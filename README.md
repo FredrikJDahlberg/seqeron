@@ -1,5 +1,4 @@
-# phixeron
-FIX Aeron Gateway
+![phixeron](doc/phixeron.png)
 
 ## Build
 
