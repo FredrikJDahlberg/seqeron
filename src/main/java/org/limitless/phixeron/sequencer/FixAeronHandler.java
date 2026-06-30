@@ -1,5 +1,6 @@
 package org.limitless.phixeron.sequencer;
 
+import io.aeron.Aeron;
 import io.aeron.ExclusivePublication;
 import io.aeron.Image;
 import io.aeron.Publication;
@@ -15,16 +16,13 @@ import org.agrona.MutableDirectBuffer;
 
 import java.util.LinkedHashMap;
 
-import static org.limitless.phixeron.sequencer.FixSessionStateMachine.DISC_SESSION_CONNECT;
-import static org.limitless.phixeron.sequencer.FixSessionStateMachine.DISC_SESSION_DISCONNECT;
-
 /**
  * ClusteredService implementation for the FIX Sequencer.
- *
+ * <p>
  * Owns all Aeron Cluster lifecycle state and coordinates between the Raft log
  * and the per-session FIX state machines. All callbacks run on the single Aeron
  * Cluster conductor thread in commit order, guaranteeing deterministic execution.
- *
+ * <p>
  * Responsibilities:
  *   - Decode the 9-byte SBE envelope (discriminator + fixSessionId) from each inbound message.
  *   - Delegate to the appropriate FixSessionStateMachine.
@@ -32,10 +30,9 @@ import static org.limitless.phixeron.sequencer.FixSessionStateMachine.DISC_SESSI
  *     CancelPendingResendCommand) and publish the rest on stream 2.
  *   - Maintain MemoryStorage and outboundArchiveIndex per session.
  *   - Snapshot and restore all session state via Aeron Archive.
- *   - Maintain the cluster-level clOrdIdRoutingTable (snapshotted).
+ *   - Maintain the cluster-level clOrdIdRoutingTable (checkpointed).
  */
-public final class FixAeronHandler implements ClusteredService
-{
+public final class FixAeronHandler implements ClusteredService {
     // ── Configuration ─────────────────────────────────────────────────────────
 
     /** Aeron IPC channel for stream 2 (cluster → AppWorker). */
@@ -73,13 +70,12 @@ public final class FixAeronHandler implements ClusteredService
      * LinkedHashMap preserves insertion order → deterministic snapshot byte sequence
      * across all cluster nodes (§6.1.11 determinism constraint).
      */
-    private final LinkedHashMap<Long, FixSessionStateMachine> sessions =
-        new LinkedHashMap<>();
+    private final LinkedHashMap<Long, FixSessionStateMachine> sessions = new LinkedHashMap<>();
 
     /**
      * Cluster-level routing table: ClOrdId → buy-side sessionId.
      * Populated when a FORWARD_APP is processed. Entries removed on final ExecutionReport.
-     * Snapshotted so the table survives failover without rebuild.
+     * Checkpointed so the table survives failover without rebuild.
      */
     private final LinkedHashMap<String, Long> clOrdIdRoutingTable = new LinkedHashMap<>();
 
@@ -104,51 +100,46 @@ public final class FixAeronHandler implements ClusteredService
     // ── ClusteredService lifecycle ────────────────────────────────────────────
 
     @Override
-    public void onStart(final Cluster cluster, final Image snapshotImage)
-    {
+    public void onStart(final Cluster cluster, final Image snapshotImage) {
         this.cluster = cluster;
-        this.stream2 = cluster.context().aeron()
-            .addPublication(STREAM_2_CHANNEL, STREAM_2_ID);
 
-        this.aeronArchive = AeronArchive.connect(new AeronArchive.Context()
-            .aeron(cluster.context().aeron()));
+        try (Aeron aeron = cluster.context().aeron()) {
+            this.stream2 = aeron.addPublication(STREAM_2_CHANNEL, STREAM_2_ID);
+            this.aeronArchive = AeronArchive.connect(new AeronArchive.Context().aeron(cluster.context().aeron()));
 
-        // Locate the cluster log recording so Archive replay positions are valid.
-        clusterLogRecordingId = findClusterLogRecordingId();
+            // Locate the cluster log recording so Archive replay positions are valid.
+            clusterLogRecordingId = findClusterLogRecordingId();
 
-        if (snapshotImage != null)
-        {
-            loadSnapshot(snapshotImage);
+            if (snapshotImage != null)
+            {
+                loadSnapshot(snapshotImage);
+            }
         }
     }
 
     @Override
-    public void onSessionOpen(final ClientSession session, final long timestamp)
-    {
+    public void onSessionOpen(final ClientSession session, final long timestamp) {
         // Aeron Cluster client sessions (ingress publishers) open and close at the
         // Aeron level; actual FIX session lifecycle is tracked via SESSION_CONNECT /
         // SESSION_DISCONNECT events on stream 1.
     }
 
     @Override
-    public void onSessionClose(
-        final ClientSession session,
-        final long timestamp,
-        final io.aeron.cluster.codecs.CloseReason closeReason)
+    public void onSessionClose(final ClientSession session,
+                               final long timestamp,
+                               final io.aeron.cluster.codecs.CloseReason closeReason)
     {
     }
 
     // ── Committed log entries ─────────────────────────────────────────────────
 
     @Override
-    public void onSessionMessage(
-        final ClientSession aeronSession,
-        final long          timestamp,
-        final DirectBuffer  buffer,
-        final int           offset,
-        final int           length,
-        final Header        header)
-    {
+    public void onSessionMessage(final ClientSession aeronSession,
+                                 final long          timestamp,
+                                 final DirectBuffer  buffer,
+                                 final int           offset,
+                                 final int           length,
+                                 final Header        header) {
         // Make progress on any in-flight Archive replay before processing new commits.
         pollPendingResend();
 
@@ -169,8 +160,7 @@ public final class FixAeronHandler implements ClusteredService
     }
 
     @Override
-    public void onTimerEvent(final long correlationId, final long timestamp)
-    {
+    public void onTimerEvent(final long correlationId, final long timestamp) {
         pollPendingResend();
 
         // Iterate in insertion order; each FSM checks whether the correlationId belongs
@@ -190,10 +180,8 @@ public final class FixAeronHandler implements ClusteredService
     // ── Snapshot ──────────────────────────────────────────────────────────────
 
     @Override
-    public void onTakeSnapshot(final ExclusivePublication snapshotPublication)
-    {
-        for (final FixSessionStateMachine fsm : sessions.values())
-        {
+    public void onTakeSnapshot(final ExclusivePublication snapshotPublication) {
+        for (final FixSessionStateMachine fsm : sessions.values()) {
             final int len = fsm.encodeTo(encodingBuffer, 0);
             offerSnapshot(snapshotPublication, encodingBuffer, len);
         }
@@ -201,8 +189,7 @@ public final class FixAeronHandler implements ClusteredService
         // Snapshot the cluster-level clOrdIdRoutingTable after all session entries.
         int pos = 0;
         encodingBuffer.putInt(pos, clOrdIdRoutingTable.size());  pos += Integer.BYTES;
-        for (final var entry : clOrdIdRoutingTable.entrySet())
-        {
+        for (final var entry : clOrdIdRoutingTable.entrySet()) {
             final byte[] clOrdIdBytes = entry.getKey().getBytes();
             encodingBuffer.putShort(pos, (short) clOrdIdBytes.length);  pos += Short.BYTES;
             encodingBuffer.putBytes(pos, clOrdIdBytes);                  pos += clOrdIdBytes.length;
@@ -211,30 +198,23 @@ public final class FixAeronHandler implements ClusteredService
         offerSnapshot(snapshotPublication, encodingBuffer, pos);
     }
 
-    private void offerSnapshot(
-        final ExclusivePublication pub,
-        final MutableDirectBuffer  buf,
-        final int                  len)
-    {
-        while (pub.offer(buf, 0, len) < 0)
-        {
+    private void offerSnapshot(final ExclusivePublication pub,
+                               final MutableDirectBuffer  buf,
+                               final int                  len) {
+        while (pub.offer(buf, 0, len) < 0) {
             cluster.idleStrategy().idle();
         }
     }
 
-    private void loadSnapshot(final Image snapshotImage)
-    {
+    private void loadSnapshot(final Image snapshotImage) {
         // Phase 1: restore per-session FSMs.
         // Each fragment in the snapshot image corresponds to one FixSessionStateMachine,
         // followed by a final fragment containing the clOrdIdRoutingTable.
         // We rely on a sentinel in the data (sessionId == 0) to detect the routing table
         // fragment; all real sessions have sessionId > 0.
-        final FragmentHandler decoder = (buf, off, len, hdr) ->
-        {
+        final FragmentHandler decoder = (buf, off, len, hdr) -> {
             final long firstLong = buf.getLong(off);
-
-            if (firstLong == 0L && buf.getInt(off + Long.BYTES) < 0)
-            {
+            if (firstLong == 0L && buf.getInt(off + Long.BYTES) < 0) {
                 // Routing table fragment (sessionId == 0 is impossible for a real session).
                 loadClOrdIdRoutingTable(buf, off + Long.BYTES);
                 return;
@@ -242,8 +222,7 @@ public final class FixAeronHandler implements ClusteredService
 
             // Check if this looks like a routing-table-only record (marker = -1 after sessionId).
             // Simpler: attempt to decode as FSM; if sessionId == 0 treat as routing table.
-            if (firstLong == 0L)
-            {
+            if (firstLong == 0L) {
                 loadClOrdIdRoutingTable(buf, off);
                 return;
             }
@@ -251,37 +230,30 @@ public final class FixAeronHandler implements ClusteredService
             final FixSessionStateMachine fsm = FixSessionStateMachine.decodeFrom(buf, off);
             sessions.put(fsm.sessionId(), fsm);
 
-            // Re-register active timers using snapshotted deadlines so they fire correctly
+            // Re-register active timers using checkpointed deadlines so they fire correctly
             // after log replay resumes from the snapshot position (§6.1.10 timer rationale).
-            if (fsm.heartbeatTimer() != 0)
-            {
+            if (fsm.heartbeatTimer() != 0) {
                 cluster.scheduleTimer(fsm.heartbeatTimer(), fsm.heartbeatTimerDeadline());
             }
-            if (fsm.testReqTimer() != 0)
-            {
+            if (fsm.testReqTimer() != 0) {
                 cluster.scheduleTimer(fsm.testReqTimer(), fsm.testReqTimerDeadline());
             }
 
             // If a TestRequest probe was in flight at snapshot time, the client's response
             // will carry the old TestReqID which no longer matches. Flag the FSM to clear
             // the stale probe on the first committed inbound message (§4.5.1).
-            if (fsm.pendingTestReqId() != null)
-            {
+            if (fsm.pendingTestReqId() != null) {
                 fsm.postFailoverPendingTestReqReset = true;
             }
         };
-
-        while (!snapshotImage.isClosed())
-        {
+        while (!snapshotImage.isClosed()) {
             cluster.idleStrategy().idle(snapshotImage.poll(decoder, REPLAY_BATCH));
         }
     }
 
-    private void loadClOrdIdRoutingTable(final DirectBuffer buf, int offset)
-    {
+    private void loadClOrdIdRoutingTable(final DirectBuffer buf, int offset) {
         final int count = buf.getInt(offset);  offset += Integer.BYTES;
-        for (int i = 0; i < count; i++)
-        {
+        for (int i = 0; i < count; i++) {
             final int    keyLen    = buf.getShort(offset) & 0xFFFF;  offset += Short.BYTES;
             final byte[] keyBytes  = new byte[keyLen];
             buf.getBytes(offset, keyBytes);                           offset += keyLen;
@@ -293,25 +265,21 @@ public final class FixAeronHandler implements ClusteredService
     // ── Leadership ────────────────────────────────────────────────────────────
 
     @Override
-    public void onNewLeadershipTermEvent(
-        final long logPosition,
-        final long leadershipTermId,
-        final long timestamp,
-        final long termBaseLogPosition,
-        final int  leaderMemberId,
-        final int  logSessionId,
-        final java.util.concurrent.TimeUnit timeUnit,
-        final int  appVersion)
-    {
+    public void onNewLeadershipTermEvent(final long logPosition,
+                                         final long leadershipTermId,
+                                         final long timestamp,
+                                         final long termBaseLogPosition,
+                                         final int  leaderMemberId,
+                                         final int  logSessionId,
+                                         final java.util.concurrent.TimeUnit timeUnit,
+                                         final int  appVersion) {
         isLeader = (leaderMemberId == cluster.memberId());
     }
 
     @Override
-    public void onRoleChange(final Cluster.Role newRole)
-    {
+    public void onRoleChange(final Cluster.Role newRole) {
         isLeader = (newRole == Cluster.Role.LEADER);
-        if (!isLeader)
-        {
+        if (!isLeader) {
             // Discard any in-progress Archive replay; the new leader will restart it
             // by re-processing the committed ResendRequest log entry.
             pendingResend = null;
@@ -319,55 +287,49 @@ public final class FixAeronHandler implements ClusteredService
     }
 
     @Override
-    public void onTerminate(final Cluster cluster)
-    {
+    public void onTerminate(final Cluster cluster) {
     }
 
     // ── Archive replay (slow-path ResendRequest) ──────────────────────────────
 
-    private void startArchiveReplay(
-        final FixSessionStateMachine fsm,
-        final long                   recordingId,
-        final long                   startPosition,
-        final long                   endSeqNo)
-    {
-        if (recordingId < 0)
-        {
+    private void startArchiveReplay(final FixSessionStateMachine fsm,
+                                    final long                   recordingId,
+                                    final long                   startPosition,
+                                    final long                   endSeqNo) {
+        if (recordingId < 0) {
             // Archive recording not yet located; fall back to MemoryStorage tail only.
             alertArchiveUnavailable();
             return;
         }
 
         final long length = ArchivePosition.REPLAY_TO_END;  // replay to recording end
-
-        final long replaySessionId = aeronArchive.startReplay(
-            recordingId, startPosition, length,
-            REPLAY_CHANNEL, REPLAY_STREAM_ID);
+        final long replaySessionId = aeronArchive.startReplay(recordingId, startPosition, length,REPLAY_CHANNEL,
+            REPLAY_STREAM_ID);
 
         // Wait for the image to become available (brief busy-spin is acceptable here
         // because this code path is rare and does not block the conductor thread for
         // more than a few microseconds on a local IPC channel).
-        io.aeron.Subscription sub = cluster.context().aeron()
-            .addSubscription(REPLAY_CHANNEL, REPLAY_STREAM_ID);
-        Image image = null;
-        for (int i = 0; i < 10_000 && image == null; i++)
-        {
-            image = sub.imageBySessionId((int) replaySessionId);
-            Thread.onSpinWait();
+        try (Aeron aeron = cluster.context().aeron()) {
+            io.aeron.Subscription sub = aeron.addSubscription(REPLAY_CHANNEL, REPLAY_STREAM_ID);
+            Image image = null;
+            for (int i = 0; i < 10_000 && image == null; i++)
+            {
+                image = sub.imageBySessionId((int) replaySessionId);
+                Thread.onSpinWait();
+            }
+            if (image == null)
+            {
+                alertArchiveReplayImageMissing(recordingId, startPosition);
+                return;
+            }
+            pendingResend = new PendingResend(fsm, sub, image, startPosition, endSeqNo);
         }
-
-        if (image == null)
-        {
-            alertArchiveReplayImageMissing(recordingId, startPosition);
-            return;
-        }
-
-        pendingResend = new PendingResend(fsm, sub, image, startPosition, endSeqNo);
     }
 
-    private void pollPendingResend()
-    {
-        if (pendingResend == null || !isLeader) return;
+    private void pollPendingResend() {
+        if (pendingResend == null || !isLeader) {
+            return;
+        }
 
         final int fragments = pendingResend.image().poll(
             (buf, off, len, hdr) ->
@@ -378,9 +340,7 @@ public final class FixAeronHandler implements ClusteredService
                 pendingResend = pendingResend.withEmitPosition(hdr.position());
             },
             REPLAY_BATCH);
-
         cluster.idleStrategy().idle(fragments);
-
         if (pendingResend.image().isClosed())
         {
             // Replay complete: flush any tail entries that fall within MemoryStorage.
@@ -395,40 +355,34 @@ public final class FixAeronHandler implements ClusteredService
 
     // ── Command emission ──────────────────────────────────────────────────────
 
-    private void emitCommands(
-        final FixSessionStateMachine fsm,
-        final Command[]              commands,
-        final long                   clusterPosition)
-    {
-        if (!isLeader) return;  // suppressors output on follower during log replay
+    private void emitCommands(final FixSessionStateMachine fsm,
+                              final Command[]              commands,
+                              final long                   clusterPosition) {
+        if (!isLeader) {
+            return;  // suppressors output on follower during log replay
+        }
 
-        for (final Command cmd : commands)
-        {
-            switch (cmd)
-            {
+        for (final Command cmd : commands) {
+            switch (cmd) {
                 case Command.ScheduleTimerCommand t ->
                     cluster.scheduleTimer(t.correlationId(), t.deadlineMs());
 
                 case Command.StartArchiveReplayCommand a ->
                     startArchiveReplay(fsm, a.recordingId(), a.startPosition(), a.endSeqNo());
 
-                case Command.CancelPendingResendCommand c ->
-                {
-                    if (pendingResend != null && pendingResend.fsm().sessionId() == c.sessionId())
-                    {
+                case Command.CancelPendingResendCommand c -> {
+                    if (pendingResend != null && pendingResend.fsm().sessionId() == c.sessionId()) {
                         pendingResend.subscription().close();
                         pendingResend = null;
                     }
                 }
 
-                case Command.SendCommand send ->
-                {
+                case Command.SendCommand send -> {
                     // Update MemoryStorage; record eviction in outboundArchiveIndex.
                     final MemoryStorage.EvictedEntry evicted = fsm.memoryStorage.store(
                         send.seqNum(), clusterPosition, send.templateId(),
                         send.payload(), send.length());
-                    if (evicted != null)
-                    {
+                    if (evicted != null) {
                         fsm.outboundArchiveIndex.put(
                             evicted.seqNum(),
                             new ArchivePosition(
@@ -444,14 +398,11 @@ public final class FixAeronHandler implements ClusteredService
         }
     }
 
-    private void publishOnStream2(final Command cmd, final long clusterPosition)
-    {
+    private void publishOnStream2(final Command cmd, final long clusterPosition) {
         cmd.encodeInto(encodingBuffer, 0, clusterPosition);
         int idleCycles = 0;
-        while (stream2.offer(encodingBuffer, 0, cmd.encodedLength()) < 0)
-        {
-            if (++idleCycles >= STREAM2_MAX_IDLE_CYCLES)
-            {
+        while (stream2.offer(encodingBuffer, 0, cmd.encodedLength()) < 0) {
+            if (++idleCycles >= STREAM2_MAX_IDLE_CYCLES) {
                 alertStream2BackPressureExceeded(clusterPosition);
                 idleCycles = 0;
             }
@@ -464,41 +415,33 @@ public final class FixAeronHandler implements ClusteredService
 
     // ── Archive discovery ─────────────────────────────────────────────────────
 
-    private long findClusterLogRecordingId()
-    {
+    private long findClusterLogRecordingId() {
         // The Aeron Cluster records the consensus log on an internal channel/stream.
         // We list recordings matching the cluster log stream to obtain the recording ID.
         // In production the recording ID is stable across restarts (same channel URI).
         final long[] found = {-1L};
-        aeronArchive.listRecordingsForUri(
-            0, 1,
-            "aeron:ipc",                                   // cluster log IPC channel
+        aeronArchive.listRecordingsForUri(0, 1, "aeron:ipc",
             io.aeron.cluster.ConsensusModule.Configuration.logStreamId(),
             (controlSessionId, correlationId, recordingId,
              startTimestamp, stopTimestamp, startPosition, stopPosition,
              initialTermId, segmentFileLength, termBufferLength, mtuLength,
-             sessionId, streamId, strippedChannel, originalChannel, sourceIdentity) ->
-                found[0] = recordingId);
-
+             sessionId, streamId, strippedChannel, originalChannel, sourceIdentity) -> found[0] = recordingId);
         return found[0];
     }
 
     // ── Diagnostics / alerting ────────────────────────────────────────────────
 
-    private void alertStream2BackPressureExceeded(final long clusterPosition)
-    {
+    private void alertStream2BackPressureExceeded(final long clusterPosition) {
         System.err.printf("[FixAeronHandler] ALERT: stream 2 back-pressure at clusterPosition=%d%n",
             clusterPosition);
     }
 
-    private void alertArchiveUnavailable()
-    {
+    private void alertArchiveUnavailable() {
         System.err.println("[FixAeronHandler] ALERT: cluster log recording not yet located; " +
             "slow-path ResendRequest will be serviced from MemoryStorage tail only");
     }
 
-    private void alertArchiveReplayImageMissing(final long recordingId, final long startPosition)
-    {
+    private void alertArchiveReplayImageMissing(final long recordingId, final long startPosition) {
         System.err.printf(
             "[FixAeronHandler] ALERT: Archive replay image never appeared " +
             "(recordingId=%d startPosition=%d)%n", recordingId, startPosition);
@@ -510,15 +453,12 @@ public final class FixAeronHandler implements ClusteredService
      * Tracks state of an in-progress async Archive replay for a slow-path ResendRequest.
      * Not snapshotted; re-derived on failover by re-processing the committed ResendRequest.
      */
-    record PendingResend(
-        FixSessionStateMachine   fsm,
-        io.aeron.Subscription    subscription,
-        Image                    image,
-        long                     emitPosition,
-        long                     endSeqNo)
-    {
-        PendingResend withEmitPosition(final long newPos)
-        {
+    record PendingResend(FixSessionStateMachine   fsm,
+                         io.aeron.Subscription    subscription,
+                         Image                    image,
+                         long                     emitPosition,
+                         long                     endSeqNo) {
+        PendingResend withEmitPosition(final long newPos) {
             return new PendingResend(fsm, subscription, image, newPos, endSeqNo);
         }
     }
