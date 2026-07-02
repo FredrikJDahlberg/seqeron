@@ -99,6 +99,7 @@ public final class SequencerNode {
             .aeronDirectoryName(aeronDir)
             .archiveDir(archiveDir)
             .controlChannel(udp(DEFAULT_HOST, archivePort))   // UDP: remote clients reach the archive here
+            .controlStreamId(100)                             // must match SequencerClient / C++ clients
             .localControlChannel("aeron:ipc")
             .localControlStreamId(100)
             .replicationChannel(udp(DEFAULT_HOST, 0))

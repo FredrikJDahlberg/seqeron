@@ -13,10 +13,10 @@
 #include "FragmentAssembler.h"
 
 // Generated SBE C++ codecs from sequencer.xml (via GenerateSeqSbeCodecs)
-#include "org/limitless/phixeron/sbe/sequencer/MessageHeader.h"
-#include "org/limitless/phixeron/sbe/sequencer/SequencedMessage.h"
-#include "org/limitless/phixeron/sbe/sequencer/SourceConnected.h"
-#include "org/limitless/phixeron/sbe/sequencer/SourceDisconnected.h"
+#include "org_limitless_phixeron_sbe_sequencer/MessageHeader.h"
+#include "org_limitless_phixeron_sbe_sequencer/SequencedMessage.h"
+#include "org_limitless_phixeron_sbe_sequencer/SourceConnected.h"
+#include "org_limitless_phixeron_sbe_sequencer/SourceDisconnected.h"
 
 namespace org::limitless::phixeron::sequencer
 {
@@ -27,7 +27,9 @@ inline constexpr const char* GLOBAL_STREAM_CHANNEL =
     "aeron:udp?endpoint=224.0.1.1:9200|interface=localhost";
 inline constexpr std::int32_t GLOBAL_STREAM_ID = 1;
 
-inline constexpr const char* REPLAY_CHANNEL   = "aeron:udp?endpoint=localhost:0";
+// Each binary uses a distinct port so their archive replay publications don't conflict.
+// fix_session_client      → 9310
+// application_stream_client → 9311
 inline constexpr std::int32_t REPLAY_STREAM_ID = 110;
 
 // ── Event types delivered to the application ─────────────────────────────────
@@ -115,25 +117,31 @@ public:
      * multicast fallback subscription.
      *
      * @param aeron           connected Aeron instance
-     * @param replaySessionId session ID returned by AeronArchive::startReplay()
+     * @param replaySessionId session ID returned by AeronArchive::startReplay(),
+     *                        or -1 when there is no historical data to replay
      * @param catchUpPosition recording stop position observed at startup;
      *                        onCaughtUp fires once the replay image reaches it
+     * @param replayChannel   channel the archive publishes the replay on;
+     *                        ignored when replaySessionId < 0
      */
     void start(std::shared_ptr<aeron::Aeron> aeron,
                std::int64_t                  replaySessionId,
-               std::int64_t                  catchUpPosition)
+               std::int64_t                  catchUpPosition,
+               const char*                   replayChannel = nullptr)
     {
         m_aeron           = std::move(aeron);
         m_replaySessionId = replaySessionId;
         m_catchUpPosition = catchUpPosition;
 
-        m_replaySub = m_aeron->addSubscription(REPLAY_CHANNEL, REPLAY_STREAM_ID);
+        if (replaySessionId >= 0 && replayChannel != nullptr) {
+            m_replaySubRegId = m_aeron->addSubscription(replayChannel, REPLAY_STREAM_ID);
+        }
 
-        // Fallback for when the replay image closes (leader failover).
-        m_liveSub = m_aeron->addSubscription(GLOBAL_STREAM_CHANNEL, GLOBAL_STREAM_ID);
+        // Live multicast fallback — always subscribed; used when replay image closes.
+        m_liveSubRegId = m_aeron->addSubscription(GLOBAL_STREAM_CHANNEL, GLOBAL_STREAM_ID);
 
-        if (catchUpPosition <= 0) {
-            // Nothing to replay; already live.
+        if (replaySessionId < 0) {
+            // No historical data — already at live.
             notifyCaughtUp();
         }
     }
@@ -144,6 +152,14 @@ public:
      */
     int poll()
     {
+        // Lazily resolve subscriptions once they become available.
+        if (!m_replaySub && m_replaySubRegId >= 0) {
+            m_replaySub = m_aeron->findSubscription(m_replaySubRegId);
+        }
+        if (!m_liveSub && m_liveSubRegId >= 0) {
+            m_liveSub = m_aeron->findSubscription(m_liveSubRegId);
+        }
+
         // Lazily resolve the replay image once it becomes available.
         if (!m_replayImage && m_replaySub) {
             m_replayImage = m_replaySub->imageBySessionId(
@@ -201,7 +217,7 @@ private:
         switch (templateId)
         {
         case SeqSbe::sbeTemplateId():
-            m_seqMsg.wrap(raw, bodyOff, blockLen, version, cap);
+            m_seqMsg.wrapForDecode(raw, bodyOff, blockLen, version, cap);
             if (m_onSequenced) {
                 const auto gseq  = m_seqMsg.globalSeqNo();
                 const auto srcId = m_seqMsg.sourceSessionId();
@@ -222,7 +238,7 @@ private:
             break;
 
         case ConnSbe::sbeTemplateId():
-            m_srcConn.wrap(raw, bodyOff, blockLen, version, cap);
+            m_srcConn.wrapForDecode(raw, bodyOff, blockLen, version, cap);
             if (m_onConnected) {
                 m_onConnected(LifecycleEvent{
                     .globalSeqNo      = m_srcConn.globalSeqNo(),
@@ -234,7 +250,7 @@ private:
             break;
 
         case DiscSbe::sbeTemplateId():
-            m_srcDisc.wrap(raw, bodyOff, blockLen, version, cap);
+            m_srcDisc.wrapForDecode(raw, bodyOff, blockLen, version, cap);
             if (m_onDisconnected) {
                 m_onDisconnected(LifecycleEvent{
                     .globalSeqNo      = m_srcDisc.globalSeqNo(),
@@ -273,6 +289,8 @@ private:
 
     // ── Aeron ─────────────────────────────────────────────────────────────────
     std::shared_ptr<aeron::Aeron>        m_aeron;
+    std::int64_t                         m_replaySubRegId = -1;
+    std::int64_t                         m_liveSubRegId   = -1;
     std::shared_ptr<aeron::Subscription> m_replaySub;
     std::shared_ptr<aeron::Subscription> m_liveSub;
     std::shared_ptr<aeron::Image>        m_replayImage; // null until resolved

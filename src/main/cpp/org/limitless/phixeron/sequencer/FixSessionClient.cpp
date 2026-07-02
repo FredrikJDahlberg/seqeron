@@ -1,24 +1,33 @@
 /*
  * FixSessionClient — TCP FIX gateway bridging FIX clients to the Aeron Cluster sequencer.
  *
+ * Deterministic design invariant:
+ *   Session state is updated ONLY by messages received from the cluster global
+ *   stream. The cluster provides total ordering and consensus timestamps; these
+ *   are used as the authoritative clock for all session timers.
+ *
  * Inbound path (TCP → Cluster):
  *   1. Accepts FIX sessions on TCP port 9000.
  *   2. Decodes each message with simdfix PayloadDecoder<FIXT_1_1>.
- *   3. Admin messages (Logon, Heartbeat, …) are handled by the per-connection
- *      ServerSession state machine, which sends responses back on TCP.
+ *   3. Admin messages (Logon, Heartbeat, …) are re-encoded as SBE
+ *      (sbe-session.xml schemaId=100) with a 4-byte connection ID prefix and
+ *      sent to the cluster ingress. Session state is NOT touched here.
  *   4. Application messages (NewOrderSingle) are wrapped in an AppMessage SBE
- *      envelope and offered to the Aeron Cluster ingress publication.
+ *      envelope (schemaId=201) and offered to the cluster ingress.
  *
  * Outbound path (Global stream → TCP):
  *   On startup the client replays the archive (NULL_POSITION length → live
- *   follow-through on the same image), then decodes each SequencedMessage's
- *   embedded FIX payload.  ExecutionReports arriving on the global stream are
- *   broadcast to all connected TCP FIX clients.
+ *   follow-through on the same image). For each SequencedMessage:
+ *   - Admin SBE payloads (schemaId==100): decoded, and the corresponding
+ *     session (looked up by embedded connection ID) is driven with the cluster
+ *     consensus timestamp. The session FSM then writes the FIX response to TCP.
+ *   - Raw FIX payloads (byte[0]=='8'): decoded as application messages
+ *     (ExecutionReport etc.) and broadcast to TCP clients.
  *
  * Channels / ports (must match SequencerNode defaults):
  *   Archive control  aeron:udp?endpoint=localhost:9301  stream 100
  *   Cluster ingress  aeron:udp?endpoint=localhost:9302  stream 101
- *   Cluster egress   aeron:udp?endpoint=localhost:0     stream 102
+ *   Cluster egress   aeron:udp?endpoint=localhost:9320  stream 102
  *   Global stream    aeron:udp?endpoint=224.0.1.1:9200|interface=localhost  stream 1
  *   FIX TCP          0.0.0.0:9000
  */
@@ -54,7 +63,7 @@
 #include "Aeron.h"
 #include "FragmentAssembler.h"
 #include "concurrent/AtomicBuffer.h"
-#include "AeronArchive.h"
+#include "client/archive/AeronArchive.h"
 
 // simdfix — session FSM + codec
 #include "org/limitless/fix/session/ServerSession.hpp"
@@ -72,14 +81,24 @@
 // Global stream subscription + event types
 #include "org/limitless/phixeron/sequencer/GlobalStreamClient.hpp"
 
+// SBE codecs for session admin messages (sbe-session.xml schemaId=100)
+#include "org_limitless_phixeron_sbe/MessageHeader.h"
+#include "org_limitless_phixeron_sbe/Logon.h"
+#include "org_limitless_phixeron_sbe/Logout.h"
+#include "org_limitless_phixeron_sbe/Heartbeat.h"
+#include "org_limitless_phixeron_sbe/TestRequest.h"
+#include "org_limitless_phixeron_sbe/ResendRequest.h"
+#include "org_limitless_phixeron_sbe/SequenceReset.h"
+
 // ── Namespace aliases ──────────────────────────────────────────────────────────
 
-namespace fix  = org::limitless::fix;
-namespace sess = fix::session;
-namespace msg  = fix::generated::messages;
-namespace cfg  = fix::generated::config;
-namespace cl   = org::limitless::phixeron::cluster;
-namespace seq  = org::limitless::phixeron::sequencer;
+namespace fix     = org::limitless::fix;
+namespace sess    = fix::session;
+namespace msg     = fix::generated::messages;
+namespace cfg     = fix::generated::config;
+namespace cl      = org::limitless::phixeron::cluster;
+namespace seq     = org::limitless::phixeron::sequencer;
+namespace sbesess = org::limitless::phixeron::sbe;
 
 using namespace aeron;
 using namespace aeron::concurrent;
@@ -94,13 +113,20 @@ static constexpr const char* ARCHIVE_CONTROL_CHANNEL   = "aeron:udp?endpoint=loc
 static constexpr int32_t     ARCHIVE_CONTROL_STREAM    = 100;
 static constexpr const char* ARCHIVE_RESPONSE_CHANNEL  = "aeron:udp?endpoint=localhost:0";
 static constexpr const char* CLUSTER_INGRESS_CHANNEL   = "aeron:udp?endpoint=localhost:9302";
-static constexpr const char* CLUSTER_EGRESS_CHANNEL    = "aeron:udp?endpoint=localhost:0";
+static constexpr const char* CLUSTER_EGRESS_CHANNEL    = "aeron:udp?endpoint=localhost:9320";
 static constexpr const char* CLIENT_INFO               = "FixSessionClient";
 static constexpr int64_t     CLUSTER_CONNECT_TIMEOUT_MS = 10'000;
+static constexpr const char* FIX_REPLAY_CHANNEL        = "aeron:udp?endpoint=localhost:9310";
 
 // AppMessage SBE constants (sequencer.xml schemaId=201, templateId=1, blockLength=0)
 static constexpr uint16_t APP_MSG_TEMPLATE_ID = 1;
 static constexpr uint16_t APP_MSG_SCHEMA_ID   = 201;
+
+// Session admin SBE schema (sbe-session.xml schemaId=100).
+// Admin AppMessage payloads are prefixed with a 4-byte connection ID so the
+// global-stream receiver can route responses to the correct TCP socket.
+static constexpr uint16_t SESSION_SCHEMA_ID = 100;
+static constexpr uint32_t CONN_ID_PREFIX    = 4;   // bytes before SBE header in admin payload
 
 // ── Low-level helpers ─────────────────────────────────────────────────────────
 
@@ -299,27 +325,128 @@ private:
     }};
 };
 
-// ── OrderGatewayApplication ───────────────────────────────────────────────────
+// ── ClusterIngressHandler ─────────────────────────────────────────────────────
 
-// Application handler injected into each ServerSession.  Receives
-// NewOrderSingle messages decoded from TCP and forwards the raw FIX bytes to
-// the cluster ingress.
-class OrderGatewayApplication : public FixMessageHandler<OrderGatewayApplication>
+// Receives decoded FIX messages on the TCP receive path and forwards them to
+// the cluster WITHOUT updating any session state. Admin messages are encoded
+// as SBE (sbe-session.xml, schemaId=100) prefixed with a 4-byte connection ID
+// for routing replies. Application messages (NewOrderSingle) are forwarded as
+// raw FIX bytes wrapped in the AppMessage SBE envelope.
+class ClusterIngressHandler : public FixMessageHandler<ClusterIngressHandler>
 {
-    ClusterIngressSender* m_ingress{};
-    // Raw FIX bytes of the message currently being dispatched; set by FixConnection
-    // before each PayloadDecoder::parse() call so handle() can send the exact wire bytes.
+    ClusterIngressSender*    m_ingress{};
+    int32_t                  m_connectionId{-1};
     std::span<const uint8_t> m_rawFixBytes;
 
+    // SBE encode buffer: [4-byte connId][8-byte SBE header][SBE body]
+    alignas(16) std::array<uint8_t, 512> m_sbeBuf{};
+
+    char*    sbeBufBody()   { return reinterpret_cast<char*>(m_sbeBuf.data() + CONN_ID_PREFIX); }
+    uint64_t sbeBufLen()    { return m_sbeBuf.size() - CONN_ID_PREFIX; }
+
+    // Writes connId at offset 0 and sends the SBE bytes to the cluster.
+    template <typename SbeMsg>
+    void sendAdmin(SbeMsg& msg)
+    {
+        if (!m_ingress) return;
+        std::memcpy(m_sbeBuf.data(), &m_connectionId, CONN_ID_PREFIX);
+        const uint16_t total = static_cast<uint16_t>(CONN_ID_PREFIX + msg.sbePosition());
+        m_ingress->send(m_sbeBuf.data(), total);
+    }
+
 public:
-    using FixMessageHandler::handle;  // keep base overloads in scope
+    using FixMessageHandler::handle;
 
-    OrderGatewayApplication() = default;
-
-    explicit OrderGatewayApplication(ClusterIngressSender* ingress)
-        : m_ingress(ingress) {}
+    ClusterIngressHandler() = default;
+    ClusterIngressHandler(ClusterIngressSender* ingress, int32_t connId)
+        : m_ingress(ingress), m_connectionId(connId) {}
 
     void setRawBytes(std::span<const uint8_t> bytes) { m_rawFixBytes = bytes; }
+
+    fix::Result handle(const LogonDecoder& logon)
+    {
+        const uint32_t hbSecs = logon.heartbeatInterval().value_or(30u);
+        sbesess::Logon msg;
+        msg.wrapAndApplyHeader(sbeBufBody(), 0, sbeBufLen());
+        msg.putSender(static_cast<const char*>("CLIENT  ")).putTarget(static_cast<const char*>("SEQNCR  "))
+           .seqNum(0).sendingTimeMs(nowMs())
+           .encryptMethod(sbesess::EncryptMethod::Value::None)
+           .heartbeatInterval(hbSecs)
+           .putXmlData(nullptr, 0);
+        sendAdmin(msg);
+        return fix::Result::Success;
+    }
+
+    fix::Result handle(const LogoutDecoder& /*logout*/)
+    {
+        sbesess::Logout msg;
+        msg.wrapAndApplyHeader(sbeBufBody(), 0, sbeBufLen());
+        msg.putSender(static_cast<const char*>("CLIENT  ")).putTarget(static_cast<const char*>("SEQNCR  "))
+           .seqNum(0).sendingTimeMs(nowMs())
+           .putText(nullptr, 0);
+        sendAdmin(msg);
+        return fix::Result::Success;
+    }
+
+    fix::Result handle(const HeartbeatDecoder& heartbeat)
+    {
+        sbesess::Heartbeat msg;
+        msg.wrapAndApplyHeader(sbeBufBody(), 0, sbeBufLen());
+        msg.putSender(static_cast<const char*>("CLIENT  ")).putTarget(static_cast<const char*>("SEQNCR  "))
+           .seqNum(0).sendingTimeMs(nowMs());
+        if (const auto id = heartbeat.testReqID()) {
+            const auto sv = *id;
+            const std::size_t n = std::min(sv.size(), static_cast<std::size_t>(32));
+            std::memcpy(msg.testReqID(), sv.data(), n);
+            if (n < 32) msg.testReqID()[n] = '\0';
+        } else {
+            msg.testReqID()[0] = '\0';
+        }
+        sendAdmin(msg);
+        return fix::Result::Success;
+    }
+
+    fix::Result handle(const TestRequestDecoder& testRequest)
+    {
+        sbesess::TestRequest msg;
+        msg.wrapAndApplyHeader(sbeBufBody(), 0, sbeBufLen());
+        msg.putSender(static_cast<const char*>("CLIENT  ")).putTarget(static_cast<const char*>("SEQNCR  "))
+           .seqNum(0).sendingTimeMs(nowMs());
+        if (const auto id = testRequest.testReqID()) {
+            const auto sv = *id;
+            const std::size_t n = std::min(sv.size(), static_cast<std::size_t>(32));
+            std::memcpy(msg.testReqID(), sv.data(), n);
+            if (n < 32) msg.testReqID()[n] = '\0';
+        } else {
+            msg.testReqID()[0] = '\0';
+        }
+        sendAdmin(msg);
+        return fix::Result::Success;
+    }
+
+    fix::Result handle(const ResendRequestDecoder& rr)
+    {
+        sbesess::ResendRequest msg;
+        msg.wrapAndApplyHeader(sbeBufBody(), 0, sbeBufLen());
+        msg.putSender(static_cast<const char*>("CLIENT  ")).putTarget(static_cast<const char*>("SEQNCR  "))
+           .seqNum(0).sendingTimeMs(nowMs())
+           .beginSeqNo(rr.beginSeqNo().value_or(1u))
+           .endSeqNo(rr.endSeqNo().value_or(0u));
+        sendAdmin(msg);
+        return fix::Result::Success;
+    }
+
+    fix::Result handle(const SequenceResetDecoder& sr)
+    {
+        sbesess::SequenceReset msg;
+        msg.wrapAndApplyHeader(sbeBufBody(), 0, sbeBufLen());
+        msg.putSender(static_cast<const char*>("CLIENT  ")).putTarget(static_cast<const char*>("SEQNCR  "))
+           .seqNum(0).sendingTimeMs(nowMs())
+           .gapFillFlag(sbesess::GapFillFlag::Value::NULL_VALUE)
+           .newSeqNo(sr.newSeqNo().value_or(1u));
+        sendAdmin(msg);
+        return fix::Result::Success;
+    }
 
     fix::Result handle(NewOrderSingleDecoder& nos)
     {
@@ -333,38 +460,47 @@ public:
             const std::size_t sz = m_rawFixBytes.size();
             if (sz > 4096) {
                 std::fprintf(stderr, "[App] FIX message too large (%zu bytes); dropped\n", sz);
-                return fix::Result::Success;
+            } else {
+                m_ingress->send(m_rawFixBytes.data(), static_cast<uint16_t>(sz));
             }
-            m_ingress->send(m_rawFixBytes.data(), static_cast<uint16_t>(sz));
         }
         return fix::Result::Success;
     }
 };
 
-// ── FixConnection ──────────────────────────────────────────────────────────────
+// ── FixConnection ─────────────────────────────────────────────────────────────
+//
+// TCP receive path:  ClusterIngressHandler encodes every FIX message as SBE
+//                   (admin) or raw FIX (app) and forwards to the cluster.
+//                   Session state is NOT updated here.
+//
+// Global stream path: FixConnection::onClusterMessage() is called by the main
+//                     loop when a SequencedMessage arrives that was sourced by
+//                     this connection. It advances the session clock to the
+//                     cluster timestamp and drives the session state machine,
+//                     which then writes the FIX response to the TCP socket.
 
+// Session only needs a transport; it no longer handles inbound application messages.
 using FixSession = sess::ServerSession<FIXT_1_1, "SEQUENCER", "CLIENT",
-                                       sess::NullStorage, TcpTransport,
-                                       OrderGatewayApplication>;
+                                       sess::NullStorage, TcpTransport>;
 
 static constexpr std::size_t MAX_RECV_BUF = 1u * 1024u * 1024u;  // 1 MB
 
-// One FixConnection per accepted TCP socket.  Owns the ServerSession, a byte
-// accumulator for split TCP reads, and a PayloadDecoder.
 struct FixConnection
 {
-    int fd;
+    int  fd;
     bool m_dead{false};
-    FixSession                          session;
+    FixSession                             session;
+    ClusterIngressHandler                  ingressHandler;
     fix::decoder::PayloadDecoder<FIXT_1_1> decoder;
-    std::vector<uint8_t>                recvBuf;
+    std::vector<uint8_t>                   recvBuf;
 
     FixConnection(int fd_, ClusterIngressSender* ingress)
         : fd(fd_)
         , session(FixSession::Builder{sess::NullStorage{}}
                       .transport(TcpTransport{fd_})
-                      .application(OrderGatewayApplication{ingress})
                       .build())
+        , ingressHandler(ingress, fd_)
     {
         session.onTcpConnected();
         recvBuf.reserve(8192);
@@ -372,6 +508,7 @@ struct FixConnection
 
     [[nodiscard]] bool isDead() const noexcept { return m_dead; }
 
+    // TCP receive: forward every complete FIX message to the cluster as SBE.
     void onRecv(const uint8_t* data, std::size_t len)
     {
         if (recvBuf.size() + len > MAX_RECV_BUF)
@@ -388,17 +525,78 @@ struct FixConnection
                 recvBuf.data() + consumed, recvBuf.size() - consumed);
 
             const std::size_t msgLen = findFixMessageEnd(remaining);
-            if (msgLen == 0) break;  // incomplete message — wait for more bytes
+            if (msgLen == 0) break;
 
             const auto msgSpan = remaining.subspan(0, msgLen);
-            session.application().setRawBytes(msgSpan);
-            decoder.parse(msgSpan, session);
+            ingressHandler.setRawBytes(msgSpan);
+            decoder.parse(msgSpan, ingressHandler);
             consumed += msgLen;
         }
 
         if (consumed > 0)
             recvBuf.erase(recvBuf.begin(),
                           recvBuf.begin() + static_cast<std::ptrdiff_t>(consumed));
+    }
+
+    // Global stream: drive session state from decoded SBE admin message with
+    // the cluster consensus timestamp as the authoritative clock.
+    void onClusterAdmin(uint16_t templateId, const char* sbeBody,
+                        uint64_t sbeBodyLen, uint16_t blockLen, uint16_t version,
+                        int64_t clusterTimestampMs)
+    {
+        session.setNowMs(clusterTimestampMs);
+        switch (templateId)
+        {
+        case sbesess::Logon::sbeTemplateId():
+        {
+            sbesess::Logon msg;
+            msg.wrapForDecode(const_cast<char*>(sbeBody), sbesess::MessageHeader::encodedLength(),
+                              blockLen, version, sbeBodyLen);
+            session.handleClusterLogon(msg.heartbeatInterval(), clusterTimestampMs);
+            break;
+        }
+        case sbesess::Logout::sbeTemplateId():
+            session.handleClusterLogout(clusterTimestampMs);
+            break;
+
+        case sbesess::Heartbeat::sbeTemplateId():
+        {
+            sbesess::Heartbeat msg;
+            msg.wrapForDecode(const_cast<char*>(sbeBody), sbesess::MessageHeader::encodedLength(),
+                              blockLen, version, sbeBodyLen);
+            session.handleClusterHeartbeat(clusterTimestampMs);
+            break;
+        }
+        case sbesess::TestRequest::sbeTemplateId():
+        {
+            sbesess::TestRequest msg;
+            msg.wrapForDecode(const_cast<char*>(sbeBody), sbesess::MessageHeader::encodedLength(),
+                              blockLen, version, sbeBodyLen);
+            session.handleClusterTestRequest(msg.testReqID(), clusterTimestampMs);
+            break;
+        }
+        case sbesess::ResendRequest::sbeTemplateId():
+        {
+            sbesess::ResendRequest msg;
+            msg.wrapForDecode(const_cast<char*>(sbeBody), sbesess::MessageHeader::encodedLength(),
+                              blockLen, version, sbeBodyLen);
+            session.handleClusterResendRequest(msg.beginSeqNo(), msg.endSeqNo(),
+                                               clusterTimestampMs);
+            break;
+        }
+        case sbesess::SequenceReset::sbeTemplateId():
+        {
+            sbesess::SequenceReset msg;
+            msg.wrapForDecode(const_cast<char*>(sbeBody), sbesess::MessageHeader::encodedLength(),
+                              blockLen, version, sbeBodyLen);
+            session.handleClusterSequenceReset(msg.newSeqNo(), clusterTimestampMs);
+            break;
+        }
+        default:
+            std::fprintf(stderr, "[FixConnection] fd=%d unknown SBE templateId=%u; ignored\n",
+                         fd, templateId);
+            break;
+        }
     }
 };
 
@@ -488,7 +686,7 @@ static void sigintHandler(int) { g_running = false; }
 // ── Archive helpers ───────────────────────────────────────────────────────────
 
 static std::int64_t findGlobalStreamRecording(
-    aeron::archive::AeronArchive& archive, std::int64_t& catchUpPos)
+    aeron::archive::client::AeronArchive& archive, std::int64_t& catchUpPos)
 {
     // Prefer the active (live) recording over any stopped one. When multiple
     // stopped recordings exist (e.g., after leader failover), pick the one with
@@ -500,12 +698,12 @@ static std::int64_t findGlobalStreamRecording(
     archive.listRecordingsForUri(
         0, std::numeric_limits<std::int32_t>::max(),
         seq::GLOBAL_STREAM_CHANNEL, seq::GLOBAL_STREAM_ID,
-        [&](const aeron::archive::RecordingDescriptor& desc) {
-            if (desc.stopPosition == aeron::archive::NULL_POSITION) {
-                activeId = desc.recordingId;  // active recording wins
-            } else if (desc.stopPosition > stoppedPos) {
-                stoppedId  = desc.recordingId;
-                stoppedPos = desc.stopPosition;
+        [&](aeron::archive::client::RecordingDescriptor& desc) {
+            if (desc.m_stopPosition == aeron::archive::client::NULL_POSITION) {
+                activeId = desc.m_recordingId;  // active recording wins
+            } else if (desc.m_stopPosition > stoppedPos) {
+                stoppedId  = desc.m_recordingId;
+                stoppedPos = desc.m_stopPosition;
             }
         });
 
@@ -517,7 +715,7 @@ static std::int64_t findGlobalStreamRecording(
     if (activeId >= 0) {
         // Resolve actual write position so the catch-up check is accurate.
         catchUpPos = archive.getRecordingPosition(activeId);
-        if (catchUpPos == aeron::archive::NULL_POSITION) catchUpPos = 0;
+        if (catchUpPos == aeron::archive::client::NULL_POSITION) catchUpPos = 0;
         return activeId;
     }
 
@@ -537,13 +735,13 @@ int main()
     std::puts("[FixSessionClient] Connected to Aeron media driver");
 
     // ── Archive ──────────────────────────────────────────────────────────────
-    aeron::archive::AeronArchive::Context archiveCtx;
+    aeron::archive::client::Context archiveCtx;
     archiveCtx.aeron(aeron)
               .controlRequestChannel(ARCHIVE_CONTROL_CHANNEL)
               .controlRequestStreamId(ARCHIVE_CONTROL_STREAM)
               .controlResponseChannel(ARCHIVE_RESPONSE_CHANNEL);
 
-    auto archive = aeron::archive::AeronArchive::connect(archiveCtx);
+    auto archive = aeron::archive::client::AeronArchive::connect(archiveCtx);
     std::puts("[FixSessionClient] Connected to Aeron Archive");
 
     // ── Locate global stream recording ───────────────────────────────────────
@@ -553,13 +751,18 @@ int main()
     std::printf("[FixSessionClient] Recording %" PRId64
                 "  catchUpPosition=%" PRId64 "\n", recordingId, catchUpPosition);
 
-    // ── Start replay (NULL_POSITION → follow live recording) ─────────────────
-    const std::int64_t replaySessionId = archive->startReplay(
-        recordingId, /*position=*/0,
-        aeron::archive::AeronArchive::NULL_POSITION,
-        seq::REPLAY_CHANNEL, seq::REPLAY_STREAM_ID);
-    std::printf("[FixSessionClient] Replay started  replaySessionId=%" PRId64 "\n",
-                replaySessionId);
+    // ── Start replay (only when there is historical data to replay) ──────────
+    std::int64_t replaySessionId = -1;
+    if (catchUpPosition > 0) {
+        aeron::archive::client::ReplayParams replayParams;
+        replayParams.position(0).length(aeron::archive::client::NULL_LENGTH);
+        replaySessionId = archive->startReplay(
+            recordingId, FIX_REPLAY_CHANNEL, seq::REPLAY_STREAM_ID, replayParams);
+        std::printf("[FixSessionClient] Replay started  replaySessionId=%" PRId64 "\n",
+                    replaySessionId);
+    } else {
+        std::puts("[FixSessionClient] No historical data — subscribing to live stream");
+    }
 
     // ── Cluster ingress ───────────────────────────────────────────────────────
     ClusterIngressSender ingressSender;
@@ -572,7 +775,7 @@ int main()
     // ── Per-connection state ──────────────────────────────────────────────────
     std::unordered_map<int, std::unique_ptr<FixConnection>> connections;
 
-    // ── Global stream FIX decoder (for ExecutionReports) ─────────────────────
+    // ── Global stream FIX decoder (for application messages, e.g. ExecutionReport) ─
     fix::decoder::PayloadDecoder<FIXT_1_1> globalDecoder;
 
     GlobalStreamFixHandler globalFixHandler([&](ExecutionReportDecoder& er)
@@ -586,24 +789,67 @@ int main()
                     execType ? static_cast<int>(*execType) : -1,
                     ordStatus ? static_cast<int>(*ordStatus) : -1);
 
-        // Route by TargetCompID (= the originating client's SenderCompID).
-        // For now broadcast to all TCP clients; a routing table can be added
-        // here once clients identify themselves with distinct CompIDs.
-        //
-        // TODO: encode ExecutionReport as FIX and send to TCP client(s).
+        // TODO: encode ExecutionReport as FIX and send to matching TCP client(s).
         (void)er;
     });
 
     // ── Global stream subscription ────────────────────────────────────────────
+    // Payload layout after the 10-byte AppMessage SBE prefix:
+    //   Admin SBE:  [4-byte connId LE][8-byte SBE MessageHeader][SBE body]
+    //               Identified by schemaId==SESSION_SCHEMA_ID at payload[8..9].
+    //   Raw FIX:    bytes starting with '8' (BeginString).
     seq::GlobalStreamClient globalStream(
         [&](const seq::SequencedEvent& e)
         {
             if (e.payloadLength <= seq::APP_MSG_SBE_PREFIX) return;
-            const auto* fixBytes = reinterpret_cast<const uint8_t*>(e.payload)
-                                   + seq::APP_MSG_SBE_PREFIX;
-            const std::size_t fixLen = e.payloadLength - seq::APP_MSG_SBE_PREFIX;
-            globalDecoder.parse(std::span<const uint8_t>(fixBytes, fixLen),
-                                globalFixHandler);
+            const auto* payload = reinterpret_cast<const uint8_t*>(e.payload)
+                                  + seq::APP_MSG_SBE_PREFIX;
+            const uint64_t payloadLen = e.payloadLength - seq::APP_MSG_SBE_PREFIX;
+
+            // Detect admin SBE: connId prefix (4 bytes) + SBE header (8 bytes).
+            // schemaId is at payload[CONN_ID_PREFIX + 4] (bytes 4-5 within SBE header).
+            if (payloadLen >= CONN_ID_PREFIX + sbesess::MessageHeader::encodedLength())
+            {
+                uint16_t schemaId;
+                std::memcpy(&schemaId,
+                            payload + CONN_ID_PREFIX + 4,  // offset within SBE header
+                            sizeof(uint16_t));
+                schemaId = SBE_LITTLE_ENDIAN_ENCODE_16(schemaId);  // no-op on LE; bswap on BE
+
+                if (schemaId == SESSION_SCHEMA_ID)
+                {
+                    int32_t connId;
+                    std::memcpy(&connId, payload, CONN_ID_PREFIX);
+
+                    const char* sbeHeader = reinterpret_cast<const char*>(payload) + CONN_ID_PREFIX;
+                    const uint64_t sbeLen = payloadLen - CONN_ID_PREFIX;
+
+                    // Read SBE MessageHeader fields.
+                    uint16_t blockLen, templateId, version;
+                    std::memcpy(&blockLen,   sbeHeader + 0, 2);
+                    std::memcpy(&templateId, sbeHeader + 2, 2);
+                    std::memcpy(&version,    sbeHeader + 6, 2);
+                    blockLen   = SBE_LITTLE_ENDIAN_ENCODE_16(blockLen);
+                    templateId = SBE_LITTLE_ENDIAN_ENCODE_16(templateId);
+                    version    = SBE_LITTLE_ENDIAN_ENCODE_16(version);
+
+                    auto it = connections.find(connId);
+                    if (it != connections.end())
+                    {
+                        it->second->onClusterAdmin(templateId, sbeHeader, sbeLen,
+                                                   blockLen, version,
+                                                   e.clusterTimestamp);
+                    }
+                    return;
+                }
+            }
+
+            // Raw FIX application message.
+            if (payloadLen > 0 && payload[0] == '8')
+            {
+                globalDecoder.parse(std::span<const uint8_t>(payload, payloadLen),
+                                    globalFixHandler);
+            }
         },
         [](const seq::LifecycleEvent& e)
         {
@@ -618,8 +864,10 @@ int main()
         []() { std::puts("[Global] Caught up to live stream"); }
     );
 
-    globalStream.start(aeron, replaySessionId, catchUpPosition);
-    std::puts("[FixSessionClient] Replay started — replaying history…");
+    globalStream.start(aeron, replaySessionId, catchUpPosition, FIX_REPLAY_CHANNEL);
+    std::puts(catchUpPosition > 0
+        ? "[FixSessionClient] Replaying history…"
+        : "[FixSessionClient] Live from start");
 
     // ── Duty cycle ────────────────────────────────────────────────────────────
     alignas(16) std::array<uint8_t, 8192> recvBuf{};
@@ -675,10 +923,11 @@ int main()
             ::close(fd);
         }
 
-        // Heartbeat keep-alive for all active sessions.
-        const int64_t tsMs = nowMs();
+        // Heartbeat keep-alive: use cluster-driven m_nowMs (last set from
+        // clusterTimestamp when a global-stream message was processed) so that
+        // outbound heartbeats are timed by cluster consensus, not wall-clock.
         for (auto& [_, conn] : connections)
-            conn->session.keepAlive(milliseconds{tsMs});
+            conn->session.keepAlive();
 
         // Aeron: global stream + cluster egress.
         const int aeronWork = globalStream.poll();

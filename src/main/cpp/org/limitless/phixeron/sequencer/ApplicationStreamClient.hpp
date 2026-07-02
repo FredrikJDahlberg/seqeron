@@ -10,7 +10,7 @@
 #include <thread>
 
 #include "Aeron.h"
-#include "AeronArchive.h"
+#include "client/archive/AeronArchive.h"
 
 #include "org/limitless/phixeron/sequencer/GlobalStreamClient.hpp"
 
@@ -73,6 +73,7 @@ public:
         const char* archiveControlChannel  = "aeron:udp?endpoint=localhost:9301";
         int32_t     archiveControlStream   = 100;
         const char* archiveResponseChannel = "aeron:udp?endpoint=localhost:0";
+        const char* replayChannel          = "aeron:udp?endpoint=localhost:9311";
     };
 
     // ── Callbacks ─────────────────────────────────────────────────────────────
@@ -102,19 +103,24 @@ public:
      * @param aeron  connected Aeron instance
      * @param config archive connection parameters (defaults match SequencerNode)
      */
+    void start(std::shared_ptr<aeron::Aeron> aeron)
+    {
+        start(std::move(aeron), Config{});
+    }
+
     void start(std::shared_ptr<aeron::Aeron> aeron,
-               const Config&                 config = {})
+               const Config&                 config)
     {
         m_aeron = std::move(aeron);
 
         // ── Connect to the Aeron Archive ─────────────────────────────────────
-        aeron::archive::AeronArchive::Context archiveCtx;
+        aeron::archive::client::Context archiveCtx;
         archiveCtx.aeron(m_aeron)
                   .controlRequestChannel(config.archiveControlChannel)
                   .controlRequestStreamId(config.archiveControlStream)
                   .controlResponseChannel(config.archiveResponseChannel);
 
-        m_archive = aeron::archive::AeronArchive::connect(archiveCtx);
+        m_archive = aeron::archive::client::AeronArchive::connect(archiveCtx);
 
         // ── Find the global stream recording ─────────────────────────────────
         std::int64_t catchUpPosition = 0;
@@ -123,16 +129,18 @@ public:
                     "  catchUpPosition=%" PRId64 "\n",
                     recordingId, catchUpPosition);
 
-        // ── Start replay; NULL_POSITION → follow the live recording ──────────
-        const std::int64_t replaySessionId = m_archive->startReplay(
-            recordingId,
-            /*position=*/0,
-            aeron::archive::AeronArchive::NULL_POSITION,
-            REPLAY_CHANNEL,
-            REPLAY_STREAM_ID);
-
-        std::printf("[ApplicationStreamClient] Replay started"
-                    "  replaySessionId=%" PRId64 "\n", replaySessionId);
+        // ── Start replay only when there is historical data to replay ─────────
+        std::int64_t replaySessionId = -1;
+        if (catchUpPosition > 0) {
+            aeron::archive::client::ReplayParams replayParams;
+            replayParams.position(0).length(aeron::archive::client::NULL_LENGTH);
+            replaySessionId = m_archive->startReplay(
+                recordingId, config.replayChannel, REPLAY_STREAM_ID, replayParams);
+            std::printf("[ApplicationStreamClient] Replay started"
+                        "  replaySessionId=%" PRId64 "\n", replaySessionId);
+        } else {
+            std::puts("[ApplicationStreamClient] No historical data — subscribing to live stream");
+        }
 
         // ── Wire up GlobalStreamClient (application messages only) ────────────
         m_globalStream = std::make_unique<GlobalStreamClient>(
@@ -142,7 +150,7 @@ public:
             [this]() { if (m_onCaughtUp) m_onCaughtUp(); }
         );
 
-        m_globalStream->start(m_aeron, replaySessionId, catchUpPosition);
+        m_globalStream->start(m_aeron, replaySessionId, catchUpPosition, config.replayChannel);
     }
 
     /**
@@ -163,29 +171,40 @@ public:
 private:
     // ── Archive helpers ───────────────────────────────────────────────────────
 
-    static std::int64_t findRecording(aeron::archive::AeronArchive& archive,
-                                      std::int64_t&                  catchUpPos)
+    static std::int64_t findRecording(aeron::archive::client::AeronArchive& archive,
+                                      std::int64_t&                          catchUpPos)
     {
-        std::int64_t bestId   = -1;
-        std::int64_t bestStop = std::numeric_limits<std::int64_t>::min();
+        // Prefer the active (live) recording; fall back to the stopped one with
+        // the highest stop position. NULL_POSITION means the recording is active.
+        std::int64_t activeId   = -1;
+        std::int64_t stoppedId  = -1;
+        std::int64_t stoppedPos = std::numeric_limits<std::int64_t>::min();
 
         archive.listRecordingsForUri(
             0, std::numeric_limits<std::int32_t>::max(),
             GLOBAL_STREAM_CHANNEL, GLOBAL_STREAM_ID,
-            [&](const aeron::archive::RecordingDescriptor& desc) {
-                if (desc.stopPosition > bestStop) {
-                    bestId   = desc.recordingId;
-                    bestStop = desc.stopPosition;
+            [&](aeron::archive::client::RecordingDescriptor& desc) {
+                if (desc.m_stopPosition == aeron::archive::client::NULL_POSITION) {
+                    activeId = desc.m_recordingId;
+                } else if (desc.m_stopPosition > stoppedPos) {
+                    stoppedId  = desc.m_recordingId;
+                    stoppedPos = desc.m_stopPosition;
                 }
             });
 
-        if (bestId < 0)
+        if (activeId < 0 && stoppedId < 0)
             throw std::runtime_error(
                 std::string("[ApplicationStreamClient] No global stream recording on ")
                 + GLOBAL_STREAM_CHANNEL);
 
-        catchUpPos = bestStop;
-        return bestId;
+        if (activeId >= 0) {
+            catchUpPos = archive.getRecordingPosition(activeId);
+            if (catchUpPos == aeron::archive::client::NULL_POSITION) catchUpPos = 0;
+            return activeId;
+        }
+
+        catchUpPos = stoppedPos;
+        return stoppedId;
     }
 
     // ── Fragment handler ──────────────────────────────────────────────────────
@@ -217,7 +236,7 @@ private:
     OnCaughtUp m_onCaughtUp;
 
     std::shared_ptr<aeron::Aeron>                       m_aeron;
-    std::shared_ptr<aeron::archive::AeronArchive>       m_archive;
+    std::shared_ptr<aeron::archive::client::AeronArchive> m_archive;
     std::unique_ptr<GlobalStreamClient>                 m_globalStream;
 };
 
