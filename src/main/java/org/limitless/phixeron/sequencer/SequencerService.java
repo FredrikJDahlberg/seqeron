@@ -37,8 +37,8 @@ import java.util.concurrent.TimeUnit;
  *
  * <p>The decorated message is published on the <em>global stream</em>
  * ({@link #GLOBAL_STREAM_CHANNEL} / {@link #GLOBAL_STREAM_ID}).
- * That channel is simultaneously recorded by the co-located Aeron Archive so clients can
- * replay the full history on startup via {@link SequencerClient}.
+ * That channel is simultaneously recorded by the co-located Aeron Archive so C++ clients can
+ * replay the full history on startup.
  *
  * <p><b>Leader-only publishing:</b> all cluster nodes maintain identical sequencing state
  * (updated on every callback), but only the leader writes to the global stream.  On failover
@@ -123,7 +123,6 @@ public final class SequencerService implements ClusteredService {
 
     @Override
     public void onSessionOpen(final ClientSession session, final long timestamp) {
-        sourceAppSeqNos.put(session.id(), 0L);
         final long globalSeq = ++globalSeqNo;
         if (!isLeader) {
             return;
