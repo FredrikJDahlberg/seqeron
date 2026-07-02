@@ -31,10 +31,10 @@ cd cmake-build-debug && ctest
 
 ---
 
-## FIX Sequencer
+## Sequencer
 
 The sequencer runs as a 1- or 3-node Aeron Cluster. Each node is launched with
-`FixSequencerNode` and configured entirely via system properties.
+`SequencerNode` and configured entirely via system properties.
 
 ### Single-node (development)
 
@@ -45,14 +45,18 @@ java \
   --add-opens=java.base/sun.nio.ch=ALL-UNNAMED \
   --add-opens=java.base/java.lang=ALL-UNNAMED \
   --add-opens=java.base/java.lang.reflect=ALL-UNNAMED \
-  -Dphixeron.memberId=0 \
+  -Dsequencer.memberId=0 \
   -jar build/libs/phixeron-0.1.0-uber.jar
-# [FixSequencerNode] Starting member 0 | ingress=aeron:udp?endpoint=localhost:9102 | baseDir=/tmp/phixeron
-# [FixSequencerNode/0] Cluster node started — Ctrl-C to stop
+# [SequencerNode] Starting member 0 | ingress=aeron:udp?endpoint=localhost:9302 | archive=aeron:udp?endpoint=localhost:9301 | baseDir=/tmp/phixeron-seq
+# [SequencerNode/0] Running — Ctrl-C to stop
 ```
 
 The node embeds its own MediaDriver and Archive — no separate `aeronmd` needed.
-Data is written to `/tmp/phixeron/archive-0` and `/tmp/phixeron/cluster-0`.
+Data is written to `/tmp/phixeron-seq/archive-0` and `/tmp/phixeron-seq/cluster-0`.
+
+Clients subscribe to the global sequenced stream on multicast
+`aeron:udp?endpoint=224.0.1.1:9200|interface=localhost` stream 1, recorded by the
+co-located Archive for replay on startup.
 
 ### Three-node cluster
 
@@ -64,9 +68,9 @@ java \
   --add-opens=java.base/sun.nio.ch=ALL-UNNAMED \
   --add-opens=java.base/java.lang=ALL-UNNAMED \
   --add-opens=java.base/java.lang.reflect=ALL-UNNAMED \
-  -Dphixeron.memberId=0 \
-  -Dphixeron.baseDir=/var/phixeron \
-  -Dphixeron.clusterMembers="0,host0:9102,host0:9103,host0:9104,host0:9105,host0:9101|1,host1:9112,host1:9113,host1:9114,host1:9115,host1:9111|2,host2:9122,host2:9123,host2:9124,host2:9125,host2:9121" \
+  -Dsequencer.memberId=0 \
+  -Dsequencer.baseDir=/var/phixeron-seq \
+  "-Dsequencer.clusterMembers=0,host0:9302,host0:9303,host0:9304,host0:9305,host0:9301|1,host1:9312,host1:9313,host1:9314,host1:9315,host1:9311|2,host2:9322,host2:9323,host2:9324,host2:9325,host2:9321" \
   -jar phixeron-0.1.0-uber.jar
 ```
 
@@ -76,9 +80,9 @@ java \
   --add-opens=java.base/sun.nio.ch=ALL-UNNAMED \
   --add-opens=java.base/java.lang=ALL-UNNAMED \
   --add-opens=java.base/java.lang.reflect=ALL-UNNAMED \
-  -Dphixeron.memberId=1 \
-  -Dphixeron.baseDir=/var/phixeron \
-  -Dphixeron.clusterMembers="0,host0:9102,host0:9103,host0:9104,host0:9105,host0:9101|1,host1:9112,host1:9113,host1:9114,host1:9115,host1:9111|2,host2:9122,host2:9123,host2:9124,host2:9125,host2:9121" \
+  -Dsequencer.memberId=1 \
+  -Dsequencer.baseDir=/var/phixeron-seq \
+  "-Dsequencer.clusterMembers=0,host0:9302,host0:9303,host0:9304,host0:9305,host0:9301|1,host1:9312,host1:9313,host1:9314,host1:9315,host1:9311|2,host2:9322,host2:9323,host2:9324,host2:9325,host2:9321" \
   -jar phixeron-0.1.0-uber.jar
 ```
 
@@ -88,32 +92,64 @@ java \
   --add-opens=java.base/sun.nio.ch=ALL-UNNAMED \
   --add-opens=java.base/java.lang=ALL-UNNAMED \
   --add-opens=java.base/java.lang.reflect=ALL-UNNAMED \
-  -Dphixeron.memberId=2 \
-  -Dphixeron.baseDir=/var/phixeron \
-  -Dphixeron.clusterMembers="0,host0:9102,host0:9103,host0:9104,host0:9105,host0:9101|1,host1:9112,host1:9113,host1:9114,host1:9115,host1:9111|2,host2:9122,host2:9123,host2:9124,host2:9125,host2:9121" \
+  -Dsequencer.memberId=2 \
+  -Dsequencer.baseDir=/var/phixeron-seq \
+  "-Dsequencer.clusterMembers=0,host0:9302,host0:9303,host0:9304,host0:9305,host0:9301|1,host1:9312,host1:9313,host1:9314,host1:9315,host1:9311|2,host2:9322,host2:9323,host2:9324,host2:9325,host2:9321" \
   -jar phixeron-0.1.0-uber.jar
 ```
 
 ### Port layout
 
-Each member's ports are `9100 + memberId × 10 + offset`:
+Each member's ports are `9300 + memberId × 10 + offset`:
 
 | Offset | Purpose          | Member 0 | Member 1 | Member 2 |
 |--------|------------------|----------|----------|----------|
-| +1     | Archive control  | 9101     | 9111     | 9121     |
-| +2     | Ingress          | 9102     | 9112     | 9122     |
-| +3     | Consensus        | 9103     | 9113     | 9123     |
-| +4     | Cluster log      | 9104     | 9114     | 9124     |
-| +5     | File transfer    | 9105     | 9115     | 9125     |
+| +1     | Archive control  | 9301     | 9311     | 9321     |
+| +2     | Ingress          | 9302     | 9312     | 9322     |
+| +3     | Consensus        | 9303     | 9313     | 9323     |
+| +4     | Cluster log      | 9304     | 9314     | 9324     |
+| +5     | File transfer    | 9305     | 9315     | 9325     |
+
+Clients connect to archive control on port 9301 (member 0) to replay history, and to
+ingress on port 9302 to send messages. The global sequenced stream is published on
+multicast `224.0.1.1:9200` (stream 1).
 
 ### System properties
 
-| Property                  | Default                        | Description                        |
-|---------------------------|--------------------------------|------------------------------------|
-| `phixeron.memberId`       | `0`                            | Raft member ID for this node       |
-| `phixeron.baseDir`        | `$TMPDIR/phixeron`             | Root for archive and cluster dirs  |
-| `phixeron.aeronDir`       | `$TMPDIR/phixeron-aeron-<id>`  | Aeron media driver directory       |
-| `phixeron.clusterMembers` | single-node localhost          | Full Aeron clusterMembers string   |
+| Property                    | Default                          | Description                        |
+|-----------------------------|----------------------------------|------------------------------------|
+| `sequencer.memberId`        | `0`                              | Raft member ID for this node       |
+| `sequencer.baseDir`         | `$TMPDIR/phixeron-seq`           | Root for archive and cluster dirs  |
+| `sequencer.aeronDir`        | `$TMPDIR/phixeron-seq-aeron-<id>`| Aeron media driver directory       |
+| `sequencer.clusterMembers`  | single-node localhost            | Full Aeron clusterMembers string   |
+
+### Client startup
+
+`SequencerClient` (abstract base) handles driver launch, archive connection, replay,
+and cluster ingress. Extend it and implement `onSequencedMessage`:
+
+```java
+public class MyClient extends SequencerClient {
+    @Override
+    protected void onSequencedMessage(long globalSeqNo, long sourceSessionId,
+                                      long appSeqNo, long timestamp,
+                                      SequencedMessageDecoder decoder) {
+        // process message
+    }
+}
+
+// Drive the client
+try (MyClient client = new MyClient()) {
+    client.start();           // connects to single-node defaults (localhost:9301 / 9302)
+    while (running) {
+        idleStrategy.idle(client.poll());
+    }
+}
+```
+
+On startup the client replays the full history from the Archive and then follows
+live data seamlessly on the same image. Override `replayStartPosition()` to return
+the last-processed archive byte position to skip already-applied history on restart.
 
 ### Restart and failover
 
@@ -121,6 +157,65 @@ Archive and cluster directories are preserved on restart (`deleteArchiveOnStart=
 `deleteDirOnStart=false`). A node rejoins the cluster and replays from its last snapshot
 automatically. To wipe state for a clean start, delete the `archive-<id>` and
 `cluster-<id>` subdirectories under `baseDir`.
+
+---
+
+## FIX TCP test client
+
+`src/test/cpp/org/limitless/phixeron/session/FixTestServer.cpp` connects to the
+`fix_session_client` gateway on TCP port 9000 and runs a minimal FIX session
+using the simdfix `ClientSession` and generated message encoders:
+
+1. **Logon** — negotiates the session (EncryptMethod=None, HeartbeatInterval=30 s)
+2. **Heartbeat** — verifies the session is active
+3. **NewOrderSingle** — sends a limit Buy order (ClOrdID=ORD-0001, AAPL, 100 @ 150.00)
+4. **Logout** — tears the session down cleanly
+
+```
+SenderCompID = CLIENT
+TargetCompID = SEQUENCER   (the gateway's identity)
+```
+
+### How to run
+
+**1. Start the sequencer node** (single-node dev mode — see [Sequencer](#sequencer)):
+```bash
+./gradlew uberJar
+java \
+  --add-opens=java.base/sun.nio.ch=ALL-UNNAMED \
+  --add-opens=java.base/java.lang=ALL-UNNAMED \
+  --add-opens=java.base/java.lang.reflect=ALL-UNNAMED \
+  -Dsequencer.memberId=0 \
+  -jar build/libs/phixeron-0.1.0-uber.jar
+```
+
+**2. Start the FIX gateway** (separate terminal):
+```bash
+cmake --build cmake-build-release --target fix_session_client
+./cmake-build-release/fix_session_client
+# [TCP] Listening on port 9000
+# [FixSessionClient] Caught up — following live stream
+```
+
+**3. Build and run the test client** (separate terminal):
+```bash
+cmake --build cmake-build-release --target fix_test_server
+./cmake-build-release/fix_test_server
+# [FixTestServer] Connecting to 127.0.0.1:9000
+# [FixTestServer] Connected
+# [FixTestServer] Sent  Logon          seq=1
+# [FixTestServer] Recv  8=FIXT.1.1|9=...|35=A|49=SEQUENCER|56=CLIENT|...
+# [FixTestServer] Sent  Heartbeat      seq=2
+# [FixTestServer] Sent  NewOrderSingle seq=3  ClOrdID=ORD-0001  AAPL Buy 100 @ 150.00
+# [FixTestServer] Sent  Logout         seq=4
+# [FixTestServer] Recv  8=FIXT.1.1|9=...|35=5|...
+# [FixTestServer] Done.
+```
+
+Connect to a non-default host or port:
+```bash
+./cmake-build-release/fix_test_server 192.168.1.10 9000
+```
 
 ---
 
