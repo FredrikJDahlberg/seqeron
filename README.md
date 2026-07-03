@@ -31,6 +31,20 @@ cd cmake-build-debug && ctest
 
 ---
 
+## Scripts
+
+Convenience scripts live under `src/main/scripts/`:
+
+| Script | Purpose |
+|--------|---------|
+| `start-cluster.sh [debug\|release]` | Start the single-node cluster (`SequencerNode`, `aeronmd`, `fix_session_client`, `application_stream_client`) in the background; Ctrl-C stops all of them |
+| `stop-cluster.sh` | Stop all cluster processes started by `start-cluster.sh` |
+| `fix-test-server.sh [debug\|release] [host [port]]` | Run a single FIX session (Logon → Heartbeat → NewOrderSingle → Logout) against a live `fix_session_client` gateway |
+| `logprint.sh <spec.sbeir> <archive-dir>` | Dump an Aeron Archive recording as JSON (see [Log printer](#log-printer)) |
+| `purgelog.sh [--force]` | Delete archive/cluster directories under `$TMPDIR/phixeron-seq` and the `logs/` directory; cluster must be stopped first |
+
+---
+
 ## Sequencer
 
 The sequencer runs as a 1- or 3-node Aeron Cluster. Each node is launched with
@@ -157,6 +171,27 @@ Archive and cluster directories are preserved on restart (`deleteArchiveOnStart=
 `deleteDirOnStart=false`). A node rejoins the cluster and replays from its last snapshot
 automatically. To wipe state for a clean start, delete the `archive-<id>` and
 `cluster-<id>` subdirectories under `baseDir`.
+
+### Log printer
+
+`SbeLogPrinter` dumps an Archive recording (`archive.catalog` + segment files under
+`archive-<id>`) as JSON, decoded against the generated SBE IR schema. It works on a
+still-running cluster — an in-progress recording is printed up to whatever has been
+written so far — so the cluster does not need to be stopped first.
+
+```bash
+./gradlew uberJar
+./gradlew generateSbe   # produces build/generated/sources/sbe/main/java/sequencer.sbeir
+
+./src/main/scripts/logprint.sh \
+  build/generated/sources/sbe/main/java/sequencer.sbeir \
+  /tmp/phixeron-seq/archive-0
+```
+
+Or via Gradle directly:
+```bash
+./gradlew sbeLogPrinter -Pspec=build/generated/sources/sbe/main/java/sequencer.sbeir -PlogDir=/tmp/phixeron-seq/archive-0
+```
 
 ---
 

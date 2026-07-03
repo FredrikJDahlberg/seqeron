@@ -10,6 +10,15 @@
 
 set -euo pipefail
 
+usage() {
+    echo "Usage: $0"
+}
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+    usage
+    exit 0
+fi
+
 PROCESSES=(SequencerNode aeronmd fix_session_client application_stream_client)
 TIMEOUT=10
 

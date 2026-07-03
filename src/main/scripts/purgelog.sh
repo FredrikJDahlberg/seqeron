@@ -13,10 +13,21 @@
 
 set -euo pipefail
 
+usage() {
+    echo "Usage: $0 [--force]"
+    echo "  --force    skip the confirmation prompt"
+}
+
 FORCE=0
-if [[ "${1:-}" == "--force" ]]; then
-    FORCE=1
-fi
+case "${1:-}" in
+    -h|--help)
+        usage
+        exit 0
+        ;;
+    --force)
+        FORCE=1
+        ;;
+esac
 
 BASE_DIR="${TMPDIR:-/tmp}phixeron-seq"
 LOG_DIR="logs"

@@ -17,6 +17,16 @@
 
 set -euo pipefail
 
+usage() {
+    echo "Usage: $0 [debug|release]"
+    echo "  default: release"
+}
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+    usage
+    exit 0
+fi
+
 # ── Config ────────────────────────────────────────────────────────────────────
 
 BUILD_TYPE="${1:-release}"
