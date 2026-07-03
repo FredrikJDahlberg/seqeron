@@ -71,7 +71,7 @@
 #include "org/limitless/phixeron/session/ResendCache.hpp"
 #include "org/limitless/fix/decoder/PayloadDecoder.hpp"
 
-// Generated FIX types (application.xml via GenerateAppMessages)
+// Generated FIX types (fix-application.xml via GenerateAppMessages)
 #include "org/limitless/fix/generated/messages/FixMessageHandler.hpp"
 #include "org/limitless/fix/generated/messages/FixMessageDecoders.hpp"
 #include "org/limitless/fix/generated/messages/FixMessageEncoders.hpp"
@@ -162,58 +162,73 @@ struct ArchiveResendContext
 // (tag 34) is in `missing`. This is a synchronous, bounded, occasional
 // slow-path operation — resends are rare, so a full scan-and-filter is
 // preferred here over maintaining a seqNum→archive-position index.
+// Archive-backed resend recovery is a best-effort, occasional slow path
+// (see comment above). The shared control-plane AeronArchive connection can
+// go stale after being idle between resend calls (e.g. an archive-side
+// control-session timeout), which surfaces as an ArchiveException from
+// getRecordingPosition()/startReplay(). That must degrade to "nothing
+// recovered" — the caller already turns any unfound sequence number into a
+// GapFill — rather than take down the whole FIX gateway process.
 static std::unordered_map<uint32_t, std::vector<uint8_t>> replayMissingAppMessages(
     ArchiveResendContext& ctx, int32_t connId, const std::unordered_set<uint32_t>& missing)
 {
     std::unordered_map<uint32_t, std::vector<uint8_t>> found;
     if (missing.empty() || !ctx.archive) return found;
 
-    const std::int64_t upToPosition = ctx.archive->getRecordingPosition(ctx.recordingId);
-    if (upToPosition <= 0) return found;
-
-    static constexpr const char* RESEND_REPLAY_CHANNEL = "aeron:udp?endpoint=localhost:9312";
-
-    aeron::archive::client::ReplayParams replayParams;
-    replayParams.position(0).length(upToPosition);
-    const std::int64_t replaySessionId = ctx.archive->startReplay(
-        ctx.recordingId, RESEND_REPLAY_CHANNEL, seq::REPLAY_STREAM_ID, replayParams);
-
-    bool done = false;
-    seq::GlobalStreamClient scan(
-        [&](const seq::SequencedEvent& e)
-        {
-            if (e.payloadLength <= seq::APP_MSG_SBE_PREFIX + CONN_ID_PREFIX) return;
-            const auto* p = reinterpret_cast<const uint8_t*>(e.payload) + seq::APP_MSG_SBE_PREFIX;
-
-            int32_t msgConnId;
-            std::memcpy(&msgConnId, p, CONN_ID_PREFIX);
-            if (msgConnId != connId) return;
-
-            const uint8_t* fixBytes = p + CONN_ID_PREFIX;
-            const auto     fixLen   = static_cast<std::size_t>(
-                e.payloadLength - seq::APP_MSG_SBE_PREFIX - CONN_ID_PREFIX);
-            if (fixLen == 0) return;
-
-            const auto [mts, mte] = fixTagRange(fixBytes, fixLen, "35");
-            if (mts == std::string::npos || mte - mts != 1 || fixBytes[mts] != '8') return;
-
-            const auto [vs, ve] = fixTagRange(fixBytes, fixLen, "34");
-            if (vs == std::string::npos) return;
-            uint32_t seqNum = 0;
-            for (std::size_t i = vs; i < ve; ++i) seqNum = seqNum * 10 + (fixBytes[i] - '0');
-
-            if (missing.contains(seqNum) && !found.contains(seqNum))
-                found.emplace(seqNum, std::vector<uint8_t>(fixBytes, fixBytes + fixLen));
-        },
-        nullptr, nullptr,
-        [&] { done = true; });
-
-    scan.start(ctx.aeron, replaySessionId, upToPosition, RESEND_REPLAY_CHANNEL);
-
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-    while (!done && found.size() < missing.size() && std::chrono::steady_clock::now() < deadline)
+    try
     {
-        if (scan.poll() == 0) std::this_thread::yield();
+        const std::int64_t upToPosition = ctx.archive->getRecordingPosition(ctx.recordingId);
+        if (upToPosition <= 0) return found;
+
+        static constexpr const char* RESEND_REPLAY_CHANNEL = "aeron:udp?endpoint=localhost:9312";
+
+        aeron::archive::client::ReplayParams replayParams;
+        replayParams.position(0).length(upToPosition);
+        const std::int64_t replaySessionId = ctx.archive->startReplay(
+            ctx.recordingId, RESEND_REPLAY_CHANNEL, seq::REPLAY_STREAM_ID, replayParams);
+
+        bool done = false;
+        seq::GlobalStreamClient scan(
+            [&](const seq::SequencedEvent& e)
+            {
+                if (e.payloadLength <= seq::APP_MSG_SBE_PREFIX + CONN_ID_PREFIX) return;
+                const auto* p = reinterpret_cast<const uint8_t*>(e.payload) + seq::APP_MSG_SBE_PREFIX;
+
+                int32_t msgConnId;
+                std::memcpy(&msgConnId, p, CONN_ID_PREFIX);
+                if (msgConnId != connId) return;
+
+                const uint8_t* fixBytes = p + CONN_ID_PREFIX;
+                const auto     fixLen   = static_cast<std::size_t>(
+                    e.payloadLength - seq::APP_MSG_SBE_PREFIX - CONN_ID_PREFIX);
+                if (fixLen == 0) return;
+
+                const auto [mts, mte] = fixTagRange(fixBytes, fixLen, "35");
+                if (mts == std::string::npos || mte - mts != 1 || fixBytes[mts] != '8') return;
+
+                const auto [vs, ve] = fixTagRange(fixBytes, fixLen, "34");
+                if (vs == std::string::npos) return;
+                uint32_t seqNum = 0;
+                for (std::size_t i = vs; i < ve; ++i) seqNum = seqNum * 10 + (fixBytes[i] - '0');
+
+                if (missing.contains(seqNum) && !found.contains(seqNum))
+                    found.emplace(seqNum, std::vector<uint8_t>(fixBytes, fixBytes + fixLen));
+            },
+            nullptr, nullptr,
+            [&] { done = true; });
+
+        scan.start(ctx.aeron, replaySessionId, upToPosition, RESEND_REPLAY_CHANNEL);
+
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (!done && found.size() < missing.size() && std::chrono::steady_clock::now() < deadline)
+        {
+            if (scan.poll() == 0) std::this_thread::yield();
+        }
+    }
+    catch (const std::exception& e)
+    {
+        std::fprintf(stderr, "[Resend] archive recovery failed for connId=%d: %s\n",
+                    connId, e.what());
     }
 
     return found;

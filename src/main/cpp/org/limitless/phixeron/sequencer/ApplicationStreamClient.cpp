@@ -25,10 +25,91 @@
 
 #include "org/limitless/phixeron/sequencer/ApplicationStreamClient.hpp"
 
+// Generated SBE codecs (sbe-application.xml via GenerateApplicationSbeCodecs)
+#include "org_limitless_phixeron_sbe_application/MessageHeader.h"
+#include "org_limitless_phixeron_sbe_application/ExecutionReport.h"
+#include "org_limitless_phixeron_sbe_application/NewOrderSingle.h"
+
 using namespace org::limitless::phixeron::sequencer;
+namespace sbeapp = org::limitless::phixeron::sbe::application;
 
 static std::atomic<bool> g_running{true};
 static void sigintHandler(int) { g_running = false; }
+
+static double toPrice(const std::int64_t mantissa)
+{
+    return static_cast<double>(mantissa) / 100000000.0;
+}
+
+static void printExecutionReport(sbeapp::ExecutionReport& m)
+{
+    std::printf("  ExecutionReport orderID=%s clOrdID=%s execID=%s execType=%s"
+                " ordStatus=%s symbol=%s side=%s leavesQty=%u cumQty=%u avgPx=%.8f\n",
+                m.getOrderIDAsString().c_str(),
+                m.getClOrdIDAsString().c_str(),
+                m.getExecIDAsString().c_str(),
+                sbeapp::ExecType::c_str(m.execType()),
+                sbeapp::OrdStatus::c_str(m.ordStatus()),
+                m.getSymbolAsString().c_str(),
+                sbeapp::Side::c_str(m.side()),
+                m.leavesQty(),
+                m.cumQty(),
+                toPrice(m.avgPx()));
+}
+
+static void printNewOrderSingle(sbeapp::NewOrderSingle& m)
+{
+    std::printf("  NewOrderSingle clOrdID=%s symbol=%s side=%s ordType=%s orderQty=%u\n",
+                m.getClOrdIDAsString().c_str(),
+                m.getSymbolAsString().c_str(),
+                sbeapp::Side::c_str(m.side()),
+                sbeapp::OrdType::c_str(m.ordType()),
+                m.orderQty());
+}
+
+// Decodes ApplicationEvent::payload as an sbe-application.xml message
+// (ExecutionReport / NewOrderSingle) and prints the decoded fields.
+static void decodeApplicationPayload(const ApplicationEvent& e)
+{
+    if (e.payloadLength < sbeapp::MessageHeader::encodedLength()) {
+        std::printf("  (payload too short for SBE header: %" PRIu64 " bytes)\n",
+                    e.payloadLength);
+        return;
+    }
+
+    auto* buffer = const_cast<char*>(reinterpret_cast<const char*>(e.payload));
+
+    sbeapp::MessageHeader header;
+    header.wrap(buffer, 0, sbeapp::MessageHeader::sbeSchemaVersion(), e.payloadLength);
+
+    if (header.schemaId() != sbeapp::MessageHeader::sbeSchemaId()) {
+        std::printf("  (not an sbe-application payload: schemaId=%u)\n", header.schemaId());
+        return;
+    }
+
+    switch (header.templateId())
+    {
+    case sbeapp::ExecutionReport::sbeTemplateId():
+    {
+        sbeapp::ExecutionReport msg;
+        msg.wrapForDecode(buffer, sbeapp::MessageHeader::encodedLength(),
+                          header.blockLength(), header.version(), e.payloadLength);
+        printExecutionReport(msg);
+        break;
+    }
+    case sbeapp::NewOrderSingle::sbeTemplateId():
+    {
+        sbeapp::NewOrderSingle msg;
+        msg.wrapForDecode(buffer, sbeapp::MessageHeader::encodedLength(),
+                          header.blockLength(), header.version(), e.payloadLength);
+        printNewOrderSingle(msg);
+        break;
+    }
+    default:
+        std::printf("  (unknown sbe-application templateId=%u)\n", header.templateId());
+        break;
+    }
+}
 
 int main()
 {
@@ -53,6 +134,7 @@ int main()
                         e.clusterTimestamp,
                         e.receiveTimeNs,
                         e.payloadLength);
+            decodeApplicationPayload(e);
         },
         []()
         {
@@ -66,7 +148,9 @@ int main()
     while (g_running)
     {
         if (client.poll() == 0)
+        {
             std::this_thread::yield();
+        }
     }
 
     std::puts("[ApplicationStreamClient] Shutting down");
