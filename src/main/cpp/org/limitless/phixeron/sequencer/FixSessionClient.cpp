@@ -268,6 +268,24 @@ public:
 
     bool isConnected() const { return m_clusterSessionId >= 0; }
 
+    // Send a keep-alive to the cluster ingress if the interval has elapsed.
+    // Must be called regularly (e.g. every duty-cycle iteration) to prevent session timeout.
+    void keepAlive()
+    {
+        if (!m_ingressPub || m_clusterSessionId < 0) return;
+        const int64_t now = nowMs();
+        if (now - m_lastKeepAliveMs < KEEP_ALIVE_INTERVAL_MS) return;
+        m_lastKeepAliveMs = now;
+
+        alignas(16) std::array<uint8_t, 64> kaBuf{};
+        const int32_t kaLen = cl::encodeSessionKeepAlive(
+            kaBuf.data(), static_cast<int32_t>(kaBuf.size()),
+            m_leadershipTermId, m_clusterSessionId);
+        AtomicBuffer kaAb(kaBuf.data(), kaBuf.size());
+        if (m_ingressPub->offer(kaAb, 0, kaLen) < 0)
+            std::fprintf(stderr, "[Cluster] keep-alive offer failed\n");
+    }
+
     // Drain cluster egress; calls onAppMessage for each application-layer response.
     void pollEgress(const std::function<void(const uint8_t*, int32_t)>& onAppMessage)
     {
@@ -294,11 +312,14 @@ public:
     }
 
 private:
+    static constexpr int64_t KEEP_ALIVE_INTERVAL_MS = 1000;
+
     std::shared_ptr<Aeron>           m_aeron;
     std::shared_ptr<Publication>     m_ingressPub;
     std::shared_ptr<Subscription>    m_egressSub;
     int64_t  m_clusterSessionId = -1;
     int64_t  m_leadershipTermId = -1;
+    int64_t  m_lastKeepAliveMs  = 0;
     const int64_t m_correlationId = 1;
 
     // Per-call callback set in pollEgress; null outside of that call.
@@ -363,9 +384,11 @@ public:
 
     void setRawBytes(std::span<const uint8_t> bytes) { m_rawFixBytes = bytes; }
 
-    fix::Result handle(const LogonDecoder& logon)
+    fix::Result handle(LogonDecoder& logon)
     {
         const uint32_t hbSecs = logon.heartbeatInterval().value_or(30u);
+        std::printf("[Ingress] Logon from fd=%d hbSecs=%u → encoding SBE\n",
+                    m_connectionId, hbSecs);
         sbesess::Logon msg;
         msg.wrapAndApplyHeader(sbeBufBody(), 0, sbeBufLen());
         msg.putSender(static_cast<const char*>("CLIENT  ")).putTarget(static_cast<const char*>("SEQNCR  "))
@@ -374,6 +397,8 @@ public:
            .heartbeatInterval(hbSecs)
            .putXmlData(nullptr, 0);
         sendAdmin(msg);
+        std::printf("[Ingress] Logon sent to cluster (fd=%d sbePos=%llu)\n",
+                    m_connectionId, static_cast<unsigned long long>(msg.sbePosition()));
         return fix::Result::Success;
     }
 
@@ -529,7 +554,10 @@ struct FixConnection
 
             const auto msgSpan = remaining.subspan(0, msgLen);
             ingressHandler.setRawBytes(msgSpan);
-            decoder.parse(msgSpan, ingressHandler);
+            const auto parseResult = decoder.parse(msgSpan, ingressHandler);
+            std::printf("[FixConnection] fd=%d parse status=%d processed=%zu msgLen=%zu\n",
+                        fd, static_cast<int>(parseResult.m_value),
+                        static_cast<std::size_t>(parseResult.m_processed), msgLen);
             consumed += msgLen;
         }
 
@@ -801,6 +829,8 @@ int main()
     seq::GlobalStreamClient globalStream(
         [&](const seq::SequencedEvent& e)
         {
+            std::printf("[Global] SequencedEvent globalSeq=%" PRId64 " payloadLen=%" PRIu64 "\n",
+                        e.globalSeqNo, static_cast<uint64_t>(e.payloadLength));
             if (e.payloadLength <= seq::APP_MSG_SBE_PREFIX) return;
             const auto* payload = reinterpret_cast<const uint8_t*>(e.payload)
                                   + seq::APP_MSG_SBE_PREFIX;
@@ -816,10 +846,14 @@ int main()
                             sizeof(uint16_t));
                 schemaId = SBE_LITTLE_ENDIAN_ENCODE_16(schemaId);  // no-op on LE; bswap on BE
 
+                std::printf("[Global] schemaId=%u (expected SESSION=%u)\n",
+                            schemaId, SESSION_SCHEMA_ID);
                 if (schemaId == SESSION_SCHEMA_ID)
                 {
                     int32_t connId;
                     std::memcpy(&connId, payload, CONN_ID_PREFIX);
+                    std::printf("[Global] Admin SBE connId=%d connections.size=%zu\n",
+                                connId, connections.size());
 
                     const char* sbeHeader = reinterpret_cast<const char*>(payload) + CONN_ID_PREFIX;
                     const uint64_t sbeLen = payloadLen - CONN_ID_PREFIX;
@@ -929,11 +963,10 @@ int main()
         for (auto& [_, conn] : connections)
             conn->session.keepAlive();
 
-        // Aeron: global stream + cluster egress.
+        // Aeron: global stream + cluster egress + session keep-alive.
         const int aeronWork = globalStream.poll();
-        ingressSender.pollEgress([](const uint8_t* /*data*/, int32_t /*len*/) {
-            // Cluster echo / keepalive — not expected in normal operation.
-        });
+        ingressSender.keepAlive();
+        ingressSender.pollEgress([](const uint8_t* /*data*/, int32_t /*len*/) {});
 
         if (aeronWork == 0 && pfds[0].revents == 0)
             std::this_thread::yield();
