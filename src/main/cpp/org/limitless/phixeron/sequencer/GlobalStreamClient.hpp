@@ -12,7 +12,7 @@
 #include "Aeron.h"
 #include "FragmentAssembler.h"
 
-// Generated SBE C++ codecs from sequencer.xml (via GenerateSeqSbeCodecs)
+// Generated SBE C++ codecs from sbe-sequencer.xml (via GenerateSeqSbeCodecs)
 #include "org_limitless_phixeron_sbe_sequencer/MessageHeader.h"
 #include "org_limitless_phixeron_sbe_sequencer/SequencedMessage.h"
 #include "org_limitless_phixeron_sbe_sequencer/SourceConnected.h"

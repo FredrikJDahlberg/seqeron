@@ -44,7 +44,7 @@ import java.util.concurrent.TimeUnit;
  * (updated on every callback), but only the leader writes to the global stream.  On failover
  * the new leader resumes from the snapshotted {@code globalSeqNo} and continues publishing.
  *
- * <p>Messages are SBE-encoded using the {@code sequencer.xml} schema (schema ID 201).
+ * <p>Messages are SBE-encoded using the {@code sbe-sequencer.xml} schema (schema ID 201).
  *
  * <p><b>Snapshot format</b> (little-endian binary, single fragment):
  * <pre>
