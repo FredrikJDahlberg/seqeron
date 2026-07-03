@@ -1,0 +1,138 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!--
+    SBE schema for the Aeron Cluster client session protocol.
+
+    This is the subset of io.aeron.cluster.codecs (schemaId=111, version=16,
+    see aeron-cluster/src/main/resources/cluster/aeron-cluster-codecs.xml)
+    that phixeron needs to speak the wire protocol as a C++ cluster client:
+    session connect/close/keep-alive, the session message envelope, session
+    events and leader-change notification.
+
+    Field order, ids, types and sinceVersion markers below are copied
+    verbatim from the upstream schema so the encoding is byte-for-byte
+    compatible with a real Aeron Cluster (Java) node — this is a trimmed
+    mirror, not an independent design.
+-->
+<sbe:messageSchema xmlns:sbe="http://fixprotocol.io/2016/sbe"
+                   package="org.limitless.phixeron.cluster.sbe"
+                   id="111"
+                   version="16"
+                   semanticVersion="5.4"
+                   description="Aeron Cluster session protocol (subset of io.aeron.cluster.codecs used by phixeron)"
+                   byteOrder="littleEndian">
+
+    <types>
+
+        <composite name="messageHeader" description="Message identifiers and length of message root.">
+            <type name="blockLength" primitiveType="uint16"/>
+            <type name="templateId"  primitiveType="uint16"/>
+            <type name="schemaId"    primitiveType="uint16"/>
+            <type name="version"     primitiveType="uint16"/>
+        </composite>
+
+        <composite name="varAsciiEncoding" description="Variable length ASCII string header.">
+            <type name="length"  primitiveType="uint32" maxValue="1073741824"/>
+            <type name="varData" primitiveType="uint8" length="0" characterEncoding="US-ASCII"/>
+        </composite>
+
+        <composite name="varDataEncoding" description="Variable length data blob header.">
+            <type name="length"  primitiveType="uint32" maxValue="1073741824"/>
+            <type name="varData" primitiveType="uint8" length="0"/>
+        </composite>
+
+        <enum name="EventCode" encodingType="int32" description="Type of event for a response.">
+            <validValue name="OK"                      description="Operation was successful">0</validValue>
+            <validValue name="ERROR"                   description="Error occurred during operation.">1</validValue>
+            <validValue name="REDIRECT"                description="Redirect to cluster leader.">2</validValue>
+            <validValue name="AUTHENTICATION_REJECTED" description="Authentication credentials rejected.">3</validValue>
+            <validValue name="CLOSED"                  description="Session has been closed.">4</validValue>
+        </enum>
+
+        <type name="time_t"    primitiveType="int64" description="Epoch time since 1 Jan 1970 UTC."/>
+        <type name="version_t" primitiveType="int32" description="Protocol or application suite version."
+              presence="optional" nullValue="0" minValue="1" maxValue="16777215"/>
+
+    </types>
+
+    <!-- ═══════════════════════════════════════════════════════════════════
+         SessionMessageHeader — wraps every application session message
+         ═══════════════════════════════════════════════════════════════════ -->
+    <sbe:message name="SessionMessageHeader"
+                 id="1"
+                 description="Header for application session messages between clients and cluster services.">
+        <field name="leadershipTermId" id="1" type="int64"/>
+        <field name="clusterSessionId" id="2" type="int64"/>
+        <field name="timestamp"        id="3" type="time_t"/>
+    </sbe:message>
+
+    <!-- ═══════════════════════════════════════════════════════════════════
+         SessionEvent — response to a connect request or async event
+         ═══════════════════════════════════════════════════════════════════ -->
+    <sbe:message name="SessionEvent"
+                 id="2"
+                 description="Response to a connect request or async event, details will be empty if code is OK.">
+        <field name="clusterSessionId"         id="1" type="int64"
+               description="Session id for a multiplexed session over a shared connection, i.e. same Image."/>
+        <field name="correlationId"            id="2" type="int64"
+               description="Request correlation id with which this event is associated."/>
+        <field name="leadershipTermId"         id="3" type="int64"
+               description="Current leadership term identifier."/>
+        <field name="leaderMemberId"           id="4" type="int32"
+               description="Current leader of the cluster."/>
+        <field name="code"                     id="5" type="EventCode"
+               description="Code type of the response."/>
+        <field name="version"                  id="6" type="version_t" presence="optional" sinceVersion="6"
+               description="Protocol version for the server using semantic version form."/>
+        <field name="leaderHeartbeatTimeoutNs" id="8" type="int64" presence="optional" sinceVersion="13"
+               description="Leader heartbeat timeout in nanoseconds as configured on the leader."/>
+        <data  name="detail"                   id="7" type="varAsciiEncoding"
+               description="Further detail such as an error message or list of cluster ingress endpoints."/>
+    </sbe:message>
+
+    <!-- ═══════════════════════════════════════════════════════════════════
+         SessionConnectRequest — client → ingress
+         ═══════════════════════════════════════════════════════════════════ -->
+    <sbe:message name="SessionConnectRequest"
+                 id="3"
+                 description="Connect to the cluster and if successful then open a session.">
+        <field name="correlationId"      id="1" type="int64"/>
+        <field name="responseStreamId"   id="2" type="int32"/>
+        <field name="version"            id="3" type="version_t" presence="optional" sinceVersion="2"/>
+        <data  name="responseChannel"    id="4" type="varAsciiEncoding"/>
+        <data  name="encodedCredentials" id="5" type="varDataEncoding"/>
+        <data  name="clientInfo"         id="6" type="varAsciiEncoding" sinceVersion="14"/>
+    </sbe:message>
+
+    <!-- ═══════════════════════════════════════════════════════════════════
+         SessionCloseRequest — client → ingress
+         ═══════════════════════════════════════════════════════════════════ -->
+    <sbe:message name="SessionCloseRequest"
+                 id="4"
+                 description="Close an open cluster session.">
+        <field name="leadershipTermId" id="1" type="int64"/>
+        <field name="clusterSessionId" id="2" type="int64"/>
+    </sbe:message>
+
+    <!-- ═══════════════════════════════════════════════════════════════════
+         SessionKeepAlive — client → ingress, at least once per session timeout
+         ═══════════════════════════════════════════════════════════════════ -->
+    <sbe:message name="SessionKeepAlive"
+                 id="5"
+                 description="Keep a cluster session open by indicating the client is alive.">
+        <field name="leadershipTermId" id="1" type="int64"/>
+        <field name="clusterSessionId" id="2" type="int64"/>
+    </sbe:message>
+
+    <!-- ═══════════════════════════════════════════════════════════════════
+         NewLeaderEvent — sent from a new leader after a leadership change
+         ═══════════════════════════════════════════════════════════════════ -->
+    <sbe:message name="NewLeaderEvent"
+                 id="6"
+                 description="Event to indicate a new leader has been elected for the cluster.">
+        <field name="leadershipTermId" id="1" type="int64"/>
+        <field name="clusterSessionId" id="2" type="int64"/>
+        <field name="leaderMemberId"   id="3" type="int32"/>
+        <data  name="ingressEndpoints" id="4" type="varAsciiEncoding"/>
+    </sbe:message>
+
+</sbe:messageSchema>

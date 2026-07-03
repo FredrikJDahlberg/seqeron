@@ -42,13 +42,13 @@
 #include <cstring>
 #include <functional>
 #include <limits>
-#include <map>
 #include <memory>
 #include <span>
 #include <stdexcept>
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 // POSIX TCP / poll
@@ -68,6 +68,7 @@
 
 // phixeron — session FSM + codec
 #include "org/limitless/phixeron/session/ServerSession.hpp"
+#include "org/limitless/phixeron/session/ResendCache.hpp"
 #include "org/limitless/fix/decoder/PayloadDecoder.hpp"
 
 // Generated FIX types (application.xml via GenerateAppMessages)
@@ -76,8 +77,15 @@
 #include "org/limitless/fix/generated/messages/FixMessageEncoders.hpp"
 #include "org/limitless/fix/generated/config/FixEngine.hpp"
 
-// Cluster wire protocol
-#include "org/limitless/phixeron/cluster/ClusterProtocol.hpp"
+// Cluster wire protocol — generated from sbe-cluster.xml (trimmed mirror of
+// io.aeron.cluster.codecs, schemaId=111)
+#include "org_limitless_phixeron_cluster_sbe/MessageHeader.h"
+#include "org_limitless_phixeron_cluster_sbe/SessionEvent.h"
+#include "org_limitless_phixeron_cluster_sbe/SessionConnectRequest.h"
+#include "org_limitless_phixeron_cluster_sbe/SessionCloseRequest.h"
+#include "org_limitless_phixeron_cluster_sbe/SessionKeepAlive.h"
+#include "org_limitless_phixeron_cluster_sbe/SessionMessageHeader.h"
+#include "org_limitless_phixeron_cluster_sbe/NewLeaderEvent.h"
 
 // Global stream subscription + event types
 #include "org/limitless/phixeron/sequencer/GlobalStreamClient.hpp"
@@ -97,7 +105,7 @@ namespace fix     = org::limitless::fix;
 namespace sess    = org::limitless::phixeron::session;
 namespace msg     = fix::generated::messages;
 namespace cfg     = fix::generated::config;
-namespace cl      = org::limitless::phixeron::cluster;
+namespace cl      = org::limitless::phixeron::cluster::sbe;
 namespace seq     = org::limitless::phixeron::sequencer;
 namespace sbesess = org::limitless::phixeron::sbe;
 
@@ -118,6 +126,12 @@ static constexpr const char* CLUSTER_EGRESS_CHANNEL    = "aeron:udp?endpoint=loc
 static constexpr const char* CLIENT_INFO               = "FixSessionClient";
 static constexpr int64_t     CLUSTER_CONNECT_TIMEOUT_MS = 10'000;
 static constexpr const char* FIX_REPLAY_CHANNEL        = "aeron:udp?endpoint=localhost:9310";
+
+// Aeron Cluster ingress/egress stream ids and client protocol semver, per
+// io.aeron.cluster.codecs / AeronCluster.Configuration defaults.
+static constexpr int32_t CLUSTER_INGRESS_STREAM_ID  = 101;
+static constexpr int32_t CLUSTER_EGRESS_STREAM_ID   = 102;
+static constexpr int32_t CLUSTER_PROTOCOL_VERSION   = (0 << 16) | (3 << 8) | 0; // 0.3.0
 
 // AppMessage SBE constants (sequencer.xml schemaId=201, templateId=1, blockLength=0)
 static constexpr uint16_t APP_MSG_TEMPLATE_ID = 1;
@@ -143,17 +157,21 @@ static void putU16LE(uint8_t* buf, uint16_t v)
     buf[1] = static_cast<uint8_t>(v >> 8u);
 }
 
-// Encodes one AppMessage SBE frame: 8-byte SBE header + 2-byte varData length + payload.
-// Returns total bytes written (10 + fixLen).
-static int32_t encodeAppMessage(uint8_t* buf, const uint8_t* fixBytes, uint16_t fixLen)
+// Encodes one AppMessage SBE frame: 8-byte SBE header + 2-byte varData length +
+// a 4-byte connection ID + payload. The connId prefix lets the global-stream
+// receiver route every echoed message (admin or application) back to the
+// originating TCP connection. Returns total bytes written.
+static int32_t encodeAppMessage(uint8_t* buf, int32_t connId, const uint8_t* fixBytes, uint16_t fixLen)
 {
+    const uint16_t payloadLen = static_cast<uint16_t>(CONN_ID_PREFIX + fixLen);
     putU16LE(buf + 0, 0);                   // blockLength  = 0
     putU16LE(buf + 2, APP_MSG_TEMPLATE_ID); // templateId   = 1
     putU16LE(buf + 4, APP_MSG_SCHEMA_ID);   // schemaId     = 201
     putU16LE(buf + 6, 0);                   // version      = 0
-    putU16LE(buf + 8, fixLen);              // payload length (uint16 per varDataEncoding)
-    std::memcpy(buf + 10, fixBytes, fixLen);
-    return 10 + static_cast<int32_t>(fixLen);
+    putU16LE(buf + 8, payloadLen);          // payload length (uint16 per varDataEncoding)
+    std::memcpy(buf + 10, &connId, CONN_ID_PREFIX);
+    std::memcpy(buf + 10 + CONN_ID_PREFIX, fixBytes, fixLen);
+    return 10 + static_cast<int32_t>(CONN_ID_PREFIX) + static_cast<int32_t>(fixLen);
 }
 
 // Scans a TCP recv buffer for the end of one FIX message (tag 10 + trailing SOH).
@@ -276,57 +294,6 @@ static void patchResendFlags(std::vector<uint8_t>& msg)
     }
 }
 
-// ── AppRecord ─────────────────────────────────────────────────────────────────
-
-struct AppRecord
-{
-    std::vector<uint8_t> fixBytes;  // raw outbound FIX bytes captured from the session
-};
-
-// ── CapturingTransport ────────────────────────────────────────────────────────
-
-// Sends FIX bytes over TCP and stores copies of application messages (non-admin)
-// in the per-connection store keyed by FIX MsgSeqNum (tag 34).  The store is
-// used by FixConnection::handleResendRequest to replay app messages on demand.
-struct CapturingTransport
-{
-    int                           fd{-1};
-    std::map<uint32_t, AppRecord>* store{nullptr};
-
-    void operator()(std::span<const uint8_t> bytes) const
-    {
-        if (fd < 0 || bytes.empty()) return;
-
-        // ── Send via TCP ──────────────────────────────────────────────────────
-        std::size_t sent = 0;
-        while (sent < bytes.size())
-        {
-            const ssize_t n = ::send(fd, bytes.data() + sent,
-                                     bytes.size() - sent, MSG_NOSIGNAL);
-            if (n < 0)
-            {
-                if (errno == EINTR) continue;
-                std::fprintf(stderr, "[TcpTransport] send fd=%d failed: %s\n",
-                             fd, std::strerror(errno));
-                return;
-            }
-            sent += static_cast<std::size_t>(n);
-        }
-
-        // ── Capture application messages ──────────────────────────────────────
-        if (!store || isAdminMsgType(bytes.data(), bytes.size())) return;
-
-        const auto [vs, ve] = fixTagRange(bytes.data(), bytes.size(), "34");
-        if (vs == std::string::npos) return;
-
-        uint32_t seq = 0;
-        for (std::size_t i = vs; i < ve; ++i) seq = seq * 10 + (bytes[i] - '0');
-        if (seq == 0) return;
-
-        (*store)[seq].fixBytes.assign(bytes.begin(), bytes.end());
-    }
-};
-
 // ── ClusterIngressSender ──────────────────────────────────────────────────────
 
 // Manages the Aeron Cluster session (SessionConnectRequest → SessionEvent(OK))
@@ -339,11 +306,11 @@ public:
     {
         m_aeron = std::move(aeron);
 
-        const auto subId = m_aeron->addSubscription(CLUSTER_EGRESS_CHANNEL, cl::EGRESS_STREAM_ID);
+        const auto subId = m_aeron->addSubscription(CLUSTER_EGRESS_CHANNEL, CLUSTER_EGRESS_STREAM_ID);
         while (!(m_egressSub = m_aeron->findSubscription(subId)))
             std::this_thread::yield();
 
-        const auto pubId = m_aeron->addPublication(CLUSTER_INGRESS_CHANNEL, cl::INGRESS_STREAM_ID);
+        const auto pubId = m_aeron->addPublication(CLUSTER_INGRESS_CHANNEL, CLUSTER_INGRESS_STREAM_ID);
         while (!(m_ingressPub = m_aeron->findPublication(pubId)))
             std::this_thread::yield();
         while (!m_ingressPub->isConnected())
@@ -351,13 +318,17 @@ public:
 
         // Send SessionConnectRequest; response channel ephemeral (port 0).
         alignas(16) std::array<uint8_t, 512> connBuf{};
-        const int32_t connLen = cl::encodeSessionConnectRequest(
-            connBuf.data(), static_cast<int32_t>(connBuf.size()),
-            m_correlationId, cl::EGRESS_STREAM_ID,
-            CLUSTER_EGRESS_CHANNEL, CLIENT_INFO);
+        cl::SessionConnectRequest req;
+        req.wrapAndApplyHeader(reinterpret_cast<char*>(connBuf.data()), 0, connBuf.size());
+        req.correlationId(m_correlationId)
+           .responseStreamId(CLUSTER_EGRESS_STREAM_ID)
+           .version(CLUSTER_PROTOCOL_VERSION);
+        req.putResponseChannel(std::string_view(CLUSTER_EGRESS_CHANNEL));
+        req.putEncodedCredentials(nullptr, 0);
+        req.putClientInfo(std::string_view(CLIENT_INFO));
 
         AtomicBuffer connAtom(connBuf.data(), connBuf.size());
-        while (m_ingressPub->offer(connAtom, 0, connLen) < 0)
+        while (m_ingressPub->offer(connAtom, 0, static_cast<util::index_t>(req.sbePosition())) < 0)
             std::this_thread::yield();
 
         // Poll egress for SessionEvent(OK).
@@ -365,20 +336,30 @@ public:
                         std::chrono::milliseconds(CLUSTER_CONNECT_TIMEOUT_MS);
 
         auto onEgress = [&](AtomicBuffer& buf, util::index_t off,
-                            util::index_t /*len*/, Header&)
+                            util::index_t len, Header&)
         {
-            if (cl::decodeTemplateId(buf.buffer(), off) != cl::TEMPLATE_SESSION_EVENT)
+            if (static_cast<uint64_t>(len) < cl::MessageHeader::encodedLength())
                 return;
-            const auto f = cl::decodeSessionEvent(buf.buffer(), off + cl::HDR_LENGTH);
-            if (f.code == cl::EventCode::OK) {
-                m_clusterSessionId = f.clusterSessionId;
-                m_leadershipTermId = f.leadershipTermId;
+            cl::MessageHeader hdr;
+            hdr.wrap(reinterpret_cast<char*>(buf.buffer()), off, 0,
+                     static_cast<uint64_t>(buf.capacity()));
+            if (hdr.templateId() != cl::SessionEvent::sbeTemplateId())
+                return;
+
+            cl::SessionEvent evt;
+            evt.wrapForDecode(reinterpret_cast<char*>(buf.buffer()),
+                               off + cl::MessageHeader::encodedLength(),
+                               hdr.blockLength(), hdr.version(),
+                               static_cast<uint64_t>(buf.capacity()));
+            if (evt.code() == cl::EventCode::Value::OK) {
+                m_clusterSessionId = evt.clusterSessionId();
+                m_leadershipTermId = evt.leadershipTermId();
                 std::printf("[Cluster] Session opened  sessionId=%" PRId64
                             "  termId=%" PRId64 "  leader=%d\n",
-                            m_clusterSessionId, m_leadershipTermId, f.leaderMemberId);
+                            m_clusterSessionId, m_leadershipTermId, evt.leaderMemberId());
             } else {
                 std::fprintf(stderr, "[Cluster] SessionEvent error code=%d\n",
-                             static_cast<int>(f.code));
+                             static_cast<int>(evt.code()));
             }
         };
 
@@ -404,11 +385,12 @@ public:
         m_lastKeepAliveMs = now;
 
         alignas(16) std::array<uint8_t, 64> kaBuf{};
-        const int32_t kaLen = cl::encodeSessionKeepAlive(
-            kaBuf.data(), static_cast<int32_t>(kaBuf.size()),
-            m_leadershipTermId, m_clusterSessionId);
+        cl::SessionKeepAlive ka;
+        ka.wrapAndApplyHeader(reinterpret_cast<char*>(kaBuf.data()), 0, kaBuf.size())
+          .leadershipTermId(m_leadershipTermId)
+          .clusterSessionId(m_clusterSessionId);
         AtomicBuffer kaAb(kaBuf.data(), kaBuf.size());
-        if (m_ingressPub->offer(kaAb, 0, kaLen) < 0)
+        if (m_ingressPub->offer(kaAb, 0, static_cast<util::index_t>(ka.sbePosition())) < 0)
             std::fprintf(stderr, "[Cluster] keep-alive offer failed\n");
     }
 
@@ -422,15 +404,20 @@ public:
     }
 
     // Wraps fixBytes in AppMessage SBE + SessionMessageHeader and offers to the cluster.
-    void send(const uint8_t* fixBytes, uint16_t fixLen)
+    // connId is prefixed into the AppMessage payload so the global-stream receiver
+    // can route the echoed message back to the originating TCP connection.
+    void send(int32_t connId, const uint8_t* fixBytes, uint16_t fixLen)
     {
         if (!m_ingressPub || m_clusterSessionId < 0 || fixLen == 0) return;
 
         alignas(16) std::array<uint8_t, 4096 + 42> buf{};
-        const int32_t hdrLen = cl::encodeSessionMessageHeader(
-            buf.data(), static_cast<int32_t>(buf.size()),
-            m_leadershipTermId, m_clusterSessionId, nowMs());
-        const int32_t appLen = encodeAppMessage(buf.data() + hdrLen, fixBytes, fixLen);
+        cl::SessionMessageHeader hdr;
+        hdr.wrapAndApplyHeader(reinterpret_cast<char*>(buf.data()), 0, buf.size())
+           .leadershipTermId(m_leadershipTermId)
+           .clusterSessionId(m_clusterSessionId)
+           .timestamp(nowMs());
+        const int32_t hdrLen = static_cast<int32_t>(hdr.sbePosition());
+        const int32_t appLen = encodeAppMessage(buf.data() + hdrLen, connId, fixBytes, fixLen);
 
         AtomicBuffer ab(buf.data(), buf.size());
         if (m_ingressPub->offer(ab, 0, hdrLen + appLen) < 0)
@@ -455,21 +442,90 @@ private:
     FragmentAssembler m_fa{[this](AtomicBuffer& buf, util::index_t off,
                                   util::index_t len, Header&)
     {
-        if (static_cast<int32_t>(len) < cl::HDR_LENGTH) return;
-        const uint16_t templateId = cl::decodeTemplateId(buf.buffer(), off);
-        if (templateId == cl::TEMPLATE_NEW_LEADER_EVENT)
+        if (static_cast<uint64_t>(len) < cl::MessageHeader::encodedLength()) return;
+        cl::MessageHeader hdr;
+        hdr.wrap(reinterpret_cast<char*>(buf.buffer()), off, 0,
+                 static_cast<uint64_t>(buf.capacity()));
+
+        if (hdr.templateId() == cl::NewLeaderEvent::sbeTemplateId())
         {
-            m_leadershipTermId = cl::detail::get64(buf.buffer(), off + cl::HDR_LENGTH);
+            cl::NewLeaderEvent evt;
+            evt.wrapForDecode(reinterpret_cast<char*>(buf.buffer()),
+                               off + cl::MessageHeader::encodedLength(),
+                               hdr.blockLength(), hdr.version(),
+                               static_cast<uint64_t>(buf.capacity()));
+            m_leadershipTermId = evt.leadershipTermId();
             std::printf("[Cluster] New leader  termId=%" PRId64 "\n", m_leadershipTermId);
             return;
         }
-        if (templateId != cl::TEMPLATE_SESSION_MESSAGE_HEADER) return;
-        const int32_t appOff = off + cl::HDR_LENGTH + cl::SESSION_MESSAGE_HEADER_BLOCK_LENGTH;
+        if (hdr.templateId() != cl::SessionMessageHeader::sbeTemplateId()) return;
+
+        const int32_t appOff = off + static_cast<int32_t>(cl::MessageHeader::encodedLength())
+                             + static_cast<int32_t>(hdr.blockLength());
         const int32_t appLen = static_cast<int32_t>(len)
-                             - cl::HDR_LENGTH - cl::SESSION_MESSAGE_HEADER_BLOCK_LENGTH;
+                             - static_cast<int32_t>(cl::MessageHeader::encodedLength())
+                             - static_cast<int32_t>(hdr.blockLength());
         if (appLen > 0 && m_onAppMessage)
             (*m_onAppMessage)(buf.buffer() + appOff, appLen);
     }};
+};
+
+// ── sendRaw ───────────────────────────────────────────────────────────────────
+
+// Blocking TCP send of a complete byte range; shared by CapturingTransport,
+// FixConnection::handleResendRequest and FixConnection::onClusterAppMessage.
+static void sendRaw(int fd, const uint8_t* data, std::size_t len)
+{
+    if (fd < 0 || len == 0) return;
+    std::size_t sent = 0;
+    while (sent < len)
+    {
+        const ssize_t n = ::send(fd, data + sent, len - sent, MSG_NOSIGNAL);
+        if (n < 0)
+        {
+            if (errno == EINTR) continue;
+            std::fprintf(stderr, "[TcpTransport] send fd=%d failed: %s\n",
+                         fd, std::strerror(errno));
+            return;
+        }
+        sent += static_cast<std::size_t>(n);
+    }
+}
+
+// ── CapturingTransport ────────────────────────────────────────────────────────
+
+// The session's outbound transport policy. Admin (session-layer) messages are
+// still delivered straight to TCP: their timing/state transitions are already
+// driven exclusively by the cluster global stream (see FixConnection::
+// onClusterAdmin), so there is nothing to gain by round-tripping them again.
+//
+// Application messages (ExecutionReport) are instead handed to the cluster for
+// sequencing; per the file's deterministic design invariant, they only reach
+// the TCP client once echoed back on the global stream, at which point
+// FixConnection::onClusterAppMessage delivers them and populates the resend
+// cache. This is what makes the cache genuinely "populated from the cluster
+// global stream" rather than from a local side-channel capture.
+struct CapturingTransport
+{
+    int                   fd{-1};
+    ClusterIngressSender* ingress{nullptr};
+    int32_t               connId{-1};
+
+    void operator()(std::span<const uint8_t> bytes) const
+    {
+        if (bytes.empty()) return;
+
+        if (isAdminMsgType(bytes.data(), bytes.size()))
+        {
+            sendRaw(fd, bytes.data(), bytes.size());
+            return;
+        }
+
+        if (ingress && bytes.size() <= std::numeric_limits<uint16_t>::max())
+        {
+            ingress->send(connId, bytes.data(), static_cast<uint16_t>(bytes.size()));
+        }
+    }
 };
 
 // Forward-declared here so ClusterIngressHandler can hold a pointer to it.
@@ -490,20 +546,18 @@ class ClusterIngressHandler : public FixMessageHandler<ClusterIngressHandler>
     std::span<const uint8_t> m_rawFixBytes;
     FixSession*              m_session{nullptr};
 
-    // SBE encode buffer: [4-byte connId][8-byte SBE header][SBE body]
+    // SBE encode buffer: [8-byte SBE header][SBE body]. The connId prefix is
+    // added uniformly by ClusterIngressSender::send/encodeAppMessage.
     alignas(16) std::array<uint8_t, 512> m_sbeBuf{};
 
-    char*    sbeBufBody()   { return reinterpret_cast<char*>(m_sbeBuf.data() + CONN_ID_PREFIX); }
-    uint64_t sbeBufLen()    { return m_sbeBuf.size() - CONN_ID_PREFIX; }
+    char*    sbeBufBody()   { return reinterpret_cast<char*>(m_sbeBuf.data()); }
+    uint64_t sbeBufLen()    { return m_sbeBuf.size(); }
 
-    // Writes connId at offset 0 and sends the SBE bytes to the cluster.
     template <typename SbeMsg>
     void sendAdmin(SbeMsg& msg)
     {
         if (!m_ingress) return;
-        std::memcpy(m_sbeBuf.data(), &m_connectionId, CONN_ID_PREFIX);
-        const uint16_t total = static_cast<uint16_t>(CONN_ID_PREFIX + msg.sbePosition());
-        m_ingress->send(m_sbeBuf.data(), total);
+        m_ingress->send(m_connectionId, m_sbeBuf.data(), static_cast<uint16_t>(msg.sbePosition()));
     }
 
 public:
@@ -661,7 +715,7 @@ public:
             if (sz > 4096) {
                 std::fprintf(stderr, "[App] FIX message too large (%zu bytes); dropped\n", sz);
             } else {
-                m_ingress->send(m_rawFixBytes.data(), static_cast<uint16_t>(sz));
+                m_ingress->send(m_connectionId, m_rawFixBytes.data(), static_cast<uint16_t>(sz));
             }
         }
 
@@ -690,17 +744,95 @@ public:
     }
 };
 
+// ── Archive-backed resend fallback ────────────────────────────────────────────
+
+// Shared handle to the archive connection and the global stream recording,
+// used on-demand by FixConnection::handleResendRequest when the ResendCache
+// doesn't hold everything a ResendRequest asks for. Owned by main() and
+// outlives every FixConnection.
+struct ArchiveResendContext
+{
+    std::shared_ptr<Aeron>                                aeron;
+    std::shared_ptr<aeron::archive::client::AeronArchive> archive;
+    std::int64_t                                          recordingId;
+};
+
+// On a resend-cache miss, scans the archived global stream from the beginning
+// up to the current recording position, filtering for application messages
+// (MsgType=ExecutionReport) that this connId submitted and whose MsgSeqNum
+// (tag 34) is in `missing`. This is a synchronous, bounded, occasional
+// slow-path operation — resends are rare, so a full scan-and-filter is
+// preferred here over maintaining a seqNum→archive-position index.
+static std::unordered_map<uint32_t, std::vector<uint8_t>> replayMissingAppMessages(
+    ArchiveResendContext& ctx, int32_t connId, const std::unordered_set<uint32_t>& missing)
+{
+    std::unordered_map<uint32_t, std::vector<uint8_t>> found;
+    if (missing.empty() || !ctx.archive) return found;
+
+    const std::int64_t upToPosition = ctx.archive->getRecordingPosition(ctx.recordingId);
+    if (upToPosition <= 0) return found;
+
+    static constexpr const char* RESEND_REPLAY_CHANNEL = "aeron:udp?endpoint=localhost:9312";
+
+    aeron::archive::client::ReplayParams replayParams;
+    replayParams.position(0).length(upToPosition);
+    const std::int64_t replaySessionId = ctx.archive->startReplay(
+        ctx.recordingId, RESEND_REPLAY_CHANNEL, seq::REPLAY_STREAM_ID, replayParams);
+
+    bool done = false;
+    seq::GlobalStreamClient scan(
+        [&](const seq::SequencedEvent& e)
+        {
+            if (e.payloadLength <= seq::APP_MSG_SBE_PREFIX + CONN_ID_PREFIX) return;
+            const auto* p = reinterpret_cast<const uint8_t*>(e.payload) + seq::APP_MSG_SBE_PREFIX;
+
+            int32_t msgConnId;
+            std::memcpy(&msgConnId, p, CONN_ID_PREFIX);
+            if (msgConnId != connId) return;
+
+            const uint8_t* fixBytes = p + CONN_ID_PREFIX;
+            const auto     fixLen   = static_cast<std::size_t>(
+                e.payloadLength - seq::APP_MSG_SBE_PREFIX - CONN_ID_PREFIX);
+            if (fixLen == 0) return;
+
+            const auto [mts, mte] = fixTagRange(fixBytes, fixLen, "35");
+            if (mts == std::string::npos || mte - mts != 1 || fixBytes[mts] != '8') return;
+
+            const auto [vs, ve] = fixTagRange(fixBytes, fixLen, "34");
+            if (vs == std::string::npos) return;
+            uint32_t seqNum = 0;
+            for (std::size_t i = vs; i < ve; ++i) seqNum = seqNum * 10 + (fixBytes[i] - '0');
+
+            if (missing.contains(seqNum) && !found.contains(seqNum))
+                found.emplace(seqNum, std::vector<uint8_t>(fixBytes, fixBytes + fixLen));
+        },
+        nullptr, nullptr,
+        [&] { done = true; });
+
+    scan.start(ctx.aeron, replaySessionId, upToPosition, RESEND_REPLAY_CHANNEL);
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!done && found.size() < missing.size() && std::chrono::steady_clock::now() < deadline)
+    {
+        if (scan.poll() == 0) std::this_thread::yield();
+    }
+
+    return found;
+}
+
 // ── FixConnection ─────────────────────────────────────────────────────────────
 //
 // TCP receive path:  ClusterIngressHandler encodes every FIX message as SBE
 //                   (admin) or raw FIX (app) and forwards to the cluster.
 //                   Session state is NOT updated here.
 //
-// Global stream path: FixConnection::onClusterMessage() is called by the main
-//                     loop when a SequencedMessage arrives that was sourced by
-//                     this connection. It advances the session clock to the
-//                     cluster timestamp and drives the session state machine,
-//                     which then writes the FIX response to the TCP socket.
+// Global stream path: FixConnection::onClusterAdmin() and onClusterAppMessage()
+//                     are called by the main loop when a SequencedMessage
+//                     arrives that was sourced by this connection (matched by
+//                     the embedded connId). They advance the session clock to
+//                     the cluster timestamp; application messages are also
+//                     delivered to TCP and cached here (see ResendCache),
+//                     never at the point they are locally encoded.
 
 // Session only needs a transport; it no longer handles inbound application messages.
 
@@ -708,20 +840,22 @@ static constexpr std::size_t MAX_RECV_BUF = 1u * 1024u * 1024u;  // 1 MB
 
 struct FixConnection
 {
-    int  fd;
-    bool m_dead{false};
-    // m_appStore must be declared before session so its address is stable when
-    // CapturingTransport (stored inside session by value) is constructed.
-    std::map<uint32_t, AppRecord>          m_appStore;
-    FixSession                             session;
-    ClusterIngressHandler                  ingressHandler;
+    int                     fd;
+    bool                    m_dead{false};
+    ArchiveResendContext*   archiveCtx;
+    // Latest outbound FIX messages, keyed by MsgSeqNum, used to satisfy
+    // ResendRequest replay without consulting the archive on every request.
+    sess::ResendCache       m_resendCache{2500};
+    FixSession              session;
+    ClusterIngressHandler   ingressHandler;
     fix::decoder::PayloadDecoder<FIXT_1_1> decoder;
     std::vector<uint8_t>                   recvBuf;
 
-    FixConnection(int fd_, ClusterIngressSender* ingress)
+    FixConnection(int fd_, ClusterIngressSender* ingress, ArchiveResendContext* archiveCtx_)
         : fd(fd_)
+        , archiveCtx(archiveCtx_)
         , session(FixSession::Builder{sess::NullStorage{}}
-                      .transport(CapturingTransport{fd_, &m_appStore})
+                      .transport(CapturingTransport{fd_, ingress, fd_})
                       .build())
         , ingressHandler(ingress, fd_, &session)
     {
@@ -733,11 +867,13 @@ struct FixConnection
 
     // Handles a ResendRequest from the cluster global stream.
     //
-    // Walks [begin, limit) using the in-memory app-message store populated by
-    // CapturingTransport.  For each contiguous run of admin seqNums it emits one
-    // SequenceReset GapFill; for each stored app-message seqNum it patches
-    // PossDupFlag=Y + OrigSendingTime into the raw bytes and sends them directly.
-    // The session's outgoing sequence counter is restored to savedNext afterwards.
+    // Walks [begin, limit) against the ResendCache. Whatever the cache misses
+    // (evicted, or never cached because it predates this cache instance) is
+    // looked up in one batched archive replay pass. Anything still missing
+    // after that must never have been an application message at all (the FIX
+    // seqnum space is shared and gapless across admin/app messages), so it is
+    // covered by a SequenceReset GapFill instead. The session's outgoing
+    // sequence counter is restored to savedNext afterwards.
     void handleResendRequest(uint32_t begin, uint32_t end, int64_t clusterTs)
     {
         session.setNowMs(clusterTs);
@@ -747,54 +883,63 @@ struct FixConnection
         const uint32_t limit     = (end == 0 || end + 1 >= savedNext)
                                    ? savedNext : end + 1;
 
-        std::printf("[Resend] fd=%d begin=%u end=%u limit=%u store=%zu\n",
-                    fd, begin, end, limit, m_appStore.size());
+        std::printf("[Resend] fd=%d begin=%u end=%u limit=%u cacheSize=%zu\n",
+                    fd, begin, end, limit, m_resendCache.size());
+
+        std::unordered_set<uint32_t> missing;
+        for (uint32_t seq = begin; seq < limit; ++seq)
+            if (m_resendCache.get(seq) == nullptr) missing.insert(seq);
+
+        std::unordered_map<uint32_t, std::vector<uint8_t>> recovered;
+        if (!missing.empty() && archiveCtx)
+        {
+            std::printf("[Resend] fd=%d %zu seq missing from cache; consulting archive\n",
+                        fd, missing.size());
+            recovered = replayMissingAppMessages(*archiveCtx, fd, missing);
+            std::printf("[Resend] fd=%d archive recovered %zu of %zu missing\n",
+                        fd, recovered.size(), missing.size());
+        }
 
         uint32_t gapStart = 0;
 
         for (uint32_t seq = begin; seq < limit; ++seq)
         {
-            const auto it = m_appStore.find(seq);
-
-            if (it == m_appStore.end())
+            const std::vector<uint8_t>* bytes = m_resendCache.get(seq);
+            std::vector<uint8_t> archiveCopy;
+            if (!bytes)
             {
-                // Admin message — accumulate into the current gap range
+                const auto it = recovered.find(seq);
+                if (it != recovered.end())
+                {
+                    archiveCopy = it->second;
+                    bytes = &archiveCopy;
+                }
+            }
+
+            if (!bytes)
+            {
+                // Neither cache nor archive holds an app message for this
+                // seq — it was an admin message. Accumulate into the gap.
                 if (gapStart == 0) gapStart = seq;
+                continue;
             }
-            else
+
+            if (gapStart != 0)
             {
-                // App message — flush any pending gap-fill first
-                if (gapStart != 0)
-                {
-                    std::printf("[Resend] fd=%d GapFill [%u, %u)\n", fd, gapStart, seq);
-                    session.sendGapFill(gapStart, seq, clusterTs);
-                    gapStart = 0;
-                }
-
-                // Patch PossDupFlag + OrigSendingTime into a copy and send raw
-                std::vector<uint8_t> patched = it->second.fixBytes;
-                patchResendFlags(patched);
-
-                std::printf("[Resend] fd=%d AppMsg seq=%u bytes=%zu\n",
-                            fd, seq, patched.size());
-
-                std::size_t sent = 0;
-                while (sent < patched.size())
-                {
-                    const ssize_t n = ::send(fd, patched.data() + sent,
-                                             patched.size() - sent, MSG_NOSIGNAL);
-                    if (n < 0)
-                    {
-                        if (errno == EINTR) continue;
-                        std::fprintf(stderr, "[Resend] fd=%d send failed: %s\n",
-                                     fd, std::strerror(errno));
-                        break;
-                    }
-                    sent += static_cast<std::size_t>(n);
-                }
-
-                session.setNextOutgoingSeqNum(seq + 1);
+                std::printf("[Resend] fd=%d GapFill [%u, %u)\n", fd, gapStart, seq);
+                session.sendGapFill(gapStart, seq, clusterTs);
+                gapStart = 0;
             }
+
+            // Patch PossDupFlag + OrigSendingTime into a copy and send raw
+            std::vector<uint8_t> patched = *bytes;
+            patchResendFlags(patched);
+
+            std::printf("[Resend] fd=%d AppMsg seq=%u bytes=%zu\n",
+                        fd, seq, patched.size());
+            sendRaw(fd, patched.data(), patched.size());
+
+            session.setNextOutgoingSeqNum(seq + 1);
         }
 
         // Flush any trailing admin gap
@@ -900,26 +1045,28 @@ struct FixConnection
             break;
         }
     }
-};
 
-// ── GlobalStreamFixHandler ────────────────────────────────────────────────────
-
-// Decodes FIX messages arriving on the global stream (SequencedMessage payloads).
-// Currently routes ExecutionReports to the provided callback for broadcast to TCP clients.
-class GlobalStreamFixHandler : public FixMessageHandler<GlobalStreamFixHandler>
-{
-    std::function<void(ExecutionReportDecoder&)> m_onExecReport;
-
-public:
-    using FixMessageHandler::handle;
-
-    explicit GlobalStreamFixHandler(std::function<void(ExecutionReportDecoder&)> onExecReport)
-        : m_onExecReport(std::move(onExecReport)) {}
-
-    fix::Result handle(ExecutionReportDecoder& er)
+    // Global stream: an outbound application message (ExecutionReport) this
+    // connection submitted to the cluster has been sequenced and echoed back.
+    // Echoes of inbound client messages (e.g. NewOrderSingle, also submitted to
+    // the cluster for total ordering) share the same connId but are not ours to
+    // deliver or cache, so anything other than MsgType=ExecutionReport ('8') is
+    // ignored here.
+    void onClusterAppMessage(const uint8_t* fixBytes, std::size_t len, int64_t clusterTimestampMs)
     {
-        if (m_onExecReport) m_onExecReport(er);
-        return fix::Result::Success;
+        const auto [mts, mte] = fixTagRange(fixBytes, len, "35");
+        if (mts == std::string::npos || mte - mts != 1 || fixBytes[mts] != '8') return;
+
+        session.setNowMs(clusterTimestampMs);
+
+        const auto [vs, ve] = fixTagRange(fixBytes, len, "34");
+        if (vs == std::string::npos) return;
+        uint32_t seqNum = 0;
+        for (std::size_t i = vs; i < ve; ++i) seqNum = seqNum * 10 + (fixBytes[i] - '0');
+        if (seqNum == 0) return;
+
+        m_resendCache.put(seqNum, std::span<const uint8_t>(fixBytes, len));
+        sendRaw(fd, fixBytes, len);
     }
 };
 
@@ -1053,6 +1200,9 @@ int main()
     std::printf("[FixSessionClient] Recording %" PRId64
                 "  catchUpPosition=%" PRId64 "\n", recordingId, catchUpPosition);
 
+    // Shared with every FixConnection for the on-demand resend archive fallback.
+    ArchiveResendContext resendArchiveCtx{aeron, archive, recordingId};
+
     // ── Start replay (only when there is historical data to replay) ──────────
     std::int64_t replaySessionId = -1;
     if (catchUpPosition > 0) {
@@ -1077,86 +1227,66 @@ int main()
     // ── Per-connection state ──────────────────────────────────────────────────
     std::unordered_map<int, std::unique_ptr<FixConnection>> connections;
 
-    // ── Global stream FIX decoder (for application messages, e.g. ExecutionReport) ─
-    fix::decoder::PayloadDecoder<FIXT_1_1> globalDecoder;
-
-    GlobalStreamFixHandler globalFixHandler([&](ExecutionReportDecoder& er)
-    {
-        const auto clOrdId   = er.clOrdID().value_or(std::string_view{});
-        const auto execType  = er.execType();
-        const auto ordStatus = er.ordStatus();
-        std::printf("[Global] ExecutionReport clOrdID=%.*s"
-                    " execType=%d ordStatus=%d\n",
-                    static_cast<int>(clOrdId.size()), clOrdId.data(),
-                    execType ? static_cast<int>(*execType) : -1,
-                    ordStatus ? static_cast<int>(*ordStatus) : -1);
-
-        // TODO: encode ExecutionReport as FIX and send to matching TCP client(s).
-        (void)er;
-    });
-
     // ── Global stream subscription ────────────────────────────────────────────
     // Payload layout after the 10-byte AppMessage SBE prefix:
-    //   Admin SBE:  [4-byte connId LE][8-byte SBE MessageHeader][SBE body]
-    //               Identified by schemaId==SESSION_SCHEMA_ID at payload[8..9].
-    //   Raw FIX:    bytes starting with '8' (BeginString).
+    //   [4-byte connId LE][admin SBE body | raw FIX bytes]
+    //   Every message this gateway submits (admin or application) is prefixed
+    //   with the 4-byte connId of the TCP connection that originated it (see
+    //   ClusterIngressSender::send), so the echo can always be routed back to
+    //   the right FixConnection. Admin vs. application is then distinguished
+    //   by schemaId==SESSION_SCHEMA_ID at the start of the remaining bytes.
     seq::GlobalStreamClient globalStream(
         [&](const seq::SequencedEvent& e)
         {
             std::printf("[Global] SequencedEvent globalSeq=%" PRId64 " payloadLen=%" PRIu64 "\n",
                         e.globalSeqNo, static_cast<uint64_t>(e.payloadLength));
-            if (e.payloadLength <= seq::APP_MSG_SBE_PREFIX) return;
+            if (e.payloadLength <= seq::APP_MSG_SBE_PREFIX + CONN_ID_PREFIX) return;
             const auto* payload = reinterpret_cast<const uint8_t*>(e.payload)
                                   + seq::APP_MSG_SBE_PREFIX;
             const uint64_t payloadLen = e.payloadLength - seq::APP_MSG_SBE_PREFIX;
 
-            // Detect admin SBE: connId prefix (4 bytes) + SBE header (8 bytes).
-            // schemaId is at payload[CONN_ID_PREFIX + 4] (bytes 4-5 within SBE header).
-            if (payloadLen >= CONN_ID_PREFIX + sbesess::MessageHeader::encodedLength())
+            int32_t connId;
+            std::memcpy(&connId, payload, CONN_ID_PREFIX);
+            const uint8_t* rest    = payload + CONN_ID_PREFIX;
+            const uint64_t restLen = payloadLen - CONN_ID_PREFIX;
+
+            auto it = connections.find(connId);
+            if (it == connections.end()) return;
+
+            // Detect admin SBE: schemaId is at rest[4..5] (bytes 4-5 of the SBE
+            // MessageHeader that opens the remaining bytes).
+            if (restLen >= sbesess::MessageHeader::encodedLength())
             {
                 uint16_t schemaId;
-                std::memcpy(&schemaId,
-                            payload + CONN_ID_PREFIX + 4,  // offset within SBE header
-                            sizeof(uint16_t));
+                std::memcpy(&schemaId, rest + 4, sizeof(uint16_t));
                 schemaId = SBE_LITTLE_ENDIAN_ENCODE_16(schemaId);  // no-op on LE; bswap on BE
 
-                std::printf("[Global] schemaId=%u (expected SESSION=%u)\n",
-                            schemaId, SESSION_SCHEMA_ID);
                 if (schemaId == SESSION_SCHEMA_ID)
                 {
-                    int32_t connId;
-                    std::memcpy(&connId, payload, CONN_ID_PREFIX);
                     std::printf("[Global] Admin SBE connId=%d connections.size=%zu\n",
                                 connId, connections.size());
 
-                    const char* sbeHeader = reinterpret_cast<const char*>(payload) + CONN_ID_PREFIX;
-                    const uint64_t sbeLen = payloadLen - CONN_ID_PREFIX;
-
                     // Read SBE MessageHeader fields.
                     uint16_t blockLen, templateId, version;
-                    std::memcpy(&blockLen,   sbeHeader + 0, 2);
-                    std::memcpy(&templateId, sbeHeader + 2, 2);
-                    std::memcpy(&version,    sbeHeader + 6, 2);
+                    std::memcpy(&blockLen,   rest + 0, 2);
+                    std::memcpy(&templateId, rest + 2, 2);
+                    std::memcpy(&version,    rest + 6, 2);
                     blockLen   = SBE_LITTLE_ENDIAN_ENCODE_16(blockLen);
                     templateId = SBE_LITTLE_ENDIAN_ENCODE_16(templateId);
                     version    = SBE_LITTLE_ENDIAN_ENCODE_16(version);
 
-                    auto it = connections.find(connId);
-                    if (it != connections.end())
-                    {
-                        it->second->onClusterAdmin(templateId, sbeHeader, sbeLen,
-                                                   blockLen, version,
-                                                   e.clusterTimestamp);
-                    }
+                    it->second->onClusterAdmin(templateId, reinterpret_cast<const char*>(rest),
+                                               restLen, blockLen, version, e.clusterTimestamp);
                     return;
                 }
             }
 
-            // Raw FIX application message.
-            if (payloadLen > 0 && payload[0] == '8')
+            // Application-layer FIX bytes: our own ExecutionReport echoed back
+            // (see FixConnection::onClusterAppMessage), or the client's own
+            // NewOrderSingle echoed back (ignored there).
+            if (restLen > 0 && rest[0] == '8')
             {
-                globalDecoder.parse(std::span<const uint8_t>(payload, payloadLen),
-                                    globalFixHandler);
+                it->second->onClusterAppMessage(rest, restLen, e.clusterTimestamp);
             }
         },
         [](const seq::LifecycleEvent& e)
@@ -1197,7 +1327,7 @@ int main()
             if (clientFd >= 0) {
                 try {
                     connections.emplace(clientFd,
-                        std::make_unique<FixConnection>(clientFd, &ingressSender));
+                        std::make_unique<FixConnection>(clientFd, &ingressSender, &resendArchiveCtx));
                 } catch (...) {
                     ::close(clientFd);
                     throw;
