@@ -42,6 +42,7 @@
 #include <cstring>
 #include <functional>
 #include <limits>
+#include <map>
 #include <memory>
 #include <span>
 #include <stdexcept>
@@ -65,8 +66,8 @@
 #include "concurrent/AtomicBuffer.h"
 #include "client/archive/AeronArchive.h"
 
-// simdfix — session FSM + codec
-#include "org/limitless/fix/session/ServerSession.hpp"
+// phixeron — session FSM + codec
+#include "org/limitless/phixeron/session/ServerSession.hpp"
 #include "org/limitless/fix/decoder/PayloadDecoder.hpp"
 
 // Generated FIX types (application.xml via GenerateAppMessages)
@@ -93,7 +94,7 @@
 // ── Namespace aliases ──────────────────────────────────────────────────────────
 
 namespace fix     = org::limitless::fix;
-namespace sess    = fix::session;
+namespace sess    = org::limitless::phixeron::session;
 namespace msg     = fix::generated::messages;
 namespace cfg     = fix::generated::config;
 namespace cl      = org::limitless::phixeron::cluster;
@@ -173,17 +174,130 @@ static std::size_t findFixMessageEnd(std::span<const uint8_t> buf)
     return 0;
 }
 
-// ── TcpTransport ──────────────────────────────────────────────────────────────
+// ── FIX byte-level helpers ────────────────────────────────────────────────────
 
-// Outbound FIX transport for one TCP connection.  Stored by value in
-// ServerSession; the session calls operator() for each encoded admin message.
-struct TcpTransport
+// Returns the byte offset of "tag=" preceded by SOH (or at offset 0), else npos.
+static std::size_t fixFindTag(const uint8_t* data, std::size_t len, std::string_view tag)
 {
-    int fd{-1};
+    const std::size_t tlen = tag.size();
+    if (len < tlen + 1) return std::string::npos;
+    for (std::size_t i = 0; i + tlen + 1 <= len; ++i)
+    {
+        if ((i == 0 || data[i - 1] == '\x01')
+            && std::memcmp(data + i, tag.data(), tlen) == 0
+            && data[i + tlen] == '=')
+            return i;
+    }
+    return std::string::npos;
+}
+
+// Returns {valueStart, valueEnd} where valueEnd points to the trailing SOH.
+// Returns {npos, npos} when the tag is absent.
+static std::pair<std::size_t, std::size_t>
+fixTagRange(const uint8_t* data, std::size_t len, std::string_view tag)
+{
+    const std::size_t pos = fixFindTag(data, len, tag);
+    if (pos == std::string::npos) return {std::string::npos, std::string::npos};
+    const std::size_t vs = pos + tag.size() + 1;
+    std::size_t ve = vs;
+    while (ve < len && data[ve] != '\x01') ++ve;
+    return {vs, ve};
+}
+
+// Returns true when tag 35 carries a session-layer MsgType.
+static bool isAdminMsgType(const uint8_t* data, std::size_t len) noexcept
+{
+    const auto [vs, ve] = fixTagRange(data, len, "35");
+    if (vs == std::string::npos || vs == ve) return true;
+    const char t = static_cast<char>(data[vs]);
+    return t == '0' || t == '1' || t == '2' || t == '3'
+        || t == '4' || t == '5' || t == 'A';
+}
+
+// Patches a stored outbound FIX message for retransmission:
+//   • inserts 43=Y and 122=<SendingTime> after tag 52
+//   • updates tag 9 (BodyLength)
+//   • recalculates tag 10 (CheckSum)
+static void patchResendFlags(std::vector<uint8_t>& msg)
+{
+    // ── 1. Extract SendingTime value and build the insertion string ────────────
+    const auto [t52s, t52e] = fixTagRange(msg.data(), msg.size(), "52");
+    if (t52s == std::string::npos) return;
+
+    std::string ins;
+    ins.reserve(32);
+    ins += "43=Y\x01" "122=";
+    ins.append(reinterpret_cast<const char*>(msg.data() + t52s), t52e - t52s);
+    ins += '\x01';
+
+    // Insert immediately after the SOH of tag 52
+    const std::size_t insPos = t52e + 1;
+    msg.insert(msg.begin() + static_cast<std::ptrdiff_t>(insPos),
+               reinterpret_cast<const uint8_t*>(ins.data()),
+               reinterpret_cast<const uint8_t*>(ins.data() + ins.size()));
+
+    // ── 2. Update BodyLength (tag 9) ─────────────────────────────────────────
+    {
+        const auto [t9s, t9e] = fixTagRange(msg.data(), msg.size(), "9");
+        if (t9s == std::string::npos) return;
+
+        uint32_t bodyLen = 0;
+        for (std::size_t i = t9s; i < t9e; ++i) bodyLen = bodyLen * 10 + (msg[i] - '0');
+        const uint32_t newBodyLen = bodyLen + static_cast<uint32_t>(ins.size());
+
+        const std::size_t oldDigits = t9e - t9s;
+        char newVal[12];
+        const int written = std::snprintf(newVal, sizeof(newVal),
+                                          "%0*u", static_cast<int>(oldDigits), newBodyLen);
+        msg.erase(msg.begin() + static_cast<std::ptrdiff_t>(t9s),
+                  msg.begin() + static_cast<std::ptrdiff_t>(t9e));
+        msg.insert(msg.begin() + static_cast<std::ptrdiff_t>(t9s),
+                   reinterpret_cast<const uint8_t*>(newVal),
+                   reinterpret_cast<const uint8_t*>(newVal + written));
+    }
+
+    // ── 3. Recalculate CheckSum (tag 10) ─────────────────────────────────────
+    {
+        const std::size_t t10pos = fixFindTag(msg.data(), msg.size(), "10");
+        if (t10pos == std::string::npos) return;
+
+        uint32_t sum = 0;
+        for (std::size_t i = 0; i < t10pos; ++i) sum += msg[i];
+        sum %= 256;
+
+        const auto [t10s, t10e] = fixTagRange(msg.data(), msg.size(), "10");
+        if (t10s == std::string::npos) return;
+
+        char chk[4];
+        std::snprintf(chk, sizeof(chk), "%03u", sum);
+        // FIX standard: CheckSum is always exactly 3 digits
+        if (t10e - t10s == 3)
+            std::memcpy(msg.data() + t10s, chk, 3);
+    }
+}
+
+// ── AppRecord ─────────────────────────────────────────────────────────────────
+
+struct AppRecord
+{
+    std::vector<uint8_t> fixBytes;  // raw outbound FIX bytes captured from the session
+};
+
+// ── CapturingTransport ────────────────────────────────────────────────────────
+
+// Sends FIX bytes over TCP and stores copies of application messages (non-admin)
+// in the per-connection store keyed by FIX MsgSeqNum (tag 34).  The store is
+// used by FixConnection::handleResendRequest to replay app messages on demand.
+struct CapturingTransport
+{
+    int                           fd{-1};
+    std::map<uint32_t, AppRecord>* store{nullptr};
 
     void operator()(std::span<const uint8_t> bytes) const
     {
         if (fd < 0 || bytes.empty()) return;
+
+        // ── Send via TCP ──────────────────────────────────────────────────────
         std::size_t sent = 0;
         while (sent < bytes.size())
         {
@@ -198,6 +312,18 @@ struct TcpTransport
             }
             sent += static_cast<std::size_t>(n);
         }
+
+        // ── Capture application messages ──────────────────────────────────────
+        if (!store || isAdminMsgType(bytes.data(), bytes.size())) return;
+
+        const auto [vs, ve] = fixTagRange(bytes.data(), bytes.size(), "34");
+        if (vs == std::string::npos) return;
+
+        uint32_t seq = 0;
+        for (std::size_t i = vs; i < ve; ++i) seq = seq * 10 + (bytes[i] - '0');
+        if (seq == 0) return;
+
+        (*store)[seq].fixBytes.assign(bytes.begin(), bytes.end());
     }
 };
 
@@ -346,6 +472,10 @@ private:
     }};
 };
 
+// Forward-declared here so ClusterIngressHandler can hold a pointer to it.
+using FixSession = sess::ServerSession<FIXT_1_1, "SEQUENCER", "CLIENT",
+                                       sess::NullStorage, CapturingTransport>;
+
 // ── ClusterIngressHandler ─────────────────────────────────────────────────────
 
 // Receives decoded FIX messages on the TCP receive path and forwards them to
@@ -358,6 +488,7 @@ class ClusterIngressHandler : public FixMessageHandler<ClusterIngressHandler>
     ClusterIngressSender*    m_ingress{};
     int32_t                  m_connectionId{-1};
     std::span<const uint8_t> m_rawFixBytes;
+    FixSession*              m_session{nullptr};
 
     // SBE encode buffer: [4-byte connId][8-byte SBE header][SBE body]
     alignas(16) std::array<uint8_t, 512> m_sbeBuf{};
@@ -379,8 +510,8 @@ public:
     using FixMessageHandler::handle;
 
     ClusterIngressHandler() = default;
-    ClusterIngressHandler(ClusterIngressSender* ingress, int32_t connId)
-        : m_ingress(ingress), m_connectionId(connId) {}
+    ClusterIngressHandler(ClusterIngressSender* ingress, int32_t connId, FixSession* session = nullptr)
+        : m_ingress(ingress), m_connectionId(connId), m_session(session) {}
 
     void setRawBytes(std::span<const uint8_t> bytes) { m_rawFixBytes = bytes; }
 
@@ -402,7 +533,7 @@ public:
         return fix::Result::Success;
     }
 
-    fix::Result handle(const LogoutDecoder& /*logout*/)
+    fix::Result handle(LogoutDecoder& /*logout*/)
     {
         sbesess::Logout msg;
         msg.wrapAndApplyHeader(sbeBufBody(), 0, sbeBufLen());
@@ -413,7 +544,7 @@ public:
         return fix::Result::Success;
     }
 
-    fix::Result handle(const HeartbeatDecoder& heartbeat)
+    fix::Result handle(HeartbeatDecoder& heartbeat)
     {
         sbesess::Heartbeat msg;
         msg.wrapAndApplyHeader(sbeBufBody(), 0, sbeBufLen());
@@ -431,7 +562,7 @@ public:
         return fix::Result::Success;
     }
 
-    fix::Result handle(const TestRequestDecoder& testRequest)
+    fix::Result handle(TestRequestDecoder& testRequest)
     {
         sbesess::TestRequest msg;
         msg.wrapAndApplyHeader(sbeBufBody(), 0, sbeBufLen());
@@ -449,7 +580,7 @@ public:
         return fix::Result::Success;
     }
 
-    fix::Result handle(const ResendRequestDecoder& rr)
+    fix::Result handle(ResendRequestDecoder& rr)
     {
         sbesess::ResendRequest msg;
         msg.wrapAndApplyHeader(sbeBufBody(), 0, sbeBufLen());
@@ -461,7 +592,7 @@ public:
         return fix::Result::Success;
     }
 
-    fix::Result handle(const SequenceResetDecoder& sr)
+    fix::Result handle(SequenceResetDecoder& sr)
     {
         sbesess::SequenceReset msg;
         msg.wrapAndApplyHeader(sbeBufBody(), 0, sbeBufLen());
@@ -475,11 +606,55 @@ public:
 
     fix::Result handle(NewOrderSingleDecoder& nos)
     {
-        const auto clOrdId = nos.clOrdID().value_or(std::string_view{});
-        const auto symbol  = nos.symbol().value_or(std::string_view{});
-        std::printf("[App] NewOrderSingle clOrdID=%.*s symbol=%.*s\n",
+        const auto clOrdId  = nos.clOrdID().value_or(std::string_view{});
+        const auto symbol   = nos.symbol().value_or(std::string_view{});
+        const Side side     = nos.side().value_or(Side::Buy);
+        const auto qty      = nos.orderQty().value_or(0u);
+        const auto ordType  = nos.ordType().value_or(OrdType::Market);
+        const auto priceOpt = nos.price();
+
+        std::printf("[App] NewOrderSingle clOrdID=%.*s symbol=%.*s side=%s qty=%u ordType=%s\n",
                     static_cast<int>(clOrdId.size()), clOrdId.data(),
-                    static_cast<int>(symbol.size()), symbol.data());
+                    static_cast<int>(symbol.size()), symbol.data(),
+                    name(side).data(), qty, name(ordType).data());
+
+        // Business validation
+        const char* rejectReason = nullptr;
+        if (clOrdId.empty())
+            rejectReason = "ClOrdID is empty";
+        else if (symbol.empty())
+            rejectReason = "Symbol is empty";
+        else if (qty == 0)
+            rejectReason = "OrderQty must be > 0";
+        else if (ordType == OrdType::Limit && !priceOpt)
+            rejectReason = "Price required for Limit order";
+        else if (priceOpt && *priceOpt <= fix::utils::FixedDecimal{0})
+            rejectReason = "Price must be positive";
+
+        if (rejectReason) {
+            std::fprintf(stderr, "[App] Rejected clOrdID=%.*s: %s\n",
+                         static_cast<int>(clOrdId.size()), clOrdId.data(), rejectReason);
+            if (m_session) {
+                m_session->setNowMs(nowMs());
+                ExecutionReportEncoder er;
+                m_session->wrapHeader(er);
+                er.orderID("NONE")
+                  .clOrdID(clOrdId)
+                  .execID("EXEC-REJ")
+                  .execType(ExecType::Rejected)
+                  .ordStatus(OrdStatus::Rejected)
+                  .symbol(symbol.empty() ? std::string_view{"?"} : symbol)
+                  .side(side)
+                  .orderQty(qty)
+                  .leavesQty(0)
+                  .cumQty(0)
+                  .avgPx(fix::utils::FixedDecimal{0})
+                  .transactTime(std::chrono::milliseconds(nowMs()))
+                  .text(rejectReason);
+                m_session->send(er);
+            }
+            return fix::Result::Success;
+        }
 
         if (m_ingress && !m_rawFixBytes.empty()) {
             const std::size_t sz = m_rawFixBytes.size();
@@ -488,6 +663,28 @@ public:
             } else {
                 m_ingress->send(m_rawFixBytes.data(), static_cast<uint16_t>(sz));
             }
+        }
+
+        if (m_session) {
+            m_session->setNowMs(nowMs());
+            ExecutionReportEncoder er;
+            m_session->wrapHeader(er);
+            er.orderID("ORD-0001")
+              .clOrdID(clOrdId)
+              .execID("EXEC-0001")
+              .execType(ExecType::New)
+              .ordStatus(OrdStatus::New)
+              .symbol(symbol)
+              .side(side)
+              .orderQty(qty)
+              .leavesQty(qty)
+              .cumQty(0)
+              .avgPx(fix::utils::FixedDecimal{0});
+            if (priceOpt) er.price(*priceOpt);
+            er.transactTime(std::chrono::milliseconds(nowMs()));
+            m_session->send(er);
+            std::printf("[App] Sent ExecutionReport (New) for clOrdID=%.*s\n",
+                        static_cast<int>(clOrdId.size()), clOrdId.data());
         }
         return fix::Result::Success;
     }
@@ -506,8 +703,6 @@ public:
 //                     which then writes the FIX response to the TCP socket.
 
 // Session only needs a transport; it no longer handles inbound application messages.
-using FixSession = sess::ServerSession<FIXT_1_1, "SEQUENCER", "CLIENT",
-                                       sess::NullStorage, TcpTransport>;
 
 static constexpr std::size_t MAX_RECV_BUF = 1u * 1024u * 1024u;  // 1 MB
 
@@ -515,6 +710,9 @@ struct FixConnection
 {
     int  fd;
     bool m_dead{false};
+    // m_appStore must be declared before session so its address is stable when
+    // CapturingTransport (stored inside session by value) is constructed.
+    std::map<uint32_t, AppRecord>          m_appStore;
     FixSession                             session;
     ClusterIngressHandler                  ingressHandler;
     fix::decoder::PayloadDecoder<FIXT_1_1> decoder;
@@ -523,15 +721,92 @@ struct FixConnection
     FixConnection(int fd_, ClusterIngressSender* ingress)
         : fd(fd_)
         , session(FixSession::Builder{sess::NullStorage{}}
-                      .transport(TcpTransport{fd_})
+                      .transport(CapturingTransport{fd_, &m_appStore})
                       .build())
-        , ingressHandler(ingress, fd_)
+        , ingressHandler(ingress, fd_, &session)
     {
         session.onTcpConnected();
         recvBuf.reserve(8192);
     }
 
     [[nodiscard]] bool isDead() const noexcept { return m_dead; }
+
+    // Handles a ResendRequest from the cluster global stream.
+    //
+    // Walks [begin, limit) using the in-memory app-message store populated by
+    // CapturingTransport.  For each contiguous run of admin seqNums it emits one
+    // SequenceReset GapFill; for each stored app-message seqNum it patches
+    // PossDupFlag=Y + OrigSendingTime into the raw bytes and sends them directly.
+    // The session's outgoing sequence counter is restored to savedNext afterwards.
+    void handleResendRequest(uint32_t begin, uint32_t end, int64_t clusterTs)
+    {
+        session.setNowMs(clusterTs);
+        if (!session.isActive()) return;
+
+        const uint32_t savedNext = session.nextOutgoingSeqNum();
+        const uint32_t limit     = (end == 0 || end + 1 >= savedNext)
+                                   ? savedNext : end + 1;
+
+        std::printf("[Resend] fd=%d begin=%u end=%u limit=%u store=%zu\n",
+                    fd, begin, end, limit, m_appStore.size());
+
+        uint32_t gapStart = 0;
+
+        for (uint32_t seq = begin; seq < limit; ++seq)
+        {
+            const auto it = m_appStore.find(seq);
+
+            if (it == m_appStore.end())
+            {
+                // Admin message — accumulate into the current gap range
+                if (gapStart == 0) gapStart = seq;
+            }
+            else
+            {
+                // App message — flush any pending gap-fill first
+                if (gapStart != 0)
+                {
+                    std::printf("[Resend] fd=%d GapFill [%u, %u)\n", fd, gapStart, seq);
+                    session.sendGapFill(gapStart, seq, clusterTs);
+                    gapStart = 0;
+                }
+
+                // Patch PossDupFlag + OrigSendingTime into a copy and send raw
+                std::vector<uint8_t> patched = it->second.fixBytes;
+                patchResendFlags(patched);
+
+                std::printf("[Resend] fd=%d AppMsg seq=%u bytes=%zu\n",
+                            fd, seq, patched.size());
+
+                std::size_t sent = 0;
+                while (sent < patched.size())
+                {
+                    const ssize_t n = ::send(fd, patched.data() + sent,
+                                             patched.size() - sent, MSG_NOSIGNAL);
+                    if (n < 0)
+                    {
+                        if (errno == EINTR) continue;
+                        std::fprintf(stderr, "[Resend] fd=%d send failed: %s\n",
+                                     fd, std::strerror(errno));
+                        break;
+                    }
+                    sent += static_cast<std::size_t>(n);
+                }
+
+                session.setNextOutgoingSeqNum(seq + 1);
+            }
+        }
+
+        // Flush any trailing admin gap
+        if (gapStart != 0)
+        {
+            std::printf("[Resend] fd=%d GapFill [%u, %u)\n", fd, gapStart, limit);
+            session.sendGapFill(gapStart, limit, clusterTs);
+        }
+
+        // Restore the outgoing counter (matters when end < savedNext)
+        session.setNextOutgoingSeqNum(savedNext);
+    }
 
     // TCP receive: forward every complete FIX message to the cluster as SBE.
     void onRecv(const uint8_t* data, std::size_t len)
@@ -608,8 +883,7 @@ struct FixConnection
             sbesess::ResendRequest msg;
             msg.wrapForDecode(const_cast<char*>(sbeBody), sbesess::MessageHeader::encodedLength(),
                               blockLen, version, sbeBodyLen);
-            session.handleClusterResendRequest(msg.beginSeqNo(), msg.endSeqNo(),
-                                               clusterTimestampMs);
+            handleResendRequest(msg.beginSeqNo(), msg.endSeqNo(), clusterTimestampMs);
             break;
         }
         case sbesess::SequenceReset::sbeTemplateId():
