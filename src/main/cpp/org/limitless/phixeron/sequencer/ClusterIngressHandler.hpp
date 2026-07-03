@@ -230,8 +230,7 @@ struct CapturingTransport
     }
 };
 
-using FixSession = sess::ServerSession<cfg::FIXT_1_1, "SEQUENCER", "CLIENT",
-                                       sess::NullStorage, CapturingTransport>;
+using FixSession = sess::ServerSession<cfg::FIXT_1_1, "SEQUENCER", "CLIENT", CapturingTransport>;
 
 // ── ClusterIngressHandler ─────────────────────────────────────────────────────
 

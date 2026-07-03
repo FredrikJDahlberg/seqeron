@@ -371,7 +371,7 @@ protected:
 
     ClusterIngressSender                        sender_;
     FakeIngressTransport*                        ingress_{nullptr};
-    FixSession session_{FixSession::Builder{sess::NullStorage{}}
+    FixSession session_{FixSession::Builder{}
                              .transport(CapturingTransport{-1, &sender_, CONN_ID})
                              .build()};
     ClusterIngressHandler                        handler_{&sender_, CONN_ID, &session_};

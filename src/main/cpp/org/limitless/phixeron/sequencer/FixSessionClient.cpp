@@ -253,7 +253,7 @@ struct FixConnection
     FixConnection(int fd_, ClusterIngressSender* ingress, ArchiveResendContext* archiveCtx_)
         : fd(fd_)
         , archiveCtx(archiveCtx_)
-        , session(FixSession::Builder{sess::NullStorage{}}
+        , session(FixSession::Builder{}
                       .transport(CapturingTransport{fd_, ingress, fd_})
                       .build())
         , ingressHandler(ingress, fd_, &session)
