@@ -2,15 +2,14 @@
 <!--
     SBE schema for client → sequencer ingress messages, before sequencing.
 
-    Union of every sbe-session.xml (admin) and sbe-application.xml (FIX
-    application) message, each carrying one additional field the sequencer
-    needs before it can stamp and republish the message as the matching
-    sbe-sequenced.xml message:
+    Union of every FIX admin and application message, each carrying one
+    additional field the sequencer needs before it can stamp and republish
+    the message as the matching sbe-sequenced.xml message:
         header — composite of sourceId (TCP connection id at the FIX
                  gateway; routes the reply) and sessionId (Aeron Cluster
                  client session id of the submitting connection)
-    Field/type definitions and IDs are otherwise copied verbatim from
-    sbe-session.xml / sbe-application.xml; keep all three files in lock-step.
+    Field/type definitions and IDs otherwise mirror the FIX wire format
+    directly (see fix-session.xml / fix-application.xml).
 
     Also carries two non-FIX lifecycle messages, ClientConnected and
     ClientDisconnected, marking when a TCP connection opens/closes at the
