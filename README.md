@@ -39,6 +39,7 @@ Convenience scripts live under `src/main/scripts/`:
 |--------|---------|
 | `start-cluster.sh [debug\|release]` | Start the single-node cluster (`SequencerNode`, `aeronmd`, `FixSessionClient`, `OrderExecClient`) in the background; Ctrl-C stops all of them |
 | `stop-cluster.sh` | Stop all cluster processes started by `start-cluster.sh` |
+| `three-node-cluster.sh [debug\|release]` | Start a local 3-node Raft cluster plus one `FixSessionClient`/`OrderExecClient`, run `fix_test_server` against it once, then tear everything down and exit with its pass/fail status |
 | `fix-test-server.sh [debug\|release] [host [port]]` | Run a single FIX session (Logon → Heartbeat → NewOrderSingle → Logout) against a live `FixSessionClient` gateway |
 | `logprint.sh <spec.sbeir> <archive-dir>` | Dump an Aeron Archive recording as JSON (see [Log printer](#log-printer)) |
 | `purgelog.sh [--force]` | Delete archive/cluster directories under `$TMPDIR/phixeron-seq` and the `logs/` directory; cluster must be stopped first |
