@@ -195,6 +195,34 @@ Or via Gradle directly:
 
 ---
 
+## Risk engine cluster client
+
+`org.limitless.phixeron.risk.RiskEngineClient` is an Aeron Cluster client that replays the
+global stream to track each account's positions (from `NewOrderSingle` + `ExecutionReport`
+fills), answers `PortfolioQueryRequest`s with a risk assessment from a mocked external risk
+engine, and submits the `PortfolioQueryReply` back to cluster ingress. The mock engine is
+synchronous, slow, and only services 5 requests at once (`MockRiskEngine`); queries beyond
+that are throttled by leaving the `PortfolioQueryRequest` fragment unconsumed on the global
+stream until a slot frees up, rather than blocking or dropping them.
+
+```bash
+./gradlew uberJar
+java \
+  --add-opens=java.base/sun.nio.ch=ALL-UNNAMED \
+  --add-opens=java.base/java.lang=ALL-UNNAMED \
+  --add-opens=java.base/java.lang.reflect=ALL-UNNAMED \
+  --add-opens=java.base/jdk.internal.misc=ALL-UNNAMED \
+  -cp build/libs/phixeron-0.1.0-uber.jar org.limitless.phixeron.risk.RiskEngineClient
+# [RiskEngineClient] Connected — replaying global stream from position 0
+# [RiskEngineClient] Running — Ctrl-C to stop
+# [RiskEngineClient] Caught up — now processing live traffic
+```
+
+Connects to the single-node sequencer defaults (archive on `localhost:9301`, cluster ingress
+on `localhost:9302`) — start the sequencer node first (see [Sequencer](#sequencer)).
+
+---
+
 ## FIX TCP test client
 
 `src/test/cpp/org/limitless/phixeron/session/FixTestServer.cpp` connects to the
@@ -203,8 +231,13 @@ using the simdfix `ClientSession` and generated message encoders:
 
 1. **Logon** — negotiates the session (EncryptMethod=None, HeartbeatInterval=30 s)
 2. **Heartbeat** — verifies the session is active
-3. **NewOrderSingle** — sends a limit Buy order (ClOrdID=ORD-0001, AAPL, 100 @ 150.00)
+3. **NewOrderSingle** — sends a limit Buy order (Account=ACC1, ClOrdID=ORD-0001, AAPL, 100 @ 150.00)
 4. **Logout** — tears the session down cleanly
+5. **Risk engine query test** — since there is no downstream matching engine, submits a
+   synthetic Trade `ExecutionReport` and a `PortfolioQueryRequest` directly to cluster
+   ingress (bypassing the FIX/TCP gateway — see
+   [risk engine cluster client](#risk-engine-cluster-client)) and prints the resulting
+   `PortfolioQueryReply`. Requires `aeronmd` and the risk engine client to be running.
 
 ```
 SenderCompID = CLIENT
@@ -224,26 +257,41 @@ java \
   -jar build/libs/phixeron-0.1.0-uber.jar
 ```
 
-**2. Start the FIX gateway** (separate terminal):
+**2. Start `aeronmd`** (separate terminal) — the C++ clients below need a media driver of
+their own, since (unlike `SequencerNode`) they don't embed one:
+```bash
+AERON_DIR="${TMPDIR}aeron-$(whoami)" ./cmake-build-release/_deps/aeron-build/binaries/aeronmd
+```
+
+**3. Start the FIX gateway** (separate terminal):
 ```bash
 cmake --build cmake-build-release --target fix_session_client
-./cmake-build-release/fix_session_client
+AERON_DIR="${TMPDIR}aeron-$(whoami)" ./cmake-build-release/fix_session_client
 # [TCP] Listening on port 9000
 # [FixSessionClient] Caught up — following live stream
 ```
 
-**3. Build and run the test client** (separate terminal):
+**4. Start the risk engine client** (separate terminal — see
+[Risk engine cluster client](#risk-engine-cluster-client)), needed for step 5 below.
+
+**5. Build and run the test client** (separate terminal):
 ```bash
 cmake --build cmake-build-release --target fix_test_server
-./cmake-build-release/fix_test_server
+AERON_DIR="${TMPDIR}aeron-$(whoami)" ./cmake-build-release/fix_test_server
 # [FixTestServer] Connecting to 127.0.0.1:9000
 # [FixTestServer] Connected
 # [FixTestServer] Sent  Logon          seq=1
 # [FixTestServer] Recv  8=FIXT.1.1|9=...|35=A|49=SEQUENCER|56=CLIENT|...
 # [FixTestServer] Sent  Heartbeat      seq=2
-# [FixTestServer] Sent  NewOrderSingle seq=3  ClOrdID=ORD-0001  AAPL Buy 100 @ 150.00
-# [FixTestServer] Sent  Logout         seq=4
+# [FixTestServer] Sent  NewOrderSingle seq=3  Account=ACC1  ClOrdID=ORD-0001  AAPL Buy 100 @ 150.00
+# [FixTestServer] Recv  8=FIXT.1.1|9=...|35=8|...                       (ExecutionReport ack)
+# ...
+# [FixTestServer] Sent  Logout         seq=6
 # [FixTestServer] Recv  8=FIXT.1.1|9=...|35=5|...
+# [FixTestServer] Starting risk engine query test
+# [FixTestServer] Sent  ExecutionReport (Trade fill)  clOrdID=ORD-0001 [direct cluster ingress]
+# [FixTestServer] Sent  PortfolioQueryRequest  account=ACC1 correlationId=777 [direct cluster ingress]
+# [FixTestServer] Recv  PortfolioQueryReply  status=Ok riskScore=15 gross=1500000000000 net=1500000000000 positions=1
 # [FixTestServer] Done.
 ```
 
@@ -251,94 +299,3 @@ Connect to a non-default host or port:
 ```bash
 ./cmake-build-release/fix_test_server 192.168.1.10 9000
 ```
-
----
-
-## HelloWorld cluster examples
-
-Two variants are provided. Both share the same C++ `HelloWorldClient`.
-
-| Variant | Service | What it demonstrates |
-|---------|---------|----------------------|
-| **C++ mock** | `hello_world_service` (C++) | Wire-protocol handshake, no real cluster |
-| **Java cluster** | `HelloWorldServiceNode` (Java) | Full single-node Aeron cluster with `ClusteredService` |
-
----
-
-### Variant A — C++ mock service
-
-The C++ service simulates a single-node cluster over the wire protocol and echoes messages unchanged.
-
-**1. Start the Aeron media driver**
-```bash
-cmake-build-debug/_deps/aeron-build/binaries/aeronmd
-```
-
-**2. Start the C++ service** (separate terminal)
-```bash
-./cmake-build-debug/hello_world_service
-# [Service] Listening on aeron:udp?endpoint=localhost:9010 stream 101
-```
-
-**3. Run the C++ client** (separate terminal)
-```bash
-./cmake-build-debug/hello_world_client
-# [Client] Connected to media driver
-# [Client] Sent SessionConnectRequest
-# [Client] Session opened  sessionId=1  termId=0  leader=0
-# [Client] Sent: Hello, World!
-# [Client] Echo: Hello, World!
-# [Client] Session closed
-```
-
----
-
-### Variant B — Java ClusteredService
-
-`HelloWorldServiceNode` runs a real single-node Aeron cluster (MediaDriver + Archive + ConsensusModule + ClusteredServiceContainer). `HelloWorldClusteredService` transforms each message: upper-cases the payload and prepends the cluster timestamp.
-
-**1. Build the fat jar**
-```bash
-./gradlew uberJar
-```
-
-**2. Start the Java cluster node** (separate terminal)
-```bash
-java \
-  --add-opens=java.base/sun.nio.ch=ALL-UNNAMED \
-  --add-opens=java.base/java.lang=ALL-UNNAMED \
-  --add-opens=java.base/jdk.internal.misc=ALL-UNNAMED \
-  -jar build/libs/phixeron-0.1.0-uber.jar
-# [Node] Starting single-node cluster...
-# [Node] Ingress: aeron:udp?endpoint=localhost:9010
-# [Node] Cluster node started — waiting for clients (Ctrl-C to stop)
-```
-
-The node manages its own embedded media driver — no separate `aeronmd` needed.
-
-**3. Run the C++ client** (separate terminal)
-```bash
-./cmake-build-debug/hello_world_client
-# [Client] Connected to media driver
-# [Client] Sent SessionConnectRequest
-# [Client] Session opened  sessionId=1  termId=0  leader=0
-# [Client] Sent: Hello, World!
-# [Client] Echo: [<timestamp>] HELLO, WORLD!
-# [Client] Session closed
-```
-
-> The Java node and the C++ client each need their own Aeron media driver.
-> The node launches one internally; the client connects to the system default
-> (`aeronmd` or the driver embedded in the node if they share the same Aeron dir).
-> To run them as separate OS processes, start `aeronmd` first and let both attach to it.
-
----
-
-### Channels and streams
-
-| Direction             | Channel                             | Stream |
-|-----------------------|-------------------------------------|--------|
-| Client → Cluster      | `aeron:udp?endpoint=localhost:9010` | 101    |
-| Cluster → Client      | `aeron:udp?endpoint=localhost:9020` | 102    |
-| Archive control       | `aeron:udp?endpoint=localhost:9009` | —      |
-| Consensus (internal)  | `aeron:udp?endpoint=localhost:9011` | —      |

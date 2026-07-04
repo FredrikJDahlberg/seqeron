@@ -145,7 +145,7 @@ public:
             [this](const SequencedEvent& e) { onSequenced(e); },
             /*onConnected=*/nullptr,         // lifecycle events are filtered out
             /*onDisconnected=*/nullptr,
-            [this]() { if (m_onCaughtUp) m_onCaughtUp(); }
+            [this]() { if (m_onCaughtUp) { m_onCaughtUp(); } }
         );
 
         m_globalStream->start(m_aeron, replaySessionId, catchUpPosition, config.replayChannel);
@@ -190,14 +190,15 @@ private:
                 }
             });
 
-        if (activeId < 0 && stoppedId < 0)
+        if (activeId < 0 && stoppedId < 0) {
             throw std::runtime_error(
                 std::string("[ApplicationStreamClient] No global stream recording on ")
                 + GLOBAL_STREAM_CHANNEL);
+        }
 
         if (activeId >= 0) {
             catchUpPos = archive.getRecordingPosition(activeId);
-            if (catchUpPos == aeron::archive::client::NULL_POSITION) catchUpPos = 0;
+            if (catchUpPos == aeron::archive::client::NULL_POSITION) { catchUpPos = 0; }
             return activeId;
         }
 
@@ -209,7 +210,7 @@ private:
 
     void onSequenced(const SequencedEvent& e)
     {
-        if (e.payloadLength == 0 || !m_onMessage) return;
+        if (e.payloadLength == 0 || !m_onMessage) { return; }
 
         m_onMessage(ApplicationEvent{
             .globalSeqNo      = e.globalSeqNo,

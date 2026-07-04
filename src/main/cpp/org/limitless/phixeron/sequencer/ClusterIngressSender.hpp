@@ -239,9 +239,9 @@ public:
     // Must be called regularly (e.g. every duty-cycle iteration) to prevent session timeout.
     void keepAlive()
     {
-        if (!m_ingress || m_clusterSessionId < 0) return;
+        if (!m_ingress || m_clusterSessionId < 0) { return; }
         const std::int64_t now = nowMs();
-        if (now - m_lastKeepAliveMs < KEEP_ALIVE_INTERVAL_MS) return;
+        if (now - m_lastKeepAliveMs < KEEP_ALIVE_INTERVAL_MS) { return; }
         m_lastKeepAliveMs = now;
 
         alignas(16) std::array<std::uint8_t, 64> kaBuf{};
@@ -250,15 +250,16 @@ public:
           .leadershipTermId(m_leadershipTermId)
           .clusterSessionId(m_clusterSessionId);
         if (!m_ingress->offer(std::span<const std::uint8_t>(
-                kaBuf.data(), static_cast<std::size_t>(ka.sbePosition()))))
+                kaBuf.data(), static_cast<std::size_t>(ka.sbePosition())))) {
             std::fprintf(stderr, "[Cluster] keep-alive offer failed\n");
+        }
     }
 
     // Sends a SessionCloseRequest and locally forgets the session. Best-effort:
     // the cluster also expires unresponsive sessions via keep-alive timeout.
     void close()
     {
-        if (!m_ingress || m_clusterSessionId < 0) return;
+        if (!m_ingress || m_clusterSessionId < 0) { return; }
 
         alignas(16) std::array<std::uint8_t, 64> buf{};
         cluster_sbe::SessionCloseRequest req;
@@ -266,8 +267,9 @@ public:
            .leadershipTermId(m_leadershipTermId)
            .clusterSessionId(m_clusterSessionId);
         if (!m_ingress->offer(std::span<const std::uint8_t>(
-                buf.data(), static_cast<std::size_t>(req.sbePosition()))))
+                buf.data(), static_cast<std::size_t>(req.sbePosition())))) {
             std::fprintf(stderr, "[Cluster] close offer failed\n");
+        }
 
         m_clusterSessionId = -1;
     }
@@ -275,7 +277,7 @@ public:
     // Drain cluster egress; calls onAppMessage for each application-layer response.
     void pollEgress(const std::function<void(const std::uint8_t*, std::int32_t)>& onAppMessage)
     {
-        if (!m_egress) return;
+        if (!m_egress) { return; }
         m_egress->poll([this, &onAppMessage](std::span<const std::uint8_t> bytes)
         {
             onFragment(bytes, onAppMessage);
@@ -286,7 +288,7 @@ public:
     // (the Aeron Cluster ingress envelope) and offers it to the cluster.
     void send(const std::uint8_t* bytes, std::uint16_t len)
     {
-        if (!m_ingress || m_clusterSessionId < 0 || len == 0) return;
+        if (!m_ingress || m_clusterSessionId < 0 || len == 0) { return; }
 
         alignas(16) std::array<std::uint8_t, 4096 + 42> buf{};
         cluster_sbe::SessionMessageHeader hdr;
@@ -298,8 +300,9 @@ public:
         std::memcpy(buf.data() + hdrLen, bytes, len);
 
         if (!m_ingress->offer(std::span<const std::uint8_t>(
-                buf.data(), static_cast<std::size_t>(hdrLen) + len)))
+                buf.data(), static_cast<std::size_t>(hdrLen) + len))) {
             std::fprintf(stderr, "[Cluster] ingress offer failed\n");
+        }
     }
 
 private:
@@ -308,7 +311,7 @@ private:
     void onFragment(std::span<const std::uint8_t> bytes,
                      const std::function<void(const std::uint8_t*, std::int32_t)>& onAppMessage)
     {
-        if (bytes.size() < cluster_sbe::MessageHeader::encodedLength()) return;
+        if (bytes.size() < cluster_sbe::MessageHeader::encodedLength()) { return; }
         cluster_sbe::MessageHeader hdr;
         hdr.wrap(reinterpret_cast<char*>(const_cast<std::uint8_t*>(bytes.data())), 0, 0, bytes.size());
 
@@ -322,11 +325,11 @@ private:
             std::printf("[Cluster] New leader  termId=%" PRId64 "\n", m_leadershipTermId);
             return;
         }
-        if (hdr.templateId() != cluster_sbe::SessionMessageHeader::sbeTemplateId()) return;
+        if (hdr.templateId() != cluster_sbe::SessionMessageHeader::sbeTemplateId()) { return; }
 
         const std::size_t appOff = cluster_sbe::MessageHeader::encodedLength()
                                   + static_cast<std::size_t>(hdr.blockLength());
-        if (bytes.size() <= appOff) return;
+        if (bytes.size() <= appOff) { return; }
         onAppMessage(bytes.data() + appOff, static_cast<std::int32_t>(bytes.size() - appOff));
     }
 

@@ -32,7 +32,7 @@
 #include "org_limitless_phixeron_sbe_sequenced/NewOrderSingle.h"
 
 using namespace org::limitless::phixeron::sequencer;
-namespace sbeseq = org::limitless::phixeron::sbe::sequenced;
+namespace seq = org::limitless::phixeron::sbe::sequenced;
 
 static std::atomic<bool> g_running{true};
 static void sigintHandler(int) { g_running = false; }
@@ -42,7 +42,7 @@ static double toPrice(const std::int64_t mantissa)
     return static_cast<double>(mantissa) / 100000000.0;
 }
 
-static void printExecutionReport(sbeseq::ExecutionReport& m)
+static void printExecutionReport(seq::ExecutionReport& m)
 {
     std::printf("  ExecutionReport sourceId=%d sessionId=%" PRId64
                 " orderID=%s clOrdID=%s execID=%s execType=%s"
@@ -51,24 +51,24 @@ static void printExecutionReport(sbeseq::ExecutionReport& m)
                 m.getOrderIDAsString().c_str(),
                 m.getClOrdIDAsString().c_str(),
                 m.getExecIDAsString().c_str(),
-                sbeseq::ExecType::c_str(m.execType()),
-                sbeseq::OrdStatus::c_str(m.ordStatus()),
+                seq::ExecType::c_str(m.execType()),
+                seq::OrdStatus::c_str(m.ordStatus()),
                 m.getSymbolAsString().c_str(),
-                sbeseq::Side::c_str(m.side()),
+                seq::Side::c_str(m.side()),
                 m.leavesQty(),
                 m.cumQty(),
                 toPrice(m.avgPx()));
 }
 
-static void printNewOrderSingle(sbeseq::NewOrderSingle& m)
+static void printNewOrderSingle(seq::NewOrderSingle& m)
 {
     std::printf("  NewOrderSingle sourceId=%d sessionId=%" PRId64
                 " clOrdID=%s symbol=%s side=%s ordType=%s orderQty=%u\n",
                 m.header().sourceId(), m.header().sessionId(),
                 m.getClOrdIDAsString().c_str(),
                 m.getSymbolAsString().c_str(),
-                sbeseq::Side::c_str(m.side()),
-                sbeseq::OrdType::c_str(m.ordType()),
+                seq::Side::c_str(m.side()),
+                seq::OrdType::c_str(m.ordType()),
                 m.orderQty());
 }
 
@@ -78,7 +78,7 @@ static void printNewOrderSingle(sbeseq::NewOrderSingle& m)
 // are reported but not decoded — this stream is application-focused.
 static void decodeApplicationPayload(const ApplicationEvent& e)
 {
-    if (e.payloadLength < sbeseq::MessageHeader::encodedLength()) {
+    if (e.payloadLength < seq::MessageHeader::encodedLength()) {
         std::printf("  (payload too short for SBE header: %" PRIu64 " bytes)\n",
                     e.payloadLength);
         return;
@@ -86,28 +86,28 @@ static void decodeApplicationPayload(const ApplicationEvent& e)
 
     auto* buffer = const_cast<char*>(reinterpret_cast<const char*>(e.payload));
 
-    sbeseq::MessageHeader header;
-    header.wrap(buffer, 0, sbeseq::MessageHeader::sbeSchemaVersion(), e.payloadLength);
+    seq::MessageHeader header;
+    header.wrap(buffer, 0, seq::MessageHeader::sbeSchemaVersion(), e.payloadLength);
 
-    if (header.schemaId() != sbeseq::MessageHeader::sbeSchemaId()) {
+    if (header.schemaId() != seq::MessageHeader::sbeSchemaId()) {
         std::printf("  (not a sbe-sequenced payload: schemaId=%u)\n", header.schemaId());
         return;
     }
 
     switch (header.templateId())
     {
-    case sbeseq::ExecutionReport::sbeTemplateId():
+    case seq::ExecutionReport::sbeTemplateId():
     {
-        sbeseq::ExecutionReport msg;
-        msg.wrapForDecode(buffer, sbeseq::MessageHeader::encodedLength(),
+        seq::ExecutionReport msg;
+        msg.wrapForDecode(buffer, seq::MessageHeader::encodedLength(),
                           header.blockLength(), header.version(), e.payloadLength);
         printExecutionReport(msg);
         break;
     }
-    case sbeseq::NewOrderSingle::sbeTemplateId():
+    case seq::NewOrderSingle::sbeTemplateId():
     {
-        sbeseq::NewOrderSingle msg;
-        msg.wrapForDecode(buffer, sbeseq::MessageHeader::encodedLength(),
+        seq::NewOrderSingle msg;
+        msg.wrapForDecode(buffer, seq::MessageHeader::encodedLength(),
                           header.blockLength(), header.version(), e.payloadLength);
         printNewOrderSingle(msg);
         break;

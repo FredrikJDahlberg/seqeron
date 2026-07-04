@@ -53,7 +53,7 @@ namespace fix      = org::limitless::fix;
 namespace sess     = org::limitless::phixeron::session;
 namespace msg      = fix::generated::messages;
 namespace cfg      = fix::generated::config;
-namespace sbeunseq = org::limitless::phixeron::sbe::unsequenced;
+namespace usq = org::limitless::phixeron::sbe::unsequenced;
 
 // ── FIX byte-level helpers ────────────────────────────────────────────────────
 
@@ -68,7 +68,7 @@ inline std::size_t findFixMessageEnd(std::span<const std::uint8_t> buf)
             && buf[i] == '1' && buf[i + 1] == '0' && buf[i + 2] == '=')
         {
             for (std::size_t j = i + 3; j < buf.size(); ++j) {
-                if (buf[j] == '\x01') return j + 1;
+                if (buf[j] == '\x01') { return j + 1; }
             }
         }
     }
@@ -79,13 +79,14 @@ inline std::size_t findFixMessageEnd(std::span<const std::uint8_t> buf)
 inline std::size_t fixFindTag(const std::uint8_t* data, std::size_t len, std::string_view tag)
 {
     const std::size_t tlen = tag.size();
-    if (len < tlen + 1) return std::string::npos;
+    if (len < tlen + 1) { return std::string::npos; }
     for (std::size_t i = 0; i + tlen + 1 <= len; ++i)
     {
         if ((i == 0 || data[i - 1] == '\x01')
             && std::memcmp(data + i, tag.data(), tlen) == 0
-            && data[i + tlen] == '=')
+            && data[i + tlen] == '=') {
             return i;
+        }
     }
     return std::string::npos;
 }
@@ -96,10 +97,10 @@ inline std::pair<std::size_t, std::size_t>
 fixTagRange(const std::uint8_t* data, std::size_t len, std::string_view tag)
 {
     const std::size_t pos = fixFindTag(data, len, tag);
-    if (pos == std::string::npos) return {std::string::npos, std::string::npos};
+    if (pos == std::string::npos) { return {std::string::npos, std::string::npos}; }
     const std::size_t vs = pos + tag.size() + 1;
     std::size_t ve = vs;
-    while (ve < len && data[ve] != '\x01') ++ve;
+    while (ve < len && data[ve] != '\x01') { ++ve; }
     return {vs, ve};
 }
 
@@ -111,7 +112,7 @@ inline void patchResendFlags(std::vector<std::uint8_t>& msg)
 {
     // ── 1. Extract SendingTime value and build the insertion string ────────────
     const auto [t52s, t52e] = fixTagRange(msg.data(), msg.size(), "52");
-    if (t52s == std::string::npos) return;
+    if (t52s == std::string::npos) { return; }
 
     std::string ins;
     ins.reserve(32);
@@ -128,10 +129,10 @@ inline void patchResendFlags(std::vector<std::uint8_t>& msg)
     // ── 2. Update BodyLength (tag 9) ─────────────────────────────────────────
     {
         const auto [t9s, t9e] = fixTagRange(msg.data(), msg.size(), "9");
-        if (t9s == std::string::npos) return;
+        if (t9s == std::string::npos) { return; }
 
         std::uint32_t bodyLen = 0;
-        for (std::size_t i = t9s; i < t9e; ++i) bodyLen = bodyLen * 10 + (msg[i] - '0');
+        for (std::size_t i = t9s; i < t9e; ++i) { bodyLen = bodyLen * 10 + (msg[i] - '0'); }
         const std::uint32_t newBodyLen = bodyLen + static_cast<std::uint32_t>(ins.size());
 
         const std::size_t oldDigits = t9e - t9s;
@@ -148,20 +149,21 @@ inline void patchResendFlags(std::vector<std::uint8_t>& msg)
     // ── 3. Recalculate CheckSum (tag 10) ─────────────────────────────────────
     {
         const std::size_t t10pos = fixFindTag(msg.data(), msg.size(), "10");
-        if (t10pos == std::string::npos) return;
+        if (t10pos == std::string::npos) { return; }
 
         std::uint32_t sum = 0;
-        for (std::size_t i = 0; i < t10pos; ++i) sum += msg[i];
+        for (std::size_t i = 0; i < t10pos; ++i) { sum += msg[i]; }
         sum %= 256;
 
         const auto [t10s, t10e] = fixTagRange(msg.data(), msg.size(), "10");
-        if (t10s == std::string::npos) return;
+        if (t10s == std::string::npos) { return; }
 
         char chk[4];
         std::snprintf(chk, sizeof(chk), "%03u", sum);
         // FIX standard: CheckSum is always exactly 3 digits
-        if (t10e - t10s == 3)
+        if (t10e - t10s == 3) {
             std::memcpy(msg.data() + t10s, chk, 3);
+        }
     }
 }
 
@@ -171,14 +173,14 @@ inline void patchResendFlags(std::vector<std::uint8_t>& msg)
 // FixConnection::handleResendRequest and FixConnection's ExecutionReport delivery.
 inline void sendRaw(int fd, const std::uint8_t* data, std::size_t len)
 {
-    if (fd < 0 || len == 0) return;
+    if (fd < 0 || len == 0) { return; }
     std::size_t sent = 0;
     while (sent < len)
     {
         const ssize_t n = ::send(fd, data + sent, len - sent, MSG_NOSIGNAL);
         if (n < 0)
         {
-            if (errno == EINTR) continue;
+            if (errno == EINTR) { continue; }
             std::fprintf(stderr, "[TcpTransport] send fd=%d failed: %s\n",
                          fd, std::strerror(errno));
             return;
@@ -216,53 +218,53 @@ using FixSession = sess::ServerSession<cfg::FIXT_1_1, "SEQUENCER", "CLIENT", Cap
 // Both enum sets mirror the same FIX values by construction (see
 // fix-application.xml / sbe-unsequenced.xml), so these are straight 1:1 maps.
 
-inline sbeunseq::Side::Value toSbeSide(msg::Side v)
+inline usq::Side::Value toSbeSide(msg::Side v)
 {
     switch (v) {
-        case msg::Side::Buy:       return sbeunseq::Side::Value::Buy;
-        case msg::Side::Sell:      return sbeunseq::Side::Value::Sell;
-        case msg::Side::BuyMinus:  return sbeunseq::Side::Value::BuyMinus;
-        case msg::Side::SellPlus:  return sbeunseq::Side::Value::SellPlus;
-        case msg::Side::SellShort: return sbeunseq::Side::Value::SellShort;
+        case msg::Side::Buy:       return usq::Side::Value::Buy;
+        case msg::Side::Sell:      return usq::Side::Value::Sell;
+        case msg::Side::BuyMinus:  return usq::Side::Value::BuyMinus;
+        case msg::Side::SellPlus:  return usq::Side::Value::SellPlus;
+        case msg::Side::SellShort: return usq::Side::Value::SellShort;
         case msg::Side::Null:      break;
     }
-    return sbeunseq::Side::Value::Buy;
+    return usq::Side::Value::Buy;
 }
 
-inline sbeunseq::OrdType::Value toSbeOrdType(msg::OrdType v)
+inline usq::OrdType::Value toSbeOrdType(msg::OrdType v)
 {
     switch (v) {
-        case msg::OrdType::Market:    return sbeunseq::OrdType::Value::Market;
-        case msg::OrdType::Limit:     return sbeunseq::OrdType::Value::Limit;
-        case msg::OrdType::Stop:      return sbeunseq::OrdType::Value::Stop;
-        case msg::OrdType::StopLimit: return sbeunseq::OrdType::Value::StopLimit;
+        case msg::OrdType::Market:    return usq::OrdType::Value::Market;
+        case msg::OrdType::Limit:     return usq::OrdType::Value::Limit;
+        case msg::OrdType::Stop:      return usq::OrdType::Value::Stop;
+        case msg::OrdType::StopLimit: return usq::OrdType::Value::StopLimit;
         case msg::OrdType::Null:      break;
     }
-    return sbeunseq::OrdType::Value::Market;
+    return usq::OrdType::Value::Market;
 }
 
-inline sbeunseq::HandlInst::Value toSbeHandlInst(msg::HandlInst v)
+inline usq::HandlInst::Value toSbeHandlInst(msg::HandlInst v)
 {
     switch (v) {
-        case msg::HandlInst::AutoPrivate: return sbeunseq::HandlInst::Value::AutoPrivate;
-        case msg::HandlInst::AutoPublic:  return sbeunseq::HandlInst::Value::AutoPublic;
-        case msg::HandlInst::Manual:      return sbeunseq::HandlInst::Value::Manual;
+        case msg::HandlInst::AutoPrivate: return usq::HandlInst::Value::AutoPrivate;
+        case msg::HandlInst::AutoPublic:  return usq::HandlInst::Value::AutoPublic;
+        case msg::HandlInst::Manual:      return usq::HandlInst::Value::Manual;
         case msg::HandlInst::Null:        break;
     }
-    return sbeunseq::HandlInst::Value::AutoPrivate;
+    return usq::HandlInst::Value::AutoPrivate;
 }
 
-inline sbeunseq::TimeInForce::Value toSbeTimeInForce(msg::TimeInForce v)
+inline usq::TimeInForce::Value toSbeTimeInForce(msg::TimeInForce v)
 {
     switch (v) {
-        case msg::TimeInForce::Day:              return sbeunseq::TimeInForce::Value::Day;
-        case msg::TimeInForce::GoodTillCancel:    return sbeunseq::TimeInForce::Value::GoodTillCancel;
-        case msg::TimeInForce::AtTheOpening:      return sbeunseq::TimeInForce::Value::AtTheOpening;
-        case msg::TimeInForce::ImmediateOrCancel: return sbeunseq::TimeInForce::Value::ImmediateOrCancel;
-        case msg::TimeInForce::FillOrKill:        return sbeunseq::TimeInForce::Value::FillOrKill;
+        case msg::TimeInForce::Day:              return usq::TimeInForce::Value::Day;
+        case msg::TimeInForce::GoodTillCancel:    return usq::TimeInForce::Value::GoodTillCancel;
+        case msg::TimeInForce::AtTheOpening:      return usq::TimeInForce::Value::AtTheOpening;
+        case msg::TimeInForce::ImmediateOrCancel: return usq::TimeInForce::Value::ImmediateOrCancel;
+        case msg::TimeInForce::FillOrKill:        return usq::TimeInForce::Value::FillOrKill;
         case msg::TimeInForce::Null:              break;
     }
-    return sbeunseq::TimeInForce::Value::Day;
+    return usq::TimeInForce::Value::Day;
 }
 
 // ── ClusterIngressHandler ─────────────────────────────────────────────────────
@@ -287,7 +289,7 @@ class ClusterIngressHandler : public msg::FixMessageHandler<ClusterIngressHandle
     template <typename SbeMsg>
     void sendUnsequenced(SbeMsg& msg)
     {
-        if (!m_ingress) return;
+        if (!m_ingress) { return; }
         m_ingress->send(m_sbeBuf.data(), static_cast<std::uint16_t>(msg.sbePosition()));
     }
 
@@ -305,12 +307,12 @@ public:
         const std::uint32_t hbSecs = logon.heartbeatInterval().value_or(30u);
         std::printf("[Ingress] Logon from fd=%d hbSecs=%u → encoding sbe-unsequenced\n",
                     m_connectionId, hbSecs);
-        sbeunseq::Logon m;
+        usq::Logon m;
         m.wrapAndApplyHeader(sbeBufBody(), 0, sbeBufLen());
         m.header().sourceId(m_connectionId).sessionId(m_ingress ? m_ingress->clusterSessionId() : -1);
         m.putSender(static_cast<const char*>("CLIENT  ")).putTarget(static_cast<const char*>("SEQNCR  "))
          .seqNum(0).sendingTimeMs(nowMs())
-         .encryptMethod(sbeunseq::EncryptMethod::Value::None)
+         .encryptMethod(usq::EncryptMethod::Value::None)
          .heartbeatInterval(hbSecs)
          .putXmlData(nullptr, 0);
         sendUnsequenced(m);
@@ -321,7 +323,7 @@ public:
 
     fix::Result handle(msg::LogoutDecoder& /*logout*/)
     {
-        sbeunseq::Logout m;
+        usq::Logout m;
         m.wrapAndApplyHeader(sbeBufBody(), 0, sbeBufLen());
         m.header().sourceId(m_connectionId).sessionId(m_ingress ? m_ingress->clusterSessionId() : -1);
         m.putSender(static_cast<const char*>("CLIENT  ")).putTarget(static_cast<const char*>("SEQNCR  "))
@@ -333,7 +335,7 @@ public:
 
     fix::Result handle(msg::HeartbeatDecoder& heartbeat)
     {
-        sbeunseq::Heartbeat m;
+        usq::Heartbeat m;
         m.wrapAndApplyHeader(sbeBufBody(), 0, sbeBufLen());
         m.header().sourceId(m_connectionId).sessionId(m_ingress ? m_ingress->clusterSessionId() : -1);
         m.putSender(static_cast<const char*>("CLIENT  ")).putTarget(static_cast<const char*>("SEQNCR  "))
@@ -342,7 +344,7 @@ public:
             const auto sv = *id;
             const std::size_t n = std::min(sv.size(), static_cast<std::size_t>(32));
             std::memcpy(m.testReqID(), sv.data(), n);
-            if (n < 32) m.testReqID()[n] = '\0';
+            if (n < 32) { m.testReqID()[n] = '\0'; }
         } else {
             m.testReqID()[0] = '\0';
         }
@@ -352,7 +354,7 @@ public:
 
     fix::Result handle(msg::TestRequestDecoder& testRequest)
     {
-        sbeunseq::TestRequest m;
+        usq::TestRequest m;
         m.wrapAndApplyHeader(sbeBufBody(), 0, sbeBufLen());
         m.header().sourceId(m_connectionId).sessionId(m_ingress ? m_ingress->clusterSessionId() : -1);
         m.putSender(static_cast<const char*>("CLIENT  ")).putTarget(static_cast<const char*>("SEQNCR  "))
@@ -361,7 +363,7 @@ public:
             const auto sv = *id;
             const std::size_t n = std::min(sv.size(), static_cast<std::size_t>(32));
             std::memcpy(m.testReqID(), sv.data(), n);
-            if (n < 32) m.testReqID()[n] = '\0';
+            if (n < 32) { m.testReqID()[n] = '\0'; }
         } else {
             m.testReqID()[0] = '\0';
         }
@@ -371,7 +373,7 @@ public:
 
     fix::Result handle(msg::ResendRequestDecoder& rr)
     {
-        sbeunseq::ResendRequest m;
+        usq::ResendRequest m;
         m.wrapAndApplyHeader(sbeBufBody(), 0, sbeBufLen());
         m.header().sourceId(m_connectionId).sessionId(m_ingress ? m_ingress->clusterSessionId() : -1);
         m.putSender(static_cast<const char*>("CLIENT  ")).putTarget(static_cast<const char*>("SEQNCR  "))
@@ -384,12 +386,12 @@ public:
 
     fix::Result handle(msg::SequenceResetDecoder& sr)
     {
-        sbeunseq::SequenceReset m;
+        usq::SequenceReset m;
         m.wrapAndApplyHeader(sbeBufBody(), 0, sbeBufLen());
         m.header().sourceId(m_connectionId).sessionId(m_ingress ? m_ingress->clusterSessionId() : -1);
         m.putSender(static_cast<const char*>("CLIENT  ")).putTarget(static_cast<const char*>("SEQNCR  "))
          .seqNum(0).sendingTimeMs(nowMs())
-         .gapFillFlag(sbeunseq::GapFillFlag::Value::NULL_VALUE)
+         .gapFillFlag(usq::GapFillFlag::Value::NULL_VALUE)
          .newSeqNo(sr.newSeqNo().value_or(1u));
         sendUnsequenced(m);
         return fix::Result::Success;
@@ -411,24 +413,25 @@ public:
 
         // Business validation
         const char* rejectReason = nullptr;
-        if (clOrdId.empty())
+        if (clOrdId.empty()) {
             rejectReason = "ClOrdID is empty";
-        else if (symbol.empty())
+        } else if (symbol.empty()) {
             rejectReason = "Symbol is empty";
-        else if (qty == 0)
+        } else if (qty == 0) {
             rejectReason = "OrderQty must be > 0";
-        else if (ordType == msg::OrdType::Limit && !priceOpt)
+        } else if (ordType == msg::OrdType::Limit && !priceOpt) {
             rejectReason = "Price required for Limit order";
-        else if (priceOpt && *priceOpt <= fix::utils::FixedDecimal{0})
+        } else if (priceOpt && *priceOpt <= fix::utils::FixedDecimal{0}) {
             rejectReason = "Price must be positive";
+        }
 
         if (rejectReason) {
             std::fprintf(stderr, "[App] Rejected clOrdID=%.*s: %s\n",
                          static_cast<int>(clOrdId.size()), clOrdId.data(), rejectReason);
             if (m_session) {
                 sendExecutionReport("NONE", clOrdId, "EXEC-REJ",
-                                     sbeunseq::ExecType::Value::Rejected,
-                                     sbeunseq::OrdStatus::Value::Rejected,
+                                     usq::ExecType::Value::Rejected,
+                                     usq::OrdStatus::Value::Rejected,
                                      symbol.empty() ? std::string_view{"?"} : symbol,
                                      toSbeSide(side), qty, /*price*/ nullptr,
                                      /*leavesQty*/ 0, /*cumQty*/ 0, rejectReason);
@@ -437,7 +440,7 @@ public:
         }
 
         if (m_ingress) {
-            sbeunseq::NewOrderSingle m;
+            usq::NewOrderSingle m;
             m.wrapAndApplyHeader(sbeBufBody(), 0, sbeBufLen());
             m.header().sourceId(m_connectionId).sessionId(m_ingress->clusterSessionId());
             m.putSender(static_cast<const char*>("CLIENT  ")).putTarget(static_cast<const char*>("SEQNCR  "))
@@ -450,21 +453,22 @@ public:
             m.transactTime(nos.transactTime().value_or(std::chrono::milliseconds(nowMs())).count());
             m.orderQty(qty);
             m.ordType(toSbeOrdType(ordType));
-            m.price(priceOpt ? priceOpt->mantissa() : sbeunseq::NewOrderSingle::priceNullValue());
-            if (const auto tif = nos.timeInForce())
+            m.price(priceOpt ? priceOpt->mantissa() : usq::NewOrderSingle::priceNullValue());
+            if (const auto tif = nos.timeInForce()) {
                 m.timeInForce(toSbeTimeInForce(*tif));
-            else
-                m.timeInForce(sbeunseq::TimeInForce::Value::NULL_VALUE);
+            } else {
+                m.timeInForce(usq::TimeInForce::Value::NULL_VALUE);
+            }
             m.putText(std::string_view{});
-            m.tradeDate(sbeunseq::NewOrderSingle::tradeDateNullValue());
-            m.maturityTime(sbeunseq::NewOrderSingle::maturityTimeNullValue());
+            m.tradeDate(usq::NewOrderSingle::tradeDateNullValue());
+            m.maturityTime(usq::NewOrderSingle::maturityTimeNullValue());
             sendUnsequenced(m);
         }
 
         if (m_session) {
             sendExecutionReport("ORD-0001", clOrdId, "EXEC-0001",
-                                 sbeunseq::ExecType::Value::New,
-                                 sbeunseq::OrdStatus::Value::New,
+                                 usq::ExecType::Value::New,
+                                 usq::OrdStatus::Value::New,
                                  symbol, toSbeSide(side), qty,
                                  priceOpt ? &*priceOpt : nullptr,
                                  /*leavesQty*/ qty, /*cumQty*/ 0, /*text*/ nullptr);
@@ -480,14 +484,14 @@ private:
     // handle(NewOrderSingleDecoder&) above.
     void sendExecutionReport(std::string_view orderId, std::string_view clOrdId,
                              std::string_view execId,
-                             sbeunseq::ExecType::Value execType,
-                             sbeunseq::OrdStatus::Value ordStatus,
-                             std::string_view symbol, sbeunseq::Side::Value side,
+                             usq::ExecType::Value execType,
+                             usq::OrdStatus::Value ordStatus,
+                             std::string_view symbol, usq::Side::Value side,
                              std::uint32_t orderQty, const fix::utils::FixedDecimal* price,
                              std::uint32_t leavesQty, std::uint32_t cumQty,
                              const char* text)
     {
-        if (!m_ingress || !m_session) return;
+        if (!m_ingress || !m_session) { return; }
 
         // ExecutionReport is the gateway's own outgoing FIX message (unlike
         // admin messages here, whose real reply is built later on the egress
@@ -501,7 +505,7 @@ private:
         const std::uint32_t seq = m_session->nextOutgoingSeqNum();
         m_session->setNextOutgoingSeqNum(seq + 1);
 
-        sbeunseq::ExecutionReport m;
+        usq::ExecutionReport m;
         m.wrapAndApplyHeader(sbeBufBody(), 0, sbeBufLen());
         m.header().sourceId(m_connectionId).sessionId(m_ingress->clusterSessionId());
         m.putSender(static_cast<const char*>("CLIENT  ")).putTarget(static_cast<const char*>("SEQNCR  "))
@@ -514,9 +518,9 @@ private:
         m.putSymbol(symbol);
         m.side(side);
         m.orderQty(orderQty);
-        m.price(price ? price->mantissa() : sbeunseq::ExecutionReport::priceNullValue());
-        m.lastQty(sbeunseq::ExecutionReport::lastQtyNullValue());
-        m.lastPx(sbeunseq::ExecutionReport::lastPxNullValue());
+        m.price(price ? price->mantissa() : usq::ExecutionReport::priceNullValue());
+        m.lastQty(usq::ExecutionReport::lastQtyNullValue());
+        m.lastPx(usq::ExecutionReport::lastPxNullValue());
         m.leavesQty(leavesQty);
         m.cumQty(cumQty);
         m.avgPx(0);

@@ -120,14 +120,14 @@ namespace fix    = org::limitless::fix;
 namespace sess   = org::limitless::phixeron::session;
 namespace msg    = fix::generated::messages;
 namespace cfg    = fix::generated::config;
-namespace seq    = org::limitless::phixeron::sequencer;
-namespace sbeseq = org::limitless::phixeron::sbe::sequenced;
+namespace sequencer = org::limitless::phixeron::sequencer;
+namespace seq = org::limitless::phixeron::sbe::sequenced;
 
 using namespace aeron;
 using namespace aeron::concurrent;
 using namespace fix::generated::config;   // FIXT_1_1, MaxMessageSize, …
 using namespace fix::generated::messages; // FixMessageHandler, LogonDecoder, …
-using seq::nowMs;
+using sequencer::nowMs;
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -142,14 +142,14 @@ static constexpr const char* FIX_REPLAY_CHANNEL        = "aeron:udp?endpoint=loc
 // ClusterIngressHandler now live in ClusterIngressHandler.hpp so they can be
 // unit tested against ClusterIngressSender's in-memory fakes (see
 // ClusterIngressHandlerTest.cpp) without a real media driver or TCP socket.
-using seq::ClusterIngressSender;
-using seq::findFixMessageEnd;
-using seq::fixTagRange;
-using seq::patchResendFlags;
-using seq::sendRaw;
-using seq::CapturingTransport;
-using seq::FixSession;
-using seq::ClusterIngressHandler;
+using sequencer::ClusterIngressSender;
+using sequencer::findFixMessageEnd;
+using sequencer::fixTagRange;
+using sequencer::patchResendFlags;
+using sequencer::sendRaw;
+using sequencer::CapturingTransport;
+using sequencer::FixSession;
+using sequencer::ClusterIngressHandler;
 
 // ── SBE enum → FIX enum mapping (egress: sbe-sequenced.xml → simdfix) ────────
 //
@@ -157,59 +157,59 @@ using seq::ClusterIngressHandler;
 // FIX values by construction (see fix-application.xml / sbe-unsequenced.xml /
 // sbe-sequenced.xml — all three keep identical enum valid values).
 
-static msg::Side fromSbeSide(sbeseq::Side::Value v)
+static msg::Side fromSbeSide(seq::Side::Value v)
 {
     switch (v) {
-        case sbeseq::Side::Value::Buy:       return msg::Side::Buy;
-        case sbeseq::Side::Value::Sell:      return msg::Side::Sell;
-        case sbeseq::Side::Value::BuyMinus:  return msg::Side::BuyMinus;
-        case sbeseq::Side::Value::SellPlus:  return msg::Side::SellPlus;
-        case sbeseq::Side::Value::SellShort: return msg::Side::SellShort;
+        case seq::Side::Value::Buy:       return msg::Side::Buy;
+        case seq::Side::Value::Sell:      return msg::Side::Sell;
+        case seq::Side::Value::BuyMinus:  return msg::Side::BuyMinus;
+        case seq::Side::Value::SellPlus:  return msg::Side::SellPlus;
+        case seq::Side::Value::SellShort: return msg::Side::SellShort;
         default: return msg::Side::Buy;
     }
 }
 
-static msg::ExecType fromSbeExecType(sbeseq::ExecType::Value v)
+static msg::ExecType fromSbeExecType(seq::ExecType::Value v)
 {
     switch (v) {
-        case sbeseq::ExecType::Value::New:            return msg::ExecType::New;
-        case sbeseq::ExecType::Value::DoneForDay:     return msg::ExecType::DoneForDay;
-        case sbeseq::ExecType::Value::Canceled:       return msg::ExecType::Canceled;
-        case sbeseq::ExecType::Value::Replaced:       return msg::ExecType::Replaced;
-        case sbeseq::ExecType::Value::PendingCancel:  return msg::ExecType::PendingCancel;
-        case sbeseq::ExecType::Value::Stopped:        return msg::ExecType::Stopped;
-        case sbeseq::ExecType::Value::Rejected:       return msg::ExecType::Rejected;
-        case sbeseq::ExecType::Value::Suspended:      return msg::ExecType::Suspended;
-        case sbeseq::ExecType::Value::PendingNew:     return msg::ExecType::PendingNew;
-        case sbeseq::ExecType::Value::Calculated:     return msg::ExecType::Calculated;
-        case sbeseq::ExecType::Value::Expired:        return msg::ExecType::Expired;
-        case sbeseq::ExecType::Value::Restated:       return msg::ExecType::Restated;
-        case sbeseq::ExecType::Value::PendingReplace: return msg::ExecType::PendingReplace;
-        case sbeseq::ExecType::Value::Trade:          return msg::ExecType::Trade;
-        case sbeseq::ExecType::Value::TradeCorrect:   return msg::ExecType::TradeCorrect;
-        case sbeseq::ExecType::Value::TradeCancel:    return msg::ExecType::TradeCancel;
-        case sbeseq::ExecType::Value::OrderStatus:    return msg::ExecType::OrderStatus;
+        case seq::ExecType::Value::New:            return msg::ExecType::New;
+        case seq::ExecType::Value::DoneForDay:     return msg::ExecType::DoneForDay;
+        case seq::ExecType::Value::Canceled:       return msg::ExecType::Canceled;
+        case seq::ExecType::Value::Replaced:       return msg::ExecType::Replaced;
+        case seq::ExecType::Value::PendingCancel:  return msg::ExecType::PendingCancel;
+        case seq::ExecType::Value::Stopped:        return msg::ExecType::Stopped;
+        case seq::ExecType::Value::Rejected:       return msg::ExecType::Rejected;
+        case seq::ExecType::Value::Suspended:      return msg::ExecType::Suspended;
+        case seq::ExecType::Value::PendingNew:     return msg::ExecType::PendingNew;
+        case seq::ExecType::Value::Calculated:     return msg::ExecType::Calculated;
+        case seq::ExecType::Value::Expired:        return msg::ExecType::Expired;
+        case seq::ExecType::Value::Restated:       return msg::ExecType::Restated;
+        case seq::ExecType::Value::PendingReplace: return msg::ExecType::PendingReplace;
+        case seq::ExecType::Value::Trade:          return msg::ExecType::Trade;
+        case seq::ExecType::Value::TradeCorrect:   return msg::ExecType::TradeCorrect;
+        case seq::ExecType::Value::TradeCancel:    return msg::ExecType::TradeCancel;
+        case seq::ExecType::Value::OrderStatus:    return msg::ExecType::OrderStatus;
         default: return msg::ExecType::New;
     }
 }
 
-static msg::OrdStatus fromSbeOrdStatus(sbeseq::OrdStatus::Value v)
+static msg::OrdStatus fromSbeOrdStatus(seq::OrdStatus::Value v)
 {
     switch (v) {
-        case sbeseq::OrdStatus::Value::New:             return msg::OrdStatus::New;
-        case sbeseq::OrdStatus::Value::PartiallyFilled: return msg::OrdStatus::PartiallyFilled;
-        case sbeseq::OrdStatus::Value::Filled:          return msg::OrdStatus::Filled;
-        case sbeseq::OrdStatus::Value::DoneForDay:      return msg::OrdStatus::DoneForDay;
-        case sbeseq::OrdStatus::Value::Canceled:        return msg::OrdStatus::Canceled;
-        case sbeseq::OrdStatus::Value::Replaced:        return msg::OrdStatus::Replaced;
-        case sbeseq::OrdStatus::Value::PendingCancel:   return msg::OrdStatus::PendingCancel;
-        case sbeseq::OrdStatus::Value::Stopped:         return msg::OrdStatus::Stopped;
-        case sbeseq::OrdStatus::Value::Rejected:        return msg::OrdStatus::Rejected;
-        case sbeseq::OrdStatus::Value::Suspended:       return msg::OrdStatus::Suspended;
-        case sbeseq::OrdStatus::Value::PendingNew:      return msg::OrdStatus::PendingNew;
-        case sbeseq::OrdStatus::Value::Calculated:      return msg::OrdStatus::Calculated;
-        case sbeseq::OrdStatus::Value::Expired:         return msg::OrdStatus::Expired;
-        case sbeseq::OrdStatus::Value::PendingReplace:  return msg::OrdStatus::PendingReplace;
+        case seq::OrdStatus::Value::New:             return msg::OrdStatus::New;
+        case seq::OrdStatus::Value::PartiallyFilled: return msg::OrdStatus::PartiallyFilled;
+        case seq::OrdStatus::Value::Filled:          return msg::OrdStatus::Filled;
+        case seq::OrdStatus::Value::DoneForDay:      return msg::OrdStatus::DoneForDay;
+        case seq::OrdStatus::Value::Canceled:        return msg::OrdStatus::Canceled;
+        case seq::OrdStatus::Value::Replaced:        return msg::OrdStatus::Replaced;
+        case seq::OrdStatus::Value::PendingCancel:   return msg::OrdStatus::PendingCancel;
+        case seq::OrdStatus::Value::Stopped:         return msg::OrdStatus::Stopped;
+        case seq::OrdStatus::Value::Rejected:        return msg::OrdStatus::Rejected;
+        case seq::OrdStatus::Value::Suspended:       return msg::OrdStatus::Suspended;
+        case seq::OrdStatus::Value::PendingNew:      return msg::OrdStatus::PendingNew;
+        case seq::OrdStatus::Value::Calculated:      return msg::OrdStatus::Calculated;
+        case seq::OrdStatus::Value::Expired:         return msg::OrdStatus::Expired;
+        case seq::OrdStatus::Value::PendingReplace:  return msg::OrdStatus::PendingReplace;
         default: return msg::OrdStatus::New;
     }
 }
@@ -221,7 +221,7 @@ static msg::OrdStatus fromSbeOrdStatus(sbeseq::OrdStatus::Value v)
 // ClusterIngressHandler at TCP-inbound submission time (see
 // ClusterIngressHandler::sendExecutionReport) — this just reproduces that
 // exact, already-assigned message, whether for normal delivery or a resend.
-static std::vector<uint8_t> reencodeExecutionReportToFix(const sbeseq::ExecutionReport& er)
+static std::vector<uint8_t> reencodeExecutionReportToFix(const seq::ExecutionReport& er)
 {
     msg::FixPayloadEncoder<cfg::FIXT_1_1, "CLIENT", "SEQUENCER"> encoder;
     alignas(16) std::array<uint8_t, 512> buf{};
@@ -242,14 +242,18 @@ static std::vector<uint8_t> reencodeExecutionReportToFix(const sbeseq::Execution
        .cumQty(er.cumQty())
        .avgPx(fix::utils::FixedDecimal{er.avgPx()})
        .transactTime(std::chrono::milliseconds(er.transactTime()));
-    if (er.price() != sbeseq::ExecutionReport::priceNullValue())
+    if (er.price() != seq::ExecutionReport::priceNullValue()) {
         enc.price(fix::utils::FixedDecimal{er.price()});
-    if (er.lastQty() != sbeseq::ExecutionReport::lastQtyNullValue())
+    }
+    if (er.lastQty() != seq::ExecutionReport::lastQtyNullValue()) {
         enc.lastQty(er.lastQty());
-    if (er.lastPx() != sbeseq::ExecutionReport::lastPxNullValue())
+    }
+    if (er.lastPx() != seq::ExecutionReport::lastPxNullValue()) {
         enc.lastPx(fix::utils::FixedDecimal{er.lastPx()});
-    if (er.text()[0] != '\0')
+    }
+    if (er.text()[0] != '\0') {
         enc.text(er.getTextAsString());
+    }
 
     const auto len = encoder.encode(enc);
     return std::vector<uint8_t>(buf.data(), buf.data() + len);
@@ -288,36 +292,37 @@ static std::unordered_map<uint32_t, std::vector<uint8_t>> replayMissingAppMessag
     ArchiveResendContext& ctx, int32_t connId, const std::unordered_set<uint32_t>& missing)
 {
     std::unordered_map<uint32_t, std::vector<uint8_t>> found;
-    if (missing.empty() || !ctx.archive) return found;
+    if (missing.empty() || !ctx.archive) { return found; }
 
     try
     {
         const std::int64_t upToPosition = ctx.archive->getRecordingPosition(ctx.recordingId);
-        if (upToPosition <= 0) return found;
+        if (upToPosition <= 0) { return found; }
 
         static constexpr const char* RESEND_REPLAY_CHANNEL = "aeron:udp?endpoint=localhost:9312";
 
         aeron::archive::client::ReplayParams replayParams;
         replayParams.position(0).length(upToPosition);
         const std::int64_t replaySessionId = ctx.archive->startReplay(
-            ctx.recordingId, RESEND_REPLAY_CHANNEL, seq::REPLAY_STREAM_ID, replayParams);
+            ctx.recordingId, RESEND_REPLAY_CHANNEL, sequencer::REPLAY_STREAM_ID, replayParams);
 
         bool done = false;
-        seq::GlobalStreamClient scan(
-            [&](const seq::SequencedEvent& e)
+        sequencer::GlobalStreamClient scan(
+            [&](const sequencer::SequencedEvent& e)
             {
-                if (e.templateId != sbeseq::ExecutionReport::sbeTemplateId()) return;
-                if (e.sourceId != connId) return;
+                if (e.templateId != seq::ExecutionReport::sbeTemplateId()) { return; }
+                if (e.sourceId != connId) { return; }
 
                 const auto* payload = reinterpret_cast<const uint8_t*>(e.payload);
-                sbeseq::ExecutionReport er;
+                seq::ExecutionReport er;
                 er.wrapForDecode(const_cast<char*>(reinterpret_cast<const char*>(payload)),
-                                 sbeseq::MessageHeader::encodedLength(),
+                                 seq::MessageHeader::encodedLength(),
                                  e.blockLength, e.version, e.payloadLength);
                 const uint32_t seqNum = er.seqNum();
 
-                if (missing.contains(seqNum) && !found.contains(seqNum))
+                if (missing.contains(seqNum) && !found.contains(seqNum)) {
                     found.emplace(seqNum, std::vector<uint8_t>(payload, payload + e.payloadLength));
+                }
             },
             nullptr, nullptr,
             [&] { done = true; });
@@ -327,7 +332,7 @@ static std::unordered_map<uint32_t, std::vector<uint8_t>> replayMissingAppMessag
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
         while (!done && found.size() < missing.size() && std::chrono::steady_clock::now() < deadline)
         {
-            if (scan.poll() == 0) std::this_thread::yield();
+            if (scan.poll() == 0) { std::this_thread::yield(); }
         }
     }
     catch (const std::exception& e)
@@ -397,7 +402,7 @@ struct FixConnection
     void handleResendRequest(uint32_t begin, uint32_t end, int64_t clusterTs)
     {
         session.setNowMs(clusterTs);
-        if (!session.isActive()) return;
+        if (!session.isActive()) { return; }
 
         const uint32_t savedNext = session.nextOutgoingSeqNum();
         const uint32_t limit     = (end == 0 || end + 1 >= savedNext)
@@ -407,8 +412,9 @@ struct FixConnection
                     fd, begin, end, limit, m_resendCache.size());
 
         std::unordered_set<uint32_t> missing;
-        for (uint32_t seq = begin; seq < limit; ++seq)
-            if (m_resendCache.get(seq) == nullptr) missing.insert(seq);
+        for (uint32_t seq = begin; seq < limit; ++seq) {
+            if (m_resendCache.get(seq) == nullptr) { missing.insert(seq); }
+        }
 
         std::unordered_map<uint32_t, std::vector<uint8_t>> recovered;
         if (!missing.empty() && archiveCtx)
@@ -440,7 +446,7 @@ struct FixConnection
             {
                 // Neither cache nor archive holds an app message for this
                 // seq — it was an admin message. Accumulate into the gap.
-                if (gapStart == 0) gapStart = seq;
+                if (gapStart == 0) { gapStart = seq; }
                 continue;
             }
 
@@ -454,12 +460,12 @@ struct FixConnection
             // Decode the cached/recovered sbe-sequenced ExecutionReport,
             // re-encode it as FIX text, then patch PossDupFlag +
             // OrigSendingTime into a copy and send raw.
-            sbeseq::MessageHeader hdr;
+            seq::MessageHeader hdr;
             hdr.wrap(reinterpret_cast<char*>(const_cast<uint8_t*>(bytes->data())), 0,
-                     sbeseq::MessageHeader::sbeSchemaVersion(), bytes->size());
-            sbeseq::ExecutionReport er;
+                     seq::MessageHeader::sbeSchemaVersion(), bytes->size());
+            seq::ExecutionReport er;
             er.wrapForDecode(reinterpret_cast<char*>(const_cast<uint8_t*>(bytes->data())),
-                             sbeseq::MessageHeader::encodedLength(),
+                             seq::MessageHeader::encodedLength(),
                              hdr.blockLength(), hdr.version(), bytes->size());
             std::vector<uint8_t> patched = reencodeExecutionReportToFix(er);
             patchResendFlags(patched);
@@ -499,7 +505,7 @@ struct FixConnection
                 recvBuf.data() + consumed, recvBuf.size() - consumed);
 
             const std::size_t msgLen = findFixMessageEnd(remaining);
-            if (msgLen == 0) break;
+            if (msgLen == 0) { break; }
 
             const auto msgSpan = remaining.subspan(0, msgLen);
             ingressHandler.setRawBytes(msgSpan);
@@ -510,9 +516,10 @@ struct FixConnection
             consumed += msgLen;
         }
 
-        if (consumed > 0)
+        if (consumed > 0) {
             recvBuf.erase(recvBuf.begin(),
                           recvBuf.begin() + static_cast<std::ptrdiff_t>(consumed));
+        }
     }
 
     // Global stream: drive session state from decoded SBE admin message with
@@ -524,46 +531,46 @@ struct FixConnection
         session.setNowMs(clusterTimestampMs);
         switch (templateId)
         {
-        case sbeseq::Logon::sbeTemplateId():
+        case seq::Logon::sbeTemplateId():
         {
-            sbeseq::Logon msg;
-            msg.wrapForDecode(const_cast<char*>(sbeBody), sbeseq::MessageHeader::encodedLength(),
+            seq::Logon msg;
+            msg.wrapForDecode(const_cast<char*>(sbeBody), seq::MessageHeader::encodedLength(),
                               blockLen, version, sbeBodyLen);
             session.handleClusterLogon(msg.heartbeatInterval(), clusterTimestampMs);
             break;
         }
-        case sbeseq::Logout::sbeTemplateId():
+        case seq::Logout::sbeTemplateId():
             session.handleClusterLogout(clusterTimestampMs);
             break;
 
-        case sbeseq::Heartbeat::sbeTemplateId():
+        case seq::Heartbeat::sbeTemplateId():
         {
-            sbeseq::Heartbeat msg;
-            msg.wrapForDecode(const_cast<char*>(sbeBody), sbeseq::MessageHeader::encodedLength(),
+            seq::Heartbeat msg;
+            msg.wrapForDecode(const_cast<char*>(sbeBody), seq::MessageHeader::encodedLength(),
                               blockLen, version, sbeBodyLen);
             session.handleClusterHeartbeat(clusterTimestampMs);
             break;
         }
-        case sbeseq::TestRequest::sbeTemplateId():
+        case seq::TestRequest::sbeTemplateId():
         {
-            sbeseq::TestRequest msg;
-            msg.wrapForDecode(const_cast<char*>(sbeBody), sbeseq::MessageHeader::encodedLength(),
+            seq::TestRequest msg;
+            msg.wrapForDecode(const_cast<char*>(sbeBody), seq::MessageHeader::encodedLength(),
                               blockLen, version, sbeBodyLen);
             session.handleClusterTestRequest(msg.testReqID(), clusterTimestampMs);
             break;
         }
-        case sbeseq::ResendRequest::sbeTemplateId():
+        case seq::ResendRequest::sbeTemplateId():
         {
-            sbeseq::ResendRequest msg;
-            msg.wrapForDecode(const_cast<char*>(sbeBody), sbeseq::MessageHeader::encodedLength(),
+            seq::ResendRequest msg;
+            msg.wrapForDecode(const_cast<char*>(sbeBody), seq::MessageHeader::encodedLength(),
                               blockLen, version, sbeBodyLen);
             handleResendRequest(msg.beginSeqNo(), msg.endSeqNo(), clusterTimestampMs);
             break;
         }
-        case sbeseq::SequenceReset::sbeTemplateId():
+        case seq::SequenceReset::sbeTemplateId():
         {
-            sbeseq::SequenceReset msg;
-            msg.wrapForDecode(const_cast<char*>(sbeBody), sbeseq::MessageHeader::encodedLength(),
+            seq::SequenceReset msg;
+            msg.wrapForDecode(const_cast<char*>(sbeBody), seq::MessageHeader::encodedLength(),
                               blockLen, version, sbeBodyLen);
             session.handleClusterSequenceReset(msg.newSeqNo(), clusterTimestampMs);
             break;
@@ -590,11 +597,11 @@ struct FixConnection
     {
         session.setNowMs(clusterTimestampMs);
 
-        sbeseq::ExecutionReport er;
-        er.wrapForDecode(const_cast<char*>(sbeBody), sbeseq::MessageHeader::encodedLength(),
+        seq::ExecutionReport er;
+        er.wrapForDecode(const_cast<char*>(sbeBody), seq::MessageHeader::encodedLength(),
                          blockLen, version, sbeBodyLen);
         const uint32_t seqNum = er.seqNum();
-        if (seqNum == 0) return;
+        if (seqNum == 0) { return; }
 
         m_resendCache.put(seqNum, std::span<const uint8_t>(
             reinterpret_cast<const uint8_t*>(sbeBody), sbeBodyLen));
@@ -612,8 +619,9 @@ public:
     void start(uint16_t port)
     {
         m_listenFd = ::socket(AF_INET, SOCK_STREAM, 0);
-        if (m_listenFd < 0)
+        if (m_listenFd < 0) {
             throw std::runtime_error("socket() failed: " + std::string(std::strerror(errno)));
+        }
 
         const int one = 1;
         ::setsockopt(m_listenFd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
@@ -623,10 +631,12 @@ public:
         addr.sin_addr.s_addr = INADDR_ANY;
         addr.sin_port        = htons(port);
 
-        if (::bind(m_listenFd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0)
+        if (::bind(m_listenFd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
             throw std::runtime_error("bind() failed: " + std::string(std::strerror(errno)));
-        if (::listen(m_listenFd, FIX_TCP_BACKLOG) < 0)
+        }
+        if (::listen(m_listenFd, FIX_TCP_BACKLOG) < 0) {
             throw std::runtime_error("listen() failed: " + std::string(std::strerror(errno)));
+        }
 
         const int flags = ::fcntl(m_listenFd, F_GETFL, 0);
         ::fcntl(m_listenFd, F_SETFL, flags | O_NONBLOCK);
@@ -640,7 +650,7 @@ public:
         sockaddr_in addr{};
         socklen_t   addrLen = sizeof(addr);
         const int fd = ::accept(m_listenFd, reinterpret_cast<sockaddr*>(&addr), &addrLen);
-        if (fd < 0) return -1;
+        if (fd < 0) { return -1; }
 
         const int flags = ::fcntl(fd, F_GETFL, 0);
         ::fcntl(fd, F_SETFL, flags | O_NONBLOCK);
@@ -680,7 +690,7 @@ static std::int64_t findGlobalStreamRecording(
 
     archive.listRecordingsForUri(
         0, std::numeric_limits<std::int32_t>::max(),
-        seq::GLOBAL_STREAM_CHANNEL, seq::GLOBAL_STREAM_ID,
+        sequencer::GLOBAL_STREAM_CHANNEL, sequencer::GLOBAL_STREAM_ID,
         [&](aeron::archive::client::RecordingDescriptor& desc) {
             if (desc.m_stopPosition == aeron::archive::client::NULL_POSITION) {
                 activeId = desc.m_recordingId;  // active recording wins
@@ -690,15 +700,16 @@ static std::int64_t findGlobalStreamRecording(
             }
         });
 
-    if (activeId < 0 && stoppedId < 0)
+    if (activeId < 0 && stoppedId < 0) {
         throw std::runtime_error(
             "[FixSessionClient] No global stream recording found on " +
-            std::string(seq::GLOBAL_STREAM_CHANNEL));
+            std::string(sequencer::GLOBAL_STREAM_CHANNEL));
+    }
 
     if (activeId >= 0) {
         // Resolve actual write position so the catch-up check is accurate.
         catchUpPos = archive.getRecordingPosition(activeId);
-        if (catchUpPos == aeron::archive::client::NULL_POSITION) catchUpPos = 0;
+        if (catchUpPos == aeron::archive::client::NULL_POSITION) { catchUpPos = 0; }
         return activeId;
     }
 
@@ -743,7 +754,7 @@ int main()
         aeron::archive::client::ReplayParams replayParams;
         replayParams.position(0).length(aeron::archive::client::NULL_LENGTH);
         replaySessionId = archive->startReplay(
-            recordingId, FIX_REPLAY_CHANNEL, seq::REPLAY_STREAM_ID, replayParams);
+            recordingId, FIX_REPLAY_CHANNEL, sequencer::REPLAY_STREAM_ID, replayParams);
         std::printf("[FixSessionClient] Replay started  replaySessionId=%" PRId64 "\n",
                     replaySessionId);
     } else {
@@ -767,25 +778,25 @@ int main()
     // messageHeader and the header composite generically, exposing
     // sourceId/templateId/blockLength/version on the event, so this lambda
     // just routes to the right FixConnection and picks the specific decode.
-    seq::GlobalStreamClient globalStream(
-        [&](const seq::SequencedEvent& e)
+    sequencer::GlobalStreamClient globalStream(
+        [&](const sequencer::SequencedEvent& e)
         {
             std::printf("[Global] SequencedEvent globalSeq=%" PRId64 " payloadLen=%" PRIu64 "\n",
                         e.globalSeqNo, static_cast<uint64_t>(e.payloadLength));
 
             auto it = connections.find(e.sourceId);
-            if (it == connections.end()) return;
+            if (it == connections.end()) { return; }
 
             const auto* body    = reinterpret_cast<const char*>(e.payload);
             const uint64_t bodyLen = e.payloadLength;
 
-            if (e.templateId == sbeseq::ExecutionReport::sbeTemplateId())
+            if (e.templateId == seq::ExecutionReport::sbeTemplateId())
             {
                 it->second->onClusterExecutionReport(body, bodyLen, e.blockLength,
                                                      e.version, e.clusterTimestamp);
                 return;
             }
-            if (e.templateId == sbeseq::NewOrderSingle::sbeTemplateId())
+            if (e.templateId == seq::NewOrderSingle::sbeTemplateId())
             {
                 // The client's own submission, echoed back for ordering; not
                 // ours to deliver or cache (see onClusterExecutionReport).
@@ -797,12 +808,12 @@ int main()
             it->second->onClusterAdmin(e.templateId, body, bodyLen,
                                        e.blockLength, e.version, e.clusterTimestamp);
         },
-        [](const seq::LifecycleEvent& e)
+        [](const sequencer::LifecycleEvent& e)
         {
             std::printf("[Global] Source connected    id=%" PRId64 "\n",
                         e.sourceSessionId);
         },
-        [](const seq::LifecycleEvent& e)
+        [](const sequencer::LifecycleEvent& e)
         {
             std::printf("[Global] Source disconnected id=%" PRId64 "\n",
                         e.sourceSessionId);
@@ -824,8 +835,9 @@ int main()
         std::vector<pollfd> pfds;
         pfds.reserve(1 + connections.size());
         pfds.push_back({tcpServer.listenFd(), POLLIN, 0});
-        for (const auto& [fd, _] : connections)
+        for (const auto& [fd, _] : connections) {
             pfds.push_back({fd, POLLIN, 0});
+        }
 
         ::poll(pfds.data(), static_cast<nfds_t>(pfds.size()), 0);
 
@@ -846,7 +858,7 @@ int main()
         // Inbound data from established connections.
         std::vector<int> toClose;
         for (std::size_t i = 1; i < pfds.size(); ++i) {
-            if (!(pfds[i].revents & (POLLIN | POLLHUP | POLLERR))) continue;
+            if (!(pfds[i].revents & (POLLIN | POLLHUP | POLLERR))) { continue; }
             const int fd = pfds[i].fd;
 
             const ssize_t n = ::recv(fd, recvBuf.data(), recvBuf.size(), 0);
@@ -858,8 +870,9 @@ int main()
                 auto it = connections.find(fd);
                 if (it != connections.end()) {
                     it->second->onRecv(recvBuf.data(), static_cast<std::size_t>(n));
-                    if (it->second->isDead() || it->second->session.isPendingClose())
+                    if (it->second->isDead() || it->second->session.isPendingClose()) {
                         toClose.push_back(fd);
+                    }
                 }
             }
         }
@@ -872,21 +885,23 @@ int main()
         // Heartbeat keep-alive: use cluster-driven m_nowMs (last set from
         // clusterTimestamp when a global-stream message was processed) so that
         // outbound heartbeats are timed by cluster consensus, not wall-clock.
-        for (auto& [_, conn] : connections)
+        for (auto& [_, conn] : connections) {
             conn->session.keepAlive();
+        }
 
         // Aeron: global stream + cluster egress + session keep-alive.
         const int aeronWork = globalStream.poll();
         ingressSender.keepAlive();
         ingressSender.pollEgress([](const uint8_t* /*data*/, int32_t /*len*/) {});
 
-        if (aeronWork == 0 && pfds[0].revents == 0)
+        if (aeronWork == 0 && pfds[0].revents == 0) {
             std::this_thread::yield();
+        }
     }
 
     std::printf("[FixSessionClient] Shutting down. Active connections: %zu\n",
                 connections.size());
-    for (const auto& [fd, _] : connections) ::close(fd);
+    for (const auto& [fd, _] : connections) { ::close(fd); }
     tcpServer.shutdown();
     ingressSender.close();
     return 0;

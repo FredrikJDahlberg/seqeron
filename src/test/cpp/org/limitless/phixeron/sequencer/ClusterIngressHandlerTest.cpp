@@ -53,7 +53,7 @@ public:
 
     int poll(const FragmentHandler& handler) override
     {
-        if (queued.empty()) return 0;
+        if (queued.empty()) { return 0; }
         const std::vector<std::uint8_t> msg = std::move(queued.front());
         queued.pop_front();
         handler(std::span<const std::uint8_t>(msg.data(), msg.size()));
@@ -102,7 +102,7 @@ std::vector<std::uint8_t> buildFix(char msgType, const std::vector<std::string>&
     std::string msg = "8=FIXT.1.1\x01" "9=" + std::to_string(body.size()) + "\x01" + body;
 
     std::uint32_t sum = 0;
-    for (const unsigned char c : msg) sum += c;
+    for (const unsigned char c : msg) { sum += c; }
     sum %= 256;
     char checksum[4];
     std::snprintf(checksum, sizeof(checksum), "%03u", sum);
@@ -127,12 +127,12 @@ SbeMsg decodeUnsequenced(std::vector<std::uint8_t>& frame)
     char* body = reinterpret_cast<char*>(frame.data() + APP_MESSAGE_OFFSET);
     const std::size_t bodyLen = frame.size() - APP_MESSAGE_OFFSET;
 
-    sbeunseq::MessageHeader hdr;
+    usq::MessageHeader hdr;
     hdr.wrap(body, 0, 0, bodyLen);
     EXPECT_EQ(SbeMsg::sbeTemplateId(), hdr.templateId());
 
     SbeMsg dec;
-    dec.wrapForDecode(body, sbeunseq::MessageHeader::encodedLength(),
+    dec.wrapForDecode(body, usq::MessageHeader::encodedLength(),
                       hdr.blockLength(), hdr.version(), bodyLen);
     return dec;
 }
@@ -201,7 +201,7 @@ TEST_F(ClusterIngressHandlerAdminOnly, LogonIsReEncodedAsSbeUnsequencedWithHeade
     ASSERT_EQ(fix::Result::Success, result.m_value);
 
     ASSERT_EQ(1u, ingress_->offered.size());
-    auto logon = decodeUnsequenced<sbeunseq::Logon>(ingress_->offered[0]);
+    auto logon = decodeUnsequenced<usq::Logon>(ingress_->offered[0]);
     EXPECT_EQ(CONN_ID, logon.header().sourceId());
     EXPECT_EQ(55, logon.header().sessionId());
     EXPECT_EQ(45u, logon.heartbeatInterval());
@@ -214,7 +214,7 @@ TEST_F(ClusterIngressHandlerAdminOnly, LogoutIsReEncodedAsSbeUnsequenced)
     ASSERT_EQ(fix::Result::Success, result.m_value);
 
     ASSERT_EQ(1u, ingress_->offered.size());
-    auto logout = decodeUnsequenced<sbeunseq::Logout>(ingress_->offered[0]);
+    auto logout = decodeUnsequenced<usq::Logout>(ingress_->offered[0]);
     EXPECT_EQ(CONN_ID, logout.header().sourceId());
 }
 
@@ -225,7 +225,7 @@ TEST_F(ClusterIngressHandlerAdminOnly, HeartbeatCarriesTestReqIdWhenPresent)
     ASSERT_EQ(fix::Result::Success, result.m_value);
 
     ASSERT_EQ(1u, ingress_->offered.size());
-    auto hb = decodeUnsequenced<sbeunseq::Heartbeat>(ingress_->offered[0]);
+    auto hb = decodeUnsequenced<usq::Heartbeat>(ingress_->offered[0]);
     EXPECT_EQ(std::string("PING1"), std::string(hb.testReqID()));
 }
 
@@ -236,7 +236,7 @@ TEST_F(ClusterIngressHandlerAdminOnly, HeartbeatHasEmptyTestReqIdWhenAbsent)
     ASSERT_EQ(fix::Result::Success, result.m_value);
 
     ASSERT_EQ(1u, ingress_->offered.size());
-    auto hb = decodeUnsequenced<sbeunseq::Heartbeat>(ingress_->offered[0]);
+    auto hb = decodeUnsequenced<usq::Heartbeat>(ingress_->offered[0]);
     EXPECT_EQ(std::string(""), std::string(hb.testReqID()));
 }
 
@@ -247,7 +247,7 @@ TEST_F(ClusterIngressHandlerAdminOnly, TestRequestCarriesTestReqId)
     ASSERT_EQ(fix::Result::Success, result.m_value);
 
     ASSERT_EQ(1u, ingress_->offered.size());
-    auto tr = decodeUnsequenced<sbeunseq::TestRequest>(ingress_->offered[0]);
+    auto tr = decodeUnsequenced<usq::TestRequest>(ingress_->offered[0]);
     EXPECT_EQ(std::string("RUOK"), std::string(tr.testReqID()));
 }
 
@@ -258,7 +258,7 @@ TEST_F(ClusterIngressHandlerAdminOnly, ResendRequestCarriesBeginAndEndSeqNo)
     ASSERT_EQ(fix::Result::Success, result.m_value);
 
     ASSERT_EQ(1u, ingress_->offered.size());
-    auto rr = decodeUnsequenced<sbeunseq::ResendRequest>(ingress_->offered[0]);
+    auto rr = decodeUnsequenced<usq::ResendRequest>(ingress_->offered[0]);
     EXPECT_EQ(5u, rr.beginSeqNo());
     EXPECT_EQ(10u, rr.endSeqNo());
 }
@@ -270,7 +270,7 @@ TEST_F(ClusterIngressHandlerAdminOnly, SequenceResetCarriesNewSeqNo)
     ASSERT_EQ(fix::Result::Success, result.m_value);
 
     ASSERT_EQ(1u, ingress_->offered.size());
-    auto sr = decodeUnsequenced<sbeunseq::SequenceReset>(ingress_->offered[0]);
+    auto sr = decodeUnsequenced<usq::SequenceReset>(ingress_->offered[0]);
     EXPECT_EQ(100u, sr.newSeqNo());
 }
 
@@ -286,7 +286,7 @@ TEST_F(ClusterIngressHandlerAdminOnly, ValidNewOrderSingleIsEncodedAsSbeUnsequen
     // No session was supplied, so only the NewOrderSingle submission happens
     // (no reject/accept ExecutionReport is generated).
     ASSERT_EQ(1u, ingress_->offered.size());
-    auto nos = decodeUnsequenced<sbeunseq::NewOrderSingle>(ingress_->offered[0]);
+    auto nos = decodeUnsequenced<usq::NewOrderSingle>(ingress_->offered[0]);
     EXPECT_EQ(CONN_ID, nos.header().sourceId());
     EXPECT_EQ(std::string("ORD-1"), nos.getClOrdIDAsString());
     EXPECT_EQ(std::string("AAPL"), nos.getSymbolAsString());
@@ -349,13 +349,13 @@ TEST_F(ClusterIngressHandlerWithSession, ValidNewOrderSingleSubmitsOrderThenSend
 
     ASSERT_EQ(2u, ingress_->offered.size());
 
-    auto nos = decodeUnsequenced<sbeunseq::NewOrderSingle>(ingress_->offered[0]);
+    auto nos = decodeUnsequenced<usq::NewOrderSingle>(ingress_->offered[0]);
     EXPECT_EQ(CONN_ID, nos.header().sourceId());
     EXPECT_EQ(std::string("ORD-2"), nos.getClOrdIDAsString());
 
-    auto er = decodeUnsequenced<sbeunseq::ExecutionReport>(ingress_->offered[1]);
+    auto er = decodeUnsequenced<usq::ExecutionReport>(ingress_->offered[1]);
     EXPECT_EQ(CONN_ID, er.header().sourceId());
-    EXPECT_EQ(sbeunseq::ExecType::Value::New, er.execType());
+    EXPECT_EQ(usq::ExecType::Value::New, er.execType());
     EXPECT_EQ(std::string("ORD-2"), er.getClOrdIDAsString());
 }
 
@@ -369,8 +369,8 @@ TEST_F(ClusterIngressHandlerWithSession, EmptyClOrdIdSendsRejectedExecutionRepor
     // The reject path returns before the order is submitted: only the
     // ExecutionReport(Rejected) reaches the ingress.
     ASSERT_EQ(1u, ingress_->offered.size());
-    auto er = decodeUnsequenced<sbeunseq::ExecutionReport>(ingress_->offered[0]);
-    EXPECT_EQ(sbeunseq::ExecType::Value::Rejected, er.execType());
+    auto er = decodeUnsequenced<usq::ExecutionReport>(ingress_->offered[0]);
+    EXPECT_EQ(usq::ExecType::Value::Rejected, er.execType());
     EXPECT_EQ(std::string("ClOrdID is empty"), er.getTextAsString());
 }
 
@@ -382,7 +382,7 @@ TEST_F(ClusterIngressHandlerWithSession, ZeroOrderQtyIsRejected)
     ASSERT_EQ(fix::Result::Success, result.m_value);
 
     ASSERT_EQ(1u, ingress_->offered.size());
-    auto er = decodeUnsequenced<sbeunseq::ExecutionReport>(ingress_->offered[0]);
+    auto er = decodeUnsequenced<usq::ExecutionReport>(ingress_->offered[0]);
     EXPECT_EQ(std::string("OrderQty must be > 0"), er.getTextAsString());
 }
 
@@ -394,7 +394,7 @@ TEST_F(ClusterIngressHandlerWithSession, LimitOrderWithoutPriceIsRejected)
     ASSERT_EQ(fix::Result::Success, result.m_value);
 
     ASSERT_EQ(1u, ingress_->offered.size());
-    auto er = decodeUnsequenced<sbeunseq::ExecutionReport>(ingress_->offered[0]);
+    auto er = decodeUnsequenced<usq::ExecutionReport>(ingress_->offered[0]);
     EXPECT_EQ(std::string("Price required for Limit order"), er.getTextAsString());
 }
 

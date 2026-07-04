@@ -276,7 +276,7 @@ private:
     void notifyCaughtUp()
     {
         m_caughtUp = true;
-        if (m_onCaughtUp) m_onCaughtUp();
+        if (m_onCaughtUp) { m_onCaughtUp(); }
     }
 
     static std::int64_t nowNs()

@@ -48,7 +48,7 @@ public:
 
     int poll(const FragmentHandler& handler) override
     {
-        if (queued.empty()) return 0;
+        if (queued.empty()) { return 0; }
         const std::vector<std::uint8_t> msg = std::move(queued.front());
         queued.pop_front();
         handler(std::span<const std::uint8_t>(msg.data(), msg.size()));
