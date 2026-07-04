@@ -60,30 +60,34 @@ public:
 
 std::vector<std::uint8_t> encodeSessionEvent(std::int64_t clusterSessionId,
                                               std::int64_t leadershipTermId,
-                                              cluster_sbe::EventCode::Value code)
+                                              cluster_sbe::EventCode::Value code,
+                                              std::int32_t leaderMemberId = 0,
+                                              std::string_view detail = {})
 {
-    std::vector<std::uint8_t> buf(256, 0);
+    std::vector<std::uint8_t> buf(256 + detail.size(), 0);
     cluster_sbe::SessionEvent enc;
     enc.wrapAndApplyHeader(reinterpret_cast<char*>(buf.data()), 0, buf.size());
     enc.clusterSessionId(clusterSessionId)
        .correlationId(1)
        .leadershipTermId(leadershipTermId)
-       .leaderMemberId(0)
+       .leaderMemberId(leaderMemberId)
        .code(code)
        .version(CLUSTER_PROTOCOL_VERSION)
        .leaderHeartbeatTimeoutNs(0);
-    enc.putDetail(nullptr, 0);
+    enc.putDetail(detail.data(), static_cast<int>(detail.size()));
     buf.resize(enc.sbePosition());
     return buf;
 }
 
-std::vector<std::uint8_t> encodeNewLeaderEvent(std::int64_t leadershipTermId)
+std::vector<std::uint8_t> encodeNewLeaderEvent(std::int64_t leadershipTermId,
+                                                std::int32_t leaderMemberId = 0,
+                                                std::string_view ingressEndpoints = {})
 {
-    std::vector<std::uint8_t> buf(128, 0);
+    std::vector<std::uint8_t> buf(128 + ingressEndpoints.size(), 0);
     cluster_sbe::NewLeaderEvent enc;
     enc.wrapAndApplyHeader(reinterpret_cast<char*>(buf.data()), 0, buf.size());
-    enc.leadershipTermId(leadershipTermId).clusterSessionId(0).leaderMemberId(0);
-    enc.putIngressEndpoints(nullptr, 0);
+    enc.leadershipTermId(leadershipTermId).clusterSessionId(0).leaderMemberId(leaderMemberId);
+    enc.putIngressEndpoints(ingressEndpoints.data(), static_cast<int>(ingressEndpoints.size()));
     buf.resize(enc.sbePosition());
     return buf;
 }
@@ -174,6 +178,28 @@ TEST(ClusterIngressSender, ConnectIgnoresErrorEventCodesUntilOkArrives)
     sender.connect(std::make_unique<FakeIngressTransport>(), std::move(egress));
 
     EXPECT_TRUE(sender.isConnected());
+}
+
+// The transport-agnostic connect() overload has no Aeron client to build a new ingress
+// Publication with, so a REDIRECT must be a safe no-op (logged, not acted on) rather than a
+// crash — the session still completes once the (already-queued) OK arrives.
+TEST(ClusterIngressSender, ConnectIgnoresRedirectWithoutAeronClientThenConnectsOnOk)
+{
+    auto egress = std::make_unique<FakeEgressTransport>();
+    egress->queued.push_back(encodeSessionEvent(-1, 0, cluster_sbe::EventCode::Value::REDIRECT,
+                                                  1, "1=localhost:9312"));
+    egress->queued.push_back(encodeSessionEvent(9, 3, cluster_sbe::EventCode::Value::OK));
+
+    auto ingress = std::make_unique<FakeIngressTransport>();
+    auto* ingressPtr = ingress.get();
+
+    ClusterIngressSender sender;
+    sender.connect(std::move(ingress), std::move(egress));
+
+    EXPECT_TRUE(sender.isConnected());
+    // No m_aeron to reconnect with, so handleRedirect must not have re-sent
+    // SessionConnectRequest: only the original one was ever offered.
+    EXPECT_EQ(1u, ingressPtr->offered.size());
 }
 
 class ConnectedClusterIngressSender : public ::testing::Test
@@ -282,6 +308,62 @@ TEST_F(ConnectedClusterIngressSender, PollEgressUpdatesLeadershipTermOnNewLeader
     ASSERT_EQ(1u, ingress_->offered.size());
     auto hdr = decodeOffered<cluster_sbe::SessionMessageHeader>(ingress_->offered[0]);
     EXPECT_EQ(999, hdr.leadershipTermId());
+}
+
+// Same as above, but the event also carries a new ingress endpoint for the (fake-connected,
+// m_aeron == nullptr) session. Without a real Aeron client there is nothing to reconnect with,
+// so this must degrade to the same leadership-term-only update as the no-endpoints case above —
+// not crash, and not touch the ingress transport.
+TEST_F(ConnectedClusterIngressSender, PollEgressIgnoresNewLeaderEndpointWithoutAeronClient)
+{
+    egress_->queued.push_back(encodeNewLeaderEvent(999, 1, "0=localhost:9302,1=localhost:9312"));
+
+    sender_.pollEgress([](const std::uint8_t*, std::int32_t) {
+        FAIL() << "NewLeaderEvent must not be forwarded as an application message";
+    });
+
+    const std::array<std::uint8_t, 1> body{'8'};
+    sender_.send(body.data(), 1);
+
+    ASSERT_EQ(1u, ingress_->offered.size());
+    auto hdr = decodeOffered<cluster_sbe::SessionMessageHeader>(ingress_->offered[0]);
+    EXPECT_EQ(999, hdr.leadershipTermId());
+}
+
+// ── findIngressEndpoint (the "memberId=host:port,..." CSV parser shared by
+//    SessionEvent(REDIRECT).detail and NewLeaderEvent.ingressEndpoints) ──────────
+
+TEST(FindIngressEndpoint, FindsMemberInMultiEntryCsv)
+{
+    std::string out;
+    EXPECT_TRUE(findIngressEndpoint("0=localhost:9302,1=localhost:9312,2=localhost:9322", 1, out));
+    EXPECT_EQ("localhost:9312", out);
+}
+
+TEST(FindIngressEndpoint, FindsLastEntryWithNoTrailingComma)
+{
+    std::string out;
+    EXPECT_TRUE(findIngressEndpoint("0=localhost:9302,1=localhost:9312", 1, out));
+    EXPECT_EQ("localhost:9312", out);
+}
+
+TEST(FindIngressEndpoint, FindsSoleEntry)
+{
+    std::string out;
+    EXPECT_TRUE(findIngressEndpoint("0=localhost:9302", 0, out));
+    EXPECT_EQ("localhost:9302", out);
+}
+
+TEST(FindIngressEndpoint, ReturnsFalseWhenMemberIdAbsent)
+{
+    std::string out;
+    EXPECT_FALSE(findIngressEndpoint("0=localhost:9302,1=localhost:9312", 2, out));
+}
+
+TEST(FindIngressEndpoint, ReturnsFalseOnEmptyCsv)
+{
+    std::string out;
+    EXPECT_FALSE(findIngressEndpoint("", 0, out));
 }
 
 } // namespace

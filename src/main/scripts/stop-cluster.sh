@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # stop-cluster.sh — stop all phixeron cluster processes started by cluster.sh.
 #
-# Sends SIGTERM to SequencerNode, aeronmd, fix_session_client, and
-# application_stream_client, then waits up to 10 s for them to exit before
+# Sends SIGTERM to SequencerNode, aeronmd, FixSessionClient, and
+# OrderExecClient, then waits up to 10 s for them to exit before
 # sending SIGKILL to any survivors.
 #
 # Usage:
@@ -19,7 +19,7 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
     exit 0
 fi
 
-PROCESSES=(SequencerNode aeronmd fix_session_client application_stream_client)
+PROCESSES=(SequencerNode aeronmd FixSessionClient OrderExecClient)
 TIMEOUT=10
 
 kill_by_name() {

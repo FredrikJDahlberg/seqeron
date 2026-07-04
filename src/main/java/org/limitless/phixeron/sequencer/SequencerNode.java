@@ -10,6 +10,7 @@ import io.aeron.driver.ThreadingMode;
 import org.agrona.concurrent.BusySpinIdleStrategy;
 import org.agrona.concurrent.NoOpLock;
 import org.agrona.concurrent.ShutdownSignalBarrier;
+import org.agrona.concurrent.YieldingIdleStrategy;
 
 import java.io.File;
 
@@ -19,8 +20,8 @@ import java.io.File;
  * <p>The Sequencer runs as an Aeron Cluster with an embedded MediaDriver, Archive, and
  * ConsensusModule.  Clients connect via the Aeron Cluster ingress protocol to send
  * {@code AppMessage}s.  The leader stamps each message with a global sequence number and
- * a per-source application sequence number, then publishes the result on the multicast
- * global stream ({@link SequencerService#GLOBAL_STREAM_CHANNEL}) which is simultaneously
+ * a per-source application sequence number, then publishes the result on the multi-destination-
+ * cast global stream ({@link SequencerService#GLOBAL_STREAM_CHANNEL}) which is simultaneously
  * recorded by the co-located Archive for client replay on startup.
  *
  * <p><b>Port layout</b> (member 0 on base 9300; members 1 and 2 use base+10, base+20):
@@ -104,7 +105,8 @@ public final class SequencerNode {
             .localControlStreamId(100)
             .replicationChannel(udp(DEFAULT_HOST, 0))
             .recordingEventsEnabled(false)
-            .deleteArchiveOnStart(false);
+            .deleteArchiveOnStart(false)
+            .idleStrategySupplier(YieldingIdleStrategy::new);
 
         final ConsensusModule.Context consensusCtx = new ConsensusModule.Context()
             .aeronDirectoryName(aeronDir)
@@ -115,6 +117,7 @@ public final class SequencerNode {
             .replicationChannel(udp(DEFAULT_HOST, 0))
             .archiveContext(localArchiveCtx.clone())
             .deleteDirOnStart(false)
+            .idleStrategySupplier(YieldingIdleStrategy::new)
             .errorHandler(t -> System.err.printf("[ConsensusModule/%d] %s%n", memberId, t.getMessage()));
 
         final ClusteredServiceContainer.Context serviceCtx = new ClusteredServiceContainer.Context()
@@ -122,6 +125,7 @@ public final class SequencerNode {
             .archiveContext(localArchiveCtx.clone())
             .clusterDir(clusterDir)
             .clusteredService(new SequencerService())
+            .idleStrategySupplier(YieldingIdleStrategy::new)
             .errorHandler(t -> System.err.printf("[SequencerService/%d] %s%n", memberId, t.getMessage()));
 
         System.out.printf("[SequencerNode] Starting member %d | ingress=%s | archive=%s | baseDir=%s%n",

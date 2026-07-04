@@ -37,9 +37,9 @@ Convenience scripts live under `src/main/scripts/`:
 
 | Script | Purpose |
 |--------|---------|
-| `start-cluster.sh [debug\|release]` | Start the single-node cluster (`SequencerNode`, `aeronmd`, `fix_session_client`, `application_stream_client`) in the background; Ctrl-C stops all of them |
+| `start-cluster.sh [debug\|release]` | Start the single-node cluster (`SequencerNode`, `aeronmd`, `FixSessionClient`, `OrderExecClient`) in the background; Ctrl-C stops all of them |
 | `stop-cluster.sh` | Stop all cluster processes started by `start-cluster.sh` |
-| `fix-test-server.sh [debug\|release] [host [port]]` | Run a single FIX session (Logon → Heartbeat → NewOrderSingle → Logout) against a live `fix_session_client` gateway |
+| `fix-test-server.sh [debug\|release] [host [port]]` | Run a single FIX session (Logon → Heartbeat → NewOrderSingle → Logout) against a live `FixSessionClient` gateway |
 | `logprint.sh <spec.sbeir> <archive-dir>` | Dump an Aeron Archive recording as JSON (see [Log printer](#log-printer)) |
 | `purgelog.sh [--force]` | Delete archive/cluster directories under `$TMPDIR/phixeron-seq` and the `logs/` directory; cluster must be stopped first |
 
@@ -68,9 +68,10 @@ java \
 The node embeds its own MediaDriver and Archive — no separate `aeronmd` needed.
 Data is written to `/tmp/phixeron-seq/archive-0` and `/tmp/phixeron-seq/cluster-0`.
 
-Clients subscribe to the global sequenced stream on multicast
-`aeron:udp?endpoint=224.0.1.1:9200|interface=localhost` stream 1, recorded by the
-co-located Archive for replay on startup.
+Clients subscribe to the global sequenced stream via multi-destination-cast (dynamic control
+mode): publisher/archive channel `aeron:udp?control-mode=dynamic|control=localhost:9200`,
+subscriber channel `aeron:udp?control-mode=dynamic|control=localhost:9200|endpoint=localhost:0`,
+stream 1 — recorded by the co-located Archive for replay on startup.
 
 ### Three-node cluster
 
@@ -125,8 +126,8 @@ Each member's ports are `9300 + memberId × 10 + offset`:
 | +5     | File transfer    | 9305     | 9315     | 9325     |
 
 Clients connect to archive control on port 9301 (member 0) to replay history, and to
-ingress on port 9302 to send messages. The global sequenced stream is published on
-multicast `224.0.1.1:9200` (stream 1).
+ingress on port 9302 to send messages. The global sequenced stream is published via
+multi-destination-cast control address `localhost:9200` (stream 1).
 
 ### System properties
 
@@ -195,27 +196,24 @@ Or via Gradle directly:
 
 ---
 
-## Risk engine cluster client
+## Order execution client
 
-`org.limitless.phixeron.risk.RiskEngineClient` is an Aeron Cluster client that replays the
-global stream to track each account's positions (from `NewOrderSingle` + `ExecutionReport`
-fills), answers `PortfolioQueryRequest`s with a risk assessment from a mocked external risk
-engine, and submits the `PortfolioQueryReply` back to cluster ingress. The mock engine is
-synchronous, slow, and only services 5 requests at once (`MockRiskEngine`); queries beyond
-that are throttled by leaving the `PortfolioQueryRequest` fragment unconsumed on the global
-stream until a slot frees up, rather than blocking or dropping them.
+`OrderExecClient` (C++, `src/main/cpp/.../sequencer/OrderExecClient.cpp`) combines what used to
+be two separate binaries — `application_stream_client` and the C++ `RiskEngineClient` — into one
+cluster ingress client. It replays the global stream then follows it live, printing every
+`NewOrderSingle`/`ExecutionReport` it sees, tracking each account's positions from those same
+fills, answering `PortfolioQueryRequest`s with a risk assessment from a mocked external risk
+engine, and submitting the `PortfolioQueryReply` back to cluster ingress. The mock engine is
+synchronous, slow, and only services 5 requests at once (`MockRiskEngine`); queries beyond that
+are throttled by leaving the `PortfolioQueryRequest` fragment unconsumed on the global stream
+until a slot frees up, rather than blocking or dropping them.
 
 ```bash
-./gradlew uberJar
-java \
-  --add-opens=java.base/sun.nio.ch=ALL-UNNAMED \
-  --add-opens=java.base/java.lang=ALL-UNNAMED \
-  --add-opens=java.base/java.lang.reflect=ALL-UNNAMED \
-  --add-opens=java.base/jdk.internal.misc=ALL-UNNAMED \
-  -cp build/libs/phixeron-0.1.0-uber.jar org.limitless.phixeron.risk.RiskEngineClient
-# [RiskEngineClient] Connected — replaying global stream from position 0
-# [RiskEngineClient] Running — Ctrl-C to stop
-# [RiskEngineClient] Caught up — now processing live traffic
+cmake --build cmake-build-release --target OrderExecClient
+AERON_DIR="${TMPDIR}aeron-$(whoami)" ./cmake-build-release/OrderExecClient
+# [OrderExecClient] Connected to Aeron media driver
+# [OrderExecClient] Connected to Aeron Archive
+# [OrderExecClient] Live from start
 ```
 
 Connects to the single-node sequencer defaults (archive on `localhost:9301`, cluster ingress
@@ -226,7 +224,7 @@ on `localhost:9302`) — start the sequencer node first (see [Sequencer](#sequen
 ## FIX TCP test client
 
 `src/test/cpp/org/limitless/phixeron/session/FixTestServer.cpp` connects to the
-`fix_session_client` gateway on TCP port 9000 and runs a minimal FIX session
+`FixSessionClient` gateway on TCP port 9000 and runs a minimal FIX session
 using the simdfix `ClientSession` and generated message encoders:
 
 1. **Logon** — negotiates the session (EncryptMethod=None, HeartbeatInterval=30 s)
@@ -236,8 +234,8 @@ using the simdfix `ClientSession` and generated message encoders:
 5. **Risk engine query test** — since there is no downstream matching engine, submits a
    synthetic Trade `ExecutionReport` and a `PortfolioQueryRequest` directly to cluster
    ingress (bypassing the FIX/TCP gateway — see
-   [risk engine cluster client](#risk-engine-cluster-client)) and prints the resulting
-   `PortfolioQueryReply`. Requires `aeronmd` and the risk engine client to be running.
+   [order execution client](#order-execution-client)) and prints the resulting
+   `PortfolioQueryReply`. Requires `aeronmd` and `OrderExecClient` to be running.
 
 ```
 SenderCompID = CLIENT
@@ -265,14 +263,14 @@ AERON_DIR="${TMPDIR}aeron-$(whoami)" ./cmake-build-release/_deps/aeron-build/bin
 
 **3. Start the FIX gateway** (separate terminal):
 ```bash
-cmake --build cmake-build-release --target fix_session_client
-AERON_DIR="${TMPDIR}aeron-$(whoami)" ./cmake-build-release/fix_session_client
+cmake --build cmake-build-release --target FixSessionClient
+AERON_DIR="${TMPDIR}aeron-$(whoami)" ./cmake-build-release/FixSessionClient
 # [TCP] Listening on port 9000
 # [FixSessionClient] Caught up — following live stream
 ```
 
-**4. Start the risk engine client** (separate terminal — see
-[Risk engine cluster client](#risk-engine-cluster-client)), needed for step 5 below.
+**4. Start `OrderExecClient`** (separate terminal — see
+[Order execution client](#order-execution-client)), needed for step 5 below.
 
 **5. Build and run the test client** (separate terminal):
 ```bash

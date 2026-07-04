@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <functional>
 #include <memory>
 #include <stdexcept>
@@ -21,14 +22,42 @@ namespace org::limitless::phixeron::sequencer
 
 // ── Constants matching SequencerService / SequencerNode ──────────────────────
 
+// Multi-destination-cast (dynamic control mode). This is the publisher/archive-recording
+// channel — matches SequencerService.GLOBAL_STREAM_CHANNEL, used here only for archive
+// recording lookups (listRecordingsForUri), never to open a local subscription directly.
 inline constexpr const char* GLOBAL_STREAM_CHANNEL =
-    "aeron:udp?endpoint=224.0.1.1:9200|interface=localhost";
+    "aeron:udp?control-mode=dynamic|control=localhost:9200";
+
+// Subscriber-side channel: same control address, plus an ephemeral local data endpoint
+// that the publisher discovers and adds as a destination automatically. Matches
+// SequencerService.GLOBAL_STREAM_SUBSCRIBER_CHANNEL. Used for the live (post-replay) fallback
+// subscription below.
+inline constexpr const char* GLOBAL_STREAM_SUBSCRIBER_CHANNEL =
+    "aeron:udp?control-mode=dynamic|control=localhost:9200|endpoint=localhost:0";
+
 inline constexpr std::int32_t GLOBAL_STREAM_ID = 1;
 
 // Each binary uses a distinct port so their archive replay publications don't conflict.
-// fix_session_client      → 9310
-// application_stream_client → 9311
+// FixSessionClient  → 9310 (env PHIXERON_FIX_REPLAY_PORT)
+// OrderExecClient   → 9311 (env PHIXERON_ORDER_EXEC_REPLAY_PORT)
+// fix_test_server   → 9312 (env PHIXERON_RISK_TEST_REPLAY_PORT)
+// FixSessionClient's resend-recovery replay → 9313 (env PHIXERON_RESEND_REPLAY_PORT)
 inline constexpr std::int32_t REPLAY_STREAM_ID = 110;
+
+/**
+ * Resolves a replay channel's port from the environment (so two instances of the same
+ * binary can run on one host without a port clash — see todo.md item 8), falling back to
+ * the given default. Returns a full "aeron:udp?endpoint=localhost:<port>" channel string.
+ */
+inline std::string resolveReplayChannel(const char* envVar, std::uint16_t defaultPort)
+{
+    std::uint16_t port = defaultPort;
+    if (const char* value = std::getenv(envVar); value != nullptr && *value != '\0')
+    {
+        port = static_cast<std::uint16_t>(std::strtoul(value, nullptr, 10));
+    }
+    return "aeron:udp?endpoint=localhost:" + std::to_string(port);
+}
 
 // ClientConnected/ClientDisconnected aren't FIX messages, so sbe-sequenced.xml
 // (like sbe-unsequenced.xml) gives them small, non-ASCII-derived template ids,
@@ -92,7 +121,7 @@ struct LifecycleEvent
  * The replay image uses NULL_POSITION as length so it follows the live
  * recording seamlessly — the same image delivers both historical and live
  * messages without a subscription switch. If the image closes (leader failover)
- * the client falls back to a direct multicast subscription.
+ * the client falls back to a direct MDC subscription.
  *
  * Every message is stamped with receiveTimeNs (std::chrono::system_clock).
  */
@@ -119,7 +148,7 @@ public:
 
     /**
      * Attaches to an already-started archive replay image and adds a live
-     * multicast fallback subscription.
+     * MDC fallback subscription.
      *
      * @param aeron           connected Aeron instance
      * @param replaySessionId session ID returned by AeronArchive::startReplay(),
@@ -142,8 +171,8 @@ public:
             m_replaySubRegId = m_aeron->addSubscription(replayChannel, REPLAY_STREAM_ID);
         }
 
-        // Live multicast fallback — always subscribed; used when replay image closes.
-        m_liveSubRegId = m_aeron->addSubscription(GLOBAL_STREAM_CHANNEL, GLOBAL_STREAM_ID);
+        // Live MDC fallback — always subscribed; used when replay image closes.
+        m_liveSubRegId = m_aeron->addSubscription(GLOBAL_STREAM_SUBSCRIBER_CHANNEL, GLOBAL_STREAM_ID);
 
         if (replaySessionId < 0) {
             // No historical data — already at live.
@@ -184,7 +213,7 @@ public:
             m_replaySub.reset();
         }
 
-        // Live multicast fallback — poll the subscription directly.
+        // Live MDC fallback — poll the subscription directly.
         if (m_liveSub) {
             return m_liveSub->poll(m_fragmentHandler, FRAGMENT_LIMIT);
         }

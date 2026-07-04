@@ -13,8 +13,19 @@
 // which is the transport-agnostic entry point used by tests; connect(aeron)
 // is the real entry point and only does Aeron resource acquisition before
 // delegating to it.
+//
+// Leader failover: a follower answers SessionConnectRequest with
+// SessionEvent(REDIRECT), and an established session gets a NewLeaderEvent when
+// the cluster elects a new leader — both carry a "memberId=host:port,..." CSV of
+// ingress endpoints (io.aeron.cluster.client.AeronCluster's own wire format).
+// ClusterIngressSender resolves its own new endpoint out of that CSV and swaps
+// its ingress Publication to it; the cluster session id is unaffected, only the
+// leadershipTermId and the publication endpoint change. Reconnection only runs
+// when connect(aeron) supplied a real Aeron client (m_aeron); the transport-
+// agnostic connect() overload used by unit tests leaves it disabled.
 
 #include <array>
+#include <charconv>
 #include <chrono>
 #include <cinttypes>
 #include <cstdint>
@@ -24,12 +35,14 @@
 #include <memory>
 #include <span>
 #include <stdexcept>
+#include <string>
 #include <string_view>
 #include <thread>
 
 #include "Aeron.h"
 #include "FragmentAssembler.h"
 #include "concurrent/AtomicBuffer.h"
+#include "concurrent/YieldingIdleStrategy.h"
 
 #include "org_limitless_phixeron_cluster_sbe/MessageHeader.h"
 #include "org_limitless_phixeron_cluster_sbe/SessionConnectRequest.h"
@@ -47,6 +60,10 @@ namespace cluster_sbe = org::limitless::phixeron::cluster::sbe;
 // ── Constants — Aeron Cluster ingress/egress channels, stream ids and client
 //    protocol semver, per io.aeron.cluster.codecs / AeronCluster.Configuration
 //    defaults. Must match SequencerNode's cluster listener configuration. ────
+// CLUSTER_INGRESS_CHANNEL must stay "aeron:udp?endpoint=" + CLUSTER_INGRESS_ENDPOINT — the
+// endpoint alone is also this client's initial value for the reconnect-on-failover tracking
+// in ClusterIngressSender (m_ingressEndpoint).
+inline constexpr const char*    CLUSTER_INGRESS_ENDPOINT   = "localhost:9302";
 inline constexpr const char*    CLUSTER_INGRESS_CHANNEL    = "aeron:udp?endpoint=localhost:9302";
 inline constexpr const char*    CLUSTER_EGRESS_CHANNEL     = "aeron:udp?endpoint=localhost:9320";
 inline constexpr std::int32_t   CLUSTER_INGRESS_STREAM_ID  = 101;
@@ -59,6 +76,34 @@ inline std::int64_t nowMs()
 {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::system_clock::now().time_since_epoch()).count();
+}
+
+// Finds `memberId`'s endpoint in a "memberId=host:port,memberId=host:port,..." CSV, the wire
+// format both SessionEvent.detail (on REDIRECT) and NewLeaderEvent.ingressEndpoints use.
+// Returns false (leaving `out` untouched) if the CSV has no entry for that member.
+inline bool findIngressEndpoint(std::string_view endpoints, std::int32_t memberId, std::string& out)
+{
+    std::size_t start = 0;
+    while (start <= endpoints.size()) {
+        const std::size_t comma = endpoints.find(',', start);
+        const std::string_view entry = endpoints.substr(
+            start, comma == std::string_view::npos ? std::string_view::npos : comma - start);
+
+        const std::size_t eq = entry.find('=');
+        if (eq != std::string_view::npos) {
+            std::int32_t parsedId = -1;
+            const std::string_view idPart = entry.substr(0, eq);
+            const auto res = std::from_chars(idPart.data(), idPart.data() + idPart.size(), parsedId);
+            if (res.ec == std::errc() && parsedId == memberId) {
+                out.assign(entry.substr(eq + 1));
+                return true;
+            }
+        }
+
+        if (comma == std::string_view::npos) { break; }
+        start = comma + 1;
+    }
+    return false;
 }
 
 // ── Transport interfaces ──────────────────────────────────────────────────────
@@ -147,46 +192,34 @@ public:
     // Real entry point: acquires the ingress publication + egress subscription
     // from Aeron (inherently async — driver IPC via addPublication/addSubscription
     // and find*), then hands off to the transport-agnostic handshake below.
+    // Storing `aeron` (used by createIngressPublication) is what enables automatic
+    // ingress reconnection on SessionEvent(REDIRECT)/NewLeaderEvent below.
     void connect(std::shared_ptr<aeron::Aeron> aeron)
     {
-        const auto subId = aeron->addSubscription(CLUSTER_EGRESS_CHANNEL, CLUSTER_EGRESS_STREAM_ID);
+        m_aeron = std::move(aeron);
+        m_ingressEndpoint = CLUSTER_INGRESS_ENDPOINT;
+
+        const auto subId = m_aeron->addSubscription(CLUSTER_EGRESS_CHANNEL, CLUSTER_EGRESS_STREAM_ID);
         std::shared_ptr<aeron::Subscription> egressSub;
-        while (!(egressSub = aeron->findSubscription(subId)))
-            std::this_thread::yield();
+        while (!(egressSub = m_aeron->findSubscription(subId)))
+            m_idleStrategy.idle();
 
-        const auto pubId = aeron->addPublication(CLUSTER_INGRESS_CHANNEL, CLUSTER_INGRESS_STREAM_ID);
-        std::shared_ptr<aeron::Publication> ingressPub;
-        while (!(ingressPub = aeron->findPublication(pubId)))
-            std::this_thread::yield();
-        while (!ingressPub->isConnected())
-            std::this_thread::yield();
-
-        connect(std::make_unique<AeronIngressTransport>(ingressPub),
+        connect(std::make_unique<AeronIngressTransport>(createIngressPublication(m_ingressEndpoint)),
                 std::make_unique<AeronEgressTransport>(egressSub));
     }
 
     // Test seam: drives the SessionConnectRequest → SessionEvent(OK) handshake
     // against any IngressTransport/EgressTransport pair, synchronously and
     // without Aeron. A fake whose poll() answers immediately with a
-    // SessionEvent(OK) makes this deterministic in a unit test.
+    // SessionEvent(OK) makes this deterministic in a unit test. Redirect/reconnect
+    // is skipped in this path since it has no Aeron client to build a new
+    // Publication with (see the m_aeron guard in handleRedirect/onFragment).
     void connect(std::unique_ptr<IngressTransport> ingress, std::unique_ptr<EgressTransport> egress)
     {
         m_ingress = std::move(ingress);
         m_egress  = std::move(egress);
 
-        alignas(16) std::array<std::uint8_t, 512> connBuf{};
-        cluster_sbe::SessionConnectRequest req;
-        req.wrapAndApplyHeader(reinterpret_cast<char*>(connBuf.data()), 0, connBuf.size());
-        req.correlationId(m_correlationId)
-           .responseStreamId(CLUSTER_EGRESS_STREAM_ID)
-           .version(CLUSTER_PROTOCOL_VERSION);
-        req.putResponseChannel(std::string_view(CLUSTER_EGRESS_CHANNEL));
-        req.putEncodedCredentials(nullptr, 0);
-        req.putClientInfo(std::string_view(CLUSTER_CLIENT_INFO));
-
-        while (!m_ingress->offer(std::span<const std::uint8_t>(
-                   connBuf.data(), static_cast<std::size_t>(req.sbePosition()))))
-            std::this_thread::yield();
+        sendConnectRequest();
 
         const auto deadline = std::chrono::steady_clock::now()
                              + std::chrono::milliseconds(m_connectTimeoutMs);
@@ -209,6 +242,8 @@ public:
                 std::printf("[Cluster] Session opened  sessionId=%" PRId64
                             "  termId=%" PRId64 "  leader=%d\n",
                             m_clusterSessionId, m_leadershipTermId, evt.leaderMemberId());
+            } else if (evt.code() == cluster_sbe::EventCode::Value::REDIRECT) {
+                handleRedirect(evt);
             } else {
                 std::fprintf(stderr, "[Cluster] SessionEvent error code=%d\n",
                              static_cast<int>(evt.code()));
@@ -216,8 +251,7 @@ public:
         };
 
         while (m_clusterSessionId < 0 && std::chrono::steady_clock::now() < deadline) {
-            if (m_egress->poll(onEgress) == 0)
-                std::this_thread::yield();
+            m_idleStrategy.idle(m_egress->poll(onEgress));
         }
 
         if (m_clusterSessionId < 0)
@@ -322,7 +356,19 @@ private:
                                cluster_sbe::MessageHeader::encodedLength(),
                                hdr.blockLength(), hdr.version(), bytes.size());
             m_leadershipTermId = evt.leadershipTermId();
-            std::printf("[Cluster] New leader  termId=%" PRId64 "\n", m_leadershipTermId);
+            const std::int32_t leaderMemberId = evt.leaderMemberId();
+            const std::string ingressEndpoints = evt.getIngressEndpointsAsString();
+
+            std::string endpoint;
+            if (m_aeron && findIngressEndpoint(ingressEndpoints, leaderMemberId, endpoint)
+                        && endpoint != m_ingressEndpoint) {
+                std::printf("[Cluster] New leader  termId=%" PRId64 "  member=%d  endpoint=%s\n",
+                            m_leadershipTermId, leaderMemberId, endpoint.c_str());
+                m_ingress = std::make_unique<AeronIngressTransport>(createIngressPublication(endpoint));
+                m_ingressEndpoint = endpoint;
+            } else {
+                std::printf("[Cluster] New leader  termId=%" PRId64 "\n", m_leadershipTermId);
+            }
             return;
         }
         if (hdr.templateId() != cluster_sbe::SessionMessageHeader::sbeTemplateId()) { return; }
@@ -333,8 +379,78 @@ private:
         onAppMessage(bytes.data() + appOff, static_cast<std::int32_t>(bytes.size() - appOff));
     }
 
+    // Encodes and offers a SessionConnectRequest on the current m_ingress. Used both for the
+    // initial handshake and to re-announce the session after a REDIRECT swaps m_ingress to the
+    // new leader's endpoint.
+    void sendConnectRequest()
+    {
+        alignas(16) std::array<std::uint8_t, 512> connBuf{};
+        cluster_sbe::SessionConnectRequest req;
+        req.wrapAndApplyHeader(reinterpret_cast<char*>(connBuf.data()), 0, connBuf.size());
+        req.correlationId(m_correlationId)
+           .responseStreamId(CLUSTER_EGRESS_STREAM_ID)
+           .version(CLUSTER_PROTOCOL_VERSION);
+        req.putResponseChannel(std::string_view(CLUSTER_EGRESS_CHANNEL));
+        req.putEncodedCredentials(nullptr, 0);
+        req.putClientInfo(std::string_view(CLUSTER_CLIENT_INFO));
+
+        while (!m_ingress->offer(std::span<const std::uint8_t>(
+                   connBuf.data(), static_cast<std::size_t>(req.sbePosition()))))
+            m_idleStrategy.idle();
+    }
+
+    // A follower rejected our SessionConnectRequest, pointing us at the real leader. Swap the
+    // ingress Publication to the leader's endpoint (if we have a real Aeron client to build one
+    // with) and re-announce. No-op if the endpoint is already the one we're using.
+    void handleRedirect(cluster_sbe::SessionEvent& evt)
+    {
+        const std::int32_t leaderMemberId = evt.leaderMemberId();
+        const std::string  detail         = evt.getDetailAsString();
+
+        std::string endpoint;
+        if (!m_aeron || !findIngressEndpoint(detail, leaderMemberId, endpoint)
+                     || endpoint == m_ingressEndpoint) {
+            std::fprintf(stderr, "[Cluster] Redirected to member=%d but could not resolve a new "
+                         "ingress endpoint from \"%s\"\n", leaderMemberId, detail.c_str());
+            return;
+        }
+
+        std::printf("[Cluster] Redirected to leader  member=%d  endpoint=%s\n",
+                    leaderMemberId, endpoint.c_str());
+        m_ingress = std::make_unique<AeronIngressTransport>(createIngressPublication(endpoint));
+        m_ingressEndpoint = endpoint;
+        sendConnectRequest();
+    }
+
+    // Creates and blocks (up to m_connectTimeoutMs) until connected to a Publication for the
+    // cluster ingress at `endpoint` ("host:port"). Only valid when connect(aeron) was used —
+    // m_aeron is null in the transport-agnostic test seam.
+    std::shared_ptr<aeron::Publication> createIngressPublication(const std::string& endpoint)
+    {
+        const std::string channel = "aeron:udp?endpoint=" + endpoint;
+        const auto deadline = std::chrono::steady_clock::now()
+                             + std::chrono::milliseconds(m_connectTimeoutMs);
+
+        const auto pubId = m_aeron->addPublication(channel, CLUSTER_INGRESS_STREAM_ID);
+        std::shared_ptr<aeron::Publication> pub;
+        while (!(pub = m_aeron->findPublication(pubId))) {
+            if (std::chrono::steady_clock::now() >= deadline)
+                throw std::runtime_error("[ClusterIngressSender] Timed out creating ingress publication to " + endpoint);
+            m_idleStrategy.idle();
+        }
+        while (!pub->isConnected()) {
+            if (std::chrono::steady_clock::now() >= deadline)
+                throw std::runtime_error("[ClusterIngressSender] Timed out connecting ingress publication to " + endpoint);
+            m_idleStrategy.idle();
+        }
+        return pub;
+    }
+
+    std::shared_ptr<aeron::Aeron>     m_aeron;
+    std::string                       m_ingressEndpoint;
     std::unique_ptr<IngressTransport> m_ingress;
     std::unique_ptr<EgressTransport>  m_egress;
+    aeron::concurrent::YieldingIdleStrategy m_idleStrategy;
 
     std::int64_t  m_clusterSessionId  = -1;
     std::int64_t  m_leadershipTermId  = -1;

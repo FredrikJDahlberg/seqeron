@@ -62,9 +62,24 @@ import java.util.concurrent.TimeUnit;
  */
 public final class SequencerService implements ClusteredService {
 
-    /** UDP multicast channel for the global sequenced stream.  All clients subscribe here. */
-    public static final String GLOBAL_STREAM_CHANNEL = "aeron:udp?endpoint=224.0.1.1:9200|interface=localhost";
-    public static final int    GLOBAL_STREAM_ID      = 1;
+    /**
+     * Multi-destination-cast (dynamic control mode) channel for the global sequenced stream.
+     * This is the publisher/archive-recording channel: the leader's {@link ExclusivePublication}
+     * and {@code startRecording} both use it. Subscribers connect with {@link
+     * #GLOBAL_STREAM_SUBSCRIBER_CHANNEL} instead, which points at the same control address but
+     * carries its own (ephemeral) data endpoint.
+     */
+    public static final String GLOBAL_STREAM_CHANNEL = "aeron:udp?control-mode=dynamic|control=localhost:9200";
+
+    /**
+     * Subscriber-side channel for the global stream's MDC dynamic control mode: same control
+     * address as {@link #GLOBAL_STREAM_CHANNEL}, plus an ephemeral local data endpoint that the
+     * publisher discovers and adds as a destination automatically.
+     */
+    public static final String GLOBAL_STREAM_SUBSCRIBER_CHANNEL =
+        "aeron:udp?control-mode=dynamic|control=localhost:9200|endpoint=localhost:0";
+
+    public static final int GLOBAL_STREAM_ID = 1;
 
     /**
      * Maximum consecutive back-pressure spins on the global stream before printing an alert.

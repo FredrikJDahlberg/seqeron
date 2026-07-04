@@ -34,7 +34,7 @@
  *   Archive control  aeron:udp?endpoint=localhost:9301  stream 100
  *   Cluster ingress  aeron:udp?endpoint=localhost:9302  stream 101
  *   Cluster egress   aeron:udp?endpoint=localhost:9320  stream 102
- *   Global stream    aeron:udp?endpoint=224.0.1.1:9200|interface=localhost  stream 1
+ *   Global stream    aeron:udp?control-mode=dynamic|control=localhost:9200  stream 1 (MDC)
  *   FIX TCP          0.0.0.0:9000
  */
 
@@ -70,6 +70,7 @@
 #include "Aeron.h"
 #include "FragmentAssembler.h"
 #include "concurrent/AtomicBuffer.h"
+#include "concurrent/YieldingIdleStrategy.h"
 #include "client/archive/AeronArchive.h"
 
 // phixeron — session FSM + codec
@@ -136,7 +137,9 @@ static constexpr int         FIX_TCP_BACKLOG            = 8;
 static constexpr const char* ARCHIVE_CONTROL_CHANNEL   = "aeron:udp?endpoint=localhost:9301";
 static constexpr int32_t     ARCHIVE_CONTROL_STREAM    = 100;
 static constexpr const char* ARCHIVE_RESPONSE_CHANNEL  = "aeron:udp?endpoint=localhost:0";
-static constexpr const char* FIX_REPLAY_CHANNEL        = "aeron:udp?endpoint=localhost:9310";
+// Overridable via PHIXERON_FIX_REPLAY_PORT so two FixSessionClient instances can run
+// on one host without a port clash (todo.md item 8) — see resolveReplayChannel().
+static constexpr std::uint16_t DEFAULT_FIX_REPLAY_PORT = 9310;
 
 // FIX byte-level helpers, sendRaw, CapturingTransport, FixSession and
 // ClusterIngressHandler now live in ClusterIngressHandler.hpp so they can be
@@ -299,12 +302,14 @@ static std::unordered_map<uint32_t, std::vector<uint8_t>> replayMissingAppMessag
         const std::int64_t upToPosition = ctx.archive->getRecordingPosition(ctx.recordingId);
         if (upToPosition <= 0) { return found; }
 
-        static constexpr const char* RESEND_REPLAY_CHANNEL = "aeron:udp?endpoint=localhost:9312";
+        static constexpr std::uint16_t DEFAULT_RESEND_REPLAY_PORT = 9313;
+        const std::string resendReplayChannel = sequencer::resolveReplayChannel(
+            "PHIXERON_RESEND_REPLAY_PORT", DEFAULT_RESEND_REPLAY_PORT);
 
         aeron::archive::client::ReplayParams replayParams;
         replayParams.position(0).length(upToPosition);
         const std::int64_t replaySessionId = ctx.archive->startReplay(
-            ctx.recordingId, RESEND_REPLAY_CHANNEL, sequencer::REPLAY_STREAM_ID, replayParams);
+            ctx.recordingId, resendReplayChannel.c_str(), sequencer::REPLAY_STREAM_ID, replayParams);
 
         bool done = false;
         sequencer::GlobalStreamClient scan(
@@ -327,7 +332,7 @@ static std::unordered_map<uint32_t, std::vector<uint8_t>> replayMissingAppMessag
             nullptr, nullptr,
             [&] { done = true; });
 
-        scan.start(ctx.aeron, replaySessionId, upToPosition, RESEND_REPLAY_CHANNEL);
+        scan.start(ctx.aeron, replaySessionId, upToPosition, resendReplayChannel.c_str());
 
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
         while (!done && found.size() < missing.size() && std::chrono::steady_clock::now() < deadline)
@@ -365,6 +370,12 @@ static constexpr std::size_t MAX_RECV_BUF = 1u * 1024u * 1024u;  // 1 MB
 
 struct FixConnection
 {
+    // Stable identifier embedded as header.sourceId in every SBE message this
+    // connection submits — assigned once from a monotone counter, unlike `fd`
+    // which the OS is free to reuse for an unrelated connection as soon as
+    // this one closes (including within the lifetime of this process, not
+    // just across a gateway restart).
+    int32_t                 connId;
     int                     fd;
     bool                    m_dead{false};
     ArchiveResendContext*   archiveCtx;
@@ -376,13 +387,15 @@ struct FixConnection
     fix::decoder::PayloadDecoder<FIXT_1_1> decoder;
     std::vector<uint8_t>                   recvBuf;
 
-    FixConnection(int fd_, ClusterIngressSender* ingress, ArchiveResendContext* archiveCtx_)
-        : fd(fd_)
+    FixConnection(int32_t connId_, int fd_, ClusterIngressSender* ingress,
+                  ArchiveResendContext* archiveCtx_)
+        : connId(connId_)
+        , fd(fd_)
         , archiveCtx(archiveCtx_)
         , session(FixSession::Builder{}
                       .transport(CapturingTransport{fd_})
                       .build())
-        , ingressHandler(ingress, fd_, &session)
+        , ingressHandler(ingress, connId_, &session)
     {
         session.onTcpConnected();
         recvBuf.reserve(8192);
@@ -408,8 +421,8 @@ struct FixConnection
         const uint32_t limit     = (end == 0 || end + 1 >= savedNext)
                                    ? savedNext : end + 1;
 
-        std::printf("[Resend] fd=%d begin=%u end=%u limit=%u cacheSize=%zu\n",
-                    fd, begin, end, limit, m_resendCache.size());
+        std::printf("[Resend] connId=%d begin=%u end=%u limit=%u cacheSize=%zu\n",
+                    connId, begin, end, limit, m_resendCache.size());
 
         std::unordered_set<uint32_t> missing;
         for (uint32_t seq = begin; seq < limit; ++seq) {
@@ -419,11 +432,11 @@ struct FixConnection
         std::unordered_map<uint32_t, std::vector<uint8_t>> recovered;
         if (!missing.empty() && archiveCtx)
         {
-            std::printf("[Resend] fd=%d %zu seq missing from cache; consulting archive\n",
-                        fd, missing.size());
-            recovered = replayMissingAppMessages(*archiveCtx, fd, missing);
-            std::printf("[Resend] fd=%d archive recovered %zu of %zu missing\n",
-                        fd, recovered.size(), missing.size());
+            std::printf("[Resend] connId=%d %zu seq missing from cache; consulting archive\n",
+                        connId, missing.size());
+            recovered = replayMissingAppMessages(*archiveCtx, connId, missing);
+            std::printf("[Resend] connId=%d archive recovered %zu of %zu missing\n",
+                        connId, recovered.size(), missing.size());
         }
 
         uint32_t gapStart = 0;
@@ -452,7 +465,7 @@ struct FixConnection
 
             if (gapStart != 0)
             {
-                std::printf("[Resend] fd=%d GapFill [%u, %u)\n", fd, gapStart, seq);
+                std::printf("[Resend] connId=%d GapFill [%u, %u)\n", connId, gapStart, seq);
                 session.sendGapFill(gapStart, seq, clusterTs);
                 gapStart = 0;
             }
@@ -470,8 +483,8 @@ struct FixConnection
             std::vector<uint8_t> patched = reencodeExecutionReportToFix(er);
             patchResendFlags(patched);
 
-            std::printf("[Resend] fd=%d AppMsg seq=%u bytes=%zu\n",
-                        fd, seq, patched.size());
+            std::printf("[Resend] connId=%d AppMsg seq=%u bytes=%zu\n",
+                        connId, seq, patched.size());
             sendRaw(fd, patched.data(), patched.size());
 
             session.setNextOutgoingSeqNum(seq + 1);
@@ -480,7 +493,7 @@ struct FixConnection
         // Flush any trailing admin gap
         if (gapStart != 0)
         {
-            std::printf("[Resend] fd=%d GapFill [%u, %u)\n", fd, gapStart, limit);
+            std::printf("[Resend] connId=%d GapFill [%u, %u)\n", connId, gapStart, limit);
             session.sendGapFill(gapStart, limit, clusterTs);
         }
 
@@ -723,6 +736,9 @@ int main()
 {
     signal(SIGINT, sigintHandler);
 
+    const std::string fixReplayChannel =
+        sequencer::resolveReplayChannel("PHIXERON_FIX_REPLAY_PORT", DEFAULT_FIX_REPLAY_PORT);
+
     // ── Aeron ────────────────────────────────────────────────────────────────
     aeron::Context aeronCtx;
     auto aeron = Aeron::connect(aeronCtx);
@@ -754,7 +770,7 @@ int main()
         aeron::archive::client::ReplayParams replayParams;
         replayParams.position(0).length(aeron::archive::client::NULL_LENGTH);
         replaySessionId = archive->startReplay(
-            recordingId, FIX_REPLAY_CHANNEL, sequencer::REPLAY_STREAM_ID, replayParams);
+            recordingId, fixReplayChannel.c_str(), sequencer::REPLAY_STREAM_ID, replayParams);
         std::printf("[FixSessionClient] Replay started  replaySessionId=%" PRId64 "\n",
                     replaySessionId);
     } else {
@@ -770,7 +786,13 @@ int main()
     tcpServer.start(FIX_TCP_PORT);
 
     // ── Per-connection state ──────────────────────────────────────────────────
-    std::unordered_map<int, std::unique_ptr<FixConnection>> connections;
+    // Keyed by the stable connId (see FixConnection), not the TCP fd — the OS
+    // is free to reuse fd numbers for an unrelated connection as soon as one
+    // closes. fdToConnId translates incoming poll()/recv() fd events to the
+    // owning connection.
+    int32_t nextConnId = 1;
+    std::unordered_map<int32_t, std::unique_ptr<FixConnection>> connections;
+    std::unordered_map<int, int32_t> fdToConnId;
 
     // ── Global stream subscription ────────────────────────────────────────────
     // e.payload is directly a sbe-sequenced.xml message (schemaId=202) — no
@@ -821,12 +843,17 @@ int main()
         []() { std::puts("[Global] Caught up to live stream"); }
     );
 
-    globalStream.start(aeron, replaySessionId, catchUpPosition, FIX_REPLAY_CHANNEL);
+    globalStream.start(aeron, replaySessionId, catchUpPosition, fixReplayChannel.c_str());
     std::puts(catchUpPosition > 0
         ? "[FixSessionClient] Replaying history…"
         : "[FixSessionClient] Live from start");
 
     // ── Duty cycle ────────────────────────────────────────────────────────────
+    // A non-zero poll() timeout lets the thread block (instead of busy-spinning
+    // a full core) whenever there is no TCP activity; Aeron work is still
+    // polled every iteration, so this only bounds how quickly idle periods back off.
+    constexpr int DUTY_CYCLE_POLL_TIMEOUT_MS = 1;
+    aeron::concurrent::YieldingIdleStrategy idleStrategy;
     alignas(16) std::array<uint8_t, 8192> recvBuf{};
 
     while (g_running)
@@ -835,19 +862,21 @@ int main()
         std::vector<pollfd> pfds;
         pfds.reserve(1 + connections.size());
         pfds.push_back({tcpServer.listenFd(), POLLIN, 0});
-        for (const auto& [fd, _] : connections) {
-            pfds.push_back({fd, POLLIN, 0});
+        for (const auto& [connId, conn] : connections) {
+            pfds.push_back({conn->fd, POLLIN, 0});
         }
 
-        ::poll(pfds.data(), static_cast<nfds_t>(pfds.size()), 0);
+        ::poll(pfds.data(), static_cast<nfds_t>(pfds.size()), DUTY_CYCLE_POLL_TIMEOUT_MS);
 
         // New TCP connections.
         if (pfds[0].revents & POLLIN) {
             const int clientFd = tcpServer.acceptNewConnection();
             if (clientFd >= 0) {
+                const int32_t connId = nextConnId++;
                 try {
-                    connections.emplace(clientFd,
-                        std::make_unique<FixConnection>(clientFd, &ingressSender, &resendArchiveCtx));
+                    connections.emplace(connId,
+                        std::make_unique<FixConnection>(connId, clientFd, &ingressSender, &resendArchiveCtx));
+                    fdToConnId.emplace(clientFd, connId);
                 } catch (...) {
                     ::close(clientFd);
                     throw;
@@ -867,18 +896,25 @@ int main()
                             n == 0 ? "EOF" : std::strerror(errno));
                 toClose.push_back(fd);
             } else {
-                auto it = connections.find(fd);
-                if (it != connections.end()) {
-                    it->second->onRecv(recvBuf.data(), static_cast<std::size_t>(n));
-                    if (it->second->isDead() || it->second->session.isPendingClose()) {
-                        toClose.push_back(fd);
+                auto fdIt = fdToConnId.find(fd);
+                if (fdIt != fdToConnId.end()) {
+                    auto it = connections.find(fdIt->second);
+                    if (it != connections.end()) {
+                        it->second->onRecv(recvBuf.data(), static_cast<std::size_t>(n));
+                        if (it->second->isDead() || it->second->session.isPendingClose()) {
+                            toClose.push_back(fd);
+                        }
                     }
                 }
             }
         }
 
         for (const int fd : toClose) {
-            connections.erase(fd);
+            auto fdIt = fdToConnId.find(fd);
+            if (fdIt != fdToConnId.end()) {
+                connections.erase(fdIt->second);
+                fdToConnId.erase(fdIt);
+            }
             ::close(fd);
         }
 
@@ -895,13 +931,13 @@ int main()
         ingressSender.pollEgress([](const uint8_t* /*data*/, int32_t /*len*/) {});
 
         if (aeronWork == 0 && pfds[0].revents == 0) {
-            std::this_thread::yield();
+            idleStrategy.idle();
         }
     }
 
     std::printf("[FixSessionClient] Shutting down. Active connections: %zu\n",
                 connections.size());
-    for (const auto& [fd, _] : connections) { ::close(fd); }
+    for (const auto& [connId, conn] : connections) { ::close(conn->fd); }
     tcpServer.shutdown();
     ingressSender.close();
     return 0;

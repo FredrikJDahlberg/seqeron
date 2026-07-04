@@ -3,8 +3,8 @@
 #
 # Launches three processes in the background, each writing to its own log file:
 #   1. SequencerNode  (Java, single-node Aeron Cluster, member 0)
-#   2. fix_session_client  (C++, FIX TCP gateway on port 9000)
-#   3. application_stream_client  (C++, replays global stream)
+#   2. FixSessionClient  (C++, FIX TCP gateway on port 9000)
+#   3. OrderExecClient  (C++, replays global stream, tracks positions, answers risk queries)
 #
 # Ctrl-C (or kill $$ / kill -- -$$) stops all three cleanly.
 #
@@ -43,12 +43,19 @@ JAVA_OPTS=(
 LOG_DIR="logs"
 SEQ_LOG="${LOG_DIR}/sequencer.log"
 MD_LOG="${LOG_DIR}/aeronmd.log"
-FIX_LOG="${LOG_DIR}/fix_session_client.log"
-APP_LOG="${LOG_DIR}/application_stream_client.log"
+FIX_LOG="${LOG_DIR}/FixSessionClient.log"
+APP_LOG="${LOG_DIR}/OrderExecClient.log"
 
 # Default Aeron directory used by aeronmd and by the C++ clients.
 AERON_DIR="${TMPDIR}aeron-$(whoami)"
-AERONMD="${BUILD_DIR}/_deps/aeron-build/binaries/aeronmd"
+
+# Prefer a system-installed aeronmd (e.g. Homebrew or a system package) on PATH;
+# fall back to the CMake FetchContent build-tree copy if none is found there.
+if command -v aeronmd >/dev/null 2>&1; then
+    AERONMD="$(command -v aeronmd)"
+else
+    AERONMD="${BUILD_DIR}/_deps/aeron-build/binaries/aeronmd"
+fi
 
 # ── Pre-flight checks ─────────────────────────────────────────────────────────
 
@@ -57,7 +64,7 @@ if [[ ! -f "${JAR}" ]]; then
     exit 1
 fi
 
-for bin in fix_session_client application_stream_client; do
+for bin in FixSessionClient OrderExecClient; do
     if [[ ! -x "${BUILD_DIR}/${bin}" ]]; then
         echo "ERROR: ${BUILD_DIR}/${bin} not found — run: cmake --build ${BUILD_DIR}" >&2
         exit 1
@@ -112,19 +119,19 @@ until [[ -f "${AERON_DIR}/cnc.dat" ]]; do
 done
 echo "[cluster.sh] Media driver ready"
 
-echo "[cluster.sh] Starting fix_session_client → ${FIX_LOG}"
-stdbuf -oL -eL "${BUILD_DIR}/fix_session_client" > "${FIX_LOG}" 2>&1 &
+echo "[cluster.sh] Starting FixSessionClient → ${FIX_LOG}"
+stdbuf -oL -eL "${BUILD_DIR}/FixSessionClient" > "${FIX_LOG}" 2>&1 &
 FIX_PID=$!
 
-echo "[cluster.sh] Starting application_stream_client → ${APP_LOG}"
-stdbuf -oL -eL "${BUILD_DIR}/application_stream_client" > "${APP_LOG}" 2>&1 &
+echo "[cluster.sh] Starting OrderExecClient → ${APP_LOG}"
+stdbuf -oL -eL "${BUILD_DIR}/OrderExecClient" > "${APP_LOG}" 2>&1 &
 APP_PID=$!
 
 echo "[cluster.sh] All processes started"
-echo "  SequencerNode             pid=${SEQ_PID}  log=${SEQ_LOG}"
-echo "  aeronmd                   pid=${MD_PID}   log=${MD_LOG}"
-echo "  fix_session_client        pid=${FIX_PID}  log=${FIX_LOG}"
-echo "  application_stream_client pid=${APP_PID}  log=${APP_LOG}"
+echo "  SequencerNode     pid=${SEQ_PID}  log=${SEQ_LOG}"
+echo "  aeronmd           pid=${MD_PID}   log=${MD_LOG}"
+echo "  FixSessionClient  pid=${FIX_PID}  log=${FIX_LOG}"
+echo "  OrderExecClient   pid=${APP_PID}  log=${APP_LOG}"
 echo "[cluster.sh] Press Ctrl-C to stop"
 
 # ── Shutdown on Ctrl-C ────────────────────────────────────────────────────────

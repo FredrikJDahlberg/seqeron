@@ -26,7 +26,7 @@ cmake --build cmake-build-release
 C++23, requires Java (Runtime) on PATH for the SBE tool and the code generator, and a
 `git@github.com:...` SSH remote reachable for the simdfix FetchContent clone.
 
-Executables: `fix_session_client`, `application_stream_client`, `fix_test_server`,
+Executables: `FixSessionClient`, `OrderExecClient`, `fix_test_server`,
 `phixeron_tests` (GoogleTest). Build a single target with `cmake --build cmake-build-debug --target <name>`.
 
 ### Java
@@ -54,16 +54,16 @@ Run a single test: `./cmake-build-debug/phixeron_tests --gtest_filter='ClusterIn
 
 ### Data flow
 ```
-FIX client (TCP) ⇄ fix_session_client (C++)  ⇄  Aeron Cluster (Java, Raft-replicated)
-                                                        │
-                                       global sequenced stream (multicast, archived)
-                                                        │
-                          ┌─────────────────────────────┼─────────────────────────────┐
-                          ▼                             ▼                             ▼
-                 fix_session_client            application_stream_client      RiskEngineClient (Java)
-              (delivers ExecutionReports        (app messages only, no          (tracks positions from
-               back to the originating           lifecycle events)              fills, answers
-               TCP client)                                                      PortfolioQueryRequest)
+FIX client (TCP) ⇄ FixSessionClient (C++)  ⇄  Aeron Cluster (Java, Raft-replicated)
+                                                      │
+                                     global sequenced stream (MDC, archived)
+                                                      │
+                          ┌───────────────────────────┴───────────────────────────┐
+                          ▼                                                       ▼
+                 FixSessionClient                                          OrderExecClient (C++)
+              (delivers ExecutionReports                              (prints app messages, tracks
+               back to the originating                                  positions from fills, answers
+               TCP client)                                               PortfolioQueryRequest)
 ```
 `fix_test_server` (C++, under `src/test/cpp/.../session/`) is a standalone FIX TCP client used to
 drive the whole pipeline end-to-end (Logon → Heartbeat → NewOrderSingle → Logout, plus a direct
@@ -72,8 +72,10 @@ cluster-ingress risk-query test) — see README.md for the full runbook and port
 ### Aeron Cluster sequencer (Java) — `SequencerNode` / `SequencerService`
 `SequencerService` (`ClusteredService`) is the replicated state machine: every ingress message
 gets a cluster-wide monotone `globalSeqNo` plus the Raft consensus timestamp, then is
-republished on the **global stream** (`GLOBAL_STREAM_CHANNEL` = `224.0.1.1:9200` multicast, stream
-1), which is simultaneously recorded by the co-located Aeron Archive so clients can replay full
+republished on the **global stream** — multi-destination-cast, dynamic control mode
+(`GLOBAL_STREAM_CHANNEL` = `aeron:udp?control-mode=dynamic|control=localhost:9200` for the
+publisher/archive side, `GLOBAL_STREAM_SUBSCRIBER_CHANNEL` adds `|endpoint=localhost:0` for
+subscribers, stream 1), which is simultaneously recorded by the co-located Aeron Archive so clients can replay full
 history on (re)connect. Only the current leader publishes; all nodes keep identical sequencing
 state so a new leader resumes exactly where the last one left off. Snapshots are a single
 little-endian `int64 globalSeqNo`.
@@ -85,7 +87,7 @@ layout). `onSessionMessage` therefore only ever decodes the outer `MessageHeader
 composite and copies everything else through as opaque bytes — it never needs to know about
 individual FIX message types.
 
-### C++ FIX gateway — `fix_session_client` / `FixSessionClient.cpp`
+### C++ FIX gateway — `FixSessionClient` / `FixSessionClient.cpp`
 Deliberately stateless proxy: authoritative FIX session state (sequence numbers, session status)
 lives in the cluster, not in this process, so it can crash and restart without losing anything.
 Three cooperating pieces:
@@ -96,7 +98,7 @@ Three cooperating pieces:
 - **`ClusterIngressHandler`** — pure byte-level logic: FIX frame/tag parsing helpers, SBE
   encode/decode, and application-message routing, built on top of `ClusterIngressSender`.
 - **`GlobalStreamClient`** — replays the archived global stream from a given position, then
-  follows it live; used identically by `fix_session_client`, `application_stream_client`, and
+  follows it live; used identically by `FixSessionClient`, `OrderExecClient`, and
   `fix_test_server`.
 
 `src/main/cpp/.../session/` (`Session`, `ClientSession`, `ServerSession`, `ResendCache`) is a
@@ -127,18 +129,21 @@ Both the Java (`generateUnsequencedSbe`/`generateSequencedSbe` Gradle tasks) and
 targets) sides regenerate independently from the same XML — keep both in sync when editing a
 schema.
 
-### Risk engine — `RiskEngineClient` / `MockRiskEngine` (Java only; C++ port pending, see todo.md)
-Replays the global stream to track per-account positions from `NewOrderSingle`/`ExecutionReport`
-fills, answers `PortfolioQueryRequest` using `MockRiskEngine` (synchronous, 5-request concurrency
-cap), and submits the reply back to cluster ingress. Throttling beyond 5 concurrent requests
-works by leaving the request fragment unconsumed on the global stream until a slot frees, not by
-blocking or dropping it.
+### Order execution client — `OrderExecClient` (C++, under `src/main/cpp/.../sequencer/OrderExecClient.cpp`)
+Combines what used to be two separate binaries — `application_stream_client` and the C++
+`RiskEngineClient` — into one. Replays the global stream then follows it live, printing every
+`NewOrderSingle`/`ExecutionReport` it decodes (lifecycle events are filtered out), while also
+tracking per-account positions from those same fills, answering `PortfolioQueryRequest` using
+`MockRiskEngine` (under `src/main/cpp/.../risk/`, synchronous, 5-request concurrency cap), and
+submitting the reply back to cluster ingress. Throttling beyond 5 concurrent requests works by
+leaving the request fragment unconsumed on the global stream until a slot frees, not by blocking
+or dropping it. The original Java `RiskEngineClient`/`MockRiskEngine` are dead code, already
+removed (`src/main/java/org/limitless/phixeron/risk/` deleted).
 
 ### Known gaps
 `todo.md` tracks known incomplete pieces (e.g. ExecutionReport→TCP routing in
-`FixSessionClient.cpp` is stubbed, connection IDs aren't stable across gateway restarts, cluster
-ingress doesn't reconnect after leader failover, no real ResendRequest replay backing store yet).
-Check it before assuming a code path is complete.
+`FixSessionClient.cpp` is stubbed, connection IDs aren't stable across gateway restarts, no real
+ResendRequest replay backing store yet). Check it before assuming a code path is complete.
 
 `doc/` contains deeper background/design docs (`0-overview.md` … `6-detailed-architecture.md`)
 for the larger target system this project implements a slice of (full buy-side/sell-side gateway
