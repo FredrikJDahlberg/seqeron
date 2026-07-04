@@ -9,20 +9,26 @@
  * Inbound path (TCP → Cluster):
  *   1. Accepts FIX sessions on TCP port 9000.
  *   2. Decodes each message with simdfix PayloadDecoder<FIXT_1_1>.
- *   3. Admin messages (Logon, Heartbeat, …) are re-encoded as SBE
- *      (sbe-session.xml schemaId=100) with a 4-byte connection ID prefix and
- *      sent to the cluster ingress. Session state is NOT touched here.
- *   4. Application messages (NewOrderSingle) are wrapped in an AppMessage SBE
- *      envelope (schemaId=201) and offered to the cluster ingress.
+ *   3. Every message — admin (Logon, Heartbeat, …) and application
+ *      (NewOrderSingle, ExecutionReport) — is re-encoded as the matching
+ *      sbe-unsequenced.xml message (schemaId=200) and offered to the cluster
+ *      ingress directly, with header.sourceId/sessionId identifying the
+ *      submitting connection. See ClusterIngressHandler.hpp.
  *
  * Outbound path (Global stream → TCP):
  *   On startup the client replays the archive (NULL_POSITION length → live
- *   follow-through on the same image). For each SequencedMessage:
- *   - Admin SBE payloads (schemaId==100): decoded, and the corresponding
- *     session (looked up by embedded connection ID) is driven with the cluster
- *     consensus timestamp. The session FSM then writes the FIX response to TCP.
- *   - Raw FIX payloads (byte[0]=='8'): decoded as application messages
- *     (ExecutionReport etc.) and broadcast to TCP clients.
+ *   follow-through on the same image). Each fragment on the global stream is
+ *   a complete sbe-sequenced.xml message (schemaId=202); its templateId picks
+ *   the branch:
+ *   - Admin templates: decoded, and the corresponding session (looked up by
+ *     header.sourceId) is driven with the cluster consensus timestamp. The
+ *     session FSM then writes the FIX response to TCP.
+ *   - ExecutionReport: decoded and re-encoded as FIX wire text (its MsgSeqNum
+ *     was already reserved and stamped by ClusterIngressHandler at TCP-inbound
+ *     submission time — see ClusterIngressHandler::sendExecutionReport — so
+ *     re-encoding here reuses that value rather than assigning a new one) and
+ *     delivered to TCP.
+ *   - NewOrderSingle: the client's own submission echoed back; ignored here.
  *
  * Channels / ports (must match SequencerNode defaults):
  *   Archive control  aeron:udp?endpoint=localhost:9301  stream 100
@@ -93,30 +99,35 @@
 // ClusterIngressHandlerTest.cpp) without a real media driver or TCP socket.
 #include "org/limitless/phixeron/sequencer/ClusterIngressHandler.hpp"
 
-// SBE codecs for session admin messages (sbe-session.xml schemaId=100)
-#include "org_limitless_phixeron_sbe/MessageHeader.h"
-#include "org_limitless_phixeron_sbe/Logon.h"
-#include "org_limitless_phixeron_sbe/Logout.h"
-#include "org_limitless_phixeron_sbe/Heartbeat.h"
-#include "org_limitless_phixeron_sbe/TestRequest.h"
-#include "org_limitless_phixeron_sbe/ResendRequest.h"
-#include "org_limitless_phixeron_sbe/SequenceReset.h"
+// SBE codecs for the sequencer → global stream egress schema (sbe-sequenced.xml
+// schemaId=202) — used on this egress path to decode what comes back off the
+// global stream. Ingress encoding (sbe-unsequenced.xml) is fully encapsulated
+// in ClusterIngressHandler.hpp and does not need to be decoded here.
+#include "org_limitless_phixeron_sbe_sequenced/MessageHeader.h"
+#include "org_limitless_phixeron_sbe_sequenced/Header.h"
+#include "org_limitless_phixeron_sbe_sequenced/Logon.h"
+#include "org_limitless_phixeron_sbe_sequenced/Logout.h"
+#include "org_limitless_phixeron_sbe_sequenced/Heartbeat.h"
+#include "org_limitless_phixeron_sbe_sequenced/TestRequest.h"
+#include "org_limitless_phixeron_sbe_sequenced/ResendRequest.h"
+#include "org_limitless_phixeron_sbe_sequenced/SequenceReset.h"
+#include "org_limitless_phixeron_sbe_sequenced/ExecutionReport.h"
+#include "org_limitless_phixeron_sbe_sequenced/NewOrderSingle.h"
 
 // ── Namespace aliases ──────────────────────────────────────────────────────────
 
-namespace fix     = org::limitless::fix;
-namespace sess    = org::limitless::phixeron::session;
-namespace msg     = fix::generated::messages;
-namespace cfg     = fix::generated::config;
-namespace seq     = org::limitless::phixeron::sequencer;
-namespace sbesess = org::limitless::phixeron::sbe;
+namespace fix    = org::limitless::fix;
+namespace sess   = org::limitless::phixeron::session;
+namespace msg    = fix::generated::messages;
+namespace cfg    = fix::generated::config;
+namespace seq    = org::limitless::phixeron::sequencer;
+namespace sbeseq = org::limitless::phixeron::sbe::sequenced;
 
 using namespace aeron;
 using namespace aeron::concurrent;
 using namespace fix::generated::config;   // FIXT_1_1, MaxMessageSize, …
 using namespace fix::generated::messages; // FixMessageHandler, LogonDecoder, …
 using seq::nowMs;
-using seq::CONN_ID_PREFIX;
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -126,9 +137,6 @@ static constexpr const char* ARCHIVE_CONTROL_CHANNEL   = "aeron:udp?endpoint=loc
 static constexpr int32_t     ARCHIVE_CONTROL_STREAM    = 100;
 static constexpr const char* ARCHIVE_RESPONSE_CHANNEL  = "aeron:udp?endpoint=localhost:0";
 static constexpr const char* FIX_REPLAY_CHANNEL        = "aeron:udp?endpoint=localhost:9310";
-
-// Session admin SBE schema (sbe-session.xml schemaId=100).
-static constexpr uint16_t SESSION_SCHEMA_ID = 100;
 
 // FIX byte-level helpers, sendRaw, CapturingTransport, FixSession and
 // ClusterIngressHandler now live in ClusterIngressHandler.hpp so they can be
@@ -142,6 +150,110 @@ using seq::sendRaw;
 using seq::CapturingTransport;
 using seq::FixSession;
 using seq::ClusterIngressHandler;
+
+// ── SBE enum → FIX enum mapping (egress: sbe-sequenced.xml → simdfix) ────────
+//
+// Inverse of ClusterIngressHandler.hpp's toSbeX() maps; both mirror the same
+// FIX values by construction (see fix-application.xml / sbe-unsequenced.xml /
+// sbe-sequenced.xml — all three keep identical enum valid values).
+
+static msg::Side fromSbeSide(sbeseq::Side::Value v)
+{
+    switch (v) {
+        case sbeseq::Side::Value::Buy:       return msg::Side::Buy;
+        case sbeseq::Side::Value::Sell:      return msg::Side::Sell;
+        case sbeseq::Side::Value::BuyMinus:  return msg::Side::BuyMinus;
+        case sbeseq::Side::Value::SellPlus:  return msg::Side::SellPlus;
+        case sbeseq::Side::Value::SellShort: return msg::Side::SellShort;
+        default: return msg::Side::Buy;
+    }
+}
+
+static msg::ExecType fromSbeExecType(sbeseq::ExecType::Value v)
+{
+    switch (v) {
+        case sbeseq::ExecType::Value::New:            return msg::ExecType::New;
+        case sbeseq::ExecType::Value::DoneForDay:     return msg::ExecType::DoneForDay;
+        case sbeseq::ExecType::Value::Canceled:       return msg::ExecType::Canceled;
+        case sbeseq::ExecType::Value::Replaced:       return msg::ExecType::Replaced;
+        case sbeseq::ExecType::Value::PendingCancel:  return msg::ExecType::PendingCancel;
+        case sbeseq::ExecType::Value::Stopped:        return msg::ExecType::Stopped;
+        case sbeseq::ExecType::Value::Rejected:       return msg::ExecType::Rejected;
+        case sbeseq::ExecType::Value::Suspended:      return msg::ExecType::Suspended;
+        case sbeseq::ExecType::Value::PendingNew:     return msg::ExecType::PendingNew;
+        case sbeseq::ExecType::Value::Calculated:     return msg::ExecType::Calculated;
+        case sbeseq::ExecType::Value::Expired:        return msg::ExecType::Expired;
+        case sbeseq::ExecType::Value::Restated:       return msg::ExecType::Restated;
+        case sbeseq::ExecType::Value::PendingReplace: return msg::ExecType::PendingReplace;
+        case sbeseq::ExecType::Value::Trade:          return msg::ExecType::Trade;
+        case sbeseq::ExecType::Value::TradeCorrect:   return msg::ExecType::TradeCorrect;
+        case sbeseq::ExecType::Value::TradeCancel:    return msg::ExecType::TradeCancel;
+        case sbeseq::ExecType::Value::OrderStatus:    return msg::ExecType::OrderStatus;
+        default: return msg::ExecType::New;
+    }
+}
+
+static msg::OrdStatus fromSbeOrdStatus(sbeseq::OrdStatus::Value v)
+{
+    switch (v) {
+        case sbeseq::OrdStatus::Value::New:             return msg::OrdStatus::New;
+        case sbeseq::OrdStatus::Value::PartiallyFilled: return msg::OrdStatus::PartiallyFilled;
+        case sbeseq::OrdStatus::Value::Filled:          return msg::OrdStatus::Filled;
+        case sbeseq::OrdStatus::Value::DoneForDay:      return msg::OrdStatus::DoneForDay;
+        case sbeseq::OrdStatus::Value::Canceled:        return msg::OrdStatus::Canceled;
+        case sbeseq::OrdStatus::Value::Replaced:        return msg::OrdStatus::Replaced;
+        case sbeseq::OrdStatus::Value::PendingCancel:   return msg::OrdStatus::PendingCancel;
+        case sbeseq::OrdStatus::Value::Stopped:         return msg::OrdStatus::Stopped;
+        case sbeseq::OrdStatus::Value::Rejected:        return msg::OrdStatus::Rejected;
+        case sbeseq::OrdStatus::Value::Suspended:       return msg::OrdStatus::Suspended;
+        case sbeseq::OrdStatus::Value::PendingNew:      return msg::OrdStatus::PendingNew;
+        case sbeseq::OrdStatus::Value::Calculated:      return msg::OrdStatus::Calculated;
+        case sbeseq::OrdStatus::Value::Expired:         return msg::OrdStatus::Expired;
+        case sbeseq::OrdStatus::Value::PendingReplace:  return msg::OrdStatus::PendingReplace;
+        default: return msg::OrdStatus::New;
+    }
+}
+
+// Re-encodes a cluster-received sbe-sequenced.xml ExecutionReport as FIX
+// wire text, using its own embedded seqNum/sendingTimeMs. Uses a standalone
+// FixPayloadEncoder (independent of any live FixSession's outgoing counter)
+// because ExecutionReport's MsgSeqNum was already reserved and stamped by
+// ClusterIngressHandler at TCP-inbound submission time (see
+// ClusterIngressHandler::sendExecutionReport) — this just reproduces that
+// exact, already-assigned message, whether for normal delivery or a resend.
+static std::vector<uint8_t> reencodeExecutionReportToFix(const sbeseq::ExecutionReport& er)
+{
+    msg::FixPayloadEncoder<cfg::FIXT_1_1, "CLIENT", "SEQUENCER"> encoder;
+    alignas(16) std::array<uint8_t, 512> buf{};
+    encoder.wrap(0, std::span<uint8_t>(buf.data(), buf.size()));
+
+    msg::ExecutionReportEncoder enc;
+    encoder.wrapHeader(enc, er.seqNum(), std::chrono::milliseconds(er.sendingTimeMs()));
+
+    enc.orderID(er.getOrderIDAsString())
+       .clOrdID(er.getClOrdIDAsString())
+       .execID(er.getExecIDAsString())
+       .execType(fromSbeExecType(er.execType()))
+       .ordStatus(fromSbeOrdStatus(er.ordStatus()))
+       .symbol(er.getSymbolAsString())
+       .side(fromSbeSide(er.side()))
+       .orderQty(er.orderQty())
+       .leavesQty(er.leavesQty())
+       .cumQty(er.cumQty())
+       .avgPx(fix::utils::FixedDecimal{er.avgPx()})
+       .transactTime(std::chrono::milliseconds(er.transactTime()));
+    if (er.price() != sbeseq::ExecutionReport::priceNullValue())
+        enc.price(fix::utils::FixedDecimal{er.price()});
+    if (er.lastQty() != sbeseq::ExecutionReport::lastQtyNullValue())
+        enc.lastQty(er.lastQty());
+    if (er.lastPx() != sbeseq::ExecutionReport::lastPxNullValue())
+        enc.lastPx(fix::utils::FixedDecimal{er.lastPx()});
+    if (er.text()[0] != '\0')
+        enc.text(er.getTextAsString());
+
+    const auto len = encoder.encode(enc);
+    return std::vector<uint8_t>(buf.data(), buf.data() + len);
+}
 
 // ── Archive-backed resend fallback ────────────────────────────────────────────
 
@@ -157,11 +269,14 @@ struct ArchiveResendContext
 };
 
 // On a resend-cache miss, scans the archived global stream from the beginning
-// up to the current recording position, filtering for application messages
-// (MsgType=ExecutionReport) that this connId submitted and whose MsgSeqNum
-// (tag 34) is in `missing`. This is a synchronous, bounded, occasional
-// slow-path operation — resends are rare, so a full scan-and-filter is
-// preferred here over maintaining a seqNum→archive-position index.
+// up to the current recording position, filtering for sbe-sequenced.xml
+// ExecutionReport messages (schemaId=202) that this connId submitted
+// (header.sourceId) and whose seqNum (tag 34) is in `missing`. Found entries
+// are stored as the original SBE bytes verbatim — the caller re-decodes and
+// re-encodes them to FIX text via reencodeExecutionReportToFix, same as a
+// live cluster echo. This is a synchronous, bounded, occasional slow-path
+// operation — resends are rare, so a full scan-and-filter is preferred here
+// over maintaining a seqNum→archive-position index.
 // Archive-backed resend recovery is a best-effort, occasional slow path
 // (see comment above). The shared control-plane AeronArchive connection can
 // go stale after being idle between resend calls (e.g. an archive-side
@@ -191,28 +306,18 @@ static std::unordered_map<uint32_t, std::vector<uint8_t>> replayMissingAppMessag
         seq::GlobalStreamClient scan(
             [&](const seq::SequencedEvent& e)
             {
-                if (e.payloadLength <= seq::APP_MSG_SBE_PREFIX + CONN_ID_PREFIX) return;
-                const auto* p = reinterpret_cast<const uint8_t*>(e.payload) + seq::APP_MSG_SBE_PREFIX;
+                if (e.templateId != sbeseq::ExecutionReport::sbeTemplateId()) return;
+                if (e.sourceId != connId) return;
 
-                int32_t msgConnId;
-                std::memcpy(&msgConnId, p, CONN_ID_PREFIX);
-                if (msgConnId != connId) return;
-
-                const uint8_t* fixBytes = p + CONN_ID_PREFIX;
-                const auto     fixLen   = static_cast<std::size_t>(
-                    e.payloadLength - seq::APP_MSG_SBE_PREFIX - CONN_ID_PREFIX);
-                if (fixLen == 0) return;
-
-                const auto [mts, mte] = fixTagRange(fixBytes, fixLen, "35");
-                if (mts == std::string::npos || mte - mts != 1 || fixBytes[mts] != '8') return;
-
-                const auto [vs, ve] = fixTagRange(fixBytes, fixLen, "34");
-                if (vs == std::string::npos) return;
-                uint32_t seqNum = 0;
-                for (std::size_t i = vs; i < ve; ++i) seqNum = seqNum * 10 + (fixBytes[i] - '0');
+                const auto* payload = reinterpret_cast<const uint8_t*>(e.payload);
+                sbeseq::ExecutionReport er;
+                er.wrapForDecode(const_cast<char*>(reinterpret_cast<const char*>(payload)),
+                                 sbeseq::MessageHeader::encodedLength(),
+                                 e.blockLength, e.version, e.payloadLength);
+                const uint32_t seqNum = er.seqNum();
 
                 if (missing.contains(seqNum) && !found.contains(seqNum))
-                    found.emplace(seqNum, std::vector<uint8_t>(fixBytes, fixBytes + fixLen));
+                    found.emplace(seqNum, std::vector<uint8_t>(payload, payload + e.payloadLength));
             },
             nullptr, nullptr,
             [&] { done = true; });
@@ -236,17 +341,18 @@ static std::unordered_map<uint32_t, std::vector<uint8_t>> replayMissingAppMessag
 
 // ── FixConnection ─────────────────────────────────────────────────────────────
 //
-// TCP receive path:  ClusterIngressHandler encodes every FIX message as SBE
-//                   (admin) or raw FIX (app) and forwards to the cluster.
-//                   Session state is NOT updated here.
+// TCP receive path:  ClusterIngressHandler encodes every FIX message (admin
+//                   and application) as sbe-unsequenced.xml and forwards it
+//                   to the cluster. Session state is NOT updated here.
 //
-// Global stream path: FixConnection::onClusterAdmin() and onClusterAppMessage()
-//                     are called by the main loop when a SequencedMessage
-//                     arrives that was sourced by this connection (matched by
-//                     the embedded connId). They advance the session clock to
-//                     the cluster timestamp; application messages are also
-//                     delivered to TCP and cached here (see ResendCache),
-//                     never at the point they are locally encoded.
+// Global stream path: FixConnection::onClusterAdmin() and
+//                     onClusterExecutionReport() are called by the main loop
+//                     when a sbe-sequenced.xml message arrives that was
+//                     sourced by this connection (matched by header.sourceId). They
+//                     advance the session clock to the cluster timestamp;
+//                     application messages are also delivered to TCP and
+//                     cached here (see ResendCache), never at the point they
+//                     are locally encoded.
 
 // Session only needs a transport; it no longer handles inbound application messages.
 
@@ -269,7 +375,7 @@ struct FixConnection
         : fd(fd_)
         , archiveCtx(archiveCtx_)
         , session(FixSession::Builder{}
-                      .transport(CapturingTransport{fd_, ingress, fd_})
+                      .transport(CapturingTransport{fd_})
                       .build())
         , ingressHandler(ingress, fd_, &session)
     {
@@ -345,8 +451,17 @@ struct FixConnection
                 gapStart = 0;
             }
 
-            // Patch PossDupFlag + OrigSendingTime into a copy and send raw
-            std::vector<uint8_t> patched = *bytes;
+            // Decode the cached/recovered sbe-sequenced ExecutionReport,
+            // re-encode it as FIX text, then patch PossDupFlag +
+            // OrigSendingTime into a copy and send raw.
+            sbeseq::MessageHeader hdr;
+            hdr.wrap(reinterpret_cast<char*>(const_cast<uint8_t*>(bytes->data())), 0,
+                     sbeseq::MessageHeader::sbeSchemaVersion(), bytes->size());
+            sbeseq::ExecutionReport er;
+            er.wrapForDecode(reinterpret_cast<char*>(const_cast<uint8_t*>(bytes->data())),
+                             sbeseq::MessageHeader::encodedLength(),
+                             hdr.blockLength(), hdr.version(), bytes->size());
+            std::vector<uint8_t> patched = reencodeExecutionReportToFix(er);
             patchResendFlags(patched);
 
             std::printf("[Resend] fd=%d AppMsg seq=%u bytes=%zu\n",
@@ -409,46 +524,46 @@ struct FixConnection
         session.setNowMs(clusterTimestampMs);
         switch (templateId)
         {
-        case sbesess::Logon::sbeTemplateId():
+        case sbeseq::Logon::sbeTemplateId():
         {
-            sbesess::Logon msg;
-            msg.wrapForDecode(const_cast<char*>(sbeBody), sbesess::MessageHeader::encodedLength(),
+            sbeseq::Logon msg;
+            msg.wrapForDecode(const_cast<char*>(sbeBody), sbeseq::MessageHeader::encodedLength(),
                               blockLen, version, sbeBodyLen);
             session.handleClusterLogon(msg.heartbeatInterval(), clusterTimestampMs);
             break;
         }
-        case sbesess::Logout::sbeTemplateId():
+        case sbeseq::Logout::sbeTemplateId():
             session.handleClusterLogout(clusterTimestampMs);
             break;
 
-        case sbesess::Heartbeat::sbeTemplateId():
+        case sbeseq::Heartbeat::sbeTemplateId():
         {
-            sbesess::Heartbeat msg;
-            msg.wrapForDecode(const_cast<char*>(sbeBody), sbesess::MessageHeader::encodedLength(),
+            sbeseq::Heartbeat msg;
+            msg.wrapForDecode(const_cast<char*>(sbeBody), sbeseq::MessageHeader::encodedLength(),
                               blockLen, version, sbeBodyLen);
             session.handleClusterHeartbeat(clusterTimestampMs);
             break;
         }
-        case sbesess::TestRequest::sbeTemplateId():
+        case sbeseq::TestRequest::sbeTemplateId():
         {
-            sbesess::TestRequest msg;
-            msg.wrapForDecode(const_cast<char*>(sbeBody), sbesess::MessageHeader::encodedLength(),
+            sbeseq::TestRequest msg;
+            msg.wrapForDecode(const_cast<char*>(sbeBody), sbeseq::MessageHeader::encodedLength(),
                               blockLen, version, sbeBodyLen);
             session.handleClusterTestRequest(msg.testReqID(), clusterTimestampMs);
             break;
         }
-        case sbesess::ResendRequest::sbeTemplateId():
+        case sbeseq::ResendRequest::sbeTemplateId():
         {
-            sbesess::ResendRequest msg;
-            msg.wrapForDecode(const_cast<char*>(sbeBody), sbesess::MessageHeader::encodedLength(),
+            sbeseq::ResendRequest msg;
+            msg.wrapForDecode(const_cast<char*>(sbeBody), sbeseq::MessageHeader::encodedLength(),
                               blockLen, version, sbeBodyLen);
             handleResendRequest(msg.beginSeqNo(), msg.endSeqNo(), clusterTimestampMs);
             break;
         }
-        case sbesess::SequenceReset::sbeTemplateId():
+        case sbeseq::SequenceReset::sbeTemplateId():
         {
-            sbesess::SequenceReset msg;
-            msg.wrapForDecode(const_cast<char*>(sbeBody), sbesess::MessageHeader::encodedLength(),
+            sbeseq::SequenceReset msg;
+            msg.wrapForDecode(const_cast<char*>(sbeBody), sbeseq::MessageHeader::encodedLength(),
                               blockLen, version, sbeBodyLen);
             session.handleClusterSequenceReset(msg.newSeqNo(), clusterTimestampMs);
             break;
@@ -462,25 +577,30 @@ struct FixConnection
 
     // Global stream: an outbound application message (ExecutionReport) this
     // connection submitted to the cluster has been sequenced and echoed back.
-    // Echoes of inbound client messages (e.g. NewOrderSingle, also submitted to
-    // the cluster for total ordering) share the same connId but are not ours to
-    // deliver or cache, so anything other than MsgType=ExecutionReport ('8') is
-    // ignored here.
-    void onClusterAppMessage(const uint8_t* fixBytes, std::size_t len, int64_t clusterTimestampMs)
+    // sbeBody/sbeBodyLen is the full sbe-sequenced.xml ExecutionReport
+    // payload (starting at its own 8-byte messageHeader), matching what
+    // replayMissingAppMessages stores in the archive-recovery map — the
+    // resend cache stores exactly the same shape so handleResendRequest can
+    // treat a cache hit and an archive hit identically. ExecutionReport's
+    // MsgSeqNum was already reserved and stamped by ClusterIngressHandler at
+    // TCP-inbound submission time, so it's read here, not assigned.
+    void onClusterExecutionReport(const char* sbeBody, uint64_t sbeBodyLen,
+                                  uint16_t blockLen, uint16_t version,
+                                  int64_t clusterTimestampMs)
     {
-        const auto [mts, mte] = fixTagRange(fixBytes, len, "35");
-        if (mts == std::string::npos || mte - mts != 1 || fixBytes[mts] != '8') return;
-
         session.setNowMs(clusterTimestampMs);
 
-        const auto [vs, ve] = fixTagRange(fixBytes, len, "34");
-        if (vs == std::string::npos) return;
-        uint32_t seqNum = 0;
-        for (std::size_t i = vs; i < ve; ++i) seqNum = seqNum * 10 + (fixBytes[i] - '0');
+        sbeseq::ExecutionReport er;
+        er.wrapForDecode(const_cast<char*>(sbeBody), sbeseq::MessageHeader::encodedLength(),
+                         blockLen, version, sbeBodyLen);
+        const uint32_t seqNum = er.seqNum();
         if (seqNum == 0) return;
 
-        m_resendCache.put(seqNum, std::span<const uint8_t>(fixBytes, len));
-        sendRaw(fd, fixBytes, len);
+        m_resendCache.put(seqNum, std::span<const uint8_t>(
+            reinterpret_cast<const uint8_t*>(sbeBody), sbeBodyLen));
+
+        const std::vector<uint8_t> fixBytes = reencodeExecutionReportToFix(er);
+        sendRaw(fd, fixBytes.data(), fixBytes.size());
     }
 };
 
@@ -642,66 +762,40 @@ int main()
     std::unordered_map<int, std::unique_ptr<FixConnection>> connections;
 
     // ── Global stream subscription ────────────────────────────────────────────
-    // Payload layout after the 10-byte AppMessage SBE prefix:
-    //   [4-byte connId LE][admin SBE body | raw FIX bytes]
-    //   Every message this gateway submits (admin or application) is prefixed
-    //   with the 4-byte connId of the TCP connection that originated it (see
-    //   ClusterIngressSender::send), so the echo can always be routed back to
-    //   the right FixConnection. Admin vs. application is then distinguished
-    //   by schemaId==SESSION_SCHEMA_ID at the start of the remaining bytes.
+    // e.payload is directly a sbe-sequenced.xml message (schemaId=202) — no
+    // envelope to strip. GlobalStreamClient already decoded the outer
+    // messageHeader and the header composite generically, exposing
+    // sourceId/templateId/blockLength/version on the event, so this lambda
+    // just routes to the right FixConnection and picks the specific decode.
     seq::GlobalStreamClient globalStream(
         [&](const seq::SequencedEvent& e)
         {
             std::printf("[Global] SequencedEvent globalSeq=%" PRId64 " payloadLen=%" PRIu64 "\n",
                         e.globalSeqNo, static_cast<uint64_t>(e.payloadLength));
-            if (e.payloadLength <= seq::APP_MSG_SBE_PREFIX + CONN_ID_PREFIX) return;
-            const auto* payload = reinterpret_cast<const uint8_t*>(e.payload)
-                                  + seq::APP_MSG_SBE_PREFIX;
-            const uint64_t payloadLen = e.payloadLength - seq::APP_MSG_SBE_PREFIX;
 
-            int32_t connId;
-            std::memcpy(&connId, payload, CONN_ID_PREFIX);
-            const uint8_t* rest    = payload + CONN_ID_PREFIX;
-            const uint64_t restLen = payloadLen - CONN_ID_PREFIX;
-
-            auto it = connections.find(connId);
+            auto it = connections.find(e.sourceId);
             if (it == connections.end()) return;
 
-            // Detect admin SBE: schemaId is at rest[4..5] (bytes 4-5 of the SBE
-            // MessageHeader that opens the remaining bytes).
-            if (restLen >= sbesess::MessageHeader::encodedLength())
+            const auto* body    = reinterpret_cast<const char*>(e.payload);
+            const uint64_t bodyLen = e.payloadLength;
+
+            if (e.templateId == sbeseq::ExecutionReport::sbeTemplateId())
             {
-                uint16_t schemaId;
-                std::memcpy(&schemaId, rest + 4, sizeof(uint16_t));
-                schemaId = SBE_LITTLE_ENDIAN_ENCODE_16(schemaId);  // no-op on LE; bswap on BE
-
-                if (schemaId == SESSION_SCHEMA_ID)
-                {
-                    std::printf("[Global] Admin SBE connId=%d connections.size=%zu\n",
-                                connId, connections.size());
-
-                    // Read SBE MessageHeader fields.
-                    uint16_t blockLen, templateId, version;
-                    std::memcpy(&blockLen,   rest + 0, 2);
-                    std::memcpy(&templateId, rest + 2, 2);
-                    std::memcpy(&version,    rest + 6, 2);
-                    blockLen   = SBE_LITTLE_ENDIAN_ENCODE_16(blockLen);
-                    templateId = SBE_LITTLE_ENDIAN_ENCODE_16(templateId);
-                    version    = SBE_LITTLE_ENDIAN_ENCODE_16(version);
-
-                    it->second->onClusterAdmin(templateId, reinterpret_cast<const char*>(rest),
-                                               restLen, blockLen, version, e.clusterTimestamp);
-                    return;
-                }
+                it->second->onClusterExecutionReport(body, bodyLen, e.blockLength,
+                                                     e.version, e.clusterTimestamp);
+                return;
+            }
+            if (e.templateId == sbeseq::NewOrderSingle::sbeTemplateId())
+            {
+                // The client's own submission, echoed back for ordering; not
+                // ours to deliver or cache (see onClusterExecutionReport).
+                return;
             }
 
-            // Application-layer FIX bytes: our own ExecutionReport echoed back
-            // (see FixConnection::onClusterAppMessage), or the client's own
-            // NewOrderSingle echoed back (ignored there).
-            if (restLen > 0 && rest[0] == '8')
-            {
-                it->second->onClusterAppMessage(rest, restLen, e.clusterTimestamp);
-            }
+            std::printf("[Global] Admin SBE connId=%d connections.size=%zu\n",
+                        e.sourceId, connections.size());
+            it->second->onClusterAdmin(e.templateId, body, bodyLen,
+                                       e.blockLength, e.version, e.clusterTimestamp);
         },
         [](const seq::LifecycleEvent& e)
         {

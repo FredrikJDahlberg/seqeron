@@ -1,7 +1,7 @@
 //
 // Deterministic unit tests for ClusterIngressHandler — the FIX-session-facing
-// bridge that turns TCP-received FIX messages into cluster ingress traffic
-// (admin messages re-encoded as SBE, application messages forwarded raw).
+// bridge that turns TCP-received FIX messages into cluster ingress traffic,
+// re-encoding every message (admin and application) as sbe-unsequenced.xml.
 //
 // Same pattern as ClusterIngressSenderTest.cpp: ClusterIngressHandler talks to
 // the cluster only through ClusterIngressSender, which in turn talks only
@@ -116,46 +116,25 @@ std::vector<std::uint8_t> buildFix(char msgType, const std::vector<std::string>&
 // ── Decoding what ClusterIngressHandler offered to the cluster ingress ───────
 
 // Every message ClusterIngressHandler sends is wrapped in a
-// SessionMessageHeader (cluster_sbe) followed by an AppMessage SBE envelope
-// (8-byte header + 2-byte varData length + 4-byte connId), matching
-// ClusterIngressSender::send/encodeAppMessage.
+// SessionMessageHeader (cluster_sbe) followed directly by a sbe-unsequenced.xml
+// message (schemaId=200), matching ClusterIngressSender::send.
 constexpr std::size_t APP_MESSAGE_OFFSET = cluster_sbe::MessageHeader::encodedLength()
                                           + cluster_sbe::SessionMessageHeader::sbeBlockLength();
-constexpr std::size_t APP_PAYLOAD_OFFSET = APP_MESSAGE_OFFSET + 10 + CONN_ID_PREFIX;
 
-// Decodes the connId-prefixed payload as an admin SBE message
-// (sbe-session.xml, schemaId=100).
-template <typename AdminMsg>
-AdminMsg decodeAdminFrame(std::vector<std::uint8_t>& frame, std::int32_t& connIdOut)
+template <typename SbeMsg>
+SbeMsg decodeUnsequenced(std::vector<std::uint8_t>& frame)
 {
-    std::memcpy(&connIdOut, frame.data() + APP_MESSAGE_OFFSET + 10, CONN_ID_PREFIX);
+    char* body = reinterpret_cast<char*>(frame.data() + APP_MESSAGE_OFFSET);
+    const std::size_t bodyLen = frame.size() - APP_MESSAGE_OFFSET;
 
-    char* body = reinterpret_cast<char*>(frame.data() + APP_PAYLOAD_OFFSET);
-    const std::size_t bodyLen = frame.size() - APP_PAYLOAD_OFFSET;
-
-    sbesess::MessageHeader hdr;
+    sbeunseq::MessageHeader hdr;
     hdr.wrap(body, 0, 0, bodyLen);
-    EXPECT_EQ(AdminMsg::sbeTemplateId(), hdr.templateId());
+    EXPECT_EQ(SbeMsg::sbeTemplateId(), hdr.templateId());
 
-    AdminMsg dec;
-    dec.wrapForDecode(body, sbesess::MessageHeader::encodedLength(), hdr.blockLength(), hdr.version(), bodyLen);
+    SbeMsg dec;
+    dec.wrapForDecode(body, sbeunseq::MessageHeader::encodedLength(),
+                      hdr.blockLength(), hdr.version(), bodyLen);
     return dec;
-}
-
-// Decodes the connId-prefixed payload as raw FIX bytes (application
-// messages: the client's own NewOrderSingle, or a generated ExecutionReport).
-std::string_view decodeRawFixFrame(std::vector<std::uint8_t>& frame, std::int32_t& connIdOut)
-{
-    std::memcpy(&connIdOut, frame.data() + APP_MESSAGE_OFFSET + 10, CONN_ID_PREFIX);
-    return std::string_view(reinterpret_cast<const char*>(frame.data() + APP_PAYLOAD_OFFSET),
-                             frame.size() - APP_PAYLOAD_OFFSET);
-}
-
-std::string_view fixTagValue(std::string_view fix, std::string_view tag)
-{
-    const auto [vs, ve] = fixTagRange(reinterpret_cast<const std::uint8_t*>(fix.data()), fix.size(), tag);
-    if (vs == std::string::npos) return {};
-    return fix.substr(vs, ve - vs);
 }
 
 } // namespace
@@ -173,16 +152,6 @@ TEST(ClusterIngressHandlerWireHelpers, FindFixMessageEndReturnsZeroWhenIncomplet
     auto msg = buildFix('0', {});
     msg.resize(msg.size() - 1);   // drop the trailing SOH of the checksum field
     EXPECT_EQ(0u, findFixMessageEnd(msg));
-}
-
-TEST(ClusterIngressHandlerWireHelpers, IsAdminMsgTypeDistinguishesSessionFromApplicationMessages)
-{
-    const auto logon = buildFix('A', {"108=30"});
-    const auto heartbeat = buildFix('0', {});
-    const auto newOrder = buildFix('D', {"11=1", "21=1", "55=X", "54=1", "60=20260703-12:00:00", "38=1", "40=1"});
-    EXPECT_TRUE(isAdminMsgType(logon.data(), logon.size()));
-    EXPECT_TRUE(isAdminMsgType(heartbeat.data(), heartbeat.size()));
-    EXPECT_FALSE(isAdminMsgType(newOrder.data(), newOrder.size()));
 }
 
 TEST(ClusterIngressHandlerWireHelpers, PatchResendFlagsInsertsPossDupAndFixesBodyLengthAndChecksum)
@@ -225,29 +194,28 @@ protected:
     fix::decoder::PayloadDecoder<cfg::FIXT_1_1>  decoder_;
 };
 
-TEST_F(ClusterIngressHandlerAdminOnly, LogonIsReEncodedAsAdminSbeWithConnIdPrefix)
+TEST_F(ClusterIngressHandlerAdminOnly, LogonIsReEncodedAsSbeUnsequencedWithHeader)
 {
     const auto msg = buildFix('A', {"98=0", "108=45"});
     const auto result = decoder_.parse(std::span<const std::uint8_t>(msg.data(), msg.size()), handler_);
     ASSERT_EQ(fix::Result::Success, result.m_value);
 
     ASSERT_EQ(1u, ingress_->offered.size());
-    std::int32_t connId = 0;
-    auto logon = decodeAdminFrame<sbesess::Logon>(ingress_->offered[0], connId);
-    EXPECT_EQ(CONN_ID, connId);
+    auto logon = decodeUnsequenced<sbeunseq::Logon>(ingress_->offered[0]);
+    EXPECT_EQ(CONN_ID, logon.header().sourceId());
+    EXPECT_EQ(55, logon.header().sessionId());
     EXPECT_EQ(45u, logon.heartbeatInterval());
 }
 
-TEST_F(ClusterIngressHandlerAdminOnly, LogoutIsReEncodedAsAdminSbe)
+TEST_F(ClusterIngressHandlerAdminOnly, LogoutIsReEncodedAsSbeUnsequenced)
 {
     const auto msg = buildFix('5', {});
     const auto result = decoder_.parse(std::span<const std::uint8_t>(msg.data(), msg.size()), handler_);
     ASSERT_EQ(fix::Result::Success, result.m_value);
 
     ASSERT_EQ(1u, ingress_->offered.size());
-    std::int32_t connId = 0;
-    decodeAdminFrame<sbesess::Logout>(ingress_->offered[0], connId);
-    EXPECT_EQ(CONN_ID, connId);
+    auto logout = decodeUnsequenced<sbeunseq::Logout>(ingress_->offered[0]);
+    EXPECT_EQ(CONN_ID, logout.header().sourceId());
 }
 
 TEST_F(ClusterIngressHandlerAdminOnly, HeartbeatCarriesTestReqIdWhenPresent)
@@ -257,8 +225,7 @@ TEST_F(ClusterIngressHandlerAdminOnly, HeartbeatCarriesTestReqIdWhenPresent)
     ASSERT_EQ(fix::Result::Success, result.m_value);
 
     ASSERT_EQ(1u, ingress_->offered.size());
-    std::int32_t connId = 0;
-    auto hb = decodeAdminFrame<sbesess::Heartbeat>(ingress_->offered[0], connId);
+    auto hb = decodeUnsequenced<sbeunseq::Heartbeat>(ingress_->offered[0]);
     EXPECT_EQ(std::string("PING1"), std::string(hb.testReqID()));
 }
 
@@ -269,8 +236,7 @@ TEST_F(ClusterIngressHandlerAdminOnly, HeartbeatHasEmptyTestReqIdWhenAbsent)
     ASSERT_EQ(fix::Result::Success, result.m_value);
 
     ASSERT_EQ(1u, ingress_->offered.size());
-    std::int32_t connId = 0;
-    auto hb = decodeAdminFrame<sbesess::Heartbeat>(ingress_->offered[0], connId);
+    auto hb = decodeUnsequenced<sbeunseq::Heartbeat>(ingress_->offered[0]);
     EXPECT_EQ(std::string(""), std::string(hb.testReqID()));
 }
 
@@ -281,8 +247,7 @@ TEST_F(ClusterIngressHandlerAdminOnly, TestRequestCarriesTestReqId)
     ASSERT_EQ(fix::Result::Success, result.m_value);
 
     ASSERT_EQ(1u, ingress_->offered.size());
-    std::int32_t connId = 0;
-    auto tr = decodeAdminFrame<sbesess::TestRequest>(ingress_->offered[0], connId);
+    auto tr = decodeUnsequenced<sbeunseq::TestRequest>(ingress_->offered[0]);
     EXPECT_EQ(std::string("RUOK"), std::string(tr.testReqID()));
 }
 
@@ -293,8 +258,7 @@ TEST_F(ClusterIngressHandlerAdminOnly, ResendRequestCarriesBeginAndEndSeqNo)
     ASSERT_EQ(fix::Result::Success, result.m_value);
 
     ASSERT_EQ(1u, ingress_->offered.size());
-    std::int32_t connId = 0;
-    auto rr = decodeAdminFrame<sbesess::ResendRequest>(ingress_->offered[0], connId);
+    auto rr = decodeUnsequenced<sbeunseq::ResendRequest>(ingress_->offered[0]);
     EXPECT_EQ(5u, rr.beginSeqNo());
     EXPECT_EQ(10u, rr.endSeqNo());
 }
@@ -306,36 +270,33 @@ TEST_F(ClusterIngressHandlerAdminOnly, SequenceResetCarriesNewSeqNo)
     ASSERT_EQ(fix::Result::Success, result.m_value);
 
     ASSERT_EQ(1u, ingress_->offered.size());
-    std::int32_t connId = 0;
-    auto sr = decodeAdminFrame<sbesess::SequenceReset>(ingress_->offered[0], connId);
+    auto sr = decodeUnsequenced<sbeunseq::SequenceReset>(ingress_->offered[0]);
     EXPECT_EQ(100u, sr.newSeqNo());
 }
 
-TEST_F(ClusterIngressHandlerAdminOnly, ValidNewOrderSingleIsForwardedAsRawFixWithoutASession)
+TEST_F(ClusterIngressHandlerAdminOnly, ValidNewOrderSingleIsEncodedAsSbeUnsequencedWithoutASession)
 {
     const auto msg = buildFix('D', {"11=ORD-1", "21=1", "55=AAPL", "54=1",
                                      "60=20260703-12:00:00", "38=100", "40=1"});
-    // Mirrors FixConnection::onRecv, which sets the raw bytes before parsing
-    // so handle(NewOrderSingleDecoder&) can forward the untouched wire bytes.
+    // Mirrors FixConnection::onRecv, which sets the raw bytes before parsing.
     handler_.setRawBytes(std::span<const std::uint8_t>(msg.data(), msg.size()));
     const auto result = decoder_.parse(std::span<const std::uint8_t>(msg.data(), msg.size()), handler_);
     ASSERT_EQ(fix::Result::Success, result.m_value);
 
-    // No session was supplied, so only the raw forward happens (no reject/
-    // accept ExecutionReport is generated).
+    // No session was supplied, so only the NewOrderSingle submission happens
+    // (no reject/accept ExecutionReport is generated).
     ASSERT_EQ(1u, ingress_->offered.size());
-    std::int32_t connId = 0;
-    const auto rawFix = decodeRawFixFrame(ingress_->offered[0], connId);
-    EXPECT_EQ(CONN_ID, connId);
-    EXPECT_EQ("ORD-1", fixTagValue(rawFix, "11"));
-    EXPECT_EQ("AAPL", fixTagValue(rawFix, "55"));
+    auto nos = decodeUnsequenced<sbeunseq::NewOrderSingle>(ingress_->offered[0]);
+    EXPECT_EQ(CONN_ID, nos.header().sourceId());
+    EXPECT_EQ(std::string("ORD-1"), nos.getClOrdIDAsString());
+    EXPECT_EQ(std::string("AAPL"), nos.getSymbolAsString());
 }
 
 TEST_F(ClusterIngressHandlerAdminOnly, InvalidNewOrderSingleWithoutASessionSendsNothing)
 {
     // ClOrdID present but empty triggers the business-rule rejection path,
-    // which returns before the raw-forward — and without a session there is
-    // nowhere to send the reject ExecutionReport either.
+    // which returns before submitting the order — and without a session
+    // there is nowhere to send the reject ExecutionReport either.
     const auto msg = buildFix('D', {"11=", "21=1", "55=AAPL", "54=1",
                                      "60=20260703-12:00:00", "38=100", "40=1"});
     handler_.setRawBytes(std::span<const std::uint8_t>(msg.data(), msg.size()));
@@ -348,8 +309,8 @@ TEST_F(ClusterIngressHandlerAdminOnly, InvalidNewOrderSingleWithoutASessionSends
 //
 // Wires a real FixSession (CapturingTransport, fd=-1 so sendRaw is a no-op)
 // so ExecutionReports generated for accepted/rejected orders are observable:
-// CapturingTransport forwards them to the same cluster ingress (ExecutionReport
-// is not an admin MsgType), per the file's deterministic design invariant.
+// they are submitted directly to the cluster ingress as sbe-unsequenced.xml
+// ExecutionReport messages, with MsgSeqNum reserved from the session.
 class ClusterIngressHandlerWithSession : public ::testing::Test
 {
 protected:
@@ -372,13 +333,13 @@ protected:
     ClusterIngressSender                        sender_;
     FakeIngressTransport*                        ingress_{nullptr};
     FixSession session_{FixSession::Builder{}
-                             .transport(CapturingTransport{-1, &sender_, CONN_ID})
+                             .transport(CapturingTransport{-1})
                              .build()};
     ClusterIngressHandler                        handler_{&sender_, CONN_ID, &session_};
     fix::decoder::PayloadDecoder<cfg::FIXT_1_1>  decoder_;
 };
 
-TEST_F(ClusterIngressHandlerWithSession, ValidNewOrderSingleForwardsRawBytesThenSendsExecutionReportNew)
+TEST_F(ClusterIngressHandlerWithSession, ValidNewOrderSingleSubmitsOrderThenSendsExecutionReportNew)
 {
     const auto msg = buildFix('D', {"11=ORD-2", "21=1", "55=MSFT", "54=1",
                                      "60=20260703-12:00:00", "38=50", "40=1"});
@@ -388,15 +349,14 @@ TEST_F(ClusterIngressHandlerWithSession, ValidNewOrderSingleForwardsRawBytesThen
 
     ASSERT_EQ(2u, ingress_->offered.size());
 
-    std::int32_t connId = 0;
-    const auto rawFix = decodeRawFixFrame(ingress_->offered[0], connId);
-    EXPECT_EQ(CONN_ID, connId);
-    EXPECT_EQ("ORD-2", fixTagValue(rawFix, "11"));
+    auto nos = decodeUnsequenced<sbeunseq::NewOrderSingle>(ingress_->offered[0]);
+    EXPECT_EQ(CONN_ID, nos.header().sourceId());
+    EXPECT_EQ(std::string("ORD-2"), nos.getClOrdIDAsString());
 
-    const auto executionReport = decodeRawFixFrame(ingress_->offered[1], connId);
-    EXPECT_EQ(CONN_ID, connId);
-    EXPECT_EQ("8", fixTagValue(executionReport, "35")) << "ExecutionReport MsgType is not '8'";
-    EXPECT_EQ(msg::code(msg::ExecType::New), fixTagValue(executionReport, "150"));
+    auto er = decodeUnsequenced<sbeunseq::ExecutionReport>(ingress_->offered[1]);
+    EXPECT_EQ(CONN_ID, er.header().sourceId());
+    EXPECT_EQ(sbeunseq::ExecType::Value::New, er.execType());
+    EXPECT_EQ(std::string("ORD-2"), er.getClOrdIDAsString());
 }
 
 TEST_F(ClusterIngressHandlerWithSession, EmptyClOrdIdSendsRejectedExecutionReportOnly)
@@ -406,13 +366,12 @@ TEST_F(ClusterIngressHandlerWithSession, EmptyClOrdIdSendsRejectedExecutionRepor
     const auto result = decoder_.parse(std::span<const std::uint8_t>(msg.data(), msg.size()), handler_);
     ASSERT_EQ(fix::Result::Success, result.m_value);
 
-    // The reject path returns before the raw-forward: only the
+    // The reject path returns before the order is submitted: only the
     // ExecutionReport(Rejected) reaches the ingress.
     ASSERT_EQ(1u, ingress_->offered.size());
-    std::int32_t connId = 0;
-    const auto executionReport = decodeRawFixFrame(ingress_->offered[0], connId);
-    EXPECT_EQ(msg::code(msg::ExecType::Rejected), fixTagValue(executionReport, "150"));
-    EXPECT_EQ("ClOrdID is empty", fixTagValue(executionReport, "58"));
+    auto er = decodeUnsequenced<sbeunseq::ExecutionReport>(ingress_->offered[0]);
+    EXPECT_EQ(sbeunseq::ExecType::Value::Rejected, er.execType());
+    EXPECT_EQ(std::string("ClOrdID is empty"), er.getTextAsString());
 }
 
 TEST_F(ClusterIngressHandlerWithSession, ZeroOrderQtyIsRejected)
@@ -423,9 +382,8 @@ TEST_F(ClusterIngressHandlerWithSession, ZeroOrderQtyIsRejected)
     ASSERT_EQ(fix::Result::Success, result.m_value);
 
     ASSERT_EQ(1u, ingress_->offered.size());
-    std::int32_t connId = 0;
-    const auto executionReport = decodeRawFixFrame(ingress_->offered[0], connId);
-    EXPECT_EQ("OrderQty must be > 0", fixTagValue(executionReport, "58"));
+    auto er = decodeUnsequenced<sbeunseq::ExecutionReport>(ingress_->offered[0]);
+    EXPECT_EQ(std::string("OrderQty must be > 0"), er.getTextAsString());
 }
 
 TEST_F(ClusterIngressHandlerWithSession, LimitOrderWithoutPriceIsRejected)
@@ -436,9 +394,8 @@ TEST_F(ClusterIngressHandlerWithSession, LimitOrderWithoutPriceIsRejected)
     ASSERT_EQ(fix::Result::Success, result.m_value);
 
     ASSERT_EQ(1u, ingress_->offered.size());
-    std::int32_t connId = 0;
-    const auto executionReport = decodeRawFixFrame(ingress_->offered[0], connId);
-    EXPECT_EQ("Price required for Limit order", fixTagValue(executionReport, "58"));
+    auto er = decodeUnsequenced<sbeunseq::ExecutionReport>(ingress_->offered[0]);
+    EXPECT_EQ(std::string("Price required for Limit order"), er.getTextAsString());
 }
 
 } // namespace org::limitless::phixeron::sequencer

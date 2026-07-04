@@ -201,30 +201,25 @@ protected:
     FakeEgressTransport*      egress_{nullptr};
 };
 
-TEST_F(ConnectedClusterIngressSender, SendWrapsFixBytesWithSessionAndAppMessageHeaders)
+TEST_F(ConnectedClusterIngressSender, SendWrapsBytesWithSessionMessageHeader)
 {
-    const std::array<std::uint8_t, 5> fix{'8', '=', 'F', 'I', 'X'};
-    sender_.send(1234, fix.data(), static_cast<std::uint16_t>(fix.size()));
+    const std::array<std::uint8_t, 5> body{'8', '=', 'F', 'I', 'X'};
+    sender_.send(body.data(), static_cast<std::uint16_t>(body.size()));
 
     ASSERT_EQ(1u, ingress_->offered.size());
     auto hdr = decodeOffered<cluster_sbe::SessionMessageHeader>(ingress_->offered[0]);
     EXPECT_EQ(TERM_ID, hdr.leadershipTermId());
     EXPECT_EQ(SESSION_ID, hdr.clusterSessionId());
 
-    // Bytes after the SessionMessageHeader are the AppMessage SBE envelope:
-    // [8-byte header][2-byte varData len][4-byte connId][fix bytes].
+    // Bytes after the SessionMessageHeader are exactly the caller-supplied
+    // message, with no separate envelope (unlike the old AppMessage scheme).
     const auto& frame = ingress_->offered[0];
     const std::size_t appOff = cluster_sbe::MessageHeader::encodedLength()
                               + cluster_sbe::SessionMessageHeader::sbeBlockLength();
-    ASSERT_GE(frame.size(), appOff + 10 + CONN_ID_PREFIX + fix.size());
+    ASSERT_GE(frame.size(), appOff + body.size());
 
-    std::int32_t connId = 0;
-    std::memcpy(&connId, frame.data() + appOff + 10, CONN_ID_PREFIX);
-    EXPECT_EQ(1234, connId);
-
-    EXPECT_TRUE(std::equal(fix.begin(), fix.end(),
-
-    frame.begin() + static_cast<std::ptrdiff_t>(appOff + 10 + CONN_ID_PREFIX)));
+    EXPECT_TRUE(std::equal(body.begin(), body.end(),
+                            frame.begin() + static_cast<std::ptrdiff_t>(appOff)));
 }
 
 TEST_F(ConnectedClusterIngressSender, KeepAliveSendsOnceThenThrottles)
@@ -281,8 +276,8 @@ TEST_F(ConnectedClusterIngressSender, PollEgressUpdatesLeadershipTermOnNewLeader
     });
 
     // The new leadership term must now be used for subsequent sends.
-    const std::array<std::uint8_t, 1> fix{'8'};
-    sender_.send(1, fix.data(), 1);
+    const std::array<std::uint8_t, 1> body{'8'};
+    sender_.send(body.data(), 1);
 
     ASSERT_EQ(1u, ingress_->offered.size());
     auto hdr = decodeOffered<cluster_sbe::SessionMessageHeader>(ingress_->offered[0]);

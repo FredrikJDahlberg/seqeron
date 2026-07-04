@@ -12,11 +12,9 @@
 #include "Aeron.h"
 #include "FragmentAssembler.h"
 
-// Generated SBE C++ codecs from sbe-sequencer.xml (via GenerateSeqSbeCodecs)
-#include "org_limitless_phixeron_sbe_sequencer/MessageHeader.h"
-#include "org_limitless_phixeron_sbe_sequencer/SequencedMessage.h"
-#include "org_limitless_phixeron_sbe_sequencer/SourceConnected.h"
-#include "org_limitless_phixeron_sbe_sequencer/SourceDisconnected.h"
+// Generated SBE C++ codecs from sbe-sequenced.xml (via GenerateSequencedSbeCodecs)
+#include "org_limitless_phixeron_sbe_sequenced/MessageHeader.h"
+#include "org_limitless_phixeron_sbe_sequenced/Header.h"
 
 namespace org::limitless::phixeron::sequencer
 {
@@ -32,35 +30,42 @@ inline constexpr std::int32_t GLOBAL_STREAM_ID = 1;
 // application_stream_client → 9311
 inline constexpr std::int32_t REPLAY_STREAM_ID = 110;
 
+// ClientConnected/ClientDisconnected aren't FIX messages, so sbe-sequenced.xml
+// (like sbe-unsequenced.xml) gives them small, non-ASCII-derived template ids,
+// clear of the FIX-MsgType-derived range used by every other message.
+inline constexpr std::uint16_t CLIENT_CONNECTED_TEMPLATE_ID    = 1;
+inline constexpr std::uint16_t CLIENT_DISCONNECTED_TEMPLATE_ID = 2;
+
 // ── Event types delivered to the application ─────────────────────────────────
 
 /**
- * Carries one SequencedMessage from the global stream.
+ * Carries one sbe-sequenced.xml message from the global stream.
+ *
+ * Every raw fragment on the wire *is* a complete sbe-sequenced.xml message
+ * (schemaId=202) — no envelope to strip. Every message in that schema
+ * declares `header` (sourceId, sessionId, globalSeqNo, timestamp) as its
+ * first field, at the same fixed offset regardless of templateId, so this
+ * client decodes it generically and exposes the fields here — callers don't
+ * need to re-decode it themselves before dispatching on templateId.
  *
  * payload/payloadLength point into the Aeron fragment buffer and are valid
- * only for the duration of the callback. Copy the data before returning if
- * it must survive.
- *
- * The payload bytes are the raw AppMessage SBE envelope written by
- * SequencerClient::send().  Layout:
- *   [0-7]  SBE MessageHeader  (8 bytes, schemaId=201, templateId=1)
- *   [8-9]  varData length     (uint16 LE, 2 bytes)
- *   [10..] actual FIX content
- * Use APP_MSG_SBE_PREFIX (10) to skip to the FIX bytes.
+ * only for the duration of the callback; payload addresses the start of the
+ * full message (its own 8-byte messageHeader included). Copy the data before
+ * returning if it must survive.
  */
 struct SequencedEvent
 {
     std::int64_t  globalSeqNo;
-    std::int64_t  sourceSessionId;
-    std::int64_t  appSeqNo;
-    std::int64_t  clusterTimestamp;  ///< cluster consensus time (ms) when message was committed
-    std::int64_t  receiveTimeNs;     ///< wall-clock ns at receipt by this client
-    const char*   payload;           ///< raw AppMessage SBE bytes (see struct comment)
-    std::uint64_t payloadLength;     ///< total byte count including the 10-byte prefix
+    std::int32_t  sourceId;         ///< TCP connection id at the FIX gateway (header.sourceId)
+    std::int64_t  sourceSessionId;  ///< Aeron Cluster client session id (header.sessionId)
+    std::int64_t  clusterTimestamp; ///< cluster consensus time (ms) when message was committed
+    std::int64_t  receiveTimeNs;    ///< wall-clock ns at receipt by this client
+    std::uint16_t templateId;       ///< outer messageHeader templateId; picks the specific decode
+    std::uint16_t blockLength;      ///< outer messageHeader blockLength; pass straight to wrapForDecode
+    std::uint16_t version;          ///< outer messageHeader version; pass straight to wrapForDecode
+    const char*   payload;          ///< raw sbe-sequenced.xml message bytes (see struct comment)
+    std::uint64_t payloadLength;    ///< total byte count
 };
-
-/** Offset past the AppMessage SBE prefix to the embedded FIX content. */
-inline constexpr std::uint64_t APP_MSG_SBE_PREFIX = 10U;
 
 struct LifecycleEvent
 {
@@ -191,14 +196,12 @@ public:
 private:
     static constexpr int FRAGMENT_LIMIT = 10;
 
-    using SeqSbe   = org::limitless::phixeron::sbe::sequencer::SequencedMessage;
-    using ConnSbe  = org::limitless::phixeron::sbe::sequencer::SourceConnected;
-    using DiscSbe  = org::limitless::phixeron::sbe::sequencer::SourceDisconnected;
-    using HdrSbe   = org::limitless::phixeron::sbe::sequencer::MessageHeader;
+    using HdrSbe = org::limitless::phixeron::sbe::sequenced::MessageHeader;
+    using HeaderComposite = org::limitless::phixeron::sbe::sequenced::Header;
 
     void onFragment(aeron::concurrent::AtomicBuffer& buffer,
                     aeron::util::index_t              offset,
-                    aeron::util::index_t             /*length*/,
+                    aeron::util::index_t              length,
                     aeron::Header&                   /*header*/)
     {
         const std::int64_t receiveNs = nowNs();
@@ -206,66 +209,67 @@ private:
         char* const         raw = reinterpret_cast<char*>(buffer.buffer());
         const std::uint64_t cap = static_cast<std::uint64_t>(buffer.capacity());
         const std::uint64_t off = static_cast<std::uint64_t>(offset);
+        const std::uint64_t len = static_cast<std::uint64_t>(length);
+
+        if (len < HdrSbe::encodedLength() + HeaderComposite::encodedLength()) {
+            std::fprintf(stderr, "[GlobalStreamClient] fragment too short: %" PRIu64 " bytes\n", len);
+            return;
+        }
 
         m_hdr.wrap(raw, off, 0U, cap);
+        if (m_hdr.schemaId() != HdrSbe::sbeSchemaId()) {
+            std::fprintf(stderr, "[GlobalStreamClient] unexpected schemaId=%u; ignored\n", m_hdr.schemaId());
+            return;
+        }
 
         const std::uint16_t templateId = m_hdr.templateId();
-        const std::uint16_t blockLen   = m_hdr.blockLength();
-        const std::uint16_t version    = m_hdr.version();
         const std::uint64_t bodyOff    = off + HdrSbe::encodedLength();
 
-        switch (templateId)
-        {
-        case SeqSbe::sbeTemplateId():
-            m_seqMsg.wrapForDecode(raw, bodyOff, blockLen, version, cap);
-            if (m_onSequenced) {
-                const auto gseq  = m_seqMsg.globalSeqNo();
-                const auto srcId = m_seqMsg.sourceSessionId();
-                const auto aseq  = m_seqMsg.appSeqNo();
-                const auto ts    = m_seqMsg.clusterTimestamp();
-                const auto plen  = m_seqMsg.payloadLength();
-                const auto pdata = m_seqMsg.payload();
-                m_onSequenced(SequencedEvent{
-                    .globalSeqNo      = gseq,
-                    .sourceSessionId  = srcId,
-                    .appSeqNo         = aseq,
-                    .clusterTimestamp = ts,
-                    .receiveTimeNs    = receiveNs,
-                    .payload          = pdata,
-                    .payloadLength    = plen
-                });
-            }
-            break;
+        // `header` is every message's first field, at a fixed offset right
+        // after the 8-byte messageHeader — safe to decode before knowing the
+        // rest of the message shape.
+        m_header.wrap(raw, bodyOff, 0U, cap);
+        const auto gseq  = m_header.globalSeqNo();
+        const auto srcId = m_header.sourceId();
+        const auto sessId = m_header.sessionId();
+        const auto ts    = m_header.timestamp();
 
-        case ConnSbe::sbeTemplateId():
-            m_srcConn.wrapForDecode(raw, bodyOff, blockLen, version, cap);
+        if (templateId == CLIENT_CONNECTED_TEMPLATE_ID) {
             if (m_onConnected) {
                 m_onConnected(LifecycleEvent{
-                    .globalSeqNo      = m_srcConn.globalSeqNo(),
-                    .sourceSessionId  = m_srcConn.sourceSessionId(),
-                    .clusterTimestamp = m_srcConn.clusterTimestamp(),
+                    .globalSeqNo      = gseq,
+                    .sourceSessionId  = sessId,
+                    .clusterTimestamp = ts,
                     .receiveTimeNs    = receiveNs
                 });
             }
-            break;
-
-        case DiscSbe::sbeTemplateId():
-            m_srcDisc.wrapForDecode(raw, bodyOff, blockLen, version, cap);
+            return;
+        }
+        if (templateId == CLIENT_DISCONNECTED_TEMPLATE_ID) {
             if (m_onDisconnected) {
                 m_onDisconnected(LifecycleEvent{
-                    .globalSeqNo      = m_srcDisc.globalSeqNo(),
-                    .sourceSessionId  = m_srcDisc.sourceSessionId(),
-                    .clusterTimestamp = m_srcDisc.clusterTimestamp(),
+                    .globalSeqNo      = gseq,
+                    .sourceSessionId  = sessId,
+                    .clusterTimestamp = ts,
                     .receiveTimeNs    = receiveNs
                 });
             }
-            break;
+            return;
+        }
 
-        default:
-            std::fprintf(stderr,
-                "[GlobalStreamClient] Unknown SBE templateId=%u; ignored\n",
-                templateId);
-            break;
+        if (m_onSequenced) {
+            m_onSequenced(SequencedEvent{
+                .globalSeqNo      = gseq,
+                .sourceId         = srcId,
+                .sourceSessionId  = sessId,
+                .clusterTimestamp = ts,
+                .receiveTimeNs    = receiveNs,
+                .templateId       = templateId,
+                .blockLength      = m_hdr.blockLength(),
+                .version          = m_hdr.version(),
+                .payload          = raw + off,
+                .payloadLength    = len
+            });
         }
     }
 
@@ -302,10 +306,8 @@ private:
     aeron::fragment_handler_t m_fragmentHandler;
 
     // ── SBE decoders — single-threaded, reused per fragment ──────────────────
-    HdrSbe  m_hdr;
-    SeqSbe  m_seqMsg;
-    ConnSbe m_srcConn;
-    DiscSbe m_srcDisc;
+    HdrSbe          m_hdr;
+    HeaderComposite m_header;
 };
 
 } // namespace org::limitless::phixeron::sequencer

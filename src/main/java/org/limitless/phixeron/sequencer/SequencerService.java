@@ -13,27 +13,38 @@ import io.aeron.logbuffer.Header;
 import org.agrona.DirectBuffer;
 import org.agrona.ExpandableDirectByteBuffer;
 import org.agrona.MutableDirectBuffer;
-import org.agrona.collections.Long2LongHashMap;
-import org.agrona.collections.LongLongConsumer;
 import io.aeron.archive.codecs.SourceLocation;
 import org.agrona.concurrent.NoOpLock;
-import org.limitless.phixeron.sbe.sequencer.MessageHeaderEncoder;
-import org.limitless.phixeron.sbe.sequencer.SequencedMessageEncoder;
-import org.limitless.phixeron.sbe.sequencer.SourceConnectedEncoder;
-import org.limitless.phixeron.sbe.sequencer.SourceDisconnectedEncoder;
+import org.limitless.phixeron.sbe.unsequenced.MessageHeaderDecoder;
+import org.limitless.phixeron.sbe.unsequenced.HeaderDecoder;
+import org.limitless.phixeron.sbe.sequenced.MessageHeaderEncoder;
+import org.limitless.phixeron.sbe.sequenced.HeaderEncoder;
+import org.limitless.phixeron.sbe.sequenced.ClientConnectedEncoder;
+import org.limitless.phixeron.sbe.sequenced.ClientDisconnectedEncoder;
 
 import java.util.concurrent.TimeUnit;
 
 /**
  * Aeron Cluster service that imposes a total order on messages arriving from multiple clients.
  *
- * <p>For every committed {@link #onSessionMessage} the service assigns:
- * <ul>
- *   <li><b>globalSeqNo</b>  — cluster-wide monotone counter shared across all sources and
- *       lifecycle events (connect / disconnect).</li>
- *   <li><b>appSeqNo</b>     — per-{@code sourceSessionId} monotone counter; allows each
- *       client to detect loss of its own messages independently.</li>
- * </ul>
+ * <p>For every committed {@link #onSessionMessage} the service assigns a
+ * <b>globalSeqNo</b> — a cluster-wide monotone counter shared across all sources and
+ * lifecycle events (connect / disconnect) — and stamps it, together with the cluster
+ * consensus timestamp, into the message's {@code header} composite before republishing it.
+ *
+ * <p>Ingress messages arrive already SBE-encoded as {@code sbe-unsequenced.xml} (schema
+ * ID 200) — the FIX gateway encodes every admin and application FIX message that way and
+ * offers it directly to the cluster, with {@code header.sourceId}/{@code header.sessionId}
+ * identifying the submitting TCP connection and Aeron Cluster session. This service does
+ * not need to know about individual FIX message types to re-stamp them: {@code
+ * sbe-sequenced.xml} (schema ID 202) is deliberately kept byte-identical to {@code
+ * sbe-unsequenced.xml} past the {@code header} composite (same field order/types/ids, same
+ * var-data layout), so {@link #onSessionMessage} decodes only the outer {@code
+ * MessageHeader} and the {@code header} composite (both always at a fixed offset,
+ * regardless of {@code templateId}), then copies every remaining byte — the rest of the
+ * fixed block plus all var-data — verbatim into a new {@code sbe-sequenced.xml} message
+ * whose {@code header} composite carries the original {@code sourceId}/{@code sessionId}
+ * plus the new {@code globalSeqNo}/{@code timestamp}.
  *
  * <p>The decorated message is published on the <em>global stream</em>
  * ({@link #GLOBAL_STREAM_CHANNEL} / {@link #GLOBAL_STREAM_ID}).
@@ -44,13 +55,9 @@ import java.util.concurrent.TimeUnit;
  * (updated on every callback), but only the leader writes to the global stream.  On failover
  * the new leader resumes from the snapshotted {@code globalSeqNo} and continues publishing.
  *
- * <p>Messages are SBE-encoded using the {@code sbe-sequencer.xml} schema (schema ID 201).
- *
  * <p><b>Snapshot format</b> (little-endian binary, single fragment):
  * <pre>
  *   int64  globalSeqNo
- *   int32  sourceCount
- *   [sourceCount × (int64 sourceSessionId + int64 appSeqNo)]
  * </pre>
  */
 public final class SequencerService implements ClusteredService {
@@ -67,24 +74,32 @@ public final class SequencerService implements ClusteredService {
 
     private static final int SNAPSHOT_POLL_BATCH = 10;
 
-    // ── SBE encoders — single conductor thread; no synchronisation needed ─────
+    /**
+     * header.sourceId for lifecycle events synthesized by this service (ClientConnected /
+     * ClientDisconnected): an Aeron Cluster session opening/closing has no TCP-level
+     * connection id to carry, unlike the ingress messages it forwards.
+     */
+    private static final int NO_SOURCE_ID = -1;
 
-    private final MessageHeaderEncoder      headerEncoder  = new MessageHeaderEncoder();
-    private final SequencedMessageEncoder   seqMsgEncoder  = new SequencedMessageEncoder();
-    private final SourceConnectedEncoder    srcConnEncoder = new SourceConnectedEncoder();
-    private final SourceDisconnectedEncoder srcDiscEncoder = new SourceDisconnectedEncoder();
-    private final MutableDirectBuffer       encodeBuffer   = new ExpandableDirectByteBuffer(4096);
+    // ── SBE codecs — single conductor thread; no synchronisation needed ───────
+
+    // Ingress decode (schema 200, sbe-unsequenced.xml). Only the outer framing
+    // header and the generic `header` composite are ever decoded — body
+    // fields are copied through as opaque bytes, see onSessionMessage.
+    private final MessageHeaderDecoder ingressMsgHeaderDecoder = new MessageHeaderDecoder();
+    private final HeaderDecoder        ingressHeaderDecoder    = new HeaderDecoder();
+
+    // Egress encode (schema 202, sbe-sequenced.xml).
+    private final MessageHeaderEncoder      headerEncoder     = new MessageHeaderEncoder();
+    private final HeaderEncoder             egressHeaderEncoder = new HeaderEncoder();
+    private final ClientConnectedEncoder    clientConnEncoder = new ClientConnectedEncoder();
+    private final ClientDisconnectedEncoder clientDiscEncoder = new ClientDisconnectedEncoder();
+    private final MutableDirectBuffer       encodeBuffer      = new ExpandableDirectByteBuffer(4096);
 
     // ── Sequencing state (snapshotted; updated on every node for determinism) ─
 
     /** Cluster-wide sequence counter; incremented for messages and lifecycle events. */
     private long globalSeqNo = 0;
-
-    /**
-     * Per-source application sequence counters keyed by {@link ClientSession#id()}.
-     * Missing value is 0; the first message from a source gets appSeqNo 1.
-     */
-    private final Long2LongHashMap sourceAppSeqNos = new Long2LongHashMap(0L);
 
     // ── Aeron runtime (not snapshotted) ──────────────────────────────────────
 
@@ -127,27 +142,30 @@ public final class SequencerService implements ClusteredService {
         if (!isLeader) {
             return;
         }
-        srcConnEncoder.wrapAndApplyHeader(encodeBuffer, 0, headerEncoder)
+        clientConnEncoder.wrapAndApplyHeader(encodeBuffer, 0, headerEncoder);
+        clientConnEncoder.header()
+            .sourceId(NO_SOURCE_ID)
+            .sessionId(session.id())
             .globalSeqNo(globalSeq)
-            .sourceSessionId(session.id())
-            .clusterTimestamp(timestamp);
-        offerToGlobalStream(MessageHeaderEncoder.ENCODED_LENGTH + SourceConnectedEncoder.BLOCK_LENGTH);
+            .timestamp(timestamp);
+        offerToGlobalStream(MessageHeaderEncoder.ENCODED_LENGTH + clientConnEncoder.encodedLength());
     }
 
     @Override
     public void onSessionClose(final ClientSession session,
                                final long timestamp,
                                final CloseReason closeReason) {
-        sourceAppSeqNos.remove(session.id());
         final long globalSeq = ++globalSeqNo;
         if (!isLeader) {
             return;
         }
-        srcDiscEncoder.wrapAndApplyHeader(encodeBuffer, 0, headerEncoder)
+        clientDiscEncoder.wrapAndApplyHeader(encodeBuffer, 0, headerEncoder);
+        clientDiscEncoder.header()
+            .sourceId(NO_SOURCE_ID)
+            .sessionId(session.id())
             .globalSeqNo(globalSeq)
-            .sourceSessionId(session.id())
-            .clusterTimestamp(timestamp);
-        offerToGlobalStream(MessageHeaderEncoder.ENCODED_LENGTH + SourceDisconnectedEncoder.BLOCK_LENGTH);
+            .timestamp(timestamp);
+        offerToGlobalStream(MessageHeaderEncoder.ENCODED_LENGTH + clientDiscEncoder.encodedLength());
     }
 
     @Override
@@ -157,19 +175,51 @@ public final class SequencerService implements ClusteredService {
                                  final int           offset,
                                  final int           length,
                                  final Header        header) {
-        final long sourceId  = session.id();
-        final long globalSeq = ++globalSeqNo;
-        final long appSeq    = nextAppSeq(sourceId);
+        final long sourceSessionId = session.id();
+        final long globalSeq       = ++globalSeqNo;
         if (!isLeader) {
             return;
         }
-        seqMsgEncoder.wrapAndApplyHeader(encodeBuffer, 0, headerEncoder)
+
+        // Decode just enough of the ingress (schema 200) message to re-stamp
+        // it: the outer framing header (for templateId/blockLength) and the
+        // `header` composite (for sourceId) — both at fixed offsets,
+        // independent of message type.
+        ingressMsgHeaderDecoder.wrap(buffer, offset);
+        final int templateId      = ingressMsgHeaderDecoder.templateId();
+        final int ingressBlockLen = ingressMsgHeaderDecoder.blockLength();
+
+        final int ingressBodyOffset = offset + MessageHeaderDecoder.ENCODED_LENGTH;
+        ingressHeaderDecoder.wrap(buffer, ingressBodyOffset);
+        final int sourceId = ingressHeaderDecoder.sourceId();
+
+        // sbe-sequenced.xml's header composite is sbe-unsequenced.xml's plus
+        // two int64 fields (globalSeqNo, timestamp); every other field is
+        // byte-identical, so the egress blockLength is simply the ingress
+        // blockLength with the header composite's growth added on.
+        final int egressBlockLen =
+            HeaderEncoder.ENCODED_LENGTH + (ingressBlockLen - HeaderDecoder.ENCODED_LENGTH);
+
+        headerEncoder.wrap(encodeBuffer, 0)
+            .blockLength(egressBlockLen)
+            .templateId(templateId)
+            .schemaId(MessageHeaderEncoder.SCHEMA_ID)
+            .version(MessageHeaderEncoder.SCHEMA_VERSION);
+
+        final int egressBodyOffset = MessageHeaderEncoder.ENCODED_LENGTH;
+        egressHeaderEncoder.wrap(encodeBuffer, egressBodyOffset)
+            .sourceId(sourceId)
+            .sessionId(sourceSessionId)
             .globalSeqNo(globalSeq)
-            .sourceSessionId(sourceId)
-            .appSeqNo(appSeq)
-            .clusterTimestamp(timestamp)
-            .putPayload(buffer, offset, length);
-        offerToGlobalStream(MessageHeaderEncoder.ENCODED_LENGTH + seqMsgEncoder.encodedLength());
+            .timestamp(timestamp);
+
+        // Copy every byte after the ingress header composite — the rest of
+        // the fixed block plus all var-data — verbatim; see class Javadoc.
+        final int copyFromOffset = ingressBodyOffset + HeaderDecoder.ENCODED_LENGTH;
+        final int copyLength     = length - MessageHeaderDecoder.ENCODED_LENGTH - HeaderDecoder.ENCODED_LENGTH;
+        encodeBuffer.putBytes(egressBodyOffset + HeaderEncoder.ENCODED_LENGTH, buffer, copyFromOffset, copyLength);
+
+        offerToGlobalStream(egressBodyOffset + HeaderEncoder.ENCODED_LENGTH + copyLength);
     }
 
     @Override
@@ -180,22 +230,10 @@ public final class SequencerService implements ClusteredService {
 
     @Override
     public void onTakeSnapshot(final ExclusivePublication snapshotPublication) {
-        int pos = 0;
-        encodeBuffer.putLong(pos, globalSeqNo);
-        pos += Long.BYTES;
-        encodeBuffer.putInt(pos, sourceAppSeqNos.size());
-        pos += Integer.BYTES;
-        final int[] posRef = {pos};
-        sourceAppSeqNos.longForEach((long srcId, long appSeq) -> {
-            encodeBuffer.putLong(posRef[0], srcId);
-            posRef[0] += Long.BYTES;
-            encodeBuffer.putLong(posRef[0], appSeq);
-            posRef[0] += Long.BYTES;
-        });
-        pos = posRef[0];
+        encodeBuffer.putLong(0, globalSeqNo);
         long offerResult;
         do {
-            offerResult = snapshotPublication.offer(encodeBuffer, 0, pos);
+            offerResult = snapshotPublication.offer(encodeBuffer, 0, Long.BYTES);
             if (offerResult == ExclusivePublication.CLOSED
                 || offerResult == ExclusivePublication.MAX_POSITION_EXCEEDED) {
                 throw new IllegalStateException(
@@ -208,18 +246,8 @@ public final class SequencerService implements ClusteredService {
     }
 
     private void loadSnapshot(final Image snapshotImage) {
-        final FragmentAssembler handler = new FragmentAssembler((buf, off, len, hdr) -> {
-            int pos = off;
-            globalSeqNo = buf.getLong(pos);
-            pos += Long.BYTES;
-            final int count = buf.getInt(pos);
-            pos += Integer.BYTES;
-            for (int i = 0; i < count; i++) {
-                final long srcId  = buf.getLong(pos); pos += Long.BYTES;
-                final long appSeq = buf.getLong(pos); pos += Long.BYTES;
-                sourceAppSeqNos.put(srcId, appSeq);
-            }
-        });
+        final FragmentAssembler handler = new FragmentAssembler(
+            (buf, off, len, hdr) -> globalSeqNo = buf.getLong(off));
         while (!snapshotImage.isClosed()) {
             cluster.idleStrategy().idle(snapshotImage.poll(handler, SNAPSHOT_POLL_BATCH));
         }
@@ -251,12 +279,6 @@ public final class SequencerService implements ClusteredService {
     }
 
     // ── Private helpers ───────────────────────────────────────────────────────
-
-    private long nextAppSeq(final long sourceId) {
-        final long next = sourceAppSeqNos.get(sourceId) + 1L;
-        sourceAppSeqNos.put(sourceId, next);
-        return next;
-    }
 
     private void offerToGlobalStream(final int length) {
         int idleSpins = 0;

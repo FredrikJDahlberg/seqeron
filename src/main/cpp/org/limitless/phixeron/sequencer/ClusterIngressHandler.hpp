@@ -2,17 +2,18 @@
 
 // ClusterIngressHandler — FIX-session-facing bridge into the Aeron Cluster.
 //
-// Everything here is pure logic (byte-level FIX parsing helpers, SBE admin
-// encoding, application-message routing) built on top of ClusterIngressSender's
+// Everything here is pure logic (byte-level FIX parsing helpers, SBE encoding,
+// application-message routing) built on top of ClusterIngressSender's
 // IngressTransport/EgressTransport seam. Nothing in this file touches a raw
-// TCP socket fd for anything observable in a test: CapturingTransport's admin
-// branch calls sendRaw(fd, ...), but that is a fire-and-forget guarded no-op
-// when fd < 0, and ClusterIngressHandler's admin/app encoders never inspect
-// their own output — they only push bytes through ClusterIngressSender, which
-// tests drive with the same in-memory IngressTransport/EgressTransport fakes
-// as ClusterIngressSenderTest.cpp (see ClusterIngressHandlerTest.cpp).
+// TCP socket fd for anything observable in a test: CapturingTransport calls
+// sendRaw(fd, ...), but that is a fire-and-forget guarded no-op when fd < 0,
+// and ClusterIngressHandler's own encoders never inspect their output — they
+// only push bytes through ClusterIngressSender, which tests drive with the
+// same in-memory IngressTransport/EgressTransport fakes as
+// ClusterIngressSenderTest.cpp (see ClusterIngressHandlerTest.cpp).
 
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -27,30 +28,32 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
-#include "org/limitless/phixeron/session/ServerSession.hpp"
 #include "org/limitless/fix/generated/messages/FixMessageHandler.hpp"
 #include "org/limitless/fix/generated/messages/FixMessageDecoders.hpp"
-#include "org/limitless/fix/generated/messages/FixMessageEncoders.hpp"
 #include "org/limitless/fix/generated/config/FixEngine.hpp"
 
+#include "org/limitless/phixeron/session/ServerSession.hpp"
 #include "org/limitless/phixeron/sequencer/ClusterIngressSender.hpp"
 
-#include "org_limitless_phixeron_sbe/MessageHeader.h"
-#include "org_limitless_phixeron_sbe/Logon.h"
-#include "org_limitless_phixeron_sbe/Logout.h"
-#include "org_limitless_phixeron_sbe/Heartbeat.h"
-#include "org_limitless_phixeron_sbe/TestRequest.h"
-#include "org_limitless_phixeron_sbe/ResendRequest.h"
-#include "org_limitless_phixeron_sbe/SequenceReset.h"
+#include "org_limitless_phixeron_sbe_unsequenced/MessageHeader.h"
+#include "org_limitless_phixeron_sbe_unsequenced/Header.h"
+#include "org_limitless_phixeron_sbe_unsequenced/Logon.h"
+#include "org_limitless_phixeron_sbe_unsequenced/Logout.h"
+#include "org_limitless_phixeron_sbe_unsequenced/Heartbeat.h"
+#include "org_limitless_phixeron_sbe_unsequenced/TestRequest.h"
+#include "org_limitless_phixeron_sbe_unsequenced/ResendRequest.h"
+#include "org_limitless_phixeron_sbe_unsequenced/SequenceReset.h"
+#include "org_limitless_phixeron_sbe_unsequenced/ExecutionReport.h"
+#include "org_limitless_phixeron_sbe_unsequenced/NewOrderSingle.h"
 
 namespace org::limitless::phixeron::sequencer
 {
 
-namespace fix     = org::limitless::fix;
-namespace sess    = org::limitless::phixeron::session;
-namespace msg     = fix::generated::messages;
-namespace cfg     = fix::generated::config;
-namespace sbesess = org::limitless::phixeron::sbe;
+namespace fix      = org::limitless::fix;
+namespace sess     = org::limitless::phixeron::session;
+namespace msg      = fix::generated::messages;
+namespace cfg      = fix::generated::config;
+namespace sbeunseq = org::limitless::phixeron::sbe::unsequenced;
 
 // ── FIX byte-level helpers ────────────────────────────────────────────────────
 
@@ -98,16 +101,6 @@ fixTagRange(const std::uint8_t* data, std::size_t len, std::string_view tag)
     std::size_t ve = vs;
     while (ve < len && data[ve] != '\x01') ++ve;
     return {vs, ve};
-}
-
-// Returns true when tag 35 carries a session-layer MsgType.
-inline bool isAdminMsgType(const std::uint8_t* data, std::size_t len) noexcept
-{
-    const auto [vs, ve] = fixTagRange(data, len, "35");
-    if (vs == std::string::npos || vs == ve) return true;
-    const char t = static_cast<char>(data[vs]);
-    return t == '0' || t == '1' || t == '2' || t == '3'
-        || t == '4' || t == '5' || t == 'A';
 }
 
 // Patches a stored outbound FIX message for retransmission:
@@ -175,7 +168,7 @@ inline void patchResendFlags(std::vector<std::uint8_t>& msg)
 // ── sendRaw ───────────────────────────────────────────────────────────────────
 
 // Blocking TCP send of a complete byte range; shared by CapturingTransport,
-// FixConnection::handleResendRequest and FixConnection::onClusterAppMessage.
+// FixConnection::handleResendRequest and FixConnection's ExecutionReport delivery.
 inline void sendRaw(int fd, const std::uint8_t* data, std::size_t len)
 {
     if (fd < 0 || len == 0) return;
@@ -196,68 +189,106 @@ inline void sendRaw(int fd, const std::uint8_t* data, std::size_t len)
 
 // ── CapturingTransport ────────────────────────────────────────────────────────
 
-// The session's outbound transport policy. Admin (session-layer) messages are
-// still delivered straight to TCP: their timing/state transitions are already
-// driven exclusively by the cluster global stream (see FixConnection::
-// onClusterAdmin), so there is nothing to gain by round-tripping them again.
-//
-// Application messages (ExecutionReport) are instead handed to the cluster for
-// sequencing; per the file's deterministic design invariant, they only reach
-// the TCP client once echoed back on the global stream, at which point
-// FixConnection::onClusterAppMessage delivers them and populates the resend
-// cache. This is what makes the cache genuinely "populated from the cluster
-// global stream" rather than from a local side-channel capture.
+// The FixSession's outbound transport: every message the session encodes
+// (cluster-driven admin replies, SequenceReset gap-fills, and — on the
+// FixSessionClient egress side — FIX-text ExecutionReports re-encoded from
+// the cluster's sbe-unsequenced.xml payload) goes straight to TCP. The
+// session is never used to FIX-encode-and-forward bytes to the cluster
+// anymore: ClusterIngressHandler encodes and submits application messages
+// as sbe-unsequenced.xml directly (see handle(NewOrderSingleDecoder&) and
+// sendExecutionReport below), reserving ExecutionReport's MsgSeqNum from the
+// same session (see sendExecutionReport's comment) without touching its
+// transport.
 struct CapturingTransport
 {
-    int                   fd{-1};
-    ClusterIngressSender* ingress{nullptr};
-    int32_t               connId{-1};
+    int fd{-1};
 
     void operator()(std::span<const std::uint8_t> bytes) const
     {
-        if (bytes.empty()) return;
-
-        if (isAdminMsgType(bytes.data(), bytes.size()))
-        {
-            sendRaw(fd, bytes.data(), bytes.size());
-            return;
-        }
-
-        if (ingress && bytes.size() <= std::numeric_limits<std::uint16_t>::max())
-        {
-            ingress->send(connId, bytes.data(), static_cast<std::uint16_t>(bytes.size()));
-        }
+        sendRaw(fd, bytes.data(), bytes.size());
     }
 };
 
 using FixSession = sess::ServerSession<cfg::FIXT_1_1, "SEQUENCER", "CLIENT", CapturingTransport>;
 
+// ── Enum mapping: simdfix FIX enums → sbe-unsequenced.xml enums ──────────────
+//
+// Both enum sets mirror the same FIX values by construction (see
+// fix-application.xml / sbe-unsequenced.xml), so these are straight 1:1 maps.
+
+inline sbeunseq::Side::Value toSbeSide(msg::Side v)
+{
+    switch (v) {
+        case msg::Side::Buy:       return sbeunseq::Side::Value::Buy;
+        case msg::Side::Sell:      return sbeunseq::Side::Value::Sell;
+        case msg::Side::BuyMinus:  return sbeunseq::Side::Value::BuyMinus;
+        case msg::Side::SellPlus:  return sbeunseq::Side::Value::SellPlus;
+        case msg::Side::SellShort: return sbeunseq::Side::Value::SellShort;
+        case msg::Side::Null:      break;
+    }
+    return sbeunseq::Side::Value::Buy;
+}
+
+inline sbeunseq::OrdType::Value toSbeOrdType(msg::OrdType v)
+{
+    switch (v) {
+        case msg::OrdType::Market:    return sbeunseq::OrdType::Value::Market;
+        case msg::OrdType::Limit:     return sbeunseq::OrdType::Value::Limit;
+        case msg::OrdType::Stop:      return sbeunseq::OrdType::Value::Stop;
+        case msg::OrdType::StopLimit: return sbeunseq::OrdType::Value::StopLimit;
+        case msg::OrdType::Null:      break;
+    }
+    return sbeunseq::OrdType::Value::Market;
+}
+
+inline sbeunseq::HandlInst::Value toSbeHandlInst(msg::HandlInst v)
+{
+    switch (v) {
+        case msg::HandlInst::AutoPrivate: return sbeunseq::HandlInst::Value::AutoPrivate;
+        case msg::HandlInst::AutoPublic:  return sbeunseq::HandlInst::Value::AutoPublic;
+        case msg::HandlInst::Manual:      return sbeunseq::HandlInst::Value::Manual;
+        case msg::HandlInst::Null:        break;
+    }
+    return sbeunseq::HandlInst::Value::AutoPrivate;
+}
+
+inline sbeunseq::TimeInForce::Value toSbeTimeInForce(msg::TimeInForce v)
+{
+    switch (v) {
+        case msg::TimeInForce::Day:              return sbeunseq::TimeInForce::Value::Day;
+        case msg::TimeInForce::GoodTillCancel:    return sbeunseq::TimeInForce::Value::GoodTillCancel;
+        case msg::TimeInForce::AtTheOpening:      return sbeunseq::TimeInForce::Value::AtTheOpening;
+        case msg::TimeInForce::ImmediateOrCancel: return sbeunseq::TimeInForce::Value::ImmediateOrCancel;
+        case msg::TimeInForce::FillOrKill:        return sbeunseq::TimeInForce::Value::FillOrKill;
+        case msg::TimeInForce::Null:              break;
+    }
+    return sbeunseq::TimeInForce::Value::Day;
+}
+
 // ── ClusterIngressHandler ─────────────────────────────────────────────────────
 
 // Receives decoded FIX messages on the TCP receive path and forwards them to
-// the cluster WITHOUT updating any session state. Admin messages are encoded
-// as SBE (sbe-session.xml, schemaId=100) prefixed with a 4-byte connection ID
-// for routing replies. Application messages (NewOrderSingle) are forwarded as
-// raw FIX bytes wrapped in the AppMessage SBE envelope.
+// the cluster WITHOUT updating any session state. Every message — admin
+// (Logon, Heartbeat, …) and application (NewOrderSingle, ExecutionReport) —
+// is re-encoded as the matching sbe-unsequenced.xml message, with
+// header.sourceId/sessionId identifying the submitting connection.
 class ClusterIngressHandler : public msg::FixMessageHandler<ClusterIngressHandler>
 {
-    ClusterIngressSender*    m_ingress{};
-    int32_t                  m_connectionId{-1};
+    ClusterIngressSender*         m_ingress{};
+    std::int32_t                  m_connectionId{-1};
+    FixSession*                   m_session{nullptr};
     std::span<const std::uint8_t> m_rawFixBytes;
-    FixSession*              m_session{nullptr};
 
-    // SBE encode buffer: [8-byte SBE header][SBE body]. The connId prefix is
-    // added uniformly by ClusterIngressSender::send/encodeAppMessage.
     alignas(16) std::array<std::uint8_t, 512> m_sbeBuf{};
 
-    char*    sbeBufBody()   { return reinterpret_cast<char*>(m_sbeBuf.data()); }
-    uint64_t sbeBufLen()    { return m_sbeBuf.size(); }
+    char*    sbeBufBody() { return reinterpret_cast<char*>(m_sbeBuf.data()); }
+    uint64_t sbeBufLen()  { return m_sbeBuf.size(); }
 
     template <typename SbeMsg>
-    void sendAdmin(SbeMsg& msg)
+    void sendUnsequenced(SbeMsg& msg)
     {
         if (!m_ingress) return;
-        m_ingress->send(m_connectionId, m_sbeBuf.data(), static_cast<std::uint16_t>(msg.sbePosition()));
+        m_ingress->send(m_sbeBuf.data(), static_cast<std::uint16_t>(msg.sbePosition()));
     }
 
 public:
@@ -272,16 +303,17 @@ public:
     fix::Result handle(msg::LogonDecoder& logon)
     {
         const std::uint32_t hbSecs = logon.heartbeatInterval().value_or(30u);
-        std::printf("[Ingress] Logon from fd=%d hbSecs=%u → encoding SBE\n",
+        std::printf("[Ingress] Logon from fd=%d hbSecs=%u → encoding sbe-unsequenced\n",
                     m_connectionId, hbSecs);
-        sbesess::Logon m;
+        sbeunseq::Logon m;
         m.wrapAndApplyHeader(sbeBufBody(), 0, sbeBufLen());
+        m.header().sourceId(m_connectionId).sessionId(m_ingress ? m_ingress->clusterSessionId() : -1);
         m.putSender(static_cast<const char*>("CLIENT  ")).putTarget(static_cast<const char*>("SEQNCR  "))
          .seqNum(0).sendingTimeMs(nowMs())
-         .encryptMethod(sbesess::EncryptMethod::Value::None)
+         .encryptMethod(sbeunseq::EncryptMethod::Value::None)
          .heartbeatInterval(hbSecs)
          .putXmlData(nullptr, 0);
-        sendAdmin(m);
+        sendUnsequenced(m);
         std::printf("[Ingress] Logon sent to cluster (fd=%d sbePos=%llu)\n",
                     m_connectionId, static_cast<unsigned long long>(m.sbePosition()));
         return fix::Result::Success;
@@ -289,19 +321,21 @@ public:
 
     fix::Result handle(msg::LogoutDecoder& /*logout*/)
     {
-        sbesess::Logout m;
+        sbeunseq::Logout m;
         m.wrapAndApplyHeader(sbeBufBody(), 0, sbeBufLen());
+        m.header().sourceId(m_connectionId).sessionId(m_ingress ? m_ingress->clusterSessionId() : -1);
         m.putSender(static_cast<const char*>("CLIENT  ")).putTarget(static_cast<const char*>("SEQNCR  "))
          .seqNum(0).sendingTimeMs(nowMs())
          .putText(nullptr, 0);
-        sendAdmin(m);
+        sendUnsequenced(m);
         return fix::Result::Success;
     }
 
     fix::Result handle(msg::HeartbeatDecoder& heartbeat)
     {
-        sbesess::Heartbeat m;
+        sbeunseq::Heartbeat m;
         m.wrapAndApplyHeader(sbeBufBody(), 0, sbeBufLen());
+        m.header().sourceId(m_connectionId).sessionId(m_ingress ? m_ingress->clusterSessionId() : -1);
         m.putSender(static_cast<const char*>("CLIENT  ")).putTarget(static_cast<const char*>("SEQNCR  "))
          .seqNum(0).sendingTimeMs(nowMs());
         if (const auto id = heartbeat.testReqID()) {
@@ -312,14 +346,15 @@ public:
         } else {
             m.testReqID()[0] = '\0';
         }
-        sendAdmin(m);
+        sendUnsequenced(m);
         return fix::Result::Success;
     }
 
     fix::Result handle(msg::TestRequestDecoder& testRequest)
     {
-        sbesess::TestRequest m;
+        sbeunseq::TestRequest m;
         m.wrapAndApplyHeader(sbeBufBody(), 0, sbeBufLen());
+        m.header().sourceId(m_connectionId).sessionId(m_ingress ? m_ingress->clusterSessionId() : -1);
         m.putSender(static_cast<const char*>("CLIENT  ")).putTarget(static_cast<const char*>("SEQNCR  "))
          .seqNum(0).sendingTimeMs(nowMs());
         if (const auto id = testRequest.testReqID()) {
@@ -330,31 +365,33 @@ public:
         } else {
             m.testReqID()[0] = '\0';
         }
-        sendAdmin(m);
+        sendUnsequenced(m);
         return fix::Result::Success;
     }
 
     fix::Result handle(msg::ResendRequestDecoder& rr)
     {
-        sbesess::ResendRequest m;
+        sbeunseq::ResendRequest m;
         m.wrapAndApplyHeader(sbeBufBody(), 0, sbeBufLen());
+        m.header().sourceId(m_connectionId).sessionId(m_ingress ? m_ingress->clusterSessionId() : -1);
         m.putSender(static_cast<const char*>("CLIENT  ")).putTarget(static_cast<const char*>("SEQNCR  "))
          .seqNum(0).sendingTimeMs(nowMs())
          .beginSeqNo(rr.beginSeqNo().value_or(1u))
          .endSeqNo(rr.endSeqNo().value_or(0u));
-        sendAdmin(m);
+        sendUnsequenced(m);
         return fix::Result::Success;
     }
 
     fix::Result handle(msg::SequenceResetDecoder& sr)
     {
-        sbesess::SequenceReset m;
+        sbeunseq::SequenceReset m;
         m.wrapAndApplyHeader(sbeBufBody(), 0, sbeBufLen());
+        m.header().sourceId(m_connectionId).sessionId(m_ingress ? m_ingress->clusterSessionId() : -1);
         m.putSender(static_cast<const char*>("CLIENT  ")).putTarget(static_cast<const char*>("SEQNCR  "))
          .seqNum(0).sendingTimeMs(nowMs())
-         .gapFillFlag(sbesess::GapFillFlag::Value::NULL_VALUE)
+         .gapFillFlag(sbeunseq::GapFillFlag::Value::NULL_VALUE)
          .newSeqNo(sr.newSeqNo().value_or(1u));
-        sendAdmin(m);
+        sendUnsequenced(m);
         return fix::Result::Success;
     }
 
@@ -389,58 +426,103 @@ public:
             std::fprintf(stderr, "[App] Rejected clOrdID=%.*s: %s\n",
                          static_cast<int>(clOrdId.size()), clOrdId.data(), rejectReason);
             if (m_session) {
-                m_session->setNowMs(nowMs());
-                msg::ExecutionReportEncoder er;
-                m_session->wrapHeader(er);
-                er.orderID("NONE")
-                  .clOrdID(clOrdId)
-                  .execID("EXEC-REJ")
-                  .execType(msg::ExecType::Rejected)
-                  .ordStatus(msg::OrdStatus::Rejected)
-                  .symbol(symbol.empty() ? std::string_view{"?"} : symbol)
-                  .side(side)
-                  .orderQty(qty)
-                  .leavesQty(0)
-                  .cumQty(0)
-                  .avgPx(fix::utils::FixedDecimal{0})
-                  .transactTime(std::chrono::milliseconds(nowMs()))
-                  .text(rejectReason);
-                m_session->send(er);
+                sendExecutionReport("NONE", clOrdId, "EXEC-REJ",
+                                     sbeunseq::ExecType::Value::Rejected,
+                                     sbeunseq::OrdStatus::Value::Rejected,
+                                     symbol.empty() ? std::string_view{"?"} : symbol,
+                                     toSbeSide(side), qty, /*price*/ nullptr,
+                                     /*leavesQty*/ 0, /*cumQty*/ 0, rejectReason);
             }
             return fix::Result::Success;
         }
 
-        if (m_ingress && !m_rawFixBytes.empty()) {
-            const std::size_t sz = m_rawFixBytes.size();
-            if (sz > 4096) {
-                std::fprintf(stderr, "[App] FIX message too large (%zu bytes); dropped\n", sz);
-            } else {
-                m_ingress->send(m_connectionId, m_rawFixBytes.data(), static_cast<std::uint16_t>(sz));
-            }
+        if (m_ingress) {
+            sbeunseq::NewOrderSingle m;
+            m.wrapAndApplyHeader(sbeBufBody(), 0, sbeBufLen());
+            m.header().sourceId(m_connectionId).sessionId(m_ingress->clusterSessionId());
+            m.putSender(static_cast<const char*>("CLIENT  ")).putTarget(static_cast<const char*>("SEQNCR  "))
+             .seqNum(0).sendingTimeMs(nowMs());
+            m.putAccount(nos.account().value_or(std::string_view{}));
+            m.putClOrdID(clOrdId);
+            m.handlInst(toSbeHandlInst(nos.handlInst().value_or(msg::HandlInst::AutoPrivate)));
+            m.putSymbol(symbol);
+            m.side(toSbeSide(side));
+            m.transactTime(nos.transactTime().value_or(std::chrono::milliseconds(nowMs())).count());
+            m.orderQty(qty);
+            m.ordType(toSbeOrdType(ordType));
+            m.price(priceOpt ? priceOpt->mantissa() : sbeunseq::NewOrderSingle::priceNullValue());
+            if (const auto tif = nos.timeInForce())
+                m.timeInForce(toSbeTimeInForce(*tif));
+            else
+                m.timeInForce(sbeunseq::TimeInForce::Value::NULL_VALUE);
+            m.putText(std::string_view{});
+            m.tradeDate(sbeunseq::NewOrderSingle::tradeDateNullValue());
+            m.maturityTime(sbeunseq::NewOrderSingle::maturityTimeNullValue());
+            sendUnsequenced(m);
         }
 
         if (m_session) {
-            m_session->setNowMs(nowMs());
-            msg::ExecutionReportEncoder er;
-            m_session->wrapHeader(er);
-            er.orderID("ORD-0001")
-              .clOrdID(clOrdId)
-              .execID("EXEC-0001")
-              .execType(msg::ExecType::New)
-              .ordStatus(msg::OrdStatus::New)
-              .symbol(symbol)
-              .side(side)
-              .orderQty(qty)
-              .leavesQty(qty)
-              .cumQty(0)
-              .avgPx(fix::utils::FixedDecimal{0});
-            if (priceOpt) er.price(*priceOpt);
-            er.transactTime(std::chrono::milliseconds(nowMs()));
-            m_session->send(er);
+            sendExecutionReport("ORD-0001", clOrdId, "EXEC-0001",
+                                 sbeunseq::ExecType::Value::New,
+                                 sbeunseq::OrdStatus::Value::New,
+                                 symbol, toSbeSide(side), qty,
+                                 priceOpt ? &*priceOpt : nullptr,
+                                 /*leavesQty*/ qty, /*cumQty*/ 0, /*text*/ nullptr);
             std::printf("[App] Sent ExecutionReport (New) for clOrdID=%.*s\n",
                         static_cast<int>(clOrdId.size()), clOrdId.data());
         }
         return fix::Result::Success;
+    }
+
+private:
+    // Builds and submits one sbe-unsequenced.xml ExecutionReport to the
+    // cluster. Used for both the reject path and the accepted-order path in
+    // handle(NewOrderSingleDecoder&) above.
+    void sendExecutionReport(std::string_view orderId, std::string_view clOrdId,
+                             std::string_view execId,
+                             sbeunseq::ExecType::Value execType,
+                             sbeunseq::OrdStatus::Value ordStatus,
+                             std::string_view symbol, sbeunseq::Side::Value side,
+                             std::uint32_t orderQty, const fix::utils::FixedDecimal* price,
+                             std::uint32_t leavesQty, std::uint32_t cumQty,
+                             const char* text)
+    {
+        if (!m_ingress || !m_session) return;
+
+        // ExecutionReport is the gateway's own outgoing FIX message (unlike
+        // admin messages here, whose real reply is built later on the egress
+        // side by FixConnection::onClusterAdmin). Its MsgSeqNum is therefore
+        // reserved synchronously, now, from the shared session counter — the
+        // same counter FixConnection's cluster-driven admin replies advance
+        // via session.send() — so the two interleave into one gapless FIX
+        // sequence. It travels through the cluster (and archive) embedded in
+        // seqNum below; FixConnection re-derives the FIX-wire MsgSeqNum from
+        // this field rather than reassigning one on echo.
+        const std::uint32_t seq = m_session->nextOutgoingSeqNum();
+        m_session->setNextOutgoingSeqNum(seq + 1);
+
+        sbeunseq::ExecutionReport m;
+        m.wrapAndApplyHeader(sbeBufBody(), 0, sbeBufLen());
+        m.header().sourceId(m_connectionId).sessionId(m_ingress->clusterSessionId());
+        m.putSender(static_cast<const char*>("CLIENT  ")).putTarget(static_cast<const char*>("SEQNCR  "))
+         .seqNum(seq).sendingTimeMs(nowMs());
+        m.putOrderID(orderId);
+        m.putClOrdID(clOrdId);
+        m.putExecID(execId);
+        m.execType(execType);
+        m.ordStatus(ordStatus);
+        m.putSymbol(symbol);
+        m.side(side);
+        m.orderQty(orderQty);
+        m.price(price ? price->mantissa() : sbeunseq::ExecutionReport::priceNullValue());
+        m.lastQty(sbeunseq::ExecutionReport::lastQtyNullValue());
+        m.lastPx(sbeunseq::ExecutionReport::lastPxNullValue());
+        m.leavesQty(leavesQty);
+        m.cumQty(cumQty);
+        m.avgPx(0);
+        m.transactTime(nowMs());
+        m.putText(text ? std::string_view(text) : std::string_view{});
+        sendUnsequenced(m);
     }
 };
 

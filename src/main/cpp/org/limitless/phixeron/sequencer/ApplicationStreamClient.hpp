@@ -22,22 +22,21 @@ namespace org::limitless::phixeron::sequencer
 /**
  * Carries one application-layer message from the global stream.
  *
- * Lifecycle events (SourceConnected, SourceDisconnected) are filtered out;
- * only SequencedMessages with non-empty payloads reach this struct.
+ * Lifecycle events (ClientConnected, ClientDisconnected) are filtered out;
+ * only sequenced messages with non-empty payloads reach this struct.
  *
- * payload/payloadLength address the raw application bytes that were originally
- * sent into the cluster — i.e. the AppMessage SBE prefix (10 bytes) has
- * already been stripped.  The pointer is valid only for the duration of the
- * callback; copy the data if it must survive.
+ * payload/payloadLength address the sbe-sequenced.xml message bytes exactly
+ * as published on the global stream (schemaId=202), including its own
+ * 8-byte messageHeader — no envelope to strip. The pointer is valid only for
+ * the duration of the callback; copy the data if it must survive.
  */
 struct ApplicationEvent
 {
     std::int64_t  globalSeqNo;       ///< monotonically increasing across all sources
     std::int64_t  sourceSessionId;   ///< cluster session that submitted this message
-    std::int64_t  appSeqNo;          ///< per-source application sequence number
     std::int64_t  clusterTimestamp;  ///< consensus time (ms) when committed by the cluster
     std::int64_t  receiveTimeNs;     ///< wall-clock ns at receipt by this client
-    const uint8_t* payload;          ///< raw application bytes (AppMessage SBE prefix removed)
+    const uint8_t* payload;          ///< raw sbe-sequenced.xml message bytes
     std::uint64_t  payloadLength;    ///< byte count of payload
 };
 
@@ -50,8 +49,7 @@ struct ApplicationEvent
  * an archive replay (NULL_POSITION length → live follow-through on the same
  * image), and delivers only application messages to the caller.
  *
- * Lifecycle events (SourceConnected / SourceDisconnected) are filtered out;
- * the AppMessage SBE 10-byte prefix is stripped before the callback fires.
+ * Lifecycle events (SourceConnected / SourceDisconnected) are filtered out.
  *
  * Typical usage:
  * @code
@@ -211,22 +209,15 @@ private:
 
     void onSequenced(const SequencedEvent& e)
     {
-        // Filter: drop messages whose payload is too short to contain application bytes.
-        if (e.payloadLength <= APP_MSG_SBE_PREFIX || !m_onMessage) return;
-
-        // Strip the 10-byte AppMessage SBE prefix (8-byte SBE header + 2-byte length field).
-        const auto* appBytes = reinterpret_cast<const uint8_t*>(e.payload)
-                               + APP_MSG_SBE_PREFIX;
-        const std::uint64_t appLen = e.payloadLength - APP_MSG_SBE_PREFIX;
+        if (e.payloadLength == 0 || !m_onMessage) return;
 
         m_onMessage(ApplicationEvent{
             .globalSeqNo      = e.globalSeqNo,
             .sourceSessionId  = e.sourceSessionId,
-            .appSeqNo         = e.appSeqNo,
             .clusterTimestamp = e.clusterTimestamp,
             .receiveTimeNs    = e.receiveTimeNs,
-            .payload          = appBytes,
-            .payloadLength    = appLen
+            .payload          = reinterpret_cast<const uint8_t*>(e.payload),
+            .payloadLength    = e.payloadLength
         });
     }
 

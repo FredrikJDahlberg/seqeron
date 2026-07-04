@@ -61,35 +61,6 @@ inline std::int64_t nowMs()
         std::chrono::system_clock::now().time_since_epoch()).count();
 }
 
-// AppMessage SBE constants (sbe-sequencer.xml schemaId=201, templateId=1, blockLength=0).
-// Admin AppMessage payloads are prefixed with a 4-byte connection ID so the
-// global-stream receiver can route responses to the correct TCP socket.
-inline constexpr std::uint16_t APP_MSG_TEMPLATE_ID = 1;
-inline constexpr std::uint16_t APP_MSG_SCHEMA_ID   = 201;
-inline constexpr std::uint32_t CONN_ID_PREFIX      = 4;   // bytes before SBE header in admin payload
-
-inline void putU16LE(std::uint8_t* buf, std::uint16_t v)
-{
-    buf[0] = static_cast<std::uint8_t>(v & 0xFFu);
-    buf[1] = static_cast<std::uint8_t>(v >> 8u);
-}
-
-// Encodes one AppMessage SBE frame: 8-byte SBE header + 2-byte varData length +
-// a 4-byte connection ID + payload. Returns total bytes written.
-inline std::int32_t encodeAppMessage(std::uint8_t* buf, std::int32_t connId,
-                                      const std::uint8_t* fixBytes, std::uint16_t fixLen)
-{
-    const std::uint16_t payloadLen = static_cast<std::uint16_t>(CONN_ID_PREFIX + fixLen);
-    putU16LE(buf + 0, 0);                   // blockLength  = 0
-    putU16LE(buf + 2, APP_MSG_TEMPLATE_ID); // templateId   = 1
-    putU16LE(buf + 4, APP_MSG_SCHEMA_ID);   // schemaId     = 201
-    putU16LE(buf + 6, 0);                   // version      = 0
-    putU16LE(buf + 8, payloadLen);          // payload length (uint16 per varDataEncoding)
-    std::memcpy(buf + 10, &connId, CONN_ID_PREFIX);
-    std::memcpy(buf + 10 + CONN_ID_PREFIX, fixBytes, fixLen);
-    return 10 + static_cast<std::int32_t>(CONN_ID_PREFIX) + static_cast<std::int32_t>(fixLen);
-}
-
 // ── Transport interfaces ──────────────────────────────────────────────────────
 
 // Outbound half: offers raw bytes to the cluster ingress. Implementations
@@ -166,7 +137,10 @@ private:
 // ── ClusterIngressSender ──────────────────────────────────────────────────────
 
 // Manages the Aeron Cluster session (SessionConnectRequest → SessionEvent(OK))
-// and sends AppMessage SBE frames to the cluster ingress.
+// and sends pre-encoded sbe-unsequenced.xml messages to the cluster ingress.
+// Every message in that schema carries its own header composite (sourceId,
+// sessionId), so unlike the old AppMessage scheme, send() needs no connection
+// id of its own — the caller bakes it into the message before calling send().
 class ClusterIngressSender
 {
 public:
@@ -256,6 +230,11 @@ public:
 
     bool isConnected() const { return m_clusterSessionId >= 0; }
 
+    // Aeron Cluster client session id of this connection, or -1 if not yet
+    // connected. Callers embed this into a message's header.sessionId field
+    // before encoding it for send().
+    std::int64_t clusterSessionId() const { return m_clusterSessionId; }
+
     // Send a keep-alive to the cluster ingress if the interval has elapsed.
     // Must be called regularly (e.g. every duty-cycle iteration) to prevent session timeout.
     void keepAlive()
@@ -303,12 +282,11 @@ public:
         });
     }
 
-    // Wraps fixBytes in AppMessage SBE + SessionMessageHeader and offers to the cluster.
-    // connId is prefixed into the AppMessage payload so the global-stream receiver
-    // can route the echoed message back to the originating TCP connection.
-    void send(std::int32_t connId, const std::uint8_t* fixBytes, std::uint16_t fixLen)
+    // Wraps a pre-encoded sbe-unsequenced.xml message in a SessionMessageHeader
+    // (the Aeron Cluster ingress envelope) and offers it to the cluster.
+    void send(const std::uint8_t* bytes, std::uint16_t len)
     {
-        if (!m_ingress || m_clusterSessionId < 0 || fixLen == 0) return;
+        if (!m_ingress || m_clusterSessionId < 0 || len == 0) return;
 
         alignas(16) std::array<std::uint8_t, 4096 + 42> buf{};
         cluster_sbe::SessionMessageHeader hdr;
@@ -317,10 +295,10 @@ public:
            .clusterSessionId(m_clusterSessionId)
            .timestamp(nowMs());
         const std::int32_t hdrLen = static_cast<std::int32_t>(hdr.sbePosition());
-        const std::int32_t appLen = encodeAppMessage(buf.data() + hdrLen, connId, fixBytes, fixLen);
+        std::memcpy(buf.data() + hdrLen, bytes, len);
 
         if (!m_ingress->offer(std::span<const std::uint8_t>(
-                buf.data(), static_cast<std::size_t>(hdrLen + appLen))))
+                buf.data(), static_cast<std::size_t>(hdrLen) + len)))
             std::fprintf(stderr, "[Cluster] ingress offer failed\n");
     }
 

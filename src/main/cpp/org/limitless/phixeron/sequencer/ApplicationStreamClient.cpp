@@ -7,9 +7,9 @@
  *   2. Locate the global stream recording (channel 224.0.1.1:9200, stream 1).
  *   3. Start an archive replay with NULL_POSITION length so the same image
  *      follows the live recording seamlessly after the history is consumed.
- *   4. Dispatch each SequencedMessage payload (AppMessage SBE prefix stripped)
- *      to the application handler.  Lifecycle events (SourceConnected /
- *      SourceDisconnected) are silently filtered out.
+ *   4. Dispatch each global-stream fragment (a sbe-sequenced.xml message,
+ *      schemaId=202, verbatim) to the application handler.  Lifecycle events
+ *      (ClientConnected / ClientDisconnected) are silently filtered out.
  *   5. onCaughtUp fires once the replay image reaches the recording stop
  *      position that was observed at startup.
  */
@@ -25,13 +25,14 @@
 
 #include "org/limitless/phixeron/sequencer/ApplicationStreamClient.hpp"
 
-// Generated SBE codecs (sbe-application.xml via GenerateApplicationSbeCodecs)
-#include "org_limitless_phixeron_sbe_application/MessageHeader.h"
-#include "org_limitless_phixeron_sbe_application/ExecutionReport.h"
-#include "org_limitless_phixeron_sbe_application/NewOrderSingle.h"
+// Generated SBE codecs (sbe-sequenced.xml via GenerateSequencedSbeCodecs)
+#include "org_limitless_phixeron_sbe_sequenced/MessageHeader.h"
+#include "org_limitless_phixeron_sbe_sequenced/Header.h"
+#include "org_limitless_phixeron_sbe_sequenced/ExecutionReport.h"
+#include "org_limitless_phixeron_sbe_sequenced/NewOrderSingle.h"
 
 using namespace org::limitless::phixeron::sequencer;
-namespace sbeapp = org::limitless::phixeron::sbe::application;
+namespace sbeseq = org::limitless::phixeron::sbe::sequenced;
 
 static std::atomic<bool> g_running{true};
 static void sigintHandler(int) { g_running = false; }
@@ -41,37 +42,43 @@ static double toPrice(const std::int64_t mantissa)
     return static_cast<double>(mantissa) / 100000000.0;
 }
 
-static void printExecutionReport(sbeapp::ExecutionReport& m)
+static void printExecutionReport(sbeseq::ExecutionReport& m)
 {
-    std::printf("  ExecutionReport orderID=%s clOrdID=%s execID=%s execType=%s"
+    std::printf("  ExecutionReport sourceId=%d sessionId=%" PRId64
+                " orderID=%s clOrdID=%s execID=%s execType=%s"
                 " ordStatus=%s symbol=%s side=%s leavesQty=%u cumQty=%u avgPx=%.8f\n",
+                m.header().sourceId(), m.header().sessionId(),
                 m.getOrderIDAsString().c_str(),
                 m.getClOrdIDAsString().c_str(),
                 m.getExecIDAsString().c_str(),
-                sbeapp::ExecType::c_str(m.execType()),
-                sbeapp::OrdStatus::c_str(m.ordStatus()),
+                sbeseq::ExecType::c_str(m.execType()),
+                sbeseq::OrdStatus::c_str(m.ordStatus()),
                 m.getSymbolAsString().c_str(),
-                sbeapp::Side::c_str(m.side()),
+                sbeseq::Side::c_str(m.side()),
                 m.leavesQty(),
                 m.cumQty(),
                 toPrice(m.avgPx()));
 }
 
-static void printNewOrderSingle(sbeapp::NewOrderSingle& m)
+static void printNewOrderSingle(sbeseq::NewOrderSingle& m)
 {
-    std::printf("  NewOrderSingle clOrdID=%s symbol=%s side=%s ordType=%s orderQty=%u\n",
+    std::printf("  NewOrderSingle sourceId=%d sessionId=%" PRId64
+                " clOrdID=%s symbol=%s side=%s ordType=%s orderQty=%u\n",
+                m.header().sourceId(), m.header().sessionId(),
                 m.getClOrdIDAsString().c_str(),
                 m.getSymbolAsString().c_str(),
-                sbeapp::Side::c_str(m.side()),
-                sbeapp::OrdType::c_str(m.ordType()),
+                sbeseq::Side::c_str(m.side()),
+                sbeseq::OrdType::c_str(m.ordType()),
                 m.orderQty());
 }
 
-// Decodes ApplicationEvent::payload as an sbe-application.xml message
-// (ExecutionReport / NewOrderSingle) and prints the decoded fields.
+// Decodes ApplicationEvent::payload as a sbe-sequenced.xml message and
+// prints the decoded fields for the two application message types
+// (ExecutionReport / NewOrderSingle); admin messages (Logon, Heartbeat, …)
+// are reported but not decoded — this stream is application-focused.
 static void decodeApplicationPayload(const ApplicationEvent& e)
 {
-    if (e.payloadLength < sbeapp::MessageHeader::encodedLength()) {
+    if (e.payloadLength < sbeseq::MessageHeader::encodedLength()) {
         std::printf("  (payload too short for SBE header: %" PRIu64 " bytes)\n",
                     e.payloadLength);
         return;
@@ -79,34 +86,35 @@ static void decodeApplicationPayload(const ApplicationEvent& e)
 
     auto* buffer = const_cast<char*>(reinterpret_cast<const char*>(e.payload));
 
-    sbeapp::MessageHeader header;
-    header.wrap(buffer, 0, sbeapp::MessageHeader::sbeSchemaVersion(), e.payloadLength);
+    sbeseq::MessageHeader header;
+    header.wrap(buffer, 0, sbeseq::MessageHeader::sbeSchemaVersion(), e.payloadLength);
 
-    if (header.schemaId() != sbeapp::MessageHeader::sbeSchemaId()) {
-        std::printf("  (not an sbe-application payload: schemaId=%u)\n", header.schemaId());
+    if (header.schemaId() != sbeseq::MessageHeader::sbeSchemaId()) {
+        std::printf("  (not a sbe-sequenced payload: schemaId=%u)\n", header.schemaId());
         return;
     }
 
     switch (header.templateId())
     {
-    case sbeapp::ExecutionReport::sbeTemplateId():
+    case sbeseq::ExecutionReport::sbeTemplateId():
     {
-        sbeapp::ExecutionReport msg;
-        msg.wrapForDecode(buffer, sbeapp::MessageHeader::encodedLength(),
+        sbeseq::ExecutionReport msg;
+        msg.wrapForDecode(buffer, sbeseq::MessageHeader::encodedLength(),
                           header.blockLength(), header.version(), e.payloadLength);
         printExecutionReport(msg);
         break;
     }
-    case sbeapp::NewOrderSingle::sbeTemplateId():
+    case sbeseq::NewOrderSingle::sbeTemplateId():
     {
-        sbeapp::NewOrderSingle msg;
-        msg.wrapForDecode(buffer, sbeapp::MessageHeader::encodedLength(),
+        sbeseq::NewOrderSingle msg;
+        msg.wrapForDecode(buffer, sbeseq::MessageHeader::encodedLength(),
                           header.blockLength(), header.version(), e.payloadLength);
         printNewOrderSingle(msg);
         break;
     }
     default:
-        std::printf("  (unknown sbe-application templateId=%u)\n", header.templateId());
+        std::printf("  (admin sbe-sequenced templateId=%u; not an application message)\n",
+                    header.templateId());
         break;
     }
 }
@@ -124,13 +132,11 @@ int main()
         {
             std::printf("[Message] globalSeq=%" PRId64
                         "  source=%" PRId64
-                        "  appSeq=%" PRId64
                         "  clusterTs=%" PRId64
                         "  receiveNs=%" PRId64
                         "  bytes=%" PRIu64 "\n",
                         e.globalSeqNo,
                         e.sourceSessionId,
-                        e.appSeqNo,
                         e.clusterTimestamp,
                         e.receiveTimeNs,
                         e.payloadLength);
