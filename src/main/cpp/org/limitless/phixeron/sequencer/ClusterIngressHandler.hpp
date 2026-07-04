@@ -32,7 +32,7 @@
 #include "org/limitless/fix/generated/messages/FixMessageDecoders.hpp"
 #include "org/limitless/fix/generated/config/FixEngine.hpp"
 
-#include "org/limitless/phixeron/session/ServerSession.hpp"
+#include "org/limitless/phixeron/fix/ServerSession.hpp"
 #include "org/limitless/phixeron/sequencer/ClusterIngressSender.hpp"
 
 #include "org_limitless_phixeron_sbe_unsequenced/MessageHeader.h"
@@ -50,7 +50,7 @@ namespace org::limitless::phixeron::sequencer
 {
 
 namespace fix      = org::limitless::fix;
-namespace sess     = org::limitless::phixeron::session;
+namespace sess     = org::limitless::phixeron::fix;
 namespace msg      = fix::generated::messages;
 namespace cfg      = fix::generated::config;
 namespace usq = org::limitless::phixeron::sbe::unsequenced;

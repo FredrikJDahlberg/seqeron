@@ -9,9 +9,11 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 #include "Aeron.h"
 #include "FragmentAssembler.h"
+#include "client/archive/AeronArchive.h"
 
 // Generated SBE C++ codecs from sbe-sequenced.xml (via GenerateSequencedSbeCodecs)
 #include "org_limitless_phixeron_sbe_sequenced/MessageHeader.h"
@@ -57,6 +59,90 @@ inline std::string resolveReplayChannel(const char* envVar, std::uint16_t defaul
         port = static_cast<std::uint16_t>(std::strtoul(value, nullptr, 10));
     }
     return "aeron:udp?endpoint=localhost:" + std::to_string(port);
+}
+
+// Default 3-node cluster archive control endpoints, one per member, following the
+// SequencerNode.PORT_BASE + memberId*10 + 1 formula (see three-node-cluster.sh's
+// CLUSTER_MEMBERS): member 0 → 9301, member 1 → 9311, member 2 → 9321. Every
+// member's co-located archive holds an identical recording of the global stream,
+// so any reachable one works equally well — there's no leader-affinity requirement
+// here, unlike cluster ingress.
+inline constexpr const char* DEFAULT_ARCHIVE_ENDPOINTS = "localhost:9301,localhost:9311,localhost:9321";
+
+/**
+ * Splits a comma-separated "host:port,host:port,..." list from the given
+ * environment variable, falling back to defaultCsv (same format) when unset
+ * or empty.
+ */
+inline std::vector<std::string> resolveArchiveEndpoints(const char* envVar, const char* defaultCsv)
+{
+    const char* value = std::getenv(envVar);
+    const std::string csv = (value != nullptr && *value != '\0') ? value : defaultCsv;
+
+    std::vector<std::string> endpoints;
+    std::size_t start = 0;
+    while (start <= csv.size())
+    {
+        const std::size_t comma = csv.find(',', start);
+        const std::size_t end   = (comma == std::string::npos) ? csv.size() : comma;
+        if (end > start)
+        {
+            endpoints.push_back(csv.substr(start, end - start));
+        }
+        if (comma == std::string::npos)
+        {
+            break;
+        }
+        start = comma + 1;
+    }
+    return endpoints;
+}
+
+/**
+ * Connects to the first reachable archive among controlEndpoints, in order.
+ *
+ * Archive recordings of the global stream are identical across every cluster
+ * member (each node's co-located archive records the same replicated stream),
+ * so — unlike cluster ingress, which must track the current Raft leader via
+ * REDIRECT/NewLeaderEvent — any reachable member's archive is an equally valid
+ * replay source. This is a one-time bootstrap choice, not something that needs
+ * to react to leadership changes afterward.
+ *
+ * @throws std::runtime_error if every candidate endpoint fails to connect.
+ */
+inline std::shared_ptr<aeron::archive::client::AeronArchive> connectToAnyArchive(
+    std::shared_ptr<aeron::Aeron>    aeron,
+    const std::vector<std::string>& controlEndpoints,
+    std::int32_t                     controlStreamId,
+    const char*                      controlResponseChannel,
+    const char*                      logPrefix)
+{
+    std::string lastError = "no candidate endpoints given";
+    for (const auto& endpoint : controlEndpoints)
+    {
+        try
+        {
+            aeron::archive::client::Context archiveCtx;
+            archiveCtx.aeron(aeron)
+                      .controlRequestChannel("aeron:udp?endpoint=" + endpoint)
+                      .controlRequestStreamId(controlStreamId)
+                      .controlResponseChannel(controlResponseChannel);
+
+            auto archive = aeron::archive::client::AeronArchive::connect(archiveCtx);
+            std::printf("%s Connected to Aeron Archive at %s\n", logPrefix, endpoint.c_str());
+            return archive;
+        }
+        catch (const std::exception& ex)
+        {
+            std::fprintf(stderr, "%s Archive connect to %s failed: %s\n",
+                         logPrefix, endpoint.c_str(), ex.what());
+            lastError = ex.what();
+        }
+    }
+
+    throw std::runtime_error(
+        std::string(logPrefix) + " Could not connect to any archive endpoint (tried " +
+        std::to_string(controlEndpoints.size()) + "); last error: " + lastError);
 }
 
 // ClientConnected/ClientDisconnected aren't FIX messages, so sbe-sequenced.xml
