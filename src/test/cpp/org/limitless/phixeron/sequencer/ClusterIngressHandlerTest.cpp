@@ -151,27 +151,27 @@ protected:
         auto egress = std::make_unique<FakeEgressTransport>();
         egress->queued.push_back(encodeSessionEvent(55, 11, cluster_sbe::EventCode::Value::OK));
         auto ingress = std::make_unique<FakeIngressTransport>();
-        ingress_ = ingress.get();
+        m_ingress = ingress.get();
 
-        sender_.connect(std::move(ingress), std::move(egress));
-        ASSERT_TRUE(sender_.isConnected());
-        ingress_->offered.clear(); // drop the captured SessionConnectRequest
+        m_sender.connect(std::move(ingress), std::move(egress));
+        ASSERT_TRUE(m_sender.isConnected());
+        m_ingress->offered.clear(); // drop the captured SessionConnectRequest
     }
 
-    ClusterIngressSender                        sender_;
-    FakeIngressTransport*                        ingress_{nullptr};
-    ClusterIngressHandler                        handler_{&sender_, CONN_ID};
-    fix::decoder::PayloadDecoder<cfg::FIXT_1_1>  decoder_;
+    ClusterIngressSender m_sender;
+    FakeIngressTransport* m_ingress{nullptr};
+    ClusterIngressHandler m_handler{&m_sender, CONN_ID};
+    fix::decoder::PayloadDecoder<cfg::FIXT_1_1>  m_decoder;
 };
 
 TEST_F(ClusterIngressHandlerAdminOnly, LogonIsReEncodedAsSbeUnsequencedWithHeader)
 {
     const auto msg = buildFix('A', {"98=0", "108=45"});
-    const auto result = decoder_.parse(std::span<const std::uint8_t>(msg.data(), msg.size()), handler_);
+    const auto result = m_decoder.parse(std::span<const std::uint8_t>(msg.data(), msg.size()), m_handler);
     ASSERT_EQ(fix::Result::Success, result.m_value);
 
-    ASSERT_EQ(1u, ingress_->offered.size());
-    auto logon = decodeUnsequenced<usq::Logon>(ingress_->offered[0]);
+    ASSERT_EQ(1u, m_ingress->offered.size());
+    auto logon = decodeUnsequenced<usq::Logon>(m_ingress->offered[0]);
     EXPECT_EQ(CONN_ID, logon.header().sourceId());
     EXPECT_EQ(55, logon.header().sessionId());
     EXPECT_EQ(45u, logon.heartbeatInterval());
@@ -180,55 +180,55 @@ TEST_F(ClusterIngressHandlerAdminOnly, LogonIsReEncodedAsSbeUnsequencedWithHeade
 TEST_F(ClusterIngressHandlerAdminOnly, LogoutIsReEncodedAsSbeUnsequenced)
 {
     const auto msg = buildFix('5', {});
-    const auto result = decoder_.parse(std::span<const std::uint8_t>(msg.data(), msg.size()), handler_);
+    const auto result = m_decoder.parse(std::span<const std::uint8_t>(msg.data(), msg.size()), m_handler);
     ASSERT_EQ(fix::Result::Success, result.m_value);
 
-    ASSERT_EQ(1u, ingress_->offered.size());
-    auto logout = decodeUnsequenced<usq::Logout>(ingress_->offered[0]);
+    ASSERT_EQ(1u, m_ingress->offered.size());
+    auto logout = decodeUnsequenced<usq::Logout>(m_ingress->offered[0]);
     EXPECT_EQ(CONN_ID, logout.header().sourceId());
 }
 
 TEST_F(ClusterIngressHandlerAdminOnly, HeartbeatCarriesTestReqIdWhenPresent)
 {
     const auto msg = buildFix('0', {"112=PING1"});
-    const auto result = decoder_.parse(std::span<const std::uint8_t>(msg.data(), msg.size()), handler_);
+    const auto result = m_decoder.parse(std::span<const std::uint8_t>(msg.data(), msg.size()), m_handler);
     ASSERT_EQ(fix::Result::Success, result.m_value);
 
-    ASSERT_EQ(1u, ingress_->offered.size());
-    auto hb = decodeUnsequenced<usq::Heartbeat>(ingress_->offered[0]);
+    ASSERT_EQ(1u, m_ingress->offered.size());
+    auto hb = decodeUnsequenced<usq::Heartbeat>(m_ingress->offered[0]);
     EXPECT_EQ(std::string("PING1"), std::string(hb.testReqID()));
 }
 
 TEST_F(ClusterIngressHandlerAdminOnly, HeartbeatHasEmptyTestReqIdWhenAbsent)
 {
     const auto msg = buildFix('0', {});
-    const auto result = decoder_.parse(std::span<const std::uint8_t>(msg.data(), msg.size()), handler_);
+    const auto result = m_decoder.parse(std::span<const std::uint8_t>(msg.data(), msg.size()), m_handler);
     ASSERT_EQ(fix::Result::Success, result.m_value);
 
-    ASSERT_EQ(1u, ingress_->offered.size());
-    auto hb = decodeUnsequenced<usq::Heartbeat>(ingress_->offered[0]);
+    ASSERT_EQ(1u, m_ingress->offered.size());
+    auto hb = decodeUnsequenced<usq::Heartbeat>(m_ingress->offered[0]);
     EXPECT_EQ(std::string(""), std::string(hb.testReqID()));
 }
 
 TEST_F(ClusterIngressHandlerAdminOnly, TestRequestCarriesTestReqId)
 {
     const auto msg = buildFix('1', {"112=RUOK"});
-    const auto result = decoder_.parse(std::span<const std::uint8_t>(msg.data(), msg.size()), handler_);
+    const auto result = m_decoder.parse(std::span<const std::uint8_t>(msg.data(), msg.size()), m_handler);
     ASSERT_EQ(fix::Result::Success, result.m_value);
 
-    ASSERT_EQ(1u, ingress_->offered.size());
-    auto tr = decodeUnsequenced<usq::TestRequest>(ingress_->offered[0]);
+    ASSERT_EQ(1u, m_ingress->offered.size());
+    auto tr = decodeUnsequenced<usq::TestRequest>(m_ingress->offered[0]);
     EXPECT_EQ(std::string("RUOK"), std::string(tr.testReqID()));
 }
 
 TEST_F(ClusterIngressHandlerAdminOnly, ResendRequestCarriesBeginAndEndSeqNo)
 {
     const auto msg = buildFix('2', {"7=5", "16=10"});
-    const auto result = decoder_.parse(std::span<const std::uint8_t>(msg.data(), msg.size()), handler_);
+    const auto result = m_decoder.parse(std::span<const std::uint8_t>(msg.data(), msg.size()), m_handler);
     ASSERT_EQ(fix::Result::Success, result.m_value);
 
-    ASSERT_EQ(1u, ingress_->offered.size());
-    auto rr = decodeUnsequenced<usq::ResendRequest>(ingress_->offered[0]);
+    ASSERT_EQ(1u, m_ingress->offered.size());
+    auto rr = decodeUnsequenced<usq::ResendRequest>(m_ingress->offered[0]);
     EXPECT_EQ(5u, rr.beginSeqNo());
     EXPECT_EQ(10u, rr.endSeqNo());
 }
@@ -236,11 +236,11 @@ TEST_F(ClusterIngressHandlerAdminOnly, ResendRequestCarriesBeginAndEndSeqNo)
 TEST_F(ClusterIngressHandlerAdminOnly, SequenceResetCarriesNewSeqNo)
 {
     const auto msg = buildFix('4', {"36=100"});
-    const auto result = decoder_.parse(std::span<const std::uint8_t>(msg.data(), msg.size()), handler_);
+    const auto result = m_decoder.parse(std::span<const std::uint8_t>(msg.data(), msg.size()), m_handler);
     ASSERT_EQ(fix::Result::Success, result.m_value);
 
-    ASSERT_EQ(1u, ingress_->offered.size());
-    auto sr = decodeUnsequenced<usq::SequenceReset>(ingress_->offered[0]);
+    ASSERT_EQ(1u, m_ingress->offered.size());
+    auto sr = decodeUnsequenced<usq::SequenceReset>(m_ingress->offered[0]);
     EXPECT_EQ(100u, sr.newSeqNo());
 }
 
@@ -249,14 +249,14 @@ TEST_F(ClusterIngressHandlerAdminOnly, ValidNewOrderSingleIsEncodedAsSbeUnsequen
     const auto msg = buildFix('D', {"11=ORD-1", "21=1", "55=AAPL", "54=1",
                                      "60=20260703-12:00:00", "38=100", "40=1"});
     // Mirrors FixConnection::onRecv, which sets the raw bytes before parsing.
-    handler_.setRawBytes(std::span<const std::uint8_t>(msg.data(), msg.size()));
-    const auto result = decoder_.parse(std::span<const std::uint8_t>(msg.data(), msg.size()), handler_);
+    m_handler.setRawBytes(std::span<const std::uint8_t>(msg.data(), msg.size()));
+    const auto result = m_decoder.parse(std::span<const std::uint8_t>(msg.data(), msg.size()), m_handler);
     ASSERT_EQ(fix::Result::Success, result.m_value);
 
     // No session was supplied, so only the NewOrderSingle submission happens
     // (no reject/accept ExecutionReport is generated).
-    ASSERT_EQ(1u, ingress_->offered.size());
-    auto nos = decodeUnsequenced<usq::NewOrderSingle>(ingress_->offered[0]);
+    ASSERT_EQ(1u, m_ingress->offered.size());
+    auto nos = decodeUnsequenced<usq::NewOrderSingle>(m_ingress->offered[0]);
     EXPECT_EQ(CONN_ID, nos.header().sourceId());
     EXPECT_EQ(std::string("ORD-1"), nos.getClOrdIDAsString());
     EXPECT_EQ(std::string("AAPL"), nos.getSymbolAsString());
@@ -269,10 +269,10 @@ TEST_F(ClusterIngressHandlerAdminOnly, InvalidNewOrderSingleWithoutASessionSends
     // there is nowhere to send the reject ExecutionReport either.
     const auto msg = buildFix('D', {"11=", "21=1", "55=AAPL", "54=1",
                                      "60=20260703-12:00:00", "38=100", "40=1"});
-    handler_.setRawBytes(std::span<const std::uint8_t>(msg.data(), msg.size()));
-    const auto result = decoder_.parse(std::span<const std::uint8_t>(msg.data(), msg.size()), handler_);
+    m_handler.setRawBytes(std::span<const std::uint8_t>(msg.data(), msg.size()));
+    const auto result = m_decoder.parse(std::span<const std::uint8_t>(msg.data(), msg.size()), m_handler);
     ASSERT_EQ(fix::Result::Success, result.m_value);
-    EXPECT_TRUE(ingress_->offered.empty());
+    EXPECT_TRUE(m_ingress->offered.empty());
 }
 
 // ── ClusterIngressHandler — NewOrderSingle with a live FixSession ─────────────
@@ -291,39 +291,38 @@ protected:
         auto egress = std::make_unique<FakeEgressTransport>();
         egress->queued.push_back(encodeSessionEvent(66, 22, cluster_sbe::EventCode::Value::OK));
         auto ingress = std::make_unique<FakeIngressTransport>();
-        ingress_ = ingress.get();
+        m_ingress = ingress.get();
 
-        sender_.connect(std::move(ingress), std::move(egress));
-        ASSERT_TRUE(sender_.isConnected());
-        ingress_->offered.clear();
+        m_sender.connect(std::move(ingress), std::move(egress));
+        ASSERT_TRUE(m_sender.isConnected());
+        m_ingress->offered.clear();
 
-        session_.onTcpConnected();
+        m_session.onTcpConnected();
     }
 
-    ClusterIngressSender                        sender_;
-    FakeIngressTransport*                        ingress_{nullptr};
-    FixSession session_{FixSession::Builder{}
-                             .transport(CapturingTransport{-1})
-                             .build()};
-    ClusterIngressHandler                        handler_{&sender_, CONN_ID, &session_};
-    fix::decoder::PayloadDecoder<cfg::FIXT_1_1>  decoder_;
+    ClusterIngressSender m_sender;
+    FakeIngressTransport* m_ingress{nullptr};
+    FixSession m_session{FixSession::Builder{}
+        .transport(CapturingTransport{-1}).build()};
+    ClusterIngressHandler m_handler{&m_sender, CONN_ID, &m_session};
+    fix::decoder::PayloadDecoder<cfg::FIXT_1_1>  m_decoder;
 };
 
 TEST_F(ClusterIngressHandlerWithSession, ValidNewOrderSingleSubmitsOrderThenSendsExecutionReportNew)
 {
     const auto msg = buildFix('D', {"11=ORD-2", "21=1", "55=MSFT", "54=1",
                                      "60=20260703-12:00:00", "38=50", "40=1"});
-    handler_.setRawBytes(std::span<const std::uint8_t>(msg.data(), msg.size()));
-    const auto result = decoder_.parse(std::span<const std::uint8_t>(msg.data(), msg.size()), handler_);
+    m_handler.setRawBytes(std::span<const std::uint8_t>(msg.data(), msg.size()));
+    const auto result = m_decoder.parse(std::span<const std::uint8_t>(msg.data(), msg.size()), m_handler);
     ASSERT_EQ(fix::Result::Success, result.m_value);
 
-    ASSERT_EQ(2u, ingress_->offered.size());
+    ASSERT_EQ(2u, m_ingress->offered.size());
 
-    auto nos = decodeUnsequenced<usq::NewOrderSingle>(ingress_->offered[0]);
+    auto nos = decodeUnsequenced<usq::NewOrderSingle>(m_ingress->offered[0]);
     EXPECT_EQ(CONN_ID, nos.header().sourceId());
     EXPECT_EQ(std::string("ORD-2"), nos.getClOrdIDAsString());
 
-    auto er = decodeUnsequenced<usq::ExecutionReport>(ingress_->offered[1]);
+    auto er = decodeUnsequenced<usq::ExecutionReport>(m_ingress->offered[1]);
     EXPECT_EQ(CONN_ID, er.header().sourceId());
     EXPECT_EQ(usq::ExecType::Value::New, er.execType());
     EXPECT_EQ(std::string("ORD-2"), er.getClOrdIDAsString());
@@ -333,13 +332,13 @@ TEST_F(ClusterIngressHandlerWithSession, EmptyClOrdIdSendsRejectedExecutionRepor
 {
     const auto msg = buildFix('D', {"11=", "21=1", "55=MSFT", "54=1",
                                      "60=20260703-12:00:00", "38=50", "40=1"});
-    const auto result = decoder_.parse(std::span<const std::uint8_t>(msg.data(), msg.size()), handler_);
+    const auto result = m_decoder.parse(std::span<const std::uint8_t>(msg.data(), msg.size()), m_handler);
     ASSERT_EQ(fix::Result::Success, result.m_value);
 
     // The reject path returns before the order is submitted: only the
     // ExecutionReport(Rejected) reaches the ingress.
-    ASSERT_EQ(1u, ingress_->offered.size());
-    auto er = decodeUnsequenced<usq::ExecutionReport>(ingress_->offered[0]);
+    ASSERT_EQ(1u, m_ingress->offered.size());
+    auto er = decodeUnsequenced<usq::ExecutionReport>(m_ingress->offered[0]);
     EXPECT_EQ(usq::ExecType::Value::Rejected, er.execType());
     EXPECT_EQ(std::string("ClOrdID is empty"), er.getTextAsString());
 }
@@ -348,11 +347,11 @@ TEST_F(ClusterIngressHandlerWithSession, ZeroOrderQtyIsRejected)
 {
     const auto msg = buildFix('D', {"11=ORD-3", "21=1", "55=MSFT", "54=1",
                                      "60=20260703-12:00:00", "38=0", "40=1"});
-    const auto result = decoder_.parse(std::span<const std::uint8_t>(msg.data(), msg.size()), handler_);
+    const auto result = m_decoder.parse(std::span<const std::uint8_t>(msg.data(), msg.size()), m_handler);
     ASSERT_EQ(fix::Result::Success, result.m_value);
 
-    ASSERT_EQ(1u, ingress_->offered.size());
-    auto er = decodeUnsequenced<usq::ExecutionReport>(ingress_->offered[0]);
+    ASSERT_EQ(1u, m_ingress->offered.size());
+    auto er = decodeUnsequenced<usq::ExecutionReport>(m_ingress->offered[0]);
     EXPECT_EQ(std::string("OrderQty must be > 0"), er.getTextAsString());
 }
 
@@ -360,11 +359,11 @@ TEST_F(ClusterIngressHandlerWithSession, LimitOrderWithoutPriceIsRejected)
 {
     const auto msg = buildFix('D', {"11=ORD-4", "21=1", "55=MSFT", "54=1",
                                      "60=20260703-12:00:00", "38=10", "40=2"});
-    const auto result = decoder_.parse(std::span<const std::uint8_t>(msg.data(), msg.size()), handler_);
+    const auto result = m_decoder.parse(std::span<const std::uint8_t>(msg.data(), msg.size()), m_handler);
     ASSERT_EQ(fix::Result::Success, result.m_value);
 
-    ASSERT_EQ(1u, ingress_->offered.size());
-    auto er = decodeUnsequenced<usq::ExecutionReport>(ingress_->offered[0]);
+    ASSERT_EQ(1u, m_ingress->offered.size());
+    auto er = decodeUnsequenced<usq::ExecutionReport>(m_ingress->offered[0]);
     EXPECT_EQ(std::string("Price required for Limit order"), er.getTextAsString());
 }
 

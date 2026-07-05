@@ -154,9 +154,25 @@ public:
     usq::SequenceReset m_sequenceReset;
     usq::ExecutionReport m_executionReport;
 
+    // Real SenderCompID (tag 49) from the TCP-received Logon, captured here for
+    // FixConnection's one-session-per-SenderCompID check when the cluster
+    // confirms this Logon (see FixConnection::onClusterAdmin). Not itself sent
+    // to the cluster — Sender/Target on the wire to the cluster are still the
+    // hardcoded "CLIENT"/"SEQNCR" literals below (todo.md item 10).
+    std::string m_senderCompId;
+
+    [[nodiscard]] const std::string& senderCompId() const
+    {
+        return m_senderCompId;
+    }
+
     fix::Result handle(const msg::LogonDecoder& logon)
     {
         const std::uint32_t hbSecs = logon.heartbeatInterval().value_or(30u);
+        if (const auto sender = logon.sender())
+        {
+            m_senderCompId.assign(sender->data(), sender->size());
+        }
         std::printf("[Ingress] Logon from fd=%d hbSecs=%u → encoding sbe-unsequenced\n",
                     m_connectionId, hbSecs);
         m_logon.wrapAndApplyHeader(buffer(), 0, bufferLength());
