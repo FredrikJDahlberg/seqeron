@@ -24,6 +24,9 @@
 #include <string_view>
 #include <vector>
 
+#include <sys/socket.h>
+#include <unistd.h>
+
 #include "org/limitless/simdifx/decoder/PayloadDecoder.hpp"
 #include "org/limitless/phixeron/sequencer/ClusterIngressHandler.hpp"
 
@@ -96,6 +99,35 @@ std::vector<std::uint8_t> buildFix(char msgType, const std::vector<std::string>&
     body += "49=CLIENT\x01";
     body += "56=SEQUENCER\x01";
     body += "34=1\x01";
+    body += "52=20260703-12:00:00\x01";
+    for (const auto& field : bodyFields) { body += field; body += '\x01'; }
+
+    std::string msg = "8=FIXT.1.1\x01" "9=" + std::to_string(body.size()) + "\x01" + body;
+
+    std::uint32_t sum = 0;
+    for (const unsigned char c : msg) { sum += c; }
+    sum %= 256;
+    char checksum[4];
+    std::snprintf(checksum, sizeof(checksum), "%03u", sum);
+    msg += "10=";
+    msg += checksum;
+    msg += '\x01';
+
+    return std::vector<std::uint8_t>(msg.begin(), msg.end());
+}
+
+// Same as buildFix, but with caller-supplied SenderCompID/TargetCompID/MsgSeqNum —
+// used to reproduce the mid-session CompID-mismatch Reject bug (see
+// ClusterIngressHandlerCompIdMismatch below), where buildFix's fixed
+// "49=CLIENT"/"56=SEQUENCER"/"34=1" can't set up a mismatch or a specific seq.
+std::vector<std::uint8_t> buildFixCustom(char msgType, std::string_view sender, std::string_view target,
+                                         std::uint32_t seqNum, const std::vector<std::string>& bodyFields)
+{
+    std::string body;
+    body += "35="; body += msgType; body += '\x01';
+    body += "49="; body += sender; body += '\x01';
+    body += "56="; body += target; body += '\x01';
+    body += "34="; body += std::to_string(seqNum); body += '\x01';
     body += "52=20260703-12:00:00\x01";
     for (const auto& field : bodyFields) { body += field; body += '\x01'; }
 
@@ -365,6 +397,84 @@ TEST_F(ClusterIngressHandlerWithSession, LimitOrderWithoutPriceIsRejected)
     ASSERT_EQ(1u, m_ingress->offered.size());
     auto er = decodeUnsequenced<usq::ExecutionReport>(m_ingress->offered[0]);
     EXPECT_EQ(std::string("Price required for Limit order"), er.getTextAsString());
+}
+
+// ── ClusterIngressHandler — CompID mismatch mid-session (Reject RefSeqNum) ────
+//
+// Investigates a live-gateway finding: fix_test_server sent a Heartbeat with
+// SenderCompID=WRONGSENDER, MsgSeqNum=2, expecting a session-level Reject with
+// RefSeqNum=2, but got RefSeqNum=0 instead. simdfix's own MessageDecoderTest
+// (MessageDecoder.HeartbeatWithLongCompIds) proves HeartbeatDecoder::
+// sequenceNumber() decodes this exact byte layout correctly (returns 2), so
+// the bug is not in the shared decoder — this test reproduces it against
+// phixeron's real ClusterIngressHandler/Session, capturing the actual encoded
+// Reject bytes over a real socketpair (CapturingTransport only knows how to
+// write to a real fd) to find where the value gets lost.
+class ClusterIngressHandlerCompIdMismatch : public ::testing::Test
+{
+protected:
+    static constexpr std::int32_t CONN_ID = 99;
+
+    void SetUp() override
+    {
+        ASSERT_EQ(0, ::socketpair(AF_UNIX, SOCK_STREAM, 0, m_fds));
+        m_session = std::make_unique<FixSession>(FixSession::Builder{}
+            .transport(CapturingTransport{m_fds[0]}).build());
+        m_session->onTcpConnected();
+        m_handler = std::make_unique<ClusterIngressHandler>(&m_sender, CONN_ID, m_session.get());
+    }
+
+    void TearDown() override
+    {
+        ::close(m_fds[0]);
+        ::close(m_fds[1]);
+    }
+
+    // Reads whatever bytes are waiting on the test's end of the socketpair.
+    std::vector<std::uint8_t> readReply()
+    {
+        std::uint8_t buf[512];
+        const ssize_t n = ::recv(m_fds[1], buf, sizeof(buf), MSG_DONTWAIT);
+        return n > 0 ? std::vector<std::uint8_t>(buf, buf + n) : std::vector<std::uint8_t>{};
+    }
+
+    int m_fds[2]{-1, -1};
+    ClusterIngressSender m_sender;
+    std::unique_ptr<FixSession> m_session;
+    std::unique_ptr<ClusterIngressHandler> m_handler;
+    fix::decoder::PayloadDecoder<cfg::FIXT_1_1> m_decoder;
+};
+
+// First, log on normally (SenderCompID=CLIENT, matching the session's
+// hardcoded expected identity): ClusterIngressHandler::handle(LogonDecoder&)
+// only forwards to the cluster (it never touches session state — see
+// FixConnection.hpp's "Session state is updated ONLY by messages received
+// from the cluster global stream" invariant), so activation is simulated
+// directly here the same way FixConnection::onClusterAdmin does when the
+// Logon echoes back confirmed. Without this, sendReject()'s
+// `m_state != State::Active` guard would silently swallow the Reject below —
+// a different failure than the one being investigated.
+TEST_F(ClusterIngressHandlerCompIdMismatch, HeartbeatRejectCarriesRealRefSeqNum)
+{
+    const auto logon = buildFixCustom('A', "CLIENT", "SEQUENCER", 1, {"98=0", "108=30"});
+    ASSERT_EQ(fix::Result::Success, m_decoder.parse(std::span<const std::uint8_t>(logon.data(), logon.size()), *m_handler).m_value);
+    m_session->handleClusterLogon(30, 0);
+    ASSERT_FALSE(readReply().empty());  // Logon's own reply, not under test
+
+    const auto heartbeat = buildFixCustom('0', "WRONGSENDER", "SEQUENCER", 2, {});
+    ASSERT_EQ(fix::Result::Success, m_decoder.parse(std::span<const std::uint8_t>(heartbeat.data(), heartbeat.size()), *m_handler).m_value);
+
+    const auto reply = readReply();
+    ASSERT_FALSE(reply.empty()) << "expected a Reject reply to the CompID-mismatched Heartbeat";
+    const std::string replyStr(reply.begin(), reply.end());
+    std::printf("[Test] Reject reply: %s\n", replyStr.c_str());
+
+    // Find "45=" (RefSeqNum) and read its value directly out of the raw bytes.
+    const auto pos = replyStr.find("45=");
+    ASSERT_NE(std::string::npos, pos) << "RefSeqNum (45) missing from Reject";
+    const auto end = replyStr.find('\x01', pos);
+    const std::string refSeqNum = replyStr.substr(pos + 3, end - (pos + 3));
+    EXPECT_EQ("2", refSeqNum) << "RefSeqNum should echo the mismatched Heartbeat's MsgSeqNum (2)";
 }
 
 } // namespace org::limitless::phixeron::sequencer
