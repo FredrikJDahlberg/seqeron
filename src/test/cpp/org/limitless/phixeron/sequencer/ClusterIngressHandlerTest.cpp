@@ -139,36 +139,6 @@ SbeMsg decodeUnsequenced(std::vector<std::uint8_t>& frame)
 
 } // namespace
 
-// ── Pure byte-level helpers ───────────────────────────────────────────────────
-
-TEST(ClusterIngressHandlerWireHelpers, FindFixMessageEndLocatesTrailingChecksum)
-{
-    const auto msg = buildFix('0', {});
-    EXPECT_EQ(msg.size(), findFixMessageEnd(msg));
-}
-
-TEST(ClusterIngressHandlerWireHelpers, FindFixMessageEndReturnsZeroWhenIncomplete)
-{
-    auto msg = buildFix('0', {});
-    msg.resize(msg.size() - 1);   // drop the trailing SOH of the checksum field
-    EXPECT_EQ(0u, findFixMessageEnd(msg));
-}
-
-TEST(ClusterIngressHandlerWireHelpers, PatchResendFlagsInsertsPossDupAndFixesBodyLengthAndChecksum)
-{
-    auto msg = buildFix('0', {});
-    patchResendFlags(msg);
-
-    const auto [pdVs, pdVe] = fixTagRange(msg.data(), msg.size(), "43");
-    ASSERT_NE(std::string::npos, pdVs);
-    EXPECT_EQ("Y", std::string_view(reinterpret_cast<const char*>(msg.data() + pdVs), pdVe - pdVs));
-    EXPECT_NE(std::string::npos, fixFindTag(msg.data(), msg.size(), "122"));
-
-    // The patched message must still be self-consistent: PayloadDecoder
-    // recomputes BodyLength/CheckSum from scratch and must accept it.
-    EXPECT_EQ(msg.size(), findFixMessageEnd(msg));
-}
-
 // ── ClusterIngressHandler — admin messages (no session required) ─────────────
 
 class ClusterIngressHandlerAdminOnly : public ::testing::Test

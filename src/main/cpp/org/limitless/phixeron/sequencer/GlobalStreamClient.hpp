@@ -180,6 +180,8 @@ struct SequencedEvent
     std::uint16_t version;          ///< outer messageHeader version; pass straight to wrapForDecode
     const char*   payload;          ///< raw sbe-sequenced.xml message bytes (see struct comment)
     std::uint64_t payloadLength;    ///< total byte count
+    std::int64_t  position;         ///< recording/stream position of this frame's first byte;
+                                     ///< pass to ReplayParams::position() to replay from here
 };
 
 struct LifecycleEvent
@@ -317,9 +319,15 @@ private:
     void onFragment(aeron::concurrent::AtomicBuffer& buffer,
                     aeron::util::index_t              offset,
                     aeron::util::index_t              length,
-                    aeron::Header&                   /*header*/)
+                    aeron::Header&                   header)
     {
         const std::int64_t receiveNs = nowNs();
+
+        // header.position() is the position the image has advanced to *after*
+        // consuming this fragment; subtracting frameLength() gives the position
+        // of the frame's first byte, which is what ReplayParams::position() needs
+        // to replay starting at (and including) this exact message.
+        const std::int64_t framePosition = header.position() - header.frameLength();
 
         char* const         raw = reinterpret_cast<char*>(buffer.buffer());
         const std::uint64_t cap = static_cast<std::uint64_t>(buffer.capacity());
@@ -383,7 +391,8 @@ private:
                 .blockLength      = m_hdr.blockLength(),
                 .version          = m_hdr.version(),
                 .payload          = raw + off,
-                .payloadLength    = len
+                .payloadLength    = len,
+                .position         = framePosition
             });
         }
     }
