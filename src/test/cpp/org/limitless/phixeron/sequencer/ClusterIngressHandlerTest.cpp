@@ -9,7 +9,7 @@
 // a real ClusterIngressSender connected to in-memory fakes — no threads, no
 // polling loops, no sockets, no media driver. Raw FIX bytes are hand-built
 // with correct BodyLength/CheckSum (mirroring patchResendFlags's arithmetic)
-// and fed through the real org::limitless::fix::decoder::PayloadDecoder, so
+// and fed through the real org::limitless::simdifx::decoder::PayloadDecoder, so
 // these tests exercise the exact tokenizer/dispatch path production traffic
 // takes.
 
@@ -24,7 +24,7 @@
 #include <string_view>
 #include <vector>
 
-#include "org/limitless/fix/decoder/PayloadDecoder.hpp"
+#include "org/limitless/simdifx/decoder/PayloadDecoder.hpp"
 #include "org/limitless/phixeron/sequencer/ClusterIngressHandler.hpp"
 
 namespace org::limitless::phixeron::sequencer

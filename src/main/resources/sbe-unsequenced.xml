@@ -58,7 +58,7 @@
     varData absent  → length == 0
     price fields (decimal in fix-application.xml) → int64 mantissa, fixed
                       exponent -8 (scale 1e8); mirrors
-                      org::limitless::fix::utils::FixedDecimal
+                      org::limitless::simdifx::utils::FixedDecimal
 -->
 <sbe:messageSchema xmlns:sbe="http://fixprotocol.io/2016/sbe"
                    package="org.limitless.phixeron.sbe.unsequenced"
@@ -112,7 +112,7 @@
 
         <!--
             Fixed-point price: int64 mantissa, implied exponent -8 (scale 1e8).
-            Mirrors org::limitless::fix::utils::FixedDecimal on the C++ side.
+            Mirrors org::limitless::simdifx::utils::FixedDecimal on the C++ side.
         -->
         <type name="price" primitiveType="int64" semanticType="Price"
               description="Fixed-point price; mantissa scaled by 1e8 (exponent -8)"/>
@@ -143,14 +143,14 @@
 
         <!--
             TradeDate (tag 75): epoch milliseconds at UTC midnight for the date.
-            Mirrors org::limitless::fix::utils::dateOnlyToEpochUTC.
+            Mirrors org::limitless::simdifx::utils::dateOnlyToEpochUTC.
         -->
         <type name="dateOnlyMs" primitiveType="int64" semanticType="LocalMktDate"
               description="Epoch ms at UTC midnight (tag 75 TradeDate)"/>
 
         <!--
             MaturityTime (tag 1079): milliseconds since UTC midnight.
-            Mirrors org::limitless::fix::utils::timeOnlyToMillis.
+            Mirrors org::limitless::simdifx::utils::timeOnlyToMillis.
         -->
         <type name="timeOnlyMs" primitiveType="int64" semanticType="UTCTimeOnly"
               description="Milliseconds since UTC midnight (tag 1079 MaturityTime)"/>

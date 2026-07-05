@@ -24,9 +24,9 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
-#include "org/limitless/fix/generated/messages/FixMessageHandler.hpp"
-#include "org/limitless/fix/generated/messages/FixMessageDecoders.hpp"
-#include "org/limitless/fix/generated/config/FixEngine.hpp"
+#include "org/limitless/simdifx/generated/messages/FixMessageHandler.hpp"
+#include "org/limitless/simdifx/generated/messages/FixMessageDecoders.hpp"
+#include "org/limitless/simdifx/generated/config/FixEngine.hpp"
 
 #include "org/limitless/phixeron/fix/ServerSession.hpp"
 #include "org/limitless/phixeron/sequencer/ClusterIngressSender.hpp"
@@ -46,7 +46,7 @@
 namespace org::limitless::phixeron::sequencer
 {
 
-namespace fix = limitless::fix;
+namespace fix = limitless::simdifx;
 namespace sess = phixeron::fix;
 namespace msg = fix::generated::messages;
 namespace cfg = fix::generated::config;

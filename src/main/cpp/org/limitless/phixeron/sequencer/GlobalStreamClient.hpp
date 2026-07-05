@@ -12,7 +12,6 @@
 #include <vector>
 
 #include "Aeron.h"
-#include "FragmentAssembler.h"
 #include "client/archive/AeronArchive.h"
 
 // Generated SBE C++ codecs from sbe-sequenced.xml (via GenerateSequencedSbeCodecs)
@@ -48,8 +47,8 @@ inline constexpr std::int32_t REPLAY_STREAM_ID = 110;
 
 /**
  * Resolves a replay channel's port from the environment (so two instances of the same
- * binary can run on one host without a port clash — see todo.md item 8), falling back to
- * the given default. Returns a full "aeron:udp?endpoint=localhost:<port>" channel string.
+ * binary can run on one host without a port clash the given default.
+ * Returns a full "aeron:udp?endpoint=localhost:<port>" channel string.
  */
 inline std::string resolveReplayChannel(const char* envVar, std::uint16_t defaultPort)
 {
@@ -255,14 +254,15 @@ public:
         m_replaySessionId = replaySessionId;
         m_catchUpPosition = catchUpPosition;
 
-        if (replaySessionId >= 0 && replayChannel != nullptr) {
+        if (replaySessionId >= 0 && replayChannel != nullptr)
+        {
             m_replaySubRegId = m_aeron->addSubscription(replayChannel, REPLAY_STREAM_ID);
         }
 
         // Live MDC fallback — always subscribed; used when replay image closes.
         m_liveSubRegId = m_aeron->addSubscription(GLOBAL_STREAM_SUBSCRIBER_CHANNEL, GLOBAL_STREAM_ID);
-
-        if (replaySessionId < 0) {
+        if (replaySessionId < 0)
+        {
             // No historical data — already at live.
             notifyCaughtUp();
         }
@@ -275,23 +275,29 @@ public:
     int poll()
     {
         // Lazily resolve subscriptions once they become available.
-        if (!m_replaySub && m_replaySubRegId >= 0) {
+        if (!m_replaySub && m_replaySubRegId >= 0)
+        {
             m_replaySub = m_aeron->findSubscription(m_replaySubRegId);
         }
-        if (!m_liveSub && m_liveSubRegId >= 0) {
+        if (!m_liveSub && m_liveSubRegId >= 0)
+        {
             m_liveSub = m_aeron->findSubscription(m_liveSubRegId);
         }
 
         // Lazily resolve the replay image once it becomes available.
-        if (!m_replayImage && m_replaySub) {
+        if (!m_replayImage && m_replaySub)
+        {
             m_replayImage = m_replaySub->imageBySessionId(
                 static_cast<std::int32_t>(m_replaySessionId));
         }
 
-        if (m_replayImage) {
-            if (!m_replayImage->isClosed()) {
+        if (m_replayImage)
+        {
+            if (!m_replayImage->isClosed())
+            {
                 const int work = m_replayImage->poll(m_fragmentHandler, FRAGMENT_LIMIT);
-                if (!m_caughtUp && m_replayImage->position() >= m_catchUpPosition) {
+                if (!m_caughtUp && m_replayImage->position() >= m_catchUpPosition)
+                {
                     notifyCaughtUp();
                 }
                 return work;
@@ -316,10 +322,10 @@ private:
     using HdrSbe = org::limitless::phixeron::sbe::sequenced::MessageHeader;
     using HeaderComposite = org::limitless::phixeron::sbe::sequenced::Header;
 
-    void onFragment(aeron::concurrent::AtomicBuffer& buffer,
-                    aeron::util::index_t              offset,
-                    aeron::util::index_t              length,
-                    aeron::Header&                   header)
+    void onFragment(const aeron::concurrent::AtomicBuffer& buffer,
+                    const aeron::util::index_t offset,
+                    const aeron::util::index_t length,
+                    const aeron::Header& header)
     {
         const std::int64_t receiveNs = nowNs();
 
@@ -333,14 +339,15 @@ private:
         const std::uint64_t cap = static_cast<std::uint64_t>(buffer.capacity());
         const std::uint64_t off = static_cast<std::uint64_t>(offset);
         const std::uint64_t len = static_cast<std::uint64_t>(length);
-
-        if (len < HdrSbe::encodedLength() + HeaderComposite::encodedLength()) {
+        if (len < HdrSbe::encodedLength() + HeaderComposite::encodedLength())
+        {
             std::fprintf(stderr, "[GlobalStreamClient] fragment too short: %" PRIu64 " bytes\n", len);
             return;
         }
 
         m_hdr.wrap(raw, off, 0U, cap);
-        if (m_hdr.schemaId() != HdrSbe::sbeSchemaId()) {
+        if (m_hdr.schemaId() != HdrSbe::sbeSchemaId())
+        {
             std::fprintf(stderr, "[GlobalStreamClient] unexpected schemaId=%u; ignored\n", m_hdr.schemaId());
             return;
         }
@@ -348,17 +355,15 @@ private:
         const std::uint16_t templateId = m_hdr.templateId();
         const std::uint64_t bodyOff    = off + HdrSbe::encodedLength();
 
-        // `header` is every message's first field, at a fixed offset right
-        // after the 8-byte messageHeader — safe to decode before knowing the
-        // rest of the message shape.
         m_header.wrap(raw, bodyOff, 0U, cap);
         const auto gseq  = m_header.globalSeqNo();
         const auto srcId = m_header.sourceId();
         const auto sessId = m_header.sessionId();
         const auto ts    = m_header.timestamp();
-
-        if (templateId == CLIENT_CONNECTED_TEMPLATE_ID) {
-            if (m_onConnected) {
+        if (templateId == CLIENT_CONNECTED_TEMPLATE_ID)
+        {
+            if (m_onConnected)
+            {
                 m_onConnected(LifecycleEvent{
                     .globalSeqNo      = gseq,
                     .sourceSessionId  = sessId,
@@ -368,8 +373,10 @@ private:
             }
             return;
         }
-        if (templateId == CLIENT_DISCONNECTED_TEMPLATE_ID) {
-            if (m_onDisconnected) {
+        if (templateId == CLIENT_DISCONNECTED_TEMPLATE_ID)
+        {
+            if (m_onDisconnected)
+            {
                 m_onDisconnected(LifecycleEvent{
                     .globalSeqNo      = gseq,
                     .sourceSessionId  = sessId,
@@ -379,8 +386,8 @@ private:
             }
             return;
         }
-
-        if (m_onSequenced) {
+        if (m_onSequenced)
+        {
             m_onSequenced(SequencedEvent{
                 .globalSeqNo      = gseq,
                 .sourceId         = srcId,
@@ -405,23 +412,21 @@ private:
 
     static std::int64_t nowNs()
     {
-        return std::chrono::duration_cast<std::chrono::nanoseconds>(
-            std::chrono::system_clock::now().time_since_epoch()).count();
+        using namespace std::chrono;
+        return duration_cast<nanoseconds>(system_clock::now().time_since_epoch()).count();
     }
 
-    // ── Callbacks ─────────────────────────────────────────────────────────────
     OnSequenced    m_onSequenced;
     OnConnected    m_onConnected;
     OnDisconnected m_onDisconnected;
     OnCaughtUp     m_onCaughtUp;
 
-    // ── Aeron ─────────────────────────────────────────────────────────────────
-    std::shared_ptr<aeron::Aeron>        m_aeron;
-    std::int64_t                         m_replaySubRegId = -1;
-    std::int64_t                         m_liveSubRegId   = -1;
+    std::shared_ptr<aeron::Aeron> m_aeron;
+    std::int64_t m_replaySubRegId = -1;
+    std::int64_t m_liveSubRegId   = -1;
     std::shared_ptr<aeron::Subscription> m_replaySub;
     std::shared_ptr<aeron::Subscription> m_liveSub;
-    std::shared_ptr<aeron::Image>        m_replayImage; // null until resolved
+    std::shared_ptr<aeron::Image> m_replayImage;
 
     std::int64_t m_replaySessionId = -1;
     std::int64_t m_catchUpPosition = 0;
@@ -429,7 +434,6 @@ private:
 
     aeron::fragment_handler_t m_fragmentHandler;
 
-    // ── SBE decoders — single-threaded, reused per fragment ──────────────────
     HdrSbe          m_hdr;
     HeaderComposite m_header;
 };
