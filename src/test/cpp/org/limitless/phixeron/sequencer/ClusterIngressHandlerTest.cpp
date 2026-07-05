@@ -94,7 +94,7 @@ std::vector<std::uint8_t> buildFix(char msgType, const std::vector<std::string>&
     std::string body;
     body += "35="; body += msgType; body += '\x01';
     body += "49=CLIENT\x01";
-    body += "56=SEQNCR\x01";
+    body += "56=SEQUENCER\x01";
     body += "34=1\x01";
     body += "52=20260703-12:00:00\x01";
     for (const auto& field : bodyFields) { body += field; body += '\x01'; }

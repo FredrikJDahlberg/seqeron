@@ -166,8 +166,48 @@ public:
         return m_senderCompId;
     }
 
+    // Verifies an inbound message's SenderCompID (tag 49) / TargetCompID
+    // (tag 56) against this session's expected identity:
+    //   - TargetCompID must always equal our own compId (FixSession::senderCompId()) —
+    //     the client must be addressing this gateway, not some other identity.
+    //   - SenderCompID must equal whatever was captured at Logon (m_senderCompId) —
+    //     an authenticated session's identity can't change mid-session. Not
+    //     checked for the Logon itself, since m_senderCompId is still empty at
+    //     that point (it's being established by this very message).
+    // Callers distinguish "on Logon" (Logout+disconnect) from "mid-session"
+    // (Reject, session stays up) per FIX 4.4 — see handle(LogonDecoder&) vs.
+    // the other handle() overloads below.
+    template <typename Decoder>
+    [[nodiscard]] bool verifyCompIds(const Decoder& message) const
+    {
+        const auto sender = message.sender();
+        const auto target = message.target();
+        if (!sender || !target)
+        {
+            return false;
+        }
+        if (*target != FixSession::senderCompId())
+        {
+            return false;
+        }
+        if (!m_senderCompId.empty() && *sender != m_senderCompId)
+        {
+            return false;
+        }
+        return true;
+    }
+
     fix::Result handle(const msg::LogonDecoder& logon)
     {
+        if (!verifyCompIds(logon))
+        {
+            std::fprintf(stderr, "[Ingress] Logon fd=%d rejected: Invalid CompId\n", m_connectionId);
+            if (m_session)
+            {
+                m_session->rejectLogon("Invalid CompId");
+            }
+            return fix::Result::Success;
+        }
         const std::uint32_t hbSecs = logon.heartbeatInterval().value_or(30u);
         if (const auto sender = logon.sender())
         {
@@ -188,8 +228,18 @@ public:
         return fix::Result::Success;
     }
 
-    fix::Result handle(const msg::LogoutDecoder& /*logout*/)
+    fix::Result handle(const msg::LogoutDecoder& logout)
     {
+        if (!verifyCompIds(logout))
+        {
+            std::fprintf(stderr, "[Ingress] Logout fd=%d rejected: Invalid CompId\n", m_connectionId);
+            if (m_session)
+            {
+                m_session->sendReject(logout.sequenceNumber().value_or(0u),
+                                       msg::SessionRejectReason::CompIDProblem, "Invalid CompId");
+            }
+            return fix::Result::Success;
+        }
         m_logout.wrapAndApplyHeader(buffer(), 0, bufferLength());
         m_logout.header().sourceId(m_connectionId).sessionId(m_ingress ? m_ingress->clusterSessionId() : -1);
         m_logout.putSender(static_cast<const char*>("CLIENT  ")).putTarget(static_cast<const char*>("SEQNCR  "))
@@ -201,6 +251,16 @@ public:
 
     fix::Result handle(const msg::HeartbeatDecoder& heartbeat)
     {
+        if (!verifyCompIds(heartbeat))
+        {
+            std::fprintf(stderr, "[Ingress] Heartbeat fd=%d rejected: Invalid CompId\n", m_connectionId);
+            if (m_session)
+            {
+                m_session->sendReject(heartbeat.sequenceNumber().value_or(0u),
+                                       msg::SessionRejectReason::CompIDProblem, "Invalid CompId");
+            }
+            return fix::Result::Success;
+        }
         m_heartbeat.wrapAndApplyHeader(buffer(), 0, bufferLength());
         m_heartbeat.header().sourceId(m_connectionId).sessionId(m_ingress ? m_ingress->clusterSessionId() : -1);
         m_heartbeat.putSender(static_cast<const char*>("CLIENT  ")).putTarget(static_cast<const char*>("SEQNCR  "))
@@ -219,6 +279,16 @@ public:
 
     fix::Result handle(const msg::TestRequestDecoder& testRequest)
     {
+        if (!verifyCompIds(testRequest))
+        {
+            std::fprintf(stderr, "[Ingress] TestRequest fd=%d rejected: Invalid CompId\n", m_connectionId);
+            if (m_session)
+            {
+                m_session->sendReject(testRequest.sequenceNumber().value_or(0u),
+                                       msg::SessionRejectReason::CompIDProblem, "Invalid CompId");
+            }
+            return fix::Result::Success;
+        }
         m_testRequest.wrapAndApplyHeader(buffer(), 0, bufferLength());
         m_testRequest.header().sourceId(m_connectionId).sessionId(m_ingress ? m_ingress->clusterSessionId() : -1);
         m_testRequest.putSender(static_cast<const char*>("CLIENT  ")).putTarget(static_cast<const char*>("SEQNCR  "))
@@ -243,6 +313,16 @@ public:
 
     fix::Result handle(const msg::ResendRequestDecoder& resendRequest)
     {
+        if (!verifyCompIds(resendRequest))
+        {
+            std::fprintf(stderr, "[Ingress] ResendRequest fd=%d rejected: Invalid CompId\n", m_connectionId);
+            if (m_session)
+            {
+                m_session->sendReject(resendRequest.sequenceNumber().value_or(0u),
+                                       msg::SessionRejectReason::CompIDProblem, "Invalid CompId");
+            }
+            return fix::Result::Success;
+        }
         m_resendRequest.wrapAndApplyHeader(buffer(), 0, bufferLength());
         m_resendRequest.header().sourceId(m_connectionId).sessionId(m_ingress ? m_ingress->clusterSessionId() : -1);
         m_resendRequest.putSender(static_cast<const char*>("CLIENT  ")).putTarget(static_cast<const char*>("SEQNCR  "))
@@ -255,6 +335,16 @@ public:
 
     fix::Result handle(const msg::SequenceResetDecoder& sequenceReset)
     {
+        if (!verifyCompIds(sequenceReset))
+        {
+            std::fprintf(stderr, "[Ingress] SequenceReset fd=%d rejected: Invalid CompId\n", m_connectionId);
+            if (m_session)
+            {
+                m_session->sendReject(sequenceReset.sequenceNumber().value_or(0u),
+                                       msg::SessionRejectReason::CompIDProblem, "Invalid CompId");
+            }
+            return fix::Result::Success;
+        }
         m_sequenceReset.wrapAndApplyHeader(buffer(), 0, bufferLength());
         m_sequenceReset.header().sourceId(m_connectionId).sessionId(m_ingress ? m_ingress->clusterSessionId() : -1);
         m_sequenceReset.putSender(static_cast<const char*>("CLIENT  ")).putTarget(static_cast<const char*>("SEQNCR  "))
@@ -267,6 +357,16 @@ public:
 
     fix::Result handle(const msg::NewOrderSingleDecoder& newOrderSingle)
     {
+        if (!verifyCompIds(newOrderSingle))
+        {
+            std::fprintf(stderr, "[Ingress] NewOrderSingle fd=%d rejected: Invalid CompId\n", m_connectionId);
+            if (m_session)
+            {
+                m_session->sendReject(newOrderSingle.sequenceNumber().value_or(0u),
+                                       msg::SessionRejectReason::CompIDProblem, "Invalid CompId");
+            }
+            return fix::Result::Success;
+        }
         const auto clOrdId  = newOrderSingle.clOrdID().value_or(std::string_view{});
         const auto symbol   = newOrderSingle.symbol().value_or(std::string_view{});
         const msg::Side side = newOrderSingle.side().value_or(msg::Side::Buy);
