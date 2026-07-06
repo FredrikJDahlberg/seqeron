@@ -184,8 +184,10 @@ private:
 // Manages the Aeron Cluster session (SessionConnectRequest → SessionEvent(OK))
 // and sends pre-encoded sbe-unsequenced.xml messages to the cluster ingress.
 // Every message in that schema carries its own header composite (sourceId,
-// sessionId), so unlike the old AppMessage scheme, send() needs no connection
-// id of its own — the caller bakes it into the message before calling send().
+// connectionId, sessionId), so unlike the old AppMessage scheme, send() needs
+// no connection id of its own — the caller bakes it into the message before
+// calling send(). sourceId (this process's fixed identity) is held here
+// instead, since it's the same for every message this sender ever submits.
 class ClusterIngressSender
 {
 public:
@@ -457,6 +459,17 @@ private:
     std::int64_t  m_lastKeepAliveMs   = 0;
     std::int64_t  m_connectTimeoutMs  = CLUSTER_CONNECT_TIMEOUT_MS;
     const std::int64_t m_correlationId = 1;
+    std::int32_t  m_sourceId          = 0;
+
+public:
+    // Fixed constant identifying this gateway *process* to the cluster (header.sourceId),
+    // as opposed to header.connectionId which identifies one TCP connection within it.
+    // Set once at startup (see PHIXERON_*_SOURCE_ID env vars in each binary's main()) so
+    // it stays stable across restarts and unique across every gateway instance sharing
+    // this cluster — unlike a per-connection counter, which starts back at 1 on every
+    // process and would otherwise collide with another gateway's connection ids.
+    void setSourceId(std::int32_t sourceId) { m_sourceId = sourceId; }
+    std::int32_t sourceId() const { return m_sourceId; }
 };
 
 } // namespace org::limitless::phixeron::sequencer

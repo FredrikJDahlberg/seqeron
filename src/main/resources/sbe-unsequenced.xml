@@ -5,9 +5,14 @@
     Union of every FIX admin and application message, each carrying one
     additional field the sequencer needs before it can stamp and republish
     the message as the matching sbe-sequenced.xml message:
-        header — composite of sourceId (TCP connection id at the FIX
-                 gateway; routes the reply) and sessionId (Aeron Cluster
-                 client session id of the submitting connection)
+        header — composite of sourceId (fixed constant identifying the
+                 submitting FIX gateway *process*; configured at startup,
+                 stable across restarts, unique across every gateway
+                 instance sharing this cluster), connectionId (TCP
+                 connection id at that gateway; routes the reply to the
+                 right local connection — unique only within one gateway
+                 process, never across processes) and sessionId (Aeron
+                 Cluster client session id of the submitting connection)
     Field/type definitions and IDs otherwise mirror the FIX wire format
     directly (see fix-session.xml / fix-application.xml).
 
@@ -31,9 +36,9 @@
     instead (1/2/3/4), clear of that range.
 
     The header field uses field id 20001 — well outside the FIX tag range —
-    since it is gateway/transport metadata, not a FIX tag. sourceId/sessionId
-    are composite members, not separately-tagged fields, so they carry no
-    field ids of their own.
+    since it is gateway/transport metadata, not a FIX tag. sourceId/connectionId/
+    sessionId are composite members, not separately-tagged fields, so they
+    carry no field ids of their own.
 
     Field IDs equal the FIX tag number for an unambiguous FIX ↔ SBE mapping.
 
@@ -82,10 +87,12 @@
             to every message in this schema (see field "header" below).
         -->
         <composite name="header"
-                   description="Identifies the TCP connection and Aeron Cluster session that submitted this message">
-            <type name="sourceId"  primitiveType="int32"
-                  description="TCP connection id at the FIX gateway; routes the reply"/>
-            <type name="sessionId" primitiveType="int64"
+                   description="Identifies the submitting gateway process, TCP connection, and Aeron Cluster session for this message">
+            <type name="sourceId"     primitiveType="int32"
+                  description="Fixed constant identifying the submitting FIX gateway process; configured at startup, stable across restarts, unique across every gateway instance"/>
+            <type name="connectionId" primitiveType="int32"
+                  description="TCP connection id at that gateway process; routes the reply. Unique only within one gateway process, not across processes"/>
+            <type name="sessionId"    primitiveType="int64"
                   description="Aeron Cluster client session id of the submitting connection"/>
         </composite>
 
@@ -507,8 +514,9 @@
          ═══════════════════════════════════════════════════════════════════ -->
     <sbe:message name="PortfolioQueryReply" id="4"
                  description="Risk engine's reply to a PortfolioQueryRequest. Submitted to cluster
-                              ingress with header.sourceId copied from the original request so the
-                              FIX gateway can route it back to the requesting TCP connection">
+                              ingress with header.sourceId/connectionId copied from the original
+                              request so the FIX gateway can route it back to the requesting TCP
+                              connection">
         <field name="header"        id="20001" type="header"/>
         <field name="correlationId" id="20002" type="correlationId"/>
         <field name="account"       id="1"     type="account"/>

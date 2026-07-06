@@ -177,6 +177,7 @@ class ClusterIngressHandlerAdminOnly : public ::testing::Test
 {
 protected:
     static constexpr std::int32_t CONN_ID = 77;
+    static constexpr std::int32_t GATEWAY_SOURCE_ID = 42;
 
     void SetUp() override
     {
@@ -185,6 +186,7 @@ protected:
         auto ingress = std::make_unique<FakeIngressTransport>();
         m_ingress = ingress.get();
 
+        m_sender.setSourceId(GATEWAY_SOURCE_ID);
         m_sender.connect(std::move(ingress), std::move(egress));
         ASSERT_TRUE(m_sender.isConnected());
         m_ingress->offered.clear(); // drop the captured SessionConnectRequest
@@ -204,7 +206,8 @@ TEST_F(ClusterIngressHandlerAdminOnly, LogonIsReEncodedAsSbeUnsequencedWithHeade
 
     ASSERT_EQ(1u, m_ingress->offered.size());
     auto logon = decodeUnsequenced<usq::Logon>(m_ingress->offered[0]);
-    EXPECT_EQ(CONN_ID, logon.header().sourceId());
+    EXPECT_EQ(GATEWAY_SOURCE_ID, logon.header().sourceId());
+    EXPECT_EQ(CONN_ID, logon.header().connectionId());
     EXPECT_EQ(55, logon.header().sessionId());
     EXPECT_EQ(45u, logon.heartbeatInterval());
 }
@@ -217,7 +220,7 @@ TEST_F(ClusterIngressHandlerAdminOnly, LogoutIsReEncodedAsSbeUnsequenced)
 
     ASSERT_EQ(1u, m_ingress->offered.size());
     auto logout = decodeUnsequenced<usq::Logout>(m_ingress->offered[0]);
-    EXPECT_EQ(CONN_ID, logout.header().sourceId());
+    EXPECT_EQ(CONN_ID, logout.header().connectionId());
 }
 
 TEST_F(ClusterIngressHandlerAdminOnly, HeartbeatCarriesTestReqIdWhenPresent)
@@ -289,7 +292,7 @@ TEST_F(ClusterIngressHandlerAdminOnly, ValidNewOrderSingleIsEncodedAsSbeUnsequen
     // (no reject/accept ExecutionReport is generated).
     ASSERT_EQ(1u, m_ingress->offered.size());
     auto nos = decodeUnsequenced<usq::NewOrderSingle>(m_ingress->offered[0]);
-    EXPECT_EQ(CONN_ID, nos.header().sourceId());
+    EXPECT_EQ(CONN_ID, nos.header().connectionId());
     EXPECT_EQ(std::string("ORD-1"), nos.getClOrdIDAsString());
     EXPECT_EQ(std::string("AAPL"), nos.getSymbolAsString());
 }
@@ -305,6 +308,67 @@ TEST_F(ClusterIngressHandlerAdminOnly, InvalidNewOrderSingleWithoutASessionSends
     const auto result = m_decoder.parse(std::span<const std::uint8_t>(msg.data(), msg.size()), m_handler);
     ASSERT_EQ(fix::Result::Success, result.m_value);
     EXPECT_TRUE(m_ingress->offered.empty());
+}
+
+// ── ClusterIngressHandler — wire errors are silently ignored ─────────────────
+//
+// FixConnection::onReceive (FixConnection.hpp) treats every PayloadDecoder
+// result other than Success/MessageFragment the same way: it advances past
+// the bad bytes and moves on — no Reject, no disconnect, no cluster ingress
+// traffic. These tests drive that same PayloadDecoder/ClusterIngressHandler
+// pair directly (no FixConnection/socket needed) to pin down that a garbled
+// message produces a non-Success Result and reaches the ingress handler zero
+// times, and that a subsequent well-formed message on the same decoder still
+// gets through — matching onReceive's loop, which never stops or disconnects
+// on an error result.
+
+TEST_F(ClusterIngressHandlerAdminOnly, BadChecksumProducesNoIngressTraffic)
+{
+    auto msg = buildFix('0', {});
+    // Corrupt the CheckSum value (last field, "10=NNN") so it no longer
+    // matches the sum PayloadDecoder recomputes over the message body.
+    ASSERT_NE(std::string::npos, std::string(msg.begin(), msg.end()).find("10="));
+    msg[msg.size() - 2] = static_cast<std::uint8_t>((msg[msg.size() - 2] - '0' + 1) % 10 + '0');
+
+    const auto result = m_decoder.parse(std::span<const std::uint8_t>(msg.data(), msg.size()), m_handler);
+    EXPECT_EQ(fix::Result::InvalidCheckSum, result.m_value);
+    EXPECT_TRUE(m_ingress->offered.empty());
+}
+
+TEST_F(ClusterIngressHandlerAdminOnly, UnknownBeginStringProducesNoIngressTraffic)
+{
+    std::string body;
+    body += "35=0\x01" "49=CLIENT\x01" "56=SEQUENCER\x01" "34=1\x01" "52=20260703-12:00:00\x01";
+    std::string msg = "8=BOGUS.1\x01" "9=" + std::to_string(body.size()) + "\x01" + body;
+    std::uint32_t sum = 0;
+    for (const unsigned char c : msg) { sum += c; }
+    char checksum[4];
+    std::snprintf(checksum, sizeof(checksum), "%03u", sum % 256);
+    msg += "10="; msg += checksum; msg += '\x01';
+    const std::vector<std::uint8_t> raw(msg.begin(), msg.end());
+
+    const auto result = m_decoder.parse(std::span<const std::uint8_t>(raw.data(), raw.size()), m_handler);
+    EXPECT_EQ(fix::Result::InvalidBeginString, result.m_value);
+    EXPECT_TRUE(m_ingress->offered.empty());
+}
+
+TEST_F(ClusterIngressHandlerAdminOnly, WireErrorDoesNotBlockSubsequentValidMessage)
+{
+    auto bad = buildFix('0', {});
+    bad[bad.size() - 2] = static_cast<std::uint8_t>((bad[bad.size() - 2] - '0' + 1) % 10 + '0');
+    const auto badResult = m_decoder.parse(std::span<const std::uint8_t>(bad.data(), bad.size()), m_handler);
+    ASSERT_EQ(fix::Result::InvalidCheckSum, badResult.m_value);
+    ASSERT_TRUE(m_ingress->offered.empty());
+
+    // Same decoder/handler pair, mirroring FixConnection::onReceive's loop,
+    // which reuses m_decoder/m_ingressHandler across every message on the
+    // connection and simply advances past a bad one without resetting state.
+    const auto good = buildFix('0', {});
+    const auto goodResult = m_decoder.parse(std::span<const std::uint8_t>(good.data(), good.size()), m_handler);
+    ASSERT_EQ(fix::Result::Success, goodResult.m_value);
+    ASSERT_EQ(1u, m_ingress->offered.size());
+    auto hb = decodeUnsequenced<usq::Heartbeat>(m_ingress->offered[0]);
+    EXPECT_EQ(CONN_ID, hb.header().connectionId());
 }
 
 // ── ClusterIngressHandler — NewOrderSingle with a live FixSession ─────────────
@@ -351,11 +415,11 @@ TEST_F(ClusterIngressHandlerWithSession, ValidNewOrderSingleSubmitsOrderThenSend
     ASSERT_EQ(2u, m_ingress->offered.size());
 
     auto nos = decodeUnsequenced<usq::NewOrderSingle>(m_ingress->offered[0]);
-    EXPECT_EQ(CONN_ID, nos.header().sourceId());
+    EXPECT_EQ(CONN_ID, nos.header().connectionId());
     EXPECT_EQ(std::string("ORD-2"), nos.getClOrdIDAsString());
 
     auto er = decodeUnsequenced<usq::ExecutionReport>(m_ingress->offered[1]);
-    EXPECT_EQ(CONN_ID, er.header().sourceId());
+    EXPECT_EQ(CONN_ID, er.header().connectionId());
     EXPECT_EQ(usq::ExecType::Value::New, er.execType());
     EXPECT_EQ(std::string("ORD-2"), er.getClOrdIDAsString());
 }

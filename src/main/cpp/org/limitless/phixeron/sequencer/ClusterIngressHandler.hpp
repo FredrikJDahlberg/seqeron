@@ -216,9 +216,9 @@ public:
         std::printf("[Ingress] Logon from fd=%d hbSecs=%u → encoding sbe-unsequenced\n",
                     m_connectionId, hbSecs);
         m_logon.wrapAndApplyHeader(buffer(), 0, bufferLength());
-        m_logon.header().sourceId(m_connectionId).sessionId(m_ingress ? m_ingress->clusterSessionId() : -1);
+        m_logon.header().sourceId(m_ingress ? m_ingress->sourceId() : 0).connectionId(m_connectionId).sessionId(m_ingress ? m_ingress->clusterSessionId() : -1);
         m_logon.putSender(static_cast<const char*>("CLIENT  ")).putTarget(static_cast<const char*>("SEQNCR  "))
-                .seqNum(0).sendingTimeMs(nowMs())
+                .seqNum(logon.sequenceNumber().value_or(0u)).sendingTimeMs(nowMs())
                 .encryptMethod(usq::EncryptMethod::Value::None)
                 .heartbeatInterval(hbSecs)
                 .putXmlData(nullptr, 0);
@@ -241,9 +241,9 @@ public:
             return fix::Result::Success;
         }
         m_logout.wrapAndApplyHeader(buffer(), 0, bufferLength());
-        m_logout.header().sourceId(m_connectionId).sessionId(m_ingress ? m_ingress->clusterSessionId() : -1);
+        m_logout.header().sourceId(m_ingress ? m_ingress->sourceId() : 0).connectionId(m_connectionId).sessionId(m_ingress ? m_ingress->clusterSessionId() : -1);
         m_logout.putSender(static_cast<const char*>("CLIENT  ")).putTarget(static_cast<const char*>("SEQNCR  "))
-                .seqNum(0).sendingTimeMs(nowMs())
+                .seqNum(logout.sequenceNumber().value_or(0u)).sendingTimeMs(nowMs())
                 .putText(nullptr, 0);
         sendUnsequenced(m_logout);
         return fix::Result::Success;
@@ -262,9 +262,9 @@ public:
             return fix::Result::Success;
         }
         m_heartbeat.wrapAndApplyHeader(buffer(), 0, bufferLength());
-        m_heartbeat.header().sourceId(m_connectionId).sessionId(m_ingress ? m_ingress->clusterSessionId() : -1);
+        m_heartbeat.header().sourceId(m_ingress ? m_ingress->sourceId() : 0).connectionId(m_connectionId).sessionId(m_ingress ? m_ingress->clusterSessionId() : -1);
         m_heartbeat.putSender(static_cast<const char*>("CLIENT  ")).putTarget(static_cast<const char*>("SEQNCR  "))
-                .seqNum(0).sendingTimeMs(nowMs());
+                .seqNum(heartbeat.sequenceNumber().value_or(0u)).sendingTimeMs(nowMs());
         if (const auto id = heartbeat.testReqID()) {
             const auto sv = *id;
             const std::size_t n = std::min(sv.size(), static_cast<std::size_t>(32));
@@ -290,9 +290,9 @@ public:
             return fix::Result::Success;
         }
         m_testRequest.wrapAndApplyHeader(buffer(), 0, bufferLength());
-        m_testRequest.header().sourceId(m_connectionId).sessionId(m_ingress ? m_ingress->clusterSessionId() : -1);
+        m_testRequest.header().sourceId(m_ingress ? m_ingress->sourceId() : 0).connectionId(m_connectionId).sessionId(m_ingress ? m_ingress->clusterSessionId() : -1);
         m_testRequest.putSender(static_cast<const char*>("CLIENT  ")).putTarget(static_cast<const char*>("SEQNCR  "))
-                .seqNum(0).sendingTimeMs(nowMs());
+                .seqNum(testRequest.sequenceNumber().value_or(0u)).sendingTimeMs(nowMs());
         if (const auto id = testRequest.testReqID())
         {
             const auto sv = *id;
@@ -324,9 +324,9 @@ public:
             return fix::Result::Success;
         }
         m_resendRequest.wrapAndApplyHeader(buffer(), 0, bufferLength());
-        m_resendRequest.header().sourceId(m_connectionId).sessionId(m_ingress ? m_ingress->clusterSessionId() : -1);
+        m_resendRequest.header().sourceId(m_ingress ? m_ingress->sourceId() : 0).connectionId(m_connectionId).sessionId(m_ingress ? m_ingress->clusterSessionId() : -1);
         m_resendRequest.putSender(static_cast<const char*>("CLIENT  ")).putTarget(static_cast<const char*>("SEQNCR  "))
-         .seqNum(0).sendingTimeMs(nowMs())
+         .seqNum(resendRequest.sequenceNumber().value_or(0u)).sendingTimeMs(nowMs())
          .beginSeqNo(resendRequest.beginSeqNo().value_or(1u))
          .endSeqNo(resendRequest.endSeqNo().value_or(0u));
         sendUnsequenced(m_resendRequest);
@@ -346,9 +346,9 @@ public:
             return fix::Result::Success;
         }
         m_sequenceReset.wrapAndApplyHeader(buffer(), 0, bufferLength());
-        m_sequenceReset.header().sourceId(m_connectionId).sessionId(m_ingress ? m_ingress->clusterSessionId() : -1);
+        m_sequenceReset.header().sourceId(m_ingress ? m_ingress->sourceId() : 0).connectionId(m_connectionId).sessionId(m_ingress ? m_ingress->clusterSessionId() : -1);
         m_sequenceReset.putSender(static_cast<const char*>("CLIENT  ")).putTarget(static_cast<const char*>("SEQNCR  "))
-         .seqNum(0).sendingTimeMs(nowMs())
+         .seqNum(sequenceReset.sequenceNumber().value_or(0u)).sendingTimeMs(nowMs())
          .gapFillFlag(usq::GapFillFlag::Value::NULL_VALUE)
          .newSeqNo(sequenceReset.newSeqNo().value_or(1u));
         sendUnsequenced(m_sequenceReset);
@@ -418,9 +418,9 @@ public:
         if (m_ingress)
         {
             m_newOrderSingle.wrapAndApplyHeader(buffer(), 0, bufferLength());
-            m_newOrderSingle.header().sourceId(m_connectionId).sessionId(m_ingress->clusterSessionId());
+            m_newOrderSingle.header().sourceId(m_ingress->sourceId()).connectionId(m_connectionId).sessionId(m_ingress->clusterSessionId());
             m_newOrderSingle.putSender(static_cast<const char*>("CLIENT  ")).putTarget(static_cast<const char*>("SEQNCR  "))
-                    .seqNum(0).sendingTimeMs(nowMs());
+                    .seqNum(newOrderSingle.sequenceNumber().value_or(0u)).sendingTimeMs(nowMs());
             m_newOrderSingle.putAccount(newOrderSingle.account().value_or(std::string_view{}));
             m_newOrderSingle.putClOrdID(clOrdId);
             m_newOrderSingle.handlInst(toSbeHandlInst(newOrderSingle.handlInst().value_or(msg::HandlInst::AutoPrivate)));
@@ -478,7 +478,7 @@ private:
         m_session->setNextOutgoingSeqNum(seq + 1);
 
         m_executionReport.wrapAndApplyHeader(buffer(), 0, bufferLength());
-        m_executionReport.header().sourceId(m_connectionId).sessionId(m_ingress->clusterSessionId());
+        m_executionReport.header().sourceId(m_ingress->sourceId()).connectionId(m_connectionId).sessionId(m_ingress->clusterSessionId());
         m_executionReport.putSender(static_cast<const char*>("CLIENT  ")).putTarget(static_cast<const char*>("SEQNCR  "))
          .seqNum(seq).sendingTimeMs(nowMs());
         m_executionReport.putOrderID(orderId);

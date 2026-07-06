@@ -5,9 +5,10 @@
     Same messages, types and field IDs as sbe-unsequenced.xml, but the
     header composite carries two more members, stamped by the sequencer
     when it republishes an sbe-unsequenced.xml message on the global stream:
-        header — composite of sourceId, sessionId (carried through
-                 unchanged from the unsequenced message so subscribers can
-                 still tell who originally submitted it), plus:
+        header — composite of sourceId, connectionId, sessionId (carried
+                 through unchanged from the unsequenced message so
+                 subscribers can still tell who originally submitted it),
+                 plus:
             globalSeqNo — cluster-wide monotone sequence number; unique
                           across all sources and message types
             timestamp   — cluster consensus time (ms since epoch) when the
@@ -33,8 +34,8 @@
 
     The header field uses field id 20001 — well outside the FIX tag range —
     since it is gateway/sequencer metadata, not a FIX tag. sourceId/
-    sessionId/globalSeqNo/timestamp are composite members, not separately-
-    tagged fields, so they carry no field ids of their own.
+    connectionId/sessionId/globalSeqNo/timestamp are composite members, not
+    separately-tagged fields, so they carry no field ids of their own.
 
     Field IDs equal the FIX tag number for an unambiguous FIX ↔ SBE mapping.
 
@@ -83,10 +84,12 @@
             this schema (see field "header" below).
         -->
         <composite name="header"
-                   description="Identifies the TCP connection, Aeron Cluster session, and sequencing stamp for this message">
-            <type name="sourceId"    primitiveType="int32"
-                  description="TCP connection id at the FIX gateway; routes the reply"/>
-            <type name="sessionId"   primitiveType="int64"
+                   description="Identifies the submitting gateway process, TCP connection, Aeron Cluster session, and sequencing stamp for this message">
+            <type name="sourceId"     primitiveType="int32"
+                  description="Fixed constant identifying the submitting FIX gateway process; configured at startup, stable across restarts, unique across every gateway instance"/>
+            <type name="connectionId" primitiveType="int32"
+                  description="TCP connection id at that gateway process; routes the reply. Unique only within one gateway process, not across processes"/>
+            <type name="sessionId"    primitiveType="int64"
                   description="Aeron Cluster client session id of the submitting connection"/>
             <type name="globalSeqNo" primitiveType="int64"
                   description="Cluster-wide monotone sequence number; unique across all sources and message types"/>

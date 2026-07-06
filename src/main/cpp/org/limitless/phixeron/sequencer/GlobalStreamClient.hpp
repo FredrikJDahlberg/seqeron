@@ -1,11 +1,13 @@
 #pragma once
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -41,7 +43,9 @@ inline constexpr std::int32_t GLOBAL_STREAM_ID = 1;
 // Each binary uses a distinct port so their archive replay publications don't conflict.
 // FixSessionClient  → 9310 (env PHIXERON_FIX_REPLAY_PORT)
 // OrderExecClient   → 9311 (env PHIXERON_ORDER_EXEC_REPLAY_PORT)
-// fix_test_server   → 9312 (env PHIXERON_RISK_TEST_REPLAY_PORT)
+// fix_test_server   → 9400 (env PHIXERON_RISK_TEST_REPLAY_PORT; kept outside the
+//                     9300-9325 cluster port block — see SequencerNode's port layout —
+//                     since 9312 used to alias member 1's cluster ingress port)
 // FixSessionClient's resend-recovery replay → 9313 (env PHIXERON_RESEND_REPLAY_PORT)
 inline constexpr std::int32_t REPLAY_STREAM_ID = 110;
 
@@ -98,27 +102,46 @@ inline std::vector<std::string> resolveArchiveEndpoints(const char* envVar, cons
 }
 
 /**
- * Connects to the first reachable archive among controlEndpoints, in order.
+ * Connects to each candidate archive endpoint in turn until one both connects
+ * and holds a recording of the global stream (matched by GLOBAL_STREAM_ID
+ * alone: the recorded originalChannel is Aeron's resolved form of the
+ * control-mode=dynamic channel, e.g. an assigned multicast endpoint, which
+ * never contains the literal GLOBAL_STREAM_CHANNEL constant as a substring).
  *
- * Archive recordings of the global stream are identical across every cluster
- * member (each node's co-located archive records the same replicated stream),
- * so — unlike cluster ingress, which must track the current Raft leader via
- * REDIRECT/NewLeaderEvent — any reachable member's archive is an equally valid
- * replay source. This is a one-time bootstrap choice, not something that needs
- * to react to leadership changes afterward.
+ * Trying more than one endpoint is necessary — not just defense in depth —
+ * because SequencerService.applyLeadership() creates the global-stream
+ * ExclusivePublication and its recording lazily, only on the node that is
+ * currently (or was most recently) leader, rather than on every node
+ * unconditionally at startup (see todo.md's "Global-stream control port
+ * collision" entry for why: every node eagerly pre-creating it collided on
+ * the shared control-mode=dynamic port when co-located on one host). So an
+ * arbitrary reachable member's archive may simply have no matching recording
+ * at all — this must keep trying candidates until it finds the one that does.
  *
- * @throws std::runtime_error if every candidate endpoint fails to connect.
+ * Note this does not chase a *later* leadership change once connected: if
+ * leadership moves on mid-session, this connected archive's recording stops
+ * advancing (a new one starts on the new leader) — see todo.md's
+ * "Cross-failover global-stream recording continuity" entry.
+ *
+ * @param[out] recordingId    recording id of the global stream found on the
+ *                            connected archive
+ * @param[out] catchUpPosition recording position to replay/catch up to
+ * @throws std::runtime_error if no candidate endpoint both connects and holds
+ *         a global stream recording.
  */
-inline std::shared_ptr<aeron::archive::client::AeronArchive> connectToAnyArchive(
+inline std::shared_ptr<aeron::archive::client::AeronArchive> connectToArchiveWithGlobalStream(
     std::shared_ptr<aeron::Aeron>    aeron,
     const std::vector<std::string>& controlEndpoints,
     std::int32_t                     controlStreamId,
     const char*                      controlResponseChannel,
-    const char*                      logPrefix)
+    const char*                      logPrefix,
+    std::int64_t&                    recordingId,
+    std::int64_t&                    catchUpPosition)
 {
     std::string lastError = "no candidate endpoints given";
     for (const auto& endpoint : controlEndpoints)
     {
+        std::shared_ptr<aeron::archive::client::AeronArchive> archive;
         try
         {
             aeron::archive::client::Context archiveCtx;
@@ -126,22 +149,132 @@ inline std::shared_ptr<aeron::archive::client::AeronArchive> connectToAnyArchive
                       .controlRequestChannel("aeron:udp?endpoint=" + endpoint)
                       .controlRequestStreamId(controlStreamId)
                       .controlResponseChannel(controlResponseChannel);
-
-            auto archive = aeron::archive::client::AeronArchive::connect(archiveCtx);
-            std::printf("%s Connected to Aeron Archive at %s\n", logPrefix, endpoint.c_str());
-            return archive;
+            archive = aeron::archive::client::AeronArchive::connect(archiveCtx);
         }
         catch (const std::exception& ex)
         {
             std::fprintf(stderr, "%s Archive connect to %s failed: %s\n",
                          logPrefix, endpoint.c_str(), ex.what());
             lastError = ex.what();
+            continue;
         }
+
+        // Prefer the active (live) recording over any stopped one; among
+        // stopped recordings prefer the largest stop position (holds the
+        // most committed data) — same preference findGlobalStreamRecording
+        // used to apply per-binary before this helper consolidated it.
+        std::int64_t activeId        = -1;
+        std::int64_t stoppedId       = -1;
+        std::int64_t stoppedPosition = std::numeric_limits<std::int64_t>::min();
+        archive->listRecordingsForUri(
+            0, std::numeric_limits<std::int32_t>::max(), "", GLOBAL_STREAM_ID,
+            [&](aeron::archive::client::RecordingDescriptor& recording)
+            {
+                if (recording.m_stopPosition == aeron::archive::client::NULL_POSITION)
+                {
+                    activeId = recording.m_recordingId;
+                }
+                else if (recording.m_stopPosition > stoppedPosition)
+                {
+                    stoppedId       = recording.m_recordingId;
+                    stoppedPosition = recording.m_stopPosition;
+                }
+            });
+
+        if (activeId < 0 && stoppedId < 0)
+        {
+            std::printf("%s Connected to %s but it has no global stream recording"
+                        " (not currently/recently leader) — trying next endpoint\n",
+                        logPrefix, endpoint.c_str());
+            lastError = "connected but no global stream recording found on " + endpoint;
+            continue;
+        }
+
+        std::printf("%s Connected to Aeron Archive at %s (holds the global stream recording)\n",
+                    logPrefix, endpoint.c_str());
+        if (activeId >= 0)
+        {
+            catchUpPosition = archive->getRecordingPosition(activeId);
+            if (catchUpPosition == aeron::archive::client::NULL_POSITION)
+            {
+                catchUpPosition = 0;
+            }
+            recordingId = activeId;
+        }
+        else
+        {
+            catchUpPosition = stoppedPosition;
+            recordingId     = stoppedId;
+        }
+        return archive;
     }
 
     throw std::runtime_error(
-        std::string(logPrefix) + " Could not connect to any archive endpoint (tried " +
-        std::to_string(controlEndpoints.size()) + "); last error: " + lastError);
+        std::string(logPrefix) + " Could not find the global stream recording on any of " +
+        std::to_string(controlEndpoints.size()) + " archive endpoint(s); last error: " + lastError);
+}
+
+/**
+ * One recording of the global stream, as found in a single archive's catalog.
+ * stopPosition is NULL_POSITION when the recording is still active (only
+ * possible for the last segment in a resolveGlobalStreamSegments() result).
+ */
+struct RecordingSegment
+{
+    std::int64_t recordingId;
+    std::int64_t stopPosition;
+};
+
+/**
+ * Lists every GLOBAL_STREAM_ID recording on an already-connected archive,
+ * ordered oldest-to-newest by startTimestamp — each one is a prior leader's
+ * tenure (see todo.md's "Cross-failover global-stream recording continuity"
+ * entry), so replaying them in this order and concatenating reproduces full
+ * history. The current leader's own archive holds every earlier tenure's
+ * segment too, because every follower continuously replicates the leader's
+ * recording into its own archive the whole time it isn't leader.
+ *
+ * The abrupt-leader-death race documented in the same todo.md entry can
+ * leave two segments both reporting stopPosition == NULL_POSITION (active);
+ * since they hold identical content, only the most recent is kept and any
+ * earlier "active" duplicate is dropped rather than replayed twice.
+ */
+inline std::vector<RecordingSegment> resolveGlobalStreamSegments(
+    const std::shared_ptr<aeron::archive::client::AeronArchive>& archive)
+{
+    struct Entry
+    {
+        std::int64_t recordingId;
+        std::int64_t startTimestamp;
+        std::int64_t stopPosition;
+    };
+    std::vector<Entry> entries;
+    archive->listRecordingsForUri(
+        0, std::numeric_limits<std::int32_t>::max(), "", GLOBAL_STREAM_ID,
+        [&](aeron::archive::client::RecordingDescriptor& recording)
+        {
+            entries.push_back({recording.m_recordingId, recording.m_startTimestamp, recording.m_stopPosition});
+        });
+
+    std::sort(entries.begin(), entries.end(),
+               [](const Entry& a, const Entry& b) { return a.startTimestamp < b.startTimestamp; });
+
+    std::vector<RecordingSegment> segments;
+    bool keptActive = false;
+    for (const auto& e : entries)
+    {
+        const bool active = (e.stopPosition == aeron::archive::client::NULL_POSITION);
+        if (active && keptActive)
+        {
+            continue;
+        }
+        if (active)
+        {
+            keptActive = true;
+        }
+        segments.push_back({e.recordingId, e.stopPosition});
+    }
+    return segments;
 }
 
 // ClientConnected/ClientDisconnected aren't FIX messages, so sbe-sequenced.xml
@@ -157,10 +290,11 @@ inline constexpr std::uint16_t CLIENT_DISCONNECTED_TEMPLATE_ID = 2;
  *
  * Every raw fragment on the wire *is* a complete sbe-sequenced.xml message
  * (schemaId=202) — no envelope to strip. Every message in that schema
- * declares `header` (sourceId, sessionId, globalSeqNo, timestamp) as its
- * first field, at the same fixed offset regardless of templateId, so this
- * client decodes it generically and exposes the fields here — callers don't
- * need to re-decode it themselves before dispatching on templateId.
+ * declares `header` (sourceId, connectionId, sessionId, globalSeqNo,
+ * timestamp) as its first field, at the same fixed offset regardless of
+ * templateId, so this client decodes it generically and exposes the fields
+ * here — callers don't need to re-decode it themselves before dispatching
+ * on templateId.
  *
  * payload/payloadLength point into the Aeron fragment buffer and are valid
  * only for the duration of the callback; payload addresses the start of the
@@ -170,7 +304,8 @@ inline constexpr std::uint16_t CLIENT_DISCONNECTED_TEMPLATE_ID = 2;
 struct SequencedEvent
 {
     std::int64_t  globalSeqNo;
-    std::int32_t  sourceId;         ///< TCP connection id at the FIX gateway (header.sourceId)
+    std::int32_t  sourceId;         ///< Fixed constant identifying the submitting gateway process (header.sourceId)
+    std::int32_t  connectionId;     ///< TCP connection id at that gateway; routes the reply (header.connectionId)
     std::int64_t  sourceSessionId;  ///< Aeron Cluster client session id (header.sessionId)
     std::int64_t  clusterTimestamp; ///< cluster consensus time (ms) when message was committed
     std::int64_t  receiveTimeNs;    ///< wall-clock ns at receipt by this client
@@ -198,17 +333,20 @@ struct LifecycleEvent
  * SBE messages to the caller.
  *
  * Startup sequence (caller is responsible for the archive connection):
- *   1. Caller uses AeronArchive to find the global stream recording and call
- *      aeronArchive.startReplay(recordingId, startPosition, NULL_POSITION,
- *                               REPLAY_CHANNEL, REPLAY_STREAM_ID)
- *      keeping the returned replaySessionId and the recording's stop position.
- *   2. Call start(aeron, replaySessionId, catchUpPosition).
+ *   1. Caller uses resolveGlobalStreamSegments(archive) to list every
+ *      GLOBAL_STREAM_ID recording on the connected archive, oldest first.
+ *   2. Call start(aeron, archive, segments, replayChannel).
  *   3. Call poll() in a duty-cycle loop.
  *
- * The replay image uses NULL_POSITION as length so it follows the live
- * recording seamlessly — the same image delivers both historical and live
- * messages without a subscription switch. If the image closes (leader failover)
- * the client falls back to a direct MDC subscription.
+ * Each historical (stopped) segment is replayed in full before moving on to
+ * the next; the last segment (which may still be actively recording) is
+ * replayed with NULL_LENGTH so it follows live seamlessly once caught up —
+ * the same image delivers both historical and live messages for that segment
+ * without a subscription switch. If that last segment's image closes (leader
+ * failover), the client falls back to a direct MDC subscription. Segments
+ * share one underlying replay subscription (same channel/stream id), so
+ * moving from one segment's replay to the next only requires starting a new
+ * archive replay session, not a new local subscription.
  *
  * Every message is stamped with receiveTimeNs (std::chrono::system_clock).
  */
@@ -234,14 +372,67 @@ public:
     {}
 
     /**
-     * Attaches to an already-started archive replay image and adds a live
-     * MDC fallback subscription.
+     * Adds a live MDC fallback subscription and, when segments is non-empty,
+     * starts replaying its segments in order (see class doc comment).
+     *
+     * @param aeron         connected Aeron instance
+     * @param archive       connected AeronArchive the segments were resolved
+     *                      from; kept alive to start each segment's replay
+     * @param segments      result of resolveGlobalStreamSegments(archive),
+     *                      oldest first; empty means no historical data
+     * @param replayChannel channel the archive publishes replays on;
+     *                      ignored when segments is empty
+     */
+    void start(std::shared_ptr<aeron::Aeron>                             aeron,
+               std::shared_ptr<aeron::archive::client::AeronArchive>     archive,
+               std::vector<RecordingSegment>                             segments,
+               const char*                                               replayChannel = nullptr)
+    {
+        m_aeron    = std::move(aeron);
+        m_archive  = std::move(archive);
+        m_segments = std::move(segments);
+
+        // Live MDC fallback — always subscribed; used when the last segment's replay image closes.
+        m_liveSubRegId = m_aeron->addSubscription(GLOBAL_STREAM_SUBSCRIBER_CHANNEL, GLOBAL_STREAM_ID);
+
+        if (m_segments.empty())
+        {
+            // No historical data — already at live.
+            notifyCaughtUp();
+            return;
+        }
+
+        const auto& last = m_segments.back();
+        if (last.stopPosition == aeron::archive::client::NULL_POSITION)
+        {
+            m_catchUpPosition = m_archive->getRecordingPosition(last.recordingId);
+            if (m_catchUpPosition == aeron::archive::client::NULL_POSITION)
+            {
+                m_catchUpPosition = 0;
+            }
+        }
+        else
+        {
+            m_catchUpPosition = last.stopPosition;
+        }
+
+        m_replayChannel  = replayChannel;
+        m_replaySubRegId = m_aeron->addSubscription(m_replayChannel, REPLAY_STREAM_ID);
+        startSegmentReplay(0);
+    }
+
+    /**
+     * Attaches to a single already-started archive replay image and adds a
+     * live MDC fallback subscription — for a bounded scan of one already-known
+     * recording, not the multi-segment bootstrap walk above. Used by
+     * FixConnection::replayMissingAppMessages's resend-recovery scan, which
+     * replays a specific position range within one recording (not from
+     * position 0, and not following live once it ends).
      *
      * @param aeron           connected Aeron instance
      * @param replaySessionId session ID returned by AeronArchive::startReplay(),
      *                        or -1 when there is no historical data to replay
-     * @param catchUpPosition recording stop position observed at startup;
-     *                        onCaughtUp fires once the replay image reaches it
+     * @param catchUpPosition recording position onCaughtUp fires once reached
      * @param replayChannel   channel the archive publishes the replay on;
      *                        ignored when replaySessionId < 0
      */
@@ -250,9 +441,10 @@ public:
                std::int64_t                  catchUpPosition,
                const char*                   replayChannel = nullptr)
     {
-        m_aeron           = std::move(aeron);
-        m_replaySessionId = replaySessionId;
-        m_catchUpPosition = catchUpPosition;
+        m_aeron            = std::move(aeron);
+        m_singleImageMode  = true;
+        m_replaySessionId  = replaySessionId;
+        m_catchUpPosition  = catchUpPosition;
 
         if (replaySessionId >= 0 && replayChannel != nullptr)
         {
@@ -284,7 +476,7 @@ public:
             m_liveSub = m_aeron->findSubscription(m_liveSubRegId);
         }
 
-        // Lazily resolve the replay image once it becomes available.
+        // Lazily resolve the current segment's replay image once it becomes available.
         if (!m_replayImage && m_replaySub)
         {
             m_replayImage = m_replaySub->imageBySessionId(
@@ -296,15 +488,22 @@ public:
             if (!m_replayImage->isClosed())
             {
                 const int work = m_replayImage->poll(m_fragmentHandler, FRAGMENT_LIMIT);
-                if (!m_caughtUp && m_replayImage->position() >= m_catchUpPosition)
+                if (!m_caughtUp && isOnLastSegment() && m_replayImage->position() >= m_catchUpPosition)
                 {
                     notifyCaughtUp();
                 }
                 return work;
             }
-            // Archive recording stopped (e.g. leader failover). Discard and fall through.
+            // This segment's replay finished (historical segment fully replayed) or, if it was
+            // the last segment, its recording stopped growing (e.g. leader failover).
             m_replayImage.reset();
-            m_replaySub.reset();
+            ++m_segmentIndex;
+            if (m_segmentIndex < m_segments.size())
+            {
+                startSegmentReplay(m_segmentIndex);
+                return 0;
+            }
+            // All segments replayed and the last one's image closed — fall through to live MDC.
         }
 
         // Live MDC fallback — poll the subscription directly.
@@ -318,6 +517,23 @@ public:
 
 private:
     static constexpr int FRAGMENT_LIMIT = 10;
+
+    bool isOnLastSegment() const
+    {
+        return m_singleImageMode || m_segmentIndex + 1 == m_segments.size();
+    }
+
+    void startSegmentReplay(std::size_t index)
+    {
+        const auto& segment = m_segments[index];
+        const bool  isLast  = (index + 1 == m_segments.size());
+
+        aeron::archive::client::ReplayParams replayParams;
+        replayParams.position(0).length(
+            isLast ? aeron::archive::client::NULL_LENGTH : segment.stopPosition);
+        m_replaySessionId = m_archive->startReplay(
+            segment.recordingId, m_replayChannel, REPLAY_STREAM_ID, replayParams);
+    }
 
     using HdrSbe = org::limitless::phixeron::sbe::sequenced::MessageHeader;
     using HeaderComposite = org::limitless::phixeron::sbe::sequenced::Header;
@@ -358,6 +574,7 @@ private:
         m_header.wrap(raw, bodyOff, 0U, cap);
         const auto gseq  = m_header.globalSeqNo();
         const auto srcId = m_header.sourceId();
+        const auto connId = m_header.connectionId();
         const auto sessId = m_header.sessionId();
         const auto ts    = m_header.timestamp();
         if (templateId == CLIENT_CONNECTED_TEMPLATE_ID)
@@ -391,6 +608,7 @@ private:
             m_onSequenced(SequencedEvent{
                 .globalSeqNo      = gseq,
                 .sourceId         = srcId,
+                .connectionId     = connId,
                 .sourceSessionId  = sessId,
                 .clusterTimestamp = ts,
                 .receiveTimeNs    = receiveNs,
@@ -422,12 +640,17 @@ private:
     OnCaughtUp     m_onCaughtUp;
 
     std::shared_ptr<aeron::Aeron> m_aeron;
+    std::shared_ptr<aeron::archive::client::AeronArchive> m_archive;
     std::int64_t m_replaySubRegId = -1;
     std::int64_t m_liveSubRegId   = -1;
     std::shared_ptr<aeron::Subscription> m_replaySub;
     std::shared_ptr<aeron::Subscription> m_liveSub;
     std::shared_ptr<aeron::Image> m_replayImage;
 
+    std::vector<RecordingSegment> m_segments;
+    std::size_t  m_segmentIndex    = 0;
+    bool         m_singleImageMode = false;
+    std::string  m_replayChannel;
     std::int64_t m_replaySessionId = -1;
     std::int64_t m_catchUpPosition = 0;
     bool         m_caughtUp        = false;

@@ -13,6 +13,8 @@ import org.agrona.concurrent.ShutdownSignalBarrier;
 import org.agrona.concurrent.YieldingIdleStrategy;
 
 import java.io.File;
+import java.util.HashMap;
+import java.util.Map;
 
 /**
  * Launches a single Sequencer cluster node.
@@ -77,6 +79,8 @@ public final class SequencerNode {
         final String clusterMembers = System.getProperty(PROP_CLUSTER_MEMBERS,
             buildSingleNodeMembers(ingressPort, memberPort, logPort, xferPort, archivePort));
 
+        final Map<Integer, String> archiveEndpointsByMemberId = parseArchiveEndpoints(clusterMembers);
+
         final File archiveDir = new File(baseDir + "/archive-" + memberId);
         final File clusterDir = new File(baseDir + "/cluster-" + memberId);
 
@@ -118,15 +122,21 @@ public final class SequencerNode {
             .archiveContext(localArchiveCtx.clone())
             .deleteDirOnStart(false)
             .idleStrategySupplier(YieldingIdleStrategy::new)
-            .errorHandler(t -> System.err.printf("[ConsensusModule/%d] %s%n", memberId, t.getMessage()));
+            .errorHandler(t -> {
+                System.err.printf("[ConsensusModule/%d] %s%n", memberId, t.getMessage());
+                t.printStackTrace();
+            });
 
         final ClusteredServiceContainer.Context serviceCtx = new ClusteredServiceContainer.Context()
             .aeronDirectoryName(aeronDir)
             .archiveContext(localArchiveCtx.clone())
             .clusterDir(clusterDir)
-            .clusteredService(new SequencerService())
+            .clusteredService(new SequencerService(archiveEndpointsByMemberId))
             .idleStrategySupplier(YieldingIdleStrategy::new)
-            .errorHandler(t -> System.err.printf("[SequencerService/%d] %s%n", memberId, t.getMessage()));
+            .errorHandler(t -> {
+                System.err.printf("[SequencerService/%d] %s%n", memberId, t.getMessage());
+                t.printStackTrace();
+            });
 
         System.out.printf("[SequencerNode] Starting member %d | ingress=%s | archive=%s | baseDir=%s%n",
             memberId, udp(DEFAULT_HOST, ingressPort), udp(DEFAULT_HOST, archivePort), baseDir);
@@ -143,6 +153,23 @@ public final class SequencerNode {
 
     private static String udp(final String host, final int port) {
         return "aeron:udp?endpoint=" + host + ":" + port;
+    }
+
+    // clusterMembers format: "id,ingress,memberFacing,log,transfer,archive|id,...". Extracts just
+    // the archive endpoint (last field) per member id, so SequencerService can reach any peer's
+    // archive by member id — needed to replicate the current leader's recording into every
+    // follower's own archive as a live standby copy (see SequencerService's leadership handling).
+    private static Map<Integer, String> parseArchiveEndpoints(final String clusterMembers) {
+        final Map<Integer, String> endpoints = new HashMap<>();
+        for (final String member : clusterMembers.split("\\|")) {
+            if (member.isEmpty()) {
+                continue;
+            }
+            final String[] fields = member.split(",");
+            final int id = Integer.parseInt(fields[0]);
+            endpoints.put(id, fields[5]);
+        }
+        return endpoints;
     }
 
     private static String buildSingleNodeMembers(final int ingressPort, final int memberPort,
