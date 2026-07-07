@@ -120,6 +120,11 @@ public final class SequencerNode {
             .ingressChannel(udp(DEFAULT_HOST, ingressPort))
             .replicationChannel(udp(DEFAULT_HOST, 0))
             .archiveContext(localArchiveCtx.clone())
+            // Lets a co-located client (sharing this member's Aeron directory, e.g.
+            // OrderExecClient) reach ingress over "aeron:ipc" while this member is leader,
+            // on top of the normal UDP ingressChannel above — never instead of it, and only
+            // while leader (see ConsensusModuleAgent.connectIngress()).
+            .isIpcIngressAllowed(true)
             .deleteDirOnStart(false)
             .idleStrategySupplier(YieldingIdleStrategy::new)
             .errorHandler(t -> {

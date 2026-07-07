@@ -46,8 +46,14 @@ MD_LOG="${LOG_DIR}/aeronmd.log"
 FIX_LOG="${LOG_DIR}/FixSessionClient.log"
 APP_LOG="${LOG_DIR}/OrderExecClient.log"
 
-# Default Aeron directory used by aeronmd and by the C++ clients.
+# Default Aeron directory used by the standalone aeronmd and by FixSessionClient.
 AERON_DIR="${TMPDIR}aeron-$(whoami)"
+
+# SequencerNode (member 0)'s own embedded media driver directory — matches its default
+# when -Dsequencer.aeronDir isn't overridden. OrderExecClient is co-located with this
+# member (shares its Aeron directory) so archive/replay/ingress can use aeron:ipc instead
+# of looping through the standalone aeronmd above — see ClusterIngressSender::connectColocated.
+SEQ_AERON_DIR="${TMPDIR}phixeron-seq-aeron-0"
 
 # Prefer a system-installed aeronmd (e.g. Homebrew or a system package) on PATH;
 # fall back to the CMake FetchContent build-tree copy if none is found there.
@@ -123,8 +129,9 @@ echo "[cluster.sh] Starting FixSessionClient → ${FIX_LOG}"
 stdbuf -oL -eL "${BUILD_DIR}/FixSessionClient" > "${FIX_LOG}" 2>&1 &
 FIX_PID=$!
 
-echo "[cluster.sh] Starting OrderExecClient → ${APP_LOG}"
-stdbuf -oL -eL "${BUILD_DIR}/OrderExecClient" > "${APP_LOG}" 2>&1 &
+echo "[cluster.sh] Starting OrderExecClient (co-located with SequencerNode member 0) → ${APP_LOG}"
+PHIXERON_ORDER_EXEC_AERON_DIR="${SEQ_AERON_DIR}" \
+    stdbuf -oL -eL "${BUILD_DIR}/OrderExecClient" > "${APP_LOG}" 2>&1 &
 APP_PID=$!
 
 echo "[cluster.sh] All processes started"

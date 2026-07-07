@@ -128,7 +128,10 @@ Each member's ports are `9300 + memberId × 10 + offset`:
 
 Clients connect to archive control on port 9301 (member 0) to replay history, and to
 ingress on port 9302 to send messages. The global sequenced stream is published via
-multi-destination-cast control address `localhost:9200` (stream 1).
+multi-destination-cast control address `localhost:9200` (stream 1). Cluster egress is a fixed
+UDP port too — 9320 for `FixSessionClient`/`fix_test_server`, 9330 for `OrderExecClient` (see
+[Order execution client](#order-execution-client)) — kept distinct because the two now sit on
+independent media driver processes that can't both bind the same UDP port on `localhost`.
 
 ### System properties
 
@@ -209,16 +212,26 @@ synchronous, slow, and only services 5 requests at once (`MockRiskEngine`); quer
 are throttled by leaving the `PortfolioQueryRequest` fragment unconsumed on the global stream
 until a slot frees up, rather than blocking or dropping them.
 
+Unlike `FixSessionClient` (which serves external, potentially remote TCP FIX clients over UDP),
+`OrderExecClient` is deliberately deployed **co-located** with one `SequencerNode` member —
+sharing that member's own embedded Aeron directory rather than the standalone `aeronmd` — so
+archive access/replay and (while that member is leader) cluster ingress can go over `aeron:ipc`
+instead of looping through two independent UDP media drivers. Cluster egress and the live
+(post-catch-up) global stream tail stay UDP regardless (see `doc/design.md` §2.7 for the full
+rationale and fallback behavior when the co-located member isn't currently leader).
+
 ```bash
 cmake --build cmake-build-release --target OrderExecClient
-AERON_DIR="${TMPDIR}aeron-$(whoami)" ./cmake-build-release/OrderExecClient
-# [OrderExecClient] Connected to Aeron media driver
-# [OrderExecClient] Connected to Aeron Archive
+PHIXERON_ORDER_EXEC_AERON_DIR="${TMPDIR}phixeron-seq-aeron-0" ./cmake-build-release/OrderExecClient
+# [OrderExecClient] Connected to co-located Aeron media driver at .../phixeron-seq-aeron-0
+# [OrderExecClient] Connected to co-located Aeron Archive via IPC (holds the global stream recording)
 # [OrderExecClient] Live from start
 ```
 
-Connects to the single-node sequencer defaults (archive on `localhost:9301`, cluster ingress
-on `localhost:9302`) — start the sequencer node first (see [Sequencer](#sequencer)).
+`PHIXERON_ORDER_EXEC_AERON_DIR` defaults to member 0's own `sequencer.aeronDir` default
+(`$TMPDIR/phixeron-seq-aeron-0`, see [System properties](#system-properties)) — start the
+sequencer node first (see [Sequencer](#sequencer)) and only override this if co-locating with a
+different member.
 
 ---
 
@@ -236,7 +249,8 @@ using the simdfix `ClientSession` and generated message encoders:
    synthetic Trade `ExecutionReport` and a `PortfolioQueryRequest` directly to cluster
    ingress (bypassing the FIX/TCP gateway — see
    [order execution client](#order-execution-client)) and prints the resulting
-   `PortfolioQueryReply`. Requires `aeronmd` and `OrderExecClient` to be running.
+   `PortfolioQueryReply`. Requires `aeronmd` (for `fix_test_server`'s own connection) and
+   `OrderExecClient` to be running.
 
 ```
 SenderCompID = CLIENT

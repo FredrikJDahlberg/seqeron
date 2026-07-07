@@ -9,11 +9,17 @@
 #   4. OrderExecClient    (C++, replays global stream, tracks positions, answers risk queries)
 # then runs fix_test_server once to completion and reports its result.
 #
-# FixSessionClient/OrderExecClient only ever *bootstrap* against member 0's
-# archive (9301) and ingress (9302) endpoints, but follow SessionEvent
-# REDIRECT/NewLeaderEvent to the real leader afterwards — so this works
-# regardless of which member wins the Raft election, as long as member 0
-# is reachable at startup.
+# FixSessionClient only ever *bootstraps* against member 0's archive (9301) and
+# ingress (9302) endpoints, but follows SessionEvent REDIRECT/NewLeaderEvent to
+# the real leader afterwards — so this works regardless of which member wins the
+# Raft election, as long as member 0 is reachable at startup.
+#
+# OrderExecClient is co-located with member 0 (shares its Aeron directory) and
+# always reads member 0's own archive over aeron:ipc — safe regardless of which
+# member is leader, since every member's archive replicates the full global
+# stream (see SequencerService's standby-follow). Cluster ingress tries
+# aeron:ipc first and falls back to the same UDP bootstrap/redirect path as
+# FixSessionClient when member 0 isn't currently leader.
 #
 # Uses a dedicated baseDir (${TMPDIR}phixeron-seq3) so it doesn't collide
 # with single-node dev state left behind by start-cluster.sh.
@@ -62,8 +68,13 @@ CLUSTER_MEMBERS="0,localhost:9302,localhost:9303,localhost:9304,localhost:9305,l
 CLUSTER_MEMBERS+="|1,localhost:9312,localhost:9313,localhost:9314,localhost:9315,localhost:9311"
 CLUSTER_MEMBERS+="|2,localhost:9322,localhost:9323,localhost:9324,localhost:9325,localhost:9321"
 
-# Default Aeron directory used by aeronmd and by the C++ clients.
+# Default Aeron directory used by the standalone aeronmd and by FixSessionClient.
 AERON_DIR="${TMPDIR}aeron-$(whoami)"
+
+# SequencerNode member 0's own embedded media driver directory — matches its default
+# when -Dsequencer.aeronDir isn't overridden (it isn't, below). OrderExecClient is
+# co-located with member 0, sharing this directory instead of the standalone aeronmd's.
+SEQ_AERON_DIR="${TMPDIR}phixeron-seq-aeron-0"
 
 # Prefer a system-installed aeronmd (e.g. Homebrew or a system package) on PATH;
 # fall back to the CMake FetchContent build-tree copy if none is found there.
@@ -150,8 +161,9 @@ echo "[three-node-cluster.sh] Starting FixSessionClient → ${FIX_LOG}"
 stdbuf -oL -eL "${BUILD_DIR}/FixSessionClient" > "${FIX_LOG}" 2>&1 &
 FIX_PID=$!
 
-echo "[three-node-cluster.sh] Starting OrderExecClient → ${APP_LOG}"
-stdbuf -oL -eL "${BUILD_DIR}/OrderExecClient" > "${APP_LOG}" 2>&1 &
+echo "[three-node-cluster.sh] Starting OrderExecClient (co-located with SequencerNode member 0) → ${APP_LOG}"
+PHIXERON_ORDER_EXEC_AERON_DIR="${SEQ_AERON_DIR}" \
+    stdbuf -oL -eL "${BUILD_DIR}/OrderExecClient" > "${APP_LOG}" 2>&1 &
 APP_PID=$!
 
 # ── Shutdown handling ─────────────────────────────────────────────────────────

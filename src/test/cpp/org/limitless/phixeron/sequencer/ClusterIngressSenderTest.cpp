@@ -334,6 +334,104 @@ TEST_F(ConnectedClusterIngressSender, PollEgressIgnoresNewLeaderEndpointWithoutA
     EXPECT_EQ(999, hdr.leadershipTermId());
 }
 
+// ── connectColocated's IPC-then-UDP fallback (see ClusterIngressSender.hpp) ────────────────
+
+// Primary (IPC) attempt never answers within the short timeout, so the fallback ingress
+// transport must be built and used instead, sharing the same egress transport throughout.
+// The queued SessionEvent(OK) only appears once the fallback is built — mirroring how, in
+// production, the cluster simply never answers an IPC SessionConnectRequest sent to a
+// follower (no IPC ingress subscription exists there at all) until the client gives up and
+// retries over UDP against a member that actually answers.
+TEST(ClusterIngressSenderColocated, FallsBackToSecondaryWhenPrimaryNeverAnswers)
+{
+    auto egress = std::make_unique<FakeEgressTransport>();
+    auto* egressPtr = egress.get();
+
+    auto primary = std::make_unique<FakeIngressTransport>();
+    auto* primaryPtr = primary.get();
+
+    auto fallback = std::make_unique<FakeIngressTransport>();
+    auto* fallbackPtr = fallback.get();
+    bool fallbackBuilt = false;
+    std::size_t primaryOfferedCountAtFallbackTime = 0;
+
+    ClusterIngressSender sender;
+    sender.connectColocated(
+        std::move(primary),
+        [&]() -> std::unique_ptr<IngressTransport>
+        {
+            fallbackBuilt = true;
+            // primaryPtr is still valid here (the sender hasn't reassigned its ingress
+            // transport to the fallback yet), but becomes dangling as soon as this lambda
+            // returns and connect() replaces it — so snapshot what we need now.
+            primaryOfferedCountAtFallbackTime = primaryPtr->m_offered.size();
+            egressPtr->m_queued.push_back(encodeSessionEvent(9, 3, cluster_sbe::EventCode::Value::OK));
+            return std::move(fallback);
+        },
+        std::move(egress),
+        /*primaryConnectTimeoutMs=*/20,
+        /*primaryFailureReason=*/nullptr);
+
+    EXPECT_TRUE(sender.isConnected());
+    EXPECT_TRUE(fallbackBuilt);
+    // The primary transport never got a SessionEvent(OK), so its SessionConnectRequest was
+    // offered but nothing else; the fallback transport is the one that actually completed
+    // the handshake once the queued OK was polled.
+    EXPECT_EQ(1u, primaryOfferedCountAtFallbackTime);
+    ASSERT_EQ(1u, fallbackPtr->m_offered.size());
+    decodeOffered<cluster_sbe::SessionConnectRequest>(fallbackPtr->m_offered[0]);
+}
+
+// A null primary (mirrors createIpcIngressPublication() itself throwing before any transport
+// could be built) must skip straight to the fallback, still delivering the queued OK.
+TEST(ClusterIngressSenderColocated, NullPrimarySkipsStraightToFallback)
+{
+    auto egress = std::make_unique<FakeEgressTransport>();
+    egress->m_queued.push_back(encodeSessionEvent(9, 3, cluster_sbe::EventCode::Value::OK));
+
+    auto fallback = std::make_unique<FakeIngressTransport>();
+    auto* fallbackPtr = fallback.get();
+
+    ClusterIngressSender sender;
+    sender.connectColocated(
+        nullptr,
+        [&]() -> std::unique_ptr<IngressTransport> { return std::move(fallback); },
+        std::move(egress),
+        /*primaryConnectTimeoutMs=*/20,
+        /*primaryFailureReason=*/"IPC publication never connected");
+
+    EXPECT_TRUE(sender.isConnected());
+    ASSERT_EQ(1u, fallbackPtr->m_offered.size());
+    decodeOffered<cluster_sbe::SessionConnectRequest>(fallbackPtr->m_offered[0]);
+}
+
+// When the primary attempt succeeds immediately, the fallback factory must never be invoked.
+TEST(ClusterIngressSenderColocated, PrimarySuccessNeverBuildsFallback)
+{
+    auto egress = std::make_unique<FakeEgressTransport>();
+    egress->m_queued.push_back(encodeSessionEvent(42, 7, cluster_sbe::EventCode::Value::OK));
+
+    auto primary = std::make_unique<FakeIngressTransport>();
+    auto* primaryPtr = primary.get();
+    bool fallbackBuilt = false;
+
+    ClusterIngressSender sender;
+    sender.connectColocated(
+        std::move(primary),
+        [&]() -> std::unique_ptr<IngressTransport>
+        {
+            fallbackBuilt = true;
+            return std::make_unique<FakeIngressTransport>();
+        },
+        std::move(egress),
+        /*primaryConnectTimeoutMs=*/1500,
+        /*primaryFailureReason=*/nullptr);
+
+    EXPECT_TRUE(sender.isConnected());
+    EXPECT_FALSE(fallbackBuilt);
+    ASSERT_EQ(1u, primaryPtr->m_offered.size());
+}
+
 // ── findIngressEndpoint (the "memberId=host:port,..." CSV parser shared by
 //    SessionEvent(REDIRECT).detail and NewLeaderEvent.ingressEndpoints) ──────────
 
