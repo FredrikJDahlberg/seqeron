@@ -99,6 +99,15 @@ struct CapturingTransport
 
 using FixSession = sess::ServerSession<cfg::FIXT_1_1, "SEQUENCER", "CLIENT", CapturingTransport>;
 
+// Reserved SenderCompID (tag 49) stamped on the gateway's own chunk-boundary
+// SequenceReset when a large ResendRequest is served in 1000-message chunks
+// (see FixConnection::handleResendRequest). Every client-originated message on
+// the global stream carries sender="CLIENT" (hardcoded below), so this value —
+// which no real client uses — lets FixConnection recognize its own checkpoint
+// reset when it round-trips back on the sequenced stream, without an SBE schema
+// change. Exactly 8 chars to fill the fixed compId field with no padding.
+inline constexpr std::string_view RESEND_CHUNK_COMPID = "RSNDCHNK";
+
 // ── ClusterIngressHandler ─────────────────────────────────────────────────────
 
 // Receives decoded FIX messages on the TCP receive path and forwards them to the cluster WITHOUT updating
@@ -353,6 +362,32 @@ public:
          .newSeqNo(sequenceReset.newSeqNo().value_or(1u));
         sendUnsequenced(m_sequenceReset);
         return fix::Result::Success;
+    }
+
+    // Sends the gateway's own chunk-boundary SequenceReset to the cluster while
+    // serving a large ResendRequest in 1000-message chunks (see
+    // FixConnection::handleResendRequest). Unlike every other message this
+    // handler forwards, this one does NOT originate from a TCP-received client
+    // message — the gateway synthesizes it — so it is stamped with the reserved
+    // RESEND_CHUNK_COMPID sender (rather than the "CLIENT" literal) so
+    // FixConnection can identify it when it round-trips on the global stream.
+    // Both seqNum (tag 34) and newSeqNo (tag 36) are the block-end+1 value: the
+    // reset sits at the outbound sequence position immediately after the last
+    // message of the just-replayed block (blockEndPlusOne == chunkEnd, the
+    // exclusive end of [chunkBegin, chunkEnd)).
+    void sendResendChunkReset(const std::uint32_t blockEndPlusOne, const std::int64_t sendingTimeMs)
+    {
+        if (!m_ingress)
+        {
+            return;
+        }
+        m_sequenceReset.wrapAndApplyHeader(buffer(), 0, bufferLength());
+        m_sequenceReset.header().sourceId(m_ingress->sourceId()).connectionId(m_connectionId).sessionId(m_ingress->clusterSessionId());
+        m_sequenceReset.putSender(RESEND_CHUNK_COMPID).putTarget(static_cast<const char*>("SEQNCR  "))
+         .seqNum(blockEndPlusOne).sendingTimeMs(sendingTimeMs)
+         .gapFillFlag(usq::GapFillFlag::Value::GapFillMessage)
+         .newSeqNo(blockEndPlusOne);
+        sendUnsequenced(m_sequenceReset);
     }
 
     fix::Result handle(const msg::NewOrderSingleDecoder& newOrderSingle)
