@@ -150,11 +150,6 @@ for the larger target system this project implements a slice of (full buy-side/s
 with a separate Application Engine, Risk Thread, and Egress process). They describe an aspirational
 superset, not this repo's current state — cross-check against the source before trusting specifics.
 
-## Code style
-
-- **Mandatory bracing**: all C++ and Java `if`/`else`/`for`/`while`/`do` bodies must use braces,
-  even single-statement ones. Never `if (cond) stmt;` — always `if (cond) { stmt; }`.
-- **C++ namespace aliases**: SBE schema namespaces are aliased to short names —
-  `usq` = `org::limitless::phixeron::sbe::unsequenced`, `seq` = `org::limitless::phixeron::sbe::sequenced`.
-  Where a file also needs the `org::limitless::phixeron::sequencer` component namespace alongside
-  `sbe::sequenced`, that one is aliased `sequencer` (not `seq`) to avoid colliding with the SBE alias.
+## Code Formatting Mandate
+- Explicitly respect all style, brace, and indentation configurations found in the local `.clang-format` file.
+- Before completing an edit or creating a file, ensure it complies with our Clang-Format criteria.

@@ -43,17 +43,15 @@
 #include "FragmentAssembler.h"
 #include "concurrent/AtomicBuffer.h"
 #include "concurrent/YieldingIdleStrategy.h"
-
 #include "org_limitless_phixeron_cluster_sbe/MessageHeader.h"
-#include "org_limitless_phixeron_cluster_sbe/SessionConnectRequest.h"
+#include "org_limitless_phixeron_cluster_sbe/NewLeaderEvent.h"
 #include "org_limitless_phixeron_cluster_sbe/SessionCloseRequest.h"
+#include "org_limitless_phixeron_cluster_sbe/SessionConnectRequest.h"
 #include "org_limitless_phixeron_cluster_sbe/SessionEvent.h"
 #include "org_limitless_phixeron_cluster_sbe/SessionKeepAlive.h"
 #include "org_limitless_phixeron_cluster_sbe/SessionMessageHeader.h"
-#include "org_limitless_phixeron_cluster_sbe/NewLeaderEvent.h"
 
-namespace org::limitless::phixeron::sequencer
-{
+namespace org::limitless::phixeron::sequencer {
 
 namespace cluster_sbe = org::limitless::phixeron::cluster::sbe;
 
@@ -63,28 +61,28 @@ namespace cluster_sbe = org::limitless::phixeron::cluster::sbe;
 // CLUSTER_INGRESS_CHANNEL must stay "aeron:udp?endpoint=" + CLUSTER_INGRESS_ENDPOINT — the
 // endpoint alone is also this client's initial value for the reconnect-on-failover tracking
 // in ClusterIngressSender (m_ingressEndpoint).
-inline constexpr const char*    CLUSTER_INGRESS_ENDPOINT   = "localhost:9302";
-inline constexpr const char*    CLUSTER_INGRESS_CHANNEL    = "aeron:udp?endpoint=localhost:9302";
-inline constexpr const char*    CLUSTER_EGRESS_CHANNEL     = "aeron:udp?endpoint=localhost:9320";
+inline constexpr const char* CLUSTER_INGRESS_ENDPOINT = "localhost:9302";
+inline constexpr const char* CLUSTER_INGRESS_CHANNEL = "aeron:udp?endpoint=localhost:9302";
+inline constexpr const char* CLUSTER_EGRESS_CHANNEL = "aeron:udp?endpoint=localhost:9320";
 // Distinct egress port for a co-located client (see connectColocated): it attaches to its own
 // SequencerNode member's embedded media driver rather than the shared standalone aeronmd that
 // FixSessionClient/fix_test_server use, so it needs its own port here too — two independent
 // media driver processes can't both bind the same UDP port on localhost.
-inline constexpr const char*    CLUSTER_EGRESS_CHANNEL_COLOCATED = "aeron:udp?endpoint=localhost:9330";
+inline constexpr const char* CLUSTER_EGRESS_CHANNEL_COLOCATED = "aeron:udp?endpoint=localhost:9330";
 // Ingress channel for a client co-located with (sharing the Aeron directory of) a cluster
 // member — only reachable while that member is the current leader, see
 // ClusterIngressSender::connectColocated.
-inline constexpr const char*    CLUSTER_INGRESS_CHANNEL_IPC = "aeron:ipc";
-inline constexpr std::int32_t   CLUSTER_INGRESS_STREAM_ID  = 101;
-inline constexpr std::int32_t   CLUSTER_EGRESS_STREAM_ID   = 102;
-inline constexpr std::int32_t   CLUSTER_PROTOCOL_VERSION   = (0 << 16) | (3 << 8) | 0; // 0.3.0
-inline constexpr const char*    CLUSTER_CLIENT_INFO        = "FixSessionClient";
-inline constexpr std::int64_t   CLUSTER_CONNECT_TIMEOUT_MS = 10'000;
+inline constexpr const char* CLUSTER_INGRESS_CHANNEL_IPC = "aeron:ipc";
+inline constexpr std::int32_t CLUSTER_INGRESS_STREAM_ID = 101;
+inline constexpr std::int32_t CLUSTER_EGRESS_STREAM_ID = 102;
+inline constexpr std::int32_t CLUSTER_PROTOCOL_VERSION = (0 << 16) | (3 << 8) | 0;  // 0.3.0
+inline constexpr const char* CLUSTER_CLIENT_INFO = "FixSessionClient";
+inline constexpr std::int64_t CLUSTER_CONNECT_TIMEOUT_MS = 10'000;
 
 inline std::int64_t nowMs()
 {
-    return std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::system_clock::now().time_since_epoch()).count();
+    return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
+        .count();
 }
 
 // Finds `memberId`'s endpoint in a "memberId=host:port,memberId=host:port,..." CSV, the wire
@@ -93,23 +91,29 @@ inline std::int64_t nowMs()
 inline bool findIngressEndpoint(std::string_view endpoints, std::int32_t memberId, std::string& out)
 {
     std::size_t start = 0;
-    while (start <= endpoints.size()) {
+    while (start <= endpoints.size())
+    {
         const std::size_t comma = endpoints.find(',', start);
-        const std::string_view entry = endpoints.substr(
-            start, comma == std::string_view::npos ? std::string_view::npos : comma - start);
+        const std::string_view entry =
+            endpoints.substr(start, comma == std::string_view::npos ? std::string_view::npos : comma - start);
 
         const std::size_t eq = entry.find('=');
-        if (eq != std::string_view::npos) {
+        if (eq != std::string_view::npos)
+        {
             std::int32_t parsedId = -1;
             const std::string_view idPart = entry.substr(0, eq);
             const auto res = std::from_chars(idPart.data(), idPart.data() + idPart.size(), parsedId);
-            if (res.ec == std::errc() && parsedId == memberId) {
+            if (res.ec == std::errc() && parsedId == memberId)
+            {
                 out.assign(entry.substr(eq + 1));
                 return true;
             }
         }
 
-        if (comma == std::string_view::npos) { break; }
+        if (comma == std::string_view::npos)
+        {
+            break;
+        }
         start = comma + 1;
     }
     return false;
@@ -120,9 +124,8 @@ inline bool findIngressEndpoint(std::string_view endpoints, std::int32_t memberI
 // Outbound half: offers raw bytes to the cluster ingress. Implementations
 // retry/back-pressure as they see fit; ClusterIngressSender treats a `false`
 // return as "not yet accepted" and spins.
-class IngressTransport
-{
-public:
+class IngressTransport {
+   public:
     virtual ~IngressTransport() = default;
     virtual bool offer(std::span<const std::uint8_t> bytes) = 0;
 };
@@ -130,9 +133,8 @@ public:
 // Inbound half: polls for whole (already reassembled) messages from the
 // cluster egress, invoking the handler once per message. Returns the number
 // of fragments processed (0 means nothing was available).
-class EgressTransport
-{
-public:
+class EgressTransport {
+   public:
     using FragmentHandler = std::function<void(std::span<const std::uint8_t>)>;
 
     virtual ~EgressTransport() = default;
@@ -141,26 +143,26 @@ public:
 
 // ── Real Aeron-backed transports ──────────────────────────────────────────────
 
-class AeronIngressTransport : public IngressTransport
-{
-public:
-    explicit AeronIngressTransport(std::shared_ptr<aeron::Publication> pub) : m_pub(std::move(pub)) {}
+class AeronIngressTransport : public IngressTransport {
+   public:
+    explicit AeronIngressTransport(std::shared_ptr<aeron::Publication> pub) : m_pub(std::move(pub))
+    {}
 
     bool offer(std::span<const std::uint8_t> bytes) override
     {
         aeron::concurrent::AtomicBuffer ab(const_cast<std::uint8_t*>(bytes.data()),
-                                            static_cast<aeron::util::index_t>(bytes.size()));
+                                           static_cast<aeron::util::index_t>(bytes.size()));
         return m_pub->offer(ab, 0, static_cast<aeron::util::index_t>(bytes.size())) >= 0;
     }
 
-private:
+   private:
     std::shared_ptr<aeron::Publication> m_pub;
 };
 
-class AeronEgressTransport : public EgressTransport
-{
-public:
-    explicit AeronEgressTransport(std::shared_ptr<aeron::Subscription> sub) : m_sub(std::move(sub)) {}
+class AeronEgressTransport : public EgressTransport {
+   public:
+    explicit AeronEgressTransport(std::shared_ptr<aeron::Subscription> sub) : m_sub(std::move(sub))
+    {}
 
     int poll(const FragmentHandler& handler) override
     {
@@ -170,22 +172,19 @@ public:
         return n;
     }
 
-private:
+   private:
     std::shared_ptr<aeron::Subscription> m_sub;
 
     // Per-call callback set in poll(); null outside of that call.
     const FragmentHandler* m_handler{nullptr};
 
     // Persistent across poll() calls so multi-fragment messages reassemble correctly.
-    aeron::FragmentAssembler m_fa{
-        [this](aeron::concurrent::AtomicBuffer& buf, aeron::util::index_t off,
-               aeron::util::index_t len, aeron::Header&)
-        {
-            if (m_handler)
-                (*m_handler)(std::span<const std::uint8_t>(
-                    reinterpret_cast<const std::uint8_t*>(buf.buffer()) + off,
-                    static_cast<std::size_t>(len)));
-        }};
+    aeron::FragmentAssembler m_fa{[this](aeron::concurrent::AtomicBuffer& buf, aeron::util::index_t off,
+                                         aeron::util::index_t len, aeron::Header&) {
+        if (m_handler)
+            (*m_handler)(std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t*>(buf.buffer()) + off,
+                                                       static_cast<std::size_t>(len)));
+    }};
 };
 
 // ── ClusterIngressSender ──────────────────────────────────────────────────────
@@ -197,9 +196,8 @@ private:
 // no connection id of its own — the caller bakes it into the message before
 // calling send(). sourceId (this process's fixed identity) is held here
 // instead, since it's the same for every message this sender ever submits.
-class ClusterIngressSender
-{
-public:
+class ClusterIngressSender {
+   public:
     // Real entry point: acquires the ingress publication + egress subscription
     // from Aeron (inherently async — driver IPC via addPublication/addSubscription
     // and find*), then hands off to the transport-agnostic handshake below.
@@ -255,17 +253,23 @@ public:
         {
             // Building the IPC publication itself timed out (createIpcIngressPublication's own
             // deadline) — treat exactly like a failed handshake attempt below.
-            connectColocated(nullptr, [this] {
-                m_ingressEndpoint = CLUSTER_INGRESS_ENDPOINT;
-                return std::make_unique<AeronIngressTransport>(createIngressPublication(m_ingressEndpoint));
-            }, std::make_unique<AeronEgressTransport>(egressSub), ipcConnectTimeoutMs, ex.what());
+            connectColocated(
+                nullptr,
+                [this] {
+                    m_ingressEndpoint = CLUSTER_INGRESS_ENDPOINT;
+                    return std::make_unique<AeronIngressTransport>(createIngressPublication(m_ingressEndpoint));
+                },
+                std::make_unique<AeronEgressTransport>(egressSub), ipcConnectTimeoutMs, ex.what());
             return;
         }
 
-        connectColocated(std::move(primary), [this] {
-            m_ingressEndpoint = CLUSTER_INGRESS_ENDPOINT;
-            return std::make_unique<AeronIngressTransport>(createIngressPublication(m_ingressEndpoint));
-        }, std::make_unique<AeronEgressTransport>(egressSub), ipcConnectTimeoutMs, nullptr);
+        connectColocated(
+            std::move(primary),
+            [this] {
+                m_ingressEndpoint = CLUSTER_INGRESS_ENDPOINT;
+                return std::make_unique<AeronIngressTransport>(createIngressPublication(m_ingressEndpoint));
+            },
+            std::make_unique<AeronEgressTransport>(egressSub), ipcConnectTimeoutMs, nullptr);
     }
 
     // Test seam for connectColocated: exercises the same "try the primary ingress transport
@@ -275,14 +279,13 @@ public:
     // itself throwing before a transport ever exists). `buildFallbackIngress` is only invoked
     // if the primary attempt fails; `egress` is shared by both attempts (reused via
     // ClusterIngressSender::connect's `m_egress` after a failed first attempt).
-    void connectColocated(std::unique_ptr<IngressTransport>                    primaryIngress,
-                           std::function<std::unique_ptr<IngressTransport>()> buildFallbackIngress,
-                           std::unique_ptr<EgressTransport>                    egress,
-                           std::int64_t                                        primaryConnectTimeoutMs,
-                           const char*                                         primaryFailureReason)
+    void connectColocated(std::unique_ptr<IngressTransport> primaryIngress,
+                          std::function<std::unique_ptr<IngressTransport>()> buildFallbackIngress,
+                          std::unique_ptr<EgressTransport> egress, std::int64_t primaryConnectTimeoutMs,
+                          const char* primaryFailureReason)
     {
         const std::int64_t fullTimeoutMs = m_connectTimeoutMs;
-        std::string        reasonStorage; // outlives the catch block, unlike ex.what()'s pointer
+        std::string reasonStorage;  // outlives the catch block, unlike ex.what()'s pointer
 
         if (primaryIngress)
         {
@@ -297,7 +300,7 @@ public:
             {
                 reasonStorage = ex.what();
                 primaryFailureReason = reasonStorage.c_str();
-                egress = std::move(m_egress); // connect() already stashed it in m_egress before failing
+                egress = std::move(m_egress);  // connect() already stashed it in m_egress before failing
             }
         }
 
@@ -316,40 +319,43 @@ public:
     void connect(std::unique_ptr<IngressTransport> ingress, std::unique_ptr<EgressTransport> egress)
     {
         m_ingress = std::move(ingress);
-        m_egress  = std::move(egress);
+        m_egress = std::move(egress);
 
         sendConnectRequest();
 
-        const auto deadline = std::chrono::steady_clock::now()
-                             + std::chrono::milliseconds(m_connectTimeoutMs);
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(m_connectTimeoutMs);
 
-        auto onEgress = [this](std::span<const std::uint8_t> bytes)
-        {
-            if (bytes.size() < cluster_sbe::MessageHeader::encodedLength()) return;
+        auto onEgress = [this](std::span<const std::uint8_t> bytes) {
+            if (bytes.size() < cluster_sbe::MessageHeader::encodedLength())
+                return;
             cluster_sbe::MessageHeader hdr;
-            hdr.wrap(reinterpret_cast<char*>(const_cast<std::uint8_t*>(bytes.data())),
-                     0, 0, bytes.size());
-            if (hdr.templateId() != cluster_sbe::SessionEvent::sbeTemplateId()) return;
+            hdr.wrap(reinterpret_cast<char*>(const_cast<std::uint8_t*>(bytes.data())), 0, 0, bytes.size());
+            if (hdr.templateId() != cluster_sbe::SessionEvent::sbeTemplateId())
+                return;
 
             cluster_sbe::SessionEvent evt;
             evt.wrapForDecode(reinterpret_cast<char*>(const_cast<std::uint8_t*>(bytes.data())),
-                               cluster_sbe::MessageHeader::encodedLength(),
-                               hdr.blockLength(), hdr.version(), bytes.size());
-            if (evt.code() == cluster_sbe::EventCode::Value::OK) {
+                              cluster_sbe::MessageHeader::encodedLength(), hdr.blockLength(), hdr.version(),
+                              bytes.size());
+            if (evt.code() == cluster_sbe::EventCode::Value::OK)
+            {
                 m_clusterSessionId = evt.clusterSessionId();
                 m_leadershipTermId = evt.leadershipTermId();
-                std::printf("[Cluster] Session opened  sessionId=%" PRId64
-                            "  termId=%" PRId64 "  leader=%d\n",
+                std::printf("[Cluster] Session opened  sessionId=%" PRId64 "  termId=%" PRId64 "  leader=%d\n",
                             m_clusterSessionId, m_leadershipTermId, evt.leaderMemberId());
-            } else if (evt.code() == cluster_sbe::EventCode::Value::REDIRECT) {
+            }
+            else if (evt.code() == cluster_sbe::EventCode::Value::REDIRECT)
+            {
                 handleRedirect(evt);
-            } else {
-                std::fprintf(stderr, "[Cluster] SessionEvent error code=%d\n",
-                             static_cast<int>(evt.code()));
+            }
+            else
+            {
+                std::fprintf(stderr, "[Cluster] SessionEvent error code=%d\n", static_cast<int>(evt.code()));
             }
         };
 
-        while (m_clusterSessionId < 0 && std::chrono::steady_clock::now() < deadline) {
+        while (m_clusterSessionId < 0 && std::chrono::steady_clock::now() < deadline)
+        {
             m_idleStrategy.idle(m_egress->poll(onEgress));
         }
 
@@ -359,31 +365,46 @@ public:
 
     // Overrides the connect handshake timeout (default 10s). Exposed so tests
     // exercising the "cluster never answers" path don't have to wait 10s.
-    void setConnectTimeoutMs(std::int64_t ms) { m_connectTimeoutMs = ms; }
+    void setConnectTimeoutMs(std::int64_t ms)
+    {
+        m_connectTimeoutMs = ms;
+    }
 
-    bool isConnected() const { return m_clusterSessionId >= 0; }
+    bool isConnected() const
+    {
+        return m_clusterSessionId >= 0;
+    }
 
     // Aeron Cluster client session id of this connection, or -1 if not yet
     // connected. Callers embed this into a message's header.sessionId field
     // before encoding it for send().
-    std::int64_t clusterSessionId() const { return m_clusterSessionId; }
+    std::int64_t clusterSessionId() const
+    {
+        return m_clusterSessionId;
+    }
 
     // Send a keep-alive to the cluster ingress if the interval has elapsed.
     // Must be called regularly (e.g. every duty-cycle iteration) to prevent session timeout.
     void keepAlive()
     {
-        if (!m_ingress || m_clusterSessionId < 0) { return; }
+        if (!m_ingress || m_clusterSessionId < 0)
+        {
+            return;
+        }
         const std::int64_t now = nowMs();
-        if (now - m_lastKeepAliveMs < KEEP_ALIVE_INTERVAL_MS) { return; }
+        if (now - m_lastKeepAliveMs < KEEP_ALIVE_INTERVAL_MS)
+        {
+            return;
+        }
         m_lastKeepAliveMs = now;
 
         alignas(16) std::array<std::uint8_t, 64> kaBuf{};
         cluster_sbe::SessionKeepAlive ka;
         ka.wrapAndApplyHeader(reinterpret_cast<char*>(kaBuf.data()), 0, kaBuf.size())
-          .leadershipTermId(m_leadershipTermId)
-          .clusterSessionId(m_clusterSessionId);
-        if (!m_ingress->offer(std::span<const std::uint8_t>(
-                kaBuf.data(), static_cast<std::size_t>(ka.sbePosition())))) {
+            .leadershipTermId(m_leadershipTermId)
+            .clusterSessionId(m_clusterSessionId);
+        if (!m_ingress->offer(std::span<const std::uint8_t>(kaBuf.data(), static_cast<std::size_t>(ka.sbePosition()))))
+        {
             std::fprintf(stderr, "[Cluster] keep-alive offer failed\n");
         }
     }
@@ -392,15 +413,18 @@ public:
     // the cluster also expires unresponsive sessions via keep-alive timeout.
     void close()
     {
-        if (!m_ingress || m_clusterSessionId < 0) { return; }
+        if (!m_ingress || m_clusterSessionId < 0)
+        {
+            return;
+        }
 
         alignas(16) std::array<std::uint8_t, 64> buf{};
         cluster_sbe::SessionCloseRequest req;
         req.wrapAndApplyHeader(reinterpret_cast<char*>(buf.data()), 0, buf.size())
-           .leadershipTermId(m_leadershipTermId)
-           .clusterSessionId(m_clusterSessionId);
-        if (!m_ingress->offer(std::span<const std::uint8_t>(
-                buf.data(), static_cast<std::size_t>(req.sbePosition())))) {
+            .leadershipTermId(m_leadershipTermId)
+            .clusterSessionId(m_clusterSessionId);
+        if (!m_ingress->offer(std::span<const std::uint8_t>(buf.data(), static_cast<std::size_t>(req.sbePosition()))))
+        {
             std::fprintf(stderr, "[Cluster] close offer failed\n");
         }
 
@@ -410,41 +434,47 @@ public:
     // Drain cluster egress; calls onAppMessage for each application-layer response.
     void pollEgress(const std::function<void(const std::uint8_t*, std::int32_t)>& onAppMessage)
     {
-        if (!m_egress) { return; }
-        m_egress->poll([this, &onAppMessage](std::span<const std::uint8_t> bytes)
+        if (!m_egress)
         {
-            onFragment(bytes, onAppMessage);
-        });
+            return;
+        }
+        m_egress->poll([this, &onAppMessage](std::span<const std::uint8_t> bytes) { onFragment(bytes, onAppMessage); });
     }
 
     // Wraps a pre-encoded sbe-unsequenced.xml message in a SessionMessageHeader
     // (the Aeron Cluster ingress envelope) and offers it to the cluster.
     void send(const std::uint8_t* bytes, std::uint16_t len)
     {
-        if (!m_ingress || m_clusterSessionId < 0 || len == 0) { return; }
+        if (!m_ingress || m_clusterSessionId < 0 || len == 0)
+        {
+            return;
+        }
 
         alignas(16) std::array<std::uint8_t, 4096 + 42> buf{};
         cluster_sbe::SessionMessageHeader hdr;
         hdr.wrapAndApplyHeader(reinterpret_cast<char*>(buf.data()), 0, buf.size())
-           .leadershipTermId(m_leadershipTermId)
-           .clusterSessionId(m_clusterSessionId)
-           .timestamp(nowMs());
+            .leadershipTermId(m_leadershipTermId)
+            .clusterSessionId(m_clusterSessionId)
+            .timestamp(nowMs());
         const std::int32_t hdrLen = static_cast<std::int32_t>(hdr.sbePosition());
         std::memcpy(buf.data() + hdrLen, bytes, len);
 
-        if (!m_ingress->offer(std::span<const std::uint8_t>(
-                buf.data(), static_cast<std::size_t>(hdrLen) + len))) {
+        if (!m_ingress->offer(std::span<const std::uint8_t>(buf.data(), static_cast<std::size_t>(hdrLen) + len)))
+        {
             std::fprintf(stderr, "[Cluster] ingress offer failed\n");
         }
     }
 
-private:
+   private:
     static constexpr std::int64_t KEEP_ALIVE_INTERVAL_MS = 1000;
 
     void onFragment(std::span<const std::uint8_t> bytes,
-                     const std::function<void(const std::uint8_t*, std::int32_t)>& onAppMessage)
+                    const std::function<void(const std::uint8_t*, std::int32_t)>& onAppMessage)
     {
-        if (bytes.size() < cluster_sbe::MessageHeader::encodedLength()) { return; }
+        if (bytes.size() < cluster_sbe::MessageHeader::encodedLength())
+        {
+            return;
+        }
         cluster_sbe::MessageHeader hdr;
         hdr.wrap(reinterpret_cast<char*>(const_cast<std::uint8_t*>(bytes.data())), 0, 0, bytes.size());
 
@@ -452,29 +482,38 @@ private:
         {
             cluster_sbe::NewLeaderEvent evt;
             evt.wrapForDecode(reinterpret_cast<char*>(const_cast<std::uint8_t*>(bytes.data())),
-                               cluster_sbe::MessageHeader::encodedLength(),
-                               hdr.blockLength(), hdr.version(), bytes.size());
+                              cluster_sbe::MessageHeader::encodedLength(), hdr.blockLength(), hdr.version(),
+                              bytes.size());
             m_leadershipTermId = evt.leadershipTermId();
             const std::int32_t leaderMemberId = evt.leaderMemberId();
             const std::string ingressEndpoints = evt.getIngressEndpointsAsString();
 
             std::string endpoint;
-            if (m_aeron && findIngressEndpoint(ingressEndpoints, leaderMemberId, endpoint)
-                        && endpoint != m_ingressEndpoint) {
-                std::printf("[Cluster] New leader  termId=%" PRId64 "  member=%d  endpoint=%s\n",
-                            m_leadershipTermId, leaderMemberId, endpoint.c_str());
+            if (m_aeron && findIngressEndpoint(ingressEndpoints, leaderMemberId, endpoint) &&
+                endpoint != m_ingressEndpoint)
+            {
+                std::printf("[Cluster] New leader  termId=%" PRId64 "  member=%d  endpoint=%s\n", m_leadershipTermId,
+                            leaderMemberId, endpoint.c_str());
                 m_ingress = std::make_unique<AeronIngressTransport>(createIngressPublication(endpoint));
                 m_ingressEndpoint = endpoint;
-            } else {
+            }
+            else
+            {
                 std::printf("[Cluster] New leader  termId=%" PRId64 "\n", m_leadershipTermId);
             }
             return;
         }
-        if (hdr.templateId() != cluster_sbe::SessionMessageHeader::sbeTemplateId()) { return; }
+        if (hdr.templateId() != cluster_sbe::SessionMessageHeader::sbeTemplateId())
+        {
+            return;
+        }
 
-        const std::size_t appOff = cluster_sbe::MessageHeader::encodedLength()
-                                  + static_cast<std::size_t>(hdr.blockLength());
-        if (bytes.size() <= appOff) { return; }
+        const std::size_t appOff =
+            cluster_sbe::MessageHeader::encodedLength() + static_cast<std::size_t>(hdr.blockLength());
+        if (bytes.size() <= appOff)
+        {
+            return;
+        }
         onAppMessage(bytes.data() + appOff, static_cast<std::int32_t>(bytes.size() - appOff));
     }
 
@@ -486,15 +525,13 @@ private:
         alignas(16) std::array<std::uint8_t, 512> connBuf{};
         cluster_sbe::SessionConnectRequest req;
         req.wrapAndApplyHeader(reinterpret_cast<char*>(connBuf.data()), 0, connBuf.size());
-        req.correlationId(m_correlationId)
-           .responseStreamId(CLUSTER_EGRESS_STREAM_ID)
-           .version(CLUSTER_PROTOCOL_VERSION);
+        req.correlationId(m_correlationId).responseStreamId(CLUSTER_EGRESS_STREAM_ID).version(CLUSTER_PROTOCOL_VERSION);
         req.putResponseChannel(std::string_view(m_egressChannel));
         req.putEncodedCredentials(nullptr, 0);
         req.putClientInfo(std::string_view(CLUSTER_CLIENT_INFO));
 
-        while (!m_ingress->offer(std::span<const std::uint8_t>(
-                   connBuf.data(), static_cast<std::size_t>(req.sbePosition()))))
+        while (!m_ingress->offer(
+            std::span<const std::uint8_t>(connBuf.data(), static_cast<std::size_t>(req.sbePosition()))))
             m_idleStrategy.idle();
     }
 
@@ -504,18 +541,19 @@ private:
     void handleRedirect(cluster_sbe::SessionEvent& evt)
     {
         const std::int32_t leaderMemberId = evt.leaderMemberId();
-        const std::string  detail         = evt.getDetailAsString();
+        const std::string detail = evt.getDetailAsString();
 
         std::string endpoint;
-        if (!m_aeron || !findIngressEndpoint(detail, leaderMemberId, endpoint)
-                     || endpoint == m_ingressEndpoint) {
-            std::fprintf(stderr, "[Cluster] Redirected to member=%d but could not resolve a new "
-                         "ingress endpoint from \"%s\"\n", leaderMemberId, detail.c_str());
+        if (!m_aeron || !findIngressEndpoint(detail, leaderMemberId, endpoint) || endpoint == m_ingressEndpoint)
+        {
+            std::fprintf(stderr,
+                         "[Cluster] Redirected to member=%d but could not resolve a new "
+                         "ingress endpoint from \"%s\"\n",
+                         leaderMemberId, detail.c_str());
             return;
         }
 
-        std::printf("[Cluster] Redirected to leader  member=%d  endpoint=%s\n",
-                    leaderMemberId, endpoint.c_str());
+        std::printf("[Cluster] Redirected to leader  member=%d  endpoint=%s\n", leaderMemberId, endpoint.c_str());
         m_ingress = std::make_unique<AeronIngressTransport>(createIngressPublication(endpoint));
         m_ingressEndpoint = endpoint;
         sendConnectRequest();
@@ -527,19 +565,22 @@ private:
     std::shared_ptr<aeron::Publication> createIngressPublication(const std::string& endpoint)
     {
         const std::string channel = "aeron:udp?endpoint=" + endpoint;
-        const auto deadline = std::chrono::steady_clock::now()
-                             + std::chrono::milliseconds(m_connectTimeoutMs);
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(m_connectTimeoutMs);
 
         const auto pubId = m_aeron->addPublication(channel, CLUSTER_INGRESS_STREAM_ID);
         std::shared_ptr<aeron::Publication> pub;
-        while (!(pub = m_aeron->findPublication(pubId))) {
+        while (!(pub = m_aeron->findPublication(pubId)))
+        {
             if (std::chrono::steady_clock::now() >= deadline)
-                throw std::runtime_error("[ClusterIngressSender] Timed out creating ingress publication to " + endpoint);
+                throw std::runtime_error("[ClusterIngressSender] Timed out creating ingress publication to " +
+                                         endpoint);
             m_idleStrategy.idle();
         }
-        while (!pub->isConnected()) {
+        while (!pub->isConnected())
+        {
             if (std::chrono::steady_clock::now() >= deadline)
-                throw std::runtime_error("[ClusterIngressSender] Timed out connecting ingress publication to " + endpoint);
+                throw std::runtime_error("[ClusterIngressSender] Timed out connecting ingress publication to " +
+                                         endpoint);
             m_idleStrategy.idle();
         }
         return pub;
@@ -552,17 +593,18 @@ private:
     // same as the UDP case, and connectColocated relies on it to trigger the UDP fallback.
     std::shared_ptr<aeron::Publication> createIpcIngressPublication()
     {
-        const auto deadline = std::chrono::steady_clock::now()
-                             + std::chrono::milliseconds(m_connectTimeoutMs);
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(m_connectTimeoutMs);
 
         const auto pubId = m_aeron->addPublication(CLUSTER_INGRESS_CHANNEL_IPC, CLUSTER_INGRESS_STREAM_ID);
         std::shared_ptr<aeron::Publication> pub;
-        while (!(pub = m_aeron->findPublication(pubId))) {
+        while (!(pub = m_aeron->findPublication(pubId)))
+        {
             if (std::chrono::steady_clock::now() >= deadline)
                 throw std::runtime_error("[ClusterIngressSender] Timed out creating IPC ingress publication");
             m_idleStrategy.idle();
         }
-        while (!pub->isConnected()) {
+        while (!pub->isConnected())
+        {
             if (std::chrono::steady_clock::now() >= deadline)
                 throw std::runtime_error("[ClusterIngressSender] Timed out connecting IPC ingress publication");
             m_idleStrategy.idle();
@@ -570,31 +612,37 @@ private:
         return pub;
     }
 
-    std::shared_ptr<aeron::Aeron>     m_aeron;
-    std::string                       m_ingressEndpoint;
+    std::shared_ptr<aeron::Aeron> m_aeron;
+    std::string m_ingressEndpoint;
     // Response channel sendConnectRequest() advertises to the cluster; CLUSTER_EGRESS_CHANNEL
     // for connect(aeron), CLUSTER_EGRESS_CHANNEL_COLOCATED for connectColocated(aeron, ...).
-    std::string                       m_egressChannel = CLUSTER_EGRESS_CHANNEL;
+    std::string m_egressChannel = CLUSTER_EGRESS_CHANNEL;
     std::unique_ptr<IngressTransport> m_ingress;
-    std::unique_ptr<EgressTransport>  m_egress;
+    std::unique_ptr<EgressTransport> m_egress;
     aeron::concurrent::YieldingIdleStrategy m_idleStrategy;
 
-    std::int64_t  m_clusterSessionId  = -1;
-    std::int64_t  m_leadershipTermId  = -1;
-    std::int64_t  m_lastKeepAliveMs   = 0;
-    std::int64_t  m_connectTimeoutMs  = CLUSTER_CONNECT_TIMEOUT_MS;
+    std::int64_t m_clusterSessionId = -1;
+    std::int64_t m_leadershipTermId = -1;
+    std::int64_t m_lastKeepAliveMs = 0;
+    std::int64_t m_connectTimeoutMs = CLUSTER_CONNECT_TIMEOUT_MS;
     const std::int64_t m_correlationId = 1;
-    std::int32_t  m_sourceId          = 0;
+    std::int32_t m_sourceId = 0;
 
-public:
+   public:
     // Fixed constant identifying this gateway *process* to the cluster (header.sourceId),
     // as opposed to header.connectionId which identifies one TCP connection within it.
     // Set once at startup (see PHIXERON_*_SOURCE_ID env vars in each binary's main()) so
     // it stays stable across restarts and unique across every gateway instance sharing
     // this cluster — unlike a per-connection counter, which starts back at 1 on every
     // process and would otherwise collide with another gateway's connection ids.
-    void setSourceId(std::int32_t sourceId) { m_sourceId = sourceId; }
-    std::int32_t sourceId() const { return m_sourceId; }
+    void setSourceId(std::int32_t sourceId)
+    {
+        m_sourceId = sourceId;
+    }
+    std::int32_t sourceId() const
+    {
+        return m_sourceId;
+    }
 };
 
-} // namespace org::limitless::phixeron::sequencer
+}  // namespace org::limitless::phixeron::sequencer

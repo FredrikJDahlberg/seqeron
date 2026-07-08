@@ -12,6 +12,10 @@
 // same in-memory IngressTransport/EgressTransport fakes as
 // ClusterIngressSenderTest.cpp (see ClusterIngressHandlerTest.cpp).
 
+#include <errno.h>
+#include <sys/socket.h>
+#include <unistd.h>
+
 #include <array>
 #include <chrono>
 #include <cstdint>
@@ -20,31 +24,24 @@
 #include <span>
 #include <string_view>
 
-#include <errno.h>
-#include <sys/socket.h>
-#include <unistd.h>
-
-#include "org/limitless/simdifx/generated/messages/FixMessageHandler.hpp"
-#include "org/limitless/simdifx/generated/messages/FixMessageDecoders.hpp"
-#include "org/limitless/simdifx/generated/config/FixEngine.hpp"
-
+#include "org/limitless/phixeron/fix/Conversions.hpp"
 #include "org/limitless/phixeron/fix/ServerSession.hpp"
 #include "org/limitless/phixeron/sequencer/ClusterIngressSender.hpp"
-#include "org/limitless/phixeron/fix/Conversions.hpp"
-
-#include "org_limitless_phixeron_sbe_unsequenced/MessageHeader.h"
+#include "org/limitless/simdifx/generated/config/FixEngine.hpp"
+#include "org/limitless/simdifx/generated/messages/FixMessageDecoders.hpp"
+#include "org/limitless/simdifx/generated/messages/FixMessageHandler.hpp"
+#include "org_limitless_phixeron_sbe_unsequenced/ExecutionReport.h"
 #include "org_limitless_phixeron_sbe_unsequenced/Header.h"
+#include "org_limitless_phixeron_sbe_unsequenced/Heartbeat.h"
 #include "org_limitless_phixeron_sbe_unsequenced/Logon.h"
 #include "org_limitless_phixeron_sbe_unsequenced/Logout.h"
-#include "org_limitless_phixeron_sbe_unsequenced/Heartbeat.h"
-#include "org_limitless_phixeron_sbe_unsequenced/TestRequest.h"
+#include "org_limitless_phixeron_sbe_unsequenced/MessageHeader.h"
+#include "org_limitless_phixeron_sbe_unsequenced/NewOrderSingle.h"
 #include "org_limitless_phixeron_sbe_unsequenced/ResendRequest.h"
 #include "org_limitless_phixeron_sbe_unsequenced/SequenceReset.h"
-#include "org_limitless_phixeron_sbe_unsequenced/ExecutionReport.h"
-#include "org_limitless_phixeron_sbe_unsequenced/NewOrderSingle.h"
+#include "org_limitless_phixeron_sbe_unsequenced/TestRequest.h"
 
-namespace org::limitless::phixeron::sequencer
-{
+namespace org::limitless::phixeron::sequencer {
 
 namespace fix = limitless::simdifx;
 namespace sess = phixeron::fix;
@@ -52,9 +49,9 @@ namespace msg = fix::generated::messages;
 namespace cfg = fix::generated::config;
 namespace usq = sbe::unsequenced;
 
-using sess::toSbeSide;
-using sess::toSbeOrdType;
 using sess::toSbeHandlInst;
+using sess::toSbeOrdType;
+using sess::toSbeSide;
 using sess::toSbeTimeInForce;
 
 // ── send FIX message ────────────────────────────────────────────────────────────
@@ -87,8 +84,7 @@ inline void sendMessage(const int fd, const std::uint8_t* data, std::size_t leng
 
 // ── CapturingTransport ────────────────────────────────────────────────────────
 
-struct CapturingTransport
-{
+struct CapturingTransport {
     int fd{-1};
 
     void operator()(std::span<const std::uint8_t> bytes) const
@@ -112,11 +108,10 @@ inline constexpr std::string_view RESEND_CHUNK_COMPID = "RSNDCHNK";
 
 // Receives decoded FIX messages on the TCP receive path and forwards them to the cluster WITHOUT updating
 // any session state.
-class ClusterIngressHandler : public msg::FixMessageHandler<ClusterIngressHandler>
-{
-    ClusterIngressSender*         m_ingress{};
-    std::int32_t                  m_connectionId{-1};
-    FixSession*                   m_session{nullptr};
+class ClusterIngressHandler : public msg::FixMessageHandler<ClusterIngressHandler> {
+    ClusterIngressSender* m_ingress{};
+    std::int32_t m_connectionId{-1};
+    FixSession* m_session{nullptr};
 
     alignas(16) std::array<std::uint8_t, 8192> m_buffer{};
     std::span<const std::uint8_t> m_rawFixBytes;
@@ -143,17 +138,21 @@ class ClusterIngressHandler : public msg::FixMessageHandler<ClusterIngressHandle
         m_ingress->send(m_buffer.data(), static_cast<std::uint16_t>(msg.sbePosition()));
     }
 
-public:
+   public:
     using FixMessageHandler::handle;
 
     ClusterIngressHandler() = default;
     ClusterIngressHandler(ClusterIngressSender* ingress, int32_t connId, FixSession* session = nullptr)
-        : m_ingress(ingress), m_connectionId(connId), m_session(session) {}
+        : m_ingress(ingress), m_connectionId(connId), m_session(session)
+    {}
 
     // Test-only: lets ClusterIngressHandlerTest feed the exact raw FIX bytes a
     // message was parsed from, independent of decoder.parse()'s own buffer.
     // Not used by any handle() overload in production.
-    void setRawBytes(std::span<const std::uint8_t> bytes) { m_rawFixBytes = bytes; }
+    void setRawBytes(std::span<const std::uint8_t> bytes)
+    {
+        m_rawFixBytes = bytes;
+    }
 
     usq::Logon m_logon;
     usq::Logout m_logout;
@@ -222,18 +221,22 @@ public:
         {
             m_senderCompId.assign(sender->data(), sender->size());
         }
-        std::printf("[Ingress] Logon from fd=%d hbSecs=%u → encoding sbe-unsequenced\n",
-                    m_connectionId, hbSecs);
+        std::printf("[Ingress] Logon from fd=%d hbSecs=%u → encoding sbe-unsequenced\n", m_connectionId, hbSecs);
         m_logon.wrapAndApplyHeader(buffer(), 0, bufferLength());
-        m_logon.header().sourceId(m_ingress ? m_ingress->sourceId() : 0).connectionId(m_connectionId).sessionId(m_ingress ? m_ingress->clusterSessionId() : -1);
-        m_logon.putSender(static_cast<const char*>("CLIENT  ")).putTarget(static_cast<const char*>("SEQNCR  "))
-                .seqNum(logon.sequenceNumber().value_or(0u)).sendingTimeMs(nowMs())
-                .encryptMethod(usq::EncryptMethod::Value::None)
-                .heartbeatInterval(hbSecs)
-                .putXmlData(nullptr, 0);
+        m_logon.header()
+            .sourceId(m_ingress ? m_ingress->sourceId() : 0)
+            .connectionId(m_connectionId)
+            .sessionId(m_ingress ? m_ingress->clusterSessionId() : -1);
+        m_logon.putSender(static_cast<const char*>("CLIENT  "))
+            .putTarget(static_cast<const char*>("SEQNCR  "))
+            .seqNum(logon.sequenceNumber().value_or(0u))
+            .sendingTimeMs(nowMs())
+            .encryptMethod(usq::EncryptMethod::Value::None)
+            .heartbeatInterval(hbSecs)
+            .putXmlData(nullptr, 0);
         sendUnsequenced(m_logon);
-        std::printf("[Ingress] Logon sent to cluster (fd=%d sbePos=%llu)\n",
-                    m_connectionId, static_cast<unsigned long long>(m_logon.sbePosition()));
+        std::printf("[Ingress] Logon sent to cluster (fd=%d sbePos=%llu)\n", m_connectionId,
+                    static_cast<unsigned long long>(m_logon.sbePosition()));
         return fix::Result::Success;
     }
 
@@ -244,16 +247,21 @@ public:
             std::fprintf(stderr, "[Ingress] Logout fd=%d rejected: Invalid CompId\n", m_connectionId);
             if (m_session)
             {
-                m_session->sendReject(logout.sequenceNumber().value_or(0u),
-                                       msg::SessionRejectReason::CompIDProblem, "Invalid CompId");
+                m_session->sendReject(logout.sequenceNumber().value_or(0u), msg::SessionRejectReason::CompIDProblem,
+                                      "Invalid CompId");
             }
             return fix::Result::Success;
         }
         m_logout.wrapAndApplyHeader(buffer(), 0, bufferLength());
-        m_logout.header().sourceId(m_ingress ? m_ingress->sourceId() : 0).connectionId(m_connectionId).sessionId(m_ingress ? m_ingress->clusterSessionId() : -1);
-        m_logout.putSender(static_cast<const char*>("CLIENT  ")).putTarget(static_cast<const char*>("SEQNCR  "))
-                .seqNum(logout.sequenceNumber().value_or(0u)).sendingTimeMs(nowMs())
-                .putText(nullptr, 0);
+        m_logout.header()
+            .sourceId(m_ingress ? m_ingress->sourceId() : 0)
+            .connectionId(m_connectionId)
+            .sessionId(m_ingress ? m_ingress->clusterSessionId() : -1);
+        m_logout.putSender(static_cast<const char*>("CLIENT  "))
+            .putTarget(static_cast<const char*>("SEQNCR  "))
+            .seqNum(logout.sequenceNumber().value_or(0u))
+            .sendingTimeMs(nowMs())
+            .putText(nullptr, 0);
         sendUnsequenced(m_logout);
         return fix::Result::Success;
     }
@@ -265,21 +273,32 @@ public:
             std::fprintf(stderr, "[Ingress] Heartbeat fd=%d rejected: Invalid CompId\n", m_connectionId);
             if (m_session)
             {
-                m_session->sendReject(heartbeat.sequenceNumber().value_or(0u),
-                                       msg::SessionRejectReason::CompIDProblem, "Invalid CompId");
+                m_session->sendReject(heartbeat.sequenceNumber().value_or(0u), msg::SessionRejectReason::CompIDProblem,
+                                      "Invalid CompId");
             }
             return fix::Result::Success;
         }
         m_heartbeat.wrapAndApplyHeader(buffer(), 0, bufferLength());
-        m_heartbeat.header().sourceId(m_ingress ? m_ingress->sourceId() : 0).connectionId(m_connectionId).sessionId(m_ingress ? m_ingress->clusterSessionId() : -1);
-        m_heartbeat.putSender(static_cast<const char*>("CLIENT  ")).putTarget(static_cast<const char*>("SEQNCR  "))
-                .seqNum(heartbeat.sequenceNumber().value_or(0u)).sendingTimeMs(nowMs());
-        if (const auto id = heartbeat.testReqID()) {
+        m_heartbeat.header()
+            .sourceId(m_ingress ? m_ingress->sourceId() : 0)
+            .connectionId(m_connectionId)
+            .sessionId(m_ingress ? m_ingress->clusterSessionId() : -1);
+        m_heartbeat.putSender(static_cast<const char*>("CLIENT  "))
+            .putTarget(static_cast<const char*>("SEQNCR  "))
+            .seqNum(heartbeat.sequenceNumber().value_or(0u))
+            .sendingTimeMs(nowMs());
+        if (const auto id = heartbeat.testReqID())
+        {
             const auto sv = *id;
             const std::size_t n = std::min(sv.size(), static_cast<std::size_t>(32));
             std::memcpy(m_heartbeat.testReqID(), sv.data(), n);
-            if (n < 32) { m_heartbeat.testReqID()[n] = '\0'; }
-        } else {
+            if (n < 32)
+            {
+                m_heartbeat.testReqID()[n] = '\0';
+            }
+        }
+        else
+        {
             m_heartbeat.testReqID()[0] = '\0';
         }
         sendUnsequenced(m_heartbeat);
@@ -294,14 +313,19 @@ public:
             if (m_session)
             {
                 m_session->sendReject(testRequest.sequenceNumber().value_or(0u),
-                                       msg::SessionRejectReason::CompIDProblem, "Invalid CompId");
+                                      msg::SessionRejectReason::CompIDProblem, "Invalid CompId");
             }
             return fix::Result::Success;
         }
         m_testRequest.wrapAndApplyHeader(buffer(), 0, bufferLength());
-        m_testRequest.header().sourceId(m_ingress ? m_ingress->sourceId() : 0).connectionId(m_connectionId).sessionId(m_ingress ? m_ingress->clusterSessionId() : -1);
-        m_testRequest.putSender(static_cast<const char*>("CLIENT  ")).putTarget(static_cast<const char*>("SEQNCR  "))
-                .seqNum(testRequest.sequenceNumber().value_or(0u)).sendingTimeMs(nowMs());
+        m_testRequest.header()
+            .sourceId(m_ingress ? m_ingress->sourceId() : 0)
+            .connectionId(m_connectionId)
+            .sessionId(m_ingress ? m_ingress->clusterSessionId() : -1);
+        m_testRequest.putSender(static_cast<const char*>("CLIENT  "))
+            .putTarget(static_cast<const char*>("SEQNCR  "))
+            .seqNum(testRequest.sequenceNumber().value_or(0u))
+            .sendingTimeMs(nowMs());
         if (const auto id = testRequest.testReqID())
         {
             const auto sv = *id;
@@ -328,16 +352,21 @@ public:
             if (m_session)
             {
                 m_session->sendReject(resendRequest.sequenceNumber().value_or(0u),
-                                       msg::SessionRejectReason::CompIDProblem, "Invalid CompId");
+                                      msg::SessionRejectReason::CompIDProblem, "Invalid CompId");
             }
             return fix::Result::Success;
         }
         m_resendRequest.wrapAndApplyHeader(buffer(), 0, bufferLength());
-        m_resendRequest.header().sourceId(m_ingress ? m_ingress->sourceId() : 0).connectionId(m_connectionId).sessionId(m_ingress ? m_ingress->clusterSessionId() : -1);
-        m_resendRequest.putSender(static_cast<const char*>("CLIENT  ")).putTarget(static_cast<const char*>("SEQNCR  "))
-         .seqNum(resendRequest.sequenceNumber().value_or(0u)).sendingTimeMs(nowMs())
-         .beginSeqNo(resendRequest.beginSeqNo().value_or(1u))
-         .endSeqNo(resendRequest.endSeqNo().value_or(0u));
+        m_resendRequest.header()
+            .sourceId(m_ingress ? m_ingress->sourceId() : 0)
+            .connectionId(m_connectionId)
+            .sessionId(m_ingress ? m_ingress->clusterSessionId() : -1);
+        m_resendRequest.putSender(static_cast<const char*>("CLIENT  "))
+            .putTarget(static_cast<const char*>("SEQNCR  "))
+            .seqNum(resendRequest.sequenceNumber().value_or(0u))
+            .sendingTimeMs(nowMs())
+            .beginSeqNo(resendRequest.beginSeqNo().value_or(1u))
+            .endSeqNo(resendRequest.endSeqNo().value_or(0u));
         sendUnsequenced(m_resendRequest);
         return fix::Result::Success;
     }
@@ -350,16 +379,21 @@ public:
             if (m_session)
             {
                 m_session->sendReject(sequenceReset.sequenceNumber().value_or(0u),
-                                       msg::SessionRejectReason::CompIDProblem, "Invalid CompId");
+                                      msg::SessionRejectReason::CompIDProblem, "Invalid CompId");
             }
             return fix::Result::Success;
         }
         m_sequenceReset.wrapAndApplyHeader(buffer(), 0, bufferLength());
-        m_sequenceReset.header().sourceId(m_ingress ? m_ingress->sourceId() : 0).connectionId(m_connectionId).sessionId(m_ingress ? m_ingress->clusterSessionId() : -1);
-        m_sequenceReset.putSender(static_cast<const char*>("CLIENT  ")).putTarget(static_cast<const char*>("SEQNCR  "))
-         .seqNum(sequenceReset.sequenceNumber().value_or(0u)).sendingTimeMs(nowMs())
-         .gapFillFlag(usq::GapFillFlag::Value::NULL_VALUE)
-         .newSeqNo(sequenceReset.newSeqNo().value_or(1u));
+        m_sequenceReset.header()
+            .sourceId(m_ingress ? m_ingress->sourceId() : 0)
+            .connectionId(m_connectionId)
+            .sessionId(m_ingress ? m_ingress->clusterSessionId() : -1);
+        m_sequenceReset.putSender(static_cast<const char*>("CLIENT  "))
+            .putTarget(static_cast<const char*>("SEQNCR  "))
+            .seqNum(sequenceReset.sequenceNumber().value_or(0u))
+            .sendingTimeMs(nowMs())
+            .gapFillFlag(usq::GapFillFlag::Value::NULL_VALUE)
+            .newSeqNo(sequenceReset.newSeqNo().value_or(1u));
         sendUnsequenced(m_sequenceReset);
         return fix::Result::Success;
     }
@@ -382,11 +416,16 @@ public:
             return;
         }
         m_sequenceReset.wrapAndApplyHeader(buffer(), 0, bufferLength());
-        m_sequenceReset.header().sourceId(m_ingress->sourceId()).connectionId(m_connectionId).sessionId(m_ingress->clusterSessionId());
-        m_sequenceReset.putSender(RESEND_CHUNK_COMPID).putTarget(static_cast<const char*>("SEQNCR  "))
-         .seqNum(blockEndPlusOne).sendingTimeMs(sendingTimeMs)
-         .gapFillFlag(usq::GapFillFlag::Value::GapFillMessage)
-         .newSeqNo(blockEndPlusOne);
+        m_sequenceReset.header()
+            .sourceId(m_ingress->sourceId())
+            .connectionId(m_connectionId)
+            .sessionId(m_ingress->clusterSessionId());
+        m_sequenceReset.putSender(RESEND_CHUNK_COMPID)
+            .putTarget(static_cast<const char*>("SEQNCR  "))
+            .seqNum(blockEndPlusOne)
+            .sendingTimeMs(sendingTimeMs)
+            .gapFillFlag(usq::GapFillFlag::Value::GapFillMessage)
+            .newSeqNo(blockEndPlusOne);
         sendUnsequenced(m_sequenceReset);
     }
 
@@ -398,20 +437,19 @@ public:
             if (m_session)
             {
                 m_session->sendReject(newOrderSingle.sequenceNumber().value_or(0u),
-                                       msg::SessionRejectReason::CompIDProblem, "Invalid CompId");
+                                      msg::SessionRejectReason::CompIDProblem, "Invalid CompId");
             }
             return fix::Result::Success;
         }
-        const auto clOrdId  = newOrderSingle.clOrdID().value_or(std::string_view{});
-        const auto symbol   = newOrderSingle.symbol().value_or(std::string_view{});
+        const auto clOrdId = newOrderSingle.clOrdID().value_or(std::string_view{});
+        const auto symbol = newOrderSingle.symbol().value_or(std::string_view{});
         const msg::Side side = newOrderSingle.side().value_or(msg::Side::Buy);
-        const auto leavesQuantity      = newOrderSingle.orderQty().value_or(0u);
-        const auto ordType  = newOrderSingle.ordType().value_or(msg::OrdType::Market);
+        const auto leavesQuantity = newOrderSingle.orderQty().value_or(0u);
+        const auto ordType = newOrderSingle.ordType().value_or(msg::OrdType::Market);
         const auto priceOpt = newOrderSingle.price();
 
         std::printf("[App] NewOrderSingle clOrdID=%.*s symbol=%.*s side=%s qty=%u ordType=%s\n",
-                    static_cast<int>(clOrdId.size()), clOrdId.data(),
-                    static_cast<int>(symbol.size()), symbol.data(),
+                    static_cast<int>(clOrdId.size()), clOrdId.data(), static_cast<int>(symbol.size()), symbol.data(),
                     msg::name(side).data(), leavesQuantity, msg::name(ordType).data());
         // Business validation
         const char* rejectReason = nullptr;
@@ -441,27 +479,32 @@ public:
                          rejectReason);
             if (m_session)
             {
-                sendExecutionReport("NONE", clOrdId, "EXEC-REJ",
-                                     usq::ExecType::Value::Rejected,
-                                     usq::OrdStatus::Value::Rejected,
-                                     symbol.empty() ? std::string_view{"?"} : symbol,
-                                     toSbeSide(side), leavesQuantity, /*price*/ nullptr,
-                                     /*leavesQty*/ 0, /*cumQty*/ 0, rejectReason);
+                sendExecutionReport("NONE", clOrdId, "EXEC-REJ", usq::ExecType::Value::Rejected,
+                                    usq::OrdStatus::Value::Rejected, symbol.empty() ? std::string_view{"?"} : symbol,
+                                    toSbeSide(side), leavesQuantity, /*price*/ nullptr,
+                                    /*leavesQty*/ 0, /*cumQty*/ 0, rejectReason);
             }
             return fix::Result::Success;
         }
         if (m_ingress)
         {
             m_newOrderSingle.wrapAndApplyHeader(buffer(), 0, bufferLength());
-            m_newOrderSingle.header().sourceId(m_ingress->sourceId()).connectionId(m_connectionId).sessionId(m_ingress->clusterSessionId());
-            m_newOrderSingle.putSender(static_cast<const char*>("CLIENT  ")).putTarget(static_cast<const char*>("SEQNCR  "))
-                    .seqNum(newOrderSingle.sequenceNumber().value_or(0u)).sendingTimeMs(nowMs());
+            m_newOrderSingle.header()
+                .sourceId(m_ingress->sourceId())
+                .connectionId(m_connectionId)
+                .sessionId(m_ingress->clusterSessionId());
+            m_newOrderSingle.putSender(static_cast<const char*>("CLIENT  "))
+                .putTarget(static_cast<const char*>("SEQNCR  "))
+                .seqNum(newOrderSingle.sequenceNumber().value_or(0u))
+                .sendingTimeMs(nowMs());
             m_newOrderSingle.putAccount(newOrderSingle.account().value_or(std::string_view{}));
             m_newOrderSingle.putClOrdID(clOrdId);
-            m_newOrderSingle.handlInst(toSbeHandlInst(newOrderSingle.handlInst().value_or(msg::HandlInst::AutoPrivate)));
+            m_newOrderSingle.handlInst(
+                toSbeHandlInst(newOrderSingle.handlInst().value_or(msg::HandlInst::AutoPrivate)));
             m_newOrderSingle.putSymbol(symbol);
             m_newOrderSingle.side(toSbeSide(side));
-            m_newOrderSingle.transactTime(newOrderSingle.transactTime().value_or(std::chrono::milliseconds(nowMs())).count());
+            m_newOrderSingle.transactTime(
+                newOrderSingle.transactTime().value_or(std::chrono::milliseconds(nowMs())).count());
             m_newOrderSingle.orderQty(leavesQuantity);
             m_newOrderSingle.ordType(toSbeOrdType(ordType));
             m_newOrderSingle.price(priceOpt ? priceOpt->mantissa() : usq::NewOrderSingle::priceNullValue());
@@ -480,29 +523,22 @@ public:
         }
         if (m_session)
         {
-            sendExecutionReport("ORD-0001", clOrdId, "EXEC-0001", usq::ExecType::Value::New,
-                                 usq::OrdStatus::Value::New, symbol, toSbeSide(side), leavesQuantity,
-                                 priceOpt ? &*priceOpt : nullptr, leavesQuantity, 0, nullptr);
-            std::printf("[App] Sent ExecutionReport (New) for clOrdID=%.*s\n",
-                        static_cast<int>(clOrdId.size()), clOrdId.data());
+            sendExecutionReport("ORD-0001", clOrdId, "EXEC-0001", usq::ExecType::Value::New, usq::OrdStatus::Value::New,
+                                symbol, toSbeSide(side), leavesQuantity, priceOpt ? &*priceOpt : nullptr,
+                                leavesQuantity, 0, nullptr);
+            std::printf("[App] Sent ExecutionReport (New) for clOrdID=%.*s\n", static_cast<int>(clOrdId.size()),
+                        clOrdId.data());
         }
         return fix::Result::Success;
     }
 
-private:
-
-    void sendExecutionReport(const std::string_view orderId,
-                             const std::string_view clOrdId,
-                             const std::string_view execId,
-                             const usq::ExecType::Value execType,
-                             const usq::OrdStatus::Value ordStatus,
-                             const std::string_view symbol,
-                             const usq::Side::Value side,
-                             const std::uint32_t orderQty,
-                             const fix::utils::FixedDecimal* price,
-                             const std::uint32_t leavesQty,
-                             const std::uint32_t cumQty,
-                             const char* text)
+   private:
+    void sendExecutionReport(const std::string_view orderId, const std::string_view clOrdId,
+                             const std::string_view execId, const usq::ExecType::Value execType,
+                             const usq::OrdStatus::Value ordStatus, const std::string_view symbol,
+                             const usq::Side::Value side, const std::uint32_t orderQty,
+                             const fix::utils::FixedDecimal* price, const std::uint32_t leavesQty,
+                             const std::uint32_t cumQty, const char* text)
     {
         if (!m_ingress || !m_session)
         {
@@ -513,9 +549,14 @@ private:
         m_session->setNextOutgoingSeqNum(seq + 1);
 
         m_executionReport.wrapAndApplyHeader(buffer(), 0, bufferLength());
-        m_executionReport.header().sourceId(m_ingress->sourceId()).connectionId(m_connectionId).sessionId(m_ingress->clusterSessionId());
-        m_executionReport.putSender(static_cast<const char*>("CLIENT  ")).putTarget(static_cast<const char*>("SEQNCR  "))
-         .seqNum(seq).sendingTimeMs(nowMs());
+        m_executionReport.header()
+            .sourceId(m_ingress->sourceId())
+            .connectionId(m_connectionId)
+            .sessionId(m_ingress->clusterSessionId());
+        m_executionReport.putSender(static_cast<const char*>("CLIENT  "))
+            .putTarget(static_cast<const char*>("SEQNCR  "))
+            .seqNum(seq)
+            .sendingTimeMs(nowMs());
         m_executionReport.putOrderID(orderId);
         m_executionReport.putClOrdID(clOrdId);
         m_executionReport.putExecID(execId);
@@ -534,7 +575,6 @@ private:
         m_executionReport.putText(text ? std::string_view(text) : std::string_view{});
         sendUnsequenced(m_executionReport);
     }
-
 };
 
-} // namespace org::limitless::phixeron::sequencer
+}  // namespace org::limitless::phixeron::sequencer

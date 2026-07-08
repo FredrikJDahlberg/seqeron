@@ -1,0 +1,82 @@
+---
+Language: Cpp
+BasedOnStyle: Google
+
+# 1. Geometry & Spacing
+IndentWidth: 4
+ContinuationIndentWidth: 4
+ColumnLimit: 120
+UseTab: Never
+
+# 2. Precise Aeron Brace Placement Rules
+BreakBeforeBraces: Custom
+BraceWrapping:
+  AfterClass: false          # Aeron attaches class braces: class Name {
+  AfterControlStatement: Always # Aeron forces if/for/while loops to drop braces to a new line
+  AfterEnum: false           # Aeron attaches enum braces
+  AfterFunction: true        # Aeron forces methods to drop braces to a new line
+  AfterNamespace: false      # Aeron attaches namespace braces: namespace usq {
+  AfterStruct: false         # Aeron attaches struct braces
+  AfterUnion: false
+  BeforeCatch: true
+  BeforeElse: true           # Aeron forces } else { to split vertically
+  IndentBraces: false
+  SplitEmptyFunction: false
+  SplitEmptyRecord: false
+  SplitEmptyNamespace: false
+
+# 3. Prevent Collapsing (Fixes your method expansion bugs)
+AllowShortBlocksOnASingleLine: Never
+AllowShortFunctionsOnASingleLine: None
+AllowShortLoopsOnASingleLine: false
+AllowShortIfStatementsOnASingleLine: Never
+
+# 4. Dense Layout Packing
+KeepEmptyLinesAtTheStartOfBlocks: false
+MaxEmptyLinesToKeep: 1
+
+# 5. Low-Latency Type Binding
+PointerAlignment: Left
+DerivePointerAlignment: false
+
+# 6. Call Signatures
+BinPackArguments: true
+BinPackParameters: true
+AlignAfterOpenBracket: Align
+
+# 7. Modern Syntax Handling
+Standard: Latest
+FixNamespaceComments: false
+
+
+---
+Language: Java
+BasedOnStyle: WebKit
+
+# 1. Geometry & Spacing
+IndentWidth: 4
+ContinuationIndentWidth: 4
+ColumnLimit: 120
+UseTab: Never
+
+# 2. Java Attached Brace Layout
+BreakBeforeBraces: Attach
+
+# 3. Compact Code Blocks (Matching Aeron's Java Layout)
+AllowShortBlocksOnASingleLine: Never
+AllowShortFunctionsOnASingleLine: None
+AllowShortLoopsOnASingleLine: false
+AllowShortIfStatementsOnASingleLine: Never
+
+# 4. Dense Layout Packing
+KeepEmptyLinesAtTheStartOfBlocks: false
+MaxEmptyLinesToKeep: 1
+
+# 5. Method Arguments Packing
+BinPackArguments: true
+BinPackParameters: true
+AlignAfterOpenBracket: Align
+
+# 6. Formatting Rules
+SortIncludes: true
+BreakAfterAttributes: Never

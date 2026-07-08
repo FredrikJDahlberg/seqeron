@@ -1,33 +1,32 @@
 package org.limitless.phixeron.sequencer;
 
+import static io.aeron.Aeron.NULL_VALUE;
+
 import io.aeron.Aeron;
 import io.aeron.ExclusivePublication;
+import io.aeron.FragmentAssembler;
 import io.aeron.Image;
 import io.aeron.archive.client.AeronArchive;
+import io.aeron.archive.codecs.SourceLocation;
 import io.aeron.cluster.codecs.CloseReason;
 import io.aeron.cluster.service.ClientSession;
 import io.aeron.cluster.service.Cluster;
 import io.aeron.cluster.service.ClusteredService;
-import io.aeron.FragmentAssembler;
 import io.aeron.logbuffer.FragmentHandler;
 import io.aeron.logbuffer.Header;
-import org.agrona.DirectBuffer;
-import org.agrona.ExpandableDirectByteBuffer;
-import org.agrona.MutableDirectBuffer;
-import io.aeron.archive.codecs.SourceLocation;
-import org.agrona.concurrent.NoOpLock;
-import org.limitless.phixeron.sbe.unsequenced.MessageHeaderDecoder;
-import org.limitless.phixeron.sbe.unsequenced.HeaderDecoder;
-import org.limitless.phixeron.sbe.sequenced.MessageHeaderEncoder;
-import org.limitless.phixeron.sbe.sequenced.HeaderEncoder;
-import org.limitless.phixeron.sbe.sequenced.ClientConnectedEncoder;
-import org.limitless.phixeron.sbe.sequenced.ClientDisconnectedEncoder;
-
 import java.util.Map;
 import java.util.concurrent.LinkedBlockingDeque;
 import java.util.concurrent.TimeUnit;
-
-import static io.aeron.Aeron.NULL_VALUE;
+import org.agrona.DirectBuffer;
+import org.agrona.ExpandableDirectByteBuffer;
+import org.agrona.MutableDirectBuffer;
+import org.agrona.concurrent.NoOpLock;
+import org.limitless.phixeron.sbe.sequenced.ClientConnectedEncoder;
+import org.limitless.phixeron.sbe.sequenced.ClientDisconnectedEncoder;
+import org.limitless.phixeron.sbe.sequenced.HeaderEncoder;
+import org.limitless.phixeron.sbe.sequenced.MessageHeaderEncoder;
+import org.limitless.phixeron.sbe.unsequenced.HeaderDecoder;
+import org.limitless.phixeron.sbe.unsequenced.MessageHeaderDecoder;
 
 /**
  * Aeron Cluster service that imposes a total order on messages arriving from multiple clients.
@@ -84,7 +83,6 @@ import static io.aeron.Aeron.NULL_VALUE;
  * </pre>
  */
 public final class SequencerService implements ClusteredService {
-
     /**
      * Multi-destination-cast (dynamic control mode) channel for the global sequenced stream.
      * This is the publisher/archive-recording channel: the current leader's {@link
@@ -101,14 +99,16 @@ public final class SequencerService implements ClusteredService {
      * address as {@link #GLOBAL_STREAM_CHANNEL}, plus an ephemeral local data endpoint that the
      * publisher discovers and adds as a destination automatically.
      */
-    public static final String GLOBAL_STREAM_SUBSCRIBER_CHANNEL =
-        "aeron:udp?control-mode=dynamic|control=localhost:9200|endpoint=localhost:0";
+    public static final String GLOBAL_STREAM_SUBSCRIBER_CHANNEL
+        = "aeron:udp?control-mode=dynamic|control=localhost:9200|endpoint=localhost:0";
 
     public static final int GLOBAL_STREAM_ID = 1;
 
-    /** Archive control stream id shared by every member — must match {@code SequencerNode}'s
+    /**
+     * Archive control stream id shared by every member — must match {@code SequencerNode}'s
      * {@code Archive.Context.controlStreamId(100)} so replication requests can reach a peer's
-     * archive. */
+     * archive.
+     */
     private static final int ARCHIVE_CONTROL_STREAM_ID = 100;
 
     /** Local, ephemeral endpoint the standby replication's live-merge subscription listens on. */
@@ -136,14 +136,14 @@ public final class SequencerService implements ClusteredService {
     // header and the generic `header` composite are ever decoded — body
     // fields are copied through as opaque bytes, see onSessionMessage.
     private final MessageHeaderDecoder ingressMsgHeaderDecoder = new MessageHeaderDecoder();
-    private final HeaderDecoder        ingressHeaderDecoder    = new HeaderDecoder();
+    private final HeaderDecoder ingressHeaderDecoder = new HeaderDecoder();
 
     // Egress encode (schema 202, sbe-sequenced.xml).
-    private final MessageHeaderEncoder      headerEncoder     = new MessageHeaderEncoder();
-    private final HeaderEncoder             egressHeaderEncoder = new HeaderEncoder();
-    private final ClientConnectedEncoder    clientConnEncoder = new ClientConnectedEncoder();
+    private final MessageHeaderEncoder headerEncoder = new MessageHeaderEncoder();
+    private final HeaderEncoder egressHeaderEncoder = new HeaderEncoder();
+    private final ClientConnectedEncoder clientConnEncoder = new ClientConnectedEncoder();
     private final ClientDisconnectedEncoder clientDiscEncoder = new ClientDisconnectedEncoder();
-    private final MutableDirectBuffer       encodeBuffer      = new ExpandableDirectByteBuffer(4096);
+    private final MutableDirectBuffer encodeBuffer = new ExpandableDirectByteBuffer(4096);
 
     // ── Sequencing state (snapshotted; updated on every node for determinism) ─
 
@@ -152,22 +152,26 @@ public final class SequencerService implements ClusteredService {
 
     // ── Aeron runtime (not snapshotted) ──────────────────────────────────────
 
-    private Cluster              cluster;
-    private boolean              isLeader;
+    private Cluster cluster;
+    private boolean isLeader;
     private ExclusivePublication globalStreamPub;
-    private AeronArchive         aeronArchive;
+    private AeronArchive aeronArchive;
 
     /** This node's own memberId → archive control endpoint ("host:port"), for every member. */
     private final Map<Integer, String> archiveEndpointsByMemberId;
 
-    /** memberId of whichever node last reported itself the leader; NULL_VALUE-as-int (-1)
-     * until the first {@link #onNewLeadershipTermEvent}. */
+    /**
+     * memberId of whichever node last reported itself the leader; NULL_VALUE-as-int (-1)
+     * until the first {@link #onNewLeadershipTermEvent}.
+     */
     private int currentLeaderMemberId = -1;
 
-    /** Runs standby-follow entirely off the ClusteredService's single conductor thread — see
-     * its class Javadoc for why. */
+    /**
+     * Runs standby-follow entirely off the ClusteredService's single conductor thread — see
+     * its class Javadoc for why.
+     */
     private StandbyFollower standbyFollower;
-    private Thread          standbyFollowerThread;
+    private Thread standbyFollowerThread;
 
     public SequencerService(final Map<Integer, String> archiveEndpointsByMemberId) {
         this.archiveEndpointsByMemberId = archiveEndpointsByMemberId;
@@ -181,16 +185,15 @@ public final class SequencerService implements ClusteredService {
 
         // Connect to the co-located archive via IPC — NoOpLock is safe on the single conductor thread.
         aeronArchive = AeronArchive.connect(new AeronArchive.Context()
-            .aeron(cluster.context().aeron())
-            .controlRequestChannel("aeron:ipc")
-            .controlRequestStreamId(100)
-            .controlResponseChannel("aeron:ipc")
-            .controlResponseStreamId(101)
-            .lock(NoOpLock.INSTANCE));
+                                                .aeron(cluster.context().aeron())
+                                                .controlRequestChannel("aeron:ipc")
+                                                .controlRequestStreamId(100)
+                                                .controlResponseChannel("aeron:ipc")
+                                                .controlResponseStreamId(101)
+                                                .lock(NoOpLock.INSTANCE));
 
-        standbyFollower = new StandbyFollower(
-            cluster.context().aeron().context().aeronDirectoryName(), cluster.memberId(),
-            archiveEndpointsByMemberId);
+        standbyFollower = new StandbyFollower(cluster.context().aeron().context().aeronDirectoryName(),
+                                              cluster.memberId(), archiveEndpointsByMemberId);
         standbyFollowerThread = new Thread(standbyFollower, "standby-follower-" + cluster.memberId());
         standbyFollowerThread.setDaemon(true);
         standbyFollowerThread.start();
@@ -228,9 +231,7 @@ public final class SequencerService implements ClusteredService {
     }
 
     @Override
-    public void onSessionClose(final ClientSession session,
-                               final long timestamp,
-                               final CloseReason closeReason) {
+    public void onSessionClose(final ClientSession session, final long timestamp, final CloseReason closeReason) {
         final long globalSeq = ++globalSeqNo;
         if (!isLeader) {
             return;
@@ -246,14 +247,10 @@ public final class SequencerService implements ClusteredService {
     }
 
     @Override
-    public void onSessionMessage(final ClientSession session,
-                                 final long          timestamp,
-                                 final DirectBuffer  buffer,
-                                 final int           offset,
-                                 final int           length,
-                                 final Header        header) {
+    public void onSessionMessage(final ClientSession session, final long timestamp, final DirectBuffer buffer,
+                                 final int offset, final int length, final Header header) {
         final long sourceSessionId = session.id();
-        final long globalSeq       = ++globalSeqNo;
+        final long globalSeq = ++globalSeqNo;
         if (!isLeader) {
             return;
         }
@@ -263,20 +260,19 @@ public final class SequencerService implements ClusteredService {
         // `header` composite (for sourceId/connectionId) — both at fixed
         // offsets, independent of message type.
         ingressMsgHeaderDecoder.wrap(buffer, offset);
-        final int templateId      = ingressMsgHeaderDecoder.templateId();
+        final int templateId = ingressMsgHeaderDecoder.templateId();
         final int ingressBlockLen = ingressMsgHeaderDecoder.blockLength();
 
         final int ingressBodyOffset = offset + MessageHeaderDecoder.ENCODED_LENGTH;
         ingressHeaderDecoder.wrap(buffer, ingressBodyOffset);
-        final int sourceId     = ingressHeaderDecoder.sourceId();
+        final int sourceId = ingressHeaderDecoder.sourceId();
         final int connectionId = ingressHeaderDecoder.connectionId();
 
         // sbe-sequenced.xml's header composite is sbe-unsequenced.xml's plus
         // two int64 fields (globalSeqNo, timestamp); every other field is
         // byte-identical, so the egress blockLength is simply the ingress
         // blockLength with the header composite's growth added on.
-        final int egressBlockLen =
-            HeaderEncoder.ENCODED_LENGTH + (ingressBlockLen - HeaderDecoder.ENCODED_LENGTH);
+        final int egressBlockLen = HeaderEncoder.ENCODED_LENGTH + (ingressBlockLen - HeaderDecoder.ENCODED_LENGTH);
 
         headerEncoder.wrap(encodeBuffer, 0)
             .blockLength(egressBlockLen)
@@ -295,7 +291,7 @@ public final class SequencerService implements ClusteredService {
         // Copy every byte after the ingress header composite — the rest of
         // the fixed block plus all var-data — verbatim; see class Javadoc.
         final int copyFromOffset = ingressBodyOffset + HeaderDecoder.ENCODED_LENGTH;
-        final int copyLength     = length - MessageHeaderDecoder.ENCODED_LENGTH - HeaderDecoder.ENCODED_LENGTH;
+        final int copyLength = length - MessageHeaderDecoder.ENCODED_LENGTH - HeaderDecoder.ENCODED_LENGTH;
         encodeBuffer.putBytes(egressBodyOffset + HeaderEncoder.ENCODED_LENGTH, buffer, copyFromOffset, copyLength);
 
         offerToGlobalStream(egressBodyOffset + HeaderEncoder.ENCODED_LENGTH + copyLength);
@@ -315,8 +311,7 @@ public final class SequencerService implements ClusteredService {
             offerResult = snapshotPublication.offer(encodeBuffer, 0, Long.BYTES);
             if (offerResult == ExclusivePublication.CLOSED
                 || offerResult == ExclusivePublication.MAX_POSITION_EXCEEDED) {
-                throw new IllegalStateException(
-                    "[SequencerService] Snapshot publication failed: " + offerResult);
+                throw new IllegalStateException("[SequencerService] Snapshot publication failed: " + offerResult);
             }
             if (offerResult < 0) {
                 cluster.idleStrategy().idle();
@@ -325,8 +320,7 @@ public final class SequencerService implements ClusteredService {
     }
 
     private void loadSnapshot(final Image snapshotImage) {
-        final FragmentAssembler handler = new FragmentAssembler(
-            (buf, off, len, hdr) -> globalSeqNo = buf.getLong(off));
+        final FragmentAssembler handler = new FragmentAssembler((buf, off, len, hdr) -> globalSeqNo = buf.getLong(off));
         while (!snapshotImage.isClosed()) {
             cluster.idleStrategy().idle(snapshotImage.poll(handler, SNAPSHOT_POLL_BATCH));
         }
@@ -335,14 +329,9 @@ public final class SequencerService implements ClusteredService {
     // ── Leadership ────────────────────────────────────────────────────────────
 
     @Override
-    public void onNewLeadershipTermEvent(final long logPosition,
-                                          final long leadershipTermId,
-                                          final long timestamp,
-                                          final long termBaseLogPosition,
-                                          final int  leaderMemberId,
-                                          final int  logSessionId,
-                                          final TimeUnit timeUnit,
-                                          final int  appVersion) {
+    public void onNewLeadershipTermEvent(final long logPosition, final long leadershipTermId, final long timestamp,
+                                         final long termBaseLogPosition, final int leaderMemberId,
+                                         final int logSessionId, final TimeUnit timeUnit, final int appVersion) {
         applyLeadership(leaderMemberId);
     }
 
@@ -373,7 +362,7 @@ public final class SequencerService implements ClusteredService {
         currentLeaderMemberId = leaderMemberId;
         final boolean leader = leaderMemberId == cluster.memberId();
         System.out.printf("[SequencerService/%d] leadership change: new leader is memberId=%d (isLeader=%b)%n",
-            cluster.memberId(), leaderMemberId, leader);
+                          cluster.memberId(), leaderMemberId, leader);
 
         if (isLeader && globalStreamPub != null) {
             globalStreamPub.close();
@@ -382,8 +371,8 @@ public final class SequencerService implements ClusteredService {
         isLeader = leader;
 
         if (isLeader) {
-            globalStreamPub = cluster.context().aeron()
-                .addExclusivePublication(GLOBAL_STREAM_CHANNEL, GLOBAL_STREAM_ID);
+            globalStreamPub
+                = cluster.context().aeron().addExclusivePublication(GLOBAL_STREAM_CHANNEL, GLOBAL_STREAM_ID);
             // Idempotent: safe to call again if this node regains leadership later.
             aeronArchive.startRecording(GLOBAL_STREAM_CHANNEL, GLOBAL_STREAM_ID, SourceLocation.LOCAL);
         }
@@ -400,8 +389,12 @@ public final class SequencerService implements ClusteredService {
                 Thread.currentThread().interrupt();
             }
         }
-        if (aeronArchive  != null) { aeronArchive.close(); }
-        if (globalStreamPub != null) { globalStreamPub.close(); }
+        if (aeronArchive != null) {
+            aeronArchive.close();
+        }
+        if (globalStreamPub != null) {
+            globalStreamPub.close();
+        }
     }
 
     // ── Private helpers ───────────────────────────────────────────────────────
@@ -410,15 +403,12 @@ public final class SequencerService implements ClusteredService {
         int idleSpins = 0;
         long result;
         while ((result = globalStreamPub.offer(encodeBuffer, 0, length)) < 0) {
-            if (result == ExclusivePublication.CLOSED
-                || result == ExclusivePublication.MAX_POSITION_EXCEEDED) {
-                throw new IllegalStateException(
-                    "[SequencerService] Global stream publication failed: " + result);
+            if (result == ExclusivePublication.CLOSED || result == ExclusivePublication.MAX_POSITION_EXCEEDED) {
+                throw new IllegalStateException("[SequencerService] Global stream publication failed: " + result);
             }
             if (++idleSpins >= MAX_BACK_PRESSURE_SPINS) {
-                System.err.printf(
-                    "[SequencerService] ALERT: global stream back-pressure at globalSeqNo=%d%n",
-                    globalSeqNo);
+                System.err.printf("[SequencerService] ALERT: global stream back-pressure at globalSeqNo=%d%n",
+                                  globalSeqNo);
                 idleSpins = 0;
             }
             cluster.idleStrategy().idle();
@@ -441,29 +431,28 @@ public final class SequencerService implements ClusteredService {
      * backlog of stale ones.
      */
     private static final class StandbyFollower implements Runnable {
-
         private static final int LOCAL_ARCHIVE_RESPONSE_STREAM_ID = 101;
 
         private final Aeron aeron;
         private final AeronArchive localArchive;
-        private final int   selfMemberId;
+        private final int selfMemberId;
         private final Map<Integer, String> archiveEndpointsByMemberId;
         private final LinkedBlockingDeque<Integer> events = new LinkedBlockingDeque<>();
         private volatile boolean running = true;
         private long activeReplicationId = NULL_VALUE;
 
         StandbyFollower(final String aeronDirectoryName, final int selfMemberId,
-                         final Map<Integer, String> archiveEndpointsByMemberId) {
+                        final Map<Integer, String> archiveEndpointsByMemberId) {
             this.selfMemberId = selfMemberId;
             this.archiveEndpointsByMemberId = archiveEndpointsByMemberId;
             aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(aeronDirectoryName));
             localArchive = AeronArchive.connect(new AeronArchive.Context()
-                .aeron(aeron)
-                .ownsAeronClient(false)
-                .controlRequestChannel("aeron:ipc")
-                .controlRequestStreamId(ARCHIVE_CONTROL_STREAM_ID)
-                .controlResponseChannel("aeron:ipc")
-                .controlResponseStreamId(LOCAL_ARCHIVE_RESPONSE_STREAM_ID));
+                                                    .aeron(aeron)
+                                                    .ownsAeronClient(false)
+                                                    .controlRequestChannel("aeron:ipc")
+                                                    .controlRequestStreamId(ARCHIVE_CONTROL_STREAM_ID)
+                                                    .controlResponseChannel("aeron:ipc")
+                                                    .controlResponseStreamId(LOCAL_ARCHIVE_RESPONSE_STREAM_ID));
         }
 
         /** Non-blocking: just enqueues, safe to call from the conductor thread. */
@@ -519,12 +508,13 @@ public final class SequencerService implements ClusteredService {
             if (srcRecordingId == NULL_VALUE) {
                 System.err.printf(
                     "[StandbyFollower] No active global-stream recording found on leaderMemberId=%d (%s); "
-                        + "cannot standby-follow yet%n", leaderMemberId, leaderEndpoint);
+                        + "cannot standby-follow yet%n",
+                    leaderMemberId, leaderEndpoint);
                 return;
             }
 
-            activeReplicationId = localArchive.replicate(srcRecordingId, NULL_VALUE,
-                ARCHIVE_CONTROL_STREAM_ID, leaderArchiveChannel, STANDBY_LIVE_DESTINATION);
+            activeReplicationId = localArchive.replicate(srcRecordingId, NULL_VALUE, ARCHIVE_CONTROL_STREAM_ID,
+                                                         leaderArchiveChannel, STANDBY_LIVE_DESTINATION);
         }
 
         // Opens a short-lived control session directly to a peer archive purely to find the
@@ -535,20 +525,22 @@ public final class SequencerService implements ClusteredService {
         // its own thread instead of running inline in SequencerService.applyLeadership.
         private long resolveActiveRecordingId(final String archiveChannel) {
             final long[] recordingId = { NULL_VALUE };
-            try (AeronArchive remote = AeronArchive.connect(new AeronArchive.Context()
-                .aeron(aeron)
-                .ownsAeronClient(false)
-                .controlRequestChannel(archiveChannel)
-                .controlRequestStreamId(ARCHIVE_CONTROL_STREAM_ID)
-                .controlResponseChannel("aeron:udp?endpoint=localhost:0"))) {
+            try (AeronArchive remote
+                 = AeronArchive.connect(new AeronArchive.Context()
+                                            .aeron(aeron)
+                                            .ownsAeronClient(false)
+                                            .controlRequestChannel(archiveChannel)
+                                            .controlRequestStreamId(ARCHIVE_CONTROL_STREAM_ID)
+                                            .controlResponseChannel("aeron:udp?endpoint=localhost:0"))) {
                 remote.listRecordingsForUri(0, Integer.MAX_VALUE, "", GLOBAL_STREAM_ID,
-                    (controlSessionId, correlationId, recId, startTimestamp, stopTimestamp, startPosition,
-                     stopPosition, initialTermId, segmentFileLength, termBufferLength, mtuLength, sessionId,
-                     streamId, strippedChannel, originalChannel, sourceIdentity) -> {
-                        if (stopTimestamp == AeronArchive.NULL_TIMESTAMP) {
-                            recordingId[0] = recId;
-                        }
-                    });
+                                            (controlSessionId, correlationId, recId, startTimestamp, stopTimestamp,
+                                             startPosition, stopPosition, initialTermId, segmentFileLength,
+                                             termBufferLength, mtuLength, sessionId, streamId, strippedChannel,
+                                             originalChannel, sourceIdentity) -> {
+                                                if (stopTimestamp == AeronArchive.NULL_TIMESTAMP) {
+                                                    recordingId[0] = recId;
+                                                }
+                                            });
             } catch (final RuntimeException ex) {
                 System.err.printf("[StandbyFollower] Failed to reach archive at %s: %s%n", archiveChannel, ex);
             }

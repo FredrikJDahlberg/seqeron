@@ -17,19 +17,17 @@
 #include "client/archive/AeronArchive.h"
 
 // Generated SBE C++ codecs from sbe-sequenced.xml (via GenerateSequencedSbeCodecs)
-#include "org_limitless_phixeron_sbe_sequenced/MessageHeader.h"
 #include "org_limitless_phixeron_sbe_sequenced/Header.h"
+#include "org_limitless_phixeron_sbe_sequenced/MessageHeader.h"
 
-namespace org::limitless::phixeron::sequencer
-{
+namespace org::limitless::phixeron::sequencer {
 
 // ── Constants matching SequencerService / SequencerNode ──────────────────────
 
 // Multi-destination-cast (dynamic control mode). This is the publisher/archive-recording
 // channel — matches SequencerService.GLOBAL_STREAM_CHANNEL, used here only for archive
 // recording lookups (listRecordingsForUri), never to open a local subscription directly.
-inline constexpr const char* GLOBAL_STREAM_CHANNEL =
-    "aeron:udp?control-mode=dynamic|control=localhost:9200";
+inline constexpr const char* GLOBAL_STREAM_CHANNEL = "aeron:udp?control-mode=dynamic|control=localhost:9200";
 
 // Subscriber-side channel: same control address, plus an ephemeral local data endpoint
 // that the publisher discovers and adds as a destination automatically. Matches
@@ -93,7 +91,7 @@ inline std::vector<std::string> resolveArchiveEndpoints(const char* envVar, cons
     while (start <= csv.size())
     {
         const std::size_t comma = csv.find(',', start);
-        const std::size_t end   = (comma == std::string::npos) ? csv.size() : comma;
+        const std::size_t end = (comma == std::string::npos) ? csv.size() : comma;
         if (end > start)
         {
             endpoints.push_back(csv.substr(start, end - start));
@@ -117,28 +115,24 @@ inline std::vector<std::string> resolveArchiveEndpoints(const char* envVar, cons
  * @return false if the archive holds no GLOBAL_STREAM_ID recording at all (leaving both
  *         out-parameters untouched).
  */
-inline bool findGlobalStreamRecording(
-    const std::shared_ptr<aeron::archive::client::AeronArchive>& archive,
-    std::int64_t&                                                 recordingId,
-    std::int64_t&                                                 catchUpPosition)
+inline bool findGlobalStreamRecording(const std::shared_ptr<aeron::archive::client::AeronArchive>& archive,
+                                      std::int64_t& recordingId, std::int64_t& catchUpPosition)
 {
-    std::int64_t activeId        = -1;
-    std::int64_t stoppedId       = -1;
+    std::int64_t activeId = -1;
+    std::int64_t stoppedId = -1;
     std::int64_t stoppedPosition = std::numeric_limits<std::int64_t>::min();
-    archive->listRecordingsForUri(
-        0, std::numeric_limits<std::int32_t>::max(), "", GLOBAL_STREAM_ID,
-        [&](aeron::archive::client::RecordingDescriptor& recording)
-        {
-            if (recording.m_stopPosition == aeron::archive::client::NULL_POSITION)
-            {
-                activeId = recording.m_recordingId;
-            }
-            else if (recording.m_stopPosition > stoppedPosition)
-            {
-                stoppedId       = recording.m_recordingId;
-                stoppedPosition = recording.m_stopPosition;
-            }
-        });
+    archive->listRecordingsForUri(0, std::numeric_limits<std::int32_t>::max(), "", GLOBAL_STREAM_ID,
+                                  [&](aeron::archive::client::RecordingDescriptor& recording) {
+                                      if (recording.m_stopPosition == aeron::archive::client::NULL_POSITION)
+                                      {
+                                          activeId = recording.m_recordingId;
+                                      }
+                                      else if (recording.m_stopPosition > stoppedPosition)
+                                      {
+                                          stoppedId = recording.m_recordingId;
+                                          stoppedPosition = recording.m_stopPosition;
+                                      }
+                                  });
 
     if (activeId < 0 && stoppedId < 0)
     {
@@ -157,7 +151,7 @@ inline bool findGlobalStreamRecording(
     else
     {
         catchUpPosition = stoppedPosition;
-        recordingId     = stoppedId;
+        recordingId = stoppedId;
     }
     return true;
 }
@@ -191,13 +185,8 @@ inline bool findGlobalStreamRecording(
  *         a global stream recording.
  */
 inline std::shared_ptr<aeron::archive::client::AeronArchive> connectToArchiveWithGlobalStream(
-    std::shared_ptr<aeron::Aeron>    aeron,
-    const std::vector<std::string>& controlEndpoints,
-    std::int32_t                     controlStreamId,
-    const char*                      controlResponseChannel,
-    const char*                      logPrefix,
-    std::int64_t&                    recordingId,
-    std::int64_t&                    catchUpPosition)
+    std::shared_ptr<aeron::Aeron> aeron, const std::vector<std::string>& controlEndpoints, std::int32_t controlStreamId,
+    const char* controlResponseChannel, const char* logPrefix, std::int64_t& recordingId, std::int64_t& catchUpPosition)
 {
     std::string lastError = "no candidate endpoints given";
     for (const auto& endpoint : controlEndpoints)
@@ -207,36 +196,36 @@ inline std::shared_ptr<aeron::archive::client::AeronArchive> connectToArchiveWit
         {
             aeron::archive::client::Context archiveCtx;
             archiveCtx.aeron(aeron)
-                      .controlRequestChannel("aeron:udp?endpoint=" + endpoint)
-                      .controlRequestStreamId(controlStreamId)
-                      .controlResponseChannel(controlResponseChannel);
+                .controlRequestChannel("aeron:udp?endpoint=" + endpoint)
+                .controlRequestStreamId(controlStreamId)
+                .controlResponseChannel(controlResponseChannel);
             archive = aeron::archive::client::AeronArchive::connect(archiveCtx);
         }
         catch (const std::exception& ex)
         {
-            std::fprintf(stderr, "%s Archive connect to %s failed: %s\n",
-                         logPrefix, endpoint.c_str(), ex.what());
+            std::fprintf(stderr, "%s Archive connect to %s failed: %s\n", logPrefix, endpoint.c_str(), ex.what());
             lastError = ex.what();
             continue;
         }
 
         if (!findGlobalStreamRecording(archive, recordingId, catchUpPosition))
         {
-            std::printf("%s Connected to %s but it has no global stream recording"
-                        " (not currently/recently leader) — trying next endpoint\n",
-                        logPrefix, endpoint.c_str());
+            std::printf(
+                "%s Connected to %s but it has no global stream recording"
+                " (not currently/recently leader) — trying next endpoint\n",
+                logPrefix, endpoint.c_str());
             lastError = "connected but no global stream recording found on " + endpoint;
             continue;
         }
 
-        std::printf("%s Connected to Aeron Archive at %s (holds the global stream recording)\n",
-                    logPrefix, endpoint.c_str());
+        std::printf("%s Connected to Aeron Archive at %s (holds the global stream recording)\n", logPrefix,
+                    endpoint.c_str());
         return archive;
     }
 
-    throw std::runtime_error(
-        std::string(logPrefix) + " Could not find the global stream recording on any of " +
-        std::to_string(controlEndpoints.size()) + " archive endpoint(s); last error: " + lastError);
+    throw std::runtime_error(std::string(logPrefix) + " Could not find the global stream recording on any of " +
+                             std::to_string(controlEndpoints.size()) +
+                             " archive endpoint(s); last error: " + lastError);
 }
 
 /**
@@ -253,28 +242,25 @@ inline std::shared_ptr<aeron::archive::client::AeronArchive> connectToArchiveWit
  * @throws std::runtime_error if the local archive can't be reached, or holds no global
  *         stream recording at all.
  */
-inline std::shared_ptr<aeron::archive::client::AeronArchive> connectLocalArchive(
-    std::shared_ptr<aeron::Aeron> aeron,
-    std::int32_t                  controlStreamId,
-    const char*                   logPrefix,
-    std::int64_t&                 recordingId,
-    std::int64_t&                 catchUpPosition)
+inline std::shared_ptr<aeron::archive::client::AeronArchive> connectLocalArchive(std::shared_ptr<aeron::Aeron> aeron,
+                                                                                 std::int32_t controlStreamId,
+                                                                                 const char* logPrefix,
+                                                                                 std::int64_t& recordingId,
+                                                                                 std::int64_t& catchUpPosition)
 {
     aeron::archive::client::Context archiveCtx;
     archiveCtx.aeron(aeron)
-              .controlRequestChannel("aeron:ipc")
-              .controlRequestStreamId(controlStreamId)
-              .controlResponseChannel("aeron:ipc");
+        .controlRequestChannel("aeron:ipc")
+        .controlRequestStreamId(controlStreamId)
+        .controlResponseChannel("aeron:ipc");
     auto archive = aeron::archive::client::AeronArchive::connect(archiveCtx);
 
     if (!findGlobalStreamRecording(archive, recordingId, catchUpPosition))
     {
-        throw std::runtime_error(
-            std::string(logPrefix) + " Co-located archive has no global stream recording");
+        throw std::runtime_error(std::string(logPrefix) + " Co-located archive has no global stream recording");
     }
 
-    std::printf("%s Connected to co-located Aeron Archive via IPC (holds the global stream recording)\n",
-                logPrefix);
+    std::printf("%s Connected to co-located Aeron Archive via IPC (holds the global stream recording)\n", logPrefix);
     return archive;
 }
 
@@ -283,8 +269,7 @@ inline std::shared_ptr<aeron::archive::client::AeronArchive> connectLocalArchive
  * stopPosition is NULL_POSITION when the recording is still active (only
  * possible for the last segment in a resolveGlobalStreamSegments() result).
  */
-struct RecordingSegment
-{
+struct RecordingSegment {
     std::int64_t recordingId;
     std::int64_t stopPosition;
 };
@@ -306,8 +291,7 @@ struct RecordingSegment
 inline std::vector<RecordingSegment> resolveGlobalStreamSegments(
     const std::shared_ptr<aeron::archive::client::AeronArchive>& archive)
 {
-    struct Entry
-    {
+    struct Entry {
         std::int64_t recordingId;
         std::int64_t startTimestamp;
         std::int64_t stopPosition;
@@ -315,13 +299,12 @@ inline std::vector<RecordingSegment> resolveGlobalStreamSegments(
     std::vector<Entry> entries;
     archive->listRecordingsForUri(
         0, std::numeric_limits<std::int32_t>::max(), "", GLOBAL_STREAM_ID,
-        [&](aeron::archive::client::RecordingDescriptor& recording)
-        {
+        [&](aeron::archive::client::RecordingDescriptor& recording) {
             entries.push_back({recording.m_recordingId, recording.m_startTimestamp, recording.m_stopPosition});
         });
 
     std::sort(entries.begin(), entries.end(),
-               [](const Entry& a, const Entry& b) { return a.startTimestamp < b.startTimestamp; });
+              [](const Entry& a, const Entry& b) { return a.startTimestamp < b.startTimestamp; });
 
     std::vector<RecordingSegment> segments;
     bool keptActive = false;
@@ -344,7 +327,7 @@ inline std::vector<RecordingSegment> resolveGlobalStreamSegments(
 // ClientConnected/ClientDisconnected aren't FIX messages, so sbe-sequenced.xml
 // (like sbe-unsequenced.xml) gives them small, non-ASCII-derived template ids,
 // clear of the FIX-MsgType-derived range used by every other message.
-inline constexpr std::uint16_t CLIENT_CONNECTED_TEMPLATE_ID    = 1;
+inline constexpr std::uint16_t CLIENT_CONNECTED_TEMPLATE_ID = 1;
 inline constexpr std::uint16_t CLIENT_DISCONNECTED_TEMPLATE_ID = 2;
 
 // ── Event types delivered to the application ─────────────────────────────────
@@ -365,25 +348,23 @@ inline constexpr std::uint16_t CLIENT_DISCONNECTED_TEMPLATE_ID = 2;
  * full message (its own 8-byte messageHeader included). Copy the data before
  * returning if it must survive.
  */
-struct SequencedEvent
-{
-    std::int64_t  globalSeqNo;
-    std::int32_t  sourceId;         ///< Fixed constant identifying the submitting gateway process (header.sourceId)
-    std::int32_t  connectionId;     ///< TCP connection id at that gateway; routes the reply (header.connectionId)
-    std::int64_t  sourceSessionId;  ///< Aeron Cluster client session id (header.sessionId)
-    std::int64_t  clusterTimestamp; ///< cluster consensus time (ms) when message was committed
-    std::int64_t  receiveTimeNs;    ///< wall-clock ns at receipt by this client
+struct SequencedEvent {
+    std::int64_t globalSeqNo;
+    std::int32_t sourceId;          ///< Fixed constant identifying the submitting gateway process (header.sourceId)
+    std::int32_t connectionId;      ///< TCP connection id at that gateway; routes the reply (header.connectionId)
+    std::int64_t sourceSessionId;   ///< Aeron Cluster client session id (header.sessionId)
+    std::int64_t clusterTimestamp;  ///< cluster consensus time (ms) when message was committed
+    std::int64_t receiveTimeNs;     ///< wall-clock ns at receipt by this client
     std::uint16_t templateId;       ///< outer messageHeader templateId; picks the specific decode
     std::uint16_t blockLength;      ///< outer messageHeader blockLength; pass straight to wrapForDecode
     std::uint16_t version;          ///< outer messageHeader version; pass straight to wrapForDecode
-    const char*   payload;          ///< raw sbe-sequenced.xml message bytes (see struct comment)
+    const char* payload;            ///< raw sbe-sequenced.xml message bytes (see struct comment)
     std::uint64_t payloadLength;    ///< total byte count
-    std::int64_t  position;         ///< recording/stream position of this frame's first byte;
-                                     ///< pass to ReplayParams::position() to replay from here
+    std::int64_t position;          ///< recording/stream position of this frame's first byte;
+                                    ///< pass to ReplayParams::position() to replay from here
 };
 
-struct LifecycleEvent
-{
+struct LifecycleEvent {
     std::int64_t globalSeqNo;
     std::int64_t sourceSessionId;
     std::int64_t clusterTimestamp;
@@ -414,25 +395,20 @@ struct LifecycleEvent
  *
  * Every message is stamped with receiveTimeNs (std::chrono::system_clock).
  */
-class GlobalStreamClient
-{
-public:
-    using OnSequenced    = std::function<void(const SequencedEvent&)>;
-    using OnConnected    = std::function<void(const LifecycleEvent&)>;
+class GlobalStreamClient {
+   public:
+    using OnSequenced = std::function<void(const SequencedEvent&)>;
+    using OnConnected = std::function<void(const LifecycleEvent&)>;
     using OnDisconnected = std::function<void(const LifecycleEvent&)>;
-    using OnCaughtUp     = std::function<void()>;
+    using OnCaughtUp = std::function<void()>;
 
-    explicit GlobalStreamClient(OnSequenced    onSequenced,
-                                OnConnected    onConnected    = {},
-                                OnDisconnected onDisconnected = {},
-                                OnCaughtUp     onCaughtUp     = {})
-        : m_onSequenced(std::move(onSequenced))
-        , m_onConnected(std::move(onConnected))
-        , m_onDisconnected(std::move(onDisconnected))
-        , m_onCaughtUp(std::move(onCaughtUp))
-        , m_fragmentHandler([this](auto& buf, auto off, auto len, auto& hdr) {
-              onFragment(buf, off, len, hdr);
-          })
+    explicit GlobalStreamClient(OnSequenced onSequenced, OnConnected onConnected = {},
+                                OnDisconnected onDisconnected = {}, OnCaughtUp onCaughtUp = {})
+        : m_onSequenced(std::move(onSequenced)),
+          m_onConnected(std::move(onConnected)),
+          m_onDisconnected(std::move(onDisconnected)),
+          m_onCaughtUp(std::move(onCaughtUp)),
+          m_fragmentHandler([this](auto& buf, auto off, auto len, auto& hdr) { onFragment(buf, off, len, hdr); })
     {}
 
     /**
@@ -447,13 +423,11 @@ public:
      * @param replayChannel channel the archive publishes replays on;
      *                      ignored when segments is empty
      */
-    void start(std::shared_ptr<aeron::Aeron>                             aeron,
-               std::shared_ptr<aeron::archive::client::AeronArchive>     archive,
-               std::vector<RecordingSegment>                             segments,
-               const char*                                               replayChannel = nullptr)
+    void start(std::shared_ptr<aeron::Aeron> aeron, std::shared_ptr<aeron::archive::client::AeronArchive> archive,
+               std::vector<RecordingSegment> segments, const char* replayChannel = nullptr)
     {
-        m_aeron    = std::move(aeron);
-        m_archive  = std::move(archive);
+        m_aeron = std::move(aeron);
+        m_archive = std::move(archive);
         m_segments = std::move(segments);
 
         // Live MDC fallback — always subscribed; used when the last segment's replay image closes.
@@ -480,7 +454,7 @@ public:
             m_catchUpPosition = last.stopPosition;
         }
 
-        m_replayChannel  = replayChannel;
+        m_replayChannel = replayChannel;
         m_replaySubRegId = m_aeron->addSubscription(m_replayChannel, REPLAY_STREAM_ID);
         startSegmentReplay(0);
     }
@@ -500,15 +474,13 @@ public:
      * @param replayChannel   channel the archive publishes the replay on;
      *                        ignored when replaySessionId < 0
      */
-    void start(std::shared_ptr<aeron::Aeron> aeron,
-               std::int64_t                  replaySessionId,
-               std::int64_t                  catchUpPosition,
-               const char*                   replayChannel = nullptr)
+    void start(std::shared_ptr<aeron::Aeron> aeron, std::int64_t replaySessionId, std::int64_t catchUpPosition,
+               const char* replayChannel = nullptr)
     {
-        m_aeron            = std::move(aeron);
-        m_singleImageMode  = true;
-        m_replaySessionId  = replaySessionId;
-        m_catchUpPosition  = catchUpPosition;
+        m_aeron = std::move(aeron);
+        m_singleImageMode = true;
+        m_replaySessionId = replaySessionId;
+        m_catchUpPosition = catchUpPosition;
 
         if (replaySessionId >= 0 && replayChannel != nullptr)
         {
@@ -543,8 +515,7 @@ public:
         // Lazily resolve the current segment's replay image once it becomes available.
         if (!m_replayImage && m_replaySub)
         {
-            m_replayImage = m_replaySub->imageBySessionId(
-                static_cast<std::int32_t>(m_replaySessionId));
+            m_replayImage = m_replaySub->imageBySessionId(static_cast<std::int32_t>(m_replaySessionId));
         }
 
         if (m_replayImage)
@@ -571,15 +542,19 @@ public:
         }
 
         // Live MDC fallback — poll the subscription directly.
-        if (m_liveSub) {
+        if (m_liveSub)
+        {
             return m_liveSub->poll(m_fragmentHandler, FRAGMENT_LIMIT);
         }
         return 0;
     }
 
-    bool isCaughtUp() const { return m_caughtUp; }
+    bool isCaughtUp() const
+    {
+        return m_caughtUp;
+    }
 
-private:
+   private:
     static constexpr int FRAGMENT_LIMIT = 10;
 
     bool isOnLastSegment() const
@@ -590,22 +565,19 @@ private:
     void startSegmentReplay(std::size_t index)
     {
         const auto& segment = m_segments[index];
-        const bool  isLast  = (index + 1 == m_segments.size());
+        const bool isLast = (index + 1 == m_segments.size());
 
         aeron::archive::client::ReplayParams replayParams;
-        replayParams.position(0).length(
-            isLast ? aeron::archive::client::NULL_LENGTH : segment.stopPosition);
-        m_replaySessionId = m_archive->startReplay(
-            segment.recordingId, m_replayChannel, REPLAY_STREAM_ID, replayParams);
+        replayParams.position(0).length(isLast ? aeron::archive::client::NULL_LENGTH : segment.stopPosition);
+        m_replaySessionId =
+            m_archive->startReplay(segment.recordingId, m_replayChannel, REPLAY_STREAM_ID, replayParams);
     }
 
     using HdrSbe = org::limitless::phixeron::sbe::sequenced::MessageHeader;
     using HeaderComposite = org::limitless::phixeron::sbe::sequenced::Header;
 
-    void onFragment(const aeron::concurrent::AtomicBuffer& buffer,
-                    const aeron::util::index_t offset,
-                    const aeron::util::index_t length,
-                    const aeron::Header& header)
+    void onFragment(const aeron::concurrent::AtomicBuffer& buffer, const aeron::util::index_t offset,
+                    const aeron::util::index_t length, const aeron::Header& header)
     {
         const std::int64_t receiveNs = nowNs();
 
@@ -615,7 +587,7 @@ private:
         // to replay starting at (and including) this exact message.
         const std::int64_t framePosition = header.position() - header.frameLength();
 
-        char* const         raw = reinterpret_cast<char*>(buffer.buffer());
+        char* const raw = reinterpret_cast<char*>(buffer.buffer());
         const std::uint64_t cap = static_cast<std::uint64_t>(buffer.capacity());
         const std::uint64_t off = static_cast<std::uint64_t>(offset);
         const std::uint64_t len = static_cast<std::uint64_t>(length);
@@ -633,24 +605,22 @@ private:
         }
 
         const std::uint16_t templateId = m_hdr.templateId();
-        const std::uint64_t bodyOff    = off + HdrSbe::encodedLength();
+        const std::uint64_t bodyOff = off + HdrSbe::encodedLength();
 
         m_header.wrap(raw, bodyOff, 0U, cap);
-        const auto gseq  = m_header.globalSeqNo();
+        const auto gseq = m_header.globalSeqNo();
         const auto srcId = m_header.sourceId();
         const auto connId = m_header.connectionId();
         const auto sessId = m_header.sessionId();
-        const auto ts    = m_header.timestamp();
+        const auto ts = m_header.timestamp();
         if (templateId == CLIENT_CONNECTED_TEMPLATE_ID)
         {
             if (m_onConnected)
             {
-                m_onConnected(LifecycleEvent{
-                    .globalSeqNo      = gseq,
-                    .sourceSessionId  = sessId,
-                    .clusterTimestamp = ts,
-                    .receiveTimeNs    = receiveNs
-                });
+                m_onConnected(LifecycleEvent{.globalSeqNo = gseq,
+                                             .sourceSessionId = sessId,
+                                             .clusterTimestamp = ts,
+                                             .receiveTimeNs = receiveNs});
             }
             return;
         }
@@ -658,38 +628,37 @@ private:
         {
             if (m_onDisconnected)
             {
-                m_onDisconnected(LifecycleEvent{
-                    .globalSeqNo      = gseq,
-                    .sourceSessionId  = sessId,
-                    .clusterTimestamp = ts,
-                    .receiveTimeNs    = receiveNs
-                });
+                m_onDisconnected(LifecycleEvent{.globalSeqNo = gseq,
+                                                .sourceSessionId = sessId,
+                                                .clusterTimestamp = ts,
+                                                .receiveTimeNs = receiveNs});
             }
             return;
         }
         if (m_onSequenced)
         {
-            m_onSequenced(SequencedEvent{
-                .globalSeqNo      = gseq,
-                .sourceId         = srcId,
-                .connectionId     = connId,
-                .sourceSessionId  = sessId,
-                .clusterTimestamp = ts,
-                .receiveTimeNs    = receiveNs,
-                .templateId       = templateId,
-                .blockLength      = m_hdr.blockLength(),
-                .version          = m_hdr.version(),
-                .payload          = raw + off,
-                .payloadLength    = len,
-                .position         = framePosition
-            });
+            m_onSequenced(SequencedEvent{.globalSeqNo = gseq,
+                                         .sourceId = srcId,
+                                         .connectionId = connId,
+                                         .sourceSessionId = sessId,
+                                         .clusterTimestamp = ts,
+                                         .receiveTimeNs = receiveNs,
+                                         .templateId = templateId,
+                                         .blockLength = m_hdr.blockLength(),
+                                         .version = m_hdr.version(),
+                                         .payload = raw + off,
+                                         .payloadLength = len,
+                                         .position = framePosition});
         }
     }
 
     void notifyCaughtUp()
     {
         m_caughtUp = true;
-        if (m_onCaughtUp) { m_onCaughtUp(); }
+        if (m_onCaughtUp)
+        {
+            m_onCaughtUp();
+        }
     }
 
     static std::int64_t nowNs()
@@ -698,31 +667,31 @@ private:
         return duration_cast<nanoseconds>(system_clock::now().time_since_epoch()).count();
     }
 
-    OnSequenced    m_onSequenced;
-    OnConnected    m_onConnected;
+    OnSequenced m_onSequenced;
+    OnConnected m_onConnected;
     OnDisconnected m_onDisconnected;
-    OnCaughtUp     m_onCaughtUp;
+    OnCaughtUp m_onCaughtUp;
 
     std::shared_ptr<aeron::Aeron> m_aeron;
     std::shared_ptr<aeron::archive::client::AeronArchive> m_archive;
     std::int64_t m_replaySubRegId = -1;
-    std::int64_t m_liveSubRegId   = -1;
+    std::int64_t m_liveSubRegId = -1;
     std::shared_ptr<aeron::Subscription> m_replaySub;
     std::shared_ptr<aeron::Subscription> m_liveSub;
     std::shared_ptr<aeron::Image> m_replayImage;
 
     std::vector<RecordingSegment> m_segments;
-    std::size_t  m_segmentIndex    = 0;
-    bool         m_singleImageMode = false;
-    std::string  m_replayChannel;
+    std::size_t m_segmentIndex = 0;
+    bool m_singleImageMode = false;
+    std::string m_replayChannel;
     std::int64_t m_replaySessionId = -1;
     std::int64_t m_catchUpPosition = 0;
-    bool         m_caughtUp        = false;
+    bool m_caughtUp = false;
 
     aeron::fragment_handler_t m_fragmentHandler;
 
-    HdrSbe          m_hdr;
+    HdrSbe m_hdr;
     HeaderComposite m_header;
 };
 
-} // namespace org::limitless::phixeron::sequencer
+}  // namespace org::limitless::phixeron::sequencer

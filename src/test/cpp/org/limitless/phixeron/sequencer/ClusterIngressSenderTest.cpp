@@ -19,17 +19,14 @@
 
 #include "org/limitless/phixeron/sequencer/ClusterIngressSender.hpp"
 
-namespace org::limitless::phixeron::sequencer
-{
-namespace
-{
+namespace org::limitless::phixeron::sequencer {
+namespace {
 
 // ── Fake transports ───────────────────────────────────────────────────────────
 
 // Captures every frame offered to the cluster ingress for inspection by tests.
-class FakeIngressTransport : public IngressTransport
-{
-public:
+class FakeIngressTransport : public IngressTransport {
+   public:
     std::vector<std::vector<std::uint8_t>> m_offered;
 
     bool offer(std::span<const std::uint8_t> bytes) override
@@ -41,9 +38,8 @@ public:
 
 // Delivers pre-queued frames on poll(), one per call, mimicking a cluster
 // egress subscription that already has messages buffered.
-class FakeEgressTransport : public EgressTransport
-{
-public:
+class FakeEgressTransport : public EgressTransport {
+   public:
     std::deque<std::vector<std::uint8_t>> m_queued;
 
     int poll(const FragmentHandler& handler) override
@@ -61,30 +57,27 @@ public:
 
 // ── Fixture wire helpers ──────────────────────────────────────────────────────
 
-std::vector<std::uint8_t> encodeSessionEvent(std::int64_t clusterSessionId,
-                                              std::int64_t leadershipTermId,
-                                              cluster_sbe::EventCode::Value code,
-                                              std::int32_t leaderMemberId = 0,
-                                              std::string_view detail = {})
+std::vector<std::uint8_t> encodeSessionEvent(std::int64_t clusterSessionId, std::int64_t leadershipTermId,
+                                             cluster_sbe::EventCode::Value code, std::int32_t leaderMemberId = 0,
+                                             std::string_view detail = {})
 {
     std::vector<std::uint8_t> buf(256 + detail.size(), 0);
     cluster_sbe::SessionEvent enc;
     enc.wrapAndApplyHeader(reinterpret_cast<char*>(buf.data()), 0, buf.size());
     enc.clusterSessionId(clusterSessionId)
-       .correlationId(1)
-       .leadershipTermId(leadershipTermId)
-       .leaderMemberId(leaderMemberId)
-       .code(code)
-       .version(CLUSTER_PROTOCOL_VERSION)
-       .leaderHeartbeatTimeoutNs(0);
+        .correlationId(1)
+        .leadershipTermId(leadershipTermId)
+        .leaderMemberId(leaderMemberId)
+        .code(code)
+        .version(CLUSTER_PROTOCOL_VERSION)
+        .leaderHeartbeatTimeoutNs(0);
     enc.putDetail(detail.data(), static_cast<int>(detail.size()));
     buf.resize(enc.sbePosition());
     return buf;
 }
 
-std::vector<std::uint8_t> encodeNewLeaderEvent(std::int64_t leadershipTermId,
-                                                std::int32_t leaderMemberId = 0,
-                                                std::string_view ingressEndpoints = {})
+std::vector<std::uint8_t> encodeNewLeaderEvent(std::int64_t leadershipTermId, std::int32_t leaderMemberId = 0,
+                                               std::string_view ingressEndpoints = {})
 {
     std::vector<std::uint8_t> buf(128 + ingressEndpoints.size(), 0);
     cluster_sbe::NewLeaderEvent enc;
@@ -97,16 +90,15 @@ std::vector<std::uint8_t> encodeNewLeaderEvent(std::int64_t leadershipTermId,
 
 // Builds an egress frame carrying an application-layer payload the way the
 // real cluster echoes it back: SessionMessageHeader followed by arbitrary bytes.
-std::vector<std::uint8_t> encodeSessionMessage(std::int64_t leadershipTermId,
-                                                std::int64_t clusterSessionId,
-                                                std::span<const std::uint8_t> appPayload)
+std::vector<std::uint8_t> encodeSessionMessage(std::int64_t leadershipTermId, std::int64_t clusterSessionId,
+                                               std::span<const std::uint8_t> appPayload)
 {
     std::vector<std::uint8_t> buf(256 + appPayload.size(), 0);
     cluster_sbe::SessionMessageHeader enc;
     enc.wrapAndApplyHeader(reinterpret_cast<char*>(buf.data()), 0, buf.size())
-       .leadershipTermId(leadershipTermId)
-       .clusterSessionId(clusterSessionId)
-       .timestamp(0);
+        .leadershipTermId(leadershipTermId)
+        .clusterSessionId(clusterSessionId)
+        .timestamp(0);
     const auto pos = static_cast<std::size_t>(enc.sbePosition());
     std::memcpy(buf.data() + pos, appPayload.data(), appPayload.size());
     buf.resize(pos + appPayload.size());
@@ -123,9 +115,8 @@ SbeMsg decodeOffered(std::vector<std::uint8_t>& frame)
     EXPECT_EQ(SbeMsg::sbeTemplateId(), hdr.templateId());
 
     SbeMsg dec;
-    dec.wrapForDecode(reinterpret_cast<char*>(frame.data()),
-                       cluster_sbe::MessageHeader::encodedLength(),
-                       hdr.blockLength(), hdr.version(), frame.size());
+    dec.wrapForDecode(reinterpret_cast<char*>(frame.data()), cluster_sbe::MessageHeader::encodedLength(),
+                      hdr.blockLength(), hdr.version(), frame.size());
     return dec;
 }
 
@@ -164,10 +155,8 @@ TEST(ClusterIngressSender, ConnectThrowsWhenClusterNeverAnswers)
     ClusterIngressSender sender;
     sender.setConnectTimeoutMs(20);
 
-    EXPECT_THROW(
-        sender.connect(std::make_unique<FakeIngressTransport>(),
-                       std::make_unique<FakeEgressTransport>()),
-        std::runtime_error);
+    EXPECT_THROW(sender.connect(std::make_unique<FakeIngressTransport>(), std::make_unique<FakeEgressTransport>()),
+                 std::runtime_error);
     EXPECT_FALSE(sender.isConnected());
 }
 
@@ -189,8 +178,8 @@ TEST(ClusterIngressSender, ConnectIgnoresErrorEventCodesUntilOkArrives)
 TEST(ClusterIngressSender, ConnectIgnoresRedirectWithoutAeronClientThenConnectsOnOk)
 {
     auto egress = std::make_unique<FakeEgressTransport>();
-    egress->m_queued.push_back(encodeSessionEvent(-1, 0, cluster_sbe::EventCode::Value::REDIRECT,
-                                                  1, "1=localhost:9312"));
+    egress->m_queued.push_back(
+        encodeSessionEvent(-1, 0, cluster_sbe::EventCode::Value::REDIRECT, 1, "1=localhost:9312"));
     egress->m_queued.push_back(encodeSessionEvent(9, 3, cluster_sbe::EventCode::Value::OK));
 
     auto ingress = std::make_unique<FakeIngressTransport>();
@@ -205,9 +194,8 @@ TEST(ClusterIngressSender, ConnectIgnoresRedirectWithoutAeronClientThenConnectsO
     EXPECT_EQ(1u, ingressPtr->m_offered.size());
 }
 
-class ConnectedClusterIngressSender : public ::testing::Test
-{
-protected:
+class ConnectedClusterIngressSender : public ::testing::Test {
+   protected:
     void SetUp() override
     {
         auto egress = std::make_unique<FakeEgressTransport>();
@@ -219,15 +207,15 @@ protected:
 
         sender_.connect(std::move(ingress), std::move(egress));
         ASSERT_TRUE(sender_.isConnected());
-        ingress_->m_offered.clear(); // drop the captured SessionConnectRequest
+        ingress_->m_offered.clear();  // drop the captured SessionConnectRequest
     }
 
     static constexpr std::int64_t SESSION_ID = 55;
-    static constexpr std::int64_t TERM_ID    = 11;
+    static constexpr std::int64_t TERM_ID = 11;
 
-    ClusterIngressSender      sender_;
-    FakeIngressTransport*     ingress_{nullptr};
-    FakeEgressTransport*      egress_{nullptr};
+    ClusterIngressSender sender_;
+    FakeIngressTransport* ingress_{nullptr};
+    FakeEgressTransport* egress_{nullptr};
 };
 
 TEST_F(ConnectedClusterIngressSender, SendWrapsBytesWithSessionMessageHeader)
@@ -243,12 +231,11 @@ TEST_F(ConnectedClusterIngressSender, SendWrapsBytesWithSessionMessageHeader)
     // Bytes after the SessionMessageHeader are exactly the caller-supplied
     // message, with no separate envelope (unlike the old AppMessage scheme).
     const auto& frame = ingress_->m_offered[0];
-    const std::size_t appOff = cluster_sbe::MessageHeader::encodedLength()
-                              + cluster_sbe::SessionMessageHeader::sbeBlockLength();
+    const std::size_t appOff =
+        cluster_sbe::MessageHeader::encodedLength() + cluster_sbe::SessionMessageHeader::sbeBlockLength();
     ASSERT_GE(frame.size(), appOff + body.size());
 
-    EXPECT_TRUE(std::equal(body.begin(), body.end(),
-                            frame.begin() + static_cast<std::ptrdiff_t>(appOff)));
+    EXPECT_TRUE(std::equal(body.begin(), body.end(), frame.begin() + static_cast<std::ptrdiff_t>(appOff)));
 }
 
 TEST_F(ConnectedClusterIngressSender, KeepAliveSendsOnceThenThrottles)
@@ -287,10 +274,7 @@ TEST_F(ConnectedClusterIngressSender, PollEgressDeliversApplicationPayload)
     egress_->m_queued.push_back(encodeSessionMessage(TERM_ID, SESSION_ID, app));
 
     std::vector<std::uint8_t> received;
-    sender_.pollEgress([&](const std::uint8_t* data, std::int32_t len)
-    {
-        received.assign(data, data + len);
-    });
+    sender_.pollEgress([&](const std::uint8_t* data, std::int32_t len) { received.assign(data, data + len); });
 
     ASSERT_EQ(app.size(), received.size());
     EXPECT_TRUE(std::equal(app.begin(), app.end(), received.begin()));
@@ -321,8 +305,7 @@ TEST_F(ConnectedClusterIngressSender, PollEgressIgnoresNewLeaderEndpointWithoutA
 {
     egress_->m_queued.push_back(encodeNewLeaderEvent(999, 1, "0=localhost:9302,1=localhost:9312"));
 
-    sender_.pollEgress([](const std::uint8_t*, std::int32_t)
-    {
+    sender_.pollEgress([](const std::uint8_t*, std::int32_t) {
         FAIL() << "NewLeaderEvent must not be forwarded as an application message";
     });
 
@@ -358,8 +341,7 @@ TEST(ClusterIngressSenderColocated, FallsBackToSecondaryWhenPrimaryNeverAnswers)
     ClusterIngressSender sender;
     sender.connectColocated(
         std::move(primary),
-        [&]() -> std::unique_ptr<IngressTransport>
-        {
+        [&]() -> std::unique_ptr<IngressTransport> {
             fallbackBuilt = true;
             // primaryPtr is still valid here (the sender hasn't reassigned its ingress
             // transport to the fallback yet), but becomes dangling as soon as this lambda
@@ -394,9 +376,7 @@ TEST(ClusterIngressSenderColocated, NullPrimarySkipsStraightToFallback)
 
     ClusterIngressSender sender;
     sender.connectColocated(
-        nullptr,
-        [&]() -> std::unique_ptr<IngressTransport> { return std::move(fallback); },
-        std::move(egress),
+        nullptr, [&]() -> std::unique_ptr<IngressTransport> { return std::move(fallback); }, std::move(egress),
         /*primaryConnectTimeoutMs=*/20,
         /*primaryFailureReason=*/"IPC publication never connected");
 
@@ -418,8 +398,7 @@ TEST(ClusterIngressSenderColocated, PrimarySuccessNeverBuildsFallback)
     ClusterIngressSender sender;
     sender.connectColocated(
         std::move(primary),
-        [&]() -> std::unique_ptr<IngressTransport>
-        {
+        [&]() -> std::unique_ptr<IngressTransport> {
             fallbackBuilt = true;
             return std::make_unique<FakeIngressTransport>();
         },
@@ -468,5 +447,5 @@ TEST(FindIngressEndpoint, ReturnsFalseOnEmptyCsv)
     EXPECT_FALSE(findIngressEndpoint("", 0, out));
 }
 
-} // namespace
-} // namespace org::limitless::phixeron::sequencer
+}  // namespace
+}  // namespace org::limitless::phixeron::sequencer

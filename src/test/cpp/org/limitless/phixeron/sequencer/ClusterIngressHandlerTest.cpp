@@ -14,6 +14,8 @@
 // takes.
 
 #include <gtest/gtest.h>
+#include <sys/socket.h>
+#include <unistd.h>
 
 #include <cstdint>
 #include <cstdio>
@@ -24,22 +26,16 @@
 #include <string_view>
 #include <vector>
 
-#include <sys/socket.h>
-#include <unistd.h>
-
-#include "org/limitless/simdifx/decoder/PayloadDecoder.hpp"
 #include "org/limitless/phixeron/sequencer/ClusterIngressHandler.hpp"
+#include "org/limitless/simdifx/decoder/PayloadDecoder.hpp"
 
-namespace org::limitless::phixeron::sequencer
-{
-namespace
-{
+namespace org::limitless::phixeron::sequencer {
+namespace {
 
 // ── Fake transports (see ClusterIngressSenderTest.cpp for the same pair) ──────
 
-class FakeIngressTransport : public IngressTransport
-{
-public:
+class FakeIngressTransport : public IngressTransport {
+   public:
     std::vector<std::vector<std::uint8_t>> offered;
 
     bool offer(std::span<const std::uint8_t> bytes) override
@@ -49,14 +45,16 @@ public:
     }
 };
 
-class FakeEgressTransport : public EgressTransport
-{
-public:
+class FakeEgressTransport : public EgressTransport {
+   public:
     std::deque<std::vector<std::uint8_t>> queued;
 
     int poll(const FragmentHandler& handler) override
     {
-        if (queued.empty()) { return 0; }
+        if (queued.empty())
+        {
+            return 0;
+        }
         const std::vector<std::uint8_t> msg = std::move(queued.front());
         queued.pop_front();
         handler(std::span<const std::uint8_t>(msg.data(), msg.size()));
@@ -64,20 +62,19 @@ public:
     }
 };
 
-std::vector<std::uint8_t> encodeSessionEvent(std::int64_t clusterSessionId,
-                                              std::int64_t leadershipTermId,
-                                              cluster_sbe::EventCode::Value code)
+std::vector<std::uint8_t> encodeSessionEvent(std::int64_t clusterSessionId, std::int64_t leadershipTermId,
+                                             cluster_sbe::EventCode::Value code)
 {
     std::vector<std::uint8_t> buf(256, 0);
     cluster_sbe::SessionEvent enc;
     enc.wrapAndApplyHeader(reinterpret_cast<char*>(buf.data()), 0, buf.size());
     enc.clusterSessionId(clusterSessionId)
-       .correlationId(1)
-       .leadershipTermId(leadershipTermId)
-       .leaderMemberId(0)
-       .code(code)
-       .version(CLUSTER_PROTOCOL_VERSION)
-       .leaderHeartbeatTimeoutNs(0);
+        .correlationId(1)
+        .leadershipTermId(leadershipTermId)
+        .leaderMemberId(0)
+        .code(code)
+        .version(CLUSTER_PROTOCOL_VERSION)
+        .leaderHeartbeatTimeoutNs(0);
     enc.putDetail(nullptr, 0);
     buf.resize(enc.sbePosition());
     return buf;
@@ -95,17 +92,29 @@ std::vector<std::uint8_t> encodeSessionEvent(std::int64_t clusterSessionId,
 std::vector<std::uint8_t> buildFix(char msgType, const std::vector<std::string>& bodyFields)
 {
     std::string body;
-    body += "35="; body += msgType; body += '\x01';
+    body += "35=";
+    body += msgType;
+    body += '\x01';
     body += "49=CLIENT\x01";
     body += "56=SEQUENCER\x01";
     body += "34=1\x01";
     body += "52=20260703-12:00:00\x01";
-    for (const auto& field : bodyFields) { body += field; body += '\x01'; }
+    for (const auto& field : bodyFields)
+    {
+        body += field;
+        body += '\x01';
+    }
 
-    std::string msg = "8=FIXT.1.1\x01" "9=" + std::to_string(body.size()) + "\x01" + body;
+    std::string msg =
+        "8=FIXT.1.1\x01"
+        "9=" +
+        std::to_string(body.size()) + "\x01" + body;
 
     std::uint32_t sum = 0;
-    for (const unsigned char c : msg) { sum += c; }
+    for (const unsigned char c : msg)
+    {
+        sum += c;
+    }
     sum %= 256;
     char checksum[4];
     std::snprintf(checksum, sizeof(checksum), "%03u", sum);
@@ -124,17 +133,35 @@ std::vector<std::uint8_t> buildFixCustom(char msgType, std::string_view sender, 
                                          std::uint32_t seqNum, const std::vector<std::string>& bodyFields)
 {
     std::string body;
-    body += "35="; body += msgType; body += '\x01';
-    body += "49="; body += sender; body += '\x01';
-    body += "56="; body += target; body += '\x01';
-    body += "34="; body += std::to_string(seqNum); body += '\x01';
+    body += "35=";
+    body += msgType;
+    body += '\x01';
+    body += "49=";
+    body += sender;
+    body += '\x01';
+    body += "56=";
+    body += target;
+    body += '\x01';
+    body += "34=";
+    body += std::to_string(seqNum);
+    body += '\x01';
     body += "52=20260703-12:00:00\x01";
-    for (const auto& field : bodyFields) { body += field; body += '\x01'; }
+    for (const auto& field : bodyFields)
+    {
+        body += field;
+        body += '\x01';
+    }
 
-    std::string msg = "8=FIXT.1.1\x01" "9=" + std::to_string(body.size()) + "\x01" + body;
+    std::string msg =
+        "8=FIXT.1.1\x01"
+        "9=" +
+        std::to_string(body.size()) + "\x01" + body;
 
     std::uint32_t sum = 0;
-    for (const unsigned char c : msg) { sum += c; }
+    for (const unsigned char c : msg)
+    {
+        sum += c;
+    }
     sum %= 256;
     char checksum[4];
     std::snprintf(checksum, sizeof(checksum), "%03u", sum);
@@ -150,8 +177,8 @@ std::vector<std::uint8_t> buildFixCustom(char msgType, std::string_view sender, 
 // Every message ClusterIngressHandler sends is wrapped in a
 // SessionMessageHeader (cluster_sbe) followed directly by a sbe-unsequenced.xml
 // message (schemaId=200), matching ClusterIngressSender::send.
-constexpr std::size_t APP_MESSAGE_OFFSET = cluster_sbe::MessageHeader::encodedLength()
-                                          + cluster_sbe::SessionMessageHeader::sbeBlockLength();
+constexpr std::size_t APP_MESSAGE_OFFSET =
+    cluster_sbe::MessageHeader::encodedLength() + cluster_sbe::SessionMessageHeader::sbeBlockLength();
 
 template <typename SbeMsg>
 SbeMsg decodeUnsequenced(std::vector<std::uint8_t>& frame)
@@ -164,18 +191,16 @@ SbeMsg decodeUnsequenced(std::vector<std::uint8_t>& frame)
     EXPECT_EQ(SbeMsg::sbeTemplateId(), hdr.templateId());
 
     SbeMsg dec;
-    dec.wrapForDecode(body, usq::MessageHeader::encodedLength(),
-                      hdr.blockLength(), hdr.version(), bodyLen);
+    dec.wrapForDecode(body, usq::MessageHeader::encodedLength(), hdr.blockLength(), hdr.version(), bodyLen);
     return dec;
 }
 
-} // namespace
+}  // namespace
 
 // ── ClusterIngressHandler — admin messages (no session required) ─────────────
 
-class ClusterIngressHandlerAdminOnly : public ::testing::Test
-{
-protected:
+class ClusterIngressHandlerAdminOnly : public ::testing::Test {
+   protected:
     static constexpr std::int32_t CONN_ID = 77;
     static constexpr std::int32_t GATEWAY_SOURCE_ID = 42;
 
@@ -189,13 +214,13 @@ protected:
         m_sender.setSourceId(GATEWAY_SOURCE_ID);
         m_sender.connect(std::move(ingress), std::move(egress));
         ASSERT_TRUE(m_sender.isConnected());
-        m_ingress->offered.clear(); // drop the captured SessionConnectRequest
+        m_ingress->offered.clear();  // drop the captured SessionConnectRequest
     }
 
     ClusterIngressSender m_sender;
     FakeIngressTransport* m_ingress{nullptr};
     ClusterIngressHandler m_handler{&m_sender, CONN_ID};
-    fix::decoder::PayloadDecoder<cfg::FIXT_1_1>  m_decoder;
+    fix::decoder::PayloadDecoder<cfg::FIXT_1_1> m_decoder;
 };
 
 TEST_F(ClusterIngressHandlerAdminOnly, LogonIsReEncodedAsSbeUnsequencedWithHeader)
@@ -281,8 +306,7 @@ TEST_F(ClusterIngressHandlerAdminOnly, SequenceResetCarriesNewSeqNo)
 
 TEST_F(ClusterIngressHandlerAdminOnly, ValidNewOrderSingleIsEncodedAsSbeUnsequencedWithoutASession)
 {
-    const auto msg = buildFix('D', {"11=ORD-1", "21=1", "55=AAPL", "54=1",
-                                     "60=20260703-12:00:00", "38=100", "40=1"});
+    const auto msg = buildFix('D', {"11=ORD-1", "21=1", "55=AAPL", "54=1", "60=20260703-12:00:00", "38=100", "40=1"});
     // Mirrors FixConnection::onRecv, which sets the raw bytes before parsing.
     m_handler.setRawBytes(std::span<const std::uint8_t>(msg.data(), msg.size()));
     const auto result = m_decoder.parse(std::span<const std::uint8_t>(msg.data(), msg.size()), m_handler);
@@ -302,8 +326,7 @@ TEST_F(ClusterIngressHandlerAdminOnly, InvalidNewOrderSingleWithoutASessionSends
     // ClOrdID present but empty triggers the business-rule rejection path,
     // which returns before submitting the order — and without a session
     // there is nowhere to send the reject ExecutionReport either.
-    const auto msg = buildFix('D', {"11=", "21=1", "55=AAPL", "54=1",
-                                     "60=20260703-12:00:00", "38=100", "40=1"});
+    const auto msg = buildFix('D', {"11=", "21=1", "55=AAPL", "54=1", "60=20260703-12:00:00", "38=100", "40=1"});
     m_handler.setRawBytes(std::span<const std::uint8_t>(msg.data(), msg.size()));
     const auto result = m_decoder.parse(std::span<const std::uint8_t>(msg.data(), msg.size()), m_handler);
     ASSERT_EQ(fix::Result::Success, result.m_value);
@@ -338,13 +361,26 @@ TEST_F(ClusterIngressHandlerAdminOnly, BadChecksumProducesNoIngressTraffic)
 TEST_F(ClusterIngressHandlerAdminOnly, UnknownBeginStringProducesNoIngressTraffic)
 {
     std::string body;
-    body += "35=0\x01" "49=CLIENT\x01" "56=SEQUENCER\x01" "34=1\x01" "52=20260703-12:00:00\x01";
-    std::string msg = "8=BOGUS.1\x01" "9=" + std::to_string(body.size()) + "\x01" + body;
+    body +=
+        "35=0\x01"
+        "49=CLIENT\x01"
+        "56=SEQUENCER\x01"
+        "34=1\x01"
+        "52=20260703-12:00:00\x01";
+    std::string msg =
+        "8=BOGUS.1\x01"
+        "9=" +
+        std::to_string(body.size()) + "\x01" + body;
     std::uint32_t sum = 0;
-    for (const unsigned char c : msg) { sum += c; }
+    for (const unsigned char c : msg)
+    {
+        sum += c;
+    }
     char checksum[4];
     std::snprintf(checksum, sizeof(checksum), "%03u", sum % 256);
-    msg += "10="; msg += checksum; msg += '\x01';
+    msg += "10=";
+    msg += checksum;
+    msg += '\x01';
     const std::vector<std::uint8_t> raw(msg.begin(), msg.end());
 
     const auto result = m_decoder.parse(std::span<const std::uint8_t>(raw.data(), raw.size()), m_handler);
@@ -377,9 +413,8 @@ TEST_F(ClusterIngressHandlerAdminOnly, WireErrorDoesNotBlockSubsequentValidMessa
 // so ExecutionReports generated for accepted/rejected orders are observable:
 // they are submitted directly to the cluster ingress as sbe-unsequenced.xml
 // ExecutionReport messages, with MsgSeqNum reserved from the session.
-class ClusterIngressHandlerWithSession : public ::testing::Test
-{
-protected:
+class ClusterIngressHandlerWithSession : public ::testing::Test {
+   protected:
     static constexpr std::int32_t CONN_ID = 88;
 
     void SetUp() override
@@ -398,16 +433,14 @@ protected:
 
     ClusterIngressSender m_sender;
     FakeIngressTransport* m_ingress{nullptr};
-    FixSession m_session{FixSession::Builder{}
-        .transport(CapturingTransport{-1}).build()};
+    FixSession m_session{FixSession::Builder{}.transport(CapturingTransport{-1}).build()};
     ClusterIngressHandler m_handler{&m_sender, CONN_ID, &m_session};
-    fix::decoder::PayloadDecoder<cfg::FIXT_1_1>  m_decoder;
+    fix::decoder::PayloadDecoder<cfg::FIXT_1_1> m_decoder;
 };
 
 TEST_F(ClusterIngressHandlerWithSession, ValidNewOrderSingleSubmitsOrderThenSendsExecutionReportNew)
 {
-    const auto msg = buildFix('D', {"11=ORD-2", "21=1", "55=MSFT", "54=1",
-                                     "60=20260703-12:00:00", "38=50", "40=1"});
+    const auto msg = buildFix('D', {"11=ORD-2", "21=1", "55=MSFT", "54=1", "60=20260703-12:00:00", "38=50", "40=1"});
     m_handler.setRawBytes(std::span<const std::uint8_t>(msg.data(), msg.size()));
     const auto result = m_decoder.parse(std::span<const std::uint8_t>(msg.data(), msg.size()), m_handler);
     ASSERT_EQ(fix::Result::Success, result.m_value);
@@ -426,8 +459,7 @@ TEST_F(ClusterIngressHandlerWithSession, ValidNewOrderSingleSubmitsOrderThenSend
 
 TEST_F(ClusterIngressHandlerWithSession, EmptyClOrdIdSendsRejectedExecutionReportOnly)
 {
-    const auto msg = buildFix('D', {"11=", "21=1", "55=MSFT", "54=1",
-                                     "60=20260703-12:00:00", "38=50", "40=1"});
+    const auto msg = buildFix('D', {"11=", "21=1", "55=MSFT", "54=1", "60=20260703-12:00:00", "38=50", "40=1"});
     const auto result = m_decoder.parse(std::span<const std::uint8_t>(msg.data(), msg.size()), m_handler);
     ASSERT_EQ(fix::Result::Success, result.m_value);
 
@@ -441,8 +473,7 @@ TEST_F(ClusterIngressHandlerWithSession, EmptyClOrdIdSendsRejectedExecutionRepor
 
 TEST_F(ClusterIngressHandlerWithSession, ZeroOrderQtyIsRejected)
 {
-    const auto msg = buildFix('D', {"11=ORD-3", "21=1", "55=MSFT", "54=1",
-                                     "60=20260703-12:00:00", "38=0", "40=1"});
+    const auto msg = buildFix('D', {"11=ORD-3", "21=1", "55=MSFT", "54=1", "60=20260703-12:00:00", "38=0", "40=1"});
     const auto result = m_decoder.parse(std::span<const std::uint8_t>(msg.data(), msg.size()), m_handler);
     ASSERT_EQ(fix::Result::Success, result.m_value);
 
@@ -453,8 +484,7 @@ TEST_F(ClusterIngressHandlerWithSession, ZeroOrderQtyIsRejected)
 
 TEST_F(ClusterIngressHandlerWithSession, LimitOrderWithoutPriceIsRejected)
 {
-    const auto msg = buildFix('D', {"11=ORD-4", "21=1", "55=MSFT", "54=1",
-                                     "60=20260703-12:00:00", "38=10", "40=2"});
+    const auto msg = buildFix('D', {"11=ORD-4", "21=1", "55=MSFT", "54=1", "60=20260703-12:00:00", "38=10", "40=2"});
     const auto result = m_decoder.parse(std::span<const std::uint8_t>(msg.data(), msg.size()), m_handler);
     ASSERT_EQ(fix::Result::Success, result.m_value);
 
@@ -474,16 +504,14 @@ TEST_F(ClusterIngressHandlerWithSession, LimitOrderWithoutPriceIsRejected)
 // phixeron's real ClusterIngressHandler/Session, capturing the actual encoded
 // Reject bytes over a real socketpair (CapturingTransport only knows how to
 // write to a real fd) to find where the value gets lost.
-class ClusterIngressHandlerCompIdMismatch : public ::testing::Test
-{
-protected:
+class ClusterIngressHandlerCompIdMismatch : public ::testing::Test {
+   protected:
     static constexpr std::int32_t CONN_ID = 99;
 
     void SetUp() override
     {
         ASSERT_EQ(0, ::socketpair(AF_UNIX, SOCK_STREAM, 0, m_fds));
-        m_session = std::make_unique<FixSession>(FixSession::Builder{}
-            .transport(CapturingTransport{m_fds[0]}).build());
+        m_session = std::make_unique<FixSession>(FixSession::Builder{}.transport(CapturingTransport{m_fds[0]}).build());
         m_session->onTcpConnected();
         m_handler = std::make_unique<ClusterIngressHandler>(&m_sender, CONN_ID, m_session.get());
     }
@@ -521,12 +549,14 @@ protected:
 TEST_F(ClusterIngressHandlerCompIdMismatch, HeartbeatRejectCarriesRealRefSeqNum)
 {
     const auto logon = buildFixCustom('A', "CLIENT", "SEQUENCER", 1, {"98=0", "108=30"});
-    ASSERT_EQ(fix::Result::Success, m_decoder.parse(std::span<const std::uint8_t>(logon.data(), logon.size()), *m_handler).m_value);
+    ASSERT_EQ(fix::Result::Success,
+              m_decoder.parse(std::span<const std::uint8_t>(logon.data(), logon.size()), *m_handler).m_value);
     m_session->handleClusterLogon(30, 0);
     ASSERT_FALSE(readReply().empty());  // Logon's own reply, not under test
 
     const auto heartbeat = buildFixCustom('0', "WRONGSENDER", "SEQUENCER", 2, {});
-    ASSERT_EQ(fix::Result::Success, m_decoder.parse(std::span<const std::uint8_t>(heartbeat.data(), heartbeat.size()), *m_handler).m_value);
+    ASSERT_EQ(fix::Result::Success,
+              m_decoder.parse(std::span<const std::uint8_t>(heartbeat.data(), heartbeat.size()), *m_handler).m_value);
 
     const auto reply = readReply();
     ASSERT_FALSE(reply.empty()) << "expected a Reject reply to the CompID-mismatched Heartbeat";
@@ -541,4 +571,4 @@ TEST_F(ClusterIngressHandlerCompIdMismatch, HeartbeatRejectCarriesRealRefSeqNum)
     EXPECT_EQ("2", refSeqNum) << "RefSeqNum should echo the mismatched Heartbeat's MsgSeqNum (2)";
 }
 
-} // namespace org::limitless::phixeron::sequencer
+}  // namespace org::limitless::phixeron::sequencer
