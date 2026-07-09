@@ -1,5 +1,16 @@
 ![phixeron](doc/phixeron.png)
 
+## Overview
+
+phixeron is an Aeron Cluster–based sequencer for a FIX gateway: a Java Raft cluster service
+assigns a global total order to inbound FIX messages, and a C++ edge process bridges real FIX
+TCP sessions to that cluster. It depends on a sibling project, **simdfix**
+(`git@github.com:FredrikJDahlberg/simdfix.git`, fetched via CMake `FetchContent`), which provides
+the generic FIX wire-format codec, session state machine base classes, and the code generator
+used to turn `fix-session.xml`/`fix-application.xml` into C++ FIX message headers. phixeron
+generates its own copy of those headers (see "SBE / FIX code generation" below) rather than
+reusing simdfix's test fixtures.
+
 ## Build
 
 ### C++

@@ -174,6 +174,12 @@ class ClusterIngressHandler : public msg::FixMessageHandler<ClusterIngressHandle
         return m_senderCompId;
     }
 
+    // This gateway process's fixed header.sourceId (see ClusterIngressSender::sourceId()).
+    [[nodiscard]] std::int32_t sourceId() const
+    {
+        return m_ingress ? m_ingress->sourceId() : 0;
+    }
+
     // Verifies an inbound message's SenderCompID (tag 49) / TargetCompID
     // (tag 56) against this session's expected identity:
     //   - TargetCompID must always equal our own compId (FixSession::senderCompId()) —

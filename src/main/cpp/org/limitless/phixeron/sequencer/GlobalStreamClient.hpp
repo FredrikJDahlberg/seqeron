@@ -33,8 +33,18 @@ inline constexpr const char* GLOBAL_STREAM_CHANNEL = "aeron:udp?control-mode=dyn
 // that the publisher discovers and adds as a destination automatically. Matches
 // SequencerService.GLOBAL_STREAM_SUBSCRIBER_CHANNEL. Used for the live (post-replay) fallback
 // subscription below.
+//
+// tether=false is the audit S4 fix: an untethered subscriber that falls behind the
+// publisher's window is moved to "resting" rather than back-pressuring the publisher, so a
+// slow or stalled global-stream consumer can never wedge the sequencer's single
+// ClusteredService thread (which spins in SequencerService.offerToGlobalStream until the
+// offer lands). The trade-off is that a rested subscriber loses the messages it fell behind
+// on and rejoins live past them — GlobalStreamClient detects that hole from the gap-free
+// globalSeqNo run and re-bootstraps the missing range from the archive (see onFragment /
+// beginRecovery below), which is the intended "let it fall behind and recover via archive
+// replay" posture.
 inline constexpr const char* GLOBAL_STREAM_SUBSCRIBER_CHANNEL =
-    "aeron:udp?control-mode=dynamic|control=localhost:9200|endpoint=localhost:0";
+    "aeron:udp?control-mode=dynamic|control=localhost:9200|endpoint=localhost:0|tether=false";
 
 inline constexpr std::int32_t GLOBAL_STREAM_ID = 1;
 
@@ -433,6 +443,13 @@ class GlobalStreamClient {
         // Live MDC fallback — always subscribed; used when the last segment's replay image closes.
         m_liveSubRegId = m_aeron->addSubscription(GLOBAL_STREAM_SUBSCRIBER_CHANNEL, GLOBAL_STREAM_ID);
 
+        // Stored unconditionally (even with no segments yet) so beginRecovery can replay from the
+        // archive if the untethered live sub later gaps — including when there was no history at start.
+        if (replayChannel != nullptr)
+        {
+            m_replayChannel = replayChannel;
+        }
+
         if (m_segments.empty())
         {
             // No historical data — already at live.
@@ -454,7 +471,6 @@ class GlobalStreamClient {
             m_catchUpPosition = last.stopPosition;
         }
 
-        m_replayChannel = replayChannel;
         m_replaySubRegId = m_aeron->addSubscription(m_replayChannel, REPLAY_STREAM_ID);
         startSegmentReplay(0);
     }
@@ -522,6 +538,7 @@ class GlobalStreamClient {
         {
             if (!m_replayImage->isClosed())
             {
+                m_pollingLive = false;
                 const int work = m_replayImage->poll(m_fragmentHandler, FRAGMENT_LIMIT);
                 if (!m_caughtUp && isOnLastSegment() && m_replayImage->position() >= m_catchUpPosition)
                 {
@@ -541,9 +558,14 @@ class GlobalStreamClient {
             // All segments replayed and the last one's image closed — fall through to live MDC.
         }
 
-        // Live MDC fallback — poll the subscription directly.
+        // Live MDC fallback — poll the subscription directly. Reached only once the
+        // open-ended last-segment replay image closes (leader failover); in steady state the
+        // client follows live through that replay image and never gets here. A gap can appear
+        // on this untethered subscription (it may have rested while replay ran, or reconnected
+        // past a failover boundary) — onFragment detects it and triggers beginRecovery.
         if (m_liveSub)
         {
+            m_pollingLive = true;
             return m_liveSub->poll(m_fragmentHandler, FRAGMENT_LIMIT);
         }
         return 0;
@@ -571,6 +593,39 @@ class GlobalStreamClient {
         replayParams.position(0).length(isLast ? aeron::archive::client::NULL_LENGTH : segment.stopPosition);
         m_replaySessionId =
             m_archive->startReplay(segment.recordingId, m_replayChannel, REPLAY_STREAM_ID, replayParams);
+    }
+
+    // Re-bootstrap the segment-replay walk from the archive after a live-stream gap (see
+    // onFragment). Re-lists the recording segments (the active recording may have grown, or a
+    // new leader's tenure appeared since start()) and restarts the replay from the oldest
+    // segment; onFragment's globalSeqNo filter drops everything already delivered, so only the
+    // missing tail is re-emitted, in order, before live-following resumes. O(history) like the
+    // initial bootstrap (cf. audit.md S1), but only reached on a real gap — a consumer that fell
+    // far behind, or a leader failover — which is rare. Runs its archive control round-trip on
+    // the duty-cycle thread, like start() does; this blocks only the caller's own liveness, never
+    // the sequencer's (cf. the S3 resend fix, which likewise keeps ms-scale archive control calls
+    // synchronous). m_caughtUp is left set, so onCaughtUp does not re-fire.
+    void beginRecovery()
+    {
+        if (!m_archive || m_replayChannel.empty())
+        {
+            return;  // no archive / replay channel to recover from (cannot happen in the live-following clients)
+        }
+        // The replay subscription is normally created in start(); create it here too for the
+        // "no history at start, then a live gap" path, which returned before start() added it.
+        if (m_replaySubRegId < 0)
+        {
+            m_replaySubRegId = m_aeron->addSubscription(m_replayChannel, REPLAY_STREAM_ID);
+        }
+        m_recovering = true;
+        m_segments = resolveGlobalStreamSegments(m_archive);
+        m_segmentIndex = 0;
+        m_replayImage.reset();
+        if (m_segments.empty())
+        {
+            return;
+        }
+        startSegmentReplay(0);
     }
 
     using HdrSbe = org::limitless::phixeron::sbe::sequenced::MessageHeader;
@@ -613,6 +668,40 @@ class GlobalStreamClient {
         const auto connId = m_header.connectionId();
         const auto sessId = m_header.sessionId();
         const auto ts = m_header.timestamp();
+
+        // Contiguity / de-duplication guard for the live-following modes (skipped for the bounded
+        // single-image resend scan, which replays and delivers an exact range verbatim). The
+        // sequencer stamps a cluster-wide globalSeqNo that increments by exactly one per published
+        // event (message or lifecycle), so the global stream is gap-free by construction: any
+        // forward jump means the current source dropped messages — an untethered live subscription
+        // that rested after falling behind (see GLOBAL_STREAM_SUBSCRIBER_CHANNEL), or a
+        // post-failover live sub that reconnected past the gap. The archive holds every sequenced
+        // message, so heal it by re-bootstrapping from the archive; drop the out-of-order fragment
+        // — the recovery replay re-delivers it, and everything after it, in order.
+        if (!m_singleImageMode)
+        {
+            if (m_lastGlobalSeqNo != 0)
+            {
+                if (gseq <= m_lastGlobalSeqNo)
+                {
+                    return;  // already delivered (e.g. a recovery replay re-covering seen ground)
+                }
+                if (gseq > m_lastGlobalSeqNo + 1)
+                {
+                    if (m_pollingLive && !m_recovering)
+                    {
+                        std::fprintf(stderr,
+                                     "[GlobalStreamClient] live-stream gap: expected globalSeqNo=%" PRId64
+                                     ", got %" PRId64 " — re-bootstrapping from archive\n",
+                                     static_cast<std::int64_t>(m_lastGlobalSeqNo + 1), static_cast<std::int64_t>(gseq));
+                        beginRecovery();
+                    }
+                    return;
+                }
+            }
+            m_recovering = false;
+            m_lastGlobalSeqNo = gseq;
+        }
         if (templateId == CLIENT_CONNECTED_TEMPLATE_ID)
         {
             if (m_onConnected)
@@ -687,6 +776,10 @@ class GlobalStreamClient {
     std::int64_t m_replaySessionId = -1;
     std::int64_t m_catchUpPosition = 0;
     bool m_caughtUp = false;
+
+    std::int64_t m_lastGlobalSeqNo = 0;  // highest globalSeqNo delivered; 0 = none yet (gap detection)
+    bool m_pollingLive = false;          // true while poll() is draining the live MDC sub (vs. a replay)
+    bool m_recovering = false;           // a re-bootstrap replay is in flight; suppresses repeat triggers
 
     aeron::fragment_handler_t m_fragmentHandler;
 

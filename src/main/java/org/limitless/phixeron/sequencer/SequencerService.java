@@ -98,9 +98,26 @@ public final class SequencerService implements ClusteredService {
      * Subscriber-side channel for the global stream's MDC dynamic control mode: same control
      * address as {@link #GLOBAL_STREAM_CHANNEL}, plus an ephemeral local data endpoint that the
      * publisher discovers and adds as a destination automatically.
+     *
+     * <p>The C++ global-stream clients ({@code GlobalStreamClient.hpp}) are the only subscribers;
+     * this constant is kept byte-identical to the C++ one so the two stay in lock-step (Java itself
+     * only publishes/records the global stream, never subscribes to it).
+     *
+     * <p><b>{@code tether=false} — audit S4 fix.</b> An untethered subscriber that falls behind the
+     * publisher's window is moved to a resting state instead of back-pressuring the publisher, so a
+     * slow or stalled global-stream consumer can never wedge this service's single conductor thread
+     * in {@link #offerToGlobalStream}. A rested subscriber loses the messages it fell behind on and
+     * rejoins live past them; the C++ client detects that hole from the gap-free {@code globalSeqNo}
+     * run and re-bootstraps the missing range from the archive — the intended "fall behind, recover
+     * via archive replay" posture rather than "back-pressure the sequencer".
+     *
+     * <p><b>Live-cluster caveat:</b> if a smoke test shows the publisher stalling (or {@code offer()}
+     * returning {@code NOT_CONNECTED}) once the <em>only</em> consumer rests, add {@code |ssc=true}
+     * (spies-simulate-connection) to {@link #GLOBAL_STREAM_CHANNEL} so the co-located archive spy
+     * keeps the publication connected and its limit advancing on its own.
      */
     public static final String GLOBAL_STREAM_SUBSCRIBER_CHANNEL
-        = "aeron:udp?control-mode=dynamic|control=localhost:9200|endpoint=localhost:0";
+        = "aeron:udp?control-mode=dynamic|control=localhost:9200|endpoint=localhost:0|tether=false";
 
     public static final int GLOBAL_STREAM_ID = 1;
 
@@ -399,6 +416,11 @@ public final class SequencerService implements ClusteredService {
 
     // ── Private helpers ───────────────────────────────────────────────────────
 
+    // Spins on the single conductor thread until the offer lands. This no longer couples the
+    // sequencer's liveness to a slow global-stream consumer (audit S4): the subscribers connect
+    // untethered (see GLOBAL_STREAM_SUBSCRIBER_CHANNEL), so one that falls behind is moved to
+    // resting and never back-pressures this publication — the only back-pressure left is the
+    // co-located archive recording, which is fast and local, so the spin is bounded in practice.
     private void offerToGlobalStream(final int length) {
         int idleSpins = 0;
         long result;
