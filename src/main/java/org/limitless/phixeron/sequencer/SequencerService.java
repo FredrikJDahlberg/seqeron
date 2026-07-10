@@ -103,18 +103,16 @@ public final class SequencerService implements ClusteredService {
      * this constant is kept byte-identical to the C++ one so the two stay in lock-step (Java itself
      * only publishes/records the global stream, never subscribes to it).
      *
-     * <p><b>{@code tether=false} — audit S4 fix.</b> An untethered subscriber that falls behind the
-     * publisher's window is moved to a resting state instead of back-pressuring the publisher, so a
-     * slow or stalled global-stream consumer can never wedge this service's single conductor thread
-     * in {@link #offerToGlobalStream}. A rested subscriber loses the messages it fell behind on and
-     * rejoins live past them; the C++ client detects that hole from the gap-free {@code globalSeqNo}
-     * run and re-bootstraps the missing range from the archive — the intended "fall behind, recover
-     * via archive replay" posture rather than "back-pressure the sequencer".
-     *
-     * <p><b>Live-cluster caveat:</b> if a smoke test shows the publisher stalling (or {@code offer()}
-     * returning {@code NOT_CONNECTED}) once the <em>only</em> consumer rests, add {@code |ssc=true}
-     * (spies-simulate-connection) to {@link #GLOBAL_STREAM_CHANNEL} so the co-located archive spy
-     * keeps the publication connected and its limit advancing on its own.
+     * <p><b>{@code tether=false} — attempted audit S4 fix, DISPROVED.</b> The intent was that an
+     * untethered subscriber falling behind is moved to a resting state instead of back-pressuring the
+     * publisher, bounding the {@link #offerToGlobalStream} spin. A live flow-control smoke test showed
+     * this does <em>not</em> hold: with the lone consumer rested the flow-control group is empty and
+     * the default {@code MaxMulticastFlowControl} never advances the sender limit, so the publisher
+     * still wedges — and {@code |ssc=true} on {@link #GLOBAL_STREAM_CHANNEL} did not save it either.
+     * See audit.md's S4 note for the evidence table and the real fix direction (drain the clients'
+     * live MDC sub every duty cycle). {@code tether=false} is left in place as harmless; the paired
+     * consumer-side {@code globalSeqNo} gap-detection + archive re-bootstrap in {@code
+     * GlobalStreamClient} is sound and kept.
      */
     public static final String GLOBAL_STREAM_SUBSCRIBER_CHANNEL
         = "aeron:udp?control-mode=dynamic|control=localhost:9200|endpoint=localhost:0|tether=false";
@@ -388,10 +386,11 @@ public final class SequencerService implements ClusteredService {
         isLeader = leader;
 
         if (isLeader) {
-            globalStreamPub
-                = cluster.context().aeron().addExclusivePublication(GLOBAL_STREAM_CHANNEL, GLOBAL_STREAM_ID);
-            // Idempotent: safe to call again if this node regains leadership later.
-            aeronArchive.startRecording(GLOBAL_STREAM_CHANNEL, GLOBAL_STREAM_ID, SourceLocation.LOCAL);
+            final String channel = globalStreamChannel();
+            globalStreamPub = cluster.context().aeron().addExclusivePublication(channel, GLOBAL_STREAM_ID);
+            // Idempotent: safe to call again if this node regains leadership later. The recording
+            // channel must match the publication channel exactly, so both go through the same helper.
+            aeronArchive.startRecording(channel, GLOBAL_STREAM_ID, SourceLocation.LOCAL);
         }
         standbyFollower.onLeadershipChange(leaderMemberId);
     }
@@ -416,11 +415,23 @@ public final class SequencerService implements ClusteredService {
 
     // ── Private helpers ───────────────────────────────────────────────────────
 
-    // Spins on the single conductor thread until the offer lands. This no longer couples the
-    // sequencer's liveness to a slow global-stream consumer (audit S4): the subscribers connect
-    // untethered (see GLOBAL_STREAM_SUBSCRIBER_CHANNEL), so one that falls behind is moved to
-    // resting and never back-pressures this publication — the only back-pressure left is the
-    // co-located archive recording, which is fast and local, so the spin is bounded in practice.
+    // Test-only knob for the S4 wedge smoke test (src/main/scripts/{start,three-node}-cluster.sh with
+    // PHIXERON_FLOOD_ORDERS): when -Dphixeron.globalStream.termLength=<power-of-two ≥ 65536> is set,
+    // appends |term-length=<value> so the global stream's flow-control window is small enough that
+    // back-pressure from an un-drained subscriber manifests after a few hundred messages instead of
+    // a full default term buffer. Returns GLOBAL_STREAM_CHANNEL unchanged in normal operation.
+    private static String globalStreamChannel() {
+        final String termLength = System.getProperty("phixeron.globalStream.termLength");
+        return (termLength == null || termLength.isEmpty())
+            ? GLOBAL_STREAM_CHANNEL
+            : GLOBAL_STREAM_CHANNEL + "|term-length=" + termLength;
+    }
+
+    // Spins on the single conductor thread until the offer lands — this is the audit S4 coupling and
+    // it is NOT yet fixed. The `tether=false` subscriber change (see GLOBAL_STREAM_SUBSCRIBER_CHANNEL)
+    // was meant to bound this spin, but a live smoke test disproved it: with a stalled consumer the
+    // publisher still wedges here forever, and `ssc=true` doesn't help. Root cause is the clients'
+    // un-drained live MDC sub; see audit.md's S4 note for the evidence and the real fix direction.
     private void offerToGlobalStream(final int length) {
         int idleSpins = 0;
         long result;
