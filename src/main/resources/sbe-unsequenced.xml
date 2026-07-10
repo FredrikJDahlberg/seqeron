@@ -33,7 +33,12 @@
         Logon     'A'=65   ExecutionReport '8'=56 NewOrderSingle 'D'=68
     ClientConnected/ClientDisconnected/PortfolioQueryRequest/PortfolioQueryReply
     aren't FIX messages, so they use small, non-ASCII-derived template ids
-    instead (1/2/3/4), clear of that range.
+    instead (1/2/3/4), clear of that range. The Router replay-protocol control
+    messages (RouterReplayRequest/RouterReplaying/RouterPending, 6/7/8) live here
+    too — they are node-local control plane between a Router and its co-located
+    app replicas, never sequenced, so they belong in this pre-sequencing schema
+    rather than sbe-sequenced.xml (id 5 is left for LeadershipChanged, which is
+    the mirror-image case: sequenced-only, so it exists only in sbe-sequenced.xml).
 
     The header field uses field id 20001 — well outside the FIX tag range —
     since it is gateway/transport metadata, not a FIX tag. sourceId/connectionId/
@@ -530,6 +535,48 @@
         <field name="positionCount" id="20007" type="uint32"/>
         <data  name="text"          id="58"    type="varDataEncoding"
                description="Optional free-text detail, e.g. an error message when status=Error; length 0 = absent"/>
+    </sbe:message>
+
+    <!-- ═══════════════════════════════════════════════════════════════════
+         Router replay protocol  (templates 6/7/8) — node-local control plane
+         between a Router and its co-located app replicas, over aeron:ipc. Never
+         sequenced (no globalSeqNo), so they carry no `header` composite. See the
+         Router design, doc/router-design.md §4. clientId identifies the
+         requesting replica so the Router can cap concurrent replays at 2 (one
+         in-flight per client) and the app can match a Replaying/Pending reply
+         to its own request; fromPosition is the recording position of the last
+         in-order frame the app holds (SequencedEvent.position), which is the
+         archive replay start — globalSeqNo stays the correctness key, position
+         is only how the archive is addressed, so the Router needs no
+         globalSeqNo->position index.
+         ═══════════════════════════════════════════════════════════════════ -->
+
+    <!-- App -> Router: "I have a gap; replay for me from fromPosition." -->
+    <sbe:message name="RouterReplayRequest" id="6"
+                 description="A replica asks its Router to replay the global stream from a recording
+                              position (its last in-order frame), because it detected a globalSeqNo gap
+                              on the fan-out (or is cold-starting from 0)">
+        <field name="clientId"     id="20010" type="int32"
+               description="Requesting replica's stable id, unique among the Router's co-located apps"/>
+        <field name="fromPosition" id="20011" type="int64"
+               description="Recording position to replay from (SequencedEvent.position of the last in-order frame)"/>
+    </sbe:message>
+
+    <!-- Router -> App: "A replay slot is free; attach to replaySessionId on the replay stream." -->
+    <sbe:message name="RouterReplaying" id="7"
+                 description="The Router started an archive replay for the requesting replica; the app
+                              attaches to replaySessionId on the Router replay stream and follows it until
+                              the image closes, then falls back to the fan-out (de-duped by globalSeqNo)">
+        <field name="clientId"        id="20010" type="int32"/>
+        <field name="replaySessionId" id="20012" type="int64"
+               description="Aeron replay session id to attach to (Subscription.imageBySessionId) on the Router replay stream"/>
+    </sbe:message>
+
+    <!-- Router -> App: "All replay slots are busy; hold at your gap and wait." -->
+    <sbe:message name="RouterPending" id="8"
+                 description="The Router has &gt;=2 replays already active; the requesting replica must hold
+                              at its gap (must not advance past the hole) until a later Replaying arrives">
+        <field name="clientId" id="20010" type="int32"/>
     </sbe:message>
 
 </sbe:messageSchema>

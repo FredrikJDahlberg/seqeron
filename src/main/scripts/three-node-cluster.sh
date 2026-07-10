@@ -6,7 +6,10 @@
 #   1. SequencerNode  x3  (Java, Raft members 0/1/2, all on localhost)
 #   2. aeronmd            (shared Aeron media driver for the C++ clients)
 #   3. FixSessionClient   (C++, FIX TCP gateway on port 9000)
-#   4. OrderExecClient    (C++, replays global stream, tracks positions, answers risk queries)
+#   4. RouterNode         (Java, co-located with member 0: the only global-stream reader on that
+#                          node; fans it out over aeron:ipc and serves replays — doc/router-design.md)
+#   5. OrderExecClient    (C++, a per-node replica behind RouterNode: consumes its IPC fan-out,
+#                          tracks positions, answers risk queries iff its node is leader)
 # then runs fix_test_server once to completion and reports its result.
 #
 # FixSessionClient only ever *bootstraps* against member 0's archive (9301) and
@@ -59,6 +62,7 @@ JAVA_OPTS=(
 LOG_DIR="logs"
 MD_LOG="${LOG_DIR}/aeronmd.log"
 FIX_LOG="${LOG_DIR}/FixSessionClient.log"
+ROUTER_LOG="${LOG_DIR}/RouterNode.log"
 APP_LOG="${LOG_DIR}/OrderExecClient.log"
 PROBE_LOG="${LOG_DIR}/GlobalStreamLatencyProbe.log"
 TEST_LOG="${LOG_DIR}/fix_test_server.log"
@@ -185,7 +189,32 @@ echo "[three-node-cluster.sh] Starting FixSessionClient → ${FIX_LOG}"
 stdbuf -oL -eL "${BUILD_DIR}/FixSessionClient" > "${FIX_LOG}" 2>&1 &
 FIX_PID=$!
 
-echo "[three-node-cluster.sh] Starting OrderExecClient (co-located with SequencerNode member 0) → ${APP_LOG}"
+echo "[three-node-cluster.sh] Starting RouterNode (co-located with SequencerNode member 0) → ${ROUTER_LOG}"
+# Attaches to member 0's embedded media driver (router.memberId=0 → phixeron-seq-aeron-0, i.e.
+# SEQ_AERON_DIR) and reads that node's local global-stream recording over aeron:ipc, fanning it out
+# to co-located replicas. OrderExecClient (below) shares the same directory and consumes that fan-out.
+java "${JAVA_OPTS[@]}" \
+    -Drouter.memberId=0 \
+    -cp "${JAR}" \
+    org.limitless.phixeron.router.RouterNode \
+    > "${ROUTER_LOG}" 2>&1 &
+ROUTER_PID=$!
+
+# Wait until the Router has located member 0's recording and begun following it, so OrderExecClient's
+# first replay request lands on a Router that can serve it (it retries regardless, but this avoids a
+# noisy startup and a needless extra replay).
+echo "[three-node-cluster.sh] Waiting for RouterNode to follow the global-stream recording…"
+WAIT=0
+until grep -q "following recording" "${ROUTER_LOG}" 2>/dev/null; do
+    sleep 0.5
+    WAIT=$(( WAIT + 1 ))
+    if (( WAIT > 60 )); then
+        echo "[three-node-cluster.sh] WARN: RouterNode not following after 30s — starting OrderExecClient anyway" >&2
+        break
+    fi
+done
+
+echo "[three-node-cluster.sh] Starting OrderExecClient (replica behind member 0's RouterNode) → ${APP_LOG}"
 # PHIXERON_LATENCY_STATS=1 makes OrderExecClient record the post-consensus delivery latency
 # (cluster-commit → its aeron:ipc archive-replay tail) of every caught-up global-stream message and
 # print p50/p99/p99.9 on shutdown — the Variant-B "record→(replicate→)replay" latency the Router
@@ -211,8 +240,8 @@ fi
 cleanup() {
     echo ""
     echo "[three-node-cluster.sh] Stopping…"
-    kill ${PROBE_PID:+"${PROBE_PID}"} "${APP_PID}" "${FIX_PID}" "${MD_PID}" "${SEQ_PIDS[@]}" 2>/dev/null || true
-    wait ${PROBE_PID:+"${PROBE_PID}"} "${APP_PID}" "${FIX_PID}" "${MD_PID}" "${SEQ_PIDS[@]}" 2>/dev/null || true
+    kill ${PROBE_PID:+"${PROBE_PID}"} "${APP_PID}" "${ROUTER_PID}" "${FIX_PID}" "${MD_PID}" "${SEQ_PIDS[@]}" 2>/dev/null || true
+    wait ${PROBE_PID:+"${PROBE_PID}"} "${APP_PID}" "${ROUTER_PID}" "${FIX_PID}" "${MD_PID}" "${SEQ_PIDS[@]}" 2>/dev/null || true
     echo "[three-node-cluster.sh] Done"
     return 0
 }

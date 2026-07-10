@@ -19,7 +19,13 @@
     Also carries the sequenced form of the two non-FIX lifecycle messages,
     ClientConnected and ClientDisconnected — same template ids (1/2) and
     shape as sbe-unsequenced.xml, just with globalSeqNo/timestamp stamped
-    into the header like every other message here.
+    into the header like every other message here — plus LeadershipChanged
+    (template 5), synthesized by the sequencer onto the global stream when a
+    new leadership term begins so every per-node replica learns, at an exact
+    globalSeqNo, which node is leader from that point on (see the Router
+    design, doc/router-design.md §3). LeadershipChanged is synthesized-only:
+    it never arrives on cluster ingress, so it has no sbe-unsequenced.xml
+    counterpart.
 
     Design notes
     ────────────
@@ -28,9 +34,9 @@
         Heartbeat '0'=48   TestRequest  '1'=49   ResendRequest '2'=50
         Reject    '3'=51   SequenceReset'4'=52    Logout        '5'=53
         Logon     'A'=65   ExecutionReport '8'=56 NewOrderSingle 'D'=68
-    ClientConnected/ClientDisconnected/PortfolioQueryRequest/PortfolioQueryReply
-    aren't FIX messages, so they use small, non-ASCII-derived template ids
-    instead (1/2/3/4), clear of that range.
+    ClientConnected/ClientDisconnected/PortfolioQueryRequest/PortfolioQueryReply/
+    LeadershipChanged aren't FIX messages, so they use small, non-ASCII-derived
+    template ids instead (1/2/3/4/5), clear of that range.
 
     The header field uses field id 20001 — well outside the FIX tag range —
     since it is gateway/sequencer metadata, not a FIX tag. sourceId/
@@ -530,6 +536,22 @@
         <field name="positionCount" id="20007" type="uint32"/>
         <data  name="text"          id="58"    type="varDataEncoding"
                description="Optional free-text detail, e.g. an error message when status=Error; length 0 = absent"/>
+    </sbe:message>
+
+    <!-- ═══════════════════════════════════════════════════════════════════
+         LeadershipChanged  (template 5)
+         Synthesized by SequencerService.applyLeadership onto the global stream
+         at a well-defined globalSeqNo whenever a new leadership term begins, so
+         every per-node replica switches leader-only emission on/off at the same
+         point in the ordered stream (Router design §3). Synthesized-only — never
+         arrives on cluster ingress — so it has no sbe-unsequenced.xml twin.
+         ═══════════════════════════════════════════════════════════════════ -->
+    <sbe:message name="LeadershipChanged" id="5"
+                 description="A new Aeron Cluster leadership term began; from this globalSeqNo on,
+                              newLeaderMemberId is the leader and only that node's replicas emit">
+        <field name="header"            id="20001" type="header"/>
+        <field name="newLeaderMemberId" id="20008" type="int32"
+               description="Aeron Cluster memberId of the node that is leader from this globalSeqNo onward"/>
     </sbe:message>
 
 </sbe:messageSchema>

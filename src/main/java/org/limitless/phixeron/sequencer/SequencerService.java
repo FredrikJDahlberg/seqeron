@@ -24,6 +24,7 @@ import org.agrona.concurrent.NoOpLock;
 import org.limitless.phixeron.sbe.sequenced.ClientConnectedEncoder;
 import org.limitless.phixeron.sbe.sequenced.ClientDisconnectedEncoder;
 import org.limitless.phixeron.sbe.sequenced.HeaderEncoder;
+import org.limitless.phixeron.sbe.sequenced.LeadershipChangedEncoder;
 import org.limitless.phixeron.sbe.sequenced.MessageHeaderEncoder;
 import org.limitless.phixeron.sbe.unsequenced.HeaderDecoder;
 import org.limitless.phixeron.sbe.unsequenced.MessageHeaderDecoder;
@@ -33,7 +34,7 @@ import org.limitless.phixeron.sbe.unsequenced.MessageHeaderDecoder;
  *
  * <p>For every committed {@link #onSessionMessage} the service assigns a
  * <b>globalSeqNo</b> — a cluster-wide monotone counter shared across all sources and
- * lifecycle events (connect / disconnect) — and stamps it, together with the cluster
+ * lifecycle events (connect / disconnect / leadership change) — and stamps it, together with the cluster
  * consensus timestamp, into the message's {@code header} composite before republishing it.
  *
  * <p>Ingress messages arrive already SBE-encoded as {@code sbe-unsequenced.xml} (schema
@@ -158,6 +159,7 @@ public final class SequencerService implements ClusteredService {
     private final HeaderEncoder egressHeaderEncoder = new HeaderEncoder();
     private final ClientConnectedEncoder clientConnEncoder = new ClientConnectedEncoder();
     private final ClientDisconnectedEncoder clientDiscEncoder = new ClientDisconnectedEncoder();
+    private final LeadershipChangedEncoder leadershipChangedEncoder = new LeadershipChangedEncoder();
     private final MutableDirectBuffer encodeBuffer = new ExpandableDirectByteBuffer(4096);
 
     // ── Sequencing state (snapshotted; updated on every node for determinism) ─
@@ -347,7 +349,7 @@ public final class SequencerService implements ClusteredService {
     public void onNewLeadershipTermEvent(final long logPosition, final long leadershipTermId, final long timestamp,
                                          final long termBaseLogPosition, final int leaderMemberId,
                                          final int logSessionId, final TimeUnit timeUnit, final int appVersion) {
-        applyLeadership(leaderMemberId);
+        applyLeadership(leaderMemberId, timestamp);
     }
 
     @Override
@@ -370,12 +372,21 @@ public final class SequencerService implements ClusteredService {
     // replicating, and doing that synchronously here previously stalled onSessionMessage (and
     // therefore every client's Logon) for as long as that round trip took — see the class
     // Javadoc's "Cross-failover recording continuity" section and StandbyFollower's own Javadoc.
-    private void applyLeadership(final int leaderMemberId) {
+    //
+    // Also synthesizes a LeadershipChanged event onto the global stream (Router design §3): every
+    // node consumes onNewLeadershipTermEvent in the same log order, so ++globalSeqNo here (on every
+    // node, leader or not, exactly like onSessionOpen/onSessionMessage) keeps the counter identical
+    // across nodes, and the new leader stamps that same globalSeqNo onto a LeadershipChanged the
+    // per-node replicas use to switch leader-only emission on/off at one exact point in the ordered
+    // stream. Only the leader has a global-stream publication, so only it offers; followers just
+    // advance the counter.
+    private void applyLeadership(final int leaderMemberId, final long timestamp) {
         if (leaderMemberId == currentLeaderMemberId) {
             return;
         }
         currentLeaderMemberId = leaderMemberId;
         final boolean leader = leaderMemberId == cluster.memberId();
+        final long globalSeq = ++globalSeqNo;
         System.out.printf("[SequencerService/%d] leadership change: new leader is memberId=%d (isLeader=%b)%n",
                           cluster.memberId(), leaderMemberId, leader);
 
@@ -391,6 +402,16 @@ public final class SequencerService implements ClusteredService {
             // Idempotent: safe to call again if this node regains leadership later. The recording
             // channel must match the publication channel exactly, so both go through the same helper.
             aeronArchive.startRecording(channel, GLOBAL_STREAM_ID, SourceLocation.LOCAL);
+
+            leadershipChangedEncoder.wrapAndApplyHeader(encodeBuffer, 0, headerEncoder);
+            leadershipChangedEncoder.header()
+                .sourceId(NO_SOURCE_ID)
+                .connectionId(NO_SOURCE_ID)
+                .sessionId(NO_SOURCE_ID)
+                .globalSeqNo(globalSeq)
+                .timestamp(timestamp);
+            leadershipChangedEncoder.newLeaderMemberId(leaderMemberId);
+            offerToGlobalStream(MessageHeaderEncoder.ENCODED_LENGTH + leadershipChangedEncoder.encodedLength());
         }
         standbyFollower.onLeadershipChange(leaderMemberId);
     }

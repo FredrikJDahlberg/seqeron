@@ -54,7 +54,9 @@ inline constexpr std::int32_t GLOBAL_STREAM_ID = 1;
 // fix_test_server   → 9400 (env PHIXERON_RISK_TEST_REPLAY_PORT; kept outside the
 //                     9300-9325 cluster port block — see SequencerNode's port layout —
 //                     since 9312 used to alias member 1's cluster ingress port)
-// FixSessionClient's resend-recovery replay → 9313 (env PHIXERON_RESEND_REPLAY_PORT)
+// FixSessionClient's resend-recovery replay → 9401 (env PHIXERON_RESEND_REPLAY_PORT; also outside
+//                     the 9300-9325 cluster block for the same reason — 9313, the previous default,
+//                     aliased member 1's Raft consensus port and failed to bind whenever member 1 was up)
 // OrderExecClient, deployed co-located with one SequencerNode member (see
 // connectLocalArchive/ClusterIngressSender::connectColocated), replays over
 // REPLAY_CHANNEL_IPC below instead — no port needed.
