@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
-# three-node-cluster.sh — bring up a local 3-node Aeron Cluster with one
-# FixSessionClient, one OrderExecClient, then run fix_test_server against it.
+# three-node-cluster.sh — bring up a local 3-node Aeron Cluster with a
+# FixSessionClient and a per-node RouterNode + OrderExecClient replica on every
+# member, then run fix_test_server against it.
 #
 # Launches, each writing to its own log file under logs/:
 #   1. SequencerNode  x3  (Java, Raft members 0/1/2, all on localhost)
 #   2. aeronmd            (shared Aeron media driver for the C++ clients)
 #   3. FixSessionClient   (C++, FIX TCP gateway on port 9000)
-#   4. RouterNode         (Java, co-located with member 0: the only global-stream reader on that
-#                          node; fans it out over aeron:ipc and serves replays — doc/router-design.md)
-#   5. OrderExecClient    (C++, a per-node replica behind RouterNode: consumes its IPC fan-out,
-#                          tracks positions, answers risk queries iff its node is leader)
+#   4. RouterNode     x3  (Java, one co-located with each member: the only global-stream reader on
+#                          that node; fans it out over aeron:ipc and serves replays — router-design.md)
+#   5. OrderExecClient x3 (C++, one per-node replica behind each RouterNode: all track positions from
+#                          the same ordered stream; only the leader node's replica answers risk queries)
 # then runs fix_test_server once to completion and reports its result.
 #
 # FixSessionClient only ever *bootstraps* against member 0's archive (9301) and
@@ -17,12 +18,11 @@
 # the real leader afterwards — so this works regardless of which member wins the
 # Raft election, as long as member 0 is reachable at startup.
 #
-# OrderExecClient is co-located with member 0 (shares its Aeron directory) and
-# always reads member 0's own archive over aeron:ipc — safe regardless of which
-# member is leader, since every member's archive replicates the full global
-# stream (see SequencerService's standby-follow). Cluster ingress tries
-# aeron:ipc first and falls back to the same UDP bootstrap/redirect path as
-# FixSessionClient when member 0 isn't currently leader.
+# Each OrderExecClient is co-located with one member (shares that member's Aeron directory) and
+# reads that node's RouterNode fan-out over aeron:ipc. Because a replica runs on every node, whichever
+# member is elected leader has a local replica ready to answer risk queries (leader-only emission,
+# design §3) — no dependence on which member wins the election. Each replica uses a distinct cluster
+# egress port (9330 + memberId) so the three co-located clients don't collide on one host.
 #
 # Uses a dedicated baseDir (${TMPDIR}phixeron-seq3) so it doesn't collide
 # with single-node dev state left behind by start-cluster.sh.
@@ -214,15 +214,46 @@ until grep -q "following recording" "${ROUTER_LOG}" 2>/dev/null; do
     fi
 done
 
-echo "[three-node-cluster.sh] Starting OrderExecClient (replica behind member 0's RouterNode) → ${APP_LOG}"
-# PHIXERON_LATENCY_STATS=1 makes OrderExecClient record the post-consensus delivery latency
-# (cluster-commit → its aeron:ipc archive-replay tail) of every caught-up global-stream message and
-# print p50/p99/p99.9 on shutdown — the Variant-B "record→(replicate→)replay" latency the Router
-# design's per-node consumers would inherit. Surfaced in the flood summary below.
+echo "[three-node-cluster.sh] Starting OrderExecClient (replica on member 0) → ${APP_LOG}"
+# Member 0's replica is the latency-instrumented one: PHIXERON_LATENCY_STATS=1 makes it record the
+# post-consensus delivery latency (cluster-commit → its aeron:ipc Router-fan-out tail) of every
+# caught-up global-stream message and print p50/p99/p99.9 on shutdown — the Variant-B
+# "record→(replicate→)replay" latency the Router design's per-node consumers inherit. Surfaced in the
+# flood summary below. The members 1 & 2 replicas below run without it (one measurement is enough).
 PHIXERON_ORDER_EXEC_AERON_DIR="${SEQ_AERON_DIR}" \
+    PHIXERON_NODE_MEMBER_ID=0 \
     PHIXERON_LATENCY_STATS=1 \
     stdbuf -oL -eL "${BUILD_DIR}/OrderExecClient" > "${APP_LOG}" 2>&1 &
 APP_PID=$!
+
+# A replica on every node (design §3): start a RouterNode + OrderExecClient co-located with members 1
+# and 2 too. Each attaches to its own member's media driver (phixeron-seq-aeron-<m>), reads that
+# node's Router fan-out over aeron:ipc, and uses a distinct cluster egress port (9330 + m, derived
+# from PHIXERON_NODE_MEMBER_ID) so the three co-located clients don't collide on one host. Whichever
+# member is leader then has a local replica ready to answer risk queries.
+EXTRA_ROUTER_PIDS=()
+EXTRA_APP_PIDS=()
+EXTRA_APP_LOGS=()
+for m in 1 2; do
+    RLOG="${LOG_DIR}/RouterNode-${m}.log"
+    ALOG="${LOG_DIR}/OrderExecClient-${m}.log"
+    MDIR="${TMPDIR}phixeron-seq-aeron-${m}"
+    echo "[three-node-cluster.sh] Starting RouterNode + OrderExecClient (replica on member ${m})"
+    java "${JAVA_OPTS[@]}" -Drouter.memberId="${m}" -cp "${JAR}" \
+        org.limitless.phixeron.router.RouterNode > "${RLOG}" 2>&1 &
+    EXTRA_ROUTER_PIDS+=("$!")
+    WAIT=0
+    until grep -q "following recording" "${RLOG}" 2>/dev/null; do
+        sleep 0.5
+        WAIT=$(( WAIT + 1 ))
+        (( WAIT > 60 )) && { echo "[three-node-cluster.sh] WARN: RouterNode-${m} not following after 30s" >&2; break; }
+    done
+    PHIXERON_ORDER_EXEC_AERON_DIR="${MDIR}" \
+        PHIXERON_NODE_MEMBER_ID="${m}" \
+        stdbuf -oL -eL "${BUILD_DIR}/OrderExecClient" > "${ALOG}" 2>&1 &
+    EXTRA_APP_PIDS+=("$!")
+    EXTRA_APP_LOGS+=("${ALOG}")
+done
 
 # Variant-A latency probe (flood mode only): a direct live-MDC subscriber to the global stream,
 # measured side-by-side with OrderExecClient's Variant-B (archive IPC replay) stat for an A-vs-B
@@ -240,8 +271,12 @@ fi
 cleanup() {
     echo ""
     echo "[three-node-cluster.sh] Stopping…"
-    kill ${PROBE_PID:+"${PROBE_PID}"} "${APP_PID}" "${ROUTER_PID}" "${FIX_PID}" "${MD_PID}" "${SEQ_PIDS[@]}" 2>/dev/null || true
-    wait ${PROBE_PID:+"${PROBE_PID}"} "${APP_PID}" "${ROUTER_PID}" "${FIX_PID}" "${MD_PID}" "${SEQ_PIDS[@]}" 2>/dev/null || true
+    kill ${PROBE_PID:+"${PROBE_PID}"} "${APP_PID}" "${ROUTER_PID}" \
+        ${EXTRA_APP_PIDS[@]+"${EXTRA_APP_PIDS[@]}"} ${EXTRA_ROUTER_PIDS[@]+"${EXTRA_ROUTER_PIDS[@]}"} \
+        "${FIX_PID}" "${MD_PID}" "${SEQ_PIDS[@]}" 2>/dev/null || true
+    wait ${PROBE_PID:+"${PROBE_PID}"} "${APP_PID}" "${ROUTER_PID}" \
+        ${EXTRA_APP_PIDS[@]+"${EXTRA_APP_PIDS[@]}"} ${EXTRA_ROUTER_PIDS[@]+"${EXTRA_ROUTER_PIDS[@]}"} \
+        "${FIX_PID}" "${MD_PID}" "${SEQ_PIDS[@]}" 2>/dev/null || true
     echo "[three-node-cluster.sh] Done"
     return 0
 }
@@ -264,6 +299,23 @@ until nc -z 127.0.0.1 9000 2>/dev/null; do
     fi
 done
 echo "[three-node-cluster.sh] Gateway is up"
+
+# fix_test_server's risk-query sub-test expects a PortfolioQueryReply, and only a caught-up
+# replica answers (the isCaughtUp gate against re-answering replayed history, design §3). We don't
+# know which member won the election, so wait for ALL three replicas to reach the live tail before
+# driving the test — that guarantees the leader's replica is ready to answer.
+echo "[three-node-cluster.sh] Waiting for all OrderExecClient replicas to catch up to the live tail…"
+for LOG in "${APP_LOG}" ${EXTRA_APP_LOGS[@]+"${EXTRA_APP_LOGS[@]}"}; do
+    WAIT=0
+    until grep -q "following live" "${LOG}" 2>/dev/null; do
+        sleep 0.5
+        WAIT=$(( WAIT + 1 ))
+        if (( WAIT > 60 )); then
+            echo "[three-node-cluster.sh] WARN: replica ${LOG} not caught up after 30s — proceeding anyway" >&2
+            break
+        fi
+    done
+done
 
 # For the delivery-latency measurement (flood mode), OrderExecClient must be caught up and
 # following the live tail BEFORE the flood — otherwise its samples measure the age of a drained

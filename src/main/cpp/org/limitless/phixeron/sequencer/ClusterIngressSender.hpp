@@ -219,9 +219,11 @@ class ClusterIngressSender {
 
     // Real entry point for a client deployed co-located with one cluster member — sharing
     // that member's own Aeron directory (see OrderExecClient's PHIXERON_ORDER_EXEC_AERON_DIR).
-    // Egress is always the normal UDP CLUSTER_EGRESS_CHANNEL (unaffected by which member is
-    // leader; the leader publishes to whatever responseChannel the client requests, over
-    // UDP loopback here regardless of which host/process is currently leader). Ingress tries
+    // Egress uses the given UDP egressChannel (default CLUSTER_EGRESS_CHANNEL_COLOCATED; a
+    // per-node replica passes a member-specific endpoint so co-located replicas on one host don't
+    // collide — see the parameter note below). It is unaffected by which member is leader: the
+    // leader publishes to whatever responseChannel the client requests, over UDP loopback here
+    // regardless of which host/process is currently leader. Ingress tries
     // CLUSTER_INGRESS_CHANNEL_IPC first, on the theory that the co-located member usually is
     // (or will shortly become) leader; a co-located member that is a follower never opens the
     // IPC ingress subscription at all (see SequencerNode's isIpcIngressAllowed — leader-only),
@@ -233,10 +235,15 @@ class ClusterIngressSender {
     // handling already resolves UDP endpoints from the wire CSV and swaps m_ingress, so
     // leadership later moving away from the co-located member degrades to UDP ingress
     // automatically, with no further special-casing needed here.
-    void connectColocated(std::shared_ptr<aeron::Aeron> aeron, std::int64_t ipcConnectTimeoutMs = 1500)
+    void connectColocated(std::shared_ptr<aeron::Aeron> aeron, std::int64_t ipcConnectTimeoutMs = 1500,
+                          const std::string& egressChannel = CLUSTER_EGRESS_CHANNEL_COLOCATED)
     {
         m_aeron = std::move(aeron);
-        m_egressChannel = CLUSTER_EGRESS_CHANNEL_COLOCATED;
+        // egressChannel must be a distinct UDP endpoint per co-located client: when a replica runs
+        // on every cluster node, each one attaches to its own member's media driver, and two driver
+        // processes on one host cannot both bind the same egress UDP port. Callers pass
+        // localhost:(9330 + memberId) or similar; the default keeps the single-replica behaviour.
+        m_egressChannel = egressChannel;
 
         const auto subId = m_aeron->addSubscription(m_egressChannel, CLUSTER_EGRESS_STREAM_ID);
         std::shared_ptr<aeron::Subscription> egressSub;
