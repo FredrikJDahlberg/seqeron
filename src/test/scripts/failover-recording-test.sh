@@ -8,7 +8,7 @@
 # SequencerService's standby replication mechanism keeps every node's archive current while it
 # isn't leader, so that whichever node next takes over already has full history locally. See
 # todo.md's "Cross-failover global-stream recording continuity" entry for the design this
-# verifies, and its "Not yet done" note that this script (not three-node-cluster.sh, which never
+# verifies, and its "Not yet done" note that this script (not three-node-e2e-test.sh, which never
 # kills a member mid-run) is what exercises the actual failover path.
 #
 # Usage:

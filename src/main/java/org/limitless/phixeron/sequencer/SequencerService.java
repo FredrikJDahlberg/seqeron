@@ -12,6 +12,7 @@ import io.aeron.cluster.codecs.CloseReason;
 import io.aeron.cluster.service.ClientSession;
 import io.aeron.cluster.service.Cluster;
 import io.aeron.cluster.service.ClusteredService;
+import io.aeron.exceptions.RegistrationException;
 import io.aeron.logbuffer.FragmentHandler;
 import io.aeron.logbuffer.Header;
 import java.util.Map;
@@ -135,6 +136,18 @@ public final class SequencerService implements ClusteredService {
      * At ~10 ns/spin this is ~10 ms per alert period.
      */
     private static final int MAX_BACK_PRESSURE_SPINS = 1_000_000;
+
+    /**
+     * How long {@link #openGlobalStreamPublication} retries a transient "Address already in use"
+     * bind of the fixed global-stream control address ({@link #GLOBAL_STREAM_CHANNEL},
+     * localhost:9200) before giving up. On a single-host cluster the outgoing and incoming leaders'
+     * separate media drivers momentarily contend for it across a failover — {@code
+     * addExclusivePublication} throws {@link RegistrationException} until the previous leader's
+     * asynchronous {@code close()} releases the socket (well under a second) — so retrying avoids
+     * leaving the new leader with a null {@link #globalStreamPub}, which would NPE every {@link
+     * #offerToGlobalStream} and silently sequence nothing onto the global stream.
+     */
+    private static final long GLOBAL_STREAM_PUB_RETRY_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(5);
 
     private static final int SNAPSHOT_POLL_BATCH = 10;
 
@@ -398,7 +411,7 @@ public final class SequencerService implements ClusteredService {
 
         if (isLeader) {
             final String channel = globalStreamChannel();
-            globalStreamPub = cluster.context().aeron().addExclusivePublication(channel, GLOBAL_STREAM_ID);
+            globalStreamPub = openGlobalStreamPublication(channel);
             // Idempotent: safe to call again if this node regains leadership later. The recording
             // channel must match the publication channel exactly, so both go through the same helper.
             aeronArchive.startRecording(channel, GLOBAL_STREAM_ID, SourceLocation.LOCAL);
@@ -446,6 +459,31 @@ public final class SequencerService implements ClusteredService {
         return (termLength == null || termLength.isEmpty())
             ? GLOBAL_STREAM_CHANNEL
             : GLOBAL_STREAM_CHANNEL + "|term-length=" + termLength;
+    }
+
+    // Opens the leader's global-stream ExclusivePublication, retrying on a transient "Address
+    // already in use" bind failure. The control address (GLOBAL_STREAM_CHANNEL, localhost:9200) is
+    // fixed regardless of which node leads, so on a single-host cluster it can still be held by the
+    // previous leader's media driver — whose losing-leadership close() is asynchronous — when this
+    // new leader tries to bind it in its own driver. The port frees within well under a second;
+    // retry until it does (or GLOBAL_STREAM_PUB_RETRY_TIMEOUT_NS elapses) rather than propagating the
+    // exception and leaving this node "leader with a null globalStreamPub", which would NPE every
+    // subsequent offerToGlobalStream and sequence nothing. Runs on the conductor thread, but this is
+    // only a local media-driver round trip (unlike StandbyFollower's remote archive calls) at a
+    // leadership transition, so a bounded spin here is safe.
+    private ExclusivePublication openGlobalStreamPublication(final String channel) {
+        final Aeron aeron = cluster.context().aeron();
+        final long deadlineNs = System.nanoTime() + GLOBAL_STREAM_PUB_RETRY_TIMEOUT_NS;
+        RegistrationException lastError;
+        do {
+            try {
+                return aeron.addExclusivePublication(channel, GLOBAL_STREAM_ID);
+            } catch (final RegistrationException ex) {
+                lastError = ex;
+                cluster.idleStrategy().idle();  // brief backoff before re-attempting the bind
+            }
+        } while (System.nanoTime() < deadlineNs);
+        throw lastError;
     }
 
     // Spins on the single conductor thread until the offer lands — this is the audit S4 coupling and

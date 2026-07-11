@@ -67,17 +67,16 @@ else
     AERONMD="${BUILD_DIR}/_deps/aeron-build/binaries/aeronmd"
 fi
 
-# ── S4 wedge smoke test (opt-in via PHIXERON_FLOOD_ORDERS) ───────────────────
-# Single-node is the clean instrument for the audit S4 flow-control test: one stable leader, so
-# the 3-node global-stream control-port collision on failover (todo.md) can't confound the result.
-# When PHIXERON_FLOOD_ORDERS is set, the SequencerNode gets -Dphixeron.globalStream.termLength
-# (default 65536) so an un-drained global-stream subscriber back-pressures the publisher after a
-# few hundred messages; then run fix_test_server in flood mode against port 9000 and check
-# sequencer.log for "ALERT: global stream back-pressure". A tether=false build should show none.
-SEQ_S4_OPTS=()
-if [[ -n "${PHIXERON_FLOOD_ORDERS:-}" ]]; then
-    SEQ_S4_OPTS+=("-Dphixeron.globalStream.termLength=${PHIXERON_GLOBAL_TERM_LENGTH:-65536}")
-    echo "[cluster.sh] S4 wedge test: global-stream term-length=${PHIXERON_GLOBAL_TERM_LENGTH:-65536}"
+# ── Optional global-stream term-length tuning ────────────────────────────────
+# When PHIXERON_GLOBAL_TERM_LENGTH is set, the SequencerNode gets -Dphixeron.globalStream.termLength
+# so the global stream's flow-control window is small enough that an un-drained subscriber
+# back-pressures the publisher after a few hundred messages. Single-node is the clean instrument for
+# this (one stable leader, no failover control-port collision) — the S4 wedge test harness
+# (src/test/scripts) sets it before driving a flood. A cluster-config knob only; this script runs no test.
+SEQ_TERM_OPTS=()
+if [[ -n "${PHIXERON_GLOBAL_TERM_LENGTH:-}" ]]; then
+    SEQ_TERM_OPTS+=("-Dphixeron.globalStream.termLength=${PHIXERON_GLOBAL_TERM_LENGTH}")
+    echo "[cluster.sh] global-stream term-length=${PHIXERON_GLOBAL_TERM_LENGTH}"
 fi
 
 # ── Pre-flight checks ─────────────────────────────────────────────────────────
@@ -105,7 +104,7 @@ mkdir -p "${LOG_DIR}"
 
 echo "[cluster.sh] Starting SequencerNode (member 0) → ${SEQ_LOG}"
 java "${JAVA_OPTS[@]}" \
-    ${SEQ_S4_OPTS[@]+"${SEQ_S4_OPTS[@]}"} \
+    ${SEQ_TERM_OPTS[@]+"${SEQ_TERM_OPTS[@]}"} \
     -Dsequencer.memberId=0 \
     -jar "${JAR}" \
     > "${SEQ_LOG}" 2>&1 &

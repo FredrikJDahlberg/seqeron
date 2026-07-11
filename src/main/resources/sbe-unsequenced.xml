@@ -553,29 +553,54 @@
 
     <!-- App -> Router: "I have a gap; replay for me from fromPosition." -->
     <sbe:message name="RouterReplayRequest" id="6"
-                 description="A replica asks its Router to replay the global stream from a recording
-                              position (its last in-order frame), because it detected a globalSeqNo gap
-                              on the fan-out (or is cold-starting from 0)">
+                 description="A replica asks its Router to replay the global stream. Either it is
+                              cold-starting and walks the full recording chain by segmentIndex, or it
+                              detected a globalSeqNo gap and resumes the active recording at fromPosition">
         <field name="clientId"     id="20010" type="int32"
                description="Requesting replica's stable id, unique among the Router's co-located apps"/>
         <field name="fromPosition" id="20011" type="int64"
-               description="Recording position to replay from (SequencedEvent.position of the last in-order frame)"/>
+               description="Recording position to resume the active recording from (SequencedEvent.position
+                            of the last in-order frame); used only when segmentIndex &lt; 0"/>
+        <field name="segmentIndex" id="20014" type="int32"
+               description="-1 = resume the current active recording at fromPosition (steady-state gap).
+                            &gt;=0 = cold-start walk: replay the segmentIndex-th recording of the global
+                            stream's per-leader-tenure chain (oldest first) from position 0. The app walks
+                            0,1,2,… de-duping by globalSeqNo (contiguous across tenures) until the Router
+                            answers NO_REPLAY_NEEDED, which marks it caught up. This spans every failover,
+                            so a cold start after a leader change recovers full history"/>
     </sbe:message>
 
     <!-- Router -> App: "A replay slot is free; attach to replaySessionId on the replay stream." -->
     <sbe:message name="RouterReplaying" id="7"
                  description="The Router started an archive replay for the requesting replica; the app
                               attaches to replaySessionId on the Router replay stream and follows it until
-                              the image closes, then falls back to the fan-out (de-duped by globalSeqNo)">
+                              its image position reaches catchUpPosition, then falls back to the fan-out
+                              (de-duped by globalSeqNo)">
         <field name="clientId"        id="20010" type="int32"/>
         <field name="replaySessionId" id="20012" type="int64"
                description="Aeron replay session id to attach to (Subscription.imageBySessionId) on the Router replay stream"/>
+        <field name="catchUpPosition" id="20013" type="int64"
+               description="Recording position the bounded replay ends at; the app is caught up once its
+                            replay image reaches this and switches to the fan-out. A bounded replay of an
+                            active recording does not close its image at the bound, so completion is
+                            detected by position (as GlobalStreamClient does for its live segment), not by
+                            image close"/>
     </sbe:message>
 
     <!-- Router -> App: "All replay slots are busy; hold at your gap and wait." -->
     <sbe:message name="RouterPending" id="8"
                  description="The Router has &gt;=2 replays already active; the requesting replica must hold
                               at its gap (must not advance past the hole) until a later Replaying arrives">
+        <field name="clientId" id="20010" type="int32"/>
+    </sbe:message>
+
+    <!-- App -> Router: "I have caught up and am on the fan-out; free my replay slot." -->
+    <sbe:message name="RouterReplayComplete" id="9"
+                 description="A replica has finished with its replay (caught up to the tip and switched to the
+                              fan-out) and no longer needs its slot; the Router frees it immediately (design
+                              §5) rather than waiting for the idle-TTL, and hands it to any waiting app. Sent
+                              after a steady-state gap resume; a cold-start walk needs none, since each of its
+                              slots is freed by the supersede on the next segment request">
         <field name="clientId" id="20010" type="int32"/>
     </sbe:message>
 
