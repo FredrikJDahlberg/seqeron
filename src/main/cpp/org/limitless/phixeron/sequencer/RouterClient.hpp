@@ -2,30 +2,32 @@
 
 // RouterClient — app-replica side of the per-node Router (doc/router-design.md).
 //
-// Where GlobalStreamClient opens its own archive connection and follows the leader's global-stream
-// recording directly, a RouterClient never touches the archive: it consumes a node-local Router's
-// aeron:ipc fan-out and asks that Router to replay when it detects a gap. That is the whole point of
-// the Router — one process per node reads the archive; every replica reads cheap local IPC — so the
-// leader keeps zero live network subscribers and audit.md S4 dissolves (design §0/§5).
+// Where GlobalStreamClient opens its own archive connection and replays the recorded sequenced stream
+// directly, a RouterClient never touches the archive: it consumes a node-local Router's aeron:ipc
+// fan-out and asks that Router to replay when it detects a gap. That is the whole point of the Router —
+// one process per node reads the archive; every replica reads cheap local IPC — so the sequencer keeps
+// zero live network subscribers and audit.md S4 dissolves (design §0/§5).
 //
 // This deliberately mirrors GlobalStreamClient's proven "follow a replay image up to a catch-up
-// position, fall back to a live sub, de-dupe the seam by globalSeqNo" handoff, with two substitutions:
-//   • the "live sub" is the Router's IPC fan-out (ROUTER_FANOUT_STREAM_ID), not a UDP MDC sub;
+// position, then hand off to the live feed, de-duping the seam by globalSeqNo" handoff, with two
+// substitutions:
+//   • the "live feed" is the Router's IPC fan-out (ROUTER_FANOUT_STREAM_ID), not an archive replay image;
 //   • the replay is served by the Router (RouterReplayRequest -> RouterReplaying) instead of the app
 //     calling AeronArchive::startReplay itself.
-// Catch-up is detected by position (RouterReplaying.catchUpPosition), like GlobalStreamClient's live
-// segment, not by the replay image closing: the Router's replay is bounded to an ACTIVE recording, and
-// a bounded replay of an active recording never closes its image at the bound (see poll()).
-// GlobalStreamClient itself is left untouched — FixSessionClient / fix_test_server /
-// GlobalStreamLatencyProbe still use it — and this reuses its SequencedEvent/LifecycleEvent structs,
-// its sequenced-schema decode, and its CLIENT_*_TEMPLATE_ID constants.
+// Catch-up is detected by position (RouterReplaying.catchUpPosition), not by the replay image closing:
+// the Router's replay is bounded to an ACTIVE recording, and a bounded replay of an active recording
+// never closes its image at the bound (see poll()). GlobalStreamClient itself is left untouched —
+// FixSessionClient and fix_test_server still use it — and this reuses its SequencedEvent/LifecycleEvent
+// structs, its sequenced-schema decode, and its CLIENT_*_TEMPLATE_ID constants.
 //
-// Recording-position semantics (subtle, load-bearing): a frame's stream position on the fan-out is
-// NOT the archive recording position, so RouterClient tracks m_lastGoodPosition only from
-// REPLAY-sourced frames (whose image positions are recording positions). On a fan-out gap it
-// re-requests from that last replay position — possibly older than the true hole — and the Router's
-// bounded replay re-serves the overlap, which the app drops by globalSeqNo (gseq <= last). Correct,
-// with a little over-replay; see design §4.
+// Gap recovery is globalSeqNo-based, not position-based (load-bearing): a fan-out frame carries a
+// globalSeqNo but NO archive recording position — the fan-out is the Router's live IPC-tap relay,
+// decoupled from any recording position, so there is nothing to resume a replay from by position. On a
+// fan-out gap the client therefore re-walks the recording chain from segment 0 (requestReplay(0, 0)),
+// de-duping every already-seen frame by globalSeqNo (gseq <= last) until it re-reaches the tip. This is
+// also robust to the recording changing under it (a member restart can leave an earlier, overlapping
+// recording), at the cost of re-reading history on each gap — gaps are rare; a globalSeqNo->segment hint
+// to start the walk nearer the hole is a possible future optimization (design §4/§8).
 
 #include <array>
 #include <chrono>
@@ -47,7 +49,6 @@
 #include "org_limitless_phixeron_sbe_sequenced/LeadershipChanged.h"
 #include "org_limitless_phixeron_sbe_unsequenced/MessageHeader.h"
 #include "org_limitless_phixeron_sbe_unsequenced/RouterPending.h"
-#include "org_limitless_phixeron_sbe_unsequenced/RouterReplayComplete.h"
 #include "org_limitless_phixeron_sbe_unsequenced/RouterReplayRequest.h"
 #include "org_limitless_phixeron_sbe_unsequenced/RouterReplaying.h"
 
@@ -81,8 +82,9 @@ inline constexpr std::uint16_t LEADERSHIP_CHANGED_TEMPLATE_ID = 5;
  * Startup: cold replicas walk the Router's per-tenure recording chain by segment index (0,1,2,…),
  * riding each segment's replay image and de-duping by globalSeqNo, until the Router answers
  * NO_REPLAY_NEEDED — so history spans every leader failover, not just the current recording. Then they
- * fall back to the fan-out at the tip. Steady-state fan-out gaps resume the active recording by
- * position (segmentIndex < 0). No archive connection is opened here.
+ * fall back to the fan-out at the tip. A steady-state fan-out gap re-walks the same chain from segment
+ * 0, de-duping by globalSeqNo — robust to a leader failover having rotated the active recording. No
+ * archive connection is opened here.
  */
 class RouterClient {
    public:
@@ -221,8 +223,9 @@ class RouterClient {
     }
 
     // Sends RouterReplayRequest(clientId, segmentIndex, fromPosition) and marks us awaiting the reply.
-    // segmentIndex >= 0 asks for the segmentIndex-th recording of the cold-start chain (fromPosition
-    // unused); segmentIndex < 0 resumes the active recording at fromPosition after a fan-out gap.
+    // This client only ever walks the chain (segmentIndex >= 0, fromPosition unused): the segmentIndex-th
+    // recording served from position 0, both for a cold start and for a gap re-walk. (The Router still
+    // also accepts segmentIndex < 0 = resume-active-recording-at-position, now unused by this client.)
     // Idempotent on the Router side (it supersedes any in-flight replay for this clientId), so the
     // resend timer re-sending the same (segmentIndex, fromPosition) is safe.
     void requestReplay(std::int32_t segmentIndex, std::int64_t fromPosition)
@@ -349,21 +352,18 @@ class RouterClient {
                 {
                     std::fprintf(stderr,
                                  "[RouterClient] fan-out gap: expected globalSeqNo=%lld got %lld — "
-                                 "requesting replay from position %lld\n",
-                                 static_cast<long long>(m_lastGlobalSeqNo + 1), static_cast<long long>(gseq),
-                                 static_cast<long long>(m_lastGoodPosition));
-                    requestReplay(-1, m_lastGoodPosition);  // resume the active recording at our last position
+                                 "re-walking the recording chain from segment 0\n",
+                                 static_cast<long long>(m_lastGlobalSeqNo + 1), static_cast<long long>(gseq));
+                    // Re-walk from segment 0, de-duping by globalSeqNo until we re-reach the tip. Robust to
+                    // a leader failover having rotated the active recording (a bare position would not be —
+                    // see file header); frames already delivered (gseq <= last) are dropped on the way.
+                    requestReplay(0, 0);
                 }
                 return;
             }
         }
         m_lastGlobalSeqNo = gseq;
-        if (fromReplay)
-        {
-            // Only replay-image positions are true archive recording positions (see file header).
-            m_lastGoodPosition = framePosition;
-        }
-        else if (!m_caughtUp)
+        if (!fromReplay && !m_caughtUp)
         {
             // First in-order frame straight off the fan-out ⇒ we are following the live tip.
             notifyCaughtUp();
@@ -419,46 +419,17 @@ class RouterClient {
     }
 
     // A replay segment finished (reached its bounded tip, or its image closed for a stopped segment).
-    // In a cold-start walk (m_walkSegmentIndex >= 0) ask the Router for the next segment and stay "not
-    // caught up": later tenures may still need replaying, and delivering them with m_caughtUp set would
-    // break the S2 "don't re-answer history" gate — the terminating NO_REPLAY_NEEDED (chain exhausted)
-    // is what finally marks us caught up. Otherwise (steady-state gap resume, segmentIndex < 0) we are
-    // back at the live tip: report caught up and follow the fan-out — the globalSeqNo de-dupe covers the
-    // seam and any residual gap re-triggers a request. Consumers rely on the caught-up signal even on a
-    // quiet cluster with no live frame yet (FixSessionClient gates TCP accept on isCaughtUp()).
+    // Every replay is now a chain walk — a cold start, or a gap re-walk from segment 0 — so always
+    // advance to the next segment; the terminating NO_REPLAY_NEEDED (chain exhausted) is what marks us
+    // caught up (onControl) and frees the last slot via the Router's supersede on that request. The walk
+    // keeps whatever caught-up state it entered with: a cold start stays "not caught up" until the
+    // terminator (preserving the S2 "don't re-answer history" gate); a steady-state gap re-walk was
+    // already caught up and stays so, the globalSeqNo de-dupe delivering only the genuinely-missed frames.
     void onReplaySegmentComplete()
     {
         m_replayImage.reset();
         m_replaySessionId = -1;
-        if (m_walkSegmentIndex >= 0)
-        {
-            requestReplay(m_walkSegmentIndex + 1, 0);  // advance the cold-start walk to the next segment
-            return;
-        }
-        // Steady-state gap resume is done and we now follow the fan-out: release our Router replay slot
-        // so it can serve another app immediately, rather than lingering until the idle-TTL (design §5).
-        // (A cold-start walk needs no release — each of its slots is freed by the supersede on the next
-        // segment request, and its final NO_REPLAY_NEEDED request frees the last one.)
-        sendRelease();
-        notifyCaughtUp();
-    }
-
-    // Fire-and-forget RouterReplayComplete: tells the Router we caught up and no longer need our replay
-    // slot. A lost message just falls back to the Router's idle-TTL reclamation, and we hold no reply
-    // state for it.
-    void sendRelease()
-    {
-        if (!m_requestPub || !m_requestPub->isConnected())
-        {
-            return;
-        }
-        alignas(16) std::array<std::uint8_t, 64> buf{};
-        usq::RouterReplayComplete enc;
-        enc.wrapAndApplyHeader(reinterpret_cast<char*>(buf.data()), 0, buf.size());
-        enc.clientId(m_clientId);
-        const auto len = static_cast<aeron::util::index_t>(usq::MessageHeader::encodedLength() + enc.encodedLength());
-        aeron::concurrent::AtomicBuffer ab(buf.data(), buf.size());
-        m_requestPub->offer(ab, 0, len);
+        requestReplay(m_walkSegmentIndex + 1, 0);  // advance the walk to the next segment
     }
 
     void notifyCaughtUp()
@@ -512,8 +483,7 @@ class RouterClient {
     std::int64_t m_reqFromPosition = 0;   // fromPosition of the current request, for idempotent resend
     std::int64_t m_lastRequestMs = 0;
 
-    std::int64_t m_lastGlobalSeqNo = 0;   // highest globalSeqNo delivered; 0 = none yet
-    std::int64_t m_lastGoodPosition = 0;  // recording position of the last replay-sourced in-order frame
+    std::int64_t m_lastGlobalSeqNo = 0;  // highest globalSeqNo delivered; 0 = none yet
     bool m_caughtUp = false;
     std::int32_t m_currentLeaderMemberId = -1;
 

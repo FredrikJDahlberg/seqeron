@@ -1,27 +1,22 @@
 package org.limitless.phixeron.sequencer;
 
-import static io.aeron.Aeron.NULL_VALUE;
-
-import io.aeron.Aeron;
 import io.aeron.ExclusivePublication;
 import io.aeron.FragmentAssembler;
 import io.aeron.Image;
 import io.aeron.archive.client.AeronArchive;
 import io.aeron.archive.codecs.SourceLocation;
+import io.aeron.archive.status.RecordingPos;
 import io.aeron.cluster.codecs.CloseReason;
 import io.aeron.cluster.service.ClientSession;
 import io.aeron.cluster.service.Cluster;
 import io.aeron.cluster.service.ClusteredService;
-import io.aeron.exceptions.RegistrationException;
-import io.aeron.logbuffer.FragmentHandler;
 import io.aeron.logbuffer.Header;
-import java.util.Map;
-import java.util.concurrent.LinkedBlockingDeque;
 import java.util.concurrent.TimeUnit;
 import org.agrona.DirectBuffer;
 import org.agrona.ExpandableDirectByteBuffer;
 import org.agrona.MutableDirectBuffer;
 import org.agrona.concurrent.NoOpLock;
+import org.agrona.concurrent.status.CountersReader;
 import org.limitless.phixeron.sbe.sequenced.ClientConnectedEncoder;
 import org.limitless.phixeron.sbe.sequenced.ClientDisconnectedEncoder;
 import org.limitless.phixeron.sbe.sequenced.HeaderEncoder;
@@ -54,30 +49,30 @@ import org.limitless.phixeron.sbe.unsequenced.MessageHeaderDecoder;
  * whose {@code header} composite carries the original {@code sourceId}/{@code connectionId}/
  * {@code sessionId} plus the new {@code globalSeqNo}/{@code timestamp}.
  *
- * <p>The decorated message is published on the <em>global stream</em>
- * ({@link #GLOBAL_STREAM_CHANNEL} / {@link #GLOBAL_STREAM_ID}), which the current leader's
- * co-located Aeron Archive records so C++ clients can replay history on startup.
+ * <p>The decorated message is published on the node-local <em>tap</em>
+ * ({@link #TAP_CHANNEL} / {@link #TAP_STREAM_ID}), an {@code aeron:ipc} stream that this node's
+ * co-located Aeron Archive records so the co-located {@link org.limitless.phixeron.router.Router}
+ * can follow it live and C++ clients can replay history on startup.
  *
- * <p><b>Leader-only publishing:</b> all cluster nodes maintain identical sequencing state
- * (updated on every callback), but only the leader writes to the global stream. The
- * {@link ExclusivePublication} itself (and its recording) is created lazily by whichever node
- * is currently leader — see {@link #applyLeadership} — and closed when that node loses
- * leadership, rather than existing on every node from startup.
+ * <p><b>Every node records its own tap (no leader/follower asymmetry on the stream path):</b> all
+ * cluster nodes maintain identical sequencing state (updated on every callback) and each one
+ * publishes and records its own tap. Because every node processes the same committed log in the
+ * same order, the taps are byte-identical across nodes, so every node's local archive independently
+ * holds a complete copy of the sequenced history — no cross-node replication is needed, and any node
+ * a client is co-located with can serve full history/gap replay. The tap {@link
+ * ExclusivePublication} and its recording are created once in {@link #onStart} and live for the whole
+ * process, continuous across leadership changes (an {@code aeron:ipc} publication has no fixed port to
+ * collide on across a failover, unlike the retired UDP global stream), so a given node's recording is a
+ * single continuous run spanning every leader tenure rather than one recording per tenure.
  *
- * <p><b>Cross-failover recording continuity:</b> every node that is <em>not</em> currently
- * leader continuously replicates the current leader's global-stream recording into its own
- * local archive as a live-following standby copy (via {@link AeronArchive#replicate}, using
- * {@link #archiveEndpointsByMemberId} to reach the leader's archive control port). When
- * leadership changes, the new leader stops standby-following (it is now the source) and starts
- * a new recording of its own for its own tenure; the node that just lost leadership stops its
- * own recording and starts standby-following the new leader instead. Because every node has
- * been shadowing the leader the whole time it was a follower, by the time any node becomes
- * leader its own local archive catalog already holds every earlier segment (each leader's tenure
- * is a separate recording, since Aeron's recording continuation across independent publication
- * instances would require exact term/session alignment — see {@code todo.md}'s "Cross-failover
- * global-stream recording continuity" entry for why segment-based stitching was chosen over
- * that). Clients therefore only ever need to reach the <em>current</em> leader's archive to
- * replay full history, walking recording segments for {@link #GLOBAL_STREAM_ID} in order.
+ * <p><b>Durability:</b> {@link #emit} is <em>reliable</em> (it spins until the offer lands), because
+ * the tap recording is the authoritative history — a dropped frame would be an unrecoverable gap. This
+ * cannot wedge structurally the way the retired UDP global stream did (audit.md S4, where {@code
+ * MaxMulticastFlowControl} never advanced the sender limit with zero network subscribers): the only
+ * tethered subscriber of the tap is the co-located archive recording, so {@link #emit} blocks only on
+ * real local-archive write back-pressure, which clears as the archive drains to disk. The Router's own
+ * tap subscription is untethered, so a slow Router is dropped (and heals via the Router replay protocol)
+ * rather than back-pressuring the recording.
  *
  * <p><b>Snapshot format</b> (little-endian binary, single fragment):
  * <pre>
@@ -86,68 +81,35 @@ import org.limitless.phixeron.sbe.unsequenced.MessageHeaderDecoder;
  */
 public final class SequencerService implements ClusteredService {
     /**
-     * Multi-destination-cast (dynamic control mode) channel for the global sequenced stream.
-     * This is the publisher/archive-recording channel: the current leader's {@link
-     * ExclusivePublication} and {@code startRecording} both use it (see {@link
-     * #applyLeadership}) — the same fixed address regardless of which node is leader, so exactly
-     * one node ever binds it at a time. Subscribers connect with {@link
-     * #GLOBAL_STREAM_SUBSCRIBER_CHANNEL} instead, which points at the same control address but
-     * carries its own (ephemeral) data endpoint.
-     */
-    public static final String GLOBAL_STREAM_CHANNEL = "aeron:udp?control-mode=dynamic|control=localhost:9200";
-
-    /**
-     * Subscriber-side channel for the global stream's MDC dynamic control mode: same control
-     * address as {@link #GLOBAL_STREAM_CHANNEL}, plus an ephemeral local data endpoint that the
-     * publisher discovers and adds as a destination automatically.
+     * Node-local IPC channel and stream the sequenced stream is tapped onto. Every node — leader
+     * <em>and</em> follower — republishes each sequenced frame here in {@code globalSeqNo} order (the
+     * taps are byte-identical across nodes, since every node processes the same committed log in the
+     * same order) and records it into its own co-located archive. The co-located {@link
+     * org.limitless.phixeron.router.Router} follows it as its live feed, and clients replay this
+     * recording for history/gap recovery — the same node-local archive serves both.
      *
-     * <p>The C++ global-stream clients ({@code GlobalStreamClient.hpp}) are the only subscribers;
-     * this constant is kept byte-identical to the C++ one so the two stay in lock-step (Java itself
-     * only publishes/records the global stream, never subscribes to it).
-     *
-     * <p><b>{@code tether=false} — attempted audit S4 fix, DISPROVED.</b> The intent was that an
-     * untethered subscriber falling behind is moved to a resting state instead of back-pressuring the
-     * publisher, bounding the {@link #offerToGlobalStream} spin. A live flow-control smoke test showed
-     * this does <em>not</em> hold: with the lone consumer rested the flow-control group is empty and
-     * the default {@code MaxMulticastFlowControl} never advances the sender limit, so the publisher
-     * still wedges — and {@code |ssc=true} on {@link #GLOBAL_STREAM_CHANNEL} did not save it either.
-     * See audit.md's S4 note for the evidence table and the real fix direction (drain the clients'
-     * live MDC sub every duty cycle). {@code tether=false} is left in place as harmless; the paired
-     * consumer-side {@code globalSeqNo} gap-detection + archive re-bootstrap in {@code
-     * GlobalStreamClient} is sound and kept.
+     * <p>Created and recorded once in {@link #onStart} and continuous per node across leadership changes
+     * ({@code aeron:ipc} has no fixed port to collide on across a failover, unlike the retired UDP global
+     * stream), so a node's recording is one continuous run spanning every leader tenure and the Router
+     * never re-resolves it. Reliable, not lossy ({@link #emit} spins until the offer lands): the recording
+     * is the authoritative history, so a dropped frame would be an unrecoverable gap.
      */
-    public static final String GLOBAL_STREAM_SUBSCRIBER_CHANNEL
-        = "aeron:udp?control-mode=dynamic|control=localhost:9200|endpoint=localhost:0|tether=false";
+    public static final String TAP_CHANNEL = "aeron:ipc";
 
-    public static final int GLOBAL_STREAM_ID = 1;
+    public static final int TAP_STREAM_ID = 205;
 
     /**
-     * Archive control stream id shared by every member — must match {@code SequencerNode}'s
-     * {@code Archive.Context.controlStreamId(100)} so replication requests can reach a peer's
-     * archive.
-     */
-    private static final int ARCHIVE_CONTROL_STREAM_ID = 100;
-
-    /** Local, ephemeral endpoint the standby replication's live-merge subscription listens on. */
-    private static final String STANDBY_LIVE_DESTINATION = "aeron:udp?endpoint=localhost:0";
-
-    /**
-     * Maximum consecutive back-pressure spins on the global stream before printing an alert.
+     * Maximum consecutive back-pressure spins in {@link #emit} before printing an alert.
      * At ~10 ns/spin this is ~10 ms per alert period.
      */
     private static final int MAX_BACK_PRESSURE_SPINS = 1_000_000;
 
     /**
-     * How long {@link #openGlobalStreamPublication} retries a transient "Address already in use"
-     * bind of the fixed global-stream control address ({@link #GLOBAL_STREAM_CHANNEL},
-     * localhost:9200) before giving up. On a single-host cluster the outgoing and incoming leaders'
-     * separate media drivers momentarily contend for it across a failover — {@code
-     * addExclusivePublication} throws {@link RegistrationException} until the previous leader's
-     * asynchronous {@code close()} releases the socket (well under a second) — so retrying avoids
-     * leaving the new leader with a null {@link #globalStreamPub}, which would NPE every {@link
-     * #offerToGlobalStream} and silently sequence nothing onto the global stream.
+     * How long {@link #awaitTapRecordingActive} waits for the co-located archive's recording of the tap
+     * to become active before failing start-up. Bounded so a wedged/absent local archive fails fast at
+     * onStart rather than hanging the node.
      */
-    private static final long GLOBAL_STREAM_PUB_RETRY_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(5);
+    private static final long TAP_RECORDING_START_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(5);
 
     private static final int SNAPSHOT_POLL_BATCH = 10;
 
@@ -183,29 +145,15 @@ public final class SequencerService implements ClusteredService {
     // ── Aeron runtime (not snapshotted) ──────────────────────────────────────
 
     private Cluster cluster;
-    private boolean isLeader;
-    private ExclusivePublication globalStreamPub;
+    private ExclusivePublication tapPub;
     private AeronArchive aeronArchive;
 
-    /** This node's own memberId → archive control endpoint ("host:port"), for every member. */
-    private final Map<Integer, String> archiveEndpointsByMemberId;
-
     /**
-     * memberId of whichever node last reported itself the leader; NULL_VALUE-as-int (-1)
-     * until the first {@link #onNewLeadershipTermEvent}.
+     * memberId of whichever node last reported itself the leader; -1 until the first
+     * {@link #onNewLeadershipTermEvent}. Kept only to de-duplicate leadership-change events and to
+     * stamp {@code newLeaderMemberId} onto the synthesized {@code LeadershipChanged}.
      */
     private int currentLeaderMemberId = -1;
-
-    /**
-     * Runs standby-follow entirely off the ClusteredService's single conductor thread — see
-     * its class Javadoc for why.
-     */
-    private StandbyFollower standbyFollower;
-    private Thread standbyFollowerThread;
-
-    public SequencerService(final Map<Integer, String> archiveEndpointsByMemberId) {
-        this.archiveEndpointsByMemberId = archiveEndpointsByMemberId;
-    }
 
     // ── ClusteredService lifecycle ────────────────────────────────────────────
 
@@ -222,34 +170,42 @@ public final class SequencerService implements ClusteredService {
                                                 .controlResponseStreamId(101)
                                                 .lock(NoOpLock.INSTANCE));
 
-        standbyFollower = new StandbyFollower(cluster.context().aeron().context().aeronDirectoryName(),
-                                              cluster.memberId(), archiveEndpointsByMemberId);
-        standbyFollowerThread = new Thread(standbyFollower, "standby-follower-" + cluster.memberId());
-        standbyFollowerThread.setDaemon(true);
-        standbyFollowerThread.start();
-
-        // The global-stream ExclusivePublication (and its recording) is created lazily, only by
-        // whichever node actually becomes leader — see applyLeadership(). Every node used to
-        // create this publication unconditionally right here, which is what broke multi-member
-        // same-host deployment: control-mode=dynamic binds a real local UDP socket at
-        // GLOBAL_STREAM_CHANNEL's fixed "control=localhost:9200" address as soon as the
-        // publication is created, so with all 3 members on one host, only the first to start
-        // would win that port and the other two would abort with "Address already in use"
-        // (see todo.md's "Global-stream control port collision" entry). Deferring creation to
-        // leadership acquisition means at most one process ever holds that port at a time,
-        // exactly like only one process ever calls offer() on it.
+        // Node-local live tap of the sequenced stream, created and recorded on every node (leader and
+        // follower alike). Every node re-publishes each sequenced frame here and records it into its own
+        // co-located archive, so every node independently holds a complete copy of the sequenced history
+        // — no cross-node replication needed. The co-located Router follows this live; clients replay this
+        // recording for history/gap recovery. See TAP_CHANNEL. Recording must be active before the first
+        // frame is published, so await it here (onStart runs before any onSessionMessage, so this waits on
+        // start-up alone, never on live traffic).
+        tapPub = cluster.context().aeron().addExclusivePublication(TAP_CHANNEL, TAP_STREAM_ID);
+        aeronArchive.startRecording(TAP_CHANNEL, TAP_STREAM_ID, SourceLocation.LOCAL);
+        awaitTapRecordingActive();
 
         if (snapshotImage != null) {
             loadSnapshot(snapshotImage);
         }
     }
 
+    // Blocks until the co-located archive's recording subscription has attached to the tap publication,
+    // so no frame is published before the recording begins (which would leave an unrecoverable hole in
+    // the authoritative history). Bounded by TAP_RECORDING_START_TIMEOUT_NS so an absent/wedged local
+    // archive fails start-up fast rather than hanging.
+    private void awaitTapRecordingActive() {
+        final CountersReader counters = cluster.context().aeron().countersReader();
+        final long archiveId = aeronArchive.archiveId();
+        final long deadlineNs = System.nanoTime() + TAP_RECORDING_START_TIMEOUT_NS;
+        while (RecordingPos.findCounterIdBySession(counters, tapPub.sessionId(), archiveId)
+               == CountersReader.NULL_COUNTER_ID) {
+            if (System.nanoTime() >= deadlineNs) {
+                throw new IllegalStateException("[SequencerService] tap recording did not start within timeout");
+            }
+            cluster.idleStrategy().idle();
+        }
+    }
+
     @Override
     public void onSessionOpen(final ClientSession session, final long timestamp) {
         final long globalSeq = ++globalSeqNo;
-        if (!isLeader) {
-            return;
-        }
         clientConnEncoder.wrapAndApplyHeader(encodeBuffer, 0, headerEncoder);
         clientConnEncoder.header()
             .sourceId(NO_SOURCE_ID)
@@ -257,15 +213,12 @@ public final class SequencerService implements ClusteredService {
             .sessionId(session.id())
             .globalSeqNo(globalSeq)
             .timestamp(timestamp);
-        offerToGlobalStream(MessageHeaderEncoder.ENCODED_LENGTH + clientConnEncoder.encodedLength());
+        emit(MessageHeaderEncoder.ENCODED_LENGTH + clientConnEncoder.encodedLength());
     }
 
     @Override
     public void onSessionClose(final ClientSession session, final long timestamp, final CloseReason closeReason) {
         final long globalSeq = ++globalSeqNo;
-        if (!isLeader) {
-            return;
-        }
         clientDiscEncoder.wrapAndApplyHeader(encodeBuffer, 0, headerEncoder);
         clientDiscEncoder.header()
             .sourceId(NO_SOURCE_ID)
@@ -273,7 +226,7 @@ public final class SequencerService implements ClusteredService {
             .sessionId(session.id())
             .globalSeqNo(globalSeq)
             .timestamp(timestamp);
-        offerToGlobalStream(MessageHeaderEncoder.ENCODED_LENGTH + clientDiscEncoder.encodedLength());
+        emit(MessageHeaderEncoder.ENCODED_LENGTH + clientDiscEncoder.encodedLength());
     }
 
     @Override
@@ -281,9 +234,6 @@ public final class SequencerService implements ClusteredService {
                                  final int offset, final int length, final Header header) {
         final long sourceSessionId = session.id();
         final long globalSeq = ++globalSeqNo;
-        if (!isLeader) {
-            return;
-        }
 
         // Decode just enough of the ingress (schema 200) message to re-stamp
         // it: the outer framing header (for templateId/blockLength) and the
@@ -324,7 +274,7 @@ public final class SequencerService implements ClusteredService {
         final int copyLength = length - MessageHeaderDecoder.ENCODED_LENGTH - HeaderDecoder.ENCODED_LENGTH;
         encodeBuffer.putBytes(egressBodyOffset + HeaderEncoder.ENCODED_LENGTH, buffer, copyFromOffset, copyLength);
 
-        offerToGlobalStream(egressBodyOffset + HeaderEncoder.ENCODED_LENGTH + copyLength);
+        emit(egressBodyOffset + HeaderEncoder.ENCODED_LENGTH + copyLength);
     }
 
     @Override
@@ -368,31 +318,19 @@ public final class SequencerService implements ClusteredService {
     @Override
     public void onRoleChange(final Cluster.Role newRole) {
         // Deliberately a no-op: onNewLeadershipTermEvent already fires on every node (leader and
-        // followers alike) with an explicit leaderMemberId, which is what applyLeadership needs
-        // to decide both "am I leader" and, if not, "whose archive should I be standby-following."
-        // Driving the same transition from two independent callbacks previously required an
-        // idempotency guard against double-firing; keying everything off one authoritative event
-        // removes that class of bug entirely.
+        // followers alike) with an explicit leaderMemberId, which is what applyLeadership needs to stamp
+        // newLeaderMemberId onto the LeadershipChanged event. Keying everything off one authoritative
+        // event (rather than also reacting here) removes a class of double-firing/idempotency bugs.
     }
 
-    // Called on every node whenever a new leadership term begins (including this node's own
-    // promotion). Creates/releases the global-stream ExclusivePublication and its recording when
-    // this node itself becomes/stops being leader (see onStart()'s comment for why creation can't
-    // happen unconditionally at startup) — both fast, local (IPC) archive calls, safe to leave on
-    // the conductor thread like the rest of this method. Standby-follow of whichever node the
-    // leader now is happens entirely on the StandbyFollower background thread instead: it needs a
-    // remote network round trip to resolve the leader's recording id before it can even start
-    // replicating, and doing that synchronously here previously stalled onSessionMessage (and
-    // therefore every client's Logon) for as long as that round trip took — see the class
-    // Javadoc's "Cross-failover recording continuity" section and StandbyFollower's own Javadoc.
-    //
-    // Also synthesizes a LeadershipChanged event onto the global stream (Router design §3): every
-    // node consumes onNewLeadershipTermEvent in the same log order, so ++globalSeqNo here (on every
-    // node, leader or not, exactly like onSessionOpen/onSessionMessage) keeps the counter identical
-    // across nodes, and the new leader stamps that same globalSeqNo onto a LeadershipChanged the
-    // per-node replicas use to switch leader-only emission on/off at one exact point in the ordered
-    // stream. Only the leader has a global-stream publication, so only it offers; followers just
-    // advance the counter.
+    // Called on every node whenever a new leadership term begins (including this node's own promotion).
+    // With every node recording its own tap there is no leader-only publication or standby-follow to
+    // manage here any more (both retired in the tap-recording change) — the only per-leadership work is
+    // synthesizing a LeadershipChanged event (Router design §3). Every node consumes
+    // onNewLeadershipTermEvent in the same log order, so ++globalSeqNo here (on every node, exactly like
+    // onSessionOpen/onSessionMessage) keeps the counter identical across nodes, and each node stamps that
+    // same globalSeqNo onto a LeadershipChanged it emits onto its own tap — the per-node replicas use it
+    // to track the current leader at one exact point in the ordered stream.
     private void applyLeadership(final int leaderMemberId, final long timestamp) {
         if (leaderMemberId == currentLeaderMemberId) {
             return;
@@ -403,248 +341,53 @@ public final class SequencerService implements ClusteredService {
         System.out.printf("[SequencerService/%d] leadership change: new leader is memberId=%d (isLeader=%b)%n",
                           cluster.memberId(), leaderMemberId, leader);
 
-        if (isLeader && globalStreamPub != null) {
-            globalStreamPub.close();
-            globalStreamPub = null;
-        }
-        isLeader = leader;
-
-        if (isLeader) {
-            final String channel = globalStreamChannel();
-            globalStreamPub = openGlobalStreamPublication(channel);
-            // Idempotent: safe to call again if this node regains leadership later. The recording
-            // channel must match the publication channel exactly, so both go through the same helper.
-            aeronArchive.startRecording(channel, GLOBAL_STREAM_ID, SourceLocation.LOCAL);
-
-            leadershipChangedEncoder.wrapAndApplyHeader(encodeBuffer, 0, headerEncoder);
-            leadershipChangedEncoder.header()
-                .sourceId(NO_SOURCE_ID)
-                .connectionId(NO_SOURCE_ID)
-                .sessionId(NO_SOURCE_ID)
-                .globalSeqNo(globalSeq)
-                .timestamp(timestamp);
-            leadershipChangedEncoder.newLeaderMemberId(leaderMemberId);
-            offerToGlobalStream(MessageHeaderEncoder.ENCODED_LENGTH + leadershipChangedEncoder.encodedLength());
-        }
-        standbyFollower.onLeadershipChange(leaderMemberId);
+        // Encoded and emitted on every node, so each node's tap (and its recording) carries this
+        // globalSeqNo gap-free.
+        leadershipChangedEncoder.wrapAndApplyHeader(encodeBuffer, 0, headerEncoder);
+        leadershipChangedEncoder.header()
+            .sourceId(NO_SOURCE_ID)
+            .connectionId(NO_SOURCE_ID)
+            .sessionId(NO_SOURCE_ID)
+            .globalSeqNo(globalSeq)
+            .timestamp(timestamp);
+        leadershipChangedEncoder.newLeaderMemberId(leaderMemberId);
+        emit(MessageHeaderEncoder.ENCODED_LENGTH + leadershipChangedEncoder.encodedLength());
     }
 
     @Override
     public void onTerminate(final Cluster cluster) {
-        if (standbyFollower != null) {
-            standbyFollower.shutdown();
-            try {
-                standbyFollowerThread.join(1000);
-            } catch (final InterruptedException ie) {
-                Thread.currentThread().interrupt();
-            }
-        }
         if (aeronArchive != null) {
             aeronArchive.close();
         }
-        if (globalStreamPub != null) {
-            globalStreamPub.close();
+        if (tapPub != null) {
+            // Closing the publication ends the recording's source image, so the archive stops the tap
+            // recording (sets its stopPosition) without an explicit stopRecording call.
+            tapPub.close();
         }
     }
 
     // ── Private helpers ───────────────────────────────────────────────────────
 
-    // Test-only knob for the S4 wedge smoke test (src/main/scripts/{start,three-node}-cluster.sh with
-    // PHIXERON_FLOOD_ORDERS): when -Dphixeron.globalStream.termLength=<power-of-two ≥ 65536> is set,
-    // appends |term-length=<value> so the global stream's flow-control window is small enough that
-    // back-pressure from an un-drained subscriber manifests after a few hundred messages instead of
-    // a full default term buffer. Returns GLOBAL_STREAM_CHANNEL unchanged in normal operation.
-    private static String globalStreamChannel() {
-        final String termLength = System.getProperty("phixeron.globalStream.termLength");
-        return (termLength == null || termLength.isEmpty())
-            ? GLOBAL_STREAM_CHANNEL
-            : GLOBAL_STREAM_CHANNEL + "|term-length=" + termLength;
-    }
-
-    // Opens the leader's global-stream ExclusivePublication, retrying on a transient "Address
-    // already in use" bind failure. The control address (GLOBAL_STREAM_CHANNEL, localhost:9200) is
-    // fixed regardless of which node leads, so on a single-host cluster it can still be held by the
-    // previous leader's media driver — whose losing-leadership close() is asynchronous — when this
-    // new leader tries to bind it in its own driver. The port frees within well under a second;
-    // retry until it does (or GLOBAL_STREAM_PUB_RETRY_TIMEOUT_NS elapses) rather than propagating the
-    // exception and leaving this node "leader with a null globalStreamPub", which would NPE every
-    // subsequent offerToGlobalStream and sequence nothing. Runs on the conductor thread, but this is
-    // only a local media-driver round trip (unlike StandbyFollower's remote archive calls) at a
-    // leadership transition, so a bounded spin here is safe.
-    private ExclusivePublication openGlobalStreamPublication(final String channel) {
-        final Aeron aeron = cluster.context().aeron();
-        final long deadlineNs = System.nanoTime() + GLOBAL_STREAM_PUB_RETRY_TIMEOUT_NS;
-        RegistrationException lastError;
-        do {
-            try {
-                return aeron.addExclusivePublication(channel, GLOBAL_STREAM_ID);
-            } catch (final RegistrationException ex) {
-                lastError = ex;
-                cluster.idleStrategy().idle();  // brief backoff before re-attempting the bind
-            }
-        } while (System.nanoTime() < deadlineNs);
-        throw lastError;
-    }
-
-    // Spins on the single conductor thread until the offer lands — this is the audit S4 coupling and
-    // it is NOT yet fixed. The `tether=false` subscriber change (see GLOBAL_STREAM_SUBSCRIBER_CHANNEL)
-    // was meant to bound this spin, but a live smoke test disproved it: with a stalled consumer the
-    // publisher still wedges here forever, and `ssc=true` doesn't help. Root cause is the clients'
-    // un-drained live MDC sub; see audit.md's S4 note for the evidence and the real fix direction.
-    private void offerToGlobalStream(final int length) {
+    // Publishes the frame in encodeBuffer[0, length) onto the node-local tap, which every node records
+    // into its own local archive as the authoritative sequenced history. Reliable: spins until the offer
+    // lands, because a dropped frame would be an unrecoverable hole in the recording. Unlike the retired
+    // UDP global stream this cannot wedge structurally — the only tethered subscriber of the tap is the
+    // co-located archive recording (the Router's tap subscription is untethered, so a slow Router is
+    // dropped, not back-pressuring), so this blocks only on real local-archive write back-pressure, which
+    // clears as the archive drains to disk.
+    private void emit(final int length) {
         int idleSpins = 0;
         long result;
-        while ((result = globalStreamPub.offer(encodeBuffer, 0, length)) < 0) {
+        while ((result = tapPub.offer(encodeBuffer, 0, length)) < 0) {
             if (result == ExclusivePublication.CLOSED || result == ExclusivePublication.MAX_POSITION_EXCEEDED) {
-                throw new IllegalStateException("[SequencerService] Global stream publication failed: " + result);
+                throw new IllegalStateException("[SequencerService] tap publication failed: " + result);
             }
             if (++idleSpins >= MAX_BACK_PRESSURE_SPINS) {
-                System.err.printf("[SequencerService] ALERT: global stream back-pressure at globalSeqNo=%d%n",
-                                  globalSeqNo);
+                System.err.printf("[SequencerService] ALERT: tap back-pressure at globalSeqNo=%d%n", globalSeqNo);
                 idleSpins = 0;
             }
             cluster.idleStrategy().idle();
         }
     }
 
-    /**
-     * Runs this node's standby-follow of whatever node is currently leader entirely on its own
-     * thread, with its own independent {@link Aeron} client and local {@link AeronArchive}
-     * connection — deliberately separate from {@link SequencerService}'s own {@code aeronArchive}
-     * and from the cluster's {@code Aeron} instance, both of which are only safe to touch from
-     * the single ClusteredService conductor thread (that's why they use {@link NoOpLock}).
-     *
-     * <p>Resolving the leader's active recording id requires a control-session round trip to a
-     * <em>remote</em> archive, which can legitimately take an unbounded amount of time (the peer
-     * may be mid-election, slow, or partitioned) — doing that on the conductor thread previously
-     * stalled every {@code onSessionMessage} call (and therefore every client's Logon) for as long
-     * as the round trip took. Leadership-change notifications arrive via a coalescing queue
-     * ({@link #onLeadershipChange}) so this thread always acts on the most recent leader, never a
-     * backlog of stale ones.
-     */
-    private static final class StandbyFollower implements Runnable {
-        private static final int LOCAL_ARCHIVE_RESPONSE_STREAM_ID = 101;
-
-        private final Aeron aeron;
-        private final AeronArchive localArchive;
-        private final int selfMemberId;
-        private final Map<Integer, String> archiveEndpointsByMemberId;
-        private final LinkedBlockingDeque<Integer> events = new LinkedBlockingDeque<>();
-        private volatile boolean running = true;
-        private long activeReplicationId = NULL_VALUE;
-
-        StandbyFollower(final String aeronDirectoryName, final int selfMemberId,
-                        final Map<Integer, String> archiveEndpointsByMemberId) {
-            this.selfMemberId = selfMemberId;
-            this.archiveEndpointsByMemberId = archiveEndpointsByMemberId;
-            aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(aeronDirectoryName));
-            localArchive = AeronArchive.connect(new AeronArchive.Context()
-                                                    .aeron(aeron)
-                                                    .ownsAeronClient(false)
-                                                    .controlRequestChannel("aeron:ipc")
-                                                    .controlRequestStreamId(ARCHIVE_CONTROL_STREAM_ID)
-                                                    .controlResponseChannel("aeron:ipc")
-                                                    .controlResponseStreamId(LOCAL_ARCHIVE_RESPONSE_STREAM_ID));
-        }
-
-        /** Non-blocking: just enqueues, safe to call from the conductor thread. */
-        void onLeadershipChange(final int leaderMemberId) {
-            events.addLast(leaderMemberId);
-        }
-
-        void shutdown() {
-            running = false;
-            events.addLast(NULL_VALUE);
-        }
-
-        @Override
-        public void run() {
-            while (running) {
-                try {
-                    int leaderMemberId = events.takeFirst();
-                    Integer queued;
-                    while ((queued = events.pollFirst()) != null) {
-                        leaderMemberId = queued;
-                    }
-                    if (running) {
-                        applyFollow(leaderMemberId);
-                    }
-                } catch (final InterruptedException ie) {
-                    Thread.currentThread().interrupt();
-                    break;
-                } catch (final RuntimeException ex) {
-                    System.err.printf("[StandbyFollower] %s%n", ex);
-                }
-            }
-            stopActiveReplication();
-            localArchive.close();
-            aeron.close();
-        }
-
-        private void applyFollow(final int leaderMemberId) {
-            stopActiveReplication();
-            if (leaderMemberId == selfMemberId || leaderMemberId == NULL_VALUE) {
-                return;
-            }
-
-            final String leaderEndpoint = archiveEndpointsByMemberId.get(leaderMemberId);
-            if (leaderEndpoint == null) {
-                System.err.printf(
-                    "[StandbyFollower] No archive endpoint known for leaderMemberId=%d; cannot standby-follow%n",
-                    leaderMemberId);
-                return;
-            }
-            final String leaderArchiveChannel = "aeron:udp?endpoint=" + leaderEndpoint;
-
-            final long srcRecordingId = resolveActiveRecordingId(leaderArchiveChannel);
-            if (srcRecordingId == NULL_VALUE) {
-                System.err.printf(
-                    "[StandbyFollower] No active global-stream recording found on leaderMemberId=%d (%s); "
-                        + "cannot standby-follow yet%n",
-                    leaderMemberId, leaderEndpoint);
-                return;
-            }
-
-            activeReplicationId = localArchive.replicate(srcRecordingId, NULL_VALUE, ARCHIVE_CONTROL_STREAM_ID,
-                                                         leaderArchiveChannel, STANDBY_LIVE_DESTINATION);
-        }
-
-        // Opens a short-lived control session directly to a peer archive purely to find the
-        // recording id of its currently-active (stopTimestamp unset) GLOBAL_STREAM_ID recording,
-        // i.e. the one the leader is writing to right now. Returns NULL_VALUE if that peer has no
-        // active recording (e.g. it just became leader and hasn't started recording yet) or is
-        // unreachable. This blocking remote round trip is the entire reason this class exists on
-        // its own thread instead of running inline in SequencerService.applyLeadership.
-        private long resolveActiveRecordingId(final String archiveChannel) {
-            final long[] recordingId = { NULL_VALUE };
-            try (AeronArchive remote
-                 = AeronArchive.connect(new AeronArchive.Context()
-                                            .aeron(aeron)
-                                            .ownsAeronClient(false)
-                                            .controlRequestChannel(archiveChannel)
-                                            .controlRequestStreamId(ARCHIVE_CONTROL_STREAM_ID)
-                                            .controlResponseChannel("aeron:udp?endpoint=localhost:0"))) {
-                remote.listRecordingsForUri(0, Integer.MAX_VALUE, "", GLOBAL_STREAM_ID,
-                                            (controlSessionId, correlationId, recId, startTimestamp, stopTimestamp,
-                                             startPosition, stopPosition, initialTermId, segmentFileLength,
-                                             termBufferLength, mtuLength, sessionId, streamId, strippedChannel,
-                                             originalChannel, sourceIdentity) -> {
-                                                if (stopTimestamp == AeronArchive.NULL_TIMESTAMP) {
-                                                    recordingId[0] = recId;
-                                                }
-                                            });
-            } catch (final RuntimeException ex) {
-                System.err.printf("[StandbyFollower] Failed to reach archive at %s: %s%n", archiveChannel, ex);
-            }
-            return recordingId[0];
-        }
-
-        private void stopActiveReplication() {
-            if (activeReplicationId == NULL_VALUE) {
-                return;
-            }
-            localArchive.tryStopReplication(activeReplicationId);
-            activeReplicationId = NULL_VALUE;
-        }
-    }
 }

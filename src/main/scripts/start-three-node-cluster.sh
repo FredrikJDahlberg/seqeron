@@ -31,12 +31,6 @@
 # Uses a dedicated baseDir (${TMPDIR}phixeron-seq3) so it doesn't collide
 # with single-node dev state left behind by start-cluster.sh.
 #
-# Optional tuning knob (a cluster-config knob, not a test):
-#   PHIXERON_GLOBAL_TERM_LENGTH=<bytes>   shrink the global stream's term buffer (and thus its
-#                                         flow-control window) so back-pressure from an un-drained
-#                                         subscriber manifests after a few hundred messages instead
-#                                         of a full default term. Used by the S4 wedge test harness.
-#
 # Prerequisites:
 #   ./gradlew uberJar                              # build the fat jar
 #   cmake --build cmake-build-release              # build C++ targets
@@ -97,17 +91,6 @@ else
     AERONMD="${BUILD_DIR}/_deps/aeron-build/binaries/aeronmd"
 fi
 
-# ── Optional global-stream term-length tuning ────────────────────────────────
-# When PHIXERON_GLOBAL_TERM_LENGTH is set, each SequencerNode gets
-# -Dphixeron.globalStream.termLength so the global stream's flow-control window is small enough
-# that back-pressure from an un-drained subscriber shows up after a few hundred messages. This is a
-# cluster-config knob only; the S4 wedge test harness (src/test/scripts) sets it before driving load.
-SEQ_TERM_OPTS=()
-if [[ -n "${PHIXERON_GLOBAL_TERM_LENGTH:-}" ]]; then
-    SEQ_TERM_OPTS+=("-Dphixeron.globalStream.termLength=${PHIXERON_GLOBAL_TERM_LENGTH}")
-    echo "[start-three-node-cluster.sh] global-stream term-length=${PHIXERON_GLOBAL_TERM_LENGTH}"
-fi
-
 # ── Pre-flight checks ─────────────────────────────────────────────────────────
 
 if [[ ! -f "${JAR}" ]]; then
@@ -139,7 +122,6 @@ for member in 0 1 2; do
     SEQ_LOGS+=("${SEQ_LOG}")
     echo "[start-three-node-cluster.sh] Starting SequencerNode (member ${member}) → ${SEQ_LOG}"
     java "${JAVA_OPTS[@]}" \
-        ${SEQ_TERM_OPTS[@]+"${SEQ_TERM_OPTS[@]}"} \
         -Dsequencer.memberId="${member}" \
         -Dsequencer.baseDir="${BASE_DIR}" \
         -Dsequencer.clusterMembers="${CLUSTER_MEMBERS}" \
@@ -193,12 +175,12 @@ java "${JAVA_OPTS[@]}" \
     > "${ROUTER_LOG}" 2>&1 &
 ROUTER_PID=$!
 
-# Wait until the Router has located member 0's recording and begun following it, so OrderExecClient's
-# first replay request lands on a Router that can serve it (it retries regardless, but this avoids a
-# noisy startup and a needless extra replay).
-echo "[start-three-node-cluster.sh] Waiting for RouterNode to follow the global-stream recording…"
+# Wait until the Router's node-local IPC tap is live, so OrderExecClient's first replay request lands
+# on a Router that is already relaying (it retries regardless, but this avoids a noisy startup and a
+# needless extra replay).
+echo "[start-three-node-cluster.sh] Waiting for RouterNode's IPC tap to go live…"
 WAIT=0
-until grep -q "following recording" "${ROUTER_LOG}" 2>/dev/null; do
+until grep -q "IPC tap live" "${ROUTER_LOG}" 2>/dev/null; do
     sleep 0.5
     WAIT=$(( WAIT + 1 ))
     if (( WAIT > 60 )); then
@@ -250,10 +232,10 @@ for m in 1 2; do
         org.limitless.phixeron.router.RouterNode > "${RLOG}" 2>&1 &
     EXTRA_ROUTER_PIDS+=("$!")
     WAIT=0
-    until grep -q "following recording" "${RLOG}" 2>/dev/null; do
+    until grep -q "IPC tap live" "${RLOG}" 2>/dev/null; do
         sleep 0.5
         WAIT=$(( WAIT + 1 ))
-        (( WAIT > 60 )) && { echo "[start-three-node-cluster.sh] WARN: RouterNode-${m} not following after 30s" >&2; break; }
+        (( WAIT > 60 )) && { echo "[start-three-node-cluster.sh] WARN: RouterNode-${m} IPC tap not live after 30s" >&2; break; }
     done
     PHIXERON_ORDER_EXEC_AERON_DIR="${MDIR}" \
         PHIXERON_NODE_MEMBER_ID="${m}" \

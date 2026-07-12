@@ -8,8 +8,6 @@ import io.aeron.cluster.service.ClusteredServiceContainer;
 import io.aeron.driver.MediaDriver;
 import io.aeron.driver.ThreadingMode;
 import java.io.File;
-import java.util.HashMap;
-import java.util.Map;
 import org.agrona.concurrent.BusySpinIdleStrategy;
 import org.agrona.concurrent.NoOpLock;
 import org.agrona.concurrent.ShutdownSignalBarrier;
@@ -20,9 +18,9 @@ import org.agrona.concurrent.YieldingIdleStrategy;
  *
  * <p>The Sequencer runs as an Aeron Cluster with an embedded MediaDriver, Archive, and
  * ConsensusModule.  Clients connect via the Aeron Cluster ingress protocol to send
- * {@code AppMessage}s.  The leader stamps each message with a global sequence number and
- * a per-source application sequence number, then publishes the result on the multi-destination-
- * cast global stream ({@link SequencerService#GLOBAL_STREAM_CHANNEL}) which is simultaneously
+ * {@code AppMessage}s.  Every node stamps each message with a global sequence number and
+ * a per-source application sequence number, then publishes the result on its node-local
+ * {@code aeron:ipc} tap ({@link SequencerService#TAP_CHANNEL}) which is simultaneously
  * recorded by the co-located Archive for client replay on startup.
  *
  * <p><b>Port layout</b> (member 0 on base 9300; members 1 and 2 use base+10, base+20):
@@ -76,8 +74,6 @@ public final class SequencerNode {
 
         final String clusterMembers = System.getProperty(
             PROP_CLUSTER_MEMBERS, buildSingleNodeMembers(ingressPort, memberPort, logPort, xferPort, archivePort));
-
-        final Map<Integer, String> archiveEndpointsByMemberId = parseArchiveEndpoints(clusterMembers);
 
         final File archiveDir = new File(baseDir + "/archive-" + memberId);
         final File clusterDir = new File(baseDir + "/cluster-" + memberId);
@@ -137,7 +133,7 @@ public final class SequencerNode {
                   .aeronDirectoryName(aeronDir)
                   .archiveContext(localArchiveCtx.clone())
                   .clusterDir(clusterDir)
-                  .clusteredService(new SequencerService(archiveEndpointsByMemberId))
+                  .clusteredService(new SequencerService())
                   .idleStrategySupplier(YieldingIdleStrategy::new)
                   .errorHandler(t -> {
                       System.err.printf("[SequencerService/%d] %s%n", memberId, t.getMessage());
@@ -159,23 +155,6 @@ public final class SequencerNode {
 
     private static String udp(final String host, final int port) {
         return "aeron:udp?endpoint=" + host + ":" + port;
-    }
-
-    // clusterMembers format: "id,ingress,memberFacing,log,transfer,archive|id,...". Extracts just
-    // the archive endpoint (last field) per member id, so SequencerService can reach any peer's
-    // archive by member id — needed to replicate the current leader's recording into every
-    // follower's own archive as a live standby copy (see SequencerService's leadership handling).
-    private static Map<Integer, String> parseArchiveEndpoints(final String clusterMembers) {
-        final Map<Integer, String> endpoints = new HashMap<>();
-        for (final String member : clusterMembers.split("\\|")) {
-            if (member.isEmpty()) {
-                continue;
-            }
-            final String[] fields = member.split(",");
-            final int id = Integer.parseInt(fields[0]);
-            endpoints.put(id, fields[5]);
-        }
-        return endpoints;
     }
 
     private static String buildSingleNodeMembers(final int ingressPort, final int memberPort, final int logPort,

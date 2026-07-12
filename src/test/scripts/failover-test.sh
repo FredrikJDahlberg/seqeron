@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
-# Cross-failover cold-start replay test (Router issue #1).
+# Cross-failover cold-start replay test.
 #
-# Creates TWO leader tenures (two GLOBAL_STREAM_ID recordings) via a forced failover, then cold-starts
-# a fresh OrderExecClient co-located with the surviving new leader and verifies it catches up. That
-# requires the Router to serve BOTH tenure recordings (segment 0 = tenure 1, segment 1 = tenure 2):
-# the old single-recording replay would only serve tenure 2 and stall with a globalSeqNo gap (it never
-# sees tenure 1's gseq=1, so tenure 2's gseq=2 is a forward jump it can't heal).
+# Forces a leader failover (two leader tenures), then cold-starts a fresh OrderExecClient co-located
+# with the surviving new leader and verifies it catches up on full history. Since every node records
+# its own node-local tap continuously — the tap publication is never re-created on a leadership change
+# — the new leader's node holds ONE continuous recording spanning both tenures (pre- and post-failover),
+# so the cold-start walk catches up from that single recording. This validates that the tap recording on
+# a node that was a follower during tenure 1 still contains tenure-1 history after it becomes leader.
 #
-# PASS iff the fresh client prints "following live" AND its Router served it >= 2 segments.
+# PASS iff the fresh client prints "following live" AND its Router served it >= 1 replay segment.
 set -uo pipefail
 
 BUILD_DIR="cmake-build-release"
@@ -56,7 +57,7 @@ for m in 0 1 2; do
   ROUTER_PIDS[$m]=$!
 done
 for m in 0 1 2; do
-  W=0; until grep -q "following recording" "$LOG_DIR/router-$m.log" 2>/dev/null; do sleep 0.5; W=$((W+1)); ((W>60)) && break; done
+  W=0; until grep -q "IPC tap live" "$LOG_DIR/router-$m.log" 2>/dev/null; do sleep 0.5; W=$((W+1)); ((W>60)) && break; done
 done
 echo "routers following"
 
@@ -77,7 +78,7 @@ until [[ -n "$NEWLEADER" ]]; do
   ((W>120)) && { echo "no new leader emerged"; break; }
 done
 echo "tenure-2 leader = member $NEWLEADER"
-sleep 3  # let tenure-2 recording start and its Router re-follow
+sleep 3  # let the new leader settle (its tap recording is continuous across the failover)
 
 FRESH_LOG="$LOG_DIR/fresh-orderexec.log"
 PHIXERON_ORDER_EXEC_AERON_DIR="${TMPDIR}phixeron-seq-aeron-${NEWLEADER}" \
@@ -100,7 +101,7 @@ echo "segments served to client 9 : $SEGMENTS"
 echo "fresh client caught up      : $CAUGHT"
 
 kill "$FRESH_PID" "${ROUTER_PIDS[@]}" "$MD_PID" "${SEQ_PIDS[@]}" 2>/dev/null; wait 2>/dev/null
-if [[ "$CAUGHT" == "1" && "$SEGMENTS" -ge 2 ]]; then
+if [[ "$CAUGHT" == "1" && "$SEGMENTS" -ge 1 ]]; then
   echo "CROSS-FAILOVER TEST: PASS"; exit 0
 else
   echo "CROSS-FAILOVER TEST: FAIL"; exit 1

@@ -29,12 +29,17 @@ case "${1:-}" in
         ;;
 esac
 
-BASE_DIR="${TMPDIR:-/tmp}phixeron-seq"
+# start-cluster.sh (single node) uses the SequencerNode default baseDir (phixeron-seq);
+# start-three-node-cluster.sh overrides it to phixeron-seq3. Purge both, else stale per-tenure
+# recordings accumulate across runs (a fresh run recovers them and grows the catalog).
+BASE_DIRS=("${TMPDIR:-/tmp}phixeron-seq" "${TMPDIR:-/tmp}phixeron-seq3")
 LOG_DIR="logs"
 
 echo "[purgelog.sh] The following will be deleted:"
-echo "  ${BASE_DIR}/archive-*"
-echo "  ${BASE_DIR}/cluster-*"
+for BASE_DIR in "${BASE_DIRS[@]}"; do
+    echo "  ${BASE_DIR}/archive-*"
+    echo "  ${BASE_DIR}/cluster-*"
+done
 echo "  ${LOG_DIR}/"
 
 if (( FORCE == 0 )); then
@@ -45,19 +50,16 @@ if (( FORCE == 0 )); then
     fi
 fi
 
-if ls "${BASE_DIR}"/archive-* > /dev/null 2>&1; then
-    rm -rf "${BASE_DIR}"/archive-*
-    echo "[purgelog.sh] Removed archive dirs"
-else
-    echo "[purgelog.sh] No archive dirs found"
-fi
-
-if ls "${BASE_DIR}"/cluster-* > /dev/null 2>&1; then
-    rm -rf "${BASE_DIR}"/cluster-*
-    echo "[purgelog.sh] Removed cluster dirs"
-else
-    echo "[purgelog.sh] No cluster dirs found"
-fi
+for BASE_DIR in "${BASE_DIRS[@]}"; do
+    if ls "${BASE_DIR}"/archive-* > /dev/null 2>&1; then
+        rm -rf "${BASE_DIR}"/archive-*
+        echo "[purgelog.sh] Removed ${BASE_DIR}/archive-*"
+    fi
+    if ls "${BASE_DIR}"/cluster-* > /dev/null 2>&1; then
+        rm -rf "${BASE_DIR}"/cluster-*
+        echo "[purgelog.sh] Removed ${BASE_DIR}/cluster-*"
+    fi
+done
 
 if [[ -d "${LOG_DIR}" ]]; then
     rm -rf "${LOG_DIR}"

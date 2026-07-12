@@ -24,29 +24,13 @@ namespace org::limitless::phixeron::sequencer {
 
 // ── Constants matching SequencerService / SequencerNode ──────────────────────
 
-// Multi-destination-cast (dynamic control mode). This is the publisher/archive-recording
-// channel — matches SequencerService.GLOBAL_STREAM_CHANNEL, used here only for archive
-// recording lookups (listRecordingsForUri), never to open a local subscription directly.
-inline constexpr const char* GLOBAL_STREAM_CHANNEL = "aeron:udp?control-mode=dynamic|control=localhost:9200";
-
-// Subscriber-side channel: same control address, plus an ephemeral local data endpoint
-// that the publisher discovers and adds as a destination automatically. Matches
-// SequencerService.GLOBAL_STREAM_SUBSCRIBER_CHANNEL. Used for the live (post-replay) fallback
-// subscription below.
-//
-// tether=false is the audit S4 fix: an untethered subscriber that falls behind the
-// publisher's window is moved to "resting" rather than back-pressuring the publisher, so a
-// slow or stalled global-stream consumer can never wedge the sequencer's single
-// ClusteredService thread (which spins in SequencerService.offerToGlobalStream until the
-// offer lands). The trade-off is that a rested subscriber loses the messages it fell behind
-// on and rejoins live past them — GlobalStreamClient detects that hole from the gap-free
-// globalSeqNo run and re-bootstraps the missing range from the archive (see onFragment /
-// beginRecovery below), which is the intended "let it fall behind and recover via archive
-// replay" posture.
-inline constexpr const char* GLOBAL_STREAM_SUBSCRIBER_CHANNEL =
-    "aeron:udp?control-mode=dynamic|control=localhost:9200|endpoint=localhost:0|tether=false";
-
-inline constexpr std::int32_t GLOBAL_STREAM_ID = 1;
+// Stream id of the recorded sequenced stream. Every node records its node-local aeron:ipc tap
+// (SequencerService.TAP_CHANNEL / TAP_STREAM_ID) into its own archive; that recording is the
+// authoritative history clients replay here, matched by stream id alone in the archive catalog
+// (listRecordingsForUri). The old UDP multi-destination-cast global stream (stream 1) is retired,
+// so there is no live network subscription — clients follow the active recording's growth via an
+// open-ended archive replay instead (see start()/poll()).
+inline constexpr std::int32_t GLOBAL_STREAM_ID = 205;
 
 // Each UDP-replaying binary uses a distinct port so their archive replay publications
 // don't conflict.
@@ -170,31 +154,19 @@ inline bool findGlobalStreamRecording(const std::shared_ptr<aeron::archive::clie
 
 /**
  * Connects to each candidate archive endpoint in turn until one both connects
- * and holds a recording of the global stream (matched by GLOBAL_STREAM_ID
- * alone: the recorded originalChannel is Aeron's resolved form of the
- * control-mode=dynamic channel, e.g. an assigned multicast endpoint, which
- * never contains the literal GLOBAL_STREAM_CHANNEL constant as a substring).
+ * and holds a recording of the sequenced stream (matched by GLOBAL_STREAM_ID
+ * alone). Every member records its own node-local tap, so any reachable
+ * member's archive holds a full copy; trying more than one endpoint is just
+ * defense in depth against an individual member being down or still starting up
+ * (its recording not yet active). This connects to a remote archive over UDP
+ * control and replays over a UDP replay channel — the recording's aeron:ipc
+ * source is irrelevant to replay.
  *
- * Trying more than one endpoint is necessary — not just defense in depth —
- * because SequencerService.applyLeadership() creates the global-stream
- * ExclusivePublication and its recording lazily, only on the node that is
- * currently (or was most recently) leader, rather than on every node
- * unconditionally at startup (see todo.md's "Global-stream control port
- * collision" entry for why: every node eagerly pre-creating it collided on
- * the shared control-mode=dynamic port when co-located on one host). So an
- * arbitrary reachable member's archive may simply have no matching recording
- * at all — this must keep trying candidates until it finds the one that does.
- *
- * Note this does not chase a *later* leadership change once connected: if
- * leadership moves on mid-session, this connected archive's recording stops
- * advancing (a new one starts on the new leader) — see todo.md's
- * "Cross-failover global-stream recording continuity" entry.
- *
- * @param[out] recordingId    recording id of the global stream found on the
+ * @param[out] recordingId    recording id of the sequenced stream found on the
  *                            connected archive
  * @param[out] catchUpPosition recording position to replay/catch up to
  * @throws std::runtime_error if no candidate endpoint both connects and holds
- *         a global stream recording.
+ *         a sequenced-stream recording.
  */
 inline std::shared_ptr<aeron::archive::client::AeronArchive> connectToArchiveWithGlobalStream(
     std::shared_ptr<aeron::Aeron> aeron, const std::vector<std::string>& controlEndpoints, std::int32_t controlStreamId,
@@ -245,9 +217,9 @@ inline std::shared_ptr<aeron::archive::client::AeronArchive> connectToArchiveWit
  * (e.g. OrderExecClient) deliberately deployed sharing a single SequencerNode member's own
  * Aeron directory (see ClusterIngressSender::connectColocated's doc comment for the ingress
  * half of that deployment). Unlike connectToArchiveWithGlobalStream, there is exactly one
- * candidate archive here, and — thanks to SequencerService's standby-follow replication —
- * every member's archive holds a full copy of the global stream regardless of current
- * leadership, so a missing recording here is a real error, not just "wrong member to ask".
+ * candidate archive here, and — because every member records its own node-local tap — every
+ * member's archive holds a full copy of the sequenced stream regardless of current leadership,
+ * so a missing recording here is a real error, not just "wrong member to ask".
  *
  * @param[out] recordingId    recording id of the global stream found on the local archive
  * @param[out] catchUpPosition recording position to replay/catch up to
@@ -386,7 +358,7 @@ struct LifecycleEvent {
 // ── GlobalStreamClient ────────────────────────────────────────────────────────
 
 /**
- * Subscribes to the SequencerService global stream, decoding and dispatching
+ * Replays the recorded sequenced stream from an archive, decoding and dispatching
  * SBE messages to the caller.
  *
  * Startup sequence (caller is responsible for the archive connection):
@@ -397,13 +369,14 @@ struct LifecycleEvent {
  *
  * Each historical (stopped) segment is replayed in full before moving on to
  * the next; the last segment (which may still be actively recording) is
- * replayed with NULL_LENGTH so it follows live seamlessly once caught up —
- * the same image delivers both historical and live messages for that segment
- * without a subscription switch. If that last segment's image closes (leader
- * failover), the client falls back to a direct MDC subscription. Segments
- * share one underlying replay subscription (same channel/stream id), so
- * moving from one segment's replay to the next only requires starting a new
- * archive replay session, not a new local subscription.
+ * replayed with NULL_LENGTH so it follows the recording's growth seamlessly
+ * once caught up — the same image delivers both historical and live messages
+ * without a subscription switch. Since every node records its own continuous
+ * tap, that last recording spans every leader failover and keeps growing as
+ * long as its member is up, so there is no live network fallback: the open-ended
+ * replay is the live feed. Segments share one underlying replay subscription
+ * (same channel/stream id), so moving from one segment's replay to the next only
+ * requires starting a new archive replay session, not a new local subscription.
  *
  * Every message is stamped with receiveTimeNs (std::chrono::system_clock).
  */
@@ -424,8 +397,8 @@ class GlobalStreamClient {
     {}
 
     /**
-     * Adds a live MDC fallback subscription and, when segments is non-empty,
-     * starts replaying its segments in order (see class doc comment).
+     * When segments is non-empty, starts replaying them in order (see class doc comment); the last
+     * (active) segment is replayed open-ended so it follows the recording's growth as the live feed.
      *
      * @param aeron         connected Aeron instance
      * @param archive       connected AeronArchive the segments were resolved
@@ -442,11 +415,6 @@ class GlobalStreamClient {
         m_archive = std::move(archive);
         m_segments = std::move(segments);
 
-        // Live MDC fallback — always subscribed; used when the last segment's replay image closes.
-        m_liveSubRegId = m_aeron->addSubscription(GLOBAL_STREAM_SUBSCRIBER_CHANNEL, GLOBAL_STREAM_ID);
-
-        // Stored unconditionally (even with no segments yet) so beginRecovery can replay from the
-        // archive if the untethered live sub later gaps — including when there was no history at start.
         if (replayChannel != nullptr)
         {
             m_replayChannel = replayChannel;
@@ -478,12 +446,11 @@ class GlobalStreamClient {
     }
 
     /**
-     * Attaches to a single already-started archive replay image and adds a
-     * live MDC fallback subscription — for a bounded scan of one already-known
-     * recording, not the multi-segment bootstrap walk above. Used by
-     * FixConnection::replayMissingAppMessages's resend-recovery scan, which
-     * replays a specific position range within one recording (not from
-     * position 0, and not following live once it ends).
+     * Attaches to a single already-started archive replay image — for a bounded scan of one
+     * already-known recording, not the multi-segment bootstrap walk above. Used by
+     * FixConnection::replayMissingAppMessages's resend-recovery scan, which replays a specific
+     * position range within one recording (not from position 0, and not following live once it ends).
+     * Completion is detected by position (catchUpPosition), so there is no live subscription.
      *
      * @param aeron           connected Aeron instance
      * @param replaySessionId session ID returned by AeronArchive::startReplay(),
@@ -505,8 +472,6 @@ class GlobalStreamClient {
             m_replaySubRegId = m_aeron->addSubscription(replayChannel, REPLAY_STREAM_ID);
         }
 
-        // Live MDC fallback — always subscribed; used when replay image closes.
-        m_liveSubRegId = m_aeron->addSubscription(GLOBAL_STREAM_SUBSCRIBER_CHANNEL, GLOBAL_STREAM_ID);
         if (replaySessionId < 0)
         {
             // No historical data — already at live.
@@ -520,14 +485,10 @@ class GlobalStreamClient {
      */
     int poll()
     {
-        // Lazily resolve subscriptions once they become available.
+        // Lazily resolve the replay subscription once it becomes available.
         if (!m_replaySub && m_replaySubRegId >= 0)
         {
             m_replaySub = m_aeron->findSubscription(m_replaySubRegId);
-        }
-        if (!m_liveSub && m_liveSubRegId >= 0)
-        {
-            m_liveSub = m_aeron->findSubscription(m_liveSubRegId);
         }
 
         // Lazily resolve the current segment's replay image once it becomes available.
@@ -540,7 +501,6 @@ class GlobalStreamClient {
         {
             if (!m_replayImage->isClosed())
             {
-                m_pollingLive = false;
                 const int work = m_replayImage->poll(m_fragmentHandler, FRAGMENT_LIMIT);
                 if (!m_caughtUp && isOnLastSegment() && m_replayImage->position() >= m_catchUpPosition)
                 {
@@ -548,27 +508,16 @@ class GlobalStreamClient {
                 }
                 return work;
             }
-            // This segment's replay finished (historical segment fully replayed) or, if it was
-            // the last segment, its recording stopped growing (e.g. leader failover).
+            // This historical segment is fully replayed; advance to the next. The last (active)
+            // segment is replayed open-ended and only closes if its recording stops growing (its
+            // member shut down), which for a co-located client is terminal — there is nothing
+            // further to follow, so poll() then just idles.
             m_replayImage.reset();
             ++m_segmentIndex;
             if (m_segmentIndex < m_segments.size())
             {
                 startSegmentReplay(m_segmentIndex);
-                return 0;
             }
-            // All segments replayed and the last one's image closed — fall through to live MDC.
-        }
-
-        // Live MDC fallback — poll the subscription directly. Reached only once the
-        // open-ended last-segment replay image closes (leader failover); in steady state the
-        // client follows live through that replay image and never gets here. A gap can appear
-        // on this untethered subscription (it may have rested while replay ran, or reconnected
-        // past a failover boundary) — onFragment detects it and triggers beginRecovery.
-        if (m_liveSub)
-        {
-            m_pollingLive = true;
-            return m_liveSub->poll(m_fragmentHandler, FRAGMENT_LIMIT);
         }
         return 0;
     }
@@ -595,39 +544,6 @@ class GlobalStreamClient {
         replayParams.position(0).length(isLast ? aeron::archive::client::NULL_LENGTH : segment.stopPosition);
         m_replaySessionId =
             m_archive->startReplay(segment.recordingId, m_replayChannel, REPLAY_STREAM_ID, replayParams);
-    }
-
-    // Re-bootstrap the segment-replay walk from the archive after a live-stream gap (see
-    // onFragment). Re-lists the recording segments (the active recording may have grown, or a
-    // new leader's tenure appeared since start()) and restarts the replay from the oldest
-    // segment; onFragment's globalSeqNo filter drops everything already delivered, so only the
-    // missing tail is re-emitted, in order, before live-following resumes. O(history) like the
-    // initial bootstrap (cf. audit.md S1), but only reached on a real gap — a consumer that fell
-    // far behind, or a leader failover — which is rare. Runs its archive control round-trip on
-    // the duty-cycle thread, like start() does; this blocks only the caller's own liveness, never
-    // the sequencer's (cf. the S3 resend fix, which likewise keeps ms-scale archive control calls
-    // synchronous). m_caughtUp is left set, so onCaughtUp does not re-fire.
-    void beginRecovery()
-    {
-        if (!m_archive || m_replayChannel.empty())
-        {
-            return;  // no archive / replay channel to recover from (cannot happen in the live-following clients)
-        }
-        // The replay subscription is normally created in start(); create it here too for the
-        // "no history at start, then a live gap" path, which returned before start() added it.
-        if (m_replaySubRegId < 0)
-        {
-            m_replaySubRegId = m_aeron->addSubscription(m_replayChannel, REPLAY_STREAM_ID);
-        }
-        m_recovering = true;
-        m_segments = resolveGlobalStreamSegments(m_archive);
-        m_segmentIndex = 0;
-        m_replayImage.reset();
-        if (m_segments.empty())
-        {
-            return;
-        }
-        startSegmentReplay(0);
     }
 
     using HdrSbe = org::limitless::phixeron::sbe::sequenced::MessageHeader;
@@ -671,37 +587,18 @@ class GlobalStreamClient {
         const auto sessId = m_header.sessionId();
         const auto ts = m_header.timestamp();
 
-        // Contiguity / de-duplication guard for the live-following modes (skipped for the bounded
-        // single-image resend scan, which replays and delivers an exact range verbatim). The
-        // sequencer stamps a cluster-wide globalSeqNo that increments by exactly one per published
-        // event (message or lifecycle), so the global stream is gap-free by construction: any
-        // forward jump means the current source dropped messages — an untethered live subscription
-        // that rested after falling behind (see GLOBAL_STREAM_SUBSCRIBER_CHANNEL), or a
-        // post-failover live sub that reconnected past the gap. The archive holds every sequenced
-        // message, so heal it by re-bootstrapping from the archive; drop the out-of-order fragment
-        // — the recovery replay re-delivers it, and everything after it, in order.
+        // De-duplication guard for the multi-segment replay walk (skipped for the bounded single-image
+        // resend scan, which delivers an exact range verbatim). The replay of a single continuous
+        // recording is gap-free by construction; the only way a globalSeqNo can repeat is when the walk
+        // crosses from one recording to an overlapping one (a member restart left an earlier, stopped
+        // recording plus the post-restart one, with overlapping globalSeqNo ranges), so drop anything at
+        // or below the highest already delivered.
         if (!m_singleImageMode)
         {
-            if (m_lastGlobalSeqNo != 0)
+            if (m_lastGlobalSeqNo != 0 && gseq <= m_lastGlobalSeqNo)
             {
-                if (gseq <= m_lastGlobalSeqNo)
-                {
-                    return;  // already delivered (e.g. a recovery replay re-covering seen ground)
-                }
-                if (gseq > m_lastGlobalSeqNo + 1)
-                {
-                    if (m_pollingLive && !m_recovering)
-                    {
-                        std::fprintf(stderr,
-                                     "[GlobalStreamClient] live-stream gap: expected globalSeqNo=%" PRId64
-                                     ", got %" PRId64 " — re-bootstrapping from archive\n",
-                                     static_cast<std::int64_t>(m_lastGlobalSeqNo + 1), static_cast<std::int64_t>(gseq));
-                        beginRecovery();
-                    }
-                    return;
-                }
+                return;  // already delivered (overlapping recording after a restart)
             }
-            m_recovering = false;
             m_lastGlobalSeqNo = gseq;
         }
         if (templateId == CLIENT_CONNECTED_TEMPLATE_ID)
@@ -766,9 +663,7 @@ class GlobalStreamClient {
     std::shared_ptr<aeron::Aeron> m_aeron;
     std::shared_ptr<aeron::archive::client::AeronArchive> m_archive;
     std::int64_t m_replaySubRegId = -1;
-    std::int64_t m_liveSubRegId = -1;
     std::shared_ptr<aeron::Subscription> m_replaySub;
-    std::shared_ptr<aeron::Subscription> m_liveSub;
     std::shared_ptr<aeron::Image> m_replayImage;
 
     std::vector<RecordingSegment> m_segments;
@@ -779,9 +674,7 @@ class GlobalStreamClient {
     std::int64_t m_catchUpPosition = 0;
     bool m_caughtUp = false;
 
-    std::int64_t m_lastGlobalSeqNo = 0;  // highest globalSeqNo delivered; 0 = none yet (gap detection)
-    bool m_pollingLive = false;          // true while poll() is draining the live MDC sub (vs. a replay)
-    bool m_recovering = false;           // a re-bootstrap replay is in flight; suppresses repeat triggers
+    std::int64_t m_lastGlobalSeqNo = 0;  // highest globalSeqNo delivered; 0 = none yet (overlap de-dup)
 
     aeron::fragment_handler_t m_fragmentHandler;
 

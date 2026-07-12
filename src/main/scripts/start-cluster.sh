@@ -67,17 +67,6 @@ else
     AERONMD="${BUILD_DIR}/_deps/aeron-build/binaries/aeronmd"
 fi
 
-# ── Optional global-stream term-length tuning ────────────────────────────────
-# When PHIXERON_GLOBAL_TERM_LENGTH is set, the SequencerNode gets -Dphixeron.globalStream.termLength
-# so the global stream's flow-control window is small enough that an un-drained subscriber
-# back-pressures the publisher after a few hundred messages. Single-node is the clean instrument for
-# this (one stable leader, no failover control-port collision) — the S4 wedge test harness
-# (src/test/scripts) sets it before driving a flood. A cluster-config knob only; this script runs no test.
-SEQ_TERM_OPTS=()
-if [[ -n "${PHIXERON_GLOBAL_TERM_LENGTH:-}" ]]; then
-    SEQ_TERM_OPTS+=("-Dphixeron.globalStream.termLength=${PHIXERON_GLOBAL_TERM_LENGTH}")
-    echo "[cluster.sh] global-stream term-length=${PHIXERON_GLOBAL_TERM_LENGTH}"
-fi
 
 # ── Pre-flight checks ─────────────────────────────────────────────────────────
 
@@ -104,7 +93,6 @@ mkdir -p "${LOG_DIR}"
 
 echo "[cluster.sh] Starting SequencerNode (member 0) → ${SEQ_LOG}"
 java "${JAVA_OPTS[@]}" \
-    ${SEQ_TERM_OPTS[@]+"${SEQ_TERM_OPTS[@]}"} \
     -Dsequencer.memberId=0 \
     -jar "${JAR}" \
     > "${SEQ_LOG}" 2>&1 &
