@@ -8,7 +8,7 @@
 # so the cold-start walk catches up from that single recording. This validates that the tap recording on
 # a node that was a follower during tenure 1 still contains tenure-1 history after it becomes leader.
 #
-# PASS iff the fresh client prints "following live" AND its Router served it >= 1 replay segment.
+# PASS iff the fresh client prints "following live" AND its Replayer served it >= 1 replay segment.
 set -uo pipefail
 
 BUILD_DIR="cmake-build-release"
@@ -30,7 +30,7 @@ AERON_DIR="${TMPDIR}aeron-$(whoami)"
 
 if command -v aeronmd >/dev/null 2>&1; then AERONMD="$(command -v aeronmd)"; else AERONMD="${BUILD_DIR}/_deps/aeron-build/binaries/aeronmd"; fi
 
-pkill -f SequencerNode 2>/dev/null; pkill -f RouterNode 2>/dev/null; pkill -f OrderExecClient 2>/dev/null
+pkill -f SequencerNode 2>/dev/null; pkill -f ReplayerNode 2>/dev/null; pkill -f OrderExecClient 2>/dev/null
 pkill -f FixSessionClient 2>/dev/null; pkill -f aeronmd 2>/dev/null; sleep 1
 rm -rf "$BASE_DIR" "${TMPDIR}phixeron-seq-aeron-0" "${TMPDIR}phixeron-seq-aeron-1" \
        "${TMPDIR}phixeron-seq-aeron-2" "$AERON_DIR" 2>/dev/null
@@ -50,16 +50,16 @@ AERON_DIR="$AERON_DIR" "$AERONMD" > "$LOG_DIR/aeronmd.log" 2>&1 &
 MD_PID=$!
 W=0; until [[ -f "$AERON_DIR/cnc.dat" ]]; do sleep 0.2; W=$((W+1)); ((W>25)) && { echo "md not up"; exit 1; }; done
 
-declare -a ROUTER_PIDS
+declare -a REPLAYER_PIDS
 for m in 0 1 2; do
-  java "${JAVA_OPTS[@]}" -Drouter.memberId="$m" -cp "$JAR" \
-       org.limitless.phixeron.router.RouterNode > "$LOG_DIR/router-$m.log" 2>&1 &
-  ROUTER_PIDS[$m]=$!
+  java "${JAVA_OPTS[@]}" -Dreplayer.memberId="$m" -cp "$JAR" \
+       org.limitless.phixeron.replayer.ReplayerNode > "$LOG_DIR/replayer-$m.log" 2>&1 &
+  REPLAYER_PIDS[$m]=$!
 done
 for m in 0 1 2; do
-  W=0; until grep -q "IPC tap live" "$LOG_DIR/router-$m.log" 2>/dev/null; do sleep 0.5; W=$((W+1)); ((W>60)) && break; done
+  W=0; until grep -q "serving replay" "$LOG_DIR/replayer-$m.log" 2>/dev/null; do sleep 0.5; W=$((W+1)); ((W>60)) && break; done
 done
-echo "routers following"
+echo "replayers serving"
 
 sleep 2  # let tenure-1 LeadershipChanged replicate to followers
 L1=$(grep -h "isLeader=true" "$LOG_DIR"/seq-*.log | grep -oE 'SequencerService/[0-9]+' | head -1 | cut -d/ -f2)
@@ -83,7 +83,7 @@ sleep 3  # let the new leader settle (its tap recording is continuous across the
 FRESH_LOG="$LOG_DIR/fresh-orderexec.log"
 PHIXERON_ORDER_EXEC_AERON_DIR="${TMPDIR}phixeron-seq-aeron-${NEWLEADER}" \
   PHIXERON_NODE_MEMBER_ID="$NEWLEADER" \
-  PHIXERON_ROUTER_CLIENT_ID=9 \
+  PHIXERON_REPLAYER_CLIENT_ID=9 \
   PHIXERON_CLUSTER_EGRESS_ENDPOINT="localhost:9349" \
   stdbuf -oL -eL "$BUILD_DIR/OrderExecClient" > "$FRESH_LOG" 2>&1 &
 FRESH_PID=$!
@@ -94,13 +94,13 @@ CAUGHT=0; grep -q "following live" "$FRESH_LOG" && CAUGHT=1
 
 echo ""
 echo "=== RESULT ==="
-echo "--- Router (member $NEWLEADER) replay decisions for fresh client 9 ---"
-grep "replay for client 9" "$LOG_DIR/router-$NEWLEADER.log" || echo "(none)"
-SEGMENTS=$(grep -c "replay for client 9" "$LOG_DIR/router-$NEWLEADER.log")
+echo "--- Replayer (member $NEWLEADER) replay decisions for fresh client 9 ---"
+grep "replay for client 9" "$LOG_DIR/replayer-$NEWLEADER.log" || echo "(none)"
+SEGMENTS=$(grep -c "replay for client 9" "$LOG_DIR/replayer-$NEWLEADER.log")
 echo "segments served to client 9 : $SEGMENTS"
 echo "fresh client caught up      : $CAUGHT"
 
-kill "$FRESH_PID" "${ROUTER_PIDS[@]}" "$MD_PID" "${SEQ_PIDS[@]}" 2>/dev/null; wait 2>/dev/null
+kill "$FRESH_PID" "${REPLAYER_PIDS[@]}" "$MD_PID" "${SEQ_PIDS[@]}" 2>/dev/null; wait 2>/dev/null
 if [[ "$CAUGHT" == "1" && "$SEGMENTS" -ge 1 ]]; then
   echo "CROSS-FAILOVER TEST: PASS"; exit 0
 else

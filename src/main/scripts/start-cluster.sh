@@ -4,9 +4,9 @@
 # Launches four processes in the background, each writing to its own log file:
 #   1. SequencerNode  (Java, single-node Aeron Cluster, member 0)
 #   2. FixSessionClient  (C++, FIX TCP gateway on port 9000)
-#   3. RouterNode  (Java, co-located with member 0: sole global-stream reader on the node; fans it
-#                   out over aeron:ipc and serves replays — doc/router-design.md)
-#   4. OrderExecClient  (C++, a replica behind RouterNode: consumes its IPC fan-out, tracks
+#   3. ReplayerNode  (Java, co-located with member 0: serves archive replay to co-located apps over
+#                     aeron:ipc — doc/router-design.md; apps read the tap directly for live)
+#   4. OrderExecClient  (C++, a replica co-located with member 0: reads the tap directly, tracks
 #                        positions, answers risk queries while its node is leader)
 #
 # Ctrl-C (or kill $$ / kill -- -$$) stops all four cleanly.
@@ -47,7 +47,7 @@ LOG_DIR="logs"
 SEQ_LOG="${LOG_DIR}/sequencer.log"
 MD_LOG="${LOG_DIR}/aeronmd.log"
 FIX_LOG="${LOG_DIR}/FixSessionClient.log"
-ROUTER_LOG="${LOG_DIR}/RouterNode.log"
+REPLAYER_LOG="${LOG_DIR}/ReplayerNode.log"
 APP_LOG="${LOG_DIR}/OrderExecClient.log"
 
 # Default Aeron directory used by the standalone aeronmd and by FixSessionClient.
@@ -134,26 +134,26 @@ echo "[cluster.sh] Starting FixSessionClient → ${FIX_LOG}"
 stdbuf -oL -eL "${BUILD_DIR}/FixSessionClient" > "${FIX_LOG}" 2>&1 &
 FIX_PID=$!
 
-echo "[cluster.sh] Starting RouterNode (co-located with SequencerNode member 0) → ${ROUTER_LOG}"
+echo "[cluster.sh] Starting ReplayerNode (co-located with SequencerNode member 0) → ${REPLAYER_LOG}"
 java "${JAVA_OPTS[@]}" \
-    -Drouter.memberId=0 \
+    -Dreplayer.memberId=0 \
     -cp "${JAR}" \
-    org.limitless.phixeron.router.RouterNode \
-    > "${ROUTER_LOG}" 2>&1 &
-ROUTER_PID=$!
+    org.limitless.phixeron.replayer.ReplayerNode \
+    > "${REPLAYER_LOG}" 2>&1 &
+REPLAYER_PID=$!
 
-echo "[cluster.sh] Waiting for RouterNode to follow the global-stream recording…"
+echo "[cluster.sh] Waiting for ReplayerNode to start serving replay…"
 WAIT=0
-until grep -q "following recording" "${ROUTER_LOG}" 2>/dev/null; do
+until grep -q "serving replay" "${REPLAYER_LOG}" 2>/dev/null; do
     sleep 0.5
     WAIT=$(( WAIT + 1 ))
     if (( WAIT > 40 )); then
-        echo "[cluster.sh] WARN: RouterNode not following after 20s — starting OrderExecClient anyway" >&2
+        echo "[cluster.sh] WARN: ReplayerNode not serving after 20s — starting OrderExecClient anyway" >&2
         break
     fi
 done
 
-echo "[cluster.sh] Starting OrderExecClient (replica behind member 0's RouterNode) → ${APP_LOG}"
+echo "[cluster.sh] Starting OrderExecClient (replica co-located with member 0) → ${APP_LOG}"
 PHIXERON_ORDER_EXEC_AERON_DIR="${SEQ_AERON_DIR}" \
     stdbuf -oL -eL "${BUILD_DIR}/OrderExecClient" > "${APP_LOG}" 2>&1 &
 APP_PID=$!
@@ -162,7 +162,7 @@ echo "[cluster.sh] All processes started"
 echo "  SequencerNode     pid=${SEQ_PID}  log=${SEQ_LOG}"
 echo "  aeronmd           pid=${MD_PID}   log=${MD_LOG}"
 echo "  FixSessionClient  pid=${FIX_PID}  log=${FIX_LOG}"
-echo "  RouterNode        pid=${ROUTER_PID}  log=${ROUTER_LOG}"
+echo "  ReplayerNode      pid=${REPLAYER_PID}  log=${REPLAYER_LOG}"
 echo "  OrderExecClient   pid=${APP_PID}  log=${APP_LOG}"
 echo "[cluster.sh] Press Ctrl-C to stop"
 
@@ -171,8 +171,8 @@ echo "[cluster.sh] Press Ctrl-C to stop"
 cleanup() {
     echo ""
     echo "[cluster.sh] Stopping…"
-    kill "${APP_PID}" "${ROUTER_PID}" "${FIX_PID}" "${MD_PID}" "${SEQ_PID}" 2>/dev/null
-    wait "${APP_PID}" "${ROUTER_PID}" "${FIX_PID}" "${MD_PID}" "${SEQ_PID}" 2>/dev/null
+    kill "${APP_PID}" "${REPLAYER_PID}" "${FIX_PID}" "${MD_PID}" "${SEQ_PID}" 2>/dev/null
+    wait "${APP_PID}" "${REPLAYER_PID}" "${FIX_PID}" "${MD_PID}" "${SEQ_PID}" 2>/dev/null
     echo "[cluster.sh] Done"
 }
 trap cleanup INT TERM
@@ -182,7 +182,7 @@ trap cleanup INT TERM
 
 wait_any() {
     while true; do
-        for pid in "${SEQ_PID}" "${MD_PID}" "${FIX_PID}" "${ROUTER_PID}" "${APP_PID}"; do
+        for pid in "${SEQ_PID}" "${MD_PID}" "${FIX_PID}" "${REPLAYER_PID}" "${APP_PID}"; do
             if ! kill -0 "${pid}" 2>/dev/null; then
                 echo "[cluster.sh] Process ${pid} exited — shutting down"
                 return

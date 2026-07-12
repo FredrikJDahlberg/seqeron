@@ -33,9 +33,9 @@
         Logon     'A'=65   ExecutionReport '8'=56 NewOrderSingle 'D'=68
     ClientConnected/ClientDisconnected/PortfolioQueryRequest/PortfolioQueryReply
     aren't FIX messages, so they use small, non-ASCII-derived template ids
-    instead (1/2/3/4), clear of that range. The Router replay-protocol control
-    messages (RouterReplayRequest/RouterReplaying/RouterPending, 6/7/8) live here
-    too — they are node-local control plane between a Router and its co-located
+    instead (1/2/3/4), clear of that range. The Replayer replay-protocol control
+    messages (ReplayRequest/Replaying/ReplayPending, 6/7/8) live here
+    too — they are node-local control plane between a Replayer and its co-located
     app replicas, never sequenced, so they belong in this pre-sequencing schema
     rather than sbe-sequenced.xml (id 5 is left for LeadershipChanged, which is
     the mirror-image case: sequenced-only, so it exists only in sbe-sequenced.xml).
@@ -538,66 +538,66 @@
     </sbe:message>
 
     <!-- ═══════════════════════════════════════════════════════════════════
-         Router replay protocol  (templates 6/7/8) — node-local control plane
-         between a Router and its co-located app replicas, over aeron:ipc. Never
+         Replay protocol  (templates 6/7/8) — node-local control plane between
+         the node's Replayer and its co-located app replicas, over aeron:ipc. Never
          sequenced (no globalSeqNo), so they carry no `header` composite. See the
-         Router design, doc/router-design.md §4. clientId identifies the
-         requesting replica so the Router can cap concurrent replays at 2 (one
-         in-flight per client) and the app can match a Replaying/Pending reply
+         Replayer design, doc/router-design.md §4. clientId identifies the
+         requesting replica so the Replayer can cap concurrent replays at 2 (one
+         in-flight per client) and the app can match a Replaying/ReplayPending reply
          to its own request; fromPosition is the recording position of the last
          in-order frame the app holds (SequencedEvent.position), which is the
          archive replay start — globalSeqNo stays the correctness key, position
-         is only how the archive is addressed, so the Router needs no
+         is only how the archive is addressed, so the Replayer needs no
          globalSeqNo->position index.
          ═══════════════════════════════════════════════════════════════════ -->
 
-    <!-- App -> Router: "I have a gap; replay for me from fromPosition." -->
-    <sbe:message name="RouterReplayRequest" id="6"
-                 description="A replica asks its Router to replay the global stream. Either it is
+    <!-- App -> Replayer: "I have a gap; replay for me from fromPosition." -->
+    <sbe:message name="ReplayRequest" id="6"
+                 description="A replica asks its Replayer to replay the sequenced stream. Either it is
                               cold-starting and walks the full recording chain by segmentIndex, or it
                               detected a globalSeqNo gap and resumes the active recording at fromPosition">
         <field name="clientId"     id="20010" type="int32"
-               description="Requesting replica's stable id, unique among the Router's co-located apps"/>
+               description="Requesting replica's stable id, unique among the Replayer's co-located apps"/>
         <field name="fromPosition" id="20011" type="int64"
                description="Recording position to resume the active recording from (SequencedEvent.position
                             of the last in-order frame); used only when segmentIndex &lt; 0"/>
         <field name="segmentIndex" id="20014" type="int32"
                description="-1 = resume the current active recording at fromPosition (steady-state gap).
-                            &gt;=0 = cold-start walk: replay the segmentIndex-th recording of the global
+                            &gt;=0 = cold-start walk: replay the segmentIndex-th recording of the sequenced
                             stream's per-leader-tenure chain (oldest first) from position 0. The app walks
-                            0,1,2,… de-duping by globalSeqNo (contiguous across tenures) until the Router
+                            0,1,2,… de-duping by globalSeqNo (contiguous across tenures) until the Replayer
                             answers NO_REPLAY_NEEDED, which marks it caught up. This spans every failover,
                             so a cold start after a leader change recovers full history"/>
     </sbe:message>
 
-    <!-- Router -> App: "A replay slot is free; attach to replaySessionId on the replay stream." -->
-    <sbe:message name="RouterReplaying" id="7"
-                 description="The Router started an archive replay for the requesting replica; the app
-                              attaches to replaySessionId on the Router replay stream and follows it until
-                              its image position reaches catchUpPosition, then falls back to the fan-out
+    <!-- Replayer -> App: "A replay slot is free; attach to replaySessionId on the replay stream." -->
+    <sbe:message name="Replaying" id="7"
+                 description="The Replayer started an archive replay for the requesting replica; the app
+                              attaches to replaySessionId on the Replayer replay stream and follows it until
+                              its image position reaches catchUpPosition, then falls back to the live tap
                               (de-duped by globalSeqNo)">
         <field name="clientId"        id="20010" type="int32"/>
         <field name="replaySessionId" id="20012" type="int64"
-               description="Aeron replay session id to attach to (Subscription.imageBySessionId) on the Router replay stream"/>
+               description="Aeron replay session id to attach to (Subscription.imageBySessionId) on the Replayer replay stream"/>
         <field name="catchUpPosition" id="20013" type="int64"
                description="Recording position the bounded replay ends at; the app is caught up once its
-                            replay image reaches this and switches to the fan-out. A bounded replay of an
+                            replay image reaches this and switches to the live tap. A bounded replay of an
                             active recording does not close its image at the bound, so completion is
                             detected by position (as GlobalStreamClient does for its live segment), not by
                             image close"/>
     </sbe:message>
 
-    <!-- Router -> App: "All replay slots are busy; hold at your gap and wait." -->
-    <sbe:message name="RouterPending" id="8"
-                 description="The Router has &gt;=2 replays already active; the requesting replica must hold
+    <!-- Replayer -> App: "All replay slots are busy; hold at your gap and wait." -->
+    <sbe:message name="ReplayPending" id="8"
+                 description="The Replayer has &gt;=2 replays already active; the requesting replica must hold
                               at its gap (must not advance past the hole) until a later Replaying arrives">
         <field name="clientId" id="20010" type="int32"/>
     </sbe:message>
 
-    <!-- App -> Router: "I have caught up and am on the fan-out; free my replay slot." -->
-    <sbe:message name="RouterReplayComplete" id="9"
+    <!-- App -> Replayer: "I have caught up and am on the live tap; free my replay slot." -->
+    <sbe:message name="ReplayComplete" id="9"
                  description="A replica has finished with its replay (caught up to the tip and switched to the
-                              fan-out) and no longer needs its slot; the Router frees it immediately (design
+                              live tap) and no longer needs its slot; the Replayer frees it immediately (design
                               §5) rather than waiting for the idle-TTL, and hands it to any waiting app. Sent
                               after a steady-state gap resume; a cold-start walk needs none, since each of its
                               slots is freed by the supersede on the next segment request">

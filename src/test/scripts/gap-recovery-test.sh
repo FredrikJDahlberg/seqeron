@@ -1,13 +1,18 @@
 #!/usr/bin/env bash
-# Steady-state gap-recovery test (RouterClient globalSeqNo re-walk).
+# Steady-state gap-recovery test (ReplayerClient globalSeqNo re-walk).
 #
-# Verifies that a consumer which is CAUGHT UP (following live via the Router fan-out) heals a dropped
-# fan-out frame: it detects the globalSeqNo gap, re-walks the recording chain from segment 0 de-duping
-# by globalSeqNo, and keeps delivering rather than wedging in-order delivery. Each node records its own
-# node-local tap continuously, so the consumer's co-located member holds ONE continuous recording; the
-# re-walk heals the gap straight from that recording. A leader failover is performed first so the gap is
-# exercised in a realistic post-failover steady state (and to confirm the consumer's own tap keeps
-# flowing across the failover — its member's recording is continuous, never rotated).
+# Verifies that a consumer which is CAUGHT UP (following live off the co-located SequencerService tap)
+# heals a dropped live tap frame: it detects the globalSeqNo gap, re-walks the recording chain from
+# segment 0 de-duping by globalSeqNo, and keeps delivering rather than wedging in-order delivery. Each
+# node records its own node-local tap continuously, so the consumer's co-located member holds ONE
+# continuous recording; the re-walk heals the gap straight from that recording (served by the node's
+# Replayer). A leader failover is performed first so the gap is exercised in a realistic post-failover
+# steady state (and to confirm the consumer's own tap keeps flowing across the failover — its member's
+# recording is continuous, never rotated).
+#
+# The gap is synthesized on the CONSUMER side: the ReplayerClient drops the next live tap frame when
+# armed via SIGUSR1 (gated by PHIXERON_FAULT_INJECTION=1 at consumer launch). With apps reading the tap
+# directly there is no fan-out relay to drop a frame in, so the drop lives where the app reads live.
 #
 # Topology keeps member 0 alive throughout: the flood's ClusterIngressSender (and the consumer's)
 # bootstrap through member 0's fixed ingress endpoint (localhost:9302) before following REDIRECT to the
@@ -17,13 +22,14 @@
 #
 # Sequence:
 #   1. Start members 1 and 2 -> one becomes the tenure-1 leader. Then start member 0 (follower) and a
-#      RouterNode per member with -Drouter.faultInjection.
-#   2. Consumer (OrderExecClient) on member 0 catches up (following live via the Router fan-out).
+#      ReplayerNode per member.
+#   2. Consumer (OrderExecClient, PHIXERON_FAULT_INJECTION=1) on member 0 catches up (following the
+#      live tap).
 #   3. Kill the tenure-1 leader -> a survivor becomes the tenure-2 leader. Member 0's own tap recording
 #      keeps flowing across the failover (it is continuous, never rotated).
-#   4. Arm a one-frame fan-out drop on member 0's Router (SIGUSR1), then flood direct cluster ingress.
-#      The first flooded frame is dropped -> the caught-up consumer sees a globalSeqNo gap and re-walks
-#      member 0's continuous recording from segment 0 to heal it.
+#   4. SIGUSR1 the consumer to arm a one-frame live-tap drop, then flood direct cluster ingress. The
+#      first flooded frame is dropped by the consumer -> it sees a globalSeqNo gap and re-walks member
+#      0's continuous recording from segment 0 (via its Replayer) to heal it.
 #   5. SIGTERM the consumer to flush its delivery-latency report.
 #
 # PASS iff the consumer (a) logged "re-walking the recording chain" (the drop took effect and recovery
@@ -61,15 +67,15 @@ start_seq() {  # start_seq <memberId>
   SEQ_PIDS[$m]=$!
 }
 
-pkill -f SequencerNode 2>/dev/null; pkill -f RouterNode 2>/dev/null; pkill -f OrderExecClient 2>/dev/null
+pkill -f SequencerNode 2>/dev/null; pkill -f ReplayerNode 2>/dev/null; pkill -f OrderExecClient 2>/dev/null
 pkill -f FixSessionClient 2>/dev/null; pkill -f fix_test_server 2>/dev/null; pkill -f aeronmd 2>/dev/null; sleep 1
 rm -rf "$BASE_DIR" "${TMPDIR}phixeron-seq-aeron-0" "${TMPDIR}phixeron-seq-aeron-1" \
        "${TMPDIR}phixeron-seq-aeron-2" "$AERON_DIR" 2>/dev/null
 
 CONSUMER_PID=""; MD_PID=""
-declare -a SEQ_PIDS ROUTER_PIDS
+declare -a SEQ_PIDS REPLAYER_PIDS
 cleanup() {
-  kill "$CONSUMER_PID" "${ROUTER_PIDS[@]}" "$MD_PID" "${SEQ_PIDS[@]}" 2>/dev/null
+  kill "$CONSUMER_PID" "${REPLAYER_PIDS[@]}" "$MD_PID" "${SEQ_PIDS[@]}" 2>/dev/null
   wait 2>/dev/null
 }
 trap cleanup EXIT INT TERM
@@ -95,23 +101,26 @@ MD_PID=$!
 W=0; until [[ -f "$AERON_DIR/cnc.dat" ]]; do sleep 0.2; W=$((W+1)); ((W>25)) && { echo "md not up"; exit 1; }; done
 
 for m in 0 1 2; do
-  java "${JAVA_OPTS[@]}" -Drouter.memberId="$m" -Drouter.faultInjection=true -cp "$JAR" \
-       org.limitless.phixeron.router.RouterNode > "$LOG_DIR/router-$m.log" 2>&1 &
-  ROUTER_PIDS[$m]=$!
+  java "${JAVA_OPTS[@]}" -Dreplayer.memberId="$m" -cp "$JAR" \
+       org.limitless.phixeron.replayer.ReplayerNode > "$LOG_DIR/replayer-$m.log" 2>&1 &
+  REPLAYER_PIDS[$m]=$!
 done
 for m in 0 1 2; do
-  W=0; until grep -q "IPC tap live" "$LOG_DIR/router-$m.log" 2>/dev/null; do sleep 0.5; W=$((W+1)); ((W>60)) && break; done
+  W=0; until grep -q "serving replay" "$LOG_DIR/replayer-$m.log" 2>/dev/null; do sleep 0.5; W=$((W+1)); ((W>60)) && break; done
 done
-echo "routers up (fault injection enabled)"
+echo "replayers serving"
 sleep 2
 
-# ── 2. Consumer catches up BEFORE the failover (following live via the fan-out) ──
+# ── 2. Consumer catches up BEFORE the failover (following the live tap) ────────
+# PHIXERON_FAULT_INJECTION=1 installs the consumer's SIGUSR1 handler and enables the ReplayerClient's
+# live-tap drop; without it a stray SIGUSR1 would kill the process (default action).
 CONSUMER_LOG="$LOG_DIR/consumer.log"
 PHIXERON_ORDER_EXEC_AERON_DIR="${TMPDIR}phixeron-seq-aeron-${CN}" \
   PHIXERON_NODE_MEMBER_ID="$CN" \
-  PHIXERON_ROUTER_CLIENT_ID=9 \
+  PHIXERON_REPLAYER_CLIENT_ID=9 \
   PHIXERON_CLUSTER_EGRESS_ENDPOINT="localhost:9349" \
   PHIXERON_LATENCY_STATS=1 \
+  PHIXERON_FAULT_INJECTION=1 \
   stdbuf -oL -eL "$BUILD_DIR/OrderExecClient" > "$CONSUMER_LOG" 2>&1 &
 CONSUMER_PID=$!
 W=0; until grep -q "following live" "$CONSUMER_LOG" 2>/dev/null; do sleep 0.5; W=$((W+1)); ((W>60)) && { echo "consumer never caught up"; exit 1; }; done
@@ -129,11 +138,11 @@ done
 echo "tenure-2 leader = member $NEWLEADER (member 0's tap recording is continuous across the failover)"
 sleep 3  # let tenure-2 recording start and settle
 
-# ── 4. Arm a fan-out drop on the consumer's Router, then flood ingress ────────
-kill -USR1 "${ROUTER_PIDS[$CN]}" 2>/dev/null
-echo "armed a fan-out drop on member $CN's Router (SIGUSR1)"
+# ── 4. Arm a live-tap drop on the consumer, then flood ingress ────────────────
+kill -USR1 "$CONSUMER_PID" 2>/dev/null
+echo "armed a live-tap drop on the consumer (SIGUSR1)"
 sleep 0.5
-echo "flooding $FLOOD_ORDERS messages to cluster ingress (first fan-out frame will be dropped)"
+echo "flooding $FLOOD_ORDERS messages to cluster ingress (first live tap frame will be dropped)"
 PHIXERON_FLOOD_ORDERS="$FLOOD_ORDERS" stdbuf -oL -eL "$BUILD_DIR/fix_test_server" 127.0.0.1 9000 \
   > "$LOG_DIR/flood.log" 2>&1 || true
 sleep 8  # let the consumer re-walk, heal, and drain the flood tail
@@ -154,7 +163,7 @@ echo ""
 echo "=== RESULT ==="
 echo "  re-walks triggered on consumer        : $REWALK"
 echo "  post-catch-up frames delivered (n)    : $DELIVERED  (threshold $DELIVER_THRESHOLD)"
-grep -E "fan-out gap|re-walking|delivery latency" "$CONSUMER_LOG" 2>/dev/null | tail -4 | sed 's/^/    /'
+grep -E "tap gap|re-walking|delivery latency" "$CONSUMER_LOG" 2>/dev/null | tail -4 | sed 's/^/    /'
 
 if [[ "$REWALK" -ge 1 && "$DELIVERED" -ge "$DELIVER_THRESHOLD" ]]; then
   echo "GAP-RECOVERY TEST: PASS — consumer re-walked its continuous recording and kept delivering"

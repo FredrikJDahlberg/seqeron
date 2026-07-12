@@ -51,8 +51,9 @@ import org.limitless.phixeron.sbe.unsequenced.MessageHeaderDecoder;
  *
  * <p>The decorated message is published on the node-local <em>tap</em>
  * ({@link #TAP_CHANNEL} / {@link #TAP_STREAM_ID}), an {@code aeron:ipc} stream that this node's
- * co-located Aeron Archive records so the co-located {@link org.limitless.phixeron.router.Router}
- * can follow it live and C++ clients can replay history on startup.
+ * co-located Aeron Archive records. Co-located app replicas follow it live directly, and the
+ * co-located {@link org.limitless.phixeron.replayer.Replayer} serves history/gap replay of this
+ * recording to those apps on startup.
  *
  * <p><b>Every node records its own tap (no leader/follower asymmetry on the stream path):</b> all
  * cluster nodes maintain identical sequencing state (updated on every callback) and each one
@@ -70,9 +71,9 @@ import org.limitless.phixeron.sbe.unsequenced.MessageHeaderDecoder;
  * cannot wedge structurally the way the retired UDP global stream did (audit.md S4, where {@code
  * MaxMulticastFlowControl} never advanced the sender limit with zero network subscribers): the only
  * tethered subscriber of the tap is the co-located archive recording, so {@link #emit} blocks only on
- * real local-archive write back-pressure, which clears as the archive drains to disk. The Router's own
- * tap subscription is untethered, so a slow Router is dropped (and heals via the Router replay protocol)
- * rather than back-pressuring the recording.
+ * real local-archive write back-pressure, which clears as the archive drains to disk. The app replicas'
+ * own tap subscriptions are untethered, so a slow app is dropped (and heals via the Replayer replay
+ * protocol) rather than back-pressuring the recording.
  *
  * <p><b>Snapshot format</b> (little-endian binary, single fragment):
  * <pre>
@@ -84,14 +85,14 @@ public final class SequencerService implements ClusteredService {
      * Node-local IPC channel and stream the sequenced stream is tapped onto. Every node — leader
      * <em>and</em> follower — republishes each sequenced frame here in {@code globalSeqNo} order (the
      * taps are byte-identical across nodes, since every node processes the same committed log in the
-     * same order) and records it into its own co-located archive. The co-located {@link
-     * org.limitless.phixeron.router.Router} follows it as its live feed, and clients replay this
-     * recording for history/gap recovery — the same node-local archive serves both.
+     * same order) and records it into its own co-located archive. The co-located app replicas follow it
+     * directly as their live feed, and the co-located {@link org.limitless.phixeron.replayer.Replayer}
+     * serves history/gap replay of this recording — the same node-local archive serves both.
      *
      * <p>Created and recorded once in {@link #onStart} and continuous per node across leadership changes
      * ({@code aeron:ipc} has no fixed port to collide on across a failover, unlike the retired UDP global
-     * stream), so a node's recording is one continuous run spanning every leader tenure and the Router
-     * never re-resolves it. Reliable, not lossy ({@link #emit} spins until the offer lands): the recording
+     * stream), so a node's recording is one continuous run spanning every leader tenure that consumers
+     * never re-resolve. Reliable, not lossy ({@link #emit} spins until the offer lands): the recording
      * is the authoritative history, so a dropped frame would be an unrecoverable gap.
      */
     public static final String TAP_CHANNEL = "aeron:ipc";
@@ -173,8 +174,9 @@ public final class SequencerService implements ClusteredService {
         // Node-local live tap of the sequenced stream, created and recorded on every node (leader and
         // follower alike). Every node re-publishes each sequenced frame here and records it into its own
         // co-located archive, so every node independently holds a complete copy of the sequenced history
-        // — no cross-node replication needed. The co-located Router follows this live; clients replay this
-        // recording for history/gap recovery. See TAP_CHANNEL. Recording must be active before the first
+        // — no cross-node replication needed. Co-located app replicas follow this live directly; the
+        // co-located Replayer serves history/gap replay of this recording. See TAP_CHANNEL. Recording
+        // must be active before the first
         // frame is published, so await it here (onStart runs before any onSessionMessage, so this waits on
         // start-up alone, never on live traffic).
         tapPub = cluster.context().aeron().addExclusivePublication(TAP_CHANNEL, TAP_STREAM_ID);
@@ -326,7 +328,7 @@ public final class SequencerService implements ClusteredService {
     // Called on every node whenever a new leadership term begins (including this node's own promotion).
     // With every node recording its own tap there is no leader-only publication or standby-follow to
     // manage here any more (both retired in the tap-recording change) — the only per-leadership work is
-    // synthesizing a LeadershipChanged event (Router design §3). Every node consumes
+    // synthesizing a LeadershipChanged event (Replayer design §3). Every node consumes
     // onNewLeadershipTermEvent in the same log order, so ++globalSeqNo here (on every node, exactly like
     // onSessionOpen/onSessionMessage) keeps the counter identical across nodes, and each node stamps that
     // same globalSeqNo onto a LeadershipChanged it emits onto its own tap — the per-node replicas use it
@@ -372,7 +374,7 @@ public final class SequencerService implements ClusteredService {
     // into its own local archive as the authoritative sequenced history. Reliable: spins until the offer
     // lands, because a dropped frame would be an unrecoverable hole in the recording. Unlike the retired
     // UDP global stream this cannot wedge structurally — the only tethered subscriber of the tap is the
-    // co-located archive recording (the Router's tap subscription is untethered, so a slow Router is
+    // co-located archive recording (the app replicas' tap subscriptions are untethered, so a slow app is
     // dropped, not back-pressuring), so this blocks only on real local-archive write back-pressure, which
     // clears as the archive drains to disk.
     private void emit(final int length) {
