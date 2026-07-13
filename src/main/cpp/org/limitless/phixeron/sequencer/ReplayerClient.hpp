@@ -20,8 +20,9 @@
 // Catch-up is detected by position (Replaying.catchUpPosition), not by the replay image closing: the
 // Replayer's replay is bounded to an ACTIVE recording, and a bounded replay of an active recording
 // never closes its image at the bound (see poll()). GlobalStreamClient itself is left untouched —
-// FixSessionClient and fix_test_server still use it — and this reuses its SequencedEvent/LifecycleEvent
-// structs, its sequenced-schema decode, and its CLIENT_*_TEMPLATE_ID constants.
+// fix_test_server still follows the archive with it (and FixConnection uses it for the resend scan) —
+// and this reuses its SequencedEvent/LifecycleEvent structs, its sequenced-schema decode, and its
+// CLIENT_*_TEMPLATE_ID constants.
 //
 // Gap recovery is globalSeqNo-based, not position-based (load-bearing): a live tap frame carries a
 // globalSeqNo but NO archive recording position we resume from — an untethered tap subscriber that
