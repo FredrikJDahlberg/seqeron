@@ -69,18 +69,18 @@ public final class ReplayerNode {
         // NoOpLock is safe: every archive control call is made from the single Replayer duty-cycle
         // thread below (all archive access lives in Replayer.poll()); main() only closes it after that
         // thread has joined.
-        final AeronArchive archive = AeronArchive.connect(new AeronArchive.Context()
-                                                              .aeron(aeron)
-                                                              .ownsAeronClient(false)
-                                                              .controlRequestChannel("aeron:ipc")
-                                                              .controlRequestStreamId(ARCHIVE_CONTROL_STREAM_ID)
-                                                              .controlResponseChannel("aeron:ipc")
-                                                              .controlResponseStreamId(ARCHIVE_CONTROL_RESPONSE_STREAM_ID)
-                                                              .lock(NoOpLock.INSTANCE));
+        final AeronArchive archive =
+            AeronArchive.connect(new AeronArchive.Context()
+                .aeron(aeron)
+                .ownsAeronClient(false)
+                .controlRequestChannel("aeron:ipc")
+                .controlRequestStreamId(ARCHIVE_CONTROL_STREAM_ID)
+                .controlResponseChannel("aeron:ipc")
+                .controlResponseStreamId(ARCHIVE_CONTROL_RESPONSE_STREAM_ID)
+                .lock(NoOpLock.INSTANCE));
 
         final IdleStrategy idleStrategy = resolveIdleStrategy();
         final Replayer replayer = new Replayer(aeron, archive, memberId, idleStrategy);
-
         final AtomicBoolean running = new AtomicBoolean(true);
         final Thread replayerThread = new Thread(() -> replayer.run(running), "replayer-" + memberId);
         replayerThread.start();

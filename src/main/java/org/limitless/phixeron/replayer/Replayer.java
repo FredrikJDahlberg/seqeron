@@ -493,15 +493,12 @@ public final class Replayer {
         entries.sort((a, b) -> Long.compare(a[1], b[1]));
         final List<Long> chain = new ArrayList<>(entries.size());
         boolean keptActive = false;
-        for (final long[] e : entries) {
-            final boolean active = e[2] == AeronArchive.NULL_TIMESTAMP;
-            if (active && keptActive) {
-                continue;
+        for (final long[] entry : entries) {
+            final boolean active = entry[2] == AeronArchive.NULL_TIMESTAMP;
+            if (!active || !keptActive) {
+                keptActive |= active;
+                chain.add(entry[0]);
             }
-            if (active) {
-                keptActive = true;
-            }
-            chain.add(e[0]);
         }
         return chain;
     }
