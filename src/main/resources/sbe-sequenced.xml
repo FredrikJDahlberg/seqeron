@@ -218,6 +218,19 @@
         </enum>
 
         <!--
+            PossDupFlag (tag 43): marks a retransmitted (possible-duplicate)
+            message. Like every SBE enum here, "absent" is the generated
+            NULL_VALUE (uint8 max = 255), NOT 0 — so an encoder must set this
+            field explicitly (a zero-init buffer would decode as an invalid
+            value). Same convention as GapFillFlag. Values mirror ASCII:
+            'Y'=89, 'N'=78.
+        -->
+        <enum name="PossDupFlag" encodingType="uint8">
+            <validValue name="Yes" description="Y: possible duplicate / resent message">89</validValue>
+            <validValue name="No"  description="N: original transmission">78</validValue>
+        </enum>
+
+        <!--
             MessageType (tag 35 / tag 372): ASCII value of the FIX MsgType character.
             Used as the SBE templateId and as the type of refMsgType in Reject.
             nullValue="0" is unambiguous (0 is not a valid FIX MsgType character).
@@ -346,6 +359,8 @@
         <field name="target"        id="56" type="compId"/>
         <field name="seqNum"        id="34" type="uint32"/>
         <field name="sendingTimeMs" id="52" type="msTimestamp"/>
+        <field name="possDupFlag"   id="43" type="PossDupFlag" presence="optional" nullValue="0"
+               description="PossDupFlag (tag 43); 89='Y' retransmit, 0 = absent"/>
         <data  name="text"          id="58" type="varDataEncoding"
                description="Optional free-text reason (tag 58); length 0 = absent"/>
     </sbe:message>
@@ -360,6 +375,8 @@
         <field name="target"        id="56"  type="compId"/>
         <field name="seqNum"        id="34"  type="uint32"/>
         <field name="sendingTimeMs" id="52"  type="msTimestamp"/>
+        <field name="possDupFlag"   id="43"  type="PossDupFlag" presence="optional" nullValue="0"
+               description="PossDupFlag (tag 43); 89='Y' retransmit, 0 = absent"/>
         <field name="testReqID"     id="112" type="testReqId"
                description="Echoed from TestRequest; byte[0]==0x00 = spontaneous heartbeat"/>
     </sbe:message>
@@ -374,6 +391,8 @@
         <field name="target"        id="56"  type="compId"/>
         <field name="seqNum"        id="34"  type="uint32"/>
         <field name="sendingTimeMs" id="52"  type="msTimestamp"/>
+        <field name="possDupFlag"   id="43"  type="PossDupFlag" presence="optional" nullValue="0"
+               description="PossDupFlag (tag 43); 89='Y' retransmit, 0 = absent"/>
         <field name="testReqID"     id="112" type="testReqId"
                description="Opaque token; must be echoed verbatim in the responding Heartbeat"/>
     </sbe:message>
@@ -388,6 +407,8 @@
         <field name="target"        id="56" type="compId"/>
         <field name="seqNum"        id="34" type="uint32"/>
         <field name="sendingTimeMs" id="52" type="msTimestamp"/>
+        <field name="possDupFlag"   id="43" type="PossDupFlag" presence="optional" nullValue="0"
+               description="PossDupFlag (tag 43); 89='Y' retransmit, 0 = absent"/>
         <field name="beginSeqNo"    id="7"  type="uint32"
                description="First missing sequence number (tag 7)"/>
         <field name="endSeqNo"      id="16" type="uint32"
@@ -478,6 +499,8 @@
         <field name="target"        id="56"  type="compId"/>
         <field name="seqNum"        id="34"  type="uint32"/>
         <field name="sendingTimeMs" id="52"  type="msTimestamp"/>
+        <field name="possDupFlag"   id="43"  type="PossDupFlag" presence="optional" nullValue="0"
+               description="PossDupFlag (tag 43); 89='Y' retransmit, 0 = absent"/>
         <field name="account"       id="1"   type="account"
                description="byte[0]==0x00 signals absent"/>
         <field name="clOrdID"       id="11"  type="orderRef"/>

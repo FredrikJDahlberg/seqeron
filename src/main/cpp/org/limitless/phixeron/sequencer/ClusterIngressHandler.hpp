@@ -211,6 +211,18 @@ class ClusterIngressHandler : public msg::FixMessageHandler<ClusterIngressHandle
         return true;
     }
 
+    // Maps an inbound FIX message's PossDupFlag (tag 43) onto the SBE enum so the
+    // gateway can tell a genuine resend from a sequence regression once the
+    // message round-trips the cluster (see FixConnection::checkInboundGap).
+    // Absent or 'N' collapses to NULL_VALUE — only 'Y' matters downstream.
+    template <typename Decoder>
+    [[nodiscard]] static usq::PossDupFlag::Value sbePossDup(const Decoder& message)
+    {
+        const auto possDup = message.possDupFlag();
+        return (possDup && *possDup == msg::Boolean::Yes) ? usq::PossDupFlag::Value::Yes
+                                                          : usq::PossDupFlag::Value::NULL_VALUE;
+    }
+
     fix::Result handle(const msg::LogonDecoder& logon)
     {
         if (!verifyCompIds(logon))
@@ -285,6 +297,7 @@ class ClusterIngressHandler : public msg::FixMessageHandler<ClusterIngressHandle
             .putTarget(std::string_view{"SEQUENCER"})
             .seqNum(logout.sequenceNumber().value_or(0u))
             .sendingTimeMs(nowMs())
+            .possDupFlag(sbePossDup(logout))
             .putText(nullptr, 0);
         sendUnsequenced(m_logout);
         return fix::Result::Success;
@@ -310,7 +323,8 @@ class ClusterIngressHandler : public msg::FixMessageHandler<ClusterIngressHandle
         m_heartbeat.putSender(std::string_view{"CLIENT"})
             .putTarget(std::string_view{"SEQUENCER"})
             .seqNum(heartbeat.sequenceNumber().value_or(0u))
-            .sendingTimeMs(nowMs());
+            .sendingTimeMs(nowMs())
+            .possDupFlag(sbePossDup(heartbeat));
         if (const auto id = heartbeat.testReqID())
         {
             const auto sv = *id;
@@ -349,7 +363,8 @@ class ClusterIngressHandler : public msg::FixMessageHandler<ClusterIngressHandle
         m_testRequest.putSender(std::string_view{"CLIENT"})
             .putTarget(std::string_view{"SEQUENCER"})
             .seqNum(testRequest.sequenceNumber().value_or(0u))
-            .sendingTimeMs(nowMs());
+            .sendingTimeMs(nowMs())
+            .possDupFlag(sbePossDup(testRequest));
         if (const auto id = testRequest.testReqID())
         {
             const auto sv = *id;
@@ -389,6 +404,7 @@ class ClusterIngressHandler : public msg::FixMessageHandler<ClusterIngressHandle
             .putTarget(std::string_view{"SEQUENCER"})
             .seqNum(resendRequest.sequenceNumber().value_or(0u))
             .sendingTimeMs(nowMs())
+            .possDupFlag(sbePossDup(resendRequest))
             .beginSeqNo(resendRequest.beginSeqNo().value_or(1u))
             .endSeqNo(resendRequest.endSeqNo().value_or(0u));
         sendUnsequenced(m_resendRequest);
@@ -520,7 +536,8 @@ class ClusterIngressHandler : public msg::FixMessageHandler<ClusterIngressHandle
             m_newOrderSingle.putSender(std::string_view{"CLIENT"})
                 .putTarget(std::string_view{"SEQUENCER"})
                 .seqNum(newOrderSingle.sequenceNumber().value_or(0u))
-                .sendingTimeMs(nowMs());
+                .sendingTimeMs(nowMs())
+                .possDupFlag(sbePossDup(newOrderSingle));
             m_newOrderSingle.putAccount(newOrderSingle.account().value_or(std::string_view{}));
             m_newOrderSingle.putClOrdID(clOrdId);
             m_newOrderSingle.handlInst(
