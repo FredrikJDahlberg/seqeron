@@ -104,9 +104,23 @@
                   description="Cluster consensus time (ms since epoch) when sequenced"/>
         </composite>
 
-        <!-- CompID: 8-char fixed, space-padded (tags 49 / 56) -->
-        <type name="compId" primitiveType="char" length="8" characterEncoding="US-ASCII"
-              description="SenderCompID or TargetCompID; space-padded to 8 bytes"/>
+        <!--
+            Per-item basic-data load progress (see doc/basicdata-design.md §3):
+            both counters count DOWN to 0. Composite members carry no field ids
+            of their own, like the header composite.
+        -->
+        <composite name="basicDataProgress"
+                   description="Per-item load progress; both count DOWN to 0. See doc/basicdata-design.md §3.">
+            <type name="remainingSections" primitiveType="uint16"
+                  description="Sections remaining after the current one; 0 = last section"/>
+            <type name="remainingItems"    primitiveType="uint16"
+                  description="Items remaining in this section after the current one; 0 = section complete"/>
+        </composite>
+
+        <!-- CompID: 16-char fixed (tags 49 / 56); byte[0]==0x00 signals absent, unused trailing bytes 0x00.
+             Sized to hold real FIX comp-ids such as "SEQUENCER" (9 chars) without abbreviation. -->
+        <type name="compId" primitiveType="char" length="16" characterEncoding="US-ASCII"
+              description="SenderCompID or TargetCompID (tags 49/56); up to 16 chars, unused trailing bytes 0x00"/>
 
         <!--
             TestReqID: 32-char fixed (tag 112).
@@ -316,6 +330,8 @@
         <field name="encryptMethod"     id="98"  type="EncryptMethod"/>
         <field name="heartbeatInterval" id="108" type="uint32"
                description="Negotiated heartbeat interval in milliseconds (HeartBtInt tag 108)"/>
+        <field name="defaultApplVerID"  id="1137" type="uint8"
+               description="FIXT.1.1 DefaultApplVerID (tag 1137); application version for the session (e.g. 6 = FIX.4.4). Always set by the gateway once validated at the edge"/>
         <data  name="xmlData"           id="213" type="varDataEncoding"
                description="Optional XML payload (FIX tags 212/213); length 0 = absent"/>
     </sbe:message>
@@ -581,6 +597,51 @@
         <field name="header"        id="20001" type="header"/>
         <field name="correlationId" id="20002" type="correlationId"
                description="clusterctl-assigned id; echoed here so the tool matches its own marker"/>
+    </sbe:message>
+
+    <!-- ═══════════════════════════════════════════════════════════════════
+         Basic data load  (templates 12–15) — sequenced form of the reference
+         data (valid FIX session comp-id pairs, the trading-day calendar) the
+         basic-data handler loads from the database once on the leader and
+         republishes into the ordered log. A load is a bracketed, fixed-order
+         run: StartBasicData, then each section's rows (both progress counters
+         decrementing to 0), then EndBasicData. Same template ids and shape as
+         sbe-unsequenced.xml (byte-identical past the header composite), with
+         globalSeqNo/timestamp stamped into the header like every other message
+         here. See doc/basicdata-design.md.
+         ═══════════════════════════════════════════════════════════════════ -->
+
+    <!-- StartBasicData (template 12) — opens a load; sent once (not re-sent on resume). -->
+    <sbe:message name="StartBasicData" id="12"
+                 description="Opens a basic-data load; sectionCount is the number of sections (tables) that follow">
+        <field name="header"       id="20001" type="header"/>
+        <field name="sectionCount" id="20020" type="uint16"/>
+    </sbe:message>
+
+    <!-- EndBasicData (template 13) — closes a load; the FIX gateway's readiness gate (design §6). -->
+    <sbe:message name="EndBasicData" id="13"
+                 description="Closes a basic-data load; the FIX gateway admits new logons only once it has observed this">
+        <field name="header" id="20001" type="header"/>
+    </sbe:message>
+
+    <!-- BasicDataSession (template 14) — section: valid FIX session comp-id pairs (design §7). -->
+    <sbe:message name="BasicDataSession" id="14"
+                 description="One valid FIX session: the sender/target comp-id pair the gateway may admit">
+        <field name="header"          id="20001" type="header"/>
+        <field name="progress"        id="20021" type="basicDataProgress"/>
+        <field name="sessionIdentity" id="20023" type="int32"/>
+        <field name="senderComp"      id="20024" type="compId"/>
+        <field name="targetComp"      id="20025" type="compId"/>
+    </sbe:message>
+
+    <!-- TradingDay (template 15) — section: calendar + open/close, HHMM as uint16. -->
+    <sbe:message name="TradingDay" id="15"
+                 description="One trading day: date plus open/close times (HHMM as uint16, e.g. 900 = 09:00, 1800 = 18:00)">
+        <field name="header"      id="20001" type="header"/>
+        <field name="progress"    id="20021" type="basicDataProgress"/>
+        <field name="tradingDate" id="20026" type="dateOnlyMs"/>
+        <field name="opening"     id="20027" type="uint16"/>
+        <field name="closing"     id="20028" type="uint16"/>
     </sbe:message>
 
 </sbe:messageSchema>

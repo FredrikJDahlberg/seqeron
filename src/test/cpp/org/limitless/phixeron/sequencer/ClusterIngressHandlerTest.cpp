@@ -225,7 +225,7 @@ class ClusterIngressHandlerAdminOnly : public ::testing::Test {
 
 TEST_F(ClusterIngressHandlerAdminOnly, LogonIsReEncodedAsSbeUnsequencedWithHeader)
 {
-    const auto msg = buildFix('A', {"98=0", "108=45"});
+    const auto msg = buildFix('A', {"98=0", "108=45", "1137=6"});
     const auto result = m_decoder.parse(std::span<const std::uint8_t>(msg.data(), msg.size()), m_handler);
     ASSERT_EQ(fix::Result::Success, result.m_value);
 
@@ -235,6 +235,7 @@ TEST_F(ClusterIngressHandlerAdminOnly, LogonIsReEncodedAsSbeUnsequencedWithHeade
     EXPECT_EQ(CONN_ID, logon.header().connectionId());
     EXPECT_EQ(55, logon.header().sessionId());
     EXPECT_EQ(45u, logon.heartbeatInterval());
+    EXPECT_EQ(6u, logon.defaultApplVerID());  // FIXT.1.1 DefaultApplVerID (tag 1137) carried through
 }
 
 TEST_F(ClusterIngressHandlerAdminOnly, LogoutIsReEncodedAsSbeUnsequenced)
@@ -548,10 +549,10 @@ class ClusterIngressHandlerCompIdMismatch : public ::testing::Test {
 // a different failure than the one being investigated.
 TEST_F(ClusterIngressHandlerCompIdMismatch, HeartbeatRejectCarriesRealRefSeqNum)
 {
-    const auto logon = buildFixCustom('A', "CLIENT", "SEQUENCER", 1, {"98=0", "108=30"});
+    const auto logon = buildFixCustom('A', "CLIENT", "SEQUENCER", 1, {"98=0", "108=30", "1137=6"});
     ASSERT_EQ(fix::Result::Success,
               m_decoder.parse(std::span<const std::uint8_t>(logon.data(), logon.size()), *m_handler).m_value);
-    m_session->handleClusterLogon(30, 0);
+    m_session->handleClusterLogon(30, 6, 0);
     ASSERT_FALSE(readReply().empty());  // Logon's own reply, not under test
 
     const auto heartbeat = buildFixCustom('0', "WRONGSENDER", "SEQUENCER", 2, {});
@@ -569,6 +570,22 @@ TEST_F(ClusterIngressHandlerCompIdMismatch, HeartbeatRejectCarriesRealRefSeqNum)
     const auto end = replyStr.find('\x01', pos);
     const std::string refSeqNum = replyStr.substr(pos + 3, end - (pos + 3));
     EXPECT_EQ("2", refSeqNum) << "RefSeqNum should echo the mismatched Heartbeat's MsgSeqNum (2)";
+}
+
+// FIXT.1.1 requires DefaultApplVerID (tag 1137) on the Logon. A Logon that omits it
+// (or carries an unsupported value) is rejected at the edge with a diagnosable Logout
+// and never establishes the session — mirroring the CompID reject path above.
+TEST_F(ClusterIngressHandlerCompIdMismatch, LogonWithoutDefaultApplVerIdIsRejectedWithLogout)
+{
+    const auto logon = buildFixCustom('A', "CLIENT", "SEQUENCER", 1, {"98=0", "108=30"});  // no tag 1137
+    ASSERT_EQ(fix::Result::Success,
+              m_decoder.parse(std::span<const std::uint8_t>(logon.data(), logon.size()), *m_handler).m_value);
+
+    const auto reply = readReply();
+    ASSERT_FALSE(reply.empty()) << "expected a Logout rejecting the Logon with no DefaultApplVerID";
+    const std::string replyStr(reply.begin(), reply.end());
+    EXPECT_NE(std::string::npos, replyStr.find("\x01" "35=5" "\x01")) << "reject should be a Logout (35=5)";
+    EXPECT_NE(std::string::npos, replyStr.find("Unsupported DefaultApplVerID")) << "reject should carry a diagnostic";
 }
 
 }  // namespace org::limitless::phixeron::sequencer

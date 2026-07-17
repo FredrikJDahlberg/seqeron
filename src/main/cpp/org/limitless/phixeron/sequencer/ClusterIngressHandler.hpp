@@ -101,7 +101,7 @@ using FixSession = sess::ServerSession<cfg::FIXT_1_1, "SEQUENCER", "CLIENT", Cap
 // the global stream carries sender="CLIENT" (hardcoded below), so this value —
 // which no real client uses — lets FixConnection recognize its own checkpoint
 // reset when it round-trips back on the sequenced stream, without an SBE schema
-// change. Exactly 8 chars to fill the fixed compId field with no padding.
+// change. A distinctive short token; the compId field zero-pads the remainder.
 inline constexpr std::string_view RESEND_CHUNK_COMPID = "RSNDCHNK";
 
 // ── ClusterIngressHandler ─────────────────────────────────────────────────────
@@ -166,7 +166,7 @@ class ClusterIngressHandler : public msg::FixMessageHandler<ClusterIngressHandle
     // FixConnection's one-session-per-SenderCompID check when the cluster
     // confirms this Logon (see FixConnection::onClusterAdmin). Not itself sent
     // to the cluster — Sender/Target on the wire to the cluster are still the
-    // hardcoded "CLIENT"/"SEQNCR" literals below (todo.md item 10).
+    // hardcoded "CLIENT"/"SEQUENCER" literals below (todo.md item 10).
     std::string m_senderCompId;
 
     [[nodiscard]] const std::string& senderCompId() const
@@ -223,6 +223,23 @@ class ClusterIngressHandler : public msg::FixMessageHandler<ClusterIngressHandle
             return fix::Result::Success;
         }
         const std::uint32_t hbSecs = logon.heartbeatInterval().value_or(30u);
+
+        // FIXT.1.1 requires DefaultApplVerID (tag 1137) on the Logon. Enforce it at the edge:
+        // an absent or unsupported value is a version-negotiation failure, answered with a
+        // diagnosable Logout (never silently dropped), before the session is established —
+        // exactly like the CompID check above.
+        const auto defaultApplVer = logon.defaultApplVerID();
+        if (!defaultApplVer || *defaultApplVer != sess::GatewayDefaultApplVerId)
+        {
+            std::fprintf(stderr, "[Ingress] Logon fd=%d rejected: DefaultApplVerID=%u (expected %u)\n",
+                         m_connectionId, defaultApplVer.value_or(0u), sess::GatewayDefaultApplVerId);
+            if (m_session)
+            {
+                m_session->rejectLogon("Unsupported DefaultApplVerID");
+            }
+            return fix::Result::Success;
+        }
+
         if (const auto sender = logon.sender())
         {
             m_senderCompId.assign(sender->data(), sender->size());
@@ -233,12 +250,13 @@ class ClusterIngressHandler : public msg::FixMessageHandler<ClusterIngressHandle
             .sourceId(m_ingress ? m_ingress->sourceId() : 0)
             .connectionId(m_connectionId)
             .sessionId(m_ingress ? m_ingress->clusterSessionId() : -1);
-        m_logon.putSender(static_cast<const char*>("CLIENT  "))
-            .putTarget(static_cast<const char*>("SEQNCR  "))
+        m_logon.putSender(std::string_view{"CLIENT"})
+            .putTarget(std::string_view{"SEQUENCER"})
             .seqNum(logon.sequenceNumber().value_or(0u))
             .sendingTimeMs(nowMs())
             .encryptMethod(usq::EncryptMethod::Value::None)
             .heartbeatInterval(hbSecs)
+            .defaultApplVerID(static_cast<std::uint8_t>(*defaultApplVer))
             .putXmlData(nullptr, 0);
         sendUnsequenced(m_logon);
         std::printf("[Ingress] Logon sent to cluster (fd=%d sbePos=%llu)\n", m_connectionId,
@@ -263,8 +281,8 @@ class ClusterIngressHandler : public msg::FixMessageHandler<ClusterIngressHandle
             .sourceId(m_ingress ? m_ingress->sourceId() : 0)
             .connectionId(m_connectionId)
             .sessionId(m_ingress ? m_ingress->clusterSessionId() : -1);
-        m_logout.putSender(static_cast<const char*>("CLIENT  "))
-            .putTarget(static_cast<const char*>("SEQNCR  "))
+        m_logout.putSender(std::string_view{"CLIENT"})
+            .putTarget(std::string_view{"SEQUENCER"})
             .seqNum(logout.sequenceNumber().value_or(0u))
             .sendingTimeMs(nowMs())
             .putText(nullptr, 0);
@@ -289,8 +307,8 @@ class ClusterIngressHandler : public msg::FixMessageHandler<ClusterIngressHandle
             .sourceId(m_ingress ? m_ingress->sourceId() : 0)
             .connectionId(m_connectionId)
             .sessionId(m_ingress ? m_ingress->clusterSessionId() : -1);
-        m_heartbeat.putSender(static_cast<const char*>("CLIENT  "))
-            .putTarget(static_cast<const char*>("SEQNCR  "))
+        m_heartbeat.putSender(std::string_view{"CLIENT"})
+            .putTarget(std::string_view{"SEQUENCER"})
             .seqNum(heartbeat.sequenceNumber().value_or(0u))
             .sendingTimeMs(nowMs());
         if (const auto id = heartbeat.testReqID())
@@ -328,8 +346,8 @@ class ClusterIngressHandler : public msg::FixMessageHandler<ClusterIngressHandle
             .sourceId(m_ingress ? m_ingress->sourceId() : 0)
             .connectionId(m_connectionId)
             .sessionId(m_ingress ? m_ingress->clusterSessionId() : -1);
-        m_testRequest.putSender(static_cast<const char*>("CLIENT  "))
-            .putTarget(static_cast<const char*>("SEQNCR  "))
+        m_testRequest.putSender(std::string_view{"CLIENT"})
+            .putTarget(std::string_view{"SEQUENCER"})
             .seqNum(testRequest.sequenceNumber().value_or(0u))
             .sendingTimeMs(nowMs());
         if (const auto id = testRequest.testReqID())
@@ -367,8 +385,8 @@ class ClusterIngressHandler : public msg::FixMessageHandler<ClusterIngressHandle
             .sourceId(m_ingress ? m_ingress->sourceId() : 0)
             .connectionId(m_connectionId)
             .sessionId(m_ingress ? m_ingress->clusterSessionId() : -1);
-        m_resendRequest.putSender(static_cast<const char*>("CLIENT  "))
-            .putTarget(static_cast<const char*>("SEQNCR  "))
+        m_resendRequest.putSender(std::string_view{"CLIENT"})
+            .putTarget(std::string_view{"SEQUENCER"})
             .seqNum(resendRequest.sequenceNumber().value_or(0u))
             .sendingTimeMs(nowMs())
             .beginSeqNo(resendRequest.beginSeqNo().value_or(1u))
@@ -394,8 +412,8 @@ class ClusterIngressHandler : public msg::FixMessageHandler<ClusterIngressHandle
             .sourceId(m_ingress ? m_ingress->sourceId() : 0)
             .connectionId(m_connectionId)
             .sessionId(m_ingress ? m_ingress->clusterSessionId() : -1);
-        m_sequenceReset.putSender(static_cast<const char*>("CLIENT  "))
-            .putTarget(static_cast<const char*>("SEQNCR  "))
+        m_sequenceReset.putSender(std::string_view{"CLIENT"})
+            .putTarget(std::string_view{"SEQUENCER"})
             .seqNum(sequenceReset.sequenceNumber().value_or(0u))
             .sendingTimeMs(nowMs())
             .gapFillFlag(usq::GapFillFlag::Value::NULL_VALUE)
@@ -427,7 +445,7 @@ class ClusterIngressHandler : public msg::FixMessageHandler<ClusterIngressHandle
             .connectionId(m_connectionId)
             .sessionId(m_ingress->clusterSessionId());
         m_sequenceReset.putSender(RESEND_CHUNK_COMPID)
-            .putTarget(static_cast<const char*>("SEQNCR  "))
+            .putTarget(std::string_view{"SEQUENCER"})
             .seqNum(blockEndPlusOne)
             .sendingTimeMs(sendingTimeMs)
             .gapFillFlag(usq::GapFillFlag::Value::GapFillMessage)
@@ -499,8 +517,8 @@ class ClusterIngressHandler : public msg::FixMessageHandler<ClusterIngressHandle
                 .sourceId(m_ingress->sourceId())
                 .connectionId(m_connectionId)
                 .sessionId(m_ingress->clusterSessionId());
-            m_newOrderSingle.putSender(static_cast<const char*>("CLIENT  "))
-                .putTarget(static_cast<const char*>("SEQNCR  "))
+            m_newOrderSingle.putSender(std::string_view{"CLIENT"})
+                .putTarget(std::string_view{"SEQUENCER"})
                 .seqNum(newOrderSingle.sequenceNumber().value_or(0u))
                 .sendingTimeMs(nowMs());
             m_newOrderSingle.putAccount(newOrderSingle.account().value_or(std::string_view{}));
@@ -559,8 +577,8 @@ class ClusterIngressHandler : public msg::FixMessageHandler<ClusterIngressHandle
             .sourceId(m_ingress->sourceId())
             .connectionId(m_connectionId)
             .sessionId(m_ingress->clusterSessionId());
-        m_executionReport.putSender(static_cast<const char*>("CLIENT  "))
-            .putTarget(static_cast<const char*>("SEQNCR  "))
+        m_executionReport.putSender(std::string_view{"CLIENT"})
+            .putTarget(std::string_view{"SEQUENCER"})
             .seqNum(seq)
             .sendingTimeMs(nowMs());
         m_executionReport.putOrderID(orderId);
