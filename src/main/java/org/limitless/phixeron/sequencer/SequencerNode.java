@@ -107,6 +107,14 @@ public final class SequencerNode {
                   .deleteArchiveOnStart(false)
                   .idleStrategySupplier(YieldingIdleStrategy::new);
 
+        // Wire the ShutdownSignalBarrier to the consensus module's termination hook: a
+        // ClusterTool/ClusterControl ABORT otherwise terminates the consensus and service agents
+        // without waking barrier.await() below, leaving the ClusteredMediaDriver (and its Archive)
+        // unclosed and the recorded log's catalog unflushed. Signalling the barrier drives the clean
+        // try-with-resources teardown (Archive.close flushes the catalog), which is what keeps the tap
+        // recording replayable/analysable after an orderly stop.
+        final ShutdownSignalBarrier barrier = new ShutdownSignalBarrier();
+
         final ConsensusModule.Context consensusCtx
             = new ConsensusModule.Context()
                   .aeronDirectoryName(aeronDir)
@@ -121,6 +129,7 @@ public final class SequencerNode {
                   // on top of the normal UDP ingressChannel above — never instead of it, and only
                   // while leader (see ConsensusModuleAgent.connectIngress()).
                   .isIpcIngressAllowed(true)
+                  .terminationHook(barrier::signalAll)
                   .deleteDirOnStart(false)
                   .idleStrategySupplier(YieldingIdleStrategy::new)
                   .errorHandler(t -> {
@@ -143,7 +152,7 @@ public final class SequencerNode {
         System.out.printf("[SequencerNode] Starting member %d | ingress=%s | archive=%s | baseDir=%s%n", memberId,
                           udp(DEFAULT_HOST, ingressPort), udp(DEFAULT_HOST, archivePort), baseDir);
 
-        try (ShutdownSignalBarrier barrier = new ShutdownSignalBarrier();
+        try (barrier;
              ClusteredMediaDriver cmd = ClusteredMediaDriver.launch(driverCtx, archiveCtx, consensusCtx);
              ClusteredServiceContainer container = ClusteredServiceContainer.launch(serviceCtx)) {
             System.out.printf("[SequencerNode/%d] Running — Ctrl-C to stop%n", memberId);

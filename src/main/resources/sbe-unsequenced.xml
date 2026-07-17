@@ -39,6 +39,9 @@
     app replicas, never sequenced, so they belong in this pre-sequencing schema
     rather than sbe-sequenced.xml (id 5 is left for LeadershipChanged, which is
     the mirror-image case: sequenced-only, so it exists only in sbe-sequenced.xml).
+    The cluster life-cycle markers ClusterStarted/ClusterStopped (10/11) also use
+    small ids; unlike the replay messages they are sequenced and echoed, so they
+    appear in both schemas.
 
     The header field uses field id 20001 — well outside the FIX tag range —
     since it is gateway/transport metadata, not a FIX tag. sourceId/connectionId/
@@ -602,6 +605,35 @@
                               after a steady-state gap resume; a cold-start walk needs none, since each of its
                               slots is freed by the supersede on the next segment request">
         <field name="clientId" id="20010" type="int32"/>
+    </sbe:message>
+
+    <!-- ═══════════════════════════════════════════════════════════════════
+         Cluster life-cycle  (templates 10/11) — operator markers injected by
+         clusterctl (org.limitless.phixeron.tool.ClusterCtl) to record the
+         trading day's open/close in the ordered log. Submitted to cluster
+         ingress like any other message, then sequenced and echoed on the global
+         stream. Unlike ClientConnected/Disconnected they carry a correlationId
+         (so clusterctl can match its own sequenced echo); unlike the
+         replay-protocol control messages they *are* sequenced, so they exist in
+         both schemas. No business body beyond correlationId.
+         ═══════════════════════════════════════════════════════════════════ -->
+
+    <!-- clusterctl -> cluster: "record that the system has started." -->
+    <sbe:message name="ClusterStarted" id="10"
+                 description="Operator marker recording that the cluster is up and open for the day;
+                              published by clusterctl once an elected leader exists">
+        <field name="header"        id="20001" type="header"/>
+        <field name="correlationId" id="20002" type="correlationId"
+               description="clusterctl-assigned id; echoed in the sequenced ClusterStarted so the tool matches its own marker"/>
+    </sbe:message>
+
+    <!-- clusterctl -> cluster: "record that the system is stopping." -->
+    <sbe:message name="ClusterStopped" id="11"
+                 description="Operator marker recording an orderly shutdown; the last business event in the
+                              log. clusterctl aborts the cluster once it observes this message sequenced">
+        <field name="header"        id="20001" type="header"/>
+        <field name="correlationId" id="20002" type="correlationId"
+               description="clusterctl-assigned id; echoed in the sequenced ClusterStopped so the tool matches its own marker"/>
     </sbe:message>
 
 </sbe:messageSchema>

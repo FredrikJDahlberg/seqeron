@@ -36,7 +36,8 @@
         Logon     'A'=65   ExecutionReport '8'=56 NewOrderSingle 'D'=68
     ClientConnected/ClientDisconnected/PortfolioQueryRequest/PortfolioQueryReply/
     LeadershipChanged aren't FIX messages, so they use small, non-ASCII-derived
-    template ids instead (1/2/3/4/5), clear of that range.
+    template ids instead (1/2/3/4/5), clear of that range. The cluster life-cycle
+    markers ClusterStarted/ClusterStopped (10/11) do too.
 
     The header field uses field id 20001 — well outside the FIX tag range —
     since it is gateway/sequencer metadata, not a FIX tag. sourceId/
@@ -552,6 +553,34 @@
         <field name="header"            id="20001" type="header"/>
         <field name="newLeaderMemberId" id="20008" type="int32"
                description="Aeron Cluster memberId of the node that is leader from this globalSeqNo onward"/>
+    </sbe:message>
+
+    <!-- ═══════════════════════════════════════════════════════════════════
+         Cluster life-cycle  (templates 10/11) — sequenced form of the operator
+         markers clusterctl injects to record the trading day's open/close. Same
+         template ids and shape as sbe-unsequenced.xml (byte-identical past the
+         header composite), with globalSeqNo/timestamp stamped into the header
+         like every other message here. clusterctl matches its own marker by
+         correlationId; ClusterStopped is the last business event before an
+         orderly shutdown.
+         ═══════════════════════════════════════════════════════════════════ -->
+
+    <!-- Sequenced marker: the cluster is up and open for the day. -->
+    <sbe:message name="ClusterStarted" id="10"
+                 description="Operator marker recording that the cluster is up and open for the day;
+                              published by clusterctl once an elected leader exists">
+        <field name="header"        id="20001" type="header"/>
+        <field name="correlationId" id="20002" type="correlationId"
+               description="clusterctl-assigned id; echoed here so the tool matches its own marker"/>
+    </sbe:message>
+
+    <!-- Sequenced marker: an orderly shutdown; the last business event in the log. -->
+    <sbe:message name="ClusterStopped" id="11"
+                 description="Operator marker recording an orderly shutdown; the last business event in the
+                              log. clusterctl aborts the cluster once it observes this message sequenced">
+        <field name="header"        id="20001" type="header"/>
+        <field name="correlationId" id="20002" type="correlationId"
+               description="clusterctl-assigned id; echoed here so the tool matches its own marker"/>
     </sbe:message>
 
 </sbe:messageSchema>
