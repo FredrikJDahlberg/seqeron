@@ -23,6 +23,7 @@ import org.limitless.phixeron.sbe.sequenced.ClientDisconnectedEncoder;
 import org.limitless.phixeron.sbe.sequenced.HeaderEncoder;
 import org.limitless.phixeron.sbe.sequenced.LeadershipChangedEncoder;
 import org.limitless.phixeron.sbe.sequenced.MessageHeaderEncoder;
+import org.limitless.phixeron.sbe.sequenced.TickEncoder;
 import org.limitless.phixeron.sbe.unsequenced.HeaderDecoder;
 import org.limitless.phixeron.sbe.unsequenced.MessageHeaderDecoder;
 
@@ -115,6 +116,26 @@ public final class SequencerService implements ClusteredService {
     private static final int SNAPSHOT_POLL_BATCH = 10;
 
     /**
+     * Period of the internal cluster clock ({@link TickEncoder}): the leader fires this timer once per
+     * second and every node emits a header-only {@code Tick} carrying the consensus timestamp. It exists
+     * so every consumer has a cluster-driven clock that keeps advancing even while an individual FIX
+     * session is silent — which is exactly when the gateway's keepalive watchdog must probe/disconnect
+     * (the sequenced-header timestamp is the only clock the watchdog is allowed to trust, since only the
+     * leader assigns real time). 1 Hz gives ±1 s resolution, ample for the watchdog's tens-of-seconds
+     * thresholds. Trade-off: every tick appends a timer event + a tick frame to the replicated
+     * log/recording, so full-log-replay recovery grows with uptime; this constant is the single knob to
+     * trade watchdog resolution against that cost. (A tighter win — gating clock emission on active FIX
+     * sessions — is noted in doc/gap.md; 1 Hz is the low-risk interim.)
+     */
+    private static final long TICK_INTERVAL_MS = 1000;
+
+    /**
+     * Correlation id of the single repeating tick timer. There is only one service timer, so a fixed
+     * constant is safe; rescheduling with the same id simply moves the one timer's deadline.
+     */
+    private static final long TICK_TIMER_CORRELATION_ID = 0x7100_0000_0000_0001L;
+
+    /**
      * header.sourceId/connectionId for lifecycle events synthesized by this service (ClientConnected /
      * ClientDisconnected): an Aeron Cluster session opening/closing has no gateway-process or TCP-level
      * connection id to carry, unlike the ingress messages it forwards.
@@ -135,6 +156,7 @@ public final class SequencerService implements ClusteredService {
     private final ClientConnectedEncoder clientConnEncoder = new ClientConnectedEncoder();
     private final ClientDisconnectedEncoder clientDiscEncoder = new ClientDisconnectedEncoder();
     private final LeadershipChangedEncoder leadershipChangedEncoder = new LeadershipChangedEncoder();
+    private final TickEncoder tickEncoder = new TickEncoder();
     private final MutableDirectBuffer encodeBuffer = new ExpandableDirectByteBuffer(4096);
 
     // ── Sequencing state (snapshotted; updated on every node for determinism) ─
@@ -185,6 +207,8 @@ public final class SequencerService implements ClusteredService {
         if (snapshotImage != null) {
             loadSnapshot(snapshotImage);
         }
+        // NB: the internal clock timer is armed in onNewLeadershipTermEvent, not here — Aeron forbids
+        // scheduling timers (or sending messages) from onStart.
     }
 
     // Blocks until the co-located archive's recording subscription has attached to the tap publication,
@@ -280,6 +304,38 @@ public final class SequencerService implements ClusteredService {
 
     @Override
     public void onTimerEvent(final long correlationId, final long timestamp) {
+        if (correlationId == TICK_TIMER_CORRELATION_ID) {
+            emitTick(timestamp);
+            scheduleTick();
+        }
+    }
+
+    // Emits one internal clock frame carrying the consensus timestamp. Fires on every node (onTimerEvent
+    // is a committed log event delivered identically to all), so like every other emit here it advances
+    // each node's byte-identical tap and consumes a globalSeqNo on every node in the same order. Consumers
+    // (the FIX gateway watchdog above all) read header.timestamp off it to keep their session clock moving
+    // while a counterparty is silent. See TICK_INTERVAL_MS for the trade-off.
+    private void emitTick(final long timestamp) {
+        final long globalSeq = ++globalSeqNo;
+        tickEncoder.wrapAndApplyHeader(encodeBuffer, 0, headerEncoder);
+        tickEncoder.header()
+            .sourceId(NO_SOURCE_ID)
+            .connectionId(NO_SOURCE_ID)
+            .sessionId(NO_SOURCE_ID)
+            .globalSeqNo(globalSeq)
+            .timestamp(timestamp);
+        emit(MessageHeaderEncoder.ENCODED_LENGTH + tickEncoder.encodedLength());
+    }
+
+    // Arms the single repeating tick timer for one TICK_INTERVAL_MS ahead of current cluster time. Spins
+    // until the schedule lands, mirroring emit()'s reliable-offer discipline: a dropped reschedule would
+    // stop the cluster clock. Deadlines are in the cluster's time unit (milliseconds — the Aeron default,
+    // not overridden in SequencerNode), matching cluster.time().
+    private void scheduleTick() {
+        final long deadline = cluster.time() + TICK_INTERVAL_MS;
+        while (!cluster.scheduleTimer(TICK_TIMER_CORRELATION_ID, deadline)) {
+            cluster.idleStrategy().idle();
+        }
     }
 
     // ── Snapshot ──────────────────────────────────────────────────────────────
@@ -314,6 +370,11 @@ public final class SequencerService implements ClusteredService {
                                          final long termBaseLogPosition, final int leaderMemberId,
                                          final int logSessionId, final TimeUnit timeUnit, final int appVersion) {
         applyLeadership(leaderMemberId, timestamp);
+        // Arm (or re-arm) the internal cluster clock here rather than in onStart, where Aeron forbids
+        // scheduling timers. Fires on every node when a term begins (cold start and every failover);
+        // scheduleTick is idempotent by correlation id, and the timer then re-arms itself in
+        // onTimerEvent, so the clock runs continuously across leadership changes.
+        scheduleTick();
     }
 
     @Override

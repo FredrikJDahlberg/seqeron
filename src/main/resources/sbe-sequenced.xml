@@ -540,6 +540,24 @@
     </sbe:message>
 
     <!-- ═══════════════════════════════════════════════════════════════════
+         Tick  (template 16) — the cluster's internal clock (~1 Hz).
+         Synthesized on a repeating cluster timer (see SequencerService), it
+         carries nothing but the header: its only payload is header.timestamp,
+         the cluster consensus time the leader assigned when the timer fired.
+         Emitted on every node (like every other message here) so the taps stay
+         byte-identical, but only the leader drives the timer's real-time
+         cadence — the one place real time enters the replicated log. It gives
+         every consumer a cluster-driven clock that keeps advancing even while a
+         given FIX session is silent, which is exactly when the keepalive
+         watchdog (FixConnection/Session) must fire. Synthesized-only — never
+         arrives on cluster ingress — so it has no sbe-unsequenced.xml twin.
+         ═══════════════════════════════════════════════════════════════════ -->
+    <sbe:message name="Tick" id="16"
+                 description="Cluster internal clock; header.timestamp is the leader's consensus time at timer fire">
+        <field name="header" id="20001" type="header"/>
+    </sbe:message>
+
+    <!-- ═══════════════════════════════════════════════════════════════════
          Risk engine query/reply — not FIX messages; no StandardHeader fields
          ═══════════════════════════════════════════════════════════════════ -->
 
