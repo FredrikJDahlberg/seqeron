@@ -223,6 +223,19 @@ class ClusterIngressHandler : public msg::FixMessageHandler<ClusterIngressHandle
                                                           : usq::PossDupFlag::Value::NULL_VALUE;
     }
 
+    // Maps an inbound FIX SequenceReset's GapFillFlag (tag 123) onto the SBE enum
+    // so the gateway can tell a GapFill from a hard reset once the message
+    // round-trips the cluster (see FixConnection's SequenceReset dispatch). Per
+    // FIXT.1.1 'N' and absent both mean a hard reset, so both collapse to
+    // NULL_VALUE — only 'Y' (GapFill) is distinguished, matching sbePossDup's idiom.
+    template <typename Decoder>
+    [[nodiscard]] static usq::GapFillFlag::Value sbeGapFill(const Decoder& message)
+    {
+        const auto gapFill = message.gapFillFlag();
+        return (gapFill && *gapFill == msg::GapFillFlag::GapFillMessage) ? usq::GapFillFlag::Value::GapFillMessage
+                                                                         : usq::GapFillFlag::Value::NULL_VALUE;
+    }
+
     fix::Result handle(const msg::LogonDecoder& logon)
     {
         if (!verifyCompIds(logon))
@@ -432,7 +445,7 @@ class ClusterIngressHandler : public msg::FixMessageHandler<ClusterIngressHandle
             .putTarget(std::string_view{"SEQUENCER"})
             .seqNum(sequenceReset.sequenceNumber().value_or(0u))
             .sendingTimeMs(nowMs())
-            .gapFillFlag(usq::GapFillFlag::Value::NULL_VALUE)
+            .gapFillFlag(sbeGapFill(sequenceReset))
             .newSeqNo(sequenceReset.newSeqNo().value_or(1u));
         sendUnsequenced(m_sequenceReset);
         return fix::Result::Success;

@@ -30,7 +30,7 @@ Java. There is no existing Java cluster-*client* today (the Java side is only th
 so the ingress-connect/echo handshake is new Java code modelled on the C++ `ClusterIngressSender` +
 tap-follow path, not shared with it.
 
-The tool is one Java class, `org.limitless.phixeron.tool.ClusterCtl` (alongside `SbeLogPrinter`),
+The tool is one Java class, `org.limitless.phixeron.tools.ClusterCtl` (alongside `SbeLogPrinter`),
 launched by `src/main/scripts/clusterctl.sh` — a thin wrapper matching the other scripts that sets
 the classpath / `--add-opens` JVM options and forwards the subcommand and its arguments:
 

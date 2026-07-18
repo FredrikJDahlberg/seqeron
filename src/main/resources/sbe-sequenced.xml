@@ -22,7 +22,7 @@
     into the header like every other message here — plus LeadershipChanged
     (template 5), synthesized by the sequencer onto the global stream when a
     new leadership term begins so every per-node replica learns, at an exact
-    globalSeqNo, which node is leader from that point on (see the Replayer
+    globalSeqNo, which node is leader from that point on (see the ReplayerService
     design, doc/router-design.md §3). LeadershipChanged is synthesized-only:
     it never arrives on cluster ingress, so it has no sbe-unsequenced.xml
     counterpart.
@@ -583,7 +583,7 @@
          Synthesized by SequencerService.applyLeadership onto the global stream
          at a well-defined globalSeqNo whenever a new leadership term begins, so
          every per-node replica switches leader-only emission on/off at the same
-         point in the ordered stream (Replayer design §3). Synthesized-only — never
+         point in the ordered stream (ReplayerService design §3). Synthesized-only — never
          arrives on cluster ingress — so it has no sbe-unsequenced.xml twin.
          ═══════════════════════════════════════════════════════════════════ -->
     <sbe:message name="LeadershipChanged" id="5"

@@ -20,7 +20,7 @@ import org.agrona.concurrent.YieldingIdleStrategy;
  * ConsensusModule.  Clients connect via the Aeron Cluster ingress protocol to send
  * {@code AppMessage}s.  Every node stamps each message with a global sequence number and
  * a per-source application sequence number, then publishes the result on its node-local
- * {@code aeron:ipc} tap ({@link SequencerService#TAP_CHANNEL}) which is simultaneously
+ * {@code aeron:ipc} tap ({@link SequencerService#REPLAYER_CHANNEL}) which is simultaneously
  * recorded by the co-located Archive for client replay on startup.
  *
  * <p><b>Port layout</b> (member 0 on base 9300; members 1 and 2 use base+10, base+20):

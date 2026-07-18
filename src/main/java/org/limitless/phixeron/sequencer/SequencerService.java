@@ -17,6 +17,7 @@ import org.agrona.ExpandableDirectByteBuffer;
 import org.agrona.MutableDirectBuffer;
 import org.agrona.concurrent.NoOpLock;
 import org.agrona.concurrent.status.CountersReader;
+import org.limitless.phixeron.replayer.ReplayerService;
 import org.limitless.phixeron.sbe.sequenced.ClientConnectedEncoder;
 import org.limitless.phixeron.sbe.sequenced.ClientDisconnectedEncoder;
 import org.limitless.phixeron.sbe.sequenced.HeaderEncoder;
@@ -50,9 +51,9 @@ import org.limitless.phixeron.sbe.unsequenced.MessageHeaderDecoder;
  * {@code sessionId} plus the new {@code globalSeqNo}/{@code timestamp}.
  *
  * <p>The decorated message is published on the node-local <em>tap</em>
- * ({@link #TAP_CHANNEL} / {@link #TAP_STREAM_ID}), an {@code aeron:ipc} stream that this node's
+ * ({@link #REPLAYER_CHANNEL} / {@link #REPLAYER_STREAM_ID}), an {@code aeron:ipc} stream that this node's
  * co-located Aeron Archive records. Co-located app replicas follow it live directly, and the
- * co-located {@link org.limitless.phixeron.replayer.Replayer} serves history/gap replay of this
+ * co-located {@link ReplayerService} serves history/gap replay of this
  * recording to those apps on startup.
  *
  * <p><b>Every node records its own tap (no leader/follower asymmetry on the stream path):</b> all
@@ -72,7 +73,7 @@ import org.limitless.phixeron.sbe.unsequenced.MessageHeaderDecoder;
  * MaxMulticastFlowControl} never advanced the sender limit with zero network subscribers): the only
  * tethered subscriber of the tap is the co-located archive recording, so {@link #emit} blocks only on
  * real local-archive write back-pressure, which clears as the archive drains to disk. The app replicas'
- * own tap subscriptions are untethered, so a slow app is dropped (and heals via the Replayer replay
+ * own tap subscriptions are untethered, so a slow app is dropped (and heals via the ReplayerService replay
  * protocol) rather than back-pressuring the recording.
  *
  * <p><b>Snapshot format</b> (little-endian binary, single fragment):
@@ -86,7 +87,7 @@ public final class SequencerService implements ClusteredService {
      * <em>and</em> follower — republishes each sequenced frame here in {@code globalSeqNo} order (the
      * taps are byte-identical across nodes, since every node processes the same committed log in the
      * same order) and records it into its own co-located archive. The co-located app replicas follow it
-     * directly as their live feed, and the co-located {@link org.limitless.phixeron.replayer.Replayer}
+     * directly as their live feed, and the co-located {@link ReplayerService}
      * serves history/gap replay of this recording — the same node-local archive serves both.
      *
      * <p>Created and recorded once in {@link #onStart} and continuous per node across leadership changes
@@ -95,9 +96,15 @@ public final class SequencerService implements ClusteredService {
      * never re-resolve. Reliable, not lossy ({@link #emit} spins until the offer lands): the recording
      * is the authoritative history, so a dropped frame would be an unrecoverable gap.
      */
-    public static final String TAP_CHANNEL = "aeron:ipc";
+    public static final String REPLAYER_CHANNEL = "aeron:ipc";
+    public static final int REPLAYER_STREAM_ID = 205;
 
-    public static final int TAP_STREAM_ID = 205;
+    /**
+     * How long {@link #awaitReplayerRecordingActive} waits for the co-located archive's recording of the tap
+     * to become active before failing start-up. Bounded so a wedged/absent local archive fails fast at
+     * onStart rather than hanging the node.
+     */
+    private static final long REPLAYER_RECORDING_START_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(5);
 
     /**
      * Maximum consecutive back-pressure spins in {@link #emit} before printing an alert.
@@ -105,20 +112,12 @@ public final class SequencerService implements ClusteredService {
      */
     private static final int MAX_BACK_PRESSURE_SPINS = 1_000_000;
 
-    /**
-     * How long {@link #awaitTapRecordingActive} waits for the co-located archive's recording of the tap
-     * to become active before failing start-up. Bounded so a wedged/absent local archive fails fast at
-     * onStart rather than hanging the node.
-     */
-    private static final long TAP_RECORDING_START_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(5);
-
     private static final int SNAPSHOT_POLL_BATCH = 10;
 
     /**
-     * header.sourceId/connectionId for lifecycle events synthesized by this service
-     * (ClientConnected / ClientDisconnected): an Aeron Cluster session opening/closing has no
-     * gateway-process or TCP-level connection id to carry, unlike the ingress messages it
-     * forwards.
+     * header.sourceId/connectionId for lifecycle events synthesized by this service (ClientConnected /
+     * ClientDisconnected): an Aeron Cluster session opening/closing has no gateway-process or TCP-level
+     * connection id to carry, unlike the ingress messages it forwards.
      */
     private static final int NO_SOURCE_ID = -1;
 
@@ -146,7 +145,7 @@ public final class SequencerService implements ClusteredService {
     // ── Aeron runtime (not snapshotted) ──────────────────────────────────────
 
     private Cluster cluster;
-    private ExclusivePublication tapPub;
+    private ExclusivePublication replayerPub;
     private AeronArchive aeronArchive;
 
     /**
@@ -175,13 +174,13 @@ public final class SequencerService implements ClusteredService {
         // follower alike). Every node re-publishes each sequenced frame here and records it into its own
         // co-located archive, so every node independently holds a complete copy of the sequenced history
         // — no cross-node replication needed. Co-located app replicas follow this live directly; the
-        // co-located Replayer serves history/gap replay of this recording. See TAP_CHANNEL. Recording
+        // co-located ReplayerService serves history/gap replay of this recording. See REPLAYER_CHANNEL. Recording
         // must be active before the first
         // frame is published, so await it here (onStart runs before any onSessionMessage, so this waits on
         // start-up alone, never on live traffic).
-        tapPub = cluster.context().aeron().addExclusivePublication(TAP_CHANNEL, TAP_STREAM_ID);
-        aeronArchive.startRecording(TAP_CHANNEL, TAP_STREAM_ID, SourceLocation.LOCAL);
-        awaitTapRecordingActive();
+        replayerPub = cluster.context().aeron().addExclusivePublication(REPLAYER_CHANNEL, REPLAYER_STREAM_ID);
+        aeronArchive.startRecording(REPLAYER_CHANNEL, REPLAYER_STREAM_ID, SourceLocation.LOCAL);
+        awaitReplayerRecordingActive();
 
         if (snapshotImage != null) {
             loadSnapshot(snapshotImage);
@@ -190,16 +189,16 @@ public final class SequencerService implements ClusteredService {
 
     // Blocks until the co-located archive's recording subscription has attached to the tap publication,
     // so no frame is published before the recording begins (which would leave an unrecoverable hole in
-    // the authoritative history). Bounded by TAP_RECORDING_START_TIMEOUT_NS so an absent/wedged local
+    // the authoritative history). Bounded by REPLAYER_RECORDING_START_TIMEOUT_NS so an absent/wedged local
     // archive fails start-up fast rather than hanging.
-    private void awaitTapRecordingActive() {
+    private void awaitReplayerRecordingActive() {
         final CountersReader counters = cluster.context().aeron().countersReader();
         final long archiveId = aeronArchive.archiveId();
-        final long deadlineNs = System.nanoTime() + TAP_RECORDING_START_TIMEOUT_NS;
-        while (RecordingPos.findCounterIdBySession(counters, tapPub.sessionId(), archiveId)
+        final long deadlineNs = System.nanoTime() + REPLAYER_RECORDING_START_TIMEOUT_NS;
+        while (RecordingPos.findCounterIdBySession(counters, replayerPub.sessionId(), archiveId)
                == CountersReader.NULL_COUNTER_ID) {
             if (System.nanoTime() >= deadlineNs) {
-                throw new IllegalStateException("[SequencerService] tap recording did not start within timeout");
+                throw new IllegalStateException("[SequencerService] replayer recording did not start within timeout");
             }
             cluster.idleStrategy().idle();
         }
@@ -328,7 +327,7 @@ public final class SequencerService implements ClusteredService {
     // Called on every node whenever a new leadership term begins (including this node's own promotion).
     // With every node recording its own tap there is no leader-only publication or standby-follow to
     // manage here any more (both retired in the tap-recording change) — the only per-leadership work is
-    // synthesizing a LeadershipChanged event (Replayer design §3). Every node consumes
+    // synthesizing a LeadershipChanged event (ReplayerService design §3). Every node consumes
     // onNewLeadershipTermEvent in the same log order, so ++globalSeqNo here (on every node, exactly like
     // onSessionOpen/onSessionMessage) keeps the counter identical across nodes, and each node stamps that
     // same globalSeqNo onto a LeadershipChanged it emits onto its own tap — the per-node replicas use it
@@ -343,7 +342,7 @@ public final class SequencerService implements ClusteredService {
         System.out.printf("[SequencerService/%d] leadership change: new leader is memberId=%d (isLeader=%b)%n",
                           cluster.memberId(), leaderMemberId, leader);
 
-        // Encoded and emitted on every node, so each node's tap (and its recording) carries this
+        // Encoded and emitted on every node, so each node's replayer (and its recording) carries this
         // globalSeqNo gap-free.
         leadershipChangedEncoder.wrapAndApplyHeader(encodeBuffer, 0, headerEncoder);
         leadershipChangedEncoder.header()
@@ -361,10 +360,10 @@ public final class SequencerService implements ClusteredService {
         if (aeronArchive != null) {
             aeronArchive.close();
         }
-        if (tapPub != null) {
+        if (replayerPub != null) {
             // Closing the publication ends the recording's source image, so the archive stops the tap
             // recording (sets its stopPosition) without an explicit stopRecording call.
-            tapPub.close();
+            replayerPub.close();
         }
     }
 
@@ -380,12 +379,12 @@ public final class SequencerService implements ClusteredService {
     private void emit(final int length) {
         int idleSpins = 0;
         long result;
-        while ((result = tapPub.offer(encodeBuffer, 0, length)) < 0) {
+        while ((result = replayerPub.offer(encodeBuffer, 0, length)) < 0) {
             if (result == ExclusivePublication.CLOSED || result == ExclusivePublication.MAX_POSITION_EXCEEDED) {
-                throw new IllegalStateException("[SequencerService] tap publication failed: " + result);
+                throw new IllegalStateException("[SequencerService] replayer publication failed: " + result);
             }
             if (++idleSpins >= MAX_BACK_PRESSURE_SPINS) {
-                System.err.printf("[SequencerService] ALERT: tap back-pressure at globalSeqNo=%d%n", globalSeqNo);
+                System.err.printf("[SequencerService] ALERT: replayer back-pressure at globalSeqNo=%d%n", globalSeqNo);
                 idleSpins = 0;
             }
             cluster.idleStrategy().idle();

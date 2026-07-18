@@ -11,29 +11,29 @@ import org.agrona.concurrent.ShutdownSignalBarrier;
 import org.agrona.concurrent.YieldingIdleStrategy;
 
 /**
- * Launches one {@link Replayer} co-located with a Sequencer cluster member.
+ * Launches one {@link ReplayerService} co-located with a Sequencer cluster member.
  *
- * <p>The Replayer does not run its own media driver: it attaches to the member's Aeron directory
+ * <p>The ReplayerService does not run its own media driver: it attaches to the member's Aeron directory
  * (the same one {@code SequencerNode} launched its {@code ClusteredMediaDriver} in) so it can reach
  * that member's local {@code Archive} over {@code aeron:ipc} — exactly like {@code OrderExecClient}
- * co-locates via {@code PHIXERON_ORDER_EXEC_AERON_DIR}. Every node runs one of these; each Replayer
+ * co-locates via {@code PHIXERON_ORDER_EXEC_AERON_DIR}. Every node runs one of these; each ReplayerService
  * serves replays from its own local archive regardless of leadership (each member records its own
  * complete copy of the sequenced stream — no cross-node replication). It is off the live path: apps
- * read the co-located {@code SequencerService} tap directly and only ask the Replayer to replay
+ * read the co-located {@code SequencerService} tap directly and only ask the ReplayerService to replay
  * history/gaps.
  *
  * <p>System properties:
  * <pre>
- *   replayer.memberId      — which cluster member this Replayer co-locates with (0/1/2); default 0
+ *   replayer.memberId      — which cluster member this ReplayerService co-locates with (0/1/2); default 0
  *   replayer.aeronDir      — that member's Aeron directory; default {tmpdir}/phixeron-seq-aeron-{memberId}
  *   replayer.idleStrategy  — duty-cycle idle strategy: {@code yielding} (default) or {@code busyspin}
  * </pre>
  *
  * <p>The default is {@code yielding} rather than {@code busyspin} (which SequencerNode uses for its
- * media-driver agents) because busy-spin only pays off when the Replayer thread owns an isolated core.
+ * media-driver agents) because busy-spin only pays off when the ReplayerService thread owns an isolated core.
  * On the tuned target deployment (core-pinned, {@code isolcpus}/{@code nohz_full}) set {@code
  * -Dreplayer.idleStrategy=busyspin}; on an oversubscribed host (e.g. a dev box already running the
- * cluster's busy-spin driver threads) busy-spin steals cycles, so the default yields. (The Replayer is
+ * cluster's busy-spin driver threads) busy-spin steals cycles, so the default yields. (The ReplayerService is
  * off the live delivery path, so this only affects how promptly it services replay requests.)
  *
  * <p>Launch example (co-located with member 0):
@@ -54,7 +54,7 @@ public final class ReplayerNode {
     private static final int ARCHIVE_CONTROL_STREAM_ID = 100;
 
     /**
-     * Control-response stream for the Replayer's own archive control session — distinct from the
+     * Control-response stream for the ReplayerService's own archive control session — distinct from the
      * member's SequencerService client (101) so archive replies never cross-talk, even though they
      * share the member's {@code aeron:ipc} driver.
      */
@@ -66,8 +66,8 @@ public final class ReplayerNode {
             PROP_AERON_DIR, System.getProperty("java.io.tmpdir") + "/phixeron-seq-aeron-" + memberId);
 
         final Aeron aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(aeronDir));
-        // NoOpLock is safe: every archive control call is made from the single Replayer duty-cycle
-        // thread below (all archive access lives in Replayer.poll()); main() only closes it after that
+        // NoOpLock is safe: every archive control call is made from the single ReplayerService duty-cycle
+        // thread below (all archive access lives in ReplayerService.poll()); main() only closes it after that
         // thread has joined.
         final AeronArchive archive =
             AeronArchive.connect(new AeronArchive.Context()
@@ -80,7 +80,7 @@ public final class ReplayerNode {
                 .lock(NoOpLock.INSTANCE));
 
         final IdleStrategy idleStrategy = resolveIdleStrategy();
-        final Replayer replayer = new Replayer(aeron, archive, memberId, idleStrategy);
+        final ReplayerService replayer = new ReplayerService(aeron, archive, memberId, idleStrategy);
         final AtomicBoolean running = new AtomicBoolean(true);
         final Thread replayerThread = new Thread(() -> replayer.run(running), "replayer-" + memberId);
         replayerThread.start();

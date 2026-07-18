@@ -64,7 +64,7 @@ namespace org::limitless::phixeron::sequencer {
 
 namespace usq = org::limitless::phixeron::sbe::unsequenced;
 
-// ── Node-local IPC channels/streams — MUST match org.limitless.phixeron.replayer.Replayer ─────────
+// ── Node-local IPC channels/streams — MUST match org.limitless.phixeron.replayer.ReplayerService ─────────
 inline constexpr const char* REPLAYER_IPC_CHANNEL = "aeron:ipc";
 // The live feed is the co-located SequencerService tap (SequencerService.TAP_CHANNEL / TAP_STREAM_ID),
 // read directly and untethered (design §5): a slow replica is dropped to a resting state rather than

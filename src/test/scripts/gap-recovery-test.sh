@@ -6,7 +6,7 @@
 # segment 0 de-duping by globalSeqNo, and keeps delivering rather than wedging in-order delivery. Each
 # node records its own node-local tap continuously, so the consumer's co-located member holds ONE
 # continuous recording; the re-walk heals the gap straight from that recording (served by the node's
-# Replayer). A leader failover is performed first so the gap is exercised in a realistic post-failover
+# ReplayerService). A leader failover is performed first so the gap is exercised in a realistic post-failover
 # steady state (and to confirm the consumer's own tap keeps flowing across the failover — its member's
 # recording is continuous, never rotated).
 #
@@ -29,7 +29,7 @@
 #      keeps flowing across the failover (it is continuous, never rotated).
 #   4. SIGUSR1 the consumer to arm a one-frame live-tap drop, then flood direct cluster ingress. The
 #      first flooded frame is dropped by the consumer -> it sees a globalSeqNo gap and re-walks member
-#      0's continuous recording from segment 0 (via its Replayer) to heal it.
+#      0's continuous recording from segment 0 (via its ReplayerService) to heal it.
 #   5. SIGTERM the consumer to flush its delivery-latency report.
 #
 # PASS iff the consumer (a) logged "re-walking the recording chain" (the drop took effect and recovery

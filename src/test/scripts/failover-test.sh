@@ -8,7 +8,7 @@
 # so the cold-start walk catches up from that single recording. This validates that the tap recording on
 # a node that was a follower during tenure 1 still contains tenure-1 history after it becomes leader.
 #
-# PASS iff the fresh client prints "following live" AND its Replayer served it >= 1 replay segment.
+# PASS iff the fresh client prints "following live" AND its ReplayerService served it >= 1 replay segment.
 set -uo pipefail
 
 BUILD_DIR="cmake-build-release"

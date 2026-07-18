@@ -168,7 +168,7 @@ echo "[start-three-node-cluster.sh] Starting ReplayerNode (co-located with Seque
 # Attaches to member 0's embedded media driver (replayer.memberId=0 → phixeron-seq-aeron-0, i.e.
 # SEQ_AERON_DIR) and serves archive replay of that node's local tap recording over aeron:ipc.
 # OrderExecClient (below) shares the same directory, reads the tap directly for live, and asks this
-# Replayer to replay on a gap / for cold-start history.
+# ReplayerService to replay on a gap / for cold-start history.
 java "${JAVA_OPTS[@]}" \
     -Dreplayer.memberId=0 \
     -cp "${JAR}" \
@@ -176,7 +176,7 @@ java "${JAVA_OPTS[@]}" \
     > "${REPLAYER_LOG}" 2>&1 &
 REPLAYER_PID=$!
 
-# Wait until the Replayer is serving replay (its local tap recording is visible on the archive), which
+# Wait until the ReplayerService is serving replay (its local tap recording is visible on the archive), which
 # also confirms the tap is live for the direct-read consumers. OrderExecClient retries regardless, but
 # this avoids a noisy startup and a needless extra cold-start replay.
 echo "[start-three-node-cluster.sh] Waiting for ReplayerNode to start serving replay…"
@@ -192,7 +192,7 @@ done
 
 # FixSessionClient is co-located with member 0 too (shares SEQ_AERON_DIR): it follows member 0's
 # SequencerService tap over aeron:ipc and uses member 0's local archive over aeron:ipc for FIX-session
-# resend recovery. Started only now — after member 0's Replayer is serving replay — so the tap exists
+# resend recovery. Started only now — after member 0's ReplayerService is serving replay — so the tap exists
 # and the local archive already holds the tap recording connectLocalArchive needs.
 # PHIXERON_REPLAYER_CLIENT_ID=2 keeps it distinct from the co-located OrderExecClient replica (id 1);
 # its cluster egress port defaults to 9340+memberId, clear of the replica's 9330+memberId.
@@ -207,7 +207,7 @@ echo "[start-three-node-cluster.sh] Starting OrderExecClient (replica on member 
 # Member 0's replica is the latency-instrumented one: PHIXERON_LATENCY_STATS=1 makes it record the
 # post-consensus delivery latency (cluster-commit → its aeron:ipc tap tail) of every caught-up
 # sequenced message and print p50/p99/p99.9 on shutdown — the Variant-B "record→deliver" latency the
-# Replayer design's per-node consumers inherit. Harmless when unused (it only prints on shutdown); the
+# ReplayerService design's per-node consumers inherit. Harmless when unused (it only prints on shutdown); the
 # S4 wedge test reads it. The members 1 & 2 replicas below run without it (one measurement is enough).
 PHIXERON_ORDER_EXEC_AERON_DIR="${SEQ_AERON_DIR}" \
     PHIXERON_NODE_MEMBER_ID=0 \

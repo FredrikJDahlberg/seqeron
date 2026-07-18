@@ -23,10 +23,10 @@ import org.limitless.phixeron.sbe.unsequenced.ReplayingEncoder;
 import org.limitless.phixeron.sequencer.SequencerService;
 
 /**
- * Per-node archive <b>replay server</b> for co-located application replicas (Replayer design,
+ * Per-node archive <b>replay server</b> for co-located application replicas (ReplayerService design,
  * {@code doc/router-design.md}). It is deliberately <em>not</em> on the live delivery path: every
  * app reads the co-located {@code SequencerService}'s node-local IPC tap ({@link
- * SequencerService#TAP_CHANNEL} / {@link SequencerService#TAP_STREAM_ID}) <b>directly</b> for the
+ * SequencerService#REPLAYER_CHANNEL} / {@link SequencerService#REPLAYER_STREAM_ID}) <b>directly</b> for the
  * live feed, so the sequencer has no live network data subscribers (the UDP multi-destination-cast
  * global stream is retired) and audit.md S4 (sequencer liveness coupled to its slowest consumer)
  * dissolves structurally. The apps' tap subscriptions are untethered, so a slow app is dropped (and
@@ -40,7 +40,7 @@ import org.limitless.phixeron.sequencer.SequencerService;
  *   <li><b>Request</b> ({@link #REQUEST_STREAM_ID}) — an app that is cold-starting, or that detects a
  *       {@code globalSeqNo} gap on the live tap, sends {@code ReplayRequest(clientId, segmentIndex,
  *       fromPosition)}.
- *   <li><b>Control</b> ({@link #CONTROL_STREAM_ID}) — the Replayer answers {@code
+ *   <li><b>Control</b> ({@link #CONTROL_STREAM_ID}) — the ReplayerService answers {@code
  *       Replaying(clientId, replaySessionId, catchUpPosition)} or {@code ReplayPending(clientId)}.
  *   <li><b>Replay</b> ({@link #REPLAY_STREAM_ID}) — it serves at most {@link #MAX_CONCURRENT_REPLAYS}
  *       archive replays at once onto this {@code aeron:ipc} stream; the requesting app attaches to the
@@ -58,13 +58,13 @@ import org.limitless.phixeron.sequencer.SequencerService;
  * and any residual gap after the handoff is healed by the same gap-detect → re-request loop (design
  * §5).
  *
- * <p><b>Strictly stateless</b> (design §6): the Replayer holds nothing not re-derivable from the
+ * <p><b>Strictly stateless</b> (design §6): the ReplayerService holds nothing not re-derivable from the
  * archive — only the ephemeral in-flight replay slots. A crash is a fast reconnect; apps treat
- * "Replayer gone" as they treat a gap and re-request on its return.
+ * "ReplayerService gone" as they treat a gap and re-request on its return.
  *
- * <p><b>Local-archive resilience.</b> The Replayer is off the live path entirely, so a transient
+ * <p><b>Local-archive resilience.</b> The ReplayerService is off the live path entirely, so a transient
  * failure of the node's local archive degrades only history/gap <em>replay</em> — steady-state
- * delivery keeps flowing over the tap the apps read directly. It does not crash the Replayer either:
+ * delivery keeps flowing over the tap the apps read directly. It does not crash the ReplayerService either:
  * an archive control call that throws in the replay path flips it to a STALLED state and keeps the
  * duty cycle running, paces its replay retries, and answers any replay request with {@code
  * ReplayPending} — which the app already treats as "hold at the gap and re-request" — until the
@@ -88,17 +88,17 @@ import org.limitless.phixeron.sequencer.SequencerService;
  * <p><b>Slice scope.</b> The shared bootstrap replay for many co-starting replicas (design §4/§8) is
  * a documented follow-up — each app still gets its own replay.
  */
-public final class Replayer {
-    /** Node-local IPC channel every Replayer↔app stream runs over. */
+public final class ReplayerService {
+    /** Node-local IPC channel every ReplayerService↔app stream runs over. */
     public static final String IPC_CHANNEL = "aeron:ipc";
 
-    /** Replayer → apps: on-demand archive replays (one Aeron session per in-flight replay). */
+    /** ReplayerService → apps: on-demand archive replays (one Aeron session per in-flight replay). */
     public static final int REPLAY_STREAM_ID = 201;
 
-    /** Apps → Replayer: {@code ReplayRequest}. */
+    /** Apps → ReplayerService: {@code ReplayRequest}. */
     public static final int REQUEST_STREAM_ID = 202;
 
-    /** Replayer → apps: {@code Replaying} / {@code ReplayPending}. */
+    /** ReplayerService → apps: {@code Replaying} / {@code ReplayPending}. */
     public static final int CONTROL_STREAM_ID = 203;
 
     /**
@@ -131,7 +131,7 @@ public final class Replayer {
     private final int memberId;
     private final IdleStrategy idleStrategy;
 
-    // ── Replayer → apps control + apps → Replayer requests ────────────────────
+    // ── ReplayerService → apps control + apps → ReplayerService requests ────────────────────
     private final ExclusivePublication controlPub;
     private final Subscription requestSub;
 
@@ -157,7 +157,7 @@ public final class Replayer {
     private final Deque<long[]> pendingRequests = new ArrayDeque<>();  // [clientId, segmentIndex, fromPosition]
 
     // Local-archive resilience (doc/router-archive.md): a transient local-archive failure must not kill
-    // the duty-cycle thread. The Replayer is off the live path (apps read the tap directly), so a stall
+    // the duty-cycle thread. The ReplayerService is off the live path (apps read the tap directly), so a stall
     // only affects replay. While STALLED it keeps its duty cycle running, paces its replay retries, and
     // holds replay-requesting apps with ReplayPending until the archive returns. (Surfacing STALLED via
     // an Aeron counter is a deferred follow-up — see doc/router-archive.md.)
@@ -175,8 +175,8 @@ public final class Replayer {
     private final FragmentHandler requestHandler =
         (buffer, offset, length, header) -> onRequest(buffer, offset, length);
 
-    public Replayer(final io.aeron.Aeron aeron, final AeronArchive archive, final int memberId,
-                    final IdleStrategy idleStrategy) {
+    public ReplayerService(final io.aeron.Aeron aeron, final AeronArchive archive, final int memberId,
+                           final IdleStrategy idleStrategy) {
         this.aeron = aeron;
         this.archive = archive;
         this.memberId = memberId;
@@ -191,12 +191,12 @@ public final class Replayer {
      * the local archive; the live feed is the tap the apps read directly, not this process.
      */
     public void run(final java.util.concurrent.atomic.AtomicBoolean running) {
-        System.out.printf("[Replayer/%d] starting; serving replay from the co-located archive…%n", memberId);
+        System.out.printf("[ReplayerService/%d] starting; serving replay from the co-located archive…%n", memberId);
         while (running.get()) {
             final int work = poll();
             idleStrategy.idle(work);
         }
-        System.out.printf("[Replayer/%d] shutting down%n", memberId);
+        System.out.printf("[ReplayerService/%d] shutting down%n", memberId);
         stopAllReplays();
     }
 
@@ -211,12 +211,12 @@ public final class Replayer {
     }
 
     // Proactive readiness marker, independent of any app connecting. Once the co-located
-    // SequencerService's tap recording is visible on the local archive, this Replayer can serve
+    // SequencerService's tap recording is visible on the local archive, this ReplayerService can serve
     // cold-start/gap replays — and, equally, live consumers reading the tap directly are getting frames
     // (you cannot record a stream that was never published). The launch scripts wait on this line before
     // starting apps. findActiveRecordingId is a cheap archive lookup that returns NULL_VALUE until the
     // recording appears (SequencerService.onStart creates it during cluster start-up, before this
-    // Replayer connects), so this fires within a cycle or two of startup and never again. Guarded so an
+    // ReplayerService connects), so this fires within a cycle or two of startup and never again. Guarded so an
     // archive that is momentarily unresponsive at startup just retries the next cycle rather than killing
     // the thread.
     private void checkReady() {
@@ -228,7 +228,7 @@ public final class Replayer {
         }
         if (recordingId != NULL_VALUE) {
             ready = true;
-            System.out.printf("[Replayer/%d] ready — tap recording %d live; serving replay%n", memberId, recordingId);
+            System.out.printf("[ReplayerService/%d] ready — tap recording %d live; serving replay%n", memberId, recordingId);
         }
     }
 
@@ -275,7 +275,7 @@ public final class Replayer {
     }
 
     // Serves one replay request, guarding every archive control call. If the local archive is
-    // unreachable (a control op throws) the Replayer must not die: it flips to STALLED and holds the
+    // unreachable (a control op throws) the ReplayerService must not die: it flips to STALLED and holds the
     // client with ReplayPending — which the client already treats as "wait and re-request on its resend
     // timer" — until the archive returns. This is the note's "defer failure until a replay is needed"
     // path (doc/router-archive.md); no slot is consumed on failure (every archive call that can throw
@@ -285,7 +285,7 @@ public final class Replayer {
     // last probe we just hold the client with ReplayPending without touching the archive (an
     // AeronArchive control call against a dead archive can block the duty cycle until its timeout), and
     // rely on the client re-requesting. A probe that succeeds clears the stall (onArchiveHealthy). Live
-    // delivery is unaffected throughout — apps read the tap directly, never through the Replayer.
+    // delivery is unaffected throughout — apps read the tap directly, never through the ReplayerService.
     private void startReplayForClient(final int clientId, final int segmentIndex, final long fromPosition) {
         if (stalled) {
             final long now = System.currentTimeMillis();
@@ -352,7 +352,7 @@ public final class Replayer {
         final long replaySessionId =
             archive.startReplay(recordingId, replayFrom, boundedLength, IPC_CHANNEL, REPLAY_STREAM_ID);
         activeReplays.add(new ReplaySlot(clientId, replaySessionId, System.currentTimeMillis()));
-        System.out.printf("[Replayer/%d] replay for client %d: segment %d recording %d [%d,%d) session %d%n", memberId,
+        System.out.printf("[ReplayerService/%d] replay for client %d: segment %d recording %d [%d,%d) session %d%n", memberId,
                           clientId, segmentIndex, recordingId, replayFrom, tip, replaySessionId);
         // catchUpPosition = tip: the app follows the replay image until it reaches this, then advances
         // (next segment, or the live tap). A bounded replay of an active recording does not close its
@@ -427,7 +427,7 @@ public final class Replayer {
         int spins = 0;
         while ((result = controlPub.offer(controlBuffer, 0, length)) < 0) {
             if (result == ExclusivePublication.CLOSED || result == ExclusivePublication.MAX_POSITION_EXCEEDED) {
-                throw new IllegalStateException("[Replayer] control publication failed: " + result);
+                throw new IllegalStateException("[ReplayerService] control publication failed: " + result);
             }
             if (result == ExclusivePublication.NOT_CONNECTED && ++spins > 1000) {
                 return;  // no app listening for control replies; give up on this one
@@ -440,11 +440,11 @@ public final class Replayer {
 
     // A local-archive control call threw: enter STALLED (idempotently, logging once per episode). The
     // caller keeps the duty cycle running and retries; replay-requesting apps were held with
-    // ReplayPending. Live delivery is unaffected — apps read the tap directly, not through the Replayer.
+    // ReplayPending. Live delivery is unaffected — apps read the tap directly, not through the ReplayerService.
     private void onArchiveStalled(final String context, final RuntimeException ex) {
         if (!stalled) {
             stalled = true;
-            System.out.printf("[Replayer/%d] STALLED: %s — local archive unreachable (%s); live delivery "
+            System.out.printf("[ReplayerService/%d] STALLED: %s — local archive unreachable (%s); live delivery "
                               + "unaffected (apps read the tap directly), retrying replay%n",
                               memberId, context, ex.getMessage());
         }
@@ -455,7 +455,7 @@ public final class Replayer {
     private void onArchiveHealthy() {
         if (stalled) {
             stalled = false;
-            System.out.printf("[Replayer/%d] RECOVERED: local archive reachable again%n", memberId);
+            System.out.printf("[ReplayerService/%d] RECOVERED: local archive reachable again%n", memberId);
         }
     }
 
@@ -464,7 +464,7 @@ public final class Replayer {
     // earlier, stopped recording alongside it, and this returns the active one.
     private long findActiveRecordingId() {
         final long[] found = {NULL_VALUE};
-        archive.listRecordingsForUri(0, Integer.MAX_VALUE, "", SequencerService.TAP_STREAM_ID,
+        archive.listRecordingsForUri(0, Integer.MAX_VALUE, "", SequencerService.REPLAYER_STREAM_ID,
                                      (controlSessionId, correlationId, recordingId, startTimestamp, stopTimestamp,
                                       startPosition, stopPosition, initialTermId, segmentFileLength, termBufferLength,
                                       mtuLength, sessionId, streamId, strippedChannel, originalChannel,
@@ -484,7 +484,7 @@ public final class Replayer {
     // de-dupes by globalSeqNo, so the overlap is harmless. Mirrors GlobalStreamClient.resolveGlobalStreamSegments.
     private List<Long> resolveSegments() {
         final List<long[]> entries = new ArrayList<>();  // [recordingId, startTs, stopTs]
-        archive.listRecordingsForUri(0, Integer.MAX_VALUE, "", SequencerService.TAP_STREAM_ID,
+        archive.listRecordingsForUri(0, Integer.MAX_VALUE, "", SequencerService.REPLAYER_STREAM_ID,
                                      (controlSessionId, correlationId, recordingId, startTimestamp, stopTimestamp,
                                       startPosition, stopPosition, initialTermId, segmentFileLength, termBufferLength,
                                       mtuLength, sessionId, streamId, strippedChannel, originalChannel,

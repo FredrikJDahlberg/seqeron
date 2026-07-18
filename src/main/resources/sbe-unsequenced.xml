@@ -33,9 +33,9 @@
         Logon     'A'=65   ExecutionReport '8'=56 NewOrderSingle 'D'=68
     ClientConnected/ClientDisconnected/PortfolioQueryRequest/PortfolioQueryReply
     aren't FIX messages, so they use small, non-ASCII-derived template ids
-    instead (1/2/3/4), clear of that range. The Replayer replay-protocol control
+    instead (1/2/3/4), clear of that range. The ReplayerService replay-protocol control
     messages (ReplayRequest/Replaying/ReplayPending, 6/7/8) live here
-    too — they are node-local control plane between a Replayer and its co-located
+    too — they are node-local control plane between a ReplayerService and its co-located
     app replicas, never sequenced, so they belong in this pre-sequencing schema
     rather than sbe-sequenced.xml (id 5 is left for LeadershipChanged, which is
     the mirror-image case: sequenced-only, so it exists only in sbe-sequenced.xml).
@@ -581,19 +581,19 @@
 
     <!-- ═══════════════════════════════════════════════════════════════════
          Replay protocol  (templates 6/7/8) — node-local control plane between
-         the node's Replayer and its co-located app replicas, over aeron:ipc. Never
+         the node's ReplayerService and its co-located app replicas, over aeron:ipc. Never
          sequenced (no globalSeqNo), so they carry no `header` composite. See the
-         Replayer design, doc/router-design.md §4. clientId identifies the
-         requesting replica so the Replayer can cap concurrent replays at 2 (one
+         ReplayerService design, doc/router-design.md §4. clientId identifies the
+         requesting replica so the ReplayerService can cap concurrent replays at 2 (one
          in-flight per client) and the app can match a Replaying/ReplayPending reply
          to its own request; fromPosition is the recording position of the last
          in-order frame the app holds (SequencedEvent.position), which is the
          archive replay start — globalSeqNo stays the correctness key, position
-         is only how the archive is addressed, so the Replayer needs no
+         is only how the archive is addressed, so the ReplayerService needs no
          globalSeqNo->position index.
          ═══════════════════════════════════════════════════════════════════ -->
 
-    <!-- App -> Replayer: "I have a gap; replay for me from fromPosition." -->
+    <!-- App -> ReplayerService: "I have a gap; replay for me from fromPosition." -->
     <sbe:message name="ReplayRequest" id="6"
                  description="A replica asks its Replayer to replay the sequenced stream. Either it is
                               cold-starting and walks the full recording chain by segmentIndex, or it
@@ -612,7 +612,7 @@
                             so a cold start after a leader change recovers full history"/>
     </sbe:message>
 
-    <!-- Replayer -> App: "A replay slot is free; attach to replaySessionId on the replay stream." -->
+    <!-- ReplayerService -> App: "A replay slot is free; attach to replaySessionId on the replay stream." -->
     <sbe:message name="Replaying" id="7"
                  description="The Replayer started an archive replay for the requesting replica; the app
                               attaches to replaySessionId on the Replayer replay stream and follows it until
@@ -629,14 +629,14 @@
                             image close"/>
     </sbe:message>
 
-    <!-- Replayer -> App: "All replay slots are busy; hold at your gap and wait." -->
+    <!-- ReplayerService -> App: "All replay slots are busy; hold at your gap and wait." -->
     <sbe:message name="ReplayPending" id="8"
                  description="The Replayer has &gt;=2 replays already active; the requesting replica must hold
                               at its gap (must not advance past the hole) until a later Replaying arrives">
         <field name="clientId" id="20010" type="int32"/>
     </sbe:message>
 
-    <!-- App -> Replayer: "I have caught up and am on the live tap; free my replay slot." -->
+    <!-- App -> ReplayerService: "I have caught up and am on the live tap; free my replay slot." -->
     <sbe:message name="ReplayComplete" id="9"
                  description="A replica has finished with its replay (caught up to the tip and switched to the
                               live tap) and no longer needs its slot; the Replayer frees it immediately (design
@@ -648,7 +648,7 @@
 
     <!-- ═══════════════════════════════════════════════════════════════════
          Cluster life-cycle  (templates 10/11) — operator markers injected by
-         clusterctl (org.limitless.phixeron.tool.ClusterCtl) to record the
+         clusterctl (org.limitless.phixeron.tools.ClusterCtl) to record the
          trading day's open/close in the ordered log. Submitted to cluster
          ingress like any other message, then sequenced and echoed on the global
          stream. Unlike ClientConnected/Disconnected they carry a correlationId
