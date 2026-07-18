@@ -231,6 +231,17 @@
         </enum>
 
         <!--
+            ResetSeqNumFlag (tag 141) on Logon: the initiator requests that both
+            sides reset MsgSeqNum to 1. Same uint8 / absent=NULL_VALUE (255)
+            convention as PossDupFlag — the encoder always sets it explicitly.
+            Values mirror ASCII: 'Y'=89, 'N'=78.
+        -->
+        <enum name="ResetSeqNumFlag" encodingType="uint8">
+            <validValue name="Yes" description="Y: reset sequence numbers to 1">89</validValue>
+            <validValue name="No"  description="N: no reset (sequence continues)">78</validValue>
+        </enum>
+
+        <!--
             MessageType (tag 35 / tag 372): ASCII value of the FIX MsgType character.
             Used as the SBE templateId and as the type of refMsgType in Reject.
             nullValue="0" is unambiguous (0 is not a valid FIX MsgType character).
@@ -345,6 +356,8 @@
                description="Negotiated heartbeat interval in milliseconds (HeartBtInt tag 108)"/>
         <field name="defaultApplVerID"  id="1137" type="uint8"
                description="FIXT.1.1 DefaultApplVerID (tag 1137); application version for the session (e.g. 6 = FIX.4.4). Always set by the gateway once validated at the edge"/>
+        <field name="resetSeqNumFlag"   id="141" type="ResetSeqNumFlag" presence="optional" nullValue="0"
+               description="ResetSeqNumFlag (tag 141); 89='Y' reset sequences to 1, 0 = absent/no reset"/>
         <data  name="xmlData"           id="213" type="varDataEncoding"
                description="Optional XML payload (FIX tags 212/213); length 0 = absent"/>
     </sbe:message>

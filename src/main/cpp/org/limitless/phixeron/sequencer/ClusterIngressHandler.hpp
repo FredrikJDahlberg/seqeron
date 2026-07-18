@@ -269,6 +269,19 @@ class ClusterIngressHandler : public msg::FixMessageHandler<ClusterIngressHandle
                                                                          : usq::GapFillFlag::Value::NULL_VALUE;
     }
 
+    // Maps an inbound Logon's ResetSeqNumFlag (tag 141) onto the SBE enum so the
+    // gateway can tell a mutual sequence-reset Logon from a sequence-continuing
+    // one once the message round-trips the cluster (see FixConnection's Logon
+    // dispatch). Absent or 'N' collapses to NULL_VALUE — only 'Y' matters
+    // downstream, matching sbePossDup/sbeGapFill's idiom.
+    template <typename Decoder>
+    [[nodiscard]] static usq::ResetSeqNumFlag::Value sbeResetSeqNum(const Decoder& message)
+    {
+        const auto reset = message.resetSeqNumFlag();
+        return (reset && *reset == msg::Boolean::Yes) ? usq::ResetSeqNumFlag::Value::Yes
+                                                      : usq::ResetSeqNumFlag::Value::NULL_VALUE;
+    }
+
     fix::Result handle(const msg::LogonDecoder& logon)
     {
         if (!verifyCompIds(logon))
@@ -315,6 +328,7 @@ class ClusterIngressHandler : public msg::FixMessageHandler<ClusterIngressHandle
             .encryptMethod(usq::EncryptMethod::Value::None)
             .heartbeatInterval(hbSecs)
             .defaultApplVerID(static_cast<std::uint8_t>(*defaultApplVer))
+            .resetSeqNumFlag(sbeResetSeqNum(logon))
             .putXmlData(nullptr, 0);
         sendUnsequenced(m_logon);
         std::printf("[Ingress] Logon sent to cluster (fd=%d sbePos=%llu)\n", m_connectionId,

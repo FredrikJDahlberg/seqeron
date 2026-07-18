@@ -552,7 +552,7 @@ TEST_F(ClusterIngressHandlerCompIdMismatch, HeartbeatRejectCarriesRealRefSeqNum)
     const auto logon = buildFixCustom('A', "CLIENT", "SEQUENCER", 1, {"98=0", "108=30", "1137=6"});
     ASSERT_EQ(fix::Result::Success,
               m_decoder.parse(std::span<const std::uint8_t>(logon.data(), logon.size()), *m_handler).m_value);
-    m_session->handleClusterLogon(30, 6, 0);
+    m_session->handleClusterLogon(30, 6, /*resetSeqNum*/ false, 0);
     ASSERT_FALSE(readReply().empty());  // Logon's own reply, not under test
 
     const auto heartbeat = buildFixCustom('0', "WRONGSENDER", "SEQUENCER", 2, {});
