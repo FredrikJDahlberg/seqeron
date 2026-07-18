@@ -27,6 +27,7 @@
 #include "org/limitless/phixeron/fix/Conversions.hpp"
 #include "org/limitless/phixeron/fix/ServerSession.hpp"
 #include "org/limitless/phixeron/sequencer/ClusterIngressSender.hpp"
+#include "org/limitless/simdifx/detail/parser/FieldDecoder.hpp"
 #include "org/limitless/simdifx/generated/config/FixEngine.hpp"
 #include "org/limitless/simdifx/generated/messages/FixMessageDecoders.hpp"
 #include "org/limitless/simdifx/generated/messages/FixMessageHandler.hpp"
@@ -146,6 +147,21 @@ class ClusterIngressHandler : public msg::FixMessageHandler<ClusterIngressHandle
         : m_ingress(ingress), m_connectionId(connId), m_session(session)
     {}
 
+    // Intercepts every tokenized inbound message before the generated dispatch
+    // runs validate() + routing, to capture its MsgSeqNum (tag 34) with the
+    // decoder's own field search + integer decode (detail::parser::FieldDecoder)
+    // rather than a hand-rolled scan. FixConnection reads it back
+    // (lastInboundSeqNum) as the RefSeqNum(45) when it Rejects a content-invalid
+    // message whose typed handle() overload never ran (gap 1). value_or(0u)
+    // covers a message with no MsgSeqNum. Then delegates to the base dispatch
+    // unchanged.
+    fix::Result handle(const fix::TokenizedMessage& message)
+    {
+        fix::detail::parser::FieldDecoder fields{message.data, message.fields, message.tags, message.size};
+        m_lastInboundSeqNum = fields.getUint32<34, false, fix::detail::RecordType::Message>().value_or(0u);
+        return FixMessageHandler::handle(message);
+    }
+
     // Test-only: lets ClusterIngressHandlerTest feed the exact raw FIX bytes a
     // message was parsed from, independent of decoder.parse()'s own buffer.
     // Not used by any handle() overload in production.
@@ -178,6 +194,23 @@ class ClusterIngressHandler : public msg::FixMessageHandler<ClusterIngressHandle
     [[nodiscard]] std::int32_t sourceId() const
     {
         return m_ingress ? m_ingress->sourceId() : 0;
+    }
+
+    // MsgSeqNum (tag 34) of the message currently being processed on the TCP
+    // receive path, captured by handle(TokenizedMessage) for the gap-1 content-
+    // Reject's RefSeqNum. FixConnection::onReceive resets it (resetInboundSeqNum)
+    // before each parse, so a message that fails tokenization before dispatch —
+    // and so never sets it — reports 0 ("unknown") rather than a stale prior value.
+    std::uint32_t m_lastInboundSeqNum{0};
+
+    void resetInboundSeqNum()
+    {
+        m_lastInboundSeqNum = 0;
+    }
+
+    [[nodiscard]] std::uint32_t lastInboundSeqNum() const
+    {
+        return m_lastInboundSeqNum;
     }
 
     // Verifies an inbound message's SenderCompID (tag 49) / TargetCompID
