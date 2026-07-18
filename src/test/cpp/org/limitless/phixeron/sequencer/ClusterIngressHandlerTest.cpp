@@ -220,7 +220,7 @@ class ClusterIngressHandlerAdminOnly : public ::testing::Test {
     ClusterIngressSender m_sender;
     FakeIngressTransport* m_ingress{nullptr};
     ClusterIngressHandler m_handler{&m_sender, CONN_ID};
-    fix::decoder::PayloadDecoder<cfg::FIXT_1_1> m_decoder;
+    fix::decoder::PayloadDecoder<msg::Protocol::FIXT_1_1> m_decoder;
 };
 
 TEST_F(ClusterIngressHandlerAdminOnly, LogonIsReEncodedAsSbeUnsequencedWithHeader)
@@ -236,6 +236,32 @@ TEST_F(ClusterIngressHandlerAdminOnly, LogonIsReEncodedAsSbeUnsequencedWithHeade
     EXPECT_EQ(55, logon.header().sessionId());
     EXPECT_EQ(45u, logon.heartbeatInterval());
     EXPECT_EQ(6u, logon.defaultApplVerID());  // FIXT.1.1 DefaultApplVerID (tag 1137) carried through
+}
+
+TEST_F(ClusterIngressHandlerAdminOnly, LogonCarriesResetSeqNumFlagThroughToSbe)
+{
+    // ResetSeqNumFlag=Y (tag 141) on the TCP Logon must survive the SBE-unsequenced
+    // re-encode so the cluster (and the confirm path) can act on the reset request.
+    const auto msg = buildFix('A', {"98=0", "108=45", "1137=6", "141=Y"});
+    const auto result = m_decoder.parse(std::span<const std::uint8_t>(msg.data(), msg.size()), m_handler);
+    ASSERT_EQ(fix::Result::Success, result.m_value);
+
+    ASSERT_EQ(1u, m_ingress->offered.size());
+    auto logon = decodeUnsequenced<usq::Logon>(m_ingress->offered[0]);
+    EXPECT_EQ(usq::ResetSeqNumFlag::Value::Yes, logon.resetSeqNumFlag());
+}
+
+TEST_F(ClusterIngressHandlerAdminOnly, LogonWithoutResetSeqNumFlagEncodesNullValue)
+{
+    // An ordinary, sequence-continuing Logon (no tag 141) collapses to NULL_VALUE,
+    // matching the possDup/gapFill "absent" convention — never a spurious reset.
+    const auto msg = buildFix('A', {"98=0", "108=45", "1137=6"});
+    const auto result = m_decoder.parse(std::span<const std::uint8_t>(msg.data(), msg.size()), m_handler);
+    ASSERT_EQ(fix::Result::Success, result.m_value);
+
+    ASSERT_EQ(1u, m_ingress->offered.size());
+    auto logon = decodeUnsequenced<usq::Logon>(m_ingress->offered[0]);
+    EXPECT_EQ(usq::ResetSeqNumFlag::Value::NULL_VALUE, logon.resetSeqNumFlag());
 }
 
 TEST_F(ClusterIngressHandlerAdminOnly, LogoutIsReEncodedAsSbeUnsequenced)
@@ -434,9 +460,9 @@ class ClusterIngressHandlerWithSession : public ::testing::Test {
 
     ClusterIngressSender m_sender;
     FakeIngressTransport* m_ingress{nullptr};
-    FixSession m_session{FixSession::Builder{}.transport(CapturingTransport{-1}).build()};
+    FixSession m_session{makeFixSessionBuilder().transport(CapturingTransport{-1}).build()};
     ClusterIngressHandler m_handler{&m_sender, CONN_ID, &m_session};
-    fix::decoder::PayloadDecoder<cfg::FIXT_1_1> m_decoder;
+    fix::decoder::PayloadDecoder<msg::Protocol::FIXT_1_1> m_decoder;
 };
 
 TEST_F(ClusterIngressHandlerWithSession, ValidNewOrderSingleSubmitsOrderThenSendsExecutionReportNew)
@@ -512,7 +538,7 @@ class ClusterIngressHandlerCompIdMismatch : public ::testing::Test {
     void SetUp() override
     {
         ASSERT_EQ(0, ::socketpair(AF_UNIX, SOCK_STREAM, 0, m_fds));
-        m_session = std::make_unique<FixSession>(FixSession::Builder{}.transport(CapturingTransport{m_fds[0]}).build());
+        m_session = std::make_unique<FixSession>(makeFixSessionBuilder().transport(CapturingTransport{m_fds[0]}).build());
         m_session->onTcpConnected();
         m_handler = std::make_unique<ClusterIngressHandler>(&m_sender, CONN_ID, m_session.get());
     }
@@ -535,7 +561,7 @@ class ClusterIngressHandlerCompIdMismatch : public ::testing::Test {
     ClusterIngressSender m_sender;
     std::unique_ptr<FixSession> m_session;
     std::unique_ptr<ClusterIngressHandler> m_handler;
-    fix::decoder::PayloadDecoder<cfg::FIXT_1_1> m_decoder;
+    fix::decoder::PayloadDecoder<msg::Protocol::FIXT_1_1> m_decoder;
 };
 
 // First, log on normally (SenderCompID=CLIENT, matching the session's

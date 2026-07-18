@@ -12,7 +12,7 @@
 // same in-memory IngressTransport/EgressTransport fakes as
 // ClusterIngressSenderTest.cpp (see ClusterIngressHandlerTest.cpp).
 
-#include <errno.h>
+#include <cerrno>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -22,8 +22,10 @@
 #include <cstdio>
 #include <cstring>
 #include <span>
+#include <string>
 #include <string_view>
 
+#include "org/limitless/phixeron/basicdata/BasicDataCatalogue.hpp"
 #include "org/limitless/phixeron/fix/Conversions.hpp"
 #include "org/limitless/phixeron/fix/ServerSession.hpp"
 #include "org/limitless/phixeron/sequencer/ClusterIngressSender.hpp"
@@ -47,7 +49,7 @@ namespace org::limitless::phixeron::sequencer {
 namespace fix = limitless::simdifx;
 namespace sess = phixeron::fix;
 namespace msg = fix::generated::messages;
-namespace cfg = fix::generated::config;
+namespace bd = phixeron::basicdata;
 namespace usq = sbe::unsequenced;
 
 using sess::toSbeHandlInst;
@@ -94,7 +96,19 @@ struct CapturingTransport {
     }
 };
 
-using FixSession = sess::ServerSession<cfg::FIXT_1_1, "SEQUENCER", "CLIENT", CapturingTransport>;
+using FixSession = sess::ServerSession<CapturingTransport>;
+
+// The gateway's own FIX identity, built from the BasicData session catalogue
+// (bd::SESSIONS): our SenderCompID (tag 49) is the sessions' shared target
+// comp-id ("SEQUENCER"), and the counterparty TargetCompID (tag 56) is the first
+// configured client session ("CLIENT"). This is the single place runtime identity
+// is injected; design §7a will resolve the per-connection target from the logon's
+// SenderCompID against the catalogue instead of always using the first row.
+inline FixSession::Builder makeFixSessionBuilder()
+{
+    return FixSession::Builder{msg::Protocol::FIXT_1_1, std::string{bd::TARGET_COMP},
+                               std::string{bd::SESSIONS.front().senderComp}};
+}
 
 // Reserved SenderCompID (tag 49) stamped on the gateway's own chunk-boundary
 // SequenceReset when a large ResendRequest is served in 1000-message chunks
@@ -215,8 +229,8 @@ class ClusterIngressHandler : public msg::FixMessageHandler<ClusterIngressHandle
 
     // Verifies an inbound message's SenderCompID (tag 49) / TargetCompID
     // (tag 56) against this session's expected identity:
-    //   - TargetCompID must always equal our own compId (FixSession::senderCompId()) —
-    //     the client must be addressing this gateway, not some other identity.
+    //   - TargetCompID must always equal our own compId (bd::TARGET_COMP, the gateway's
+    //     SenderCompID) — the client must be addressing this gateway, not some other identity.
     //   - SenderCompID must equal whatever was captured at Logon (m_senderCompId) —
     //     an authenticated session's identity can't change mid-session. Not
     //     checked for the Logon itself, since m_senderCompId is still empty at
@@ -233,7 +247,7 @@ class ClusterIngressHandler : public msg::FixMessageHandler<ClusterIngressHandle
         {
             return false;
         }
-        if (*target != FixSession::senderCompId())
+        if (*target != bd::TARGET_COMP)
         {
             return false;
         }
