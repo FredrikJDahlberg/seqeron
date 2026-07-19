@@ -161,7 +161,7 @@ does not force the catalog, or a node was mid-recording):
   on top of `onTerminate`.
 
 Post-shutdown analysis reads any single node's archive dir (every node's tap is byte-identical), via
-`SbeLogPrinter` / `logprint.sh` with the sequenced SBE IR.
+`SbeLogPrinter` / `sbe-log-printer.sh` with the sequenced SBE IR.
 
 ## Schema work (do both toolchains, in lockstep)
 

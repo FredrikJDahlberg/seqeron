@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # clusterctl.sh — operator cluster life-cycle tool (start / shutdown / passthrough).
 #
-# Thin launcher for org.limitless.phixeron.tool.ClusterCtl (see clusterctl.md). Node-local:
+# Thin launcher for org.limitless.phixeron.tools.ClusterCtl (see clusterctl.md). Node-local:
 # run co-located on a SequencerNode host — it shares that node's Aeron directory (to reach the
 # co-located tap over aeron:ipc) and its clusterDir (for io.aeron.cluster.ClusterTool).
 #
@@ -44,4 +44,4 @@ DPROPS=( "-Dclusterctl.memberId=${CLUSTERCTL_MEMBER_ID:-0}" )
 [[ -n "${CLUSTERCTL_AERON_DIR:-}" ]]         && DPROPS+=( "-Dclusterctl.aeronDir=${CLUSTERCTL_AERON_DIR}" )
 [[ -n "${CLUSTERCTL_INGRESS_ENDPOINTS:-}" ]] && DPROPS+=( "-Dclusterctl.ingressEndpoints=${CLUSTERCTL_INGRESS_ENDPOINTS}" )
 
-exec java "${JAVA_OPTS[@]}" "${DPROPS[@]}" -cp "${JAR}" org.limitless.phixeron.tool.ClusterCtl "$@"
+exec java "${JAVA_OPTS[@]}" "${DPROPS[@]}" -cp "${JAR}" org.limitless.phixeron.tools.ClusterCtl "$@"

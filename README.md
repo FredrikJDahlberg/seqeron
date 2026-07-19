@@ -212,23 +212,56 @@ written so far — so the cluster does not need to be stopped first.
 
 ./src/main/scripts/sbe-log-printer.sh \
   build/generated/sources/sbe/main/java/sbe-sequenced.sbeir \
-  "${TMPDIR}phixeron-seq/archive-0"
+  "${TMPDIR}phixeron-seq/archive-0" --stream 205
 ```
 
 Or via Gradle directly (defaults `-Pspec` to the sequenced IR above):
 ```bash
-./gradlew sbeLogPrinter -PlogDir="${TMPDIR}phixeron-seq/archive-0"
+./gradlew sbeLogPrinter -PlogDir="${TMPDIR}phixeron-seq/archive-0" -Pstream=205
 ```
 
-Every recording in the catalog is dumped, not just the one matching the spec. The archive
-holds both the sequenced tap (stream 205, schema 202) and the cluster log (schema 111), so
-with the sequenced IR the cluster-log recording fails to decode and is reported on stderr:
+#### Selecting a recording
+
+An archive dir holds more than one recording, so by default the printer dumps **all** of them:
 
 ```
+[Catalog] Recording ID: 0 | Stream ID: 205 | Start Pos: 0 | Stop Pos: 6336
+[Catalog] Recording ID: 1 | Stream ID: 100 | Start Pos: 0 | Stop Pos: 8448
 Exception parsing segment .../1-0.rec: Required schema id 202 but was 111
+[Catalog] Recording ID: 2 | Stream ID: 205 | Start Pos: 0 | Stop Pos: 12480
 ```
 
-That is expected — the scan skips that recording and continues with the next one.
+Stream 100 is the Raft cluster log (schema 111) — it cannot decode against the sequenced IR, so
+it is reported on stderr and skipped. Streams 205 are two generations of the sequenced tap: a node
+restart replays its whole cluster log and re-emits every message onto a *new* tap recording, so
+recording 2 starts again at `globalSeqNo` 1 and recording 0 is a strict prefix of it.
+
+`--stream 205` (or `-Pstream=205`) dumps only the **newest** recording on that stream — one
+complete copy of sequenced history, no cluster-log error, no repeats. Recording ids are not stable
+across restarts, which is why the selector is the stream rather than the id.
+
+Omit the flag when you want everything, including stale tap generations. Exits non-zero if the
+requested stream matches no recording.
+
+#### Output format
+
+Each message is preceded by a separator naming it — the JSON carries field values only, so a
+header-only message such as `Tick` is otherwise indistinguishable from any other:
+
+```
+--- Log File Offset: 96 | Tick (templateId 16) ---
+```
+
+`--oneline` (or `-Poneline`) collapses each message onto a single line, which greps and diffs far
+better than the default pretty print:
+
+```
+--- Log File Offset: 0 | LeadershipChanged (templateId 5) ---
+{ "header": { "sourceId": -1, "connectionId": -1, "sessionId": -1, "globalSeqNo": 1, "timestamp": 1784483030632 }, "newLeaderMemberId": 0 }
+```
+
+Note the dump as a whole is not a JSON document either way — the `[Catalog]` and separator lines sit
+between the objects — but with `--oneline` each individual message line parses on its own.
 
 ---
 
