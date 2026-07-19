@@ -118,7 +118,7 @@
         </composite>
 
         <!-- CompID: 16-char fixed (tags 49 / 56); byte[0]==0x00 signals absent, unused trailing bytes 0x00.
-             Sized to hold real FIX comp-ids such as "SEQUENCER" (9 chars) without abbreviation. -->
+             Sized to hold real FIX comp-ids such as "PHIXERON" (8 chars) without abbreviation. -->
         <type name="compId" primitiveType="char" length="16" characterEncoding="US-ASCII"
               description="SenderCompID or TargetCompID (tags 49/56); up to 16 chars, unused trailing bytes 0x00"/>
 

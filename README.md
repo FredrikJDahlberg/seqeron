@@ -52,7 +52,7 @@ cluster (or are standalone tools); they run no tests:
 | `start-cluster.sh [debug\|release]` | Start the single-node cluster (`SequencerNode`, `aeronmd`, `FixSessionClient`, `ReplayerNode`, `OrderExecClient`) in the background; Ctrl-C stops all of them |
 | `start-three-node-cluster.sh [debug\|release]` | Start a local 3-node Raft cluster with a `FixSessionClient` and a per-node `ReplayerNode` + `OrderExecClient` replica; blocks until Ctrl-C, then stops all of them |
 | `stop-cluster.sh` | Stop all cluster processes started by either start script |
-| `logprint.sh <spec.sbeir> <archive-dir>` | Dump an Aeron Archive recording as JSON (see [Log printer](#log-printer)) |
+| `sbe-log-printer.sh <spec.sbeir> <archive-dir>` | Dump an Aeron Archive recording as JSON (see [Log printer](#log-printer)) |
 | `purgelog.sh [--force]` | Delete archive/cluster directories under `$TMPDIR/phixeron-seq` and the `logs/` directory; cluster must be stopped first |
 
 Test scripts live under `src/test/scripts/` — each brings the cluster up via the start scripts above
@@ -208,17 +208,27 @@ written so far — so the cluster does not need to be stopped first.
 
 ```bash
 ./gradlew uberJar
-./gradlew generateSbe   # produces build/generated/sources/sbe/main/java/sequencer.sbeir
+./gradlew generateSequencedSbe   # produces build/generated/sources/sbe/main/java/sbe-sequenced.sbeir
 
-./src/main/scripts/logprint.sh \
-  build/generated/sources/sbe/main/java/sequencer.sbeir \
-  /tmp/phixeron-seq/archive-0
+./src/main/scripts/sbe-log-printer.sh \
+  build/generated/sources/sbe/main/java/sbe-sequenced.sbeir \
+  "${TMPDIR}phixeron-seq/archive-0"
 ```
 
-Or via Gradle directly:
+Or via Gradle directly (defaults `-Pspec` to the sequenced IR above):
 ```bash
-./gradlew sbeLogPrinter -Pspec=build/generated/sources/sbe/main/java/sequencer.sbeir -PlogDir=/tmp/phixeron-seq/archive-0
+./gradlew sbeLogPrinter -PlogDir="${TMPDIR}phixeron-seq/archive-0"
 ```
+
+Every recording in the catalog is dumped, not just the one matching the spec. The archive
+holds both the sequenced tap (stream 205, schema 202) and the cluster log (schema 111), so
+with the sequenced IR the cluster-log recording fails to decode and is reported on stderr:
+
+```
+Exception parsing segment .../1-0.rec: Required schema id 202 but was 111
+```
+
+That is expected — the scan skips that recording and continues with the next one.
 
 ---
 
@@ -277,7 +287,7 @@ using the simdfix `ClientSession` and generated message encoders:
 
 ```
 SenderCompID = CLIENT
-TargetCompID = SEQUENCER   (the gateway's identity)
+TargetCompID = PHIXERON   (the gateway's identity)
 ```
 
 ### How to run
@@ -317,7 +327,7 @@ AERON_DIR="${TMPDIR}aeron-$(whoami)" ./cmake-build-release/fix_test_server
 # [FixTestServer] Connecting to 127.0.0.1:9000
 # [FixTestServer] Connected
 # [FixTestServer] Sent  Logon          seq=1
-# [FixTestServer] Recv  8=FIXT.1.1|9=...|35=A|49=SEQUENCER|56=CLIENT|...
+# [FixTestServer] Recv  8=FIXT.1.1|9=...|35=A|49=PHIXERON|56=CLIENT|...
 # [FixTestServer] Sent  Heartbeat      seq=2
 # [FixTestServer] Sent  NewOrderSingle seq=3  Account=ACC1  ClOrdID=ORD-0001  AAPL Buy 100 @ 150.00
 # [FixTestServer] Recv  8=FIXT.1.1|9=...|35=8|...                       (ExecutionReport ack)
