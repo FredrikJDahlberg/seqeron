@@ -97,7 +97,7 @@ too (its targets are `EXCLUDE_FROM_ALL` and never get built in this project), so
 those as spurious `..._NOT_BUILT` failures alongside phixeron's real results. If you must use
 `ctest`, filter them out: `ctest --output-on-failure -E "_NOT_BUILT"`.
 
-Run a single test: `./cmake-build-debug/phixeron_tests --gtest_filter='ClusterIngressHandler*'`
+Run a single test: `./cmake-build-debug/phixeron_tests --gtest_filter='FixIngressHandler*'`
 (GoogleTest name-filter syntax; test suite/case names are visible in the `ctest`/`run_tests` output).
 
 ## Architecture
@@ -145,7 +145,7 @@ Three cooperating pieces:
   (`SessionConnectRequest → SessionEvent(OK) → send/keep-alive → SessionCloseRequest`), talking to
   the cluster only through an `IngressTransport`/`EgressTransport` seam so tests can substitute
   in-memory fakes.
-- **`ClusterIngressHandler`** — pure byte-level logic: FIX frame/tag parsing helpers, SBE
+- **`FixIngressHandler`** — pure byte-level logic: FIX frame/tag parsing helpers, SBE
   encode/decode, and application-message routing, built on top of `ClusterIngressSender`.
 - **`GlobalStreamClient`** — replays the archived global stream from a given position, then
   follows it live; used identically by `FixSessionClient`, `OrderExecClient`, and

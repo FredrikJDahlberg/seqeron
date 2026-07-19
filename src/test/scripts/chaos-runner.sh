@@ -141,7 +141,7 @@ log "cluster READY — gateway up, consumer following live"
 
 # Optional steady background order flow so faults land on a system that is actually doing work.
 # Streams NewOrderSingles THROUGH the gateway as SenderCompID "LOADGEN" — distinct from the "CLIENT"
-# the liveness probe uses, so the load session and a concurrent probe session coexist (proven by
+# the liveness probe uses, so the load fix and a concurrent probe fix coexist (proven by
 # fix_test_server's runTwoDifferentSendersTest). Loops so order flow is continuous for the whole run.
 start_background_load() {
   [[ "$BACKGROUND_LOAD" == "1" ]] || return 0
