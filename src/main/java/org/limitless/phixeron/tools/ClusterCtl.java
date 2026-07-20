@@ -187,13 +187,13 @@ public final class ClusterCtl {
     private static long publishMarkerAndAwaitEcho(
         final AeronCluster cluster, final int templateId, final long correlationId) {
         // Attach to the tap before publishing so the echo cannot be missed.
-        final Subscription tap
-            = cluster.context().aeron().addSubscription(SequencerService.REPLAYER_CHANNEL, SequencerService.REPLAYER_STREAM_ID);
+        final Subscription tap = cluster.context().aeron()
+            .addSubscription(SequencerService.FEEDER_CHANNEL, SequencerService.FEEDER_STREAM_ID);
         final long connectDeadline = System.nanoTime() + CONNECT_TIMEOUT_NS;
         while (!tap.isConnected()) {
             if (System.nanoTime() >= connectDeadline) {
                 System.err.printf("[clusterctl] tap (aeron:ipc/%d) not available — co-located with a SequencerNode?%n",
-                                  SequencerService.REPLAYER_STREAM_ID);
+                                  SequencerService.FEEDER_STREAM_ID);
                 return -1;
             }
             cluster.pollEgress();

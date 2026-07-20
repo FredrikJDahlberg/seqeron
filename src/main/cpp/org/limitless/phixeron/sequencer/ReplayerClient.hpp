@@ -12,7 +12,7 @@
 // This deliberately mirrors GlobalStreamClient's proven "follow a replay image up to a catch-up
 // position, then hand off to the live feed, de-duping the seam by globalSeqNo" handoff, with two
 // substitutions:
-//   • the "live feed" is the SequencerService IPC tap (REPLAYER_TAP_STREAM_ID), read directly and
+//   • the "live feed" is the SequencerService IPC tap (FEEDER_STREAM_ID), read directly and
 //     untethered — the same recorded aeron:ipc stream the Replayer replays from — not an archive
 //     replay image;
 //   • the replay is served by the Replayer (ReplayRequest -> Replaying) instead of the app calling
@@ -47,7 +47,7 @@
 #include "concurrent/AtomicBuffer.h"
 
 // Reuses SequencedEvent / LifecycleEvent, the sequenced MessageHeader/Header codecs, the
-// CLIENT_CONNECTED/DISCONNECTED template-id constants, and GLOBAL_STREAM_ID (the recorded sequenced
+// CLIENT_CONNECTED/DISCONNECTED template-id constants, and FEEDER_STREAM_ID (the recorded sequenced
 // stream id, which the live tap and the Replayer's replays both address) — header-only; brings in
 // archive headers it does not otherwise need, which is harmless — the un-rewired binaries include the
 // same header.
@@ -66,13 +66,13 @@ namespace usq = org::limitless::phixeron::sbe::unsequenced;
 
 // ── Node-local IPC channels/streams — MUST match org.limitless.phixeron.replayer.ReplayerService ─────────
 inline constexpr const char* REPLAYER_IPC_CHANNEL = "aeron:ipc";
-// The live feed is the co-located SequencerService tap (SequencerService.TAP_CHANNEL / TAP_STREAM_ID),
-// read directly and untethered (design §5): a slow replica is dropped to a resting state rather than
-// back-pressuring the sequencer's recording, then re-detects its globalSeqNo gap and recovers via the
-// Replayer. REPLAYER_TAP_STREAM_ID is the recorded sequenced stream, so it equals GLOBAL_STREAM_ID.
-inline constexpr const char* REPLAYER_TAP_CHANNEL = "aeron:ipc?tether=false";
-inline constexpr std::int32_t REPLAYER_TAP_STREAM_ID = 205;
-static_assert(REPLAYER_TAP_STREAM_ID == GLOBAL_STREAM_ID, "tap stream id must match the recorded sequenced stream");
+// The live feed is the co-located SequencerService tap (SequencerService.FEEDER_CHANNEL /
+// FEEDER_STREAM_ID), read directly and untethered (design §5): a slow replica is dropped to a resting
+// state rather than back-pressuring the sequencer's recording, then re-detects its globalSeqNo gap
+// and recovers via the Replayer. Same stream as the publisher's, addressed with the consumer-side
+// `?tether=false` option; FEEDER_STREAM_ID itself is defined once, in GlobalStreamClient.hpp, since the
+// live tap and the Replayer's replays of its recording are the same stream.
+inline constexpr const char* FEEDER_CHANNEL = "aeron:ipc?tether=false";
 inline constexpr std::int32_t REPLAYER_REPLAY_STREAM_ID = 201;
 inline constexpr std::int32_t REPLAYER_REQUEST_STREAM_ID = 202;
 inline constexpr std::int32_t REPLAYER_CONTROL_STREAM_ID = 203;
@@ -124,7 +124,7 @@ class ReplayerClient {
     void start(std::shared_ptr<aeron::Aeron> aeron)
     {
         m_aeron = std::move(aeron);
-        m_tapSubRegId = m_aeron->addSubscription(REPLAYER_TAP_CHANNEL, REPLAYER_TAP_STREAM_ID);
+        m_tapSubRegId = m_aeron->addSubscription(FEEDER_CHANNEL, FEEDER_STREAM_ID);
         m_replaySubRegId = m_aeron->addSubscription(REPLAYER_IPC_CHANNEL, REPLAYER_REPLAY_STREAM_ID);
         m_controlSubRegId = m_aeron->addSubscription(REPLAYER_IPC_CHANNEL, REPLAYER_CONTROL_STREAM_ID);
         m_requestPubRegId = m_aeron->addPublication(REPLAYER_IPC_CHANNEL, REPLAYER_REQUEST_STREAM_ID);

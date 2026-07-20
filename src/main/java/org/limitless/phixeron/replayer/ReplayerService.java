@@ -26,7 +26,7 @@ import org.limitless.phixeron.sequencer.SequencerService;
  * Per-node archive <b>replay server</b> for co-located application replicas (ReplayerService design,
  * {@code doc/router-design.md}). It is deliberately <em>not</em> on the live delivery path: every
  * app reads the co-located {@code SequencerService}'s node-local IPC tap ({@link
- * SequencerService#REPLAYER_CHANNEL} / {@link SequencerService#REPLAYER_STREAM_ID}) <b>directly</b> for the
+ * SequencerService#FEEDER_CHANNEL} / {@link SequencerService#FEEDER_STREAM_ID}) <b>directly</b> for the
  * live feed, so the sequencer has no live network data subscribers (the UDP multi-destination-cast
  * global stream is retired) and audit.md S4 (sequencer liveness coupled to its slowest consumer)
  * dissolves structurally. The apps' tap subscriptions are untethered, so a slow app is dropped (and
@@ -464,7 +464,7 @@ public final class ReplayerService {
     // earlier, stopped recording alongside it, and this returns the active one.
     private long findActiveRecordingId() {
         final long[] found = {NULL_VALUE};
-        archive.listRecordingsForUri(0, Integer.MAX_VALUE, "", SequencerService.REPLAYER_STREAM_ID,
+        archive.listRecordingsForUri(0, Integer.MAX_VALUE, "", SequencerService.FEEDER_STREAM_ID,
                                      (controlSessionId, correlationId, recordingId, startTimestamp, stopTimestamp,
                                       startPosition, stopPosition, initialTermId, segmentFileLength, termBufferLength,
                                       mtuLength, sessionId, streamId, strippedChannel, originalChannel,
@@ -484,7 +484,7 @@ public final class ReplayerService {
     // de-dupes by globalSeqNo, so the overlap is harmless. Mirrors GlobalStreamClient.resolveGlobalStreamSegments.
     private List<Long> resolveSegments() {
         final List<long[]> entries = new ArrayList<>();  // [recordingId, startTs, stopTs]
-        archive.listRecordingsForUri(0, Integer.MAX_VALUE, "", SequencerService.REPLAYER_STREAM_ID,
+        archive.listRecordingsForUri(0, Integer.MAX_VALUE, "", SequencerService.FEEDER_STREAM_ID,
                                      (controlSessionId, correlationId, recordingId, startTimestamp, stopTimestamp,
                                       startPosition, stopPosition, initialTermId, segmentFileLength, termBufferLength,
                                       mtuLength, sessionId, streamId, strippedChannel, originalChannel,

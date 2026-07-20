@@ -68,6 +68,7 @@ MD_LOG="${LOG_DIR}/aeronmd.log"
 FIX_LOG="${LOG_DIR}/FixSessionClient.log"
 REPLAYER_LOG="${LOG_DIR}/ReplayerNode.log"
 APP_LOG="${LOG_DIR}/OrderExecClient.log"
+BASICDATA_LOG="${LOG_DIR}/BasicDataClient.log"
 
 BASE_DIR="${TMPDIR:-/tmp}phixeron-seq3"
 
@@ -98,7 +99,7 @@ if [[ ! -f "${JAR}" ]]; then
     exit 1
 fi
 
-for bin in FixSessionClient OrderExecClient; do
+for bin in FixSessionClient OrderExecClient BasicDataClient; do
     if [[ ! -x "${BUILD_DIR}/${bin}" ]]; then
         echo "ERROR: ${BUILD_DIR}/${bin} not found — run: cmake --build ${BUILD_DIR}" >&2
         exit 1
@@ -215,6 +216,22 @@ PHIXERON_ORDER_EXEC_AERON_DIR="${SEQ_AERON_DIR}" \
     stdbuf -oL -eL "${BUILD_DIR}/OrderExecClient" > "${APP_LOG}" 2>&1 &
 APP_PID=$!
 
+# BasicDataClient (replica on member 0) — the reference-data gateway. Dual-role: the replica on
+# whichever member is leader produces the session/trading-day rows into the sequenced log once; every
+# replica consumes them back off the tap. The FIX gateway builds its SessionMap from those
+# BasicDataSession rows, so without this running every Logon is refused "Unknown SenderCompID".
+# PHIXERON_REPLAYER_CLIENT_ID=3 keeps it distinct from the co-located OrderExecClient (1) and
+# FixSessionClient (2). Its cluster egress port must be given explicitly: the default is 9340+memberId,
+# which is exactly FixSessionClient's, so co-locating both on member 0 would collide — use 9350+memberId
+# (clear of the 9300-9325 cluster block, the replica's 9330+m and the gateway's 9340+m).
+echo "[start-three-node-cluster.sh] Starting BasicDataClient (replica on member 0) → ${BASICDATA_LOG}"
+PHIXERON_BASICDATA_AERON_DIR="${SEQ_AERON_DIR}" \
+    PHIXERON_NODE_MEMBER_ID=0 \
+    PHIXERON_REPLAYER_CLIENT_ID=3 \
+    PHIXERON_BASICDATA_EGRESS_ENDPOINT="localhost:9350" \
+    stdbuf -oL -eL "${BUILD_DIR}/BasicDataClient" > "${BASICDATA_LOG}" 2>&1 &
+BASICDATA_PID=$!
+
 # A replica on every node (design §3): start a ReplayerNode + OrderExecClient co-located with members 1
 # and 2 too. Each attaches to its own member's media driver (phixeron-seq-aeron-<m>), reads that
 # node's SequencerService tap over aeron:ipc, and uses a distinct cluster egress port (9330 + m, derived
@@ -223,9 +240,11 @@ APP_PID=$!
 EXTRA_REPLAYER_PIDS=()
 EXTRA_APP_PIDS=()
 EXTRA_APP_LOGS=()
+EXTRA_BASICDATA_PIDS=()
 for m in 1 2; do
     RLOG="${LOG_DIR}/ReplayerNode-${m}.log"
     ALOG="${LOG_DIR}/OrderExecClient-${m}.log"
+    BDLOG="${LOG_DIR}/BasicDataClient-${m}.log"
     MDIR="${TMPDIR}phixeron-seq-aeron-${m}"
     echo "[start-three-node-cluster.sh] Starting ReplayerNode + OrderExecClient (replica on member ${m})"
     java "${JAVA_OPTS[@]}" -Dreplayer.memberId="${m}" -cp "${JAR}" \
@@ -242,10 +261,18 @@ for m in 1 2; do
         stdbuf -oL -eL "${BUILD_DIR}/OrderExecClient" > "${ALOG}" 2>&1 &
     EXTRA_APP_PIDS+=("$!")
     EXTRA_APP_LOGS+=("${ALOG}")
+    # One BasicDataClient replica per node too, so whichever member is elected leader has a local
+    # replica able to produce the load (and every node keeps the consumed tables warm for failover).
+    PHIXERON_BASICDATA_AERON_DIR="${MDIR}" \
+        PHIXERON_NODE_MEMBER_ID="${m}" \
+        PHIXERON_REPLAYER_CLIENT_ID=3 \
+        PHIXERON_BASICDATA_EGRESS_ENDPOINT="localhost:$(( 9350 + m ))" \
+        stdbuf -oL -eL "${BUILD_DIR}/BasicDataClient" > "${BDLOG}" 2>&1 &
+    EXTRA_BASICDATA_PIDS+=("$!")
 done
 
 ALL_PIDS=("${APP_PID}" "${REPLAYER_PID}" "${EXTRA_APP_PIDS[@]}" "${EXTRA_REPLAYER_PIDS[@]}" \
-          "${FIX_PID}" "${MD_PID}" "${SEQ_PIDS[@]}")
+          "${BASICDATA_PID}" "${EXTRA_BASICDATA_PIDS[@]}" "${FIX_PID}" "${MD_PID}" "${SEQ_PIDS[@]}")
 
 # ── Shutdown handling ─────────────────────────────────────────────────────────
 
@@ -289,12 +316,29 @@ for LOG in "${APP_LOG}" "${EXTRA_APP_LOGS[@]}"; do
     done
 done
 
+# The gateway gates logons on EndBasicData itself (doc/basicdata-design.md §6), so a client that
+# connects early queues in the listen backlog rather than being refused — this wait is not needed for
+# correctness. It is here so READY means "a Logon will be answered now", keeping the harness's
+# failure modes distinguishable: a genuine hang shows up here, not as a client-side connect timeout.
+echo "[start-three-node-cluster.sh] Waiting for the FIX gateway to load basic data…"
+WAIT=0
+until grep -q "Basic data loaded" "${FIX_LOG}" 2>/dev/null; do
+    sleep 0.5
+    WAIT=$(( WAIT + 1 ))
+    if (( WAIT > 60 )); then
+        echo "[start-three-node-cluster.sh] WARN: gateway has not seen EndBasicData after 30s —" \
+             "its logon gate is still shut, so clients will connect but get no Logon reply" >&2
+        break
+    fi
+done
+
 echo "[start-three-node-cluster.sh] READY — cluster is up and all replicas are following the live tail"
 echo "  SequencerNode     pids=${SEQ_PIDS[*]}"
 echo "  aeronmd           pid=${MD_PID}"
 echo "  FixSessionClient  pid=${FIX_PID}   log=${FIX_LOG}"
 echo "  ReplayerNode      pids=${REPLAYER_PID} ${EXTRA_REPLAYER_PIDS[*]}"
 echo "  OrderExecClient   pids=${APP_PID} ${EXTRA_APP_PIDS[*]}"
+echo "  BasicDataClient   pids=${BASICDATA_PID} ${EXTRA_BASICDATA_PIDS[*]}"
 echo "[start-three-node-cluster.sh] Press Ctrl-C to stop"
 
 # ── Monitor ───────────────────────────────────────────────────────────────────

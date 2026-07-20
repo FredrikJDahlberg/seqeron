@@ -85,7 +85,13 @@ Executables: `FixSessionClient`, `OrderExecClient`, `fix_test_server`,
 ./gradlew uberJar              # fat jar: build/libs/phixeron-<version>-uber.jar
 ./gradlew generateUnsequencedSbe generateSequencedSbe   # regenerate SBE Java codecs (also runs on compileJava)
 ```
-There is no JUnit suite on the Java side — all automated tests are the C++ GoogleTest suite.
+```bash
+./gradlew test                 # JUnit 5 unit tests for the Java state machines
+```
+The Java suite covers the deterministic state machines only (`Sequencer`) and deliberately touches
+no Aeron runtime — no media driver, no cluster, no Aeron mocks — so it runs in ~1s. Everything
+Aeron-shaped stays covered by the C++ GoogleTest suite and the end-to-end scripts in
+`src/test/scripts/`.
 
 ## Tests
 
@@ -106,7 +112,8 @@ Run a single test: `./cmake-build-debug/phixeron_tests --gtest_filter='FixIngres
 ```
 FIX client (TCP) ⇄ FixSessionClient (C++)  ⇄  Aeron Cluster (Java, Raft-replicated)
                                                       │
-                                     global sequenced stream (MDC, archived)
+                        sequenced tap, per node (aeron:ipc 205, archived on every node)
+                       live: read directly · history/gaps: co-located ReplayerService
                                                       │
                           ┌───────────────────────────┴───────────────────────────┐
                           ▼                                                       ▼
@@ -119,23 +126,60 @@ FIX client (TCP) ⇄ FixSessionClient (C++)  ⇄  Aeron Cluster (Java, Raft-repl
 drive the whole pipeline end-to-end (Logon → Heartbeat → NewOrderSingle → Logout, plus a direct
 cluster-ingress risk-query test) — see README.md for the full runbook and port table.
 
-### Aeron Cluster sequencer (Java) — `SequencerNode` / `SequencerService`
-`SequencerService` (`ClusteredService`) is the replicated state machine: every ingress message
+### Aeron Cluster sequencer (Java) — `SequencerNode` / `SequencerService` / `Sequencer`
+`Sequencer` is the replicated state machine proper — it owns `globalSeqNo` and every frame encode,
+has no Aeron dependency, and is unit-tested directly (`SequencerTest`). `SequencerService`
+(`ClusteredService`) is its Aeron adapter: it decides *when* to call the sequencer and publishes
+what comes back, holding no replicated state itself. Every ingress message
 gets a cluster-wide monotone `globalSeqNo` plus the Raft consensus timestamp, then is
-republished on the **global stream** — multi-destination-cast, dynamic control mode
-(`GLOBAL_STREAM_CHANNEL` = `aeron:udp?control-mode=dynamic|control=localhost:9200` for the
-publisher/archive side, `GLOBAL_STREAM_SUBSCRIBER_CHANNEL` adds `|endpoint=localhost:0` for
-subscribers, stream 1), which is simultaneously recorded by the co-located Aeron Archive so clients can replay full
-history on (re)connect. Only the current leader publishes; all nodes keep identical sequencing
-state so a new leader resumes exactly where the last one left off. Snapshots are a single
-little-endian `int64 globalSeqNo`.
+republished on the **node-local tap** (`FEEDER_CHANNEL` = `aeron:ipc`, `FEEDER_STREAM_ID` = 205),
+which this node's co-located Aeron Archive records. Every frame on it is sequenced: all 21
+messages in `sbe-sequenced.xml` carry the `header` composite, and the sequencer is the stream's only
+publisher, so `globalSeqNo` + consensus `timestamp` are stamped on ingress messages and on the
+lifecycle/tick/leadership frames it synthesizes alike.
+
+**Every node publishes and records its own tap** — leader and follower alike. All nodes process the
+same committed log in the same order and keep identical sequencing state (so a new leader resumes
+exactly where the last one left off), which makes the taps byte-identical across nodes: each
+archive independently holds complete history, with no cross-node replication. The tap publication
+is created once in `onStart` and never re-created on a leadership change (`aeron:ipc` has no port
+to collide on), so a node's recording is one continuous run spanning every leader tenure.
+
+Consumers split live from history: co-located apps subscribe to the tap **directly** for the live
+feed (untethered, so a slow app is dropped and heals via replay rather than back-pressuring), while
+the co-located `ReplayerService` serves cold-start/gap replay off the same recording. `emit` is
+reliable — it spins until the offer lands, since a dropped frame would be an unrecoverable hole —
+and can only block on local-archive write back-pressure, because the recording is the tap's one
+tethered subscriber.
+
+> This replaced a UDP multi-destination-cast "global stream" (leader-only publisher, stream 1),
+> retired in Phase 2 — see `doc/router-archive.md` and `doc/todo.md` items 1/2c. The tap's identity is
+> `FEEDER_CHANNEL`/`FEEDER_STREAM_ID` on both sides: Java in `SequencerService`, C++ in
+> `GlobalStreamClient.hpp` (the one definition of `FEEDER_STREAM_ID`) plus `ReplayerClient.hpp`'s
+> `FEEDER_CHANNEL`, which addresses the same stream with the consumer-side `?tether=false` option.
+> Named to pair with the `Replayer`: the **Feeder** stream is the live feed, the Replayer serves
+> history off its recording. Older names for it (`GLOBAL_STREAM_ID`, `REPLAYER_STREAM_ID`,
+> `REPLAYER_TAP_STREAM_ID`, `TAP_STREAM_ID`, `SEQUENCED_STREAM_ID`) are gone; they survive only in
+> the dated entries in `doc/todo.md` and `doc/audit.md`.
+
+Besides forwarded ingress, the sequencer synthesizes its own frames on the same `globalSeqNo`
+counter: `ClientConnected`/`ClientDisconnected` (cluster session lifecycle), `LeadershipChanged`
+(de-duplicated per leader), and a **1 Hz `Tick`** — the cluster clock, so consumers have a
+consensus-driven time source that keeps advancing while a FIX session is silent, which is exactly
+when the gateway's keepalive watchdog must probe (`TICK_INTERVAL_MS`).
+
+The snapshot codec is a single little-endian `int64 globalSeqNo`, but **snapshots are not taken in
+practice** — `clusterctl shutdown` uses `ABORT`, and recovery is always full-log replay from
+`globalSeqNo` 1. That is deliberate: replaying the whole log is what keeps each node's tap recording
+complete and gap-free. The cost is that recovery time and archive size grow with uptime (the 1 Hz
+tick alone is ~86.4k frames/day) — see `doc/todo.md`.
 
 The key trick making this cheap: ingress messages arrive already SBE-encoded as
 `sbe-unsequenced.xml` (schema 200), and `sbe-sequenced.xml` (schema 202) is deliberately kept
 byte-identical past the shared `header` composite (same field order/types/ids, same var-data
-layout). `onSessionMessage` therefore only ever decodes the outer `MessageHeader` + `header`
-composite and copies everything else through as opaque bytes — it never needs to know about
-individual FIX message types.
+layout). `Sequencer.sequenceMessage` therefore only ever decodes the outer `MessageHeader` +
+`header` composite and copies everything else through as opaque bytes — it never needs to know
+about individual FIX message types.
 
 ### C++ FIX gateway — `FixSessionClient` / `FixSessionClient.cpp`
 Deliberately stateless proxy: authoritative FIX session state (sequence numbers, session status)

@@ -25,12 +25,12 @@ namespace org::limitless::phixeron::sequencer {
 // ── Constants matching SequencerService / SequencerNode ──────────────────────
 
 // Stream id of the recorded sequenced stream. Every node records its node-local aeron:ipc tap
-// (SequencerService.TAP_CHANNEL / TAP_STREAM_ID) into its own archive; that recording is the
+// (SequencerService.FEEDER_CHANNEL / FEEDER_STREAM_ID) into its own archive; that recording is the
 // authoritative history clients replay here, matched by stream id alone in the archive catalog
 // (listRecordingsForUri). The old UDP multi-destination-cast global stream (stream 1) is retired,
 // so there is no live network subscription — clients follow the active recording's growth via an
 // open-ended archive replay instead (see start()/poll()).
-inline constexpr std::int32_t GLOBAL_STREAM_ID = 205;
+inline constexpr std::int32_t FEEDER_STREAM_ID = 205;
 
 // Each UDP-replaying binary uses a distinct port so their archive replay publications
 // don't conflict.
@@ -108,7 +108,7 @@ inline std::vector<std::string> resolveArchiveEndpoints(const char* envVar, cons
  *
  * @param[out] recordingId    recording id of the global stream found on the archive
  * @param[out] catchUpPosition recording position to replay/catch up to
- * @return false if the archive holds no GLOBAL_STREAM_ID recording at all (leaving both
+ * @return false if the archive holds no FEEDER_STREAM_ID recording at all (leaving both
  *         out-parameters untouched).
  */
 inline bool findGlobalStreamRecording(const std::shared_ptr<aeron::archive::client::AeronArchive>& archive,
@@ -117,7 +117,7 @@ inline bool findGlobalStreamRecording(const std::shared_ptr<aeron::archive::clie
     std::int64_t activeId = -1;
     std::int64_t stoppedId = -1;
     std::int64_t stoppedPosition = std::numeric_limits<std::int64_t>::min();
-    archive->listRecordingsForUri(0, std::numeric_limits<std::int32_t>::max(), "", GLOBAL_STREAM_ID,
+    archive->listRecordingsForUri(0, std::numeric_limits<std::int32_t>::max(), "", FEEDER_STREAM_ID,
                                   [&](aeron::archive::client::RecordingDescriptor& recording) {
                                       if (recording.m_stopPosition == aeron::archive::client::NULL_POSITION)
                                       {
@@ -154,7 +154,7 @@ inline bool findGlobalStreamRecording(const std::shared_ptr<aeron::archive::clie
 
 /**
  * Connects to each candidate archive endpoint in turn until one both connects
- * and holds a recording of the sequenced stream (matched by GLOBAL_STREAM_ID
+ * and holds a recording of the sequenced stream (matched by FEEDER_STREAM_ID
  * alone). Every member records its own node-local tap, so any reachable
  * member's archive holds a full copy; trying more than one endpoint is just
  * defense in depth against an individual member being down or still starting up
@@ -259,7 +259,7 @@ struct RecordingSegment {
 };
 
 /**
- * Lists every GLOBAL_STREAM_ID recording on an already-connected archive,
+ * Lists every FEEDER_STREAM_ID recording on an already-connected archive,
  * ordered oldest-to-newest by startTimestamp — each one is a prior leader's
  * tenure (see todo.md's "Cross-failover global-stream recording continuity"
  * entry), so replaying them in this order and concatenating reproduces full
@@ -282,7 +282,7 @@ inline std::vector<RecordingSegment> resolveGlobalStreamSegments(
     };
     std::vector<Entry> entries;
     archive->listRecordingsForUri(
-        0, std::numeric_limits<std::int32_t>::max(), "", GLOBAL_STREAM_ID,
+        0, std::numeric_limits<std::int32_t>::max(), "", FEEDER_STREAM_ID,
         [&](aeron::archive::client::RecordingDescriptor& recording) {
             entries.push_back({recording.m_recordingId, recording.m_startTimestamp, recording.m_stopPosition});
         });
@@ -363,7 +363,7 @@ struct LifecycleEvent {
  *
  * Startup sequence (caller is responsible for the archive connection):
  *   1. Caller uses resolveGlobalStreamSegments(archive) to list every
- *      GLOBAL_STREAM_ID recording on the connected archive, oldest first.
+ *      FEEDER_STREAM_ID recording on the connected archive, oldest first.
  *   2. Call start(aeron, archive, segments, replayChannel).
  *   3. Call poll() in a duty-cycle loop.
  *

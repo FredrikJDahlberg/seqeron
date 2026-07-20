@@ -18,14 +18,6 @@ import org.agrona.MutableDirectBuffer;
 import org.agrona.concurrent.NoOpLock;
 import org.agrona.concurrent.status.CountersReader;
 import org.limitless.phixeron.replayer.ReplayerService;
-import org.limitless.phixeron.sbe.sequenced.ClientConnectedEncoder;
-import org.limitless.phixeron.sbe.sequenced.ClientDisconnectedEncoder;
-import org.limitless.phixeron.sbe.sequenced.HeaderEncoder;
-import org.limitless.phixeron.sbe.sequenced.LeadershipChangedEncoder;
-import org.limitless.phixeron.sbe.sequenced.MessageHeaderEncoder;
-import org.limitless.phixeron.sbe.sequenced.TickEncoder;
-import org.limitless.phixeron.sbe.unsequenced.HeaderDecoder;
-import org.limitless.phixeron.sbe.unsequenced.MessageHeaderDecoder;
 
 /**
  * Aeron Cluster service that imposes a total order on messages arriving from multiple clients.
@@ -35,24 +27,15 @@ import org.limitless.phixeron.sbe.unsequenced.MessageHeaderDecoder;
  * lifecycle events (connect / disconnect / leadership change) — and stamps it, together with the cluster
  * consensus timestamp, into the message's {@code header} composite before republishing it.
  *
- * <p>Ingress messages arrive already SBE-encoded as {@code sbe-unsequenced.xml} (schema
- * ID 200) — the FIX gateway encodes every admin and application FIX message that way and
- * offers it directly to the cluster, with {@code header.sourceId} identifying the submitting
- * gateway <em>process</em> (a fixed constant, stable across restarts and unique across every
- * gateway instance sharing this cluster), {@code header.connectionId} identifying the specific
- * TCP connection at that gateway, and {@code header.sessionId} the Aeron Cluster session. This
- * service does not need to know about individual FIX message types to re-stamp them: {@code
- * sbe-sequenced.xml} (schema ID 202) is deliberately kept byte-identical to {@code
- * sbe-unsequenced.xml} past the {@code header} composite (same field order/types/ids, same
- * var-data layout), so {@link #onSessionMessage} decodes only the outer {@code
- * MessageHeader} and the {@code header} composite (both always at a fixed offset,
- * regardless of {@code templateId}), then copies every remaining byte — the rest of the
- * fixed block plus all var-data — verbatim into a new {@code sbe-sequenced.xml} message
- * whose {@code header} composite carries the original {@code sourceId}/{@code connectionId}/
- * {@code sessionId} plus the new {@code globalSeqNo}/{@code timestamp}.
+ * <p><b>This class is the Aeron adapter, not the state machine.</b> All sequencing state and every
+ * frame encode — including the {@code sbe-unsequenced.xml} (schema 200) → {@code sbe-sequenced.xml}
+ * (schema 202) copy-through trick that lets the sequencer re-stamp any FIX message type without
+ * knowing about it — live in {@link Sequencer}, which has no Aeron dependency and is unit-tested
+ * directly. What remains here is the cluster-facing half: the tap publication and its recording,
+ * timer scheduling, snapshot I/O, and the reliable-offer discipline in {@link #emit}.
  *
  * <p>The decorated message is published on the node-local <em>tap</em>
- * ({@link #REPLAYER_CHANNEL} / {@link #REPLAYER_STREAM_ID}), an {@code aeron:ipc} stream that this node's
+ * ({@link #FEEDER_CHANNEL} / {@link #FEEDER_STREAM_ID}), an {@code aeron:ipc} stream that this node's
  * co-located Aeron Archive records. Co-located app replicas follow it live directly, and the
  * co-located {@link ReplayerService} serves history/gap replay of this
  * recording to those apps on startup.
@@ -97,15 +80,15 @@ public final class SequencerService implements ClusteredService {
      * never re-resolve. Reliable, not lossy ({@link #emit} spins until the offer lands): the recording
      * is the authoritative history, so a dropped frame would be an unrecoverable gap.
      */
-    public static final String REPLAYER_CHANNEL = "aeron:ipc";
-    public static final int REPLAYER_STREAM_ID = 205;
+    public static final String FEEDER_CHANNEL = "aeron:ipc";
+    public static final int FEEDER_STREAM_ID = 205;
 
     /**
-     * How long {@link #awaitReplayerRecordingActive} waits for the co-located archive's recording of the tap
+     * How long {@link #awaitTapRecordingActive} waits for the co-located archive's recording of the tap
      * to become active before failing start-up. Bounded so a wedged/absent local archive fails fast at
      * onStart rather than hanging the node.
      */
-    private static final long REPLAYER_RECORDING_START_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(5);
+    private static final long TAP_RECORDING_START_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(5);
 
     /**
      * Maximum consecutive back-pressure spins in {@link #emit} before printing an alert.
@@ -116,7 +99,7 @@ public final class SequencerService implements ClusteredService {
     private static final int SNAPSHOT_POLL_BATCH = 10;
 
     /**
-     * Period of the internal cluster clock ({@link TickEncoder}): the leader fires this timer once per
+     * Period of the internal cluster clock ({@link Sequencer#tick}): the leader fires this timer once per
      * second and every node emits a header-only {@code Tick} carrying the consensus timestamp. It exists
      * so every consumer has a cluster-driven clock that keeps advancing even while an individual FIX
      * session is silent — which is exactly when the gateway's keepalive watchdog must probe/disconnect
@@ -136,46 +119,20 @@ public final class SequencerService implements ClusteredService {
     private static final long TICK_TIMER_CORRELATION_ID = 0x7100_0000_0000_0001L;
 
     /**
-     * header.sourceId/connectionId for lifecycle events synthesized by this service (ClientConnected /
-     * ClientDisconnected): an Aeron Cluster session opening/closing has no gateway-process or TCP-level
-     * connection id to carry, unlike the ingress messages it forwards.
+     * The replicated state machine: owns {@code globalSeqNo} and every frame encode. This class is
+     * only its Aeron adapter — it decides <em>when</em> to call the sequencer and publishes what
+     * comes back, and holds no replicated state of its own.
      */
-    private static final int NO_SOURCE_ID = -1;
+    private final Sequencer sequencer = new Sequencer();
 
-    // ── SBE codecs — single conductor thread; no synchronisation needed ───────
-
-    // Ingress decode (schema 200, sbe-unsequenced.xml). Only the outer framing
-    // header and the generic `header` composite are ever decoded — body
-    // fields are copied through as opaque bytes, see onSessionMessage.
-    private final MessageHeaderDecoder ingressMsgHeaderDecoder = new MessageHeaderDecoder();
-    private final HeaderDecoder ingressHeaderDecoder = new HeaderDecoder();
-
-    // Egress encode (schema 202, sbe-sequenced.xml).
-    private final MessageHeaderEncoder headerEncoder = new MessageHeaderEncoder();
-    private final HeaderEncoder egressHeaderEncoder = new HeaderEncoder();
-    private final ClientConnectedEncoder clientConnEncoder = new ClientConnectedEncoder();
-    private final ClientDisconnectedEncoder clientDiscEncoder = new ClientDisconnectedEncoder();
-    private final LeadershipChangedEncoder leadershipChangedEncoder = new LeadershipChangedEncoder();
-    private final TickEncoder tickEncoder = new TickEncoder();
-    private final MutableDirectBuffer encodeBuffer = new ExpandableDirectByteBuffer(4096);
-
-    // ── Sequencing state (snapshotted; updated on every node for determinism) ─
-
-    /** Cluster-wide sequence counter; incremented for messages and lifecycle events. */
-    private long globalSeqNo = 0;
+    /** Snapshot scratch; separate from the sequencer's encode buffer so the two never alias. */
+    private final MutableDirectBuffer snapshotBuffer = new ExpandableDirectByteBuffer(Long.BYTES);
 
     // ── Aeron runtime (not snapshotted) ──────────────────────────────────────
 
     private Cluster cluster;
-    private ExclusivePublication replayerPub;
+    private ExclusivePublication tapPub;
     private AeronArchive aeronArchive;
-
-    /**
-     * memberId of whichever node last reported itself the leader; -1 until the first
-     * {@link #onNewLeadershipTermEvent}. Kept only to de-duplicate leadership-change events and to
-     * stamp {@code newLeaderMemberId} onto the synthesized {@code LeadershipChanged}.
-     */
-    private int currentLeaderMemberId = -1;
 
     // ── ClusteredService lifecycle ────────────────────────────────────────────
 
@@ -196,13 +153,13 @@ public final class SequencerService implements ClusteredService {
         // follower alike). Every node re-publishes each sequenced frame here and records it into its own
         // co-located archive, so every node independently holds a complete copy of the sequenced history
         // — no cross-node replication needed. Co-located app replicas follow this live directly; the
-        // co-located ReplayerService serves history/gap replay of this recording. See REPLAYER_CHANNEL. Recording
+        // co-located ReplayerService serves history/gap replay of this recording. See FEEDER_CHANNEL. Recording
         // must be active before the first
         // frame is published, so await it here (onStart runs before any onSessionMessage, so this waits on
         // start-up alone, never on live traffic).
-        replayerPub = cluster.context().aeron().addExclusivePublication(REPLAYER_CHANNEL, REPLAYER_STREAM_ID);
-        aeronArchive.startRecording(REPLAYER_CHANNEL, REPLAYER_STREAM_ID, SourceLocation.LOCAL);
-        awaitReplayerRecordingActive();
+        tapPub = cluster.context().aeron().addExclusivePublication(FEEDER_CHANNEL, FEEDER_STREAM_ID);
+        aeronArchive.startRecording(FEEDER_CHANNEL, FEEDER_STREAM_ID, SourceLocation.LOCAL);
+        awaitTapRecordingActive();
 
         if (snapshotImage != null) {
             loadSnapshot(snapshotImage);
@@ -213,13 +170,13 @@ public final class SequencerService implements ClusteredService {
 
     // Blocks until the co-located archive's recording subscription has attached to the tap publication,
     // so no frame is published before the recording begins (which would leave an unrecoverable hole in
-    // the authoritative history). Bounded by REPLAYER_RECORDING_START_TIMEOUT_NS so an absent/wedged local
+    // the authoritative history). Bounded by TAP_RECORDING_START_TIMEOUT_NS so an absent/wedged local
     // archive fails start-up fast rather than hanging.
-    private void awaitReplayerRecordingActive() {
+    private void awaitTapRecordingActive() {
         final CountersReader counters = cluster.context().aeron().countersReader();
         final long archiveId = aeronArchive.archiveId();
-        final long deadlineNs = System.nanoTime() + REPLAYER_RECORDING_START_TIMEOUT_NS;
-        while (RecordingPos.findCounterIdBySession(counters, replayerPub.sessionId(), archiveId)
+        final long deadlineNs = System.nanoTime() + TAP_RECORDING_START_TIMEOUT_NS;
+        while (RecordingPos.findCounterIdBySession(counters, tapPub.sessionId(), archiveId)
                == CountersReader.NULL_COUNTER_ID) {
             if (System.nanoTime() >= deadlineNs) {
                 throw new IllegalStateException("[SequencerService] replayer recording did not start within timeout");
@@ -230,101 +187,26 @@ public final class SequencerService implements ClusteredService {
 
     @Override
     public void onSessionOpen(final ClientSession session, final long timestamp) {
-        final long globalSeq = ++globalSeqNo;
-        clientConnEncoder.wrapAndApplyHeader(encodeBuffer, 0, headerEncoder);
-        clientConnEncoder.header()
-            .sourceId(NO_SOURCE_ID)
-            .connectionId(NO_SOURCE_ID)
-            .sessionId(session.id())
-            .globalSeqNo(globalSeq)
-            .timestamp(timestamp);
-        emit(MessageHeaderEncoder.ENCODED_LENGTH + clientConnEncoder.encodedLength());
+        emit(sequencer.clientConnected(session.id(), timestamp));
     }
 
     @Override
     public void onSessionClose(final ClientSession session, final long timestamp, final CloseReason closeReason) {
-        final long globalSeq = ++globalSeqNo;
-        clientDiscEncoder.wrapAndApplyHeader(encodeBuffer, 0, headerEncoder);
-        clientDiscEncoder.header()
-            .sourceId(NO_SOURCE_ID)
-            .connectionId(NO_SOURCE_ID)
-            .sessionId(session.id())
-            .globalSeqNo(globalSeq)
-            .timestamp(timestamp);
-        emit(MessageHeaderEncoder.ENCODED_LENGTH + clientDiscEncoder.encodedLength());
+        emit(sequencer.clientDisconnected(session.id(), timestamp));
     }
 
     @Override
     public void onSessionMessage(final ClientSession session, final long timestamp, final DirectBuffer buffer,
                                  final int offset, final int length, final Header header) {
-        final long sourceSessionId = session.id();
-        final long globalSeq = ++globalSeqNo;
-
-        // Decode just enough of the ingress (schema 200) message to re-stamp
-        // it: the outer framing header (for templateId/blockLength) and the
-        // `header` composite (for sourceId/connectionId) — both at fixed
-        // offsets, independent of message type.
-        ingressMsgHeaderDecoder.wrap(buffer, offset);
-        final int templateId = ingressMsgHeaderDecoder.templateId();
-        final int ingressBlockLen = ingressMsgHeaderDecoder.blockLength();
-
-        final int ingressBodyOffset = offset + MessageHeaderDecoder.ENCODED_LENGTH;
-        ingressHeaderDecoder.wrap(buffer, ingressBodyOffset);
-        final int sourceId = ingressHeaderDecoder.sourceId();
-        final int connectionId = ingressHeaderDecoder.connectionId();
-
-        // sbe-sequenced.xml's header composite is sbe-unsequenced.xml's plus
-        // two int64 fields (globalSeqNo, timestamp); every other field is
-        // byte-identical, so the egress blockLength is simply the ingress
-        // blockLength with the header composite's growth added on.
-        final int egressBlockLen = HeaderEncoder.ENCODED_LENGTH + (ingressBlockLen - HeaderDecoder.ENCODED_LENGTH);
-
-        headerEncoder.wrap(encodeBuffer, 0)
-            .blockLength(egressBlockLen)
-            .templateId(templateId)
-            .schemaId(MessageHeaderEncoder.SCHEMA_ID)
-            .version(MessageHeaderEncoder.SCHEMA_VERSION);
-
-        final int egressBodyOffset = MessageHeaderEncoder.ENCODED_LENGTH;
-        egressHeaderEncoder.wrap(encodeBuffer, egressBodyOffset)
-            .sourceId(sourceId)
-            .connectionId(connectionId)
-            .sessionId(sourceSessionId)
-            .globalSeqNo(globalSeq)
-            .timestamp(timestamp);
-
-        // Copy every byte after the ingress header composite — the rest of
-        // the fixed block plus all var-data — verbatim; see class Javadoc.
-        final int copyFromOffset = ingressBodyOffset + HeaderDecoder.ENCODED_LENGTH;
-        final int copyLength = length - MessageHeaderDecoder.ENCODED_LENGTH - HeaderDecoder.ENCODED_LENGTH;
-        encodeBuffer.putBytes(egressBodyOffset + HeaderEncoder.ENCODED_LENGTH, buffer, copyFromOffset, copyLength);
-
-        emit(egressBodyOffset + HeaderEncoder.ENCODED_LENGTH + copyLength);
+        emit(sequencer.sequenceMessage(buffer, offset, length, session.id(), timestamp));
     }
 
     @Override
     public void onTimerEvent(final long correlationId, final long timestamp) {
         if (correlationId == TICK_TIMER_CORRELATION_ID) {
-            emitTick(timestamp);
+            emit(sequencer.tick(timestamp));
             scheduleTick();
         }
-    }
-
-    // Emits one internal clock frame carrying the consensus timestamp. Fires on every node (onTimerEvent
-    // is a committed log event delivered identically to all), so like every other emit here it advances
-    // each node's byte-identical tap and consumes a globalSeqNo on every node in the same order. Consumers
-    // (the FIX gateway watchdog above all) read header.timestamp off it to keep their session clock moving
-    // while a counterparty is silent. See TICK_INTERVAL_MS for the trade-off.
-    private void emitTick(final long timestamp) {
-        final long globalSeq = ++globalSeqNo;
-        tickEncoder.wrapAndApplyHeader(encodeBuffer, 0, headerEncoder);
-        tickEncoder.header()
-            .sourceId(NO_SOURCE_ID)
-            .connectionId(NO_SOURCE_ID)
-            .sessionId(NO_SOURCE_ID)
-            .globalSeqNo(globalSeq)
-            .timestamp(timestamp);
-        emit(MessageHeaderEncoder.ENCODED_LENGTH + tickEncoder.encodedLength());
     }
 
     // Arms the single repeating tick timer for one TICK_INTERVAL_MS ahead of current cluster time. Spins
@@ -342,10 +224,10 @@ public final class SequencerService implements ClusteredService {
 
     @Override
     public void onTakeSnapshot(final ExclusivePublication snapshotPublication) {
-        encodeBuffer.putLong(0, globalSeqNo);
+        snapshotBuffer.putLong(0, sequencer.globalSeqNo());
         long offerResult;
         do {
-            offerResult = snapshotPublication.offer(encodeBuffer, 0, Long.BYTES);
+            offerResult = snapshotPublication.offer(snapshotBuffer, 0, Long.BYTES);
             if (offerResult == ExclusivePublication.CLOSED
                 || offerResult == ExclusivePublication.MAX_POSITION_EXCEEDED) {
                 throw new IllegalStateException("[SequencerService] Snapshot publication failed: " + offerResult);
@@ -357,7 +239,8 @@ public final class SequencerService implements ClusteredService {
     }
 
     private void loadSnapshot(final Image snapshotImage) {
-        final FragmentAssembler handler = new FragmentAssembler((buf, off, len, hdr) -> globalSeqNo = buf.getLong(off));
+        final FragmentAssembler handler =
+            new FragmentAssembler((buf, off, len, hdr) -> sequencer.globalSeqNo(buf.getLong(off)));
         while (!snapshotImage.isClosed()) {
             cluster.idleStrategy().idle(snapshotImage.poll(handler, SNAPSHOT_POLL_BATCH));
         }
@@ -394,26 +277,16 @@ public final class SequencerService implements ClusteredService {
     // same globalSeqNo onto a LeadershipChanged it emits onto its own tap — the per-node replicas use it
     // to track the current leader at one exact point in the ordered stream.
     private void applyLeadership(final int leaderMemberId, final long timestamp) {
-        if (leaderMemberId == currentLeaderMemberId) {
+        // Encoded and emitted on every node, so each node's replayer (and its recording) carries this
+        // globalSeqNo gap-free. The sequencer suppresses a repeat of the leader already on record.
+        final int length = sequencer.leadershipChanged(leaderMemberId, timestamp);
+        if (length == Sequencer.NO_FRAME) {
             return;
         }
-        currentLeaderMemberId = leaderMemberId;
         final boolean leader = leaderMemberId == cluster.memberId();
-        final long globalSeq = ++globalSeqNo;
         System.out.printf("[SequencerService/%d] leadership change: new leader is memberId=%d (isLeader=%b)%n",
                           cluster.memberId(), leaderMemberId, leader);
-
-        // Encoded and emitted on every node, so each node's replayer (and its recording) carries this
-        // globalSeqNo gap-free.
-        leadershipChangedEncoder.wrapAndApplyHeader(encodeBuffer, 0, headerEncoder);
-        leadershipChangedEncoder.header()
-            .sourceId(NO_SOURCE_ID)
-            .connectionId(NO_SOURCE_ID)
-            .sessionId(NO_SOURCE_ID)
-            .globalSeqNo(globalSeq)
-            .timestamp(timestamp);
-        leadershipChangedEncoder.newLeaderMemberId(leaderMemberId);
-        emit(MessageHeaderEncoder.ENCODED_LENGTH + leadershipChangedEncoder.encodedLength());
+        emit(length);
     }
 
     @Override
@@ -421,10 +294,10 @@ public final class SequencerService implements ClusteredService {
         if (aeronArchive != null) {
             aeronArchive.close();
         }
-        if (replayerPub != null) {
+        if (tapPub != null) {
             // Closing the publication ends the recording's source image, so the archive stops the tap
             // recording (sets its stopPosition) without an explicit stopRecording call.
-            replayerPub.close();
+            tapPub.close();
         }
     }
 
@@ -440,12 +313,13 @@ public final class SequencerService implements ClusteredService {
     private void emit(final int length) {
         int idleSpins = 0;
         long result;
-        while ((result = replayerPub.offer(encodeBuffer, 0, length)) < 0) {
+        while ((result = tapPub.offer(sequencer.buffer(), 0, length)) < 0) {
             if (result == ExclusivePublication.CLOSED || result == ExclusivePublication.MAX_POSITION_EXCEEDED) {
                 throw new IllegalStateException("[SequencerService] replayer publication failed: " + result);
             }
             if (++idleSpins >= MAX_BACK_PRESSURE_SPINS) {
-                System.err.printf("[SequencerService] ALERT: replayer back-pressure at globalSeqNo=%d%n", globalSeqNo);
+                System.err.printf("[SequencerService] ALERT: replayer back-pressure at globalSeqNo=%d%n",
+                                  sequencer.globalSeqNo());
                 idleSpins = 0;
             }
             cluster.idleStrategy().idle();
