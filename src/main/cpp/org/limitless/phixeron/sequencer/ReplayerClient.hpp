@@ -515,7 +515,7 @@ class ReplayerClient {
 
     bool m_awaitingReplay = false;
     std::int64_t m_replaySessionId = -1;
-    std::int64_t m_catchUpPosition = 0;  // bounded replay's end position; segment done once the image reaches it
+    std::int64_t m_catchUpPosition = 0;   // bounded replay's end position; segment done once the image reaches it
     std::int32_t m_walkSegmentIndex = 0;  // cold-start walk position; -1 once caught up (steady/resume mode)
     std::int64_t m_reqFromPosition = 0;   // fromPosition of the current request, for idempotent resend
     std::int64_t m_lastRequestMs = 0;
