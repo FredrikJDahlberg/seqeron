@@ -185,15 +185,20 @@ public final class SequencerService implements ClusteredService {
         }
     }
 
-    @Override
-    public void onSessionOpen(final ClientSession session, final long timestamp) {
-        emit(sequencer.clientConnected(session.id(), timestamp));
-    }
+    // An Aeron Cluster session opening or closing is a transport event between the cluster and one
+    // of its clients — a gateway or an OrderExecClient attaching and detaching. It is not a FIX
+    // session lifecycle, and nothing downstream ever consumed it. The events consumers actually
+    // need, ClientConnected/ClientDisconnected, describe a FIX client's TCP connection to the
+    // gateway; the gateway observes those directly and publishes them on ingress, so they arrive
+    // through onSessionMessage below like every other message and carry the connectionId they
+    // refer to. Emitting a cluster-session frame under those same template ids would put two
+    // unrelated meanings on one type, so these stay empty rather than synthesizing anything.
 
     @Override
-    public void onSessionClose(final ClientSession session, final long timestamp, final CloseReason closeReason) {
-        emit(sequencer.clientDisconnected(session.id(), timestamp));
-    }
+    public void onSessionOpen(final ClientSession session, final long timestamp) {}
+
+    @Override
+    public void onSessionClose(final ClientSession session, final long timestamp, final CloseReason closeReason) {}
 
     @Override
     public void onSessionMessage(final ClientSession session, final long timestamp, final DirectBuffer buffer,

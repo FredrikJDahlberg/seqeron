@@ -415,7 +415,12 @@ class ReplayerClient {
         {
             if (m_onConnected)
             {
-                m_onConnected(LifecycleEvent{gseq, sessId, ts, receiveNs});
+                m_onConnected(LifecycleEvent{.globalSeqNo = gseq,
+                                             .sourceId = srcId,
+                                             .connectionId = connId,
+                                             .sourceSessionId = sessId,
+                                             .clusterTimestamp = ts,
+                                             .receiveTimeNs = receiveNs});
             }
             return;
         }
@@ -423,7 +428,12 @@ class ReplayerClient {
         {
             if (m_onDisconnected)
             {
-                m_onDisconnected(LifecycleEvent{gseq, sessId, ts, receiveNs});
+                m_onDisconnected(LifecycleEvent{.globalSeqNo = gseq,
+                                                .sourceId = srcId,
+                                                .connectionId = connId,
+                                                .sourceSessionId = sessId,
+                                                .clusterTimestamp = ts,
+                                                .receiveTimeNs = receiveNs});
             }
             return;
         }

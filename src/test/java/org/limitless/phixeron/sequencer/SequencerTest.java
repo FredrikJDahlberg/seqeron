@@ -15,6 +15,7 @@ import org.limitless.phixeron.sbe.sequenced.LeadershipChangedDecoder;
 import org.limitless.phixeron.sbe.sequenced.LogoutDecoder;
 import org.limitless.phixeron.sbe.sequenced.MessageHeaderDecoder;
 import org.limitless.phixeron.sbe.sequenced.NewOrderSingleDecoder;
+import org.limitless.phixeron.sbe.sequenced.Origin;
 import org.limitless.phixeron.sbe.sequenced.TickDecoder;
 
 /**
@@ -148,17 +149,23 @@ class SequencerTest {
     @Test
     @DisplayName("globalSeqNo is gap-free and monotone across every event type")
     void globalSeqNoIsGapFreeAcrossEveryEventType() {
-        // Lifecycle events, ingress messages, clock ticks and elections all draw from the one counter;
-        // a consumer that sees a gap treats it as lost data and re-walks history, so this must hold for
-        // every emitting path.
+        // Forwarded ingress messages, clock ticks and elections all draw from the one counter; a
+        // consumer that sees a gap treats it as lost data and re-walks history, so this must hold for
+        // every emitting path. TCP lifecycle events are ordinary forwarded ingress — the gateway
+        // publishes them — so they go through sequenceMessage here, not a synthesized encoder.
         final int ingressLength = encodeIngressNewOrderSingle(ingress, 0);
+        final MutableDirectBuffer lifecycle = new ExpandableArrayBuffer(64);
 
-        assertEquals(1L, globalSeqNoOf(sequencer.clientConnected(SESSION_ID, TIMESTAMP)));
+        final int connectedLength = encodeIngressClientConnected(lifecycle, 0);
+        assertEquals(1L, globalSeqNoOf(sequencer.sequenceMessage(lifecycle, 0, connectedLength, SESSION_ID, TIMESTAMP)));
         assertEquals(2L, globalSeqNoOf(sequencer.sequenceMessage(ingress, 0, ingressLength, SESSION_ID, TIMESTAMP)));
         assertEquals(3L, globalSeqNoOf(sequencer.tick(TIMESTAMP + 1000)));
         assertEquals(4L, globalSeqNoOf(sequencer.leadershipChanged(2, TIMESTAMP + 1500)));
         assertEquals(5L, globalSeqNoOf(sequencer.sequenceMessage(ingress, 0, ingressLength, SESSION_ID, TIMESTAMP)));
-        assertEquals(6L, globalSeqNoOf(sequencer.clientDisconnected(SESSION_ID, TIMESTAMP + 2000)));
+
+        final int disconnectedLength = encodeIngressClientDisconnected(lifecycle, 0);
+        assertEquals(6L, globalSeqNoOf(
+            sequencer.sequenceMessage(lifecycle, 0, disconnectedLength, SESSION_ID, TIMESTAMP + 2000)));
         assertEquals(6L, sequencer.globalSeqNo());
     }
 
@@ -209,9 +216,11 @@ class SequencerTest {
     private byte[][] runLog(final Sequencer target) {
         final MutableDirectBuffer message = new ExpandableArrayBuffer(512);
         final int messageLength = encodeIngressNewOrderSingle(message, 0);
+        final MutableDirectBuffer lifecycle = new ExpandableArrayBuffer(64);
+        final int connectedLength = encodeIngressClientConnected(lifecycle, 0);
         final java.util.List<byte[]> frames = new java.util.ArrayList<>();
 
-        collect(frames, target, target.clientConnected(SESSION_ID, TIMESTAMP));
+        collect(frames, target, target.sequenceMessage(lifecycle, 0, connectedLength, SESSION_ID, TIMESTAMP));
         collect(frames, target, target.leadershipChanged(0, TIMESTAMP + 1));
         for (int i = 0; i < 5; i++) {
             collect(frames, target, target.sequenceMessage(message, 0, messageLength, SESSION_ID, TIMESTAMP + i));
@@ -219,7 +228,8 @@ class SequencerTest {
         }
         collect(frames, target, target.leadershipChanged(0, TIMESTAMP + 9));  // suppressed
         collect(frames, target, target.leadershipChanged(1, TIMESTAMP + 10));
-        collect(frames, target, target.clientDisconnected(SESSION_ID, TIMESTAMP + 11));
+        final int disconnectedLength = encodeIngressClientDisconnected(lifecycle, 0);
+        collect(frames, target, target.sequenceMessage(lifecycle, 0, disconnectedLength, SESSION_ID, TIMESTAMP + 11));
         return frames.toArray(new byte[0][]);
     }
 
@@ -255,32 +265,44 @@ class SequencerTest {
     // ── Lifecycle and clock frames ────────────────────────────────────────────
 
     @Test
-    @DisplayName("lifecycle and tick frames carry no submitter identity")
-    void lifecycleFramesCarryNoSubmitterIdentity() {
-        // These are synthesized by the sequencer itself, so there is no gateway process or TCP
-        // connection behind them — consumers rely on the sentinel to tell them apart from forwarded
-        // ingress traffic.
-        final int connectedLength = sequencer.clientConnected(SESSION_ID, TIMESTAMP);
+    @DisplayName("TCP lifecycle frames carry the connection they describe")
+    void tcpLifecycleFramesCarryTheConnectionTheyDescribe() {
+        // These name an external event — a FIX client's TCP connection opening and closing — so unlike
+        // a tick or an election they have a real gateway process and connection behind them, and both
+        // ids must survive sequencing. Without them a consumer can see that *a* session ended but not
+        // which, which is the whole reason the gateway publishes these rather than the sequencer
+        // synthesizing a cluster-session event under the same template ids.
+        final MutableDirectBuffer lifecycle = new ExpandableArrayBuffer(64);
+
+        final int connectedLength =
+            sequencer.sequenceMessage(lifecycle, 0, encodeIngressClientConnected(lifecycle, 0), SESSION_ID, TIMESTAMP);
         final MessageHeaderDecoder messageHeader = new MessageHeaderDecoder().wrap(sequencer.buffer(), 0);
         assertEquals(ClientConnectedDecoder.TEMPLATE_ID, messageHeader.templateId());
-        HeaderDecoder header = new ClientConnectedDecoder()
+        final ClientConnectedDecoder connectedDecoder = new ClientConnectedDecoder()
             .wrap(sequencer.buffer(), MessageHeaderDecoder.ENCODED_LENGTH, messageHeader.blockLength(),
-                  messageHeader.version())
-            .header();
-        assertEquals(Sequencer.NO_SOURCE_ID, header.sourceId());
-        assertEquals(Sequencer.NO_SOURCE_ID, header.connectionId());
+                  messageHeader.version());
+        HeaderDecoder header = connectedDecoder.header();
+        // `origin` sits past the header composite, so it rides through the opaque byte copy
+        // untouched — the sequencer never decodes it and must not disturb it.
+        assertEquals(Origin.Gateway, connectedDecoder.origin());
+        assertEquals(SOURCE_ID, header.sourceId());
+        assertEquals(CONNECTION_ID, header.connectionId());
         assertEquals(SESSION_ID, header.sessionId());
         assertEquals(1L, header.globalSeqNo());
         assertEquals(TIMESTAMP, header.timestamp());
+        // A header-only message copies zero body bytes through — the degenerate end of the
+        // copy-through path every other message exercises with a body.
         assertEquals(connectedLength, MessageHeaderDecoder.ENCODED_LENGTH + ClientConnectedDecoder.BLOCK_LENGTH);
 
-        final int disconnectedLength = sequencer.clientDisconnected(SESSION_ID, TIMESTAMP + 1);
+        final int disconnectedLength = sequencer.sequenceMessage(
+            lifecycle, 0, encodeIngressClientDisconnected(lifecycle, 0), SESSION_ID, TIMESTAMP + 1);
         final MessageHeaderDecoder disconnectHeader = new MessageHeaderDecoder().wrap(sequencer.buffer(), 0);
         assertEquals(ClientDisconnectedDecoder.TEMPLATE_ID, disconnectHeader.templateId());
         header = new ClientDisconnectedDecoder()
             .wrap(sequencer.buffer(), MessageHeaderDecoder.ENCODED_LENGTH, disconnectHeader.blockLength(),
                   disconnectHeader.version())
             .header();
+        assertEquals(CONNECTION_ID, header.connectionId());
         assertEquals(TIMESTAMP + 1, header.timestamp());
         assertEquals(SESSION_ID, header.sessionId());
         assertEquals(disconnectedLength, MessageHeaderDecoder.ENCODED_LENGTH + ClientDisconnectedDecoder.BLOCK_LENGTH);
@@ -352,8 +374,40 @@ class SequencerTest {
             .target("PHIXERON")
             .seqNum(99L)
             .sendingTimeMs(1_699_999_999_000L)
+            .origin(org.limitless.phixeron.sbe.unsequenced.Origin.Client)
             .possDupFlag(org.limitless.phixeron.sbe.unsequenced.PossDupFlag.No)
             .text(reason);
+
+        return org.limitless.phixeron.sbe.unsequenced.MessageHeaderEncoder.ENCODED_LENGTH + encoder.encodedLength();
+    }
+
+    /**
+     * Encodes a schema-200 ClientConnected, as the FIX gateway submits it when it accepts a TCP
+     * connection. Header-only: the connection it describes is entirely in {@code header}.
+     */
+    private static int encodeIngressClientConnected(final MutableDirectBuffer buffer, final int offset) {
+        final org.limitless.phixeron.sbe.unsequenced.MessageHeaderEncoder messageHeader =
+            new org.limitless.phixeron.sbe.unsequenced.MessageHeaderEncoder();
+        final org.limitless.phixeron.sbe.unsequenced.ClientConnectedEncoder encoder =
+            new org.limitless.phixeron.sbe.unsequenced.ClientConnectedEncoder();
+
+        encoder.wrapAndApplyHeader(buffer, offset, messageHeader);
+        encoder.header().sourceId(SOURCE_ID).connectionId(CONNECTION_ID).sessionId(-1);
+        encoder.origin(org.limitless.phixeron.sbe.unsequenced.Origin.Gateway);
+
+        return org.limitless.phixeron.sbe.unsequenced.MessageHeaderEncoder.ENCODED_LENGTH + encoder.encodedLength();
+    }
+
+    /** Encodes a schema-200 ClientDisconnected; the mirror of {@link #encodeIngressClientConnected}. */
+    private static int encodeIngressClientDisconnected(final MutableDirectBuffer buffer, final int offset) {
+        final org.limitless.phixeron.sbe.unsequenced.MessageHeaderEncoder messageHeader =
+            new org.limitless.phixeron.sbe.unsequenced.MessageHeaderEncoder();
+        final org.limitless.phixeron.sbe.unsequenced.ClientDisconnectedEncoder encoder =
+            new org.limitless.phixeron.sbe.unsequenced.ClientDisconnectedEncoder();
+
+        encoder.wrapAndApplyHeader(buffer, offset, messageHeader);
+        encoder.header().sourceId(SOURCE_ID).connectionId(CONNECTION_ID).sessionId(-1);
+        encoder.origin(org.limitless.phixeron.sbe.unsequenced.Origin.Gateway);
 
         return org.limitless.phixeron.sbe.unsequenced.MessageHeaderEncoder.ENCODED_LENGTH + encoder.encodedLength();
     }

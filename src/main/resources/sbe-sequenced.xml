@@ -217,6 +217,17 @@
             <validValue name="SequenceReset"  description="N: hard reset">78</validValue>
         </enum>
 
+        <!-- Where a message came from. Every FIX session message on the stream is either the
+             external counterparty's, forwarded by the gateway, or one the gateway itself
+             produced; the two are otherwise indistinguishable, since a gateway reply reuses the
+             same template as the client message it answers. Consumers route on this rather than
+             inferring direction from comp-ids or sourceId (sourceId names the submitting gateway
+             process and is identical in both directions). -->
+        <enum name="Origin" encodingType="uint8">
+            <validValue name="Client"  description="Received from the external FIX counterparty and forwarded by the gateway">1</validValue>
+            <validValue name="Gateway" description="Produced by the gateway itself">2</validValue>
+        </enum>
+
         <!--
             PossDupFlag (tag 43): marks a retransmitted (possible-duplicate)
             message. Like every SBE enum here, "absent" is the generated
@@ -351,6 +362,7 @@
         <field name="target"            id="56"  type="compId"/>
         <field name="seqNum"            id="34"  type="uint32"/>
         <field name="sendingTimeMs"     id="52"  type="msTimestamp"/>
+        <field name="origin"            id="20002" type="Origin"/>
         <field name="encryptMethod"     id="98"  type="EncryptMethod"/>
         <field name="heartbeatInterval" id="108" type="uint32"
                description="Negotiated heartbeat interval in milliseconds (HeartBtInt tag 108)"/>
@@ -372,6 +384,7 @@
         <field name="target"        id="56" type="compId"/>
         <field name="seqNum"        id="34" type="uint32"/>
         <field name="sendingTimeMs" id="52" type="msTimestamp"/>
+        <field name="origin"        id="20002" type="Origin"/>
         <field name="possDupFlag"   id="43" type="PossDupFlag" presence="optional" nullValue="0"
                description="PossDupFlag (tag 43); 89='Y' retransmit, 0 = absent"/>
         <data  name="text"          id="58" type="varDataEncoding"
@@ -388,6 +401,7 @@
         <field name="target"        id="56"  type="compId"/>
         <field name="seqNum"        id="34"  type="uint32"/>
         <field name="sendingTimeMs" id="52"  type="msTimestamp"/>
+        <field name="origin"        id="20002" type="Origin"/>
         <field name="possDupFlag"   id="43"  type="PossDupFlag" presence="optional" nullValue="0"
                description="PossDupFlag (tag 43); 89='Y' retransmit, 0 = absent"/>
         <field name="testReqID"     id="112" type="testReqId"
@@ -404,6 +418,7 @@
         <field name="target"        id="56"  type="compId"/>
         <field name="seqNum"        id="34"  type="uint32"/>
         <field name="sendingTimeMs" id="52"  type="msTimestamp"/>
+        <field name="origin"        id="20002" type="Origin"/>
         <field name="possDupFlag"   id="43"  type="PossDupFlag" presence="optional" nullValue="0"
                description="PossDupFlag (tag 43); 89='Y' retransmit, 0 = absent"/>
         <field name="testReqID"     id="112" type="testReqId"
@@ -420,6 +435,7 @@
         <field name="target"        id="56" type="compId"/>
         <field name="seqNum"        id="34" type="uint32"/>
         <field name="sendingTimeMs" id="52" type="msTimestamp"/>
+        <field name="origin"        id="20002" type="Origin"/>
         <field name="possDupFlag"   id="43" type="PossDupFlag" presence="optional" nullValue="0"
                description="PossDupFlag (tag 43); 89='Y' retransmit, 0 = absent"/>
         <field name="beginSeqNo"    id="7"  type="uint32"
@@ -438,6 +454,7 @@
         <field name="target"              id="56"  type="compId"/>
         <field name="seqNum"              id="34"  type="uint32"/>
         <field name="sendingTimeMs"       id="52"  type="msTimestamp"/>
+        <field name="origin"              id="20002" type="Origin"/>
         <field name="refSeqNum"           id="45"  type="uint32"
                description="Sequence number of the rejected message (tag 45)"/>
         <field name="refTagID"            id="371" type="uint32"
@@ -463,6 +480,13 @@
         <field name="target"        id="56"  type="compId"/>
         <field name="seqNum"        id="34"  type="uint32"/>
         <field name="sendingTimeMs" id="52"  type="msTimestamp"/>
+        <field name="origin"        id="20002" type="Origin"/>
+        <field name="possDupFlag"     id="43"  type="PossDupFlag"
+               presence="optional" nullValue="0"
+               description="PossDupFlag (tag 43); 89='Y' retransmit, 0 = absent"/>
+        <field name="origSendingTime" id="122" type="msTimestamp"
+               presence="optional" nullValue="0"
+               description="SendingTime of the messages a GapFill stands in for (tag 122); 0 = absent"/>
         <field name="gapFillFlag"   id="123" type="GapFillFlag"
                presence="optional" nullValue="0"
                description="89='Y' gap-fill, 78='N' hard reset, 0 = absent (tag 123)"/>
@@ -542,6 +566,7 @@
     <sbe:message name="ClientConnected" id="1"
                  description="A client opened a TCP connection to the FIX gateway">
         <field name="header" id="20001" type="header"/>
+        <field name="origin" id="20002" type="Origin"/>
     </sbe:message>
 
     <!-- ═══════════════════════════════════════════════════════════════════
@@ -550,6 +575,7 @@
     <sbe:message name="ClientDisconnected" id="2"
                  description="A client closed (or lost) its TCP connection to the FIX gateway">
         <field name="header" id="20001" type="header"/>
+        <field name="origin" id="20002" type="Origin"/>
     </sbe:message>
 
     <!-- ═══════════════════════════════════════════════════════════════════

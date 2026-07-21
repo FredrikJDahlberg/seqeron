@@ -310,7 +310,9 @@ inline std::vector<RecordingSegment> resolveGlobalStreamSegments(
 
 // ClientConnected/ClientDisconnected aren't FIX messages, so sbe-sequenced.xml
 // (like sbe-unsequenced.xml) gives them small, non-ASCII-derived template ids,
-// clear of the FIX-MsgType-derived range used by every other message.
+// clear of the FIX-MsgType-derived range used by every other message. They mark a FIX
+// client's TCP connection to the gateway opening and closing, and the gateway that owns
+// that socket publishes them; see LifecycleEvent below.
 inline constexpr std::uint16_t CLIENT_CONNECTED_TEMPLATE_ID = 1;
 inline constexpr std::uint16_t CLIENT_DISCONNECTED_TEMPLATE_ID = 2;
 
@@ -348,11 +350,23 @@ struct SequencedEvent {
                                     ///< pass to ReplayParams::position() to replay from here
 };
 
+/**
+ * A FIX client's TCP connection to a gateway opening (ClientConnected) or closing
+ * (ClientDisconnected). Published by the gateway that owns the socket — these are external
+ * events it observes, forwarded on ingress like any other message, not something the
+ * sequencer synthesizes.
+ *
+ * sourceId/connectionId name the connection the event refers to, and both are needed:
+ * connectionId is unique only within the publishing gateway process, so a consumer serving
+ * one gateway must match sourceId before acting on a connectionId (see FixSessionClient).
+ */
 struct LifecycleEvent {
     std::int64_t globalSeqNo;
-    std::int64_t sourceSessionId;
-    std::int64_t clusterTimestamp;
-    std::int64_t receiveTimeNs;
+    std::int32_t sourceId;          ///< publishing gateway process (header.sourceId)
+    std::int32_t connectionId;      ///< TCP connection at that gateway (header.connectionId)
+    std::int64_t sourceSessionId;   ///< Aeron Cluster session the event was submitted on
+    std::int64_t clusterTimestamp;  ///< cluster consensus time (ms) when committed
+    std::int64_t receiveTimeNs;     ///< wall-clock ns at receipt by this client
 };
 
 // ── GlobalStreamClient ────────────────────────────────────────────────────────
@@ -606,6 +620,8 @@ class GlobalStreamClient {
             if (m_onConnected)
             {
                 m_onConnected(LifecycleEvent{.globalSeqNo = gseq,
+                                             .sourceId = srcId,
+                                             .connectionId = connId,
                                              .sourceSessionId = sessId,
                                              .clusterTimestamp = ts,
                                              .receiveTimeNs = receiveNs});
@@ -617,6 +633,8 @@ class GlobalStreamClient {
             if (m_onDisconnected)
             {
                 m_onDisconnected(LifecycleEvent{.globalSeqNo = gseq,
+                                                .sourceId = srcId,
+                                                .connectionId = connId,
                                                 .sourceSessionId = sessId,
                                                 .clusterTimestamp = ts,
                                                 .receiveTimeNs = receiveNs});

@@ -3,8 +3,6 @@ package org.limitless.phixeron.sequencer;
 import org.agrona.DirectBuffer;
 import org.agrona.ExpandableDirectByteBuffer;
 import org.agrona.MutableDirectBuffer;
-import org.limitless.phixeron.sbe.sequenced.ClientConnectedEncoder;
-import org.limitless.phixeron.sbe.sequenced.ClientDisconnectedEncoder;
 import org.limitless.phixeron.sbe.sequenced.HeaderEncoder;
 import org.limitless.phixeron.sbe.sequenced.LeadershipChangedEncoder;
 import org.limitless.phixeron.sbe.sequenced.MessageHeaderEncoder;
@@ -50,10 +48,16 @@ import org.limitless.phixeron.sbe.unsequenced.MessageHeaderDecoder;
  */
 public final class Sequencer {
     /**
-     * header.sourceId/connectionId for lifecycle events synthesized by the sequencer itself
-     * (ClientConnected / ClientDisconnected / Tick / LeadershipChanged): a cluster session
-     * opening/closing, a clock tick, or an election has no gateway-process or TCP-level connection
-     * id to carry, unlike the ingress messages it forwards.
+     * header.sourceId/connectionId for events synthesized by the sequencer itself (Tick /
+     * LeadershipChanged): a clock tick or an election has no gateway-process or TCP-level
+     * connection id to carry, unlike the ingress messages it forwards.
+     *
+     * <p>ClientConnected/ClientDisconnected are deliberately not in that list. They denote a FIX
+     * client's TCP session opening and closing — external events the gateway observes and publishes
+     * on ingress like any other message, carrying the real sourceId/connectionId of the connection
+     * they describe. The sequencer used to synthesize them for Aeron <em>cluster</em> sessions
+     * instead, which named a different thing entirely and left the actual TCP lifecycle absent from
+     * the log; nothing consumed the cluster-session form, so it was removed rather than renamed.
      */
     public static final int NO_SOURCE_ID = -1;
 
@@ -69,8 +73,6 @@ public final class Sequencer {
     // ── Egress encode (schema 202, sbe-sequenced.xml) ─────────────────────────
     private final MessageHeaderEncoder headerEncoder = new MessageHeaderEncoder();
     private final HeaderEncoder egressHeaderEncoder = new HeaderEncoder();
-    private final ClientConnectedEncoder clientConnEncoder = new ClientConnectedEncoder();
-    private final ClientDisconnectedEncoder clientDiscEncoder = new ClientDisconnectedEncoder();
     private final LeadershipChangedEncoder leadershipChangedEncoder = new LeadershipChangedEncoder();
     private final TickEncoder tickEncoder = new TickEncoder();
     private final MutableDirectBuffer encodeBuffer = new ExpandableDirectByteBuffer(4096);
@@ -160,32 +162,6 @@ public final class Sequencer {
         encodeBuffer.putBytes(egressBodyOffset + HeaderEncoder.ENCODED_LENGTH, buffer, copyFromOffset, copyLength);
 
         return egressBodyOffset + HeaderEncoder.ENCODED_LENGTH + copyLength;
-    }
-
-    /** Encodes the {@code ClientConnected} lifecycle event for a newly-opened cluster session. */
-    public int clientConnected(final long sessionId, final long timestamp) {
-        final long globalSeq = ++globalSeqNo;
-        clientConnEncoder.wrapAndApplyHeader(encodeBuffer, 0, headerEncoder);
-        clientConnEncoder.header()
-            .sourceId(NO_SOURCE_ID)
-            .connectionId(NO_SOURCE_ID)
-            .sessionId(sessionId)
-            .globalSeqNo(globalSeq)
-            .timestamp(timestamp);
-        return MessageHeaderEncoder.ENCODED_LENGTH + clientConnEncoder.encodedLength();
-    }
-
-    /** Encodes the {@code ClientDisconnected} lifecycle event for a closed cluster session. */
-    public int clientDisconnected(final long sessionId, final long timestamp) {
-        final long globalSeq = ++globalSeqNo;
-        clientDiscEncoder.wrapAndApplyHeader(encodeBuffer, 0, headerEncoder);
-        clientDiscEncoder.header()
-            .sourceId(NO_SOURCE_ID)
-            .connectionId(NO_SOURCE_ID)
-            .sessionId(sessionId)
-            .globalSeqNo(globalSeq)
-            .timestamp(timestamp);
-        return MessageHeaderEncoder.ENCODED_LENGTH + clientDiscEncoder.encodedLength();
     }
 
     /**
