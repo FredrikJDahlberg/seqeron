@@ -129,6 +129,12 @@
         <type name="testReqId" primitiveType="char" length="32" characterEncoding="US-ASCII"
               description="TestReqID (tag 112); byte[0]==0x00 signals absent"/>
 
+        <!-- Gateway instance identity: the static per-instance name the FIX gateway is launched with
+             (its gateway command-line argument) and matches against the Gateway basic-data rows to
+             learn its own gatewayId/gatewaySourceId at startup. 32-char fixed; byte[0]==0x00 signals absent. -->
+        <type name="gatewayName" primitiveType="char" length="32" characterEncoding="US-ASCII"
+              description="FIX gateway instance identity (--gateway CLI arg); byte[0]==0x00 signals absent"/>
+
         <!-- UTC milliseconds since Unix epoch (maps to std::chrono::milliseconds) -->
         <type name="msTimestamp" primitiveType="int64" semanticType="UTCTimestamp"
               description="Sending time in milliseconds since 1970-01-01T00:00:00Z (tag 52)"/>
@@ -564,18 +570,27 @@
          ClientConnected  (template 1)
          ═══════════════════════════════════════════════════════════════════ -->
     <sbe:message name="ClientConnected" id="1"
-                 description="A client opened a TCP connection to the FIX gateway">
-        <field name="header" id="20001" type="header"/>
-        <field name="origin" id="20002" type="Origin"/>
+                 description="A client opened a TCP connection to the FIX gateway; senderComp/targetComp name the
+                              resolved FIX session (absent until a Logon resolves it) so a standby gateway can map
+                              the connection to a session deterministically. Symmetric with ClientDisconnected.">
+        <field name="header"     id="20001" type="header"/>
+        <field name="origin"     id="20002" type="Origin"/>
+        <field name="senderComp" id="20024" type="compId"/>
+        <field name="targetComp" id="20025" type="compId"/>
     </sbe:message>
 
     <!-- ═══════════════════════════════════════════════════════════════════
          ClientDisconnected  (template 2)
          ═══════════════════════════════════════════════════════════════════ -->
     <sbe:message name="ClientDisconnected" id="2"
-                 description="A client closed (or lost) its TCP connection to the FIX gateway">
-        <field name="header" id="20001" type="header"/>
-        <field name="origin" id="20002" type="Origin"/>
+                 description="A client closed (or lost) its TCP connection to the FIX gateway; senderComp/targetComp
+                              name the resolved FIX session (absent if it closed before Logon) so the standby sets
+                              exactly that session disconnected — the socket-death fact no consumer can otherwise
+                              derive. Symmetric with ClientConnected.">
+        <field name="header"     id="20001" type="header"/>
+        <field name="origin"     id="20002" type="Origin"/>
+        <field name="senderComp" id="20024" type="compId"/>
+        <field name="targetComp" id="20025" type="compId"/>
     </sbe:message>
 
     <!-- ═══════════════════════════════════════════════════════════════════
@@ -680,7 +695,7 @@
     </sbe:message>
 
     <!-- ═══════════════════════════════════════════════════════════════════
-         Basic data load  (templates 12–15) — sequenced form of the reference
+         Basic data load  (templates 12–15, plus Gateway 17) — sequenced form of the reference
          data (valid FIX session comp-id pairs, the trading-day calendar) the
          basic-data handler loads from the database once on the leader and
          republishes into the ordered log. A load is a bracketed, fixed-order
@@ -722,6 +737,37 @@
         <field name="tradingDate" id="20026" type="dateOnlyMs"/>
         <field name="opening"     id="20027" type="uint16"/>
         <field name="closing"     id="20028" type="uint16"/>
+    </sbe:message>
+
+    <!-- Gateway (template 17) — basic-data section: the FIX-gateway topology, one row per gateway
+         instance. Maps the instance's static identity (gatewayName, matched against its gateway
+         command-line argument at startup) to the ids it adopts: gatewayId (unique per instance, the GatewayActive
+         target) and gatewaySourceId (the shared logical sourceId the active and standby of one logical
+         gateway both stamp into header.sourceId). Lets a gateway derive its whole identity from the log
+         rather than per-process config, so a standby derives the same. header.sourceId here is the
+         BasicData client's, as on every basic-data row. See doc/todo.md item 8c. -->
+    <sbe:message name="Gateway" id="17"
+                 description="One FIX gateway instance: static gatewayName -> gatewayId + shared gatewaySourceId">
+        <field name="header"          id="20001" type="header"/>
+        <field name="progress"        id="20021" type="basicDataProgress"/>
+        <field name="gatewayId"       id="20029" type="int32"/>
+        <field name="gatewaySourceId" id="20030" type="int32"/>
+        <field name="gatewayName"     id="20031" type="gatewayName"/>
+    </sbe:message>
+
+    <!-- ═══════════════════════════════════════════════════════════════════
+         GatewayActive (template 18) — activates one FIX gateway instance. Two
+         publishers, one frame: clusterctl sends it to promote a hot-standby, and
+         the cluster synthesizes it on EndBasicData to activate the primary. Every
+         consumer, on observing it, sets all sessions this gateway serves to
+         disconnected (the deterministic close-out of any pre-activation session
+         state); the instance whose gatewayId matches then opens its accept gate,
+         the others stay standby. See doc/todo.md items 18 and 8c.
+         ═══════════════════════════════════════════════════════════════════ -->
+    <sbe:message name="GatewayActive" id="18"
+                 description="Activates the FIX gateway instance whose gatewayId this carries">
+        <field name="header"    id="20001" type="header"/>
+        <field name="gatewayId" id="20029" type="int32"/>
     </sbe:message>
 
 </sbe:messageSchema>
