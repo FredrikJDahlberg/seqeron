@@ -332,24 +332,30 @@ class SequencerTest {
     // ── Standby promotion (GatewayActive) ─────────────────────────────────────
 
     @Test
-    @DisplayName("the first EndBasicData is followed by a bootstrap GatewayActive naming the primary")
+    @DisplayName("the first EndBasicData is followed by a bootstrap GatewayActive naming the rank-0 primary")
     void firstEndBasicDataSynthesizesBootstrapActivation() {
         // Cold-start designation: one instance must open its gate and the standby must wait, so the
         // cluster names the primary's gatewayId behind the load-complete marker (doc/todo.md item 18).
+        // The primary is derived from the Gateway rows in the load — the rank-0 row — not configured.
         final int primaryGatewayId = 5;
-        final Sequencer seq = new Sequencer(SOURCE_ID, primaryGatewayId);
-        final MutableDirectBuffer buf = new ExpandableArrayBuffer(64);
+        final Sequencer seq = new Sequencer();
+        final MutableDirectBuffer buf = new ExpandableArrayBuffer(128);
 
         assertEquals(Sequencer.NO_FRAME, seq.pendingBootstrapActivation(TIMESTAMP), "nothing pending before EndBasicData");
 
+        // The load carries the topology: gatewayId 5 (rank 0) is the primary, 6 (rank 1) the standby.
+        seq.sequenceMessage(buf, 0, encodeIngressGateway(buf, 0, primaryGatewayId, SOURCE_ID, "GW-A", 0), SESSION_ID,
+                            TIMESTAMP);
+        seq.sequenceMessage(buf, 0, encodeIngressGateway(buf, 0, 6, SOURCE_ID, "GW-B", 1), SESSION_ID, TIMESTAMP);
+
         final int endLength = seq.sequenceMessage(buf, 0, encodeIngressEndBasicData(buf, 0), SESSION_ID, TIMESTAMP);
-        assertEquals(1L, globalSeqNoOf(seq, endLength));
+        assertEquals(3L, globalSeqNoOf(seq, endLength));  // 2 Gateway rows + EndBasicData
 
         final int activationLength = seq.pendingBootstrapActivation(TIMESTAMP + 1);
         assertNotEquals(Sequencer.NO_FRAME, activationLength);
         final GatewayActiveDecoder decoded = decodeGatewayActive(seq.buffer(), activationLength);
-        assertEquals(primaryGatewayId, decoded.gatewayId());
-        assertEquals(2L, decoded.header().globalSeqNo());          // takes the next globalSeqNo after EndBasicData
+        assertEquals(primaryGatewayId, decoded.gatewayId());       // the rank-0 gatewayId, derived from the log
+        assertEquals(4L, decoded.header().globalSeqNo());          // takes the next globalSeqNo after EndBasicData
         assertEquals(TIMESTAMP + 1, decoded.header().timestamp());
         assertEquals(Sequencer.NO_SOURCE_ID, decoded.header().sourceId());  // synthesized: no submitter
 
@@ -359,23 +365,37 @@ class SequencerTest {
     }
 
     @Test
+    @DisplayName("EndBasicData with no Gateway row designates no primary and synthesizes no activation")
+    void endBasicDataWithoutGatewayRowFailsClosed() {
+        final Sequencer seq = new Sequencer();
+        final MutableDirectBuffer buf = new ExpandableArrayBuffer(64);
+        seq.sequenceMessage(buf, 0, encodeIngressEndBasicData(buf, 0), SESSION_ID, TIMESTAMP);
+        assertEquals(Sequencer.NO_FRAME, seq.pendingBootstrapActivation(TIMESTAMP + 1),
+                     "no Gateway topology ⇒ no bootstrap activation (fail closed)");
+    }
+
+    @Test
     @DisplayName("closing a gateway session promotes the standby with a GatewayActive on the gateway sourceId")
     void closingGatewaySessionPromotesStandby() {
-        final Sequencer seq = new Sequencer(SOURCE_ID, 5);
+        final Sequencer seq = new Sequencer();
         final MutableDirectBuffer buf = new ExpandableArrayBuffer(512);
 
-        // A session that publishes under the gateway sourceId (SOURCE_ID here) is a gateway session.
+        // The Gateway row makes SOURCE_ID a known gateway sourceId (rank-0 primary is gatewayId 5).
+        seq.sequenceMessage(buf, 0, encodeIngressGateway(buf, 0, 5, SOURCE_ID, "GW-A", 0), SESSION_ID, TIMESTAMP);
+
+        // A session that then publishes under that sourceId is a gateway session (NewOrderSingle carries
+        // SOURCE_ID as its header.sourceId).
         final long gatewaySession = 0xA11CEL;
         seq.sequenceMessage(buf, 0, encodeIngressNewOrderSingle(buf, 0), gatewaySession, TIMESTAMP);
 
-        // A session that never published under the gateway sourceId is not — its close promotes nothing.
+        // A session that never published under a gateway sourceId is not — its close promotes nothing.
         assertEquals(Sequencer.NO_FRAME, seq.sessionClosed(0xBEEFL, TIMESTAMP + 1));
 
         final int promotionLength = seq.sessionClosed(gatewaySession, TIMESTAMP + 2);
         assertNotEquals(Sequencer.NO_FRAME, promotionLength);
         final GatewayActiveDecoder decoded = decodeGatewayActive(seq.buffer(), promotionLength);
-        assertEquals(SOURCE_ID, decoded.gatewayId());              // promotion carries the (shared) gateway sourceId
-        assertEquals(2L, decoded.header().globalSeqNo());
+        assertEquals(SOURCE_ID, decoded.gatewayId());              // promotion carries that session's gateway sourceId
+        assertEquals(3L, decoded.header().globalSeqNo());          // Gateway row + NewOrderSingle + promotion
         assertEquals(TIMESTAMP + 2, decoded.header().timestamp());
 
         // The session is forgotten: a duplicate close does not re-promote.
@@ -412,6 +432,26 @@ class SequencerTest {
             .tradeDate(1_699_920_000_000L)
             .maturityTime(1_700_086_400_000L);
 
+        return org.limitless.phixeron.sbe.unsequenced.MessageHeaderEncoder.ENCODED_LENGTH + encoder.encodedLength();
+    }
+
+    /** Encodes a schema-200 Gateway topology row, as the BasicDataClient producer would submit it. */
+    private static int encodeIngressGateway(final MutableDirectBuffer buffer, final int offset, final int gatewayId,
+                                            final int gatewaySourceId, final String gatewayName,
+                                            final int preferenceRank) {
+        final org.limitless.phixeron.sbe.unsequenced.MessageHeaderEncoder messageHeader =
+            new org.limitless.phixeron.sbe.unsequenced.MessageHeaderEncoder();
+        final org.limitless.phixeron.sbe.unsequenced.GatewayEncoder encoder =
+            new org.limitless.phixeron.sbe.unsequenced.GatewayEncoder();
+
+        encoder.wrapAndApplyHeader(buffer, offset, messageHeader);
+        // The producer's own sourceId (not a gateway's), outside the gateway-sourceId set.
+        encoder.header().sourceId(99).connectionId(-1).sessionId(-1);
+        encoder.progress().remainingSections(0).remainingItems(0);
+        encoder.gatewayId(gatewayId)
+            .gatewaySourceId(gatewaySourceId)
+            .gatewayName(gatewayName)
+            .preferenceRank((short) preferenceRank);
         return org.limitless.phixeron.sbe.unsequenced.MessageHeaderEncoder.ENCODED_LENGTH + encoder.encodedLength();
     }
 

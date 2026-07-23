@@ -206,6 +206,7 @@ if [[ -z "${PHIXERON_SKIP_FIX_GATEWAY:-}" ]]; then
     PHIXERON_FIX_GATEWAY_AERON_DIR="${SEQ_AERON_DIR}" \
         PHIXERON_NODE_MEMBER_ID=0 \
         PHIXERON_REPLAYER_CLIENT_ID=2 \
+        PHIXERON_FIX_GATEWAY_NAME=GW-A \
         stdbuf -oL -eL "${BUILD_DIR}/FixSessionClient" > "${FIX_LOG}" 2>&1 &
     FIX_PID=$!
 else

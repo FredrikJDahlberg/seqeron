@@ -9,6 +9,7 @@ import org.limitless.phixeron.sbe.sequenced.LeadershipChangedEncoder;
 import org.limitless.phixeron.sbe.sequenced.MessageHeaderEncoder;
 import org.limitless.phixeron.sbe.sequenced.TickEncoder;
 import org.limitless.phixeron.sbe.unsequenced.EndBasicDataDecoder;
+import org.limitless.phixeron.sbe.unsequenced.GatewayDecoder;
 import org.limitless.phixeron.sbe.unsequenced.HeaderDecoder;
 import org.limitless.phixeron.sbe.unsequenced.MessageHeaderDecoder;
 
@@ -66,23 +67,13 @@ public final class Sequencer {
     /** {@link #leadershipChanged} and friends return this when the event produces no frame. */
     public static final int NO_FRAME = 0;
 
-    /**
-     * Default gateway {@code sourceId} the promotion path watches for and stamps into a promotion
-     * {@code GatewayActive}. Matches the C++ gateway's {@code DEFAULT_GATEWAY_SOURCE_ID}.
-     */
-    public static final int DEFAULT_GATEWAY_SOURCE_ID = 0;
-
-    /**
-     * Default per-instance {@code gatewayId} the bootstrap {@code GatewayActive} names on the first
-     * {@code EndBasicData} — the designated primary. Matches the C++ gateway's {@code DEFAULT_GATEWAY_ID}.
-     */
-    public static final int DEFAULT_PRIMARY_GATEWAY_ID = 1;
-
     // ── Ingress decode (schema 200, sbe-unsequenced.xml) ──────────────────────
-    // Only the outer framing header and the generic `header` composite are ever
-    // decoded — body fields are copied through as opaque bytes, see sequenceMessage.
+    // Only the outer framing header and the generic `header` composite are ever decoded — body fields
+    // are copied through as opaque bytes (see sequenceMessage), with one bounded exception: the Gateway
+    // topology row, whose scalar fields feed the derived topology below.
     private final MessageHeaderDecoder ingressMsgHeaderDecoder = new MessageHeaderDecoder();
     private final HeaderDecoder ingressHeaderDecoder = new HeaderDecoder();
+    private final GatewayDecoder gatewayDecoder = new GatewayDecoder();
 
     // ── Egress encode (schema 202, sbe-sequenced.xml) ─────────────────────────
     private final MessageHeaderEncoder headerEncoder = new MessageHeaderEncoder();
@@ -92,18 +83,24 @@ public final class Sequencer {
     private final GatewayActiveEncoder gatewayActiveEncoder = new GatewayActiveEncoder();
     private final MutableDirectBuffer encodeBuffer = new ExpandableDirectByteBuffer(4096);
 
-    // ── Topology (fixed at construction; doc/todo.md item 8c) ─────────────────
+    // ── Topology — derived from the sequenced Gateway rows (doc/todo.md item 8c) ─
+    // Not configured: the basic-data producer publishes one Gateway row per gateway instance, and the
+    // sequencer builds this from them as they pass through sequenceMessage. Pure functions of the
+    // ordered log, so every node agrees, and rebuilt on full-log replay (there are no snapshots).
 
     /**
-     * The gateway {@code sourceId} this sequencer treats as "a FIX gateway": a cluster session that
-     * publishes ingress under it is a gateway session ({@link #gatewaySessionIds}), and its close
-     * promotes the standby. Also the {@code gatewayId} a promotion {@code GatewayActive} carries —
-     * the standby, sharing the sourceId, matches on it.
+     * Every logical gateway's {@code gatewaySourceId}, from the Gateway rows: the set of sourceIds a
+     * cluster session may be a FIX gateway under (a session that publishes under one is tracked in
+     * {@link #gatewaySessionSourceId}), and the sourceId a promotion {@code GatewayActive} carries.
      */
-    private final int gatewaySourceId;
+    private final java.util.Set<Integer> gatewaySourceIds = new java.util.HashSet<>();
 
-    /** The designated-primary {@code gatewayId} the bootstrap {@code GatewayActive} names. */
-    private final int primaryGatewayId;
+    /**
+     * The designated-primary {@code gatewayId} — the {@code gatewayId} of the rank-0 Gateway row —
+     * named by the bootstrap {@code GatewayActive}. -1 until a rank-0 row is seen; a bootstrap with no
+     * designated primary produces no frame (fail closed).
+     */
+    private int designatedPrimaryGatewayId = -1;
 
     // ── Replicated state (snapshotted; advanced identically on every node) ────
 
@@ -118,12 +115,14 @@ public final class Sequencer {
     private int currentLeaderMemberId = -1;
 
     /**
-     * Cluster sessions currently publishing under {@link #gatewaySourceId} — FIX gateway processes
-     * attached to cluster ingress. Added in {@link #sequenceMessage} the first time a session stamps
-     * the gateway sourceId, removed in {@link #sessionClosed}. Replicated state: built identically on
-     * every node from the same ordered log, so every node promotes at the same close.
+     * Cluster sessions currently publishing under a gateway sourceId ({@link #gatewaySourceIds}) —
+     * FIX gateway processes attached to cluster ingress — mapped to the sourceId each publishes under,
+     * so {@link #sessionClosed} can promote with that session's own gateway sourceId. Added in {@link
+     * #sequenceMessage} the first time a session stamps a gateway sourceId, removed in {@link
+     * #sessionClosed}. Replicated state: built identically on every node, so every node promotes at
+     * the same close.
      */
-    private final java.util.Set<Long> gatewaySessionIds = new java.util.HashSet<>();
+    private final java.util.Map<Long, Integer> gatewaySessionSourceId = new java.util.HashMap<>();
 
     /** True once the bootstrap {@code GatewayActive} has been synthesized (on the first EndBasicData). */
     private boolean bootstrapActivationEmitted = false;
@@ -134,20 +133,8 @@ public final class Sequencer {
      */
     private boolean bootstrapActivationPending = false;
 
-    /** Single-gateway topology defaults; see the {@code (gatewaySourceId, primaryGatewayId)} constructor. */
-    public Sequencer() {
-        this(DEFAULT_GATEWAY_SOURCE_ID, DEFAULT_PRIMARY_GATEWAY_ID);
-    }
-
-    /**
-     * @param gatewaySourceId  sourceId identifying a FIX gateway session — the promotion trigger and
-     *                         the {@code gatewayId} a promotion {@code GatewayActive} carries
-     * @param primaryGatewayId designated-primary {@code gatewayId} named by the bootstrap {@code GatewayActive}
-     */
-    public Sequencer(final int gatewaySourceId, final int primaryGatewayId) {
-        this.gatewaySourceId = gatewaySourceId;
-        this.primaryGatewayId = primaryGatewayId;
-    }
+    /** Topology is derived from the sequenced Gateway rows (see {@link #gatewaySourceIds}), not configured. */
+    public Sequencer() {}
 
     /** The buffer every encode writes into, from offset 0. Valid up to the length just returned. */
     public MutableDirectBuffer buffer() {
@@ -197,10 +184,20 @@ public final class Sequencer {
         final int connectionId = ingressHeaderDecoder.connectionId();
 
         // Topology bookkeeping for standby promotion (see sessionClosed / pendingBootstrapActivation).
-        // A session that publishes under the gateway sourceId is a FIX gateway; the first EndBasicData
-        // designates the primary. Both are pure functions of the ordered log, so every node agrees.
-        if (sourceId == gatewaySourceId) {
-            gatewaySessionIds.add(sessionId);
+        // A Gateway row defines the topology; a session that publishes under a gateway sourceId is a FIX
+        // gateway; the first EndBasicData designates the primary. All pure functions of the ordered log.
+        if (gatewaySourceIds.contains(sourceId)) {
+            gatewaySessionSourceId.put(sessionId, sourceId);
+        }
+        if (templateId == GatewayDecoder.TEMPLATE_ID) {
+            // The one bounded exception to opaque copy-through: decode the Gateway row's scalars into
+            // the derived topology (it is still copied through below like any other message). Its
+            // gatewaySourceId joins the gateway-sourceId set; the rank-0 row names the designated primary.
+            gatewayDecoder.wrap(buffer, ingressBodyOffset, ingressBlockLen, ingressMsgHeaderDecoder.version());
+            gatewaySourceIds.add(gatewayDecoder.gatewaySourceId());
+            if (gatewayDecoder.preferenceRank() == 0) {
+                designatedPrimaryGatewayId = gatewayDecoder.gatewayId();
+            }
         }
         if (templateId == EndBasicDataDecoder.TEMPLATE_ID && !bootstrapActivationEmitted) {
             bootstrapActivationEmitted = true;
@@ -290,21 +287,25 @@ public final class Sequencer {
             return NO_FRAME;
         }
         bootstrapActivationPending = false;
-        return gatewayActive(primaryGatewayId, timestamp);
+        if (designatedPrimaryGatewayId < 0) {
+            return NO_FRAME;  // no Gateway row designated a primary — nothing to activate (fail closed)
+        }
+        return gatewayActive(designatedPrimaryGatewayId, timestamp);
     }
 
     /**
-     * A cluster session closed. If it was a FIX gateway session — it had published under {@link
-     * #gatewaySourceId} — synthesize a promotion {@code GatewayActive} carrying that sourceId (the
+     * A cluster session closed. If it was a FIX gateway session — it had published under one of {@link
+     * #gatewaySourceIds} — synthesize a promotion {@code GatewayActive} carrying that sourceId (the
      * standby, sharing it, activates) and forget the session; otherwise {@link #NO_FRAME}. Driven
      * from the cluster's {@code onSessionClose}, a committed log event delivered identically to
      * every node, so the promotion lands at the same {@code globalSeqNo} everywhere.
      */
     public int sessionClosed(final long sessionId, final long timestamp) {
-        if (!gatewaySessionIds.remove(sessionId)) {
+        final Integer sourceId = gatewaySessionSourceId.remove(sessionId);
+        if (sourceId == null) {
             return NO_FRAME;
         }
-        return gatewayActive(gatewaySourceId, timestamp);
+        return gatewayActive(sourceId, timestamp);
     }
 
     /** Encodes one {@code GatewayActive} naming {@code gatewayId}; advances {@code globalSeqNo}. */

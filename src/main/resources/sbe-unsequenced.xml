@@ -763,6 +763,7 @@
         <field name="sessionIdentity" id="20023" type="int32"/>
         <field name="senderComp"      id="20024" type="compId"/>
         <field name="targetComp"      id="20025" type="compId"/>
+        <field name="ownerSourceId"   id="20033" type="int32"/>   <!-- logical gateway (Gateway.gatewaySourceId) that serves this session; 0 = unset -->
     </sbe:message>
 
     <!-- TradingDay (template 15) — section: calendar + open/close, HHMM as uint16. -->
@@ -789,6 +790,7 @@
         <field name="gatewayId"       id="20029" type="int32"/>
         <field name="gatewaySourceId" id="20030" type="int32"/>
         <field name="gatewayName"     id="20031" type="gatewayName"/>
+        <field name="preferenceRank"  id="20032" type="uint8"/>   <!-- 0 = designated primary; 1,2… = standbys of the same gatewaySourceId -->
     </sbe:message>
 
     <!-- ═══════════════════════════════════════════════════════════════════

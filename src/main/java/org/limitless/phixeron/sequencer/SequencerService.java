@@ -136,17 +136,9 @@ public final class SequencerService implements ClusteredService {
 
     // ── Construction ────────────────────────────────────────────────────────────
 
-    /** Single-gateway topology defaults; see {@link #SequencerService(int, int)}. */
+    /** Gateway topology is derived from the sequenced Gateway rows (see {@link Sequencer}), not configured. */
     public SequencerService() {
-        this(Sequencer.DEFAULT_GATEWAY_SOURCE_ID, Sequencer.DEFAULT_PRIMARY_GATEWAY_ID);
-    }
-
-    /**
-     * @param gatewaySourceId  sourceId identifying a FIX gateway session (the standby-promotion trigger)
-     * @param primaryGatewayId designated-primary {@code gatewayId} named by the bootstrap {@code GatewayActive}
-     */
-    public SequencerService(final int gatewaySourceId, final int primaryGatewayId) {
-        this.sequencer = new Sequencer(gatewaySourceId, primaryGatewayId);
+        this.sequencer = new Sequencer();
     }
 
     // ── ClusteredService lifecycle ────────────────────────────────────────────
