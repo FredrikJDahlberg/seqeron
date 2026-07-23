@@ -3,10 +3,12 @@ package org.limitless.phixeron.sequencer;
 import org.agrona.DirectBuffer;
 import org.agrona.ExpandableDirectByteBuffer;
 import org.agrona.MutableDirectBuffer;
+import org.limitless.phixeron.sbe.sequenced.GatewayActiveEncoder;
 import org.limitless.phixeron.sbe.sequenced.HeaderEncoder;
 import org.limitless.phixeron.sbe.sequenced.LeadershipChangedEncoder;
 import org.limitless.phixeron.sbe.sequenced.MessageHeaderEncoder;
 import org.limitless.phixeron.sbe.sequenced.TickEncoder;
+import org.limitless.phixeron.sbe.unsequenced.EndBasicDataDecoder;
 import org.limitless.phixeron.sbe.unsequenced.HeaderDecoder;
 import org.limitless.phixeron.sbe.unsequenced.MessageHeaderDecoder;
 
@@ -64,6 +66,18 @@ public final class Sequencer {
     /** {@link #leadershipChanged} and friends return this when the event produces no frame. */
     public static final int NO_FRAME = 0;
 
+    /**
+     * Default gateway {@code sourceId} the promotion path watches for and stamps into a promotion
+     * {@code GatewayActive}. Matches the C++ gateway's {@code DEFAULT_GATEWAY_SOURCE_ID}.
+     */
+    public static final int DEFAULT_GATEWAY_SOURCE_ID = 0;
+
+    /**
+     * Default per-instance {@code gatewayId} the bootstrap {@code GatewayActive} names on the first
+     * {@code EndBasicData} — the designated primary. Matches the C++ gateway's {@code DEFAULT_GATEWAY_ID}.
+     */
+    public static final int DEFAULT_PRIMARY_GATEWAY_ID = 1;
+
     // ── Ingress decode (schema 200, sbe-unsequenced.xml) ──────────────────────
     // Only the outer framing header and the generic `header` composite are ever
     // decoded — body fields are copied through as opaque bytes, see sequenceMessage.
@@ -75,7 +89,21 @@ public final class Sequencer {
     private final HeaderEncoder egressHeaderEncoder = new HeaderEncoder();
     private final LeadershipChangedEncoder leadershipChangedEncoder = new LeadershipChangedEncoder();
     private final TickEncoder tickEncoder = new TickEncoder();
+    private final GatewayActiveEncoder gatewayActiveEncoder = new GatewayActiveEncoder();
     private final MutableDirectBuffer encodeBuffer = new ExpandableDirectByteBuffer(4096);
+
+    // ── Topology (fixed at construction; doc/todo.md item 8c) ─────────────────
+
+    /**
+     * The gateway {@code sourceId} this sequencer treats as "a FIX gateway": a cluster session that
+     * publishes ingress under it is a gateway session ({@link #gatewaySessionIds}), and its close
+     * promotes the standby. Also the {@code gatewayId} a promotion {@code GatewayActive} carries —
+     * the standby, sharing the sourceId, matches on it.
+     */
+    private final int gatewaySourceId;
+
+    /** The designated-primary {@code gatewayId} the bootstrap {@code GatewayActive} names. */
+    private final int primaryGatewayId;
 
     // ── Replicated state (snapshotted; advanced identically on every node) ────
 
@@ -88,6 +116,38 @@ public final class Sequencer {
      * onto the synthesized {@code LeadershipChanged}.
      */
     private int currentLeaderMemberId = -1;
+
+    /**
+     * Cluster sessions currently publishing under {@link #gatewaySourceId} — FIX gateway processes
+     * attached to cluster ingress. Added in {@link #sequenceMessage} the first time a session stamps
+     * the gateway sourceId, removed in {@link #sessionClosed}. Replicated state: built identically on
+     * every node from the same ordered log, so every node promotes at the same close.
+     */
+    private final java.util.Set<Long> gatewaySessionIds = new java.util.HashSet<>();
+
+    /** True once the bootstrap {@code GatewayActive} has been synthesized (on the first EndBasicData). */
+    private boolean bootstrapActivationEmitted = false;
+
+    /**
+     * Set when {@link #sequenceMessage} sequenced the EndBasicData that must be followed by the
+     * bootstrap {@code GatewayActive}; consumed (and cleared) by {@link #pendingBootstrapActivation}.
+     */
+    private boolean bootstrapActivationPending = false;
+
+    /** Single-gateway topology defaults; see the {@code (gatewaySourceId, primaryGatewayId)} constructor. */
+    public Sequencer() {
+        this(DEFAULT_GATEWAY_SOURCE_ID, DEFAULT_PRIMARY_GATEWAY_ID);
+    }
+
+    /**
+     * @param gatewaySourceId  sourceId identifying a FIX gateway session — the promotion trigger and
+     *                         the {@code gatewayId} a promotion {@code GatewayActive} carries
+     * @param primaryGatewayId designated-primary {@code gatewayId} named by the bootstrap {@code GatewayActive}
+     */
+    public Sequencer(final int gatewaySourceId, final int primaryGatewayId) {
+        this.gatewaySourceId = gatewaySourceId;
+        this.primaryGatewayId = primaryGatewayId;
+    }
 
     /** The buffer every encode writes into, from offset 0. Valid up to the length just returned. */
     public MutableDirectBuffer buffer() {
@@ -135,6 +195,17 @@ public final class Sequencer {
         ingressHeaderDecoder.wrap(buffer, ingressBodyOffset);
         final int sourceId = ingressHeaderDecoder.sourceId();
         final int connectionId = ingressHeaderDecoder.connectionId();
+
+        // Topology bookkeeping for standby promotion (see sessionClosed / pendingBootstrapActivation).
+        // A session that publishes under the gateway sourceId is a FIX gateway; the first EndBasicData
+        // designates the primary. Both are pure functions of the ordered log, so every node agrees.
+        if (sourceId == gatewaySourceId) {
+            gatewaySessionIds.add(sessionId);
+        }
+        if (templateId == EndBasicDataDecoder.TEMPLATE_ID && !bootstrapActivationEmitted) {
+            bootstrapActivationEmitted = true;
+            bootstrapActivationPending = true;
+        }
 
         // sbe-sequenced.xml's header composite is sbe-unsequenced.xml's plus two int64 fields
         // (globalSeqNo, timestamp); every other field is byte-identical, so the egress blockLength
@@ -204,5 +275,49 @@ public final class Sequencer {
             .timestamp(timestamp);
         leadershipChangedEncoder.newLeaderMemberId(leaderMemberId);
         return MessageHeaderEncoder.ENCODED_LENGTH + leadershipChangedEncoder.encodedLength();
+    }
+
+    /**
+     * The bootstrap activation, synthesized once behind the first {@code EndBasicData}: the cluster
+     * designates the primary FIX gateway by naming its {@code gatewayId} in a {@code GatewayActive},
+     * so exactly one instance opens its accept gate at cold start and a standby waits. Returns the
+     * frame length, or {@link #NO_FRAME} when none is pending. The adapter calls this right after the
+     * {@link #sequenceMessage} that sequenced the EndBasicData, so it takes the next {@code
+     * globalSeqNo} — identically on every node and on replay.
+     */
+    public int pendingBootstrapActivation(final long timestamp) {
+        if (!bootstrapActivationPending) {
+            return NO_FRAME;
+        }
+        bootstrapActivationPending = false;
+        return gatewayActive(primaryGatewayId, timestamp);
+    }
+
+    /**
+     * A cluster session closed. If it was a FIX gateway session — it had published under {@link
+     * #gatewaySourceId} — synthesize a promotion {@code GatewayActive} carrying that sourceId (the
+     * standby, sharing it, activates) and forget the session; otherwise {@link #NO_FRAME}. Driven
+     * from the cluster's {@code onSessionClose}, a committed log event delivered identically to
+     * every node, so the promotion lands at the same {@code globalSeqNo} everywhere.
+     */
+    public int sessionClosed(final long sessionId, final long timestamp) {
+        if (!gatewaySessionIds.remove(sessionId)) {
+            return NO_FRAME;
+        }
+        return gatewayActive(gatewaySourceId, timestamp);
+    }
+
+    /** Encodes one {@code GatewayActive} naming {@code gatewayId}; advances {@code globalSeqNo}. */
+    private int gatewayActive(final int gatewayId, final long timestamp) {
+        final long globalSeq = ++globalSeqNo;
+        gatewayActiveEncoder.wrapAndApplyHeader(encodeBuffer, 0, headerEncoder);
+        gatewayActiveEncoder.header()
+            .sourceId(NO_SOURCE_ID)
+            .connectionId(NO_SOURCE_ID)
+            .sessionId(NO_SOURCE_ID)
+            .globalSeqNo(globalSeq)
+            .timestamp(timestamp);
+        gatewayActiveEncoder.gatewayId(gatewayId);
+        return MessageHeaderEncoder.ENCODED_LENGTH + gatewayActiveEncoder.encodedLength();
     }
 }

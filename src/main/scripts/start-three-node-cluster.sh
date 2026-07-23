@@ -197,12 +197,20 @@ done
 # and the local archive already holds the tap recording connectLocalArchive needs.
 # PHIXERON_REPLAYER_CLIENT_ID=2 keeps it distinct from the co-located OrderExecClient replica (id 1);
 # its cluster egress port defaults to 9340+memberId, clear of the replica's 9330+memberId.
-echo "[start-three-node-cluster.sh] Starting FixSessionClient (co-located with member 0) → ${FIX_LOG}"
-PHIXERON_FIX_GATEWAY_AERON_DIR="${SEQ_AERON_DIR}" \
-    PHIXERON_NODE_MEMBER_ID=0 \
-    PHIXERON_REPLAYER_CLIENT_ID=2 \
-    stdbuf -oL -eL "${BUILD_DIR}/FixSessionClient" > "${FIX_LOG}" 2>&1 &
-FIX_PID=$!
+# PHIXERON_SKIP_FIX_GATEWAY lets a caller own the FIX gateway itself instead of having this script
+# launch and monitor one — needed by the two-gateway failover harness, which runs a primary and a hot
+# standby and must kill the primary WITHOUT this script's monitor tearing down the whole cluster.
+FIX_PID=""
+if [[ -z "${PHIXERON_SKIP_FIX_GATEWAY:-}" ]]; then
+    echo "[start-three-node-cluster.sh] Starting FixSessionClient (co-located with member 0) → ${FIX_LOG}"
+    PHIXERON_FIX_GATEWAY_AERON_DIR="${SEQ_AERON_DIR}" \
+        PHIXERON_NODE_MEMBER_ID=0 \
+        PHIXERON_REPLAYER_CLIENT_ID=2 \
+        stdbuf -oL -eL "${BUILD_DIR}/FixSessionClient" > "${FIX_LOG}" 2>&1 &
+    FIX_PID=$!
+else
+    echo "[start-three-node-cluster.sh] PHIXERON_SKIP_FIX_GATEWAY set — not launching the FIX gateway (caller-owned)"
+fi
 
 echo "[start-three-node-cluster.sh] Starting OrderExecClient (replica on member 0) → ${APP_LOG}"
 # Member 0's replica is the latency-instrumented one: PHIXERON_LATENCY_STATS=1 makes it record the
@@ -272,7 +280,10 @@ for m in 1 2; do
 done
 
 ALL_PIDS=("${APP_PID}" "${REPLAYER_PID}" "${EXTRA_APP_PIDS[@]}" "${EXTRA_REPLAYER_PIDS[@]}" \
-          "${BASICDATA_PID}" "${EXTRA_BASICDATA_PIDS[@]}" "${FIX_PID}" "${MD_PID}" "${SEQ_PIDS[@]}")
+          "${BASICDATA_PID}" "${EXTRA_BASICDATA_PIDS[@]}" "${MD_PID}" "${SEQ_PIDS[@]}")
+if [[ -n "${FIX_PID}" ]]; then
+    ALL_PIDS+=("${FIX_PID}")
+fi
 
 # ── Shutdown handling ─────────────────────────────────────────────────────────
 
@@ -287,18 +298,20 @@ trap cleanup INT TERM
 
 # ── Wait until fully ready ────────────────────────────────────────────────────
 
-echo "[start-three-node-cluster.sh] Waiting for FixSessionClient gateway on 127.0.0.1:9000…"
-WAIT=0
-until nc -z 127.0.0.1 9000 2>/dev/null; do
-    sleep 0.5
-    WAIT=$(( WAIT + 1 ))
-    if (( WAIT > 40 )); then
-        echo "ERROR: 127.0.0.1:9000 not reachable after 20 s — see ${FIX_LOG}" >&2
-        cleanup
-        exit 1
-    fi
-done
-echo "[start-three-node-cluster.sh] Gateway is up"
+if [[ -n "${FIX_PID}" ]]; then
+    echo "[start-three-node-cluster.sh] Waiting for FixSessionClient gateway on 127.0.0.1:9000…"
+    WAIT=0
+    until nc -z 127.0.0.1 9000 2>/dev/null; do
+        sleep 0.5
+        WAIT=$(( WAIT + 1 ))
+        if (( WAIT > 40 )); then
+            echo "ERROR: 127.0.0.1:9000 not reachable after 20 s — see ${FIX_LOG}" >&2
+            cleanup
+            exit 1
+        fi
+    done
+    echo "[start-three-node-cluster.sh] Gateway is up"
+fi
 
 # Only a caught-up replica answers a PortfolioQueryRequest (the isCaughtUp gate against re-answering
 # replayed history, design §3). We don't know which member won the election, so wait for ALL three
@@ -320,22 +333,28 @@ done
 # connects early queues in the listen backlog rather than being refused — this wait is not needed for
 # correctness. It is here so READY means "a Logon will be answered now", keeping the harness's
 # failure modes distinguishable: a genuine hang shows up here, not as a client-side connect timeout.
-echo "[start-three-node-cluster.sh] Waiting for the FIX gateway to load basic data…"
-WAIT=0
-until grep -q "Basic data loaded" "${FIX_LOG}" 2>/dev/null; do
-    sleep 0.5
-    WAIT=$(( WAIT + 1 ))
-    if (( WAIT > 60 )); then
-        echo "[start-three-node-cluster.sh] WARN: gateway has not seen EndBasicData after 30s —" \
-             "its logon gate is still shut, so clients will connect but get no Logon reply" >&2
-        break
-    fi
-done
+if [[ -n "${FIX_PID}" ]]; then
+    echo "[start-three-node-cluster.sh] Waiting for the FIX gateway to load basic data…"
+    WAIT=0
+    until grep -q "Basic data loaded" "${FIX_LOG}" 2>/dev/null; do
+        sleep 0.5
+        WAIT=$(( WAIT + 1 ))
+        if (( WAIT > 60 )); then
+            echo "[start-three-node-cluster.sh] WARN: gateway has not seen EndBasicData after 30s —" \
+                 "its logon gate is still shut, so clients will connect but get no Logon reply" >&2
+            break
+        fi
+    done
+fi
 
 echo "[start-three-node-cluster.sh] READY — cluster is up and all replicas are following the live tail"
 echo "  SequencerNode     pids=${SEQ_PIDS[*]}"
 echo "  aeronmd           pid=${MD_PID}"
-echo "  FixSessionClient  pid=${FIX_PID}   log=${FIX_LOG}"
+if [[ -n "${FIX_PID}" ]]; then
+    echo "  FixSessionClient  pid=${FIX_PID}   log=${FIX_LOG}"
+else
+    echo "  FixSessionClient  (skipped — caller-owned)"
+fi
 echo "  ReplayerNode      pids=${REPLAYER_PID} ${EXTRA_REPLAYER_PIDS[*]}"
 echo "  OrderExecClient   pids=${APP_PID} ${EXTRA_APP_PIDS[*]}"
 echo "  BasicDataClient   pids=${BASICDATA_PID} ${EXTRA_BASICDATA_PIDS[*]}"

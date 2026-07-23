@@ -10,6 +10,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.limitless.phixeron.sbe.sequenced.ClientConnectedDecoder;
 import org.limitless.phixeron.sbe.sequenced.ClientDisconnectedDecoder;
+import org.limitless.phixeron.sbe.sequenced.GatewayActiveDecoder;
 import org.limitless.phixeron.sbe.sequenced.HeaderDecoder;
 import org.limitless.phixeron.sbe.sequenced.LeadershipChangedDecoder;
 import org.limitless.phixeron.sbe.sequenced.LogoutDecoder;
@@ -328,6 +329,59 @@ class SequencerTest {
         assertEquals(length, MessageHeaderDecoder.ENCODED_LENGTH + TickDecoder.BLOCK_LENGTH);
     }
 
+    // ── Standby promotion (GatewayActive) ─────────────────────────────────────
+
+    @Test
+    @DisplayName("the first EndBasicData is followed by a bootstrap GatewayActive naming the primary")
+    void firstEndBasicDataSynthesizesBootstrapActivation() {
+        // Cold-start designation: one instance must open its gate and the standby must wait, so the
+        // cluster names the primary's gatewayId behind the load-complete marker (doc/todo.md item 18).
+        final int primaryGatewayId = 5;
+        final Sequencer seq = new Sequencer(SOURCE_ID, primaryGatewayId);
+        final MutableDirectBuffer buf = new ExpandableArrayBuffer(64);
+
+        assertEquals(Sequencer.NO_FRAME, seq.pendingBootstrapActivation(TIMESTAMP), "nothing pending before EndBasicData");
+
+        final int endLength = seq.sequenceMessage(buf, 0, encodeIngressEndBasicData(buf, 0), SESSION_ID, TIMESTAMP);
+        assertEquals(1L, globalSeqNoOf(seq, endLength));
+
+        final int activationLength = seq.pendingBootstrapActivation(TIMESTAMP + 1);
+        assertNotEquals(Sequencer.NO_FRAME, activationLength);
+        final GatewayActiveDecoder decoded = decodeGatewayActive(seq.buffer(), activationLength);
+        assertEquals(primaryGatewayId, decoded.gatewayId());
+        assertEquals(2L, decoded.header().globalSeqNo());          // takes the next globalSeqNo after EndBasicData
+        assertEquals(TIMESTAMP + 1, decoded.header().timestamp());
+        assertEquals(Sequencer.NO_SOURCE_ID, decoded.header().sourceId());  // synthesized: no submitter
+
+        // Fires once: a re-emitted load (a leader change mid-load) does not re-designate the primary.
+        seq.sequenceMessage(buf, 0, encodeIngressEndBasicData(buf, 0), SESSION_ID, TIMESTAMP + 2);
+        assertEquals(Sequencer.NO_FRAME, seq.pendingBootstrapActivation(TIMESTAMP + 3));
+    }
+
+    @Test
+    @DisplayName("closing a gateway session promotes the standby with a GatewayActive on the gateway sourceId")
+    void closingGatewaySessionPromotesStandby() {
+        final Sequencer seq = new Sequencer(SOURCE_ID, 5);
+        final MutableDirectBuffer buf = new ExpandableArrayBuffer(512);
+
+        // A session that publishes under the gateway sourceId (SOURCE_ID here) is a gateway session.
+        final long gatewaySession = 0xA11CEL;
+        seq.sequenceMessage(buf, 0, encodeIngressNewOrderSingle(buf, 0), gatewaySession, TIMESTAMP);
+
+        // A session that never published under the gateway sourceId is not — its close promotes nothing.
+        assertEquals(Sequencer.NO_FRAME, seq.sessionClosed(0xBEEFL, TIMESTAMP + 1));
+
+        final int promotionLength = seq.sessionClosed(gatewaySession, TIMESTAMP + 2);
+        assertNotEquals(Sequencer.NO_FRAME, promotionLength);
+        final GatewayActiveDecoder decoded = decodeGatewayActive(seq.buffer(), promotionLength);
+        assertEquals(SOURCE_ID, decoded.gatewayId());              // promotion carries the (shared) gateway sourceId
+        assertEquals(2L, decoded.header().globalSeqNo());
+        assertEquals(TIMESTAMP + 2, decoded.header().timestamp());
+
+        // The session is forgotten: a duplicate close does not re-promote.
+        assertEquals(Sequencer.NO_FRAME, seq.sessionClosed(gatewaySession, TIMESTAMP + 3));
+    }
+
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     /** Encodes a fully-populated schema-200 NewOrderSingle, as the FIX gateway would submit it. */
@@ -410,6 +464,27 @@ class SequencerTest {
         encoder.origin(org.limitless.phixeron.sbe.unsequenced.Origin.Gateway);
 
         return org.limitless.phixeron.sbe.unsequenced.MessageHeaderEncoder.ENCODED_LENGTH + encoder.encodedLength();
+    }
+
+    /** Encodes a schema-200 EndBasicData (header-only), as the BasicDataClient submits it to close a load. */
+    private static int encodeIngressEndBasicData(final MutableDirectBuffer buffer, final int offset) {
+        final org.limitless.phixeron.sbe.unsequenced.MessageHeaderEncoder messageHeader =
+            new org.limitless.phixeron.sbe.unsequenced.MessageHeaderEncoder();
+        final org.limitless.phixeron.sbe.unsequenced.EndBasicDataEncoder encoder =
+            new org.limitless.phixeron.sbe.unsequenced.EndBasicDataEncoder();
+
+        encoder.wrapAndApplyHeader(buffer, offset, messageHeader);
+        encoder.header().sourceId(3).connectionId(-1).sessionId(-1);  // the BasicDataClient's sourceId
+
+        return org.limitless.phixeron.sbe.unsequenced.MessageHeaderEncoder.ENCODED_LENGTH + encoder.encodedLength();
+    }
+
+    private static GatewayActiveDecoder decodeGatewayActive(final MutableDirectBuffer buffer, final int length) {
+        final MessageHeaderDecoder messageHeader = new MessageHeaderDecoder().wrap(buffer, 0);
+        assertEquals(GatewayActiveDecoder.TEMPLATE_ID, messageHeader.templateId());
+        assertEquals(length, MessageHeaderDecoder.ENCODED_LENGTH + messageHeader.blockLength());
+        return new GatewayActiveDecoder().wrap(buffer, MessageHeaderDecoder.ENCODED_LENGTH,
+                                               messageHeader.blockLength(), messageHeader.version());
     }
 
     private static NewOrderSingleDecoder decodeNewOrderSingle(final MutableDirectBuffer buffer, final int length) {

@@ -39,6 +39,10 @@ import org.agrona.concurrent.YieldingIdleStrategy;
  *                               default: single-node localhost
  *   sequencer.baseDir         — data directory root; default /tmp/phixeron-seq
  *   sequencer.aeronDir        — Aeron media driver directory
+ *   sequencer.gatewaySourceId — header.sourceId identifying a FIX gateway session (standby-promotion
+ *                               trigger); default 0
+ *   sequencer.primaryGatewayId— designated-primary gatewayId named by the bootstrap GatewayActive on
+ *                               EndBasicData; default 1
  * </pre>
  *
  * <p>Single-node launch example:
@@ -54,6 +58,8 @@ public final class SequencerNode {
     private static final String PROP_CLUSTER_MEMBERS = "sequencer.clusterMembers";
     private static final String PROP_BASE_DIR = "sequencer.baseDir";
     private static final String PROP_AERON_DIR = "sequencer.aeronDir";
+    private static final String PROP_GATEWAY_SOURCE_ID = "sequencer.gatewaySourceId";
+    private static final String PROP_PRIMARY_GATEWAY_ID = "sequencer.primaryGatewayId";
 
     private static final String DEFAULT_HOST = "localhost";
     private static final int PORT_BASE = 9300;
@@ -64,6 +70,8 @@ public final class SequencerNode {
             = System.getProperty(PROP_BASE_DIR, System.getProperty("java.io.tmpdir") + "/phixeron-seq");
         final String aeronDir = System.getProperty(
             PROP_AERON_DIR, System.getProperty("java.io.tmpdir") + "/phixeron-seq-aeron-" + memberId);
+        final int gatewaySourceId = Integer.getInteger(PROP_GATEWAY_SOURCE_ID, Sequencer.DEFAULT_GATEWAY_SOURCE_ID);
+        final int primaryGatewayId = Integer.getInteger(PROP_PRIMARY_GATEWAY_ID, Sequencer.DEFAULT_PRIMARY_GATEWAY_ID);
 
         final int portBase = PORT_BASE + memberId * 10;
         final int archivePort = portBase + 1;
@@ -142,7 +150,7 @@ public final class SequencerNode {
                   .aeronDirectoryName(aeronDir)
                   .archiveContext(localArchiveCtx.clone())
                   .clusterDir(clusterDir)
-                  .clusteredService(new SequencerService())
+                  .clusteredService(new SequencerService(gatewaySourceId, primaryGatewayId))
                   .idleStrategySupplier(YieldingIdleStrategy::new)
                   .errorHandler(t -> {
                       System.err.printf("[SequencerService/%d] %s%n", memberId, t.getMessage());

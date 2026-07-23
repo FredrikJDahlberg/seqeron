@@ -123,7 +123,7 @@ public final class SequencerService implements ClusteredService {
      * only its Aeron adapter — it decides <em>when</em> to call the sequencer and publishes what
      * comes back, and holds no replicated state of its own.
      */
-    private final Sequencer sequencer = new Sequencer();
+    private final Sequencer sequencer;
 
     /** Snapshot scratch; separate from the sequencer's encode buffer so the two never alias. */
     private final MutableDirectBuffer snapshotBuffer = new ExpandableDirectByteBuffer(Long.BYTES);
@@ -133,6 +133,21 @@ public final class SequencerService implements ClusteredService {
     private Cluster cluster;
     private ExclusivePublication tapPub;
     private AeronArchive aeronArchive;
+
+    // ── Construction ────────────────────────────────────────────────────────────
+
+    /** Single-gateway topology defaults; see {@link #SequencerService(int, int)}. */
+    public SequencerService() {
+        this(Sequencer.DEFAULT_GATEWAY_SOURCE_ID, Sequencer.DEFAULT_PRIMARY_GATEWAY_ID);
+    }
+
+    /**
+     * @param gatewaySourceId  sourceId identifying a FIX gateway session (the standby-promotion trigger)
+     * @param primaryGatewayId designated-primary {@code gatewayId} named by the bootstrap {@code GatewayActive}
+     */
+    public SequencerService(final int gatewaySourceId, final int primaryGatewayId) {
+        this.sequencer = new Sequencer(gatewaySourceId, primaryGatewayId);
+    }
 
     // ── ClusteredService lifecycle ────────────────────────────────────────────
 
@@ -187,23 +202,40 @@ public final class SequencerService implements ClusteredService {
 
     // An Aeron Cluster session opening or closing is a transport event between the cluster and one
     // of its clients — a gateway or an OrderExecClient attaching and detaching. It is not a FIX
-    // session lifecycle, and nothing downstream ever consumed it. The events consumers actually
-    // need, ClientConnected/ClientDisconnected, describe a FIX client's TCP connection to the
-    // gateway; the gateway observes those directly and publishes them on ingress, so they arrive
-    // through onSessionMessage below like every other message and carry the connectionId they
-    // refer to. Emitting a cluster-session frame under those same template ids would put two
-    // unrelated meanings on one type, so these stay empty rather than synthesizing anything.
+    // session lifecycle: the FIX client's TCP connection to the gateway is carried by
+    // ClientConnected/ClientDisconnected, which the gateway observes directly and publishes on
+    // ingress, so they arrive through onSessionMessage below like every other message and carry the
+    // connectionId they refer to. onSessionOpen therefore synthesizes nothing.
+    //
+    // onSessionClose is the one exception, and only for a FIX *gateway's* cluster session: when the
+    // primary gateway detaches (crash or shutdown) that is the promotion trigger for a hot standby.
+    // The sequencer synthesizes a GatewayActive so the standby — which has been rebuilding the
+    // primary's session state off the tap — opens its accept gate. A non-gateway session closing
+    // still produces nothing. See Sequencer.sessionClosed and doc/todo.md item 18.
 
     @Override
     public void onSessionOpen(final ClientSession session, final long timestamp) {}
 
     @Override
-    public void onSessionClose(final ClientSession session, final long timestamp, final CloseReason closeReason) {}
+    public void onSessionClose(final ClientSession session, final long timestamp, final CloseReason closeReason) {
+        final int activation = sequencer.sessionClosed(session.id(), timestamp);
+        if (activation != Sequencer.NO_FRAME) {
+            System.out.printf("[SequencerService/%d] gateway session %d closed (%s) — promoting standby%n",
+                              cluster.memberId(), session.id(), closeReason);
+            emit(activation);
+        }
+    }
 
     @Override
     public void onSessionMessage(final ClientSession session, final long timestamp, final DirectBuffer buffer,
                                  final int offset, final int length, final Header header) {
         emit(sequencer.sequenceMessage(buffer, offset, length, session.id(), timestamp));
+        // The first EndBasicData opens the trading day: the cluster designates the primary FIX
+        // gateway by synthesizing a bootstrap GatewayActive right behind it, on the next globalSeqNo.
+        final int activation = sequencer.pendingBootstrapActivation(timestamp);
+        if (activation != Sequencer.NO_FRAME) {
+            emit(activation);
+        }
     }
 
     @Override
