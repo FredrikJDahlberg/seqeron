@@ -449,7 +449,27 @@ class ClusterIngressSender {
     }
 
     // Wraps a pre-encoded sbe-unsequenced.xml message in a SessionMessageHeader
-    // (the Aeron Cluster ingress envelope) and offers it to the cluster.
+    // (the Aeron Cluster ingress envelope) and offers it to the cluster, spinning
+    // until the offer lands. This is reliable by the same contract as the sequencer's
+    // tap emit: a dropped ingress frame is unrecoverable — it tears a hole in the
+    // gateway's outbound MsgSeqNum stream that no resend can fill (the ResendCache only
+    // ever holds frames that actually round-tripped) — so send() never returns having
+    // failed to place the frame.
+    //
+    // Two reasons an offer is rejected, both handled by the spin:
+    //   • transient back-pressure — the ingress subscriber is briefly behind;
+    //     re-offering succeeds once it drains. This is the common case even in steady
+    //     state and was the frame-dropping bug before this became a spin.
+    //   • the ingress publication went not-connected because the leader changed — the
+    //     retry must first let a NewLeaderEvent/REDIRECT swap m_ingress to the new
+    //     leader. That swap is driven by egress polling, which runs on *this* thread
+    //     (the single duty cycle), so the spin pumps egress itself (pumpEgressControl).
+    //     A plain while(!offer) idle() would DEADLOCK here: it would spin forever on the
+    //     dead leader's publication while the very poll that revives it never runs.
+    // After a swap the leadership term has moved on, so leadershipTermId (and the
+    // cluster-overwritten timestamp) are re-stamped before each retry — the new leader
+    // rejects a frame still carrying the previous term. This mirrors what Aeron's own
+    // AeronCluster.offer() does internally.
     void send(const std::uint8_t* bytes, std::uint16_t len)
     {
         if (!m_ingress || m_clusterSessionId < 0 || len == 0)
@@ -465,15 +485,35 @@ class ClusterIngressSender {
             .timestamp(nowMs());
         const std::int32_t hdrLen = static_cast<std::int32_t>(hdr.sbePosition());
         std::memcpy(buf.data() + hdrLen, bytes, len);
+        const std::size_t frameLen = static_cast<std::size_t>(hdrLen) + len;
 
-        if (!m_ingress->offer(std::span<const std::uint8_t>(buf.data(), static_cast<std::size_t>(hdrLen) + len)))
+        while (!m_ingress->offer(std::span<const std::uint8_t>(buf.data(), frameLen)))
         {
-            std::fprintf(stderr, "[Cluster] ingress offer failed\n");
+            pumpEgressControl();  // let a NewLeaderEvent/REDIRECT swap m_ingress to the new leader
+            m_idleStrategy.idle();
+            hdr.leadershipTermId(m_leadershipTermId).timestamp(nowMs());  // re-stamp for the (possibly new) leader
         }
     }
 
    private:
     static constexpr std::int64_t KEEP_ALIVE_INTERVAL_MS = 1000;
+
+    // Drives the egress subscription for cluster session-control frames only —
+    // SessionEvent / NewLeaderEvent / REDIRECT, all handled inside onFragment (e.g.
+    // swapping m_ingress to a new leader) — discarding any application payload. Used
+    // by send()'s reliable-offer spin so a leader failover can complete mid-send.
+    // Discarding the payload is safe because every ClusterIngressSender caller already
+    // polls egress with a no-op application handler: in this system the data round-trip
+    // is the node-local tap, and cluster egress carries only session-control frames.
+    void pumpEgressControl()
+    {
+        if (m_egress)
+        {
+            m_egress->poll([this](std::span<const std::uint8_t> bytes) {
+                onFragment(bytes, [](const std::uint8_t*, std::int32_t) {});
+            });
+        }
+    }
 
     void onFragment(std::span<const std::uint8_t> bytes,
                     const std::function<void(const std::uint8_t*, std::int32_t)>& onAppMessage)

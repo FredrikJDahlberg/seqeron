@@ -36,6 +36,28 @@ class FakeIngressTransport : public IngressTransport {
     }
 };
 
+// Rejects the first m_rejectCount offers (as a back-pressured or, during a leader
+// failover, not-connected ingress publication would), then accepts — capturing the
+// frame that finally lands. Drives ClusterIngressSender::send()'s reliable-offer spin.
+class FlakyIngressTransport : public IngressTransport {
+   public:
+    int m_rejectCount = 0;  // reject this many offers before accepting the next
+    int m_offerCalls = 0;
+    std::vector<std::uint8_t> m_accepted;  // the frame that finally landed
+
+    bool offer(std::span<const std::uint8_t> bytes) override
+    {
+        ++m_offerCalls;
+        if (m_rejectCount > 0)
+        {
+            --m_rejectCount;
+            return false;
+        }
+        m_accepted.assign(bytes.begin(), bytes.end());
+        return true;
+    }
+};
+
 // Delivers pre-queued frames on poll(), one per call, mimicking a cluster
 // egress subscription that already has messages buffered.
 class FakeEgressTransport : public EgressTransport {
@@ -315,6 +337,71 @@ TEST_F(ConnectedClusterIngressSender, PollEgressIgnoresNewLeaderEndpointWithoutA
     ASSERT_EQ(1u, ingress_->m_offered.size());
     auto hdr = decodeOffered<cluster_sbe::SessionMessageHeader>(ingress_->m_offered[0]);
     EXPECT_EQ(999, hdr.leadershipTermId());
+}
+
+// ── Reliable send: spin until the offer lands (see ClusterIngressSender::send) ──────────────
+
+// A back-pressured ingress publication rejects offers transiently; send() must keep
+// re-offering the same frame until it lands rather than dropping it (a dropped ingress
+// frame is an unrecoverable hole in the outbound MsgSeqNum stream).
+TEST(ClusterIngressSenderReliableSend, SendSpinsUntilOfferAccepted)
+{
+    auto egress = std::make_unique<FakeEgressTransport>();
+    egress->m_queued.push_back(encodeSessionEvent(55, 11, cluster_sbe::EventCode::Value::OK));
+
+    auto ingress = std::make_unique<FlakyIngressTransport>();
+    auto* ingressPtr = ingress.get();
+
+    ClusterIngressSender sender;
+    sender.connect(std::move(ingress), std::move(egress));
+    ASSERT_TRUE(sender.isConnected());
+
+    ingressPtr->m_offerCalls = 0;
+    ingressPtr->m_rejectCount = 3;  // reject three offers, accept the fourth
+
+    const std::array<std::uint8_t, 5> body{'8', '=', 'F', 'I', 'X'};
+    sender.send(body.data(), static_cast<std::uint16_t>(body.size()));
+
+    EXPECT_EQ(4, ingressPtr->m_offerCalls);  // spun until it landed
+    ASSERT_FALSE(ingressPtr->m_accepted.empty());
+    auto hdr = decodeOffered<cluster_sbe::SessionMessageHeader>(ingressPtr->m_accepted);
+    EXPECT_EQ(11, hdr.leadershipTermId());
+    EXPECT_EQ(55, hdr.clusterSessionId());
+}
+
+// During a leader failover the offer fails while a NewLeaderEvent is waiting on egress.
+// send()'s spin must pump egress itself — picking up the new leader (and, in production,
+// swapping the ingress publication to it) — and re-stamp the frame's leadershipTermId to
+// the new term before the retry lands, because the new leader rejects a frame carrying the
+// old term. This also pins down the no-deadlock property: the swap that lets the offer
+// succeed is driven from inside send(), on the same thread, not from the duty cycle.
+TEST(ClusterIngressSenderReliableSend, SendReStampsLeadershipTermAfterMidSpinFailover)
+{
+    auto egress = std::make_unique<FakeEgressTransport>();
+    egress->m_queued.push_back(encodeSessionEvent(55, 11, cluster_sbe::EventCode::Value::OK));
+    auto* egressPtr = egress.get();
+
+    auto ingress = std::make_unique<FlakyIngressTransport>();
+    auto* ingressPtr = ingress.get();
+
+    ClusterIngressSender sender;
+    sender.connect(std::move(ingress), std::move(egress));
+    ASSERT_TRUE(sender.isConnected());
+
+    // A new leader (term 999) is waiting on egress; the current publication rejects the
+    // first offer, as a not-connected one would mid-failover. The spin pumps egress
+    // (consuming the NewLeaderEvent, updating the term) before the second offer lands.
+    egressPtr->m_queued.push_back(encodeNewLeaderEvent(999));
+    ingressPtr->m_offerCalls = 0;
+    ingressPtr->m_rejectCount = 1;
+
+    const std::array<std::uint8_t, 1> body{'8'};
+    sender.send(body.data(), 1);
+
+    EXPECT_EQ(2, ingressPtr->m_offerCalls);
+    ASSERT_FALSE(ingressPtr->m_accepted.empty());
+    auto hdr = decodeOffered<cluster_sbe::SessionMessageHeader>(ingressPtr->m_accepted);
+    EXPECT_EQ(999, hdr.leadershipTermId());  // re-stamped to the new leader's term
 }
 
 // ── connectColocated's IPC-then-UDP fallback (see ClusterIngressSender.hpp) ────────────────
