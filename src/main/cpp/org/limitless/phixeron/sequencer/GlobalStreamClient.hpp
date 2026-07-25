@@ -14,7 +14,9 @@
 #include <vector>
 
 #include "Aeron.h"
+#include "FragmentAssembler.h"
 #include "client/archive/AeronArchive.h"
+#include "concurrent/logbuffer/LogBufferDescriptor.h"
 
 // Generated SBE C++ codecs from sbe-sequenced.xml (via GenerateSequencedSbeCodecs)
 #include "org_limitless_phixeron_sbe_sequenced/Header.h"
@@ -350,6 +352,24 @@ struct SequencedEvent {
                                     ///< pass to ReplayParams::position() to replay from here
 };
 
+// Stream position of the first byte of the frame `header` describes — what SequencedEvent::position
+// carries, for both clients that populate one, and what the resend path hands to
+// ReplayParams::position().
+//
+// Derived from the frame's own term id/offset rather than as `position() - frameLength()`, which is
+// wrong in two ways. Header::position() is the *next* frame's position: this frame's end rounded up
+// to the 32-byte frame alignment, so subtracting an unaligned frameLength() (SBE messages are
+// arbitrary lengths) lands 1-31 bytes past the true start and is itself unaligned — and a replay
+// position must sit on a frame boundary. Under a FragmentAssembler it is further off: the completed
+// header is the first fragment's with frameLength() rewritten to the whole assembled length, while
+// position() has advanced past the last fragment, adding a frame header's worth of overshoot per
+// extra fragment. Term offsets are always frame-aligned, so this form is exact in both cases.
+inline std::int64_t frameStartPosition(const aeron::Header& header)
+{
+    return aeron::concurrent::logbuffer::LogBufferDescriptor::computePosition(
+        header.termId(), header.termOffset(), header.positionBitsToShift(), header.initialTermId());
+}
+
 /**
  * A FIX client's TCP connection to a gateway opening (ClientConnected) or closing
  * (ClientDisconnected). Published by the gateway that owns the socket — these are external
@@ -407,7 +427,9 @@ class GlobalStreamClient {
           m_onConnected(std::move(onConnected)),
           m_onDisconnected(std::move(onDisconnected)),
           m_onCaughtUp(std::move(onCaughtUp)),
-          m_fragmentHandler([this](auto& buf, auto off, auto len, auto& hdr) { onFragment(buf, off, len, hdr); })
+          m_fragmentHandler([this](auto& buf, auto off, auto len, auto& hdr) { onFragment(buf, off, len, hdr); }),
+          m_assembler(std::make_unique<aeron::FragmentAssembler>(m_fragmentHandler)),
+          m_poll(m_assembler->handler())
     {}
 
     /**
@@ -515,7 +537,7 @@ class GlobalStreamClient {
         {
             if (!m_replayImage->isClosed())
             {
-                const int work = m_replayImage->poll(m_fragmentHandler, FRAGMENT_LIMIT);
+                const int work = m_replayImage->poll(m_poll, FRAGMENT_LIMIT);
                 if (!m_caughtUp && isOnLastSegment() && m_replayImage->position() >= m_catchUpPosition)
                 {
                     notifyCaughtUp();
@@ -572,7 +594,7 @@ class GlobalStreamClient {
         // consuming this fragment; subtracting frameLength() gives the position
         // of the frame's first byte, which is what ReplayParams::position() needs
         // to replay starting at (and including) this exact message.
-        const std::int64_t framePosition = header.position() - header.frameLength();
+        const std::int64_t framePosition = frameStartPosition(header);
 
         char* const raw = reinterpret_cast<char*>(buffer.buffer());
         const std::uint64_t cap = static_cast<std::uint64_t>(buffer.capacity());
@@ -695,6 +717,23 @@ class GlobalStreamClient {
     std::int64_t m_lastGlobalSeqNo = 0;  // highest globalSeqNo delivered; 0 = none yet (overlap de-dup)
 
     aeron::fragment_handler_t m_fragmentHandler;
+
+    // Reassembly. A sequenced frame can exceed the IPC MTU — SequencerService encodes into an
+    // 8192-byte buffer and aeron.ipc.mtu.length defaults to 8192, leaving ~8160 for payload — and
+    // Aeron splits it, in the recording as much as on the live tap. Unreassembled, the leading
+    // fragment still carries a valid outer MessageHeader and a plausible globalSeqNo, so onFragment
+    // delivers it *truncated* and the contiguity check never notices; only the tail fragment fails
+    // the schemaId test and is dropped. Silent corruption, not a detectable gap.
+    //
+    // Buffers are allocated lazily, on a fragmented BEGIN only, so an all-unfragmented replay costs
+    // nothing; a non-BEGIN fragment with no builder is discarded rather than spliced onto whatever
+    // came before it. Each client owns one — FixConnection builds a fresh GlobalStreamClient per
+    // resend chunk, so no partial message outlives the scan that started it.
+    std::unique_ptr<aeron::FragmentAssembler> m_assembler;
+
+    // Composed once: FragmentAssembler::handler() builds a fresh std::function per call, and this is
+    // polled every duty-cycle iteration.
+    aeron::fragment_handler_t m_poll;
 
     HdrSbe m_hdr;
     HeaderComposite m_header;

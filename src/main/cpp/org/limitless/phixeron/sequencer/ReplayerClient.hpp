@@ -19,10 +19,10 @@
 //     AeronArchive::startReplay itself.
 // Catch-up is detected by position (Replaying.catchUpPosition), not by the replay image closing: the
 // Replayer's replay is bounded to an ACTIVE recording, and a bounded replay of an active recording
-// never closes its image at the bound (see poll()). GlobalStreamClient itself is left untouched —
-// fix_test_server still follows the archive with it (and FixConnection uses it for the resend scan) —
-// and this reuses its SequencedEvent/LifecycleEvent structs, its sequenced-schema decode, and its
-// CLIENT_*_TEMPLATE_ID constants.
+// never closes its image at the bound (see poll()). GlobalStreamClient keeps its own role —
+// fix_test_server still follows the archive with it, and FixConnection uses it for the resend scan —
+// and this reuses its SequencedEvent/LifecycleEvent structs, its sequenced-schema decode, its
+// CLIENT_*_TEMPLATE_ID constants and its frameStartPosition.
 //
 // Gap recovery is globalSeqNo-based, not position-based (load-bearing): a live tap frame carries a
 // globalSeqNo but NO archive recording position we resume from — an untethered tap subscriber that
@@ -44,6 +44,7 @@
 #include <string>
 
 #include "Aeron.h"
+#include "FragmentAssembler.h"
 #include "concurrent/AtomicBuffer.h"
 
 // Reuses SequencedEvent / LifecycleEvent, the sequenced MessageHeader/Header codecs, the
@@ -116,7 +117,13 @@ class ReplayerClient {
           m_onCaughtUp(std::move(onCaughtUp)),
           m_tapHandler([this](auto& b, auto o, auto l, auto& h) { onFragment(b, o, l, h, /*fromReplay=*/false); }),
           m_replayHandler([this](auto& b, auto o, auto l, auto& h) { onFragment(b, o, l, h, /*fromReplay=*/true); }),
-          m_controlHandler([this](auto& b, auto o, auto l, auto& h) { onControl(b, o, l, h); })
+          m_controlHandler([this](auto& b, auto o, auto l, auto& h) { onControl(b, o, l, h); }),
+          m_tapAssembler(std::make_unique<aeron::FragmentAssembler>(m_tapHandler)),
+          m_replayAssembler(std::make_unique<aeron::FragmentAssembler>(m_replayHandler)),
+          m_controlAssembler(std::make_unique<aeron::FragmentAssembler>(m_controlHandler)),
+          m_tapPoll(m_tapAssembler->handler()),
+          m_replayPoll(m_replayAssembler->handler()),
+          m_controlPoll(m_controlAssembler->handler())
     {}
 
     // Subscribes the tap/replay/control streams, opens the request publication, and requests the
@@ -160,7 +167,7 @@ class ReplayerClient {
         int work = 0;
         if (m_controlSub)
         {
-            work += m_controlSub->poll(m_controlHandler, FRAGMENT_LIMIT);
+            work += m_controlSub->poll(m_controlPoll, FRAGMENT_LIMIT);
         }
 
         // Re-request if a prior request went unanswered (Replayer still starting, request lost, or
@@ -181,7 +188,7 @@ class ReplayerClient {
             {
                 if (!m_replayImage->isClosed())
                 {
-                    const int n = m_replayImage->poll(m_replayHandler, FRAGMENT_LIMIT);
+                    const int n = m_replayImage->poll(m_replayPoll, FRAGMENT_LIMIT);
                     if (m_replayImage->position() < m_catchUpPosition)
                     {
                         return work + n;  // still riding this segment up to its tip
@@ -210,7 +217,7 @@ class ReplayerClient {
 
         if (m_tapSub)
         {
-            work += m_tapSub->poll(m_tapHandler, FRAGMENT_LIMIT);
+            work += m_tapSub->poll(m_tapPoll, FRAGMENT_LIMIT);
         }
         return work;
     }
@@ -352,7 +359,7 @@ class ReplayerClient {
         }
 
         const std::int64_t receiveNs = nowNs();
-        const std::int64_t framePosition = header.position() - header.frameLength();
+        const std::int64_t framePosition = frameStartPosition(header);
 
         char* const raw = reinterpret_cast<char*>(buffer.buffer());
         const auto cap = static_cast<std::uint64_t>(buffer.capacity());
@@ -544,6 +551,31 @@ class ReplayerClient {
     aeron::fragment_handler_t m_tapHandler;
     aeron::fragment_handler_t m_replayHandler;
     aeron::fragment_handler_t m_controlHandler;
+
+    // Reassembly. A sequenced frame can exceed the IPC MTU — SequencerService encodes into an
+    // 8192-byte buffer and aeron.ipc.mtu.length defaults to 8192, leaving ~8160 for payload — and
+    // Aeron then splits it. Unreassembled, the leading fragment still carries a valid outer
+    // MessageHeader and a plausible globalSeqNo, so onFragment delivers it *truncated* and the
+    // contiguity check never notices; only the tail fragment fails the schemaId test and is
+    // dropped. Silent corruption, not the detectable gap it looks like.
+    //
+    // One assembler per subscription rather than one shared: partial messages are keyed by session
+    // id, and the three streams number their sessions independently, so sharing would let a tap
+    // session splice onto a replay one. Buffers are allocated lazily, on a fragmented BEGIN only,
+    // so an all-unfragmented stream costs nothing.
+    //
+    // Safe on the untethered tap: a subscriber dropped and rejoined mid-message resumes on a
+    // non-BEGIN fragment, which the assembler discards (no builder for that session, or a
+    // term-offset that does not chain) instead of splicing it onto an unrelated message.
+    std::unique_ptr<aeron::FragmentAssembler> m_tapAssembler;
+    std::unique_ptr<aeron::FragmentAssembler> m_replayAssembler;
+    std::unique_ptr<aeron::FragmentAssembler> m_controlAssembler;
+
+    // Composed once: FragmentAssembler::handler() builds a fresh std::function per call, and these
+    // are polled every duty-cycle iteration.
+    aeron::fragment_handler_t m_tapPoll;
+    aeron::fragment_handler_t m_replayPoll;
+    aeron::fragment_handler_t m_controlPoll;
 
     HdrSbe m_hdr;
     HeaderComposite m_header;

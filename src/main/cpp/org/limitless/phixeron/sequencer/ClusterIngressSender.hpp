@@ -167,7 +167,7 @@ class AeronEgressTransport : public EgressTransport {
     int poll(const FragmentHandler& handler) override
     {
         m_handler = &handler;
-        const int n = m_sub->poll(m_fa.handler(), 10);
+        const int n = m_sub->poll(m_poll, 10);
         m_handler = nullptr;
         return n;
     }
@@ -185,6 +185,12 @@ class AeronEgressTransport : public EgressTransport {
             (*m_handler)(std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t*>(buf.buffer()) + off,
                                                        static_cast<std::size_t>(len)));
     }};
+
+    // Composed once rather than per poll(): FragmentAssembler::handler() returns a fresh
+    // std::function by value, and this is polled every duty-cycle iteration. Subscription::poll
+    // takes its handler by forwarding reference, so passing the member costs nothing to begin with.
+    // Declared after m_fa — it is built from it.
+    aeron::fragment_handler_t m_poll{m_fa.handler()};
 };
 
 // ── ClusterIngressSender ──────────────────────────────────────────────────────
