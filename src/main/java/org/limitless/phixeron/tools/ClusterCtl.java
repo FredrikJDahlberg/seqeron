@@ -88,6 +88,9 @@ public final class ClusterCtl {
             case "--help":
                 usage();
                 break;
+            case "snapshot":
+                System.out.println("[clusterctl] snapshot: command is not supported.");
+                break;
             case "start":
                 System.exit(start());
                 break;
@@ -292,6 +295,7 @@ public final class ClusterCtl {
 
               start        record a "system started" marker (requires an elected leader)
               shutdown     orderly stop; safe to run on every node, no-op on followers
+              snapshot     this operation is not supported
               help         show this help
               <other>      passed through to io.aeron.cluster.ClusterTool (describe, errors,
                            list-members, recording-log, …) against this node's cluster dir
