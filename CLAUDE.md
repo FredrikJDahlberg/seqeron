@@ -168,11 +168,12 @@ counter: `ClientConnected`/`ClientDisconnected` (cluster session lifecycle), `Le
 consensus-driven time source that keeps advancing while a FIX session is silent, which is exactly
 when the gateway's keepalive watchdog must probe (`TICK_INTERVAL_MS`).
 
-The snapshot codec is a single little-endian `int64 globalSeqNo`, but **snapshots are not taken in
-practice** — `clusterctl shutdown` uses `ABORT`, and recovery is always full-log replay from
-`globalSeqNo` 1. That is deliberate: replaying the whole log is what keeps each node's tap recording
-complete and gap-free. The cost is that recovery time and archive size grow with uptime (the 1 Hz
-tick alone is ~86.4k frames/day) — see `doc/todo.md`.
+**Snapshots are not supported**, and both `ClusteredService` hooks refuse: `onTakeSnapshot` throws,
+and `onStart` refuses a snapshot image rather than restoring from one. `clusterctl shutdown` uses
+`ABORT`, and recovery is always full-log replay from `globalSeqNo` 1. That is deliberate: replaying
+the whole log is what keeps each node's tap recording complete and gap-free — a node restored from a
+snapshot would record only from wherever it resumed. The cost is that recovery time and archive size
+grow with uptime (the 1 Hz tick alone is ~86.4k frames/day) — see `doc/todo.md`.
 
 The key trick making this cheap: ingress messages arrive already SBE-encoded as
 `sbe-unsequenced.xml` (schema 200), and `sbe-sequenced.xml` (schema 202) is deliberately kept

@@ -3,6 +3,7 @@ package org.limitless.phixeron.sequencer;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import org.agrona.ExpandableArrayBuffer;
 import org.agrona.MutableDirectBuffer;
@@ -26,7 +27,7 @@ import org.limitless.phixeron.sbe.sequenced.TickDecoder;
  * Sequencer} is a pure function of its inputs, so the whole state machine is exercised by calling it
  * and decoding the frames it writes, which is what makes these tests fast and stable enough to run
  * on every build. Everything Aeron-shaped ({@link SequencerService}'s tap publication, archive
- * recording, timer scheduling, snapshot I/O) stays covered by the end-to-end scripts under
+ * recording, timer scheduling) stays covered by the end-to-end scripts under
  * {@code src/test/scripts}.
  *
  * <p>The invariants under test are the ones a replicated state machine cannot be allowed to break:
@@ -190,6 +191,50 @@ class SequencerTest {
         assertEquals(2, sequencer.currentLeaderMemberId());
     }
 
+    // ── Ingress validation ────────────────────────────────────────────────────
+
+    @Test
+    @DisplayName("a frame too short to hold the header composite is skipped, not thrown on")
+    void shortFrameIsSkippedRatherThanThrownOn() {
+        // Throwing here would land on every node — the frame is already committed to the replicated log
+        // — and again on every replay of it, leaving the log unreplayable and the cluster unrecoverable
+        // without surgery (doc/review-2026-07-25.md #7). Before the length check this computed a
+        // negative copyLength and threw out of putBytes.
+        final int ingressLength = encodeIngressNewOrderSingle(ingress, 0);
+
+        assertEquals(Sequencer.NO_FRAME,
+                     sequencer.sequenceMessage(ingress, 0, Sequencer.MIN_INGRESS_LENGTH - 1, SESSION_ID, TIMESTAMP));
+        assertEquals(0L, sequencer.globalSeqNo(), "a skipped message must consume no sequence number");
+
+        // The next good message is still globalSeqNo 1: consumers detect loss by gaps, so a skip has to
+        // leave the numbering contiguous rather than burn a number on a frame nobody will ever receive.
+        assertEquals(1L, globalSeqNoOf(sequencer.sequenceMessage(ingress, 0, ingressLength, SESSION_ID, TIMESTAMP)));
+    }
+
+    @Test
+    @DisplayName("a frame from a foreign schema is skipped")
+    void foreignSchemaIsSkipped() {
+        // Every offset sequenceMessage reads is a schema-200 offset; under another schema they address
+        // something else entirely, so the frame is refused rather than re-stamped as if it were ours.
+        final int ingressLength = encodeIngressNewOrderSingle(ingress, 0);
+        new org.limitless.phixeron.sbe.unsequenced.MessageHeaderEncoder().wrap(ingress, 0).schemaId(999);
+
+        assertEquals(Sequencer.NO_FRAME, sequencer.sequenceMessage(ingress, 0, ingressLength, SESSION_ID, TIMESTAMP));
+        assertEquals(0L, sequencer.globalSeqNo());
+    }
+
+    @Test
+    @DisplayName("a blockLength the frame cannot back is skipped")
+    void oversizedBlockLengthIsSkipped() {
+        // blockLength feeds both the egress blockLength and the bounded Gateway decode, so a value
+        // larger than the frame carries is rejected before either uses it.
+        final int ingressLength = encodeIngressNewOrderSingle(ingress, 0);
+        new org.limitless.phixeron.sbe.unsequenced.MessageHeaderEncoder().wrap(ingress, 0).blockLength(ingressLength);
+
+        assertEquals(Sequencer.NO_FRAME, sequencer.sequenceMessage(ingress, 0, ingressLength, SESSION_ID, TIMESTAMP));
+        assertEquals(0L, sequencer.globalSeqNo());
+    }
+
     // ── Determinism ───────────────────────────────────────────────────────────
 
     @Test
@@ -246,21 +291,14 @@ class SequencerTest {
     // ── Snapshot ──────────────────────────────────────────────────────────────
 
     @Test
-    @DisplayName("restoring a snapshot continues the sequence where it left off")
-    void snapshotRestoreContinuesTheSequence() {
-        final int ingressLength = encodeIngressNewOrderSingle(ingress, 0);
-        for (int i = 0; i < 17; i++) {
-            sequencer.sequenceMessage(ingress, 0, ingressLength, SESSION_ID, TIMESTAMP);
-        }
-        final long snapshotted = sequencer.globalSeqNo();
-        assertEquals(17L, snapshotted);
-
-        // What SequencerService.loadSnapshot does with the int64 it reads off the snapshot image.
-        final Sequencer restored = new Sequencer();
-        restored.globalSeqNo(snapshotted);
-
-        final int length = restored.sequenceMessage(ingress, 0, ingressLength, SESSION_ID, TIMESTAMP);
-        assertEquals(18L, globalSeqNoOf(restored, length));
+    @DisplayName("taking a snapshot is refused rather than persisting part of the replicated state")
+    void takingASnapshotIsRefused() {
+        // The one SequencerService call these tests make, and it starts no Aeron runtime: the throw
+        // precedes any use of the publication, which is why null is safe to pass. This used to persist
+        // globalSeqNo alone and drop the six other replicated fields, so a restored node re-emitted the
+        // bootstrap GatewayActive and stopped producing frames identical to its peers'
+        // (doc/review-2026-07-25.md #5). Recovery is full-log replay, which rebuilds all of it.
+        assertThrows(UnsupportedOperationException.class, () -> new SequencerService().onTakeSnapshot(null));
     }
 
     // ── Lifecycle and clock frames ────────────────────────────────────────────

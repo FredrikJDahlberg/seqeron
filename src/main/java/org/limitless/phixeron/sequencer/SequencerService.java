@@ -1,7 +1,6 @@
 package org.limitless.phixeron.sequencer;
 
 import io.aeron.ExclusivePublication;
-import io.aeron.FragmentAssembler;
 import io.aeron.Image;
 import io.aeron.archive.client.AeronArchive;
 import io.aeron.archive.codecs.SourceLocation;
@@ -13,8 +12,6 @@ import io.aeron.cluster.service.ClusteredService;
 import io.aeron.logbuffer.Header;
 import java.util.concurrent.TimeUnit;
 import org.agrona.DirectBuffer;
-import org.agrona.ExpandableDirectByteBuffer;
-import org.agrona.MutableDirectBuffer;
 import org.agrona.concurrent.NoOpLock;
 import org.agrona.concurrent.status.CountersReader;
 import org.limitless.phixeron.replayer.ReplayerService;
@@ -32,7 +29,7 @@ import org.limitless.phixeron.replayer.ReplayerService;
  * (schema 202) copy-through trick that lets the sequencer re-stamp any FIX message type without
  * knowing about it — live in {@link Sequencer}, which has no Aeron dependency and is unit-tested
  * directly. What remains here is the cluster-facing half: the tap publication and its recording,
- * timer scheduling, snapshot I/O, and the reliable-offer discipline in {@link #emit}.
+ * timer scheduling, and the reliable-offer discipline in {@link #emit}.
  *
  * <p>The decorated message is published on the node-local <em>tap</em>
  * ({@link #FEEDER_CHANNEL} / {@link #FEEDER_STREAM_ID}), an {@code aeron:ipc} stream that this node's
@@ -60,10 +57,15 @@ import org.limitless.phixeron.replayer.ReplayerService;
  * own tap subscriptions are untethered, so a slow app is dropped (and heals via the ReplayerService replay
  * protocol) rather than back-pressuring the recording.
  *
- * <p><b>Snapshot format</b> (little-endian binary, single fragment):
- * <pre>
- *   int64  globalSeqNo
- * </pre>
+ * <p><b>No snapshots — both hooks refuse.</b> Recovery here is always full-log replay from {@code
+ * globalSeqNo} 1, and that is what makes a node's tap recording a complete copy of history rather
+ * than one beginning wherever a snapshot left off. A snapshot would also have to carry all of {@link
+ * Sequencer}'s replicated state — the gateway topology, the standby-promotion session map, the
+ * bootstrap-activation latch — and one that silently dropped any of it would diverge the restored
+ * node from its peers, breaking the byte-identical-taps invariant above. So {@link #onTakeSnapshot}
+ * throws rather than persisting a partial state, and {@link #onStart} refuses a snapshot image
+ * rather than restoring from one. Nothing in normal operation reaches either: {@code clusterctl
+ * shutdown} uses {@code ABORT}, which takes no snapshot. See doc/review-2026-07-25.md #5.
  */
 public final class SequencerService implements ClusteredService {
     /**
@@ -96,8 +98,6 @@ public final class SequencerService implements ClusteredService {
      */
     private static final int MAX_BACK_PRESSURE_SPINS = 1_000_000;
 
-    private static final int SNAPSHOT_POLL_BATCH = 10;
-
     /**
      * Period of the internal cluster clock ({@link Sequencer#tick}): the leader fires this timer once per
      * second and every node emits a header-only {@code Tick} carrying the consensus timestamp. It exists
@@ -125,10 +125,7 @@ public final class SequencerService implements ClusteredService {
      */
     private final Sequencer sequencer;
 
-    /** Snapshot scratch; separate from the sequencer's encode buffer so the two never alias. */
-    private final MutableDirectBuffer snapshotBuffer = new ExpandableDirectByteBuffer(Long.BYTES);
-
-    // ── Aeron runtime (not snapshotted) ──────────────────────────────────────
+    // ── Aeron runtime ────────────────────────────────────────────────────────
 
     private Cluster cluster;
     private ExclusivePublication tapPub;
@@ -168,8 +165,15 @@ public final class SequencerService implements ClusteredService {
         aeronArchive.startRecording(FEEDER_CHANNEL, FEEDER_STREAM_ID, SourceLocation.LOCAL);
         awaitTapRecordingActive();
 
+        // A snapshot exists only if someone drove ClusterControl's SNAPSHOT/SHUTDOWN toggle, which this
+        // service does not support (see the class javadoc). Restoring from one would resume with the
+        // gateway topology, promotion session map and bootstrap latch all empty, so refuse the start
+        // rather than run a node that has quietly diverged from its peers.
         if (snapshotImage != null) {
-            loadSnapshot(snapshotImage);
+            throw new IllegalStateException(
+                "[SequencerService] Refusing to start from a snapshot: recovery is full-log replay from "
+                + "globalSeqNo 1 (see the class javadoc). Remove the snapshot from the cluster directory "
+                + "so the log replays in full.");
         }
         // NB: the internal clock timer is armed in onNewLeadershipTermEvent, not here — Aeron forbids
         // scheduling timers (or sending messages) from onStart.
@@ -221,7 +225,10 @@ public final class SequencerService implements ClusteredService {
     @Override
     public void onSessionMessage(final ClientSession session, final long timestamp, final DirectBuffer buffer,
                                  final int offset, final int length, final Header header) {
-        emit(sequencer.sequenceMessage(buffer, offset, length, session.id(), timestamp));
+        final int sequenced = sequencer.sequenceMessage(buffer, offset, length, session.id(), timestamp);
+        if (sequenced != Sequencer.NO_FRAME) {
+            emit(sequenced);
+        }
         // The first EndBasicData opens the trading day: the cluster designates the primary FIX
         // gateway by synthesizing a bootstrap GatewayActive right behind it, on the next globalSeqNo.
         final int activation = sequencer.pendingBootstrapActivation(timestamp);
@@ -251,28 +258,18 @@ public final class SequencerService implements ClusteredService {
 
     // ── Snapshot ──────────────────────────────────────────────────────────────
 
+    // Unsupported by design (see the class javadoc). This used to write a single int64 globalSeqNo and
+    // silently drop the six other replicated fields Sequencer holds, so a restore re-emitted the
+    // bootstrap GatewayActive (two live gateways on one sourceId), lost standby promotion, and left the
+    // node's frames no longer byte-identical with its peers'. A half-written snapshot is worse than
+    // none: this way an operator reaching for the toggle finds out immediately, instead of the cluster
+    // finding out at the next restart.
     @Override
     public void onTakeSnapshot(final ExclusivePublication snapshotPublication) {
-        snapshotBuffer.putLong(0, sequencer.globalSeqNo());
-        long offerResult;
-        do {
-            offerResult = snapshotPublication.offer(snapshotBuffer, 0, Long.BYTES);
-            if (offerResult == ExclusivePublication.CLOSED
-                || offerResult == ExclusivePublication.MAX_POSITION_EXCEEDED) {
-                throw new IllegalStateException("[SequencerService] Snapshot publication failed: " + offerResult);
-            }
-            if (offerResult < 0) {
-                cluster.idleStrategy().idle();
-            }
-        } while (offerResult < 0);
-    }
-
-    private void loadSnapshot(final Image snapshotImage) {
-        final FragmentAssembler handler =
-            new FragmentAssembler((buf, off, len, hdr) -> sequencer.globalSeqNo(buf.getLong(off)));
-        while (!snapshotImage.isClosed()) {
-            cluster.idleStrategy().idle(snapshotImage.poll(handler, SNAPSHOT_POLL_BATCH));
-        }
+        throw new UnsupportedOperationException(
+            "[SequencerService] Snapshots are not supported: recovery is full-log replay from globalSeqNo 1, "
+            + "which is what keeps each node's tap recording complete. Stop the cluster with clusterctl "
+            + "shutdown (ABORT), not a SNAPSHOT/SHUTDOWN toggle.");
     }
 
     // ── Leadership ────────────────────────────────────────────────────────────

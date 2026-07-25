@@ -198,6 +198,12 @@ class AeronEgressTransport : public EgressTransport {
 // instead, since it's the same for every message this sender ever submits.
 class ClusterIngressSender {
    public:
+    // Largest sbe-unsequenced.xml payload send() can frame. Every caller sizes its encode buffer from
+    // this (see FixIngressHandler::m_buffer), so a caller's buffer and send()'s framing buffer cannot
+    // disagree — the two used to, at 8192 against 4096, leaving an unchecked memcpy of a
+    // network-derived length into a smaller stack array (doc/review-2026-07-25.md #4).
+    static constexpr std::size_t MAX_PAYLOAD_LEN = 8192;
+
     // Real entry point: acquires the ingress publication + egress subscription
     // from Aeron (inherently async — driver IPC via addPublication/addSubscription
     // and find*), then hands off to the transport-agnostic handshake below.
@@ -454,7 +460,14 @@ class ClusterIngressSender {
     // tap emit: a dropped ingress frame is unrecoverable — it tears a hole in the
     // gateway's outbound MsgSeqNum stream that no resend can fill (the ResendCache only
     // ever holds frames that actually round-tripped) — so send() never returns having
-    // failed to place the frame.
+    // failed to place the frame *while there is a cluster session to place it on*.
+    //
+    // Returns false in the one case the spin cannot resolve: there is no session (not yet
+    // connected, or already closed), so no amount of waiting would help — a leader failover,
+    // which the spin does handle, keeps the session id. The caller must not have committed
+    // anything on the assumption the frame went out; that is why this reports rather than
+    // returning void, and why Session::publishOutbound only advances the outbound MsgSeqNum
+    // once the frame is placed (doc/review-2026-07-25.md #4).
     //
     // Two reasons an offer is rejected, both handled by the spin:
     //   • transient back-pressure — the ingress subscriber is briefly behind;
@@ -470,14 +483,23 @@ class ClusterIngressSender {
     // cluster-overwritten timestamp) are re-stamped before each retry — the new leader
     // rejects a frame still carrying the previous term. This mirrors what Aeron's own
     // AeronCluster.offer() does internally.
-    void send(const std::uint8_t* bytes, std::uint16_t len)
+    [[nodiscard]] bool send(const std::uint8_t* bytes, std::uint16_t len)
     {
         if (!m_ingress || m_clusterSessionId < 0 || len == 0)
         {
-            return;
+            return false;
+        }
+        // buf is sized from MAX_PAYLOAD_LEN, as every caller's encode buffer is, so this cannot fire
+        // without a code change that broke that pairing. Throwing rather than truncating or dropping:
+        // a frame too large to place is a programming error no runtime handling can repair, and
+        // silently dropping it would tear the outbound MsgSeqNum hole this function exists to prevent.
+        if (len > MAX_PAYLOAD_LEN)
+        {
+            throw std::runtime_error("[ClusterIngressSender] ingress payload " + std::to_string(len) +
+                                     " exceeds MAX_PAYLOAD_LEN " + std::to_string(MAX_PAYLOAD_LEN));
         }
 
-        alignas(16) std::array<std::uint8_t, 4096 + 42> buf{};
+        alignas(16) std::array<std::uint8_t, INGRESS_FRAME_LEN> buf{};
         cluster_sbe::SessionMessageHeader hdr;
         hdr.wrapAndApplyHeader(reinterpret_cast<char*>(buf.data()), 0, buf.size())
             .leadershipTermId(m_leadershipTermId)
@@ -493,10 +515,15 @@ class ClusterIngressSender {
             m_idleStrategy.idle();
             hdr.leadershipTermId(m_leadershipTermId).timestamp(nowMs());  // re-stamp for the (possibly new) leader
         }
+        return true;
     }
 
    private:
     static constexpr std::int64_t KEEP_ALIVE_INTERVAL_MS = 1000;
+
+    // send()'s framing buffer: the largest payload plus the SessionMessageHeader envelope it goes in.
+    static constexpr std::size_t INGRESS_FRAME_LEN =
+        MAX_PAYLOAD_LEN + cluster_sbe::SessionMessageHeader::sbeBlockAndHeaderLength();
 
     // Drives the egress subscription for cluster session-control frames only —
     // SessionEvent / NewLeaderEvent / REDIRECT, all handled inside onFragment (e.g.

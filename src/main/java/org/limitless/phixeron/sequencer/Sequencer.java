@@ -67,6 +67,12 @@ public final class Sequencer {
     /** {@link #leadershipChanged} and friends return this when the event produces no frame. */
     public static final int NO_FRAME = 0;
 
+    /**
+     * Smallest ingress message {@link #sequenceMessage} can re-stamp: the outer framing header plus the
+     * {@code header} composite, the only two things it decodes. Anything shorter is malformed.
+     */
+    static final int MIN_INGRESS_LENGTH = MessageHeaderDecoder.ENCODED_LENGTH + HeaderDecoder.ENCODED_LENGTH;
+
     // ── Ingress decode (schema 200, sbe-unsequenced.xml) ──────────────────────
     // Only the outer framing header and the generic `header` composite are ever decoded — body fields
     // are copied through as opaque bytes (see sequenceMessage), with one bounded exception: the Gateway
@@ -102,7 +108,10 @@ public final class Sequencer {
      */
     private int designatedPrimaryGatewayId = -1;
 
-    // ── Replicated state (snapshotted; advanced identically on every node) ────
+    // ── Replicated state (advanced identically on every node; not snapshotted) ─
+    // There are no snapshots — SequencerService refuses both hooks — so every field here is rebuilt by
+    // full-log replay from globalSeqNo 1. A field added here therefore needs no persistence change, but
+    // it does have to stay a pure function of the ordered log, like the rest.
 
     /** Cluster-wide monotone counter; advanced for messages and lifecycle events alike. */
     private long globalSeqNo = 0;
@@ -146,11 +155,6 @@ public final class Sequencer {
         return globalSeqNo;
     }
 
-    /** Restores the counter from a snapshot. The only way state moves other than by an event. */
-    public void globalSeqNo(final long value) {
-        globalSeqNo = value;
-    }
-
     /** memberId of the last observed leader; -1 until the first {@link #leadershipChanged}. */
     public int currentLeaderMemberId() {
         return currentLeaderMemberId;
@@ -165,11 +169,14 @@ public final class Sequencer {
      * @param length    of the whole ingress message, framing header included
      * @param sessionId Aeron Cluster session the message arrived on
      * @param timestamp cluster consensus time to stamp
-     * @return length of the encoded frame in {@link #buffer()}
+     * @return length of the encoded frame in {@link #buffer()}, or {@link #NO_FRAME} if the ingress
+     *     message was malformed and skipped
      */
     public int sequenceMessage(final DirectBuffer buffer, final int offset, final int length, final long sessionId,
                                final long timestamp) {
-        final long globalSeq = ++globalSeqNo;
+        if (length < MIN_INGRESS_LENGTH) {
+            return reject("length " + length + " is below the " + MIN_INGRESS_LENGTH + "-byte minimum framing");
+        }
 
         // Decode just enough of the ingress message to re-stamp it: the outer framing header (for
         // templateId/blockLength) and the `header` composite (for sourceId/connectionId) — both at
@@ -177,6 +184,26 @@ public final class Sequencer {
         ingressMsgHeaderDecoder.wrap(buffer, offset);
         final int templateId = ingressMsgHeaderDecoder.templateId();
         final int ingressBlockLen = ingressMsgHeaderDecoder.blockLength();
+
+        // The three remaining ways a length can go wrong before it is used: a foreign schema (every
+        // offset below would then mean something else), a fixed block too short to hold the `header`
+        // composite this re-stamps (egressBlockLen would underflow), and one declaring more bytes than
+        // the frame carries (the Gateway decode below reads within blockLength). templateId itself is
+        // deliberately not checked against a list: not knowing the message types is the copy-through
+        // trick above, and enumerating them here would couple the sequencer to the message catalogue.
+        if (ingressMsgHeaderDecoder.schemaId() != MessageHeaderDecoder.SCHEMA_ID) {
+            return reject("schemaId " + ingressMsgHeaderDecoder.schemaId() + " is not "
+                          + MessageHeaderDecoder.SCHEMA_ID);
+        }
+        if (ingressBlockLen < HeaderDecoder.ENCODED_LENGTH
+            || MessageHeaderDecoder.ENCODED_LENGTH + ingressBlockLen > length) {
+            return reject("blockLength " + ingressBlockLen + " does not fit a " + length + "-byte frame");
+        }
+
+        // Only now, once the frame is known to be sequenceable: a rejected message must not consume a
+        // number, or every consumer would see a permanent gap in the tap's globalSeqNo and go asking
+        // the Replayer for a frame that was never emitted.
+        final long globalSeq = ++globalSeqNo;
 
         final int ingressBodyOffset = offset + MessageHeaderDecoder.ENCODED_LENGTH;
         ingressHeaderDecoder.wrap(buffer, ingressBodyOffset);
@@ -230,6 +257,20 @@ public final class Sequencer {
         encodeBuffer.putBytes(egressBodyOffset + HeaderEncoder.ENCODED_LENGTH, buffer, copyFromOffset, copyLength);
 
         return egressBodyOffset + HeaderEncoder.ENCODED_LENGTH + copyLength;
+    }
+
+    /**
+     * Skips a malformed ingress message, logging it and producing no frame. Deliberately not an
+     * exception: the message is already committed to the replicated log, so throwing would kill the
+     * service on every node identically — and again on every replay of that log, leaving it
+     * unreplayable and the cluster unrecoverable without surgery (doc/review-2026-07-25.md #7). This is
+     * the one bug class Raft amplifies instead of containing. The decision is a pure function of the
+     * frame's own bytes, so every node skips the same message and the sequence stays identical.
+     */
+    private int reject(final String reason) {
+        System.err.printf("[Sequencer] skipping malformed ingress message: %s (globalSeqNo stays %d)%n",
+                          reason, globalSeqNo);
+        return NO_FRAME;
     }
 
     /**

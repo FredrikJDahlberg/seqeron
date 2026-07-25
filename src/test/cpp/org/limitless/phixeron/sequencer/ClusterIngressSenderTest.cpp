@@ -243,7 +243,7 @@ class ConnectedClusterIngressSender : public ::testing::Test {
 TEST_F(ConnectedClusterIngressSender, SendWrapsBytesWithSessionMessageHeader)
 {
     const std::array<std::uint8_t, 5> body{'8', '=', 'F', 'I', 'X'};
-    sender_.send(body.data(), static_cast<std::uint16_t>(body.size()));
+    EXPECT_TRUE(sender_.send(body.data(), static_cast<std::uint16_t>(body.size())));
 
     ASSERT_EQ(1u, ingress_->m_offered.size());
     auto hdr = decodeOffered<cluster_sbe::SessionMessageHeader>(ingress_->m_offered[0]);
@@ -258,6 +258,48 @@ TEST_F(ConnectedClusterIngressSender, SendWrapsBytesWithSessionMessageHeader)
     ASSERT_GE(frame.size(), appOff + body.size());
 
     EXPECT_TRUE(std::equal(body.begin(), body.end(), frame.begin() + static_cast<std::ptrdiff_t>(appOff)));
+}
+
+TEST_F(ConnectedClusterIngressSender, SendFramesAPayloadOfTheLargestSupportedSize)
+{
+    // send()'s framing buffer is sized from MAX_PAYLOAD_LEN, which is also what every caller sizes its
+    // encode buffer from. The two used to disagree — a 8192-byte encode buffer against a 4138-byte
+    // framing array — so a full-size message memcpy'd past the end of it (doc/review-2026-07-25.md #4).
+    // Under the Debug build's AddressSanitizer this fails on the write, not on the size assertion.
+    const std::vector<std::uint8_t> body(ClusterIngressSender::MAX_PAYLOAD_LEN, 0xAB);
+    EXPECT_TRUE(sender_.send(body.data(), static_cast<std::uint16_t>(body.size())));
+
+    ASSERT_EQ(1u, ingress_->m_offered.size());
+    const auto& frame = ingress_->m_offered[0];
+    const std::size_t appOff = cluster_sbe::SessionMessageHeader::sbeBlockAndHeaderLength();
+    ASSERT_EQ(appOff + body.size(), frame.size());
+    EXPECT_TRUE(std::equal(body.begin(), body.end(), frame.begin() + static_cast<std::ptrdiff_t>(appOff)));
+}
+
+TEST_F(ConnectedClusterIngressSender, SendRefusesAPayloadLargerThanTheFramingBuffer)
+{
+    // Unreachable while every caller sizes its buffer from MAX_PAYLOAD_LEN; this guards the raw
+    // (pointer, len) API against a future one that does not. Throwing rather than truncating or
+    // dropping: a frame too large to place is a programming error no runtime handling can repair, and
+    // dropping it would tear the outbound MsgSeqNum hole send() exists to prevent.
+    const std::vector<std::uint8_t> body(ClusterIngressSender::MAX_PAYLOAD_LEN + 1, 0xCD);
+    EXPECT_THROW((void)sender_.send(body.data(), static_cast<std::uint16_t>(body.size())), std::runtime_error);
+    EXPECT_TRUE(ingress_->m_offered.empty());
+}
+
+TEST_F(ConnectedClusterIngressSender, SendReportsFailureOnceTheSessionIsClosed)
+{
+    // The one outcome the reliable-offer spin cannot fix: with no cluster session there is nothing to
+    // offer to and no amount of waiting helps (a leader failover, which the spin does handle, keeps
+    // the session id). Reporting it is what lets Session::publishOutbound leave the outbound MsgSeqNum
+    // unspent instead of tearing a hole no resend can fill — doc/review-2026-07-25.md #4.
+    sender_.close();
+    ASSERT_FALSE(sender_.isConnected());
+    ingress_->m_offered.clear();
+
+    const std::array<std::uint8_t, 1> body{'8'};
+    EXPECT_FALSE(sender_.send(body.data(), 1));
+    EXPECT_TRUE(ingress_->m_offered.empty());
 }
 
 TEST_F(ConnectedClusterIngressSender, KeepAliveSendsOnceThenThrottles)
@@ -312,7 +354,7 @@ TEST_F(ConnectedClusterIngressSender, PollEgressUpdatesLeadershipTermOnNewLeader
 
     // The new leadership term must now be used for subsequent sends.
     const std::array<std::uint8_t, 1> body{'8'};
-    sender_.send(body.data(), 1);
+    EXPECT_TRUE(sender_.send(body.data(), 1));
 
     ASSERT_EQ(1u, ingress_->m_offered.size());
     auto hdr = decodeOffered<cluster_sbe::SessionMessageHeader>(ingress_->m_offered[0]);
@@ -332,7 +374,7 @@ TEST_F(ConnectedClusterIngressSender, PollEgressIgnoresNewLeaderEndpointWithoutA
     });
 
     const std::array<std::uint8_t, 1> body{'8'};
-    sender_.send(body.data(), 1);
+    EXPECT_TRUE(sender_.send(body.data(), 1));
 
     ASSERT_EQ(1u, ingress_->m_offered.size());
     auto hdr = decodeOffered<cluster_sbe::SessionMessageHeader>(ingress_->m_offered[0]);
@@ -360,7 +402,7 @@ TEST(ClusterIngressSenderReliableSend, SendSpinsUntilOfferAccepted)
     ingressPtr->m_rejectCount = 3;  // reject three offers, accept the fourth
 
     const std::array<std::uint8_t, 5> body{'8', '=', 'F', 'I', 'X'};
-    sender.send(body.data(), static_cast<std::uint16_t>(body.size()));
+    EXPECT_TRUE(sender.send(body.data(), static_cast<std::uint16_t>(body.size())));
 
     EXPECT_EQ(4, ingressPtr->m_offerCalls);  // spun until it landed
     ASSERT_FALSE(ingressPtr->m_accepted.empty());
@@ -396,7 +438,7 @@ TEST(ClusterIngressSenderReliableSend, SendReStampsLeadershipTermAfterMidSpinFai
     ingressPtr->m_rejectCount = 1;
 
     const std::array<std::uint8_t, 1> body{'8'};
-    sender.send(body.data(), 1);
+    EXPECT_TRUE(sender.send(body.data(), 1));
 
     EXPECT_EQ(2, ingressPtr->m_offerCalls);
     ASSERT_FALSE(ingressPtr->m_accepted.empty());

@@ -195,9 +195,10 @@ the last-processed archive byte position to skip already-applied history on rest
 ### Restart and failover
 
 Archive and cluster directories are preserved on restart (`deleteArchiveOnStart=false`,
-`deleteDirOnStart=false`). A node rejoins the cluster and replays from its last snapshot
-automatically. To wipe state for a clean start, delete the `archive-<id>` and
-`cluster-<id>` subdirectories under `baseDir`.
+`deleteDirOnStart=false`). A node rejoins the cluster and replays the log in full — there are no
+snapshots, and `SequencerService` refuses to take or restore one, so recovery always starts from
+`globalSeqNo` 1 (which is what keeps every node's tap recording a complete copy of history). To wipe
+state for a clean start, delete the `archive-<id>` and `cluster-<id>` subdirectories under `baseDir`.
 
 ### Log printer
 
