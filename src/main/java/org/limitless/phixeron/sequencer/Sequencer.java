@@ -138,7 +138,7 @@ public final class Sequencer {
 
     /**
      * Set when {@link #sequenceMessage} sequenced the EndBasicData that must be followed by the
-     * bootstrap {@code GatewayActive}; consumed (and cleared) by {@link #pendingBootstrapActivation}.
+     * bootstrap {@code GatewayActive}; consumed (and cleared) by {@link #pendingGatewayBootstrapActivation}.
      */
     private boolean bootstrapActivationPending = false;
 
@@ -172,54 +172,43 @@ public final class Sequencer {
      * @return length of the encoded frame in {@link #buffer()}, or {@link #NO_FRAME} if the ingress
      *     message was malformed and skipped
      */
-    public int sequenceMessage(final DirectBuffer buffer, final int offset, final int length, final long sessionId,
+    public int sequenceMessage(final DirectBuffer buffer,
+                               final int offset,
+                               final int length,
+                               final long sessionId,
                                final long timestamp) {
         if (length < MIN_INGRESS_LENGTH) {
             return reject("length " + length + " is below the " + MIN_INGRESS_LENGTH + "-byte minimum framing");
         }
 
-        // Decode just enough of the ingress message to re-stamp it: the outer framing header (for
-        // templateId/blockLength) and the `header` composite (for sourceId/connectionId) — both at
-        // fixed offsets, independent of message type.
+        // Decode the framing header (for templateId/blockLength) and the `header` composite
+        // (for sourceId/connectionId) — both at fixed offsets, independent of message type.
         ingressMsgHeaderDecoder.wrap(buffer, offset);
         final int templateId = ingressMsgHeaderDecoder.templateId();
         final int ingressBlockLen = ingressMsgHeaderDecoder.blockLength();
-
-        // The three remaining ways a length can go wrong before it is used: a foreign schema (every
-        // offset below would then mean something else), a fixed block too short to hold the `header`
-        // composite this re-stamps (egressBlockLen would underflow), and one declaring more bytes than
-        // the frame carries (the Gateway decode below reads within blockLength). templateId itself is
-        // deliberately not checked against a list: not knowing the message types is the copy-through
-        // trick above, and enumerating them here would couple the sequencer to the message catalogue.
         if (ingressMsgHeaderDecoder.schemaId() != MessageHeaderDecoder.SCHEMA_ID) {
             return reject("schemaId " + ingressMsgHeaderDecoder.schemaId() + " is not "
                           + MessageHeaderDecoder.SCHEMA_ID);
         }
-        if (ingressBlockLen < HeaderDecoder.ENCODED_LENGTH
-            || MessageHeaderDecoder.ENCODED_LENGTH + ingressBlockLen > length) {
+        if (ingressBlockLen < HeaderDecoder.ENCODED_LENGTH ||
+            MessageHeaderDecoder.ENCODED_LENGTH + ingressBlockLen > length) {
             return reject("blockLength " + ingressBlockLen + " does not fit a " + length + "-byte frame");
         }
 
-        // Only now, once the frame is known to be sequenceable: a rejected message must not consume a
-        // number, or every consumer would see a permanent gap in the tap's globalSeqNo and go asking
-        // the Replayer for a frame that was never emitted.
         final long globalSeq = ++globalSeqNo;
-
         final int ingressBodyOffset = offset + MessageHeaderDecoder.ENCODED_LENGTH;
         ingressHeaderDecoder.wrap(buffer, ingressBodyOffset);
+
         final int sourceId = ingressHeaderDecoder.sourceId();
         final int connectionId = ingressHeaderDecoder.connectionId();
 
-        // Topology bookkeeping for standby promotion (see sessionClosed / pendingBootstrapActivation).
-        // A Gateway row defines the topology; a session that publishes under a gateway sourceId is a FIX
-        // gateway; the first EndBasicData designates the primary. All pure functions of the ordered log.
+        // Topology bookkeeping for FIX standby promotion (see sessionClosed / pendingBootstrapActivation).
+        // A Gateway message defines the topology; a session that publishes under a gateway sourceId is a FIX
+        // gateway; the first EndBasicData designates the primary.
         if (gatewaySourceIds.contains(sourceId)) {
             gatewaySessionSourceId.put(sessionId, sourceId);
         }
         if (templateId == GatewayDecoder.TEMPLATE_ID) {
-            // The one bounded exception to opaque copy-through: decode the Gateway row's scalars into
-            // the derived topology (it is still copied through below like any other message). Its
-            // gatewaySourceId joins the gateway-sourceId set; the rank-0 row names the designated primary.
             gatewayDecoder.wrap(buffer, ingressBodyOffset, ingressBlockLen, ingressMsgHeaderDecoder.version());
             gatewaySourceIds.add(gatewayDecoder.gatewaySourceId());
             if (gatewayDecoder.preferenceRank() == 0) {
@@ -235,7 +224,6 @@ public final class Sequencer {
         // (globalSeqNo, timestamp); every other field is byte-identical, so the egress blockLength
         // is simply the ingress blockLength with the header composite's growth added on.
         final int egressBlockLen = HeaderEncoder.ENCODED_LENGTH + (ingressBlockLen - HeaderDecoder.ENCODED_LENGTH);
-
         headerEncoder.wrap(encodeBuffer, 0)
             .blockLength(egressBlockLen)
             .templateId(templateId)
@@ -250,22 +238,16 @@ public final class Sequencer {
             .globalSeqNo(globalSeq)
             .timestamp(timestamp);
 
-        // Copy every byte after the ingress header composite — the rest of the fixed block plus all
-        // var-data — verbatim; see the class Javadoc.
+        // Copy every byte after the ingress header composite
         final int copyFromOffset = ingressBodyOffset + HeaderDecoder.ENCODED_LENGTH;
         final int copyLength = length - MessageHeaderDecoder.ENCODED_LENGTH - HeaderDecoder.ENCODED_LENGTH;
         encodeBuffer.putBytes(egressBodyOffset + HeaderEncoder.ENCODED_LENGTH, buffer, copyFromOffset, copyLength);
-
         return egressBodyOffset + HeaderEncoder.ENCODED_LENGTH + copyLength;
     }
 
     /**
-     * Skips a malformed ingress message, logging it and producing no frame. Deliberately not an
-     * exception: the message is already committed to the replicated log, so throwing would kill the
-     * service on every node identically — and again on every replay of that log, leaving it
-     * unreplayable and the cluster unrecoverable without surgery (doc/review-2026-07-25.md #7). This is
-     * the one bug class Raft amplifies instead of containing. The decision is a pure function of the
-     * frame's own bytes, so every node skips the same message and the sequence stays identical.
+     * Skips a malformed ingress message
+     * @param reason rejection description
      */
     private int reject(final String reason) {
         System.err.printf("[Sequencer] skipping malformed ingress message: %s (globalSeqNo stays %d)%n",
@@ -274,11 +256,9 @@ public final class Sequencer {
     }
 
     /**
-     * Encodes one internal clock frame carrying the consensus timestamp. Fires on every node (the
-     * timer event is a committed log event delivered identically to all), so like every other event
-     * here it advances each node's byte-identical tap and consumes a globalSeqNo on every node in
-     * the same order. Consumers (the FIX gateway watchdog above all) read {@code header.timestamp}
-     * off it to keep their session clock moving while a counterparty is silent.
+     * Encodes one internal clock frame carrying the consensus timestamp. Consumers (the FIX gateway)
+     * read {@code header.timestamp} off it to keep their session clock moving while a counterparty is silent.
+     * @param timestamp now
      */
     public int tick(final long timestamp) {
         final long globalSeq = ++globalSeqNo;
@@ -297,6 +277,8 @@ public final class Sequencer {
      * one on record. De-duplicating here (rather than at the caller) keeps the {@code globalSeqNo}
      * advance and the suppression decision in one place, so every node consumes the same number of
      * sequence numbers for the same log.
+     * @param leaderMemberId leader member identity
+     * @param timestamp now
      */
     public int leadershipChanged(final int leaderMemberId, final long timestamp) {
         if (leaderMemberId == currentLeaderMemberId) {
@@ -322,8 +304,9 @@ public final class Sequencer {
      * frame length, or {@link #NO_FRAME} when none is pending. The adapter calls this right after the
      * {@link #sequenceMessage} that sequenced the EndBasicData, so it takes the next {@code
      * globalSeqNo} — identically on every node and on replay.
+     * @param timestamp now
      */
-    public int pendingBootstrapActivation(final long timestamp) {
+    public int pendingGatewayBootstrapActivation(final long timestamp) {
         if (!bootstrapActivationPending) {
             return NO_FRAME;
         }
@@ -335,11 +318,9 @@ public final class Sequencer {
     }
 
     /**
-     * A cluster session closed. If it was a FIX gateway session — it had published under one of {@link
-     * #gatewaySourceIds} — synthesize a promotion {@code GatewayActive} carrying that sourceId (the
-     * standby, sharing it, activates) and forget the session; otherwise {@link #NO_FRAME}. Driven
-     * from the cluster's {@code onSessionClose}, a committed log event delivered identically to
-     * every node, so the promotion lands at the same {@code globalSeqNo} everywhere.
+     * A cluster session closed. If it was a FIX gateway session send a standby promotion.
+     * @param sessionId session identity
+     * @param timestamp now
      */
     public int sessionClosed(final long sessionId, final long timestamp) {
         final Integer sourceId = gatewaySessionSourceId.remove(sessionId);
@@ -349,7 +330,11 @@ public final class Sequencer {
         return gatewayActive(sourceId, timestamp);
     }
 
-    /** Encodes one {@code GatewayActive} naming {@code gatewayId}; advances {@code globalSeqNo}. */
+    /**
+     * Encodes one {@code GatewayActive} naming {@code gatewayId}; advances {@code globalSeqNo}.
+     * @param gatewayId gateway identity
+     * @param timestamp now
+     */
     private int gatewayActive(final int gatewayId, final long timestamp) {
         final long globalSeq = ++globalSeqNo;
         gatewayActiveEncoder.wrapAndApplyHeader(encodeBuffer, 0, headerEncoder);

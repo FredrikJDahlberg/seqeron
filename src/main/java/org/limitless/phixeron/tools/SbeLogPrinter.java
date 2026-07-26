@@ -48,7 +48,7 @@ public class SbeLogPrinter {
     private final StringBuilder outputBuilder = new StringBuilder();
 
     public SbeLogPrinter(final String specIrPath, final String archiveDirPath, final int streamIdFilter,
-                         final boolean oneLine) throws Exception {
+                         final boolean oneLine) {
         this.archiveDir = new File(archiveDirPath);
         if (!archiveDir.exists() || !archiveDir.isDirectory()) {
             throw new IllegalArgumentException("Invalid archive directory: " + archiveDirPath);

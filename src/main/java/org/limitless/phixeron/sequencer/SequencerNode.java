@@ -64,19 +64,19 @@ public final class SequencerNode {
 
     public static void main(final String[] args) {
         final int memberId = Integer.getInteger(PROP_MEMBER_ID, 0);
-        final String baseDir
-            = System.getProperty(PROP_BASE_DIR, System.getProperty("java.io.tmpdir") + "/phixeron-seq");
-        final String aeronDir = System.getProperty(
-            PROP_AERON_DIR, System.getProperty("java.io.tmpdir") + "/phixeron-seq-aeron-" + memberId);
+        final String baseDir = System.getProperty(PROP_BASE_DIR, System.getProperty("java.io.tmpdir") +
+            "/phixeron-seq");
+        final String aeronDir = System.getProperty(PROP_AERON_DIR, System.getProperty("java.io.tmpdir") +
+            "/phixeron-seq-aeron-" + memberId);
         final int portBase = PORT_BASE + memberId * 10;
         final int archivePort = portBase + 1;
         final int ingressPort = portBase + 2;
         final int memberPort = portBase + 3;
         final int logPort = portBase + 4;
-        final int xferPort = portBase + 5;
+        final int transferPort = portBase + 5;
 
         final String clusterMembers = System.getProperty(
-            PROP_CLUSTER_MEMBERS, buildSingleNodeMembers(ingressPort, memberPort, logPort, xferPort, archivePort));
+            PROP_CLUSTER_MEMBERS, buildSingleNodeMembers(ingressPort, memberPort, logPort, transferPort, archivePort));
 
         final File archiveDir = new File(baseDir + "/archive-" + memberId);
         final File clusterDir = new File(baseDir + "/cluster-" + memberId);
@@ -97,18 +97,17 @@ public final class SequencerNode {
                                                          .controlResponseStreamId(101)
                                                          .aeronDirectoryName(aeronDir);
 
-        final Archive.Context archiveCtx
-            = new Archive.Context()
-                  .aeronDirectoryName(aeronDir)
-                  .archiveDir(archiveDir)
-                  .controlChannel(udp(DEFAULT_HOST, archivePort)) // UDP: remote clients reach the archive here
-                  .controlStreamId(100) // must match C++ clients
-                  .localControlChannel("aeron:ipc")
-                  .localControlStreamId(100)
-                  .replicationChannel(udp(DEFAULT_HOST, 0))
-                  .recordingEventsEnabled(false)
-                  .deleteArchiveOnStart(false)
-                  .idleStrategySupplier(YieldingIdleStrategy::new);
+        final Archive.Context archiveCtx = new Archive.Context()
+            .aeronDirectoryName(aeronDir)
+            .archiveDir(archiveDir)
+            .controlChannel(udp(DEFAULT_HOST, archivePort)) // UDP: remote clients reach the archive here
+            .controlStreamId(100) // must match C++ clients
+            .localControlChannel("aeron:ipc")
+            .localControlStreamId(100)
+            .replicationChannel(udp(DEFAULT_HOST, 0))
+            .recordingEventsEnabled(false)
+            .deleteArchiveOnStart(false)
+            .idleStrategySupplier(YieldingIdleStrategy::new);
 
         // Wire the ShutdownSignalBarrier to the consensus module's termination hook: a
         // ClusterTool/ClusterControl ABORT otherwise terminates the consensus and service agents
@@ -117,40 +116,33 @@ public final class SequencerNode {
         // try-with-resources teardown (Archive.close flushes the catalog), which is what keeps the tap
         // recording replayable/analysable after an orderly stop.
         final ShutdownSignalBarrier barrier = new ShutdownSignalBarrier();
+        final ConsensusModule.Context consensusCtx = new ConsensusModule.Context()
+            .aeronDirectoryName(aeronDir)
+            .clusterMemberId(memberId)
+            .clusterMembers(clusterMembers)
+            .clusterDir(clusterDir)
+            .ingressChannel(udp(DEFAULT_HOST, ingressPort))
+            .replicationChannel(udp(DEFAULT_HOST, 0))
+            .archiveContext(localArchiveCtx.clone())
+            .isIpcIngressAllowed(true) // Lets a co-located client share aeron directory
+            .terminationHook(barrier::signalAll)
+            .deleteDirOnStart(false)
+            .idleStrategySupplier(YieldingIdleStrategy::new)
+            .errorHandler(t -> {
+                System.err.printf("[ConsensusModule/%d] %s%n", memberId, t.getMessage());
+                t.printStackTrace();
+            });
 
-        final ConsensusModule.Context consensusCtx
-            = new ConsensusModule.Context()
-                  .aeronDirectoryName(aeronDir)
-                  .clusterMemberId(memberId)
-                  .clusterMembers(clusterMembers)
-                  .clusterDir(clusterDir)
-                  .ingressChannel(udp(DEFAULT_HOST, ingressPort))
-                  .replicationChannel(udp(DEFAULT_HOST, 0))
-                  .archiveContext(localArchiveCtx.clone())
-                  // Lets a co-located client (sharing this member's Aeron directory, e.g.
-                  // OrderExecClient) reach ingress over "aeron:ipc" while this member is leader,
-                  // on top of the normal UDP ingressChannel above — never instead of it, and only
-                  // while leader (see ConsensusModuleAgent.connectIngress()).
-                  .isIpcIngressAllowed(true)
-                  .terminationHook(barrier::signalAll)
-                  .deleteDirOnStart(false)
-                  .idleStrategySupplier(YieldingIdleStrategy::new)
-                  .errorHandler(t -> {
-                      System.err.printf("[ConsensusModule/%d] %s%n", memberId, t.getMessage());
-                      t.printStackTrace();
-                  });
-
-        final ClusteredServiceContainer.Context serviceCtx
-            = new ClusteredServiceContainer.Context()
-                  .aeronDirectoryName(aeronDir)
-                  .archiveContext(localArchiveCtx.clone())
-                  .clusterDir(clusterDir)
-                  .clusteredService(new SequencerService())
-                  .idleStrategySupplier(YieldingIdleStrategy::new)
-                  .errorHandler(t -> {
-                      System.err.printf("[SequencerService/%d] %s%n", memberId, t.getMessage());
-                      t.printStackTrace();
-                  });
+        final ClusteredServiceContainer.Context serviceCtx = new ClusteredServiceContainer.Context()
+            .aeronDirectoryName(aeronDir)
+            .archiveContext(localArchiveCtx.clone())
+            .clusterDir(clusterDir)
+            .clusteredService(new SequencerService())
+            .idleStrategySupplier(YieldingIdleStrategy::new)
+            .errorHandler(t -> {
+                System.err.printf("[SequencerService/%d] %s%n", memberId, t.getMessage());
+                t.printStackTrace();
+            });
 
         System.out.printf("[SequencerNode] Starting member %d | ingress=%s | archive=%s | baseDir=%s%n", memberId,
                           udp(DEFAULT_HOST, ingressPort), udp(DEFAULT_HOST, archivePort), baseDir);
@@ -170,8 +162,8 @@ public final class SequencerNode {
     }
 
     private static String buildSingleNodeMembers(final int ingressPort, final int memberPort, final int logPort,
-                                                 final int xferPort, final int archivePort) {
+                                                 final int transferPort, final int archivePort) {
         return "0," + DEFAULT_HOST + ":" + ingressPort + "," + DEFAULT_HOST + ":" + memberPort + "," + DEFAULT_HOST
-            + ":" + logPort + "," + DEFAULT_HOST + ":" + xferPort + "," + DEFAULT_HOST + ":" + archivePort + "|";
+            + ":" + logPort + "," + DEFAULT_HOST + ":" + transferPort + "," + DEFAULT_HOST + ":" + archivePort + "|";
     }
 }

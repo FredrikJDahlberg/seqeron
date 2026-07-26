@@ -102,8 +102,11 @@ public final class ReplayerNode {
         }
     }
 
-    // Resolves the duty-cycle idle strategy from replayer.idleStrategy (case-insensitive); see the
-    // class Javadoc for why the default is yielding rather than busy-spin.
+    /**
+     * Resolves the duty-cycle idle strategy from replayer.idleStrategy (case-insensitive); see the
+     * class Javadoc for why the default is yielding rather than busy-spin.
+     * @return idle strategy
+     */
     private static IdleStrategy resolveIdleStrategy() {
         final String name = System.getProperty(PROP_IDLE_STRATEGY, "yielding");
         return switch (name.toLowerCase(Locale.ROOT)) {

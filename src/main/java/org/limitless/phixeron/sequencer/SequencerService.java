@@ -131,15 +131,16 @@ public final class SequencerService implements ClusteredService {
     private ExclusivePublication tapPub;
     private AeronArchive aeronArchive;
 
-    // ── Construction ────────────────────────────────────────────────────────────
-
     /** Gateway topology is derived from the sequenced Gateway rows (see {@link Sequencer}), not configured. */
     public SequencerService() {
         this.sequencer = new Sequencer();
     }
 
-    // ── ClusteredService lifecycle ────────────────────────────────────────────
-
+    /**
+     * Cluster start handler
+     * @param cluster       with which the service can interact.
+     * @param snapshotImage from which the service can load its archived state which can be null when no snapshot.
+     */
     @Override
     public void onStart(final Cluster cluster, final Image snapshotImage) {
         this.cluster = cluster;
@@ -152,37 +153,29 @@ public final class SequencerService implements ClusteredService {
                                                 .controlResponseChannel("aeron:ipc")
                                                 .controlResponseStreamId(101)
                                                 .lock(NoOpLock.INSTANCE));
-
         // Node-local live tap of the sequenced stream, created and recorded on every node (leader and
         // follower alike). Every node re-publishes each sequenced frame here and records it into its own
         // co-located archive, so every node independently holds a complete copy of the sequenced history
-        // — no cross-node replication needed. Co-located app replicas follow this live directly; the
-        // co-located ReplayerService serves history/gap replay of this recording. See FEEDER_CHANNEL. Recording
-        // must be active before the first
-        // frame is published, so await it here (onStart runs before any onSessionMessage, so this waits on
-        // start-up alone, never on live traffic).
+        // Co-located app replicas follow this live directly; the co-located ReplayerService serves history/gap replay
+        // of this recording.
         tapPub = cluster.context().aeron().addExclusivePublication(FEEDER_CHANNEL, FEEDER_STREAM_ID);
         aeronArchive.startRecording(FEEDER_CHANNEL, FEEDER_STREAM_ID, SourceLocation.LOCAL);
         awaitTapRecordingActive();
 
-        // A snapshot exists only if someone drove ClusterControl's SNAPSHOT/SHUTDOWN toggle, which this
-        // service does not support (see the class javadoc). Restoring from one would resume with the
-        // gateway topology, promotion session map and bootstrap latch all empty, so refuse the start
-        // rather than run a node that has quietly diverged from its peers.
+        // snapshots are not supported
         if (snapshotImage != null) {
             throw new IllegalStateException(
                 "[SequencerService] Refusing to start from a snapshot: recovery is full-log replay from "
                 + "globalSeqNo 1 (see the class javadoc). Remove the snapshot from the cluster directory "
                 + "so the log replays in full.");
         }
-        // NB: the internal clock timer is armed in onNewLeadershipTermEvent, not here — Aeron forbids
-        // scheduling timers (or sending messages) from onStart.
     }
 
-    // Blocks until the co-located archive's recording subscription has attached to the tap publication,
-    // so no frame is published before the recording begins (which would leave an unrecoverable hole in
-    // the authoritative history). Bounded by TAP_RECORDING_START_TIMEOUT_NS so an absent/wedged local
-    // archive fails start-up fast rather than hanging.
+    /**
+     * Blocks until the co-located archive's recording subscription has attached to the tap publication.
+     * Bounded by TAP_RECORDING_START_TIMEOUT_NS so an absent local archive fails start-up fast rather than hanging.
+     */
+
     private void awaitTapRecordingActive() {
         final CountersReader counters = cluster.context().aeron().countersReader();
         final long archiveId = aeronArchive.archiveId();
@@ -196,22 +189,21 @@ public final class SequencerService implements ClusteredService {
         }
     }
 
-    // An Aeron Cluster session opening or closing is a transport event between the cluster and one
-    // of its clients — a gateway or an OrderExecClient attaching and detaching. It is not a FIX
-    // session lifecycle: the FIX client's TCP connection to the gateway is carried by
-    // ClientConnected/ClientDisconnected, which the gateway observes directly and publishes on
-    // ingress, so they arrive through onSessionMessage below like every other message and carry the
-    // connectionId they refer to. onSessionOpen therefore synthesizes nothing.
-    //
-    // onSessionClose is the one exception, and only for a FIX *gateway's* cluster session: when the
-    // primary gateway detaches (crash or shutdown) that is the promotion trigger for a hot standby.
-    // The sequencer synthesizes a GatewayActive so the standby — which has been rebuilding the
-    // primary's session state off the tap — opens its accept gate. A non-gateway session closing
-    // still produces nothing. See Sequencer.sessionClosed and doc/todo.md item 18.
-
+    /**
+     * Cluster client session open handler.
+     * @param session   for the client which have been opened.
+     * @param timestamp at which the session was opened.
+     */
     @Override
-    public void onSessionOpen(final ClientSession session, final long timestamp) {}
+    public void onSessionOpen(final ClientSession session, final long timestamp) {
+    }
 
+    /**
+     * Cluster client session close handler.
+     * @param session     that has been closed.
+     * @param timestamp   at which the session was closed.
+     * @param closeReason the session was closed.
+     */
     @Override
     public void onSessionClose(final ClientSession session, final long timestamp, final CloseReason closeReason) {
         final int activation = sequencer.sessionClosed(session.id(), timestamp);
@@ -222,21 +214,39 @@ public final class SequencerService implements ClusteredService {
         }
     }
 
+    /**
+     * Client session message handler
+     * @param session   for the client which sent the message. This can be null if the client was a service.
+     * @param timestamp for when the message was received.
+     * @param buffer    containing the message.
+     * @param offset    in the buffer at which the message is encoded.
+     * @param length    of the encoded message.
+     * @param header    aeron header for the incoming message.
+     */
     @Override
-    public void onSessionMessage(final ClientSession session, final long timestamp, final DirectBuffer buffer,
-                                 final int offset, final int length, final Header header) {
+    public void onSessionMessage(final ClientSession session,
+                                 final long timestamp,
+                                 final DirectBuffer buffer,
+                                 final int offset,
+                                 final int length,
+                                 final Header header) {
         final int sequenced = sequencer.sequenceMessage(buffer, offset, length, session.id(), timestamp);
         if (sequenced != Sequencer.NO_FRAME) {
             emit(sequenced);
         }
         // The first EndBasicData opens the trading day: the cluster designates the primary FIX
         // gateway by synthesizing a bootstrap GatewayActive right behind it, on the next globalSeqNo.
-        final int activation = sequencer.pendingBootstrapActivation(timestamp);
+        final int activation = sequencer.pendingGatewayBootstrapActivation(timestamp);
         if (activation != Sequencer.NO_FRAME) {
             emit(activation);
         }
     }
 
+    /**
+     * Timer event handler
+     * @param correlationId for the expired timer.
+     * @param timestamp     at which the timer expired.
+     */
     @Override
     public void onTimerEvent(final long correlationId, final long timestamp) {
         if (correlationId == TICK_TIMER_CORRELATION_ID) {
@@ -245,10 +255,10 @@ public final class SequencerService implements ClusteredService {
         }
     }
 
-    // Arms the single repeating tick timer for one TICK_INTERVAL_MS ahead of current cluster time. Spins
-    // until the schedule lands, mirroring emit()'s reliable-offer discipline: a dropped reschedule would
-    // stop the cluster clock. Deadlines are in the cluster's time unit (milliseconds — the Aeron default,
-    // not overridden in SequencerNode), matching cluster.time().
+    /**
+     * Schedule heartbeat every TICK_INTERVAL_MS ahead of current cluster time.
+     * Spins until the schedule lands
+     */
     private void scheduleTick() {
         final long deadline = cluster.time() + TICK_INTERVAL_MS;
         while (!cluster.scheduleTimer(TICK_TIMER_CORRELATION_ID, deadline)) {
@@ -256,14 +266,10 @@ public final class SequencerService implements ClusteredService {
         }
     }
 
-    // ── Snapshot ──────────────────────────────────────────────────────────────
-
-    // Unsupported by design (see the class javadoc). This used to write a single int64 globalSeqNo and
-    // silently drop the six other replicated fields Sequencer holds, so a restore re-emitted the
-    // bootstrap GatewayActive (two live gateways on one sourceId), lost standby promotion, and left the
-    // node's frames no longer byte-identical with its peers'. A half-written snapshot is worse than
-    // none: this way an operator reaching for the toggle finds out immediately, instead of the cluster
-    // finding out at the next restart.
+    /**
+     * Snapshot handler Unsupported by design (see the class javadoc).
+     * @param snapshotPublication to which the state should be recorded.
+     */
     @Override
     public void onTakeSnapshot(final ExclusivePublication snapshotPublication) {
         throw new UnsupportedOperationException(
@@ -272,36 +278,44 @@ public final class SequencerService implements ClusteredService {
             + "shutdown (ABORT), not a SNAPSHOT/SHUTDOWN toggle.");
     }
 
-    // ── Leadership ────────────────────────────────────────────────────────────
-
+    /**
+     * New leadership term received
+     * @param logPosition identity for the new leadership term.
+     * @param leadershipTermId position the log has reached as the result of this message.
+     * @param timestamp for the new leadership term.
+     * @param termBaseLogPosition position at the beginning of the leadership term.
+     * @param leaderMemberId who won the election.
+     * @param logSessionId session id for the publication of the log.
+     * @param timeUnit for the timestamps in the coming leadership term.
+     * @param appVersion for the application configured in the consensus module.
+     */
     @Override
-    public void onNewLeadershipTermEvent(final long logPosition, final long leadershipTermId, final long timestamp,
-                                         final long termBaseLogPosition, final int leaderMemberId,
-                                         final int logSessionId, final TimeUnit timeUnit, final int appVersion) {
+    public void onNewLeadershipTermEvent(final long logPosition,
+                                         final long leadershipTermId,
+                                         final long timestamp,
+                                         final long termBaseLogPosition,
+                                         final int leaderMemberId,
+                                         final int logSessionId,
+                                         final TimeUnit timeUnit,
+                                         final int appVersion) {
         applyLeadership(leaderMemberId, timestamp);
-        // Arm (or re-arm) the internal cluster clock here rather than in onStart, where Aeron forbids
-        // scheduling timers. Fires on every node when a term begins (cold start and every failover);
-        // scheduleTick is idempotent by correlation id, and the timer then re-arms itself in
-        // onTimerEvent, so the clock runs continuously across leadership changes.
-        scheduleTick();
+        scheduleTick();         // Arm (or re-arm) the internal cluster clock here
     }
 
+    /**
+     * Role change handler
+     * @param newRole that the node has assumed.
+     */
     @Override
     public void onRoleChange(final Cluster.Role newRole) {
-        // Deliberately a no-op: onNewLeadershipTermEvent already fires on every node (leader and
-        // followers alike) with an explicit leaderMemberId, which is what applyLeadership needs to stamp
-        // newLeaderMemberId onto the LeadershipChanged event. Keying everything off one authoritative
-        // event (rather than also reacting here) removes a class of double-firing/idempotency bugs.
+        // Deliberately a no-op: onNewLeadershipTermEvent already fires on every node
     }
 
-    // Called on every node whenever a new leadership term begins (including this node's own promotion).
-    // With every node recording its own tap there is no leader-only publication or standby-follow to
-    // manage here any more (both retired in the tap-recording change) — the only per-leadership work is
-    // synthesizing a LeadershipChanged event (ReplayerService design §3). Every node consumes
-    // onNewLeadershipTermEvent in the same log order, so ++globalSeqNo here (on every node, exactly like
-    // onSessionOpen/onSessionMessage) keeps the counter identical across nodes, and each node stamps that
-    // same globalSeqNo onto a LeadershipChanged it emits onto its own tap — the per-node replicas use it
-    // to track the current leader at one exact point in the ordered stream.
+    /**
+     * Called when a new leadership term begins.
+     * @param leaderMemberId leader member identity
+     * @param timestamp now
+     */
     private void applyLeadership(final int leaderMemberId, final long timestamp) {
         // Encoded and emitted on every node, so each node's replayer (and its recording) carries this
         // globalSeqNo gap-free. The sequencer suppresses a repeat of the leader already on record.
@@ -315,6 +329,10 @@ public final class SequencerService implements ClusteredService {
         emit(length);
     }
 
+    /**
+     * Termination handler
+     * @param cluster with which the service can interact.
+     */
     @Override
     public void onTerminate(final Cluster cluster) {
         if (aeronArchive != null) {
@@ -327,15 +345,10 @@ public final class SequencerService implements ClusteredService {
         }
     }
 
-    // ── Private helpers ───────────────────────────────────────────────────────
-
-    // Publishes the frame in encodeBuffer[0, length) onto the node-local tap, which every node records
-    // into its own local archive as the authoritative sequenced history. Reliable: spins until the offer
-    // lands, because a dropped frame would be an unrecoverable hole in the recording. Unlike the retired
-    // UDP global stream this cannot wedge structurally — the only tethered subscriber of the tap is the
-    // co-located archive recording (the app replicas' tap subscriptions are untethered, so a slow app is
-    // dropped, not back-pressuring), so this blocks only on real local-archive write back-pressure, which
-    // clears as the archive drains to disk.
+    /**
+     * Publishes the frame in encodeBuffer[0, length) onto the node-local tap.
+     * @param length
+     */
     private void emit(final int length) {
         int idleSpins = 0;
         long result;
@@ -351,5 +364,4 @@ public final class SequencerService implements ClusteredService {
             cluster.idleStrategy().idle();
         }
     }
-
 }

@@ -379,7 +379,7 @@ class SequencerTest {
         final Sequencer seq = new Sequencer();
         final MutableDirectBuffer buf = new ExpandableArrayBuffer(128);
 
-        assertEquals(Sequencer.NO_FRAME, seq.pendingBootstrapActivation(TIMESTAMP), "nothing pending before EndBasicData");
+        assertEquals(Sequencer.NO_FRAME, seq.pendingGatewayBootstrapActivation(TIMESTAMP), "nothing pending before EndBasicData");
 
         // The load carries the topology: gatewayId 5 (rank 0) is the primary, 6 (rank 1) the standby.
         seq.sequenceMessage(buf, 0, encodeIngressGateway(buf, 0, primaryGatewayId, SOURCE_ID, "GW-A", 0), SESSION_ID,
@@ -389,7 +389,7 @@ class SequencerTest {
         final int endLength = seq.sequenceMessage(buf, 0, encodeIngressEndBasicData(buf, 0), SESSION_ID, TIMESTAMP);
         assertEquals(3L, globalSeqNoOf(seq, endLength));  // 2 Gateway rows + EndBasicData
 
-        final int activationLength = seq.pendingBootstrapActivation(TIMESTAMP + 1);
+        final int activationLength = seq.pendingGatewayBootstrapActivation(TIMESTAMP + 1);
         assertNotEquals(Sequencer.NO_FRAME, activationLength);
         final GatewayActiveDecoder decoded = decodeGatewayActive(seq.buffer(), activationLength);
         assertEquals(primaryGatewayId, decoded.gatewayId());       // the rank-0 gatewayId, derived from the log
@@ -399,7 +399,7 @@ class SequencerTest {
 
         // Fires once: a re-emitted load (a leader change mid-load) does not re-designate the primary.
         seq.sequenceMessage(buf, 0, encodeIngressEndBasicData(buf, 0), SESSION_ID, TIMESTAMP + 2);
-        assertEquals(Sequencer.NO_FRAME, seq.pendingBootstrapActivation(TIMESTAMP + 3));
+        assertEquals(Sequencer.NO_FRAME, seq.pendingGatewayBootstrapActivation(TIMESTAMP + 3));
     }
 
     @Test
@@ -408,7 +408,7 @@ class SequencerTest {
         final Sequencer seq = new Sequencer();
         final MutableDirectBuffer buf = new ExpandableArrayBuffer(64);
         seq.sequenceMessage(buf, 0, encodeIngressEndBasicData(buf, 0), SESSION_ID, TIMESTAMP);
-        assertEquals(Sequencer.NO_FRAME, seq.pendingBootstrapActivation(TIMESTAMP + 1),
+        assertEquals(Sequencer.NO_FRAME, seq.pendingGatewayBootstrapActivation(TIMESTAMP + 1),
                      "no Gateway topology ⇒ no bootstrap activation (fail closed)");
     }
 
