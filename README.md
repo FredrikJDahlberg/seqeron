@@ -25,7 +25,7 @@ cmake -B cmake-build-release -DCMAKE_BUILD_TYPE=Release
 cmake --build cmake-build-release
 ```
 
-### Java
+### Javax3
 
 ```bash
 ./gradlew compileJava

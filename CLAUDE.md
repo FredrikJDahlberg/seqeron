@@ -248,3 +248,5 @@ superset, not this repo's current state — cross-check against the source befor
 ## Code Formatting Mandate
 - Explicitly respect all style, brace, and indentation configurations found in the local `.clang-format` file.
 - Before completing an edit or creating a file, ensure it complies with our Clang-Format criteria.
+- Keep code comments short and to the point. Do not explain design that is already documented.
+- 

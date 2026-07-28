@@ -24,6 +24,7 @@ BraceWrapping:
   SplitEmptyFunction: false
   SplitEmptyRecord: false
   SplitEmptyNamespace: false
+  AfterObjCDeclaration: false
 
 # 3. Prevent Collapsing (Fixes your method expansion bugs)
 AllowShortBlocksOnASingleLine: Never
@@ -80,3 +81,4 @@ AlignAfterOpenBracket: Align
 # 6. Formatting Rules
 SortIncludes: true
 BreakAfterAttributes: Never
+...

@@ -72,7 +72,8 @@ public final class ClusterCtl {
     private static final int NO_ID = -1;
 
     private static final IdleStrategy IDLE = new YieldingIdleStrategy();
-    private static final EgressListener NULL_EGRESS = (sessionId, timestamp, buffer, offset, length, header) -> { };
+    private static final EgressListener NULL_EGRESS = (sessionId, timestamp, buffer, offset,
+                                                       length, header) -> { };
 
     private ClusterCtl() {
     }

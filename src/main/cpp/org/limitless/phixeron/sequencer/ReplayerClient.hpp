@@ -98,7 +98,8 @@ inline constexpr std::uint16_t LEADERSHIP_CHANGED_TEMPLATE_ID = 5;
  * de-duping by globalSeqNo — robust to a leader failover having rotated the active recording. No archive
  * connection is opened here.
  */
-class ReplayerClient {
+class ReplayerClient
+{
    public:
     using OnSequenced = std::function<void(const SequencedEvent&)>;
     using OnConnected = std::function<void(const LifecycleEvent&)>;
@@ -148,7 +149,7 @@ class ReplayerClient {
 
     // Arm a drop of the next n live tap frames. Called on the poll thread (deferred from a signal
     // handler); a no-op unless fault injection was enabled.
-    void injectTapDrop(int n)
+    void injectTapDrop(const int n)
     {
         if (m_faultInjection)
         {
@@ -446,9 +447,9 @@ class ReplayerClient {
         }
         if (templateId == LEADERSHIP_CHANGED_TEMPLATE_ID)
         {
-            org::limitless::phixeron::sbe::sequenced::LeadershipChanged lc;
-            lc.wrapForDecode(raw, off + HdrSbe::encodedLength(), m_hdr.blockLength(), m_hdr.version(), cap);
-            m_currentLeaderMemberId = lc.newLeaderMemberId();
+            sbe::sequenced::LeadershipChanged leadershpChanged;
+            leadershpChanged.wrapForDecode(raw, off + HdrSbe::encodedLength(), m_hdr.blockLength(), m_hdr.version(), cap);
+            m_currentLeaderMemberId = leadershpChanged.newLeaderMemberId();
             if (m_onLeadershipChanged)
             {
                 m_onLeadershipChanged(m_currentLeaderMemberId, gseq);
