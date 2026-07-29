@@ -66,7 +66,7 @@ inline constexpr const char* CLUSTER_INGRESS_CHANNEL = "aeron:udp?endpoint=local
 inline constexpr const char* CLUSTER_EGRESS_CHANNEL = "aeron:udp?endpoint=localhost:9320";
 // Distinct egress port for a co-located client (see connectColocated): it attaches to its own
 // SequencerNode member's embedded media driver rather than the shared standalone aeronmd that
-// FixSessionClient/fix_test_server use, so it needs its own port here too — two independent
+// FixGateway/fix_test_server use, so it needs its own port here too — two independent
 // media driver processes can't both bind the same UDP port on localhost.
 inline constexpr const char* CLUSTER_EGRESS_CHANNEL_COLOCATED = "aeron:udp?endpoint=localhost:9330";
 // Ingress channel for a client co-located with (sharing the Aeron directory of) a cluster
@@ -76,7 +76,7 @@ inline constexpr const char* CLUSTER_INGRESS_CHANNEL_IPC = "aeron:ipc";
 inline constexpr std::int32_t CLUSTER_INGRESS_STREAM_ID = 101;
 inline constexpr std::int32_t CLUSTER_EGRESS_STREAM_ID = 102;
 inline constexpr std::int32_t CLUSTER_PROTOCOL_VERSION = (0 << 16) | (3 << 8) | 0;  // 0.3.0
-inline constexpr const char* CLUSTER_CLIENT_INFO = "FixSessionClient";
+inline constexpr const char* CLUSTER_CLIENT_INFO = "FixGateway";
 inline constexpr std::int64_t CLUSTER_CONNECT_TIMEOUT_MS = 10'000;
 
 inline std::int64_t nowMs()

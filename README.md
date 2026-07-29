@@ -49,8 +49,8 @@ cluster (or are standalone tools); they run no tests:
 
 | Script | Purpose |
 |--------|---------|
-| `start-cluster.sh [debug\|release]` | Start the single-node cluster (`SequencerNode`, `aeronmd`, `FixSessionClient`, `ReplayerNode`, `OrderExecClient`) in the background; Ctrl-C stops all of them |
-| `start-three-node-cluster.sh [debug\|release]` | Start a local 3-node Raft cluster with a `FixSessionClient` and a per-node `ReplayerNode` + `OrderExecClient` replica; blocks until Ctrl-C, then stops all of them |
+| `start-cluster.sh [debug\|release]` | Start the single-node cluster (`SequencerNode`, `aeronmd`, `FixGateway`, `ReplayerNode`, `OrderExecClient`) in the background; Ctrl-C stops all of them |
+| `start-three-node-cluster.sh [debug\|release]` | Start a local 3-node Raft cluster with a `FixGateway` and a per-node `ReplayerNode` + `OrderExecClient` replica; blocks until Ctrl-C, then stops all of them |
 | `stop-cluster.sh` | Stop all cluster processes started by either start script |
 | `sbe-log-printer.sh <spec.sbeir> <archive-dir>` | Dump an Aeron Archive recording as JSON (see [Log printer](#log-printer)) |
 | `purgelog.sh [--force]` | Delete archive/cluster directories under `$TMPDIR/phixeron-seq` and the `logs/` directory; cluster must be stopped first |
@@ -61,7 +61,7 @@ and tears it down via `stop-cluster.sh` (run them from the repository root):
 | Script | Purpose |
 |--------|---------|
 | `three-node-e2e-test.sh [debug\|release]` | Start the 3-node cluster, run `fix_test_server` against it once, then tear everything down and exit with its pass/fail status (set `PHIXERON_FLOOD_ORDERS=<N>` for the delivery-latency-under-load run) |
-| `fix-test-server.sh [debug\|release] [host [port]]` | Run a single FIX session (Logon → Heartbeat → NewOrderSingle → Logout) against a live `FixSessionClient` gateway |
+| `fix-test-server.sh [debug\|release] [host [port]]` | Run a single FIX session (Logon → Heartbeat → NewOrderSingle → Logout) against a live `FixGateway` |
 | `failover-test.sh` | Force a failover, then cold-start a fresh `OrderExecClient` on the new leader and verify it catches up on full history (each node's tap recording is one continuous run spanning both tenures) |
 | `gap-recovery-test.sh` | Drop a live tap frame on a caught-up consumer (SIGUSR1 fault-injection) and verify it re-walks its recording and heals rather than wedging |
 
@@ -151,7 +151,7 @@ Each member's ports are `9300 + memberId × 10 + offset`:
 Clients connect to archive control on port 9301 (member 0) to replay history, and to
 ingress on port 9302 to send messages. The sequenced stream is a node-local `aeron:ipc` tap
 (stream 205) recorded into each member's own archive — no network stream port. Cluster egress is a
-fixed UDP port too — 9320 for `FixSessionClient`/`fix_test_server`, 9330 for `OrderExecClient` (see
+fixed UDP port too — 9320 for `FixGateway`/`fix_test_server`, 9330 for `OrderExecClient` (see
 [Order execution client](#order-execution-client)) — kept distinct because the two now sit on
 independent media driver processes that can't both bind the same UDP port on `localhost`.
 
@@ -278,7 +278,7 @@ synchronous, slow, and only services 5 requests at once (`MockRiskEngine`); quer
 are throttled by leaving the `PortfolioQueryRequest` fragment unconsumed on the global stream
 until a slot frees up, rather than blocking or dropping them.
 
-Unlike `FixSessionClient` (which serves external, potentially remote TCP FIX clients over UDP),
+Unlike `FixGateway` (which serves external, potentially remote TCP FIX clients over UDP),
 `OrderExecClient` is deliberately deployed **co-located** with one `SequencerNode` member —
 sharing that member's own embedded Aeron directory rather than the standalone `aeronmd` — so
 archive access/replay, the live (post-catch-up) sequenced-stream tail (the co-located member's
@@ -305,7 +305,7 @@ different member.
 ## FIX TCP test client
 
 `src/test/cpp/org/limitless/phixeron/session/FixTestServer.cpp` connects to the
-`FixSessionClient` gateway on TCP port 9000 and runs a minimal FIX session
+`FixGateway` on TCP port 9000 and runs a minimal FIX session
 using the simdfix `ClientSession` and generated message encoders:
 
 1. **Logon** — negotiates the session (EncryptMethod=None, HeartbeatInterval=30 s)
@@ -345,10 +345,10 @@ AERON_DIR="${TMPDIR}aeron-$(whoami)" ./cmake-build-release/_deps/aeron-build/bin
 
 **3. Start the FIX gateway** (separate terminal):
 ```bash
-cmake --build cmake-build-release --target FixSessionClient
-AERON_DIR="${TMPDIR}aeron-$(whoami)" ./cmake-build-release/FixSessionClient
+cmake --build cmake-build-release --target FixGateway
+AERON_DIR="${TMPDIR}aeron-$(whoami)" ./cmake-build-release/FixGateway
 # [TCP] Listening on port 9000
-# [FixSessionClient] Caught up — following live stream
+# [FixGateway] Caught up — following live stream
 ```
 
 **4. Start `OrderExecClient`** (separate terminal — see

@@ -16,7 +16,7 @@
 #
 # TOPOLOGY (borrowed from gap-recovery-test.sh so the observation point is stable): members 1 & 2 start
 #   first so the initial leader is one of them; member 0 joins as a follower and is the ALWAYS-ALIVE host
-#   for the FixSessionClient gateway (port 9000), the co-located OrderExecClient consumer (our safety
+#   for the FixGateway (port 9000), the co-located OrderExecClient consumer (our safety
 #   oracle + tap-drop target, launched with PHIXERON_FAULT_INJECTION=1), and its ReplayerNode. Destructive
 #   faults only ever hit the leader or the other non-0 member, so the probe/observation host never dies.
 #
@@ -92,7 +92,7 @@ trap cleanup EXIT INT TERM
 
 # ── Bring-up ─────────────────────────────────────────────────────────────────────
 [[ -f "$JAR" ]] || { echo "missing $JAR — run ./gradlew uberJar"; exit 1; }
-[[ -x "$BUILD_DIR/OrderExecClient" && -x "$BUILD_DIR/FixSessionClient" && -x "$BUILD_DIR/fix_test_server" ]] \
+[[ -x "$BUILD_DIR/OrderExecClient" && -x "$BUILD_DIR/FixGateway" && -x "$BUILD_DIR/fix_test_server" ]] \
   || { echo "missing C++ targets — run cmake --build $BUILD_DIR"; exit 1; }
 
 # Idempotent pre-clean so back-to-back runs don't collide: SIGKILL any survivors, then WAIT for the
@@ -101,7 +101,7 @@ trap cleanup EXIT INT TERM
 # substring — pkilling by class name misses it. Match the jar path (in both SequencerNode's `-jar` and
 # ReplayerNode's `-cp` lines) and the -Dsequencer marker instead.
 pkill -9 -f "$JAR" 2>/dev/null; pkill -9 -f "sequencer.memberId" 2>/dev/null
-for p in OrderExecClient FixSessionClient fix_test_server aeronmd; do pkill -9 -f "$p" 2>/dev/null; done
+for p in OrderExecClient FixGateway fix_test_server aeronmd; do pkill -9 -f "$p" 2>/dev/null; done
 rm -rf "$BASE_DIR" "${TMPDIR}phixeron-seq-aeron-0" "${TMPDIR}phixeron-seq-aeron-1" \
        "${TMPDIR}phixeron-seq-aeron-2" "$AERON_DIR" 2>/dev/null
 W=0; while lsof -nP -iUDP:9301 -iUDP:9311 -iUDP:9321 2>/dev/null | grep -q java; do sleep 0.5; W=$((W+1)); ((W>20)) && { echo "UDP archive ports still held after 10s — stale cluster?"; exit 1; }; done
@@ -134,7 +134,7 @@ W=0; until grep -q "following live" "$CONSUMER_LOG" 2>/dev/null; do sleep 0.5; W
 # FIX gateway on member 0 (port 9000).
 FIX_LOG="$LOG_DIR/fix.log"
 PHIXERON_FIX_GATEWAY_AERON_DIR="${TMPDIR}phixeron-seq-aeron-${CN}" PHIXERON_NODE_MEMBER_ID="$CN" \
-  PHIXERON_REPLAYER_CLIENT_ID=2 stdbuf -oL -eL "$BUILD_DIR/FixSessionClient" > "$FIX_LOG" 2>&1 &
+  PHIXERON_REPLAYER_CLIENT_ID=2 stdbuf -oL -eL "$BUILD_DIR/FixGateway" > "$FIX_LOG" 2>&1 &
 FIX_PID=$!
 W=0; until nc -z 127.0.0.1 9000 2>/dev/null; do sleep 0.5; W=$((W+1)); ((W>40)) && { echo "gateway 9000 not up"; exit 1; }; done
 log "cluster READY — gateway up, consumer following live"

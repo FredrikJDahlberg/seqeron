@@ -2,7 +2,7 @@
 # stop-cluster.sh — stop all phixeron cluster processes started by start-cluster.sh
 # or start-three-node-cluster.sh.
 #
-# Sends SIGTERM to SequencerNode, aeronmd, FixSessionClient, ReplayerNode,
+# Sends SIGTERM to SequencerNode, aeronmd, FixGateway, ReplayerNode,
 # OrderExecClient, and BasicDataClient, then waits up to 10 s for them to exit before
 # sending SIGKILL to any survivors.
 #
@@ -26,7 +26,7 @@ fi
 PROCESSES=(
     "SequencerNode|sequencer.memberId"
     "aeronmd|aeronmd"
-    "FixSessionClient|FixSessionClient"
+    "FixGateway|FixGateway"
     "ReplayerNode|ReplayerNode"
     "OrderExecClient|OrderExecClient"
     "BasicDataClient|BasicDataClient"

@@ -3,7 +3,7 @@
 #
 # Launches four processes in the background, each writing to its own log file:
 #   1. SequencerNode  (Java, single-node Aeron Cluster, member 0)
-#   2. FixSessionClient  (C++, FIX TCP gateway on port 9000)
+#   2. FixGateway  (C++, FIX TCP gateway on port 9000)
 #   3. ReplayerNode  (Java, co-located with member 0: serves archive replay to co-located apps over
 #                     aeron:ipc — doc/router-design.md; apps read the tap directly for live)
 #   4. OrderExecClient  (C++, a replica co-located with member 0: reads the tap directly, tracks
@@ -46,11 +46,11 @@ JAVA_OPTS=(
 LOG_DIR="logs"
 SEQ_LOG="${LOG_DIR}/sequencer.log"
 MD_LOG="${LOG_DIR}/aeronmd.log"
-FIX_LOG="${LOG_DIR}/FixSessionClient.log"
+FIX_LOG="${LOG_DIR}/FixGateway.log"
 REPLAYER_LOG="${LOG_DIR}/ReplayerNode.log"
 APP_LOG="${LOG_DIR}/OrderExecClient.log"
 
-# Default Aeron directory used by the standalone aeronmd and by FixSessionClient.
+# Default Aeron directory used by the standalone aeronmd and by FixGateway.
 AERON_DIR="${TMPDIR}aeron-$(whoami)"
 
 # SequencerNode (member 0)'s own embedded media driver directory — matches its default
@@ -75,7 +75,7 @@ if [[ ! -f "${JAR}" ]]; then
     exit 1
 fi
 
-for bin in FixSessionClient OrderExecClient; do
+for bin in FixGateway OrderExecClient; do
     if [[ ! -x "${BUILD_DIR}/${bin}" ]]; then
         echo "ERROR: ${BUILD_DIR}/${bin} not found — run: cmake --build ${BUILD_DIR}" >&2
         exit 1
@@ -130,8 +130,8 @@ until [[ -f "${AERON_DIR}/cnc.dat" ]]; do
 done
 echo "[cluster.sh] Media driver ready"
 
-echo "[cluster.sh] Starting FixSessionClient → ${FIX_LOG}"
-stdbuf -oL -eL "${BUILD_DIR}/FixSessionClient" > "${FIX_LOG}" 2>&1 &
+echo "[cluster.sh] Starting FixGateway → ${FIX_LOG}"
+stdbuf -oL -eL "${BUILD_DIR}/FixGateway" > "${FIX_LOG}" 2>&1 &
 FIX_PID=$!
 
 echo "[cluster.sh] Starting ReplayerNode (co-located with SequencerNode member 0) → ${REPLAYER_LOG}"
@@ -161,7 +161,7 @@ APP_PID=$!
 echo "[cluster.sh] All processes started"
 echo "  SequencerNode     pid=${SEQ_PID}  log=${SEQ_LOG}"
 echo "  aeronmd           pid=${MD_PID}   log=${MD_LOG}"
-echo "  FixSessionClient  pid=${FIX_PID}  log=${FIX_LOG}"
+echo "  FixGateway  pid=${FIX_PID}  log=${FIX_LOG}"
 echo "  ReplayerNode      pid=${REPLAYER_PID}  log=${REPLAYER_LOG}"
 echo "  OrderExecClient   pid=${APP_PID}  log=${APP_LOG}"
 echo "[cluster.sh] Press Ctrl-C to stop"

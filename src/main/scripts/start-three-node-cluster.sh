@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # start-three-node-cluster.sh — bring up a local 3-node Aeron Cluster with a
-# FixSessionClient and a per-node ReplayerNode + OrderExecClient replica on every
+# FixGateway and a per-node ReplayerNode + OrderExecClient replica on every
 # member, then keep it running until interrupted.
 #
 # Launches, each writing to its own log file under logs/:
 #   1. SequencerNode  x3  (Java, Raft members 0/1/2, all on localhost)
 #   2. aeronmd            (shared Aeron media driver for the C++ clients)
-#   3. FixSessionClient   (C++, FIX TCP gateway on port 9000)
+#   3. FixGateway   (C++, FIX TCP gateway on port 9000)
 #   4. ReplayerNode   x3  (Java, one co-located with each member: serves archive replay to co-located
 #                          apps over aeron:ipc — router-design.md; apps read the tap directly for live)
 #   5. OrderExecClient x3 (C++, one per-node replica co-located with each member: all track positions from
@@ -16,7 +16,7 @@
 # scripts under src/test/scripts/ (e.g. three-node-e2e-test.sh), which start it via this script and
 # tear it down via stop-cluster.sh.
 #
-# FixSessionClient is co-located with member 0 (shares its Aeron directory, SEQ_AERON_DIR): it
+# FixGateway is co-located with member 0 (shares its Aeron directory, SEQ_AERON_DIR): it
 # follows that node's SequencerService tap over aeron:ipc and reaches member 0's local archive over
 # aeron:ipc for FIX-session resend recovery. Cluster ingress tries aeron:ipc first and falls back to
 # UDP + SessionEvent REDIRECT/NewLeaderEvent to the real leader, so this works regardless of which
@@ -65,7 +65,7 @@ JAVA_OPTS=(
 
 LOG_DIR="logs"
 MD_LOG="${LOG_DIR}/aeronmd.log"
-FIX_LOG="${LOG_DIR}/FixSessionClient.log"
+FIX_LOG="${LOG_DIR}/FixGateway.log"
 REPLAYER_LOG="${LOG_DIR}/ReplayerNode.log"
 APP_LOG="${LOG_DIR}/OrderExecClient.log"
 BASICDATA_LOG="${LOG_DIR}/BasicDataClient.log"
@@ -76,7 +76,7 @@ CLUSTER_MEMBERS="0,localhost:9302,localhost:9303,localhost:9304,localhost:9305,l
 CLUSTER_MEMBERS+="|1,localhost:9312,localhost:9313,localhost:9314,localhost:9315,localhost:9311"
 CLUSTER_MEMBERS+="|2,localhost:9322,localhost:9323,localhost:9324,localhost:9325,localhost:9321"
 
-# Default Aeron directory used by the standalone aeronmd and by FixSessionClient.
+# Default Aeron directory used by the standalone aeronmd and by FixGateway.
 AERON_DIR="${TMPDIR}aeron-$(whoami)"
 
 # SequencerNode member 0's own embedded media driver directory — matches its default
@@ -99,7 +99,7 @@ if [[ ! -f "${JAR}" ]]; then
     exit 1
 fi
 
-for bin in FixSessionClient OrderExecClient BasicDataClient; do
+for bin in FixGateway OrderExecClient BasicDataClient; do
     if [[ ! -x "${BUILD_DIR}/${bin}" ]]; then
         echo "ERROR: ${BUILD_DIR}/${bin} not found — run: cmake --build ${BUILD_DIR}" >&2
         exit 1
@@ -191,7 +191,7 @@ until grep -q "serving replay" "${REPLAYER_LOG}" 2>/dev/null; do
     fi
 done
 
-# FixSessionClient is co-located with member 0 too (shares SEQ_AERON_DIR): it follows member 0's
+# FixGateway is co-located with member 0 too (shares SEQ_AERON_DIR): it follows member 0's
 # SequencerService tap over aeron:ipc and uses member 0's local archive over aeron:ipc for FIX-session
 # resend recovery. Started only now — after member 0's ReplayerService is serving replay — so the tap exists
 # and the local archive already holds the tap recording connectLocalArchive needs.
@@ -202,12 +202,12 @@ done
 # standby and must kill the primary WITHOUT this script's monitor tearing down the whole cluster.
 FIX_PID=""
 if [[ -z "${PHIXERON_SKIP_FIX_GATEWAY:-}" ]]; then
-    echo "[start-three-node-cluster.sh] Starting FixSessionClient (co-located with member 0) → ${FIX_LOG}"
+    echo "[start-three-node-cluster.sh] Starting FixGateway (co-located with member 0) → ${FIX_LOG}"
     PHIXERON_FIX_GATEWAY_AERON_DIR="${SEQ_AERON_DIR}" \
         PHIXERON_NODE_MEMBER_ID=0 \
         PHIXERON_REPLAYER_CLIENT_ID=2 \
         PHIXERON_FIX_GATEWAY_NAME=GW-A \
-        stdbuf -oL -eL "${BUILD_DIR}/FixSessionClient" > "${FIX_LOG}" 2>&1 &
+        stdbuf -oL -eL "${BUILD_DIR}/FixGateway" > "${FIX_LOG}" 2>&1 &
     FIX_PID=$!
 else
     echo "[start-three-node-cluster.sh] PHIXERON_SKIP_FIX_GATEWAY set — not launching the FIX gateway (caller-owned)"
@@ -230,8 +230,8 @@ APP_PID=$!
 # replica consumes them back off the tap. The FIX gateway builds its SessionMap from those
 # BasicDataSession rows, so without this running every Logon is refused "Unknown SenderCompID".
 # PHIXERON_REPLAYER_CLIENT_ID=3 keeps it distinct from the co-located OrderExecClient (1) and
-# FixSessionClient (2). Its cluster egress port must be given explicitly: the default is 9340+memberId,
-# which is exactly FixSessionClient's, so co-locating both on member 0 would collide — use 9350+memberId
+# FixGateway (2). Its cluster egress port must be given explicitly: the default is 9340+memberId,
+# which is exactly FixGateway's, so co-locating both on member 0 would collide — use 9350+memberId
 # (clear of the 9300-9325 cluster block, the replica's 9330+m and the gateway's 9340+m).
 echo "[start-three-node-cluster.sh] Starting BasicDataClient (replica on member 0) → ${BASICDATA_LOG}"
 PHIXERON_BASICDATA_AERON_DIR="${SEQ_AERON_DIR}" \
@@ -300,7 +300,7 @@ trap cleanup INT TERM
 # ── Wait until fully ready ────────────────────────────────────────────────────
 
 if [[ -n "${FIX_PID}" ]]; then
-    echo "[start-three-node-cluster.sh] Waiting for FixSessionClient gateway on 127.0.0.1:9000…"
+    echo "[start-three-node-cluster.sh] Waiting for FixGateway on 127.0.0.1:9000…"
     WAIT=0
     until nc -z 127.0.0.1 9000 2>/dev/null; do
         sleep 0.5
@@ -352,9 +352,9 @@ echo "[start-three-node-cluster.sh] READY — cluster is up and all replicas are
 echo "  SequencerNode     pids=${SEQ_PIDS[*]}"
 echo "  aeronmd           pid=${MD_PID}"
 if [[ -n "${FIX_PID}" ]]; then
-    echo "  FixSessionClient  pid=${FIX_PID}   log=${FIX_LOG}"
+    echo "  FixGateway  pid=${FIX_PID}   log=${FIX_LOG}"
 else
-    echo "  FixSessionClient  (skipped — caller-owned)"
+    echo "  FixGateway  (skipped — caller-owned)"
 fi
 echo "  ReplayerNode      pids=${REPLAYER_PID} ${EXTRA_REPLAYER_PIDS[*]}"
 echo "  OrderExecClient   pids=${APP_PID} ${EXTRA_APP_PIDS[*]}"

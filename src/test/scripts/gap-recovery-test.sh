@@ -68,7 +68,7 @@ start_seq() {  # start_seq <memberId>
 }
 
 pkill -f SequencerNode 2>/dev/null; pkill -f ReplayerNode 2>/dev/null; pkill -f OrderExecClient 2>/dev/null
-pkill -f FixSessionClient 2>/dev/null; pkill -f fix_test_server 2>/dev/null; pkill -f aeronmd 2>/dev/null; sleep 1
+pkill -f FixGateway 2>/dev/null; pkill -f fix_test_server 2>/dev/null; pkill -f aeronmd 2>/dev/null; sleep 1
 rm -rf "$BASE_DIR" "${TMPDIR}phixeron-seq-aeron-0" "${TMPDIR}phixeron-seq-aeron-1" \
        "${TMPDIR}phixeron-seq-aeron-2" "$AERON_DIR" 2>/dev/null
 

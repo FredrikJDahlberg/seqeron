@@ -36,11 +36,11 @@ inline constexpr std::int32_t FEEDER_STREAM_ID = 205;
 
 // Each UDP-replaying binary uses a distinct port so their archive replay publications
 // don't conflict.
-// FixSessionClient  → 9310 (env PHIXERON_FIX_REPLAY_PORT)
+// FixGateway  → 9310 (env PHIXERON_FIX_REPLAY_PORT)
 // fix_test_server   → 9400 (env PHIXERON_RISK_TEST_REPLAY_PORT; kept outside the
 //                     9300-9325 cluster port block — see SequencerNode's port layout —
 //                     since 9312 used to alias member 1's cluster ingress port)
-// FixSessionClient's resend-recovery replay → 9401 (env PHIXERON_RESEND_REPLAY_PORT; also outside
+// FixGateway's resend-recovery replay → 9401 (env PHIXERON_RESEND_REPLAY_PORT; also outside
 //                     the 9300-9325 cluster block for the same reason — 9313, the previous default,
 //                     aliased member 1's Raft consensus port and failed to bind whenever member 1 was up)
 // OrderExecClient, deployed co-located with one SequencerNode member (see
@@ -378,7 +378,7 @@ inline std::int64_t frameStartPosition(const aeron::Header& header)
  *
  * sourceId/connectionId name the connection the event refers to, and both are needed:
  * connectionId is unique only within the publishing gateway process, so a consumer serving
- * one gateway must match sourceId before acting on a connectionId (see FixSessionClient).
+ * one gateway must match sourceId before acting on a connectionId (see FixGateway).
  */
 struct LifecycleEvent {
     std::int64_t globalSeqNo;

@@ -31,7 +31,7 @@ AERON_DIR="${TMPDIR}aeron-$(whoami)"
 if command -v aeronmd >/dev/null 2>&1; then AERONMD="$(command -v aeronmd)"; else AERONMD="${BUILD_DIR}/_deps/aeron-build/binaries/aeronmd"; fi
 
 pkill -f SequencerNode 2>/dev/null; pkill -f ReplayerNode 2>/dev/null; pkill -f OrderExecClient 2>/dev/null
-pkill -f FixSessionClient 2>/dev/null; pkill -f aeronmd 2>/dev/null; sleep 1
+pkill -f FixGateway 2>/dev/null; pkill -f aeronmd 2>/dev/null; sleep 1
 rm -rf "$BASE_DIR" "${TMPDIR}phixeron-seq-aeron-0" "${TMPDIR}phixeron-seq-aeron-1" \
        "${TMPDIR}phixeron-seq-aeron-2" "$AERON_DIR" 2>/dev/null
 

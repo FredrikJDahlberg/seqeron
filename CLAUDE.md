@@ -76,7 +76,7 @@ cmake --build cmake-build-release
 C++23, requires Java (Runtime) on PATH for the SBE tool and the code generator, and a
 `git@github.com:...` SSH remote reachable for the simdfix FetchContent clone.
 
-Executables: `FixSessionClient`, `OrderExecClient`, `fix_test_server`,
+Executables: `FixGateway`, `OrderExecClient`, `fix_test_server`,
 `phixeron_tests` (GoogleTest). Build a single target with `cmake --build cmake-build-debug --target <name>`.
 
 ### Java
@@ -110,14 +110,14 @@ Run a single test: `./cmake-build-debug/phixeron_tests --gtest_filter='FixIngres
 
 ### Data flow
 ```
-FIX client (TCP) ⇄ FixSessionClient (C++)  ⇄  Aeron Cluster (Java, Raft-replicated)
+FIX client (TCP) ⇄ FixGateway (C++)  ⇄  Aeron Cluster (Java, Raft-replicated)
                                                       │
                         sequenced tap, per node (aeron:ipc 205, archived on every node)
                        live: read directly · history/gaps: co-located ReplayerService
                                                       │
                           ┌───────────────────────────┴───────────────────────────┐
                           ▼                                                       ▼
-                 FixSessionClient                                          OrderExecClient (C++)
+                 FixGateway                                          OrderExecClient (C++)
               (delivers ExecutionReports                              (prints app messages, tracks
                back to the originating                                  positions from fills, answers
                TCP client)                                               PortfolioQueryRequest)
@@ -182,7 +182,7 @@ layout). `Sequencer.sequenceMessage` therefore only ever decodes the outer `Mess
 `header` composite and copies everything else through as opaque bytes — it never needs to know
 about individual FIX message types.
 
-### C++ FIX gateway — `FixSessionClient` / `FixSessionClient.cpp`
+### C++ FIX gateway — `FixGateway` / `FixGateway.cpp`
 Deliberately stateless proxy: authoritative FIX session state (sequence numbers, session status)
 lives in the cluster, not in this process, so it can crash and restart without losing anything.
 Three cooperating pieces:
@@ -193,7 +193,7 @@ Three cooperating pieces:
 - **`FixIngressHandler`** — pure byte-level logic: FIX frame/tag parsing helpers, SBE
   encode/decode, and application-message routing, built on top of `ClusterIngressSender`.
 - **`GlobalStreamClient`** — replays the archived global stream from a given position, then
-  follows it live; used identically by `FixSessionClient`, `OrderExecClient`, and
+  follows it live; used identically by `FixGateway`, `OrderExecClient`, and
   `fix_test_server`.
 
 `src/main/cpp/.../session/` (`Session`, `ClientSession`, `ServerSession`, `ResendCache`) is a
@@ -237,7 +237,7 @@ removed (`src/main/java/org/limitless/phixeron/risk/` deleted).
 
 ### Known gaps
 `todo.md` tracks known incomplete pieces (e.g. ExecutionReport→TCP routing in
-`FixSessionClient.cpp` is stubbed, connection IDs aren't stable across gateway restarts, no real
+`FixGateway.cpp` is stubbed, connection IDs aren't stable across gateway restarts, no real
 ResendRequest replay backing store yet). Check it before assuming a code path is complete.
 
 `doc/` contains deeper background/design docs (`0-overview.md` … `6-detailed-architecture.md`)
