@@ -376,6 +376,8 @@
                description="FIXT.1.1 DefaultApplVerID (tag 1137); application version for the session (e.g. 6 = FIX.4.4). Always set by the gateway once validated at the edge"/>
         <field name="resetSeqNumFlag"   id="141" type="ResetSeqNumFlag" presence="optional" nullValue="0"
                description="ResetSeqNumFlag (tag 141); 89='Y' reset sequences to 1, 0 = absent/no reset"/>
+        <field name="nextExpectedMsgSeqNum" id="789" type="uint32"
+               description="NextExpectedMsgSeqNum (tag 789); this side's own nextExpectedSeqNum at publish time"/>
         <data  name="xmlData"           id="213" type="varDataEncoding"
                description="Optional XML payload (FIX tags 212/213); length 0 = absent"/>
     </sbe:message>
