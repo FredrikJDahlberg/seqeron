@@ -2,6 +2,7 @@ package org.limitless.phixeron.replayer;
 
 import static io.aeron.Aeron.NULL_VALUE;
 
+import io.aeron.Counter;
 import io.aeron.ExclusivePublication;
 import io.aeron.Subscription;
 import io.aeron.archive.client.AeronArchive;
@@ -16,6 +17,7 @@ import org.agrona.DirectBuffer;
 import org.agrona.ExpandableArrayBuffer;
 import org.agrona.MutableDirectBuffer;
 import org.agrona.concurrent.IdleStrategy;
+import org.limitless.phixeron.PhixeronCounters;
 import org.limitless.phixeron.sbe.unsequenced.MessageHeaderDecoder;
 import org.limitless.phixeron.sbe.unsequenced.MessageHeaderEncoder;
 import org.limitless.phixeron.sbe.unsequenced.ReplayCompleteDecoder;
@@ -166,10 +168,18 @@ public final class ReplayerService {
     // Local-archive resilience (doc/router-archive.md): a transient local-archive failure must not kill
     // the duty-cycle thread. The ReplayerService is off the live path (apps read the tap directly), so a stall
     // only affects replay. While STALLED it keeps its duty cycle running, paces its replay retries, and
-    // holds replay-requesting apps with ReplayPending until the archive returns. (Surfacing STALLED via
-    // an Aeron counter is a deferred follow-up — see doc/router-archive.md.)
+    // holds replay-requesting apps with ReplayPending until the archive returns. Surfaced via
+    // stalledCounter (PhixeronCounters.REPLAYER_STALLED_TYPE_ID).
     private boolean stalled = false;
     private long lastStallRetryMs = 0;
+
+    // ── Operator counters (see PhixeronCounters), created in the constructor ────────────────────
+    private final Counter stalledCounter;
+    private final Counter readyCounter;
+    private final Counter activeReplaySlotsCounter;
+    private final Counter pendingRequestsCounter;
+    private final Counter replaysServedCounter;
+    private final Counter idleTtlReclaimedCounter;
 
     private final MessageHeaderDecoder inHeaderDecoder = new MessageHeaderDecoder();
     private final ReplayRequestDecoder replayRequestDecoder = new ReplayRequestDecoder();
@@ -190,6 +200,19 @@ public final class ReplayerService {
 
         this.controlPub = aeron.addExclusivePublication(IPC_CHANNEL, CONTROL_STREAM_ID);
         this.requestSub = aeron.addSubscription(IPC_CHANNEL, REQUEST_STREAM_ID);
+
+        this.stalledCounter = aeron.addCounter(
+            PhixeronCounters.REPLAYER_STALLED_TYPE_ID, "phixeron.replayer.stalled member=" + memberId);
+        this.readyCounter = aeron.addCounter(
+            PhixeronCounters.REPLAYER_READY_TYPE_ID, "phixeron.replayer.ready member=" + memberId);
+        this.activeReplaySlotsCounter = aeron.addCounter(
+            PhixeronCounters.REPLAYER_ACTIVE_SLOTS_TYPE_ID, "phixeron.replayer.activeSlots member=" + memberId);
+        this.pendingRequestsCounter = aeron.addCounter(
+            PhixeronCounters.REPLAYER_PENDING_REQUESTS_TYPE_ID, "phixeron.replayer.pendingRequests member=" + memberId);
+        this.replaysServedCounter = aeron.addCounter(
+            PhixeronCounters.REPLAYER_REPLAYS_SERVED_COUNT_TYPE_ID, "phixeron.replayer.replaysServedCount member=" + memberId);
+        this.idleTtlReclaimedCounter = aeron.addCounter(PhixeronCounters.REPLAYER_IDLE_TTL_RECLAIMED_COUNT_TYPE_ID,
+            "phixeron.replayer.idleTtlReclaimedCount member=" + memberId);
     }
 
     /**
@@ -214,6 +237,8 @@ public final class ReplayerService {
         }
         final int work = requestSub.poll(requestHandler, FRAGMENT_LIMIT);
         reclaimIdleSlots();
+        activeReplaySlotsCounter.set(activeReplays.size());
+        pendingRequestsCounter.set(pendingRequests.size());
         return work;
     }
 
@@ -229,6 +254,7 @@ public final class ReplayerService {
         }
         if (recordingId != NULL_VALUE) {
             ready = true;
+            readyCounter.set(1);
             System.out.printf("[ReplayerService/%d] ready — tap recording %d live; serving replay%n", memberId, recordingId);
         }
     }
@@ -300,6 +326,7 @@ public final class ReplayerService {
             serveReplay(clientId, segmentIndex, fromPosition);
             if (stalled) {
                 stalled = false;
+                stalledCounter.set(0);
                 System.out.printf("[ReplayerService/%d] RECOVERED: local archive reachable again%n", memberId);
             }
         } catch (final RuntimeException error) {
@@ -360,6 +387,7 @@ public final class ReplayerService {
 
         final long replaySessionId = archive.startReplay(recordingId, replayFrom, boundedLength, IPC_CHANNEL,
             REPLAY_STREAM_ID);
+        replaysServedCounter.increment();
         activeReplays.add(new ReplaySlot(clientId, replaySessionId, System.currentTimeMillis()));
         System.out.printf("[ReplayerService/%d] replay for client %d: segment %d recording %d [%d,%d) session %d%n", memberId,
                           clientId, segmentIndex, recordingId, replayFrom, tip, replaySessionId);
@@ -391,6 +419,7 @@ public final class ReplayerService {
         for (int i = activeReplays.size() - 1; i >= 0; i--) {
             if (now - activeReplays.get(i).lastTouchedMs > REPLAY_SLOT_TTL_MS) {
                 stopReplay(activeReplays.remove(i).replaySessionId);
+                idleTtlReclaimedCounter.increment();
                 freed = true;
             }
         }
@@ -486,6 +515,7 @@ public final class ReplayerService {
     private void onArchiveStalled(final String message, final RuntimeException exception) {
         if (!stalled) {
             stalled = true;
+            stalledCounter.set(1);
             System.out.printf("[ReplayerService/%d] STALLED: %s — local archive unreachable (%s); live delivery "
                               + "unaffected (apps read the tap directly), retrying replay%n",
                               memberId, message, exception.getMessage());

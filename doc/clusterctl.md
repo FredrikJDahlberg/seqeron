@@ -50,6 +50,8 @@ clusterctl.sh describe …     # → ClusterTool passthrough
 ```
 clusterctl.sh start        record a "system started" marker (precondition: elected leader)
 clusterctl.sh shutdown     orderly stop; run on every node, no-op on followers
+clusterctl.sh counters     list this node's phixeron operator counters; no cluster connection
+                           needed, safe on every node
 clusterctl.sh help         list commands and exit
 clusterctl.sh <other...>   pass through to ClusterTool (describe / errors / list-members / …)
 ```
@@ -107,6 +109,13 @@ exit on the coordinated termination); do not have systemd independently `SIGTERM
 `SequencerNode` in a way that races the `ABORT`, or a node could terminate before applying
 `ClusterStopped`. (`SIGTERM` is itself clean now — it drives the same barrier teardown — it just
 isn't ordered against the marker.)
+
+### counters
+
+Lists this node's phixeron operator counters — the `SequencerService`/`ReplayerService` gauges and
+event counts (`org.limitless.phixeron.PhixeronCounters`) — read directly off the co-located Aeron
+directory's CnC file via `CountersReader`. No cluster connection (unlike `start`/`shutdown`), so it
+works with no elected leader and is safe to run on every node.
 
 ### help / passthrough
 

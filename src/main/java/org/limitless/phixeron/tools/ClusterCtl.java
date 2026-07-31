@@ -1,5 +1,6 @@
 package org.limitless.phixeron.tools;
 
+import io.aeron.Aeron;
 import io.aeron.FragmentAssembler;
 import io.aeron.Publication;
 import io.aeron.Subscription;
@@ -14,6 +15,8 @@ import org.agrona.DirectBuffer;
 import org.agrona.ExpandableArrayBuffer;
 import org.agrona.concurrent.IdleStrategy;
 import org.agrona.concurrent.YieldingIdleStrategy;
+import org.agrona.concurrent.status.CountersReader;
+import org.limitless.phixeron.PhixeronCounters;
 import org.limitless.phixeron.sbe.sequenced.ClusterStartedDecoder;
 import org.limitless.phixeron.sbe.sequenced.MessageHeaderDecoder;
 import org.limitless.phixeron.sbe.unsequenced.ClusterStartedEncoder;
@@ -45,6 +48,10 @@ import org.limitless.phixeron.sequencer.SequencerService;
  *       {@code ClusterStopped}) to disk — so the log stays replayable/analysable afterwards. Best
  *       effort: if the echo does not arrive (an unhealthy cluster — often why one stops early), it
  *       aborts anyway, still via {@code ABORT} rather than SIGKILL, so the log is preserved.</li>
+ *   <li><b>counters</b> — lists this node's phixeron operator counters ({@link
+ *       org.limitless.phixeron.PhixeronCounters}), read directly off the co-located Aeron
+ *       directory's CnC file. No cluster connection, so it works with no elected leader and is
+ *       safe on every node.</li>
  *   <li><b>help</b> — usage.</li>
  *   <li><i>anything else</i> — passed through to {@link ClusterTool} against this node's
  *       {@code clusterDir} (describe, errors, list-members, recording-log, …).</li>
@@ -97,6 +104,9 @@ public final class ClusterCtl {
                 break;
             case "shutdown":
                 System.exit(shutdown());
+                break;
+            case "counters":
+                System.exit(counters());
                 break;
             default:
                 passthrough(args); // io.aeron.cluster.ClusterTool
@@ -159,6 +169,37 @@ public final class ClusterCtl {
         }
         System.out.println("[clusterctl] shutdown: cluster abort requested");
         return 0;
+    }
+
+    // ── counters ────────────────────────────────────────────────────────────────
+
+    /**
+     * Lists this node's phixeron operator counters (see {@link PhixeronCounters}) — the
+     * {@code SequencerService}/{@code ReplayerService} gauges and event counts — read directly off the
+     * co-located Aeron directory's CnC file. No cluster connection needed, so this works whether or not
+     * this node holds an elected leader, and is safe to run on every node.
+     */
+    private static int counters() {
+        try (Aeron aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(AERON_DIR))) {
+            final CountersReader reader = aeron.countersReader();
+            final boolean[] found = {false};
+            reader.forEach((counterId, typeId, keyBuffer, label) -> {
+                if (typeId < PhixeronCounters.MIN_TYPE_ID || typeId > PhixeronCounters.MAX_TYPE_ID) {
+                    return;
+                }
+                found[0] = true;
+                System.out.printf("%-55s = %d%n", label, reader.getCounterValue(counterId));
+            });
+            if (!found[0]) {
+                System.out.println(
+                    "[clusterctl] counters: none found under " + AERON_DIR
+                    + " — is a SequencerNode/ReplayerNode running there?");
+            }
+            return 0;
+        } catch (final Exception ex) {
+            System.err.println("[clusterctl] counters: could not connect to " + AERON_DIR + " (" + ex.getMessage() + ")");
+            return 1;
+        }
     }
 
     // ── passthrough ─────────────────────────────────────────────────────────────
@@ -296,6 +337,8 @@ public final class ClusterCtl {
 
               start        record a "system started" marker (requires an elected leader)
               shutdown     orderly stop; safe to run on every node, no-op on followers
+              counters     list this node's phixeron operator counters (SequencerService/
+                           ReplayerService); no cluster connection needed, safe on every node
               snapshot     this operation is not supported
               help         show this help
               <other>      passed through to io.aeron.cluster.ClusterTool (describe, errors,

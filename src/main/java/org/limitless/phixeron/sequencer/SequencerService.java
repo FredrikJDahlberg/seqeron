@@ -1,5 +1,7 @@
 package org.limitless.phixeron.sequencer;
 
+import io.aeron.Aeron;
+import io.aeron.Counter;
 import io.aeron.ExclusivePublication;
 import io.aeron.Image;
 import io.aeron.archive.client.AeronArchive;
@@ -14,6 +16,7 @@ import java.util.concurrent.TimeUnit;
 import org.agrona.DirectBuffer;
 import org.agrona.concurrent.NoOpLock;
 import org.agrona.concurrent.status.CountersReader;
+import org.limitless.phixeron.PhixeronCounters;
 import org.limitless.phixeron.replayer.ReplayerService;
 
 /**
@@ -131,6 +134,16 @@ public final class SequencerService implements ClusteredService {
     private ExclusivePublication tapPub;
     private AeronArchive aeronArchive;
 
+    // ── Operator counters (see PhixeronCounters) — created once in onStart, closed in onTerminate ──
+    private Counter globalSeqNoCounter;
+    private Counter tapBackPressureAlertCounter;
+    private Counter rejectedIngressCounter;
+    private Counter leadershipChangeCounter;
+    private Counter currentLeaderMemberIdCounter;
+    private Counter lastTickTimestampCounter;
+    private Counter gatewayPromotionCounter;
+    private Counter bootstrapActivatedCounter;
+
     /** Gateway topology is derived from the sequenced Gateway rows (see {@link Sequencer}), not configured. */
     public SequencerService() {
         this.sequencer = new Sequencer();
@@ -161,6 +174,9 @@ public final class SequencerService implements ClusteredService {
         tapPub = cluster.context().aeron().addExclusivePublication(FEEDER_CHANNEL, FEEDER_STREAM_ID);
         aeronArchive.startRecording(FEEDER_CHANNEL, FEEDER_STREAM_ID, SourceLocation.LOCAL);
         awaitTapRecordingActive();
+        // Counters are NOT created here: cluster.memberId() is still NULL_VALUE during onStart (Aeron
+        // assigns it only once this service has joined the active log, after onStart returns) — see
+        // ensureCounters(), called instead from the first callback that needs one.
 
         // snapshots are not supported
         if (snapshotImage != null) {
@@ -190,6 +206,38 @@ public final class SequencerService implements ClusteredService {
     }
 
     /**
+     * Lazily creates this node's operator counters (see {@link PhixeronCounters}) on the first
+     * callback that needs one, labelled with the memberId so {@code aeron-stat}/{@code clusterctl
+     * counters} disambiguate nodes sharing one host. Not created eagerly in {@link #onStart}: {@code
+     * cluster.memberId()} is still {@code NULL_VALUE} there — Aeron assigns it only once this service
+     * has joined the active log, which happens after {@code onStart} returns but before any of the
+     * callbacks below can fire.
+     */
+    private void ensureCounters() {
+        if (globalSeqNoCounter != null) {
+            return;
+        }
+        final int memberId = cluster.memberId();
+        final Aeron aeron = cluster.context().aeron();
+        globalSeqNoCounter = aeron.addCounter(
+            PhixeronCounters.SEQUENCER_GLOBAL_SEQ_NO_TYPE_ID, "phixeron.sequencer.globalSeqNo member=" + memberId);
+        tapBackPressureAlertCounter = aeron.addCounter(PhixeronCounters.SEQUENCER_TAP_BACKPRESSURE_ALERTS_TYPE_ID,
+            "phixeron.sequencer.tapBackPressureAlerts member=" + memberId);
+        rejectedIngressCounter = aeron.addCounter(PhixeronCounters.SEQUENCER_REJECTED_INGRESS_COUNT_TYPE_ID,
+            "phixeron.sequencer.rejectedIngressCount member=" + memberId);
+        leadershipChangeCounter = aeron.addCounter(PhixeronCounters.SEQUENCER_LEADERSHIP_CHANGE_COUNT_TYPE_ID,
+            "phixeron.sequencer.leadershipChangeCount member=" + memberId);
+        currentLeaderMemberIdCounter = aeron.addCounter(PhixeronCounters.SEQUENCER_CURRENT_LEADER_MEMBER_ID_TYPE_ID,
+            "phixeron.sequencer.currentLeaderMemberId member=" + memberId);
+        lastTickTimestampCounter = aeron.addCounter(PhixeronCounters.SEQUENCER_LAST_TICK_TIMESTAMP_TYPE_ID,
+            "phixeron.sequencer.lastTickTimestamp member=" + memberId);
+        gatewayPromotionCounter = aeron.addCounter(PhixeronCounters.SEQUENCER_GATEWAY_PROMOTION_COUNT_TYPE_ID,
+            "phixeron.sequencer.gatewayPromotionCount member=" + memberId);
+        bootstrapActivatedCounter = aeron.addCounter(PhixeronCounters.SEQUENCER_BOOTSTRAP_ACTIVATED_TYPE_ID,
+            "phixeron.sequencer.bootstrapActivated member=" + memberId);
+    }
+
+    /**
      * Cluster client session open handler.
      * @param session   for the client which have been opened.
      * @param timestamp at which the session was opened.
@@ -206,8 +254,10 @@ public final class SequencerService implements ClusteredService {
      */
     @Override
     public void onSessionClose(final ClientSession session, final long timestamp, final CloseReason closeReason) {
+        ensureCounters();
         final int activation = sequencer.sessionClosed(session.id(), timestamp);
         if (activation != Sequencer.NO_FRAME) {
+            gatewayPromotionCounter.increment();
             System.out.printf("[SequencerService/%d] gateway session %d closed (%s) — promoting standby%n",
                               cluster.memberId(), session.id(), closeReason);
             emit(activation);
@@ -230,14 +280,18 @@ public final class SequencerService implements ClusteredService {
                                  final int offset,
                                  final int length,
                                  final Header header) {
+        ensureCounters();
         final int sequenced = sequencer.sequenceMessage(buffer, offset, length, session.id(), timestamp);
         if (sequenced != Sequencer.NO_FRAME) {
             emit(sequenced);
+        } else {
+            rejectedIngressCounter.increment();
         }
         // The first EndBasicData opens the trading day: the cluster designates the primary FIX
         // gateway by synthesizing a bootstrap GatewayActive right behind it, on the next globalSeqNo.
         final int activation = sequencer.pendingGatewayBootstrapActivation(timestamp);
         if (activation != Sequencer.NO_FRAME) {
+            bootstrapActivatedCounter.set(1);
             emit(activation);
         }
     }
@@ -250,7 +304,9 @@ public final class SequencerService implements ClusteredService {
     @Override
     public void onTimerEvent(final long correlationId, final long timestamp) {
         if (correlationId == TICK_TIMER_CORRELATION_ID) {
+            ensureCounters();
             emit(sequencer.tick(timestamp));
+            lastTickTimestampCounter.set(timestamp);
             scheduleTick();
         }
     }
@@ -317,12 +373,15 @@ public final class SequencerService implements ClusteredService {
      * @param timestamp now
      */
     private void applyLeadership(final int leaderMemberId, final long timestamp) {
+        ensureCounters();
         // Encoded and emitted on every node, so each node's replayer (and its recording) carries this
         // globalSeqNo gap-free. The sequencer suppresses a repeat of the leader already on record.
         final int length = sequencer.leadershipChanged(leaderMemberId, timestamp);
         if (length == Sequencer.NO_FRAME) {
             return;
         }
+        leadershipChangeCounter.increment();
+        currentLeaderMemberIdCounter.set(leaderMemberId);
         final boolean leader = leaderMemberId == cluster.memberId();
         System.out.printf("[SequencerService/%d] leadership change: new leader is memberId=%d (isLeader=%b)%n",
                           cluster.memberId(), leaderMemberId, leader);
@@ -343,6 +402,22 @@ public final class SequencerService implements ClusteredService {
             // recording (sets its stopPosition) without an explicit stopRecording call.
             tapPub.close();
         }
+        closeCounters();
+    }
+
+    /**
+     * Closes this node's operator counters, freeing their slots in the CnC counters file.
+     */
+    private void closeCounters() {
+        final Counter[] counters = {
+            globalSeqNoCounter, tapBackPressureAlertCounter, rejectedIngressCounter, leadershipChangeCounter,
+            currentLeaderMemberIdCounter, lastTickTimestampCounter, gatewayPromotionCounter, bootstrapActivatedCounter
+        };
+        for (final Counter counter : counters) {
+            if (counter != null) {
+                counter.close();
+            }
+        }
     }
 
     /**
@@ -359,9 +434,11 @@ public final class SequencerService implements ClusteredService {
             if (++idleSpins >= MAX_BACK_PRESSURE_SPINS) {
                 System.err.printf("[SequencerService] ALERT: replayer back-pressure at globalSeqNo=%d%n",
                                   sequencer.globalSeqNo());
+                tapBackPressureAlertCounter.increment();
                 idleSpins = 0;
             }
             cluster.idleStrategy().idle();
         }
+        globalSeqNoCounter.set(sequencer.globalSeqNo());
     }
 }
