@@ -246,11 +246,16 @@ class ClusterIngressSender {
     // Once connected (by either path), everything else is unchanged: NewLeaderEvent/REDIRECT
     // handling already resolves UDP endpoints from the wire CSV and swaps m_ingress, so
     // leadership later moving away from the co-located member degrades to UDP ingress
-    // automatically, with no further special-casing needed here.
-    void connectColocated(std::shared_ptr<aeron::Aeron> aeron, std::int64_t ipcConnectTimeoutMs = 1500,
+    // automatically. Leadership later moving *back* to it is handled too (see onFragment's
+    // NewLeaderEvent branch): `memberId` is this client's own co-located cluster member id, so a
+    // NewLeaderEvent naming it can be recognised and re-chased back onto IPC.
+    void connectColocated(std::shared_ptr<aeron::Aeron> aeron, std::int32_t memberId,
+                          std::int64_t ipcConnectTimeoutMs = 1500,
                           const std::string& egressChannel = CLUSTER_EGRESS_CHANNEL_COLOCATED)
     {
         m_aeron = std::move(aeron);
+        m_coLocatedMemberId = memberId;
+        m_ipcConnectTimeoutMs = ipcConnectTimeoutMs;
         // egressChannel must be a distinct UDP endpoint per co-located client: when a replica runs
         // on every cluster node, each one attaches to its own member's media driver, and two driver
         // processes on one host cannot both bind the same egress UDP port. Callers pass
@@ -297,12 +302,17 @@ class ClusterIngressSender {
     // may be null to skip straight to the fallback (mirrors createIpcIngressPublication()
     // itself throwing before a transport ever exists). `buildFallbackIngress` is only invoked
     // if the primary attempt fails; `egress` is shared by both attempts (reused via
-    // ClusterIngressSender::connect's `m_egress` after a failed first attempt).
+    // ClusterIngressSender::connect's `m_egress` after a failed first attempt). `memberId`
+    // (default -1, i.e. "no co-located member") lets a test set m_coLocatedMemberId without a
+    // real Aeron client, to exercise onFragment's NewLeaderEvent guard — the guard also requires
+    // m_aeron, so it stays a no-op here regardless; there is nothing to reconnect to without a
+    // real Aeron client, same reasoning as the plain endpoint-reconnect path above it.
     void connectColocated(std::unique_ptr<IngressTransport> primaryIngress,
                           std::function<std::unique_ptr<IngressTransport>()> buildFallbackIngress,
                           std::unique_ptr<EgressTransport> egress, std::int64_t primaryConnectTimeoutMs,
-                          const char* primaryFailureReason)
+                          const char* primaryFailureReason, std::int32_t memberId = -1)
     {
+        m_coLocatedMemberId = memberId;
         const std::int64_t fullTimeoutMs = m_connectTimeoutMs;
         std::string reasonStorage;  // outlives the catch block, unlike ex.what()'s pointer
 
@@ -568,6 +578,40 @@ class ClusterIngressSender {
             const std::int32_t leaderMemberId = evt.leaderMemberId();
             const std::string ingressEndpoints = evt.getIngressEndpointsAsString();
 
+            // Leadership has returned to our own co-located member while we're parked on UDP
+            // (having failed over from IPC earlier) — re-chase the cheaper IPC path rather than
+            // staying on UDP until the next restart. Bounded by the same short timeout
+            // connectColocated uses for its own first IPC attempt: the co-located member's IPC
+            // ingress subscription is Aeron's own leader-only listener (isIpcIngressAllowed), so
+            // there is a startup race identical to the one connectColocated already tolerates, not
+            // a reason to block the duty cycle waiting on the full connect timeout.
+            if (m_aeron && m_coLocatedMemberId >= 0 && leaderMemberId == m_coLocatedMemberId &&
+                m_ingressEndpoint != "ipc")
+            {
+                const std::int64_t fullTimeoutMs = m_connectTimeoutMs;
+                m_connectTimeoutMs = m_ipcConnectTimeoutMs;
+                try
+                {
+                    auto ipcPub = createIpcIngressPublication();
+                    m_connectTimeoutMs = fullTimeoutMs;
+                    m_ingress = std::make_unique<AeronIngressTransport>(std::move(ipcPub));
+                    m_ingressEndpoint = "ipc";
+                    std::printf("[Cluster] New leader  termId=%" PRId64
+                                "  member=%d is co-located — switched back to "
+                                "IPC ingress\n",
+                                m_leadershipTermId, leaderMemberId);
+                    return;
+                }
+                catch (const std::exception& ex)
+                {
+                    m_connectTimeoutMs = fullTimeoutMs;
+                    std::fprintf(stderr,
+                                 "[Cluster] Co-located member=%d is new leader but IPC ingress not ready yet "
+                                 "(%s) — staying on UDP\n",
+                                 leaderMemberId, ex.what());
+                }
+            }
+
             std::string endpoint;
             if (m_aeron && findIngressEndpoint(ingressEndpoints, leaderMemberId, endpoint) &&
                 endpoint != m_ingressEndpoint)
@@ -694,6 +738,13 @@ class ClusterIngressSender {
 
     std::shared_ptr<aeron::Aeron> m_aeron;
     std::string m_ingressEndpoint;
+    // This client's own co-located cluster member id, or -1 if not co-located (plain connect()).
+    // Set by connectColocated; lets onFragment's NewLeaderEvent handling recognise "leadership
+    // came back to me" and re-chase IPC instead of resolving yet another UDP endpoint.
+    std::int32_t m_coLocatedMemberId = -1;
+    // Short bounded timeout reused for every IPC (re)connect attempt, not just the first —
+    // set once by connectColocated alongside m_coLocatedMemberId.
+    std::int64_t m_ipcConnectTimeoutMs = 1500;
     // Response channel sendConnectRequest() advertises to the cluster; CLUSTER_EGRESS_CHANNEL
     // for connect(aeron), CLUSTER_EGRESS_CHANNEL_COLOCATED for connectColocated(aeron, ...).
     std::string m_egressChannel = CLUSTER_EGRESS_CHANNEL;

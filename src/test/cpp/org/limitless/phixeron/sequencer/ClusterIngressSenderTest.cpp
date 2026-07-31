@@ -446,6 +446,36 @@ TEST(ClusterIngressSenderReliableSend, SendReStampsLeadershipTermAfterMidSpinFai
     EXPECT_EQ(999, hdr.leadershipTermId());  // re-stamped to the new leader's term
 }
 
+// Without a real Aeron client there is nothing to re-chase IPC with, so a NewLeaderEvent naming
+// this client's own co-located member (set via the test-seam's memberId) must degrade to the
+// same leadership-term-only update as PollEgressIgnoresNewLeaderEndpointWithoutAeronClient above
+// — not attempt (and crash on) building an IPC publication with a null m_aeron.
+TEST(ClusterIngressSenderColocated, PollEgressIgnoresIpcRechaseWithoutAeronClientEvenWhenLeaderIsCoLocatedMember)
+{
+    auto egress = std::make_unique<FakeEgressTransport>();
+    egress->m_queued.push_back(encodeSessionEvent(9, 3, cluster_sbe::EventCode::Value::OK));
+    auto* egressPtr = egress.get();
+
+    auto primary = std::make_unique<FakeIngressTransport>();
+
+    ClusterIngressSender sender;
+    sender.connectColocated(
+        std::move(primary), [&]() -> std::unique_ptr<IngressTransport> { return nullptr; }, std::move(egress),
+        /*primaryConnectTimeoutMs=*/1500, /*primaryFailureReason=*/nullptr, /*memberId=*/3);
+    ASSERT_TRUE(sender.isConnected());
+
+    // New leader is member 3 — this client's own co-located member — but m_aeron is null.
+    egressPtr->m_queued.push_back(encodeNewLeaderEvent(999, 3, "0=localhost:9302,3=localhost:9308"));
+    sender.pollEgress([](const std::uint8_t*, std::int32_t) {
+        FAIL() << "NewLeaderEvent must not be forwarded as an application message";
+    });
+
+    // The new leadership term must still be adopted for subsequent sends, exactly as the
+    // no-co-located-member case does.
+    const std::array<std::uint8_t, 1> body{'8'};
+    EXPECT_TRUE(sender.send(body.data(), 1));
+}
+
 // ── connectColocated's IPC-then-UDP fallback (see ClusterIngressSender.hpp) ────────────────
 
 // Primary (IPC) attempt never answers within the short timeout, so the fallback ingress

@@ -39,6 +39,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <functional>
 #include <memory>
 #include <string>
@@ -157,10 +158,19 @@ class ReplayerClient
         }
     }
 
+    // Test-only: feeds a fragment through the same decode/baseline/gap logic poll() drives off the
+    // live tap subscription (fromReplay=false), without a real Aeron subscription or media driver —
+    // see ReplayerClientTest.cpp.
+    void testDeliverTapFragment(const aeron::concurrent::AtomicBuffer& buffer, aeron::util::index_t offset,
+                                aeron::util::index_t length, const aeron::Header& header)
+    {
+        onFragment(buffer, offset, length, header, /*fromReplay=*/false);
+    }
+
     // One duty-cycle iteration; returns fragments consumed. Poll ordering: always drain control
-    // (to learn Replaying/ReplayPending); ride an attached replay image to exclusion of the tap (so
-    // tap frames the app can't use yet aren't consumed and lost); otherwise, once caught up,
-    // follow the live tap.
+    // (to learn Replaying/ReplayPending) and always drain the tap (see below); ride an attached
+    // replay image to exclusion of *dispatching* the tap — its frames aren't lost, just discarded,
+    // until caught up, when it takes over dispatch.
     int poll()
     {
         resolveResources();
@@ -189,36 +199,42 @@ class ReplayerClient
             {
                 if (!m_replayImage->isClosed())
                 {
-                    const int n = m_replayImage->poll(m_replayPoll, FRAGMENT_LIMIT);
-                    if (m_replayImage->position() < m_catchUpPosition)
+                    work += m_replayImage->poll(m_replayPoll, FRAGMENT_LIMIT);
+                    if (m_replayImage->position() >= m_catchUpPosition)
                     {
-                        return work + n;  // still riding this segment up to its tip
+                        // Reached this segment's bounded tip. A bounded replay of an ACTIVE
+                        // (still-recording) recording does NOT close its image at the bound (verified:
+                        // image position == tip, isClosed() stays false forever), so completion is
+                        // detected by position — exactly as GlobalStreamClient does for its live segment.
+                        onReplaySegmentComplete();
                     }
-                    // Reached this segment's bounded tip. A bounded replay of an ACTIVE (still-recording)
-                    // recording does NOT close its image at the bound (verified: image position == tip,
-                    // isClosed() stays false forever), so completion is detected by position — exactly as
-                    // GlobalStreamClient does for its live segment (position() >= catchUpPosition).
-                    onReplaySegmentComplete();
-                    return work + n;
                 }
-                // Image closed on its own — a stopped historical segment's bounded replay does close at
-                // its stopPosition. Same completion handling.
-                onReplaySegmentComplete();
+                else
+                {
+                    // Image closed on its own — a stopped historical segment's bounded replay does close
+                    // at its stopPosition. Same completion handling.
+                    onReplaySegmentComplete();
+                }
             }
-            else
-            {
-                return work;  // Replaying received, image not yet attached — hold
-            }
+            // else: Replaying received, image not yet attached — nothing to poll this cycle, fall
+            // through to the tap drain below rather than holding the whole duty cycle on it.
         }
 
-        if (m_awaitingReplay)
-        {
-            return work;  // holding at the gap until the Replayer answers
-        }
-
+        // Always drain the tap, even mid-walk (cold start or gap re-walk) or while merely awaiting
+        // the Replayer's answer: it is untethered (FEEDER_CHANNEL's ?tether=false), so an Aeron
+        // subscription that goes unpolled falls behind the publisher's log buffer — regardless of
+        // what is done with what it hands back. Skipping this poll (the previous behaviour) meant
+        // every walk guaranteed the tap fell behind by however long the walk took, manufacturing a
+        // fresh gap right as the walk finished and re-triggering it — a re-walk that could never
+        // converge under sustained live traffic (doc/todo.md "A gap re-walk starves the tap it is
+        // recovering"). Discarding rather than dispatching preserves the ordering invariant: the
+        // walk is already re-delivering these globalSeqNos in order, and dispatching a live frame
+        // mid-walk would either be out of order or misread as a fresh gap by onFragment's
+        // contiguity check (which would spuriously restart the walk from segment 0).
+        const bool recovering = m_replaySessionId >= 0 || m_awaitingReplay;
         if (m_tapSub)
         {
-            work += m_tapSub->poll(m_tapPoll, FRAGMENT_LIMIT);
+            work += m_tapSub->poll(recovering ? m_tapDiscardPoll : m_tapPoll, FRAGMENT_LIMIT);
         }
         return work;
     }
@@ -407,6 +423,23 @@ class ReplayerClient
                 return;
             }
         }
+        else if (gseq != 1)
+        {
+            // The very first frame this client ever sees — replayed history, or the live tap right
+            // after a cold-start NO_REPLAY_NEEDED — must be globalSeqNo 1: the log always starts
+            // there and there are no snapshots (doc/todo.md "No snapshots"), so a correct recording
+            // walked from its true beginning has no other possible first value. Anything else means
+            // this node's own recording does not reach the start of the log (e.g. purged) — a
+            // permanent condition, not a transient one: globalSeqNo only increases, so no later frame
+            // can ever be 1 once this one wasn't, and re-requesting the same replay would just repeat
+            // the same wrong answer. Silently adopting it as the baseline would track position/state
+            // from mid-stream; this process cannot do its job, so fail fast instead of limping on.
+            std::fprintf(stderr,
+                         "[ReplayerClient] FATAL: first frame observed has globalSeqNo=%lld, expected 1 — "
+                         "this node's recording does not reach the start of the log; aborting\n",
+                         static_cast<long long>(gseq));
+            std::abort();
+        }
         m_lastGlobalSeqNo = gseq;
         if (!fromReplay && !m_caughtUp)
         {
@@ -577,6 +610,11 @@ class ReplayerClient
     aeron::fragment_handler_t m_tapPoll;
     aeron::fragment_handler_t m_replayPoll;
     aeron::fragment_handler_t m_controlPoll;
+
+    // Drains the tap during a walk without dispatching (see poll()) — deliberately bypasses
+    // m_tapAssembler: we don't care about reassembling what we're about to discard, only about
+    // advancing the untethered subscription's position so it doesn't fall behind.
+    aeron::fragment_handler_t m_tapDiscardPoll{[](auto&, auto, auto, auto&) {}};
 
     HdrSbe m_hdr;
     HeaderComposite m_header;

@@ -211,6 +211,9 @@
             <validValue name="CompIDProblem"               description="tag 9">9</validValue>
             <validValue name="SendingTimeAccuracyProblem"  description="tag 10">10</validValue>
             <validValue name="InvalidMsgType"              description="tag 11">11</validValue>
+            <validValue name="InvalidMsgSeqNum"            description="tag 12">12</validValue>
+            <validValue name="InvalidPossDupFlag"          description="tag 13">13</validValue>
+            <validValue name="InvalidGapFillFlag"          description="tag 14">14</validValue>
         </enum>
 
         <!--

@@ -76,7 +76,11 @@ public final class MetricsExporter {
                 "phixeron_replayer_replays_served_total", "Count of replays started since this node came up.", "counter")),
             Map.entry(PhixeronCounters.REPLAYER_IDLE_TTL_RECLAIMED_COUNT_TYPE_ID, new MetricMeta(
                 "phixeron_replayer_idle_ttl_reclaimed_total",
-                "Count of replay slots reclaimed by the idle-TTL backstop.", "counter"))
+                "Count of replay slots reclaimed by the idle-TTL backstop.", "counter")),
+            Map.entry(PhixeronCounters.REPLAYER_INTEGRITY_FAILURE_TYPE_ID, new MetricMeta(
+                "phixeron_replayer_integrity_failure",
+                "1 once this node's oldest tap recording failed the startup gseq-1 integrity check, else 0.",
+                "gauge"))
         );
         final Map<Integer, MetricMeta> map = new HashMap<>();
         for (final Map.Entry<Integer, MetricMeta> entry : entries) {
