@@ -219,22 +219,25 @@ public final class SequencerService implements ClusteredService {
         }
         final int memberId = cluster.memberId();
         final Aeron aeron = cluster.context().aeron();
-        globalSeqNoCounter = aeron.addCounter(
-            PhixeronCounters.SEQUENCER_GLOBAL_SEQ_NO_TYPE_ID, "phixeron.sequencer.globalSeqNo member=" + memberId);
-        tapBackPressureAlertCounter = aeron.addCounter(PhixeronCounters.SEQUENCER_TAP_BACKPRESSURE_ALERTS_TYPE_ID,
-            "phixeron.sequencer.tapBackPressureAlerts member=" + memberId);
-        rejectedIngressCounter = aeron.addCounter(PhixeronCounters.SEQUENCER_REJECTED_INGRESS_COUNT_TYPE_ID,
-            "phixeron.sequencer.rejectedIngressCount member=" + memberId);
-        leadershipChangeCounter = aeron.addCounter(PhixeronCounters.SEQUENCER_LEADERSHIP_CHANGE_COUNT_TYPE_ID,
-            "phixeron.sequencer.leadershipChangeCount member=" + memberId);
-        currentLeaderMemberIdCounter = aeron.addCounter(PhixeronCounters.SEQUENCER_CURRENT_LEADER_MEMBER_ID_TYPE_ID,
-            "phixeron.sequencer.currentLeaderMemberId member=" + memberId);
-        lastTickTimestampCounter = aeron.addCounter(PhixeronCounters.SEQUENCER_LAST_TICK_TIMESTAMP_TYPE_ID,
-            "phixeron.sequencer.lastTickTimestamp member=" + memberId);
-        gatewayPromotionCounter = aeron.addCounter(PhixeronCounters.SEQUENCER_GATEWAY_PROMOTION_COUNT_TYPE_ID,
-            "phixeron.sequencer.gatewayPromotionCount member=" + memberId);
-        bootstrapActivatedCounter = aeron.addCounter(PhixeronCounters.SEQUENCER_BOOTSTRAP_ACTIVATED_TYPE_ID,
-            "phixeron.sequencer.bootstrapActivated member=" + memberId);
+        globalSeqNoCounter = PhixeronCounters.addCounter(aeron, PhixeronCounters.SEQUENCER_GLOBAL_SEQ_NO_TYPE_ID,
+            "phixeron.sequencer.globalSeqNo member=" + memberId, memberId);
+        tapBackPressureAlertCounter = PhixeronCounters.addCounter(aeron,
+            PhixeronCounters.SEQUENCER_TAP_BACKPRESSURE_ALERTS_TYPE_ID,
+            "phixeron.sequencer.tapBackPressureAlerts member=" + memberId, memberId);
+        rejectedIngressCounter = PhixeronCounters.addCounter(aeron, PhixeronCounters.SEQUENCER_REJECTED_INGRESS_COUNT_TYPE_ID,
+            "phixeron.sequencer.rejectedIngressCount member=" + memberId, memberId);
+        leadershipChangeCounter = PhixeronCounters.addCounter(aeron,
+            PhixeronCounters.SEQUENCER_LEADERSHIP_CHANGE_COUNT_TYPE_ID,
+            "phixeron.sequencer.leadershipChangeCount member=" + memberId, memberId);
+        currentLeaderMemberIdCounter = PhixeronCounters.addCounter(aeron,
+            PhixeronCounters.SEQUENCER_CURRENT_LEADER_MEMBER_ID_TYPE_ID,
+            "phixeron.sequencer.currentLeaderMemberId member=" + memberId, memberId);
+        lastTickTimestampCounter = PhixeronCounters.addCounter(aeron, PhixeronCounters.SEQUENCER_LAST_TICK_TIMESTAMP_TYPE_ID,
+            "phixeron.sequencer.lastTickTimestamp member=" + memberId, memberId);
+        gatewayPromotionCounter = PhixeronCounters.addCounter(aeron, PhixeronCounters.SEQUENCER_GATEWAY_PROMOTION_COUNT_TYPE_ID,
+            "phixeron.sequencer.gatewayPromotionCount member=" + memberId, memberId);
+        bootstrapActivatedCounter = PhixeronCounters.addCounter(aeron, PhixeronCounters.SEQUENCER_BOOTSTRAP_ACTIVATED_TYPE_ID,
+            "phixeron.sequencer.bootstrapActivated member=" + memberId, memberId);
     }
 
     /**

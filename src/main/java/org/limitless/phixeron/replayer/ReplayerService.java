@@ -201,18 +201,19 @@ public final class ReplayerService {
         this.controlPub = aeron.addExclusivePublication(IPC_CHANNEL, CONTROL_STREAM_ID);
         this.requestSub = aeron.addSubscription(IPC_CHANNEL, REQUEST_STREAM_ID);
 
-        this.stalledCounter = aeron.addCounter(
-            PhixeronCounters.REPLAYER_STALLED_TYPE_ID, "phixeron.replayer.stalled member=" + memberId);
-        this.readyCounter = aeron.addCounter(
-            PhixeronCounters.REPLAYER_READY_TYPE_ID, "phixeron.replayer.ready member=" + memberId);
-        this.activeReplaySlotsCounter = aeron.addCounter(
-            PhixeronCounters.REPLAYER_ACTIVE_SLOTS_TYPE_ID, "phixeron.replayer.activeSlots member=" + memberId);
-        this.pendingRequestsCounter = aeron.addCounter(
-            PhixeronCounters.REPLAYER_PENDING_REQUESTS_TYPE_ID, "phixeron.replayer.pendingRequests member=" + memberId);
-        this.replaysServedCounter = aeron.addCounter(
-            PhixeronCounters.REPLAYER_REPLAYS_SERVED_COUNT_TYPE_ID, "phixeron.replayer.replaysServedCount member=" + memberId);
-        this.idleTtlReclaimedCounter = aeron.addCounter(PhixeronCounters.REPLAYER_IDLE_TTL_RECLAIMED_COUNT_TYPE_ID,
-            "phixeron.replayer.idleTtlReclaimedCount member=" + memberId);
+        this.stalledCounter = PhixeronCounters.addCounter(aeron,
+            PhixeronCounters.REPLAYER_STALLED_TYPE_ID, "phixeron.replayer.stalled member=" + memberId, memberId);
+        this.readyCounter = PhixeronCounters.addCounter(aeron,
+            PhixeronCounters.REPLAYER_READY_TYPE_ID, "phixeron.replayer.ready member=" + memberId, memberId);
+        this.activeReplaySlotsCounter = PhixeronCounters.addCounter(aeron,
+            PhixeronCounters.REPLAYER_ACTIVE_SLOTS_TYPE_ID, "phixeron.replayer.activeSlots member=" + memberId, memberId);
+        this.pendingRequestsCounter = PhixeronCounters.addCounter(aeron,
+            PhixeronCounters.REPLAYER_PENDING_REQUESTS_TYPE_ID, "phixeron.replayer.pendingRequests member=" + memberId, memberId);
+        this.replaysServedCounter = PhixeronCounters.addCounter(aeron,
+            PhixeronCounters.REPLAYER_REPLAYS_SERVED_COUNT_TYPE_ID,
+            "phixeron.replayer.replaysServedCount member=" + memberId, memberId);
+        this.idleTtlReclaimedCounter = PhixeronCounters.addCounter(aeron, PhixeronCounters.REPLAYER_IDLE_TTL_RECLAIMED_COUNT_TYPE_ID,
+            "phixeron.replayer.idleTtlReclaimedCount member=" + memberId, memberId);
     }
 
     /**
