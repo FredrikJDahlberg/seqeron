@@ -211,9 +211,14 @@
             <validValue name="CompIDProblem"               description="tag 9">9</validValue>
             <validValue name="SendingTimeAccuracyProblem"  description="tag 10">10</validValue>
             <validValue name="InvalidMsgType"              description="tag 11">11</validValue>
-            <validValue name="InvalidMsgSeqNum"            description="tag 12">12</validValue>
-            <validValue name="InvalidPossDupFlag"          description="tag 13">13</validValue>
-            <validValue name="InvalidGapFillFlag"          description="tag 14">14</validValue>
+            <validValue name="XmlValidationError"          description="tag 12">12</validValue>
+            <validValue name="TagAppearsMoreThanOnce"      description="tag 13">13</validValue>
+            <validValue name="TagSpecifiedOutOfOrder"      description="tag 14">14</validValue>
+            <validValue name="RepeatingGroupFieldsOutOfOrder" description="tag 15">15</validValue>
+            <validValue name="IncorrectNumInGroupCount"    description="tag 16">16</validValue>
+            <validValue name="NonDataValueIncludesFieldDelimiter" description="tag 17">17</validValue>
+            <validValue name="InvalidUnsupportedApplicationVersion" description="tag 18">18</validValue>
+            <validValue name="Other"                       description="tag 99">99</validValue>
         </enum>
 
         <!--
