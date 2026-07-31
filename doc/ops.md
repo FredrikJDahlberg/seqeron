@@ -69,23 +69,23 @@ exporter.
 
 ### Prometheus
 
-`ops/prometheus/prometheus.yml` — one job, scraping the aggregator's combined endpoint:
+`src/main/ops/prometheus/prometheus.yml` — one job, scraping the aggregator's combined endpoint:
 
 ```
-prometheus --config.file=ops/prometheus/prometheus.yml
+prometheus --config.file=src/main/ops/prometheus/prometheus.yml
 ```
 
 ### Grafana
 
-`ops/grafana/provisioning/` — a `Prometheus` datasource (`http://localhost:9090`) and one dashboard
+`src/main/ops/grafana/provisioning/` — a `Prometheus` datasource (`http://localhost:9090`) and one dashboard
 (`phixeron.json`, uid `phixeron`), both provisioned by file. The dashboard has one panel per exported
 metric family — see the reference below.
 
-Deploy by mounting the whole `ops/grafana/provisioning` tree at Grafana's own provisioning root.
+Deploy by mounting the whole `src/main/ops/grafana/provisioning` tree at Grafana's own provisioning root.
 Under the standard Grafana Docker image that's already `/etc/grafana/provisioning` by default:
 
 ```
-docker run -p 3000:3000 -v "$(pwd)/ops/grafana/provisioning:/etc/grafana/provisioning" grafana/grafana
+docker run -p 3000:3000 -v "$(pwd)/src/main/ops/grafana/provisioning:/etc/grafana/provisioning" grafana/grafana
 ```
 
 Running Grafana natively instead (no container), point `GF_PATHS_PROVISIONING` at the directory
@@ -94,7 +94,7 @@ yourself — the dashboard file provider resolves its `path` from that same env 
 than a hardcoded container path, so both cases resolve correctly:
 
 ```
-GF_PATHS_PROVISIONING="$(pwd)/ops/grafana/provisioning" grafana server ...
+GF_PATHS_PROVISIONING="$(pwd)/src/main/ops/grafana/provisioning" grafana server ...
 ```
 
 ## Metrics reference

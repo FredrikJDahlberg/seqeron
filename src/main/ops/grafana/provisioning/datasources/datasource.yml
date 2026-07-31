@@ -1,0 +1,12 @@
+# Grafana datasource provisioning. Deploy by mounting the whole src/main/ops/grafana/provisioning tree at
+# Grafana's /etc/grafana/provisioning (the standard Grafana provisioning mount point).
+
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    uid: prometheus
+    type: prometheus
+    access: proxy
+    url: http://localhost:9090
+    isDefault: true

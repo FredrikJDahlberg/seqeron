@@ -1,0 +1,14 @@
+# Grafana dashboard provisioning. Loads phixeron.json (in this same directory). $GF_PATHS_PROVISIONING
+# is Grafana's own env var for its provisioning root (Grafana expands $VARS in provisioning YAML) —
+# it defaults to /etc/grafana/provisioning in the standard Grafana Docker image, and otherwise takes
+# whatever the deployment points GF_PATHS_PROVISIONING at, so this resolves correctly either way.
+
+apiVersion: 1
+
+providers:
+  - name: phixeron
+    type: file
+    updateIntervalSeconds: 30
+    options:
+      path: $GF_PATHS_PROVISIONING/dashboards
+      foldersFromFilesStructure: false
