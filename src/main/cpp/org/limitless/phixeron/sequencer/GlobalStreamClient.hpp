@@ -420,13 +420,21 @@ class GlobalStreamClient {
     using OnConnected = std::function<void(const LifecycleEvent&)>;
     using OnDisconnected = std::function<void(const LifecycleEvent&)>;
     using OnCaughtUp = std::function<void()>;
+    // Fired (single-image mode only, see the bounded-scan start() overload) if the replay
+    // image closes before reaching catchUpPosition — e.g. the requested range was invalid, or
+    // the recording was truncated. A real Aeron-reported fact, not a guess: lets a caller like
+    // FixConnection's archive-recovery scan conclude immediately instead of waiting out a
+    // stall timeout for data that is provably never coming.
+    using OnReplayEnded = std::function<void()>;
 
     explicit GlobalStreamClient(OnSequenced onSequenced, OnConnected onConnected = {},
-                                OnDisconnected onDisconnected = {}, OnCaughtUp onCaughtUp = {})
+                                OnDisconnected onDisconnected = {}, OnCaughtUp onCaughtUp = {},
+                                OnReplayEnded onReplayEnded = {})
         : m_onSequenced(std::move(onSequenced)),
           m_onConnected(std::move(onConnected)),
           m_onDisconnected(std::move(onDisconnected)),
           m_onCaughtUp(std::move(onCaughtUp)),
+          m_onReplayEnded(std::move(onReplayEnded)),
           m_fragmentHandler([this](auto& buf, auto off, auto len, auto& hdr) { onFragment(buf, off, len, hdr); }),
           m_assembler(std::make_unique<aeron::FragmentAssembler>(m_fragmentHandler)),
           m_poll(m_assembler->handler())
@@ -544,6 +552,17 @@ class GlobalStreamClient {
                 }
                 return work;
             }
+            if (m_singleImageMode && !m_caughtUp)
+            {
+                // The bounded scan's image ended without ever reaching catchUpPosition — nothing
+                // further will arrive for it. Distinct from notifyCaughtUp (which means the target
+                // position was reached): callers that only care "is the scan over" can treat the two
+                // alike, but the two signals stay separate here since they mean different things.
+                if (m_onReplayEnded)
+                {
+                    m_onReplayEnded();
+                }
+            }
             // This historical segment is fully replayed; advance to the next. The last (active)
             // segment is replayed open-ended and only closes if its recording stops growing (its
             // member shut down), which for a co-located client is terminal — there is nothing
@@ -561,6 +580,15 @@ class GlobalStreamClient {
     bool isCaughtUp() const
     {
         return m_caughtUp;
+    }
+
+    // Current replay image position, or -1 if no image has resolved yet. Exposes scan
+    // progress without exposing the image itself — lets a caller (e.g. FixConnection's
+    // archive-recovery stall detector) tell "still working, just slow" apart from "stuck"
+    // without guessing from wall-clock elapsed time.
+    [[nodiscard]] std::int64_t position() const
+    {
+        return m_replayImage ? m_replayImage->position() : -1;
     }
 
    private:
@@ -699,6 +727,7 @@ class GlobalStreamClient {
     OnConnected m_onConnected;
     OnDisconnected m_onDisconnected;
     OnCaughtUp m_onCaughtUp;
+    OnReplayEnded m_onReplayEnded;
 
     std::shared_ptr<aeron::Aeron> m_aeron;
     std::shared_ptr<aeron::archive::client::AeronArchive> m_archive;
