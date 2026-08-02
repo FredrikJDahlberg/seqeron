@@ -54,6 +54,7 @@
 // archive headers it does not otherwise need, which is harmless — the un-rewired binaries include the
 // same header.
 #include "org/limitless/phixeron/sequencer/ClusterStreamClient.hpp"
+#include "org/limitless/phixeron/util/Logger.hpp"
 
 // Replay-protocol control codecs (sbe-unsequenced.xml) + LeadershipChanged (sbe-sequenced.xml)
 #include "org_limitless_phixeron_sbe_sequenced/LeadershipChanged.h"
@@ -65,6 +66,7 @@
 namespace org::limitless::phixeron::sequencer {
 
 namespace usq = org::limitless::phixeron::sbe::unsequenced;
+namespace diag = org::limitless::phixeron::util;
 
 // ── Node-local IPC channels/streams — MUST match org.limitless.phixeron.replayer.ReplayerService ─────────
 inline constexpr const char* REPLAYER_IPC_CHANNEL = "aeron:ipc";
@@ -200,6 +202,23 @@ class ReplayerClient
         return m_walkSegmentIndex;
     }
 
+    // Test-only: when the current (or most recent) replay request was sent, so a test can observe the
+    // resend timer (poll()'s RESEND_INTERVAL_MS check) actually re-sending rather than just re-checking
+    // state that a resend wouldn't otherwise change.
+    std::int64_t testLastRequestMs() const
+    {
+        return m_lastRequestMs;
+    }
+
+    // Test-only: the exact predicate poll() uses to route live-tap fragments to m_tapDiscardPoll
+    // (mid-walk or awaiting the Replayer's answer) vs. real dispatch — see ReplayerClientTest.cpp's
+    // discard-vs-dispatch regression lock (doc/todo.md, 2026-07-31 "gap re-walk starves the tap it is
+    // recovering").
+    bool testIsRecovering() const
+    {
+        return isRecovering();
+    }
+
     // One duty-cycle iteration; returns fragments consumed. Poll ordering: always drain control
     // (to learn Replaying/ReplayPending) and always drain the tap (see below); ride an attached
     // replay image to exclusion of *dispatching* the tap — its frames aren't lost, just discarded,
@@ -257,10 +276,9 @@ class ReplayerClient
         // the Replayer's answer: it is untethered (FEEDER_CHANNEL's ?tether=false), so an Aeron
         // subscription that goes unpolled falls behind the publisher's log buffer — regardless of
         // what is done with what it hands back.
-        const bool recovering = m_replaySessionId >= 0 || m_awaitingReplay;
         if (m_tapSub)
         {
-            work += m_tapSub->poll(recovering ? m_tapDiscardPoll : m_tapPoll, FRAGMENT_LIMIT);
+            work += m_tapSub->poll(isRecovering() ? m_tapDiscardPoll : m_tapPoll, FRAGMENT_LIMIT);
         }
         return work;
     }
@@ -280,6 +298,13 @@ class ReplayerClient
    private:
     static constexpr int FRAGMENT_LIMIT = 16;
     static constexpr std::int64_t RESEND_INTERVAL_MS = 500;
+
+    // Mid-walk (cold start or gap re-walk) or awaiting the Replayer's answer: poll() routes live-tap
+    // fragments to m_tapDiscardPoll rather than real dispatch while this holds (see poll()'s Javadoc).
+    bool isRecovering() const
+    {
+        return m_replaySessionId >= 0 || m_awaitingReplay;
+    }
 
     void resolveResources()
     {
@@ -434,10 +459,16 @@ class ReplayerClient
             {
                 if (!fromReplay && !m_awaitingReplay)
                 {
-                    std::fprintf(stderr,
-                                 "[ReplayerClient] tap gap: expected globalSeqNo=%lld got %lld — "
-                                 "re-walking the recording chain from segment 0\n",
-                                 static_cast<long long>(m_lastGlobalSeqNo + 1), static_cast<long long>(gseq));
+                    // m_replaySessionId >= 0 here means a PRIOR walk's replay is still actively riding an
+                    // attached image (not just awaiting the Replayer's answer) at the exact moment this new
+                    // gap is detected — i.e. this new request supersedes a walk genuinely in flight, not one
+                    // that had already finished. Logged before requestReplay() resets it, so a test can
+                    // observe genuine back-to-back overlap rather than inferring it from timing alone.
+                    diag::Logger::warn(diag::Component::ReplayerClient, diag::EventCode::TapGap,
+                                           "tap gap: expected globalSeqNo=%lld got %lld — "
+                                           "re-walking the recording chain from segment 0%s",
+                                           static_cast<long long>(m_lastGlobalSeqNo + 1), static_cast<long long>(gseq),
+                                           m_replaySessionId >= 0 ? " (previous walk still in flight — superseding it)" : "");
                     // Re-walk from segment 0, de-duping by globalSeqNo until we re-reach the tip. Robust to
                     // a leader failover having rotated the active recording (a bare position would not be —
                     // see file header); frames already delivered (gseq <= last) are dropped on the way.
@@ -450,10 +481,10 @@ class ReplayerClient
         {
             // The very first frame this client ever sees — replayed history, or the live tap right
             // after a cold-start NO_REPLAY_NEEDED — must be globalSeqNo 1.
-            std::fprintf(stderr,
-                         "[ReplayerClient] FATAL: first frame observed has globalSeqNo=%lld, expected 1 — "
-                         "this node's recording does not reach the start of the log; aborting\n",
-                         static_cast<long long>(gseq));
+            diag::Logger::fault(diag::Component::ReplayerClient, diag::EventCode::FirstFrameNotOne,
+                                    "FATAL: first frame observed has globalSeqNo=%lld, expected 1 — "
+                                    "this node's recording does not reach the start of the log; aborting",
+                                    static_cast<long long>(gseq));
             std::abort();
         }
         m_lastGlobalSeqNo = gseq;

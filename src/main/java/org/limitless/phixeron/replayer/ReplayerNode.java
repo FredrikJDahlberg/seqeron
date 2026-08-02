@@ -9,6 +9,7 @@ import org.agrona.concurrent.IdleStrategy;
 import org.agrona.concurrent.NoOpLock;
 import org.agrona.concurrent.ShutdownSignalBarrier;
 import org.agrona.concurrent.YieldingIdleStrategy;
+import org.limitless.phixeron.util.Logger;
 
 /**
  * Launches one {@link ReplayerService} co-located with a Sequencer cluster member.
@@ -85,8 +86,8 @@ public final class ReplayerNode {
         final Thread replayerThread = new Thread(() -> replayer.run(running), "replayer-" + memberId);
         replayerThread.start();
 
-        System.out.printf("[ReplayerNode/%d] Running — Ctrl-C to stop | aeronDir=%s | idle=%s%n", memberId, aeronDir,
-                          idleStrategy.getClass().getSimpleName());
+        Logger.info(Logger.Component.ReplayerNode, memberId, "Running — Ctrl-C to stop | aeronDir=%s | idle=%s",
+                aeronDir, idleStrategy.getClass().getSimpleName());
         try (ShutdownSignalBarrier barrier = new ShutdownSignalBarrier()) {
             barrier.await();
         } finally {
@@ -98,7 +99,7 @@ public final class ReplayerNode {
             }
             archive.close();
             aeron.close();
-            System.out.printf("[ReplayerNode/%d] Shutdown complete%n", memberId);
+            Logger.info(Logger.Component.ReplayerNode, memberId, "Shutdown complete");
         }
     }
 

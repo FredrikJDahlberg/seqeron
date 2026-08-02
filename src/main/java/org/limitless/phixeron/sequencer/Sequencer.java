@@ -12,6 +12,7 @@ import org.limitless.phixeron.sbe.unsequenced.EndBasicDataDecoder;
 import org.limitless.phixeron.sbe.unsequenced.GatewayDecoder;
 import org.limitless.phixeron.sbe.unsequenced.HeaderDecoder;
 import org.limitless.phixeron.sbe.unsequenced.MessageHeaderDecoder;
+import org.limitless.phixeron.util.Logger;
 
 /**
  * The sequencer's replicated state machine, free of every Aeron type.
@@ -250,8 +251,8 @@ public final class Sequencer {
      * @param reason rejection description
      */
     private int reject(final String reason) {
-        System.err.printf("[Sequencer] skipping malformed ingress message: %s (globalSeqNo stays %d)%n",
-                          reason, globalSeqNo);
+        Logger.error(Logger.Component.Sequencer, Logger.EventCode.MalformedIngressMessage, currentLeaderMemberId,
+                "skipping malformed ingress message: %s (globalSeqNo stays %d)", reason, globalSeqNo);
         return NO_FRAME;
     }
 

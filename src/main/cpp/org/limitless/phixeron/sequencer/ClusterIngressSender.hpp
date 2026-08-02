@@ -50,10 +50,12 @@
 #include "org_limitless_phixeron_cluster_sbe/SessionEvent.h"
 #include "org_limitless_phixeron_cluster_sbe/SessionKeepAlive.h"
 #include "org_limitless_phixeron_cluster_sbe/SessionMessageHeader.h"
+#include "org/limitless/phixeron/util/Logger.hpp"
 
 namespace org::limitless::phixeron::sequencer {
 
 namespace cluster_sbe = org::limitless::phixeron::cluster::sbe;
+namespace diag = org::limitless::phixeron::util;
 
 // ── Constants — Aeron Cluster ingress/egress channels, stream ids and client
 //    protocol semver, per io.aeron.cluster.codecs / AeronCluster.Configuration
@@ -333,8 +335,9 @@ class ClusterIngressSender {
             }
         }
 
-        std::printf("[Cluster] Co-located member not leader (%s) — falling back to UDP ingress\n",
-                    primaryFailureReason != nullptr ? primaryFailureReason : "unknown");
+        diag::Logger::info(diag::Component::Cluster,
+                               "Co-located member not leader (%s) — falling back to UDP ingress",
+                               primaryFailureReason != nullptr ? primaryFailureReason : "unknown");
         m_connectTimeoutMs = fullTimeoutMs;
         connect(buildFallbackIngress(), std::move(egress));
     }
@@ -370,8 +373,9 @@ class ClusterIngressSender {
             {
                 m_clusterSessionId = evt.clusterSessionId();
                 m_leadershipTermId = evt.leadershipTermId();
-                std::printf("[Cluster] Session opened  sessionId=%" PRId64 "  termId=%" PRId64 "  leader=%d\n",
-                            m_clusterSessionId, m_leadershipTermId, evt.leaderMemberId());
+                diag::Logger::info(diag::Component::Cluster,
+                                       "Session opened  sessionId=%" PRId64 "  termId=%" PRId64 "  leader=%d",
+                                       m_clusterSessionId, m_leadershipTermId, evt.leaderMemberId());
             }
             else if (evt.code() == cluster_sbe::EventCode::Value::REDIRECT)
             {
@@ -379,7 +383,8 @@ class ClusterIngressSender {
             }
             else
             {
-                std::fprintf(stderr, "[Cluster] SessionEvent error code=%d\n", static_cast<int>(evt.code()));
+                diag::Logger::error(diag::Component::Cluster, diag::EventCode::ClusterSessionError,
+                                        "SessionEvent error code=%d", static_cast<int>(evt.code()));
             }
         };
 
@@ -434,7 +439,8 @@ class ClusterIngressSender {
             .clusterSessionId(m_clusterSessionId);
         if (!m_ingress->offer(std::span<const std::uint8_t>(kaBuf.data(), static_cast<std::size_t>(ka.sbePosition()))))
         {
-            std::fprintf(stderr, "[Cluster] keep-alive offer failed\n");
+            diag::Logger::error(diag::Component::Cluster, diag::EventCode::ClusterOfferFailed,
+                                    "keep-alive offer failed");
         }
     }
 
@@ -454,7 +460,8 @@ class ClusterIngressSender {
             .clusterSessionId(m_clusterSessionId);
         if (!m_ingress->offer(std::span<const std::uint8_t>(buf.data(), static_cast<std::size_t>(req.sbePosition()))))
         {
-            std::fprintf(stderr, "[Cluster] close offer failed\n");
+            diag::Logger::error(diag::Component::Cluster, diag::EventCode::ClusterOfferFailed,
+                                    "close offer failed");
         }
 
         m_clusterSessionId = -1;
@@ -596,19 +603,17 @@ class ClusterIngressSender {
                     m_connectTimeoutMs = fullTimeoutMs;
                     m_ingress = std::make_unique<AeronIngressTransport>(std::move(ipcPub));
                     m_ingressEndpoint = "ipc";
-                    std::printf("[Cluster] New leader  termId=%" PRId64
-                                "  member=%d is co-located — switched back to "
-                                "IPC ingress\n",
-                                m_leadershipTermId, leaderMemberId);
+                    diag::Logger::info(diag::Component::Cluster, "New leader  termId=%" PRId64
+                                           "  member=%d is co-located — switched back to IPC ingress",
+                                          m_leadershipTermId, leaderMemberId);
                     return;
                 }
                 catch (const std::exception& ex)
                 {
                     m_connectTimeoutMs = fullTimeoutMs;
-                    std::fprintf(stderr,
-                                 "[Cluster] Co-located member=%d is new leader but IPC ingress not ready yet "
-                                 "(%s) — staying on UDP\n",
-                                 leaderMemberId, ex.what());
+                    diag::Logger::error(diag::Component::Cluster,diag::EventCode::ClusterIpcFallback,
+                                            "Co-located member=%d is new leader but IPC ingress not ready yet "
+                                            "(%s) — staying on UDP", leaderMemberId, ex.what());
                 }
             }
 
@@ -616,14 +621,15 @@ class ClusterIngressSender {
             if (m_aeron && findIngressEndpoint(ingressEndpoints, leaderMemberId, endpoint) &&
                 endpoint != m_ingressEndpoint)
             {
-                std::printf("[Cluster] New leader  termId=%" PRId64 "  member=%d  endpoint=%s\n", m_leadershipTermId,
-                            leaderMemberId, endpoint.c_str());
+                diag::Logger::info(diag::Component::Cluster,
+                                       "New leader  termId=%" PRId64 "  member=%d  endpoint=%s",
+                                       m_leadershipTermId, leaderMemberId, endpoint.c_str());
                 m_ingress = std::make_unique<AeronIngressTransport>(createIngressPublication(endpoint));
                 m_ingressEndpoint = endpoint;
             }
             else
             {
-                std::printf("[Cluster] New leader  termId=%" PRId64 "\n", m_leadershipTermId);
+                diag::Logger::info(diag::Component::Cluster, "New leader  termId=%" PRId64, m_leadershipTermId);
             }
             return;
         }
@@ -670,14 +676,14 @@ class ClusterIngressSender {
         std::string endpoint;
         if (!m_aeron || !findIngressEndpoint(detail, leaderMemberId, endpoint) || endpoint == m_ingressEndpoint)
         {
-            std::fprintf(stderr,
-                         "[Cluster] Redirected to member=%d but could not resolve a new "
-                         "ingress endpoint from \"%s\"\n",
-                         leaderMemberId, detail.c_str());
+            diag::Logger::error(diag::Component::Cluster, diag::EventCode::ClusterRedirectUnresolved,
+                                    "Redirected to member=%d but could not resolve a new "
+                                    "ingress endpoint from \"%s\"", leaderMemberId, detail.c_str());
             return;
         }
 
-        std::printf("[Cluster] Redirected to leader  member=%d  endpoint=%s\n", leaderMemberId, endpoint.c_str());
+        diag::Logger::info(diag::Component::Cluster, "Redirected to leader  member=%d  endpoint=%s",
+                               leaderMemberId, endpoint.c_str());
         m_ingress = std::make_unique<AeronIngressTransport>(createIngressPublication(endpoint));
         m_ingressEndpoint = endpoint;
         sendConnectRequest();

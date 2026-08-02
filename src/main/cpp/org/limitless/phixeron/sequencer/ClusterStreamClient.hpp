@@ -21,8 +21,11 @@
 // Generated SBE C++ codecs from sbe-sequenced.xml (via GenerateSequencedSbeCodecs)
 #include "org_limitless_phixeron_sbe_sequenced/Header.h"
 #include "org_limitless_phixeron_sbe_sequenced/MessageHeader.h"
+#include "org/limitless/phixeron/util/Logger.hpp"
 
 namespace org::limitless::phixeron::sequencer {
+
+namespace diag = org::limitless::phixeron::util;
 
 // ── Constants matching SequencerService / SequencerNode ──────────────────────
 
@@ -630,14 +633,16 @@ private:
         const std::uint64_t len = static_cast<std::uint64_t>(length);
         if (len < HdrSbe::encodedLength() + HeaderComposite::encodedLength())
         {
-            std::fprintf(stderr, "[ClusterStreamClient] fragment too short: %" PRIu64 " bytes\n", len);
+            diag::Logger::error(diag::Component::ClusterStreamClient, diag::EventCode::FragmentTooShort,
+                                    "fragment too short: %" PRIu64 " bytes", len);
             return;
         }
 
         m_hdr.wrap(raw, off, 0U, cap);
         if (m_hdr.schemaId() != HdrSbe::sbeSchemaId())
         {
-            std::fprintf(stderr, "[ClusterStreamClient] unexpected schemaId=%u; ignored\n", m_hdr.schemaId());
+            diag::Logger::error(diag::Component::ClusterStreamClient, diag::EventCode::UnexpectedSchemaId,
+                                    "unexpected schemaId=%u; ignored", m_hdr.schemaId());
             return;
         }
 

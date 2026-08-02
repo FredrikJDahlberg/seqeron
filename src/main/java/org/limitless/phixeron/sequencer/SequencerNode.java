@@ -12,6 +12,7 @@ import org.agrona.concurrent.BusySpinIdleStrategy;
 import org.agrona.concurrent.NoOpLock;
 import org.agrona.concurrent.ShutdownSignalBarrier;
 import org.agrona.concurrent.YieldingIdleStrategy;
+import org.limitless.phixeron.util.Logger;
 
 /**
  * Launches a single Sequencer cluster node.
@@ -129,7 +130,8 @@ public final class SequencerNode {
             .deleteDirOnStart(false)
             .idleStrategySupplier(YieldingIdleStrategy::new)
             .errorHandler(t -> {
-                System.err.printf("[ConsensusModule/%d] %s%n", memberId, t.getMessage());
+                Logger.error(Logger.Component.ConsensusModule, Logger.EventCode.ConsensusModuleError,
+                        memberId, "%s", t.getMessage());
                 t.printStackTrace();
             });
 
@@ -140,20 +142,22 @@ public final class SequencerNode {
             .clusteredService(new SequencerService())
             .idleStrategySupplier(YieldingIdleStrategy::new)
             .errorHandler(t -> {
-                System.err.printf("[SequencerService/%d] %s%n", memberId, t.getMessage());
+                Logger.error(Logger.Component.SequencerService, Logger.EventCode.ServiceError, memberId,
+                        "%s", t.getMessage());
                 t.printStackTrace();
             });
 
-        System.out.printf("[SequencerNode] Starting member %d | ingress=%s | archive=%s | baseDir=%s%n", memberId,
-                          udp(DEFAULT_HOST, ingressPort), udp(DEFAULT_HOST, archivePort), baseDir);
+        Logger.info(Logger.Component.SequencerNode, memberId,
+                "Starting member %d | ingress=%s | archive=%s | baseDir=%s",
+                udp(DEFAULT_HOST, ingressPort), udp(DEFAULT_HOST, archivePort), baseDir);
 
         try (barrier;
              ClusteredMediaDriver cmd = ClusteredMediaDriver.launch(driverCtx, archiveCtx, consensusCtx);
              ClusteredServiceContainer container = ClusteredServiceContainer.launch(serviceCtx)) {
-            System.out.printf("[SequencerNode/%d] Running — Ctrl-C to stop%n", memberId);
+            Logger.info(Logger.Component.SequencerNode, memberId, "Running — Ctrl-C to stop");
             barrier.await();
         } finally {
-            System.out.printf("[SequencerNode/%d] Shutdown complete%n", memberId);
+            Logger.info(Logger.Component.SequencerNode, memberId, "Shutdown complete");
         }
     }
 

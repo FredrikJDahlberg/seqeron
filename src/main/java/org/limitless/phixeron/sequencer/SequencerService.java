@@ -18,6 +18,7 @@ import org.agrona.concurrent.NoOpLock;
 import org.agrona.concurrent.status.CountersReader;
 import org.limitless.phixeron.PhixeronCounters;
 import org.limitless.phixeron.replayer.ReplayerService;
+import org.limitless.phixeron.util.Logger;
 
 /**
  * Aeron Cluster service that imposes a total order on messages arriving from multiple clients.
@@ -261,8 +262,8 @@ public final class SequencerService implements ClusteredService {
         final int activation = sequencer.sessionClosed(session.id(), timestamp);
         if (activation != Sequencer.NO_FRAME) {
             gatewayPromotionCounter.increment();
-            System.out.printf("[SequencerService/%d] gateway session %d closed (%s) — promoting standby%n",
-                              cluster.memberId(), session.id(), closeReason);
+            Logger.info(Logger.Component.SequencerService, cluster.memberId(),
+                    "gateway session %d closed (%s) — promoting standby", session.id(), closeReason);
             emit(activation);
         }
     }
@@ -386,8 +387,8 @@ public final class SequencerService implements ClusteredService {
         leadershipChangeCounter.increment();
         currentLeaderMemberIdCounter.set(leaderMemberId);
         final boolean leader = leaderMemberId == cluster.memberId();
-        System.out.printf("[SequencerService/%d] leadership change: new leader is memberId=%d (isLeader=%b)%n",
-                          cluster.memberId(), leaderMemberId, leader);
+        Logger.info(Logger.Component.SequencerService, cluster.memberId(),
+                "leadership change: new leader is memberId=%d (isLeader=%b)", leaderMemberId, leader);
         emit(length);
     }
 
@@ -435,8 +436,8 @@ public final class SequencerService implements ClusteredService {
                 throw new IllegalStateException("[SequencerService] replayer publication failed: " + result);
             }
             if (++idleSpins >= MAX_BACK_PRESSURE_SPINS) {
-                System.err.printf("[SequencerService] ALERT: replayer back-pressure at globalSeqNo=%d%n",
-                                  sequencer.globalSeqNo());
+                Logger.error(Logger.Component.Sequencer, Logger.EventCode.ReplayerBackpressure, cluster.memberId(),
+                        "ALERT: replayer back-pressure at globalSeqNo=%d", sequencer.globalSeqNo());
                 tapBackPressureAlertCounter.increment();
                 idleSpins = 0;
             }

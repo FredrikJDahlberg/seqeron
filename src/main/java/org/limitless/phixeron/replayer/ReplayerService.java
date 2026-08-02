@@ -25,6 +25,7 @@ import org.limitless.phixeron.sbe.unsequenced.ReplayPendingEncoder;
 import org.limitless.phixeron.sbe.unsequenced.ReplayRequestDecoder;
 import org.limitless.phixeron.sbe.unsequenced.ReplayingEncoder;
 import org.limitless.phixeron.sequencer.SequencerService;
+import org.limitless.phixeron.util.Logger;
 
 /**
  * Per-node archive <b>replay server</b> for co-located application replicas (ReplayerService design,
@@ -251,12 +252,13 @@ public final class ReplayerService {
      * @param running true while running
      */
     public void run(final AtomicBoolean running) {
-        System.out.printf("[ReplayerService/%d] starting; serving replay from the co-located archive…%n", memberId);
+        Logger.info(Logger.Component.ReplayerService, memberId,
+                "starting; serving replay from the co-located archive…");
         while (running.get()) {
             final int work = poll();
             idleStrategy.idle(work);
         }
-        System.out.printf("[ReplayerService/%d] shutting down%n", memberId);
+        Logger.info(Logger.Component.ReplayerService, memberId, "shutting down");
         stopAllReplays();
     }
 
@@ -315,17 +317,17 @@ public final class ReplayerService {
         if (firstGlobalSeqNo != 1L) {
             integrityFailed = true;
             integrityFailureCounter.set(1);
-            System.err.printf(
-                "[ReplayerService/%d] FATAL: oldest tap recording %d's first frame has globalSeqNo=%d, expected "
-                + "1 — this node's recording does not reach the start of the log (deleted, corrupted, or a "
-                + "partial restore?); refusing to mark ready%n",
-                memberId, oldestRecordingId, firstGlobalSeqNo);
+            Logger.fault(Logger.Component.ReplayerService, Logger.EventCode.ArchiveIntegrityFailure, memberId,
+                    "FATAL: oldest tap recording %d's first frame has globalSeqNo=%d, expected "
+                            + "1 — this node's recording does not reach the start of the log (deleted, corrupted, or a "
+                            + "partial restore?); refusing to mark ready", oldestRecordingId, firstGlobalSeqNo);
             return;
         }
 
         ready = true;
         readyCounter.set(1);
-        System.out.printf("[ReplayerService/%d] ready — tap recording %d live; serving replay%n", memberId, recordingId);
+        Logger.info(Logger.Component.ReplayerService, memberId, "ready — tap recording %d live; serving replay",
+                recordingId);
     }
 
     /**
@@ -407,6 +409,9 @@ public final class ReplayerService {
         if (!replaySlots.hasCapacity()) {
             replaySlots.enqueue(clientId, segmentIndex, fromPosition);
             sendPending(clientId);
+            Logger.info(Logger.Component.ReplayerService, memberId,
+                    "client %d queued: no free replay slot (active=%d/%d, pending=%d)", clientId,
+                    replaySlots.activeCount(), MAX_CONCURRENT_REPLAYS, replaySlots.pendingCount());
             return;
         }
         startReplayForClient(clientId, segmentIndex, fromPosition);
@@ -436,7 +441,8 @@ public final class ReplayerService {
             if (stalled) {
                 stalled = false;
                 stalledCounter.set(0);
-                System.out.printf("[ReplayerService/%d] RECOVERED: local archive reachable again%n", memberId);
+                Logger.info(Logger.Component.ReplayerService, memberId,
+                        "RECOVERED: local archive reachable again");
             }
         } catch (final RuntimeException error) {
             onArchiveStalled("serving replay for client " + clientId, error);
@@ -498,8 +504,9 @@ public final class ReplayerService {
             REPLAY_STREAM_ID);
         replaysServedCounter.increment();
         replaySlots.activate(clientId, replaySessionId, System.currentTimeMillis());
-        System.out.printf("[ReplayerService/%d] replay for client %d: segment %d recording %d [%d,%d) session %d%n", memberId,
-                          clientId, segmentIndex, recordingId, replayFrom, tip, replaySessionId);
+        Logger.info(Logger.Component.ReplayerService, memberId,
+                "replay for client %d: segment %d recording %d [%d,%d) session %d", clientId,
+                segmentIndex, recordingId, replayFrom, tip, replaySessionId);
         // catchUpPosition = tip: the app follows the replay image until it reaches this, then advances
         // (next segment, or the live tap). A bounded replay of an active recording does not close its
         // image at the bound, so the app detects completion by position (see Replaying / ReplayerClient).
@@ -621,9 +628,9 @@ public final class ReplayerService {
         if (!stalled) {
             stalled = true;
             stalledCounter.set(1);
-            System.out.printf("[ReplayerService/%d] STALLED: %s — local archive unreachable (%s); live delivery "
-                              + "unaffected (apps read the tap directly), retrying replay%n",
-                              memberId, message, exception.getMessage());
+            Logger.info(Logger.Component.ReplayerService, memberId,
+                    "STALLED: %s — local archive unreachable (%s); live delivery unaffected "
+                            + "(apps read the tap directly), retrying replay", message, exception.getMessage());
         }
     }
 

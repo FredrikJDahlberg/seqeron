@@ -35,6 +35,22 @@
 # PASS iff the consumer (a) logged "re-walking the recording chain" (the drop took effect and recovery
 # engaged) AND (b) kept delivering — its post-catch-up sample count n >= DELIVER_THRESHOLD (healed).
 # A wedge freezes n at a handful; a heal tracks the whole flood, so the two are far apart.
+#
+# A second scenario ("larger deliberate gaps") is folded into this same script via an env var, rather
+# than duplicating the whole cluster bootstrap above:
+#   GAP_SIZE=<n>          drop n consecutive live tap frames per arm instead of 1 — sent as
+#                         PHIXERON_FAULT_DROP_COUNT, fixed at consumer startup: standard POSIX signals
+#                         are not queued, so sending SIGUSR1 n times would not reliably accumulate to n
+#                         — see OrderExecClient.cpp.
+#
+# A third scenario ("gap discovered mid-replay" — re-arm a second drop while the first walk is still
+# actively replaying) was attempted and abandoned: see doc/todo.md's 2026-08-02 note. Local Aeron IPC
+# replay of a small gap completes too fast (likely sub-millisecond) for a bash-level poll-then-signal
+# loop to reliably land inside that window — every attempt measured zero genuine overlaps. The state
+# transition itself (a new gap detected while `m_replaySessionId >= 0`, not just `m_awaitingReplay`) is
+# instead covered deterministically by
+# `ReplayerClientGapRecovery.NewGapWhileReplaySessionActiveSupersedesTheInFlightWalk` in
+# `ReplayerClientTest.cpp`.
 set -uo pipefail
 
 BUILD_DIR="cmake-build-release"
@@ -43,6 +59,7 @@ LOG_DIR="logs/gap-recovery"
 FLOOD_ORDERS=300
 DELIVER_THRESHOLD=120
 CN=0            # consumer's member — member 0, never killed, stable local ingress
+GAP_SIZE="${GAP_SIZE:-1}"  # frames dropped per arm (keep comfortably below FLOOD_ORDERS)
 
 rm -rf "$LOG_DIR"; mkdir -p "$LOG_DIR"
 
@@ -121,6 +138,7 @@ PHIXERON_ORDER_EXEC_AERON_DIR="${TMPDIR}phixeron-seq-aeron-${CN}" \
   PHIXERON_CLUSTER_EGRESS_ENDPOINT="localhost:9349" \
   PHIXERON_LATENCY_STATS=1 \
   PHIXERON_FAULT_INJECTION=1 \
+  PHIXERON_FAULT_DROP_COUNT="$GAP_SIZE" \
   stdbuf -oL -eL "$BUILD_DIR/OrderExecClient" > "$CONSUMER_LOG" 2>&1 &
 CONSUMER_PID=$!
 W=0; until grep -q "following live" "$CONSUMER_LOG" 2>/dev/null; do sleep 0.5; W=$((W+1)); ((W>60)) && { echo "consumer never caught up"; exit 1; }; done
@@ -140,9 +158,9 @@ sleep 3  # let tenure-2 recording start and settle
 
 # ── 4. Arm a live-tap drop on the consumer, then flood ingress ────────────────
 kill -USR1 "$CONSUMER_PID" 2>/dev/null
-echo "armed a live-tap drop on the consumer (SIGUSR1)"
+echo "armed a $GAP_SIZE-frame live-tap drop on the consumer (SIGUSR1, PHIXERON_FAULT_DROP_COUNT=$GAP_SIZE)"
 sleep 0.5
-echo "flooding $FLOOD_ORDERS messages to cluster ingress (first live tap frame will be dropped)"
+echo "flooding $FLOOD_ORDERS messages to cluster ingress (first $GAP_SIZE live tap frame(s) will be dropped)"
 PHIXERON_FLOOD_ORDERS="$FLOOD_ORDERS" stdbuf -oL -eL "$BUILD_DIR/fix_test_server" 127.0.0.1 9000 \
   > "$LOG_DIR/flood.log" 2>&1 || true
 sleep 8  # let the consumer re-walk, heal, and drain the flood tail
@@ -161,9 +179,10 @@ DELIVERED=${DELIVERED:-0}
 
 echo ""
 echo "=== RESULT ==="
-echo "  re-walks triggered on consumer        : $REWALK"
-echo "  post-catch-up frames delivered (n)    : $DELIVERED  (threshold $DELIVER_THRESHOLD)"
-grep -E "tap gap|re-walking|delivery latency" "$CONSUMER_LOG" 2>/dev/null | tail -4 | sed 's/^/    /'
+echo "  gap size (frames dropped per arm)       : $GAP_SIZE"
+echo "  re-walks triggered on consumer          : $REWALK"
+echo "  post-catch-up frames delivered (n)      : $DELIVERED  (threshold $DELIVER_THRESHOLD)"
+grep -E "tap gap|re-walking|delivery latency" "$CONSUMER_LOG" 2>/dev/null | tail -6 | sed 's/^/    /'
 
 if [[ "$REWALK" -ge 1 && "$DELIVERED" -ge "$DELIVER_THRESHOLD" ]]; then
   echo "GAP-RECOVERY TEST: PASS — consumer re-walked its continuous recording and kept delivering"
