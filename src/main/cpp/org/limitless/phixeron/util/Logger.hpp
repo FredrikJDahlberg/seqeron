@@ -43,10 +43,8 @@ enum class EventCode : std::uint16_t
 {
     TapGap,
     FirstFrameNotOne,
-    // Generic: routine status lines with no anomaly of their own to identify.
     Info,
-    // Specific: one per distinguishable anomaly class (rejects grouped by FIX message type,
-    // not by individual call site — see doc/todo.md).
+    // Specific errors
     ClusterSessionError,
     ClusterOfferFailed,
     ClusterIpcFallback,
@@ -158,7 +156,6 @@ inline void reset()
     installedSink() = &defaultSink();
 }
 
-// printf-style formatting straight into the fixed-size event text; truncated at capacity.
 inline void vlog(const Component component, const Severity severity, const EventCode code,
                  const char* format, va_list args)
 {
@@ -173,8 +170,7 @@ inline void vlog(const Component component, const Severity severity, const Event
     installedSink()->record(event);
 }
 
-inline void log(const Component component, const Severity severity, const EventCode code,
-                const char* format, ...)
+inline void log(const Component component, const Severity severity, const EventCode code, const char* format, ...)
 {
     va_list args;
     va_start(args, format);
