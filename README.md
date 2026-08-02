@@ -270,12 +270,12 @@ between the objects — but with `--oneline` each individual message line parses
 
 `OrderExecClient` (C++, `src/main/cpp/.../sequencer/OrderExecClient.cpp`) combines what used to
 be two separate binaries — `application_stream_client` and the C++ `RiskEngineClient` — into one
-cluster ingress client. It replays the global stream then follows it live, printing every
+cluster ingress client. It replays the cluster stream then follows it live, printing every
 `NewOrderSingle`/`ExecutionReport` it sees, tracking each account's positions from those same
 fills, answering `PortfolioQueryRequest`s with a risk assessment from a mocked external risk
 engine, and submitting the `PortfolioQueryReply` back to cluster ingress. The mock engine is
 synchronous, slow, and only services 5 requests at once (`MockRiskEngine`); queries beyond that
-are throttled by leaving the `PortfolioQueryRequest` fragment unconsumed on the global stream
+are throttled by leaving the `PortfolioQueryRequest` fragment unconsumed on the cluster stream
 until a slot frees up, rather than blocking or dropping them.
 
 Unlike `FixGateway` (which serves external, potentially remote TCP FIX clients over UDP),
@@ -291,7 +291,7 @@ isn't currently leader).
 cmake --build cmake-build-release --target OrderExecClient
 PHIXERON_ORDER_EXEC_AERON_DIR="${TMPDIR}phixeron-seq-aeron-0" ./cmake-build-release/OrderExecClient
 # [OrderExecClient] Connected to co-located Aeron media driver at .../phixeron-seq-aeron-0
-# [OrderExecClient] Connected to co-located Aeron Archive via IPC (holds the global stream recording)
+# [OrderExecClient] Connected to co-located Aeron Archive via IPC (holds the cluster stream recording)
 # [OrderExecClient] Live from start
 ```
 

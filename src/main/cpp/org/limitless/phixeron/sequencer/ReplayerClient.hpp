@@ -2,14 +2,14 @@
 
 // ReplayerClient — app-replica side of the per-node Replayer (doc/router-design.md).
 //
-// Where GlobalStreamClient opens its own archive connection and replays the recorded sequenced stream
+// Where ClusterStreamClient opens its own archive connection and replays the recorded sequenced stream
 // directly, a ReplayerClient reads the co-located SequencerService IPC tap LIVE and only touches the
 // archive indirectly — by asking the node-local Replayer to replay when it detects a gap. That is the
 // whole point of the Replayer — one process per node reads the archive; every replica reads the cheap
 // local tap for live and asks the Replayer for history/gaps — so the sequencer keeps zero live network
 // subscribers and audit.md S4 dissolves (design §0/§5).
 //
-// This deliberately mirrors GlobalStreamClient's proven "follow a replay image up to a catch-up
+// This deliberately mirrors ClusterStreamClient's proven "follow a replay image up to a catch-up
 // position, then hand off to the live feed, de-duping the seam by globalSeqNo" handoff, with two
 // substitutions:
 //   • the "live feed" is the SequencerService IPC tap (FEEDER_STREAM_ID), read directly and
@@ -19,7 +19,7 @@
 //     AeronArchive::startReplay itself.
 // Catch-up is detected by position (Replaying.catchUpPosition), not by the replay image closing: the
 // Replayer's replay is bounded to an ACTIVE recording, and a bounded replay of an active recording
-// never closes its image at the bound (see poll()). GlobalStreamClient keeps its own role —
+// never closes its image at the bound (see poll()). ClusterStreamClient keeps its own role —
 // fix_test_server still follows the archive with it, and FixConnection uses it for the resend scan —
 // and this reuses its SequencedEvent/LifecycleEvent structs, its sequenced-schema decode, its
 // CLIENT_*_TEMPLATE_ID constants and its frameStartPosition.
@@ -53,7 +53,7 @@
 // stream id, which the live tap and the Replayer's replays both address) — header-only; brings in
 // archive headers it does not otherwise need, which is harmless — the un-rewired binaries include the
 // same header.
-#include "org/limitless/phixeron/sequencer/GlobalStreamClient.hpp"
+#include "org/limitless/phixeron/sequencer/ClusterStreamClient.hpp"
 
 // Replay-protocol control codecs (sbe-unsequenced.xml) + LeadershipChanged (sbe-sequenced.xml)
 #include "org_limitless_phixeron_sbe_sequenced/LeadershipChanged.h"
@@ -68,12 +68,6 @@ namespace usq = org::limitless::phixeron::sbe::unsequenced;
 
 // ── Node-local IPC channels/streams — MUST match org.limitless.phixeron.replayer.ReplayerService ─────────
 inline constexpr const char* REPLAYER_IPC_CHANNEL = "aeron:ipc";
-// The live feed is the co-located SequencerService tap (SequencerService.FEEDER_CHANNEL /
-// FEEDER_STREAM_ID), read directly and untethered (design §5): a slow replica is dropped to a resting
-// state rather than back-pressuring the sequencer's recording, then re-detects its globalSeqNo gap
-// and recovers via the Replayer. Same stream as the publisher's, addressed with the consumer-side
-// `?tether=false` option; FEEDER_STREAM_ID itself is defined once, in GlobalStreamClient.hpp, since the
-// live tap and the Replayer's replays of its recording are the same stream.
 inline constexpr const char* FEEDER_CHANNEL = "aeron:ipc?tether=false";
 inline constexpr std::int32_t REPLAYER_REPLAY_STREAM_ID = 201;
 inline constexpr std::int32_t REPLAYER_REQUEST_STREAM_ID = 202;
@@ -88,7 +82,7 @@ inline constexpr std::uint16_t LEADERSHIP_CHANGED_TEMPLATE_ID = 5;
 
 /**
  * Follows the co-located SequencerService IPC tap directly, decoding and dispatching sbe-sequenced
- * messages to the caller exactly like GlobalStreamClient — same SequencedEvent/LifecycleEvent callbacks
+ * messages to the caller exactly like ClusterStreamClient — same SequencedEvent/LifecycleEvent callbacks
  * — plus an OnLeadershipChanged callback and currentLeaderMemberId()/isCaughtUp() accessors that the
  * caller uses to gate leader-only emission (design §3).
  *
@@ -205,7 +199,7 @@ class ReplayerClient
                         // Reached this segment's bounded tip. A bounded replay of an ACTIVE
                         // (still-recording) recording does NOT close its image at the bound (verified:
                         // image position == tip, isClosed() stays false forever), so completion is
-                        // detected by position — exactly as GlobalStreamClient does for its live segment.
+                        // detected by position — exactly as ClusterStreamClient does for its live segment.
                         onReplaySegmentComplete();
                     }
                 }
@@ -223,14 +217,7 @@ class ReplayerClient
         // Always drain the tap, even mid-walk (cold start or gap re-walk) or while merely awaiting
         // the Replayer's answer: it is untethered (FEEDER_CHANNEL's ?tether=false), so an Aeron
         // subscription that goes unpolled falls behind the publisher's log buffer — regardless of
-        // what is done with what it hands back. Skipping this poll (the previous behaviour) meant
-        // every walk guaranteed the tap fell behind by however long the walk took, manufacturing a
-        // fresh gap right as the walk finished and re-triggering it — a re-walk that could never
-        // converge under sustained live traffic (doc/todo.md "A gap re-walk starves the tap it is
-        // recovering"). Discarding rather than dispatching preserves the ordering invariant: the
-        // walk is already re-delivering these globalSeqNos in order, and dispatching a live frame
-        // mid-walk would either be out of order or misread as a fresh gap by onFragment's
-        // contiguity check (which would spuriously restart the walk from segment 0).
+        // what is done with what it hands back.
         const bool recovering = m_replaySessionId >= 0 || m_awaitingReplay;
         if (m_tapSub)
         {
@@ -276,9 +263,6 @@ class ReplayerClient
     }
 
     // Sends ReplayRequest(clientId, segmentIndex, fromPosition) and marks us awaiting the reply.
-    // This client only ever walks the chain (segmentIndex >= 0, fromPosition unused): the segmentIndex-th
-    // recording served from position 0, both for a cold start and for a gap re-walk. (The Replayer still
-    // also accepts segmentIndex < 0 = resume-active-recording-at-position, now unused by this client.)
     // Idempotent on the Replayer side (it supersedes any in-flight replay for this clientId), so the
     // resend timer re-sending the same (segmentIndex, fromPosition) is safe.
     void requestReplay(std::int32_t segmentIndex, std::int64_t fromPosition)
@@ -398,7 +382,7 @@ class ReplayerClient
         m_header.wrap(raw, bodyOff, 0U, cap);
         const auto gseq = m_header.globalSeqNo();
 
-        // Contiguity / de-duplication — identical invariant to GlobalStreamClient: globalSeqNo
+        // Contiguity / de-duplication — identical invariant to ClusterStreamClient: globalSeqNo
         // increments by exactly one per event, so any forward jump is a gap. Drop dups; on a
         // tap gap, re-request a replay by re-walking the recording chain from segment 0 and hold.
         if (m_lastGlobalSeqNo != 0)
@@ -426,14 +410,7 @@ class ReplayerClient
         else if (gseq != 1)
         {
             // The very first frame this client ever sees — replayed history, or the live tap right
-            // after a cold-start NO_REPLAY_NEEDED — must be globalSeqNo 1: the log always starts
-            // there and there are no snapshots (doc/todo.md "No snapshots"), so a correct recording
-            // walked from its true beginning has no other possible first value. Anything else means
-            // this node's own recording does not reach the start of the log (e.g. purged) — a
-            // permanent condition, not a transient one: globalSeqNo only increases, so no later frame
-            // can ever be 1 once this one wasn't, and re-requesting the same replay would just repeat
-            // the same wrong answer. Silently adopting it as the baseline would track position/state
-            // from mid-stream; this process cannot do its job, so fail fast instead of limping on.
+            // after a cold-start NO_REPLAY_NEEDED — must be globalSeqNo 1.
             std::fprintf(stderr,
                          "[ReplayerClient] FATAL: first frame observed has globalSeqNo=%lld, expected 1 — "
                          "this node's recording does not reach the start of the log; aborting\n",
@@ -507,12 +484,6 @@ class ReplayerClient
     }
 
     // A replay segment finished (reached its bounded tip, or its image closed for a stopped segment).
-    // Every replay is now a chain walk — a cold start, or a gap re-walk from segment 0 — so always
-    // advance to the next segment; the terminating NO_REPLAY_NEEDED (chain exhausted) is what marks us
-    // caught up (onControl) and frees the last slot via the Replayer's supersede on that request. The walk
-    // keeps whatever caught-up state it entered with: a cold start stays "not caught up" until the
-    // terminator (preserving the S2 "don't re-answer history" gate); a steady-state gap re-walk was
-    // already caught up and stays so, the globalSeqNo de-dupe delivering only the genuinely-missed frames.
     void onReplaySegmentComplete()
     {
         m_replayImage.reset();
@@ -539,7 +510,7 @@ class ReplayerClient
         return duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
     }
 
-    // Same wall-clock ns stamp GlobalStreamClient records (its own nowNs() is private).
+    // Same wall-clock ns stamp ClusterStreamClient records (its own nowNs() is private).
     static std::int64_t nowNs()
     {
         using namespace std::chrono;
@@ -586,21 +557,6 @@ class ReplayerClient
     aeron::fragment_handler_t m_replayHandler;
     aeron::fragment_handler_t m_controlHandler;
 
-    // Reassembly. A sequenced frame can exceed the IPC MTU — SequencerService encodes into an
-    // 8192-byte buffer and aeron.ipc.mtu.length defaults to 8192, leaving ~8160 for payload — and
-    // Aeron then splits it. Unreassembled, the leading fragment still carries a valid outer
-    // MessageHeader and a plausible globalSeqNo, so onFragment delivers it *truncated* and the
-    // contiguity check never notices; only the tail fragment fails the schemaId test and is
-    // dropped. Silent corruption, not the detectable gap it looks like.
-    //
-    // One assembler per subscription rather than one shared: partial messages are keyed by session
-    // id, and the three streams number their sessions independently, so sharing would let a tap
-    // session splice onto a replay one. Buffers are allocated lazily, on a fragmented BEGIN only,
-    // so an all-unfragmented stream costs nothing.
-    //
-    // Safe on the untethered tap: a subscriber dropped and rejoined mid-message resumes on a
-    // non-BEGIN fragment, which the assembler discards (no builder for that session, or a
-    // term-offset that does not chain) instead of splicing it onto an unrelated message.
     std::unique_ptr<aeron::FragmentAssembler> m_tapAssembler;
     std::unique_ptr<aeron::FragmentAssembler> m_replayAssembler;
     std::unique_ptr<aeron::FragmentAssembler> m_controlAssembler;
@@ -611,9 +567,7 @@ class ReplayerClient
     aeron::fragment_handler_t m_replayPoll;
     aeron::fragment_handler_t m_controlPoll;
 
-    // Drains the tap during a walk without dispatching (see poll()) — deliberately bypasses
-    // m_tapAssembler: we don't care about reassembling what we're about to discard, only about
-    // advancing the untethered subscription's position so it doesn't fall behind.
+    // Drains the tap during a walk without dispatching.
     aeron::fragment_handler_t m_tapDiscardPoll{[](auto&, auto, auto, auto&) {}};
 
     HdrSbe m_hdr;

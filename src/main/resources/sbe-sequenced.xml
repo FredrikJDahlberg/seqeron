@@ -1,10 +1,10 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <!--
-    SBE schema for sequencer → global stream messages, after sequencing.
+    SBE schema for sequencer → cluster stream messages, after sequencing.
 
     Same messages, types and field IDs as sbe-unsequenced.xml, but the
     header composite carries two more members, stamped by the sequencer
-    when it republishes an sbe-unsequenced.xml message on the global stream:
+    when it republishes an sbe-unsequenced.xml message on the cluster stream:
         header — composite of sourceId, connectionId, sessionId (carried
                  through unchanged from the unsequenced message so
                  subscribers can still tell who originally submitted it),
@@ -20,7 +20,7 @@
     ClientConnected and ClientDisconnected — same template ids (1/2) and
     shape as sbe-unsequenced.xml, just with globalSeqNo/timestamp stamped
     into the header like every other message here — plus LeadershipChanged
-    (template 5), synthesized by the sequencer onto the global stream when a
+    (template 5), synthesized by the sequencer onto the cluster stream when a
     new leadership term begins so every per-node replica learns, at an exact
     globalSeqNo, which node is leader from that point on (see the ReplayerService
     design, doc/router-design.md §3). LeadershipChanged is synthesized-only:
@@ -73,7 +73,7 @@
                    package="org.limitless.phixeron.sbe.sequenced"
                    id="202"
                    version="0"
-                   description="Sequenced FIX admin + application messages on the global stream"
+                   description="Sequenced FIX admin + application messages on the cluster stream"
                    byteOrder="littleEndian">
 
     <types>
@@ -631,7 +631,7 @@
     <sbe:message name="PortfolioQueryRequest" id="3"
                  description="Requests a risk assessment of an end user's portfolio; submitted to
                               cluster ingress like any other message and answered asynchronously,
-                              on the global stream, by a PortfolioQueryReply from the risk engine
+                              on the cluster stream, by a PortfolioQueryReply from the risk engine
                               cluster client">
         <field name="header"        id="20001" type="header"/>
         <field name="correlationId" id="20002" type="correlationId"/>
@@ -662,7 +662,7 @@
 
     <!-- ═══════════════════════════════════════════════════════════════════
          LeadershipChanged  (template 5)
-         Synthesized by SequencerService.applyLeadership onto the global stream
+         Synthesized by SequencerService.applyLeadership onto the cluster stream
          at a well-defined globalSeqNo whenever a new leadership term begins, so
          every per-node replica switches leader-only emission on/off at the same
          point in the ordered stream (ReplayerService design §3). Synthesized-only — never

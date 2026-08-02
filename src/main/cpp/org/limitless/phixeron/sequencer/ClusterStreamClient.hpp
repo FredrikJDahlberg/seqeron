@@ -34,8 +34,7 @@ namespace org::limitless::phixeron::sequencer {
 // open-ended archive replay instead (see start()/poll()).
 inline constexpr std::int32_t FEEDER_STREAM_ID = 205;
 
-// Each UDP-replaying binary uses a distinct port so their archive replay publications
-// don't conflict.
+// Each UDP-replaying binary uses a distinct port.
 // FixGateway  → 9310 (env PHIXERON_FIX_REPLAY_PORT)
 // fix_test_server   → 9400 (env PHIXERON_RISK_TEST_REPLAY_PORT; kept outside the
 //                     9300-9325 cluster port block — see SequencerNode's port layout —
@@ -69,7 +68,7 @@ inline std::string resolveReplayChannel(const char* envVar, std::uint16_t defaul
 // Default 3-node cluster archive control endpoints, one per member, following the
 // SequencerNode.PORT_BASE + memberId*10 + 1 formula (see three-node-cluster.sh's
 // CLUSTER_MEMBERS): member 0 → 9301, member 1 → 9311, member 2 → 9321. Every
-// member's co-located archive holds an identical recording of the global stream,
+// member's co-located archive holds an identical recording of the cluster stream,
 // so any reachable one works equally well — there's no leader-affinity requirement
 // here, unlike cluster ingress.
 inline constexpr const char* DEFAULT_ARCHIVE_ENDPOINTS = "localhost:9301,localhost:9311,localhost:9321";
@@ -104,16 +103,16 @@ inline std::vector<std::string> resolveArchiveEndpoints(const char* envVar, cons
 }
 
 /**
- * Looks up the global stream recording on an already-connected archive, preferring the
+ * Looks up the cluster stream recording on an already-connected archive, preferring the
  * active (live) recording over any stopped one; among stopped recordings prefers the
  * largest stop position (holds the most committed data).
  *
- * @param[out] recordingId    recording id of the global stream found on the archive
+ * @param[out] recordingId    recording id of the cluster stream found on the archive
  * @param[out] catchUpPosition recording position to replay/catch up to
  * @return false if the archive holds no FEEDER_STREAM_ID recording at all (leaving both
  *         out-parameters untouched).
  */
-inline bool findGlobalStreamRecording(const std::shared_ptr<aeron::archive::client::AeronArchive>& archive,
+inline bool findClusterStreamRecording(const std::shared_ptr<aeron::archive::client::AeronArchive>& archive,
                                       std::int64_t& recordingId, std::int64_t& catchUpPosition)
 {
     std::int64_t activeId = -1;
@@ -170,7 +169,7 @@ inline bool findGlobalStreamRecording(const std::shared_ptr<aeron::archive::clie
  * @throws std::runtime_error if no candidate endpoint both connects and holds
  *         a sequenced-stream recording.
  */
-inline std::shared_ptr<aeron::archive::client::AeronArchive> connectToArchiveWithGlobalStream(
+inline std::shared_ptr<aeron::archive::client::AeronArchive> connectToArchiveWithClusterStream(
     std::shared_ptr<aeron::Aeron> aeron, const std::vector<std::string>& controlEndpoints, std::int32_t controlStreamId,
     const char* controlResponseChannel, const char* logPrefix, std::int64_t& recordingId, std::int64_t& catchUpPosition)
 {
@@ -194,22 +193,22 @@ inline std::shared_ptr<aeron::archive::client::AeronArchive> connectToArchiveWit
             continue;
         }
 
-        if (!findGlobalStreamRecording(archive, recordingId, catchUpPosition))
+        if (!findClusterStreamRecording(archive, recordingId, catchUpPosition))
         {
             std::printf(
-                "%s Connected to %s but it has no global stream recording"
+                "%s Connected to %s but it has no cluster stream recording"
                 " (not currently/recently leader) — trying next endpoint\n",
                 logPrefix, endpoint.c_str());
-            lastError = "connected but no global stream recording found on " + endpoint;
+            lastError = "connected but no cluster stream recording found on " + endpoint;
             continue;
         }
 
-        std::printf("%s Connected to Aeron Archive at %s (holds the global stream recording)\n", logPrefix,
+        std::printf("%s Connected to Aeron Archive at %s (holds the cluster stream recording)\n", logPrefix,
                     endpoint.c_str());
         return archive;
     }
 
-    throw std::runtime_error(std::string(logPrefix) + " Could not find the global stream recording on any of " +
+    throw std::runtime_error(std::string(logPrefix) + " Could not find the cluster stream recording on any of " +
                              std::to_string(controlEndpoints.size()) +
                              " archive endpoint(s); last error: " + lastError);
 }
@@ -218,14 +217,14 @@ inline std::shared_ptr<aeron::archive::client::AeronArchive> connectToArchiveWit
  * Connects to the archive co-located with this process over "aeron:ipc" — used by clients
  * (e.g. OrderExecClient) deliberately deployed sharing a single SequencerNode member's own
  * Aeron directory (see ClusterIngressSender::connectColocated's doc comment for the ingress
- * half of that deployment). Unlike connectToArchiveWithGlobalStream, there is exactly one
+ * half of that deployment). Unlike connectToArchiveWithClusterStream, there is exactly one
  * candidate archive here, and — because every member records its own node-local tap — every
  * member's archive holds a full copy of the sequenced stream regardless of current leadership,
  * so a missing recording here is a real error, not just "wrong member to ask".
  *
- * @param[out] recordingId    recording id of the global stream found on the local archive
+ * @param[out] recordingId    recording id of the cluster stream found on the local archive
  * @param[out] catchUpPosition recording position to replay/catch up to
- * @throws std::runtime_error if the local archive can't be reached, or holds no global
+ * @throws std::runtime_error if the local archive can't be reached, or holds no cluster
  *         stream recording at all.
  */
 inline std::shared_ptr<aeron::archive::client::AeronArchive> connectLocalArchive(std::shared_ptr<aeron::Aeron> aeron,
@@ -241,19 +240,19 @@ inline std::shared_ptr<aeron::archive::client::AeronArchive> connectLocalArchive
         .controlResponseChannel("aeron:ipc");
     auto archive = aeron::archive::client::AeronArchive::connect(archiveCtx);
 
-    if (!findGlobalStreamRecording(archive, recordingId, catchUpPosition))
+    if (!findClusterStreamRecording(archive, recordingId, catchUpPosition))
     {
-        throw std::runtime_error(std::string(logPrefix) + " Co-located archive has no global stream recording");
+        throw std::runtime_error(std::string(logPrefix) + " Co-located archive has no cluster stream recording");
     }
 
-    std::printf("%s Connected to co-located Aeron Archive via IPC (holds the global stream recording)\n", logPrefix);
+    std::printf("%s Connected to co-located Aeron Archive via IPC (holds the cluster stream recording)\n", logPrefix);
     return archive;
 }
 
 /**
- * One recording of the global stream, as found in a single archive's catalog.
+ * One recording of the cluster stream, as found in a single archive's catalog.
  * stopPosition is NULL_POSITION when the recording is still active (only
- * possible for the last segment in a resolveGlobalStreamSegments() result).
+ * possible for the last segment in a resolveClusterStreamSegments() result).
  */
 struct RecordingSegment {
     std::int64_t recordingId;
@@ -263,7 +262,7 @@ struct RecordingSegment {
 /**
  * Lists every FEEDER_STREAM_ID recording on an already-connected archive,
  * ordered oldest-to-newest by startTimestamp — each one is a prior leader's
- * tenure (see todo.md's "Cross-failover global-stream recording continuity"
+ * tenure (see todo.md's "Cross-failover cluster-stream recording continuity"
  * entry), so replaying them in this order and concatenating reproduces full
  * history. The current leader's own archive holds every earlier tenure's
  * segment too, because every follower continuously replicates the leader's
@@ -274,7 +273,7 @@ struct RecordingSegment {
  * since they hold identical content, only the most recent is kept and any
  * earlier "active" duplicate is dropped rather than replayed twice.
  */
-inline std::vector<RecordingSegment> resolveGlobalStreamSegments(
+inline std::vector<RecordingSegment> resolveClusterStreamSegments(
     const std::shared_ptr<aeron::archive::client::AeronArchive>& archive)
 {
     struct Entry {
@@ -321,7 +320,7 @@ inline constexpr std::uint16_t CLIENT_DISCONNECTED_TEMPLATE_ID = 2;
 // ── Event types delivered to the application ─────────────────────────────────
 
 /**
- * Carries one sbe-sequenced.xml message from the global stream.
+ * Carries one sbe-sequenced.xml message from the cluster stream.
  *
  * Every raw fragment on the wire *is* a complete sbe-sequenced.xml message
  * (schemaId=202) — no envelope to strip. Every message in that schema
@@ -389,14 +388,14 @@ struct LifecycleEvent {
     std::int64_t receiveTimeNs;     ///< wall-clock ns at receipt by this client
 };
 
-// ── GlobalStreamClient ────────────────────────────────────────────────────────
+// ── ClusterStreamClient ───────────────────────────────────────────────────────
 
 /**
  * Replays the recorded sequenced stream from an archive, decoding and dispatching
  * SBE messages to the caller.
  *
  * Startup sequence (caller is responsible for the archive connection):
- *   1. Caller uses resolveGlobalStreamSegments(archive) to list every
+ *   1. Caller uses resolveClusterStreamSegments(archive) to list every
  *      FEEDER_STREAM_ID recording on the connected archive, oldest first.
  *   2. Call start(aeron, archive, segments, replayChannel).
  *   3. Call poll() in a duty-cycle loop.
@@ -414,8 +413,9 @@ struct LifecycleEvent {
  *
  * Every message is stamped with receiveTimeNs (std::chrono::system_clock).
  */
-class GlobalStreamClient {
-   public:
+class ClusterStreamClient
+{
+public:
     using OnSequenced = std::function<void(const SequencedEvent&)>;
     using OnConnected = std::function<void(const LifecycleEvent&)>;
     using OnDisconnected = std::function<void(const LifecycleEvent&)>;
@@ -427,7 +427,7 @@ class GlobalStreamClient {
     // stall timeout for data that is provably never coming.
     using OnReplayEnded = std::function<void()>;
 
-    explicit GlobalStreamClient(OnSequenced onSequenced, OnConnected onConnected = {},
+    explicit ClusterStreamClient(OnSequenced onSequenced, OnConnected onConnected = {},
                                 OnDisconnected onDisconnected = {}, OnCaughtUp onCaughtUp = {},
                                 OnReplayEnded onReplayEnded = {})
         : m_onSequenced(std::move(onSequenced)),
@@ -447,7 +447,7 @@ class GlobalStreamClient {
      * @param aeron         connected Aeron instance
      * @param archive       connected AeronArchive the segments were resolved
      *                      from; kept alive to start each segment's replay
-     * @param segments      result of resolveGlobalStreamSegments(archive),
+     * @param segments      result of resolveClusterStreamSegments(archive),
      *                      oldest first; empty means no historical data
      * @param replayChannel channel the archive publishes replays on;
      *                      ignored when segments is empty
@@ -591,7 +591,7 @@ class GlobalStreamClient {
         return m_replayImage ? m_replayImage->position() : -1;
     }
 
-   private:
+private:
     static constexpr int FRAGMENT_LIMIT = 10;
 
     bool isOnLastSegment() const
@@ -630,14 +630,14 @@ class GlobalStreamClient {
         const std::uint64_t len = static_cast<std::uint64_t>(length);
         if (len < HdrSbe::encodedLength() + HeaderComposite::encodedLength())
         {
-            std::fprintf(stderr, "[GlobalStreamClient] fragment too short: %" PRIu64 " bytes\n", len);
+            std::fprintf(stderr, "[ClusterStreamClient] fragment too short: %" PRIu64 " bytes\n", len);
             return;
         }
 
         m_hdr.wrap(raw, off, 0U, cap);
         if (m_hdr.schemaId() != HdrSbe::sbeSchemaId())
         {
-            std::fprintf(stderr, "[GlobalStreamClient] unexpected schemaId=%u; ignored\n", m_hdr.schemaId());
+            std::fprintf(stderr, "[ClusterStreamClient] unexpected schemaId=%u; ignored\n", m_hdr.schemaId());
             return;
         }
 
@@ -747,17 +747,7 @@ class GlobalStreamClient {
 
     aeron::fragment_handler_t m_fragmentHandler;
 
-    // Reassembly. A sequenced frame can exceed the IPC MTU — SequencerService encodes into an
-    // 8192-byte buffer and aeron.ipc.mtu.length defaults to 8192, leaving ~8160 for payload — and
-    // Aeron splits it, in the recording as much as on the live tap. Unreassembled, the leading
-    // fragment still carries a valid outer MessageHeader and a plausible globalSeqNo, so onFragment
-    // delivers it *truncated* and the contiguity check never notices; only the tail fragment fails
-    // the schemaId test and is dropped. Silent corruption, not a detectable gap.
-    //
-    // Buffers are allocated lazily, on a fragmented BEGIN only, so an all-unfragmented replay costs
-    // nothing; a non-BEGIN fragment with no builder is discarded rather than spliced onto whatever
-    // came before it. Each client owns one — FixConnection builds a fresh GlobalStreamClient per
-    // resend chunk, so no partial message outlives the scan that started it.
+    // Reassembly. A sequenced frame can exceed the IPC MTU.
     std::unique_ptr<aeron::FragmentAssembler> m_assembler;
 
     // Composed once: FragmentAssembler::handler() builds a fresh std::function per call, and this is

@@ -613,7 +613,7 @@
     <sbe:message name="PortfolioQueryRequest" id="3"
                  description="Requests a risk assessment of an end user's portfolio; submitted to
                               cluster ingress like any other message and answered asynchronously,
-                              on the global stream, by a PortfolioQueryReply from the risk engine
+                              on the cluster stream, by a PortfolioQueryReply from the risk engine
                               cluster client">
         <field name="header"        id="20001" type="header"/>
         <field name="correlationId" id="20002" type="correlationId"/>
@@ -689,7 +689,7 @@
                description="Recording position the bounded replay ends at; the app is caught up once its
                             replay image reaches this and switches to the live tap. A bounded replay of an
                             active recording does not close its image at the bound, so completion is
-                            detected by position (as GlobalStreamClient does for its live segment), not by
+                            detected by position (as ClusterStreamClient does for its live segment), not by
                             image close"/>
     </sbe:message>
 
@@ -714,7 +714,7 @@
          Cluster life-cycle  (templates 10/11) — operator markers injected by
          clusterctl (org.limitless.phixeron.tools.ClusterCtl) to record the
          trading day's open/close in the ordered log. Submitted to cluster
-         ingress like any other message, then sequenced and echoed on the global
+         ingress like any other message, then sequenced and echoed on the cluster
          stream. Unlike ClientConnected/Disconnected they carry a correlationId
          (so clusterctl can match its own sequenced echo); unlike the
          replay-protocol control messages they *are* sequenced, so they exist in

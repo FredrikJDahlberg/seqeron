@@ -57,7 +57,7 @@ import org.limitless.phixeron.sequencer.SequencerService;
  * divergence from the design's literal "open-ended replay that becomes the live feed": a bounded
  * replay <em>ends by itself</em> once it reaches the tip, at which point the requesting app switches
  * to the live tap (de-duping the seam by {@code globalSeqNo}) — the exact "replay reaches its tip →
- * live sub" handoff {@code GlobalStreamClient} already implements, with the tap playing the role of
+ * live sub" handoff {@code ClusterStreamClient} already implements, with the tap playing the role of
  * the live sub. The app detects that tip by <em>position</em> (the {@code catchUpPosition} carried in
  * {@link ReplayingEncoder}), not by the replay image closing: a bounded replay of an <em>active</em>
  * recording does not close its image at the bound. That needs no {@code globalSeqNo→position} index,
@@ -87,7 +87,7 @@ import org.limitless.phixeron.sequencer.SequencerService;
  * archive returns (doc/router-archive.md).
  *
  * <p><b>Cross-failover replay.</b> A cold-starting app walks the recording chain ({@link
- * #resolveSegments}, the same oldest-first stitching {@code GlobalStreamClient} uses). With every node
+ * #resolveSegments}, the same oldest-first stitching {@code ClusterStreamClient} uses). With every node
  * recording its own continuous tap this is normally a single recording spanning every leader failover,
  * so the walk sees full history rather than only the currently-active tenure. Steady-state gap recovery
  * resumes the active recording at a position ({@code ReplayRequest.segmentIndex < 0}); see {@link
@@ -671,7 +671,7 @@ public final class ReplayerService {
     // own continuous tap this is normally a single recording spanning every leader tenure, so there is usually nothing
     // to stitch. A member restart can leave an earlier, stopped recording plus the post-restart one (overlapping
     // globalSeqNo ranges); a cold-starting app replays them in order and de-duplicates by globalSeqNo, so the overlap
-    // is harmless. Mirrors GlobalStreamClient.resolveGlobalStreamSegments.
+    // is harmless. Mirrors ClusterStreamClient.resolveClusterStreamSegments.
     private List<Long> resolveSegments() {
         final List<long[]> entries = new ArrayList<>();  // [recordingId, startTs, stopTs]
         archive.listRecordingsForUri(0, Integer.MAX_VALUE, "", SequencerService.FEEDER_STREAM_ID,

@@ -155,7 +155,7 @@ tethered subscriber.
 > This replaced a UDP multi-destination-cast "global stream" (leader-only publisher, stream 1),
 > retired in Phase 2 — see `doc/router-archive.md` and `doc/todo.md` items 1/2c. The tap's identity is
 > `FEEDER_CHANNEL`/`FEEDER_STREAM_ID` on both sides: Java in `SequencerService`, C++ in
-> `GlobalStreamClient.hpp` (the one definition of `FEEDER_STREAM_ID`) plus `ReplayerClient.hpp`'s
+> `ClusterStreamClient.hpp` (the one definition of `FEEDER_STREAM_ID`) plus `ReplayerClient.hpp`'s
 > `FEEDER_CHANNEL`, which addresses the same stream with the consumer-side `?tether=false` option.
 > Named to pair with the `Replayer`: the **Feeder** stream is the live feed, the Replayer serves
 > history off its recording. Older names for it (`GLOBAL_STREAM_ID`, `REPLAYER_STREAM_ID`,
@@ -192,7 +192,7 @@ Three cooperating pieces:
   in-memory fakes.
 - **`FixIngressHandler`** — pure byte-level logic: FIX frame/tag parsing helpers, SBE
   encode/decode, and application-message routing, built on top of `ClusterIngressSender`.
-- **`GlobalStreamClient`** — replays the archived global stream from a given position, then
+- **`ClusterStreamClient`** — replays the archived cluster stream from a given position, then
   follows it live; used identically by `FixGateway`, `OrderExecClient`, and
   `fix_test_server`.
 
@@ -226,12 +226,12 @@ schema.
 
 ### Order execution client — `OrderExecClient` (C++, under `src/main/cpp/.../sequencer/OrderExecClient.cpp`)
 Combines what used to be two separate binaries — `application_stream_client` and the C++
-`RiskEngineClient` — into one. Replays the global stream then follows it live, printing every
+`RiskEngineClient` — into one. Replays the cluster stream then follows it live, printing every
 `NewOrderSingle`/`ExecutionReport` it decodes (lifecycle events are filtered out), while also
 tracking per-account positions from those same fills, answering `PortfolioQueryRequest` using
 `MockRiskEngine` (under `src/main/cpp/.../risk/`, synchronous, 5-request concurrency cap), and
 submitting the reply back to cluster ingress. Throttling beyond 5 concurrent requests works by
-leaving the request fragment unconsumed on the global stream until a slot frees, not by blocking
+leaving the request fragment unconsumed on the cluster stream until a slot frees, not by blocking
 or dropping it. The original Java `RiskEngineClient`/`MockRiskEngine` are dead code, already
 removed (`src/main/java/org/limitless/phixeron/risk/` deleted).
 
