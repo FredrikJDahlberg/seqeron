@@ -75,7 +75,7 @@ rm -rf "$BASE_DIR" "${TMPDIR}phixeron-seq-aeron-0" "${TMPDIR}phixeron-seq-aeron-
 CONSUMER_PID=""; MD_PID=""
 declare -a SEQ_PIDS REPLAYER_PIDS
 cleanup() {
-  kill "$CONSUMER_PID" "${REPLAYER_PIDS[@]}" "$MD_PID" "${SEQ_PIDS[@]}" 2>/dev/null
+  kill "$CONSUMER_PID" "${REPLAYER_PIDS[@]:-}" "$MD_PID" "${SEQ_PIDS[@]:-}" 2>/dev/null
   wait 2>/dev/null
 }
 trap cleanup EXIT INT TERM
