@@ -161,6 +161,45 @@ class ReplayerClient
         onFragment(buffer, offset, length, header, /*fromReplay=*/false);
     }
 
+    // Test-only: same as testDeliverTapFragment, but through the replay-image decode path
+    // (fromReplay=true) poll() drives while riding an attached replay image — see ReplayerClientTest.cpp.
+    void testDeliverReplayFragment(const aeron::concurrent::AtomicBuffer& buffer, aeron::util::index_t offset,
+                                   aeron::util::index_t length, const aeron::Header& header)
+    {
+        onFragment(buffer, offset, length, header, /*fromReplay=*/true);
+    }
+
+    // Test-only: feeds a fragment through the same control-stream decode path onControl() drives off
+    // the Replayer's control subscription (Replaying / ReplayPending) — see ReplayerClientTest.cpp.
+    void testDeliverControl(const aeron::concurrent::AtomicBuffer& buffer, aeron::util::index_t offset,
+                            aeron::util::index_t length, const aeron::Header& header)
+    {
+        onControl(buffer, offset, length, header);
+    }
+
+    // Test-only: simulates a replay image reaching its bounded catch-up position (or a stopped
+    // segment's image closing) without a real Aeron replay image — see ReplayerClientTest.cpp.
+    void testCompleteReplaySegment()
+    {
+        onReplaySegmentComplete();
+    }
+
+    // Test-only accessors into the walk/gap-recovery state machine — see ReplayerClientTest.cpp.
+    bool testIsAwaitingReplay() const
+    {
+        return m_awaitingReplay;
+    }
+
+    std::int64_t testReplaySessionId() const
+    {
+        return m_replaySessionId;
+    }
+
+    std::int32_t testWalkSegmentIndex() const
+    {
+        return m_walkSegmentIndex;
+    }
+
     // One duty-cycle iteration; returns fragments consumed. Poll ordering: always drain control
     // (to learn Replaying/ReplayPending) and always drain the tap (see below); ride an attached
     // replay image to exclusion of *dispatching* the tap — its frames aren't lost, just discarded,

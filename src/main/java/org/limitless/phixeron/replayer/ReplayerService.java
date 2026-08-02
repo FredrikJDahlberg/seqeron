@@ -8,9 +8,7 @@ import io.aeron.ExclusivePublication;
 import io.aeron.Subscription;
 import io.aeron.archive.client.AeronArchive;
 import io.aeron.logbuffer.FragmentHandler;
-import java.util.ArrayDeque;
 import java.util.ArrayList;
-import java.util.Deque;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -179,26 +177,9 @@ public final class ReplayerService {
     private boolean integrityFailed = false;
 
     // ── Replay protocol state ─────────────────────────────────────────────────
-    private static final class ReplaySlot {
-        final int clientId;
-        final long replaySessionId;
-        final long lastTouchedMs;
-
-        /**
-         * Construct a replay slot
-         * @param clientId client identity
-         * @param replaySessionId replay session identity
-         * @param nowMs now
-         */
-        ReplaySlot(final int clientId, final long replaySessionId, final long nowMs) {
-            this.clientId = clientId;
-            this.replaySessionId = replaySessionId;
-            this.lastTouchedMs = nowMs;
-        }
-    }
-
-    private final List<ReplaySlot> activeReplays = new ArrayList<>(MAX_CONCURRENT_REPLAYS);
-    private final Deque<long[]> pendingRequests = new ArrayDeque<>();  // [clientId, segmentIndex, fromPosition]
+    // Admission control and pending-queue bookkeeping is a pure function of client ids/tokens (see
+    // ReplaySlotAllocator's Javadoc) — split out so it's unit-testable without an archive.
+    private final ReplaySlotAllocator replaySlots = new ReplaySlotAllocator(MAX_CONCURRENT_REPLAYS, REPLAY_SLOT_TTL_MS);
 
     // Local-archive resilience (doc/router-archive.md): a transient local-archive failure must not kill
     // the duty-cycle thread. The ReplayerService is off the live path (apps read the tap directly), so a stall
@@ -286,8 +267,8 @@ public final class ReplayerService {
         }
         final int work = requestSub.poll(requestHandler, FRAGMENT_LIMIT);
         reclaimIdleSlots();
-        activeReplaySlotsCounter.set(activeReplays.size());
-        pendingRequestsCounter.set(pendingRequests.size());
+        activeReplaySlotsCounter.set(replaySlots.activeCount());
+        pendingRequestsCounter.set(replaySlots.pendingCount());
         return work;
     }
 
@@ -423,8 +404,8 @@ public final class ReplayerService {
         // next segment of its cold-start walk).
         stopReplayForClient(clientId);
 
-        if (activeReplays.size() >= MAX_CONCURRENT_REPLAYS) {
-            pendingRequests.addLast(new long[] {clientId, segmentIndex, fromPosition});
+        if (!replaySlots.hasCapacity()) {
+            replaySlots.enqueue(clientId, segmentIndex, fromPosition);
             sendPending(clientId);
             return;
         }
@@ -480,7 +461,7 @@ public final class ReplayerService {
             replayFrom = fromPosition;
             if (recordingId == NULL_VALUE) {
                 // No recording to replay from yet; ask the app to hold and retry.
-                pendingRequests.addLast(new long[] {clientId, segmentIndex, fromPosition});
+                replaySlots.enqueue(clientId, segmentIndex, fromPosition);
                 sendPending(clientId);
                 return;
             }
@@ -488,7 +469,7 @@ public final class ReplayerService {
             final List<Long> segments = resolveSegments();
             if (segments.isEmpty()) {
                 // No tap recording on the local archive yet; hold and retry.
-                pendingRequests.addLast(new long[] {clientId, segmentIndex, fromPosition});
+                replaySlots.enqueue(clientId, segmentIndex, fromPosition);
                 sendPending(clientId);
                 return;
             }
@@ -516,7 +497,7 @@ public final class ReplayerService {
         final long replaySessionId = archive.startReplay(recordingId, replayFrom, boundedLength, IPC_CHANNEL,
             REPLAY_STREAM_ID);
         replaysServedCounter.increment();
-        activeReplays.add(new ReplaySlot(clientId, replaySessionId, System.currentTimeMillis()));
+        replaySlots.activate(clientId, replaySessionId, System.currentTimeMillis());
         System.out.printf("[ReplayerService/%d] replay for client %d: segment %d recording %d [%d,%d) session %d%n", memberId,
                           clientId, segmentIndex, recordingId, replayFrom, tip, replaySessionId);
         // catchUpPosition = tip: the app follows the replay image until it reaches this, then advances
@@ -530,11 +511,9 @@ public final class ReplayerService {
      * @param clientId client identity
      */
     private void stopReplayForClient(final int clientId) {
-        for (int i = 0; i < activeReplays.size(); i++) {
-            if (activeReplays.get(i).clientId == clientId) {
-                stopReplay(activeReplays.remove(i).replaySessionId);
-                return;
-            }
+        final long token = replaySlots.supersede(clientId);
+        if (token != ReplaySlotAllocator.NO_SLOT) {
+            stopReplay(token);
         }
     }
 
@@ -542,16 +521,12 @@ public final class ReplayerService {
      * Reclaims unused replay slots.
      */
     private void reclaimIdleSlots() {
-        final long now = System.currentTimeMillis();
-        boolean freed = false;
-        for (int i = activeReplays.size() - 1; i >= 0; i--) {
-            if (now - activeReplays.get(i).lastTouchedMs > REPLAY_SLOT_TTL_MS) {
-                stopReplay(activeReplays.remove(i).replaySessionId);
-                idleTtlReclaimedCounter.increment();
-                freed = true;
-            }
+        final List<Long> reclaimed = replaySlots.reclaimIdle(System.currentTimeMillis());
+        for (final long token : reclaimed) {
+            stopReplay(token);
+            idleTtlReclaimedCounter.increment();
         }
-        if (freed) {
+        if (!reclaimed.isEmpty()) {
             drainPending();
         }
     }
@@ -563,10 +538,13 @@ public final class ReplayerService {
         // Bounded to the current queue length: startReplayForClient may re-queue a request (e.g. no
         // recording yet), so retry each waiting request at most once per call rather than spinning on
         // one that cannot yet make progress.
-        int budget = pendingRequests.size();
-        while (budget-- > 0 && !pendingRequests.isEmpty() && activeReplays.size() < MAX_CONCURRENT_REPLAYS) {
-            final long[] req = pendingRequests.pollFirst();
-            startReplayForClient((int) req[0], (int) req[1], req[2]);
+        int budget = replaySlots.pendingCount();
+        while (budget-- > 0) {
+            final ReplaySlotAllocator.PendingRequest req = replaySlots.pollPending();
+            if (req == null) {
+                break;
+            }
+            startReplayForClient(req.clientId(), req.segmentIndex(), req.fromPosition());
         }
     }
 
@@ -586,10 +564,9 @@ public final class ReplayerService {
      * Stop all replays
      */
     private void stopAllReplays() {
-        for (final ReplaySlot slot : activeReplays) {
-            stopReplay(slot.replaySessionId);
+        for (final long token : replaySlots.clear()) {
+            stopReplay(token);
         }
-        activeReplays.clear();
     }
 
     /**
@@ -673,23 +650,13 @@ public final class ReplayerService {
     // globalSeqNo ranges); a cold-starting app replays them in order and de-duplicates by globalSeqNo, so the overlap
     // is harmless. Mirrors ClusterStreamClient.resolveClusterStreamSegments.
     private List<Long> resolveSegments() {
-        final List<long[]> entries = new ArrayList<>();  // [recordingId, startTs, stopTs]
+        final List<ReplayChain.RecordingSpan> spans = new ArrayList<>();
         archive.listRecordingsForUri(0, Integer.MAX_VALUE, "", SequencerService.FEEDER_STREAM_ID,
                                      (controlSessionId, correlationId, recordingId, startTimestamp, stopTimestamp,
                                       startPosition, stopPosition, initialTermId, segmentFileLength, termBufferLength,
                                       mtuLength, sessionId, streamId, strippedChannel, originalChannel,
-                                      sourceIdentity) -> entries.add(new long[] {recordingId, startTimestamp,
-                                                                                 stopTimestamp}));
-        entries.sort((a, b) -> Long.compare(a[1], b[1]));
-        final List<Long> chain = new ArrayList<>(entries.size());
-        boolean keptActive = false;
-        for (final long[] entry : entries) {
-            final boolean active = entry[2] == AeronArchive.NULL_TIMESTAMP;
-            if (!active || !keptActive) {
-                keptActive |= active;
-                chain.add(entry[0]);
-            }
-        }
-        return chain;
+                                      sourceIdentity) -> spans.add(new ReplayChain.RecordingSpan(recordingId,
+                                          startTimestamp, stopTimestamp == AeronArchive.NULL_TIMESTAMP)));
+        return ReplayChain.stitch(spans);
     }
 }
