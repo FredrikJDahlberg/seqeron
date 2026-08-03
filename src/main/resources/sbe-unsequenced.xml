@@ -777,7 +777,7 @@
     </sbe:message>
 
     <!-- TradingDay (template 15) — section: calendar + open/close, HHMM as uint16. -->
-    <sbe:message name="TradingDay" id="15"
+    <sbe:message name="BasicDataTradingDay" id="15"
                  description="One trading day: date plus open/close times (HHMM as uint16, e.g. 900 = 09:00, 1800 = 18:00)">
         <field name="header"      id="20001" type="header"/>
         <field name="progress"    id="20021" type="basicDataProgress"/>
@@ -793,7 +793,7 @@
          gateway both stamp into header.sourceId). Lets a gateway derive its whole identity from the log
          rather than per-process config, so a standby derives the same. header.sourceId here is the
          BasicData client's, as on every basic-data row. See doc/todo.md item 8c. -->
-    <sbe:message name="Gateway" id="17"
+    <sbe:message name="BasicDataGateway" id="17"
                  description="One FIX gateway instance: static gatewayName -> gatewayId + shared gatewaySourceId">
         <field name="header"          id="20001" type="header"/>
         <field name="progress"        id="20021" type="basicDataProgress"/>

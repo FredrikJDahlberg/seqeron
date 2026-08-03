@@ -8,8 +8,8 @@ import org.limitless.phixeron.sbe.sequenced.HeaderEncoder;
 import org.limitless.phixeron.sbe.sequenced.LeadershipChangedEncoder;
 import org.limitless.phixeron.sbe.sequenced.MessageHeaderEncoder;
 import org.limitless.phixeron.sbe.sequenced.TickEncoder;
+import org.limitless.phixeron.sbe.unsequenced.BasicDataGatewayDecoder;
 import org.limitless.phixeron.sbe.unsequenced.EndBasicDataDecoder;
-import org.limitless.phixeron.sbe.unsequenced.GatewayDecoder;
 import org.limitless.phixeron.sbe.unsequenced.HeaderDecoder;
 import org.limitless.phixeron.sbe.unsequenced.MessageHeaderDecoder;
 import org.limitless.phixeron.util.Logger;
@@ -80,7 +80,7 @@ public final class Sequencer {
     // topology row, whose scalar fields feed the derived topology below.
     private final MessageHeaderDecoder ingressMsgHeaderDecoder = new MessageHeaderDecoder();
     private final HeaderDecoder ingressHeaderDecoder = new HeaderDecoder();
-    private final GatewayDecoder gatewayDecoder = new GatewayDecoder();
+    private final BasicDataGatewayDecoder gatewayDecoder = new BasicDataGatewayDecoder();
 
     // ── Egress encode (schema 202, sbe-sequenced.xml) ─────────────────────────
     private final MessageHeaderEncoder headerEncoder = new MessageHeaderEncoder();
@@ -209,7 +209,7 @@ public final class Sequencer {
         if (gatewaySourceIds.contains(sourceId)) {
             gatewaySessionSourceId.put(sessionId, sourceId);
         }
-        if (templateId == GatewayDecoder.TEMPLATE_ID) {
+        if (templateId == BasicDataGatewayDecoder.TEMPLATE_ID) {
             gatewayDecoder.wrap(buffer, ingressBodyOffset, ingressBlockLen, ingressMsgHeaderDecoder.version());
             gatewaySourceIds.add(gatewayDecoder.gatewaySourceId());
             if (gatewayDecoder.preferenceRank() == 0) {

@@ -479,8 +479,8 @@ class SequencerTest {
                                             final int preferenceRank) {
         final org.limitless.phixeron.sbe.unsequenced.MessageHeaderEncoder messageHeader =
             new org.limitless.phixeron.sbe.unsequenced.MessageHeaderEncoder();
-        final org.limitless.phixeron.sbe.unsequenced.GatewayEncoder encoder =
-            new org.limitless.phixeron.sbe.unsequenced.GatewayEncoder();
+        final org.limitless.phixeron.sbe.unsequenced.BasicDataGatewayEncoder encoder =
+            new org.limitless.phixeron.sbe.unsequenced.BasicDataGatewayEncoder();
 
         encoder.wrapAndApplyHeader(buffer, offset, messageHeader);
         // The producer's own sourceId (not a gateway's), outside the gateway-sourceId set.

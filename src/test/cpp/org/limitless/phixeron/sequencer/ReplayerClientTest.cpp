@@ -28,17 +28,17 @@ namespace {
 namespace seq = org::limitless::phixeron::sbe::sequenced;
 namespace diag = org::limitless::phixeron::util;
 
-// Captures every DiagnosticEvent reported while in scope, in place of the installed default
-// (StderrDiagnosticSink) — see Diagnostic.hpp. RAII so a test that ASSERTs out early still restores
+// Captures every LoggerEvent reported while in scope, in place of the installed default
+// (StderrLoggerSink) — see Logger.hpp. RAII so a test that ASSERTs out early still restores
 // the default sink rather than leaving a dangling pointer installed for later tests.
-struct ScopedDiagnosticSink final : diag::LoggerSink
+struct ScopedLoggerSink final : diag::LoggerSink
 {
-    ScopedDiagnosticSink()
+    ScopedLoggerSink()
     {
         diag::Logger::install(*this);
     }
 
-    ~ScopedDiagnosticSink() override
+    ~ScopedLoggerSink() override
     {
         diag::Logger::reset();
     }
@@ -194,7 +194,7 @@ TEST(ReplayerClientGapRecovery, MidStreamGapTriggersReplayRequestAndWithholdsThe
 
 TEST(ReplayerClientGapRecovery, TapGapReportsAStructuredDiagnosticEvent)
 {
-    ScopedDiagnosticSink sink;
+    ScopedLoggerSink sink;
     ReplayerClient client{1, [](const SequencedEvent&) {}};
 
     deliverLive(client, 1);
