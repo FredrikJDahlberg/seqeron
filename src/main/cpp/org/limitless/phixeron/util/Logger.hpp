@@ -18,7 +18,7 @@ enum class Component : std::uint8_t
 {
     FixGateway,
     OrderExecClient,
-    ReplayerClient,
+    ReplayerStreamReceiver,
     BasicDataClient,
     Cluster,
     Tcp,
@@ -102,7 +102,7 @@ inline const char* componentName(const Component component)
     {
         case Component::FixGateway: return "FixGateway";
         case Component::OrderExecClient: return "OrderExecClient";
-        case Component::ReplayerClient: return "ReplayerClient";
+        case Component::ReplayerStreamReceiver: return "ReplayerStreamReceiver";
         case Component::BasicDataClient: return "BasicDataClient";
         case Component::Cluster: return "Cluster";
         case Component::Tcp: return "TCP";

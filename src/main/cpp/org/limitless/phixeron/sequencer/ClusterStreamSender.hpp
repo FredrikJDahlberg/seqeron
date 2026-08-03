@@ -1,6 +1,6 @@
 #pragma once
 
-// ClusterIngressSender — Aeron Cluster client session state machine
+// ClusterStreamSender — Aeron Cluster client session state machine
 // (SessionConnectRequest → SessionEvent(OK) → send/keep-alive → SessionCloseRequest).
 //
 // The session logic below never touches Aeron types directly: it talks to the
@@ -18,7 +18,7 @@
 // SessionEvent(REDIRECT), and an established session gets a NewLeaderEvent when
 // the cluster elects a new leader — both carry a "memberId=host:port,..." CSV of
 // ingress endpoints (io.aeron.cluster.client.AeronCluster's own wire format).
-// ClusterIngressSender resolves its own new endpoint out of that CSV and swaps
+// ClusterStreamSender resolves its own new endpoint out of that CSV and swaps
 // its ingress Publication to it; the cluster session id is unaffected, only the
 // leadershipTermId and the publication endpoint change. Reconnection only runs
 // when connect(aeron) supplied a real Aeron client (m_aeron); the transport-
@@ -62,7 +62,7 @@ namespace diag = org::limitless::phixeron::util;
 //    defaults. Must match SequencerNode's cluster listener configuration. ────
 // CLUSTER_INGRESS_CHANNEL must stay "aeron:udp?endpoint=" + CLUSTER_INGRESS_ENDPOINT — the
 // endpoint alone is also this client's initial value for the reconnect-on-failover tracking
-// in ClusterIngressSender (m_ingressEndpoint).
+// in ClusterStreamSender (m_ingressEndpoint).
 inline constexpr const char* CLUSTER_INGRESS_ENDPOINT = "localhost:9302";
 inline constexpr const char* CLUSTER_INGRESS_CHANNEL = "aeron:udp?endpoint=localhost:9302";
 inline constexpr const char* CLUSTER_EGRESS_CHANNEL = "aeron:udp?endpoint=localhost:9320";
@@ -73,7 +73,7 @@ inline constexpr const char* CLUSTER_EGRESS_CHANNEL = "aeron:udp?endpoint=localh
 inline constexpr const char* CLUSTER_EGRESS_CHANNEL_COLOCATED = "aeron:udp?endpoint=localhost:9330";
 // Ingress channel for a client co-located with (sharing the Aeron directory of) a cluster
 // member — only reachable while that member is the current leader, see
-// ClusterIngressSender::connectColocated.
+// ClusterStreamSender::connectColocated.
 inline constexpr const char* CLUSTER_INGRESS_CHANNEL_IPC = "aeron:ipc";
 inline constexpr std::int32_t CLUSTER_INGRESS_STREAM_ID = 101;
 inline constexpr std::int32_t CLUSTER_EGRESS_STREAM_ID = 102;
@@ -124,7 +124,7 @@ inline bool findIngressEndpoint(std::string_view endpoints, std::int32_t memberI
 // ── Transport interfaces ──────────────────────────────────────────────────────
 
 // Outbound half: offers raw bytes to the cluster ingress. Implementations
-// retry/back-pressure as they see fit; ClusterIngressSender treats a `false`
+// retry/back-pressure as they see fit; ClusterStreamSender treats a `false`
 // return as "not yet accepted" and spins.
 class IngressTransport {
    public:
@@ -195,7 +195,7 @@ class AeronEgressTransport : public EgressTransport {
     aeron::fragment_handler_t m_poll{m_fa.handler()};
 };
 
-// ── ClusterIngressSender ──────────────────────────────────────────────────────
+// ── ClusterStreamSender ──────────────────────────────────────────────────────
 
 // Manages the Aeron Cluster session (SessionConnectRequest → SessionEvent(OK))
 // and sends pre-encoded sbe-unsequenced.xml messages to the cluster ingress.
@@ -304,7 +304,7 @@ class ClusterStreamSender {
     // may be null to skip straight to the fallback (mirrors createIpcIngressPublication()
     // itself throwing before a transport ever exists). `buildFallbackIngress` is only invoked
     // if the primary attempt fails; `egress` is shared by both attempts (reused via
-    // ClusterIngressSender::connect's `m_egress` after a failed first attempt). `memberId`
+    // ClusterStreamSender::connect's `m_egress` after a failed first attempt). `memberId`
     // (default -1, i.e. "no co-located member") lets a test set m_coLocatedMemberId without a
     // real Aeron client, to exercise onFragment's NewLeaderEvent guard — the guard also requires
     // m_aeron, so it stays a no-op here regardless; there is nothing to reconnect to without a
@@ -394,7 +394,7 @@ class ClusterStreamSender {
         }
 
         if (m_clusterSessionId < 0)
-            throw std::runtime_error("[ClusterIngressSender] Timed out waiting for cluster session");
+            throw std::runtime_error("[ClusterStreamSender] Timed out waiting for cluster session");
     }
 
     // Overrides the connect handshake timeout (default 10s). Exposed so tests
@@ -518,7 +518,7 @@ class ClusterStreamSender {
         // silently dropping it would tear the outbound MsgSeqNum hole this function exists to prevent.
         if (len > MAX_PAYLOAD_LEN)
         {
-            throw std::runtime_error("[ClusterIngressSender] ingress payload " + std::to_string(len) +
+            throw std::runtime_error("[ClusterStreamSender] ingress payload " + std::to_string(len) +
                                      " exceeds MAX_PAYLOAD_LEN " + std::to_string(MAX_PAYLOAD_LEN));
         }
 
@@ -552,7 +552,7 @@ class ClusterStreamSender {
     // SessionEvent / NewLeaderEvent / REDIRECT, all handled inside onFragment (e.g.
     // swapping m_ingress to a new leader) — discarding any application payload. Used
     // by send()'s reliable-offer spin so a leader failover can complete mid-send.
-    // Discarding the payload is safe because every ClusterIngressSender caller already
+    // Discarding the payload is safe because every ClusterStreamSender caller already
     // polls egress with a no-op application handler: in this system the data round-trip
     // is the node-local tap, and cluster egress carries only session-control frames.
     void pumpEgressControl()
@@ -702,14 +702,14 @@ class ClusterStreamSender {
         while (!(pub = m_aeron->findPublication(pubId)))
         {
             if (std::chrono::steady_clock::now() >= deadline)
-                throw std::runtime_error("[ClusterIngressSender] Timed out creating ingress publication to " +
+                throw std::runtime_error("[ClusterStreamSender] Timed out creating ingress publication to " +
                                          endpoint);
             m_idleStrategy.idle();
         }
         while (!pub->isConnected())
         {
             if (std::chrono::steady_clock::now() >= deadline)
-                throw std::runtime_error("[ClusterIngressSender] Timed out connecting ingress publication to " +
+                throw std::runtime_error("[ClusterStreamSender] Timed out connecting ingress publication to " +
                                          endpoint);
             m_idleStrategy.idle();
         }
@@ -730,13 +730,13 @@ class ClusterStreamSender {
         while (!(pub = m_aeron->findPublication(pubId)))
         {
             if (std::chrono::steady_clock::now() >= deadline)
-                throw std::runtime_error("[ClusterIngressSender] Timed out creating IPC ingress publication");
+                throw std::runtime_error("[ClusterStreamSender] Timed out creating IPC ingress publication");
             m_idleStrategy.idle();
         }
         while (!pub->isConnected())
         {
             if (std::chrono::steady_clock::now() >= deadline)
-                throw std::runtime_error("[ClusterIngressSender] Timed out connecting IPC ingress publication");
+                throw std::runtime_error("[ClusterStreamSender] Timed out connecting IPC ingress publication");
             m_idleStrategy.idle();
         }
         return pub;

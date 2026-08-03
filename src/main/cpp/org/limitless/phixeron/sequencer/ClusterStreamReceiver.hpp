@@ -46,7 +46,7 @@ inline constexpr std::int32_t FEEDER_STREAM_ID = 205;
 //                     the 9300-9325 cluster block for the same reason — 9313, the previous default,
 //                     aliased member 1's Raft consensus port and failed to bind whenever member 1 was up)
 // OrderExecClient, deployed co-located with one SequencerNode member (see
-// connectLocalArchive/ClusterIngressSender::connectColocated), replays over
+// connectLocalArchive/ClusterStreamSender::connectColocated), replays over
 // REPLAY_CHANNEL_IPC below instead — no port needed.
 inline constexpr std::int32_t REPLAY_STREAM_ID = 110;
 
@@ -219,7 +219,7 @@ inline std::shared_ptr<aeron::archive::client::AeronArchive> connectToArchiveWit
 /**
  * Connects to the archive co-located with this process over "aeron:ipc" — used by clients
  * (e.g. OrderExecClient) deliberately deployed sharing a single SequencerNode member's own
- * Aeron directory (see ClusterIngressSender::connectColocated's doc comment for the ingress
+ * Aeron directory (see ClusterStreamSender::connectColocated's doc comment for the ingress
  * half of that deployment). Unlike connectToArchiveWithClusterStream, there is exactly one
  * candidate archive here, and — because every member records its own node-local tap — every
  * member's archive holds a full copy of the sequenced stream regardless of current leadership,

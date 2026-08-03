@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Steady-state gap-recovery test (ReplayerClient globalSeqNo re-walk).
+# Steady-state gap-recovery test (ReplayerStreamReceiver globalSeqNo re-walk).
 #
 # Verifies that a consumer which is CAUGHT UP (following live off the co-located SequencerService tap)
 # heals a dropped live tap frame: it detects the globalSeqNo gap, re-walks the recording chain from
@@ -10,11 +10,11 @@
 # steady state (and to confirm the consumer's own tap keeps flowing across the failover — its member's
 # recording is continuous, never rotated).
 #
-# The gap is synthesized on the CONSUMER side: the ReplayerClient drops the next live tap frame when
+# The gap is synthesized on the CONSUMER side: the ReplayerStreamReceiver drops the next live tap frame when
 # armed via SIGUSR1 (gated by PHIXERON_FAULT_INJECTION=1 at consumer launch). With apps reading the tap
 # directly there is no fan-out relay to drop a frame in, so the drop lives where the app reads live.
 #
-# Topology keeps member 0 alive throughout: the flood's ClusterIngressSender (and the consumer's)
+# Topology keeps member 0 alive throughout: the flood's ClusterStreamSender (and the consumer's)
 # bootstrap through member 0's fixed ingress endpoint (localhost:9302) before following REDIRECT to the
 # current leader, and the consumer lives on member 0 (co-located, stable ingress). To guarantee the
 # killed leader is NOT member 0, members 1 and 2 are started first so one of THEM wins the initial
@@ -49,8 +49,8 @@
 # loop to reliably land inside that window — every attempt measured zero genuine overlaps. The state
 # transition itself (a new gap detected while `m_replaySessionId >= 0`, not just `m_awaitingReplay`) is
 # instead covered deterministically by
-# `ReplayerClientGapRecovery.NewGapWhileReplaySessionActiveSupersedesTheInFlightWalk` in
-# `ReplayerClientTest.cpp`.
+# `ReplayerStreamReceiverGapRecovery.NewGapWhileReplaySessionActiveSupersedesTheInFlightWalk` in
+# `ReplayerStreamReceiverTest.cpp`.
 set -uo pipefail
 
 BUILD_DIR="cmake-build-release"
@@ -129,7 +129,7 @@ echo "replayers serving"
 sleep 2
 
 # ── 2. Consumer catches up BEFORE the failover (following the live tap) ────────
-# PHIXERON_FAULT_INJECTION=1 installs the consumer's SIGUSR1 handler and enables the ReplayerClient's
+# PHIXERON_FAULT_INJECTION=1 installs the consumer's SIGUSR1 handler and enables the ReplayerStreamReceiver's
 # live-tap drop; without it a stray SIGUSR1 would kill the process (default action).
 CONSUMER_LOG="$LOG_DIR/consumer.log"
 PHIXERON_ORDER_EXEC_AERON_DIR="${TMPDIR}phixeron-seq-aeron-${CN}" \

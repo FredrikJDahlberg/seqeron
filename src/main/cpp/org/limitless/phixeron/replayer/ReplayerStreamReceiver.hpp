@@ -1,9 +1,9 @@
 #pragma once
 
-// ReplayerClient — app-replica side of the per-node Replayer (doc/router-design.md).
+// ReplayerStreamReceiver — app-replica side of the per-node Replayer (doc/router-design.md).
 //
 // Where ClusterStreamClient opens its own archive connection and replays the recorded sequenced stream
-// directly, a ReplayerClient reads the co-located SequencerService IPC tap LIVE and only touches the
+// directly, a ReplayerStreamReceiver reads the co-located SequencerService IPC tap LIVE and only touches the
 // archive indirectly — by asking the node-local Replayer to replay when it detects a gap. That is the
 // whole point of the Replayer — one process per node reads the archive; every replica reads the cheap
 // local tap for live and asks the Replayer for history/gaps — so the sequencer keeps zero live network
@@ -156,7 +156,7 @@ class ReplayerStreamReceiver
 
     // Test-only: feeds a fragment through the same decode/baseline/gap logic poll() drives off the
     // live tap subscription (fromReplay=false), without a real Aeron subscription or media driver —
-    // see ReplayerClientTest.cpp.
+    // see ReplayerStreamReceiverTest.cpp.
     void testDeliverTapFragment(const aeron::concurrent::AtomicBuffer& buffer, aeron::util::index_t offset,
                                 aeron::util::index_t length, const aeron::Header& header)
     {
@@ -164,7 +164,7 @@ class ReplayerStreamReceiver
     }
 
     // Test-only: same as testDeliverTapFragment, but through the replay-image decode path
-    // (fromReplay=true) poll() drives while riding an attached replay image — see ReplayerClientTest.cpp.
+    // (fromReplay=true) poll() drives while riding an attached replay image — see ReplayerStreamReceiverTest.cpp.
     void testDeliverReplayFragment(const aeron::concurrent::AtomicBuffer& buffer, aeron::util::index_t offset,
                                    aeron::util::index_t length, const aeron::Header& header)
     {
@@ -172,7 +172,7 @@ class ReplayerStreamReceiver
     }
 
     // Test-only: feeds a fragment through the same control-stream decode path onControl() drives off
-    // the Replayer's control subscription (Replaying / ReplayPending) — see ReplayerClientTest.cpp.
+    // the Replayer's control subscription (Replaying / ReplayPending) — see ReplayerStreamReceiverTest.cpp.
     void testDeliverControl(const aeron::concurrent::AtomicBuffer& buffer, aeron::util::index_t offset,
                             aeron::util::index_t length, const aeron::Header& header)
     {
@@ -180,13 +180,13 @@ class ReplayerStreamReceiver
     }
 
     // Test-only: simulates a replay image reaching its bounded catch-up position (or a stopped
-    // segment's image closing) without a real Aeron replay image — see ReplayerClientTest.cpp.
+    // segment's image closing) without a real Aeron replay image — see ReplayerStreamReceiverTest.cpp.
     void testCompleteReplaySegment()
     {
         onReplaySegmentComplete();
     }
 
-    // Test-only accessors into the walk/gap-recovery state machine — see ReplayerClientTest.cpp.
+    // Test-only accessors into the walk/gap-recovery state machine — see ReplayerStreamReceiverTest.cpp.
     bool testIsAwaitingReplay() const
     {
         return m_awaitingReplay;
@@ -211,7 +211,7 @@ class ReplayerStreamReceiver
     }
 
     // Test-only: the exact predicate poll() uses to route live-tap fragments to m_tapDiscardPoll
-    // (mid-walk or awaiting the Replayer's answer) vs. real dispatch — see ReplayerClientTest.cpp's
+    // (mid-walk or awaiting the Replayer's answer) vs. real dispatch — see ReplayerStreamReceiverTest.cpp's
     // discard-vs-dispatch regression lock (doc/todo.md, 2026-07-31 "gap re-walk starves the tap it is
     // recovering").
     bool testIsRecovering() const
@@ -464,7 +464,7 @@ class ReplayerStreamReceiver
                     // gap is detected — i.e. this new request supersedes a walk genuinely in flight, not one
                     // that had already finished. Logged before requestReplay() resets it, so a test can
                     // observe genuine back-to-back overlap rather than inferring it from timing alone.
-                    diag::Logger::warn(diag::Component::ReplayerClient, diag::EventCode::TapGap,
+                    diag::Logger::warn(diag::Component::ReplayerStreamReceiver, diag::EventCode::TapGap,
                                            "tap gap: expected globalSeqNo=%lld got %lld — "
                                            "re-walking the recording chain from segment 0%s",
                                            static_cast<long long>(m_lastGlobalSeqNo + 1), static_cast<long long>(gseq),
@@ -481,7 +481,7 @@ class ReplayerStreamReceiver
         {
             // The very first frame this client ever sees — replayed history, or the live tap right
             // after a cold-start NO_REPLAY_NEEDED — must be globalSeqNo 1.
-            diag::Logger::fault(diag::Component::ReplayerClient, diag::EventCode::FirstFrameNotOne,
+            diag::Logger::fault(diag::Component::ReplayerStreamReceiver, diag::EventCode::FirstFrameNotOne,
                                     "FATAL: first frame observed has globalSeqNo=%lld, expected 1 — "
                                     "this node's recording does not reach the start of the log; aborting",
                                     static_cast<long long>(gseq));

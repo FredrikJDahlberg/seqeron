@@ -56,7 +56,7 @@ AERON_DIR="${TMPDIR}aeron-$(whoami)"
 # SequencerNode (member 0)'s own embedded media driver directory — matches its default
 # when -Dsequencer.aeronDir isn't overridden. OrderExecClient is co-located with this
 # member (shares its Aeron directory) so archive/replay/ingress can use aeron:ipc instead
-# of looping through the standalone aeronmd above — see ClusterIngressSender::connectColocated.
+# of looping through the standalone aeronmd above — see ClusterStreamSender::connectColocated.
 SEQ_AERON_DIR="${TMPDIR}phixeron-seq-aeron-0"
 
 # Prefer a system-installed aeronmd (e.g. Homebrew or a system package) on PATH;

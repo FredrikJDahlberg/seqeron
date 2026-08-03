@@ -1,5 +1,5 @@
-// frameStartPosition (ClusterStreamClient.hpp), pinned against Aeron's own Header semantics. Both
-// stream clients — ClusterStreamClient and ReplayerClient — derive SequencedEvent::position with it.
+// frameStartPosition (ClusterStreamReceiver.hpp), pinned against Aeron's own Header semantics. Both
+// stream clients — ClusterStreamClient and ReplayerStreamReceiver — derive SequencedEvent::position with it.
 //
 // SequencedEvent::position must be the stream position of the frame's FIRST byte: FixConnection
 // checkpoints it in m_seqOffsetIndex and later hands it to ReplayParams::position() to seek an

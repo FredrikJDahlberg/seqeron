@@ -27,7 +27,7 @@ Aeron directory and `clusterDir`. It combines two mechanisms that the original s
 
 Java — required, since `ClusterTool`, the Aeron cluster ingress client, and the SBE codecs are all
 Java. There is no existing Java cluster-*client* today (the Java side is only the service + nodes),
-so the ingress-connect/echo handshake is new Java code modelled on the C++ `ClusterIngressSender` +
+so the ingress-connect/echo handshake is new Java code modelled on the C++ `ClusterStreamSender` +
 tap-follow path, not shared with it.
 
 The tool is one Java class, `org.limitless.phixeron.tools.ClusterCtl` (alongside `SbeLogPrinter`),

@@ -509,7 +509,7 @@ public final class ReplayerService {
                 segmentIndex, recordingId, replayFrom, tip, replaySessionId);
         // catchUpPosition = tip: the app follows the replay image until it reaches this, then advances
         // (next segment, or the live tap). A bounded replay of an active recording does not close its
-        // image at the bound, so the app detects completion by position (see Replaying / ReplayerClient).
+        // image at the bound, so the app detects completion by position (see Replaying / ReplayerStreamReceiver).
         sendReplaying(clientId, replaySessionId, tip);
     }
 

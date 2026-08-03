@@ -1,4 +1,4 @@
-// ReplayerClient's first-frame-must-be-globalSeqNo-1 baseline check (doc/todo.md "Replayer /
+// ReplayerStreamReceiver's first-frame-must-be-globalSeqNo-1 baseline check (doc/todo.md "Replayer /
 // ingress" — cold start answered NO_REPLAY_NEEDED adopting an arbitrary globalSeqNo baseline: nothing
 // checked the first frame delivered was globalSeqNo 1, so a node whose own recording doesn't reach the
 // start of the log would silently track position/state from mid-stream). globalSeqNo only increases,
@@ -104,7 +104,7 @@ void deliverLive(ReplayerStreamReceiver& client, const std::int64_t globalSeqNo)
     client.testDeliverTapFragment(ab, 0, static_cast<aeron::util::index_t>(buf.size()), frame.wrap());
 }
 
-TEST(ReplayerClientBaseline, FirstFrameAtGlobalSeqNoOneIsAccepted)
+TEST(ReplayerStreamReceiverBaseline, FirstFrameAtGlobalSeqNoOneIsAccepted)
 {
     int delivered = 0;
     ReplayerStreamReceiver client{1, [&](const SequencedEvent&) { ++delivered; }};
@@ -115,7 +115,7 @@ TEST(ReplayerClientBaseline, FirstFrameAtGlobalSeqNoOneIsAccepted)
     EXPECT_TRUE(client.isCaughtUp());
 }
 
-TEST(ReplayerClientBaseline, FirstFrameNotAtGlobalSeqNoOneAbortsTheProcess)
+TEST(ReplayerStreamReceiverBaseline, FirstFrameNotAtGlobalSeqNoOneAbortsTheProcess)
 {
     ReplayerStreamReceiver client{1, [](const SequencedEvent&) {}};
 
@@ -175,7 +175,7 @@ void deliverControl(ReplayerStreamReceiver& client, const std::vector<std::uint8
     client.testDeliverControl(ab, 0, static_cast<aeron::util::index_t>(body.size()), frame.wrap());
 }
 
-TEST(ReplayerClientGapRecovery, MidStreamGapTriggersReplayRequestAndWithholdsTheOutOfOrderFrame)
+TEST(ReplayerStreamReceiverGapRecovery, MidStreamGapTriggersReplayRequestAndWithholdsTheOutOfOrderFrame)
 {
     int delivered = 0;
     ReplayerStreamReceiver client{1, [&](const SequencedEvent&) { ++delivered; }};
@@ -192,7 +192,7 @@ TEST(ReplayerClientGapRecovery, MidStreamGapTriggersReplayRequestAndWithholdsThe
     EXPECT_EQ(-1, client.testReplaySessionId()) << "no session yet — only a request, until the Replayer answers";
 }
 
-TEST(ReplayerClientGapRecovery, TapGapReportsAStructuredDiagnosticEvent)
+TEST(ReplayerStreamReceiverGapRecovery, TapGapReportsAStructuredDiagnosticEvent)
 {
     ScopedLoggerSink sink;
     ReplayerStreamReceiver client{1, [](const SequencedEvent&) {}};
@@ -203,14 +203,14 @@ TEST(ReplayerClientGapRecovery, TapGapReportsAStructuredDiagnosticEvent)
 
     ASSERT_EQ(1u, sink.events.size()) << "exactly the one gap detected above, nothing from setup";
     const auto& event = sink.events[0];
-    EXPECT_EQ(diag::Component::ReplayerClient, event.component);
+    EXPECT_EQ(diag::Component::ReplayerStreamReceiver, event.component);
     EXPECT_EQ(diag::Severity::Warn, event.severity);
     EXPECT_EQ(diag::EventCode::TapGap, event.code);
     const std::string text(event.text.data(), event.textLen);
     EXPECT_EQ("tap gap: expected globalSeqNo=3 got 5 — re-walking the recording chain from segment 0", text);
 }
 
-TEST(ReplayerClientGapRecovery, NewGapWhileReplaySessionActiveSupersedesTheInFlightWalk)
+TEST(ReplayerStreamReceiverGapRecovery, NewGapWhileReplaySessionActiveSupersedesTheInFlightWalk)
 {
     int delivered = 0;
     ReplayerStreamReceiver client{1, [&](const SequencedEvent&) { ++delivered; }};
@@ -221,7 +221,7 @@ TEST(ReplayerClientGapRecovery, NewGapWhileReplaySessionActiveSupersedesTheInFli
 
     // The Replayer answers with an active session: now mid-walk (m_replaySessionId >= 0), not merely
     // awaiting an answer — the distinction the "previous walk still in flight" log marker in
-    // ReplayerClient.hpp's onFragment exists to surface. (The e2e version of this scenario — re-arming a
+    // ReplayerStreamReceiver.hpp's onFragment exists to surface. (The e2e version of this scenario — re-arming a
     // live-tap drop while a real walk is in flight — was attempted and abandoned as impractical: local
     // Aeron IPC replay of a small gap completes too fast for a shell-level poll-then-signal loop to
     // reliably land inside the window; see doc/todo.md's 2026-08-02 note. This state transition is
@@ -243,7 +243,7 @@ TEST(ReplayerClientGapRecovery, NewGapWhileReplaySessionActiveSupersedesTheInFli
     EXPECT_EQ(1, delivered) << "neither out-of-order frame is ever dispatched";
 }
 
-TEST(ReplayerClientGapRecovery, SteadyStateGapAlwaysRestartsTheWalkFromSegmentZero)
+TEST(ReplayerStreamReceiverGapRecovery, SteadyStateGapAlwaysRestartsTheWalkFromSegmentZero)
 {
     ReplayerStreamReceiver client{1, [](const SequencedEvent&) {}};
 
@@ -264,7 +264,7 @@ TEST(ReplayerClientGapRecovery, SteadyStateGapAlwaysRestartsTheWalkFromSegmentZe
                                                     "robust to the recording having rotated under it";
 }
 
-TEST(ReplayerClientGapRecovery, DuplicateAndStaleFramesFromReplayAreDropped)
+TEST(ReplayerStreamReceiverGapRecovery, DuplicateAndStaleFramesFromReplayAreDropped)
 {
     int delivered = 0;
     ReplayerStreamReceiver client{1, [&](const SequencedEvent&) { ++delivered; }};
@@ -281,7 +281,7 @@ TEST(ReplayerClientGapRecovery, DuplicateAndStaleFramesFromReplayAreDropped)
     EXPECT_EQ(3, delivered);
 }
 
-TEST(ReplayerClientGapRecovery, NoReplayNeededMarksCaughtUpAndClearsWalkState)
+TEST(ReplayerStreamReceiverGapRecovery, NoReplayNeededMarksCaughtUpAndClearsWalkState)
 {
     ReplayerStreamReceiver client{1, [](const SequencedEvent&) {}};
 
@@ -294,7 +294,7 @@ TEST(ReplayerClientGapRecovery, NoReplayNeededMarksCaughtUpAndClearsWalkState)
     EXPECT_EQ(-1, client.testWalkSegmentIndex()) << "chain exhausted -> steady/resume mode, not mid-walk";
 }
 
-TEST(ReplayerClientGapRecovery, ReplayingWithSessionArmsReplayWithoutMarkingCaughtUp)
+TEST(ReplayerStreamReceiverGapRecovery, ReplayingWithSessionArmsReplayWithoutMarkingCaughtUp)
 {
     ReplayerStreamReceiver client{1, [](const SequencedEvent&) {}};
 
@@ -305,7 +305,7 @@ TEST(ReplayerClientGapRecovery, ReplayingWithSessionArmsReplayWithoutMarkingCaug
     EXPECT_EQ(42, client.testReplaySessionId());
 }
 
-TEST(ReplayerClientGapRecovery, ReplayingForAnotherClientIdIsIgnored)
+TEST(ReplayerStreamReceiverGapRecovery, ReplayingForAnotherClientIdIsIgnored)
 {
     ReplayerStreamReceiver client{1, [](const SequencedEvent&) {}};
 
@@ -316,7 +316,7 @@ TEST(ReplayerClientGapRecovery, ReplayingForAnotherClientIdIsIgnored)
     EXPECT_FALSE(client.isCaughtUp());
 }
 
-TEST(ReplayerClientGapRecovery, SegmentCompleteAdvancesTheWalkAndReRequestsTheNextSegment)
+TEST(ReplayerStreamReceiverGapRecovery, SegmentCompleteAdvancesTheWalkAndReRequestsTheNextSegment)
 {
     ReplayerStreamReceiver client{1, [](const SequencedEvent&) {}};
     deliverControl(client, encodeReplaying(/*clientId=*/1, /*replaySessionId=*/7, /*catchUpPosition=*/500));
@@ -329,7 +329,7 @@ TEST(ReplayerClientGapRecovery, SegmentCompleteAdvancesTheWalkAndReRequestsTheNe
     EXPECT_EQ(-1, client.testReplaySessionId()) << "no session until the Replayer answers the new request";
 }
 
-TEST(ReplayerClientGapRecovery, ReplayPendingHoldsAtTheGapWithoutAssigningASession)
+TEST(ReplayerStreamReceiverGapRecovery, ReplayPendingHoldsAtTheGapWithoutAssigningASession)
 {
     int delivered = 0;
     ReplayerStreamReceiver client{1, [&](const SequencedEvent&) { ++delivered; }};
@@ -351,7 +351,7 @@ TEST(ReplayerClientGapRecovery, ReplayPendingHoldsAtTheGapWithoutAssigningASessi
 // `m_awaitingReplay && (nowMs() - m_lastRequestMs) > RESEND_INTERVAL_MS`), which touches only
 // m_requestPub — never m_tapSub/m_replaySub/m_controlSub/m_replayImage — unlike the discard-vs-
 // dispatch routing above, which needs a live tap subscription poll() has no seam to fake.
-TEST(ReplayerClientGapRecovery, StuckAwaitingReplayResendsAfterTheIntervalElapses)
+TEST(ReplayerStreamReceiverGapRecovery, StuckAwaitingReplayResendsAfterTheIntervalElapses)
 {
     ReplayerStreamReceiver client{1, [](const SequencedEvent&) {}};
 
@@ -380,7 +380,7 @@ TEST(ReplayerClientGapRecovery, StuckAwaitingReplayResendsAfterTheIntervalElapse
 // decouples polling (always happens) from dispatch (routed through isRecovering()); this test walks
 // every state transition that predicate must track so a future change can't silently narrow it back to
 // missing one of them.
-TEST(ReplayerClientGapRecovery, RecoveringFlagTracksWalkAndAwaitingReplayState)
+TEST(ReplayerStreamReceiverGapRecovery, RecoveringFlagTracksWalkAndAwaitingReplayState)
 {
     ReplayerStreamReceiver client{1, [](const SequencedEvent&) {}};
     EXPECT_FALSE(client.testIsRecovering()) << "nothing in flight yet";

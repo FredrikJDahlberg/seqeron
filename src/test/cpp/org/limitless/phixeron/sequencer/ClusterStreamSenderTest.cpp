@@ -1,9 +1,9 @@
 //
-// Deterministic unit tests for ClusterIngressSender's session lifecycle
+// Deterministic unit tests for ClusterStreamSender's session lifecycle
 // (connect → SessionEvent(OK) → send → keep-alive → close).
 //
-// ClusterIngressSender talks to the cluster purely through IngressTransport::offer
-// and EgressTransport::poll (see ClusterIngressSender.hpp), so these tests drive
+// ClusterStreamSender talks to the cluster purely through IngressTransport::offer
+// and EgressTransport::poll (see ClusterStreamSender.hpp), so these tests drive
 // it against small in-memory fakes instead of a real Aeron media driver — no
 // threads, no polling loops, no sockets. Wire-level codec round-trips of the
 // individual SBE messages are covered separately in ClusterCodecTest.cpp; these
@@ -38,7 +38,7 @@ class FakeIngressTransport : public IngressTransport {
 
 // Rejects the first m_rejectCount offers (as a back-pressured or, during a leader
 // failover, not-connected ingress publication would), then accepts — capturing the
-// frame that finally lands. Drives ClusterIngressSender::send()'s reliable-offer spin.
+// frame that finally lands. Drives ClusterStreamSender::send()'s reliable-offer spin.
 class FlakyIngressTransport : public IngressTransport {
    public:
     int m_rejectCount = 0;  // reject this many offers before accepting the next
@@ -128,7 +128,7 @@ std::vector<std::uint8_t> encodeSessionMessage(std::int64_t leadershipTermId, st
 }
 
 // Decodes the MessageHeader + templateId-specific SBE message that
-// ClusterIngressSender offered to the (fake) ingress transport.
+// ClusterStreamSender offered to the (fake) ingress transport.
 template <typename SbeMsg>
 SbeMsg decodeOffered(std::vector<std::uint8_t>& frame)
 {
@@ -144,7 +144,7 @@ SbeMsg decodeOffered(std::vector<std::uint8_t>& frame)
 
 // ── Tests ──────────────────────────────────────────────────────────────────────
 
-TEST(ClusterIngressSender, ConnectSendsSessionConnectRequestAndAdoptsSessionOnOk)
+TEST(ClusterStreamSender, ConnectSendsSessionConnectRequestAndAdoptsSessionOnOk)
 {
     auto egress = std::make_unique<FakeEgressTransport>();
     egress->m_queued.push_back(encodeSessionEvent(42, 7, cluster_sbe::EventCode::Value::OK));
@@ -172,7 +172,7 @@ TEST(ClusterIngressSender, ConnectSendsSessionConnectRequestAndAdoptsSessionOnOk
     EXPECT_EQ(CLUSTER_CLIENT_INFO, req.getClientInfoAsString());
 }
 
-TEST(ClusterIngressSender, ConnectThrowsWhenClusterNeverAnswers)
+TEST(ClusterStreamSender, ConnectThrowsWhenClusterNeverAnswers)
 {
     ClusterStreamSender sender;
     sender.setConnectTimeoutMs(20);
@@ -182,7 +182,7 @@ TEST(ClusterIngressSender, ConnectThrowsWhenClusterNeverAnswers)
     EXPECT_FALSE(sender.isConnected());
 }
 
-TEST(ClusterIngressSender, ConnectIgnoresErrorEventCodesUntilOkArrives)
+TEST(ClusterStreamSender, ConnectIgnoresErrorEventCodesUntilOkArrives)
 {
     auto egress = std::make_unique<FakeEgressTransport>();
     egress->m_queued.push_back(encodeSessionEvent(-1, 0, cluster_sbe::EventCode::Value::ERROR));
@@ -197,7 +197,7 @@ TEST(ClusterIngressSender, ConnectIgnoresErrorEventCodesUntilOkArrives)
 // The transport-agnostic connect() overload has no Aeron client to build a new ingress
 // Publication with, so a REDIRECT must be a safe no-op (logged, not acted on) rather than a
 // crash — the session still completes once the (already-queued) OK arrives.
-TEST(ClusterIngressSender, ConnectIgnoresRedirectWithoutAeronClientThenConnectsOnOk)
+TEST(ClusterStreamSender, ConnectIgnoresRedirectWithoutAeronClientThenConnectsOnOk)
 {
     auto egress = std::make_unique<FakeEgressTransport>();
     egress->m_queued.push_back(
@@ -216,7 +216,7 @@ TEST(ClusterIngressSender, ConnectIgnoresRedirectWithoutAeronClientThenConnectsO
     EXPECT_EQ(1u, ingressPtr->m_offered.size());
 }
 
-class ConnectedClusterIngressSender : public ::testing::Test {
+class ConnectedClusterStreamSender : public ::testing::Test {
    protected:
     void SetUp() override
     {
@@ -240,7 +240,7 @@ class ConnectedClusterIngressSender : public ::testing::Test {
     FakeEgressTransport* egress_{nullptr};
 };
 
-TEST_F(ConnectedClusterIngressSender, SendWrapsBytesWithSessionMessageHeader)
+TEST_F(ConnectedClusterStreamSender, SendWrapsBytesWithSessionMessageHeader)
 {
     const std::array<std::uint8_t, 5> body{'8', '=', 'F', 'I', 'X'};
     EXPECT_TRUE(sender_.send(body.data(), static_cast<std::uint16_t>(body.size())));
@@ -260,7 +260,7 @@ TEST_F(ConnectedClusterIngressSender, SendWrapsBytesWithSessionMessageHeader)
     EXPECT_TRUE(std::equal(body.begin(), body.end(), frame.begin() + static_cast<std::ptrdiff_t>(appOff)));
 }
 
-TEST_F(ConnectedClusterIngressSender, SendFramesAPayloadOfTheLargestSupportedSize)
+TEST_F(ConnectedClusterStreamSender, SendFramesAPayloadOfTheLargestSupportedSize)
 {
     // send()'s framing buffer is sized from MAX_PAYLOAD_LEN, which is also what every caller sizes its
     // encode buffer from. The two used to disagree — a 8192-byte encode buffer against a 4138-byte
@@ -276,7 +276,7 @@ TEST_F(ConnectedClusterIngressSender, SendFramesAPayloadOfTheLargestSupportedSiz
     EXPECT_TRUE(std::equal(body.begin(), body.end(), frame.begin() + static_cast<std::ptrdiff_t>(appOff)));
 }
 
-TEST_F(ConnectedClusterIngressSender, SendRefusesAPayloadLargerThanTheFramingBuffer)
+TEST_F(ConnectedClusterStreamSender, SendRefusesAPayloadLargerThanTheFramingBuffer)
 {
     // Unreachable while every caller sizes its buffer from MAX_PAYLOAD_LEN; this guards the raw
     // (pointer, len) API against a future one that does not. Throwing rather than truncating or
@@ -287,7 +287,7 @@ TEST_F(ConnectedClusterIngressSender, SendRefusesAPayloadLargerThanTheFramingBuf
     EXPECT_TRUE(ingress_->m_offered.empty());
 }
 
-TEST_F(ConnectedClusterIngressSender, SendReportsFailureOnceTheSessionIsClosed)
+TEST_F(ConnectedClusterStreamSender, SendReportsFailureOnceTheSessionIsClosed)
 {
     // The one outcome the reliable-offer spin cannot fix: with no cluster session there is nothing to
     // offer to and no amount of waiting helps (a leader failover, which the spin does handle, keeps
@@ -302,7 +302,7 @@ TEST_F(ConnectedClusterIngressSender, SendReportsFailureOnceTheSessionIsClosed)
     EXPECT_TRUE(ingress_->m_offered.empty());
 }
 
-TEST_F(ConnectedClusterIngressSender, KeepAliveSendsOnceThenThrottles)
+TEST_F(ConnectedClusterStreamSender, KeepAliveSendsOnceThenThrottles)
 {
     sender_.keepAlive();
     ASSERT_EQ(1u, ingress_->m_offered.size());
@@ -316,7 +316,7 @@ TEST_F(ConnectedClusterIngressSender, KeepAliveSendsOnceThenThrottles)
     EXPECT_EQ(1u, ingress_->m_offered.size());
 }
 
-TEST_F(ConnectedClusterIngressSender, CloseSendsSessionCloseRequestAndForgetsSession)
+TEST_F(ConnectedClusterStreamSender, CloseSendsSessionCloseRequestAndForgetsSession)
 {
     sender_.close();
 
@@ -332,7 +332,7 @@ TEST_F(ConnectedClusterIngressSender, CloseSendsSessionCloseRequestAndForgetsSes
     EXPECT_EQ(1u, ingress_->m_offered.size());
 }
 
-TEST_F(ConnectedClusterIngressSender, PollEgressDeliversApplicationPayload)
+TEST_F(ConnectedClusterStreamSender, PollEgressDeliversApplicationPayload)
 {
     const std::array<std::uint8_t, 4> app{'8', '=', 'x', 'x'};
     egress_->m_queued.push_back(encodeSessionMessage(TERM_ID, SESSION_ID, app));
@@ -344,7 +344,7 @@ TEST_F(ConnectedClusterIngressSender, PollEgressDeliversApplicationPayload)
     EXPECT_TRUE(std::equal(app.begin(), app.end(), received.begin()));
 }
 
-TEST_F(ConnectedClusterIngressSender, PollEgressUpdatesLeadershipTermOnNewLeaderEvent)
+TEST_F(ConnectedClusterStreamSender, PollEgressUpdatesLeadershipTermOnNewLeaderEvent)
 {
     egress_->m_queued.push_back(encodeNewLeaderEvent(999));
 
@@ -365,7 +365,7 @@ TEST_F(ConnectedClusterIngressSender, PollEgressUpdatesLeadershipTermOnNewLeader
 // m_aeron == nullptr) session. Without a real Aeron client there is nothing to reconnect with,
 // so this must degrade to the same leadership-term-only update as the no-endpoints case above —
 // not crash, and not touch the ingress transport.
-TEST_F(ConnectedClusterIngressSender, PollEgressIgnoresNewLeaderEndpointWithoutAeronClient)
+TEST_F(ConnectedClusterStreamSender, PollEgressIgnoresNewLeaderEndpointWithoutAeronClient)
 {
     egress_->m_queued.push_back(encodeNewLeaderEvent(999, 1, "0=localhost:9302,1=localhost:9312"));
 
@@ -381,12 +381,12 @@ TEST_F(ConnectedClusterIngressSender, PollEgressIgnoresNewLeaderEndpointWithoutA
     EXPECT_EQ(999, hdr.leadershipTermId());
 }
 
-// ── Reliable send: spin until the offer lands (see ClusterIngressSender::send) ──────────────
+// ── Reliable send: spin until the offer lands (see ClusterStreamSender::send) ──────────────
 
 // A back-pressured ingress publication rejects offers transiently; send() must keep
 // re-offering the same frame until it lands rather than dropping it (a dropped ingress
 // frame is an unrecoverable hole in the outbound MsgSeqNum stream).
-TEST(ClusterIngressSenderReliableSend, SendSpinsUntilOfferAccepted)
+TEST(ClusterStreamSenderReliableSend, SendSpinsUntilOfferAccepted)
 {
     auto egress = std::make_unique<FakeEgressTransport>();
     egress->m_queued.push_back(encodeSessionEvent(55, 11, cluster_sbe::EventCode::Value::OK));
@@ -417,7 +417,7 @@ TEST(ClusterIngressSenderReliableSend, SendSpinsUntilOfferAccepted)
 // the new term before the retry lands, because the new leader rejects a frame carrying the
 // old term. This also pins down the no-deadlock property: the swap that lets the offer
 // succeed is driven from inside send(), on the same thread, not from the duty cycle.
-TEST(ClusterIngressSenderReliableSend, SendReStampsLeadershipTermAfterMidSpinFailover)
+TEST(ClusterStreamSenderReliableSend, SendReStampsLeadershipTermAfterMidSpinFailover)
 {
     auto egress = std::make_unique<FakeEgressTransport>();
     egress->m_queued.push_back(encodeSessionEvent(55, 11, cluster_sbe::EventCode::Value::OK));
@@ -450,7 +450,7 @@ TEST(ClusterIngressSenderReliableSend, SendReStampsLeadershipTermAfterMidSpinFai
 // this client's own co-located member (set via the test-seam's memberId) must degrade to the
 // same leadership-term-only update as PollEgressIgnoresNewLeaderEndpointWithoutAeronClient above
 // — not attempt (and crash on) building an IPC publication with a null m_aeron.
-TEST(ClusterIngressSenderColocated, PollEgressIgnoresIpcRechaseWithoutAeronClientEvenWhenLeaderIsCoLocatedMember)
+TEST(ClusterStreamSenderColocated, PollEgressIgnoresIpcRechaseWithoutAeronClientEvenWhenLeaderIsCoLocatedMember)
 {
     auto egress = std::make_unique<FakeEgressTransport>();
     egress->m_queued.push_back(encodeSessionEvent(9, 3, cluster_sbe::EventCode::Value::OK));
@@ -476,7 +476,7 @@ TEST(ClusterIngressSenderColocated, PollEgressIgnoresIpcRechaseWithoutAeronClien
     EXPECT_TRUE(sender.send(body.data(), 1));
 }
 
-// ── connectColocated's IPC-then-UDP fallback (see ClusterIngressSender.hpp) ────────────────
+// ── connectColocated's IPC-then-UDP fallback (see ClusterStreamSender.hpp) ────────────────
 
 // Primary (IPC) attempt never answers within the short timeout, so the fallback ingress
 // transport must be built and used instead, sharing the same egress transport throughout.
@@ -484,7 +484,7 @@ TEST(ClusterIngressSenderColocated, PollEgressIgnoresIpcRechaseWithoutAeronClien
 // production, the cluster simply never answers an IPC SessionConnectRequest sent to a
 // follower (no IPC ingress subscription exists there at all) until the client gives up and
 // retries over UDP against a member that actually answers.
-TEST(ClusterIngressSenderColocated, FallsBackToSecondaryWhenPrimaryNeverAnswers)
+TEST(ClusterStreamSenderColocated, FallsBackToSecondaryWhenPrimaryNeverAnswers)
 {
     auto egress = std::make_unique<FakeEgressTransport>();
     auto* egressPtr = egress.get();
@@ -525,7 +525,7 @@ TEST(ClusterIngressSenderColocated, FallsBackToSecondaryWhenPrimaryNeverAnswers)
 
 // A null primary (mirrors createIpcIngressPublication() itself throwing before any transport
 // could be built) must skip straight to the fallback, still delivering the queued OK.
-TEST(ClusterIngressSenderColocated, NullPrimarySkipsStraightToFallback)
+TEST(ClusterStreamSenderColocated, NullPrimarySkipsStraightToFallback)
 {
     auto egress = std::make_unique<FakeEgressTransport>();
     egress->m_queued.push_back(encodeSessionEvent(9, 3, cluster_sbe::EventCode::Value::OK));
@@ -545,7 +545,7 @@ TEST(ClusterIngressSenderColocated, NullPrimarySkipsStraightToFallback)
 }
 
 // When the primary attempt succeeds immediately, the fallback factory must never be invoked.
-TEST(ClusterIngressSenderColocated, PrimarySuccessNeverBuildsFallback)
+TEST(ClusterStreamSenderColocated, PrimarySuccessNeverBuildsFallback)
 {
     auto egress = std::make_unique<FakeEgressTransport>();
     egress->m_queued.push_back(encodeSessionEvent(42, 7, cluster_sbe::EventCode::Value::OK));
