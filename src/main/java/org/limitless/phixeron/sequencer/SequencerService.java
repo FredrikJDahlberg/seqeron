@@ -103,6 +103,16 @@ public final class SequencerService implements ClusteredService {
     private static final int MAX_BACK_PRESSURE_SPINS = 1_000_000;
 
     /**
+     * How long tap-emit back-pressure must persist, continuously, before {@link #emit} treats it as a
+     * genuine local-archive stall (surfaced via {@code tapStalledCounter}) rather than the ordinary,
+     * self-clearing back-pressure {@link #MAX_BACK_PRESSURE_SPINS} already alerts on every ~10 ms. Set
+     * well above one alert period so the two signals stay distinguishable: an operator/dashboard can
+     * tell "briefly busy" from "actually stuck" without inferring it from how fast the alert counter is
+     * climbing.
+     */
+    private static final long SUSTAINED_BACKPRESSURE_THRESHOLD_NS = TimeUnit.SECONDS.toNanos(2);
+
+    /**
      * Period of the internal cluster clock ({@link Sequencer#tick}): the leader fires this timer once per
      * second and every node emits a header-only {@code Tick} carrying the consensus timestamp. It exists
      * so every consumer has a cluster-driven clock that keeps advancing even while an individual FIX
@@ -138,6 +148,7 @@ public final class SequencerService implements ClusteredService {
     // ── Operator counters (see PhixeronCounters) — created once in onStart, closed in onTerminate ──
     private Counter globalSeqNoCounter;
     private Counter tapBackPressureAlertCounter;
+    private Counter tapStalledCounter;
     private Counter rejectedIngressCounter;
     private Counter leadershipChangeCounter;
     private Counter currentLeaderMemberIdCounter;
@@ -225,6 +236,8 @@ public final class SequencerService implements ClusteredService {
         tapBackPressureAlertCounter = PhixeronCounters.addCounter(aeron,
             PhixeronCounters.SEQUENCER_TAP_BACKPRESSURE_ALERTS_TYPE_ID,
             "phixeron.sequencer.tapBackPressureAlerts member=" + memberId, memberId);
+        tapStalledCounter = PhixeronCounters.addCounter(aeron, PhixeronCounters.SEQUENCER_TAP_STALLED_TYPE_ID,
+            "phixeron.sequencer.tapStalled member=" + memberId, memberId);
         rejectedIngressCounter = PhixeronCounters.addCounter(aeron, PhixeronCounters.SEQUENCER_REJECTED_INGRESS_COUNT_TYPE_ID,
             "phixeron.sequencer.rejectedIngressCount member=" + memberId, memberId);
         leadershipChangeCounter = PhixeronCounters.addCounter(aeron,
@@ -414,8 +427,9 @@ public final class SequencerService implements ClusteredService {
      */
     private void closeCounters() {
         final Counter[] counters = {
-            globalSeqNoCounter, tapBackPressureAlertCounter, rejectedIngressCounter, leadershipChangeCounter,
-            currentLeaderMemberIdCounter, lastTickTimestampCounter, gatewayPromotionCounter, bootstrapActivatedCounter
+            globalSeqNoCounter, tapBackPressureAlertCounter, tapStalledCounter, rejectedIngressCounter,
+            leadershipChangeCounter, currentLeaderMemberIdCounter, lastTickTimestampCounter, gatewayPromotionCounter,
+            bootstrapActivatedCounter
         };
         for (final Counter counter : counters) {
             if (counter != null) {
@@ -425,23 +439,45 @@ public final class SequencerService implements ClusteredService {
     }
 
     /**
-     * Publishes the frame in encodeBuffer[0, length) onto the node-local tap.
+     * Publishes the frame in encodeBuffer[0, length) onto the node-local tap. Spins on back-pressure —
+     * see the class javadoc on why this must be reliable rather than lossy. {@code tapStalledCounter}
+     * distinguishes a sustained local-archive stall from ordinary transient back-pressure (see
+     * {@link #SUSTAINED_BACKPRESSURE_THRESHOLD_NS}) so an operator doesn't have to infer it from how
+     * fast the alert counter is climbing. This is observability only: {@code emit} still spins
+     * indefinitely either way, since giving up here would leave an unrecoverable gap in the tap.
      * @param length
      */
     private void emit(final int length) {
         int idleSpins = 0;
+        long stallStartNs = 0;
+        boolean stalled = false;
         long result;
         while ((result = tapPub.offer(sequencer.buffer(), 0, length)) < 0) {
             if (result == ExclusivePublication.CLOSED || result == ExclusivePublication.MAX_POSITION_EXCEEDED) {
                 throw new IllegalStateException("[SequencerService] replayer publication failed: " + result);
+            }
+            if (stallStartNs == 0) {
+                stallStartNs = System.nanoTime();
             }
             if (++idleSpins >= MAX_BACK_PRESSURE_SPINS) {
                 Logger.error(Logger.Component.Sequencer, Logger.EventCode.ReplayerBackpressure, cluster.memberId(),
                         "ALERT: replayer back-pressure at globalSeqNo=%d", sequencer.globalSeqNo());
                 tapBackPressureAlertCounter.increment();
                 idleSpins = 0;
+                if (!stalled && System.nanoTime() - stallStartNs >= SUSTAINED_BACKPRESSURE_THRESHOLD_NS) {
+                    stalled = true;
+                    tapStalledCounter.set(1);
+                    Logger.error(Logger.Component.Sequencer, Logger.EventCode.ReplayerBackpressure, cluster.memberId(),
+                            "STALLED: tap back-pressure sustained beyond %ds at globalSeqNo=%d",
+                            TimeUnit.NANOSECONDS.toSeconds(SUSTAINED_BACKPRESSURE_THRESHOLD_NS), sequencer.globalSeqNo());
+                }
             }
             cluster.idleStrategy().idle();
+        }
+        if (stalled) {
+            tapStalledCounter.set(0);
+            Logger.info(Logger.Component.Sequencer, cluster.memberId(),
+                    "RECOVERED: tap back-pressure cleared at globalSeqNo=%d", sequencer.globalSeqNo());
         }
         globalSeqNoCounter.set(sequencer.globalSeqNo());
     }

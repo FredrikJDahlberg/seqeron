@@ -113,6 +113,7 @@ buffer — see `PhixeronCounters.addCounter`/`KEY_MEMBER_ID_OFFSET`).
 | `phixeron_sequencer_last_tick_timestamp_ms` | gauge | Consensus timestamp of the last 1Hz Tick emitted |
 | `phixeron_sequencer_gateway_promotion_total` | counter | Count of standby-promotion GatewayActive frames emitted on a gateway session close |
 | `phixeron_sequencer_bootstrap_activated` | gauge | 1 once the bootstrap GatewayActive has been emitted for the trading day, else 0 |
+| `phixeron_sequencer_tap_stalled` | gauge | 1 while tap-emit back-pressure has been sustained past the stall threshold (2s), else 0 |
 | `phixeron_replayer_stalled` | gauge | 1 while the local archive is unreachable for replay, else 0 |
 | `phixeron_replayer_ready` | gauge | 1 once the co-located tap recording is visible and replay requests are being served |
 | `phixeron_replayer_active_slots` | gauge | Current count of in-flight replays |

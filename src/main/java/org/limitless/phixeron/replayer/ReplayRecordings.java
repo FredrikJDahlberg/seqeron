@@ -10,11 +10,11 @@ import java.util.List;
  * without one — see {@code ReplayerService.resolveSegments}'s Javadoc for why the chain is normally
  * length 1 and when a member restart can transiently leave more than one entry.
  */
-public final class ReplayChain {
+public final class ReplayRecordings {
     /** One tap recording as read off an archive listing, before ordering/stitching. */
     public record RecordingSpan(long recordingId, long startTimestampMs, boolean active) {}
 
-    private ReplayChain() {}
+    private ReplayRecordings() {}
 
     /**
      * Orders {@code spans} oldest→newest by {@code startTimestampMs} and keeps every stopped span plus

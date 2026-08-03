@@ -6,18 +6,18 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.util.List;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
-import org.limitless.phixeron.replayer.ReplayChain.RecordingSpan;
+import org.limitless.phixeron.replayer.ReplayRecordings.RecordingSpan;
 
 /**
  * Unit tests for the pure recording-chain stitching behind {@link ReplayerService#resolveSegments}.
- * No Aeron/Archive runtime involved — {@link ReplayChain#stitch} only sorts and dedups the spans it is
+ * No Aeron/Archive runtime involved — {@link ReplayRecordings#stitch} only sorts and dedups the spans it is
  * handed.
  */
-class ReplayChainTest {
+class ReplayRecordingsTest {
     @Test
     @DisplayName("a single active recording is the whole chain")
     void singleActiveRecordingIsTheWholeChain() {
-        final List<Long> chain = ReplayChain.stitch(List.of(new RecordingSpan(42, 1000, true)));
+        final List<Long> chain = ReplayRecordings.stitch(List.of(new RecordingSpan(42, 1000, true)));
 
         assertEquals(List.of(42L), chain);
     }
@@ -25,7 +25,7 @@ class ReplayChainTest {
     @Test
     @DisplayName("an empty listing stitches to an empty chain")
     void emptyListingStitchesToEmptyChain() {
-        assertTrue(ReplayChain.stitch(List.of()).isEmpty());
+        assertTrue(ReplayRecordings.stitch(List.of()).isEmpty());
     }
 
     @Test
@@ -34,7 +34,7 @@ class ReplayChainTest {
         // A member restart leaves an earlier, stopped recording alongside the post-restart active one.
         final List<RecordingSpan> spans = List.of(new RecordingSpan(2, 2000, true), new RecordingSpan(1, 1000, false));
 
-        assertEquals(List.of(1L, 2L), ReplayChain.stitch(spans));
+        assertEquals(List.of(1L, 2L), ReplayRecordings.stitch(spans));
     }
 
     @Test
@@ -45,7 +45,7 @@ class ReplayChainTest {
         final List<RecordingSpan> spans = List.of(new RecordingSpan(100, 3000, false),
             new RecordingSpan(200, 1000, false), new RecordingSpan(300, 2000, true));
 
-        assertEquals(List.of(200L, 300L, 100L), ReplayChain.stitch(spans));
+        assertEquals(List.of(200L, 300L, 100L), ReplayRecordings.stitch(spans));
     }
 
     @Test
@@ -54,7 +54,7 @@ class ReplayChainTest {
         final List<RecordingSpan> spans =
             List.of(new RecordingSpan(1, 1000, false), new RecordingSpan(2, 2000, false), new RecordingSpan(3, 3000, false));
 
-        assertEquals(List.of(1L, 2L, 3L), ReplayChain.stitch(spans));
+        assertEquals(List.of(1L, 2L, 3L), ReplayRecordings.stitch(spans));
     }
 
     @Test
@@ -67,7 +67,7 @@ class ReplayChainTest {
         final List<RecordingSpan> spans =
             List.of(new RecordingSpan(1, 1000, true), new RecordingSpan(2, 2000, true));
 
-        assertEquals(List.of(1L), ReplayChain.stitch(spans));
+        assertEquals(List.of(1L), ReplayRecordings.stitch(spans));
     }
 
     @Test
@@ -77,7 +77,7 @@ class ReplayChainTest {
             List.of(new RecordingSpan(2, 2000, false), new RecordingSpan(1, 1000, false)));
         final List<RecordingSpan> original = List.copyOf(spans);
 
-        ReplayChain.stitch(spans);
+        ReplayRecordings.stitch(spans);
 
         assertEquals(original, spans);
     }

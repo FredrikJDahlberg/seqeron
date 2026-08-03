@@ -547,11 +547,10 @@ public final class ReplayerService {
         // one that cannot yet make progress.
         int budget = replaySlots.pendingCount();
         while (budget-- > 0) {
-            final ReplaySlotAllocator.PendingRequest req = replaySlots.pollPending();
-            if (req == null) {
-                break;
+            final ReplaySlotAllocator.PendingRequest request = replaySlots.pollPending();
+            if (request != null) {
+                startReplayForClient(request.clientId(), request.segmentIndex(), request.fromPosition());
             }
-            startReplayForClient(req.clientId(), req.segmentIndex(), req.fromPosition());
         }
     }
 
@@ -657,13 +656,13 @@ public final class ReplayerService {
     // globalSeqNo ranges); a cold-starting app replays them in order and de-duplicates by globalSeqNo, so the overlap
     // is harmless. Mirrors ClusterStreamClient.resolveClusterStreamSegments.
     private List<Long> resolveSegments() {
-        final List<ReplayChain.RecordingSpan> spans = new ArrayList<>();
+        final List<ReplayRecordings.RecordingSpan> spans = new ArrayList<>();
         archive.listRecordingsForUri(0, Integer.MAX_VALUE, "", SequencerService.FEEDER_STREAM_ID,
                                      (controlSessionId, correlationId, recordingId, startTimestamp, stopTimestamp,
                                       startPosition, stopPosition, initialTermId, segmentFileLength, termBufferLength,
                                       mtuLength, sessionId, streamId, strippedChannel, originalChannel,
-                                      sourceIdentity) -> spans.add(new ReplayChain.RecordingSpan(recordingId,
+                                      sourceIdentity) -> spans.add(new ReplayRecordings.RecordingSpan(recordingId,
                                           startTimestamp, stopTimestamp == AeronArchive.NULL_TIMESTAMP)));
-        return ReplayChain.stitch(spans);
+        return ReplayRecordings.stitch(spans);
     }
 }

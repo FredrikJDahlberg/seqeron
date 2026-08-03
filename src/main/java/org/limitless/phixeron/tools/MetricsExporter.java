@@ -62,6 +62,9 @@ public final class MetricsExporter {
             Map.entry(PhixeronCounters.SEQUENCER_BOOTSTRAP_ACTIVATED_TYPE_ID, new MetricMeta(
                 "phixeron_sequencer_bootstrap_activated",
                 "1 once the bootstrap GatewayActive has been emitted for the trading day, else 0.", "gauge")),
+            Map.entry(PhixeronCounters.SEQUENCER_TAP_STALLED_TYPE_ID, new MetricMeta(
+                "phixeron_sequencer_tap_stalled",
+                "1 while tap-emit back-pressure has been sustained past the stall threshold, else 0.", "gauge")),
             Map.entry(PhixeronCounters.REPLAYER_STALLED_TYPE_ID, new MetricMeta(
                 "phixeron_replayer_stalled", "1 while the local archive is unreachable for replay, else 0.", "gauge")),
             Map.entry(PhixeronCounters.REPLAYER_READY_TYPE_ID, new MetricMeta(
