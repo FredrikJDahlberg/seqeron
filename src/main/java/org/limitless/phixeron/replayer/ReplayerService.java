@@ -340,15 +340,15 @@ public final class ReplayerService {
      *         retries on the next poll() cycle rather than treating a null as failure)
      */
     private Long peekFirstGlobalSeqNo(final long recordingId) {
-        long tip = archive.getRecordingPosition(recordingId);
-        if (tip < 0) {
-            tip = archive.getStopPosition(recordingId);
+        long position = archive.getRecordingPosition(recordingId);
+        if (position < 0) {
+            position = archive.getStopPosition(recordingId);
         }
-        if (tip <= 0) {
+        if (position <= 0) {
             return null;
         }
 
-        final long replaySessionId = archive.startReplay(recordingId, 0, tip, IPC_CHANNEL, SELF_CHECK_STREAM_ID);
+        final long replaySessionId = archive.startReplay(recordingId, 0, position, IPC_CHANNEL, SELF_CHECK_STREAM_ID);
         try (Subscription sub = aeron.addSubscription(IPC_CHANNEL, SELF_CHECK_STREAM_ID)) {
             final long[] globalSeqNo = {NULL_VALUE};
             final FragmentHandler handler = (buffer, offset, length, header) -> {
