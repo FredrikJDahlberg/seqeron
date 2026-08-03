@@ -15,7 +15,7 @@
 #include <gtest/gtest.h>
 
 #include "aeron_image.h"  // aeron_header_t / aeron_data_header_t layout, to build a header by hand
-#include "org/limitless/phixeron/sequencer/ClusterStreamClient.hpp"
+#include "org/limitless/phixeron/sequencer/ClusterStreamReceiver.hpp"
 
 namespace {
 

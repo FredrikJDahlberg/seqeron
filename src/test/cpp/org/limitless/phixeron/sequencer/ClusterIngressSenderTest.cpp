@@ -17,7 +17,7 @@
 #include <string_view>
 #include <vector>
 
-#include "org/limitless/phixeron/sequencer/ClusterIngressSender.hpp"
+#include "org/limitless/phixeron/sequencer/ClusterStreamSender.hpp"
 
 namespace org::limitless::phixeron::sequencer {
 namespace {
@@ -153,7 +153,7 @@ TEST(ClusterIngressSender, ConnectSendsSessionConnectRequestAndAdoptsSessionOnOk
     auto ingress = std::make_unique<FakeIngressTransport>();
     auto* ingressPtr = ingress.get();
 
-    ClusterIngressSender sender;
+    ClusterStreamSender sender;
     sender.connect(std::move(ingress), std::move(egress));
 
     EXPECT_TRUE(sender.isConnected());
@@ -174,7 +174,7 @@ TEST(ClusterIngressSender, ConnectSendsSessionConnectRequestAndAdoptsSessionOnOk
 
 TEST(ClusterIngressSender, ConnectThrowsWhenClusterNeverAnswers)
 {
-    ClusterIngressSender sender;
+    ClusterStreamSender sender;
     sender.setConnectTimeoutMs(20);
 
     EXPECT_THROW(sender.connect(std::make_unique<FakeIngressTransport>(), std::make_unique<FakeEgressTransport>()),
@@ -188,7 +188,7 @@ TEST(ClusterIngressSender, ConnectIgnoresErrorEventCodesUntilOkArrives)
     egress->m_queued.push_back(encodeSessionEvent(-1, 0, cluster_sbe::EventCode::Value::ERROR));
     egress->m_queued.push_back(encodeSessionEvent(9, 3, cluster_sbe::EventCode::Value::OK));
 
-    ClusterIngressSender sender;
+    ClusterStreamSender sender;
     sender.connect(std::make_unique<FakeIngressTransport>(), std::move(egress));
 
     EXPECT_TRUE(sender.isConnected());
@@ -207,7 +207,7 @@ TEST(ClusterIngressSender, ConnectIgnoresRedirectWithoutAeronClientThenConnectsO
     auto ingress = std::make_unique<FakeIngressTransport>();
     auto* ingressPtr = ingress.get();
 
-    ClusterIngressSender sender;
+    ClusterStreamSender sender;
     sender.connect(std::move(ingress), std::move(egress));
 
     EXPECT_TRUE(sender.isConnected());
@@ -235,7 +235,7 @@ class ConnectedClusterIngressSender : public ::testing::Test {
     static constexpr std::int64_t SESSION_ID = 55;
     static constexpr std::int64_t TERM_ID = 11;
 
-    ClusterIngressSender sender_;
+    ClusterStreamSender sender_;
     FakeIngressTransport* ingress_{nullptr};
     FakeEgressTransport* egress_{nullptr};
 };
@@ -266,7 +266,7 @@ TEST_F(ConnectedClusterIngressSender, SendFramesAPayloadOfTheLargestSupportedSiz
     // encode buffer from. The two used to disagree — a 8192-byte encode buffer against a 4138-byte
     // framing array — so a full-size message memcpy'd past the end of it (doc/review-2026-07-25.md #4).
     // Under the Debug build's AddressSanitizer this fails on the write, not on the size assertion.
-    const std::vector<std::uint8_t> body(ClusterIngressSender::MAX_PAYLOAD_LEN, 0xAB);
+    const std::vector<std::uint8_t> body(ClusterStreamSender::MAX_PAYLOAD_LEN, 0xAB);
     EXPECT_TRUE(sender_.send(body.data(), static_cast<std::uint16_t>(body.size())));
 
     ASSERT_EQ(1u, ingress_->m_offered.size());
@@ -282,7 +282,7 @@ TEST_F(ConnectedClusterIngressSender, SendRefusesAPayloadLargerThanTheFramingBuf
     // (pointer, len) API against a future one that does not. Throwing rather than truncating or
     // dropping: a frame too large to place is a programming error no runtime handling can repair, and
     // dropping it would tear the outbound MsgSeqNum hole send() exists to prevent.
-    const std::vector<std::uint8_t> body(ClusterIngressSender::MAX_PAYLOAD_LEN + 1, 0xCD);
+    const std::vector<std::uint8_t> body(ClusterStreamSender::MAX_PAYLOAD_LEN + 1, 0xCD);
     EXPECT_THROW((void)sender_.send(body.data(), static_cast<std::uint16_t>(body.size())), std::runtime_error);
     EXPECT_TRUE(ingress_->m_offered.empty());
 }
@@ -394,7 +394,7 @@ TEST(ClusterIngressSenderReliableSend, SendSpinsUntilOfferAccepted)
     auto ingress = std::make_unique<FlakyIngressTransport>();
     auto* ingressPtr = ingress.get();
 
-    ClusterIngressSender sender;
+    ClusterStreamSender sender;
     sender.connect(std::move(ingress), std::move(egress));
     ASSERT_TRUE(sender.isConnected());
 
@@ -426,7 +426,7 @@ TEST(ClusterIngressSenderReliableSend, SendReStampsLeadershipTermAfterMidSpinFai
     auto ingress = std::make_unique<FlakyIngressTransport>();
     auto* ingressPtr = ingress.get();
 
-    ClusterIngressSender sender;
+    ClusterStreamSender sender;
     sender.connect(std::move(ingress), std::move(egress));
     ASSERT_TRUE(sender.isConnected());
 
@@ -458,7 +458,7 @@ TEST(ClusterIngressSenderColocated, PollEgressIgnoresIpcRechaseWithoutAeronClien
 
     auto primary = std::make_unique<FakeIngressTransport>();
 
-    ClusterIngressSender sender;
+    ClusterStreamSender sender;
     sender.connectColocated(
         std::move(primary), [&]() -> std::unique_ptr<IngressTransport> { return nullptr; }, std::move(egress),
         /*primaryConnectTimeoutMs=*/1500, /*primaryFailureReason=*/nullptr, /*memberId=*/3);
@@ -497,7 +497,7 @@ TEST(ClusterIngressSenderColocated, FallsBackToSecondaryWhenPrimaryNeverAnswers)
     bool fallbackBuilt = false;
     std::size_t primaryOfferedCountAtFallbackTime = 0;
 
-    ClusterIngressSender sender;
+    ClusterStreamSender sender;
     sender.connectColocated(
         std::move(primary),
         [&]() -> std::unique_ptr<IngressTransport> {
@@ -533,7 +533,7 @@ TEST(ClusterIngressSenderColocated, NullPrimarySkipsStraightToFallback)
     auto fallback = std::make_unique<FakeIngressTransport>();
     auto* fallbackPtr = fallback.get();
 
-    ClusterIngressSender sender;
+    ClusterStreamSender sender;
     sender.connectColocated(
         nullptr, [&]() -> std::unique_ptr<IngressTransport> { return std::move(fallback); }, std::move(egress),
         /*primaryConnectTimeoutMs=*/20,
@@ -554,7 +554,7 @@ TEST(ClusterIngressSenderColocated, PrimarySuccessNeverBuildsFallback)
     auto* primaryPtr = primary.get();
     bool fallbackBuilt = false;
 
-    ClusterIngressSender sender;
+    ClusterStreamSender sender;
     sender.connectColocated(
         std::move(primary),
         [&]() -> std::unique_ptr<IngressTransport> {

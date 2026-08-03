@@ -204,7 +204,7 @@ class AeronEgressTransport : public EgressTransport {
 // no connection id of its own — the caller bakes it into the message before
 // calling send(). sourceId (this process's fixed identity) is held here
 // instead, since it's the same for every message this sender ever submits.
-class ClusterIngressSender {
+class ClusterStreamSender {
    public:
     // Largest sbe-unsequenced.xml payload send() can frame. Every caller sizes its encode buffer from
     // this (see FixIngressHandler::m_buffer), so a caller's buffer and send()'s framing buffer cannot

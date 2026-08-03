@@ -53,7 +53,7 @@
 // stream id, which the live tap and the Replayer's replays both address) — header-only; brings in
 // archive headers it does not otherwise need, which is harmless — the un-rewired binaries include the
 // same header.
-#include "org/limitless/phixeron/sequencer/ClusterStreamClient.hpp"
+#include "org/limitless/phixeron/sequencer/ClusterStreamReceiver.hpp"
 #include "org/limitless/phixeron/util/Logger.hpp"
 
 // Replay-protocol control codecs (sbe-unsequenced.xml) + LeadershipChanged (sbe-sequenced.xml)
@@ -95,7 +95,7 @@ inline constexpr std::uint16_t LEADERSHIP_CHANGED_TEMPLATE_ID = 5;
  * de-duping by globalSeqNo — robust to a leader failover having rotated the active recording. No archive
  * connection is opened here.
  */
-class ReplayerClient
+class ReplayerStreamReceiver
 {
    public:
     using OnSequenced = std::function<void(const SequencedEvent&)>;
@@ -104,7 +104,7 @@ class ReplayerClient
     using OnLeadershipChanged = std::function<void(std::int32_t newLeaderMemberId, std::int64_t globalSeqNo)>;
     using OnCaughtUp = std::function<void()>;
 
-    ReplayerClient(std::int32_t clientId, OnSequenced onSequenced, OnConnected onConnected = {},
+    ReplayerStreamReceiver(std::int32_t clientId, OnSequenced onSequenced, OnConnected onConnected = {},
                    OnDisconnected onDisconnected = {}, OnLeadershipChanged onLeadershipChanged = {},
                    OnCaughtUp onCaughtUp = {})
         : m_clientId(clientId),

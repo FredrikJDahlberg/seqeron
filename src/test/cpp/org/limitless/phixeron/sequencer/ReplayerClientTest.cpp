@@ -16,7 +16,7 @@
 #include <gtest/gtest.h>
 
 #include "aeron_image.h"  // aeron_header_t / aeron_data_header_t layout, to build a header by hand
-#include "org/limitless/phixeron/sequencer/ReplayerClient.hpp"
+#include "org/limitless/phixeron/replayer/ReplayerStreamReceiver.hpp"
 #include "org/limitless/phixeron/util/Logger.hpp"
 #include "org_limitless_phixeron_sbe_sequenced/Heartbeat.h"
 #include "org_limitless_phixeron_sbe_unsequenced/ReplayPending.h"
@@ -95,7 +95,7 @@ std::vector<std::uint8_t> encodeHeartbeat(const std::int64_t globalSeqNo)
 }
 
 // Feeds one Heartbeat frame straight into the client, exactly as poll() would off the live tap.
-void deliverLive(ReplayerClient& client, const std::int64_t globalSeqNo)
+void deliverLive(ReplayerStreamReceiver& client, const std::int64_t globalSeqNo)
 {
     auto buf = encodeHeartbeat(globalSeqNo);
     const auto frameLength = DATA_HEADER_LENGTH + static_cast<std::int32_t>(buf.size());
@@ -107,7 +107,7 @@ void deliverLive(ReplayerClient& client, const std::int64_t globalSeqNo)
 TEST(ReplayerClientBaseline, FirstFrameAtGlobalSeqNoOneIsAccepted)
 {
     int delivered = 0;
-    ReplayerClient client{1, [&](const SequencedEvent&) { ++delivered; }};
+    ReplayerStreamReceiver client{1, [&](const SequencedEvent&) { ++delivered; }};
 
     deliverLive(client, 1);
 
@@ -117,7 +117,7 @@ TEST(ReplayerClientBaseline, FirstFrameAtGlobalSeqNoOneIsAccepted)
 
 TEST(ReplayerClientBaseline, FirstFrameNotAtGlobalSeqNoOneAbortsTheProcess)
 {
-    ReplayerClient client{1, [](const SequencedEvent&) {}};
+    ReplayerStreamReceiver client{1, [](const SequencedEvent&) {}};
 
     EXPECT_DEATH(deliverLive(client, 57), "globalSeqNo=57, expected 1")
         << "must not silently adopt a mid-stream baseline";
@@ -136,7 +136,7 @@ TEST(ReplayerClientBaseline, FirstFrameNotAtGlobalSeqNoOneAbortsTheProcess)
 // the 2026-07-31 bug involved.
 
 // One Heartbeat frame from a replay image (fromReplay=true), otherwise identical to deliverLive.
-void deliverReplay(ReplayerClient& client, const std::int64_t globalSeqNo)
+void deliverReplay(ReplayerStreamReceiver& client, const std::int64_t globalSeqNo)
 {
     auto buf = encodeHeartbeat(globalSeqNo);
     const auto frameLength = DATA_HEADER_LENGTH + static_cast<std::int32_t>(buf.size());
@@ -168,7 +168,7 @@ std::vector<std::uint8_t> encodeReplayPending(const std::int32_t clientId)
 
 // Feeds one already-encoded control-stream message (Replaying/ReplayPending) straight into the client,
 // exactly as onControl() would decode it off the Replayer's control subscription.
-void deliverControl(ReplayerClient& client, const std::vector<std::uint8_t>& body)
+void deliverControl(ReplayerStreamReceiver& client, const std::vector<std::uint8_t>& body)
 {
     Frame frame{/*termOffset=*/0, DATA_HEADER_LENGTH + static_cast<std::int32_t>(body.size())};
     aeron::concurrent::AtomicBuffer ab(const_cast<std::uint8_t*>(body.data()), body.size());
@@ -178,7 +178,7 @@ void deliverControl(ReplayerClient& client, const std::vector<std::uint8_t>& bod
 TEST(ReplayerClientGapRecovery, MidStreamGapTriggersReplayRequestAndWithholdsTheOutOfOrderFrame)
 {
     int delivered = 0;
-    ReplayerClient client{1, [&](const SequencedEvent&) { ++delivered; }};
+    ReplayerStreamReceiver client{1, [&](const SequencedEvent&) { ++delivered; }};
 
     deliverLive(client, 1);
     deliverLive(client, 2);
@@ -195,7 +195,7 @@ TEST(ReplayerClientGapRecovery, MidStreamGapTriggersReplayRequestAndWithholdsThe
 TEST(ReplayerClientGapRecovery, TapGapReportsAStructuredDiagnosticEvent)
 {
     ScopedLoggerSink sink;
-    ReplayerClient client{1, [](const SequencedEvent&) {}};
+    ReplayerStreamReceiver client{1, [](const SequencedEvent&) {}};
 
     deliverLive(client, 1);
     deliverLive(client, 2);
@@ -213,7 +213,7 @@ TEST(ReplayerClientGapRecovery, TapGapReportsAStructuredDiagnosticEvent)
 TEST(ReplayerClientGapRecovery, NewGapWhileReplaySessionActiveSupersedesTheInFlightWalk)
 {
     int delivered = 0;
-    ReplayerClient client{1, [&](const SequencedEvent&) { ++delivered; }};
+    ReplayerStreamReceiver client{1, [&](const SequencedEvent&) { ++delivered; }};
 
     deliverLive(client, 1);
     deliverLive(client, 5);  // gap -> requestReplay(0, 0), awaiting
@@ -245,7 +245,7 @@ TEST(ReplayerClientGapRecovery, NewGapWhileReplaySessionActiveSupersedesTheInFli
 
 TEST(ReplayerClientGapRecovery, SteadyStateGapAlwaysRestartsTheWalkFromSegmentZero)
 {
-    ReplayerClient client{1, [](const SequencedEvent&) {}};
+    ReplayerStreamReceiver client{1, [](const SequencedEvent&) {}};
 
     // Move the walk index off 0 first (simulating a cold-start walk already into segment 2).
     deliverControl(client, encodeReplaying(/*clientId=*/1, /*replaySessionId=*/7, /*catchUpPosition=*/100));
@@ -267,7 +267,7 @@ TEST(ReplayerClientGapRecovery, SteadyStateGapAlwaysRestartsTheWalkFromSegmentZe
 TEST(ReplayerClientGapRecovery, DuplicateAndStaleFramesFromReplayAreDropped)
 {
     int delivered = 0;
-    ReplayerClient client{1, [&](const SequencedEvent&) { ++delivered; }};
+    ReplayerStreamReceiver client{1, [&](const SequencedEvent&) { ++delivered; }};
 
     deliverLive(client, 1);
     deliverLive(client, 2);
@@ -283,7 +283,7 @@ TEST(ReplayerClientGapRecovery, DuplicateAndStaleFramesFromReplayAreDropped)
 
 TEST(ReplayerClientGapRecovery, NoReplayNeededMarksCaughtUpAndClearsWalkState)
 {
-    ReplayerClient client{1, [](const SequencedEvent&) {}};
+    ReplayerStreamReceiver client{1, [](const SequencedEvent&) {}};
 
     ASSERT_FALSE(client.isCaughtUp());
     deliverControl(client, encodeReplaying(/*clientId=*/1, REPLAYER_NO_REPLAY_NEEDED, /*catchUpPosition=*/0));
@@ -296,7 +296,7 @@ TEST(ReplayerClientGapRecovery, NoReplayNeededMarksCaughtUpAndClearsWalkState)
 
 TEST(ReplayerClientGapRecovery, ReplayingWithSessionArmsReplayWithoutMarkingCaughtUp)
 {
-    ReplayerClient client{1, [](const SequencedEvent&) {}};
+    ReplayerStreamReceiver client{1, [](const SequencedEvent&) {}};
 
     deliverControl(client, encodeReplaying(/*clientId=*/1, /*replaySessionId=*/42, /*catchUpPosition=*/1'000));
 
@@ -307,7 +307,7 @@ TEST(ReplayerClientGapRecovery, ReplayingWithSessionArmsReplayWithoutMarkingCaug
 
 TEST(ReplayerClientGapRecovery, ReplayingForAnotherClientIdIsIgnored)
 {
-    ReplayerClient client{1, [](const SequencedEvent&) {}};
+    ReplayerStreamReceiver client{1, [](const SequencedEvent&) {}};
 
     deliverControl(client, encodeReplaying(/*clientId=*/2, /*replaySessionId=*/42, /*catchUpPosition=*/1'000));
 
@@ -318,7 +318,7 @@ TEST(ReplayerClientGapRecovery, ReplayingForAnotherClientIdIsIgnored)
 
 TEST(ReplayerClientGapRecovery, SegmentCompleteAdvancesTheWalkAndReRequestsTheNextSegment)
 {
-    ReplayerClient client{1, [](const SequencedEvent&) {}};
+    ReplayerStreamReceiver client{1, [](const SequencedEvent&) {}};
     deliverControl(client, encodeReplaying(/*clientId=*/1, /*replaySessionId=*/7, /*catchUpPosition=*/500));
     ASSERT_EQ(7, client.testReplaySessionId());
 
@@ -332,7 +332,7 @@ TEST(ReplayerClientGapRecovery, SegmentCompleteAdvancesTheWalkAndReRequestsTheNe
 TEST(ReplayerClientGapRecovery, ReplayPendingHoldsAtTheGapWithoutAssigningASession)
 {
     int delivered = 0;
-    ReplayerClient client{1, [&](const SequencedEvent&) { ++delivered; }};
+    ReplayerStreamReceiver client{1, [&](const SequencedEvent&) { ++delivered; }};
     deliverLive(client, 1);
     deliverLive(client, 5);  // gap -> awaiting a replay
     ASSERT_TRUE(client.testIsAwaitingReplay());
@@ -353,7 +353,7 @@ TEST(ReplayerClientGapRecovery, ReplayPendingHoldsAtTheGapWithoutAssigningASessi
 // dispatch routing above, which needs a live tap subscription poll() has no seam to fake.
 TEST(ReplayerClientGapRecovery, StuckAwaitingReplayResendsAfterTheIntervalElapses)
 {
-    ReplayerClient client{1, [](const SequencedEvent&) {}};
+    ReplayerStreamReceiver client{1, [](const SequencedEvent&) {}};
 
     deliverLive(client, 1);
     deliverLive(client, 5);  // gap -> requestReplay(0, 0), arming the resend timer
@@ -382,7 +382,7 @@ TEST(ReplayerClientGapRecovery, StuckAwaitingReplayResendsAfterTheIntervalElapse
 // missing one of them.
 TEST(ReplayerClientGapRecovery, RecoveringFlagTracksWalkAndAwaitingReplayState)
 {
-    ReplayerClient client{1, [](const SequencedEvent&) {}};
+    ReplayerStreamReceiver client{1, [](const SequencedEvent&) {}};
     EXPECT_FALSE(client.testIsRecovering()) << "nothing in flight yet";
 
     deliverLive(client, 1);
