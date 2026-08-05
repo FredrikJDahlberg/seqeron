@@ -65,6 +65,12 @@ public final class MetricsExporter {
             Map.entry(PhixeronCounters.SEQUENCER_TAP_STALLED_TYPE_ID, new MetricMeta(
                 "phixeron_sequencer_tap_stalled",
                 "1 while tap-emit back-pressure has been sustained past the stall threshold, else 0.", "gauge")),
+            Map.entry(PhixeronCounters.SEQUENCER_CONNECTED_CLIENTS_TYPE_ID, new MetricMeta(
+                "phixeron_sequencer_connected_clients",
+                "Current count of TCP clients connected across every gateway.", "gauge")),
+            Map.entry(PhixeronCounters.SEQUENCER_INGRESS_MESSAGES_TYPE_ID, new MetricMeta(
+                "phixeron_sequencer_ingress_messages_total",
+                "Count of ingress messages successfully sequenced.", "counter")),
             Map.entry(PhixeronCounters.REPLAYER_STALLED_TYPE_ID, new MetricMeta(
                 "phixeron_replayer_stalled", "1 while the local archive is unreachable for replay, else 0.", "gauge")),
             Map.entry(PhixeronCounters.REPLAYER_READY_TYPE_ID, new MetricMeta(

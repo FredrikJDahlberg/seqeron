@@ -155,6 +155,8 @@ public final class SequencerService implements ClusteredService {
     private Counter lastTickTimestampCounter;
     private Counter gatewayPromotionCounter;
     private Counter bootstrapActivatedCounter;
+    private Counter connectedClientsCounter;
+    private Counter messagesSequencedCounter;
 
     /** Gateway topology is derived from the sequenced Gateway rows (see {@link Sequencer}), not configured. */
     public SequencerService() {
@@ -252,6 +254,10 @@ public final class SequencerService implements ClusteredService {
             "phixeron.sequencer.gatewayPromotionCount member=" + memberId, memberId);
         bootstrapActivatedCounter = PhixeronCounters.addCounter(aeron, PhixeronCounters.SEQUENCER_BOOTSTRAP_ACTIVATED_TYPE_ID,
             "phixeron.sequencer.bootstrapActivated member=" + memberId, memberId);
+        connectedClientsCounter = PhixeronCounters.addCounter(aeron, PhixeronCounters.SEQUENCER_CONNECTED_CLIENTS_TYPE_ID,
+            "phixeron.sequencer.connectedClients member=" + memberId, memberId);
+        messagesSequencedCounter = PhixeronCounters.addCounter(aeron, PhixeronCounters.SEQUENCER_INGRESS_MESSAGES_TYPE_ID,
+            "phixeron.sequencer.ingressMessages member=" + memberId, memberId);
     }
 
     /**
@@ -300,6 +306,7 @@ public final class SequencerService implements ClusteredService {
         ensureCounters();
         final int sequenced = sequencer.sequenceMessage(buffer, offset, length, session.id(), timestamp);
         if (sequenced != Sequencer.NO_FRAME) {
+            messagesSequencedCounter.increment();
             emit(sequenced);
         } else {
             rejectedIngressCounter.increment();
@@ -429,7 +436,7 @@ public final class SequencerService implements ClusteredService {
         final Counter[] counters = {
             globalSeqNoCounter, tapBackPressureAlertCounter, tapStalledCounter, rejectedIngressCounter,
             leadershipChangeCounter, currentLeaderMemberIdCounter, lastTickTimestampCounter, gatewayPromotionCounter,
-            bootstrapActivatedCounter
+            bootstrapActivatedCounter, connectedClientsCounter, messagesSequencedCounter
         };
         for (final Counter counter : counters) {
             if (counter != null) {
@@ -480,5 +487,6 @@ public final class SequencerService implements ClusteredService {
                     "RECOVERED: tap back-pressure cleared at globalSeqNo=%d", sequencer.globalSeqNo());
         }
         globalSeqNoCounter.set(sequencer.globalSeqNo());
+        connectedClientsCounter.set(sequencer.connectedClientCount());
     }
 }

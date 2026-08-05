@@ -9,6 +9,8 @@ import org.limitless.phixeron.sbe.sequenced.LeadershipChangedEncoder;
 import org.limitless.phixeron.sbe.sequenced.MessageHeaderEncoder;
 import org.limitless.phixeron.sbe.sequenced.TickEncoder;
 import org.limitless.phixeron.sbe.unsequenced.BasicDataGatewayDecoder;
+import org.limitless.phixeron.sbe.unsequenced.ClientConnectedDecoder;
+import org.limitless.phixeron.sbe.unsequenced.ClientDisconnectedDecoder;
 import org.limitless.phixeron.sbe.unsequenced.EndBasicDataDecoder;
 import org.limitless.phixeron.sbe.unsequenced.HeaderDecoder;
 import org.limitless.phixeron.sbe.unsequenced.MessageHeaderDecoder;
@@ -134,6 +136,14 @@ public final class Sequencer {
      */
     private final java.util.Map<Long, Integer> gatewaySessionSourceId = new java.util.HashMap<>();
 
+    /**
+     * Count of TCP clients currently connected across every gateway, derived from {@code
+     * ClientConnected}/{@code ClientDisconnected} ingress frames as they pass through {@link
+     * #sequenceMessage} — the same pattern as {@link #gatewaySourceIds}. Replicated state: every node
+     * counts the same connect/disconnect pairs off the same log.
+     */
+    private int connectedClientCount = 0;
+
     /** True once the bootstrap {@code GatewayActive} has been synthesized (on the first EndBasicData). */
     private boolean bootstrapActivationEmitted = false;
 
@@ -159,6 +169,11 @@ public final class Sequencer {
     /** memberId of the last observed leader; -1 until the first {@link #leadershipChanged}. */
     public int currentLeaderMemberId() {
         return currentLeaderMemberId;
+    }
+
+    /** Count of TCP clients currently connected across every gateway; 0 before any {@code ClientConnected}. */
+    public int connectedClientCount() {
+        return connectedClientCount;
     }
 
     /**
@@ -219,6 +234,11 @@ public final class Sequencer {
         if (templateId == EndBasicDataDecoder.TEMPLATE_ID && !bootstrapActivationEmitted) {
             bootstrapActivationEmitted = true;
             bootstrapActivationPending = true;
+        }
+        if (templateId == ClientConnectedDecoder.TEMPLATE_ID) {
+            connectedClientCount++;
+        } else if (templateId == ClientDisconnectedDecoder.TEMPLATE_ID) {
+            connectedClientCount--;
         }
 
         // sbe-sequenced.xml's header composite is sbe-unsequenced.xml's plus two int64 fields

@@ -49,6 +49,12 @@ public final class PhixeronCounters {
      */
     public static final int SEQUENCER_TAP_STALLED_TYPE_ID = 5008;
 
+    /** Current count of TCP clients connected across every gateway, derived from the sequenced log. */
+    public static final int SEQUENCER_CONNECTED_CLIENTS_TYPE_ID = 5009;
+
+    /** Count of ingress messages successfully sequenced; {@code rate()} over this is ingress throughput. */
+    public static final int SEQUENCER_INGRESS_MESSAGES_TYPE_ID = 5010;
+
     // ── ReplayerService (per-node replay server) ───────────────────────────────
     public static final int REPLAYER_TYPE_ID_MIN = 5100;
     public static final int REPLAYER_TYPE_ID_MAX = 5199;

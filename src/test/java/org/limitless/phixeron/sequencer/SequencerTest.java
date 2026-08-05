@@ -367,6 +367,28 @@ class SequencerTest {
         assertEquals(length, MessageHeaderDecoder.ENCODED_LENGTH + TickDecoder.BLOCK_LENGTH);
     }
 
+    @Test
+    @DisplayName("connectedClientCount tracks ClientConnected/ClientDisconnected pairs off the log")
+    void connectedClientCountTracksLifecycleFrames() {
+        final Sequencer seq = new Sequencer();
+        final MutableDirectBuffer lifecycle = new ExpandableArrayBuffer(64);
+        assertEquals(0, seq.connectedClientCount());
+
+        seq.sequenceMessage(lifecycle, 0, encodeIngressClientConnected(lifecycle, 0), SESSION_ID, TIMESTAMP);
+        assertEquals(1, seq.connectedClientCount());
+
+        seq.sequenceMessage(lifecycle, 0, encodeIngressClientConnected(lifecycle, 0), SESSION_ID + 1, TIMESTAMP);
+        assertEquals(2, seq.connectedClientCount());
+
+        seq.sequenceMessage(lifecycle, 0, encodeIngressClientDisconnected(lifecycle, 0), SESSION_ID, TIMESTAMP + 1);
+        assertEquals(1, seq.connectedClientCount());
+
+        // Ordinary application traffic must not perturb the count.
+        final int orderLength = encodeIngressNewOrderSingle(ingress, 0);
+        seq.sequenceMessage(ingress, 0, orderLength, SESSION_ID + 1, TIMESTAMP + 2);
+        assertEquals(1, seq.connectedClientCount());
+    }
+
     // ── Standby promotion (GatewayActive) ─────────────────────────────────────
 
     @Test
