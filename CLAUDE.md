@@ -110,17 +110,17 @@ Run a single test: `./cmake-build-debug/phixeron_tests --gtest_filter='FixIngres
 
 ### Data flow
 ```
-FIX client (TCP) ⇄ FixGateway (C++)  ⇄  Aeron Cluster (Java, Raft-replicated)
-                                                      │
-                        sequenced tap, per node (aeron:ipc 205, archived on every node)
-                       live: read directly · history/gaps: co-located ReplayerService
-                                                      │
-                          ┌───────────────────────────┴───────────────────────────┐
-                          ▼                                                       ▼
-                 FixGateway                                          OrderExecClient (C++)
-              (delivers ExecutionReports                              (prints app messages, tracks
-               back to the originating                                  positions from fills, answers
-               TCP client)                                               PortfolioQueryRequest)
+FIX client (TCP) ⇄ FixGateway (C++)  ──output──▶  Aeron Cluster (Java, Raft-replicated)
+                                                              │
+                              IPC (aeron:ipc 205), sequenced frames — recorded on every node
+                               live tap: read directly · history/gaps: replay via co-located ReplayerService
+                                                              │
+                                  ┌───────────────────────────┴───────────────────────────┐
+                                  ▼                                                       ▼
+                                  FixGateway                          OrderExecClient (C++)
+                                (delivers ExecutionReports           (prints app messages, tracks
+                                 back to the originating             positions from fills, answers
+                                 TCP client)                          PortfolioQueryRequest)
 ```
 `fix_test_server` (C++, under `src/test/cpp/.../session/`) is a standalone FIX TCP client used to
 drive the whole pipeline end-to-end (Logon → Heartbeat → NewOrderSingle → Logout, plus a direct
@@ -224,7 +224,7 @@ Both the Java (`generateUnsequencedSbe`/`generateSequencedSbe` Gradle tasks) and
 targets) sides regenerate independently from the same XML — keep both in sync when editing a
 schema.
 
-### Order execution client — `OrderExecClient` (C++, under `src/main/cpp/.../sequencer/OrderExecClient.cpp`)
+### Order execution client — `OrderExecClient` (C++, under `src/main/cpp/.../order/OrderExecClient.cpp`)
 Combines what used to be two separate binaries — `application_stream_client` and the C++
 `RiskEngineClient` — into one. Replays the cluster stream then follows it live, printing every
 `NewOrderSingle`/`ExecutionReport` it decodes (lifecycle events are filtered out), while also
@@ -234,6 +234,29 @@ submitting the reply back to cluster ingress. Throttling beyond 5 concurrent req
 leaving the request fragment unconsumed on the cluster stream until a slot frees, not by blocking
 or dropping it. The original Java `RiskEngineClient`/`MockRiskEngine` are dead code, already
 removed (`src/main/java/org/limitless/phixeron/risk/` deleted).
+
+### Reference-data gateway — `BasicDataClient` / `Gateways` (C++, under `src/main/cpp/.../basicdata/`)
+Dual-role per-node process (`doc/basicdata-design.md`): on the **leader** it's a producer — reads
+static reference data (FIX session comp-id pairs, gateway topology, the trading-day calendar;
+currently hardcoded in `BasicDataConstants.hpp`, standing in for a real DB read) and publishes it as
+ordinary sequenced `BasicData*` messages, an external-input adapter exactly like the FIX gateway is
+for TCP. On **every node** it's a consumer — follows the co-located tap (like `OrderExecClient`
+tracks positions) to build an identical in-memory reference-data view, giving reference data the
+same node-loss fault tolerance as business state.
+
+A load is a bracketed, fixed-order run: `StartBasicData(sectionCount=3)` → Gateway rows → session
+rows → TradingDay rows → `EndBasicData`, each section's `remainingItems` counting down to 0 — the
+completion contract that makes an interrupted load detectable and resumable (recovery replays the
+same code path as first load, resuming at the first incomplete section). Gateways load first so a
+gateway resolves its own `{gatewayId, gatewaySourceId}` (`Gateways::resolve`, keyed on the
+launch-time `PHIXERON_FIX_GATEWAY_NAME`) before session rows arrive, letting it drop, on ingest,
+every session a different logical gateway owns. `resolve()` returns `nullopt` on no match — callers
+must fail closed rather than default to sourceId 0.
+
+This is also where FIX session identity comes from at runtime: CompIDs are never hardcoded per
+process — the gateway starts with none and resolves them from the BasicData SessionMap (ingress via
+`resolveSession`, outbound via `handleLogon` → `applyResolvedIdentity`). Reference rows are static
+for the trading day — no add/remove/re-point while a session is live.
 
 ### Known gaps
 `todo.md` tracks known incomplete pieces (e.g. ExecutionReport→TCP routing in
