@@ -18,9 +18,11 @@ import org.agrona.concurrent.YieldingIdleStrategy;
 import org.agrona.concurrent.status.CountersReader;
 import org.limitless.phixeron.PhixeronCounters;
 import org.limitless.phixeron.sbe.sequenced.ClusterStartedDecoder;
+import org.limitless.phixeron.sbe.sequenced.GatewayActiveDecoder;
 import org.limitless.phixeron.sbe.sequenced.MessageHeaderDecoder;
 import org.limitless.phixeron.sbe.unsequenced.ClusterStartedEncoder;
 import org.limitless.phixeron.sbe.unsequenced.ClusterStoppedEncoder;
+import org.limitless.phixeron.sbe.unsequenced.GatewayActiveEncoder;
 import org.limitless.phixeron.sbe.unsequenced.MessageHeaderEncoder;
 import org.limitless.phixeron.sequencer.SequencerNode;
 import org.limitless.phixeron.sequencer.SequencerService;
@@ -49,6 +51,13 @@ import org.limitless.phixeron.sequencer.SequencerService;
  *       {@code ClusterStopped}) to disk — so the log stays replayable/analysable afterwards. Best
  *       effort: if the echo does not arrive (an unhealthy cluster — often why one stops early), it
  *       aborts anyway, still via {@code ABORT} rather than SIGKILL, so the log is preserved.</li>
+ *   <li><b>activate &lt;gatewayId&gt;</b> — manual standby promotion: publishes an unsequenced
+ *       {@code GatewayActive(gatewayId)} to cluster ingress and waits for its sequenced echo on the
+ *       tap. No special-casing needed on the sequencer side — {@code GatewayActive} passes through
+ *       {@code Sequencer.sequenceMessage} like any other message, the same path the sequencer's own
+ *       bootstrap/promotion activations take. Every gateway instance reacts identically regardless of
+ *       which of the two publishes it: the instance whose {@code gatewayId}/{@code gatewaySourceId}
+ *       matches opens its accept gate, the others stay standby.</li>
  *   <li><b>counters</b> — lists this node's phixeron operator counters ({@link
  *       org.limitless.phixeron.PhixeronCounters}), read directly off the co-located Aeron
  *       directory's CnC file. No cluster connection, so it works with no elected leader and is
@@ -105,6 +114,9 @@ public final class ClusterCtl {
                 break;
             case "shutdown":
                 System.exit(shutdown());
+                break;
+            case "activate":
+                System.exit(activate(args));
                 break;
             case "counters":
                 System.exit(counters());
@@ -170,6 +182,112 @@ public final class ClusterCtl {
         }
         System.out.println("[clusterctl] shutdown: cluster abort requested");
         return 0;
+    }
+
+    // ── activate ──────────────────────────────────────────────────────────────
+
+    /**
+     * Manual standby promotion: publishes {@code GatewayActive(gatewayId)} to cluster ingress and
+     * waits for its sequenced echo, mirroring {@link #start()}'s connect/publish/await-echo shape.
+     * No leader gate — routing to the leader is cluster ingress's job, same as {@code start}.
+     */
+    private static int activate(final String[] args) {
+        if (args.length < 2) {
+            System.err.println("[clusterctl] activate: missing <gatewayId>");
+            return 2;
+        }
+        final int gatewayId;
+        try {
+            gatewayId = Integer.parseInt(args[1]);
+        } catch (final NumberFormatException ex) {
+            System.err.println("[clusterctl] activate: <gatewayId> must be an integer, got '" + args[1] + "'");
+            return 2;
+        }
+
+        try (AeronCluster cluster = connectCluster()) {
+            final long globalSeqNo = publishGatewayActiveAndAwaitEcho(cluster, gatewayId);
+            if (globalSeqNo < 0) {
+                System.err.println("[clusterctl] activate: no sequenced GatewayActive echo within timeout");
+                return 1;
+            }
+            System.out.printf("[clusterctl] activate: GatewayActive(gatewayId=%d) recorded at globalSeqNo=%d%n",
+                               gatewayId, globalSeqNo);
+            return 0;
+        } catch (final Exception ex) {
+            System.err.println("[clusterctl] activate: no elected leader / cluster unreachable (" + ex.getMessage() + ")");
+            return 1;
+        }
+    }
+
+    /**
+     * Publishes an unsequenced {@code GatewayActive(gatewayId)} marker, then reads this node's
+     * co-located tap for the matching sequenced echo. Returns the assigned globalSeqNo, or -1 on
+     * timeout (tap unavailable, or no echo within {@link #ECHO_TIMEOUT_NS}). Structured like {@link
+     * #publishMarkerAndAwaitEcho} but kept separate: {@code GatewayActive} has no correlationId to
+     * match on (it carries only {@code gatewayId}), so it matches the echo by {@code gatewayId} instead.
+     */
+    private static long publishGatewayActiveAndAwaitEcho(final AeronCluster cluster, final int gatewayId) {
+        final Subscription tap = cluster.context().aeron()
+            .addSubscription(SequencerService.FEEDER_CHANNEL, SequencerService.FEEDER_STREAM_ID);
+        final long connectDeadline = System.nanoTime() + CONNECT_TIMEOUT_NS;
+        while (!tap.isConnected()) {
+            if (System.nanoTime() >= connectDeadline) {
+                System.err.printf("[clusterctl] tap (aeron:ipc/%d) not available — co-located with a SequencerNode?%n",
+                                  SequencerService.FEEDER_STREAM_ID);
+                return -1;
+            }
+            cluster.pollEgress();
+            IDLE.idle();
+        }
+
+        final ExpandableArrayBuffer buffer = new ExpandableArrayBuffer(64);
+        final GatewayActiveEncoder encoder = new GatewayActiveEncoder();
+        encoder.wrapAndApplyHeader(buffer, 0, new MessageHeaderEncoder());
+        encoder.header().sourceId(NO_ID).connectionId(NO_ID).sessionId(NO_ID);
+        encoder.gatewayId(gatewayId);
+        final int length = MessageHeaderEncoder.ENCODED_LENGTH + encoder.encodedLength();
+        offer(cluster, buffer, length);
+
+        final GatewayActiveEchoHandler handler = new GatewayActiveEchoHandler(gatewayId);
+        final FragmentAssembler assembler = new FragmentAssembler(handler);
+        final long deadline = System.nanoTime() + ECHO_TIMEOUT_NS;
+        while (!handler.found && System.nanoTime() < deadline) {
+            final int fragments = tap.poll(assembler, 10);
+            cluster.pollEgress();
+            IDLE.idle(fragments);
+        }
+        return handler.found ? handler.globalSeqNo : -1;
+    }
+
+    /** Matches the sequenced {@code GatewayActive} echo of our own marker by gatewayId. */
+    private static final class GatewayActiveEchoHandler implements FragmentHandler {
+        private final int gatewayId;
+        private final MessageHeaderDecoder messageHeader = new MessageHeaderDecoder();
+        private final GatewayActiveDecoder decoder = new GatewayActiveDecoder();
+        private boolean found;
+        private long globalSeqNo;
+
+        GatewayActiveEchoHandler(final int gatewayId) {
+            this.gatewayId = gatewayId;
+        }
+
+        @Override
+        public void onFragment(final DirectBuffer buffer, final int offset, final int length, final Header header) {
+            if (found) {
+                return;
+            }
+            messageHeader.wrap(buffer, offset);
+            if (messageHeader.schemaId() != GatewayActiveDecoder.SCHEMA_ID
+                || messageHeader.templateId() != GatewayActiveDecoder.TEMPLATE_ID) {
+                return;
+            }
+            decoder.wrap(buffer, offset + MessageHeaderDecoder.ENCODED_LENGTH, messageHeader.blockLength(),
+                         messageHeader.version());
+            if (decoder.gatewayId() == gatewayId) {
+                globalSeqNo = decoder.header().globalSeqNo();
+                found = true;
+            }
+        }
     }
 
     // ── counters ────────────────────────────────────────────────────────────────
@@ -338,6 +456,9 @@ public final class ClusterCtl {
 
               start        record a "system started" marker (requires an elected leader)
               shutdown     orderly stop; safe to run on every node, no-op on followers
+              activate <gatewayId>
+                           manual standby promotion; publishes GatewayActive(gatewayId) and
+                           waits for its sequenced echo (requires an elected leader)
               counters     list this node's phixeron operator counters (SequencerService/
                            ReplayerService); no cluster connection needed, safe on every node
               snapshot     this operation is not supported

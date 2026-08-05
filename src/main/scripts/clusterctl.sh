@@ -5,10 +5,11 @@
 # run co-located on a SequencerNode host — it shares that node's Aeron directory (to reach the
 # co-located tap over aeron:ipc) and its clusterDir (for io.aeron.cluster.ClusterTool).
 #
-#   clusterctl.sh start          # record a "system started" marker (requires an elected leader)
-#   clusterctl.sh shutdown       # orderly stop; safe on every node, no-op on followers
+#   clusterctl.sh start             # record a "system started" marker (requires an elected leader)
+#   clusterctl.sh shutdown          # orderly stop; safe on every node, no-op on followers
+#   clusterctl.sh activate <id>     # manual standby promotion (requires an elected leader)
 #   clusterctl.sh help
-#   clusterctl.sh describe …     # anything else → ClusterTool passthrough
+#   clusterctl.sh describe …        # anything else → ClusterTool passthrough
 #
 # Config (override the SequencerNode-mirroring defaults for multi-node / custom dirs):
 #   CLUSTERCTL_MEMBER_ID          co-located member id             (default 0)

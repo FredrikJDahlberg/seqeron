@@ -35,10 +35,11 @@ launched by `src/main/scripts/clusterctl.sh` — a thin wrapper matching the oth
 the classpath / `--add-opens` JVM options and forwards the subcommand and its arguments:
 
 ```
-clusterctl.sh start          # record a "system started" marker
-clusterctl.sh shutdown       # orderly stop
+clusterctl.sh start             # record a "system started" marker
+clusterctl.sh shutdown          # orderly stop
+clusterctl.sh activate <id>     # manual standby promotion
 clusterctl.sh help
-clusterctl.sh describe …     # → ClusterTool passthrough
+clusterctl.sh describe …        # → ClusterTool passthrough
 ```
 
 (`ClusterCtl` is named to mirror the script and to avoid shadowing Aeron's own
@@ -48,12 +49,13 @@ clusterctl.sh describe …     # → ClusterTool passthrough
 ## Commands
 
 ```
-clusterctl.sh start        record a "system started" marker (precondition: elected leader)
-clusterctl.sh shutdown     orderly stop; run on every node, no-op on followers
-clusterctl.sh counters     list this node's phixeron operator counters; no cluster connection
-                           needed, safe on every node
-clusterctl.sh help         list commands and exit
-clusterctl.sh <other...>   pass through to ClusterTool (describe / errors / list-members / …)
+clusterctl.sh start          record a "system started" marker (precondition: elected leader)
+clusterctl.sh shutdown       orderly stop; run on every node, no-op on followers
+clusterctl.sh activate <id>  manual standby promotion (precondition: elected leader)
+clusterctl.sh counters       list this node's phixeron operator counters; no cluster connection
+                             needed, safe on every node
+clusterctl.sh help           list commands and exit
+clusterctl.sh <other...>     pass through to ClusterTool (describe / errors / list-members / …)
 ```
 
 ### start
@@ -109,6 +111,22 @@ exit on the coordinated termination); do not have systemd independently `SIGTERM
 `SequencerNode` in a way that races the `ABORT`, or a node could terminate before applying
 `ClusterStopped`. (`SIGTERM` is itself clean now — it drives the same barrier teardown — it just
 isn't ordered against the marker.)
+
+### activate
+
+Manual standby promotion. Publishes an **unsequenced `GatewayActive(gatewayId)`** (schema 200, no
+`correlationId` field — matched on `gatewayId` instead) via cluster ingress, then waits (bounded
+timeout) for its **sequenced** echo on the local tap, printing the assigned `globalSeqNo` on success.
+No leader gate in `clusterctl` itself: publish routes to the leader like any other ingress message,
+same as `start`; with no elected leader the ingress connect times out and the command exits non-zero,
+same failure shape as `start`.
+
+`GatewayActive` needs no sequencer-side special-casing to support this second publisher —
+`Sequencer.sequenceMessage` copies it through like any other message (only `BasicDataGateway` and
+`EndBasicData` are special-cased, to derive topology and trigger the bootstrap activation). Every
+gateway instance reacts identically regardless of which of the two publishers (the sequencer's own
+bootstrap/promotion, or this command) sent it: the instance whose `gatewayId`/`gatewaySourceId`
+matches opens its accept gate, the others stay standby (or close, if previously active).
 
 ### counters
 
