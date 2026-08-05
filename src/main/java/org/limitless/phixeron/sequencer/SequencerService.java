@@ -102,6 +102,18 @@ public final class SequencerService implements ClusteredService {
     public static final int FEEDER_STREAM_ID = 205;
 
     /**
+     * Control-response stream for this service's own archive client (startRecording/stopRecording).
+     * Must not be 101: that's Aeron Cluster's default {@code ingressStreamId}, and
+     * isIpcIngressAllowed(true) makes the leader subscribe to ingress on aeron:ipc/101 too — sharing
+     * it here means every archive reply misdecodes as an ingress frame (and vice versa). Also distinct
+     * from ReplayerNode's ARCHIVE_CONTROL_RESPONSE_STREAM_ID (120), which shares this member's
+     * aeron:ipc driver. Matches SequencerNode's own ARCHIVE_CONTROL_RESPONSE_STREAM_ID (121) — sharing
+     * a value is fine, since the archive protocol demuxes concurrent clients on one response stream by
+     * controlSessionId/correlationId.
+     */
+    private static final int ARCHIVE_CONTROL_RESPONSE_STREAM_ID = 121;
+
+    /**
      * How long {@link #awaitTapRecordingActive} waits for the co-located archive's recording of the tap
      * to become active before failing start-up. Bounded so a wedged/absent local archive fails fast at
      * onStart rather than hanging the node.
@@ -254,7 +266,7 @@ public final class SequencerService implements ClusteredService {
                                                 .controlRequestChannel("aeron:ipc")
                                                 .controlRequestStreamId(100)
                                                 .controlResponseChannel("aeron:ipc")
-                                                .controlResponseStreamId(101)
+                                                .controlResponseStreamId(ARCHIVE_CONTROL_RESPONSE_STREAM_ID)
                                                 .lock(NoOpLock.INSTANCE));
         // Node-local live tap of the sequenced stream, created and recorded on every node (leader and
         // follower alike). Every node re-publishes each sequenced frame here and records it into its own

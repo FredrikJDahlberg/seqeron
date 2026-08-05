@@ -68,6 +68,17 @@ public final class SequencerNode {
     private static final int PORT_BASE = 9300;
 
     /**
+     * Control-response stream for this member's own archive clients (ConsensusModule +
+     * ClusteredServiceContainer). Must not be 101: that's Aeron Cluster's default
+     * {@code ingressStreamId}, and isIpcIngressAllowed(true) makes the leader subscribe to
+     * ingress on aeron:ipc/101 too — sharing it with the archive response stream means every
+     * archive reply misdecodes as an ingress frame (and vice versa). Also distinct from
+     * ReplayerNode's ARCHIVE_CONTROL_RESPONSE_STREAM_ID (120), which shares this member's
+     * aeron:ipc driver.
+     */
+    private static final int ARCHIVE_CONTROL_RESPONSE_STREAM_ID = 121;
+
+    /**
      * Exit status of a node that stopped because it could no longer record its tap (see {@code
      * SequencerService.fatalTapFailure}), as opposed to the 0 of an orderly shutdown — the signal process
      * supervision needs to tell "restart me" from "I was told to stop".
@@ -106,7 +117,7 @@ public final class SequencerNode {
                                                          .controlRequestChannel("aeron:ipc")
                                                          .controlRequestStreamId(100)
                                                          .controlResponseChannel("aeron:ipc")
-                                                         .controlResponseStreamId(101)
+                                                         .controlResponseStreamId(ARCHIVE_CONTROL_RESPONSE_STREAM_ID)
                                                          .aeronDirectoryName(aeronDir);
 
         final Archive.Context archiveCtx = new Archive.Context()
