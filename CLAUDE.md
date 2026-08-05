@@ -150,7 +150,14 @@ feed (untethered, so a slow app is dropped and heals via replay rather than back
 the co-located `ReplayerService` serves cold-start/gap replay off the same recording. `emit` is
 reliable — it spins until the offer lands, since a dropped frame would be an unrecoverable hole —
 and can only block on local-archive write back-pressure, because the recording is the tap's one
-tethered subscriber.
+tethered subscriber. Reliable is not unbounded, though: `TapStallPolicy` watches the archive's
+`RecordingPos` counter, and a node whose recording has stopped or stopped advancing **terminates
+itself** (exit 70) rather than sequence history it cannot keep — peers keep quorum, and the restart
+rebuilds its recording over the full-log replay it does anyway. The 1 Hz tick runs the same liveness
+check, because a *stopped* recording back-pressures nothing at all (the untethered app subscribers
+keep the publication connected) and would otherwise be silent. Note that no cluster callback may
+signal failure by throwing: `Image.boundedControlledPoll` has already advanced the log position past
+the message and `AgentRunner` keeps the agent alive, so a throw drops the frame and carries on.
 
 > This replaced a UDP multi-destination-cast "global stream" (leader-only publisher, stream 1),
 > retired in Phase 2 — see `doc/router-archive.md` and `doc/todo.md` items 1/2c. The tap's identity is

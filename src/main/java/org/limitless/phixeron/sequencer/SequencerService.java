@@ -12,6 +12,8 @@ import io.aeron.cluster.service.ClientSession;
 import io.aeron.cluster.service.Cluster;
 import io.aeron.cluster.service.ClusteredService;
 import io.aeron.logbuffer.Header;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.concurrent.TimeUnit;
 import org.agrona.DirectBuffer;
 import org.agrona.concurrent.NoOpLock;
@@ -61,6 +63,16 @@ import org.limitless.phixeron.util.Logger;
  * own tap subscriptions are untethered, so a slow app is dropped (and heals via the ReplayerService replay
  * protocol) rather than back-pressuring the recording.
  *
+ * <p><b>…but reliable is not unbounded: a node that cannot record its tap terminates.</b> Spinning is
+ * right for an archive that is merely busy and wrong for one that is dead, and the two are told apart by
+ * whether the recording behind the tap is still there and still advancing ({@link TapStallPolicy}, driven
+ * from {@link #emit} on back-pressure and from the 1 Hz tick on liveness — {@link
+ * #checkTapRecordingAlive} covers the case that never back-pressures at all). Once the archive is
+ * provably not recording, this node cannot do the job it exists to do, so {@link #fatalTapFailure} takes
+ * it down: the peers hold identical complete recordings and keep quorum, and the restart rebuilds this
+ * node's recording from {@code globalSeqNo} 1 over the full-log replay it performs anyway. Note that
+ * <em>throwing</em> is not an option in any of the callbacks below — see {@link #emit}.
+ *
  * <p><b>No snapshots — both hooks refuse.</b> Recovery here is always full-log replay from {@code
  * globalSeqNo} 1, and that is what makes a node's tap recording a complete copy of history rather
  * than one beginning wherever a snapshot left off. A snapshot would also have to carry all of {@link
@@ -97,10 +109,21 @@ public final class SequencerService implements ClusteredService {
     private static final long TAP_RECORDING_START_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(5);
 
     /**
-     * Maximum consecutive back-pressure spins in {@link #emit} before printing an alert.
-     * At ~10 ns/spin this is ~10 ms per alert period.
+     * How often, in wall time, back-pressure in {@link #emit} is alerted on and {@link #stallPolicy}
+     * re-evaluated. This used to be a spin count (1,000,000, documented as "~10 ms at ~10 ns/spin"), which
+     * is only true when the loop spins on an idle core: the container idles with a {@code
+     * YieldingIdleStrategy}, and on a loaded host a yield costs microseconds, so the same count took over
+     * ten seconds — long enough that a node whose archive had died sat there spinning without ever
+     * reaching the evaluation that would have terminated it. The stall thresholds below are wall-clock
+     * durations, so what samples them has to be too.
      */
-    private static final int MAX_BACK_PRESSURE_SPINS = 1_000_000;
+    private static final long BACK_PRESSURE_ALERT_INTERVAL_NS = TimeUnit.MILLISECONDS.toNanos(10);
+
+    /**
+     * Spins between clock reads while back-pressured. {@code System.nanoTime} is cheap but not free, and
+     * the idle strategy may be a busy-spin one, so the clock is not read on every iteration.
+     */
+    private static final int SPINS_PER_CLOCK_CHECK = 1024;
 
     /**
      * How long tap-emit back-pressure must persist, continuously, before {@link #emit} treats it as a
@@ -111,6 +134,27 @@ public final class SequencerService implements ClusteredService {
      * climbing.
      */
     private static final long SUSTAINED_BACKPRESSURE_THRESHOLD_NS = TimeUnit.SECONDS.toNanos(2);
+
+    /**
+     * How long the tap recording may make <em>zero</em> progress, while {@link #emit} is back-pressured,
+     * before this node gives up on the local archive and terminates (see {@link #fatalTapFailure}). Not a
+     * back-pressure timeout: an archive draining slowly under load back-pressures continuously and keeps
+     * advancing, and is left alone however long that lasts — this bounds only an archive that has stopped
+     * draining. Chosen an order of magnitude above the stall gauge's 2s and far above any plausible
+     * page-cache/fsync hiccup on working storage, so reaching it means the disk or the archive is gone
+     * rather than slow. The one value here that wants re-tuning against real production storage.
+     */
+    private static final long TAP_STALL_FATAL_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(30);
+
+    /**
+     * How long after signalling a fatal tap failure the process may still be alive before it is halted
+     * outright. The graceful path has to close the very archive that may be the thing wedged, so it can
+     * hang; by this point the node is committed to dying and nothing is lost by skipping the niceties.
+     * Well above the ~7s a healthy teardown takes when {@link #emit} is the wedged party — the container's
+     * close has to wait out its own retry timeout and then interrupt this thread out of the spin — so the
+     * backstop cannot pre-empt a shutdown that was about to succeed. It is a backstop, not a deadline.
+     */
+    private static final long FATAL_SHUTDOWN_BACKSTOP_NS = TimeUnit.SECONDS.toNanos(30);
 
     /**
      * Period of the internal cluster clock ({@link Sequencer#tick}): the leader fires this timer once per
@@ -126,6 +170,12 @@ public final class SequencerService implements ClusteredService {
      */
     private static final long TICK_INTERVAL_MS = 1000;
 
+    /** Set at launch to enable the test-only fault below; unset in production. */
+    private static final String FAULT_INJECTION_ENV = "PHIXERON_FAULT_INJECTION";
+
+    /** Touch this file in the cluster directory to arm the fault. See {@link #injectTapRecordingFault}. */
+    private static final String TAP_FAULT_TRIGGER_FILE = "tap-stall-fault";
+
     /**
      * Correlation id of the single repeating tick timer. There is only one service timer, so a fixed
      * constant is safe; rescheduling with the same id simply moves the one timer's deadline.
@@ -139,11 +189,27 @@ public final class SequencerService implements ClusteredService {
      */
     private final Sequencer sequencer;
 
+    /** When to stop waiting on a back-pressured tap and terminate instead. Pure; see {@link TapStallPolicy}. */
+    private final TapStallPolicy stallPolicy =
+        new TapStallPolicy(SUSTAINED_BACKPRESSURE_THRESHOLD_NS, TAP_STALL_FATAL_TIMEOUT_NS);
+
+    /** Brings the whole node down; wired by {@link SequencerNode}. See {@link #fatalTapFailure}. */
+    private final Runnable fatalHandler;
+
     // ── Aeron runtime ────────────────────────────────────────────────────────
 
     private Cluster cluster;
     private ExclusivePublication tapPub;
     private AeronArchive aeronArchive;
+    private CountersReader counters;
+
+    // ── Tap recording liveness (the archive's own counter for this node's recording) ──
+    private int tapRecordingCounterId = CountersReader.NULL_COUNTER_ID;
+    private long tapRecordingId = RecordingPos.NULL_RECORDING_ID;
+    private boolean fatalSignalled;
+    private long fatalSignalledNs;
+    /** Test-only fault trigger; null unless fault injection is enabled. See {@link #injectTapRecordingFault}. */
+    private Path tapFaultTrigger;
 
     // ── Operator counters (see PhixeronCounters) — created once in onStart, closed in onTerminate ──
     private Counter globalSeqNoCounter;
@@ -158,9 +224,15 @@ public final class SequencerService implements ClusteredService {
     private Counter connectedClientsCounter;
     private Counter messagesSequencedCounter;
 
-    /** Gateway topology is derived from the sequenced Gateway rows (see {@link Sequencer}), not configured. */
-    public SequencerService() {
+    /**
+     * Gateway topology is derived from the sequenced Gateway rows (see {@link Sequencer}), not configured.
+     * @param fatalHandler run once, from a cluster callback, when this node can no longer record its own
+     *                     tap — see {@link #fatalTapFailure}. Must not block: it is expected to signal a
+     *                     shutdown and return, not to perform one.
+     */
+    public SequencerService(final Runnable fatalHandler) {
         this.sequencer = new Sequencer();
+        this.fatalHandler = fatalHandler;
     }
 
     /**
@@ -171,6 +243,10 @@ public final class SequencerService implements ClusteredService {
     @Override
     public void onStart(final Cluster cluster, final Image snapshotImage) {
         this.cluster = cluster;
+        this.counters = cluster.context().aeron().countersReader();
+        if (null != System.getenv(FAULT_INJECTION_ENV)) {
+            tapFaultTrigger = cluster.context().clusterDir().toPath().resolve(TAP_FAULT_TRIGGER_FILE);
+        }
 
         // Connect to the co-located archive via IPC — NoOpLock is safe on the single conductor thread.
         aeronArchive = AeronArchive.connect(new AeronArchive.Context()
@@ -194,7 +270,7 @@ public final class SequencerService implements ClusteredService {
 
         // snapshots are not supported
         if (snapshotImage != null) {
-            throw new IllegalStateException(
+            throw refuseStart(
                 "[SequencerService] Refusing to start from a snapshot: recovery is full-log replay from "
                 + "globalSeqNo 1 (see the class javadoc). Remove the snapshot from the cluster directory "
                 + "so the log replays in full.");
@@ -202,21 +278,37 @@ public final class SequencerService implements ClusteredService {
     }
 
     /**
-     * Blocks until the co-located archive's recording subscription has attached to the tap publication.
+     * Blocks until the co-located archive's recording subscription has attached to the tap publication, and
+     * keeps its counter so {@link #tapRecordingActive} can tell later whether that recording is still there.
      * Bounded by TAP_RECORDING_START_TIMEOUT_NS so an absent local archive fails start-up fast rather than hanging.
      */
 
     private void awaitTapRecordingActive() {
-        final CountersReader counters = cluster.context().aeron().countersReader();
         final long archiveId = aeronArchive.archiveId();
         final long deadlineNs = System.nanoTime() + TAP_RECORDING_START_TIMEOUT_NS;
-        while (RecordingPos.findCounterIdBySession(counters, tapPub.sessionId(), archiveId)
+        int counterId;
+        while ((counterId = RecordingPos.findCounterIdBySession(counters, tapPub.sessionId(), archiveId))
                == CountersReader.NULL_COUNTER_ID) {
             if (System.nanoTime() >= deadlineNs) {
-                throw new IllegalStateException("[SequencerService] replayer recording did not start within timeout");
+                throw refuseStart("[SequencerService] replayer recording did not start within timeout");
             }
             cluster.idleStrategy().idle();
         }
+        tapRecordingCounterId = counterId;
+        tapRecordingId = RecordingPos.getRecordingId(counters, counterId);
+    }
+
+    /**
+     * Refuses to bring this node up. Throwing alone would only kill the service agent thread — {@code
+     * AgentRunner} reports an {@code onStart} failure and stops, but nothing exits the JVM — leaving a
+     * headless node whose media driver and consensus module keep running without a service behind them.
+     * So the fatal handler brings the process down and the caller's throw stops the agent from proceeding.
+     * @param message why start-up was refused
+     * @return the exception for the caller to throw
+     */
+    private IllegalStateException refuseStart(final String message) {
+        fatalHandler.run();
+        return new IllegalStateException(message);
     }
 
     /**
@@ -331,8 +423,44 @@ public final class SequencerService implements ClusteredService {
             ensureCounters();
             emit(sequencer.tick(timestamp));
             lastTickTimestampCounter.set(timestamp);
+            injectTapRecordingFault();
+            checkTapRecordingAlive();
             scheduleTick();
         }
+    }
+
+    /**
+     * 1 Hz liveness check on the co-located archive's recording of the tap — and the reason {@link #emit}'s
+     * back-pressure bound is not enough on its own: <b>a recording that stops does not back-pressure
+     * anything.</b> The tap publication still has the app replicas attached (untethered), so offers keep
+     * landing and frames keep flowing live while nothing at all is being recorded — this node silently
+     * losing the history it is responsible for, discovered only when someone later asks it for a replay.
+     * The recording counter going away is the only symptom, so it is checked on the cluster's own clock.
+     */
+    private void checkTapRecordingAlive() {
+        if (fatalSignalled) {
+            haltIfShutdownStalled(System.nanoTime());
+        } else if (!tapRecordingActive()) {
+            fatalTapFailure("the local archive stopped recording the tap (recording " + tapRecordingId + ")");
+        }
+    }
+
+    /**
+     * Test-only fault injection (src/test/scripts/chaos-runner.sh), inert unless {@link
+     * #FAULT_INJECTION_ENV} was set at launch: touching {@code <clusterDir>/tap-stall-fault} makes this node
+     * stop recording its own tap, which is the only way to provoke {@link #checkTapRecordingAlive} from
+     * outside the process — the archive runs inside this JVM, so its recorder cannot be paused or killed on
+     * its own. A file trigger rather than a signal: no unsupported JDK signal API, and none of the
+     * coalescing caveats the C++ side's SIGUSR1 injector carries. One-shot per process.
+     */
+    private void injectTapRecordingFault() {
+        if (tapFaultTrigger == null || !Files.exists(tapFaultTrigger)) {
+            return;
+        }
+        tapFaultTrigger = null;
+        Logger.info(Logger.Component.SequencerService, cluster.memberId(),
+                "fault injection: stopping this node's tap recording");
+        aeronArchive.stopRecording(FEEDER_CHANNEL, FEEDER_STREAM_ID);
     }
 
     /**
@@ -446,47 +574,130 @@ public final class SequencerService implements ClusteredService {
     }
 
     /**
-     * Publishes the frame in encodeBuffer[0, length) onto the node-local tap. Spins on back-pressure —
-     * see the class javadoc on why this must be reliable rather than lossy. {@code tapStalledCounter}
-     * distinguishes a sustained local-archive stall from ordinary transient back-pressure (see
-     * {@link #SUSTAINED_BACKPRESSURE_THRESHOLD_NS}) so an operator doesn't have to infer it from how
-     * fast the alert counter is climbing. This is observability only: {@code emit} still spins
-     * indefinitely either way, since giving up here would leave an unrecoverable gap in the tap.
-     * @param length
+     * Publishes the frame in encodeBuffer[0, length) onto the node-local tap. Spins on back-pressure — see
+     * the class javadoc on why this must be reliable rather than lossy — but not blindly: {@link
+     * TapStallPolicy} watches the recording behind the tap, and once it is provably not draining (or gone),
+     * {@link #fatalTapFailure} takes the node down rather than wait out a failure that will not clear.
+     * {@code tapStalledCounter} still separates a sustained stall from ordinary transient back-pressure
+     * (see {@link #SUSTAINED_BACKPRESSURE_THRESHOLD_NS}) for the operator watching it happen.
+     *
+     * <p><b>The only two exits are a landed offer and process death</b> — never a return with the frame
+     * unpublished, and in particular never an exception. An exception raised in any callback below is
+     * caught by {@code Image.boundedControlledPoll}, which has <em>already advanced the log position past
+     * the message</em> in its {@code finally}, and {@code AgentRunner} keeps the agent running for anything
+     * that is not an {@code AgentTerminationException}: the service would resume at the next message,
+     * around a hole in its own recording, with {@code globalSeqNo} already consumed. That is precisely the
+     * unrecoverable gap all of this exists to prevent, so the failure paths signal and keep spinning. (The
+     * spin does unwind on the way out — closing the container interrupts this thread, and the idle strategy
+     * raises {@code AgentTerminationException("interrupted")} — but only once the process is already going
+     * down, which is why that stack trace appears in the log after a fatal.)
+     * @param length of the encoded frame at offset 0 of the sequencer's buffer
      */
     private void emit(final int length) {
-        int idleSpins = 0;
-        long stallStartNs = 0;
-        boolean stalled = false;
+        int spins = 0;
+        long nextAlertNs = 0;
         long result;
         while ((result = tapPub.offer(sequencer.buffer(), 0, length)) < 0) {
             if (result == ExclusivePublication.CLOSED || result == ExclusivePublication.MAX_POSITION_EXCEEDED) {
-                throw new IllegalStateException("[SequencerService] replayer publication failed: " + result);
+                fatalTapFailure("tap publication failed: " + result);
             }
-            if (stallStartNs == 0) {
-                stallStartNs = System.nanoTime();
-            }
-            if (++idleSpins >= MAX_BACK_PRESSURE_SPINS) {
-                Logger.error(Logger.Component.Sequencer, Logger.EventCode.ReplayerBackpressure, cluster.memberId(),
-                        "ALERT: replayer back-pressure at globalSeqNo=%d", sequencer.globalSeqNo());
-                tapBackPressureAlertCounter.increment();
-                idleSpins = 0;
-                if (!stalled && System.nanoTime() - stallStartNs >= SUSTAINED_BACKPRESSURE_THRESHOLD_NS) {
-                    stalled = true;
-                    tapStalledCounter.set(1);
-                    Logger.error(Logger.Component.Sequencer, Logger.EventCode.ReplayerBackpressure, cluster.memberId(),
-                            "STALLED: tap back-pressure sustained beyond %ds at globalSeqNo=%d",
-                            TimeUnit.NANOSECONDS.toSeconds(SUSTAINED_BACKPRESSURE_THRESHOLD_NS), sequencer.globalSeqNo());
+            if (++spins >= SPINS_PER_CLOCK_CHECK) {
+                spins = 0;
+                final long nowNs = System.nanoTime();
+                if (nextAlertNs == 0) {
+                    nextAlertNs = nowNs + BACK_PRESSURE_ALERT_INTERVAL_NS;   // first read only anchors the period
+                } else if (nowNs - nextAlertNs >= 0) {
+                    nextAlertNs = nowNs + BACK_PRESSURE_ALERT_INTERVAL_NS;
+                    onBackPressureThreshold(nowNs);
                 }
             }
             cluster.idleStrategy().idle();
         }
-        if (stalled) {
+        // onEmitted() always runs (it resets the policy); the gauge stays latched on a node that is dying,
+        // so an operator watching it does not see the stall "clear" on the way out.
+        if (stallPolicy.onEmitted() && !fatalSignalled) {
             tapStalledCounter.set(0);
             Logger.info(Logger.Component.Sequencer, cluster.memberId(),
                     "RECOVERED: tap back-pressure cleared at globalSeqNo=%d", sequencer.globalSeqNo());
         }
         globalSeqNoCounter.set(sequencer.globalSeqNo());
         connectedClientsCounter.set(sequencer.connectedClientCount());
+    }
+
+    /**
+     * One {@link #BACK_PRESSURE_ALERT_INTERVAL_NS} of continuous back-pressure has elapsed in {@link #emit}:
+     * alert, then ask {@link TapStallPolicy} whether this is an archive that is merely busy or one that has
+     * stopped draining. All of the per-period work lives here rather than in the spin, so the normal emit —
+     * where the first offer lands — pays none of it.
+     * @param nowNs the clock reading that triggered this period, reused rather than read again
+     */
+    private void onBackPressureThreshold(final long nowNs) {
+        if (fatalSignalled) {
+            haltIfShutdownStalled(nowNs);
+            return;
+        }
+        Logger.error(Logger.Component.Sequencer, Logger.EventCode.ReplayerBackpressure, cluster.memberId(),
+                "ALERT: replayer back-pressure at globalSeqNo=%d", sequencer.globalSeqNo());
+        tapBackPressureAlertCounter.increment();
+        switch (stallPolicy.onBackPressure(nowNs, tapRecordingActive(), tapRecordedPosition())) {
+            case STALLED -> {
+                tapStalledCounter.set(1);
+                Logger.error(Logger.Component.Sequencer, Logger.EventCode.ReplayerBackpressure, cluster.memberId(),
+                        "STALLED: tap back-pressure sustained beyond %ds with no recording progress at globalSeqNo=%d",
+                        TimeUnit.NANOSECONDS.toSeconds(SUSTAINED_BACKPRESSURE_THRESHOLD_NS), sequencer.globalSeqNo());
+            }
+            case FATAL_RECORDING_GONE -> fatalTapFailure(
+                    "the local archive stopped recording the tap (recording " + tapRecordingId + ")");
+            case FATAL_NO_PROGRESS -> fatalTapFailure("the tap recording made no progress for "
+                    + TimeUnit.NANOSECONDS.toSeconds(TAP_STALL_FATAL_TIMEOUT_NS) + "s of continuous back-pressure");
+            case CONTINUE -> {
+            }
+        }
+    }
+
+    /**
+     * Gives up on this node. Its archive is the authoritative copy of the sequenced history and a frame that
+     * cannot be recorded is a hole that no later work can fill, so a node that cannot record is no longer
+     * doing the job it exists to do and is better dead than silently incomplete: the peers hold identical,
+     * complete recordings and keep quorum without it, and its restart rebuilds the recording from {@code
+     * globalSeqNo} 1 over the full-log replay it performs anyway. Latched — the first call decides.
+     * @param reason what failed, for the operator
+     */
+    private void fatalTapFailure(final String reason) {
+        if (fatalSignalled) {
+            return;
+        }
+        fatalSignalled = true;
+        fatalSignalledNs = System.nanoTime();
+        if (tapStalledCounter != null) {   // null before the first callback creates the counters
+            tapStalledCounter.set(1);
+        }
+        Logger.fault(Logger.Component.SequencerService, Logger.EventCode.TapRecordingFailure, cluster.memberId(),
+                "FATAL: %s at globalSeqNo=%d — terminating this node, it can no longer record the history it "
+                + "is responsible for; a restart replays the full log and rebuilds its recording",
+                reason, sequencer.globalSeqNo());
+        fatalHandler.run();
+    }
+
+    /**
+     * Backstop for the graceful teardown {@link #fatalHandler} kicks off: that path has to close the very
+     * archive that may be what is wedged, so it can hang. By this point the node is committed to dying and
+     * everything it holds is either replicated or replayable, so stop waiting and halt.
+     * @param nowNs monotonic clock reading
+     */
+    private void haltIfShutdownStalled(final long nowNs) {
+        if (nowNs - fatalSignalledNs >= FATAL_SHUTDOWN_BACKSTOP_NS) {
+            Runtime.getRuntime().halt(SequencerNode.EXIT_TAP_FATAL);
+        }
+    }
+
+    /** Whether the co-located archive is still recording this node's tap onto {@link #tapRecordingId}. */
+    private boolean tapRecordingActive() {
+        return RecordingPos.isActive(counters, tapRecordingCounterId, tapRecordingId);
+    }
+
+    /** How far the archive has recorded the tap; only meaningful while {@link #tapRecordingActive}. */
+    private long tapRecordedPosition() {
+        return counters.getCounterValue(tapRecordingCounterId);
     }
 }

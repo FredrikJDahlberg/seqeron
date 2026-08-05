@@ -298,7 +298,8 @@ class SequencerTest {
         // globalSeqNo alone and drop the six other replicated fields, so a restored node re-emitted the
         // bootstrap GatewayActive and stopped producing frames identical to its peers'
         // (doc/review-2026-07-25.md #5). Recovery is full-log replay, which rebuilds all of it.
-        assertThrows(UnsupportedOperationException.class, () -> new SequencerService().onTakeSnapshot(null));
+        assertThrows(UnsupportedOperationException.class,
+            () -> new SequencerService(() -> { }).onTakeSnapshot(null));
     }
 
     // ── Lifecycle and clock frames ────────────────────────────────────────────

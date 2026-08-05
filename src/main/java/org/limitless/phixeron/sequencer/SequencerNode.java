@@ -8,6 +8,7 @@ import io.aeron.cluster.service.ClusteredServiceContainer;
 import io.aeron.driver.MediaDriver;
 import io.aeron.driver.ThreadingMode;
 import java.io.File;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.agrona.concurrent.BusySpinIdleStrategy;
 import org.agrona.concurrent.NoOpLock;
 import org.agrona.concurrent.ShutdownSignalBarrier;
@@ -65,6 +66,13 @@ public final class SequencerNode {
 
     private static final String DEFAULT_HOST = "localhost";
     private static final int PORT_BASE = 9300;
+
+    /**
+     * Exit status of a node that stopped because it could no longer record its tap (see {@code
+     * SequencerService.fatalTapFailure}), as opposed to the 0 of an orderly shutdown — the signal process
+     * supervision needs to tell "restart me" from "I was told to stop".
+     */
+    static final int EXIT_TAP_FATAL = 70;
 
     public static void main(final String[] args) {
         final int memberId = Integer.getInteger(PROP_MEMBER_ID, 0);
@@ -138,11 +146,25 @@ public final class SequencerNode {
                 t.printStackTrace();
             });
 
+        // A node that can no longer record its own tap must not keep sequencing history it cannot keep
+        // (SequencerService.fatalTapFailure): take the same barrier path an operator shutdown takes, so the
+        // Archive still gets its clean close, and remember to exit non-zero afterwards so process
+        // supervision restarts the node — the restart's full-log replay is what rebuilds its recording.
+        final AtomicBoolean tapFatal = new AtomicBoolean();
+        final SequencerService service = new SequencerService(() -> {
+            tapFatal.set(true);
+            barrier.signalAll();
+        });
+
         final ClusteredServiceContainer.Context serviceCtx = new ClusteredServiceContainer.Context()
             .aeronDirectoryName(aeronDir)
             .archiveContext(localArchiveCtx.clone())
             .clusterDir(clusterDir)
-            .clusteredService(new SequencerService())
+            .clusteredService(service)
+            // The container's own hook defaults to a no-op, so a service agent that terminates by itself
+            // (AgentTerminationException) would otherwise leave this process running headless: media driver
+            // and consensus module up, no service behind them.
+            .terminationHook(barrier::signalAll)
             .idleStrategySupplier(YieldingIdleStrategy::new)
             .errorHandler(t -> {
                 Logger.error(Logger.Component.SequencerService, Logger.EventCode.ServiceError, memberId,
@@ -161,6 +183,9 @@ public final class SequencerNode {
             barrier.await();
         } finally {
             Logger.info(Logger.Component.SequencerNode, memberId, "Shutdown complete");
+        }
+        if (tapFatal.get()) {
+            System.exit(EXIT_TAP_FATAL);
         }
     }
 

@@ -51,13 +51,16 @@ CN=0            # consumer / gateway / observation host — never killed
 if command -v aeronmd >/dev/null 2>&1; then AERONMD="$(command -v aeronmd)"; else AERONMD="${BUILD_DIR}/_deps/aeron-build/binaries/aeronmd"; fi
 
 rm -rf "$LOG_DIR"; mkdir -p "$LOG_DIR"
-declare -a SEQ_PIDS REPLAYER_PIDS
+declare -a SEQ_PIDS REPLAYER_PIDS BASICDATA_PIDS EXTRA_CONSUMER_PIDS
 CONSUMER_PID=""; FIX_PID=""; MD_PID=""; LOAD_PID=""
 declare -a FAULT_HISTORY=()
 
 # ── Helpers ─────────────────────────────────────────────────────────────────────
 start_seq() {  # start_seq <memberId> — append so leadership history survives restarts (last isLeader= wins)
   local m="$1"
+  # PHIXERON_FAULT_INJECTION arms the tap-recording fault fault_tap_stall triggers by file (the archive is
+  # in-process, so it cannot be stalled from outside); inert until that file appears.
+  PHIXERON_FAULT_INJECTION=1 \
   java "${JAVA_OPTS[@]}" -Dsequencer.memberId="$m" -Dsequencer.baseDir="$BASE_DIR" \
        -Dsequencer.clusterMembers="$CLUSTER_MEMBERS" -jar "$JAR" >> "$LOG_DIR/seq-$m.log" 2>&1 &
   SEQ_PIDS[$m]=$!
@@ -87,14 +90,18 @@ cleanup() {
   kill "${LOAD_PID:-}" "${CONSUMER_PID:-}" "${FIX_PID:-}" "${MD_PID:-}" 2>/dev/null
   pkill -f fix_test_server 2>/dev/null   # the background-load loop's in-flight child outlives its subshell
   # ${arr[@]+"${arr[@]}"} — the bash 3.2 / set -u safe way to expand a possibly-empty array to nothing.
-  for p in "${SEQ_PIDS[@]+"${SEQ_PIDS[@]}"}" "${REPLAYER_PIDS[@]+"${REPLAYER_PIDS[@]}"}"; do kill "$p" 2>/dev/null; done
+  for p in "${SEQ_PIDS[@]+"${SEQ_PIDS[@]}"}" "${REPLAYER_PIDS[@]+"${REPLAYER_PIDS[@]}"}" \
+           "${BASICDATA_PIDS[@]+"${BASICDATA_PIDS[@]}"}" "${EXTRA_CONSUMER_PIDS[@]+"${EXTRA_CONSUMER_PIDS[@]}"}"; do
+    kill "$p" 2>/dev/null
+  done
   wait 2>/dev/null
 }
 trap cleanup EXIT INT TERM
 
 # ── Bring-up ─────────────────────────────────────────────────────────────────────
 [[ -f "$JAR" ]] || { echo "missing $JAR — run ./gradlew uberJar"; exit 1; }
-[[ -x "$BUILD_DIR/OrderExecClient" && -x "$BUILD_DIR/FixGateway" && -x "$BUILD_DIR/fix_test_server" ]] \
+[[ -x "$BUILD_DIR/OrderExecClient" && -x "$BUILD_DIR/FixGateway" && -x "$BUILD_DIR/fix_test_server" \
+   && -x "$BUILD_DIR/BasicDataClient" ]] \
   || { echo "missing C++ targets — run cmake --build $BUILD_DIR"; exit 1; }
 
 # Idempotent pre-clean so back-to-back runs don't collide: SIGKILL any survivors, then WAIT for the
@@ -103,7 +110,7 @@ trap cleanup EXIT INT TERM
 # substring — pkilling by class name misses it. Match the jar path (in both SequencerNode's `-jar` and
 # ReplayerNode's `-cp` lines) and the -Dsequencer marker instead.
 pkill -9 -f "$JAR" 2>/dev/null; pkill -9 -f "sequencer.memberId" 2>/dev/null
-for p in OrderExecClient FixGateway fix_test_server aeronmd; do pkill -9 -f "$p" 2>/dev/null; done
+for p in OrderExecClient FixGateway fix_test_server BasicDataClient aeronmd; do pkill -9 -f "$p" 2>/dev/null; done
 rm -rf "$BASE_DIR" "${TMPDIR}phixeron-seq-aeron-0" "${TMPDIR}phixeron-seq-aeron-1" \
        "${TMPDIR}phixeron-seq-aeron-2" "$AERON_DIR" 2>/dev/null
 W=0; while lsof -nP -iUDP:"$(archive_port 0)" -iUDP:"$(archive_port 1)" -iUDP:"$(archive_port 2)" 2>/dev/null \
@@ -125,6 +132,18 @@ for m in 0 1 2; do
 done
 for m in 0 1 2; do W=0; until grep -q "serving replay" "$LOG_DIR/replayer-$m.log" 2>/dev/null; do sleep 0.5; W=$((W+1)); ((W>60)) && break; done; done
 
+# BasicDataClient replica on every node (see start-three-node-cluster.sh): dual-role, producer on
+# whichever member is leader, consumer elsewhere. Without one running on every node, no member ever
+# publishes the Gateway/Session/TradingDay rows the gateway needs — EndBasicData never arrives, the
+# gateway's accept gate never opens (m_basicDataLoaded stays false), and every Logon just queues in the
+# TCP backlog until the client times out. One per node so a leader failover always has a local producer.
+for m in 0 1 2; do
+  PHIXERON_BASICDATA_AERON_DIR="${TMPDIR}phixeron-seq-aeron-${m}" PHIXERON_NODE_MEMBER_ID="$m" \
+    PHIXERON_REPLAYER_CLIENT_ID=3 PHIXERON_BASICDATA_EGRESS_ENDPOINT="localhost:$(basicdata_egress_port "$m")" \
+    stdbuf -oL -eL "$BUILD_DIR/BasicDataClient" > "$LOG_DIR/basicdata-$m.log" 2>&1 &
+  BASICDATA_PIDS[$m]=$!
+done
+
 # Consumer on member 0: fault-injection ON (SIGUSR1 tap-drop) + latency stats (flushed on exit, not read here).
 CONSUMER_LOG="$LOG_DIR/consumer.log"
 PHIXERON_ORDER_EXEC_AERON_DIR="${TMPDIR}phixeron-seq-aeron-${CN}" PHIXERON_NODE_MEMBER_ID="$CN" \
@@ -134,22 +153,45 @@ PHIXERON_ORDER_EXEC_AERON_DIR="${TMPDIR}phixeron-seq-aeron-${CN}" PHIXERON_NODE_
 CONSUMER_PID=$!
 W=0; until grep -q "following live" "$CONSUMER_LOG" 2>/dev/null; do sleep 0.5; W=$((W+1)); ((W>60)) && { echo "consumer never caught up"; exit 1; }; done
 
+# OrderExecClient replica on members 1 and 2 too (see start-three-node-cluster.sh): sendNewExecutionReport
+# only fires on the replica CO-LOCATED WITH THE CURRENT LEADER (OrderExecClient.cpp, m_replayer.isCaughtUp()
+# && currentLeaderMemberId()==m_nodeMemberId — one fill per order, not one per replica). Bring-up always
+# elects the initial leader from members 1/2 before member 0 even joins (see below), so without a replica on
+# every node NO replica is ever positioned to answer a NewOrderSingle with an ExecutionReport, and every FIX
+# round-trip probe hangs waiting for one. Plain replicas: no latency stats, no fault injection (those stay
+# unique to the member-0 observation consumer above).
+for m in 1 2; do
+  PHIXERON_ORDER_EXEC_AERON_DIR="${TMPDIR}phixeron-seq-aeron-${m}" PHIXERON_NODE_MEMBER_ID="$m" \
+    stdbuf -oL -eL "$BUILD_DIR/OrderExecClient" > "$LOG_DIR/orderexec-$m.log" 2>&1 &
+  EXTRA_CONSUMER_PIDS[$m]=$!
+done
+for m in 1 2; do W=0; until grep -q "following live" "$LOG_DIR/orderexec-$m.log" 2>/dev/null; do sleep 0.5; W=$((W+1)); ((W>60)) && { log "  WARN orderexec-$m never caught up"; break; }; done; done
+
 # FIX gateway on member 0 (port $FIX_TCP_PORT).
 FIX_LOG="$LOG_DIR/fix.log"
 PHIXERON_FIX_GATEWAY_AERON_DIR="${TMPDIR}phixeron-seq-aeron-${CN}" PHIXERON_NODE_MEMBER_ID="$CN" \
   PHIXERON_REPLAYER_CLIENT_ID=2 PHIXERON_FIX_TCP_PORT="$FIX_TCP_PORT" \
+  PHIXERON_FIX_GATEWAY_NAME=GW-A \
   stdbuf -oL -eL "$BUILD_DIR/FixGateway" > "$FIX_LOG" 2>&1 &
 FIX_PID=$!
 W=0; until nc -z 127.0.0.1 "$FIX_TCP_PORT" 2>/dev/null; do sleep 0.5; W=$((W+1)); ((W>40)) && { echo "gateway $FIX_TCP_PORT not up"; exit 1; }; done
+# The TCP port alone isn't "ready to Logon": the gateway gates on EndBasicData (a client that connects
+# earlier just queues in the listen backlog and eventually times out) — see start-three-node-cluster.sh.
+W=0; until grep -q "Basic data loaded" "$FIX_LOG" 2>/dev/null; do sleep 0.5; W=$((W+1)); ((W>60)) && { echo "gateway never saw EndBasicData — its logon gate is still shut"; exit 1; }; done
 log "cluster READY — gateway up, consumer following live"
 
 # Optional steady background order flow so faults land on a system that is actually doing work.
-# Streams NewOrderSingles THROUGH the gateway as SenderCompID "LOADGEN" — distinct from the "CLIENT"
+# Streams NewOrderSingles THROUGH the gateway as SenderCompID "LOADGEN" — distinct from the "PROBE"
 # the liveness probe uses, so the load fix and a concurrent probe fix coexist (proven by
 # fix_test_server's runTwoDifferentSendersTest). Loops so order flow is continuous for the whole run.
 start_background_load() {
   [[ "$BACKGROUND_LOAD" == "1" ]] || return 0
-  ( while true; do PHIXERON_FIX_LOADGEN=50 "$BUILD_DIR/fix_test_server" 127.0.0.1 "$FIX_TCP_PORT" >/dev/null 2>&1 || true; done ) &
+  # A normal iteration is naturally rate-limited by its own session duration (Logon..50 orders..Logout).
+  # On failure (e.g. mid leader-failover) that natural throttle disappears — back off instead of
+  # respawning in a hot spin, or a run of instant failures floods the gateway's small TCP backlog with
+  # connect attempts, which starves other connections (the liveness probe included) with connection
+  # refusals of its own making.
+  ( while true; do PHIXERON_FIX_LOADGEN=50 "$BUILD_DIR/fix_test_server" 127.0.0.1 "$FIX_TCP_PORT" >/dev/null 2>&1 || sleep 0.5; done ) &
   LOAD_PID=$!
 }
 start_background_load
@@ -162,6 +204,35 @@ start_background_load
 # CAN win a Raft election after a failover, so destructive/stall faults pick their target from {1,2} only.
 target_leader() { [[ "$1" == 1 || "$1" == 2 ]] && echo "$1" || echo $(( RANDOM % 2 + 1 )); }  # leader if killable, else a random {1,2}
 a_follower()    { case "$1" in 1) echo 2;; 2) echo 1;; *) echo $(( RANDOM % 2 + 1 ));; esac; }   # a non-leader among {1,2}
+
+# A killed member's co-located ReplayerNode/BasicDataClient/OrderExecClient replicas share its embedded
+# media driver (same aeron dir) and don't survive the member's restart: the driver dies with the
+# SequencerNode process, and none of these clients reconnect to the fresh driver the restart creates at
+# the same path — they just fault (DriverTimeoutException / "MediaDriver has been shutdown") and sit dead
+# for the rest of the run. That leaves a permanent hole: e.g. if member $m later becomes leader, its dead
+# OrderExecClient replica can't be the one that answers a NewOrderSingle with an ExecutionReport (leader-
+# only emission), so a later round's FIX round-trip probe hangs waiting for one that will never come. Only
+# called for members 1/2 — member 0's co-located apps (gateway, consumer) are never killed with it.
+restart_colocated_apps() {
+  local m="$1" W=0
+  kill "${REPLAYER_PIDS[$m]:-0}" "${BASICDATA_PIDS[$m]:-0}" "${EXTRA_CONSUMER_PIDS[$m]:-0}" 2>/dev/null
+  java "${JAVA_OPTS[@]}" -Dreplayer.memberId="$m" -cp "$JAR" \
+       org.limitless.phixeron.replayer.ReplayerNode > "$LOG_DIR/replayer-$m.log" 2>&1 &
+  REPLAYER_PIDS[$m]=$!
+  until grep -q "serving replay" "$LOG_DIR/replayer-$m.log" 2>/dev/null; do
+    sleep 0.5; W=$((W+1)); ((W>60)) && { log "  WARN replayer-$m not serving after restart"; break; }
+  done
+  PHIXERON_BASICDATA_AERON_DIR="${TMPDIR}phixeron-seq-aeron-${m}" PHIXERON_NODE_MEMBER_ID="$m" \
+    PHIXERON_REPLAYER_CLIENT_ID=3 PHIXERON_BASICDATA_EGRESS_ENDPOINT="localhost:$(basicdata_egress_port "$m")" \
+    stdbuf -oL -eL "$BUILD_DIR/BasicDataClient" > "$LOG_DIR/basicdata-$m.log" 2>&1 &
+  BASICDATA_PIDS[$m]=$!
+  PHIXERON_ORDER_EXEC_AERON_DIR="${TMPDIR}phixeron-seq-aeron-${m}" PHIXERON_NODE_MEMBER_ID="$m" \
+    stdbuf -oL -eL "$BUILD_DIR/OrderExecClient" > "$LOG_DIR/orderexec-$m.log" 2>&1 &
+  EXTRA_CONSUMER_PIDS[$m]=$!
+  W=0; until grep -q "following live" "$LOG_DIR/orderexec-$m.log" 2>/dev/null; do
+    sleep 0.5; W=$((W+1)); ((W>60)) && { log "  WARN orderexec-$m not caught up after restart"; break; }
+  done
+}
 
 fault_kill_leader() {  # crash the leader (when it's a killable member) -> real Raft failover -> restore it as a follower
   local L="$1" T; T="$(target_leader "$L")"
@@ -176,11 +247,13 @@ fault_kill_leader() {  # crash the leader (when it's a killable member) -> real 
   sleep 3                                                       # let the new leader settle
   start_seq "$T"; wait_running "$T" || log "  WARN member $T did not restart"
   sleep 2                                                       # let the restored member rejoin (full-log replay)
+  restart_colocated_apps "$T"
 }
 fault_kill_follower() {  # crash a follower -> should be transparent (quorum holds) -> restart it
   local L="$1" F; F="$(a_follower "$L")"
   log "FAULT kill-follower: member $F"; kill "${SEQ_PIDS[$F]}" 2>/dev/null; sleep 1
   start_seq "$F"; wait_running "$F" || log "  WARN member $F did not restart"
+  restart_colocated_apps "$F"
 }
 fault_pause_node() {  # SIGSTOP a killable node (GC-pause / stall simulation: socket stays half-open) then SIGCONT
   local L="$1" P; P=$(( RANDOM % 2 == 0 ? $(target_leader "$L") : $(a_follower "$L") ))
@@ -190,9 +263,35 @@ fault_pause_node() {  # SIGSTOP a killable node (GC-pause / stall simulation: so
 fault_tap_drop() {  # drop one live tap frame at the consumer -> gap -> re-walk recovery (SIGUSR1 path)
   log "FAULT tap-drop: SIGUSR1 consumer (arm one-frame live-tap drop)"; kill -USR1 "$CONSUMER_PID" 2>/dev/null
 }
+fault_tap_stall() {  # kill a node's local tap recording -> it must notice within a tick and TERMINATE ITSELF
+  # The one fault the node is expected to answer by dying: a node that cannot record its own tap can no
+  # longer serve the history it is responsible for, so it exits non-zero (SequencerService.fatalTapFailure)
+  # and is restarted, rebuilding its recording over the full-log replay. Aimed at a follower — failover is
+  # already covered by fault_kill_leader, and this asserts the self-termination, not the election.
+  local L="$1" T; T="$(a_follower "$L")"
+  log "FAULT tap-stall: stop member $T's tap recording (expect FATAL + self-termination)"
+  touch "$BASE_DIR/cluster-$T/tap-stall-fault"
+  local W=0; while kill -0 "${SEQ_PIDS[$T]}" 2>/dev/null; do sleep 0.2; W=$((W+1)); ((W>50)) && break; done
+  if kill -0 "${SEQ_PIDS[$T]}" 2>/dev/null; then
+    log "  INVARIANT FAIL: member $T kept running for 10s with no tap recording"
+    # Still wait for it to actually die before restarting below, or the restart hits its own archive
+    # mark file ("active mark file detected") and the round after this one fails for the wrong reason.
+    kill "${SEQ_PIDS[$T]}" 2>/dev/null
+    W=0; while kill -0 "${SEQ_PIDS[$T]}" 2>/dev/null; do sleep 0.2; W=$((W+1)); ((W>50)) && break; done
+  else
+    grep -q "FATAL:.*terminating this node" "$LOG_DIR/seq-$T.log" \
+      && log "  ok: member $T detected the dead recording and terminated" \
+      || log "  INVARIANT FAIL: member $T died without the FATAL tap-recording line"
+  fi
+  rm -f "$BASE_DIR/cluster-$T/tap-stall-fault"   # else the restarted node re-arms it immediately
+  sleep 2
+  start_seq "$T"; wait_running "$T" || log "  WARN member $T did not restart"
+  sleep 2                                                       # let the restored member rejoin (full-log replay)
+  restart_colocated_apps "$T"
+}
 # Targeted mode: set ONLY_FAULT=<fn> (e.g. fault_kill_leader) to run just that fault every round,
 # for deterministically exercising one failure path in-loop rather than seed-hunting for it.
-FAULTS=(fault_kill_leader fault_kill_follower fault_pause_node fault_tap_drop)
+FAULTS=(fault_kill_leader fault_kill_follower fault_pause_node fault_tap_drop fault_tap_stall)
 [[ -n "${ONLY_FAULT:-}" ]] && FAULTS=("$ONLY_FAULT")
 
 # NOTE — heavier / platform-specific faults intentionally left as seams, not enabled by default:
@@ -246,11 +345,20 @@ verify_sequence() {
   local spec="build/generated/sources/sbe/main/java/sbe-sequenced.sbeir" m rc=0
   [[ -f "$spec" ]] || { log "SAFETY: skipped (no $spec — run ./gradlew generateSequencedSbe)"; return 0; }
   # Quiesce first: stop the background load and let the last sequenced messages replicate to every node.
-  # Otherwise we dump the three archives sequentially WHILE the stream is still growing and read three
-  # different high-water marks — a snapshot skew, not a real divergence. Convergence can only be asserted
-  # against a stationary stream.
+  # That alone isn't enough for a stationary stream, though: the 1 Hz Tick (the cluster clock) keeps
+  # advancing globalSeqNo forever by design, background load or not, and the three archives are dumped
+  # sequentially (each a multi-second decode of thousands of frames) — so without freezing the cluster,
+  # a tick or two legitimately lands between reading member 0's archive and member 2's, and convergence
+  # fails on a phantom 1-frame "divergence" that's really just clock drift across a non-atomic snapshot.
+  # SIGSTOP every member right before dumping: the archive is in-process, so pausing the JVM pauses the
+  # tick generator with it, giving a true stationary snapshot. Already-flushed archive files on disk are
+  # unaffected by a stopped process. cleanup() SIGCONTs everything before killing it, same as the
+  # fault_pause_node path, so nothing is left stopped on exit.
   kill "${LOAD_PID:-}" 2>/dev/null; pkill -f fix_test_server 2>/dev/null; LOAD_PID=""
   sleep 3
+  log "  pausing the cluster for an atomic snapshot…"
+  for m in 0 1 2; do kill -STOP "${SEQ_PIDS[$m]:-0}" 2>/dev/null; done
+  sleep 0.5   # let any in-flight archive write land before reading
   local -a highwater=("" "" "")
   for m in 0 1 2; do
     local archive="${BASE_DIR}/archive-${m}"
@@ -273,6 +381,7 @@ verify_sequence() {
     highwater[$m]="$hw"
     log "  member $m: tap gap-free & monotone, high-water globalSeqNo=$hw"
   done
+  for m in 0 1 2; do kill -CONT "${SEQ_PIDS[$m]:-0}" 2>/dev/null; done
   # Convergence: every node must have recorded the same final globalSeqNo.
   if [[ "$rc" == 0 && "${highwater[0]}" == "${highwater[1]}" && "${highwater[1]}" == "${highwater[2]}" ]]; then
     log "  convergence OK: all 3 nodes recorded globalSeqNo 1..${highwater[0]}"

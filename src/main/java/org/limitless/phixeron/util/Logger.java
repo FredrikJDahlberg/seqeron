@@ -37,7 +37,8 @@ public final class Logger {
         ConsensusModuleError,
         ServiceError,
         ReplayerBackpressure,
-        ArchiveIntegrityFailure
+        ArchiveIntegrityFailure,
+        TapRecordingFailure
     }
 
     public record LoggerEvent(Component component, Severity severity, EventCode code, Integer memberId,

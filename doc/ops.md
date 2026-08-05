@@ -113,13 +113,32 @@ buffer — see `PhixeronCounters.addCounter`/`KEY_MEMBER_ID_OFFSET`).
 | `phixeron_sequencer_last_tick_timestamp_ms` | gauge | Consensus timestamp of the last 1Hz Tick emitted |
 | `phixeron_sequencer_gateway_promotion_total` | counter | Count of standby-promotion GatewayActive frames emitted on a gateway session close |
 | `phixeron_sequencer_bootstrap_activated` | gauge | 1 once the bootstrap GatewayActive has been emitted for the trading day, else 0 |
-| `phixeron_sequencer_tap_stalled` | gauge | 1 while tap-emit back-pressure has been sustained past the stall threshold (2s), else 0 |
+| `phixeron_sequencer_tap_stalled` | gauge | 1 while the tap recording has made no progress for longer than the stall threshold (2s) under back-pressure, else 0. Latches at 1 when the node terminates for an unrecordable tap — see below |
 | `phixeron_replayer_stalled` | gauge | 1 while the local archive is unreachable for replay, else 0 |
 | `phixeron_replayer_ready` | gauge | 1 once the co-located tap recording is visible and replay requests are being served |
 | `phixeron_replayer_active_slots` | gauge | Current count of in-flight replays |
 | `phixeron_replayer_pending_requests` | gauge | Current count of replay requests waiting for a free slot |
 | `phixeron_replayer_replays_served_total` | counter | Count of replays started since this node came up |
 | `phixeron_replayer_idle_ttl_reclaimed_total` | counter | Count of replay slots reclaimed by the idle-TTL backstop |
+
+## A node that terminates itself
+
+`SequencerNode` exits **70** when its local archive stops recording the node's tap (stalled with no
+progress for 30s under back-pressure, or the recording gone outright). This is deliberate, not a crash:
+that node's archive is its copy of the sequenced history, so one that cannot record can only accumulate
+silent holes in it. What to expect and what to do:
+
+- **In the log:** a `[SequencerService/N] FATAL: … terminating this node` line naming the reason, and
+  `phixeron_sequencer_tap_stalled{member="N"}` at 1 until the process (and its counters) go away.
+  `phixeron_node_up{member="N"}` then drops to 0.
+- **The cluster keeps going** on the remaining members — every node holds an identical, complete
+  recording, so nothing is lost with the node itself, and an election moves leadership if it held it.
+  **Two nodes down is a quorum loss**, so treat a second one as an emergency rather than a repeat.
+- **Restart it** once the storage is healthy: recovery is the usual full-log replay from `globalSeqNo`
+  1, which rebuilds the node's tap recording from scratch. Under process supervision this is automatic
+  — exit 70 vs the 0 of an orderly `clusterctl shutdown` is exactly the "restart me" signal.
+- **If it exits 70 immediately on restart**, the archive is still broken (the same check bounds
+  start-up: the recording must go live within 5s). Fix the storage before restarting again.
 
 ## Non-goals / open items
 
