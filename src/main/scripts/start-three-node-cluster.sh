@@ -40,6 +40,9 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/ports.sh"
+
 usage() {
     echo "Usage: $0 [debug|release]"
     echo "  default: release"
@@ -72,9 +75,8 @@ BASICDATA_LOG="${LOG_DIR}/BasicDataClient.log"
 
 BASE_DIR="${TMPDIR:-/tmp}phixeron-seq3"
 
-CLUSTER_MEMBERS="0,localhost:9302,localhost:9303,localhost:9304,localhost:9305,localhost:9301"
-CLUSTER_MEMBERS+="|1,localhost:9312,localhost:9313,localhost:9314,localhost:9315,localhost:9311"
-CLUSTER_MEMBERS+="|2,localhost:9322,localhost:9323,localhost:9324,localhost:9325,localhost:9321"
+CLUSTER_MEMBERS="$(cluster_members_string 3)"
+FIX_TCP_PORT="$(fix_tcp_port)"
 
 # Default Aeron directory used by the standalone aeronmd and by FixGateway.
 AERON_DIR="${TMPDIR}aeron-$(whoami)"
@@ -207,6 +209,7 @@ if [[ -z "${PHIXERON_SKIP_FIX_GATEWAY:-}" ]]; then
         PHIXERON_NODE_MEMBER_ID=0 \
         PHIXERON_REPLAYER_CLIENT_ID=2 \
         PHIXERON_FIX_GATEWAY_NAME=GW-A \
+        PHIXERON_FIX_TCP_PORT="${FIX_TCP_PORT}" \
         stdbuf -oL -eL "${BUILD_DIR}/FixGateway" > "${FIX_LOG}" 2>&1 &
     FIX_PID=$!
 else
@@ -237,7 +240,7 @@ echo "[start-three-node-cluster.sh] Starting BasicDataClient (replica on member 
 PHIXERON_BASICDATA_AERON_DIR="${SEQ_AERON_DIR}" \
     PHIXERON_NODE_MEMBER_ID=0 \
     PHIXERON_REPLAYER_CLIENT_ID=3 \
-    PHIXERON_BASICDATA_EGRESS_ENDPOINT="localhost:9350" \
+    PHIXERON_BASICDATA_EGRESS_ENDPOINT="localhost:$(basicdata_egress_port 0)" \
     stdbuf -oL -eL "${BUILD_DIR}/BasicDataClient" > "${BASICDATA_LOG}" 2>&1 &
 BASICDATA_PID=$!
 
@@ -275,7 +278,7 @@ for m in 1 2; do
     PHIXERON_BASICDATA_AERON_DIR="${MDIR}" \
         PHIXERON_NODE_MEMBER_ID="${m}" \
         PHIXERON_REPLAYER_CLIENT_ID=3 \
-        PHIXERON_BASICDATA_EGRESS_ENDPOINT="localhost:$(( 9350 + m ))" \
+        PHIXERON_BASICDATA_EGRESS_ENDPOINT="localhost:$(basicdata_egress_port "${m}")" \
         stdbuf -oL -eL "${BUILD_DIR}/BasicDataClient" > "${BDLOG}" 2>&1 &
     EXTRA_BASICDATA_PIDS+=("$!")
 done
@@ -300,13 +303,13 @@ trap cleanup INT TERM
 # ── Wait until fully ready ────────────────────────────────────────────────────
 
 if [[ -n "${FIX_PID}" ]]; then
-    echo "[start-three-node-cluster.sh] Waiting for FixGateway on 127.0.0.1:9000…"
+    echo "[start-three-node-cluster.sh] Waiting for FixGateway on 127.0.0.1:${FIX_TCP_PORT}…"
     WAIT=0
-    until nc -z 127.0.0.1 9000 2>/dev/null; do
+    until nc -z 127.0.0.1 "${FIX_TCP_PORT}" 2>/dev/null; do
         sleep 0.5
         WAIT=$(( WAIT + 1 ))
         if (( WAIT > 40 )); then
-            echo "ERROR: 127.0.0.1:9000 not reachable after 20 s — see ${FIX_LOG}" >&2
+            echo "ERROR: 127.0.0.1:${FIX_TCP_PORT} not reachable after 20 s — see ${FIX_LOG}" >&2
             cleanup
             exit 1
         fi

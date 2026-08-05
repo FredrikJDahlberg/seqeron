@@ -11,6 +11,9 @@
 # PASS iff the fresh client prints "following live" AND its ReplayerService served it >= 1 replay segment.
 set -uo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/../../main/scripts/lib/ports.sh"
+
 BUILD_DIR="cmake-build-release"
 JAR="build/libs/phixeron-0.1.0-uber.jar"
 LOG_DIR="logs/failover"
@@ -23,9 +26,7 @@ JAVA_OPTS=(
   --add-opens=java.base/jdk.internal.misc=ALL-UNNAMED
 )
 BASE_DIR="${TMPDIR:-/tmp}phixeron-seqfo"
-CLUSTER_MEMBERS="0,localhost:9302,localhost:9303,localhost:9304,localhost:9305,localhost:9301"
-CLUSTER_MEMBERS+="|1,localhost:9312,localhost:9313,localhost:9314,localhost:9315,localhost:9311"
-CLUSTER_MEMBERS+="|2,localhost:9322,localhost:9323,localhost:9324,localhost:9325,localhost:9321"
+CLUSTER_MEMBERS="$(cluster_members_string 3)"
 AERON_DIR="${TMPDIR}aeron-$(whoami)"
 
 if command -v aeronmd >/dev/null 2>&1; then AERONMD="$(command -v aeronmd)"; else AERONMD="${BUILD_DIR}/_deps/aeron-build/binaries/aeronmd"; fi
@@ -84,7 +85,7 @@ FRESH_LOG="$LOG_DIR/fresh-orderexec.log"
 PHIXERON_ORDER_EXEC_AERON_DIR="${TMPDIR}phixeron-seq-aeron-${NEWLEADER}" \
   PHIXERON_NODE_MEMBER_ID="$NEWLEADER" \
   PHIXERON_REPLAYER_CLIENT_ID=9 \
-  PHIXERON_CLUSTER_EGRESS_ENDPOINT="localhost:9349" \
+  PHIXERON_CLUSTER_EGRESS_ENDPOINT="localhost:${TEST_CONSUMER_EGRESS_PORT}" \
   stdbuf -oL -eL "$BUILD_DIR/OrderExecClient" > "$FRESH_LOG" 2>&1 &
 FRESH_PID=$!
 echo "started fresh cold OrderExecClient (client 9) co-located with new leader member $NEWLEADER"

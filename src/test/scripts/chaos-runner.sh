@@ -24,6 +24,9 @@
 #   the heal window. On first failure it stops and prints the fault history + SEED to reproduce.
 set -uo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/../../main/scripts/lib/ports.sh"
+
 # ── Config ────────────────────────────────────────────────────────────────────
 BUILD_DIR="cmake-build-release"
 JAR="build/libs/phixeron-0.1.0-uber.jar"
@@ -41,9 +44,8 @@ JAVA_OPTS=(
   --add-opens=java.base/jdk.internal.misc=ALL-UNNAMED
 )
 BASE_DIR="${TMPDIR:-/tmp}phixeron-seqfo"
-CLUSTER_MEMBERS="0,localhost:9302,localhost:9303,localhost:9304,localhost:9305,localhost:9301"
-CLUSTER_MEMBERS+="|1,localhost:9312,localhost:9313,localhost:9314,localhost:9315,localhost:9311"
-CLUSTER_MEMBERS+="|2,localhost:9322,localhost:9323,localhost:9324,localhost:9325,localhost:9321"
+CLUSTER_MEMBERS="$(cluster_members_string 3)"
+FIX_TCP_PORT="$(fix_tcp_port)"
 AERON_DIR="${TMPDIR}aeron-$(whoami)"
 CN=0            # consumer / gateway / observation host — never killed
 if command -v aeronmd >/dev/null 2>&1; then AERONMD="$(command -v aeronmd)"; else AERONMD="${BUILD_DIR}/_deps/aeron-build/binaries/aeronmd"; fi
@@ -96,7 +98,7 @@ trap cleanup EXIT INT TERM
   || { echo "missing C++ targets — run cmake --build $BUILD_DIR"; exit 1; }
 
 # Idempotent pre-clean so back-to-back runs don't collide: SIGKILL any survivors, then WAIT for the
-# member archive-control ports (9301/9311/9321 — Aeron binds these as UDP) to actually release.
+# member archive-control ports (Aeron binds these as UDP) to actually release.
 # NB: SequencerNode launches via `java -jar "$JAR"`, so its command line contains NO "SequencerNode"
 # substring — pkilling by class name misses it. Match the jar path (in both SequencerNode's `-jar` and
 # ReplayerNode's `-cp` lines) and the -Dsequencer marker instead.
@@ -104,7 +106,8 @@ pkill -9 -f "$JAR" 2>/dev/null; pkill -9 -f "sequencer.memberId" 2>/dev/null
 for p in OrderExecClient FixGateway fix_test_server aeronmd; do pkill -9 -f "$p" 2>/dev/null; done
 rm -rf "$BASE_DIR" "${TMPDIR}phixeron-seq-aeron-0" "${TMPDIR}phixeron-seq-aeron-1" \
        "${TMPDIR}phixeron-seq-aeron-2" "$AERON_DIR" 2>/dev/null
-W=0; while lsof -nP -iUDP:9301 -iUDP:9311 -iUDP:9321 2>/dev/null | grep -q java; do sleep 0.5; W=$((W+1)); ((W>20)) && { echo "UDP archive ports still held after 10s — stale cluster?"; exit 1; }; done
+W=0; while lsof -nP -iUDP:"$(archive_port 0)" -iUDP:"$(archive_port 1)" -iUDP:"$(archive_port 2)" 2>/dev/null \
+  | grep -q java; do sleep 0.5; W=$((W+1)); ((W>20)) && { echo "UDP archive ports still held after 10s — stale cluster?"; exit 1; }; done
 
 log "SEED=$SEED  ROUNDS=$ROUNDS  STEADY_STATE_SECS=$STEADY_STATE_SECS   (replay with SEED=$SEED)"
 start_seq 1; start_seq 2
@@ -125,18 +128,19 @@ for m in 0 1 2; do W=0; until grep -q "serving replay" "$LOG_DIR/replayer-$m.log
 # Consumer on member 0: fault-injection ON (SIGUSR1 tap-drop) + latency stats (flushed on exit, not read here).
 CONSUMER_LOG="$LOG_DIR/consumer.log"
 PHIXERON_ORDER_EXEC_AERON_DIR="${TMPDIR}phixeron-seq-aeron-${CN}" PHIXERON_NODE_MEMBER_ID="$CN" \
-  PHIXERON_REPLAYER_CLIENT_ID=9 PHIXERON_CLUSTER_EGRESS_ENDPOINT="localhost:9349" \
+  PHIXERON_REPLAYER_CLIENT_ID=9 PHIXERON_CLUSTER_EGRESS_ENDPOINT="localhost:${TEST_CONSUMER_EGRESS_PORT}" \
   PHIXERON_LATENCY_STATS=1 PHIXERON_FAULT_INJECTION=1 \
   stdbuf -oL -eL "$BUILD_DIR/OrderExecClient" > "$CONSUMER_LOG" 2>&1 &
 CONSUMER_PID=$!
 W=0; until grep -q "following live" "$CONSUMER_LOG" 2>/dev/null; do sleep 0.5; W=$((W+1)); ((W>60)) && { echo "consumer never caught up"; exit 1; }; done
 
-# FIX gateway on member 0 (port 9000).
+# FIX gateway on member 0 (port $FIX_TCP_PORT).
 FIX_LOG="$LOG_DIR/fix.log"
 PHIXERON_FIX_GATEWAY_AERON_DIR="${TMPDIR}phixeron-seq-aeron-${CN}" PHIXERON_NODE_MEMBER_ID="$CN" \
-  PHIXERON_REPLAYER_CLIENT_ID=2 stdbuf -oL -eL "$BUILD_DIR/FixGateway" > "$FIX_LOG" 2>&1 &
+  PHIXERON_REPLAYER_CLIENT_ID=2 PHIXERON_FIX_TCP_PORT="$FIX_TCP_PORT" \
+  stdbuf -oL -eL "$BUILD_DIR/FixGateway" > "$FIX_LOG" 2>&1 &
 FIX_PID=$!
-W=0; until nc -z 127.0.0.1 9000 2>/dev/null; do sleep 0.5; W=$((W+1)); ((W>40)) && { echo "gateway 9000 not up"; exit 1; }; done
+W=0; until nc -z 127.0.0.1 "$FIX_TCP_PORT" 2>/dev/null; do sleep 0.5; W=$((W+1)); ((W>40)) && { echo "gateway $FIX_TCP_PORT not up"; exit 1; }; done
 log "cluster READY — gateway up, consumer following live"
 
 # Optional steady background order flow so faults land on a system that is actually doing work.
@@ -145,7 +149,7 @@ log "cluster READY — gateway up, consumer following live"
 # fix_test_server's runTwoDifferentSendersTest). Loops so order flow is continuous for the whole run.
 start_background_load() {
   [[ "$BACKGROUND_LOAD" == "1" ]] || return 0
-  ( while true; do PHIXERON_FIX_LOADGEN=50 "$BUILD_DIR/fix_test_server" 127.0.0.1 9000 >/dev/null 2>&1 || true; done ) &
+  ( while true; do PHIXERON_FIX_LOADGEN=50 "$BUILD_DIR/fix_test_server" 127.0.0.1 "$FIX_TCP_PORT" >/dev/null 2>&1 || true; done ) &
   LOAD_PID=$!
 }
 start_background_load
@@ -209,7 +213,7 @@ check_invariants() {
   # (b) liveness: a single strict FIX round-trip as "PROBE" (Logon -> NewOrderSingle -> ExecutionReport
   # -> Logout). Distinct CompID from the "LOADGEN" background load, so the two never collide; exit 0 iff
   # Logon is accepted AND the order round-trips through the cluster and back.
-  if PHIXERON_FIX_PROBE=1 "$BUILD_DIR/fix_test_server" 127.0.0.1 9000 > "$LOG_DIR/probe.log" 2>&1; then
+  if PHIXERON_FIX_PROBE=1 "$BUILD_DIR/fix_test_server" 127.0.0.1 "$FIX_TCP_PORT" > "$LOG_DIR/probe.log" 2>&1; then
     log "  ok: FIX round-trip probe passed"
   else
     log "  INVARIANT FAIL: FIX round-trip probe failed (see $LOG_DIR/probe.log)"; fail=1

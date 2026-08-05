@@ -22,6 +22,7 @@ import org.limitless.phixeron.sbe.sequenced.MessageHeaderDecoder;
 import org.limitless.phixeron.sbe.unsequenced.ClusterStartedEncoder;
 import org.limitless.phixeron.sbe.unsequenced.ClusterStoppedEncoder;
 import org.limitless.phixeron.sbe.unsequenced.MessageHeaderEncoder;
+import org.limitless.phixeron.sequencer.SequencerNode;
 import org.limitless.phixeron.sequencer.SequencerService;
 
 /**
@@ -68,8 +69,8 @@ public final class ClusterCtl {
     private static final String AERON_DIR = System.getProperty(
         "clusterctl.aeronDir", System.getProperty("java.io.tmpdir") + "/phixeron-seq-aeron-" + MEMBER_ID);
     private static final File CLUSTER_DIR = new File(BASE_DIR + "/cluster-" + MEMBER_ID);
-    private static final String INGRESS_ENDPOINTS
-        = System.getProperty("clusterctl.ingressEndpoints", "0=localhost:9302");
+    private static final String INGRESS_ENDPOINTS = System.getProperty(
+        "clusterctl.ingressEndpoints", "0=" + SequencerNode.ingressEndpoint(0));
 
     private static final long CONNECT_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(5);
     private static final long ECHO_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(5);

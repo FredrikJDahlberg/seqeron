@@ -36,8 +36,10 @@ import org.limitless.phixeron.util.Logger;
  * <p><b>System properties</b>:
  * <pre>
  *   sequencer.memberId        — this node's Raft member ID (0, 1, or 2); default 0
- *   sequencer.clusterMembers  — full clusterMembers string (Aeron format);
- *                               default: single-node localhost
+ *   sequencer.nodeCount       — cluster size; used to generate clusterMembers when that
+ *                               property is not set explicitly; default 1
+ *   sequencer.clusterMembers  — full clusterMembers string (Aeron format); overrides
+ *                               nodeCount-based generation when set
  *   sequencer.baseDir         — data directory root; default /tmp/phixeron-seq
  *   sequencer.aeronDir        — Aeron media driver directory
  * </pre>
@@ -56,6 +58,7 @@ import org.limitless.phixeron.util.Logger;
  */
 public final class SequencerNode {
     private static final String PROP_MEMBER_ID = "sequencer.memberId";
+    private static final String PROP_NODE_COUNT = "sequencer.nodeCount";
     private static final String PROP_CLUSTER_MEMBERS = "sequencer.clusterMembers";
     private static final String PROP_BASE_DIR = "sequencer.baseDir";
     private static final String PROP_AERON_DIR = "sequencer.aeronDir";
@@ -65,6 +68,7 @@ public final class SequencerNode {
 
     public static void main(final String[] args) {
         final int memberId = Integer.getInteger(PROP_MEMBER_ID, 0);
+        final int nodeCount = Integer.getInteger(PROP_NODE_COUNT, 1);
         final String baseDir = System.getProperty(PROP_BASE_DIR, System.getProperty("java.io.tmpdir") +
             "/phixeron-seq");
         final String aeronDir = System.getProperty(PROP_AERON_DIR, System.getProperty("java.io.tmpdir") +
@@ -76,8 +80,7 @@ public final class SequencerNode {
         final int logPort = portBase + 4;
         final int transferPort = portBase + 5;
 
-        final String clusterMembers = System.getProperty(
-            PROP_CLUSTER_MEMBERS, buildSingleNodeMembers(ingressPort, memberPort, logPort, transferPort, archivePort));
+        final String clusterMembers = System.getProperty(PROP_CLUSTER_MEMBERS, buildClusterMembers(nodeCount));
 
         final File archiveDir = new File(baseDir + "/archive-" + memberId);
         final File clusterDir = new File(baseDir + "/cluster-" + memberId);
@@ -149,7 +152,7 @@ public final class SequencerNode {
 
         Logger.info(Logger.Component.SequencerNode, memberId,
                 "Starting member %d | ingress=%s | archive=%s | baseDir=%s",
-                udp(DEFAULT_HOST, ingressPort), udp(DEFAULT_HOST, archivePort), baseDir);
+                memberId, udp(DEFAULT_HOST, ingressPort), udp(DEFAULT_HOST, archivePort), baseDir);
 
         try (barrier;
              ClusteredMediaDriver cmd = ClusteredMediaDriver.launch(driverCtx, archiveCtx, consensusCtx);
@@ -165,9 +168,33 @@ public final class SequencerNode {
         return "aeron:udp?endpoint=" + host + ":" + port;
     }
 
-    private static String buildSingleNodeMembers(final int ingressPort, final int memberPort, final int logPort,
-                                                 final int transferPort, final int archivePort) {
-        return "0," + DEFAULT_HOST + ":" + ingressPort + "," + DEFAULT_HOST + ":" + memberPort + "," + DEFAULT_HOST
-            + ":" + logPort + "," + DEFAULT_HOST + ":" + transferPort + "," + DEFAULT_HOST + ":" + archivePort + "|";
+    /**
+     * A member's cluster-ingress endpoint ("host:port"), per this class's {@link #PORT_BASE}
+     * port-layout formula. Exposed so other callers co-located with the default single-node
+     * cluster (e.g. {@code ClusterCtl}) can derive their default from here instead of restating
+     * the port number.
+     */
+    public static String ingressEndpoint(final int memberId) {
+        return DEFAULT_HOST + ":" + (PORT_BASE + memberId * 10 + 2);
+    }
+
+    /**
+     * Generates the Aeron {@code clusterMembers} string for a {@code nodeCount}-member cluster,
+     * all on {@link #DEFAULT_HOST}, using this class's {@link #PORT_BASE} port-layout formula
+     * (see the class Javadoc). This is the single source of truth other launchers (shell scripts)
+     * should defer to rather than restating the port numbers themselves.
+     */
+    static String buildClusterMembers(final int nodeCount) {
+        final StringBuilder members = new StringBuilder();
+        for (int id = 0; id < nodeCount; id++) {
+            final int base = PORT_BASE + id * 10;
+            members.append(id).append(',')
+                   .append(DEFAULT_HOST).append(':').append(base + 2).append(',')
+                   .append(DEFAULT_HOST).append(':').append(base + 3).append(',')
+                   .append(DEFAULT_HOST).append(':').append(base + 4).append(',')
+                   .append(DEFAULT_HOST).append(':').append(base + 5).append(',')
+                   .append(DEFAULT_HOST).append(':').append(base + 1).append('|');
+        }
+        return members.toString();
     }
 }

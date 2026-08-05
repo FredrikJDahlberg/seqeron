@@ -21,6 +21,7 @@
 // Generated SBE C++ codecs from sbe-sequenced.xml (via GenerateSequencedSbeCodecs)
 #include "org_limitless_phixeron_sbe_sequenced/Header.h"
 #include "org_limitless_phixeron_sbe_sequenced/MessageHeader.h"
+#include "org/limitless/phixeron/sequencer/PortLayout.hpp"
 #include "org/limitless/phixeron/util/Logger.hpp"
 
 namespace org::limitless::phixeron::sequencer {
@@ -68,20 +69,20 @@ inline std::string resolveReplayChannel(const char* envVar, std::uint16_t defaul
     return "aeron:udp?endpoint=localhost:" + std::to_string(port);
 }
 
-// Default 3-node cluster archive control endpoints, one per member, following the
-// SequencerNode.PORT_BASE + memberId*10 + 1 formula (see three-node-cluster.sh's
-// CLUSTER_MEMBERS): member 0 → 9301, member 1 → 9311, member 2 → 9321. Every
-// member's co-located archive holds an identical recording of the cluster stream,
-// so any reachable one works equally well — there's no leader-affinity requirement
-// here, unlike cluster ingress.
-inline constexpr const char* DEFAULT_ARCHIVE_ENDPOINTS = "localhost:9301,localhost:9311,localhost:9321";
+// Default 3-node cluster archive control endpoints, one per member, generated from
+// PortLayout.hpp's clusterArchivePort formula (the C++ mirror of SequencerNode.PORT_BASE +
+// memberId*10 + 1 — see three-node-cluster.sh's CLUSTER_MEMBERS): member 0 → 9301, member 1 →
+// 9311, member 2 → 9321. Every member's co-located archive holds an identical recording of the
+// cluster stream, so any reachable one works equally well — there's no leader-affinity
+// requirement here, unlike cluster ingress.
+inline const std::string DEFAULT_ARCHIVE_ENDPOINTS = archiveEndpointsCsv(3);
 
 /**
  * Splits a comma-separated "host:port,host:port,..." list from the given
  * environment variable, falling back to defaultCsv (same format) when unset
  * or empty.
  */
-inline std::vector<std::string> resolveArchiveEndpoints(const char* envVar, const char* defaultCsv)
+inline std::vector<std::string> resolveArchiveEndpoints(const char* envVar, const std::string& defaultCsv)
 {
     const char* value = std::getenv(envVar);
     const std::string csv = (value != nullptr && *value != '\0') ? value : defaultCsv;

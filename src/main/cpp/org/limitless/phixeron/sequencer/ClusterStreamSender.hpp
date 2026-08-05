@@ -50,6 +50,7 @@
 #include "org_limitless_phixeron_cluster_sbe/SessionEvent.h"
 #include "org_limitless_phixeron_cluster_sbe/SessionKeepAlive.h"
 #include "org_limitless_phixeron_cluster_sbe/SessionMessageHeader.h"
+#include "org/limitless/phixeron/sequencer/PortLayout.hpp"
 #include "org/limitless/phixeron/util/Logger.hpp"
 
 namespace org::limitless::phixeron::sequencer {
@@ -59,18 +60,23 @@ namespace diag = org::limitless::phixeron::util;
 
 // ── Constants — Aeron Cluster ingress/egress channels, stream ids and client
 //    protocol semver, per io.aeron.cluster.codecs / AeronCluster.Configuration
-//    defaults. Must match SequencerNode's cluster listener configuration. ────
+//    defaults. Ports are derived from PortLayout.hpp's shared formula rather than
+//    restated as literals — must match SequencerNode's cluster listener configuration. ────
 // CLUSTER_INGRESS_CHANNEL must stay "aeron:udp?endpoint=" + CLUSTER_INGRESS_ENDPOINT — the
 // endpoint alone is also this client's initial value for the reconnect-on-failover tracking
-// in ClusterStreamSender (m_ingressEndpoint).
-inline constexpr const char* CLUSTER_INGRESS_ENDPOINT = "localhost:9302";
-inline constexpr const char* CLUSTER_INGRESS_CHANNEL = "aeron:udp?endpoint=localhost:9302";
-inline constexpr const char* CLUSTER_EGRESS_CHANNEL = "aeron:udp?endpoint=localhost:9320";
+// in ClusterStreamSender (m_ingressEndpoint). Member 0's ingress port is only the *initial*
+// guess for a non-colocated client: handleRedirect/onFragment resolve the real leader's
+// endpoint from the wire CSV afterward.
+inline const std::string CLUSTER_INGRESS_ENDPOINT = "localhost:" + std::to_string(clusterIngressPort(0));
+inline const std::string CLUSTER_INGRESS_CHANNEL = "aeron:udp?endpoint=" + CLUSTER_INGRESS_ENDPOINT;
+inline const std::string CLUSTER_EGRESS_CHANNEL =
+    "aeron:udp?endpoint=localhost:" + std::to_string(FIX_TEST_CLIENT_EGRESS_PORT);
 // Distinct egress port for a co-located client (see connectColocated): it attaches to its own
 // SequencerNode member's embedded media driver rather than the shared standalone aeronmd that
 // FixGateway/fix_test_server use, so it needs its own port here too — two independent
 // media driver processes can't both bind the same UDP port on localhost.
-inline constexpr const char* CLUSTER_EGRESS_CHANNEL_COLOCATED = "aeron:udp?endpoint=localhost:9330";
+inline const std::string CLUSTER_EGRESS_CHANNEL_COLOCATED =
+    "aeron:udp?endpoint=localhost:" + std::to_string(orderExecEgressPort(0));
 // Ingress channel for a client co-located with (sharing the Aeron directory of) a cluster
 // member — only reachable while that member is the current leader, see
 // ClusterStreamSender::connectColocated.
