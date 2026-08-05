@@ -818,4 +818,23 @@
         <field name="gatewayId" id="20029" type="int32"/>
     </sbe:message>
 
+    <!-- ═══════════════════════════════════════════════════════════════════
+         GatewayStarted (template 19) — gateway-scoped restart/epoch marker.
+         Published once by the gateway itself, immediately after it activates and
+         finalizes recovery of any sessions a prior process instance left dangling —
+         every activation publishes this the same way, whether it is a cold-start
+         bootstrap, a restart after a crash, or a standby promotion (a SIGKILL/crash
+         can't publish ClientDisconnected for the sessions it was serving, so without
+         this the log has no event marking where a new instance took over).
+         firstConnectionId is the connectionId this instance starts allocating from,
+         so any consumer can tell a still-open ClientConnected under this sourceId is
+         stale as of this frame without needing this gateway's own recovery-finalize
+         state. See doc/todo.md "No gateway-scoped restart/epoch marker".
+         ═══════════════════════════════════════════════════════════════════ -->
+    <sbe:message name="GatewayStarted" id="19"
+                 description="A process instance activated for header.sourceId; firstConnectionId is where its connectionId allocation resumes">
+        <field name="header"            id="20001" type="header"/>
+        <field name="firstConnectionId" id="20034" type="int32"/>
+    </sbe:message>
+
 </sbe:messageSchema>
