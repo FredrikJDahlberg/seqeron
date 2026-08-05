@@ -25,7 +25,7 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "${SCRIPT_DIR}/../../main/scripts/lib/ports.sh"
+source "${SCRIPT_DIR}/../../main/scripts/ports.sh"
 
 # ── Config ────────────────────────────────────────────────────────────────────
 BUILD_DIR="cmake-build-release"
