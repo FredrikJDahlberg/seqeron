@@ -49,7 +49,7 @@ public final class TapStallPolicy {
      * how long back-pressure had already lasted before it is unknown, so the timers start here.
      * @param nowNs            monotonic clock reading
      * @param recordingActive  whether the archive's recording of the tap is still live
-     * @param recordedPosition that recording's current position; read only when {@code recordingActive}
+     * @param recordedPosition that recording's current position; ignored unless {@code recordingActive}
      * @return what the service should do
      */
     public Action onBackPressure(final long nowNs, final boolean recordingActive, final long recordedPosition) {

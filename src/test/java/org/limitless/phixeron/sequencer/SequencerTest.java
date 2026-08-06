@@ -417,19 +417,46 @@ class SequencerTest {
         final MutableDirectBuffer lifecycle = new ExpandableArrayBuffer(64);
         assertEquals(0, seq.connectedClientCount());
 
-        seq.sequenceMessage(lifecycle, 0, encodeIngressClientConnected(lifecycle, 0), SESSION_ID, TIMESTAMP);
+        seq.sequenceMessage(lifecycle, 0, encodeIngressClientConnected(lifecycle, 0, 1), SESSION_ID, TIMESTAMP);
         assertEquals(1, seq.connectedClientCount());
 
-        seq.sequenceMessage(lifecycle, 0, encodeIngressClientConnected(lifecycle, 0), SESSION_ID + 1, TIMESTAMP);
+        seq.sequenceMessage(lifecycle, 0, encodeIngressClientConnected(lifecycle, 0, 2), SESSION_ID + 1, TIMESTAMP);
         assertEquals(2, seq.connectedClientCount());
 
-        seq.sequenceMessage(lifecycle, 0, encodeIngressClientDisconnected(lifecycle, 0), SESSION_ID, TIMESTAMP + 1);
+        seq.sequenceMessage(lifecycle, 0, encodeIngressClientDisconnected(lifecycle, 0, 1), SESSION_ID, TIMESTAMP + 1);
         assertEquals(1, seq.connectedClientCount());
 
         // Ordinary application traffic must not perturb the count.
         final int orderLength = encodeIngressNewOrderSingle(ingress, 0);
         seq.sequenceMessage(ingress, 0, orderLength, SESSION_ID + 1, TIMESTAMP + 2);
         assertEquals(1, seq.connectedClientCount());
+    }
+
+    @Test
+    @DisplayName("connectedClientCount is a live gauge, not a running tally that drifts")
+    void connectedClientCountIsALiveGauge() {
+        // What a tally got wrong: a gateway that dies with clients attached publishes no
+        // ClientDisconnected for any of them, so its connects stay counted for the rest of the day.
+        // GatewayStarted is its successor declaring the epoch rolled — every connection still open under
+        // that logical gateway belonged to the instance that went away, and died with its sockets.
+        final Sequencer seq = new Sequencer();
+        final MutableDirectBuffer buf = new ExpandableArrayBuffer(128);
+        seq.sequenceMessage(buf, 0, encodeIngressClientConnected(buf, 0, 1), SESSION_ID, TIMESTAMP);
+        seq.sequenceMessage(buf, 0, encodeIngressClientConnected(buf, 0, 2), SESSION_ID, TIMESTAMP);
+        assertEquals(2, seq.connectedClientCount());
+
+        seq.sequenceMessage(buf, 0, encodeIngressGatewayStarted(buf, 0, 5), SESSION_ID + 1, TIMESTAMP + 1);
+        assertEquals(0, seq.connectedClientCount(), "the dead instance's connections are not still connected");
+
+        // The successor's own connection counts, and counts once however many times the frame arrives.
+        seq.sequenceMessage(buf, 0, encodeIngressClientConnected(buf, 0, 1), SESSION_ID + 1, TIMESTAMP + 2);
+        seq.sequenceMessage(buf, 0, encodeIngressClientConnected(buf, 0, 1), SESSION_ID + 1, TIMESTAMP + 3);
+        assertEquals(1, seq.connectedClientCount());
+
+        // A disconnect matching nothing open cannot take the gauge below zero.
+        seq.sequenceMessage(buf, 0, encodeIngressClientDisconnected(buf, 0, 1), SESSION_ID + 1, TIMESTAMP + 4);
+        seq.sequenceMessage(buf, 0, encodeIngressClientDisconnected(buf, 0, 1), SESSION_ID + 1, TIMESTAMP + 5);
+        assertEquals(0, seq.connectedClientCount());
     }
 
     // ── Standby promotion (GatewayActive) ─────────────────────────────────────
@@ -643,13 +670,19 @@ class SequencerTest {
      * connection. Header-only: the connection it describes is entirely in {@code header}.
      */
     private static int encodeIngressClientConnected(final MutableDirectBuffer buffer, final int offset) {
+        return encodeIngressClientConnected(buffer, offset, CONNECTION_ID);
+    }
+
+    /** As above, for the one connection identity {@code connectedClientCount} keys its gauge on. */
+    private static int encodeIngressClientConnected(final MutableDirectBuffer buffer, final int offset,
+                                                    final int connectionId) {
         final org.limitless.phixeron.sbe.unsequenced.MessageHeaderEncoder messageHeader =
             new org.limitless.phixeron.sbe.unsequenced.MessageHeaderEncoder();
         final org.limitless.phixeron.sbe.unsequenced.ClientConnectedEncoder encoder =
             new org.limitless.phixeron.sbe.unsequenced.ClientConnectedEncoder();
 
         encoder.wrapAndApplyHeader(buffer, offset, messageHeader);
-        encoder.header().sourceId(SOURCE_ID).connectionId(CONNECTION_ID).sessionId(-1);
+        encoder.header().sourceId(SOURCE_ID).connectionId(connectionId).sessionId(-1);
         encoder.origin(org.limitless.phixeron.sbe.unsequenced.Origin.Gateway);
 
         return org.limitless.phixeron.sbe.unsequenced.MessageHeaderEncoder.ENCODED_LENGTH + encoder.encodedLength();
@@ -657,13 +690,19 @@ class SequencerTest {
 
     /** Encodes a schema-200 ClientDisconnected; the mirror of {@link #encodeIngressClientConnected}. */
     private static int encodeIngressClientDisconnected(final MutableDirectBuffer buffer, final int offset) {
+        return encodeIngressClientDisconnected(buffer, offset, CONNECTION_ID);
+    }
+
+    /** As above, for a named connection. */
+    private static int encodeIngressClientDisconnected(final MutableDirectBuffer buffer, final int offset,
+                                                       final int connectionId) {
         final org.limitless.phixeron.sbe.unsequenced.MessageHeaderEncoder messageHeader =
             new org.limitless.phixeron.sbe.unsequenced.MessageHeaderEncoder();
         final org.limitless.phixeron.sbe.unsequenced.ClientDisconnectedEncoder encoder =
             new org.limitless.phixeron.sbe.unsequenced.ClientDisconnectedEncoder();
 
         encoder.wrapAndApplyHeader(buffer, offset, messageHeader);
-        encoder.header().sourceId(SOURCE_ID).connectionId(CONNECTION_ID).sessionId(-1);
+        encoder.header().sourceId(SOURCE_ID).connectionId(connectionId).sessionId(-1);
         encoder.origin(org.limitless.phixeron.sbe.unsequenced.Origin.Gateway);
 
         return org.limitless.phixeron.sbe.unsequenced.MessageHeaderEncoder.ENCODED_LENGTH + encoder.encodedLength();

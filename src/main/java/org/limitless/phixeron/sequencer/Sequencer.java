@@ -174,15 +174,39 @@ public final class Sequencer {
     private final java.util.Map<Long, Integer> activeGatewaySession = new java.util.HashMap<>();
 
     /**
-     * Count of TCP clients currently connected across every gateway, derived from {@code
-     * ClientConnected}/{@code ClientDisconnected} ingress frames as they pass through {@link
-     * #sequenceMessage} — the same pattern as {@link #gatewayRows}. Replicated state: every node
-     * counts the same connect/disconnect pairs off the same log.
+     * The connections currently open at each gateway: {@code header.sourceId} to the set of {@code
+     * header.connectionId}s that have had a {@code ClientConnected} and no {@code ClientDisconnected}
+     * yet, maintained from those frames as they pass through {@link #sequenceMessage} — the same
+     * pattern as {@link #gatewayRows}. Replicated state: every node sees the same frames in the same
+     * order and holds the same set. Only ever {@code add}/{@code remove}/{@code size}-d, never
+     * iterated, so its hash order cannot reach a frame.
+     */
+    private final java.util.Map<Integer, java.util.Set<Integer>> openConnections = new java.util.HashMap<>();
+
+    /**
+     * Count of TCP clients currently connected across every gateway: {@link #openConnections}'s total
+     * size, maintained incrementally rather than summed.
+     *
+     * <p>A live gauge, not a running tally. It moves only when a connection actually enters or leaves
+     * that map, so an unmatched {@code ClientDisconnected} cannot take it negative and a repeated
+     * {@code ClientConnected} cannot double-count — and a gateway that dies without disconnecting its
+     * clients has its still-open connections released by the {@code GatewayStarted} its successor
+     * publishes (see {@link #releaseStaleConnections}), which is what keeps this from drifting upward
+     * over a day of gateway restarts.
      */
     private int connectedClientCount = 0;
 
     /** True once the bootstrap {@code GatewayActive} has been synthesized (on the first EndBasicData). */
     private boolean bootstrapActivationEmitted = false;
+
+    /**
+     * This node's cluster memberId, for the diagnostic slot in {@link #reject}'s log line. Node-local
+     * and <em>not</em> replicated state — no state transition reads it, so it cannot reach a frame —
+     * which is also why it is set rather than constructed: {@code cluster.memberId()} is still
+     * {@code NULL_VALUE} while this class is being built (see {@code SequencerService.ensureCounters}).
+     * Null until then, which the logger renders as no member context rather than a wrong one.
+     */
+    private Integer memberId;
 
     /**
      * Set when {@link #sequenceMessage} sequenced the EndBasicData that must be followed by the
@@ -211,6 +235,14 @@ public final class Sequencer {
     /** Count of TCP clients currently connected across every gateway; 0 before any {@code ClientConnected}. */
     public int connectedClientCount() {
         return connectedClientCount;
+    }
+
+    /**
+     * Names this node in the rejection log line; see {@link #memberId}.
+     * @param memberId this node's cluster memberId
+     */
+    public void memberId(final int memberId) {
+        this.memberId = memberId;
     }
 
     /**
@@ -280,15 +312,21 @@ public final class Sequencer {
         if (templateId == GatewayStartedDecoder.TEMPLATE_ID) {
             gatewayStartedDecoder.wrap(buffer, ingressBodyOffset, ingressBlockLen, ingressMsgHeaderDecoder.version());
             activeGatewaySession.put(sessionId, gatewayStartedDecoder.gatewayId());
+            releaseStaleConnections(sourceId);
         }
         if (templateId == EndBasicDataDecoder.TEMPLATE_ID && !bootstrapActivationEmitted) {
             bootstrapActivationEmitted = true;
             bootstrapActivationPending = true;
         }
         if (templateId == ClientConnectedDecoder.TEMPLATE_ID) {
-            connectedClientCount++;
+            if (openConnections.computeIfAbsent(sourceId, source -> new java.util.HashSet<>()).add(connectionId)) {
+                connectedClientCount++;
+            }
         } else if (templateId == ClientDisconnectedDecoder.TEMPLATE_ID) {
-            connectedClientCount--;
+            final java.util.Set<Integer> open = openConnections.get(sourceId);
+            if (open != null && open.remove(connectionId)) {
+                connectedClientCount--;
+            }
         }
 
         headerEncoder.wrap(encodeBuffer, 0)
@@ -321,7 +359,7 @@ public final class Sequencer {
      * @param reason rejection description
      */
     private int reject(final String reason) {
-        Logger.error(Logger.Component.Sequencer, Logger.EventCode.MalformedIngressMessage, currentLeaderMemberId,
+        Logger.error(Logger.Component.Sequencer, Logger.EventCode.MalformedIngressMessage, memberId,
                 "skipping malformed ingress message: %s (globalSeqNo stays %d)", reason, globalSeqNo);
         return NO_FRAME;
     }
@@ -437,6 +475,25 @@ public final class Sequencer {
             }
         }
         return best == null ? NO_GATEWAY_ID : best.gatewayId();
+    }
+
+    /**
+     * Drops every connection still open under {@code gatewaySourceId}. A {@code GatewayStarted} is a new
+     * instance declaring it has taken that logical gateway over, so anything still open under it belongs
+     * to the instance that went away, whose sockets died with it — a crash cannot publish the {@code
+     * ClientDisconnected}s that would have closed them out, which is the whole reason that frame exists
+     * (it carries the {@code firstConnectionId} the new instance resumes allocating from for the same
+     * reason). Without this, every gateway crash leaves its clients counted forever.
+     *
+     * <p>It cannot drop a live connection: a gateway publishes {@code GatewayStarted} before it opens its
+     * accept gate ({@code FixGateway.cpp}), so none of its own {@code ClientConnected}s can precede it.
+     * @param gatewaySourceId the logical gateway whose epoch just rolled
+     */
+    private void releaseStaleConnections(final int gatewaySourceId) {
+        final java.util.Set<Integer> stale = openConnections.remove(gatewaySourceId);
+        if (stale != null) {
+            connectedClientCount -= stale.size();
+        }
     }
 
     /** Records a Gateway row, replacing any earlier row for the same {@code gatewayId} in place. */

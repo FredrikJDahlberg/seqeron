@@ -159,6 +159,17 @@ public final class SequencerService implements ClusteredService {
     private static final long TAP_STALL_FATAL_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(30);
 
     /**
+     * How long the consensus module may refuse the cluster-clock timer, continuously, before {@link
+     * #scheduleTick} gives up on this node. The same judgement {@link #TAP_STALL_FATAL_TIMEOUT_NS} makes
+     * about the archive, applied to the other end of the service: back-pressure on the consensus-module
+     * proxy is ordinary and self-clearing, and half a minute of it without a single accepted timer is not
+     * a busy module but a wedged one. Matched to that constant deliberately — both bound the same
+     * question, "is the thing this node depends on still draining?", and there is no reason for the two
+     * answers to differ.
+     */
+    private static final long TICK_SCHEDULE_FATAL_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(30);
+
+    /**
      * How long after signalling a fatal tap failure the process may still be alive before it is halted
      * outright. The graceful path has to close the very archive that may be the thing wedged, so it can
      * hang; by this point the node is committed to dying and nothing is lost by skipping the niceties.
@@ -336,6 +347,10 @@ public final class SequencerService implements ClusteredService {
             return;
         }
         final int memberId = cluster.memberId();
+        // Same reason the counters are labelled here rather than in onStart: this is the first point at
+        // which Aeron has assigned the id. The sequencer names itself with it when it rejects an ingress
+        // message — it has no other member context, and used to log the *leader's* id in that slot.
+        sequencer.memberId(memberId);
         final Aeron aeron = cluster.context().aeron();
         globalSeqNoCounter = PhixeronCounters.addCounter(aeron, PhixeronCounters.SEQUENCER_GLOBAL_SEQ_NO_TYPE_ID,
             "phixeron.sequencer.globalSeqNo member=" + memberId, memberId);
@@ -489,12 +504,35 @@ public final class SequencerService implements ClusteredService {
     }
 
     /**
-     * Schedule heartbeat every TICK_INTERVAL_MS ahead of current cluster time.
-     * Spins until the schedule lands
+     * Re-arms the cluster clock ({@link #TICK_INTERVAL_MS} ahead of current cluster time), spinning until
+     * the consensus module accepts it — bounded, for the same reason {@link #emit} is. Returning with the
+     * timer unscheduled would stop the clock outright: nothing else re-arms it until the next leadership
+     * term, so every consumer's session clock would silently stop advancing. Spinning forever is no better
+     * — {@code onTimerEvent} would never return and this node would go dark with none of the failure paths
+     * below ever running. So a consensus module that has not accepted a timer for {@link
+     * #TICK_SCHEDULE_FATAL_TIMEOUT_NS} is treated as wedged and this node terminates, as visibly as it does
+     * when it cannot record its own tap. (The only false return is back-pressure: Aeron throws for a
+     * closed/disconnected proxy publication rather than returning.)
      */
     private void scheduleTick() {
         final long deadline = cluster.time() + TICK_INTERVAL_MS;
+        int spins = 0;
+        long backPressuredSinceNs = 0;
         while (!cluster.scheduleTimer(TICK_TIMER_CORRELATION_ID, deadline)) {
+            if (++spins >= SPINS_PER_CLOCK_CHECK) {
+                spins = 0;
+                final long nowNs = System.nanoTime();
+                if (backPressuredSinceNs == 0) {
+                    backPressuredSinceNs = nowNs;             // first read only anchors the period
+                } else if (fatalSignalled) {
+                    haltIfShutdownStalled(nowNs);             // keep the backstop alive: no tick reaches it now
+                } else if (nowNs - backPressuredSinceNs >= TICK_SCHEDULE_FATAL_TIMEOUT_NS) {
+                    fatalFailure(Logger.EventCode.ServiceError,
+                            "the consensus module did not accept the cluster-clock timer for "
+                            + TimeUnit.NANOSECONDS.toSeconds(TICK_SCHEDULE_FATAL_TIMEOUT_NS)
+                            + "s of continuous back-pressure");
+                }
+            }
             cluster.idleStrategy().idle();
         }
     }
@@ -681,26 +719,38 @@ public final class SequencerService implements ClusteredService {
     }
 
     /**
-     * Gives up on this node. Its archive is the authoritative copy of the sequenced history and a frame that
-     * cannot be recorded is a hole that no later work can fill, so a node that cannot record is no longer
-     * doing the job it exists to do and is better dead than silently incomplete: the peers hold identical,
-     * complete recordings and keep quorum without it, and its restart rebuilds the recording from {@code
-     * globalSeqNo} 1 over the full-log replay it performs anyway. Latched — the first call decides.
+     * Gives up on this node, because its archive is the authoritative copy of the sequenced history and a
+     * frame that cannot be recorded is a hole that no later work can fill: a node that cannot record is no
+     * longer doing the job it exists to do, and is better dead than silently incomplete. Also latches the
+     * stall gauge, so an operator watching it does not see the stall clear on the way out.
      * @param reason what failed, for the operator
      */
     private void fatalTapFailure(final String reason) {
+        if (!fatalSignalled && tapStalledCounter != null) {   // null before the first callback creates the counters
+            tapStalledCounter.set(1);
+        }
+        fatalFailure(Logger.EventCode.TapRecordingFailure, reason
+                + ", so it can no longer record the history it is responsible for");
+    }
+
+    /**
+     * Brings this node down: the peers hold identical, complete recordings and keep quorum without it, and
+     * its restart rebuilds everything it held from {@code globalSeqNo} 1 over the full-log replay it
+     * performs anyway — so failing loudly and early costs the cluster nothing and costs a silently degraded
+     * node everything. Latched: the first call decides, and later ones only fall through to {@link
+     * #haltIfShutdownStalled}.
+     * @param code   which failure class this is, for the operator's log
+     * @param reason what failed
+     */
+    private void fatalFailure(final Logger.EventCode code, final String reason) {
         if (fatalSignalled) {
             return;
         }
         fatalSignalled = true;
         fatalSignalledNs = System.nanoTime();
-        if (tapStalledCounter != null) {   // null before the first callback creates the counters
-            tapStalledCounter.set(1);
-        }
-        Logger.fault(Logger.Component.SequencerService, Logger.EventCode.TapRecordingFailure, cluster.memberId(),
-                "FATAL: %s at globalSeqNo=%d — terminating this node, it can no longer record the history it "
-                + "is responsible for; a restart replays the full log and rebuilds its recording",
-                reason, sequencer.globalSeqNo());
+        Logger.fault(Logger.Component.SequencerService, code, cluster.memberId(),
+                "FATAL: %s at globalSeqNo=%d — terminating this node; its peers keep quorum and its restart "
+                + "replays the full log", reason, sequencer.globalSeqNo());
         fatalHandler.run();
     }
 
