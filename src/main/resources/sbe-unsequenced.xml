@@ -861,9 +861,17 @@
          disconnected (the deterministic close-out of any pre-activation session
          state); the instance whose gatewayId matches then opens its accept gate,
          the others stay standby. See doc/todo.md items 18 and 8c.
+         This is a *state assignment* for the logical gateway, not a one-shot event:
+         the last frame naming any instance of a gatewaySourceId designates that
+         group's active instance, and supersedes every earlier one. A consumer that
+         latched the first match instead would re-activate itself off a superseded
+         frame while replaying history at cold start, alongside the peer that
+         superseded it. Always a gatewayId, never a gatewaySourceId — the two are
+         separate id spaces and a pair shares its gatewaySourceId, so a frame
+         carrying one would match both instances at once.
          ═══════════════════════════════════════════════════════════════════ -->
     <sbe:message name="GatewayActive" id="18"
-                 description="Activates the FIX gateway instance whose gatewayId this carries">
+                 description="Designates the FIX gateway instance whose gatewayId this carries as its group's active one">
         <field name="header"    id="20001" type="header"/>
         <field name="gatewayId" id="20029" type="int32"/>
     </sbe:message>
@@ -880,10 +888,17 @@
          so any consumer can tell a still-open ClientConnected under this sourceId is
          stale as of this frame without needing this gateway's own recovery-finalize
          state. See doc/todo.md "No gateway-scoped restart/epoch marker".
+         gatewayId names the *instance* that took over, where header.sourceId names
+         only the logical gateway both instances of a pair share. It is also the
+         sequencer's one source of truth for which cluster session an active gateway
+         is on: a routing header.sourceId is echoed by other clients (an
+         ExecutionReport carries the originating gateway's), so only a gateway
+         publishing this about itself may be taken for one.
          ═══════════════════════════════════════════════════════════════════ -->
     <sbe:message name="GatewayStarted" id="19"
-                 description="A process instance activated for header.sourceId; firstConnectionId is where its connectionId allocation resumes">
+                 description="Gateway instance gatewayId activated for header.sourceId; firstConnectionId is where its connectionId allocation resumes">
         <field name="header"            id="20001" type="header"/>
+        <field name="gatewayId"         id="20029" type="int32"/>
         <field name="firstConnectionId" id="20034" type="int32"/>
     </sbe:message>
 

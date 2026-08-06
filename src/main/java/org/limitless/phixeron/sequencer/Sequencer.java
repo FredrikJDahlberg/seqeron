@@ -12,6 +12,7 @@ import org.limitless.phixeron.sbe.unsequenced.BasicDataGatewayDecoder;
 import org.limitless.phixeron.sbe.unsequenced.ClientConnectedDecoder;
 import org.limitless.phixeron.sbe.unsequenced.ClientDisconnectedDecoder;
 import org.limitless.phixeron.sbe.unsequenced.EndBasicDataDecoder;
+import org.limitless.phixeron.sbe.unsequenced.GatewayStartedDecoder;
 import org.limitless.phixeron.sbe.unsequenced.HeaderDecoder;
 import org.limitless.phixeron.sbe.unsequenced.MessageHeaderDecoder;
 import org.limitless.phixeron.util.Logger;
@@ -70,6 +71,9 @@ public final class Sequencer {
     /** {@link #leadershipChanged} and friends return this when the event produces no frame. */
     public static final int NO_FRAME = 0;
 
+    /** No gateway instance: {@link #promotionTarget} found no sibling, {@link #designatedPrimaryGatewayId} no rank-0 row. */
+    private static final int NO_GATEWAY_ID = -1;
+
     /**
      * Smallest ingress message {@link #sequenceMessage} can re-stamp: the outer framing header plus the
      * {@code header} composite, the only two things it decodes. Anything shorter is malformed.
@@ -78,11 +82,12 @@ public final class Sequencer {
 
     // ── Ingress decode (schema 200, sbe-unsequenced.xml) ──────────────────────
     // Only the outer framing header and the generic `header` composite are ever decoded — body fields
-    // are copied through as opaque bytes (see sequenceMessage), with one bounded exception: the Gateway
-    // topology row, whose scalar fields feed the derived topology below.
+    // are copied through as opaque bytes (see sequenceMessage), with two bounded exceptions: the Gateway
+    // topology row and GatewayStarted, whose scalar fields feed the derived topology below.
     private final MessageHeaderDecoder ingressMsgHeaderDecoder = new MessageHeaderDecoder();
     private final HeaderDecoder ingressHeaderDecoder = new HeaderDecoder();
     private final BasicDataGatewayDecoder gatewayDecoder = new BasicDataGatewayDecoder();
+    private final GatewayStartedDecoder gatewayStartedDecoder = new GatewayStartedDecoder();
 
     // ── Egress encode (schema 202, sbe-sequenced.xml) ─────────────────────────
     private final MessageHeaderEncoder headerEncoder = new MessageHeaderEncoder();
@@ -97,19 +102,22 @@ public final class Sequencer {
     // sequencer builds this from them as they pass through sequenceMessage. Pure functions of the
     // ordered log, so every node agrees, and rebuilt on full-log replay (there are no snapshots).
 
+    /** One Gateway row: an instance ({@code gatewayId}) of a logical gateway ({@code gatewaySourceId}). */
+    private record GatewayRow(int gatewayId, int gatewaySourceId, short preferenceRank) {}
+
     /**
-     * Every logical gateway's {@code gatewaySourceId}, from the Gateway rows: the set of sourceIds a
-     * cluster session may be a FIX gateway under (a session that publishes under one is tracked in
-     * {@link #gatewaySessionSourceId}), and the sourceId a promotion {@code GatewayActive} carries.
+     * Every Gateway row seen, in log order, de-duplicated on {@code gatewayId} so a re-emitted load (a
+     * leader change mid-load) re-asserts rather than duplicates. Read only by {@link #promotionTarget},
+     * and only ever by index, so the iteration order is the log's and every node agrees.
      */
-    private final java.util.Set<Integer> gatewaySourceIds = new java.util.HashSet<>();
+    private final java.util.List<GatewayRow> gatewayRows = new java.util.ArrayList<>();
 
     /**
      * The designated-primary {@code gatewayId} — the {@code gatewayId} of the rank-0 Gateway row —
-     * named by the bootstrap {@code GatewayActive}. -1 until a rank-0 row is seen; a bootstrap with no
-     * designated primary produces no frame (fail closed).
+     * named by the bootstrap {@code GatewayActive}. {@link #NO_GATEWAY_ID} until a rank-0 row is seen; a
+     * bootstrap with no designated primary produces no frame (fail closed).
      */
-    private int designatedPrimaryGatewayId = -1;
+    private int designatedPrimaryGatewayId = NO_GATEWAY_ID;
 
     // ── Replicated state (advanced identically on every node; not snapshotted) ─
     // There are no snapshots — SequencerService refuses both hooks — so every field here is rebuilt by
@@ -127,19 +135,28 @@ public final class Sequencer {
     private int currentLeaderMemberId = -1;
 
     /**
-     * Cluster sessions currently publishing under a gateway sourceId ({@link #gatewaySourceIds}) —
-     * FIX gateway processes attached to cluster ingress — mapped to the sourceId each publishes under,
-     * so {@link #sessionClosed} can promote with that session's own gateway sourceId. Added in {@link
-     * #sequenceMessage} the first time a session stamps a gateway sourceId, removed in {@link
-     * #sessionClosed}. Replicated state: built identically on every node, so every node promotes at
-     * the same close.
+     * The cluster session each <em>active</em> FIX gateway instance is attached on, mapped to that
+     * instance's {@code gatewayId}, so {@link #sessionClosed} knows which instance it just lost and can
+     * promote a sibling. Added in {@link #sequenceMessage} on a {@code GatewayStarted}, removed in
+     * {@link #sessionClosed}. Replicated state: built identically on every node, so every node promotes
+     * at the same close.
+     *
+     * <p><b>{@code GatewayStarted} is the only thing that puts a session in here, and that is load-bearing.</b>
+     * This used to key off {@code header.sourceId} landing in the set of known gateway sourceIds, which
+     * is not an assertion the publisher makes about itself: that field is the <em>routing</em> id of the
+     * gateway a message is travelling to or from, and other clients legitimately echo it — the
+     * OrderExecClient stamps the originating gateway's sourceId onto every ExecutionReport and
+     * PortfolioQueryReply it submits. Its cluster session was therefore recorded as a gateway's, and an
+     * ordinary OrderExecClient restart promoted the standby out from under a perfectly healthy primary.
+     * {@code GatewayStarted} is published by a gateway about itself, on activation and nowhere else, so
+     * it is the one frame that means what this map needs it to mean.
      */
-    private final java.util.Map<Long, Integer> gatewaySessionSourceId = new java.util.HashMap<>();
+    private final java.util.Map<Long, Integer> activeGatewaySession = new java.util.HashMap<>();
 
     /**
      * Count of TCP clients currently connected across every gateway, derived from {@code
      * ClientConnected}/{@code ClientDisconnected} ingress frames as they pass through {@link
-     * #sequenceMessage} — the same pattern as {@link #gatewaySourceIds}. Replicated state: every node
+     * #sequenceMessage} — the same pattern as {@link #gatewayRows}. Replicated state: every node
      * counts the same connect/disconnect pairs off the same log.
      */
     private int connectedClientCount = 0;
@@ -153,7 +170,7 @@ public final class Sequencer {
      */
     private boolean bootstrapActivationPending = false;
 
-    /** Topology is derived from the sequenced Gateway rows (see {@link #gatewaySourceIds}), not configured. */
+    /** Topology is derived from the sequenced Gateway rows (see {@link #gatewayRows}), not configured. */
     public Sequencer() {}
 
     /** The buffer every encode writes into, from offset 0. Valid up to the length just returned. */
@@ -219,17 +236,19 @@ public final class Sequencer {
         final int connectionId = ingressHeaderDecoder.connectionId();
 
         // Topology bookkeeping for FIX standby promotion (see sessionClosed / pendingBootstrapActivation).
-        // A Gateway message defines the topology; a session that publishes under a gateway sourceId is a FIX
-        // gateway; the first EndBasicData designates the primary.
-        if (gatewaySourceIds.contains(sourceId)) {
-            gatewaySessionSourceId.put(sessionId, sourceId);
-        }
+        // A Gateway message defines the topology; a GatewayStarted is a gateway instance declaring which
+        // session it is active on; the first EndBasicData designates the primary.
         if (templateId == BasicDataGatewayDecoder.TEMPLATE_ID) {
             gatewayDecoder.wrap(buffer, ingressBodyOffset, ingressBlockLen, ingressMsgHeaderDecoder.version());
-            gatewaySourceIds.add(gatewayDecoder.gatewaySourceId());
+            addGatewayRow(gatewayDecoder.gatewayId(), gatewayDecoder.gatewaySourceId(),
+                          gatewayDecoder.preferenceRank());
             if (gatewayDecoder.preferenceRank() == 0) {
                 designatedPrimaryGatewayId = gatewayDecoder.gatewayId();
             }
+        }
+        if (templateId == GatewayStartedDecoder.TEMPLATE_ID) {
+            gatewayStartedDecoder.wrap(buffer, ingressBodyOffset, ingressBlockLen, ingressMsgHeaderDecoder.version());
+            activeGatewaySession.put(sessionId, gatewayStartedDecoder.gatewayId());
         }
         if (templateId == EndBasicDataDecoder.TEMPLATE_ID && !bootstrapActivationEmitted) {
             bootstrapActivationEmitted = true;
@@ -332,23 +351,73 @@ public final class Sequencer {
             return NO_FRAME;
         }
         bootstrapActivationPending = false;
-        if (designatedPrimaryGatewayId < 0) {
+        if (designatedPrimaryGatewayId == NO_GATEWAY_ID) {
             return NO_FRAME;  // no Gateway row designated a primary — nothing to activate (fail closed)
         }
         return gatewayActive(designatedPrimaryGatewayId, timestamp);
     }
 
     /**
-     * A cluster session closed. If it was a FIX gateway session send a standby promotion.
+     * A cluster session closed. If it was the session an active FIX gateway declared itself on (via
+     * {@code GatewayStarted}), promote a standby of the same logical gateway; otherwise no frame.
      * @param sessionId session identity
      * @param timestamp now
      */
     public int sessionClosed(final long sessionId, final long timestamp) {
-        final Integer sourceId = gatewaySessionSourceId.remove(sessionId);
-        if (sourceId == null) {
+        final Integer closedGatewayId = activeGatewaySession.remove(sessionId);
+        if (closedGatewayId == null) {
             return NO_FRAME;
         }
-        return gatewayActive(sourceId, timestamp);
+        final int promoted = promotionTarget(closedGatewayId);
+        if (promoted == NO_GATEWAY_ID) {
+            return NO_FRAME;  // no sibling to hand over to — fail closed rather than name a nonexistent instance
+        }
+        return gatewayActive(promoted, timestamp);
+    }
+
+    /**
+     * The {@code gatewayId} to hand over to when instance {@code closedGatewayId} goes away: the
+     * lowest-{@code preferenceRank} other instance of the same logical gateway, ties broken by log
+     * order, or {@link #NO_GATEWAY_ID} if that instance has no known row or no sibling.
+     *
+     * <p>A <b>{@code gatewayId}</b>, never the {@code gatewaySourceId} this used to promote with. Those
+     * are separate id spaces, and every instance of a pair shares the sourceId, so a {@code
+     * GatewayActive} carrying one designated <em>both</em> instances at once — which the consumer could
+     * only survive by latching the first match it ever saw, and that in turn made a restarting instance
+     * re-activate itself off a superseded frame during cold-start replay.
+     * @param closedGatewayId the instance whose session just closed
+     */
+    private int promotionTarget(final int closedGatewayId) {
+        GatewayRow closed = null;
+        for (final GatewayRow row : gatewayRows) {
+            if (row.gatewayId() == closedGatewayId) {
+                closed = row;
+                break;
+            }
+        }
+        if (closed == null) {
+            return NO_GATEWAY_ID;
+        }
+        GatewayRow best = null;
+        for (final GatewayRow row : gatewayRows) {
+            if (row.gatewaySourceId() == closed.gatewaySourceId() && row.gatewayId() != closedGatewayId
+                && (best == null || row.preferenceRank() < best.preferenceRank())) {
+                best = row;
+            }
+        }
+        return best == null ? NO_GATEWAY_ID : best.gatewayId();
+    }
+
+    /** Records a Gateway row, replacing any earlier row for the same {@code gatewayId} in place. */
+    private void addGatewayRow(final int gatewayId, final int gatewaySourceId, final short preferenceRank) {
+        final GatewayRow row = new GatewayRow(gatewayId, gatewaySourceId, preferenceRank);
+        for (int i = 0; i < gatewayRows.size(); i++) {
+            if (gatewayRows.get(i).gatewayId() == gatewayId) {
+                gatewayRows.set(i, row);
+                return;
+            }
+        }
+        gatewayRows.add(row);
     }
 
     /**

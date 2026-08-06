@@ -436,31 +436,91 @@ class SequencerTest {
     }
 
     @Test
-    @DisplayName("closing a gateway session promotes the standby with a GatewayActive on the gateway sourceId")
+    @DisplayName("closing the active gateway's session promotes the next-ranked sibling, named by gatewayId")
     void closingGatewaySessionPromotesStandby() {
         final Sequencer seq = new Sequencer();
         final MutableDirectBuffer buf = new ExpandableArrayBuffer(512);
 
-        // The Gateway row makes SOURCE_ID a known gateway sourceId (rank-0 primary is gatewayId 5).
+        // One logical gateway (SOURCE_ID) served by an active/standby pair: gatewayId 5 rank 0, 6 rank 1.
         seq.sequenceMessage(buf, 0, encodeIngressGateway(buf, 0, 5, SOURCE_ID, "GW-A", 0), SESSION_ID, TIMESTAMP);
+        seq.sequenceMessage(buf, 0, encodeIngressGateway(buf, 0, 6, SOURCE_ID, "GW-B", 1), SESSION_ID, TIMESTAMP);
 
-        // A session that then publishes under that sourceId is a gateway session (NewOrderSingle carries
-        // SOURCE_ID as its header.sourceId).
+        // GatewayStarted is how instance 5 declares which cluster session it is active on.
         final long gatewaySession = 0xA11CEL;
-        seq.sequenceMessage(buf, 0, encodeIngressNewOrderSingle(buf, 0), gatewaySession, TIMESTAMP);
+        seq.sequenceMessage(buf, 0, encodeIngressGatewayStarted(buf, 0, 5), gatewaySession, TIMESTAMP);
 
-        // A session that never published under a gateway sourceId is not — its close promotes nothing.
+        // A session no gateway ever claimed is not one — its close promotes nothing.
         assertEquals(Sequencer.NO_FRAME, seq.sessionClosed(0xBEEFL, TIMESTAMP + 1));
 
         final int promotionLength = seq.sessionClosed(gatewaySession, TIMESTAMP + 2);
         assertNotEquals(Sequencer.NO_FRAME, promotionLength);
         final GatewayActiveDecoder decoded = decodeGatewayActive(seq.buffer(), promotionLength);
-        assertEquals(SOURCE_ID, decoded.gatewayId());              // promotion carries that session's gateway sourceId
-        assertEquals(3L, decoded.header().globalSeqNo());          // Gateway row + NewOrderSingle + promotion
+        // The standby's gatewayId — never the gatewaySourceId. Both instances share the sourceId, so a
+        // promotion carrying it designated both at once, and the consumer could only survive that by
+        // latching its first match, which made a restarting instance re-activate off a superseded frame.
+        assertEquals(6, decoded.gatewayId());
+        assertNotEquals(SOURCE_ID, decoded.gatewayId());
+        assertEquals(4L, decoded.header().globalSeqNo());          // 2 Gateway rows + GatewayStarted + promotion
         assertEquals(TIMESTAMP + 2, decoded.header().timestamp());
 
         // The session is forgotten: a duplicate close does not re-promote.
         assertEquals(Sequencer.NO_FRAME, seq.sessionClosed(gatewaySession, TIMESTAMP + 3));
+    }
+
+    @Test
+    @DisplayName("a session that merely echoes a gateway sourceId is not a gateway session")
+    void echoingAGatewaySourceIdDoesNotMakeASessionAGateway() {
+        // header.sourceId is a *routing* id, not a claim of identity: the OrderExecClient stamps the
+        // originating gateway's sourceId onto every ExecutionReport and PortfolioQueryReply it submits.
+        // Inferring "this session is a gateway" from it made an ordinary OrderExecClient restart promote
+        // the standby out from under a healthy primary. Only GatewayStarted may claim a session.
+        final Sequencer seq = new Sequencer();
+        final MutableDirectBuffer buf = new ExpandableArrayBuffer(512);
+        seq.sequenceMessage(buf, 0, encodeIngressGateway(buf, 0, 5, SOURCE_ID, "GW-A", 0), SESSION_ID, TIMESTAMP);
+        seq.sequenceMessage(buf, 0, encodeIngressGateway(buf, 0, 6, SOURCE_ID, "GW-B", 1), SESSION_ID, TIMESTAMP);
+
+        final long gatewaySession = 0xA11CEL;
+        seq.sequenceMessage(buf, 0, encodeIngressGatewayStarted(buf, 0, 5), gatewaySession, TIMESTAMP);
+
+        // NewOrderSingle carries SOURCE_ID — a known gateway sourceId — on a session that is not a gateway.
+        final long orderExecSession = 0x0EC1E47L;
+        seq.sequenceMessage(buf, 0, encodeIngressNewOrderSingle(buf, 0), orderExecSession, TIMESTAMP + 1);
+
+        assertEquals(Sequencer.NO_FRAME, seq.sessionClosed(orderExecSession, TIMESTAMP + 2),
+                     "echoing a gateway sourceId must not make a session promotable");
+        assertNotEquals(Sequencer.NO_FRAME, seq.sessionClosed(gatewaySession, TIMESTAMP + 3),
+                        "the session GatewayStarted claimed is still the one that promotes");
+    }
+
+    @Test
+    @DisplayName("closing the only instance of a logical gateway promotes nothing")
+    void soleGatewayInstanceHasNoStandbyToPromote() {
+        // Fail closed: naming a nonexistent instance would activate no one while burning a globalSeqNo,
+        // and naming the sourceId (as this used to) would activate everyone.
+        final Sequencer seq = new Sequencer();
+        final MutableDirectBuffer buf = new ExpandableArrayBuffer(512);
+        seq.sequenceMessage(buf, 0, encodeIngressGateway(buf, 0, 5, SOURCE_ID, "GW-A", 0), SESSION_ID, TIMESTAMP);
+
+        final long gatewaySession = 0xA11CEL;
+        seq.sequenceMessage(buf, 0, encodeIngressGatewayStarted(buf, 0, 5), gatewaySession, TIMESTAMP);
+
+        assertEquals(Sequencer.NO_FRAME, seq.sessionClosed(gatewaySession, TIMESTAMP + 1));
+        assertEquals(2L, seq.globalSeqNo(), "a promotion with no target consumes no sequence number");
+    }
+
+    @Test
+    @DisplayName("a GatewayStarted from an unknown instance promotes nothing")
+    void unknownGatewayInstancePromotesNothing() {
+        final Sequencer seq = new Sequencer();
+        final MutableDirectBuffer buf = new ExpandableArrayBuffer(512);
+        seq.sequenceMessage(buf, 0, encodeIngressGateway(buf, 0, 5, SOURCE_ID, "GW-A", 0), SESSION_ID, TIMESTAMP);
+        seq.sequenceMessage(buf, 0, encodeIngressGateway(buf, 0, 6, SOURCE_ID, "GW-B", 1), SESSION_ID, TIMESTAMP);
+
+        final long rogueSession = 0xC0FFEEL;
+        seq.sequenceMessage(buf, 0, encodeIngressGatewayStarted(buf, 0, 99), rogueSession, TIMESTAMP);
+
+        assertEquals(Sequencer.NO_FRAME, seq.sessionClosed(rogueSession, TIMESTAMP + 1),
+                     "an instance with no Gateway row resolves to no group, so there is no sibling to promote");
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
@@ -563,6 +623,24 @@ class SequencerTest {
         encoder.wrapAndApplyHeader(buffer, offset, messageHeader);
         encoder.header().sourceId(SOURCE_ID).connectionId(CONNECTION_ID).sessionId(-1);
         encoder.origin(org.limitless.phixeron.sbe.unsequenced.Origin.Gateway);
+
+        return org.limitless.phixeron.sbe.unsequenced.MessageHeaderEncoder.ENCODED_LENGTH + encoder.encodedLength();
+    }
+
+    /**
+     * Encodes a schema-200 GatewayStarted, as an instance publishes it on activation: the one frame that
+     * tells the sequencer which cluster session a given {@code gatewayId} is active on.
+     */
+    private static int encodeIngressGatewayStarted(final MutableDirectBuffer buffer, final int offset,
+                                                   final int gatewayId) {
+        final org.limitless.phixeron.sbe.unsequenced.MessageHeaderEncoder messageHeader =
+            new org.limitless.phixeron.sbe.unsequenced.MessageHeaderEncoder();
+        final org.limitless.phixeron.sbe.unsequenced.GatewayStartedEncoder encoder =
+            new org.limitless.phixeron.sbe.unsequenced.GatewayStartedEncoder();
+
+        encoder.wrapAndApplyHeader(buffer, offset, messageHeader);
+        encoder.header().sourceId(SOURCE_ID).connectionId(-1).sessionId(-1);
+        encoder.gatewayId(gatewayId).firstConnectionId(1);
 
         return org.limitless.phixeron.sbe.unsequenced.MessageHeaderEncoder.ENCODED_LENGTH + encoder.encodedLength();
     }
