@@ -84,6 +84,13 @@ public final class PhixeronCounters {
      */
     public static final int REPLAYER_INTEGRITY_FAILURE_TYPE_ID = 5106;
 
+    /**
+     * Count of control replies dropped rather than spun on because an app stopped draining the control
+     * stream. Each costs that app one resend interval and nothing else; a rising rate means a wedged
+     * replica, and is the only trace of it — the Replayer no longer stalls in sympathy.
+     */
+    public static final int REPLAYER_CONTROL_REPLIES_DROPPED_COUNT_TYPE_ID = 5107;
+
     /** Whole range this class owns, for a typeId-range scan (see {@code clusterctl counters}). */
     public static final int MIN_TYPE_ID = SEQUENCER_TYPE_ID_MIN;
     public static final int MAX_TYPE_ID = REPLAYER_TYPE_ID_MAX;

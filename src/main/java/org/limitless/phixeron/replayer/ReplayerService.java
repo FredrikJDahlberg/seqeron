@@ -12,7 +12,6 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
-
 import org.agrona.DirectBuffer;
 import org.agrona.ExpandableArrayBuffer;
 import org.agrona.MutableDirectBuffer;
@@ -21,8 +20,10 @@ import org.limitless.phixeron.PhixeronCounters;
 import org.limitless.phixeron.sbe.unsequenced.MessageHeaderDecoder;
 import org.limitless.phixeron.sbe.unsequenced.MessageHeaderEncoder;
 import org.limitless.phixeron.sbe.unsequenced.ReplayCompleteDecoder;
+import org.limitless.phixeron.sbe.unsequenced.ReplayHeartbeatDecoder;
 import org.limitless.phixeron.sbe.unsequenced.ReplayPendingEncoder;
 import org.limitless.phixeron.sbe.unsequenced.ReplayRequestDecoder;
+import org.limitless.phixeron.sbe.unsequenced.ReplayUnavailableEncoder;
 import org.limitless.phixeron.sbe.unsequenced.ReplayingEncoder;
 import org.limitless.phixeron.sequencer.SequencerService;
 import org.limitless.phixeron.util.Logger;
@@ -47,6 +48,8 @@ import org.limitless.phixeron.util.Logger;
  *       fromPosition)}.
  *   <li><b>Control</b> ({@link #CONTROL_STREAM_ID}) — the ReplayerService answers {@code
  *       Replaying(clientId, replaySessionId, catchUpPosition)} or {@code ReplayPending(clientId)}.
+ *       Untethered and bounded ({@link #MAX_CONTROL_OFFER_SPINS}) for the same reason the tap is: one
+ *       thread answers every app here too, so a wedged app must not be able to hold it.
  *   <li><b>Replay</b> ({@link #REPLAY_STREAM_ID}) — it serves at most {@link #MAX_CONCURRENT_REPLAYS}
  *       archive replays at once onto this {@code aeron:ipc} stream; the requesting app attaches to the
  *       replay image by session id.
@@ -74,8 +77,12 @@ import org.limitless.phixeron.util.Logger;
  * project's cluster membership is static, never joining mid-history — so a failure here means this
  * node's own recording has been deleted, corrupted, or partially restored: a broken node. {@code
  * ready} then never becomes true for this process's lifetime ({@link PhixeronCounters#REPLAYER_INTEGRITY_FAILURE_TYPE_ID}
- * latches instead), refusing once at the source rather than leaving every consumer that would ask this
- * node for history to independently hit the same wall.
+ * latches instead), and {@link #onRequest} answers every replay request {@code ReplayUnavailable} — the
+ * refusal is what contains the broken archive here, rather than leaving every consumer that asks this
+ * node for history to independently hit the same wall (and each app's wall is an abort on its own
+ * first-frame-must-be-1 check, so one bad archive would take down all of them). Until the check has
+ * passed, requests are answered {@code ReplayPending}: history this node has not proven good is not
+ * served.
  *
  * <p><b>Local-archive resilience.</b> The ReplayerService is off the live path entirely, so a transient
  * failure of the node's local archive degrades only history/gap <em>replay</em> — steady-state
@@ -132,6 +139,13 @@ public final class ReplayerService {
     private static final long SELF_CHECK_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(2);
 
     /**
+     * Bounds the length {@link #peekFirstGlobalSeqNo} asks the archive to replay. It reads exactly one
+     * fragment, so this only has to cover the first frame — comfortably over a default MTU, and orders
+     * of magnitude under the whole recording it used to request.
+     */
+    private static final long SELF_CHECK_REPLAY_LENGTH = 4096;
+
+    /**
      * Archive-IO parallelism cap on concurrent replays (design §4/§8) — not a fairness knob. The
      * only multi-replay event that matters is node start/restart, and the node emits nothing until
      * every replica is caught up (the readiness barrier), so this is a makespan bound, not a
@@ -145,7 +159,14 @@ public final class ReplayerService {
      */
     public static final long NO_REPLAY_NEEDED = NULL_VALUE;
 
-    /** Idle-TTL slot reclamation (see class Javadoc): a slot untouched this long is reclaimed. */
+    /**
+     * Idle-TTL slot reclamation (see class Javadoc): a slot untouched this long is reclaimed. Genuinely
+     * an IDLE timeout — a client refreshes its slot with {@code ReplayHeartbeat} for as long as it is
+     * riding the replay image, so this bounds how long a slot survives its client going away, not how
+     * long a replay may legitimately take. It must not be the latter: the design mandates full-log
+     * replay with no snapshots, so replay duration grows with the trading day and no fixed lifetime is
+     * correct. Reclaiming mid-flight stops the archive replay under a healthy client.
+     */
     private static final long REPLAY_SLOT_TTL_MS = 60_000;
 
     /**
@@ -153,6 +174,16 @@ public final class ReplayerService {
      * hammered every duty cycle.
      */
     private static final long STALL_RETRY_INTERVAL_MS = 1_000;
+
+    /**
+     * Bounds {@link #offerControl}'s retry spin, whatever the reason the offer failed. Every app is
+     * answered from this one duty-cycle thread, so an app that stops draining the control stream must
+     * not be able to hold it — that would couple every other app's replays to the slowest one, the
+     * audit.md S4 pattern this design exists to dissolve, reintroduced on the control plane. A reply
+     * that will not go out is dropped instead; the app's own resend timer is the retry. The apps
+     * subscribe untethered, so this bound is a backstop for a burst, not the primary defence.
+     */
+    private static final int MAX_CONTROL_OFFER_SPINS = 1_000;
 
     private static final int FRAGMENT_LIMIT = 16;
 
@@ -177,6 +208,16 @@ public final class ReplayerService {
     // history would independently hit the same wall, so it fails here instead, once, loudly.
     private boolean integrityFailed = false;
 
+    // Latches once the ">1 active tap recording" anomaly has been reported (see resolveSegments): the
+    // condition lasts as long as the stale recording is on disk, and resolveSegments runs per replay
+    // request, so without this it would repeat the fault line on every one.
+    private boolean staleActiveRecordingLogged = false;
+
+    // Latches once a dropped control reply has been reported (see offerControl): a wedged app is
+    // answered on every one of its resends, so without this it would repeat the fault line at the
+    // resend rate. The counter keeps carrying the rate.
+    private boolean controlReplyDropLogged = false;
+
     // ── Replay protocol state ─────────────────────────────────────────────────
     // Admission control and pending-queue bookkeeping is a pure function of client ids/tokens (see
     // ReplaySlotAllocator's Javadoc) — split out so it's unit-testable without an archive.
@@ -198,13 +239,16 @@ public final class ReplayerService {
     private final Counter replaysServedCounter;
     private final Counter idleTtlReclaimedCounter;
     private final Counter integrityFailureCounter;
+    private final Counter controlRepliesDroppedCounter;
 
     private final MessageHeaderDecoder inHeaderDecoder = new MessageHeaderDecoder();
     private final ReplayRequestDecoder replayRequestDecoder = new ReplayRequestDecoder();
     private final ReplayCompleteDecoder replayCompleteDecoder = new ReplayCompleteDecoder();
+    private final ReplayHeartbeatDecoder replayHeartbeatDecoder = new ReplayHeartbeatDecoder();
     private final MessageHeaderEncoder outHeaderEncoder = new MessageHeaderEncoder();
     private final ReplayingEncoder replayingEncoder = new ReplayingEncoder();
     private final ReplayPendingEncoder pendingEncoder = new ReplayPendingEncoder();
+    private final ReplayUnavailableEncoder unavailableEncoder = new ReplayUnavailableEncoder();
     private final MutableDirectBuffer controlBuffer = new ExpandableArrayBuffer(64);
 
     // Decode the sequenced (not unsequenced) schema's outer header + header composite — the tap
@@ -244,6 +288,9 @@ public final class ReplayerService {
             "phixeron.replayer.idleTtlReclaimedCount member=" + memberId, memberId);
         this.integrityFailureCounter = PhixeronCounters.addCounter(aeron, PhixeronCounters.REPLAYER_INTEGRITY_FAILURE_TYPE_ID,
             "phixeron.replayer.integrityFailure member=" + memberId, memberId);
+        this.controlRepliesDroppedCounter = PhixeronCounters.addCounter(aeron,
+            PhixeronCounters.REPLAYER_CONTROL_REPLIES_DROPPED_COUNT_TYPE_ID,
+            "phixeron.replayer.controlRepliesDroppedCount member=" + memberId, memberId);
     }
 
     /**
@@ -290,24 +337,25 @@ public final class ReplayerService {
         if (integrityFailed) {
             return;
         }
-        final long recordingId;
+        final ReplayRecordings.RecordingSpan active;
         try {
-            recordingId = findActiveRecordingId();
+            active = findActiveRecording();
         } catch (final RuntimeException ex) {
             return;  // archive not answering yet; retry next cycle (scripts time out and proceed)
         }
-        if (recordingId == NULL_VALUE) {
+        if (active == null) {
             return;  // nothing recorded yet; retry next cycle
         }
 
-        final List<Long> segments = resolveSegments();
+        final List<ReplayRecordings.RecordingSpan> segments = resolveSegments();
         if (segments.isEmpty()) {
             return;  // retry next cycle
         }
-        final long oldestRecordingId = segments.get(0);
+        final ReplayRecordings.RecordingSpan oldest = segments.get(0);
+        final long oldestRecordingId = oldest.recordingId();
         final Long firstGlobalSeqNo;
         try {
-            firstGlobalSeqNo = peekFirstGlobalSeqNo(oldestRecordingId);
+            firstGlobalSeqNo = peekFirstGlobalSeqNo(oldest);
         } catch (final RuntimeException ex) {
             return;  // archive not answering yet; retry next cycle
         }
@@ -327,32 +375,48 @@ public final class ReplayerService {
         ready = true;
         readyCounter.set(1);
         Logger.info(Logger.Component.ReplayerService, memberId, "ready — tap recording %d live; serving replay",
-                recordingId);
+                active.recordingId());
     }
 
     /**
-     * Replays just the first frame of {@code recordingId} (position 0) and returns its globalSeqNo.
-     * Replay is the only way to read recorded content back, so this opens a short-lived one on the
-     * internal {@link #SELF_CHECK_STREAM_ID}, reads one fragment, and tears both down.
-     * @param recordingId the recording to peek (the oldest tap recording — see checkReady)
-     * @return the first frame's globalSeqNo, or null if nothing is written yet ({@code tip <= 0}) or
-     *         the replay didn't deliver within {@link #SELF_CHECK_TIMEOUT_NS} (transient — checkReady
-     *         retries on the next poll() cycle rather than treating a null as failure)
+     * Replays just the first frame of {@code span} and returns its globalSeqNo. Replay is the only way
+     * to read recorded content back, so this opens a short-lived one on the internal {@link
+     * #SELF_CHECK_STREAM_ID}, reads one fragment, and tears both down.
+     *
+     * <p>Bounded to {@link #SELF_CHECK_REPLAY_LENGTH}, not to the whole recording: only the first
+     * fragment is ever read, and asking the archive to replay a trading day's worth of log to look at
+     * eight bytes is work it would do until the {@code finally} below stopped it.
+     * @param span the recording to peek (the oldest tap recording — see checkReady)
+     * @return the first frame's globalSeqNo, or null if nothing is written yet, the first fragment is
+     *         not a sequenced frame, or the replay didn't deliver within {@link #SELF_CHECK_TIMEOUT_NS}
+     *         (transient — checkReady retries on the next poll() cycle rather than treating a null as
+     *         failure)
      */
-    private Long peekFirstGlobalSeqNo(final long recordingId) {
+    private Long peekFirstGlobalSeqNo(final ReplayRecordings.RecordingSpan span) {
+        final long recordingId = span.recordingId();
         long position = archive.getRecordingPosition(recordingId);
         if (position < 0) {
             position = archive.getStopPosition(recordingId);
         }
-        if (position <= 0) {
+        final long replayLength = Math.min(position - span.startPosition(), SELF_CHECK_REPLAY_LENGTH);
+        if (replayLength <= 0) {
             return null;
         }
 
-        final long replaySessionId = archive.startReplay(recordingId, 0, position, IPC_CHANNEL, SELF_CHECK_STREAM_ID);
+        final long replaySessionId =
+            archive.startReplay(recordingId, span.startPosition(), replayLength, IPC_CHANNEL, SELF_CHECK_STREAM_ID);
         try (Subscription sub = aeron.addSubscription(IPC_CHANNEL, SELF_CHECK_STREAM_ID)) {
             final long[] globalSeqNo = {NULL_VALUE};
             final FragmentHandler handler = (buffer, offset, length, header) -> {
                 selfCheckMsgHeaderDecoder.wrap(buffer, offset);
+                // Only the sequenced schema carries the header composite this reads globalSeqNo out of;
+                // anything else on this stream would decode to a number with no meaning. The templateId
+                // is deliberately not checked — every sequenced message carries the same header, which
+                // is the whole point of the schema (see Sequencer.sequenceMessage).
+                if (selfCheckMsgHeaderDecoder.schemaId()
+                        != org.limitless.phixeron.sbe.sequenced.MessageHeaderDecoder.SCHEMA_ID) {
+                    return;
+                }
                 final int bodyOffset =
                     offset + org.limitless.phixeron.sbe.sequenced.MessageHeaderDecoder.ENCODED_LENGTH;
                 selfCheckHeaderDecoder.wrap(buffer, bodyOffset);
@@ -393,28 +457,53 @@ public final class ReplayerService {
             drainPending();
             return;
         }
+        // ReplayHeartbeat: the app is still riding its replay image. Refresh its slot so the TTL ages
+        // from the client's last sign of life, not from when the replay started (see ReplaySlotAllocator
+        // .touch — a full-log replay outlives any fixed lifetime). No reply.
+        if (inHeaderDecoder.templateId() == ReplayHeartbeatDecoder.TEMPLATE_ID) {
+            replayHeartbeatDecoder.wrap(buffer, offset + MessageHeaderDecoder.ENCODED_LENGTH,
+                                        inHeaderDecoder.blockLength(), inHeaderDecoder.version());
+            replaySlots.touch(replayHeartbeatDecoder.clientId(), System.currentTimeMillis());
+            return;
+        }
         if (inHeaderDecoder.templateId() != ReplayRequestDecoder.TEMPLATE_ID) {
             return;
         }
         replayRequestDecoder.wrap(buffer, offset + MessageHeaderDecoder.ENCODED_LENGTH, inHeaderDecoder.blockLength(),
                                   inHeaderDecoder.version());
         final int clientId = replayRequestDecoder.clientId();
+        final long requestId = replayRequestDecoder.requestId();
         final long fromPosition = replayRequestDecoder.fromPosition();
         final int segmentIndex = replayRequestDecoder.segmentIndex();
+
+        // Answer from this node's own health before touching a slot or the archive — see checkReady.
+        // Serving history the integrity check rejected is worse than refusing it: the replay's first
+        // frame would not be globalSeqNo 1, and every co-located app would abort on its own baseline
+        // check, so one broken archive would take down every replica instead of just this process.
+        if (integrityFailed) {
+            sendUnavailable(clientId, requestId);
+            return;
+        }
+        // Not yet proven good either. Not enqueued: the app's own resend timer is the retry, and a
+        // request queued here would only be re-tried against the same not-yet-ready state.
+        if (!ready) {
+            sendPending(clientId, requestId);
+            return;
+        }
 
         // Supersede any in-flight replay for this client (it re-requested — a new gap position or the
         // next segment of its cold-start walk).
         stopReplayForClient(clientId);
 
         if (!replaySlots.hasCapacity()) {
-            replaySlots.enqueue(clientId, segmentIndex, fromPosition);
-            sendPending(clientId);
+            replaySlots.enqueue(clientId, requestId, segmentIndex, fromPosition);
+            sendPending(clientId, requestId);
             Logger.info(Logger.Component.ReplayerService, memberId,
                     "client %d queued: no free replay slot (active=%d/%d, pending=%d)", clientId,
                     replaySlots.activeCount(), MAX_CONCURRENT_REPLAYS, replaySlots.pendingCount());
             return;
         }
-        startReplayForClient(clientId, segmentIndex, fromPosition);
+        startReplayForClient(clientId, requestId, segmentIndex, fromPosition);
         // A walk-terminating request (segmentIndex past the chain) frees this client's slot via the
         // supersede above without taking a new one; hand that freed slot to a waiting app now rather
         // than at the next idle-TTL sweep (design §5).
@@ -424,20 +513,22 @@ public final class ReplayerService {
     /**
      * Serves one replay request, guarding every archive control call.
      * @param clientId client identity
+     * @param requestId the request being answered, echoed in every reply
      * @param segmentIndex segment index
      * @param fromPosition start replay position
      */
-    private void startReplayForClient(final int clientId, final int segmentIndex, final long fromPosition) {
+    private void startReplayForClient(final int clientId, final long requestId, final int segmentIndex,
+                                      final long fromPosition) {
         if (stalled) {
             final long now = System.currentTimeMillis();
             if ((now - lastStallRetryMs) < STALL_RETRY_INTERVAL_MS) {
-                sendPending(clientId);
+                sendPending(clientId, requestId);
                 return;
             }
             lastStallRetryMs = now;  // this attempt is the paced probe
         }
         try {
-            serveReplay(clientId, segmentIndex, fromPosition);
+            serveReplay(clientId, requestId, segmentIndex, fromPosition);
             if (stalled) {
                 stalled = false;
                 stalledCounter.set(0);
@@ -445,9 +536,34 @@ public final class ReplayerService {
                         "RECOVERED: local archive reachable again");
             }
         } catch (final RuntimeException error) {
+            if (segmentIndex < 0) {
+                // A resume replays from a position the CLIENT supplied, and the startPosition check in
+                // serveReplay cannot catch the remaining way it can be wrong: in range, but not on a
+                // frame boundary of a recording that has since rotated. Calling that an archive stall
+                // answers ReplayPending to a request that can never succeed — forever. Steering the app
+                // onto the walk costs it one round trip, and if the archive really is sick the walk
+                // that follows says so through this same path.
+                rejectResume(clientId, requestId, "archive refused it: " + error.getMessage());
+                return;
+            }
             onArchiveStalled("serving replay for client " + clientId, error);
-            sendPending(clientId);
+            sendPending(clientId, requestId);
         }
+    }
+
+    /**
+     * Refuses a resume-by-position request: answers NO_REPLAY_NEEDED, which an app that resumed only
+     * because it has an open hole reads as "that position is no good here" and falls back to walking the
+     * recording chain — the path that needs no position to be sound.
+     * @param clientId client identity
+     * @param requestId the request being refused
+     * @param reason what was wrong with the position, for the log
+     */
+    private void rejectResume(final int clientId, final long requestId, final String reason) {
+        Logger.info(Logger.Component.ReplayerService, memberId,
+                "client %d's resume refused (%s) — answering NO_REPLAY_NEEDED so it re-walks the chain",
+                clientId, reason);
+        sendReplaying(clientId, requestId, NO_REPLAY_NEEDED, 0);
     }
 
     /**
@@ -456,36 +572,54 @@ public final class ReplayerService {
      * the per-leader-tenure recording chain — serving the segmentIndex-th recording from position 0, or
      * NO_REPLAY_NEEDED once the walk runs past the last tenure (which is what marks the app caught up).
      * @param clientId client identity
+     * @param requestId the request being answered, echoed in every reply
      * @param segmentIndex segment index
      * @param fromPosition start position
      */
-    private void serveReplay(final int clientId, final int segmentIndex, final long fromPosition) {
+    private void serveReplay(final int clientId, final long requestId, final int segmentIndex,
+                             final long fromPosition) {
+        // This request is the client's current one, so anything it still has queued is stale — drop it
+        // before any path below can queue a fresh one (see ReplaySlotAllocator.cancelPending).
+        replaySlots.cancelPending(clientId);
+
         final long recordingId;
         final long replayFrom;
         if (segmentIndex < 0) {
-            recordingId = findActiveRecordingId();
-            replayFrom = fromPosition;
-            if (recordingId == NULL_VALUE) {
+            final ReplayRecordings.RecordingSpan active = findActiveRecording();
+            if (active == null) {
                 // No recording to replay from yet; ask the app to hold and retry.
-                replaySlots.enqueue(clientId, segmentIndex, fromPosition);
-                sendPending(clientId);
+                replaySlots.enqueue(clientId, requestId, segmentIndex, fromPosition);
+                sendPending(clientId, requestId);
                 return;
             }
+            if (fromPosition < active.startPosition()) {
+                // The app is resuming at a position from a recording this one replaced: it predates
+                // anything we hold. Steer it onto the chain walk (see rejectResume) instead of handing
+                // the archive a position it will refuse.
+                rejectResume(clientId, requestId, "position " + fromPosition + " predates recording "
+                        + active.recordingId() + "'s startPosition " + active.startPosition());
+                return;
+            }
+            recordingId = active.recordingId();
+            replayFrom = fromPosition;
         } else {
-            final List<Long> segments = resolveSegments();
+            final List<ReplayRecordings.RecordingSpan> segments = resolveSegments();
             if (segments.isEmpty()) {
                 // No tap recording on the local archive yet; hold and retry.
-                replaySlots.enqueue(clientId, segmentIndex, fromPosition);
-                sendPending(clientId);
+                replaySlots.enqueue(clientId, requestId, segmentIndex, fromPosition);
+                sendPending(clientId, requestId);
                 return;
             }
             if (segmentIndex >= segments.size()) {
                 // Walked past the last tenure: the app has replayed all history and is at the live tip.
-                sendReplaying(clientId, NO_REPLAY_NEEDED, 0);
+                sendReplaying(clientId, requestId, NO_REPLAY_NEEDED, 0);
                 return;
             }
-            recordingId = segments.get(segmentIndex);
-            replayFrom = 0;
+            // The recording's own startPosition, not a hardcoded 0: a walk step means "this whole
+            // segment from its beginning", and the archive is the authority on where that is.
+            final ReplayRecordings.RecordingSpan segment = segments.get(segmentIndex);
+            recordingId = segment.recordingId();
+            replayFrom = segment.startPosition();
         }
 
         long tip = archive.getRecordingPosition(recordingId);
@@ -496,7 +630,7 @@ public final class ReplayerService {
         if (boundedLength <= 0) {
             // Already at (or past) the tip — nothing historical to serve. Tell the app to just
             // follow the live tap; no slot consumed.
-            sendReplaying(clientId, NO_REPLAY_NEEDED, tip);
+            sendReplaying(clientId, requestId, NO_REPLAY_NEEDED, tip);
             return;
         }
 
@@ -510,7 +644,7 @@ public final class ReplayerService {
         // catchUpPosition = tip: the app follows the replay image until it reaches this, then advances
         // (next segment, or the live tap). A bounded replay of an active recording does not close its
         // image at the bound, so the app detects completion by position (see Replaying / ReplayerStreamReceiver).
-        sendReplaying(clientId, replaySessionId, tip);
+        sendReplaying(clientId, requestId, replaySessionId, tip);
     }
 
     /**
@@ -549,7 +683,8 @@ public final class ReplayerService {
         while (budget-- > 0) {
             final ReplaySlotAllocator.PendingRequest request = replaySlots.pollPending();
             if (request != null) {
-                startReplayForClient(request.clientId(), request.segmentIndex(), request.fromPosition());
+                startReplayForClient(request.clientId(), request.requestId(), request.segmentIndex(),
+                                     request.fromPosition());
             }
         }
     }
@@ -578,12 +713,15 @@ public final class ReplayerService {
     /**
      * Send replaying message
      * @param clientId client identity
+     * @param requestId the request being answered
      * @param replaySessionId replay session identity
      * @param catchUpPosition catchup positon
      */
-    private void sendReplaying(final int clientId, final long replaySessionId, final long catchUpPosition) {
+    private void sendReplaying(final int clientId, final long requestId, final long replaySessionId,
+                               final long catchUpPosition) {
         replayingEncoder.wrapAndApplyHeader(controlBuffer, 0, outHeaderEncoder)
             .clientId(clientId)
+            .requestId(requestId)
             .replaySessionId(replaySessionId)
             .catchUpPosition(catchUpPosition);
         offerControl(MessageHeaderEncoder.ENCODED_LENGTH + replayingEncoder.encodedLength());
@@ -591,16 +729,33 @@ public final class ReplayerService {
 
     /**
      * Send pending message
-     * @param clientId
+     * @param clientId client identity
+     * @param requestId the request being answered
      */
-    private void sendPending(final int clientId) {
-        pendingEncoder.wrapAndApplyHeader(controlBuffer, 0, outHeaderEncoder).clientId(clientId);
+    private void sendPending(final int clientId, final long requestId) {
+        pendingEncoder.wrapAndApplyHeader(controlBuffer, 0, outHeaderEncoder).clientId(clientId).requestId(requestId);
         offerControl(MessageHeaderEncoder.ENCODED_LENGTH + pendingEncoder.encodedLength());
     }
 
     /**
-     * Offer message limit
-     * @param length limit
+     * Refuses a replay request outright: this node failed its integrity check and has no valid history
+     * to serve. Not logged per refusal — checkReady already reported the fault once, and the apps resend
+     * on a 500ms timer.
+     * @param clientId client identity
+     * @param requestId the request being refused
+     */
+    private void sendUnavailable(final int clientId, final long requestId) {
+        unavailableEncoder.wrapAndApplyHeader(controlBuffer, 0, outHeaderEncoder).clientId(clientId)
+            .requestId(requestId);
+        offerControl(MessageHeaderEncoder.ENCODED_LENGTH + unavailableEncoder.encodedLength());
+    }
+
+    /**
+     * Offers one control reply, dropping it rather than spinning without bound (see {@link
+     * #MAX_CONTROL_OFFER_SPINS}). Dropping is safe here in a way it is not on the tap: a reply answers
+     * a request the app resends on a timer, so the cost is one resend interval, whereas an unsent
+     * sequenced frame is a hole nothing can fill.
+     * @param length encoded length
      */
     private void offerControl(final int length) {
         long result;
@@ -609,10 +764,32 @@ public final class ReplayerService {
             if (result == ExclusivePublication.CLOSED || result == ExclusivePublication.MAX_POSITION_EXCEEDED) {
                 throw new IllegalStateException("[ReplayerService] control publication failed: " + result);
             }
-            if (result == ExclusivePublication.NOT_CONNECTED && ++spins > 1000) {
-                return;  // no app listening for control replies; give up on this one
+            if (++spins > MAX_CONTROL_OFFER_SPINS) {
+                // NOT_CONNECTED is ordinary: an app's control subscription need not be registered yet
+                // when its first request lands, and the resend covers it. Back-pressure at the bound is
+                // not ordinary — that is an app that subscribed and stopped reading.
+                if (result != ExclusivePublication.NOT_CONNECTED) {
+                    onControlReplyDropped(result);
+                }
+                return;
             }
             idleStrategy.idle();
+        }
+    }
+
+    /**
+     * A control reply was dropped at the spin bound: report it once, count every one.
+     * @param result the failing offer result
+     */
+    private void onControlReplyDropped(final long result) {
+        controlRepliesDroppedCounter.increment();
+        if (!controlReplyDropLogged) {
+            controlReplyDropLogged = true;
+            Logger.error(Logger.Component.ReplayerService, Logger.EventCode.ControlReplyDropped, memberId,
+                    "dropped a control reply (offer=%d): an app subscribed to stream %d and stopped "
+                            + "reading it. Its replays are delayed by a resend; every other app is "
+                            + "unaffected — see phixeron.replayer.controlRepliesDroppedCount", result,
+                    CONTROL_STREAM_ID);
         }
     }
 
@@ -635,16 +812,21 @@ public final class ReplayerService {
 
     // Finds the currently-active tap recording on the local archive (stopTimestamp unset). Normally
     // there is exactly one (each node records its own continuous tap); a member restart can leave an
-    // earlier, stopped recording alongside it, and this returns the active one.
-    private long findActiveRecordingId() {
-        final long[] found = {NULL_VALUE};
+    // earlier, stopped recording alongside it, and this returns the active one. An unclean shutdown can
+    // leave an earlier one unstopped too, so this picks the highest recordingId rather than trusting
+    // listing order — the same span ReplayRecordings.stitch keeps, so the two selection rules agree.
+    // Returns null when there is none.
+    private ReplayRecordings.RecordingSpan findActiveRecording() {
+        final ReplayRecordings.RecordingSpan[] found = {null};
         archive.listRecordingsForUri(0, Integer.MAX_VALUE, "", SequencerService.FEEDER_STREAM_ID,
                                      (controlSessionId, correlationId, recordingId, startTimestamp, stopTimestamp,
                                       startPosition, stopPosition, initialTermId, segmentFileLength, termBufferLength,
                                       mtuLength, sessionId, streamId, strippedChannel, originalChannel,
                                       sourceIdentity) -> {
-                                         if (stopTimestamp == AeronArchive.NULL_TIMESTAMP) {
-                                             found[0] = recordingId;
+                                         if (stopTimestamp == AeronArchive.NULL_TIMESTAMP
+                                                 && (found[0] == null || recordingId > found[0].recordingId())) {
+                                             found[0] = new ReplayRecordings.RecordingSpan(recordingId, startPosition,
+                                                                                           true);
                                          }
                                      });
         return found[0];
@@ -655,14 +837,21 @@ public final class ReplayerService {
     // to stitch. A member restart can leave an earlier, stopped recording plus the post-restart one (overlapping
     // globalSeqNo ranges); a cold-starting app replays them in order and de-duplicates by globalSeqNo, so the overlap
     // is harmless. Mirrors ClusterStreamClient.resolveClusterStreamSegments.
-    private List<Long> resolveSegments() {
+    private List<ReplayRecordings.RecordingSpan> resolveSegments() {
         final List<ReplayRecordings.RecordingSpan> spans = new ArrayList<>();
         archive.listRecordingsForUri(0, Integer.MAX_VALUE, "", SequencerService.FEEDER_STREAM_ID,
                                      (controlSessionId, correlationId, recordingId, startTimestamp, stopTimestamp,
                                       startPosition, stopPosition, initialTermId, segmentFileLength, termBufferLength,
                                       mtuLength, sessionId, streamId, strippedChannel, originalChannel,
                                       sourceIdentity) -> spans.add(new ReplayRecordings.RecordingSpan(recordingId,
-                                          startTimestamp, stopTimestamp == AeronArchive.NULL_TIMESTAMP)));
+                                          startPosition, stopTimestamp == AeronArchive.NULL_TIMESTAMP)));
+        final long activeCount = spans.stream().filter(ReplayRecordings.RecordingSpan::active).count();
+        if (activeCount > 1 && !staleActiveRecordingLogged) {
+            staleActiveRecordingLogged = true;
+            Logger.error(Logger.Component.ReplayerService, Logger.EventCode.StaleActiveRecording, memberId,
+                    "%d tap recordings report as still recording — an unclean shutdown left an older one "
+                            + "unstopped; serving the newest and skipping the stale one(s)", activeCount);
+        }
         return ReplayRecordings.stitch(spans);
     }
 }

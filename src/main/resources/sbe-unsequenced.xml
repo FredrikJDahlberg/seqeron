@@ -644,17 +644,26 @@
     </sbe:message>
 
     <!-- ═══════════════════════════════════════════════════════════════════
-         Replay protocol  (templates 6/7/8) — node-local control plane between
+         Replay protocol  (templates 6/7/8/9/20/21) — node-local control plane between
          the node's ReplayerService and its co-located app replicas, over aeron:ipc. Never
          sequenced (no globalSeqNo), so they carry no `header` composite. See the
          ReplayerService design, doc/router-design.md §4. clientId identifies the
          requesting replica so the ReplayerService can cap concurrent replays at 2 (one
-         in-flight per client) and the app can match a Replaying/ReplayPending reply
-         to its own request; fromPosition is the recording position of the last
-         in-order frame the app holds (SequencedEvent.position), which is the
-         archive replay start — globalSeqNo stays the correctness key, position
-         is only how the archive is addressed, so the ReplayerService needs no
-         globalSeqNo->position index.
+         in-flight per client), and requestId identifies WHICH request a
+         Replaying/ReplayPending answers — clientId alone cannot, because a resend
+         supersedes the in-flight replay and leaves two replies for the same client
+         queued in order on the shared control stream, the first of them stale;
+         fromPosition is the recording position of the last in-order frame the app
+         holds (SequencedEvent.position), which is the archive replay start —
+         globalSeqNo stays the correctness key, position is only how the archive is
+         addressed, so the ReplayerService needs no globalSeqNo->position index.
+
+         These six are node-local and never recorded (they travel on the request/
+         control streams, not the tap), so adding a field to one is a coordinated
+         in-place change — the Java Replayer and the C++ apps on a node are built and
+         restarted together, and no recording holds an older encoding of them. Hence
+         no schema version bump: that would restamp every ingress message that IS
+         recorded, for no gain here.
          ═══════════════════════════════════════════════════════════════════ -->
 
     <!-- App -> ReplayerService: "I have a gap; replay for me from fromPosition." -->
@@ -664,6 +673,14 @@
                               detected a globalSeqNo gap and resumes the active recording at fromPosition">
         <field name="clientId"     id="20010" type="int32"
                description="Requesting replica's stable id, unique among the Replayer's co-located apps"/>
+        <field name="requestId"    id="20015" type="int64"
+               description="Monotone per-client request counter, incremented on every send INCLUDING a
+                            verbatim resend, and echoed in the Replaying/ReplayPending that answers it.
+                            The app ignores any reply whose requestId is not its current one: a resend
+                            makes the Replayer supersede the in-flight replay and start a new one, so the
+                            stale reply for the stopped session is still queued ahead of the live one on
+                            the shared control stream, and acting on it would attach to (or wait for) a
+                            replay session that no longer exists"/>
         <field name="fromPosition" id="20011" type="int64"
                description="Recording position to resume the active recording from (SequencedEvent.position
                             of the last in-order frame); used only when segmentIndex &lt; 0"/>
@@ -683,6 +700,9 @@
                               its image position reaches catchUpPosition, then falls back to the live tap
                               (de-duped by globalSeqNo)">
         <field name="clientId"        id="20010" type="int32"/>
+        <field name="requestId"       id="20015" type="int64"
+               description="Echo of the answered ReplayRequest.requestId; the app ignores a reply that is
+                            not for its current request"/>
         <field name="replaySessionId" id="20012" type="int64"
                description="Aeron replay session id to attach to (Subscription.imageBySessionId) on the Replayer replay stream"/>
         <field name="catchUpPosition" id="20013" type="int64"
@@ -697,7 +717,10 @@
     <sbe:message name="ReplayPending" id="8"
                  description="The Replayer has &gt;=2 replays already active; the requesting replica must hold
                               at its gap (must not advance past the hole) until a later Replaying arrives">
-        <field name="clientId" id="20010" type="int32"/>
+        <field name="clientId"  id="20010" type="int32"/>
+        <field name="requestId" id="20015" type="int64"
+               description="Echo of the answered ReplayRequest.requestId; the app ignores a reply that is
+                            not for its current request"/>
     </sbe:message>
 
     <!-- App -> ReplayerService: "I have caught up and am on the live tap; free my replay slot." -->
@@ -708,6 +731,33 @@
                               after a steady-state gap resume; a cold-start walk needs none, since each of its
                               slots is freed by the supersede on the next segment request">
         <field name="clientId" id="20010" type="int32"/>
+    </sbe:message>
+
+    <!-- App -> ReplayerService: "I am still riding my replay; keep my slot." -->
+    <sbe:message name="ReplayHeartbeat" id="20"
+                 description="Sent by a replica every ~500ms for as long as it is riding an attached replay
+                              image, and refreshes that client's slot. This is what makes the slot TTL an
+                              IDLE timeout rather than a max lifetime: a replay has no upper time bound (the
+                              design mandates full-log replay, and the log grows all trading day), so a slot
+                              aged only from when it was activated is reclaimed mid-flight on any replay that
+                              outlives the TTL — stopping the replay under a healthy client. A client that
+                              died or wedged stops heart-beating and is still reclaimed on schedule">
+        <field name="clientId" id="20010" type="int32"/>
+    </sbe:message>
+
+    <!-- ReplayerService -> App: "this node cannot serve history at all; hold, do not expect an answer." -->
+    <sbe:message name="ReplayUnavailable" id="21"
+                 description="The Replayer's startup integrity check failed — this node's oldest tap recording
+                              does not reach globalSeqNo 1 (deleted, corrupted, or a partial restore), so it has
+                              no valid history to serve any replica. Distinct from ReplayPending, which means
+                              'hold, a slot will free': this is permanent for the Replayer's lifetime. Refusing
+                              here is what keeps a broken archive contained to the Replayer — served anyway, the
+                              replay's first frame would not be globalSeqNo 1 and every co-located app would
+                              independently abort on its own baseline check">
+        <field name="clientId"  id="20010" type="int32"/>
+        <field name="requestId" id="20015" type="int64"
+               description="Echo of the refused ReplayRequest.requestId; the app ignores a reply that is
+                            not for its current request"/>
     </sbe:message>
 
     <!-- ═══════════════════════════════════════════════════════════════════

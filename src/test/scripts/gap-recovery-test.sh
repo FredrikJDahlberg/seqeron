@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Steady-state gap-recovery test (ReplayerStreamReceiver globalSeqNo re-walk).
+# Steady-state gap-recovery test (ReplayerStreamReceiver globalSeqNo gap -> resume).
 #
 # Verifies that a consumer which is CAUGHT UP (following live off the co-located SequencerService tap)
-# heals a dropped live tap frame: it detects the globalSeqNo gap, re-walks the recording chain from
-# segment 0 de-duping by globalSeqNo, and keeps delivering rather than wedging in-order delivery. Each
+# heals a dropped live tap frame: it detects the globalSeqNo gap, resumes the recording at the frame it
+# last dispatched, and keeps delivering rather than wedging in-order delivery. Each
 # node records its own node-local tap continuously, so the consumer's co-located member holds ONE
-# continuous recording; the re-walk heals the gap straight from that recording (served by the node's
+# continuous recording; the resume heals the gap straight from that recording (served by the node's
 # ReplayerService). A leader failover is performed first so the gap is exercised in a realistic post-failover
 # steady state (and to confirm the consumer's own tap keeps flowing across the failover — its member's
 # recording is continuous, never rotated).
@@ -28,12 +28,12 @@
 #   3. Kill the tenure-1 leader -> a survivor becomes the tenure-2 leader. Member 0's own tap recording
 #      keeps flowing across the failover (it is continuous, never rotated).
 #   4. SIGUSR1 the consumer to arm a one-frame live-tap drop, then flood direct cluster ingress. The
-#      first flooded frame is dropped by the consumer -> it sees a globalSeqNo gap and re-walks member
-#      0's continuous recording from segment 0 (via its ReplayerService) to heal it.
+#      first flooded frame is dropped by the consumer -> it sees a globalSeqNo gap and resumes member
+#      0's continuous recording (via its ReplayerService) at the hole to heal it.
 #   5. SIGTERM the consumer to flush its delivery-latency report.
 #
-# PASS iff the consumer (a) logged "re-walking the recording chain" (the drop took effect and recovery
-# engaged) AND (b) kept delivering — its post-catch-up sample count n >= DELIVER_THRESHOLD (healed).
+# PASS iff the consumer (a) logged a tap gap (the drop took effect and recovery engaged) with NO fallback
+# to a chain re-walk, AND (b) kept delivering — its post-catch-up sample count n >= DELIVER_THRESHOLD.
 # A wedge freezes n at a handful; a heal tracks the whole flood, so the two are far apart.
 #
 # A second scenario ("larger deliberate gaps") is folded into this same script via an env var, rather
@@ -47,10 +47,11 @@
 # actively replaying) was attempted and abandoned: see doc/todo.md's 2026-08-02 note. Local Aeron IPC
 # replay of a small gap completes too fast (likely sub-millisecond) for a bash-level poll-then-signal
 # loop to reliably land inside that window — every attempt measured zero genuine overlaps. The state
-# transition itself (a new gap detected while `m_replaySessionId >= 0`, not just `m_awaitingReplay`) is
-# instead covered deterministically by
-# `ReplayerStreamReceiverGapRecovery.NewGapWhileReplaySessionActiveSupersedesTheInFlightWalk` in
-# `ReplayerStreamReceiverTest.cpp`.
+# transition itself (a non-contiguous tap frame arriving while `m_replaySessionId >= 0`, not just
+# `m_awaitingReplay`) is instead covered deterministically by
+# `ReplayerStreamReceiverGapRecovery.TapFrameAheadOfAnInFlightWalkDoesNotSupersedeIt` in
+# `ReplayerStreamReceiverTest.cpp` — as of 2026-08-05 such a frame must NOT supersede the in-flight
+# walk, since the tap is now dispatched mid-walk and legitimately runs ahead of the replay.
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -164,7 +165,7 @@ sleep 0.5
 echo "flooding $FLOOD_ORDERS messages to cluster ingress (first $GAP_SIZE live tap frame(s) will be dropped)"
 PHIXERON_FLOOD_ORDERS="$FLOOD_ORDERS" stdbuf -oL -eL "$BUILD_DIR/fix_test_server" 127.0.0.1 9000 \
   > "$LOG_DIR/flood.log" 2>&1 || true
-sleep 8  # let the consumer re-walk, heal, and drain the flood tail
+sleep 8  # let the consumer resume, heal, and drain the flood tail
 
 # ── 5. Flush the consumer's delivery-latency report ───────────────────────────
 # SIGTERM the consumer and wait for it to actually EXIT (flushing its report) before the trap tears
@@ -174,6 +175,11 @@ for _ in $(seq 1 40); do kill -0 "$CONSUMER_PID" 2>/dev/null || break; sleep 0.5
 CONSUMER_PID=""  # exited (or gave up waiting); don't re-kill in cleanup
 
 # ── Assertions ────────────────────────────────────────────────────────────────
+RECOVERIES=$(grep -c "tap gap: expected globalSeqNo" "$CONSUMER_LOG" 2>/dev/null)
+# The gap must have been repaired by a RESUME, not by a chain re-walk: a re-walk here replays the whole
+# recording to close a one-frame hole, and only appears as a fallback (the recording rotated under the
+# position the resume anchored on) — which cannot happen in this scenario, whose member records
+# continuously across the failover.
 REWALK=$(grep -c "re-walking the recording chain" "$CONSUMER_LOG" 2>/dev/null)
 DELIVERED=$(grep -oE "n=[0-9]+" "$CONSUMER_LOG" 2>/dev/null | head -1 | cut -d= -f2)
 DELIVERED=${DELIVERED:-0}
@@ -181,14 +187,15 @@ DELIVERED=${DELIVERED:-0}
 echo ""
 echo "=== RESULT ==="
 echo "  gap size (frames dropped per arm)       : $GAP_SIZE"
-echo "  re-walks triggered on consumer          : $REWALK"
+echo "  gap recoveries triggered on consumer    : $RECOVERIES"
+echo "  of which fell back to a chain re-walk   : $REWALK  (expected 0)"
 echo "  post-catch-up frames delivered (n)      : $DELIVERED  (threshold $DELIVER_THRESHOLD)"
 grep -E "tap gap|re-walking|delivery latency" "$CONSUMER_LOG" 2>/dev/null | tail -6 | sed 's/^/    /'
 
-if [[ "$REWALK" -ge 1 && "$DELIVERED" -ge "$DELIVER_THRESHOLD" ]]; then
-  echo "GAP-RECOVERY TEST: PASS — consumer re-walked its continuous recording and kept delivering"
+if [[ "$RECOVERIES" -ge 1 && "$REWALK" -eq 0 && "$DELIVERED" -ge "$DELIVER_THRESHOLD" ]]; then
+  echo "GAP-RECOVERY TEST: PASS — consumer resumed its continuous recording at the hole and kept delivering"
   exit 0
 else
-  echo "GAP-RECOVERY TEST: FAIL — consumer did not heal (re-walk=$REWALK, delivered=$DELIVERED)"
+  echo "GAP-RECOVERY TEST: FAIL — consumer did not heal (recoveries=$RECOVERIES, re-walk=$REWALK, delivered=$DELIVERED)"
   exit 1
 fi

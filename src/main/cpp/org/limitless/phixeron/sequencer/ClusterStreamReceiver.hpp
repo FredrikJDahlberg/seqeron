@@ -265,50 +265,54 @@ struct RecordingSegment {
 
 /**
  * Lists every FEEDER_STREAM_ID recording on an already-connected archive,
- * ordered oldest-to-newest by startTimestamp — each one is a prior leader's
+ * ordered oldest-to-newest by recordingId — each one is a prior leader's
  * tenure (see todo.md's "Cross-failover cluster-stream recording continuity"
  * entry), so replaying them in this order and concatenating reproduces full
  * history. The current leader's own archive holds every earlier tenure's
  * segment too, because every follower continuously replicates the leader's
  * recording into its own archive the whole time it isn't leader.
+ * recordingId is monotone as the archive creates recordings; startTimestamp
+ * is archive wall clock, which a backward clock step can invert.
  *
  * The abrupt-leader-death race documented in the same todo.md entry can
  * leave two segments both reporting stopPosition == NULL_POSITION (active);
- * since they hold identical content, only the most recent is kept and any
- * earlier "active" duplicate is dropped rather than replayed twice.
+ * since the newer holds the older's content, only the most recent is kept and
+ * any earlier "active" duplicate is dropped rather than replayed twice.
  */
 inline std::vector<RecordingSegment> resolveClusterStreamSegments(
     const std::shared_ptr<aeron::archive::client::AeronArchive>& archive)
 {
     struct Entry {
         std::int64_t recordingId;
-        std::int64_t startTimestamp;
         std::int64_t stopPosition;
     };
     std::vector<Entry> entries;
-    archive->listRecordingsForUri(
-        0, std::numeric_limits<std::int32_t>::max(), "", FEEDER_STREAM_ID,
-        [&](aeron::archive::client::RecordingDescriptor& recording) {
-            entries.push_back({recording.m_recordingId, recording.m_startTimestamp, recording.m_stopPosition});
-        });
+    archive->listRecordingsForUri(0, std::numeric_limits<std::int32_t>::max(), "", FEEDER_STREAM_ID,
+                                  [&](aeron::archive::client::RecordingDescriptor& recording) {
+                                      entries.push_back({recording.m_recordingId, recording.m_stopPosition});
+                                  });
 
     std::sort(entries.begin(), entries.end(),
-              [](const Entry& a, const Entry& b) { return a.startTimestamp < b.startTimestamp; });
+              [](const Entry& a, const Entry& b) { return a.recordingId < b.recordingId; });
 
-    std::vector<RecordingSegment> segments;
-    bool keptActive = false;
+    std::int64_t newestActiveId = -1;
     for (const auto& e : entries)
     {
-        const bool active = (e.stopPosition == aeron::archive::client::NULL_POSITION);
-        if (active && keptActive)
+        if (e.stopPosition == aeron::archive::client::NULL_POSITION)
         {
-            continue;
+            newestActiveId = e.recordingId;
         }
-        if (active)
+    }
+
+    std::vector<RecordingSegment> segments;
+    for (const auto& e : entries)
+    {
+        const bool stale =
+            (e.stopPosition == aeron::archive::client::NULL_POSITION) && (e.recordingId != newestActiveId);
+        if (!stale)
         {
-            keptActive = true;
+            segments.push_back({e.recordingId, e.stopPosition});
         }
-        segments.push_back({e.recordingId, e.stopPosition});
     }
     return segments;
 }

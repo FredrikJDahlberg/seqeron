@@ -75,7 +75,8 @@ enum class EventCode : std::uint16_t
     TcpSendFailed,
     GatewayNameUnresolved,
     GatewayNameMissing,
-    TapStalled
+    TapStalled,
+    ReplayUnavailable
 };
 
 // Fixed-size, no heap allocation — mirrors the field widths a future SBE encoding would use.

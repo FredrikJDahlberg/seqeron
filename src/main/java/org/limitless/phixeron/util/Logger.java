@@ -38,7 +38,9 @@ public final class Logger {
         ServiceError,
         ReplayerBackpressure,
         ArchiveIntegrityFailure,
-        TapRecordingFailure
+        StaleActiveRecording,
+        TapRecordingFailure,
+        ControlReplyDropped
     }
 
     public record LoggerEvent(Component component, Severity severity, EventCode code, Integer memberId,
