@@ -76,6 +76,7 @@ enum class EventCode : std::uint16_t
     GatewayNameUnresolved,
     GatewayNameMissing,
     TapStalled,
+    GatewayFenced,
     ReplayUnavailable
 };
 

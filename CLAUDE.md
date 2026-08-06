@@ -193,19 +193,41 @@ about individual FIX message types.
 Deliberately stateless proxy: authoritative FIX session state (sequence numbers, session status)
 lives in the cluster, not in this process, so it can crash and restart without losing anything.
 Three cooperating pieces:
-- **`ClusterIngressSender`** — the Aeron Cluster client session state machine
+- **`ClusterStreamSender`** (`sequencer/`) — the Aeron Cluster client session state machine
   (`SessionConnectRequest → SessionEvent(OK) → send/keep-alive → SessionCloseRequest`), talking to
   the cluster only through an `IngressTransport`/`EgressTransport` seam so tests can substitute
   in-memory fakes.
 - **`FixIngressHandler`** — pure byte-level logic: FIX frame/tag parsing helpers, SBE
-  encode/decode, and application-message routing, built on top of `ClusterIngressSender`.
-- **`ClusterStreamClient`** — replays the archived cluster stream from a given position, then
-  follows it live; used identically by `FixGateway`, `OrderExecClient`, and
-  `fix_test_server`.
+  encode/decode, and application-message routing, built on top of `ClusterStreamSender`.
+- **`ClusterStreamReceiver`** (`sequencer/`) / **`ReplayerStreamReceiver`** (`replayer/`) — follow the
+  sequenced stream: replay history from a given position via the Replayer, then follow the tap live;
+  used the same way by `FixGateway`, `OrderExecClient`, and `fix_test_server`.
 
-`src/main/cpp/.../session/` (`Session`, `ClientSession`, `ServerSession`, `ResendCache`) is a
+`src/main/cpp/.../fix/` (`Session`, `ClientSession`, `ServerSession`, `ResendCache`) is a
 role-agnostic (CRTP) FIX session-layer base shared with simdfix-generated message handlers —
 sequence tracking, resend/gap-fill handling — independent of the Aeron Cluster plumbing above.
+
+**Two unrelated things are both called a "session"**, and the distinction is load-bearing:
+the **Aeron Cluster session** (`ClusterStreamSender::clusterSessionId()`, `header.sessionId`,
+`SequencerService.onSessionClose`) and the **FIX session** (the classes just above, `m_sessions`,
+`m_recoveredSessions`). There is **one cluster session per gateway process, carrying every FIX
+session** — `FixIngressHandler` stamps the same `sessionId` on every message and tells connections
+apart by `header.connectionId`. `ClientSession` unhelpfully names both (`io.aeron.cluster.service.ClientSession`
+vs `org::limitless::phixeron::fix::ClientSession`).
+
+**Fencing: the gateway stops serving TCP clients when it loses its place in the cluster.**
+`FixGateway::fence()` closes the accept gate and drops every client socket on three signals — a
+`GatewayActive` naming a sibling instance (it was superseded), the cluster closing its cluster session,
+or no `Tick` from the co-located tap for `TAP_STALL_TIMEOUT_MS`. Without it a demoted primary kept
+serving alongside the standby that replaced it, since `m_gateOpen` only ever latched true. It publishes
+no `ClientDisconnected` — the fence deliberately looks to the cluster exactly like this process dying,
+which is the state the recovery path is built for — and snapshots live FIX session state into
+`m_recoveredSessions` on the way out. Being superseded keeps the cluster session, so that fence just
+drops the instance back to standby and the gate can re-open on a later promotion; the two fences that
+lose the session **exit the process**, because `connect()` runs only at startup and an instance with no
+session could never be promoted again (the accept gate requires `isConnected()` — fail closed). A leader
+failover is *not* session loss: `NewLeaderEvent` swaps the ingress publication and keeps the session id.
+See `doc/todo.md` "Gateway HA / multi-instance".
 
 ### SBE / FIX code generation
 Three SBE schemas under `src/main/resources/`, each generating into a distinct namespace so one

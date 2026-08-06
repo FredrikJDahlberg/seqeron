@@ -423,6 +423,14 @@ class ClusterStreamSender {
         return m_clusterSessionId;
     }
 
+    // True once the cluster has closed this client's session (see onFragment) — as opposed to never
+    // having connected one, which leaves clusterSessionId() at -1 just the same. Latched: there is no
+    // re-handshake, so a caller whose work is only valid with a session checks this and stops.
+    [[nodiscard]] bool isSessionLost() const noexcept
+    {
+        return m_sessionLost;
+    }
+
     // Send a keep-alive to the cluster ingress if the interval has elapsed.
     // Must be called regularly (e.g. every duty-cycle iteration) to prevent session timeout.
     void keepAlive()
@@ -581,6 +589,31 @@ class ClusterStreamSender {
         cluster_sbe::MessageHeader hdr;
         hdr.wrap(reinterpret_cast<char*>(const_cast<std::uint8_t*>(bytes.data())), 0, 0, bytes.size());
 
+        if (hdr.templateId() == cluster_sbe::SessionEvent::sbeTemplateId())
+        {
+            cluster_sbe::SessionEvent evt;
+            evt.wrapForDecode(reinterpret_cast<char*>(const_cast<std::uint8_t*>(bytes.data())),
+                              cluster_sbe::MessageHeader::encodedLength(), hdr.blockLength(), hdr.version(),
+                              bytes.size());
+            // The cluster has closed our session — on request, on leader shutdown, or by keep-alive
+            // timeout, all of which it reports here the same way (io.aeron.cluster.SessionManager sends
+            // EventCode.CLOSED carrying the CloseReason as detail, timeouts included). A steady-state
+            // SessionEvent used to fall off the end of this handler, so a session the cluster had already
+            // forgotten still looked healthy to this client and send() went on framing into a dead id.
+            // Forgetting it here makes send()/keepAlive() report the truth instead; what to do about it is
+            // the caller's call (FixGateway fences its TCP clients — it must not answer FIX traffic it can
+            // no longer sequence). Latched, because there is no re-handshake to clear it.
+            if (m_clusterSessionId >= 0 && evt.clusterSessionId() == m_clusterSessionId &&
+                evt.code() != cluster_sbe::EventCode::Value::OK)
+            {
+                diag::Logger::error(diag::Component::Cluster, diag::EventCode::ClusterSessionError,
+                                        "Cluster closed session %" PRId64 " (code=%d, %s)", m_clusterSessionId,
+                                        static_cast<int>(evt.code()), evt.getDetailAsString().c_str());
+                m_clusterSessionId = -1;
+                m_sessionLost = true;
+            }
+            return;
+        }
         if (hdr.templateId() == cluster_sbe::NewLeaderEvent::sbeTemplateId())
         {
             cluster_sbe::NewLeaderEvent evt;
@@ -765,6 +798,8 @@ class ClusterStreamSender {
     aeron::concurrent::YieldingIdleStrategy m_idleStrategy;
 
     std::int64_t m_clusterSessionId = -1;
+    // Latched once the cluster closes this client's session; see onFragment and isSessionLost().
+    bool m_sessionLost = false;
     std::int64_t m_leadershipTermId = -1;
     std::int64_t m_lastKeepAliveMs = 0;
     std::int64_t m_connectTimeoutMs = CLUSTER_CONNECT_TIMEOUT_MS;

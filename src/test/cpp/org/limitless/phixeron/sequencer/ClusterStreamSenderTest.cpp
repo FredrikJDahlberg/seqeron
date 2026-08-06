@@ -381,6 +381,40 @@ TEST_F(ConnectedClusterStreamSender, PollEgressIgnoresNewLeaderEndpointWithoutAe
     EXPECT_EQ(999, hdr.leadershipTermId());
 }
 
+// The cluster closes a session it has stopped hearing from (keep-alive timeout) exactly as it
+// closes one on request: EventCode::CLOSED on egress, with the CloseReason as detail. A
+// steady-state SessionEvent used to fall off the end of onFragment, so the client went on framing
+// into a session id the cluster had already forgotten — and, being a FIX gateway, went on serving
+// TCP clients whose traffic could no longer be sequenced.
+TEST_F(ConnectedClusterStreamSender, PollEgressReportsTheClusterClosingThisSession)
+{
+    EXPECT_FALSE(sender_.isSessionLost());
+
+    egress_->m_queued.push_back(encodeSessionEvent(SESSION_ID, TERM_ID, cluster_sbe::EventCode::Value::CLOSED, 0,
+                                                   "TIMEOUT"));
+    sender_.pollEgress([](const std::uint8_t*, std::int32_t) {
+        FAIL() << "a SessionEvent must not be forwarded as an application message";
+    });
+
+    EXPECT_TRUE(sender_.isSessionLost());
+    EXPECT_FALSE(sender_.isConnected());
+    // …and the session is genuinely gone, not merely flagged: nothing more may be framed onto it.
+    const std::array<std::uint8_t, 1> body{'8'};
+    EXPECT_FALSE(sender_.send(body.data(), 1));
+    EXPECT_TRUE(ingress_->m_offered.empty());
+}
+
+// A close for somebody else's session says nothing about ours.
+TEST_F(ConnectedClusterStreamSender, PollEgressIgnoresACloseForAnotherSession)
+{
+    egress_->m_queued.push_back(
+        encodeSessionEvent(SESSION_ID + 1, TERM_ID, cluster_sbe::EventCode::Value::CLOSED, 0, "CLIENT_ACTION"));
+    sender_.pollEgress([](const std::uint8_t*, std::int32_t) {});
+
+    EXPECT_FALSE(sender_.isSessionLost());
+    EXPECT_TRUE(sender_.isConnected());
+}
+
 // ── Reliable send: spin until the offer lands (see ClusterStreamSender::send) ──────────────
 
 // A back-pressured ingress publication rejects offers transiently; send() must keep
