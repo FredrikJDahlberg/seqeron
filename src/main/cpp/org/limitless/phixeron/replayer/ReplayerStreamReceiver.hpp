@@ -41,14 +41,14 @@
 //
 // The replay->live seam is closed by the tap itself, not by a round trip. Tap frames are drained AND
 // dispatched while a walk is in flight, and — load-bearing — ones landing beyond the current hole are
-// RETAINED in globalSeqNo order (retainAhead/drainRetained) rather than dropped, because the tap must be
+// RETAINED in globalSeqNo order (retainMessages/drainRetained) rather than dropped, because the tap must be
 // polled every duty cycle (it is untethered) and an unretained frame is therefore gone for good. When
 // the replay reaches the hole, the retained frames hand straight over and the client is live with no
 // residual. Dropping them (as this did until 2026-08-05) left every walk ending one guaranteed hole
 // short of live and re-walking the whole chain, re-opening the same hole: convergence depended on
 // nothing being published during the final round trip — on the publish rate, not on any progress
 // invariant. Measured on gap-recovery-test.sh, a single injected frame drop under a 300-message flood
-// cost 6 full re-walks; retention closes it in 1. The buffer is bounded (MAX_AHEAD_*) and falls back to
+// cost 6 full re-walks; retention closes it in 1. The buffer is bounded (MAX_MESSAGES_*) and falls back to
 // that drop-and-re-walk behaviour past the bound, since a re-walk over a full trading day cannot buffer
 // a day of traffic.
 //
@@ -83,8 +83,9 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#include <deque>
 #include <functional>
-#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -176,6 +177,16 @@ class ReplayerStreamReceiver
           m_replayPoll(m_replayAssembler->handler()),
           m_controlPoll(m_controlAssembler->handler())
     {}
+
+    // Returns any blocks still held by the retained-ahead FIFO (see retainMessages/drainRetained) — the
+    // pool's own destructor only frees its free list, not blocks still checked out to m_messagesBlocks.
+    ~ReplayerStreamReceiver()
+    {
+        for (auto* block : m_messagesBlocks)
+        {
+            delete block;
+        }
+    }
 
     // Subscribes the tap/replay/control streams, opens the request publication, and requests the
     // cold-start replay from position 0.
@@ -382,17 +393,61 @@ class ReplayerStreamReceiver
     // "replay the segmentIndex-th recording of the chain" — see ReplayerService.serveReplay.
     static constexpr std::int32_t RESUME_SEGMENT_INDEX = -1;
 
-    // Caps on frames retained ahead of a hole (see retainAhead) — enough to cover a walk over a normal
+    // Caps on frames retained ahead of a hole (see retainMessages) — enough to cover a walk over a normal
     // recording, not a whole trading day; past either bound recovery falls back to re-walking.
-    static constexpr std::size_t MAX_AHEAD_FRAMES = 65536;
-    static constexpr std::size_t MAX_AHEAD_BYTES = 16UL * 1024 * 1024;
+    static constexpr std::size_t MAX_MESSAGES_FRAMES = 65536;
+    static constexpr std::size_t MAX_MESSAGES_BYTES = 16UL * 1024 * 1024;
 
-    // One live tap frame held until the hole below it closes. Carries the receive stamp and position
-    // from when it arrived, so a consumer's delivery-latency stats measure the tap, not the drain.
-    struct AheadFrame {
+    // Fixed-size block backing the retained-ahead FIFO (see retainMessages/drainRetained). Records are
+    // appended length-prefixed and never split across a block boundary — every message here is well
+    // under 512 bytes, so the wasted tail per boundary is bounded and negligible against SIZE.
+    struct MessagesBlock {
+        static constexpr std::size_t SIZE = 4096;
+        std::array<std::uint8_t, SIZE> bytes;
+        std::size_t used = 0;
+    };
+
+    // Per-record framing within a block. Carries the receive stamp and position from when the frame
+    // arrived, so a consumer's delivery-latency stats measure the tap, not the drain.
+    struct MessagesRecordHeader {
+        std::int64_t globalSeqNo;
         std::int64_t position;
         std::int64_t receiveNs;
-        std::vector<std::uint8_t> bytes;
+        std::uint32_t length;
+    };
+
+    // Pools MessagesBlocks instead of allocating (and copying, on growth) one buffer per retained frame.
+    // Released blocks are kept for reuse rather than freed, so a later recovery episode reuses
+    // already-resident pages instead of paying a fresh allocation/page-fault cost.
+    class MessagesBlockPool {
+       public:
+        ~MessagesBlockPool()
+        {
+            for (auto* block : m_freeList)
+            {
+                delete block;
+            }
+        }
+
+        MessagesBlock* acquire()
+        {
+            if (m_freeList.empty())
+            {
+                return new MessagesBlock();
+            }
+            MessagesBlock* const block = m_freeList.back();
+            m_freeList.pop_back();
+            block->used = 0;
+            return block;
+        }
+
+        void release(MessagesBlock* const block)
+        {
+            m_freeList.push_back(block);
+        }
+
+       private:
+        std::vector<MessagesBlock*> m_freeList;
     };
 
     // Mid-walk (cold start or gap re-walk) or awaiting the Replayer's answer: a non-contiguous live-tap
@@ -682,7 +737,7 @@ class ReplayerStreamReceiver
 
         // Contiguity / de-duplication — identical invariant to ClusterStreamClient: globalSeqNo
         // increments by exactly one per event, so any forward jump is a gap. Drop dups; a frame from
-        // beyond the hole is RETAINED (see retainAhead) rather than dropped, so the replay closing the
+        // beyond the hole is RETAINED (see retainMessages) rather than dropped, so the replay closing the
         // hole hands straight over to it.
         if (m_lastGlobalSeqNo != 0)
         {
@@ -713,7 +768,7 @@ class ReplayerStreamReceiver
                 }
                 if (!fromReplay)
                 {
-                    retainAhead(gseq, raw + off, len, framePosition, receiveNs);
+                    retainMessages(gseq, raw + off, len, framePosition, receiveNs);
                 }
                 else if (!m_replayGapLogged)
                 {
@@ -740,7 +795,7 @@ class ReplayerStreamReceiver
                 // running ahead of a replay that has not reached globalSeqNo 1 yet. Only the walk may
                 // establish the baseline — adopting this frame's would BE the arbitrary mid-stream
                 // baseline the abort below exists to prevent — but it is still real data, so retain it.
-                retainAhead(gseq, raw + off, len, framePosition, receiveNs);
+                retainMessages(gseq, raw + off, len, framePosition, receiveNs);
                 return;
             }
             // The very first frame this client ever sees — replayed history, or the live tap right
@@ -757,8 +812,8 @@ class ReplayerStreamReceiver
     }
 
     // Everything past the contiguity check: advance the baseline, then decode and hand the frame to the
-    // caller. Split out so a frame replayed from m_ahead (which lives in its own buffer, not the
-    // subscription's) runs the identical path.
+    // caller. Split out so a frame drained from the retained-messages buffer (which lives in its own
+    // storage, not the subscription's) runs the identical path.
     void dispatchFrame(char* const raw, const std::uint64_t off, const std::uint64_t len, const std::uint64_t cap,
                        const std::int64_t gseq, const std::int64_t framePosition, const std::int64_t receiveNs,
                        const bool fromReplay)
@@ -846,54 +901,82 @@ class ReplayerStreamReceiver
     //
     // Bounded, and deliberately lossy past the bound: a re-walk over a full trading day cannot buffer a
     // day of traffic, so on overflow this falls back to the old drop-and-re-walk behaviour rather than
-    // growing without limit. Ordered by globalSeqNo, so out-of-order arrival across the tap/replay seam
-    // sorts itself.
-    void retainAhead(const std::int64_t gseq, const char* const frame, const std::uint64_t len,
+    // growing without limit. Retained as a FIFO of pooled blocks, not sorted by globalSeqNo: a single
+    // Aeron image delivers strictly increasing globalSeqNo with no reordering, so arrival order already
+    // is globalSeqNo order — only an exact-duplicate redelivery (a repeat of the most recently retained
+    // globalSeqNo) needs an explicit check, not general sorting.
+    void retainMessages(const std::int64_t gseq, const char* const frame, const std::uint64_t len,
                      const std::int64_t framePosition, const std::int64_t receiveNs)
     {
-        if (m_ahead.size() >= MAX_AHEAD_FRAMES || (m_aheadBytes + len) > MAX_AHEAD_BYTES)
+        const std::size_t recordSize = sizeof(MessagesRecordHeader) + len;
+        if (m_messagesFrameCount >= MAX_MESSAGES_FRAMES || (m_messagesBytes + len) > MAX_MESSAGES_BYTES ||
+            recordSize > MessagesBlock::SIZE)
         {
-            if (!m_aheadOverflowed)
+            if (!m_messagesOverflowed)
             {
-                m_aheadOverflowed = true;
+                m_messagesOverflowed = true;
                 diag::Logger::warn(diag::Component::ReplayerStreamReceiver, diag::EventCode::TapGap,
                                    "retained-frame buffer full at globalSeqNo=%lld (%zu frames, %zu bytes) — "
                                    "dropping ahead-of-hole frames; recovery falls back to re-walking",
-                                   static_cast<long long>(gseq), m_ahead.size(), m_aheadBytes);
+                                   static_cast<long long>(gseq), m_messagesFrameCount, m_messagesBytes);
             }
             return;
         }
-        if (!m_ahead
-                 .try_emplace(gseq, AheadFrame{framePosition, receiveNs, std::vector<std::uint8_t>(frame, frame + len)})
-                 .second)
+        if (m_messagesFrameCount > 0 && gseq <= m_messagesTailGseq)
         {
             return;  // already retained (the tap redelivered it) — keep the first copy
         }
-        m_aheadBytes += len;
+        if (m_messagesBlocks.empty() || m_messagesBlocks.back()->used + recordSize > MessagesBlock::SIZE)
+        {
+            m_messagesBlocks.push_back(m_messagesBlockPool.acquire());
+        }
+        MessagesBlock* const tail = m_messagesBlocks.back();
+        const MessagesRecordHeader header{gseq, framePosition, receiveNs, static_cast<std::uint32_t>(len)};
+        std::memcpy(tail->bytes.data() + tail->used, &header, sizeof(header));
+        std::memcpy(tail->bytes.data() + tail->used + sizeof(header), frame, len);
+        tail->used += recordSize;
+        ++m_messagesFrameCount;
+        m_messagesBytes += len;
+        m_messagesTailGseq = gseq;
     }
 
     // Hands over every retained frame that has become contiguous, discarding any the replay has since
-    // covered. Called after each dispatch, so the seam closes the instant the replay reaches it.
+    // covered. Called after each dispatch, so the seam closes the instant the replay reaches it. A block
+    // is returned to the pool the moment it is fully consumed, so the next recovery episode reuses
+    // already-resident memory instead of paying a fresh allocation.
     void drainRetained()
     {
-        while (!m_ahead.empty())
+        for (;;)
         {
-            const auto it = m_ahead.begin();
-            if (it->first > m_lastGlobalSeqNo + 1)
+            if (m_messagesBlocks.empty())
+            {
+                return;
+            }
+            MessagesBlock* const front = m_messagesBlocks.front();
+            if (m_messagesReadOffset >= front->used)
+            {
+                m_messagesBlockPool.release(front);
+                m_messagesBlocks.pop_front();
+                m_messagesReadOffset = 0;
+                continue;
+            }
+            MessagesRecordHeader header;
+            std::memcpy(&header, front->bytes.data() + m_messagesReadOffset, sizeof(header));
+            if (header.globalSeqNo > m_lastGlobalSeqNo + 1)
             {
                 return;  // still a hole below the oldest retained frame
             }
-            AheadFrame frame = std::move(it->second);
-            const std::int64_t gseq = it->first;
-            m_ahead.erase(it);
-            m_aheadBytes -= frame.bytes.size();
-            if (gseq <= m_lastGlobalSeqNo)
+            std::uint8_t* const payload = front->bytes.data() + m_messagesReadOffset + sizeof(header);
+            m_messagesReadOffset += sizeof(header) + header.length;
+            --m_messagesFrameCount;
+            m_messagesBytes -= header.length;
+            if (header.globalSeqNo <= m_lastGlobalSeqNo)
             {
                 continue;  // the replay already covered it
             }
-            m_aheadOverflowed = false;
-            dispatchFrame(reinterpret_cast<char*>(frame.bytes.data()), 0, frame.bytes.size(), frame.bytes.size(), gseq,
-                          frame.position, frame.receiveNs, /*fromReplay=*/false);
+            m_messagesOverflowed = false;
+            dispatchFrame(reinterpret_cast<char*>(payload), 0, header.length, header.length, header.globalSeqNo,
+                          header.position, header.receiveNs, /*fromReplay=*/false);
         }
     }
 
@@ -999,10 +1082,14 @@ class ReplayerStreamReceiver
     bool m_replayGapLogged = false;        // report a hole in replayed history once per episode, not per frame
     bool m_caughtUp = false;               // following live; revoked on a tap gap, re-established at the seam
 
-    // Live tap frames from beyond the current hole, ordered by globalSeqNo (see retainAhead).
-    std::map<std::int64_t, AheadFrame> m_ahead;
-    std::size_t m_aheadBytes = 0;
-    bool m_aheadOverflowed = false;  // log the overflow once per episode, not per frame
+    // Live tap frames from beyond the current hole, retained in arrival order (see retainMessages).
+    MessagesBlockPool m_messagesBlockPool;
+    std::deque<MessagesBlock*> m_messagesBlocks;
+    std::size_t m_messagesReadOffset = 0;  // offset of the next unconsumed record within m_messagesBlocks.front()
+    std::int64_t m_messagesTailGseq = 0;   // globalSeqNo of the most recently retained frame; dedups redelivery
+    std::size_t m_messagesFrameCount = 0;
+    std::size_t m_messagesBytes = 0;
+    bool m_messagesOverflowed = false;  // log the overflow once per episode, not per frame
 
     std::int32_t m_currentLeaderMemberId = -1;
 
