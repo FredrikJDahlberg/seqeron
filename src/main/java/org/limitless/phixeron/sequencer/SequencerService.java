@@ -408,6 +408,19 @@ public final class SequencerService implements ClusteredService {
                                  final int length,
                                  final Header header) {
         ensureCounters();
+        if (session == null) {
+            // Aeron looks the session up by clusterSessionId and passes the result straight through, so
+            // this is null whenever that id has no live session (the interface contract above says so).
+            // sessionId is the one header field sequenceMessage cannot copy from the ingress frame, and
+            // it is exactly what is missing, so the frame is unsequenceable — count it like any other
+            // malformed ingress. Dereferencing would throw, and a throw here is swallowed after the log
+            // position has already advanced (see emit), which drops the frame anyway but silently.
+            rejectedIngressCounter.increment();
+            Logger.error(Logger.Component.SequencerService, Logger.EventCode.MalformedIngressMessage,
+                    cluster.memberId(), "skipping ingress message with no client session (globalSeqNo stays %d)",
+                    sequencer.globalSeqNo());
+            return;
+        }
         final int sequenced = sequencer.sequenceMessage(buffer, offset, length, session.id(), timestamp);
         if (sequenced != Sequencer.NO_FRAME) {
             messagesSequencedCounter.increment();

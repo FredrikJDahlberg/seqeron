@@ -80,6 +80,26 @@ public final class Sequencer {
      */
     static final int MIN_INGRESS_LENGTH = MessageHeaderDecoder.ENCODED_LENGTH + HeaderDecoder.ENCODED_LENGTH;
 
+    /**
+     * Largest value the framing header's uint16 {@code blockLength} can carry — 65535 is SBE's null
+     * value for the type. {@code MessageHeaderEncoder.blockLength(int)} casts to {@code short} without
+     * complaint, so anything above this has to be refused before it is written.
+     */
+    private static final int MAX_BLOCK_LENGTH = 65534;
+
+    static {
+        // sequenceMessage stamps the ingress version onto a schema-202 frame, which is only truthful
+        // while the two schemas version in lockstep — the same assumption the byte-identity of
+        // everything past the header rests on. Bumping one XML's version without the other breaks it
+        // silently on the wire, so fail at class load instead.
+        if (MessageHeaderDecoder.SCHEMA_VERSION != MessageHeaderEncoder.SCHEMA_VERSION) {
+            throw new IllegalStateException(
+                "schema version mismatch: sbe-unsequenced.xml is at version " + MessageHeaderDecoder.SCHEMA_VERSION
+                + " and sbe-sequenced.xml at " + MessageHeaderEncoder.SCHEMA_VERSION
+                + "; the copy-through in sequenceMessage requires them to version together");
+        }
+    }
+
     // ── Ingress decode (schema 200, sbe-unsequenced.xml) ──────────────────────
     // Only the outer framing header and the generic `header` composite are ever decoded — body fields
     // are copied through as opaque bytes (see sequenceMessage), with two bounded exceptions: the Gateway
@@ -227,6 +247,17 @@ public final class Sequencer {
             MessageHeaderDecoder.ENCODED_LENGTH + ingressBlockLen > length) {
             return reject("blockLength " + ingressBlockLen + " does not fit a " + length + "-byte frame");
         }
+        // sbe-sequenced.xml's header composite is sbe-unsequenced.xml's plus two int64 fields
+        // (globalSeqNo, timestamp); every other field is byte-identical, so the egress blockLength is
+        // simply the ingress blockLength with the header composite's growth added on. That sum can
+        // exceed what a uint16 holds, and the encoder narrows to short silently — a frame with a
+        // truncated blockLength would go straight into authoritative, unreplayable history.
+        final int egressBlockLen = HeaderEncoder.ENCODED_LENGTH + (ingressBlockLen - HeaderDecoder.ENCODED_LENGTH);
+        if (egressBlockLen > MAX_BLOCK_LENGTH) {
+            return reject("blockLength " + ingressBlockLen + " leaves no room for the "
+                          + (HeaderEncoder.ENCODED_LENGTH - HeaderDecoder.ENCODED_LENGTH)
+                          + " bytes the sequenced header adds");
+        }
 
         final long globalSeq = ++globalSeqNo;
         final int ingressBodyOffset = offset + MessageHeaderDecoder.ENCODED_LENGTH;
@@ -260,15 +291,15 @@ public final class Sequencer {
             connectedClientCount--;
         }
 
-        // sbe-sequenced.xml's header composite is sbe-unsequenced.xml's plus two int64 fields
-        // (globalSeqNo, timestamp); every other field is byte-identical, so the egress blockLength
-        // is simply the ingress blockLength with the header composite's growth added on.
-        final int egressBlockLen = HeaderEncoder.ENCODED_LENGTH + (ingressBlockLen - HeaderDecoder.ENCODED_LENGTH);
         headerEncoder.wrap(encodeBuffer, 0)
             .blockLength(egressBlockLen)
             .templateId(templateId)
             .schemaId(MessageHeaderEncoder.SCHEMA_ID)
-            .version(MessageHeaderEncoder.SCHEMA_VERSION);
+            // The block this describes is the ingress block copied through verbatim, so the version
+            // that describes it is the ingress one, not this build's. Stamping the compiled version
+            // over a shorter block would have consumers gate optional fields on a version those bytes
+            // do not have, and read past the block into var-data.
+            .version(ingressMsgHeaderDecoder.version());
 
         final int egressBodyOffset = MessageHeaderEncoder.ENCODED_LENGTH;
         egressHeaderEncoder.wrap(encodeBuffer, egressBodyOffset)

@@ -41,6 +41,9 @@ class SequencerTest {
     private static final long SESSION_ID = 0x5EE51_0000L;
     private static final long TIMESTAMP = 1_700_000_000_000L;
 
+    /** One past the largest blockLength the framing header's uint16 can carry (65535 is SBE's null). */
+    private static final int MAX_UINT16 = 65535;
+
     /** Ingress header composite is 16 bytes, sequenced is 32 — the delta every egress frame grows by. */
     private static final int HEADER_GROWTH =
         org.limitless.phixeron.sbe.sequenced.HeaderEncoder.ENCODED_LENGTH
@@ -130,6 +133,20 @@ class SequencerTest {
         assertEquals(ingressBlockLength + HEADER_GROWTH, egress.blockLength());
         assertEquals(NewOrderSingleDecoder.TEMPLATE_ID, egress.templateId());
         assertEquals(NewOrderSingleDecoder.SCHEMA_ID, egress.schemaId());
+    }
+
+    @Test
+    @DisplayName("the egress version describes the ingress block, not this build's schema")
+    void egressVersionIsCarriedFromTheIngressFrame() {
+        // Everything past the header is copied through verbatim, so the version describing it is the
+        // producer's. Stamping this build's over a shorter block would have consumers gate optional
+        // fields on a version those bytes do not have, and read past the block into var-data.
+        final int ingressLength = encodeIngressNewOrderSingle(ingress, 0);
+        new org.limitless.phixeron.sbe.unsequenced.MessageHeaderEncoder().wrap(ingress, 0).version(3);
+
+        sequencer.sequenceMessage(ingress, 0, ingressLength, SESSION_ID, TIMESTAMP);
+
+        assertEquals(3, new MessageHeaderDecoder().wrap(sequencer.buffer(), 0).version());
     }
 
     @Test
@@ -233,6 +250,31 @@ class SequencerTest {
 
         assertEquals(Sequencer.NO_FRAME, sequencer.sequenceMessage(ingress, 0, ingressLength, SESSION_ID, TIMESTAMP));
         assertEquals(0L, sequencer.globalSeqNo());
+    }
+
+    @Test
+    @DisplayName("a blockLength whose sequenced form would overflow the uint16 field is skipped")
+    void blockLengthThatCannotSurviveTheHeaderGrowthIsSkipped() {
+        // The egress blockLength is the ingress one plus the header growth, and the framing header
+        // carries it as a uint16 the encoder narrows to without complaint. Just under the ceiling on
+        // ingress is over it on egress, so this is either caught here or written as a corrupt frame
+        // into authoritative, unreplayable history.
+        final int overflowing = MAX_UINT16 - HEADER_GROWTH;
+        assertEquals(Sequencer.NO_FRAME, sequenceWithBlockLength(overflowing));
+        assertEquals(0L, sequencer.globalSeqNo(), "a skipped message must consume no sequence number");
+
+        // …and the frame one byte smaller, whose sequenced form is the largest that still fits, is not.
+        assertNotEquals(Sequencer.NO_FRAME, sequenceWithBlockLength(overflowing - 1));
+        assertEquals(1L, sequencer.globalSeqNo());
+    }
+
+    /** Sequences a frame claiming {@code blockLength}, backed by real capacity so the length is honest. */
+    private int sequenceWithBlockLength(final int blockLength) {
+        final int ingressLength = MessageHeaderDecoder.ENCODED_LENGTH + blockLength;
+        encodeIngressNewOrderSingle(ingress, 0);
+        ingress.putByte(ingressLength - 1, (byte)0);
+        new org.limitless.phixeron.sbe.unsequenced.MessageHeaderEncoder().wrap(ingress, 0).blockLength(blockLength);
+        return sequencer.sequenceMessage(ingress, 0, ingressLength, SESSION_ID, TIMESTAMP);
     }
 
     // ── Determinism ───────────────────────────────────────────────────────────
