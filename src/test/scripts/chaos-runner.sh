@@ -14,11 +14,17 @@
 #   (the whole point of chaos testing is a reproducing case, not noise). ROUNDS and STEADY_STATE_SECS
 #   are env-overridable.
 #
-# TOPOLOGY (borrowed from gap-recovery-test.sh so the observation point is stable): members 1 & 2 start
-#   first so the initial leader is one of them; member 0 joins as a follower and is the ALWAYS-ALIVE host
-#   for the FixGateway (port 9000), the co-located OrderExecClient consumer (our safety
-#   oracle + tap-drop target, launched with PHIXERON_FAULT_INJECTION=1), and its ReplayerNode. Destructive
-#   faults only ever hit the leader or the other non-0 member, so the probe/observation host never dies.
+# TOPOLOGY (borrowed from gap-recovery-test.sh for a deterministic initial leader): members 1 & 2 start
+#   first so the initial leader is one of them; member 0 joins as a follower after. Member 0 (CN) hosts the
+#   safety-oracle/tap-drop-target OrderExecClient consumer (PHIXERON_FAULT_INJECTION=1) and the primary FIX
+#   gateway GW-A (port 9000); member 1 (STANDBY_MEMBER) additionally hosts the hot-standby gateway GW-B
+#   (port 9001), the same active/standby pair gateway-failover-test.sh drives — sharing gatewaySourceId 0
+#   per BasicDataConstants.hpp, so a real promotion (not a dead end) happens whichever one dies. All three
+#   members are legal fault targets; restart_colocated_apps brings each member's co-located apps (gateway
+#   and/or consumer included) back up in place. active_gateway_port tracks which of GW-A/GW-B is currently
+#   serving, for the probe and the background load to target. LEADER_CHANGES controls the round count for a
+#   dedicated ONLY_FAULT=fault_kill_leader run (every round is a genuine failover, since every member is a
+#   legal kill target).
 #
 # PASS/FAIL: the loop runs ROUNDS rounds; a round FAILS if any steady-state invariant is violated after
 #   the heal window. On first failure it stops and prints the fault history + SEED to reproduce.
@@ -35,6 +41,11 @@ ROUNDS="${ROUNDS:-20}"
 STEADY_STATE_SECS="${STEADY_STATE_SECS:-4}"     # heal window between injecting a fault and checking invariants
 SEED="${SEED:-$RANDOM}"                           # export SEED=<n> to replay a run exactly
 BACKGROUND_LOAD="${BACKGROUND_LOAD:-1}"          # 1 = keep a low-rate FIX order flow running under the chaos
+# Round count used instead of ROUNDS when ONLY_FAULT=fault_kill_leader: every round kills whoever is
+# currently leading (see target_leader below), so with all three members killable this is genuinely
+# LEADER_CHANGES failovers, not just that many kill attempts.
+LEADER_CHANGES="${LEADER_CHANGES:-10}"
+[[ "${ONLY_FAULT:-}" == "fault_kill_leader" ]] && ROUNDS="$LEADER_CHANGES"
 RANDOM="$SEED"
 
 JAVA_OPTS=(
@@ -47,12 +58,14 @@ BASE_DIR="${TMPDIR:-/tmp}phixeron-seqfo"
 CLUSTER_MEMBERS="$(cluster_members_string 3)"
 FIX_TCP_PORT="$(fix_tcp_port)"
 AERON_DIR="${TMPDIR}aeron-$(whoami)"
-CN=0            # consumer / gateway / observation host — never killed
+CN=0            # primary gateway (GW-A) / observation consumer host — a fault target like any other member
+STANDBY_MEMBER=1  # hot-standby gateway (GW-B) host — see gateway-failover-test.sh's active/standby model
+STANDBY_PORT="$(fix_tcp_port 1)"
 if command -v aeronmd >/dev/null 2>&1; then AERONMD="$(command -v aeronmd)"; else AERONMD="${BUILD_DIR}/_deps/aeron-build/binaries/aeronmd"; fi
 
 rm -rf "$LOG_DIR"; mkdir -p "$LOG_DIR"
 declare -a SEQ_PIDS REPLAYER_PIDS BASICDATA_PIDS EXTRA_CONSUMER_PIDS
-CONSUMER_PID=""; FIX_PID=""; MD_PID=""; LOAD_PID=""
+CONSUMER_PID=""; FIX_PID=""; STANDBY_FIX_PID=""; MD_PID=""; LOAD_PID=""
 declare -a FAULT_HISTORY=()
 
 # ── Helpers ─────────────────────────────────────────────────────────────────────
@@ -87,7 +100,7 @@ log() { printf '[chaos %s] %s\n' "$(date +%H:%M:%S)" "$*"; }
 cleanup() {
   log "tearing down"
   for m in 0 1 2; do kill -CONT "${SEQ_PIDS[$m]:-0}" 2>/dev/null; done   # un-pause before killing
-  kill "${LOAD_PID:-}" "${CONSUMER_PID:-}" "${FIX_PID:-}" "${MD_PID:-}" 2>/dev/null
+  kill "${LOAD_PID:-}" "${CONSUMER_PID:-}" "${FIX_PID:-}" "${STANDBY_FIX_PID:-}" "${MD_PID:-}" 2>/dev/null
   pkill -f fix_test_server 2>/dev/null   # the background-load loop's in-flight child outlives its subshell
   # ${arr[@]+"${arr[@]}"} — the bash 3.2 / set -u safe way to expand a possibly-empty array to nothing.
   for p in "${SEQ_PIDS[@]+"${SEQ_PIDS[@]}"}" "${REPLAYER_PIDS[@]+"${REPLAYER_PIDS[@]}"}" \
@@ -145,12 +158,18 @@ for m in 0 1 2; do
 done
 
 # Consumer on member 0: fault-injection ON (SIGUSR1 tap-drop) + latency stats (flushed on exit, not read here).
+# Extracted into start_consumer/start_gateway (below) so restart_colocated_apps can relaunch the same pair
+# in place when member 0 itself is a fault target — same driver-death problem members 1/2's replicas have
+# on restart, just for the gateway/consumer instead of a plain OrderExecClient replica.
 CONSUMER_LOG="$LOG_DIR/consumer.log"
-PHIXERON_ORDER_EXEC_AERON_DIR="${TMPDIR}phixeron-seq-aeron-${CN}" PHIXERON_NODE_MEMBER_ID="$CN" \
-  PHIXERON_REPLAYER_CLIENT_ID=9 PHIXERON_CLUSTER_EGRESS_ENDPOINT="localhost:${TEST_CONSUMER_EGRESS_PORT}" \
-  PHIXERON_LATENCY_STATS=1 PHIXERON_FAULT_INJECTION=1 \
-  stdbuf -oL -eL "$BUILD_DIR/OrderExecClient" > "$CONSUMER_LOG" 2>&1 &
-CONSUMER_PID=$!
+start_consumer() {
+  PHIXERON_ORDER_EXEC_AERON_DIR="${TMPDIR}phixeron-seq-aeron-${CN}" PHIXERON_NODE_MEMBER_ID="$CN" \
+    PHIXERON_REPLAYER_CLIENT_ID=9 PHIXERON_CLUSTER_EGRESS_ENDPOINT="localhost:${TEST_CONSUMER_EGRESS_PORT}" \
+    PHIXERON_LATENCY_STATS=1 PHIXERON_FAULT_INJECTION=1 \
+    stdbuf -oL -eL "$BUILD_DIR/OrderExecClient" > "$CONSUMER_LOG" 2>&1 &
+  CONSUMER_PID=$!
+}
+start_consumer
 W=0; until grep -q "following live" "$CONSUMER_LOG" 2>/dev/null; do sleep 0.5; W=$((W+1)); ((W>60)) && { echo "consumer never caught up"; exit 1; }; done
 
 # OrderExecClient replica on members 1 and 2 too (see start-three-node-cluster.sh): sendNewExecutionReport
@@ -169,21 +188,50 @@ for m in 1 2; do W=0; until grep -q "following live" "$LOG_DIR/orderexec-$m.log"
 
 # FIX gateway on member 0 (port $FIX_TCP_PORT).
 FIX_LOG="$LOG_DIR/fix.log"
-PHIXERON_FIX_GATEWAY_AERON_DIR="${TMPDIR}phixeron-seq-aeron-${CN}" PHIXERON_NODE_MEMBER_ID="$CN" \
-  PHIXERON_REPLAYER_CLIENT_ID=2 PHIXERON_FIX_TCP_PORT="$FIX_TCP_PORT" \
-  PHIXERON_FIX_GATEWAY_NAME=GW-A \
-  stdbuf -oL -eL "$BUILD_DIR/FixGateway" > "$FIX_LOG" 2>&1 &
-FIX_PID=$!
+start_gateway() {
+  PHIXERON_FIX_GATEWAY_AERON_DIR="${TMPDIR}phixeron-seq-aeron-${CN}" PHIXERON_NODE_MEMBER_ID="$CN" \
+    PHIXERON_REPLAYER_CLIENT_ID=2 PHIXERON_FIX_TCP_PORT="$FIX_TCP_PORT" \
+    PHIXERON_FIX_GATEWAY_NAME=GW-A \
+    stdbuf -oL -eL "$BUILD_DIR/FixGateway" > "$FIX_LOG" 2>&1 &
+  FIX_PID=$!
+}
+start_gateway
 W=0; until nc -z 127.0.0.1 "$FIX_TCP_PORT" 2>/dev/null; do sleep 0.5; W=$((W+1)); ((W>40)) && { echo "gateway $FIX_TCP_PORT not up"; exit 1; }; done
 # The TCP port alone isn't "ready to Logon": the gateway gates on EndBasicData (a client that connects
 # earlier just queues in the listen backlog and eventually times out) — see start-three-node-cluster.sh.
 W=0; until grep -q "Basic data loaded" "$FIX_LOG" 2>/dev/null; do sleep 0.5; W=$((W+1)); ((W>60)) && { echo "gateway never saw EndBasicData — its logon gate is still shut"; exit 1; }; done
-log "cluster READY — gateway up, consumer following live"
+
+# Hot-standby gateway GW-B on member $STANDBY_MEMBER (port $STANDBY_PORT): shadows the tap, gate shut,
+# promoted in place of GW-A on a GatewayActive naming it (see gateway-failover-test.sh). Without this,
+# killing GW-A's host would promote to a sibling gatewayId that has no live process behind it — a dead end.
+STANDBY_FIX_LOG="$LOG_DIR/fix-standby.log"
+start_standby_gateway() {
+  PHIXERON_FIX_GATEWAY_AERON_DIR="${TMPDIR}phixeron-seq-aeron-${STANDBY_MEMBER}" PHIXERON_NODE_MEMBER_ID="$STANDBY_MEMBER" \
+    PHIXERON_REPLAYER_CLIENT_ID=2 PHIXERON_FIX_TCP_PORT="$STANDBY_PORT" \
+    PHIXERON_FIX_GATEWAY_NAME=GW-B \
+    stdbuf -oL -eL "$BUILD_DIR/FixGateway" > "$STANDBY_FIX_LOG" 2>&1 &
+  STANDBY_FIX_PID=$!
+}
+start_standby_gateway
+W=0; until grep -q "Caught up to live stream" "$STANDBY_FIX_LOG" 2>/dev/null; do sleep 0.5; W=$((W+1)); ((W>60)) && { echo "standby gateway never caught up"; exit 1; }; done
+log "cluster READY — gateway up (GW-A active, GW-B standby), consumer following live"
+
+# Which of GW-A/GW-B is currently serving — each gateway logs "is now active"/"is now standby" (only) when
+# ITS OWN activation state changes (FixGateway.cpp's GatewayActive handler), so the last such line in EACH
+# log independently reflects that instance's current state; whichever says "active" wins. No cross-file
+# time correlation needed. Falls back to GW-A (the bootstrap-designated primary) if neither has resolved yet.
+gateway_status() { grep -o "is now active\|is now standby" "$1" 2>/dev/null | tail -1 | grep -o "active\|standby"; }
+active_gateway_port() {
+  [[ "$(gateway_status "$FIX_LOG")" == "active" ]] && { echo "$FIX_TCP_PORT"; return; }
+  [[ "$(gateway_status "$STANDBY_FIX_LOG")" == "active" ]] && { echo "$STANDBY_PORT"; return; }
+  echo "$FIX_TCP_PORT"
+}
 
 # Optional steady background order flow so faults land on a system that is actually doing work.
-# Streams NewOrderSingles THROUGH the gateway as SenderCompID "LOADGEN" — distinct from the "PROBE"
-# the liveness probe uses, so the load fix and a concurrent probe fix coexist (proven by
-# fix_test_server's runTwoDifferentSendersTest). Loops so order flow is continuous for the whole run.
+# Streams NewOrderSingles THROUGH whichever gateway currently holds the accept gate, as SenderCompID
+# "LOADGEN" — distinct from the "PROBE" the liveness probe uses, so the load fix and a concurrent probe fix
+# coexist (proven by fix_test_server's runTwoDifferentSendersTest). Loops so order flow is continuous for
+# the whole run, following the gateway across a GW-A/GW-B promotion.
 start_background_load() {
   [[ "$BACKGROUND_LOAD" == "1" ]] || return 0
   # A normal iteration is naturally rate-limited by its own session duration (Logon..50 orders..Logout).
@@ -191,7 +239,7 @@ start_background_load() {
   # respawning in a hot spin, or a run of instant failures floods the gateway's small TCP backlog with
   # connect attempts, which starves other connections (the liveness probe included) with connection
   # refusals of its own making.
-  ( while true; do PHIXERON_FIX_LOADGEN=50 "$BUILD_DIR/fix_test_server" 127.0.0.1 "$FIX_TCP_PORT" >/dev/null 2>&1 || sleep 0.5; done ) &
+  ( while true; do PHIXERON_FIX_LOADGEN=50 "$BUILD_DIR/fix_test_server" 127.0.0.1 "$(active_gateway_port)" >/dev/null 2>&1 || sleep 0.5; done ) &
   LOAD_PID=$!
 }
 start_background_load
@@ -200,22 +248,28 @@ start_background_load
 # Each injector picks its own target relative to the CURRENT leader and heals the cluster back to full
 # strength (so the next round starts from 3/3, never draining quorum across rounds). Every fault here is
 # an in-process / signal mechanism already exercised by the existing single-shot tests.
-# Member 0 (CN) hosts the gateway + consumer + observation point and is NEVER killed or paused — but it
-# CAN win a Raft election after a failover, so destructive/stall faults pick their target from {1,2} only.
-target_leader() { [[ "$1" == 1 || "$1" == 2 ]] && echo "$1" || echo $(( RANDOM % 2 + 1 )); }  # leader if killable, else a random {1,2}
-a_follower()    { case "$1" in 1) echo 2;; 2) echo 1;; *) echo $(( RANDOM % 2 + 1 ));; esac; }   # a non-leader among {1,2}
+# All three members, including CN, are legal fault targets — killing/pausing member 0 takes its co-located
+# gateway + consumer down too, and restart_colocated_apps brings that specific pair back (see below).
+target_leader() { echo "$1"; }                                    # the current leader — always a legal kill target
+a_follower()    { local l="$1" p; while :; do p=$(( RANDOM % 3 )); [[ "$p" != "$l" ]] && { echo "$p"; return; }; done; }  # a random non-leader among {0,1,2}
 
-# A killed member's co-located ReplayerNode/BasicDataClient/OrderExecClient replicas share its embedded
-# media driver (same aeron dir) and don't survive the member's restart: the driver dies with the
-# SequencerNode process, and none of these clients reconnect to the fresh driver the restart creates at
-# the same path — they just fault (DriverTimeoutException / "MediaDriver has been shutdown") and sit dead
-# for the rest of the run. That leaves a permanent hole: e.g. if member $m later becomes leader, its dead
-# OrderExecClient replica can't be the one that answers a NewOrderSingle with an ExecutionReport (leader-
-# only emission), so a later round's FIX round-trip probe hangs waiting for one that will never come. Only
-# called for members 1/2 — member 0's co-located apps (gateway, consumer) are never killed with it.
+# A killed member's co-located ReplayerNode/BasicDataClient/OrderExecClient (or, for CN, the gateway +
+# observation consumer) share its embedded media driver (same aeron dir) and don't survive the member's
+# restart: the driver dies with the SequencerNode process, and none of these clients reconnect to the
+# fresh driver the restart creates at the same path — they just fault (DriverTimeoutException /
+# "MediaDriver has been shutdown") and sit dead for the rest of the run. That leaves a permanent hole:
+# e.g. if member $m later becomes leader, its dead OrderExecClient replica can't be the one that answers a
+# NewOrderSingle with an ExecutionReport (leader-only emission), so a later round's FIX round-trip probe
+# hangs waiting for one that will never come.
 restart_colocated_apps() {
   local m="$1" W=0
-  kill "${REPLAYER_PIDS[$m]:-0}" "${BASICDATA_PIDS[$m]:-0}" "${EXTRA_CONSUMER_PIDS[$m]:-0}" 2>/dev/null
+  kill "${REPLAYER_PIDS[$m]:-0}" "${BASICDATA_PIDS[$m]:-0}" 2>/dev/null
+  if [[ "$m" == "$CN" ]]; then
+    kill "${CONSUMER_PID:-0}" "${FIX_PID:-0}" 2>/dev/null
+  else
+    kill "${EXTRA_CONSUMER_PIDS[$m]:-0}" 2>/dev/null
+  fi
+  [[ "$m" == "$STANDBY_MEMBER" ]] && kill "${STANDBY_FIX_PID:-0}" 2>/dev/null
   java "${JAVA_OPTS[@]}" -Dreplayer.memberId="$m" -cp "$JAR" \
        org.limitless.phixeron.replayer.ReplayerNode > "$LOG_DIR/replayer-$m.log" 2>&1 &
   REPLAYER_PIDS[$m]=$!
@@ -226,17 +280,37 @@ restart_colocated_apps() {
     PHIXERON_REPLAYER_CLIENT_ID=3 PHIXERON_BASICDATA_EGRESS_ENDPOINT="localhost:$(basicdata_egress_port "$m")" \
     stdbuf -oL -eL "$BUILD_DIR/BasicDataClient" > "$LOG_DIR/basicdata-$m.log" 2>&1 &
   BASICDATA_PIDS[$m]=$!
-  PHIXERON_ORDER_EXEC_AERON_DIR="${TMPDIR}phixeron-seq-aeron-${m}" PHIXERON_NODE_MEMBER_ID="$m" \
-    stdbuf -oL -eL "$BUILD_DIR/OrderExecClient" > "$LOG_DIR/orderexec-$m.log" 2>&1 &
-  EXTRA_CONSUMER_PIDS[$m]=$!
-  W=0; until grep -q "following live" "$LOG_DIR/orderexec-$m.log" 2>/dev/null; do
-    sleep 0.5; W=$((W+1)); ((W>60)) && { log "  WARN orderexec-$m not caught up after restart"; break; }
-  done
+  if [[ "$m" == "$CN" ]]; then
+    start_consumer
+    W=0; until grep -q "following live" "$CONSUMER_LOG" 2>/dev/null; do
+      sleep 0.5; W=$((W+1)); ((W>60)) && { log "  WARN consumer not caught up after restart"; break; }
+    done
+    start_gateway
+    W=0; until nc -z 127.0.0.1 "$FIX_TCP_PORT" 2>/dev/null; do
+      sleep 0.5; W=$((W+1)); ((W>40)) && { log "  WARN gateway port $FIX_TCP_PORT not up after restart"; break; }
+    done
+    W=0; until grep -q "Basic data loaded" "$FIX_LOG" 2>/dev/null; do
+      sleep 0.5; W=$((W+1)); ((W>60)) && { log "  WARN gateway never saw EndBasicData after restart"; break; }
+    done
+  else
+    PHIXERON_ORDER_EXEC_AERON_DIR="${TMPDIR}phixeron-seq-aeron-${m}" PHIXERON_NODE_MEMBER_ID="$m" \
+      stdbuf -oL -eL "$BUILD_DIR/OrderExecClient" > "$LOG_DIR/orderexec-$m.log" 2>&1 &
+    EXTRA_CONSUMER_PIDS[$m]=$!
+    W=0; until grep -q "following live" "$LOG_DIR/orderexec-$m.log" 2>/dev/null; do
+      sleep 0.5; W=$((W+1)); ((W>60)) && { log "  WARN orderexec-$m not caught up after restart"; break; }
+    done
+  fi
+  if [[ "$m" == "$STANDBY_MEMBER" ]]; then
+    start_standby_gateway
+    W=0; until grep -q "Caught up to live stream" "$STANDBY_FIX_LOG" 2>/dev/null; do
+      sleep 0.5; W=$((W+1)); ((W>60)) && { log "  WARN standby gateway not caught up after restart"; break; }
+    done
+  fi
 }
 
-fault_kill_leader() {  # crash the leader (when it's a killable member) -> real Raft failover -> restore it as a follower
-  local L="$1" T; T="$(target_leader "$L")"
-  log "FAULT kill-leader: member $T (leader=$L)"; kill "${SEQ_PIDS[$T]}" 2>/dev/null
+fault_kill_leader() {  # crash the leader -> real Raft failover -> restore it as a follower
+  local L="$1" T; T="$(target_leader "$L")"   # every member is a legal kill target, so T is always the actual leader
+  log "FAULT kill-leader: member $T"; kill "${SEQ_PIDS[$T]}" 2>/dev/null
   local W=0; while kill -0 "${SEQ_PIDS[$T]}" 2>/dev/null; do sleep 0.2; W=$((W+1)); ((W>50)) && break; done  # let it actually die
   # Wait for a DIFFERENT member to win the election (a genuine failover). Restarting T too fast — before
   # the survivors elect — lets T just bounce and reclaim leadership, which half-wedges the cluster instead
@@ -310,9 +384,10 @@ check_invariants() {
   local L; L="$(current_leader)"
   [[ -z "$L" ]] && { log "  INVARIANT FAIL: no leader"; fail=1; } || log "  ok: leader = member $L"
   # (b) liveness: a single strict FIX round-trip as "PROBE" (Logon -> NewOrderSingle -> ExecutionReport
-  # -> Logout). Distinct CompID from the "LOADGEN" background load, so the two never collide; exit 0 iff
-  # Logon is accepted AND the order round-trips through the cluster and back.
-  if PHIXERON_FIX_PROBE=1 "$BUILD_DIR/fix_test_server" 127.0.0.1 "$FIX_TCP_PORT" > "$LOG_DIR/probe.log" 2>&1; then
+  # -> Logout), against whichever of GW-A/GW-B currently holds the accept gate. Distinct CompID from the
+  # "LOADGEN" background load, so the two never collide; exit 0 iff Logon is accepted AND the order
+  # round-trips through the cluster and back.
+  if PHIXERON_FIX_PROBE=1 "$BUILD_DIR/fix_test_server" 127.0.0.1 "$(active_gateway_port)" > "$LOG_DIR/probe.log" 2>&1; then
     log "  ok: FIX round-trip probe passed"
   else
     log "  INVARIANT FAIL: FIX round-trip probe failed (see $LOG_DIR/probe.log)"; fail=1

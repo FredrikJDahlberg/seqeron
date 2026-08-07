@@ -733,9 +733,9 @@
         <field name="clientId" id="20010" type="int32"/>
     </sbe:message>
 
-    <!-- App -> ReplayerService: "I am still riding my replay; keep my slot." -->
+    <!-- App -> ReplayerService: "I am still running my replay; keep my slot." -->
     <sbe:message name="ReplayHeartbeat" id="20"
-                 description="Sent by a replica every ~500ms for as long as it is riding an attached replay
+                 description="Sent by a replica every ~500ms for as long as it is running an attached replay
                               image, and refreshes that client's slot. This is what makes the slot TTL an
                               IDLE timeout rather than a max lifetime: a replay has no upper time bound (the
                               design mandates full-log replay, and the log grows all trading day), so a slot

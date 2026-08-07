@@ -391,6 +391,21 @@ class ClusterStreamSender {
             {
                 diag::Logger::error(diag::Component::Cluster, diag::EventCode::ClusterSessionError,
                                         "SessionEvent error code=%d", static_cast<int>(evt.code()));
+                // The close can land in the same poll() batch as the OK that just opened this
+                // session (io.aeron.cluster.SessionManager delivers both before this thread ever
+                // gets to check the loop condition below) — without this, the session looks
+                // connected forever even though the cluster already forgot it. Re-arms the loop to
+                // keep waiting rather than returning a session that is already dead; a REDIRECT
+                // landing right after (also within this same connect()) can still recover a working
+                // session before the deadline. Deliberately NOT m_sessionLost: that latch is for
+                // steady-state loss of a session connect() already handed back to the caller (see
+                // onFragment) — here connect() itself hasn't returned yet, so it either recovers a
+                // new session before its deadline or throws, both of which the caller already
+                // handles without consulting the latch.
+                if (m_clusterSessionId >= 0 && evt.clusterSessionId() == m_clusterSessionId)
+                {
+                    m_clusterSessionId = -1;
+                }
             }
         };
 
