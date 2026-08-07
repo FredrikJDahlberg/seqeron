@@ -83,13 +83,15 @@ struct Frame {
 // One Heartbeat frame (template id 48) at the given globalSeqNo — clear of the
 // ClientConnected/ClientDisconnected/LeadershipChanged special ids (1/2/5), so it always reaches
 // onSequenced rather than being intercepted as a lifecycle/leadership event.
-std::vector<std::uint8_t> encodeHeartbeat(const std::int64_t globalSeqNo)
+std::vector<std::uint8_t> encodeHeartbeat(const std::int64_t globalSeqNo,
+                                          const seq::Origin::Value origin = seq::Origin::Value::Client)
 {
     std::vector<std::uint8_t> buf(256, 0);
     seq::Heartbeat enc;
     enc.wrapAndApplyHeader(reinterpret_cast<char*>(buf.data()), 0, buf.size());
-    enc.header().sourceId(1).connectionId(0).sessionId(1).globalSeqNo(globalSeqNo).timestamp(0);
-    enc.seqNum(1).sendingTimeMs(0).origin(seq::Origin::Value::Client).possDupFlag(seq::PossDupFlag::Value::NULL_VALUE);
+    enc.header().sourceId(1).connectionId(0).sessionId(1).globalSeqNo(globalSeqNo).timestamp(0)
+        .origin(origin);
+    enc.seqNum(1).sendingTimeMs(0).possDupFlag(seq::PossDupFlag::Value::NULL_VALUE);
     enc.testReqID()[0] = '\0';
     buf.resize(enc.sbePosition());
     return buf;
@@ -99,9 +101,10 @@ std::vector<std::uint8_t> encodeHeartbeat(const std::int64_t globalSeqNo)
 // termOffset places the frame within the term, which is what gives it a recording position — the
 // default 0 suffices wherever a test does not care, but requestResume anchors on the last dispatched
 // frame's position, so a test that checks the anchor must space its frames apart.
-void deliverLive(ReplayerStreamReceiver& client, const std::int64_t globalSeqNo, const std::int32_t termOffset = 0)
+void deliverLive(ReplayerStreamReceiver& client, const std::int64_t globalSeqNo, const std::int32_t termOffset = 0,
+                 const seq::Origin::Value origin = seq::Origin::Value::Client)
 {
-    auto buf = encodeHeartbeat(globalSeqNo);
+    auto buf = encodeHeartbeat(globalSeqNo, origin);
     const auto frameLength = DATA_HEADER_LENGTH + static_cast<std::int32_t>(buf.size());
     Frame frame{termOffset, frameLength};
     aeron::concurrent::AtomicBuffer ab(buf.data(), buf.size());
@@ -812,6 +815,24 @@ TEST(ReplayerStreamReceiverGapRecovery, RetainedFramesAlreadyCoveredByTheReplayA
     deliverReplay(client, 4);  // and another
 
     EXPECT_EQ((std::vector<std::int64_t>{1, 2, 3, 4}), delivered) << "each globalSeqNo dispatched exactly once";
+}
+
+// `origin` is a header-composite field now, so every consumer gets it off SequencedEvent without
+// decoding the body or knowing the template — which is what lets FixGateway tell a connection's FIX
+// session traffic from an application frame merely addressed to the same connectionId. If this ever
+// stopped being populated it would read as Origin::None, and that dispatch would silently route
+// nothing.
+TEST(ReplayerStreamReceiverOrigin, SequencedEventCarriesTheHeaderOrigin)
+{
+    for (const auto origin : {seq::Origin::Value::Client, seq::Origin::Value::Gateway,
+                              seq::Origin::Value::Application})
+    {
+        std::vector<seq::Origin::Value> seen;
+        ReplayerStreamReceiver client{1, [&](const SequencedEvent& event) { seen.push_back(event.origin); }};
+        deliverLive(client, 1, 0, origin);
+        ASSERT_EQ(1u, seen.size()) << "frame was not dispatched";
+        EXPECT_EQ(origin, seen.front());
+    }
 }
 
 }  // namespace

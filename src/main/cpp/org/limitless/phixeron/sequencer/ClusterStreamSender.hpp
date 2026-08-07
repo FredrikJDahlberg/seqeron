@@ -515,7 +515,8 @@ class ClusterStreamSender {
     // failed to place the frame *while there is a cluster session to place it on*.
     //
     // Returns false in the one case the spin cannot resolve: there is no session (not yet
-    // connected, or already closed), so no amount of waiting would help — a leader failover,
+    // connected, or closed — whether before the call or while the spin is running), so no
+    // amount of waiting would help — a leader failover,
     // which the spin does handle, keeps the session id. The caller must not have committed
     // anything on the assumption the frame went out; that is why this reports rather than
     // returning void, and why Session::publishOutbound only advances the outbound MsgSeqNum
@@ -564,6 +565,14 @@ class ClusterStreamSender {
         while (!m_ingress->offer(std::span<const std::uint8_t>(buf.data(), frameLen)))
         {
             pumpEgressControl();  // let a NewLeaderEvent/REDIRECT swap m_ingress to the new leader
+            // The pump above may have just learned the cluster closed this session. Re-checked here and
+            // not only before the loop: an offer on a closed session is rejected forever, so without this
+            // the spin never terminates — the caller never sees the false, never sees isSessionLost(),
+            // and its duty cycle (SIGTERM handling included) stops entirely.
+            if (m_clusterSessionId < 0)
+            {
+                return false;
+            }
             m_idleStrategy.idle();
             hdr.leadershipTermId(m_leadershipTermId).timestamp(nowMs());  // re-stamp for the (possibly new) leader
         }

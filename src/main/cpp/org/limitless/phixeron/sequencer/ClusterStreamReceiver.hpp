@@ -350,6 +350,10 @@ struct SequencedEvent {
     std::int64_t sourceSessionId;   ///< Aeron Cluster client session id (header.sessionId)
     std::int64_t clusterTimestamp;  ///< cluster consensus time (ms) when message was committed
     std::int64_t receiveTimeNs;     ///< wall-clock ns at receipt by this client
+    /// Which producer role emitted the frame (header.origin). Present on every message, so a consumer
+    /// can tell FIX session traffic from an application frame that merely shares the connectionId,
+    /// without knowing the template. Carried through the sequencer unchanged from the publisher.
+    sbe::sequenced::Origin::Value origin;
     std::uint16_t templateId;       ///< outer messageHeader templateId; picks the specific decode
     std::uint16_t blockLength;      ///< outer messageHeader blockLength; pass straight to wrapForDecode
     std::uint16_t version;          ///< outer messageHeader version; pass straight to wrapForDecode
@@ -660,6 +664,7 @@ private:
         const auto connId = m_header.connectionId();
         const auto sessId = m_header.sessionId();
         const auto ts = m_header.timestamp();
+        const auto origin = m_header.origin();
 
         // De-duplication guard for the multi-segment replay walk (skipped for the bounded single-image
         // resend scan, which delivers an exact range verbatim). The replay of a single continuous
@@ -709,6 +714,7 @@ private:
                                          .sourceSessionId = sessId,
                                          .clusterTimestamp = ts,
                                          .receiveTimeNs = receiveNs,
+                                         .origin = origin,
                                          .templateId = templateId,
                                          .blockLength = m_hdr.blockLength(),
                                          .version = m_hdr.version(),

@@ -837,6 +837,7 @@ class ReplayerStreamReceiver
         const auto connId = m_header.connectionId();
         const auto sessId = m_header.sessionId();
         const auto ts = m_header.timestamp();
+        const auto origin = m_header.origin();
 
         if (templateId == CLIENT_CONNECTED_TEMPLATE_ID)
         {
@@ -883,6 +884,7 @@ class ReplayerStreamReceiver
                                          .sourceSessionId = sessId,
                                          .clusterTimestamp = ts,
                                          .receiveTimeNs = receiveNs,
+                                         .origin = origin,
                                          .templateId = templateId,
                                          .blockLength = m_hdr.blockLength(),
                                          .version = m_hdr.version(),

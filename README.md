@@ -3,13 +3,17 @@
 ## Overview
 
 phixeron is an Aeron Cluster–based sequencer for a FIX gateway: a Java Raft cluster service
-assigns a global total order to inbound FIX messages, and a C++ edge process bridges real FIX
-TCP sessions to that cluster. It depends on a sibling project, **simdfix**
-(`git@github.com:FredrikJDahlberg/simdfix.git`, fetched via CMake `FetchContent`), which provides
-the generic FIX wire-format codec, session state machine base classes, and the code generator
-used to turn `fix-session.xml`/`fix-application.xml` into C++ FIX message headers. phixeron
-generates its own copy of those headers (see "SBE / FIX code generation" below) rather than
-reusing simdfix's test fixtures.
+assigns a global total order to inbound FIX messages and republishes them on a per-node local
+tap that every node's co-located Aeron Archive records, so each node holds an identical,
+gap-free copy of the sequenced history. A C++ edge process (`FixGateway`) bridges real FIX TCP
+sessions to that cluster; `OrderExecClient` and a reference-data gateway (`BasicDataClient`)
+are further consumers of the same tap. Consumers read the tap live and fall back to a
+co-located `Replayer` for cold-start/gap replay off the local recording. It depends on a
+sibling project, **simdfix** (`git@github.com:FredrikJDahlberg/simdfix.git`, fetched via CMake
+`FetchContent`), which provides the generic FIX wire-format codec, session state machine base
+classes, and the code generator used to turn `fix-session.xml`/`fix-application.xml` into C++
+FIX message headers. phixeron generates its own copy of those headers rather than reusing
+simdfix's test fixtures.
 
 ## Build
 
@@ -25,7 +29,7 @@ cmake -B cmake-build-release -DCMAKE_BUILD_TYPE=Release
 cmake --build cmake-build-release
 ```
 
-### Javax3
+### Java
 
 ```bash
 ./gradlew compileJava

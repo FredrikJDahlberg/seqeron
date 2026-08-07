@@ -77,7 +77,9 @@ enum class EventCode : std::uint16_t
     GatewayNameMissing,
     TapStalled,
     GatewayFenced,
-    ReplayUnavailable
+    ReplayUnavailable,
+    MalformedFill,
+    OrderAccountsEvicted
 };
 
 // Fixed-size, no heap allocation — mirrors the field widths a future SBE encoding would use.

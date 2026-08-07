@@ -7,6 +7,7 @@ import org.limitless.phixeron.sbe.sequenced.GatewayActiveEncoder;
 import org.limitless.phixeron.sbe.sequenced.HeaderEncoder;
 import org.limitless.phixeron.sbe.sequenced.LeadershipChangedEncoder;
 import org.limitless.phixeron.sbe.sequenced.MessageHeaderEncoder;
+import org.limitless.phixeron.sbe.sequenced.Origin;
 import org.limitless.phixeron.sbe.sequenced.TickEncoder;
 import org.limitless.phixeron.sbe.unsequenced.BasicDataGatewayDecoder;
 import org.limitless.phixeron.sbe.unsequenced.ClientConnectedDecoder;
@@ -345,7 +346,12 @@ public final class Sequencer {
             .connectionId(connectionId)
             .sessionId(sessionId)
             .globalSeqNo(globalSeq)
-            .timestamp(timestamp);
+            .timestamp(timestamp)
+            // Carried through, not decided here: only the publisher knows which role it spoke as.
+            // The sequencer stamps ordering, never provenance. Re-looked-up by value because the two
+            // schemas generate two distinct Origin types; they are identical by construction, which
+            // SequencerTest.originEnumsAgreeAcrossSchemas pins.
+            .origin(Origin.get(ingressHeaderDecoder.origin().value()));
 
         // Copy every byte after the ingress header composite
         final int copyFromOffset = ingressBodyOffset + HeaderDecoder.ENCODED_LENGTH;
@@ -377,7 +383,8 @@ public final class Sequencer {
             .connectionId(NO_SOURCE_ID)
             .sessionId(NO_SOURCE_ID)
             .globalSeqNo(globalSeq)
-            .timestamp(timestamp);
+            .timestamp(timestamp)
+            .origin(Origin.Application);
         return MessageHeaderEncoder.ENCODED_LENGTH + tickEncoder.encodedLength();
     }
 
@@ -401,7 +408,8 @@ public final class Sequencer {
             .connectionId(NO_SOURCE_ID)
             .sessionId(NO_SOURCE_ID)
             .globalSeqNo(globalSeq)
-            .timestamp(timestamp);
+            .timestamp(timestamp)
+            .origin(Origin.Application);
         leadershipChangedEncoder.newLeaderMemberId(leaderMemberId);
         return MessageHeaderEncoder.ENCODED_LENGTH + leadershipChangedEncoder.encodedLength();
     }
@@ -521,7 +529,8 @@ public final class Sequencer {
             .connectionId(NO_SOURCE_ID)
             .sessionId(NO_SOURCE_ID)
             .globalSeqNo(globalSeq)
-            .timestamp(timestamp);
+            .timestamp(timestamp)
+            .origin(Origin.Application);
         gatewayActiveEncoder.gatewayId(gatewayId);
         return MessageHeaderEncoder.ENCODED_LENGTH + gatewayActiveEncoder.encodedLength();
     }

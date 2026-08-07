@@ -102,6 +102,8 @@
                   description="TCP connection id at that gateway process; routes the reply. Unique only within one gateway process, not across processes"/>
             <type name="sessionId"    primitiveType="int64"
                   description="Aeron Cluster client session id of the submitting connection"/>
+            <ref  name="origin"       type="Origin"
+                  description="Which producer role emitted this frame; see the Origin enum"/>
         </composite>
 
         <!--
@@ -231,15 +233,24 @@
             <validValue name="SequenceReset"  description="N: hard reset">78</validValue>
         </enum>
 
-        <!-- Where a message came from. Every FIX session message on the stream is either the
-             external counterparty's, forwarded by the gateway, or one the gateway itself
-             produced; the two are otherwise indistinguishable, since a gateway reply reuses the
-             same template as the client message it answers. Consumers route on this rather than
-             inferring direction from comp-ids or sourceId (sourceId names the submitting gateway
-             process and is identical in both directions). -->
+        <!-- Which producer role emitted this frame. Lives in the `header` composite, so EVERY message
+             carries it and any consumer can read it at a fixed offset without knowing the template.
+
+             It exists because a FIX session message is otherwise ambiguous: a gateway reply reuses the
+             same template as the client message it answers, and comp-ids and sourceId are identical in
+             both directions (sourceId names the submitting gateway process, not the direction). It is
+             also what separates session traffic from everything else sharing a connectionId — a
+             PortfolioQueryReply copies the originating sourceId/connectionId so the answer can be
+             routed back, and must not therefore be fed into that connection's FIX session state.
+
+             None is 0 so a zero-initialised buffer decodes to "nobody stamped this" rather than to a
+             value outside the enum. It is not a routing outcome: a consumer treats it as "not mine".
+             Every publisher sets one of the other three explicitly. -->
         <enum name="Origin" encodingType="uint8">
-            <validValue name="Client"  description="Received from the external FIX counterparty and forwarded by the gateway">1</validValue>
-            <validValue name="Gateway" description="Produced by the gateway itself">2</validValue>
+            <validValue name="None"        description="Unset — no publisher stamped this frame">0</validValue>
+            <validValue name="Client"      description="FIX session message received from the external counterparty and forwarded by the gateway">1</validValue>
+            <validValue name="Gateway"     description="FIX session message the gateway itself produced">2</validValue>
+            <validValue name="Application" description="Application-layer or infrastructure frame: orders, executions, queries, reference data, cluster lifecycle">3</validValue>
         </enum>
 
         <!--
@@ -376,7 +387,6 @@
         <field name="target"            id="56"  type="compId"/>
         <field name="seqNum"            id="34"  type="uint32"/>
         <field name="sendingTimeMs"     id="52"  type="msTimestamp"/>
-        <field name="origin"            id="20002" type="Origin"/>
         <field name="encryptMethod"     id="98"  type="EncryptMethod"/>
         <field name="heartbeatInterval" id="108" type="uint32"
                description="Negotiated heartbeat interval in milliseconds (HeartBtInt tag 108)"/>
@@ -400,7 +410,6 @@
         <field name="target"        id="56" type="compId"/>
         <field name="seqNum"        id="34" type="uint32"/>
         <field name="sendingTimeMs" id="52" type="msTimestamp"/>
-        <field name="origin"        id="20002" type="Origin"/>
         <field name="possDupFlag"   id="43" type="PossDupFlag" presence="optional" nullValue="0"
                description="PossDupFlag (tag 43); 89='Y' retransmit, 0 = absent"/>
         <data  name="text"          id="58" type="varDataEncoding"
@@ -417,7 +426,6 @@
         <field name="target"        id="56"  type="compId"/>
         <field name="seqNum"        id="34"  type="uint32"/>
         <field name="sendingTimeMs" id="52"  type="msTimestamp"/>
-        <field name="origin"        id="20002" type="Origin"/>
         <field name="possDupFlag"   id="43"  type="PossDupFlag" presence="optional" nullValue="0"
                description="PossDupFlag (tag 43); 89='Y' retransmit, 0 = absent"/>
         <field name="testReqID"     id="112" type="testReqId"
@@ -434,7 +442,6 @@
         <field name="target"        id="56"  type="compId"/>
         <field name="seqNum"        id="34"  type="uint32"/>
         <field name="sendingTimeMs" id="52"  type="msTimestamp"/>
-        <field name="origin"        id="20002" type="Origin"/>
         <field name="possDupFlag"   id="43"  type="PossDupFlag" presence="optional" nullValue="0"
                description="PossDupFlag (tag 43); 89='Y' retransmit, 0 = absent"/>
         <field name="testReqID"     id="112" type="testReqId"
@@ -451,7 +458,6 @@
         <field name="target"        id="56" type="compId"/>
         <field name="seqNum"        id="34" type="uint32"/>
         <field name="sendingTimeMs" id="52" type="msTimestamp"/>
-        <field name="origin"        id="20002" type="Origin"/>
         <field name="possDupFlag"   id="43" type="PossDupFlag" presence="optional" nullValue="0"
                description="PossDupFlag (tag 43); 89='Y' retransmit, 0 = absent"/>
         <field name="beginSeqNo"    id="7"  type="uint32"
@@ -470,7 +476,6 @@
         <field name="target"              id="56"  type="compId"/>
         <field name="seqNum"              id="34"  type="uint32"/>
         <field name="sendingTimeMs"       id="52"  type="msTimestamp"/>
-        <field name="origin"              id="20002" type="Origin"/>
         <field name="refSeqNum"           id="45"  type="uint32"
                description="Sequence number of the rejected message (tag 45)"/>
         <field name="refTagID"            id="371" type="uint32"
@@ -496,7 +501,6 @@
         <field name="target"        id="56"  type="compId"/>
         <field name="seqNum"        id="34"  type="uint32"/>
         <field name="sendingTimeMs" id="52"  type="msTimestamp"/>
-        <field name="origin"        id="20002" type="Origin"/>
         <field name="possDupFlag"     id="43"  type="PossDupFlag"
                presence="optional" nullValue="0"
                description="PossDupFlag (tag 43); 89='Y' retransmit, 0 = absent"/>
@@ -584,7 +588,6 @@
                               resolved FIX session (absent until a Logon resolves it) so a standby gateway can map
                               the connection to a session deterministically. Symmetric with ClientDisconnected.">
         <field name="header"     id="20001" type="header"/>
-        <field name="origin"     id="20002" type="Origin"/>
         <field name="senderComp" id="20024" type="compId"/>
         <field name="targetComp" id="20025" type="compId"/>
     </sbe:message>
@@ -598,7 +601,6 @@
                               exactly that session disconnected — the socket-death fact no consumer can otherwise
                               derive. Symmetric with ClientConnected.">
         <field name="header"     id="20001" type="header"/>
-        <field name="origin"     id="20002" type="Origin"/>
         <field name="senderComp" id="20024" type="compId"/>
         <field name="targetComp" id="20025" type="compId"/>
     </sbe:message>

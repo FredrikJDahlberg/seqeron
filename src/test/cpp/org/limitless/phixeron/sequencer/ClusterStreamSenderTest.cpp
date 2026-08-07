@@ -480,6 +480,40 @@ TEST(ClusterStreamSenderReliableSend, SendReStampsLeadershipTermAfterMidSpinFail
     EXPECT_EQ(999, hdr.leadershipTermId());  // re-stamped to the new leader's term
 }
 
+// The cluster closes this session while send()'s spin is already running — the CLOSED event is
+// waiting on egress and only the spin's own pump will see it. An offer on a closed session is
+// rejected forever, so the spin MUST re-check the session it framed against and give up, not just
+// check it once on entry: without that, send() never returns, the caller never sees the false or
+// isSessionLost(), and its whole duty cycle (SIGTERM handling included) stops. The reject count is
+// finite rather than permanent so a regression fails on the EXPECTs instead of hanging the suite.
+TEST(ClusterStreamSenderReliableSend, SendGivesUpWhenTheSessionIsClosedMidSpin)
+{
+    auto egress = std::make_unique<FakeEgressTransport>();
+    egress->m_queued.push_back(encodeSessionEvent(55, 11, cluster_sbe::EventCode::Value::OK));
+    auto* egressPtr = egress.get();
+
+    auto ingress = std::make_unique<FlakyIngressTransport>();
+    auto* ingressPtr = ingress.get();
+
+    ClusterStreamSender sender;
+    sender.connect(std::move(ingress), std::move(egress));
+    ASSERT_TRUE(sender.isConnected());
+
+    egressPtr->m_queued.push_back(
+        encodeSessionEvent(55, 11, cluster_sbe::EventCode::Value::CLOSED, 0, "SERVICE_ACTION"));
+    ingressPtr->m_offerCalls = 0;
+    ingressPtr->m_accepted.clear();  // drop the connect handshake frame, so this asserts on send() alone
+    ingressPtr->m_rejectCount = 32;  // far more than the one rejection the close needs to land
+
+    const std::array<std::uint8_t, 1> body{'8'};
+    EXPECT_FALSE(sender.send(body.data(), 1));
+
+    EXPECT_EQ(1, ingressPtr->m_offerCalls);   // gave up on the first rejection, not after 32
+    EXPECT_TRUE(ingressPtr->m_accepted.empty());  // nothing was placed on the dead session
+    EXPECT_TRUE(sender.isSessionLost());
+    EXPECT_FALSE(sender.isConnected());
+}
+
 // Without a real Aeron client there is nothing to re-chase IPC with, so a NewLeaderEvent naming
 // this client's own co-located member (set via the test-seam's memberId) must degrade to the
 // same leadership-term-only update as PollEgressIgnoresNewLeaderEndpointWithoutAeronClient above

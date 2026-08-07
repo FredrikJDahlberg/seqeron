@@ -364,9 +364,9 @@ class SequencerTest {
             .wrap(sequencer.buffer(), MessageHeaderDecoder.ENCODED_LENGTH, messageHeader.blockLength(),
                   messageHeader.version());
         HeaderDecoder header = connectedDecoder.header();
-        // `origin` sits past the header composite, so it rides through the opaque byte copy
-        // untouched — the sequencer never decodes it and must not disturb it.
-        assertEquals(Origin.Gateway, connectedDecoder.origin());
+        // `origin` is a header-composite field, so unlike the opaque body it is decoded and
+        // re-encoded — the sequencer must carry the publisher's stamp through, never restamp it.
+        assertEquals(Origin.Gateway, header.origin());
         assertEquals(SOURCE_ID, header.sourceId());
         assertEquals(CONNECTION_ID, header.connectionId());
         assertEquals(SESSION_ID, header.sessionId());
@@ -658,7 +658,6 @@ class SequencerTest {
             .target("PHIXERON")
             .seqNum(99L)
             .sendingTimeMs(1_699_999_999_000L)
-            .origin(org.limitless.phixeron.sbe.unsequenced.Origin.Client)
             .possDupFlag(org.limitless.phixeron.sbe.unsequenced.PossDupFlag.No)
             .text(reason);
 
@@ -682,8 +681,8 @@ class SequencerTest {
             new org.limitless.phixeron.sbe.unsequenced.ClientConnectedEncoder();
 
         encoder.wrapAndApplyHeader(buffer, offset, messageHeader);
-        encoder.header().sourceId(SOURCE_ID).connectionId(connectionId).sessionId(-1);
-        encoder.origin(org.limitless.phixeron.sbe.unsequenced.Origin.Gateway);
+        encoder.header().sourceId(SOURCE_ID).connectionId(connectionId).sessionId(-1)
+            .origin(org.limitless.phixeron.sbe.unsequenced.Origin.Gateway);
 
         return org.limitless.phixeron.sbe.unsequenced.MessageHeaderEncoder.ENCODED_LENGTH + encoder.encodedLength();
     }
@@ -702,8 +701,8 @@ class SequencerTest {
             new org.limitless.phixeron.sbe.unsequenced.ClientDisconnectedEncoder();
 
         encoder.wrapAndApplyHeader(buffer, offset, messageHeader);
-        encoder.header().sourceId(SOURCE_ID).connectionId(connectionId).sessionId(-1);
-        encoder.origin(org.limitless.phixeron.sbe.unsequenced.Origin.Gateway);
+        encoder.header().sourceId(SOURCE_ID).connectionId(connectionId).sessionId(-1)
+            .origin(org.limitless.phixeron.sbe.unsequenced.Origin.Gateway);
 
         return org.limitless.phixeron.sbe.unsequenced.MessageHeaderEncoder.ENCODED_LENGTH + encoder.encodedLength();
     }
@@ -761,6 +760,26 @@ class SequencerTest {
         assertEquals(LeadershipChangedDecoder.TEMPLATE_ID, messageHeader.templateId());
         return new LeadershipChangedDecoder().wrap(buffer, MessageHeaderDecoder.ENCODED_LENGTH,
                                                    messageHeader.blockLength(), messageHeader.version());
+    }
+
+    /**
+     * The sequencer copies a forwarded message's origin through by value, because the two schemas
+     * generate two distinct Origin types. That is only sound while the two agree value-for-value —
+     * edit one schema's enum without the other and provenance would silently change on the way
+     * through, turning an Application frame into a Client one (or into NULL_VALUE).
+     */
+    @Test
+    @DisplayName("the two schemas' Origin enums agree value-for-value")
+    void originEnumsAgreeAcrossSchemas() {
+        assertEquals(org.limitless.phixeron.sbe.unsequenced.Origin.values().length,
+                     org.limitless.phixeron.sbe.sequenced.Origin.values().length);
+        for (final org.limitless.phixeron.sbe.unsequenced.Origin ingress :
+                org.limitless.phixeron.sbe.unsequenced.Origin.values()) {
+            final org.limitless.phixeron.sbe.sequenced.Origin egress =
+                org.limitless.phixeron.sbe.sequenced.Origin.get(ingress.value());
+            assertEquals(ingress.name(), egress.name(),
+                         "Origin " + ingress.value() + " differs between the schemas");
+        }
     }
 
     private long globalSeqNoOf(final int length) {
