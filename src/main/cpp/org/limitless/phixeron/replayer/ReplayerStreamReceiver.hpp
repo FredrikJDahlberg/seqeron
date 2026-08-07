@@ -124,6 +124,8 @@ inline constexpr const char* FEEDER_CHANNEL = "aeron:ipc?tether=false";
 // thread, so an app that stops polling must not be able to back-pressure the stream the others are
 // answered on. A dropped reply costs one RESEND_INTERVAL_MS, which the resend timer already covers.
 // The replay stream stays tethered — a dropped replay fragment is a hole in history, not a lost reply.
+// That is only safe because nothing subscribes to it except the one app riding a replay, and only while
+// it is riding one: see openReplaySubscription for what a standing subscription here cost.
 inline constexpr const char* REPLAYER_CONTROL_CHANNEL = "aeron:ipc?tether=false";
 inline constexpr std::int32_t REPLAYER_REPLAY_STREAM_ID = 201;
 inline constexpr std::int32_t REPLAYER_REQUEST_STREAM_ID = 202;
@@ -194,7 +196,8 @@ class ReplayerStreamReceiver
     {
         m_aeron = std::move(aeron);
         m_tapSubRegId = m_aeron->addSubscription(FEEDER_CHANNEL, FEEDER_STREAM_ID);
-        m_replaySubRegId = m_aeron->addSubscription(REPLAYER_IPC_CHANNEL, REPLAYER_REPLAY_STREAM_ID);
+        // No standing replay subscription — see openReplaySubscription: one is opened per replay
+        // episode, filtered to that replay's own session id, and closed when the episode ends.
         m_controlSubRegId = m_aeron->addSubscription(REPLAYER_CONTROL_CHANNEL, REPLAYER_CONTROL_STREAM_ID);
         m_requestPubRegId = m_aeron->addPublication(REPLAYER_IPC_CHANNEL, REPLAYER_REQUEST_STREAM_ID);
         requestReplay(0, 0);  // cold start: walk the recording chain from segment 0
@@ -255,6 +258,14 @@ class ReplayerStreamReceiver
     void testReplayImageClosed(const std::int64_t finalPosition)
     {
         onReplayImageClosed(finalPosition);
+    }
+
+    // Test-only: what poll()'s stall watchdog does once an established replay has gone
+    // REPLAY_STALL_TIMEOUT_MS without advancing — the timer itself is wall-clock, which the unit suite
+    // has no way to advance.
+    void testReplayStalled()
+    {
+        onReplayStalled();
     }
 
     // Test-only accessors into the walk/gap-recovery state machine — see ReplayerStreamReceiverTest.cpp.
@@ -341,13 +352,19 @@ class ReplayerStreamReceiver
                 if (!m_replayImage->isClosed())
                 {
                     work += m_replayImage->poll(m_replayPoll, FRAGMENT_LIMIT);
-                    if (m_replayImage->position() >= m_catchUpPosition)
+                    const std::int64_t position = m_replayImage->position();
+                    if (position >= m_catchUpPosition)
                     {
                         // Reached this segment's bounded tip. A bounded replay of an ACTIVE
                         // (still-recording) recording does NOT close its image at the bound (verified:
                         // image position == tip, isClosed() stays false forever), so completion is
                         // detected by position — exactly as ClusterStreamClient does for its live segment.
                         onReplaySegmentComplete();
+                    }
+                    else if (position != m_lastReplayPosition)
+                    {
+                        m_lastReplayPosition = position;
+                        m_lastReplayProgressMs = nowMs();
                     }
                 }
                 else
@@ -359,6 +376,17 @@ class ReplayerStreamReceiver
             }
             // else: Replaying received, image not yet attached — nothing to poll this cycle, fall
             // through to the tap drain below rather than holding the whole duty cycle on it.
+
+            // A replay that goes silent has no other way to surface. The resend timer above only covers
+            // "no Replaying yet": once one arrives m_awaitingReplay is false, and a bounded replay of an
+            // active recording never closes its image, so an image that simply stops advancing — the
+            // archive faulted, the Replayer stopped the session without us seeing the close, the
+            // publication is wedged — leaves this client waiting on it forever with nothing retrying.
+            // Re-request the same segment verbatim, exactly as the truncated-close path does.
+            if (m_replaySessionId >= 0 && (nowMs() - m_lastReplayProgressMs) > REPLAY_STALL_TIMEOUT_MS)
+            {
+                onReplayStalled();
+            }
         }
 
         // Always drain the tap, even mid-walk (cold start or gap re-walk) or while merely awaiting the
@@ -388,6 +416,12 @@ class ReplayerStreamReceiver
    private:
     static constexpr int FRAGMENT_LIMIT = 16;
     static constexpr std::int64_t RESEND_INTERVAL_MS = 500;
+
+    // How long an established replay may deliver nothing before it is re-requested (see poll()'s stall
+    // watchdog). Deliberately far above any legitimate pause: the archive reads local disk and measures
+    // ~19 MB/s into the replay, so a replay with anything left to serve is never quiet for seconds. Kept
+    // well clear of RESEND_INTERVAL_MS too, since a spurious fire costs a whole segment re-replayed.
+    static constexpr std::int64_t REPLAY_STALL_TIMEOUT_MS = 5'000;
 
     // ReplayRequest.segmentIndex meaning "resume the active recording at fromPosition" rather than
     // "replay the segmentIndex-th recording of the chain" — see ReplayerService.serveReplay.
@@ -495,7 +529,7 @@ class ReplayerStreamReceiver
         m_reqFromPosition = fromPosition;
         m_awaitingReplay = true;
         m_replaySessionId = -1;
-        m_replayImage.reset();
+        closeReplaySubscription();
         m_lastRequestMs = nowMs();
         ++m_requestId;
         if (!m_requestPub || !m_requestPub->isConnected())
@@ -526,6 +560,46 @@ class ReplayerStreamReceiver
     {
         requestReplay(RESUME_SEGMENT_INDEX, m_lastFramePosition);
         m_resumeAnchorGseq = m_lastGlobalSeqNo;
+    }
+
+    // Subscribes to exactly one replay — this one — for as long as we ride it, and to nothing on the
+    // replay stream the rest of the time.
+    //
+    // Load-bearing, not tidiness. The Replayer answers every app on one shared aeron:ipc stream, and an
+    // Aeron publication is flow-controlled by its slowest TETHERED subscriber. A standing subscription
+    // on that stream (which is what this was until 2026-08-07) made every idle app a subscriber of every
+    // other app's replay — one that never polls, because poll() only ever reads the image of its OWN
+    // session, so its position stays at 0 forever. The archive's replay then wedges one publication
+    // window past the slowest of them — measured: pub-lmt pinned at exactly 33 554 432 (32 MiB, half a
+    // 64 MB term) with two peer sub-pos at 0 — and never moves again. Any cold start with more than
+    // ~32 MiB of history therefore hung permanently, which is what a restarted replica does after a
+    // few hundred thousand messages. Filtered to the session id, a replay publication has exactly one
+    // subscriber, and no app can hold back another's replay.
+    void openReplaySubscription(const std::int64_t replaySessionId)
+    {
+        closeReplaySubscription();
+        if (!m_aeron)
+        {
+            return;  // unit suite drives onControl with no Aeron, exactly as requestReplay tolerates
+        }
+        // The archive's replaySessionId carries the Aeron image session id in its low 32 bits — the
+        // same narrowing poll() used to hand imageBySessionId.
+        const std::string channel = std::string(REPLAYER_IPC_CHANNEL) +
+                                    "?session-id=" + std::to_string(static_cast<std::int32_t>(replaySessionId));
+        m_replaySubRegId = m_aeron->addSubscription(channel, REPLAYER_REPLAY_STREAM_ID);
+    }
+
+    void closeReplaySubscription()
+    {
+        m_replayImage.reset();
+        if (!m_replaySub && m_replaySubRegId >= 0 && m_aeron)
+        {
+            // Resolve before dropping: an add the driver has already answered but resolveResources has
+            // not picked up would otherwise stay open with nothing holding it.
+            m_replaySub = m_aeron->findSubscription(m_replaySubRegId);
+        }
+        m_replaySub.reset();  // last reference — Subscription's destructor closes it
+        m_replaySubRegId = -1;
     }
 
     // Releases our replay slot: we have reached the tip the Replayer bounded us to and are back on the
@@ -632,6 +706,10 @@ class ReplayerStreamReceiver
                 // image reaches it (a bounded replay of an active recording never closes its image
                 // at the bound, so completion is by position, not image close — see file header).
                 m_catchUpPosition = dec.catchUpPosition();
+                openReplaySubscription(session);
+                // Arm the stall watchdog from here: this is the moment the replay starts existing.
+                m_lastReplayPosition = -1;
+                m_lastReplayProgressMs = nowMs();
             }
         }
         else if (mh.templateId() == usq::ReplayPending::sbeTemplateId())
@@ -1005,10 +1083,22 @@ class ReplayerStreamReceiver
         requestReplay(m_walkSegmentIndex, m_reqFromPosition);  // same request verbatim, new requestId
     }
 
+    // An attached (or expected) replay stopped delivering — see the watchdog check in poll().
+    void onReplayStalled()
+    {
+        diag::Logger::warn(diag::Component::ReplayerStreamReceiver, diag::EventCode::TapGap,
+                           "replay session %lld made no progress for %lldms at position %lld of "
+                           "catchUpPosition %lld (image %s) — re-requesting segment %d",
+                           static_cast<long long>(m_replaySessionId), static_cast<long long>(REPLAY_STALL_TIMEOUT_MS),
+                           static_cast<long long>(m_lastReplayPosition), static_cast<long long>(m_catchUpPosition),
+                           m_replayImage ? "attached" : "never attached", static_cast<int>(m_walkSegmentIndex));
+        requestReplay(m_walkSegmentIndex, m_reqFromPosition);  // same request verbatim, new requestId
+    }
+
     // A replay segment finished (reached its bounded tip, or its image closed for a stopped segment).
     void onReplaySegmentComplete()
     {
-        m_replayImage.reset();
+        closeReplaySubscription();
         m_replaySessionId = -1;
         if (m_walkSegmentIndex < 0)
         {
@@ -1076,6 +1166,8 @@ class ReplayerStreamReceiver
     std::int64_t m_lastRequestMs = 0;
     std::int64_t m_requestId = 0;  // advances per send; replies not carrying it are stale (see onControl)
     std::int64_t m_lastHeartbeatMs = 0;
+    std::int64_t m_lastReplayPosition = -1;   // last replay-image position seen; -1 = not attached yet
+    std::int64_t m_lastReplayProgressMs = 0;  // when it last changed — the stall watchdog's clock
     bool m_replayUnavailableLogged = false;  // the refusal is permanent and resent every 500ms; log it once
 
     std::int64_t m_lastGlobalSeqNo = 0;  // highest globalSeqNo delivered; 0 = none yet

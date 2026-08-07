@@ -506,6 +506,31 @@ TEST(ReplayerStreamReceiverGapRecovery, ReplayImageClosingShortOfTheBoundReReque
     EXPECT_EQ(1u, sink.events.size()) << "a truncated replay is reported, not silently absorbed";
 }
 
+// A replay that neither closes nor advances is the third case, and the one nothing used to catch: once
+// Replaying arrives the resend timer is disarmed (m_awaitingReplay is false), and a bounded replay of an
+// active recording never closes its image, so an image that simply stops — the archive faulted, the
+// publication wedged — left the client waiting on it forever. Measured before the fix: a cold start past
+// ~32 MiB of history hung permanently with the image attached, open, and frozen.
+TEST(ReplayerStreamReceiverGapRecovery, ReplayThatStopsAdvancingReRequestsTheSameSegment)
+{
+    ScopedLoggerSink sink;
+    ReplayerStreamReceiver client{1, [](const SequencedEvent&) {}};
+    deliverControl(client, encodeReplaying(/*clientId=*/1, client.testRequestId(), /*replaySessionId=*/7,
+                                           /*catchUpPosition=*/500));
+    const std::int64_t requestId = client.testRequestId();
+    ASSERT_FALSE(client.testIsAwaitingReplay()) << "a session was assigned, so nothing else is retrying";
+
+    client.testReplayStalled();
+
+    EXPECT_EQ(0, client.testWalkSegmentIndex()) << "the walk must NOT advance over a segment that stalled "
+                                                   "part-way through";
+    EXPECT_TRUE(client.testIsAwaitingReplay()) << "the same segment is re-requested instead";
+    EXPECT_EQ(-1, client.testReplaySessionId());
+    EXPECT_NE(requestId, client.testRequestId()) << "re-requesting is a new request, so the reply to the "
+                                                    "stalled one is recognisably stale";
+    EXPECT_EQ(1u, sink.events.size()) << "a stalled replay is reported, not silently absorbed";
+}
+
 TEST(ReplayerStreamReceiverGapRecovery, ReplayPendingHoldsAtTheGapWithoutAssigningASession)
 {
     int delivered = 0;

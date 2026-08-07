@@ -40,6 +40,8 @@ RESEND_REPLAY_PORT_DEFAULT=9401      # FixGateway resend-recovery replay
 TEST_CONSUMER_EGRESS_PORT=9349       # test-only: gap-recovery-test.sh/chaos-runner.sh's own
                                       # observation-consumer OrderExecClient (replayerClientId=9),
                                       # distinct from ORDER_EXEC_EGRESS_PORT_BASE+id
+REPLAY_BENCH_EGRESS_PORT=9348        # test-only: replay-bench.sh's cold OrderExecClient
+                                      # (replayerClientId=7), added alongside a running cluster
 
 fix_tcp_port()            { echo $(( FIX_TCP_PORT_BASE + ${1:-0} )); }
 order_exec_egress_port()  { echo $(( ORDER_EXEC_EGRESS_PORT_BASE + $1 )); }
