@@ -47,6 +47,16 @@ BACKGROUND_LOAD="${BACKGROUND_LOAD:-1}"          # 1 = keep a low-rate FIX order
 LEADER_CHANGES="${LEADER_CHANGES:-10}"
 [[ "${ONLY_FAULT:-}" == "fault_kill_leader" ]] && ROUNDS="$LEADER_CHANGES"
 RANDOM="$SEED"
+# How long a co-located client may take to notice its media driver died before we call it a
+# fail-fast violation. Must exceed Aeron's DEFAULT_MEDIA_DRIVER_TIMEOUT_MS (10s, Context.h) — a
+# client CANNOT detect driver death sooner than that, so anything less produces spurious failures.
+DRIVER_LOSS_GRACE_SECS="${DRIVER_LOSS_GRACE_SECS:-15}"
+# 1 = a fail-fast violation fails the round; 0 = report it and carry on (for triaging a run whose
+# clients are known not to exit yet, without going red every kill round).
+DRIVER_LOSS_STRICT="${DRIVER_LOSS_STRICT:-1}"
+# How long fault_sigkill_node waits before restarting the member it SIGKILLed, so Aeron ages out the
+# mark files the kill left "active". Must exceed the mark-file liveness timeout (driverTimeoutMs, 10s).
+SIGKILL_MARKFILE_SETTLE_SECS="${SIGKILL_MARKFILE_SETTLE_SECS:-12}"
 
 JAVA_OPTS=(
   --add-opens=java.base/sun.nio.ch=ALL-UNNAMED
@@ -67,10 +77,16 @@ rm -rf "$LOG_DIR"; mkdir -p "$LOG_DIR"
 declare -a SEQ_PIDS REPLAYER_PIDS BASICDATA_PIDS EXTRA_CONSUMER_PIDS
 CONSUMER_PID=""; FIX_PID=""; STANDBY_FIX_PID=""; MD_PID=""; LOAD_PID=""
 declare -a FAULT_HISTORY=()
+DRIVER_LOSS_FAIL=0   # set by check_driver_loss_failfast, folded into the round result by check_invariants
+declare -a SEQ_LOG_OFFSET   # lines already in seq-<m>.log when its CURRENT boot started — see wait_running
 
 # ── Helpers ─────────────────────────────────────────────────────────────────────
 start_seq() {  # start_seq <memberId> — append so leadership history survives restarts (last isLeader= wins)
   local m="$1"
+  # Remember where this boot's output begins, BEFORE launching, so wait_running can tell a fresh
+  # "Running" from the one the previous boot left in the same (appended-to) file.
+  SEQ_LOG_OFFSET[$m]=0
+  [[ -f "$LOG_DIR/seq-$m.log" ]] && SEQ_LOG_OFFSET[$m]=$(wc -l < "$LOG_DIR/seq-$m.log")
   # PHIXERON_FAULT_INJECTION arms the tap-recording fault fault_tap_stall triggers by file (the archive is
   # in-process, so it cannot be stalled from outside); inert until that file appears.
   PHIXERON_FAULT_INJECTION=1 \
@@ -80,7 +96,21 @@ start_seq() {  # start_seq <memberId> — append so leadership history survives 
 }
 # NB: a bash loop's exit status is that of the last command in its body, so we MUST end with an explicit
 # `return 0` — otherwise the trailing `((W>60))` (false, status 1) would make a SUCCESSFUL wait report failure.
-wait_running() { local m="$1" W=0; until grep -q "Running" "$LOG_DIR/seq-$m.log" 2>/dev/null; do sleep 0.5; W=$((W+1)); ((W>60)) && return 1; done; return 0; }
+#
+# Scoped to the CURRENT boot's output. start_seq appends (so leadership history survives a restart), so a
+# whole-file `grep -q "Running"` matched the PREVIOUS boot's line and returned instantly on every restart —
+# the harness never actually waited for a restarted node, and rounds went on to check invariants against a
+# member that was still replaying the log. Read from this boot's starting offset instead.
+wait_running() {
+  # NB: two statements, not one — `local m="$1" off="${SEQ_LOG_OFFSET[$m]}"` expands every word BEFORE
+  # `local` performs any assignment, so the subscript would read the (unset, `set -u`) GLOBAL m.
+  local m="$1" W=0
+  local off="${SEQ_LOG_OFFSET[$m]:-0}"
+  until tail -n "+$((off + 1))" "$LOG_DIR/seq-$m.log" 2>/dev/null | grep -q "Running"; do
+    sleep 0.5; W=$((W+1)); ((W>60)) && return 1
+  done
+  return 0
+}
 
 alive() { kill -0 "${SEQ_PIDS[$1]:-0}" 2>/dev/null; }   # is member $1's SequencerNode process up (not SIGSTOPped-aware)
 
@@ -253,6 +283,72 @@ start_background_load
 target_leader() { echo "$1"; }                                    # the current leader — always a legal kill target
 a_follower()    { local l="$1" p; while :; do p=$(( RANDOM % 3 )); [[ "$p" != "$l" ]] && { echo "$p"; return; }; done; }  # a random non-leader among {0,1,2}
 
+# ── Media-driver fail-fast assertions ────────────────────────────────────────────
+# SequencerNode embeds its media driver (ClusteredMediaDriver, SequencerNode.java:191), so killing a
+# member IS a media-driver kill for every client sharing that member's aeron dir — the standalone
+# aeronmd this script starts serves only fix_test_server. Every kill fault therefore already injects
+# "driver dies, restarts at the same path"; what was missing is asserting on it, because
+# restart_colocated_apps below relaunches these clients unconditionally and so guarantees the
+# recovery the test should have been proving.
+#
+# The property under test is FAIL-FAST: a client that loses its driver must EXIT, non-zero, so a real
+# supervisor restarts it. Staying alive is the bug — for FixGateway it means a live TCP listener in
+# front of a process that can no longer reach the cluster, so a FIX client connects, Logons, and
+# hangs. Checked BEFORE restart_colocated_apps kills them, or the kill masks the result.
+assert_died_on_driver_loss() {  # <label> <pid> — waits out the driver timeout, then asserts exit
+  local label="$1" pid="${2:-}" W=0 rc
+  [[ -z "$pid" || "$pid" == "0" ]] && return 0
+  while kill -0 "$pid" 2>/dev/null; do
+    sleep 0.5; W=$((W+1)); (( W > DRIVER_LOSS_GRACE_SECS * 2 )) && break
+  done
+  if kill -0 "$pid" 2>/dev/null; then
+    log "  DRIVER-LOSS FAIL: $label (pid $pid) still running ${DRIVER_LOSS_GRACE_SECS}s after its media driver died"
+    DRIVER_LOSS_FAIL=1
+    return 1
+  fi
+  # `wait` on a still-unreaped child yields its exit status; 127 means already reaped, so treat an
+  # unavailable status as inconclusive rather than inventing a verdict.
+  wait "$pid" 2>/dev/null; rc=$?
+  if (( rc == 127 )); then
+    log "  ok: $label exited on driver loss (status unavailable — already reaped)"
+  elif (( rc == 0 )); then
+    log "  DRIVER-LOSS FAIL: $label exited 0 on driver loss — a restart-on-failure supervisor would not restart it"
+    DRIVER_LOSS_FAIL=1
+    return 1
+  else
+    log "  ok: $label exited $rc on driver loss"
+  fi
+  return 0
+}
+
+# Only meaningful on the failure path above: once the process is gone the OS has closed its listening
+# socket, so a port probe on a dead gateway asserts nothing. Alive AND still accepting is what turns a
+# leaked process into a client-visible hang, so that is what gets reported.
+report_gateway_socket() {  # <port> <label> <pid>
+  kill -0 "${3:-0}" 2>/dev/null || return 0
+  nc -z 127.0.0.1 "$1" 2>/dev/null \
+    && log "  DRIVER-LOSS FAIL: $2 is STILL ACCEPTING TCP on port $1 with no media driver — a FIX client would connect and hang"
+  return 0
+}
+
+check_driver_loss_failfast() {  # <memberId whose driver just died>
+  local m="$1"
+  assert_died_on_driver_loss "replayer-$m"  "${REPLAYER_PIDS[$m]:-}"
+  assert_died_on_driver_loss "basicdata-$m" "${BASICDATA_PIDS[$m]:-}"
+  if [[ "$m" == "$CN" ]]; then
+    assert_died_on_driver_loss "consumer"     "${CONSUMER_PID:-}"
+    assert_died_on_driver_loss "gateway GW-A" "${FIX_PID:-}"
+    report_gateway_socket "$FIX_TCP_PORT" "gateway GW-A" "${FIX_PID:-}"
+  else
+    assert_died_on_driver_loss "orderexec-$m" "${EXTRA_CONSUMER_PIDS[$m]:-}"
+  fi
+  if [[ "$m" == "$STANDBY_MEMBER" ]]; then
+    assert_died_on_driver_loss "gateway GW-B" "${STANDBY_FIX_PID:-}"
+    report_gateway_socket "$STANDBY_PORT" "gateway GW-B" "${STANDBY_FIX_PID:-}"
+  fi
+  return 0
+}
+
 # A killed member's co-located ReplayerNode/BasicDataClient/OrderExecClient (or, for CN, the gateway +
 # observation consumer) share its embedded media driver (same aeron dir) and don't survive the member's
 # restart: the driver dies with the SequencerNode process, and none of these clients reconnect to the
@@ -263,6 +359,7 @@ a_follower()    { local l="$1" p; while :; do p=$(( RANDOM % 3 )); [[ "$p" != "$
 # hangs waiting for one that will never come.
 restart_colocated_apps() {
   local m="$1" W=0
+  check_driver_loss_failfast "$m"
   kill "${REPLAYER_PIDS[$m]:-0}" "${BASICDATA_PIDS[$m]:-0}" 2>/dev/null
   if [[ "$m" == "$CN" ]]; then
     kill "${CONSUMER_PID:-0}" "${FIX_PID:-0}" 2>/dev/null
@@ -329,6 +426,28 @@ fault_kill_follower() {  # crash a follower -> should be transparent (quorum hol
   start_seq "$F"; wait_running "$F" || log "  WARN member $F did not restart"
   restart_colocated_apps "$F"
 }
+fault_sigkill_node() {  # SIGKILL a follower — driver dies with NO clean shutdown, so clients must time out
+  # The harsher twin of fault_kill_follower, and the only fault that exercises the media-driver TIMEOUT
+  # path. A plain `kill` (SIGTERM) lets the JVM's shutdown hook close the ClusteredMediaDriver cleanly, so
+  # co-located clients see "MediaDriver has been shutdown" and exit within ~1s. SIGKILL leaves the CnC file
+  # frozen with no such marker, so the only detector is DEFAULT_MEDIA_DRIVER_TIMEOUT_MS (10s) — a genuinely
+  # different code path in the client, and the one a real machine/OOM kill takes.
+  # Aimed at a follower: failover is already covered by fault_kill_leader, and this asserts driver-loss
+  # detection, not the election.
+  local L="$1" F; F="$(a_follower "$L")"
+  log "FAULT sigkill-node: SIGKILL member $F (expect co-located clients to exit via the 10s driver timeout)"
+  kill -9 "${SEQ_PIDS[$F]}" 2>/dev/null
+  local W=0; while kill -0 "${SEQ_PIDS[$F]}" 2>/dev/null; do sleep 0.2; W=$((W+1)); ((W>50)) && break; done
+  # A SIGKILLed node never unwinds, so its Archive/consensus mark files are left "active" — restarting
+  # before Aeron ages them out fails with "active mark file detected". Wait out the mark-file liveness
+  # timeout (driverTimeoutMs, 10s) before restarting, or the round after this one fails for that reason
+  # rather than for anything this fault is testing. This also gives the co-located clients the full
+  # timeout window they need, which check_driver_loss_failfast then asserts they used.
+  sleep "$SIGKILL_MARKFILE_SETTLE_SECS"
+  start_seq "$F"; wait_running "$F" || log "  WARN member $F did not restart"
+  sleep 2                                                       # let the restored member rejoin (full-log replay)
+  restart_colocated_apps "$F"
+}
 fault_pause_node() {  # SIGSTOP a killable node (GC-pause / stall simulation: socket stays half-open) then SIGCONT
   local L="$1" P; P=$(( RANDOM % 2 == 0 ? $(target_leader "$L") : $(a_follower "$L") ))
   log "FAULT pause-node: SIGSTOP member $P for 3s"; kill -STOP "${SEQ_PIDS[$P]}" 2>/dev/null
@@ -365,13 +484,24 @@ fault_tap_stall() {  # kill a node's local tap recording -> it must notice withi
 }
 # Targeted mode: set ONLY_FAULT=<fn> (e.g. fault_kill_leader) to run just that fault every round,
 # for deterministically exercising one failure path in-loop rather than seed-hunting for it.
-FAULTS=(fault_kill_leader fault_kill_follower fault_pause_node fault_tap_drop fault_tap_stall)
+FAULTS=(fault_kill_leader fault_kill_follower fault_sigkill_node fault_pause_node fault_tap_drop fault_tap_stall)
 [[ -n "${ONLY_FAULT:-}" ]] && FAULTS=("$ONLY_FAULT")
 
+# NOTE — on killing the media driver: there is deliberately no fault_kill_aeronmd, and adding one would
+#   test the harness rather than the system. The standalone aeronmd started above serves ONLY
+#   fix_test_server (default aeron::Context, FixTestServer.cpp:302,1118) — i.e. the probe and the
+#   background load. Every production process is on a per-member driver embedded in its SequencerNode
+#   (ClusteredMediaDriver at ${TMPDIR}phixeron-seq-aeron-<m>): ReplayerNode (ReplayerNode.java:67),
+#   FixGateway, OrderExecClient and BasicDataClient all attach there. So killing aeronmd would break the
+#   probe while leaving the system untouched, and the real "driver dies and restarts at the same path"
+#   fault is ALREADY injected by every kill fault above — asserted by check_driver_loss_failfast.
+#
 # NOTE — heavier / platform-specific faults intentionally left as seams, not enabled by default:
-#   * kill aeronmd (destructive: the co-located C++ clients lose their media driver; needs a client restart)
 #   * network delay/loss/partition — Linux uses `tc qdisc ... netem`; macOS uses dnctl/pfctl (dummynet) and
 #     needs root. This host is darwin, so netem is NOT wired up here; add it under an OS+root guard for CI-on-Linux.
+#   * a standalone-driver kill becomes a genuinely distinct fault only if the C++ clients are ever moved
+#     off the embedded drivers onto a shared aeronmd — driver dies, cluster node survives, which the
+#     embedded topology cannot produce. Wire it then.
 
 # ── Steady-state oracle ──────────────────────────────────────────────────────────
 # Liveness + a safety PROXY via log grep. The RIGOROUS safety oracle (gap-free, monotone globalSeqNo across
@@ -398,7 +528,18 @@ check_invariants() {
   else
     log "  INVARIANT FAIL: consumer down or not following live"; fail=1
   fi
-  # (d) The rigorous safety property (gap-free, monotone globalSeqNo) is asserted ONCE at end of run by
+  # (d) fail-fast on media-driver loss, as observed by this round's check_driver_loss_failfast (kill
+  #     faults only; the flag stays 0 for rounds that never killed a member). Reset either way so a
+  #     violation is attributed to the round that caused it.
+  if [[ "$DRIVER_LOSS_FAIL" == "1" ]]; then
+    if [[ "$DRIVER_LOSS_STRICT" == "1" ]]; then
+      fail=1
+    else
+      log "  (driver-loss violation above not failing the round — DRIVER_LOSS_STRICT=0)"
+    fi
+  fi
+  DRIVER_LOSS_FAIL=0
+  # (e) The rigorous safety property (gap-free, monotone globalSeqNo) is asserted ONCE at end of run by
   #     verify_sequence below — decoding it every round would re-dump the whole recording each time.
   return $fail
 }

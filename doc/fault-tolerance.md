@@ -271,6 +271,34 @@ fenced itself out of a recovery it didn't need. The very first frame a client ev
 carry `globalSeqNo == 1` or the process aborts — a hard invariant that this node's recording reaches
 the start of the log.
 
+The replay stream is subscribed **per episode and filtered to that replay's own Aeron session id**
+(`openReplaySubscription`), never held open between replays. That is a flow-control requirement, not
+housekeeping. The `ReplayerService` answers every app on one shared `aeron:ipc` stream (201), and an
+Aeron publication is throttled by its slowest *tethered* subscriber — so a standing subscription there
+(as this code had until 2026-08-07) made every idle app a subscriber of every other app's replay, one
+that never polls, since `poll()` only ever reads the image of its own session. Its position sat at 0
+forever, and the archive's replay wedged one publication window in and never moved again: measured on a
+stalled cold start, `pub-lmt` pinned at exactly 33,554,432 — 32 MiB, half a 64 MB term — with two peer
+`sub-pos` at 0 and the replay frozen just past it at 34.6 MB, tens of MB short of its bound. Any cold
+start needing more than ~32 MiB of history therefore hung **permanently**, which with no snapshots (§0)
+is what a restarted replica faces after a few hundred thousand messages. Filtered by session id, a
+replay publication has exactly one subscriber and no app can hold back another's, while the stream stays
+tethered so a replay fragment is still never silently dropped. This is the data-plane twin of the
+control-plane coupling §3.1 avoids by dropping replies rather than blocking on them; the live tap is the
+third case, and resolves it the other way, by being untethered (§3 above, §1.3).
+
+Nothing detected that hang either, which was the second half of the bug. The resend timer only covers
+"no `Replaying` yet" (`m_awaitingReplay`), and a bounded replay of a *still-recording* segment never
+closes its image on reaching its bound — completion there is detected by position, not by the image
+closing — so an image that is attached, open, and simply frozen had no watchdog at all. A replay that
+makes no progress for `REPLAY_STALL_TIMEOUT_MS` (5s) now re-requests the same segment verbatim: the same
+recovery already used when an image closes *short* of its bound (meaning the replay was stopped under
+the client — superseded, slot reclaimed, archive fault), extended to cover a silent one, and a
+`Replaying` whose image never attaches at all.
+5s is far above any legitimate pause: the archive sustains tens of MB/s into a local IPC replay, so a
+replay with anything left to serve is never quiet for seconds, and a spurious fire only costs one
+segment re-replayed.
+
 `ClusterStreamReceiver`/`ClusterStreamClient` is the archive-direct sibling used where there's no
 co-located Replayer (`fix_test_server`, and `FixConnection`'s bounded resend-recovery scan): it walks
 an archive's recorded segments for a stream directly, replaying each historical segment fully and the
@@ -296,6 +324,26 @@ A freshly promoted leader simply calls `dispatchUndispatched()` against state ev
 holds identically — no special-cased failover recovery logic, no risk of answering a query twice
 (discharge only ever happens via a sequenced reply) or losing one (a reply that doesn't land leaves the
 request outstanding for the next leader to pick up).
+
+Dispatch runs in **insertion order**, which — fed from the sequenced stream — is `globalSeqNo` order.
+That is load-bearing rather than tidiness: these side effects are externally visible in the order they
+are emitted (an `ExecutionReport` takes its outbound FIX `MsgSeqNum` when the gateway frames it), so
+iterating the underlying `unordered_map` directly, as this did until 2026-08-07, handed a counterparty a
+burst of acks shuffled — and shuffled *differently* per replica, since a rebuilt hash map's iteration
+order is not a function of the log. Determinism across replicas (§0) has to hold for emission order, not
+only for state.
+
+Two more things ride the same machinery for the same reason. **Venue acks**: every `NewOrderSingle` is
+outstanding from the moment it is sequenced until its `ExecutionReport` is in the log, keyed on the
+order's `globalSeqNo` — which is also what its `ExecID` names (`VenueExecId.hpp`). That replaced a bare
+"am I caught up and leader?" test taken at the instant the order was decoded, with no record kept, so an
+order arriving before this node had processed its own promotion — or delivered by a gap-repair replay,
+during which `isCaughtUp()` is false throughout (§3.2) — was stepped past and acknowledged by nobody.
+Because the ack is a pure function of the sequenced order (cluster timestamp included), a re-emission
+after a failover is byte-identical to the one that may have been lost, so the at-least-once seam yields
+exact duplicates that dedupe on `ExecID` rather than two conflicting acks. **Rejected queries** get a
+second, parallel `OutstandingQueries<RejectedQuery>` instance, so the canned "queue full" reply is
+retried and handed off across a failover exactly like a real one instead of being fire-and-forget.
 
 ## 5. Reference data (BasicData) recovery
 
@@ -337,6 +385,15 @@ section after a failover.
   simultaneously and asserts every node's tap recording is gap-free, strictly monotone in `globalSeqNo`,
   and converged to the same high-water mark across all three nodes — the strongest available proof that
   §1.1's "byte-identical taps" invariant actually held for the run.
+- **`src/test/scripts/replay-bench.sh`** — times a cold replica from launch to "Caught up" against a
+  preloaded archive, optionally while load keeps arriving. It adds a fresh `OrderExecClient` beside a
+  running cluster rather than restarting one (the launch script tears the cluster down when a child
+  exits), so it walks the whole recording chain exactly as a restarted replica does. Written to chase
+  §3.2's replay wedge and kept as the regression measurement for it: `replay-bench.sh 400000` builds
+  ~70 MB of history — the case that used to hang forever and now converges in well under a second — and
+  a run reporting `NEVER CAUGHT UP` is that class of bug rather than a slow machine. This is also the
+  measurement that matters for `fault_kill_leader` above, since a restarted replica has to catch up
+  inside the harness's probe window; the replay wedge is what made those rounds fail.
 
 ## 7. What this does not cover
 

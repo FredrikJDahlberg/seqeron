@@ -411,7 +411,9 @@ class ClusterStreamSender {
 
         while (m_clusterSessionId < 0 && std::chrono::steady_clock::now() < deadline)
         {
-            m_idleStrategy.idle(m_egress->poll(onEgress));
+            const int fragments = m_egress->poll(onEgress);
+            applyPendingIngressSwitch();  // a REDIRECT in that batch; never build inside poll()
+            m_idleStrategy.idle(fragments);
         }
 
         if (m_clusterSessionId < 0)
@@ -504,6 +506,7 @@ class ClusterStreamSender {
             return;
         }
         m_egress->poll([this, &onAppMessage](std::span<const std::uint8_t> bytes) { onFragment(bytes, onAppMessage); });
+        applyPendingIngressSwitch();  // a NewLeaderEvent/REDIRECT in that batch; never build inside poll()
     }
 
     // Wraps a pre-encoded sbe-unsequenced.xml message in a SessionMessageHeader
@@ -600,6 +603,9 @@ class ClusterStreamSender {
             m_egress->poll([this](std::span<const std::uint8_t> bytes) {
                 onFragment(bytes, [](const std::uint8_t*, std::int32_t) {});
             });
+            // The whole point of this pump: let send()'s spin pick up the new leader. The swap itself
+            // must happen here, after poll() returns, not in the handler.
+            applyPendingIngressSwitch();
         }
     }
 
@@ -658,26 +664,15 @@ class ClusterStreamSender {
             if (m_aeron && m_coLocatedMemberId >= 0 && leaderMemberId == m_coLocatedMemberId &&
                 m_ingressEndpoint != "ipc")
             {
-                const std::int64_t fullTimeoutMs = m_connectTimeoutMs;
-                m_connectTimeoutMs = m_ipcConnectTimeoutMs;
-                try
-                {
-                    auto ipcPub = createIpcIngressPublication();
-                    m_connectTimeoutMs = fullTimeoutMs;
-                    m_ingress = std::make_unique<AeronIngressTransport>(std::move(ipcPub));
-                    m_ingressEndpoint = "ipc";
-                    diag::Logger::info(diag::Component::Cluster, "New leader  termId=%" PRId64
-                                           "  member=%d is co-located — switched back to IPC ingress",
-                                          m_leadershipTermId, leaderMemberId);
-                    return;
-                }
-                catch (const std::exception& ex)
-                {
-                    m_connectTimeoutMs = fullTimeoutMs;
-                    diag::Logger::error(diag::Component::Cluster,diag::EventCode::ClusterIpcFallback,
-                                            "Co-located member=%d is new leader but IPC ingress not ready yet "
-                                            "(%s) — staying on UDP", leaderMemberId, ex.what());
-                }
+                diag::Logger::info(diag::Component::Cluster,
+                                   "New leader  termId=%" PRId64
+                                   "  member=%d is co-located — switching back to IPC ingress",
+                                   m_leadershipTermId, leaderMemberId);
+                m_pendingIngress = PendingIngressSwitch{.pending = true,
+                                                        .endpoint = "ipc",
+                                                        .timeoutMs = m_ipcConnectTimeoutMs,
+                                                        .keepCurrentOnFailure = true};
+                return;
             }
 
             std::string endpoint;
@@ -687,8 +682,8 @@ class ClusterStreamSender {
                 diag::Logger::info(diag::Component::Cluster,
                                        "New leader  termId=%" PRId64 "  member=%d  endpoint=%s",
                                        m_leadershipTermId, leaderMemberId, endpoint.c_str());
-                m_ingress = std::make_unique<AeronIngressTransport>(createIngressPublication(endpoint));
-                m_ingressEndpoint = endpoint;
+                m_pendingIngress =
+                    PendingIngressSwitch{.pending = true, .endpoint = endpoint, .timeoutMs = m_connectTimeoutMs};
             }
             else
             {
@@ -747,9 +742,62 @@ class ClusterStreamSender {
 
         diag::Logger::info(diag::Component::Cluster, "Redirected to leader  member=%d  endpoint=%s",
                                leaderMemberId, endpoint.c_str());
-        m_ingress = std::make_unique<AeronIngressTransport>(createIngressPublication(endpoint));
-        m_ingressEndpoint = endpoint;
-        sendConnectRequest();
+        m_pendingIngress = PendingIngressSwitch{
+            .pending = true, .endpoint = endpoint, .timeoutMs = m_connectTimeoutMs, .resendConnectRequest = true};
+    }
+
+    // Performs the ingress swap a fragment handler asked for. MUST run outside EgressTransport::poll.
+    //
+    // Building a Publication means addPublication()/findPublication() against the client conductor,
+    // then spinning until it is connected — up to m_connectTimeoutMs (10s). Doing that from inside the
+    // handler ran it inside Aeron's own aeron_subscription_poll/aeron_image_poll, which is unsafe twice
+    // over: the poll holds the subscription's image list across the callback, and the conductor thread
+    // frees images out from under it when a peer restarts (SIGSEGV in aeron_image_poll, null deref —
+    // seen cold-starting a replica against a co-located member that was not the leader); and a timeout
+    // here throws a C++ exception straight through libaeron's C frames, which is undefined behaviour.
+    // The handlers therefore only record the intent, and this applies it once poll() has returned.
+    void applyPendingIngressSwitch()
+    {
+        if (!m_pendingIngress.pending)
+        {
+            return;
+        }
+        // Copy and clear first: a throw below must not leave the request armed to retry forever.
+        const PendingIngressSwitch req = m_pendingIngress;
+        m_pendingIngress = PendingIngressSwitch{};
+
+        const std::int64_t fullTimeoutMs = m_connectTimeoutMs;
+        m_connectTimeoutMs = req.timeoutMs;
+        try
+        {
+            auto pub = req.endpoint == "ipc" ? createIpcIngressPublication() : createIngressPublication(req.endpoint);
+            m_connectTimeoutMs = fullTimeoutMs;
+            m_ingress = std::make_unique<AeronIngressTransport>(std::move(pub));
+            m_ingressEndpoint = req.endpoint;
+            diag::Logger::info(diag::Component::Cluster, "Ingress switched to %s", req.endpoint.c_str());
+            if (req.resendConnectRequest)
+            {
+                sendConnectRequest();
+            }
+        }
+        catch (const std::exception& ex)
+        {
+            m_connectTimeoutMs = fullTimeoutMs;
+            if (req.keepCurrentOnFailure)
+            {
+                diag::Logger::error(diag::Component::Cluster, diag::EventCode::ClusterIpcFallback,
+                                    "Ingress %s not ready yet (%s) — staying on %s", req.endpoint.c_str(), ex.what(),
+                                    m_ingressEndpoint.c_str());
+            }
+            else
+            {
+                // Nothing to fall back to: leave m_ingress pointing at the old leader. connect()'s
+                // deadline turns this into a clean "timed out waiting for cluster session"; in steady
+                // state send() keeps spinning and a later NewLeaderEvent re-arms the swap.
+                diag::Logger::error(diag::Component::Cluster, diag::EventCode::ClusterRedirectUnresolved,
+                                    "Could not build ingress publication to %s (%s)", req.endpoint.c_str(), ex.what());
+            }
+        }
     }
 
     // Creates and blocks (up to m_connectTimeoutMs) until connected to a Publication for the
@@ -820,6 +868,17 @@ class ClusterStreamSender {
     std::unique_ptr<IngressTransport> m_ingress;
     std::unique_ptr<EgressTransport> m_egress;
     aeron::concurrent::YieldingIdleStrategy m_idleStrategy;
+
+    // An ingress-publication swap requested from inside an egress fragment handler, performed later
+    // by applyPendingIngressSwitch(). Never build the publication in the handler itself — see there.
+    struct PendingIngressSwitch {
+        bool pending = false;
+        std::string endpoint;               // "ipc", or "host:port"
+        std::int64_t timeoutMs = 0;         // deadline for building it
+        bool resendConnectRequest = false;  // REDIRECT re-handshakes; NewLeaderEvent keeps the session
+        bool keepCurrentOnFailure = false;  // NewLeaderEvent→IPC: stay on the current UDP leg if IPC isn't up
+    };
+    PendingIngressSwitch m_pendingIngress;
 
     std::int64_t m_clusterSessionId = -1;
     // Latched once the cluster closes this client's session; see onFragment and isSessionLost().

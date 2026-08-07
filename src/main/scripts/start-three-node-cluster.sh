@@ -5,7 +5,9 @@
 #
 # Launches, each writing to its own log file under logs/:
 #   1. SequencerNode  x3  (Java, Raft members 0/1/2, all on localhost)
-#   2. aeronmd            (shared Aeron media driver for the C++ clients)
+#   2. aeronmd            (standalone Aeron media driver, for C++ clients that DON'T co-locate with a
+#                          member — in practice fix_test_server, which the e2e scripts launch against
+#                          this cluster. Every long-running app below uses a member's embedded driver.)
 #   3. FixGateway   (C++, FIX TCP gateway on port 9000)
 #   4. ReplayerNode   x3  (Java, one co-located with each member: serves archive replay to co-located
 #                          apps over aeron:ipc — router-design.md; apps read the tap directly for live)
@@ -78,7 +80,9 @@ BASE_DIR="${TMPDIR:-/tmp}phixeron-seq3"
 CLUSTER_MEMBERS="$(cluster_members_string 3)"
 FIX_TCP_PORT="$(fix_tcp_port)"
 
-# Default Aeron directory used by the standalone aeronmd and by FixGateway.
+# Default Aeron directory: the standalone aeronmd's own, and what a C++ client that sets no
+# PHIXERON_*_AERON_DIR attaches to. NOT FixGateway's — that is pointed at SEQ_AERON_DIR below, as are
+# OrderExecClient and BasicDataClient, so nothing this script launches uses this directory.
 AERON_DIR="${TMPDIR}aeron-$(whoami)"
 
 # SequencerNode member 0's own embedded media driver directory — matches its default
