@@ -93,6 +93,17 @@ inline std::int64_t nowMs()
         .count();
 }
 
+// The ingress endpoint of a given cluster member, from the same PortLayout formula
+// CLUSTER_INGRESS_ENDPOINT is built from — including its single-host "localhost" assumption. Used
+// where only a member id is available: SessionEvent(OK) names the leader but carries no endpoint CSV
+// (io.aeron.cluster.ClusterSession sends OK with an empty detail), unlike REDIRECT and
+// NewLeaderEvent, which findIngressEndpoint below resolves from the wire. A multi-host deployment
+// would resolve this from configuration instead.
+inline std::string memberIngressEndpoint(const std::int32_t memberId)
+{
+    return "localhost:" + std::to_string(clusterIngressPort(memberId));
+}
+
 // Finds `memberId`'s endpoint in a "memberId=host:port,memberId=host:port,..." CSV, the wire
 // format both SessionEvent.detail (on REDIRECT) and NewLeaderEvent.ingressEndpoints use.
 // Returns false (leaving `out` untouched) if the CSV has no entry for that member.
@@ -277,12 +288,21 @@ class ClusterStreamSender {
 
         m_ingressEndpoint = "ipc";
         std::unique_ptr<IngressTransport> primary;
+        // createIpcIngressPublication() blocks on m_connectTimeoutMs, which otherwise still holds
+        // its full-default value here — without this swap, a co-located member that isn't currently
+        // leader (so the IPC publication never connects) burns the full 10s default before falling
+        // back to UDP instead of failing fast in ipcConnectTimeoutMs as intended. Restored before the
+        // fallback connectColocated() call below so ITS attempt still gets the full budget.
+        const std::int64_t fullTimeoutMs = m_connectTimeoutMs;
+        m_connectTimeoutMs = ipcConnectTimeoutMs;
         try
         {
             primary = std::make_unique<AeronIngressTransport>(createIpcIngressPublication());
+            m_connectTimeoutMs = fullTimeoutMs;
         }
         catch (const std::exception& ex)
         {
+            m_connectTimeoutMs = fullTimeoutMs;
             // Building the IPC publication itself timed out (createIpcIngressPublication's own
             // deadline) — treat exactly like a failed handshake attempt below.
             connectColocated(
@@ -291,7 +311,7 @@ class ClusterStreamSender {
                     m_ingressEndpoint = CLUSTER_INGRESS_ENDPOINT;
                     return std::make_unique<AeronIngressTransport>(createIngressPublication(m_ingressEndpoint));
                 },
-                std::make_unique<AeronEgressTransport>(egressSub), ipcConnectTimeoutMs, ex.what());
+                std::make_unique<AeronEgressTransport>(egressSub), ipcConnectTimeoutMs, ex.what(), memberId);
             return;
         }
 
@@ -301,7 +321,7 @@ class ClusterStreamSender {
                 m_ingressEndpoint = CLUSTER_INGRESS_ENDPOINT;
                 return std::make_unique<AeronIngressTransport>(createIngressPublication(m_ingressEndpoint));
             },
-            std::make_unique<AeronEgressTransport>(egressSub), ipcConnectTimeoutMs, nullptr);
+            std::make_unique<AeronEgressTransport>(egressSub), ipcConnectTimeoutMs, nullptr, memberId);
     }
 
     // Test seam for connectColocated: exercises the same "try the primary ingress transport
@@ -315,6 +335,11 @@ class ClusterStreamSender {
     // real Aeron client, to exercise onFragment's NewLeaderEvent guard — the guard also requires
     // m_aeron, so it stays a no-op here regardless; there is nothing to reconnect to without a
     // real Aeron client, same reasoning as the plain endpoint-reconnect path above it.
+    //
+    // The production connectColocated(aeron, memberId, …) above passes its own member id straight
+    // through. It used to let this default to -1, silently un-setting the m_coLocatedMemberId it had
+    // just stored — which disabled onFragment's "leadership came back to my member, re-chase IPC"
+    // branch for exactly the clients that had fallen back to UDP and most needed it.
     void connectColocated(std::unique_ptr<IngressTransport> primaryIngress,
                           std::function<std::unique_ptr<IngressTransport>()> buildFallbackIngress,
                           std::unique_ptr<EgressTransport> egress, std::int64_t primaryConnectTimeoutMs,
@@ -379,9 +404,11 @@ class ClusterStreamSender {
             {
                 m_clusterSessionId = evt.clusterSessionId();
                 m_leadershipTermId = evt.leadershipTermId();
-                diag::Logger::info(diag::Component::Cluster,
-                                       "Session opened  sessionId=%" PRId64 "  termId=%" PRId64 "  leader=%d",
-                                       m_clusterSessionId, m_leadershipTermId, evt.leaderMemberId());
+                diag::Logger::info(
+                    diag::Component::Cluster,
+                    "Session opened  sessionId=%" PRId64 "  termId=%" PRId64 "  leader=%d  via ingress %s",
+                    m_clusterSessionId, m_leadershipTermId, evt.leaderMemberId(), m_ingressEndpoint.c_str());
+                ensureIngressTargetsLeader(evt.leaderMemberId());
             }
             else if (evt.code() == cluster_sbe::EventCode::Value::REDIRECT)
             {
@@ -583,7 +610,10 @@ class ClusterStreamSender {
     }
 
    private:
-    static constexpr std::int64_t KEEP_ALIVE_INTERVAL_MS = 1000;
+    // Paired with ConsensusModule's sessionTimeoutNs (1s, SequencerNode.java) at a 5x margin — the two
+    // were lowered together and only make sense as a pair. Raising this without raising that reaps
+    // healthy sessions; there is no in-process re-handshake, so that is process death, not a hiccup.
+    static constexpr std::int64_t KEEP_ALIVE_INTERVAL_MS = 200;
 
     // send()'s framing buffer: the largest payload plus the SessionMessageHeader envelope it goes in.
     static constexpr std::size_t INGRESS_FRAME_LEN =
@@ -636,9 +666,20 @@ class ClusterStreamSender {
             if (m_clusterSessionId >= 0 && evt.clusterSessionId() == m_clusterSessionId &&
                 evt.code() != cluster_sbe::EventCode::Value::OK)
             {
+                // Every close reason is trusted, TIMEOUT included. A SessionInstanceAnnounce/instanceToken
+                // scheme used to suppress a TIMEOUT arriving "too soon to be genuine", on the theory that
+                // it must be a same-numbered dead predecessor's overdue close rather than ours. Removed
+                // 2026-08-08: its premise was false. A session whose ingress publication points at a
+                // follower has every keep-alive silently dropped and does time out for real within that
+                // window — which is what the suppressed closes actually were (see
+                // ensureIngressTargetsLeader). Suppressing them would have let a client go on framing into
+                // a session the cluster had forgotten, and for FixGateway would have defeated the fence.
+                // The id reuse itself is real and routine, but harmless: 20 chaos rounds with the filter
+                // disarmed produced no session close of any kind.
+                const std::string detail = evt.getDetailAsString();
                 diag::Logger::error(diag::Component::Cluster, diag::EventCode::ClusterSessionError,
                                         "Cluster closed session %" PRId64 " (code=%d, %s)", m_clusterSessionId,
-                                        static_cast<int>(evt.code()), evt.getDetailAsString().c_str());
+                                        static_cast<int>(evt.code()), detail.c_str());
                 m_clusterSessionId = -1;
                 m_sessionLost = true;
             }
@@ -726,6 +767,48 @@ class ClusterStreamSender {
     // A follower rejected our SessionConnectRequest, pointing us at the real leader. Swap the
     // ingress Publication to the leader's endpoint (if we have a real Aeron client to build one
     // with) and re-announce. No-op if the endpoint is already the one we're using.
+    // Points the ingress publication at the member that actually leads, once the OK has named it.
+    //
+    // A SessionConnectRequest that lands on a FOLLOWER still yields a working-looking session: the open
+    // is replicated and the leader answers OK over egress, so this client adopts a real clusterSessionId
+    // and reports isConnected(). But a follower silently drops every subsequent session message and
+    // keep-alive — io.aeron.cluster.ConsensusModuleAgent.onIngressMessage acts only when
+    // `Cluster.Role.LEADER == role`, and falls through with no reply of any kind — so nothing this
+    // client publishes is ever sequenced, and ~sessionTimeoutNs later the session dies of a GENUINE
+    // timeout. That is what happened to every co-located replica whose member was a follower at connect
+    // time: connectColocated's UDP fallback aims at CLUSTER_INGRESS_ENDPOINT, which is member 0's port
+    // whatever member the client sits on. Nothing moved them afterwards either — handleRedirect needs a
+    // REDIRECT and NewLeaderEvent needs a *further* election, neither of which is guaranteed to come.
+    //
+    // No SessionConnectRequest is re-sent: the session is cluster-wide and already open on the leader,
+    // so only the publication is aimed wrong (unlike handleRedirect, which is answering a redirect that
+    // never opened one).
+    void ensureIngressTargetsLeader(const std::int32_t leaderMemberId)
+    {
+        // m_aeron is null in the transport-agnostic test seam — nothing to build a publication with,
+        // same guard handleRedirect and the NewLeaderEvent branch apply.
+        if (!m_aeron || leaderMemberId < 0)
+        {
+            return;
+        }
+        // IPC ingress is Aeron's leader-only listener (SequencerNode's isIpcIngressAllowed), so being on
+        // it at all already proves the co-located member leads.
+        if (m_ingressEndpoint == "ipc")
+        {
+            return;
+        }
+        const std::string endpoint = memberIngressEndpoint(leaderMemberId);
+        if (endpoint == m_ingressEndpoint)
+        {
+            return;
+        }
+
+        diag::Logger::info(diag::Component::Cluster,
+                           "Session opened through non-leader ingress %s — leader is member=%d, switching to %s",
+                           m_ingressEndpoint.c_str(), leaderMemberId, endpoint.c_str());
+        m_pendingIngress = PendingIngressSwitch{.pending = true, .endpoint = endpoint, .timeoutMs = m_connectTimeoutMs};
+    }
+
     void handleRedirect(cluster_sbe::SessionEvent& evt)
     {
         const std::int32_t leaderMemberId = evt.leaderMemberId();
@@ -775,7 +858,17 @@ class ClusterStreamSender {
             m_ingress = std::make_unique<AeronIngressTransport>(std::move(pub));
             m_ingressEndpoint = req.endpoint;
             diag::Logger::info(diag::Component::Cluster, "Ingress switched to %s", req.endpoint.c_str());
-            if (req.resendConnectRequest)
+            // A swap that leaves us with no session must re-handshake on the new publication, whatever
+            // the arming site asked for. ensureIngressTargetsLeader arms with resendConnectRequest=false
+            // because it normally runs holding a freshly-opened session — but the cluster can close that
+            // session in the very same poll batch that opened it (see connect()'s error branch), and then
+            // nothing would ever send a SessionConnectRequest on the new publication: connect() would sit
+            // out its deadline waiting for an OK nobody asked for, and the REDIRECT that used to rescue
+            // this path now short-circuits in handleRedirect, since the endpoint it wants is already the
+            // one we are on. Observed as a gateway aborting with "Timed out waiting for cluster session".
+            // Covered by chaos-runner.sh, not the unit suite: arming a switch at all requires a real
+            // Aeron client to build the replacement publication with, which the transport seam has not.
+            if (req.resendConnectRequest || m_clusterSessionId < 0)
             {
                 sendConnectRequest();
             }

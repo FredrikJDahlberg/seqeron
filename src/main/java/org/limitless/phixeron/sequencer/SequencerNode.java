@@ -8,8 +8,13 @@ import io.aeron.cluster.service.ClusteredServiceContainer;
 import io.aeron.driver.MediaDriver;
 import io.aeron.driver.ThreadingMode;
 import java.io.File;
+import java.util.Locale;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Supplier;
+import org.agrona.concurrent.BackoffIdleStrategy;
 import org.agrona.concurrent.BusySpinIdleStrategy;
+import org.agrona.concurrent.IdleStrategy;
 import org.agrona.concurrent.NoOpLock;
 import org.agrona.concurrent.ShutdownSignalBarrier;
 import org.agrona.concurrent.YieldingIdleStrategy;
@@ -43,6 +48,13 @@ import org.limitless.phixeron.util.Logger;
  *                               nodeCount-based generation when set
  *   sequencer.baseDir         — data directory root; default /tmp/phixeron-seq
  *   sequencer.aeronDir        — Aeron media driver directory
+ *   sequencer.idleStrategy    — duty-cycle idle strategy for the driver/archive/consensus/service
+ *                               agents: {@code backoff} (default), {@code yielding}, or {@code busyspin}.
+ *                               Busy-spin only pays off when each agent owns an isolated core; on an
+ *                               oversubscribed host (e.g. this cluster's 3 members plus their co-located
+ *                               replayer/consumer/gateway processes sharing one dev machine) it starves
+ *                               everything else instead. Backoff spins briefly, then yields, then sleeps
+ *                               with escalating backoff — cheap when idle, still prompt when busy.
  * </pre>
  *
  * <p>Gateway topology (which sourceIds are FIX gateways, and which gatewayId is the designated
@@ -63,6 +75,7 @@ public final class SequencerNode {
     private static final String PROP_CLUSTER_MEMBERS = "sequencer.clusterMembers";
     private static final String PROP_BASE_DIR = "sequencer.baseDir";
     private static final String PROP_AERON_DIR = "sequencer.aeronDir";
+    private static final String PROP_IDLE_STRATEGY = "sequencer.idleStrategy";
 
     private static final String DEFAULT_HOST = "localhost";
     private static final int PORT_BASE = 9300;
@@ -104,12 +117,13 @@ public final class SequencerNode {
         final File archiveDir = new File(baseDir + "/archive-" + memberId);
         final File clusterDir = new File(baseDir + "/cluster-" + memberId);
 
+        final Supplier<IdleStrategy> idleStrategySupplier = resolveIdleStrategySupplier();
         final MediaDriver.Context driverCtx = new MediaDriver.Context()
                                                   .aeronDirectoryName(aeronDir)
                                                   .threadingMode(ThreadingMode.DEDICATED)
-                                                  .conductorIdleStrategy(new BusySpinIdleStrategy())
-                                                  .senderIdleStrategy(new BusySpinIdleStrategy())
-                                                  .receiverIdleStrategy(new BusySpinIdleStrategy())
+                                                  .conductorIdleStrategy(idleStrategySupplier.get())
+                                                  .senderIdleStrategy(idleStrategySupplier.get())
+                                                  .receiverIdleStrategy(idleStrategySupplier.get())
                                                   .dirDeleteOnStart(true);
 
         final AeronArchive.Context localArchiveCtx = new AeronArchive.Context()
@@ -130,7 +144,7 @@ public final class SequencerNode {
             .replicationChannel(udp(DEFAULT_HOST, 0))
             .recordingEventsEnabled(false)
             .deleteArchiveOnStart(false)
-            .idleStrategySupplier(YieldingIdleStrategy::new);
+            .idleStrategySupplier(idleStrategySupplier);
 
         // Wire the ShutdownSignalBarrier to the consensus module's termination hook: a
         // ClusterTool/ClusterControl ABORT otherwise terminates the consensus and service agents
@@ -150,7 +164,40 @@ public final class SequencerNode {
             .isIpcIngressAllowed(true) // Lets a co-located client share aeron directory
             .terminationHook(barrier::signalAll)
             .deleteDirOnStart(false)
-            .idleStrategySupplier(YieldingIdleStrategy::new)
+            // Aeron's defaults (200ms interval / 10s timeout, a 50x ratio) are tuned for noisy/WAN
+            // clusters. This cluster is 3 nodes on loopback UDP — broadcastTime is sub-millisecond, so
+            // per Raft's broadcastTime ≪ electionTimeout ≪ MTBF guideline, both knobs can come down
+            // together (kept at a 10x interval:timeout ratio, same as the untouched Aeron defaults) far
+            // below Aeron's WAN-oriented defaults, without approaching the sub-ms broadcastTime floor.
+            // The real noise floor here is JVM GC pause jitter, not the network — 200ms stays well clear
+            // of typical minor-GC pause durations.
+            .leaderHeartbeatIntervalNs(TimeUnit.MILLISECONDS.toNanos(20))
+            .leaderHeartbeatTimeoutNs(TimeUnit.MILLISECONDS.toNanos(200))
+            // The election pair, left at Aeron's defaults until now (1s / 100ms) and measured to be the
+            // dominant cost of a failover: across 12 chaos failovers the cluster sequenced nothing for a
+            // median 1.58s, of which ~200ms is the heartbeat timeout above and ~1s was electionTimeoutNs
+            // alone. Lowered on the same reasoning and, as above, as a PAIR at the stock 10x
+            // interval:timeout ratio — electionStatusIntervalNs is how often an election round exchanges
+            // status, so the timeout has to span enough of them that one late message retries the round
+            // rather than abandoning it. Dropping the timeout alone to 200ms would have left 2 intervals
+            // inside it against Aeron's 10, which buys latency by trading away election stability.
+            .electionTimeoutNs(TimeUnit.MILLISECONDS.toNanos(200))
+            .electionStatusIntervalNs(TimeUnit.MILLISECONDS.toNanos(20))
+            // Same reasoning applied to the client session timeout, which was left at Aeron's 10s
+            // default: a client that dies abruptly (its co-located member killed, taking the shared
+            // media driver with it) is only reaped after this elapses, and until then it holds a
+            // session the cluster still believes in. 10s on a loopback cluster is a long time to
+            // carry a corpse.
+            //
+            // MUST stay a comfortable multiple of ClusterStreamSender's KEEP_ALIVE_INTERVAL_MS
+            // (200ms — the two were lowered together): this bounds how long a LIVE client may go
+            // silent before the cluster reaps it, so the margin is what absorbs scheduler jitter, a
+            // duty cycle sitting in send()'s offer spin, and GC pause on this side. At 5x it clears
+            // the same jitter floor the 200ms leader-heartbeat timeout above is set against. Reaping
+            // a healthy session is not a recoverable event: there is no in-process re-handshake, so
+            // OrderExecClient exits and FixGateway fences and exits (see isSessionLost).
+            .sessionTimeoutNs(TimeUnit.SECONDS.toNanos(1))
+            .idleStrategySupplier(idleStrategySupplier)
             .errorHandler(t -> {
                 Logger.error(Logger.Component.ConsensusModule, Logger.EventCode.ConsensusModuleError,
                         memberId, "%s", t.getMessage());
@@ -176,7 +223,7 @@ public final class SequencerNode {
             // (AgentTerminationException) would otherwise leave this process running headless: media driver
             // and consensus module up, no service behind them.
             .terminationHook(barrier::signalAll)
-            .idleStrategySupplier(YieldingIdleStrategy::new)
+            .idleStrategySupplier(idleStrategySupplier)
             .errorHandler(t -> {
                 Logger.error(Logger.Component.SequencerService, Logger.EventCode.ServiceError, memberId,
                         "%s", t.getMessage());
@@ -184,8 +231,9 @@ public final class SequencerNode {
             });
 
         Logger.info(Logger.Component.SequencerNode, memberId,
-                "Starting member %d | ingress=%s | archive=%s | baseDir=%s",
-                memberId, udp(DEFAULT_HOST, ingressPort), udp(DEFAULT_HOST, archivePort), baseDir);
+                "Starting member %d | ingress=%s | archive=%s | baseDir=%s | idle=%s",
+                memberId, udp(DEFAULT_HOST, ingressPort), udp(DEFAULT_HOST, archivePort), baseDir,
+                System.getProperty(PROP_IDLE_STRATEGY, "backoff"));
 
         try (barrier;
              ClusteredMediaDriver cmd = ClusteredMediaDriver.launch(driverCtx, archiveCtx, consensusCtx);
@@ -198,6 +246,22 @@ public final class SequencerNode {
         if (tapFatal.get()) {
             System.exit(EXIT_TAP_FATAL);
         }
+    }
+
+    /**
+     * Resolves the driver/archive/consensus/service idle strategy from sequencer.idleStrategy
+     * (case-insensitive); see the class Javadoc for why the default is backoff.
+     * @return idle strategy supplier — one instance is created per agent thread, never shared
+     */
+    private static Supplier<IdleStrategy> resolveIdleStrategySupplier() {
+        final String name = System.getProperty(PROP_IDLE_STRATEGY, "backoff");
+        return switch (name.toLowerCase(Locale.ROOT)) {
+            case "busyspin" -> BusySpinIdleStrategy::new;
+            case "yielding" -> YieldingIdleStrategy::new;
+            case "backoff" -> BackoffIdleStrategy::new;
+            default -> throw new IllegalArgumentException(
+                "Unknown " + PROP_IDLE_STRATEGY + "=" + name + " (expected 'backoff', 'yielding', or 'busyspin')");
+        };
     }
 
     private static String udp(final String host, final int port) {

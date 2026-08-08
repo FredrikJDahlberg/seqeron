@@ -172,6 +172,40 @@ TEST(ClusterStreamSender, ConnectSendsSessionConnectRequestAndAdoptsSessionOnOk)
     EXPECT_EQ(CLUSTER_CLIENT_INFO, req.getClientInfoAsString());
 }
 
+// A SessionConnectRequest that lands on a FOLLOWER still yields a session — the open is replicated
+// and the leader answers OK — but a follower then silently drops every session message and keep-alive
+// (ConsensusModuleAgent.onIngressMessage requires `Cluster.Role.LEADER == role` and falls through with
+// no reply). The OK names the leader, and that is the only signal available: unlike REDIRECT and
+// NewLeaderEvent it carries no endpoint CSV, so the endpoint is derived from the member id. Without
+// this the client looked connected, had nothing it published sequenced, and died of a genuine session
+// timeout ~10s later (doc/todo.md).
+TEST(ClusterStreamSender, MemberIngressEndpointMatchesTheInitialEndpointFormula)
+{
+    // Member 0's derived endpoint must be exactly the constant connectColocated's UDP fallback aims
+    // at, or "am I already on the leader?" would compare unequal strings for the same member.
+    EXPECT_EQ(CLUSTER_INGRESS_ENDPOINT, memberIngressEndpoint(0));
+
+    // …and every other member resolves to its own distinct endpoint.
+    EXPECT_NE(memberIngressEndpoint(0), memberIngressEndpoint(1));
+    EXPECT_NE(memberIngressEndpoint(1), memberIngressEndpoint(2));
+    EXPECT_EQ("localhost:" + std::to_string(clusterIngressPort(2)), memberIngressEndpoint(2));
+}
+
+// The transport-agnostic connect() overload has no Aeron client to build a replacement publication
+// with, so an OK naming a leader we are not publishing to must be a safe no-op rather than a crash —
+// the same guard handleRedirect applies. The session is still adopted.
+TEST(ClusterStreamSender, ConnectIgnoresNonLeaderIngressWithoutAeronClient)
+{
+    auto egress = std::make_unique<FakeEgressTransport>();
+    egress->m_queued.push_back(encodeSessionEvent(42, 7, cluster_sbe::EventCode::Value::OK, /*leaderMemberId=*/2));
+
+    ClusterStreamSender sender;
+    sender.connect(std::make_unique<FakeIngressTransport>(), std::move(egress));
+
+    EXPECT_TRUE(sender.isConnected());
+    EXPECT_EQ(42, sender.clusterSessionId());
+}
+
 TEST(ClusterStreamSender, ConnectThrowsWhenClusterNeverAnswers)
 {
     ClusterStreamSender sender;

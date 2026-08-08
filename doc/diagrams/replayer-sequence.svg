@@ -1,0 +1,110 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="1680" viewBox="0 0 1400 1680" font-family="Helvetica, Arial, sans-serif">
+<rect x="0" y="0" width="1400" height="1680" fill="#ffffff"/>
+<defs>
+  <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" orient="auto-start-reverse">
+    <path d="M0,0 L10,5 L0,10 z" fill="#333333"/>
+  </marker>
+</defs>
+<text x="700" y="34" text-anchor="middle" font-size="19" font-weight="bold" fill="#333333">Replayer protocol — cold-start walk, live-tap follow, gap recovery</text>
+<text x="700" y="54" text-anchor="middle" font-size="12" fill="#666666">ReplayerStreamReceiver (C++) &#8596; ReplayerService (Java) — node-local aeron:ipc, streams 201/202/203/205</text>
+<line x1="150" y1="126" x2="150" y2="1594" stroke="#999999" stroke-width="1.5" stroke-dasharray="5,4"/>
+<line x1="520" y1="126" x2="520" y2="1594" stroke="#999999" stroke-width="1.5" stroke-dasharray="5,4"/>
+<line x1="900" y1="126" x2="900" y2="1594" stroke="#999999" stroke-width="1.5" stroke-dasharray="5,4"/>
+<line x1="1230" y1="126" x2="1230" y2="1594" stroke="#999999" stroke-width="1.5" stroke-dasharray="5,4"/>
+<rect x="110" y="466" width="1160" height="162" fill="none" stroke="#888888" stroke-width="1.3" stroke-dasharray="4,3" rx="4"/>
+<path d="M110,466 h228 v24 l-6,6 h-222 z" fill="#eeeeee" stroke="#888888" stroke-width="1"/>
+<text x="118" y="480" font-size="10.5" font-weight="bold" fill="#333333">LOOP</text>
+<text x="118" y="494" font-size="10" fill="#333333">per remaining recording segment</text>
+<rect x="110" y="1160" width="1160" height="100" fill="none" stroke="#888888" stroke-width="1.3" stroke-dasharray="4,3" rx="4"/>
+<path d="M110,1160 h286 v24 l-6,6 h-280 z" fill="#eeeeee" stroke="#888888" stroke-width="1"/>
+<text x="118" y="1174" font-size="10.5" font-weight="bold" fill="#333333">LOOP</text>
+<text x="118" y="1188" font-size="10" fill="#333333">~500ms, for as long as the image is held</text>
+<rect x="110" y="1456" width="1160" height="128" fill="none" stroke="#888888" stroke-width="1.3" stroke-dasharray="6,4" rx="4"/>
+<path d="M110,1456 h523 v40 l-6,6 h-517 z" fill="#eeeeee" stroke="#888888" stroke-width="1"/>
+<text x="118" y="1470" font-size="10.5" font-weight="bold" fill="#333333">ALT</text>
+<text x="118" y="1484" font-size="10" fill="#333333">alt — anchor mismatch, or the Replayer refuses fromPosition (active recording</text>
+<text x="118" y="1498" font-size="10" fill="#333333">rotated under the resume, e.g. a member restart)</text>
+<rect x="55" y="66" width="190" height="66" rx="7" fill="#f2f2f2" stroke="#444444" stroke-width="1.4"/>
+<text x="150" y="88" text-anchor="middle" font-size="13" font-weight="bold" fill="#333333">Live Tap</text>
+<text x="150" y="104" text-anchor="middle" font-size="10" fill="#666666">stream 205, untethered</text>
+<rect x="55" y="1598" width="190" height="66" rx="7" fill="#f2f2f2" stroke="#444444" stroke-width="1.4"/>
+<text x="150" y="1620" text-anchor="middle" font-size="13" font-weight="bold" fill="#333333">Live Tap</text>
+<text x="150" y="1636" text-anchor="middle" font-size="10" fill="#666666">stream 205, untethered</text>
+<rect x="385" y="66" width="270" height="66" rx="7" fill="#f2f2f2" stroke="#444444" stroke-width="1.4"/>
+<text x="520" y="88" text-anchor="middle" font-size="13" font-weight="bold" fill="#333333">ReplayerStreamReceiver</text>
+<text x="520" y="104" text-anchor="middle" font-size="10" fill="#666666">App (FixGateway / OrderExecClient /</text>
+<text x="520" y="118" text-anchor="middle" font-size="10" fill="#666666">BasicDataClient), C++</text>
+<rect x="385" y="1598" width="270" height="66" rx="7" fill="#f2f2f2" stroke="#444444" stroke-width="1.4"/>
+<text x="520" y="1620" text-anchor="middle" font-size="13" font-weight="bold" fill="#333333">ReplayerStreamReceiver</text>
+<text x="520" y="1636" text-anchor="middle" font-size="10" fill="#666666">App (FixGateway / OrderExecClient /</text>
+<text x="520" y="1650" text-anchor="middle" font-size="10" fill="#666666">BasicDataClient), C++</text>
+<rect x="790" y="66" width="220" height="66" rx="7" fill="#f2f2f2" stroke="#444444" stroke-width="1.4"/>
+<text x="900" y="88" text-anchor="middle" font-size="13" font-weight="bold" fill="#333333">ReplayerService</text>
+<text x="900" y="104" text-anchor="middle" font-size="10" fill="#666666">Java, one per cluster member</text>
+<rect x="790" y="1598" width="220" height="66" rx="7" fill="#f2f2f2" stroke="#444444" stroke-width="1.4"/>
+<text x="900" y="1620" text-anchor="middle" font-size="13" font-weight="bold" fill="#333333">ReplayerService</text>
+<text x="900" y="1636" text-anchor="middle" font-size="10" fill="#666666">Java, one per cluster member</text>
+<rect x="1115" y="66" width="230" height="66" rx="7" fill="#f2f2f2" stroke="#444444" stroke-width="1.4"/>
+<text x="1230" y="88" text-anchor="middle" font-size="13" font-weight="bold" fill="#333333">Aeron Archive</text>
+<text x="1230" y="104" text-anchor="middle" font-size="10" fill="#666666">local, node-co-located recording</text>
+<rect x="1115" y="1598" width="230" height="66" rx="7" fill="#f2f2f2" stroke="#444444" stroke-width="1.4"/>
+<text x="1230" y="1620" text-anchor="middle" font-size="13" font-weight="bold" fill="#333333">Aeron Archive</text>
+<text x="1230" y="1636" text-anchor="middle" font-size="10" fill="#666666">local, node-co-located recording</text>
+<rect x="40" y="162" width="1320" height="28" rx="5" fill="#e4ecf7" stroke="#7a93b8" stroke-width="1"/>
+<text x="700" y="181" text-anchor="middle" font-size="12.5" font-weight="bold" fill="#1f3a5f">Cold start — walk the node's recording chain (segmentIndex 0, 1, 2, ...)</text>
+<line x1="520" y1="244" x2="900" y2="244" stroke="#333333" stroke-width="1.5" marker-end="url(#arrow)"/>
+<text x="710" y="223" text-anchor="middle" font-size="11" fill="#333333">ReplayRequest(clientId, reqId=1, segmentIndex=0,</text>
+<text x="710" y="236" text-anchor="middle" font-size="11" fill="#333333">fromPosition=0)</text>
+<line x1="900" y1="294" x2="1230" y2="294" stroke="#333333" stroke-width="1.5" marker-end="url(#arrow)"/>
+<text x="1065" y="286" text-anchor="middle" font-size="11" fill="#333333">startReplay(oldest recording, segment.startPosition)</text>
+<line x1="900" y1="344" x2="520" y2="344" stroke="#333333" stroke-width="1.5" stroke-dasharray="6,4" marker-end="url(#arrow)"/>
+<text x="710" y="336" text-anchor="middle" font-size="11" fill="#333333">Replaying(reqId=1, replaySessionId, catchUpPosition=P0)</text>
+<line x1="1230" y1="394" x2="520" y2="394" stroke="#333333" stroke-width="1.5" stroke-dasharray="6,4" marker-end="url(#arrow)"/>
+<text x="875" y="386" text-anchor="middle" font-size="11" fill="#333333">replay frames [stream 201]</text>
+<rect x="220" y="414" width="600" height="46" rx="5" fill="#f2f2f2" stroke="#444444" stroke-width="1"/>
+<text x="520" y="430" text-anchor="middle" font-size="10.3" font-style="italic" fill="#333333">rides the image to catchUpPosition; the live tap is drained AND dispatched in parallel —</text>
+<text x="520" y="446" text-anchor="middle" font-size="10.3" font-style="italic" fill="#333333">frames beyond this segment are retained, not dropped</text>
+<line x1="520" y1="552" x2="900" y2="552" stroke="#333333" stroke-width="1.5" marker-end="url(#arrow)"/>
+<text x="710" y="531" text-anchor="middle" font-size="11" fill="#333333">ReplayRequest(reqId+1, segmentIndex+1,</text>
+<text x="710" y="544" text-anchor="middle" font-size="11" fill="#333333">fromPosition=segment.startPosition)</text>
+<line x1="900" y1="602" x2="520" y2="602" stroke="#333333" stroke-width="1.5" stroke-dasharray="6,4" marker-end="url(#arrow)"/>
+<text x="710" y="594" text-anchor="middle" font-size="11" fill="#333333">Replaying(reqId, replaySessionId, catchUpPosition)</text>
+<line x1="900" y1="662" x2="520" y2="662" stroke="#333333" stroke-width="1.5" stroke-dasharray="6,4" marker-end="url(#arrow)"/>
+<text x="710" y="654" text-anchor="middle" font-size="11" fill="#333333">Replaying(reqId=N, replaySessionId=NO_REPLAY_NEEDED)</text>
+<rect x="242" y="682" width="556" height="30" rx="5" fill="#f2f2f2" stroke="#444444" stroke-width="1"/>
+<text x="520" y="698" text-anchor="middle" font-size="10.3" font-style="italic" fill="#333333">caught up — isCaughtUp()=true; falls back to following the live tap directly</text>
+<rect x="40" y="724" width="1320" height="28" rx="5" fill="#e4ecf7" stroke="#7a93b8" stroke-width="1"/>
+<text x="700" y="743" text-anchor="middle" font-size="12.5" font-weight="bold" fill="#1f3a5f">Steady state — following the live tap</text>
+<line x1="150" y1="794" x2="520" y2="794" stroke="#333333" stroke-width="1.5" stroke-dasharray="6,4" marker-end="url(#arrow)"/>
+<text x="335" y="786" text-anchor="middle" font-size="11" fill="#333333">frame gseq=104</text>
+<rect x="375" y="814" width="290" height="30" rx="5" fill="#f2f2f2" stroke="#444444" stroke-width="1"/>
+<text x="520" y="830" text-anchor="middle" font-size="10.3" font-style="italic" fill="#333333">in order (gseq == last+1) — dispatched</text>
+<rect x="40" y="856" width="1320" height="28" rx="5" fill="#e4ecf7" stroke="#7a93b8" stroke-width="1"/>
+<text x="700" y="875" text-anchor="middle" font-size="12.5" font-weight="bold" fill="#1f3a5f">Gap detected → resume → ahead-buffer closes the seam</text>
+<line x1="150" y1="926" x2="520" y2="926" stroke="#333333" stroke-width="1.5" stroke-dasharray="6,4" marker-end="url(#arrow)"/>
+<text x="335" y="918" text-anchor="middle" font-size="11" fill="#333333">frame gseq=106 (expected 105)</text>
+<rect x="220" y="946" width="600" height="46" rx="5" fill="#f2f2f2" stroke="#444444" stroke-width="1"/>
+<text x="520" y="962" text-anchor="middle" font-size="10.3" font-style="italic" fill="#333333">isCaughtUp() &lt;- false · retains gseq=106 in the bounded, globalSeqNo-ordered ahead-buffer</text>
+<text x="520" y="978" text-anchor="middle" font-size="10.3" font-style="italic" fill="#333333">(MAX_MESSAGES_FRAMES / MAX_MESSAGES_BYTES) instead of dropping it</text>
+<line x1="520" y1="1044" x2="900" y2="1044" stroke="#333333" stroke-width="1.5" marker-end="url(#arrow)"/>
+<text x="710" y="1023" text-anchor="middle" font-size="11" fill="#333333">ReplayRequest(reqId=k, segmentIndex=-1,</text>
+<text x="710" y="1036" text-anchor="middle" font-size="11" fill="#333333">fromPosition=posOf(gseq=104)) — resume</text>
+<line x1="900" y1="1094" x2="1230" y2="1094" stroke="#333333" stroke-width="1.5" marker-end="url(#arrow)"/>
+<text x="1065" y="1086" text-anchor="middle" font-size="11" fill="#333333">startReplay(active recording, fromPosition)</text>
+<line x1="900" y1="1144" x2="520" y2="1144" stroke="#333333" stroke-width="1.5" stroke-dasharray="6,4" marker-end="url(#arrow)"/>
+<text x="710" y="1136" text-anchor="middle" font-size="11" fill="#333333">Replaying(reqId=k, replaySessionId, catchUpPosition=tip)</text>
+<line x1="520" y1="1234" x2="900" y2="1234" stroke="#333333" stroke-width="1.5" marker-end="url(#arrow)"/>
+<text x="710" y="1226" text-anchor="middle" font-size="11" fill="#333333">ReplayHeartbeat(clientId) — refreshes the slot's idle TTL</text>
+<line x1="1230" y1="1294" x2="520" y2="1294" stroke="#333333" stroke-width="1.5" stroke-dasharray="6,4" marker-end="url(#arrow)"/>
+<text x="875" y="1286" text-anchor="middle" font-size="11" fill="#333333">replay frame gseq=105 [stream 201]</text>
+<rect x="220" y="1314" width="600" height="46" rx="5" fill="#f2f2f2" stroke="#444444" stroke-width="1"/>
+<text x="520" y="1330" text-anchor="middle" font-size="10.3" font-style="italic" fill="#333333">anchor check: gseq == 105, ok -&gt; dispatch 105, then drain the ahead-buffer -&gt; dispatch</text>
+<text x="520" y="1346" text-anchor="middle" font-size="10.3" font-style="italic" fill="#333333">retained gseq=106 — no further gap</text>
+<line x1="520" y1="1400" x2="900" y2="1400" stroke="#333333" stroke-width="1.5" marker-end="url(#arrow)"/>
+<text x="710" y="1392" text-anchor="middle" font-size="11" fill="#333333">ReplayComplete(clientId) — free the slot</text>
+<rect x="284" y="1420" width="472" height="30" rx="5" fill="#f2f2f2" stroke="#444444" stroke-width="1"/>
+<text x="520" y="1436" text-anchor="middle" font-size="10.3" font-style="italic" fill="#333333">isCaughtUp() &lt;- true (OnCaughtUp re-fires); back on the live tap</text>
+<line x1="520" y1="1558" x2="900" y2="1558" stroke="#333333" stroke-width="1.5" marker-end="url(#arrow)"/>
+<text x="710" y="1537" text-anchor="middle" font-size="11" fill="#333333">ReplayRequest(segmentIndex=0, fromPosition=0) — fall back</text>
+<text x="710" y="1550" text-anchor="middle" font-size="11" fill="#333333">to a full chain re-walk</text>
+</svg>

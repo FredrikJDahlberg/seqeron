@@ -4,6 +4,7 @@ import io.aeron.Aeron;
 import io.aeron.archive.client.AeronArchive;
 import java.util.Locale;
 import java.util.concurrent.atomic.AtomicBoolean;
+import org.agrona.concurrent.BackoffIdleStrategy;
 import org.agrona.concurrent.BusySpinIdleStrategy;
 import org.agrona.concurrent.IdleStrategy;
 import org.agrona.concurrent.NoOpLock;
@@ -27,15 +28,17 @@ import org.limitless.phixeron.util.Logger;
  * <pre>
  *   replayer.memberId      — which cluster member this ReplayerService co-locates with (0/1/2); default 0
  *   replayer.aeronDir      — that member's Aeron directory; default {tmpdir}/phixeron-seq-aeron-{memberId}
- *   replayer.idleStrategy  — duty-cycle idle strategy: {@code yielding} (default) or {@code busyspin}
+ *   replayer.idleStrategy  — duty-cycle idle strategy: {@code backoff} (default), {@code yielding}, or
+ *                            {@code busyspin}
  * </pre>
  *
- * <p>The default is {@code yielding} rather than {@code busyspin} (which SequencerNode uses for its
- * media-driver agents) because busy-spin only pays off when the ReplayerService thread owns an isolated core.
- * On the tuned target deployment (core-pinned, {@code isolcpus}/{@code nohz_full}) set {@code
- * -Dreplayer.idleStrategy=busyspin}; on an oversubscribed host (e.g. a dev box already running the
- * cluster's busy-spin driver threads) busy-spin steals cycles, so the default yields. (The ReplayerService is
- * off the live delivery path, so this only affects how promptly it services replay requests.)
+ * <p>The default is {@code backoff} rather than {@code busyspin} or {@code yielding} because busy-spin
+ * (and, under sustained contention, yielding too) only pays off when the ReplayerService thread owns an
+ * isolated core. On the tuned target deployment (core-pinned, {@code isolcpus}/{@code nohz_full}) set
+ * {@code -Dreplayer.idleStrategy=busyspin}; on an oversubscribed host (e.g. a dev box already running the
+ * cluster's own busy-spin/backoff driver threads) busy-spin steals cycles from everything else, so the
+ * default backs off instead. (The ReplayerService is off the live delivery path, so this only affects how
+ * promptly it services replay requests.)
  *
  * <p>Launch example (co-located with member 0):
  * <pre>
@@ -105,16 +108,17 @@ public final class ReplayerNode {
 
     /**
      * Resolves the duty-cycle idle strategy from replayer.idleStrategy (case-insensitive); see the
-     * class Javadoc for why the default is yielding rather than busy-spin.
+     * class Javadoc for why the default is backoff rather than busy-spin.
      * @return idle strategy
      */
     private static IdleStrategy resolveIdleStrategy() {
-        final String name = System.getProperty(PROP_IDLE_STRATEGY, "yielding");
+        final String name = System.getProperty(PROP_IDLE_STRATEGY, "backoff");
         return switch (name.toLowerCase(Locale.ROOT)) {
             case "busyspin" -> new BusySpinIdleStrategy();
             case "yielding" -> new YieldingIdleStrategy();
+            case "backoff" -> new BackoffIdleStrategy();
             default -> throw new IllegalArgumentException(
-                "Unknown " + PROP_IDLE_STRATEGY + "=" + name + " (expected 'yielding' or 'busyspin')");
+                "Unknown " + PROP_IDLE_STRATEGY + "=" + name + " (expected 'backoff', 'yielding', or 'busyspin')");
         };
     }
 }
