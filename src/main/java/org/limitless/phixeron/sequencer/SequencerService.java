@@ -143,31 +143,34 @@ public final class SequencerService implements ClusteredService {
      * self-clearing back-pressure {@link #MAX_BACK_PRESSURE_SPINS} already alerts on every ~10 ms. Set
      * well above one alert period so the two signals stay distinguishable: an operator/dashboard can
      * tell "briefly busy" from "actually stuck" without inferring it from how fast the alert counter is
-     * climbing.
+     * climbing. Matched to {@code leaderHeartbeatTimeoutNs}/{@code electionTimeoutNs}
+     * ({@link SequencerNode}) so every failover-adjacent timeout in this cluster sits in the same order
+     * of magnitude, rather than the disk-side detector lagging the consensus-side ones by two orders.
      */
-    private static final long SUSTAINED_BACKPRESSURE_THRESHOLD_NS = TimeUnit.SECONDS.toNanos(2);
+    private static final long SUSTAINED_BACKPRESSURE_THRESHOLD_NS = TimeUnit.MILLISECONDS.toNanos(200);
 
     /**
      * How long the tap recording may make <em>zero</em> progress, while {@link #emit} is back-pressured,
      * before this node gives up on the local archive and terminates (see {@link #fatalTapFailure}). Not a
      * back-pressure timeout: an archive draining slowly under load back-pressures continuously and keeps
      * advancing, and is left alone however long that lasts — this bounds only an archive that has stopped
-     * draining. Chosen an order of magnitude above the stall gauge's 2s and far above any plausible
-     * page-cache/fsync hiccup on working storage, so reaching it means the disk or the archive is gone
-     * rather than slow. The one value here that wants re-tuning against real production storage.
+     * draining. Kept at 5x the stall gauge, the same margin {@code sessionTimeoutNs} keeps over the
+     * keep-alive interval, and lands this node's own fatal judgement in the same order of magnitude as
+     * {@code sessionTimeoutNs}'s 1s — the other threshold governing how long this cluster tolerates a
+     * dependency going quiet. Re-tune against real production storage before trusting it off loopback.
      */
-    private static final long TAP_STALL_FATAL_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(30);
+    private static final long TAP_STALL_FATAL_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(1);
 
     /**
      * How long the consensus module may refuse the cluster-clock timer, continuously, before {@link
      * #scheduleTick} gives up on this node. The same judgement {@link #TAP_STALL_FATAL_TIMEOUT_NS} makes
      * about the archive, applied to the other end of the service: back-pressure on the consensus-module
-     * proxy is ordinary and self-clearing, and half a minute of it without a single accepted timer is not
+     * proxy is ordinary and self-clearing, and a full second of it without a single accepted timer is not
      * a busy module but a wedged one. Matched to that constant deliberately — both bound the same
      * question, "is the thing this node depends on still draining?", and there is no reason for the two
      * answers to differ.
      */
-    private static final long TICK_SCHEDULE_FATAL_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(30);
+    private static final long TICK_SCHEDULE_FATAL_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(1);
 
     /**
      * How long after signalling a fatal tap failure the process may still be alive before it is halted
@@ -706,13 +709,13 @@ public final class SequencerService implements ClusteredService {
             case STALLED -> {
                 tapStalledCounter.set(1);
                 Logger.error(Logger.Component.Sequencer, Logger.EventCode.ReplayerBackpressure, cluster.memberId(),
-                        "STALLED: tap back-pressure sustained beyond %ds with no recording progress at globalSeqNo=%d",
-                        TimeUnit.NANOSECONDS.toSeconds(SUSTAINED_BACKPRESSURE_THRESHOLD_NS), sequencer.globalSeqNo());
+                        "STALLED: tap back-pressure sustained beyond %dms with no recording progress at globalSeqNo=%d",
+                        TimeUnit.NANOSECONDS.toMillis(SUSTAINED_BACKPRESSURE_THRESHOLD_NS), sequencer.globalSeqNo());
             }
             case FATAL_RECORDING_GONE -> fatalTapFailure(
                     "the local archive stopped recording the tap (recording " + tapRecordingId + ")");
             case FATAL_NO_PROGRESS -> fatalTapFailure("the tap recording made no progress for "
-                    + TimeUnit.NANOSECONDS.toSeconds(TAP_STALL_FATAL_TIMEOUT_NS) + "s of continuous back-pressure");
+                    + TimeUnit.NANOSECONDS.toMillis(TAP_STALL_FATAL_TIMEOUT_NS) + "ms of continuous back-pressure");
             case CONTINUE -> {
             }
         }
