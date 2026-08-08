@@ -164,38 +164,11 @@ public final class SequencerNode {
             .isIpcIngressAllowed(true) // Lets a co-located client share aeron directory
             .terminationHook(barrier::signalAll)
             .deleteDirOnStart(false)
-            // Aeron's defaults (200ms interval / 10s timeout, a 50x ratio) are tuned for noisy/WAN
-            // clusters. This cluster is 3 nodes on loopback UDP — broadcastTime is sub-millisecond, so
-            // per Raft's broadcastTime ≪ electionTimeout ≪ MTBF guideline, both knobs can come down
-            // together (kept at a 10x interval:timeout ratio, same as the untouched Aeron defaults) far
-            // below Aeron's WAN-oriented defaults, without approaching the sub-ms broadcastTime floor.
-            // The real noise floor here is JVM GC pause jitter, not the network — 200ms stays well clear
-            // of typical minor-GC pause durations.
             .leaderHeartbeatIntervalNs(TimeUnit.MILLISECONDS.toNanos(20))
             .leaderHeartbeatTimeoutNs(TimeUnit.MILLISECONDS.toNanos(200))
-            // The election pair, left at Aeron's defaults until now (1s / 100ms) and measured to be the
-            // dominant cost of a failover: across 12 chaos failovers the cluster sequenced nothing for a
-            // median 1.58s, of which ~200ms is the heartbeat timeout above and ~1s was electionTimeoutNs
-            // alone. Lowered on the same reasoning and, as above, as a PAIR at the stock 10x
-            // interval:timeout ratio — electionStatusIntervalNs is how often an election round exchanges
-            // status, so the timeout has to span enough of them that one late message retries the round
-            // rather than abandoning it. Dropping the timeout alone to 200ms would have left 2 intervals
-            // inside it against Aeron's 10, which buys latency by trading away election stability.
             .electionTimeoutNs(TimeUnit.MILLISECONDS.toNanos(200))
             .electionStatusIntervalNs(TimeUnit.MILLISECONDS.toNanos(20))
-            // Same reasoning applied to the client session timeout, which was left at Aeron's 10s
-            // default: a client that dies abruptly (its co-located member killed, taking the shared
-            // media driver with it) is only reaped after this elapses, and until then it holds a
-            // session the cluster still believes in. 10s on a loopback cluster is a long time to
-            // carry a corpse.
-            //
-            // MUST stay a comfortable multiple of ClusterStreamSender's KEEP_ALIVE_INTERVAL_MS
-            // (200ms — the two were lowered together): this bounds how long a LIVE client may go
-            // silent before the cluster reaps it, so the margin is what absorbs scheduler jitter, a
-            // duty cycle sitting in send()'s offer spin, and GC pause on this side. At 5x it clears
-            // the same jitter floor the 200ms leader-heartbeat timeout above is set against. Reaping
-            // a healthy session is not a recoverable event: there is no in-process re-handshake, so
-            // OrderExecClient exits and FixGateway fences and exits (see isSessionLost).
+            .startupCanvassTimeoutNs(TimeUnit.SECONDS.toNanos(5))
             .sessionTimeoutNs(TimeUnit.SECONDS.toNanos(1))
             .idleStrategySupplier(idleStrategySupplier)
             .errorHandler(t -> {
@@ -209,7 +182,8 @@ public final class SequencerNode {
         // Archive still gets its clean close, and remember to exit non-zero afterwards so process
         // supervision restarts the node — the restart's full-log replay is what rebuilds its recording.
         final AtomicBoolean tapFatal = new AtomicBoolean();
-        final SequencerService service = new SequencerService(() -> {
+        final SequencerService service = new SequencerService(() ->
+        {
             tapFatal.set(true);
             barrier.signalAll();
         });

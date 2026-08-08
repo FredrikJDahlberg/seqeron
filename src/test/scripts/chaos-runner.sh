@@ -58,6 +58,15 @@ DRIVER_LOSS_STRICT="${DRIVER_LOSS_STRICT:-1}"
 # mark files the kill left "active". Must exceed the mark-file liveness timeout (driverTimeoutMs, 10s).
 SIGKILL_MARKFILE_SETTLE_SECS="${SIGKILL_MARKFILE_SETTLE_SECS:-12}"
 
+LEADER_TIMEOUT_SECS=30
+ELECTION_TIMEOUT_SECS=15
+NODE_START_TIMEOUT_SECS=15
+APP_CATCHUP_TIMEOUT_SECS=30
+GATEWAY_PORT_TIMEOUT_SECS=15   # gateway TCP listener after (re)start: measured 2.0s
+PROC_EXIT_TIMEOUT_SECS=10      # a signalled member actually dying: measured 0.2s
+TAP_STALL_DEADLINE_SECS=10
+PAUSE_SECS=0.5
+
 JAVA_OPTS=(
   --add-opens=java.base/sun.nio.ch=ALL-UNNAMED
   --add-opens=java.base/java.lang=ALL-UNNAMED
@@ -78,6 +87,7 @@ declare -a SEQ_PIDS REPLAYER_PIDS BASICDATA_PIDS EXTRA_CONSUMER_PIDS
 CONSUMER_PID=""; FIX_PID=""; STANDBY_FIX_PID=""; MD_PID=""; LOAD_PID=""
 declare -a FAULT_HISTORY=()
 DRIVER_LOSS_FAIL=0   # set by check_driver_loss_failfast, folded into the round result by check_invariants
+RESTART_FAIL=0       # set by assert_restarted, folded into the round result by check_invariants
 declare -a SEQ_LOG_OFFSET   # lines already in seq-<m>.log when its CURRENT boot started — see wait_running
 
 # ── Helpers ─────────────────────────────────────────────────────────────────────
@@ -95,7 +105,7 @@ start_seq() {  # start_seq <memberId> — append so leadership history survives 
   SEQ_PIDS[$m]=$!
 }
 # NB: a bash loop's exit status is that of the last command in its body, so we MUST end with an explicit
-# `return 0` — otherwise the trailing `((W>60))` (false, status 1) would make a SUCCESSFUL wait report failure.
+# `return 0` — otherwise the trailing budget test (false, status 1) would make a SUCCESSFUL wait report failure.
 #
 # Scoped to the CURRENT boot's output. start_seq appends (so leadership history survives a restart), so a
 # whole-file `grep -q "Running"` matched the PREVIOUS boot's line and returned instantly on every restart —
@@ -107,9 +117,23 @@ wait_running() {
   local m="$1" W=0
   local off="${SEQ_LOG_OFFSET[$m]:-0}"
   until tail -n "+$((off + 1))" "$LOG_DIR/seq-$m.log" 2>/dev/null | grep -q "Running"; do
-    sleep 0.5; W=$((W+1)); ((W>60)) && return 1
+    sleep 0.5; W=$((W+1)); ((W > NODE_START_TIMEOUT_SECS * 2)) && return 1
   done
   return 0
+}
+
+# A member that does not come back is a FAILED ROUND, not a warning. Nothing else here notices one:
+# every later round still finds a leader and passes its probe on the two survivors, so a run whose
+# member 2 died on an archive its SIGKILL had torn reported 24/24 liveness while permanently down a
+# node, and only the end-of-run convergence check caught it. Reported through the same flag mechanism
+# as the driver-loss assertions rather than by returning: the fault function must still run
+# restart_colocated_apps, and the round must still check its other invariants.
+assert_restarted() {  # <memberId> — start_seq must already have been called
+  local m="$1"
+  wait_running "$m" && return 0
+  log "  RESTART FAIL: member $m never printed \"Running\" within ${NODE_START_TIMEOUT_SECS}s (see $LOG_DIR/seq-$m.log)"
+  RESTART_FAIL=1
+  return 1
 }
 
 alive() { kill -0 "${SEQ_PIDS[$1]:-0}" 2>/dev/null; }   # is member $1's SequencerNode process up (not SIGSTOPped-aware)
@@ -123,7 +147,7 @@ current_leader() {  # echo the memberId whose most-recent leadership line is isL
   done
   echo ""
 }
-wait_for_leader() { local W=0 L; while :; do L="$(current_leader)"; [[ -n "$L" ]] && { echo "$L"; return 0; }; sleep 0.5; W=$((W+1)); ((W>120)) && { echo ""; return 1; }; done; }
+wait_for_leader() { local W=0 L; while :; do L="$(current_leader)"; [[ -n "$L" ]] && { echo "$L"; return 0; }; sleep 0.5; W=$((W+1)); ((W > LEADER_TIMEOUT_SECS * 2)) && { echo ""; return 1; }; done; }
 
 log() { printf '[chaos %s] %s\n' "$(date +%H:%M:%S)" "$*"; }
 
@@ -173,7 +197,7 @@ for m in 0 1 2; do
        org.limitless.phixeron.replayer.ReplayerNode > "$LOG_DIR/replayer-$m.log" 2>&1 &
   REPLAYER_PIDS[$m]=$!
 done
-for m in 0 1 2; do W=0; until grep -q "serving replay" "$LOG_DIR/replayer-$m.log" 2>/dev/null; do sleep 0.5; W=$((W+1)); ((W>60)) && break; done; done
+for m in 0 1 2; do W=0; until grep -q "serving replay" "$LOG_DIR/replayer-$m.log" 2>/dev/null; do sleep 0.5; W=$((W+1)); ((W > APP_CATCHUP_TIMEOUT_SECS * 2)) && break; done; done
 
 # BasicDataClient replica on every node (see start-three-node-cluster.sh): dual-role, producer on
 # whichever member is leader, consumer elsewhere. Without one running on every node, no member ever
@@ -200,7 +224,7 @@ start_consumer() {
   CONSUMER_PID=$!
 }
 start_consumer
-W=0; until grep -q "following live" "$CONSUMER_LOG" 2>/dev/null; do sleep 0.5; W=$((W+1)); ((W>60)) && { echo "consumer never caught up"; exit 1; }; done
+W=0; until grep -q "following live" "$CONSUMER_LOG" 2>/dev/null; do sleep 0.5; W=$((W+1)); ((W > APP_CATCHUP_TIMEOUT_SECS * 2)) && { echo "consumer never caught up"; exit 1; }; done
 
 # OrderExecClient replica on members 1 and 2 too (see start-three-node-cluster.sh): sendNewExecutionReport
 # only fires on the replica CO-LOCATED WITH THE CURRENT LEADER (OrderExecClient.cpp, m_replayer.isCaughtUp()
@@ -214,7 +238,7 @@ for m in 1 2; do
     stdbuf -oL -eL "$BUILD_DIR/OrderExecClient" > "$LOG_DIR/orderexec-$m.log" 2>&1 &
   EXTRA_CONSUMER_PIDS[$m]=$!
 done
-for m in 1 2; do W=0; until grep -q "following live" "$LOG_DIR/orderexec-$m.log" 2>/dev/null; do sleep 0.5; W=$((W+1)); ((W>60)) && { log "  WARN orderexec-$m never caught up"; break; }; done; done
+for m in 1 2; do W=0; until grep -q "following live" "$LOG_DIR/orderexec-$m.log" 2>/dev/null; do sleep 0.5; W=$((W+1)); ((W > APP_CATCHUP_TIMEOUT_SECS * 2)) && { log "  WARN orderexec-$m never caught up"; break; }; done; done
 
 # FIX gateway on member 0 (port $FIX_TCP_PORT).
 FIX_LOG="$LOG_DIR/fix.log"
@@ -226,10 +250,10 @@ start_gateway() {
   FIX_PID=$!
 }
 start_gateway
-W=0; until nc -z 127.0.0.1 "$FIX_TCP_PORT" 2>/dev/null; do sleep 0.5; W=$((W+1)); ((W>40)) && { echo "gateway $FIX_TCP_PORT not up"; exit 1; }; done
+W=0; until nc -z 127.0.0.1 "$FIX_TCP_PORT" 2>/dev/null; do sleep 0.5; W=$((W+1)); ((W > GATEWAY_PORT_TIMEOUT_SECS * 2)) && { echo "gateway $FIX_TCP_PORT not up"; exit 1; }; done
 # The TCP port alone isn't "ready to Logon": the gateway gates on EndBasicData (a client that connects
 # earlier just queues in the listen backlog and eventually times out) — see start-three-node-cluster.sh.
-W=0; until grep -q "Basic data loaded" "$FIX_LOG" 2>/dev/null; do sleep 0.5; W=$((W+1)); ((W>60)) && { echo "gateway never saw EndBasicData — its logon gate is still shut"; exit 1; }; done
+W=0; until grep -q "Basic data loaded" "$FIX_LOG" 2>/dev/null; do sleep 0.5; W=$((W+1)); ((W > APP_CATCHUP_TIMEOUT_SECS * 2)) && { echo "gateway never saw EndBasicData — its logon gate is still shut"; exit 1; }; done
 
 # Hot-standby gateway GW-B on member $STANDBY_MEMBER (port $STANDBY_PORT): shadows the tap, gate shut,
 # promoted in place of GW-A on a GatewayActive naming it (see gateway-failover-test.sh). Without this,
@@ -243,7 +267,7 @@ start_standby_gateway() {
   STANDBY_FIX_PID=$!
 }
 start_standby_gateway
-W=0; until grep -q "Caught up to live stream" "$STANDBY_FIX_LOG" 2>/dev/null; do sleep 0.5; W=$((W+1)); ((W>60)) && { echo "standby gateway never caught up"; exit 1; }; done
+W=0; until grep -q "Caught up to live stream" "$STANDBY_FIX_LOG" 2>/dev/null; do sleep 0.5; W=$((W+1)); ((W > APP_CATCHUP_TIMEOUT_SECS * 2)) && { echo "standby gateway never caught up"; exit 1; }; done
 log "cluster READY — gateway up (GW-A active, GW-B standby), consumer following live"
 
 # Which of GW-A/GW-B is currently serving — each gateway logs "is now active"/"is now standby" (only) when
@@ -371,7 +395,7 @@ restart_colocated_apps() {
        org.limitless.phixeron.replayer.ReplayerNode > "$LOG_DIR/replayer-$m.log" 2>&1 &
   REPLAYER_PIDS[$m]=$!
   until grep -q "serving replay" "$LOG_DIR/replayer-$m.log" 2>/dev/null; do
-    sleep 0.5; W=$((W+1)); ((W>60)) && { log "  WARN replayer-$m not serving after restart"; break; }
+    sleep 0.5; W=$((W+1)); ((W > APP_CATCHUP_TIMEOUT_SECS * 2)) && { log "  WARN replayer-$m not serving after restart"; break; }
   done
   PHIXERON_BASICDATA_AERON_DIR="${TMPDIR}phixeron-seq-aeron-${m}" PHIXERON_NODE_MEMBER_ID="$m" \
     PHIXERON_REPLAYER_CLIENT_ID=3 PHIXERON_BASICDATA_EGRESS_ENDPOINT="localhost:$(basicdata_egress_port "$m")" \
@@ -380,27 +404,27 @@ restart_colocated_apps() {
   if [[ "$m" == "$CN" ]]; then
     start_consumer
     W=0; until grep -q "following live" "$CONSUMER_LOG" 2>/dev/null; do
-      sleep 0.5; W=$((W+1)); ((W>60)) && { log "  WARN consumer not caught up after restart"; break; }
+      sleep 0.5; W=$((W+1)); ((W > APP_CATCHUP_TIMEOUT_SECS * 2)) && { log "  WARN consumer not caught up after restart"; break; }
     done
     start_gateway
     W=0; until nc -z 127.0.0.1 "$FIX_TCP_PORT" 2>/dev/null; do
-      sleep 0.5; W=$((W+1)); ((W>40)) && { log "  WARN gateway port $FIX_TCP_PORT not up after restart"; break; }
+      sleep 0.5; W=$((W+1)); ((W > GATEWAY_PORT_TIMEOUT_SECS * 2)) && { log "  WARN gateway port $FIX_TCP_PORT not up after restart"; break; }
     done
     W=0; until grep -q "Basic data loaded" "$FIX_LOG" 2>/dev/null; do
-      sleep 0.5; W=$((W+1)); ((W>60)) && { log "  WARN gateway never saw EndBasicData after restart"; break; }
+      sleep 0.5; W=$((W+1)); ((W > APP_CATCHUP_TIMEOUT_SECS * 2)) && { log "  WARN gateway never saw EndBasicData after restart"; break; }
     done
   else
     PHIXERON_ORDER_EXEC_AERON_DIR="${TMPDIR}phixeron-seq-aeron-${m}" PHIXERON_NODE_MEMBER_ID="$m" \
       stdbuf -oL -eL "$BUILD_DIR/OrderExecClient" > "$LOG_DIR/orderexec-$m.log" 2>&1 &
     EXTRA_CONSUMER_PIDS[$m]=$!
     W=0; until grep -q "following live" "$LOG_DIR/orderexec-$m.log" 2>/dev/null; do
-      sleep 0.5; W=$((W+1)); ((W>60)) && { log "  WARN orderexec-$m not caught up after restart"; break; }
+      sleep 0.5; W=$((W+1)); ((W > APP_CATCHUP_TIMEOUT_SECS * 2)) && { log "  WARN orderexec-$m not caught up after restart"; break; }
     done
   fi
   if [[ "$m" == "$STANDBY_MEMBER" ]]; then
     start_standby_gateway
     W=0; until grep -q "Caught up to live stream" "$STANDBY_FIX_LOG" 2>/dev/null; do
-      sleep 0.5; W=$((W+1)); ((W>60)) && { log "  WARN standby gateway not caught up after restart"; break; }
+      sleep 0.5; W=$((W+1)); ((W > APP_CATCHUP_TIMEOUT_SECS * 2)) && { log "  WARN standby gateway not caught up after restart"; break; }
     done
   fi
 }
@@ -408,23 +432,62 @@ restart_colocated_apps() {
 fault_kill_leader() {  # crash the leader -> real Raft failover -> restore it as a follower
   local L="$1" T; T="$(target_leader "$L")"   # every member is a legal kill target, so T is always the actual leader
   log "FAULT kill-leader: member $T"; kill "${SEQ_PIDS[$T]}" 2>/dev/null
-  local W=0; while kill -0 "${SEQ_PIDS[$T]}" 2>/dev/null; do sleep 0.2; W=$((W+1)); ((W>50)) && break; done  # let it actually die
+  local W=0; while kill -0 "${SEQ_PIDS[$T]}" 2>/dev/null; do sleep 0.2; W=$((W+1)); ((W > PROC_EXIT_TIMEOUT_SECS * 5)) && break; done  # let it actually die
   # Wait for a DIFFERENT member to win the election (a genuine failover). Restarting T too fast — before
   # the survivors elect — lets T just bounce and reclaim leadership, which half-wedges the cluster instead
   # of failing over. (If we killed a follower, current_leader is unchanged and this returns immediately.)
   local NL="" W2=0
-  until NL="$(current_leader)"; [[ -n "$NL" && "$NL" != "$T" ]]; do sleep 0.5; W2=$((W2+1)); ((W2>120)) && break; done
+  until NL="$(current_leader)"; [[ -n "$NL" && "$NL" != "$T" ]]; do sleep 0.5; W2=$((W2+1)); ((W2 > ELECTION_TIMEOUT_SECS * 2)) && break; done
   log "  new leader: member ${NL:-<none>}"
-  sleep 3                                                       # let the new leader settle
-  start_seq "$T"; wait_running "$T" || log "  WARN member $T did not restart"
+  sleep 1                                                       # let the new leader settle (election measures 0.5s)
+  start_seq "$T"; assert_restarted "$T"
   sleep 2                                                       # let the restored member rejoin (full-log replay)
   restart_colocated_apps "$T"
 }
 fault_kill_follower() {  # crash a follower -> should be transparent (quorum holds) -> restart it
   local L="$1" F; F="$(a_follower "$L")"
   log "FAULT kill-follower: member $F"; kill "${SEQ_PIDS[$F]}" 2>/dev/null; sleep 1
-  start_seq "$F"; wait_running "$F" || log "  WARN member $F did not restart"
+  start_seq "$F"; assert_restarted "$F"
   restart_colocated_apps "$F"
+}
+# The corrective action Aeron's own error message names, run on a SIGKILLed member's archive before
+# restarting it. A kill mid-write can leave the last data fragment of a recording straddling a page
+# boundary — unverifiable, so Archive.launch REFUSES to open the catalog ("Found potentially incomplete
+# last fragment straddling page boundary in file: …/1-0.rec. Run `ArchiveTool verify` for corrective
+# action!") and the member never comes back for the rest of the run. Observed on the cluster LOG
+# recording (streamId 100), not just the tap. verify truncates the torn fragment and writes the
+# recovered stopPosition into the catalog descriptor, which is what stops the next boot from tripping
+# over it: Catalog.refreshAndFixDescriptor only recomputes a stopPosition that is still NULL_POSITION.
+# Nothing committed is lost — the fragment was never fully written, so it is behind this member's acked
+# append position, and it re-replicates from the leader on rejoin.
+# Only the SIGKILL path needs this: every other fault here leaves through the shutdown barrier
+# (fault_tap_stall's self-termination included, SequencerNode.java), so the Archive gets a clean close.
+repair_archive() {  # repair_archive <memberId>
+  # One `local` per variable, deliberately: bash 3.2 (the macOS default) expands $m in the SAME
+  # `local` statement from the OUTER scope rather than from the local just assigned, so a combined
+  # declaration silently aimed every repair at whatever the last `for m in 0 1 2` loop left behind.
+  local m="$1"
+  local archive="$BASE_DIR/archive-$m"
+  local out="$LOG_DIR/archive-verify-$m.log"
+  [[ -f "$archive/archive.catalog" ]] || return 0
+  # Never touch a LIVE archive. verify opens the catalog READ-WRITE and writes a stopPosition into
+  # every in-progress recording — bookkeeping the running archive owns — which leaves that node's
+  # recording looking stopped and fails the convergence check at the end of the run. The call site
+  # only ever passes a member it has just watched die, so this is a backstop, not a race.
+  kill -0 "${SEQ_PIDS[$m]:-0}" 2>/dev/null \
+    && { log "  WARN member $m still running — skipping archive repair"; return 0; }
+  # verify PROMPTS on stdin before truncating ("(y) to truncate the file or (n) to do nothing"), so feed
+  # it an endless `yes` — one prompt per straddling recording, and a bare `printf y` would leave a second
+  # prompt reading EOF. Redirected from a process substitution rather than piped: under `pipefail` the
+  # SIGPIPE that kills `yes` when the JVM exits would otherwise mask ArchiveTool's own exit status.
+  if java "${JAVA_OPTS[@]}" -cp "$JAR" io.aeron.archive.ArchiveTool "$archive" verify \
+       < <(yes) >> "$out" 2>&1; then
+    grep -q "straddles a page boundary" "$out" \
+      && log "  repaired member $m's archive: truncated a torn last fragment"
+  else
+    log "  WARN ArchiveTool verify reported errors for member $m (see $out)"
+  fi
+  return 0   # a clean archive prints nothing to grep for; that is not a failure
 }
 fault_sigkill_node() {  # SIGKILL a follower — driver dies with NO clean shutdown, so clients must time out
   # The harsher twin of fault_kill_follower, and the only fault that exercises the media-driver TIMEOUT
@@ -437,21 +500,22 @@ fault_sigkill_node() {  # SIGKILL a follower — driver dies with NO clean shutd
   local L="$1" F; F="$(a_follower "$L")"
   log "FAULT sigkill-node: SIGKILL member $F (expect co-located clients to exit via the 10s driver timeout)"
   kill -9 "${SEQ_PIDS[$F]}" 2>/dev/null
-  local W=0; while kill -0 "${SEQ_PIDS[$F]}" 2>/dev/null; do sleep 0.2; W=$((W+1)); ((W>50)) && break; done
+  local W=0; while kill -0 "${SEQ_PIDS[$F]}" 2>/dev/null; do sleep 0.2; W=$((W+1)); ((W > PROC_EXIT_TIMEOUT_SECS * 5)) && break; done
   # A SIGKILLed node never unwinds, so its Archive/consensus mark files are left "active" — restarting
   # before Aeron ages them out fails with "active mark file detected". Wait out the mark-file liveness
   # timeout (driverTimeoutMs, 10s) before restarting, or the round after this one fails for that reason
   # rather than for anything this fault is testing. This also gives the co-located clients the full
   # timeout window they need, which check_driver_loss_failfast then asserts they used.
   sleep "$SIGKILL_MARKFILE_SETTLE_SECS"
-  start_seq "$F"; wait_running "$F" || log "  WARN member $F did not restart"
+  repair_archive "$F"
+  start_seq "$F"; assert_restarted "$F"
   sleep 2                                                       # let the restored member rejoin (full-log replay)
   restart_colocated_apps "$F"
 }
 fault_pause_node() {  # SIGSTOP a killable node (GC-pause / stall simulation: socket stays half-open) then SIGCONT
   local L="$1" P; P=$(( RANDOM % 2 == 0 ? $(target_leader "$L") : $(a_follower "$L") ))
-  log "FAULT pause-node: SIGSTOP member $P for 3s"; kill -STOP "${SEQ_PIDS[$P]}" 2>/dev/null
-  sleep 3; kill -CONT "${SEQ_PIDS[$P]}" 2>/dev/null; log "  SIGCONT member $P"
+  log "FAULT pause-node: SIGSTOP member $P for ${PAUSE_SECS}s"; kill -STOP "${SEQ_PIDS[$P]}" 2>/dev/null
+  sleep "$PAUSE_SECS"; kill -CONT "${SEQ_PIDS[$P]}" 2>/dev/null; log "  SIGCONT member $P"
 }
 fault_tap_drop() {  # drop one live tap frame at the consumer -> gap -> re-walk recovery (SIGUSR1 path)
   log "FAULT tap-drop: SIGUSR1 consumer (arm one-frame live-tap drop)"; kill -USR1 "$CONSUMER_PID" 2>/dev/null
@@ -464,13 +528,13 @@ fault_tap_stall() {  # kill a node's local tap recording -> it must notice withi
   local L="$1" T; T="$(a_follower "$L")"
   log "FAULT tap-stall: stop member $T's tap recording (expect FATAL + self-termination)"
   touch "$BASE_DIR/cluster-$T/tap-stall-fault"
-  local W=0; while kill -0 "${SEQ_PIDS[$T]}" 2>/dev/null; do sleep 0.2; W=$((W+1)); ((W>50)) && break; done
+  local W=0; while kill -0 "${SEQ_PIDS[$T]}" 2>/dev/null; do sleep 0.2; W=$((W+1)); ((W > TAP_STALL_DEADLINE_SECS * 5)) && break; done
   if kill -0 "${SEQ_PIDS[$T]}" 2>/dev/null; then
-    log "  INVARIANT FAIL: member $T kept running for 10s with no tap recording"
+    log "  INVARIANT FAIL: member $T kept running for ${TAP_STALL_DEADLINE_SECS}s with no tap recording"
     # Still wait for it to actually die before restarting below, or the restart hits its own archive
     # mark file ("active mark file detected") and the round after this one fails for the wrong reason.
     kill "${SEQ_PIDS[$T]}" 2>/dev/null
-    W=0; while kill -0 "${SEQ_PIDS[$T]}" 2>/dev/null; do sleep 0.2; W=$((W+1)); ((W>50)) && break; done
+    W=0; while kill -0 "${SEQ_PIDS[$T]}" 2>/dev/null; do sleep 0.2; W=$((W+1)); ((W > PROC_EXIT_TIMEOUT_SECS * 5)) && break; done
   else
     grep -q "FATAL:.*terminating this node" "$LOG_DIR/seq-$T.log" \
       && log "  ok: member $T detected the dead recording and terminated" \
@@ -478,7 +542,7 @@ fault_tap_stall() {  # kill a node's local tap recording -> it must notice withi
   fi
   rm -f "$BASE_DIR/cluster-$T/tap-stall-fault"   # else the restarted node re-arms it immediately
   sleep 2
-  start_seq "$T"; wait_running "$T" || log "  WARN member $T did not restart"
+  start_seq "$T"; assert_restarted "$T"
   sleep 2                                                       # let the restored member rejoin (full-log replay)
   restart_colocated_apps "$T"
 }
@@ -539,7 +603,11 @@ check_invariants() {
     fi
   fi
   DRIVER_LOSS_FAIL=0
-  # (e) The rigorous safety property (gap-free, monotone globalSeqNo) is asserted ONCE at end of run by
+  # (e) every member this round's fault restarted came back, as observed by assert_restarted. Reset
+  #     either way, same as (d), so a violation is attributed to the round that caused it.
+  [[ "$RESTART_FAIL" == "1" ]] && fail=1
+  RESTART_FAIL=0
+  # (f) The rigorous safety property (gap-free, monotone globalSeqNo) is asserted ONCE at end of run by
   #     verify_sequence below — decoding it every round would re-dump the whole recording each time.
   return $fail
 }
