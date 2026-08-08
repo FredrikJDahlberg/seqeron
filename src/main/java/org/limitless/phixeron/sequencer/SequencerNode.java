@@ -174,7 +174,6 @@ public final class SequencerNode {
             .errorHandler(t -> {
                 Logger.error(Logger.Component.ConsensusModule, Logger.EventCode.ConsensusModuleError,
                         memberId, "%s", t.getMessage());
-                t.printStackTrace();
             });
 
         // A node that can no longer record its own tap must not keep sequencing history it cannot keep
@@ -201,7 +200,6 @@ public final class SequencerNode {
             .errorHandler(t -> {
                 Logger.error(Logger.Component.SequencerService, Logger.EventCode.ServiceError, memberId,
                         "%s", t.getMessage());
-                t.printStackTrace();
             });
 
         Logger.info(Logger.Component.SequencerNode, memberId,

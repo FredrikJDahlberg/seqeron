@@ -330,8 +330,11 @@ class ReplayerStreamReceiver
 
         // Re-request if a prior request went unanswered (Replayer still starting, request lost, or
         // Replayer restarted — design §6). Covers both "no Replaying yet" and "Replaying seen but the
-        // replay image never attached".
-        if (m_awaitingReplay && (nowMs() - m_lastRequestMs) > RESEND_INTERVAL_MS)
+        // replay image never attached". The request publication connecting is a separate, much
+        // shorter race (addPublication is async) — retry every poll while it is still pending rather
+        // than eating a full RESEND_INTERVAL_MS of pure cold-start latency for it.
+        const bool requestPubPending = m_requestPubRegId >= 0 && (!m_requestPub || !m_requestPub->isConnected());
+        if (m_awaitingReplay && (requestPubPending || (nowMs() - m_lastRequestMs) > RESEND_INTERVAL_MS))
         {
             requestReplay(m_walkSegmentIndex, m_reqFromPosition);  // re-send the same request verbatim
         }

@@ -57,6 +57,7 @@ enum class EventCode : std::uint16_t
     ResendIgnored,
     ArchiveScanStalled,
     ArchiveRecoveryFailed,
+    ArchiveConnectFailed,
     MessageRejected,
     StreamCorrupt,
     MessageTooLarge,

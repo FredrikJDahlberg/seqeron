@@ -1,16 +1,16 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="1680" viewBox="0 0 1400 1680" font-family="Helvetica, Arial, sans-serif">
-<rect x="0" y="0" width="1400" height="1680" fill="#ffffff"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="2190" viewBox="0 0 1400 2190" font-family="Helvetica, Arial, sans-serif">
+<rect x="0" y="0" width="1400" height="2190" fill="#ffffff"/>
 <defs>
   <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" orient="auto-start-reverse">
     <path d="M0,0 L10,5 L0,10 z" fill="#333333"/>
   </marker>
 </defs>
-<text x="700" y="34" text-anchor="middle" font-size="19" font-weight="bold" fill="#333333">Replayer protocol — cold-start walk, live-tap follow, gap recovery</text>
+<text x="700" y="34" text-anchor="middle" font-size="19" font-weight="bold" fill="#333333">Replayer protocol — cold-start walk, live-tap follow, gap recovery, refusal &amp; stall</text>
 <text x="700" y="54" text-anchor="middle" font-size="12" fill="#666666">ReplayerStreamReceiver (C++) &#8596; ReplayerService (Java) — node-local aeron:ipc, streams 201/202/203/205</text>
-<line x1="150" y1="126" x2="150" y2="1594" stroke="#999999" stroke-width="1.5" stroke-dasharray="5,4"/>
-<line x1="520" y1="126" x2="520" y2="1594" stroke="#999999" stroke-width="1.5" stroke-dasharray="5,4"/>
-<line x1="900" y1="126" x2="900" y2="1594" stroke="#999999" stroke-width="1.5" stroke-dasharray="5,4"/>
-<line x1="1230" y1="126" x2="1230" y2="1594" stroke="#999999" stroke-width="1.5" stroke-dasharray="5,4"/>
+<line x1="150" y1="126" x2="150" y2="2076" stroke="#999999" stroke-width="1.5" stroke-dasharray="5,4"/>
+<line x1="520" y1="126" x2="520" y2="2076" stroke="#999999" stroke-width="1.5" stroke-dasharray="5,4"/>
+<line x1="900" y1="126" x2="900" y2="2076" stroke="#999999" stroke-width="1.5" stroke-dasharray="5,4"/>
+<line x1="1230" y1="126" x2="1230" y2="2076" stroke="#999999" stroke-width="1.5" stroke-dasharray="5,4"/>
 <rect x="110" y="466" width="1160" height="162" fill="none" stroke="#888888" stroke-width="1.3" stroke-dasharray="4,3" rx="4"/>
 <path d="M110,466 h228 v24 l-6,6 h-222 z" fill="#eeeeee" stroke="#888888" stroke-width="1"/>
 <text x="118" y="480" font-size="10.5" font-weight="bold" fill="#333333">LOOP</text>
@@ -27,29 +27,29 @@
 <rect x="55" y="66" width="190" height="66" rx="7" fill="#f2f2f2" stroke="#444444" stroke-width="1.4"/>
 <text x="150" y="88" text-anchor="middle" font-size="13" font-weight="bold" fill="#333333">Live Tap</text>
 <text x="150" y="104" text-anchor="middle" font-size="10" fill="#666666">stream 205, untethered</text>
-<rect x="55" y="1598" width="190" height="66" rx="7" fill="#f2f2f2" stroke="#444444" stroke-width="1.4"/>
-<text x="150" y="1620" text-anchor="middle" font-size="13" font-weight="bold" fill="#333333">Live Tap</text>
-<text x="150" y="1636" text-anchor="middle" font-size="10" fill="#666666">stream 205, untethered</text>
+<rect x="55" y="2092" width="190" height="66" rx="7" fill="#f2f2f2" stroke="#444444" stroke-width="1.4"/>
+<text x="150" y="2114" text-anchor="middle" font-size="13" font-weight="bold" fill="#333333">Live Tap</text>
+<text x="150" y="2130" text-anchor="middle" font-size="10" fill="#666666">stream 205, untethered</text>
 <rect x="385" y="66" width="270" height="66" rx="7" fill="#f2f2f2" stroke="#444444" stroke-width="1.4"/>
 <text x="520" y="88" text-anchor="middle" font-size="13" font-weight="bold" fill="#333333">ReplayerStreamReceiver</text>
 <text x="520" y="104" text-anchor="middle" font-size="10" fill="#666666">App (FixGateway / OrderExecClient /</text>
 <text x="520" y="118" text-anchor="middle" font-size="10" fill="#666666">BasicDataClient), C++</text>
-<rect x="385" y="1598" width="270" height="66" rx="7" fill="#f2f2f2" stroke="#444444" stroke-width="1.4"/>
-<text x="520" y="1620" text-anchor="middle" font-size="13" font-weight="bold" fill="#333333">ReplayerStreamReceiver</text>
-<text x="520" y="1636" text-anchor="middle" font-size="10" fill="#666666">App (FixGateway / OrderExecClient /</text>
-<text x="520" y="1650" text-anchor="middle" font-size="10" fill="#666666">BasicDataClient), C++</text>
+<rect x="385" y="2092" width="270" height="66" rx="7" fill="#f2f2f2" stroke="#444444" stroke-width="1.4"/>
+<text x="520" y="2114" text-anchor="middle" font-size="13" font-weight="bold" fill="#333333">ReplayerStreamReceiver</text>
+<text x="520" y="2130" text-anchor="middle" font-size="10" fill="#666666">App (FixGateway / OrderExecClient /</text>
+<text x="520" y="2144" text-anchor="middle" font-size="10" fill="#666666">BasicDataClient), C++</text>
 <rect x="790" y="66" width="220" height="66" rx="7" fill="#f2f2f2" stroke="#444444" stroke-width="1.4"/>
 <text x="900" y="88" text-anchor="middle" font-size="13" font-weight="bold" fill="#333333">ReplayerService</text>
 <text x="900" y="104" text-anchor="middle" font-size="10" fill="#666666">Java, one per cluster member</text>
-<rect x="790" y="1598" width="220" height="66" rx="7" fill="#f2f2f2" stroke="#444444" stroke-width="1.4"/>
-<text x="900" y="1620" text-anchor="middle" font-size="13" font-weight="bold" fill="#333333">ReplayerService</text>
-<text x="900" y="1636" text-anchor="middle" font-size="10" fill="#666666">Java, one per cluster member</text>
+<rect x="790" y="2092" width="220" height="66" rx="7" fill="#f2f2f2" stroke="#444444" stroke-width="1.4"/>
+<text x="900" y="2114" text-anchor="middle" font-size="13" font-weight="bold" fill="#333333">ReplayerService</text>
+<text x="900" y="2130" text-anchor="middle" font-size="10" fill="#666666">Java, one per cluster member</text>
 <rect x="1115" y="66" width="230" height="66" rx="7" fill="#f2f2f2" stroke="#444444" stroke-width="1.4"/>
 <text x="1230" y="88" text-anchor="middle" font-size="13" font-weight="bold" fill="#333333">Aeron Archive</text>
 <text x="1230" y="104" text-anchor="middle" font-size="10" fill="#666666">local, node-co-located recording</text>
-<rect x="1115" y="1598" width="230" height="66" rx="7" fill="#f2f2f2" stroke="#444444" stroke-width="1.4"/>
-<text x="1230" y="1620" text-anchor="middle" font-size="13" font-weight="bold" fill="#333333">Aeron Archive</text>
-<text x="1230" y="1636" text-anchor="middle" font-size="10" fill="#666666">local, node-co-located recording</text>
+<rect x="1115" y="2092" width="230" height="66" rx="7" fill="#f2f2f2" stroke="#444444" stroke-width="1.4"/>
+<text x="1230" y="2114" text-anchor="middle" font-size="13" font-weight="bold" fill="#333333">Aeron Archive</text>
+<text x="1230" y="2130" text-anchor="middle" font-size="10" fill="#666666">local, node-co-located recording</text>
 <rect x="40" y="162" width="1320" height="28" rx="5" fill="#e4ecf7" stroke="#7a93b8" stroke-width="1"/>
 <text x="700" y="181" text-anchor="middle" font-size="12.5" font-weight="bold" fill="#1f3a5f">Cold start — walk the node's recording chain (segmentIndex 0, 1, 2, ...)</text>
 <line x1="520" y1="244" x2="900" y2="244" stroke="#333333" stroke-width="1.5" marker-end="url(#arrow)"/>
@@ -107,4 +107,27 @@
 <line x1="520" y1="1558" x2="900" y2="1558" stroke="#333333" stroke-width="1.5" marker-end="url(#arrow)"/>
 <text x="710" y="1537" text-anchor="middle" font-size="11" fill="#333333">ReplayRequest(segmentIndex=0, fromPosition=0) — fall back</text>
 <text x="710" y="1550" text-anchor="middle" font-size="11" fill="#333333">to a full chain re-walk</text>
+<rect x="40" y="1640" width="1320" height="28" rx="5" fill="#e4ecf7" stroke="#7a93b8" stroke-width="1"/>
+<text x="700" y="1659" text-anchor="middle" font-size="12.5" font-weight="bold" fill="#1f3a5f">Replayer cannot serve — the app holds, and dispatches nothing</text>
+<line x1="520" y1="1710" x2="900" y2="1710" stroke="#333333" stroke-width="1.5" marker-end="url(#arrow)"/>
+<text x="710" y="1702" text-anchor="middle" font-size="11" fill="#333333">ReplayRequest(reqId=n, segmentIndex=s, fromPosition=p)</text>
+<line x1="900" y1="1768" x2="520" y2="1768" stroke="#333333" stroke-width="1.5" stroke-dasharray="6,4" marker-end="url(#arrow)"/>
+<text x="710" y="1747" text-anchor="middle" font-size="11" fill="#333333">ReplayPending(reqId=n) — not ready yet, no free slot (MAX_CONCURRENT_REPLAYS=2),</text>
+<text x="710" y="1760" text-anchor="middle" font-size="11" fill="#333333">local archive STALLED, or nothing recorded yet</text>
+<rect x="220" y="1788" width="600" height="30" rx="5" fill="#f2f2f2" stroke="#444444" stroke-width="1"/>
+<text x="520" y="1804" text-anchor="middle" font-size="10.3" font-style="italic" fill="#333333">holds at the gap; the ~500ms resend timer is the retry, not a client-side queue</text>
+<line x1="900" y1="1874" x2="520" y2="1874" stroke="#333333" stroke-width="1.5" stroke-dasharray="6,4" marker-end="url(#arrow)"/>
+<text x="710" y="1866" text-anchor="middle" font-size="11" fill="#333333">ReplayUnavailable(reqId=n) — this node failed its globalSeqNo-1 integrity check</text>
+<rect x="180" y="1894" width="680" height="62" rx="5" fill="#f2f2f2" stroke="#444444" stroke-width="1"/>
+<text x="520" y="1910" text-anchor="middle" font-size="10.3" font-style="italic" fill="#333333">no valid history to serve, so the app never goes caught up and every consumer gate stays</text>
+<text x="520" y="1926" text-anchor="middle" font-size="10.3" font-style="italic" fill="#333333">shut (leader-only emission, the gateway&#8217;s tap-stall watchdog). Deliberately NOT fatal: repair</text>
+<text x="520" y="1942" text-anchor="middle" font-size="10.3" font-style="italic" fill="#333333">the archive and restart the Replayer — the resend timer resumes it, with no app restart.</text>
+<rect x="40" y="1976" width="1320" height="28" rx="5" fill="#e4ecf7" stroke="#7a93b8" stroke-width="1"/>
+<text x="700" y="1995" text-anchor="middle" font-size="12.5" font-weight="bold" fill="#1f3a5f">A replay that stops under us — re-request the same segment verbatim</text>
+<line x1="520" y1="2032" x2="900" y2="2032" stroke="#333333" stroke-width="1.5" marker-end="url(#arrow)"/>
+<text x="710" y="2024" text-anchor="middle" font-size="11" fill="#333333">ReplayRequest(reqId=n+1, same segmentIndex, same fromPosition)</text>
+<rect x="930" y="2002" width="440" height="62" rx="5" fill="#f2f2f2" stroke="#444444" stroke-width="1"/>
+<text x="1150" y="2018" text-anchor="middle" font-size="10.3" font-style="italic" fill="#333333">no progress for 5s (REPLAY_STALL_TIMEOUT_MS), or the image</text>
+<text x="1150" y="2034" text-anchor="middle" font-size="10.3" font-style="italic" fill="#333333">closed SHORT of catchUpPosition — only a close AT the bound</text>
+<text x="1150" y="2050" text-anchor="middle" font-size="10.3" font-style="italic" fill="#333333">is completion; advancing there would skip a whole segment</text>
 </svg>

@@ -192,23 +192,25 @@ inline std::shared_ptr<aeron::archive::client::AeronArchive> connectToArchiveWit
         }
         catch (const std::exception& ex)
         {
-            std::fprintf(stderr, "%s Archive connect to %s failed: %s\n", logPrefix, endpoint.c_str(), ex.what());
+            diag::Logger::warn(diag::Component::ClusterStreamClient, diag::EventCode::ArchiveConnectFailed,
+                               "%s Archive connect to %s failed: %s", logPrefix, endpoint.c_str(), ex.what());
             lastError = ex.what();
             continue;
         }
 
         if (!findClusterStreamRecording(archive, recordingId, catchUpPosition))
         {
-            std::printf(
-                "%s Connected to %s but it has no cluster stream recording"
-                " (not currently/recently leader) — trying next endpoint\n",
-                logPrefix, endpoint.c_str());
+            diag::Logger::info(diag::Component::ClusterStreamClient,
+                               "%s Connected to %s but it has no cluster stream recording"
+                               " (not currently/recently leader) — trying next endpoint",
+                               logPrefix, endpoint.c_str());
             lastError = "connected but no cluster stream recording found on " + endpoint;
             continue;
         }
 
-        std::printf("%s Connected to Aeron Archive at %s (holds the cluster stream recording)\n", logPrefix,
-                    endpoint.c_str());
+        diag::Logger::info(diag::Component::ClusterStreamClient,
+                           "%s Connected to Aeron Archive at %s (holds the cluster stream recording)", logPrefix,
+                           endpoint.c_str());
         return archive;
     }
 
@@ -249,7 +251,9 @@ inline std::shared_ptr<aeron::archive::client::AeronArchive> connectLocalArchive
         throw std::runtime_error(std::string(logPrefix) + " Co-located archive has no cluster stream recording");
     }
 
-    std::printf("%s Connected to co-located Aeron Archive via IPC (holds the cluster stream recording)\n", logPrefix);
+    diag::Logger::info(diag::Component::ClusterStreamClient,
+                       "%s Connected to co-located Aeron Archive via IPC (holds the cluster stream recording)",
+                       logPrefix);
     return archive;
 }
 
