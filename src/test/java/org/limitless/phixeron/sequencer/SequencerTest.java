@@ -573,7 +573,8 @@ class SequencerTest {
         final long gatewaySession = 0xA11CEL;
         seq.sequenceMessage(buf, 0, encodeIngressGatewayStarted(buf, 0, 5), gatewaySession, TIMESTAMP);
 
-        assertEquals(Sequencer.NO_FRAME, seq.sessionClosed(gatewaySession, TIMESTAMP + 1));
+        assertEquals(Sequencer.NO_PROMOTION_TARGET, seq.sessionClosed(gatewaySession, TIMESTAMP + 1),
+                     "distinct from NO_FRAME: this WAS a gateway session, just one with no standby");
         assertEquals(2L, seq.globalSeqNo(), "a promotion with no target consumes no sequence number");
     }
 
@@ -588,7 +589,7 @@ class SequencerTest {
         final long rogueSession = 0xC0FFEEL;
         seq.sequenceMessage(buf, 0, encodeIngressGatewayStarted(buf, 0, 99), rogueSession, TIMESTAMP);
 
-        assertEquals(Sequencer.NO_FRAME, seq.sessionClosed(rogueSession, TIMESTAMP + 1),
+        assertEquals(Sequencer.NO_PROMOTION_TARGET, seq.sessionClosed(rogueSession, TIMESTAMP + 1),
                      "an instance with no Gateway row resolves to no group, so there is no sibling to promote");
     }
 

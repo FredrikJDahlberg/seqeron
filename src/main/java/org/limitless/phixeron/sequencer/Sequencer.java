@@ -72,6 +72,15 @@ public final class Sequencer {
     /** {@link #leadershipChanged} and friends return this when the event produces no frame. */
     public static final int NO_FRAME = 0;
 
+    /**
+     * {@link #sessionClosed} returns this instead of {@link #NO_FRAME} when the closing session <em>was</em>
+     * an active gateway's, but {@link #promotionTarget} found no standby to hand over to (fail closed
+     * rather than name a nonexistent instance). Distinct from {@code NO_FRAME} so the caller can tell "this
+     * session was never a gateway's" from "a gateway just went away and nothing replaced it" — the latter
+     * leaves the cluster with no active instance of that logical gateway and is worth alerting on.
+     */
+    public static final int NO_PROMOTION_TARGET = -1;
+
     /** No gateway instance: {@link #promotionTarget} found no sibling, {@link #designatedPrimaryGatewayId} no rank-0 row. */
     private static final int NO_GATEWAY_ID = -1;
 
@@ -439,6 +448,8 @@ public final class Sequencer {
      * {@code GatewayStarted}), promote a standby of the same logical gateway; otherwise no frame.
      * @param sessionId session identity
      * @param timestamp now
+     * @return a {@code GatewayActive} frame length, {@link #NO_FRAME} if this wasn't a gateway session, or
+     *     {@link #NO_PROMOTION_TARGET} if it was one but no standby could be found
      */
     public int sessionClosed(final long sessionId, final long timestamp) {
         final Integer closedGatewayId = activeGatewaySession.remove(sessionId);
@@ -447,7 +458,14 @@ public final class Sequencer {
         }
         final int promoted = promotionTarget(closedGatewayId);
         if (promoted == NO_GATEWAY_ID) {
-            return NO_FRAME;  // no sibling to hand over to — fail closed rather than name a nonexistent instance
+            // fail closed rather than name a nonexistent instance — but this is a real anomaly (the
+            // cluster now has no active instance of this logical gateway), unlike an ordinary NO_FRAME,
+            // so it is worth its own log line rather than passing silently like a non-gateway session close.
+            Logger.error(Logger.Component.Sequencer, Logger.EventCode.GatewayPromotionFailed, memberId,
+                    "gateway instance %d's session closed with no standby to promote — this logical "
+                    + "gateway has no active instance until one starts (globalSeqNo stays %d)",
+                    closedGatewayId, globalSeqNo);
+            return NO_PROMOTION_TARGET;
         }
         return gatewayActive(promoted, timestamp);
     }

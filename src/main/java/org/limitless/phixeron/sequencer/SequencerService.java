@@ -246,6 +246,7 @@ public final class SequencerService implements ClusteredService {
     private Counter currentLeaderMemberIdCounter;
     private Counter lastTickTimestampCounter;
     private Counter gatewayPromotionCounter;
+    private Counter gatewayPromotionFailedCounter;
     private Counter bootstrapActivatedCounter;
     private Counter connectedClientsCounter;
     private Counter messagesSequencedCounter;
@@ -374,6 +375,9 @@ public final class SequencerService implements ClusteredService {
             "phixeron.sequencer.lastTickTimestamp member=" + memberId, memberId);
         gatewayPromotionCounter = PhixeronCounters.addCounter(aeron, PhixeronCounters.SEQUENCER_GATEWAY_PROMOTION_COUNT_TYPE_ID,
             "phixeron.sequencer.gatewayPromotionCount member=" + memberId, memberId);
+        gatewayPromotionFailedCounter = PhixeronCounters.addCounter(aeron,
+            PhixeronCounters.SEQUENCER_GATEWAY_PROMOTION_FAILED_COUNT_TYPE_ID,
+            "phixeron.sequencer.gatewayPromotionFailedCount member=" + memberId, memberId);
         bootstrapActivatedCounter = PhixeronCounters.addCounter(aeron, PhixeronCounters.SEQUENCER_BOOTSTRAP_ACTIVATED_TYPE_ID,
             "phixeron.sequencer.bootstrapActivated member=" + memberId, memberId);
         connectedClientsCounter = PhixeronCounters.addCounter(aeron, PhixeronCounters.SEQUENCER_CONNECTED_CLIENTS_TYPE_ID,
@@ -401,7 +405,12 @@ public final class SequencerService implements ClusteredService {
     public void onSessionClose(final ClientSession session, final long timestamp, final CloseReason closeReason) {
         ensureCounters();
         final int activation = sequencer.sessionClosed(session.id(), timestamp);
-        if (activation != Sequencer.NO_FRAME) {
+        if (activation == Sequencer.NO_PROMOTION_TARGET) {
+            // A gateway session closed but nothing replaced it — the cluster is gateway-less for this
+            // logical gateway until an instance starts. Sequencer already logged the specifics; this side
+            // only needs to surface it as an operator-visible counter, distinct from gatewayPromotionCounter.
+            gatewayPromotionFailedCounter.increment();
+        } else if (activation != Sequencer.NO_FRAME) {
             gatewayPromotionCounter.increment();
             Logger.info(Logger.Component.SequencerService, cluster.memberId(),
                     "gateway session %d closed (%s) — promoting standby", session.id(), closeReason);
@@ -630,7 +639,7 @@ public final class SequencerService implements ClusteredService {
         final Counter[] counters = {
             globalSeqNoCounter, tapBackPressureAlertCounter, tapStalledCounter, rejectedIngressCounter,
             leadershipChangeCounter, currentLeaderMemberIdCounter, lastTickTimestampCounter, gatewayPromotionCounter,
-            bootstrapActivatedCounter, connectedClientsCounter, messagesSequencedCounter
+            gatewayPromotionFailedCounter, bootstrapActivatedCounter, connectedClientsCounter, messagesSequencedCounter
         };
         for (final Counter counter : counters) {
             if (counter != null) {

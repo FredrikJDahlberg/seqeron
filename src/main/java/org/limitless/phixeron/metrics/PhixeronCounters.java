@@ -55,6 +55,14 @@ public final class PhixeronCounters {
     /** Count of ingress messages successfully sequenced; {@code rate()} over this is ingress throughput. */
     public static final int SEQUENCER_INGRESS_MESSAGES_TYPE_ID = 5010;
 
+    /**
+     * Count of gateway session closes that found no standby to promote ({@code
+     * Sequencer.NO_PROMOTION_TARGET}): the cluster is left with no active instance of that logical
+     * gateway until one starts. Distinct from a session close that was never a gateway's at all, which
+     * this counter does not see.
+     */
+    public static final int SEQUENCER_GATEWAY_PROMOTION_FAILED_COUNT_TYPE_ID = 5011;
+
     // ── ReplayerService (per-node replay server) ───────────────────────────────
     public static final int REPLAYER_TYPE_ID_MIN = 5100;
     public static final int REPLAYER_TYPE_ID_MAX = 5199;
