@@ -107,8 +107,8 @@ import org.limitless.phixeron.util.Logger;
  * that died or lost its release, not the primary path (design §5's untether/timeout is a stronger
  * version of the same idea).
  *
- * <p><b>Slice scope.</b> The shared bootstrap replay for many co-starting replicas (design §4/§8) is
- * a documented follow-up — each app still gets its own replay.
+ * <p><b>Scope.</b> Shared bootstrap replay for many co-starting replicas is deliberately not
+ * implemented — each app gets its own walk. See design §2.4 for why it was designed and rejected.
  */
 public final class ReplayerService {
     /** Node-local IPC channel every ReplayerService↔app stream runs over. */
