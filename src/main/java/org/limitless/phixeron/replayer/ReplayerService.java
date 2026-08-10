@@ -151,7 +151,7 @@ public final class ReplayerService {
      * every replica is caught up (the readiness barrier), so this is a makespan bound, not a
      * starvation one.
      */
-    private static final int MAX_CONCURRENT_REPLAYS = 2;
+    private static final int MAX_CONCURRENT_REPLAYS = 4;
 
     /**
      * A {@code Replaying.replaySessionId} of this value means "you are already at the tip; there is
@@ -191,6 +191,9 @@ public final class ReplayerService {
     private final AeronArchive archive;
     private final int memberId;
     private final IdleStrategy idleStrategy;
+
+    /** Brings the whole process down; wired by {@link ReplayerNode}. See {@link #fatalDutyCycleFailure}. */
+    private final Runnable fatalHandler;
 
     // ── ReplayerService → apps control + apps → ReplayerService requests ────────────────────
     private final ExclusivePublication controlPub;
@@ -263,12 +266,18 @@ public final class ReplayerService {
     private final FragmentHandler requestHandler =
         (buffer, offset, length, header) -> onRequest(buffer, offset, length);
 
+    /**
+     * @param fatalHandler run once, from the duty-cycle thread, when the duty cycle dies on an uncaught
+     *                     exception — see {@link #fatalDutyCycleFailure}. Must not block: it is expected
+     *                     to signal a shutdown and return, not to perform one.
+     */
     public ReplayerService(final Aeron aeron, final AeronArchive archive, final int memberId,
-                           final IdleStrategy idleStrategy) {
+                           final IdleStrategy idleStrategy, final Runnable fatalHandler) {
         this.aeron = aeron;
         this.archive = archive;
         this.memberId = memberId;
         this.idleStrategy = idleStrategy;
+        this.fatalHandler = fatalHandler;
 
         this.controlPub = aeron.addExclusivePublication(IPC_CHANNEL, CONTROL_STREAM_ID);
         this.requestSub = aeron.addSubscription(IPC_CHANNEL, REQUEST_STREAM_ID);
@@ -301,12 +310,34 @@ public final class ReplayerService {
     public void run(final AtomicBoolean running) {
         Logger.info(Logger.Component.ReplayerService, memberId,
                 "starting; serving replay from the co-located archive…");
-        while (running.get()) {
-            final int work = poll();
-            idleStrategy.idle(work);
+        try {
+            while (running.get()) {
+                final int work = poll();
+                idleStrategy.idle(work);
+            }
+        } catch (final RuntimeException ex) {
+            fatalDutyCycleFailure(ex);
         }
         Logger.info(Logger.Component.ReplayerService, memberId, "shutting down");
         stopAllReplays();
+    }
+
+    /**
+     * The duty-cycle loop must never die silently: an uncaught exception here (e.g. {@link
+     * #offerControl}'s CLOSED/MAX_POSITION_EXCEEDED) would otherwise unwind this thread while the process
+     * keeps running with {@code ready} still latched at 1 — every co-located app would keep resending
+     * into a ReplayerService that has stopped polling its requests, with nothing to tell it apart from a
+     * merely slow one. Strictly stateless (class Javadoc): dying loudly and letting process supervision
+     * restart costs nothing a fast reconnect and full-log replay does not already pay for.
+     * @param ex what killed the duty cycle
+     */
+    private void fatalDutyCycleFailure(final RuntimeException ex) {
+        ready = false;
+        readyCounter.set(0);
+        Logger.fault(Logger.Component.ReplayerService, Logger.EventCode.ReplayDutyCycleFailure, memberId,
+                "FATAL: replay duty cycle terminated by an uncaught exception (%s) — clearing readiness "
+                        + "and exiting; process supervision should restart this node", ex.getMessage());
+        fatalHandler.run();
     }
 
     /** One duty-cycle iteration. Returns a work count for the idle strategy. */
@@ -563,7 +594,7 @@ public final class ReplayerService {
         Logger.info(Logger.Component.ReplayerService, memberId,
                 "client %d's resume refused (%s) — answering NO_REPLAY_NEEDED so it re-walks the chain",
                 clientId, reason);
-        sendReplaying(clientId, requestId, NO_REPLAY_NEEDED, 0);
+        sendReplaying(clientId, requestId, NO_REPLAY_NEEDED, 0, NULL_VALUE);
     }
 
     /**
@@ -612,7 +643,8 @@ public final class ReplayerService {
             }
             if (segmentIndex >= segments.size()) {
                 // Walked past the last tenure: the app has replayed all history and is at the live tip.
-                sendReplaying(clientId, requestId, NO_REPLAY_NEEDED, 0);
+                // No specific recording to name here — NULL_VALUE, matching NO_REPLAY_NEEDED's own sentinel.
+                sendReplaying(clientId, requestId, NO_REPLAY_NEEDED, 0, NULL_VALUE);
                 return;
             }
             // The recording's own startPosition, not a hardcoded 0: a walk step means "this whole
@@ -630,7 +662,7 @@ public final class ReplayerService {
         if (boundedLength <= 0) {
             // Already at (or past) the tip — nothing historical to serve. Tell the app to just
             // follow the live tap; no slot consumed.
-            sendReplaying(clientId, requestId, NO_REPLAY_NEEDED, tip);
+            sendReplaying(clientId, requestId, NO_REPLAY_NEEDED, tip, recordingId);
             return;
         }
 
@@ -644,7 +676,7 @@ public final class ReplayerService {
         // catchUpPosition = tip: the app follows the replay image until it reaches this, then advances
         // (next segment, or the live tap). A bounded replay of an active recording does not close its
         // image at the bound, so the app detects completion by position (see Replaying / ReplayerStreamReceiver).
-        sendReplaying(clientId, requestId, replaySessionId, tip);
+        sendReplaying(clientId, requestId, replaySessionId, tip, recordingId);
     }
 
     /**
@@ -716,14 +748,16 @@ public final class ReplayerService {
      * @param requestId the request being answered
      * @param replaySessionId replay session identity
      * @param catchUpPosition catchup positon
+     * @param recordingId archive recordingId the reply was served from, or NULL_VALUE (see Replaying.recordingId)
      */
     private void sendReplaying(final int clientId, final long requestId, final long replaySessionId,
-                               final long catchUpPosition) {
+                               final long catchUpPosition, final long recordingId) {
         replayingEncoder.wrapAndApplyHeader(controlBuffer, 0, outHeaderEncoder)
             .clientId(clientId)
             .requestId(requestId)
             .replaySessionId(replaySessionId)
-            .catchUpPosition(catchUpPosition);
+            .catchUpPosition(catchUpPosition)
+            .recordingId(recordingId);
         offerControl(MessageHeaderEncoder.ENCODED_LENGTH + replayingEncoder.encodedLength());
     }
 

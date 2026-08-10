@@ -96,14 +96,19 @@
     },
     {
       "id": 7,
-      "title": "Last tick timestamp (ms)",
+      "title": "Node apply lag (ms)",
+      "description": "How far behind the cluster each node's SequencerService is: scrape time minus the consensus timestamp of the last 1 Hz Tick it applied. A node lagging here publishes a contiguous, gap-free tap that is simply OLD, so its co-located apps serve stale state — a condition neither the tap-stall (silence) nor the recovery-stall watchdog can see. Steady state is a sawtooth bounded by the 1 s tick period plus the 15 s scrape interval; a sustained climb on one member is that member falling behind. Reads the leader's clock against Prometheus's, so it also carries any NTP skew between them.",
       "type": "timeseries",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "x": 12, "y": 4, "w": 12, "h": 8 },
       "targets": [
-        { "refId": "A", "expr": "phixeron_sequencer_last_tick_timestamp_ms", "legendFormat": "member {{member}}" }
+        {
+          "refId": "A",
+          "expr": "time() * 1000 - phixeron_sequencer_last_tick_timestamp_ms",
+          "legendFormat": "member {{member}}"
+        }
       ],
-      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "fieldConfig": { "defaults": { "unit": "ms" }, "overrides": [] },
       "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single" } }
     },
     {

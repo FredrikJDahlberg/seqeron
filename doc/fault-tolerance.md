@@ -134,19 +134,23 @@ fence deliberately looks to the cluster exactly like this process dying), and se
 — which also closes the accept gate, since `processSockets` only calls `acceptNewConnection()` while
 `m_gateOpen` is true. It is idempotent (no-ops if the gate is already shut).
 
-Three independent signals trigger it (`FixGateway.cpp:296-325, 557-577`), and they are not
+Four independent signals trigger it (`FixGateway.cpp:296-325, 353-382, 557-577`), and they are not
 equivalent — one of them is not a fault at all:
 
 | Signal | Where | What happens after |
 |---|---|---|
 | A `GatewayActive` names a **sibling** instance while this one was active | `sequencedEvent`, `FixGateway.cpp:557-577` | Fences, `m_activated = false`, but **keeps running** — drops to standby, keeps following the tap, and can be re-promoted later. The cluster session is untouched. |
 | The cluster closes this gateway's ingress session (`ClusterStreamSender::isSessionLost()`) | `doWork`, `FixGateway.cpp:315-319` | Fences and **exits the process** (`running = false`) — a lost session cannot be re-established in-process (§2.3), so an instance in this state could never be promoted again; fail closed by exiting rather than idling with no session. |
-| No `Tick` from the co-located tap for `TAP_STALL_TIMEOUT_MS` (20s = 20× the 1 Hz tick period) | `checkTapStall`, `FixGateway.cpp:352-369` | Closes its own cluster session first, then fences and **exits**. Voluntary: rather than sit "connected" behind a dead tap, it forces the same session-loss path as the row above, which drives standby promotion on the cluster side. |
+| No `Tick` from the co-located tap for `TAP_STALL_TIMEOUT_MS` (20s = 20× the 1 Hz tick period), while caught up | `checkTapStall`, `FixGateway.cpp:352-369` | Closes its own cluster session first, then fences and **exits**. Voluntary: rather than sit "connected" behind a dead tap, it forces the same session-loss path as the row above, which drives standby promotion on the cluster side. |
+| Continuous `!isCaughtUp()` for `RECOVERY_STALL_TIMEOUT_MS` (60s = 3× `TAP_STALL_TIMEOUT_MS`), once this instance has been caught up before | `checkTapStall`, `GatewayRecoveryStallPolicy` | Same as the row above — closes its own cluster session, then fences and **exits**. The symmetric case (2026-08-10 fix): a recovery that never converges (Replayer down, `onReplayUnavailable`, or a gap in replayed history this node's chain doesn't cover) used to leave the tap-stall watchdog fully gated with no bound, so an already-active gateway kept the gate open and the cluster session alive behind a view of the log frozen behind a hole it could never close. A cold start (never yet caught up) is exempt — its gate legitimately stays closed however long the initial walk takes. |
 
 The tap-stall watchdog is gated on `m_replayer.isCaughtUp()` so an in-progress cold-start/gap replay
 never reads as a stall, and it measures **monotonic wall-clock time**, not cluster-consensus time —
 deliberately, since consensus time is itself delivered by the very `Tick` frames being watched for, so
-it would freeze along with a stalled tap and never trip (`FixGateway.cpp:241-244`).
+it would freeze along with a stalled tap and never trip (`FixGateway.cpp:241-244`). Its `!isCaughtUp()`
+branch is not simply skipped, though: `GatewayRecoveryStallPolicy` (pure, Aeron-free, unit-tested in
+`GatewayRecoveryStallPolicyTest.cpp`) provides the row above — the deadline is armed only once
+`onCaughtUp()` has fired at least once, so it can never fire during a legitimate cold start.
 
 A `GatewayActive` naming *this* instance while it was standby is the mirror case: `m_activated` flips
 true and the accept gate can open once every other gate condition is met (§2.4) — no fence involved.
@@ -240,13 +244,22 @@ node is told `ReplayUnavailable` instead of independently discovering the same b
 `peekFirstGlobalSeqNo`). An archive call that throws mid-replay flips the service into a `stalled`
 state — retried at 1s intervals, answering requests `ReplayPending` in the meantime — without
 crashing the process or touching live delivery, since live reads never go through this service.
-`MAX_CONCURRENT_REPLAYS = 2` bounds archive-IO parallelism (the only event that needs many concurrent
+`MAX_CONCURRENT_REPLAYS = 4` bounds archive-IO parallelism (the only event that needs many concurrent
 replays is node start/restart, when every co-located app cold-starts at once); a slot freed by one
 client is handed to a waiting one immediately, with a 60s idle-TTL as a backstop against a client that
 died mid-replay. Its own control-plane replies are offered with a bounded spin and **dropped** rather
 than blocked past that — cheap, since the requester just resends on a timer — so one stuck app cannot
 couple every other app's replay to it, the same untethered-drop philosophy as the tap itself, applied
 to the control plane.
+
+An uncaught exception escaping the duty-cycle loop (e.g. `offerControl`'s `CLOSED`/
+`MAX_POSITION_EXCEEDED`) used to unwind the thread silently, leaving `phixeron.replayer.ready` latched
+at 1 while nothing polled requests any more — a healthy-looking, dead process, with every co-located
+app resending into the void (fixed 2026-08-10). `ReplayerService.run()` now catches it,
+clears `ready`/`readyCounter` back to 0, and calls an injected `fatalHandler`; `ReplayerNode` wires that
+to its `ShutdownSignalBarrier` (mirroring `SequencerNode`'s `tapFatal` pattern — §1.3), so the process
+still tears down its archive/Aeron client cleanly before exiting with a distinct code
+(`EXIT_DUTY_CYCLE_FATAL = 70`) for process supervision to restart it on.
 
 ### 3.2 Client-side replay (`ReplayerStreamReceiver`, C++)
 
@@ -294,10 +307,28 @@ closing — so an image that is attached, open, and simply frozen had no watchdo
 makes no progress for `REPLAY_STALL_TIMEOUT_MS` (5s) now re-requests the same segment verbatim: the same
 recovery already used when an image closes *short* of its bound (meaning the replay was stopped under
 the client — superseded, slot reclaimed, archive fault), extended to cover a silent one, and a
-`Replaying` whose image never attaches at all.
+`Replaying` whose image never attaches at all. For a *resume* retry (as opposed to a cold-start walk
+step) "verbatim" specifically means re-anchoring via `requestResume()`, not resending the bare
+`fromPosition` — a bug fixed 2026-08-10: resending the bare position bypassed the anchor check
+described above entirely (the first anchor had already been consumed by the retried episode's earlier
+frames), so a mis-landed retry onto a rotated recording could ride an unvalidated position rather than
+falling back to the chain walk.
 5s is far above any legitimate pause: the archive sustains tens of MB/s into a local IPC replay, so a
 replay with anything left to serve is never quiet for seconds, and a spurious fire only costs one
 segment re-replayed.
+
+For a **cold-start walk** step, the same "same segment, verbatim" retry has a different failure mode
+(fixed 2026-08-10): `serveReplay` re-runs `resolveSegments()` on every request, and
+`ReplayRecordings.stitch` drops a stale still-recording span once a newer one supersedes it — so the
+recording a given `segmentIndex` denotes can shift between the client's original request for a segment
+and a later retry of that same index (image closed short, stalled, or resent). `Replaying` now echoes
+the `recordingId` it served; `ReplayerStreamReceiver` remembers the recordingId it saw for the segment
+currently in flight and, if a retry lands on a different one, abandons the walk and restarts from
+segment 0 rather than risk replaying the wrong span or duplicating one. `globalSeqNo` contiguity already
+made this self-healing in practice — the walk's replayFrom is always a whole recording from its own
+`startPosition`, so a shifted segment is either the exact same data or a strict superset (a fresh
+full-log replay), never a hole — but the mismatch is now caught at the point it happens instead of
+relying on a later tap frame to notice a `isCaughtUp()==true` state that under-covered history.
 
 `ClusterStreamReceiver`/`ClusterStreamClient` is the archive-direct sibling used where there's no
 co-located Replayer (`fix_test_server`, and `FixConnection`'s bounded resend-recovery scan): it walks
@@ -394,6 +425,14 @@ section after a failover.
   a run reporting `NEVER CAUGHT UP` is that class of bug rather than a slow machine. This is also the
   measurement that matters for `fault_kill_leader` above, since a restarted replica has to catch up
   inside the harness's probe window; the replay wedge is what made those rounds fail.
+- **`src/test/scripts/replayer-restart-test.sh`** (added 2026-08-10) — the directed, deterministic
+  counterpart to `chaos-runner.sh`'s randomized coverage of the same territory: kills and restarts
+  member 0's `ReplayerNode` alone (leaving its `SequencerNode` and client untouched) the instant it
+  starts serving a cold-starting client's first segment, then separately kills member 0's `SequencerNode`
+  outright and asserts its co-located `ReplayerNode`/client fail fast and, once restarted, a fresh
+  cold-start walk crosses a real two-recording chain (two distinct `recordingId`s) before converging —
+  §3.2's resume-retry and recordingId-mismatch hardening exercised against real Aeron/Archive processes,
+  not fabricated `Replaying` replies.
 
 ## 7. What this does not cover
 

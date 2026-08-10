@@ -713,6 +713,16 @@
                             active recording does not close its image at the bound, so completion is
                             detected by position (as ClusterStreamClient does for its live segment), not by
                             image close"/>
+        <field name="recordingId"     id="20016" type="int64"
+               description="Archive recordingId the reply was served from; -1 when replaySessionId is
+                            NO_REPLAY_NEEDED because the walk ran past the end of the chain (no specific
+                            recording to name). serveReplay re-resolves the recording chain on every request
+                            (ReplayerService.resolveSegments), and ReplayRecordings.stitch can drop a stale
+                            still-recording span once a newer one supersedes it — shifting which recording a
+                            given segmentIndex denotes. The app remembers the recordingId it last saw for its
+                            current segmentIndex and compares on every reply for that same index: a mismatch
+                            means the chain moved under it, so it abandons the walk and restarts from segment
+                            0 rather than risk replaying the wrong span"/>
     </sbe:message>
 
     <!-- ReplayerService -> App: "All replay slots are busy; hold at your gap and wait." -->

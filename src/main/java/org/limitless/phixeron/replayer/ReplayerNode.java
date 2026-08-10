@@ -64,6 +64,14 @@ public final class ReplayerNode {
      */
     private static final int ARCHIVE_CONTROL_RESPONSE_STREAM_ID = 120;
 
+    /**
+     * Exit status of a node whose replay duty cycle died on an uncaught exception (see {@code
+     * ReplayerService.fatalDutyCycleFailure}), as opposed to the 0 of an orderly shutdown — the signal
+     * process supervision needs to tell "restart me" from "I was told to stop". Mirrors SequencerNode's
+     * EXIT_TAP_FATAL.
+     */
+    private static final int EXIT_DUTY_CYCLE_FATAL = 70;
+
     public static void main(final String[] args) {
         final int memberId = Integer.getInteger(PROP_MEMBER_ID, 0);
         final String aeronDir = System.getProperty(
@@ -84,14 +92,23 @@ public final class ReplayerNode {
                 .lock(NoOpLock.INSTANCE));
 
         final IdleStrategy idleStrategy = resolveIdleStrategy();
-        final ReplayerService replayer = new ReplayerService(aeron, archive, memberId, idleStrategy);
         final AtomicBoolean running = new AtomicBoolean(true);
+        final AtomicBoolean dutyCycleFatal = new AtomicBoolean();
+        // Wired the same way SequencerNode wires its own tapFatal: the duty-cycle thread cannot exit the
+        // process itself (it may be mid-teardown of the very archive/aeron client main() still needs to
+        // close cleanly), so it signals the barrier and main() exits non-zero after the normal shutdown
+        // path below has run.
+        final ShutdownSignalBarrier barrier = new ShutdownSignalBarrier();
+        final ReplayerService replayer = new ReplayerService(aeron, archive, memberId, idleStrategy, () -> {
+            dutyCycleFatal.set(true);
+            barrier.signalAll();
+        });
         final Thread replayerThread = new Thread(() -> replayer.run(running), "replayer-" + memberId);
         replayerThread.start();
 
         Logger.info(Logger.Component.ReplayerNode, memberId, "Running — Ctrl-C to stop | aeronDir=%s | idle=%s",
                 aeronDir, idleStrategy.getClass().getSimpleName());
-        try (ShutdownSignalBarrier barrier = new ShutdownSignalBarrier()) {
+        try (barrier) {
             barrier.await();
         } finally {
             running.set(false);
@@ -103,6 +120,9 @@ public final class ReplayerNode {
             archive.close();
             aeron.close();
             Logger.info(Logger.Component.ReplayerNode, memberId, "Shutdown complete");
+        }
+        if (dutyCycleFatal.get()) {
+            System.exit(EXIT_DUTY_CYCLE_FATAL);
         }
     }
 

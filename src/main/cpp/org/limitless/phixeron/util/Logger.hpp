@@ -77,6 +77,8 @@ enum class EventCode : std::uint16_t
     GatewayNameUnresolved,
     GatewayNameMissing,
     TapStalled,
+    TapLagging,
+    RecoveryStalled,
     GatewayFenced,
     ReplayUnavailable,
     MalformedFill,

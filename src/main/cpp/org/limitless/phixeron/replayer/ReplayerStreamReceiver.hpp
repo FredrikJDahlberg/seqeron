@@ -284,6 +284,13 @@ class ReplayerStreamReceiver
         return m_walkSegmentIndex;
     }
 
+    // Test-only: the recordingId last seen for the current walk segment, or -1 — see the recordingId
+    // mismatch check in onControl's Replaying handler.
+    std::int64_t testWalkRecordingId() const
+    {
+        return m_walkRecordingId;
+    }
+
     // Test-only: when the current (or most recent) replay request was sent, so a test can observe the
     // resend timer (poll()'s RESEND_INTERVAL_MS check) actually re-sending rather than just re-checking
     // state that a resend wouldn't otherwise change.
@@ -527,6 +534,12 @@ class ReplayerStreamReceiver
         if (segmentIndex >= 0)
         {
             m_resumeAnchorGseq = 0;  // a walk supersedes any resume in flight
+            if (segmentIndex != m_walkSegmentIndex)
+            {
+                // A different segment than the one in flight: nothing to compare its recordingId
+                // against yet (see the Replaying handler in onControl).
+                m_walkRecordingId = -1;
+            }
         }
         m_walkSegmentIndex = segmentIndex;
         m_reqFromPosition = fromPosition;
@@ -704,6 +717,27 @@ class ReplayerStreamReceiver
             }
             else
             {
+                if (m_walkSegmentIndex >= 0)
+                {
+                    // serveReplay re-resolves the recording chain on every request, and a stale
+                    // still-recording span can be dropped from it once a newer one supersedes it
+                    // (ReplayRecordings.stitch) — shifting which recording this segmentIndex denotes.
+                    // A retried request for the SAME index must land on the SAME recording it did the
+                    // first time; anything else means the chain moved under it, so abandon the walk and
+                    // restart from segment 0 rather than risk replaying the wrong span.
+                    const std::int64_t recordingId = dec.recordingId();
+                    if (m_walkRecordingId >= 0 && recordingId != m_walkRecordingId)
+                    {
+                        diag::Logger::warn(diag::Component::ReplayerStreamReceiver, diag::EventCode::TapGap,
+                                           "walk segment %d now resolves to recording %lld, previously %lld — "
+                                           "the recording chain shifted under us; re-walking from segment 0",
+                                           static_cast<int>(m_walkSegmentIndex), static_cast<long long>(recordingId),
+                                           static_cast<long long>(m_walkRecordingId));
+                        requestReplay(0, 0);
+                        return;
+                    }
+                    m_walkRecordingId = recordingId;
+                }
                 m_replaySessionId = session;
                 // Position the bounded replay ends at; poll() declares caught up once the replay
                 // image reaches it (a bounded replay of an active recording never closes its image
@@ -1083,7 +1117,17 @@ class ReplayerStreamReceiver
                            "stopped under us; re-requesting the same segment (index %d)",
                            static_cast<long long>(finalPosition), static_cast<long long>(m_catchUpPosition),
                            static_cast<int>(m_walkSegmentIndex));
-        requestReplay(m_walkSegmentIndex, m_reqFromPosition);  // same request verbatim, new requestId
+        if (m_walkSegmentIndex < 0)
+        {
+            // A resume, not a walk step: re-anchor via requestResume() rather than re-sending the stale
+            // m_reqFromPosition verbatim, which would carry no anchor for onFragment to validate against
+            // (the original anchor was already consumed by this episode's first replayed frame).
+            requestResume();
+        }
+        else
+        {
+            requestReplay(m_walkSegmentIndex, m_reqFromPosition);  // same request verbatim, new requestId
+        }
     }
 
     // An attached (or expected) replay stopped delivering — see the watchdog check in poll().
@@ -1095,7 +1139,15 @@ class ReplayerStreamReceiver
                            static_cast<long long>(m_replaySessionId), static_cast<long long>(REPLAY_STALL_TIMEOUT_MS),
                            static_cast<long long>(m_lastReplayPosition), static_cast<long long>(m_catchUpPosition),
                            m_replayImage ? "attached" : "never attached", static_cast<int>(m_walkSegmentIndex));
-        requestReplay(m_walkSegmentIndex, m_reqFromPosition);  // same request verbatim, new requestId
+        if (m_walkSegmentIndex < 0)
+        {
+            // A resume, not a walk step: re-anchor via requestResume() — see onReplayImageClosed.
+            requestResume();
+        }
+        else
+        {
+            requestReplay(m_walkSegmentIndex, m_reqFromPosition);  // same request verbatim, new requestId
+        }
     }
 
     // A replay segment finished (reached its bounded tip, or its image closed for a stopped segment).
@@ -1107,7 +1159,19 @@ class ReplayerStreamReceiver
         {
             // A resume, not a walk step: there is no next segment. We hold every frame the recording
             // had when the request was served, so we are back at the tip — anything published since is
-            // on the tap, retained ahead of the hole we just closed.
+            // on the tap, retained ahead of the hole we just closed. Drain it before trusting that: a
+            // retained-ahead frame the replay didn't cover may itself sit behind a hole (drainRetained
+            // stops there), and an overflow (retainMessages) silently dropped tap frames outright, past
+            // the bound this replay was even asked to cover — either leaves us short of the real
+            // frontier. Only declare caught up once nothing is left waiting and no overflow is latched;
+            // otherwise re-walk now rather than wait for some future tap frame to rediscover the hole,
+            // which is unbounded under the same sustained load that caused the overflow.
+            drainRetained();
+            if (!m_messagesBlocks.empty() || m_messagesOverflowed)
+            {
+                requestReplay(0, 0);
+                return;
+            }
             sendReplayComplete();
             notifyCaughtUp();
             return;
@@ -1165,6 +1229,7 @@ class ReplayerStreamReceiver
     std::int64_t m_replaySessionId = -1;
     std::int64_t m_catchUpPosition = 0;   // bounded replay's end position; segment done once the image reaches it
     std::int32_t m_walkSegmentIndex = 0;  // cold-start walk position; -1 once caught up (steady/resume mode)
+    std::int64_t m_walkRecordingId = -1;  // recordingId last served for m_walkSegmentIndex, or -1 if not yet known
     std::int64_t m_reqFromPosition = 0;   // fromPosition of the current request, for idempotent resend
     std::int64_t m_lastRequestMs = 0;
     std::int64_t m_requestId = 0;  // advances per send; replies not carrying it are stale (see onControl)

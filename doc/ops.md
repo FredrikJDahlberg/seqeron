@@ -79,7 +79,12 @@ prometheus --config.file=src/main/ops/prometheus/prometheus.yml
 
 `src/main/ops/grafana/provisioning/` — a `Prometheus` datasource (`http://localhost:9090`) and one dashboard
 (`phixeron.json`, uid `phixeron`), both provisioned by file. The dashboard has one panel per exported
-metric family — see the reference below.
+metric family — see the reference below. One panel plots a derived value rather than the counter
+itself: **Node apply lag (ms)** is `time() * 1000 - phixeron_sequencer_last_tick_timestamp_ms`, since
+the raw consensus timestamp is an epoch value no operator can read. Per member, that difference is how
+far behind the cluster that node's `SequencerService` is — the one place a node publishing a
+contiguous but *stale* tap becomes visible (see `review-2.md` #7; neither the tap-stall silence
+watchdog nor the recovery-stall watchdog can see that state).
 
 Deploy by mounting the whole `src/main/ops/grafana/provisioning` tree at Grafana's own provisioning root.
 Under the standard Grafana Docker image that's already `/etc/grafana/provisioning` by default:

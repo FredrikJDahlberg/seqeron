@@ -68,6 +68,7 @@ and tears it down via `stop-cluster.sh` (run them from the repository root):
 | `fix-test-server.sh [debug\|release] [host [port]]` | Run a single FIX session (Logon → Heartbeat → NewOrderSingle → Logout) against a live `FixGateway` |
 | `failover-test.sh` | Force a failover, then cold-start a fresh `OrderExecClient` on the new leader and verify it catches up on full history (each node's tap recording is one continuous run spanning both tenures) |
 | `gap-recovery-test.sh` | Drop a live tap frame on a caught-up consumer (SIGUSR1 fault-injection) and verify it re-walks its recording and heals rather than wedging |
+| `replayer-restart-test.sh` | Kill and restart a node's `ReplayerNode` while a client is riding a replay from it, then kill and restart the client's own node entirely and verify its fresh cold-start walk crosses a real multi-recording chain |
 
 ---
 

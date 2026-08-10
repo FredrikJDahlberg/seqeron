@@ -154,13 +154,21 @@ void deliverReplay(ReplayerStreamReceiver& client, const std::int64_t globalSeqN
 
 // requestId must be the client's CURRENT one (client.testRequestId()) for a reply to be acted on — see
 // onControl's correlation check; pass a different value to build the stale reply a resend leaves behind.
+// recordingId defaults to -1 ("no expectation") so existing call sites that don't care about the
+// walk-recordingId mismatch check (see onControl) are unaffected — a test exercising that check passes
+// it explicitly.
 std::vector<std::uint8_t> encodeReplaying(const std::int32_t clientId, const std::int64_t requestId,
-                                          const std::int64_t replaySessionId, const std::int64_t catchUpPosition)
+                                          const std::int64_t replaySessionId, const std::int64_t catchUpPosition,
+                                          const std::int64_t recordingId = -1)
 {
     std::vector<std::uint8_t> buf(64, 0);
     usq::Replaying enc;
     enc.wrapAndApplyHeader(reinterpret_cast<char*>(buf.data()), 0, buf.size());
-    enc.clientId(clientId).requestId(requestId).replaySessionId(replaySessionId).catchUpPosition(catchUpPosition);
+    enc.clientId(clientId)
+        .requestId(requestId)
+        .replaySessionId(replaySessionId)
+        .catchUpPosition(catchUpPosition)
+        .recordingId(recordingId);
     buf.resize(enc.sbePosition());
     return buf;
 }
@@ -642,6 +650,10 @@ TEST(ReplayerStreamReceiverGapRecovery, RecoveringFlagTracksWalkAndAwaitingRepla
                                            /*catchUpPosition=*/500));
     EXPECT_TRUE(client.testIsRecovering()) << "a session id means history remains to replay, not yet caught up";
 
+    deliverReplay(client, 1);  // opens on the anchored frame -> anchor consumed, frame deduped
+    deliverReplay(client, 2);  // closes the hole the resume was asked to cover, draining retained frame 5
+    deliverReplay(client, 3);
+    deliverReplay(client, 4);
     client.testCompleteReplaySegment();
     EXPECT_FALSE(client.testIsRecovering()) << "a resume ends at its bound — there is no next segment to ask for";
 
@@ -778,6 +790,69 @@ TEST(ReplayerStreamReceiverGapRecovery, ResumeOpeningOnTheWrongFrameFallsBackToT
     EXPECT_EQ(diag::EventCode::TapGap, sink.events[1].code);
 }
 
+// The resume anchor is consumed by the first frame of ONE replay episode (doc/review A9) — a retry of
+// that same logical resume (image closed short of its bound, or stalled) starts a NEW episode and must
+// re-arm the check via requestResume(), not resend the bare fromPosition via requestReplay() directly.
+// Without it, the retried replay's first frame rides with no anchor to validate against: if the active
+// recording rotated under the anchored position and the frame that now lands there happens to look
+// contiguous (globalSeqNo == last + 1), it is silently dispatched as if it were the frame the resume
+// asked for, instead of being caught as a mismatch and falling back to the chain walk.
+TEST(ReplayerStreamReceiverGapRecovery, ReplayImageClosingShortOfTheBoundOnAResumeReArmsTheAnchorCheck)
+{
+    int delivered = 0;
+    ReplayerStreamReceiver client{1, [&](const SequencedEvent&) { ++delivered; }};
+
+    deliverLive(client, 1);
+    deliverLive(client, 5);  // gap -> resume anchored on frame 1
+    deliverControl(client, encodeReplaying(/*clientId=*/1, client.testRequestId(), /*replaySessionId=*/7,
+                                           /*catchUpPosition=*/500));
+    deliverReplay(client, 1);  // opens on the anchored frame -> anchor consumed, frame deduped
+    ASSERT_EQ(1, delivered);
+
+    client.testReplayImageClosed(/*finalPosition=*/300);  // stopped under us before frame 2 arrived
+    ASSERT_EQ(-1, client.testWalkSegmentIndex()) << "still a resume retry, not a walk step";
+
+    deliverControl(client, encodeReplaying(/*clientId=*/1, client.testRequestId(), /*replaySessionId=*/8,
+                                           /*catchUpPosition=*/500));
+    // The active recording rotated: the retried resume's first frame is NOT the frame it was anchored
+    // on, but it happens to look contiguous (globalSeqNo == last + 1).
+    deliverReplay(client, 2);
+
+    EXPECT_EQ(1, delivered) << "must not silently accept an unanchored frame merely because it looks contiguous";
+    EXPECT_EQ(0, client.testWalkSegmentIndex()) << "the mismatch must fall back to the chain walk";
+    EXPECT_TRUE(client.testIsAwaitingReplay());
+    EXPECT_EQ(-1, client.testReplaySessionId());
+    EXPECT_FALSE(client.isCaughtUp());
+}
+
+// Same defect, the other retry trigger: a resume that stalls (never closes, never advances) instead of
+// closing short.
+TEST(ReplayerStreamReceiverGapRecovery, ReplayStallOnAResumeReArmsTheAnchorCheck)
+{
+    int delivered = 0;
+    ReplayerStreamReceiver client{1, [&](const SequencedEvent&) { ++delivered; }};
+
+    deliverLive(client, 1);
+    deliverLive(client, 5);  // gap -> resume anchored on frame 1
+    deliverControl(client, encodeReplaying(/*clientId=*/1, client.testRequestId(), /*replaySessionId=*/7,
+                                           /*catchUpPosition=*/500));
+    deliverReplay(client, 1);  // opens on the anchored frame -> anchor consumed, frame deduped
+    ASSERT_EQ(1, delivered);
+
+    client.testReplayStalled();  // stopped advancing before frame 2 arrived
+    ASSERT_EQ(-1, client.testWalkSegmentIndex()) << "still a resume retry, not a walk step";
+
+    deliverControl(client, encodeReplaying(/*clientId=*/1, client.testRequestId(), /*replaySessionId=*/8,
+                                           /*catchUpPosition=*/500));
+    deliverReplay(client, 2);  // rotated recording, looks contiguous but is not the anchored frame
+
+    EXPECT_EQ(1, delivered) << "must not silently accept an unanchored frame merely because it looks contiguous";
+    EXPECT_EQ(0, client.testWalkSegmentIndex()) << "the mismatch must fall back to the chain walk";
+    EXPECT_TRUE(client.testIsAwaitingReplay());
+    EXPECT_EQ(-1, client.testReplaySessionId());
+    EXPECT_FALSE(client.isCaughtUp());
+}
+
 // The same rotation seen one step earlier: the Replayer answers "nothing to replay" because the position
 // is already at its recording's tip. For a walk that means caught up; for a resume it cannot, because we
 // only resumed on account of a hole we know is open — taking it at face value would close that hole by
@@ -815,12 +890,44 @@ TEST(ReplayerStreamReceiverGapRecovery, ResumeReachingItsBoundCatchesUpWithoutRe
     deliverControl(client, encodeReplaying(/*clientId=*/1, client.testRequestId(), /*replaySessionId=*/7,
                                            /*catchUpPosition=*/500));
 
+    deliverReplay(client, 1);  // opens on the anchored frame -> anchor consumed, frame deduped
+    deliverReplay(client, 2);  // closes the hole the resume was asked to cover, draining retained frame 5
+    deliverReplay(client, 3);
+    deliverReplay(client, 4);
     client.testCompleteReplaySegment();
 
     EXPECT_FALSE(client.testIsAwaitingReplay()) << "no follow-up request — a resume has no next segment";
     EXPECT_EQ(-1, client.testReplaySessionId());
     EXPECT_TRUE(client.isCaughtUp()) << "we hold everything the recording had when the request was served";
     EXPECT_EQ(2, caughtUpNotifications) << "re-fired, so consumers re-arm on re-convergence";
+}
+
+// The companion defect (doc/review #5): a resume can reach its bound while a retained-ahead frame still
+// sits behind a hole the replay never covered — onReplaySegmentComplete used to declare caught up on the
+// bound alone, with no check that m_lastGlobalSeqNo had actually reached the frontier the retained FIFO
+// knows about. That reading is silently wrong: consumers gate real decisions on isCaughtUp() and nothing
+// would rediscover the hole until some later, unrelated tap frame happened to expose it.
+TEST(ReplayerStreamReceiverGapRecovery, ResumeReachingItsBoundWithARetainedHoleStillOpenReWalksInstead)
+{
+    int caughtUpNotifications = 0;
+    ReplayerStreamReceiver client{1, [](const SequencedEvent&) {}, {}, {}, {}, [&] { ++caughtUpNotifications; }};
+
+    deliverLive(client, 1);
+    ASSERT_EQ(1, caughtUpNotifications);
+    deliverLive(client, 5);  // gap -> resume anchored on frame 1; 5 is retained ahead of the hole
+    deliverControl(client, encodeReplaying(/*clientId=*/1, client.testRequestId(), /*replaySessionId=*/7,
+                                           /*catchUpPosition=*/500));
+
+    deliverReplay(client, 1);  // opens on the anchored frame -> anchor consumed, frame deduped
+    deliverReplay(client, 2);  // the replay's bound is reached having covered only up to 2 — 3, 4 unfilled
+
+    client.testCompleteReplaySegment();  // reached the bound it was given, but the hole above 2 is still open
+
+    EXPECT_FALSE(client.isCaughtUp()) << "must not declare caught up with a retained frame still behind a hole";
+    EXPECT_EQ(1, caughtUpNotifications) << "no false re-convergence notification";
+    EXPECT_EQ(0, client.testWalkSegmentIndex()) << "falls back to the chain walk instead of trusting the bound";
+    EXPECT_TRUE(client.testIsAwaitingReplay());
+    EXPECT_EQ(-1, client.testReplaySessionId());
 }
 
 // Retained frames the replay has meanwhile covered are discarded on drain rather than double-delivered —
@@ -840,6 +947,61 @@ TEST(ReplayerStreamReceiverGapRecovery, RetainedFramesAlreadyCoveredByTheReplayA
     deliverReplay(client, 4);  // and another
 
     EXPECT_EQ((std::vector<std::int64_t>{1, 2, 3, 4}), delivered) << "each globalSeqNo dispatched exactly once";
+}
+
+// ── Walk-segment recordingId mismatch (doc/review #4) ────────────────────────────────────────
+// serveReplay re-resolves the recording chain on every request; ReplayRecordings.stitch drops a stale
+// still-recording span once a newer one supersedes it, which shifts what a given segmentIndex denotes.
+// A retry of the SAME segment (image closed short of its bound, stalled, or simply resent) must land on
+// the SAME recording it did originally — the Replayer echoes the recordingId it served precisely so this
+// can be checked without relying on globalSeqNo contiguity to notice it later.
+TEST(ReplayerStreamReceiverGapRecovery, WalkSegmentRetryOnTheSameRecordingContinuesNormally)
+{
+    ReplayerStreamReceiver client{1, [](const SequencedEvent&) {}};
+    deliverControl(client, encodeReplaying(/*clientId=*/1, client.testRequestId(), /*replaySessionId=*/7,
+                                           /*catchUpPosition=*/500, /*recordingId=*/5));
+    ASSERT_EQ(5, client.testWalkRecordingId());
+    const std::int64_t requestId = client.testRequestId();
+
+    client.testReplayImageClosed(/*finalPosition=*/312);  // stopped under us, mid-segment -> retried
+    ASSERT_EQ(0, client.testWalkSegmentIndex());
+    ASSERT_NE(requestId, client.testRequestId());
+
+    deliverControl(client, encodeReplaying(/*clientId=*/1, client.testRequestId(), /*replaySessionId=*/8,
+                                           /*catchUpPosition=*/700, /*recordingId=*/5));
+
+    EXPECT_EQ(0, client.testWalkSegmentIndex()) << "same recording -> the retry is trusted, not abandoned";
+    EXPECT_EQ(5, client.testWalkRecordingId());
+    EXPECT_EQ(8, client.testReplaySessionId());
+}
+
+TEST(ReplayerStreamReceiverGapRecovery, WalkSegmentRetryOnADifferentRecordingAbandonsTheWalkAndRestartsAtSegmentZero)
+{
+    ReplayerStreamReceiver client{1, [](const SequencedEvent&) {}};
+
+    // Segment 0 -> recording 5, then advance to segment 1 -> recording 8 (a legitimate chain of two).
+    deliverControl(client, encodeReplaying(/*clientId=*/1, client.testRequestId(), /*replaySessionId=*/7,
+                                           /*catchUpPosition=*/500, /*recordingId=*/5));
+    client.testCompleteReplaySegment();
+    ASSERT_EQ(1, client.testWalkSegmentIndex());
+    ASSERT_EQ(-1, client.testWalkRecordingId()) << "no expectation yet for the new segment";
+    deliverControl(client, encodeReplaying(/*clientId=*/1, client.testRequestId(), /*replaySessionId=*/9,
+                                           /*catchUpPosition=*/900, /*recordingId=*/8));
+    ASSERT_EQ(8, client.testWalkRecordingId());
+
+    client.testReplayImageClosed(/*finalPosition=*/650);  // stopped under us, mid-segment -> retried
+    ASSERT_EQ(1, client.testWalkSegmentIndex()) << "still segment 1 — re-requested, not advanced";
+
+    // The retry for segment 1 now resolves to a different recording — the chain shifted under us.
+    ScopedLoggerSink sink;
+    deliverControl(client, encodeReplaying(/*clientId=*/1, client.testRequestId(), /*replaySessionId=*/55,
+                                           /*catchUpPosition=*/1'200, /*recordingId=*/42));
+
+    EXPECT_EQ(0, client.testWalkSegmentIndex()) << "abandon the walk and restart from segment 0";
+    EXPECT_EQ(-1, client.testWalkRecordingId());
+    EXPECT_TRUE(client.testIsAwaitingReplay()) << "restarting the walk is itself a new request";
+    EXPECT_EQ(-1, client.testReplaySessionId()) << "must not attach to the mismatched reply's session";
+    EXPECT_EQ(1u, sink.events.size()) << "the shift is reported, not silently absorbed";
 }
 
 // `origin` is a header-composite field now, so every consumer gets it off SequencedEvent without

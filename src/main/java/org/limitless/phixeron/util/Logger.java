@@ -41,7 +41,8 @@ public final class Logger {
         StaleActiveRecording,
         TapRecordingFailure,
         ControlReplyDropped,
-        GatewayPromotionFailed
+        GatewayPromotionFailed,
+        ReplayDutyCycleFailure
     }
 
     public record LoggerEvent(Component component, Severity severity, EventCode code, Integer memberId,
