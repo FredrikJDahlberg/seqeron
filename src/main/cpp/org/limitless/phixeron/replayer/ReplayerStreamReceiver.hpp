@@ -708,11 +708,32 @@ class ReplayerStreamReceiver
                     requestReplay(0, 0);
                     return;
                 }
+                if (dec.recordingId() >= 0)
+                {
+                    // Not the walk terminator. serveReplay answers NO_REPLAY_NEEDED for two different
+                    // things and tells them apart by this field: it names the recording it found
+                    // nothing in when a segment is merely EMPTY, and names none at all only once the
+                    // request ran past the last recording in the chain. Ending the walk on the former
+                    // drops every later segment — an empty leading recording (an unclean restart that
+                    // created one before anything was published to it) would truncate the whole chain,
+                    // and since the re-walk a later tap gap triggers lands on that same empty segment,
+                    // it would never converge. Skip it and keep walking.
+                    requestReplay(m_walkSegmentIndex + 1, 0);
+                    return;
+                }
                 m_replaySessionId = -1;   // already at the tip — follow the live tap
                 m_walkSegmentIndex = -1;  // chain exhausted (or never a walk) → steady/resume mode
-                // Nothing to replay means we have walked the whole recording chain and are at the
-                // Replayer's tip → caught up, following live (see the replay-tip case in poll() for why
-                // consumers need this even with no live frame yet).
+                // The chain is exhausted, but the frontier is what the retained-ahead FIFO knows, not
+                // what the chain covered: a frame retained during the walk may still sit behind a hole
+                // the replay never reached, and an overflow (retainMessages) dropped tap frames
+                // outright. Same guard, same reason, as the resume path in onReplaySegmentComplete —
+                // declaring caught up here is what opens FixGateway's accept gate.
+                drainRetained();
+                if (!m_messagesBlocks.empty() || m_messagesOverflowed)
+                {
+                    requestReplay(0, 0);
+                    return;
+                }
                 notifyCaughtUp();
             }
             else

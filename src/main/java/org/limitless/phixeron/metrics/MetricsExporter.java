@@ -89,6 +89,17 @@ public final class MetricsExporter {
             Map.entry(PhixeronCounters.REPLAYER_INTEGRITY_FAILURE_TYPE_ID, new MetricMeta(
                 "phixeron_replayer_integrity_failure",
                 "1 once this node's oldest tap recording failed the startup gseq-1 integrity check, else 0.",
+                "gauge")),
+            Map.entry(PhixeronCounters.REPLAYER_CONTROL_REPLIES_DROPPED_COUNT_TYPE_ID, new MetricMeta(
+                "phixeron_replayer_control_replies_dropped_total",
+                "Count of control replies dropped rather than spun on because an app stopped draining the "
+                    + "control stream. Each costs that app one resend interval and nothing else, so a rising "
+                    + "rate — not the absolute value — is what identifies a wedged replica.",
+                "counter")),
+            Map.entry(PhixeronCounters.REPLAYER_CLIENT_ID_COLLISION_TYPE_ID, new MetricMeta(
+                "phixeron_replayer_client_id_collision",
+                "1 once two co-located apps were seen sharing one PHIXERON_REPLAYER_CLIENT_ID, else 0. "
+                    + "They stop each other's replays and neither catches up until it is corrected.",
                 "gauge"))
         );
         final Map<Integer, MetricMeta> map = new HashMap<>();

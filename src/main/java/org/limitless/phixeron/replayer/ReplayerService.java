@@ -71,8 +71,9 @@ import org.limitless.phixeron.util.Logger;
  * "ReplayerService gone" as they treat a gap and re-request on its return.
  *
  * <p><b>Startup integrity check.</b> Before ever declaring readiness, {@link #checkReady} verifies the
- * oldest tap recording's first frame is actually {@code globalSeqNo} 1 (see {@link
- * #peekFirstGlobalSeqNo}), not just that some recording exists. This should always hold — {@code
+ * oldest tap recording's first frame is actually {@code globalSeqNo} 1 (see {@link #startSelfCheck} /
+ * {@link #pollSelfCheck}, which spread that read across duty cycles rather than blocking one), not just
+ * that some recording exists. This should always hold — {@code
  * SequencerService} arms and confirms its recording before it can emit a single frame, and this
  * project's cluster membership is static, never joining mid-history — so a failure here means this
  * node's own recording has been deleted, corrupted, or partially restored: a broken node. {@code
@@ -124,24 +125,26 @@ public final class ReplayerService {
     public static final int CONTROL_STREAM_ID = 203;
 
     /**
-     * Internal-only IPC stream {@link #peekFirstGlobalSeqNo} replays onto to read back the oldest tap
-     * recording's first frame at startup (see {@link #checkReady}). Never used by any app-facing
+     * Internal-only IPC stream the startup self-check replays onto to read back the oldest tap
+     * recording's first frame (see {@link #checkReady}). Never used by any app-facing
      * protocol — distinct from {@link #REPLAY_STREAM_ID} purely so this one-shot self-check can never
      * cross-talk with a real client replay.
      */
     private static final int SELF_CHECK_STREAM_ID = 204;
 
     /**
-     * Bounds {@link #peekFirstGlobalSeqNo}'s wait for the self-check replay's first fragment. The
-     * replay is a few bytes over local IPC, so this is generous headroom, not an expected duration;
-     * a miss just means {@link #checkReady} retries on the next {@link #poll()} cycle.
+     * How long a self-check replay may go unanswered before it is abandoned and started over. Spread
+     * across duty cycles, never spun on: the check reads at most one fragment per {@link #poll()}, so
+     * this bounds an <em>elapsed</em> wait, not a blocked one. The replay is a few bytes over local
+     * IPC, so it is generous headroom rather than an expected duration; expiring just means
+     * {@link #checkReady} starts a fresh one.
      */
     private static final long SELF_CHECK_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(2);
 
     /**
-     * Bounds the length {@link #peekFirstGlobalSeqNo} asks the archive to replay. It reads exactly one
-     * fragment, so this only has to cover the first frame — comfortably over a default MTU, and orders
-     * of magnitude under the whole recording it used to request.
+     * Bounds the length the self-check asks the archive to replay. It reads exactly one fragment, so
+     * this only has to cover the first frame — comfortably over a default MTU, and orders of magnitude
+     * under the whole recording it used to request.
      */
     private static final long SELF_CHECK_REPLAY_LENGTH = 4096;
 
@@ -185,6 +188,13 @@ public final class ReplayerService {
      */
     private static final int MAX_CONTROL_OFFER_SPINS = 1_000;
 
+    /**
+     * Window {@link ReplayClientIdCollisions} counts {@code requestId} regressions over. Wide enough
+     * that two colliding clients — each resending on its own ~500ms timer — cross the threshold well
+     * inside it, short enough that unrelated restarts spread over a trading day never accumulate.
+     */
+    private static final long CLIENT_ID_COLLISION_WINDOW_MS = 10_000;
+
     private static final int FRAGMENT_LIMIT = 16;
 
     private final Aeron aeron;
@@ -205,11 +215,23 @@ public final class ReplayerService {
     private boolean ready = false;
 
     // Latched once the oldest tap recording's first frame fails the gseq-1 integrity check (see
-    // checkReady/peekFirstGlobalSeqNo): this node's own recording doesn't reach the start of the log
+    // checkReady/pollSelfCheck): this node's own recording doesn't reach the start of the log
     // (deleted, corrupted, or a partial restore), so there is no valid history to serve. `ready` must
     // never become true once this is set — every consumer that would otherwise ask this node for
     // history would independently hit the same wall, so it fails here instead, once, loudly.
     private boolean integrityFailed = false;
+
+    // ── Startup integrity self-check (see checkReady) ──────────────────────────────────────────
+    // The check spans duty cycles instead of blocking one: it starts a short replay, then reads it a
+    // fragment at a time on later cycles until it answers or SELF_CHECK_TIMEOUT_NS elapses. Waiting
+    // inside a single cycle starved every co-located app of even a ReplayPending for as long as the
+    // wait — and the archive being slow to answer is exactly when they are asking.
+    private Subscription selfCheckSub;
+    private long selfCheckReplaySessionId = NULL_VALUE;
+    private long selfCheckRecordingId = NULL_VALUE;      // the oldest recording being peeked
+    private long selfCheckActiveRecordingId = NULL_VALUE;  // the live one, for the readiness line
+    private long selfCheckGlobalSeqNo = NULL_VALUE;      // what the first fragment carried, once read
+    private long selfCheckDeadlineNs = 0;
 
     // Latches once the ">1 active tap recording" anomaly has been reported (see resolveSegments): the
     // condition lasts as long as the stale recording is on disk, and resolveSegments runs per replay
@@ -225,6 +247,12 @@ public final class ReplayerService {
     // Admission control and pending-queue bookkeeping is a pure function of client ids/tokens (see
     // ReplaySlotAllocator's Javadoc) — split out so it's unit-testable without an archive.
     private final ReplaySlotAllocator replaySlots = new ReplaySlotAllocator(MAX_CONCURRENT_REPLAYS, REPLAY_SLOT_TTL_MS);
+
+    // Two co-located apps launched with the same PHIXERON_REPLAYER_CLIENT_ID supersede each other's
+    // replays on every request and neither ever catches up. Also a pure function of what arrives on the
+    // request stream, so it too is split out and unit-tested without an archive.
+    private final ReplayClientIdCollisions clientIdCollisions =
+        new ReplayClientIdCollisions(CLIENT_ID_COLLISION_WINDOW_MS);
 
     // Local-archive resilience (doc/router-archive.md): a transient local-archive failure must not kill
     // the duty-cycle thread. The ReplayerService is off the live path (apps read the tap directly), so a stall
@@ -243,6 +271,7 @@ public final class ReplayerService {
     private final Counter idleTtlReclaimedCounter;
     private final Counter integrityFailureCounter;
     private final Counter controlRepliesDroppedCounter;
+    private final Counter clientIdCollisionCounter;
 
     private final MessageHeaderDecoder inHeaderDecoder = new MessageHeaderDecoder();
     private final ReplayRequestDecoder replayRequestDecoder = new ReplayRequestDecoder();
@@ -255,7 +284,7 @@ public final class ReplayerService {
     private final MutableDirectBuffer controlBuffer = new ExpandableArrayBuffer(64);
 
     // Decode the sequenced (not unsequenced) schema's outer header + header composite — the tap
-    // recording's own on-wire format — used only by peekFirstGlobalSeqNo. Fully qualified at the point
+    // recording's own on-wire format — used only by the self-check. Fully qualified at the point
     // of use instead of imported: the simple names MessageHeaderDecoder/HeaderDecoder are already taken
     // by this class's own unsequenced-schema request/control protocol decoders above.
     private final org.limitless.phixeron.sbe.sequenced.MessageHeaderDecoder selfCheckMsgHeaderDecoder =
@@ -265,6 +294,9 @@ public final class ReplayerService {
 
     private final FragmentHandler requestHandler =
         (buffer, offset, length, header) -> onRequest(buffer, offset, length);
+
+    private final FragmentHandler selfCheckHandler =
+        (buffer, offset, length, header) -> onSelfCheckFragment(buffer, offset);
 
     /**
      * @param fatalHandler run once, from the duty-cycle thread, when the duty cycle dies on an uncaught
@@ -300,6 +332,9 @@ public final class ReplayerService {
         this.controlRepliesDroppedCounter = PhixeronCounters.addCounter(aeron,
             PhixeronCounters.REPLAYER_CONTROL_REPLIES_DROPPED_COUNT_TYPE_ID,
             "phixeron.replayer.controlRepliesDroppedCount member=" + memberId, memberId);
+        this.clientIdCollisionCounter = PhixeronCounters.addCounter(aeron,
+            PhixeronCounters.REPLAYER_CLIENT_ID_COLLISION_TYPE_ID,
+            "phixeron.replayer.clientIdCollision member=" + memberId, memberId);
     }
 
     /**
@@ -320,6 +355,7 @@ public final class ReplayerService {
         }
         Logger.info(Logger.Component.ReplayerService, memberId, "shutting down");
         stopAllReplays();
+        closeSelfCheck();  // a check still in flight owns an archive replay and a subscription
     }
 
     /**
@@ -342,10 +378,15 @@ public final class ReplayerService {
 
     /** One duty-cycle iteration. Returns a work count for the idle strategy. */
     public int poll() {
+        // Requests first, integrity check second. A not-ready ReplayerService still owes every request an
+        // answer — ReplayPending, or ReplayUnavailable once the check has failed — and answering costs
+        // nothing, whereas checkReady below makes archive control calls that block this thread for as
+        // long as the archive takes. The cost of this order is that a request arriving in the very cycle
+        // readiness flips is answered ReplayPending and served on the app's next resend instead.
+        int work = requestSub.poll(requestHandler, FRAGMENT_LIMIT);
         if (!ready) {
-            checkReady();
+            work += checkReady();
         }
-        final int work = requestSub.poll(requestHandler, FRAGMENT_LIMIT);
         reclaimIdleSlots();
         activeReplaySlotsCounter.set(replaySlots.activeCount());
         pendingRequestsCounter.set(replaySlots.pendingCount());
@@ -363,11 +404,33 @@ public final class ReplayerService {
      * #integrityFailed} latches, {@code ready} must never become true for this process's lifetime —
      * every consumer that would otherwise ask this node for history and independently hit the same
      * wall is better served by this one node-level refusal than by each of them failing on their own.
+     *
+     * <p>One step per duty cycle: open the check, or read at most one fragment of it. It never waits.
+     * @return work count, so the idle strategy does not park a cycle that is actively reading
      */
-    private void checkReady() {
+    private int checkReady() {
         if (integrityFailed) {
-            return;
+            return 0;
         }
+        if (selfCheckSub == null) {
+            startSelfCheck();
+            return 0;
+        }
+        return pollSelfCheck();
+    }
+
+    /**
+     * Opens the self-check replay: the oldest tap recording's first frame, on the internal {@link
+     * #SELF_CHECK_STREAM_ID}. Replay is the only way to read recorded content back, so there is no
+     * cheaper way to see that frame.
+     *
+     * <p>Bounded to {@link #SELF_CHECK_REPLAY_LENGTH}, not to the whole recording: only the first
+     * fragment is ever read, and asking the archive to replay a trading day's worth of log to look at
+     * eight bytes is work it would do until {@link #closeSelfCheck} stopped it. Every early return here
+     * is transient — nothing recorded yet, or the archive not answering — and simply retries on the
+     * next cycle.
+     */
+    private void startSelfCheck() {
         final ReplayRecordings.RecordingSpan active;
         try {
             active = findActiveRecording();
@@ -377,22 +440,54 @@ public final class ReplayerService {
         if (active == null) {
             return;  // nothing recorded yet; retry next cycle
         }
-
         final List<ReplayRecordings.RecordingSpan> segments = resolveSegments();
         if (segments.isEmpty()) {
             return;  // retry next cycle
         }
+
         final ReplayRecordings.RecordingSpan oldest = segments.get(0);
-        final long oldestRecordingId = oldest.recordingId();
-        final Long firstGlobalSeqNo;
         try {
-            firstGlobalSeqNo = peekFirstGlobalSeqNo(oldest);
+            long position = archive.getRecordingPosition(oldest.recordingId());
+            if (position < 0) {
+                position = archive.getStopPosition(oldest.recordingId());
+            }
+            final long replayLength = Math.min(position - oldest.startPosition(), SELF_CHECK_REPLAY_LENGTH);
+            if (replayLength <= 0) {
+                return;  // oldest recording has nothing written yet; retry next cycle
+            }
+            selfCheckRecordingId = oldest.recordingId();
+            selfCheckActiveRecordingId = active.recordingId();
+            selfCheckGlobalSeqNo = NULL_VALUE;
+            selfCheckReplaySessionId = archive.startReplay(oldest.recordingId(), oldest.startPosition(), replayLength,
+                                                          IPC_CHANNEL, SELF_CHECK_STREAM_ID);
+            selfCheckSub = aeron.addSubscription(IPC_CHANNEL, SELF_CHECK_STREAM_ID);
+            selfCheckDeadlineNs = System.nanoTime() + SELF_CHECK_TIMEOUT_NS;
         } catch (final RuntimeException ex) {
-            return;  // archive not answering yet; retry next cycle
+            closeSelfCheck();  // archive not answering yet; retry next cycle
         }
-        if (firstGlobalSeqNo == null) {
-            return;  // oldest recording has nothing written yet; retry next cycle
+    }
+
+    /**
+     * Reads at most one fragment off an in-flight self-check and acts on it. Returns a work count.
+     *
+     * <p>A first frame at {@code globalSeqNo} 1 is what makes this node ready. Anything else latches
+     * {@link #integrityFailed} permanently — retrying reads the same on-disk bytes, so there is nothing
+     * to wait for. Delivering nothing before the deadline is neither: that is transient, so the check is
+     * torn down and started fresh on a later cycle.
+     */
+    private int pollSelfCheck() {
+        final int work = selfCheckSub.poll(selfCheckHandler, 1);
+        if (selfCheckGlobalSeqNo == NULL_VALUE) {
+            if (System.nanoTime() > selfCheckDeadlineNs) {
+                closeSelfCheck();  // no fragment in time; start over next cycle
+            }
+            return work;
         }
+
+        final long firstGlobalSeqNo = selfCheckGlobalSeqNo;
+        final long oldestRecordingId = selfCheckRecordingId;
+        final long activeRecordingId = selfCheckActiveRecordingId;
+        closeSelfCheck();
         if (firstGlobalSeqNo != 1L) {
             integrityFailed = true;
             integrityFailureCounter.set(1);
@@ -400,69 +495,47 @@ public final class ReplayerService {
                     "FATAL: oldest tap recording %d's first frame has globalSeqNo=%d, expected "
                             + "1 — this node's recording does not reach the start of the log (deleted, corrupted, or a "
                             + "partial restore?); refusing to mark ready", oldestRecordingId, firstGlobalSeqNo);
-            return;
+            return work;
         }
 
         ready = true;
         readyCounter.set(1);
         Logger.info(Logger.Component.ReplayerService, memberId, "ready — tap recording %d live; serving replay",
-                active.recordingId());
+                activeRecordingId);
+        return work;
     }
 
     /**
-     * Replays just the first frame of {@code span} and returns its globalSeqNo. Replay is the only way
-     * to read recorded content back, so this opens a short-lived one on the internal {@link
-     * #SELF_CHECK_STREAM_ID}, reads one fragment, and tears both down.
-     *
-     * <p>Bounded to {@link #SELF_CHECK_REPLAY_LENGTH}, not to the whole recording: only the first
-     * fragment is ever read, and asking the archive to replay a trading day's worth of log to look at
-     * eight bytes is work it would do until the {@code finally} below stopped it.
-     * @param span the recording to peek (the oldest tap recording — see checkReady)
-     * @return the first frame's globalSeqNo, or null if nothing is written yet, the first fragment is
-     *         not a sequenced frame, or the replay didn't deliver within {@link #SELF_CHECK_TIMEOUT_NS}
-     *         (transient — checkReady retries on the next poll() cycle rather than treating a null as
-     *         failure)
+     * Reads globalSeqNo off the self-check replay's first fragment.
+     * @param buffer fragment buffer
+     * @param offset fragment offset
      */
-    private Long peekFirstGlobalSeqNo(final ReplayRecordings.RecordingSpan span) {
-        final long recordingId = span.recordingId();
-        long position = archive.getRecordingPosition(recordingId);
-        if (position < 0) {
-            position = archive.getStopPosition(recordingId);
+    private void onSelfCheckFragment(final DirectBuffer buffer, final int offset) {
+        selfCheckMsgHeaderDecoder.wrap(buffer, offset);
+        // Only the sequenced schema carries the header composite this reads globalSeqNo out of;
+        // anything else on this stream would decode to a number with no meaning. The templateId is
+        // deliberately not checked — every sequenced message carries the same header, which is the whole
+        // point of the schema (see Sequencer.sequenceMessage).
+        if (selfCheckMsgHeaderDecoder.schemaId()
+                != org.limitless.phixeron.sbe.sequenced.MessageHeaderDecoder.SCHEMA_ID) {
+            return;
         }
-        final long replayLength = Math.min(position - span.startPosition(), SELF_CHECK_REPLAY_LENGTH);
-        if (replayLength <= 0) {
-            return null;
-        }
+        final int bodyOffset = offset + org.limitless.phixeron.sbe.sequenced.MessageHeaderDecoder.ENCODED_LENGTH;
+        selfCheckHeaderDecoder.wrap(buffer, bodyOffset);
+        selfCheckGlobalSeqNo = selfCheckHeaderDecoder.globalSeqNo();
+    }
 
-        final long replaySessionId =
-            archive.startReplay(recordingId, span.startPosition(), replayLength, IPC_CHANNEL, SELF_CHECK_STREAM_ID);
-        try (Subscription sub = aeron.addSubscription(IPC_CHANNEL, SELF_CHECK_STREAM_ID)) {
-            final long[] globalSeqNo = {NULL_VALUE};
-            final FragmentHandler handler = (buffer, offset, length, header) -> {
-                selfCheckMsgHeaderDecoder.wrap(buffer, offset);
-                // Only the sequenced schema carries the header composite this reads globalSeqNo out of;
-                // anything else on this stream would decode to a number with no meaning. The templateId
-                // is deliberately not checked — every sequenced message carries the same header, which
-                // is the whole point of the schema (see Sequencer.sequenceMessage).
-                if (selfCheckMsgHeaderDecoder.schemaId()
-                        != org.limitless.phixeron.sbe.sequenced.MessageHeaderDecoder.SCHEMA_ID) {
-                    return;
-                }
-                final int bodyOffset =
-                    offset + org.limitless.phixeron.sbe.sequenced.MessageHeaderDecoder.ENCODED_LENGTH;
-                selfCheckHeaderDecoder.wrap(buffer, bodyOffset);
-                globalSeqNo[0] = selfCheckHeaderDecoder.globalSeqNo();
-            };
-            final long deadlineNs = System.nanoTime() + SELF_CHECK_TIMEOUT_NS;
-            while (globalSeqNo[0] == NULL_VALUE && System.nanoTime() < deadlineNs) {
-                if (sub.poll(handler, 1) == 0) {
-                    idleStrategy.idle();
-                }
-            }
-            return globalSeqNo[0] == NULL_VALUE ? null : globalSeqNo[0];
-        } finally {
-            stopReplay(replaySessionId);
+    /** Tears down an in-flight self-check, whether it answered, expired, or never opened. */
+    private void closeSelfCheck() {
+        if (selfCheckReplaySessionId != NULL_VALUE) {
+            stopReplay(selfCheckReplaySessionId);
+            selfCheckReplaySessionId = NULL_VALUE;
         }
+        if (selfCheckSub != null) {
+            selfCheckSub.close();
+            selfCheckSub = null;
+        }
+        selfCheckGlobalSeqNo = NULL_VALUE;
     }
 
     // ── Replay protocol ─────────────────────────────────────────────────────────
@@ -506,6 +579,10 @@ public final class ReplayerService {
         final long requestId = replayRequestDecoder.requestId();
         final long fromPosition = replayRequestDecoder.fromPosition();
         final int segmentIndex = replayRequestDecoder.segmentIndex();
+
+        if (clientIdCollisions.onRequest(clientId, requestId, System.currentTimeMillis())) {
+            onClientIdCollision(clientId);
+        }
 
         // Answer from this node's own health before touching a slot or the archive — see checkReady.
         // Serving history the integrity check rejected is worse than refusing it: the replay's first
@@ -643,7 +720,10 @@ public final class ReplayerService {
             }
             if (segmentIndex >= segments.size()) {
                 // Walked past the last tenure: the app has replayed all history and is at the live tip.
-                // No specific recording to name here — NULL_VALUE, matching NO_REPLAY_NEEDED's own sentinel.
+                // No specific recording to name here — NULL_VALUE, matching NO_REPLAY_NEEDED's own sentinel,
+                // and load-bearing: this is the ONLY reply that ends a walk. The empty-segment case below
+                // sends the same sentinel while naming its recording, which is how the app tells "skip this
+                // segment" from "the chain is exhausted, you are caught up".
                 sendReplaying(clientId, requestId, NO_REPLAY_NEEDED, 0, NULL_VALUE);
                 return;
             }
@@ -658,10 +738,22 @@ public final class ReplayerService {
         if (tip < 0) {
             tip = archive.getStopPosition(recordingId);
         }
+        if (tip < 0) {
+            // Neither counter could say where this recording ends: its RecordingPos counter is already
+            // gone and its stopPosition is not written yet. That is a transient read, not an answer —
+            // reported as a tip it would tell a walking app this segment is empty and a resuming one
+            // that its position is stale. Hold and retry, exactly as for a recording not yet listed.
+            replaySlots.enqueue(clientId, requestId, segmentIndex, fromPosition);
+            sendPending(clientId, requestId);
+            return;
+        }
         final long boundedLength = tip - replayFrom;
         if (boundedLength <= 0) {
-            // Already at (or past) the tip — nothing historical to serve. Tell the app to just
-            // follow the live tap; no slot consumed.
+            // Already at (or past) the tip — nothing historical to serve. Naming the recording is what
+            // separates this from the walk-terminating reply above: for a resume it means "you are at
+            // the tip", but for a walk step it means only that THIS segment is empty (an unclean restart
+            // can leave a recording created before anything was published to it), and the app must skip
+            // it and carry on rather than end its walk with the rest of the chain unreplayed.
             sendReplaying(clientId, requestId, NO_REPLAY_NEEDED, tip, recordingId);
             return;
         }
@@ -809,6 +901,21 @@ public final class ReplayerService {
             }
             idleStrategy.idle();
         }
+    }
+
+    /**
+     * Two co-located apps are using one client id (see {@link ReplayClientIdCollisions}). Reported, not
+     * refused: both are already livelocked — each request stops the other's replay — so refusing changes
+     * nothing they experience, while a false positive would stop a healthy replica from ever recovering.
+     * What was missing is the diagnosis, and the fix is a launch-configuration change.
+     * @param clientId the id being used twice
+     */
+    private void onClientIdCollision(final int clientId) {
+        clientIdCollisionCounter.set(1);
+        Logger.error(Logger.Component.ReplayerService, Logger.EventCode.ReplayClientIdCollision, memberId,
+                "two co-located apps are both using PHIXERON_REPLAYER_CLIENT_ID=%d — their requestId "
+                        + "sequences interleave, so each request stops the other's replay and NEITHER will "
+                        + "ever catch up; give them distinct ids and restart them", clientId);
     }
 
     /**

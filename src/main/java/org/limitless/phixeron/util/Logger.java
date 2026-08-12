@@ -42,7 +42,9 @@ public final class Logger {
         TapRecordingFailure,
         ControlReplyDropped,
         GatewayPromotionFailed,
-        ReplayDutyCycleFailure
+        ReplayDutyCycleFailure,
+        ReplayClientIdCollision,
+        ShutdownTimeout
     }
 
     public record LoggerEvent(Component component, Severity severity, EventCode code, Integer memberId,

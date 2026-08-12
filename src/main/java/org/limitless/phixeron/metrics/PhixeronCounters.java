@@ -99,6 +99,14 @@ public final class PhixeronCounters {
      */
     public static final int REPLAYER_CONTROL_REPLIES_DROPPED_COUNT_TYPE_ID = 5107;
 
+    /**
+     * 1 once two co-located apps have been seen sharing one {@code PHIXERON_REPLAYER_CLIENT_ID} (see
+     * {@code ReplayClientIdCollisions}), else 0. A configuration fault, not a runtime one: the two
+     * stop each other's replays on every request and neither ever catches up, so a node showing this
+     * has replicas that will not recover until it is corrected.
+     */
+    public static final int REPLAYER_CLIENT_ID_COLLISION_TYPE_ID = 5108;
+
     /** Whole range this class owns, for a typeId-range scan (see {@code clusterctl counters}). */
     public static final int MIN_TYPE_ID = SEQUENCER_TYPE_ID_MIN;
     public static final int MAX_TYPE_ID = REPLAYER_TYPE_ID_MAX;

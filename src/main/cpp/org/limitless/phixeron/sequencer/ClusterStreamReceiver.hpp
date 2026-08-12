@@ -570,19 +570,11 @@ public:
             }
             if (m_singleImageMode && !m_caughtUp)
             {
-                // The bounded scan's image ended without ever reaching catchUpPosition — nothing
-                // further will arrive for it. Distinct from notifyCaughtUp (which means the target
-                // position was reached): callers that only care "is the scan over" can treat the two
-                // alike, but the two signals stay separate here since they mean different things.
                 if (m_onReplayEnded)
                 {
                     m_onReplayEnded();
                 }
             }
-            // This historical segment is fully replayed; advance to the next. The last (active)
-            // segment is replayed open-ended and only closes if its recording stops growing (its
-            // member shut down), which for a co-located client is terminal — there is nothing
-            // further to follow, so poll() then just idles.
             m_replayImage.reset();
             ++m_segmentIndex;
             if (m_segmentIndex < m_segments.size())
@@ -598,11 +590,8 @@ public:
         return m_caughtUp;
     }
 
-    // Current replay image position, or -1 if no image has resolved yet. Exposes scan
-    // progress without exposing the image itself — lets a caller (e.g. FixConnection's
-    // archive-recovery stall detector) tell "still working, just slow" apart from "stuck"
-    // without guessing from wall-clock elapsed time.
-    [[nodiscard]] std::int64_t position() const
+    // Current replay image position, or -1 if no image has resolved yet.
+    [[nodiscard]] std::int64_t replayImagePosition() const
     {
         return m_replayImage ? m_replayImage->position() : -1;
     }
@@ -633,13 +622,7 @@ private:
                     const aeron::util::index_t length, const aeron::Header& header)
     {
         const std::int64_t receiveNs = nowNs();
-
-        // header.position() is the position the image has advanced to *after*
-        // consuming this fragment; subtracting frameLength() gives the position
-        // of the frame's first byte, which is what ReplayParams::position() needs
-        // to replay starting at (and including) this exact message.
         const std::int64_t framePosition = frameStartPosition(header);
-
         char* const raw = reinterpret_cast<char*>(buffer.buffer());
         const std::uint64_t cap = static_cast<std::uint64_t>(buffer.capacity());
         const std::uint64_t off = static_cast<std::uint64_t>(offset);
@@ -669,13 +652,6 @@ private:
         const auto sessId = m_header.sessionId();
         const auto ts = m_header.timestamp();
         const auto origin = m_header.origin();
-
-        // De-duplication guard for the multi-segment replay walk (skipped for the bounded single-image
-        // resend scan, which delivers an exact range verbatim). The replay of a single continuous
-        // recording is gap-free by construction; the only way a globalSeqNo can repeat is when the walk
-        // crosses from one recording to an overlapping one (a member restart left an earlier, stopped
-        // recording plus the post-restart one, with overlapping globalSeqNo ranges), so drop anything at
-        // or below the highest already delivered.
         if (!m_singleImageMode)
         {
             if (m_lastGlobalSeqNo != 0 && gseq <= m_lastGlobalSeqNo)

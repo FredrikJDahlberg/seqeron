@@ -206,6 +206,19 @@
       ],
       "fieldConfig": { "defaults": {}, "overrides": [] },
       "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single" } }
+    },
+    {
+      "id": 16,
+      "title": "Control replies dropped/s",
+      "description": "Replay control replies (Replaying/ReplayPending/ReplayUnavailable) the Replayer dropped at its offer-spin bound rather than spin on. Expected to sit at zero, and it is the RATE that means something — the counter never resets while a node is up, so a flat non-zero line is only old history. A sustained rate means one co-located app subscribed to the control stream and stopped draining it; dropping is deliberate, since the Replayer answers every app from one duty-cycle thread and must not let a wedged one hold the rest. The cost falls on the offending app alone: one ~500 ms resend per drop. NOT_CONNECTED (an app whose subscription is not registered yet) is excluded at the source and never counts here.",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "x": 0, "y": 44, "w": 12, "h": 8 },
+      "targets": [
+        { "refId": "A", "expr": "rate(phixeron_replayer_control_replies_dropped_total[5m])", "legendFormat": "member {{member}}" }
+      ],
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single" } }
     }
   ]
 }

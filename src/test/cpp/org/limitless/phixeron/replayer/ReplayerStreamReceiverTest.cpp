@@ -376,8 +376,10 @@ TEST(ReplayerStreamReceiverGapRecovery, NoReplayNeededMarksCaughtUpAndClearsWalk
     ReplayerStreamReceiver client{1, [](const SequencedEvent&) {}};
 
     ASSERT_FALSE(client.isCaughtUp());
+    // recordingId -1: the walk ran past the last recording. That is the only reply that ends a walk —
+    // see NoReplayNeededNamingARecordingSkipsThatSegmentAndKeepsWalking for the other sender.
     deliverControl(client, encodeReplaying(/*clientId=*/1, client.testRequestId(), REPLAYER_NO_REPLAY_NEEDED,
-                                           /*catchUpPosition=*/0));
+                                           /*catchUpPosition=*/0, /*recordingId=*/-1));
 
     EXPECT_TRUE(client.isCaughtUp()) << "NO_REPLAY_NEEDED means already at the tip of an empty/exhausted chain";
     EXPECT_FALSE(client.testIsAwaitingReplay());
@@ -668,11 +670,17 @@ TEST(ReplayerStreamReceiverGapRecovery, RecoveringFlagTracksWalkAndAwaitingRepla
 
     deliverControl(client, encodeReplaying(/*clientId=*/1, client.testRequestId(), /*replaySessionId=*/9,
                                            /*catchUpPosition=*/500));
+    // The walk has to actually close the hole it re-walked for: 9 is retained behind the missing 6..8,
+    // and the terminator below refuses to end recovery while anything is still stranded there
+    // (WalkTerminatorWithARetainedHoleStillOpenReWalksInstead).
+    deliverReplay(client, 6);
+    deliverReplay(client, 7);
+    deliverReplay(client, 8);  // dispatching 8 drains the retained 9 straight over
     client.testCompleteReplaySegment();
     EXPECT_TRUE(client.testIsRecovering()) << "advancing to the next segment stays mid-walk";
 
     deliverControl(client, encodeReplaying(/*clientId=*/1, client.testRequestId(), REPLAYER_NO_REPLAY_NEEDED,
-                                           /*catchUpPosition=*/0));
+                                           /*catchUpPosition=*/0, /*recordingId=*/-1));
     EXPECT_FALSE(client.testIsRecovering()) << "chain exhausted -> back to steady state";
 }
 
@@ -947,6 +955,84 @@ TEST(ReplayerStreamReceiverGapRecovery, RetainedFramesAlreadyCoveredByTheReplayA
     deliverReplay(client, 4);  // and another
 
     EXPECT_EQ((std::vector<std::int64_t>{1, 2, 3, 4}), delivered) << "each globalSeqNo dispatched exactly once";
+}
+
+// ── The walk's terminating NO_REPLAY_NEEDED (review-3 findings 1 and 2) ──────────────────────
+// serveReplay sends NO_REPLAY_NEEDED for two different things and tells them apart by recordingId: a
+// walk that ran past the last recording (names none, -1) versus a segment that is merely EMPTY (names
+// the recording it found nothing in). Only the first ends the walk. And ending it is not by itself
+// permission to declare caught up: the frontier is what the retained-ahead FIFO knows, not what the
+// chain covered.
+
+TEST(ReplayerStreamReceiverGapRecovery, WalkTerminatorWithARetainedHoleStillOpenReWalksInstead)
+{
+    int caughtUpNotifications = 0;
+    ReplayerStreamReceiver client{1, [](const SequencedEvent&) {}, {}, {}, {}, [&] { ++caughtUpNotifications; }};
+
+    // Cold-start walk over segment 0, which covers only globalSeqNo 1..2 — while the tap runs ahead and
+    // frame 5 is retained behind the hole at 3,4.
+    deliverControl(client, encodeReplaying(/*clientId=*/1, client.testRequestId(), /*replaySessionId=*/7,
+                                           /*catchUpPosition=*/500, /*recordingId=*/5));
+    deliverReplay(client, 1);
+    deliverReplay(client, 2);
+    deliverLive(client, 5);  // ahead of the hole -> retained, not dropped
+    client.testCompleteReplaySegment();
+    ASSERT_EQ(1, client.testWalkSegmentIndex()) << "segment 0 done -> the walk advances";
+
+    // The chain really is exhausted (the terminator names no recording) — but 3 and 4 were never
+    // replayed, so the retained frame 5 still sits behind a hole.
+    deliverControl(client, encodeReplaying(/*clientId=*/1, client.testRequestId(), REPLAYER_NO_REPLAY_NEEDED,
+                                           /*catchUpPosition=*/0, /*recordingId=*/-1));
+
+    EXPECT_FALSE(client.isCaughtUp()) << "must not declare caught up with a retained frame behind a hole";
+    EXPECT_EQ(0, caughtUpNotifications) << "no false convergence notification — this opens the accept gate";
+    EXPECT_EQ(0, client.testWalkSegmentIndex()) << "re-walks the chain rather than trusting the terminator";
+    EXPECT_TRUE(client.testIsAwaitingReplay());
+}
+
+// The negative control for the guard above: a walk whose retained frames all drained must still finish.
+TEST(ReplayerStreamReceiverGapRecovery, WalkTerminatorWithEveryRetainedFrameDrainedStillCatchesUp)
+{
+    ReplayerStreamReceiver client{1, [](const SequencedEvent&) {}};
+
+    deliverControl(client, encodeReplaying(/*clientId=*/1, client.testRequestId(), /*replaySessionId=*/7,
+                                           /*catchUpPosition=*/500, /*recordingId=*/5));
+    deliverReplay(client, 1);
+    deliverLive(client, 3);    // ahead of the hole at 2 -> retained
+    deliverReplay(client, 2);  // closes it, so 3 drains straight over
+    client.testCompleteReplaySegment();
+
+    deliverControl(client, encodeReplaying(/*clientId=*/1, client.testRequestId(), REPLAYER_NO_REPLAY_NEEDED,
+                                           /*catchUpPosition=*/0, /*recordingId=*/-1));
+
+    EXPECT_TRUE(client.isCaughtUp()) << "nothing is outstanding — the guard must not fire here";
+    EXPECT_EQ(-1, client.testWalkSegmentIndex()) << "steady/resume mode, not a spurious re-walk";
+    EXPECT_FALSE(client.testIsAwaitingReplay());
+}
+
+// An unclean restart can leave a recording created before anything was published to it. Taking the
+// NO_REPLAY_NEEDED that answers it as the walk terminator drops every later segment on the floor — and
+// because the re-walk a later tap gap triggers lands on that same empty segment, it never converges.
+TEST(ReplayerStreamReceiverGapRecovery, NoReplayNeededNamingARecordingSkipsThatSegmentAndKeepsWalking)
+{
+    ReplayerStreamReceiver client{1, [](const SequencedEvent&) {}};
+
+    deliverControl(client, encodeReplaying(/*clientId=*/1, client.testRequestId(), REPLAYER_NO_REPLAY_NEEDED,
+                                           /*catchUpPosition=*/0, /*recordingId=*/5));
+
+    EXPECT_FALSE(client.isCaughtUp()) << "an empty segment says nothing about the rest of the chain";
+    EXPECT_EQ(1, client.testWalkSegmentIndex()) << "skip the empty segment, keep walking";
+    EXPECT_TRUE(client.testIsAwaitingReplay());
+    EXPECT_EQ(-1, client.testReplaySessionId());
+
+    // Segment 1 holds the history, and the walk proceeds through it normally.
+    deliverControl(client, encodeReplaying(/*clientId=*/1, client.testRequestId(), /*replaySessionId=*/9,
+                                           /*catchUpPosition=*/900, /*recordingId=*/8));
+
+    EXPECT_EQ(9, client.testReplaySessionId());
+    EXPECT_EQ(8, client.testWalkRecordingId());
+    deliverReplay(client, 1);
+    EXPECT_EQ(1, client.testWalkSegmentIndex()) << "still walking segment 1";
 }
 
 // ── Walk-segment recordingId mismatch (doc/review #4) ────────────────────────────────────────
