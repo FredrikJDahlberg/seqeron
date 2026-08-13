@@ -102,6 +102,7 @@
 #include "org/limitless/phixeron/replayer/RecoveryProgressPolicy.hpp"
 #include "org/limitless/phixeron/sequencer/ClusterStreamReceiver.hpp"
 #include "org/limitless/phixeron/util/Logger.hpp"
+#include "org/limitless/phixeron/util/PhixeronCounters.hpp"
 
 // Replay-protocol control codecs (sbe-unsequenced.xml) + LeadershipChanged (sbe-sequenced.xml)
 #include "org_limitless_phixeron_sbe_sequenced/LeadershipChanged.h"
@@ -191,11 +192,17 @@ class ReplayerStreamReceiver
         }
     }
 
-    // Subscribes the tap/replay/control streams, opens the request publication, and requests the
-    // cold-start replay from position 0.
-    void start(std::shared_ptr<aeron::Aeron> aeron)
+    // Subscribes the tap/replay/control streams, opens the request publication and the convergence
+    // counter, and requests the cold-start replay from position 0. memberId is this app's node — needed
+    // only to label that counter, since a node's metrics are merged with every other node's.
+    void start(std::shared_ptr<aeron::Aeron> aeron, const std::int32_t memberId)
     {
         m_aeron = std::move(aeron);
+        m_recoveryStalledCounterRegId = util::addAppCounter(
+            m_aeron, util::APP_RECOVERY_STALLED_TYPE_ID,
+            "phixeron.app.recoveryStalled member=" + std::to_string(memberId) + " client=" +
+                std::to_string(m_clientId),
+            memberId, m_clientId);
         m_tapSubRegId = m_aeron->addSubscription(FEEDER_CHANNEL, FEEDER_STREAM_ID);
         // No standing replay subscription — see openReplaySubscription: one is opened per replay
         // episode, filtered to that replay's own session id, and closed when the episode ends.
@@ -536,6 +543,10 @@ class ReplayerStreamReceiver
         if (!m_requestPub && m_requestPubRegId >= 0)
         {
             m_requestPub = m_aeron->findPublication(m_requestPubRegId);
+        }
+        if (!m_recoveryStalledCounter && m_recoveryStalledCounterRegId >= 0)
+        {
+            m_recoveryStalledCounter = m_aeron->findCounter(m_recoveryStalledCounterRegId);
         }
     }
 
@@ -972,8 +983,12 @@ class ReplayerStreamReceiver
                        const bool fromReplay)
     {
         // The one funnel every in-order frame passes through, replayed or live — so recovery advancing
-        // its globalSeqNo is exactly this being reached (see RecoveryProgressPolicy).
-        m_recoveryProgress.onProgress();
+        // its globalSeqNo is exactly this being reached (see RecoveryProgressPolicy). onProgress returns
+        // the falling edge only, so the gauge is written once per episode rather than once per frame.
+        if (m_recoveryProgress.onProgress() && m_recoveryStalledCounter)
+        {
+            m_recoveryStalledCounter->set(0);
+        }
         m_hdr.wrap(raw, off, 0U, cap);
         const std::uint16_t templateId = m_hdr.templateId();
         m_header.wrap(raw, off + HdrSbe::encodedLength(), 0U, cap);
@@ -1190,6 +1205,10 @@ class ReplayerStreamReceiver
                             static_cast<long long>(m_lastGlobalSeqNo), static_cast<int>(m_walkSegmentIndex),
                             m_awaitingReplay ? 1 : 0, static_cast<long long>(m_replaySessionId),
                             m_replayUnavailableLogged ? 1 : 0);
+        if (m_recoveryStalledCounter)
+        {
+            m_recoveryStalledCounter->set(1);
+        }
         return true;
     }
 
@@ -1308,7 +1327,11 @@ class ReplayerStreamReceiver
     bool m_caughtUp = false;               // following live; revoked on a tap gap, re-established at the seam
 
     // Recovery that runs without ever dispatching anything — contained, but silent until this (review-3.md #6).
+    // The gauge is the same fact the fault line carries, in the form an alert can be written against;
+    // null until the async add resolves (resolveResources), which no reporting path may depend on.
     RecoveryProgressPolicy m_recoveryProgress{RECOVERY_PROGRESS_TIMEOUT_MS};
+    std::int64_t m_recoveryStalledCounterRegId = -1;
+    std::shared_ptr<aeron::Counter> m_recoveryStalledCounter;
 
     // Live tap frames from beyond the current hole, retained in arrival order (see retainMessages).
     MessagesBlockPool m_messagesBlockPool;

@@ -100,6 +100,12 @@ public final class MetricsExporter {
                 "phixeron_replayer_client_id_collision",
                 "1 once two co-located apps were seen sharing one PHIXERON_REPLAYER_CLIENT_ID, else 0. "
                     + "They stop each other's replays and neither catches up until it is corrected.",
+                "gauge")),
+            Map.entry(PhixeronCounters.APP_RECOVERY_STALLED_TYPE_ID, new MetricMeta(
+                "phixeron_app_recovery_stalled",
+                "1 while a co-located replica's recovery has dispatched nothing for 30s while not caught "
+                    + "up, else 0. It is holding, which is correct — but it is not serving, and this is the "
+                    + "only signal that says so.",
                 "gauge"))
         );
         final Map<Integer, MetricMeta> map = new HashMap<>();
@@ -164,7 +170,13 @@ public final class MetricsExporter {
             final long value = reader.getCounterValue(counterId);
             body.append("# HELP ").append(meta.name()).append(' ').append(meta.help()).append('\n');
             body.append("# TYPE ").append(meta.name()).append(' ').append(meta.type()).append('\n');
-            body.append(meta.name()).append("{member=\"").append(memberId).append("\"} ").append(value).append('\n');
+            body.append(meta.name()).append("{member=\"").append(memberId).append('"');
+            // App counters are published by several co-located replicas at once, so memberId alone
+            // would render them as one repeated series rather than one per replica.
+            if (typeId >= PhixeronCounters.APP_TYPE_ID_MIN && typeId <= PhixeronCounters.APP_TYPE_ID_MAX) {
+                body.append(",client=\"").append(keyBuffer.getInt(PhixeronCounters.KEY_CLIENT_ID_OFFSET)).append('"');
+            }
+            body.append("} ").append(value).append('\n');
         });
         return body.toString();
     }

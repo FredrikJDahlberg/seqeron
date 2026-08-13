@@ -294,8 +294,8 @@ public final class ClusterCtl {
 
     /**
      * Lists this node's phixeron operator counters (see {@link PhixeronCounters}) — the
-     * {@code SequencerService}/{@code ReplayerService} gauges and event counts — read directly off the
-     * co-located Aeron directory's CnC file. No cluster connection needed, so this works whether or not
+     * {@code SequencerService}/{@code ReplayerService} gauges and event counts, plus whatever the
+     * co-located C++ replicas publish — read directly off the co-located Aeron directory's CnC file. No cluster connection needed, so this works whether or not
      * this node holds an elected leader, and is safe to run on every node.
      */
     private static int counters() {

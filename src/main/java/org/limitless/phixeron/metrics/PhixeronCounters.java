@@ -107,12 +107,35 @@ public final class PhixeronCounters {
      */
     public static final int REPLAYER_CLIENT_ID_COLLISION_TYPE_ID = 5108;
 
+    // ── Co-located C++ application replicas (FixGateway / OrderExecClient / BasicDataClient) ───
+    // Published by the apps themselves, not by any Java process — see the C++ half in
+    // {@code util/PhixeronCounters.hpp}, which must be kept in step with the ids and key layout here.
+    public static final int APP_TYPE_ID_MIN = 5200;
+    public static final int APP_TYPE_ID_MAX = 5299;
+
+    /**
+     * 1 while a co-located replica's recovery has been reported unconvergent — nothing dispatched for
+     * {@code RECOVERY_PROGRESS_TIMEOUT_MS} while not caught up (see {@code RecoveryProgressPolicy}) —
+     * else 0. The replica is holding, which is correct and safe; what it is not is serving.
+     */
+    public static final int APP_RECOVERY_STALLED_TYPE_ID = 5200;
+
     /** Whole range this class owns, for a typeId-range scan (see {@code clusterctl counters}). */
     public static final int MIN_TYPE_ID = SEQUENCER_TYPE_ID_MIN;
-    public static final int MAX_TYPE_ID = REPLAYER_TYPE_ID_MAX;
+    public static final int MAX_TYPE_ID = APP_TYPE_ID_MAX;
 
     /** Offset of the memberId int within a counter's key buffer (see {@link #addCounter}). */
     public static final int KEY_MEMBER_ID_OFFSET = 0;
+
+    /**
+     * Offset of the replayer clientId int in an <b>app</b> counter's key. Node-scoped counters carry the
+     * memberId alone, but a node runs several co-located replicas publishing the same type id, so
+     * without this they would all render as one Prometheus series per node — the same label set,
+     * silently overwritten. Only counters in the {@link #APP_TYPE_ID_MIN}..{@link #APP_TYPE_ID_MAX}
+     * range carry it; on the others this offset reads 0 out of Aeron's zero-filled key area, which is
+     * why the exporter keys off the range rather than probing the value.
+     */
+    public static final int KEY_CLIENT_ID_OFFSET = BitUtil.SIZE_OF_INT;
 
     /** Length of the key buffer written by {@link #addCounter}: one int, the memberId. */
     public static final int KEY_LENGTH = BitUtil.SIZE_OF_INT;

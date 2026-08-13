@@ -59,6 +59,22 @@ TEST(RecoveryProgressPolicy, ASingleDispatchMidEpisodeRestartsTheDeadline)
     EXPECT_TRUE(policy.onNoProgress(seconds(60)));
 }
 
+TEST(RecoveryProgressPolicy, OnlyProgressEndingAReportedEpisodeIsAFallingEdge)
+{
+    RecoveryProgressPolicy policy{STALL_MS};
+
+    // A healthy stream calls onProgress on every frame; a gauge driven off this must not be written on
+    // every one of them, only on the edge where a reported episode actually ends.
+    EXPECT_FALSE(policy.onProgress());
+    policy.onNoProgress(seconds(0));
+    EXPECT_FALSE(policy.onProgress()) << "an episode that was never reported has no edge to fall from";
+
+    policy.onNoProgress(seconds(10));
+    ASSERT_TRUE(policy.onNoProgress(seconds(40)));
+    EXPECT_TRUE(policy.onProgress()) << "the reported episode ended here";
+    EXPECT_FALSE(policy.onProgress()) << "and only here";
+}
+
 TEST(RecoveryProgressPolicy, ALaterEpisodeIsReportedAgainRatherThanSwallowedByTheFirst)
 {
     RecoveryProgressPolicy policy{STALL_MS};

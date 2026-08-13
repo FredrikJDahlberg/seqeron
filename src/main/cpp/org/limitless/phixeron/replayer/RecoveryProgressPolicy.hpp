@@ -29,12 +29,16 @@ class RecoveryProgressPolicy
     // Replayer slot behind other co-located apps' walks, not any step of this client's own.
     explicit RecoveryProgressPolicy(std::int64_t stallMs) : m_stallMs{stallMs} {}
 
-    // Recovery is converging: a frame was dispatched in order, or the stream went contiguous. Clears the
-    // clock and re-arms the report, so a later episode is reported again rather than swallowed.
-    void onProgress()
+    // Recovery is converging: a frame was dispatched in order. Clears the clock and re-arms the report,
+    // so a later episode is reported again rather than swallowed. Returns true only when this ends an
+    // episode that HAD been reported — the falling edge, so the caller's gauge clears exactly once
+    // rather than on every frame of a healthy stream.
+    bool onProgress()
     {
+        const bool wasReported = m_reported;
         m_sinceMs = 0;
         m_reported = false;
+        return wasReported;
     }
 
     // Evaluates one observation made while !isCaughtUp(). The first of an episode only anchors the clock

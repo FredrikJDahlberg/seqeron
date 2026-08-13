@@ -107,6 +107,12 @@ GF_PATHS_PROVISIONING="$(pwd)/src/main/ops/grafana/provisioning" grafana server 
 Every metric carries a `member="N"` label (the memberId, read from the counter's structured key
 buffer — see `PhixeronCounters.addCounter`/`KEY_MEMBER_ID_OFFSET`).
 
+`phixeron_app_*` metrics carry a second label, `client="M"` — the replayer clientId. They are published
+by the co-located C++ replicas (`FixGateway`, `OrderExecClient`, `BasicDataClient`) rather than by a
+Java process, and several of them run per node publishing the same counter, so `member` alone would
+collapse them into one repeated series. The C++ half of the registry is
+`org/limitless/phixeron/util/PhixeronCounters.hpp`, which must be kept in step with the Java one.
+
 | Metric | Type | Meaning |
 |---|---|---|
 | `phixeron_node_up` | gauge | Synthesized by the aggregator, not read from a counter: 1 if its last scrape of that node's exporter succeeded, else 0 |
@@ -128,6 +134,7 @@ buffer — see `PhixeronCounters.addCounter`/`KEY_MEMBER_ID_OFFSET`).
 | `phixeron_replayer_integrity_failure` | gauge | 1 once a tap recording failed the startup gseq-1 integrity check, else 0. Every recording in the node's chain is checked, not just the oldest: one that begins above 1 resumed mid-history, which is a hole at its join. Latched: `ready` never becomes 1 again for that process |
 | `phixeron_replayer_control_replies_dropped_total` | counter | Count of control replies dropped rather than spun on because an app stopped draining the control stream. Each costs that app one resend interval, so the **rate** identifies a wedged replica — the absolute value does not |
 | `phixeron_replayer_client_id_collision` | gauge | 1 once two co-located apps were seen sharing one `PHIXERON_REPLAYER_CLIENT_ID`, else 0. They stop each other's replays and neither catches up until the launch configuration is corrected |
+| `phixeron_app_recovery_stalled` | gauge | 1 while this replica's recovery has dispatched nothing for 30s while not caught up, else 0. Also labelled `client`. It is holding, which is correct and safe — but it is not serving, and nothing else says so: the causes are a `ReplayUnavailable` refusal, a Replayer that never answers, and a hole this node's recording chain cannot cover. The replica's own fault line names which |
 
 ## A node that terminates itself
 

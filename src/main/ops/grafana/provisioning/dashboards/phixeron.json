@@ -219,6 +219,19 @@
       ],
       "fieldConfig": { "defaults": {}, "overrides": [] },
       "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single" } }
+    },
+    {
+      "id": 17,
+      "title": "App recovery stalled",
+      "description": "1 while a co-located replica's recovery has dispatched nothing for 30s while not caught up, else 0. One series per replica (member + replayer clientId), because several run per node. The replica is HOLDING, not corrupting anything — nothing is dispatched from a baseline it cannot establish, so its consumer gates stay shut — but it is also not serving, and it will not recover on its own: the causes are a ReplayUnavailable refusal, a Replayer that never answers, and a hole this node's recording chain cannot cover. Read it with phixeron_replayer_ready and phixeron_replayer_integrity_failure for the node it sits on, and with the replica's own RecoveryStalled fault line, which names the state telling those three apart. Any sustained 1 warrants a look; it clears by itself the moment recovery delivers a frame.",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "x": 12, "y": 44, "w": 12, "h": 8 },
+      "targets": [
+        { "refId": "A", "expr": "phixeron_app_recovery_stalled", "legendFormat": "member {{member}} client {{client}}" }
+      ],
+      "fieldConfig": { "defaults": { "min": 0, "max": 1 }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single" } }
     }
   ]
 }
