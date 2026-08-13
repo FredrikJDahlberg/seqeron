@@ -314,6 +314,13 @@ class ReplayerStreamReceiver
         return m_lastRequestMs;
     }
 
+    // Test-only: a ReplayComplete encoded but not yet out on the wire. Distinguishes "slot released"
+    // from "release attempted", which a discarded offer result used to conflate (review-3.md #9).
+    bool testCompletePending() const
+    {
+        return m_completePending;
+    }
+
     // Test-only: the id the next reply must carry to be acted on — lets a test build a stale reply
     // (see onControl's request-correlation check) without guessing the counter's internal start value.
     std::int64_t testRequestId() const
@@ -359,6 +366,15 @@ class ReplayerStreamReceiver
         if (m_awaitingReplay && (requestPubPending || (nowMs() - m_lastRequestMs) > RESEND_INTERVAL_MS))
         {
             requestReplay(m_walkSegmentIndex, m_reqFromPosition);  // re-send the same request verbatim
+        }
+
+        // A ReplayComplete that never made it out holds our slot until the 60s TTL, and nothing else
+        // re-sends it — the walk supersedes its own slot, but a resume has no follow-up request. Outside
+        // the m_replaySessionId block below on purpose: by the time this is pending we are caught up and
+        // back on the live tap, so that block no longer runs.
+        if (m_completePending)
+        {
+            sendReplayComplete();
         }
 
         if (m_replaySessionId >= 0)
@@ -573,6 +589,10 @@ class ReplayerStreamReceiver
         m_reqFromPosition = fromPosition;
         m_awaitingReplay = true;
         m_replaySessionId = -1;
+        // Drop any unsent release: ReplayComplete names only the clientId, so one landing late — after
+        // this request took a fresh slot — would free the slot this replay is riding. A new request
+        // supersedes the old slot on the Replayer side anyway, so there is nothing left to release.
+        m_completePending = false;
         closeReplaySubscription();
         m_lastRequestMs = nowMs();
         ++m_requestId;
@@ -587,6 +607,11 @@ class ReplayerStreamReceiver
         enc.clientId(m_clientId).requestId(m_requestId).fromPosition(fromPosition).segmentIndex(segmentIndex);
         const auto len = static_cast<aeron::util::index_t>(usq::MessageHeader::encodedLength() + enc.encodedLength());
         aeron::concurrent::AtomicBuffer ab(buf.data(), buf.size());
+        // Result deliberately discarded: unlike the two sends below, a request that does not land is
+        // already covered — the resend timer re-sends it verbatim after RESEND_INTERVAL_MS. Retrying it
+        // any sooner is actively harmful: every send does ++m_requestId, and onControl only acts on a
+        // reply carrying the CURRENT id, so a per-poll retry runs the counter away and every reply that
+        // arrives is discarded as stale — the client then never attaches a replay and never catches up.
         m_requestPub->offer(ab, 0, len);
     }
 
@@ -650,10 +675,12 @@ class ReplayerStreamReceiver
     // live tap. Only the resume path needs this — every step of a cold-start walk supersedes its own
     // slot with the next segment's request, and the walk's last request frees it via NO_REPLAY_NEEDED,
     // whereas a resume has no follow-up request at all. Without it the slot sits until the 60s idle TTL
-    // reclaims it: half of MAX_CONCURRENT_REPLAYS, held by nobody. Best-effort — a lost one costs only
-    // that delay.
+    // reclaims it: one of MAX_CONCURRENT_REPLAYS slots, held by nobody. Unlike a request this has no
+    // timer behind it and no follow-up that would supersede it, so a single dropped offer was the whole
+    // release — hence m_completePending, retried from poll() until it lands.
     void sendReplayComplete()
     {
+        m_completePending = true;
         if (!m_requestPub || !m_requestPub->isConnected())
         {
             return;
@@ -664,7 +691,7 @@ class ReplayerStreamReceiver
         enc.clientId(m_clientId);
         const auto len = static_cast<aeron::util::index_t>(usq::MessageHeader::encodedLength() + enc.encodedLength());
         aeron::concurrent::AtomicBuffer ab(buf.data(), buf.size());
-        m_requestPub->offer(ab, 0, len);
+        m_completePending = m_requestPub->offer(ab, 0, len) < 0;
     }
 
     // Refreshes this client's replay slot while it rides an attached image, so the Replayer's idle TTL
@@ -673,7 +700,6 @@ class ReplayerStreamReceiver
     // slot being reclaimed, which the truncated-close path in poll() recovers from by re-requesting.
     void sendHeartbeat()
     {
-        m_lastHeartbeatMs = nowMs();
         if (!m_requestPub || !m_requestPub->isConnected())
         {
             return;
@@ -684,7 +710,13 @@ class ReplayerStreamReceiver
         enc.clientId(m_clientId);
         const auto len = static_cast<aeron::util::index_t>(usq::MessageHeader::encodedLength() + enc.encodedLength());
         aeron::concurrent::AtomicBuffer ab(buf.data(), buf.size());
-        m_requestPub->offer(ab, 0, len);
+        // Only a landed heartbeat refreshes the slot, so the clock measures when the Replayer last
+        // actually heard from us. Advancing it on a dropped offer burnt a whole interval per loss and
+        // walked a healthy client toward the TTL in silence.
+        if (m_requestPub->offer(ab, 0, len) >= 0)
+        {
+            m_lastHeartbeatMs = nowMs();
+        }
     }
 
     void onControl(const aeron::concurrent::AtomicBuffer& buffer, aeron::util::index_t offset,
@@ -1316,6 +1348,11 @@ class ReplayerStreamReceiver
     std::int64_t m_lastRequestMs = 0;
     std::int64_t m_requestId = 0;  // advances per send; replies not carrying it are stale (see onControl)
     std::int64_t m_lastHeartbeatMs = 0;
+    // A ReplayComplete that did not land (review-3.md #9). isConnected() only rules out NOT_CONNECTED; a
+    // healthy publication still returns BACK_PRESSURED/ADMIN_ACTION transiently, and a discarded result
+    // made "attempted" indistinguishable from "sent". Only the release needs this — see requestReplay
+    // for why the request must NOT be retried the same way.
+    bool m_completePending = false;
     std::int64_t m_lastReplayPosition = -1;   // last replay-image position seen; -1 = not attached yet
     std::int64_t m_lastReplayProgressMs = 0;  // when it last changed — the stall watchdog's clock
     bool m_replayUnavailableLogged = false;  // the refusal is permanent and resent every 500ms; log it once

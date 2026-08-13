@@ -885,7 +885,7 @@ TEST(ReplayerStreamReceiverGapRecovery, NoReplayNeededOverAnOpenHoleFallsBackToT
 
 // A resume ends at the bound it was given and has no next segment to request — so unlike a walk step it
 // must declare itself caught up and hand the slot back (ReplayComplete), or the slot sits until the 60s
-// idle TTL reclaims it: half of MAX_CONCURRENT_REPLAYS, held by nobody.
+// idle TTL reclaims it: one of MAX_CONCURRENT_REPLAYS slots, held by nobody.
 TEST(ReplayerStreamReceiverGapRecovery, ResumeReachingItsBoundCatchesUpWithoutRequestingAnotherSegment)
 {
     int caughtUpNotifications = 0;
@@ -908,6 +908,77 @@ TEST(ReplayerStreamReceiverGapRecovery, ResumeReachingItsBoundCatchesUpWithoutRe
     EXPECT_EQ(-1, client.testReplaySessionId());
     EXPECT_TRUE(client.isCaughtUp()) << "we hold everything the recording had when the request was served";
     EXPECT_EQ(2, caughtUpNotifications) << "re-fired, so consumers re-arm on re-convergence";
+}
+
+// review-3.md #9: the release was a fire-and-forget offer, so an offer that did not land was
+// indistinguishable from one that did — and nothing re-sent it, leaving the slot to the 60s TTL. There
+// is no publication in these tests, so every send here is a send that never went out.
+TEST(ReplayerStreamReceiverGapRecovery, AReplayCompleteThatNeverWentOutStaysPending)
+{
+    ReplayerStreamReceiver client{1, [](const SequencedEvent&) {}, {}, {}, {}, [] {}};
+
+    deliverLive(client, 1);
+    deliverLive(client, 5);  // gap -> resume
+    deliverControl(client, encodeReplaying(/*clientId=*/1, client.testRequestId(), /*replaySessionId=*/7,
+                                           /*catchUpPosition=*/500));
+    deliverReplay(client, 1);
+    deliverReplay(client, 2);
+    deliverReplay(client, 3);
+    deliverReplay(client, 4);
+    ASSERT_FALSE(client.testCompletePending()) << "nothing to release until the resume reaches its bound";
+
+    client.testCompleteReplaySegment();
+
+    ASSERT_TRUE(client.isCaughtUp());
+    EXPECT_TRUE(client.testCompletePending()) << "it never reached the wire — remember it";
+    client.poll();
+    EXPECT_TRUE(client.testCompletePending()) << "poll retries the release rather than forgetting it";
+}
+
+// An unsent request must NOT be retried per duty cycle, only on the resend timer. Every send does
+// ++m_requestId and onControl acts only on a reply carrying the CURRENT id, so a per-poll retry runs the
+// counter away and every reply that arrives is discarded as stale — leaving the client awaiting a replay
+// that can never correlate, hence never caught up. Cost of getting this wrong is not a slow resend: it is
+// a consumer wedged out of isCaughtUp(), which on the leader-co-located replica means no ExecutionReport.
+TEST(ReplayerStreamReceiverGapRecovery, AnUnsentRequestIsNotReSentOncePerPoll)
+{
+    ReplayerStreamReceiver client{1, [](const SequencedEvent&) {}, {}, {}, {}, [] {}};
+
+    deliverLive(client, 1);
+    deliverLive(client, 5);  // gap -> resume request; no publication here, so it never goes out
+    const std::int64_t before = client.testRequestId();
+
+    for (int i = 0; i < 50; ++i)
+    {
+        client.poll();
+    }
+
+    ASSERT_TRUE(client.testIsAwaitingReplay()) << "still waiting — nothing answered it";
+    EXPECT_LE(client.testRequestId() - before, 1)
+        << "the resend timer paces this; one id per poll outruns every reply in flight";
+}
+
+// ReplayComplete names only the clientId, so one landing after a NEW request took a fresh slot would
+// free the slot that replay is riding. A new request supersedes the old slot server-side anyway.
+TEST(ReplayerStreamReceiverGapRecovery, ANewRequestDropsAReplayCompleteThatNeverWentOut)
+{
+    ReplayerStreamReceiver client{1, [](const SequencedEvent&) {}, {}, {}, {}, [] {}};
+
+    deliverLive(client, 1);
+    deliverLive(client, 5);  // gap -> resume
+    deliverControl(client, encodeReplaying(/*clientId=*/1, client.testRequestId(), /*replaySessionId=*/7,
+                                           /*catchUpPosition=*/500));
+    deliverReplay(client, 1);
+    deliverReplay(client, 2);
+    deliverReplay(client, 3);
+    deliverReplay(client, 4);
+    client.testCompleteReplaySegment();
+    ASSERT_TRUE(client.testCompletePending());
+
+    deliverLive(client, 9);  // a second gap -> new request, taking a fresh slot
+
+    ASSERT_TRUE(client.testIsAwaitingReplay());
+    EXPECT_FALSE(client.testCompletePending()) << "dropped: releasing now would free the new slot";
 }
 
 // The companion defect (doc/review #5): a resume can reach its bound while a retained-ahead frame still
@@ -1203,3 +1274,4 @@ TEST(ReplayerStreamReceiverConvergence, TheReportNamesTheStateThatTellsTheCauses
 
 }  // namespace
 }  // namespace org::limitless::phixeron::sequencer
+

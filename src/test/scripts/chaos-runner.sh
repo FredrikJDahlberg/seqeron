@@ -94,6 +94,9 @@ declare -a SEQ_LOG_OFFSET   # lines already in seq-<m>.log when its CURRENT boot
 # Set by fault_tap_drop, consumed by check_invariants: which replica was armed and its pre-fault gap
 # counts, so the round can assert the drop ACTUALLY LANDED rather than passing on liveness alone.
 TAP_DROP_TARGET=""; TAP_DROP_LOG=""; TAP_DROP_RESUMES=0; TAP_DROP_REWALKS=0
+# Per-replica RecoveryStalled alarms already accounted for, so check_invariants (c) fails a round on a
+# NEW one rather than re-reporting an episode some earlier round already owned.
+declare -a RECOVERY_STALL_BASELINE=(0 0 0)
 
 # ── Helpers ─────────────────────────────────────────────────────────────────────
 start_seq() {  # start_seq <memberId> — append so leadership history survives restarts (last isLeader= wins)
@@ -325,6 +328,10 @@ replica_log() { local m="$1"; [[ "$m" == "$CN" ]] && echo "$CONSUMER_LOG" || ech
 # that an armed tap-drop actually landed. Distinct from the re-walk fallback counted below.
 count_tap_resumes() { grep -c 'tap gap: expected globalSeqNo' "$1" 2>/dev/null || true; }
 count_tap_rewalks() { grep -c 're-walking the recording chain' "$1" 2>/dev/null || true; }
+# The client's own "I am not serving" alarm (RecoveryStalled, ReplayerStreamReceiver::checkRecoveryProgress):
+# recovery dispatched nothing for RECOVERY_PROGRESS_TIMEOUT_MS while not caught up. Unlike the one-shot
+# "following live" marker this fires per episode, so it reads CURRENT state rather than latching at boot.
+count_recovery_stalls() { grep -c 'recovery has dispatched nothing' "$1" 2>/dev/null || true; }
 
 # ── Media-driver fail-fast assertions ────────────────────────────────────────────
 # SequencerNode embeds its media driver (ClusteredMediaDriver, SequencerNode.java:191), so killing a
@@ -630,11 +637,38 @@ check_invariants() {
   else
     log "  INVARIANT FAIL: FIX round-trip probe failed (see $LOG_DIR/probe.log)"; fail=1
   fi
-  # (c) safety proxy: the consumer process is still up and following live (i.e. delivering in order, not wedged)
-  if kill -0 "$CONSUMER_PID" 2>/dev/null && grep -q "following live" "$CONSUMER_LOG"; then
-    log "  ok: consumer alive & following live (re-walks so far: $(count_tap_rewalks "$CONSUMER_LOG"))"
+  # (c) safety proxy: every co-located replica is still up and still SERVING.
+  #     This used to grep the consumer log for "following live" — which OrderExecClient prints ONCE on the
+  #     replay->live transition and never again (m_announcedLive latches, OrderExecClient.cpp:440). It
+  #     therefore matched the startup line forever and passed vacuously: a replica that later fell out of
+  #     isCaughtUp() and stopped serving looked identical to a healthy one. That is not hypothetical — a
+  #     wedged consumer is exactly what a per-poll request resend produced, and only the FIX probe caught
+  #     it, and then only because the wedged replica happened to be the leader-co-located one. No log grep
+  #     can read the current state, so use the alarm the client raises for precisely this condition.
+  #     Detection is not instant: the alarm needs RECOVERY_PROGRESS_TIMEOUT_MS (30s) of recovery
+  #     dispatching nothing, so a fresh wedge surfaces a round or two later, not in the round that caused
+  #     it. That latency belongs to the policy, not here. All three replicas, not just member 0's: any of
+  #     them can wedge, and only the leader-co-located one is implicitly covered by the probe in (b).
+  local cfail=0 m pid rlog stalls
+  for m in 0 1 2; do
+    pid="$(replica_pid "$m")"
+    rlog="$(replica_log "$m")"
+    if ! kill -0 "${pid:-0}" 2>/dev/null; then
+      log "  INVARIANT FAIL: member $m's OrderExecClient replica is not running"; cfail=1; continue
+    fi
+    stalls="$(count_recovery_stalls "$rlog")"
+    # A restart truncates the log (start_consumer/start_replica use >), so the count drops to 0 and the
+    # baseline follows it down — a restarted replica cannot inherit a predecessor's alarm.
+    if (( stalls > ${RECOVERY_STALL_BASELINE[$m]:-0} )); then
+      log "  INVARIANT FAIL: member $m's replica reported recovery stalled — up but not serving (see $rlog)"
+      cfail=1
+    fi
+    RECOVERY_STALL_BASELINE[$m]="$stalls"
+  done
+  if [[ "$cfail" == "1" ]]; then
+    fail=1
   else
-    log "  INVARIANT FAIL: consumer down or not following live"; fail=1
+    log "  ok: all 3 replicas up and serving (consumer re-walks so far: $(count_tap_rewalks "$CONSUMER_LOG"))"
   fi
   # (c2) EFFICACY, for tap-drop rounds only: the armed drop must have produced a real gap episode on the
   #      target, repaired by a RESUME at the hole. Without this the fault is unverified — a SIGUSR1 to a
