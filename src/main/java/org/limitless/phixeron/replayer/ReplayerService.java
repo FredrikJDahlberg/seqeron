@@ -3,12 +3,9 @@ package org.limitless.phixeron.replayer;
 import static io.aeron.Aeron.NULL_VALUE;
 
 import io.aeron.Aeron;
-import io.aeron.Counter;
 import io.aeron.ExclusivePublication;
-import io.aeron.Subscription;
 import io.aeron.archive.client.AeronArchive;
 import io.aeron.logbuffer.FragmentHandler;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -16,6 +13,7 @@ import org.agrona.DirectBuffer;
 import org.agrona.ExpandableArrayBuffer;
 import org.agrona.MutableDirectBuffer;
 import org.agrona.concurrent.IdleStrategy;
+import org.agrona.concurrent.status.AtomicCounter;
 import org.limitless.phixeron.PhixeronCounters;
 import org.limitless.phixeron.sbe.unsequenced.MessageHeaderDecoder;
 import org.limitless.phixeron.sbe.unsequenced.MessageHeaderEncoder;
@@ -70,10 +68,17 @@ import org.limitless.phixeron.util.Logger;
  * archive — only the ephemeral in-flight replay slots. A crash is a fast reconnect; apps treat
  * "ReplayerService gone" as they treat a gap and re-request on its return.
  *
- * <p><b>Startup integrity check.</b> Before ever declaring readiness, {@link #checkReady} verifies the
- * oldest tap recording's first frame is actually {@code globalSeqNo} 1 (see {@link #startSelfCheck} /
- * {@link #pollSelfCheck}, which spread that read across duty cycles rather than blocking one), not just
- * that some recording exists. This should always hold — {@code
+ * <p><b>Startup integrity check.</b> Before ever declaring readiness, {@link #checkReady} verifies that
+ * <em>every</em> recording in this node's chain begins at {@code globalSeqNo} 1 (see {@link
+ * #startSelfCheck} / {@link #pollSelfCheck}, which sweep the chain one span per duty cycle rather than
+ * blocking one), not just that some recording exists. Every span, not only the oldest: recovery is
+ * always full-log replay with no snapshots, so a healthy recording starts at {@code globalSeqNo} 1
+ * however late it was created ({@link ReplayRecordings#stitch}), and one that starts higher resumed
+ * mid-history — which IS a hole at its join with the span before it. Nothing else here can see that
+ * hole; it otherwise surfaces only as a co-located app that walks the chain and never converges
+ * (review-3.md finding 6). A <em>stopped</em> recording with nothing in it is skipped instead: an
+ * unclean restart can create one before anything is published to it, it can never gain a first frame,
+ * and {@link #serveReplay} already skips it by name. This should always hold — {@code
  * SequencerService} arms and confirms its recording before it can emit a single frame, and this
  * project's cluster membership is static, never joining mid-history — so a failure here means this
  * node's own recording has been deleted, corrupted, or partially restored: a broken node. {@code
@@ -125,12 +130,13 @@ public final class ReplayerService {
     public static final int CONTROL_STREAM_ID = 203;
 
     /**
-     * Internal-only IPC stream the startup self-check replays onto to read back the oldest tap
-     * recording's first frame (see {@link #checkReady}). Never used by any app-facing
+     * Internal-only IPC stream the startup self-check replays onto to read back each tap recording's
+     * first frame (see {@link #checkReady}). Never used by any app-facing
      * protocol — distinct from {@link #REPLAY_STREAM_ID} purely so this one-shot self-check can never
-     * cross-talk with a real client replay.
+     * cross-talk with a real client replay. Package-private rather than private: {@link
+     * AeronReplayer} subscribes to it on this class's behalf.
      */
-    private static final int SELF_CHECK_STREAM_ID = 204;
+    static final int SELF_CHECK_STREAM_ID = 204;
 
     /**
      * How long a self-check replay may go unanswered before it is abandoned and started over. Spread
@@ -152,9 +158,10 @@ public final class ReplayerService {
      * Archive-IO parallelism cap on concurrent replays (design §4/§8) — not a fairness knob. The
      * only multi-replay event that matters is node start/restart, and the node emits nothing until
      * every replica is caught up (the readiness barrier), so this is a makespan bound, not a
-     * starvation one.
+     * starvation one. Package-private so {@code ReplayerServiceTest} fills exactly this many slots
+     * rather than hardcoding the number a second time.
      */
-    private static final int MAX_CONCURRENT_REPLAYS = 4;
+    static final int MAX_CONCURRENT_REPLAYS = 4;
 
     /**
      * A {@code Replaying.replaySessionId} of this value means "you are already at the tip; there is
@@ -197,25 +204,21 @@ public final class ReplayerService {
 
     private static final int FRAGMENT_LIMIT = 16;
 
-    private final Aeron aeron;
-    private final AeronArchive archive;
+    /** The node this serves: its archive, its two app-facing IPC streams, its counters, its clock. */
+    private final Replayer replayer;
     private final int memberId;
     private final IdleStrategy idleStrategy;
 
     /** Brings the whole process down; wired by {@link ReplayerNode}. See {@link #fatalDutyCycleFailure}. */
     private final Runnable fatalHandler;
 
-    // ── ReplayerService → apps control + apps → ReplayerService requests ────────────────────
-    private final ExclusivePublication controlPub;
-    private final Subscription requestSub;
-
     // Proactive readiness marker: set once the co-located SequencerService's tap recording is visible
     // on the local archive AND has passed the startup integrity check (see checkReady). The launch
     // scripts wait on the readiness log before starting apps.
     private boolean ready = false;
 
-    // Latched once the oldest tap recording's first frame fails the gseq-1 integrity check (see
-    // checkReady/pollSelfCheck): this node's own recording doesn't reach the start of the log
+    // Latched once a tap recording's first frame fails the gseq-1 integrity check (see
+    // checkReady/pollSelfCheck): this node's recording chain doesn't cover the log from the start
     // (deleted, corrupted, or a partial restore), so there is no valid history to serve. `ready` must
     // never become true once this is set — every consumer that would otherwise ask this node for
     // history would independently hit the same wall, so it fails here instead, once, loudly.
@@ -225,10 +228,14 @@ public final class ReplayerService {
     // The check spans duty cycles instead of blocking one: it starts a short replay, then reads it a
     // fragment at a time on later cycles until it answers or SELF_CHECK_TIMEOUT_NS elapses. Waiting
     // inside a single cycle starved every co-located app of even a ReplayPending for as long as the
-    // wait — and the archive being slow to answer is exactly when they are asking.
-    private Subscription selfCheckSub;
+    // wait — and the archive being slow to answer is exactly when they are asking. One span at a
+    // time: selfCheckSpans is the chain being swept and selfCheckIndex the cursor into it. Resolved
+    // once, at the start of the sweep, so the cursor cannot shift under a chain re-listed per span.
+    private Replayer.SelfCheckStream selfCheckSub;
+    private List<ReplayRecordings.RecordingSpan> selfCheckSpans;
+    private int selfCheckIndex;
     private long selfCheckReplaySessionId = NULL_VALUE;
-    private long selfCheckRecordingId = NULL_VALUE;      // the oldest recording being peeked
+    private long selfCheckRecordingId = NULL_VALUE;      // the span being peeked
     private long selfCheckActiveRecordingId = NULL_VALUE;  // the live one, for the readiness line
     private long selfCheckGlobalSeqNo = NULL_VALUE;      // what the first fragment carried, once read
     private long selfCheckDeadlineNs = 0;
@@ -263,15 +270,15 @@ public final class ReplayerService {
     private long lastStallRetryMs = 0;
 
     // ── Operator counters (see PhixeronCounters), created in the constructor ────────────────────
-    private final Counter stalledCounter;
-    private final Counter readyCounter;
-    private final Counter activeReplaySlotsCounter;
-    private final Counter pendingRequestsCounter;
-    private final Counter replaysServedCounter;
-    private final Counter idleTtlReclaimedCounter;
-    private final Counter integrityFailureCounter;
-    private final Counter controlRepliesDroppedCounter;
-    private final Counter clientIdCollisionCounter;
+    private final AtomicCounter stalledCounter;
+    private final AtomicCounter readyCounter;
+    private final AtomicCounter activeReplaySlotsCounter;
+    private final AtomicCounter pendingRequestsCounter;
+    private final AtomicCounter replaysServedCounter;
+    private final AtomicCounter idleTtlReclaimedCounter;
+    private final AtomicCounter integrityFailureCounter;
+    private final AtomicCounter controlRepliesDroppedCounter;
+    private final AtomicCounter clientIdCollisionCounter;
 
     private final MessageHeaderDecoder inHeaderDecoder = new MessageHeaderDecoder();
     private final ReplayRequestDecoder replayRequestDecoder = new ReplayRequestDecoder();
@@ -299,42 +306,52 @@ public final class ReplayerService {
         (buffer, offset, length, header) -> onSelfCheckFragment(buffer, offset);
 
     /**
+     * Production constructor: serves member {@code memberId}'s own Aeron client and archive.
      * @param fatalHandler run once, from the duty-cycle thread, when the duty cycle dies on an uncaught
      *                     exception — see {@link #fatalDutyCycleFailure}. Must not block: it is expected
      *                     to signal a shutdown and return, not to perform one.
      */
     public ReplayerService(final Aeron aeron, final AeronArchive archive, final int memberId,
                            final IdleStrategy idleStrategy, final Runnable fatalHandler) {
-        this.aeron = aeron;
-        this.archive = archive;
+        this(new AeronReplayer(aeron, archive, memberId), memberId, idleStrategy, fatalHandler);
+    }
+
+    /**
+     * Serves whatever {@link Replayer} it is handed — the seam a test substitutes a fake
+     * node for.
+     * @param replayer the node's archive, app-facing streams, counters and clock
+     * @param memberId which cluster member this ReplayerService co-locates with
+     * @param idleStrategy duty-cycle and control-offer idle strategy
+     * @param fatalHandler see the production constructor
+     */
+    ReplayerService(final Replayer replayer, final int memberId, final IdleStrategy idleStrategy,
+                    final Runnable fatalHandler) {
+        this.replayer = replayer;
         this.memberId = memberId;
         this.idleStrategy = idleStrategy;
         this.fatalHandler = fatalHandler;
 
-        this.controlPub = aeron.addExclusivePublication(IPC_CHANNEL, CONTROL_STREAM_ID);
-        this.requestSub = aeron.addSubscription(IPC_CHANNEL, REQUEST_STREAM_ID);
-
-        this.stalledCounter = PhixeronCounters.addCounter(aeron,
-            PhixeronCounters.REPLAYER_STALLED_TYPE_ID, "phixeron.replayer.stalled member=" + memberId, memberId);
-        this.readyCounter = PhixeronCounters.addCounter(aeron,
-            PhixeronCounters.REPLAYER_READY_TYPE_ID, "phixeron.replayer.ready member=" + memberId, memberId);
-        this.activeReplaySlotsCounter = PhixeronCounters.addCounter(aeron,
-            PhixeronCounters.REPLAYER_ACTIVE_SLOTS_TYPE_ID, "phixeron.replayer.activeSlots member=" + memberId, memberId);
-        this.pendingRequestsCounter = PhixeronCounters.addCounter(aeron,
-            PhixeronCounters.REPLAYER_PENDING_REQUESTS_TYPE_ID, "phixeron.replayer.pendingRequests member=" + memberId, memberId);
-        this.replaysServedCounter = PhixeronCounters.addCounter(aeron,
+        this.stalledCounter = replayer.newCounter(
+            PhixeronCounters.REPLAYER_STALLED_TYPE_ID, "phixeron.replayer.stalled member=" + memberId);
+        this.readyCounter = replayer.newCounter(
+            PhixeronCounters.REPLAYER_READY_TYPE_ID, "phixeron.replayer.ready member=" + memberId);
+        this.activeReplaySlotsCounter = replayer.newCounter(
+            PhixeronCounters.REPLAYER_ACTIVE_SLOTS_TYPE_ID, "phixeron.replayer.activeSlots member=" + memberId);
+        this.pendingRequestsCounter = replayer.newCounter(
+            PhixeronCounters.REPLAYER_PENDING_REQUESTS_TYPE_ID, "phixeron.replayer.pendingRequests member=" + memberId);
+        this.replaysServedCounter = replayer.newCounter(
             PhixeronCounters.REPLAYER_REPLAYS_SERVED_COUNT_TYPE_ID,
-            "phixeron.replayer.replaysServedCount member=" + memberId, memberId);
-        this.idleTtlReclaimedCounter = PhixeronCounters.addCounter(aeron, PhixeronCounters.REPLAYER_IDLE_TTL_RECLAIMED_COUNT_TYPE_ID,
-            "phixeron.replayer.idleTtlReclaimedCount member=" + memberId, memberId);
-        this.integrityFailureCounter = PhixeronCounters.addCounter(aeron, PhixeronCounters.REPLAYER_INTEGRITY_FAILURE_TYPE_ID,
-            "phixeron.replayer.integrityFailure member=" + memberId, memberId);
-        this.controlRepliesDroppedCounter = PhixeronCounters.addCounter(aeron,
+            "phixeron.replayer.replaysServedCount member=" + memberId);
+        this.idleTtlReclaimedCounter = replayer.newCounter(PhixeronCounters.REPLAYER_IDLE_TTL_RECLAIMED_COUNT_TYPE_ID,
+            "phixeron.replayer.idleTtlReclaimedCount member=" + memberId);
+        this.integrityFailureCounter = replayer.newCounter(PhixeronCounters.REPLAYER_INTEGRITY_FAILURE_TYPE_ID,
+            "phixeron.replayer.integrityFailure member=" + memberId);
+        this.controlRepliesDroppedCounter = replayer.newCounter(
             PhixeronCounters.REPLAYER_CONTROL_REPLIES_DROPPED_COUNT_TYPE_ID,
-            "phixeron.replayer.controlRepliesDroppedCount member=" + memberId, memberId);
-        this.clientIdCollisionCounter = PhixeronCounters.addCounter(aeron,
+            "phixeron.replayer.controlRepliesDroppedCount member=" + memberId);
+        this.clientIdCollisionCounter = replayer.newCounter(
             PhixeronCounters.REPLAYER_CLIENT_ID_COLLISION_TYPE_ID,
-            "phixeron.replayer.clientIdCollision member=" + memberId, memberId);
+            "phixeron.replayer.clientIdCollision member=" + memberId);
     }
 
     /**
@@ -383,7 +400,7 @@ public final class ReplayerService {
         // nothing, whereas checkReady below makes archive control calls that block this thread for as
         // long as the archive takes. The cost of this order is that a request arriving in the very cycle
         // readiness flips is answered ReplayPending and served on the app's next resend instead.
-        int work = requestSub.poll(requestHandler, FRAGMENT_LIMIT);
+        int work = replayer.pollRequests(requestHandler, FRAGMENT_LIMIT);
         if (!ready) {
             work += checkReady();
         }
@@ -395,10 +412,12 @@ public final class ReplayerService {
 
     /**
      * Waits for the tap recording to be visible, then verifies its history actually reaches back to
-     * the start of the log before ever declaring readiness. Under correct operation this always holds
+     * the start of the log before ever declaring readiness — every recording in the chain, one per
+     * duty cycle (see the class Javadoc for why the newest counts as much as the oldest). Under correct
+     * operation this always holds
      * (SequencerService arms and confirms the recording before it can emit a single frame — see its
      * onStart/awaitTapRecordingActive — and this node's own static, fixed cluster membership never
-     * joins mid-history), so a failure here means this node's oldest tap recording has been deleted,
+     * joins mid-history), so a failure here means a tap recording has been deleted,
      * corrupted, or partially restored out from under it: a broken node, not a transient condition.
      * That is a permanent state (retrying reads the same on-disk bytes), so once {@link
      * #integrityFailed} latches, {@code ready} must never become true for this process's lifetime —
@@ -420,7 +439,7 @@ public final class ReplayerService {
     }
 
     /**
-     * Opens the self-check replay: the oldest tap recording's first frame, on the internal {@link
+     * Opens the self-check replay for the span the sweep is on: its first frame, on the internal {@link
      * #SELF_CHECK_STREAM_ID}. Replay is the only way to read recorded content back, so there is no
      * cheaper way to see that frame.
      *
@@ -440,28 +459,38 @@ public final class ReplayerService {
         if (active == null) {
             return;  // nothing recorded yet; retry next cycle
         }
-        final List<ReplayRecordings.RecordingSpan> segments = resolveSegments();
-        if (segments.isEmpty()) {
-            return;  // retry next cycle
+        if (selfCheckSpans == null) {
+            final List<ReplayRecordings.RecordingSpan> segments = resolveSegments();
+            if (segments.isEmpty()) {
+                return;  // retry next cycle
+            }
+            selfCheckSpans = segments;
+            selfCheckIndex = 0;
         }
+        selfCheckActiveRecordingId = active.recordingId();
 
-        final ReplayRecordings.RecordingSpan oldest = segments.get(0);
+        final ReplayRecordings.RecordingSpan span = selfCheckSpans.get(selfCheckIndex);
         try {
-            long position = archive.getRecordingPosition(oldest.recordingId());
+            long position = replayer.recordingPosition(span.recordingId());
             if (position < 0) {
-                position = archive.getStopPosition(oldest.recordingId());
+                position = replayer.stopPosition(span.recordingId());
             }
-            final long replayLength = Math.min(position - oldest.startPosition(), SELF_CHECK_REPLAY_LENGTH);
+            final long replayLength = Math.min(position - span.startPosition(), SELF_CHECK_REPLAY_LENGTH);
             if (replayLength <= 0) {
-                return;  // oldest recording has nothing written yet; retry next cycle
+                if (span.active()) {
+                    return;  // nothing written to the live recording yet; retry next cycle
+                }
+                // A stopped recording with nothing in it will never have a first frame to prove, and
+                // serveReplay already skips it by name, so holding readiness on one wedges the node.
+                completeSelfCheckSpan();
+                return;
             }
-            selfCheckRecordingId = oldest.recordingId();
-            selfCheckActiveRecordingId = active.recordingId();
+            selfCheckRecordingId = span.recordingId();
             selfCheckGlobalSeqNo = NULL_VALUE;
-            selfCheckReplaySessionId = archive.startReplay(oldest.recordingId(), oldest.startPosition(), replayLength,
-                                                          IPC_CHANNEL, SELF_CHECK_STREAM_ID);
-            selfCheckSub = aeron.addSubscription(IPC_CHANNEL, SELF_CHECK_STREAM_ID);
-            selfCheckDeadlineNs = System.nanoTime() + SELF_CHECK_TIMEOUT_NS;
+            selfCheckReplaySessionId = replayer.startReplay(span.recordingId(), span.startPosition(), replayLength,
+                                                      SELF_CHECK_STREAM_ID);
+            selfCheckSub = replayer.openSelfCheckStream();
+            selfCheckDeadlineNs = replayer.nanoTime() + SELF_CHECK_TIMEOUT_NS;
         } catch (final RuntimeException ex) {
             closeSelfCheck();  // archive not answering yet; retry next cycle
         }
@@ -470,39 +499,53 @@ public final class ReplayerService {
     /**
      * Reads at most one fragment off an in-flight self-check and acts on it. Returns a work count.
      *
-     * <p>A first frame at {@code globalSeqNo} 1 is what makes this node ready. Anything else latches
-     * {@link #integrityFailed} permanently — retrying reads the same on-disk bytes, so there is nothing
-     * to wait for. Delivering nothing before the deadline is neither: that is transient, so the check is
-     * torn down and started fresh on a later cycle.
+     * <p>A first frame at {@code globalSeqNo} 1 proves that span; the node is ready once every span in
+     * the chain has been proved. Anything else latches {@link #integrityFailed} permanently — retrying
+     * reads the same on-disk bytes, so there is nothing to wait for. Delivering nothing before the
+     * deadline is neither: that is transient, so the check is torn down and the same span started fresh
+     * on a later cycle.
      */
     private int pollSelfCheck() {
         final int work = selfCheckSub.poll(selfCheckHandler, 1);
         if (selfCheckGlobalSeqNo == NULL_VALUE) {
-            if (System.nanoTime() > selfCheckDeadlineNs) {
+            if (replayer.nanoTime() > selfCheckDeadlineNs) {
                 closeSelfCheck();  // no fragment in time; start over next cycle
             }
             return work;
         }
 
         final long firstGlobalSeqNo = selfCheckGlobalSeqNo;
-        final long oldestRecordingId = selfCheckRecordingId;
-        final long activeRecordingId = selfCheckActiveRecordingId;
+        final long recordingId = selfCheckRecordingId;
         closeSelfCheck();
         if (firstGlobalSeqNo != 1L) {
             integrityFailed = true;
             integrityFailureCounter.set(1);
             Logger.fault(Logger.Component.ReplayerService, Logger.EventCode.ArchiveIntegrityFailure, memberId,
-                    "FATAL: oldest tap recording %d's first frame has globalSeqNo=%d, expected "
-                            + "1 — this node's recording does not reach the start of the log (deleted, corrupted, or a "
-                            + "partial restore?); refusing to mark ready", oldestRecordingId, firstGlobalSeqNo);
+                    "FATAL: tap recording %d (%d of %d in this node's chain) has first frame globalSeqNo=%d, "
+                            + "expected 1 — this node's recording chain does not cover the log from the start "
+                            + "(deleted, corrupted, or a partial restore?); refusing to mark ready",
+                    recordingId, selfCheckIndex + 1, selfCheckSpans.size(), firstGlobalSeqNo);
             return work;
         }
+        completeSelfCheckSpan();
+        return work;
+    }
 
+    /**
+     * One span is behind the sweep — proved at {@code globalSeqNo} 1, or a stopped empty one there is
+     * nothing to prove. Readiness waits for the whole chain.
+     */
+    private void completeSelfCheckSpan() {
+        ++selfCheckIndex;
+        if (selfCheckIndex < selfCheckSpans.size()) {
+            return;  // the next cycle opens the next span's check
+        }
         ready = true;
         readyCounter.set(1);
-        Logger.info(Logger.Component.ReplayerService, memberId, "ready — tap recording %d live; serving replay",
-                activeRecordingId);
-        return work;
+        Logger.info(Logger.Component.ReplayerService, memberId,
+                "ready — tap recording %d live, %d-recording chain verified from globalSeqNo 1; serving replay",
+                selfCheckActiveRecordingId, selfCheckSpans.size());
+        selfCheckSpans = null;  // the sweep is over; a later one resolves the chain again rather than resuming this
     }
 
     /**
@@ -567,7 +610,7 @@ public final class ReplayerService {
         if (inHeaderDecoder.templateId() == ReplayHeartbeatDecoder.TEMPLATE_ID) {
             replayHeartbeatDecoder.wrap(buffer, offset + MessageHeaderDecoder.ENCODED_LENGTH,
                                         inHeaderDecoder.blockLength(), inHeaderDecoder.version());
-            replaySlots.touch(replayHeartbeatDecoder.clientId(), System.currentTimeMillis());
+            replaySlots.touch(replayHeartbeatDecoder.clientId(), replayer.epochMillis());
             return;
         }
         if (inHeaderDecoder.templateId() != ReplayRequestDecoder.TEMPLATE_ID) {
@@ -580,7 +623,7 @@ public final class ReplayerService {
         final long fromPosition = replayRequestDecoder.fromPosition();
         final int segmentIndex = replayRequestDecoder.segmentIndex();
 
-        if (clientIdCollisions.onRequest(clientId, requestId, System.currentTimeMillis())) {
+        if (clientIdCollisions.onRequest(clientId, requestId, replayer.epochMillis())) {
             onClientIdCollision(clientId);
         }
 
@@ -628,7 +671,7 @@ public final class ReplayerService {
     private void startReplayForClient(final int clientId, final long requestId, final int segmentIndex,
                                       final long fromPosition) {
         if (stalled) {
-            final long now = System.currentTimeMillis();
+            final long now = replayer.epochMillis();
             if ((now - lastStallRetryMs) < STALL_RETRY_INTERVAL_MS) {
                 sendPending(clientId, requestId);
                 return;
@@ -734,9 +777,9 @@ public final class ReplayerService {
             replayFrom = segment.startPosition();
         }
 
-        long tip = archive.getRecordingPosition(recordingId);
+        long tip = replayer.recordingPosition(recordingId);
         if (tip < 0) {
-            tip = archive.getStopPosition(recordingId);
+            tip = replayer.stopPosition(recordingId);
         }
         if (tip < 0) {
             // Neither counter could say where this recording ends: its RecordingPos counter is already
@@ -758,10 +801,9 @@ public final class ReplayerService {
             return;
         }
 
-        final long replaySessionId = archive.startReplay(recordingId, replayFrom, boundedLength, IPC_CHANNEL,
-            REPLAY_STREAM_ID);
+        final long replaySessionId = replayer.startReplay(recordingId, replayFrom, boundedLength, REPLAY_STREAM_ID);
         replaysServedCounter.increment();
-        replaySlots.activate(clientId, replaySessionId, System.currentTimeMillis());
+        replaySlots.activate(clientId, replaySessionId, replayer.epochMillis());
         Logger.info(Logger.Component.ReplayerService, memberId,
                 "replay for client %d: segment %d recording %d [%d,%d) session %d", clientId,
                 segmentIndex, recordingId, replayFrom, tip, replaySessionId);
@@ -786,7 +828,7 @@ public final class ReplayerService {
      * Reclaims unused replay slots.
      */
     private void reclaimIdleSlots() {
-        final List<Long> reclaimed = replaySlots.reclaimIdle(System.currentTimeMillis());
+        final List<Long> reclaimed = replaySlots.reclaimIdle(replayer.epochMillis());
         for (final long token : reclaimed) {
             stopReplay(token);
             idleTtlReclaimedCounter.increment();
@@ -819,7 +861,7 @@ public final class ReplayerService {
      */
     private void stopReplay(final long replaySessionId) {
         try {
-            archive.stopReplay(replaySessionId);
+            replayer.stopReplay(replaySessionId);
         } catch (final RuntimeException ex) {
             // Bounded replays end on their own, so the session may already be gone — harmless.
         }
@@ -886,7 +928,7 @@ public final class ReplayerService {
     private void offerControl(final int length) {
         long result;
         int spins = 0;
-        while ((result = controlPub.offer(controlBuffer, 0, length)) < 0) {
+        while ((result = replayer.offerControl(controlBuffer, 0, length)) < 0) {
             if (result == ExclusivePublication.CLOSED || result == ExclusivePublication.MAX_POSITION_EXCEEDED) {
                 throw new IllegalStateException("[ReplayerService] control publication failed: " + result);
             }
@@ -958,19 +1000,13 @@ public final class ReplayerService {
     // listing order — the same span ReplayRecordings.stitch keeps, so the two selection rules agree.
     // Returns null when there is none.
     private ReplayRecordings.RecordingSpan findActiveRecording() {
-        final ReplayRecordings.RecordingSpan[] found = {null};
-        archive.listRecordingsForUri(0, Integer.MAX_VALUE, "", SequencerService.FEEDER_STREAM_ID,
-                                     (controlSessionId, correlationId, recordingId, startTimestamp, stopTimestamp,
-                                      startPosition, stopPosition, initialTermId, segmentFileLength, termBufferLength,
-                                      mtuLength, sessionId, streamId, strippedChannel, originalChannel,
-                                      sourceIdentity) -> {
-                                         if (stopTimestamp == AeronArchive.NULL_TIMESTAMP
-                                                 && (found[0] == null || recordingId > found[0].recordingId())) {
-                                             found[0] = new ReplayRecordings.RecordingSpan(recordingId, startPosition,
-                                                                                           true);
-                                         }
-                                     });
-        return found[0];
+        ReplayRecordings.RecordingSpan found = null;
+        for (final ReplayRecordings.RecordingSpan span : replayer.listTapRecordings()) {
+            if (span.active() && (found == null || span.recordingId() > found.recordingId())) {
+                found = span;
+            }
+        }
+        return found;
     }
 
     // Ordered oldest→newest list of tap recordings on the local archive. With every node recording its
@@ -979,13 +1015,7 @@ public final class ReplayerService {
     // globalSeqNo ranges); a cold-starting app replays them in order and de-duplicates by globalSeqNo, so the overlap
     // is harmless. Mirrors ClusterStreamClient.resolveClusterStreamSegments.
     private List<ReplayRecordings.RecordingSpan> resolveSegments() {
-        final List<ReplayRecordings.RecordingSpan> spans = new ArrayList<>();
-        archive.listRecordingsForUri(0, Integer.MAX_VALUE, "", SequencerService.FEEDER_STREAM_ID,
-                                     (controlSessionId, correlationId, recordingId, startTimestamp, stopTimestamp,
-                                      startPosition, stopPosition, initialTermId, segmentFileLength, termBufferLength,
-                                      mtuLength, sessionId, streamId, strippedChannel, originalChannel,
-                                      sourceIdentity) -> spans.add(new ReplayRecordings.RecordingSpan(recordingId,
-                                          startPosition, stopTimestamp == AeronArchive.NULL_TIMESTAMP)));
+        final List<ReplayRecordings.RecordingSpan> spans = replayer.listTapRecordings();
         final long activeCount = spans.stream().filter(ReplayRecordings.RecordingSpan::active).count();
         if (activeCount > 1 && !staleActiveRecordingLogged) {
             staleActiveRecordingLogged = true;

@@ -88,10 +88,10 @@ Executables: `FixGateway`, `OrderExecClient`, `fix_test_server`,
 ```bash
 ./gradlew test                 # JUnit 5 unit tests for the Java state machines
 ```
-The Java suite covers the deterministic state machines only (`Sequencer`) and deliberately touches
-no Aeron runtime — no media driver, no cluster, no Aeron mocks — so it runs in ~1s. Everything
-Aeron-shaped stays covered by the C++ GoogleTest suite and the end-to-end scripts in
-`src/test/scripts/`.
+The Java suite covers the deterministic decision-making — `Sequencer`, and `ReplayerService` through
+its `Replayer` seam — and deliberately touches no Aeron runtime: no media driver, no
+cluster, no Aeron mocks, so it runs in ~1s. Everything Aeron-shaped stays covered by the C++
+GoogleTest suite and the end-to-end scripts in `src/test/scripts/`.
 
 ## Tests
 

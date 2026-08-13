@@ -125,7 +125,7 @@ buffer — see `PhixeronCounters.addCounter`/`KEY_MEMBER_ID_OFFSET`).
 | `phixeron_replayer_pending_requests` | gauge | Current count of replay requests waiting for a free slot |
 | `phixeron_replayer_replays_served_total` | counter | Count of replays started since this node came up |
 | `phixeron_replayer_idle_ttl_reclaimed_total` | counter | Count of replay slots reclaimed by the idle-TTL backstop |
-| `phixeron_replayer_integrity_failure` | gauge | 1 once this node's oldest tap recording failed the startup gseq-1 integrity check, else 0. Latched: `ready` never becomes 1 again for that process |
+| `phixeron_replayer_integrity_failure` | gauge | 1 once a tap recording failed the startup gseq-1 integrity check, else 0. Every recording in the node's chain is checked, not just the oldest: one that begins above 1 resumed mid-history, which is a hole at its join. Latched: `ready` never becomes 1 again for that process |
 | `phixeron_replayer_control_replies_dropped_total` | counter | Count of control replies dropped rather than spun on because an app stopped draining the control stream. Each costs that app one resend interval, so the **rate** identifies a wedged replica — the absolute value does not |
 | `phixeron_replayer_client_id_collision` | gauge | 1 once two co-located apps were seen sharing one `PHIXERON_REPLAYER_CLIENT_ID`, else 0. They stop each other's replays and neither catches up until the launch configuration is corrected |
 

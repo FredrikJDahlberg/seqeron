@@ -1108,5 +1108,98 @@ TEST(ReplayerStreamReceiverOrigin, SequencedEventCarriesTheHeaderOrigin)
     }
 }
 
+// ── Convergence alarm (review-3.md #6) ───────────────────────────────────────────────────────
+// RecoveryProgressPolicyTest covers the verdict itself; what is locked here is the wiring poll() does
+// around it — that an in-order dispatch counts as progress, that catching up without dispatching does
+// too, and that the report carries the state telling the causes apart. A clock is supplied because
+// poll() reads it off the wall, which this suite cannot advance.
+
+constexpr std::int64_t CLOCK_MS = 3 * 60 * 60 * 1000;
+constexpr std::int64_t PAST_DEADLINE_MS = CLOCK_MS + 30'000;  // RECOVERY_PROGRESS_TIMEOUT_MS
+
+TEST(ReplayerStreamReceiverConvergence, RecoveryDeliveringNothingIsReportedOncePerEpisode)
+{
+    ScopedLoggerSink sink;
+    ReplayerStreamReceiver client{1, [](const SequencedEvent&) {}};
+
+    EXPECT_FALSE(client.testCheckRecoveryProgress(CLOCK_MS)) << "the first observation only anchors the clock";
+    EXPECT_TRUE(client.testCheckRecoveryProgress(PAST_DEADLINE_MS));
+
+    ASSERT_EQ(1u, sink.events.size());
+    EXPECT_EQ(diag::Component::ReplayerStreamReceiver, sink.events[0].component);
+    EXPECT_EQ(diag::Severity::Fault, sink.events[0].severity);
+    EXPECT_EQ(diag::EventCode::RecoveryStalled, sink.events[0].code);
+
+    // The condition persists for as long as the archive is broken; the caller logs, so it must not
+    // repeat every duty cycle.
+    EXPECT_FALSE(client.testCheckRecoveryProgress(PAST_DEADLINE_MS + 60'000));
+    EXPECT_EQ(1u, sink.events.size());
+}
+
+TEST(ReplayerStreamReceiverConvergence, AWalkThatIsStillDeliveringIsNeverReportedHoweverLongItRuns)
+{
+    ScopedLoggerSink sink;
+    ReplayerStreamReceiver client{1, [](const SequencedEvent&) {}};
+
+    // A cold start replaying a whole trading day: slow, but converging one frame at a time. Measuring
+    // elapsed time instead of progress is exactly what would fence this.
+    for (std::int64_t gseq = 1; gseq <= 20; ++gseq)
+    {
+        deliverReplay(client, gseq);
+        EXPECT_FALSE(client.testCheckRecoveryProgress(CLOCK_MS + gseq * 60'000)) << "at globalSeqNo " << gseq;
+    }
+}
+
+TEST(ReplayerStreamReceiverConvergence, AGapAfterAHealthyRunStartsItsOwnEpisodeRatherThanInheritingOne)
+{
+    ScopedLoggerSink sink;
+    ReplayerStreamReceiver client{1, [](const SequencedEvent&) {}};
+    ASSERT_FALSE(client.testCheckRecoveryProgress(CLOCK_MS));  // an episode anchored during cold start
+    deliverLive(client, 1);                                    // ... which then converges
+    ASSERT_TRUE(client.isCaughtUp());
+
+    deliverLive(client, 5);  // much later, a tap gap: !isCaughtUp() again
+    ASSERT_FALSE(client.isCaughtUp());
+
+    // Inheriting the cold-start clock would report this the instant the gap opened, before the re-walk
+    // it triggers had any chance to converge.
+    EXPECT_FALSE(client.testCheckRecoveryProgress(PAST_DEADLINE_MS));
+    ASSERT_EQ(1u, sink.events.size()) << "the tap-gap warn only — no convergence report";
+    EXPECT_EQ(diag::EventCode::TapGap, sink.events[0].code);
+}
+
+TEST(ReplayerStreamReceiverConvergence, ACaughtUpClientThatSimplyGoesQuietIsNotReported)
+{
+    ScopedLoggerSink sink;
+    ReplayerStreamReceiver client{1, [](const SequencedEvent&) {}};
+    deliverLive(client, 1);
+    ASSERT_TRUE(client.isCaughtUp());
+
+    // A tap that goes silent is checkTapStall's business (FixGateway), and it is not a convergence
+    // failure at all — diagnosing it as one would put a second, wrong explanation on the same event.
+    EXPECT_FALSE(client.testCheckRecoveryProgress(CLOCK_MS));
+    EXPECT_FALSE(client.testCheckRecoveryProgress(PAST_DEADLINE_MS));
+    EXPECT_TRUE(sink.events.empty());
+}
+
+TEST(ReplayerStreamReceiverConvergence, TheReportNamesTheStateThatTellsTheCausesApart)
+{
+    ReplayerStreamReceiver client{1, [](const SequencedEvent&) {}};
+    deliverLive(client, 1);
+    deliverLive(client, 5);  // gap -> awaiting a replay
+    deliverControl(client, encodeReplayUnavailable(/*clientId=*/1, client.testRequestId()));
+
+    ScopedLoggerSink sink;  // installed after the refusal, so it captures only the report below
+    ASSERT_FALSE(client.testCheckRecoveryProgress(CLOCK_MS));
+    ASSERT_TRUE(client.testCheckRecoveryProgress(PAST_DEADLINE_MS));
+
+    ASSERT_EQ(1u, sink.events.size());
+    const std::string text(sink.events[0].text.data(), sink.events[0].textLen);
+    // Without these an operator cannot tell a refused node from one whose chain cannot cover the hole.
+    EXPECT_NE(std::string::npos, text.find("lastGlobalSeqNo=1")) << text;
+    EXPECT_NE(std::string::npos, text.find("awaitingReplay=1")) << text;
+    EXPECT_NE(std::string::npos, text.find("replayerUnavailable=1")) << text;
+}
+
 }  // namespace
 }  // namespace org::limitless::phixeron::sequencer

@@ -99,6 +99,7 @@
 // stream id, which the live tap and the Replayer's replays both address) — header-only; brings in
 // archive headers it does not otherwise need, which is harmless — the un-rewired binaries include the
 // same header.
+#include "org/limitless/phixeron/replayer/RecoveryProgressPolicy.hpp"
 #include "org/limitless/phixeron/sequencer/ClusterStreamReceiver.hpp"
 #include "org/limitless/phixeron/util/Logger.hpp"
 
@@ -268,6 +269,13 @@ class ReplayerStreamReceiver
         onReplayStalled();
     }
 
+    // Test-only: the convergence check poll() runs every cycle, with the clock supplied — poll() reads it
+    // off the wall clock, which the unit suite has no way to advance. Returns whether it reported.
+    bool testCheckRecoveryProgress(const std::int64_t nowMs)
+    {
+        return checkRecoveryProgress(nowMs);
+    }
+
     // Test-only accessors into the walk/gap-recovery state machine — see ReplayerStreamReceiverTest.cpp.
     bool testIsAwaitingReplay() const
     {
@@ -408,6 +416,8 @@ class ReplayerStreamReceiver
         {
             work += m_tapSub->poll(m_tapPoll, FRAGMENT_LIMIT);
         }
+
+        checkRecoveryProgress(nowMs());
         return work;
     }
 
@@ -432,6 +442,13 @@ class ReplayerStreamReceiver
     // ~19 MB/s into the replay, so a replay with anything left to serve is never quiet for seconds. Kept
     // well clear of RESEND_INTERVAL_MS too, since a spurious fire costs a whole segment re-replayed.
     static constexpr std::int64_t REPLAY_STALL_TIMEOUT_MS = 5'000;
+
+    // How long recovery may run without dispatching a single frame before it is reported as unconvergent
+    // (see RecoveryProgressPolicy). A different question from REPLAY_STALL_TIMEOUT_MS above, which asks
+    // whether one replay IMAGE is advancing: the re-walk loop this catches keeps starting and finishing
+    // healthy replays and dispatches nothing out of any of them. Generous, because it alarms rather than
+    // fences — a late report costs nothing, a false one costs an operator's attention.
+    static constexpr std::int64_t RECOVERY_PROGRESS_TIMEOUT_MS = 30'000;
 
     // ReplayRequest.segmentIndex meaning "resume the active recording at fromPosition" rather than
     // "replay the segmentIndex-th recording of the chain" — see ReplayerService.serveReplay.
@@ -954,6 +971,9 @@ class ReplayerStreamReceiver
                        const std::int64_t gseq, const std::int64_t framePosition, const std::int64_t receiveNs,
                        const bool fromReplay)
     {
+        // The one funnel every in-order frame passes through, replayed or live — so recovery advancing
+        // its globalSeqNo is exactly this being reached (see RecoveryProgressPolicy).
+        m_recoveryProgress.onProgress();
         m_hdr.wrap(raw, off, 0U, cap);
         const std::uint16_t templateId = m_hdr.templateId();
         m_header.wrap(raw, off + HdrSbe::encodedLength(), 0U, cap);
@@ -1151,6 +1171,28 @@ class ReplayerStreamReceiver
         }
     }
 
+    // Recovery has run without dispatching a frame for RECOVERY_PROGRESS_TIMEOUT_MS. Evaluated every duty
+    // cycle; nowMs is a parameter only so the unit suite can supply a clock poll() takes off the wall.
+    bool checkRecoveryProgress(const std::int64_t nowMs)
+    {
+        if (m_caughtUp || !m_recoveryProgress.onNoProgress(nowMs))
+        {
+            return false;
+        }
+        // Reported, not acted on: holding IS the correct response to a baseline this node cannot
+        // establish, so the only thing missing was someone saying so. The state printed is what tells
+        // the causes apart — a chain that cannot cover the hole, a Replayer that never answers, a refusal.
+        diag::Logger::fault(diag::Component::ReplayerStreamReceiver, diag::EventCode::RecoveryStalled,
+                            "recovery has dispatched nothing for >%lldms: lastGlobalSeqNo=%lld segment=%d "
+                            "awaitingReplay=%d replaySession=%lld replayerUnavailable=%d — holding; check "
+                            "this node's Replayer and its recording chain",
+                            static_cast<long long>(RECOVERY_PROGRESS_TIMEOUT_MS),
+                            static_cast<long long>(m_lastGlobalSeqNo), static_cast<int>(m_walkSegmentIndex),
+                            m_awaitingReplay ? 1 : 0, static_cast<long long>(m_replaySessionId),
+                            m_replayUnavailableLogged ? 1 : 0);
+        return true;
+    }
+
     // An attached (or expected) replay stopped delivering — see the watchdog check in poll().
     void onReplayStalled()
     {
@@ -1264,6 +1306,9 @@ class ReplayerStreamReceiver
     std::int64_t m_resumeAnchorGseq = 0;   // globalSeqNo a resume replay must open at, or 0 if not resuming
     bool m_replayGapLogged = false;        // report a hole in replayed history once per episode, not per frame
     bool m_caughtUp = false;               // following live; revoked on a tap gap, re-established at the seam
+
+    // Recovery that runs without ever dispatching anything — contained, but silent until this (review-3.md #6).
+    RecoveryProgressPolicy m_recoveryProgress{RECOVERY_PROGRESS_TIMEOUT_MS};
 
     // Live tap frames from beyond the current hole, retained in arrival order (see retainMessages).
     MessagesBlockPool m_messagesBlockPool;
