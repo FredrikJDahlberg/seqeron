@@ -88,7 +88,12 @@ CONSUMER_PID=""; FIX_PID=""; STANDBY_FIX_PID=""; MD_PID=""; LOAD_PID=""
 declare -a FAULT_HISTORY=()
 DRIVER_LOSS_FAIL=0   # set by check_driver_loss_failfast, folded into the round result by check_invariants
 RESTART_FAIL=0       # set by assert_restarted, folded into the round result by check_invariants
+TAP_STALL_FAIL=0     # set by fault_tap_stall, folded into the round result by check_invariants
+FAILOVER_FAIL=0      # set by fault_kill_leader, folded into the round result by check_invariants
 declare -a SEQ_LOG_OFFSET   # lines already in seq-<m>.log when its CURRENT boot started — see wait_running
+# Set by fault_tap_drop, consumed by check_invariants: which replica was armed and its pre-fault gap
+# counts, so the round can assert the drop ACTUALLY LANDED rather than passing on liveness alone.
+TAP_DROP_TARGET=""; TAP_DROP_LOG=""; TAP_DROP_RESUMES=0; TAP_DROP_REWALKS=0
 
 # ── Helpers ─────────────────────────────────────────────────────────────────────
 start_seq() {  # start_seq <memberId> — append so leadership history survives restarts (last isLeader= wins)
@@ -231,13 +236,19 @@ W=0; until grep -q "following live" "$CONSUMER_LOG" 2>/dev/null; do sleep 0.5; W
 # && currentLeaderMemberId()==m_nodeMemberId — one fill per order, not one per replica). Bring-up always
 # elects the initial leader from members 1/2 before member 0 even joins (see below), so without a replica on
 # every node NO replica is ever positioned to answer a NewOrderSingle with an ExecutionReport, and every FIX
-# round-trip probe hangs waiting for one. Plain replicas: no latency stats, no fault injection (those stay
-# unique to the member-0 observation consumer above).
-for m in 1 2; do
+# round-trip probe hangs waiting for one. Latency stats stay unique to the member-0 observation consumer,
+# but fault injection is armed on ALL THREE so fault_tap_drop can aim at whichever replica is currently
+# leader-co-located — the only one doing external-facing work. Defined as a function for the same reason
+# start_consumer is: restart_colocated_apps must relaunch a replica with the SAME env, or a restarted one
+# silently loses its arm and every later tap-drop aimed at it is a no-op.
+start_replica() {  # start_replica <memberId>  (members 1/2; member 0's replica is start_consumer)
+  local m="$1"
   PHIXERON_ORDER_EXEC_AERON_DIR="${TMPDIR}phixeron-seq-aeron-${m}" PHIXERON_NODE_MEMBER_ID="$m" \
+    PHIXERON_FAULT_INJECTION=1 \
     stdbuf -oL -eL "$BUILD_DIR/OrderExecClient" > "$LOG_DIR/orderexec-$m.log" 2>&1 &
   EXTRA_CONSUMER_PIDS[$m]=$!
-done
+}
+for m in 1 2; do start_replica "$m"; done
 for m in 1 2; do W=0; until grep -q "following live" "$LOG_DIR/orderexec-$m.log" 2>/dev/null; do sleep 0.5; W=$((W+1)); ((W > APP_CATCHUP_TIMEOUT_SECS * 2)) && { log "  WARN orderexec-$m never caught up"; break; }; done; done
 
 # FIX gateway on member 0 (port $FIX_TCP_PORT).
@@ -306,6 +317,14 @@ start_background_load
 # gateway + consumer down too, and restart_colocated_apps brings that specific pair back (see below).
 target_leader() { echo "$1"; }                                    # the current leader — always a legal kill target
 a_follower()    { local l="$1" p; while :; do p=$(( RANDOM % 3 )); [[ "$p" != "$l" ]] && { echo "$p"; return; }; done; }  # a random non-leader among {0,1,2}
+# Member 0's OrderExecClient is the observation consumer (CONSUMER_PID/consumer.log); 1 and 2 are plain
+# replicas. Both are legal tap-drop targets, so resolve either by memberId.
+replica_pid() { local m="$1"; [[ "$m" == "$CN" ]] && echo "${CONSUMER_PID:-}" || echo "${EXTRA_CONSUMER_PIDS[$m]:-}"; }
+replica_log() { local m="$1"; [[ "$m" == "$CN" ]] && echo "$CONSUMER_LOG" || echo "$LOG_DIR/orderexec-$m.log"; }
+# A gap the consumer repaired by RESUMING its recording at the hole — the healthy recovery, and the proof
+# that an armed tap-drop actually landed. Distinct from the re-walk fallback counted below.
+count_tap_resumes() { grep -c 'tap gap: expected globalSeqNo' "$1" 2>/dev/null || true; }
+count_tap_rewalks() { grep -c 're-walking the recording chain' "$1" 2>/dev/null || true; }
 
 # ── Media-driver fail-fast assertions ────────────────────────────────────────────
 # SequencerNode embeds its media driver (ClusteredMediaDriver, SequencerNode.java:191), so killing a
@@ -414,9 +433,7 @@ restart_colocated_apps() {
       sleep 0.5; W=$((W+1)); ((W > APP_CATCHUP_TIMEOUT_SECS * 2)) && { log "  WARN gateway never saw EndBasicData after restart"; break; }
     done
   else
-    PHIXERON_ORDER_EXEC_AERON_DIR="${TMPDIR}phixeron-seq-aeron-${m}" PHIXERON_NODE_MEMBER_ID="$m" \
-      stdbuf -oL -eL "$BUILD_DIR/OrderExecClient" > "$LOG_DIR/orderexec-$m.log" 2>&1 &
-    EXTRA_CONSUMER_PIDS[$m]=$!
+    start_replica "$m"
     W=0; until grep -q "following live" "$LOG_DIR/orderexec-$m.log" 2>/dev/null; do
       sleep 0.5; W=$((W+1)); ((W > APP_CATCHUP_TIMEOUT_SECS * 2)) && { log "  WARN orderexec-$m not caught up after restart"; break; }
     done
@@ -439,6 +456,14 @@ fault_kill_leader() {  # crash the leader -> real Raft failover -> restore it as
   local NL="" W2=0
   until NL="$(current_leader)"; [[ -n "$NL" && "$NL" != "$T" ]]; do sleep 0.5; W2=$((W2+1)); ((W2 > ELECTION_TIMEOUT_SECS * 2)) && break; done
   log "  new leader: member ${NL:-<none>}"
+  # The loop above also exits on TIMEOUT, which until now was indistinguishable from a real failover: it
+  # just logged "<none>" and carried on. Invariant (a) does not catch it — (a) is satisfied by ANY leader,
+  # including T bouncing back and reclaiming leadership, which is the half-wedged state the wait exists to
+  # avoid. T is always the leader here (target_leader), so leadership MUST move off it.
+  if [[ -z "$NL" || "$NL" == "$T" ]]; then
+    log "  INVARIANT FAIL: no genuine failover within ${ELECTION_TIMEOUT_SECS}s — leadership did not move off member $T"
+    FAILOVER_FAIL=1
+  fi
   sleep 1                                                       # let the new leader settle (election measures 0.5s)
   start_seq "$T"; assert_restarted "$T"
   sleep 2                                                       # let the restored member rejoin (full-log replay)
@@ -517,8 +542,20 @@ fault_pause_node() {  # SIGSTOP a killable node (GC-pause / stall simulation: so
   log "FAULT pause-node: SIGSTOP member $P for ${PAUSE_SECS}s"; kill -STOP "${SEQ_PIDS[$P]}" 2>/dev/null
   sleep "$PAUSE_SECS"; kill -CONT "${SEQ_PIDS[$P]}" 2>/dev/null; log "  SIGCONT member $P"
 }
-fault_tap_drop() {  # drop one live tap frame at the consumer -> gap -> re-walk recovery (SIGUSR1 path)
-  log "FAULT tap-drop: SIGUSR1 consumer (arm one-frame live-tap drop)"; kill -USR1 "$CONSUMER_PID" 2>/dev/null
+fault_tap_drop() {  # drop one live tap frame -> gap -> resume-at-the-hole recovery (SIGUSR1 path)
+  # Aimed at the replica CO-LOCATED WITH THE LEADER, not always member 0's. That replica is the one
+  # answering NewOrderSingle with an ExecutionReport and emitting query replies (the isCaughtUp() &&
+  # currentLeaderMemberId()==m_nodeMemberId gate), so a gap episode there tests recovery WHILE emitting.
+  # Member 0 is usually a follower — bring-up elects the initial leader from members 1/2 — so the old
+  # fixed target exercised only the passive following path.
+  local L="$1" T; T="$(target_leader "$L")"
+  local pid; pid="$(replica_pid "$T")"
+  TAP_DROP_TARGET="$T"
+  TAP_DROP_LOG="$(replica_log "$T")"
+  TAP_DROP_RESUMES="$(count_tap_resumes "$TAP_DROP_LOG")"
+  TAP_DROP_REWALKS="$(count_tap_rewalks "$TAP_DROP_LOG")"
+  log "FAULT tap-drop: SIGUSR1 member $T's replica (leader-co-located; arm one-frame live-tap drop)"
+  kill -USR1 "$pid" 2>/dev/null || log "  WARN no live replica pid for member $T"
 }
 fault_tap_stall() {  # kill a node's local tap recording -> it must notice within a tick and TERMINATE ITSELF
   # The one fault the node is expected to answer by dying: a node that cannot record its own tap can no
@@ -531,14 +568,21 @@ fault_tap_stall() {  # kill a node's local tap recording -> it must notice withi
   local W=0; while kill -0 "${SEQ_PIDS[$T]}" 2>/dev/null; do sleep 0.2; W=$((W+1)); ((W > TAP_STALL_DEADLINE_SECS * 5)) && break; done
   if kill -0 "${SEQ_PIDS[$T]}" 2>/dev/null; then
     log "  INVARIANT FAIL: member $T kept running for ${TAP_STALL_DEADLINE_SECS}s with no tap recording"
+    TAP_STALL_FAIL=1
     # Still wait for it to actually die before restarting below, or the restart hits its own archive
     # mark file ("active mark file detected") and the round after this one fails for the wrong reason.
     kill "${SEQ_PIDS[$T]}" 2>/dev/null
     W=0; while kill -0 "${SEQ_PIDS[$T]}" 2>/dev/null; do sleep 0.2; W=$((W+1)); ((W > PROC_EXIT_TIMEOUT_SECS * 5)) && break; done
   else
-    grep -q "FATAL:.*terminating this node" "$LOG_DIR/seq-$T.log" \
-      && log "  ok: member $T detected the dead recording and terminated" \
-      || log "  INVARIANT FAIL: member $T died without the FATAL tap-recording line"
+    # Scoped to the CURRENT boot, like wait_running: start_seq APPENDS, so a whole-file grep matches the
+    # FATAL line an EARLIER tap-stall round left behind and passes a member that has since died of
+    # something else entirely. The same member does get stalled twice in a run, so this is reachable.
+    if tail -n "+$(( ${SEQ_LOG_OFFSET[$T]:-0} + 1 ))" "$LOG_DIR/seq-$T.log" 2>/dev/null \
+       | grep -q "FATAL:.*terminating this node"; then
+      log "  ok: member $T detected the dead recording and terminated"
+    else
+      log "  INVARIANT FAIL: member $T died without the FATAL tap-recording line"; TAP_STALL_FAIL=1
+    fi
   fi
   rm -f "$BASE_DIR/cluster-$T/tap-stall-fault"   # else the restarted node re-arms it immediately
   sleep 2
@@ -588,9 +632,27 @@ check_invariants() {
   fi
   # (c) safety proxy: the consumer process is still up and following live (i.e. delivering in order, not wedged)
   if kill -0 "$CONSUMER_PID" 2>/dev/null && grep -q "following live" "$CONSUMER_LOG"; then
-    log "  ok: consumer alive & following live (re-walks so far: $(grep -c 're-walking the recording chain' "$CONSUMER_LOG"))"
+    log "  ok: consumer alive & following live (re-walks so far: $(count_tap_rewalks "$CONSUMER_LOG"))"
   else
     log "  INVARIANT FAIL: consumer down or not following live"; fail=1
+  fi
+  # (c2) EFFICACY, for tap-drop rounds only: the armed drop must have produced a real gap episode on the
+  #      target, repaired by a RESUME at the hole. Without this the fault is unverified — a SIGUSR1 to a
+  #      dead/unarmed replica silently does nothing and the round still passes (a), (b) and (c), which is
+  #      exactly what it did before. A re-walk is the DEGRADED repair (replaying the whole recording to
+  #      close a one-frame hole; gap-recovery-test.sh asserts 0 of them), so it fails the round too.
+  if [[ -n "$TAP_DROP_TARGET" ]]; then
+    local resumes; resumes="$(count_tap_resumes "$TAP_DROP_LOG")"
+    local rewalks; rewalks="$(count_tap_rewalks "$TAP_DROP_LOG")"
+    if (( resumes > TAP_DROP_RESUMES )); then
+      log "  ok: tap-drop landed on member $TAP_DROP_TARGET — gap resumed at the hole ($TAP_DROP_RESUMES -> $resumes)"
+    else
+      log "  INVARIANT FAIL: tap-drop on member $TAP_DROP_TARGET produced NO gap episode (resumes stuck at $resumes) — fault did not land"; fail=1
+    fi
+    if (( rewalks > TAP_DROP_REWALKS )); then
+      log "  INVARIANT FAIL: member $TAP_DROP_TARGET fell back to a chain re-walk ($TAP_DROP_REWALKS -> $rewalks) — expected a resume"; fail=1
+    fi
+    TAP_DROP_TARGET=""
   fi
   # (d) fail-fast on media-driver loss, as observed by this round's check_driver_loss_failfast (kill
   #     faults only; the flag stays 0 for rounds that never killed a member). Reset either way so a
@@ -607,7 +669,15 @@ check_invariants() {
   #     either way, same as (d), so a violation is attributed to the round that caused it.
   [[ "$RESTART_FAIL" == "1" ]] && fail=1
   RESTART_FAIL=0
-  # (f) The rigorous safety property (gap-free, monotone globalSeqNo) is asserted ONCE at end of run by
+  # (f) the tap-stall target self-terminated, and did it for the RIGHT reason, as observed by
+  #     fault_tap_stall. Its two INVARIANT FAIL branches used to only log — they set no flag, so a node
+  #     that kept sequencing history it could not record printed a failure and the round still PASSED.
+  [[ "$TAP_STALL_FAIL" == "1" ]] && fail=1
+  TAP_STALL_FAIL=0
+  # (g) a kill-leader round produced a GENUINE failover, as observed by fault_kill_leader.
+  [[ "$FAILOVER_FAIL" == "1" ]] && fail=1
+  FAILOVER_FAIL=0
+  # (h) The rigorous safety property (gap-free, monotone globalSeqNo) is asserted ONCE at end of run by
   #     verify_sequence below — decoding it every round would re-dump the whole recording each time.
   return $fail
 }
