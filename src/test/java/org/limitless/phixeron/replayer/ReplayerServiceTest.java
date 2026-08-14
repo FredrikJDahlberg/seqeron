@@ -292,6 +292,24 @@ class ReplayerServiceTest {
         assertTrue(loggedOnce(Logger.EventCode.StaleActiveRecording));
     }
 
+    @Test
+    void aSecondStaleActiveRecordingIsReportedAgainAfterTheFirstWasRepaired() {
+        fakeReplayer.addRecording(5, 0, true, 1000);  // left unstopped by an unclean shutdown
+        fakeReplayer.addRecording(6, 0, true, 4096);
+        makeReady();
+        request(CLIENT, 1, 0, 0);
+
+        fakeReplayer.stopRecording(5);  // operator repairs it
+        request(CLIENT, 2, 0, 0);
+        assertEquals(1, logCount(Logger.EventCode.StaleActiveRecording), "the repair is not a new episode");
+
+        fakeReplayer.addRecording(7, 4096, true, 5000);  // a later unclean shutdown leaves 6 unstopped
+        request(CLIENT, 3, 0, 0);
+
+        // This anomaly has no counter, so a latch that never re-arms makes every later episode silent.
+        assertEquals(2, logCount(Logger.EventCode.StaleActiveRecording));
+    }
+
     // ── Steady-state resume ─────────────────────────────────────────────────────
 
     @Test
@@ -453,6 +471,26 @@ class ReplayerServiceTest {
     }
 
     @Test
+    void aFreshBurstOfDroppedRepliesIsReportedAgainAfterAQuietPeriod() {
+        fakeReplayer.controlOfferResult(Publication.BACK_PRESSURED);
+        fakeReplayer.enqueueRequest(replayRequest(CLIENT, 1, 0, 0));
+        replayerService.poll();
+
+        // Same episode: a wedged app is answered on every resend, and the counter carries the rate.
+        fakeReplayer.advanceMillis(1_000);
+        fakeReplayer.enqueueRequest(replayRequest(CLIENT, 2, 0, 0));
+        replayerService.poll();
+        assertEquals(1, logCount(Logger.EventCode.ControlReplyDropped));
+
+        fakeReplayer.advanceMillis(60_000);
+        fakeReplayer.enqueueRequest(replayRequest(CLIENT, 3, 0, 0));
+        replayerService.poll();
+
+        assertEquals(2, logCount(Logger.EventCode.ControlReplyDropped), "a distinct episode names itself");
+        assertEquals(3, fakeReplayer.counter(PhixeronCounters.REPLAYER_CONTROL_REPLIES_DROPPED_COUNT_TYPE_ID));
+    }
+
+    @Test
     void aReplyToAnAppNotSubscribedYetIsDroppedWithoutBeingCounted() {
         fakeReplayer.controlOfferResult(Publication.NOT_CONNECTED);
         fakeReplayer.enqueueRequest(replayRequest(CLIENT, 1, 0, 0));
@@ -584,7 +622,11 @@ class ReplayerServiceTest {
     }
 
     private boolean loggedOnce(final Logger.EventCode code) {
-        return events.stream().filter(event -> event.code() == code).count() == 1;
+        return logCount(code) == 1;
+    }
+
+    private long logCount(final Logger.EventCode code) {
+        return events.stream().filter(event -> event.code() == code).count();
     }
 
     // ── Encoders ────────────────────────────────────────────────────────────────

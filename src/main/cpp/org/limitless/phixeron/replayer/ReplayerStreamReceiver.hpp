@@ -751,6 +751,11 @@ class ReplayerStreamReceiver
                 return;
             }
             m_awaitingReplay = false;
+            // The Replayer is serving again: whatever refusal episode was open has ended (an operator
+            // repaired the archive and restarted it). Clearing here is what makes a second, distinct
+            // outage report itself, and what keeps checkRecoveryProgress's replayerUnavailable field
+            // reading current state rather than "was ever refused".
+            m_replayerUnavailable = false;
             const std::int64_t session = dec.replaySessionId();
             if (session == REPLAYER_NO_REPLAY_NEEDED)
             {
@@ -791,6 +796,7 @@ class ReplayerStreamReceiver
                 drainRetained();
                 if (!m_messagesBlocks.empty() || m_messagesOverflowed)
                 {
+                    endOverflowEpisode();
                     requestReplay(0, 0);
                     return;
                 }
@@ -840,6 +846,7 @@ class ReplayerStreamReceiver
                 // timer keeps us alive if the eventual Replaying is ever lost, but ReplayPending itself is
                 // just "wait" — reset the request clock so we don't spam while queued.
                 m_lastRequestMs = nowMs();
+                m_replayerUnavailable = false;  // queued, not refused — the episode ended (see Replaying)
             }
         }
         else if (mh.templateId() == usq::ReplayUnavailable::sbeTemplateId())
@@ -861,9 +868,9 @@ class ReplayerStreamReceiver
     // from a baseline we cannot establish.
     void onReplayUnavailable()
     {
-        if (!m_replayUnavailableLogged)
+        if (!m_replayerUnavailable)
         {
-            m_replayUnavailableLogged = true;
+            m_replayerUnavailable = true;
             diag::Logger::fault(diag::Component::ReplayerStreamReceiver, diag::EventCode::ReplayUnavailable,
                                 "this node's Replayer has no valid history to serve (its archive failed the "
                                 "globalSeqNo-1 integrity check) — holding, not dispatching; repair the node's "
@@ -1030,9 +1037,12 @@ class ReplayerStreamReceiver
         // Where this frame starts in the recording — the tap, a replay image and the recording itself
         // all count positions in the same space. requestResume anchors on it.
         m_lastFramePosition = framePosition;
-        if (!fromReplay && !m_caughtUp)
+        if (!fromReplay && !m_caughtUp && !m_messagesOverflowed)
         {
-            // First in-order frame straight off the live tap ⇒ we are following the live tip.
+            // First in-order frame straight off the live tap ⇒ we are following the live tip. Unless
+            // retainMessages dropped frames: this one may well be a retained frame draining over a
+            // closed hole with the dropped ones still missing above it, and contiguity here says
+            // nothing about them. The re-walk requested at the end of this replay is what settles it.
             notifyCaughtUp();
         }
 
@@ -1117,9 +1127,10 @@ class ReplayerStreamReceiver
         if (m_messagesFrameCount >= MAX_MESSAGES_FRAMES || (m_messagesBytes + len) > MAX_MESSAGES_BYTES ||
             recordSize > MessagesBlock::SIZE)
         {
-            if (!m_messagesOverflowed)
+            m_messagesOverflowed = true;
+            if (!m_messagesOverflowLogged)
             {
-                m_messagesOverflowed = true;
+                m_messagesOverflowLogged = true;
                 diag::Logger::warn(diag::Component::ReplayerStreamReceiver, diag::EventCode::TapGap,
                                    "retained-frame buffer full at globalSeqNo=%lld (%zu frames, %zu bytes) — "
                                    "dropping ahead-of-hole frames; recovery falls back to re-walking",
@@ -1179,10 +1190,21 @@ class ReplayerStreamReceiver
             {
                 continue;  // the replay already covered it
             }
-            m_messagesOverflowed = false;
             dispatchFrame(reinterpret_cast<char*>(payload), 0, header.length, header.length, header.globalSeqNo,
                           header.position, header.receiveNs, /*fromReplay=*/false);
         }
+    }
+
+    // The re-walk about to be requested is what covers the frames retainMessages dropped, so the
+    // overflow ends HERE, where it is acted on — not in drainRetained, where clearing it (as this did
+    // until 2026-08-14) forgot the drop at exactly the wrong moment: the frame whose dispatch cleared it
+    // then declared us caught up at the seam, over a frontier the drops had already invalidated. That
+    // opened FixGateway's accept gate over a hole, left for the next tap gap to rediscover — the outcome
+    // the check above re-walks to avoid. A later overflow is a new episode and reports itself.
+    void endOverflowEpisode()
+    {
+        m_messagesOverflowed = false;
+        m_messagesOverflowLogged = false;
     }
 
     // Decides what a closed replay image means, from the position it closed at.
@@ -1236,7 +1258,7 @@ class ReplayerStreamReceiver
                             static_cast<long long>(RECOVERY_PROGRESS_TIMEOUT_MS),
                             static_cast<long long>(m_lastGlobalSeqNo), static_cast<int>(m_walkSegmentIndex),
                             m_awaitingReplay ? 1 : 0, static_cast<long long>(m_replaySessionId),
-                            m_replayUnavailableLogged ? 1 : 0);
+                            m_replayerUnavailable ? 1 : 0);
         if (m_recoveryStalledCounter)
         {
             m_recoveryStalledCounter->set(1);
@@ -1283,6 +1305,7 @@ class ReplayerStreamReceiver
             drainRetained();
             if (!m_messagesBlocks.empty() || m_messagesOverflowed)
             {
+                endOverflowEpisode();
                 requestReplay(0, 0);
                 return;
             }
@@ -1355,7 +1378,10 @@ class ReplayerStreamReceiver
     bool m_completePending = false;
     std::int64_t m_lastReplayPosition = -1;   // last replay-image position seen; -1 = not attached yet
     std::int64_t m_lastReplayProgressMs = 0;  // when it last changed — the stall watchdog's clock
-    bool m_replayUnavailableLogged = false;  // the refusal is permanent and resent every 500ms; log it once
+    // The Replayer is refusing to serve us (integrity check failed). State, not just a log latch: the
+    // refusal is resent on every 500ms request, so report it once per episode, and checkRecoveryProgress
+    // prints it as the fact that tells a refusal apart from a Replayer that never answered.
+    bool m_replayerUnavailable = false;
 
     std::int64_t m_lastGlobalSeqNo = 0;  // highest globalSeqNo delivered; 0 = none yet
     std::int64_t m_lastFramePosition = 0;  // where that frame starts in the recording; requestResume's anchor
@@ -1377,7 +1403,11 @@ class ReplayerStreamReceiver
     std::int64_t m_messagesTailGseq = 0;   // globalSeqNo of the most recently retained frame; dedups redelivery
     std::size_t m_messagesFrameCount = 0;
     std::size_t m_messagesBytes = 0;
-    bool m_messagesOverflowed = false;  // log the overflow once per episode, not per frame
+    // Frames were dropped ahead of the hole because the FIFO above was full: the frontier this client
+    // holds is short of the real one, so it must re-walk rather than declare itself caught up. Cleared
+    // only where that re-walk is requested (endOverflowEpisode).
+    bool m_messagesOverflowed = false;
+    bool m_messagesOverflowLogged = false;  // that overflow reported once per episode, not per frame
 
     std::int32_t m_currentLeaderMemberId = -1;
 

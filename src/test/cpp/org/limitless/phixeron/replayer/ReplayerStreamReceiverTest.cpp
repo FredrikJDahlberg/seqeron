@@ -52,6 +52,30 @@ struct ScopedLoggerSink final : diag::LoggerSink
     std::vector<diag::LoggerEvent> events;
 };
 
+// Refusals only: a re-request logs its own (warn) line between two of them, so size() cannot count these.
+std::size_t refusalCount(const ScopedLoggerSink& sink)
+{
+    std::size_t count = 0;
+    for (const diag::LoggerEvent& event : sink.events)
+    {
+        count += event.code == diag::EventCode::ReplayUnavailable ? 1 : 0;
+    }
+    return count;
+}
+
+// Retained-buffer overflows only: every gap/re-walk warn shares EventCode::TapGap, so only the text
+// separates them.
+std::size_t overflowReports(const ScopedLoggerSink& sink)
+{
+    std::size_t count = 0;
+    for (const diag::LoggerEvent& event : sink.events)
+    {
+        const std::string text(event.text.data(), event.textLen);
+        count += text.find("retained-frame buffer full") != std::string::npos ? 1 : 0;
+    }
+    return count;
+}
+
 constexpr std::int32_t DATA_HEADER_LENGTH = 32;  // AERON_DATA_HEADER_LENGTH
 constexpr std::int32_t TERM_ID = 7;
 constexpr std::int32_t INITIAL_TERM_ID = 7;         // termCount 0, so position == termOffset
@@ -141,6 +165,19 @@ TEST(ReplayerStreamReceiverBaseline, FirstFrameNotAtGlobalSeqNoOneAbortsTheProce
 // not here. What is locked below is the logic poll() feeds those fragments to: the contiguity/de-dupe
 // decision, the isRecovering() predicate that separates a real hole from the tap running ahead of an
 // in-flight walk, and the isCaughtUp() state transitions consumers gate on.
+
+// A live tap frame too big for the retained-ahead FIFO to hold: a Heartbeat zero-padded past
+// MessagesBlock::SIZE, which retainMessages refuses outright (recordSize > MessagesBlock::SIZE). The
+// cheapest of its three overflow triggers to drive — the other two need 65536 frames or 16 MiB.
+void deliverLiveTooBigToRetain(ReplayerStreamReceiver& client, const std::int64_t globalSeqNo)
+{
+    auto buf = encodeHeartbeat(globalSeqNo);
+    buf.resize(8192, 0);  // decoded from the front; the padding only has to make the record oversized
+    const auto frameLength = DATA_HEADER_LENGTH + static_cast<std::int32_t>(buf.size());
+    Frame frame{/*termOffset=*/0, frameLength};
+    aeron::concurrent::AtomicBuffer ab(buf.data(), buf.size());
+    client.testDeliverTapFragment(ab, 0, static_cast<aeron::util::index_t>(buf.size()), frame.wrap());
+}
 
 // One Heartbeat frame from a replay image (fromReplay=true), otherwise identical to deliverLive.
 void deliverReplay(ReplayerStreamReceiver& client, const std::int64_t globalSeqNo)
@@ -584,7 +621,49 @@ TEST(ReplayerStreamReceiverGapRecovery, ReplayUnavailableHoldsWithoutAbortingOrA
 
     // The Replayer answers every resend the same way; the fault line must not repeat per reply.
     deliverControl(client, encodeReplayUnavailable(/*clientId=*/1, client.testRequestId()));
-    EXPECT_EQ(1u, sink.events.size()) << "the refusal is permanent — report it once, not every 500ms";
+    EXPECT_EQ(1u, sink.events.size()) << "one episode is one line, not one per 500ms resend";
+}
+
+// A second, distinct outage hours later must report itself: the latch is on the episode, not on the
+// process (review-3.md #12). The intervening reply is what ends the first episode — an operator
+// repaired the archive and restarted the Replayer, exactly the recovery onReplayUnavailable describes.
+TEST(ReplayerStreamReceiverGapRecovery, ARefusalAfterTheReplayerRecoveredIsReportedAgain)
+{
+    ReplayerStreamReceiver client{1, [](const SequencedEvent&) {}};
+    deliverLive(client, 1);
+    deliverLive(client, 5);  // gap -> awaiting a replay
+
+    ScopedLoggerSink sink;  // installed after the setup gap, so it captures only what follows
+    deliverControl(client, encodeReplayUnavailable(/*clientId=*/1, client.testRequestId()));
+    ASSERT_EQ(1u, refusalCount(sink));
+
+    deliverControl(client, encodeReplaying(/*clientId=*/1, client.testRequestId(), /*replaySessionId=*/7,
+                                           /*catchUpPosition=*/900));
+    // Later: that node's archive breaks again, its Replayer restarts refusing, and our replay stops
+    // delivering — so we re-request (a new requestId) and are refused a second time.
+    client.testReplayStalled();
+    deliverControl(client, encodeReplayUnavailable(/*clientId=*/1, client.testRequestId()));
+
+    EXPECT_EQ(2u, refusalCount(sink)) << "a process-lifetime latch leaves every later outage silent — and "
+                                         "this refusal carries no counter, so the log line is all there is";
+}
+
+// Being queued ends the episode too: a Replayer with integrityFailed latched answers ReplayUnavailable,
+// never ReplayPending, so a pending reply is proof it is serving again — and while queued, a stall report
+// naming us "refused" would point at the wrong thing.
+TEST(ReplayerStreamReceiverGapRecovery, AQueuedReplayAlsoEndsTheRefusalEpisode)
+{
+    ReplayerStreamReceiver client{1, [](const SequencedEvent&) {}};
+    deliverLive(client, 1);
+    deliverLive(client, 5);  // gap -> awaiting a replay
+
+    ScopedLoggerSink sink;  // installed after the setup gap, so it captures only what follows
+    deliverControl(client, encodeReplayUnavailable(/*clientId=*/1, client.testRequestId()));
+    deliverControl(client, encodeReplayPending(/*clientId=*/1, client.testRequestId()));
+    client.testReplayStalled();
+    deliverControl(client, encodeReplayUnavailable(/*clientId=*/1, client.testRequestId()));
+
+    EXPECT_EQ(2u, refusalCount(sink));
 }
 
 TEST(ReplayerStreamReceiverGapRecovery, ReplayUnavailableForASupersededRequestIsIgnored)
@@ -1009,6 +1088,58 @@ TEST(ReplayerStreamReceiverGapRecovery, ResumeReachingItsBoundWithARetainedHoleS
     EXPECT_EQ(-1, client.testReplaySessionId());
 }
 
+// The overflow half of the same guard (review-3.md #12). When retainMessages had to DROP tap frames, the
+// frontier is short by frames that are gone from the tap for good, and every retained frame draining
+// cleanly says nothing about them. drainRetained used to clear the overflow on its first dispatch —
+// before this check could read it — so precisely the run that drained successfully was the one that
+// declared itself caught up over the hole.
+TEST(ReplayerStreamReceiverGapRecovery, ResumeReachingItsBoundAfterDroppedTapFramesReWalksInstead)
+{
+    int caughtUpNotifications = 0;
+    ReplayerStreamReceiver client{1, [](const SequencedEvent&) {}, {}, {}, {}, [&] { ++caughtUpNotifications; }};
+
+    deliverLive(client, 1);
+    ASSERT_EQ(1, caughtUpNotifications);
+    deliverLive(client, 3);                // gap -> resume anchored on frame 1; 3 is retained
+    deliverLiveTooBigToRetain(client, 4);  // ahead of the hole too, but dropped rather than retained
+    deliverControl(client, encodeReplaying(/*clientId=*/1, client.testRequestId(), /*replaySessionId=*/7,
+                                           /*catchUpPosition=*/500));
+
+    deliverReplay(client, 1);  // opens on the anchored frame -> anchor consumed, frame deduped
+    deliverReplay(client, 2);  // closes the hole the resume was asked to cover, draining retained frame 3
+
+    client.testCompleteReplaySegment();
+
+    EXPECT_FALSE(client.isCaughtUp()) << "frame 4 was dropped — the drained frontier is not the real one";
+    EXPECT_EQ(1, caughtUpNotifications) << "no false re-convergence notification";
+    EXPECT_EQ(0, client.testWalkSegmentIndex()) << "re-walks now rather than leaving the hole for a later tap gap";
+    EXPECT_TRUE(client.testIsAwaitingReplay());
+}
+
+TEST(ReplayerStreamReceiverGapRecovery, DroppedTapFramesAreReportedOncePerEpisode)
+{
+    ReplayerStreamReceiver client{1, [](const SequencedEvent&) {}};
+    deliverLive(client, 1);
+    deliverLive(client, 3);  // gap -> resume anchored on frame 1; 3 is retained
+
+    ScopedLoggerSink sink;  // installed after the setup gap, so it captures only the overflow lines
+    deliverLiveTooBigToRetain(client, 4);
+    deliverLiveTooBigToRetain(client, 5);
+    ASSERT_EQ(1u, overflowReports(sink)) << "one episode is one line, not one per dropped frame";
+
+    // The re-walk is what covers the dropped frames, so the episode ends when it is requested.
+    deliverControl(client, encodeReplaying(/*clientId=*/1, client.testRequestId(), /*replaySessionId=*/7,
+                                           /*catchUpPosition=*/500));
+    deliverReplay(client, 1);
+    deliverReplay(client, 2);
+    client.testCompleteReplaySegment();
+    ASSERT_EQ(0, client.testWalkSegmentIndex());
+
+    deliverLiveTooBigToRetain(client, 9);
+
+    EXPECT_EQ(2u, overflowReports(sink)) << "a later overflow is a distinct episode and names itself";
+}
+
 // Retained frames the replay has meanwhile covered are discarded on drain rather than double-delivered —
 // the ranges legitimately overlap, since a re-walk restarts from segment 0 while the tap keeps arriving.
 TEST(ReplayerStreamReceiverGapRecovery, RetainedFramesAlreadyCoveredByTheReplayAreNotRedelivered)
@@ -1079,6 +1210,42 @@ TEST(ReplayerStreamReceiverGapRecovery, WalkTerminatorWithEveryRetainedFrameDrai
     EXPECT_TRUE(client.isCaughtUp()) << "nothing is outstanding — the guard must not fire here";
     EXPECT_EQ(-1, client.testWalkSegmentIndex()) << "steady/resume mode, not a spurious re-walk";
     EXPECT_FALSE(client.testIsAwaitingReplay());
+}
+
+// The same guard at the terminator, driven through to convergence: the re-walk must both happen AND be
+// able to finish. The overflow is cleared where that re-walk is requested, which is the only clear point
+// that does both — clearing it on drain forgets the drop and catches up over the hole, never clearing it
+// leaves a client that can never declare itself caught up again.
+TEST(ReplayerStreamReceiverGapRecovery, WalkTerminatorAfterDroppedTapFramesReWalksThenCatchesUp)
+{
+    int caughtUpNotifications = 0;
+    ReplayerStreamReceiver client{1, [](const SequencedEvent&) {}, {}, {}, {}, [&] { ++caughtUpNotifications; }};
+
+    deliverControl(client, encodeReplaying(/*clientId=*/1, client.testRequestId(), /*replaySessionId=*/7,
+                                           /*catchUpPosition=*/500, /*recordingId=*/5));
+    deliverReplay(client, 1);
+    deliverReplay(client, 2);
+    deliverLiveTooBigToRetain(client, 4);  // the tap runs ahead of the walk, and this one is dropped
+    client.testCompleteReplaySegment();
+
+    deliverControl(client, encodeReplaying(/*clientId=*/1, client.testRequestId(), REPLAYER_NO_REPLAY_NEEDED,
+                                           /*catchUpPosition=*/0, /*recordingId=*/-1));
+
+    EXPECT_FALSE(client.isCaughtUp()) << "the chain was exhausted, but a tap frame above it was dropped";
+    EXPECT_EQ(0, caughtUpNotifications) << "no false convergence notification — this opens the accept gate";
+    ASSERT_EQ(0, client.testWalkSegmentIndex()) << "re-walks the chain rather than trusting the terminator";
+
+    // The re-walk replays what the drop lost, and this time nothing is dropped.
+    deliverControl(client, encodeReplaying(/*clientId=*/1, client.testRequestId(), /*replaySessionId=*/8,
+                                           /*catchUpPosition=*/900, /*recordingId=*/5));
+    deliverReplay(client, 3);
+    deliverReplay(client, 4);
+    client.testCompleteReplaySegment();
+    deliverControl(client, encodeReplaying(/*clientId=*/1, client.testRequestId(), REPLAYER_NO_REPLAY_NEEDED,
+                                           /*catchUpPosition=*/0, /*recordingId=*/-1));
+
+    EXPECT_TRUE(client.isCaughtUp()) << "a re-walk that dropped nothing must be able to finish";
+    EXPECT_EQ(1, caughtUpNotifications);
 }
 
 // An unclean restart can leave a recording created before anything was published to it. Taking the
@@ -1270,6 +1437,26 @@ TEST(ReplayerStreamReceiverConvergence, TheReportNamesTheStateThatTellsTheCauses
     EXPECT_NE(std::string::npos, text.find("lastGlobalSeqNo=1")) << text;
     EXPECT_NE(std::string::npos, text.find("awaitingReplay=1")) << text;
     EXPECT_NE(std::string::npos, text.find("replayerUnavailable=1")) << text;
+}
+
+TEST(ReplayerStreamReceiverConvergence, TheReportStopsNamingARefusalOnceTheReplayerServesAgain)
+{
+    ReplayerStreamReceiver client{1, [](const SequencedEvent&) {}};
+    deliverLive(client, 1);
+    deliverLive(client, 5);  // gap -> awaiting a replay
+    deliverControl(client, encodeReplayUnavailable(/*clientId=*/1, client.testRequestId()));
+    deliverControl(client, encodeReplaying(/*clientId=*/1, client.testRequestId(), /*replaySessionId=*/7,
+                                           /*catchUpPosition=*/900));
+
+    ScopedLoggerSink sink;  // installed after the exchange above, so it captures only the report below
+    ASSERT_FALSE(client.testCheckRecoveryProgress(CLOCK_MS));
+    ASSERT_TRUE(client.testCheckRecoveryProgress(PAST_DEADLINE_MS));
+
+    ASSERT_EQ(1u, sink.events.size());
+    const std::string text(sink.events[0].text.data(), sink.events[0].textLen);
+    // The field is state, not "was ever refused": a stale 1 points the operator at a Replayer that is
+    // answering fine, and away from the attached replay that is actually not delivering.
+    EXPECT_NE(std::string::npos, text.find("replayerUnavailable=0")) << text;
 }
 
 }  // namespace

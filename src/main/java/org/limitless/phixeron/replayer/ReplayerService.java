@@ -202,6 +202,14 @@ public final class ReplayerService {
      */
     private static final long CLIENT_ID_COLLISION_WINDOW_MS = 10_000;
 
+    /**
+     * Quiet period that ends a control-reply-drop episode (see {@link #onControlReplyDropped}). Drops
+     * come in bursts — a wedged app is answered on every one of its ~500ms resends — so the report is
+     * per burst, not per drop; a drop this long after the last one is a new episode and is reported
+     * again. Without it the first burst of the process is the only one ever named.
+     */
+    private static final long CONTROL_DROP_QUIET_MS = 60_000;
+
     private static final int FRAGMENT_LIMIT = 16;
 
     /** The node this serves: its archive, its two app-facing IPC streams, its counters, its clock. */
@@ -240,15 +248,18 @@ public final class ReplayerService {
     private long selfCheckGlobalSeqNo = NULL_VALUE;      // what the first fragment carried, once read
     private long selfCheckDeadlineNs = 0;
 
-    // Latches once the ">1 active tap recording" anomaly has been reported (see resolveSegments): the
+    // Latches while the ">1 active tap recording" anomaly is reported (see resolveSegments): the
     // condition lasts as long as the stale recording is on disk, and resolveSegments runs per replay
-    // request, so without this it would repeat the fault line on every one.
+    // request, so without this it would repeat the fault line on every one. Cleared when the count
+    // returns to 1 — an operator purge followed by a later unclean shutdown is a second episode, and
+    // this anomaly has no counter, so an un-re-armed latch makes it silent rather than merely quiet.
     private boolean staleActiveRecordingLogged = false;
 
-    // Latches once a dropped control reply has been reported (see offerControl): a wedged app is
-    // answered on every one of its resends, so without this it would repeat the fault line at the
-    // resend rate. The counter keeps carrying the rate.
-    private boolean controlReplyDropLogged = false;
+    // When the last dropped control reply was (see onControlReplyDropped), 0 = none this process.
+    // Drops are reported per episode rather than per drop: a wedged app is answered on every one of its
+    // resends, so without this the fault line would repeat at the resend rate. The counter carries the
+    // rate in between.
+    private long lastControlDropMs = 0;
 
     // ── Replay protocol state ─────────────────────────────────────────────────
     // Admission control and pending-queue bookkeeping is a pure function of client ids/tokens (see
@@ -961,13 +972,15 @@ public final class ReplayerService {
     }
 
     /**
-     * A control reply was dropped at the spin bound: report it once, count every one.
+     * A control reply was dropped at the spin bound: report it once per episode, count every one.
      * @param result the failing offer result
      */
     private void onControlReplyDropped(final long result) {
         controlRepliesDroppedCounter.increment();
-        if (!controlReplyDropLogged) {
-            controlReplyDropLogged = true;
+        final long nowMs = replayer.epochMillis();
+        final boolean newEpisode = lastControlDropMs == 0 || nowMs - lastControlDropMs >= CONTROL_DROP_QUIET_MS;
+        lastControlDropMs = nowMs;
+        if (newEpisode) {
             Logger.error(Logger.Component.ReplayerService, Logger.EventCode.ControlReplyDropped, memberId,
                     "dropped a control reply (offer=%d): an app subscribed to stream %d and stopped "
                             + "reading it. Its replays are delayed by a resend; every other app is "
@@ -1017,11 +1030,15 @@ public final class ReplayerService {
     private List<ReplayRecordings.RecordingSpan> resolveSegments() {
         final List<ReplayRecordings.RecordingSpan> spans = replayer.listTapRecordings();
         final long activeCount = spans.stream().filter(ReplayRecordings.RecordingSpan::active).count();
-        if (activeCount > 1 && !staleActiveRecordingLogged) {
-            staleActiveRecordingLogged = true;
-            Logger.error(Logger.Component.ReplayerService, Logger.EventCode.StaleActiveRecording, memberId,
-                    "%d tap recordings report as still recording — an unclean shutdown left an older one "
-                            + "unstopped; serving the newest and skipping the stale one(s)", activeCount);
+        if (activeCount > 1) {
+            if (!staleActiveRecordingLogged) {
+                staleActiveRecordingLogged = true;
+                Logger.error(Logger.Component.ReplayerService, Logger.EventCode.StaleActiveRecording, memberId,
+                        "%d tap recordings report as still recording — an unclean shutdown left an older one "
+                                + "unstopped; serving the newest and skipping the stale one(s)", activeCount);
+            }
+        } else {
+            staleActiveRecordingLogged = false;
         }
         return ReplayRecordings.stitch(spans);
     }

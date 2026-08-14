@@ -70,6 +70,16 @@ final class FakeReplayer implements Replayer {
         }
     }
 
+    /** Marks a recording stopped, as an operator repairing an unclean shutdown's leftover does. */
+    void stopRecording(final long recordingId) {
+        recordings.replaceAll(span -> span.recordingId() == recordingId
+            ? new ReplayRecordings.RecordingSpan(recordingId, span.startPosition(), false) : span);
+        final Long tip = recordingPositions.remove(recordingId);
+        if (tip != null) {
+            stopPositions.put(recordingId, tip);
+        }
+    }
+
     /** Leaves neither position counter able to report {@code recordingId}'s tip, as a rotation transiently does. */
     void hideTip(final long recordingId) {
         recordingPositions.remove(recordingId);
