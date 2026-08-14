@@ -104,8 +104,13 @@ cmake --build cmake-build-release
 ## Tests
 
 ```bash
-cd cmake-build-debug && ctest
+cd cmake-build-debug && cmake --build . --target run_tests
 ```
+
+Use `run_tests`, not plain `ctest`: simdfix's own test suite is registered here too, and since
+its targets are `EXCLUDE_FROM_ALL` and never built in this project, `ctest` reports them as
+spurious `..._NOT_BUILT` failures alongside phixeron's real results. If you do need `ctest`,
+filter them out with `ctest --output-on-failure -E "_NOT_BUILT"`.
 
 ---
 
@@ -336,7 +341,7 @@ between the objects — but with `--oneline` each individual message line parses
 
 ## Order execution client
 
-`OrderExecClient` (C++, `src/main/cpp/.../sequencer/OrderExecClient.cpp`) combines what used to
+`OrderExecClient` (C++, `src/main/cpp/.../order/OrderExecClient.cpp`) combines what used to
 be two separate binaries — `application_stream_client` and the C++ `RiskEngineClient` — into one
 cluster ingress client. It replays the cluster stream then follows it live, printing every
 `NewOrderSingle`/`ExecutionReport` it sees, tracking each account's positions from those same
