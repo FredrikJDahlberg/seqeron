@@ -23,11 +23,13 @@ namespace org::limitless::phixeron::sequencer {
 // types so it is unit-testable directly, mirroring GatewayRecoveryStallPolicy and GatewayTapLagPolicy.
 class RecoveryProgressPolicy
 {
-   public:
+  public:
     // stallMs: how long recovery may run without dispatching a single frame before it is called
     // unconvergent. It has to clear the longest legitimate pause with nothing dispatched — waiting on a
     // Replayer slot behind other co-located apps' walks, not any step of this client's own.
-    explicit RecoveryProgressPolicy(std::int64_t stallMs) : m_stallMs{stallMs} {}
+    explicit RecoveryProgressPolicy(std::int64_t stallMs)
+      : m_stallMs{ stallMs }
+    {}
 
     // Recovery is converging: a frame was dispatched in order. Clears the clock and re-arms the report,
     // so a later episode is reported again rather than swallowed. Returns true only when this ends an
@@ -59,10 +61,10 @@ class RecoveryProgressPolicy
         return true;
     }
 
-   private:
+  private:
     std::int64_t m_stallMs;
-    std::int64_t m_sinceMs = 0;  // 0 = no episode currently timed
+    std::int64_t m_sinceMs = 0; // 0 = no episode currently timed
     bool m_reported = false;
 };
 
-}  // namespace org::limitless::phixeron::sequencer
+} // namespace org::limitless::phixeron::sequencer

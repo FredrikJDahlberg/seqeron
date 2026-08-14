@@ -32,15 +32,16 @@ static constexpr std::uint16_t UNSEQUENCED_SCHEMA_ID = 200;
 static constexpr std::uint16_t SEQUENCED_SCHEMA_ID = 202;
 static constexpr std::uint16_t SCHEMA_VERSION = 0;
 
-template <typename MessageHeader>
-MessageHeader decodeHeader(std::uint8_t* buffer, std::uint64_t bufferferLength)
+template<typename MessageHeader>
+MessageHeader
+decodeHeader(std::uint8_t* buffer, std::uint64_t bufferferLength)
 {
     MessageHeader hdr;
     hdr.wrap(reinterpret_cast<char*>(buffer), 0, 0, bufferferLength);
     return hdr;
 }
 
-}  // namespace
+} // namespace
 
 // sbe-unsequenced.xml
 
@@ -50,7 +51,7 @@ TEST(UnsequencedCodec, MessageHeaderIdentifiesSchemaAndVersion)
     usq::Heartbeat hb;
     hb.wrapAndApplyHeader(reinterpret_cast<char*>(buffer.data()), 0, buffer.size());
     hb.header().sourceId(1).sessionId(2);
-    hb.putSender(std::string_view{"CLIENT"}).putTarget(std::string_view{"PHIXERON"}).seqNum(1).sendingTimeMs(0);
+    hb.putSender(std::string_view{ "CLIENT" }).putTarget(std::string_view{ "PHIXERON" }).seqNum(1).sendingTimeMs(0);
     hb.testReqID()[0] = '\0';
 
     const auto hdr = decodeHeader<usq::MessageHeader>(buffer.data(), buffer.size());
@@ -66,8 +67,8 @@ TEST(UnsequencedCodec, LogonRoundTripsHeaderAndXmlData)
     usq::Logon enc;
     enc.wrapAndApplyHeader(reinterpret_cast<char*>(buffer.data()), 0, buffer.size());
     enc.header().sourceId(42).sessionId(7);
-    enc.putSender(std::string_view{"CLIENT"})
-        .putTarget(std::string_view{"PHIXERON"})
+    enc.putSender(std::string_view{ "CLIENT" })
+        .putTarget(std::string_view{ "PHIXERON" })
         .seqNum(1)
         .sendingTimeMs(1234567890123LL)
         .encryptMethod(usq::EncryptMethod::Value::None)
@@ -89,7 +90,7 @@ TEST(UnsequencedCodec, LogonRoundTripsHeaderAndXmlData)
     EXPECT_EQ(1234567890123LL, dec.sendingTimeMs());
     EXPECT_EQ(usq::EncryptMethod::Value::None, dec.encryptMethod());
     EXPECT_EQ(30000u, dec.heartbeatInterval());
-    EXPECT_EQ(6, dec.defaultApplVerID());  // FIXT.1.1 DefaultApplVerID (tag 1137)
+    EXPECT_EQ(6, dec.defaultApplVerID()); // FIXT.1.1 DefaultApplVerID (tag 1137)
     EXPECT_EQ("<FIXML/>", dec.getXmlDataAsString());
 }
 
@@ -99,7 +100,7 @@ TEST(UnsequencedCodec, NewOrderSingleRoundTripsAllFieldsIncludingOptionals)
     usq::NewOrderSingle enc;
     enc.wrapAndApplyHeader(reinterpret_cast<char*>(buffer.data()), 0, buffer.size());
     enc.header().sourceId(11).sessionId(22);
-    enc.putSender(std::string_view{"CLIENT"}).putTarget(std::string_view{"PHIXERON"}).seqNum(3).sendingTimeMs(1000);
+    enc.putSender(std::string_view{ "CLIENT" }).putTarget(std::string_view{ "PHIXERON" }).seqNum(3).sendingTimeMs(1000);
     enc.putAccount("ACC1");
     enc.putClOrdID("ORD-1");
     enc.handlInst(usq::HandlInst::Value::AutoPrivate);
@@ -143,7 +144,7 @@ TEST(UnsequencedCodec, NewOrderSingleRoundTripsWithOptionalFieldsAbsent)
     usq::NewOrderSingle enc;
     enc.wrapAndApplyHeader(reinterpret_cast<char*>(buffer.data()), 0, buffer.size());
     enc.header().sourceId(1).sessionId(1);
-    enc.putSender(std::string_view{"CLIENT"}).putTarget(std::string_view{"PHIXERON"}).seqNum(1).sendingTimeMs(1000);
+    enc.putSender(std::string_view{ "CLIENT" }).putTarget(std::string_view{ "PHIXERON" }).seqNum(1).sendingTimeMs(1000);
     enc.putAccount(std::string_view{});
     enc.putClOrdID("ORD-2");
     enc.handlInst(usq::HandlInst::Value::Manual);
@@ -175,7 +176,7 @@ TEST(UnsequencedCodec, ExecutionReportRoundTripsOptionalFieldsPresent)
     usq::ExecutionReport enc;
     enc.wrapAndApplyHeader(reinterpret_cast<char*>(buffer.data()), 0, buffer.size());
     enc.header().sourceId(5).sessionId(6);
-    enc.putSender(std::string_view{"CLIENT"}).putTarget(std::string_view{"PHIXERON"}).seqNum(9).sendingTimeMs(1000);
+    enc.putSender(std::string_view{ "CLIENT" }).putTarget(std::string_view{ "PHIXERON" }).seqNum(9).sendingTimeMs(1000);
     enc.putOrderID("ORD-3").putClOrdID("ORD-3").putExecID("EXEC-1");
     enc.execType(usq::ExecType::Value::Trade);
     enc.ordStatus(usq::OrdStatus::Value::PartiallyFilled);
@@ -256,7 +257,7 @@ TEST(SequencedCodec, MessageHeaderIdentifiesSchemaAndVersion)
     seq::Heartbeat hb;
     hb.wrapAndApplyHeader(reinterpret_cast<char*>(buffer.data()), 0, buffer.size());
     hb.header().sourceId(1).sessionId(2).globalSeqNo(3).timestamp(4);
-    hb.putSender(std::string_view{"CLIENT"}).putTarget(std::string_view{"PHIXERON"}).seqNum(1).sendingTimeMs(0);
+    hb.putSender(std::string_view{ "CLIENT" }).putTarget(std::string_view{ "PHIXERON" }).seqNum(1).sendingTimeMs(0);
     hb.testReqID()[0] = '\0';
 
     const auto hdr = decodeHeader<seq::MessageHeader>(buffer.data(), buffer.size());
@@ -272,7 +273,7 @@ TEST(SequencedCodec, HeaderCarriesSourceSessionGlobalSeqNoAndTimestamp)
     seq::Heartbeat enc;
     enc.wrapAndApplyHeader(reinterpret_cast<char*>(buffer.data()), 0, buffer.size());
     enc.header().sourceId(10).sessionId(20).globalSeqNo(123456789LL).timestamp(1700000000000LL);
-    enc.putSender(std::string_view{"CLIENT"}).putTarget(std::string_view{"PHIXERON"}).seqNum(1).sendingTimeMs(0);
+    enc.putSender(std::string_view{ "CLIENT" }).putTarget(std::string_view{ "PHIXERON" }).seqNum(1).sendingTimeMs(0);
     enc.testReqID()[0] = '\0';
 
     seq::Heartbeat dec;
@@ -290,7 +291,7 @@ TEST(SequencedCodec, ExecutionReportRoundTripsAllFieldsWithSequencingStamp)
     seq::ExecutionReport enc;
     enc.wrapAndApplyHeader(reinterpret_cast<char*>(buffer.data()), 0, buffer.size());
     enc.header().sourceId(5).sessionId(6).globalSeqNo(1000).timestamp(2000);
-    enc.putSender(std::string_view{"CLIENT"}).putTarget(std::string_view{"PHIXERON"}).seqNum(9).sendingTimeMs(1000);
+    enc.putSender(std::string_view{ "CLIENT" }).putTarget(std::string_view{ "PHIXERON" }).seqNum(9).sendingTimeMs(1000);
     enc.putOrderID("ORD-3").putClOrdID("ORD-3").putExecID("EXEC-1");
     enc.execType(seq::ExecType::Value::New);
     enc.ordStatus(seq::OrdStatus::Value::New);

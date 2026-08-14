@@ -101,10 +101,10 @@ public final class SequencerNode {
     public static void main(final String[] args) {
         final int memberId = Integer.getInteger(PROP_MEMBER_ID, 0);
         final int nodeCount = Integer.getInteger(PROP_NODE_COUNT, 1);
-        final String baseDir = System.getProperty(PROP_BASE_DIR, System.getProperty("java.io.tmpdir") +
-            "/phixeron-seq");
-        final String aeronDir = System.getProperty(PROP_AERON_DIR, System.getProperty("java.io.tmpdir") +
-            "/phixeron-seq-aeron-" + memberId);
+        final String baseDir =
+            System.getProperty(PROP_BASE_DIR, System.getProperty("java.io.tmpdir") + "/phixeron-seq");
+        final String aeronDir = System.getProperty(
+            PROP_AERON_DIR, System.getProperty("java.io.tmpdir") + "/phixeron-seq-aeron-" + memberId);
         final int portBase = PORT_BASE + memberId * 10;
         final int archivePort = portBase + 1;
         final int ingressPort = portBase + 2;
@@ -134,17 +134,18 @@ public final class SequencerNode {
                                                          .controlResponseStreamId(ARCHIVE_CONTROL_RESPONSE_STREAM_ID)
                                                          .aeronDirectoryName(aeronDir);
 
-        final Archive.Context archiveCtx = new Archive.Context()
-            .aeronDirectoryName(aeronDir)
-            .archiveDir(archiveDir)
-            .controlChannel(udp(DEFAULT_HOST, archivePort)) // UDP: remote clients reach the archive here
-            .controlStreamId(100) // must match C++ clients
-            .localControlChannel("aeron:ipc")
-            .localControlStreamId(100)
-            .replicationChannel(udp(DEFAULT_HOST, 0))
-            .recordingEventsEnabled(false)
-            .deleteArchiveOnStart(false)
-            .idleStrategySupplier(idleStrategySupplier);
+        final Archive.Context archiveCtx =
+            new Archive.Context()
+                .aeronDirectoryName(aeronDir)
+                .archiveDir(archiveDir)
+                .controlChannel(udp(DEFAULT_HOST, archivePort)) // UDP: remote clients reach the archive here
+                .controlStreamId(100) // must match C++ clients
+                .localControlChannel("aeron:ipc")
+                .localControlStreamId(100)
+                .replicationChannel(udp(DEFAULT_HOST, 0))
+                .recordingEventsEnabled(false)
+                .deleteArchiveOnStart(false)
+                .idleStrategySupplier(idleStrategySupplier);
 
         // Wire the ShutdownSignalBarrier to the consensus module's termination hook: a
         // ClusterTool/ClusterControl ABORT otherwise terminates the consensus and service agents
@@ -153,58 +154,60 @@ public final class SequencerNode {
         // try-with-resources teardown (Archive.close flushes the catalog), which is what keeps the tap
         // recording replayable/analysable after an orderly stop.
         final ShutdownSignalBarrier barrier = new ShutdownSignalBarrier();
-        final ConsensusModule.Context consensusCtx = new ConsensusModule.Context()
-            .aeronDirectoryName(aeronDir)
-            .clusterMemberId(memberId)
-            .clusterMembers(clusterMembers)
-            .clusterDir(clusterDir)
-            .ingressChannel(udp(DEFAULT_HOST, ingressPort))
-            .replicationChannel(udp(DEFAULT_HOST, 0))
-            .archiveContext(localArchiveCtx.clone())
-            .isIpcIngressAllowed(true) // Lets a co-located client share aeron directory
-            .terminationHook(barrier::signalAll)
-            .deleteDirOnStart(false)
-            .leaderHeartbeatIntervalNs(TimeUnit.MILLISECONDS.toNanos(20))
-            .leaderHeartbeatTimeoutNs(TimeUnit.MILLISECONDS.toNanos(200))
-            .electionTimeoutNs(TimeUnit.MILLISECONDS.toNanos(200))
-            .electionStatusIntervalNs(TimeUnit.MILLISECONDS.toNanos(20))
-            .startupCanvassTimeoutNs(TimeUnit.SECONDS.toNanos(5))
-            .sessionTimeoutNs(TimeUnit.SECONDS.toNanos(1))
-            .idleStrategySupplier(idleStrategySupplier)
-            .errorHandler(t -> Logger.error(Logger.Component.ConsensusModule, Logger.EventCode.ConsensusModuleError,
-                    memberId, "%s", t.getMessage()));
+        final ConsensusModule.Context consensusCtx =
+            new ConsensusModule.Context()
+                .aeronDirectoryName(aeronDir)
+                .clusterMemberId(memberId)
+                .clusterMembers(clusterMembers)
+                .clusterDir(clusterDir)
+                .ingressChannel(udp(DEFAULT_HOST, ingressPort))
+                .replicationChannel(udp(DEFAULT_HOST, 0))
+                .archiveContext(localArchiveCtx.clone())
+                .isIpcIngressAllowed(true) // Lets a co-located client share aeron directory
+                .terminationHook(barrier::signalAll)
+                .deleteDirOnStart(false)
+                .leaderHeartbeatIntervalNs(TimeUnit.MILLISECONDS.toNanos(20))
+                .leaderHeartbeatTimeoutNs(TimeUnit.MILLISECONDS.toNanos(200))
+                .electionTimeoutNs(TimeUnit.MILLISECONDS.toNanos(200))
+                .electionStatusIntervalNs(TimeUnit.MILLISECONDS.toNanos(20))
+                .startupCanvassTimeoutNs(TimeUnit.SECONDS.toNanos(5))
+                .sessionTimeoutNs(TimeUnit.SECONDS.toNanos(1))
+                .idleStrategySupplier(idleStrategySupplier)
+                .errorHandler(t
+                              -> Logger.error(Logger.Component.ConsensusModule, Logger.EventCode.ConsensusModuleError,
+                                              memberId, "%s", t.getMessage()));
 
         // A node that can no longer record its own tap must not keep sequencing history it cannot keep
         // (SequencerService.fatalTapFailure): take the same barrier path an operator shutdown takes, so the
         // Archive still gets its clean close, and remember to exit non-zero afterwards so process
         // supervision restarts the node — the restart's full-log replay is what rebuilds its recording.
         final AtomicBoolean tapFatal = new AtomicBoolean();
-        final SequencerService service = new SequencerService(() ->
-        {
+        final SequencerService service = new SequencerService(() -> {
             tapFatal.set(true);
             barrier.signalAll();
         });
 
-        final ClusteredServiceContainer.Context serviceCtx = new ClusteredServiceContainer.Context()
-            .aeronDirectoryName(aeronDir)
-            .archiveContext(localArchiveCtx.clone())
-            .clusterDir(clusterDir)
-            .clusteredService(service)
-            // The container's own hook defaults to a no-op, so a service agent that terminates by itself
-            // (AgentTerminationException) would otherwise leave this process running headless: media driver
-            // and consensus module up, no service behind them.
-            .terminationHook(barrier::signalAll)
-            .idleStrategySupplier(idleStrategySupplier)
-            .errorHandler(t -> Logger.error(Logger.Component.SequencerService, Logger.EventCode.ServiceError, memberId,
-                    "%s", t.getMessage()));
+        final ClusteredServiceContainer.Context serviceCtx =
+            new ClusteredServiceContainer.Context()
+                .aeronDirectoryName(aeronDir)
+                .archiveContext(localArchiveCtx.clone())
+                .clusterDir(clusterDir)
+                .clusteredService(service)
+                // The container's own hook defaults to a no-op, so a service agent that terminates by itself
+                // (AgentTerminationException) would otherwise leave this process running headless: media driver
+                // and consensus module up, no service behind them.
+                .terminationHook(barrier::signalAll)
+                .idleStrategySupplier(idleStrategySupplier)
+                .errorHandler(t
+                              -> Logger.error(Logger.Component.SequencerService, Logger.EventCode.ServiceError,
+                                              memberId, "%s", t.getMessage()));
 
         Logger.info(Logger.Component.SequencerNode, memberId,
-                "Starting member %d | ingress=%s | archive=%s | baseDir=%s | idle=%s",
-                memberId, udp(DEFAULT_HOST, ingressPort), udp(DEFAULT_HOST, archivePort), baseDir,
-                System.getProperty(PROP_IDLE_STRATEGY, "backoff"));
+                    "Starting member %d | ingress=%s | archive=%s | baseDir=%s | idle=%s", memberId,
+                    udp(DEFAULT_HOST, ingressPort), udp(DEFAULT_HOST, archivePort), baseDir,
+                    System.getProperty(PROP_IDLE_STRATEGY, "backoff"));
 
-        try (barrier;
-             ClusteredMediaDriver cmd = ClusteredMediaDriver.launch(driverCtx, archiveCtx, consensusCtx);
+        try (barrier; ClusteredMediaDriver cmd = ClusteredMediaDriver.launch(driverCtx, archiveCtx, consensusCtx);
              ClusteredServiceContainer container = ClusteredServiceContainer.launch(serviceCtx)) {
             Logger.info(Logger.Component.SequencerNode, memberId, "Running — Ctrl-C to stop");
             barrier.await();
@@ -227,8 +230,9 @@ public final class SequencerNode {
             case "busyspin" -> BusySpinIdleStrategy::new;
             case "yielding" -> YieldingIdleStrategy::new;
             case "backoff" -> BackoffIdleStrategy::new;
-            default -> throw new IllegalArgumentException(
-                "Unknown " + PROP_IDLE_STRATEGY + "=" + name + " (expected 'backoff', 'yielding', or 'busyspin')");
+            default ->
+                throw new IllegalArgumentException("Unknown " + PROP_IDLE_STRATEGY + "=" + name +
+                                                   " (expected 'backoff', 'yielding', or 'busyspin')");
         };
     }
 
@@ -256,12 +260,28 @@ public final class SequencerNode {
         final StringBuilder members = new StringBuilder();
         for (int id = 0; id < nodeCount; id++) {
             final int base = PORT_BASE + id * 10;
-            members.append(id).append(',')
-                   .append(DEFAULT_HOST).append(':').append(base + 2).append(',')
-                   .append(DEFAULT_HOST).append(':').append(base + 3).append(',')
-                   .append(DEFAULT_HOST).append(':').append(base + 4).append(',')
-                   .append(DEFAULT_HOST).append(':').append(base + 5).append(',')
-                   .append(DEFAULT_HOST).append(':').append(base + 1).append('|');
+            members.append(id)
+                .append(',')
+                .append(DEFAULT_HOST)
+                .append(':')
+                .append(base + 2)
+                .append(',')
+                .append(DEFAULT_HOST)
+                .append(':')
+                .append(base + 3)
+                .append(',')
+                .append(DEFAULT_HOST)
+                .append(':')
+                .append(base + 4)
+                .append(',')
+                .append(DEFAULT_HOST)
+                .append(':')
+                .append(base + 5)
+                .append(',')
+                .append(DEFAULT_HOST)
+                .append(':')
+                .append(base + 1)
+                .append('|');
         }
         return members.toString();
     }

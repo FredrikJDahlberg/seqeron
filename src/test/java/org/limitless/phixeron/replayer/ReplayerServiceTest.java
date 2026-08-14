@@ -43,12 +43,11 @@ import org.limitless.phixeron.util.Logger;
 class ReplayerServiceTest {
     private static final int MEMBER_ID = 0;
     private static final int CLIENT = 7;
-    private static final int RESUME = -1;  // ReplayRequest.segmentIndex < 0 — resume, not a walk step
+    private static final int RESUME = -1; // ReplayRequest.segmentIndex < 0 — resume, not a walk step
 
     /** One decoded control reply. {@code recordingId}/{@code catchUpPosition} are unset on non-Replaying replies. */
     private record Reply(int templateId, int clientId, long requestId, long replaySessionId, long catchUpPosition,
-                         long recordingId) {
-    }
+                         long recordingId) { }
 
     private final List<Logger.LoggerEvent> events = new ArrayList<>();
     private final AtomicInteger fatalCount = new AtomicInteger();
@@ -62,7 +61,8 @@ class ReplayerServiceTest {
     void setUp() {
         Logger.install(events::add);
         fakeReplayer = new FakeReplayer();
-        replayerService = new ReplayerService(fakeReplayer, MEMBER_ID, NoOpIdleStrategy.INSTANCE, fatalCount::incrementAndGet);
+        replayerService =
+            new ReplayerService(fakeReplayer, MEMBER_ID, NoOpIdleStrategy.INSTANCE, fatalCount::incrementAndGet);
     }
 
     @AfterEach
@@ -77,9 +77,9 @@ class ReplayerServiceTest {
         fakeReplayer.addRecording(6, 0, true, 4096);
         fakeReplayer.enqueueSelfCheckFrame(sequencedFrame(1));
 
-        replayerService.poll();  // opens the self-check
+        replayerService.poll(); // opens the self-check
         assertEquals(0, fakeReplayer.counter(PhixeronCounters.REPLAYER_READY_TYPE_ID));
-        replayerService.poll();  // reads its first fragment
+        replayerService.poll(); // reads its first fragment
 
         assertEquals(1, fakeReplayer.counter(PhixeronCounters.REPLAYER_READY_TYPE_ID));
         assertEquals(0, fakeReplayer.counter(PhixeronCounters.REPLAYER_INTEGRITY_FAILURE_TYPE_ID));
@@ -122,10 +122,11 @@ class ReplayerServiceTest {
 
         // Both spans, not just the oldest: with no snapshots a healthy recording begins at globalSeqNo 1
         // however late it was created, so the newest is as much a witness to complete history as the oldest.
-        final List<Long> checked = fakeReplayer.startedReplays().stream()
-            .filter(r -> r.streamId() == ReplayerService.SELF_CHECK_STREAM_ID)
-            .map(FakeReplayer.StartedReplay::recordingId)
-            .toList();
+        final List<Long> checked = fakeReplayer.startedReplays()
+                                       .stream()
+                                       .filter(r -> r.streamId() == ReplayerService.SELF_CHECK_STREAM_ID)
+                                       .map(FakeReplayer.StartedReplay::recordingId)
+                                       .toList();
         assertEquals(List.of(5L, 6L), checked);
     }
 
@@ -134,11 +135,11 @@ class ReplayerServiceTest {
         fakeReplayer.addRecording(5, 0, false, 4096);
         fakeReplayer.addRecording(6, 0, true, 4096);
 
-        replayerService.poll();                                  // opens the check on recording 5
+        replayerService.poll(); // opens the check on recording 5
         fakeReplayer.enqueueSelfCheckFrame(sequencedFrame(1));
-        replayerService.poll();                                  // recording 5 proves out
-        replayerService.poll();                                  // opens the check on recording 6
-        fakeReplayer.enqueueSelfCheckFrame(sequencedFrame(4001));  // resumed mid-history: a hole at the join
+        replayerService.poll(); // recording 5 proves out
+        replayerService.poll(); // opens the check on recording 6
+        fakeReplayer.enqueueSelfCheckFrame(sequencedFrame(4001)); // resumed mid-history: a hole at the join
         replayerService.poll();
 
         // The hole itself is invisible from here — only a walking app ever meets it, and then only as a
@@ -151,7 +152,7 @@ class ReplayerServiceTest {
 
     @Test
     void aStoppedRecordingWithNothingInItIsSkippedRatherThanHeldOn() {
-        fakeReplayer.addRecording(5, 0, false, 0);  // created by an unclean restart, never published to
+        fakeReplayer.addRecording(5, 0, false, 0); // created by an unclean restart, never published to
         fakeReplayer.addRecording(6, 0, true, 4096);
 
         makeReady();
@@ -163,7 +164,7 @@ class ReplayerServiceTest {
 
     @Test
     void aLiveRecordingWithNothingInItYetHoldsReadinessRatherThanPassing() {
-        fakeReplayer.addRecording(6, 0, true, 0);  // recording armed, sequencer has published nothing yet
+        fakeReplayer.addRecording(6, 0, true, 0); // recording armed, sequencer has published nothing yet
 
         for (int cycle = 0; cycle < 5; cycle++) {
             replayerService.poll();
@@ -178,11 +179,11 @@ class ReplayerServiceTest {
 
     @Test
     void aSelfCheckThatDeliversNothingInTimeIsStartedOverRatherThanFailed() {
-        fakeReplayer.addRecording(6, 0, true, 4096);  // no self-check frame queued
+        fakeReplayer.addRecording(6, 0, true, 4096); // no self-check frame queued
 
         replayerService.poll();
         assertEquals(1, fakeReplayer.selfCheckStreamsOpened());
-        fakeReplayer.advanceMillis(3_000);  // past SELF_CHECK_TIMEOUT_NS
+        fakeReplayer.advanceMillis(3_000); // past SELF_CHECK_TIMEOUT_NS
         replayerService.poll();
         replayerService.poll();
 
@@ -206,7 +207,7 @@ class ReplayerServiceTest {
     void aRequestArrivingInTheCycleReadinessFlipsIsHeldUntilTheAppsNextResend() {
         fakeReplayer.addRecording(6, 0, true, 4096);
         fakeReplayer.enqueueSelfCheckFrame(sequencedFrame(1));
-        replayerService.poll();  // opens the self-check; readiness flips on the next cycle
+        replayerService.poll(); // opens the self-check; readiness flips on the next cycle
 
         // poll() answers requests BEFORE running the integrity check, because a not-ready Replayer still
         // owes every request an answer and answering costs nothing, whereas the check makes archive
@@ -234,7 +235,7 @@ class ReplayerServiceTest {
 
         final FakeReplayer.StartedReplay last = lastClientReplay();
         assertEquals(7, last.recordingId());
-        assertEquals(4096, last.position());  // the recording's own startPosition, not 0
+        assertEquals(4096, last.position()); // the recording's own startPosition, not 0
         assertEquals(9000 - 4096, last.length());
     }
 
@@ -251,7 +252,7 @@ class ReplayerServiceTest {
 
     @Test
     void anEmptySegmentIsRefusedByNameSoTheWalkSkipsItRatherThanEnding() {
-        threeSegmentChain();  // segment 1 (recording 6) was created but never written to
+        threeSegmentChain(); // segment 1 (recording 6) was created but never written to
         makeReady();
 
         final Reply empty = request(CLIENT, 1, 1, 0);
@@ -268,7 +269,7 @@ class ReplayerServiceTest {
         fakeReplayer.addRecording(5, 0, false, 1000);
         fakeReplayer.addRecording(6, 0, true, 4096);
         makeReady();
-        fakeReplayer.hideTip(6);  // RecordingPos gone, stopPosition not written yet
+        fakeReplayer.hideTip(6); // RecordingPos gone, stopPosition not written yet
 
         final Reply reply = request(CLIENT, 1, 1, 0);
 
@@ -280,7 +281,7 @@ class ReplayerServiceTest {
 
     @Test
     void moreThanOneActiveRecordingIsReportedOnceAndTheNewestIsServed() {
-        fakeReplayer.addRecording(5, 0, true, 1000);  // left unstopped by an unclean shutdown
+        fakeReplayer.addRecording(5, 0, true, 1000); // left unstopped by an unclean shutdown
         fakeReplayer.addRecording(6, 0, true, 4096);
         makeReady();
 
@@ -294,16 +295,16 @@ class ReplayerServiceTest {
 
     @Test
     void aSecondStaleActiveRecordingIsReportedAgainAfterTheFirstWasRepaired() {
-        fakeReplayer.addRecording(5, 0, true, 1000);  // left unstopped by an unclean shutdown
+        fakeReplayer.addRecording(5, 0, true, 1000); // left unstopped by an unclean shutdown
         fakeReplayer.addRecording(6, 0, true, 4096);
         makeReady();
         request(CLIENT, 1, 0, 0);
 
-        fakeReplayer.stopRecording(5);  // operator repairs it
+        fakeReplayer.stopRecording(5); // operator repairs it
         request(CLIENT, 2, 0, 0);
         assertEquals(1, logCount(Logger.EventCode.StaleActiveRecording), "the repair is not a new episode");
 
-        fakeReplayer.addRecording(7, 4096, true, 5000);  // a later unclean shutdown leaves 6 unstopped
+        fakeReplayer.addRecording(7, 4096, true, 5000); // a later unclean shutdown leaves 6 unstopped
         request(CLIENT, 3, 0, 0);
 
         // This anomaly has no counter, so a latch that never re-arms makes every later episode silent.
@@ -355,11 +356,11 @@ class ReplayerServiceTest {
         fakeReplayer.addRecording(6, 0, true, 4096);
         makeReady();
         fakeReplayer.failReplays(new IllegalStateException("archive gone"));
-        request(CLIENT, 1, 0, 0);  // enters STALLED
-        request(CLIENT, 2, 0, 0);  // the first request after that is itself the paced probe
+        request(CLIENT, 1, 0, 0); // enters STALLED
+        request(CLIENT, 2, 0, 0); // the first request after that is itself the paced probe
         final int probes = fakeReplayer.replayAttempts();
 
-        fakeReplayer.advanceMillis(100);  // inside STALL_RETRY_INTERVAL_MS
+        fakeReplayer.advanceMillis(100); // inside STALL_RETRY_INTERVAL_MS
         final Reply reply = request(CLIENT, 3, 0, 0);
 
         assertEquals(ReplayPendingDecoder.TEMPLATE_ID, reply.templateId());
@@ -374,7 +375,7 @@ class ReplayerServiceTest {
         request(CLIENT, 1, 0, 0);
 
         fakeReplayer.serveReplaysAgain();
-        fakeReplayer.advanceMillis(1_500);  // past STALL_RETRY_INTERVAL_MS
+        fakeReplayer.advanceMillis(1_500); // past STALL_RETRY_INTERVAL_MS
         final Reply reply = request(CLIENT, 2, 0, 0);
 
         assertEquals(ReplayingDecoder.TEMPLATE_ID, reply.templateId());
@@ -423,7 +424,7 @@ class ReplayerServiceTest {
 
         fakeReplayer.serveReplaysAgain();
         fakeReplayer.advanceMillis(1_500);
-        replayerService.poll();  // no request arrives, ever again
+        replayerService.poll(); // no request arrives, ever again
 
         assertEquals(0, fakeReplayer.counter(PhixeronCounters.REPLAYER_STALLED_TYPE_ID));
         assertTrue(noClientReplayStarted(), "the probe is the node's own, not a replay served to an app");
@@ -500,13 +501,13 @@ class ReplayerServiceTest {
         fakeReplayer.advanceMillis(45_000);
         fakeReplayer.enqueueRequest(replayHeartbeat(CLIENT));
         replayerService.poll();
-        fakeReplayer.advanceMillis(45_000);  // 90s since the replay started, 45s since the heartbeat
+        fakeReplayer.advanceMillis(45_000); // 90s since the replay started, 45s since the heartbeat
         replayerService.poll();
 
         assertEquals(1, fakeReplayer.counter(PhixeronCounters.REPLAYER_ACTIVE_SLOTS_TYPE_ID));
         assertEquals(0, fakeReplayer.counter(PhixeronCounters.REPLAYER_IDLE_TTL_RECLAIMED_COUNT_TYPE_ID));
 
-        fakeReplayer.advanceMillis(61_000);  // past REPLAY_SLOT_TTL_MS with no further sign of life
+        fakeReplayer.advanceMillis(61_000); // past REPLAY_SLOT_TTL_MS with no further sign of life
         replayerService.poll();
 
         assertEquals(0, fakeReplayer.counter(PhixeronCounters.REPLAYER_ACTIVE_SLOTS_TYPE_ID));
@@ -602,7 +603,7 @@ class ReplayerServiceTest {
         makeReady();
 
         request(CLIENT, 9, 0, 0);
-        request(CLIENT, 8, 0, 0);  // a second app's own, lower, requestId sequence
+        request(CLIENT, 8, 0, 0); // a second app's own, lower, requestId sequence
         request(CLIENT, 7, 0, 0);
         request(CLIENT, 6, 0, 0);
 
@@ -639,7 +640,8 @@ class ReplayerServiceTest {
             }
             replayerService.poll();
         }
-        assertEquals(1, fakeReplayer.counter(PhixeronCounters.REPLAYER_READY_TYPE_ID), "fixture failed to make the node ready");
+        assertEquals(1, fakeReplayer.counter(PhixeronCounters.REPLAYER_READY_TYPE_ID),
+                     "fixture failed to make the node ready");
     }
 
     /** Delivers one ReplayRequest and returns the reply it drew. */
@@ -674,9 +676,11 @@ class ReplayerServiceTest {
 
     /** The most recent replay served to an app, ignoring the startup self-check's own. */
     private FakeReplayer.StartedReplay lastClientReplay() {
-        final List<FakeReplayer.StartedReplay> clientReplays = fakeReplayer.startedReplays().stream()
-            .filter(replay -> replay.streamId() == ReplayerService.REPLAY_STREAM_ID)
-            .toList();
+        final List<FakeReplayer.StartedReplay> clientReplays =
+            fakeReplayer.startedReplays()
+                .stream()
+                .filter(replay -> replay.streamId() == ReplayerService.REPLAY_STREAM_ID)
+                .toList();
         assertFalse(clientReplays.isEmpty(), "no replay was started for an app");
         return clientReplays.getLast();
     }

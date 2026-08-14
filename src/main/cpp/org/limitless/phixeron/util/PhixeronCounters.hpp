@@ -33,9 +33,9 @@ inline constexpr std::size_t APP_KEY_LENGTH = 8;
 // Allocates an app counter keyed on {memberId, clientId}. Returns the registration id to resolve with
 // Aeron::findCounter — the add is async, so the counter is not usable on the calling line (callers
 // resolve it on a later duty cycle, exactly as they do publications and subscriptions).
-inline std::int64_t addAppCounter(const std::shared_ptr<aeron::Aeron>& aeron, const std::int32_t typeId,
-                                  const std::string& label, const std::int32_t memberId,
-                                  const std::int32_t clientId)
+inline std::int64_t
+addAppCounter(const std::shared_ptr<aeron::Aeron>& aeron, const std::int32_t typeId, const std::string& label,
+              const std::int32_t memberId, const std::int32_t clientId)
 {
     std::uint8_t key[APP_KEY_LENGTH] = {};
     std::memcpy(key + KEY_MEMBER_ID_OFFSET, &memberId, sizeof(memberId));
@@ -43,4 +43,4 @@ inline std::int64_t addAppCounter(const std::shared_ptr<aeron::Aeron>& aeron, co
     return aeron->addCounter(typeId, key, APP_KEY_LENGTH, label);
 }
 
-}  // namespace org::limitless::phixeron::util
+} // namespace org::limitless::phixeron::util

@@ -9,25 +9,12 @@ package org.limitless.phixeron.util;
  * swapping one in later changes this file, not the call sites.
  */
 public final class Logger {
-
     private Logger() {
     }
 
-    public enum Component {
-        Sequencer,
-        SequencerNode,
-        SequencerService,
-        ConsensusModule,
-        ReplayerNode,
-        ReplayerService
-    }
+    public enum Component { Sequencer, SequencerNode, SequencerService, ConsensusModule, ReplayerNode, ReplayerService }
 
-    public enum Severity {
-        Info,
-        Warn,
-        Error,
-        Fault
-    }
+    public enum Severity { Info, Warn, Error, Fault }
 
     public enum EventCode {
         // Generic: routine status lines with no anomaly of their own to identify.
@@ -48,9 +35,8 @@ public final class Logger {
         ShutdownTimeout
     }
 
-    public record LoggerEvent(Component component, Severity severity, EventCode code, Integer memberId,
-                              String message) {
-    }
+    public record
+        LoggerEvent(Component component, Severity severity, EventCode code, Integer memberId, String message) { }
 
     public interface LoggerSink {
         void record(LoggerEvent event);
@@ -61,7 +47,7 @@ public final class Logger {
         @Override
         public void record(final LoggerEvent event) {
             final String tag = event.memberId() == null ? "[" + event.component() + "]"
-                : "[" + event.component() + "/" + event.memberId() + "]";
+                                                        : "[" + event.component() + "/" + event.memberId() + "]";
             System.err.println(tag + " " + event.message());
         }
     }
@@ -79,7 +65,8 @@ public final class Logger {
         installedSink = DEFAULT_SINK;
     }
 
-    public static void info(final Component component, final Integer memberId, final String format, final Object... args) {
+    public static void info(final Component component, final Integer memberId, final String format,
+                            final Object... args) {
         log(component, Severity.Info, EventCode.Info, memberId, format, args);
     }
 
@@ -94,7 +81,7 @@ public final class Logger {
     }
 
     public static void log(final Component component, final Severity severity, final EventCode code,
-                            final String format, final Object... args) {
+                           final String format, final Object... args) {
         log(component, severity, code, null, format, args);
     }
 

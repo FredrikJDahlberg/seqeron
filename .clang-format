@@ -46,24 +46,21 @@ Language: Java
 BasedOnStyle: WebKit
 
 IndentWidth: 4
-ContinuationIndentWidth: 4
-ColumnLimit: 120
+TabWidth: 8
 UseTab: Never
+ColumnLimit: 120
 
-BreakBeforeBraces: Allman
-
+BreakBeforeBraces: Attach
 AllowShortBlocksOnASingleLine: Never
 AllowShortFunctionsOnASingleLine: None
-AllowShortLoopsOnASingleLine: false
 AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
 
-KeepEmptyLinesAtTheStartOfBlocks: false
-MaxEmptyLinesToKeep: 1
-
-BinPackArguments: true
-BinPackParameters: true
 AlignAfterOpenBracket: true
+ContinuationIndentWidth: 4
+BreakBeforeBinaryOperators: None
+BreakBeforeTernaryOperators: true
 
+MaxEmptyLinesToKeep: 2
+KeepEmptyLinesAtTheStartOfBlocks: false
 SortIncludes: true
-BreakAfterAttributes: Never
-...

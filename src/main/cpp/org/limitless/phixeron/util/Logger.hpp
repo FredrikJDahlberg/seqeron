@@ -97,40 +97,54 @@ struct LoggerEvent
 
 class LoggerSink
 {
-   public:
+  public:
     virtual ~LoggerSink() = default;
     virtual void record(const LoggerEvent& event) = 0;
 };
 
 namespace diagnostic_detail {
 
-inline const char* componentName(const Component component)
+inline const char*
+componentName(const Component component)
 {
     switch (component)
     {
-        case Component::FixGateway: return "FixGateway";
-        case Component::OrderExecClient: return "OrderExecClient";
-        case Component::ReplayerStreamReceiver: return "ReplayerStreamReceiver";
-        case Component::BasicDataClient: return "BasicDataClient";
-        case Component::Cluster: return "Cluster";
-        case Component::Tcp: return "TCP";
-        case Component::FixSession: return "FixSession";
-        case Component::FixConnection: return "FixConnection";
-        case Component::Resend: return "Resend";
-        case Component::ClusterStreamClient: return "ClusterStreamClient";
-        case Component::Ingress: return "Ingress";
-        case Component::App: return "App";
-        case Component::TcpTransport: return "TcpTransport";
+        case Component::FixGateway:
+            return "FixGateway";
+        case Component::OrderExecClient:
+            return "OrderExecClient";
+        case Component::ReplayerStreamReceiver:
+            return "ReplayerStreamReceiver";
+        case Component::BasicDataClient:
+            return "BasicDataClient";
+        case Component::Cluster:
+            return "Cluster";
+        case Component::Tcp:
+            return "TCP";
+        case Component::FixSession:
+            return "FixSession";
+        case Component::FixConnection:
+            return "FixConnection";
+        case Component::Resend:
+            return "Resend";
+        case Component::ClusterStreamClient:
+            return "ClusterStreamClient";
+        case Component::Ingress:
+            return "Ingress";
+        case Component::App:
+            return "App";
+        case Component::TcpTransport:
+            return "TcpTransport";
     }
     return "Unknown";
 }
 
-}  // namespace diagnostic_detail
+} // namespace diagnostic_detail
 
 // Default sink: reproduces today's "[Component] message" stderr line.
 class StderrLoggerSink final : public LoggerSink
 {
-   public:
+  public:
     void record(const LoggerEvent& event) override
     {
         std::fprintf(stderr, "[%s] %.*s\n", diagnostic_detail::componentName(event.component),
@@ -140,13 +154,15 @@ class StderrLoggerSink final : public LoggerSink
 
 namespace Logger {
 
-inline StderrLoggerSink& defaultSink()
+inline StderrLoggerSink&
+defaultSink()
 {
     static StderrLoggerSink sink;
     return sink;
 }
 
-inline LoggerSink*& installedSink()
+inline LoggerSink*&
+installedSink()
 {
     static LoggerSink* sink = &defaultSink();
     return sink;
@@ -154,20 +170,22 @@ inline LoggerSink*& installedSink()
 
 // Installs the sink every subsequent log() call forwards to. Caller owns the sink's lifetime (e.g.
 // a test's stack-local RecordingDiagnosticSink) — reset() before it goes out of scope.
-inline void install(LoggerSink& sink)
+inline void
+install(LoggerSink& sink)
 {
     installedSink() = &sink;
 }
 
-inline void reset()
+inline void
+reset()
 {
     installedSink() = &defaultSink();
 }
 
-inline void vlog(const Component component, const Severity severity, const EventCode code,
-                 const char* format, va_list args)
+inline void
+vlog(const Component component, const Severity severity, const EventCode code, const char* format, va_list args)
 {
-    LoggerEvent event{.component = component, .severity = severity, .code = code};
+    LoggerEvent event{ .component = component, .severity = severity, .code = code };
     const int written = std::vsnprintf(event.text.data(), event.text.size(), format, args);
     int len = written > 0 ? written : 0;
     if (len > static_cast<int>(event.text.size()) - 1)
@@ -178,7 +196,8 @@ inline void vlog(const Component component, const Severity severity, const Event
     installedSink()->record(event);
 }
 
-inline void log(const Component component, const Severity severity, const EventCode code, const char* format, ...)
+inline void
+log(const Component component, const Severity severity, const EventCode code, const char* format, ...)
 {
     va_list args;
     va_start(args, format);
@@ -186,7 +205,8 @@ inline void log(const Component component, const Severity severity, const EventC
     va_end(args);
 }
 
-inline void info(const Component component, const EventCode code, const char* format, ...)
+inline void
+info(const Component component, const EventCode code, const char* format, ...)
 {
     va_list args;
     va_start(args, format);
@@ -194,7 +214,8 @@ inline void info(const Component component, const EventCode code, const char* fo
     va_end(args);
 }
 
-inline void info(const Component component, const char* format, ...)
+inline void
+info(const Component component, const char* format, ...)
 {
     va_list args;
     va_start(args, format);
@@ -202,7 +223,8 @@ inline void info(const Component component, const char* format, ...)
     va_end(args);
 }
 
-inline void warn(const Component component, const EventCode code, const char* format, ...)
+inline void
+warn(const Component component, const EventCode code, const char* format, ...)
 {
     va_list args;
     va_start(args, format);
@@ -210,7 +232,8 @@ inline void warn(const Component component, const EventCode code, const char* fo
     va_end(args);
 }
 
-inline void error(const Component component, const EventCode code, const char* format, ...)
+inline void
+error(const Component component, const EventCode code, const char* format, ...)
 {
     va_list args;
     va_start(args, format);
@@ -218,7 +241,8 @@ inline void error(const Component component, const EventCode code, const char* f
     va_end(args);
 }
 
-inline void fault(const Component component, const EventCode code, const char* format, ...)
+inline void
+fault(const Component component, const EventCode code, const char* format, ...)
 {
     va_list args;
     va_start(args, format);
@@ -226,6 +250,6 @@ inline void fault(const Component component, const EventCode code, const char* f
     va_end(args);
 }
 
-}  // namespace diagnostic_detail
+} // namespace diagnostic_detail
 
-}  // namespace org::limitless::phixeron::util
+} // namespace org::limitless::phixeron::util

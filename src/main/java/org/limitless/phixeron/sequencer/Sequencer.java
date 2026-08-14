@@ -81,7 +81,10 @@ public final class Sequencer {
      */
     public static final int NO_PROMOTION_TARGET = -1;
 
-    /** No gateway instance: {@link #promotionTarget} found no sibling, {@link #designatedPrimaryGatewayId} no rank-0 row. */
+    /**
+     * No gateway instance: {@link #promotionTarget} found no sibling, {@link #designatedPrimaryGatewayId} no rank-0
+     * row.
+     */
     private static final int NO_GATEWAY_ID = -1;
 
     /**
@@ -119,9 +122,9 @@ public final class Sequencer {
         // silently on the wire, so fail at class load instead.
         if (MessageHeaderDecoder.SCHEMA_VERSION != MessageHeaderEncoder.SCHEMA_VERSION) {
             throw new IllegalStateException(
-                "schema version mismatch: sbe-unsequenced.xml is at version " + MessageHeaderDecoder.SCHEMA_VERSION
-                + " and sbe-sequenced.xml at " + MessageHeaderEncoder.SCHEMA_VERSION
-                + "; the copy-through in sequenceMessage requires them to version together");
+                "schema version mismatch: sbe-unsequenced.xml is at version " + MessageHeaderDecoder.SCHEMA_VERSION +
+                " and sbe-sequenced.xml at " + MessageHeaderEncoder.SCHEMA_VERSION +
+                "; the copy-through in sequenceMessage requires them to version together");
         }
     }
 
@@ -144,7 +147,7 @@ public final class Sequencer {
 
     // Topology
     /** One Gateway row: an instance ({@code gatewayId}) of a logical gateway ({@code gatewaySourceId}). */
-    private record GatewayRow(int gatewayId, int gatewaySourceId, short preferenceRank) {}
+    private record GatewayRow(int gatewayId, int gatewaySourceId, short preferenceRank) { }
 
     /**
      * Every Gateway row seen, in log order, de-duplicated on {@code gatewayId} so a re-emitted load (a
@@ -244,7 +247,8 @@ public final class Sequencer {
     private boolean bootstrapActivationPending = false;
 
     /** Topology is derived from the sequenced Gateway rows (see {@link #gatewayRows}), not configured. */
-    public Sequencer() {}
+    public Sequencer() {
+    }
 
     /** The buffer every encode writes into, from offset 0. Valid up to the length just returned. */
     public MutableDirectBuffer buffer() {
@@ -286,10 +290,7 @@ public final class Sequencer {
      * @return length of the encoded frame in {@link #buffer()}, or {@link #NO_FRAME} if the ingress
      *     message was malformed and skipped
      */
-    public int sequenceMessage(final DirectBuffer buffer,
-                               final int offset,
-                               final int length,
-                               final long sessionId,
+    public int sequenceMessage(final DirectBuffer buffer, final int offset, final int length, final long sessionId,
                                final long timestamp) {
         if (length < MIN_INGRESS_LENGTH) {
             return reject("length " + length + " is below the " + MIN_INGRESS_LENGTH + "-byte minimum framing");
@@ -299,8 +300,8 @@ public final class Sequencer {
         final int templateId = ingressMsgHeaderDecoder.templateId();
         final int ingressBlockLen = ingressMsgHeaderDecoder.blockLength();
         if (ingressMsgHeaderDecoder.schemaId() != MessageHeaderDecoder.SCHEMA_ID) {
-            return reject("schemaId " + ingressMsgHeaderDecoder.schemaId() + " is not "
-                          + MessageHeaderDecoder.SCHEMA_ID);
+            return reject("schemaId " + ingressMsgHeaderDecoder.schemaId() + " is not " +
+                          MessageHeaderDecoder.SCHEMA_ID);
         }
         if (ingressBlockLen < HeaderDecoder.ENCODED_LENGTH ||
             MessageHeaderDecoder.ENCODED_LENGTH + ingressBlockLen > length) {
@@ -309,9 +310,9 @@ public final class Sequencer {
 
         final int egressBlockLen = HeaderEncoder.ENCODED_LENGTH + (ingressBlockLen - HeaderDecoder.ENCODED_LENGTH);
         if (egressBlockLen > MAX_BLOCK_LENGTH) {
-            return reject("blockLength " + ingressBlockLen + " leaves no room for the "
-                          + (HeaderEncoder.ENCODED_LENGTH - HeaderDecoder.ENCODED_LENGTH)
-                          + " bytes the sequenced header adds");
+            return reject("blockLength " + ingressBlockLen + " leaves no room for the " +
+                          (HeaderEncoder.ENCODED_LENGTH - HeaderDecoder.ENCODED_LENGTH) +
+                          " bytes the sequenced header adds");
         }
 
         final long globalSeq = ++globalSeqNo;
@@ -388,7 +389,7 @@ public final class Sequencer {
      */
     private int reject(final String reason) {
         Logger.error(Logger.Component.Sequencer, Logger.EventCode.MalformedIngressMessage, memberId,
-                "skipping malformed ingress message: %s (globalSeqNo stays %d)", reason, globalSeqNo);
+                     "skipping malformed ingress message: %s (globalSeqNo stays %d)", reason, globalSeqNo);
         return NO_FRAME;
     }
 
@@ -451,7 +452,7 @@ public final class Sequencer {
         }
         bootstrapActivationPending = false;
         if (designatedPrimaryGatewayId == NO_GATEWAY_ID) {
-            return NO_FRAME;  // no Gateway row designated a primary — nothing to activate (fail closed)
+            return NO_FRAME; // no Gateway row designated a primary — nothing to activate (fail closed)
         }
         return gatewayActive(designatedPrimaryGatewayId, timestamp);
     }
@@ -475,9 +476,9 @@ public final class Sequencer {
             // cluster now has no active instance of this logical gateway), unlike an ordinary NO_FRAME,
             // so it is worth its own log line rather than passing silently like a non-gateway session close.
             Logger.error(Logger.Component.Sequencer, Logger.EventCode.GatewayPromotionFailed, memberId,
-                    "gateway instance %d's session closed with no standby to promote — this logical "
-                    + "gateway has no active instance until one starts (globalSeqNo stays %d)",
-                    closedGatewayId, globalSeqNo);
+                         "gateway instance %d's session closed with no standby to promote — this logical "
+                             + "gateway has no active instance until one starts (globalSeqNo stays %d)",
+                         closedGatewayId, globalSeqNo);
             return NO_PROMOTION_TARGET;
         }
         return gatewayActive(promoted, timestamp);
@@ -521,14 +522,16 @@ public final class Sequencer {
         final int promoted = promotionTarget(designated);
         if (promoted == NO_GATEWAY_ID) {
             Logger.error(Logger.Component.Sequencer, Logger.EventCode.GatewayPromotionFailed, memberId,
-                    "gateway instance %d never declared itself started within %dms and has no sibling to "
-                    + "promote — this logical gateway has no active instance until one starts "
-                    + "(globalSeqNo stays %d)", designated, GATEWAY_ACTIVATION_TIMEOUT_MS, globalSeqNo);
+                         "gateway instance %d never declared itself started within %dms and has no sibling to "
+                             + "promote — this logical gateway has no active instance until one starts "
+                             + "(globalSeqNo stays %d)",
+                         designated, GATEWAY_ACTIVATION_TIMEOUT_MS, globalSeqNo);
             return NO_PROMOTION_TARGET;
         }
         Logger.error(Logger.Component.Sequencer, Logger.EventCode.GatewayActivationTimeout, memberId,
-                "gateway instance %d never declared itself started within %dms of being designated — "
-                + "handing the role to instance %d", designated, GATEWAY_ACTIVATION_TIMEOUT_MS, promoted);
+                     "gateway instance %d never declared itself started within %dms of being designated — "
+                         + "handing the role to instance %d",
+                     designated, GATEWAY_ACTIVATION_TIMEOUT_MS, promoted);
         return gatewayActive(promoted, timestamp);
     }
 
@@ -557,8 +560,8 @@ public final class Sequencer {
         }
         GatewayRow best = null;
         for (final GatewayRow row : gatewayRows) {
-            if (row.gatewaySourceId() == closed.gatewaySourceId() && row.gatewayId() != closedGatewayId
-                && (best == null || row.preferenceRank() < best.preferenceRank())) {
+            if (row.gatewaySourceId() == closed.gatewaySourceId() && row.gatewayId() != closedGatewayId &&
+                (best == null || row.preferenceRank() < best.preferenceRank())) {
                 best = row;
             }
         }

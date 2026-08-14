@@ -23,13 +23,13 @@ namespace org::limitless::phixeron::util {
 
 class DynamicIdleStrategy
 {
-public:
+  public:
     using Variant = std::variant<aeron::concurrent::BusySpinIdleStrategy, aeron::concurrent::YieldingIdleStrategy,
-        aeron::concurrent::BackoffIdleStrategy>;
+                                 aeron::concurrent::BackoffIdleStrategy>;
 
-    explicit DynamicIdleStrategy(Variant strategy) : m_strategy(std::move(strategy))
-    {
-    }
+    explicit DynamicIdleStrategy(Variant strategy)
+      : m_strategy(std::move(strategy))
+    {}
 
     inline void idle(int workCount)
     {
@@ -46,12 +46,13 @@ public:
         std::visit([](auto& s) { s.reset(); }, m_strategy);
     }
 
-private:
+  private:
     Variant m_strategy;
 };
 
 // Resolves PHIXERON_IDLE_STRATEGY (case-insensitive): "backoff" (default), "yielding", or "busyspin".
-inline DynamicIdleStrategy resolveIdleStrategy()
+inline DynamicIdleStrategy
+resolveIdleStrategy()
 {
     const char* v = std::getenv("PHIXERON_IDLE_STRATEGY");
     std::string name = (v != nullptr && *v != '\0') ? v : "backoff";
@@ -61,18 +62,18 @@ inline DynamicIdleStrategy resolveIdleStrategy()
     }
     if (name == "busyspin")
     {
-        return DynamicIdleStrategy{aeron::concurrent::BusySpinIdleStrategy{}};
+        return DynamicIdleStrategy{ aeron::concurrent::BusySpinIdleStrategy{} };
     }
     if (name == "yielding")
     {
-        return DynamicIdleStrategy{aeron::concurrent::YieldingIdleStrategy{}};
+        return DynamicIdleStrategy{ aeron::concurrent::YieldingIdleStrategy{} };
     }
     if (name == "backoff")
     {
-        return DynamicIdleStrategy{aeron::concurrent::BackoffIdleStrategy{}};
+        return DynamicIdleStrategy{ aeron::concurrent::BackoffIdleStrategy{} };
     }
-    throw std::invalid_argument(
-        "Unknown PHIXERON_IDLE_STRATEGY=" + name + " (expected 'backoff', 'yielding', or 'busyspin')");
+    throw std::invalid_argument("Unknown PHIXERON_IDLE_STRATEGY=" + name +
+                                " (expected 'backoff', 'yielding', or 'busyspin')");
 }
 
-}  // namespace org::limitless::phixeron::util
+} // namespace org::limitless::phixeron::util

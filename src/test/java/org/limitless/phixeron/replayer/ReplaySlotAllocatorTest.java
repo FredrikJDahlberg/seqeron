@@ -72,7 +72,7 @@ class ReplaySlotAllocatorTest {
         allocator.enqueue(2, /*requestId=*/77, -1, 500);
         allocator.enqueue(3, /*requestId=*/78, 0, 0);
 
-        allocator.supersede(1);  // frees the one slot
+        allocator.supersede(1); // frees the one slot
 
         final ReplaySlotAllocator.PendingRequest first = allocator.pollPending();
         assertEquals(2, first.clientId());
@@ -83,12 +83,12 @@ class ReplaySlotAllocatorTest {
         assertEquals(77, first.requestId());
         assertEquals(1, allocator.pendingCount());
 
-        allocator.activate(first.clientId(), 999, 0);  // caller starts serving it, consuming the slot
+        allocator.activate(first.clientId(), 999, 0); // caller starts serving it, consuming the slot
 
         assertNull(allocator.pollPending(), "no capacity left for the next queued request");
         assertEquals(1, allocator.pendingCount());
 
-        allocator.supersede(first.clientId());  // that replay finished/superseded, freeing the slot again
+        allocator.supersede(first.clientId()); // that replay finished/superseded, freeing the slot again
         final ReplaySlotAllocator.PendingRequest second = allocator.pollPending();
         assertEquals(3, second.clientId());
         assertEquals(0, allocator.pendingCount());
@@ -138,7 +138,7 @@ class ReplaySlotAllocatorTest {
         allocator.enqueue(2, /*requestId=*/1, 0, 0);
         allocator.enqueue(3, /*requestId=*/1, 0, 0);
 
-        allocator.enqueue(2, /*requestId=*/2, 0, 0);  // client 2's resend while it waits
+        allocator.enqueue(2, /*requestId=*/2, 0, 0); // client 2's resend while it waits
 
         // Sending it to the back on every resend would starve a client that resends on a timer.
         allocator.supersede(1);
@@ -183,8 +183,8 @@ class ReplaySlotAllocatorTest {
     @DisplayName("reclaimIdle removes only slots older than the TTL and returns their tokens")
     void reclaimIdleRemovesOnlySlotsOlderThanTtl() {
         final ReplaySlotAllocator allocator = new ReplaySlotAllocator(2, TTL_MS);
-        allocator.activate(1, 100, 0);         // stale: idle 120_000ms by "now"
-        allocator.activate(2, 200, 100_000);   // fresh: idle only 20_000ms by "now"
+        allocator.activate(1, 100, 0); // stale: idle 120_000ms by "now"
+        allocator.activate(2, 200, 100_000); // fresh: idle only 20_000ms by "now"
 
         final List<Long> reclaimed = allocator.reclaimIdle(120_000);
 

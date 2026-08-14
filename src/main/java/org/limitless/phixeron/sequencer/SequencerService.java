@@ -291,10 +291,9 @@ public final class SequencerService implements ClusteredService {
 
         // snapshots are not supported
         if (snapshotImage != null) {
-            throw refuseStart(
-                "[SequencerService] Refusing to start from a snapshot: recovery is full-log replay from "
-                + "globalSeqNo 1 (see the class javadoc). Remove the snapshot from the cluster directory "
-                + "so the log replays in full.");
+            throw refuseStart("[SequencerService] Refusing to start from a snapshot: recovery is full-log replay from "
+                              + "globalSeqNo 1 (see the class javadoc). Remove the snapshot from the cluster directory "
+                              + "so the log replays in full.");
         }
     }
 
@@ -308,8 +307,8 @@ public final class SequencerService implements ClusteredService {
         final long archiveId = aeronArchive.archiveId();
         final long deadlineNs = System.nanoTime() + TAP_RECORDING_START_TIMEOUT_NS;
         int counterId;
-        while ((counterId = RecordingPos.findCounterIdBySession(counters, tapPub.sessionId(), archiveId))
-               == CountersReader.NULL_COUNTER_ID) {
+        while ((counterId = RecordingPos.findCounterIdBySession(counters, tapPub.sessionId(), archiveId)) ==
+               CountersReader.NULL_COUNTER_ID) {
             if (System.nanoTime() >= deadlineNs) {
                 throw refuseStart("[SequencerService] replayer recording did not start within timeout");
             }
@@ -351,33 +350,39 @@ public final class SequencerService implements ClusteredService {
         sequencer.memberId(memberId);
         final Aeron aeron = cluster.context().aeron();
         globalSeqNoCounter = PhixeronCounters.addCounter(aeron, PhixeronCounters.SEQUENCER_GLOBAL_SEQ_NO_TYPE_ID,
-            "phixeron.sequencer.globalSeqNo member=" + memberId, memberId);
-        tapBackPressureAlertCounter = PhixeronCounters.addCounter(aeron,
-            PhixeronCounters.SEQUENCER_TAP_BACKPRESSURE_ALERTS_TYPE_ID,
-            "phixeron.sequencer.tapBackPressureAlerts member=" + memberId, memberId);
+                                                         "phixeron.sequencer.globalSeqNo member=" + memberId, memberId);
+        tapBackPressureAlertCounter =
+            PhixeronCounters.addCounter(aeron, PhixeronCounters.SEQUENCER_TAP_BACKPRESSURE_ALERTS_TYPE_ID,
+                                        "phixeron.sequencer.tapBackPressureAlerts member=" + memberId, memberId);
         tapStalledCounter = PhixeronCounters.addCounter(aeron, PhixeronCounters.SEQUENCER_TAP_STALLED_TYPE_ID,
-            "phixeron.sequencer.tapStalled member=" + memberId, memberId);
-        rejectedIngressCounter = PhixeronCounters.addCounter(aeron, PhixeronCounters.SEQUENCER_REJECTED_INGRESS_COUNT_TYPE_ID,
-            "phixeron.sequencer.rejectedIngressCount member=" + memberId, memberId);
-        leadershipChangeCounter = PhixeronCounters.addCounter(aeron,
-            PhixeronCounters.SEQUENCER_LEADERSHIP_CHANGE_COUNT_TYPE_ID,
-            "phixeron.sequencer.leadershipChangeCount member=" + memberId, memberId);
-        currentLeaderMemberIdCounter = PhixeronCounters.addCounter(aeron,
-            PhixeronCounters.SEQUENCER_CURRENT_LEADER_MEMBER_ID_TYPE_ID,
-            "phixeron.sequencer.currentLeaderMemberId member=" + memberId, memberId);
-        lastTickTimestampCounter = PhixeronCounters.addCounter(aeron, PhixeronCounters.SEQUENCER_LAST_TICK_TIMESTAMP_TYPE_ID,
-            "phixeron.sequencer.lastTickTimestamp member=" + memberId, memberId);
-        gatewayPromotionCounter = PhixeronCounters.addCounter(aeron, PhixeronCounters.SEQUENCER_GATEWAY_PROMOTION_COUNT_TYPE_ID,
-            "phixeron.sequencer.gatewayPromotionCount member=" + memberId, memberId);
-        gatewayPromotionFailedCounter = PhixeronCounters.addCounter(aeron,
-            PhixeronCounters.SEQUENCER_GATEWAY_PROMOTION_FAILED_COUNT_TYPE_ID,
-            "phixeron.sequencer.gatewayPromotionFailedCount member=" + memberId, memberId);
-        bootstrapActivatedCounter = PhixeronCounters.addCounter(aeron, PhixeronCounters.SEQUENCER_BOOTSTRAP_ACTIVATED_TYPE_ID,
-            "phixeron.sequencer.bootstrapActivated member=" + memberId, memberId);
-        connectedClientsCounter = PhixeronCounters.addCounter(aeron, PhixeronCounters.SEQUENCER_CONNECTED_CLIENTS_TYPE_ID,
-            "phixeron.sequencer.connectedClients member=" + memberId, memberId);
-        messagesSequencedCounter = PhixeronCounters.addCounter(aeron, PhixeronCounters.SEQUENCER_INGRESS_MESSAGES_TYPE_ID,
-            "phixeron.sequencer.ingressMessages member=" + memberId, memberId);
+                                                        "phixeron.sequencer.tapStalled member=" + memberId, memberId);
+        rejectedIngressCounter =
+            PhixeronCounters.addCounter(aeron, PhixeronCounters.SEQUENCER_REJECTED_INGRESS_COUNT_TYPE_ID,
+                                        "phixeron.sequencer.rejectedIngressCount member=" + memberId, memberId);
+        leadershipChangeCounter =
+            PhixeronCounters.addCounter(aeron, PhixeronCounters.SEQUENCER_LEADERSHIP_CHANGE_COUNT_TYPE_ID,
+                                        "phixeron.sequencer.leadershipChangeCount member=" + memberId, memberId);
+        currentLeaderMemberIdCounter =
+            PhixeronCounters.addCounter(aeron, PhixeronCounters.SEQUENCER_CURRENT_LEADER_MEMBER_ID_TYPE_ID,
+                                        "phixeron.sequencer.currentLeaderMemberId member=" + memberId, memberId);
+        lastTickTimestampCounter =
+            PhixeronCounters.addCounter(aeron, PhixeronCounters.SEQUENCER_LAST_TICK_TIMESTAMP_TYPE_ID,
+                                        "phixeron.sequencer.lastTickTimestamp member=" + memberId, memberId);
+        gatewayPromotionCounter =
+            PhixeronCounters.addCounter(aeron, PhixeronCounters.SEQUENCER_GATEWAY_PROMOTION_COUNT_TYPE_ID,
+                                        "phixeron.sequencer.gatewayPromotionCount member=" + memberId, memberId);
+        gatewayPromotionFailedCounter =
+            PhixeronCounters.addCounter(aeron, PhixeronCounters.SEQUENCER_GATEWAY_PROMOTION_FAILED_COUNT_TYPE_ID,
+                                        "phixeron.sequencer.gatewayPromotionFailedCount member=" + memberId, memberId);
+        bootstrapActivatedCounter =
+            PhixeronCounters.addCounter(aeron, PhixeronCounters.SEQUENCER_BOOTSTRAP_ACTIVATED_TYPE_ID,
+                                        "phixeron.sequencer.bootstrapActivated member=" + memberId, memberId);
+        connectedClientsCounter =
+            PhixeronCounters.addCounter(aeron, PhixeronCounters.SEQUENCER_CONNECTED_CLIENTS_TYPE_ID,
+                                        "phixeron.sequencer.connectedClients member=" + memberId, memberId);
+        messagesSequencedCounter =
+            PhixeronCounters.addCounter(aeron, PhixeronCounters.SEQUENCER_INGRESS_MESSAGES_TYPE_ID,
+                                        "phixeron.sequencer.ingressMessages member=" + memberId, memberId);
     }
 
     /**
@@ -399,7 +404,7 @@ public final class SequencerService implements ClusteredService {
     public void onSessionClose(final ClientSession session, final long timestamp, final CloseReason closeReason) {
         ensureCounters();
         publishPromotion(sequencer.sessionClosed(session.id(), timestamp),
-                "gateway session " + session.id() + " closed (" + closeReason + ")");
+                         "gateway session " + session.id() + " closed (" + closeReason + ")");
     }
 
     /**
@@ -417,8 +422,7 @@ public final class SequencerService implements ClusteredService {
             gatewayPromotionFailedCounter.increment();
         } else if (activation != Sequencer.NO_FRAME) {
             gatewayPromotionCounter.increment();
-            Logger.info(Logger.Component.SequencerService, cluster.memberId(),
-                    "%s — promoting standby", reason);
+            Logger.info(Logger.Component.SequencerService, cluster.memberId(), "%s — promoting standby", reason);
             emit(activation);
         }
     }
@@ -433,12 +437,8 @@ public final class SequencerService implements ClusteredService {
      * @param header    aeron header for the incoming message.
      */
     @Override
-    public void onSessionMessage(final ClientSession session,
-                                 final long timestamp,
-                                 final DirectBuffer buffer,
-                                 final int offset,
-                                 final int length,
-                                 final Header header) {
+    public void onSessionMessage(final ClientSession session, final long timestamp, final DirectBuffer buffer,
+                                 final int offset, final int length, final Header header) {
         ensureCounters();
         if (session == null) {
             // Aeron looks the session up by clusterSessionId and passes the result straight through, so
@@ -449,8 +449,8 @@ public final class SequencerService implements ClusteredService {
             // position has already advanced (see emit), which drops the frame anyway but silently.
             rejectedIngressCounter.increment();
             Logger.error(Logger.Component.SequencerService, Logger.EventCode.MalformedIngressMessage,
-                    cluster.memberId(), "skipping ingress message with no client session (globalSeqNo stays %d)",
-                    sequencer.globalSeqNo());
+                         cluster.memberId(), "skipping ingress message with no client session (globalSeqNo stays %d)",
+                         sequencer.globalSeqNo());
             return;
         }
         final int sequenced = sequencer.sequenceMessage(buffer, offset, length, session.id(), timestamp);
@@ -482,7 +482,7 @@ public final class SequencerService implements ClusteredService {
             // The cluster clock is also the deadline clock: a designated gateway instance that never
             // declared itself started is handed over on this same consensus time, on every node alike.
             publishPromotion(sequencer.pendingGatewayActivationTimeout(timestamp),
-                    "a designated gateway instance never declared itself started");
+                             "a designated gateway instance never declared itself started");
             lastTickTimestampCounter.set(timestamp);
             injectTapRecordingFault();
             checkTapRecordingAlive();
@@ -520,7 +520,7 @@ public final class SequencerService implements ClusteredService {
         }
         tapFaultTrigger = null;
         Logger.info(Logger.Component.SequencerService, cluster.memberId(),
-                "fault injection: stopping this node's tap recording");
+                    "fault injection: stopping this node's tap recording");
         aeronArchive.stopRecording(FEEDER_CHANNEL, FEEDER_STREAM_ID);
     }
 
@@ -544,14 +544,14 @@ public final class SequencerService implements ClusteredService {
                 spins = 0;
                 final long nowNs = System.nanoTime();
                 if (backPressuredSinceNs == 0) {
-                    backPressuredSinceNs = nowNs;             // first read only anchors the period
+                    backPressuredSinceNs = nowNs; // first read only anchors the period
                 } else if (fatalSignalled) {
-                    haltIfShutdownStalled(nowNs);             // keep the backstop alive: no tick reaches it now
+                    haltIfShutdownStalled(nowNs); // keep the backstop alive: no tick reaches it now
                 } else if (nowNs - backPressuredSinceNs >= TICK_SCHEDULE_FATAL_TIMEOUT_NS) {
                     fatalFailure(Logger.EventCode.ServiceError,
-                            "the consensus module did not accept the cluster-clock timer for "
-                            + TimeUnit.NANOSECONDS.toSeconds(TICK_SCHEDULE_FATAL_TIMEOUT_NS)
-                            + "s of continuous back-pressure");
+                                 "the consensus module did not accept the cluster-clock timer for " +
+                                     TimeUnit.NANOSECONDS.toSeconds(TICK_SCHEDULE_FATAL_TIMEOUT_NS) +
+                                     "s of continuous back-pressure");
                 }
             }
             cluster.idleStrategy().idle();
@@ -582,16 +582,11 @@ public final class SequencerService implements ClusteredService {
      * @param appVersion for the application configured in the consensus module.
      */
     @Override
-    public void onNewLeadershipTermEvent(final long logPosition,
-                                         final long leadershipTermId,
-                                         final long timestamp,
-                                         final long termBaseLogPosition,
-                                         final int leaderMemberId,
-                                         final int logSessionId,
-                                         final TimeUnit timeUnit,
-                                         final int appVersion) {
+    public void onNewLeadershipTermEvent(final long logPosition, final long leadershipTermId, final long timestamp,
+                                         final long termBaseLogPosition, final int leaderMemberId,
+                                         final int logSessionId, final TimeUnit timeUnit, final int appVersion) {
         applyLeadership(leaderMemberId, timestamp);
-        scheduleTick();         // Arm (or re-arm) the internal cluster clock here
+        scheduleTick(); // Arm (or re-arm) the internal cluster clock here
     }
 
     /**
@@ -620,7 +615,7 @@ public final class SequencerService implements ClusteredService {
         currentLeaderMemberIdCounter.set(leaderMemberId);
         final boolean leader = leaderMemberId == cluster.memberId();
         Logger.info(Logger.Component.SequencerService, cluster.memberId(),
-                "leadership change: new leader is memberId=%d (isLeader=%b)", leaderMemberId, leader);
+                    "leadership change: new leader is memberId=%d (isLeader=%b)", leaderMemberId, leader);
         emit(length);
     }
 
@@ -646,9 +641,10 @@ public final class SequencerService implements ClusteredService {
      */
     private void closeCounters() {
         final Counter[] counters = {
-            globalSeqNoCounter, tapBackPressureAlertCounter, tapStalledCounter, rejectedIngressCounter,
-            leadershipChangeCounter, currentLeaderMemberIdCounter, lastTickTimestampCounter, gatewayPromotionCounter,
-            gatewayPromotionFailedCounter, bootstrapActivatedCounter, connectedClientsCounter, messagesSequencedCounter
+            globalSeqNoCounter,        tapBackPressureAlertCounter, tapStalledCounter,
+            rejectedIngressCounter,    leadershipChangeCounter,     currentLeaderMemberIdCounter,
+            lastTickTimestampCounter,  gatewayPromotionCounter,     gatewayPromotionFailedCounter,
+            bootstrapActivatedCounter, connectedClientsCounter,     messagesSequencedCounter
         };
         for (final Counter counter : counters) {
             if (counter != null) {
@@ -689,7 +685,7 @@ public final class SequencerService implements ClusteredService {
                 spins = 0;
                 final long nowNs = System.nanoTime();
                 if (nextAlertNs == 0) {
-                    nextAlertNs = nowNs + BACK_PRESSURE_ALERT_INTERVAL_NS;   // first read only anchors the period
+                    nextAlertNs = nowNs + BACK_PRESSURE_ALERT_INTERVAL_NS; // first read only anchors the period
                 } else if (nowNs - nextAlertNs >= 0) {
                     nextAlertNs = nowNs + BACK_PRESSURE_ALERT_INTERVAL_NS;
                     onBackPressureThreshold(nowNs);
@@ -702,7 +698,7 @@ public final class SequencerService implements ClusteredService {
         if (stallPolicy.onEmitted() && !fatalSignalled) {
             tapStalledCounter.set(0);
             Logger.info(Logger.Component.Sequencer, cluster.memberId(),
-                    "RECOVERED: tap back-pressure cleared at globalSeqNo=%d", sequencer.globalSeqNo());
+                        "RECOVERED: tap back-pressure cleared at globalSeqNo=%d", sequencer.globalSeqNo());
         }
         globalSeqNoCounter.set(sequencer.globalSeqNo());
         connectedClientsCounter.set(sequencer.connectedClientCount());
@@ -721,21 +717,24 @@ public final class SequencerService implements ClusteredService {
             return;
         }
         Logger.error(Logger.Component.Sequencer, Logger.EventCode.ReplayerBackpressure, cluster.memberId(),
-                "ALERT: replayer back-pressure at globalSeqNo=%d", sequencer.globalSeqNo());
+                     "ALERT: replayer back-pressure at globalSeqNo=%d", sequencer.globalSeqNo());
         tapBackPressureAlertCounter.increment();
         switch (stallPolicy.onBackPressure(nowNs, tapRecordingActive(), tapRecordedPosition())) {
-            case STALLED -> {
-                tapStalledCounter.set(1);
-                Logger.error(Logger.Component.Sequencer, Logger.EventCode.ReplayerBackpressure, cluster.memberId(),
-                        "STALLED: tap back-pressure sustained beyond %dms with no recording progress at globalSeqNo=%d",
-                        TimeUnit.NANOSECONDS.toMillis(SUSTAINED_BACKPRESSURE_THRESHOLD_NS), sequencer.globalSeqNo());
-            }
-            case FATAL_RECORDING_GONE -> fatalTapFailure(
-                    "the local archive stopped recording the tap (recording " + tapRecordingId + ")");
-            case FATAL_NO_PROGRESS -> fatalTapFailure("the tap recording made no progress for "
-                    + TimeUnit.NANOSECONDS.toMillis(TAP_STALL_FATAL_TIMEOUT_NS) + "ms of continuous back-pressure");
-            case CONTINUE -> {
-            }
+        case STALLED -> {
+            tapStalledCounter.set(1);
+            Logger.error(
+                Logger.Component.Sequencer, Logger.EventCode.ReplayerBackpressure, cluster.memberId(),
+                "STALLED: tap back-pressure sustained beyond %dms with no recording progress at globalSeqNo=%d",
+                TimeUnit.NANOSECONDS.toMillis(SUSTAINED_BACKPRESSURE_THRESHOLD_NS), sequencer.globalSeqNo());
+        }
+        case FATAL_RECORDING_GONE ->
+            fatalTapFailure("the local archive stopped recording the tap (recording " + tapRecordingId + ")");
+        case FATAL_NO_PROGRESS ->
+            fatalTapFailure("the tap recording made no progress for " +
+                            TimeUnit.NANOSECONDS.toMillis(TAP_STALL_FATAL_TIMEOUT_NS) +
+                            "ms of continuous back-pressure");
+        case CONTINUE -> {
+        }
         }
     }
 
@@ -747,11 +746,11 @@ public final class SequencerService implements ClusteredService {
      * @param reason what failed, for the operator
      */
     private void fatalTapFailure(final String reason) {
-        if (!fatalSignalled && tapStalledCounter != null) {   // null before the first callback creates the counters
+        if (!fatalSignalled && tapStalledCounter != null) { // null before the first callback creates the counters
             tapStalledCounter.set(1);
         }
-        fatalFailure(Logger.EventCode.TapRecordingFailure, reason
-                + ", so it can no longer record the history it is responsible for");
+        fatalFailure(Logger.EventCode.TapRecordingFailure,
+                     reason + ", so it can no longer record the history it is responsible for");
     }
 
     /**
@@ -770,8 +769,9 @@ public final class SequencerService implements ClusteredService {
         fatalSignalled = true;
         fatalSignalledNs = System.nanoTime();
         Logger.fault(Logger.Component.SequencerService, code, cluster.memberId(),
-                "FATAL: %s at globalSeqNo=%d — terminating this node; its peers keep quorum and its restart "
-                + "replays the full log", reason, sequencer.globalSeqNo());
+                     "FATAL: %s at globalSeqNo=%d — terminating this node; its peers keep quorum and its restart "
+                         + "replays the full log",
+                     reason, sequencer.globalSeqNo());
         fatalHandler.run();
     }
 

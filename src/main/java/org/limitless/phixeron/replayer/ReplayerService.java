@@ -82,13 +82,12 @@ import org.limitless.phixeron.util.Logger;
  * SequencerService} arms and confirms its recording before it can emit a single frame, and this
  * project's cluster membership is static, never joining mid-history — so a failure here means this
  * node's own recording has been deleted, corrupted, or partially restored: a broken node. {@code
- * ready} then never becomes true for this process's lifetime ({@link PhixeronCounters#REPLAYER_INTEGRITY_FAILURE_TYPE_ID}
- * latches instead), and {@link #onRequest} answers every replay request {@code ReplayUnavailable} — the
- * refusal is what contains the broken archive here, rather than leaving every consumer that asks this
- * node for history to independently hit the same wall (and each app's wall is an abort on its own
- * first-frame-must-be-1 check, so one bad archive would take down all of them). Until the check has
- * passed, requests are answered {@code ReplayPending}: history this node has not proven good is not
- * served.
+ * ready} then never becomes true for this process's lifetime ({@link
+ * PhixeronCounters#REPLAYER_INTEGRITY_FAILURE_TYPE_ID} latches instead), and {@link #onRequest} answers every replay
+ * request {@code ReplayUnavailable} — the refusal is what contains the broken archive here, rather than leaving every
+ * consumer that asks this node for history to independently hit the same wall (and each app's wall is an abort on its
+ * own first-frame-must-be-1 check, so one bad archive would take down all of them). Until the check has passed,
+ * requests are answered {@code ReplayPending}: history this node has not proven good is not served.
  *
  * <p><b>Local-archive resilience.</b> The ReplayerService is off the live path entirely, so a transient
  * failure of the node's local archive degrades only history/gap <em>replay</em> — steady-state
@@ -245,9 +244,9 @@ public final class ReplayerService {
     private List<ReplayRecordings.RecordingSpan> selfCheckSpans;
     private int selfCheckIndex;
     private long selfCheckReplaySessionId = NULL_VALUE;
-    private long selfCheckRecordingId = NULL_VALUE;      // the span being peeked
-    private long selfCheckActiveRecordingId = NULL_VALUE;  // the live one, for the readiness line
-    private long selfCheckGlobalSeqNo = NULL_VALUE;      // what the first fragment carried, once read
+    private long selfCheckRecordingId = NULL_VALUE; // the span being peeked
+    private long selfCheckActiveRecordingId = NULL_VALUE; // the live one, for the readiness line
+    private long selfCheckGlobalSeqNo = NULL_VALUE; // what the first fragment carried, once read
     private long selfCheckDeadlineNs = 0;
 
     // Latches while the ">1 active tap recording" anomaly is reported (see resolveSegments): the
@@ -344,27 +343,26 @@ public final class ReplayerService {
         this.idleStrategy = idleStrategy;
         this.fatalHandler = fatalHandler;
 
-        this.stalledCounter = replayer.newCounter(
-            PhixeronCounters.REPLAYER_STALLED_TYPE_ID, "phixeron.replayer.stalled member=" + memberId);
-        this.readyCounter = replayer.newCounter(
-            PhixeronCounters.REPLAYER_READY_TYPE_ID, "phixeron.replayer.ready member=" + memberId);
-        this.activeReplaySlotsCounter = replayer.newCounter(
-            PhixeronCounters.REPLAYER_ACTIVE_SLOTS_TYPE_ID, "phixeron.replayer.activeSlots member=" + memberId);
-        this.pendingRequestsCounter = replayer.newCounter(
-            PhixeronCounters.REPLAYER_PENDING_REQUESTS_TYPE_ID, "phixeron.replayer.pendingRequests member=" + memberId);
-        this.replaysServedCounter = replayer.newCounter(
-            PhixeronCounters.REPLAYER_REPLAYS_SERVED_COUNT_TYPE_ID,
-            "phixeron.replayer.replaysServedCount member=" + memberId);
-        this.idleTtlReclaimedCounter = replayer.newCounter(PhixeronCounters.REPLAYER_IDLE_TTL_RECLAIMED_COUNT_TYPE_ID,
-            "phixeron.replayer.idleTtlReclaimedCount member=" + memberId);
+        this.stalledCounter = replayer.newCounter(PhixeronCounters.REPLAYER_STALLED_TYPE_ID,
+                                                  "phixeron.replayer.stalled member=" + memberId);
+        this.readyCounter =
+            replayer.newCounter(PhixeronCounters.REPLAYER_READY_TYPE_ID, "phixeron.replayer.ready member=" + memberId);
+        this.activeReplaySlotsCounter = replayer.newCounter(PhixeronCounters.REPLAYER_ACTIVE_SLOTS_TYPE_ID,
+                                                            "phixeron.replayer.activeSlots member=" + memberId);
+        this.pendingRequestsCounter = replayer.newCounter(PhixeronCounters.REPLAYER_PENDING_REQUESTS_TYPE_ID,
+                                                          "phixeron.replayer.pendingRequests member=" + memberId);
+        this.replaysServedCounter = replayer.newCounter(PhixeronCounters.REPLAYER_REPLAYS_SERVED_COUNT_TYPE_ID,
+                                                        "phixeron.replayer.replaysServedCount member=" + memberId);
+        this.idleTtlReclaimedCounter =
+            replayer.newCounter(PhixeronCounters.REPLAYER_IDLE_TTL_RECLAIMED_COUNT_TYPE_ID,
+                                "phixeron.replayer.idleTtlReclaimedCount member=" + memberId);
         this.integrityFailureCounter = replayer.newCounter(PhixeronCounters.REPLAYER_INTEGRITY_FAILURE_TYPE_ID,
-            "phixeron.replayer.integrityFailure member=" + memberId);
-        this.controlRepliesDroppedCounter = replayer.newCounter(
-            PhixeronCounters.REPLAYER_CONTROL_REPLIES_DROPPED_COUNT_TYPE_ID,
-            "phixeron.replayer.controlRepliesDroppedCount member=" + memberId);
-        this.clientIdCollisionCounter = replayer.newCounter(
-            PhixeronCounters.REPLAYER_CLIENT_ID_COLLISION_TYPE_ID,
-            "phixeron.replayer.clientIdCollision member=" + memberId);
+                                                           "phixeron.replayer.integrityFailure member=" + memberId);
+        this.controlRepliesDroppedCounter =
+            replayer.newCounter(PhixeronCounters.REPLAYER_CONTROL_REPLIES_DROPPED_COUNT_TYPE_ID,
+                                "phixeron.replayer.controlRepliesDroppedCount member=" + memberId);
+        this.clientIdCollisionCounter = replayer.newCounter(PhixeronCounters.REPLAYER_CLIENT_ID_COLLISION_TYPE_ID,
+                                                            "phixeron.replayer.clientIdCollision member=" + memberId);
     }
 
     /**
@@ -374,7 +372,7 @@ public final class ReplayerService {
      */
     public void run(final AtomicBoolean running) {
         Logger.info(Logger.Component.ReplayerService, memberId,
-                "starting; serving replay from the co-located archive…");
+                    "starting; serving replay from the co-located archive…");
         try {
             while (running.get()) {
                 final int work = poll();
@@ -385,7 +383,7 @@ public final class ReplayerService {
         }
         Logger.info(Logger.Component.ReplayerService, memberId, "shutting down");
         stopAllReplays();
-        closeSelfCheck();  // a check still in flight owns an archive replay and a subscription
+        closeSelfCheck(); // a check still in flight owns an archive replay and a subscription
     }
 
     /**
@@ -401,8 +399,9 @@ public final class ReplayerService {
         ready = false;
         readyCounter.set(0);
         Logger.fault(Logger.Component.ReplayerService, Logger.EventCode.ReplayDutyCycleFailure, memberId,
-                "FATAL: replay duty cycle terminated by an uncaught exception (%s) — clearing readiness "
-                        + "and exiting; process supervision should restart this node", ex.getMessage());
+                     "FATAL: replay duty cycle terminated by an uncaught exception (%s) — clearing readiness "
+                         + "and exiting; process supervision should restart this node",
+                     ex.getMessage());
         fatalHandler.run();
     }
 
@@ -463,12 +462,12 @@ public final class ReplayerService {
         try {
             final ReplayRecordings.RecordingSpan active = findActiveRecording();
             if (active == null) {
-                return;  // nothing recorded yet; retry next cycle
+                return; // nothing recorded yet; retry next cycle
             }
             if (selfCheckSpans == null) {
                 final List<ReplayRecordings.RecordingSpan> segments = resolveSegments();
                 if (segments.isEmpty()) {
-                    return;  // retry next cycle
+                    return; // retry next cycle
                 }
                 selfCheckSpans = segments;
                 selfCheckIndex = 0;
@@ -483,7 +482,7 @@ public final class ReplayerService {
             final long replayLength = Math.min(position - span.startPosition(), SELF_CHECK_REPLAY_LENGTH);
             if (replayLength <= 0) {
                 if (span.active()) {
-                    return;  // nothing written to the live recording yet; retry next cycle
+                    return; // nothing written to the live recording yet; retry next cycle
                 }
                 // A stopped recording with nothing in it will never have a first frame to prove, and
                 // serveReplay already skips it by name, so holding readiness on one wedges the node.
@@ -492,11 +491,11 @@ public final class ReplayerService {
             }
             selfCheckRecordingId = span.recordingId();
             selfCheckGlobalSeqNo = NULL_VALUE;
-            selfCheckReplaySessionId = replayer.startReplay(span.recordingId(), span.startPosition(), replayLength,
-                                                      SELF_CHECK_STREAM_ID);
+            selfCheckReplaySessionId =
+                replayer.startReplay(span.recordingId(), span.startPosition(), replayLength, SELF_CHECK_STREAM_ID);
             selfCheckSub = replayer.openSelfCheckStream();
             selfCheckDeadlineNs = replayer.nanoTime() + SELF_CHECK_TIMEOUT_NS;
-            onArchiveRecovered();  // it served a replay: whatever refused one earlier is over
+            onArchiveRecovered(); // it served a replay: whatever refused one earlier is over
         } catch (final RuntimeException ex) {
             closeSelfCheck();
             onArchiveStalled("running the startup self-check", ex);
@@ -516,7 +515,7 @@ public final class ReplayerService {
         final int work = selfCheckSub.poll(selfCheckHandler, 1);
         if (selfCheckGlobalSeqNo == NULL_VALUE) {
             if (replayer.nanoTime() > selfCheckDeadlineNs) {
-                closeSelfCheck();  // no fragment in time; start over next cycle
+                closeSelfCheck(); // no fragment in time; start over next cycle
             }
             return work;
         }
@@ -528,10 +527,10 @@ public final class ReplayerService {
             integrityFailed = true;
             integrityFailureCounter.set(1);
             Logger.fault(Logger.Component.ReplayerService, Logger.EventCode.ArchiveIntegrityFailure, memberId,
-                    "FATAL: tap recording %d (%d of %d in this node's chain) has first frame globalSeqNo=%d, "
-                            + "expected 1 — this node's recording chain does not cover the log from the start "
-                            + "(deleted, corrupted, or a partial restore?); refusing to mark ready",
-                    recordingId, selfCheckIndex + 1, selfCheckSpans.size(), firstGlobalSeqNo);
+                         "FATAL: tap recording %d (%d of %d in this node's chain) has first frame globalSeqNo=%d, "
+                             + "expected 1 — this node's recording chain does not cover the log from the start "
+                             + "(deleted, corrupted, or a partial restore?); refusing to mark ready",
+                         recordingId, selfCheckIndex + 1, selfCheckSpans.size(), firstGlobalSeqNo);
             return work;
         }
         completeSelfCheckSpan();
@@ -545,14 +544,14 @@ public final class ReplayerService {
     private void completeSelfCheckSpan() {
         ++selfCheckIndex;
         if (selfCheckIndex < selfCheckSpans.size()) {
-            return;  // the next cycle opens the next span's check
+            return; // the next cycle opens the next span's check
         }
         ready = true;
         readyCounter.set(1);
         Logger.info(Logger.Component.ReplayerService, memberId,
-                "ready — tap recording %d live, %d-recording chain verified from globalSeqNo 1; serving replay",
-                selfCheckActiveRecordingId, selfCheckSpans.size());
-        selfCheckSpans = null;  // the sweep is over; a later one resolves the chain again rather than resuming this
+                    "ready — tap recording %d live, %d-recording chain verified from globalSeqNo 1; serving replay",
+                    selfCheckActiveRecordingId, selfCheckSpans.size());
+        selfCheckSpans = null; // the sweep is over; a later one resolves the chain again rather than resuming this
     }
 
     /**
@@ -562,8 +561,8 @@ public final class ReplayerService {
      */
     private void onSelfCheckFragment(final DirectBuffer buffer, final int offset) {
         selfCheckMsgHeaderDecoder.wrap(buffer, offset);
-        if (selfCheckMsgHeaderDecoder.schemaId()
-                != org.limitless.phixeron.sbe.sequenced.MessageHeaderDecoder.SCHEMA_ID) {
+        if (selfCheckMsgHeaderDecoder.schemaId() !=
+            org.limitless.phixeron.sbe.sequenced.MessageHeaderDecoder.SCHEMA_ID) {
             return;
         }
         final int bodyOffset = offset + org.limitless.phixeron.sbe.sequenced.MessageHeaderDecoder.ENCODED_LENGTH;
@@ -652,8 +651,8 @@ public final class ReplayerService {
             replaySlots.enqueue(clientId, requestId, segmentIndex, fromPosition);
             sendPending(clientId, requestId);
             Logger.info(Logger.Component.ReplayerService, memberId,
-                    "client %d queued: no free replay slot (active=%d/%d, pending=%d)", clientId,
-                    replaySlots.activeCount(), MAX_CONCURRENT_REPLAYS, replaySlots.pendingCount());
+                        "client %d queued: no free replay slot (active=%d/%d, pending=%d)", clientId,
+                        replaySlots.activeCount(), MAX_CONCURRENT_REPLAYS, replaySlots.pendingCount());
             return;
         }
         startReplayForClient(clientId, requestId, segmentIndex, fromPosition);
@@ -678,7 +677,7 @@ public final class ReplayerService {
                 sendPending(clientId, requestId);
                 return;
             }
-            lastStallRetryMs = now;  // this attempt is the paced probe
+            lastStallRetryMs = now; // this attempt is the paced probe
         }
         try {
             serveReplay(clientId, requestId, segmentIndex, fromPosition);
@@ -688,8 +687,9 @@ public final class ReplayerService {
                 rejectResume(clientId, requestId, "archive refused it: " + error.getMessage());
                 return;
             }
-            onArchiveStalled("serving " + (segmentIndex < 0 ? "a resume" : "walk segment " + segmentIndex)
-                    + " for client " + clientId, error);
+            onArchiveStalled("serving " + (segmentIndex < 0 ? "a resume" : "walk segment " + segmentIndex) +
+                                 " for client " + clientId,
+                             error);
             sendPending(clientId, requestId);
         }
     }
@@ -724,8 +724,8 @@ public final class ReplayerService {
         try {
             final ReplayRecordings.RecordingSpan active = findActiveRecording();
             if (active != null) {
-                stopReplay(replayer.startReplay(active.recordingId(), active.startPosition(),
-                                                SELF_CHECK_REPLAY_LENGTH, SELF_CHECK_STREAM_ID));
+                stopReplay(replayer.startReplay(active.recordingId(), active.startPosition(), SELF_CHECK_REPLAY_LENGTH,
+                                                SELF_CHECK_STREAM_ID));
             }
             onArchiveRecovered();
         } catch (final RuntimeException ex) {
@@ -743,8 +743,8 @@ public final class ReplayerService {
      */
     private void rejectResume(final int clientId, final long requestId, final String reason) {
         Logger.info(Logger.Component.ReplayerService, memberId,
-                "client %d's resume refused (%s) — answering NO_REPLAY_NEEDED so it re-walks the chain",
-                clientId, reason);
+                    "client %d's resume refused (%s) — answering NO_REPLAY_NEEDED so it re-walks the chain", clientId,
+                    reason);
         sendReplaying(clientId, requestId, NO_REPLAY_NEEDED, 0, NULL_VALUE);
     }
 
@@ -758,7 +758,8 @@ public final class ReplayerService {
      * @param segmentIndex segment index
      * @param fromPosition start position
      */
-    private void serveReplay(final int clientId, final long requestId, final int segmentIndex, final long fromPosition) {
+    private void serveReplay(final int clientId, final long requestId, final int segmentIndex,
+                             final long fromPosition) {
         replaySlots.cancelPending(clientId);
 
         final long recordingId;
@@ -775,8 +776,9 @@ public final class ReplayerService {
                 // The app is resuming at a position from a recording this one replaced: it predates
                 // anything we hold. Steer it onto the chain walk (see rejectResume) instead of handing
                 // the archive a position it will refuse.
-                rejectResume(clientId, requestId, "position " + fromPosition + " predates recording "
-                        + active.recordingId() + "'s startPosition " + active.startPosition());
+                rejectResume(clientId, requestId,
+                             "position " + fromPosition + " predates recording " + active.recordingId() +
+                                 "'s startPosition " + active.startPosition());
                 return;
             }
             recordingId = active.recordingId();
@@ -833,8 +835,8 @@ public final class ReplayerService {
         replaysServedCounter.increment();
         replaySlots.activate(clientId, replaySessionId, replayer.epochMillis());
         Logger.info(Logger.Component.ReplayerService, memberId,
-                "replay for client %d: segment %d recording %d [%d,%d) session %d", clientId,
-                segmentIndex, recordingId, replayFrom, tip, replaySessionId);
+                    "replay for client %d: segment %d recording %d [%d,%d) session %d", clientId, segmentIndex,
+                    recordingId, replayFrom, tip, replaySessionId);
         // catchUpPosition = tip: the app follows the replay image until it reaches this, then advances
         // (next segment, or the live tap). A bounded replay of an active recording does not close its
         // image at the bound, so the app detects completion by position (see Replaying / ReplayerStreamReceiver).
@@ -941,7 +943,8 @@ public final class ReplayerService {
      * @param requestId the request being refused
      */
     private void sendUnavailable(final int clientId, final long requestId) {
-        unavailableEncoder.wrapAndApplyHeader(controlBuffer, 0, outHeaderEncoder).clientId(clientId)
+        unavailableEncoder.wrapAndApplyHeader(controlBuffer, 0, outHeaderEncoder)
+            .clientId(clientId)
             .requestId(requestId);
         offerControl(MessageHeaderEncoder.ENCODED_LENGTH + unavailableEncoder.encodedLength());
     }
@@ -983,9 +986,10 @@ public final class ReplayerService {
     private void onClientIdCollision(final int clientId) {
         clientIdCollisionCounter.set(1);
         Logger.error(Logger.Component.ReplayerService, Logger.EventCode.ReplayClientIdCollision, memberId,
-                "two co-located apps are both using PHIXERON_REPLAYER_CLIENT_ID=%d — their requestId "
-                        + "sequences interleave, so each request stops the other's replay and NEITHER will "
-                        + "ever catch up; give them distinct ids and restart them", clientId);
+                     "two co-located apps are both using PHIXERON_REPLAYER_CLIENT_ID=%d — their requestId "
+                         + "sequences interleave, so each request stops the other's replay and NEITHER will "
+                         + "ever catch up; give them distinct ids and restart them",
+                     clientId);
     }
 
     /**
@@ -999,10 +1003,10 @@ public final class ReplayerService {
         lastControlDropMs = nowMs;
         if (newEpisode) {
             Logger.error(Logger.Component.ReplayerService, Logger.EventCode.ControlReplyDropped, memberId,
-                    "dropped a control reply (offer=%d): an app subscribed to stream %d and stopped "
-                            + "reading it. Its replays are delayed by a resend; every other app is "
-                            + "unaffected — see phixeron.replayer.controlRepliesDroppedCount", result,
-                    CONTROL_STREAM_ID);
+                         "dropped a control reply (offer=%d): an app subscribed to stream %d and stopped "
+                             + "reading it. Its replays are delayed by a resend; every other app is "
+                             + "unaffected — see phixeron.replayer.controlRepliesDroppedCount",
+                         result, CONTROL_STREAM_ID);
         }
     }
 
@@ -1018,9 +1022,9 @@ public final class ReplayerService {
             stalled = true;
             stalledCounter.set(1);
             Logger.info(Logger.Component.ReplayerService, memberId,
-                    "STALLED: the local archive refused %s (%s); live delivery unaffected "
-                            + "(apps read the tap directly), probing until it answers", message,
-                    exception.getMessage());
+                        "STALLED: the local archive refused %s (%s); live delivery unaffected "
+                            + "(apps read the tap directly), probing until it answers",
+                        message, exception.getMessage());
         }
     }
 
@@ -1061,8 +1065,9 @@ public final class ReplayerService {
             if (!staleActiveRecordingLogged) {
                 staleActiveRecordingLogged = true;
                 Logger.error(Logger.Component.ReplayerService, Logger.EventCode.StaleActiveRecording, memberId,
-                        "%d tap recordings report as still recording — an unclean shutdown left an older one "
-                                + "unstopped; serving the newest and skipping the stale one(s)", activeCount);
+                             "%d tap recordings report as still recording — an unclean shutdown left an older one "
+                                 + "unstopped; serving the newest and skipping the stale one(s)",
+                             activeCount);
             }
         } else {
             staleActiveRecordingLogged = false;

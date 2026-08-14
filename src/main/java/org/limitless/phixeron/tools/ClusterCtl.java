@@ -73,13 +73,13 @@ import org.limitless.phixeron.sequencer.SequencerService;
 public final class ClusterCtl {
     // ── Configuration (mirrors SequencerNode's property defaults for co-location) ──
     private static final int MEMBER_ID = Integer.getInteger("clusterctl.memberId", 0);
-    private static final String BASE_DIR
-        = System.getProperty("clusterctl.baseDir", System.getProperty("java.io.tmpdir") + "/phixeron-seq");
+    private static final String BASE_DIR =
+        System.getProperty("clusterctl.baseDir", System.getProperty("java.io.tmpdir") + "/phixeron-seq");
     private static final String AERON_DIR = System.getProperty(
         "clusterctl.aeronDir", System.getProperty("java.io.tmpdir") + "/phixeron-seq-aeron-" + MEMBER_ID);
     private static final File CLUSTER_DIR = new File(BASE_DIR + "/cluster-" + MEMBER_ID);
-    private static final String INGRESS_ENDPOINTS = System.getProperty(
-        "clusterctl.ingressEndpoints", "0=" + SequencerNode.ingressEndpoint(0));
+    private static final String INGRESS_ENDPOINTS =
+        System.getProperty("clusterctl.ingressEndpoints", "0=" + SequencerNode.ingressEndpoint(0));
 
     private static final long CONNECT_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(5);
     private static final long ECHO_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(5);
@@ -89,8 +89,7 @@ public final class ClusterCtl {
     private static final int NO_ID = -1;
 
     private static final IdleStrategy IDLE = new YieldingIdleStrategy();
-    private static final EgressListener NULL_EGRESS = (sessionId, timestamp, buffer, offset,
-                                                       length, header) -> { };
+    private static final EgressListener NULL_EGRESS = (sessionId, timestamp, buffer, offset, length, header) -> { };
 
     private ClusterCtl() {
     }
@@ -101,29 +100,29 @@ public final class ClusterCtl {
             System.exit(2);
         }
         switch (args[0]) {
-            case "help":
-            case "-h":
-            case "--help":
-                usage();
-                break;
-            case "snapshot":
-                System.out.println("[clusterctl] snapshot: command is not supported.");
-                break;
-            case "start":
-                System.exit(start());
-                break;
-            case "shutdown":
-                System.exit(shutdown());
-                break;
-            case "activate":
-                System.exit(activate(args));
-                break;
-            case "counters":
-                System.exit(counters());
-                break;
-            default:
-                passthrough(args); // io.aeron.cluster.ClusterTool
-                break;
+        case "help":
+        case "-h":
+        case "--help":
+            usage();
+            break;
+        case "snapshot":
+            System.out.println("[clusterctl] snapshot: command is not supported.");
+            break;
+        case "start":
+            System.exit(start());
+            break;
+        case "shutdown":
+            System.exit(shutdown());
+            break;
+        case "activate":
+            System.exit(activate(args));
+            break;
+        case "counters":
+            System.exit(counters());
+            break;
+        default:
+            passthrough(args); // io.aeron.cluster.ClusterTool
+            break;
         }
     }
 
@@ -132,8 +131,8 @@ public final class ClusterCtl {
     private static int start() {
         final long correlationId = System.nanoTime();
         try (AeronCluster cluster = connectCluster()) {
-            final long globalSeqNo
-                = publishMarkerAndAwaitEcho(cluster, ClusterStartedEncoder.TEMPLATE_ID, correlationId);
+            final long globalSeqNo =
+                publishMarkerAndAwaitEcho(cluster, ClusterStartedEncoder.TEMPLATE_ID, correlationId);
             if (globalSeqNo < 0) {
                 System.err.println("[clusterctl] start: no sequenced ClusterStarted echo within timeout");
                 return 1;
@@ -159,16 +158,16 @@ public final class ClusterCtl {
 
         final long correlationId = System.nanoTime();
         try (AeronCluster cluster = connectCluster()) {
-            final long globalSeqNo
-                = publishMarkerAndAwaitEcho(cluster, ClusterStoppedEncoder.TEMPLATE_ID, correlationId);
+            final long globalSeqNo =
+                publishMarkerAndAwaitEcho(cluster, ClusterStoppedEncoder.TEMPLATE_ID, correlationId);
             if (globalSeqNo < 0) {
                 System.err.println("[clusterctl] shutdown: no ClusterStopped echo within timeout — aborting anyway");
             } else {
                 System.out.printf("[clusterctl] shutdown: system-stopped recorded at globalSeqNo=%d%n", globalSeqNo);
             }
         } catch (final Exception ex) {
-            System.err.println(
-                "[clusterctl] shutdown: could not publish ClusterStopped (" + ex.getMessage() + ") — aborting anyway");
+            System.err.println("[clusterctl] shutdown: could not publish ClusterStopped (" + ex.getMessage() +
+                               ") — aborting anyway");
         }
 
         // Orderly, consensus-coordinated termination of every node. ABORT takes no snapshot (preserving
@@ -211,10 +210,11 @@ public final class ClusterCtl {
                 return 1;
             }
             System.out.printf("[clusterctl] activate: GatewayActive(gatewayId=%d) recorded at globalSeqNo=%d%n",
-                               gatewayId, globalSeqNo);
+                              gatewayId, globalSeqNo);
             return 0;
         } catch (final Exception ex) {
-            System.err.println("[clusterctl] activate: no elected leader / cluster unreachable (" + ex.getMessage() + ")");
+            System.err.println("[clusterctl] activate: no elected leader / cluster unreachable (" + ex.getMessage() +
+                               ")");
             return 1;
         }
     }
@@ -227,8 +227,8 @@ public final class ClusterCtl {
      * match on (it carries only {@code gatewayId}), so it matches the echo by {@code gatewayId} instead.
      */
     private static long publishGatewayActiveAndAwaitEcho(final AeronCluster cluster, final int gatewayId) {
-        final Subscription tap = cluster.context().aeron()
-            .addSubscription(SequencerService.FEEDER_CHANNEL, SequencerService.FEEDER_STREAM_ID);
+        final Subscription tap = cluster.context().aeron().addSubscription(SequencerService.FEEDER_CHANNEL,
+                                                                           SequencerService.FEEDER_STREAM_ID);
         final long connectDeadline = System.nanoTime() + CONNECT_TIMEOUT_NS;
         while (!tap.isConnected()) {
             if (System.nanoTime() >= connectDeadline) {
@@ -277,8 +277,8 @@ public final class ClusterCtl {
                 return;
             }
             messageHeader.wrap(buffer, offset);
-            if (messageHeader.schemaId() != GatewayActiveDecoder.SCHEMA_ID
-                || messageHeader.templateId() != GatewayActiveDecoder.TEMPLATE_ID) {
+            if (messageHeader.schemaId() != GatewayActiveDecoder.SCHEMA_ID ||
+                messageHeader.templateId() != GatewayActiveDecoder.TEMPLATE_ID) {
                 return;
             }
             decoder.wrap(buffer, offset + MessageHeaderDecoder.ENCODED_LENGTH, messageHeader.blockLength(),
@@ -295,13 +295,14 @@ public final class ClusterCtl {
     /**
      * Lists this node's phixeron operator counters (see {@link PhixeronCounters}) — the
      * {@code SequencerService}/{@code ReplayerService} gauges and event counts, plus whatever the
-     * co-located C++ replicas publish — read directly off the co-located Aeron directory's CnC file. No cluster connection needed, so this works whether or not
-     * this node holds an elected leader, and is safe to run on every node.
+     * co-located C++ replicas publish — read directly off the co-located Aeron directory's CnC file. No cluster
+     * connection needed, so this works whether or not this node holds an elected leader, and is safe to run on every
+     * node.
      */
     private static int counters() {
         try (Aeron aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(AERON_DIR))) {
             final CountersReader reader = aeron.countersReader();
-            final boolean[] found = {false};
+            final boolean[] found = { false };
             reader.forEach((counterId, typeId, keyBuffer, label) -> {
                 if (typeId < PhixeronCounters.MIN_TYPE_ID || typeId > PhixeronCounters.MAX_TYPE_ID) {
                     return;
@@ -310,13 +311,13 @@ public final class ClusterCtl {
                 System.out.printf("%-55s = %d%n", label, reader.getCounterValue(counterId));
             });
             if (!found[0]) {
-                System.out.println(
-                    "[clusterctl] counters: none found under " + AERON_DIR
-                    + " — is a SequencerNode/ReplayerNode running there?");
+                System.out.println("[clusterctl] counters: none found under " + AERON_DIR +
+                                   " — is a SequencerNode/ReplayerNode running there?");
             }
             return 0;
         } catch (final Exception ex) {
-            System.err.println("[clusterctl] counters: could not connect to " + AERON_DIR + " (" + ex.getMessage() + ")");
+            System.err.println("[clusterctl] counters: could not connect to " + AERON_DIR + " (" + ex.getMessage() +
+                               ")");
             return 1;
         }
     }
@@ -348,11 +349,11 @@ public final class ClusterCtl {
      * ingress, then reads this node's co-located tap for the matching sequenced echo. Returns the
      * assigned globalSeqNo, or -1 on timeout (tap unavailable, or no echo within {@link #ECHO_TIMEOUT_NS}).
      */
-    private static long publishMarkerAndAwaitEcho(
-        final AeronCluster cluster, final int templateId, final long correlationId) {
+    private static long publishMarkerAndAwaitEcho(final AeronCluster cluster, final int templateId,
+                                                  final long correlationId) {
         // Attach to the tap before publishing so the echo cannot be missed.
-        final Subscription tap = cluster.context().aeron()
-            .addSubscription(SequencerService.FEEDER_CHANNEL, SequencerService.FEEDER_STREAM_ID);
+        final Subscription tap = cluster.context().aeron().addSubscription(SequencerService.FEEDER_CHANNEL,
+                                                                           SequencerService.FEEDER_STREAM_ID);
         final long connectDeadline = System.nanoTime() + CONNECT_TIMEOUT_NS;
         while (!tap.isConnected()) {
             if (System.nanoTime() >= connectDeadline) {
@@ -379,7 +380,8 @@ public final class ClusterCtl {
         return handler.found ? handler.globalSeqNo : -1;
     }
 
-    private static int encodeMarker(final ExpandableArrayBuffer buffer, final int templateId, final long correlationId) {
+    private static int encodeMarker(final ExpandableArrayBuffer buffer, final int templateId,
+                                    final long correlationId) {
         // ClusterStarted (10) and ClusterStopped (11) are byte-identical past the header composite, so
         // this differs only in the encoder chosen for the outer template id.
         if (templateId == ClusterStartedEncoder.TEMPLATE_ID) {
@@ -435,8 +437,8 @@ public final class ClusterCtl {
                 return;
             }
             messageHeader.wrap(buffer, offset);
-            if (messageHeader.schemaId() != ClusterStartedDecoder.SCHEMA_ID
-                || messageHeader.templateId() != templateId) {
+            if (messageHeader.schemaId() != ClusterStartedDecoder.SCHEMA_ID ||
+                messageHeader.templateId() != templateId) {
                 return;
             }
             marker.wrap(buffer, offset + MessageHeaderDecoder.ENCODED_LENGTH, messageHeader.blockLength(),

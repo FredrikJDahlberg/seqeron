@@ -8,7 +8,7 @@ class SequencerNodeTest {
     @Test
     void singleNodeMembersMatchDocumentedLayout() {
         assertEquals("0,localhost:9302,localhost:9303,localhost:9304,localhost:9305,localhost:9301|",
-            SequencerNode.buildClusterMembers(1));
+                     SequencerNode.buildClusterMembers(1));
     }
 
     @Test
@@ -19,10 +19,9 @@ class SequencerNodeTest {
 
     @Test
     void threeNodeMembersMatchDocumentedLayout() {
-        assertEquals(
-            "0,localhost:9302,localhost:9303,localhost:9304,localhost:9305,localhost:9301|"
-                + "1,localhost:9312,localhost:9313,localhost:9314,localhost:9315,localhost:9311|"
-                + "2,localhost:9322,localhost:9323,localhost:9324,localhost:9325,localhost:9321|",
-            SequencerNode.buildClusterMembers(3));
+        assertEquals("0,localhost:9302,localhost:9303,localhost:9304,localhost:9305,localhost:9301|"
+                         + "1,localhost:9312,localhost:9313,localhost:9314,localhost:9315,localhost:9311|"
+                         + "2,localhost:9322,localhost:9323,localhost:9324,localhost:9325,localhost:9321|",
+                     SequencerNode.buildClusterMembers(3));
     }
 }

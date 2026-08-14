@@ -29,8 +29,7 @@ final class FakeReplayer implements Replayer {
     private static final int COUNTER_CAPACITY = 16;
 
     /** One {@code startReplay} the service asked for. */
-    record StartedReplay(long recordingId, long position, long length, int streamId, long replaySessionId) {
-    }
+    record StartedReplay(long recordingId, long position, long length, int streamId, long replaySessionId) { }
 
     private final List<ReplayRecordings.RecordingSpan> recordings = new ArrayList<>();
     private final Map<Long, Long> recordingPositions = new HashMap<>();
@@ -45,7 +44,7 @@ final class FakeReplayer implements Replayer {
 
     private final Deque<byte[]> requestQueue = new ArrayDeque<>();
     private final List<byte[]> controlReplies = new ArrayList<>();
-    private long controlOfferResult = 1;  // > 0 is a successful offer
+    private long controlOfferResult = 1; // > 0 is a successful offer
 
     private final Deque<byte[]> selfCheckFrames = new ArrayDeque<>();
     private int selfCheckStreamsOpened;
@@ -53,7 +52,7 @@ final class FakeReplayer implements Replayer {
     // Direct buffers, not byte[]: CountersManager requires 8-byte alignment.
     private final CountersManager countersManager = new CountersManager(
         new UnsafeBuffer(ByteBuffer.allocateDirect(COUNTER_CAPACITY * CountersReader.METADATA_LENGTH)),
-        new UnsafeBuffer(ByteBuffer.allocateDirect(COUNTER_CAPACITY * CountersReader.COUNTER_LENGTH)));
+        new UnsafeBuffer(ByteBuffer.allocateDirect(COUNTER_CAPACITY* CountersReader.COUNTER_LENGTH)));
     private final Map<Integer, AtomicCounter> countersByTypeId = new HashMap<>();
 
     private long epochMillis = 1_000_000L;
@@ -73,8 +72,10 @@ final class FakeReplayer implements Replayer {
 
     /** Marks a recording stopped, as an operator repairing an unclean shutdown's leftover does. */
     void stopRecording(final long recordingId) {
-        recordings.replaceAll(span -> span.recordingId() == recordingId
-            ? new ReplayRecordings.RecordingSpan(recordingId, span.startPosition(), false) : span);
+        recordings.replaceAll(span
+                              -> span.recordingId() == recordingId
+                                  ? new ReplayRecordings.RecordingSpan(recordingId, span.startPosition(), false)
+                                  : span);
         final Long tip = recordingPositions.remove(recordingId);
         if (tip != null) {
             stopPositions.put(recordingId, tip);
@@ -178,7 +179,7 @@ final class FakeReplayer implements Replayer {
 
     @Override
     public long startReplay(final long recordingId, final long position, final long length, final int streamId) {
-        ++replayAttempts;  // counted before the failure, so a refused probe is still visible as a probe
+        ++replayAttempts; // counted before the failure, so a refused probe is still visible as a probe
         throwIfArchiveDown();
         if (replayFailure != null) {
             throw replayFailure;

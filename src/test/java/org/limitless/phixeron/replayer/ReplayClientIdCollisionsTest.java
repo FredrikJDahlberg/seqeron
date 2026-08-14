@@ -1,9 +1,9 @@
 package org.limitless.phixeron.replayer;
 
+import static org.junit.jupiter.api.Assertions.*;
+
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
-
-import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * Unit tests for the duplicate-{@code PHIXERON_REPLAYER_CLIENT_ID} detector (review-3 finding 4). The
@@ -22,7 +22,7 @@ class ReplayClientIdCollisionsTest {
 
         for (long requestId = 1; requestId <= 100; requestId++) {
             assertFalse(collisions.onRequest(CLIENT, requestId, requestId * 500),
-                    "a single client's requestIds only ever increase");
+                        "a single client's requestIds only ever increase");
         }
     }
 
@@ -39,7 +39,7 @@ class ReplayClientIdCollisionsTest {
         assertFalse(collisions.onRequest(CLIENT, 1, nowMs += 500), "the restart itself is one step back");
         for (long requestId = 2; requestId <= 50; requestId++) {
             assertFalse(collisions.onRequest(CLIENT, requestId, nowMs += 500),
-                    "a restarted client is monotone again — never a collision");
+                        "a restarted client is monotone again — never a collision");
         }
     }
 
@@ -50,7 +50,7 @@ class ReplayClientIdCollisionsTest {
         long nowMs = 0;
 
         for (int restart = 0; restart < 10; restart++) {
-            nowMs += WINDOW_MS * 6;  // hours apart, in window terms
+            nowMs += WINDOW_MS * 6; // hours apart, in window terms
             assertFalse(collisions.onRequest(CLIENT, 1, nowMs), "each restart is evidence of nothing on its own");
             for (long requestId = 2; requestId <= 30; requestId++) {
                 assertFalse(collisions.onRequest(CLIENT, requestId, nowMs += 100));

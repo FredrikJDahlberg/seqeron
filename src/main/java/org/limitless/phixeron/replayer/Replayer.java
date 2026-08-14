@@ -23,7 +23,6 @@ import org.agrona.concurrent.status.AtomicCounter;
  * fixed by the implementation rather than passed at each call.
  */
 public interface Replayer {
-
     /**
      * Every tap recording the local archive holds, in whatever order it listed them — ordering and
      * active-span selection are {@code ReplayerService}'s decisions ({@link ReplayRecordings#stitch}).

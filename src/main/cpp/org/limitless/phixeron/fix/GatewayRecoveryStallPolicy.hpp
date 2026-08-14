@@ -27,12 +27,14 @@ namespace org::limitless::phixeron::fix {
 // because this one fences.
 class GatewayRecoveryStallPolicy
 {
-   public:
+  public:
     // deadlineMs: how long recovery may run without dispatching a single frame, once this instance has
     // been caught up before, before it is declared unconvergent. Deliberately generous relative to a
     // normal gap-recovery re-walk (seconds, per ReplayerStreamReceiver's own file header) so that is
     // never mistaken for the pathological case this exists to catch.
-    explicit GatewayRecoveryStallPolicy(std::int64_t deadlineMs) : m_deadlineMs{deadlineMs} {}
+    explicit GatewayRecoveryStallPolicy(std::int64_t deadlineMs)
+      : m_deadlineMs{ deadlineMs }
+    {}
 
     // Caught up: not (or no longer) recovering. Latches everCaughtUp forever and clears the recovery
     // clock, so re-convergence after a legitimate re-walk re-arms cleanly for the next one.
@@ -62,11 +64,11 @@ class GatewayRecoveryStallPolicy
         return (nowMs - m_recoveryStartMs) >= m_deadlineMs;
     }
 
-   private:
+  private:
     std::int64_t m_deadlineMs;
     bool m_everCaughtUp = false;
-    std::int64_t m_recoveryStartMs = 0;  // 0 = no recovery episode currently timed
-    std::int64_t m_lastGlobalSeqNo = 0;  // frontier at the last observation; only meaningful while timing
+    std::int64_t m_recoveryStartMs = 0; // 0 = no recovery episode currently timed
+    std::int64_t m_lastGlobalSeqNo = 0; // frontier at the last observation; only meaningful while timing
 };
 
-}  // namespace org::limitless::phixeron::fix
+} // namespace org::limitless::phixeron::fix

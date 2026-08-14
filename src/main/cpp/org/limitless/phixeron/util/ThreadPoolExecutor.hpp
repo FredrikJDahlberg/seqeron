@@ -21,8 +21,9 @@ namespace org::limitless::phixeron::util {
 // clone()/stack-alloc for a thread that's spun up and torn down just for it.
 class ThreadPoolExecutor
 {
-public:
-    explicit ThreadPoolExecutor(int poolSize) : m_poolSize{poolSize}
+  public:
+    explicit ThreadPoolExecutor(int poolSize)
+      : m_poolSize{ poolSize }
     {
         m_workers.reserve(poolSize);
         for (int i = 0; i < poolSize; ++i)
@@ -69,7 +70,7 @@ public:
         m_cv.notify_one();
     }
 
-private:
+  private:
     void workerLoop()
     {
         while (true)
@@ -80,7 +81,7 @@ private:
                 m_cv.wait(lock, [this] { return m_stopping || !m_tasks.empty(); });
                 if (m_tasks.empty())
                 {
-                    return;  // stopping, and every queued task has already drained
+                    return; // stopping, and every queued task has already drained
                 }
                 task = std::move(m_tasks.front());
                 m_tasks.pop_front();
@@ -91,12 +92,12 @@ private:
     }
 
     int m_poolSize;
-    std::atomic<int> m_inFlight{0};
+    std::atomic<int> m_inFlight{ 0 };
     std::mutex m_mutex;
     std::condition_variable m_cv;
     std::deque<std::function<void()>> m_tasks;
-    bool m_stopping{false};
+    bool m_stopping{ false };
     std::vector<std::thread> m_workers;
 };
 
-}  // namespace org::limitless::phixeron::util
+} // namespace org::limitless::phixeron::util

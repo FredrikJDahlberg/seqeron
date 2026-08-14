@@ -104,12 +104,17 @@ public final class MetricsAggregator {
         }
 
         final StringBuilder body = new StringBuilder();
-        body.append("# HELP ").append(NODE_UP_NAME)
+        body.append("# HELP ")
+            .append(NODE_UP_NAME)
             .append(" 1 if the aggregator's last scrape of this node's exporter succeeded, else 0.\n");
         body.append("# TYPE ").append(NODE_UP_NAME).append(" gauge\n");
         for (final Map.Entry<Integer, Boolean> entry : up.entrySet()) {
-            body.append(NODE_UP_NAME).append("{member=\"").append(entry.getKey()).append("\"} ")
-                .append(entry.getValue() ? 1 : 0).append('\n');
+            body.append(NODE_UP_NAME)
+                .append("{member=\"")
+                .append(entry.getKey())
+                .append("\"} ")
+                .append(entry.getValue() ? 1 : 0)
+                .append('\n');
         }
 
         for (final String name : helpByName.keySet()) {
@@ -124,9 +129,9 @@ public final class MetricsAggregator {
     private String scrape(final String hostPort) {
         try {
             final HttpRequest request = HttpRequest.newBuilder(URI.create("http://" + hostPort + "/metrics"))
-                .timeout(SCRAPE_TIMEOUT)
-                .GET()
-                .build();
+                                            .timeout(SCRAPE_TIMEOUT)
+                                            .GET()
+                                            .build();
             final HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
             return response.statusCode() == 200 ? response.body() : null;
         } catch (final IOException ex) {
@@ -138,7 +143,8 @@ public final class MetricsAggregator {
     }
 
     private static void parseInto(final String scraped, final Map<String, String> helpByName,
-                                   final Map<String, String> typeByName, final Map<String, StringBuilder> samplesByName) {
+                                  final Map<String, String> typeByName,
+                                  final Map<String, StringBuilder> samplesByName) {
         for (final String line : scraped.split("\n")) {
             if (line.isEmpty()) {
                 continue;

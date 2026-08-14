@@ -20,9 +20,10 @@ public final class ReplayRecordings {
      * Today it is always 0 (SequencerService arms recording on a brand-new publication before emitting
      * anything), but a replay requested below it fails at the archive rather than degrading.
      */
-    public record RecordingSpan(long recordingId, long startPosition, boolean active) {}
+    public record RecordingSpan(long recordingId, long startPosition, boolean active) { }
 
-    private ReplayRecordings() {}
+    private ReplayRecordings() {
+    }
 
     /**
      * Orders {@code spans} oldest→newest by {@code recordingId} and keeps every stopped span plus the
@@ -46,7 +47,7 @@ public final class ReplayRecordings {
         final List<RecordingSpan> sorted = new ArrayList<>(spans);
         sorted.sort(Comparator.comparingLong(RecordingSpan::recordingId));
 
-        long newestActiveId = -1;  // recordingIds are non-negative; -1 means "no active span"
+        long newestActiveId = -1; // recordingIds are non-negative; -1 means "no active span"
         for (final RecordingSpan span : sorted) {
             if (span.active()) {
                 newestActiveId = span.recordingId();

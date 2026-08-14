@@ -50,4 +50,4 @@ TEST(PortLayout, SatellitePortsAreDistinctPerRole)
     }
 }
 
-}  // namespace
+} // namespace

@@ -25,8 +25,9 @@ namespace {
 // ── Fake transports ───────────────────────────────────────────────────────────
 
 // Captures every frame offered to the cluster ingress for inspection by tests.
-class FakeIngressTransport : public IngressTransport {
-   public:
+class FakeIngressTransport : public IngressTransport
+{
+  public:
     std::vector<std::vector<std::uint8_t>> m_offered;
 
     bool offer(std::span<const std::uint8_t> bytes) override
@@ -39,11 +40,12 @@ class FakeIngressTransport : public IngressTransport {
 // Rejects the first m_rejectCount offers (as a back-pressured or, during a leader
 // failover, not-connected ingress publication would), then accepts — capturing the
 // frame that finally lands. Drives ClusterStreamSender::send()'s reliable-offer spin.
-class FlakyIngressTransport : public IngressTransport {
-   public:
-    int m_rejectCount = 0;  // reject this many offers before accepting the next
+class FlakyIngressTransport : public IngressTransport
+{
+  public:
+    int m_rejectCount = 0; // reject this many offers before accepting the next
     int m_offerCalls = 0;
-    std::vector<std::uint8_t> m_accepted;  // the frame that finally landed
+    std::vector<std::uint8_t> m_accepted; // the frame that finally landed
 
     bool offer(std::span<const std::uint8_t> bytes) override
     {
@@ -60,8 +62,9 @@ class FlakyIngressTransport : public IngressTransport {
 
 // Delivers pre-queued frames on poll(), one per call, mimicking a cluster
 // egress subscription that already has messages buffered.
-class FakeEgressTransport : public EgressTransport {
-   public:
+class FakeEgressTransport : public EgressTransport
+{
+  public:
     std::deque<std::vector<std::uint8_t>> m_queued;
 
     int poll(const FragmentHandler& handler) override
@@ -79,9 +82,9 @@ class FakeEgressTransport : public EgressTransport {
 
 // ── Fixture wire helpers ──────────────────────────────────────────────────────
 
-std::vector<std::uint8_t> encodeSessionEvent(std::int64_t clusterSessionId, std::int64_t leadershipTermId,
-                                             cluster_sbe::EventCode::Value code, std::int32_t leaderMemberId = 0,
-                                             std::string_view detail = {})
+std::vector<std::uint8_t>
+encodeSessionEvent(std::int64_t clusterSessionId, std::int64_t leadershipTermId, cluster_sbe::EventCode::Value code,
+                   std::int32_t leaderMemberId = 0, std::string_view detail = {})
 {
     std::vector<std::uint8_t> buf(256 + detail.size(), 0);
     cluster_sbe::SessionEvent enc;
@@ -98,8 +101,9 @@ std::vector<std::uint8_t> encodeSessionEvent(std::int64_t clusterSessionId, std:
     return buf;
 }
 
-std::vector<std::uint8_t> encodeNewLeaderEvent(std::int64_t leadershipTermId, std::int32_t leaderMemberId = 0,
-                                               std::string_view ingressEndpoints = {})
+std::vector<std::uint8_t>
+encodeNewLeaderEvent(std::int64_t leadershipTermId, std::int32_t leaderMemberId = 0,
+                     std::string_view ingressEndpoints = {})
 {
     std::vector<std::uint8_t> buf(128 + ingressEndpoints.size(), 0);
     cluster_sbe::NewLeaderEvent enc;
@@ -112,8 +116,9 @@ std::vector<std::uint8_t> encodeNewLeaderEvent(std::int64_t leadershipTermId, st
 
 // Builds an egress frame carrying an application-layer payload the way the
 // real cluster echoes it back: SessionMessageHeader followed by arbitrary bytes.
-std::vector<std::uint8_t> encodeSessionMessage(std::int64_t leadershipTermId, std::int64_t clusterSessionId,
-                                               std::span<const std::uint8_t> appPayload)
+std::vector<std::uint8_t>
+encodeSessionMessage(std::int64_t leadershipTermId, std::int64_t clusterSessionId,
+                     std::span<const std::uint8_t> appPayload)
 {
     std::vector<std::uint8_t> buf(256 + appPayload.size(), 0);
     cluster_sbe::SessionMessageHeader enc;
@@ -129,8 +134,9 @@ std::vector<std::uint8_t> encodeSessionMessage(std::int64_t leadershipTermId, st
 
 // Decodes the MessageHeader + templateId-specific SBE message that
 // ClusterStreamSender offered to the (fake) ingress transport.
-template <typename SbeMsg>
-SbeMsg decodeOffered(std::vector<std::uint8_t>& frame)
+template<typename SbeMsg>
+SbeMsg
+decodeOffered(std::vector<std::uint8_t>& frame)
 {
     cluster_sbe::MessageHeader hdr;
     hdr.wrap(reinterpret_cast<char*>(frame.data()), 0, 0, frame.size());
@@ -250,8 +256,9 @@ TEST(ClusterStreamSender, ConnectIgnoresRedirectWithoutAeronClientThenConnectsOn
     EXPECT_EQ(1u, ingressPtr->m_offered.size());
 }
 
-class ConnectedClusterStreamSender : public ::testing::Test {
-   protected:
+class ConnectedClusterStreamSender : public ::testing::Test
+{
+  protected:
     void SetUp() override
     {
         auto egress = std::make_unique<FakeEgressTransport>();
@@ -263,20 +270,20 @@ class ConnectedClusterStreamSender : public ::testing::Test {
 
         sender_.connect(std::move(ingress), std::move(egress));
         ASSERT_TRUE(sender_.isConnected());
-        ingress_->m_offered.clear();  // drop the captured SessionConnectRequest
+        ingress_->m_offered.clear(); // drop the captured SessionConnectRequest
     }
 
     static constexpr std::int64_t SESSION_ID = 55;
     static constexpr std::int64_t TERM_ID = 11;
 
     ClusterStreamSender sender_;
-    FakeIngressTransport* ingress_{nullptr};
-    FakeEgressTransport* egress_{nullptr};
+    FakeIngressTransport* ingress_{ nullptr };
+    FakeEgressTransport* egress_{ nullptr };
 };
 
 TEST_F(ConnectedClusterStreamSender, SendWrapsBytesWithSessionMessageHeader)
 {
-    const std::array<std::uint8_t, 5> body{'8', '=', 'F', 'I', 'X'};
+    const std::array<std::uint8_t, 5> body{ '8', '=', 'F', 'I', 'X' };
     EXPECT_TRUE(sender_.send(body.data(), static_cast<std::uint16_t>(body.size())));
 
     ASSERT_EQ(1u, ingress_->m_offered.size());
@@ -331,7 +338,7 @@ TEST_F(ConnectedClusterStreamSender, SendReportsFailureOnceTheSessionIsClosed)
     ASSERT_FALSE(sender_.isConnected());
     ingress_->m_offered.clear();
 
-    const std::array<std::uint8_t, 1> body{'8'};
+    const std::array<std::uint8_t, 1> body{ '8' };
     EXPECT_FALSE(sender_.send(body.data(), 1));
     EXPECT_TRUE(ingress_->m_offered.empty());
 }
@@ -368,7 +375,7 @@ TEST_F(ConnectedClusterStreamSender, CloseSendsSessionCloseRequestAndForgetsSess
 
 TEST_F(ConnectedClusterStreamSender, PollEgressDeliversApplicationPayload)
 {
-    const std::array<std::uint8_t, 4> app{'8', '=', 'x', 'x'};
+    const std::array<std::uint8_t, 4> app{ '8', '=', 'x', 'x' };
     egress_->m_queued.push_back(encodeSessionMessage(TERM_ID, SESSION_ID, app));
 
     std::vector<std::uint8_t> received;
@@ -387,7 +394,7 @@ TEST_F(ConnectedClusterStreamSender, PollEgressUpdatesLeadershipTermOnNewLeaderE
     });
 
     // The new leadership term must now be used for subsequent sends.
-    const std::array<std::uint8_t, 1> body{'8'};
+    const std::array<std::uint8_t, 1> body{ '8' };
     EXPECT_TRUE(sender_.send(body.data(), 1));
 
     ASSERT_EQ(1u, ingress_->m_offered.size());
@@ -407,7 +414,7 @@ TEST_F(ConnectedClusterStreamSender, PollEgressIgnoresNewLeaderEndpointWithoutAe
         FAIL() << "NewLeaderEvent must not be forwarded as an application message";
     });
 
-    const std::array<std::uint8_t, 1> body{'8'};
+    const std::array<std::uint8_t, 1> body{ '8' };
     EXPECT_TRUE(sender_.send(body.data(), 1));
 
     ASSERT_EQ(1u, ingress_->m_offered.size());
@@ -424,8 +431,8 @@ TEST_F(ConnectedClusterStreamSender, PollEgressReportsTheClusterClosingThisSessi
 {
     EXPECT_FALSE(sender_.isSessionLost());
 
-    egress_->m_queued.push_back(encodeSessionEvent(SESSION_ID, TERM_ID, cluster_sbe::EventCode::Value::CLOSED, 0,
-                                                   "TIMEOUT"));
+    egress_->m_queued.push_back(
+        encodeSessionEvent(SESSION_ID, TERM_ID, cluster_sbe::EventCode::Value::CLOSED, 0, "TIMEOUT"));
     sender_.pollEgress([](const std::uint8_t*, std::int32_t) {
         FAIL() << "a SessionEvent must not be forwarded as an application message";
     });
@@ -433,7 +440,7 @@ TEST_F(ConnectedClusterStreamSender, PollEgressReportsTheClusterClosingThisSessi
     EXPECT_TRUE(sender_.isSessionLost());
     EXPECT_FALSE(sender_.isConnected());
     // …and the session is genuinely gone, not merely flagged: nothing more may be framed onto it.
-    const std::array<std::uint8_t, 1> body{'8'};
+    const std::array<std::uint8_t, 1> body{ '8' };
     EXPECT_FALSE(sender_.send(body.data(), 1));
     EXPECT_TRUE(ingress_->m_offered.empty());
 }
@@ -467,12 +474,12 @@ TEST(ClusterStreamSenderReliableSend, SendSpinsUntilOfferAccepted)
     ASSERT_TRUE(sender.isConnected());
 
     ingressPtr->m_offerCalls = 0;
-    ingressPtr->m_rejectCount = 3;  // reject three offers, accept the fourth
+    ingressPtr->m_rejectCount = 3; // reject three offers, accept the fourth
 
-    const std::array<std::uint8_t, 5> body{'8', '=', 'F', 'I', 'X'};
+    const std::array<std::uint8_t, 5> body{ '8', '=', 'F', 'I', 'X' };
     EXPECT_TRUE(sender.send(body.data(), static_cast<std::uint16_t>(body.size())));
 
-    EXPECT_EQ(4, ingressPtr->m_offerCalls);  // spun until it landed
+    EXPECT_EQ(4, ingressPtr->m_offerCalls); // spun until it landed
     ASSERT_FALSE(ingressPtr->m_accepted.empty());
     auto hdr = decodeOffered<cluster_sbe::SessionMessageHeader>(ingressPtr->m_accepted);
     EXPECT_EQ(11, hdr.leadershipTermId());
@@ -505,13 +512,13 @@ TEST(ClusterStreamSenderReliableSend, SendReStampsLeadershipTermAfterMidSpinFail
     ingressPtr->m_offerCalls = 0;
     ingressPtr->m_rejectCount = 1;
 
-    const std::array<std::uint8_t, 1> body{'8'};
+    const std::array<std::uint8_t, 1> body{ '8' };
     EXPECT_TRUE(sender.send(body.data(), 1));
 
     EXPECT_EQ(2, ingressPtr->m_offerCalls);
     ASSERT_FALSE(ingressPtr->m_accepted.empty());
     auto hdr = decodeOffered<cluster_sbe::SessionMessageHeader>(ingressPtr->m_accepted);
-    EXPECT_EQ(999, hdr.leadershipTermId());  // re-stamped to the new leader's term
+    EXPECT_EQ(999, hdr.leadershipTermId()); // re-stamped to the new leader's term
 }
 
 // The cluster closes this session while send()'s spin is already running — the CLOSED event is
@@ -536,14 +543,14 @@ TEST(ClusterStreamSenderReliableSend, SendGivesUpWhenTheSessionIsClosedMidSpin)
     egressPtr->m_queued.push_back(
         encodeSessionEvent(55, 11, cluster_sbe::EventCode::Value::CLOSED, 0, "SERVICE_ACTION"));
     ingressPtr->m_offerCalls = 0;
-    ingressPtr->m_accepted.clear();  // drop the connect handshake frame, so this asserts on send() alone
-    ingressPtr->m_rejectCount = 32;  // far more than the one rejection the close needs to land
+    ingressPtr->m_accepted.clear(); // drop the connect handshake frame, so this asserts on send() alone
+    ingressPtr->m_rejectCount = 32; // far more than the one rejection the close needs to land
 
-    const std::array<std::uint8_t, 1> body{'8'};
+    const std::array<std::uint8_t, 1> body{ '8' };
     EXPECT_FALSE(sender.send(body.data(), 1));
 
-    EXPECT_EQ(1, ingressPtr->m_offerCalls);   // gave up on the first rejection, not after 32
-    EXPECT_TRUE(ingressPtr->m_accepted.empty());  // nothing was placed on the dead session
+    EXPECT_EQ(1, ingressPtr->m_offerCalls);      // gave up on the first rejection, not after 32
+    EXPECT_TRUE(ingressPtr->m_accepted.empty()); // nothing was placed on the dead session
     EXPECT_TRUE(sender.isSessionLost());
     EXPECT_FALSE(sender.isConnected());
 }
@@ -574,7 +581,7 @@ TEST(ClusterStreamSenderColocated, PollEgressIgnoresIpcRechaseWithoutAeronClient
 
     // The new leadership term must still be adopted for subsequent sends, exactly as the
     // no-co-located-member case does.
-    const std::array<std::uint8_t, 1> body{'8'};
+    const std::array<std::uint8_t, 1> body{ '8' };
     EXPECT_TRUE(sender.send(body.data(), 1));
 }
 
@@ -708,5 +715,5 @@ TEST(FindIngressEndpoint, ReturnsFalseOnEmptyCsv)
     EXPECT_FALSE(findIngressEndpoint("", 0, out));
 }
 
-}  // namespace
-}  // namespace org::limitless::phixeron::sequencer
+} // namespace
+} // namespace org::limitless::phixeron::sequencer

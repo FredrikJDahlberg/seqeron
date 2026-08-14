@@ -101,13 +101,13 @@ public final class ReplayerNode {
         // thread has joined.
         final AeronArchive archive =
             AeronArchive.connect(new AeronArchive.Context()
-                .aeron(aeron)
-                .ownsAeronClient(false)
-                .controlRequestChannel("aeron:ipc")
-                .controlRequestStreamId(ARCHIVE_CONTROL_STREAM_ID)
-                .controlResponseChannel("aeron:ipc")
-                .controlResponseStreamId(ARCHIVE_CONTROL_RESPONSE_STREAM_ID)
-                .lock(NoOpLock.INSTANCE));
+                                     .aeron(aeron)
+                                     .ownsAeronClient(false)
+                                     .controlRequestChannel("aeron:ipc")
+                                     .controlRequestStreamId(ARCHIVE_CONTROL_STREAM_ID)
+                                     .controlResponseChannel("aeron:ipc")
+                                     .controlResponseStreamId(ARCHIVE_CONTROL_RESPONSE_STREAM_ID)
+                                     .lock(NoOpLock.INSTANCE));
 
         final IdleStrategy idleStrategy = resolveIdleStrategy();
         final AtomicBoolean running = new AtomicBoolean(true);
@@ -125,7 +125,7 @@ public final class ReplayerNode {
         replayerThread.start();
 
         Logger.info(Logger.Component.ReplayerNode, memberId, "Running — Ctrl-C to stop | aeronDir=%s | idle=%s",
-                aeronDir, idleStrategy.getClass().getSimpleName());
+                    aeronDir, idleStrategy.getClass().getSimpleName());
         // NOT try-with-resources on the barrier. Agrona drives it from a JVM shutdown hook that signals
         // every barrier and then waits (10s) for each to be closed — so closing it is what releases the
         // JVM to finish exiting. Closing it first, as `try (barrier) { await(); } finally { …teardown }`
@@ -151,9 +151,9 @@ public final class ReplayerNode {
             Logger.info(Logger.Component.ReplayerNode, memberId, "Shutdown complete");
         } else {
             Logger.error(Logger.Component.ReplayerNode, Logger.EventCode.ShutdownTimeout, memberId,
-                    "duty-cycle thread still running %dms after being told to stop — exiting without "
-                            + "closing the archive/Aeron client rather than closing them under it",
-                    SHUTDOWN_JOIN_TIMEOUT_MS);
+                         "duty-cycle thread still running %dms after being told to stop — exiting without "
+                             + "closing the archive/Aeron client rather than closing them under it",
+                         SHUTDOWN_JOIN_TIMEOUT_MS);
         }
         barrier.close();
 
@@ -178,8 +178,9 @@ public final class ReplayerNode {
             case "busyspin" -> new BusySpinIdleStrategy();
             case "yielding" -> new YieldingIdleStrategy();
             case "backoff" -> new BackoffIdleStrategy();
-            default -> throw new IllegalArgumentException(
-                "Unknown " + PROP_IDLE_STRATEGY + "=" + name + " (expected 'backoff', 'yielding', or 'busyspin')");
+            default ->
+                throw new IllegalArgumentException("Unknown " + PROP_IDLE_STRATEGY + "=" + name +
+                                                   " (expected 'backoff', 'yielding', or 'busyspin')");
         };
     }
 }

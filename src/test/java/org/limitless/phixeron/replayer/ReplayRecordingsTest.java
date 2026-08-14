@@ -50,8 +50,7 @@ class ReplayRecordingsTest {
     @Test
     @DisplayName("input is sorted by recordingId regardless of listing order")
     void inputIsSortedByRecordingIdRegardlessOfListingOrder() {
-        final List<RecordingSpan> spans =
-            List.of(span(300, false), span(100, false), span(200, true));
+        final List<RecordingSpan> spans = List.of(span(300, false), span(100, false), span(200, true));
 
         assertEquals(List.of(100L, 200L, 300L), ids(ReplayRecordings.stitch(spans)));
     }
@@ -59,8 +58,7 @@ class ReplayRecordingsTest {
     @Test
     @DisplayName("every stopped recording is kept even with none active")
     void everyStoppedRecordingIsKeptEvenWithNoneActive() {
-        final List<RecordingSpan> spans =
-            List.of(span(1, false), span(2, false), span(3, false));
+        final List<RecordingSpan> spans = List.of(span(1, false), span(2, false), span(3, false));
 
         assertEquals(List.of(1L, 2L, 3L), ids(ReplayRecordings.stitch(spans)));
     }
@@ -81,8 +79,7 @@ class ReplayRecordingsTest {
     @DisplayName("stopped spans newer than the kept active one are still kept")
     void stoppedSpansNewerThanTheKeptActiveOneAreStillKept() {
         // Only actives are deduplicated; every stopped span stays in the chain, in recordingId order.
-        final List<RecordingSpan> spans =
-            List.of(span(1, true), span(2, true), span(3, false));
+        final List<RecordingSpan> spans = List.of(span(1, true), span(2, true), span(3, false));
 
         assertEquals(List.of(2L, 3L), ids(ReplayRecordings.stitch(spans)));
     }
@@ -93,8 +90,7 @@ class ReplayRecordingsTest {
         // The chain is what ReplayerService replays each segment from, so a span that lost its
         // startPosition on the way through would be replayed from a hardcoded 0 — the assumption
         // doc/review A10 is about.
-        final List<RecordingSpan> spans =
-            List.of(new RecordingSpan(2, 8192, true), new RecordingSpan(1, 4096, false));
+        final List<RecordingSpan> spans = List.of(new RecordingSpan(2, 8192, true), new RecordingSpan(1, 4096, false));
 
         final List<RecordingSpan> chain = ReplayRecordings.stitch(spans);
 
@@ -104,8 +100,7 @@ class ReplayRecordingsTest {
     @Test
     @DisplayName("stitching does not mutate the input list")
     void stitchingDoesNotMutateInput() {
-        final List<RecordingSpan> spans =
-            new java.util.ArrayList<>(List.of(span(2, false), span(1, false)));
+        final List<RecordingSpan> spans = new java.util.ArrayList<>(List.of(span(2, false), span(1, false)));
         final List<RecordingSpan> original = List.copyOf(spans);
 
         ReplayRecordings.stitch(spans);

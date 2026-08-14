@@ -32,20 +32,20 @@ public final class AeronReplayer implements Replayer {
         this.aeron = aeron;
         this.archive = archive;
         this.memberId = memberId;
-        this.controlPub =
-            aeron.addExclusivePublication(ReplayerService.IPC_CHANNEL, ReplayerService.CONTROL_STREAM_ID);
+        this.controlPub = aeron.addExclusivePublication(ReplayerService.IPC_CHANNEL, ReplayerService.CONTROL_STREAM_ID);
         this.requestSub = aeron.addSubscription(ReplayerService.IPC_CHANNEL, ReplayerService.REQUEST_STREAM_ID);
     }
 
     @Override
     public List<ReplayRecordings.RecordingSpan> listTapRecordings() {
         final List<ReplayRecordings.RecordingSpan> spans = new ArrayList<>();
-        archive.listRecordingsForUri(0, Integer.MAX_VALUE, "", SequencerService.FEEDER_STREAM_ID,
-                                     (controlSessionId, correlationId, recordingId, startTimestamp, stopTimestamp,
-                                      startPosition, stopPosition, initialTermId, segmentFileLength, termBufferLength,
-                                      mtuLength, sessionId, streamId, strippedChannel, originalChannel,
-                                      sourceIdentity) -> spans.add(new ReplayRecordings.RecordingSpan(recordingId,
-                                          startPosition, stopTimestamp == AeronArchive.NULL_TIMESTAMP)));
+        archive.listRecordingsForUri(
+            0, Integer.MAX_VALUE, "", SequencerService.FEEDER_STREAM_ID,
+            (controlSessionId, correlationId, recordingId, startTimestamp, stopTimestamp, startPosition, stopPosition,
+             initialTermId, segmentFileLength, termBufferLength, mtuLength, sessionId, streamId, strippedChannel,
+             originalChannel, sourceIdentity)
+                -> spans.add(new ReplayRecordings.RecordingSpan(recordingId, startPosition,
+                                                                stopTimestamp == AeronArchive.NULL_TIMESTAMP)));
         return spans;
     }
 

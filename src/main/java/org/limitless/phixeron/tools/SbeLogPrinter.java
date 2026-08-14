@@ -144,8 +144,8 @@ public class SbeLogPrinter {
                     break;
                 }
 
-                final int frameLength
-                    = BitUtil.align(recordingLength + DESCRIPTOR_HEADER_LENGTH, BitUtil.CACHE_LINE_LENGTH);
+                final int frameLength =
+                    BitUtil.align(recordingLength + DESCRIPTOR_HEADER_LENGTH, BitUtil.CACHE_LINE_LENGTH);
 
                 if (headerDecoder.state() == RecordingState.VALID) {
                     final int descriptorOffset = offset + DESCRIPTOR_HEADER_LENGTH;
@@ -155,8 +155,8 @@ public class SbeLogPrinter {
                     if (NO_STREAM_FILTER == streamIdFilter) {
                         dumpRecording(descriptorDecoder);
                         foundAny = true;
-                    } else if (descriptorDecoder.streamId() == streamIdFilter
-                               && descriptorDecoder.recordingId() > selectedRecordingId) {
+                    } else if (descriptorDecoder.streamId() == streamIdFilter &&
+                               descriptorDecoder.recordingId() > selectedRecordingId) {
                         selectedRecordingId = descriptorDecoder.recordingId();
                         selectedOffset = descriptorOffset;
                     }
@@ -179,7 +179,6 @@ public class SbeLogPrinter {
             }
 
             return foundAny;
-
         } catch (Exception e) {
             System.err.println("Failed parsing catalog file: " + e.getMessage());
             return false;
@@ -241,8 +240,8 @@ public class SbeLogPrinter {
                         if (oneLine) {
                             collapse(outputBuilder);
                         }
-                        System.out.println("--- Log File Offset: " + currentPosition + " | "
-                                           + messageName(templateId) + " (templateId " + templateId + ") ---");
+                        System.out.println("--- Log File Offset: " + currentPosition + " | " + messageName(templateId) +
+                                           " (templateId " + templateId + ") ---");
                         System.out.println(outputBuilder);
                     }
 
@@ -250,7 +249,6 @@ public class SbeLogPrinter {
                     fileOffset += paddedLength;
                     currentPosition += paddedLength;
                 }
-
             } catch (Exception e) {
                 System.err.println("Exception parsing segment " + segmentFile + ": " + e.getMessage());
                 break;

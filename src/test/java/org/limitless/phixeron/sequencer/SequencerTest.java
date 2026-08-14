@@ -45,9 +45,8 @@ class SequencerTest {
     private static final int MAX_UINT16 = 65535;
 
     /** Ingress header composite is 16 bytes, sequenced is 32 — the delta every egress frame grows by. */
-    private static final int HEADER_GROWTH =
-        org.limitless.phixeron.sbe.sequenced.HeaderEncoder.ENCODED_LENGTH
-        - org.limitless.phixeron.sbe.unsequenced.HeaderEncoder.ENCODED_LENGTH;
+    private static final int HEADER_GROWTH = org.limitless.phixeron.sbe.sequenced.HeaderEncoder.ENCODED_LENGTH -
+        org.limitless.phixeron.sbe.unsequenced.HeaderEncoder.ENCODED_LENGTH;
 
     private final Sequencer sequencer = new Sequencer();
     private final MutableDirectBuffer ingress = new ExpandableArrayBuffer(512);
@@ -109,10 +108,8 @@ class SequencerTest {
         final int length = sequencer.sequenceMessage(ingress, 0, ingressLength, SESSION_ID, TIMESTAMP);
 
         final MessageHeaderDecoder messageHeader = new MessageHeaderDecoder().wrap(sequencer.buffer(), 0);
-        final LogoutDecoder decoded = new LogoutDecoder().wrap(sequencer.buffer(),
-                                                               MessageHeaderDecoder.ENCODED_LENGTH,
-                                                               messageHeader.blockLength(),
-                                                               messageHeader.version());
+        final LogoutDecoder decoded = new LogoutDecoder().wrap(sequencer.buffer(), MessageHeaderDecoder.ENCODED_LENGTH,
+                                                               messageHeader.blockLength(), messageHeader.version());
         assertEquals("CLIENT", decoded.sender().trim());
         assertEquals(99L, decoded.seqNum());
         assertEquals(reason, decoded.text());
@@ -176,15 +173,17 @@ class SequencerTest {
         final MutableDirectBuffer lifecycle = new ExpandableArrayBuffer(64);
 
         final int connectedLength = encodeIngressClientConnected(lifecycle, 0);
-        assertEquals(1L, globalSeqNoOf(sequencer.sequenceMessage(lifecycle, 0, connectedLength, SESSION_ID, TIMESTAMP)));
+        assertEquals(1L,
+                     globalSeqNoOf(sequencer.sequenceMessage(lifecycle, 0, connectedLength, SESSION_ID, TIMESTAMP)));
         assertEquals(2L, globalSeqNoOf(sequencer.sequenceMessage(ingress, 0, ingressLength, SESSION_ID, TIMESTAMP)));
         assertEquals(3L, globalSeqNoOf(sequencer.tick(TIMESTAMP + 1000)));
         assertEquals(4L, globalSeqNoOf(sequencer.leadershipChanged(2, TIMESTAMP + 1500)));
         assertEquals(5L, globalSeqNoOf(sequencer.sequenceMessage(ingress, 0, ingressLength, SESSION_ID, TIMESTAMP)));
 
         final int disconnectedLength = encodeIngressClientDisconnected(lifecycle, 0);
-        assertEquals(6L, globalSeqNoOf(
-            sequencer.sequenceMessage(lifecycle, 0, disconnectedLength, SESSION_ID, TIMESTAMP + 2000)));
+        assertEquals(
+            6L,
+            globalSeqNoOf(sequencer.sequenceMessage(lifecycle, 0, disconnectedLength, SESSION_ID, TIMESTAMP + 2000)));
         assertEquals(6L, sequencer.globalSeqNo());
     }
 
@@ -314,7 +313,7 @@ class SequencerTest {
             collect(frames, target, target.sequenceMessage(message, 0, messageLength, SESSION_ID, TIMESTAMP + i));
             collect(frames, target, target.tick(TIMESTAMP + 1000L * i));
         }
-        collect(frames, target, target.leadershipChanged(0, TIMESTAMP + 9));  // suppressed
+        collect(frames, target, target.leadershipChanged(0, TIMESTAMP + 9)); // suppressed
         collect(frames, target, target.leadershipChanged(1, TIMESTAMP + 10));
         final int disconnectedLength = encodeIngressClientDisconnected(lifecycle, 0);
         collect(frames, target, target.sequenceMessage(lifecycle, 0, disconnectedLength, SESSION_ID, TIMESTAMP + 11));
@@ -340,8 +339,7 @@ class SequencerTest {
         // globalSeqNo alone and drop the six other replicated fields, so a restored node re-emitted the
         // bootstrap GatewayActive and stopped producing frames identical to its peers'
         // (doc/review-2026-07-25.md #5). Recovery is full-log replay, which rebuilds all of it.
-        assertThrows(UnsupportedOperationException.class,
-            () -> new SequencerService(() -> { }).onTakeSnapshot(null));
+        assertThrows(UnsupportedOperationException.class, () -> new SequencerService(() -> { }).onTakeSnapshot(null));
     }
 
     // ── Lifecycle and clock frames ────────────────────────────────────────────
@@ -360,9 +358,9 @@ class SequencerTest {
             sequencer.sequenceMessage(lifecycle, 0, encodeIngressClientConnected(lifecycle, 0), SESSION_ID, TIMESTAMP);
         final MessageHeaderDecoder messageHeader = new MessageHeaderDecoder().wrap(sequencer.buffer(), 0);
         assertEquals(ClientConnectedDecoder.TEMPLATE_ID, messageHeader.templateId());
-        final ClientConnectedDecoder connectedDecoder = new ClientConnectedDecoder()
-            .wrap(sequencer.buffer(), MessageHeaderDecoder.ENCODED_LENGTH, messageHeader.blockLength(),
-                  messageHeader.version());
+        final ClientConnectedDecoder connectedDecoder =
+            new ClientConnectedDecoder().wrap(sequencer.buffer(), MessageHeaderDecoder.ENCODED_LENGTH,
+                                              messageHeader.blockLength(), messageHeader.version());
         HeaderDecoder header = connectedDecoder.header();
         // `origin` is a header-composite field, so unlike the opaque body it is decoded and
         // re-encoded — the sequencer must carry the publisher's stamp through, never restamp it.
@@ -381,9 +379,9 @@ class SequencerTest {
         final MessageHeaderDecoder disconnectHeader = new MessageHeaderDecoder().wrap(sequencer.buffer(), 0);
         assertEquals(ClientDisconnectedDecoder.TEMPLATE_ID, disconnectHeader.templateId());
         header = new ClientDisconnectedDecoder()
-            .wrap(sequencer.buffer(), MessageHeaderDecoder.ENCODED_LENGTH, disconnectHeader.blockLength(),
-                  disconnectHeader.version())
-            .header();
+                     .wrap(sequencer.buffer(), MessageHeaderDecoder.ENCODED_LENGTH, disconnectHeader.blockLength(),
+                           disconnectHeader.version())
+                     .header();
         assertEquals(CONNECTION_ID, header.connectionId());
         assertEquals(TIMESTAMP + 1, header.timestamp());
         assertEquals(SESSION_ID, header.sessionId());
@@ -401,9 +399,9 @@ class SequencerTest {
         final MessageHeaderDecoder messageHeader = new MessageHeaderDecoder().wrap(sequencer.buffer(), 0);
         assertEquals(TickDecoder.TEMPLATE_ID, messageHeader.templateId());
         final HeaderDecoder header = new TickDecoder()
-            .wrap(sequencer.buffer(), MessageHeaderDecoder.ENCODED_LENGTH, messageHeader.blockLength(),
-                  messageHeader.version())
-            .header();
+                                         .wrap(sequencer.buffer(), MessageHeaderDecoder.ENCODED_LENGTH,
+                                               messageHeader.blockLength(), messageHeader.version())
+                                         .header();
         assertEquals(tickTime, header.timestamp());
         assertEquals(Sequencer.NO_SOURCE_ID, header.sessionId());
         assertEquals(1L, header.globalSeqNo());
@@ -471,7 +469,8 @@ class SequencerTest {
         final Sequencer seq = new Sequencer();
         final MutableDirectBuffer buf = new ExpandableArrayBuffer(128);
 
-        assertEquals(Sequencer.NO_FRAME, seq.pendingGatewayBootstrapActivation(TIMESTAMP), "nothing pending before EndBasicData");
+        assertEquals(Sequencer.NO_FRAME, seq.pendingGatewayBootstrapActivation(TIMESTAMP),
+                     "nothing pending before EndBasicData");
 
         // The load carries the topology: gatewayId 5 (rank 0) is the primary, 6 (rank 1) the standby.
         seq.sequenceMessage(buf, 0, encodeIngressGateway(buf, 0, primaryGatewayId, SOURCE_ID, "GW-A", 0), SESSION_ID,
@@ -479,15 +478,15 @@ class SequencerTest {
         seq.sequenceMessage(buf, 0, encodeIngressGateway(buf, 0, 6, SOURCE_ID, "GW-B", 1), SESSION_ID, TIMESTAMP);
 
         final int endLength = seq.sequenceMessage(buf, 0, encodeIngressEndBasicData(buf, 0), SESSION_ID, TIMESTAMP);
-        assertEquals(3L, globalSeqNoOf(seq, endLength));  // 2 Gateway rows + EndBasicData
+        assertEquals(3L, globalSeqNoOf(seq, endLength)); // 2 Gateway rows + EndBasicData
 
         final int activationLength = seq.pendingGatewayBootstrapActivation(TIMESTAMP + 1);
         assertNotEquals(Sequencer.NO_FRAME, activationLength);
         final GatewayActiveDecoder decoded = decodeGatewayActive(seq.buffer(), activationLength);
-        assertEquals(primaryGatewayId, decoded.gatewayId());       // the rank-0 gatewayId, derived from the log
-        assertEquals(4L, decoded.header().globalSeqNo());          // takes the next globalSeqNo after EndBasicData
+        assertEquals(primaryGatewayId, decoded.gatewayId()); // the rank-0 gatewayId, derived from the log
+        assertEquals(4L, decoded.header().globalSeqNo()); // takes the next globalSeqNo after EndBasicData
         assertEquals(TIMESTAMP + 1, decoded.header().timestamp());
-        assertEquals(Sequencer.NO_SOURCE_ID, decoded.header().sourceId());  // synthesized: no submitter
+        assertEquals(Sequencer.NO_SOURCE_ID, decoded.header().sourceId()); // synthesized: no submitter
 
         // Fires once: a re-emitted load (a leader change mid-load) does not re-designate the primary.
         seq.sequenceMessage(buf, 0, encodeIngressEndBasicData(buf, 0), SESSION_ID, TIMESTAMP + 2);
@@ -529,7 +528,7 @@ class SequencerTest {
         // latching its first match, which made a restarting instance re-activate off a superseded frame.
         assertEquals(6, decoded.gatewayId());
         assertNotEquals(SOURCE_ID, decoded.gatewayId());
-        assertEquals(4L, decoded.header().globalSeqNo());          // 2 Gateway rows + GatewayStarted + promotion
+        assertEquals(4L, decoded.header().globalSeqNo()); // 2 Gateway rows + GatewayStarted + promotion
         assertEquals(TIMESTAMP + 2, decoded.header().timestamp());
 
         // The session is forgotten: a duplicate close does not re-promote.
@@ -595,7 +594,7 @@ class SequencerTest {
         seq.sequenceMessage(buf, 0, encodeIngressGateway(buf, 0, 5, SOURCE_ID, "GW-A", 0), SESSION_ID, TIMESTAMP);
         seq.sequenceMessage(buf, 0, encodeIngressGateway(buf, 0, 6, SOURCE_ID, "GW-B", 1), SESSION_ID, TIMESTAMP);
         seq.sequenceMessage(buf, 0, encodeIngressEndBasicData(buf, 0), SESSION_ID, TIMESTAMP);
-        assertNotEquals(Sequencer.NO_FRAME, seq.pendingGatewayBootstrapActivation(TIMESTAMP));  // designates 5
+        assertNotEquals(Sequencer.NO_FRAME, seq.pendingGatewayBootstrapActivation(TIMESTAMP)); // designates 5
 
         final long deadline = TIMESTAMP + Sequencer.GATEWAY_ACTIVATION_TIMEOUT_MS;
         assertEquals(Sequencer.NO_FRAME, seq.pendingGatewayActivationTimeout(deadline - 1),
@@ -604,7 +603,7 @@ class SequencerTest {
         final int handover = seq.pendingGatewayActivationTimeout(deadline);
         assertNotEquals(Sequencer.NO_FRAME, handover);
         assertEquals(6, decodeGatewayActive(seq.buffer(), handover).gatewayId());
-        assertEquals(5L, seq.globalSeqNo());  // 2 rows + EndBasicData + bootstrap + this
+        assertEquals(5L, seq.globalSeqNo()); // 2 rows + EndBasicData + bootstrap + this
     }
 
     @Test
@@ -681,7 +680,7 @@ class SequencerTest {
 
         final long gatewaySession = 0xA11CEL;
         seq.sequenceMessage(buf, 0, encodeIngressGatewayStarted(buf, 0, 5), gatewaySession, TIMESTAMP);
-        assertNotEquals(Sequencer.NO_FRAME, seq.sessionClosed(gatewaySession, TIMESTAMP));  // promotes 6
+        assertNotEquals(Sequencer.NO_FRAME, seq.sessionClosed(gatewaySession, TIMESTAMP)); // promotes 6
 
         // The standby it promoted has to declare itself started like any other designated instance —
         // otherwise a crash of the primary while the standby is also down leaves the same dead end.
@@ -754,7 +753,7 @@ class SequencerTest {
         encoder.gatewayId(gatewayId)
             .gatewaySourceId(gatewaySourceId)
             .gatewayName(gatewayName)
-            .preferenceRank((short) preferenceRank);
+            .preferenceRank((short)preferenceRank);
         return org.limitless.phixeron.sbe.unsequenced.MessageHeaderEncoder.ENCODED_LENGTH + encoder.encodedLength();
     }
 
@@ -794,7 +793,10 @@ class SequencerTest {
             new org.limitless.phixeron.sbe.unsequenced.ClientConnectedEncoder();
 
         encoder.wrapAndApplyHeader(buffer, offset, messageHeader);
-        encoder.header().sourceId(SOURCE_ID).connectionId(connectionId).sessionId(-1)
+        encoder.header()
+            .sourceId(SOURCE_ID)
+            .connectionId(connectionId)
+            .sessionId(-1)
             .origin(org.limitless.phixeron.sbe.unsequenced.Origin.Gateway);
 
         return org.limitless.phixeron.sbe.unsequenced.MessageHeaderEncoder.ENCODED_LENGTH + encoder.encodedLength();
@@ -814,7 +816,10 @@ class SequencerTest {
             new org.limitless.phixeron.sbe.unsequenced.ClientDisconnectedEncoder();
 
         encoder.wrapAndApplyHeader(buffer, offset, messageHeader);
-        encoder.header().sourceId(SOURCE_ID).connectionId(connectionId).sessionId(-1)
+        encoder.header()
+            .sourceId(SOURCE_ID)
+            .connectionId(connectionId)
+            .sessionId(-1)
             .origin(org.limitless.phixeron.sbe.unsequenced.Origin.Gateway);
 
         return org.limitless.phixeron.sbe.unsequenced.MessageHeaderEncoder.ENCODED_LENGTH + encoder.encodedLength();
@@ -846,7 +851,7 @@ class SequencerTest {
             new org.limitless.phixeron.sbe.unsequenced.EndBasicDataEncoder();
 
         encoder.wrapAndApplyHeader(buffer, offset, messageHeader);
-        encoder.header().sourceId(3).connectionId(-1).sessionId(-1);  // the BasicDataClient's sourceId
+        encoder.header().sourceId(3).connectionId(-1).sessionId(-1); // the BasicDataClient's sourceId
 
         return org.limitless.phixeron.sbe.unsequenced.MessageHeaderEncoder.ENCODED_LENGTH + encoder.encodedLength();
     }
@@ -855,8 +860,8 @@ class SequencerTest {
         final MessageHeaderDecoder messageHeader = new MessageHeaderDecoder().wrap(buffer, 0);
         assertEquals(GatewayActiveDecoder.TEMPLATE_ID, messageHeader.templateId());
         assertEquals(length, MessageHeaderDecoder.ENCODED_LENGTH + messageHeader.blockLength());
-        return new GatewayActiveDecoder().wrap(buffer, MessageHeaderDecoder.ENCODED_LENGTH,
-                                               messageHeader.blockLength(), messageHeader.version());
+        return new GatewayActiveDecoder().wrap(buffer, MessageHeaderDecoder.ENCODED_LENGTH, messageHeader.blockLength(),
+                                               messageHeader.version());
     }
 
     private static NewOrderSingleDecoder decodeNewOrderSingle(final MutableDirectBuffer buffer, final int length) {
@@ -887,11 +892,10 @@ class SequencerTest {
         assertEquals(org.limitless.phixeron.sbe.unsequenced.Origin.values().length,
                      org.limitless.phixeron.sbe.sequenced.Origin.values().length);
         for (final org.limitless.phixeron.sbe.unsequenced.Origin ingress :
-                org.limitless.phixeron.sbe.unsequenced.Origin.values()) {
+             org.limitless.phixeron.sbe.unsequenced.Origin.values()) {
             final org.limitless.phixeron.sbe.sequenced.Origin egress =
                 org.limitless.phixeron.sbe.sequenced.Origin.get(ingress.value());
-            assertEquals(ingress.name(), egress.name(),
-                         "Origin " + ingress.value() + " differs between the schemas");
+            assertEquals(ingress.name(), egress.name(), "Origin " + ingress.value() + " differs between the schemas");
         }
     }
 

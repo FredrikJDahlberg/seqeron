@@ -22,7 +22,7 @@ public final class ReplaySlotAllocator {
     /** One pending request waiting for a free slot, in request order. */
     public record PendingRequest(int clientId, long requestId, int segmentIndex, long fromPosition) { }
 
-    private record ActiveSlot(int clientId, long token, long lastTouchedMs) {}
+    private record ActiveSlot(int clientId, long token, long lastTouchedMs) { }
 
     private final int maxConcurrent;
     private final long slotTtlMs;

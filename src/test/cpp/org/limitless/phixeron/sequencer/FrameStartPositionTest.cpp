@@ -14,21 +14,22 @@
 
 #include <gtest/gtest.h>
 
-#include "aeron_image.h"  // aeron_header_t / aeron_data_header_t layout, to build a header by hand
+#include "aeron_image.h" // aeron_header_t / aeron_data_header_t layout, to build a header by hand
 #include "org/limitless/phixeron/sequencer/ClusterStreamReceiver.hpp"
 
 namespace {
 
 using org::limitless::phixeron::sequencer::frameStartPosition;
 
-constexpr std::int32_t DATA_HEADER_LENGTH = 32;  // AERON_DATA_HEADER_LENGTH
+constexpr std::int32_t DATA_HEADER_LENGTH = 32; // AERON_DATA_HEADER_LENGTH
 constexpr std::int32_t TERM_ID = 7;
-constexpr std::int32_t INITIAL_TERM_ID = 7;         // termCount 0, so position == termOffset
-constexpr std::size_t POSITION_BITS_TO_SHIFT = 16;  // 64 KiB terms
+constexpr std::int32_t INITIAL_TERM_ID = 7;        // termCount 0, so position == termOffset
+constexpr std::size_t POSITION_BITS_TO_SHIFT = 16; // 64 KiB terms
 
 // A frame header as a poll handler sees it. `fragmentedFrameLength` is AERON_NULL_VALUE on every
 // ordinary frame and only set to the on-wire total by the FragmentAssembler's completed header.
-struct Frame {
+struct Frame
+{
     aeron_data_header_t data{};
     aeron_header_t header{};
 
@@ -46,12 +47,13 @@ struct Frame {
 
     aeron::Header wrap()
     {
-        return aeron::Header{&header};
+        return aeron::Header{ &header };
     }
 };
 
 // The formula frameStartPosition replaced, kept here so each test can show what it would have said.
-std::int64_t legacyPosition(const aeron::Header& header)
+std::int64_t
+legacyPosition(const aeron::Header& header)
 {
     return header.position() - header.frameLength();
 }
@@ -60,7 +62,7 @@ std::int64_t legacyPosition(const aeron::Header& header)
 // frameStartPosition did not change the answer where the answer was already correct.
 TEST(FrameStartPosition, AnAlignedFrameStartsWhereBothFormulasAgree)
 {
-    Frame frame{/*termOffset=*/1024, /*frameLength=*/DATA_HEADER_LENGTH + 96};  // 128, 32-aligned
+    Frame frame{ /*termOffset=*/1024, /*frameLength=*/DATA_HEADER_LENGTH + 96 }; // 128, 32-aligned
     const aeron::Header header = frame.wrap();
 
     EXPECT_EQ(1024, frameStartPosition(header));
@@ -72,7 +74,7 @@ TEST(FrameStartPosition, AnAlignedFrameStartsWhereBothFormulasAgree)
 // 32-byte alignment), so subtracting the unaligned frameLength() overshoots by the padding.
 TEST(FrameStartPosition, AnUnalignedFrameOvershootsUnderTheOldSubtraction)
 {
-    Frame frame{/*termOffset=*/1024, /*frameLength=*/DATA_HEADER_LENGTH + 100};  // 132 → padded to 160
+    Frame frame{ /*termOffset=*/1024, /*frameLength=*/DATA_HEADER_LENGTH + 100 }; // 132 → padded to 160
     const aeron::Header header = frame.wrap();
 
     EXPECT_EQ(1024, frameStartPosition(header));
@@ -85,9 +87,9 @@ TEST(FrameStartPosition, AnUnalignedFrameOvershootsUnderTheOldSubtraction)
 // message over an 8 KiB IPC MTU is the case that motivated the FragmentAssembler.
 TEST(FrameStartPosition, AReassembledMessageStartsAtItsFirstFragment)
 {
-    constexpr std::int32_t assembledLength = DATA_HEADER_LENGTH + 8320;  // 8352
-    constexpr std::int32_t onWireLength = 8192 + 192;                    // two fragments, each header-prefixed
-    Frame frame{/*termOffset=*/4096, assembledLength, /*fragmentedFrameLength=*/onWireLength};
+    constexpr std::int32_t assembledLength = DATA_HEADER_LENGTH + 8320; // 8352
+    constexpr std::int32_t onWireLength = 8192 + 192;                   // two fragments, each header-prefixed
+    Frame frame{ /*termOffset=*/4096, assembledLength, /*fragmentedFrameLength=*/onWireLength };
     const aeron::Header header = frame.wrap();
 
     EXPECT_EQ(4096, frameStartPosition(header));
@@ -100,7 +102,7 @@ TEST(FrameStartPosition, EveryDerivedPositionIsFrameAligned)
 {
     for (std::int32_t payload = 1; payload <= 64; ++payload)
     {
-        Frame frame{/*termOffset=*/2048, DATA_HEADER_LENGTH + payload};
+        Frame frame{ /*termOffset=*/2048, DATA_HEADER_LENGTH + payload };
         const aeron::Header header = frame.wrap();
         EXPECT_EQ(0, frameStartPosition(header) % 32) << "payload " << payload;
     }
@@ -109,11 +111,11 @@ TEST(FrameStartPosition, EveryDerivedPositionIsFrameAligned)
 // Term offset alone is not the position: a frame in a later term is that many term lengths along.
 TEST(FrameStartPosition, ALaterTermAdvancesThePositionByWholeTerms)
 {
-    Frame frame{/*termOffset=*/512, DATA_HEADER_LENGTH + 64};
+    Frame frame{ /*termOffset=*/512, DATA_HEADER_LENGTH + 64 };
     frame.data.term_id = INITIAL_TERM_ID + 3;
     const aeron::Header header = frame.wrap();
 
-    EXPECT_EQ((std::int64_t{3} << POSITION_BITS_TO_SHIFT) + 512, frameStartPosition(header));
+    EXPECT_EQ((std::int64_t{ 3 } << POSITION_BITS_TO_SHIFT) + 512, frameStartPosition(header));
 }
 
-}  // namespace
+} // namespace

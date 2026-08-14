@@ -155,7 +155,7 @@ inline constexpr std::uint16_t LEADERSHIP_CHANGED_TEMPLATE_ID = 5;
  */
 class ReplayerStreamReceiver
 {
-   public:
+  public:
     using OnSequenced = std::function<void(const SequencedEvent&)>;
     using OnConnected = std::function<void(const LifecycleEvent&)>;
     using OnDisconnected = std::function<void(const LifecycleEvent&)>;
@@ -163,23 +163,23 @@ class ReplayerStreamReceiver
     using OnCaughtUp = std::function<void()>;
 
     ReplayerStreamReceiver(std::int32_t clientId, OnSequenced onSequenced, OnConnected onConnected = {},
-                   OnDisconnected onDisconnected = {}, OnLeadershipChanged onLeadershipChanged = {},
-                   OnCaughtUp onCaughtUp = {})
-        : m_clientId(clientId),
-          m_onSequenced(std::move(onSequenced)),
-          m_onConnected(std::move(onConnected)),
-          m_onDisconnected(std::move(onDisconnected)),
-          m_onLeadershipChanged(std::move(onLeadershipChanged)),
-          m_onCaughtUp(std::move(onCaughtUp)),
-          m_tapHandler([this](auto& b, auto o, auto l, auto& h) { onFragment(b, o, l, h, /*fromReplay=*/false); }),
-          m_replayHandler([this](auto& b, auto o, auto l, auto& h) { onFragment(b, o, l, h, /*fromReplay=*/true); }),
-          m_controlHandler([this](auto& b, auto o, auto l, auto& h) { onControl(b, o, l, h); }),
-          m_tapAssembler(std::make_unique<aeron::FragmentAssembler>(m_tapHandler)),
-          m_replayAssembler(std::make_unique<aeron::FragmentAssembler>(m_replayHandler)),
-          m_controlAssembler(std::make_unique<aeron::FragmentAssembler>(m_controlHandler)),
-          m_tapPoll(m_tapAssembler->handler()),
-          m_replayPoll(m_replayAssembler->handler()),
-          m_controlPoll(m_controlAssembler->handler())
+                           OnDisconnected onDisconnected = {}, OnLeadershipChanged onLeadershipChanged = {},
+                           OnCaughtUp onCaughtUp = {})
+      : m_clientId(clientId)
+      , m_onSequenced(std::move(onSequenced))
+      , m_onConnected(std::move(onConnected))
+      , m_onDisconnected(std::move(onDisconnected))
+      , m_onLeadershipChanged(std::move(onLeadershipChanged))
+      , m_onCaughtUp(std::move(onCaughtUp))
+      , m_tapHandler([this](auto& b, auto o, auto l, auto& h) { onFragment(b, o, l, h, /*fromReplay=*/false); })
+      , m_replayHandler([this](auto& b, auto o, auto l, auto& h) { onFragment(b, o, l, h, /*fromReplay=*/true); })
+      , m_controlHandler([this](auto& b, auto o, auto l, auto& h) { onControl(b, o, l, h); })
+      , m_tapAssembler(std::make_unique<aeron::FragmentAssembler>(m_tapHandler))
+      , m_replayAssembler(std::make_unique<aeron::FragmentAssembler>(m_replayHandler))
+      , m_controlAssembler(std::make_unique<aeron::FragmentAssembler>(m_controlHandler))
+      , m_tapPoll(m_tapAssembler->handler())
+      , m_replayPoll(m_replayAssembler->handler())
+      , m_controlPoll(m_controlAssembler->handler())
     {}
 
     // Returns any blocks still held by the retained-ahead FIFO (see retainMessages/drainRetained) — the
@@ -200,15 +200,14 @@ class ReplayerStreamReceiver
         m_aeron = std::move(aeron);
         m_recoveryStalledCounterRegId = util::addAppCounter(
             m_aeron, util::APP_RECOVERY_STALLED_TYPE_ID,
-            "phixeron.app.recoveryStalled member=" + std::to_string(memberId) + " client=" +
-                std::to_string(m_clientId),
+            "phixeron.app.recoveryStalled member=" + std::to_string(memberId) + " client=" + std::to_string(m_clientId),
             memberId, m_clientId);
         m_tapSubRegId = m_aeron->addSubscription(FEEDER_CHANNEL, FEEDER_STREAM_ID);
         // No standing replay subscription — see openReplaySubscription: one is opened per replay
         // episode, filtered to that replay's own session id, and closed when the episode ends.
         m_controlSubRegId = m_aeron->addSubscription(REPLAYER_CONTROL_CHANNEL, REPLAYER_CONTROL_STREAM_ID);
         m_requestPubRegId = m_aeron->addPublication(REPLAYER_IPC_CHANNEL, REPLAYER_REQUEST_STREAM_ID);
-        requestReplay(0, 0);  // cold start: walk the recording chain from segment 0
+        requestReplay(0, 0); // cold start: walk the recording chain from segment 0
     }
 
     // Test-only (see OrderExecClient's PHIXERON_FAULT_INJECTION hook): enable dropping live tap frames on
@@ -365,7 +364,7 @@ class ReplayerStreamReceiver
         const bool requestPubPending = m_requestPubRegId >= 0 && (!m_requestPub || !m_requestPub->isConnected());
         if (m_awaitingReplay && (requestPubPending || (nowMs() - m_lastRequestMs) > RESEND_INTERVAL_MS))
         {
-            requestReplay(m_walkSegmentIndex, m_reqFromPosition);  // re-send the same request verbatim
+            requestReplay(m_walkSegmentIndex, m_reqFromPosition); // re-send the same request verbatim
         }
 
         // A ReplayComplete that never made it out holds our slot until the 60s TTL, and nothing else
@@ -464,7 +463,7 @@ class ReplayerStreamReceiver
         return m_currentLeaderMemberId;
     }
 
-   private:
+  private:
     static constexpr int FRAGMENT_LIMIT = 16;
     static constexpr std::int64_t RESEND_INTERVAL_MS = 500;
 
@@ -493,7 +492,8 @@ class ReplayerStreamReceiver
     // Fixed-size block backing the retained-ahead FIFO (see retainMessages/drainRetained). Records are
     // appended length-prefixed and never split across a block boundary — every message here is well
     // under 512 bytes, so the wasted tail per boundary is bounded and negligible against SIZE.
-    struct MessagesBlock {
+    struct MessagesBlock
+    {
         static constexpr std::size_t SIZE = 4096;
         std::array<std::uint8_t, SIZE> bytes;
         std::size_t used = 0;
@@ -501,7 +501,8 @@ class ReplayerStreamReceiver
 
     // Per-record framing within a block. Carries the receive stamp and position from when the frame
     // arrived, so a consumer's delivery-latency stats measure the tap, not the drain.
-    struct MessagesRecordHeader {
+    struct MessagesRecordHeader
+    {
         std::int64_t globalSeqNo;
         std::int64_t position;
         std::int64_t receiveNs;
@@ -511,8 +512,9 @@ class ReplayerStreamReceiver
     // Pools MessagesBlocks instead of allocating (and copying, on growth) one buffer per retained frame.
     // Released blocks are kept for reuse rather than freed, so a later recovery episode reuses
     // already-resident pages instead of paying a fresh allocation/page-fault cost.
-    class MessagesBlockPool {
-       public:
+    class MessagesBlockPool
+    {
+      public:
         ~MessagesBlockPool()
         {
             for (auto* block : m_freeList)
@@ -538,7 +540,7 @@ class ReplayerStreamReceiver
             m_freeList.push_back(block);
         }
 
-       private:
+      private:
         std::vector<MessagesBlock*> m_freeList;
     };
 
@@ -585,7 +587,7 @@ class ReplayerStreamReceiver
     {
         if (segmentIndex >= 0)
         {
-            m_resumeAnchorGseq = 0;  // a walk supersedes any resume in flight
+            m_resumeAnchorGseq = 0; // a walk supersedes any resume in flight
             if (segmentIndex != m_walkSegmentIndex)
             {
                 // A different segment than the one in flight: nothing to compare its recordingId
@@ -606,7 +608,7 @@ class ReplayerStreamReceiver
         ++m_requestId;
         if (!m_requestPub || !m_requestPub->isConnected())
         {
-            return;  // Replayer not up yet; the resend timer retries
+            return; // Replayer not up yet; the resend timer retries
         }
 
         alignas(16) std::array<std::uint8_t, 64> buf{};
@@ -657,7 +659,7 @@ class ReplayerStreamReceiver
         closeReplaySubscription();
         if (!m_aeron)
         {
-            return;  // unit suite drives onControl with no Aeron, exactly as requestReplay tolerates
+            return; // unit suite drives onControl with no Aeron, exactly as requestReplay tolerates
         }
         // The archive's replaySessionId carries the Aeron image session id in its low 32 bits — the
         // same narrowing poll() used to hand imageBySessionId.
@@ -675,7 +677,7 @@ class ReplayerStreamReceiver
             // not picked up would otherwise stay open with nothing holding it.
             m_replaySub = m_aeron->findSubscription(m_replaySubRegId);
         }
-        m_replaySub.reset();  // last reference — Subscription's destructor closes it
+        m_replaySub.reset(); // last reference — Subscription's destructor closes it
         m_replaySubRegId = -1;
     }
 
@@ -748,7 +750,7 @@ class ReplayerStreamReceiver
             dec.wrapForDecode(raw, bodyOff, mh.blockLength(), mh.version(), cap);
             if (dec.clientId() != m_clientId)
             {
-                return;  // another replica's reply on the shared control stream
+                return; // another replica's reply on the shared control stream
             }
             if (dec.requestId() != m_requestId)
             {
@@ -794,8 +796,8 @@ class ReplayerStreamReceiver
                     requestReplay(m_walkSegmentIndex + 1, 0);
                     return;
                 }
-                m_replaySessionId = -1;   // already at the tip — follow the live tap
-                m_walkSegmentIndex = -1;  // chain exhausted (or never a walk) → steady/resume mode
+                m_replaySessionId = -1;  // already at the tip — follow the live tap
+                m_walkSegmentIndex = -1; // chain exhausted (or never a walk) → steady/resume mode
                 // The chain is exhausted, but the frontier is what the retained-ahead FIFO knows, not
                 // what the chain covered: a frame retained during the walk may still sit behind a hole
                 // the replay never reached, and an overflow (retainMessages) dropped tap frames
@@ -854,7 +856,7 @@ class ReplayerStreamReceiver
                 // timer keeps us alive if the eventual Replaying is ever lost, but ReplayPending itself is
                 // just "wait" — reset the request clock so we don't spam while queued.
                 m_lastRequestMs = nowMs();
-                m_replayerUnavailable = false;  // queued, not refused — the episode ended (see Replaying)
+                m_replayerUnavailable = false; // queued, not refused — the episode ended (see Replaying)
             }
         }
         else if (mh.templateId() == usq::ReplayUnavailable::sbeTemplateId())
@@ -1013,9 +1015,9 @@ class ReplayerStreamReceiver
             // after a cold-start NO_REPLAY_NEEDED, which the Replayer sends at segment 0 only when the
             // recording is empty — must be globalSeqNo 1.
             diag::Logger::fault(diag::Component::ReplayerStreamReceiver, diag::EventCode::FirstFrameNotOne,
-                                    "FATAL: first frame observed has globalSeqNo=%lld, expected 1 — "
-                                    "this node's recording does not reach the start of the log; aborting",
-                                    static_cast<long long>(gseq));
+                                "FATAL: first frame observed has globalSeqNo=%lld, expected 1 — "
+                                "this node's recording does not reach the start of the log; aborting",
+                                static_cast<long long>(gseq));
             std::abort();
         }
         dispatchFrame(raw, off, len, cap, gseq, framePosition, receiveNs, fromReplay);
@@ -1064,12 +1066,12 @@ class ReplayerStreamReceiver
         {
             if (m_onConnected)
             {
-                m_onConnected(LifecycleEvent{.globalSeqNo = gseq,
-                                             .sourceId = srcId,
-                                             .connectionId = connId,
-                                             .sourceSessionId = sessId,
-                                             .clusterTimestamp = ts,
-                                             .receiveTimeNs = receiveNs});
+                m_onConnected(LifecycleEvent{ .globalSeqNo = gseq,
+                                              .sourceId = srcId,
+                                              .connectionId = connId,
+                                              .sourceSessionId = sessId,
+                                              .clusterTimestamp = ts,
+                                              .receiveTimeNs = receiveNs });
             }
             return;
         }
@@ -1077,19 +1079,20 @@ class ReplayerStreamReceiver
         {
             if (m_onDisconnected)
             {
-                m_onDisconnected(LifecycleEvent{.globalSeqNo = gseq,
-                                                .sourceId = srcId,
-                                                .connectionId = connId,
-                                                .sourceSessionId = sessId,
-                                                .clusterTimestamp = ts,
-                                                .receiveTimeNs = receiveNs});
+                m_onDisconnected(LifecycleEvent{ .globalSeqNo = gseq,
+                                                 .sourceId = srcId,
+                                                 .connectionId = connId,
+                                                 .sourceSessionId = sessId,
+                                                 .clusterTimestamp = ts,
+                                                 .receiveTimeNs = receiveNs });
             }
             return;
         }
         if (templateId == LEADERSHIP_CHANGED_TEMPLATE_ID)
         {
             sbe::sequenced::LeadershipChanged leadershpChanged;
-            leadershpChanged.wrapForDecode(raw, off + HdrSbe::encodedLength(), m_hdr.blockLength(), m_hdr.version(), cap);
+            leadershpChanged.wrapForDecode(raw, off + HdrSbe::encodedLength(), m_hdr.blockLength(), m_hdr.version(),
+                                           cap);
             m_currentLeaderMemberId = leadershpChanged.newLeaderMemberId();
             if (m_onLeadershipChanged)
             {
@@ -1099,19 +1102,19 @@ class ReplayerStreamReceiver
         }
         if (m_onSequenced)
         {
-            m_onSequenced(SequencedEvent{.globalSeqNo = gseq,
-                                         .sourceId = srcId,
-                                         .connectionId = connId,
-                                         .sourceSessionId = sessId,
-                                         .clusterTimestamp = ts,
-                                         .receiveTimeNs = receiveNs,
-                                         .origin = origin,
-                                         .templateId = templateId,
-                                         .blockLength = m_hdr.blockLength(),
-                                         .version = m_hdr.version(),
-                                         .payload = raw + off,
-                                         .payloadLength = len,
-                                         .position = framePosition});
+            m_onSequenced(SequencedEvent{ .globalSeqNo = gseq,
+                                          .sourceId = srcId,
+                                          .connectionId = connId,
+                                          .sourceSessionId = sessId,
+                                          .clusterTimestamp = ts,
+                                          .receiveTimeNs = receiveNs,
+                                          .origin = origin,
+                                          .templateId = templateId,
+                                          .blockLength = m_hdr.blockLength(),
+                                          .version = m_hdr.version(),
+                                          .payload = raw + off,
+                                          .payloadLength = len,
+                                          .position = framePosition });
         }
     }
 
@@ -1129,7 +1132,7 @@ class ReplayerStreamReceiver
     // is globalSeqNo order — only an exact-duplicate redelivery (a repeat of the most recently retained
     // globalSeqNo) needs an explicit check, not general sorting.
     void retainMessages(const std::int64_t gseq, const char* const frame, const std::uint64_t len,
-                     const std::int64_t framePosition, const std::int64_t receiveNs)
+                        const std::int64_t framePosition, const std::int64_t receiveNs)
     {
         const std::size_t recordSize = sizeof(MessagesRecordHeader) + len;
         if (m_messagesFrameCount >= MAX_MESSAGES_FRAMES || (m_messagesBytes + len) > MAX_MESSAGES_BYTES ||
@@ -1148,14 +1151,14 @@ class ReplayerStreamReceiver
         }
         if (m_messagesFrameCount > 0 && gseq <= m_messagesTailGseq)
         {
-            return;  // already retained (the tap redelivered it) — keep the first copy
+            return; // already retained (the tap redelivered it) — keep the first copy
         }
         if (m_messagesBlocks.empty() || m_messagesBlocks.back()->used + recordSize > MessagesBlock::SIZE)
         {
             m_messagesBlocks.push_back(m_messagesBlockPool.acquire());
         }
         MessagesBlock* const tail = m_messagesBlocks.back();
-        const MessagesRecordHeader header{gseq, framePosition, receiveNs, static_cast<std::uint32_t>(len)};
+        const MessagesRecordHeader header{ gseq, framePosition, receiveNs, static_cast<std::uint32_t>(len) };
         std::memcpy(tail->bytes.data() + tail->used, &header, sizeof(header));
         std::memcpy(tail->bytes.data() + tail->used + sizeof(header), frame, len);
         tail->used += recordSize;
@@ -1188,7 +1191,7 @@ class ReplayerStreamReceiver
             std::memcpy(&header, front->bytes.data() + m_messagesReadOffset, sizeof(header));
             if (header.globalSeqNo > m_lastGlobalSeqNo + 1)
             {
-                return;  // still a hole below the oldest retained frame
+                return; // still a hole below the oldest retained frame
             }
             std::uint8_t* const payload = front->bytes.data() + m_messagesReadOffset + sizeof(header);
             m_messagesReadOffset += sizeof(header) + header.length;
@@ -1196,7 +1199,7 @@ class ReplayerStreamReceiver
             m_messagesBytes -= header.length;
             if (header.globalSeqNo <= m_lastGlobalSeqNo)
             {
-                continue;  // the replay already covered it
+                continue; // the replay already covered it
             }
             dispatchFrame(reinterpret_cast<char*>(payload), 0, header.length, header.length, header.globalSeqNo,
                           header.position, header.receiveNs, /*fromReplay=*/false);
@@ -1244,7 +1247,7 @@ class ReplayerStreamReceiver
         }
         else
         {
-            requestReplay(m_walkSegmentIndex, m_reqFromPosition);  // same request verbatim, new requestId
+            requestReplay(m_walkSegmentIndex, m_reqFromPosition); // same request verbatim, new requestId
         }
     }
 
@@ -1290,7 +1293,7 @@ class ReplayerStreamReceiver
         }
         else
         {
-            requestReplay(m_walkSegmentIndex, m_reqFromPosition);  // same request verbatim, new requestId
+            requestReplay(m_walkSegmentIndex, m_reqFromPosition); // same request verbatim, new requestId
         }
     }
 
@@ -1321,14 +1324,14 @@ class ReplayerStreamReceiver
             notifyCaughtUp();
             return;
         }
-        requestReplay(m_walkSegmentIndex + 1, 0);  // advance the walk to the next segment
+        requestReplay(m_walkSegmentIndex + 1, 0); // advance the walk to the next segment
     }
 
     void notifyCaughtUp()
     {
         if (m_caughtUp)
         {
-            return;  // idempotent — reached from the replay-tip, no-replay, and first-live-frame paths
+            return; // idempotent — reached from the replay-tip, no-replay, and first-live-frame paths
         }
         // Fires again after a gap cleared m_caughtUp, so consumers can re-arm on re-convergence
         // (FixGateway restarts its tap-stall watchdog here) rather than only on first catch-up.
@@ -1372,50 +1375,50 @@ class ReplayerStreamReceiver
 
     bool m_awaitingReplay = false;
     std::int64_t m_replaySessionId = -1;
-    std::int64_t m_catchUpPosition = 0;   // bounded replay's end position; segment done once the image reaches it
-    std::int32_t m_walkSegmentIndex = 0;  // cold-start walk position; -1 once caught up (steady/resume mode)
-    std::int64_t m_walkRecordingId = -1;  // recordingId last served for m_walkSegmentIndex, or -1 if not yet known
-    std::int64_t m_reqFromPosition = 0;   // fromPosition of the current request, for idempotent resend
+    std::int64_t m_catchUpPosition = 0;  // bounded replay's end position; segment done once the image reaches it
+    std::int32_t m_walkSegmentIndex = 0; // cold-start walk position; -1 once caught up (steady/resume mode)
+    std::int64_t m_walkRecordingId = -1; // recordingId last served for m_walkSegmentIndex, or -1 if not yet known
+    std::int64_t m_reqFromPosition = 0;  // fromPosition of the current request, for idempotent resend
     std::int64_t m_lastRequestMs = 0;
-    std::int64_t m_requestId = 0;  // advances per send; replies not carrying it are stale (see onControl)
+    std::int64_t m_requestId = 0; // advances per send; replies not carrying it are stale (see onControl)
     std::int64_t m_lastHeartbeatMs = 0;
     // A ReplayComplete that did not land (review-3.md #9). isConnected() only rules out NOT_CONNECTED; a
     // healthy publication still returns BACK_PRESSURED/ADMIN_ACTION transiently, and a discarded result
     // made "attempted" indistinguishable from "sent". Only the release needs this — see requestReplay
     // for why the request must NOT be retried the same way.
     bool m_completePending = false;
-    std::int64_t m_lastReplayPosition = -1;   // last replay-image position seen; -1 = not attached yet
-    std::int64_t m_lastReplayProgressMs = 0;  // when it last changed — the stall watchdog's clock
+    std::int64_t m_lastReplayPosition = -1;  // last replay-image position seen; -1 = not attached yet
+    std::int64_t m_lastReplayProgressMs = 0; // when it last changed — the stall watchdog's clock
     // The Replayer is refusing to serve us (integrity check failed). State, not just a log latch: the
     // refusal is resent on every 500ms request, so report it once per episode, and checkRecoveryProgress
     // prints it as the fact that tells a refusal apart from a Replayer that never answered.
     bool m_replayerUnavailable = false;
 
-    std::int64_t m_lastGlobalSeqNo = 0;  // highest globalSeqNo delivered; 0 = none yet
-    std::int64_t m_lastFramePosition = 0;  // where that frame starts in the recording; requestResume's anchor
-    std::int64_t m_resumeAnchorGseq = 0;   // globalSeqNo a resume replay must open at, or 0 if not resuming
-    bool m_replayGapLogged = false;        // report a hole in replayed history once per episode, not per frame
-    bool m_caughtUp = false;               // following live; revoked on a tap gap, re-established at the seam
+    std::int64_t m_lastGlobalSeqNo = 0;   // highest globalSeqNo delivered; 0 = none yet
+    std::int64_t m_lastFramePosition = 0; // where that frame starts in the recording; requestResume's anchor
+    std::int64_t m_resumeAnchorGseq = 0;  // globalSeqNo a resume replay must open at, or 0 if not resuming
+    bool m_replayGapLogged = false;       // report a hole in replayed history once per episode, not per frame
+    bool m_caughtUp = false;              // following live; revoked on a tap gap, re-established at the seam
 
     // Recovery that runs without ever dispatching anything — contained, but silent until this (review-3.md #6).
     // The gauge is the same fact the fault line carries, in the form an alert can be written against;
     // null until the async add resolves (resolveResources), which no reporting path may depend on.
-    RecoveryProgressPolicy m_recoveryProgress{RECOVERY_PROGRESS_TIMEOUT_MS};
+    RecoveryProgressPolicy m_recoveryProgress{ RECOVERY_PROGRESS_TIMEOUT_MS };
     std::int64_t m_recoveryStalledCounterRegId = -1;
     std::shared_ptr<aeron::Counter> m_recoveryStalledCounter;
 
     // Live tap frames from beyond the current hole, retained in arrival order (see retainMessages).
     MessagesBlockPool m_messagesBlockPool;
     std::deque<MessagesBlock*> m_messagesBlocks;
-    std::size_t m_messagesReadOffset = 0;  // offset of the next unconsumed record within m_messagesBlocks.front()
-    std::int64_t m_messagesTailGseq = 0;   // globalSeqNo of the most recently retained frame; dedups redelivery
+    std::size_t m_messagesReadOffset = 0; // offset of the next unconsumed record within m_messagesBlocks.front()
+    std::int64_t m_messagesTailGseq = 0;  // globalSeqNo of the most recently retained frame; dedups redelivery
     std::size_t m_messagesFrameCount = 0;
     std::size_t m_messagesBytes = 0;
     // Frames were dropped ahead of the hole because the FIFO above was full: the frontier this client
     // holds is short of the real one, so it must re-walk rather than declare itself caught up. Cleared
     // only where that re-walk is requested (endOverflowEpisode).
     bool m_messagesOverflowed = false;
-    bool m_messagesOverflowLogged = false;  // that overflow reported once per episode, not per frame
+    bool m_messagesOverflowLogged = false; // that overflow reported once per episode, not per frame
 
     std::int32_t m_currentLeaderMemberId = -1;
 
@@ -1424,7 +1427,7 @@ class ReplayerStreamReceiver
     // poll thread (deferred from OrderExecClient's SIGUSR1 handler) and consumed on the poll thread; the
     // atomic mirrors the Java side and stays safe if a caller ever arms it from another thread.
     bool m_faultInjection = false;
-    std::atomic<int> m_faultDropPending{0};
+    std::atomic<int> m_faultDropPending{ 0 };
 
     aeron::fragment_handler_t m_tapHandler;
     aeron::fragment_handler_t m_replayHandler;
@@ -1444,4 +1447,4 @@ class ReplayerStreamReceiver
     HeaderComposite m_header;
 };
 
-}  // namespace org::limitless::phixeron::sequencer
+} // namespace org::limitless::phixeron::sequencer

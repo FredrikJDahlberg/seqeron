@@ -31,8 +31,7 @@ class TapStallPolicyTest {
     void drainingArchiveIsNeverFatal() {
         long position = 4096;
         for (long s = 0; s < 300; s++) {
-            assertEquals(Action.CONTINUE, policy.onBackPressure(seconds(s), true, position += 64),
-                "second " + s);
+            assertEquals(Action.CONTINUE, policy.onBackPressure(seconds(s), true, position += 64), "second " + s);
         }
     }
 
@@ -54,7 +53,7 @@ class TapStallPolicyTest {
     @Test
     @DisplayName("a recording that stops advancing raises the gauge, then terminates the node")
     void frozenRecordingStallsThenTerminates() {
-        assertEquals(Action.CONTINUE, policy.onBackPressure(seconds(0), true, 4096));   // anchors the clock
+        assertEquals(Action.CONTINUE, policy.onBackPressure(seconds(0), true, 4096)); // anchors the clock
         assertEquals(Action.CONTINUE, policy.onBackPressure(seconds(1), true, 4096));
         assertEquals(Action.STALLED, policy.onBackPressure(seconds(2), true, 4096));
         assertEquals(Action.CONTINUE, policy.onBackPressure(seconds(3), true, 4096), "STALLED is edge-triggered");
