@@ -40,6 +40,7 @@ final class FakeReplayer implements Replayer {
     private final List<Long> stoppedReplays = new ArrayList<>();
     private long nextReplaySessionId = 900;
     private RuntimeException replayFailure;
+    private RuntimeException archiveFailure;
     private int replayAttempts;
 
     private final Deque<byte[]> requestQueue = new ArrayDeque<>();
@@ -86,13 +87,26 @@ final class FakeReplayer implements Replayer {
         stopPositions.remove(recordingId);
     }
 
-    /** Makes every subsequent {@code startReplay} throw, as an unreachable local archive does. */
+    /** Makes every subsequent {@code startReplay} throw, as an archive that will not serve a replay does. */
     void failReplays(final RuntimeException failure) {
         replayFailure = failure;
     }
 
     void serveReplaysAgain() {
         replayFailure = null;
+    }
+
+    /**
+     * Makes every subsequent archive call throw, listings included — an archive that has stopped
+     * answering at all, as opposed to one that answers and refuses a particular replay ({@link
+     * #failReplays}). What separates a real outage from a bad request position.
+     */
+    void failArchive(final RuntimeException failure) {
+        archiveFailure = failure;
+    }
+
+    void answerArchiveAgain() {
+        archiveFailure = null;
     }
 
     /** Queues one encoded app → Replayer message for the next {@code pollRequests}. */
@@ -146,22 +160,26 @@ final class FakeReplayer implements Replayer {
 
     @Override
     public List<ReplayRecordings.RecordingSpan> listTapRecordings() {
+        throwIfArchiveDown();
         return new ArrayList<>(recordings);
     }
 
     @Override
     public long recordingPosition(final long recordingId) {
+        throwIfArchiveDown();
         return recordingPositions.getOrDefault(recordingId, -1L);
     }
 
     @Override
     public long stopPosition(final long recordingId) {
+        throwIfArchiveDown();
         return stopPositions.getOrDefault(recordingId, -1L);
     }
 
     @Override
     public long startReplay(final long recordingId, final long position, final long length, final int streamId) {
         ++replayAttempts;  // counted before the failure, so a refused probe is still visible as a probe
+        throwIfArchiveDown();
         if (replayFailure != null) {
             throw replayFailure;
         }
@@ -225,6 +243,12 @@ final class FakeReplayer implements Replayer {
         final AtomicCounter counter = countersManager.newCounter(label, typeId);
         countersByTypeId.put(typeId, counter);
         return counter;
+    }
+
+    private void throwIfArchiveDown() {
+        if (archiveFailure != null) {
+            throw archiveFailure;
+        }
     }
 
     @Override

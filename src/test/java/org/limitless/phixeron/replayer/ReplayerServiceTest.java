@@ -389,9 +389,79 @@ class ReplayerServiceTest {
 
         final Reply reply = request(CLIENT, 1, RESUME, 2048);
 
-        // Deliberate asymmetry (review-3.md #10): a resume replays from a position the CLIENT supplied,
-        // and answering ReplayPending to a position that can never work holds it forever.
+        // The archive still answers, so it is the position that is wrong — one the client supplied, in
+        // range but not on a frame boundary of a recording that has rotated. Answering ReplayPending to a
+        // position that can never work would hold that app forever.
         assertEquals(ReplayerService.NO_REPLAY_NEEDED, reply.replaySessionId());
+        assertEquals(0, fakeReplayer.counter(PhixeronCounters.REPLAYER_STALLED_TYPE_ID));
+    }
+
+    @Test
+    void aResumeAnArchiveOutageRefusesIsHeldRatherThanSteeredOntoAReWalk() {
+        // The same exception, the opposite fault (review-3.md #10). Reading every refused resume as a bad
+        // position sent a whole node's worth of apps off their positions and onto full chain re-walks
+        // because the archive was down, and reported nothing until one of those walks came back.
+        fakeReplayer.addRecording(6, 0, true, 4096);
+        makeReady();
+        fakeReplayer.failArchive(new IllegalStateException("archive gone"));
+
+        final Reply reply = request(CLIENT, 1, RESUME, 2048);
+
+        assertEquals(ReplayPendingDecoder.TEMPLATE_ID, reply.templateId(), "hold at the gap, keep the position");
+        assertEquals(1, fakeReplayer.counter(PhixeronCounters.REPLAYER_STALLED_TYPE_ID));
+    }
+
+    @Test
+    void anArchiveThatComesBackIsNoticedWithNoRequestToNoticeItOn() {
+        // A Replayer whose apps have all caught up is asked for nothing, so the stall used to have no
+        // way back: phixeron.replayer.stalled stayed at 1 for the rest of the process (review-3.md #10).
+        fakeReplayer.addRecording(6, 0, true, 4096);
+        makeReady();
+        fakeReplayer.failReplays(new IllegalStateException("archive gone"));
+        request(CLIENT, 1, 0, 0);
+        assertEquals(1, fakeReplayer.counter(PhixeronCounters.REPLAYER_STALLED_TYPE_ID));
+
+        fakeReplayer.serveReplaysAgain();
+        fakeReplayer.advanceMillis(1_500);
+        replayerService.poll();  // no request arrives, ever again
+
+        assertEquals(0, fakeReplayer.counter(PhixeronCounters.REPLAYER_STALLED_TYPE_ID));
+        assertTrue(noClientReplayStarted(), "the probe is the node's own, not a replay served to an app");
+    }
+
+    @Test
+    void theIdleProbeIsPacedLikeARequestedOne() {
+        fakeReplayer.addRecording(6, 0, true, 4096);
+        makeReady();
+        fakeReplayer.failReplays(new IllegalStateException("archive gone"));
+        request(CLIENT, 1, 0, 0);
+        final int probes = fakeReplayer.replayAttempts();
+
+        for (int cycle = 0; cycle < 10; ++cycle) {
+            replayerService.poll();
+        }
+
+        assertEquals(probes, fakeReplayer.replayAttempts(), "a dead archive must not be hammered every cycle");
+        fakeReplayer.advanceMillis(1_500);
+        replayerService.poll();
+        assertEquals(probes + 1, fakeReplayer.replayAttempts(), "one probe per interval, though");
+    }
+
+    @Test
+    void anArchiveThatRefusesTheStartupSelfCheckIsReportedRatherThanLookingMerelySlow() {
+        // The self-check used to swallow exactly the faults the replay path reports (review-3.md #10), so
+        // a node whose archive never answered looked like one that was merely slow to become ready.
+        fakeReplayer.addRecording(6, 0, true, 4096);
+        fakeReplayer.failArchive(new IllegalStateException("archive gone"));
+
+        replayerService.poll();
+
+        assertEquals(1, fakeReplayer.counter(PhixeronCounters.REPLAYER_STALLED_TYPE_ID));
+        assertEquals(0, fakeReplayer.counter(PhixeronCounters.REPLAYER_READY_TYPE_ID));
+        assertEquals(0, fatalCount.get(), "a transient archive fault must not take the duty cycle down");
+
+        fakeReplayer.answerArchiveAgain();
+        makeReady();
         assertEquals(0, fakeReplayer.counter(PhixeronCounters.REPLAYER_STALLED_TYPE_ID));
     }
 

@@ -93,10 +93,12 @@ import org.limitless.phixeron.util.Logger;
  * <p><b>Local-archive resilience.</b> The ReplayerService is off the live path entirely, so a transient
  * failure of the node's local archive degrades only history/gap <em>replay</em> — steady-state
  * delivery keeps flowing over the tap the apps read directly. It does not crash the ReplayerService either:
- * an archive control call that throws in the replay path flips it to a STALLED state and keeps the
- * duty cycle running, paces its replay retries, and answers any replay request with {@code
- * ReplayPending} — which the app already treats as "hold at the gap and re-request" — until the
- * archive returns (doc/router-archive.md).
+ * an archive control call that throws — from any path, the startup self-check included — flips it to a
+ * STALLED state and keeps the duty cycle running, paces its replay retries, and answers any replay request
+ * with {@code ReplayPending} — which the app already treats as "hold at the gap and re-request" — until
+ * the archive returns (doc/router-archive.md). The state is the node's own view of its archive and nothing
+ * else, so it is set wherever the archive refuses and cleared wherever it answers, {@link #probeArchive}
+ * included: an idle Replayer must not go on reporting a fault that has been over for hours.
  *
  * <p><b>Cross-failover replay.</b> A cold-starting app walks the recording chain ({@link
  * #resolveSegments}, the same oldest-first stitching {@code ClusterStreamClient} uses). With every node
@@ -414,6 +416,11 @@ public final class ReplayerService {
         int work = replayer.pollRequests(requestHandler, FRAGMENT_LIMIT);
         if (!ready) {
             work += checkReady();
+        } else if (stalled) {
+            // Only once ready: until then the self-check above is already a paced replay of this node's
+            // own archive, and it clears the stall itself — a second replay on its stream would feed the
+            // check's own subscription frames from a recording it is not sweeping.
+            probeArchive();
         }
         reclaimIdleSlots();
         activeReplaySlotsCounter.set(replaySlots.activeCount());
@@ -461,27 +468,22 @@ public final class ReplayerService {
      * next cycle.
      */
     private void startSelfCheck() {
-        final ReplayRecordings.RecordingSpan active;
         try {
-            active = findActiveRecording();
-        } catch (final RuntimeException ex) {
-            return;  // archive not answering yet; retry next cycle (scripts time out and proceed)
-        }
-        if (active == null) {
-            return;  // nothing recorded yet; retry next cycle
-        }
-        if (selfCheckSpans == null) {
-            final List<ReplayRecordings.RecordingSpan> segments = resolveSegments();
-            if (segments.isEmpty()) {
-                return;  // retry next cycle
+            final ReplayRecordings.RecordingSpan active = findActiveRecording();
+            if (active == null) {
+                return;  // nothing recorded yet; retry next cycle
             }
-            selfCheckSpans = segments;
-            selfCheckIndex = 0;
-        }
-        selfCheckActiveRecordingId = active.recordingId();
+            if (selfCheckSpans == null) {
+                final List<ReplayRecordings.RecordingSpan> segments = resolveSegments();
+                if (segments.isEmpty()) {
+                    return;  // retry next cycle
+                }
+                selfCheckSpans = segments;
+                selfCheckIndex = 0;
+            }
+            selfCheckActiveRecordingId = active.recordingId();
 
-        final ReplayRecordings.RecordingSpan span = selfCheckSpans.get(selfCheckIndex);
-        try {
+            final ReplayRecordings.RecordingSpan span = selfCheckSpans.get(selfCheckIndex);
             long position = replayer.recordingPosition(span.recordingId());
             if (position < 0) {
                 position = replayer.stopPosition(span.recordingId());
@@ -502,8 +504,15 @@ public final class ReplayerService {
                                                       SELF_CHECK_STREAM_ID);
             selfCheckSub = replayer.openSelfCheckStream();
             selfCheckDeadlineNs = replayer.nanoTime() + SELF_CHECK_TIMEOUT_NS;
+            onArchiveRecovered();  // it served a replay: whatever refused one earlier is over
         } catch (final RuntimeException ex) {
-            closeSelfCheck();  // archive not answering yet; retry next cycle
+            // One catch over every archive call this makes, and it reports the fault like any other
+            // (review-3.md #10): swallowing it here left a node whose archive never answers looking
+            // merely slow to become ready, while the one call that was outside a catch took the whole
+            // duty cycle down for the same fault. Transient by assumption — the same span is started
+            // fresh on a later cycle — so nothing here is fatal or latched.
+            closeSelfCheck();
+            onArchiveStalled("running the startup self-check", ex);
         }
     }
 
@@ -691,25 +700,62 @@ public final class ReplayerService {
         }
         try {
             serveReplay(clientId, requestId, segmentIndex, fromPosition);
-            if (stalled) {
-                stalled = false;
-                stalledCounter.set(0);
-                Logger.info(Logger.Component.ReplayerService, memberId,
-                        "RECOVERED: local archive reachable again");
-            }
+            onArchiveRecovered();
         } catch (final RuntimeException error) {
-            if (segmentIndex < 0) {
-                // A resume replays from a position the CLIENT supplied, and the startPosition check in
-                // serveReplay cannot catch the remaining way it can be wrong: in range, but not on a
-                // frame boundary of a recording that has since rotated. Calling that an archive stall
-                // answers ReplayPending to a request that can never succeed — forever. Steering the app
-                // onto the walk costs it one round trip, and if the archive really is sick the walk
-                // that follows says so through this same path.
+            // Two faults reach here wearing the same exception, and they need opposite answers (review-3.md
+            // #10): a resume replays from a position the CLIENT supplied, and the startPosition check in
+            // serveReplay cannot catch the remaining way it can be wrong — in range, but not on a frame
+            // boundary of a recording that has since rotated. Answering ReplayPending to a position that
+            // can never work holds that app forever; steering a whole node's worth of apps off their
+            // positions and onto full chain re-walks because the archive is down is just as wrong, and it
+            // used to be what happened, with nothing reporting the outage until one of those walks
+            // arrived. So ask the archive which it is, on the error path only.
+            if (segmentIndex < 0 && archiveAnswers()) {
                 rejectResume(clientId, requestId, "archive refused it: " + error.getMessage());
                 return;
             }
-            onArchiveStalled("serving replay for client " + clientId, error);
+            onArchiveStalled("serving " + (segmentIndex < 0 ? "a resume" : "walk segment " + segmentIndex)
+                    + " for client " + clientId, error);
             sendPending(clientId, requestId);
+        }
+    }
+
+    /** Whether the local archive still answers at all — what separates a bad request from an outage. */
+    private boolean archiveAnswers() {
+        try {
+            replayer.listTapRecordings();
+            return true;
+        } catch (final RuntimeException ex) {
+            return false;
+        }
+    }
+
+    /**
+     * Re-probes the local archive while STALLED, sharing {@link #STALL_RETRY_INTERVAL_MS} with the
+     * request-driven probe so the two together still make at most one attempt a second at a dead archive.
+     *
+     * <p>The state used to clear only on a client's replay succeeding, which made it a fault report
+     * nothing could retract: a Replayer whose apps have all caught up is asked for nothing, so {@code
+     * phixeron.replayer.stalled} stayed at 1 for the rest of the process however healthy the archive had
+     * since become. Probes with a bounded replay rather than a listing, because serving a replay is what
+     * the state claims the archive cannot do — one that lists recordings and still refuses to replay them
+     * is stalled exactly as this describes.
+     */
+    private void probeArchive() {
+        final long now = replayer.epochMillis();
+        if ((now - lastStallRetryMs) < STALL_RETRY_INTERVAL_MS) {
+            return;
+        }
+        lastStallRetryMs = now;
+        try {
+            final ReplayRecordings.RecordingSpan active = findActiveRecording();
+            if (active != null) {
+                stopReplay(replayer.startReplay(active.recordingId(), active.startPosition(),
+                                                SELF_CHECK_REPLAY_LENGTH, SELF_CHECK_STREAM_ID));
+            }
+            onArchiveRecovered();
+        } catch (final RuntimeException ex) {
+            // Still refusing: stays STALLED and probes again on the next interval.
         }
     }
 
@@ -993,7 +1039,7 @@ public final class ReplayerService {
 
     /**
      * A local-archive control call threw: enter STALLED (idempotently, logging once per episode).
-     * @param message error text
+     * @param message what was being attempted
      * @param exception runtime exception
      */
     private void onArchiveStalled(final String message, final RuntimeException exception) {
@@ -1001,8 +1047,18 @@ public final class ReplayerService {
             stalled = true;
             stalledCounter.set(1);
             Logger.info(Logger.Component.ReplayerService, memberId,
-                    "STALLED: %s — local archive unreachable (%s); live delivery unaffected "
-                            + "(apps read the tap directly), retrying replay", message, exception.getMessage());
+                    "STALLED: the local archive refused %s (%s); live delivery unaffected "
+                            + "(apps read the tap directly), probing until it answers", message,
+                    exception.getMessage());
+        }
+    }
+
+    /** The local archive answered: leave STALLED (idempotently, logging once per episode). */
+    private void onArchiveRecovered() {
+        if (stalled) {
+            stalled = false;
+            stalledCounter.set(0);
+            Logger.info(Logger.Component.ReplayerService, memberId, "RECOVERED: local archive reachable again");
         }
     }
 

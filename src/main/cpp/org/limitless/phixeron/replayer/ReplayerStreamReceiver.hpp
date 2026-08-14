@@ -449,6 +449,14 @@ class ReplayerStreamReceiver
         return m_caughtUp;
     }
 
+    // Highest globalSeqNo dispatched in order, 0 before the first. The frontier a consumer measures its
+    // own recovery progress by — recovery that never advances it is not converging (see
+    // RecoveryProgressPolicy, which applies the same predicate internally).
+    std::int64_t lastGlobalSeqNo() const
+    {
+        return m_lastGlobalSeqNo;
+    }
+
     // memberId of the current leader per the last LeadershipChanged processed, or -1 until one is
     // seen. A replica emits iff its own node is this leader (design §3).
     std::int32_t currentLeaderMemberId() const

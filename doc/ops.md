@@ -122,10 +122,10 @@ collapse them into one repeated series. The C++ half of the registry is
 | `phixeron_sequencer_leadership_change_total` | counter | Count of leadership changes this node has observed and sequenced |
 | `phixeron_sequencer_current_leader_member_id` | gauge | memberId of the leader last recorded by this node's Sequencer |
 | `phixeron_sequencer_last_tick_timestamp_ms` | gauge | Consensus timestamp of the last 1Hz Tick emitted |
-| `phixeron_sequencer_gateway_promotion_total` | counter | Count of standby-promotion GatewayActive frames emitted on a gateway session close |
+| `phixeron_sequencer_gateway_promotion_total` | counter | Count of standby-promotion GatewayActive frames emitted — on a gateway session close, or on a designated instance failing to publish `GatewayStarted` within 60s of being named |
 | `phixeron_sequencer_bootstrap_activated` | gauge | 1 once the bootstrap GatewayActive has been emitted for the trading day, else 0 |
 | `phixeron_sequencer_tap_stalled` | gauge | 1 while the tap recording has made no progress for longer than the stall threshold (2s) under back-pressure, else 0. Latches at 1 when the node terminates for an unrecordable tap — see below |
-| `phixeron_replayer_stalled` | gauge | 1 while the local archive is unreachable for replay, else 0 |
+| `phixeron_replayer_stalled` | gauge | 1 while the local archive is refusing to serve a replay, else 0. Set from every path that asks the archive for one — the startup self-check included — and cleared by a bounded probe replay the node runs itself once a second while stalled, so it reads 0 again even on a Replayer no app is asking for history |
 | `phixeron_replayer_ready` | gauge | 1 once the co-located tap recording is visible and replay requests are being served |
 | `phixeron_replayer_active_slots` | gauge | Current count of in-flight replays |
 | `phixeron_replayer_pending_requests` | gauge | Current count of replay requests waiting for a free slot |

@@ -578,6 +578,118 @@ class SequencerTest {
         assertEquals(2L, seq.globalSeqNo(), "a promotion with no target consumes no sequence number");
     }
 
+    // ── Activation deadline (a designated instance that never declares itself started) ────────────
+
+    @Test
+    @DisplayName("a designated primary that never declares itself started is handed over to the standby")
+    void designatedPrimaryThatNeverStartsIsHandedOver() {
+        // The gap this closes (review-3.md #6's follow-up): only GatewayStarted registers an instance,
+        // and it is published at gate-open, AFTER catch-up. An instance that dies or wedges in cold start
+        // was never registered, so no session close could ever promote past it — the cluster kept a
+        // designated primary that was never going to serve, with nothing to say so.
+        final Sequencer seq = new Sequencer();
+        final MutableDirectBuffer buf = new ExpandableArrayBuffer(512);
+        assertEquals(Sequencer.NO_FRAME, seq.pendingGatewayActivationTimeout(TIMESTAMP),
+                     "nothing designated ⇒ no deadline to miss");
+
+        seq.sequenceMessage(buf, 0, encodeIngressGateway(buf, 0, 5, SOURCE_ID, "GW-A", 0), SESSION_ID, TIMESTAMP);
+        seq.sequenceMessage(buf, 0, encodeIngressGateway(buf, 0, 6, SOURCE_ID, "GW-B", 1), SESSION_ID, TIMESTAMP);
+        seq.sequenceMessage(buf, 0, encodeIngressEndBasicData(buf, 0), SESSION_ID, TIMESTAMP);
+        assertNotEquals(Sequencer.NO_FRAME, seq.pendingGatewayBootstrapActivation(TIMESTAMP));  // designates 5
+
+        final long deadline = TIMESTAMP + Sequencer.GATEWAY_ACTIVATION_TIMEOUT_MS;
+        assertEquals(Sequencer.NO_FRAME, seq.pendingGatewayActivationTimeout(deadline - 1),
+                     "a cold start still inside the deadline is not overdue");
+
+        final int handover = seq.pendingGatewayActivationTimeout(deadline);
+        assertNotEquals(Sequencer.NO_FRAME, handover);
+        assertEquals(6, decodeGatewayActive(seq.buffer(), handover).gatewayId());
+        assertEquals(5L, seq.globalSeqNo());  // 2 rows + EndBasicData + bootstrap + this
+    }
+
+    @Test
+    @DisplayName("a designated primary that did declare itself started is left alone")
+    void designatedPrimaryThatStartedIsNotHandedOver() {
+        final Sequencer seq = new Sequencer();
+        final MutableDirectBuffer buf = new ExpandableArrayBuffer(512);
+        seq.sequenceMessage(buf, 0, encodeIngressGateway(buf, 0, 5, SOURCE_ID, "GW-A", 0), SESSION_ID, TIMESTAMP);
+        seq.sequenceMessage(buf, 0, encodeIngressGateway(buf, 0, 6, SOURCE_ID, "GW-B", 1), SESSION_ID, TIMESTAMP);
+        seq.sequenceMessage(buf, 0, encodeIngressEndBasicData(buf, 0), SESSION_ID, TIMESTAMP);
+        seq.pendingGatewayBootstrapActivation(TIMESTAMP);
+
+        final long gatewaySession = 0xA11CEL;
+        seq.sequenceMessage(buf, 0, encodeIngressGatewayStarted(buf, 0, 5), gatewaySession, TIMESTAMP + 1);
+        final long globalSeqNo = seq.globalSeqNo();
+
+        final long deadline = TIMESTAMP + Sequencer.GATEWAY_ACTIVATION_TIMEOUT_MS;
+        assertEquals(Sequencer.NO_FRAME, seq.pendingGatewayActivationTimeout(deadline));
+        // Disarmed, not merely quiet: a healthy primary must not be demoted one deadline later.
+        assertEquals(Sequencer.NO_FRAME,
+                     seq.pendingGatewayActivationTimeout(deadline + 10 * Sequencer.GATEWAY_ACTIVATION_TIMEOUT_MS));
+        assertEquals(globalSeqNo, seq.globalSeqNo(), "an answered activation synthesizes nothing");
+    }
+
+    @Test
+    @DisplayName("the hand-over arms the same deadline on the instance it names")
+    void handoverArmsTheDeadlineOnTheInstanceItNames() {
+        // A whole gateway tier that is down must converge on whichever instance comes up first, not on
+        // whichever the cluster happened to designate before they all went away.
+        final Sequencer seq = new Sequencer();
+        final MutableDirectBuffer buf = new ExpandableArrayBuffer(512);
+        seq.sequenceMessage(buf, 0, encodeIngressGateway(buf, 0, 5, SOURCE_ID, "GW-A", 0), SESSION_ID, TIMESTAMP);
+        seq.sequenceMessage(buf, 0, encodeIngressGateway(buf, 0, 6, SOURCE_ID, "GW-B", 1), SESSION_ID, TIMESTAMP);
+        seq.sequenceMessage(buf, 0, encodeIngressEndBasicData(buf, 0), SESSION_ID, TIMESTAMP);
+        seq.pendingGatewayBootstrapActivation(TIMESTAMP);
+
+        final long first = TIMESTAMP + Sequencer.GATEWAY_ACTIVATION_TIMEOUT_MS;
+        assertEquals(6, decodeGatewayActive(seq.buffer(), seq.pendingGatewayActivationTimeout(first)).gatewayId());
+
+        assertEquals(Sequencer.NO_FRAME, seq.pendingGatewayActivationTimeout(first + 1),
+                     "the hand-over restarts the deadline rather than firing again immediately");
+
+        final long second = first + Sequencer.GATEWAY_ACTIVATION_TIMEOUT_MS;
+        assertEquals(5, decodeGatewayActive(seq.buffer(), seq.pendingGatewayActivationTimeout(second)).gatewayId(),
+                     "the standby did not start either — the role goes back rather than stopping here");
+    }
+
+    @Test
+    @DisplayName("an unanswered activation with no sibling to hand over to fails closed")
+    void unansweredActivationWithNoSiblingFailsClosed() {
+        final Sequencer seq = new Sequencer();
+        final MutableDirectBuffer buf = new ExpandableArrayBuffer(512);
+        seq.sequenceMessage(buf, 0, encodeIngressGateway(buf, 0, 5, SOURCE_ID, "GW-A", 0), SESSION_ID, TIMESTAMP);
+        seq.sequenceMessage(buf, 0, encodeIngressEndBasicData(buf, 0), SESSION_ID, TIMESTAMP);
+        seq.pendingGatewayBootstrapActivation(TIMESTAMP);
+        final long globalSeqNo = seq.globalSeqNo();
+
+        final long deadline = TIMESTAMP + Sequencer.GATEWAY_ACTIVATION_TIMEOUT_MS;
+        assertEquals(Sequencer.NO_PROMOTION_TARGET, seq.pendingGatewayActivationTimeout(deadline),
+                     "distinct from NO_FRAME: an activation WAS missed, there is just nobody to hand it to");
+        assertEquals(globalSeqNo, seq.globalSeqNo(), "a hand-over with no target consumes no sequence number");
+        assertEquals(Sequencer.NO_FRAME,
+                     seq.pendingGatewayActivationTimeout(deadline + Sequencer.GATEWAY_ACTIVATION_TIMEOUT_MS),
+                     "reported once — a sole instance has nothing to re-designate to");
+    }
+
+    @Test
+    @DisplayName("a promotion on session close arms the deadline too")
+    void promotionOnSessionCloseArmsTheDeadline() {
+        final Sequencer seq = new Sequencer();
+        final MutableDirectBuffer buf = new ExpandableArrayBuffer(512);
+        seq.sequenceMessage(buf, 0, encodeIngressGateway(buf, 0, 5, SOURCE_ID, "GW-A", 0), SESSION_ID, TIMESTAMP);
+        seq.sequenceMessage(buf, 0, encodeIngressGateway(buf, 0, 6, SOURCE_ID, "GW-B", 1), SESSION_ID, TIMESTAMP);
+
+        final long gatewaySession = 0xA11CEL;
+        seq.sequenceMessage(buf, 0, encodeIngressGatewayStarted(buf, 0, 5), gatewaySession, TIMESTAMP);
+        assertNotEquals(Sequencer.NO_FRAME, seq.sessionClosed(gatewaySession, TIMESTAMP));  // promotes 6
+
+        // The standby it promoted has to declare itself started like any other designated instance —
+        // otherwise a crash of the primary while the standby is also down leaves the same dead end.
+        final int handover = seq.pendingGatewayActivationTimeout(TIMESTAMP + Sequencer.GATEWAY_ACTIVATION_TIMEOUT_MS);
+        assertNotEquals(Sequencer.NO_FRAME, handover);
+        assertEquals(5, decodeGatewayActive(seq.buffer(), handover).gatewayId());
+    }
+
     @Test
     @DisplayName("a GatewayStarted from an unknown instance promotes nothing")
     void unknownGatewayInstancePromotesNothing() {

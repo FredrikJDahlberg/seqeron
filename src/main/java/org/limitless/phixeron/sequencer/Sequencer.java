@@ -85,6 +85,21 @@ public final class Sequencer {
     private static final int NO_GATEWAY_ID = -1;
 
     /**
+     * How long a designated instance has, in cluster time, to answer a {@code GatewayActive} with a
+     * {@code GatewayStarted} before {@link #pendingGatewayActivationTimeout} hands the role to a sibling.
+     *
+     * <p>It must clear a legitimate cold start: the designated instance only declares itself started
+     * once it has replayed the whole log (there are no snapshots), and that grows through the trading
+     * day. Being generous costs nothing here, because the failure this bounds — a designated primary
+     * that never arrives — is answered a minute late rather than not at all, while a premature
+     * hand-over costs a role swap to an instance that may be no readier.
+     *
+     * <p>Package-private so {@code SequencerTest} drives exactly this deadline rather than hardcoding it
+     * a second time.
+     */
+    static final long GATEWAY_ACTIVATION_TIMEOUT_MS = 60_000;
+
+    /**
      * Smallest ingress message {@link #sequenceMessage} can re-stamp: the outer framing header plus the
      * {@code header} composite, the only two things it decodes. Anything shorter is malformed.
      */
@@ -208,6 +223,17 @@ public final class Sequencer {
 
     /** True once the bootstrap {@code GatewayActive} has been synthesized (on the first EndBasicData). */
     private boolean bootstrapActivationEmitted = false;
+
+    /**
+     * The {@code gatewayId} of the last {@code GatewayActive} synthesized, until it is answered by a
+     * {@code GatewayStarted} or times out; {@link #NO_GATEWAY_ID} when nothing is outstanding. Armed by
+     * {@link #gatewayActive}, resolved by {@link #pendingGatewayActivationTimeout} — see there for why an
+     * activation needs a deadline at all.
+     */
+    private int pendingActivationGatewayId = NO_GATEWAY_ID;
+
+    /** Cluster time at which {@link #pendingActivationGatewayId} is treated as never having arrived. */
+    private long activationDeadline = 0;
 
     /**
      * This node's cluster memberId, for the diagnostic slot in {@link #reject}'s log line. Node-local
@@ -471,6 +497,55 @@ public final class Sequencer {
     }
 
     /**
+     * The other way a logical gateway loses its active instance: the one just designated never declares
+     * itself started. Every activation — bootstrap and promotion alike — is answered by a {@code
+     * GatewayStarted} the instance publishes when it opens its accept gate, and that is the only frame
+     * that registers it in {@link #activeGatewaySession}. An instance that dies, or wedges, before ever
+     * getting there was therefore never a registered instance, so nothing about its session closing (or
+     * never closing) can promote a sibling — the cluster simply has no gateway, and no path back.
+     *
+     * <p>This is that path: {@link #GATEWAY_ACTIVATION_TIMEOUT_MS} after a {@code GatewayActive}, an
+     * instance that has not declared itself started hands the role to its next-ranked sibling, exactly as
+     * {@link #sessionClosed} does. The promotion arms the same deadline on the instance it names, so a
+     * whole gateway tier that is down converges the moment any instance comes up rather than depending on
+     * which one the cluster happened to designate first.
+     *
+     * <p>Deterministic off the cluster clock: driven from the 1 Hz {@code Tick}'s consensus timestamp, so
+     * every node evaluates the same deadline against the same time and synthesizes the same frame — like
+     * {@link #pendingGatewayBootstrapActivation}, the caller invokes it right after the {@link #tick} it
+     * belongs to and simply publishes what comes back.
+     * @param timestamp now
+     * @return a {@code GatewayActive} frame length, {@link #NO_FRAME} if nothing was overdue, or {@link
+     *     #NO_PROMOTION_TARGET} if an activation went unanswered and there was no sibling to hand it to
+     */
+    public int pendingGatewayActivationTimeout(final long timestamp) {
+        if (pendingActivationGatewayId == NO_GATEWAY_ID || timestamp < activationDeadline) {
+            return NO_FRAME;
+        }
+        final int designated = pendingActivationGatewayId;
+        pendingActivationGatewayId = NO_GATEWAY_ID;
+        // Asked of the instance that was designated, not of the logical gateway: a sibling that declared
+        // itself started is either the one already serving (nothing to answer for either way) or one that
+        // opened its gate in the window before it replayed the frame superseding it, which is precisely
+        // the case that still needs an instance designated.
+        if (activeGatewaySession.containsValue(designated)) {
+            return NO_FRAME;
+        }
+        final int promoted = promotionTarget(designated);
+        if (promoted == NO_GATEWAY_ID) {
+            Logger.error(Logger.Component.Sequencer, Logger.EventCode.GatewayPromotionFailed, memberId,
+                    "gateway instance %d never declared itself started within %dms and has no sibling to "
+                    + "promote — this logical gateway has no active instance until one starts "
+                    + "(globalSeqNo stays %d)", designated, GATEWAY_ACTIVATION_TIMEOUT_MS, globalSeqNo);
+            return NO_PROMOTION_TARGET;
+        }
+        Logger.error(Logger.Component.Sequencer, Logger.EventCode.GatewayActivationTimeout, memberId,
+                "gateway instance %d never declared itself started within %dms of being designated — "
+                + "handing the role to instance %d", designated, GATEWAY_ACTIVATION_TIMEOUT_MS, promoted);
+        return gatewayActive(promoted, timestamp);
+    }
+
+    /**
      * The {@code gatewayId} to hand over to when instance {@code closedGatewayId} goes away: the
      * lowest-{@code preferenceRank} other instance of the same logical gateway, ties broken by log
      * order, or {@link #NO_GATEWAY_ID} if that instance has no known row or no sibling.
@@ -535,11 +610,16 @@ public final class Sequencer {
     }
 
     /**
-     * Encodes one {@code GatewayActive} naming {@code gatewayId}; advances {@code globalSeqNo}.
+     * Encodes one {@code GatewayActive} naming {@code gatewayId}; advances {@code globalSeqNo}. Arms the
+     * activation deadline on the instance it names — every activation is a claim the instance still has
+     * to answer (see {@link #pendingGatewayActivationTimeout}), so arming here is what keeps bootstrap
+     * and promotion from needing to remember to.
      * @param gatewayId gateway identity
      * @param timestamp now
      */
     private int gatewayActive(final int gatewayId, final long timestamp) {
+        pendingActivationGatewayId = gatewayId;
+        activationDeadline = timestamp + GATEWAY_ACTIVATION_TIMEOUT_MS;
         final long globalSeq = ++globalSeqNo;
         gatewayActiveEncoder.wrapAndApplyHeader(encodeBuffer, 0, headerEncoder);
         gatewayActiveEncoder.header()

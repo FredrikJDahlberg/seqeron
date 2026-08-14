@@ -398,16 +398,27 @@ public final class SequencerService implements ClusteredService {
     @Override
     public void onSessionClose(final ClientSession session, final long timestamp, final CloseReason closeReason) {
         ensureCounters();
-        final int activation = sequencer.sessionClosed(session.id(), timestamp);
+        publishPromotion(sequencer.sessionClosed(session.id(), timestamp),
+                "gateway session " + session.id() + " closed (" + closeReason + ")");
+    }
+
+    /**
+     * Publishes whatever a promotion decision came back with, counting both outcomes.
+     * @param activation what {@link Sequencer#sessionClosed} or {@link
+     *     Sequencer#pendingGatewayActivationTimeout} returned
+     * @param reason what triggered it, for the log line
+     */
+    private void publishPromotion(final int activation, final String reason) {
         if (activation == Sequencer.NO_PROMOTION_TARGET) {
-            // A gateway session closed but nothing replaced it — the cluster is gateway-less for this
-            // logical gateway until an instance starts. Sequencer already logged the specifics; this side
-            // only needs to surface it as an operator-visible counter, distinct from gatewayPromotionCounter.
+            // A gateway lost its active instance but nothing replaced it — the cluster is gateway-less for
+            // this logical gateway until an instance starts. Sequencer already logged the specifics; this
+            // side only needs to surface it as an operator-visible counter, distinct from
+            // gatewayPromotionCounter.
             gatewayPromotionFailedCounter.increment();
         } else if (activation != Sequencer.NO_FRAME) {
             gatewayPromotionCounter.increment();
             Logger.info(Logger.Component.SequencerService, cluster.memberId(),
-                    "gateway session %d closed (%s) — promoting standby", session.id(), closeReason);
+                    "%s — promoting standby", reason);
             emit(activation);
         }
     }
@@ -468,6 +479,10 @@ public final class SequencerService implements ClusteredService {
         if (correlationId == TICK_TIMER_CORRELATION_ID) {
             ensureCounters();
             emit(sequencer.tick(timestamp));
+            // The cluster clock is also the deadline clock: a designated gateway instance that never
+            // declared itself started is handed over on this same consensus time, on every node alike.
+            publishPromotion(sequencer.pendingGatewayActivationTimeout(timestamp),
+                    "a designated gateway instance never declared itself started");
             lastTickTimestampCounter.set(timestamp);
             injectTapRecordingFault();
             checkTapRecordingAlive();

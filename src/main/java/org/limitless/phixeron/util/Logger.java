@@ -42,6 +42,7 @@ public final class Logger {
         TapRecordingFailure,
         ControlReplyDropped,
         GatewayPromotionFailed,
+        GatewayActivationTimeout,
         ReplayDutyCycleFailure,
         ReplayClientIdCollision,
         ShutdownTimeout
