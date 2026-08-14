@@ -2,18 +2,81 @@
 
 ## Overview
 
-phixeron is an Aeron Cluster–based sequencer for a FIX gateway: a Java Raft cluster service
-assigns a global total order to inbound FIX messages and republishes them on a per-node local
-tap that every node's co-located Aeron Archive records, so each node holds an identical,
-gap-free copy of the sequenced history. A C++ edge process (`FixGateway`) bridges real FIX TCP
-sessions to that cluster; `OrderExecClient` and a reference-data gateway (`BasicDataClient`)
-are further consumers of the same tap. Consumers read the tap live and fall back to a
-co-located `Replayer` for cold-start/gap replay off the local recording. It depends on a
-sibling project, **simdfix** (`git@github.com:FredrikJDahlberg/simdfix.git`, fetched via CMake
-`FetchContent`), which provides the generic FIX wire-format codec, session state machine base
-classes, and the code generator used to turn `fix-session.xml`/`fix-application.xml` into C++
-FIX message headers. phixeron generates its own copy of those headers rather than reusing
-simdfix's test fixtures.
+phixeron assigns a single global, gap-free, replicated total order to inbound FIX messages
+arriving over TCP, using an Aeron Cluster (Raft) replicated state machine as the sequencer.
+Everything downstream of that point — order execution, position tracking, risk queries, FIX
+resend/replay — reads from that one authoritative ordered stream instead of coordinating
+directly with each other.
+
+Each node republishes every sequenced frame onto a **node-local `aeron:ipc` tap** (stream 205)
+that its own co-located Aeron Archive records. Leader and follower alike publish and record
+their own tap, and since every node processes the same committed log in the same order the taps
+are byte-identical — each node's archive independently holds a complete copy of sequenced
+history, with no cross-node replication. Co-located C++ replicas read the tap *directly* and
+untethered for the live feed, and ask a per-node **Replayer** to serve cold-start history and
+gaps off the recording. The sequencer therefore has **zero live network subscribers**: a slow
+replica is dropped and heals by replay rather than back-pressuring the cluster.
+
+### Processes
+
+- **`SequencerNode` / `SequencerService` / `Sequencer`** (Java) — the cluster node. `Sequencer`
+  is the replicated state machine proper (no Aeron dependency, unit-tested directly): it stamps
+  each ingress message with a monotone `globalSeqNo` plus the Raft consensus timestamp and
+  synthesizes the frames the cluster itself owns (`Tick`, `LeadershipChanged`, `GatewayActive`).
+  `SequencerService` is its Aeron adapter and holds no replicated state of its own.
+- **`ReplayerNode` / `ReplayerService`** (Java) — one per member, co-located in that member's
+  Aeron directory. The only process that reads the archive: it serves an on-demand replay
+  protocol to the co-located replicas, and sits off the live delivery path entirely.
+- **`FixGateway`** (C++) — the FIX edge process, deployed as one active instance plus optional
+  hot standbys of the same logical gateway. It bridges FIX TCP sessions to cluster ingress and
+  frames execution reports arriving on the tap back to the originating connection. It holds no
+  authoritative session state: a standby or restarted instance rebuilds every session by
+  shadowing the tap, and serves clients only once a `GatewayActive` names it. Owns FIX resend
+  recovery.
+- **`OrderExecClient`** (C++) — a replica on *every* node, and the system's **execution venue**:
+  it acknowledges each `NewOrderSingle` with an `ExecutionReport(New)` whose `ExecID` derives
+  from the order's `globalSeqNo`, tracks per-account positions from fills, and answers
+  `PortfolioQueryRequest` from an in-process `MockRiskEngine`. All replicas track state; only
+  the replica on the current leader emits, with `OutstandingQueries` keeping query replies
+  exactly-once across a failover.
+- **`BasicDataClient`** (C++) — the reference-data gateway, a replica on every node and
+  dual-role: on the leader it publishes the static reference data (FIX session comp-id pairs,
+  gateway topology, trading-day calendar) into cluster ingress as ordinary messages; on every
+  node it consumes them back off the tap into identical in-memory tables. This is what makes
+  session identity and gateway topology properties of the log rather than of per-process config.
+- **`ClusterCtl`** (Java, `clusterctl`) — start/status/shutdown tooling. Its `start` and
+  `shutdown` publish `ClusterStarted`/`ClusterStopped` markers *through* the log, so the
+  boundaries of a run are themselves sequenced.
+- **`MetricsExporter` / `MetricsAggregator`** (Java) — the ops plane, orthogonal to the FIX data
+  flow: a node-local exporter serves `/metrics` off the Aeron CnC counters, and the aggregator
+  pulls every node's exporter into one combined Prometheus endpoint.
+
+### Load-bearing properties
+
+- **The cluster never parses FIX message bodies.** `Sequencer` decodes only the outer SBE
+  `MessageHeader` and the shared `header` composite; everything past that is copied through as
+  opaque bytes, because `sbe-sequenced.xml` (schema 202) is kept field-for-field identical to
+  `sbe-unsequenced.xml` (schema 200) past `header`. The one bounded exception is the
+  `BasicDataGateway` topology row.
+- **The log holds the authoritative state, and every decision consumers must agree on is
+  emitted rather than inferred.** FIX session state is driven only by cluster-replicated
+  callbacks, never straight off the TCP receive path; connects/disconnects, refusals, order
+  acks, promotions and the clock all round-trip through the sequencer.
+- **No snapshots — recovery is always full-log replay from `globalSeqNo` 1.** That is what
+  keeps every node's tap recording complete, and all derived state is a pure function of the
+  log. The cost is recovery time and archive size growing with uptime, bounded in practice by a
+  one-trading-day log.
+
+It depends on a sibling project, **simdfix**
+(`git@github.com:FredrikJDahlberg/simdfix.git`, fetched via CMake `FetchContent`), which
+provides the generic FIX wire-format codec, session state machine base classes, and the code
+generator used to turn `fix-session.xml`/`fix-application.xml` into C++ FIX message headers.
+phixeron generates its own copy of those headers rather than reusing simdfix's test fixtures.
+
+`doc/design.md` is the full design description this summarizes; its *Known gaps* section and
+`doc/todo.md` are the authority on what is not built yet — most notably there is no matching
+engine (no fills, cancels or replaces past the `New` ack), no pre-trade risk gating, and no
+edge authentication.
 
 ## Build
 
