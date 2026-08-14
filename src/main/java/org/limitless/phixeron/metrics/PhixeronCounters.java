@@ -14,7 +14,7 @@ import org.agrona.concurrent.UnsafeBuffer;
  * individual ids.
  */
 public final class PhixeronCounters {
-    // ── SequencerService (the Aeron Cluster service) ───────────────────────────
+    // SequencerService (the Aeron Cluster service)
     public static final int SEQUENCER_TYPE_ID_MIN = 5000;
     public static final int SEQUENCER_TYPE_ID_MAX = 5099;
 
@@ -63,7 +63,7 @@ public final class PhixeronCounters {
      */
     public static final int SEQUENCER_GATEWAY_PROMOTION_FAILED_COUNT_TYPE_ID = 5011;
 
-    // ── ReplayerService (per-node replay server) ───────────────────────────────
+    // ReplayerService (per-node replay server)
     public static final int REPLAYER_TYPE_ID_MIN = 5100;
     public static final int REPLAYER_TYPE_ID_MAX = 5199;
 

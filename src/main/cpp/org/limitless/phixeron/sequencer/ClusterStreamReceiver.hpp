@@ -296,8 +296,7 @@ inline std::vector<RecordingSegment> resolveClusterStreamSegments(
                                       entries.push_back({recording.m_recordingId, recording.m_stopPosition});
                                   });
 
-    std::sort(entries.begin(), entries.end(),
-              [](const Entry& a, const Entry& b) { return a.recordingId < b.recordingId; });
+    std::ranges::sort(entries, [](const Entry& a, const Entry& b) { return a.recordingId < b.recordingId; });
 
     std::int64_t newestActiveId = -1;
     for (const auto& e : entries)

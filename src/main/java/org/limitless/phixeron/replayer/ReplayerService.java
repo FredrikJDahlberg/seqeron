@@ -234,7 +234,7 @@ public final class ReplayerService {
     // history would independently hit the same wall, so it fails here instead, once, loudly.
     private boolean integrityFailed = false;
 
-    // ── Startup integrity self-check (see checkReady) ──────────────────────────────────────────
+    // Startup integrity self-check (see checkReady)
     // The check spans duty cycles instead of blocking one: it starts a short replay, then reads it a
     // fragment at a time on later cycles until it answers or SELF_CHECK_TIMEOUT_NS elapses. Waiting
     // inside a single cycle starved every co-located app of even a ReplayPending for as long as the
@@ -263,7 +263,7 @@ public final class ReplayerService {
     // rate in between.
     private long lastControlDropMs = 0;
 
-    // ── Replay protocol state ─────────────────────────────────────────────────
+    // Replay protocol state
     // Admission control and pending-queue bookkeeping is a pure function of client ids/tokens (see
     // ReplaySlotAllocator's Javadoc) — split out so it's unit-testable without an archive.
     private final ReplaySlotAllocator replaySlots = new ReplaySlotAllocator(MAX_CONCURRENT_REPLAYS, REPLAY_SLOT_TTL_MS);
@@ -282,7 +282,7 @@ public final class ReplayerService {
     private boolean stalled = false;
     private long lastStallRetryMs = 0;
 
-    // ── Operator counters (see PhixeronCounters), created in the constructor ────────────────────
+    // Operator counters (see PhixeronCounters)
     private final AtomicCounter stalledCounter;
     private final AtomicCounter readyCounter;
     private final AtomicCounter activeReplaySlotsCounter;
@@ -408,18 +408,10 @@ public final class ReplayerService {
 
     /** One duty-cycle iteration. Returns a work count for the idle strategy. */
     public int poll() {
-        // Requests first, integrity check second. A not-ready ReplayerService still owes every request an
-        // answer — ReplayPending, or ReplayUnavailable once the check has failed — and answering costs
-        // nothing, whereas checkReady below makes archive control calls that block this thread for as
-        // long as the archive takes. The cost of this order is that a request arriving in the very cycle
-        // readiness flips is answered ReplayPending and served on the app's next resend instead.
         int work = replayer.pollRequests(requestHandler, FRAGMENT_LIMIT);
         if (!ready) {
             work += checkReady();
         } else if (stalled) {
-            // Only once ready: until then the self-check above is already a paced replay of this node's
-            // own archive, and it clears the stall itself — a second replay on its stream would feed the
-            // check's own subscription frames from a recording it is not sweeping.
             probeArchive();
         }
         reclaimIdleSlots();
@@ -506,11 +498,6 @@ public final class ReplayerService {
             selfCheckDeadlineNs = replayer.nanoTime() + SELF_CHECK_TIMEOUT_NS;
             onArchiveRecovered();  // it served a replay: whatever refused one earlier is over
         } catch (final RuntimeException ex) {
-            // One catch over every archive call this makes, and it reports the fault like any other
-            // (review-3.md #10): swallowing it here left a node whose archive never answers looking
-            // merely slow to become ready, while the one call that was outside a catch took the whole
-            // duty cycle down for the same fault. Transient by assumption — the same span is started
-            // fresh on a later cycle — so nothing here is fatal or latched.
             closeSelfCheck();
             onArchiveStalled("running the startup self-check", ex);
         }
@@ -575,10 +562,6 @@ public final class ReplayerService {
      */
     private void onSelfCheckFragment(final DirectBuffer buffer, final int offset) {
         selfCheckMsgHeaderDecoder.wrap(buffer, offset);
-        // Only the sequenced schema carries the header composite this reads globalSeqNo out of;
-        // anything else on this stream would decode to a number with no meaning. The templateId is
-        // deliberately not checked — every sequenced message carries the same header, which is the whole
-        // point of the schema (see Sequencer.sequenceMessage).
         if (selfCheckMsgHeaderDecoder.schemaId()
                 != org.limitless.phixeron.sbe.sequenced.MessageHeaderDecoder.SCHEMA_ID) {
             return;
@@ -601,8 +584,7 @@ public final class ReplayerService {
         selfCheckGlobalSeqNo = NULL_VALUE;
     }
 
-    // ── Replay protocol ─────────────────────────────────────────────────────────
-
+    // Replay protocol
     /**
      * Request handler
      * @param buffer message buffer
@@ -702,14 +684,6 @@ public final class ReplayerService {
             serveReplay(clientId, requestId, segmentIndex, fromPosition);
             onArchiveRecovered();
         } catch (final RuntimeException error) {
-            // Two faults reach here wearing the same exception, and they need opposite answers (review-3.md
-            // #10): a resume replays from a position the CLIENT supplied, and the startPosition check in
-            // serveReplay cannot catch the remaining way it can be wrong — in range, but not on a frame
-            // boundary of a recording that has since rotated. Answering ReplayPending to a position that
-            // can never work holds that app forever; steering a whole node's worth of apps off their
-            // positions and onto full chain re-walks because the archive is down is just as wrong, and it
-            // used to be what happened, with nothing reporting the outage until one of those walks
-            // arrived. So ask the archive which it is, on the error path only.
             if (segmentIndex < 0 && archiveAnswers()) {
                 rejectResume(clientId, requestId, "archive refused it: " + error.getMessage());
                 return;
@@ -784,10 +758,7 @@ public final class ReplayerService {
      * @param segmentIndex segment index
      * @param fromPosition start position
      */
-    private void serveReplay(final int clientId, final long requestId, final int segmentIndex,
-                             final long fromPosition) {
-        // This request is the client's current one, so anything it still has queued is stale — drop it
-        // before any path below can queue a fresh one (see ReplaySlotAllocator.cancelPending).
+    private void serveReplay(final int clientId, final long requestId, final int segmentIndex, final long fromPosition) {
         replaySlots.cancelPending(clientId);
 
         final long recordingId;
@@ -1035,7 +1006,7 @@ public final class ReplayerService {
         }
     }
 
-    // ── Local-archive resilience ────────────────────────────────────────────────
+    // Local-archive resilience
 
     /**
      * A local-archive control call threw: enter STALLED (idempotently, logging once per episode).

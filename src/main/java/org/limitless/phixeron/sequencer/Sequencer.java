@@ -125,7 +125,7 @@ public final class Sequencer {
         }
     }
 
-    // ── Ingress decode (schema 200, sbe-unsequenced.xml) ──────────────────────
+    // Ingress decode (schema 200, sbe-unsequenced.xml)
     // Only the outer framing header and the generic `header` composite are ever decoded — body fields
     // are copied through as opaque bytes (see sequenceMessage), with two bounded exceptions: the Gateway
     // topology row and GatewayStarted, whose scalar fields feed the derived topology below.
@@ -134,7 +134,7 @@ public final class Sequencer {
     private final BasicDataGatewayDecoder gatewayDecoder = new BasicDataGatewayDecoder();
     private final GatewayStartedDecoder gatewayStartedDecoder = new GatewayStartedDecoder();
 
-    // ── Egress encode (schema 202, sbe-sequenced.xml) ─────────────────────────
+    // Egress encode (schema 202, sbe-sequenced.xml)
     private final MessageHeaderEncoder headerEncoder = new MessageHeaderEncoder();
     private final HeaderEncoder egressHeaderEncoder = new HeaderEncoder();
     private final LeadershipChangedEncoder leadershipChangedEncoder = new LeadershipChangedEncoder();
@@ -142,11 +142,7 @@ public final class Sequencer {
     private final GatewayActiveEncoder gatewayActiveEncoder = new GatewayActiveEncoder();
     private final MutableDirectBuffer encodeBuffer = new ExpandableDirectByteBuffer(4096);
 
-    // ── Topology — derived from the sequenced Gateway rows (doc/todo.md item 8c) ─
-    // Not configured: the basic-data producer publishes one Gateway row per gateway instance, and the
-    // sequencer builds this from them as they pass through sequenceMessage. Pure functions of the
-    // ordered log, so every node agrees, and rebuilt on full-log replay (there are no snapshots).
-
+    // Topology
     /** One Gateway row: an instance ({@code gatewayId}) of a logical gateway ({@code gatewaySourceId}). */
     private record GatewayRow(int gatewayId, int gatewaySourceId, short preferenceRank) {}
 
@@ -164,10 +160,7 @@ public final class Sequencer {
      */
     private int designatedPrimaryGatewayId = NO_GATEWAY_ID;
 
-    // ── Replicated state (advanced identically on every node; not snapshotted) ─
-    // There are no snapshots — SequencerService refuses both hooks — so every field here is rebuilt by
-    // full-log replay from globalSeqNo 1. A field added here therefore needs no persistence change, but
-    // it does have to stay a pure function of the ordered log, like the rest.
+    // Replicated state (advanced identically on every node; not snapshotted)
 
     /** Cluster-wide monotone counter; advanced for messages and lifecycle events alike. */
     private long globalSeqNo = 0;
@@ -302,8 +295,6 @@ public final class Sequencer {
             return reject("length " + length + " is below the " + MIN_INGRESS_LENGTH + "-byte minimum framing");
         }
 
-        // Decode the framing header (for templateId/blockLength) and the `header` composite
-        // (for sourceId/connectionId) — both at fixed offsets, independent of message type.
         ingressMsgHeaderDecoder.wrap(buffer, offset);
         final int templateId = ingressMsgHeaderDecoder.templateId();
         final int ingressBlockLen = ingressMsgHeaderDecoder.blockLength();
@@ -315,11 +306,7 @@ public final class Sequencer {
             MessageHeaderDecoder.ENCODED_LENGTH + ingressBlockLen > length) {
             return reject("blockLength " + ingressBlockLen + " does not fit a " + length + "-byte frame");
         }
-        // sbe-sequenced.xml's header composite is sbe-unsequenced.xml's plus two int64 fields
-        // (globalSeqNo, timestamp); every other field is byte-identical, so the egress blockLength is
-        // simply the ingress blockLength with the header composite's growth added on. That sum can
-        // exceed what a uint16 holds, and the encoder narrows to short silently — a frame with a
-        // truncated blockLength would go straight into authoritative, unreplayable history.
+
         final int egressBlockLen = HeaderEncoder.ENCODED_LENGTH + (ingressBlockLen - HeaderDecoder.ENCODED_LENGTH);
         if (egressBlockLen > MAX_BLOCK_LENGTH) {
             return reject("blockLength " + ingressBlockLen + " leaves no room for the "
@@ -334,9 +321,9 @@ public final class Sequencer {
         final int sourceId = ingressHeaderDecoder.sourceId();
         final int connectionId = ingressHeaderDecoder.connectionId();
 
-        // Topology bookkeeping for FIX standby promotion (see sessionClosed / pendingBootstrapActivation).
-        // A Gateway message defines the topology; a GatewayStarted is a gateway instance declaring which
-        // session it is active on; the first EndBasicData designates the primary.
+        // Topology bookkeeping for FIX standby promotion A Gateway message defines the topology;
+        // a GatewayStarted is a gateway instance declaring which session it is active on; the first
+        // EndBasicData designates the primary.
         if (templateId == BasicDataGatewayDecoder.TEMPLATE_ID) {
             gatewayDecoder.wrap(buffer, ingressBodyOffset, ingressBlockLen, ingressMsgHeaderDecoder.version());
             addGatewayRow(gatewayDecoder.gatewayId(), gatewayDecoder.gatewaySourceId(),

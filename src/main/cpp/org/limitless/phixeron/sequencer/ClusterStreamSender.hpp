@@ -165,9 +165,9 @@ class AeronIngressTransport : public IngressTransport
 
     bool offer(std::span<const std::uint8_t> bytes) override
     {
-        aeron::concurrent::AtomicBuffer ab(const_cast<std::uint8_t*>(bytes.data()),
-                                           static_cast<aeron::util::index_t>(bytes.size()));
-        return m_pub->offer(ab, 0, static_cast<aeron::util::index_t>(bytes.size())) >= 0;
+        const aeron::concurrent::AtomicBuffer buffer(const_cast<std::uint8_t*>(bytes.data()),
+                                                     static_cast<aeron::util::index_t>(bytes.size()));
+        return m_pub->offer(buffer, 0, static_cast<aeron::util::index_t>(bytes.size())) >= 0;
     }
 
    private:
