@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # metrics-aggregator.sh — central ops-server aggregator for phixeron's node-local exporters.
 #
-# Thin launcher for org.limitless.phixeron.tools.MetricsAggregator. Pulls every node's /metrics
+# Thin launcher for org.limitless.phixeron.metrics.MetricsAggregator. Pulls every node's /metrics
 # (see metrics-exporter.sh) over HTTP and re-exposes one combined /metrics endpoint — the
 # aggregating-proxy topology, so Prometheus only needs network reach to this one process. Also
 # synthesizes phixeron_node_up{member="N"} from its own per-node scrape success/failure. No Aeron
@@ -32,4 +32,4 @@ DPROPS=()
 [[ -n "${METRICS_AGGREGATOR_PORT:-}" ]]    && DPROPS+=( "-DmetricsAggregator.port=${METRICS_AGGREGATOR_PORT}" )
 [[ -n "${METRICS_AGGREGATOR_TARGETS:-}" ]] && DPROPS+=( "-DmetricsAggregator.targets=${METRICS_AGGREGATOR_TARGETS}" )
 
-exec java "${DPROPS[@]+"${DPROPS[@]}"}" -cp "${JAR}" org.limitless.phixeron.tools.MetricsAggregator "$@"
+exec java "${DPROPS[@]+"${DPROPS[@]}"}" -cp "${JAR}" org.limitless.phixeron.metrics.MetricsAggregator "$@"

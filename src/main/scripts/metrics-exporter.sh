@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # metrics-exporter.sh — node-local Prometheus exporter for phixeron's operator counters.
 #
-# Thin launcher for org.limitless.phixeron.tools.MetricsExporter. Node-local: run co-located on a
+# Thin launcher for org.limitless.phixeron.metrics.MetricsExporter. Node-local: run co-located on a
 # SequencerNode/ReplayerNode host — it shares that node's Aeron directory (the same connection-less
 # access pattern as `clusterctl counters`) and stays resident, serving /metrics for a scraper to
 # poll on an interval.
@@ -40,4 +40,4 @@ DPROPS=( "-DmetricsExporter.memberId=${METRICS_EXPORTER_MEMBER_ID:-0}" )
 [[ -n "${METRICS_EXPORTER_AERON_DIR:-}" ]] && DPROPS+=( "-DmetricsExporter.aeronDir=${METRICS_EXPORTER_AERON_DIR}" )
 [[ -n "${METRICS_EXPORTER_PORT:-}" ]]      && DPROPS+=( "-DmetricsExporter.port=${METRICS_EXPORTER_PORT}" )
 
-exec java "${JAVA_OPTS[@]}" "${DPROPS[@]}" -cp "${JAR}" org.limitless.phixeron.tools.MetricsExporter "$@"
+exec java "${JAVA_OPTS[@]}" "${DPROPS[@]}" -cp "${JAR}" org.limitless.phixeron.metrics.MetricsExporter "$@"
