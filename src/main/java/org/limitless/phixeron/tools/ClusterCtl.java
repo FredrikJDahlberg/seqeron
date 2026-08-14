@@ -16,7 +16,7 @@ import org.agrona.ExpandableArrayBuffer;
 import org.agrona.concurrent.IdleStrategy;
 import org.agrona.concurrent.YieldingIdleStrategy;
 import org.agrona.concurrent.status.CountersReader;
-import org.limitless.phixeron.PhixeronCounters;
+import org.limitless.phixeron.metrics.PhixeronCounters;
 import org.limitless.phixeron.sbe.sequenced.ClusterStartedDecoder;
 import org.limitless.phixeron.sbe.sequenced.GatewayActiveDecoder;
 import org.limitless.phixeron.sbe.sequenced.MessageHeaderDecoder;
@@ -59,7 +59,7 @@ import org.limitless.phixeron.sequencer.SequencerService;
  *       which of the two publishes it: the instance whose {@code gatewayId}/{@code gatewaySourceId}
  *       matches opens its accept gate, the others stay standby.</li>
  *   <li><b>counters</b> — lists this node's phixeron operator counters ({@link
- *       org.limitless.phixeron.PhixeronCounters}), read directly off the co-located Aeron
+ *       org.limitless.phixeron.metrics.PhixeronCounters}), read directly off the co-located Aeron
  *       directory's CnC file. No cluster connection, so it works with no elected leader and is
  *       safe on every node.</li>
  *   <li><b>help</b> — usage.</li>

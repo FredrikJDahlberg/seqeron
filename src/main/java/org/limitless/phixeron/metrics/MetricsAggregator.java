@@ -1,4 +1,4 @@
-package org.limitless.phixeron.tools;
+package org.limitless.phixeron.metrics;
 
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;

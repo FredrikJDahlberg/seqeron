@@ -18,7 +18,7 @@ import org.agrona.concurrent.UnsafeBuffer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.limitless.phixeron.PhixeronCounters;
+import org.limitless.phixeron.metrics.PhixeronCounters;
 import org.limitless.phixeron.sbe.unsequenced.MessageHeaderDecoder;
 import org.limitless.phixeron.sbe.unsequenced.MessageHeaderEncoder;
 import org.limitless.phixeron.sbe.unsequenced.ReplayCompleteEncoder;
@@ -85,7 +85,7 @@ class ReplayerServiceTest {
         assertEquals(0, fakeReplayer.counter(PhixeronCounters.REPLAYER_INTEGRITY_FAILURE_TYPE_ID));
         // Bounded to the first frame, not the whole recording: it only ever reads one fragment.
         assertEquals(1, fakeReplayer.startedReplays().size());
-        assertEquals(ReplayerService.SELF_CHECK_STREAM_ID, fakeReplayer.startedReplays().get(0).streamId());
+        assertEquals(ReplayerService.SELF_CHECK_STREAM_ID, fakeReplayer.startedReplays().getFirst().streamId());
     }
 
     @Test
@@ -544,7 +544,7 @@ class ReplayerServiceTest {
     private Reply lastReply() {
         final List<byte[]> replies = fakeReplayer.controlReplies();
         assertFalse(replies.isEmpty(), "no control reply was sent");
-        final UnsafeBuffer buffer = new UnsafeBuffer(replies.get(replies.size() - 1));
+        final UnsafeBuffer buffer = new UnsafeBuffer(replies.getLast());
         final MessageHeaderDecoder header = new MessageHeaderDecoder();
         header.wrap(buffer, 0);
         final int offset = MessageHeaderDecoder.ENCODED_LENGTH;
@@ -570,7 +570,7 @@ class ReplayerServiceTest {
             .filter(replay -> replay.streamId() == ReplayerService.REPLAY_STREAM_ID)
             .toList();
         assertFalse(clientReplays.isEmpty(), "no replay was started for an app");
-        return clientReplays.get(clientReplays.size() - 1);
+        return clientReplays.getLast();
     }
 
     private boolean noClientReplayStarted() {

@@ -14,7 +14,7 @@ import org.agrona.ExpandableArrayBuffer;
 import org.agrona.MutableDirectBuffer;
 import org.agrona.concurrent.IdleStrategy;
 import org.agrona.concurrent.status.AtomicCounter;
-import org.limitless.phixeron.PhixeronCounters;
+import org.limitless.phixeron.metrics.PhixeronCounters;
 import org.limitless.phixeron.sbe.unsequenced.MessageHeaderDecoder;
 import org.limitless.phixeron.sbe.unsequenced.MessageHeaderEncoder;
 import org.limitless.phixeron.sbe.unsequenced.ReplayCompleteDecoder;

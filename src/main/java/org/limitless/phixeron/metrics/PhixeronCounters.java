@@ -1,4 +1,4 @@
-package org.limitless.phixeron;
+package org.limitless.phixeron.metrics;
 
 import io.aeron.Aeron;
 import io.aeron.Counter;

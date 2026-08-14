@@ -4,11 +4,6 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 
 import org.junit.jupiter.api.Test;
 
-/**
- * Pins the {@link SequencerNode#PORT_BASE}-derived port-layout formula (see the class Javadoc)
- * so a future edit to it — or to the mirrored C++ {@code PortLayout.hpp}/shell {@code ports.sh}
- * copies — is caught by a failing assertion instead of silent drift.
- */
 class SequencerNodeTest {
     @Test
     void singleNodeMembersMatchDocumentedLayout() {

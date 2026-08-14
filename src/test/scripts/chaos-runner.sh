@@ -30,6 +30,16 @@
 #   the heal window. On first failure it stops and prints the fault history + SEED to reproduce.
 set -uo pipefail
 
+# A full run takes many minutes, and a host that sleeps mid-round takes the whole cluster down with it:
+# Aeron's service-interval watchdog measures WALL clock, so on wake every client aborts at once and the
+# round reads as a product failure (observed 2026-08-13: 'Clamshell Sleep' at 22:19, ~15 min gap, all
+# three replicas dead). Re-exec under caffeinate so the run holds sleep off itself. A lid close can still
+# force sleep — `sudo pmset -c disablesleep 1` is the harder lock. NO_CAFFEINATE=1 to skip.
+if [[ -z "${NO_CAFFEINATE:-}" && "${CHAOS_CAFFEINATED:-}" != 1 ]] && command -v caffeinate >/dev/null 2>&1; then
+  export CHAOS_CAFFEINATED=1
+  exec caffeinate -dims "$BASH" "$0" "$@"
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../../main/scripts/ports.sh"
 

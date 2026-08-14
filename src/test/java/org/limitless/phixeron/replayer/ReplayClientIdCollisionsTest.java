@@ -1,10 +1,9 @@
 package org.limitless.phixeron.replayer;
 
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertTrue;
-
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+
+import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * Unit tests for the duplicate-{@code PHIXERON_REPLAYER_CLIENT_ID} detector (review-3 finding 4). The
@@ -76,7 +75,7 @@ class ReplayClientIdCollisionsTest {
             }
         }
 
-        assertTrue(reports == 1, "reported exactly once, not at the pair's combined resend rate");
+        assertEquals(1, reports, "reported exactly once, not at the pair's combined resend rate");
     }
 
     @Test

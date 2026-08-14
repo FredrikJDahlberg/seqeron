@@ -9,7 +9,7 @@ import java.util.ArrayList;
 import java.util.List;
 import org.agrona.DirectBuffer;
 import org.agrona.concurrent.status.AtomicCounter;
-import org.limitless.phixeron.PhixeronCounters;
+import org.limitless.phixeron.metrics.PhixeronCounters;
 import org.limitless.phixeron.sequencer.SequencerService;
 
 /**

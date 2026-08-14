@@ -13,6 +13,7 @@ import java.nio.channels.FileChannel;
 import java.util.List;
 import org.agrona.BitUtil;
 import org.agrona.concurrent.UnsafeBuffer;
+import org.limitless.phixeron.util.Logger;
 import uk.co.real_logic.sbe.ir.Ir;
 import uk.co.real_logic.sbe.ir.IrDecoder;
 import uk.co.real_logic.sbe.ir.Token;
@@ -70,7 +71,7 @@ public class SbeLogPrinter {
      */
     private String messageName(final int templateId) {
         final List<Token> tokens = ir.getMessage(templateId);
-        return null == tokens || tokens.isEmpty() ? "<unknown>" : tokens.get(0).name();
+        return null == tokens || tokens.isEmpty() ? "<unknown>" : tokens.getFirst().name();
     }
 
     /**
@@ -240,7 +241,6 @@ public class SbeLogPrinter {
                         if (oneLine) {
                             collapse(outputBuilder);
                         }
-
                         System.out.println("--- Log File Offset: " + currentPosition + " | "
                                            + messageName(templateId) + " (templateId " + templateId + ") ---");
                         System.out.println(outputBuilder);

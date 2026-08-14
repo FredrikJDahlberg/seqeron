@@ -18,7 +18,7 @@ import java.util.concurrent.TimeUnit;
 import org.agrona.DirectBuffer;
 import org.agrona.concurrent.NoOpLock;
 import org.agrona.concurrent.status.CountersReader;
-import org.limitless.phixeron.PhixeronCounters;
+import org.limitless.phixeron.metrics.PhixeronCounters;
 import org.limitless.phixeron.replayer.ReplayerService;
 import org.limitless.phixeron.util.Logger;
 
@@ -139,13 +139,7 @@ public final class SequencerService implements ClusteredService {
 
     /**
      * How long tap-emit back-pressure must persist, continuously, before {@link #emit} treats it as a
-     * genuine local-archive stall (surfaced via {@code tapStalledCounter}) rather than the ordinary,
-     * self-clearing back-pressure {@link #MAX_BACK_PRESSURE_SPINS} already alerts on every ~10 ms. Set
-     * well above one alert period so the two signals stay distinguishable: an operator/dashboard can
-     * tell "briefly busy" from "actually stuck" without inferring it from how fast the alert counter is
-     * climbing. Matched to {@code leaderHeartbeatTimeoutNs}/{@code electionTimeoutNs}
-     * ({@link SequencerNode}) so every failover-adjacent timeout in this cluster sits in the same order
-     * of magnitude, rather than the disk-side detector lagging the consensus-side ones by two orders.
+     * genuine local-archive stall.
      */
     private static final long SUSTAINED_BACKPRESSURE_THRESHOLD_NS = TimeUnit.MILLISECONDS.toNanos(200);
 

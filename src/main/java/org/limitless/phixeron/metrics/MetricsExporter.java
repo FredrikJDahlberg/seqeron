@@ -1,4 +1,4 @@
-package org.limitless.phixeron.tools;
+package org.limitless.phixeron.metrics;
 
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
@@ -11,7 +11,6 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import org.agrona.concurrent.status.CountersReader;
-import org.limitless.phixeron.PhixeronCounters;
 
 /**
  * Node-local Prometheus exporter (see {@code doc/ops.md}): serves phixeron's operator counters

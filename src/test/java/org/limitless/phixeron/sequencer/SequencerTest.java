@@ -374,7 +374,7 @@ class SequencerTest {
         assertEquals(TIMESTAMP, header.timestamp());
         // A header-only message copies zero body bytes through — the degenerate end of the
         // copy-through path every other message exercises with a body.
-        assertEquals(connectedLength, MessageHeaderDecoder.ENCODED_LENGTH + ClientConnectedDecoder.BLOCK_LENGTH);
+        assertEquals(MessageHeaderDecoder.ENCODED_LENGTH + ClientConnectedDecoder.BLOCK_LENGTH, connectedLength);
 
         final int disconnectedLength = sequencer.sequenceMessage(
             lifecycle, 0, encodeIngressClientDisconnected(lifecycle, 0), SESSION_ID, TIMESTAMP + 1);
@@ -387,7 +387,7 @@ class SequencerTest {
         assertEquals(CONNECTION_ID, header.connectionId());
         assertEquals(TIMESTAMP + 1, header.timestamp());
         assertEquals(SESSION_ID, header.sessionId());
-        assertEquals(disconnectedLength, MessageHeaderDecoder.ENCODED_LENGTH + ClientDisconnectedDecoder.BLOCK_LENGTH);
+        assertEquals(MessageHeaderDecoder.ENCODED_LENGTH + ClientDisconnectedDecoder.BLOCK_LENGTH, disconnectedLength);
     }
 
     @Test
@@ -407,7 +407,7 @@ class SequencerTest {
         assertEquals(tickTime, header.timestamp());
         assertEquals(Sequencer.NO_SOURCE_ID, header.sessionId());
         assertEquals(1L, header.globalSeqNo());
-        assertEquals(length, MessageHeaderDecoder.ENCODED_LENGTH + TickDecoder.BLOCK_LENGTH);
+        assertEquals(MessageHeaderDecoder.ENCODED_LENGTH + TickDecoder.BLOCK_LENGTH, length);
     }
 
     @Test

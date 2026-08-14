@@ -7,12 +7,6 @@ package org.limitless.phixeron.sequencer;
  * node. Free of every Aeron type so it is unit-testable without a cluster — the service reads the two
  * inputs off the archive's {@code RecordingPos} counter and applies the verdict, mirroring how {@link
  * Sequencer} is split from {@code SequencerService}.
- *
- * <p><b>The discriminator is recording progress, not elapsed back-pressure.</b> An archive draining
- * slowly under load back-pressures continuously while still making progress, and killing that node
- * would turn a load spike into an outage; an archive whose recording position has not moved at all is
- * not draining, and no amount of further waiting changes that. A recording counter that has gone away
- * is fatal at once — nothing is being recorded any more, so waiting cannot help either.
  */
 public final class TapStallPolicy {
     /** What the service should do about the back-pressure it is currently spinning on. */

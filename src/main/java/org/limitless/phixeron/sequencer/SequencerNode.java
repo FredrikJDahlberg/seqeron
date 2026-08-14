@@ -171,10 +171,8 @@ public final class SequencerNode {
             .startupCanvassTimeoutNs(TimeUnit.SECONDS.toNanos(5))
             .sessionTimeoutNs(TimeUnit.SECONDS.toNanos(1))
             .idleStrategySupplier(idleStrategySupplier)
-            .errorHandler(t -> {
-                Logger.error(Logger.Component.ConsensusModule, Logger.EventCode.ConsensusModuleError,
-                        memberId, "%s", t.getMessage());
-            });
+            .errorHandler(t -> Logger.error(Logger.Component.ConsensusModule, Logger.EventCode.ConsensusModuleError,
+                    memberId, "%s", t.getMessage()));
 
         // A node that can no longer record its own tap must not keep sequencing history it cannot keep
         // (SequencerService.fatalTapFailure): take the same barrier path an operator shutdown takes, so the
@@ -197,10 +195,8 @@ public final class SequencerNode {
             // and consensus module up, no service behind them.
             .terminationHook(barrier::signalAll)
             .idleStrategySupplier(idleStrategySupplier)
-            .errorHandler(t -> {
-                Logger.error(Logger.Component.SequencerService, Logger.EventCode.ServiceError, memberId,
-                        "%s", t.getMessage());
-            });
+            .errorHandler(t -> Logger.error(Logger.Component.SequencerService, Logger.EventCode.ServiceError, memberId,
+                    "%s", t.getMessage()));
 
         Logger.info(Logger.Component.SequencerNode, memberId,
                 "Starting member %d | ingress=%s | archive=%s | baseDir=%s | idle=%s",

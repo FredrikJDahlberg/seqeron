@@ -1,10 +1,11 @@
 package org.limitless.phixeron.replayer;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 
 /**
- * Pure recording-chain stitching for {@link ReplayerService#resolveSegments}: orders a node's tap
+ * Pure recording-chain stitching for {@link ReplayerService}: orders a node's tap
  * recordings oldest→newest and keeps at most one "active" (still-recording) entry — the newest — rather
  * than mistaking a stale one for a bounded historical segment. Free of every Aeron/Archive type so it is
  * unit-testable without one — see {@code ReplayerService.resolveSegments}'s Javadoc for why the chain is
@@ -43,7 +44,7 @@ public final class ReplayRecordings {
      */
     public static List<RecordingSpan> stitch(final List<RecordingSpan> spans) {
         final List<RecordingSpan> sorted = new ArrayList<>(spans);
-        sorted.sort((a, b) -> Long.compare(a.recordingId(), b.recordingId()));
+        sorted.sort(Comparator.comparingLong(RecordingSpan::recordingId));
 
         long newestActiveId = -1;  // recordingIds are non-negative; -1 means "no active span"
         for (final RecordingSpan span : sorted) {

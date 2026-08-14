@@ -126,7 +126,7 @@ public final class ReplaySlotAllocator {
      * @return the longest-waiting client's current request, or null
      */
     public PendingRequest pollPending() {
-        return hasCapacity() && !pending.isEmpty() ? pending.remove(0) : null;
+        return hasCapacity() && !pending.isEmpty() ? pending.removeFirst() : null;
     }
 
     /** Removes and returns the tokens of every slot untouched for longer than the TTL (see {@link #touch}). */
