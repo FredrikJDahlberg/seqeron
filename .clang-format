@@ -39,6 +39,12 @@ BinPackArguments: true
 BinPackParameters: true
 AlignAfterOpenBracket: true
 
+# Constructor initializers: colon closes the signature line, commas end lines (Mozilla's
+# BeforeComma leads with them). CurrentLine keeps one initializer per line — Mozilla's
+# inherited BinPack is inert under BeforeComma but would pack them under AfterColon.
+BreakConstructorInitializers: AfterColon
+PackConstructorInitializers: CurrentLine
+
 Standard: Latest
 FixNamespaceComments: false
 ---

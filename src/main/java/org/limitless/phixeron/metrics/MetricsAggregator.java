@@ -42,10 +42,14 @@ public final class MetricsAggregator {
         this.targets = targets;
     }
 
+    /**
+     * Main entry point
+     * @param args arguments
+     * @throws IOException
+     */
     public static void main(final String[] args) throws IOException {
         final Map<Integer, String> targets = parseTargets(TARGETS);
         final MetricsAggregator aggregator = new MetricsAggregator(targets);
-
         final HttpServer server = HttpServer.create(new InetSocketAddress(PORT), 0);
         server.createContext("/metrics", aggregator::handleMetrics);
         server.setExecutor(null);
@@ -56,9 +60,14 @@ public final class MetricsAggregator {
         Runtime.getRuntime().addShutdownHook(new Thread(() -> server.stop(0)));
     }
 
-    private static Map<Integer, String> parseTargets(final String spec) {
+    /**
+     * Parse end-point
+     * @param targets end-point
+     * @return end-points by identity
+     */
+    private static Map<Integer, String> parseTargets(final String targets) {
         final Map<Integer, String> map = new TreeMap<>();
-        for (final String entry : spec.split(",")) {
+        for (final String entry : targets.split(",")) {
             final String[] parts = entry.split("=", 2);
             map.put(Integer.parseInt(parts[0].trim()), parts[1].trim());
         }
@@ -93,13 +102,12 @@ public final class MetricsAggregator {
         final Map<String, String> helpByName = new LinkedHashMap<>();
         final Map<String, String> typeByName = new LinkedHashMap<>();
         final Map<String, StringBuilder> samplesByName = new LinkedHashMap<>();
-        final Map<Integer, Boolean> up = new TreeMap<>();
-
+        final Map<Integer, Boolean> targetByResponse = new TreeMap<>();
         for (final Map.Entry<Integer, String> target : targets.entrySet()) {
-            final String scraped = scrape(target.getValue());
-            up.put(target.getKey(), scraped != null);
-            if (scraped != null) {
-                parseInto(scraped, helpByName, typeByName, samplesByName);
+            final String response = scrape(target.getValue());
+            targetByResponse.put(target.getKey(), response != null);
+            if (response != null) {
+                parseResponse(response, helpByName, typeByName, samplesByName);
             }
         }
 
@@ -108,7 +116,7 @@ public final class MetricsAggregator {
             .append(NODE_UP_NAME)
             .append(" 1 if the aggregator's last scrape of this node's exporter succeeded, else 0.\n");
         body.append("# TYPE ").append(NODE_UP_NAME).append(" gauge\n");
-        for (final Map.Entry<Integer, Boolean> entry : up.entrySet()) {
+        for (final Map.Entry<Integer, Boolean> entry : targetByResponse.entrySet()) {
             body.append(NODE_UP_NAME)
                 .append("{member=\"")
                 .append(entry.getKey())
@@ -116,7 +124,6 @@ public final class MetricsAggregator {
                 .append(entry.getValue() ? 1 : 0)
                 .append('\n');
         }
-
         for (final String name : helpByName.keySet()) {
             body.append("# HELP ").append(name).append(' ').append(helpByName.get(name)).append('\n');
             body.append("# TYPE ").append(name).append(' ').append(typeByName.get(name)).append('\n');
@@ -125,7 +132,11 @@ public final class MetricsAggregator {
         return body.toString();
     }
 
-    /** Returns the scraped body, or {@code null} on any failure (connect/timeout/non-200) — never throws. */
+    /**
+     * Returns the scraped body, or {@code null} on any failure (connect/timeout/non-200).
+     * @param hostPort host port
+     * @return response or null
+     */
     private String scrape(final String hostPort) {
         try {
             final HttpRequest request = HttpRequest.newBuilder(URI.create("http://" + hostPort + "/metrics"))
@@ -134,18 +145,26 @@ public final class MetricsAggregator {
                                             .build();
             final HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
             return response.statusCode() == 200 ? response.body() : null;
-        } catch (final IOException ex) {
+        } catch (final IOException error) {
             return null;
-        } catch (final InterruptedException ex) {
+        } catch (final InterruptedException error) {
             Thread.currentThread().interrupt();
             return null;
         }
     }
 
-    private static void parseInto(final String scraped, final Map<String, String> helpByName,
-                                  final Map<String, String> typeByName,
-                                  final Map<String, StringBuilder> samplesByName) {
-        for (final String line : scraped.split("\n")) {
+    /**
+     * Parse response
+     * @param response string
+     * @param helpByName help
+     * @param typeByName type
+     * @param samplesByName sample
+     */
+    private static void parseResponse(final String response,
+                                      final Map<String, String> helpByName,
+                                      final Map<String, String> typeByName,
+                                      final Map<String, StringBuilder> samplesByName) {
+        for (final String line : response.split("\n")) {
             if (line.isEmpty()) {
                 continue;
             }

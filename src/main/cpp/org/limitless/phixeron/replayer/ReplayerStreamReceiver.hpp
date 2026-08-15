@@ -164,22 +164,22 @@ class ReplayerStreamReceiver
 
     ReplayerStreamReceiver(std::int32_t clientId, OnSequenced onSequenced, OnConnected onConnected = {},
                            OnDisconnected onDisconnected = {}, OnLeadershipChanged onLeadershipChanged = {},
-                           OnCaughtUp onCaughtUp = {})
-      : m_clientId(clientId)
-      , m_onSequenced(std::move(onSequenced))
-      , m_onConnected(std::move(onConnected))
-      , m_onDisconnected(std::move(onDisconnected))
-      , m_onLeadershipChanged(std::move(onLeadershipChanged))
-      , m_onCaughtUp(std::move(onCaughtUp))
-      , m_tapHandler([this](auto& b, auto o, auto l, auto& h) { onFragment(b, o, l, h, /*fromReplay=*/false); })
-      , m_replayHandler([this](auto& b, auto o, auto l, auto& h) { onFragment(b, o, l, h, /*fromReplay=*/true); })
-      , m_controlHandler([this](auto& b, auto o, auto l, auto& h) { onControl(b, o, l, h); })
-      , m_tapAssembler(std::make_unique<aeron::FragmentAssembler>(m_tapHandler))
-      , m_replayAssembler(std::make_unique<aeron::FragmentAssembler>(m_replayHandler))
-      , m_controlAssembler(std::make_unique<aeron::FragmentAssembler>(m_controlHandler))
-      , m_tapPoll(m_tapAssembler->handler())
-      , m_replayPoll(m_replayAssembler->handler())
-      , m_controlPoll(m_controlAssembler->handler())
+                           OnCaughtUp onCaughtUp = {}) :
+      m_clientId(clientId),
+      m_onSequenced(std::move(onSequenced)),
+      m_onConnected(std::move(onConnected)),
+      m_onDisconnected(std::move(onDisconnected)),
+      m_onLeadershipChanged(std::move(onLeadershipChanged)),
+      m_onCaughtUp(std::move(onCaughtUp)),
+      m_tapHandler([this](auto& b, auto o, auto l, auto& h) { onFragment(b, o, l, h, /*fromReplay=*/false); }),
+      m_replayHandler([this](auto& b, auto o, auto l, auto& h) { onFragment(b, o, l, h, /*fromReplay=*/true); }),
+      m_controlHandler([this](auto& b, auto o, auto l, auto& h) { onControl(b, o, l, h); }),
+      m_tapAssembler(std::make_unique<aeron::FragmentAssembler>(m_tapHandler)),
+      m_replayAssembler(std::make_unique<aeron::FragmentAssembler>(m_replayHandler)),
+      m_controlAssembler(std::make_unique<aeron::FragmentAssembler>(m_controlHandler)),
+      m_tapPoll(m_tapAssembler->handler()),
+      m_replayPoll(m_replayAssembler->handler()),
+      m_controlPoll(m_controlAssembler->handler())
     {}
 
     // Returns any blocks still held by the retained-ahead FIFO (see retainMessages/drainRetained) — the

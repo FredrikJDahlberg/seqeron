@@ -468,15 +468,15 @@ class ClusterStreamClient
 
     explicit ClusterStreamClient(OnSequenced onSequenced, OnConnected onConnected = {},
                                  OnDisconnected onDisconnected = {}, OnCaughtUp onCaughtUp = {},
-                                 OnReplayEnded onReplayEnded = {})
-      : m_onSequenced(std::move(onSequenced))
-      , m_onConnected(std::move(onConnected))
-      , m_onDisconnected(std::move(onDisconnected))
-      , m_onCaughtUp(std::move(onCaughtUp))
-      , m_onReplayEnded(std::move(onReplayEnded))
-      , m_fragmentHandler([this](auto& buf, auto off, auto len, auto& hdr) { onFragment(buf, off, len, hdr); })
-      , m_assembler(std::make_unique<aeron::FragmentAssembler>(m_fragmentHandler))
-      , m_poll(m_assembler->handler())
+                                 OnReplayEnded onReplayEnded = {}) :
+      m_onSequenced(std::move(onSequenced)),
+      m_onConnected(std::move(onConnected)),
+      m_onDisconnected(std::move(onDisconnected)),
+      m_onCaughtUp(std::move(onCaughtUp)),
+      m_onReplayEnded(std::move(onReplayEnded)),
+      m_fragmentHandler([this](auto& buf, auto off, auto len, auto& hdr) { onFragment(buf, off, len, hdr); }),
+      m_assembler(std::make_unique<aeron::FragmentAssembler>(m_fragmentHandler)),
+      m_poll(m_assembler->handler())
     {}
 
     /**

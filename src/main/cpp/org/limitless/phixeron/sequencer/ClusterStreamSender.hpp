@@ -163,8 +163,7 @@ class EgressTransport
 class AeronIngressTransport : public IngressTransport
 {
   public:
-    explicit AeronIngressTransport(std::shared_ptr<aeron::Publication> pub)
-      : m_pub(std::move(pub))
+    explicit AeronIngressTransport(std::shared_ptr<aeron::Publication> pub) : m_pub(std::move(pub))
     {}
 
     bool offer(std::span<const std::uint8_t> bytes) override
@@ -181,8 +180,7 @@ class AeronIngressTransport : public IngressTransport
 class AeronEgressTransport : public EgressTransport
 {
   public:
-    explicit AeronEgressTransport(std::shared_ptr<aeron::Subscription> sub)
-      : m_sub(std::move(sub))
+    explicit AeronEgressTransport(std::shared_ptr<aeron::Subscription> sub) : m_sub(std::move(sub))
     {}
 
     int poll(const FragmentHandler& handler) override

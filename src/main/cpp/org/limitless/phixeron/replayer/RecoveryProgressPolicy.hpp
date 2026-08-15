@@ -27,8 +27,7 @@ class RecoveryProgressPolicy
     // stallMs: how long recovery may run without dispatching a single frame before it is called
     // unconvergent. It has to clear the longest legitimate pause with nothing dispatched — waiting on a
     // Replayer slot behind other co-located apps' walks, not any step of this client's own.
-    explicit RecoveryProgressPolicy(std::int64_t stallMs)
-      : m_stallMs{ stallMs }
+    explicit RecoveryProgressPolicy(std::int64_t stallMs) : m_stallMs{ stallMs }
     {}
 
     // Recovery is converging: a frame was dispatched in order. Clears the clock and re-arms the report,

@@ -216,14 +216,13 @@ public final class SequencerService implements ClusteredService {
     /** Brings the whole node down; wired by {@link SequencerNode}. See {@link #fatalTapFailure}. */
     private final Runnable fatalHandler;
 
-    // ── Aeron runtime ────────────────────────────────────────────────────────
-
+    // Aeron runtime
     private Cluster cluster;
     private ExclusivePublication tapPub;
     private AeronArchive aeronArchive;
     private CountersReader counters;
 
-    // ── Tap recording liveness (the archive's own counter for this node's recording) ──
+    // Tap recording liveness
     private int tapRecordingCounterId = CountersReader.NULL_COUNTER_ID;
     private long tapRecordingId = RecordingPos.NULL_RECORDING_ID;
     private boolean fatalSignalled;
@@ -231,7 +230,7 @@ public final class SequencerService implements ClusteredService {
     /** Test-only fault trigger; null unless fault injection is enabled. See {@link #injectTapRecordingFault}. */
     private Path tapFaultTrigger;
 
-    // ── Operator counters (see PhixeronCounters) — created once in onStart, closed in onTerminate ──
+    // Operator counters
     private Counter globalSeqNoCounter;
     private Counter tapBackPressureAlertCounter;
     private Counter tapStalledCounter;
@@ -269,7 +268,6 @@ public final class SequencerService implements ClusteredService {
             tapFaultTrigger = cluster.context().clusterDir().toPath().resolve(TAP_FAULT_TRIGGER_FILE);
         }
 
-        // Connect to the co-located archive via IPC — NoOpLock is safe on the single conductor thread.
         aeronArchive = AeronArchive.connect(new AeronArchive.Context()
                                                 .aeron(cluster.context().aeron())
                                                 .controlRequestChannel("aeron:ipc")
@@ -277,18 +275,10 @@ public final class SequencerService implements ClusteredService {
                                                 .controlResponseChannel("aeron:ipc")
                                                 .controlResponseStreamId(ARCHIVE_CONTROL_RESPONSE_STREAM_ID)
                                                 .lock(NoOpLock.INSTANCE));
-        // Node-local live tap of the sequenced stream, created and recorded on every node (leader and
-        // follower alike). Every node re-publishes each sequenced frame here and records it into its own
-        // co-located archive, so every node independently holds a complete copy of the sequenced history
-        // Co-located app replicas follow this live directly; the co-located ReplayerService serves history/gap replay
-        // of this recording.
         tapPub = cluster.context().aeron().addExclusivePublication(FEEDER_CHANNEL, FEEDER_STREAM_ID);
         aeronArchive.startRecording(FEEDER_CHANNEL, FEEDER_STREAM_ID, SourceLocation.LOCAL);
         awaitTapRecordingActive();
-        // Counters are NOT created here: cluster.memberId() is still NULL_VALUE during onStart (Aeron
-        // assigns it only once this service has joined the active log, after onStart returns) — see
-        // ensureCounters(), called instead from the first callback that needs one.
-
+        // Counters are NOT created here: cluster.memberId() is still NULL_VALUE during onStart
         // snapshots are not supported
         if (snapshotImage != null) {
             throw refuseStart("[SequencerService] Refusing to start from a snapshot: recovery is full-log replay from "
@@ -344,9 +334,6 @@ public final class SequencerService implements ClusteredService {
             return;
         }
         final int memberId = cluster.memberId();
-        // Same reason the counters are labelled here rather than in onStart: this is the first point at
-        // which Aeron has assigned the id. The sequencer names itself with it when it rejects an ingress
-        // message — it has no other member context, and used to log the *leader's* id in that slot.
         sequencer.memberId(memberId);
         final Aeron aeron = cluster.context().aeron();
         globalSeqNoCounter = PhixeronCounters.addCounter(aeron, PhixeronCounters.SEQUENCER_GLOBAL_SEQ_NO_TYPE_ID,
@@ -415,10 +402,7 @@ public final class SequencerService implements ClusteredService {
      */
     private void publishPromotion(final int activation, final String reason) {
         if (activation == Sequencer.NO_PROMOTION_TARGET) {
-            // A gateway lost its active instance but nothing replaced it — the cluster is gateway-less for
-            // this logical gateway until an instance starts. Sequencer already logged the specifics; this
-            // side only needs to surface it as an operator-visible counter, distinct from
-            // gatewayPromotionCounter.
+            // A gateway lost its active instance but nothing replaced it.
             gatewayPromotionFailedCounter.increment();
         } else if (activation != Sequencer.NO_FRAME) {
             gatewayPromotionCounter.increment();
@@ -441,12 +425,6 @@ public final class SequencerService implements ClusteredService {
                                  final int offset, final int length, final Header header) {
         ensureCounters();
         if (session == null) {
-            // Aeron looks the session up by clusterSessionId and passes the result straight through, so
-            // this is null whenever that id has no live session (the interface contract above says so).
-            // sessionId is the one header field sequenceMessage cannot copy from the ingress frame, and
-            // it is exactly what is missing, so the frame is unsequenceable — count it like any other
-            // malformed ingress. Dereferencing would throw, and a throw here is swallowed after the log
-            // position has already advanced (see emit), which drops the frame anyway but silently.
             rejectedIngressCounter.increment();
             Logger.error(Logger.Component.SequencerService, Logger.EventCode.MalformedIngressMessage,
                          cluster.memberId(), "skipping ingress message with no client session (globalSeqNo stays %d)",
@@ -693,8 +671,6 @@ public final class SequencerService implements ClusteredService {
             }
             cluster.idleStrategy().idle();
         }
-        // onEmitted() always runs (it resets the policy); the gauge stays latched on a node that is dying,
-        // so an operator watching it does not see the stall "clear" on the way out.
         if (stallPolicy.onEmitted() && !fatalSignalled) {
             tapStalledCounter.set(0);
             Logger.info(Logger.Component.Sequencer, cluster.memberId(),

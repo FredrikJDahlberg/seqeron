@@ -76,8 +76,6 @@ public final class ReplayClientIdCollisions {
         }
 
         if ((nowMs - sequence.windowStartMs) > windowMs) {
-            // The previous steps are too old to be evidence of anything: an app restarting once an hour
-            // must not accumulate its way to a collision report.
             sequence.windowStartMs = nowMs;
             sequence.backwardsSteps = 0;
         }

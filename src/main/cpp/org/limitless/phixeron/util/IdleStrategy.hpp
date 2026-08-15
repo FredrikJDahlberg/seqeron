@@ -27,8 +27,7 @@ class DynamicIdleStrategy
     using Variant = std::variant<aeron::concurrent::BusySpinIdleStrategy, aeron::concurrent::YieldingIdleStrategy,
                                  aeron::concurrent::BackoffIdleStrategy>;
 
-    explicit DynamicIdleStrategy(Variant strategy)
-      : m_strategy(std::move(strategy))
+    explicit DynamicIdleStrategy(Variant strategy) : m_strategy(std::move(strategy))
     {}
 
     inline void idle(int workCount)

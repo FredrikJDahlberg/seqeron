@@ -42,7 +42,6 @@ public class SbeLogPrinter {
     private final File archiveDir;
     private final Ir ir;
     private final JsonPrinter jsonPrinter;
-    // JsonPrinter emits field values only, so the message name is read separately off each frame header.
     private final OtfHeaderDecoder sbeHeaderDecoder;
     private final int streamIdFilter;
     private final boolean oneLine;
@@ -88,7 +87,6 @@ public class SbeLogPrinter {
                 while (read + 1 < length && ' ' == builder.charAt(read + 1)) {
                     read++;
                 }
-                // A key already ends in ": ", so a second space there would only pad the output.
                 if (write > 0 && ' ' != builder.charAt(write - 1)) {
                     builder.setCharAt(write++, ' ');
                 }
@@ -96,7 +94,6 @@ public class SbeLogPrinter {
                 builder.setCharAt(write++, c);
             }
         }
-        // A trailing newline would leave a dangling space; nothing else can produce one at the end.
         if (write > 0 && ' ' == builder.charAt(write - 1)) {
             write--;
         }
@@ -124,34 +121,27 @@ public class SbeLogPrinter {
             final long fileLength = channel.size();
             final ByteBuffer byteBuffer = channel.map(FileChannel.MapMode.READ_ONLY, 0, fileLength);
             final UnsafeBuffer catalogBuffer = new UnsafeBuffer(byteBuffer);
-
             final RecordingDescriptorHeaderDecoder headerDecoder = new RecordingDescriptorHeaderDecoder();
             final RecordingDescriptorDecoder descriptorDecoder = new RecordingDescriptorDecoder();
-
             int offset = CATALOG_HEADER_LENGTH;
             boolean foundAny = false;
-            // Descriptor offset of the newest recording matching streamIdFilter, resolved after the walk so
-            // "newest" can be decided across the whole catalog. Unused when no filter is set.
             int selectedOffset = -1;
             long selectedRecordingId = -1;
 
             while (offset + DESCRIPTOR_HEADER_LENGTH <= fileLength) {
                 headerDecoder.wrap(catalogBuffer, offset, RecordingDescriptorHeaderDecoder.BLOCK_LENGTH,
                                    RecordingDescriptorHeaderDecoder.SCHEMA_VERSION);
-
                 final int recordingLength = headerDecoder.length();
                 if (recordingLength <= 0) {
                     break;
                 }
 
-                final int frameLength =
-                    BitUtil.align(recordingLength + DESCRIPTOR_HEADER_LENGTH, BitUtil.CACHE_LINE_LENGTH);
-
+                final int frameLength = BitUtil.align(recordingLength + DESCRIPTOR_HEADER_LENGTH,
+                    BitUtil.CACHE_LINE_LENGTH);
                 if (headerDecoder.state() == RecordingState.VALID) {
                     final int descriptorOffset = offset + DESCRIPTOR_HEADER_LENGTH;
                     descriptorDecoder.wrap(catalogBuffer, descriptorOffset, RecordingDescriptorDecoder.BLOCK_LENGTH,
                                            RecordingDescriptorDecoder.SCHEMA_VERSION);
-
                     if (NO_STREAM_FILTER == streamIdFilter) {
                         dumpRecording(descriptorDecoder);
                         foundAny = true;
@@ -161,23 +151,19 @@ public class SbeLogPrinter {
                         selectedOffset = descriptorOffset;
                     }
                 }
-
                 offset += frameLength;
             }
-
             if (NO_STREAM_FILTER != streamIdFilter && selectedOffset >= 0) {
                 descriptorDecoder.wrap(catalogBuffer, selectedOffset, RecordingDescriptorDecoder.BLOCK_LENGTH,
                                        RecordingDescriptorDecoder.SCHEMA_VERSION);
                 dumpRecording(descriptorDecoder);
                 foundAny = true;
             }
-
             if (!foundAny) {
                 System.err.println(NO_STREAM_FILTER == streamIdFilter
                                        ? "No valid recordings found in catalog."
                                        : "No valid recording on stream " + streamIdFilter + " found in catalog.");
             }
-
             return foundAny;
         } catch (Exception e) {
             System.err.println("Failed parsing catalog file: " + e.getMessage());

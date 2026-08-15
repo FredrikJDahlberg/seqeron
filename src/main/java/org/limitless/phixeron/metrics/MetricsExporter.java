@@ -185,8 +185,6 @@ public final class MetricsExporter {
             body.append("# HELP ").append(meta.name()).append(' ').append(meta.help()).append('\n');
             body.append("# TYPE ").append(meta.name()).append(' ').append(meta.type()).append('\n');
             body.append(meta.name()).append("{member=\"").append(memberId).append('"');
-            // App counters are published by several co-located replicas at once, so memberId alone
-            // would render them as one repeated series rather than one per replica.
             if (typeId >= PhixeronCounters.APP_TYPE_ID_MIN && typeId <= PhixeronCounters.APP_TYPE_ID_MAX) {
                 body.append(",client=\"").append(keyBuffer.getInt(PhixeronCounters.KEY_CLIENT_ID_OFFSET)).append('"');
             }

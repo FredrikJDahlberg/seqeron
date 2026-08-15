@@ -126,8 +126,6 @@ public final class ClusterCtl {
         }
     }
 
-    // ── start ─────────────────────────────────────────────────────────────────
-
     private static int start() {
         final long correlationId = System.nanoTime();
         try (AeronCluster cluster = connectCluster()) {
@@ -145,12 +143,7 @@ public final class ClusterCtl {
         }
     }
 
-    // ── shutdown ────────────────────────────────────────────────────────────────
-
     private static int shutdown() {
-        // Leader gate — node-local, no cluster connection. isLeader() returns 0 only when this node is
-        // the elected leader; anything else (follower, or cluster not running) is a no-op so the command
-        // is safe to fire on every node.
         if (ClusterTool.isLeader(System.out, CLUSTER_DIR) != 0) {
             System.out.println("[clusterctl] shutdown: this node is not the leader — nothing to do");
             return 0;
@@ -170,11 +163,6 @@ public final class ClusterCtl {
                                ") — aborting anyway");
         }
 
-        // Orderly, consensus-coordinated termination of every node. ABORT takes no snapshot (preserving
-        // this system's full-log-replay recovery), and SequencerNode's wired terminationHook makes each
-        // node unwind through try-with-resources and close its Archive cleanly, draining the tap recording
-        // (including the ClusterStopped observed above) to disk — so the log stays analysable. See
-        // clusterctl.md.
         if (!ClusterTool.abort(CLUSTER_DIR, System.out)) {
             System.err.println("[clusterctl] shutdown: ClusterTool.abort failed");
             return 1;
@@ -182,8 +170,6 @@ public final class ClusterCtl {
         System.out.println("[clusterctl] shutdown: cluster abort requested");
         return 0;
     }
-
-    // ── activate ──────────────────────────────────────────────────────────────
 
     /**
      * Manual standby promotion: publishes {@code GatewayActive(gatewayId)} to cluster ingress and
@@ -290,8 +276,6 @@ public final class ClusterCtl {
         }
     }
 
-    // ── counters ────────────────────────────────────────────────────────────────
-
     /**
      * Lists this node's phixeron operator counters (see {@link PhixeronCounters}) — the
      * {@code SequencerService}/{@code ReplayerService} gauges and event counts, plus whatever the
@@ -322,8 +306,6 @@ public final class ClusterCtl {
         }
     }
 
-    // ── passthrough ─────────────────────────────────────────────────────────────
-
     private static void passthrough(final String[] args) {
         // ClusterTool.main expects args[0] = clusterDir, args[1..] = command + its arguments.
         final String[] toolArgs = new String[args.length + 1];
@@ -332,16 +314,14 @@ public final class ClusterCtl {
         ClusterTool.main(toolArgs);
     }
 
-    // ── Marker publish + echo ────────────────────────────────────────────────────
-
     private static AeronCluster connectCluster() {
         return AeronCluster.connect(new AeronCluster.Context()
-                                        .aeronDirectoryName(AERON_DIR)
-                                        .ingressChannel("aeron:udp")
-                                        .ingressEndpoints(INGRESS_ENDPOINTS)
-                                        .egressChannel("aeron:udp?endpoint=localhost:0")
-                                        .egressListener(NULL_EGRESS)
-                                        .messageTimeoutNs(CONNECT_TIMEOUT_NS));
+            .aeronDirectoryName(AERON_DIR)
+            .ingressChannel("aeron:udp")
+            .ingressEndpoints(INGRESS_ENDPOINTS)
+            .egressChannel("aeron:udp?endpoint=localhost:0")
+            .egressListener(NULL_EGRESS)
+            .messageTimeoutNs(CONNECT_TIMEOUT_NS));
     }
 
     /**
@@ -351,9 +331,8 @@ public final class ClusterCtl {
      */
     private static long publishMarkerAndAwaitEcho(final AeronCluster cluster, final int templateId,
                                                   final long correlationId) {
-        // Attach to the tap before publishing so the echo cannot be missed.
         final Subscription tap = cluster.context().aeron().addSubscription(SequencerService.FEEDER_CHANNEL,
-                                                                           SequencerService.FEEDER_STREAM_ID);
+            SequencerService.FEEDER_STREAM_ID);
         final long connectDeadline = System.nanoTime() + CONNECT_TIMEOUT_NS;
         while (!tap.isConnected()) {
             if (System.nanoTime() >= connectDeadline) {
@@ -382,8 +361,6 @@ public final class ClusterCtl {
 
     private static int encodeMarker(final ExpandableArrayBuffer buffer, final int templateId,
                                     final long correlationId) {
-        // ClusterStarted (10) and ClusterStopped (11) are byte-identical past the header composite, so
-        // this differs only in the encoder chosen for the outer template id.
         if (templateId == ClusterStartedEncoder.TEMPLATE_ID) {
             final ClusterStartedEncoder encoder = new ClusterStartedEncoder();
             encoder.wrapAndApplyHeader(buffer, 0, new MessageHeaderEncoder());

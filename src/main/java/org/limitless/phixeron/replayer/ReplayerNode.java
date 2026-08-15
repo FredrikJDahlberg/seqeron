@@ -96,26 +96,18 @@ public final class ReplayerNode {
             PROP_AERON_DIR, System.getProperty("java.io.tmpdir") + "/phixeron-seq-aeron-" + memberId);
 
         final Aeron aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(aeronDir));
-        // NoOpLock is safe: every archive control call is made from the single ReplayerService duty-cycle
-        // thread below (all archive access lives in ReplayerService.poll()); main() only closes it after that
-        // thread has joined.
-        final AeronArchive archive =
-            AeronArchive.connect(new AeronArchive.Context()
-                                     .aeron(aeron)
-                                     .ownsAeronClient(false)
-                                     .controlRequestChannel("aeron:ipc")
-                                     .controlRequestStreamId(ARCHIVE_CONTROL_STREAM_ID)
-                                     .controlResponseChannel("aeron:ipc")
-                                     .controlResponseStreamId(ARCHIVE_CONTROL_RESPONSE_STREAM_ID)
-                                     .lock(NoOpLock.INSTANCE));
+        final AeronArchive archive = AeronArchive.connect(new AeronArchive.Context()
+            .aeron(aeron)
+            .ownsAeronClient(false)
+            .controlRequestChannel("aeron:ipc")
+            .controlRequestStreamId(ARCHIVE_CONTROL_STREAM_ID)
+            .controlResponseChannel("aeron:ipc")
+            .controlResponseStreamId(ARCHIVE_CONTROL_RESPONSE_STREAM_ID)
+            .lock(NoOpLock.INSTANCE));
 
         final IdleStrategy idleStrategy = resolveIdleStrategy();
         final AtomicBoolean running = new AtomicBoolean(true);
         final AtomicBoolean dutyCycleFatal = new AtomicBoolean();
-        // Wired the same way SequencerNode wires its own tapFatal: the duty-cycle thread cannot exit the
-        // process itself (it may be mid-teardown of the very archive/aeron client main() still needs to
-        // close cleanly), so it signals the barrier and main() exits non-zero after the normal shutdown
-        // path below has run.
         final ShutdownSignalBarrier barrier = new ShutdownSignalBarrier();
         final ReplayerService replayer = new ReplayerService(aeron, archive, memberId, idleStrategy, () -> {
             dutyCycleFatal.set(true);
@@ -126,13 +118,6 @@ public final class ReplayerNode {
 
         Logger.info(Logger.Component.ReplayerNode, memberId, "Running — Ctrl-C to stop | aeronDir=%s | idle=%s",
                     aeronDir, idleStrategy.getClass().getSimpleName());
-        // NOT try-with-resources on the barrier. Agrona drives it from a JVM shutdown hook that signals
-        // every barrier and then waits (10s) for each to be closed — so closing it is what releases the
-        // JVM to finish exiting. Closing it first, as `try (barrier) { await(); } finally { …teardown }`
-        // does, releases that hook before any teardown runs and leaves the rest racing the JVM's exit:
-        // under a real SIGTERM the process died before it could log completion. SequencerNode gets this
-        // right by listing the barrier first among its resources, so it closes last; here the teardown is
-        // conditional, so it is spelled out and the barrier is closed explicitly at the end.
         barrier.await();
         running.set(false);
         try {
@@ -140,10 +125,7 @@ public final class ReplayerNode {
         } catch (final InterruptedException ie) {
             Thread.currentThread().interrupt();
         }
-        // Only close what nothing is still using. The duty-cycle thread makes archive control calls and
-        // polls Aeron subscriptions, so closing these under a thread that has not finished is a
-        // use-after-close in someone else's stack. Leaking them for the moments before the process exits
-        // costs nothing by comparison.
+
         final boolean stopped = !replayerThread.isAlive();
         if (stopped) {
             archive.close();
@@ -161,8 +143,6 @@ public final class ReplayerNode {
             System.exit(EXIT_DUTY_CYCLE_FATAL);
         }
         if (!stopped) {
-            // The duty-cycle thread is not a daemon, so a wedged one would otherwise hold the JVM up
-            // forever after main() returns.
             System.exit(EXIT_SHUTDOWN_TIMEOUT);
         }
     }

@@ -147,12 +147,6 @@ public final class SequencerNode {
                 .deleteArchiveOnStart(false)
                 .idleStrategySupplier(idleStrategySupplier);
 
-        // Wire the ShutdownSignalBarrier to the consensus module's termination hook: a
-        // ClusterTool/ClusterControl ABORT otherwise terminates the consensus and service agents
-        // without waking barrier.await() below, leaving the ClusteredMediaDriver (and its Archive)
-        // unclosed and the recorded log's catalog unflushed. Signalling the barrier drives the clean
-        // try-with-resources teardown (Archive.close flushes the catalog), which is what keeps the tap
-        // recording replayable/analysable after an orderly stop.
         final ShutdownSignalBarrier barrier = new ShutdownSignalBarrier();
         final ConsensusModule.Context consensusCtx =
             new ConsensusModule.Context()
@@ -177,10 +171,6 @@ public final class SequencerNode {
                               -> Logger.error(Logger.Component.ConsensusModule, Logger.EventCode.ConsensusModuleError,
                                               memberId, "%s", t.getMessage()));
 
-        // A node that can no longer record its own tap must not keep sequencing history it cannot keep
-        // (SequencerService.fatalTapFailure): take the same barrier path an operator shutdown takes, so the
-        // Archive still gets its clean close, and remember to exit non-zero afterwards so process
-        // supervision restarts the node — the restart's full-log replay is what rebuilds its recording.
         final AtomicBoolean tapFatal = new AtomicBoolean();
         final SequencerService service = new SequencerService(() -> {
             tapFatal.set(true);
@@ -193,9 +183,6 @@ public final class SequencerNode {
                 .archiveContext(localArchiveCtx.clone())
                 .clusterDir(clusterDir)
                 .clusteredService(service)
-                // The container's own hook defaults to a no-op, so a service agent that terminates by itself
-                // (AgentTerminationException) would otherwise leave this process running headless: media driver
-                // and consensus module up, no service behind them.
                 .terminationHook(barrier::signalAll)
                 .idleStrategySupplier(idleStrategySupplier)
                 .errorHandler(t
@@ -261,26 +248,11 @@ public final class SequencerNode {
         for (int id = 0; id < nodeCount; id++) {
             final int base = PORT_BASE + id * 10;
             members.append(id)
-                .append(',')
-                .append(DEFAULT_HOST)
-                .append(':')
-                .append(base + 2)
-                .append(',')
-                .append(DEFAULT_HOST)
-                .append(':')
-                .append(base + 3)
-                .append(',')
-                .append(DEFAULT_HOST)
-                .append(':')
-                .append(base + 4)
-                .append(',')
-                .append(DEFAULT_HOST)
-                .append(':')
-                .append(base + 5)
-                .append(',')
-                .append(DEFAULT_HOST)
-                .append(':')
-                .append(base + 1)
+                .append(',').append(DEFAULT_HOST).append(':').append(base + 2)
+                .append(',').append(DEFAULT_HOST).append(':').append(base + 3)
+                .append(',').append(DEFAULT_HOST).append(':').append(base + 4)
+                .append(',').append(DEFAULT_HOST).append(':').append(base + 5)
+                .append(',').append(DEFAULT_HOST).append(':').append(base + 1)
                 .append('|');
         }
         return members.toString();

@@ -321,10 +321,6 @@ public final class Sequencer {
 
         final int sourceId = ingressHeaderDecoder.sourceId();
         final int connectionId = ingressHeaderDecoder.connectionId();
-
-        // Topology bookkeeping for FIX standby promotion A Gateway message defines the topology;
-        // a GatewayStarted is a gateway instance declaring which session it is active on; the first
-        // EndBasicData designates the primary.
         if (templateId == BasicDataGatewayDecoder.TEMPLATE_ID) {
             gatewayDecoder.wrap(buffer, ingressBodyOffset, ingressBlockLen, ingressMsgHeaderDecoder.version());
             addGatewayRow(gatewayDecoder.gatewayId(), gatewayDecoder.gatewaySourceId(),
@@ -357,10 +353,6 @@ public final class Sequencer {
             .blockLength(egressBlockLen)
             .templateId(templateId)
             .schemaId(MessageHeaderEncoder.SCHEMA_ID)
-            // The block this describes is the ingress block copied through verbatim, so the version
-            // that describes it is the ingress one, not this build's. Stamping the compiled version
-            // over a shorter block would have consumers gate optional fields on a version those bytes
-            // do not have, and read past the block into var-data.
             .version(ingressMsgHeaderDecoder.version());
 
         final int egressBodyOffset = MessageHeaderEncoder.ENCODED_LENGTH;
@@ -370,10 +362,6 @@ public final class Sequencer {
             .sessionId(sessionId)
             .globalSeqNo(globalSeq)
             .timestamp(timestamp)
-            // Carried through, not decided here: only the publisher knows which role it spoke as.
-            // The sequencer stamps ordering, never provenance. Re-looked-up by value because the two
-            // schemas generate two distinct Origin types; they are identical by construction, which
-            // SequencerTest.originEnumsAgreeAcrossSchemas pins.
             .origin(Origin.get(ingressHeaderDecoder.origin().value()));
 
         // Copy every byte after the ingress header composite
@@ -472,9 +460,6 @@ public final class Sequencer {
         }
         final int promoted = promotionTarget(closedGatewayId);
         if (promoted == NO_GATEWAY_ID) {
-            // fail closed rather than name a nonexistent instance — but this is a real anomaly (the
-            // cluster now has no active instance of this logical gateway), unlike an ordinary NO_FRAME,
-            // so it is worth its own log line rather than passing silently like a non-gateway session close.
             Logger.error(Logger.Component.Sequencer, Logger.EventCode.GatewayPromotionFailed, memberId,
                          "gateway instance %d's session closed with no standby to promote — this logical "
                              + "gateway has no active instance until one starts (globalSeqNo stays %d)",
@@ -512,10 +497,6 @@ public final class Sequencer {
         }
         final int designated = pendingActivationGatewayId;
         pendingActivationGatewayId = NO_GATEWAY_ID;
-        // Asked of the instance that was designated, not of the logical gateway: a sibling that declared
-        // itself started is either the one already serving (nothing to answer for either way) or one that
-        // opened its gate in the window before it replayed the frame superseding it, which is precisely
-        // the case that still needs an instance designated.
         if (activeGatewaySession.containsValue(designated)) {
             return NO_FRAME;
         }

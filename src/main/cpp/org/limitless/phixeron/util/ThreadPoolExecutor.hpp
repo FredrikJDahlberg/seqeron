@@ -22,8 +22,7 @@ namespace org::limitless::phixeron::util {
 class ThreadPoolExecutor
 {
   public:
-    explicit ThreadPoolExecutor(int poolSize)
-      : m_poolSize{ poolSize }
+    explicit ThreadPoolExecutor(int poolSize) : m_poolSize{ poolSize }
     {
         m_workers.reserve(poolSize);
         for (int i = 0; i < poolSize; ++i)

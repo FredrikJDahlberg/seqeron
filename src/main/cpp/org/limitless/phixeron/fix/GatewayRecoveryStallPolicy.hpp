@@ -32,8 +32,7 @@ class GatewayRecoveryStallPolicy
     // been caught up before, before it is declared unconvergent. Deliberately generous relative to a
     // normal gap-recovery re-walk (seconds, per ReplayerStreamReceiver's own file header) so that is
     // never mistaken for the pathological case this exists to catch.
-    explicit GatewayRecoveryStallPolicy(std::int64_t deadlineMs)
-      : m_deadlineMs{ deadlineMs }
+    explicit GatewayRecoveryStallPolicy(std::int64_t deadlineMs) : m_deadlineMs{ deadlineMs }
     {}
 
     // Caught up: not (or no longer) recovering. Latches everCaughtUp forever and clears the recovery
