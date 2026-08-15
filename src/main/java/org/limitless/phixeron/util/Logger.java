@@ -12,7 +12,10 @@ public final class Logger {
     private Logger() {
     }
 
-    public enum Component { Sequencer, SequencerNode, SequencerService, ConsensusModule, ReplayerNode, ReplayerService }
+    public enum Component {
+        Sequencer, SequencerNode, SequencerService, ConsensusModule, ReplayerNode, ReplayerService,
+        ReplayerStreamReceiver, ExchangeGateway
+    }
 
     public enum Severity { Info, Warn, Error, Fault }
 
@@ -32,7 +35,15 @@ public final class Logger {
         GatewayActivationTimeout,
         ReplayDutyCycleFailure,
         ReplayClientIdCollision,
-        ShutdownTimeout
+        ShutdownTimeout,
+        // Replayer client (ReplayerStreamReceiver) — the C++ twin uses the same names.
+        TapGap,
+        ReplayUnavailable,
+        RecoveryStalled,
+        FirstFrameNotOne,
+        // Exchange-facing FIX gateway.
+        ClusterSessionError,
+        VenueSessionError
     }
 
     public record

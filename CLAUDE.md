@@ -264,6 +264,43 @@ leaving the request fragment unconsumed on the cluster stream until a slot frees
 or dropping it. The original Java `RiskEngineClient`/`MockRiskEngine` are dead code, already
 removed (`src/main/java/org/limitless/phixeron/risk/` deleted).
 
+### Exchange-facing FIX gateway — `ExchangeGateway` (Java, under `src/main/java/.../exchange/`)
+The **venue** leg, and the only edge that is not simdfix: an [Artio](https://github.com/real-logic/artio)
+**initiator** toward an exchange, added because the system had a client-facing acceptor and nothing facing
+out. Additive — the C++/simdfix client gateway is untouched. See `doc/artio-integration.md` §13, which
+records what the memo (written for replacing the *acceptor*) gets wrong about the mechanism.
+
+The invariant is the same one the C++ edge holds: **nothing un-sequenced reaches the wire.** Artio owns
+TCP, codecs, the session FSM and the timers — it decides *what* to send and *when* — but every decision
+goes through `ClusterSessionProxy` (`isAsync() = true`) to cluster ingress as an opaque
+`SessionProtocolMessage` (template 22, carrying pre-encoded FIX bytes), and reaches the venue only when it
+comes back on the node tap, emitted by a `SessionWriter` at the `MsgSeqNum` the log recorded. Inbound venue
+traffic is published too, so the log is a complete session record.
+
+Three Artio 0.177 facts this depends on, each of which fails **silently** if got wrong:
+- The writer must come from `FixLibrary.followerSession(...)`, **not** `sessionWriter(...)` — only the
+  former is registered where Artio links it to the `Session`. An unlinked writer advances no
+  `lastSentMsgSeqNum` and never fires `onSessionWriterLogout()`.
+- That follower header needs its **comp-ids swapped** (the engine resolves it with `onAcceptLogon`, which
+  reads local = `TargetCompID`; an initiator's key comes from `onInitiateLogon`). Get it wrong and the
+  writer is registered under a different `sessionId`, never linked, and fills the local log while nothing
+  reaches the venue.
+- Binding and seeding happen in the `sessionAcquireHandler` (fires at **connect**), never on the `initiate`
+  reply (completes only after logon) — the latter deadlocks.
+
+`ReplayerStreamReceiver` (Java, `replayer/`) is a faithful port of the C++ client of the same name — same
+protocol, same walk/resume/retain state machine. Keep the two in step. Identity is env config
+(`PHIXERON_EXCHANGE_*`), not a BasicData row: `Sequencer` holds one `designatedPrimaryGatewayId`, so an
+exchange row would hijack the client-facing election. Session layer only — no order flow, no standby.
+
+```bash
+./gradlew mockExchange                     # FIX acceptor standing in for the venue (port 9010)
+./gradlew exchangeGateway                  # the gateway itself (needs a running cluster)
+src/test/scripts/exchange-gateway-test.sh  # all-Java e2e; no C++ build needed
+```
+The e2e purges Artio's own log dir alongside `purgelog.sh` — the two hold the same session's sequence
+numbers, and purging one alone trips the gateway's "sent-sequence disagreement" check.
+
 ### Reference-data gateway — `BasicDataClient` / `Gateways` (C++, under `src/main/cpp/.../basicdata/`)
 Dual-role per-node process (`doc/basicdata-design.md`): on the **leader** it's a producer — reads
 static reference data (FIX session comp-id pairs, gateway topology, the trading-day calendar;

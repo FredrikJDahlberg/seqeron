@@ -140,6 +140,9 @@ public final class PhixeronCounters {
     /** Length of the key buffer written by {@link #addCounter}: one int, the memberId. */
     public static final int KEY_LENGTH = BitUtil.SIZE_OF_INT;
 
+    /** Length of the key buffer written by {@link #addAppCounter}: memberId then clientId. */
+    public static final int APP_KEY_LENGTH = 2 * BitUtil.SIZE_OF_INT;
+
     /**
      * Allocates a phixeron operator counter with {@code memberId} encoded as a 4-byte int key
      * (offset {@link #KEY_MEMBER_ID_OFFSET}) alongside its human-readable label, so a remote reader
@@ -152,6 +155,22 @@ public final class PhixeronCounters {
         final byte[] labelBytes = label.getBytes(StandardCharsets.US_ASCII);
         final UnsafeBuffer labelBuffer = new UnsafeBuffer(labelBytes);
         return aeron.addCounter(typeId, keyBuffer, 0, KEY_LENGTH, labelBuffer, 0, labelBytes.length);
+    }
+
+    /**
+     * Allocates an <b>app</b> counter, keyed on {@code {memberId, clientId}} rather than the memberId alone
+     * (see {@link #KEY_CLIENT_ID_OFFSET}): a node runs several co-located replicas publishing the same type
+     * id, and without the clientId they all render as one series per node. The C++ twin is
+     * {@code util/PhixeronCounters.hpp}'s {@code addAppCounter}; the key layout must match.
+     */
+    public static Counter addAppCounter(final Aeron aeron, final int typeId, final String label, final int memberId,
+                                        final int clientId) {
+        final UnsafeBuffer keyBuffer = new UnsafeBuffer(new byte[APP_KEY_LENGTH]);
+        keyBuffer.putInt(KEY_MEMBER_ID_OFFSET, memberId);
+        keyBuffer.putInt(KEY_CLIENT_ID_OFFSET, clientId);
+        final byte[] labelBytes = label.getBytes(StandardCharsets.US_ASCII);
+        final UnsafeBuffer labelBuffer = new UnsafeBuffer(labelBytes);
+        return aeron.addCounter(typeId, keyBuffer, 0, APP_KEY_LENGTH, labelBuffer, 0, labelBytes.length);
     }
 
     private PhixeronCounters() {

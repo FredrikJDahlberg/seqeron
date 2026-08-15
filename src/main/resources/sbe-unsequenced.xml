@@ -41,7 +41,9 @@
     the mirror-image case: sequenced-only, so it exists only in sbe-sequenced.xml).
     The cluster life-cycle markers ClusterStarted/ClusterStopped (10/11) also use
     small ids; unlike the replay messages they are sequenced and echoed, so they
-    appear in both schemas.
+    appear in both schemas. SessionProtocolMessage (22) is the one FIX message with
+    a small id: it stands for ANY session MsgType, so no single ASCII value
+    describes it.
 
     The header field uses field id 20001 — well outside the FIX tag range —
     since it is gateway/transport metadata, not a FIX tag. sourceId/connectionId/
@@ -512,6 +514,33 @@
                description="89='Y' gap-fill, 78='N' hard reset, 0 = absent (tag 123)"/>
         <field name="newSeqNo"      id="36"  type="uint32"
                description="Next expected inbound sequence number after reset (tag 36)"/>
+    </sbe:message>
+
+    <!-- ═══════════════════════════════════════════════════════════════════
+         SessionProtocolMessage  (template 22) — opaque, pre-encoded session traffic
+         ═══════════════════════════════════════════════════════════════════ -->
+    <sbe:message name="SessionProtocolMessage" id="22"
+                 description="One complete FIX session-protocol message carried as opaque bytes, for an edge whose
+                              session layer is an embedded FIX engine rather than the structured templates above.
+                              header.origin says which way it travels: Client = received from the counterparty and
+                              recorded, Gateway = decided by the engine and put on the wire only once it comes back
+                              on the tap. The structured Logon/Logout/Heartbeat/... templates cannot stand in for
+                              this: they carry no sequenceIndex, no LastMsgSeqNumProcessed (369) and no Logon
+                              credentials, so re-encoding from them would put bytes on the wire that differ from the
+                              ones the engine's own session logic assumed it had sent. Opaque also makes egress a
+                              memcpy rather than a re-encode, which is what keeps every node's copy identical.">
+        <field name="header"        id="20001" type="header"/>
+        <field name="seqNum"        id="34"    type="uint32"
+               description="MsgSeqNum (tag 34) reserved for this message when it was published; it is re-emitted at
+                            exactly this number on the round trip, never re-derived"/>
+        <field name="sequenceIndex" id="20035" type="uint32"
+               description="The FIX engine's sequence generation for this session, carried through so the emitting
+                            side writes into the same generation the deciding side reserved in"/>
+        <field name="msgType"       id="20036" type="int64"
+               description="MsgType (tag 35) in the engine's packed form — the MsgType's ASCII chars packed into a
+                            long ('A' = 65) — which is the form SessionWriter.send takes"/>
+        <data  name="fixBytes"      id="20037" type="varDataEncoding"
+               description="The complete pre-encoded FIX message, BeginString through CheckSum"/>
     </sbe:message>
 
     <!-- ═══════════════════════════════════════════════════════════════════
