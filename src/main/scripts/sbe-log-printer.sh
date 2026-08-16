@@ -3,8 +3,18 @@
 #
 # Reads archive.catalog + segment files under the given archive directory
 # (see start-cluster.sh / SequencerServer, default $TMPDIR/phixeron-seq/archive-<id>)
-# and prints every recorded SBE message as JSON, decoded against the given
-# SBE IR (.sbeir) spec file.
+# and prints every recorded SBE message as JSON.
+#
+# The schema is one of the IR files packaged in the uber jar: --schema sequenced
+# (the tap, the default), --schema unsequenced (cluster ingress) or --schema cluster
+# (the Raft consensus log on stream 100). --spec <file> decodes against an IR file
+# outside the jar instead.
+#
+# sbe-cluster.xml is a trimmed mirror of io.aeron.cluster.codecs — only what the C++
+# cluster client needs — so on the Raft log the consensus-module events it does not
+# define (TimerEvent, SessionOpenEvent/SessionCloseEvent, NewLeadershipTermEvent, …)
+# print as "<not in schema>" with their template id. SessionMessageHeader, the
+# envelope around every ingress message, does decode.
 #
 # By default every recording in the catalog is dumped, not just the one matching
 # the spec. The archive holds both the sequenced tap (stream 205, schema 202) and
@@ -26,19 +36,21 @@
 # recording scrolls.
 #
 # Usage:
-#   ./sbe-log-printer.sh <spec.sbeir> <archive-dir> [--stream <id>] [--oneline]
+#   ./sbe-log-printer.sh [--schema <name>|--spec <file.sbeir>] <archive-dir> [--stream <id>] [--oneline]
 #
 # Example:
-#   ./gradlew uberJar generateSequencedSbe
-#   ./sbe-log-printer.sh build/generated/sources/sbe/main/java/sbe-sequenced.sbeir \
-#       "${TMPDIR}phixeron-seq/archive-0" --stream 205
+#   ./gradlew uberJar
+#   ./sbe-log-printer.sh "${TMPDIR}phixeron-seq/archive-0" --stream 205
 
 set -euo pipefail
 
 usage() {
-    echo "Usage: $0 <spec.sbeir> <archive-dir> [--stream <id>] [--oneline]"
-    echo "  --stream <id>  dump only the newest recording on that stream"
-    echo "  --oneline      print each message as a single line of JSON"
+    echo "Usage: $0 [--schema <name>|--spec <file.sbeir>] <archive-dir> [--stream <id>] [--oneline]"
+    echo "  --schema <name>  bundled schema to decode against (default sequenced): sequenced, unsequenced, cluster"
+    echo "  --spec <file>    decode against an IR file outside the jar instead"
+    echo "  --stream <id>    dump only the newest recording on that stream"
+    echo "  --oneline        print each message as a single line of JSON"
+    echo "  --list-schemas   list the bundled schema names and exit"
 }
 
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
@@ -46,14 +58,11 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
     exit 0
 fi
 
-if [[ $# -lt 2 ]]; then
+if [[ $# -lt 1 ]]; then
     usage >&2
     exit 1
 fi
 
-SPEC="$1"
-ARCHIVE_DIR="$2"
-shift 2
 JAR="build/libs/phixeron-0.1.0-uber.jar"
 
 # ── Pre-flight checks ─────────────────────────────────────────────────────────
@@ -63,17 +72,8 @@ if [[ ! -f "${JAR}" ]]; then
     exit 1
 fi
 
-if [[ ! -f "${SPEC}" ]]; then
-    echo "ERROR: ${SPEC} not found — run: ./gradlew generateSequencedSbe" >&2
-    exit 1
-fi
-
-if [[ ! -d "${ARCHIVE_DIR}" ]]; then
-    echo "ERROR: ${ARCHIVE_DIR} is not a directory" >&2
-    exit 1
-fi
-
 # ── Run ───────────────────────────────────────────────────────────────────────
+# Argument validation (including the archive dir) is the printer's; it holds the option table.
 
 exec java --add-opens=java.base/jdk.internal.misc=ALL-UNNAMED \
-    -cp "${JAR}" org.limitless.phixeron.tools.SbeLogPrinter "${SPEC}" "${ARCHIVE_DIR}" "$@"
+    -cp "${JAR}" org.limitless.phixeron.tools.SbeLogPrinter "$@"

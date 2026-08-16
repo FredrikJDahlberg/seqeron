@@ -740,8 +740,8 @@ check_invariants() {
 # yields zero globalSeqNo and is skipped. The node's high-water mark is the max globalSeqNo it recorded;
 # all nodes' high-water marks must match (convergence).
 verify_sequence() {
-  local spec="build/generated/sources/sbe/main/java/sbe-sequenced.sbeir" m rc=0
-  [[ -f "$spec" ]] || { log "SAFETY: skipped (no $spec — run ./gradlew generateSequencedSbe)"; return 0; }
+  local jar="build/libs/phixeron-0.1.0-uber.jar" m rc=0
+  [[ -f "$jar" ]] || { log "SAFETY: skipped (no $jar — run ./gradlew uberJar)"; return 0; }
   # Quiesce first: stop the background load and let the last sequenced messages replicate to every node.
   # That alone isn't enough for a stationary stream, though: the 1 Hz Tick (the cluster clock) keeps
   # advancing globalSeqNo forever by design, background load or not, and the three archives are dumped
@@ -760,7 +760,7 @@ verify_sequence() {
   local -a highwater=("" "" "")
   for m in 0 1 2; do
     local archive="${BASE_DIR}/archive-${m}"
-    [[ -f "$archive/archive.catalog" ]] && ./src/main/scripts/sbe-log-printer.sh "$spec" "$archive" \
+    [[ -f "$archive/archive.catalog" ]] && ./src/main/scripts/sbe-log-printer.sh "$archive" \
       > "$LOG_DIR/sequenced-dump-$m.txt" 2>&1 || { log "  member $m: no recording at $archive"; rc=1; continue; }
     local hw
     hw=$(awk -v member="$m" '

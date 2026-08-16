@@ -124,7 +124,7 @@ cluster (or are standalone tools); they run no tests:
 | `start-cluster.sh [debug\|release]` | Start the single-node cluster (`SequencerServer`, `aeronmd`, `FixGateway`, `ReplayerServer`, `OrderExecServer`) in the background; Ctrl-C stops all of them |
 | `start-three-node-cluster.sh [debug\|release]` | Start a local 3-node Raft cluster with a `FixGateway` and a per-node `ReplayerServer` + `OrderExecServer` replica; blocks until Ctrl-C, then stops all of them |
 | `stop-cluster.sh` | Stop all cluster processes started by either start script |
-| `sbe-log-printer.sh <spec.sbeir> <archive-dir>` | Dump an Aeron Archive recording as JSON (see [Log printer](#log-printer)) |
+| `sbe-log-printer.sh <archive-dir>` | Dump an Aeron Archive recording as JSON (see [Log printer](#log-printer)) |
 | `purgelog.sh [--force]` | Delete archive/cluster directories under `$TMPDIR/phixeron-seq` and the `logs/` directory; cluster must be stopped first |
 
 Test scripts live under `src/test/scripts/` — each brings the cluster up via the start scripts above
@@ -282,17 +282,38 @@ written so far — so the cluster does not need to be stopped first.
 
 ```bash
 ./gradlew uberJar
-./gradlew generateSequencedSbe   # produces build/generated/sources/sbe/main/java/sbe-sequenced.sbeir
 
-./src/main/scripts/sbe-log-printer.sh \
-  build/generated/sources/sbe/main/java/sbe-sequenced.sbeir \
-  "${TMPDIR}phixeron-seq/archive-0" --stream 205
+./src/main/scripts/sbe-log-printer.sh "${TMPDIR}phixeron-seq/archive-0" --stream 205
 ```
 
-Or via Gradle directly (defaults `-Pspec` to the sequenced IR above):
+Or via Gradle directly:
 ```bash
 ./gradlew sbeLogPrinter -PlogDir="${TMPDIR}phixeron-seq/archive-0" -Pstream=205
 ```
+
+#### Selecting a schema
+
+The generated IR files ship inside the uber jar, selected by name: `--schema sequenced` (the
+default — what the tap carries), `--schema unsequenced` (cluster ingress) or `--schema cluster`
+(the Raft consensus log on stream 100). `--list-schemas` prints the bundled names.
+`--spec <file.sbeir>` decodes against an IR file outside the jar instead — the two are mutually
+exclusive. The Gradle task takes the same as `-Pschema=` / `-Pspec=`.
+
+`sbe-cluster.xml` is a trimmed mirror of `io.aeron.cluster.codecs` — the subset the C++ cluster
+client needs to speak the wire protocol, not the full consensus vocabulary. So `--schema cluster`
+decodes `SessionMessageHeader` (the envelope around every ingress message, carrying the cluster
+session id and consensus timestamp) and prints the consensus-module events the mirror does not
+define as `<not in schema>` with their template id:
+
+```
+--- Log File Offset: 224 | <not in schema> (templateId 21) ---
+--- Log File Offset: 384 | SessionMessageHeader (templateId 1) ---
+{ "leadershipTermId": 0, "clusterSessionId": 1, "timestamp": 1786867267532 }
+```
+
+The common ones are 20 `TimerEvent`, 21 `SessionOpenEvent`, 22 `SessionCloseEvent`,
+24 `NewLeadershipTermEvent`. Adding them to the mirror would decode them, at the cost of
+generating C++ codecs for messages the client never sends.
 
 #### Selecting a recording
 
@@ -306,7 +327,7 @@ Exception parsing segment .../1-0.rec: Required schema id 202 but was 111
 ```
 
 Stream 100 is the Raft cluster log (schema 111) — it cannot decode against the sequenced IR, so
-it is reported on stderr and skipped. Streams 205 are two generations of the sequenced tap: a node
+it is reported on stderr and skipped (dump it with `--schema cluster --stream 100`). Streams 205 are two generations of the sequenced tap: a node
 restart replays its whole cluster log and re-emits every message onto a *new* tap recording, so
 recording 2 starts again at `globalSeqNo` 1 and recording 0 is a strict prefix of it.
 
