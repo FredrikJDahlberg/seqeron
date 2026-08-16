@@ -243,7 +243,10 @@ Three SBE schemas under `src/main/resources/`, each generating into a distinct n
 include path covers all of them (`org.limitless.phixeron.{sbe.unsequenced, sbe.sequenced}`,
 `org.limitless.phixeron.cluster.sbe`):
 - `sbe-cluster.xml` — trimmed mirror of `io.aeron.cluster.codecs` (SessionConnectRequest,
-  SessionEvent, SessionKeepAlive, …), replacing a hand-written `ClusterProtocol.hpp`.
+  SessionEvent, SessionKeepAlive, …), replacing a hand-written `ClusterProtocol.hpp`. Its last
+  section is decode-only — the consensus-module log entries (`TimerEvent`, `SessionOpenEvent`, …)
+  that `SbeLogPrinter --schema cluster` reads out of a Raft-log recording; the client never sends
+  them. Only this schema's Java side is IR-only (`generateClusterSbeIr`, no codecs).
 - `sbe-unsequenced.xml` (schema 200) — every FIX message the gateway can receive, plus
   `sourceId`/`sessionId` identifying the submitting TCP connection/cluster session. Field/type
   definitions mirror the FIX wire format directly (see `fix-session.xml`/`fix-application.xml`

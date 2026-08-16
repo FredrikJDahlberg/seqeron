@@ -6,7 +6,8 @@
     see aeron-cluster/src/main/resources/cluster/aeron-cluster-codecs.xml)
     that phixeron needs to speak the wire protocol as a C++ cluster client:
     session connect/close/keep-alive, the session message envelope, session
-    events and leader-change notification.
+    events and leader-change notification, plus the consensus-module log
+    entries SbeLogPrinter decodes (see the decode-only section at the end).
 
     Field order, ids, types and sinceVersion markers below are copied
     verbatim from the upstream schema so the encoding is byte-for-byte
@@ -46,6 +47,24 @@
             <validValue name="REDIRECT"                description="Redirect to cluster leader.">2</validValue>
             <validValue name="AUTHENTICATION_REJECTED" description="Authentication credentials rejected.">3</validValue>
             <validValue name="CLOSED"                  description="Session has been closed.">4</validValue>
+        </enum>
+
+        <enum name="CloseReason" encodingType="int32" description="Reason why a session was closed.">
+            <validValue name="CLIENT_ACTION"  description="Client closed the session.">0</validValue>
+            <validValue name="SERVICE_ACTION" description="Service closed the session.">1</validValue>
+            <validValue name="TIMEOUT"        description="Session timed out due to inactivity.">2</validValue>
+        </enum>
+
+        <enum name="ClusterAction" encodingType="int32" description="Action to be taken by cluster nodes.">
+            <validValue name="SUSPEND"  description="Suspend ingress to the cluster.">0</validValue>
+            <validValue name="RESUME"   description="Resume ingress to the cluster.">1</validValue>
+            <validValue name="SNAPSHOT" description="Snapshot state in the cluster.">2</validValue>
+        </enum>
+
+        <enum name="ClusterTimeUnit" encodingType="int32" description="Type the time unit used for timestamps.">
+            <validValue name="MILLIS" description="Time unit of milliseconds for timestamps.">0</validValue>
+            <validValue name="MICROS" description="Time unit of microseconds for timestamps.">1</validValue>
+            <validValue name="NANOS"  description="Time unit of nanoseconds for timestamps.">2</validValue>
         </enum>
 
         <type name="time_t"    primitiveType="int64" description="Epoch time since 1 Jan 1970 UTC."/>
@@ -133,6 +152,69 @@
         <field name="clusterSessionId" id="2" type="int64"/>
         <field name="leaderMemberId"   id="3" type="int32"/>
         <data  name="ingressEndpoints" id="4" type="varAsciiEncoding"/>
+    </sbe:message>
+
+    <!-- ═══════════════════════════════════════════════════════════════════
+         Consensus-module log entries — decode only
+
+         These are never sent or received by the cluster client; they are what
+         io.aeron.cluster.LogPublisher appends to the Raft log alongside the
+         SessionMessageHeader-wrapped ingress messages. They are here so
+         SbeLogPrinter can dump a cluster-log recording (schema name "cluster").
+         The set is exactly LogPublisher's append methods in Aeron 1.51:
+         message(1), timer(20), sessionOpen(21), sessionClose(22),
+         clusterAction(23), newLeadershipTermEvent(24).
+         ═══════════════════════════════════════════════════════════════════ -->
+    <sbe:message name="TimerEvent"
+                 id="20"
+                 description="Timer triggered event as the result of a deadline passing on a registered timer.">
+        <field name="leadershipTermId" id="1" type="int64"/>
+        <field name="correlationId"    id="2" type="int64"/>
+        <field name="timestamp"        id="3" type="time_t"/>
+    </sbe:message>
+
+    <sbe:message name="SessionOpenEvent"
+                 id="21"
+                 description="Event for the state machine to notify a session has been opened.">
+        <field name="leadershipTermId" id="1" type="int64"/>
+        <field name="correlationId"    id="2" type="int64"/>
+        <field name="clusterSessionId" id="3" type="int64"/>
+        <field name="timestamp"        id="4" type="time_t"/>
+        <field name="responseStreamId" id="6" type="int32"/>
+        <data  name="responseChannel"  id="7" type="varAsciiEncoding"/>
+        <data  name="encodedPrincipal" id="8" type="varDataEncoding"/>
+    </sbe:message>
+
+    <sbe:message name="SessionCloseEvent"
+                 id="22"
+                 description="Event for the state machine to notify a session has been closed.">
+        <field name="leadershipTermId" id="1" type="int64"/>
+        <field name="clusterSessionId" id="2" type="int64"/>
+        <field name="timestamp"        id="3" type="time_t"/>
+        <field name="closeReason"      id="4" type="CloseReason"/>
+    </sbe:message>
+
+    <sbe:message name="ClusterActionRequest"
+                 id="23"
+                 description="Request an action be taken by the service.">
+        <field name="leadershipTermId" id="1" type="int64"/>
+        <field name="logPosition"      id="2" type="int64"/>
+        <field name="timestamp"        id="3" type="time_t"/>
+        <field name="action"           id="4" type="ClusterAction"/>
+        <field name="flags"            id="5" type="int32" sinceVersion="11" presence="optional"/>
+    </sbe:message>
+
+    <sbe:message name="NewLeadershipTermEvent"
+                 id="24"
+                 description="Event for the start of a new leadership term.">
+        <field name="leadershipTermId"    id="1" type="int64"/>
+        <field name="logPosition"         id="2" type="int64"/>
+        <field name="timestamp"           id="3" type="time_t"/>
+        <field name="termBaseLogPosition" id="4" type="int64"/>
+        <field name="leaderMemberId"      id="5" type="int32"/>
+        <field name="logSessionId"        id="6" type="int32"/>
+        <field name="timeUnit"            id="7" type="ClusterTimeUnit" sinceVersion="4" presence="optional"/>
+        <field name="appVersion"          id="8" type="version_t" sinceVersion="4" presence="optional"/>
     </sbe:message>
 
 </sbe:messageSchema>

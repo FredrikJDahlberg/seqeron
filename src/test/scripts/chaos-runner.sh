@@ -736,8 +736,8 @@ check_invariants() {
 # post-restart recording that re-records 1..N from scratch (recovery is always full-log replay from
 # gseq 1 — there are no snapshots). So each RECORDING is checked independently and reset at its
 # "[Catalog] Recording ID" boundary — NOT concatenated (that would read the K→1 restart as a regression).
-# The co-resident raft consensus-log recording is schema 111, which the 202 spec can't decode, so it
-# yields zero globalSeqNo and is skipped. The node's high-water mark is the max globalSeqNo it recorded;
+# The co-resident raft consensus-log recording decodes too (schema 111), but none of its messages carry
+# a globalSeqNo, so it contributes nothing to the scan below. The node's high-water mark is the max globalSeqNo it recorded;
 # all nodes' high-water marks must match (convergence).
 verify_sequence() {
   local jar="build/libs/phixeron-0.1.0-uber.jar" m rc=0

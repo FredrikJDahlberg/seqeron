@@ -5,23 +5,18 @@
 # (see start-cluster.sh / SequencerServer, default $TMPDIR/phixeron-seq/archive-<id>)
 # and prints every recorded SBE message as JSON.
 #
-# The schema is one of the IR files packaged in the uber jar: --schema sequenced
-# (the tap, the default), --schema unsequenced (cluster ingress) or --schema cluster
-# (the Raft consensus log on stream 100). --spec <file> decodes against an IR file
-# outside the jar instead.
+# All three IR files packaged in the uber jar are loaded by default — sequenced
+# (the tap, stream 205), unsequenced (cluster ingress) and cluster (the Raft
+# consensus log, stream 100) — and each frame is decoded against the schema its
+# own header names. So one run reads an archive dir end to end, whichever mix of
+# recordings it holds. --schema <name> narrows the run to one of them;
+# --spec <file> decodes against an IR file outside the jar instead.
 #
-# sbe-cluster.xml is a trimmed mirror of io.aeron.cluster.codecs — only what the C++
-# cluster client needs — so on the Raft log the consensus-module events it does not
-# define (TimerEvent, SessionOpenEvent/SessionCloseEvent, NewLeadershipTermEvent, …)
-# print as "<not in schema>" with their template id. SessionMessageHeader, the
-# envelope around every ingress message, does decode.
+# A frame the run cannot decode is labelled and skipped, never fatal:
+#   "<schema N not loaded>"  — its schema was excluded by --schema/--spec
+#   "<not in schema>"        — its template is absent from that schema
 #
-# By default every recording in the catalog is dumped, not just the one matching
-# the spec. The archive holds both the sequenced tap (stream 205, schema 202) and
-# the cluster log (schema 111), so with the sequenced spec the cluster-log
-# recording fails to decode and is reported on stderr as
-#   Exception parsing segment .../<id>-0.rec: Required schema id 202 but was 111
-# That is expected: the scan skips it and continues with the next recording.
+# By default every recording in the catalog is dumped, not just one.
 #
 # --stream <id> selects the newest recording on that stream instead. Prefer it
 # for the tap: a node restart mints a new tap recording that replays the whole
@@ -46,7 +41,7 @@ set -euo pipefail
 
 usage() {
     echo "Usage: $0 [--schema <name>|--spec <file.sbeir>] <archive-dir> [--stream <id>] [--oneline]"
-    echo "  --schema <name>  bundled schema to decode against (default sequenced): sequenced, unsequenced, cluster"
+    echo "  --schema <name>  decode only this schema (default: all of sequenced, unsequenced, cluster)"
     echo "  --spec <file>    decode against an IR file outside the jar instead"
     echo "  --stream <id>    dump only the newest recording on that stream"
     echo "  --oneline        print each message as a single line of JSON"

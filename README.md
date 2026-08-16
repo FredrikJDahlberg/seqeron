@@ -291,29 +291,43 @@ Or via Gradle directly:
 ./gradlew sbeLogPrinter -PlogDir="${TMPDIR}phixeron-seq/archive-0" -Pstream=205
 ```
 
-#### Selecting a schema
+#### Schemas
 
-The generated IR files ship inside the uber jar, selected by name: `--schema sequenced` (the
-default — what the tap carries), `--schema unsequenced` (cluster ingress) or `--schema cluster`
-(the Raft consensus log on stream 100). `--list-schemas` prints the bundled names.
+All three generated IR files ship inside the uber jar — `sequenced` (the tap), `unsequenced`
+(cluster ingress) and `cluster` (the Raft consensus log) — and **all three are loaded by
+default**. Each frame is decoded against the schema its own header names, so a single run reads
+an archive dir end to end whatever mix of recordings it holds:
+
+```
+[Catalog] Recording ID: 0 | Stream ID: 205 | ...    → sequenced (schema 202)
+[Catalog] Recording ID: 1 | Stream ID: 100 | ...    → cluster   (schema 111)
+[Catalog] Recording ID: 2 | Stream ID: 205 | ...    → sequenced (schema 202)
+```
+
+`--schema <name>` narrows the run to one schema; frames of the others are then labelled
+`<schema N not loaded>` and skipped. `--list-schemas` prints the bundled names.
 `--spec <file.sbeir>` decodes against an IR file outside the jar instead — the two are mutually
 exclusive. The Gradle task takes the same as `-Pschema=` / `-Pspec=`.
 
-`sbe-cluster.xml` is a trimmed mirror of `io.aeron.cluster.codecs` — the subset the C++ cluster
-client needs to speak the wire protocol, not the full consensus vocabulary. So `--schema cluster`
-decodes `SessionMessageHeader` (the envelope around every ingress message, carrying the cluster
-session id and consensus timestamp) and prints the consensus-module events the mirror does not
-define as `<not in schema>` with their template id:
+`sbe-cluster.xml` is a trimmed mirror of `io.aeron.cluster.codecs`: the subset the C++ cluster
+client needs to speak the wire protocol, plus a decode-only section covering what
+`io.aeron.cluster.LogPublisher` appends to the Raft log — `TimerEvent`, `SessionOpenEvent`,
+`SessionCloseEvent`, `ClusterActionRequest`, `NewLeadershipTermEvent`. Between those and
+`SessionMessageHeader` (the envelope around every ingress message), a cluster-log recording
+decodes end to end:
 
 ```
---- Log File Offset: 224 | <not in schema> (templateId 21) ---
---- Log File Offset: 384 | SessionMessageHeader (templateId 1) ---
-{ "leadershipTermId": 0, "clusterSessionId": 1, "timestamp": 1786867267532 }
+--- Log File Offset: 0 | NewLeadershipTermEvent (templateId 24) ---
+{ "leadershipTermId": 0, "logPosition": 96, "timestamp": ..., "termBaseLogPosition": 0,
+  "leaderMemberId": 0, "logSessionId": 1548081610, "timeUnit": "MILLIS", "appVersion": 1 }
+--- Log File Offset: 224 | SessionOpenEvent (templateId 21) ---
+{ "leadershipTermId": 0, "correlationId": 137, "clusterSessionId": 1, "timestamp": ...,
+  "responseStreamId": 102, "responseChannel": "aeron:udp?...", "encodedPrincipal": "" }
 ```
 
-The common ones are 20 `TimerEvent`, 21 `SessionOpenEvent`, 22 `SessionCloseEvent`,
-24 `NewLeadershipTermEvent`. Adding them to the mirror would decode them, at the cost of
-generating C++ codecs for messages the client never sends.
+A frame whose template the schema does not define prints as `<not in schema>` with its template
+id rather than aborting the scan — which is what you would see if a future Aeron version appended
+something new to the log.
 
 #### Selecting a recording
 
@@ -322,18 +336,17 @@ An archive dir holds more than one recording, so by default the printer dumps **
 ```
 [Catalog] Recording ID: 0 | Stream ID: 205 | Start Pos: 0 | Stop Pos: 6336
 [Catalog] Recording ID: 1 | Stream ID: 100 | Start Pos: 0 | Stop Pos: 8448
-Exception parsing segment .../1-0.rec: Required schema id 202 but was 111
 [Catalog] Recording ID: 2 | Stream ID: 205 | Start Pos: 0 | Stop Pos: 12480
 ```
 
-Stream 100 is the Raft cluster log (schema 111) — it cannot decode against the sequenced IR, so
-it is reported on stderr and skipped (dump it with `--schema cluster --stream 100`). Streams 205 are two generations of the sequenced tap: a node
-restart replays its whole cluster log and re-emits every message onto a *new* tap recording, so
-recording 2 starts again at `globalSeqNo` 1 and recording 0 is a strict prefix of it.
+Stream 100 is the Raft cluster log; the two on 205 are successive generations of the sequenced
+tap, because a node restart replays its whole cluster log and re-emits every message onto a *new*
+tap recording — so recording 2 starts again at `globalSeqNo` 1 and recording 0 is a strict prefix
+of it.
 
 `--stream 205` (or `-Pstream=205`) dumps only the **newest** recording on that stream — one
-complete copy of sequenced history, no cluster-log error, no repeats. Recording ids are not stable
-across restarts, which is why the selector is the stream rather than the id.
+complete copy of sequenced history, no repeats. Recording ids are not stable across restarts,
+which is why the selector is the stream rather than the id.
 
 Omit the flag when you want everything, including stale tap generations. Exits non-zero if the
 requested stream matches no recording.
