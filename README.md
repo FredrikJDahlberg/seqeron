@@ -19,12 +19,12 @@ replica is dropped and heals by replay rather than back-pressuring the cluster.
 
 ### Processes
 
-- **`SequencerNode` / `SequencerService` / `Sequencer`** (Java) — the cluster node. `Sequencer`
+- **`SequencerServer` / `SequencerService` / `Sequencer`** (Java) — the cluster node. `Sequencer`
   is the replicated state machine proper (no Aeron dependency, unit-tested directly): it stamps
   each ingress message with a monotone `globalSeqNo` plus the Raft consensus timestamp and
   synthesizes the frames the cluster itself owns (`Tick`, `LeadershipChanged`, `GatewayActive`).
   `SequencerService` is its Aeron adapter and holds no replicated state of its own.
-- **`ReplayerNode` / `ReplayerService`** (Java) — one per member, co-located in that member's
+- **`ReplayerServer` / `ReplayerService`** (Java) — one per member, co-located in that member's
   Aeron directory. The only process that reads the archive: it serves an on-demand replay
   protocol to the co-located replicas, and sits off the live delivery path entirely.
 - **`FixGateway`** (C++) — the FIX edge process, deployed as one active instance plus optional
@@ -33,13 +33,13 @@ replica is dropped and heals by replay rather than back-pressuring the cluster.
   authoritative session state: a standby or restarted instance rebuilds every session by
   shadowing the tap, and serves clients only once a `GatewayActive` names it. Owns FIX resend
   recovery.
-- **`OrderExecClient`** (C++) — a replica on *every* node, and the system's **execution venue**:
+- **`OrderExecServer`** (C++) — a replica on *every* node, and the system's **execution venue**:
   it acknowledges each `NewOrderSingle` with an `ExecutionReport(New)` whose `ExecID` derives
   from the order's `globalSeqNo`, tracks per-account positions from fills, and answers
   `PortfolioQueryRequest` from an in-process `MockRiskEngine`. All replicas track state; only
   the replica on the current leader emits, with `OutstandingQueries` keeping query replies
   exactly-once across a failover.
-- **`BasicDataClient`** (C++) — the reference-data gateway, a replica on every node and
+- **`BasicDataServer`** (C++) — the reference-data gateway, a replica on every node and
   dual-role: on the leader it publishes the static reference data (FIX session comp-id pairs,
   gateway topology, trading-day calendar) into cluster ingress as ordinary messages; on every
   node it consumes them back off the tap into identical in-memory tables. This is what makes
@@ -121,8 +121,8 @@ cluster (or are standalone tools); they run no tests:
 
 | Script | Purpose |
 |--------|---------|
-| `start-cluster.sh [debug\|release]` | Start the single-node cluster (`SequencerNode`, `aeronmd`, `FixGateway`, `ReplayerNode`, `OrderExecClient`) in the background; Ctrl-C stops all of them |
-| `start-three-node-cluster.sh [debug\|release]` | Start a local 3-node Raft cluster with a `FixGateway` and a per-node `ReplayerNode` + `OrderExecClient` replica; blocks until Ctrl-C, then stops all of them |
+| `start-cluster.sh [debug\|release]` | Start the single-node cluster (`SequencerServer`, `aeronmd`, `FixGateway`, `ReplayerServer`, `OrderExecServer`) in the background; Ctrl-C stops all of them |
+| `start-three-node-cluster.sh [debug\|release]` | Start a local 3-node Raft cluster with a `FixGateway` and a per-node `ReplayerServer` + `OrderExecServer` replica; blocks until Ctrl-C, then stops all of them |
 | `stop-cluster.sh` | Stop all cluster processes started by either start script |
 | `sbe-log-printer.sh <spec.sbeir> <archive-dir>` | Dump an Aeron Archive recording as JSON (see [Log printer](#log-printer)) |
 | `purgelog.sh [--force]` | Delete archive/cluster directories under `$TMPDIR/phixeron-seq` and the `logs/` directory; cluster must be stopped first |
@@ -134,16 +134,16 @@ and tears it down via `stop-cluster.sh` (run them from the repository root):
 |--------|---------|
 | `three-node-e2e-test.sh [debug\|release]` | Start the 3-node cluster, run `fix_test_server` against it once, then tear everything down and exit with its pass/fail status (set `PHIXERON_FLOOD_ORDERS=<N>` for the delivery-latency-under-load run) |
 | `fix-test-server.sh [debug\|release] [host [port]]` | Run a single FIX session (Logon → Heartbeat → NewOrderSingle → Logout) against a live `FixGateway` |
-| `failover-test.sh` | Force a failover, then cold-start a fresh `OrderExecClient` on the new leader and verify it catches up on full history (each node's tap recording is one continuous run spanning both tenures) |
+| `failover-test.sh` | Force a failover, then cold-start a fresh `OrderExecServer` on the new leader and verify it catches up on full history (each node's tap recording is one continuous run spanning both tenures) |
 | `gap-recovery-test.sh` | Drop a live tap frame on a caught-up consumer (SIGUSR1 fault-injection) and verify it re-walks its recording and heals rather than wedging |
-| `replayer-restart-test.sh` | Kill and restart a node's `ReplayerNode` while a client is riding a replay from it, then kill and restart the client's own node entirely and verify its fresh cold-start walk crosses a real multi-recording chain |
+| `replayer-restart-test.sh` | Kill and restart a node's `ReplayerServer` while a client is riding a replay from it, then kill and restart the client's own node entirely and verify its fresh cold-start walk crosses a real multi-recording chain |
 
 ---
 
 ## Sequencer
 
 The sequencer runs as a 1- or 3-node Aeron Cluster. Each node is launched with
-`SequencerNode` and configured entirely via system properties.
+`SequencerServer` and configured entirely via system properties.
 
 ### Single-node (development)
 
@@ -156,8 +156,8 @@ java \
   --add-opens=java.base/java.lang.reflect=ALL-UNNAMED \
   -Dsequencer.memberId=0 \
   -jar build/libs/phixeron-0.1.0-uber.jar
-# [SequencerNode] Starting member 0 | ingress=aeron:udp?endpoint=localhost:9302 | archive=aeron:udp?endpoint=localhost:9301 | baseDir=/tmp/phixeron-seq
-# [SequencerNode/0] Running — Ctrl-C to stop
+# [SequencerServer] Starting member 0 | ingress=aeron:udp?endpoint=localhost:9302 | archive=aeron:udp?endpoint=localhost:9301 | baseDir=/tmp/phixeron-seq
+# [SequencerServer/0] Running — Ctrl-C to stop
 ```
 
 The node embeds its own MediaDriver and Archive — no separate `aeronmd` needed.
@@ -224,7 +224,7 @@ Each member's ports are `9300 + memberId × 10 + offset`:
 Clients connect to archive control on port 9301 (member 0) to replay history, and to
 ingress on port 9302 to send messages. The sequenced stream is a node-local `aeron:ipc` tap
 (stream 205) recorded into each member's own archive — no network stream port. Cluster egress is a
-fixed UDP port too — 9320 for `FixGateway`/`fix_test_server`, 9330 for `OrderExecClient` (see
+fixed UDP port too — 9320 for `FixGateway`/`fix_test_server`, 9330 for `OrderExecServer` (see
 [Order execution client](#order-execution-client)) — kept distinct because the two now sit on
 independent media driver processes that can't both bind the same UDP port on `localhost`.
 
@@ -341,7 +341,7 @@ between the objects — but with `--oneline` each individual message line parses
 
 ## Order execution client
 
-`OrderExecClient` (C++, `src/main/cpp/.../order/OrderExecClient.cpp`) combines what used to
+`OrderExecServer` (C++, `src/main/cpp/.../order/OrderExecServer.cpp`) combines what used to
 be two separate binaries — `application_stream_client` and the C++ `RiskEngineClient` — into one
 cluster ingress client. It replays the cluster stream then follows it live, printing every
 `NewOrderSingle`/`ExecutionReport` it sees, tracking each account's positions from those same
@@ -352,7 +352,7 @@ are throttled by leaving the `PortfolioQueryRequest` fragment unconsumed on the 
 until a slot frees up, rather than blocking or dropping them.
 
 Unlike `FixGateway` (which serves external, potentially remote TCP FIX clients over UDP),
-`OrderExecClient` is deliberately deployed **co-located** with one `SequencerNode` member —
+`OrderExecServer` is deliberately deployed **co-located** with one `SequencerServer` member —
 sharing that member's own embedded Aeron directory rather than the standalone `aeronmd` — so
 archive access/replay, the live (post-catch-up) sequenced-stream tail (the co-located member's
 `aeron:ipc` tap, read directly), and — while that member is leader — cluster ingress all go over `aeron:ipc`
@@ -361,11 +361,11 @@ instead of looping through two independent UDP media drivers. Cluster egress sta
 isn't currently leader).
 
 ```bash
-cmake --build cmake-build-release --target OrderExecClient
-PHIXERON_ORDER_EXEC_AERON_DIR="${TMPDIR}phixeron-seq-aeron-0" ./cmake-build-release/OrderExecClient
-# [OrderExecClient] Connected to co-located Aeron media driver at .../phixeron-seq-aeron-0
-# [OrderExecClient] Connected to co-located Aeron Archive via IPC (holds the cluster stream recording)
-# [OrderExecClient] Live from start
+cmake --build cmake-build-release --target OrderExecServer
+PHIXERON_ORDER_EXEC_AERON_DIR="${TMPDIR}phixeron-seq-aeron-0" ./cmake-build-release/OrderExecServer
+# [OrderExecServer] Connected to co-located Aeron media driver at .../phixeron-seq-aeron-0
+# [OrderExecServer] Connected to co-located Aeron Archive via IPC (holds the cluster stream recording)
+# [OrderExecServer] Live from start
 ```
 
 `PHIXERON_ORDER_EXEC_AERON_DIR` defaults to member 0's own `sequencer.aeronDir` default
@@ -390,7 +390,7 @@ using the simdfix `ClientSession` and generated message encoders:
    ingress (bypassing the FIX/TCP gateway — see
    [order execution client](#order-execution-client)) and prints the resulting
    `PortfolioQueryReply`. Requires `aeronmd` (for `fix_test_server`'s own connection) and
-   `OrderExecClient` to be running.
+   `OrderExecServer` to be running.
 
 ```
 SenderCompID = CLIENT
@@ -411,7 +411,7 @@ java \
 ```
 
 **2. Start `aeronmd`** (separate terminal) — the C++ clients below need a media driver of
-their own, since (unlike `SequencerNode`) they don't embed one:
+their own, since (unlike `SequencerServer`) they don't embed one:
 ```bash
 AERON_DIR="${TMPDIR}aeron-$(whoami)" ./cmake-build-release/_deps/aeron-build/binaries/aeronmd
 ```
@@ -424,7 +424,7 @@ AERON_DIR="${TMPDIR}aeron-$(whoami)" ./cmake-build-release/FixGateway
 # [FixGateway] Caught up — following live stream
 ```
 
-**4. Start `OrderExecClient`** (separate terminal — see
+**4. Start `OrderExecServer`** (separate terminal — see
 [Order execution client](#order-execution-client)), needed for step 5 below.
 
 **5. Build and run the test client** (separate terminal):

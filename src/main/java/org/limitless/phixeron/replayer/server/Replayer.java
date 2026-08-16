@@ -1,4 +1,4 @@
-package org.limitless.phixeron.replayer;
+package org.limitless.phixeron.replayer.server;
 
 import io.aeron.logbuffer.FragmentHandler;
 import java.util.List;

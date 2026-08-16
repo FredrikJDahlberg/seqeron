@@ -1,4 +1,4 @@
-package org.limitless.phixeron.replayer;
+package org.limitless.phixeron.replayer.server;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -6,7 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.util.List;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
-import org.limitless.phixeron.replayer.ReplayRecordings.RecordingSpan;
+import org.limitless.phixeron.replayer.server.ReplayRecordings.RecordingSpan;
 
 /**
  * Unit tests for the pure recording-chain stitching behind {@link ReplayerService#resolveSegments}.

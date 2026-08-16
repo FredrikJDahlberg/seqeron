@@ -1,8 +1,8 @@
 #pragma once
 
 // Encode-and-offer for cluster ingress: the one preamble every producer in this system writes before
-// its own fields, factored out of the four places that each spelled it out (BasicDataClient's loader,
-// OrderExecClient's PortfolioQueryReply and venue ExecutionReport, FixGateway's GatewayStarted).
+// its own fields, factored out of the four places that each spelled it out (BasicDataServer's loader,
+// OrderExecServer's PortfolioQueryReply and venue ExecutionReport, FixGateway's GatewayStarted).
 //
 // Deliberately a free function over ClusterStreamSender rather than a member of it: the sender is the
 // cluster *session* state machine and knows only the sbe-cluster.xml wire protocol. Teaching it the
@@ -20,7 +20,7 @@
 namespace org::limitless::phixeron::sequencer {
 
 // Encode buffer for one ingress message. 512 bytes is what the largest hand-rolled buffer this
-// replaced already used (OrderExecClient's ExecutionReport, the widest message any of these producers
+// replaced already used (OrderExecServer's ExecutionReport, the widest message any of these producers
 // encodes) and comfortably clears ClusterStreamSender::send's MAX_PAYLOAD_LEN check.
 inline constexpr std::size_t INGRESS_ENCODE_BUFFER_LEN = 512;
 

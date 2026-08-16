@@ -538,9 +538,9 @@ class SequencerTest {
     @Test
     @DisplayName("a session that merely echoes a gateway sourceId is not a gateway session")
     void echoingAGatewaySourceIdDoesNotMakeASessionAGateway() {
-        // header.sourceId is a *routing* id, not a claim of identity: the OrderExecClient stamps the
+        // header.sourceId is a *routing* id, not a claim of identity: the OrderExecServer stamps the
         // originating gateway's sourceId onto every ExecutionReport and PortfolioQueryReply it submits.
-        // Inferring "this session is a gateway" from it made an ordinary OrderExecClient restart promote
+        // Inferring "this session is a gateway" from it made an ordinary OrderExecServer restart promote
         // the standby out from under a healthy primary. Only GatewayStarted may claim a session.
         final Sequencer seq = new Sequencer();
         final MutableDirectBuffer buf = new ExpandableArrayBuffer(512);
@@ -737,7 +737,7 @@ class SequencerTest {
         return org.limitless.phixeron.sbe.unsequenced.MessageHeaderEncoder.ENCODED_LENGTH + encoder.encodedLength();
     }
 
-    /** Encodes a schema-200 Gateway topology row, as the BasicDataClient producer would submit it. */
+    /** Encodes a schema-200 Gateway topology row, as the BasicDataServer producer would submit it. */
     private static int encodeIngressGateway(final MutableDirectBuffer buffer, final int offset, final int gatewayId,
                                             final int gatewaySourceId, final String gatewayName,
                                             final int preferenceRank) {
@@ -843,7 +843,7 @@ class SequencerTest {
         return org.limitless.phixeron.sbe.unsequenced.MessageHeaderEncoder.ENCODED_LENGTH + encoder.encodedLength();
     }
 
-    /** Encodes a schema-200 EndBasicData (header-only), as the BasicDataClient submits it to close a load. */
+    /** Encodes a schema-200 EndBasicData (header-only), as the BasicDataServer submits it to close a load. */
     private static int encodeIngressEndBasicData(final MutableDirectBuffer buffer, final int offset) {
         final org.limitless.phixeron.sbe.unsequenced.MessageHeaderEncoder messageHeader =
             new org.limitless.phixeron.sbe.unsequenced.MessageHeaderEncoder();
@@ -851,7 +851,7 @@ class SequencerTest {
             new org.limitless.phixeron.sbe.unsequenced.EndBasicDataEncoder();
 
         encoder.wrapAndApplyHeader(buffer, offset, messageHeader);
-        encoder.header().sourceId(3).connectionId(-1).sessionId(-1); // the BasicDataClient's sourceId
+        encoder.header().sourceId(3).connectionId(-1).sessionId(-1); // the BasicDataServer's sourceId
 
         return org.limitless.phixeron.sbe.unsequenced.MessageHeaderEncoder.ENCODED_LENGTH + encoder.encodedLength();
     }

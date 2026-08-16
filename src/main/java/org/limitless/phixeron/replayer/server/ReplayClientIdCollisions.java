@@ -1,4 +1,4 @@
-package org.limitless.phixeron.replayer;
+package org.limitless.phixeron.replayer.server;
 
 import java.util.HashMap;
 import java.util.Map;

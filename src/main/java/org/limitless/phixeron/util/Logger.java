@@ -13,7 +13,7 @@ public final class Logger {
     }
 
     public enum Component {
-        Sequencer, SequencerNode, SequencerService, ConsensusModule, ReplayerNode, ReplayerService,
+        Sequencer, SequencerServer, SequencerService, ConsensusModule, ReplayerServer, ReplayerService,
         ReplayerStreamReceiver, ExchangeGateway
     }
 

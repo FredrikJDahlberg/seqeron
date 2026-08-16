@@ -42,7 +42,7 @@ term buffer. Any fix for issue 3 must not reintroduce that shape.
 Two more constraints follow from the existing protocol:
 
 - **No wire-format change.** `ReplayRequest` / `Replaying` / `ReplayPending` are used by every
-  client (`FixGateway`, `OrderExecClient`, `BasicDataClient`) and must not change shape.
+  client (`FixGateway`, `OrderExecServer`, `BasicDataServer`) and must not change shape.
 - **Correctness must never depend on sharing succeeding.** Coalescing is a pure efficiency layer;
   every path must have an always-safe fallback to today's per-client behavior.
 

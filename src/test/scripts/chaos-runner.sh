@@ -16,7 +16,7 @@
 #
 # TOPOLOGY (borrowed from gap-recovery-test.sh for a deterministic initial leader): members 1 & 2 start
 #   first so the initial leader is one of them; member 0 joins as a follower after. Member 0 (CN) hosts the
-#   safety-oracle/tap-drop-target OrderExecClient consumer (PHIXERON_FAULT_INJECTION=1) and the primary FIX
+#   safety-oracle/tap-drop-target OrderExecServer consumer (PHIXERON_FAULT_INJECTION=1) and the primary FIX
 #   gateway GW-A (port 9000); member 1 (STANDBY_MEMBER) additionally hosts the hot-standby gateway GW-B
 #   (port 9001), the same active/standby pair gateway-failover-test.sh drives — sharing gatewaySourceId 0
 #   per BasicDataConstants.hpp, so a real promotion (not a dead end) happens whichever one dies. All three
@@ -154,7 +154,7 @@ assert_restarted() {  # <memberId> — start_seq must already have been called
   return 1
 }
 
-alive() { kill -0 "${SEQ_PIDS[$1]:-0}" 2>/dev/null; }   # is member $1's SequencerNode process up (not SIGSTOPped-aware)
+alive() { kill -0 "${SEQ_PIDS[$1]:-0}" 2>/dev/null; }   # is member $1's SequencerServer process up (not SIGSTOPped-aware)
 
 current_leader() {  # echo the memberId whose most-recent leadership line is isLeader=true, or "" if none/split
   local m line
@@ -185,17 +185,17 @@ trap cleanup EXIT INT TERM
 
 # ── Bring-up ─────────────────────────────────────────────────────────────────────
 [[ -f "$JAR" ]] || { echo "missing $JAR — run ./gradlew uberJar"; exit 1; }
-[[ -x "$BUILD_DIR/OrderExecClient" && -x "$BUILD_DIR/FixGateway" && -x "$BUILD_DIR/fix_test_server" \
-   && -x "$BUILD_DIR/BasicDataClient" ]] \
+[[ -x "$BUILD_DIR/OrderExecServer" && -x "$BUILD_DIR/FixGateway" && -x "$BUILD_DIR/fix_test_server" \
+   && -x "$BUILD_DIR/BasicDataServer" ]] \
   || { echo "missing C++ targets — run cmake --build $BUILD_DIR"; exit 1; }
 
 # Idempotent pre-clean so back-to-back runs don't collide: SIGKILL any survivors, then WAIT for the
 # member archive-control ports (Aeron binds these as UDP) to actually release.
-# NB: SequencerNode launches via `java -jar "$JAR"`, so its command line contains NO "SequencerNode"
-# substring — pkilling by class name misses it. Match the jar path (in both SequencerNode's `-jar` and
-# ReplayerNode's `-cp` lines) and the -Dsequencer marker instead.
+# NB: SequencerServer launches via `java -jar "$JAR"`, so its command line contains NO "SequencerServer"
+# substring — pkilling by class name misses it. Match the jar path (in both SequencerServer's `-jar` and
+# ReplayerServer's `-cp` lines) and the -Dsequencer marker instead.
 pkill -9 -f "$JAR" 2>/dev/null; pkill -9 -f "sequencer.memberId" 2>/dev/null
-for p in OrderExecClient FixGateway fix_test_server BasicDataClient aeronmd; do pkill -9 -f "$p" 2>/dev/null; done
+for p in OrderExecServer FixGateway fix_test_server BasicDataServer aeronmd; do pkill -9 -f "$p" 2>/dev/null; done
 rm -rf "$BASE_DIR" "${TMPDIR}phixeron-seq-aeron-0" "${TMPDIR}phixeron-seq-aeron-1" \
        "${TMPDIR}phixeron-seq-aeron-2" "$AERON_DIR" 2>/dev/null
 W=0; while lsof -nP -iUDP:"$(archive_port 0)" -iUDP:"$(archive_port 1)" -iUDP:"$(archive_port 2)" 2>/dev/null \
@@ -212,12 +212,12 @@ W=0; until [[ -f "$AERON_DIR/cnc.dat" ]]; do sleep 0.2; W=$((W+1)); ((W>25)) && 
 
 for m in 0 1 2; do
   java "${JAVA_OPTS[@]}" -Dreplayer.memberId="$m" -cp "$JAR" \
-       org.limitless.phixeron.replayer.ReplayerNode > "$LOG_DIR/replayer-$m.log" 2>&1 &
+       org.limitless.phixeron.replayer.server.ReplayerServer > "$LOG_DIR/replayer-$m.log" 2>&1 &
   REPLAYER_PIDS[$m]=$!
 done
 for m in 0 1 2; do W=0; until grep -q "serving replay" "$LOG_DIR/replayer-$m.log" 2>/dev/null; do sleep 0.5; W=$((W+1)); ((W > APP_CATCHUP_TIMEOUT_SECS * 2)) && break; done; done
 
-# BasicDataClient replica on every node (see start-three-node-cluster.sh): dual-role, producer on
+# BasicDataServer replica on every node (see start-three-node-cluster.sh): dual-role, producer on
 # whichever member is leader, consumer elsewhere. Without one running on every node, no member ever
 # publishes the Gateway/Session/TradingDay rows the gateway needs — EndBasicData never arrives, the
 # gateway's accept gate never opens (m_basicDataLoaded stays false), and every Logon just queues in the
@@ -225,27 +225,27 @@ for m in 0 1 2; do W=0; until grep -q "serving replay" "$LOG_DIR/replayer-$m.log
 for m in 0 1 2; do
   PHIXERON_BASICDATA_AERON_DIR="${TMPDIR}phixeron-seq-aeron-${m}" PHIXERON_NODE_MEMBER_ID="$m" \
     PHIXERON_REPLAYER_CLIENT_ID=3 PHIXERON_BASICDATA_EGRESS_ENDPOINT="localhost:$(basicdata_egress_port "$m")" \
-    stdbuf -oL -eL "$BUILD_DIR/BasicDataClient" > "$LOG_DIR/basicdata-$m.log" 2>&1 &
+    stdbuf -oL -eL "$BUILD_DIR/BasicDataServer" > "$LOG_DIR/basicdata-$m.log" 2>&1 &
   BASICDATA_PIDS[$m]=$!
 done
 
 # Consumer on member 0: fault-injection ON (SIGUSR1 tap-drop) + latency stats (flushed on exit, not read here).
 # Extracted into start_consumer/start_gateway (below) so restart_colocated_apps can relaunch the same pair
 # in place when member 0 itself is a fault target — same driver-death problem members 1/2's replicas have
-# on restart, just for the gateway/consumer instead of a plain OrderExecClient replica.
+# on restart, just for the gateway/consumer instead of a plain OrderExecServer replica.
 CONSUMER_LOG="$LOG_DIR/consumer.log"
 start_consumer() {
   PHIXERON_ORDER_EXEC_AERON_DIR="${TMPDIR}phixeron-seq-aeron-${CN}" PHIXERON_NODE_MEMBER_ID="$CN" \
     PHIXERON_REPLAYER_CLIENT_ID=9 PHIXERON_CLUSTER_EGRESS_ENDPOINT="localhost:${TEST_CONSUMER_EGRESS_PORT}" \
     PHIXERON_LATENCY_STATS=1 PHIXERON_FAULT_INJECTION=1 \
-    stdbuf -oL -eL "$BUILD_DIR/OrderExecClient" > "$CONSUMER_LOG" 2>&1 &
+    stdbuf -oL -eL "$BUILD_DIR/OrderExecServer" > "$CONSUMER_LOG" 2>&1 &
   CONSUMER_PID=$!
 }
 start_consumer
 W=0; until grep -q "following live" "$CONSUMER_LOG" 2>/dev/null; do sleep 0.5; W=$((W+1)); ((W > APP_CATCHUP_TIMEOUT_SECS * 2)) && { echo "consumer never caught up"; exit 1; }; done
 
-# OrderExecClient replica on members 1 and 2 too (see start-three-node-cluster.sh): sendNewExecutionReport
-# only fires on the replica CO-LOCATED WITH THE CURRENT LEADER (OrderExecClient.cpp, m_replayer.isCaughtUp()
+# OrderExecServer replica on members 1 and 2 too (see start-three-node-cluster.sh): sendNewExecutionReport
+# only fires on the replica CO-LOCATED WITH THE CURRENT LEADER (OrderExecServer.cpp, m_replayer.isCaughtUp()
 # && currentLeaderMemberId()==m_nodeMemberId — one fill per order, not one per replica). Bring-up always
 # elects the initial leader from members 1/2 before member 0 even joins (see below), so without a replica on
 # every node NO replica is ever positioned to answer a NewOrderSingle with an ExecutionReport, and every FIX
@@ -258,7 +258,7 @@ start_replica() {  # start_replica <memberId>  (members 1/2; member 0's replica 
   local m="$1"
   PHIXERON_ORDER_EXEC_AERON_DIR="${TMPDIR}phixeron-seq-aeron-${m}" PHIXERON_NODE_MEMBER_ID="$m" \
     PHIXERON_FAULT_INJECTION=1 \
-    stdbuf -oL -eL "$BUILD_DIR/OrderExecClient" > "$LOG_DIR/orderexec-$m.log" 2>&1 &
+    stdbuf -oL -eL "$BUILD_DIR/OrderExecServer" > "$LOG_DIR/orderexec-$m.log" 2>&1 &
   EXTRA_CONSUMER_PIDS[$m]=$!
 }
 for m in 1 2; do start_replica "$m"; done
@@ -330,7 +330,7 @@ start_background_load
 # gateway + consumer down too, and restart_colocated_apps brings that specific pair back (see below).
 target_leader() { echo "$1"; }                                    # the current leader — always a legal kill target
 a_follower()    { local l="$1" p; while :; do p=$(( RANDOM % 3 )); [[ "$p" != "$l" ]] && { echo "$p"; return; }; done; }  # a random non-leader among {0,1,2}
-# Member 0's OrderExecClient is the observation consumer (CONSUMER_PID/consumer.log); 1 and 2 are plain
+# Member 0's OrderExecServer is the observation consumer (CONSUMER_PID/consumer.log); 1 and 2 are plain
 # replicas. Both are legal tap-drop targets, so resolve either by memberId.
 replica_pid() { local m="$1"; [[ "$m" == "$CN" ]] && echo "${CONSUMER_PID:-}" || echo "${EXTRA_CONSUMER_PIDS[$m]:-}"; }
 replica_log() { local m="$1"; [[ "$m" == "$CN" ]] && echo "$CONSUMER_LOG" || echo "$LOG_DIR/orderexec-$m.log"; }
@@ -344,7 +344,7 @@ count_tap_rewalks() { grep -c 're-walking the recording chain' "$1" 2>/dev/null 
 count_recovery_stalls() { grep -c 'recovery has dispatched nothing' "$1" 2>/dev/null || true; }
 
 # ── Media-driver fail-fast assertions ────────────────────────────────────────────
-# SequencerNode embeds its media driver (ClusteredMediaDriver, SequencerNode.java:191), so killing a
+# SequencerServer embeds its media driver (ClusteredMediaDriver, SequencerServer.java:191), so killing a
 # member IS a media-driver kill for every client sharing that member's aeron dir — the standalone
 # aeronmd this script starts serves only fix_test_server. Every kill fault therefore already injects
 # "driver dies, restarts at the same path"; what was missing is asserting on it, because
@@ -409,12 +409,12 @@ check_driver_loss_failfast() {  # <memberId whose driver just died>
   return 0
 }
 
-# A killed member's co-located ReplayerNode/BasicDataClient/OrderExecClient (or, for CN, the gateway +
+# A killed member's co-located ReplayerServer/BasicDataServer/OrderExecServer (or, for CN, the gateway +
 # observation consumer) share its embedded media driver (same aeron dir) and don't survive the member's
-# restart: the driver dies with the SequencerNode process, and none of these clients reconnect to the
+# restart: the driver dies with the SequencerServer process, and none of these clients reconnect to the
 # fresh driver the restart creates at the same path — they just fault (DriverTimeoutException /
 # "MediaDriver has been shutdown") and sit dead for the rest of the run. That leaves a permanent hole:
-# e.g. if member $m later becomes leader, its dead OrderExecClient replica can't be the one that answers a
+# e.g. if member $m later becomes leader, its dead OrderExecServer replica can't be the one that answers a
 # NewOrderSingle with an ExecutionReport (leader-only emission), so a later round's FIX round-trip probe
 # hangs waiting for one that will never come.
 restart_colocated_apps() {
@@ -428,14 +428,14 @@ restart_colocated_apps() {
   fi
   [[ "$m" == "$STANDBY_MEMBER" ]] && kill "${STANDBY_FIX_PID:-0}" 2>/dev/null
   java "${JAVA_OPTS[@]}" -Dreplayer.memberId="$m" -cp "$JAR" \
-       org.limitless.phixeron.replayer.ReplayerNode > "$LOG_DIR/replayer-$m.log" 2>&1 &
+       org.limitless.phixeron.replayer.server.ReplayerServer > "$LOG_DIR/replayer-$m.log" 2>&1 &
   REPLAYER_PIDS[$m]=$!
   until grep -q "serving replay" "$LOG_DIR/replayer-$m.log" 2>/dev/null; do
     sleep 0.5; W=$((W+1)); ((W > APP_CATCHUP_TIMEOUT_SECS * 2)) && { log "  WARN replayer-$m not serving after restart"; break; }
   done
   PHIXERON_BASICDATA_AERON_DIR="${TMPDIR}phixeron-seq-aeron-${m}" PHIXERON_NODE_MEMBER_ID="$m" \
     PHIXERON_REPLAYER_CLIENT_ID=3 PHIXERON_BASICDATA_EGRESS_ENDPOINT="localhost:$(basicdata_egress_port "$m")" \
-    stdbuf -oL -eL "$BUILD_DIR/BasicDataClient" > "$LOG_DIR/basicdata-$m.log" 2>&1 &
+    stdbuf -oL -eL "$BUILD_DIR/BasicDataServer" > "$LOG_DIR/basicdata-$m.log" 2>&1 &
   BASICDATA_PIDS[$m]=$!
   if [[ "$m" == "$CN" ]]; then
     start_consumer
@@ -503,7 +503,7 @@ fault_kill_follower() {  # crash a follower -> should be transparent (quorum hol
 # Nothing committed is lost — the fragment was never fully written, so it is behind this member's acked
 # append position, and it re-replicates from the leader on rejoin.
 # Only the SIGKILL path needs this: every other fault here leaves through the shutdown barrier
-# (fault_tap_stall's self-termination included, SequencerNode.java), so the Archive gets a clean close.
+# (fault_tap_stall's self-termination included, SequencerServer.java), so the Archive gets a clean close.
 repair_archive() {  # repair_archive <memberId>
   # One `local` per variable, deliberately: bash 3.2 (the macOS default) expands $m in the SAME
   # `local` statement from the OUTER scope rather than from the local just assigned, so a combined
@@ -615,9 +615,9 @@ FAULTS=(fault_kill_leader fault_kill_follower fault_sigkill_node fault_pause_nod
 # NOTE — on killing the media driver: there is deliberately no fault_kill_aeronmd, and adding one would
 #   test the harness rather than the system. The standalone aeronmd started above serves ONLY
 #   fix_test_server (default aeron::Context, FixTestServer.cpp:302,1118) — i.e. the probe and the
-#   background load. Every production process is on a per-member driver embedded in its SequencerNode
-#   (ClusteredMediaDriver at ${TMPDIR}phixeron-seq-aeron-<m>): ReplayerNode (ReplayerNode.java:67),
-#   FixGateway, OrderExecClient and BasicDataClient all attach there. So killing aeronmd would break the
+#   background load. Every production process is on a per-member driver embedded in its SequencerServer
+#   (ClusteredMediaDriver at ${TMPDIR}phixeron-seq-aeron-<m>): ReplayerServer (ReplayerServer.java:67),
+#   FixGateway, OrderExecServer and BasicDataServer all attach there. So killing aeronmd would break the
 #   probe while leaving the system untouched, and the real "driver dies and restarts at the same path"
 #   fault is ALREADY injected by every kill fault above — asserted by check_driver_loss_failfast.
 #
@@ -648,8 +648,8 @@ check_invariants() {
     log "  INVARIANT FAIL: FIX round-trip probe failed (see $LOG_DIR/probe.log)"; fail=1
   fi
   # (c) safety proxy: every co-located replica is still up and still SERVING.
-  #     This used to grep the consumer log for "following live" — which OrderExecClient prints ONCE on the
-  #     replay->live transition and never again (m_announcedLive latches, OrderExecClient.cpp:440). It
+  #     This used to grep the consumer log for "following live" — which OrderExecServer prints ONCE on the
+  #     replay->live transition and never again (m_announcedLive latches, OrderExecServer.cpp:440). It
   #     therefore matched the startup line forever and passed vacuously: a replica that later fell out of
   #     isCaughtUp() and stopped serving looked identical to a healthy one. That is not hypothetical — a
   #     wedged consumer is exactly what a per-poll request resend produced, and only the FIX probe caught
@@ -664,7 +664,7 @@ check_invariants() {
     pid="$(replica_pid "$m")"
     rlog="$(replica_log "$m")"
     if ! kill -0 "${pid:-0}" 2>/dev/null; then
-      log "  INVARIANT FAIL: member $m's OrderExecClient replica is not running"; cfail=1; continue
+      log "  INVARIANT FAIL: member $m's OrderExecServer replica is not running"; cfail=1; continue
     fi
     stalls="$(count_recovery_stalls "$rlog")"
     # A restart truncates the log (start_consumer/start_replica use >), so the count drops to 0 and the

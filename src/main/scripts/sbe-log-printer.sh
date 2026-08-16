@@ -2,7 +2,7 @@
 # sbe-log-printer.sh — dump an Aeron Archive recording as JSON using an SBE schema.
 #
 # Reads archive.catalog + segment files under the given archive directory
-# (see start-cluster.sh / SequencerNode, default $TMPDIR/phixeron-seq/archive-<id>)
+# (see start-cluster.sh / SequencerServer, default $TMPDIR/phixeron-seq/archive-<id>)
 # and prints every recorded SBE message as JSON, decoded against the given
 # SBE IR (.sbeir) spec file.
 #

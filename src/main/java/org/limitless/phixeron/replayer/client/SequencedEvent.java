@@ -1,4 +1,4 @@
-package org.limitless.phixeron.replayer;
+package org.limitless.phixeron.replayer.client;
 
 import org.agrona.DirectBuffer;
 import org.limitless.phixeron.sbe.sequenced.Origin;

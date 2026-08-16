@@ -1,7 +1,7 @@
 // Pins PortLayout.hpp's port-layout formula against the same (memberId -> port) pairs
-// SequencerNodeTest (Java) checks, so a change to one side without the other fails a build
+// SequencerServerTest (Java) checks, so a change to one side without the other fails a build
 // instead of drifting silently — see PortLayout.hpp's comment for how that drift happened
-// before (FixGateway's and BasicDataClient's egress ports both defaulting to 9340+memberId).
+// before (FixGateway's and BasicDataServer's egress ports both defaulting to 9340+memberId).
 
 #include <gtest/gtest.h>
 
@@ -40,7 +40,7 @@ TEST(PortLayout, SatellitePortsAreDistinctPerRole)
     EXPECT_EQ(9340, fixGatewayEgressPort(0));
     EXPECT_EQ(9350, basicDataEgressPort(0));
 
-    // The bug this header fixed: OrderExecClient/FixGateway/BasicDataClient co-located egress
+    // The bug this header fixed: OrderExecServer/FixGateway/BasicDataServer co-located egress
     // ports must never collide for the same memberId.
     for (int memberId = 0; memberId < 3; ++memberId)
     {

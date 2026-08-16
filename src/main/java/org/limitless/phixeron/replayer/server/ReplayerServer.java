@@ -1,4 +1,4 @@
-package org.limitless.phixeron.replayer;
+package org.limitless.phixeron.replayer.server;
 
 import io.aeron.Aeron;
 import io.aeron.archive.client.AeronArchive;
@@ -16,8 +16,8 @@ import org.limitless.phixeron.util.Logger;
  * Launches one {@link ReplayerService} co-located with a Sequencer cluster member.
  *
  * <p>The ReplayerService does not run its own media driver: it attaches to the member's Aeron directory
- * (the same one {@code SequencerNode} launched its {@code ClusteredMediaDriver} in) so it can reach
- * that member's local {@code Archive} over {@code aeron:ipc} — exactly like {@code OrderExecClient}
+ * (the same one {@code SequencerServer} launched its {@code ClusteredMediaDriver} in) so it can reach
+ * that member's local {@code Archive} over {@code aeron:ipc} — exactly like {@code OrderExecServer}
  * co-locates via {@code PHIXERON_ORDER_EXEC_AERON_DIR}. Every node runs one of these; each ReplayerService
  * serves replays from its own local archive regardless of leadership (each member records its own
  * complete copy of the sequenced stream — no cross-node replication). It is off the live path: apps
@@ -46,15 +46,15 @@ import org.limitless.phixeron.util.Logger;
  *        --add-opens=java.base/sun.nio.ch=ALL-UNNAMED \
  *        --add-opens=java.base/jdk.internal.misc=ALL-UNNAMED \
  *        -cp phixeron-uber.jar \
- *        org.limitless.phixeron.replayer.ReplayerNode
+ *        org.limitless.phixeron.replayer.server.ReplayerServer
  * </pre>
  */
-public final class ReplayerNode {
+public final class ReplayerServer {
     private static final String PROP_MEMBER_ID = "replayer.memberId";
     private static final String PROP_AERON_DIR = "replayer.aeronDir";
     private static final String PROP_IDLE_STRATEGY = "replayer.idleStrategy";
 
-    /** Must match SequencerNode's Archive.localControlStreamId(100). */
+    /** Must match SequencerServer's Archive.localControlStreamId(100). */
     private static final int ARCHIVE_CONTROL_STREAM_ID = 100;
 
     /**
@@ -67,7 +67,7 @@ public final class ReplayerNode {
     /**
      * Exit status of a node whose replay duty cycle died on an uncaught exception (see {@code
      * ReplayerService.fatalDutyCycleFailure}), as opposed to the 0 of an orderly shutdown — the signal
-     * process supervision needs to tell "restart me" from "I was told to stop". Mirrors SequencerNode's
+     * process supervision needs to tell "restart me" from "I was told to stop". Mirrors SequencerServer's
      * EXIT_TAP_FATAL.
      */
     private static final int EXIT_DUTY_CYCLE_FATAL = 70;
@@ -116,7 +116,7 @@ public final class ReplayerNode {
         final Thread replayerThread = new Thread(() -> replayer.run(running), "replayer-" + memberId);
         replayerThread.start();
 
-        Logger.info(Logger.Component.ReplayerNode, memberId, "Running — Ctrl-C to stop | aeronDir=%s | idle=%s",
+        Logger.info(Logger.Component.ReplayerServer, memberId, "Running — Ctrl-C to stop | aeronDir=%s | idle=%s",
                     aeronDir, idleStrategy.getClass().getSimpleName());
         barrier.await();
         running.set(false);
@@ -130,9 +130,9 @@ public final class ReplayerNode {
         if (stopped) {
             archive.close();
             aeron.close();
-            Logger.info(Logger.Component.ReplayerNode, memberId, "Shutdown complete");
+            Logger.info(Logger.Component.ReplayerServer, memberId, "Shutdown complete");
         } else {
-            Logger.error(Logger.Component.ReplayerNode, Logger.EventCode.ShutdownTimeout, memberId,
+            Logger.error(Logger.Component.ReplayerServer, Logger.EventCode.ShutdownTimeout, memberId,
                          "duty-cycle thread still running %dms after being told to stop — exiting without "
                              + "closing the archive/Aeron client rather than closing them under it",
                          SHUTDOWN_JOIN_TIMEOUT_MS);

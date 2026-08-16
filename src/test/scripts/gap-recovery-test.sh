@@ -22,8 +22,8 @@
 #
 # Sequence:
 #   1. Start members 1 and 2 -> one becomes the tenure-1 leader. Then start member 0 (follower) and a
-#      ReplayerNode per member.
-#   2. Consumer (OrderExecClient, PHIXERON_FAULT_INJECTION=1) on member 0 catches up (following the
+#      ReplayerServer per member.
+#   2. Consumer (OrderExecServer, PHIXERON_FAULT_INJECTION=1) on member 0 catches up (following the
 #      live tap).
 #   3. Kill the tenure-1 leader -> a survivor becomes the tenure-2 leader. Member 0's own tap recording
 #      keeps flowing across the failover (it is continuous, never rotated).
@@ -41,7 +41,7 @@
 #   GAP_SIZE=<n>          drop n consecutive live tap frames per arm instead of 1 — sent as
 #                         PHIXERON_FAULT_DROP_COUNT, fixed at consumer startup: standard POSIX signals
 #                         are not queued, so sending SIGUSR1 n times would not reliably accumulate to n
-#                         — see OrderExecClient.cpp.
+#                         — see OrderExecServer.cpp.
 #
 # A third scenario ("gap discovered mid-replay" — re-arm a second drop while the first walk is still
 # actively replaying) was attempted and abandoned: see doc/todo.md's 2026-08-02 note. Local Aeron IPC
@@ -86,7 +86,7 @@ start_seq() {  # start_seq <memberId>
   SEQ_PIDS[$m]=$!
 }
 
-pkill -f SequencerNode 2>/dev/null; pkill -f ReplayerNode 2>/dev/null; pkill -f OrderExecClient 2>/dev/null
+pkill -f SequencerServer 2>/dev/null; pkill -f ReplayerServer 2>/dev/null; pkill -f OrderExecServer 2>/dev/null
 pkill -f FixGateway 2>/dev/null; pkill -f fix_test_server 2>/dev/null; pkill -f aeronmd 2>/dev/null; sleep 1
 rm -rf "$BASE_DIR" "${TMPDIR}phixeron-seq-aeron-0" "${TMPDIR}phixeron-seq-aeron-1" \
        "${TMPDIR}phixeron-seq-aeron-2" "$AERON_DIR" 2>/dev/null
@@ -121,7 +121,7 @@ W=0; until [[ -f "$AERON_DIR/cnc.dat" ]]; do sleep 0.2; W=$((W+1)); ((W>25)) && 
 
 for m in 0 1 2; do
   java "${JAVA_OPTS[@]}" -Dreplayer.memberId="$m" -cp "$JAR" \
-       org.limitless.phixeron.replayer.ReplayerNode > "$LOG_DIR/replayer-$m.log" 2>&1 &
+       org.limitless.phixeron.replayer.server.ReplayerServer > "$LOG_DIR/replayer-$m.log" 2>&1 &
   REPLAYER_PIDS[$m]=$!
 done
 for m in 0 1 2; do
@@ -141,7 +141,7 @@ PHIXERON_ORDER_EXEC_AERON_DIR="${TMPDIR}phixeron-seq-aeron-${CN}" \
   PHIXERON_LATENCY_STATS=1 \
   PHIXERON_FAULT_INJECTION=1 \
   PHIXERON_FAULT_DROP_COUNT="$GAP_SIZE" \
-  stdbuf -oL -eL "$BUILD_DIR/OrderExecClient" > "$CONSUMER_LOG" 2>&1 &
+  stdbuf -oL -eL "$BUILD_DIR/OrderExecServer" > "$CONSUMER_LOG" 2>&1 &
 CONSUMER_PID=$!
 W=0; until grep -q "following live" "$CONSUMER_LOG" 2>/dev/null; do sleep 0.5; W=$((W+1)); ((W>60)) && { echo "consumer never caught up"; exit 1; }; done
 echo "consumer caught up (following live) on tenure 1"

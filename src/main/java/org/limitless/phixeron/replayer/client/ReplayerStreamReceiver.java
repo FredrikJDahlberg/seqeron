@@ -1,4 +1,4 @@
-package org.limitless.phixeron.replayer;
+package org.limitless.phixeron.replayer.client;
 
 import io.aeron.Aeron;
 import io.aeron.Counter;
@@ -15,6 +15,7 @@ import java.util.List;
 import org.agrona.DirectBuffer;
 import org.agrona.concurrent.UnsafeBuffer;
 import org.limitless.phixeron.metrics.PhixeronCounters;
+import org.limitless.phixeron.replayer.server.ReplayerService;
 import org.limitless.phixeron.sbe.sequenced.HeaderDecoder;
 import org.limitless.phixeron.sbe.sequenced.LeadershipChangedDecoder;
 import org.limitless.phixeron.sbe.sequenced.MessageHeaderDecoder;

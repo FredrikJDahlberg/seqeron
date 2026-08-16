@@ -6,7 +6,7 @@ replayable/analysable afterwards.
 
 ## Shape
 
-`clusterctl` is **node-local**: it runs co-located on a `SequencerNode` host, sharing that node's
+`clusterctl` is **node-local**: it runs co-located on a `SequencerServer` host, sharing that node's
 Aeron directory and `clusterDir`. It combines two mechanisms that the original sketch conflated:
 
 - **In-band marker messages** over cluster ingress — `ClusterStarted` / `ClusterStopped` records
@@ -20,7 +20,7 @@ Aeron directory and `clusterDir`. It combines two mechanisms that the original s
   javadoc), so the destructive commands must be run on the leader node.
 
 `clusterctl` does **not** launch or restart cluster processes. Bringing nodes up is still
-`start-cluster.sh` / launching `SequencerNode` JVMs. `start` only *records* that the system is up;
+`start-cluster.sh` / launching `SequencerServer` JVMs. `start` only *records* that the system is up;
 `shutdown` records the close marker and then terminates the running nodes.
 
 ### Implementation
@@ -106,9 +106,9 @@ the real work to the one leader, so the operator need not know which node leads.
    `SbeLogPrinter` against the archive dir and assert the tap recording (stream 205) has a valid
    stopPosition and dumps. If not, fall back to the alternatives below.
 
-**Deployment note (systemd).** Let the leader's `ABORT` stop the follower `SequencerNode`s (they
+**Deployment note (systemd).** Let the leader's `ABORT` stop the follower `SequencerServer`s (they
 exit on the coordinated termination); do not have systemd independently `SIGTERM` a follower's
-`SequencerNode` in a way that races the `ABORT`, or a node could terminate before applying
+`SequencerServer` in a way that races the `ABORT`, or a node could terminate before applying
 `ClusterStopped`. (`SIGTERM` is itself clean now — it drives the same barrier teardown — it just
 isn't ordered against the marker.)
 
@@ -152,15 +152,15 @@ Two facts about Aeron 1.51.0 shutdown, both verified against the cluster sources
   replaying). `ABORT` (`:2544`) terminates with no snapshot and coordinates all nodes at one log
   position — the right fit.
 
-- **Termination hook wired in `SequencerNode` (done).** Aeron's default
+- **Termination hook wired in `SequencerServer` (done).** Aeron's default
   `ConsensusModule.Context.terminationHook` is a **no-op** `() -> {}` (`ConsensusModule.java:2089`);
-  the documented pattern is `.terminationHook(barrier::signalAll)` (`:268`). `SequencerNode`
+  the documented pattern is `.terminationHook(barrier::signalAll)` (`:268`). `SequencerServer`
   previously used a `ShutdownSignalBarrier` but did **not** wire the hook, so a `ClusterTool`
   `ABORT`/`SHUTDOWN` terminated the consensus + service agents but never signalled the barrier —
-  `SequencerNode.main` stayed blocked on `barrier.await()`, the `ClusteredMediaDriver`/`Archive`
+  `SequencerServer.main` stayed blocked on `barrier.await()`, the `ClusteredMediaDriver`/`Archive`
   were **never closed through the clean try-with-resources path**, and the half-dead node
   (archive up, consensus dead) had to be `kill`ed, risking an unflushed catalog and an unreadable
-  log. `SequencerNode` now wires `terminationHook(barrier::signalAll)`, so `ABORT` unwinds cleanly
+  log. `SequencerServer` now wires `terminationHook(barrier::signalAll)`, so `ABORT` unwinds cleanly
   on every node → `Archive.close()` forces the catalog → `SbeLogPrinter` reads the tap. This is the
   change that makes `clusterctl` shutdown safe for log analysis.
 
@@ -175,7 +175,7 @@ the termination-hook fix guarantees.
 If, even with the two changes above, a clean archive close cannot be relied on (e.g. `Archive.close`
 does not force the catalog, or a node was mid-recording):
 
-- **Alt A (strongest fallback) — local `SIGTERM`** to the `SequencerNode` PID instead of Aeron's
+- **Alt A (strongest fallback) — local `SIGTERM`** to the `SequencerServer` PID instead of Aeron's
   `ClusterControl` toggle. That path is already clean today: it drives the same `ShutdownSignalBarrier` →
   try-with-resources → `Archive.close()` teardown that `stop-cluster.sh` relies on, and needs no
   termination-hook fix and no snapshot decision. Trade-off: not a consensus-coordinated quiesce, so

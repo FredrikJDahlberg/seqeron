@@ -2,7 +2,7 @@
 
 #include <cstdint>
 
-namespace org::limitless::phixeron::sequencer {
+namespace org::limitless::phixeron::replayer::client {
 
 // Pure decision logic behind ReplayerStreamReceiver's convergence alarm (review-3.md #6). Recovery that
 // never converges is correctly CONTAINED — nothing is dispatched from a baseline this node cannot
@@ -66,4 +66,4 @@ class RecoveryProgressPolicy
     bool m_reported = false;
 };
 
-} // namespace org::limitless::phixeron::sequencer
+} // namespace org::limitless::phixeron::replayer::client

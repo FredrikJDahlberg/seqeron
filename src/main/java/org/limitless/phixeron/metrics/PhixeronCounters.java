@@ -107,7 +107,7 @@ public final class PhixeronCounters {
      */
     public static final int REPLAYER_CLIENT_ID_COLLISION_TYPE_ID = 5108;
 
-    // ── Co-located C++ application replicas (FixGateway / OrderExecClient / BasicDataClient) ───
+    // ── Co-located C++ application replicas (FixGateway / OrderExecServer / BasicDataServer) ───
     // Published by the apps themselves, not by any Java process — see the C++ half in
     // {@code util/PhixeronCounters.hpp}, which must be kept in step with the ids and key layout here.
     public static final int APP_TYPE_ID_MIN = 5200;

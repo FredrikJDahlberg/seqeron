@@ -66,10 +66,10 @@ import org.limitless.phixeron.util.Logger;
  *   java -Dsequencer.memberId=0 \
  *        --add-opens=java.base/sun.nio.ch=ALL-UNNAMED \
  *        -cp phixeron-uber.jar \
- *        org.limitless.phixeron.sequencer.SequencerNode
+ *        org.limitless.phixeron.sequencer.SequencerServer
  * </pre>
  */
-public final class SequencerNode {
+public final class SequencerServer {
     private static final String PROP_MEMBER_ID = "sequencer.memberId";
     private static final String PROP_NODE_COUNT = "sequencer.nodeCount";
     private static final String PROP_CLUSTER_MEMBERS = "sequencer.clusterMembers";
@@ -86,7 +86,7 @@ public final class SequencerNode {
      * {@code ingressStreamId}, and isIpcIngressAllowed(true) makes the leader subscribe to
      * ingress on aeron:ipc/101 too — sharing it with the archive response stream means every
      * archive reply misdecodes as an ingress frame (and vice versa). Also distinct from
-     * ReplayerNode's ARCHIVE_CONTROL_RESPONSE_STREAM_ID (120), which shares this member's
+     * ReplayerServer's ARCHIVE_CONTROL_RESPONSE_STREAM_ID (120), which shares this member's
      * aeron:ipc driver.
      */
     private static final int ARCHIVE_CONTROL_RESPONSE_STREAM_ID = 121;
@@ -189,17 +189,17 @@ public final class SequencerNode {
                               -> Logger.error(Logger.Component.SequencerService, Logger.EventCode.ServiceError,
                                               memberId, "%s", t.getMessage()));
 
-        Logger.info(Logger.Component.SequencerNode, memberId,
+        Logger.info(Logger.Component.SequencerServer, memberId,
                     "Starting member %d | ingress=%s | archive=%s | baseDir=%s | idle=%s", memberId,
                     udp(DEFAULT_HOST, ingressPort), udp(DEFAULT_HOST, archivePort), baseDir,
                     System.getProperty(PROP_IDLE_STRATEGY, "backoff"));
 
         try (barrier; ClusteredMediaDriver cmd = ClusteredMediaDriver.launch(driverCtx, archiveCtx, consensusCtx);
              ClusteredServiceContainer container = ClusteredServiceContainer.launch(serviceCtx)) {
-            Logger.info(Logger.Component.SequencerNode, memberId, "Running — Ctrl-C to stop");
+            Logger.info(Logger.Component.SequencerServer, memberId, "Running — Ctrl-C to stop");
             barrier.await();
         } finally {
-            Logger.info(Logger.Component.SequencerNode, memberId, "Shutdown complete");
+            Logger.info(Logger.Component.SequencerServer, memberId, "Shutdown complete");
         }
         if (tapFatal.get()) {
             System.exit(EXIT_TAP_FATAL);

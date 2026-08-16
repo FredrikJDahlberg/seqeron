@@ -8,8 +8,8 @@ counter — end to end from a running node to a dashboard panel.
 
 Pull, not push, and an **aggregating proxy**, not service discovery:
 
-- Each node runs `metrics-exporter.sh` (`MetricsExporter`), co-located with a `SequencerNode`/
-  `ReplayerNode` the same way `clusterctl` is — sharing that node's Aeron directory — and serves
+- Each node runs `metrics-exporter.sh` (`MetricsExporter`), co-located with a `SequencerServer`/
+  `ReplayerServer` the same way `clusterctl` is — sharing that node's Aeron directory — and serves
   `/metrics` in Prometheus text exposition format, read live off the CnC file via
   `CountersReader.forEach`.
 - One central `metrics-aggregator.sh` (`MetricsAggregator`) scrapes every node's exporter over HTTP
@@ -39,7 +39,7 @@ metrics-exporter.sh          # serve /metrics on port 9400 + memberId
 | `METRICS_EXPORTER_AERON_DIR` | `metricsExporter.aeronDir` | `$TMPDIR/phixeron-seq-aeron-<memberId>` |
 | `METRICS_EXPORTER_PORT` | `metricsExporter.port` | `9400 + memberId` |
 
-Run one per node, co-located with that node's `SequencerNode`/`ReplayerNode` (mirrors
+Run one per node, co-located with that node's `SequencerServer`/`ReplayerServer` (mirrors
 `clusterctl.sh`'s co-location — same Aeron directory, no cluster connection needed). Needs the same
 `--add-opens` JVM flags as every other phixeron Java process that touches Agrona; the script sets
 them.
@@ -108,7 +108,7 @@ Every metric carries a `member="N"` label (the memberId, read from the counter's
 buffer — see `PhixeronCounters.addCounter`/`KEY_MEMBER_ID_OFFSET`).
 
 `phixeron_app_*` metrics carry a second label, `client="M"` — the replayer clientId. They are published
-by the co-located C++ replicas (`FixGateway`, `OrderExecClient`, `BasicDataClient`) rather than by a
+by the co-located C++ replicas (`FixGateway`, `OrderExecServer`, `BasicDataServer`) rather than by a
 Java process, and several of them run per node publishing the same counter, so `member` alone would
 collapse them into one repeated series. The C++ half of the registry is
 `org/limitless/phixeron/util/PhixeronCounters.hpp`, which must be kept in step with the Java one.
@@ -138,7 +138,7 @@ collapse them into one repeated series. The C++ half of the registry is
 
 ## A node that terminates itself
 
-`SequencerNode` exits **70** when its local archive stops recording the node's tap (stalled with no
+`SequencerServer` exits **70** when its local archive stops recording the node's tap (stalled with no
 progress for 30s under back-pressure, or the recording gone outright). This is deliberate, not a crash:
 that node's archive is its copy of the sequenced history, so one that cannot record can only accumulate
 silent holes in it. What to expect and what to do:

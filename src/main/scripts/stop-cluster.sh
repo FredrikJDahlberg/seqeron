@@ -2,8 +2,8 @@
 # stop-cluster.sh — stop all phixeron cluster processes started by start-cluster.sh
 # or start-three-node-cluster.sh.
 #
-# Sends SIGTERM to SequencerNode, aeronmd, FixGateway, ReplayerNode,
-# OrderExecClient, and BasicDataClient, then waits up to 10 s for them to exit before
+# Sends SIGTERM to SequencerServer, aeronmd, FixGateway, ReplayerServer,
+# OrderExecServer, and BasicDataServer, then waits up to 10 s for them to exit before
 # sending SIGKILL to any survivors.
 #
 # Usage:
@@ -20,16 +20,16 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
     exit 0
 fi
 
-# Each entry is "label|pgrep-pattern". SequencerNode is launched via `java … -jar …uber.jar`, so its
+# Each entry is "label|pgrep-pattern". SequencerServer is launched via `java … -jar …uber.jar`, so its
 # Main-Class name is in the manifest, not on the command line — match its -Dsequencer.memberId system
-# property instead (present on every SequencerNode launch, and on no other process).
+# property instead (present on every SequencerServer launch, and on no other process).
 PROCESSES=(
-    "SequencerNode|sequencer.memberId"
+    "SequencerServer|sequencer.memberId"
     "aeronmd|aeronmd"
     "FixGateway|FixGateway"
-    "ReplayerNode|ReplayerNode"
-    "OrderExecClient|OrderExecClient"
-    "BasicDataClient|BasicDataClient"
+    "ReplayerServer|ReplayerServer"
+    "OrderExecServer|OrderExecServer"
+    "BasicDataServer|BasicDataServer"
 )
 TIMEOUT=10
 

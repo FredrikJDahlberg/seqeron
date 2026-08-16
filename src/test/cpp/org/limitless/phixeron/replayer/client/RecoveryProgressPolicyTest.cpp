@@ -4,9 +4,9 @@
 
 #include <gtest/gtest.h>
 
-#include "org/limitless/phixeron/replayer/RecoveryProgressPolicy.hpp"
+#include "org/limitless/phixeron/replayer/client/RecoveryProgressPolicy.hpp"
 
-namespace org::limitless::phixeron::sequencer {
+namespace org::limitless::phixeron::replayer::client {
 namespace {
 
 constexpr std::int64_t STALL_MS = 30'000;
@@ -89,4 +89,4 @@ TEST(RecoveryProgressPolicy, ALaterEpisodeIsReportedAgainRatherThanSwallowedByTh
 }
 
 } // namespace
-} // namespace org::limitless::phixeron::sequencer
+} // namespace org::limitless::phixeron::replayer::client

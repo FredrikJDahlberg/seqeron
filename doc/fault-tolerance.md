@@ -87,7 +87,7 @@ the cluster clock also runs `checkTapRecordingAlive` (`SequencerService.java:480
 it looking connected — so liveness has to be polled, not just inferred from back-pressure.
 
 Either path calls `fatalTapFailure` → `fatalFailure`, which logs `FATAL: … terminating this node` and
-runs the fatal handler wired by `SequencerNode`, exiting the process with code **70**
+runs the fatal handler wired by `SequencerServer`, exiting the process with code **70**
 (`SequencerService.java:728-767`; documented operator-facing in `doc/ops.md` "A node that terminates
 itself"). No cluster callback may signal failure by throwing instead: `Image.boundedControlledPoll`
 has already advanced the log position past the message before a thrown exception is caught, and
@@ -110,7 +110,7 @@ underlying storage is still broken (start-up itself is bounded — the recording
 `clusterctl shutdown` is leader-gated: on the leader it publishes an unsequenced `ClusterStopped`
 marker, best-effort awaits its sequenced echo (so the log's last event before a planned stop is always
 that marker), then calls Aeron's `ClusterTool.abort` (`ClusterCtl.java:151-185`). `ABORT` — not
-`SHUTDOWN` — is the only lifecycle action that terminates without taking a snapshot, and `SequencerNode`
+`SHUTDOWN` — is the only lifecycle action that terminates without taking a snapshot, and `SequencerServer`
 wires `ConsensusModule.Context.terminationHook` to a barrier so every node still unwinds cleanly
 (closing its Archive and draining the tap recording to disk) rather than being killed abruptly
 (`doc/clusterctl.md`). `clusterctl start` is the read-side complement: it publishes `ClusterStarted`
@@ -170,7 +170,7 @@ Two ways a `GatewayActive` is produced:
   checks whether the closed session was one an *active* gateway had declared itself on via
   `GatewayStarted` (`Sequencer.java:174,435-445` — deliberately keyed off `GatewayStarted`, not the
   routing `sourceId` on every message, because other clients legitimately echo a gateway's `sourceId`
-  and an earlier version of this logic let an unrelated `OrderExecClient` restart promote a standby out
+  and an earlier version of this logic let an unrelated `OrderExecServer` restart promote a standby out
   from under a perfectly healthy primary). If so, `promotionTarget` picks the lowest-`preferenceRank`
   sibling sharing the same `gatewaySourceId` and emits `GatewayActive` naming it — or emits nothing,
   fail-closed, if there is no sibling to hand over to rather than naming a nonexistent instance
@@ -226,7 +226,7 @@ externally and unambiguously.
 
 ## 3. Stream recovery — cold start, gaps, and the live/history split
 
-Every app that consumes the sequenced stream (the FIX gateway, `OrderExecClient`, `BasicDataClient`,
+Every app that consumes the sequenced stream (the FIX gateway, `OrderExecServer`, `BasicDataServer`,
 `fix_test_server`) uses the same split: read the co-located `SequencerService`'s tap **directly and
 live** (untethered `aeron:ipc?tether=false`, so a slow consumer is dropped rather than back-pressuring
 the sequencer — see §1.3 and `doc/audit.md` S4), and ask the co-located `ReplayerService` to fill in
@@ -240,7 +240,7 @@ recording and checks `globalSeqNo == 1`; if that fails, `ready` latches false fo
 lifetime (`integrityFailed`) — a deliberate refusal, because a first frame that isn't 1 means this
 node's own recording is missing or corrupted, and centralizing the check here means every app on the
 node is told `ReplayUnavailable` instead of independently discovering the same broken archive
-(`src/main/java/org/limitless/phixeron/replayer/ReplayerService.java`, `checkReady`/
+(`src/main/java/org/limitless/phixeron/replayer/server/ReplayerService.java`, `checkReady`/
 `peekFirstGlobalSeqNo`). An archive call that throws mid-replay flips the service into a `stalled`
 state — retried at 1s intervals, answering requests `ReplayPending` in the meantime — without
 crashing the process or touching live delivery, since live reads never go through this service.
@@ -256,8 +256,8 @@ An uncaught exception escaping the duty-cycle loop (e.g. `offerControl`'s `CLOSE
 `MAX_POSITION_EXCEEDED`) used to unwind the thread silently, leaving `phixeron.replayer.ready` latched
 at 1 while nothing polled requests any more — a healthy-looking, dead process, with every co-located
 app resending into the void (fixed 2026-08-10). `ReplayerService.run()` now catches it,
-clears `ready`/`readyCounter` back to 0, and calls an injected `fatalHandler`; `ReplayerNode` wires that
-to its `ShutdownSignalBarrier` (mirroring `SequencerNode`'s `tapFatal` pattern — §1.3), so the process
+clears `ready`/`readyCounter` back to 0, and calls an injected `fatalHandler`; `ReplayerServer` wires that
+to its `ShutdownSignalBarrier` (mirroring `SequencerServer`'s `tapFatal` pattern — §1.3), so the process
 still tears down its archive/Aeron client cleanly before exiting with a distinct code
 (`EXIT_DUTY_CYCLE_FATAL = 70`) for process supervision to restart it on.
 
@@ -338,7 +338,7 @@ messages without a subscription switch.
 
 ## 4. Exactly-once query replies across a failover — `OutstandingQueries`
 
-`PortfolioQueryRequest` handling (`OrderExecClient`) needs a leader-only responder, but the leader can
+`PortfolioQueryRequest` handling (`OrderExecServer`) needs a leader-only responder, but the leader can
 change mid-flight. `OutstandingQueries.hpp` (templated, Aeron-free, unit-tested standalone, mirroring
 the split between `Sequencer` and `SequencerService`) keeps two separate notions of state:
 
@@ -378,7 +378,7 @@ retried and handed off across a failover exactly like a real one instead of bein
 
 ## 5. Reference data (BasicData) recovery
 
-`BasicDataClient`/`Gateways` treat reference data with the same fault-tolerance shape as everything
+`BasicDataServer`/`Gateways` treat reference data with the same fault-tolerance shape as everything
 else: every node builds an identical in-memory view by following its co-located tap, so losing a node
 loses no reference data — a neighbour already holds it (`doc/basicdata-design.md` §0, mirroring
 `doc/audit.md` S1). The producer role (reading the source-of-truth and publishing `BasicData*` rows) is
@@ -417,7 +417,7 @@ section after a failover.
   and converged to the same high-water mark across all three nodes — the strongest available proof that
   §1.1's "byte-identical taps" invariant actually held for the run.
 - **`src/test/scripts/replay-bench.sh`** — times a cold replica from launch to "Caught up" against a
-  preloaded archive, optionally while load keeps arriving. It adds a fresh `OrderExecClient` beside a
+  preloaded archive, optionally while load keeps arriving. It adds a fresh `OrderExecServer` beside a
   running cluster rather than restarting one (the launch script tears the cluster down when a child
   exits), so it walks the whole recording chain exactly as a restarted replica does. Written to chase
   §3.2's replay wedge and kept as the regression measurement for it: `replay-bench.sh 400000` builds
@@ -427,9 +427,9 @@ section after a failover.
   inside the harness's probe window; the replay wedge is what made those rounds fail.
 - **`src/test/scripts/replayer-restart-test.sh`** (added 2026-08-10) — the directed, deterministic
   counterpart to `chaos-runner.sh`'s randomized coverage of the same territory: kills and restarts
-  member 0's `ReplayerNode` alone (leaving its `SequencerNode` and client untouched) the instant it
-  starts serving a cold-starting client's first segment, then separately kills member 0's `SequencerNode`
-  outright and asserts its co-located `ReplayerNode`/client fail fast and, once restarted, a fresh
+  member 0's `ReplayerServer` alone (leaving its `SequencerServer` and client untouched) the instant it
+  starts serving a cold-starting client's first segment, then separately kills member 0's `SequencerServer`
+  outright and asserts its co-located `ReplayerServer`/client fail fast and, once restarted, a fresh
   cold-start walk crosses a real two-recording chain (two distinct `recordingId`s) before converging —
   §3.2's resume-retry and recordingId-mismatch hardening exercised against real Aeron/Archive processes,
   not fabricated `Replaying` replies.

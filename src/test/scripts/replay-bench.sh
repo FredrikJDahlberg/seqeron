@@ -77,7 +77,7 @@ PHIXERON_ORDER_EXEC_AERON_DIR="${TMPDIR}phixeron-seq-aeron-1" \
     PHIXERON_NODE_MEMBER_ID=1 \
     PHIXERON_REPLAYER_CLIENT_ID=7 \
     PHIXERON_CLUSTER_EGRESS_ENDPOINT="localhost:${REPLAY_BENCH_EGRESS_PORT}" \
-    stdbuf -oL -eL ./cmake-build-release/OrderExecClient > "$COLD_LOG" 2>&1 &
+    stdbuf -oL -eL ./cmake-build-release/OrderExecServer > "$COLD_LOG" 2>&1 &
 COLD_PID=$!
 
 W=0

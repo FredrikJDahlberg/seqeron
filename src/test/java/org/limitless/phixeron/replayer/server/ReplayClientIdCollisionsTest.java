@@ -1,4 +1,4 @@
-package org.limitless.phixeron.replayer;
+package org.limitless.phixeron.replayer.server;
 
 import static org.junit.jupiter.api.Assertions.*;
 

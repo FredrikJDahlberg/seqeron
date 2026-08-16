@@ -2,13 +2,13 @@
 # metrics-exporter.sh — node-local Prometheus exporter for phixeron's operator counters.
 #
 # Thin launcher for org.limitless.phixeron.metrics.MetricsExporter. Node-local: run co-located on a
-# SequencerNode/ReplayerNode host — it shares that node's Aeron directory (the same connection-less
+# SequencerServer/ReplayerServer host — it shares that node's Aeron directory (the same connection-less
 # access pattern as `clusterctl counters`) and stays resident, serving /metrics for a scraper to
 # poll on an interval.
 #
 #   metrics-exporter.sh          # serve /metrics on port 9400 + memberId
 #
-# Config (override the SequencerNode-mirroring defaults for multi-node / custom dirs):
+# Config (override the SequencerServer-mirroring defaults for multi-node / custom dirs):
 #   METRICS_EXPORTER_MEMBER_ID    co-located member id             (default 0)
 #   METRICS_EXPORTER_AERON_DIR    co-located member's Aeron dir     (default $TMPDIR/phixeron-seq-aeron-<id>)
 #   METRICS_EXPORTER_PORT         HTTP port to serve /metrics on    (default 9400 + memberId)
@@ -35,7 +35,7 @@ JAVA_OPTS=(
 )
 
 # Map METRICS_EXPORTER_* env onto -DmetricsExporter.* system properties; unset ones fall back to
-# MetricsExporter's SequencerNode-mirroring defaults.
+# MetricsExporter's SequencerServer-mirroring defaults.
 DPROPS=( "-DmetricsExporter.memberId=${METRICS_EXPORTER_MEMBER_ID:-0}" )
 [[ -n "${METRICS_EXPORTER_AERON_DIR:-}" ]] && DPROPS+=( "-DmetricsExporter.aeronDir=${METRICS_EXPORTER_AERON_DIR}" )
 [[ -n "${METRICS_EXPORTER_PORT:-}" ]]      && DPROPS+=( "-DmetricsExporter.port=${METRICS_EXPORTER_PORT}" )

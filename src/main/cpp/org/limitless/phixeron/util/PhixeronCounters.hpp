@@ -14,7 +14,7 @@
 // scrapes, or scrapes one under the wrong name.
 //
 // App counters carry TWO ints, not one. A node runs several co-located C++ replicas (FixGateway,
-// OrderExecClient, BasicDataClient) and each publishes the same type id, so memberId alone would give
+// OrderExecServer, BasicDataServer) and each publishes the same type id, so memberId alone would give
 // them identical Prometheus label sets — one series per node, silently overwritten. The replayer
 // clientId disambiguates them, and it is already the per-node-unique id ReplayClientIdCollisions
 // polices.

@@ -1,12 +1,12 @@
 #pragma once
 
 // Canonical port-layout formula shared by every phixeron process — the C++ mirror of
-// SequencerNode's PORT_BASE + memberId*10 + offset scheme (see SequencerNode.java's class
+// SequencerServer's PORT_BASE + memberId*10 + offset scheme (see SequencerServer.java's class
 // Javadoc and doc/design.md's "Port layout" section, the source of truth both sides cite).
 // Every other port constant used to be an independently hand-typed literal restating this
 // formula (or a satellite base "known" to sit outside it) — that drift is how FixGateway's and
-// BasicDataClient's co-located egress ports ended up both defaulting to 9340+memberId. Kept in
-// sync deliberately now: SequencerNodeTest (Java) and PortLayoutTest (here) each pin the same
+// BasicDataServer's co-located egress ports ended up both defaulting to 9340+memberId. Kept in
+// sync deliberately now: SequencerServerTest (Java) and PortLayoutTest (here) each pin the same
 // (memberId -> port) pairs so a change to one side without the other fails a build.
 
 #include <cstdint>
@@ -50,9 +50,9 @@ clusterTransferPort(int memberId)
 }
 
 // Builds the "host:port,host:port,..." archive-endpoint CSV for a nodeCount-member cluster, all
-// on one host — the C++ mirror of SequencerNode.buildClusterMembers's archive column. Every
+// on one host — the C++ mirror of SequencerServer.buildClusterMembers's archive column. Every
 // member's co-located archive independently holds a complete recording of the tap (see
-// SequencerNode's class Javadoc), so any reachable member's endpoint here works equally well.
+// SequencerServer's class Javadoc), so any reachable member's endpoint here works equally well.
 inline std::string
 archiveEndpointsCsv(int nodeCount, const char* host = "localhost")
 {
@@ -77,9 +77,9 @@ archiveEndpointsCsv(int nodeCount, const char* host = "localhost")
 inline constexpr std::uint16_t FIX_TCP_PORT_BASE = 9000; // FixGateway TCP listen port
 inline constexpr std::uint16_t FIX_TEST_CLIENT_EGRESS_PORT =
     9320; // fix_test_server's own (non-colocated) cluster egress
-inline constexpr std::uint16_t ORDER_EXEC_EGRESS_PORT_BASE = 9330;   // OrderExecClient co-located egress
+inline constexpr std::uint16_t ORDER_EXEC_EGRESS_PORT_BASE = 9330;   // OrderExecServer co-located egress
 inline constexpr std::uint16_t FIX_GATEWAY_EGRESS_PORT_BASE = 9340;  // FixGateway co-located egress
-inline constexpr std::uint16_t BASICDATA_EGRESS_PORT_BASE = 9350;    // BasicDataClient co-located egress
+inline constexpr std::uint16_t BASICDATA_EGRESS_PORT_BASE = 9350;    // BasicDataServer co-located egress
 inline constexpr std::uint16_t RISK_TEST_REPLAY_PORT_DEFAULT = 9400; // fix_test_server risk-test replay
 inline constexpr std::uint16_t RESEND_REPLAY_PORT_DEFAULT = 9401;    // FixGateway resend-recovery replay
 

@@ -17,9 +17,9 @@ namespace org::limitless::phixeron::util {
 enum class Component : std::uint8_t
 {
     FixGateway,
-    OrderExecClient,
+    OrderExecServer,
     ReplayerStreamReceiver,
-    BasicDataClient,
+    BasicDataServer,
     Cluster,
     Tcp,
     FixSession,
@@ -111,12 +111,12 @@ componentName(const Component component)
     {
         case Component::FixGateway:
             return "FixGateway";
-        case Component::OrderExecClient:
-            return "OrderExecClient";
+        case Component::OrderExecServer:
+            return "OrderExecServer";
         case Component::ReplayerStreamReceiver:
             return "ReplayerStreamReceiver";
-        case Component::BasicDataClient:
-            return "BasicDataClient";
+        case Component::BasicDataServer:
+            return "BasicDataServer";
         case Component::Cluster:
             return "Cluster";
         case Component::Tcp:

@@ -217,7 +217,7 @@ polled, not just inferred from back-pressure.
 
 Either path calls \texttt{fatalTapFailure} → \texttt{fatalFailure},
 which logs \texttt{FATAL:\ …\ terminating\ this\ node} and runs the
-fatal handler wired by \texttt{SequencerNode}, exiting the process with
+fatal handler wired by \texttt{SequencerServer}, exiting the process with
 code \textbf{70} (\texttt{SequencerService.java:728-767}; documented
 operator-facing in \texttt{doc/ops.md} ``A node that terminates
 itself''). No cluster callback may signal failure by throwing instead:
@@ -253,7 +253,7 @@ awaits its sequenced echo (so the log's last event before a planned stop
 is always that marker), then calls Aeron's \texttt{ClusterTool.abort}
 (\texttt{ClusterCtl.java:151-185}). \texttt{ABORT} --- not
 \texttt{SHUTDOWN} --- is the only lifecycle action that terminates
-without taking a snapshot, and \texttt{SequencerNode} wires
+without taking a snapshot, and \texttt{SequencerServer} wires
 \texttt{ConsensusModule.Context.terminationHook} to a barrier so every
 node still unwinds cleanly (closing its Archive and draining the tap
 recording to disk) rather than being killed abruptly
@@ -369,7 +369,7 @@ Two ways a \texttt{GatewayActive} is produced:
   deliberately keyed off \texttt{GatewayStarted}, not the routing
   \texttt{sourceId} on every message, because other clients legitimately
   echo a gateway's \texttt{sourceId} and an earlier version of this
-  logic let an unrelated \texttt{OrderExecClient} restart promote a
+  logic let an unrelated \texttt{OrderExecServer} restart promote a
   standby out from under a perfectly healthy primary). If so,
   \texttt{promotionTarget} picks the lowest-\texttt{preferenceRank}
   sibling sharing the same \texttt{gatewaySourceId} and emits
@@ -464,7 +464,7 @@ live/history
 split}\label{stream-recovery-cold-start-gaps-and-the-livehistory-split}
 
 Every app that consumes the sequenced stream (the FIX gateway,
-\texttt{OrderExecClient}, \texttt{BasicDataClient},
+\texttt{OrderExecServer}, \texttt{BasicDataServer},
 \texttt{fix\_test\_server}) uses the same split: read the co-located
 \texttt{SequencerService}'s tap \textbf{directly and live} (untethered
 \texttt{aeron:ipc?tether=false}, so a slow consumer is dropped rather
@@ -487,7 +487,7 @@ frame that isn't 1 means this node's own recording is missing or
 corrupted, and centralizing the check here means every app on the node
 is told \texttt{ReplayUnavailable} instead of independently discovering
 the same broken archive
-(\texttt{src/main/java/org/limitless/phixeron/replayer/ReplayerService.java},
+(\texttt{src/main/java/org/limitless/phixeron/replayer/server/ReplayerService.java},
 \texttt{checkReady}/ \texttt{peekFirstGlobalSeqNo}). An archive call
 that throws mid-replay flips the service into a \texttt{stalled} state
 --- retried at 1s intervals, answering requests \texttt{ReplayPending}
@@ -592,7 +592,7 @@ both historical and live messages without a subscription switch.
 failover ---
 \texttt{OutstandingQueries}}{4. Exactly-once query replies across a failover --- OutstandingQueries}}\label{exactly-once-query-replies-across-a-failover-outstandingqueries}
 
-\texttt{PortfolioQueryRequest} handling (\texttt{OrderExecClient}) needs
+\texttt{PortfolioQueryRequest} handling (\texttt{OrderExecServer}) needs
 a leader-only responder, but the leader can change mid-flight.
 \texttt{OutstandingQueries.hpp} (templated, Aeron-free, unit-tested
 standalone, mirroring the split between \texttt{Sequencer} and
@@ -657,7 +657,7 @@ fire-and-forget.
 \subsection{5. Reference data (BasicData)
 recovery}\label{reference-data-basicdata-recovery}
 
-\texttt{BasicDataClient}/\texttt{Gateways} treat reference data with the
+\texttt{BasicDataServer}/\texttt{Gateways} treat reference data with the
 same fault-tolerance shape as everything else: every node builds an
 identical in-memory view by following its co-located tap, so losing a
 node loses no reference data --- a neighbour already holds it
@@ -725,7 +725,7 @@ verification}\label{operational-tooling-and-verification}
   \textbf{\texttt{src/test/scripts/replay-bench.sh}} --- times a cold
   replica from launch to ``Caught up'' against a preloaded archive,
   optionally while load keeps arriving. It adds a fresh
-  \texttt{OrderExecClient} beside a running cluster rather than
+  \texttt{OrderExecServer} beside a running cluster rather than
   restarting one (the launch script tears the cluster down when a child
   exits), so it walks the whole recording chain exactly as a restarted
   replica does. Written to chase §3.2's replay wedge and kept as the

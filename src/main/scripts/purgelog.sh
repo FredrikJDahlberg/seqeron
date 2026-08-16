@@ -29,7 +29,7 @@ case "${1:-}" in
         ;;
 esac
 
-# start-cluster.sh (single node) uses the SequencerNode default baseDir (phixeron-seq);
+# start-cluster.sh (single node) uses the SequencerServer default baseDir (phixeron-seq);
 # start-three-node-cluster.sh overrides it to phixeron-seq3. Purge both, else stale per-tenure
 # recordings accumulate across runs (a fresh run recovers them and grows the catalog).
 BASE_DIRS=("${TMPDIR:-/tmp}phixeron-seq" "${TMPDIR:-/tmp}phixeron-seq3")

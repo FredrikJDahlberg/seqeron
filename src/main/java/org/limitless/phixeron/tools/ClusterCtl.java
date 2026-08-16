@@ -24,12 +24,12 @@ import org.limitless.phixeron.sbe.unsequenced.ClusterStartedEncoder;
 import org.limitless.phixeron.sbe.unsequenced.ClusterStoppedEncoder;
 import org.limitless.phixeron.sbe.unsequenced.GatewayActiveEncoder;
 import org.limitless.phixeron.sbe.unsequenced.MessageHeaderEncoder;
-import org.limitless.phixeron.sequencer.SequencerNode;
+import org.limitless.phixeron.sequencer.SequencerServer;
 import org.limitless.phixeron.sequencer.SequencerService;
 
 /**
  * clusterctl — the operator cluster life-cycle tool (see clusterctl.md). Node-local: run co-located
- * on a {@code SequencerNode} host, sharing that node's Aeron directory (to reach the co-located tap
+ * on a {@code SequencerServer} host, sharing that node's Aeron directory (to reach the co-located tap
  * over {@code aeron:ipc}) and {@code clusterDir} (for {@link ClusterTool}).
  *
  * <p>Named to mirror the {@code clusterctl.sh} launcher and to avoid shadowing Aeron's own
@@ -45,7 +45,7 @@ import org.limitless.phixeron.sequencer.SequencerService;
  *   <li><b>shutdown</b> — safe to fire on every node. On a follower it is a no-op (leader gate via
  *       {@link ClusterTool#isLeader}); on the leader it publishes a {@code ClusterStopped} marker,
  *       waits (best-effort) for its sequenced echo, then requests {@link ClusterTool#abort} — a
- *       consensus-coordinated, snapshot-free termination of every node. Because {@code SequencerNode}
+ *       consensus-coordinated, snapshot-free termination of every node. Because {@code SequencerServer}
  *       wires its termination hook, that abort unwinds each node cleanly through try-with-resources,
  *       closing the Archive and draining the tap recording (including the just-observed
  *       {@code ClusterStopped}) to disk — so the log stays replayable/analysable afterwards. Best
@@ -67,11 +67,11 @@ import org.limitless.phixeron.sequencer.SequencerService;
  *       {@code clusterDir} (describe, errors, list-members, recording-log, …).</li>
  * </ul>
  *
- * <p>Configuration mirrors {@code SequencerNode}'s defaults so co-location with the default
+ * <p>Configuration mirrors {@code SequencerServer}'s defaults so co-location with the default
  * single-node cluster works with no arguments (see {@link #usage()} / {@code clusterctl.sh}).
  */
 public final class ClusterCtl {
-    // ── Configuration (mirrors SequencerNode's property defaults for co-location) ──
+    // ── Configuration (mirrors SequencerServer's property defaults for co-location) ──
     private static final int MEMBER_ID = Integer.getInteger("clusterctl.memberId", 0);
     private static final String BASE_DIR =
         System.getProperty("clusterctl.baseDir", System.getProperty("java.io.tmpdir") + "/phixeron-seq");
@@ -79,7 +79,7 @@ public final class ClusterCtl {
         "clusterctl.aeronDir", System.getProperty("java.io.tmpdir") + "/phixeron-seq-aeron-" + MEMBER_ID);
     private static final File CLUSTER_DIR = new File(BASE_DIR + "/cluster-" + MEMBER_ID);
     private static final String INGRESS_ENDPOINTS =
-        System.getProperty("clusterctl.ingressEndpoints", "0=" + SequencerNode.ingressEndpoint(0));
+        System.getProperty("clusterctl.ingressEndpoints", "0=" + SequencerServer.ingressEndpoint(0));
 
     private static final long CONNECT_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(5);
     private static final long ECHO_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(5);
@@ -218,7 +218,7 @@ public final class ClusterCtl {
         final long connectDeadline = System.nanoTime() + CONNECT_TIMEOUT_NS;
         while (!tap.isConnected()) {
             if (System.nanoTime() >= connectDeadline) {
-                System.err.printf("[clusterctl] tap (aeron:ipc/%d) not available — co-located with a SequencerNode?%n",
+                System.err.printf("[clusterctl] tap (aeron:ipc/%d) not available — co-located with a SequencerServer?%n",
                                   SequencerService.FEEDER_STREAM_ID);
                 return -1;
             }
@@ -296,7 +296,7 @@ public final class ClusterCtl {
             });
             if (!found[0]) {
                 System.out.println("[clusterctl] counters: none found under " + AERON_DIR +
-                                   " — is a SequencerNode/ReplayerNode running there?");
+                                   " — is a SequencerServer/ReplayerServer running there?");
             }
             return 0;
         } catch (final Exception ex) {
@@ -336,7 +336,7 @@ public final class ClusterCtl {
         final long connectDeadline = System.nanoTime() + CONNECT_TIMEOUT_NS;
         while (!tap.isConnected()) {
             if (System.nanoTime() >= connectDeadline) {
-                System.err.printf("[clusterctl] tap (aeron:ipc/%d) not available — co-located with a SequencerNode?%n",
+                System.err.printf("[clusterctl] tap (aeron:ipc/%d) not available — co-located with a SequencerServer?%n",
                                   SequencerService.FEEDER_STREAM_ID);
                 return -1;
             }
@@ -429,7 +429,7 @@ public final class ClusterCtl {
 
     private static void usage() {
         System.out.println("""
-            clusterctl — cluster life-cycle tool (node-local; run co-located with a SequencerNode)
+            clusterctl — cluster life-cycle tool (node-local; run co-located with a SequencerServer)
 
             Usage: clusterctl.sh <command> [args]
 

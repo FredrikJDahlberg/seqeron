@@ -13,31 +13,31 @@
 #
 #   PHASE 1 — Replayer restart under a riding client.
 #     A backlog is flooded onto cluster ingress BEFORE the client starts, so its cold-start walk has real
-#     work to do. The client (OrderExecClient, clientId 9) starts and its walk begins; the instant member
-#     0's ReplayerService logs that it has started serving client 9's first segment, member 0's ReplayerNode
+#     work to do. The client (OrderExecServer, clientId 9) starts and its walk begins; the instant member
+#     0's ReplayerService logs that it has started serving client 9's first segment, member 0's ReplayerServer
 #     is killed outright. This is deliberately ordering-based, not timing-based: the server log line is
 #     guaranteed to precede whatever the client does with the reply, so the kill always lands no later than
 #     "client about to (or already) riding the replay" — whether the client ends up mid-image, waiting on a
 #     reply that never arrives, or already finished is immaterial; all three are real instances of "the
 #     Replayer this client depends on just went away" and are handled by the same resend/stall machinery
-#     (onReplayImageClosed / onReplayStalled / poll()'s resend timer). ReplayerNode is then restarted, and
+#     (onReplayImageClosed / onReplayStalled / poll()'s resend timer). ReplayerServer is then restarted, and
 #     the client must survive (not crash) and eventually converge to "following live".
 #
 #   PHASE 2 — the client's own node restarts, producing a genuine (not fabricated) multi-recording chain.
-#     Member 0's SequencerNode itself is killed. Its co-located ReplayerNode and OrderExecClient share its
+#     Member 0's SequencerServer itself is killed. Its co-located ReplayerServer and OrderExecServer share its
 #     embedded media driver and must fail fast (die within the driver-loss grace window) rather than spin
 #     forever against a dead driver — the same invariant chaos-runner.sh's assert_died_on_driver_loss checks,
 #     asserted here directly rather than as one random outcome among many. Member 0 is restarted: with no
 #     snapshots, recovery is a full-log replay onto a BRAND NEW tap publication/recording (design.md §0),
 #     leaving the pre-restart recording as a real, stopped, cold-start-walk segment rather than the current
-#     active one. Once member 0's ReplayerNode and the client (same clientId) are restarted fresh, the
+#     active one. Once member 0's ReplayerServer and the client (same clientId) are restarted fresh, the
 #     client's cold-start walk must cross that real 2-recording chain — segment 0 the old recording, segment
 #     1 the new one — the live boundary case ReplayerService.serveReplay/ReplayRecordings.stitch and the
 #     2026-08-10 recordingId-echo hardening (review-2.md #4) exist for, exercised here for real rather than
 #     via hand-fabricated Replaying replies.
 #
 # PASS iff: phase 1's client survives the Replayer kill and reaches "following live" once it is back; phase
-# 2's ReplayerNode/client both exit within the driver-loss grace window when their node dies, both come back
+# 2's ReplayerServer/client both exit within the driver-loss grace window when their node dies, both come back
 # after the restart, and the fresh client's cold-start walk is served (at least) two segments naming two
 # distinct recordingIds.
 set -uo pipefail
@@ -80,7 +80,7 @@ start_seq() {  # start_seq <memberId> <logfile>
 start_replayer() {  # start_replayer <memberId> <logfile>
   local m="$1" log="$2"
   java "${JAVA_OPTS[@]}" -Dreplayer.memberId="$m" -cp "$JAR" \
-       org.limitless.phixeron.replayer.ReplayerNode > "$log" 2>&1 &
+       org.limitless.phixeron.replayer.server.ReplayerServer > "$log" 2>&1 &
   REPLAYER_PIDS[$m]=$!
 }
 start_client() {  # start_client <logfile>
@@ -89,7 +89,7 @@ start_client() {  # start_client <logfile>
     PHIXERON_NODE_MEMBER_ID="$CN" \
     PHIXERON_REPLAYER_CLIENT_ID="$CLIENT_ID" \
     PHIXERON_CLUSTER_EGRESS_ENDPOINT="localhost:${TEST_CONSUMER_EGRESS_PORT}" \
-    stdbuf -oL -eL "$BUILD_DIR/OrderExecClient" > "$log" 2>&1 &
+    stdbuf -oL -eL "$BUILD_DIR/OrderExecServer" > "$log" 2>&1 &
   CLIENT_PID=$!
 }
 wait_for() {  # wait_for <pattern> <logfile> <timeout_iters (x0.5s)> <description>
@@ -105,7 +105,7 @@ wait_for_exit() {  # wait_for_exit <pid> <timeout_iters (x0.5s)>
   return 0
 }
 
-pkill -f SequencerNode 2>/dev/null; pkill -f ReplayerNode 2>/dev/null; pkill -f OrderExecClient 2>/dev/null
+pkill -f SequencerServer 2>/dev/null; pkill -f ReplayerServer 2>/dev/null; pkill -f OrderExecServer 2>/dev/null
 pkill -f FixGateway 2>/dev/null; pkill -f fix_test_server 2>/dev/null; pkill -f aeronmd 2>/dev/null; sleep 1
 rm -rf "$BASE_DIR" "${TMPDIR}phixeron-seq-aeron-0" "${TMPDIR}phixeron-seq-aeron-1" \
        "${TMPDIR}phixeron-seq-aeron-2" "$AERON_DIR" 2>/dev/null
@@ -160,7 +160,7 @@ echo "started client $CLIENT_ID (cold start) co-located with member $CN"
 wait_for "replay for client $CLIENT_ID: segment 0" "$LOG_DIR/replayer-$CN.log" 60 \
   "Replayer to start serving client $CLIENT_ID's first segment" || exit 1
 kill "${REPLAYER_PIDS[$CN]}" 2>/dev/null
-echo "killed member $CN's ReplayerNode the instant it started serving client $CLIENT_ID"
+echo "killed member $CN's ReplayerServer the instant it started serving client $CLIENT_ID"
 
 if ! kill -0 "$CLIENT_PID" 2>/dev/null; then
   echo "PHASE 1 FAIL: client $CLIENT_ID crashed when its Replayer went away — should hold and retry"
@@ -184,14 +184,14 @@ echo "phase 1: $([[ $PHASE1_PASS == 1 ]] && echo PASS || echo FAIL)"
 # ═══════════════════ PHASE 2 — the client's own node restarts (real recording rotation) ═══════════════════
 echo ""
 echo "── phase 2: client's own node restarts -> genuine multi-recording chain ──"
-echo "killing member $CN's SequencerNode (its co-located ReplayerNode + client must fail fast)"
+echo "killing member $CN's SequencerServer (its co-located ReplayerServer + client must fail fast)"
 kill "${SEQ_PIDS[$CN]}" 2>/dev/null
 SEQ_DIED=0; REPLAYER_DIED=0; CLIENT_DIED=0
 wait_for_exit "${SEQ_PIDS[$CN]}" $((PROC_EXIT_TIMEOUT_SECS * 2)) && SEQ_DIED=1
 wait_for_exit "${REPLAYER_PIDS[$CN]}" $((DRIVER_LOSS_GRACE_SECS * 2)) && REPLAYER_DIED=1
 wait_for_exit "$CLIENT_PID" $((DRIVER_LOSS_GRACE_SECS * 2)) && CLIENT_DIED=1
-echo "  member $CN SequencerNode exited      : $SEQ_DIED"
-echo "  co-located ReplayerNode failed fast  : $REPLAYER_DIED"
+echo "  member $CN SequencerServer exited      : $SEQ_DIED"
+echo "  co-located ReplayerServer failed fast  : $REPLAYER_DIED"
 echo "  co-located client failed fast        : $CLIENT_DIED"
 
 if [[ "$SEQ_DIED" != "1" || "$REPLAYER_DIED" != "1" || "$CLIENT_DIED" != "1" ]]; then

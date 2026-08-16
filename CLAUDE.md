@@ -76,7 +76,7 @@ cmake --build cmake-build-release
 C++23, requires Java (Runtime) on PATH for the SBE tool and the code generator, and a
 `git@github.com:...` SSH remote reachable for the simdfix FetchContent clone.
 
-Executables: `FixGateway`, `OrderExecClient`, `fix_test_server`,
+Executables: `FixGateway`, `OrderExecServer`, `fix_test_server`,
 `phixeron_tests` (GoogleTest). Build a single target with `cmake --build cmake-build-debug --target <name>`.
 
 ### Java
@@ -117,7 +117,7 @@ FIX client (TCP) ⇄ FixGateway (C++)  ──output──▶  Aeron Cluster (Jav
                                                               │
                                   ┌───────────────────────────┴───────────────────────────┐
                                   ▼                                                       ▼
-                                  FixGateway                          OrderExecClient (C++)
+                                  FixGateway                          OrderExecServer (C++)
                                 (delivers ExecutionReports           (prints app messages, tracks
                                  back to the originating             positions from fills, answers
                                  TCP client)                          PortfolioQueryRequest)
@@ -126,7 +126,7 @@ FIX client (TCP) ⇄ FixGateway (C++)  ──output──▶  Aeron Cluster (Jav
 drive the whole pipeline end-to-end (Logon → Heartbeat → NewOrderSingle → Logout, plus a direct
 cluster-ingress risk-query test) — see README.md for the full runbook and port table.
 
-### Aeron Cluster sequencer (Java) — `SequencerNode` / `SequencerService` / `Sequencer`
+### Aeron Cluster sequencer (Java) — `SequencerServer` / `SequencerService` / `Sequencer`
 `Sequencer` is the replicated state machine proper — it owns `globalSeqNo` and every frame encode,
 has no Aeron dependency, and is unit-tested directly (`SequencerTest`). `SequencerService`
 (`ClusteredService`) is its Aeron adapter: it decides *when* to call the sequencer and publishes
@@ -145,6 +145,14 @@ archive independently holds complete history, with no cross-node replication. Th
 is created once in `onStart` and never re-created on a leadership change (`aeron:ipc` has no port
 to collide on), so a node's recording is one continuous run spanning every leader tenure.
 
+The replay protocol has two sides and they live in two namespaces — **`replayer.server`** (Java only:
+`ReplayerServer`/`ReplayerService` and their pure seams `Replayer`, `ReplaySlotAllocator`,
+`ReplayRecordings`, `ReplayClientIdCollisions`) and **`replayer.client`** (`ReplayerStreamReceiver`,
+`RecoveryProgressPolicy`, `SequencedEvent` — Java, and C++ in
+`org::limitless::phixeron::replayer::client`). The only edge across is client→server: the client reads
+`ReplayerService`'s channel/stream-id constants, which are the wire contract between them. There is no
+C++ replay server; the C++ side is all client.
+
 Consumers split live from history: co-located apps subscribe to the tap **directly** for the live
 feed (untethered, so a slow app is dropped and heals via replay rather than back-pressuring), while
 the co-located `ReplayerService` serves cold-start/gap replay off the same recording. `emit` is
@@ -162,7 +170,8 @@ the message and `AgentRunner` keeps the agent alive, so a throw drops the frame 
 > This replaced a UDP multi-destination-cast "global stream" (leader-only publisher, stream 1),
 > retired in Phase 2 — see `doc/router-archive.md` and `doc/todo.md` items 1/2c. The tap's identity is
 > `FEEDER_CHANNEL`/`FEEDER_STREAM_ID` on both sides: Java in `SequencerService`, C++ in
-> `ClusterStreamClient.hpp` (the one definition of `FEEDER_STREAM_ID`) plus `ReplayerClient.hpp`'s
+> `sequencer/ClusterStreamReceiver.hpp` (the one definition of `FEEDER_STREAM_ID`) plus
+> `replayer/client/ReplayerStreamReceiver.hpp`'s
 > `FEEDER_CHANNEL`, which addresses the same stream with the consumer-side `?tether=false` option.
 > Named to pair with the `Replayer`: the **Feeder** stream is the live feed, the Replayer serves
 > history off its recording. Older names for it (`GLOBAL_STREAM_ID`, `REPLAYER_STREAM_ID`,
@@ -199,9 +208,9 @@ Three cooperating pieces:
   in-memory fakes.
 - **`FixIngressHandler`** — pure byte-level logic: FIX frame/tag parsing helpers, SBE
   encode/decode, and application-message routing, built on top of `ClusterStreamSender`.
-- **`ClusterStreamReceiver`** (`sequencer/`) / **`ReplayerStreamReceiver`** (`replayer/`) — follow the
+- **`ClusterStreamReceiver`** (`sequencer/`) / **`ReplayerStreamReceiver`** (`replayer/client/`) — follow the
   sequenced stream: replay history from a given position via the Replayer, then follow the tap live;
-  used the same way by `FixGateway`, `OrderExecClient`, and `fix_test_server`.
+  used the same way by `FixGateway`, `OrderExecServer`, and `fix_test_server`.
 
 `src/main/cpp/.../fix/` (`Session`, `ClientSession`, `ServerSession`, `ResendCache`) is a
 role-agnostic (CRTP) FIX session-layer base shared with simdfix-generated message handlers —
@@ -253,7 +262,7 @@ Both the Java (`generateUnsequencedSbe`/`generateSequencedSbe` Gradle tasks) and
 targets) sides regenerate independently from the same XML — keep both in sync when editing a
 schema.
 
-### Order execution client — `OrderExecClient` (C++, under `src/main/cpp/.../order/OrderExecClient.cpp`)
+### Order execution client — `OrderExecServer` (C++, under `src/main/cpp/.../order/OrderExecServer.cpp`)
 Combines what used to be two separate binaries — `application_stream_client` and the C++
 `RiskEngineClient` — into one. Replays the cluster stream then follows it live, printing every
 `NewOrderSingle`/`ExecutionReport` it decodes (lifecycle events are filtered out), while also
@@ -288,7 +297,7 @@ Three Artio 0.177 facts this depends on, each of which fails **silently** if got
 - Binding and seeding happen in the `sessionAcquireHandler` (fires at **connect**), never on the `initiate`
   reply (completes only after logon) — the latter deadlocks.
 
-`ReplayerStreamReceiver` (Java, `replayer/`) is a faithful port of the C++ client of the same name — same
+`ReplayerStreamReceiver` (Java, `replayer/client/`) is a faithful port of the C++ client of the same name — same
 protocol, same walk/resume/retain state machine. Keep the two in step. Identity is env config
 (`PHIXERON_EXCHANGE_*`), not a BasicData row: `Sequencer` holds one `designatedPrimaryGatewayId`, so an
 exchange row would hijack the client-facing election. Session layer only — no order flow, no standby.
@@ -301,12 +310,12 @@ src/test/scripts/exchange-gateway-test.sh  # all-Java e2e; no C++ build needed
 The e2e purges Artio's own log dir alongside `purgelog.sh` — the two hold the same session's sequence
 numbers, and purging one alone trips the gateway's "sent-sequence disagreement" check.
 
-### Reference-data gateway — `BasicDataClient` / `Gateways` (C++, under `src/main/cpp/.../basicdata/`)
+### Reference-data gateway — `BasicDataServer` / `Gateways` (C++, under `src/main/cpp/.../basicdata/`)
 Dual-role per-node process (`doc/basicdata-design.md`): on the **leader** it's a producer — reads
 static reference data (FIX session comp-id pairs, gateway topology, the trading-day calendar;
 currently hardcoded in `BasicDataConstants.hpp`, standing in for a real DB read) and publishes it as
 ordinary sequenced `BasicData*` messages, an external-input adapter exactly like the FIX gateway is
-for TCP. On **every node** it's a consumer — follows the co-located tap (like `OrderExecClient`
+for TCP. On **every node** it's a consumer — follows the co-located tap (like `OrderExecServer`
 tracks positions) to build an identical in-memory reference-data view, giving reference data the
 same node-loss fault tolerance as business state.
 

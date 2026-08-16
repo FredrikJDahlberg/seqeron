@@ -33,11 +33,11 @@ envFlag(const char* name)
     return value != nullptr && *value != '\0';
 }
 
-// The co-located SequencerNode member's Aeron directory, which an app shares so it can reach that
+// The co-located SequencerServer member's Aeron directory, which an app shares so it can reach that
 // node's tap, its Replayer and (while that member leads) cluster ingress over aeron:ipc. `envName` is
 // the per-binary override (PHIXERON_ORDER_EXEC_AERON_DIR, PHIXERON_BASICDATA_AERON_DIR, …).
 //
-// The default is the directory of the member `memberId` names, matching SequencerNode.java's own
+// The default is the directory of the member `memberId` names, matching SequencerServer.java's own
 // default. It was previously spelled out once per binary and two of the three hardcoded member 0, so an
 // unset override on member 1 or 2 attached the app to a different node's media driver than
 // PHIXERON_NODE_MEMBER_ID named. Every launcher under src/*/scripts sets the override explicitly, so

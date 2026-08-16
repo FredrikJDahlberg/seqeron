@@ -16,14 +16,14 @@
 #include <gtest/gtest.h>
 
 #include "aeron_image.h" // aeron_header_t / aeron_data_header_t layout, to build a header by hand
-#include "org/limitless/phixeron/replayer/ReplayerStreamReceiver.hpp"
+#include "org/limitless/phixeron/replayer/client/ReplayerStreamReceiver.hpp"
 #include "org/limitless/phixeron/util/Logger.hpp"
 #include "org_limitless_phixeron_sbe_sequenced/Heartbeat.h"
 #include "org_limitless_phixeron_sbe_unsequenced/ReplayPending.h"
 #include "org_limitless_phixeron_sbe_unsequenced/ReplayUnavailable.h"
 #include "org_limitless_phixeron_sbe_unsequenced/Replaying.h"
 
-namespace org::limitless::phixeron::sequencer {
+namespace org::limitless::phixeron::replayer::client {
 namespace {
 
 namespace seq = org::limitless::phixeron::sbe::sequenced;
@@ -772,7 +772,7 @@ TEST(ReplayerStreamReceiverGapRecovery, RecoveringFlagTracksWalkAndAwaitingRepla
 }
 
 // isCaughtUp() is a state, not a latch (doc/review A1). Consumers gate real decisions on it —
-// OrderExecClient/BasicDataClient leader-only emission, and FixGateway's tap-stall watchdog, which
+// OrderExecServer/BasicDataServer leader-only emission, and FixGateway's tap-stall watchdog, which
 // measures silence in DISPATCHED frames and self-terminates the gateway after 20s. A re-walk dispatches
 // nothing until the replay passes the hole, so leaving it latched made the gateway diagnose its own
 // recovery as a stalled sequencer and force a standby promotion it did not need.
@@ -1468,4 +1468,4 @@ TEST(ReplayerStreamReceiverConvergence, TheReportStopsNamingARefusalOnceTheRepla
 }
 
 } // namespace
-} // namespace org::limitless::phixeron::sequencer
+} // namespace org::limitless::phixeron::replayer::client

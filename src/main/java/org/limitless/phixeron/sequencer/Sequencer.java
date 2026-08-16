@@ -186,9 +186,9 @@ public final class Sequencer {
      * This used to key off {@code header.sourceId} landing in the set of known gateway sourceIds, which
      * is not an assertion the publisher makes about itself: that field is the <em>routing</em> id of the
      * gateway a message is travelling to or from, and other clients legitimately echo it — the
-     * OrderExecClient stamps the originating gateway's sourceId onto every ExecutionReport and
+     * OrderExecServer stamps the originating gateway's sourceId onto every ExecutionReport and
      * PortfolioQueryReply it submits. Its cluster session was therefore recorded as a gateway's, and an
-     * ordinary OrderExecClient restart promoted the standby out from under a perfectly healthy primary.
+     * ordinary OrderExecServer restart promoted the standby out from under a perfectly healthy primary.
      * {@code GatewayStarted} is published by a gateway about itself, on activation and nowhere else, so
      * it is the one frame that means what this map needs it to mean.
      */

@@ -1,4 +1,4 @@
-package org.limitless.phixeron.replayer;
+package org.limitless.phixeron.replayer.client;
 
 /**
  * Pure decision logic behind {@link ReplayerStreamReceiver}'s convergence alarm. Recovery that never

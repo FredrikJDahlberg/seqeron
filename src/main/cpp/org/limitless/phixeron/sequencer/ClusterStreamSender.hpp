@@ -61,7 +61,7 @@ namespace diag = org::limitless::phixeron::util;
 // ── Constants — Aeron Cluster ingress/egress channels, stream ids and client
 //    protocol semver, per io.aeron.cluster.codecs / AeronCluster.Configuration
 //    defaults. Ports are derived from PortLayout.hpp's shared formula rather than
-//    restated as literals — must match SequencerNode's cluster listener configuration. ────
+//    restated as literals — must match SequencerServer's cluster listener configuration. ────
 // CLUSTER_INGRESS_CHANNEL must stay "aeron:udp?endpoint=" + CLUSTER_INGRESS_ENDPOINT — the
 // endpoint alone is also this client's initial value for the reconnect-on-failover tracking
 // in ClusterStreamSender (m_ingressEndpoint). Member 0's ingress port is only the *initial*
@@ -250,7 +250,7 @@ class ClusterStreamSender
     }
 
     // Real entry point for a client deployed co-located with one cluster member — sharing
-    // that member's own Aeron directory (see OrderExecClient's PHIXERON_ORDER_EXEC_AERON_DIR).
+    // that member's own Aeron directory (see OrderExecServer's PHIXERON_ORDER_EXEC_AERON_DIR).
     // Egress uses the given UDP egressChannel (default CLUSTER_EGRESS_CHANNEL_COLOCATED; a
     // per-node replica passes a member-specific endpoint so co-located replicas on one host don't
     // collide — see the parameter note below). It is unaffected by which member is leader: the
@@ -258,7 +258,7 @@ class ClusterStreamSender
     // regardless of which host/process is currently leader. Ingress tries
     // CLUSTER_INGRESS_CHANNEL_IPC first, on the theory that the co-located member usually is
     // (or will shortly become) leader; a co-located member that is a follower never opens the
-    // IPC ingress subscription at all (see SequencerNode's isIpcIngressAllowed — leader-only),
+    // IPC ingress subscription at all (see SequencerServer's isIpcIngressAllowed — leader-only),
     // so an IPC SessionConnectRequest to a follower simply goes unanswered rather than being
     // rejected — hence the short ipcConnectTimeoutMs before falling back to the normal UDP
     // ingress endpoint, where a follower answers with a proper REDIRECT to the real leader.
@@ -593,7 +593,7 @@ class ClusterStreamSender
     }
 
   private:
-    // Paired with ConsensusModule's sessionTimeoutNs (1s, SequencerNode.java) at a 5x margin — the two
+    // Paired with ConsensusModule's sessionTimeoutNs (1s, SequencerServer.java) at a 5x margin — the two
     // were lowered together and only make sense as a pair. Raising this without raising that reaps
     // healthy sessions; there is no in-process re-handshake, so that is process death, not a hiccup.
     static constexpr std::int64_t KEEP_ALIVE_INTERVAL_MS = 200;
@@ -735,7 +735,7 @@ class ClusterStreamSender
         {
             return;
         }
-        // IPC ingress is Aeron's leader-only listener (SequencerNode's isIpcIngressAllowed), so being on
+        // IPC ingress is Aeron's leader-only listener (SequencerServer's isIpcIngressAllowed), so being on
         // it at all already proves the co-located member leads.
         if (m_ingressEndpoint == "ipc")
         {
@@ -850,7 +850,7 @@ class ClusterStreamSender
 
     // Same as createIngressPublication(endpoint), but over CLUSTER_INGRESS_CHANNEL_IPC —
     // only ever reachable by an ingress subscription the co-located member opens while it is
-    // leader (see SequencerNode's isIpcIngressAllowed), so isConnected() may simply never
+    // leader (see SequencerServer's isIpcIngressAllowed), so isConnected() may simply never
     // become true when it isn't; the m_connectTimeoutMs deadline here is what bounds that,
     // same as the UDP case, and connectColocated relies on it to trigger the UDP fallback.
     std::shared_ptr<aeron::Publication> createIpcIngressPublication()

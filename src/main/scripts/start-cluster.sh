@@ -2,11 +2,11 @@
 # cluster.sh — start the phixeron single-node cluster and its C++ clients.
 #
 # Launches four processes in the background, each writing to its own log file:
-#   1. SequencerNode  (Java, single-node Aeron Cluster, member 0)
+#   1. SequencerServer  (Java, single-node Aeron Cluster, member 0)
 #   2. FixGateway  (C++, FIX TCP gateway on port 9000)
-#   3. ReplayerNode  (Java, co-located with member 0: serves archive replay to co-located apps over
+#   3. ReplayerServer  (Java, co-located with member 0: serves archive replay to co-located apps over
 #                     aeron:ipc — doc/router-design.md; apps read the tap directly for live)
-#   4. OrderExecClient  (C++, a replica co-located with member 0: reads the tap directly, tracks
+#   4. OrderExecServer  (C++, a replica co-located with member 0: reads the tap directly, tracks
 #                        positions, answers risk queries while its node is leader)
 #
 # Ctrl-C (or kill $$ / kill -- -$$) stops all four cleanly.
@@ -47,14 +47,14 @@ LOG_DIR="logs"
 SEQ_LOG="${LOG_DIR}/sequencer.log"
 MD_LOG="${LOG_DIR}/aeronmd.log"
 FIX_LOG="${LOG_DIR}/FixGateway.log"
-REPLAYER_LOG="${LOG_DIR}/ReplayerNode.log"
-APP_LOG="${LOG_DIR}/OrderExecClient.log"
+REPLAYER_LOG="${LOG_DIR}/ReplayerServer.log"
+APP_LOG="${LOG_DIR}/OrderExecServer.log"
 
 # Default Aeron directory used by the standalone aeronmd and by FixGateway.
 AERON_DIR="${TMPDIR}aeron-$(whoami)"
 
-# SequencerNode (member 0)'s own embedded media driver directory — matches its default
-# when -Dsequencer.aeronDir isn't overridden. OrderExecClient is co-located with this
+# SequencerServer (member 0)'s own embedded media driver directory — matches its default
+# when -Dsequencer.aeronDir isn't overridden. OrderExecServer is co-located with this
 # member (shares its Aeron directory) so archive/replay/ingress can use aeron:ipc instead
 # of looping through the standalone aeronmd above — see ClusterStreamSender::connectColocated.
 SEQ_AERON_DIR="${TMPDIR}phixeron-seq-aeron-0"
@@ -75,7 +75,7 @@ if [[ ! -f "${JAR}" ]]; then
     exit 1
 fi
 
-for bin in FixGateway OrderExecClient; do
+for bin in FixGateway OrderExecServer; do
     if [[ ! -x "${BUILD_DIR}/${bin}" ]]; then
         echo "ERROR: ${BUILD_DIR}/${bin} not found — run: cmake --build ${BUILD_DIR}" >&2
         exit 1
@@ -91,7 +91,7 @@ mkdir -p "${LOG_DIR}"
 
 # ── Launch ────────────────────────────────────────────────────────────────────
 
-echo "[cluster.sh] Starting SequencerNode (member 0) → ${SEQ_LOG}"
+echo "[cluster.sh] Starting SequencerServer (member 0) → ${SEQ_LOG}"
 java "${JAVA_OPTS[@]}" \
     -Dsequencer.memberId=0 \
     -jar "${JAR}" \
@@ -105,12 +105,12 @@ until grep -q "Running" "${SEQ_LOG}" 2>/dev/null; do
     sleep 0.5
     WAIT=$(( WAIT + 1 ))
     if (( WAIT > 40 )); then
-        echo "ERROR: SequencerNode did not reach Running state after 20 s" >&2
+        echo "ERROR: SequencerServer did not reach Running state after 20 s" >&2
         kill "${SEQ_PID}" 2>/dev/null
         exit 1
     fi
 done
-echo "[cluster.sh] SequencerNode is running"
+echo "[cluster.sh] SequencerServer is running"
 
 echo "[cluster.sh] Starting Aeron media driver → ${MD_LOG}"
 AERON_DIR="${AERON_DIR}" "${AERONMD}" > "${MD_LOG}" 2>&1 &
@@ -134,36 +134,36 @@ echo "[cluster.sh] Starting FixGateway → ${FIX_LOG}"
 stdbuf -oL -eL "${BUILD_DIR}/FixGateway" > "${FIX_LOG}" 2>&1 &
 FIX_PID=$!
 
-echo "[cluster.sh] Starting ReplayerNode (co-located with SequencerNode member 0) → ${REPLAYER_LOG}"
+echo "[cluster.sh] Starting ReplayerServer (co-located with SequencerServer member 0) → ${REPLAYER_LOG}"
 java "${JAVA_OPTS[@]}" \
     -Dreplayer.memberId=0 \
     -cp "${JAR}" \
-    org.limitless.phixeron.replayer.ReplayerNode \
+    org.limitless.phixeron.replayer.server.ReplayerServer \
     > "${REPLAYER_LOG}" 2>&1 &
 REPLAYER_PID=$!
 
-echo "[cluster.sh] Waiting for ReplayerNode to start serving replay…"
+echo "[cluster.sh] Waiting for ReplayerServer to start serving replay…"
 WAIT=0
 until grep -q "serving replay" "${REPLAYER_LOG}" 2>/dev/null; do
     sleep 0.5
     WAIT=$(( WAIT + 1 ))
     if (( WAIT > 40 )); then
-        echo "[cluster.sh] WARN: ReplayerNode not serving after 20s — starting OrderExecClient anyway" >&2
+        echo "[cluster.sh] WARN: ReplayerServer not serving after 20s — starting OrderExecServer anyway" >&2
         break
     fi
 done
 
-echo "[cluster.sh] Starting OrderExecClient (replica co-located with member 0) → ${APP_LOG}"
+echo "[cluster.sh] Starting OrderExecServer (replica co-located with member 0) → ${APP_LOG}"
 PHIXERON_ORDER_EXEC_AERON_DIR="${SEQ_AERON_DIR}" \
-    stdbuf -oL -eL "${BUILD_DIR}/OrderExecClient" > "${APP_LOG}" 2>&1 &
+    stdbuf -oL -eL "${BUILD_DIR}/OrderExecServer" > "${APP_LOG}" 2>&1 &
 APP_PID=$!
 
 echo "[cluster.sh] All processes started"
-echo "  SequencerNode     pid=${SEQ_PID}  log=${SEQ_LOG}"
+echo "  SequencerServer     pid=${SEQ_PID}  log=${SEQ_LOG}"
 echo "  aeronmd           pid=${MD_PID}   log=${MD_LOG}"
 echo "  FixGateway  pid=${FIX_PID}  log=${FIX_LOG}"
-echo "  ReplayerNode      pid=${REPLAYER_PID}  log=${REPLAYER_LOG}"
-echo "  OrderExecClient   pid=${APP_PID}  log=${APP_LOG}"
+echo "  ReplayerServer      pid=${REPLAYER_PID}  log=${REPLAYER_LOG}"
+echo "  OrderExecServer   pid=${APP_PID}  log=${APP_LOG}"
 echo "[cluster.sh] Press Ctrl-C to stop"
 
 # ── Shutdown on Ctrl-C ────────────────────────────────────────────────────────

@@ -19,7 +19,7 @@ import org.agrona.DirectBuffer;
 import org.agrona.concurrent.NoOpLock;
 import org.agrona.concurrent.status.CountersReader;
 import org.limitless.phixeron.metrics.PhixeronCounters;
-import org.limitless.phixeron.replayer.ReplayerService;
+import org.limitless.phixeron.replayer.server.ReplayerService;
 import org.limitless.phixeron.util.Logger;
 
 /**
@@ -106,8 +106,8 @@ public final class SequencerService implements ClusteredService {
      * Must not be 101: that's Aeron Cluster's default {@code ingressStreamId}, and
      * isIpcIngressAllowed(true) makes the leader subscribe to ingress on aeron:ipc/101 too — sharing
      * it here means every archive reply misdecodes as an ingress frame (and vice versa). Also distinct
-     * from ReplayerNode's ARCHIVE_CONTROL_RESPONSE_STREAM_ID (120), which shares this member's
-     * aeron:ipc driver. Matches SequencerNode's own ARCHIVE_CONTROL_RESPONSE_STREAM_ID (121) — sharing
+     * from ReplayerServer's ARCHIVE_CONTROL_RESPONSE_STREAM_ID (120), which shares this member's
+     * aeron:ipc driver. Matches SequencerServer's own ARCHIVE_CONTROL_RESPONSE_STREAM_ID (121) — sharing
      * a value is fine, since the archive protocol demuxes concurrent clients on one response stream by
      * controlSessionId/correlationId.
      */
@@ -213,7 +213,7 @@ public final class SequencerService implements ClusteredService {
     private final TapStallPolicy stallPolicy =
         new TapStallPolicy(SUSTAINED_BACKPRESSURE_THRESHOLD_NS, TAP_STALL_FATAL_TIMEOUT_NS);
 
-    /** Brings the whole node down; wired by {@link SequencerNode}. See {@link #fatalTapFailure}. */
+    /** Brings the whole node down; wired by {@link SequencerServer}. See {@link #fatalTapFailure}. */
     private final Runnable fatalHandler;
 
     // Aeron runtime
@@ -759,7 +759,7 @@ public final class SequencerService implements ClusteredService {
      */
     private void haltIfShutdownStalled(final long nowNs) {
         if (nowNs - fatalSignalledNs >= FATAL_SHUTDOWN_BACKSTOP_NS) {
-            Runtime.getRuntime().halt(SequencerNode.EXIT_TAP_FATAL);
+            Runtime.getRuntime().halt(SequencerServer.EXIT_TAP_FATAL);
         }
     }
 

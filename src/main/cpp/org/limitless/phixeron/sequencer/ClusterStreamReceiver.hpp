@@ -28,7 +28,7 @@ namespace org::limitless::phixeron::sequencer {
 
 namespace diag = org::limitless::phixeron::util;
 
-// ── Constants matching SequencerService / SequencerNode ──────────────────────
+// ── Constants matching SequencerService / SequencerServer ──────────────────────
 
 // Stream id of the recorded sequenced stream. Every node records its node-local aeron:ipc tap
 // (SequencerService.FEEDER_CHANNEL / FEEDER_STREAM_ID) into its own archive; that recording is the
@@ -41,12 +41,12 @@ inline constexpr std::int32_t FEEDER_STREAM_ID = 205;
 // Each UDP-replaying binary uses a distinct port.
 // FixGateway  → 9310 (env PHIXERON_FIX_REPLAY_PORT)
 // fix_test_server   → 9400 (env PHIXERON_RISK_TEST_REPLAY_PORT; kept outside the
-//                     9300-9325 cluster port block — see SequencerNode's port layout —
+//                     9300-9325 cluster port block — see SequencerServer's port layout —
 //                     since 9312 used to alias member 1's cluster ingress port)
 // FixGateway's resend-recovery replay → 9401 (env PHIXERON_RESEND_REPLAY_PORT; also outside
 //                     the 9300-9325 cluster block for the same reason — 9313, the previous default,
 //                     aliased member 1's Raft consensus port and failed to bind whenever member 1 was up)
-// OrderExecClient, deployed co-located with one SequencerNode member (see
+// OrderExecServer, deployed co-located with one SequencerServer member (see
 // connectLocalArchive/ClusterStreamSender::connectColocated), replays over
 // REPLAY_CHANNEL_IPC below instead — no port needed.
 inline constexpr std::int32_t REPLAY_STREAM_ID = 110;
@@ -71,7 +71,7 @@ resolveReplayChannel(const char* envVar, std::uint16_t defaultPort)
 }
 
 // Default 3-node cluster archive control endpoints, one per member, generated from
-// PortLayout.hpp's clusterArchivePort formula (the C++ mirror of SequencerNode.PORT_BASE +
+// PortLayout.hpp's clusterArchivePort formula (the C++ mirror of SequencerServer.PORT_BASE +
 // memberId*10 + 1 — see three-node-cluster.sh's CLUSTER_MEMBERS): member 0 → 9301, member 1 →
 // 9311, member 2 → 9321. Every member's co-located archive holds an identical recording of the
 // cluster stream, so any reachable one works equally well — there's no leader-affinity
@@ -225,7 +225,7 @@ connectToArchiveWithClusterStream(std::shared_ptr<aeron::Aeron> aeron, const std
 
 /**
  * Connects to the archive co-located with this process over "aeron:ipc" — used by clients
- * (e.g. OrderExecClient) deliberately deployed sharing a single SequencerNode member's own
+ * (e.g. OrderExecServer) deliberately deployed sharing a single SequencerServer member's own
  * Aeron directory (see ClusterStreamSender::connectColocated's doc comment for the ingress
  * half of that deployment). Unlike connectToArchiveWithClusterStream, there is exactly one
  * candidate archive here, and — because every member records its own node-local tap — every

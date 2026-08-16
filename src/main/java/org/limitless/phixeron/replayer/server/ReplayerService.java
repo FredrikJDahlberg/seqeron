@@ -1,4 +1,4 @@
-package org.limitless.phixeron.replayer;
+package org.limitless.phixeron.replayer.server;
 
 import static io.aeron.Aeron.NULL_VALUE;
 
@@ -218,7 +218,7 @@ public final class ReplayerService {
     private final int memberId;
     private final IdleStrategy idleStrategy;
 
-    /** Brings the whole process down; wired by {@link ReplayerNode}. See {@link #fatalDutyCycleFailure}. */
+    /** Brings the whole process down; wired by {@link ReplayerServer}. See {@link #fatalDutyCycleFailure}. */
     private final Runnable fatalHandler;
 
     // Proactive readiness marker: set once the co-located SequencerService's tap recording is visible

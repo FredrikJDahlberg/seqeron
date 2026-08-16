@@ -99,7 +99,7 @@
 // stream id, which the live tap and the Replayer's replays both address) — header-only; brings in
 // archive headers it does not otherwise need, which is harmless — the un-rewired binaries include the
 // same header.
-#include "org/limitless/phixeron/replayer/RecoveryProgressPolicy.hpp"
+#include "org/limitless/phixeron/replayer/client/RecoveryProgressPolicy.hpp"
 #include "org/limitless/phixeron/sequencer/ClusterStreamReceiver.hpp"
 #include "org/limitless/phixeron/util/Logger.hpp"
 #include "org/limitless/phixeron/util/PhixeronCounters.hpp"
@@ -114,12 +114,21 @@
 #include "org_limitless_phixeron_sbe_unsequenced/ReplayUnavailable.h"
 #include "org_limitless_phixeron_sbe_unsequenced/Replaying.h"
 
-namespace org::limitless::phixeron::sequencer {
+namespace org::limitless::phixeron::replayer::client {
 
 namespace usq = org::limitless::phixeron::sbe::unsequenced;
 namespace diag = org::limitless::phixeron::util;
 
-// ── Node-local IPC channels/streams — MUST match org.limitless.phixeron.replayer.ReplayerService ─────────
+// Reused verbatim from ClusterStreamClient's namespace rather than redefined — the two clients deliver
+// the same frames off the same stream, so the event types and template ids must stay one definition.
+using org::limitless::phixeron::sequencer::CLIENT_CONNECTED_TEMPLATE_ID;
+using org::limitless::phixeron::sequencer::CLIENT_DISCONNECTED_TEMPLATE_ID;
+using org::limitless::phixeron::sequencer::FEEDER_STREAM_ID;
+using org::limitless::phixeron::sequencer::frameStartPosition;
+using org::limitless::phixeron::sequencer::LifecycleEvent;
+using org::limitless::phixeron::sequencer::SequencedEvent;
+
+// ── Node-local IPC channels/streams — MUST match org.limitless.phixeron.replayer.server.ReplayerService ─────────
 inline constexpr const char* REPLAYER_IPC_CHANNEL = "aeron:ipc";
 inline constexpr const char* FEEDER_CHANNEL = "aeron:ipc?tether=false";
 // Untethered like the tap, and for the same reason: the Replayer answers every app from one duty-cycle
@@ -210,7 +219,7 @@ class ReplayerStreamReceiver
         requestReplay(0, 0); // cold start: walk the recording chain from segment 0
     }
 
-    // Test-only (see OrderExecClient's PHIXERON_FAULT_INJECTION hook): enable dropping live tap frames on
+    // Test-only (see OrderExecServer's PHIXERON_FAULT_INJECTION hook): enable dropping live tap frames on
     // demand, to synthesize a consumer-side globalSeqNo gap so a test can drive the re-walk gap recovery
     // deterministically (src/test/scripts/gap-recovery-test.sh). A no-op in production (never enabled).
     void enableFaultInjection()
@@ -1424,7 +1433,7 @@ class ReplayerStreamReceiver
 
     // Test-only fault injection (gated by enableFaultInjection): drop the next N live tap frames to
     // synthesize a consumer-side globalSeqNo gap (src/test/scripts/gap-recovery-test.sh). Armed on the
-    // poll thread (deferred from OrderExecClient's SIGUSR1 handler) and consumed on the poll thread; the
+    // poll thread (deferred from OrderExecServer's SIGUSR1 handler) and consumed on the poll thread; the
     // atomic mirrors the Java side and stays safe if a caller ever arms it from another thread.
     bool m_faultInjection = false;
     std::atomic<int> m_faultDropPending{ 0 };
@@ -1447,4 +1456,4 @@ class ReplayerStreamReceiver
     HeaderComposite m_header;
 };
 
-} // namespace org::limitless::phixeron::sequencer
+} // namespace org::limitless::phixeron::replayer::client

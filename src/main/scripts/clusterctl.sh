@@ -2,7 +2,7 @@
 # clusterctl.sh — operator cluster life-cycle tool (start / shutdown / passthrough).
 #
 # Thin launcher for org.limitless.phixeron.tools.ClusterCtl (see clusterctl.md). Node-local:
-# run co-located on a SequencerNode host — it shares that node's Aeron directory (to reach the
+# run co-located on a SequencerServer host — it shares that node's Aeron directory (to reach the
 # co-located tap over aeron:ipc) and its clusterDir (for io.aeron.cluster.ClusterTool).
 #
 #   clusterctl.sh start             # record a "system started" marker (requires an elected leader)
@@ -11,7 +11,7 @@
 #   clusterctl.sh help
 #   clusterctl.sh describe …        # anything else → ClusterTool passthrough
 #
-# Config (override the SequencerNode-mirroring defaults for multi-node / custom dirs):
+# Config (override the SequencerServer-mirroring defaults for multi-node / custom dirs):
 #   CLUSTERCTL_MEMBER_ID          co-located member id             (default 0)
 #   CLUSTERCTL_BASE_DIR           cluster data dir root            (default $TMPDIR/phixeron-seq)
 #   CLUSTERCTL_AERON_DIR          co-located member's Aeron dir     (default $TMPDIR/phixeron-seq-aeron-<id>)
@@ -39,7 +39,7 @@ JAVA_OPTS=(
 )
 
 # Map CLUSTERCTL_* env onto -Dclusterctl.* system properties; unset ones fall back to ClusterCtl's
-# SequencerNode-mirroring defaults.
+# SequencerServer-mirroring defaults.
 DPROPS=( "-Dclusterctl.memberId=${CLUSTERCTL_MEMBER_ID:-0}" )
 [[ -n "${CLUSTERCTL_BASE_DIR:-}" ]]          && DPROPS+=( "-Dclusterctl.baseDir=${CLUSTERCTL_BASE_DIR}" )
 [[ -n "${CLUSTERCTL_AERON_DIR:-}" ]]         && DPROPS+=( "-Dclusterctl.aeronDir=${CLUSTERCTL_AERON_DIR}" )

@@ -1,4 +1,4 @@
-package org.limitless.phixeron.replayer;
+package org.limitless.phixeron.replayer.server;
 
 import io.aeron.Aeron;
 import io.aeron.ExclusivePublication;
@@ -19,7 +19,7 @@ import org.limitless.phixeron.sequencer.SequencerService;
  * testable.
  *
  * <p>Not thread-safe, and does not need to be: the control publication is exclusive and every call is
- * made from the single replay duty-cycle thread (see {@code ReplayerNode}'s {@code NoOpLock} note).
+ * made from the single replay duty-cycle thread (see {@code ReplayerServer}'s {@code NoOpLock} note).
  */
 public final class AeronReplayer implements Replayer {
     private final Aeron aeron;

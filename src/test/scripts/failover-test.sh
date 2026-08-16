@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Cross-failover cold-start replay test.
 #
-# Forces a leader failover (two leader tenures), then cold-starts a fresh OrderExecClient co-located
+# Forces a leader failover (two leader tenures), then cold-starts a fresh OrderExecServer co-located
 # with the surviving new leader and verifies it catches up on full history. Since every node records
 # its own node-local tap continuously — the tap publication is never re-created on a leadership change
 # — the new leader's node holds ONE continuous recording spanning both tenures (pre- and post-failover),
@@ -31,7 +31,7 @@ AERON_DIR="${TMPDIR}aeron-$(whoami)"
 
 if command -v aeronmd >/dev/null 2>&1; then AERONMD="$(command -v aeronmd)"; else AERONMD="${BUILD_DIR}/_deps/aeron-build/binaries/aeronmd"; fi
 
-pkill -f SequencerNode 2>/dev/null; pkill -f ReplayerNode 2>/dev/null; pkill -f OrderExecClient 2>/dev/null
+pkill -f SequencerServer 2>/dev/null; pkill -f ReplayerServer 2>/dev/null; pkill -f OrderExecServer 2>/dev/null
 pkill -f FixGateway 2>/dev/null; pkill -f aeronmd 2>/dev/null; sleep 1
 rm -rf "$BASE_DIR" "${TMPDIR}phixeron-seq-aeron-0" "${TMPDIR}phixeron-seq-aeron-1" \
        "${TMPDIR}phixeron-seq-aeron-2" "$AERON_DIR" 2>/dev/null
@@ -54,7 +54,7 @@ W=0; until [[ -f "$AERON_DIR/cnc.dat" ]]; do sleep 0.2; W=$((W+1)); ((W>25)) && 
 declare -a REPLAYER_PIDS
 for m in 0 1 2; do
   java "${JAVA_OPTS[@]}" -Dreplayer.memberId="$m" -cp "$JAR" \
-       org.limitless.phixeron.replayer.ReplayerNode > "$LOG_DIR/replayer-$m.log" 2>&1 &
+       org.limitless.phixeron.replayer.server.ReplayerServer > "$LOG_DIR/replayer-$m.log" 2>&1 &
   REPLAYER_PIDS[$m]=$!
 done
 for m in 0 1 2; do
@@ -86,9 +86,9 @@ PHIXERON_ORDER_EXEC_AERON_DIR="${TMPDIR}phixeron-seq-aeron-${NEWLEADER}" \
   PHIXERON_NODE_MEMBER_ID="$NEWLEADER" \
   PHIXERON_REPLAYER_CLIENT_ID=9 \
   PHIXERON_CLUSTER_EGRESS_ENDPOINT="localhost:${TEST_CONSUMER_EGRESS_PORT}" \
-  stdbuf -oL -eL "$BUILD_DIR/OrderExecClient" > "$FRESH_LOG" 2>&1 &
+  stdbuf -oL -eL "$BUILD_DIR/OrderExecServer" > "$FRESH_LOG" 2>&1 &
 FRESH_PID=$!
-echo "started fresh cold OrderExecClient (client 9) co-located with new leader member $NEWLEADER"
+echo "started fresh cold OrderExecServer (client 9) co-located with new leader member $NEWLEADER"
 
 W=0; until grep -q "following live" "$FRESH_LOG" 2>/dev/null; do sleep 0.5; W=$((W+1)); ((W>60)) && break; done
 CAUGHT=0; grep -q "following live" "$FRESH_LOG" && CAUGHT=1
