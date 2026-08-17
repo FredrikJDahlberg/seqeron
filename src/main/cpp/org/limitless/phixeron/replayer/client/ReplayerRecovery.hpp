@@ -74,6 +74,11 @@ class ReplayerRecoveryActions
 
     // The phixeron.app.recoveryStalled gauge.
     virtual void recoveryStalled(bool stalled) = 0;
+
+    // Epoch millis. Here rather than as a std::function member because this interface already exists and
+    // is already virtual — the timers below need a clock the unit suite can advance, not a second
+    // injection point.
+    virtual std::int64_t nowMs() = 0;
 };
 
 class ReplayerRecovery
@@ -84,14 +89,12 @@ class ReplayerRecovery
     using OnDisconnected = std::function<void(const LifecycleEvent&)>;
     using OnLeadershipChanged = std::function<void(std::int32_t newLeaderMemberId, std::int64_t globalSeqNo)>;
     using OnCaughtUp = std::function<void()>;
-    using Clock = std::function<std::int64_t()>; // epoch millis
 
-    ReplayerRecovery(const std::int32_t clientId, ReplayerRecoveryActions& actions, Clock clock,
-                     OnSequenced onSequenced, OnConnected onConnected = {}, OnDisconnected onDisconnected = {},
+    ReplayerRecovery(const std::int32_t clientId, ReplayerRecoveryActions& actions, OnSequenced onSequenced,
+                     OnConnected onConnected = {}, OnDisconnected onDisconnected = {},
                      OnLeadershipChanged onLeadershipChanged = {}, OnCaughtUp onCaughtUp = {}) :
       m_clientId(clientId),
       m_actions(actions),
-      m_clock(std::move(clock)),
       m_onSequenced(std::move(onSequenced)),
       m_onConnected(std::move(onConnected)),
       m_onDisconnected(std::move(onDisconnected)),
@@ -341,7 +344,7 @@ class ReplayerRecovery
                 m_actions.openReplay(session);
                 // Arm the stall watchdog from here: this is the moment the replay starts existing.
                 m_lastReplayPosition = -1;
-                m_lastReplayProgressMs = m_clock();
+                m_lastReplayProgressMs = m_actions.nowMs();
             }
         }
         else if (mh.templateId() == usq::ReplayPending::sbeTemplateId())
@@ -353,7 +356,7 @@ class ReplayerRecovery
                 // Replayer has no free slot; keep holding. m_awaitingReplay stays true so the resend
                 // timer keeps us alive if the eventual Replaying is ever lost, but ReplayPending itself is
                 // just "wait" — reset the request clock so we don't spam while queued.
-                m_lastRequestMs = m_clock();
+                m_lastRequestMs = m_actions.nowMs();
                 m_replayerUnavailable = false; // queued, not refused — the episode ended (see Replaying)
             }
         }
@@ -381,7 +384,7 @@ class ReplayerRecovery
         if (position != m_lastReplayPosition)
         {
             m_lastReplayPosition = position;
-            m_lastReplayProgressMs = m_clock();
+            m_lastReplayProgressMs = m_actions.nowMs();
         }
     }
 
@@ -414,7 +417,7 @@ class ReplayerRecovery
     // RESEND_INTERVAL_MS of pure cold-start latency for a race that is much shorter than that.
     void doTimers(const bool requestPublicationPending)
     {
-        const std::int64_t nowMs = m_clock();
+        const std::int64_t nowMs = m_actions.nowMs();
 
         // Re-request if a prior request went unanswered (Replayer still starting, request lost, or
         // Replayer restarted). Covers both "no Replaying yet" and "Replaying seen but the replay image
@@ -459,7 +462,7 @@ class ReplayerRecovery
     // duty cycle; returns whether it reported.
     bool checkRecoveryProgress()
     {
-        if (m_caughtUp || !m_recoveryProgress.onNoProgress(m_clock()))
+        if (m_caughtUp || !m_recoveryProgress.onNoProgress(m_actions.nowMs()))
         {
             return false;
         }
@@ -665,7 +668,7 @@ class ReplayerRecovery
         // supersedes the old slot on the Replayer side anyway, so there is nothing left to release.
         m_completePending = false;
         m_actions.closeReplay();
-        m_lastRequestMs = m_clock();
+        m_lastRequestMs = m_actions.nowMs();
         ++m_requestId;
         // Best-effort: a request that does not land is already covered — the resend timer re-sends it
         // verbatim after RESEND_INTERVAL_MS. Retrying it any sooner is actively harmful: every send does
@@ -729,7 +732,7 @@ class ReplayerRecovery
         // walked a healthy client toward the TTL in silence.
         if (m_actions.sendReplayHeartbeat())
         {
-            m_lastHeartbeatMs = m_clock();
+            m_lastHeartbeatMs = m_actions.nowMs();
         }
     }
 
@@ -751,7 +754,7 @@ class ReplayerRecovery
         }
         // Hold exactly as for ReplayPending: still awaiting, request clock reset so the resend paces at
         // the normal interval rather than spinning on a permanent condition.
-        m_lastRequestMs = m_clock();
+        m_lastRequestMs = m_actions.nowMs();
     }
 
     // An attached (or expected) replay stopped delivering — see the watchdog in doTimers.
@@ -1006,7 +1009,6 @@ class ReplayerRecovery
 
     const std::int32_t m_clientId;
     ReplayerRecoveryActions& m_actions;
-    Clock m_clock;
     OnSequenced m_onSequenced;
     OnConnected m_onConnected;
     OnDisconnected m_onDisconnected;

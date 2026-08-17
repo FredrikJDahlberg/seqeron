@@ -28,4 +28,10 @@ public interface ReplayerRecoveryActions {
 
     /** The node this app runs on, or null before start — log attribution only. */
     Integer memberId();
+
+    /**
+     * Epoch millis. Here rather than as a {@code LongSupplier} field because this interface already exists
+     * — the timers need a clock the unit suite can advance, not a second injection point.
+     */
+    long nowMs();
 }

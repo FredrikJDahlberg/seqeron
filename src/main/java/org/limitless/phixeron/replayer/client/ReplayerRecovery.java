@@ -4,7 +4,6 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
 import java.util.List;
-import java.util.function.LongSupplier;
 import org.agrona.DirectBuffer;
 import org.agrona.concurrent.UnsafeBuffer;
 import org.limitless.phixeron.replayer.server.ReplayerService;
@@ -123,7 +122,6 @@ public final class ReplayerRecovery {
 
     private final int clientId;
     private final ReplayerRecoveryActions actions;
-    private final LongSupplier clock;
     private final SequencedHandler onSequenced;
     private final LeadershipHandler onLeadershipChanged;
     private final CaughtUpHandler onCaughtUp;
@@ -216,18 +214,17 @@ public final class ReplayerRecovery {
      * @param clientId            this replica's stable id, unique among the Replayer's co-located apps
      *                            ({@code PHIXERON_REPLAYER_CLIENT_ID}); two apps sharing one supersede
      *                            each other's replays and neither ever catches up
-     * @param actions             performs the sends and the replay subscription this class decides on
-     * @param clock               epoch millis; the receiver supplies the wall clock
+     * @param actions             performs the sends and the replay subscription this class decides on, and
+     *                            supplies the clock
      * @param onSequenced         receives every in-order frame
      * @param onLeadershipChanged receives each leadership change, or null
      * @param onCaughtUp          fires on every transition to caught-up, or null
      */
-    public ReplayerRecovery(final int clientId, final ReplayerRecoveryActions actions, final LongSupplier clock,
+    public ReplayerRecovery(final int clientId, final ReplayerRecoveryActions actions,
                             final SequencedHandler onSequenced, final LeadershipHandler onLeadershipChanged,
                             final CaughtUpHandler onCaughtUp) {
         this.clientId = clientId;
         this.actions = actions;
-        this.clock = clock;
         this.onSequenced = onSequenced;
         this.onLeadershipChanged = onLeadershipChanged;
         this.onCaughtUp = onCaughtUp;
@@ -372,7 +369,7 @@ public final class ReplayerRecovery {
                 // Replayer has no free slot; keep holding. awaitingReplay stays true so the resend timer
                 // keeps us alive if the eventual Replaying is ever lost, but ReplayPending itself is just
                 // "wait" — reset the request clock so we don't spam while queued.
-                lastRequestMs = clock.getAsLong();
+                lastRequestMs = actions.nowMs();
                 replayerUnavailable = false; // queued, not refused — the episode ended
             }
         } else if (controlHeader.templateId() == ReplayUnavailableDecoder.TEMPLATE_ID) {
@@ -394,7 +391,7 @@ public final class ReplayerRecovery {
         }
         if (position != lastReplayPosition) {
             lastReplayPosition = position;
-            lastReplayProgressMs = clock.getAsLong();
+            lastReplayProgressMs = actions.nowMs();
         }
     }
 
@@ -429,7 +426,7 @@ public final class ReplayerRecovery {
      *                                  than that
      */
     public void doTimers(final boolean requestPublicationPending) {
-        final long nowMs = clock.getAsLong();
+        final long nowMs = actions.nowMs();
 
         // Re-request if a prior request went unanswered (Replayer still starting, request lost, or Replayer
         // restarted). Covers both "no Replaying yet" and "Replaying seen but the replay image never
@@ -470,7 +467,7 @@ public final class ReplayerRecovery {
      * @return whether it reported
      */
     public boolean checkRecoveryProgress() {
-        if (caughtUp || !recoveryProgress.onNoProgress(clock.getAsLong())) {
+        if (caughtUp || !recoveryProgress.onNoProgress(actions.nowMs())) {
             return false;
         }
         // Reported, not acted on: holding IS the correct response to a baseline this node cannot establish,
@@ -587,7 +584,7 @@ public final class ReplayerRecovery {
         // the old slot on the Replayer side anyway, so there is nothing left to release.
         completePending = false;
         actions.closeReplay();
-        lastRequestMs = clock.getAsLong();
+        lastRequestMs = actions.nowMs();
         ++requestId;
         // Best-effort: a request that does not land is already covered — the resend timer re-sends it
         // verbatim. Retrying it any sooner is actively harmful: every send does ++requestId, and onControl
@@ -690,7 +687,7 @@ public final class ReplayerRecovery {
         actions.openReplay(session);
         // Arm the stall watchdog from here: this is the moment the replay starts existing.
         lastReplayPosition = -1;
-        lastReplayProgressMs = clock.getAsLong();
+        lastReplayProgressMs = actions.nowMs();
     }
 
     /**
@@ -711,7 +708,7 @@ public final class ReplayerRecovery {
         }
         // Hold exactly as for ReplayPending: still awaiting, request clock reset so the resend paces at the
         // normal interval rather than spinning on a permanent condition.
-        lastRequestMs = clock.getAsLong();
+        lastRequestMs = actions.nowMs();
     }
 
     /**
@@ -737,7 +734,7 @@ public final class ReplayerRecovery {
         // heard from us. Advancing it on a dropped offer burns a whole interval per loss and walks a healthy
         // client toward the TTL in silence.
         if (actions.sendReplayHeartbeat()) {
-            lastHeartbeatMs = clock.getAsLong();
+            lastHeartbeatMs = actions.nowMs();
         }
     }
 

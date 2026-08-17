@@ -94,7 +94,7 @@ constexpr std::int64_t PAST_EVERY_TIMER_MS = 6'000;
 struct Client final : ReplayerRecoveryActions
 {
     explicit Client(ReplayerRecovery::OnSequenced onSequenced, ReplayerRecovery::OnCaughtUp onCaughtUp = {}) :
-      recovery(CLIENT_ID, *this, [this] { return nowMs; }, std::move(onSequenced), {}, {}, {}, std::move(onCaughtUp))
+      recovery(CLIENT_ID, *this, std::move(onSequenced), {}, {}, {}, std::move(onCaughtUp))
     {}
 
     void sendReplayRequest(std::int64_t, std::int32_t, std::int64_t) override
@@ -123,7 +123,12 @@ struct Client final : ReplayerRecoveryActions
     void recoveryStalled(bool) override
     {}
 
-    std::int64_t nowMs = CLOCK_MS;
+    std::int64_t nowMs() override
+    {
+        return clockMs;
+    }
+
+    std::int64_t clockMs = CLOCK_MS;
     int requestsSent = 0;
 
     ReplayerRecovery recovery;
@@ -244,14 +249,14 @@ completeSegment(Client& client)
 void
 advancePastTimers(Client& client)
 {
-    client.nowMs += PAST_EVERY_TIMER_MS;
+    client.clockMs += PAST_EVERY_TIMER_MS;
     client.recovery.doTimers(/*requestPublicationPending=*/false);
 }
 
 bool
 checkProgressAt(Client& client, const std::int64_t nowMs)
 {
-    client.nowMs = nowMs;
+    client.clockMs = nowMs;
     return client.recovery.checkRecoveryProgress();
 }
 
@@ -551,9 +556,9 @@ TEST(ReplayerRecoveryGapRecovery, ReplayPendingForASupersededRequestIsIgnored)
     completeSegment(client); // advances the walk -> a new request, whose resend deadline is what matters
     const int sends = client.requestsSent;
 
-    client.nowMs += 300; // still inside the current request's resend interval
+    client.clockMs += 300; // still inside the current request's resend interval
     deliverControl(client, encodeReplayPending(/*clientId=*/1, stale));
-    client.nowMs += 300; // ... which has now elapsed, unless the stale "wait" pushed it out
+    client.clockMs += 300; // ... which has now elapsed, unless the stale "wait" pushed it out
     client.recovery.doTimers(/*requestPublicationPending=*/false);
 
     EXPECT_EQ(sends + 1, client.requestsSent) << "a superseded request's ReplayPending must not "
@@ -721,7 +726,7 @@ TEST(ReplayerRecoveryGapRecovery, ReplayUnavailableForASupersededRequestIsIgnore
 
     ScopedLoggerSink sink; // installed after the setup gap, so it captures only the refusal below
     deliverControl(client, encodeReplayUnavailable(/*clientId=*/1, stale));
-    client.nowMs += 600; // > RESEND_INTERVAL_MS since the CURRENT request went out
+    client.clockMs += 600; // > RESEND_INTERVAL_MS since the CURRENT request went out
     client.recovery.doTimers(/*requestPublicationPending=*/false);
 
     EXPECT_TRUE(sink.events.empty()) << "a stale refusal says nothing about the Replayer's current state";
@@ -737,12 +742,12 @@ TEST(ReplayerRecoveryGapRecovery, StuckAwaitingReplayResendsAfterTheIntervalElap
     ASSERT_TRUE(client.recovery.isAwaitingReplay());
     const int sends = client.requestsSent;
 
-    client.nowMs += 300; // inside RESEND_INTERVAL_MS (500)
+    client.clockMs += 300; // inside RESEND_INTERVAL_MS (500)
     client.recovery.doTimers(/*requestPublicationPending=*/false);
     EXPECT_EQ(sends, client.requestsSent) << "must not resend before RESEND_INTERVAL_MS elapses";
     EXPECT_TRUE(client.recovery.isAwaitingReplay());
 
-    client.nowMs += 300; // 600ms since the request — past it
+    client.clockMs += 300; // 600ms since the request — past it
     client.recovery.doTimers(/*requestPublicationPending=*/false);
 
     EXPECT_EQ(sends + 1, client.requestsSent)

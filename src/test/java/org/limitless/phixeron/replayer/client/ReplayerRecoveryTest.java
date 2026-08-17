@@ -43,7 +43,7 @@ class ReplayerRecoveryTest {
 
     /** The transport recorded rather than performed — no publication, so nothing ever reaches the wire. */
     private static final class RecordingActions implements ReplayerRecoveryActions {
-        long nowMs = CLOCK_MS;
+        long clockMs = CLOCK_MS;
         int requestsSent;
 
         @Override
@@ -77,6 +77,11 @@ class ReplayerRecoveryTest {
         public Integer memberId() {
             return 0;
         }
+
+        @Override
+        public long nowMs() {
+            return clockMs;
+        }
     }
 
     @BeforeEach
@@ -84,8 +89,7 @@ class ReplayerRecoveryTest {
         dispatched.clear();
         caughtUpAt.clear();
         actions = new RecordingActions();
-        receiver = new ReplayerRecovery(CLIENT_ID, actions, () -> actions.nowMs,
-                                        event -> dispatched.add(event.globalSeqNo()), null,
+        receiver = new ReplayerRecovery(CLIENT_ID, actions, event -> dispatched.add(event.globalSeqNo()), null,
                                         () -> caughtUpAt.add((long)dispatched.size()));
         receiver.start();
     }

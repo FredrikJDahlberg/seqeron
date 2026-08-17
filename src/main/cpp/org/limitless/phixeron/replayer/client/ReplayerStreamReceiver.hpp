@@ -72,20 +72,20 @@ class ReplayerStreamReceiver : private ReplayerRecoveryActions
                            OnDisconnected onDisconnected = {}, OnLeadershipChanged onLeadershipChanged = {},
                            OnCaughtUp onCaughtUp = {}) :
       m_clientId(clientId),
-      m_recovery(
-          clientId, *this, [] { return nowMs(); }, std::move(onSequenced), std::move(onConnected),
-          std::move(onDisconnected), std::move(onLeadershipChanged), std::move(onCaughtUp)),
-      m_tapHandler([this](auto& buffer, auto offset, auto length, auto& header) {
-          onTapFragment(buffer, offset, length, header);
-      }),
-      m_replayHandler([this](auto& buffer, auto offset, auto length, auto& header) {
-          onReplayFragment(buffer, offset, length, header);
-      }),
-      m_controlHandler(
-          [this](auto& buffer, auto offset, auto length, auto&) { onControlFragment(buffer, offset, length); }),
-      m_tapAssembler(std::make_unique<aeron::FragmentAssembler>(m_tapHandler)),
-      m_replayAssembler(std::make_unique<aeron::FragmentAssembler>(m_replayHandler)),
-      m_controlAssembler(std::make_unique<aeron::FragmentAssembler>(m_controlHandler)),
+      m_recovery(clientId, *this, std::move(onSequenced), std::move(onConnected), std::move(onDisconnected),
+                 std::move(onLeadershipChanged), std::move(onCaughtUp)),
+      // Constructed from temporaries: FragmentAssembler copies the delegate into its own member, so
+      // keeping our own copy alive would just be a second std::function per stream, never called again.
+      m_tapAssembler(
+          std::make_unique<aeron::FragmentAssembler>([this](auto& buffer, auto offset, auto length, auto& header) {
+              onTapFragment(buffer, offset, length, header);
+          })),
+      m_replayAssembler(
+          std::make_unique<aeron::FragmentAssembler>([this](auto& buffer, auto offset, auto length, auto& header) {
+              onReplayFragment(buffer, offset, length, header);
+          })),
+      m_controlAssembler(std::make_unique<aeron::FragmentAssembler>(
+          [this](auto& buffer, auto offset, auto length, auto&) { onControlFragment(buffer, offset, length); })),
       m_tapPoll(m_tapAssembler->handler()),
       m_replayPoll(m_replayAssembler->handler()),
       m_controlPoll(m_controlAssembler->handler())
@@ -368,7 +368,7 @@ class ReplayerStreamReceiver : private ReplayerRecoveryActions
         return reinterpret_cast<char*>(buffer.buffer()) + offset;
     }
 
-    static std::int64_t nowMs()
+    std::int64_t nowMs() override
     {
         using namespace std::chrono;
         return duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
@@ -403,10 +403,6 @@ class ReplayerStreamReceiver : private ReplayerRecoveryActions
     // atomic mirrors the Java side and stays safe if a caller ever arms it from another thread.
     bool m_faultInjection = false;
     std::atomic<int> m_faultDropPending{ 0 };
-
-    aeron::fragment_handler_t m_tapHandler;
-    aeron::fragment_handler_t m_replayHandler;
-    aeron::fragment_handler_t m_controlHandler;
 
     std::unique_ptr<aeron::FragmentAssembler> m_tapAssembler;
     std::unique_ptr<aeron::FragmentAssembler> m_replayAssembler;

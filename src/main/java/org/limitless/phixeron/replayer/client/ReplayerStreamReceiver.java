@@ -86,8 +86,7 @@ public final class ReplayerStreamReceiver implements AutoCloseable, ReplayerReco
                                   final ReplayerRecovery.LeadershipHandler onLeadershipChanged,
                                   final ReplayerRecovery.CaughtUpHandler onCaughtUp) {
         this.clientId = clientId;
-        this.recovery = new ReplayerRecovery(clientId, this, System::currentTimeMillis, onSequenced,
-                                             onLeadershipChanged, onCaughtUp);
+        this.recovery = new ReplayerRecovery(clientId, this, onSequenced, onLeadershipChanged, onCaughtUp);
         this.tapHandler = new FragmentAssembler(
             (buffer, offset, length, hdr) ->
                 recovery.onFrame(buffer, offset, length, frameStartPosition(hdr), nowNs(), false));
@@ -290,6 +289,11 @@ public final class ReplayerStreamReceiver implements AutoCloseable, ReplayerReco
     @Override
     public Integer memberId() {
         return memberId;
+    }
+
+    @Override
+    public long nowMs() {
+        return System.currentTimeMillis();
     }
 
     /**
