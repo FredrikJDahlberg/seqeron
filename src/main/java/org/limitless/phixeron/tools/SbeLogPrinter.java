@@ -1,9 +1,11 @@
 package org.limitless.phixeron.tools;
 
 import io.aeron.archive.client.AeronArchive;
+import io.aeron.archive.codecs.CatalogHeaderDecoder;
 import io.aeron.archive.codecs.RecordingDescriptorDecoder;
 import io.aeron.archive.codecs.RecordingDescriptorHeaderDecoder;
 import io.aeron.archive.codecs.RecordingState;
+import io.aeron.cluster.codecs.SessionMessageHeaderDecoder;
 import io.aeron.logbuffer.FrameDescriptor;
 import io.aeron.protocol.DataHeaderFlyweight;
 import java.io.File;
@@ -17,7 +19,6 @@ import java.util.List;
 import java.util.Map;
 import org.agrona.BitUtil;
 import org.agrona.concurrent.UnsafeBuffer;
-import org.limitless.phixeron.util.Logger;
 import uk.co.real_logic.sbe.ir.Ir;
 import uk.co.real_logic.sbe.ir.IrDecoder;
 import uk.co.real_logic.sbe.ir.Token;
@@ -35,19 +36,20 @@ import uk.co.real_logic.sbe.otf.OtfHeaderDecoder;
  * schema its own header names, so one run reads an archive dir holding recordings of more than one
  * schema. Naming one narrows the dump to it; an IR file outside the jar can be given instead.
  *
- * <p>By default every valid recording in the catalog is dumped. A node restart mints a <em>new</em>
+ * <p>By default, every valid recording in the catalog is dumped. A node restart mints a <em>new</em>
  * tap recording rather than extending the old one, so the default output repeats history. Pass a
  * stream id to select instead; see {@link #scanAndDumpLog()}.
  */
 public class SbeLogPrinter {
     /** Bundled schema names, in the order {@code --list-schemas} prints them. */
     private static final String[] BUNDLED_SCHEMAS = {"sequenced", "unsequenced", "cluster"};
-    // firstRecordingDescriptorOffset for a non-legacy catalog; see io.aeron.archive.Catalog.
-    private static final int CATALOG_HEADER_LENGTH = RecordingDescriptorHeaderDecoder.BLOCK_LENGTH;
+    private static final int CATALOG_HEADER_LENGTH = CatalogHeaderDecoder.BLOCK_LENGTH;
     private static final int DESCRIPTOR_HEADER_LENGTH = RecordingDescriptorHeaderDecoder.BLOCK_LENGTH;
 
     /** streamIdFilter value meaning "no filter" — dump every recording. Stream id 0 is legal, so 0 cannot serve. */
     public static final int NO_STREAM_FILTER = Integer.MIN_VALUE;
+
+    private static final String RECORDING_SEGMENT_SUFFIX = ".rec";
 
     /** One loaded schema: its IR (for template lookup) and the printer built from it. */
     private record Schema(Ir ir, JsonPrinter printer) {
@@ -55,10 +57,15 @@ public class SbeLogPrinter {
 
     private final File archiveDir;
     private final Map<Integer, Schema> schemasBySchemaId = new HashMap<>();
+
     private final OtfHeaderDecoder sbeHeaderDecoder;
+    private final DataHeaderFlyweight dataHeader;
+        private final RecordingDescriptorHeaderDecoder headerDecoder = new RecordingDescriptorHeaderDecoder();
+    private final RecordingDescriptorDecoder descriptorDecoder = new RecordingDescriptorDecoder();
+
     private final int streamIdFilter;
     private final boolean oneLine;
-    private final StringBuilder outputBuilder = new StringBuilder();
+    private final StringBuilder builder = new StringBuilder();
 
     public SbeLogPrinter(final List<Ir> irs, final String archiveDirPath, final int streamIdFilter,
                          final boolean oneLine) {
@@ -74,6 +81,7 @@ public class SbeLogPrinter {
         // Every schema here uses the standard messageHeader composite, so any one of them reads the
         // schema id that selects the rest.
         this.sbeHeaderDecoder = new OtfHeaderDecoder(irs.getFirst().headerStructure());
+        this.dataHeader = new DataHeaderFlyweight();
     }
 
     /** Loads one of the IR files packaged in the jar, by schema name. */
@@ -107,6 +115,9 @@ public class SbeLogPrinter {
      * Message name for a template id, for labelling the dump — a header-only message such as {@code Tick}
      * is otherwise indistinguishable from any other in the JSON, which carries field values only. The first
      * token of a message is its BEGIN_MESSAGE token, whose name is the message name.
+     * @param ir internal representation
+     * @param templateId template identity
+     * @return message name
      */
     private static String messageName(final Ir ir, final int templateId) {
         final List<Token> tokens = ir.getMessage(templateId);
@@ -114,69 +125,84 @@ public class SbeLogPrinter {
     }
 
     /**
+     * Message token
+     * @param ir internal representation
+     * @param templateId message templateId
+     * @return token
+     */
+    private static Token messageToken(final Ir ir, final int templateId) {
+        final List<Token> tokens = ir.getMessage(templateId);
+        return null == tokens || tokens.isEmpty() ? null : tokens.getFirst();
+    }
+
+    /**
      * A cluster-log {@code SessionMessageHeader} is not a standalone entry: {@code LogPublisher} appends
      * the raw client ingress payload — a self-describing SBE message in a different schema — immediately
      * after it in the same Aeron frame (this is what {@code ClusterStreamSender::send} builds). Without
      * this, the dump shows only the envelope and silently drops the message it wrapped.
+     * @param schema protocol schema
+     * @param templateId message templateIdn
+     * @param buffer message buffer
+     * @param payloadOffset payload offset
+     * @param frameEndOffset frame end offset
      */
-    private void appendNestedIngressMessage(final Schema schema, final int templateId, final UnsafeBuffer buffer,
-                                            final int payloadOffset, final int frameEndOffset) {
-        if (!"SessionMessageHeader".equals(messageName(schema.ir(), templateId))) {
-            return;
-        }
-        final int nestedOffset = payloadOffset + sbeHeaderDecoder.encodedLength() +
-                                 sbeHeaderDecoder.getBlockLength(buffer, payloadOffset);
-        if (nestedOffset >= frameEndOffset) {
-            return;
-        }
-        final int nestedSchemaId = sbeHeaderDecoder.getSchemaId(buffer, nestedOffset);
-        final int nestedTemplateId = sbeHeaderDecoder.getTemplateId(buffer, nestedOffset);
-        final Schema nestedSchema = schemasBySchemaId.get(nestedSchemaId);
-        outputBuilder.append(' ');
-        if (null == nestedSchema || null == nestedSchema.ir().getMessage(nestedTemplateId)) {
-            outputBuilder.append("<undecodable ingress payload: schema ").append(nestedSchemaId)
-                         .append(", templateId ").append(nestedTemplateId).append('>');
-        } else {
-            outputBuilder.append(messageName(nestedSchema.ir(), nestedTemplateId)).append('=');
-            nestedSchema.printer().print(outputBuilder, buffer, nestedOffset);
+    private void appendNestedIngressMessage(final Schema schema,
+                                            final int templateId,
+                                            final UnsafeBuffer buffer,
+                                            final int payloadOffset,
+                                            final int frameEndOffset) {
+        final Ir ir = schema.ir();
+        final Token message = messageToken(ir, templateId);
+        if (null != message && SessionMessageHeaderDecoder.SCHEMA_ID == ir.id() &&
+            SessionMessageHeaderDecoder.TEMPLATE_ID == message.id()) {
+            final int nestedOffset = payloadOffset + sbeHeaderDecoder.encodedLength() +
+                sbeHeaderDecoder.getBlockLength(buffer, payloadOffset);
+            if (nestedOffset < frameEndOffset) {
+                final int nestedSchemaId = sbeHeaderDecoder.getSchemaId(buffer, nestedOffset);
+                final int nestedTemplateId = sbeHeaderDecoder.getTemplateId(buffer, nestedOffset);
+                final Schema nestedSchema = schemasBySchemaId.get(nestedSchemaId);
+                final Ir nestedIr = nestedSchema.ir();
+                builder.append(' ');
+                if (null == nestedIr.getMessage(nestedTemplateId)) {
+                    builder.append("<undecodable ingress payload: schema ").append(nestedSchemaId)
+                        .append(", templateId ").append(nestedTemplateId).append('>');
+                } else {
+                    builder.append(messageName(nestedIr, nestedTemplateId)).append('=');
+                    nestedSchema.printer().print(builder, buffer, nestedOffset);
+                }
+            }
         }
     }
 
     /**
-     * Collapses the pretty-printed JSON onto a single line, replacing each newline and the indent run that
-     * follows it with one space. JsonPrinter has no compact mode — the layout is hardcoded in JsonTokenListener
-     * — so this rewrites its output. Safe because every literal newline in that output is structural: a newline
-     * inside a string value is escaped to {@code \n} by {@code Types.jsonEscape}, never emitted raw.
+     * Collapses the pretty-printed JSON onto a single line.
+     * @param builder string builder
      */
     private static void collapse(final StringBuilder builder) {
-        int write = 0;
+        int position = 0;
         for (int read = 0, length = builder.length(); read < length; read++) {
             final char c = builder.charAt(read);
             if ('\n' == c) {
                 while (read + 1 < length && ' ' == builder.charAt(read + 1)) {
-                    read++;
+                    ++read;
                 }
-                if (write > 0 && ' ' != builder.charAt(write - 1)) {
-                    builder.setCharAt(write++, ' ');
+                if (position > 0 && ' ' != builder.charAt(position - 1)) {
+                    builder.setCharAt(position, ' ');
+                    ++position;
                 }
             } else {
-                builder.setCharAt(write++, c);
+                builder.setCharAt(position, c);
+                ++position;
             }
         }
-        if (write > 0 && ' ' == builder.charAt(write - 1)) {
-            write--;
+        if (position > 0 && ' ' == builder.charAt(position - 1)) {
+            --position;
         }
-        builder.setLength(write);
+        builder.setLength(position);
     }
 
     /**
-     * Dumps recordings as JSON. With no stream filter every valid recording is dumped in catalog order.
-     * With a stream filter only the <em>newest</em> recording on that stream is dumped: recording ids are
-     * assigned monotonically by the archive, so the highest id on a stream is the most recent, and for the
-     * sequenced tap that one recording holds the complete history — a node replays its whole cluster log on
-     * restart and re-emits every message, so each tap recording starts again at globalSeqNo 1 and older ones
-     * are strict prefixes of it. Dumping them all would just repeat that history.
-     *
+     * Dumps recordings as JSON.
      * @return true if at least one recording was dumped.
      */
     public boolean scanAndDumpLog() {
@@ -185,58 +211,58 @@ public class SbeLogPrinter {
             System.err.println("Could not locate archive.catalog file in " + archiveDir);
             return false;
         }
-
-        try (RandomAccessFile raf = new RandomAccessFile(catalogFile, "r"); FileChannel channel = raf.getChannel()) {
+        try (RandomAccessFile file = new RandomAccessFile(catalogFile, "r"); FileChannel channel = file.getChannel()) {
             final long fileLength = channel.size();
             final ByteBuffer byteBuffer = channel.map(FileChannel.MapMode.READ_ONLY, 0, fileLength);
             final UnsafeBuffer catalogBuffer = new UnsafeBuffer(byteBuffer);
-            final RecordingDescriptorHeaderDecoder headerDecoder = new RecordingDescriptorHeaderDecoder();
-            final RecordingDescriptorDecoder descriptorDecoder = new RecordingDescriptorDecoder();
-            int offset = CATALOG_HEADER_LENGTH;
-            boolean foundAny = false;
-            int selectedOffset = -1;
-            long selectedRecordingId = -1;
+            processFile(fileLength, catalogBuffer);
+        } catch (Exception error) {
+            System.err.println("Failed parsing catalog file: " + error.getMessage());
+            return false;
+        }
+        return true;
+    }
 
-            while (offset + DESCRIPTOR_HEADER_LENGTH <= fileLength) {
-                headerDecoder.wrap(catalogBuffer, offset, RecordingDescriptorHeaderDecoder.BLOCK_LENGTH,
-                                   RecordingDescriptorHeaderDecoder.SCHEMA_VERSION);
-                final int recordingLength = headerDecoder.length();
-                if (recordingLength <= 0) {
-                    break;
-                }
-
+    private void processFile(final long fileLength, final UnsafeBuffer buffer) {
+        int offset = CATALOG_HEADER_LENGTH;
+        int selectedOffset = -1;
+        long selectedRecordingId = -1;
+        int recordingLength = 1;
+        boolean found = false;
+        while (recordingLength >= 1 && offset + DESCRIPTOR_HEADER_LENGTH <= fileLength) {
+            headerDecoder.wrap(buffer, offset, RecordingDescriptorHeaderDecoder.BLOCK_LENGTH,
+                RecordingDescriptorHeaderDecoder.SCHEMA_VERSION);
+            recordingLength = headerDecoder.length();
+            if (recordingLength >= 1) {
                 final int frameLength = BitUtil.align(recordingLength + DESCRIPTOR_HEADER_LENGTH,
                     BitUtil.CACHE_LINE_LENGTH);
                 if (headerDecoder.state() == RecordingState.VALID) {
                     final int descriptorOffset = offset + DESCRIPTOR_HEADER_LENGTH;
-                    descriptorDecoder.wrap(catalogBuffer, descriptorOffset, RecordingDescriptorDecoder.BLOCK_LENGTH,
-                                           RecordingDescriptorDecoder.SCHEMA_VERSION);
+                    descriptorDecoder.wrap(buffer, descriptorOffset,
+                        RecordingDescriptorDecoder.BLOCK_LENGTH,
+                        RecordingDescriptorDecoder.SCHEMA_VERSION);
                     if (NO_STREAM_FILTER == streamIdFilter) {
                         dumpRecording(descriptorDecoder);
-                        foundAny = true;
+                        found = true;
                     } else if (descriptorDecoder.streamId() == streamIdFilter &&
-                               descriptorDecoder.recordingId() > selectedRecordingId) {
+                        descriptorDecoder.recordingId() > selectedRecordingId) {
                         selectedRecordingId = descriptorDecoder.recordingId();
                         selectedOffset = descriptorOffset;
                     }
                 }
                 offset += frameLength;
             }
-            if (NO_STREAM_FILTER != streamIdFilter && selectedOffset >= 0) {
-                descriptorDecoder.wrap(catalogBuffer, selectedOffset, RecordingDescriptorDecoder.BLOCK_LENGTH,
-                                       RecordingDescriptorDecoder.SCHEMA_VERSION);
-                dumpRecording(descriptorDecoder);
-                foundAny = true;
-            }
-            if (!foundAny) {
-                System.err.println(NO_STREAM_FILTER == streamIdFilter
-                                       ? "No valid recordings found in catalog."
-                                       : "No valid recording on stream " + streamIdFilter + " found in catalog.");
-            }
-            return foundAny;
-        } catch (Exception e) {
-            System.err.println("Failed parsing catalog file: " + e.getMessage());
-            return false;
+        }
+        if (NO_STREAM_FILTER != streamIdFilter && selectedOffset >= 0) {
+            descriptorDecoder.wrap(buffer, selectedOffset, RecordingDescriptorDecoder.BLOCK_LENGTH,
+                RecordingDescriptorDecoder.SCHEMA_VERSION);
+            dumpRecording(descriptorDecoder);
+            found = true;
+        }
+        if (!found) {
+            System.err.println(NO_STREAM_FILTER == streamIdFilter ?
+                "No valid recordings found in catalog." :
+                "No valid recording on stream " + streamIdFilter + " found in catalog.");
         }
     }
 
@@ -244,85 +270,90 @@ public class SbeLogPrinter {
         final long recordingId = descriptorDecoder.recordingId();
         final long startPosition = descriptorDecoder.startPosition();
         final long stopPosition = descriptorDecoder.stopPosition();
+        final int termBufferLength = descriptorDecoder.termBufferLength();
         final int segmentFileLength = descriptorDecoder.segmentFileLength();
-
         System.out.printf("[Catalog] Recording ID: %d | Stream ID: %d | Start Pos: %d | Stop Pos: %d%n", recordingId,
                           descriptorDecoder.streamId(), startPosition, stopPosition);
-
-        readPhysicalSegments(recordingId, startPosition, stopPosition, segmentFileLength);
+        readPhysicalSegments(recordingId, startPosition, stopPosition, termBufferLength, segmentFileLength);
     }
 
-    private void readPhysicalSegments(final long recordingId, final long startPos, final long stopPos,
+    /**
+     * Read log segment
+     * @param recordingId recording identity
+     * @param startPos start position
+     * @param stopPos stop position
+     * @param termLength term buffer length
+     * @param segmentLength segment length
+     */
+    private void readPhysicalSegments(final long recordingId,
+                                      final long startPos,
+                                      final long stopPos,
+                                      final int termLength,
                                       final int segmentLength) {
-        long currentPosition = startPos;
         // An in-progress recording has no stop position yet; rely on frame/segment EOF to end the scan.
-        final long effectiveStopPos = stopPos == AeronArchive.NULL_POSITION ? Long.MAX_VALUE : stopPos;
-        while (currentPosition < effectiveStopPos) {
-            final long segmentBasePosition = currentPosition - (currentPosition % segmentLength);
-            // Archive.Configuration.RECORDING_SEGMENT_SUFFIX is package-private, so it's inlined here.
-            final File segmentFile = new File(archiveDir, recordingId + "-" + segmentBasePosition + ".rec");
-
+        final long endPosition = stopPos == AeronArchive.NULL_POSITION ? Long.MAX_VALUE : stopPos;
+        for (long position = startPos; position < endPosition; ) {
+            // The segment grid is anchored on the recording's start term, not on position 0.
+            final long segmentBasePosition = AeronArchive.segmentFileBasePosition(startPos, position, termLength,
+                                                                                 segmentLength);
+            final File segmentFile = new File(archiveDir, recordingId + "-" + segmentBasePosition +
+                RECORDING_SEGMENT_SUFFIX);
             if (!segmentFile.exists()) {
                 break;
             }
-
-            final long positionBeforeSegment = currentPosition;
             try (RandomAccessFile raf = new RandomAccessFile(segmentFile, "r");
                  FileChannel channel = raf.getChannel()) {
                 final long fileLength = channel.size();
-                final ByteBuffer byteBuffer = channel.map(FileChannel.MapMode.READ_ONLY, 0, fileLength);
-                final UnsafeBuffer unsafeBuffer = new UnsafeBuffer(byteBuffer);
-                final DataHeaderFlyweight frameHeader = new DataHeaderFlyweight();
-                int fileOffset = (int)(currentPosition % segmentLength);
-                while (fileOffset < fileLength && currentPosition < effectiveStopPos) {
-                    frameHeader.wrap(unsafeBuffer, fileOffset, (int)fileLength - fileOffset);
-                    final int frameLength = frameHeader.frameLength();
+                final ByteBuffer mappedFile = channel.map(FileChannel.MapMode.READ_ONLY, 0, fileLength);
+                final UnsafeBuffer buffer = new UnsafeBuffer(mappedFile);
+                int fileOffset = (int)(position - segmentBasePosition);
+                while (fileOffset + DataHeaderFlyweight.HEADER_LENGTH <= fileLength && position < endPosition) {
+                    dataHeader.wrap(buffer, fileOffset, (int)fileLength - fileOffset);
+                    final int frameLength = printMessage(fileOffset, position, buffer);
                     if (frameLength <= 0) {
-                        break;
+                        // Zero-filled tail: the end of a still-growing recording.
+                        return;
                     }
-                    if (frameHeader.headerType() == DataHeaderFlyweight.HDR_TYPE_DATA) {
-                        final int sbePayloadOffset = fileOffset + DataHeaderFlyweight.HEADER_LENGTH;
-                        final int templateId = sbeHeaderDecoder.getTemplateId(unsafeBuffer, sbePayloadOffset);
-                        final int schemaId = sbeHeaderDecoder.getSchemaId(unsafeBuffer, sbePayloadOffset);
-                        final Schema schema = schemasBySchemaId.get(schemaId);
-
-                        // Frames this run cannot decode are labelled and skipped rather than left to throw:
-                        // one archive dir holds recordings of several schemas, and a schema may cover only
-                        // part of a stream (sbe-cluster.xml is a trimmed mirror of io.aeron.cluster.codecs).
-                        if (null == schema) {
-                            System.out.println("--- Log File Offset: " + currentPosition +
-                                               " | <schema " + schemaId + " not loaded> (templateId " +
-                                               templateId + ") ---");
-                        } else if (null == schema.ir().getMessage(templateId)) {
-                            System.out.println("--- Log File Offset: " + currentPosition +
-                                               " | <not in schema> (templateId " + templateId + ") ---");
-                        } else {
-                            outputBuilder.setLength(0);
-                            outputBuilder.append(messageName(schema.ir(), templateId)).append('=');
-                            schema.printer().print(outputBuilder, unsafeBuffer, sbePayloadOffset);
-                            appendNestedIngressMessage(schema, templateId, unsafeBuffer, sbePayloadOffset,
-                                                       fileOffset + frameLength);
-                            if (oneLine) {
-                                collapse(outputBuilder);
-                            }
-                            System.out.println(outputBuilder);
-                        }
-                    }
-
                     final int paddedLength = BitUtil.align(frameLength, FrameDescriptor.FRAME_ALIGNMENT);
                     fileOffset += paddedLength;
-                    currentPosition += paddedLength;
+                    position += paddedLength;
                 }
-            } catch (Exception e) {
-                System.err.println("Exception parsing segment " + segmentFile + ": " + e.getMessage());
-                break;
-            }
-
-            // No frame was available to advance past — the tail of a still-growing recording. Stop here.
-            if (currentPosition == positionBeforeSegment) {
+            } catch (Exception error) {
+                System.err.println("Exception parsing segment " + segmentFile + ": " + error.getMessage());
                 break;
             }
         }
+    }
+
+    private int printMessage(final int fileOffset, final long currentPosition, final UnsafeBuffer buffer) {
+        final int frameLength = dataHeader.frameLength();
+        if (frameLength >= 1 && dataHeader.headerType() == DataHeaderFlyweight.HDR_TYPE_DATA) {
+            final int sbePayloadOffset = fileOffset + DataHeaderFlyweight.HEADER_LENGTH;
+            final int templateId = sbeHeaderDecoder.getTemplateId(buffer, sbePayloadOffset);
+            final int schemaId = sbeHeaderDecoder.getSchemaId(buffer, sbePayloadOffset);
+            final Schema schema = schemasBySchemaId.get(schemaId);
+            if (null == schema) {
+                System.out.format("Position: %d, Error: Schema %d not loaded, templateId = %d\n",
+                    currentPosition, schemaId, templateId);
+            } else {
+                final Ir ir = schema.ir();
+                if (null == ir.getMessage(templateId)) {
+                    System.out.format("Position: %d, Error: templpateId = %d not in schema\n",
+                        currentPosition, templateId);
+                } else {
+                    builder.setLength(0);
+                    builder.append(messageName(ir, templateId)).append(" = ");
+                    schema.printer().print(builder, buffer, sbePayloadOffset);
+                    appendNestedIngressMessage(schema, templateId, buffer, sbePayloadOffset,
+                        fileOffset + frameLength);
+                    if (oneLine) {
+                        collapse(builder);
+                    }
+                    System.out.println(builder);
+                }
+            }
+        }
+        return frameLength;
     }
 
     private static void usage() {
@@ -392,7 +423,6 @@ public class SbeLogPrinter {
             System.err.println("Unknown schema '" + schema + "' — bundled: " + String.join(", ", BUNDLED_SCHEMAS));
             System.exit(1);
         }
-
         try {
             final List<Ir> irs = specIrPath != null ? List.of(loadIrFile(specIrPath))
                                      : schema != null ? List.of(loadBundledIr(schema))

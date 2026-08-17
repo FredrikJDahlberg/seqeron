@@ -35,87 +35,6 @@ import org.limitless.phixeron.util.Logger;
  * global stream is retired) and audit.md S4 (sequencer liveness coupled to its slowest consumer)
  * dissolves structurally. The apps' tap subscriptions are untethered, so a slow app is dropped (and
  * heals via the replay protocol below) rather than back-pressuring the sequencer.
- *
- * <p>This process exists only so that <b>one</b> reader per node touches the archive on behalf of
- * every co-located replica (design §0/§5): N apps do not each open an archive control session and
- * run their own replays. Its whole job is the on-demand replay protocol, all single-threaded on the
- * duty-cycle thread:
- * <ul>
- *   <li><b>Request</b> ({@link #REQUEST_STREAM_ID}) — an app that is cold-starting, or that detects a
- *       {@code globalSeqNo} gap on the live tap, sends {@code ReplayRequest(clientId, segmentIndex,
- *       fromPosition)}.
- *   <li><b>Control</b> ({@link #CONTROL_STREAM_ID}) — the ReplayerService answers {@code
- *       Replaying(clientId, replaySessionId, catchUpPosition)} or {@code ReplayPending(clientId)}.
- *       Untethered and bounded ({@link #MAX_CONTROL_OFFER_SPINS}) for the same reason the tap is: one
- *       thread answers every app here too, so a wedged app must not be able to hold it.
- *   <li><b>Replay</b> ({@link #REPLAY_STREAM_ID}) — it serves at most {@link #MAX_CONCURRENT_REPLAYS}
- *       archive replays at once onto this {@code aeron:ipc} stream; the requesting app attaches to the
- *       replay image by session id.
- * </ul>
- *
- * <p><b>Replay is bounded to the current recording tip, not open-ended.</b> This is a deliberate
- * divergence from the design's literal "open-ended replay that becomes the live feed": a bounded
- * replay <em>ends by itself</em> once it reaches the tip, at which point the requesting app switches
- * to the live tap (de-duping the seam by {@code globalSeqNo}) — the exact "replay reaches its tip →
- * live sub" handoff {@code ClusterStreamClient} already implements, with the tap playing the role of
- * the live sub. The app detects that tip by <em>position</em> (the {@code catchUpPosition} carried in
- * {@link ReplayingEncoder}), not by the replay image closing: a bounded replay of an <em>active</em>
- * recording does not close its image at the bound. That needs no {@code globalSeqNo→position} index,
- * and any residual gap after the handoff is healed by the same gap-detect → re-request loop (design
- * §5).
- *
- * <p><b>Strictly stateless</b> (design §6): the ReplayerService holds nothing not re-derivable from the
- * archive — only the ephemeral in-flight replay slots. A crash is a fast reconnect; apps treat
- * "ReplayerService gone" as they treat a gap and re-request on its return.
- *
- * <p><b>Startup integrity check.</b> Before ever declaring readiness, {@link #checkReady} verifies that
- * <em>every</em> recording in this node's chain begins at {@code globalSeqNo} 1 (see {@link
- * #startSelfCheck} / {@link #pollSelfCheck}, which sweep the chain one span per duty cycle rather than
- * blocking one), not just that some recording exists. Every span, not only the oldest: recovery is
- * always full-log replay with no snapshots, so a healthy recording starts at {@code globalSeqNo} 1
- * however late it was created ({@link ReplayRecordings#stitch}), and one that starts higher resumed
- * mid-history — which IS a hole at its join with the span before it. Nothing else here can see that
- * hole; it otherwise surfaces only as a co-located app that walks the chain and never converges
- * (review-3.md finding 6). A <em>stopped</em> recording with nothing in it is skipped instead: an
- * unclean restart can create one before anything is published to it, it can never gain a first frame,
- * and {@link #serveReplay} already skips it by name. This should always hold — {@code
- * SequencerService} arms and confirms its recording before it can emit a single frame, and this
- * project's cluster membership is static, never joining mid-history — so a failure here means this
- * node's own recording has been deleted, corrupted, or partially restored: a broken node. {@code
- * ready} then never becomes true for this process's lifetime ({@link
- * PhixeronCounters#REPLAYER_INTEGRITY_FAILURE_TYPE_ID} latches instead), and {@link #onRequest} answers every replay
- * request {@code ReplayUnavailable} — the refusal is what contains the broken archive here, rather than leaving every
- * consumer that asks this node for history to independently hit the same wall (and each app's wall is an abort on its
- * own first-frame-must-be-1 check, so one bad archive would take down all of them). Until the check has passed,
- * requests are answered {@code ReplayPending}: history this node has not proven good is not served.
- *
- * <p><b>Local-archive resilience.</b> The ReplayerService is off the live path entirely, so a transient
- * failure of the node's local archive degrades only history/gap <em>replay</em> — steady-state
- * delivery keeps flowing over the tap the apps read directly. It does not crash the ReplayerService either:
- * an archive control call that throws — from any path, the startup self-check included — flips it to a
- * STALLED state and keeps the duty cycle running, paces its replay retries, and answers any replay request
- * with {@code ReplayPending} — which the app already treats as "hold at the gap and re-request" — until
- * the archive returns (doc/router-archive.md). The state is the node's own view of its archive and nothing
- * else, so it is set wherever the archive refuses and cleared wherever it answers, {@link #probeArchive}
- * included: an idle Replayer must not go on reporting a fault that has been over for hours.
- *
- * <p><b>Cross-failover replay.</b> A cold-starting app walks the recording chain ({@link
- * #resolveSegments}, the same oldest-first stitching {@code ClusterStreamClient} uses). With every node
- * recording its own continuous tap this is normally a single recording spanning every leader failover,
- * so the walk sees full history rather than only the currently-active tenure. Steady-state gap recovery
- * resumes the active recording at a position ({@code ReplayRequest.segmentIndex < 0}); see {@link
- * #startReplayForClient}.
- *
- * <p><b>Slot reclamation.</b> A slot frees as soon as its app is done with it — a cold-start walk
- * supersedes each slot on its next segment request (and frees the last via its walk-terminating
- * request), and a steady-state gap resume ends with a {@code ReplayComplete} message — and a freed
- * slot is handed to any waiting app immediately ({@link #drainPending} on release/termination), not
- * at the next sweep. The idle-TTL ({@link #REPLAY_SLOT_TTL_MS}) is now only a backstop for an app
- * that died or lost its release, not the primary path (design §5's untether/timeout is a stronger
- * version of the same idea).
- *
- * <p><b>Scope.</b> Shared bootstrap replay for many co-starting replicas is deliberately not
- * implemented — each app gets its own walk. See design §2.4 for why it was designed and rejected.
  */
 public final class ReplayerService {
     /** Node-local IPC channel every ReplayerService↔app stream runs over. */
@@ -139,76 +58,28 @@ public final class ReplayerService {
      */
     static final int SELF_CHECK_STREAM_ID = 204;
 
-    /**
-     * How long a self-check replay may go unanswered before it is abandoned and started over. Spread
-     * across duty cycles, never spun on: the check reads at most one fragment per {@link #poll()}, so
-     * this bounds an <em>elapsed</em> wait, not a blocked one. The replay is a few bytes over local
-     * IPC, so it is generous headroom rather than an expected duration; expiring just means
-     * {@link #checkReady} starts a fresh one.
-     */
+    // How long a self-check replay may go unanswered before it is abandoned and started over.
     private static final long SELF_CHECK_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(2);
 
-    /**
-     * Bounds the length the self-check asks the archive to replay. It reads exactly one fragment, so
-     * this only has to cover the first frame — comfortably over a default MTU, and orders of magnitude
-     * under the whole recording it used to request.
-     */
+    // Bounds the length the self-check asks the archive to replay.
     private static final long SELF_CHECK_REPLAY_LENGTH = 4096;
 
-    /**
-     * Archive-IO parallelism cap on concurrent replays (design §4/§8) — not a fairness knob. The
-     * only multi-replay event that matters is node start/restart, and the node emits nothing until
-     * every replica is caught up (the readiness barrier), so this is a makespan bound, not a
-     * starvation one. Package-private so {@code ReplayerServiceTest} fills exactly this many slots
-     * rather than hardcoding the number a second time.
-     */
     static final int MAX_CONCURRENT_REPLAYS = 4;
-
-    /**
-     * A {@code Replaying.replaySessionId} of this value means "you are already at the tip; there is
-     * nothing to replay — just follow the live tap." Sent instead of starting a zero-length replay.
-     */
     public static final long NO_REPLAY_NEEDED = NULL_VALUE;
 
-    /**
-     * Idle-TTL slot reclamation (see class Javadoc): a slot untouched this long is reclaimed. Genuinely
-     * an IDLE timeout — a client refreshes its slot with {@code ReplayHeartbeat} for as long as it is
-     * riding the replay image, so this bounds how long a slot survives its client going away, not how
-     * long a replay may legitimately take. It must not be the latter: the design mandates full-log
-     * replay with no snapshots, so replay duration grows with the trading day and no fixed lifetime is
-     * correct. Reclaiming mid-flight stops the archive replay under a healthy client.
-     */
+    // Idle-TTL slot reclamation (see class Javadoc): a slot untouched this long is reclaimed.
     private static final long REPLAY_SLOT_TTL_MS = 60_000;
 
-    /**
-     * While STALLED, probe the local archive (for replay) at most this often, so a dead archive is not
-     * hammered every duty cycle.
-     */
+    // While STALLED, probe the local archive (for replay).
     private static final long STALL_RETRY_INTERVAL_MS = 1_000;
 
-    /**
-     * Bounds {@link #offerControl}'s retry spin, whatever the reason the offer failed. Every app is
-     * answered from this one duty-cycle thread, so an app that stops draining the control stream must
-     * not be able to hold it — that would couple every other app's replays to the slowest one, the
-     * audit.md S4 pattern this design exists to dissolve, reintroduced on the control plane. A reply
-     * that will not go out is dropped instead; the app's own resend timer is the retry. The apps
-     * subscribe untethered, so this bound is a backstop for a burst, not the primary defence.
-     */
+    // Bounds {@link #offerControl}'s retry spin,
     private static final int MAX_CONTROL_OFFER_SPINS = 1_000;
 
-    /**
-     * Window {@link ReplayClientIdCollisions} counts {@code requestId} regressions over. Wide enough
-     * that two colliding clients — each resending on its own ~500ms timer — cross the threshold well
-     * inside it, short enough that unrelated restarts spread over a trading day never accumulate.
-     */
+    // Window {@link ReplayClientIdCollisions} counts {@code requestId} regressions over
     private static final long CLIENT_ID_COLLISION_WINDOW_MS = 10_000;
 
-    /**
-     * Quiet period that ends a control-reply-drop episode (see {@link #onControlReplyDropped}). Drops
-     * come in bursts — a wedged app is answered on every one of its ~500ms resends — so the report is
-     * per burst, not per drop; a drop this long after the last one is a new episode and is reported
-     * again. Without it the first burst of the process is the only one ever named.
-     */
+    // Quiet period that ends a control-reply-drop episode (see {@link #onControlReplyDropped}).
     private static final long CONTROL_DROP_QUIET_MS = 60_000;
 
     private static final int FRAGMENT_LIMIT = 16;
@@ -221,17 +92,14 @@ public final class ReplayerService {
     /** Brings the whole process down; wired by {@link ReplayerServer}. See {@link #fatalDutyCycleFailure}. */
     private final Runnable fatalHandler;
 
-    // Proactive readiness marker: set once the co-located SequencerService's tap recording is visible
-    // on the local archive AND has passed the startup integrity check (see checkReady). The launch
-    // scripts wait on the readiness log before starting apps.
+    // The SequencerService's tap recording is visible on the local archive AND has passed the startup integrity check.
     private boolean ready = false;
 
-    // Latched once a tap recording's first frame fails the gseq-1 integrity check (see
-    // checkReady/pollSelfCheck): this node's recording chain doesn't cover the log from the start
-    // (deleted, corrupted, or a partial restore), so there is no valid history to serve. `ready` must
-    // never become true once this is set — every consumer that would otherwise ask this node for
-    // history would independently hit the same wall, so it fails here instead, once, loudly.
     private boolean integrityFailed = false;
+    private boolean staleActiveRecordingLogged = false;
+    private boolean stalled = false;
+
+    private long lastStallRetryMs = 0;
 
     // Startup integrity self-check (see checkReady)
     private Replayer.SelfCheckStream selfCheckSub;
@@ -243,37 +111,15 @@ public final class ReplayerService {
     private long selfCheckGlobalSeqNo = NULL_VALUE; // what the first fragment carried, once read
     private long selfCheckDeadlineNs = 0;
 
-    // Latches while the ">1 active tap recording" anomaly is reported (see resolveSegments): the
-    // condition lasts as long as the stale recording is on disk, and resolveSegments runs per replay
-    // request, so without this it would repeat the fault line on every one. Cleared when the count
-    // returns to 1 — an operator purge followed by a later unclean shutdown is a second episode, and
-    // this anomaly has no counter, so an un-re-armed latch makes it silent rather than merely quiet.
-    private boolean staleActiveRecordingLogged = false;
 
     // When the last dropped control reply was (see onControlReplyDropped), 0 = none this process.
-    // Drops are reported per episode rather than per drop: a wedged app is answered on every one of its
-    // resends, so without this the fault line would repeat at the resend rate. The counter carries the
-    // rate in between.
     private long lastControlDropMs = 0;
 
     // Replay protocol state
-    // Admission control and pending-queue bookkeeping is a pure function of client ids/tokens (see
-    // ReplaySlotAllocator's Javadoc) — split out so it's unit-testable without an archive.
     private final ReplaySlotAllocator replaySlots = new ReplaySlotAllocator(MAX_CONCURRENT_REPLAYS, REPLAY_SLOT_TTL_MS);
 
-    // Two co-located apps launched with the same PHIXERON_REPLAYER_CLIENT_ID supersede each other's
-    // replays on every request and neither ever catches up. Also a pure function of what arrives on the
-    // request stream, so it too is split out and unit-tested without an archive.
     private final ReplayClientIdCollisions clientIdCollisions =
         new ReplayClientIdCollisions(CLIENT_ID_COLLISION_WINDOW_MS);
-
-    // Local-archive resilience (doc/router-archive.md): a transient local-archive failure must not kill
-    // the duty-cycle thread. The ReplayerService is off the live path (apps read the tap directly), so a stall
-    // only affects replay. While STALLED it keeps its duty cycle running, paces its replay retries, and
-    // holds replay-requesting apps with ReplayPending until the archive returns. Surfaced via
-    // stalledCounter (PhixeronCounters.REPLAYER_STALLED_TYPE_ID).
-    private boolean stalled = false;
-    private long lastStallRetryMs = 0;
 
     // Operator counters (see PhixeronCounters)
     private final AtomicCounter stalledCounter;

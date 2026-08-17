@@ -28,18 +28,8 @@ public final class ReplayRecordings {
     /**
      * Orders {@code spans} oldest→newest by {@code recordingId} and keeps every stopped span plus the
      * newest active one.
-     *
-     * <p>The key is {@code recordingId} — monotone by construction as the archive creates recordings —
-     * and not the descriptor's {@code startTimestamp}, which is archive wall clock: a backward clock
-     * step between two recordings inverts them, and the client's {@code globalSeqNo} de-dupe then
-     * discards the older segment wholesale with no diagnostic.
-     *
-     * <p>The active span kept is the newest, not the first: an unclean shutdown leaves the pre-restart
-     * recording unstopped alongside the live one, and that stale entry is only a prefix — with no
-     * snapshots every restart replays the whole log, so the newest recording starts at {@code
-     * globalSeqNo} 1 as well and holds complete history. Keeping the stale one instead ends the chain
-     * before recent history, and a client that walks it to its end declares itself caught up, gaps on
-     * the tap, re-walks, and never converges.
+     * <p>The key is {@code recordingId} — monotone by construction as the archive creates recordings.
+     * <p>The active span kept is the newest.
      * @param spans unordered recording spans from one archive listing
      * @return the spans to replay, oldest first
      */

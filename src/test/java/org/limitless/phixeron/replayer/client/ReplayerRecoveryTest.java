@@ -18,33 +18,76 @@ import org.limitless.phixeron.sbe.sequenced.TickEncoder;
 import org.limitless.phixeron.sbe.unsequenced.ReplayingEncoder;
 
 /**
- * Unit tests for the walk / gap-recovery state machine ported from the C++
- * {@code ReplayerStreamReceiver.hpp}. No Aeron runtime: frames and control replies are fed straight into
- * the same {@code onFrame}/{@code onControl} paths {@code poll()} drives, which is exactly how the C++
- * suite drives its twin.
- *
- * <p>The receiver is deliberately started via {@link ReplayerStreamReceiver#startForTest()} rather than
- * {@code start(Aeron, int)} — the cold-start request is the only thing {@code start} does that the state
- * machine depends on, and {@code requestReplay} already tolerates having no publication.
+ * Unit tests for the walk / gap-recovery state machine, and the twin of the C++
+ * {@code ReplayerRecoveryTest.cpp}. {@link ReplayerRecovery} holds no Aeron runtime and no clock of its
+ * own, so the suite drives it directly: its transport is recorded through {@link ReplayerRecoveryActions}
+ * and its clock is owned by the test.
  */
-class ReplayerStreamReceiverTest {
+class ReplayerRecoveryTest {
     private static final int CLIENT_ID = 4;
     private static final long NO_REPLAY_NEEDED = ReplayerService.NO_REPLAY_NEEDED;
 
     /** The walk terminator: nothing left to replay AND no recording named. */
     private static final long CHAIN_EXHAUSTED = -1;
 
+    /** Arrival stamp; carried through to SequencedEvent, asserted on by no test here. */
+    private static final long RECEIVE_NS = 0;
+
+    /** Stands in for the wall clock. The absolute value is arbitrary; only applied deltas matter. */
+    private static final long CLOCK_MS = 3 * 60 * 60 * 1000L;
+
     private final List<Long> dispatched = new ArrayList<>();
     private final List<Long> caughtUpAt = new ArrayList<>();
-    private ReplayerStreamReceiver receiver;
+    private RecordingActions actions;
+    private ReplayerRecovery receiver;
+
+    /** The transport recorded rather than performed — no publication, so nothing ever reaches the wire. */
+    private static final class RecordingActions implements ReplayerRecoveryActions {
+        long nowMs = CLOCK_MS;
+        int requestsSent;
+
+        @Override
+        public void sendReplayRequest(final long requestId, final int segmentIndex, final long fromPosition) {
+            ++requestsSent;
+        }
+
+        @Override
+        public boolean sendReplayComplete() {
+            return false;
+        }
+
+        @Override
+        public boolean sendReplayHeartbeat() {
+            return false;
+        }
+
+        @Override
+        public void openReplay(final long replaySessionId) {
+        }
+
+        @Override
+        public void closeReplay() {
+        }
+
+        @Override
+        public void recoveryStalled(final boolean stalled) {
+        }
+
+        @Override
+        public Integer memberId() {
+            return 0;
+        }
+    }
 
     @BeforeEach
     void setUp() {
         dispatched.clear();
         caughtUpAt.clear();
-        receiver = new ReplayerStreamReceiver(CLIENT_ID, event -> dispatched.add(event.globalSeqNo()), null,
-                                              () -> caughtUpAt.add((long)dispatched.size()));
-        receiver.startForTest();
+        actions = new RecordingActions();
+        receiver = new ReplayerRecovery(CLIENT_ID, actions, () -> actions.nowMs,
+                                        event -> dispatched.add(event.globalSeqNo()), null,
+                                        () -> caughtUpAt.add((long)dispatched.size()));
+        receiver.start();
     }
 
     @Test
@@ -174,12 +217,12 @@ class ReplayerStreamReceiverTest {
     void shiftedRecordingChainRestartsTheWalk() {
         answerReplaying(11, 4096, 7); // segment 0 → recording 7
         assertEquals(7, receiver.walkRecordingId());
-        receiver.replaySegmentCompleteForTest(); // → segment 1, nothing to compare against yet
+        completeSegment(); // → segment 1, nothing to compare against yet
         assertEquals(1, receiver.walkSegmentIndex());
         assertEquals(-1, receiver.walkRecordingId());
 
         answerReplaying(12, 8192, 8);         // segment 1 → recording 8
-        receiver.replayImageClosedForTest(0); // stopped short → re-request the SAME segment
+        receiver.onReplayImageClosed(0); // stopped short → re-request the SAME segment
         answerReplaying(13, 8192, 9);         // ... but it now resolves to recording 9
 
         assertEquals(0, receiver.walkSegmentIndex(), "the chain moved under the walk — start it over");
@@ -191,11 +234,11 @@ class ReplayerStreamReceiverTest {
     @DisplayName("a replay image closing at its bound completes the segment; short of it re-requests")
     void closedImageIsCompletionOnlyAtTheBound() {
         answerReplaying(11, 4096, 7);
-        receiver.replayImageClosedForTest(4096);
+        receiver.onReplayImageClosed(4096);
         assertEquals(1, receiver.walkSegmentIndex(), "at the bound: the segment is done");
 
         answerReplaying(12, 8192, 8);
-        receiver.replayImageClosedForTest(4000);
+        receiver.onReplayImageClosed(4000);
         assertEquals(1, receiver.walkSegmentIndex(), "short of the bound: the same segment is re-requested");
         assertTrue(receiver.isAwaitingReplay());
     }
@@ -230,8 +273,13 @@ class ReplayerStreamReceiverTest {
                            replayingLength());
     }
 
+    /** The replay image reaching the bound the Replayer gave it — how a segment completes. */
+    private void completeSegment() {
+        receiver.onReplayPosition(receiver.catchUpPosition());
+    }
+
     private void deliverReplay(final long globalSeqNo) {
-        receiver.onFrame(tickFrame(globalSeqNo), 0, tickLength(), globalSeqNo * 1024, true);
+        receiver.onFrame(tickFrame(globalSeqNo), 0, tickLength(), globalSeqNo * 1024, RECEIVE_NS, true);
     }
 
     private void deliverTap(final long globalSeqNo) {
@@ -239,7 +287,7 @@ class ReplayerStreamReceiverTest {
     }
 
     private void deliverTapAt(final long globalSeqNo, final long position) {
-        receiver.onFrame(tickFrame(globalSeqNo), 0, tickLength(), position, false);
+        receiver.onFrame(tickFrame(globalSeqNo), 0, tickLength(), position, RECEIVE_NS, false);
     }
 
     private static UnsafeBuffer tickFrame(final long globalSeqNo) {

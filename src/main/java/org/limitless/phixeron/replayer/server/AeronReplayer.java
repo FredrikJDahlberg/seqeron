@@ -18,8 +18,8 @@ import org.limitless.phixeron.sequencer.SequencerService;
  * is a forward — any decision belongs above the seam, in {@code ReplayerService}, where it is
  * testable.
  *
- * <p>Not thread-safe, and does not need to be: the control publication is exclusive and every call is
- * made from the single replay duty-cycle thread (see {@code ReplayerServer}'s {@code NoOpLock} note).
+ * <p>Not thread-safe, the control publication is exclusive and every call is from the duty-cycle thread
+ * (see {@code ReplayerServer}'s {@code NoOpLock} note).
  */
 public final class AeronReplayer implements Replayer {
     private final Aeron aeron;

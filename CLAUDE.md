@@ -147,8 +147,8 @@ to collide on), so a node's recording is one continuous run spanning every leade
 
 The replay protocol has two sides and they live in two namespaces — **`replayer.server`** (Java only:
 `ReplayerServer`/`ReplayerService` and their pure seams `Replayer`, `ReplaySlotAllocator`,
-`ReplayRecordings`, `ReplayClientIdCollisions`) and **`replayer.client`** (`ReplayerStreamReceiver`,
-`RecoveryProgressPolicy`, `SequencedEvent` — Java, and C++ in
+`ReplayRecordings`, `ReplayClientIdCollisions`) and **`replayer.client`** (`ReplayerStreamReceiver` and its
+pure seam `ReplayerRecovery`, plus `RecoveryProgressPolicy`, `SequencedEvent` — Java, and C++ in
 `org::limitless::phixeron::replayer::client`). The only edge across is client→server: the client reads
 `ReplayerService`'s channel/stream-id constants, which are the wire contract between them. There is no
 C++ replay server; the C++ side is all client.
@@ -210,7 +210,10 @@ Three cooperating pieces:
   encode/decode, and application-message routing, built on top of `ClusterStreamSender`.
 - **`ClusterStreamReceiver`** (`sequencer/`) / **`ReplayerStreamReceiver`** (`replayer/client/`) — follow the
   sequenced stream: replay history from a given position via the Replayer, then follow the tap live;
-  used the same way by `FixGateway`, `OrderExecServer`, and `fix_test_server`.
+  used the same way by `FixGateway`, `OrderExecServer`, and `fix_test_server`. `ReplayerStreamReceiver` is
+  the Aeron adapter only — subscriptions, the replay image, the clocks; every decision it makes about them
+  lives in **`ReplayerRecovery`**, which holds none of them and is where the unit suite drives the
+  walk/resume/gap state machine (`ReplayerRecoveryTest`, both languages).
 
 `src/main/cpp/.../fix/` (`Session`, `ClientSession`, `ServerSession`, `ResendCache`) is a
 role-agnostic (CRTP) FIX session-layer base shared with simdfix-generated message handlers —
@@ -300,8 +303,9 @@ Three Artio 0.177 facts this depends on, each of which fails **silently** if got
 - Binding and seeding happen in the `sessionAcquireHandler` (fires at **connect**), never on the `initiate`
   reply (completes only after logon) — the latter deadlocks.
 
-`ReplayerStreamReceiver` (Java, `replayer/client/`) is a faithful port of the C++ client of the same name — same
-protocol, same walk/resume/retain state machine. Keep the two in step. Identity is env config
+`ReplayerStreamReceiver`/`ReplayerRecovery` (Java, `replayer/client/`) are faithful ports of the C++ classes of
+the same names — same protocol, same walk/resume/retain state machine, same adapter/seam split. Keep the two
+in step (all four files, and both `ReplayerRecoveryTest`s). Identity is env config
 (`PHIXERON_EXCHANGE_*`), not a BasicData row: `Sequencer` holds one `designatedPrimaryGatewayId`, so an
 exchange row would hijack the client-facing election. Session layer only — no order flow, no standby.
 

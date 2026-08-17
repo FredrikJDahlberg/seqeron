@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cinttypes> // PRIu64
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>

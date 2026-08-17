@@ -5,30 +5,6 @@ import java.util.Map;
 
 /**
  * Detects two co-located apps that were launched with the same {@code PHIXERON_REPLAYER_CLIENT_ID}.
- * Pure — no Aeron, no archive, no clock of its own — so it is unit-testable directly, mirroring {@link
- * ReplaySlotAllocator}'s split from {@link ReplayerService}.
- *
- * <p><b>Why this needs detecting at all.</b> {@link ReplayerService} keys everything on {@code
- * clientId}: {@code onRequest} supersedes (and stops) that client's in-flight replay on every request it
- * sees. Two processes sharing an id therefore stop each other's replay on each request — each sees its
- * image close short of its bound, each re-requests, and each re-request kills the other's. Neither ever
- * completes a segment, neither ever catches up, and nothing says why: the logs show only ordinary
- * "closed short of catchUpPosition" lines on both sides. It is a livelock produced by a one-line
- * configuration mistake, and it is invisible.
- *
- * <p><b>What separates the two cases.</b> A single client's {@code requestId} advances on every send and
- * is never reset in-process, and the request stream is an ordered IPC publication — so for one live
- * client the ids seen here are strictly increasing. A <em>restart</em> shows up as one backwards step
- * (the new process starts its counter again) followed by monotone ids. Two live processes interleave
- * their two counters, so they produce backwards steps repeatedly, at the rate they resend. Counting
- * backwards steps within a window separates them: a restart contributes one, a collision contributes a
- * stream of them.
- *
- * <p><b>Reports, does not refuse.</b> Answering {@code ReplayUnavailable} to a suspected collision would
- * be fail-closed, but it converts one livelock into another — the apps hold and never dispatch either
- * way — while giving a false positive the power to stop a healthy replica from ever recovering. The
- * livelock being <em>silent</em> is the defect; a fault line plus a counter is what fixes that, and the
- * operator fixes the configuration.
  */
 public final class ReplayClientIdCollisions {
     /**

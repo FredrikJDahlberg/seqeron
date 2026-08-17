@@ -10,17 +10,6 @@ import org.agrona.concurrent.status.AtomicCounter;
  * node-local IPC streams it answers co-located apps over, its operator counters, and the clock —
  * behind one seam, so the replay protocol itself can be exercised without an Aeron runtime (see
  * {@code ReplayerServiceTest}).
- *
- * <p>Deliberately <b>one</b> interface rather than one per dependency: there are exactly two
- * implementations, {@link AeronReplayer} and the test fake, and splitting the same eleven
- * calls across three interfaces would only mean writing three fakes instead of one. Everything above
- * this line — which recording to serve, when the tip is unknown, when to hold, when to refuse — stays
- * in {@code ReplayerService} where it can be asserted on; everything below it is a one-line forward to
- * {@code Aeron}/{@code AeronArchive}.
- *
- * <p>Narrower than the calls it wraps: the archive's callback-driven recording listing arrives as a
- * plain {@code List}, and the channel every stream runs over ({@link ReplayerService#IPC_CHANNEL}) is
- * fixed by the implementation rather than passed at each call.
  */
 public interface Replayer {
     /**
