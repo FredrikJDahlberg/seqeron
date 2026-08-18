@@ -2,17 +2,6 @@
 
 // ReplayerRecovery — the walk/resume/gap decision state machine behind ReplayerStreamReceiver.
 //
-// Split out from the receiver so the decisions can be driven directly: cold-start walk, steady-state
-// resume, contiguity/de-dupe, the retained-ahead FIFO, the Replayer control-stream transitions, and the
-// two watchdogs. Everything needing a live Aeron publication/subscription/image sits behind
-// ReplayerRecoveryActions and the clock is injected, so this class holds no Aeron runtime and no wall
-// clock — the same decision/transport seam the project draws at Sequencer/SequencerService and
-// Replayer/ReplayerService.
-//
-// Gap recovery is anchored on globalSeqNo and merely accelerated by position: a tap gap asks the
-// Replayer to RESUME the active recording at the frame last dispatched, and any mismatch falls back to
-// re-walking the chain from segment 0, which needs no position to be sound.
-
 #include <array>
 #include <cstdint>
 #include <cstdlib>
@@ -58,8 +47,6 @@ inline constexpr std::uint16_t LEADERSHIP_CHANGED_TEMPLATE_ID = 5;
 class ReplayerRecoveryActions
 {
   public:
-    virtual ~ReplayerRecoveryActions() = default;
-
     // Offer a ReplayRequest. Best-effort by design — see requestReplay on why it must not be retried
     // any faster than the resend timer does.
     virtual void sendReplayRequest(std::int64_t requestId, std::int32_t segmentIndex, std::int64_t fromPosition) = 0;
@@ -79,6 +66,9 @@ class ReplayerRecoveryActions
     // is already virtual — the timers below need a clock the unit suite can advance, not a second
     // injection point.
     virtual std::int64_t nowMs() = 0;
+
+  protected:
+    ~ReplayerRecoveryActions() = default;
 };
 
 class ReplayerRecovery
@@ -262,90 +252,7 @@ class ReplayerRecovery
                 // timer while no live replay exists.
                 return;
             }
-            m_awaitingReplay = false;
-            // The Replayer is serving again: whatever refusal episode was open has ended (an operator
-            // repaired the archive and restarted it). Clearing here is what makes a second, distinct
-            // outage report itself, and what keeps checkRecoveryProgress's replayerUnavailable field
-            // reading current state rather than "was ever refused".
-            m_replayerUnavailable = false;
-            const std::int64_t session = dec.replaySessionId();
-            if (session == REPLAYER_NO_REPLAY_NEEDED)
-            {
-                if (m_walkSegmentIndex < 0)
-                {
-                    // We asked to resume at a position we know sits below a hole, and the Replayer says
-                    // that position is already at the recording's tip — so it is not our recording any
-                    // more. Declaring ourselves caught up here would close the hole by fiat.
-                    diag::Logger::warn(diag::Component::ReplayerStreamReceiver, diag::EventCode::TapGap,
-                                       "resume at position %lld answered 'nothing to replay' while a hole is "
-                                       "open above globalSeqNo=%lld — the active recording rotated under us; "
-                                       "re-walking the recording chain from segment 0",
-                                       static_cast<long long>(m_reqFromPosition),
-                                       static_cast<long long>(m_lastGlobalSeqNo));
-                    requestReplay(0, 0);
-                    return;
-                }
-                if (dec.recordingId() >= 0)
-                {
-                    // Not the walk terminator. serveReplay answers NO_REPLAY_NEEDED for two different
-                    // things and tells them apart by this field: it names the recording it found
-                    // nothing in when a segment is merely EMPTY, and names none at all only once the
-                    // request ran past the last recording in the chain. Ending the walk on the former
-                    // drops every later segment — an empty leading recording (an unclean restart that
-                    // created one before anything was published to it) would truncate the whole chain,
-                    // and since the re-walk a later tap gap triggers lands on that same empty segment,
-                    // it would never converge. Skip it and keep walking.
-                    requestReplay(m_walkSegmentIndex + 1, 0);
-                    return;
-                }
-                m_replaySessionId = -1;  // already at the tip — follow the live tap
-                m_walkSegmentIndex = -1; // chain exhausted (or never a walk) → steady/resume mode
-                // The chain is exhausted, but the frontier is what the retained-ahead FIFO knows, not
-                // what the chain covered: a frame retained during the walk may still sit behind a hole
-                // the replay never reached, and an overflow (retainMessages) dropped tap frames
-                // outright. Same guard, same reason, as the resume path in onReplaySegmentComplete —
-                // declaring caught up here is what opens FixGateway's accept gate.
-                drainRetained();
-                if (!m_messagesBlocks.empty() || m_messagesOverflowed)
-                {
-                    endOverflowEpisode();
-                    requestReplay(0, 0);
-                    return;
-                }
-                notifyCaughtUp();
-            }
-            else
-            {
-                if (m_walkSegmentIndex >= 0)
-                {
-                    // serveReplay re-resolves the recording chain on every request, and a stale
-                    // still-recording span can be dropped from it once a newer one supersedes it
-                    // (ReplayRecordings.stitch) — shifting which recording this segmentIndex denotes.
-                    // A retried request for the SAME index must land on the SAME recording it did the
-                    // first time; anything else means the chain moved under it, so abandon the walk and
-                    // restart from segment 0 rather than risk replaying the wrong span.
-                    const std::int64_t recordingId = dec.recordingId();
-                    if (m_walkRecordingId >= 0 && recordingId != m_walkRecordingId)
-                    {
-                        diag::Logger::warn(diag::Component::ReplayerStreamReceiver, diag::EventCode::TapGap,
-                                           "walk segment %d now resolves to recording %lld, previously %lld — "
-                                           "the recording chain shifted under us; re-walking from segment 0",
-                                           static_cast<int>(m_walkSegmentIndex), static_cast<long long>(recordingId),
-                                           static_cast<long long>(m_walkRecordingId));
-                        requestReplay(0, 0);
-                        return;
-                    }
-                    m_walkRecordingId = recordingId;
-                }
-                m_replaySessionId = session;
-                // Position the bounded replay ends at; the segment is done once the replay image reaches
-                // it (a bounded replay of an active recording never closes its image at the bound).
-                m_catchUpPosition = dec.catchUpPosition();
-                m_actions.openReplay(session);
-                // Arm the stall watchdog from here: this is the moment the replay starts existing.
-                m_lastReplayPosition = -1;
-                m_lastReplayProgressMs = m_actions.nowMs();
-            }
+            onReplaying(dec.replaySessionId(), dec.catchUpPosition(), dec.recordingId());
         }
         else if (mh.templateId() == usq::ReplayPending::sbeTemplateId())
         {
@@ -709,6 +616,85 @@ class ReplayerRecovery
         }
     }
 
+    // Acts on a Replaying reply already matched to this client and to the current requestId (see
+    // onControl); session is REPLAYER_NO_REPLAY_NEEDED or the replay to ride.
+    void onReplaying(const std::int64_t session, const std::int64_t replayCatchUpPosition,
+                     const std::int64_t recordingId)
+    {
+        m_awaitingReplay = false;
+        // The Replayer is serving again: whatever refusal episode was open has ended (an operator
+        // repaired the archive and restarted it). Clearing here is what makes a second, distinct outage
+        // report itself, and what keeps checkRecoveryProgress's replayerUnavailable field reading current
+        // state rather than "was ever refused".
+        m_replayerUnavailable = false;
+        if (session == REPLAYER_NO_REPLAY_NEEDED)
+        {
+            if (m_walkSegmentIndex < 0)
+            {
+                // We asked to resume at a position we know sits below a hole, and the Replayer says that
+                // position is already at the recording's tip — so it is not our recording any more.
+                // Declaring ourselves caught up here would close the hole by fiat.
+                diag::Logger::warn(diag::Component::ReplayerStreamReceiver, diag::EventCode::TapGap,
+                                   "resume at position %lld answered 'nothing to replay' while a hole is open "
+                                   "above globalSeqNo=%lld — the active recording rotated under us; re-walking "
+                                   "the recording chain from segment 0",
+                                   static_cast<long long>(m_reqFromPosition),
+                                   static_cast<long long>(m_lastGlobalSeqNo));
+                requestReplay(0, 0);
+                return;
+            }
+            if (recordingId >= 0)
+            {
+                // Not the walk terminator. serveReplay answers NO_REPLAY_NEEDED for two different things
+                // and tells them apart by this field: it names the recording it found nothing in when a
+                // segment is merely EMPTY, and names none at all only once the request ran past the last
+                // recording in the chain. Ending the walk on the former drops every later segment — an
+                // empty leading recording (an unclean restart that created one before anything was
+                // published to it) would truncate the whole chain, and since the re-walk a later tap gap
+                // triggers lands on that same empty segment, it would never converge. Skip it and keep
+                // walking.
+                requestReplay(m_walkSegmentIndex + 1, 0);
+                return;
+            }
+            m_replaySessionId = -1;  // already at the tip — follow the live tap
+            m_walkSegmentIndex = -1; // chain exhausted (or never a walk) → steady/resume mode
+            if (reachedTip())
+            {
+                notifyCaughtUp();
+            }
+            return;
+        }
+
+        if (m_walkSegmentIndex >= 0)
+        {
+            // serveReplay re-resolves the recording chain on every request, and a stale still-recording
+            // span can be dropped from it once a newer one supersedes it (ReplayRecordings.stitch) —
+            // shifting which recording this segmentIndex denotes. A retried request for the SAME index
+            // must land on the SAME recording it did the first time; anything else means the chain moved
+            // under it, so abandon the walk and restart from segment 0 rather than risk replaying the
+            // wrong span.
+            if (m_walkRecordingId >= 0 && recordingId != m_walkRecordingId)
+            {
+                diag::Logger::warn(diag::Component::ReplayerStreamReceiver, diag::EventCode::TapGap,
+                                   "walk segment %d now resolves to recording %lld, previously %lld — the "
+                                   "recording chain shifted under us; re-walking from segment 0",
+                                   static_cast<int>(m_walkSegmentIndex), static_cast<long long>(recordingId),
+                                   static_cast<long long>(m_walkRecordingId));
+                requestReplay(0, 0);
+                return;
+            }
+            m_walkRecordingId = recordingId;
+        }
+        m_replaySessionId = session;
+        // Position the bounded replay ends at; the segment is done once the replay image reaches it (a
+        // bounded replay of an active recording never closes its image at the bound).
+        m_catchUpPosition = replayCatchUpPosition;
+        m_actions.openReplay(session);
+        // Arm the stall watchdog from here: this is the moment the replay starts existing.
+        m_lastReplayPosition = -1;
+        m_lastReplayProgressMs = m_actions.nowMs();
+    }
+
     // Releases our replay slot: we have reached the tip the Replayer bounded us to and are back on the
     // live tap. Only the resume path needs this — every step of a cold-start walk supersedes its own
     // slot with the next segment's request, and the walk's last request frees it via NO_REPLAY_NEEDED,
@@ -776,24 +762,14 @@ class ReplayerRecovery
         m_replaySessionId = -1;
         if (m_walkSegmentIndex < 0)
         {
-            // A resume, not a walk step: there is no next segment. We hold every frame the recording
-            // had when the request was served, so we are back at the tip — anything published since is
-            // on the tap, retained ahead of the hole we just closed. Drain it before trusting that: a
-            // retained-ahead frame the replay didn't cover may itself sit behind a hole (drainRetained
-            // stops there), and an overflow (retainMessages) silently dropped tap frames outright, past
-            // the bound this replay was even asked to cover — either leaves us short of the real
-            // frontier. Only declare caught up once nothing is left waiting and no overflow is latched;
-            // otherwise re-walk now rather than wait for some future tap frame to rediscover the hole,
-            // which is unbounded under the same sustained load that caused the overflow.
-            drainRetained();
-            if (!m_messagesBlocks.empty() || m_messagesOverflowed)
+            // A resume, not a walk step: there is no next segment. We hold every frame the recording had
+            // when the request was served, so we are back at the tip — anything published since is on the
+            // tap, retained ahead of the hole we just closed, which is exactly what reachedTip() settles.
+            if (reachedTip())
             {
-                endOverflowEpisode();
-                requestReplay(0, 0);
-                return;
+                sendReplayComplete();
+                notifyCaughtUp();
             }
-            sendReplayComplete();
-            notifyCaughtUp();
             return;
         }
         requestReplay(m_walkSegmentIndex + 1, 0); // advance the walk to the next segment
@@ -836,29 +812,18 @@ class ReplayerRecovery
         const auto ts = m_header.timestamp();
         const auto origin = m_header.origin();
 
-        if (templateId == CLIENT_CONNECTED_TEMPLATE_ID)
+        if (templateId == CLIENT_CONNECTED_TEMPLATE_ID || templateId == CLIENT_DISCONNECTED_TEMPLATE_ID)
         {
-            if (m_onConnected)
+            // Both carry the same header-only LifecycleEvent; only the callback differs.
+            const OnConnected& callback = templateId == CLIENT_CONNECTED_TEMPLATE_ID ? m_onConnected : m_onDisconnected;
+            if (callback)
             {
-                m_onConnected(LifecycleEvent{ .globalSeqNo = gseq,
-                                              .sourceId = srcId,
-                                              .connectionId = connId,
-                                              .sourceSessionId = sessId,
-                                              .clusterTimestamp = ts,
-                                              .receiveTimeNs = receiveNs });
-            }
-            return;
-        }
-        if (templateId == CLIENT_DISCONNECTED_TEMPLATE_ID)
-        {
-            if (m_onDisconnected)
-            {
-                m_onDisconnected(LifecycleEvent{ .globalSeqNo = gseq,
-                                                 .sourceId = srcId,
-                                                 .connectionId = connId,
-                                                 .sourceSessionId = sessId,
-                                                 .clusterTimestamp = ts,
-                                                 .receiveTimeNs = receiveNs });
+                callback(LifecycleEvent{ .globalSeqNo = gseq,
+                                         .sourceId = srcId,
+                                         .connectionId = connId,
+                                         .sourceSessionId = sessId,
+                                         .clusterTimestamp = ts,
+                                         .receiveTimeNs = receiveNs });
             }
             return;
         }
@@ -978,6 +943,28 @@ class ReplayerRecovery
             dispatchFrame(reinterpret_cast<char*>(payload), header.length, header.globalSeqNo, header.position,
                           header.receiveNs, /*fromReplay=*/false);
         }
+    }
+
+    // The replay side says we are at the tip — the chain is exhausted, or a resume reached its bound.
+    // Whether we actually are is what the retained-ahead FIFO knows, not what the replay covered: a frame
+    // retained during the episode may itself sit behind a hole the replay never reached (drainRetained
+    // stops there), and an overflow (retainMessages) silently dropped tap frames outright, past the bound
+    // the replay was even asked to cover. Either leaves us short of the real frontier, and declaring
+    // caught up over it is what opens FixGateway's accept gate on a hole.
+    //
+    // True only once nothing is left waiting and no overflow is latched. Otherwise it re-walks HERE
+    // rather than waiting for some future tap frame to rediscover the hole, which is unbounded under the
+    // same sustained load that caused the overflow.
+    bool reachedTip()
+    {
+        drainRetained();
+        if (m_messagesBlocks.empty() && !m_messagesOverflowed)
+        {
+            return true;
+        }
+        endOverflowEpisode();
+        requestReplay(0, 0);
+        return false;
     }
 
     // The re-walk about to be requested is what covers the frames retainMessages dropped, so the

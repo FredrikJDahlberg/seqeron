@@ -59,7 +59,7 @@ inline constexpr std::int32_t REPLAYER_CONTROL_STREAM_ID = 203;
  * same chain walk if that resume does not land where it was anchored. No archive connection is opened
  * here.
  */
-class ReplayerStreamReceiver : private ReplayerRecoveryActions
+class ReplayerStreamReceiver final : private ReplayerRecoveryActions
 {
   public:
     using OnSequenced = ReplayerRecovery::OnSequenced;

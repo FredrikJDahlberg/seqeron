@@ -652,17 +652,9 @@ public final class ReplayerRecovery {
             }
             replaySessionId = -1; // already at the tip — follow the live tap
             walkSegmentIndex = -1; // chain exhausted (or never a walk) → steady/resume mode
-            // The chain is exhausted, but the frontier is what the retained-ahead FIFO knows, not what the
-            // chain covered: a frame retained during the walk may still sit behind a hole the replay never
-            // reached, and an overflow dropped tap frames outright. Same guard, same reason, as the resume
-            // path in onReplaySegmentComplete.
-            drainRetained();
-            if (!retained.isEmpty() || retainOverflowed) {
-                endOverflowEpisode();
-                requestReplay(0, 0);
-                return;
+            if (reachedTip()) {
+                notifyCaughtUp();
             }
-            notifyCaughtUp();
             return;
         }
 
@@ -755,17 +747,11 @@ public final class ReplayerRecovery {
         if (walkSegmentIndex < 0) {
             // A resume, not a walk step: there is no next segment. We hold every frame the recording had when
             // the request was served, so we are back at the tip — anything published since is on the tap,
-            // retained ahead of the hole we just closed. Drain it before trusting that: a retained-ahead frame
-            // the replay didn't cover may itself sit behind a hole, and an overflow silently dropped tap
-            // frames outright, past the bound this replay was even asked to cover.
-            drainRetained();
-            if (!retained.isEmpty() || retainOverflowed) {
-                endOverflowEpisode();
-                requestReplay(0, 0);
-                return;
+            // retained ahead of the hole we just closed, which is exactly what reachedTip() settles.
+            if (reachedTip()) {
+                sendReplayComplete();
+                notifyCaughtUp();
             }
-            sendReplayComplete();
-            notifyCaughtUp();
             return;
         }
         requestReplay(walkSegmentIndex + 1, 0); // advance the walk to the next segment
@@ -898,6 +884,28 @@ public final class ReplayerRecovery {
             }
             dispatchFrame(front.buffer, payloadOffset, length, globalSeqNo, position, receiveNs, false);
         }
+    }
+
+    /**
+     * The replay side says we are at the tip — the chain is exhausted, or a resume reached its bound.
+     * Whether we actually are is what the retained-ahead FIFO knows, not what the replay covered: a frame
+     * retained during the episode may itself sit behind a hole the replay never reached
+     * ({@link #drainRetained} stops there), and an overflow ({@link #retainFrame}) silently dropped tap
+     * frames outright, past the bound the replay was even asked to cover. Either leaves us short of the real
+     * frontier, and declaring caught up over it opens a consumer's gates on a hole.
+     *
+     * @return true only once nothing is left waiting and no overflow is latched. Otherwise it re-walks HERE
+     *         rather than waiting for some future tap frame to rediscover the hole, which is unbounded under
+     *         the same sustained load that caused the overflow.
+     */
+    private boolean reachedTip() {
+        drainRetained();
+        if (retained.isEmpty() && !retainOverflowed) {
+            return true;
+        }
+        endOverflowEpisode();
+        requestReplay(0, 0);
+        return false;
     }
 
     /**
