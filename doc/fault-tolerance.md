@@ -330,7 +330,7 @@ made this self-healing in practice — the walk's replayFrom is always a whole r
 full-log replay), never a hole — but the mismatch is now caught at the point it happens instead of
 relying on a later tap frame to notice a `isCaughtUp()==true` state that under-covered history.
 
-`ClusterStreamReceiver`/`ClusterStreamClient` is the archive-direct sibling used where there's no
+`ClusterStreamClient` is the archive-direct sibling used where there's no
 co-located Replayer (`fix_test_server`, and `FixConnection`'s bounded resend-recovery scan): it walks
 an archive's recorded segments for a stream directly, replaying each historical segment fully and the
 last (possibly still-recording) one open-ended, so the same image delivers both historical and live

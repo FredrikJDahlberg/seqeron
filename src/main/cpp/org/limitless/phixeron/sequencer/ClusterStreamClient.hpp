@@ -1,12 +1,8 @@
 #pragma once
 
 #include <algorithm>
-#include <atomic>
-#include <chrono>
 #include <cinttypes> // PRIu64
 #include <cstdint>
-#include <cstdio>
-#include <cstdlib>
 #include <functional>
 #include <limits>
 #include <memory>
@@ -17,27 +13,24 @@
 #include "Aeron.h"
 #include "FragmentAssembler.h"
 #include "client/archive/AeronArchive.h"
-#include "concurrent/logbuffer/LogBufferDescriptor.h"
 
-// Generated SBE C++ codecs from sbe-sequenced.xml (via GenerateSequencedSbeCodecs)
 #include "org/limitless/phixeron/sequencer/PortLayout.hpp"
+#include "org/limitless/phixeron/sequencer/SequencedFrame.hpp"
+#include "org/limitless/phixeron/util/Env.hpp"
 #include "org/limitless/phixeron/util/Logger.hpp"
-#include "org_limitless_phixeron_sbe_sequenced/Header.h"
-#include "org_limitless_phixeron_sbe_sequenced/MessageHeader.h"
+
+// Reading the sequenced stream back out of an Aeron Archive: finding the recordings, connecting to
+// the archive that holds them, and walking them in order. The frames it delivers, and the stream it
+// reads, are defined in SequencedFrame.hpp — include that alone if all you do is decode frames
+// someone else delivered.
+//
+// This is not the live path. Production consumers follow the node-local tap through
+// ReplayerStreamReceiver; what is left here serves FixConnection's bounded resend scan and
+// fix_test_server.
 
 namespace org::limitless::phixeron::sequencer {
 
 namespace diag = org::limitless::phixeron::util;
-
-// ── Constants matching SequencerService / SequencerServer ──────────────────────
-
-// Stream id of the recorded sequenced stream. Every node records its node-local aeron:ipc tap
-// (SequencerService.FEEDER_CHANNEL / FEEDER_STREAM_ID) into its own archive; that recording is the
-// authoritative history clients replay here, matched by stream id alone in the archive catalog
-// (listRecordingsForUri). The old UDP multi-destination-cast global stream (stream 1) is retired,
-// so there is no live network subscription — clients follow the active recording's growth via an
-// open-ended archive replay instead (see start()/poll()).
-inline constexpr std::int32_t FEEDER_STREAM_ID = 205;
 
 // Each UDP-replaying binary uses a distinct port.
 // FixGateway  → 9310 (env PHIXERON_FIX_REPLAY_PORT)
@@ -63,12 +56,7 @@ inline constexpr const char* REPLAY_CHANNEL_IPC = "aeron:ipc";
 inline std::string
 resolveReplayChannel(const char* envVar, std::uint16_t defaultPort)
 {
-    std::uint16_t port = defaultPort;
-    if (const char* value = std::getenv(envVar); value != nullptr && *value != '\0')
-    {
-        port = static_cast<std::uint16_t>(std::strtoul(value, nullptr, 10));
-    }
-    return "aeron:udp?endpoint=localhost:" + std::to_string(port);
+    return "aeron:udp?endpoint=localhost:" + std::to_string(diag::envInt(envVar, defaultPort));
 }
 
 // Default 3-node cluster archive control endpoints, one per member, generated from
@@ -87,8 +75,7 @@ inline const std::string DEFAULT_ARCHIVE_ENDPOINTS = archiveEndpointsCsv(3);
 inline std::vector<std::string>
 resolveArchiveEndpoints(const char* envVar, const std::string& defaultCsv)
 {
-    const char* value = std::getenv(envVar);
-    const std::string csv = (value != nullptr && *value != '\0') ? value : defaultCsv;
+    const std::string csv = diag::envString(envVar, defaultCsv);
 
     std::vector<std::string> endpoints;
     std::size_t start = 0;
@@ -324,109 +311,6 @@ resolveClusterStreamSegments(const std::shared_ptr<aeron::archive::client::Aeron
     }
     return segments;
 }
-
-// ClientConnected/ClientDisconnected aren't FIX messages, so sbe-sequenced.xml
-// (like sbe-unsequenced.xml) gives them small, non-ASCII-derived template ids,
-// clear of the FIX-MsgType-derived range used by every other message. They mark a FIX
-// client's TCP connection to the gateway opening and closing, and the gateway that owns
-// that socket publishes them; see LifecycleEvent below.
-inline constexpr std::uint16_t CLIENT_CONNECTED_TEMPLATE_ID = 1;
-inline constexpr std::uint16_t CLIENT_DISCONNECTED_TEMPLATE_ID = 2;
-
-// ── Event types delivered to the application ─────────────────────────────────
-
-/**
- * Carries one sbe-sequenced.xml message from the cluster stream.
- *
- * Every raw fragment on the wire *is* a complete sbe-sequenced.xml message
- * (schemaId=202) — no envelope to strip. Every message in that schema
- * declares `header` (sourceId, connectionId, sessionId, globalSeqNo,
- * timestamp) as its first field, at the same fixed offset regardless of
- * templateId, so this client decodes it generically and exposes the fields
- * here — callers don't need to re-decode it themselves before dispatching
- * on templateId.
- *
- * payload/payloadLength point into the Aeron fragment buffer and are valid
- * only for the duration of the callback; payload addresses the start of the
- * full message (its own 8-byte messageHeader included). Copy the data before
- * returning if it must survive.
- */
-struct SequencedEvent
-{
-    std::int64_t globalSeqNo;
-    std::int32_t sourceId;         ///< Fixed constant identifying the submitting gateway process (header.sourceId)
-    std::int32_t connectionId;     ///< TCP connection id at that gateway; routes the reply (header.connectionId)
-    std::int64_t sourceSessionId;  ///< Aeron Cluster client session id (header.sessionId)
-    std::int64_t clusterTimestamp; ///< cluster consensus time (ms) when message was committed
-    std::int64_t receiveTimeNs;    ///< wall-clock ns at receipt by this client
-    /// Which producer role emitted the frame (header.origin). Present on every message, so a consumer
-    /// can tell FIX session traffic from an application frame that merely shares the connectionId,
-    /// without knowing the template. Carried through the sequencer unchanged from the publisher.
-    sbe::sequenced::Origin::Value origin;
-    std::uint16_t templateId;    ///< outer messageHeader templateId; picks the specific decode
-    std::uint16_t blockLength;   ///< outer messageHeader blockLength; pass straight to wrapForDecode
-    std::uint16_t version;       ///< outer messageHeader version; pass straight to wrapForDecode
-    const char* payload;         ///< raw sbe-sequenced.xml message bytes (see struct comment)
-    std::uint64_t payloadLength; ///< total byte count
-    std::int64_t position;       ///< recording/stream position of this frame's first byte;
-                                 ///< pass to ReplayParams::position() to replay from here
-};
-
-// Wraps an event's payload in the sbe-sequenced decoder the caller has already matched its templateId
-// against. Every consumer otherwise repeats this same wrapForDecode preamble once per message type,
-// const_cast included — the generated codecs decode through a mutable char*, while the event carries a
-// const pointer into the fragment buffer. Decoding does not write to it.
-//
-// The returned decoder points into that fragment buffer, so it is valid only for the duration of the
-// callback, exactly as SequencedEvent::payload is.
-template<typename Decoder>
-Decoder
-decodeSequenced(const SequencedEvent& event)
-{
-    Decoder decoder;
-    decoder.wrapForDecode(const_cast<char*>(event.payload), sbe::sequenced::MessageHeader::encodedLength(),
-                          event.blockLength, event.version, event.payloadLength);
-    return decoder;
-}
-
-// Stream position of the first byte of the frame `header` describes — what SequencedEvent::position
-// carries, for both clients that populate one, and what the resend path hands to
-// ReplayParams::position().
-//
-// Derived from the frame's own term id/offset rather than as `position() - frameLength()`, which is
-// wrong in two ways. Header::position() is the *next* frame's position: this frame's end rounded up
-// to the 32-byte frame alignment, so subtracting an unaligned frameLength() (SBE messages are
-// arbitrary lengths) lands 1-31 bytes past the true start and is itself unaligned — and a replay
-// position must sit on a frame boundary. Under a FragmentAssembler it is further off: the completed
-// header is the first fragment's with frameLength() rewritten to the whole assembled length, while
-// position() has advanced past the last fragment, adding a frame header's worth of overshoot per
-// extra fragment. Term offsets are always frame-aligned, so this form is exact in both cases.
-inline std::int64_t
-frameStartPosition(const aeron::Header& header)
-{
-    return aeron::concurrent::logbuffer::LogBufferDescriptor::computePosition(
-        header.termId(), header.termOffset(), header.positionBitsToShift(), header.initialTermId());
-}
-
-/**
- * A FIX client's TCP connection to a gateway opening (ClientConnected) or closing
- * (ClientDisconnected). Published by the gateway that owns the socket — these are external
- * events it observes, forwarded on ingress like any other message, not something the
- * sequencer synthesizes.
- *
- * sourceId/connectionId name the connection the event refers to, and both are needed:
- * connectionId is unique only within the publishing gateway process, so a consumer serving
- * one gateway must match sourceId before acting on a connectionId (see FixGateway).
- */
-struct LifecycleEvent
-{
-    std::int64_t globalSeqNo;
-    std::int32_t sourceId;         ///< publishing gateway process (header.sourceId)
-    std::int32_t connectionId;     ///< TCP connection at that gateway (header.connectionId)
-    std::int64_t sourceSessionId;  ///< Aeron Cluster session the event was submitted on
-    std::int64_t clusterTimestamp; ///< cluster consensus time (ms) when committed
-    std::int64_t receiveTimeNs;    ///< wall-clock ns at receipt by this client
-};
 
 // ── ClusterStreamClient ───────────────────────────────────────────────────────
 
@@ -735,12 +619,6 @@ class ClusterStreamClient
         {
             m_onCaughtUp();
         }
-    }
-
-    static std::int64_t nowNs()
-    {
-        using namespace std::chrono;
-        return duration_cast<nanoseconds>(system_clock::now().time_since_epoch()).count();
     }
 
     OnSequenced m_onSequenced;

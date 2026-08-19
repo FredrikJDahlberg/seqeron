@@ -5,7 +5,7 @@ import org.limitless.phixeron.sbe.sequenced.Origin;
 
 /**
  * One frame delivered in order off the sequenced stream, live or replayed. The Java twin of the C++
- * {@code SequencedEvent} struct in {@code sequencer/ClusterStreamReceiver.hpp}.
+ * {@code SequencedEvent} struct in {@code sequencer/SequencedFrame.hpp}.
  *
  * <p><b>A flyweight, reused per dispatch.</b> {@link #buffer()} points into the subscription's term
  * buffer (or, for a frame drained from the retained-ahead FIFO, into that FIFO's storage), so both the

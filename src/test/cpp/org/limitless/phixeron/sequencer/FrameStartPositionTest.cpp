@@ -1,4 +1,4 @@
-// frameStartPosition (ClusterStreamReceiver.hpp), pinned against Aeron's own Header semantics. Both
+// frameStartPosition (SequencedFrame.hpp), pinned against Aeron's own Header semantics. Both
 // stream clients — ClusterStreamClient and ReplayerStreamReceiver — derive SequencedEvent::position with it.
 //
 // SequencedEvent::position must be the stream position of the frame's FIRST byte: FixConnection
@@ -15,7 +15,7 @@
 #include <gtest/gtest.h>
 
 #include "aeron_image.h" // aeron_header_t / aeron_data_header_t layout, to build a header by hand
-#include "org/limitless/phixeron/sequencer/ClusterStreamReceiver.hpp"
+#include "org/limitless/phixeron/sequencer/SequencedFrame.hpp"
 
 namespace {
 

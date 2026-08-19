@@ -170,7 +170,7 @@ the message and `AgentRunner` keeps the agent alive, so a throw drops the frame 
 > This replaced a UDP multi-destination-cast "global stream" (leader-only publisher, stream 1),
 > retired in Phase 2 — see `doc/router-archive.md` and `doc/todo.md` items 1/2c. The tap's identity is
 > `FEEDER_CHANNEL`/`FEEDER_STREAM_ID` on both sides: Java in `SequencerService`, C++ in
-> `sequencer/ClusterStreamReceiver.hpp` (the one definition of `FEEDER_STREAM_ID`) plus
+> `sequencer/SequencedFrame.hpp` (the one definition of `FEEDER_STREAM_ID`) plus
 > `replayer/client/ReplayerStreamReceiver.hpp`'s
 > `FEEDER_CHANNEL`, which addresses the same stream with the consumer-side `?tether=false` option.
 > Named to pair with the `Replayer`: the **Feeder** stream is the live feed, the Replayer serves
@@ -208,7 +208,7 @@ Three cooperating pieces:
   in-memory fakes.
 - **`FixIngressHandler`** — pure byte-level logic: FIX frame/tag parsing helpers, SBE
   encode/decode, and application-message routing, built on top of `ClusterStreamSender`.
-- **`ClusterStreamReceiver`** (`sequencer/`) / **`ReplayerStreamReceiver`** (`replayer/client/`) — follow the
+- **`ClusterStreamClient`** (`sequencer/`) / **`ReplayerStreamReceiver`** (`replayer/client/`) — follow the
   sequenced stream: replay history from a given position via the Replayer, then follow the tap live;
   used the same way by `FixGateway`, `OrderExecServer`, and `fix_test_server`. `ReplayerStreamReceiver` is
   the Aeron adapter only — subscriptions, the replay image, the clocks; every decision it makes about them

@@ -347,14 +347,14 @@ class ReplayerStreamReceiver final : private ReplayerRecoveryActions
             return;
         }
         m_recovery.onFrame(frameAt(buffer, offset), static_cast<std::uint64_t>(length), frameStartPosition(header),
-                           nowNs(), /*fromReplay=*/false);
+                           sequencer::nowNs(), /*fromReplay=*/false);
     }
 
     void onReplayFragment(const aeron::concurrent::AtomicBuffer& buffer, const aeron::util::index_t offset,
                           const aeron::util::index_t length, const aeron::Header& header)
     {
         m_recovery.onFrame(frameAt(buffer, offset), static_cast<std::uint64_t>(length), frameStartPosition(header),
-                           nowNs(), /*fromReplay=*/true);
+                           sequencer::nowNs(), /*fromReplay=*/true);
     }
 
     void onControlFragment(const aeron::concurrent::AtomicBuffer& buffer, const aeron::util::index_t offset,
@@ -372,13 +372,6 @@ class ReplayerStreamReceiver final : private ReplayerRecoveryActions
     {
         using namespace std::chrono;
         return duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
-    }
-
-    // Same wall-clock ns stamp ClusterStreamClient records (its own nowNs() is private).
-    static std::int64_t nowNs()
-    {
-        using namespace std::chrono;
-        return duration_cast<nanoseconds>(system_clock::now().time_since_epoch()).count();
     }
 
     const std::int32_t m_clientId;

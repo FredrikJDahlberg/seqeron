@@ -10,10 +10,8 @@
 #include <functional>
 #include <vector>
 
-// Reuses SequencedEvent / LifecycleEvent and the CLIENT_CONNECTED/DISCONNECTED template-id constants
-// from the other sequenced-stream client — the two deliver the same frames off the same stream.
 #include "org/limitless/phixeron/replayer/client/RecoveryProgressPolicy.hpp"
-#include "org/limitless/phixeron/sequencer/ClusterStreamReceiver.hpp"
+#include "org/limitless/phixeron/sequencer/SequencedFrame.hpp"
 #include "org/limitless/phixeron/util/Logger.hpp"
 
 // Replay-protocol control codecs (sbe-unsequenced.xml) + LeadershipChanged (sbe-sequenced.xml)

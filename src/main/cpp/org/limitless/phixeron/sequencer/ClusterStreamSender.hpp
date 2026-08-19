@@ -818,12 +818,12 @@ class ClusterStreamSender
         }
     }
 
-    // Creates and blocks (up to m_connectTimeoutMs) until connected to a Publication for the
-    // cluster ingress at `endpoint` ("host:port"). Only valid when connect(aeron) was used —
-    // m_aeron is null in the transport-agnostic test seam.
-    std::shared_ptr<aeron::Publication> createIngressPublication(const std::string& endpoint)
+    // Adds a cluster-ingress publication on `channel` and blocks until it is both resolved and
+    // connected, or m_connectTimeoutMs elapses. `description` names it in the timeout messages.
+    // Only valid when connect(aeron) was used — m_aeron is null in the transport-agnostic test seam.
+    std::shared_ptr<aeron::Publication> awaitIngressPublication(const std::string& channel,
+                                                                const std::string& description)
     {
-        const std::string channel = "aeron:udp?endpoint=" + endpoint;
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(m_connectTimeoutMs);
 
         const auto pubId = m_aeron->addPublication(channel, CLUSTER_INGRESS_STREAM_ID);
@@ -832,7 +832,7 @@ class ClusterStreamSender
         {
             if (std::chrono::steady_clock::now() >= deadline)
             {
-                throw std::runtime_error("[ClusterStreamSender] Timed out creating ingress publication to " + endpoint);
+                throw std::runtime_error("[ClusterStreamSender] Timed out creating " + description);
             }
             m_idleStrategy.idle();
         }
@@ -840,42 +840,27 @@ class ClusterStreamSender
         {
             if (std::chrono::steady_clock::now() >= deadline)
             {
-                throw std::runtime_error("[ClusterStreamSender] Timed out connecting ingress publication to " +
-                                         endpoint);
+                throw std::runtime_error("[ClusterStreamSender] Timed out connecting " + description);
             }
             m_idleStrategy.idle();
         }
         return pub;
     }
 
-    // Same as createIngressPublication(endpoint), but over CLUSTER_INGRESS_CHANNEL_IPC —
-    // only ever reachable by an ingress subscription the co-located member opens while it is
-    // leader (see SequencerServer's isIpcIngressAllowed), so isConnected() may simply never
-    // become true when it isn't; the m_connectTimeoutMs deadline here is what bounds that,
-    // same as the UDP case, and connectColocated relies on it to trigger the UDP fallback.
+    // The cluster ingress at `endpoint` ("host:port").
+    std::shared_ptr<aeron::Publication> createIngressPublication(const std::string& endpoint)
+    {
+        return awaitIngressPublication("aeron:udp?endpoint=" + endpoint, "ingress publication to " + endpoint);
+    }
+
+    // Same, but over CLUSTER_INGRESS_CHANNEL_IPC — only ever reachable by an ingress subscription
+    // the co-located member opens while it is leader (see SequencerServer's isIpcIngressAllowed), so
+    // isConnected() may simply never become true when it isn't; the m_connectTimeoutMs deadline is
+    // what bounds that, same as the UDP case, and connectColocated relies on it to trigger the UDP
+    // fallback.
     std::shared_ptr<aeron::Publication> createIpcIngressPublication()
     {
-        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(m_connectTimeoutMs);
-
-        const auto pubId = m_aeron->addPublication(CLUSTER_INGRESS_CHANNEL_IPC, CLUSTER_INGRESS_STREAM_ID);
-        std::shared_ptr<aeron::Publication> pub;
-        while (!(pub = m_aeron->findPublication(pubId)))
-        {
-            if (std::chrono::steady_clock::now() >= deadline)
-            {
-                throw std::runtime_error("[ClusterStreamSender] Timed out creating IPC ingress publication");
-            }
-            m_idleStrategy.idle();
-        }
-        while (!pub->isConnected())
-        {
-            if (std::chrono::steady_clock::now() >= deadline)
-            {
-                throw std::runtime_error("[ClusterStreamSender] Timed out connecting IPC ingress publication");
-            }
-            m_idleStrategy.idle();
-        }
-        return pub;
+        return awaitIngressPublication(CLUSTER_INGRESS_CHANNEL_IPC, "IPC ingress publication");
     }
 
     std::shared_ptr<aeron::Aeron> m_aeron;
