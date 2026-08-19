@@ -857,21 +857,10 @@ public final class ReplayerRecovery {
      * already-resident memory instead of paying a fresh allocation.
      */
     private void drainRetained() {
-        while (true) {
-            final RetainBlock front = retained.peekFirst();
-            if (front == null) {
-                return;
-            }
-            if (retainReadOffset >= front.used) {
-                retained.pollFirst();
-                releaseBlock(front);
-                retainReadOffset = 0;
-                continue;
-            }
+        // Exits when the FIFO runs dry, or on a hole below the oldest retained frame.
+        RetainBlock front = frontRetained();
+        while (front != null && front.buffer.getLong(retainReadOffset) <= lastGlobalSeqNo + 1) {
             final long globalSeqNo = front.buffer.getLong(retainReadOffset);
-            if (globalSeqNo > lastGlobalSeqNo + 1) {
-                return; // still a hole below the oldest retained frame
-            }
             final long position = front.buffer.getLong(retainReadOffset + Long.BYTES);
             final long receiveNs = front.buffer.getLong(retainReadOffset + 2 * Long.BYTES);
             final int length = front.buffer.getInt(retainReadOffset + 3 * Long.BYTES);
@@ -879,11 +868,23 @@ public final class ReplayerRecovery {
             retainReadOffset += RetainBlock.RECORD_HEADER_LENGTH + length;
             --retainFrameCount;
             retainBytes -= length;
-            if (globalSeqNo <= lastGlobalSeqNo) {
-                continue; // the replay already covered it
+            if (globalSeqNo > lastGlobalSeqNo) { // otherwise the replay already covered it
+                dispatchFrame(front.buffer, payloadOffset, length, globalSeqNo, position, receiveNs, false);
             }
-            dispatchFrame(front.buffer, payloadOffset, length, globalSeqNo, position, receiveNs, false);
+            front = frontRetained();
         }
+    }
+
+    /** Block holding the oldest retained record, recycling any fully-read blocks first. Null when none. */
+    private RetainBlock frontRetained() {
+        RetainBlock front = retained.peekFirst();
+        while (front != null && retainReadOffset >= front.used) {
+            retained.pollFirst();
+            releaseBlock(front);
+            retainReadOffset = 0;
+            front = retained.peekFirst();
+        }
+        return front;
     }
 
     /**
