@@ -165,7 +165,7 @@ class ReplayerRecovery
 
     std::int64_t m_lastGlobalSeqNo = 0;   // highest globalSeqNo delivered; 0 = none yet
     std::int64_t m_lastFramePosition = 0; // where that frame starts in the recording; requestResume's anchor
-    std::int64_t m_resumeAnchorGseq = 0;  // globalSeqNo a resume replay must open at, or 0 if not resuming
+    std::int64_t m_resumeAnchorSequenceNumber = 0;  // globalSeqNo a resume replay must open at, or 0 if not resuming
     bool m_replayGapLogged = false;       // report a hole in replayed history once per episode, not per frame
     bool m_caughtUp = false;              // following live; revoked on a tap gap, re-established at the seam
 
@@ -175,7 +175,7 @@ class ReplayerRecovery
     MessagesBlockPool m_messagesBlockPool;
     std::deque<MessagesBlock*> m_messagesBlocks;
     std::size_t m_messagesReadOffset = 0; // offset of the next unconsumed record within m_messagesBlocks.front()
-    std::int64_t m_messagesTailGseq = 0;  // globalSeqNo of the most recently retained frame; dedups redelivery
+    std::int64_t m_messagesTailSequenceNumber = 0;  // globalSeqNo of the most recently retained frame; dedups redelivery
     std::size_t m_messagesFrameCount = 0;
     std::size_t m_messagesBytes = 0;
     bool m_messagesOverflowed = false;
@@ -228,42 +228,42 @@ class ReplayerRecovery
         }
 
         m_header.wrap(frame, HdrSbe::encodedLength(), 0U, length);
-        const auto gseq = m_header.globalSeqNo();
-        if (fromReplay && m_resumeAnchorGseq != 0)
+        const auto sequenceNumber = m_header.globalSeqNo();
+        if (fromReplay && m_resumeAnchorSequenceNumber != 0)
         {
-            const std::int64_t anchor = m_resumeAnchorGseq;
-            m_resumeAnchorGseq = 0;
-            if (gseq != anchor)
+            const std::int64_t anchor = m_resumeAnchorSequenceNumber;
+            m_resumeAnchorSequenceNumber = 0;
+            if (sequenceNumber != anchor)
             {
                 diag::Logger::warn(diag::Component::ReplayerStreamReceiver, diag::EventCode::TapGap,
                                    "resume replay opened at globalSeqNo=%lld, expected %lld — the active "
                                    "recording rotated under us; re-walking the recording chain from segment 0",
-                                   static_cast<long long>(gseq), static_cast<long long>(anchor));
+                                   static_cast<long long>(sequenceNumber), static_cast<long long>(anchor));
                 requestReplay(0, 0);
                 return;
             }
         }
         if (m_lastGlobalSeqNo != 0)
         {
-            if (gseq <= m_lastGlobalSeqNo)
+            if (sequenceNumber <= m_lastGlobalSeqNo)
             {
                 return;
             }
-            if (gseq > m_lastGlobalSeqNo + 1)
+            if (sequenceNumber > m_lastGlobalSeqNo + 1)
             {
                 if (!fromReplay && !isRecovering())
                 {
                     diag::Logger::warn(diag::Component::ReplayerStreamReceiver, diag::EventCode::TapGap,
                                        "tap gap: expected globalSeqNo=%lld got %lld — "
                                        "resuming the recording at globalSeqNo=%lld",
-                                       static_cast<long long>(m_lastGlobalSeqNo + 1), static_cast<long long>(gseq),
+                                       static_cast<long long>(m_lastGlobalSeqNo + 1), static_cast<long long>(sequenceNumber),
                                        static_cast<long long>(m_lastGlobalSeqNo));
                     m_caughtUp = false;
                     requestResume();
                 }
                 if (!fromReplay)
                 {
-                    retainMessages(gseq, frame, length, framePosition, receiveNs);
+                    retainMessages(sequenceNumber, frame, length, framePosition, receiveNs);
                 }
                 else if (!m_replayGapLogged)
                 {
@@ -272,25 +272,25 @@ class ReplayerRecovery
                                        "gap in REPLAYED history: expected globalSeqNo=%lld got %lld — this "
                                        "node's recording chain does not cover the hole; recovery cannot "
                                        "converge until it does",
-                                       static_cast<long long>(m_lastGlobalSeqNo + 1), static_cast<long long>(gseq));
+                                       static_cast<long long>(m_lastGlobalSeqNo + 1), static_cast<long long>(sequenceNumber));
                 }
                 return;
             }
         }
-        else if (gseq != 1)
+        else if (sequenceNumber != 1)
         {
             if (!fromReplay && isRecovering())
             {
-                retainMessages(gseq, frame, length, framePosition, receiveNs);
+                retainMessages(sequenceNumber, frame, length, framePosition, receiveNs);
                 return;
             }
             diag::Logger::fault(diag::Component::ReplayerStreamReceiver, diag::EventCode::FirstFrameNotOne,
                                 "FATAL: first frame observed has globalSeqNo=%lld, expected 1 — "
                                 "this node's recording does not reach the start of the log; aborting",
-                                static_cast<long long>(gseq));
+                                static_cast<long long>(sequenceNumber));
             std::abort();
         }
-        dispatchFrame(frame, length, gseq, framePosition, receiveNs, fromReplay);
+        dispatchFrame(frame, length, sequenceNumber, framePosition, receiveNs, fromReplay);
         drainRetained();
     }
 
@@ -474,7 +474,7 @@ class ReplayerRecovery
     {
         if (segmentIndex >= 0)
         {
-            m_resumeAnchorGseq = 0; // a walk supersedes any resume in flight
+            m_resumeAnchorSequenceNumber = 0; // a walk supersedes any resume in flight
             if (segmentIndex != m_walkSegmentIndex)
             {
                 m_walkRecordingId = -1;
@@ -494,7 +494,7 @@ class ReplayerRecovery
     void requestResume()
     {
         requestReplay(RESUME_SEGMENT_INDEX, m_lastFramePosition);
-        m_resumeAnchorGseq = m_lastGlobalSeqNo;
+        m_resumeAnchorSequenceNumber = m_lastGlobalSeqNo;
     }
 
     void reRequestCurrent()
@@ -612,12 +612,14 @@ class ReplayerRecovery
                 sendReplayComplete();
                 notifyCaughtUp();
             }
-            return;
         }
-        requestReplay(m_walkSegmentIndex + 1, 0); // advance the walk to the next segment
+        else
+        {
+            requestReplay(m_walkSegmentIndex + 1, 0); // advance the walk to the next segment
+        }
     }
 
-    void dispatchFrame(char* const frame, const std::uint64_t length, const std::int64_t gseq,
+    void dispatchFrame(char* const frame, const std::uint64_t length, const std::int64_t sequenceNumber,
                        const std::int64_t framePosition, const std::int64_t receiveNs, const bool fromReplay)
     {
         if (m_recoveryProgress.onProgress())
@@ -628,7 +630,7 @@ class ReplayerRecovery
         const std::uint16_t templateId = m_hdr.templateId();
         m_header.wrap(frame, HdrSbe::encodedLength(), 0U, length);
 
-        m_lastGlobalSeqNo = gseq;
+        m_lastGlobalSeqNo = sequenceNumber;
         m_replayGapLogged = false;
         m_lastFramePosition = framePosition;
         if (!fromReplay && !m_caughtUp && !m_messagesOverflowed)
@@ -647,7 +649,7 @@ class ReplayerRecovery
             const OnConnected& callback = templateId == CLIENT_CONNECTED_TEMPLATE_ID ? m_onConnected : m_onDisconnected;
             if (callback)
             {
-                callback(LifecycleEvent{ .globalSeqNo = gseq,
+                callback(LifecycleEvent{ .globalSeqNo = sequenceNumber,
                                          .sourceId = srcId,
                                          .connectionId = connId,
                                          .sourceSessionId = sessId,
@@ -664,13 +666,13 @@ class ReplayerRecovery
             m_currentLeaderMemberId = leadershipChanged.newLeaderMemberId();
             if (m_onLeadershipChanged)
             {
-                m_onLeadershipChanged(m_currentLeaderMemberId, gseq);
+                m_onLeadershipChanged(m_currentLeaderMemberId, sequenceNumber);
             }
             return;
         }
         if (m_onSequenced)
         {
-            m_onSequenced(SequencedEvent{ .globalSeqNo = gseq,
+            m_onSequenced(SequencedEvent{ .globalSeqNo = sequenceNumber,
                                           .sourceId = srcId,
                                           .connectionId = connId,
                                           .sourceSessionId = sessId,
@@ -686,7 +688,7 @@ class ReplayerRecovery
         }
     }
 
-    void retainMessages(const std::int64_t gseq, const char* const frame, const std::uint64_t len,
+    void retainMessages(const std::int64_t sequenceNumber, const char* const frame, const std::uint64_t len,
                         const std::int64_t framePosition, const std::int64_t receiveNs)
     {
         const std::size_t recordSize = sizeof(MessagesRecordHeader) + len;
@@ -700,23 +702,23 @@ class ReplayerRecovery
                 diag::Logger::warn(diag::Component::ReplayerStreamReceiver, diag::EventCode::TapGap,
                                    "retained-frame buffer full at globalSeqNo=%lld (%zu frames, %zu bytes) — "
                                    "dropping ahead-of-hole frames; recovery falls back to re-walking",
-                                   static_cast<long long>(gseq), m_messagesFrameCount, m_messagesBytes);
+                                   static_cast<long long>(sequenceNumber), m_messagesFrameCount, m_messagesBytes);
             }
         }
-        else if (m_messagesFrameCount <= 0 || gseq > m_messagesTailGseq)
+        else if (m_messagesFrameCount <= 0 || sequenceNumber > m_messagesTailSequenceNumber)
         {
             if (m_messagesBlocks.empty() || m_messagesBlocks.back()->used + recordSize > MessagesBlock::SIZE)
             {
                 m_messagesBlocks.push_back(m_messagesBlockPool.acquire());
             }
             MessagesBlock* const tail = m_messagesBlocks.back();
-            const MessagesRecordHeader header{ gseq, framePosition, receiveNs, static_cast<std::uint32_t>(len) };
+            const MessagesRecordHeader header{ sequenceNumber, framePosition, receiveNs, static_cast<std::uint32_t>(len) };
             std::memcpy(tail->bytes.data() + tail->used, &header, sizeof(header));
             std::memcpy(tail->bytes.data() + tail->used + sizeof(header), frame, len);
             tail->used += recordSize;
             ++m_messagesFrameCount;
             m_messagesBytes += len;
-            m_messagesTailGseq = gseq;
+            m_messagesTailSequenceNumber = sequenceNumber;
         }
     }
 
@@ -729,12 +731,13 @@ class ReplayerRecovery
             m_messagesBlocks.pop_front();
             m_messagesReadOffset = 0;
         }
-        if (m_messagesBlocks.empty())
+
+        const bool empty = m_messagesBlocks.empty();
+        if (!empty)
         {
-            return false;
+            std::memcpy(&header, m_messagesBlocks.front()->bytes.data() + m_messagesReadOffset, sizeof(header));
         }
-        std::memcpy(&header, m_messagesBlocks.front()->bytes.data() + m_messagesReadOffset, sizeof(header));
-        return true;
+        return !empty;
     }
 
     // Exits when the FIFO runs dry, or on a hole below the oldest retained frame.
@@ -743,8 +746,7 @@ class ReplayerRecovery
         MessagesRecordHeader header;
         while (peekRetained(header) && header.globalSeqNo <= m_lastGlobalSeqNo + 1)
         {
-            std::uint8_t* const payload =
-                m_messagesBlocks.front()->bytes.data() + m_messagesReadOffset + sizeof(header);
+            std::uint8_t* const payload = m_messagesBlocks.front()->bytes.data() + m_messagesReadOffset + sizeof(header);
             m_messagesReadOffset += sizeof(header) + header.length;
             --m_messagesFrameCount;
             m_messagesBytes -= header.length;
@@ -759,13 +761,13 @@ class ReplayerRecovery
     bool reachedTip()
     {
         drainRetained();
-        if (m_messagesBlocks.empty() && !m_messagesOverflowed)
+        const bool success = m_messagesBlocks.empty() && !m_messagesOverflowed;
+        if (!success)
         {
-            return true;
+            endOverflowEpisode();
+            requestReplay(0, 0);
         }
-        endOverflowEpisode();
-        requestReplay(0, 0);
-        return false;
+        return success;
     }
 
     void endOverflowEpisode()
