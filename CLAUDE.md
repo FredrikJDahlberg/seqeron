@@ -76,7 +76,7 @@ cmake --build cmake-build-release
 C++23, requires Java (Runtime) on PATH for the SBE tool and the code generator, and a
 `git@github.com:...` SSH remote reachable for the simdfix FetchContent clone.
 
-Executables: `FixGateway`, `OrderExecServer`, `fix_test_server`,
+Executables: `FixGateway`, `OrderExecServer`, `BasicDataServer`, `fix_test_server`,
 `phixeron_tests` (GoogleTest). Build a single target with `cmake --build cmake-build-debug --target <name>`.
 
 ### Java
@@ -122,7 +122,7 @@ FIX client (TCP) ⇄ FixGateway (C++)  ──output──▶  Aeron Cluster (Jav
                                  back to the originating             positions from fills, answers
                                  TCP client)                          PortfolioQueryRequest)
 ```
-`fix_test_server` (C++, under `src/test/cpp/.../session/`) is a standalone FIX TCP client used to
+`fix_test_server` (C++, `src/test/cpp/.../fix/FixTestServer.cpp`) is a standalone FIX TCP client used to
 drive the whole pipeline end-to-end (Logon → Heartbeat → NewOrderSingle → Logout, plus a direct
 cluster-ingress risk-query test) — see README.md for the full runbook and port table.
 
@@ -133,8 +133,8 @@ has no Aeron dependency, and is unit-tested directly (`SequencerTest`). `Sequenc
 what comes back, holding no replicated state itself. Every ingress message
 gets a cluster-wide monotone `globalSeqNo` plus the Raft consensus timestamp, then is
 republished on the **node-local tap** (`FEEDER_CHANNEL` = `aeron:ipc`, `FEEDER_STREAM_ID` = 205),
-which this node's co-located Aeron Archive records. Every frame on it is sequenced: all 21
-messages in `sbe-sequenced.xml` carry the `header` composite, and the sequencer is the stream's only
+which this node's co-located Aeron Archive records. Every frame on it is sequenced: every
+message in `sbe-sequenced.xml` carries the `header` composite, and the sequencer is the stream's only
 publisher, so `globalSeqNo` + consensus `timestamp` are stamped on ingress messages and on the
 lifecycle/tick/leadership frames it synthesizes alike.
 
@@ -168,7 +168,7 @@ signal failure by throwing: `Image.boundedControlledPoll` has already advanced t
 the message and `AgentRunner` keeps the agent alive, so a throw drops the frame and carries on.
 
 > This replaced a UDP multi-destination-cast "global stream" (leader-only publisher, stream 1),
-> retired in Phase 2 — see `doc/router-archive.md` and `doc/todo.md` items 1/2c. The tap's identity is
+> retired in Phase 2 — see `doc/audit.md` (finding S4, which it closed structurally). The tap's identity is
 > `FEEDER_CHANNEL`/`FEEDER_STREAM_ID` on both sides: Java in `SequencerService`, C++ in
 > `sequencer/SequencedFrame.hpp` (the one definition of `FEEDER_STREAM_ID`) plus
 > `replayer/client/ReplayerStreamReceiver.hpp`'s
@@ -228,15 +228,17 @@ apart by `header.connectionId`. `ClientSession` unhelpfully names both (`io.aero
 vs `org::limitless::phixeron::fix::ClientSession`).
 
 **Fencing: the gateway stops serving TCP clients when it loses its place in the cluster.**
-`FixGateway::fence()` closes the accept gate and drops every client socket on three signals — a
+`FixGateway::closeSessions()` closes the accept gate and drops every client socket on four signals — a
 `GatewayActive` naming a sibling instance (it was superseded), the cluster closing its cluster session,
-or no `Tick` from the co-located tap for `TAP_STALL_TIMEOUT_MS`. Without it a demoted primary kept
+no `Tick` from the co-located tap for `TAP_STALL_TIMEOUT_MS`, or recovery dispatching nothing for
+`RECOVERY_STALL_TIMEOUT_MS` (`GatewayRecoveryStallPolicy`). Without it a demoted primary kept
 serving alongside the standby that replaced it, since `m_gateOpen` only ever latched true. It publishes
 no `ClientDisconnected` — the fence deliberately looks to the cluster exactly like this process dying,
 which is the state the recovery path is built for — and snapshots live FIX session state into
 `m_recoveredSessions` on the way out. Being superseded keeps the cluster session, so that fence just
-drops the instance back to standby and the gate can re-open on a later promotion; the two fences that
-lose the session **exit the process**, because `connect()` runs only at startup and an instance with no
+drops the instance back to standby and the gate can re-open on a later promotion; the other three
+lose the session — the cluster closed it, or the two stall fences close it themselves so standby
+promotion can take over — and **exit the process**, because `connect()` runs only at startup and an instance with no
 session could never be promoted again (the accept gate requires `isConnected()` — fail closed). A leader
 failover is *not* session loss: `NewLeaderEvent` swaps the ingress publication and keeps the session id.
 See `doc/todo.md` "Gateway HA / multi-instance".
@@ -292,7 +294,7 @@ goes through `ClusterSessionProxy` (`isAsync() = true`) to cluster ingress as an
 comes back on the node tap, emitted by a `SessionWriter` at the `MsgSeqNum` the log recorded. Inbound venue
 traffic is published too, so the log is a complete session record.
 
-Three Artio 0.177 facts this depends on, each of which fails **silently** if got wrong:
+Four Artio 0.177 facts this depends on, each of which fails **silently** if got wrong:
 - The writer must come from `FixLibrary.followerSession(...)`, **not** `sessionWriter(...)` — only the
   former is registered where Artio links it to the `Session`. An unlinked writer advances no
   `lastSentMsgSeqNum` and never fires `onSessionWriterLogout()`.
@@ -302,12 +304,22 @@ Three Artio 0.177 facts this depends on, each of which fails **silently** if got
   reaches the venue.
 - Binding and seeding happen in the `sessionAcquireHandler` (fires at **connect**), never on the `initiate`
   reply (completes only after logon) — the latter deadlocks.
+- `sessionProxyFactory` is a **library** setting, so `FixEngine.close()` — which logs out every session the
+  engine still owns — goes out through Artio's own `DirectSessionProxy`, straight to the wire, past the
+  cluster. `ExchangeGateway.close()` drops the venue socket first (`detachFromVenue`) so the engine finds
+  nothing logged on. Without it the venue counts a `MsgSeqNum` the log never recorded and the next instance
+  to hold the session logs on one behind, forever.
 
 `ReplayerStreamReceiver`/`ReplayerRecovery` (Java, `replayer/client/`) are faithful ports of the C++ classes of
 the same names — same protocol, same walk/resume/retain state machine, same adapter/seam split. Keep the two
-in step (all four files, and both `ReplayerRecoveryTest`s). Identity is env config
-(`PHIXERON_EXCHANGE_*`), not a BasicData row: `Sequencer` holds one `designatedPrimaryGatewayId`, so an
-exchange row would hijack the client-facing election. Session layer only — no order flow, no standby.
+in step (all four files, and both `ReplayerRecoveryTest`s).
+
+It is an **active/passive pair** (`EGW-A`/`EGW-B` under `gatewaySourceId` 5), the second logical gateway
+alongside the client-facing one — see `doc/basicdata-design.md` §2 for the Gateway-table shape and the
+per-`gatewaySourceId` election it needs from the sequencer. Identity is the `Gateway` row named by
+`PHIXERON_EXCHANGE_GATEWAY_NAME` (everything else stays `PHIXERON_EXCHANGE_*` deployment config); the
+passive instance follows the tap and fills its local Artio log through a `NO_CONNECTION_ID` follower
+writer, so promotion is a dial-out, not a live-session hand-over. Session layer only — no order flow.
 
 ```bash
 ./gradlew mockExchange                     # FIX acceptor standing in for the venue (port 9010)
@@ -341,14 +353,17 @@ process — the gateway starts with none and resolves them from the BasicData Se
 for the trading day — no add/remove/re-point while a session is live.
 
 ### Known gaps
-`todo.md` tracks known incomplete pieces (e.g. ExecutionReport→TCP routing in
-`FixGateway.cpp` is stubbed, connection IDs aren't stable across gateway restarts, no real
-ResendRequest replay backing store yet). Check it before assuming a code path is complete.
+`todo.md` tracks known incomplete pieces (e.g. no matching engine — orders get a `New` ack and
+nothing else; no pre-trade risk gating; no edge authentication; connection IDs aren't stable across
+gateway restarts; only one in-flight resend per connection). Check it before assuming a code path is
+complete.
 
-`doc/` contains deeper background/design docs (`0-overview.md` … `6-detailed-architecture.md`)
-for the larger target system this project implements a slice of (full buy-side/sell-side gateway
-with a separate Application Engine, Risk Thread, and Egress process). They describe an aspirational
-superset, not this repo's current state — cross-check against the source before trusting specifics.
+`doc/` contains the deeper docs: `architecture-primer.md` (the short tour, written for readers
+without a financial-systems background), `design.md` (the full current design), `fault-tolerance.md`,
+`basicdata-design.md`, `gap.md` (FIXT.1.1 session-protocol coverage), `audit.md` (open findings),
+`cli-guide.md`/`ops.md`/`clusterctl.md` (runbooks). Two are **proposals, not descriptions of this
+repo** — `artio-integration.md` and `fix-test-artio.md` — so cross-check them against the source
+before trusting specifics.
 
 ## Code Formatting Mandate
 - Explicitly respect all style, brace, and indentation configurations found in the local `.clang-format` file.

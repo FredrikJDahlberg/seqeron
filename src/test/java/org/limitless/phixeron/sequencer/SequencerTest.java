@@ -37,6 +37,9 @@ import org.limitless.phixeron.sbe.sequenced.TickDecoder;
  */
 class SequencerTest {
     private static final int SOURCE_ID = 7;
+
+    /** The second logical gateway, for the multi-pair cases: a distinct gatewaySourceId. */
+    private static final int EXCHANGE_SOURCE_ID = 8;
     private static final int CONNECTION_ID = 42;
     private static final long SESSION_ID = 0x5EE51_0000L;
     private static final long TIMESTAMP = 1_700_000_000_000L;
@@ -702,6 +705,114 @@ class SequencerTest {
 
         assertEquals(Sequencer.NO_PROMOTION_TARGET, seq.sessionClosed(rogueSession, TIMESTAMP + 1),
                      "an instance with no Gateway row resolves to no group, so there is no sibling to promote");
+    }
+
+    // ── Two logical gateways ──────────────────────────────────────────────────
+    // The deployment runs more than one pair: the client-facing gateway (C++ FixGateway) and the
+    // exchange-facing one (Java ExchangeGateway), each an active/standby pair under its own
+    // gatewaySourceId. Everything below is a case where the sequencer used to hold one of something it
+    // needs one of per pair. SOURCE_ID is the first pair; EXCHANGE_SOURCE_ID the second.
+
+    @Test
+    @DisplayName("the bootstrap activates the rank-0 primary of every logical gateway, not just one")
+    void bootstrapActivatesEveryLogicalGatewaysPrimary() {
+        final Sequencer seq = new Sequencer();
+        final MutableDirectBuffer buf = new ExpandableArrayBuffer(512);
+        loadTwoPairs(seq, buf);
+
+        final int endLength = seq.sequenceMessage(buf, 0, encodeIngressEndBasicData(buf, 0), SESSION_ID, TIMESTAMP);
+        assertEquals(5L, globalSeqNoOf(seq, endLength)); // 4 Gateway rows + EndBasicData
+
+        // One frame per call, in Gateway-row order, on consecutive globalSeqNos — the adapter drains it.
+        final int first = seq.pendingGatewayBootstrapActivation(TIMESTAMP + 1);
+        final GatewayActiveDecoder clientPair = decodeGatewayActive(seq.buffer(), first);
+        assertEquals(5, clientPair.gatewayId());
+        assertEquals(6L, clientPair.header().globalSeqNo());
+
+        final int second = seq.pendingGatewayBootstrapActivation(TIMESTAMP + 1);
+        final GatewayActiveDecoder exchangePair = decodeGatewayActive(seq.buffer(), second);
+        // Not the client pair's standby: a second rank-0 row used to overwrite the first designation, so
+        // whichever logical gateway loaded last took the only bootstrap and the other never got one.
+        assertEquals(8, exchangePair.gatewayId());
+        assertEquals(7L, exchangePair.header().globalSeqNo());
+
+        assertEquals(Sequencer.NO_FRAME, seq.pendingGatewayBootstrapActivation(TIMESTAMP + 1),
+                     "two logical gateways, two activations");
+    }
+
+    @Test
+    @DisplayName("losing one logical gateway's active instance promotes only its own sibling")
+    void logicalGatewaysPromoteIndependently() {
+        final Sequencer seq = new Sequencer();
+        final MutableDirectBuffer buf = new ExpandableArrayBuffer(512);
+        loadTwoPairs(seq, buf);
+
+        final long clientSession = 0xA11CEL;
+        final long exchangeSession = 0xB0B0L;
+        seq.sequenceMessage(buf, 0, encodeIngressGatewayStarted(buf, 0, 5), clientSession, TIMESTAMP);
+        seq.sequenceMessage(buf, 0, encodeIngressGatewayStarted(buf, 0, 8), exchangeSession, TIMESTAMP);
+
+        final int promotion = seq.sessionClosed(exchangeSession, TIMESTAMP + 1);
+        assertEquals(9, decodeGatewayActive(seq.buffer(), promotion).gatewayId(),
+                     "the exchange pair's standby — promotionTarget filters on the closed instance's own "
+                         + "gatewaySourceId");
+
+        // The client pair is untouched: its active instance never lost anything.
+        final int clientPromotion = seq.sessionClosed(clientSession, TIMESTAMP + 2);
+        assertEquals(6, decodeGatewayActive(seq.buffer(), clientPromotion).gatewayId());
+    }
+
+    @Test
+    @DisplayName("each logical gateway keeps its own activation deadline")
+    void eachLogicalGatewayKeepsItsOwnActivationDeadline() {
+        // The regression this guards: one outstanding activation for the whole cluster meant the second
+        // bootstrap overwrote the first's deadline, so a designated primary that never arrived was never
+        // handed over — silently, and only for whichever pair happened to be designated first.
+        final Sequencer seq = new Sequencer();
+        final MutableDirectBuffer buf = new ExpandableArrayBuffer(512);
+        loadTwoPairs(seq, buf);
+        seq.sequenceMessage(buf, 0, encodeIngressEndBasicData(buf, 0), SESSION_ID, TIMESTAMP);
+        assertNotEquals(Sequencer.NO_FRAME, seq.pendingGatewayBootstrapActivation(TIMESTAMP)); // designates 5
+        assertNotEquals(Sequencer.NO_FRAME, seq.pendingGatewayBootstrapActivation(TIMESTAMP)); // designates 8
+
+        final long deadline = TIMESTAMP + Sequencer.GATEWAY_ACTIVATION_TIMEOUT_MS;
+        assertEquals(Sequencer.NO_FRAME, seq.pendingGatewayActivationTimeout(deadline - 1));
+
+        // Both come due on the same tick, and both are handed over — the adapter drains this too.
+        assertEquals(6, decodeGatewayActive(seq.buffer(), seq.pendingGatewayActivationTimeout(deadline)).gatewayId());
+        assertEquals(9, decodeGatewayActive(seq.buffer(), seq.pendingGatewayActivationTimeout(deadline)).gatewayId());
+        assertEquals(Sequencer.NO_FRAME, seq.pendingGatewayActivationTimeout(deadline),
+                     "both hand-overs restarted their own deadline");
+    }
+
+    @Test
+    @DisplayName("one logical gateway answering its activation does not excuse the other")
+    void answeringOneActivationLeavesTheOtherOnTheClock() {
+        final Sequencer seq = new Sequencer();
+        final MutableDirectBuffer buf = new ExpandableArrayBuffer(512);
+        loadTwoPairs(seq, buf);
+        seq.sequenceMessage(buf, 0, encodeIngressEndBasicData(buf, 0), SESSION_ID, TIMESTAMP);
+        seq.pendingGatewayBootstrapActivation(TIMESTAMP); // designates 5
+        seq.pendingGatewayBootstrapActivation(TIMESTAMP); // designates 8
+
+        // Only the client pair's primary comes up.
+        seq.sequenceMessage(buf, 0, encodeIngressGatewayStarted(buf, 0, 5), 0xA11CEL, TIMESTAMP + 1);
+
+        final long deadline = TIMESTAMP + Sequencer.GATEWAY_ACTIVATION_TIMEOUT_MS;
+        assertEquals(9, decodeGatewayActive(seq.buffer(), seq.pendingGatewayActivationTimeout(deadline)).gatewayId(),
+                     "the exchange pair is still overdue, and is walked past the answered entry to reach it");
+        assertEquals(Sequencer.NO_FRAME, seq.pendingGatewayActivationTimeout(deadline),
+                     "the healthy pair is disarmed, not merely quiet");
+    }
+
+    /** Two active/standby pairs: 5/6 under SOURCE_ID, 8/9 under EXCHANGE_SOURCE_ID, in load order. */
+    private static void loadTwoPairs(final Sequencer seq, final MutableDirectBuffer buf) {
+        seq.sequenceMessage(buf, 0, encodeIngressGateway(buf, 0, 5, SOURCE_ID, "GW-A", 0), SESSION_ID, TIMESTAMP);
+        seq.sequenceMessage(buf, 0, encodeIngressGateway(buf, 0, 6, SOURCE_ID, "GW-B", 1), SESSION_ID, TIMESTAMP);
+        seq.sequenceMessage(buf, 0, encodeIngressGateway(buf, 0, 8, EXCHANGE_SOURCE_ID, "EGW-A", 0), SESSION_ID,
+                            TIMESTAMP);
+        seq.sequenceMessage(buf, 0, encodeIngressGateway(buf, 0, 9, EXCHANGE_SOURCE_ID, "EGW-B", 1), SESSION_ID,
+                            TIMESTAMP);
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────

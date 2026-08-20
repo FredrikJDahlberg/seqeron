@@ -438,10 +438,12 @@ public final class SequencerService implements ClusteredService {
         } else {
             rejectedIngressCounter.increment();
         }
-        // The first EndBasicData opens the trading day: the cluster designates the primary FIX
-        // gateway by synthesizing a bootstrap GatewayActive right behind it, on the next globalSeqNo.
-        final int activation = sequencer.pendingGatewayBootstrapActivation(timestamp);
-        if (activation != Sequencer.NO_FRAME) {
+        // The first EndBasicData opens the trading day: the cluster designates the primary of each
+        // logical gateway by synthesizing a bootstrap GatewayActive right behind it, one per pair on
+        // consecutive globalSeqNos. Drained rather than taken once — and each frame is emitted before the
+        // next is asked for, because they all encode into the sequencer's one buffer.
+        int activation;
+        while ((activation = sequencer.pendingGatewayBootstrapActivation(timestamp)) != Sequencer.NO_FRAME) {
             bootstrapActivatedCounter.set(1);
             emit(activation);
         }
@@ -459,8 +461,12 @@ public final class SequencerService implements ClusteredService {
             emit(sequencer.tick(timestamp));
             // The cluster clock is also the deadline clock: a designated gateway instance that never
             // declared itself started is handed over on this same consensus time, on every node alike.
-            publishPromotion(sequencer.pendingGatewayActivationTimeout(timestamp),
-                             "a designated gateway instance never declared itself started");
+            // Drained for the same reason as the bootstrap: each logical gateway keeps its own deadline,
+            // so more than one can come due on the same tick.
+            int overdue;
+            while ((overdue = sequencer.pendingGatewayActivationTimeout(timestamp)) != Sequencer.NO_FRAME) {
+                publishPromotion(overdue, "a designated gateway instance never declared itself started");
+            }
             lastTickTimestampCounter.set(timestamp);
             injectTapRecordingFault();
             checkTapRecordingAlive();

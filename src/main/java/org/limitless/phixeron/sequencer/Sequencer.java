@@ -82,8 +82,8 @@ public final class Sequencer {
     public static final int NO_PROMOTION_TARGET = -1;
 
     /**
-     * No gateway instance: {@link #promotionTarget} found no sibling, {@link #designatedPrimaryGatewayId} no rank-0
-     * row.
+     * No gateway instance: {@link #promotionTarget} found no sibling, {@link #rowFor} no row for an
+     * instance, {@link #takeOverdueActivation} nothing overdue.
      */
     private static final int NO_GATEWAY_ID = -1;
 
@@ -157,11 +157,17 @@ public final class Sequencer {
     private final java.util.List<GatewayRow> gatewayRows = new java.util.ArrayList<>();
 
     /**
-     * The designated-primary {@code gatewayId} — the {@code gatewayId} of the rank-0 Gateway row —
-     * named by the bootstrap {@code GatewayActive}. {@link #NO_GATEWAY_ID} until a rank-0 row is seen; a
-     * bootstrap with no designated primary produces no frame (fail closed).
+     * The {@code gatewayId}s the bootstrap still has to activate — one per logical gateway, the rank-0
+     * row of each {@code gatewaySourceId}, filled from {@link #gatewayRows} behind the first {@code
+     * EndBasicData} and drained one frame per call by {@link #pendingGatewayBootstrapActivation}.
+     *
+     * <p>One per <em>logical</em> gateway, because the deployment has more than one: the client-facing
+     * pair and the exchange-facing pair elect independently and neither may activate the other's
+     * instances. A single designated primary here (which is what this was) let whichever rank-0 row
+     * loaded last silently take the other pair's bootstrap. Empty when no row designated a primary —
+     * nothing is activated, which is the fail-closed answer.
      */
-    private int designatedPrimaryGatewayId = NO_GATEWAY_ID;
+    private final java.util.ArrayDeque<Integer> bootstrapActivations = new java.util.ArrayDeque<>();
 
     // Replicated state (advanced identically on every node; not snapshotted)
 
@@ -220,16 +226,21 @@ public final class Sequencer {
     /** True once the bootstrap {@code GatewayActive} has been synthesized (on the first EndBasicData). */
     private boolean bootstrapActivationEmitted = false;
 
-    /**
-     * The {@code gatewayId} of the last {@code GatewayActive} synthesized, until it is answered by a
-     * {@code GatewayStarted} or times out; {@link #NO_GATEWAY_ID} when nothing is outstanding. Armed by
-     * {@link #gatewayActive}, resolved by {@link #pendingGatewayActivationTimeout} — see there for why an
-     * activation needs a deadline at all.
-     */
-    private int pendingActivationGatewayId = NO_GATEWAY_ID;
+    /** An outstanding {@code GatewayActive}: which instance was named, and when it stops being excused. */
+    private record PendingActivation(int gatewaySourceId, int gatewayId, long deadline) { }
 
-    /** Cluster time at which {@link #pendingActivationGatewayId} is treated as never having arrived. */
-    private long activationDeadline = 0;
+    /**
+     * Every {@code GatewayActive} synthesized but not yet answered by a {@code GatewayStarted}, at most
+     * one per logical gateway — armed by {@link #gatewayActive}, resolved by {@link
+     * #pendingGatewayActivationTimeout} (see there for why an activation needs a deadline at all).
+     *
+     * <p>Keyed on {@code gatewaySourceId} rather than held as a single outstanding activation, because
+     * the two logical gateways bootstrap back to back: the second activation used to overwrite the
+     * first's deadline, so a designated instance that never arrived was never handed over. A list in
+     * arm order, replaced in place, so the iteration {@link #pendingGatewayActivationTimeout} walks is
+     * the log's on every node — the same reason {@link #gatewayRows} is not a map.
+     */
+    private final java.util.List<PendingActivation> pendingActivations = new java.util.ArrayList<>();
 
     /**
      * This node's cluster memberId, for the diagnostic slot in {@link #reject}'s log line. Node-local
@@ -239,12 +250,6 @@ public final class Sequencer {
      * Null until then, which the logger renders as no member context rather than a wrong one.
      */
     private Integer memberId;
-
-    /**
-     * Set when {@link #sequenceMessage} sequenced the EndBasicData that must be followed by the
-     * bootstrap {@code GatewayActive}; consumed (and cleared) by {@link #pendingGatewayBootstrapActivation}.
-     */
-    private boolean bootstrapActivationPending = false;
 
     /** Topology is derived from the sequenced Gateway rows (see {@link #gatewayRows}), not configured. */
     public Sequencer() {
@@ -325,9 +330,6 @@ public final class Sequencer {
             gatewayDecoder.wrap(buffer, ingressBodyOffset, ingressBlockLen, ingressMsgHeaderDecoder.version());
             addGatewayRow(gatewayDecoder.gatewayId(), gatewayDecoder.gatewaySourceId(),
                           gatewayDecoder.preferenceRank());
-            if (gatewayDecoder.preferenceRank() == 0) {
-                designatedPrimaryGatewayId = gatewayDecoder.gatewayId();
-            }
         }
         if (templateId == GatewayStartedDecoder.TEMPLATE_ID) {
             gatewayStartedDecoder.wrap(buffer, ingressBodyOffset, ingressBlockLen, ingressMsgHeaderDecoder.version());
@@ -336,7 +338,11 @@ public final class Sequencer {
         }
         if (templateId == EndBasicDataDecoder.TEMPLATE_ID && !bootstrapActivationEmitted) {
             bootstrapActivationEmitted = true;
-            bootstrapActivationPending = true;
+            for (final GatewayRow row : gatewayRows) {
+                if (row.preferenceRank() == 0) {
+                    bootstrapActivations.add(row.gatewayId());
+                }
+            }
         }
         if (templateId == ClientConnectedDecoder.TEMPLATE_ID) {
             if (openConnections.computeIfAbsent(sourceId, source -> new java.util.HashSet<>()).add(connectionId)) {
@@ -426,23 +432,24 @@ public final class Sequencer {
     }
 
     /**
-     * The bootstrap activation, synthesized once behind the first {@code EndBasicData}: the cluster
-     * designates the primary FIX gateway by naming its {@code gatewayId} in a {@code GatewayActive},
-     * so exactly one instance opens its accept gate at cold start and a standby waits. Returns the
-     * frame length, or {@link #NO_FRAME} when none is pending. The adapter calls this right after the
-     * {@link #sequenceMessage} that sequenced the EndBasicData, so it takes the next {@code
-     * globalSeqNo} — identically on every node and on replay.
+     * The bootstrap activations, synthesized once behind the first {@code EndBasicData}: the cluster
+     * designates the primary of each logical gateway by naming its {@code gatewayId} in a {@code
+     * GatewayActive}, so exactly one instance of each pair opens its accept gate at cold start and its
+     * standby waits.
+     *
+     * <p><b>One frame per call.</b> There is one activation per logical gateway and each takes its own
+     * {@code globalSeqNo}, so the adapter calls this in a loop until {@link #NO_FRAME} — emitting what
+     * comes back before asking again, since every call re-encodes into the same {@link #buffer()}. The
+     * loop runs right after the {@link #sequenceMessage} that sequenced the EndBasicData, so the frames
+     * take the next {@code globalSeqNo}s in {@link #gatewayRows} order — identically on every node and
+     * on replay.
      * @param timestamp now
+     * @return a {@code GatewayActive} frame length, or {@link #NO_FRAME} when none is left pending
      */
     public int pendingGatewayBootstrapActivation(final long timestamp) {
-        if (!bootstrapActivationPending) {
-            return NO_FRAME;
-        }
-        bootstrapActivationPending = false;
-        if (designatedPrimaryGatewayId == NO_GATEWAY_ID) {
-            return NO_FRAME; // no Gateway row designated a primary — nothing to activate (fail closed)
-        }
-        return gatewayActive(designatedPrimaryGatewayId, timestamp);
+        final Integer gatewayId = bootstrapActivations.poll();
+        // Empty when no Gateway row designated a primary — nothing to activate (fail closed).
+        return gatewayId == null ? NO_FRAME : gatewayActive(gatewayId, timestamp);
     }
 
     /**
@@ -492,12 +499,8 @@ public final class Sequencer {
      *     #NO_PROMOTION_TARGET} if an activation went unanswered and there was no sibling to hand it to
      */
     public int pendingGatewayActivationTimeout(final long timestamp) {
-        if (pendingActivationGatewayId == NO_GATEWAY_ID || timestamp < activationDeadline) {
-            return NO_FRAME;
-        }
-        final int designated = pendingActivationGatewayId;
-        pendingActivationGatewayId = NO_GATEWAY_ID;
-        if (activeGatewaySession.containsValue(designated)) {
+        final int designated = takeOverdueActivation(timestamp);
+        if (designated == NO_GATEWAY_ID) {
             return NO_FRAME;
         }
         final int promoted = promotionTarget(designated);
@@ -517,6 +520,30 @@ public final class Sequencer {
     }
 
     /**
+     * Removes and returns the first activation whose deadline has passed and that no {@code
+     * GatewayStarted} answered, or {@link #NO_GATEWAY_ID} if none is overdue. An overdue activation the
+     * instance did answer is dropped too — it is simply resolved, and leaving it would have it looked at
+     * on every tick from here on.
+     *
+     * <p>The pending entry is taken before the caller decides anything, so the {@code gatewayActive} that
+     * a hand-over ends in cannot re-enter {@link #pendingActivations} mid-iteration.
+     * @param timestamp now
+     */
+    private int takeOverdueActivation(final long timestamp) {
+        for (final java.util.Iterator<PendingActivation> it = pendingActivations.iterator(); it.hasNext(); ) {
+            final PendingActivation pending = it.next();
+            if (timestamp < pending.deadline()) {
+                continue;
+            }
+            it.remove();
+            if (!activeGatewaySession.containsValue(pending.gatewayId())) {
+                return pending.gatewayId();
+            }
+        }
+        return NO_GATEWAY_ID;
+    }
+
+    /**
      * The {@code gatewayId} to hand over to when instance {@code closedGatewayId} goes away: the
      * lowest-{@code preferenceRank} other instance of the same logical gateway, ties broken by log
      * order, or {@link #NO_GATEWAY_ID} if that instance has no known row or no sibling.
@@ -529,13 +556,7 @@ public final class Sequencer {
      * @param closedGatewayId the instance whose session just closed
      */
     private int promotionTarget(final int closedGatewayId) {
-        GatewayRow closed = null;
-        for (final GatewayRow row : gatewayRows) {
-            if (row.gatewayId() == closedGatewayId) {
-                closed = row;
-                break;
-            }
-        }
+        final GatewayRow closed = rowFor(closedGatewayId);
         if (closed == null) {
             return NO_GATEWAY_ID;
         }
@@ -589,8 +610,7 @@ public final class Sequencer {
      * @param timestamp now
      */
     private int gatewayActive(final int gatewayId, final long timestamp) {
-        pendingActivationGatewayId = gatewayId;
-        activationDeadline = timestamp + GATEWAY_ACTIVATION_TIMEOUT_MS;
+        armActivationDeadline(gatewayId, timestamp);
         final long globalSeq = ++globalSeqNo;
         gatewayActiveEncoder.wrapAndApplyHeader(encodeBuffer, 0, headerEncoder);
         gatewayActiveEncoder.header()
@@ -602,5 +622,40 @@ public final class Sequencer {
             .origin(Origin.Application);
         gatewayActiveEncoder.gatewayId(gatewayId);
         return MessageHeaderEncoder.ENCODED_LENGTH + gatewayActiveEncoder.encodedLength();
+    }
+
+    /**
+     * Puts {@code gatewayId} on the clock as its logical gateway's outstanding activation, replacing any
+     * earlier one for that {@code gatewaySourceId} in place — a fresh activation supersedes the claim the
+     * previous one made, exactly as it does for the consumers. An instance with no Gateway row is not
+     * armed: nothing could be promoted in its place anyway, since {@link #promotionTarget} finds siblings
+     * through that row.
+     * @param gatewayId the instance just designated
+     * @param timestamp now
+     */
+    private void armActivationDeadline(final int gatewayId, final long timestamp) {
+        final GatewayRow row = rowFor(gatewayId);
+        if (row == null) {
+            return;
+        }
+        final PendingActivation armed =
+            new PendingActivation(row.gatewaySourceId(), gatewayId, timestamp + GATEWAY_ACTIVATION_TIMEOUT_MS);
+        for (int i = 0; i < pendingActivations.size(); i++) {
+            if (pendingActivations.get(i).gatewaySourceId() == row.gatewaySourceId()) {
+                pendingActivations.set(i, armed);
+                return;
+            }
+        }
+        pendingActivations.add(armed);
+    }
+
+    /** The Gateway row for {@code gatewayId}, or null if no load has named that instance. */
+    private GatewayRow rowFor(final int gatewayId) {
+        for (final GatewayRow row : gatewayRows) {
+            if (row.gatewayId() == gatewayId) {
+                return row;
+            }
+        }
+        return null;
     }
 }
