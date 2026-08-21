@@ -56,8 +56,7 @@ struct ScopedLoggerSink final : diag::LoggerSink
 };
 
 // Refusals only: a re-request logs its own (warn) line between two of them, so size() cannot count these.
-std::size_t
-refusalCount(const ScopedLoggerSink& sink)
+std::size_t refusalCount(const ScopedLoggerSink& sink)
 {
     std::size_t count = 0;
     for (const diag::LoggerEvent& event : sink.events)
@@ -69,8 +68,7 @@ refusalCount(const ScopedLoggerSink& sink)
 
 // Retained-buffer overflows only: every gap/re-walk warn shares EventCode::TapGap, so only the text
 // separates them.
-std::size_t
-overflowReports(const ScopedLoggerSink& sink)
+std::size_t overflowReports(const ScopedLoggerSink& sink)
 {
     std::size_t count = 0;
     for (const diag::LoggerEvent& event : sink.events)
@@ -137,8 +135,8 @@ struct Client final : ReplayerRecoveryActions
 // One Heartbeat frame (template id 48) at the given globalSeqNo — clear of the
 // ClientConnected/ClientDisconnected/LeadershipChanged special ids (1/2/5), so it always reaches
 // onSequenced rather than being intercepted as a lifecycle/leadership event.
-std::vector<std::uint8_t>
-encodeHeartbeat(const std::int64_t globalSeqNo, const seq::Origin::Value origin = seq::Origin::Value::Client)
+std::vector<std::uint8_t> encodeHeartbeat(const std::int64_t globalSeqNo,
+                                          const seq::Origin::Value origin = seq::Origin::Value::Client)
 {
     std::vector<std::uint8_t> buf(256, 0);
     seq::Heartbeat enc;
@@ -154,9 +152,8 @@ encodeHeartbeat(const std::int64_t globalSeqNo, const seq::Origin::Value origin 
 // the frame starts in the recording — the default 0 suffices wherever a test does not care, but
 // requestResume anchors on the last dispatched frame's position, so a test that checks the anchor must
 // space its frames apart.
-void
-deliverLive(Client& client, const std::int64_t globalSeqNo, const std::int64_t framePosition = 0,
-            const seq::Origin::Value origin = seq::Origin::Value::Client)
+void deliverLive(Client& client, const std::int64_t globalSeqNo, const std::int64_t framePosition = 0,
+                 const seq::Origin::Value origin = seq::Origin::Value::Client)
 {
     auto buf = encodeHeartbeat(globalSeqNo, origin);
     client.recovery.onFrame(reinterpret_cast<char*>(buf.data()), buf.size(), framePosition, /*receiveNs=*/0,
@@ -166,8 +163,7 @@ deliverLive(Client& client, const std::int64_t globalSeqNo, const std::int64_t f
 // A live tap frame too big for the retained-ahead FIFO to hold: a Heartbeat zero-padded past
 // MessagesBlock::SIZE, which retainMessages refuses outright (recordSize > MessagesBlock::SIZE). The
 // cheapest of its three overflow triggers to drive — the other two need 65536 frames or 16 MiB.
-void
-deliverLiveTooBigToRetain(Client& client, const std::int64_t globalSeqNo)
+void deliverLiveTooBigToRetain(Client& client, const std::int64_t globalSeqNo)
 {
     auto buf = encodeHeartbeat(globalSeqNo);
     buf.resize(8192, 0); // decoded from the front; the padding only has to make the record oversized
@@ -176,8 +172,7 @@ deliverLiveTooBigToRetain(Client& client, const std::int64_t globalSeqNo)
 }
 
 // One Heartbeat frame from a replay image (fromReplay=true), otherwise identical to deliverLive.
-void
-deliverReplay(Client& client, const std::int64_t globalSeqNo)
+void deliverReplay(Client& client, const std::int64_t globalSeqNo)
 {
     auto buf = encodeHeartbeat(globalSeqNo);
     client.recovery.onFrame(reinterpret_cast<char*>(buf.data()), buf.size(), /*framePosition=*/0, /*receiveNs=*/0,
@@ -189,9 +184,9 @@ deliverReplay(Client& client, const std::int64_t globalSeqNo)
 // recordingId defaults to -1 ("no expectation") so existing call sites that don't care about the
 // walk-recordingId mismatch check (see onControl) are unaffected — a test exercising that check passes
 // it explicitly.
-std::vector<std::uint8_t>
-encodeReplaying(const std::int32_t clientId, const std::int64_t requestId, const std::int64_t replaySessionId,
-                const std::int64_t catchUpPosition, const std::int64_t recordingId = -1)
+std::vector<std::uint8_t> encodeReplaying(const std::int32_t clientId, const std::int64_t requestId,
+                                          const std::int64_t replaySessionId, const std::int64_t catchUpPosition,
+                                          const std::int64_t recordingId = -1)
 {
     std::vector<std::uint8_t> buf(64, 0);
     usq::Replaying enc;
@@ -205,8 +200,7 @@ encodeReplaying(const std::int32_t clientId, const std::int64_t requestId, const
     return buf;
 }
 
-std::vector<std::uint8_t>
-encodeReplayPending(const std::int32_t clientId, const std::int64_t requestId)
+std::vector<std::uint8_t> encodeReplayPending(const std::int32_t clientId, const std::int64_t requestId)
 {
     std::vector<std::uint8_t> buf(32, 0);
     usq::ReplayPending enc;
@@ -216,8 +210,7 @@ encodeReplayPending(const std::int32_t clientId, const std::int64_t requestId)
     return buf;
 }
 
-std::vector<std::uint8_t>
-encodeReplayUnavailable(const std::int32_t clientId, const std::int64_t requestId)
+std::vector<std::uint8_t> encodeReplayUnavailable(const std::int32_t clientId, const std::int64_t requestId)
 {
     std::vector<std::uint8_t> buf(32, 0);
     usq::ReplayUnavailable enc;
@@ -229,16 +222,14 @@ encodeReplayUnavailable(const std::int32_t clientId, const std::int64_t requestI
 
 // Feeds one already-encoded control-stream message straight in, exactly as onControl() would decode it
 // off the Replayer's control subscription.
-void
-deliverControl(Client& client, std::vector<std::uint8_t> body)
+void deliverControl(Client& client, std::vector<std::uint8_t> body)
 {
     client.recovery.onControl(reinterpret_cast<char*>(body.data()), body.size());
 }
 
 // The replay image reaching the bound the Replayer gave it — how a segment completes, since a bounded
 // replay of an active recording never closes its image at the bound.
-void
-completeSegment(Client& client)
+void completeSegment(Client& client)
 {
     client.recovery.onReplayPosition(client.recovery.catchUpPosition());
 }
@@ -246,15 +237,13 @@ completeSegment(Client& client)
 // One duty cycle with the clock past every timer in it: an unanswered request is re-sent, and an
 // established replay that has delivered nothing is declared stalled. Either way the client re-asks with
 // a fresh requestId.
-void
-advancePastTimers(Client& client)
+void advancePastTimers(Client& client)
 {
     client.clockMs += PAST_EVERY_TIMER_MS;
     client.recovery.doTimers(/*requestPublicationPending=*/false);
 }
 
-bool
-checkProgressAt(Client& client, const std::int64_t nowMs)
+bool checkProgressAt(Client& client, const std::int64_t nowMs)
 {
     client.clockMs = nowMs;
     return client.recovery.checkRecoveryProgress();

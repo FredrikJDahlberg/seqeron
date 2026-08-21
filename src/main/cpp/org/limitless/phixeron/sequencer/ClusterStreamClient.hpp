@@ -53,8 +53,7 @@ inline constexpr const char* REPLAY_CHANNEL_IPC = "aeron:ipc";
  * binary can run on one host without a port clash the given default.
  * Returns a full "aeron:udp?endpoint=localhost:<port>" channel string.
  */
-inline std::string
-resolveReplayChannel(const char* envVar, std::uint16_t defaultPort)
+inline std::string resolveReplayChannel(const char* envVar, std::uint16_t defaultPort)
 {
     return "aeron:udp?endpoint=localhost:" + std::to_string(diag::envInt(envVar, defaultPort));
 }
@@ -72,8 +71,7 @@ inline const std::string DEFAULT_ARCHIVE_ENDPOINTS = archiveEndpointsCsv(3);
  * environment variable, falling back to defaultCsv (same format) when unset
  * or empty.
  */
-inline std::vector<std::string>
-resolveArchiveEndpoints(const char* envVar, const std::string& defaultCsv)
+inline std::vector<std::string> resolveArchiveEndpoints(const char* envVar, const std::string& defaultCsv)
 {
     const std::string csv = diag::envString(envVar, defaultCsv);
 
@@ -106,9 +104,8 @@ resolveArchiveEndpoints(const char* envVar, const std::string& defaultCsv)
  * @return false if the archive holds no FEEDER_STREAM_ID recording at all (leaving both
  *         out-parameters untouched).
  */
-inline bool
-findClusterStreamRecording(const std::shared_ptr<aeron::archive::client::AeronArchive>& archive,
-                           std::int64_t& recordingId, std::int64_t& catchUpPosition)
+inline bool findClusterStreamRecording(const std::shared_ptr<aeron::archive::client::AeronArchive>& archive,
+                                       std::int64_t& recordingId, std::int64_t& catchUpPosition)
 {
     std::int64_t activeId = -1;
     std::int64_t stoppedId = -1;
@@ -164,10 +161,9 @@ findClusterStreamRecording(const std::shared_ptr<aeron::archive::client::AeronAr
  * @throws std::runtime_error if no candidate endpoint both connects and holds
  *         a sequenced-stream recording.
  */
-inline std::shared_ptr<aeron::archive::client::AeronArchive>
-connectToArchiveWithClusterStream(std::shared_ptr<aeron::Aeron> aeron, const std::vector<std::string>& controlEndpoints,
-                                  std::int32_t controlStreamId, const char* controlResponseChannel,
-                                  const char* logPrefix, std::int64_t& recordingId, std::int64_t& catchUpPosition)
+inline std::shared_ptr<aeron::archive::client::AeronArchive> connectToArchiveWithClusterStream(
+    std::shared_ptr<aeron::Aeron> aeron, const std::vector<std::string>& controlEndpoints, std::int32_t controlStreamId,
+    const char* controlResponseChannel, const char* logPrefix, std::int64_t& recordingId, std::int64_t& catchUpPosition)
 {
     std::string lastError = "no candidate endpoints given";
     for (const auto& endpoint : controlEndpoints)
@@ -225,9 +221,11 @@ connectToArchiveWithClusterStream(std::shared_ptr<aeron::Aeron> aeron, const std
  * @throws std::runtime_error if the local archive can't be reached, or holds no cluster
  *         stream recording at all.
  */
-inline std::shared_ptr<aeron::archive::client::AeronArchive>
-connectLocalArchive(std::shared_ptr<aeron::Aeron> aeron, std::int32_t controlStreamId, const char* logPrefix,
-                    std::int64_t& recordingId, std::int64_t& catchUpPosition)
+inline std::shared_ptr<aeron::archive::client::AeronArchive> connectLocalArchive(std::shared_ptr<aeron::Aeron> aeron,
+                                                                                 std::int32_t controlStreamId,
+                                                                                 const char* logPrefix,
+                                                                                 std::int64_t& recordingId,
+                                                                                 std::int64_t& catchUpPosition)
 {
     aeron::archive::client::Context archiveCtx;
     archiveCtx.aeron(aeron)
@@ -274,8 +272,8 @@ struct RecordingSegment
  * since the newer holds the older's content, only the most recent is kept and
  * any earlier "active" duplicate is dropped rather than replayed twice.
  */
-inline std::vector<RecordingSegment>
-resolveClusterStreamSegments(const std::shared_ptr<aeron::archive::client::AeronArchive>& archive)
+inline std::vector<RecordingSegment> resolveClusterStreamSegments(
+    const std::shared_ptr<aeron::archive::client::AeronArchive>& archive)
 {
     struct Entry
     {

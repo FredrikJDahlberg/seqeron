@@ -13,8 +13,7 @@ constexpr std::int64_t STALL_MS = 30'000;
 // Arbitrary non-zero clock origin — 0 is the policy's "no episode timed" sentinel.
 constexpr std::int64_t T0 = 3 * 60 * 60 * 1000;
 
-constexpr std::int64_t
-seconds(const std::int64_t s)
+constexpr std::int64_t seconds(const std::int64_t s)
 {
     return T0 + s * 1000;
 }

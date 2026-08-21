@@ -33,8 +33,7 @@ static constexpr std::uint16_t SEQUENCED_SCHEMA_ID = 202;
 static constexpr std::uint16_t SCHEMA_VERSION = 0;
 
 template<typename MessageHeader>
-MessageHeader
-decodeHeader(std::uint8_t* buffer, std::uint64_t bufferferLength)
+MessageHeader decodeHeader(std::uint8_t* buffer, std::uint64_t bufferferLength)
 {
     MessageHeader hdr;
     hdr.wrap(reinterpret_cast<char*>(buffer), 0, 0, bufferferLength);

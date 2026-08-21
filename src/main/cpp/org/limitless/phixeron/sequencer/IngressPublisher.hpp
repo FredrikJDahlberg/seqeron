@@ -35,9 +35,8 @@ inline constexpr std::size_t INGRESS_ENCODE_BUFFER_LEN = 512;
 // Returns what ClusterStreamSender::send returns: false only when there is no cluster session. A caller
 // that reserved a FIX MsgSeqNum must act on that; one that did not may discard it (doc/todo.md 0e).
 template<typename Encoder, typename Fill>
-[[nodiscard]] bool
-publishUnsequenced(ClusterStreamSender& sender, const std::int32_t sourceId, const std::int32_t connectionId,
-                   Fill&& fill)
+[[nodiscard]] bool publishUnsequenced(ClusterStreamSender& sender, const std::int32_t sourceId,
+                                      const std::int32_t connectionId, Fill&& fill)
 {
     alignas(16) std::array<std::uint8_t, INGRESS_ENCODE_BUFFER_LEN> buffer{};
     Encoder encoder;

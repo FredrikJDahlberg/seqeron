@@ -50,8 +50,7 @@ class DynamicIdleStrategy
 };
 
 // Resolves PHIXERON_IDLE_STRATEGY (case-insensitive): "backoff" (default), "yielding", or "busyspin".
-inline DynamicIdleStrategy
-resolveIdleStrategy()
+inline DynamicIdleStrategy resolveIdleStrategy()
 {
     const char* v = std::getenv("PHIXERON_IDLE_STRATEGY");
     std::string name = (v != nullptr && *v != '\0') ? v : "backoff";

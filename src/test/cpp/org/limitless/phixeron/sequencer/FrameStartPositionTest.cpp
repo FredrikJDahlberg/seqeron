@@ -52,8 +52,7 @@ struct Frame
 };
 
 // The formula frameStartPosition replaced, kept here so each test can show what it would have said.
-std::int64_t
-legacyPosition(const aeron::Header& header)
+std::int64_t legacyPosition(const aeron::Header& header)
 {
     return header.position() - header.frameLength();
 }

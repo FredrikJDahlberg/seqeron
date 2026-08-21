@@ -15,8 +15,7 @@ constexpr std::int64_t T0 = 3 * 60 * 60 * 1000;
 // A frontier that never advances: the non-converging case every deadline test below drives.
 constexpr std::int64_t STUCK = 4242;
 
-constexpr std::int64_t
-seconds(const std::int64_t s)
+constexpr std::int64_t seconds(const std::int64_t s)
 {
     return T0 + s * 1000;
 }

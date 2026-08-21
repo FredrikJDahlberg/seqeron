@@ -104,8 +104,7 @@ class LoggerSink
 
 namespace diagnostic_detail {
 
-inline const char*
-componentName(const Component component)
+inline const char* componentName(const Component component)
 {
     switch (component)
     {
@@ -154,15 +153,13 @@ class StderrLoggerSink final : public LoggerSink
 
 namespace Logger {
 
-inline StderrLoggerSink&
-defaultSink()
+inline StderrLoggerSink& defaultSink()
 {
     static StderrLoggerSink sink;
     return sink;
 }
 
-inline LoggerSink*&
-installedSink()
+inline LoggerSink*& installedSink()
 {
     static LoggerSink* sink = &defaultSink();
     return sink;
@@ -170,20 +167,18 @@ installedSink()
 
 // Installs the sink every subsequent log() call forwards to. Caller owns the sink's lifetime (e.g.
 // a test's stack-local RecordingDiagnosticSink) — reset() before it goes out of scope.
-inline void
-install(LoggerSink& sink)
+inline void install(LoggerSink& sink)
 {
     installedSink() = &sink;
 }
 
-inline void
-reset()
+inline void reset()
 {
     installedSink() = &defaultSink();
 }
 
-inline void
-vlog(const Component component, const Severity severity, const EventCode code, const char* format, va_list args)
+inline void vlog(const Component component, const Severity severity, const EventCode code, const char* format,
+                 va_list args)
 {
     LoggerEvent event{ .component = component, .severity = severity, .code = code };
     const int written = std::vsnprintf(event.text.data(), event.text.size(), format, args);
@@ -196,8 +191,7 @@ vlog(const Component component, const Severity severity, const EventCode code, c
     installedSink()->record(event);
 }
 
-inline void
-log(const Component component, const Severity severity, const EventCode code, const char* format, ...)
+inline void log(const Component component, const Severity severity, const EventCode code, const char* format, ...)
 {
     va_list args;
     va_start(args, format);
@@ -205,8 +199,7 @@ log(const Component component, const Severity severity, const EventCode code, co
     va_end(args);
 }
 
-inline void
-info(const Component component, const EventCode code, const char* format, ...)
+inline void info(const Component component, const EventCode code, const char* format, ...)
 {
     va_list args;
     va_start(args, format);
@@ -214,8 +207,7 @@ info(const Component component, const EventCode code, const char* format, ...)
     va_end(args);
 }
 
-inline void
-info(const Component component, const char* format, ...)
+inline void info(const Component component, const char* format, ...)
 {
     va_list args;
     va_start(args, format);
@@ -223,8 +215,7 @@ info(const Component component, const char* format, ...)
     va_end(args);
 }
 
-inline void
-warn(const Component component, const EventCode code, const char* format, ...)
+inline void warn(const Component component, const EventCode code, const char* format, ...)
 {
     va_list args;
     va_start(args, format);
@@ -232,8 +223,7 @@ warn(const Component component, const EventCode code, const char* format, ...)
     va_end(args);
 }
 
-inline void
-error(const Component component, const EventCode code, const char* format, ...)
+inline void error(const Component component, const EventCode code, const char* format, ...)
 {
     va_list args;
     va_start(args, format);
@@ -241,8 +231,7 @@ error(const Component component, const EventCode code, const char* format, ...)
     va_end(args);
 }
 
-inline void
-fault(const Component component, const EventCode code, const char* format, ...)
+inline void fault(const Component component, const EventCode code, const char* format, ...)
 {
     va_list args;
     va_start(args, format);

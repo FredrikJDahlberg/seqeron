@@ -80,8 +80,7 @@ inline constexpr std::int32_t CLUSTER_PROTOCOL_VERSION = (0 << 16) | (3 << 8) | 
 inline constexpr const char* CLUSTER_CLIENT_INFO = "FixGateway";
 inline constexpr std::int64_t CLUSTER_CONNECT_TIMEOUT_MS = 10'000;
 
-inline std::int64_t
-nowMs()
+inline std::int64_t nowMs()
 {
     return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
         .count();
@@ -93,8 +92,7 @@ nowMs()
 // (io.aeron.cluster.ClusterSession sends OK with an empty detail), unlike REDIRECT and
 // NewLeaderEvent, which findIngressEndpoint below resolves from the wire. A multi-host deployment
 // would resolve this from configuration instead.
-inline std::string
-memberIngressEndpoint(const std::int32_t memberId)
+inline std::string memberIngressEndpoint(const std::int32_t memberId)
 {
     return "localhost:" + std::to_string(clusterIngressPort(memberId));
 }
@@ -102,8 +100,7 @@ memberIngressEndpoint(const std::int32_t memberId)
 // Finds `memberId`'s endpoint in a "memberId=host:port,memberId=host:port,..." CSV, the wire
 // format both SessionEvent.detail (on REDIRECT) and NewLeaderEvent.ingressEndpoints use.
 // Returns false (leaving `out` untouched) if the CSV has no entry for that member.
-inline bool
-findIngressEndpoint(std::string_view endpoints, std::int32_t memberId, std::string& out)
+inline bool findIngressEndpoint(std::string_view endpoints, std::int32_t memberId, std::string& out)
 {
     std::size_t start = 0;
     while (start <= endpoints.size())

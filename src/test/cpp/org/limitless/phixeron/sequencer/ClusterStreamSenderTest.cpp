@@ -82,9 +82,9 @@ class FakeEgressTransport : public EgressTransport
 
 // ── Fixture wire helpers ──────────────────────────────────────────────────────
 
-std::vector<std::uint8_t>
-encodeSessionEvent(std::int64_t clusterSessionId, std::int64_t leadershipTermId, cluster_sbe::EventCode::Value code,
-                   std::int32_t leaderMemberId = 0, std::string_view detail = {})
+std::vector<std::uint8_t> encodeSessionEvent(std::int64_t clusterSessionId, std::int64_t leadershipTermId,
+                                             cluster_sbe::EventCode::Value code, std::int32_t leaderMemberId = 0,
+                                             std::string_view detail = {})
 {
     std::vector<std::uint8_t> buf(256 + detail.size(), 0);
     cluster_sbe::SessionEvent enc;
@@ -101,9 +101,8 @@ encodeSessionEvent(std::int64_t clusterSessionId, std::int64_t leadershipTermId,
     return buf;
 }
 
-std::vector<std::uint8_t>
-encodeNewLeaderEvent(std::int64_t leadershipTermId, std::int32_t leaderMemberId = 0,
-                     std::string_view ingressEndpoints = {})
+std::vector<std::uint8_t> encodeNewLeaderEvent(std::int64_t leadershipTermId, std::int32_t leaderMemberId = 0,
+                                               std::string_view ingressEndpoints = {})
 {
     std::vector<std::uint8_t> buf(128 + ingressEndpoints.size(), 0);
     cluster_sbe::NewLeaderEvent enc;
@@ -116,9 +115,8 @@ encodeNewLeaderEvent(std::int64_t leadershipTermId, std::int32_t leaderMemberId 
 
 // Builds an egress frame carrying an application-layer payload the way the
 // real cluster echoes it back: SessionMessageHeader followed by arbitrary bytes.
-std::vector<std::uint8_t>
-encodeSessionMessage(std::int64_t leadershipTermId, std::int64_t clusterSessionId,
-                     std::span<const std::uint8_t> appPayload)
+std::vector<std::uint8_t> encodeSessionMessage(std::int64_t leadershipTermId, std::int64_t clusterSessionId,
+                                               std::span<const std::uint8_t> appPayload)
 {
     std::vector<std::uint8_t> buf(256 + appPayload.size(), 0);
     cluster_sbe::SessionMessageHeader enc;
@@ -135,8 +133,7 @@ encodeSessionMessage(std::int64_t leadershipTermId, std::int64_t clusterSessionI
 // Decodes the MessageHeader + templateId-specific SBE message that
 // ClusterStreamSender offered to the (fake) ingress transport.
 template<typename SbeMsg>
-SbeMsg
-decodeOffered(std::vector<std::uint8_t>& frame)
+SbeMsg decodeOffered(std::vector<std::uint8_t>& frame)
 {
     cluster_sbe::MessageHeader hdr;
     hdr.wrap(reinterpret_cast<char*>(frame.data()), 0, 0, frame.size());

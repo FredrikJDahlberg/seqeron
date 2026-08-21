@@ -11,23 +11,20 @@
 namespace org::limitless::phixeron::util {
 
 // Reads a base-10 int from the environment, falling back when unset/empty.
-inline std::int32_t
-envInt(const char* name, const std::int32_t fallback)
+inline std::int32_t envInt(const char* name, const std::int32_t fallback)
 {
     const char* value = std::getenv(name);
     return (value != nullptr && *value != '\0') ? static_cast<std::int32_t>(std::strtol(value, nullptr, 10)) : fallback;
 }
 
-inline std::string
-envString(const char* name, const std::string& fallback)
+inline std::string envString(const char* name, const std::string& fallback)
 {
     const char* value = std::getenv(name);
     return (value != nullptr && *value != '\0') ? std::string{ value } : fallback;
 }
 
 // Set and non-empty — the shape every PHIXERON_* opt-in switch uses.
-inline bool
-envFlag(const char* name)
+inline bool envFlag(const char* name)
 {
     const char* value = std::getenv(name);
     return value != nullptr && *value != '\0';
@@ -42,8 +39,7 @@ envFlag(const char* name)
 // unset override on member 1 or 2 attached the app to a different node's media driver than
 // PHIXERON_NODE_MEMBER_ID named. Every launcher under src/*/scripts sets the override explicitly, so
 // that only ever mattered for a hand-started process — but it is a trap, and unifying removes it.
-inline std::string
-resolveAeronDir(const char* envName, const std::int32_t memberId)
+inline std::string resolveAeronDir(const char* envName, const std::int32_t memberId)
 {
     const char* value = std::getenv(envName);
     if (value != nullptr && *value != '\0')
@@ -58,8 +54,7 @@ resolveAeronDir(const char* envName, const std::int32_t memberId)
 // A "host:port" cluster-egress endpoint: the per-binary override, else localhost on the port this app
 // owns. Every client co-located on one node shares that node's media driver, so each needs a distinct
 // port — the defaults come from PortLayout's per-role bases.
-inline std::string
-resolveEgressEndpoint(const char* envName, const std::uint16_t defaultPort)
+inline std::string resolveEgressEndpoint(const char* envName, const std::uint16_t defaultPort)
 {
     return envString(envName, "localhost:" + std::to_string(defaultPort));
 }
@@ -67,8 +62,7 @@ resolveEgressEndpoint(const char* envName, const std::uint16_t defaultPort)
 // Per-message logging on the poll thread (doc/audit.md C1) blocks on stdout under load, so it is opt-in
 // via PHIXERON_VERBOSE_LOG rather than unconditional: a normal run's poll thread never stalls on a
 // write() nobody is watching. Cached — this is checked once per message.
-inline bool
-verboseLoggingEnabled()
+inline bool verboseLoggingEnabled()
 {
     static const bool enabled = envFlag("PHIXERON_VERBOSE_LOG");
     return enabled;

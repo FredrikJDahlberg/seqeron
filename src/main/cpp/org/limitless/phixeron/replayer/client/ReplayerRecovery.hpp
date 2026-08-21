@@ -78,7 +78,7 @@ struct MessagesRecordHeader
 
 class MessagesBlockPool
 {
-public:
+  public:
     ~MessagesBlockPool()
     {
         for (auto* block : m_freeList)
@@ -108,7 +108,7 @@ public:
         m_freeList.push_back(block);
     }
 
-private:
+  private:
     std::vector<MessagesBlock*> m_freeList;
 };
 
@@ -161,11 +161,11 @@ class ReplayerRecovery
     std::int64_t m_lastReplayProgressMs = 0; // when it last changed — the stall watchdog's clock
     bool m_replayerUnavailable = false;
 
-    std::int64_t m_lastGlobalSeqNo = 0;   // highest globalSeqNo delivered; 0 = none yet
-    std::int64_t m_lastFramePosition = 0; // where that frame starts in the recording; requestResume's anchor
-    std::int64_t m_resumeAnchorSequenceNumber = 0;  // globalSeqNo a resume replay must open at, or 0 if not resuming
-    bool m_replayGapLogged = false;       // report a hole in replayed history once per episode, not per frame
-    bool m_caughtUp = false;              // following live; revoked on a tap gap, re-established at the seam
+    std::int64_t m_lastGlobalSeqNo = 0;            // highest globalSeqNo delivered; 0 = none yet
+    std::int64_t m_lastFramePosition = 0;          // where that frame starts in the recording; requestResume's anchor
+    std::int64_t m_resumeAnchorSequenceNumber = 0; // globalSeqNo a resume replay must open at, or 0 if not resuming
+    bool m_replayGapLogged = false;                // report a hole in replayed history once per episode, not per frame
+    bool m_caughtUp = false;                       // following live; revoked on a tap gap, re-established at the seam
 
     RecoveryProgressPolicy m_recoveryProgress{ RECOVERY_PROGRESS_TIMEOUT_MS };
 
@@ -173,7 +173,7 @@ class ReplayerRecovery
     MessagesBlockPool m_messagesBlockPool;
     std::deque<MessagesBlock*> m_messagesBlocks;
     std::size_t m_messagesReadOffset = 0; // offset of the next unconsumed record within m_messagesBlocks.front()
-    std::int64_t m_messagesTailSequenceNumber = 0;  // globalSeqNo of the most recently retained frame; dedups redelivery
+    std::int64_t m_messagesTailSequenceNumber = 0; // globalSeqNo of the most recently retained frame; dedups redelivery
     std::size_t m_messagesFrameCount = 0;
     std::size_t m_messagesBytes = 0;
     bool m_messagesOverflowed = false;
@@ -254,7 +254,8 @@ class ReplayerRecovery
                     diag::Logger::warn(diag::Component::ReplayerStreamReceiver, diag::EventCode::TapGap,
                                        "tap gap: expected globalSeqNo=%lld got %lld — "
                                        "resuming the recording at globalSeqNo=%lld",
-                                       static_cast<long long>(m_lastGlobalSeqNo + 1), static_cast<long long>(sequenceNumber),
+                                       static_cast<long long>(m_lastGlobalSeqNo + 1),
+                                       static_cast<long long>(sequenceNumber),
                                        static_cast<long long>(m_lastGlobalSeqNo));
                     m_caughtUp = false;
                     requestResume();
@@ -270,7 +271,8 @@ class ReplayerRecovery
                                        "gap in REPLAYED history: expected globalSeqNo=%lld got %lld — this "
                                        "node's recording chain does not cover the hole; recovery cannot "
                                        "converge until it does",
-                                       static_cast<long long>(m_lastGlobalSeqNo + 1), static_cast<long long>(sequenceNumber));
+                                       static_cast<long long>(m_lastGlobalSeqNo + 1),
+                                       static_cast<long long>(sequenceNumber));
                 }
                 return;
             }
@@ -710,7 +712,8 @@ class ReplayerRecovery
                 m_messagesBlocks.push_back(m_messagesBlockPool.acquire());
             }
             MessagesBlock* const tail = m_messagesBlocks.back();
-            const MessagesRecordHeader header{ sequenceNumber, framePosition, receiveNs, static_cast<std::uint32_t>(len) };
+            const MessagesRecordHeader header{ sequenceNumber, framePosition, receiveNs,
+                                               static_cast<std::uint32_t>(len) };
             std::memcpy(tail->bytes.data() + tail->used, &header, sizeof(header));
             std::memcpy(tail->bytes.data() + tail->used + sizeof(header), frame, len);
             tail->used += recordSize;
@@ -744,7 +747,8 @@ class ReplayerRecovery
         MessagesRecordHeader header;
         while (peekRetained(header) && header.globalSeqNo <= m_lastGlobalSeqNo + 1)
         {
-            std::uint8_t* const payload = m_messagesBlocks.front()->bytes.data() + m_messagesReadOffset + sizeof(header);
+            std::uint8_t* const payload =
+                m_messagesBlocks.front()->bytes.data() + m_messagesReadOffset + sizeof(header);
             m_messagesReadOffset += sizeof(header) + header.length;
             --m_messagesFrameCount;
             m_messagesBytes -= header.length;

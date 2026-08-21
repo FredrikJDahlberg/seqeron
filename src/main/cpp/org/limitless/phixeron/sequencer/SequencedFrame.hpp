@@ -77,9 +77,8 @@ struct SequencedEvent
 // gateway-origin admin frames behind an in-flight resend and replays them once it drains, and its
 // outbound resend path re-decodes bytes it cached.
 template<typename Decoder>
-Decoder
-decodeSequenced(const char* payload, const std::uint64_t payloadLength, const std::uint16_t blockLength,
-                const std::uint16_t version)
+Decoder decodeSequenced(const char* payload, const std::uint64_t payloadLength, const std::uint16_t blockLength,
+                        const std::uint16_t version)
 {
     Decoder decoder;
     decoder.wrapForDecode(const_cast<char*>(payload), sbe::sequenced::MessageHeader::encodedLength(), blockLength,
@@ -95,8 +94,7 @@ decodeSequenced(const char* payload, const std::uint64_t payloadLength, const st
 // The returned decoder points into that fragment buffer, so it is valid only for the duration of the
 // callback, exactly as SequencedEvent::payload is.
 template<typename Decoder>
-Decoder
-decodeSequenced(const SequencedEvent& event)
+Decoder decodeSequenced(const SequencedEvent& event)
 {
     return decodeSequenced<Decoder>(event.payload, event.payloadLength, event.blockLength, event.version);
 }
@@ -132,8 +130,7 @@ struct LifecycleEvent
 
 // The wall-clock stamp SequencedEvent/LifecycleEvent carry as receiveTimeNs. Free rather than a
 // member of either stream client, so both stamp their events off the same clock.
-inline std::int64_t
-nowNs()
+inline std::int64_t nowNs()
 {
     using namespace std::chrono;
     return duration_cast<nanoseconds>(system_clock::now().time_since_epoch()).count();
