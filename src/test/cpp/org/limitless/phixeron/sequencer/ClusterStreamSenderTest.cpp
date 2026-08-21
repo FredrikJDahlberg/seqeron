@@ -12,8 +12,10 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <deque>
+#include <limits>
 #include <string_view>
 #include <vector>
 
@@ -481,6 +483,62 @@ TEST(ClusterStreamSenderReliableSend, SendSpinsUntilOfferAccepted)
     auto hdr = decodeOffered<cluster_sbe::SessionMessageHeader>(ingressPtr->m_accepted);
     EXPECT_EQ(11, hdr.leadershipTermId());
     EXPECT_EQ(55, hdr.clusterSessionId());
+}
+
+// The spin's other two exits both need a leader — one to accept the frame, the other to send the close —
+// so when quorum is lost neither ever arrives. Left unbounded that stops the caller's whole duty cycle
+// with it (no tap poll, no keep-alive, no tap-stall fence) silently, for as long as the outage lasts.
+// Bounded, it becomes the session loss it already is, and the caller's existing isSessionLost() fence
+// takes it from there.
+TEST(ClusterStreamSender, SendGivesTheSessionUpWhenNoLeaderEverAcceptsIngress)
+{
+    auto egress = std::make_unique<FakeEgressTransport>();
+    egress->m_queued.push_back(encodeSessionEvent(55, 11, cluster_sbe::EventCode::Value::OK));
+
+    auto ingress = std::make_unique<FlakyIngressTransport>();
+    auto* ingressPtr = ingress.get();
+
+    ClusterStreamSender sender;
+    sender.setIngressStallTimeoutMs(100);
+    sender.connect(std::move(ingress), std::move(egress));
+    ASSERT_TRUE(sender.isConnected());
+
+    ingressPtr->m_rejectCount = std::numeric_limits<int>::max(); // no leader is ever coming back
+
+    const std::array<std::uint8_t, 5> body{ '8', '=', 'F', 'I', 'X' };
+    const auto start = std::chrono::steady_clock::now();
+    EXPECT_FALSE(sender.send(body.data(), static_cast<std::uint16_t>(body.size())));
+    const auto elapsed = std::chrono::steady_clock::now() - start;
+
+    EXPECT_GE(elapsed, std::chrono::milliseconds(100)) << "the bound must be ridden out, not tripped on refusal one";
+    EXPECT_TRUE(sender.isSessionLost()) << "what the caller fences on; nothing else here would have set it";
+    EXPECT_FALSE(sender.isConnected());
+}
+
+// The bound is on elapsed time, not on attempts: a busy leader that refuses a great many offers in quick
+// succession and then takes one is ordinary back-pressure, and must not be mistaken for an outage.
+TEST(ClusterStreamSender, SendRidesOutManyFastRefusalsWithinTheStallBound)
+{
+    auto egress = std::make_unique<FakeEgressTransport>();
+    egress->m_queued.push_back(encodeSessionEvent(55, 11, cluster_sbe::EventCode::Value::OK));
+
+    auto ingress = std::make_unique<FlakyIngressTransport>();
+    auto* ingressPtr = ingress.get();
+
+    ClusterStreamSender sender;
+    sender.setIngressStallTimeoutMs(60'000); // beyond anything this test can take
+    sender.connect(std::move(ingress), std::move(egress));
+    ASSERT_TRUE(sender.isConnected());
+
+    ingressPtr->m_offerCalls = 0;
+    ingressPtr->m_rejectCount = 5'000;
+
+    const std::array<std::uint8_t, 5> body{ '8', '=', 'F', 'I', 'X' };
+    EXPECT_TRUE(sender.send(body.data(), static_cast<std::uint16_t>(body.size())));
+
+    EXPECT_EQ(5'001, ingressPtr->m_offerCalls);
+    EXPECT_FALSE(sender.isSessionLost());
+    EXPECT_TRUE(sender.isConnected());
 }
 
 // During a leader failover the offer fails while a NewLeaderEvent is waiting on egress.

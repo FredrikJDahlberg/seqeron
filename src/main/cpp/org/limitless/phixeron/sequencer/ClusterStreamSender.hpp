@@ -225,6 +225,7 @@ class ClusterStreamSender
   public:
     static constexpr std::size_t MAX_PAYLOAD_LEN = 8192;
 
+
     // Real entry point: acquires the ingress publication + egress subscription
     // from Aeron (inherently async — driver IPC via addPublication/addSubscription
     // and find*), then hands off to the transport-agnostic handshake below.
@@ -448,6 +449,13 @@ class ClusterStreamSender
         m_connectTimeoutMs = ms;
     }
 
+    // Overrides send()'s give-up bound (default INGRESS_STALL_FATAL_TIMEOUT_MS). Exposed for the same
+    // reason as setConnectTimeoutMs: a test of the "no leader ever accepts ingress" path cannot wait 10s.
+    void setIngressStallTimeoutMs(std::int64_t ms)
+    {
+        m_ingressStallFatalTimeoutMs = ms;
+    }
+
     bool isConnected() const
     {
         return m_clusterSessionId >= 0;
@@ -576,12 +584,48 @@ class ClusterStreamSender
         std::memcpy(buf.data() + hdrLen, bytes, len);
         const std::size_t frameLen = static_cast<std::size_t>(hdrLen) + len;
 
+        // Bounded, and alerted on. The spin's other two exits — the offer landing, and the cluster telling
+        // us the session is gone — both need a leader: one to accept ingress, the other to send the close.
+        // Lose quorum and neither ever comes, so an unbounded spin here stops the whole duty cycle with it
+        // (no tap poll, no keep-alive, no tap-stall fence, and not one line in the log) for as long as the
+        // outage lasts. Past the bound the session is called what it has become, and the caller's
+        // isSessionLost() fence takes it from there — the same path a cluster-sent close would have taken.
+        //
+        // Pumping keepAlive() from in here would not help, and its absence is deliberate: it offers on this
+        // same m_ingress, so a publication that will not take this frame will not take a keep-alive either.
+        std::chrono::steady_clock::time_point blockedSince{};
+        std::chrono::steady_clock::time_point nextAlert{};
         while (!m_ingress->offer(std::span<const std::uint8_t>(buf.data(), frameLen)))
         {
             pumpEgressControl();
             if (m_clusterSessionId < 0)
             {
                 return false;
+            }
+            const auto now = std::chrono::steady_clock::now();
+            if (blockedSince == std::chrono::steady_clock::time_point{})
+            {
+                blockedSince = now; // first refusal only anchors the period; the common case never gets here
+                nextAlert = now + INGRESS_BACKPRESSURE_ALERT_INTERVAL;
+            }
+            const auto blockedMs = static_cast<std::int64_t>(
+                std::chrono::duration_cast<std::chrono::milliseconds>(now - blockedSince).count());
+            if (blockedMs >= m_ingressStallFatalTimeoutMs)
+            {
+                diag::Logger::error(diag::Component::Cluster, diag::EventCode::ClusterSessionError,
+                                    "no leader has accepted cluster ingress for %" PRId64 "ms — giving the session "
+                                    "up rather than spin on with the duty cycle stopped",
+                                    blockedMs);
+                m_clusterSessionId = -1;
+                m_sessionLost = true;
+                return false;
+            }
+            if (now >= nextAlert)
+            {
+                nextAlert = now + INGRESS_BACKPRESSURE_ALERT_INTERVAL;
+                diag::Logger::error(diag::Component::Cluster, diag::EventCode::ClusterOfferFailed,
+                                    "cluster ingress has refused this frame for %" PRId64 "ms — still retrying",
+                                    blockedMs);
             }
             m_idleStrategy.idle();
             hdr.leadershipTermId(m_leadershipTermId).timestamp(nowMs()); // re-stamp for the (possibly new) leader
@@ -594,6 +638,17 @@ class ClusterStreamSender
     // were lowered together and only make sense as a pair. Raising this without raising that reaps
     // healthy sessions; there is no in-process re-handshake, so that is process death, not a hiccup.
     static constexpr std::int64_t KEEP_ALIVE_INTERVAL_MS = 200;
+
+    // How long send() tolerates an ingress offer being refused continuously before it declares the session
+    // dead. Sized against the longest legitimate refusal, which is an election: the publication is
+    // not-connected until a NewLeaderEvent swaps it, and SequencerServer runs electionTimeoutNs and
+    // leaderHeartbeatTimeoutNs at 200ms with a 5s startupCanvassTimeoutNs — so this is 2x the slowest of
+    // those and 50x a routine election, while still bounding an outage that no election will end.
+    static constexpr std::int64_t INGRESS_STALL_FATAL_TIMEOUT_MS = 10'000;
+
+    // How often a continuously refused offer is alerted on, so an operator sees the stall while it lasts
+    // rather than only its outcome.
+    static constexpr auto INGRESS_BACKPRESSURE_ALERT_INTERVAL = std::chrono::milliseconds(1'000);
 
     // send()'s framing buffer: the largest payload plus the SessionMessageHeader envelope it goes in.
     static constexpr std::size_t INGRESS_FRAME_LEN =
@@ -884,6 +939,7 @@ class ClusterStreamSender
     std::int64_t m_clusterSessionId = -1;
     // Latched once the cluster closes this client's session; see onFragment and isSessionLost().
     bool m_sessionLost = false;
+    std::int64_t m_ingressStallFatalTimeoutMs = INGRESS_STALL_FATAL_TIMEOUT_MS;
     std::int64_t m_leadershipTermId = -1;
     std::int64_t m_lastKeepAliveMs = 0;
     std::int64_t m_connectTimeoutMs = CLUSTER_CONNECT_TIMEOUT_MS;
