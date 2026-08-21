@@ -310,6 +310,26 @@ Four Artio 0.177 facts this depends on, each of which fails **silently** if got 
   nothing logged on. Without it the venue counts a `MsgSeqNum` the log never recorded and the next instance
   to hold the session logs on one behind, forever.
 
+The Aeron rule the sequencer section states — no cluster callback may signal failure by throwing — holds on
+the **client** side too, and the gateway's fences depend on it: `Image.poll` hands any exception its fragment
+handler raises to the Aeron error handler and advances the subscriber position anyway, so a throw from
+`EgressListener.onSessionEvent` is swallowed and the process carries on. `ExchangeGateway` records the fault
+and raises it from `doWork` (`checkClusterSession`), between polling the cluster and acting on what was
+polled. It checks `isConnected()` as well as the recorded fault because `AeronCluster` also closes *itself*,
+with no event at all, when a new leader does not arrive before its timeout — and an `ERROR` event, unlike
+`CLOSED`, leaves the client open.
+
+Two further fences run in the same place in `doWork`, ported from the C++ edge: the co-located tap
+delivering no `Tick` for `TAP_STALL_TIMEOUT_MS` (20 tick periods) while caught up, and recovery dispatching
+nothing for `RECOVERY_STALL_TIMEOUT_MS` (3x that) — the latter decided by `GatewayRecoveryStallPolicy`, a
+port of the C++ class of the same name, so keep both files and both `GatewayRecoveryStallPolicyTest`s in
+step. Both are fatal for the reason session loss is: everything this gateway decides reaches the venue only
+by coming back off the tap, so a frozen view is a held session nothing is being written to — and the
+keep-alive would go on holding the *cluster* session open, so the sequencer would never promote the standby.
+The throw unwinds through `close()`, which drops the venue socket before releasing the cluster session, so
+the standby is promoted against a venue that is already free. Neither arms until the first catch-up: a cold
+start replays the whole log (no snapshots) and has no useful time bound.
+
 `ReplayerStreamReceiver`/`ReplayerRecovery` (Java, `replayer/client/`) are faithful ports of the C++ classes of
 the same names — same protocol, same walk/resume/retain state machine, same adapter/seam split. Keep the two
 in step (all four files, and both `ReplayerRecoveryTest`s).

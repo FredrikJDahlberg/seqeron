@@ -176,20 +176,6 @@ public final class SequencerService implements ClusteredService {
      */
     private static final long FATAL_SHUTDOWN_BACKSTOP_NS = TimeUnit.SECONDS.toNanos(30);
 
-    /**
-     * Period of the internal cluster clock ({@link Sequencer#tick}): the leader fires this timer once per
-     * second and every node emits a header-only {@code Tick} carrying the consensus timestamp. It exists
-     * so every consumer has a cluster-driven clock that keeps advancing even while an individual FIX
-     * session is silent — which is exactly when the gateway's keepalive watchdog must probe/disconnect
-     * (the sequenced-header timestamp is the only clock the watchdog is allowed to trust, since only the
-     * leader assigns real time). 1 Hz gives ±1 s resolution, ample for the watchdog's tens-of-seconds
-     * thresholds. Trade-off: every tick appends a timer event + a tick frame to the replicated
-     * log/recording, so full-log-replay recovery grows with uptime; this constant is the single knob to
-     * trade watchdog resolution against that cost. (A tighter win — gating clock emission on active FIX
-     * sessions — is noted in doc/gap.md; 1 Hz is the low-risk interim.)
-     */
-    private static final long TICK_INTERVAL_MS = 1000;
-
     /** Set at launch to enable the test-only fault below; unset in production. */
     private static final String FAULT_INJECTION_ENV = "PHIXERON_FAULT_INJECTION";
 
@@ -509,7 +495,7 @@ public final class SequencerService implements ClusteredService {
     }
 
     /**
-     * Re-arms the cluster clock ({@link #TICK_INTERVAL_MS} ahead of current cluster time), spinning until
+     * Re-arms the cluster clock ({@link Sequencer#TICK_INTERVAL_MS} ahead of current cluster time), spinning until
      * the consensus module accepts it — bounded, for the same reason {@link #emit} is. Returning with the
      * timer unscheduled would stop the clock outright: nothing else re-arms it until the next leadership
      * term, so every consumer's session clock would silently stop advancing. Spinning forever is no better
@@ -520,7 +506,7 @@ public final class SequencerService implements ClusteredService {
      * closed/disconnected proxy publication rather than returning.)
      */
     private void scheduleTick() {
-        final long deadline = cluster.time() + TICK_INTERVAL_MS;
+        final long deadline = cluster.time() + Sequencer.TICK_INTERVAL_MS;
         int spins = 0;
         long backPressuredSinceNs = 0;
         while (!cluster.scheduleTimer(TICK_TIMER_CORRELATION_ID, deadline)) {

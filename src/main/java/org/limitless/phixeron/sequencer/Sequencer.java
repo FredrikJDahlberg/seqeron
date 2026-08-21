@@ -88,19 +88,46 @@ public final class Sequencer {
     private static final int NO_GATEWAY_ID = -1;
 
     /**
+     * Period of the internal cluster clock ({@link #tick}): the leader fires this timer once per
+     * second and every node emits a header-only {@code Tick} carrying the consensus timestamp. It exists
+     * so every consumer has a cluster-driven clock that keeps advancing even while an individual FIX
+     * session is silent — which is exactly when the gateway's keepalive watchdog must probe/disconnect
+     * (the sequenced-header timestamp is the only clock the watchdog is allowed to trust, since only the
+     * leader assigns real time). 1 Hz gives ±1 s resolution, ample for the watchdog's tens-of-seconds
+     * thresholds. Trade-off: every tick appends a timer event + a tick frame to the replicated
+     * log/recording, so full-log-replay recovery grows with uptime; this constant is the single knob to
+     * trade watchdog resolution against that cost. (A tighter win — gating clock emission on active FIX
+     * sessions — is noted in doc/gap.md; 1 Hz is the low-risk interim.)
+     *
+     * <p>It lives here rather than in the adapter because the state machine's own deadlines are evaluated
+     * in cluster time, on tick timestamps, so this is the resolution every one of them is quantised to.
+     * Public because it is a contract rather than an internal: consumers size their own tap watchdogs in
+     * tick periods (the C++ edge duplicates it as {@code FixGateway::TICK_INTERVAL_MS} for want of a way to
+     * share it), and a watchdog tighter than the clock it watches fires on a healthy stream.
+     */
+    public static final long TICK_INTERVAL_MS = 1000;
+
+    /**
      * How long a designated instance has, in cluster time, to answer a {@code GatewayActive} with a
      * {@code GatewayStarted} before {@link #pendingGatewayActivationTimeout} hands the role to a sibling.
      *
-     * <p>It must clear a legitimate cold start: the designated instance only declares itself started
-     * once it has replayed the whole log (there are no snapshots), and that grows through the trading
-     * day. Being generous costs nothing here, because the failure this bounds — a designated primary
-     * that never arrives — is answered a minute late rather than not at all, while a premature
-     * hand-over costs a role swap to an instance that may be no readier.
+     * <p>Five ticks, matching the order of the cluster's own {@code sessionTimeoutNs} — this is a failover
+     * deadline, and a gateway tier with no active instance is down. What it bounds is small: observe a
+     * frame on the co-located tap and publish one back. A caught-up instance does that in a duty cycle.
+     *
+     * <p>It deliberately does <em>not</em> clear a cold start, which has no useful bound (there are no
+     * snapshots, so a late-in-the-day start replays the whole log). A pair that is still replaying
+     * therefore trades the role every five ticks until one of them catches up, and that is cheap: a
+     * superseded instance keeps replaying ({@code ExchangeGateway.standDown} is a no-op before the socket
+     * exists), whoever finishes first answers the next activation naming it, and the churn is one frame
+     * per period against a log already taking 60 ticks a minute. An instance that <em>has</em> answered is
+     * never swapped out — {@link #takeOverdueActivation} drops its deadline instead — so steady state
+     * costs nothing at all.
      *
      * <p>Package-private so {@code SequencerTest} drives exactly this deadline rather than hardcoding it
      * a second time.
      */
-    static final long GATEWAY_ACTIVATION_TIMEOUT_MS = 60_000;
+    static final long GATEWAY_ACTIVATION_TIMEOUT_MS = 5 * TICK_INTERVAL_MS;
 
     /**
      * Smallest ingress message {@link #sequenceMessage} can re-stamp: the outer framing header plus the
