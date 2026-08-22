@@ -357,10 +357,20 @@ The e2e purges Artio's own log dir alongside `purgelog.sh` — the two hold the 
 numbers, and purging one alone trips the gateway's "sent-sequence disagreement" check.
 
 ### Shared Artio-leg pieces — `org.limitless.phixeron.fixgateway`
-The three classes that are genuinely direction-agnostic, and nothing else: `ClusterSessionProxy` (the Artio
+The four classes that are genuinely direction-agnostic, and nothing else: `ClusterSessionProxy` (the Artio
 `SessionProxy` that publishes instead of writing, built per session by both legs' `sessionProxyFactory`),
-`SessionProtocolPublisher` (its seam onto a leg's `ClusterIngress`) and `GatewayRecoveryStallPolicy` (the
-recovery fence, a port of the C++ class of the same name — keep the two files and both tests in step).
+`SessionProtocolPublisher` (its seam onto a leg's `ClusterIngress`), `GatewayRecoveryStallPolicy` (the
+recovery fence, a port of the C++ class of the same name — keep the two files and both tests in step) and
+`FixtConfiguration`.
+
+**Both Artio legs speak FIXT.1.1**, as the C++ edge does, and `FixtConfiguration` holds both halves of it
+(`doc/artio-integration.md` §18): the dictionary (`artio-session-fixt-codecs`), which an acceptor takes as
+`acceptorfixDictionary` and an initiator as `SessionConfiguration.fixDictionary` — **both legs set the
+acceptor one**, because `followerSession` resolves the session context's dictionary from the follower
+header's `BeginString` through that lookup, so the header encoder must come from the same dictionary — and
+`DefaultApplVerID`(1137)=6, which FIXT.1.1 requires on the Logon and Artio never sets. 1137 has to be a
+`SessionCustomisationStrategy` rather than a preset: `LogonEncoder.resetMessage()` clears it and the proxy
+resets after every send.
 **Everything leg-specific stays in its own package**: each leg has its own `ClusterIngress`,
 `GatewayLifecycle` and `GatewayLifecycleActions`. The two `GatewayLifecycle`s share a name because they hold
 the same role in each direction; the package tells them apart.
