@@ -33,6 +33,12 @@ replica is dropped and heals by replay rather than back-pressuring the cluster.
   authoritative session state: a standby or restarted instance rebuilds every session by
   shadowing the tap, and serves clients only once a `GatewayActive` names it. Owns FIX resend
   recovery.
+- **`ExchangeGateway`** (Java) — the **venue-facing** edge, the mirror of `FixGateway` pointing
+  outward: an [Artio](https://github.com/real-logic/artio) initiator that logs on to an exchange,
+  deployed as its own active/passive pair under a second `gatewaySourceId`. Artio owns the socket,
+  the codecs and the session FSM, but every message it decides to send goes to cluster ingress first
+  and reaches the venue only when it comes back on the tap — the same invariant the C++ edge holds,
+  reached by a different mechanism. Session layer only: no order flow crosses it yet.
 - **`OrderExecServer`** (C++) — a replica on *every* node, and the system's **execution venue**:
   it acknowledges each `NewOrderSingle` with an `ExecutionReport(New)` whose `ExecID` derives
   from the order's `globalSeqNo`, tracks per-account positions from fills, and answers
@@ -136,6 +142,7 @@ and tears it down via `stop-cluster.sh` (run them from the repository root):
 | `fix-test-server.sh [debug\|release] [host [port]]` | Run a single FIX session (Logon → Heartbeat → NewOrderSingle → Logout) against a live `FixGateway` |
 | `failover-test.sh` | Force a failover, then cold-start a fresh `OrderExecServer` on the new leader and verify it catches up on full history (each node's tap recording is one continuous run spanning both tenures) |
 | `gap-recovery-test.sh` | Drop a live tap frame on a caught-up consumer (SIGUSR1 fault-injection) and verify it re-walks its recording and heals rather than wedging |
+| `exchange-gateway-test.sh` | Bring up the venue leg — the `EGW-A`/`EGW-B` pair against a `MockExchange` — and verify nothing reaches the venue that has not round-tripped consensus, that a restart rebuilds session state from the log, and that failover works both automatically and via `clusterctl`. All-Java; no C++ build needed |
 | `replayer-restart-test.sh` | Kill and restart a node's `ReplayerServer` while a client is riding a replay from it, then kill and restart the client's own node entirely and verify its fresh cold-start walk crosses a real multi-recording chain |
 
 ---

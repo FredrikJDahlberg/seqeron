@@ -155,6 +155,25 @@ silent holes in it. What to expect and what to do:
 - **If it exits 70 immediately on restart**, the archive is still broken (the same check bounds
   start-up: the recording must go live within 5s). Fix the storage before restarting again.
 
+## A gateway that terminates itself
+
+`ExchangeGateway` exits **70** on the same principle and for the same reason — see
+`doc/fault-tolerance.md` §2.5 for the four fences. It is not a cluster member, so nothing here is a
+quorum question, but it *is* the venue leg: while it is down, nothing reaches the exchange.
+
+- **In the log:** a `[ExchangeGateway/N] FATAL: …` line naming the fence that fired — a lost cluster
+  session, a tap that stopped delivering `Tick`s, a recovery that stopped converging, or one outbound
+  frame back-pressured past 20 s.
+- **The passive instance takes over on its own** if one is running: the fences deliberately make this
+  look to the cluster like the process dying, which is what the sequencer promotes a standby on. The
+  handover is a fresh dial to the venue, not a live session moving, so expect a new logon.
+- **Restart it** under supervision: exit 70 is the "restart me" signal, and recovery is the usual
+  full-log replay. A restarted instance comes back as a standby and is promoted only when named.
+- **A tap stall usually means the co-located node is the problem, not the gateway** — check whether
+  that member's `SequencerServer` self-terminated first (above); they share the tap.
+- **No metrics yet.** The gateway publishes no `PhixeronCounters`, so it is absent from `/metrics`
+  entirely — the log is the only signal. See below.
+
 ## Non-goals / open items
 
 - No authentication on either `/metrics` endpoint — see "Shape" above; both are meant to sit behind
@@ -164,3 +183,8 @@ silent holes in it. What to expect and what to do:
   downed node — `phixeron_node_up` simply stops updating rather than misreporting).
 - `metricsAggregator.targets` is a fixed, hand-maintained list — no service discovery. For a cluster
   whose membership changes, keep it in sync with `clusterMembers`.
+- **Neither FIX gateway is instrumented.** `PhixeronCounters` covers `SequencerService`/
+  `ReplayerService` only, so `FixGateway` and `ExchangeGateway` contribute nothing to `/metrics`:
+  no session state, no fence counters, nothing per-connection. The nearest signal is second-hand and
+  sequencer-side — `phixeron_sequencer_gateway_promotion_total` says that a promotion happened, not how
+  either gateway is doing. Monitoring the edges themselves means reading their logs.

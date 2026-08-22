@@ -117,12 +117,15 @@ wires `ConsensusModule.Context.terminationHook` to a barrier so every node still
 and waits for its sequenced echo, so an operator/script can confirm the cluster is actually up (elected
 leader, ingress accepted) rather than merely that processes launched.
 
-## 2. FIX gateway (C++) fault tolerance
+## 2. FIX gateway fault tolerance
+
+There are two FIX edges — `FixGateway` (C++, client-facing, §2.1–§2.4) and `ExchangeGateway`
+(Java/Artio, venue-facing, §2.5) — and they hold the same position by the same two mechanisms:
+fencing (stop serving before you're wrong) and standby promotion (someone else takes over).
 
 `FixGateway` is a deliberately stateless proxy: authoritative FIX session state (sequence numbers,
 session status) lives in the cluster (§0), not in the gateway process, specifically so the gateway can
-crash and restart without losing anything durable. Two mechanisms carry the rest: fencing (stop
-serving before you're wrong) and standby promotion (someone else takes over).
+crash and restart without losing anything durable.
 
 ### 2.1 Fencing: `closeSessions`
 
@@ -223,6 +226,58 @@ external supervisor's job (or a sibling instance already running as a promoted s
 this process attempts on its own. This is a deliberate simplification: a session-loss retry loop would
 have to re-derive whether it's still safe to be active, which the promotion mechanism already decides
 externally and unambiguously.
+
+### 2.5 The venue-facing gateway (`ExchangeGateway`, Java/Artio)
+
+Same position, reached differently. `FixGateway` is stateless because it never decides anything;
+`ExchangeGateway` embeds a FIX engine that decides constantly, and is stateless anyway because every
+decision is published to the cluster before it is acted on and is emitted only when it comes back on
+the tap (`doc/design.md` §2.12). A crash therefore loses nothing either: the log holds the session,
+and the instance that next holds it rebuilds from the log.
+
+**Five fences, four of them fatal.** Being superseded is the exception: a `GatewayActive` naming the
+sibling makes `GatewayLifecycle` drop the venue socket and fall back to `PASSIVE`, keeping the cluster
+session so this instance can be activated again later — and publishing nothing on the way out, so to
+the cluster it looks exactly like the process dying, which is the state the recovery path is built
+for. The other four end the process:
+
+| Fence | Trigger | Where |
+|---|---|---|
+| Cluster session lost | an `ERROR`/`CLOSED` egress event, **or** `!isConnected()` with no event at all — `AeronCluster` closes itself when a new leader does not arrive before its timeout, and an `ERROR` event, unlike `CLOSED`, leaves the client open | `checkClusterSession`, from `doWork` |
+| Tap stall | no `Tick` from the co-located tap for 20 tick periods while caught up | `checkTapStall`, from `doWork` |
+| Recovery stall | recovery dispatching nothing for 3× that | `GatewayRecoveryStallPolicy` (a port of the C++ class of the same name) |
+| Emit wedge | one outbound frame continuously back-pressured on the `SessionWriter` for the same 20 tick periods | `emit` → `haltWedged` |
+
+The two stall fences are fatal for the reason session loss is: everything this gateway decides reaches
+the venue only by coming back off the tap, so a frozen view is a held session nothing is being written
+to — and worse, the keep-alive would go on holding the *cluster* session open, so the sequencer would
+never promote the standby. Neither arms until the first catch-up, because a cold start replays the
+whole log (§0) and has no useful time bound.
+
+**Nothing may signal failure by throwing from an Aeron callback**, on the client side as much as inside
+the cluster (§1.3): `Image.poll` hands any exception its fragment handler raises to the error handler
+and advances the subscriber position anyway, so a throw from `EgressListener.onSessionEvent` is
+swallowed and the process carries on. The gateway therefore *records* the fault and raises it from
+`doWork`, between polling the cluster and acting on what was polled. The throw unwinds through
+`close()`, which drops the venue socket **before** releasing the cluster session, so the standby is
+promoted against a venue that is already free.
+
+The emit wedge is the one that cannot unwind — `emit` must not return without having written, and
+cannot throw from inside the tap's fragment handler for the reason just given — so it `halt`s (70)
+instead. That costs nothing the ordered teardown was buying: dying drops the venue socket with the
+process, and the cluster session outlives it by at most `sessionTimeoutNs`. The frame is in the
+replicated log, so the promoted instance's own Artio log holds it and the venue's `ResendRequest`
+closes the gap.
+
+**Promotion is a dial-out rather than a hand-over.** The passive instance follows the tap and fills its
+local Artio log through a `NO_CONNECTION_ID` follower writer, so it is already at the right
+`MsgSeqNum` when a `GatewayActive` names it; it then opens a fresh socket. Retry after a failed dial is
+backed off (1 s doubling to 30 s), armed both by a dial that errored and by a session that dropped
+before completing its logon — the shape a venue refusing us takes — because each attempt writes frames
+into a log that takes no snapshots.
+
+**Not covered:** a venue whose `MsgSeqNum` state has diverged from the log is retried against, never
+reconciled with (§7, `doc/todo.md`).
 
 ## 3. Stream recovery — cold start, gaps, and the live/history split
 
@@ -445,3 +500,13 @@ section after a failover.
   `tc netem`/`dnctl` isn't wired up on the macOS dev host).
 - **Single-node dev launches** have no failover to exercise at all — the mechanisms above only engage
   with 2+ cluster members.
+- **A venue whose sequence state has diverged from the log is retried against, never reconciled with**
+  (§2.5). The refusal names the number the venue expected, so a `SequenceReset` published through the
+  cluster could adopt it; nothing does. The retry is bounded in cost, not resolved. `doc/todo.md`.
+- **Three of the venue leg's four fatal fences are unexercised by any script.**
+  `exchange-gateway-test.sh` drives the session-loss one for real — it starves the standby's keepalive
+  until the cluster closes its session, and asserts the exit was that fence rather than an incidental
+  crash. The tap-stall, recovery-stall and emit-wedge paths have only been verified by shrinking their
+  timeouts; nothing drives the states they exist for, and the Java gateway has no equivalent of the C++
+  `PHIXERON_FAULT_INJECTION` hook. That script also co-locates both instances on one cluster member, so
+  the pair on separate members — the production topology — is untested.
