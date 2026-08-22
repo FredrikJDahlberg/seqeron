@@ -336,10 +336,17 @@ in step (all four files, and both `ReplayerRecoveryTest`s).
 
 It is an **active/passive pair** (`EGW-A`/`EGW-B` under `gatewaySourceId` 5), the second logical gateway
 alongside the client-facing one — see `doc/basicdata-design.md` §2 for the Gateway-table shape and the
-per-`gatewaySourceId` election it needs from the sequencer. Identity is the `Gateway` row named by
-`PHIXERON_EXCHANGE_GATEWAY_NAME` (everything else stays `PHIXERON_EXCHANGE_*` deployment config); the
-passive instance follows the tap and fills its local Artio log through a `NO_CONNECTION_ID` follower
-writer, so promotion is a dial-out, not a live-session hand-over. Session layer only — no order flow.
+per-`gatewaySourceId` election it needs from the sequencer. Identity is reference data, not config: the
+`Gateway` row named by `PHIXERON_EXCHANGE_GATEWAY_NAME`, plus the one `BasicDataSession` row that
+gateway's `gatewaySourceId` owns for the venue's comp-ids (everything else stays `PHIXERON_EXCHANGE_*`
+deployment config). Session rows read **as the inbound message does** — `senderComp` is the counterparty,
+`targetComp` is us — which is why one convention serves both edges: the acceptor keys its admit-filter on
+`senderComp`, the initiator logs on as `targetComp` to `senderComp`, and the follower header's swapped
+comp-ids are the row verbatim. The comp-ids therefore arrive mid-replay, so `followerSession` is requested
+when the row lands rather than at start-up and `emit` waits for the reply (`awaitWriter`) rather than
+dropping the frames behind that row in the same poll batch. The passive instance follows the tap and fills
+its local Artio log through a `NO_CONNECTION_ID` follower writer, so promotion is a dial-out, not a
+live-session hand-over. Session layer only — no order flow.
 
 ```bash
 ./gradlew mockExchange                     # FIX acceptor standing in for the venue (port 9010)

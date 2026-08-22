@@ -174,6 +174,53 @@ quorum question, but it *is* the venue leg: while it is down, nothing reaches th
 - **No metrics yet.** The gateway publishes no `PhixeronCounters`, so it is absent from `/metrics`
   entirely — the log is the only signal. See below.
 
+## A venue that will not accept the logon
+
+`ExchangeGateway` keeps running for this one — the gateway is healthy, the venue is the problem — so
+there is no exit code and no failover to wait for. The signal is a single log line:
+
+```
+[ExchangeGateway/N] the venue has refused this session's logon 3 times running (LOGOUT) — this gateway
+will go on retrying every 300000ms, …
+```
+
+structured as `VenueLogonRefused` at `Error`, and emitted **once per run of refusals** (the retries
+themselves log at `Warn`). It means the socket came up and the logon never completed, three times in a
+row — long enough that the one cause which clears by itself, a venue still holding the previous
+instance's socket after a promotion, has been ruled out.
+
+- **What it does not tell you is why**, and that is not a gap in the logging: bad credentials, a comp-id
+  the venue does not know, a `MsgSeqNum` the venue disagrees with and a venue that is simply closed are
+  the same hang-up on the wire. The bracketed `DisconnectReason` narrows it a little — `LOGOUT` means the
+  venue answered before hanging up, anything else means it just dropped the socket.
+- **Check the closed case first**, since it is the only one that needs nothing done: the gateway retries
+  every 5 minutes indefinitely and will come up on its own when the venue opens. The notification is not
+  repeated, so a session that recovers leaves one `Error` line behind and nothing else.
+- **Otherwise it needs a human, and not a restart** — the state that is being refused is in the
+  replicated log, so a restarted gateway replays straight back into the same refusal. Compare what the
+  venue expects against what the log holds (`SbeLogPrinter`), and see `doc/todo.md`, "A venue that
+  disagrees with the log is never reconciled with".
+- **`phixeron_exchange_gateway_*`: nothing.** As above, the gateway publishes no counters, so this
+  cannot be alerted on from Prometheus today — it is a log-scrape signal.
+
+## A gateway that never dials at all
+
+Distinct from the above, and quieter, because there is no venue in it: an instance that caught up and
+then sat there. The line to look for is
+
+```
+[ExchangeGateway/N] the whole log holds no BasicDataSession row owned by gatewaySourceId=5 …
+```
+
+also `VenueSessionError` at `Error`, and emitted once, at catch-up. The gateway's comp-ids are reference
+data — the one session row its `gatewaySourceId` owns — so an instance without that row has nothing to log
+on as and fails closed rather than guessing. It looks exactly like an ordinary standby otherwise: caught
+up, holding its cluster session, answering the keep-alive, and it will accept a `GatewayActive` and still
+not dial. Fix it in reference data (`BasicDataConstants.hpp`), reload, and no restart is needed — the row
+resolves off the tap like any other frame. The sibling line, `a second venue session … is owned by
+gatewaySourceId=N`, is the opposite mistake and is not fatal: the gateway stays on the first row and
+refuses the second, because one venue session is all this build serves (`doc/design.md` known gap 12).
+
 ## Non-goals / open items
 
 - No authentication on either `/metrics` endpoint — see "Shape" above; both are meant to sit behind

@@ -43,7 +43,8 @@ public final class Logger {
         FirstFrameNotOne,
         // Exchange-facing FIX gateway.
         ClusterSessionError,
-        VenueSessionError
+        VenueSessionError,
+        VenueLogonRefused
     }
 
     public record

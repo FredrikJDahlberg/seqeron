@@ -272,12 +272,32 @@ closes the gap.
 **Promotion is a dial-out rather than a hand-over.** The passive instance follows the tap and fills its
 local Artio log through a `NO_CONNECTION_ID` follower writer, so it is already at the right
 `MsgSeqNum` when a `GatewayActive` names it; it then opens a fresh socket. Retry after a failed dial is
-backed off (1 s doubling to 30 s), armed both by a dial that errored and by a session that dropped
-before completing its logon — the shape a venue refusing us takes — because each attempt writes frames
-into a log that takes no snapshots.
+backed off, because each attempt writes frames into a log that takes no snapshots, and at which rate
+depends on the only thing the gateway can honestly tell apart — whether a socket ever came up:
+
+| what happened | rate | why |
+|---|---|---|
+| the venue could not be connected to at all | 1 s doubling to 30 s | it is down, not refusing *this session*; it clears by itself the moment it is back, and the gateway should be on it |
+| the socket came up and the logon never completed | 1 s, 2 s, then every 5 min | the causes are indistinguishable on the wire, and they differ |
+
+The second row is the interesting one. Bad credentials, a comp-id the venue does not know, a `MsgSeqNum`
+it disagrees with and a venue that is simply closed all arrive as the same hang-up — and a FIX session
+outlives the connection carrying it, so a closed venue may equally just drop the socket rather than say
+anything. So the gateway neither gives up nor keeps dialling at the unreachable-venue rate. The first two
+retries stay quick, because one cause *does* clear in seconds (a venue that has not yet reaped the
+previous instance's socket refuses in exactly this way, which is the ordinary case right after a
+promotion). Past that it settles at 5 minutes — cheap enough to leave running indefinitely, so a venue
+that was only closed still comes back on its own — and raises `VenueLogonRefused` at `Error` **once per
+run of refusals**, because the causes that are not self-clearing need a human and no restart of the
+gateway will fix them. `doc/ops.md`, "A venue that will not accept the logon".
+
+`GatewayStarted` goes out once per activation, not once per dial: it is this instance declaring the epoch
+rolled, which is what makes the sequencer release the connections its predecessor left dangling, and a
+retry inside one activation rolls nothing. A retry costs the log its `ClientConnected`, its `Logon` and
+its `ClientDisconnected`, and nothing else.
 
 **Not covered:** a venue whose `MsgSeqNum` state has diverged from the log is retried against, never
-reconciled with (§7, `doc/todo.md`).
+reconciled with (§7, `doc/todo.md`) — the notification above is what surfaces it, not a resolution.
 
 ## 3. Stream recovery — cold start, gaps, and the live/history split
 
@@ -502,7 +522,8 @@ section after a failover.
   with 2+ cluster members.
 - **A venue whose sequence state has diverged from the log is retried against, never reconciled with**
   (§2.5). The refusal names the number the venue expected, so a `SequenceReset` published through the
-  cluster could adopt it; nothing does. The retry is bounded in cost, not resolved. `doc/todo.md`.
+  cluster could adopt it; nothing does. The retry is bounded in cost and now raises an operator
+  notification, which is not the same as resolving it. `doc/todo.md`.
 - **Three of the venue leg's four fatal fences are unexercised by any script.**
   `exchange-gateway-test.sh` drives the session-loss one for real — it starves the standby's keepalive
   until the cluster closes its session, and asserts the exit was that fence rather than an incidental
