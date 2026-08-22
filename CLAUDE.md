@@ -289,10 +289,10 @@ records what the memo (written for replacing the *acceptor*) gets wrong about th
 
 The invariant is the same one the C++ edge holds: **nothing un-sequenced reaches the wire.** Artio owns
 TCP, codecs, the session FSM and the timers — it decides *what* to send and *when* — but every decision
-goes through `ClusterSessionProxy` (`isAsync() = true`) to cluster ingress as an opaque
-`SessionProtocolMessage` (template 22, carrying pre-encoded FIX bytes), and reaches the venue only when it
-comes back on the node tap, emitted by a `SessionWriter` at the `MsgSeqNum` the log recorded. Inbound venue
-traffic is published too, so the log is a complete session record.
+goes through `ClusterSessionProxy` (`isAsync() = true`, in the shared `fixgateway` package) to cluster
+ingress as an opaque `SessionProtocolMessage` (template 22, carrying pre-encoded FIX bytes), and reaches
+the venue only when it comes back on the node tap, emitted by a `SessionWriter` at the `MsgSeqNum` the log
+recorded. Inbound venue traffic is published too, so the log is a complete session record.
 
 Four Artio 0.177 facts this depends on, each of which fails **silently** if got wrong:
 - The writer must come from `FixLibrary.followerSession(...)`, **not** `sessionWriter(...)` — only the
@@ -355,6 +355,70 @@ src/test/scripts/exchange-gateway-test.sh  # all-Java e2e; no C++ build needed
 ```
 The e2e purges Artio's own log dir alongside `purgelog.sh` — the two hold the same session's sequence
 numbers, and purging one alone trips the gateway's "sent-sequence disagreement" check.
+
+### Shared Artio-leg pieces — `org.limitless.phixeron.fixgateway`
+The three classes that are genuinely direction-agnostic, and nothing else: `ClusterSessionProxy` (the Artio
+`SessionProxy` that publishes instead of writing, built per session by both legs' `sessionProxyFactory`),
+`SessionProtocolPublisher` (its seam onto a leg's `ClusterIngress`) and `GatewayRecoveryStallPolicy` (the
+recovery fence, a port of the C++ class of the same name — keep the two files and both tests in step).
+**Everything leg-specific stays in its own package**: each leg has its own `ClusterIngress`,
+`GatewayLifecycle` and `GatewayLifecycleActions`. The two `GatewayLifecycle`s share a name because they hold
+the same role in each direction; the package tells them apart.
+
+### Client-facing Artio FIX gateway — `OrderGateway` (Java, under `src/main/java/.../order/`)
+The **inbound** leg: an Artio **acceptor** toward order-entry clients, the same proxy → cluster → tap →
+`SessionWriter` loop as the venue leg with the direction and the *multiplicity* flipped. See
+`doc/artio-integration.md` §17, which records what §16's costing got wrong.
+
+**Session layer only, and additive.** No application message is decoded or routed, and the C++ `FixGateway`
+is untouched and remains the production client edge. This runs as a **third logical gateway** —
+`gatewaySourceId` 6, instances `OGW-A`/`OGW-B` under `PHIXERON_ORDER_GATEWAY_NAME`, listening on 9020 —
+beside the C++ pair (sourceId 0) and the venue pair (sourceId 5), so sessions migrate one
+`BasicDataSession` row at a time and the C++ edge retires when the last one moves.
+
+**N sessions on one cluster session.** There is still one Aeron Cluster session per gateway process; client
+connections are told apart by `header.connectionId`, which the composite header already carried — so this
+leg needed **no schema change** in either direction. `connectionId`s are allocated from a counter that
+resumes past the highest the replay held, and that resume point is `GatewayStarted.firstConnectionId`.
+Sequence state (`ClientSessions`) is keyed on the comp-id pair, not the connection, because that is what a
+FIX session is: a reconnect resumes rather than restarts.
+
+Two Artio 0.177 facts on top of the venue leg's four, both silent if got wrong:
+- **`initialAcceptedSessionOwner(SOLE_LIBRARY)` is required.** With the engine owning accepted sessions the
+  Logon *reply* is composed engine-side and never reaches the proxy, so the first message of every session
+  would go to the wire un-sequenced.
+- **`sessionPersistenceStrategy(alwaysPersistent())` is required.** Artio's default for an acceptor is
+  `alwaysTransient`: every logon resets the session's sequence numbers to 1 and the sent-sequence index is
+  ignored. That silently undoes the whole standby mechanism — the follower writer fills the passive
+  instance's Artio log correctly, and the promoted instance answers the client's Logon at 1 anyway, which
+  the client refuses as `MSG_SEQ_NO_TOO_LOW`. The initiator leg gets this from
+  `SessionConfiguration.sequenceNumbersPersistent(true)`; an acceptor's equivalent is an **engine** setting.
+
+**The dial becomes an accept gate.** `bindAtStartup(false)` (set *after* `bindTo`, which defaults it true)
+so a cold instance is bound to nothing; `FixEngine.bind()` on activation, after the `GatewayStarted` that
+registers the instance — the order matters, since the sequencer releases every connection open under this
+`gatewaySourceId` when that frame lands. Closing it is `unbind(false)` plus an explicit `requestDisconnect`
+per session: **never `unbind(true)`**, which is Artio's end-of-day operation and logs every counterparty out
+through the engine's own proxy, straight to the wire past the cluster.
+
+A counterparty no `BasicDataSession` row names is **admitted and then logged out through the proxy**, on the
+first message rather than in an `AuthenticationStrategy` — an engine-level rejection bypasses the proxy, so
+it would reach the wire without ever being sequenced, breaking the invariant the C++ edge holds for every
+client-facing refusal. Follower writers are requested off `ClientConnected` frames, identically on the
+active instance and the standby, so promotion is a live-session takeover.
+
+The three fences are the venue leg's, in the same place in `doWork` and fatal for the same reason: cluster
+session lost, tap silent for `TAP_STALL_TIMEOUT_MS`, recovery dispatching nothing for
+`RECOVERY_STALL_TIMEOUT_MS`. A fourth is new — an asynchronous `FixEngine.bind()` that fails leaves an
+instance the cluster holds active with nothing listening, so `checkBind` raises it.
+
+```bash
+./gradlew orderGateway                  # the gateway itself (needs a running cluster)
+./gradlew mockOrderClient -Pargs="OCLIENT PHIXERON 127.0.0.1:9020"
+src/test/scripts/order-gateway-test.sh  # all-Java e2e; no C++ build needed
+```
+Like the venue leg's, the e2e purges Artio's log dirs — the gateways' and the clients' — alongside
+`purgelog.sh`, or the two rebuild paths disagree.
 
 ### Reference-data gateway — `BasicDataServer` / `Gateways` (C++, under `src/main/cpp/.../basicdata/`)
 Dual-role per-node process (`doc/basicdata-design.md`): on the **leader** it's a producer — reads

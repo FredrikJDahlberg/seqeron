@@ -14,7 +14,7 @@ public final class Logger {
 
     public enum Component {
         Sequencer, SequencerServer, SequencerService, ConsensusModule, ReplayerServer, ReplayerService,
-        ReplayerStreamReceiver, ExchangeGateway
+        ReplayerStreamReceiver, ExchangeGateway, OrderGateway
     }
 
     public enum Severity { Info, Warn, Error, Fault }
@@ -41,10 +41,13 @@ public final class Logger {
         ReplayUnavailable,
         RecoveryStalled,
         FirstFrameNotOne,
-        // Exchange-facing FIX gateway.
+        // Artio FIX gateways, both legs.
         ClusterSessionError,
+        // Exchange-facing (venue) leg.
         VenueSessionError,
-        VenueLogonRefused
+        VenueLogonRefused,
+        // Client-facing (order-entry) leg.
+        ClientSessionError
     }
 
     public record

@@ -232,8 +232,12 @@ Clients connect to archive control on port 9301 (member 0) to replay history, an
 ingress on port 9302 to send messages. The sequenced stream is a node-local `aeron:ipc` tap
 (stream 205) recorded into each member's own archive — no network stream port. Cluster egress is a
 fixed UDP port too — 9320 for `FixGateway`/`fix_test_server`, 9330 for `OrderExecServer` (see
-[Order execution client](#order-execution-client)) — kept distinct because the two now sit on
-independent media driver processes that can't both bind the same UDP port on `localhost`.
+[Order execution client](#order-execution-client)), 9360 for `ExchangeGateway` and 9380 for
+`OrderGateway` — kept distinct because these sit on independent media driver processes that can't both
+bind the same UDP port on `localhost`. The Artio-backed gateways each run their own Aeron Archive as
+well, whose control channel needs a UDP port of its own: 9370 for `ExchangeGateway`, 9390 for
+`OrderGateway`. On the FIX side, `FixGateway` accepts on 9000, `MockExchange` stands in for the venue
+on 9010, and `OrderGateway` accepts on 9020.
 
 ### System properties
 
