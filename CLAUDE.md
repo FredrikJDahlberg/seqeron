@@ -462,6 +462,7 @@ complete.
 `doc/` contains the deeper docs: `architecture-primer.md` (the short tour, written for readers
 without a financial-systems background), `design.md` (the full current design), `fault-tolerance.md`,
 `basicdata-design.md`, `gap.md` (FIXT.1.1 session-protocol coverage), `audit.md` (open findings),
+`portability-linux.md` (what a RHEL 9/10 bring-up has to fix — the tree is macOS/clang-only today),
 `cli-guide.md`/`ops.md`/`clusterctl.md` (runbooks). Two are **proposals, not descriptions of this
 repo** — `artio-integration.md` and `fix-test-artio.md` — so cross-check them against the source
 before trusting specifics.
