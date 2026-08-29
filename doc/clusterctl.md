@@ -238,6 +238,205 @@ sides:
 The sequencer needs no new logic to stamp these: `onSessionMessage` already copies any message type
 through by template id.
 
+## Topology file format — XML, and what the parser costs
+
+_Proposal, 2026-08-29. `doc/future-arch.md` §3.6 chose flat CSV over JDK XML and named the condition
+for revisiting it: "worth it only if a row grows attributes." Two things have since met it, so this
+prices the move._
+
+**What changed.** The protocol registry (`doc/seqeron-protocol.md` §6.3) adds a **second record kind**
+an operator asserts into the log — `PayloadIdRegistered` — and it has the identical lifecycle to the
+roster: it changes when you deploy. Left in its own file it needs its own `load-protocols` verb and
+its own place in the runbook. §3.6's own criterion for
+bundling two things into one loader is lifecycle match, and these match exactly. Meanwhile the roster
+itself wants a `description` per logical gateway, which today lives in a `#` comment that no parser
+sees and nothing keeps honest.
+
+### The shape
+
+One file, two sections, `gatewaySourceId` as a container rather than a repeated column:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<topology xmlns="http://limitless.org/seqeron/topology/1" name="phixeron-dev">
+
+  <protocols>
+    <protocol name="simdfixgw" version="1" payloadId="2"
+              description="C++/simdfix edge — FIX admin + application messages"/>
+    <protocol name="phixeron"  version="1" payloadId="3"
+              description="Java/Artio edges — pre-encoded FIX session bytes"/>
+  </protocols>
+
+  <gateways>
+    <gateway sourceId="0" description="client-facing, C++ FixGateway">
+      <primary name="GW-A"  id="1"/>
+      <standby name="GW-B"  id="2"/>
+    </gateway>
+    <gateway sourceId="5" description="exchange-facing, Java ExchangeGateway">
+      <primary name="EGW-A" id="3"/>
+      <standby name="EGW-B" id="4"/>
+    </gateway>
+    <gateway sourceId="6" description="client-facing, Java OrderGateway">
+      <primary name="OGW-A" id="5"/>
+      <standby name="OGW-B" id="6"/>
+    </gateway>
+  </gateways>
+
+</topology>
+```
+
+**The nesting is the whole argument, not the syntax.** Three of today's five hand-written validation
+rules stop being checks and become structure:
+
+| rule today | under this shape |
+| --- | --- |
+| exactly one rank-0 row per `gatewaySourceId` | element cardinality — one `<primary>`, zero-or-more `<standby>`, in the content model |
+| `preferenceRank` is 0..N with no duplicates | **the field is gone.** Rank is `<standby>` document order |
+| an instance carrying the wrong `gatewaySourceId` | **unrepresentable** — the instance sits inside its gateway |
+| unique `gatewayId` / `gatewayName` | `<xs:unique>` in the XSD, declarative |
+| a protocol registering `payloadId` 1 | `<xs:minInclusive value="2"/>` |
+
+That leaves the parser with no hand-written cross-row validation at all.
+
+A conservative variant keeps `<instance name= id= rank=/>` and a flat `rank` attribute. It is a
+smaller diff, buys only the container property, and keeps the rank-0 scan. Not worth the work — if
+the flat variant is what gets built, stay on CSV.
+
+#### What each attribute is for, and which ones reach the log
+
+**The rule: an attribute is published only if something reads it.** A file that carries fields the
+log never sees is fine; a log that carries fields nothing consumes is the coupling this whole design
+is avoiding.
+
+| attribute | purpose | on the wire? |
+| --- | --- | --- |
+| `topology/@name` | names the deployment this file describes, so a roster cannot be read as generic. **Documentation only for now** — a load-time interlock ("refuse a topology whose name is not this cluster's") needs a cluster-side identity, which does not exist yet (`doc/seqeron-protocol.md` §15) | no |
+| `protocol/@name` | the protocol's identity, and what `SbeLogPrinter` labels a payload with | **yes** — `PayloadIdRegistered.protocolName` |
+| `protocol/@version` | the protocol revision this deployment asserts. A product compares it against its own compiled-in version at start-up and **refuses to start on a mismatch** | **yes** — `PayloadIdRegistered.protocolVersion` |
+| `protocol/@payloadId` | the numeric the frame carries (§6.1 of the protocol spec) | **yes** |
+| `protocol/@description` | free text for the operator reading the file | no |
+| `gateway/@sourceId` | `header.sourceId` of the logical gateway | yes, per instance |
+| `gateway/@description` | free text; replaces the `#` comment nothing kept honest | no |
+| `primary/@name`, `standby/@name` | the launch-time join key (`PHIXERON_*_GATEWAY_NAME`) | yes |
+| `primary/@id`, `standby/@id` | instance identity, what a `GatewayActive` names | yes |
+
+**`@version` is the attribute that earns the most**, and it is worth being explicit about why: it is
+a direct attack on **V-1**, which `doc/seqeron-protocol.md` calls the worst failure mode in the whole
+proposal — three repos silently disagreeing about a shared format, corrupting frames rather than
+failing to build. Asserted into the log by the operator and checked by each product against its own
+build, the skew becomes a start-up refusal on one process instead of malformed frames on every node.
+That check is a product asserting something about **its own** protocol; it does not weaken P-1–P-3,
+which are about protocols a consumer does *not* own.
+
+**`@payloadId` stays in the file, and that is a decision worth naming.** The alternative is to
+register by name alone and have the sequencer allocate the number from the log — deterministic, and
+consistent with "identity is reference data, not config" the way `gatewayId` already is. It is
+rejected here because a product stamps `payloadId` on **every outbound frame**, so learning it from
+the log would mean no gateway can publish until it has replayed its own registration, adding a
+start-up ordering dependency to the hot path to remove a five-line table from a file an operator
+already edits. `gatewayId` can be learned because nothing is published before activation; a
+`payloadId` cannot.
+
+### The XSD
+
+`src/main/resources/topology.xsd`, ~70 lines, sketched:
+
+```xml
+<xs:element name="gateway">
+  <xs:complexType>
+    <xs:sequence>
+      <xs:element name="primary" type="Instance"/>
+      <xs:element name="standby" type="Instance" minOccurs="0" maxOccurs="unbounded"/>
+    </xs:sequence>
+    <xs:attribute name="sourceId"    type="xs:int"  use="required"/>
+    <xs:attribute name="description" type="xs:string"/>
+  </xs:complexType>
+</xs:element>
+```
+
+with `Instance` carrying `name` as an `xs:string` restricted to `maxLength="32"` (matching the SBE
+`gatewayName` `char[32]`, which is otherwise a limit discovered at publish time) and `id` as
+`xs:int`, and document-level `<xs:unique>` over instance `@name`, instance `@id`, protocol
+`@payloadId` and protocol `@name`.
+
+**One JDK limit to know before designing against it:** the validator shipped in the JDK is Xerces at
+**XSD 1.0**, so `xs:assert` and conditional type assignment are unavailable. The shape above needs
+neither — that is not a coincidence, it is why the primary/standby split is the recommended variant
+rather than a `rank` attribute with a co-occurrence constraint.
+
+### Parser design
+
+**DOM (`DocumentBuilderFactory`), not StAX, SAX or JAXB.** The document is ~30 elements read once at
+tool start-up, so streaming buys nothing and costs a handler state machine; JAXB left the JDK at 11
+and would be the new dependency §3.6 refused.
+
+Validate against the XSD during the parse (`factory.setSchema(...)`) with an `ErrorHandler` that
+rethrows, so a schema violation and a malformed document arrive on the same path and carry
+`SAXParseException`'s line and column. Then walk the DOM into the existing `TopologyRow` records —
+`publishRosterAndAwaitEcho` and the `remaining` countdown are untouched, because the wire is untouched.
+
+**The one non-obvious cost is XXE hardening, and it is mandatory rather than optional:**
+
+```java
+final DocumentBuilderFactory f = DocumentBuilderFactory.newInstance();
+f.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);  // also kills billion-laughs
+f.setXIncludeAware(false);
+f.setExpandEntityReferences(false);
+f.setNamespaceAware(true);
+schemaFactory.setProperty(XMLConstants.ACCESS_EXTERNAL_DTD, "");
+schemaFactory.setProperty(XMLConstants.ACCESS_EXTERNAL_SCHEMA, "");
+```
+
+The threat here is mild — an operator who can edit `topology.xml` already has a shell on the node,
+which is this tool's whole access-control model — but the defaults are unsafe, the incantation has to
+be right, and it is a permanent obligation with no analogue in `Files.readAllLines`. Price it as
+eight lines that a reviewer must recognise, not as eight lines.
+
+### Cost
+
+| | CSV today | XML |
+| --- | --- | --- |
+| parse | `readTopology`, **23 lines** | DOM walk over two sections, **~55 lines** |
+| validation | `validateTopology`, **35 lines** | **~5** (`payloadId != 1`); the rest is the XSD |
+| hardening | none needed | **~8 lines**, mandatory, easy to get wrong |
+| declarative artifact | none | `topology.xsd`, **~70 lines** |
+| dependencies | none | none — `javax.xml` is JDK |
+| files to convert | 4 (`topology.csv` + 3 test rosters) | 4, plus 4 path strings in scripts |
+| operator errors caught | at load, by line number | in the editor, by XSD completion, before the cluster is touched |
+| verbs | `load-topology` + a new `load-protocols` | `load-topology` alone, publishing both sections |
+
+**Net: not a line saving** — 58 lines of Java become ~68 Java plus a 70-line schema. What it buys is
+that the 35 imperative lines become declarative and the error classes above become unrepresentable,
+and it is honest to call that a trade rather than a win.
+
+**What it does not cost, which is the part that makes it cheap:**
+
+- **No wire change**, no SBE edit, no archive purge. This is `clusterctl`-local and trivially
+  reversible — nearly unique among the decisions in this design space.
+- **No C++ parser.** Nothing in C++ reads these files; `Gateways.hpp` consumes the *frames*. The
+  format is a one-language concern, which is exactly what §3.6's "three-way mirror" warnings are not
+  about.
+- **No shell change beyond the path.** No script parses the file — `grep` finds only `clusterctl.sh
+  load-topology <path>` call sites in four scripts, so the conversion is an extension rename.
+- **One fewer runbook step.** A separate protocols file needs its own command, run ahead of
+  `load-topology`; merging the sections into one file and one command is what lets
+  `doc/seqeron-protocol.md` §6.3 cost no new step at all, leaving today's `start` → `load-topology` →
+  reference-data load. The tool publishes protocols before gateways
+  regardless of document order, and the XSD's `xs:sequence` fixes document order to match so the file
+  reads the way it publishes.
+
+### Recommendation
+
+**Do it, and only as a bundle with the protocol registry.** The XML pays for itself through the
+merge — one artifact, one operator action, one fewer ordering rule — and through making the
+sourceId-mismatch and duplicate-rank classes unrepresentable. Split the two apart and the honest
+answer is §3.6's original one: a second flat CSV for protocols, and CSV stays.
+
+Land it in one commit: XSD, parser, all four files converted, the four script paths, and
+`load-protocols` never built. There is no reason to accept both formats — the argument for a
+compatibility window is a live deployment, and this file is read once by a tool an operator runs by
+hand.
+
 ## Non-goals / open items
 
 - Does not launch or restart cluster processes.
