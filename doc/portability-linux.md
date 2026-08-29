@@ -87,6 +87,14 @@ Lowering the floor therefore means replacing `EXCLUDE_FROM_ALL` with the pre-3.2
 under `CMP0169` — trading a RHEL 9 blocker for a deprecation warning on RHEL 10. Not worth it:
 **RHEL 9 needs CMake from Kitware's repo or `pip install cmake`.**
 
+**The effective floor is 3.30, not 3.28** (found 2026-08-29 by the first real Linux configure, in the
+CI container): Aeron 1.51.0's own `CMakeLists.txt:16` requires 3.30, and FetchContent evaluates it
+during our configure. Lowering our own line changes nothing while that pin stands. This is invisible
+on macOS, where Homebrew's CMake is always current, and it also puts **RHEL 10 exactly at the floor
+with nothing to spare** — a future Aeron bump moves RHEL 10 into the same non-stock-CMake bucket as
+RHEL 9. `.github/workflows/ci.yml` adds Kitware's repo for the same reason: Ubuntu 24.04 ships
+3.28.3.
+
 ### 1c. `CMAKE_CXX_STANDARD 23` — required by exactly one TU
 
 `CMakeLists.txt`. RHEL 9's default GCC 11 has no usable C++23, so RHEL 9 needs `gcc-toolset-14`

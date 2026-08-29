@@ -1,0 +1,77 @@
+name: linux
+
+# The tree is developed on macOS/arm64 with Apple clang and libc++; this is the only
+# place it is built against libstdc++ on x86-64. See doc/portability-linux.md.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: clang
+            cc: clang
+            cxx: clang++
+          - name: gcc-14
+            cc: gcc-14
+            cxx: g++-14
+    steps:
+      - uses: actions/checkout@v4
+
+      # CMakeLists.txt declares simdfix over SSH, which no runner can authenticate.
+      # simdfix is public, so rewrite the URL rather than provision a deploy key.
+      - name: Clone simdfix over HTTPS
+        run: git config --global url."https://github.com/".insteadOf "git@github.com:"
+
+      # Aeron 1.51.0's own CMakeLists requires CMake >= 3.30; noble ships 3.28.3.
+      - name: Add Kitware's CMake repository
+        run: |
+          wget -qO - https://apt.kitware.com/keys/kitware-archive-latest.asc \
+            | gpg --dearmor - | sudo tee /usr/share/keyrings/kitware-archive-keyring.gpg > /dev/null
+          echo 'deb [signed-by=/usr/share/keyrings/kitware-archive-keyring.gpg] https://apt.kitware.com/ubuntu/ noble main' \
+            | sudo tee /etc/apt/sources.list.d/kitware.list > /dev/null
+
+      # libpugixml-dev: simdfix's Generator, which phixeron builds for its FIX codecs.
+      # uuid-dev: Aeron's C driver, which only warns when libuuid is missing.
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            cmake clang g++-14 libpugixml-dev uuid-dev
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      # Aeron's CMake shells out to ./gradlew :aeron-all:assemble.
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: gradle-
+
+      - name: Configure
+        run: >
+          cmake -B build -DCMAKE_BUILD_TYPE=Debug
+          -DCMAKE_C_COMPILER=${{ matrix.cc }}
+          -DCMAKE_CXX_COMPILER=${{ matrix.cxx }}
+
+      - name: Build
+        run: cmake --build build -j
+
+      # Not plain ctest: simdfix's own suite is registered here too and reports
+      # spurious ..._NOT_BUILT failures — see CLAUDE.md.
+      - name: Test
+        run: cmake --build build --target run_tests
