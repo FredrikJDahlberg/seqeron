@@ -30,7 +30,7 @@
 # emission, design §3) — no dependence on which member wins the election. Each replica uses a distinct
 # cluster egress port (9330 + memberId) so the three co-located clients don't collide on one host.
 #
-# Uses a dedicated baseDir (${TMPDIR}phixeron-seq3) so it doesn't collide
+# Uses a dedicated baseDir (phixeron-seq3 under the temp dir) so it doesn't collide
 # with single-node dev state left behind by start-cluster.sh.
 #
 # Prerequisites:
@@ -44,6 +44,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/ports.sh"
+source "${SCRIPT_DIR}/paths.sh"
 
 usage() {
     echo "Usage: $0 [debug|release]"
@@ -75,7 +76,7 @@ REPLAYER_LOG="${LOG_DIR}/ReplayerServer.log"
 APP_LOG="${LOG_DIR}/OrderExecServer.log"
 BASICDATA_LOG="${LOG_DIR}/BasicDataServer.log"
 
-BASE_DIR="${TMPDIR:-/tmp}phixeron-seq3"
+BASE_DIR="${TMP_DIR}/phixeron-seq3"
 
 CLUSTER_MEMBERS="$(cluster_members_string 3)"
 FIX_TCP_PORT="$(fix_tcp_port)"
@@ -83,12 +84,12 @@ FIX_TCP_PORT="$(fix_tcp_port)"
 # Default Aeron directory: the standalone aeronmd's own, and what a C++ client that sets no
 # PHIXERON_*_AERON_DIR attaches to. NOT FixGateway's — that is pointed at SEQ_AERON_DIR below, as are
 # OrderExecServer and BasicDataServer, so nothing this script launches uses this directory.
-AERON_DIR="${TMPDIR}aeron-$(whoami)"
+AERON_DIR="$(aeron_default_dir)"
 
 # SequencerServer member 0's own embedded media driver directory — matches its default
 # when -Dsequencer.aeronDir isn't overridden (it isn't, below). OrderExecServer is
 # co-located with member 0, sharing this directory instead of the standalone aeronmd's.
-SEQ_AERON_DIR="${TMPDIR}phixeron-seq-aeron-0"
+SEQ_AERON_DIR="${TMP_DIR}/phixeron-seq-aeron-0"
 
 # Prefer a system-installed aeronmd (e.g. Homebrew or a system package) on PATH;
 # fall back to the CMake FetchContent build-tree copy if none is found there.
@@ -261,7 +262,7 @@ for m in 1 2; do
     RLOG="${LOG_DIR}/ReplayerServer-${m}.log"
     ALOG="${LOG_DIR}/OrderExecServer-${m}.log"
     BDLOG="${LOG_DIR}/BasicDataServer-${m}.log"
-    MDIR="${TMPDIR}phixeron-seq-aeron-${m}"
+    MDIR="${TMP_DIR}/phixeron-seq-aeron-${m}"
     echo "[start-three-node-cluster.sh] Starting ReplayerServer + OrderExecServer (replica on member ${m})"
     java "${JAVA_OPTS[@]}" -Dreplayer.memberId="${m}" -cp "${JAR}" \
         org.limitless.phixeron.replayer.server.ReplayerServer > "${RLOG}" 2>&1 &

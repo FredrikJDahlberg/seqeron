@@ -56,6 +56,7 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../../main/scripts/ports.sh"
+source "${SCRIPT_DIR}/../../main/scripts/paths.sh"
 
 BUILD_DIR="cmake-build-release"
 JAR="build/libs/phixeron-0.1.0-uber.jar"
@@ -73,9 +74,9 @@ JAVA_OPTS=(
   --add-opens=java.base/java.lang.reflect=ALL-UNNAMED
   --add-opens=java.base/jdk.internal.misc=ALL-UNNAMED
 )
-BASE_DIR="${TMPDIR:-/tmp}phixeron-seqfo"
+BASE_DIR="${TMP_DIR}/phixeron-seqfo"
 CLUSTER_MEMBERS="$(cluster_members_string 3)"
-AERON_DIR="${TMPDIR}aeron-$(whoami)"
+AERON_DIR="$(aeron_default_dir)"
 
 if command -v aeronmd >/dev/null 2>&1; then AERONMD="$(command -v aeronmd)"; else AERONMD="${BUILD_DIR}/_deps/aeron-build/binaries/aeronmd"; fi
 
@@ -88,8 +89,8 @@ start_seq() {  # start_seq <memberId>
 
 pkill -f SequencerServer 2>/dev/null; pkill -f ReplayerServer 2>/dev/null; pkill -f OrderExecServer 2>/dev/null
 pkill -f FixGateway 2>/dev/null; pkill -f fix_test_server 2>/dev/null; pkill -f aeronmd 2>/dev/null; sleep 1
-rm -rf "$BASE_DIR" "${TMPDIR}phixeron-seq-aeron-0" "${TMPDIR}phixeron-seq-aeron-1" \
-       "${TMPDIR}phixeron-seq-aeron-2" "$AERON_DIR" 2>/dev/null
+rm -rf "$BASE_DIR" "${TMP_DIR}/phixeron-seq-aeron-0" "${TMP_DIR}/phixeron-seq-aeron-1" \
+       "${TMP_DIR}/phixeron-seq-aeron-2" "$AERON_DIR" 2>/dev/null
 
 CONSUMER_PID=""; MD_PID=""
 declare -a SEQ_PIDS REPLAYER_PIDS
@@ -134,7 +135,7 @@ sleep 2
 # PHIXERON_FAULT_INJECTION=1 installs the consumer's SIGUSR1 handler and enables the ReplayerStreamReceiver's
 # live-tap drop; without it a stray SIGUSR1 would kill the process (default action).
 CONSUMER_LOG="$LOG_DIR/consumer.log"
-PHIXERON_ORDER_EXEC_AERON_DIR="${TMPDIR}phixeron-seq-aeron-${CN}" \
+PHIXERON_ORDER_EXEC_AERON_DIR="${TMP_DIR}/phixeron-seq-aeron-${CN}" \
   PHIXERON_NODE_MEMBER_ID="$CN" \
   PHIXERON_REPLAYER_CLIENT_ID=9 \
   PHIXERON_CLUSTER_EGRESS_ENDPOINT="localhost:${TEST_CONSUMER_EGRESS_PORT}" \

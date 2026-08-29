@@ -13,6 +13,8 @@
 
 set -euo pipefail
 
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/paths.sh"
+
 usage() {
     echo "Usage: $0 [--force]"
     echo "  --force    skip the confirmation prompt"
@@ -32,7 +34,7 @@ esac
 # start-cluster.sh (single node) uses the SequencerServer default baseDir (phixeron-seq);
 # start-three-node-cluster.sh overrides it to phixeron-seq3. Purge both, else stale per-tenure
 # recordings accumulate across runs (a fresh run recovers them and grows the catalog).
-BASE_DIRS=("${TMPDIR:-/tmp}phixeron-seq" "${TMPDIR:-/tmp}phixeron-seq3")
+BASE_DIRS=("${TMP_DIR}/phixeron-seq" "${TMP_DIR}/phixeron-seq3")
 LOG_DIR="logs"
 
 echo "[purgelog.sh] The following will be deleted:"

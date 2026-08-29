@@ -16,6 +16,12 @@
 > Updated the same day: §1a is **fixed** — the build no longer requires clang. §1b and §1c were
 > re-examined and stand as they were, for reasons now recorded there; a first-pass claim that the
 > C++23 setting was gratuitous was wrong and is corrected in §1c.
+>
+> Updated 2026-08-29: §2 and §4 are **fixed** — path joining now goes through
+> `src/main/scripts/paths.sh` (`TMP_DIR`, `aeron_default_dir`) on the shell side, `Env.hpp`'s
+> `joinPath` on the C++ side and `new File(parent, child)` in `BasicDataLoader`; the missing
+> includes and the two non-standard header spellings are in. What remains untried is a real
+> libstdc++ compile, which is where anything §4 missed will surface. §3 is still open.
 
 Platform baselines assumed below:
 
@@ -303,12 +309,15 @@ Adding the attribute is the cheap way to find the sites that were missed — suc
 
 1. **Done** — the compiler fork (§1a). Debug now builds with either GCC or clang; coverage is opt-in
    and forks on `CMAKE_CXX_COMPILER_ID`; `-march=native` is gone.
-2. Path joining, all four sites (§2a–§2d). This is the bulk of the work and the part that fails
-   silently — and 2b is the one that will waste the most time, because it makes `purgelog.sh` a
-   no-op while reporting success.
-3. `AERON_DIR` against the platform default (§2e).
-4. The missing includes (§4) — cheap, and they have to be found by an actual libstdc++ compile
-   anyway, so they are really "whatever the first RHEL build reports".
+2. **Done** — path joining, all four sites (§2a–§2d), via `src/main/scripts/paths.sh` on the
+   shell side and `Env.hpp::joinPath` on the C++ side.
+3. **Done** — `AERON_DIR` against the platform default (§2e): `aeron_default_dir` in `paths.sh`,
+   which every launcher and cleanup now calls.
+4. **Done, as far as macOS can tell** — the missing includes (§4). They still have to be confirmed
+   by an actual libstdc++ compile, so treat the list as a head start on "whatever the first RHEL
+   build reports", not a completed sweep. The `format(printf)` attribute on `util/Logger` is
+   deliberately **not** done: it is a diagnostics change with a `-Wformat` sweep behind it, not a
+   portability break.
 5. Deployment questions (§3) when there is a target host to answer them against.
 
 §1b and §1c are deliberately **not** on this list: both were examined and left alone, for the

@@ -35,7 +35,7 @@
 #
 # Example:
 #   ./gradlew uberJar
-#   ./sbe-log-printer.sh "${TMPDIR}phixeron-seq/archive-0" --stream 205
+#   ./sbe-log-printer.sh "${TMPDIR:-/tmp}/phixeron-seq/archive-0" --stream 205
 
 set -euo pipefail
 

@@ -294,12 +294,12 @@ written so far — so the cluster does not need to be stopped first.
 ```bash
 ./gradlew uberJar
 
-./src/main/scripts/sbe-log-printer.sh "${TMPDIR}phixeron-seq/archive-0" --stream 205
+./src/main/scripts/sbe-log-printer.sh "${TMPDIR:-/tmp}/phixeron-seq/archive-0" --stream 205
 ```
 
 Or via Gradle directly:
 ```bash
-./gradlew sbeLogPrinter -PlogDir="${TMPDIR}phixeron-seq/archive-0" -Pstream=205
+./gradlew sbeLogPrinter -PlogDir="${TMPDIR:-/tmp}/phixeron-seq/archive-0" -Pstream=205
 ```
 
 #### Schemas
@@ -407,7 +407,7 @@ isn't currently leader).
 
 ```bash
 cmake --build cmake-build-release --target OrderExecServer
-PHIXERON_ORDER_EXEC_AERON_DIR="${TMPDIR}phixeron-seq-aeron-0" ./cmake-build-release/OrderExecServer
+PHIXERON_ORDER_EXEC_AERON_DIR="${TMPDIR:-/tmp}/phixeron-seq-aeron-0" ./cmake-build-release/OrderExecServer
 # [OrderExecServer] Connected to co-located Aeron media driver at .../phixeron-seq-aeron-0
 # [OrderExecServer] Connected to co-located Aeron Archive via IPC (holds the cluster stream recording)
 # [OrderExecServer] Live from start
@@ -458,13 +458,15 @@ java \
 **2. Start `aeronmd`** (separate terminal) — the C++ clients below need a media driver of
 their own, since (unlike `SequencerServer`) they don't embed one:
 ```bash
-AERON_DIR="${TMPDIR}aeron-$(whoami)" ./cmake-build-release/_deps/aeron-build/binaries/aeronmd
+source src/main/scripts/paths.sh   # aeron_default_dir: /dev/shm/aeron-<user> on Linux, $TMPDIR/aeron-<user> on macOS
+AERON_DIR="$(aeron_default_dir)" ./cmake-build-release/_deps/aeron-build/binaries/aeronmd
 ```
 
 **3. Start the FIX gateway** (separate terminal):
 ```bash
 cmake --build cmake-build-release --target FixGateway
-AERON_DIR="${TMPDIR}aeron-$(whoami)" ./cmake-build-release/FixGateway
+source src/main/scripts/paths.sh
+AERON_DIR="$(aeron_default_dir)" ./cmake-build-release/FixGateway
 # [TCP] Listening on port 9000
 # [FixGateway] Caught up — following live stream
 ```
@@ -475,7 +477,8 @@ AERON_DIR="${TMPDIR}aeron-$(whoami)" ./cmake-build-release/FixGateway
 **5. Build and run the test client** (separate terminal):
 ```bash
 cmake --build cmake-build-release --target fix_test_server
-AERON_DIR="${TMPDIR}aeron-$(whoami)" ./cmake-build-release/fix_test_server
+source src/main/scripts/paths.sh
+AERON_DIR="$(aeron_default_dir)" ./cmake-build-release/fix_test_server
 # [FixTestServer] Connecting to 127.0.0.1:9000
 # [FixTestServer] Connected
 # [FixTestServer] Sent  Logon          seq=1

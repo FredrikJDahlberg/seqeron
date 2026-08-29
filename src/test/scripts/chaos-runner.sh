@@ -42,6 +42,7 @@ fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../../main/scripts/ports.sh"
+source "${SCRIPT_DIR}/../../main/scripts/paths.sh"
 
 # ── Config ────────────────────────────────────────────────────────────────────
 BUILD_DIR="cmake-build-release"
@@ -83,10 +84,10 @@ JAVA_OPTS=(
   --add-opens=java.base/java.lang.reflect=ALL-UNNAMED
   --add-opens=java.base/jdk.internal.misc=ALL-UNNAMED
 )
-BASE_DIR="${TMPDIR:-/tmp}phixeron-seqfo"
+BASE_DIR="${TMP_DIR}/phixeron-seqfo"
 CLUSTER_MEMBERS="$(cluster_members_string 3)"
 FIX_TCP_PORT="$(fix_tcp_port)"
-AERON_DIR="${TMPDIR}aeron-$(whoami)"
+AERON_DIR="$(aeron_default_dir)"
 CN=0            # primary gateway (GW-A) / observation consumer host — a fault target like any other member
 STANDBY_MEMBER=1  # hot-standby gateway (GW-B) host — see gateway-failover-test.sh's active/standby model
 STANDBY_PORT="$(fix_tcp_port 1)"
@@ -196,8 +197,8 @@ trap cleanup EXIT INT TERM
 # ReplayerServer's `-cp` lines) and the -Dsequencer marker instead.
 pkill -9 -f "$JAR" 2>/dev/null; pkill -9 -f "sequencer.memberId" 2>/dev/null
 for p in OrderExecServer FixGateway fix_test_server BasicDataServer aeronmd; do pkill -9 -f "$p" 2>/dev/null; done
-rm -rf "$BASE_DIR" "${TMPDIR}phixeron-seq-aeron-0" "${TMPDIR}phixeron-seq-aeron-1" \
-       "${TMPDIR}phixeron-seq-aeron-2" "$AERON_DIR" 2>/dev/null
+rm -rf "$BASE_DIR" "${TMP_DIR}/phixeron-seq-aeron-0" "${TMP_DIR}/phixeron-seq-aeron-1" \
+       "${TMP_DIR}/phixeron-seq-aeron-2" "$AERON_DIR" 2>/dev/null
 W=0; while lsof -nP -iUDP:"$(archive_port 0)" -iUDP:"$(archive_port 1)" -iUDP:"$(archive_port 2)" 2>/dev/null \
   | grep -q java; do sleep 0.5; W=$((W+1)); ((W>20)) && { echo "UDP archive ports still held after 10s — stale cluster?"; exit 1; }; done
 
@@ -223,7 +224,7 @@ for m in 0 1 2; do W=0; until grep -q "serving replay" "$LOG_DIR/replayer-$m.log
 # gateway's accept gate never opens (m_basicDataLoaded stays false), and every Logon just queues in the
 # TCP backlog until the client times out. One per node so a leader failover always has a local producer.
 for m in 0 1 2; do
-  PHIXERON_BASICDATA_AERON_DIR="${TMPDIR}phixeron-seq-aeron-${m}" PHIXERON_NODE_MEMBER_ID="$m" \
+  PHIXERON_BASICDATA_AERON_DIR="${TMP_DIR}/phixeron-seq-aeron-${m}" PHIXERON_NODE_MEMBER_ID="$m" \
     PHIXERON_REPLAYER_CLIENT_ID=3 PHIXERON_BASICDATA_EGRESS_ENDPOINT="localhost:$(basicdata_egress_port "$m")" \
     stdbuf -oL -eL "$BUILD_DIR/BasicDataServer" > "$LOG_DIR/basicdata-$m.log" 2>&1 &
   BASICDATA_PIDS[$m]=$!
@@ -235,7 +236,7 @@ done
 # on restart, just for the gateway/consumer instead of a plain OrderExecServer replica.
 CONSUMER_LOG="$LOG_DIR/consumer.log"
 start_consumer() {
-  PHIXERON_ORDER_EXEC_AERON_DIR="${TMPDIR}phixeron-seq-aeron-${CN}" PHIXERON_NODE_MEMBER_ID="$CN" \
+  PHIXERON_ORDER_EXEC_AERON_DIR="${TMP_DIR}/phixeron-seq-aeron-${CN}" PHIXERON_NODE_MEMBER_ID="$CN" \
     PHIXERON_REPLAYER_CLIENT_ID=9 PHIXERON_CLUSTER_EGRESS_ENDPOINT="localhost:${TEST_CONSUMER_EGRESS_PORT}" \
     PHIXERON_LATENCY_STATS=1 PHIXERON_FAULT_INJECTION=1 \
     stdbuf -oL -eL "$BUILD_DIR/OrderExecServer" > "$CONSUMER_LOG" 2>&1 &
@@ -256,7 +257,7 @@ W=0; until grep -q "following live" "$CONSUMER_LOG" 2>/dev/null; do sleep 0.5; W
 # silently loses its arm and every later tap-drop aimed at it is a no-op.
 start_replica() {  # start_replica <memberId>  (members 1/2; member 0's replica is start_consumer)
   local m="$1"
-  PHIXERON_ORDER_EXEC_AERON_DIR="${TMPDIR}phixeron-seq-aeron-${m}" PHIXERON_NODE_MEMBER_ID="$m" \
+  PHIXERON_ORDER_EXEC_AERON_DIR="${TMP_DIR}/phixeron-seq-aeron-${m}" PHIXERON_NODE_MEMBER_ID="$m" \
     PHIXERON_FAULT_INJECTION=1 \
     stdbuf -oL -eL "$BUILD_DIR/OrderExecServer" > "$LOG_DIR/orderexec-$m.log" 2>&1 &
   EXTRA_CONSUMER_PIDS[$m]=$!
@@ -267,7 +268,7 @@ for m in 1 2; do W=0; until grep -q "following live" "$LOG_DIR/orderexec-$m.log"
 # FIX gateway on member 0 (port $FIX_TCP_PORT).
 FIX_LOG="$LOG_DIR/fix.log"
 start_gateway() {
-  PHIXERON_FIX_GATEWAY_AERON_DIR="${TMPDIR}phixeron-seq-aeron-${CN}" PHIXERON_NODE_MEMBER_ID="$CN" \
+  PHIXERON_FIX_GATEWAY_AERON_DIR="${TMP_DIR}/phixeron-seq-aeron-${CN}" PHIXERON_NODE_MEMBER_ID="$CN" \
     PHIXERON_REPLAYER_CLIENT_ID=2 PHIXERON_FIX_TCP_PORT="$FIX_TCP_PORT" \
     PHIXERON_FIX_GATEWAY_NAME=GW-A \
     stdbuf -oL -eL "$BUILD_DIR/FixGateway" > "$FIX_LOG" 2>&1 &
@@ -284,7 +285,7 @@ W=0; until grep -q "Basic data loaded" "$FIX_LOG" 2>/dev/null; do sleep 0.5; W=$
 # killing GW-A's host would promote to a sibling gatewayId that has no live process behind it — a dead end.
 STANDBY_FIX_LOG="$LOG_DIR/fix-standby.log"
 start_standby_gateway() {
-  PHIXERON_FIX_GATEWAY_AERON_DIR="${TMPDIR}phixeron-seq-aeron-${STANDBY_MEMBER}" PHIXERON_NODE_MEMBER_ID="$STANDBY_MEMBER" \
+  PHIXERON_FIX_GATEWAY_AERON_DIR="${TMP_DIR}/phixeron-seq-aeron-${STANDBY_MEMBER}" PHIXERON_NODE_MEMBER_ID="$STANDBY_MEMBER" \
     PHIXERON_REPLAYER_CLIENT_ID=2 PHIXERON_FIX_TCP_PORT="$STANDBY_PORT" \
     PHIXERON_FIX_GATEWAY_NAME=GW-B \
     stdbuf -oL -eL "$BUILD_DIR/FixGateway" > "$STANDBY_FIX_LOG" 2>&1 &
@@ -433,7 +434,7 @@ restart_colocated_apps() {
   until grep -q "serving replay" "$LOG_DIR/replayer-$m.log" 2>/dev/null; do
     sleep 0.5; W=$((W+1)); ((W > APP_CATCHUP_TIMEOUT_SECS * 2)) && { log "  WARN replayer-$m not serving after restart"; break; }
   done
-  PHIXERON_BASICDATA_AERON_DIR="${TMPDIR}phixeron-seq-aeron-${m}" PHIXERON_NODE_MEMBER_ID="$m" \
+  PHIXERON_BASICDATA_AERON_DIR="${TMP_DIR}/phixeron-seq-aeron-${m}" PHIXERON_NODE_MEMBER_ID="$m" \
     PHIXERON_REPLAYER_CLIENT_ID=3 PHIXERON_BASICDATA_EGRESS_ENDPOINT="localhost:$(basicdata_egress_port "$m")" \
     stdbuf -oL -eL "$BUILD_DIR/BasicDataServer" > "$LOG_DIR/basicdata-$m.log" 2>&1 &
   BASICDATA_PIDS[$m]=$!
@@ -616,7 +617,7 @@ FAULTS=(fault_kill_leader fault_kill_follower fault_sigkill_node fault_pause_nod
 #   test the harness rather than the system. The standalone aeronmd started above serves ONLY
 #   fix_test_server (default aeron::Context, FixTestServer.cpp:302,1118) — i.e. the probe and the
 #   background load. Every production process is on a per-member driver embedded in its SequencerServer
-#   (ClusteredMediaDriver at ${TMPDIR}phixeron-seq-aeron-<m>): ReplayerServer (ReplayerServer.java:67),
+#   (ClusteredMediaDriver at ${TMP_DIR}/phixeron-seq-aeron-<m>): ReplayerServer (ReplayerServer.java:67),
 #   FixGateway, OrderExecServer and BasicDataServer all attach there. So killing aeronmd would break the
 #   probe while leaving the system untouched, and the real "driver dies and restarts at the same path"
 #   fault is ALREADY injected by every kill fault above — asserted by check_driver_loss_failfast.

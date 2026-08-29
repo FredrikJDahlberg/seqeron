@@ -19,6 +19,7 @@
 set -uo pipefail
 cd "$(dirname "$0")/../../.." || exit 1
 source src/main/scripts/ports.sh
+source src/main/scripts/paths.sh
 
 PRELOAD="${1:-20000}"
 LOAD_DURING="${2:-0}"
@@ -57,7 +58,7 @@ PHIXERON_FLOOD_ORDERS="$PRELOAD" ./cmake-build-release/fix_test_server 127.0.0.1
     > "$BENCH_LOG_DIR/preload.log" 2>&1
 sleep 3
 
-ARCHIVE_BYTES=$(du -sk "${TMPDIR}phixeron-seq3/archive-1" 2>/dev/null | awk '{print $1*1024}')
+ARCHIVE_BYTES=$(du -sk "${TMP_DIR}/phixeron-seq3/archive-1" 2>/dev/null | awk '{print $1*1024}')
 
 if [[ "$LOAD_DURING" == "1" ]]; then
     ( PHIXERON_FLOOD_ORDERS=$((PRELOAD * 4)) \
@@ -73,7 +74,7 @@ fi
 # chain from scratch exactly as a restarted replica does, while everything else keeps running.
 : > "$COLD_LOG"
 START=$(python3 -c 'import time; print(time.time())')
-PHIXERON_ORDER_EXEC_AERON_DIR="${TMPDIR}phixeron-seq-aeron-1" \
+PHIXERON_ORDER_EXEC_AERON_DIR="${TMP_DIR}/phixeron-seq-aeron-1" \
     PHIXERON_NODE_MEMBER_ID=1 \
     PHIXERON_REPLAYER_CLIENT_ID=7 \
     PHIXERON_CLUSTER_EGRESS_ENDPOINT="localhost:${REPLAY_BENCH_EGRESS_PORT}" \

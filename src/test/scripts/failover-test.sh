@@ -13,6 +13,7 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../../main/scripts/ports.sh"
+source "${SCRIPT_DIR}/../../main/scripts/paths.sh"
 
 BUILD_DIR="cmake-build-release"
 JAR="build/libs/phixeron-0.1.0-uber.jar"
@@ -25,16 +26,16 @@ JAVA_OPTS=(
   --add-opens=java.base/java.lang.reflect=ALL-UNNAMED
   --add-opens=java.base/jdk.internal.misc=ALL-UNNAMED
 )
-BASE_DIR="${TMPDIR:-/tmp}phixeron-seqfo"
+BASE_DIR="${TMP_DIR}/phixeron-seqfo"
 CLUSTER_MEMBERS="$(cluster_members_string 3)"
-AERON_DIR="${TMPDIR}aeron-$(whoami)"
+AERON_DIR="$(aeron_default_dir)"
 
 if command -v aeronmd >/dev/null 2>&1; then AERONMD="$(command -v aeronmd)"; else AERONMD="${BUILD_DIR}/_deps/aeron-build/binaries/aeronmd"; fi
 
 pkill -f SequencerServer 2>/dev/null; pkill -f ReplayerServer 2>/dev/null; pkill -f OrderExecServer 2>/dev/null
 pkill -f FixGateway 2>/dev/null; pkill -f aeronmd 2>/dev/null; sleep 1
-rm -rf "$BASE_DIR" "${TMPDIR}phixeron-seq-aeron-0" "${TMPDIR}phixeron-seq-aeron-1" \
-       "${TMPDIR}phixeron-seq-aeron-2" "$AERON_DIR" 2>/dev/null
+rm -rf "$BASE_DIR" "${TMP_DIR}/phixeron-seq-aeron-0" "${TMP_DIR}/phixeron-seq-aeron-1" \
+       "${TMP_DIR}/phixeron-seq-aeron-2" "$AERON_DIR" 2>/dev/null
 
 declare -a SEQ_PIDS
 for m in 0 1 2; do
@@ -82,7 +83,7 @@ echo "tenure-2 leader = member $NEWLEADER"
 sleep 3  # let the new leader settle (its tap recording is continuous across the failover)
 
 FRESH_LOG="$LOG_DIR/fresh-orderexec.log"
-PHIXERON_ORDER_EXEC_AERON_DIR="${TMPDIR}phixeron-seq-aeron-${NEWLEADER}" \
+PHIXERON_ORDER_EXEC_AERON_DIR="${TMP_DIR}/phixeron-seq-aeron-${NEWLEADER}" \
   PHIXERON_NODE_MEMBER_ID="$NEWLEADER" \
   PHIXERON_REPLAYER_CLIENT_ID=9 \
   PHIXERON_CLUSTER_EGRESS_ENDPOINT="localhost:${TEST_CONSUMER_EGRESS_PORT}" \

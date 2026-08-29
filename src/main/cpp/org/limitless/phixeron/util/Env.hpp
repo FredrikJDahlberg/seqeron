@@ -30,6 +30,18 @@ inline bool envFlag(const char* name)
     return value != nullptr && *value != '\0';
 }
 
+// Joins a directory and a name with exactly one separator. macOS's $TMPDIR ends in a slash and Linux's
+// /tmp does not, so concatenating a name onto either gets one of the two platforms wrong — see
+// doc/portability-linux.md §2d.
+inline std::string joinPath(const std::string& dir, const std::string& name)
+{
+    if (dir.empty())
+    {
+        return name;
+    }
+    return dir.back() == '/' ? dir + name : dir + '/' + name;
+}
+
 // The co-located SequencerServer member's Aeron directory, which an app shares so it can reach that
 // node's tap, its Replayer and (while that member leads) cluster ingress over aeron:ipc. `envName` is
 // the per-binary override (PHIXERON_ORDER_EXEC_AERON_DIR, PHIXERON_BASICDATA_AERON_DIR, …).
@@ -47,8 +59,8 @@ inline std::string resolveAeronDir(const char* envName, const std::int32_t membe
         return value;
     }
     const char* tmpDir = std::getenv("TMPDIR");
-    return std::string(tmpDir != nullptr && *tmpDir != '\0' ? tmpDir : "/tmp/") + "phixeron-seq-aeron-" +
-           std::to_string(memberId);
+    return joinPath(tmpDir != nullptr && *tmpDir != '\0' ? tmpDir : "/tmp",
+                    "phixeron-seq-aeron-" + std::to_string(memberId));
 }
 
 // A "host:port" cluster-egress endpoint: the per-binary override, else localhost on the port this app

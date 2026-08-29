@@ -20,6 +20,8 @@
 
 set -euo pipefail
 
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/paths.sh"
+
 usage() {
     echo "Usage: $0 [debug|release]"
     echo "  default: release"
@@ -51,13 +53,13 @@ REPLAYER_LOG="${LOG_DIR}/ReplayerServer.log"
 APP_LOG="${LOG_DIR}/OrderExecServer.log"
 
 # Default Aeron directory used by the standalone aeronmd and by FixGateway.
-AERON_DIR="${TMPDIR}aeron-$(whoami)"
+AERON_DIR="$(aeron_default_dir)"
 
 # SequencerServer (member 0)'s own embedded media driver directory — matches its default
 # when -Dsequencer.aeronDir isn't overridden. OrderExecServer is co-located with this
 # member (shares its Aeron directory) so archive/replay/ingress can use aeron:ipc instead
 # of looping through the standalone aeronmd above — see ClusterStreamSender::connectColocated.
-SEQ_AERON_DIR="${TMPDIR}phixeron-seq-aeron-0"
+SEQ_AERON_DIR="${TMP_DIR}/phixeron-seq-aeron-0"
 
 # Prefer a system-installed aeronmd (e.g. Homebrew or a system package) on PATH;
 # fall back to the CMake FetchContent build-tree copy if none is found there.
