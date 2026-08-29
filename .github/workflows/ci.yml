@@ -69,7 +69,7 @@ jobs:
           -DCMAKE_CXX_COMPILER=${{ matrix.cxx }}
 
       - name: Build
-        run: cmake --build build -j
+        run: cmake --build build -j $(nproc)
 
       # Not plain ctest: simdfix's own suite is registered here too and reports
       # spurious ..._NOT_BUILT failures — see CLAUDE.md.
