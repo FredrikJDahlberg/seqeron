@@ -37,7 +37,7 @@
     ClientConnected/ClientDisconnected/PortfolioQueryRequest/PortfolioQueryReply/
     LeadershipChanged aren't FIX messages, so they use small, non-ASCII-derived
     template ids instead (1/2/3/4/5), clear of that range. The cluster life-cycle
-    markers ClusterStarted/ClusterStopped (10/11) do too. SessionProtocolMessage
+    markers ClusterStarted/ClusterStopped (10/11) do too. ClientSessionEvent
     (22) is the one FIX message with a small id: it stands for ANY session MsgType,
     so no single ASCII value describes it.
 
@@ -517,9 +517,9 @@
     </sbe:message>
 
     <!-- ═══════════════════════════════════════════════════════════════════
-         SessionProtocolMessage  (template 22) — opaque, pre-encoded session traffic
+         ClientSessionEvent  (template 22) — opaque, pre-encoded session traffic
          ═══════════════════════════════════════════════════════════════════ -->
-    <sbe:message name="SessionProtocolMessage" id="22"
+    <sbe:message name="ClientSessionEvent" id="22"
                  description="One complete FIX session-protocol message carried as opaque bytes, for an edge whose
                               session layer is an embedded FIX engine rather than the structured templates above.
                               header.origin says which way it travels: Client = received from the counterparty and

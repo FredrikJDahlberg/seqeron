@@ -320,7 +320,7 @@ records what the memo (written for replacing the *acceptor*) gets wrong about th
 The invariant is the same one the C++ edge holds: **nothing un-sequenced reaches the wire.** Artio owns
 TCP, codecs, the session FSM and the timers — it decides *what* to send and *when* — but every decision
 goes through `ClusterSessionProxy` (`isAsync() = true`, in the shared `fixgateway` package) to cluster
-ingress as an opaque `SessionProtocolMessage` (template 22, carrying pre-encoded FIX bytes), and reaches
+ingress as an opaque `ClientSessionEvent` (template 22, carrying pre-encoded FIX bytes), and reaches
 the venue only when it comes back on the node tap, emitted by a `SessionWriter` at the `MsgSeqNum` the log
 recorded. Inbound venue traffic is published too, so the log is a complete session record.
 
