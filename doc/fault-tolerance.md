@@ -9,9 +9,9 @@ description of what the code does today, not the aspirational superset in `doc/0
 
 Every recovery path in this document reduces to the same primitive: **replay the sequenced log from
 `globalSeqNo` 1**. `SequencerService.onTakeSnapshot` throws and `onStart` refuses a snapshot image
-(`src/main/java/org/limitless/phixeron/sequencer/SequencerService.java:295-300,544-550`); `clusterctl
+(`cluster/src/main/java/org/limitless/phixeron/sequencer/SequencerService.java:295-300,544-550`); `clusterctl
 shutdown` uses Aeron's `ABORT` action, which takes no snapshot, never `SHUTDOWN`
-(`src/main/java/org/limitless/phixeron/tools/ClusterCtl.java:151-185` — `SHUTDOWN` snapshots first,
+(`cluster/src/main/java/org/limitless/phixeron/tools/ClusterCtl.java:151-185` — `SHUTDOWN` snapshots first,
 which would silently break the invariant below).
 
 This is deliberate, not an oversight: **every node publishes and records its own copy of the
@@ -61,7 +61,7 @@ On the C++ client side, `ClusterStreamSender` (the Aeron Cluster ingress session
 session**: a `NewLeaderEvent` swaps only the ingress `Publication` to the new leader's endpoint,
 re-resolved out of the event's member CSV — the cluster session id and leadership term id are updated
 in place, never re-created
-(`src/main/cpp/org/limitless/phixeron/sequencer/ClusterStreamSender.hpp:632-689`). `send()`'s retry
+(`cluster/src/main/cpp/org/limitless/phixeron/sequencer/ClusterStreamSender.hpp:632-689`). `send()`'s retry
 loop pumps the egress control stream between offer attempts specifically so an in-flight
 `NewLeaderEvent` can land and swap the publication mid-spin — a naive `while(!offer) idle()` would
 deadlock, spinning on the dead leader's publication while the poll that would revive it never runs
@@ -315,7 +315,7 @@ recording and checks `globalSeqNo == 1`; if that fails, `ready` latches false fo
 lifetime (`integrityFailed`) — a deliberate refusal, because a first frame that isn't 1 means this
 node's own recording is missing or corrupted, and centralizing the check here means every app on the
 node is told `ReplayUnavailable` instead of independently discovering the same broken archive
-(`src/main/java/org/limitless/phixeron/replayer/server/ReplayerService.java`, `checkReady`/
+(`cluster/src/main/java/org/limitless/phixeron/replayer/server/ReplayerService.java`, `checkReady`/
 `peekFirstGlobalSeqNo`). An archive call that throws mid-replay flips the service into a `stalled`
 state — retried at 1s intervals, answering requests `ReplayPending` in the meantime — without
 crashing the process or touching live delivery, since live reads never go through this service.

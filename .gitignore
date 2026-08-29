@@ -1,0 +1,22 @@
+# Build output
+/build/
+/*/build/
+cmake-build-*/
+/out/
+
+# Gradle
+/.gradle/
+
+# Coverage instrumentation dumps (PHIXERON_COVERAGE=ON, clang)
+*.profraw
+*.profdata
+
+# Runtime — the e2e scripts and the launchers write here
+/logs/
+
+# IDE
+/.idea/
+*.iml
+
+# macOS
+.DS_Store

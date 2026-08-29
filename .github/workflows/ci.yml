@@ -94,7 +94,7 @@ jobs:
           path: |
             ~/.gradle/caches
             ~/.gradle/wrapper
-          key: gradle-java-${{ hashFiles('build.gradle', 'gradle/wrapper/gradle-wrapper.properties') }}
+          key: gradle-java-${{ hashFiles('*.gradle', '*/build.gradle', 'gradle/wrapper/gradle-wrapper.properties') }}
           restore-keys: gradle-java-
 
       # JUnit 5 suite for the Java state machines; no Aeron runtime, no C++ build.
@@ -102,18 +102,20 @@ jobs:
       - name: Test
         run: ./gradlew test
 
+      # One report per Gradle module since the :cluster/:gateways split (doc/future-arch.md §8.6).
       - name: Coverage summary
         if: always()
         run: |
           python3 - <<'EOF' >> "$GITHUB_STEP_SUMMARY"
           import xml.etree.ElementTree as ET
-          r = ET.parse('build/reports/jacoco/test/jacocoTestReport.xml').getroot()
-          print('| metric | covered | total | % |')
-          print('|---|---|---|---|')
-          for c in r.findall('counter'):
-              m, cv = int(c.get('missed')), int(c.get('covered'))
-              t = m + cv
-              print(f"| {c.get('type').title()} | {cv} | {t} | {100*cv/t if t else 0:.1f}% |")
+          print('| module | metric | covered | total | % |')
+          print('|---|---|---|---|---|')
+          for mod in ('cluster', 'gateways'):
+              r = ET.parse(f'{mod}/build/reports/jacoco/test/jacocoTestReport.xml').getroot()
+              for c in r.findall('counter'):
+                  m, cv = int(c.get('missed')), int(c.get('covered'))
+                  t = m + cv
+                  print(f"| {mod} | {c.get('type').title()} | {cv} | {t} | {100*cv/t if t else 0:.1f}% |")
           EOF
 
       - name: Upload coverage report
@@ -121,4 +123,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: jacoco-report
-          path: build/reports/jacoco/test/
+          path: |
+            cluster/build/reports/jacoco/test/
+            gateways/build/reports/jacoco/test/

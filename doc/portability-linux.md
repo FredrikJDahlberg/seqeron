@@ -190,7 +190,7 @@ Only `BasicDataLoader` is actually wrong, and it is wrong only on Linux.
 ### 2d. `Env.hpp:resolveAeronDir` — a trailing slash baked into the fallback
 
 ```cpp
-// src/main/cpp/org/limitless/phixeron/util/Env.hpp:49-51
+// cluster/src/main/cpp/org/limitless/phixeron/util/Env.hpp:49-51
 const char* tmpDir = std::getenv("TMPDIR");
 return std::string(tmpDir != nullptr && *tmpDir != '\0' ? tmpDir : "/tmp/") + "phixeron-seq-aeron-" +
        std::to_string(memberId);

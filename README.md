@@ -86,6 +86,14 @@ edge authentication.
 
 ## Build
 
+The source is split by module, and the directory a file is in is what owns it: `cluster/` is the
+cluster tier (the sequencer, the replayer, the shared client classes and the tools, in both
+languages), `gateways/` is the Java Artio FIX legs, and `src/main/cpp` is the C++ FIX edge. The
+dependency runs one way, product to cluster, and both builds enforce it — Gradle through
+`:gateways` depending on `:cluster`, CMake through the `phixeron_core` / `phixeron` target pair.
+The SBE schemas under `src/main/resources` and the scripts under `src/{main,test}/scripts` are
+shared and stay at the root. See `doc/future-arch.md` §11 for where this is going.
+
 ### C++
 
 ```bash
@@ -112,6 +120,9 @@ cmake --build cmake-build-release
 ```bash
 cd cmake-build-debug && cmake --build . --target run_tests
 ```
+
+`run_tests` runs both GoogleTest binaries: `core_tests` (the cluster tier) then `phixeron_tests`
+(the C++ FIX edge). On the Java side `./gradlew test` runs both modules' suites.
 
 Use `run_tests`, not plain `ctest`: simdfix's own test suite is registered here too, and since
 its targets are `EXCLUDE_FROM_ALL` and never built in this project, `ctest` reports them as

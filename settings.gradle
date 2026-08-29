@@ -1,1 +1,9 @@
 rootProject.name = 'phixeron'
+
+// Module boundaries ahead of the three-repo split (doc/future-arch.md §11 step 1):
+//   :cluster  — seqeron-to-be: the sequencer, the replayer (both sides), the shared client classes,
+//               the tools and the SBE codegen.
+//   :gateways — the Artio legs (exchange + order) and their test harness.
+// The dependency runs one way only, :gateways -> :cluster; nothing in :cluster may reference
+// :gateways. The C++ half of the same boundary is CMake's phixeron_core / phixeron target pair.
+include 'cluster', 'gateways'

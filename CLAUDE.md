@@ -63,6 +63,27 @@ For multi-step tasks, state a brief plan:
 See the [Overview](README.md#overview) in README.md for a description of what phixeron is and
 its relationship to the sibling **simdfix** project.
 
+## Module layout
+
+The tree is split along the boundary `doc/future-arch.md` proposes for the eventual three repos
+(§11 step 1). **Which directory a file is in is what module owns it**, in both languages:
+
+| module | Java | C++ |
+| --- | --- | --- |
+| cluster tier (seqeron-to-be) | `cluster/src/main/java` — `sequencer`, `replayer`, `tools`, `metrics`, `util`, plus `fixgateway/GatewayRecoveryStallPolicy` | `cluster/src/main/cpp` — `sequencer`, `replayer/client`, `util`, `basicdata/{Gateways,SectionAccumulator}.hpp`, `fix/GatewayRecoveryStallPolicy.hpp` |
+| Artio legs | `gateways/src/main/java` — `exchange`, `order`, the rest of `fixgateway`, and `gateways/src/test/artio` | — |
+| C++ edge | — | `src/main/cpp` — `fix`, `order`, `risk`, `basicdata/BasicData{Server.cpp,Constants.hpp}` |
+
+The dependency runs one way, product → cluster, and the build enforces it: `:gateways` compiles
+against `:cluster`'s output and `:cluster` never sees it; the CMake pair is `phixeron_core` (its own
+include root, no simdfix, no generated FIX codecs) and `phixeron` (core plus the C++ edge's root).
+Two things are deliberately still shared, both at the root: `src/main/resources` (the SBE schemas —
+step 3 splits them) and `src/{main,test}/scripts`.
+
+Both `fixgateway` packages split across the boundary, on purpose: the recovery-stall policy is a
+language-port pair and those live in the cluster tier (`doc/future-arch.md` §7), everything else in
+the package is the products'.
+
 ## Build
 
 ### C++
@@ -76,18 +97,25 @@ cmake --build cmake-build-release
 C++23, requires Java (Runtime) on PATH for the SBE tool and the code generator, and a
 `git@github.com:...` SSH remote reachable for the simdfix FetchContent clone.
 
-Executables: `FixGateway`, `OrderExecServer`, `BasicDataServer`, `fix_test_server`,
-`phixeron_tests` (GoogleTest). Build a single target with `cmake --build cmake-build-debug --target <name>`.
+Executables: `FixGateway`, `OrderExecServer`, `BasicDataServer`, `fix_test_server`, and two
+GoogleTest binaries — `core_tests` (the cluster tier, linking `phixeron_core` only) and
+`phixeron_tests` (the C++ edge). Build a single target with
+`cmake --build cmake-build-debug --target <name>`.
 
 ### Java
 ```bash
-./gradlew compileJava
-./gradlew uberJar              # fat jar: build/libs/phixeron-<version>-uber.jar
+./gradlew compileJava          # both modules
+./gradlew uberJar              # fat jar over both: build/libs/phixeron-<version>-uber.jar
 ./gradlew generateUnsequencedSbe generateSequencedSbe   # regenerate SBE Java codecs (also runs on compileJava)
 ```
 ```bash
-./gradlew test                 # JUnit 5 unit tests for the Java state machines
+./gradlew test                 # JUnit 5 unit tests for the Java state machines, both modules
 ```
+Task names are unqualified because each lives in exactly one module — `:cluster` owns the SBE
+codegen, `sbeLogPrinter` and `run`; `:gateways` owns `exchangeGateway`, `orderGateway`,
+`mockExchange`, `mockOrderClient`, `fixTestClient`, `sessionProxyTest` and the Artio codegen; the
+root owns `uberJar`. Coverage is one JaCoCo report per module
+(`<module>/build/reports/jacoco/test/`).
 The Java suite covers the deterministic decision-making — `Sequencer`, and `ReplayerService` through
 its `Replayer` seam — and deliberately touches no Aeron runtime: no media driver, no
 cluster, no Aeron mocks, so it runs in ~1s. Everything Aeron-shaped stays covered by the C++
@@ -103,8 +131,10 @@ too (its targets are `EXCLUDE_FROM_ALL` and never get built in this project), so
 those as spurious `..._NOT_BUILT` failures alongside phixeron's real results. If you must use
 `ctest`, filter them out: `ctest --output-on-failure -E "_NOT_BUILT"`.
 
-Run a single test: `./cmake-build-debug/phixeron_tests --gtest_filter='FixIngressHandler*'`
-(GoogleTest name-filter syntax; test suite/case names are visible in the `ctest`/`run_tests` output).
+`run_tests` runs both binaries in order, `core_tests` first. Run a single test:
+`./cmake-build-debug/phixeron_tests --gtest_filter='FixIngressHandler*'` (or `core_tests` for a
+cluster-tier suite; GoogleTest name-filter syntax, and test suite/case names are visible in the
+`ctest`/`run_tests` output).
 
 ## Architecture
 
@@ -281,7 +311,7 @@ leaving the request fragment unconsumed on the cluster stream until a slot frees
 or dropping it. The original Java `RiskEngineClient`/`MockRiskEngine` are dead code, already
 removed (`src/main/java/org/limitless/phixeron/risk/` deleted).
 
-### Exchange-facing FIX gateway — `ExchangeGateway` (Java, under `src/main/java/.../exchange/`)
+### Exchange-facing FIX gateway — `ExchangeGateway` (Java, under `gateways/src/main/java/.../exchange/`)
 The **venue** leg, and the only edge that is not simdfix: an [Artio](https://github.com/real-logic/artio)
 **initiator** toward an exchange, added because the system had a client-facing acceptor and nothing facing
 out. Additive — the C++/simdfix client gateway is untouched. See `doc/artio-integration.md` §13, which
@@ -375,7 +405,7 @@ resets after every send.
 `GatewayLifecycle` and `GatewayLifecycleActions`. The two `GatewayLifecycle`s share a name because they hold
 the same role in each direction; the package tells them apart.
 
-### Client-facing Artio FIX gateway — `OrderGateway` (Java, under `src/main/java/.../order/`)
+### Client-facing Artio FIX gateway — `OrderGateway` (Java, under `gateways/src/main/java/.../order/`)
 The **inbound** leg: an Artio **acceptor** toward order-entry clients, the same proxy → cluster → tap →
 `SessionWriter` loop as the venue leg with the direction and the *multiplicity* flipped. See
 `doc/artio-integration.md` §17, which records what §16's costing got wrong.
