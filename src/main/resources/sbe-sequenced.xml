@@ -736,7 +736,7 @@
     </sbe:message>
 
     <!-- ═══════════════════════════════════════════════════════════════════
-         Basic data load  (templates 12–15, plus Gateway 17) — sequenced form of the reference
+         Basic data load  (templates 12–15) — sequenced form of the reference
          data (valid FIX session comp-id pairs, the trading-day calendar) the
          basic-data handler loads from the database once on the leader and
          republishes into the ordered log. A load is a bracketed, fixed-order
@@ -781,17 +781,29 @@
         <field name="closing"     id="20028" type="uint16"/>
     </sbe:message>
 
-    <!-- Gateway (template 17) — basic-data section: the FIX-gateway topology, one row per gateway
-         instance. Maps the instance's static identity (gatewayName, matched against its gateway
-         command-line argument at startup) to the ids it adopts: gatewayId (unique per instance, the GatewayActive
-         target) and gatewaySourceId (the shared logical sourceId the active and standby of one logical
-         gateway both stamp into header.sourceId). Lets a gateway derive its whole identity from the log
-         rather than per-process config, so a standby derives the same. header.sourceId here is the
-         BasicData client's, as on every basic-data row. See doc/todo.md item 8c. -->
-    <sbe:message name="BasicDataGateway" id="17"
-                 description="One FIX gateway instance: static gatewayName -> gatewayId + shared gatewaySourceId">
+    <!-- ═══════════════════════════════════════════════════════════════════
+         GatewayRegistered (template 17) — the FIX-gateway roster: one frame per
+         gateway instance, published by `clusterctl load-topology` (see
+         doc/basicdata-design.md §3a). Maps an instance's static identity
+         (gatewayName, matched against the PHIXERON_*_GATEWAY_NAME it was launched
+         with) to the ids it adopts: gatewayId (unique per instance, what a
+         GatewayActive names) and gatewaySourceId (the shared logical sourceId the
+         active and standby of one logical gateway both stamp into header.sourceId).
+         Lets a gateway derive its whole identity from the log rather than from
+         per-process config, so a standby derives the same. See doc/todo.md item 8c.
+         `remaining` counts DOWN to 0 over one roster run, and the row carrying 0 is
+         the sequencer's completeness edge: that is where it synthesizes the bootstrap
+         GatewayActive of each logical gateway. A *supplied* roster rather than
+         per-instance self-registration, because "have I seen everyone?" has to be
+         answerable from the log alone rather than from a grace timer, and because an
+         instance learns its own ids here — see doc/future-arch.md §3.5.
+         header.sourceId is the operator tool's (-1): the roster is a deployment
+         assertion, not traffic on behalf of any gateway.
+         ═══════════════════════════════════════════════════════════════════ -->
+    <sbe:message name="GatewayRegistered" id="17"
+                 description="One FIX gateway instance: static gatewayName -> gatewayId + shared gatewaySourceId; remaining=0 closes the roster">
         <field name="header"          id="20001" type="header"/>
-        <field name="progress"        id="20021" type="basicDataProgress"/>
+        <field name="remaining"       id="20038" type="uint16"/>   <!-- roster rows after this one; 0 = last, roster complete -->
         <field name="gatewayId"       id="20029" type="int32"/>
         <field name="gatewaySourceId" id="20030" type="int32"/>
         <field name="gatewayName"     id="20031" type="gatewayName"/>
@@ -801,7 +813,8 @@
     <!-- ═══════════════════════════════════════════════════════════════════
          GatewayActive (template 18) — activates one FIX gateway instance. Two
          publishers, one frame: clusterctl sends it to promote a hot-standby, and
-         the cluster synthesizes it on EndBasicData to activate the primary. Every
+         the cluster synthesizes it on the roster's last GatewayRegistered
+         row to activate the primary. Every
          consumer, on observing it, sets all sessions this gateway serves to
          disconnected (the deterministic close-out of any pre-activation session
          state); the instance whose gatewayId matches then opens its accept gate,

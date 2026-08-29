@@ -8,6 +8,9 @@
 #   clusterctl.sh start             # record a "system started" marker (requires an elected leader)
 #   clusterctl.sh shutdown          # orderly stop; safe on every node, no-op on followers
 #   clusterctl.sh activate <id>     # manual standby promotion (requires an elected leader)
+#   clusterctl.sh load-topology <file>
+#                                   # publish the gateway roster (src/main/resources/topology.csv);
+#                                   # run once per cluster lifetime, BEFORE the reference-data load
 #   clusterctl.sh help
 #   clusterctl.sh describe …        # anything else → ClusterTool passthrough
 #

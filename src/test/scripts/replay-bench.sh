@@ -45,7 +45,7 @@ trap cleanup EXIT
 # Stale recordings are not merely noise here — they are counted in the archive size and replayed by
 # the cold replica, so the number this prints would be measuring the wrong history.
 ./src/main/scripts/purgelog.sh --force >/dev/null 2>&1
-./src/main/scripts/start-three-node-cluster.sh > "$START_LOG" 2>&1 &
+./src/test/scripts/start-three-node-cluster.sh > "$START_LOG" 2>&1 &
 W=0
 until grep -q "READY" "$START_LOG" 2>/dev/null; do
     sleep 2

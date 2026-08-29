@@ -9,10 +9,9 @@ import org.limitless.phixeron.sbe.sequenced.LeadershipChangedEncoder;
 import org.limitless.phixeron.sbe.sequenced.MessageHeaderEncoder;
 import org.limitless.phixeron.sbe.sequenced.Origin;
 import org.limitless.phixeron.sbe.sequenced.TickEncoder;
-import org.limitless.phixeron.sbe.unsequenced.BasicDataGatewayDecoder;
 import org.limitless.phixeron.sbe.unsequenced.ClientConnectedDecoder;
 import org.limitless.phixeron.sbe.unsequenced.ClientDisconnectedDecoder;
-import org.limitless.phixeron.sbe.unsequenced.EndBasicDataDecoder;
+import org.limitless.phixeron.sbe.unsequenced.GatewayRegisteredDecoder;
 import org.limitless.phixeron.sbe.unsequenced.GatewayStartedDecoder;
 import org.limitless.phixeron.sbe.unsequenced.HeaderDecoder;
 import org.limitless.phixeron.sbe.unsequenced.MessageHeaderDecoder;
@@ -157,11 +156,11 @@ public final class Sequencer {
 
     // Ingress decode (schema 200, sbe-unsequenced.xml)
     // Only the outer framing header and the generic `header` composite are ever decoded — body fields
-    // are copied through as opaque bytes (see sequenceMessage), with two bounded exceptions: the Gateway
-    // topology row and GatewayStarted, whose scalar fields feed the derived topology below.
+    // are copied through as opaque bytes (see sequenceMessage), with two bounded exceptions:
+    // GatewayRegistered and GatewayStarted, whose scalar fields feed the derived topology below.
     private final MessageHeaderDecoder ingressMsgHeaderDecoder = new MessageHeaderDecoder();
     private final HeaderDecoder ingressHeaderDecoder = new HeaderDecoder();
-    private final BasicDataGatewayDecoder gatewayDecoder = new BasicDataGatewayDecoder();
+    private final GatewayRegisteredDecoder gatewayRegisteredDecoder = new GatewayRegisteredDecoder();
     private final GatewayStartedDecoder gatewayStartedDecoder = new GatewayStartedDecoder();
 
     // Egress encode (schema 202, sbe-sequenced.xml)
@@ -177,16 +176,16 @@ public final class Sequencer {
     private record GatewayRow(int gatewayId, int gatewaySourceId, short preferenceRank) { }
 
     /**
-     * Every Gateway row seen, in log order, de-duplicated on {@code gatewayId} so a re-emitted load (a
-     * leader change mid-load) re-asserts rather than duplicates. Read only by {@link #promotionTarget},
+     * Every roster row seen, in log order, de-duplicated on {@code gatewayId} so a re-published roster
+     * (an operator re-running {@code load-topology}) re-asserts rather than duplicates. Read only by {@link #promotionTarget},
      * and only ever by index, so the iteration order is the log's and every node agrees.
      */
     private final java.util.List<GatewayRow> gatewayRows = new java.util.ArrayList<>();
 
     /**
      * The {@code gatewayId}s the bootstrap still has to activate — one per logical gateway, the rank-0
-     * row of each {@code gatewaySourceId}, filled from {@link #gatewayRows} behind the first {@code
-     * EndBasicData} and drained one frame per call by {@link #pendingGatewayBootstrapActivation}.
+     * row of each {@code gatewaySourceId}, filled from {@link #gatewayRows} behind the first complete
+     * roster and drained one frame per call by {@link #pendingGatewayBootstrapActivation}.
      *
      * <p>One per <em>logical</em> gateway, because the deployment has more than one: the client-facing
      * pair and the exchange-facing pair elect independently and neither may activate the other's
@@ -250,7 +249,7 @@ public final class Sequencer {
      */
     private int connectedClientCount = 0;
 
-    /** True once the bootstrap {@code GatewayActive} has been synthesized (on the first EndBasicData). */
+    /** True once the bootstrap {@code GatewayActive} has been synthesized (on the first complete roster). */
     private boolean bootstrapActivationEmitted = false;
 
     /** An outstanding {@code GatewayActive}: which instance was named, and when it stops being excused. */
@@ -353,23 +352,26 @@ public final class Sequencer {
 
         final int sourceId = ingressHeaderDecoder.sourceId();
         final int connectionId = ingressHeaderDecoder.connectionId();
-        if (templateId == BasicDataGatewayDecoder.TEMPLATE_ID) {
-            gatewayDecoder.wrap(buffer, ingressBodyOffset, ingressBlockLen, ingressMsgHeaderDecoder.version());
-            addGatewayRow(gatewayDecoder.gatewayId(), gatewayDecoder.gatewaySourceId(),
-                          gatewayDecoder.preferenceRank());
+        if (templateId == GatewayRegisteredDecoder.TEMPLATE_ID) {
+            gatewayRegisteredDecoder.wrap(buffer, ingressBodyOffset, ingressBlockLen,
+                                          ingressMsgHeaderDecoder.version());
+            addGatewayRow(gatewayRegisteredDecoder.gatewayId(), gatewayRegisteredDecoder.gatewaySourceId(),
+                          gatewayRegisteredDecoder.preferenceRank());
+            // remaining == 0 is the roster's last row, and the whole completeness edge: the publisher
+            // counts the rows it read, so the cluster never has to infer "have I seen everyone?".
+            if (gatewayRegisteredDecoder.remaining() == 0 && !bootstrapActivationEmitted) {
+                bootstrapActivationEmitted = true;
+                for (final GatewayRow row : gatewayRows) {
+                    if (row.preferenceRank() == 0) {
+                        bootstrapActivations.add(row.gatewayId());
+                    }
+                }
+            }
         }
         if (templateId == GatewayStartedDecoder.TEMPLATE_ID) {
             gatewayStartedDecoder.wrap(buffer, ingressBodyOffset, ingressBlockLen, ingressMsgHeaderDecoder.version());
             activeGatewaySession.put(sessionId, gatewayStartedDecoder.gatewayId());
             releaseStaleConnections(sourceId);
-        }
-        if (templateId == EndBasicDataDecoder.TEMPLATE_ID && !bootstrapActivationEmitted) {
-            bootstrapActivationEmitted = true;
-            for (final GatewayRow row : gatewayRows) {
-                if (row.preferenceRank() == 0) {
-                    bootstrapActivations.add(row.gatewayId());
-                }
-            }
         }
         if (templateId == ClientConnectedDecoder.TEMPLATE_ID) {
             if (openConnections.computeIfAbsent(sourceId, source -> new java.util.HashSet<>()).add(connectionId)) {
@@ -459,23 +461,22 @@ public final class Sequencer {
     }
 
     /**
-     * The bootstrap activations, synthesized once behind the first {@code EndBasicData}: the cluster
-     * designates the primary of each logical gateway by naming its {@code gatewayId} in a {@code
-     * GatewayActive}, so exactly one instance of each pair opens its accept gate at cold start and its
-     * standby waits.
+     * The bootstrap activations, synthesized once behind the roster's last row: the cluster designates
+     * the primary of each logical gateway by naming its {@code gatewayId} in a {@code GatewayActive}, so
+     * exactly one instance of each pair opens its accept gate at cold start and its standby waits.
      *
      * <p><b>One frame per call.</b> There is one activation per logical gateway and each takes its own
      * {@code globalSeqNo}, so the adapter calls this in a loop until {@link #NO_FRAME} — emitting what
      * comes back before asking again, since every call re-encodes into the same {@link #buffer()}. The
-     * loop runs right after the {@link #sequenceMessage} that sequenced the EndBasicData, so the frames
-     * take the next {@code globalSeqNo}s in {@link #gatewayRows} order — identically on every node and
-     * on replay.
+     * loop runs right after the {@link #sequenceMessage} that sequenced the roster's last row, so the
+     * frames take the next {@code globalSeqNo}s in {@link #gatewayRows} order — identically on every node
+     * and on replay.
      * @param timestamp now
      * @return a {@code GatewayActive} frame length, or {@link #NO_FRAME} when none is left pending
      */
     public int pendingGatewayBootstrapActivation(final long timestamp) {
         final Integer gatewayId = bootstrapActivations.poll();
-        // Empty when no Gateway row designated a primary — nothing to activate (fail closed).
+        // Empty when no roster row designated a primary — nothing to activate (fail closed).
         return gatewayId == null ? NO_FRAME : gatewayActive(gatewayId, timestamp);
     }
 

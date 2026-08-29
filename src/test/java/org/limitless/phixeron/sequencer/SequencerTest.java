@@ -463,47 +463,57 @@ class SequencerTest {
     // ── Standby promotion (GatewayActive) ─────────────────────────────────────
 
     @Test
-    @DisplayName("the first EndBasicData is followed by a bootstrap GatewayActive naming the rank-0 primary")
-    void firstEndBasicDataSynthesizesBootstrapActivation() {
+    @DisplayName("the roster's last row is followed by a bootstrap GatewayActive naming the rank-0 primary")
+    void rostersLastRowSynthesizesBootstrapActivation() {
         // Cold-start designation: one instance must open its gate and the standby must wait, so the
-        // cluster names the primary's gatewayId behind the load-complete marker (doc/todo.md item 18).
-        // The primary is derived from the Gateway rows in the load — the rank-0 row — not configured.
+        // cluster names the primary's gatewayId behind the row that completes the roster (doc/todo.md
+        // item 18). The primary is derived from those rows — the rank-0 one — not configured.
         final int primaryGatewayId = 5;
         final Sequencer seq = new Sequencer();
         final MutableDirectBuffer buf = new ExpandableArrayBuffer(128);
 
         assertEquals(Sequencer.NO_FRAME, seq.pendingGatewayBootstrapActivation(TIMESTAMP),
-                     "nothing pending before EndBasicData");
+                     "nothing pending before the roster");
 
-        // The load carries the topology: gatewayId 5 (rank 0) is the primary, 6 (rank 1) the standby.
-        seq.sequenceMessage(buf, 0, encodeIngressGateway(buf, 0, primaryGatewayId, SOURCE_ID, "GW-A", 0), SESSION_ID,
-                            TIMESTAMP);
-        seq.sequenceMessage(buf, 0, encodeIngressGateway(buf, 0, 6, SOURCE_ID, "GW-B", 1), SESSION_ID, TIMESTAMP);
+        // gatewayId 5 (rank 0) is the primary, 6 (rank 1) the standby; remaining counts down to 0.
+        seq.sequenceMessage(buf, 0, encodeIngressGatewayRegistered(buf, 0, primaryGatewayId, SOURCE_ID, "GW-A", 0, 1),
+                            SESSION_ID, TIMESTAMP);
+        assertEquals(Sequencer.NO_FRAME, seq.pendingGatewayBootstrapActivation(TIMESTAMP),
+                     "an incomplete roster designates nobody — remaining is the whole completeness edge");
 
-        final int endLength = seq.sequenceMessage(buf, 0, encodeIngressEndBasicData(buf, 0), SESSION_ID, TIMESTAMP);
-        assertEquals(3L, globalSeqNoOf(seq, endLength)); // 2 Gateway rows + EndBasicData
+        final int endLength = seq.sequenceMessage(
+            buf, 0, encodeIngressGatewayRegistered(buf, 0, 6, SOURCE_ID, "GW-B", 1, 0), SESSION_ID, TIMESTAMP);
+        assertEquals(2L, globalSeqNoOf(seq, endLength)); // 2 roster rows
 
         final int activationLength = seq.pendingGatewayBootstrapActivation(TIMESTAMP + 1);
         assertNotEquals(Sequencer.NO_FRAME, activationLength);
         final GatewayActiveDecoder decoded = decodeGatewayActive(seq.buffer(), activationLength);
         assertEquals(primaryGatewayId, decoded.gatewayId()); // the rank-0 gatewayId, derived from the log
-        assertEquals(4L, decoded.header().globalSeqNo()); // takes the next globalSeqNo after EndBasicData
+        assertEquals(3L, decoded.header().globalSeqNo()); // takes the next globalSeqNo after the last row
         assertEquals(TIMESTAMP + 1, decoded.header().timestamp());
         assertEquals(Sequencer.NO_SOURCE_ID, decoded.header().sourceId()); // synthesized: no submitter
 
-        // Fires once: a re-emitted load (a leader change mid-load) does not re-designate the primary.
-        seq.sequenceMessage(buf, 0, encodeIngressEndBasicData(buf, 0), SESSION_ID, TIMESTAMP + 2);
+        // Fires once: re-running load-topology re-asserts the rows without re-designating the primary.
+        seq.sequenceMessage(buf, 0, encodeIngressGatewayRegistered(buf, 0, 6, SOURCE_ID, "GW-B", 1, 0), SESSION_ID,
+                            TIMESTAMP + 2);
         assertEquals(Sequencer.NO_FRAME, seq.pendingGatewayBootstrapActivation(TIMESTAMP + 3));
     }
 
     @Test
-    @DisplayName("EndBasicData with no Gateway row designates no primary and synthesizes no activation")
-    void endBasicDataWithoutGatewayRowFailsClosed() {
+    @DisplayName("a complete roster with no rank-0 row designates no primary and synthesizes no activation")
+    void rosterWithNoPrimaryFailsClosed() {
+        // The empty roster this replaces stopped being expressible when the completeness edge became a
+        // countdown: with no rows there is no remaining==0 to fire on, so the latch stays unset and a
+        // later roster still elects. clusterctl refuses to publish either shape; the sequencer's own
+        // answer to a rank-0-less roster that reached it anyway is still to activate nobody.
         final Sequencer seq = new Sequencer();
-        final MutableDirectBuffer buf = new ExpandableArrayBuffer(64);
-        seq.sequenceMessage(buf, 0, encodeIngressEndBasicData(buf, 0), SESSION_ID, TIMESTAMP);
+        final MutableDirectBuffer buf = new ExpandableArrayBuffer(128);
+        seq.sequenceMessage(buf, 0, encodeIngressGatewayRegistered(buf, 0, 5, SOURCE_ID, "GW-A", 1, 1), SESSION_ID,
+                            TIMESTAMP);
+        seq.sequenceMessage(buf, 0, encodeIngressGatewayRegistered(buf, 0, 6, SOURCE_ID, "GW-B", 2, 0), SESSION_ID,
+                            TIMESTAMP);
         assertEquals(Sequencer.NO_FRAME, seq.pendingGatewayBootstrapActivation(TIMESTAMP + 1),
-                     "no Gateway topology ⇒ no bootstrap activation (fail closed)");
+                     "no rank-0 row ⇒ no bootstrap activation (fail closed)");
     }
 
     @Test
@@ -513,8 +523,10 @@ class SequencerTest {
         final MutableDirectBuffer buf = new ExpandableArrayBuffer(512);
 
         // One logical gateway (SOURCE_ID) served by an active/standby pair: gatewayId 5 rank 0, 6 rank 1.
-        seq.sequenceMessage(buf, 0, encodeIngressGateway(buf, 0, 5, SOURCE_ID, "GW-A", 0), SESSION_ID, TIMESTAMP);
-        seq.sequenceMessage(buf, 0, encodeIngressGateway(buf, 0, 6, SOURCE_ID, "GW-B", 1), SESSION_ID, TIMESTAMP);
+        seq.sequenceMessage(buf, 0, encodeIngressGatewayRegistered(buf, 0, 5, SOURCE_ID, "GW-A", 0, 1), SESSION_ID,
+                            TIMESTAMP);
+        seq.sequenceMessage(buf, 0, encodeIngressGatewayRegistered(buf, 0, 6, SOURCE_ID, "GW-B", 1, 0), SESSION_ID,
+                            TIMESTAMP);
 
         // GatewayStarted is how instance 5 declares which cluster session it is active on.
         final long gatewaySession = 0xA11CEL;
@@ -547,8 +559,10 @@ class SequencerTest {
         // the standby out from under a healthy primary. Only GatewayStarted may claim a session.
         final Sequencer seq = new Sequencer();
         final MutableDirectBuffer buf = new ExpandableArrayBuffer(512);
-        seq.sequenceMessage(buf, 0, encodeIngressGateway(buf, 0, 5, SOURCE_ID, "GW-A", 0), SESSION_ID, TIMESTAMP);
-        seq.sequenceMessage(buf, 0, encodeIngressGateway(buf, 0, 6, SOURCE_ID, "GW-B", 1), SESSION_ID, TIMESTAMP);
+        seq.sequenceMessage(buf, 0, encodeIngressGatewayRegistered(buf, 0, 5, SOURCE_ID, "GW-A", 0, 1), SESSION_ID,
+                            TIMESTAMP);
+        seq.sequenceMessage(buf, 0, encodeIngressGatewayRegistered(buf, 0, 6, SOURCE_ID, "GW-B", 1, 0), SESSION_ID,
+                            TIMESTAMP);
 
         final long gatewaySession = 0xA11CEL;
         seq.sequenceMessage(buf, 0, encodeIngressGatewayStarted(buf, 0, 5), gatewaySession, TIMESTAMP);
@@ -570,7 +584,8 @@ class SequencerTest {
         // and naming the sourceId (as this used to) would activate everyone.
         final Sequencer seq = new Sequencer();
         final MutableDirectBuffer buf = new ExpandableArrayBuffer(512);
-        seq.sequenceMessage(buf, 0, encodeIngressGateway(buf, 0, 5, SOURCE_ID, "GW-A", 0), SESSION_ID, TIMESTAMP);
+        seq.sequenceMessage(buf, 0, encodeIngressGatewayRegistered(buf, 0, 5, SOURCE_ID, "GW-A", 0, 0), SESSION_ID,
+                            TIMESTAMP);
 
         final long gatewaySession = 0xA11CEL;
         seq.sequenceMessage(buf, 0, encodeIngressGatewayStarted(buf, 0, 5), gatewaySession, TIMESTAMP);
@@ -594,9 +609,10 @@ class SequencerTest {
         assertEquals(Sequencer.NO_FRAME, seq.pendingGatewayActivationTimeout(TIMESTAMP),
                      "nothing designated ⇒ no deadline to miss");
 
-        seq.sequenceMessage(buf, 0, encodeIngressGateway(buf, 0, 5, SOURCE_ID, "GW-A", 0), SESSION_ID, TIMESTAMP);
-        seq.sequenceMessage(buf, 0, encodeIngressGateway(buf, 0, 6, SOURCE_ID, "GW-B", 1), SESSION_ID, TIMESTAMP);
-        seq.sequenceMessage(buf, 0, encodeIngressEndBasicData(buf, 0), SESSION_ID, TIMESTAMP);
+        seq.sequenceMessage(buf, 0, encodeIngressGatewayRegistered(buf, 0, 5, SOURCE_ID, "GW-A", 0, 1), SESSION_ID,
+                            TIMESTAMP);
+        seq.sequenceMessage(buf, 0, encodeIngressGatewayRegistered(buf, 0, 6, SOURCE_ID, "GW-B", 1, 0), SESSION_ID,
+                            TIMESTAMP);
         assertNotEquals(Sequencer.NO_FRAME, seq.pendingGatewayBootstrapActivation(TIMESTAMP)); // designates 5
 
         final long deadline = TIMESTAMP + Sequencer.GATEWAY_ACTIVATION_TIMEOUT_MS;
@@ -606,7 +622,7 @@ class SequencerTest {
         final int handover = seq.pendingGatewayActivationTimeout(deadline);
         assertNotEquals(Sequencer.NO_FRAME, handover);
         assertEquals(6, decodeGatewayActive(seq.buffer(), handover).gatewayId());
-        assertEquals(5L, seq.globalSeqNo()); // 2 rows + EndBasicData + bootstrap + this
+        assertEquals(4L, seq.globalSeqNo()); // 2 roster rows + bootstrap + this
     }
 
     @Test
@@ -614,9 +630,10 @@ class SequencerTest {
     void designatedPrimaryThatStartedIsNotHandedOver() {
         final Sequencer seq = new Sequencer();
         final MutableDirectBuffer buf = new ExpandableArrayBuffer(512);
-        seq.sequenceMessage(buf, 0, encodeIngressGateway(buf, 0, 5, SOURCE_ID, "GW-A", 0), SESSION_ID, TIMESTAMP);
-        seq.sequenceMessage(buf, 0, encodeIngressGateway(buf, 0, 6, SOURCE_ID, "GW-B", 1), SESSION_ID, TIMESTAMP);
-        seq.sequenceMessage(buf, 0, encodeIngressEndBasicData(buf, 0), SESSION_ID, TIMESTAMP);
+        seq.sequenceMessage(buf, 0, encodeIngressGatewayRegistered(buf, 0, 5, SOURCE_ID, "GW-A", 0, 1), SESSION_ID,
+                            TIMESTAMP);
+        seq.sequenceMessage(buf, 0, encodeIngressGatewayRegistered(buf, 0, 6, SOURCE_ID, "GW-B", 1, 0), SESSION_ID,
+                            TIMESTAMP);
         seq.pendingGatewayBootstrapActivation(TIMESTAMP);
 
         final long gatewaySession = 0xA11CEL;
@@ -638,9 +655,10 @@ class SequencerTest {
         // whichever the cluster happened to designate before they all went away.
         final Sequencer seq = new Sequencer();
         final MutableDirectBuffer buf = new ExpandableArrayBuffer(512);
-        seq.sequenceMessage(buf, 0, encodeIngressGateway(buf, 0, 5, SOURCE_ID, "GW-A", 0), SESSION_ID, TIMESTAMP);
-        seq.sequenceMessage(buf, 0, encodeIngressGateway(buf, 0, 6, SOURCE_ID, "GW-B", 1), SESSION_ID, TIMESTAMP);
-        seq.sequenceMessage(buf, 0, encodeIngressEndBasicData(buf, 0), SESSION_ID, TIMESTAMP);
+        seq.sequenceMessage(buf, 0, encodeIngressGatewayRegistered(buf, 0, 5, SOURCE_ID, "GW-A", 0, 1), SESSION_ID,
+                            TIMESTAMP);
+        seq.sequenceMessage(buf, 0, encodeIngressGatewayRegistered(buf, 0, 6, SOURCE_ID, "GW-B", 1, 0), SESSION_ID,
+                            TIMESTAMP);
         seq.pendingGatewayBootstrapActivation(TIMESTAMP);
 
         final long first = TIMESTAMP + Sequencer.GATEWAY_ACTIVATION_TIMEOUT_MS;
@@ -659,8 +677,8 @@ class SequencerTest {
     void unansweredActivationWithNoSiblingFailsClosed() {
         final Sequencer seq = new Sequencer();
         final MutableDirectBuffer buf = new ExpandableArrayBuffer(512);
-        seq.sequenceMessage(buf, 0, encodeIngressGateway(buf, 0, 5, SOURCE_ID, "GW-A", 0), SESSION_ID, TIMESTAMP);
-        seq.sequenceMessage(buf, 0, encodeIngressEndBasicData(buf, 0), SESSION_ID, TIMESTAMP);
+        seq.sequenceMessage(buf, 0, encodeIngressGatewayRegistered(buf, 0, 5, SOURCE_ID, "GW-A", 0, 0), SESSION_ID,
+                            TIMESTAMP);
         seq.pendingGatewayBootstrapActivation(TIMESTAMP);
         final long globalSeqNo = seq.globalSeqNo();
 
@@ -678,8 +696,10 @@ class SequencerTest {
     void promotionOnSessionCloseArmsTheDeadline() {
         final Sequencer seq = new Sequencer();
         final MutableDirectBuffer buf = new ExpandableArrayBuffer(512);
-        seq.sequenceMessage(buf, 0, encodeIngressGateway(buf, 0, 5, SOURCE_ID, "GW-A", 0), SESSION_ID, TIMESTAMP);
-        seq.sequenceMessage(buf, 0, encodeIngressGateway(buf, 0, 6, SOURCE_ID, "GW-B", 1), SESSION_ID, TIMESTAMP);
+        seq.sequenceMessage(buf, 0, encodeIngressGatewayRegistered(buf, 0, 5, SOURCE_ID, "GW-A", 0, 1), SESSION_ID,
+                            TIMESTAMP);
+        seq.sequenceMessage(buf, 0, encodeIngressGatewayRegistered(buf, 0, 6, SOURCE_ID, "GW-B", 1, 0), SESSION_ID,
+                            TIMESTAMP);
 
         final long gatewaySession = 0xA11CEL;
         seq.sequenceMessage(buf, 0, encodeIngressGatewayStarted(buf, 0, 5), gatewaySession, TIMESTAMP);
@@ -697,8 +717,10 @@ class SequencerTest {
     void unknownGatewayInstancePromotesNothing() {
         final Sequencer seq = new Sequencer();
         final MutableDirectBuffer buf = new ExpandableArrayBuffer(512);
-        seq.sequenceMessage(buf, 0, encodeIngressGateway(buf, 0, 5, SOURCE_ID, "GW-A", 0), SESSION_ID, TIMESTAMP);
-        seq.sequenceMessage(buf, 0, encodeIngressGateway(buf, 0, 6, SOURCE_ID, "GW-B", 1), SESSION_ID, TIMESTAMP);
+        seq.sequenceMessage(buf, 0, encodeIngressGatewayRegistered(buf, 0, 5, SOURCE_ID, "GW-A", 0, 1), SESSION_ID,
+                            TIMESTAMP);
+        seq.sequenceMessage(buf, 0, encodeIngressGatewayRegistered(buf, 0, 6, SOURCE_ID, "GW-B", 1, 0), SESSION_ID,
+                            TIMESTAMP);
 
         final long rogueSession = 0xC0FFEEL;
         seq.sequenceMessage(buf, 0, encodeIngressGatewayStarted(buf, 0, 99), rogueSession, TIMESTAMP);
@@ -718,23 +740,22 @@ class SequencerTest {
     void bootstrapActivatesEveryLogicalGatewaysPrimary() {
         final Sequencer seq = new Sequencer();
         final MutableDirectBuffer buf = new ExpandableArrayBuffer(512);
-        loadTwoPairs(seq, buf);
+        final int endLength = loadTwoPairs(seq, buf);
 
-        final int endLength = seq.sequenceMessage(buf, 0, encodeIngressEndBasicData(buf, 0), SESSION_ID, TIMESTAMP);
-        assertEquals(5L, globalSeqNoOf(seq, endLength)); // 4 Gateway rows + EndBasicData
+        assertEquals(4L, globalSeqNoOf(seq, endLength)); // 4 roster rows
 
-        // One frame per call, in Gateway-row order, on consecutive globalSeqNos — the adapter drains it.
+        // One frame per call, in roster order, on consecutive globalSeqNos — the adapter drains it.
         final int first = seq.pendingGatewayBootstrapActivation(TIMESTAMP + 1);
         final GatewayActiveDecoder clientPair = decodeGatewayActive(seq.buffer(), first);
         assertEquals(5, clientPair.gatewayId());
-        assertEquals(6L, clientPair.header().globalSeqNo());
+        assertEquals(5L, clientPair.header().globalSeqNo());
 
         final int second = seq.pendingGatewayBootstrapActivation(TIMESTAMP + 1);
         final GatewayActiveDecoder exchangePair = decodeGatewayActive(seq.buffer(), second);
         // Not the client pair's standby: a second rank-0 row used to overwrite the first designation, so
         // whichever logical gateway loaded last took the only bootstrap and the other never got one.
         assertEquals(8, exchangePair.gatewayId());
-        assertEquals(7L, exchangePair.header().globalSeqNo());
+        assertEquals(6L, exchangePair.header().globalSeqNo());
 
         assertEquals(Sequencer.NO_FRAME, seq.pendingGatewayBootstrapActivation(TIMESTAMP + 1),
                      "two logical gateways, two activations");
@@ -771,7 +792,6 @@ class SequencerTest {
         final Sequencer seq = new Sequencer();
         final MutableDirectBuffer buf = new ExpandableArrayBuffer(512);
         loadTwoPairs(seq, buf);
-        seq.sequenceMessage(buf, 0, encodeIngressEndBasicData(buf, 0), SESSION_ID, TIMESTAMP);
         assertNotEquals(Sequencer.NO_FRAME, seq.pendingGatewayBootstrapActivation(TIMESTAMP)); // designates 5
         assertNotEquals(Sequencer.NO_FRAME, seq.pendingGatewayBootstrapActivation(TIMESTAMP)); // designates 8
 
@@ -791,7 +811,6 @@ class SequencerTest {
         final Sequencer seq = new Sequencer();
         final MutableDirectBuffer buf = new ExpandableArrayBuffer(512);
         loadTwoPairs(seq, buf);
-        seq.sequenceMessage(buf, 0, encodeIngressEndBasicData(buf, 0), SESSION_ID, TIMESTAMP);
         seq.pendingGatewayBootstrapActivation(TIMESTAMP); // designates 5
         seq.pendingGatewayBootstrapActivation(TIMESTAMP); // designates 8
 
@@ -805,14 +824,20 @@ class SequencerTest {
                      "the healthy pair is disarmed, not merely quiet");
     }
 
-    /** Two active/standby pairs: 5/6 under SOURCE_ID, 8/9 under EXCHANGE_SOURCE_ID, in load order. */
-    private static void loadTwoPairs(final Sequencer seq, final MutableDirectBuffer buf) {
-        seq.sequenceMessage(buf, 0, encodeIngressGateway(buf, 0, 5, SOURCE_ID, "GW-A", 0), SESSION_ID, TIMESTAMP);
-        seq.sequenceMessage(buf, 0, encodeIngressGateway(buf, 0, 6, SOURCE_ID, "GW-B", 1), SESSION_ID, TIMESTAMP);
-        seq.sequenceMessage(buf, 0, encodeIngressGateway(buf, 0, 8, EXCHANGE_SOURCE_ID, "EGW-A", 0), SESSION_ID,
+    /**
+     * Two active/standby pairs: 5/6 under SOURCE_ID, 8/9 under EXCHANGE_SOURCE_ID, in roster order.
+     * One complete roster run — remaining counts down to 0 on the last row. Returns that row's frame
+     * length, since it is the frame the bootstrap is synthesized behind.
+     */
+    private static int loadTwoPairs(final Sequencer seq, final MutableDirectBuffer buf) {
+        seq.sequenceMessage(buf, 0, encodeIngressGatewayRegistered(buf, 0, 5, SOURCE_ID, "GW-A", 0, 3), SESSION_ID,
                             TIMESTAMP);
-        seq.sequenceMessage(buf, 0, encodeIngressGateway(buf, 0, 9, EXCHANGE_SOURCE_ID, "EGW-B", 1), SESSION_ID,
+        seq.sequenceMessage(buf, 0, encodeIngressGatewayRegistered(buf, 0, 6, SOURCE_ID, "GW-B", 1, 2), SESSION_ID,
                             TIMESTAMP);
+        seq.sequenceMessage(buf, 0, encodeIngressGatewayRegistered(buf, 0, 8, EXCHANGE_SOURCE_ID, "EGW-A", 0, 1),
+                            SESSION_ID, TIMESTAMP);
+        return seq.sequenceMessage(buf, 0, encodeIngressGatewayRegistered(buf, 0, 9, EXCHANGE_SOURCE_ID, "EGW-B", 1, 0),
+                                   SESSION_ID, TIMESTAMP);
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
@@ -848,20 +873,24 @@ class SequencerTest {
         return org.limitless.phixeron.sbe.unsequenced.MessageHeaderEncoder.ENCODED_LENGTH + encoder.encodedLength();
     }
 
-    /** Encodes a schema-200 Gateway topology row, as the BasicDataServer producer would submit it. */
-    private static int encodeIngressGateway(final MutableDirectBuffer buffer, final int offset, final int gatewayId,
-                                            final int gatewaySourceId, final String gatewayName,
-                                            final int preferenceRank) {
+    /**
+     * Encodes a schema-200 roster row, as {@code clusterctl load-topology} submits it. {@code remaining}
+     * is the rows left after this one; 0 makes it the last, which is what the bootstrap fires on.
+     */
+    private static int encodeIngressGatewayRegistered(final MutableDirectBuffer buffer, final int offset,
+                                                      final int gatewayId, final int gatewaySourceId,
+                                                      final String gatewayName, final int preferenceRank,
+                                                      final int remaining) {
         final org.limitless.phixeron.sbe.unsequenced.MessageHeaderEncoder messageHeader =
             new org.limitless.phixeron.sbe.unsequenced.MessageHeaderEncoder();
-        final org.limitless.phixeron.sbe.unsequenced.BasicDataGatewayEncoder encoder =
-            new org.limitless.phixeron.sbe.unsequenced.BasicDataGatewayEncoder();
+        final org.limitless.phixeron.sbe.unsequenced.GatewayRegisteredEncoder encoder =
+            new org.limitless.phixeron.sbe.unsequenced.GatewayRegisteredEncoder();
 
         encoder.wrapAndApplyHeader(buffer, offset, messageHeader);
-        // The producer's own sourceId (not a gateway's), outside the gateway-sourceId set.
+        // The operator tool's own sourceId (not a gateway's), outside the gateway-sourceId set.
         encoder.header().sourceId(99).connectionId(-1).sessionId(-1);
-        encoder.progress().remainingSections(0).remainingItems(0);
-        encoder.gatewayId(gatewayId)
+        encoder.remaining(remaining)
+            .gatewayId(gatewayId)
             .gatewaySourceId(gatewaySourceId)
             .gatewayName(gatewayName)
             .preferenceRank((short)preferenceRank);
@@ -950,19 +979,6 @@ class SequencerTest {
         encoder.wrapAndApplyHeader(buffer, offset, messageHeader);
         encoder.header().sourceId(SOURCE_ID).connectionId(-1).sessionId(-1);
         encoder.gatewayId(gatewayId).firstConnectionId(1);
-
-        return org.limitless.phixeron.sbe.unsequenced.MessageHeaderEncoder.ENCODED_LENGTH + encoder.encodedLength();
-    }
-
-    /** Encodes a schema-200 EndBasicData (header-only), as the BasicDataServer submits it to close a load. */
-    private static int encodeIngressEndBasicData(final MutableDirectBuffer buffer, final int offset) {
-        final org.limitless.phixeron.sbe.unsequenced.MessageHeaderEncoder messageHeader =
-            new org.limitless.phixeron.sbe.unsequenced.MessageHeaderEncoder();
-        final org.limitless.phixeron.sbe.unsequenced.EndBasicDataEncoder encoder =
-            new org.limitless.phixeron.sbe.unsequenced.EndBasicDataEncoder();
-
-        encoder.wrapAndApplyHeader(buffer, offset, messageHeader);
-        encoder.header().sourceId(3).connectionId(-1).sessionId(-1); // the BasicDataServer's sourceId
 
         return org.limitless.phixeron.sbe.unsequenced.MessageHeaderEncoder.ENCODED_LENGTH + encoder.encodedLength();
     }

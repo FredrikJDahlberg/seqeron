@@ -10,6 +10,10 @@ import io.aeron.cluster.client.EgressListener;
 import io.aeron.logbuffer.FragmentHandler;
 import io.aeron.logbuffer.Header;
 import java.io.File;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.TimeUnit;
 import org.agrona.DirectBuffer;
 import org.agrona.ExpandableArrayBuffer;
@@ -19,10 +23,12 @@ import org.agrona.concurrent.status.CountersReader;
 import org.limitless.phixeron.metrics.PhixeronCounters;
 import org.limitless.phixeron.sbe.sequenced.ClusterStartedDecoder;
 import org.limitless.phixeron.sbe.sequenced.GatewayActiveDecoder;
+import org.limitless.phixeron.sbe.sequenced.GatewayRegisteredDecoder;
 import org.limitless.phixeron.sbe.sequenced.MessageHeaderDecoder;
 import org.limitless.phixeron.sbe.unsequenced.ClusterStartedEncoder;
 import org.limitless.phixeron.sbe.unsequenced.ClusterStoppedEncoder;
 import org.limitless.phixeron.sbe.unsequenced.GatewayActiveEncoder;
+import org.limitless.phixeron.sbe.unsequenced.GatewayRegisteredEncoder;
 import org.limitless.phixeron.sbe.unsequenced.MessageHeaderEncoder;
 import org.limitless.phixeron.sequencer.SequencerServer;
 import org.limitless.phixeron.sequencer.SequencerService;
@@ -58,6 +64,19 @@ import org.limitless.phixeron.sequencer.SequencerService;
  *       bootstrap/promotion activations take. Every gateway instance reacts identically regardless of
  *       which of the two publishes it: the instance whose {@code gatewayId}/{@code gatewaySourceId}
  *       matches opens its accept gate, the others stay standby.</li>
+ *   <li><b>load-topology &lt;file&gt;</b> — publishes the gateway roster: one unsequenced
+ *       {@code GatewayRegistered} per row of a {@code name,gatewayId,gatewaySourceId,preferenceRank}
+ *       CSV file, {@code remaining} counting down to 0 on the last, then waits for that last row's
+ *       sequenced echo. The roster is a deployment assertion, the same kind of act as {@code
+ *       activate}, which is why it lives here rather than riding along in the reference-data load:
+ *       it changes when you deploy, where the comp-id table and the calendar change daily (see
+ *       doc/future-arch.md §3.6). The {@code remaining == 0} row is the sequencer's completeness
+ *       edge — it synthesizes one bootstrap {@code GatewayActive} per logical gateway behind it —
+ *       so this tool, which counted the rows it read, is what authors that edge. Re-running is safe:
+ *       the sequencer de-dups rows on {@code gatewayId} and latches the bootstrap once.
+ *       <b>Run it before the reference-data load</b>: a session row whose {@code ownerSourceId} no
+ *       roster row claims is dropped by every gateway on ingest, so a load that beats the roster in
+ *       leaves the gateways with no sessions (fail closed, but a dead cluster).</li>
  *   <li><b>counters</b> — lists this node's phixeron operator counters ({@link
  *       org.limitless.phixeron.metrics.PhixeronCounters}), read directly off the co-located Aeron
  *       directory's CnC file. No cluster connection, so it works with no elected leader and is
@@ -88,6 +107,10 @@ public final class ClusterCtl {
     /** header.sourceId/connectionId for markers this tool submits: no gateway process/TCP connection. */
     private static final int NO_ID = -1;
 
+    /** Roster-row field widths, from sbe-unsequenced.xml's gatewayName type and preferenceRank uint8. */
+    private static final int GATEWAY_NAME_LENGTH = 32;
+    private static final int MAX_PREFERENCE_RANK = 255;
+
     private static final IdleStrategy IDLE = new YieldingIdleStrategy();
     private static final EgressListener NULL_EGRESS = (sessionId, timestamp, buffer, offset, length, header) -> { };
 
@@ -116,6 +139,9 @@ public final class ClusterCtl {
             break;
         case "activate":
             System.exit(activate(args));
+            break;
+        case "load-topology":
+            System.exit(loadTopology(args));
             break;
         case "counters":
             System.exit(counters());
@@ -205,6 +231,180 @@ public final class ClusterCtl {
         }
     }
 
+    /** One roster row as read from the topology file. */
+    private record TopologyRow(String gatewayName, int gatewayId, int gatewaySourceId, int preferenceRank) { }
+
+    /**
+     * Publishes the gateway roster read from {@code args[1]} — one {@code GatewayRegistered} per row,
+     * {@code remaining} counting down to 0 — and waits for the last row's sequenced echo.
+     *
+     * <p>Validated before a byte is published, because the checks are what the log cannot make for
+     * itself: the sequencer de-dups on {@code gatewayId} and elects the rank-0 row of each {@code
+     * gatewaySourceId}, so a duplicate id silently drops an instance and a missing (or second) rank-0
+     * leaves a logical gateway with no primary (or an arbitrary one). These used to be {@code
+     * static_assert}s over the hardcoded table in {@code BasicDataConstants.hpp}; a file read at load
+     * time is where they belong now.
+     */
+    private static int loadTopology(final String[] args) {
+        if (args.length < 2) {
+            System.err.println("[clusterctl] load-topology: missing <file>");
+            return 2;
+        }
+        final List<TopologyRow> rows;
+        try {
+            rows = readTopology(new File(args[1]));
+            validateTopology(rows);
+        } catch (final IOException | IllegalArgumentException ex) {
+            System.err.println("[clusterctl] load-topology: " + args[1] + ": " + ex.getMessage());
+            return 2;
+        }
+
+        try (AeronCluster cluster = connectCluster()) {
+            final long globalSeqNo = publishRosterAndAwaitEcho(cluster, rows);
+            if (globalSeqNo < 0) {
+                System.err.println("[clusterctl] load-topology: no sequenced GatewayRegistered echo within timeout");
+                return 1;
+            }
+            System.out.printf("[clusterctl] load-topology: %d gateway row(s) recorded, roster complete at "
+                              + "globalSeqNo=%d%n", rows.size(), globalSeqNo);
+            return 0;
+        } catch (final Exception ex) {
+            System.err.println("[clusterctl] load-topology: no elected leader / cluster unreachable (" +
+                               ex.getMessage() + ")");
+            return 1;
+        }
+    }
+
+    /** Reads {@code name,gatewayId,gatewaySourceId,preferenceRank} rows; blank lines and {@code #} skipped. */
+    private static List<TopologyRow> readTopology(final File file) throws IOException {
+        final List<TopologyRow> rows = new ArrayList<>();
+        int lineNo = 0;
+        for (final String raw : Files.readAllLines(file.toPath())) {
+            lineNo++;
+            final String line = raw.trim();
+            if (line.isEmpty() || line.charAt(0) == '#') {
+                continue;
+            }
+            final String[] fields = line.split(",");
+            if (fields.length != 4) {
+                throw new IllegalArgumentException(
+                    "line " + lineNo + ": expected name,gatewayId,gatewaySourceId,preferenceRank, got '" + line + "'");
+            }
+            try {
+                rows.add(new TopologyRow(fields[0].trim(), Integer.parseInt(fields[1].trim()),
+                                         Integer.parseInt(fields[2].trim()), Integer.parseInt(fields[3].trim())));
+            } catch (final NumberFormatException ex) {
+                throw new IllegalArgumentException("line " + lineNo + ": " + ex.getMessage());
+            }
+        }
+        return rows;
+    }
+
+    private static void validateTopology(final List<TopologyRow> rows) {
+        if (rows.isEmpty()) {
+            throw new IllegalArgumentException("no rows — an empty roster elects nobody");
+        }
+        for (int i = 0; i < rows.size(); i++) {
+            final TopologyRow row = rows.get(i);
+            if (row.gatewayName().isEmpty() || row.gatewayName().length() > GATEWAY_NAME_LENGTH) {
+                throw new IllegalArgumentException(
+                    "gatewayName '" + row.gatewayName() + "' must be 1.." + GATEWAY_NAME_LENGTH + " chars");
+            }
+            if (row.preferenceRank() < 0 || row.preferenceRank() > MAX_PREFERENCE_RANK) {
+                throw new IllegalArgumentException(
+                    row.gatewayName() + ": preferenceRank must be 0.." + MAX_PREFERENCE_RANK);
+            }
+            for (int j = i + 1; j < rows.size(); j++) {
+                if (rows.get(j).gatewayId() == row.gatewayId()) {
+                    throw new IllegalArgumentException("duplicate gatewayId " + row.gatewayId());
+                }
+                if (rows.get(j).gatewayName().equals(row.gatewayName())) {
+                    throw new IllegalArgumentException("duplicate gatewayName '" + row.gatewayName() + "'");
+                }
+            }
+        }
+        for (final TopologyRow row : rows) {
+            int primaries = 0;
+            for (final TopologyRow other : rows) {
+                if (other.gatewaySourceId() == row.gatewaySourceId() && other.preferenceRank() == 0) {
+                    primaries++;
+                }
+            }
+            if (primaries != 1) {
+                throw new IllegalArgumentException("gatewaySourceId " + row.gatewaySourceId() + " has " + primaries +
+                                                   " preferenceRank-0 row(s), needs exactly 1");
+            }
+        }
+    }
+
+    /**
+     * Offers every roster row to cluster ingress, then reads this node's co-located tap for the sequenced
+     * echo of the last one. Returns its globalSeqNo, or -1 on timeout. Matched on the last row's {@code
+     * gatewayId}: that is the row the sequencer bootstraps behind, so its echo is exactly the "roster is
+     * in the log" edge the caller is waiting for.
+     */
+    private static long publishRosterAndAwaitEcho(final AeronCluster cluster, final List<TopologyRow> rows) {
+        final Subscription tap = awaitTap(cluster);
+        if (tap == null) {
+            return -1;
+        }
+
+        final ExpandableArrayBuffer buffer = new ExpandableArrayBuffer(128);
+        final GatewayRegisteredEncoder encoder = new GatewayRegisteredEncoder();
+        for (int i = 0; i < rows.size(); i++) {
+            final TopologyRow row = rows.get(i);
+            encoder.wrapAndApplyHeader(buffer, 0, new MessageHeaderEncoder());
+            encoder.header().sourceId(NO_ID).connectionId(NO_ID).sessionId(NO_ID);
+            encoder.remaining(rows.size() - 1 - i)
+                   .gatewayId(row.gatewayId())
+                   .gatewaySourceId(row.gatewaySourceId())
+                   .gatewayName(row.gatewayName())
+                   .preferenceRank((short)row.preferenceRank());
+            offer(cluster, buffer, MessageHeaderEncoder.ENCODED_LENGTH + encoder.encodedLength());
+        }
+
+        final RosterEchoHandler handler = new RosterEchoHandler(rows.get(rows.size() - 1).gatewayId());
+        final FragmentAssembler assembler = new FragmentAssembler(handler);
+        final long deadline = System.nanoTime() + ECHO_TIMEOUT_NS;
+        while (!handler.found && System.nanoTime() < deadline) {
+            final int fragments = tap.poll(assembler, 10);
+            cluster.pollEgress();
+            IDLE.idle(fragments);
+        }
+        return handler.found ? handler.globalSeqNo : -1;
+    }
+
+    /** Matches the sequenced echo of the roster's last row by gatewayId. */
+    private static final class RosterEchoHandler implements FragmentHandler {
+        private final int gatewayId;
+        private final MessageHeaderDecoder messageHeader = new MessageHeaderDecoder();
+        private final GatewayRegisteredDecoder decoder = new GatewayRegisteredDecoder();
+        private boolean found;
+        private long globalSeqNo;
+
+        RosterEchoHandler(final int gatewayId) {
+            this.gatewayId = gatewayId;
+        }
+
+        @Override
+        public void onFragment(final DirectBuffer buffer, final int offset, final int length, final Header header) {
+            if (found) {
+                return;
+            }
+            messageHeader.wrap(buffer, offset);
+            if (messageHeader.schemaId() != GatewayRegisteredDecoder.SCHEMA_ID ||
+                messageHeader.templateId() != GatewayRegisteredDecoder.TEMPLATE_ID) {
+                return;
+            }
+            decoder.wrap(buffer, offset + MessageHeaderDecoder.ENCODED_LENGTH, messageHeader.blockLength(),
+                         messageHeader.version());
+            if (decoder.gatewayId() == gatewayId && decoder.remaining() == 0) {
+                globalSeqNo = decoder.header().globalSeqNo();
+                found = true;
+            }
+        }
+    }
+
     /**
      * Publishes an unsequenced {@code GatewayActive(gatewayId)} marker, then reads this node's
      * co-located tap for the matching sequenced echo. Returns the assigned globalSeqNo, or -1 on
@@ -213,17 +413,9 @@ public final class ClusterCtl {
      * match on (it carries only {@code gatewayId}), so it matches the echo by {@code gatewayId} instead.
      */
     private static long publishGatewayActiveAndAwaitEcho(final AeronCluster cluster, final int gatewayId) {
-        final Subscription tap = cluster.context().aeron().addSubscription(SequencerService.FEEDER_CHANNEL,
-                                                                           SequencerService.FEEDER_STREAM_ID);
-        final long connectDeadline = System.nanoTime() + CONNECT_TIMEOUT_NS;
-        while (!tap.isConnected()) {
-            if (System.nanoTime() >= connectDeadline) {
-                System.err.printf("[clusterctl] tap (aeron:ipc/%d) not available — co-located with a SequencerServer?%n",
-                                  SequencerService.FEEDER_STREAM_ID);
-                return -1;
-            }
-            cluster.pollEgress();
-            IDLE.idle();
+        final Subscription tap = awaitTap(cluster);
+        if (tap == null) {
+            return -1;
         }
 
         final ExpandableArrayBuffer buffer = new ExpandableArrayBuffer(64);
@@ -331,17 +523,9 @@ public final class ClusterCtl {
      */
     private static long publishMarkerAndAwaitEcho(final AeronCluster cluster, final int templateId,
                                                   final long correlationId) {
-        final Subscription tap = cluster.context().aeron().addSubscription(SequencerService.FEEDER_CHANNEL,
-            SequencerService.FEEDER_STREAM_ID);
-        final long connectDeadline = System.nanoTime() + CONNECT_TIMEOUT_NS;
-        while (!tap.isConnected()) {
-            if (System.nanoTime() >= connectDeadline) {
-                System.err.printf("[clusterctl] tap (aeron:ipc/%d) not available — co-located with a SequencerServer?%n",
-                                  SequencerService.FEEDER_STREAM_ID);
-                return -1;
-            }
-            cluster.pollEgress();
-            IDLE.idle();
+        final Subscription tap = awaitTap(cluster);
+        if (tap == null) {
+            return -1;
         }
 
         final ExpandableArrayBuffer buffer = new ExpandableArrayBuffer(64);
@@ -373,6 +557,26 @@ public final class ClusterCtl {
         encoder.header().sourceId(NO_ID).connectionId(NO_ID).sessionId(NO_ID);
         encoder.correlationId(correlationId);
         return MessageHeaderEncoder.ENCODED_LENGTH + encoder.encodedLength();
+    }
+
+    /**
+     * Subscribes to this node's co-located tap and waits for it to connect, which is where every
+     * await-my-own-echo path starts. Returns null (having said why) if it never does.
+     */
+    private static Subscription awaitTap(final AeronCluster cluster) {
+        final Subscription tap = cluster.context().aeron().addSubscription(SequencerService.FEEDER_CHANNEL,
+                                                                          SequencerService.FEEDER_STREAM_ID);
+        final long connectDeadline = System.nanoTime() + CONNECT_TIMEOUT_NS;
+        while (!tap.isConnected()) {
+            if (System.nanoTime() >= connectDeadline) {
+                System.err.printf("[clusterctl] tap (aeron:ipc/%d) not available — co-located with a SequencerServer?%n",
+                                  SequencerService.FEEDER_STREAM_ID);
+                return null;
+            }
+            cluster.pollEgress();
+            IDLE.idle();
+        }
+        return tap;
     }
 
     private static void offer(final AeronCluster cluster, final DirectBuffer buffer, final int length) {
@@ -438,6 +642,10 @@ public final class ClusterCtl {
               activate <gatewayId>
                            manual standby promotion; publishes GatewayActive(gatewayId) and
                            waits for its sequenced echo (requires an elected leader)
+              load-topology <file>
+                           publish the gateway roster from a CSV file
+                           (name,gatewayId,gatewaySourceId,preferenceRank); run once per
+                           cluster lifetime, BEFORE the reference-data load
               counters     list this node's phixeron operator counters (SequencerService/
                            ReplayerService); no cluster connection needed, safe on every node
               snapshot     this operation is not supported

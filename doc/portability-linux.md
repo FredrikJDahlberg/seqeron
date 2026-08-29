@@ -140,7 +140,7 @@ mode.
 | Site | |
 |---|---|
 | `src/main/scripts/start-cluster.sh:54,60` | `AERON_DIR`, `SEQ_AERON_DIR` |
-| `src/main/scripts/start-three-node-cluster.sh:86,91,264` | `AERON_DIR`, `SEQ_AERON_DIR`, per-member `MDIR` |
+| `src/test/scripts/start-three-node-cluster.sh:86,91,264` | `AERON_DIR`, `SEQ_AERON_DIR`, per-member `MDIR` |
 | `src/test/scripts/{chaos-runner,failover-test,gap-recovery-test,replayer-restart-test,replay-bench}.sh` | base dirs and per-member Aeron dirs |
 
 RHEL leaves `TMPDIR` unset in a normal login shell. Every one of these scripts runs `set -euo

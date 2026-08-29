@@ -19,7 +19,8 @@
 #   safety-oracle/tap-drop-target OrderExecServer consumer (PHIXERON_FAULT_INJECTION=1) and the primary FIX
 #   gateway GW-A (port 9000); member 1 (STANDBY_MEMBER) additionally hosts the hot-standby gateway GW-B
 #   (port 9001), the same active/standby pair gateway-failover-test.sh drives — sharing gatewaySourceId 0
-#   per BasicDataConstants.hpp, so a real promotion (not a dead end) happens whichever one dies. All three
+#   per src/test/resources/topology-gw.csv — the roster this run loads, naming only the pair it starts, so no
+#   absent gateway is designated and handed over every 5s for the length of the run. All three
 #   members are legal fault targets; restart_colocated_apps brings each member's co-located apps (gateway
 #   and/or consumer included) back up in place. active_gateway_port tracks which of GW-A/GW-B is currently
 #   serving, for the probe and the background load to target. LEADER_CHANGES controls the round count for a
@@ -208,6 +209,15 @@ wait_running 1 && wait_running 2 || { echo "members 1/2 not up"; exit 1; }
 wait_for_leader >/dev/null || { echo "no initial leader among 1/2"; exit 1; }
 start_seq 0; wait_running 0 || { echo "member 0 not up"; exit 1; }
 
+# The gateway roster, ahead of everything that reads it (doc/future-arch.md §3.6): a deployment
+# assertion an operator publishes through clusterctl, not part of the reference-data load. Before the
+# BasicDataServer replicas below, or a gateway with no resolved gatewaySourceId drops every session row.
+CLUSTERCTL_AERON_DIR="${TMP_DIR}/phixeron-seq-aeron-0" \
+  CLUSTERCTL_INGRESS_ENDPOINTS="$(ingress_endpoints_string 3)" \
+  "${SCRIPT_DIR}/../../main/scripts/clusterctl.sh" load-topology src/test/resources/topology-gw.csv \
+  > "$LOG_DIR/clusterctl-load-topology.log" 2>&1 \
+  || { echo "clusterctl load-topology failed — see $LOG_DIR/clusterctl-load-topology.log"; exit 1; }
+
 AERON_DIR="$AERON_DIR" "$AERONMD" > "$LOG_DIR/aeronmd.log" 2>&1 & MD_PID=$!
 W=0; until [[ -f "$AERON_DIR/cnc.dat" ]]; do sleep 0.2; W=$((W+1)); ((W>25)) && { echo "media driver not up"; exit 1; }; done
 
@@ -220,7 +230,7 @@ for m in 0 1 2; do W=0; until grep -q "serving replay" "$LOG_DIR/replayer-$m.log
 
 # BasicDataServer replica on every node (see start-three-node-cluster.sh): dual-role, producer on
 # whichever member is leader, consumer elsewhere. Without one running on every node, no member ever
-# publishes the Gateway/Session/TradingDay rows the gateway needs — EndBasicData never arrives, the
+# publishes the Session/TradingDay rows the gateway needs — EndBasicData never arrives, the
 # gateway's accept gate never opens (m_basicDataLoaded stays false), and every Logon just queues in the
 # TCP backlog until the client times out. One per node so a leader failover always has a local producer.
 for m in 0 1 2; do

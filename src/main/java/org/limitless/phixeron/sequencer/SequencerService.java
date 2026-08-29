@@ -424,7 +424,7 @@ public final class SequencerService implements ClusteredService {
         } else {
             rejectedIngressCounter.increment();
         }
-        // The first EndBasicData opens the trading day: the cluster designates the primary of each
+        // The roster's last row opens the trading day: the cluster designates the primary of each
         // logical gateway by synthesizing a bootstrap GatewayActive right behind it, one per pair on
         // consecutive globalSeqNos. Drained rather than taken once — and each frame is emitted before the
         // next is asked for, because they all encode into the sequencer's one buffer.

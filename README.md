@@ -63,7 +63,7 @@ replica is dropped and heals by replay rather than back-pressuring the cluster.
   `MessageHeader` and the shared `header` composite; everything past that is copied through as
   opaque bytes, because `sbe-sequenced.xml` (schema 202) is kept field-for-field identical to
   `sbe-unsequenced.xml` (schema 200) past `header`. The one bounded exception is the
-  `BasicDataGateway` topology row.
+  `GatewayRegistered` roster row.
 - **The log holds the authoritative state, and every decision consumers must agree on is
   emitted rather than inferred.** FIX session state is driven only by cluster-replicated
   callbacks, never straight off the TCP receive path; connects/disconnects, refusals, order
@@ -134,21 +134,24 @@ filter them out with `ctest --output-on-failure -E "_NOT_BUILT"`.
 ## Scripts
 
 Cluster start/stop and utility scripts live under `src/main/scripts/` — these only start and stop the
-cluster (or are standalone tools); they run no tests:
+cluster (or are standalone tools); they run no tests. `start-three-node-cluster.sh` is the exception
+that moved: it stands up a cluster for the harnesses below and nothing deploys from it, so it lives
+with them:
 
 | Script | Purpose |
 |--------|---------|
 | `start-cluster.sh [debug\|release]` | Start the single-node cluster (`SequencerServer`, `aeronmd`, `FixGateway`, `ReplayerServer`, `OrderExecServer`) in the background; Ctrl-C stops all of them |
-| `start-three-node-cluster.sh [debug\|release]` | Start a local 3-node Raft cluster with a `FixGateway` and a per-node `ReplayerServer` + `OrderExecServer` replica; blocks until Ctrl-C, then stops all of them |
 | `stop-cluster.sh` | Stop all cluster processes started by either start script |
 | `sbe-log-printer.sh <archive-dir>` | Dump an Aeron Archive recording as JSON (see [Log printer](#log-printer)) |
 | `purgelog.sh [--force]` | Delete archive/cluster directories under `$TMPDIR/phixeron-seq` and the `logs/` directory; cluster must be stopped first |
 
-Test scripts live under `src/test/scripts/` — each brings the cluster up via the start scripts above
-and tears it down via `stop-cluster.sh` (run them from the repository root):
+Test scripts live under `src/test/scripts/` — each brings the cluster up (via `start-cluster.sh`
+above or the sibling `start-three-node-cluster.sh`) and tears it down via `stop-cluster.sh` (run them
+from the repository root):
 
 | Script | Purpose |
 |--------|---------|
+| `start-three-node-cluster.sh [debug\|release]` | Start a local 3-node Raft cluster with a `FixGateway` and a per-node `ReplayerServer` + `OrderExecServer` replica; blocks until Ctrl-C, then stops all of them |
 | `three-node-e2e-test.sh [debug\|release]` | Start the 3-node cluster, run `fix_test_server` against it once, then tear everything down and exit with its pass/fail status (set `PHIXERON_FLOOD_ORDERS=<N>` for the delivery-latency-under-load run) |
 | `fix-test-server.sh [debug\|release] [host [port]]` | Run a single FIX session (Logon → Heartbeat → NewOrderSingle → Logout) against a live `FixGateway` |
 | `failover-test.sh` | Force a failover, then cold-start a fresh `OrderExecServer` on the new leader and verify it catches up on full history (each node's tap recording is one continuous run spanning both tenures) |

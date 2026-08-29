@@ -52,6 +52,8 @@ clusterctl.sh describe …        # → ClusterTool passthrough
 clusterctl.sh start          record a "system started" marker (precondition: elected leader)
 clusterctl.sh shutdown       orderly stop; run on every node, no-op on followers
 clusterctl.sh activate <id>  manual standby promotion (precondition: elected leader)
+clusterctl.sh load-topology <file>
+                             publish the gateway roster (precondition: elected leader)
 clusterctl.sh counters       list this node's phixeron operator counters; no cluster connection
                              needed, safe on every node
 clusterctl.sh help           list commands and exit
@@ -122,11 +124,44 @@ same as `start`; with no elected leader the ingress connect times out and the co
 same failure shape as `start`.
 
 `GatewayActive` needs no sequencer-side special-casing to support this second publisher —
-`Sequencer.sequenceMessage` copies it through like any other message (only `BasicDataGateway` and
-`EndBasicData` are special-cased, to derive topology and trigger the bootstrap activation). Every
+`Sequencer.sequenceMessage` copies it through like any other message (only `GatewayRegistered` is
+special-cased, to derive topology and — at `remaining == 0` — trigger the bootstrap activation). Every
 gateway instance reacts identically regardless of which of the two publishers (the sequencer's own
 bootstrap/promotion, or this command) sent it: the instance whose `gatewayId`/`gatewaySourceId`
 matches opens its accept gate, the others stay standby (or close, if previously active).
+
+### load-topology
+
+Publishes the **gateway roster**: one unsequenced `GatewayRegistered` per row of a flat
+`name,gatewayId,gatewaySourceId,preferenceRank` CSV file (`src/main/resources/topology.csv`; blank
+lines and `#` comments skipped), `remaining` counting down to 0 on the last, then waits for that last
+row's sequenced echo on the local tap. Same connect/publish/await-echo shape as `activate`, and the
+same failure mode with no elected leader.
+
+The roster is a **deployment assertion**, the same kind of act as `activate` — which is why it is
+here rather than riding along in `BasicDataServer`'s reference-data load. It changes when you deploy;
+the comp-id table and the trading-day calendar change daily (`doc/future-arch.md` §3.6). Keeping it
+out of the load is also what lets the cluster tier decode no reference data at all: the `remaining ==
+0` row is the sequencer's completeness edge, and it synthesizes one bootstrap `GatewayActive` per
+logical gateway behind it.
+
+Validated before a byte is published — unique `gatewayId`, unique `gatewayName`, exactly one rank-0
+row per `gatewaySourceId` — because the log cannot make those checks for itself: a duplicate id
+silently drops an instance, and a missing or second rank-0 leaves a logical gateway with no primary
+or an arbitrary one. These used to be `static_assert`s over the hardcoded table in
+`BasicDataConstants.hpp`.
+
+**Run it before the reference-data load**, once per cluster lifetime: `start` → `load-topology` →
+the reference-data load. A load that gets in first produces session rows whose `ownerSourceId` no
+roster row claims, and every gateway drops them on ingest — fail closed, but a cluster that serves
+nobody. Re-running is safe: the sequencer de-dups rows on `gatewayId` and latches the bootstrap once.
+
+**Roster only what the deployment runs.** A rostered pair that no process starts is designated, times
+out after `GATEWAY_ACTIVATION_TIMEOUT_MS`, hands the role to its standby, and times out again — one
+`GatewayActive` frame every 5s for as long as the cluster is up, in a log recovery replays in full.
+`topology.csv` is the full three-pair deployment; the harnesses load the pair each one actually starts
+(`src/test/resources/topology-{gw,egw,ogw}.csv`), which is why a `load-topology` argument is
+a file rather than a constant.
 
 ### counters
 

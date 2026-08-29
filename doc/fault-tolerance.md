@@ -183,9 +183,9 @@ Two ways a `GatewayActive` is produced:
   special-casing — and waits for its sequenced echo, matched by `gatewayId`
   (`ClusterCtl.java:194-291`). This is the operator's lever for a planned failover.
 
-A **bootstrap** activation also runs once per trading day: the first `EndBasicData` (the completion
-marker of a reference-data load, §5) triggers `Sequencer.pendingGatewayBootstrapActivation`, which
-names the rank-0 (`preferenceRank == 0`) Gateway row — so exactly one instance opens its accept gate at
+A **bootstrap** activation also runs once per cluster lifetime: the first complete roster — the
+`GatewayRegistered` row carrying `remaining == 0`, published by `clusterctl load-topology` — triggers
+`Sequencer.pendingGatewayBootstrapActivation`, which names the rank-0 (`preferenceRank == 0`) roster row — so exactly one instance opens its accept gate at
 cold start and every sibling waits as a hot standby (`Sequencer.java:409-427`). A bootstrap with no
 rank-0 row produces no frame — fail closed rather than guess.
 

@@ -27,6 +27,17 @@ cluster_members_string() {
     echo "${out}"
 }
 
+# Builds the ingressEndpoints string clusterctl takes (CLUSTERCTL_INGRESS_ENDPOINTS) for a
+# nodeCount-member cluster: "0=host:9302,1=host:9312,…". Usage: ingress_endpoints_string 3 [host]
+ingress_endpoints_string() {
+    local node_count="$1" host="${2:-localhost}" out="" id
+    for (( id = 0; id < node_count; id++ )); do
+        [[ -n "${out}" ]] && out+=","
+        out+="${id}=${host}:$(ingress_port "${id}")"
+    done
+    echo "${out}"
+}
+
 # ── Satellite ports — one dedicated base per client role, deliberately outside the cluster's
 #    own 9300-9325 (3-node) block; offset by memberId for a role with one co-located replica
 #    per node. Must match PortLayout.hpp (C++) / SequencerServer.java. ─────────────────────────

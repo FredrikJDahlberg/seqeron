@@ -462,21 +462,31 @@ Like the venue leg's, the e2e purges Artio's log dirs — the gateways' and the 
 
 ### Reference-data gateway — `BasicDataServer` / `Gateways` (C++, under `src/main/cpp/.../basicdata/`)
 Dual-role per-node process (`doc/basicdata-design.md`): on the **leader** it's a producer — reads
-static reference data (FIX session comp-id pairs, gateway topology, the trading-day calendar;
-currently hardcoded in `BasicDataConstants.hpp`, standing in for a real DB read) and publishes it as
+static reference data (FIX session comp-id pairs and the trading-day calendar; currently hardcoded in
+`BasicDataConstants.hpp`, standing in for a real DB read) and publishes it as
 ordinary sequenced `BasicData*` messages, an external-input adapter exactly like the FIX gateway is
 for TCP. On **every node** it's a consumer — follows the co-located tap (like `OrderExecServer`
 tracks positions) to build an identical in-memory reference-data view, giving reference data the
 same node-loss fault tolerance as business state.
 
-A load is a bracketed, fixed-order run: `StartBasicData(sectionCount=3)` → Gateway rows → session
-rows → TradingDay rows → `EndBasicData`, each section's `remainingItems` counting down to 0 — the
-completion contract that makes an interrupted load detectable and resumable (recovery replays the
-same code path as first load, resuming at the first incomplete section). Gateways load first so a
-gateway resolves its own `{gatewayId, gatewaySourceId}` (`Gateways::resolve`, keyed on the
-launch-time `PHIXERON_FIX_GATEWAY_NAME`) before session rows arrive, letting it drop, on ingest,
-every session a different logical gateway owns. `resolve()` returns `nullopt` on no match — callers
-must fail closed rather than default to sourceId 0.
+A load is a bracketed, fixed-order run: `StartBasicData(sectionCount=2)` → session rows → TradingDay
+rows → `EndBasicData`, each section's `remainingItems` counting down to 0 — the completion contract
+that makes an interrupted load detectable and resumable (recovery replays the same code path as first
+load, resuming at the first incomplete section).
+
+**The gateway roster is not part of this load and not reference data.** `clusterctl load-topology
+src/main/resources/topology.csv` publishes it as `GatewayRegistered` frames — a deployment assertion
+an operator makes, the same kind of act as `activate` (`doc/basicdata-design.md` §2,
+`doc/future-arch.md` §3.5/§3.6). Its `remaining` counts down to 0 on the last row, and that row is
+the sequencer's completeness edge: it synthesizes the bootstrap `GatewayActive` per logical gateway
+behind it. The cluster tier therefore decodes **no** reference data at all.
+
+Run it **before** the reference-data load, once per cluster lifetime. A gateway resolves its own
+`{gatewayId, gatewaySourceId}` from the roster (`Gateways::resolve`, keyed on the launch-time
+`PHIXERON_FIX_GATEWAY_NAME`), and until it has, it drops every session row — the same ingest filter
+that drops another logical gateway's rows, and the designed fail-closed answer to a load that beat
+the roster in. `resolve()` returns `nullopt` on no match — callers must fail closed rather than
+default to sourceId 0.
 
 This is also where FIX session identity comes from at runtime: CompIDs are never hardcoded per
 process — the gateway starts with none and resolves them from the BasicData SessionMap (ingress via
