@@ -54,9 +54,9 @@ public final class MetricsExporter {
             Map.entry(PhixeronCounters.SEQUENCER_CURRENT_LEADER_MEMBER_ID_TYPE_ID,
                       new MetricMeta("phixeron_sequencer_current_leader_member_id",
                                      "memberId of the leader last recorded by this node's Sequencer.", "gauge")),
-            Map.entry(PhixeronCounters.SEQUENCER_LAST_TICK_TIMESTAMP_TYPE_ID,
+            Map.entry(PhixeronCounters.SEQUENCER_LAST_CLUSTER_HEARTBEAT_TIMESTAMP_TYPE_ID,
                       new MetricMeta("phixeron_sequencer_last_tick_timestamp_ms",
-                                     "Consensus timestamp of the last 1Hz Tick emitted.", "gauge")),
+                                     "Consensus timestamp of the last 1Hz ClusterHeartbeat emitted.", "gauge")),
             Map.entry(
                 PhixeronCounters.SEQUENCER_GATEWAY_PROMOTION_COUNT_TYPE_ID,
                 new MetricMeta("phixeron_sequencer_gateway_promotion_total",

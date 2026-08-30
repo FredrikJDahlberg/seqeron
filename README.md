@@ -22,7 +22,7 @@ replica is dropped and heals by replay rather than back-pressuring the cluster.
 - **`SequencerServer` / `SequencerService` / `Sequencer`** (Java) — the cluster node. `Sequencer`
   is the replicated state machine proper (no Aeron dependency, unit-tested directly): it stamps
   each ingress message with a monotone `globalSeqNo` plus the Raft consensus timestamp and
-  synthesizes the frames the cluster itself owns (`Tick`, `LeadershipChanged`, `GatewayActive`).
+  synthesizes the frames the cluster itself owns (`ClusterHeartbeat`, `LeadershipChanged`, `GatewayActive`).
   `SequencerService` is its Aeron adapter and holds no replicated state of its own.
 - **`ReplayerServer` / `ReplayerService`** (Java) — one per member, co-located in that member's
   Aeron directory. The only process that reads the archive: it serves an on-demand replay
@@ -379,10 +379,10 @@ requested stream matches no recording.
 #### Output format
 
 Each message is preceded by a separator naming it — the JSON carries field values only, so a
-header-only message such as `Tick` is otherwise indistinguishable from any other:
+header-only message such as `ClusterHeartbeat` is otherwise indistinguishable from any other:
 
 ```
---- Log File Offset: 96 | Tick (templateId 16) ---
+--- Log File Offset: 96 | ClusterHeartbeat (templateId 16) ---
 ```
 
 `--oneline` (or `-Poneline`) collapses each message onto a single line, which greps and diffs far

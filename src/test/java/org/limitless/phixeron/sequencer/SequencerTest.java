@@ -18,7 +18,7 @@ import org.limitless.phixeron.sbe.sequenced.LogoutDecoder;
 import org.limitless.phixeron.sbe.sequenced.MessageHeaderDecoder;
 import org.limitless.phixeron.sbe.sequenced.NewOrderSingleDecoder;
 import org.limitless.phixeron.sbe.sequenced.Origin;
-import org.limitless.phixeron.sbe.sequenced.TickDecoder;
+import org.limitless.phixeron.sbe.sequenced.ClusterHeartbeatDecoder;
 
 /**
  * Unit tests for the sequencer's replicated state machine.
@@ -168,7 +168,7 @@ class SequencerTest {
     @Test
     @DisplayName("globalSeqNo is gap-free and monotone across every event type")
     void globalSeqNoIsGapFreeAcrossEveryEventType() {
-        // Forwarded ingress messages, clock ticks and elections all draw from the one counter; a
+        // Forwarded ingress messages, clock heartbeats and elections all draw from the one counter; a
         // consumer that sees a gap treats it as lost data and re-walks history, so this must hold for
         // every emitting path. TCP lifecycle events are ordinary forwarded ingress — the gateway
         // publishes them — so they go through sequenceMessage here, not a synthesized encoder.
@@ -179,7 +179,7 @@ class SequencerTest {
         assertEquals(1L,
                      globalSeqNoOf(sequencer.sequenceMessage(lifecycle, 0, connectedLength, SESSION_ID, TIMESTAMP)));
         assertEquals(2L, globalSeqNoOf(sequencer.sequenceMessage(ingress, 0, ingressLength, SESSION_ID, TIMESTAMP)));
-        assertEquals(3L, globalSeqNoOf(sequencer.tick(TIMESTAMP + 1000)));
+        assertEquals(3L, globalSeqNoOf(sequencer.clusterHeartbeat(TIMESTAMP + 1000)));
         assertEquals(4L, globalSeqNoOf(sequencer.leadershipChanged(2, TIMESTAMP + 1500)));
         assertEquals(5L, globalSeqNoOf(sequencer.sequenceMessage(ingress, 0, ingressLength, SESSION_ID, TIMESTAMP)));
 
@@ -314,7 +314,7 @@ class SequencerTest {
         collect(frames, target, target.leadershipChanged(0, TIMESTAMP + 1));
         for (int i = 0; i < 5; i++) {
             collect(frames, target, target.sequenceMessage(message, 0, messageLength, SESSION_ID, TIMESTAMP + i));
-            collect(frames, target, target.tick(TIMESTAMP + 1000L * i));
+            collect(frames, target, target.clusterHeartbeat(TIMESTAMP + 1000L * i));
         }
         collect(frames, target, target.leadershipChanged(0, TIMESTAMP + 9)); // suppressed
         collect(frames, target, target.leadershipChanged(1, TIMESTAMP + 10));
@@ -351,7 +351,7 @@ class SequencerTest {
     @DisplayName("TCP lifecycle frames carry the connection they describe")
     void tcpLifecycleFramesCarryTheConnectionTheyDescribe() {
         // These name an external event — a FIX client's TCP connection opening and closing — so unlike
-        // a tick or an election they have a real gateway process and connection behind them, and both
+        // a heartbeat or an election they have a real gateway process and connection behind them, and both
         // ids must survive sequencing. Without them a consumer can see that *a* session ended but not
         // which, which is the whole reason the gateway publishes these rather than the sequencer
         // synthesizing a cluster-session event under the same template ids.
@@ -392,23 +392,23 @@ class SequencerTest {
     }
 
     @Test
-    @DisplayName("tick carries the consensus timestamp and no session")
+    @DisplayName("heartbeat carries the consensus timestamp and no session")
     void tickCarriesConsensusTimestamp() {
         // The gateway's keepalive watchdog reads exactly this field to advance its session clock while
-        // a counterparty is silent, so a tick that lost its timestamp would stall every watchdog.
-        final long tickTime = TIMESTAMP + 60_000;
-        final int length = sequencer.tick(tickTime);
+        // a counterparty is silent, so a heartbeat that lost its timestamp would stall every watchdog.
+        final long heartbeatTime = TIMESTAMP + 60_000;
+        final int length = sequencer.clusterHeartbeat(heartbeatTime);
 
         final MessageHeaderDecoder messageHeader = new MessageHeaderDecoder().wrap(sequencer.buffer(), 0);
-        assertEquals(TickDecoder.TEMPLATE_ID, messageHeader.templateId());
-        final HeaderDecoder header = new TickDecoder()
+        assertEquals(ClusterHeartbeatDecoder.TEMPLATE_ID, messageHeader.templateId());
+        final HeaderDecoder header = new ClusterHeartbeatDecoder()
                                          .wrap(sequencer.buffer(), MessageHeaderDecoder.ENCODED_LENGTH,
                                                messageHeader.blockLength(), messageHeader.version())
                                          .header();
-        assertEquals(tickTime, header.timestamp());
+        assertEquals(heartbeatTime, header.timestamp());
         assertEquals(Sequencer.NO_SOURCE_ID, header.sessionId());
         assertEquals(1L, header.globalSeqNo());
-        assertEquals(MessageHeaderDecoder.ENCODED_LENGTH + TickDecoder.BLOCK_LENGTH, length);
+        assertEquals(MessageHeaderDecoder.ENCODED_LENGTH + ClusterHeartbeatDecoder.BLOCK_LENGTH, length);
     }
 
     @Test
@@ -798,7 +798,7 @@ class SequencerTest {
         final long deadline = TIMESTAMP + Sequencer.GATEWAY_ACTIVATION_TIMEOUT_MS;
         assertEquals(Sequencer.NO_FRAME, seq.pendingGatewayActivationTimeout(deadline - 1));
 
-        // Both come due on the same tick, and both are handed over — the adapter drains this too.
+        // Both come due on the same heartbeat, and both are handed over — the adapter drains this too.
         assertEquals(6, decodeGatewayActive(seq.buffer(), seq.pendingGatewayActivationTimeout(deadline)).gatewayId());
         assertEquals(9, decodeGatewayActive(seq.buffer(), seq.pendingGatewayActivationTimeout(deadline)).gatewayId());
         assertEquals(Sequencer.NO_FRAME, seq.pendingGatewayActivationTimeout(deadline),

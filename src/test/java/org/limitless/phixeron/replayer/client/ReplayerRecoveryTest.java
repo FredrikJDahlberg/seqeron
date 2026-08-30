@@ -14,7 +14,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.limitless.phixeron.replayer.server.ReplayerService;
 import org.limitless.phixeron.sbe.sequenced.Origin;
-import org.limitless.phixeron.sbe.sequenced.TickEncoder;
+import org.limitless.phixeron.sbe.sequenced.ClusterHeartbeatEncoder;
 import org.limitless.phixeron.sbe.unsequenced.ReplayingEncoder;
 
 /**
@@ -296,15 +296,17 @@ class ReplayerRecoveryTest {
 
     private static UnsafeBuffer tickFrame(final long globalSeqNo) {
         final UnsafeBuffer buffer = new UnsafeBuffer(new byte[256]);
-        final TickEncoder tick = new TickEncoder();
-        tick.wrapAndApplyHeader(buffer, 0, new org.limitless.phixeron.sbe.sequenced.MessageHeaderEncoder());
-        tick.header().sourceId(1).connectionId(0).sessionId(0).globalSeqNo(globalSeqNo).timestamp(globalSeqNo * 1000)
+        final ClusterHeartbeatEncoder heartbeat = new ClusterHeartbeatEncoder();
+        heartbeat.wrapAndApplyHeader(buffer, 0, new org.limitless.phixeron.sbe.sequenced.MessageHeaderEncoder());
+        heartbeat.header().sourceId(1).connectionId(0).sessionId(0).globalSeqNo(globalSeqNo)
+            .timestamp(globalSeqNo * 1000)
             .origin(Origin.Application);
         return buffer;
     }
 
     private static int tickLength() {
-        return org.limitless.phixeron.sbe.sequenced.MessageHeaderEncoder.ENCODED_LENGTH + TickEncoder.BLOCK_LENGTH;
+        return org.limitless.phixeron.sbe.sequenced.MessageHeaderEncoder.ENCODED_LENGTH
+            + ClusterHeartbeatEncoder.BLOCK_LENGTH;
     }
 
     private static UnsafeBuffer replayingBuffer(final long requestId, final long replaySessionId,

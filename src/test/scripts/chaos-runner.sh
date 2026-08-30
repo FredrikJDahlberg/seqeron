@@ -585,7 +585,7 @@ fault_tap_drop() {  # drop one live tap frame -> gap -> resume-at-the-hole recov
   log "FAULT tap-drop: SIGUSR1 member $T's replica (leader-co-located; arm one-frame live-tap drop)"
   kill -USR1 "$pid" 2>/dev/null || log "  WARN no live replica pid for member $T"
 }
-fault_tap_stall() {  # kill a node's local tap recording -> it must notice within a tick and TERMINATE ITSELF
+fault_tap_stall() {  # kill a node's local tap recording -> it must notice within a heartbeat and TERMINATE ITSELF
   # The one fault the node is expected to answer by dying: a node that cannot record its own tap can no
   # longer serve the history it is responsible for, so it exits non-zero (SequencerService.fatalTapFailure)
   # and is restarted, rebuilding its recording over the full-log replay. Aimed at a follower — failover is
@@ -754,13 +754,13 @@ verify_sequence() {
   local jar="build/libs/phixeron-0.1.0-uber.jar" m rc=0
   [[ -f "$jar" ]] || { log "SAFETY: skipped (no $jar — run ./gradlew uberJar)"; return 0; }
   # Quiesce first: stop the background load and let the last sequenced messages replicate to every node.
-  # That alone isn't enough for a stationary stream, though: the 1 Hz Tick (the cluster clock) keeps
+  # That alone isn't enough for a stationary stream, though: the 1 Hz ClusterHeartbeat (the cluster clock) keeps
   # advancing globalSeqNo forever by design, background load or not, and the three archives are dumped
   # sequentially (each a multi-second decode of thousands of frames) — so without freezing the cluster,
-  # a tick or two legitimately lands between reading member 0's archive and member 2's, and convergence
+  # a heartbeat or two legitimately lands between reading member 0's archive and member 2's, and convergence
   # fails on a phantom 1-frame "divergence" that's really just clock drift across a non-atomic snapshot.
   # SIGSTOP every member right before dumping: the archive is in-process, so pausing the JVM pauses the
-  # tick generator with it, giving a true stationary snapshot. Already-flushed archive files on disk are
+  # heartbeat generator with it, giving a true stationary snapshot. Already-flushed archive files on disk are
   # unaffected by a stopped process. cleanup() SIGCONTs everything before killing it, same as the
   # fault_pause_node path, so nothing is left stopped on exit.
   kill "${LOAD_PID:-}" 2>/dev/null; pkill -f fix_test_server 2>/dev/null; LOAD_PID=""

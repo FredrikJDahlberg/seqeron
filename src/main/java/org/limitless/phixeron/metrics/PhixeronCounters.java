@@ -33,8 +33,8 @@ public final class PhixeronCounters {
     /** memberId of the leader last recorded by this node's {@code Sequencer}. */
     public static final int SEQUENCER_CURRENT_LEADER_MEMBER_ID_TYPE_ID = 5004;
 
-    /** Consensus timestamp of the last 1 Hz {@code Tick} emitted. */
-    public static final int SEQUENCER_LAST_TICK_TIMESTAMP_TYPE_ID = 5005;
+    /** Consensus timestamp of the last 1 Hz {@code ClusterHeartbeat} emitted. */
+    public static final int SEQUENCER_LAST_CLUSTER_HEARTBEAT_TIMESTAMP_TYPE_ID = 5005;
 
     /** Count of standby-promotion {@code GatewayActive} frames emitted on a gateway session close. */
     public static final int SEQUENCER_GATEWAY_PROMOTION_COUNT_TYPE_ID = 5006;

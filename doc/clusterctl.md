@@ -294,7 +294,7 @@ rules stop being checks and become structure:
 | `preferenceRank` is 0..N with no duplicates | **the field is gone.** Rank is `<standby>` document order |
 | an instance carrying the wrong `gatewaySourceId` | **unrepresentable** — the instance sits inside its gateway |
 | unique `gatewayId` / `gatewayName` | `<xs:unique>` in the XSD, declarative |
-| a protocol registering `payloadId` 1 | `<xs:minInclusive value="2"/>` |
+| a protocol registering `payloadId` 1 | `<xs:minInclusive value="2"/>` — and it is the **only** enforcement of C-1 there is, since the registry does not gate and no wire check can be made in |
 
 That leaves the parser with no hand-written cross-row validation at all.
 
@@ -312,7 +312,7 @@ is avoiding.
 | --- | --- | --- |
 | `topology/@name` | names the deployment this file describes, so a roster cannot be read as generic. **Documentation only for now** — a load-time interlock ("refuse a topology whose name is not this cluster's") needs a cluster-side identity, which does not exist yet (`doc/seqeron-protocol.md` §15) | no |
 | `protocol/@name` | the protocol's identity, and what `SbeLogPrinter` labels a payload with | **yes** — `PayloadIdRegistered.protocolName` |
-| `protocol/@version` | the protocol revision this deployment asserts. A product compares it against its own compiled-in version at start-up and **refuses to start on a mismatch** | **yes** — `PayloadIdRegistered.protocolVersion` |
+| `protocol/@version` | the operator's record of which revision this deployment runs, printed beside the name. **Nothing checks it** — the interlock this section used to specify was rejected, below | **yes** — `PayloadIdRegistered.protocolVersion` |
 | `protocol/@payloadId` | the numeric the frame carries (§6.1 of the protocol spec) | **yes** |
 | `protocol/@description` | free text for the operator reading the file | no |
 | `gateway/@sourceId` | `header.sourceId` of the logical gateway | yes, per instance |
@@ -320,18 +320,26 @@ is avoiding.
 | `primary/@name`, `standby/@name` | the launch-time join key (`PHIXERON_*_GATEWAY_NAME`) | yes |
 | `primary/@id`, `standby/@id` | instance identity, what a `GatewayActive` names | yes |
 
-**`@version` is the attribute that earns the most**, and it is worth being explicit about why: it is
-a direct attack on **V-1**, which `doc/seqeron-protocol.md` calls the worst failure mode in the whole
-proposal — three repos silently disagreeing about a shared format, corrupting frames rather than
-failing to build. Asserted into the log by the operator and checked by each product against its own
-build, the skew becomes a start-up refusal on one process instead of malformed frames on every node.
-That check is a product asserting something about **its own** protocol; it does not weaken P-1–P-3,
-which are about protocols a consumer does *not* own.
+**`@version` carries no interlock, and that is a reversal.** This section specified one until
+2026-08-30 — each application comparing the asserted version against its own compiled-in constant and
+refusing to start on a mismatch — on the ground that it was a direct attack on **V-1**, the silent
+disagreement between three repos about a shared format. `doc/seqeron-protocol.md` §6.3 retired it,
+and the reason is that it never touched V-1: V-1 is two builds producing different frame bytes from
+skewed Aeron / Agrona / SBE **while both declare the same number**, which a number-against-number
+comparison passes cleanly. What such a check catches instead is deploy hygiene — the build that
+shipped is not the one declared — and it catches it by stopping every application in the fleet on one
+wrong character in a hand-edited file. That is the same inverted error profile that retired the
+registry's ingress gate: the check polices the one input it depends on being right. The V-1 defence
+is mechanical and involves no operator — the cross-language golden corpus (§13 row 6 of the protocol
+spec) and the published library pins (§11).
+
+`@version` still reaches the log, because an operator's record of what a deployment runs is worth
+printing beside the protocol's name. It is read by `SbeLogPrinter` and by nobody else.
 
 **`@payloadId` stays in the file, and that is a decision worth naming.** The alternative is to
 register by name alone and have the sequencer allocate the number from the log — deterministic, and
 consistent with "identity is reference data, not config" the way `gatewayId` already is. It is
-rejected here because a product stamps `payloadId` on **every outbound frame**, so learning it from
+rejected here because an application stamps `payloadId` on **every outbound frame**, so learning it from
 the log would mean no gateway can publish until it has replayed its own registration, adding a
 start-up ordering dependency to the hot path to remove a five-line table from a file an operator
 already edits. `gatewayId` can be learned because nothing is published before activation; a

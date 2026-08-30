@@ -121,7 +121,7 @@ collapse them into one repeated series. The C++ half of the registry is
 | `phixeron_sequencer_rejected_ingress_total` | counter | Count of malformed ingress messages skipped by `Sequencer.sequenceMessage` |
 | `phixeron_sequencer_leadership_change_total` | counter | Count of leadership changes this node has observed and sequenced |
 | `phixeron_sequencer_current_leader_member_id` | gauge | memberId of the leader last recorded by this node's Sequencer |
-| `phixeron_sequencer_last_tick_timestamp_ms` | gauge | Consensus timestamp of the last 1Hz Tick emitted |
+| `phixeron_sequencer_last_tick_timestamp_ms` | gauge | Consensus timestamp of the last 1Hz ClusterHeartbeat emitted |
 | `phixeron_sequencer_gateway_promotion_total` | counter | Count of standby-promotion GatewayActive frames emitted — on a gateway session close, or on a designated instance failing to publish `GatewayStarted` within 60s of being named |
 | `phixeron_sequencer_bootstrap_activated` | gauge | 1 once the bootstrap GatewayActive has been emitted for the trading day, else 0 |
 | `phixeron_sequencer_tap_stalled` | gauge | 1 while the tap recording has made no progress for longer than the stall threshold (2s) under back-pressure, else 0. Latches at 1 when the node terminates for an unrecordable tap — see below |
@@ -162,7 +162,7 @@ silent holes in it. What to expect and what to do:
 quorum question, but it *is* the venue leg: while it is down, nothing reaches the exchange.
 
 - **In the log:** a `[ExchangeGateway/N] FATAL: …` line naming the fence that fired — a lost cluster
-  session, a tap that stopped delivering `Tick`s, a recovery that stopped converging, or one outbound
+  session, a tap that stopped delivering `ClusterHeartbeat`s, a recovery that stopped converging, or one outbound
   frame back-pressured past 20 s.
 - **The passive instance takes over on its own** if one is running: the fences deliberately make this
   look to the cluster like the process dying, which is what the sequencer promotes a standby on. The

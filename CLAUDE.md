@@ -166,7 +166,7 @@ republished on the **node-local tap** (`FEEDER_CHANNEL` = `aeron:ipc`, `FEEDER_S
 which this node's co-located Aeron Archive records. Every frame on it is sequenced: every
 message in `sbe-sequenced.xml` carries the `header` composite, and the sequencer is the stream's only
 publisher, so `globalSeqNo` + consensus `timestamp` are stamped on ingress messages and on the
-lifecycle/tick/leadership frames it synthesizes alike.
+lifecycle/heartbeat/leadership frames it synthesizes alike.
 
 **Every node publishes and records its own tap** — leader and follower alike. All nodes process the
 same committed log in the same order and keep identical sequencing state (so a new leader resumes
@@ -191,7 +191,7 @@ and can only block on local-archive write back-pressure, because the recording i
 tethered subscriber. Reliable is not unbounded, though: `TapStallPolicy` watches the archive's
 `RecordingPos` counter, and a node whose recording has stopped or stopped advancing **terminates
 itself** (exit 70) rather than sequence history it cannot keep — peers keep quorum, and the restart
-rebuilds its recording over the full-log replay it does anyway. The 1 Hz tick runs the same liveness
+rebuilds its recording over the full-log replay it does anyway. The 1 Hz heartbeat runs the same liveness
 check, because a *stopped* recording back-pressures nothing at all (the untethered app subscribers
 keep the publication connected) and would otherwise be silent. Note that no cluster callback may
 signal failure by throwing: `Image.boundedControlledPoll` has already advanced the log position past
@@ -210,16 +210,16 @@ the message and `AgentRunner` keeps the agent alive, so a throw drops the frame 
 
 Besides forwarded ingress, the sequencer synthesizes its own frames on the same `globalSeqNo`
 counter: `ClientConnected`/`ClientDisconnected` (cluster session lifecycle), `LeadershipChanged`
-(de-duplicated per leader), and a **1 Hz `Tick`** — the cluster clock, so consumers have a
+(de-duplicated per leader), and a **1 Hz `ClusterHeartbeat`** — the cluster clock, so consumers have a
 consensus-driven time source that keeps advancing while a FIX session is silent, which is exactly
-when the gateway's keepalive watchdog must probe (`TICK_INTERVAL_MS`).
+when the gateway's keepalive watchdog must probe (`CLUSTER_HEARTBEAT_INTERVAL_MS`).
 
 **Snapshots are not supported**, and both `ClusteredService` hooks refuse: `onTakeSnapshot` throws,
 and `onStart` refuses a snapshot image rather than restoring from one. `clusterctl shutdown` uses
 `ABORT`, and recovery is always full-log replay from `globalSeqNo` 1. That is deliberate: replaying
 the whole log is what keeps each node's tap recording complete and gap-free — a node restored from a
 snapshot would record only from wherever it resumed. The cost is that recovery time and archive size
-grow with uptime (the 1 Hz tick alone is ~86.4k frames/day) — see `doc/todo.md`.
+grow with uptime (the 1 Hz heartbeat alone is ~86.4k frames/day) — see `doc/todo.md`.
 
 The key trick making this cheap: ingress messages arrive already SBE-encoded as
 `sbe-unsequenced.xml` (schema 200), and `sbe-sequenced.xml` (schema 202) is deliberately kept
@@ -260,7 +260,7 @@ vs `org::limitless::phixeron::fix::ClientSession`).
 **Fencing: the gateway stops serving TCP clients when it loses its place in the cluster.**
 `FixGateway::closeSessions()` closes the accept gate and drops every client socket on four signals — a
 `GatewayActive` naming a sibling instance (it was superseded), the cluster closing its cluster session,
-no `Tick` from the co-located tap for `TAP_STALL_TIMEOUT_MS`, or recovery dispatching nothing for
+no `ClusterHeartbeat` from the co-located tap for `TAP_STALL_TIMEOUT_MS`, or recovery dispatching nothing for
 `RECOVERY_STALL_TIMEOUT_MS` (`GatewayRecoveryStallPolicy`). Without it a demoted primary kept
 serving alongside the standby that replaced it, since `m_gateOpen` only ever latched true. It publishes
 no `ClientDisconnected` — the fence deliberately looks to the cluster exactly like this process dying,
@@ -350,7 +350,7 @@ with no event at all, when a new leader does not arrive before its timeout — a
 `CLOSED`, leaves the client open.
 
 Two further fences run in the same place in `doWork`, ported from the C++ edge: the co-located tap
-delivering no `Tick` for `TAP_STALL_TIMEOUT_MS` (20 tick periods) while caught up, and recovery dispatching
+delivering no `ClusterHeartbeat` for `TAP_STALL_TIMEOUT_MS` (20 heartbeat periods) while caught up, and recovery dispatching
 nothing for `RECOVERY_STALL_TIMEOUT_MS` (3x that) — the latter decided by `GatewayRecoveryStallPolicy`, a
 port of the C++ class of the same name, so keep both files and both `GatewayRecoveryStallPolicyTest`s in
 step. Both are fatal for the reason session loss is: everything this gateway decides reaches the venue only

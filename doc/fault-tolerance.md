@@ -81,7 +81,7 @@ tap's only tethered subscriber is the recording itself, app replicas are untethe
 not the same as unbounded. `TapStallPolicy` (pure, Aeron-free, unit-tested in isolation —
 `TapStallPolicy.java`) distinguishes an archive that is merely slow (back-pressured but its recording
 position keeps advancing → `CONTINUE`) from one that has stopped draining (`FATAL_NO_PROGRESS` after
-30s of zero progress) or gone away entirely (`FATAL_RECORDING_GONE`). The same 1 Hz tick that drives
+30s of zero progress) or gone away entirely (`FATAL_RECORDING_GONE`). The same 1 Hz heartbeat that drives
 the cluster clock also runs `checkTapRecordingAlive` (`SequencerService.java:480-486`), because a
 *stopped* recording doesn't back-pressure anything at all — the tap's untethered app subscribers keep
 it looking connected — so liveness has to be polled, not just inferred from back-pressure.
@@ -144,12 +144,12 @@ equivalent — one of them is not a fault at all:
 |---|---|---|
 | A `GatewayActive` names a **sibling** instance while this one was active | `sequencedEvent`, `FixGateway.cpp:557-577` | Fences, `m_activated = false`, but **keeps running** — drops to standby, keeps following the tap, and can be re-promoted later. The cluster session is untouched. |
 | The cluster closes this gateway's ingress session (`ClusterStreamSender::isSessionLost()`) | `doWork`, `FixGateway.cpp:315-319` | Fences and **exits the process** (`running = false`) — a lost session cannot be re-established in-process (§2.3), so an instance in this state could never be promoted again; fail closed by exiting rather than idling with no session. |
-| No `Tick` from the co-located tap for `TAP_STALL_TIMEOUT_MS` (20s = 20× the 1 Hz tick period), while caught up | `checkTapStall`, `FixGateway.cpp:352-369` | Closes its own cluster session first, then fences and **exits**. Voluntary: rather than sit "connected" behind a dead tap, it forces the same session-loss path as the row above, which drives standby promotion on the cluster side. |
+| No `ClusterHeartbeat` from the co-located tap for `TAP_STALL_TIMEOUT_MS` (20s = 20× the 1 Hz heartbeat period), while caught up | `checkTapStall`, `FixGateway.cpp:352-369` | Closes its own cluster session first, then fences and **exits**. Voluntary: rather than sit "connected" behind a dead tap, it forces the same session-loss path as the row above, which drives standby promotion on the cluster side. |
 | Continuous `!isCaughtUp()` for `RECOVERY_STALL_TIMEOUT_MS` (60s = 3× `TAP_STALL_TIMEOUT_MS`), once this instance has been caught up before | `checkTapStall`, `GatewayRecoveryStallPolicy` | Same as the row above — closes its own cluster session, then fences and **exits**. The symmetric case (2026-08-10 fix): a recovery that never converges (Replayer down, `onReplayUnavailable`, or a gap in replayed history this node's chain doesn't cover) used to leave the tap-stall watchdog fully gated with no bound, so an already-active gateway kept the gate open and the cluster session alive behind a view of the log frozen behind a hole it could never close. A cold start (never yet caught up) is exempt — its gate legitimately stays closed however long the initial walk takes. |
 
 The tap-stall watchdog is gated on `m_replayer.isCaughtUp()` so an in-progress cold-start/gap replay
 never reads as a stall, and it measures **monotonic wall-clock time**, not cluster-consensus time —
-deliberately, since consensus time is itself delivered by the very `Tick` frames being watched for, so
+deliberately, since consensus time is itself delivered by the very `ClusterHeartbeat` frames being watched for, so
 it would freeze along with a stalled tap and never trip (`FixGateway.cpp:241-244`). Its `!isCaughtUp()`
 branch is not simply skipped, though: `GatewayRecoveryStallPolicy` (pure, Aeron-free, unit-tested in
 `GatewayRecoveryStallPolicyTest.cpp`) provides the row above — the deadline is armed only once
@@ -244,9 +244,9 @@ for. The other four end the process:
 | Fence | Trigger | Where |
 |---|---|---|
 | Cluster session lost | an `ERROR`/`CLOSED` egress event, **or** `!isConnected()` with no event at all — `AeronCluster` closes itself when a new leader does not arrive before its timeout, and an `ERROR` event, unlike `CLOSED`, leaves the client open | `checkClusterSession`, from `doWork` |
-| Tap stall | no `Tick` from the co-located tap for 20 tick periods while caught up | `checkTapStall`, from `doWork` |
+| Tap stall | no `ClusterHeartbeat` from the co-located tap for 20 heartbeat periods while caught up | `checkTapStall`, from `doWork` |
 | Recovery stall | recovery dispatching nothing for 3× that | `GatewayRecoveryStallPolicy` (a port of the C++ class of the same name) |
-| Emit wedge | one outbound frame continuously back-pressured on the `SessionWriter` for the same 20 tick periods | `emit` → `haltWedged` |
+| Emit wedge | one outbound frame continuously back-pressured on the `SessionWriter` for the same 20 heartbeat periods | `emit` → `haltWedged` |
 
 The two stall fences are fatal for the reason session loss is: everything this gateway decides reaches
 the venue only by coming back off the tap, so a frozen view is a held session nothing is being written

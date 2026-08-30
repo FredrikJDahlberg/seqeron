@@ -3,7 +3,7 @@ package org.limitless.phixeron.fixgateway;
 /**
  * Pure decision logic behind an Artio gateway's recovery fence — the symmetric case to its tap-silence
  * fence. Shared by both legs: {@code ExchangeGateway} toward a venue and {@code OrderGateway} toward
- * clients. Silence is bounded by "no {@code Tick} for a while"; this bounds the opposite state,
+ * clients. Silence is bounded by "no {@code ClusterHeartbeat} for a while"; this bounds the opposite state,
  * a tap that never goes contiguous again. A {@code Replayer} that never answers, a {@code ReplayUnavailable}
  * refusal, and a gap this node's recording chain cannot cover all hold {@code isCaughtUp()} false
  * indefinitely without ever being fatal on their own.

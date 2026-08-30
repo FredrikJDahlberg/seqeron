@@ -635,7 +635,7 @@
     </sbe:message>
 
     <!-- ═══════════════════════════════════════════════════════════════════
-         Tick  (template 16) — the cluster's internal clock (~1 Hz).
+         ClusterHeartbeat  (template 16) — the cluster's internal clock (~1 Hz).
          Synthesized on a repeating cluster timer (see SequencerService), it
          carries nothing but the header: its only payload is header.timestamp,
          the cluster consensus time the leader assigned when the timer fired.
@@ -647,7 +647,7 @@
          watchdog (FixConnection/Session) must fire. Synthesized-only — never
          arrives on cluster ingress — so it has no sbe-unsequenced.xml twin.
          ═══════════════════════════════════════════════════════════════════ -->
-    <sbe:message name="Tick" id="16"
+    <sbe:message name="ClusterHeartbeat" id="16"
                  description="Cluster internal clock; header.timestamp is the leader's consensus time at timer fire">
         <field name="header" id="20001" type="header"/>
     </sbe:message>

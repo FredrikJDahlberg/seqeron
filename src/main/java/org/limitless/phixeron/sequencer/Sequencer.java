@@ -8,7 +8,7 @@ import org.limitless.phixeron.sbe.sequenced.HeaderEncoder;
 import org.limitless.phixeron.sbe.sequenced.LeadershipChangedEncoder;
 import org.limitless.phixeron.sbe.sequenced.MessageHeaderEncoder;
 import org.limitless.phixeron.sbe.sequenced.Origin;
-import org.limitless.phixeron.sbe.sequenced.TickEncoder;
+import org.limitless.phixeron.sbe.sequenced.ClusterHeartbeatEncoder;
 import org.limitless.phixeron.sbe.unsequenced.ClientConnectedDecoder;
 import org.limitless.phixeron.sbe.unsequenced.ClientDisconnectedDecoder;
 import org.limitless.phixeron.sbe.unsequenced.GatewayRegisteredDecoder;
@@ -55,8 +55,8 @@ import org.limitless.phixeron.util.Logger;
  */
 public final class Sequencer {
     /**
-     * header.sourceId/connectionId for events synthesized by the sequencer itself (Tick /
-     * LeadershipChanged): a clock tick or an election has no gateway-process or TCP-level
+     * header.sourceId/connectionId for events synthesized by the sequencer itself (ClusterHeartbeat /
+     * LeadershipChanged): a clock heartbeat or an election has no gateway-process or TCP-level
      * connection id to carry, unlike the ingress messages it forwards.
      *
      * <p>ClientConnected/ClientDisconnected are deliberately not in that list. They denote a FIX
@@ -87,46 +87,47 @@ public final class Sequencer {
     private static final int NO_GATEWAY_ID = -1;
 
     /**
-     * Period of the internal cluster clock ({@link #tick}): the leader fires this timer once per
-     * second and every node emits a header-only {@code Tick} carrying the consensus timestamp. It exists
+     * Period of the internal cluster clock ({@link #clusterHeartbeat}): the leader fires this timer once per
+     * second and every node emits a header-only {@code ClusterHeartbeat} carrying the consensus timestamp. It exists
      * so every consumer has a cluster-driven clock that keeps advancing even while an individual FIX
      * session is silent — which is exactly when the gateway's keepalive watchdog must probe/disconnect
      * (the sequenced-header timestamp is the only clock the watchdog is allowed to trust, since only the
      * leader assigns real time). 1 Hz gives ±1 s resolution, ample for the watchdog's tens-of-seconds
-     * thresholds. Trade-off: every tick appends a timer event + a tick frame to the replicated
+     * thresholds. Trade-off: every heartbeat appends a timer event + a heartbeat frame to the replicated
      * log/recording, so full-log-replay recovery grows with uptime; this constant is the single knob to
      * trade watchdog resolution against that cost. (A tighter win — gating clock emission on active FIX
      * sessions — is noted in doc/gap.md; 1 Hz is the low-risk interim.)
      *
      * <p>It lives here rather than in the adapter because the state machine's own deadlines are evaluated
-     * in cluster time, on tick timestamps, so this is the resolution every one of them is quantised to.
+     * in cluster time, on heartbeat timestamps, so this is the resolution every one of them is quantised to.
      * Public because it is a contract rather than an internal: consumers size their own tap watchdogs in
-     * tick periods (the C++ edge duplicates it as {@code FixGateway::TICK_INTERVAL_MS} for want of a way to
+     * heartbeat periods (the C++ edge duplicates it as
+     * {@code FixGateway::CLUSTER_HEARTBEAT_INTERVAL_MS} for want of a way to
      * share it), and a watchdog tighter than the clock it watches fires on a healthy stream.
      */
-    public static final long TICK_INTERVAL_MS = 1000;
+    public static final long CLUSTER_HEARTBEAT_INTERVAL_MS = 1000;
 
     /**
      * How long a designated instance has, in cluster time, to answer a {@code GatewayActive} with a
      * {@code GatewayStarted} before {@link #pendingGatewayActivationTimeout} hands the role to a sibling.
      *
-     * <p>Five ticks, matching the order of the cluster's own {@code sessionTimeoutNs} — this is a failover
+     * <p>Five heartbeats, matching the order of the cluster's own {@code sessionTimeoutNs} — this is a failover
      * deadline, and a gateway tier with no active instance is down. What it bounds is small: observe a
      * frame on the co-located tap and publish one back. A caught-up instance does that in a duty cycle.
      *
      * <p>It deliberately does <em>not</em> clear a cold start, which has no useful bound (there are no
      * snapshots, so a late-in-the-day start replays the whole log). A pair that is still replaying
-     * therefore trades the role every five ticks until one of them catches up, and that is cheap: a
+     * therefore trades the role every five heartbeats until one of them catches up, and that is cheap: a
      * superseded instance keeps replaying ({@code ExchangeGateway.standDown} is a no-op before the socket
      * exists), whoever finishes first answers the next activation naming it, and the churn is one frame
-     * per period against a log already taking 60 ticks a minute. An instance that <em>has</em> answered is
+     * per period against a log already taking 60 heartbeats a minute. An instance that <em>has</em> answered is
      * never swapped out — {@link #takeOverdueActivation} drops its deadline instead — so steady state
      * costs nothing at all.
      *
      * <p>Package-private so {@code SequencerTest} drives exactly this deadline rather than hardcoding it
      * a second time.
      */
-    static final long GATEWAY_ACTIVATION_TIMEOUT_MS = 5 * TICK_INTERVAL_MS;
+    static final long GATEWAY_ACTIVATION_TIMEOUT_MS = 5 * CLUSTER_HEARTBEAT_INTERVAL_MS;
 
     /**
      * Smallest ingress message {@link #sequenceMessage} can re-stamp: the outer framing header plus the
@@ -167,7 +168,7 @@ public final class Sequencer {
     private final MessageHeaderEncoder headerEncoder = new MessageHeaderEncoder();
     private final HeaderEncoder egressHeaderEncoder = new HeaderEncoder();
     private final LeadershipChangedEncoder leadershipChangedEncoder = new LeadershipChangedEncoder();
-    private final TickEncoder tickEncoder = new TickEncoder();
+    private final ClusterHeartbeatEncoder clusterHeartbeatEncoder = new ClusterHeartbeatEncoder();
     private final GatewayActiveEncoder gatewayActiveEncoder = new GatewayActiveEncoder();
     private final MutableDirectBuffer encodeBuffer = new ExpandableDirectByteBuffer(4096);
 
@@ -421,17 +422,17 @@ public final class Sequencer {
      * read {@code header.timestamp} off it to keep their session clock moving while a counterparty is silent.
      * @param timestamp now
      */
-    public int tick(final long timestamp) {
+    public int clusterHeartbeat(final long timestamp) {
         final long globalSeq = ++globalSeqNo;
-        tickEncoder.wrapAndApplyHeader(encodeBuffer, 0, headerEncoder);
-        tickEncoder.header()
+        clusterHeartbeatEncoder.wrapAndApplyHeader(encodeBuffer, 0, headerEncoder);
+        clusterHeartbeatEncoder.header()
             .sourceId(NO_SOURCE_ID)
             .connectionId(NO_SOURCE_ID)
             .sessionId(NO_SOURCE_ID)
             .globalSeqNo(globalSeq)
             .timestamp(timestamp)
             .origin(Origin.Application);
-        return MessageHeaderEncoder.ENCODED_LENGTH + tickEncoder.encodedLength();
+        return MessageHeaderEncoder.ENCODED_LENGTH + clusterHeartbeatEncoder.encodedLength();
     }
 
     /**
@@ -518,9 +519,9 @@ public final class Sequencer {
      * whole gateway tier that is down converges the moment any instance comes up rather than depending on
      * which one the cluster happened to designate first.
      *
-     * <p>Deterministic off the cluster clock: driven from the 1 Hz {@code Tick}'s consensus timestamp, so
+     * <p>Deterministic off the cluster clock: driven from the 1 Hz {@code ClusterHeartbeat}'s consensus timestamp, so
      * every node evaluates the same deadline against the same time and synthesizes the same frame — like
-     * {@link #pendingGatewayBootstrapActivation}, the caller invokes it right after the {@link #tick} it
+     * {@link #pendingGatewayBootstrapActivation}, the caller invokes it right after the {@link #clusterHeartbeat} it
      * belongs to and simply publishes what comes back.
      * @param timestamp now
      * @return a {@code GatewayActive} frame length, {@link #NO_FRAME} if nothing was overdue, or {@link
@@ -551,7 +552,7 @@ public final class Sequencer {
      * Removes and returns the first activation whose deadline has passed and that no {@code
      * GatewayStarted} answered, or {@link #NO_GATEWAY_ID} if none is overdue. An overdue activation the
      * instance did answer is dropped too — it is simply resolved, and leaving it would have it looked at
-     * on every tick from here on.
+     * on every heartbeat from here on.
      *
      * <p>The pending entry is taken before the caller decides anything, so the {@code gatewayActive} that
      * a hand-over ends in cannot re-enter {@link #pendingActivations} mid-iteration.

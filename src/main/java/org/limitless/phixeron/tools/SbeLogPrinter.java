@@ -112,7 +112,7 @@ public class SbeLogPrinter {
     }
 
     /**
-     * Message name for a template id, for labelling the dump — a header-only message such as {@code Tick}
+     * Message name for a template id, for labelling the dump — a header-only message such as {@code ClusterHeartbeat}
      * is otherwise indistinguishable from any other in the JSON, which carries field values only. The first
      * token of a message is its BEGIN_MESSAGE token, whose name is the message name.
      * @param ir internal representation

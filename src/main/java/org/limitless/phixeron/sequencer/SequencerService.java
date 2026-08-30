@@ -66,7 +66,7 @@ import org.limitless.phixeron.util.Logger;
  * <p><b>…but reliable is not unbounded: a node that cannot record its tap terminates.</b> Spinning is
  * right for an archive that is merely busy and wrong for one that is dead, and the two are told apart by
  * whether the recording behind the tap is still there and still advancing ({@link TapStallPolicy}, driven
- * from {@link #emit} on back-pressure and from the 1 Hz tick on liveness — {@link
+ * from {@link #emit} on back-pressure and from the 1 Hz heartbeat on liveness — {@link
  * #checkTapRecordingAlive} covers the case that never back-pressures at all). Once the archive is
  * provably not recording, this node cannot do the job it exists to do, so {@link #fatalTapFailure} takes
  * it down: the peers hold identical complete recordings and keep quorum, and the restart rebuilds this
@@ -183,7 +183,7 @@ public final class SequencerService implements ClusteredService {
     private static final String TAP_FAULT_TRIGGER_FILE = "tap-stall-fault";
 
     /**
-     * Correlation id of the single repeating tick timer. There is only one service timer, so a fixed
+     * Correlation id of the single repeating heartbeat timer. There is only one service timer, so a fixed
      * constant is safe; rescheduling with the same id simply moves the one timer's deadline.
      */
     private static final long TICK_TIMER_CORRELATION_ID = 0x7100_0000_0000_0001L;
@@ -339,7 +339,7 @@ public final class SequencerService implements ClusteredService {
             PhixeronCounters.addCounter(aeron, PhixeronCounters.SEQUENCER_CURRENT_LEADER_MEMBER_ID_TYPE_ID,
                                         "phixeron.sequencer.currentLeaderMemberId member=" + memberId, memberId);
         lastTickTimestampCounter =
-            PhixeronCounters.addCounter(aeron, PhixeronCounters.SEQUENCER_LAST_TICK_TIMESTAMP_TYPE_ID,
+            PhixeronCounters.addCounter(aeron, PhixeronCounters.SEQUENCER_LAST_CLUSTER_HEARTBEAT_TIMESTAMP_TYPE_ID,
                                         "phixeron.sequencer.lastTickTimestamp member=" + memberId, memberId);
         gatewayPromotionCounter =
             PhixeronCounters.addCounter(aeron, PhixeronCounters.SEQUENCER_GATEWAY_PROMOTION_COUNT_TYPE_ID,
@@ -444,11 +444,11 @@ public final class SequencerService implements ClusteredService {
     public void onTimerEvent(final long correlationId, final long timestamp) {
         if (correlationId == TICK_TIMER_CORRELATION_ID) {
             ensureCounters();
-            emit(sequencer.tick(timestamp));
+            emit(sequencer.clusterHeartbeat(timestamp));
             // The cluster clock is also the deadline clock: a designated gateway instance that never
             // declared itself started is handed over on this same consensus time, on every node alike.
             // Drained for the same reason as the bootstrap: each logical gateway keeps its own deadline,
-            // so more than one can come due on the same tick.
+            // so more than one can come due on the same heartbeat.
             int overdue;
             while ((overdue = sequencer.pendingGatewayActivationTimeout(timestamp)) != Sequencer.NO_FRAME) {
                 publishPromotion(overdue, "a designated gateway instance never declared itself started");
@@ -495,7 +495,8 @@ public final class SequencerService implements ClusteredService {
     }
 
     /**
-     * Re-arms the cluster clock ({@link Sequencer#TICK_INTERVAL_MS} ahead of current cluster time), spinning until
+     * Re-arms the cluster clock ({@link Sequencer#CLUSTER_HEARTBEAT_INTERVAL_MS} ahead of current
+     * cluster time), spinning until
      * the consensus module accepts it — bounded, for the same reason {@link #emit} is. Returning with the
      * timer unscheduled would stop the clock outright: nothing else re-arms it until the next leadership
      * term, so every consumer's session clock would silently stop advancing. Spinning forever is no better
@@ -506,7 +507,7 @@ public final class SequencerService implements ClusteredService {
      * closed/disconnected proxy publication rather than returning.)
      */
     private void scheduleTick() {
-        final long deadline = cluster.time() + Sequencer.TICK_INTERVAL_MS;
+        final long deadline = cluster.time() + Sequencer.CLUSTER_HEARTBEAT_INTERVAL_MS;
         int spins = 0;
         long backPressuredSinceNs = 0;
         while (!cluster.scheduleTimer(TICK_TIMER_CORRELATION_ID, deadline)) {
@@ -516,7 +517,7 @@ public final class SequencerService implements ClusteredService {
                 if (backPressuredSinceNs == 0) {
                     backPressuredSinceNs = nowNs; // first read only anchors the period
                 } else if (fatalSignalled) {
-                    haltIfShutdownStalled(nowNs); // keep the backstop alive: no tick reaches it now
+                    haltIfShutdownStalled(nowNs); // keep the backstop alive: no heartbeat reaches it now
                 } else if (nowNs - backPressuredSinceNs >= TICK_SCHEDULE_FATAL_TIMEOUT_NS) {
                     fatalFailure(Logger.EventCode.ServiceError,
                                  "the consensus module did not accept the cluster-clock timer for " +

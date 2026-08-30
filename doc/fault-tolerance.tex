@@ -208,7 +208,7 @@ tethered subscriber is the recording itself, app replicas are untethered
 slow (back-pressured but its recording position keeps advancing →
 \texttt{CONTINUE}) from one that has stopped draining
 (\texttt{FATAL\_NO\_PROGRESS} after 30s of zero progress) or gone away
-entirely (\texttt{FATAL\_RECORDING\_GONE}). The same 1 Hz tick that
+entirely (\texttt{FATAL\_RECORDING\_GONE}). The same 1 Hz heartbeat that
 drives the cluster clock also runs \texttt{checkTapRecordingAlive}
 (\texttt{SequencerService.java:480-486}), because a \emph{stopped}
 recording doesn't back-pressure anything at all --- the tap's untethered
@@ -322,8 +322,8 @@ The cluster closes this gateway's ingress session
 (\texttt{running\ =\ false}) --- a lost session cannot be re-established
 in-process (§2.3), so an instance in this state could never be promoted
 again; fail closed by exiting rather than idling with no session. \\
-No \texttt{Tick} from the co-located tap for
-\texttt{TAP\_STALL\_TIMEOUT\_MS} (20s = 20× the 1 Hz tick period) &
+No \texttt{ClusterHeartbeat} from the co-located tap for
+\texttt{TAP\_STALL\_TIMEOUT\_MS} (20s = 20× the 1 Hz heartbeat period) &
 \texttt{checkTapStall}, \texttt{FixGateway.cpp:352-369} & Closes its own
 cluster session first, then fences and \textbf{exits}. Voluntary: rather
 than sit ``connected'' behind a dead tap, it forces the same
@@ -336,7 +336,7 @@ The tap-stall watchdog is gated on \texttt{m\_replayer.isCaughtUp()} so
 an in-progress cold-start/gap replay never reads as a stall, and it
 measures \textbf{monotonic wall-clock time}, not cluster-consensus time
 --- deliberately, since consensus time is itself delivered by the very
-\texttt{Tick} frames being watched for, so it would freeze along with a
+\texttt{ClusterHeartbeat} frames being watched for, so it would freeze along with a
 stalled tap and never trip (\texttt{FixGateway.cpp:241-244}).
 
 A \texttt{GatewayActive} naming \emph{this} instance while it was
