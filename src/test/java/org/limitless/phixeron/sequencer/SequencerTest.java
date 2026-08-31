@@ -393,7 +393,7 @@ class SequencerTest {
 
     @Test
     @DisplayName("heartbeat carries the consensus timestamp and no session")
-    void tickCarriesConsensusTimestamp() {
+    void heartbeatCarriesConsensusTimestamp() {
         // The gateway's keepalive watchdog reads exactly this field to advance its session clock while
         // a counterparty is silent, so a heartbeat that lost its timestamp would stall every watchdog.
         final long heartbeatTime = TIMESTAMP + 60_000;

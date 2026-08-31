@@ -157,14 +157,14 @@ public final class SequencerService implements ClusteredService {
 
     /**
      * How long the consensus module may refuse the cluster-clock timer, continuously, before {@link
-     * #scheduleTick} gives up on this node. The same judgement {@link #TAP_STALL_FATAL_TIMEOUT_NS} makes
+     * #scheduleHeartbeat} gives up on this node. The same judgement {@link #TAP_STALL_FATAL_TIMEOUT_NS} makes
      * about the archive, applied to the other end of the service: back-pressure on the consensus-module
      * proxy is ordinary and self-clearing, and a full second of it without a single accepted timer is not
      * a busy module but a wedged one. Matched to that constant deliberately — both bound the same
      * question, "is the thing this node depends on still draining?", and there is no reason for the two
      * answers to differ.
      */
-    private static final long TICK_SCHEDULE_FATAL_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(1);
+    private static final long HEARTBEAT_SCHEDULE_FATAL_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(1);
 
     /**
      * How long after signalling a fatal tap failure the process may still be alive before it is halted
@@ -186,7 +186,7 @@ public final class SequencerService implements ClusteredService {
      * Correlation id of the single repeating heartbeat timer. There is only one service timer, so a fixed
      * constant is safe; rescheduling with the same id simply moves the one timer's deadline.
      */
-    private static final long TICK_TIMER_CORRELATION_ID = 0x7100_0000_0000_0001L;
+    private static final long HEARTBEAT_TIMER_CORRELATION_ID = 0x7100_0000_0000_0001L;
 
     /**
      * The replicated state machine: owns {@code globalSeqNo} and every frame encode. This class is
@@ -223,7 +223,7 @@ public final class SequencerService implements ClusteredService {
     private Counter rejectedIngressCounter;
     private Counter leadershipChangeCounter;
     private Counter currentLeaderMemberIdCounter;
-    private Counter lastTickTimestampCounter;
+    private Counter lastHeartbeatTimestampCounter;
     private Counter gatewayPromotionCounter;
     private Counter gatewayPromotionFailedCounter;
     private Counter bootstrapActivatedCounter;
@@ -338,9 +338,9 @@ public final class SequencerService implements ClusteredService {
         currentLeaderMemberIdCounter =
             PhixeronCounters.addCounter(aeron, PhixeronCounters.SEQUENCER_CURRENT_LEADER_MEMBER_ID_TYPE_ID,
                                         "phixeron.sequencer.currentLeaderMemberId member=" + memberId, memberId);
-        lastTickTimestampCounter =
+        lastHeartbeatTimestampCounter =
             PhixeronCounters.addCounter(aeron, PhixeronCounters.SEQUENCER_LAST_CLUSTER_HEARTBEAT_TIMESTAMP_TYPE_ID,
-                                        "phixeron.sequencer.lastTickTimestamp member=" + memberId, memberId);
+                                        "phixeron.sequencer.lastHeartbeatTimestamp member=" + memberId, memberId);
         gatewayPromotionCounter =
             PhixeronCounters.addCounter(aeron, PhixeronCounters.SEQUENCER_GATEWAY_PROMOTION_COUNT_TYPE_ID,
                                         "phixeron.sequencer.gatewayPromotionCount member=" + memberId, memberId);
@@ -442,7 +442,7 @@ public final class SequencerService implements ClusteredService {
      */
     @Override
     public void onTimerEvent(final long correlationId, final long timestamp) {
-        if (correlationId == TICK_TIMER_CORRELATION_ID) {
+        if (correlationId == HEARTBEAT_TIMER_CORRELATION_ID) {
             ensureCounters();
             emit(sequencer.clusterHeartbeat(timestamp));
             // The cluster clock is also the deadline clock: a designated gateway instance that never
@@ -453,10 +453,10 @@ public final class SequencerService implements ClusteredService {
             while ((overdue = sequencer.pendingGatewayActivationTimeout(timestamp)) != Sequencer.NO_FRAME) {
                 publishPromotion(overdue, "a designated gateway instance never declared itself started");
             }
-            lastTickTimestampCounter.set(timestamp);
+            lastHeartbeatTimestampCounter.set(timestamp);
             injectTapRecordingFault();
             checkTapRecordingAlive();
-            scheduleTick();
+            scheduleHeartbeat();
         }
     }
 
@@ -502,15 +502,15 @@ public final class SequencerService implements ClusteredService {
      * term, so every consumer's session clock would silently stop advancing. Spinning forever is no better
      * — {@code onTimerEvent} would never return and this node would go dark with none of the failure paths
      * below ever running. So a consensus module that has not accepted a timer for {@link
-     * #TICK_SCHEDULE_FATAL_TIMEOUT_NS} is treated as wedged and this node terminates, as visibly as it does
+     * #HEARTBEAT_SCHEDULE_FATAL_TIMEOUT_NS} is treated as wedged and this node terminates, as visibly as it does
      * when it cannot record its own tap. (The only false return is back-pressure: Aeron throws for a
      * closed/disconnected proxy publication rather than returning.)
      */
-    private void scheduleTick() {
+    private void scheduleHeartbeat() {
         final long deadline = cluster.time() + Sequencer.CLUSTER_HEARTBEAT_INTERVAL_MS;
         int spins = 0;
         long backPressuredSinceNs = 0;
-        while (!cluster.scheduleTimer(TICK_TIMER_CORRELATION_ID, deadline)) {
+        while (!cluster.scheduleTimer(HEARTBEAT_TIMER_CORRELATION_ID, deadline)) {
             if (++spins >= SPINS_PER_CLOCK_CHECK) {
                 spins = 0;
                 final long nowNs = System.nanoTime();
@@ -518,10 +518,10 @@ public final class SequencerService implements ClusteredService {
                     backPressuredSinceNs = nowNs; // first read only anchors the period
                 } else if (fatalSignalled) {
                     haltIfShutdownStalled(nowNs); // keep the backstop alive: no heartbeat reaches it now
-                } else if (nowNs - backPressuredSinceNs >= TICK_SCHEDULE_FATAL_TIMEOUT_NS) {
+                } else if (nowNs - backPressuredSinceNs >= HEARTBEAT_SCHEDULE_FATAL_TIMEOUT_NS) {
                     fatalFailure(Logger.EventCode.ServiceError,
                                  "the consensus module did not accept the cluster-clock timer for " +
-                                     TimeUnit.NANOSECONDS.toSeconds(TICK_SCHEDULE_FATAL_TIMEOUT_NS) +
+                                     TimeUnit.NANOSECONDS.toSeconds(HEARTBEAT_SCHEDULE_FATAL_TIMEOUT_NS) +
                                      "s of continuous back-pressure");
                 }
             }
@@ -557,7 +557,7 @@ public final class SequencerService implements ClusteredService {
                                          final long termBaseLogPosition, final int leaderMemberId,
                                          final int logSessionId, final TimeUnit timeUnit, final int appVersion) {
         applyLeadership(leaderMemberId, timestamp);
-        scheduleTick(); // Arm (or re-arm) the internal cluster clock here
+        scheduleHeartbeat(); // Arm (or re-arm) the internal cluster clock here
     }
 
     /**
@@ -614,7 +614,7 @@ public final class SequencerService implements ClusteredService {
         final Counter[] counters = {
             globalSeqNoCounter,        tapBackPressureAlertCounter, tapStalledCounter,
             rejectedIngressCounter,    leadershipChangeCounter,     currentLeaderMemberIdCounter,
-            lastTickTimestampCounter,  gatewayPromotionCounter,     gatewayPromotionFailedCounter,
+            lastHeartbeatTimestampCounter,  gatewayPromotionCounter,     gatewayPromotionFailedCounter,
             bootstrapActivatedCounter, connectedClientsCounter,     messagesSequencedCounter
         };
         for (final Counter counter : counters) {

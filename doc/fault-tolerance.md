@@ -93,7 +93,7 @@ itself"). No cluster callback may signal failure by throwing instead: `Image.bou
 has already advanced the log position past the message before a thrown exception is caught, and
 `AgentRunner` keeps the agent alive — a throw here would silently drop the frame and leave the node
 running with a hole in its own recording, exactly the failure this whole mechanism exists to prevent
-(class Javadoc, `SequencerService.java:66-74`). The same reasoning bounds `scheduleTick`
+(class Javadoc, `SequencerService.java:66-74`). The same reasoning bounds `scheduleHeartbeat`
 (`SequencerService.java:517-538`): a consensus module that refuses the cluster-clock timer for 30s
 continuous back-pressure is wedged, not busy, and gets the same fatal treatment — otherwise every
 consumer's session clock silently stops advancing with no operator-visible signal.

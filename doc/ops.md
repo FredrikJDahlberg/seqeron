@@ -162,8 +162,8 @@ silent holes in it. What to expect and what to do:
 quorum question, but it *is* the venue leg: while it is down, nothing reaches the exchange.
 
 - **In the log:** a `[ExchangeGateway/N] FATAL: …` line naming the fence that fired — a lost cluster
-  session, a tap that stopped delivering `ClusterHeartbeat`s, a recovery that stopped converging, or one outbound
-  frame back-pressured past 20 s.
+  session, a tap that stopped delivering `ClusterHeartbeat`s, a recovery that stopped converging, or
+  one outbound frame back-pressured past 20 s.
 - **The passive instance takes over on its own** if one is running: the fences deliberately make this
   look to the cluster like the process dying, which is what the sequencer promotes a standby on. The
   handover is a fresh dial to the venue, not a live session moving, so expect a new logon.

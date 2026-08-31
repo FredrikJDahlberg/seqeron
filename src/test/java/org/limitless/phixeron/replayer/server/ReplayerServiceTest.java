@@ -732,8 +732,8 @@ class ReplayerServiceTest {
     private byte[] sequencedFrame(final long globalSeqNo) {
         final org.limitless.phixeron.sbe.sequenced.MessageHeaderEncoder sequencedHeader =
             new org.limitless.phixeron.sbe.sequenced.MessageHeaderEncoder();
-        final org.limitless.phixeron.sbe.sequenced.TickEncoder encoder =
-            new org.limitless.phixeron.sbe.sequenced.TickEncoder();
+        final org.limitless.phixeron.sbe.sequenced.ClusterHeartbeatEncoder encoder =
+            new org.limitless.phixeron.sbe.sequenced.ClusterHeartbeatEncoder();
         encoder.wrapAndApplyHeader(encodeBuffer, 0, sequencedHeader).header().globalSeqNo(globalSeqNo);
         return encoded(encoder.encodedLength());
     }

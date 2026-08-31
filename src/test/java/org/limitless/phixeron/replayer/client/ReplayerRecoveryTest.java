@@ -283,7 +283,7 @@ class ReplayerRecoveryTest {
     }
 
     private void deliverReplay(final long globalSeqNo) {
-        receiver.onFrame(tickFrame(globalSeqNo), 0, tickLength(), globalSeqNo * 1024, RECEIVE_NS, true);
+        receiver.onFrame(heartbeatFrame(globalSeqNo), 0, heartbeatLength(), globalSeqNo * 1024, RECEIVE_NS, true);
     }
 
     private void deliverTap(final long globalSeqNo) {
@@ -291,10 +291,10 @@ class ReplayerRecoveryTest {
     }
 
     private void deliverTapAt(final long globalSeqNo, final long position) {
-        receiver.onFrame(tickFrame(globalSeqNo), 0, tickLength(), position, RECEIVE_NS, false);
+        receiver.onFrame(heartbeatFrame(globalSeqNo), 0, heartbeatLength(), position, RECEIVE_NS, false);
     }
 
-    private static UnsafeBuffer tickFrame(final long globalSeqNo) {
+    private static UnsafeBuffer heartbeatFrame(final long globalSeqNo) {
         final UnsafeBuffer buffer = new UnsafeBuffer(new byte[256]);
         final ClusterHeartbeatEncoder heartbeat = new ClusterHeartbeatEncoder();
         heartbeat.wrapAndApplyHeader(buffer, 0, new org.limitless.phixeron.sbe.sequenced.MessageHeaderEncoder());
@@ -304,7 +304,7 @@ class ReplayerRecoveryTest {
         return buffer;
     }
 
-    private static int tickLength() {
+    private static int heartbeatLength() {
         return org.limitless.phixeron.sbe.sequenced.MessageHeaderEncoder.ENCODED_LENGTH
             + ClusterHeartbeatEncoder.BLOCK_LENGTH;
     }
