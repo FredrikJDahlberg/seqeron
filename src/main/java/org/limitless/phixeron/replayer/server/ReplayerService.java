@@ -68,7 +68,7 @@ public final class ReplayerService {
     public static final long NO_REPLAY_NEEDED = NULL_VALUE;
 
     // Idle-TTL slot reclamation (see class Javadoc): a slot untouched this long is reclaimed.
-    private static final long REPLAY_SLOT_TTL_MS = 60_000;
+    static final long REPLAY_SLOT_TTL_MS = 5_000;
 
     // While STALLED, probe the local archive (for replay).
     private static final long STALL_RETRY_INTERVAL_MS = 1_000;

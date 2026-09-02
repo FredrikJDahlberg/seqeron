@@ -498,16 +498,18 @@ class ReplayerServiceTest {
         request(CLIENT, 1, 0, 0);
         final long session = lastClientReplay().replaySessionId();
 
-        fakeReplayer.advanceMillis(45_000);
+        final long almostTtl = ReplayerService.REPLAY_SLOT_TTL_MS * 3 / 4;
+        fakeReplayer.advanceMillis(almostTtl);
         fakeReplayer.enqueueRequest(replayHeartbeat(CLIENT));
         replayerService.poll();
-        fakeReplayer.advanceMillis(45_000); // 90s since the replay started, 45s since the heartbeat
+        // One and a half TTLs since the replay started, but only three quarters of one since the heartbeat.
+        fakeReplayer.advanceMillis(almostTtl);
         replayerService.poll();
 
         assertEquals(1, fakeReplayer.counter(PhixeronCounters.REPLAYER_ACTIVE_SLOTS_TYPE_ID));
         assertEquals(0, fakeReplayer.counter(PhixeronCounters.REPLAYER_IDLE_TTL_RECLAIMED_COUNT_TYPE_ID));
 
-        fakeReplayer.advanceMillis(61_000); // past REPLAY_SLOT_TTL_MS with no further sign of life
+        fakeReplayer.advanceMillis(ReplayerService.REPLAY_SLOT_TTL_MS + 1); // no further sign of life
         replayerService.poll();
 
         assertEquals(0, fakeReplayer.counter(PhixeronCounters.REPLAYER_ACTIVE_SLOTS_TYPE_ID));
