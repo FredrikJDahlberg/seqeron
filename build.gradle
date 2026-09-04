@@ -61,8 +61,8 @@ tasks.register('generateUnsequencedSbe', JavaExec) {
     doFirst { sbeGeneratedSrcDir.mkdirs() }
 }
 
-tasks.register('generateSequencedSbe', JavaExec) {
-    description = 'Generate Java SBE codecs from sbe-sequenced.xml (global stream / egress format)'
+tasks.register('generateSessionSbe', JavaExec) {
+    description = 'Generate Java SBE codecs from sbe-session.xml (the FIX session family, payloadId 3)'
     classpath   = configurations.sbeCodegen
     mainClass   = 'uk.co.real_logic.sbe.SbeTool'
 
@@ -74,9 +74,30 @@ tasks.register('generateSequencedSbe', JavaExec) {
     systemProperty 'sbe.xinclude.aware',           'true'
     systemProperty 'sbe.generate.ir',              'true'
 
-    args new File(sbeResourceDir, 'sbe-sequenced.xml')
+    args new File(sbeResourceDir, 'sbe-session.xml')
 
-    inputs.file  new File(sbeResourceDir, 'sbe-sequenced.xml')
+    inputs.file  new File(sbeResourceDir, 'sbe-session.xml')
+    outputs.dir  sbeGeneratedSrcDir
+
+    doFirst { sbeGeneratedSrcDir.mkdirs() }
+}
+
+tasks.register('generateBasicDataSbe', JavaExec) {
+    description = 'Generate Java SBE codecs from sbe-basicdata.xml (reference data, payloadId 4)'
+    classpath   = configurations.sbeCodegen
+    mainClass   = 'uk.co.real_logic.sbe.SbeTool'
+
+    jvmArgs '--add-opens=java.base/jdk.internal.misc=ALL-UNNAMED'
+
+    systemProperty 'sbe.output.dir',               sbeGeneratedSrcDir.absolutePath
+    systemProperty 'sbe.target.language',          'Java'
+    systemProperty 'sbe.java.generate.interfaces', 'false'
+    systemProperty 'sbe.xinclude.aware',           'true'
+    systemProperty 'sbe.generate.ir',              'true'
+
+    args new File(sbeResourceDir, 'sbe-basicdata.xml')
+
+    inputs.file  new File(sbeResourceDir, 'sbe-basicdata.xml')
     outputs.dir  sbeGeneratedSrcDir
 
     doFirst { sbeGeneratedSrcDir.mkdirs() }
@@ -103,7 +124,9 @@ tasks.register('generateFrameSbe', JavaExec) {
     doFirst { sbeGeneratedSrcDir.mkdirs() }
 }
 
-tasks.named('compileJava') { dependsOn 'generateUnsequencedSbe', 'generateSequencedSbe', 'generateFrameSbe' }
+tasks.named('compileJava') {
+    dependsOn 'generateUnsequencedSbe', 'generateFrameSbe', 'generateSessionSbe', 'generateBasicDataSbe'
+}
 
 // IR only, no stubs: the Java side speaks the cluster protocol through io.aeron.cluster.codecs, so the
 // mirror schema's codecs would be dead classes in the jar. The IR alone is what SbeLogPrinter needs to
@@ -128,6 +151,29 @@ tasks.register('generateClusterSbeIr', JavaExec) {
     doFirst { sbeGeneratedSrcDir.mkdirs() }
 }
 
+// Same again for the order family: its codecs are C++-only (sbe-order.xml is the order application's,
+// and no Java consumer exists), so Java stubs would be dead classes. The IR alone is what lets
+// SbeLogPrinter name an order payload instead of printing it as an undecodable schema/template pair.
+tasks.register('generateOrderSbeIr', JavaExec) {
+    description = 'Generate the SBE IR (no codecs) from sbe-order.xml for SbeLogPrinter'
+    classpath   = configurations.sbeCodegen
+    mainClass   = 'uk.co.real_logic.sbe.SbeTool'
+
+    jvmArgs '--add-opens=java.base/jdk.internal.misc=ALL-UNNAMED'
+
+    systemProperty 'sbe.output.dir',      sbeGeneratedSrcDir.absolutePath
+    systemProperty 'sbe.xinclude.aware',  'true'
+    systemProperty 'sbe.generate.stubs',  'false'
+    systemProperty 'sbe.generate.ir',     'true'
+
+    args new File(sbeResourceDir, 'sbe-order.xml')
+
+    inputs.file  new File(sbeResourceDir, 'sbe-order.xml')
+    outputs.file new File(sbeGeneratedSrcDir, 'sbe-order.sbeir')
+
+    doFirst { sbeGeneratedSrcDir.mkdirs() }
+}
+
 // The SBE tasks above emit a .sbeir IR file alongside the generated Java (sbe.generate.ir). Copy those
 // into a resource dir so they ship inside the jar and SbeLogPrinter can decode a recording without a
 // path into build/. Copied rather than adding sbeGeneratedSrcDir to `resources` directly: that dir is
@@ -137,7 +183,8 @@ def sbeIrResourceDir = layout.buildDirectory.dir('generated/resources/sbeir')
 
 tasks.register('collectSbeIr', Copy) {
     description = 'Stage the generated SBE IR files as jar resources for SbeLogPrinter'
-    dependsOn 'generateUnsequencedSbe', 'generateSequencedSbe', 'generateFrameSbe', 'generateClusterSbeIr'
+    dependsOn 'generateUnsequencedSbe', 'generateFrameSbe', 'generateSessionSbe', 'generateBasicDataSbe',
+              'generateClusterSbeIr', 'generateOrderSbeIr'
     from(sbeGeneratedSrcDir) {
         include '*.sbeir'
         into 'org/limitless/phixeron/tools/sbeir'

@@ -4,9 +4,12 @@ _Normative specification, 2026-09-02. The **what** and **how** only; the design 
 behind each decision and the alternatives weighed are in `doc/seqeron-protocol.md`, which this
 condenses and does not supersede. Rule identifiers are that document's, unchanged._
 
-> **Status: specification of the target, not of the tree.** The tree ships the schema *pair*
-> (`sbe-unsequenced.xml` 200 / `sbe-sequenced.xml` 202). This states what `doc/future-arch.md` §11
-> step 3 lands; §15 is the migration. Statements about today's code are marked _(today)_.
+> **Status: specification of the target, not of the tree.** The tree is mid-§15: every message family
+> is on a payload now (`sbe-frame.xml` 210 with core, plus `sbe-order.xml` 220, `sbe-session.xml` 230
+> and `sbe-basicdata.xml` 240), and `sbe-sequenced.xml` is gone. What is left of the old pair is
+> `sbe-unsequenced.xml`, holding the node-local replay control protocol alone, which §15 step 5 moves
+> to `seqeron-replay.xml`. This states what `doc/future-arch.md` §11 step 3 lands; §15 is the migration
+> and records what has landed so far. Statements about today's code are marked _(today)_.
 >
 > **Normative language.** MUST / MUST NOT / SHOULD as usual. Rules carry identifiers — **F-n** frame,
 > **T-n** transport, **S-n** sequencer, **P-n** payload, **C-n** registration, **R-n** replay, **V-n**
@@ -209,6 +212,12 @@ core frame per row of the file's `<protocols>` section (§6.4).
 | 0 | unset — **invalid on the wire** | fixed by this document |
 | 1 | **seqeron core** (`seqeron-frame.xml`, schema 210) | fixed by this document; **implicit** — never registered (**C-1**) |
 | 2… | one per application schema or encoding | the deployment's to allocate; **registered only where the protocol is shared** |
+
+_(This deployment today, all four allocated by §15 steps 3 and 4: **2** = the order family
+(`sbe-order.xml` 220, the order flow and the portfolio query over it), **3** = the FIX session family
+(`sbe-session.xml` 230, both edges' session layer), **4** = reference data (`sbe-basicdata.xml` 240).
+**4** is the only one that crosses application boundaries and so the only one §6.4's example declares;
+2 and 3 are private between the processes that speak them and need no row.)_
 
 **The registry's subject is the shared protocol.** A `payloadId` that one application publishes and
 that same application alone reads is **out of scope**: seqeron neither allocates it nor requires it
@@ -557,15 +566,15 @@ MUST NOT throw (§9.4).
 | # | reject when | today? |
 | --- | --- | --- |
 | 1 | `length < MIN_INGRESS_LENGTH` (28), or `length > MAX_INGRESS_LENGTH` (§12) | ✓ floor; ceiling **new** |
-| 2 | `MessageHeader.schemaId != 210`, or `MessageHeader.version != 0` | ✓ schema (against 200); version **new** |
-| 3 | `MessageHeader.templateId != Unsequenced` | **new** |
-| 4 | `blockLength != unsequencedHeader.ENCODED_LENGTH` (18), exactly | **new** (today: a floor of 17) |
-| 5 | the var-data length prefix is not a usable payload length: it is 65535 (`varDataEncoding`'s `nullValue`), or `MIN_INGRESS_LENGTH + payloadLength != length` | **new** |
+| 2 | `MessageHeader.schemaId != 210`, or `MessageHeader.version != 0` | ✓ |
+| 3 | `MessageHeader.templateId != Unsequenced` | ✓ |
+| 4 | `blockLength != unsequencedHeader.ENCODED_LENGTH` (18), exactly | ✓ |
+| 5 | the var-data length prefix is not a usable payload length: it is 65535 (`varDataEncoding`'s `nullValue`), or `MIN_INGRESS_LENGTH + payloadLength != length` | ✓ |
 | 6 | `sourceId == -1` — reserved for the cluster's own frames (**F-4**) | **new** |
-| 7 | `payloadId == 0` | **new** |
-| 8 | `payloadId == 1` and the payload is shorter than the 8-byte `MessageHeader`, or that header's `schemaId` is not 210 (**P-4**) | **new** |
-| 9 | `payloadId == 1` and the inner `templateId` is synthesis-only (`ClusterHeartbeat`, `LeadershipChanged`) | **new** |
-| 10 | `payloadId == 1` and the frame fails **S-6** — a `GatewayStarted` whose payload is shorter than the 8-byte `MessageHeader` plus the **sequencer's own** `GatewayStarted` block length (**16 bytes in all**), or whose `gatewayId` names no roster row, or whose row names a different `gatewaySourceId`; or another core frame claiming a rostered `sourceId` on an unbound session | **new** |
+| 7 | `payloadId == 0` | ✓ |
+| 8 | `payloadId == 1` and the payload is shorter than the 8-byte `MessageHeader`, or that header's `schemaId` is not 210 (**P-4**) | ✓ |
+| 9 | `payloadId == 1` and the inner `templateId` is synthesis-only (`ClusterHeartbeat`, `LeadershipChanged`) | ✓ |
+| 10 | `payloadId == 1` and the frame fails **S-6** — a `GatewayStarted` whose payload is shorter than the 8-byte `MessageHeader` plus the **sequencer's own** `GatewayStarted` block length (**16 bytes in all**), or whose `gatewayId` names no roster row, or whose row names a different `gatewaySourceId`; or another core frame claiming a rostered `sourceId` on an unbound session | ✓ body floors; roster and session checks **new** |
 
 Rejection logs and counts (§9.6) and emits nothing — neither the rejected message nor any report of
 it — and `globalSeqNo` does not move.
@@ -576,8 +585,10 @@ How to implement the sharp ones:
   `blockLength` puts the var-data prefix inside the header composite; a long one, or a prefix short of
   the frame end, silently drops bytes and re-emits the frame a size smaller, deterministically, on every
   node. Condition 4 compares against the composite's own `ENCODED_LENGTH`, not a hand-written constant.
-- **The `MAX_BLOCK_LENGTH` check is retired** _(today)_ — under the envelope the block is a constant and
-  the only varying length is the payload's, bounded by condition 1.
+  _(Today the 28-byte floor is `Sequencer.MIN_FRAME_LENGTH`.)_
+- **The `MAX_BLOCK_LENGTH` check is retired** — under the envelope the block is a constant and the only
+  varying length is the payload's, bounded by condition 1. _(Retired in the tree with §15 step 4, which
+  took the last traffic off the copy-through branch and the branch with it.)_
 - **The ceiling is a compiled-in protocol constant, never a transport read per frame.** **S-3** forbids
   checking against a node's MTU: a node provisioned smaller than its peers would fork `globalSeqNo`. The
   per-node part is **checked at start-up, never per frame** — a node whose ingress or tap MTU cannot
@@ -593,9 +604,9 @@ How to implement the sharp ones:
   producer-declared length bounds nothing. The constant is `8 + GatewayStartedDecoder.BLOCK_LENGTH` = 16
   (`gatewayId`, `firstConnectionId`), and the same rule holds for any core template a later condition
   reads a body field from.
-- **Condition 6 is an int32 compare** — no enum to decode, nothing that can throw. _(Today it is an
-  `Origin` equality, and `Origin.get` throws `IllegalArgumentException` in Java and `[E103]` in C++ on
-  any out-of-range byte, which §9.4 forbids on this path.)_
+- **Condition 6 is an int32 compare** — no enum to decode, nothing that can throw. The `Origin` enum it
+  replaces is already gone (§15 step 1), so what is left is the compare itself; until it lands, a frame
+  submitted at the reserved `sourceId` is sequenced like any other.
 - **Condition 8 precedes 9 and 10** and is the sequencer's instance of **P-4**: reading a `templateId`
   out of an unverified payload is reading a foreign schema's numbering as core's.
 
@@ -905,35 +916,77 @@ crossed the `payloadId` boundary in the wrong direction.
 
 ## 15. Landing it (`doc/future-arch.md` §11 step 3)
 
-Each sub-step green before the next, all in one repo:
+Each sub-step green before the next, all in one repo. The numbering is fixed — `sbe-frame.xml` and
+`doc/future-arch.md` cite these step numbers — so a landed step keeps its place and records what
+actually landed.
 
-1. Add `seqeron-frame.xml` with the two envelopes, the two renamed composites and the ten core
-   payloads (prefix-extended,
-   `payloadId` moved in, `origin` deleted, unpadded) — and, in the same wire change, give the FIX
-   session families in the running pair their own direction field. → both codegen paths green, the
-   `HeaderDecoder`/`HeaderEncoder` rename landed across all 17 files, both edges reading direction from
-   the payload, copy-through unchanged, no consumer routed through an envelope yet.
-2. Land §13.1's payload pipe and its base64 frame line, before anything on the wire is opaque. →
-   `SbeLogPrinter` renders a frame's payload beside its `globalSeqNo` and round-trips arbitrary bytes;
-   no schema and no frame changes.
-3. Move `NewOrderSingle`/`ExecutionReport` onto a payload first. Blast radius: the C++ edge
+1. **Landed.** Add the frame schema with the two envelopes, the two renamed composites and the ten core
+   payloads (prefix-extended, `payloadId` moved in, `origin` deleted, unpadded) — and, in the same wire
+   change, give the FIX session families in the running pair their own direction field. → both codegen
+   paths green, the `unsequencedHeader`/`sequencedHeader` rename landed across the pair and every
+   consumer of it, both edges reading direction from the payload, copy-through unchanged. The file is
+   `src/main/resources/sbe-frame.xml` and says `phixeron` throughout: the `seqeron` rename goes with the
+   repo split (`doc/future-arch.md` §11 step 1), not with a protocol step, each of which is already a
+   wire change on its own. **Step 6 landed in the same change** — see there for why it could not wait.
+2. **Postponed.** Land §13.1's payload pipe and its base64 frame line, before anything on the wire is
+   opaque. → `SbeLogPrinter` renders a frame's payload beside its `globalSeqNo` and round-trips
+   arbitrary bytes; no schema and no frame changes. It gates the **application** families, not core: a
+   core payload is decoded by the same tool that reads the frame around it, so this is a prerequisite
+   for step 3 rather than for step 1. `SbeLogPrinter` already unwraps the envelope and prints the core
+   payload inline; what is missing is rendering a payload it cannot decode.
+3. **Landed.** Move `NewOrderSingle`/`ExecutionReport` onto a payload first. Blast radius: the C++ edge
    (`FixIngressHandler`, `FixConnection`, `Conversions`) plus `OrderExecServer`. → C++ suites and C++
-   e2e green; that family has **one** codec set instead of a 200/202 pair.
-4. Move the rest: the nine remaining FIX application messages and `ClientSessionEvent` onto their own
-   applications' `payloadId`s, and the shared-protocol family onto `payloadId` 4 — whose owning repo
-   must be settled before this step, not after. → both all-Java e2e and the C++ e2e green.
+   e2e green; that family has **one** codec set instead of a 200/202 pair. It is
+   `src/main/resources/sbe-order.xml`, **schema 220**, **`payloadId` 2** — the first the deployment
+   allocates, since 0 and 1 are this document's and §6.4's example holds 4 for the shared-protocol
+   family. C++ only: no Java consumer exists, so the pair's Java codecs for it are simply gone, and
+   `SequencerTest`'s copy-through exemplar is a `Heartbeat` now. The six order-only enums (`Side`,
+   `OrdType`, `TimeInForce`, `HandlInst`, `ExecType`, `OrdStatus`) moved with the two messages rather
+   than being duplicated — no remaining message in the pair used them. It is **not** registered
+   (§6.3): that is step 8's `PayloadIdRegistered`, and **C-2** means the wire behaves identically
+   until then.
+4. **Landed.** Move the rest: the FIX session family and `ClientSessionEvent` to `sbe-session.xml`,
+   **schema 230, `payloadId` 3** — one schema, because they are one protocol at two fidelities (this
+   edge's structured templates, the Artio legs' opaque bytes), and when the C++ edge retires the seven
+   templates go while `ClientSessionEvent` stays. `PortfolioQuery{Request,Reply}` fold into
+   `sbe-order.xml` rather than taking a number of their own: they are the same application, between the
+   same two processes as the order flow, and a `payloadId` names a schema, never a message. Reference
+   data goes to `sbe-basicdata.xml`, **schema 240, `payloadId` 4** — the one protocol here that crosses
+   application boundaries, and so the only one §6.4's example declares. Its owning repo settles with the
+   repo split (`doc/future-arch.md` §11 step 1); until then every schema lives at the shared root, as
+   `sbe-order.xml` already did. → both all-Java e2e and the C++ e2e green.
+
+   **Step 7's code half landed here**, because this step is what makes it true: with the last family on
+   a payload, nothing publishes a bare schema-200 message to ingress at all, so `sequenceBare` and the
+   `schemaId` dispatcher above it had no reachable traffic and no test that could encode any. Gone with
+   them: `MIN_INGRESS_LENGTH`, `MAX_BLOCK_LENGTH`, `HEADER_GROWTH`'s bare meaning, the lockstep
+   schema-version assertion, the bare branch of `unwrapFrame` and its Java twin, `NO_PAYLOAD_ID` — and
+   `sbe-sequenced.xml` itself, which was left with no message in it. Same shape as step 6 landing inside
+   step 1: the deletion is not a separate change, it is what the move *is*.
 5. Extract the replay set into `seqeron-replay.xml`. Namespace change only. → both
    `ReplayerRecoveryTest`s green.
-6. Repoint every consumer at core's nine existing frames as `payloadId` 1 — they are already defined
-   once in `seqeron-frame.xml` beside the envelope (step 1); this deletes the pair's copies. →
-   `HEADER_GROWTH` and the mirrored definitions gone; the sequencer decodes no `payloadId` but 1.
-7. Delete the old pair. → `:cluster` and `core_tests` build and pass with **no application message
-   defined anywhere in seqeron's schemas**.
-8. Add `PayloadIdRegistered`, convert the topology file to §6.4's document and schema, and teach
-   `SbeLogPrinter` to label payloads from it. The conversion is a hard cutover — the roster files and
-   every caller change in one commit — but it is **not** a wire change: past the new rows the frames the
-   loader publishes are unchanged. → a payload prints under its protocol's name, an unregistered one
+6. **Landed with step 1, less its last clause.** Repoint every consumer at core's nine existing frames
+   as `payloadId` 1 — they are already defined once in the frame schema beside the envelope (step 1);
+   this deletes the pair's copies. → the pair's copies are gone, and the sequencer decodes no
+   `payloadId` but 1. It could not wait for steps 3–5: **a core payload carries no `header` field**
+   (§7.1), so moving core off the pair is what brings the envelope live, and bringing the envelope live
+   is what moving core off the pair means. `HEADER_GROWTH` survived here, still measuring the bare
+   copy-through path; step 4 took that path away and left it measuring the envelope's own 18→34 growth.
+7. **Half landed with step 4** — see there for what went and why. `sbe-sequenced.xml` is deleted and
+   the copy-through branch with it. What remains is `sbe-unsequenced.xml`, which holds nothing but the
+   replay control protocol: it goes when step 5 moves that to `seqeron-replay.xml`. → `:cluster` and
+   `core_tests` build and pass with **no application message defined anywhere in seqeron's schemas**.
+8. **Schema half landed with step 1.** `PayloadIdRegistered` is defined — §7's tenth core payload — and
+   nothing publishes it. What remains: convert the topology file to §6.4's document and schema, and
+   teach `SbeLogPrinter` to label payloads from it. The conversion is a hard cutover — the roster files
+   and every caller change in one commit — but it is **not** a wire change: past the new rows the frames
+   the loader publishes are unchanged. → a payload prints under its protocol's name, an unregistered one
    under its number, no frame affected either way, both e2e suites green with no new start-up step.
 9. §14's suite, both languages. → it fails on a deliberate field reorder and on a renumbered core frame.
 
 **Steps 1 and 3–6 are each a wire change**, and **V-3** applies to each.
+
+**Between step 1 and step 4 the tap carried two shapes** — schema 210 envelopes beside bare schema 202
+messages — and `Sequencer.sequenceMessage` was a `schemaId` dispatcher over the two, a knowing,
+temporary divergence from **§9.2 condition 2**. Step 4 ended it: every frame on the tap is an envelope,
+every consumer dispatches on `(payloadId, templateId)`, and condition 2 holds as written.

@@ -21,7 +21,9 @@
 
 #include "org/limitless/phixeron/replayer/client/ReplayerRecovery.hpp"
 #include "org/limitless/phixeron/util/Logger.hpp"
-#include "org_limitless_phixeron_sbe_sequenced/Heartbeat.h"
+#include "org_limitless_phixeron_sbe_frame/ClusterHeartbeat.h"
+#include "org_limitless_phixeron_sbe_frame/MessageHeader.h"
+#include "org_limitless_phixeron_sbe_frame/Sequenced.h"
 #include "org_limitless_phixeron_sbe_unsequenced/ReplayPending.h"
 #include "org_limitless_phixeron_sbe_unsequenced/ReplayUnavailable.h"
 #include "org_limitless_phixeron_sbe_unsequenced/Replaying.h"
@@ -29,7 +31,7 @@
 namespace org::limitless::phixeron::replayer::client {
 namespace {
 
-namespace seq = org::limitless::phixeron::sbe::sequenced;
+namespace frm = org::limitless::phixeron::sbe::frame;
 namespace diag = org::limitless::phixeron::util;
 
 // Captures every LoggerEvent reported while in scope, in place of the installed default
@@ -132,19 +134,30 @@ struct Client final : ReplayerRecoveryActions
     ReplayerRecovery recovery;
 };
 
-// One Heartbeat frame (template id 48) at the given globalSeqNo — clear of the
-// ClientConnected/ClientDisconnected/LeadershipChanged special ids (1/2/5), so it always reaches
-// onSequenced rather than being intercepted as a lifecycle/leadership event.
+// One frame carrying a core ClusterHeartbeat payload (template id 16) at the given globalSeqNo — clear
+// of the ClientConnected/ClientDisconnected/LeadershipChanged special ids (1/2/5), so it always reaches
+// onSequenced rather than being intercepted as a lifecycle/leadership event. The twin of the Java
+// ReplayerRecoveryTest's heartbeatBuffer; keep the two in step.
 std::vector<std::uint8_t> encodeHeartbeat(const std::int64_t globalSeqNo)
 {
+    alignas(16) std::array<std::uint8_t, 64> payload{};
+    frm::ClusterHeartbeat heartbeat;
+    heartbeat.wrapAndApplyHeader(reinterpret_cast<char*>(payload.data()), 0, payload.size());
+    const auto payloadLength =
+        static_cast<std::uint16_t>(frm::MessageHeader::encodedLength() + heartbeat.encodedLength());
+
     std::vector<std::uint8_t> buf(256, 0);
-    seq::Heartbeat enc;
-    enc.wrapAndApplyHeader(reinterpret_cast<char*>(buf.data()), 0, buf.size());
-    enc.header().sourceId(1).connectionId(0).sessionId(1).globalSeqNo(globalSeqNo).timestamp(0);
-    enc.direction(seq::Direction::Value::Client);
-    enc.seqNum(1).sendingTimeMs(0).possDupFlag(seq::PossDupFlag::Value::NULL_VALUE);
-    enc.testReqID()[0] = '\0';
-    buf.resize(enc.sbePosition());
+    frm::Sequenced frame;
+    frame.wrapAndApplyHeader(reinterpret_cast<char*>(buf.data()), 0, buf.size());
+    frame.header()
+        .sourceId(1)
+        .connectionId(0)
+        .sessionId(0)
+        .payloadId(sequencer::CORE_PAYLOAD_ID)
+        .globalSeqNo(globalSeqNo)
+        .timestamp(globalSeqNo * 1000);
+    frame.putPayload(reinterpret_cast<const char*>(payload.data()), payloadLength);
+    buf.resize(frm::MessageHeader::encodedLength() + frame.encodedLength());
     return buf;
 }
 

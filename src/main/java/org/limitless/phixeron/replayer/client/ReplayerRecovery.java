@@ -125,7 +125,7 @@ public final class ReplayerRecovery {
     private final LeadershipHandler onLeadershipChanged;
     private final CaughtUpHandler onCaughtUp;
 
-    private final FrameView view = new FrameView();
+    private final SequencedFrameDecoder view = new SequencedFrameDecoder();
     private final LeadershipChangedDecoder leadershipChanged = new LeadershipChangedDecoder();
     private final org.limitless.phixeron.sbe.unsequenced.MessageHeaderDecoder controlHeader =
         new org.limitless.phixeron.sbe.unsequenced.MessageHeaderDecoder();
@@ -780,7 +780,7 @@ public final class ReplayerRecovery {
 
         // A template id means nothing without the protocol it belongs to: core's 5 is some other payload's
         // 5, so both halves have to match before a frame is read as a leadership change.
-        if (view.payloadId() == FrameView.CORE_PAYLOAD_ID && templateId == LEADERSHIP_CHANGED_TEMPLATE_ID) {
+        if (view.payloadId() == SequencedFrameDecoder.CORE_PAYLOAD_ID && templateId == LEADERSHIP_CHANGED_TEMPLATE_ID) {
             leadershipChanged.wrap(buffer, view.payloadOffset() + MessageHeaderDecoder.ENCODED_LENGTH,
                                    view.blockLength(), view.version());
             currentLeaderMemberId = leadershipChanged.newLeaderMemberId();

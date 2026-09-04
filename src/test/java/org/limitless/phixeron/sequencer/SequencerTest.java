@@ -14,10 +14,9 @@ import org.limitless.phixeron.sbe.frame.ClientDisconnectedDecoder;
 import org.limitless.phixeron.sbe.frame.ClusterHeartbeatDecoder;
 import org.limitless.phixeron.sbe.frame.GatewayActiveDecoder;
 import org.limitless.phixeron.sbe.frame.LeadershipChangedDecoder;
-import org.limitless.phixeron.sbe.sequenced.LogoutDecoder;
-import org.limitless.phixeron.sbe.sequenced.MessageHeaderDecoder;
-import org.limitless.phixeron.sbe.sequenced.NewOrderSingleDecoder;
-import org.limitless.phixeron.sbe.sequenced.SequencedHeaderDecoder;
+import org.limitless.phixeron.sbe.frame.MessageHeaderDecoder;
+import org.limitless.phixeron.sbe.session.HeartbeatDecoder;
+import org.limitless.phixeron.sbe.session.LogoutDecoder;
 
 /**
  * Unit tests for the sequencer's replicated state machine.
@@ -31,7 +30,7 @@ import org.limitless.phixeron.sbe.sequenced.SequencedHeaderDecoder;
  *
  * <p>The invariants under test are the ones a replicated state machine cannot be allowed to break:
  * the same log produces byte-identical output on every node, {@code globalSeqNo} is gap-free across
- * every event type, and the schema-200 → schema-202 copy-through preserves every byte past the
+ * every event type, and the copy-through preserves every byte of the payload past the
  * header.
  */
 class SequencerTest {
@@ -43,12 +42,17 @@ class SequencerTest {
     private static final long SESSION_ID = 0x5EE51_0000L;
     private static final long TIMESTAMP = 1_700_000_000_000L;
 
-    /** One past the largest blockLength the framing header's uint16 can carry (65535 is SBE's null). */
-    private static final int MAX_UINT16 = 65535;
+    /**
+     * The FIX session family's payloadId (sbe-session.xml, schema 230). Used here as an exemplar of a
+     * payload the sequencer does not own: it is copied through opaque, and this test decodes it only to
+     * prove that every byte survived.
+     */
+    private static final int SESSION_PAYLOAD_ID = 3;
 
-    /** Ingress header composite is 16 bytes, sequenced is 32 — the delta every egress frame grows by. */
-    private static final int HEADER_GROWTH = org.limitless.phixeron.sbe.sequenced.SequencedHeaderEncoder.ENCODED_LENGTH -
-        org.limitless.phixeron.sbe.unsequenced.UnsequencedHeaderEncoder.ENCODED_LENGTH;
+    /** unsequencedHeader is 18 bytes, sequencedHeader 34 — the delta every sequenced frame grows by. */
+    private static final int HEADER_GROWTH =
+        org.limitless.phixeron.sbe.frame.SequencedHeaderDecoder.ENCODED_LENGTH -
+        org.limitless.phixeron.sbe.frame.UnsequencedHeaderDecoder.ENCODED_LENGTH;
 
     /**
      * Bytes a {@code Sequenced} frame adds around its payload: the framing header, the 34-byte
@@ -58,6 +62,10 @@ class SequencerTest {
         org.limitless.phixeron.sbe.frame.MessageHeaderDecoder.ENCODED_LENGTH +
         org.limitless.phixeron.sbe.frame.SequencedHeaderDecoder.ENCODED_LENGTH +
         org.limitless.phixeron.sbe.frame.SequencedDecoder.payloadHeaderLength();
+
+    /** Where a payload's body starts in an encoded frame: the envelope, then the payload's own header. */
+    private static final int SESSION_PAYLOAD_BODY_OFFSET =
+        FRAME_OVERHEAD + org.limitless.phixeron.sbe.session.MessageHeaderDecoder.ENCODED_LENGTH;
 
     /** Offset of the payload's length prefix in an {@code Unsequenced} frame, and of the payload itself. */
     private static final int INGRESS_PREFIX_OFFSET = org.limitless.phixeron.sbe.frame.MessageHeaderDecoder.ENCODED_LENGTH +
@@ -76,38 +84,29 @@ class SequencerTest {
     @Test
     @DisplayName("sequencing an ingress message preserves every field past the header composite")
     void sequenceMessagePreservesEveryFieldPastTheHeader() {
-        final int ingressLength = encodeIngressNewOrderSingle(ingress, 0);
+        final int ingressLength = encodeIngressHeartbeat(ingress, 0);
 
         final int length = sequencer.sequenceMessage(ingress, 0, ingressLength, SESSION_ID, TIMESTAMP);
 
-        final NewOrderSingleDecoder decoded = decodeNewOrderSingle(sequencer.buffer(), length);
+        final HeartbeatDecoder decoded = decodeHeartbeat(sequencer.buffer());
         // Every business field survives the opaque byte copy unread and unmodified.
+        assertEquals("Client", decoded.direction().name());
         assertEquals("CLIENT", decoded.sender().trim());
         assertEquals("PHIXERON", decoded.target().trim());
         assertEquals(4321L, decoded.seqNum());
         assertEquals(1_699_999_999_000L, decoded.sendingTimeMs());
-        assertEquals("ACCT01", decoded.account().trim());
-        assertEquals("CLORD-000000000001", decoded.clOrdID().trim());
-        assertEquals("AAPL", decoded.symbol().trim());
-        assertEquals("Sell", decoded.side().name());
-        assertEquals("Limit", decoded.ordType().name());
-        assertEquals("Manual", decoded.handlInst().name());
-        assertEquals("FillOrKill", decoded.timeInForce().name());
         assertEquals("Yes", decoded.possDupFlag().name());
-        assertEquals(1_699_999_999_500L, decoded.transactTime());
-        assertEquals(2500L, decoded.orderQty());
-        assertEquals(19_950_000L, decoded.price());
-        assertEquals("partial fill expected", decoded.text().trim());
+        assertEquals("TESTREQ-0001", decoded.testReqID().trim());
     }
 
     @Test
     @DisplayName("sequencing stamps the header without disturbing the submitter's identity")
     void sequenceMessageStampsHeader() {
-        final int ingressLength = encodeIngressNewOrderSingle(ingress, 0);
+        final int ingressLength = encodeIngressHeartbeat(ingress, 0);
 
         final int length = sequencer.sequenceMessage(ingress, 0, ingressLength, SESSION_ID, TIMESTAMP);
 
-        final SequencedHeaderDecoder header = decodeNewOrderSingle(sequencer.buffer(), length).header();
+        final org.limitless.phixeron.sbe.frame.SequencedHeaderDecoder header = frameHeaderOf(sequencer.buffer());
         // Carried through from the ingress message…
         assertEquals(SOURCE_ID, header.sourceId());
         assertEquals(CONNECTION_ID, header.connectionId());
@@ -120,16 +119,14 @@ class SequencerTest {
     @Test
     @DisplayName("var-data (Logout text) survives the copy-through")
     void sequenceMessagePreservesVarData() {
-        // NewOrderSingle is all fixed block; Logout carries var-data, so it exercises the copyLength
+        // Heartbeat is all fixed block; Logout carries var-data, so it exercises the copyLength
         // arithmetic past the end of the fixed block as well.
         final String reason = "counterparty requested disconnect";
         final int ingressLength = encodeIngressLogout(ingress, 0, reason);
 
         final int length = sequencer.sequenceMessage(ingress, 0, ingressLength, SESSION_ID, TIMESTAMP);
 
-        final MessageHeaderDecoder messageHeader = new MessageHeaderDecoder().wrap(sequencer.buffer(), 0);
-        final LogoutDecoder decoded = new LogoutDecoder().wrap(sequencer.buffer(), MessageHeaderDecoder.ENCODED_LENGTH,
-                                                               messageHeader.blockLength(), messageHeader.version());
+        final LogoutDecoder decoded = decodeLogout(sequencer.buffer());
         assertEquals("CLIENT", decoded.sender().trim());
         assertEquals(99L, decoded.seqNum());
         assertEquals(reason, decoded.text());
@@ -138,32 +135,32 @@ class SequencerTest {
     }
 
     @Test
-    @DisplayName("egress blockLength grows by exactly the header composite delta")
-    void egressBlockLengthGrowsByHeaderDelta() {
-        final int ingressLength = encodeIngressNewOrderSingle(ingress, 0);
-        final int ingressBlockLength =
-            new org.limitless.phixeron.sbe.unsequenced.MessageHeaderDecoder().wrap(ingress, 0).blockLength();
+    @DisplayName("the tap frame is a Sequenced envelope, its block exactly the header composite")
+    void egressFrameIsASequencedEnvelope() {
+        // The ingress and tap templates differ, and their blockLengths differ by exactly the stamp: the
+        // envelope's block IS its header composite, so anything else here means the two are out of step.
+        final int ingressLength = encodeIngressHeartbeat(ingress, 0);
+        final int ingressBlockLength = new MessageHeaderDecoder().wrap(ingress, 0).blockLength();
 
         sequencer.sequenceMessage(ingress, 0, ingressLength, SESSION_ID, TIMESTAMP);
 
         final MessageHeaderDecoder egress = new MessageHeaderDecoder().wrap(sequencer.buffer(), 0);
         assertEquals(ingressBlockLength + HEADER_GROWTH, egress.blockLength());
-        assertEquals(NewOrderSingleDecoder.TEMPLATE_ID, egress.templateId());
-        assertEquals(NewOrderSingleDecoder.SCHEMA_ID, egress.schemaId());
+        assertEquals(org.limitless.phixeron.sbe.frame.SequencedDecoder.TEMPLATE_ID, egress.templateId());
+        assertEquals(MessageHeaderDecoder.SCHEMA_ID, egress.schemaId());
     }
 
     @Test
-    @DisplayName("the egress version describes the ingress block, not this build's schema")
-    void egressVersionIsCarriedFromTheIngressFrame() {
-        // Everything past the header is copied through verbatim, so the version describing it is the
-        // producer's. Stamping this build's over a shorter block would have consumers gate optional
-        // fields on a version those bytes do not have, and read past the block into var-data.
-        final int ingressLength = encodeIngressNewOrderSingle(ingress, 0);
-        new org.limitless.phixeron.sbe.unsequenced.MessageHeaderEncoder().wrap(ingress, 0).version(3);
+    @DisplayName("a frame declaring a version this build does not encode is skipped")
+    void frameFromAForeignVersionIsSkipped() {
+        // The frame layer's own offsets are what every later read is measured from, and a version this
+        // build has never encoded says they may not be where this code expects.
+        final int ingressLength = encodeIngressHeartbeat(ingress, 0);
+        new org.limitless.phixeron.sbe.frame.MessageHeaderEncoder().wrap(ingress, 0)
+            .version(MessageHeaderDecoder.SCHEMA_VERSION + 1);
 
-        sequencer.sequenceMessage(ingress, 0, ingressLength, SESSION_ID, TIMESTAMP);
-
-        assertEquals(3, new MessageHeaderDecoder().wrap(sequencer.buffer(), 0).version());
+        assertEquals(Sequencer.NO_FRAME, sequencer.sequenceMessage(ingress, 0, ingressLength, SESSION_ID, TIMESTAMP));
+        assertEquals(0L, sequencer.globalSeqNo());
     }
 
     @Test
@@ -171,13 +168,13 @@ class SequencerTest {
     void sequenceMessageHonoursOffset() {
         // Aeron hands fragments at an arbitrary offset into a shared term buffer, never 0.
         final int offset = 96;
-        final int ingressLength = encodeIngressNewOrderSingle(ingress, offset);
+        final int ingressLength = encodeIngressHeartbeat(ingress, offset);
 
         final int length = sequencer.sequenceMessage(ingress, offset, ingressLength, SESSION_ID, TIMESTAMP);
 
-        final NewOrderSingleDecoder decoded = decodeNewOrderSingle(sequencer.buffer(), length);
-        assertEquals("AAPL", decoded.symbol().trim());
-        assertEquals(CONNECTION_ID, decoded.header().connectionId());
+        final HeartbeatDecoder decoded = decodeHeartbeat(sequencer.buffer());
+        assertEquals("TESTREQ-0001", decoded.testReqID().trim());
+        assertEquals(CONNECTION_ID, frameHeaderOf(sequencer.buffer()).connectionId());
     }
 
     // ── globalSeqNo ───────────────────────────────────────────────────────────
@@ -189,7 +186,7 @@ class SequencerTest {
         // consumer that sees a gap treats it as lost data and re-walks history, so this must hold for
         // every emitting path. TCP lifecycle events are ordinary forwarded ingress — the gateway
         // publishes them — so they go through sequenceMessage here, not a synthesized encoder.
-        final int ingressLength = encodeIngressNewOrderSingle(ingress, 0);
+        final int ingressLength = encodeIngressHeartbeat(ingress, 0);
         final MutableDirectBuffer lifecycle = new ExpandableArrayBuffer(64);
 
         final int connectedLength = encodeIngressClientConnected(lifecycle, 0);
@@ -236,10 +233,10 @@ class SequencerTest {
         // — and again on every replay of it, leaving the log unreplayable and the cluster unrecoverable
         // without surgery (doc/review-2026-07-25.md #7). Before the length check this computed a
         // negative copyLength and threw out of putBytes.
-        final int ingressLength = encodeIngressNewOrderSingle(ingress, 0);
+        final int ingressLength = encodeIngressHeartbeat(ingress, 0);
 
         assertEquals(Sequencer.NO_FRAME,
-                     sequencer.sequenceMessage(ingress, 0, Sequencer.MIN_INGRESS_LENGTH - 1, SESSION_ID, TIMESTAMP));
+                     sequencer.sequenceMessage(ingress, 0, Sequencer.MIN_FRAME_LENGTH - 1, SESSION_ID, TIMESTAMP));
         assertEquals(0L, sequencer.globalSeqNo(), "a skipped message must consume no sequence number");
 
         // The next good message is still globalSeqNo 1: consumers detect loss by gaps, so a skip has to
@@ -250,10 +247,10 @@ class SequencerTest {
     @Test
     @DisplayName("a frame from a foreign schema is skipped")
     void foreignSchemaIsSkipped() {
-        // Every offset sequenceMessage reads is a schema-200 offset; under another schema they address
+        // Every offset sequenceMessage reads is a schema-210 offset; under another schema they address
         // something else entirely, so the frame is refused rather than re-stamped as if it were ours.
-        final int ingressLength = encodeIngressNewOrderSingle(ingress, 0);
-        new org.limitless.phixeron.sbe.unsequenced.MessageHeaderEncoder().wrap(ingress, 0).schemaId(999);
+        final int ingressLength = encodeIngressHeartbeat(ingress, 0);
+        new org.limitless.phixeron.sbe.frame.MessageHeaderEncoder().wrap(ingress, 0).schemaId(999);
 
         assertEquals(Sequencer.NO_FRAME, sequencer.sequenceMessage(ingress, 0, ingressLength, SESSION_ID, TIMESTAMP));
         assertEquals(0L, sequencer.globalSeqNo());
@@ -365,40 +362,24 @@ class SequencerTest {
     }
 
     @Test
-    @DisplayName("a blockLength the frame cannot back is skipped")
-    void oversizedBlockLengthIsSkipped() {
-        // blockLength feeds both the egress blockLength and the bounded Gateway decode, so a value
-        // larger than the frame carries is rejected before either uses it.
-        final int ingressLength = encodeIngressNewOrderSingle(ingress, 0);
-        new org.limitless.phixeron.sbe.unsequenced.MessageHeaderEncoder().wrap(ingress, 0).blockLength(ingressLength);
+    @DisplayName("a blockLength that is not the header composite's exact length is skipped")
+    void blockLengthThatIsNotTheHeaderCompositeIsSkipped() {
+        // An equality, not a floor: the envelope's block IS its header composite, so a short blockLength
+        // puts the payload's length prefix inside the header and a long one silently drops bytes off the
+        // end. Either is written into authoritative, unreplayable history.
+        final int ingressLength = encodeIngressHeartbeat(ingress, 0);
+        final int exact = org.limitless.phixeron.sbe.frame.UnsequencedHeaderDecoder.ENCODED_LENGTH;
 
+        new org.limitless.phixeron.sbe.frame.MessageHeaderEncoder().wrap(ingress, 0).blockLength(exact - 1);
         assertEquals(Sequencer.NO_FRAME, sequencer.sequenceMessage(ingress, 0, ingressLength, SESSION_ID, TIMESTAMP));
-        assertEquals(0L, sequencer.globalSeqNo());
-    }
-
-    @Test
-    @DisplayName("a blockLength whose sequenced form would overflow the uint16 field is skipped")
-    void blockLengthThatCannotSurviveTheHeaderGrowthIsSkipped() {
-        // The egress blockLength is the ingress one plus the header growth, and the framing header
-        // carries it as a uint16 the encoder narrows to without complaint. Just under the ceiling on
-        // ingress is over it on egress, so this is either caught here or written as a corrupt frame
-        // into authoritative, unreplayable history.
-        final int overflowing = MAX_UINT16 - HEADER_GROWTH;
-        assertEquals(Sequencer.NO_FRAME, sequenceWithBlockLength(overflowing));
+        new org.limitless.phixeron.sbe.frame.MessageHeaderEncoder().wrap(ingress, 0).blockLength(exact + 1);
+        assertEquals(Sequencer.NO_FRAME, sequencer.sequenceMessage(ingress, 0, ingressLength, SESSION_ID, TIMESTAMP));
         assertEquals(0L, sequencer.globalSeqNo(), "a skipped message must consume no sequence number");
 
-        // …and the frame one byte smaller, whose sequenced form is the largest that still fits, is not.
-        assertNotEquals(Sequencer.NO_FRAME, sequenceWithBlockLength(overflowing - 1));
+        new org.limitless.phixeron.sbe.frame.MessageHeaderEncoder().wrap(ingress, 0).blockLength(exact);
+        assertNotEquals(Sequencer.NO_FRAME, sequencer.sequenceMessage(ingress, 0, ingressLength, SESSION_ID,
+                                                                      TIMESTAMP));
         assertEquals(1L, sequencer.globalSeqNo());
-    }
-
-    /** Sequences a frame claiming {@code blockLength}, backed by real capacity so the length is honest. */
-    private int sequenceWithBlockLength(final int blockLength) {
-        final int ingressLength = MessageHeaderDecoder.ENCODED_LENGTH + blockLength;
-        encodeIngressNewOrderSingle(ingress, 0);
-        ingress.putByte(ingressLength - 1, (byte)0);
-        new org.limitless.phixeron.sbe.unsequenced.MessageHeaderEncoder().wrap(ingress, 0).blockLength(blockLength);
-        return sequencer.sequenceMessage(ingress, 0, ingressLength, SESSION_ID, TIMESTAMP);
     }
 
     // ── Determinism ───────────────────────────────────────────────────────────
@@ -427,7 +408,7 @@ class SequencerTest {
     /** Drives one fixed "committed log" through a sequencer, returning every frame it emitted. */
     private byte[][] runLog(final Sequencer target) {
         final MutableDirectBuffer message = new ExpandableArrayBuffer(512);
-        final int messageLength = encodeIngressNewOrderSingle(message, 0);
+        final int messageLength = encodeIngressHeartbeat(message, 0);
         final MutableDirectBuffer lifecycle = new ExpandableArrayBuffer(64);
         final int connectedLength = encodeIngressClientConnected(lifecycle, 0);
         final java.util.List<byte[]> frames = new java.util.ArrayList<>();
@@ -541,7 +522,7 @@ class SequencerTest {
         assertEquals(1, seq.connectedClientCount());
 
         // Ordinary application traffic must not perturb the count.
-        final int orderLength = encodeIngressNewOrderSingle(ingress, 0);
+        final int orderLength = encodeIngressHeartbeat(ingress, 0);
         seq.sequenceMessage(ingress, 0, orderLength, SESSION_ID + 1, TIMESTAMP + 2);
         assertEquals(1, seq.connectedClientCount());
     }
@@ -681,9 +662,9 @@ class SequencerTest {
         final long gatewaySession = 0xA11CEL;
         seq.sequenceMessage(buf, 0, encodeIngressGatewayStarted(buf, 0, 5), gatewaySession, TIMESTAMP);
 
-        // NewOrderSingle carries SOURCE_ID — a known gateway sourceId — on a session that is not a gateway.
+        // The Heartbeat carries SOURCE_ID — a known gateway sourceId — on a session that is not a gateway.
         final long orderExecSession = 0x0EC1E47L;
-        seq.sequenceMessage(buf, 0, encodeIngressNewOrderSingle(buf, 0), orderExecSession, TIMESTAMP + 1);
+        seq.sequenceMessage(buf, 0, encodeIngressHeartbeat(buf, 0), orderExecSession, TIMESTAMP + 1);
 
         assertEquals(Sequencer.NO_FRAME, seq.sessionClosed(orderExecSession, TIMESTAMP + 2),
                      "echoing a gateway sourceId must not make a session promotable");
@@ -956,35 +937,27 @@ class SequencerTest {
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
-    /** Encodes a fully-populated schema-200 NewOrderSingle, as the FIX gateway would submit it. */
-    private static int encodeIngressNewOrderSingle(final MutableDirectBuffer buffer, final int offset) {
-        final org.limitless.phixeron.sbe.unsequenced.MessageHeaderEncoder messageHeader =
-            new org.limitless.phixeron.sbe.unsequenced.MessageHeaderEncoder();
-        final org.limitless.phixeron.sbe.unsequenced.NewOrderSingleEncoder encoder =
-            new org.limitless.phixeron.sbe.unsequenced.NewOrderSingleEncoder();
+    /**
+     * Encodes a frame carrying a fully-populated session Heartbeat, as an Artio leg would submit it —
+     * the all-fixed-block exemplar for the copy-through. The sequencer never opens payloadId 3; the test
+     * decodes it afterwards only to prove every byte came across.
+     */
+    private static int encodeIngressHeartbeat(final MutableDirectBuffer buffer, final int offset) {
+        final MutableDirectBuffer payload = new ExpandableArrayBuffer(128);
+        final org.limitless.phixeron.sbe.session.HeartbeatEncoder encoder =
+            new org.limitless.phixeron.sbe.session.HeartbeatEncoder();
 
-        encoder.wrapAndApplyHeader(buffer, offset, messageHeader);
-        encoder.header().sourceId(SOURCE_ID).connectionId(CONNECTION_ID).sessionId(-1);
-        encoder.sender("CLIENT")
+        encoder.wrapAndApplyHeader(payload, 0, new org.limitless.phixeron.sbe.session.MessageHeaderEncoder());
+        encoder.direction(org.limitless.phixeron.sbe.session.Direction.Client)
+            .sender("CLIENT")
             .target("PHIXERON")
             .seqNum(4321L)
             .sendingTimeMs(1_699_999_999_000L)
-            .possDupFlag(org.limitless.phixeron.sbe.unsequenced.PossDupFlag.Yes)
-            .account("ACCT01")
-            .clOrdID("CLORD-000000000001")
-            .handlInst(org.limitless.phixeron.sbe.unsequenced.HandlInst.Manual)
-            .symbol("AAPL")
-            .side(org.limitless.phixeron.sbe.unsequenced.Side.Sell)
-            .transactTime(1_699_999_999_500L)
-            .orderQty(2500L)
-            .ordType(org.limitless.phixeron.sbe.unsequenced.OrdType.Limit)
-            .price(19_950_000L)
-            .timeInForce(org.limitless.phixeron.sbe.unsequenced.TimeInForce.FillOrKill)
-            .text("partial fill expected")
-            .tradeDate(1_699_920_000_000L)
-            .maturityTime(1_700_086_400_000L);
+            .possDupFlag(org.limitless.phixeron.sbe.session.PossDupFlag.Yes)
+            .testReqID("TESTREQ-0001");
 
-        return org.limitless.phixeron.sbe.unsequenced.MessageHeaderEncoder.ENCODED_LENGTH + encoder.encodedLength();
+        return encodeIngressPayloadFrame(buffer, offset, SOURCE_ID, CONNECTION_ID, SESSION_PAYLOAD_ID, payload,
+                                         corePayloadLength(encoder.encodedLength()));
     }
 
     /**
@@ -1007,23 +980,23 @@ class SequencerTest {
         return encodeIngressFrame(buffer, offset, 99, -1, payload, corePayloadLength(encoder.encodedLength()));
     }
 
-    /** Encodes a schema-200 Logout, whose trailing {@code text} is var-data rather than fixed block. */
+    /** Encodes a frame carrying a session Logout, whose trailing {@code text} is var-data, not fixed block. */
     private static int encodeIngressLogout(final MutableDirectBuffer buffer, final int offset, final String reason) {
-        final org.limitless.phixeron.sbe.unsequenced.MessageHeaderEncoder messageHeader =
-            new org.limitless.phixeron.sbe.unsequenced.MessageHeaderEncoder();
-        final org.limitless.phixeron.sbe.unsequenced.LogoutEncoder encoder =
-            new org.limitless.phixeron.sbe.unsequenced.LogoutEncoder();
+        final MutableDirectBuffer payload = new ExpandableArrayBuffer(128);
+        final org.limitless.phixeron.sbe.session.LogoutEncoder encoder =
+            new org.limitless.phixeron.sbe.session.LogoutEncoder();
 
-        encoder.wrapAndApplyHeader(buffer, offset, messageHeader);
-        encoder.header().sourceId(SOURCE_ID).connectionId(CONNECTION_ID).sessionId(-1);
-        encoder.sender("CLIENT")
+        encoder.wrapAndApplyHeader(payload, 0, new org.limitless.phixeron.sbe.session.MessageHeaderEncoder());
+        encoder.direction(org.limitless.phixeron.sbe.session.Direction.Client)
+            .sender("CLIENT")
             .target("PHIXERON")
             .seqNum(99L)
             .sendingTimeMs(1_699_999_999_000L)
-            .possDupFlag(org.limitless.phixeron.sbe.unsequenced.PossDupFlag.No)
+            .possDupFlag(org.limitless.phixeron.sbe.session.PossDupFlag.No)
             .text(reason);
 
-        return org.limitless.phixeron.sbe.unsequenced.MessageHeaderEncoder.ENCODED_LENGTH + encoder.encodedLength();
+        return encodeIngressPayloadFrame(buffer, offset, SOURCE_ID, CONNECTION_ID, SESSION_PAYLOAD_ID, payload,
+                                         corePayloadLength(encoder.encodedLength()));
     }
 
     /**
@@ -1081,12 +1054,32 @@ class SequencerTest {
                                                header.blockLength(), header.version());
     }
 
-    private static NewOrderSingleDecoder decodeNewOrderSingle(final MutableDirectBuffer buffer, final int length) {
-        final MessageHeaderDecoder messageHeader = new MessageHeaderDecoder().wrap(buffer, 0);
-        assertEquals(NewOrderSingleDecoder.TEMPLATE_ID, messageHeader.templateId());
-        assertEquals(length, MessageHeaderDecoder.ENCODED_LENGTH + messageHeader.blockLength());
-        return new NewOrderSingleDecoder().wrap(buffer, MessageHeaderDecoder.ENCODED_LENGTH,
-                                                messageHeader.blockLength(), messageHeader.version());
+    private static HeartbeatDecoder decodeHeartbeat(final MutableDirectBuffer buffer) {
+        final org.limitless.phixeron.sbe.session.MessageHeaderDecoder header =
+            sessionPayloadHeader(buffer, HeartbeatDecoder.TEMPLATE_ID);
+        return new HeartbeatDecoder().wrap(buffer, SESSION_PAYLOAD_BODY_OFFSET, header.blockLength(),
+                                           header.version());
+    }
+
+    private static LogoutDecoder decodeLogout(final MutableDirectBuffer buffer) {
+        final org.limitless.phixeron.sbe.session.MessageHeaderDecoder header =
+            sessionPayloadHeader(buffer, LogoutDecoder.TEMPLATE_ID);
+        return new LogoutDecoder().wrap(buffer, SESSION_PAYLOAD_BODY_OFFSET, header.blockLength(), header.version());
+    }
+
+    /**
+     * The payload header of the frame just encoded, having first checked the envelope names this
+     * payloadId and this template — the {@code (payloadId, templateId)} pair a real consumer dispatches
+     * on, since template ids are unique per schema only.
+     */
+    private static org.limitless.phixeron.sbe.session.MessageHeaderDecoder sessionPayloadHeader(
+        final MutableDirectBuffer buffer, final int templateId) {
+        assertEquals(SESSION_PAYLOAD_ID, frameHeaderOf(buffer).payloadId());
+        final org.limitless.phixeron.sbe.session.MessageHeaderDecoder header =
+            new org.limitless.phixeron.sbe.session.MessageHeaderDecoder().wrap(buffer, FRAME_OVERHEAD);
+        assertEquals(org.limitless.phixeron.sbe.session.MessageHeaderDecoder.SCHEMA_ID, header.schemaId());
+        assertEquals(templateId, header.templateId());
+        return header;
     }
 
     private static LeadershipChangedDecoder decodeLeadershipChanged(final MutableDirectBuffer buffer,
@@ -1097,49 +1090,14 @@ class SequencerTest {
                                                    header.blockLength(), header.version());
     }
 
-    /**
-     * {@code direction} is a payload field the sequencer never decodes — it is copied through with the
-     * rest of the body — but the producer encodes the schema-200 enum and the consumer decodes the
-     * schema-202 one over those same bytes. Edit one without the other and direction silently changes
-     * on the way through, turning a Gateway message into a Client one (or into NULL_VALUE), which on
-     * the Artio legs is the difference between emitting a frame to the counterparty and filing it as
-     * history.
-     */
-    @Test
-    @DisplayName("the two schemas' Direction enums agree value-for-value")
-    void directionEnumsAgreeAcrossSchemas() {
-        assertEquals(org.limitless.phixeron.sbe.unsequenced.Direction.values().length,
-                     org.limitless.phixeron.sbe.sequenced.Direction.values().length);
-        for (final org.limitless.phixeron.sbe.unsequenced.Direction ingress :
-             org.limitless.phixeron.sbe.unsequenced.Direction.values()) {
-            final org.limitless.phixeron.sbe.sequenced.Direction egress =
-                org.limitless.phixeron.sbe.sequenced.Direction.get(ingress.value());
-            assertEquals(ingress.name(), egress.name(),
-                         "Direction " + ingress.value() + " differs between the schemas");
-        }
-    }
-
     private long globalSeqNoOf(final int length) {
         return globalSeqNoOf(sequencer, length);
     }
 
-    /**
-     * Reads globalSeqNo off whatever frame was just encoded. The header sits at a fixed offset in both
-     * shapes, but they are different headers: the frame's carries payloadId ahead of globalSeqNo and the
-     * bare pair's does not, so the field is four bytes further in.
-     */
+    /** Reads globalSeqNo off the frame just encoded — its header, at a fixed offset past the framing one. */
     private static long globalSeqNoOf(final Sequencer target, final int length) {
         assertNotEquals(Sequencer.NO_FRAME, length);
-        if (isFrame(target.buffer())) {
-            return frameHeaderOf(target.buffer()).globalSeqNo();
-        }
-        return new SequencedHeaderDecoder().wrap(target.buffer(), MessageHeaderDecoder.ENCODED_LENGTH).globalSeqNo();
-    }
-
-    /** True if the encoded frame is a schema-210 envelope rather than a bare schema-202 message. */
-    private static boolean isFrame(final MutableDirectBuffer buffer) {
-        return new org.limitless.phixeron.sbe.frame.MessageHeaderDecoder().wrap(buffer, 0).schemaId() ==
-               org.limitless.phixeron.sbe.frame.MessageHeaderDecoder.SCHEMA_ID;
+        return frameHeaderOf(target.buffer()).globalSeqNo();
     }
 
     /** The frame's own header — the identity every core payload relies on, since it carries none itself. */
@@ -1154,10 +1112,17 @@ class SequencerTest {
     private static int encodeIngressFrame(final MutableDirectBuffer buffer, final int offset, final int sourceId,
                                           final int connectionId, final MutableDirectBuffer payload,
                                           final int payloadLength) {
+        return encodeIngressPayloadFrame(buffer, offset, sourceId, connectionId, Sequencer.CORE_PAYLOAD_ID, payload,
+                                         payloadLength);
+    }
+
+    /** The same, for a payload the sequencer does not own. */
+    private static int encodeIngressPayloadFrame(final MutableDirectBuffer buffer, final int offset,
+                                                 final int sourceId, final int connectionId, final int payloadId,
+                                                 final MutableDirectBuffer payload, final int payloadLength) {
         final org.limitless.phixeron.sbe.frame.UnsequencedEncoder encoder = new org.limitless.phixeron.sbe.frame.UnsequencedEncoder();
         encoder.wrapAndApplyHeader(buffer, offset, new org.limitless.phixeron.sbe.frame.MessageHeaderEncoder());
-        encoder.header().sourceId(sourceId).connectionId(connectionId).sessionId(-1)
-            .payloadId(Sequencer.CORE_PAYLOAD_ID);
+        encoder.header().sourceId(sourceId).connectionId(connectionId).sessionId(-1).payloadId(payloadId);
         encoder.putPayload(payload, 0, payloadLength);
         return org.limitless.phixeron.sbe.frame.MessageHeaderEncoder.ENCODED_LENGTH + encoder.encodedLength();
     }

@@ -8,10 +8,10 @@
     whoever that number names (§6). The cluster tier decodes payloadId 1 and nothing
     else.
 
-    Nothing generates from this file yet. It is added ahead of its consumers so the
-    envelope's own codegen is green in both languages before any message family moves
-    onto it (spec §15 step 1); steps 3-7 migrate the families, step 7 deletes the
-    sbe-unsequenced/sbe-sequenced pair.
+    Every frame on cluster ingress and on the tap is one of these two templates: spec
+    §15 steps 1, 3 and 4 moved every message family onto a payload. Four payloadIds are
+    allocated — 1 core (below), 2 the order family (sbe-order.xml), 3 the FIX session
+    family (sbe-session.xml), 4 reference data (sbe-basicdata.xml).
 
     F-3: unsequencedHeader is a byte-prefix of sequencedHeader — same fields, same
     offsets, same types, for the first 18 bytes. That is what makes sequencing a

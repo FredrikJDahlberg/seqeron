@@ -106,7 +106,7 @@ GoogleTest binaries — `core_tests` (the cluster tier, linking `phixeron_core` 
 ```bash
 ./gradlew compileJava          # both modules
 ./gradlew uberJar              # fat jar over both: build/libs/phixeron-<version>-uber.jar
-./gradlew generateUnsequencedSbe generateSequencedSbe   # regenerate SBE Java codecs (also runs on compileJava)
+./gradlew generateFrameSbe generateSessionSbe generateBasicDataSbe   # regenerate SBE Java codecs (also on compileJava)
 ```
 ```bash
 ./gradlew test                 # JUnit 5 unit tests for the Java state machines, both modules
@@ -163,9 +163,9 @@ has no Aeron dependency, and is unit-tested directly (`SequencerTest`). `Sequenc
 what comes back, holding no replicated state itself. Every ingress message
 gets a cluster-wide monotone `globalSeqNo` plus the Raft consensus timestamp, then is
 republished on the **node-local tap** (`FEEDER_CHANNEL` = `aeron:ipc`, `FEEDER_STREAM_ID` = 205),
-which this node's co-located Aeron Archive records. Every frame on it is sequenced: every
-message in `sbe-sequenced.xml` carries the `header` composite, and the sequencer is the stream's only
-publisher, so `globalSeqNo` + consensus `timestamp` are stamped on ingress messages and on the
+which this node's co-located Aeron Archive records. Every frame on it is sequenced: the tap carries
+`Sequenced` envelopes and nothing else, and the sequencer is the stream's only publisher, so
+`globalSeqNo` + consensus `timestamp` are stamped on ingress messages and on the
 lifecycle/heartbeat/leadership frames it synthesizes alike.
 
 **Every node publishes and records its own tap** — leader and follower alike. All nodes process the
@@ -221,12 +221,25 @@ the whole log is what keeps each node's tap recording complete and gap-free — 
 snapshot would record only from wherever it resumed. The cost is that recovery time and archive size
 grow with uptime (the 1 Hz heartbeat alone is ~86.4k frames/day) — see `doc/todo.md`.
 
-The key trick making this cheap: ingress messages arrive already SBE-encoded as
-`sbe-unsequenced.xml` (schema 200), and `sbe-sequenced.xml` (schema 202) is deliberately kept
-byte-identical past the shared `header` composite (same field order/types/ids, same var-data
-layout). `Sequencer.sequenceMessage` therefore only ever decodes the outer `MessageHeader` +
-`header` composite and copies everything else through as opaque bytes — it never needs to know
-about individual FIX message types.
+**Everything on the wire is one shape: the `sbe-frame.xml` (schema 210) envelope.** An `Unsequenced`
+frame on ingress, republished as `Sequenced` on the tap, carrying one opaque length-prefixed payload
+named by `header.payloadId`. Sequencing is copy-18/append-16 and the payload is never re-encoded;
+`sequenceFrame` validates every frame against `doc/seqeron-protocol-spec.md` §9.2. Four `payloadId`s
+are allocated:
+
+| id | schema | who speaks it |
+| --- | --- | --- |
+| 1 | `sbe-frame.xml` 210 | **core** — seqeron's own, and the only one the cluster tier decodes |
+| 2 | `sbe-order.xml` 220 | order flow + the portfolio query: C++ FIX edge ↔ `OrderExecServer` |
+| 3 | `sbe-session.xml` 230 | the FIX session family, both edges |
+| 4 | `sbe-basicdata.xml` 240 | reference data — the one protocol that crosses application boundaries |
+
+Everything but core is copied through unopened (**S-2**).
+
+**A consumer dispatches on `(payloadId, templateId)`, never `templateId` alone** — template ids are
+unique per schema, so a session template and an order template can collide. `unwrapFrame` (C++,
+`SequencedFrame.hpp`) and `SequencedFrameDecoder` (Java) are the one place the envelope is stripped;
+past them every consumer sees a `payloadId` and the message's own template.
 
 ### C++ FIX gateway — `FixGateway` / `FixGateway.cpp`
 Deliberately stateless proxy: authoritative FIX session state (sequence numbers, session status)
@@ -274,20 +287,41 @@ failover is *not* session loss: `NewLeaderEvent` swaps the ingress publication a
 See `doc/todo.md` "Gateway HA / multi-instance".
 
 ### SBE / FIX code generation
-Three SBE schemas under `src/main/resources/`, each generating into a distinct namespace so one
-include path covers all of them (`org.limitless.phixeron.{sbe.unsequenced, sbe.sequenced}`,
-`org.limitless.phixeron.cluster.sbe`):
+Six SBE schemas under `src/main/resources/`, each generating into a distinct namespace so one
+include path covers all of them (`org.limitless.phixeron.{sbe.frame, sbe.order, sbe.session,
+sbe.basicdata, sbe.unsequenced}`, `org.limitless.phixeron.cluster.sbe`):
 - `sbe-cluster.xml` — trimmed mirror of `io.aeron.cluster.codecs` (SessionConnectRequest,
   SessionEvent, SessionKeepAlive, …), replacing a hand-written `ClusterProtocol.hpp`. Its last
   section is decode-only — the consensus-module log entries (`TimerEvent`, `SessionOpenEvent`, …)
   that `SbeLogPrinter --schema cluster` reads out of a Raft-log recording; the client never sends
-  them. Only this schema's Java side is IR-only (`generateClusterSbeIr`, no codecs).
-- `sbe-unsequenced.xml` (schema 200) — every FIX message the gateway can receive, plus
-  `sourceId`/`sessionId` identifying the submitting TCP connection/cluster session. Field/type
-  definitions mirror the FIX wire format directly (see `fix-session.xml`/`fix-application.xml`
-  below); there's no separate SBE schema per FIX layer.
-- `sbe-sequenced.xml` (schema 202) — same messages, byte-identical past `header`, plus
-  `globalSeqNo`/`timestamp` (see above).
+  them. Java side is IR-only (`generateClusterSbeIr`, no codecs), as `sbe-order.xml`'s is.
+- `sbe-unsequenced.xml` (schema 200) — misnamed leftover: after §15 step 4 it holds nothing but the
+  six **replay control** messages, node-local between a `ReplayerService` and its co-located app
+  replicas, never sequenced and never recorded. Spec §15 step 5 moves them to `seqeron-replay.xml`,
+  which is when this file goes.
+- `sbe-frame.xml` (schema 210) — the `Unsequenced`/`Sequenced` envelope pair, their two header
+  composites, and the ten **core** payloads (`payloadId` 1: the TCP lifecycle events, the cluster
+  markers, the 1 Hz `ClusterHeartbeat`, the gateway roster/election frames). A core payload carries
+  **no `header` field** — the frame's is the only one. Seqeron's own, and the only `payloadId` the
+  cluster tier decodes.
+- `sbe-order.xml` (schema 220) — the order application's payload (`payloadId` 2):
+  `NewOrderSingle` and `ExecutionReport`, the flow between the C++ FIX edge and `OrderExecServer`.
+  **One codec set, not a 200/202 pair** — a payload carries no header, so its ingress and tap forms
+  are the same bytes. Its `ORDER_PAYLOAD_ID` lives in `src/main/cpp/.../order/OrderPayload.hpp`, not in
+  the cluster tier. Java codecs would be dead classes (no Java consumer), so like `sbe-cluster.xml` the
+  Java side is **IR-only** (`generateOrderSbeIr`) — the IR is what lets `SbeLogPrinter` name an order
+  payload instead of printing `<undecodable ingress payload>`. `PortfolioQuery{Request,Reply}` are here
+  too: same application, same two processes, and a `payloadId` names a schema, never a message.
+- `sbe-session.xml` (schema 230) — the FIX session family (`payloadId` 3): `Logon`…`SequenceReset`, the
+  structured templates the C++/simdfix edge encodes, plus `ClientSessionEvent`, the same protocol as
+  opaque pre-encoded FIX bytes for the Artio legs. One schema because it is one protocol at two
+  fidelities. `SESSION_PAYLOAD_ID` lives in `src/main/cpp/.../fix/SessionPayload.hpp` and
+  `gateways/.../fixgateway/SessionPayload.java`.
+- `sbe-basicdata.xml` (schema 240) — reference data (`payloadId` 4): the bracketed `BasicData*` load.
+  **The one shared protocol** — published by the C++ edge, read by both edges and both Java Artio legs —
+  and so the only `payloadId` the topology file's `<protocols>` section declares (spec §6.4).
+  `BASICDATA_PAYLOAD_ID` lives in `src/main/cpp/.../basicdata/BasicDataPayload.hpp` and
+  `gateways/.../basicdata/BasicDataPayload.java`.
 
 Separately, `fix-session.xml` / `fix-application.xml` / `config.xml` are simdfix Generator input
 (not SBE), producing the C++ FIX message encoders/decoders/handler dispatch
@@ -295,10 +329,13 @@ Separately, `fix-session.xml` / `fix-application.xml` / `config.xml` are simdfix
 **not** simdfix's own generated-headers location, to avoid colliding with simdfix's own
 (excluded-from-build) test-fixture generation.
 
-Both the Java (`generateUnsequencedSbe`/`generateSequencedSbe` Gradle tasks) and C++
-(`GenerateUnsequencedSbeCodecs`/`GenerateSequencedSbeCodecs`/`GenerateClusterSbeCodecs` CMake
-targets) sides regenerate independently from the same XML — keep both in sync when editing a
-schema.
+Both the Java (`generateUnsequencedSbe`/`generateFrameSbe`/`generateSessionSbe`/`generateBasicDataSbe`
+codec tasks, plus `generateClusterSbeIr`/`generateOrderSbeIr` for the IR-only two) and C++
+(`GenerateUnsequencedSbeCodecs`/`GenerateFrameSbeCodecs`/`GenerateSessionSbeCodecs`/
+`GenerateBasicDataSbeCodecs`/`GenerateOrderSbeCodecs`/`GenerateClusterSbeCodecs` CMake targets) sides
+regenerate independently from the same XML — keep both in sync when editing a schema. **SBE never deletes generated files for
+messages you removed**, so after deleting from a schema, purge `cmake-build-*/generated/sbe` and
+`cluster/build/generated/sources/sbe` before trusting a build or a test run.
 
 ### Order execution client — `OrderExecServer` (C++, under `src/main/cpp/.../order/OrderExecServer.cpp`)
 Combines what used to be two separate binaries — `application_stream_client` and the C++

@@ -15,7 +15,7 @@
 #include "org/limitless/phixeron/sequencer/SequencedFrame.hpp"
 #include "org/limitless/phixeron/util/Logger.hpp"
 
-// Replay-protocol control codecs (sbe-unsequenced.xml) + LeadershipChanged (sbe-sequenced.xml)
+// Replay-protocol control codecs (sbe-unsequenced.xml) + LeadershipChanged (core, sbe-frame.xml)
 #include "org_limitless_phixeron_sbe_frame/LeadershipChanged.h"
 #include "org_limitless_phixeron_sbe_unsequenced/MessageHeader.h"
 #include "org_limitless_phixeron_sbe_unsequenced/ReplayPending.h"
@@ -35,7 +35,7 @@ using org::limitless::phixeron::sequencer::SequencedEvent;
 // Replaying.replaySessionId sentinel: "nothing to replay, you are at the tip — follow the live tap".
 inline constexpr std::int64_t REPLAYER_NO_REPLAY_NEEDED = -1;
 
-// LeadershipChanged (sbe-sequenced.xml template 5)
+// LeadershipChanged (core payload, sbe-frame.xml template 5)
 inline constexpr std::uint16_t LEADERSHIP_CHANGED_TEMPLATE_ID = 5;
 
 /**

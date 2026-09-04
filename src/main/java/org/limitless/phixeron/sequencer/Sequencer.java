@@ -25,28 +25,22 @@ import org.limitless.phixeron.util.Logger;
  *
  * <p>Owns the entire replicated state ({@code globalSeqNo}, plus the leader id kept only to
  * de-duplicate leadership events) and all frame encoding. Each {@code sequence*}/event method
- * assigns the next {@code globalSeqNo}, encodes one {@code sbe-sequenced.xml} (schema 202) frame
- * into {@link #buffer()} starting at offset 0, and returns its length — or {@code 0} when the event
- * produces no frame. The caller publishes {@code buffer()[0, length)} and does nothing else: every
- * decision that must be identical on every node lives here.
+ * assigns the next {@code globalSeqNo}, encodes one {@code Sequenced} frame ({@code sbe-frame.xml},
+ * schema 210) into {@link #buffer()} starting at offset 0, and returns its length — or {@code 0} when
+ * the event produces no frame. The caller publishes {@code buffer()[0, length)} and does nothing else:
+ * every decision that must be identical on every node lives here.
  *
  * <p>That split is what makes the state machine testable without a cluster, a media driver, or any
  * Aeron mock — {@link SequencerService} is the thin adapter that owns the tap publication, the
  * archive, and timer scheduling, and it is the only part that needs a live cluster to exercise.
  *
- * <p><b>The copy-through trick.</b> Ingress messages arrive already SBE-encoded as {@code
- * sbe-unsequenced.xml} (schema 200) — the FIX gateway encodes every admin and application FIX
- * message that way and offers it directly to the cluster, with {@code header.sourceId} identifying
- * the submitting gateway <em>process</em>, {@code header.connectionId} the specific TCP connection
- * at that gateway, and {@code header.sessionId} the Aeron Cluster session. {@link
- * #sequenceMessage} does not need to know about individual FIX message types to re-stamp them:
- * {@code sbe-sequenced.xml} is deliberately kept byte-identical to {@code sbe-unsequenced.xml} past
- * the {@code header} composite (same field order/types/ids, same var-data layout), so it decodes
- * only the outer {@code MessageHeader} and the {@code header} composite (both always at a fixed
- * offset, regardless of {@code templateId}), then copies every remaining byte — the rest of the
- * fixed block plus all var-data — verbatim into a new schema-202 message whose {@code header}
- * carries the original {@code sourceId}/{@code connectionId}/{@code sessionId} plus the new {@code
- * globalSeqNo}/{@code timestamp}.
+ * <p><b>The copy-through.</b> Every ingress message is an {@code Unsequenced} frame whose body is one
+ * opaque length-prefixed payload, named by {@code header.payloadId} and owned by whoever that number
+ * names. Sequencing is a copy of the 18-byte {@code unsequencedHeader} with the 16-byte stamp appended
+ * ({@code globalSeqNo} and the consensus {@code timestamp}), and the payload copied through
+ * byte-identical, never re-encoded (<b>E-1</b>). {@link #sequenceMessage} therefore needs to know
+ * nothing about any application's message types — it opens {@code payloadId} 1, the core payloads that
+ * are seqeron's own, and nothing else (<b>S-2</b>).
  *
  * <p><b>Determinism.</b> Every method is a pure function of its arguments and the current state —
  * no clock reads, no randomness, no I/O — so replaying the same call sequence on any node produces
@@ -138,21 +132,6 @@ public final class Sequencer {
      */
     public static final int CORE_PAYLOAD_ID = CoreFrame.PAYLOAD_ID;
 
-    /** Schema id of the bare, un-enveloped ingress pair still carrying the FIX families. */
-    private static final int BARE_SCHEMA_ID = org.limitless.phixeron.sbe.unsequenced.MessageHeaderDecoder.SCHEMA_ID;
-
-    /** The bare pair's ingress and tap {@code header} composites — 16 and 32 bytes. */
-    private static final int BARE_HEADER_LENGTH =
-        org.limitless.phixeron.sbe.unsequenced.UnsequencedHeaderDecoder.ENCODED_LENGTH;
-    private static final int BARE_TAP_HEADER_LENGTH =
-        org.limitless.phixeron.sbe.sequenced.SequencedHeaderEncoder.ENCODED_LENGTH;
-
-    /**
-     * Smallest bare ingress message {@link #sequenceMessage} can re-stamp: the outer framing header plus
-     * the {@code header} composite, the only two things it decodes. Anything shorter is malformed.
-     */
-    static final int MIN_INGRESS_LENGTH = MessageHeaderDecoder.ENCODED_LENGTH + BARE_HEADER_LENGTH;
-
     /**
      * Smallest {@code Unsequenced} frame: the framing header, the 18-byte {@code unsequencedHeader} and
      * the payload's own 2-byte length prefix. A frame this size carries an empty payload, which is legal.
@@ -180,24 +159,7 @@ public final class Sequencer {
      */
     private static final int MAX_BLOCK_LENGTH = 65534;
 
-    static {
-        // sequenceMessage stamps the ingress version onto a schema-202 frame, which is only truthful
-        // while the two schemas version in lockstep — the same assumption the byte-identity of
-        // everything past the header rests on. Bumping one XML's version without the other breaks it
-        // silently on the wire, so fail at class load instead.
-        final int bareIngress = org.limitless.phixeron.sbe.unsequenced.MessageHeaderDecoder.SCHEMA_VERSION;
-        final int bareTap = org.limitless.phixeron.sbe.sequenced.MessageHeaderEncoder.SCHEMA_VERSION;
-        if (bareIngress != bareTap) {
-            throw new IllegalStateException(
-                "schema version mismatch: sbe-unsequenced.xml is at version " + bareIngress +
-                " and sbe-sequenced.xml at " + bareTap +
-                "; the copy-through in sequenceMessage requires them to version together");
-        }
-    }
-
-    // Frame decode (schema 210, sbe-frame.xml). The outer MessageHeader composite is byte-identical in
-    // every SBE schema, so this one decoder reads the schemaId that picks the branch, whichever shape
-    // the frame turns out to be.
+    // Frame decode (schema 210, sbe-frame.xml).
     private final MessageHeaderDecoder msgHeaderDecoder = new MessageHeaderDecoder();
     private final UnsequencedHeaderDecoder frameHeaderDecoder = new UnsequencedHeaderDecoder();
 
@@ -216,14 +178,6 @@ public final class Sequencer {
     private final ClusterHeartbeatEncoder clusterHeartbeatEncoder = new ClusterHeartbeatEncoder();
     private final GatewayActiveEncoder gatewayActiveEncoder = new GatewayActiveEncoder();
 
-    // Bare pair codecs (schemas 200/202), for the FIX families that have not moved onto a payload yet.
-    // Transitional: they go with the last message family, and with them the whole sequenceBare branch.
-    private final org.limitless.phixeron.sbe.unsequenced.UnsequencedHeaderDecoder bareHeaderDecoder =
-        new org.limitless.phixeron.sbe.unsequenced.UnsequencedHeaderDecoder();
-    private final org.limitless.phixeron.sbe.sequenced.MessageHeaderEncoder bareMsgHeaderEncoder =
-        new org.limitless.phixeron.sbe.sequenced.MessageHeaderEncoder();
-    private final org.limitless.phixeron.sbe.sequenced.SequencedHeaderEncoder bareTapHeaderEncoder =
-        new org.limitless.phixeron.sbe.sequenced.SequencedHeaderEncoder();
     private final MutableDirectBuffer encodeBuffer = new ExpandableDirectByteBuffer(4096);
 
     // Topology
@@ -365,8 +319,8 @@ public final class Sequencer {
     }
 
     /**
-     * Re-stamps one ingress (schema 200) message as a sequenced (schema 202) frame, copying
-     * everything past the {@code header} composite through verbatim — see the class Javadoc.
+     * Re-stamps one {@code Unsequenced} ingress frame as a {@code Sequenced} one, copying its payload
+     * through verbatim — see the class Javadoc.
      *
      * @param buffer    holding the ingress message
      * @param offset    of the ingress message's outer {@code MessageHeader}
@@ -383,15 +337,10 @@ public final class Sequencer {
                           "-byte framing header");
         }
         msgHeaderDecoder.wrap(buffer, offset);
-        final int schemaId = msgHeaderDecoder.schemaId();
-        if (schemaId == MessageHeaderDecoder.SCHEMA_ID) {
-            return sequenceFrame(buffer, offset, length, sessionId, timestamp);
+        if (msgHeaderDecoder.schemaId() != MessageHeaderDecoder.SCHEMA_ID) {
+            return reject("schemaId " + msgHeaderDecoder.schemaId() + " is not " + MessageHeaderDecoder.SCHEMA_ID);
         }
-        if (schemaId == BARE_SCHEMA_ID) {
-            return sequenceBare(buffer, offset, length, sessionId, timestamp);
-        }
-        return reject("schemaId " + schemaId + " is neither " + MessageHeaderDecoder.SCHEMA_ID + " nor " +
-                      BARE_SCHEMA_ID);
+        return sequenceFrame(buffer, offset, length, sessionId, timestamp);
     }
 
     /**
@@ -527,56 +476,6 @@ public final class Sequencer {
             }
         }
         return true;
-    }
-
-    /**
-     * Sequences a bare, un-enveloped schema-200 message onto the tap as schema 202 — the copy-through this
-     * class was built on, unchanged, and now carrying only the FIX families that have not moved onto a
-     * payload yet. It derives no state: every frame the sequencer reads is core, and core is enveloped.
-     *
-     * <p>Transitional. It goes with the last family that needs it (spec §15 step 7).
-     */
-    private int sequenceBare(final DirectBuffer buffer, final int offset, final int length, final long sessionId,
-                             final long timestamp) {
-        if (length < MIN_INGRESS_LENGTH) {
-            return reject("length " + length + " is below the " + MIN_INGRESS_LENGTH + "-byte minimum framing");
-        }
-        final int ingressBlockLen = msgHeaderDecoder.blockLength();
-        if (ingressBlockLen < BARE_HEADER_LENGTH ||
-            MessageHeaderDecoder.ENCODED_LENGTH + ingressBlockLen > length) {
-            return reject("blockLength " + ingressBlockLen + " does not fit a " + length + "-byte frame");
-        }
-
-        final int egressBlockLen = BARE_TAP_HEADER_LENGTH + (ingressBlockLen - BARE_HEADER_LENGTH);
-        if (egressBlockLen > MAX_BLOCK_LENGTH) {
-            return reject("blockLength " + ingressBlockLen + " leaves no room for the " +
-                          (BARE_TAP_HEADER_LENGTH - BARE_HEADER_LENGTH) +
-                          " bytes the sequenced header adds");
-        }
-
-        final long globalSeq = ++globalSeqNo;
-        final int ingressBodyOffset = offset + MessageHeaderDecoder.ENCODED_LENGTH;
-        bareHeaderDecoder.wrap(buffer, ingressBodyOffset);
-
-        bareMsgHeaderEncoder.wrap(encodeBuffer, 0)
-            .blockLength(egressBlockLen)
-            .templateId(msgHeaderDecoder.templateId())
-            .schemaId(org.limitless.phixeron.sbe.sequenced.MessageHeaderEncoder.SCHEMA_ID)
-            .version(msgHeaderDecoder.version());
-
-        final int egressBodyOffset = MessageHeaderDecoder.ENCODED_LENGTH;
-        bareTapHeaderEncoder.wrap(encodeBuffer, egressBodyOffset)
-            .sourceId(bareHeaderDecoder.sourceId())
-            .connectionId(bareHeaderDecoder.connectionId())
-            .sessionId(sessionId)
-            .globalSeqNo(globalSeq)
-            .timestamp(timestamp);
-
-        // Copy every byte after the ingress header composite
-        final int copyFromOffset = ingressBodyOffset + BARE_HEADER_LENGTH;
-        final int copyLength = length - MessageHeaderDecoder.ENCODED_LENGTH - BARE_HEADER_LENGTH;
-        encodeBuffer.putBytes(egressBodyOffset + BARE_TAP_HEADER_LENGTH, buffer, copyFromOffset, copyLength);
-        return egressBodyOffset + BARE_TAP_HEADER_LENGTH + copyLength;
     }
 
     /**

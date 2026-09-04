@@ -62,10 +62,9 @@ public final class SequencedEvent {
     }
 
     /**
-     * Which protocol {@link #templateId()} belongs to: {@link FrameView#CORE_PAYLOAD_ID} for seqeron's own
-     * payloads, {@link FrameView#NO_PAYLOAD_ID} for a bare schema-202 message. Template ids are unique only
-     * within a protocol, so a consumer that matches one without checking this is reading some other
-     * protocol's numbering as its own.
+     * Which protocol {@link #templateId()} belongs to: {@link SequencedFrameDecoder#CORE_PAYLOAD_ID} for seqeron's own
+     * payloads, an application's own number otherwise. Template ids are unique only within a protocol, so a
+     * consumer that matches one without checking this is reading some other protocol's numbering as its own.
      */
     public int payloadId() {
         return payloadId;
@@ -73,7 +72,7 @@ public final class SequencedEvent {
 
     /** True if this frame carries a seqeron core payload. */
     public boolean isCore() {
-        return payloadId == FrameView.CORE_PAYLOAD_ID;
+        return payloadId == SequencedFrameDecoder.CORE_PAYLOAD_ID;
     }
 
     /** The message's {@code messageHeader} templateId; picks the specific decode. */

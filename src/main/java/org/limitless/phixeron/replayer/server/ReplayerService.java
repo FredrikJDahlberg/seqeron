@@ -142,8 +142,8 @@ public final class ReplayerService {
     private final ReplayUnavailableEncoder unavailableEncoder = new ReplayUnavailableEncoder();
     private final MutableDirectBuffer controlBuffer = new ExpandableArrayBuffer(64);
 
-    private final org.limitless.phixeron.replayer.client.FrameView selfCheckView =
-        new org.limitless.phixeron.replayer.client.FrameView();
+    private final org.limitless.phixeron.replayer.client.SequencedFrameDecoder selfCheckView =
+        new org.limitless.phixeron.replayer.client.SequencedFrameDecoder();
 
     private final FragmentHandler requestHandler =
         (buffer, offset, length, header) -> onRequest(buffer, offset, length);

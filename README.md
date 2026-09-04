@@ -59,11 +59,11 @@ replica is dropped and heals by replay rather than back-pressuring the cluster.
 
 ### Load-bearing properties
 
-- **The cluster never parses FIX message bodies.** `Sequencer` decodes only the outer SBE
-  `MessageHeader` and the shared `header` composite; everything past that is copied through as
-  opaque bytes, because `sbe-sequenced.xml` (schema 202) is kept field-for-field identical to
-  `sbe-unsequenced.xml` (schema 200) past `header`. The one bounded exception is the
-  `GatewayRegistered` roster row.
+- **The cluster never parses FIX message bodies.** Every ingress message is an `Unsequenced` frame
+  (`sbe-frame.xml`, schema 210) whose body is one opaque payload named by `header.payloadId`;
+  `Sequencer` decodes the frame header, stamps it, and copies the payload through byte-identical.
+  Only `payloadId` 1 — seqeron's own core payloads — is ever opened, and the one bounded exception
+  inside it is the `GatewayRegistered` roster row.
 - **The log holds the authoritative state, and every decision consumers must agree on is
   emitted rather than inferred.** FIX session state is driven only by cluster-replicated
   callbacks, never straight off the TCP receive path; connects/disconnects, refusals, order
@@ -318,15 +318,16 @@ Or via Gradle directly:
 
 #### Schemas
 
-All three generated IR files ship inside the uber jar — `sequenced` (the tap), `unsequenced`
-(cluster ingress) and `cluster` (the Raft consensus log) — and **all three are loaded by
-default**. Each frame is decoded against the schema its own header names, so a single run reads
-an archive dir end to end whatever mix of recordings it holds:
+Every generated IR file ships inside the uber jar — `frame` (the envelope and core), `order`,
+`session` and `basicdata` (the three application payloads), `unsequenced` (the node-local replay
+control plane) and `cluster` (the Raft consensus log) — and **all of them are loaded by default**.
+Each frame is decoded against the schema its own header names, and a payload inside an envelope the
+same way, so a single run reads an archive dir end to end whatever mix of recordings it holds:
 
 ```
-[Catalog] Recording ID: 0 | Stream ID: 205 | ...    → sequenced (schema 202)
-[Catalog] Recording ID: 1 | Stream ID: 100 | ...    → cluster   (schema 111)
-[Catalog] Recording ID: 2 | Stream ID: 205 | ...    → sequenced (schema 202)
+[Catalog] Recording ID: 0 | Stream ID: 205 | ...    → frames  (schema 210)
+[Catalog] Recording ID: 1 | Stream ID: 100 | ...    → cluster (schema 111)
+[Catalog] Recording ID: 2 | Stream ID: 205 | ...    → frames  (schema 210)
 ```
 
 `--schema <name>` narrows the run to one schema; frames of the others are then labelled

@@ -46,7 +46,7 @@ inline constexpr std::int32_t REPLAYER_REQUEST_STREAM_ID = 202;
 inline constexpr std::int32_t REPLAYER_CONTROL_STREAM_ID = 203;
 
 /**
- * Follows the co-located SequencerService IPC tap directly, decoding and dispatching sbe-sequenced
+ * Follows the co-located SequencerService IPC tap directly, decoding and dispatching sequenced
  * messages to the caller exactly like ClusterStreamClient — same SequencedEvent/LifecycleEvent callbacks
  * — plus an OnLeadershipChanged callback and currentLeaderMemberId()/isCaughtUp() accessors that the
  * caller uses to gate leader-only emission (design §3).
