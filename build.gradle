@@ -39,8 +39,8 @@ def sbeResourceDir     = rootProject.file('src/main/resources')
 sourceSets.main.java.srcDir sbeGeneratedSrcDir
 sourceSets.main.resources.srcDir sbeResourceDir
 
-tasks.register('generateUnsequencedSbe', JavaExec) {
-    description = 'Generate Java SBE codecs from sbe-unsequenced.xml (cluster ingress format)'
+tasks.register('generateReplaySbe', JavaExec) {
+    description = 'Generate Java SBE codecs from sbe-replay.xml (the node-local replay control protocol)'
     classpath   = configurations.sbeCodegen
     mainClass   = 'uk.co.real_logic.sbe.SbeTool'
 
@@ -53,9 +53,9 @@ tasks.register('generateUnsequencedSbe', JavaExec) {
     systemProperty 'sbe.xinclude.aware',           'true'
     systemProperty 'sbe.generate.ir',              'true'
 
-    args new File(sbeResourceDir, 'sbe-unsequenced.xml')
+    args new File(sbeResourceDir, 'sbe-replay.xml')
 
-    inputs.file  new File(sbeResourceDir, 'sbe-unsequenced.xml')
+    inputs.file  new File(sbeResourceDir, 'sbe-replay.xml')
     outputs.dir  sbeGeneratedSrcDir
 
     doFirst { sbeGeneratedSrcDir.mkdirs() }
@@ -125,7 +125,7 @@ tasks.register('generateFrameSbe', JavaExec) {
 }
 
 tasks.named('compileJava') {
-    dependsOn 'generateUnsequencedSbe', 'generateFrameSbe', 'generateSessionSbe', 'generateBasicDataSbe'
+    dependsOn 'generateReplaySbe', 'generateFrameSbe', 'generateSessionSbe', 'generateBasicDataSbe'
 }
 
 // IR only, no stubs: the Java side speaks the cluster protocol through io.aeron.cluster.codecs, so the
@@ -183,7 +183,7 @@ def sbeIrResourceDir = layout.buildDirectory.dir('generated/resources/sbeir')
 
 tasks.register('collectSbeIr', Copy) {
     description = 'Stage the generated SBE IR files as jar resources for SbeLogPrinter'
-    dependsOn 'generateUnsequencedSbe', 'generateFrameSbe', 'generateSessionSbe', 'generateBasicDataSbe',
+    dependsOn 'generateReplaySbe', 'generateFrameSbe', 'generateSessionSbe', 'generateBasicDataSbe',
               'generateClusterSbeIr', 'generateOrderSbeIr'
     from(sbeGeneratedSrcDir) {
         include '*.sbeir'

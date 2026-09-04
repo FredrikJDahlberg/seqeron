@@ -14,7 +14,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.limitless.phixeron.replayer.server.ReplayerService;
 import org.limitless.phixeron.sbe.frame.ClusterHeartbeatEncoder;
-import org.limitless.phixeron.sbe.unsequenced.ReplayingEncoder;
+import org.limitless.phixeron.sbe.replay.ReplayingEncoder;
 
 /**
  * Unit tests for the walk / gap-recovery state machine, and the twin of the C++
@@ -322,7 +322,7 @@ class ReplayerRecoveryTest {
                                                 final long catchUpPosition, final long recordingId) {
         final UnsafeBuffer buffer = new UnsafeBuffer(new byte[256]);
         new ReplayingEncoder()
-            .wrapAndApplyHeader(buffer, 0, new org.limitless.phixeron.sbe.unsequenced.MessageHeaderEncoder())
+            .wrapAndApplyHeader(buffer, 0, new org.limitless.phixeron.sbe.replay.MessageHeaderEncoder())
             .clientId(CLIENT_ID)
             .requestId(requestId)
             .replaySessionId(replaySessionId)
@@ -332,7 +332,7 @@ class ReplayerRecoveryTest {
     }
 
     private static int replayingLength() {
-        return org.limitless.phixeron.sbe.unsequenced.MessageHeaderEncoder.ENCODED_LENGTH
+        return org.limitless.phixeron.sbe.replay.MessageHeaderEncoder.ENCODED_LENGTH
             + ReplayingEncoder.BLOCK_LENGTH;
     }
 }

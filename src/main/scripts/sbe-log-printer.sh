@@ -5,8 +5,9 @@
 # (see start-cluster.sh / SequencerServer, default $TMPDIR/phixeron-seq/archive-<id>)
 # and prints every recorded SBE message as JSON.
 #
-# All three IR files packaged in the uber jar are loaded by default — sequenced
-# (the tap, stream 205), unsequenced (cluster ingress) and cluster (the Raft
+# All six IR files packaged in the uber jar are loaded by default — frame (the
+# envelope and core, on the tap, stream 205), order/session/basicdata (the
+# payloads inside it), replay (the node-local control plane) and cluster (the Raft
 # consensus log, stream 100) — and each frame is decoded against the schema its
 # own header names. So one run reads an archive dir end to end, whichever mix of
 # recordings it holds. --schema <name> narrows the run to one of them;
@@ -41,7 +42,7 @@ set -euo pipefail
 
 usage() {
     echo "Usage: $0 [--schema <name>|--spec <file.sbeir>] <archive-dir> [--stream <id>] [--oneline]"
-    echo "  --schema <name>  decode only this schema (default: all of sequenced, unsequenced, cluster)"
+    echo "  --schema <name>  decode only this schema (default: all six)"
     echo "  --spec <file>    decode against an IR file outside the jar instead"
     echo "  --stream <id>    dump only the newest recording on that stream"
     echo "  --oneline        print each message as a single line of JSON"

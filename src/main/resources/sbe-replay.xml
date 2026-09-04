@@ -1,27 +1,26 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <!--
-    The replay control protocol — and, after doc/seqeron-protocol-spec.md §15 step 4,
-    nothing else.
+    The replay control protocol, and nothing else (doc/seqeron-protocol-spec.md §15 step 5).
 
     Six node-local control messages between a node's ReplayerService and its co-located app
     replicas, over aeron:ipc. They are never sequenced and never recorded, so they carry no
     header composite and have no counterpart schema.
 
-    Everything else that used to live here has moved onto a payloadId of its own, inside the
-    sbe-frame.xml envelope: the core frames to payloadId 1 (§15 step 1/6), the order family
-    to sbe-order.xml (2), the FIX session family to sbe-session.xml (3) and reference data to
-    sbe-basicdata.xml (4). Nothing publishes a bare schema-200 message to cluster ingress any
-    more, and the sequencer's bare branch went with the last of them. The name is now wrong —
-    these six were never "unsequenced ingress", they are a control plane — and §15 step 5
-    moves them to seqeron-replay.xml, which is when this file goes.
+    This is what is left of the old sbe-unsequenced.xml (schema 200) once every message family
+    moved onto a payloadId inside the sbe-frame.xml envelope — core to payloadId 1 (§15 step
+    1/6), the order family to sbe-order.xml (2), the FIX session family to sbe-session.xml (3)
+    and reference data to sbe-basicdata.xml (4). Schema 200 is retired with that file: these
+    six were never "unsequenced ingress", they are a control plane, and §8 gives the control
+    plane 212 of its own.
 
-    Template ids are the ones these six have always had, and none of the ids the moved
-    families used is reused: a recording or a control message from an older build must never
-    read as something else.
+    Renumbering is free here and nowhere else: nothing records these (they travel on the
+    request/control streams, not the tap), and a node's Replayer and its co-located apps are
+    built and restarted together, so no decoder ever meets an older build's bytes (V-3 exempts
+    this schema for the same reason). Template ids are the ones these six have always had.
 -->
 <sbe:messageSchema xmlns:sbe="http://fixprotocol.io/2016/sbe"
-                   package="org.limitless.phixeron.sbe.unsequenced"
-                   id="200"
+                   package="org.limitless.phixeron.sbe.replay"
+                   id="212"
                    version="0"
                    description="Node-local replay control protocol between a ReplayerService and its co-located app replicas"
                    byteOrder="littleEndian">
@@ -57,8 +56,7 @@
          control streams, not the tap), so adding a field to one is a coordinated
          in-place change — the Java Replayer and the C++ apps on a node are built and
          restarted together, and no recording holds an older encoding of them. Hence
-         no schema version bump: that would restamp every ingress message that IS
-         recorded, for no gain here.
+         no schema version bump, and none is ever needed here (§11).
          ═══════════════════════════════════════════════════════════════════ -->
 
     <!-- App -> ReplayerService: "I have a gap; replay for me from fromPosition." -->

@@ -24,9 +24,9 @@
 #include "org_limitless_phixeron_sbe_frame/ClusterHeartbeat.h"
 #include "org_limitless_phixeron_sbe_frame/MessageHeader.h"
 #include "org_limitless_phixeron_sbe_frame/Sequenced.h"
-#include "org_limitless_phixeron_sbe_unsequenced/ReplayPending.h"
-#include "org_limitless_phixeron_sbe_unsequenced/ReplayUnavailable.h"
-#include "org_limitless_phixeron_sbe_unsequenced/Replaying.h"
+#include "org_limitless_phixeron_sbe_replay/ReplayPending.h"
+#include "org_limitless_phixeron_sbe_replay/ReplayUnavailable.h"
+#include "org_limitless_phixeron_sbe_replay/Replaying.h"
 
 namespace org::limitless::phixeron::replayer::client {
 namespace {
@@ -201,7 +201,7 @@ std::vector<std::uint8_t> encodeReplaying(const std::int32_t clientId, const std
                                           const std::int64_t recordingId = -1)
 {
     std::vector<std::uint8_t> buf(64, 0);
-    usq::Replaying enc;
+    rpl::Replaying enc;
     enc.wrapAndApplyHeader(reinterpret_cast<char*>(buf.data()), 0, buf.size());
     enc.clientId(clientId)
         .requestId(requestId)
@@ -215,7 +215,7 @@ std::vector<std::uint8_t> encodeReplaying(const std::int32_t clientId, const std
 std::vector<std::uint8_t> encodeReplayPending(const std::int32_t clientId, const std::int64_t requestId)
 {
     std::vector<std::uint8_t> buf(32, 0);
-    usq::ReplayPending enc;
+    rpl::ReplayPending enc;
     enc.wrapAndApplyHeader(reinterpret_cast<char*>(buf.data()), 0, buf.size());
     enc.clientId(clientId).requestId(requestId);
     buf.resize(enc.sbePosition());
@@ -225,7 +225,7 @@ std::vector<std::uint8_t> encodeReplayPending(const std::int32_t clientId, const
 std::vector<std::uint8_t> encodeReplayUnavailable(const std::int32_t clientId, const std::int64_t requestId)
 {
     std::vector<std::uint8_t> buf(32, 0);
-    usq::ReplayUnavailable enc;
+    rpl::ReplayUnavailable enc;
     enc.wrapAndApplyHeader(reinterpret_cast<char*>(buf.data()), 0, buf.size());
     enc.clientId(clientId).requestId(requestId);
     buf.resize(enc.sbePosition());

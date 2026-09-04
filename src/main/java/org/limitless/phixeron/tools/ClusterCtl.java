@@ -109,7 +109,7 @@ public final class ClusterCtl {
     /** header.sourceId/connectionId for markers this tool submits: no gateway process/TCP connection. */
     private static final int NO_ID = -1;
 
-    /** Roster-row field widths, from sbe-unsequenced.xml's gatewayName type and preferenceRank uint8. */
+    /** Roster-row field widths, from sbe-frame.xml's gatewayName type and preferenceRank uint8. */
     private static final int GATEWAY_NAME_LENGTH = 32;
     private static final int MAX_PREFERENCE_RANK = 255;
 

@@ -214,8 +214,8 @@ class AeronEgressTransport : public EgressTransport
 // ── ClusterStreamSender ──────────────────────────────────────────────────────
 
 // Manages the Aeron Cluster session (SessionConnectRequest → SessionEvent(OK))
-// and sends pre-encoded sbe-unsequenced.xml messages to the cluster ingress.
-// Every message in that schema carries its own header composite (sourceId,
+// and sends pre-encoded Unsequenced frames (sbe-frame.xml) to the cluster ingress.
+// Every frame carries its own header composite (sourceId,
 // connectionId, sessionId), so unlike the old AppMessage scheme, send() needs
 // no connection id of its own — the caller bakes it into the message before
 // calling send(). sourceId (this process's fixed identity) is held here
@@ -537,7 +537,7 @@ class ClusterStreamSender
         applyPendingIngressSwitch(); // a NewLeaderEvent/REDIRECT in that batch; never build inside poll()
     }
 
-    // Wraps a pre-encoded sbe-unsequenced.xml message in a SessionMessageHeader
+    // Wraps a pre-encoded Unsequenced frame in a SessionMessageHeader
     // (the Aeron Cluster ingress envelope) and offers it to the cluster, spinning
     // until the offer lands.
     //

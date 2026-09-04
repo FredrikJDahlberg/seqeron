@@ -22,11 +22,11 @@
 #include "org/limitless/phixeron/replayer/client/ReplayerRecovery.hpp"
 #include "org/limitless/phixeron/util/PhixeronCounters.hpp"
 
-// Request codecs (sbe-unsequenced.xml); the replies are decoded in ReplayerRecovery.
-#include "org_limitless_phixeron_sbe_unsequenced/MessageHeader.h"
-#include "org_limitless_phixeron_sbe_unsequenced/ReplayComplete.h"
-#include "org_limitless_phixeron_sbe_unsequenced/ReplayHeartbeat.h"
-#include "org_limitless_phixeron_sbe_unsequenced/ReplayRequest.h"
+// Request codecs (sbe-replay.xml); the replies are decoded in ReplayerRecovery.
+#include "org_limitless_phixeron_sbe_replay/MessageHeader.h"
+#include "org_limitless_phixeron_sbe_replay/ReplayComplete.h"
+#include "org_limitless_phixeron_sbe_replay/ReplayHeartbeat.h"
+#include "org_limitless_phixeron_sbe_replay/ReplayRequest.h"
 
 namespace org::limitless::phixeron::replayer::client {
 
@@ -222,10 +222,10 @@ class ReplayerStreamReceiver final : private ReplayerRecoveryActions
             return; // Replayer not up yet; the resend timer retries
         }
         alignas(16) std::array<std::uint8_t, REQUEST_BUFFER_LENGTH> buf{};
-        usq::ReplayRequest enc;
+        rpl::ReplayRequest enc;
         enc.wrapAndApplyHeader(reinterpret_cast<char*>(buf.data()), 0, buf.size());
         enc.clientId(m_clientId).requestId(requestId).fromPosition(fromPosition).segmentIndex(segmentIndex);
-        const auto len = static_cast<aeron::util::index_t>(usq::MessageHeader::encodedLength() + enc.encodedLength());
+        const auto len = static_cast<aeron::util::index_t>(rpl::MessageHeader::encodedLength() + enc.encodedLength());
         aeron::concurrent::AtomicBuffer ab(buf.data(), buf.size());
         m_requestPub->offer(ab, 0, len); // result deliberately discarded — see ReplayerRecovery::requestReplay
     }
@@ -237,10 +237,10 @@ class ReplayerStreamReceiver final : private ReplayerRecoveryActions
             return false;
         }
         alignas(16) std::array<std::uint8_t, REQUEST_BUFFER_LENGTH> buf{};
-        usq::ReplayComplete enc;
+        rpl::ReplayComplete enc;
         enc.wrapAndApplyHeader(reinterpret_cast<char*>(buf.data()), 0, buf.size());
         enc.clientId(m_clientId);
-        const auto len = static_cast<aeron::util::index_t>(usq::MessageHeader::encodedLength() + enc.encodedLength());
+        const auto len = static_cast<aeron::util::index_t>(rpl::MessageHeader::encodedLength() + enc.encodedLength());
         aeron::concurrent::AtomicBuffer ab(buf.data(), buf.size());
         return m_requestPub->offer(ab, 0, len) >= 0;
     }
@@ -252,10 +252,10 @@ class ReplayerStreamReceiver final : private ReplayerRecoveryActions
             return false;
         }
         alignas(16) std::array<std::uint8_t, REQUEST_BUFFER_LENGTH> buf{};
-        usq::ReplayHeartbeat enc;
+        rpl::ReplayHeartbeat enc;
         enc.wrapAndApplyHeader(reinterpret_cast<char*>(buf.data()), 0, buf.size());
         enc.clientId(m_clientId);
-        const auto len = static_cast<aeron::util::index_t>(usq::MessageHeader::encodedLength() + enc.encodedLength());
+        const auto len = static_cast<aeron::util::index_t>(rpl::MessageHeader::encodedLength() + enc.encodedLength());
         aeron::concurrent::AtomicBuffer ab(buf.data(), buf.size());
         return m_requestPub->offer(ab, 0, len) >= 0;
     }

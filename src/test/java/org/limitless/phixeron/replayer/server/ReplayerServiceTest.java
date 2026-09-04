@@ -19,14 +19,14 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.limitless.phixeron.metrics.PhixeronCounters;
-import org.limitless.phixeron.sbe.unsequenced.MessageHeaderDecoder;
-import org.limitless.phixeron.sbe.unsequenced.MessageHeaderEncoder;
-import org.limitless.phixeron.sbe.unsequenced.ReplayCompleteEncoder;
-import org.limitless.phixeron.sbe.unsequenced.ReplayHeartbeatEncoder;
-import org.limitless.phixeron.sbe.unsequenced.ReplayPendingDecoder;
-import org.limitless.phixeron.sbe.unsequenced.ReplayRequestEncoder;
-import org.limitless.phixeron.sbe.unsequenced.ReplayUnavailableDecoder;
-import org.limitless.phixeron.sbe.unsequenced.ReplayingDecoder;
+import org.limitless.phixeron.sbe.replay.MessageHeaderDecoder;
+import org.limitless.phixeron.sbe.replay.MessageHeaderEncoder;
+import org.limitless.phixeron.sbe.replay.ReplayCompleteEncoder;
+import org.limitless.phixeron.sbe.replay.ReplayHeartbeatEncoder;
+import org.limitless.phixeron.sbe.replay.ReplayPendingDecoder;
+import org.limitless.phixeron.sbe.replay.ReplayRequestEncoder;
+import org.limitless.phixeron.sbe.replay.ReplayUnavailableDecoder;
+import org.limitless.phixeron.sbe.replay.ReplayingDecoder;
 import org.limitless.phixeron.util.Logger;
 
 /**

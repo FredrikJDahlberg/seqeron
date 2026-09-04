@@ -9,9 +9,9 @@ import org.agrona.concurrent.UnsafeBuffer;
 import org.limitless.phixeron.replayer.server.ReplayerService;
 import org.limitless.phixeron.sbe.frame.LeadershipChangedDecoder;
 import org.limitless.phixeron.sbe.frame.MessageHeaderDecoder;
-import org.limitless.phixeron.sbe.unsequenced.ReplayPendingDecoder;
-import org.limitless.phixeron.sbe.unsequenced.ReplayUnavailableDecoder;
-import org.limitless.phixeron.sbe.unsequenced.ReplayingDecoder;
+import org.limitless.phixeron.sbe.replay.ReplayPendingDecoder;
+import org.limitless.phixeron.sbe.replay.ReplayUnavailableDecoder;
+import org.limitless.phixeron.sbe.replay.ReplayingDecoder;
 import org.limitless.phixeron.util.Logger;
 
 /**
@@ -127,8 +127,8 @@ public final class ReplayerRecovery {
 
     private final SequencedFrameDecoder view = new SequencedFrameDecoder();
     private final LeadershipChangedDecoder leadershipChanged = new LeadershipChangedDecoder();
-    private final org.limitless.phixeron.sbe.unsequenced.MessageHeaderDecoder controlHeader =
-        new org.limitless.phixeron.sbe.unsequenced.MessageHeaderDecoder();
+    private final org.limitless.phixeron.sbe.replay.MessageHeaderDecoder controlHeader =
+        new org.limitless.phixeron.sbe.replay.MessageHeaderDecoder();
     private final ReplayingDecoder replaying = new ReplayingDecoder();
     private final ReplayPendingDecoder replayPending = new ReplayPendingDecoder();
     private final ReplayUnavailableDecoder replayUnavailable = new ReplayUnavailableDecoder();
@@ -334,7 +334,7 @@ public final class ReplayerRecovery {
 
     /** Decodes one Replayer control reply ({@code Replaying}/{@code ReplayPending}/{@code ReplayUnavailable}). */
     public void onControl(final DirectBuffer buffer, final int offset, final int length) {
-        if (length < org.limitless.phixeron.sbe.unsequenced.MessageHeaderDecoder.ENCODED_LENGTH) {
+        if (length < org.limitless.phixeron.sbe.replay.MessageHeaderDecoder.ENCODED_LENGTH) {
             return;
         }
         controlHeader.wrap(buffer, offset);

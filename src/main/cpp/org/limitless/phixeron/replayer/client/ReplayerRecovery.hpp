@@ -15,16 +15,16 @@
 #include "org/limitless/phixeron/sequencer/SequencedFrame.hpp"
 #include "org/limitless/phixeron/util/Logger.hpp"
 
-// Replay-protocol control codecs (sbe-unsequenced.xml) + LeadershipChanged (core, sbe-frame.xml)
+// Replay-protocol control codecs (sbe-replay.xml) + LeadershipChanged (core, sbe-frame.xml)
 #include "org_limitless_phixeron_sbe_frame/LeadershipChanged.h"
-#include "org_limitless_phixeron_sbe_unsequenced/MessageHeader.h"
-#include "org_limitless_phixeron_sbe_unsequenced/ReplayPending.h"
-#include "org_limitless_phixeron_sbe_unsequenced/ReplayUnavailable.h"
-#include "org_limitless_phixeron_sbe_unsequenced/Replaying.h"
+#include "org_limitless_phixeron_sbe_replay/MessageHeader.h"
+#include "org_limitless_phixeron_sbe_replay/ReplayPending.h"
+#include "org_limitless_phixeron_sbe_replay/ReplayUnavailable.h"
+#include "org_limitless_phixeron_sbe_replay/Replaying.h"
 
 namespace org::limitless::phixeron::replayer::client {
 
-namespace usq = org::limitless::phixeron::sbe::unsequenced;
+namespace rpl = org::limitless::phixeron::sbe::replay;
 namespace diag = org::limitless::phixeron::util;
 
 using org::limitless::phixeron::sequencer::CLIENT_CONNECTED_TEMPLATE_ID;
@@ -286,18 +286,18 @@ class ReplayerRecovery
     // One message off the Replayer's control stream (Replaying / ReplayPending / ReplayUnavailable).
     void onControl(char* const message, const std::uint64_t length)
     {
-        if (length < usq::MessageHeader::encodedLength())
+        if (length < rpl::MessageHeader::encodedLength())
         {
             return;
         }
 
-        usq::MessageHeader mh;
+        rpl::MessageHeader mh;
         mh.wrap(message, 0U, 0U, length);
-        const std::uint64_t bodyOff = usq::MessageHeader::encodedLength();
+        const std::uint64_t bodyOff = rpl::MessageHeader::encodedLength();
 
-        if (mh.templateId() == usq::Replaying::sbeTemplateId())
+        if (mh.templateId() == rpl::Replaying::sbeTemplateId())
         {
-            usq::Replaying replaying;
+            rpl::Replaying replaying;
             replaying.wrapForDecode(message, bodyOff, mh.blockLength(), mh.version(), length);
             if (replaying.clientId() != m_clientId || replaying.requestId() != m_requestId)
             {
@@ -305,9 +305,9 @@ class ReplayerRecovery
             }
             onReplaying(replaying.replaySessionId(), replaying.catchUpPosition(), replaying.recordingId());
         }
-        else if (mh.templateId() == usq::ReplayPending::sbeTemplateId())
+        else if (mh.templateId() == rpl::ReplayPending::sbeTemplateId())
         {
-            usq::ReplayPending replayPending;
+            rpl::ReplayPending replayPending;
             replayPending.wrapForDecode(message, bodyOff, mh.blockLength(), mh.version(), length);
             if (replayPending.clientId() == m_clientId && replayPending.requestId() == m_requestId)
             {
@@ -315,9 +315,9 @@ class ReplayerRecovery
                 m_replayerUnavailable = false; // queued, not refused — the episode ended (see Replaying)
             }
         }
-        else if (mh.templateId() == usq::ReplayUnavailable::sbeTemplateId())
+        else if (mh.templateId() == rpl::ReplayUnavailable::sbeTemplateId())
         {
-            usq::ReplayUnavailable replayUnavailable;
+            rpl::ReplayUnavailable replayUnavailable;
             replayUnavailable.wrapForDecode(message, bodyOff, mh.blockLength(), mh.version(), length);
             if (replayUnavailable.clientId() == m_clientId && replayUnavailable.requestId() == m_requestId)
             {

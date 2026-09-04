@@ -289,16 +289,17 @@ See `doc/todo.md` "Gateway HA / multi-instance".
 ### SBE / FIX code generation
 Six SBE schemas under `src/main/resources/`, each generating into a distinct namespace so one
 include path covers all of them (`org.limitless.phixeron.{sbe.frame, sbe.order, sbe.session,
-sbe.basicdata, sbe.unsequenced}`, `org.limitless.phixeron.cluster.sbe`):
+sbe.basicdata, sbe.replay}`, `org.limitless.phixeron.cluster.sbe`):
 - `sbe-cluster.xml` — trimmed mirror of `io.aeron.cluster.codecs` (SessionConnectRequest,
   SessionEvent, SessionKeepAlive, …), replacing a hand-written `ClusterProtocol.hpp`. Its last
   section is decode-only — the consensus-module log entries (`TimerEvent`, `SessionOpenEvent`, …)
   that `SbeLogPrinter --schema cluster` reads out of a Raft-log recording; the client never sends
   them. Java side is IR-only (`generateClusterSbeIr`, no codecs), as `sbe-order.xml`'s is.
-- `sbe-unsequenced.xml` (schema 200) — misnamed leftover: after §15 step 4 it holds nothing but the
-  six **replay control** messages, node-local between a `ReplayerService` and its co-located app
-  replicas, never sequenced and never recorded. Spec §15 step 5 moves them to `seqeron-replay.xml`,
-  which is when this file goes.
+- `sbe-replay.xml` (schema 212) — the six **replay control** messages, node-local between a
+  `ReplayerService` and its co-located app replicas, never sequenced and never recorded. What §15
+  step 5 extracted from `sbe-unsequenced.xml`; schema 200 retired with that file, and nothing but
+  namespace and id changed — renumbering is free precisely because nothing records these and a
+  node's Java and C++ builds ship together.
 - `sbe-frame.xml` (schema 210) — the `Unsequenced`/`Sequenced` envelope pair, their two header
   composites, and the ten **core** payloads (`payloadId` 1: the TCP lifecycle events, the cluster
   markers, the 1 Hz `ClusterHeartbeat`, the gateway roster/election frames). A core payload carries
@@ -329,9 +330,9 @@ Separately, `fix-session.xml` / `fix-application.xml` / `config.xml` are simdfix
 **not** simdfix's own generated-headers location, to avoid colliding with simdfix's own
 (excluded-from-build) test-fixture generation.
 
-Both the Java (`generateUnsequencedSbe`/`generateFrameSbe`/`generateSessionSbe`/`generateBasicDataSbe`
+Both the Java (`generateReplaySbe`/`generateFrameSbe`/`generateSessionSbe`/`generateBasicDataSbe`
 codec tasks, plus `generateClusterSbeIr`/`generateOrderSbeIr` for the IR-only two) and C++
-(`GenerateUnsequencedSbeCodecs`/`GenerateFrameSbeCodecs`/`GenerateSessionSbeCodecs`/
+(`GenerateReplaySbeCodecs`/`GenerateFrameSbeCodecs`/`GenerateSessionSbeCodecs`/
 `GenerateBasicDataSbeCodecs`/`GenerateOrderSbeCodecs`/`GenerateClusterSbeCodecs` CMake targets) sides
 regenerate independently from the same XML — keep both in sync when editing a schema. **SBE never deletes generated files for
 messages you removed**, so after deleting from a schema, purge `cmake-build-*/generated/sbe` and

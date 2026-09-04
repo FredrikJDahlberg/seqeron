@@ -6,10 +6,10 @@ condenses and does not supersede. Rule identifiers are that document's, unchange
 
 > **Status: specification of the target, not of the tree.** The tree is mid-§15: every message family
 > is on a payload now (`sbe-frame.xml` 210 with core, plus `sbe-order.xml` 220, `sbe-session.xml` 230
-> and `sbe-basicdata.xml` 240), and `sbe-sequenced.xml` is gone. What is left of the old pair is
-> `sbe-unsequenced.xml`, holding the node-local replay control protocol alone, which §15 step 5 moves
-> to `seqeron-replay.xml`. This states what `doc/future-arch.md` §11 step 3 lands; §15 is the migration
-> and records what has landed so far. Statements about today's code are marked _(today)_.
+> and `sbe-basicdata.xml` 240), the old pair is gone, and the replay control protocol stands alone in
+> `sbe-replay.xml` (212). What is left is the registry work of steps 2 and 8 and §14's conformance
+> suite. This states what `doc/future-arch.md` §11 step 3 lands; §15 is the migration and records what
+> has landed so far. Statements about today's code are marked _(today)_.
 >
 > **Normative language.** MUST / MUST NOT / SHOULD as usual. Rules carry identifiers — **F-n** frame,
 > **T-n** transport, **S-n** sequencer, **P-n** payload, **C-n** registration, **R-n** replay, **V-n**
@@ -963,8 +963,15 @@ actually landed.
    schema-version assertion, the bare branch of `unwrapFrame` and its Java twin, `NO_PAYLOAD_ID` — and
    `sbe-sequenced.xml` itself, which was left with no message in it. Same shape as step 6 landing inside
    step 1: the deletion is not a separate change, it is what the move *is*.
-5. Extract the replay set into `seqeron-replay.xml`. Namespace change only. → both
-   `ReplayerRecoveryTest`s green.
+5. **Landed.** Extract the replay set into its own schema. Namespace change only — the six messages,
+   their fields and their template ids are untouched. → both `ReplayerRecoveryTest`s green, both e2e
+   paths green. The file is `src/main/resources/sbe-replay.xml`, not `seqeron-replay.xml`, for step
+   1's reason: the `seqeron` rename goes with the repo split. The schema id **did** move, 200 → §8's
+   **212**, because 200 was the old ingress pair's and dies with it — free here and nowhere else,
+   since nothing records these six and a node's Replayer and its co-located apps are built and
+   restarted together (**V-3** exempts this schema). **Step 7 completes here**: `sbe-unsequenced.xml`
+   is gone, and with it the last message defined in seqeron's schemas that is neither the envelope nor
+   a core payload.
 6. **Landed with step 1, less its last clause.** Repoint every consumer at core's nine existing frames
    as `payloadId` 1 — they are already defined once in the frame schema beside the envelope (step 1);
    this deletes the pair's copies. → the pair's copies are gone, and the sequencer decodes no
@@ -972,9 +979,9 @@ actually landed.
    (§7.1), so moving core off the pair is what brings the envelope live, and bringing the envelope live
    is what moving core off the pair means. `HEADER_GROWTH` survived here, still measuring the bare
    copy-through path; step 4 took that path away and left it measuring the envelope's own 18→34 growth.
-7. **Half landed with step 4** — see there for what went and why. `sbe-sequenced.xml` is deleted and
-   the copy-through branch with it. What remains is `sbe-unsequenced.xml`, which holds nothing but the
-   replay control protocol: it goes when step 5 moves that to `seqeron-replay.xml`. → `:cluster` and
+7. **Landed, in halves with steps 4 and 5.** Step 4 deleted `sbe-sequenced.xml` and the copy-through
+   branch with it — see there for why the deletion is not a separate change. Step 5 took the last of
+   the pair, `sbe-unsequenced.xml`, by moving the replay control protocol out of it. → `:cluster` and
    `core_tests` build and pass with **no application message defined anywhere in seqeron's schemas**.
 8. **Schema half landed with step 1.** `PayloadIdRegistered` is defined — §7's tenth core payload — and
    nothing publishes it. What remains: convert the topology file to §6.4's document and schema, and
