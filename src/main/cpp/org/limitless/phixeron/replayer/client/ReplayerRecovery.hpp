@@ -3,6 +3,7 @@
 // ReplayerRecovery — the walk/resume/gap decision state machine behind ReplayerStreamReceiver.
 //
 #include <array>
+#include <cinttypes>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -15,7 +16,7 @@
 #include "org/limitless/phixeron/util/Logger.hpp"
 
 // Replay-protocol control codecs (sbe-unsequenced.xml) + LeadershipChanged (sbe-sequenced.xml)
-#include "org_limitless_phixeron_sbe_sequenced/LeadershipChanged.h"
+#include "org_limitless_phixeron_sbe_frame/LeadershipChanged.h"
 #include "org_limitless_phixeron_sbe_unsequenced/MessageHeader.h"
 #include "org_limitless_phixeron_sbe_unsequenced/ReplayPending.h"
 #include "org_limitless_phixeron_sbe_unsequenced/ReplayUnavailable.h"
@@ -136,9 +137,6 @@ class ReplayerRecovery
     static constexpr std::size_t MAX_MESSAGES_FRAMES = 65536;
     static constexpr std::size_t MAX_MESSAGES_BYTES = 16UL * 1024 * 1024;
 
-    using HdrSbe = org::limitless::phixeron::sbe::sequenced::MessageHeader;
-    using HeaderComposite = org::limitless::phixeron::sbe::sequenced::Header;
-
     const std::int32_t m_clientId;
     ReplayerRecoveryActions& m_actions;
     OnSequenced m_onSequenced;
@@ -181,9 +179,6 @@ class ReplayerRecovery
 
     std::int32_t m_currentLeaderMemberId = -1;
 
-    HdrSbe m_hdr;
-    HeaderComposite m_header;
-
   public:
     ReplayerRecovery(const std::int32_t clientId, ReplayerRecoveryActions& actions, OnSequenced onSequenced,
                      OnConnected onConnected = {}, OnDisconnected onDisconnected = {},
@@ -214,19 +209,13 @@ class ReplayerRecovery
     void onFrame(char* const frame, const std::uint64_t length, const std::int64_t framePosition,
                  const std::int64_t receiveNs, const bool fromReplay)
     {
-        if (length < HdrSbe::encodedLength() + HeaderComposite::encodedLength())
+        // The envelope is stripped once, here: both frame shapes carry globalSeqNo, at different offsets.
+        const sequencer::FrameView entry = sequencer::unwrapFrame(frame, length);
+        if (!entry.valid)
         {
             return;
         }
-
-        m_hdr.wrap(frame, 0U, 0U, length);
-        if (m_hdr.schemaId() != HdrSbe::sbeSchemaId())
-        {
-            return;
-        }
-
-        m_header.wrap(frame, HdrSbe::encodedLength(), 0U, length);
-        const auto sequenceNumber = m_header.globalSeqNo();
+        const auto sequenceNumber = entry.globalSeqNo;
         if (fromReplay && m_resumeAnchorSequenceNumber != 0)
         {
             const std::int64_t anchor = m_resumeAnchorSequenceNumber;
@@ -626,9 +615,8 @@ class ReplayerRecovery
         {
             m_actions.recoveryStalled(false);
         }
-        m_hdr.wrap(frame, 0U, 0U, length);
-        const std::uint16_t templateId = m_hdr.templateId();
-        m_header.wrap(frame, HdrSbe::encodedLength(), 0U, length);
+        const sequencer::FrameView view = sequencer::unwrapFrame(frame, length);
+        const std::uint16_t templateId = view.templateId;
 
         m_lastGlobalSeqNo = sequenceNumber;
         m_replayGapLogged = false;
@@ -638,12 +626,21 @@ class ReplayerRecovery
             notifyCaughtUp();
         }
 
-        const auto srcId = m_header.sourceId();
-        const auto connId = m_header.connectionId();
-        const auto sessId = m_header.sessionId();
-        const auto ts = m_header.timestamp();
-        const auto origin = m_header.origin();
-        if (templateId == CLIENT_CONNECTED_TEMPLATE_ID || templateId == CLIENT_DISCONNECTED_TEMPLATE_ID)
+        if (!view.valid)
+        {
+            diag::Logger::error(diag::Component::ReplayerStreamReceiver, diag::EventCode::FragmentTooShort,
+                                "unreadable frame of %" PRIu64 " bytes at gseq %" PRId64 "; ignored", length,
+                                sequenceNumber);
+            return;
+        }
+        const auto srcId = view.sourceId;
+        const auto connId = view.connectionId;
+        const auto sessId = view.sessionId;
+        const auto ts = view.timestamp;
+        // A template id means nothing without the protocol it belongs to: core's 1 and 2 are some other
+        // payload's 1 and 2, so both halves have to match before a frame is read as a lifecycle event.
+        const bool isCore = view.payloadId == sequencer::CORE_PAYLOAD_ID;
+        if (isCore && (templateId == CLIENT_CONNECTED_TEMPLATE_ID || templateId == CLIENT_DISCONNECTED_TEMPLATE_ID))
         {
             // Both carry the same header-only LifecycleEvent; only the callback differs.
             const OnConnected& callback = templateId == CLIENT_CONNECTED_TEMPLATE_ID ? m_onConnected : m_onDisconnected;
@@ -658,11 +655,11 @@ class ReplayerRecovery
             }
             return;
         }
-        if (templateId == LEADERSHIP_CHANGED_TEMPLATE_ID)
+        if (isCore && templateId == LEADERSHIP_CHANGED_TEMPLATE_ID)
         {
-            sbe::sequenced::LeadershipChanged leadershipChanged;
-            leadershipChanged.wrapForDecode(frame, HdrSbe::encodedLength(), m_hdr.blockLength(), m_hdr.version(),
-                                            length);
+            sbe::frame::LeadershipChanged leadershipChanged;
+            leadershipChanged.wrapForDecode(const_cast<char*>(view.payload), sbe::frame::MessageHeader::encodedLength(),
+                                            view.blockLength, view.version, view.payloadLength);
             m_currentLeaderMemberId = leadershipChanged.newLeaderMemberId();
             if (m_onLeadershipChanged)
             {
@@ -678,12 +675,12 @@ class ReplayerRecovery
                                           .sourceSessionId = sessId,
                                           .clusterTimestamp = ts,
                                           .receiveTimeNs = receiveNs,
-                                          .origin = origin,
+                                          .payloadId = view.payloadId,
                                           .templateId = templateId,
-                                          .blockLength = m_hdr.blockLength(),
-                                          .version = m_hdr.version(),
-                                          .payload = frame,
-                                          .payloadLength = length,
+                                          .blockLength = view.blockLength,
+                                          .version = view.version,
+                                          .payload = view.payload,
+                                          .payloadLength = view.payloadLength,
                                           .position = framePosition });
         }
     }

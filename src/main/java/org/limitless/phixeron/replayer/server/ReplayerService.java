@@ -142,16 +142,14 @@ public final class ReplayerService {
     private final ReplayUnavailableEncoder unavailableEncoder = new ReplayUnavailableEncoder();
     private final MutableDirectBuffer controlBuffer = new ExpandableArrayBuffer(64);
 
-    private final org.limitless.phixeron.sbe.sequenced.MessageHeaderDecoder selfCheckMsgHeaderDecoder =
-        new org.limitless.phixeron.sbe.sequenced.MessageHeaderDecoder();
-    private final org.limitless.phixeron.sbe.sequenced.HeaderDecoder selfCheckHeaderDecoder =
-        new org.limitless.phixeron.sbe.sequenced.HeaderDecoder();
+    private final org.limitless.phixeron.replayer.client.FrameView selfCheckView =
+        new org.limitless.phixeron.replayer.client.FrameView();
 
     private final FragmentHandler requestHandler =
         (buffer, offset, length, header) -> onRequest(buffer, offset, length);
 
     private final FragmentHandler selfCheckHandler =
-        (buffer, offset, length, header) -> onSelfCheckFragment(buffer, offset);
+        (buffer, offset, length, header) -> onSelfCheckFragment(buffer, offset, length);
 
     /**
      * Production constructor: serves member {@code memberId}'s own Aeron client and archive.
@@ -394,16 +392,14 @@ public final class ReplayerService {
      * Reads globalSeqNo off the self-check replay's first fragment.
      * @param buffer fragment buffer
      * @param offset fragment offset
+     * @param length fragment length
      */
-    private void onSelfCheckFragment(final DirectBuffer buffer, final int offset) {
-        selfCheckMsgHeaderDecoder.wrap(buffer, offset);
-        if (selfCheckMsgHeaderDecoder.schemaId() !=
-            org.limitless.phixeron.sbe.sequenced.MessageHeaderDecoder.SCHEMA_ID) {
-            return;
+    private void onSelfCheckFragment(final DirectBuffer buffer, final int offset, final int length) {
+        // Either frame shape will do: the check only asks what globalSeqNo the recording starts at, and
+        // both carry it.
+        if (selfCheckView.wrap(buffer, offset, length)) {
+            selfCheckGlobalSeqNo = selfCheckView.globalSeqNo();
         }
-        final int bodyOffset = offset + org.limitless.phixeron.sbe.sequenced.MessageHeaderDecoder.ENCODED_LENGTH;
-        selfCheckHeaderDecoder.wrap(buffer, bodyOffset);
-        selfCheckGlobalSeqNo = selfCheckHeaderDecoder.globalSeqNo();
     }
 
     /** Tears down an in-flight self-check, whether it answered, expired, or never opened. */

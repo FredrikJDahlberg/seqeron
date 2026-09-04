@@ -3,18 +3,21 @@ package org.limitless.phixeron.sequencer;
 import org.agrona.DirectBuffer;
 import org.agrona.ExpandableDirectByteBuffer;
 import org.agrona.MutableDirectBuffer;
-import org.limitless.phixeron.sbe.sequenced.GatewayActiveEncoder;
-import org.limitless.phixeron.sbe.sequenced.HeaderEncoder;
-import org.limitless.phixeron.sbe.sequenced.LeadershipChangedEncoder;
-import org.limitless.phixeron.sbe.sequenced.MessageHeaderEncoder;
-import org.limitless.phixeron.sbe.sequenced.Origin;
-import org.limitless.phixeron.sbe.sequenced.ClusterHeartbeatEncoder;
-import org.limitless.phixeron.sbe.unsequenced.ClientConnectedDecoder;
-import org.limitless.phixeron.sbe.unsequenced.ClientDisconnectedDecoder;
-import org.limitless.phixeron.sbe.unsequenced.GatewayRegisteredDecoder;
-import org.limitless.phixeron.sbe.unsequenced.GatewayStartedDecoder;
-import org.limitless.phixeron.sbe.unsequenced.HeaderDecoder;
-import org.limitless.phixeron.sbe.unsequenced.MessageHeaderDecoder;
+import org.limitless.phixeron.sbe.frame.ClientConnectedDecoder;
+import org.limitless.phixeron.sbe.frame.ClientDisconnectedDecoder;
+import org.limitless.phixeron.sbe.frame.ClusterHeartbeatDecoder;
+import org.limitless.phixeron.sbe.frame.ClusterHeartbeatEncoder;
+import org.limitless.phixeron.sbe.frame.GatewayActiveEncoder;
+import org.limitless.phixeron.sbe.frame.GatewayRegisteredDecoder;
+import org.limitless.phixeron.sbe.frame.GatewayStartedDecoder;
+import org.limitless.phixeron.sbe.frame.LeadershipChangedDecoder;
+import org.limitless.phixeron.sbe.frame.LeadershipChangedEncoder;
+import org.limitless.phixeron.sbe.frame.MessageHeaderDecoder;
+import org.limitless.phixeron.sbe.frame.MessageHeaderEncoder;
+import org.limitless.phixeron.sbe.frame.SequencedEncoder;
+import org.limitless.phixeron.sbe.frame.SequencedHeaderEncoder;
+import org.limitless.phixeron.sbe.frame.UnsequencedDecoder;
+import org.limitless.phixeron.sbe.frame.UnsequencedHeaderDecoder;
 import org.limitless.phixeron.util.Logger;
 
 /**
@@ -130,10 +133,45 @@ public final class Sequencer {
     static final long GATEWAY_ACTIVATION_TIMEOUT_MS = 5 * CLUSTER_HEARTBEAT_INTERVAL_MS;
 
     /**
-     * Smallest ingress message {@link #sequenceMessage} can re-stamp: the outer framing header plus the
-     * {@code header} composite, the only two things it decodes. Anything shorter is malformed.
+     * The one {@code payloadId} the sequencer decodes: seqeron's own core payloads
+     * (doc/seqeron-protocol-spec.md §6.1). Every other value is copied through opaque.
      */
-    static final int MIN_INGRESS_LENGTH = MessageHeaderDecoder.ENCODED_LENGTH + HeaderDecoder.ENCODED_LENGTH;
+    public static final int CORE_PAYLOAD_ID = CoreFrame.PAYLOAD_ID;
+
+    /** Schema id of the bare, un-enveloped ingress pair still carrying the FIX families. */
+    private static final int BARE_SCHEMA_ID = org.limitless.phixeron.sbe.unsequenced.MessageHeaderDecoder.SCHEMA_ID;
+
+    /** The bare pair's ingress and tap {@code header} composites — 16 and 32 bytes. */
+    private static final int BARE_HEADER_LENGTH =
+        org.limitless.phixeron.sbe.unsequenced.UnsequencedHeaderDecoder.ENCODED_LENGTH;
+    private static final int BARE_TAP_HEADER_LENGTH =
+        org.limitless.phixeron.sbe.sequenced.SequencedHeaderEncoder.ENCODED_LENGTH;
+
+    /**
+     * Smallest bare ingress message {@link #sequenceMessage} can re-stamp: the outer framing header plus
+     * the {@code header} composite, the only two things it decodes. Anything shorter is malformed.
+     */
+    static final int MIN_INGRESS_LENGTH = MessageHeaderDecoder.ENCODED_LENGTH + BARE_HEADER_LENGTH;
+
+    /**
+     * Smallest {@code Unsequenced} frame: the framing header, the 18-byte {@code unsequencedHeader} and
+     * the payload's own 2-byte length prefix. A frame this size carries an empty payload, which is legal.
+     */
+    static final int MIN_FRAME_LENGTH = MessageHeaderDecoder.ENCODED_LENGTH + UnsequencedHeaderDecoder.ENCODED_LENGTH +
+                                        UnsequencedDecoder.payloadHeaderLength();
+
+    /**
+     * {@code varDataEncoding}'s {@code nullValue}. A prefix of 65535 is "absent", not a 65535-byte payload,
+     * and admitting it would read the frame a length short of what it claims.
+     */
+    private static final int NULL_PAYLOAD_LENGTH = 65535;
+
+    /** Offset of the payload's length prefix in every frame this class encodes. */
+    private static final int TAP_PAYLOAD_PREFIX_OFFSET =
+        MessageHeaderEncoder.ENCODED_LENGTH + SequencedHeaderEncoder.ENCODED_LENGTH;
+
+    /** Offset of the payload itself, one length prefix past that. */
+    private static final int TAP_PAYLOAD_OFFSET = TAP_PAYLOAD_PREFIX_OFFSET + UnsequencedDecoder.payloadHeaderLength();
 
     /**
      * Largest value the framing header's uint16 {@code blockLength} can carry — 65535 is SBE's null
@@ -147,29 +185,45 @@ public final class Sequencer {
         // while the two schemas version in lockstep — the same assumption the byte-identity of
         // everything past the header rests on. Bumping one XML's version without the other breaks it
         // silently on the wire, so fail at class load instead.
-        if (MessageHeaderDecoder.SCHEMA_VERSION != MessageHeaderEncoder.SCHEMA_VERSION) {
+        final int bareIngress = org.limitless.phixeron.sbe.unsequenced.MessageHeaderDecoder.SCHEMA_VERSION;
+        final int bareTap = org.limitless.phixeron.sbe.sequenced.MessageHeaderEncoder.SCHEMA_VERSION;
+        if (bareIngress != bareTap) {
             throw new IllegalStateException(
-                "schema version mismatch: sbe-unsequenced.xml is at version " + MessageHeaderDecoder.SCHEMA_VERSION +
-                " and sbe-sequenced.xml at " + MessageHeaderEncoder.SCHEMA_VERSION +
+                "schema version mismatch: sbe-unsequenced.xml is at version " + bareIngress +
+                " and sbe-sequenced.xml at " + bareTap +
                 "; the copy-through in sequenceMessage requires them to version together");
         }
     }
 
-    // Ingress decode (schema 200, sbe-unsequenced.xml)
-    // Only the outer framing header and the generic `header` composite are ever decoded — body fields
-    // are copied through as opaque bytes (see sequenceMessage), with two bounded exceptions:
-    // GatewayRegistered and GatewayStarted, whose scalar fields feed the derived topology below.
-    private final MessageHeaderDecoder ingressMsgHeaderDecoder = new MessageHeaderDecoder();
-    private final HeaderDecoder ingressHeaderDecoder = new HeaderDecoder();
+    // Frame decode (schema 210, sbe-frame.xml). The outer MessageHeader composite is byte-identical in
+    // every SBE schema, so this one decoder reads the schemaId that picks the branch, whichever shape
+    // the frame turns out to be.
+    private final MessageHeaderDecoder msgHeaderDecoder = new MessageHeaderDecoder();
+    private final UnsequencedHeaderDecoder frameHeaderDecoder = new UnsequencedHeaderDecoder();
+
+    // Core payload decode (payloadId 1). Body fields are read from exactly two of them — GatewayRegistered
+    // and GatewayStarted, whose scalars feed the derived topology below; the rest are matched on
+    // templateId alone, off identity the frame header already carries.
+    private final MessageHeaderDecoder payloadHeaderDecoder = new MessageHeaderDecoder();
     private final GatewayRegisteredDecoder gatewayRegisteredDecoder = new GatewayRegisteredDecoder();
     private final GatewayStartedDecoder gatewayStartedDecoder = new GatewayStartedDecoder();
 
-    // Egress encode (schema 202, sbe-sequenced.xml)
+    // Frame encode (schema 210). headerEncoder writes the outer framing header and, on a synthesized
+    // frame, the payload's own — at two different offsets, the outer one already written by then.
     private final MessageHeaderEncoder headerEncoder = new MessageHeaderEncoder();
-    private final HeaderEncoder egressHeaderEncoder = new HeaderEncoder();
+    private final SequencedHeaderEncoder tapHeaderEncoder = new SequencedHeaderEncoder();
     private final LeadershipChangedEncoder leadershipChangedEncoder = new LeadershipChangedEncoder();
     private final ClusterHeartbeatEncoder clusterHeartbeatEncoder = new ClusterHeartbeatEncoder();
     private final GatewayActiveEncoder gatewayActiveEncoder = new GatewayActiveEncoder();
+
+    // Bare pair codecs (schemas 200/202), for the FIX families that have not moved onto a payload yet.
+    // Transitional: they go with the last message family, and with them the whole sequenceBare branch.
+    private final org.limitless.phixeron.sbe.unsequenced.UnsequencedHeaderDecoder bareHeaderDecoder =
+        new org.limitless.phixeron.sbe.unsequenced.UnsequencedHeaderDecoder();
+    private final org.limitless.phixeron.sbe.sequenced.MessageHeaderEncoder bareMsgHeaderEncoder =
+        new org.limitless.phixeron.sbe.sequenced.MessageHeaderEncoder();
+    private final org.limitless.phixeron.sbe.sequenced.SequencedHeaderEncoder bareTapHeaderEncoder =
+        new org.limitless.phixeron.sbe.sequenced.SequencedHeaderEncoder();
     private final MutableDirectBuffer encodeBuffer = new ExpandableDirectByteBuffer(4096);
 
     // Topology
@@ -324,38 +378,124 @@ public final class Sequencer {
      */
     public int sequenceMessage(final DirectBuffer buffer, final int offset, final int length, final long sessionId,
                                final long timestamp) {
-        if (length < MIN_INGRESS_LENGTH) {
-            return reject("length " + length + " is below the " + MIN_INGRESS_LENGTH + "-byte minimum framing");
+        if (length < MessageHeaderDecoder.ENCODED_LENGTH) {
+            return reject("length " + length + " is below the " + MessageHeaderDecoder.ENCODED_LENGTH +
+                          "-byte framing header");
+        }
+        msgHeaderDecoder.wrap(buffer, offset);
+        final int schemaId = msgHeaderDecoder.schemaId();
+        if (schemaId == MessageHeaderDecoder.SCHEMA_ID) {
+            return sequenceFrame(buffer, offset, length, sessionId, timestamp);
+        }
+        if (schemaId == BARE_SCHEMA_ID) {
+            return sequenceBare(buffer, offset, length, sessionId, timestamp);
+        }
+        return reject("schemaId " + schemaId + " is neither " + MessageHeaderDecoder.SCHEMA_ID + " nor " +
+                      BARE_SCHEMA_ID);
+    }
+
+    /**
+     * Sequences an {@code Unsequenced} frame: the envelope's copy-18/append-16, plus the core state the
+     * sequencer derives when the payload is its own.
+     *
+     * <p>The payload is copied verbatim, its length prefix included, and is never re-encoded (<b>E-1</b>).
+     * Decoding it at all happens only for {@code payloadId} 1, and only after the bounds each read needs
+     * have been established — reading a {@code templateId} out of an unverified payload is reading a
+     * foreign schema's numbering as core's (<b>P-4</b>).
+     */
+    private int sequenceFrame(final DirectBuffer buffer, final int offset, final int length, final long sessionId,
+                              final long timestamp) {
+        if (length < MIN_FRAME_LENGTH) {
+            return reject("length " + length + " is below the " + MIN_FRAME_LENGTH + "-byte minimum framing");
+        }
+        if (msgHeaderDecoder.version() != MessageHeaderDecoder.SCHEMA_VERSION) {
+            return reject("version " + msgHeaderDecoder.version() + " is not " +
+                          MessageHeaderDecoder.SCHEMA_VERSION);
+        }
+        if (msgHeaderDecoder.templateId() != UnsequencedDecoder.TEMPLATE_ID) {
+            return reject("templateId " + msgHeaderDecoder.templateId() + " is not Unsequenced (" +
+                          UnsequencedDecoder.TEMPLATE_ID + ")");
+        }
+        // An equality, not a floor, and against the composite's own constant: a short blockLength puts the
+        // var-data prefix inside the header composite, a long one silently drops bytes off the end.
+        if (msgHeaderDecoder.blockLength() != UnsequencedHeaderDecoder.ENCODED_LENGTH) {
+            return reject("blockLength " + msgHeaderDecoder.blockLength() + " is not " +
+                          UnsequencedHeaderDecoder.ENCODED_LENGTH);
         }
 
-        ingressMsgHeaderDecoder.wrap(buffer, offset);
-        final int templateId = ingressMsgHeaderDecoder.templateId();
-        final int ingressBlockLen = ingressMsgHeaderDecoder.blockLength();
-        if (ingressMsgHeaderDecoder.schemaId() != MessageHeaderDecoder.SCHEMA_ID) {
-            return reject("schemaId " + ingressMsgHeaderDecoder.schemaId() + " is not " +
-                          MessageHeaderDecoder.SCHEMA_ID);
-        }
-        if (ingressBlockLen < HeaderDecoder.ENCODED_LENGTH ||
-            MessageHeaderDecoder.ENCODED_LENGTH + ingressBlockLen > length) {
-            return reject("blockLength " + ingressBlockLen + " does not fit a " + length + "-byte frame");
+        final int bodyOffset = offset + MessageHeaderDecoder.ENCODED_LENGTH;
+        final int prefixOffset = bodyOffset + UnsequencedHeaderDecoder.ENCODED_LENGTH;
+        final int payloadLength = buffer.getShort(prefixOffset, java.nio.ByteOrder.LITTLE_ENDIAN) & 0xFFFF;
+        if (payloadLength == NULL_PAYLOAD_LENGTH || MIN_FRAME_LENGTH + payloadLength != length) {
+            return reject("payload length " + payloadLength + " does not fit a " + length + "-byte frame");
         }
 
-        final int egressBlockLen = HeaderEncoder.ENCODED_LENGTH + (ingressBlockLen - HeaderDecoder.ENCODED_LENGTH);
-        if (egressBlockLen > MAX_BLOCK_LENGTH) {
-            return reject("blockLength " + ingressBlockLen + " leaves no room for the " +
-                          (HeaderEncoder.ENCODED_LENGTH - HeaderDecoder.ENCODED_LENGTH) +
-                          " bytes the sequenced header adds");
+        frameHeaderDecoder.wrap(buffer, bodyOffset);
+        final int payloadId = frameHeaderDecoder.payloadId();
+        if (payloadId == 0) {
+            return reject("payloadId 0 is not a protocol");
+        }
+        final int sourceId = frameHeaderDecoder.sourceId();
+        final int connectionId = frameHeaderDecoder.connectionId();
+
+        if (payloadId == CORE_PAYLOAD_ID &&
+            !applyCore(buffer, prefixOffset + UnsequencedDecoder.payloadHeaderLength(), payloadLength, sourceId,
+                       connectionId, sessionId)) {
+            return NO_FRAME;
         }
 
         final long globalSeq = ++globalSeqNo;
-        final int ingressBodyOffset = offset + MessageHeaderDecoder.ENCODED_LENGTH;
-        ingressHeaderDecoder.wrap(buffer, ingressBodyOffset);
+        headerEncoder.wrap(encodeBuffer, 0)
+            .blockLength(SequencedEncoder.BLOCK_LENGTH)
+            .templateId(SequencedEncoder.TEMPLATE_ID)
+            .schemaId(MessageHeaderEncoder.SCHEMA_ID)
+            .version(MessageHeaderEncoder.SCHEMA_VERSION);
+        tapHeaderEncoder.wrap(encodeBuffer, MessageHeaderEncoder.ENCODED_LENGTH)
+            .sourceId(sourceId)
+            .connectionId(connectionId)
+            .sessionId(sessionId)
+            .payloadId(payloadId)
+            .globalSeqNo(globalSeq)
+            .timestamp(timestamp);
+        encodeBuffer.putBytes(TAP_PAYLOAD_PREFIX_OFFSET, buffer, prefixOffset,
+                              UnsequencedDecoder.payloadHeaderLength() + payloadLength);
+        return TAP_PAYLOAD_OFFSET + payloadLength;
+    }
 
-        final int sourceId = ingressHeaderDecoder.sourceId();
-        final int connectionId = ingressHeaderDecoder.connectionId();
+    /**
+     * The core state the sequencer derives from a {@code payloadId} 1 payload, and the only place it
+     * decodes one. Returns {@link #NO_FRAME} to admit the frame, or a rejection.
+     *
+     * <p>Each condition establishes what the next may read: fitting the frame exactly says nothing about
+     * being long enough for a body field, and the floor a read needs is the decoder's compiled block
+     * length, never the wire's — an SBE decoder reads a fixed-width field at its fixed offset whatever
+     * acting block length it was wrapped with.
+     */
+    private boolean applyCore(final DirectBuffer buffer, final int payloadOffset, final int payloadLength,
+                              final int sourceId, final int connectionId, final long sessionId) {
+        if (payloadLength < MessageHeaderDecoder.ENCODED_LENGTH) {
+            return rejectPayload("core payload of " + payloadLength + " bytes is shorter than its framing header");
+        }
+        payloadHeaderDecoder.wrap(buffer, payloadOffset);
+        if (payloadHeaderDecoder.schemaId() != MessageHeaderDecoder.SCHEMA_ID) {
+            return rejectPayload("core payload declares schemaId " + payloadHeaderDecoder.schemaId() + ", not " +
+                          MessageHeaderDecoder.SCHEMA_ID);
+        }
+        final int templateId = payloadHeaderDecoder.templateId();
+        if (templateId == ClusterHeartbeatDecoder.TEMPLATE_ID || templateId == LeadershipChangedDecoder.TEMPLATE_ID) {
+            return rejectPayload("templateId " + templateId + " is synthesized by the cluster and illegal on ingress");
+        }
+
+        final int bodyOffset = payloadOffset + MessageHeaderDecoder.ENCODED_LENGTH;
+        final int bodyLength = payloadLength - MessageHeaderDecoder.ENCODED_LENGTH;
+        final int version = payloadHeaderDecoder.version();
+
         if (templateId == GatewayRegisteredDecoder.TEMPLATE_ID) {
-            gatewayRegisteredDecoder.wrap(buffer, ingressBodyOffset, ingressBlockLen,
-                                          ingressMsgHeaderDecoder.version());
+            if (bodyLength < GatewayRegisteredDecoder.BLOCK_LENGTH) {
+                return rejectPayload("GatewayRegistered body of " + bodyLength + " bytes is short of " +
+                              GatewayRegisteredDecoder.BLOCK_LENGTH);
+            }
+            gatewayRegisteredDecoder.wrap(buffer, bodyOffset, GatewayRegisteredDecoder.BLOCK_LENGTH, version);
             addGatewayRow(gatewayRegisteredDecoder.gatewayId(), gatewayRegisteredDecoder.gatewaySourceId(),
                           gatewayRegisteredDecoder.preferenceRank());
             // remaining == 0 is the roster's last row, and the whole completeness edge: the publisher
@@ -368,13 +508,15 @@ public final class Sequencer {
                     }
                 }
             }
-        }
-        if (templateId == GatewayStartedDecoder.TEMPLATE_ID) {
-            gatewayStartedDecoder.wrap(buffer, ingressBodyOffset, ingressBlockLen, ingressMsgHeaderDecoder.version());
+        } else if (templateId == GatewayStartedDecoder.TEMPLATE_ID) {
+            if (bodyLength < GatewayStartedDecoder.BLOCK_LENGTH) {
+                return rejectPayload("GatewayStarted body of " + bodyLength + " bytes is short of " +
+                              GatewayStartedDecoder.BLOCK_LENGTH);
+            }
+            gatewayStartedDecoder.wrap(buffer, bodyOffset, GatewayStartedDecoder.BLOCK_LENGTH, version);
             activeGatewaySession.put(sessionId, gatewayStartedDecoder.gatewayId());
             releaseStaleConnections(sourceId);
-        }
-        if (templateId == ClientConnectedDecoder.TEMPLATE_ID) {
+        } else if (templateId == ClientConnectedDecoder.TEMPLATE_ID) {
             if (openConnections.computeIfAbsent(sourceId, source -> new java.util.HashSet<>()).add(connectionId)) {
                 connectedClientCount++;
             }
@@ -384,27 +526,66 @@ public final class Sequencer {
                 connectedClientCount--;
             }
         }
+        return true;
+    }
 
-        headerEncoder.wrap(encodeBuffer, 0)
+    /**
+     * Sequences a bare, un-enveloped schema-200 message onto the tap as schema 202 — the copy-through this
+     * class was built on, unchanged, and now carrying only the FIX families that have not moved onto a
+     * payload yet. It derives no state: every frame the sequencer reads is core, and core is enveloped.
+     *
+     * <p>Transitional. It goes with the last family that needs it (spec §15 step 7).
+     */
+    private int sequenceBare(final DirectBuffer buffer, final int offset, final int length, final long sessionId,
+                             final long timestamp) {
+        if (length < MIN_INGRESS_LENGTH) {
+            return reject("length " + length + " is below the " + MIN_INGRESS_LENGTH + "-byte minimum framing");
+        }
+        final int ingressBlockLen = msgHeaderDecoder.blockLength();
+        if (ingressBlockLen < BARE_HEADER_LENGTH ||
+            MessageHeaderDecoder.ENCODED_LENGTH + ingressBlockLen > length) {
+            return reject("blockLength " + ingressBlockLen + " does not fit a " + length + "-byte frame");
+        }
+
+        final int egressBlockLen = BARE_TAP_HEADER_LENGTH + (ingressBlockLen - BARE_HEADER_LENGTH);
+        if (egressBlockLen > MAX_BLOCK_LENGTH) {
+            return reject("blockLength " + ingressBlockLen + " leaves no room for the " +
+                          (BARE_TAP_HEADER_LENGTH - BARE_HEADER_LENGTH) +
+                          " bytes the sequenced header adds");
+        }
+
+        final long globalSeq = ++globalSeqNo;
+        final int ingressBodyOffset = offset + MessageHeaderDecoder.ENCODED_LENGTH;
+        bareHeaderDecoder.wrap(buffer, ingressBodyOffset);
+
+        bareMsgHeaderEncoder.wrap(encodeBuffer, 0)
             .blockLength(egressBlockLen)
-            .templateId(templateId)
-            .schemaId(MessageHeaderEncoder.SCHEMA_ID)
-            .version(ingressMsgHeaderDecoder.version());
+            .templateId(msgHeaderDecoder.templateId())
+            .schemaId(org.limitless.phixeron.sbe.sequenced.MessageHeaderEncoder.SCHEMA_ID)
+            .version(msgHeaderDecoder.version());
 
-        final int egressBodyOffset = MessageHeaderEncoder.ENCODED_LENGTH;
-        egressHeaderEncoder.wrap(encodeBuffer, egressBodyOffset)
-            .sourceId(sourceId)
-            .connectionId(connectionId)
+        final int egressBodyOffset = MessageHeaderDecoder.ENCODED_LENGTH;
+        bareTapHeaderEncoder.wrap(encodeBuffer, egressBodyOffset)
+            .sourceId(bareHeaderDecoder.sourceId())
+            .connectionId(bareHeaderDecoder.connectionId())
             .sessionId(sessionId)
             .globalSeqNo(globalSeq)
-            .timestamp(timestamp)
-            .origin(Origin.get(ingressHeaderDecoder.origin().value()));
+            .timestamp(timestamp);
 
         // Copy every byte after the ingress header composite
-        final int copyFromOffset = ingressBodyOffset + HeaderDecoder.ENCODED_LENGTH;
-        final int copyLength = length - MessageHeaderDecoder.ENCODED_LENGTH - HeaderDecoder.ENCODED_LENGTH;
-        encodeBuffer.putBytes(egressBodyOffset + HeaderEncoder.ENCODED_LENGTH, buffer, copyFromOffset, copyLength);
-        return egressBodyOffset + HeaderEncoder.ENCODED_LENGTH + copyLength;
+        final int copyFromOffset = ingressBodyOffset + BARE_HEADER_LENGTH;
+        final int copyLength = length - MessageHeaderDecoder.ENCODED_LENGTH - BARE_HEADER_LENGTH;
+        encodeBuffer.putBytes(egressBodyOffset + BARE_TAP_HEADER_LENGTH, buffer, copyFromOffset, copyLength);
+        return egressBodyOffset + BARE_TAP_HEADER_LENGTH + copyLength;
+    }
+
+    /**
+     * Skips a malformed ingress message
+     * @param reason rejection description
+     */
+    private boolean rejectPayload(final String reason) {
+        reject(reason);
+        return false;
     }
 
     /**
@@ -424,15 +605,9 @@ public final class Sequencer {
      */
     public int clusterHeartbeat(final long timestamp) {
         final long globalSeq = ++globalSeqNo;
-        clusterHeartbeatEncoder.wrapAndApplyHeader(encodeBuffer, 0, headerEncoder);
-        clusterHeartbeatEncoder.header()
-            .sourceId(NO_SOURCE_ID)
-            .connectionId(NO_SOURCE_ID)
-            .sessionId(NO_SOURCE_ID)
-            .globalSeqNo(globalSeq)
-            .timestamp(timestamp)
-            .origin(Origin.Application);
-        return MessageHeaderEncoder.ENCODED_LENGTH + clusterHeartbeatEncoder.encodedLength();
+        beginSynthesized(globalSeq, timestamp);
+        clusterHeartbeatEncoder.wrapAndApplyHeader(encodeBuffer, TAP_PAYLOAD_OFFSET, headerEncoder);
+        return endSynthesized(MessageHeaderEncoder.ENCODED_LENGTH + clusterHeartbeatEncoder.encodedLength());
     }
 
     /**
@@ -449,16 +624,10 @@ public final class Sequencer {
         }
         currentLeaderMemberId = leaderMemberId;
         final long globalSeq = ++globalSeqNo;
-        leadershipChangedEncoder.wrapAndApplyHeader(encodeBuffer, 0, headerEncoder);
-        leadershipChangedEncoder.header()
-            .sourceId(NO_SOURCE_ID)
-            .connectionId(NO_SOURCE_ID)
-            .sessionId(NO_SOURCE_ID)
-            .globalSeqNo(globalSeq)
-            .timestamp(timestamp)
-            .origin(Origin.Application);
+        beginSynthesized(globalSeq, timestamp);
+        leadershipChangedEncoder.wrapAndApplyHeader(encodeBuffer, TAP_PAYLOAD_OFFSET, headerEncoder);
         leadershipChangedEncoder.newLeaderMemberId(leaderMemberId);
-        return MessageHeaderEncoder.ENCODED_LENGTH + leadershipChangedEncoder.encodedLength();
+        return endSynthesized(MessageHeaderEncoder.ENCODED_LENGTH + leadershipChangedEncoder.encodedLength());
     }
 
     /**
@@ -641,16 +810,44 @@ public final class Sequencer {
     private int gatewayActive(final int gatewayId, final long timestamp) {
         armActivationDeadline(gatewayId, timestamp);
         final long globalSeq = ++globalSeqNo;
-        gatewayActiveEncoder.wrapAndApplyHeader(encodeBuffer, 0, headerEncoder);
-        gatewayActiveEncoder.header()
+        beginSynthesized(globalSeq, timestamp);
+        gatewayActiveEncoder.wrapAndApplyHeader(encodeBuffer, TAP_PAYLOAD_OFFSET, headerEncoder);
+        gatewayActiveEncoder.gatewayId(gatewayId);
+        return endSynthesized(MessageHeaderEncoder.ENCODED_LENGTH + gatewayActiveEncoder.encodedLength());
+    }
+
+    /**
+     * Opens a frame the cluster synthesized on its own initiative, leaving {@link #encodeBuffer} ready for
+     * the caller to encode its core payload at {@link #TAP_PAYLOAD_OFFSET}.
+     *
+     * <p>These are the frames with no producer, so <b>F-4</b>'s {@code -1} stands in for the identity an
+     * ingress frame carries, and <b>E-1</b>'s exception applies: every node encodes its own copy rather
+     * than copying one through, which is why the encode must be a pure function of its arguments.
+     */
+    private void beginSynthesized(final long globalSeq, final long timestamp) {
+        headerEncoder.wrap(encodeBuffer, 0)
+            .blockLength(SequencedEncoder.BLOCK_LENGTH)
+            .templateId(SequencedEncoder.TEMPLATE_ID)
+            .schemaId(MessageHeaderEncoder.SCHEMA_ID)
+            .version(MessageHeaderEncoder.SCHEMA_VERSION);
+        tapHeaderEncoder.wrap(encodeBuffer, MessageHeaderEncoder.ENCODED_LENGTH)
             .sourceId(NO_SOURCE_ID)
             .connectionId(NO_SOURCE_ID)
             .sessionId(NO_SOURCE_ID)
+            .payloadId(CORE_PAYLOAD_ID)
             .globalSeqNo(globalSeq)
-            .timestamp(timestamp)
-            .origin(Origin.Application);
-        gatewayActiveEncoder.gatewayId(gatewayId);
-        return MessageHeaderEncoder.ENCODED_LENGTH + gatewayActiveEncoder.encodedLength();
+            .timestamp(timestamp);
+    }
+
+    /**
+     * Closes a synthesized frame by writing the payload's length prefix, which is only known once the
+     * payload is encoded.
+     * @param payloadLength bytes the caller wrote at {@link #TAP_PAYLOAD_OFFSET}
+     * @return length of the whole frame
+     */
+    private int endSynthesized(final int payloadLength) {
+        encodeBuffer.putShort(TAP_PAYLOAD_PREFIX_OFFSET, (short) payloadLength, java.nio.ByteOrder.LITTLE_ENDIAN);
+        return TAP_PAYLOAD_OFFSET + payloadLength;
     }
 
     /**

@@ -730,14 +730,21 @@ class ReplayerServiceTest {
         return encoded(encoder.encodedLength());
     }
 
-    /** One frame off the tap recording, as the self-check reads it back: sequenced schema, header only. */
+    /** One frame off the tap recording, as the self-check reads it back: a core ClusterHeartbeat. */
     private byte[] sequencedFrame(final long globalSeqNo) {
-        final org.limitless.phixeron.sbe.sequenced.MessageHeaderEncoder sequencedHeader =
-            new org.limitless.phixeron.sbe.sequenced.MessageHeaderEncoder();
-        final org.limitless.phixeron.sbe.sequenced.ClusterHeartbeatEncoder encoder =
-            new org.limitless.phixeron.sbe.sequenced.ClusterHeartbeatEncoder();
-        encoder.wrapAndApplyHeader(encodeBuffer, 0, sequencedHeader).header().globalSeqNo(globalSeqNo);
-        return encoded(encoder.encodedLength());
+        final org.agrona.ExpandableArrayBuffer payload = new org.agrona.ExpandableArrayBuffer(64);
+        final org.limitless.phixeron.sbe.frame.ClusterHeartbeatEncoder heartbeat = new org.limitless.phixeron.sbe.frame.ClusterHeartbeatEncoder();
+        heartbeat.wrapAndApplyHeader(payload, 0, new org.limitless.phixeron.sbe.frame.MessageHeaderEncoder());
+
+        final org.limitless.phixeron.sbe.frame.SequencedEncoder frame = new org.limitless.phixeron.sbe.frame.SequencedEncoder();
+        frame.wrapAndApplyHeader(encodeBuffer, 0, new org.limitless.phixeron.sbe.frame.MessageHeaderEncoder());
+        frame.header().sourceId(1).connectionId(0).sessionId(0)
+            .payloadId(org.limitless.phixeron.sequencer.CoreFrame.PAYLOAD_ID)
+            .globalSeqNo(globalSeqNo).timestamp(0);
+        frame.putPayload(payload, 0, org.limitless.phixeron.sbe.frame.MessageHeaderEncoder.ENCODED_LENGTH + heartbeat.encodedLength());
+        final byte[] message = new byte[org.limitless.phixeron.sbe.frame.MessageHeaderEncoder.ENCODED_LENGTH + frame.encodedLength()];
+        encodeBuffer.getBytes(0, message);
+        return message;
     }
 
     private byte[] encoded(final int bodyLength) {

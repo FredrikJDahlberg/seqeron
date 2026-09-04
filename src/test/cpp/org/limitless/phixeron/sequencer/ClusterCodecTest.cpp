@@ -11,12 +11,15 @@
 #include <cstring>
 #include <string_view>
 
-#include "org_limitless_phixeron_sbe_sequenced/ClientConnected.h"
+#include "org/limitless/phixeron/sequencer/SequencedFrame.hpp"
+#include "org_limitless_phixeron_sbe_frame/ClientConnected.h"
+#include "org_limitless_phixeron_sbe_frame/ClientDisconnected.h"
+#include "org_limitless_phixeron_sbe_frame/MessageHeader.h"
+#include "org_limitless_phixeron_sbe_frame/Sequenced.h"
+#include "org_limitless_phixeron_sbe_frame/Unsequenced.h"
 #include "org_limitless_phixeron_sbe_sequenced/ExecutionReport.h"
 #include "org_limitless_phixeron_sbe_sequenced/Heartbeat.h"
 #include "org_limitless_phixeron_sbe_sequenced/MessageHeader.h"
-#include "org_limitless_phixeron_sbe_unsequenced/ClientConnected.h"
-#include "org_limitless_phixeron_sbe_unsequenced/ClientDisconnected.h"
 #include "org_limitless_phixeron_sbe_unsequenced/ExecutionReport.h"
 #include "org_limitless_phixeron_sbe_unsequenced/Heartbeat.h"
 #include "org_limitless_phixeron_sbe_unsequenced/Logon.h"
@@ -25,6 +28,8 @@
 
 namespace usq = org::limitless::phixeron::sbe::unsequenced;
 namespace seq = org::limitless::phixeron::sbe::sequenced;
+namespace frm = org::limitless::phixeron::sbe::frame;
+namespace sequencer = org::limitless::phixeron::sequencer;
 
 namespace {
 
@@ -210,38 +215,61 @@ TEST(UnsequencedCodec, ExecutionReportRoundTripsOptionalFieldsPresent)
     EXPECT_EQ("partial fill", dec.getTextAsString());
 }
 
-TEST(UnsequencedCodec, ClientConnectedRoundTripsHeaderOnly)
+// ── sbe-frame.xml ─────────────────────────────────────────────────────────
+//
+// The TCP lifecycle events are core payloads now, and a core payload carries no header of its own: the
+// identity is the frame's. These check that the envelope round-trips both ways round, which is what
+// every consumer's dispatch rests on.
+
+TEST(FrameCodec, ClientConnectedRoundTripsInsideAnUnsequencedFrame)
 {
-    alignas(16) std::array<std::uint8_t, 64> buffer{};
-    usq::ClientConnected enc;
-    enc.wrapAndApplyHeader(reinterpret_cast<char*>(buffer.data()), 0, buffer.size());
-    enc.header().sourceId(77).sessionId(88);
+    alignas(16) std::array<std::uint8_t, 64> payload{};
+    frm::ClientConnected enc;
+    enc.wrapAndApplyHeader(reinterpret_cast<char*>(payload.data()), 0, payload.size());
+    enc.putConnectionData(nullptr, 0);
+    const auto payloadLength = static_cast<std::uint16_t>(frm::MessageHeader::encodedLength() + enc.encodedLength());
 
-    const auto hdr = decodeHeader<usq::MessageHeader>(buffer.data(), buffer.size());
-    ASSERT_EQ(usq::ClientConnected::sbeTemplateId(), hdr.templateId());
+    alignas(16) std::array<std::uint8_t, 128> buffer{};
+    frm::Unsequenced frame;
+    frame.wrapAndApplyHeader(reinterpret_cast<char*>(buffer.data()), 0, buffer.size());
+    frame.header().sourceId(77).connectionId(5).sessionId(88).payloadId(sequencer::CORE_PAYLOAD_ID);
+    frame.putPayload(reinterpret_cast<const char*>(payload.data()), payloadLength);
 
-    usq::ClientConnected dec;
-    dec.wrapForDecode(reinterpret_cast<char*>(buffer.data()), usq::MessageHeader::encodedLength(), hdr.blockLength(),
-                      hdr.version(), buffer.size());
-    EXPECT_EQ(77, dec.header().sourceId());
-    EXPECT_EQ(88, dec.header().sessionId());
+    const auto view = sequencer::unwrapFrame(reinterpret_cast<const char*>(buffer.data()),
+                                             frm::MessageHeader::encodedLength() + frame.encodedLength());
+    ASSERT_FALSE(view.valid) << "an Unsequenced frame is not a tap frame; only Sequenced is";
 }
 
-TEST(UnsequencedCodec, ClientDisconnectedRoundTripsHeaderOnly)
+TEST(FrameCodec, ClientDisconnectedRoundTripsInsideASequencedFrame)
 {
-    alignas(16) std::array<std::uint8_t, 64> buffer{};
-    usq::ClientDisconnected enc;
-    enc.wrapAndApplyHeader(reinterpret_cast<char*>(buffer.data()), 0, buffer.size());
-    enc.header().sourceId(99).sessionId(100);
+    alignas(16) std::array<std::uint8_t, 64> payload{};
+    frm::ClientDisconnected enc;
+    enc.wrapAndApplyHeader(reinterpret_cast<char*>(payload.data()), 0, payload.size());
+    const auto payloadLength = static_cast<std::uint16_t>(frm::MessageHeader::encodedLength() + enc.encodedLength());
 
-    const auto hdr = decodeHeader<usq::MessageHeader>(buffer.data(), buffer.size());
-    ASSERT_EQ(usq::ClientDisconnected::sbeTemplateId(), hdr.templateId());
+    alignas(16) std::array<std::uint8_t, 128> buffer{};
+    frm::Sequenced frame;
+    frame.wrapAndApplyHeader(reinterpret_cast<char*>(buffer.data()), 0, buffer.size());
+    frame.header()
+        .sourceId(99)
+        .connectionId(7)
+        .sessionId(100)
+        .payloadId(sequencer::CORE_PAYLOAD_ID)
+        .globalSeqNo(42)
+        .timestamp(1700000000000LL);
+    frame.putPayload(reinterpret_cast<const char*>(payload.data()), payloadLength);
 
-    usq::ClientDisconnected dec;
-    dec.wrapForDecode(reinterpret_cast<char*>(buffer.data()), usq::MessageHeader::encodedLength(), hdr.blockLength(),
-                      hdr.version(), buffer.size());
-    EXPECT_EQ(99, dec.header().sourceId());
-    EXPECT_EQ(100, dec.header().sessionId());
+    const auto view = sequencer::unwrapFrame(reinterpret_cast<const char*>(buffer.data()),
+                                             frm::MessageHeader::encodedLength() + frame.encodedLength());
+    ASSERT_TRUE(view.valid);
+    EXPECT_EQ(sequencer::CORE_PAYLOAD_ID, view.payloadId);
+    EXPECT_EQ(frm::ClientDisconnected::sbeTemplateId(), view.templateId);
+    EXPECT_EQ(99, view.sourceId);
+    EXPECT_EQ(7, view.connectionId);
+    EXPECT_EQ(100, view.sessionId);
+    EXPECT_EQ(42, view.globalSeqNo);
+    EXPECT_EQ(1700000000000LL, view.timestamp);
+    EXPECT_EQ(payloadLength, view.payloadLength);
 }
 
 // ── sbe-sequenced.xml ─────────────────────────────────────────────────────
@@ -321,21 +349,22 @@ TEST(SequencedCodec, ExecutionReportRoundTripsAllFieldsWithSequencingStamp)
     EXPECT_EQ(100u, dec.leavesQty());
 }
 
-TEST(SequencedCodec, ClientConnectedRoundTripsSequencingStamp)
+TEST(FrameCodec, ABareSequencedMessageIsReadAsOneWithNoPayloadId)
 {
+    // The other shape still on the tap: a schema-202 message with its own header composite. unwrapFrame
+    // is the one place the two are told apart, so a consumer never has to.
     alignas(16) std::array<std::uint8_t, 128> buffer{};
-    seq::ClientConnected enc;
+    seq::Heartbeat enc;
     enc.wrapAndApplyHeader(reinterpret_cast<char*>(buffer.data()), 0, buffer.size());
-    enc.header().sourceId(77).sessionId(88).globalSeqNo(1).timestamp(1700000000000LL);
+    enc.header().sourceId(77).connectionId(3).sessionId(88).globalSeqNo(1).timestamp(1700000000000LL);
+    enc.putSender("CLIENT").putTarget("PHIXERON").seqNum(4).sendingTimeMs(0);
 
-    const auto hdr = decodeHeader<seq::MessageHeader>(buffer.data(), buffer.size());
-    ASSERT_EQ(seq::ClientConnected::sbeTemplateId(), hdr.templateId());
-
-    seq::ClientConnected dec;
-    dec.wrapForDecode(reinterpret_cast<char*>(buffer.data()), seq::MessageHeader::encodedLength(), hdr.blockLength(),
-                      hdr.version(), buffer.size());
-    EXPECT_EQ(77, dec.header().sourceId());
-    EXPECT_EQ(88, dec.header().sessionId());
-    EXPECT_EQ(1, dec.header().globalSeqNo());
-    EXPECT_EQ(1700000000000LL, dec.header().timestamp());
+    const auto length = seq::MessageHeader::encodedLength() + enc.encodedLength();
+    const auto view = sequencer::unwrapFrame(reinterpret_cast<const char*>(buffer.data()), length);
+    ASSERT_TRUE(view.valid);
+    EXPECT_EQ(sequencer::NO_PAYLOAD_ID, view.payloadId);
+    EXPECT_EQ(seq::Heartbeat::sbeTemplateId(), view.templateId);
+    EXPECT_EQ(77, view.sourceId);
+    EXPECT_EQ(1, view.globalSeqNo);
+    EXPECT_EQ(length, view.payloadLength) << "a bare message is the whole fragment";
 }

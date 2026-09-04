@@ -7,8 +7,11 @@
 #include "concurrent/logbuffer/LogBufferDescriptor.h"
 
 // Generated SBE C++ codecs from sbe-sequenced.xml (via GenerateSequencedSbeCodecs)
-#include "org_limitless_phixeron_sbe_sequenced/Header.h"
+#include "org_limitless_phixeron_sbe_frame/MessageHeader.h"
+#include "org_limitless_phixeron_sbe_frame/Sequenced.h"
+#include "org_limitless_phixeron_sbe_frame/SequencedHeader.h"
 #include "org_limitless_phixeron_sbe_sequenced/MessageHeader.h"
+#include "org_limitless_phixeron_sbe_sequenced/SequencedHeader.h"
 
 // The sequenced stream's wire contract: what a frame on it is, how to decode one, and where it
 // sits. Everything here is shared by both stream clients — ClusterStreamClient (archive replay,
@@ -36,20 +39,29 @@ inline constexpr std::int32_t FEEDER_STREAM_ID = 205;
 inline constexpr std::uint16_t CLIENT_CONNECTED_TEMPLATE_ID = 1;
 inline constexpr std::uint16_t CLIENT_DISCONNECTED_TEMPLATE_ID = 2;
 
+// The one payloadId the cluster tier owns and decodes: seqeron's own core payloads
+// (doc/seqeron-protocol-spec.md §6.1). Frames carrying anything else are followed and forwarded
+// without being opened.
+inline constexpr std::uint16_t CORE_PAYLOAD_ID = 1;
+
+// SequencedEvent::payloadId for a frame that is not an envelope at all — a bare schema-202 message,
+// which is still how the FIX families travel. Transitional, and 0 is safe to borrow for it because the
+// wire forbids it (a frame declaring payloadId 0 is rejected on ingress).
+inline constexpr std::uint16_t NO_PAYLOAD_ID = 0;
+
 /**
- * Carries one sbe-sequenced.xml message from the cluster stream.
+ * Carries one message from the cluster stream, whichever shape its frame had.
  *
- * Every raw fragment on the wire *is* a complete sbe-sequenced.xml message
- * (schemaId=202) — no envelope to strip. Every message in that schema
- * declares `header` (sourceId, connectionId, sessionId, globalSeqNo,
- * timestamp) as its first field, at the same fixed offset regardless of
- * templateId, so this client decodes it generically and exposes the fields
- * here — callers don't need to re-decode it themselves before dispatching
- * on templateId.
+ * A fragment is one of two things today. Under the envelope (schemaId=210) it is a `Sequenced` frame
+ * whose header carries the identity below and whose body is one opaque payload named by payloadId; the
+ * stream client strips the envelope and the fields here describe the *payload*. A bare schema-202
+ * message is the whole fragment, its own `header` composite sits at the same fixed offset regardless of
+ * templateId, and payloadId is NO_PAYLOAD_ID. Either way a consumer dispatches on templateId without
+ * re-decoding anything, and one that cares which protocol it is reads payloadId.
  *
  * payload/payloadLength point into the Aeron fragment buffer and are valid
  * only for the duration of the callback; payload addresses the start of the
- * full message (its own 8-byte messageHeader included). Copy the data before
+ * message (its own 8-byte messageHeader included). Copy the data before
  * returning if it must survive.
  */
 struct SequencedEvent
@@ -60,21 +72,119 @@ struct SequencedEvent
     std::int64_t sourceSessionId;  ///< Aeron Cluster client session id (header.sessionId)
     std::int64_t clusterTimestamp; ///< cluster consensus time (ms) when message was committed
     std::int64_t receiveTimeNs;    ///< wall-clock ns at receipt by this client
-    /// Which producer role emitted the frame (header.origin). Present on every message, so a consumer
-    /// can tell FIX session traffic from an application frame that merely shares the connectionId,
-    /// without knowing the template. Carried through the sequencer unchanged from the publisher.
-    sbe::sequenced::Origin::Value origin;
-    std::uint16_t templateId;    ///< outer messageHeader templateId; picks the specific decode
-    std::uint16_t blockLength;   ///< outer messageHeader blockLength; pass straight to wrapForDecode
-    std::uint16_t version;       ///< outer messageHeader version; pass straight to wrapForDecode
-    const char* payload;         ///< raw sbe-sequenced.xml message bytes (see struct comment)
-    std::uint64_t payloadLength; ///< total byte count
-    std::int64_t position;       ///< recording/stream position of this frame's first byte;
-                                 ///< pass to ReplayParams::position() to replay from here
+    std::uint16_t payloadId;       ///< which protocol templateId belongs to; NO_PAYLOAD_ID for a bare frame
+    std::uint16_t templateId;      ///< the message's messageHeader templateId; picks the specific decode
+    std::uint16_t blockLength;     ///< outer messageHeader blockLength; pass straight to wrapForDecode
+    std::uint16_t version;         ///< outer messageHeader version; pass straight to wrapForDecode
+    const char* payload;           ///< raw sbe-sequenced.xml message bytes (see struct comment)
+    std::uint64_t payloadLength;   ///< total byte count
+    std::int64_t position;         ///< recording/stream position of this frame's first byte;
+                                   ///< pass to ReplayParams::position() to replay from here
 };
 
+/**
+ * One frame off the tap, unwrapped: everything a consumer dispatches on, with the envelope — if there
+ * was one — already stripped.
+ *
+ * The two stream clients both build one of these and then differ only in what they do with it, which is
+ * the point: the two frame shapes are told apart here, once, rather than at every consumer. Under the
+ * envelope the identity is the frame header's and the message is the payload; for a bare schema-202
+ * message the identity is its own `header` composite and the message is the whole fragment.
+ */
+struct FrameView
+{
+    bool valid;              ///< false for a fragment that is neither shape, or too short to read
+    std::uint16_t payloadId; ///< NO_PAYLOAD_ID for a bare frame
+    std::int32_t sourceId;
+    std::int32_t connectionId;
+    std::int64_t sessionId;
+    std::int64_t globalSeqNo;
+    std::int64_t timestamp;
+    std::uint16_t templateId; ///< the message's own, never the envelope's
+    std::uint16_t blockLength;
+    std::uint16_t version;
+    const char* payload; ///< the message, its 8-byte messageHeader included
+    std::uint64_t payloadLength;
+};
+
+/**
+ * Reads one fragment into a FrameView, stripping the envelope when there is one.
+ *
+ * Bounds are checked because a short fragment would otherwise be read past its end. It should not
+ * happen — the sequencer validates every frame on ingress and the recording is what it wrote — so
+ * `valid == false` here means the recording itself is damaged, and the caller logs and drops.
+ */
+inline FrameView unwrapFrame(const char* const frame, const std::uint64_t length)
+{
+    FrameView view{};
+    char* const bytes = const_cast<char*>(frame);
+    if (length < sbe::frame::MessageHeader::encodedLength())
+    {
+        return view;
+    }
+
+    sbe::frame::MessageHeader hdr;
+    hdr.wrap(bytes, 0U, 0U, length);
+    if (hdr.schemaId() == sbe::frame::Sequenced::sbeSchemaId())
+    {
+        if (hdr.templateId() != sbe::frame::Sequenced::sbeTemplateId() ||
+            length < sbe::frame::Sequenced::sbeBlockAndHeaderLength() + sbe::frame::Sequenced::payloadHeaderLength())
+        {
+            return view;
+        }
+        sbe::frame::Sequenced sequenced;
+        sequenced.wrapForDecode(bytes, sbe::frame::MessageHeader::encodedLength(), hdr.blockLength(), hdr.version(),
+                                length);
+        sbe::frame::SequencedHeader& header = sequenced.header();
+        view.payloadId = header.payloadId();
+        view.sourceId = header.sourceId();
+        view.connectionId = header.connectionId();
+        view.sessionId = header.sessionId();
+        view.globalSeqNo = header.globalSeqNo();
+        view.timestamp = header.timestamp();
+
+        const std::uint64_t payloadLength = sequenced.payloadLength();
+        const char* const payload = sequenced.payload();
+        if (payloadLength < sbe::frame::MessageHeader::encodedLength())
+        {
+            return view; // an empty or truncated payload names no message to dispatch on
+        }
+        sbe::frame::MessageHeader payloadHdr;
+        payloadHdr.wrap(const_cast<char*>(payload), 0U, 0U, payloadLength);
+        view.templateId = payloadHdr.templateId();
+        view.blockLength = payloadHdr.blockLength();
+        view.version = payloadHdr.version();
+        view.payload = payload;
+        view.payloadLength = payloadLength;
+        view.valid = true;
+        return view;
+    }
+
+    // A bare schema-202 message: the FIX families, until they move onto payloads of their own.
+    if (hdr.schemaId() != sbe::sequenced::MessageHeader::sbeSchemaId() ||
+        length < sbe::sequenced::MessageHeader::encodedLength() + sbe::sequenced::SequencedHeader::encodedLength())
+    {
+        return view;
+    }
+    sbe::sequenced::SequencedHeader header;
+    header.wrap(bytes, sbe::sequenced::MessageHeader::encodedLength(), 0U, length);
+    view.payloadId = NO_PAYLOAD_ID;
+    view.sourceId = header.sourceId();
+    view.connectionId = header.connectionId();
+    view.sessionId = header.sessionId();
+    view.globalSeqNo = header.globalSeqNo();
+    view.timestamp = header.timestamp();
+    view.templateId = hdr.templateId();
+    view.blockLength = hdr.blockLength();
+    view.version = hdr.version();
+    view.payload = frame;
+    view.payloadLength = length;
+    view.valid = true;
+    return view;
+}
+
 // The same decode for a frame held as loose bytes rather than a live event — the gateway buffers
-// gateway-origin admin frames behind an in-flight resend and replays them once it drains, and its
+// gateway-produced admin frames behind an in-flight resend and replays them once it drains, and its
 // outbound resend path re-decodes bytes it cached.
 template<typename Decoder>
 Decoder decodeSequenced(const char* payload, const std::uint64_t payloadLength, const std::uint16_t blockLength,

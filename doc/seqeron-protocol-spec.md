@@ -23,7 +23,7 @@ nothing else.**
 | --- | --- | --- | --- |
 | **L0 transport** | Aeron channels, stream ids, the cluster ingress/egress session protocol | `sbe-cluster.xml` (mirror of `io.aeron.cluster.codecs`) | Aeron, mirrored by seqeron |
 | **L1 frame** | the `Unsequenced`/`Sequenced` envelope pair — the only two templates on the recorded path | `seqeron-frame.xml` (210) | seqeron |
-| **L2 payload** | one opaque, length-prefixed byte range per frame, named by `payloadId` | core: `seqeron-core.xml` (211); applications: their own | whoever `payloadId` names |
+| **L2 payload** | one opaque, length-prefixed byte range per frame, named by `payloadId` | core: `seqeron-frame.xml` (210), beside the envelope; applications: their own | whoever `payloadId` names |
 | **control plane** | replayer↔client replay control; off-frame, node-local, never sequenced, never recorded | `seqeron-replay.xml` (212) | seqeron |
 
 > **P-0. seqeron's obligation to a payload is discharged in full when the frame carrying it has been
@@ -65,8 +65,8 @@ A consumer MUST validate `MessageHeader.schemaId` on every stream it reads (**T-
 
 | stream | channel / id | carries | recorded? |
 | --- | --- | --- | --- |
-| cluster ingress | Aeron Cluster ingress, inside the L0 session envelope | `Unsequenced` — schema 210, template 1 | in the Raft log |
-| **the tap (Feeder)** | `aeron:ipc`, stream **205** | `Sequenced` — schema 210, template 2 | **yes**, by the co-located archive, on every node |
+| cluster ingress | Aeron Cluster ingress, inside the L0 session envelope | `Unsequenced` — schema 210, template 100 | in the Raft log |
+| **the tap (Feeder)** | `aeron:ipc`, stream **205** | `Sequenced` — schema 210, template 101 | **yes**, by the co-located archive, on every node |
 | replayer replay | stream **201** | `Sequenced` — replayed archive bytes, byte-identical to the tap | no |
 | replayer request | stream **202** | schema 212, client → replayer | no |
 | replayer control | stream **203** | schema 212, replayer → client | no |
@@ -79,8 +79,8 @@ A consumer MUST validate `MessageHeader.schemaId` on every stream it reads (**T-
 ## 4. The frame layer
 
 ```
-Unsequenced  (schema 210, template 1) { unsequencedHeader, payload:varData }
-Sequenced    (schema 210, template 2) { sequencedHeader,   payload:varData }
+Unsequenced  (schema 210, template 100) { unsequencedHeader, payload:varData }
+Sequenced    (schema 210, template 101) { sequencedHeader,   payload:varData }
 ```
 
 The two differ only by the stamp; each body is one length-prefixed payload and nothing else.
@@ -202,23 +202,29 @@ consumer maps it to a decoder module; that module reads its own framing.
 ### 6.1 Registry
 
 The registry lives in the log: `clusterctl load-topology <file>` publishes one `PayloadIdRegistered`
-core frame per row of the file's `<protocols>` section.
+core frame per row of the file's `<protocols>` section (§6.4).
 
-| value | names | registered by |
+| value | names | in scope here? |
 | --- | --- | --- |
-| 0 | unset — **invalid on the wire** | — |
-| 1 | **seqeron core** (`seqeron-core.xml`, schema 211) | **implicit** — never registered (**C-1**) |
-| 2, 3 | one per application schema or encoding | `<protocols>` |
-| 4 | a **shared application protocol** — published by one application, read by more than one | `<protocols>` |
-| 5… | further application schemas or encodings | `<protocols>` |
+| 0 | unset — **invalid on the wire** | fixed by this document |
+| 1 | **seqeron core** (`seqeron-frame.xml`, schema 210) | fixed by this document; **implicit** — never registered (**C-1**) |
+| 2… | one per application schema or encoding | the deployment's to allocate; **registered only where the protocol is shared** |
 
-The allocation above is conventional and belongs to this document; the log records what a given
-deployment declared it was running, and admits everything regardless (§6.3).
+**The registry's subject is the shared protocol.** A `payloadId` that one application publishes and
+that same application alone reads is **out of scope**: seqeron neither allocates it nor requires it
+declared, and **P-1** and **C-2** mean the wire behaves identically either way — the only thing a
+missing row costs is the label §13.1 would have printed. What this document fixes is 0 and 1, and the
+requirement that a protocol crossing application boundaries be declared.
 
-A `payloadId` whose protocol crosses application boundaries needs a **single owning repo**, and every
+A `payloadId` whose protocol does cross those boundaries needs a **single owning repo**, and every
 consumer links its codecs and tracks its version like any other dependency — a schema two repos may
 edit re-creates one layer up the byte-identity problem the envelope deletes. Its publisher is an
 application like any other, never the cluster tier. seqeron's involvement ends at the number.
+
+It is nonetheless **one id space**: two applications that privately pick the same number collide on the
+tap, and no rule here detects it — **P-4** catches a wrongly selected decoder only where the encoding
+self-describes. Allocating across applications is the deployment's, and declaring the crossing ones is
+the part this document requires.
 
 ### 6.2 Selective consumption
 
@@ -243,13 +249,14 @@ PayloadIdRegistered  (core, template 23, block 36)
     { payloadId:uint16, protocolVersion:uint16, protocolName:char[32] }
 ```
 
+One row per **shared** protocol (§6.1); an application's private `payloadId` has none.
 `protocolName` is the label `SbeLogPrinter` puts on a payload it cannot decode (§13.1); `protocolVersion`
 is which revision the deployment runs, printed beside it and checked by nothing. It is **not** the
 payload's `schemaId` — a `payloadId` may name an encoding that has none. No `description`, no
 `remaining` countdown.
 
 - **C-1. `payloadId` 1 is core, is never registered, and MUST NOT be registrable.** Enforced where the
-  row is written: the topology file's schema constrains `payloadId` to 2 or above.
+  row is written: the topology file's schema constrains `payloadId` to 2 or above (§6.4).
 - **C-2. Registration does not gate.** The sequencer MUST NOT reject a frame for carrying an
   unregistered `payloadId`, and MUST NOT decode `PayloadIdRegistered` at all. A consumer MUST NOT read
   registration as permission: **P-1** is unchanged and unconditional.
@@ -262,10 +269,63 @@ would fork `globalSeqNo` (**S-3**). Any future gate must be log-derived.
 Runbook order is unchanged and carries no new constraint: `clusterctl start` → `load-topology` →
 application data loads. No frame depends on the `<protocols>` rows.
 
+### 6.4 The topology file
+
+One operator file, two sections, two core payloads: `<gateways>` produces the `GatewayRegistered`
+roster (§7), `<protocols>` the `PayloadIdRegistered` rows above — one per **shared** protocol, and
+nothing for an application's private `payloadId` (§6.1). It is XML with a schema shipped
+beside it _(today: CSV, roster only)_ — **C-1** is a constraint on what may be *written*, and the
+schema is where a constraint on writing belongs.
+
+```xml
+<topology>
+  <gateways>
+    <gateway name="GW-A" id="1" sourceId="0" rank="0"/>
+    <gateway name="GW-B" id="2" sourceId="0" rank="1"/>
+  </gateways>
+  <protocols>
+    <protocol payloadId="4" version="1" name="phixeron-basicdata"/>
+  </protocols>
+</topology>
+```
+
+Attributes are the payload fields under short names: `name`/`id`/`sourceId`/`rank` are
+`gatewayName`/`gatewayId`/`gatewaySourceId`/`preferenceRank` (§7.1), and
+`payloadId`/`version`/`name` are `payloadId`/`protocolVersion`/`protocolName` (§6.3). `remaining`
+appears in neither section — it is the publisher's, counted off the row count.
+
+| constraint | enforced by | why there |
+| --- | --- | --- |
+| `name` 1..32 printable US-ASCII | schema | the `char[32]` it encodes into, and a launch-time join key |
+| `id` int32, `rank` uint8, `version` uint16 | schema | the field widths |
+| `sourceId >= 0` | schema | −1 is the cluster's own (**F-4**) and never a roster row's |
+| `payloadId >= 2` | schema | **C-1** — 0 is invalid on the wire, 1 is core |
+| `id`, `name` and `payloadId` each unique | schema, as identity constraints | a duplicate `gatewayId` silently drops an instance; a duplicate `payloadId` is an operator slip, not **C-3**'s supersede |
+| exactly one `rank="0"` per `sourceId` | the loader | not expressible per row; a second rank-0 leaves a logical gateway an arbitrary primary |
+| `sourceId` is none of the reserved ids (§5) | the loader | likewise — it is a check against a constant, not a field range |
+| `<gateways>` non-empty; `<protocols>` MAY be absent or empty | schema | an empty roster elects nobody; a deployment whose applications share no protocol declares none |
+
+**The schema is the loader's, not the document's.** A loader MUST resolve the schema from its own
+artifact and MUST NOT honour a schema location the document names: a file that names its own schema
+can name a lax one, and **C-1** would be advisory. A document MAY carry the location as an editor
+affordance.
+
+**Publish order.** The loader MUST validate the whole file before publishing any row — a file that
+fails half-way leaves a roster the log has already closed. The roster rows are then published as one
+contiguous run in file order, `remaining` counting down to 0 on the last; **nothing may fall between
+them**, because that last row is the completeness edge §7.2 synthesizes the bootstrap `GatewayActive`s
+behind. The protocol rows follow it, and carry no countdown of their own.
+
 ## 7. Core payloads — `payloadId` 1
 
-Ten messages in `seqeron-core.xml` (schema 211), **defined once each**. Core is an application of its
-own, read by the sequencer the way an application's payloads are read by that application.
+Ten messages in `seqeron-frame.xml` (schema 210), **defined once each**, beside the envelope pair they
+ride in — same owner, same artifact, same change rule, so they are one schema. Core is an application
+of its own, read by the sequencer the way an application's payloads are read by that application.
+
+**Template ids are unique per schema, so the envelope pair moved rather than core.** `Unsequenced` and
+`Sequenced` are **100** and **101**; `ClientConnected` and `ClientDisconnected` keep 1 and 2. The
+envelope is new and nothing has ever encoded it, while core's ids are already in recordings — which is
+the same argument that fixes the rest of the ids below.
 
 | payload | id | ingress-legal? | synthesized? | sequencer **decodes** it? |
 | --- | --- | --- | --- | --- |
@@ -365,10 +425,14 @@ its content is entirely the frame's consensus `timestamp` and `globalSeqNo`, so 
 
 **`ClientConnected` carries an opaque tail; `ClientDisconnected` does not, and the asymmetry is
 deliberate.** Both *frames* are core because connection lifecycle is core functionality: the sequencer
-keys its open-connection set on `header.sourceId` and `header.connectionId`, releases stale connections
-behind a `GatewayStarted`, and it is that set a promoted standby takes over. For a **disconnect that is
-the whole message** — `header.connectionId` names a connection every consumer already saw connect, so
-there is nothing to add and the payload is its `MessageHeader` alone.
+keys its open-connection set on `header.sourceId` and `header.connectionId`, and releases every
+connection still open under a `gatewaySourceId` behind that logical gateway's next `GatewayStarted` — a
+crashed instance publishes none of the `ClientDisconnected`s that would have closed them out. **That set
+is node-local sequencer state and the release synthesizes no frame**: `ClientDisconnected` has one
+producer, the gateway, and a promoted instance therefore inherits no open connection. A consumer keeping
+a view of its own derives it from the same replayed frames, and **S-3** keeps every node's set identical.
+For a **disconnect that is the whole message** — `header.connectionId` names a connection every
+consumer already saw connect, so there is nothing to add and the payload is its `MessageHeader` alone.
 
 A **connect** is different, and `header.connectionId` alone is not enough for it. The id is minted by
 the gateway, one per connection, so a counterparty that reconnects arrives under a *new* id while
@@ -437,8 +501,8 @@ and the order the deadlines are walked in MUST be the log's on every node (**S-3
 **Evaluation** runs on the 1 Hz `ClusterHeartbeat`'s consensus timestamp, immediately after the heartbeat
 frame it belongs to, never on a local timer. The sequencer takes the **first** armed activation in arm
 order whose deadline has passed and removes it; if no `GatewayStarted` has meanwhile bound that
-`gatewayId` to a session it designates from it, and otherwise it was answered and is simply dropped. **At
-most one promotion per heartbeat.**
+`gatewayId` to a session, it designates a new target from it by the rule above; otherwise the activation
+was answered and is simply dropped. **At most one promotion per heartbeat.**
 
 Every input is log-derived — the roster from `GatewayRegistered`, the binding set from `GatewayStarted`,
 the clock from the consensus timestamp — so **S-3** holds and every node synthesizes the same frame at the
@@ -450,18 +514,23 @@ same `globalSeqNo`.
 
 | file | schema id | holds | change policy (§11) |
 | --- | --- | --- | --- |
-| `seqeron-frame.xml` | **210** | `Unsequenced`, `Sequenced`, `unsequencedHeader`, `sequencedHeader`, `messageHeader`, `varDataEncoding` | **frozen** |
-| `seqeron-core.xml` | **211** | the ten core payloads (§7) | changeable under **V-3**; restamps no application frame |
+| `seqeron-frame.xml` | **210** | `Unsequenced`, `Sequenced`, the two header composites, `messageHeader`, `varDataEncoding`, **and the ten core payloads** (§7) | the envelope **frozen**; core changeable under **V-3** |
 | `seqeron-replay.xml` | **212** | the six `Replay*` control messages (§10) | in-place, no version bump |
+
+**The envelope and core are one schema because they are one thing.** Both are seqeron's, both ship in
+the same artifact, and **V-3** governs both identically — a separate schema id bought only a distinction
+nothing reads. `version` stays **0** for the life of the file, core changes included: **V-3** forbids a
+mixed-vintage cluster, so no decoder ever meets bytes another build encoded and there is nothing for a
+version to signal. Schema 211 is unallocated.
 
 **An application `xi:include`s nothing of seqeron's and regenerates nothing of it.** It defines its own
 payload encoding — a schema if that encoding has one, nothing at all if it does not — and reads the
 frame through seqeron's compiled codecs: the jar for Java, the published headers for C++. There is no
 `common-types.xml`.
 
-seqeron ships all three schemas' codecs as **one artifact per language**: `ReplayerRecovery` decodes
-`LeadershipChanged` (core) while handling a `Replaying` (control) inside a `Sequenced` walk, so all
-three are one link-time unit.
+seqeron ships both schemas' codecs as **one artifact per language**: `ReplayerRecovery` decodes
+`LeadershipChanged` (core) while handling a `Replaying` (control) inside a `Sequenced` walk, so the
+two are one link-time unit.
 
 ## 9. Sequencer rules
 
@@ -494,7 +563,7 @@ MUST NOT throw (§9.4).
 | 5 | the var-data length prefix is not a usable payload length: it is 65535 (`varDataEncoding`'s `nullValue`), or `MIN_INGRESS_LENGTH + payloadLength != length` | **new** |
 | 6 | `sourceId == -1` — reserved for the cluster's own frames (**F-4**) | **new** |
 | 7 | `payloadId == 0` | **new** |
-| 8 | `payloadId == 1` and the payload is shorter than the 8-byte `MessageHeader`, or that header's `schemaId` is not 211 (**P-4**) | **new** |
+| 8 | `payloadId == 1` and the payload is shorter than the 8-byte `MessageHeader`, or that header's `schemaId` is not 210 (**P-4**) | **new** |
 | 9 | `payloadId == 1` and the inner `templateId` is synthesis-only (`ClusterHeartbeat`, `LeadershipChanged`) | **new** |
 | 10 | `payloadId == 1` and the frame fails **S-6** — a `GatewayStarted` whose payload is shorter than the 8-byte `MessageHeader` plus the **sequencer's own** `GatewayStarted` block length (**16 bytes in all**), or whose `gatewayId` names no roster row, or whose row names a different `gatewaySourceId`; or another core frame claiming a rostered `sourceId` on an unbound session | **new** |
 
@@ -683,14 +752,14 @@ slot would be reclaimed. Lowering the TTL to 5 000 is what brings the fence back
 
 ## 11. Versioning
 
-**Scope: seqeron's three schemas.** Payload versioning, log lifetime and the operational procedure for
+**Scope: seqeron's two schemas.** Payload versioning, log lifetime and the operational procedure for
 landing a change are all outside it — the first belongs to the application (**V-2**), the other two to
 the deployment.
 
 | artifact | policy | blast radius |
 | --- | --- | --- |
-| `seqeron-frame.xml` (210) | **frozen.** Any change is a new wire format; all three repos release together | everything |
-| `seqeron-core.xml` (211) | changeable, under **V-3**. The version lives in the **payload's own** `MessageHeader`, so a core bump restamps *no* application frame | the cluster tier and core's consumers |
+| `seqeron-frame.xml` (210) — the envelope | **frozen.** Any change is a new wire format; all three repos release together | everything |
+| `seqeron-frame.xml` (210) — the core payloads | changeable, under **V-3**. A core payload is a payload like any other, so a core change restamps *no* application frame — the frame around it is untouched | the cluster tier and core's consumers |
 | `seqeron-replay.xml` (212) | in place, no bump (§10) | one node's build |
 | an application schema | the application's business | one repo, one commit — **E-1** holds here |
 
@@ -764,7 +833,7 @@ to copy.
 
 ### 13.1 `SbeLogPrinter` pipes payloads; it does not decode them
 
-Core's ten are the only payloads it decodes unaided (seqeron owns schema 211, so a `payloadId` 1 frame
+Core's ten are the only payloads it decodes unaided (seqeron owns schema 210, so a `payloadId` 1 frame
 prints in full). Everything else goes down a pipe:
 
 ```
@@ -773,7 +842,8 @@ sbe-log-printer.sh --payload … | application-decode.sh
 
 seqeron gains no application dependency, no descriptor loading and no `templateId → type` registry. It
 still **labels** a payload from the `PayloadIdRegistered` frames in the recording it is already reading
-(§6.3). Two requirements:
+(§6.3) — the shared protocols, which are the rows that exist; everything else prints under its number.
+Two requirements:
 
 1. **Binary-safe rendering.** `varDataEncoding` declares `characterEncoding="US-ASCII"` and SBE's
    `JsonPrinter` renders var-data through it, so arbitrary payload bytes come out mangled. Emit
@@ -837,7 +907,8 @@ crossed the `payloadId` boundary in the wrong direction.
 
 Each sub-step green before the next, all in one repo:
 
-1. Add `seqeron-frame.xml` with the two envelopes and the two renamed composites (prefix-extended,
+1. Add `seqeron-frame.xml` with the two envelopes, the two renamed composites and the ten core
+   payloads (prefix-extended,
    `payloadId` moved in, `origin` deleted, unpadded) — and, in the same wire change, give the FIX
    session families in the running pair their own direction field. → both codegen paths green, the
    `HeaderDecoder`/`HeaderEncoder` rename landed across all 17 files, both edges reading direction from
@@ -853,14 +924,16 @@ Each sub-step green before the next, all in one repo:
    must be settled before this step, not after. → both all-Java e2e and the C++ e2e green.
 5. Extract the replay set into `seqeron-replay.xml`. Namespace change only. → both
    `ReplayerRecoveryTest`s green.
-6. Move core's nine existing frames into `seqeron-core.xml` as `payloadId` 1, defined once. →
+6. Repoint every consumer at core's nine existing frames as `payloadId` 1 — they are already defined
+   once in `seqeron-frame.xml` beside the envelope (step 1); this deletes the pair's copies. →
    `HEADER_GROWTH` and the mirrored definitions gone; the sequencer decodes no `payloadId` but 1.
 7. Delete the old pair. → `:cluster` and `core_tests` build and pass with **no application message
    defined anywhere in seqeron's schemas**.
-8. Add `PayloadIdRegistered` and the `<protocols>` section of the topology file, and teach
-   `SbeLogPrinter` to label payloads from it. → a payload prints under its protocol's name, an
-   unregistered one under its number, no frame affected either way, both e2e suites green with no new
-   start-up step.
+8. Add `PayloadIdRegistered`, convert the topology file to §6.4's document and schema, and teach
+   `SbeLogPrinter` to label payloads from it. The conversion is a hard cutover — the roster files and
+   every caller change in one commit — but it is **not** a wire change: past the new rows the frames the
+   loader publishes are unchanged. → a payload prints under its protocol's name, an unregistered one
+   under its number, no frame affected either way, both e2e suites green with no new start-up step.
 9. §14's suite, both languages. → it fails on a deliberate field reorder and on a renumbered core frame.
 
 **Steps 1 and 3–6 are each a wire change**, and **V-3** applies to each.

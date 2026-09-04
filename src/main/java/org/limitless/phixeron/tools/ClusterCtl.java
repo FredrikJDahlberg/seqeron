@@ -21,14 +21,16 @@ import org.agrona.concurrent.IdleStrategy;
 import org.agrona.concurrent.YieldingIdleStrategy;
 import org.agrona.concurrent.status.CountersReader;
 import org.limitless.phixeron.metrics.PhixeronCounters;
-import org.limitless.phixeron.sbe.sequenced.ClusterStartedDecoder;
-import org.limitless.phixeron.sbe.sequenced.GatewayActiveDecoder;
-import org.limitless.phixeron.sbe.sequenced.GatewayRegisteredDecoder;
+import org.limitless.phixeron.replayer.client.FrameView;
+import org.limitless.phixeron.sbe.frame.ClusterStartedDecoder;
+import org.limitless.phixeron.sbe.frame.GatewayActiveDecoder;
+import org.limitless.phixeron.sbe.frame.GatewayRegisteredDecoder;
 import org.limitless.phixeron.sbe.sequenced.MessageHeaderDecoder;
-import org.limitless.phixeron.sbe.unsequenced.ClusterStartedEncoder;
-import org.limitless.phixeron.sbe.unsequenced.ClusterStoppedEncoder;
-import org.limitless.phixeron.sbe.unsequenced.GatewayActiveEncoder;
-import org.limitless.phixeron.sbe.unsequenced.GatewayRegisteredEncoder;
+import org.limitless.phixeron.sbe.frame.ClusterStartedEncoder;
+import org.limitless.phixeron.sbe.frame.ClusterStoppedEncoder;
+import org.limitless.phixeron.sbe.frame.GatewayActiveEncoder;
+import org.limitless.phixeron.sbe.frame.GatewayRegisteredEncoder;
+import org.limitless.phixeron.sequencer.CoreFrame;
 import org.limitless.phixeron.sbe.unsequenced.MessageHeaderEncoder;
 import org.limitless.phixeron.sequencer.SequencerServer;
 import org.limitless.phixeron.sequencer.SequencerService;
@@ -350,17 +352,17 @@ public final class ClusterCtl {
         }
 
         final ExpandableArrayBuffer buffer = new ExpandableArrayBuffer(128);
+        final ExpandableArrayBuffer payload = new ExpandableArrayBuffer(128);
         final GatewayRegisteredEncoder encoder = new GatewayRegisteredEncoder();
         for (int i = 0; i < rows.size(); i++) {
             final TopologyRow row = rows.get(i);
-            encoder.wrapAndApplyHeader(buffer, 0, new MessageHeaderEncoder());
-            encoder.header().sourceId(NO_ID).connectionId(NO_ID).sessionId(NO_ID);
+            encoder.wrapAndApplyHeader(payload, 0, new org.limitless.phixeron.sbe.frame.MessageHeaderEncoder());
             encoder.remaining(rows.size() - 1 - i)
                    .gatewayId(row.gatewayId())
                    .gatewaySourceId(row.gatewaySourceId())
                    .gatewayName(row.gatewayName())
                    .preferenceRank((short)row.preferenceRank());
-            offer(cluster, buffer, MessageHeaderEncoder.ENCODED_LENGTH + encoder.encodedLength());
+            offer(cluster, buffer, wrapCore(buffer, payload, encoder.encodedLength()));
         }
 
         final RosterEchoHandler handler = new RosterEchoHandler(rows.get(rows.size() - 1).gatewayId());
@@ -377,7 +379,7 @@ public final class ClusterCtl {
     /** Matches the sequenced echo of the roster's last row by gatewayId. */
     private static final class RosterEchoHandler implements FragmentHandler {
         private final int gatewayId;
-        private final MessageHeaderDecoder messageHeader = new MessageHeaderDecoder();
+        private final FrameView view = new FrameView();
         private final GatewayRegisteredDecoder decoder = new GatewayRegisteredDecoder();
         private boolean found;
         private long globalSeqNo;
@@ -391,15 +393,13 @@ public final class ClusterCtl {
             if (found) {
                 return;
             }
-            messageHeader.wrap(buffer, offset);
-            if (messageHeader.schemaId() != GatewayRegisteredDecoder.SCHEMA_ID ||
-                messageHeader.templateId() != GatewayRegisteredDecoder.TEMPLATE_ID) {
+            if (!isCore(view, buffer, offset, length, GatewayRegisteredDecoder.TEMPLATE_ID)) {
                 return;
             }
-            decoder.wrap(buffer, offset + MessageHeaderDecoder.ENCODED_LENGTH, messageHeader.blockLength(),
-                         messageHeader.version());
+            decoder.wrap(buffer, view.payloadOffset() + MessageHeaderDecoder.ENCODED_LENGTH, view.blockLength(),
+                         view.version());
             if (decoder.gatewayId() == gatewayId && decoder.remaining() == 0) {
-                globalSeqNo = decoder.header().globalSeqNo();
+                globalSeqNo = view.globalSeqNo();
                 found = true;
             }
         }
@@ -419,12 +419,11 @@ public final class ClusterCtl {
         }
 
         final ExpandableArrayBuffer buffer = new ExpandableArrayBuffer(64);
+        final ExpandableArrayBuffer payload = new ExpandableArrayBuffer(64);
         final GatewayActiveEncoder encoder = new GatewayActiveEncoder();
-        encoder.wrapAndApplyHeader(buffer, 0, new MessageHeaderEncoder());
-        encoder.header().sourceId(NO_ID).connectionId(NO_ID).sessionId(NO_ID);
+        encoder.wrapAndApplyHeader(payload, 0, new org.limitless.phixeron.sbe.frame.MessageHeaderEncoder());
         encoder.gatewayId(gatewayId);
-        final int length = MessageHeaderEncoder.ENCODED_LENGTH + encoder.encodedLength();
-        offer(cluster, buffer, length);
+        offer(cluster, buffer, wrapCore(buffer, payload, encoder.encodedLength()));
 
         final GatewayActiveEchoHandler handler = new GatewayActiveEchoHandler(gatewayId);
         final FragmentAssembler assembler = new FragmentAssembler(handler);
@@ -440,7 +439,7 @@ public final class ClusterCtl {
     /** Matches the sequenced {@code GatewayActive} echo of our own marker by gatewayId. */
     private static final class GatewayActiveEchoHandler implements FragmentHandler {
         private final int gatewayId;
-        private final MessageHeaderDecoder messageHeader = new MessageHeaderDecoder();
+        private final FrameView view = new FrameView();
         private final GatewayActiveDecoder decoder = new GatewayActiveDecoder();
         private boolean found;
         private long globalSeqNo;
@@ -454,15 +453,13 @@ public final class ClusterCtl {
             if (found) {
                 return;
             }
-            messageHeader.wrap(buffer, offset);
-            if (messageHeader.schemaId() != GatewayActiveDecoder.SCHEMA_ID ||
-                messageHeader.templateId() != GatewayActiveDecoder.TEMPLATE_ID) {
+            if (!isCore(view, buffer, offset, length, GatewayActiveDecoder.TEMPLATE_ID)) {
                 return;
             }
-            decoder.wrap(buffer, offset + MessageHeaderDecoder.ENCODED_LENGTH, messageHeader.blockLength(),
-                         messageHeader.version());
+            decoder.wrap(buffer, view.payloadOffset() + MessageHeaderDecoder.ENCODED_LENGTH, view.blockLength(),
+                         view.version());
             if (decoder.gatewayId() == gatewayId) {
-                globalSeqNo = decoder.header().globalSeqNo();
+                globalSeqNo = view.globalSeqNo();
                 found = true;
             }
         }
@@ -545,18 +542,38 @@ public final class ClusterCtl {
 
     private static int encodeMarker(final ExpandableArrayBuffer buffer, final int templateId,
                                     final long correlationId) {
+        final ExpandableArrayBuffer payload = new ExpandableArrayBuffer(64);
         if (templateId == ClusterStartedEncoder.TEMPLATE_ID) {
             final ClusterStartedEncoder encoder = new ClusterStartedEncoder();
-            encoder.wrapAndApplyHeader(buffer, 0, new MessageHeaderEncoder());
-            encoder.header().sourceId(NO_ID).connectionId(NO_ID).sessionId(NO_ID);
+            encoder.wrapAndApplyHeader(payload, 0, new org.limitless.phixeron.sbe.frame.MessageHeaderEncoder());
             encoder.correlationId(correlationId);
-            return MessageHeaderEncoder.ENCODED_LENGTH + encoder.encodedLength();
+            return wrapCore(buffer, payload, encoder.encodedLength());
         }
         final ClusterStoppedEncoder encoder = new ClusterStoppedEncoder();
-        encoder.wrapAndApplyHeader(buffer, 0, new MessageHeaderEncoder());
-        encoder.header().sourceId(NO_ID).connectionId(NO_ID).sessionId(NO_ID);
+        encoder.wrapAndApplyHeader(payload, 0, new org.limitless.phixeron.sbe.frame.MessageHeaderEncoder());
         encoder.correlationId(correlationId);
-        return MessageHeaderEncoder.ENCODED_LENGTH + encoder.encodedLength();
+        return wrapCore(buffer, payload, encoder.encodedLength());
+    }
+
+    /**
+     * Whether the fragment is a core frame carrying {@code templateId}. Every echo handler asks this: a
+     * template id names nothing without the protocol it belongs to, and the tap carries other protocols.
+     */
+    private static boolean isCore(final FrameView view, final DirectBuffer buffer, final int offset,
+                                  final int length, final int templateId) {
+        return view.wrap(buffer, offset, length) && view.payloadId() == FrameView.CORE_PAYLOAD_ID &&
+               view.templateId() == templateId;
+    }
+
+    /**
+     * Wraps a core payload in an {@code Unsequenced} frame. clusterctl is not a gateway, so it publishes
+     * under no {@code sourceId} and no connection — {@code NO_ID} for both, which is also what the
+     * operator markers have always carried.
+     */
+    private static int wrapCore(final ExpandableArrayBuffer frame, final ExpandableArrayBuffer payload,
+                                final int encodedLength) {
+        return CoreFrame.wrap(frame, NO_ID, NO_ID, NO_ID, payload,
+                              org.limitless.phixeron.sbe.frame.MessageHeaderEncoder.ENCODED_LENGTH + encodedLength);
     }
 
     /**
@@ -602,7 +619,7 @@ public final class ClusterCtl {
     private static final class EchoHandler implements FragmentHandler {
         private final int templateId;
         private final long correlationId;
-        private final MessageHeaderDecoder messageHeader = new MessageHeaderDecoder();
+        private final FrameView view = new FrameView();
         private final ClusterStartedDecoder marker = new ClusterStartedDecoder();
         private boolean found;
         private long globalSeqNo;
@@ -617,15 +634,13 @@ public final class ClusterCtl {
             if (found) {
                 return;
             }
-            messageHeader.wrap(buffer, offset);
-            if (messageHeader.schemaId() != ClusterStartedDecoder.SCHEMA_ID ||
-                messageHeader.templateId() != templateId) {
+            if (!isCore(view, buffer, offset, length, templateId)) {
                 return;
             }
-            marker.wrap(buffer, offset + MessageHeaderDecoder.ENCODED_LENGTH, messageHeader.blockLength(),
-                        messageHeader.version());
+            marker.wrap(buffer, view.payloadOffset() + MessageHeaderDecoder.ENCODED_LENGTH, view.blockLength(),
+                        view.version());
             if (marker.correlationId() == correlationId) {
-                globalSeqNo = marker.header().globalSeqNo();
+                globalSeqNo = view.globalSeqNo();
                 found = true;
             }
         }

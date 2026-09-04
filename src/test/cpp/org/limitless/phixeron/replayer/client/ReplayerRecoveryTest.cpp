@@ -135,13 +135,13 @@ struct Client final : ReplayerRecoveryActions
 // One Heartbeat frame (template id 48) at the given globalSeqNo — clear of the
 // ClientConnected/ClientDisconnected/LeadershipChanged special ids (1/2/5), so it always reaches
 // onSequenced rather than being intercepted as a lifecycle/leadership event.
-std::vector<std::uint8_t> encodeHeartbeat(const std::int64_t globalSeqNo,
-                                          const seq::Origin::Value origin = seq::Origin::Value::Client)
+std::vector<std::uint8_t> encodeHeartbeat(const std::int64_t globalSeqNo)
 {
     std::vector<std::uint8_t> buf(256, 0);
     seq::Heartbeat enc;
     enc.wrapAndApplyHeader(reinterpret_cast<char*>(buf.data()), 0, buf.size());
-    enc.header().sourceId(1).connectionId(0).sessionId(1).globalSeqNo(globalSeqNo).timestamp(0).origin(origin);
+    enc.header().sourceId(1).connectionId(0).sessionId(1).globalSeqNo(globalSeqNo).timestamp(0);
+    enc.direction(seq::Direction::Value::Client);
     enc.seqNum(1).sendingTimeMs(0).possDupFlag(seq::PossDupFlag::Value::NULL_VALUE);
     enc.testReqID()[0] = '\0';
     buf.resize(enc.sbePosition());
@@ -152,10 +152,9 @@ std::vector<std::uint8_t> encodeHeartbeat(const std::int64_t globalSeqNo,
 // the frame starts in the recording — the default 0 suffices wherever a test does not care, but
 // requestResume anchors on the last dispatched frame's position, so a test that checks the anchor must
 // space its frames apart.
-void deliverLive(Client& client, const std::int64_t globalSeqNo, const std::int64_t framePosition = 0,
-                 const seq::Origin::Value origin = seq::Origin::Value::Client)
+void deliverLive(Client& client, const std::int64_t globalSeqNo, const std::int64_t framePosition = 0)
 {
-    auto buf = encodeHeartbeat(globalSeqNo, origin);
+    auto buf = encodeHeartbeat(globalSeqNo);
     client.recovery.onFrame(reinterpret_cast<char*>(buf.data()), buf.size(), framePosition, /*receiveNs=*/0,
                             /*fromReplay=*/false);
 }
@@ -1362,24 +1361,6 @@ TEST(ReplayerRecoveryGapRecovery, WalkSegmentRetryOnADifferentRecordingAbandonsT
     EXPECT_TRUE(client.recovery.isAwaitingReplay()) << "restarting the walk is itself a new request";
     EXPECT_EQ(-1, client.recovery.replaySessionId()) << "must not attach to the mismatched reply's session";
     EXPECT_EQ(1u, sink.events.size()) << "the shift is reported, not silently absorbed";
-}
-
-// `origin` is a header-composite field now, so every consumer gets it off SequencedEvent without
-// decoding the body or knowing the template — which is what lets FixGateway tell a connection's FIX
-// session traffic from an application frame merely addressed to the same connectionId. If this ever
-// stopped being populated it would read as Origin::None, and that dispatch would silently route
-// nothing.
-TEST(ReplayerRecoveryOrigin, SequencedEventCarriesTheHeaderOrigin)
-{
-    for (const auto origin :
-         { seq::Origin::Value::Client, seq::Origin::Value::Gateway, seq::Origin::Value::Application })
-    {
-        std::vector<seq::Origin::Value> seen;
-        Client client{ [&](const SequencedEvent& event) { seen.push_back(event.origin); } };
-        deliverLive(client, 1, 0, origin);
-        ASSERT_EQ(1u, seen.size()) << "frame was not dispatched";
-        EXPECT_EQ(origin, seen.front());
-    }
 }
 
 // ── Convergence alarm (review-3.md #6) ───────────────────────────────────────────────────────

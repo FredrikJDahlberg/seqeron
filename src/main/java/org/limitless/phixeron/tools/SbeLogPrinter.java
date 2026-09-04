@@ -42,7 +42,7 @@ import uk.co.real_logic.sbe.otf.OtfHeaderDecoder;
  */
 public class SbeLogPrinter {
     /** Bundled schema names, in the order {@code --list-schemas} prints them. */
-    private static final String[] BUNDLED_SCHEMAS = {"sequenced", "unsequenced", "cluster"};
+    private static final String[] BUNDLED_SCHEMAS = {"frame", "sequenced", "unsequenced", "cluster"};
     private static final int CATALOG_HEADER_LENGTH = CatalogHeaderDecoder.BLOCK_LENGTH;
     private static final int DESCRIPTOR_HEADER_LENGTH = RecordingDescriptorHeaderDecoder.BLOCK_LENGTH;
 
@@ -50,6 +50,13 @@ public class SbeLogPrinter {
     public static final int NO_STREAM_FILTER = Integer.MIN_VALUE;
 
     private static final String RECORDING_SEGMENT_SUFFIX = ".rec";
+
+    /** The frame layer's schema id, whose two templates carry every other protocol's messages. */
+    private static final int FRAME_SCHEMA_ID = org.limitless.phixeron.sbe.frame.MessageHeaderDecoder.SCHEMA_ID;
+
+    /** {@code varDataEncoding}'s length prefix, between the frame's block and its payload. */
+    private static final int PAYLOAD_PREFIX_LENGTH =
+        org.limitless.phixeron.sbe.frame.SequencedDecoder.payloadHeaderLength();
 
     /** One loaded schema: its IR (for template lookup) and the printer built from it. */
     private record Schema(Ir ir, JsonPrinter printer) {
@@ -153,25 +160,46 @@ public class SbeLogPrinter {
                                             final int frameEndOffset) {
         final Ir ir = schema.ir();
         final Token message = messageToken(ir, templateId);
-        if (null != message && SessionMessageHeaderDecoder.SCHEMA_ID == ir.id() &&
-            SessionMessageHeaderDecoder.TEMPLATE_ID == message.id()) {
-            final int nestedOffset = payloadOffset + sbeHeaderDecoder.encodedLength() +
-                sbeHeaderDecoder.getBlockLength(buffer, payloadOffset);
-            if (nestedOffset < frameEndOffset) {
-                final int nestedSchemaId = sbeHeaderDecoder.getSchemaId(buffer, nestedOffset);
-                final int nestedTemplateId = sbeHeaderDecoder.getTemplateId(buffer, nestedOffset);
-                final Schema nestedSchema = schemasBySchemaId.get(nestedSchemaId);
-                final Ir nestedIr = nestedSchema.ir();
-                builder.append(' ');
-                if (null == nestedIr.getMessage(nestedTemplateId)) {
-                    builder.append("<undecodable ingress payload: schema ").append(nestedSchemaId)
-                        .append(", templateId ").append(nestedTemplateId).append('>');
-                } else {
-                    builder.append(messageName(nestedIr, nestedTemplateId)).append('=');
-                    nestedSchema.printer().print(builder, buffer, nestedOffset);
-                }
-            }
+        if (null == message) {
+            return;
         }
+        if (SessionMessageHeaderDecoder.SCHEMA_ID == ir.id() &&
+            SessionMessageHeaderDecoder.TEMPLATE_ID == message.id()) {
+            appendNested(buffer, payloadOffset + sbeHeaderDecoder.encodedLength() +
+                                 sbeHeaderDecoder.getBlockLength(buffer, payloadOffset), frameEndOffset);
+            return;
+        }
+        if (FRAME_SCHEMA_ID == ir.id()) {
+            // The seqeron envelope: the message is one length-prefixed payload past the frame's block, and
+            // the frame line alone would say only that a frame went by, never what it carried.
+            appendNested(buffer, payloadOffset + sbeHeaderDecoder.encodedLength() +
+                                 sbeHeaderDecoder.getBlockLength(buffer, payloadOffset) + PAYLOAD_PREFIX_LENGTH,
+                         frameEndOffset);
+        }
+    }
+
+    /**
+     * Prints the message at {@code nestedOffset} beside the frame that carried it, on the same line.
+     *
+     * <p>A payload seqeron does not own prints as its schema and template ids rather than being decoded —
+     * the printer holds no descriptor for it, and guessing one would read a foreign schema's numbering as
+     * a known schema's (doc/seqeron-protocol-spec.md §13.1).
+     */
+    private void appendNested(final UnsafeBuffer buffer, final int nestedOffset, final int frameEndOffset) {
+        if (nestedOffset >= frameEndOffset) {
+            return;
+        }
+        final int nestedSchemaId = sbeHeaderDecoder.getSchemaId(buffer, nestedOffset);
+        final int nestedTemplateId = sbeHeaderDecoder.getTemplateId(buffer, nestedOffset);
+        final Schema nestedSchema = schemasBySchemaId.get(nestedSchemaId);
+        builder.append(' ');
+        if (null == nestedSchema || null == nestedSchema.ir().getMessage(nestedTemplateId)) {
+            builder.append("<undecodable ingress payload: schema ").append(nestedSchemaId)
+                .append(", templateId ").append(nestedTemplateId).append('>');
+            return;
+        }
+        builder.append(messageName(nestedSchema.ir(), nestedTemplateId)).append('=');
+        nestedSchema.printer().print(builder, buffer, nestedOffset);
     }
 
     /**

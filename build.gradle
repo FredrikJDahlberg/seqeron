@@ -82,7 +82,28 @@ tasks.register('generateSequencedSbe', JavaExec) {
     doFirst { sbeGeneratedSrcDir.mkdirs() }
 }
 
-tasks.named('compileJava') { dependsOn 'generateUnsequencedSbe', 'generateSequencedSbe' }
+tasks.register('generateFrameSbe', JavaExec) {
+    description = 'Generate Java SBE codecs from sbe-frame.xml (the Unsequenced/Sequenced envelope pair)'
+    classpath   = configurations.sbeCodegen
+    mainClass   = 'uk.co.real_logic.sbe.SbeTool'
+
+    jvmArgs '--add-opens=java.base/jdk.internal.misc=ALL-UNNAMED'
+
+    systemProperty 'sbe.output.dir',               sbeGeneratedSrcDir.absolutePath
+    systemProperty 'sbe.target.language',          'Java'
+    systemProperty 'sbe.java.generate.interfaces', 'false'
+    systemProperty 'sbe.xinclude.aware',           'true'
+    systemProperty 'sbe.generate.ir',              'true'
+
+    args new File(sbeResourceDir, 'sbe-frame.xml')
+
+    inputs.file  new File(sbeResourceDir, 'sbe-frame.xml')
+    outputs.dir  sbeGeneratedSrcDir
+
+    doFirst { sbeGeneratedSrcDir.mkdirs() }
+}
+
+tasks.named('compileJava') { dependsOn 'generateUnsequencedSbe', 'generateSequencedSbe', 'generateFrameSbe' }
 
 // IR only, no stubs: the Java side speaks the cluster protocol through io.aeron.cluster.codecs, so the
 // mirror schema's codecs would be dead classes in the jar. The IR alone is what SbeLogPrinter needs to
@@ -116,7 +137,7 @@ def sbeIrResourceDir = layout.buildDirectory.dir('generated/resources/sbeir')
 
 tasks.register('collectSbeIr', Copy) {
     description = 'Stage the generated SBE IR files as jar resources for SbeLogPrinter'
-    dependsOn 'generateUnsequencedSbe', 'generateSequencedSbe', 'generateClusterSbeIr'
+    dependsOn 'generateUnsequencedSbe', 'generateSequencedSbe', 'generateFrameSbe', 'generateClusterSbeIr'
     from(sbeGeneratedSrcDir) {
         include '*.sbeir'
         into 'org/limitless/phixeron/tools/sbeir'

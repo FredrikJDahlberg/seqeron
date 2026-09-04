@@ -1,0 +1,205 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!--
+    The frame layer — doc/seqeron-protocol-spec.md §4, schema 210.
+
+    Two templates and nothing else: Unsequenced on cluster ingress, Sequenced on the
+    node tap and every replay of it. Each body is one length-prefixed payload, opaque
+    to this schema; what is inside it is named by header.payloadId and owned by
+    whoever that number names (§6). The cluster tier decodes payloadId 1 and nothing
+    else.
+
+    Nothing generates from this file yet. It is added ahead of its consumers so the
+    envelope's own codegen is green in both languages before any message family moves
+    onto it (spec §15 step 1); steps 3-7 migrate the families, step 7 deletes the
+    sbe-unsequenced/sbe-sequenced pair.
+
+    F-3: unsequencedHeader is a byte-prefix of sequencedHeader — same fields, same
+    offsets, same types, for the first 18 bytes. That is what makes sequencing a
+    copy-18/append-16 and lets one decoder read a frame-layer field without knowing
+    which of the two templates it holds. Sequencing overwrites sessionId with the true
+    Aeron Cluster session id the frame arrived on and copies everything else verbatim
+    (§5).
+
+    No pad. payloadId is 2-byte aligned and globalSeqNo sits unaligned at offset 18;
+    both generators read fixed-width fields through memcpy (SBE C++) and UnsafeBuffer
+    (Agrona), which compile to single unaligned loads on x86-64 and ARM64. Plain
+    accessors only — getLongVolatile/getAndAddLong and C++ atomics on an unaligned
+    address are undefined.
+
+    The composites are named for their templates rather than both being `header`,
+    which they cannot be once they share one file.
+
+    Naming: `phixeron` throughout, not `seqeron`. The spec names the target file
+    seqeron-frame.xml; that rename lands with the actual repo split
+    (doc/future-arch.md §11 step 1), not with the protocol steps, each of which is
+    already a wire change on its own.
+-->
+<sbe:messageSchema xmlns:sbe="http://fixprotocol.io/2016/sbe"
+                   package="org.limitless.phixeron.sbe.frame"
+                   id="210"
+                   version="0"
+                   semanticVersion="1.0"
+                   description="phixeron frame layer: the Unsequenced/Sequenced envelope pair"
+                   byteOrder="littleEndian">
+
+    <types>
+        <composite name="messageHeader"
+                   description="Template and schema identification for every message on the wire">
+            <type name="blockLength" primitiveType="uint16"/>
+            <type name="templateId"  primitiveType="uint16"/>
+            <type name="schemaId"    primitiveType="uint16"/>
+            <type name="version"     primitiveType="uint16"/>
+        </composite>
+
+        <!-- 18 bytes. Every field is producer-set; sourceId MUST NOT be -1 (reserved for the
+             cluster's own synthesized frames, F-4) and payloadId MUST be non-zero. -->
+        <composite name="unsequencedHeader"
+                   description="Frame header on cluster ingress: who produced this frame, over which connection and cluster session, and what its payload is">
+            <type name="sourceId"     primitiveType="int32"
+                  description="Identifies the producer. Rostered gateways use their gatewaySourceId; -1 is reserved for the cluster itself and is illegal here"/>
+            <type name="connectionId" primitiveType="int32"
+                  description="The producer's own connection id; unique within one producer process, never across processes"/>
+            <type name="sessionId"    primitiveType="int64"
+                  description="Aeron Cluster session id. Advisory on ingress — the sequencer overwrites it with the session the frame actually arrived on"/>
+            <type name="payloadId"    primitiveType="uint16"
+                  description="Names the payload's decoder namespace and encoding; 1 is core, 0 is invalid on the wire"/>
+        </composite>
+
+        <!-- 34 bytes: unsequencedHeader's 18 verbatim, then the stamp. -->
+        <composite name="sequencedHeader"
+                   description="Frame header on the tap: the ingress header verbatim, plus the sequencer's stamp">
+            <type name="sourceId"     primitiveType="int32"
+                  description="Copied verbatim from ingress; -1 marks a frame the cluster synthesized (F-4)"/>
+            <type name="connectionId" primitiveType="int32"
+                  description="Copied verbatim from ingress; -1 on a synthesized frame"/>
+            <type name="sessionId"    primitiveType="int64"
+                  description="The true Aeron Cluster session id the frame arrived on; -1 on a synthesized frame"/>
+            <type name="payloadId"    primitiveType="uint16"
+                  description="Copied verbatim from ingress"/>
+            <type name="globalSeqNo"  primitiveType="int64"
+                  description="Cluster-wide monotone sequence number, starting at 1, one per emitted frame, never reused and never gapped (S-4)"/>
+            <type name="timestamp"    primitiveType="int64"
+                  description="Raft consensus time (ms since epoch) at commit — never a node's local clock (S-3)"/>
+        </composite>
+
+        <type name="correlationId" primitiveType="int64"
+              description="clusterctl-assigned id, echoed in the frame so the tool matches its own marker"/>
+
+        <type name="gatewayName" primitiveType="char" length="32" characterEncoding="US-ASCII"
+              description="Launch-time gateway identity (PHIXERON_*_GATEWAY_NAME); byte[0]==0x00 signals absent"/>
+
+        <type name="protocolName" primitiveType="char" length="32" characterEncoding="US-ASCII"
+              description="Label SbeLogPrinter prints for a payload it cannot decode; byte[0]==0x00 signals absent"/>
+
+        <!-- The payload's length prefix. characterEncoding is inherited from the generators'
+             defaults and is not a claim about the bytes: a payload is arbitrary binary, and
+             SbeLogPrinter renders it base64 rather than through this encoding (§13.1). -->
+        <composite name="varDataEncoding">
+            <type name="length"  primitiveType="uint16" nullValue="65535" presence="optional"/>
+            <type name="varData" primitiveType="uint8"  length="0"/>
+        </composite>
+    </types>
+
+    <sbe:message name="Unsequenced" id="100"
+                 description="One frame on cluster ingress, awaiting a globalSeqNo. The sequencer admits it under §9.2 and republishes it as Sequenced, or rejects it and emits nothing at all">
+        <field name="header"  id="20001" type="unsequencedHeader"/>
+        <data  name="payload" id="20040" type="varDataEncoding"
+               description="The payload named by header.payloadId, opaque here and copied byte-identical onto the tap. Bounded by MAX_PAYLOAD_LENGTH (§12); MAY be empty"/>
+    </sbe:message>
+
+    <sbe:message name="Sequenced" id="101"
+                 description="One frame on the node tap: an admitted ingress frame, or one the cluster synthesized on its own initiative. The only template the recording holds">
+        <field name="header"  id="20001" type="sequencedHeader"/>
+        <data  name="payload" id="20040" type="varDataEncoding"
+               description="The payload named by header.payloadId, byte-identical to the ingress frame's where there was one"/>
+    </sbe:message>
+
+    <!-- ── Core payloads — payloadId 1 ───────────────────────────────────────────────────────────
+         seqeron's own payloads, and the only ones the cluster tier decodes. They sit inside a frame
+         like any other payload, so **none of them carries a header field**: the header is the
+         frame's, and a payload repeating it would nest one envelope inside another.
+
+         Ids are the ones they hold today, deliberately: a recording made by an older build must
+         never read as one of these. That is also why the envelope pair above is numbered 100/101 —
+         template ids are unique per schema, and 1/2 were already ClientConnected/ClientDisconnected.
+
+         Two of them are synthesis-only (LeadershipChanged, ClusterHeartbeat): the sequencer encodes
+         them on its own initiative and rejects either on ingress.
+    -->
+
+    <sbe:message name="ClientConnected" id="1"
+                 description="A connection opened at a gateway. connectionData carries whatever identity that
+                              gateway's connections have — opaque to core, encoded by the producer named by
+                              header.sourceId, and MAY be empty">
+        <data name="connectionData" id="20041" type="varDataEncoding"/>
+    </sbe:message>
+
+    <sbe:message name="ClientDisconnected" id="2"
+                 description="A connection closed at a gateway. No fields: header.connectionId names a connection
+                              every consumer already saw connect, so there is nothing to add"/>
+
+    <sbe:message name="LeadershipChanged" id="5"
+                 description="A new Aeron Cluster leadership term began. Synthesized once per term, de-duplicated
+                              on newLeaderMemberId; illegal on ingress">
+        <field name="newLeaderMemberId" id="20008" type="int32"
+               description="Aeron Cluster memberId of the node that is leader from this globalSeqNo onward"/>
+    </sbe:message>
+
+    <sbe:message name="ClusterStarted" id="10"
+                 description="Operator marker recording that the cluster is up and open for the day; published by
+                              clusterctl once an elected leader exists">
+        <field name="correlationId" id="20002" type="correlationId"/>
+    </sbe:message>
+
+    <sbe:message name="ClusterStopped" id="11"
+                 description="Operator marker recording an orderly shutdown; the last business event in the log">
+        <field name="correlationId" id="20002" type="correlationId"/>
+    </sbe:message>
+
+    <sbe:message name="ClusterHeartbeat" id="16"
+                 description="The cluster clock, synthesized at 1 Hz off a cluster timer. No fields: the frame's
+                              consensus timestamp and globalSeqNo are the whole message, which makes this the
+                              cheapest frame in the system. Illegal on ingress"/>
+
+    <sbe:message name="GatewayRegistered" id="17"
+                 description="One roster row, published by clusterctl load-topology. remaining=0 marks the last row
+                              and is the completeness edge the bootstrap GatewayActives are synthesized behind">
+        <field name="remaining"       id="20038" type="uint16"
+               description="Roster rows still to come after this one; 0 = last"/>
+        <field name="gatewayId"       id="20029" type="int32"
+               description="The row's own identity, unique across the roster; what a GatewayActive names"/>
+        <field name="gatewaySourceId" id="20030" type="int32"
+               description="The logical gateway this row belongs to, shared by every instance of it; the value
+                            header.sourceId is matched against"/>
+        <field name="gatewayName"     id="20031" type="gatewayName"/>
+        <field name="preferenceRank"  id="20032" type="uint8"
+               description="0 = designated primary (exactly one per gatewaySourceId); 1,2… = standbys"/>
+    </sbe:message>
+
+    <sbe:message name="GatewayActive" id="18"
+                 description="Designates one gateway instance as its logical gateway's active one. Four producers:
+                              clusterctl activate on ingress, and the sequencer at bootstrap, on session close and
+                              on activation timeout">
+        <field name="gatewayId" id="20029" type="int32"/>
+    </sbe:message>
+
+    <sbe:message name="GatewayStarted" id="19"
+                 description="A gateway instance activated. Binds its cluster session to this gatewayId, and
+                              releases every connection still open under its gatewaySourceId">
+        <field name="gatewayId"         id="20029" type="int32"/>
+        <field name="firstConnectionId" id="20034" type="int32"
+               description="Where this instance resumes allocating connectionIds, chosen past the highest its own
+                            replay held"/>
+    </sbe:message>
+
+    <sbe:message name="PayloadIdRegistered" id="23"
+                 description="One row of the topology file's protocols section: what a shared payloadId is called
+                              in this deployment. Labeling only — the sequencer never decodes it and registration
+                              gates nothing">
+        <field name="payloadId"       id="20042" type="uint16"/>
+        <field name="protocolVersion" id="20043" type="uint16"
+               description="Which revision the deployment runs; printed beside the name and checked by nothing"/>
+        <field name="protocolName"    id="20044" type="protocolName"/>
+    </sbe:message>
+
+</sbe:messageSchema>

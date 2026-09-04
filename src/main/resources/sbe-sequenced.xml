@@ -16,16 +16,13 @@
     Field/type definitions and IDs are otherwise copied verbatim from
     sbe-unsequenced.xml; keep both files in lock-step.
 
-    Also carries the sequenced form of the two non-FIX lifecycle messages,
-    ClientConnected and ClientDisconnected — same template ids (1/2) and
-    shape as sbe-unsequenced.xml, just with globalSeqNo/timestamp stamped
-    into the header like every other message here — plus LeadershipChanged
-    (template 5), synthesized by the sequencer onto the cluster stream when a
-    new leadership term begins so every per-node replica learns, at an exact
-    globalSeqNo, which node is leader from that point on (see the ReplayerService
-    design, doc/router-design.md §3). LeadershipChanged is synthesized-only:
-    it never arrives on cluster ingress, so it has no sbe-unsequenced.xml
-    counterpart.
+    seqeron's own frames are NOT here. The TCP lifecycle events, the cluster
+    clock, LeadershipChanged, the life-cycle markers and the gateway HA control
+    frames are core payloads, defined once in sbe-frame.xml (schema 210) and
+    carried inside a Sequenced envelope — see doc/seqeron-protocol-spec.md §7.
+    What is left here is the FIX families and the reference data, still
+    travelling as bare schema-202 messages until they move onto payloadIds of
+    their own (§15 steps 3-4).
 
     Design notes
     ────────────
@@ -34,10 +31,11 @@
         Heartbeat '0'=48   TestRequest  '1'=49   ResendRequest '2'=50
         Reject    '3'=51   SequenceReset'4'=52    Logout        '5'=53
         Logon     'A'=65   ExecutionReport '8'=56 NewOrderSingle 'D'=68
-    ClientConnected/ClientDisconnected/PortfolioQueryRequest/PortfolioQueryReply/
-    LeadershipChanged aren't FIX messages, so they use small, non-ASCII-derived
-    template ids instead (1/2/3/4/5), clear of that range. The cluster life-cycle
-    markers ClusterStarted/ClusterStopped (10/11) do too. ClientSessionEvent
+    PortfolioQueryRequest/PortfolioQueryReply aren't FIX messages, so they use
+    small, non-ASCII-derived template ids instead (3/4), clear of that range.
+    Ids 1/2/5/10/11/16/17/18/19 are NOT reused: they belonged to the messages
+    that are core now, and a recording made by an older build must never read as
+    something else. ClientSessionEvent
     (22) is the one FIX message with a small id: it stands for ANY session MsgType,
     so no single ASCII value describes it.
 
@@ -92,7 +90,7 @@
             Transport + sequencing identity, prepended to every message in
             this schema (see field "header" below).
         -->
-        <composite name="header"
+        <composite name="sequencedHeader"
                    description="Identifies the submitting gateway process, TCP connection, Aeron Cluster session, and sequencing stamp for this message">
             <type name="sourceId"     primitiveType="int32"
                   description="Fixed constant identifying the submitting FIX gateway process; configured at startup, stable across restarts, unique across every gateway instance"/>
@@ -104,8 +102,6 @@
                   description="Cluster-wide monotone sequence number; unique across all sources and message types"/>
             <type name="timestamp"   primitiveType="int64"
                   description="Cluster consensus time (ms since epoch) when sequenced"/>
-            <ref  name="origin"       type="Origin"
-                  description="Which producer role emitted this frame; see the Origin enum"/>
         </composite>
 
         <!--
@@ -235,24 +231,29 @@
             <validValue name="SequenceReset"  description="N: hard reset">78</validValue>
         </enum>
 
-        <!-- Which producer role emitted this frame. Lives in the `header` composite, so EVERY message
-             carries it and any consumer can read it at a fixed offset without knowing the template.
+        <!-- Which way a FIX session message travels. A field on each session-family message rather
+             than a member of the header composite: the direction is one edge's vocabulary, not the
+             frame's, and the frame layer (sbe-frame.xml) carries no such field
+             (doc/seqeron-protocol-spec.md §4.3).
 
              It exists because a FIX session message is otherwise ambiguous: a gateway reply reuses the
              same template as the client message it answers, and comp-ids and sourceId are identical in
-             both directions (sourceId names the submitting gateway process, not the direction). It is
-             also what separates session traffic from everything else sharing a connectionId — a
-             PortfolioQueryReply copies the originating sourceId/connectionId so the answer can be
-             routed back, and must not therefore be fed into that connection's FIX session state.
+             both directions (sourceId names the submitting gateway process, not the direction).
 
-             None is 0 so a zero-initialised buffer decodes to "nobody stamped this" rather than to a
-             value outside the enum. It is not a routing outcome: a consumer treats it as "not mine".
-             Every publisher sets one of the other three explicitly. -->
-        <enum name="Origin" encodingType="uint8">
-            <validValue name="None"        description="Unset — no publisher stamped this frame">0</validValue>
-            <validValue name="Client"      description="FIX session message received from the external counterparty and forwarded by the gateway">1</validValue>
-            <validValue name="Gateway"     description="FIX session message the gateway itself produced">2</validValue>
-            <validValue name="Application" description="Application-layer or infrastructure frame: orders, executions, queries, reference data, cluster lifecycle">3</validValue>
+             Carried as the first field after the header on every message that has one, so a consumer
+             reads it at one fixed offset for the whole family rather than per template.
+
+             Unset is 0 so a zero-initialised buffer decodes to "nobody stamped this" rather than to a
+             value outside the enum; it is not a routing outcome, and a consumer treats it as "not
+             mine". Every publisher sets Client or Gateway explicitly.
+
+             What separates session traffic from everything else sharing a connectionId is now the
+             template id — only the session family carries this field, so only the session family can
+             be fed into a connection's FIX session state. -->
+        <enum name="Direction" encodingType="uint8">
+            <validValue name="Unset"   description="Unset — no publisher stamped this message">0</validValue>
+            <validValue name="Client"  description="Received from the external counterparty and forwarded by the gateway">1</validValue>
+            <validValue name="Gateway" description="Produced by the gateway itself">2</validValue>
         </enum>
 
         <!--
@@ -384,7 +385,8 @@
          ═══════════════════════════════════════════════════════════════════ -->
     <sbe:message name="Logon" id="65" semanticType="A"
                  description="Session logon; sent by initiator and echoed by acceptor">
-        <field name="header"            id="20001" type="header"/>
+        <field name="header"            id="20001" type="sequencedHeader"/>
+        <field name="direction"    id="20039" type="Direction"/>
         <field name="sender"            id="49"  type="compId"/>
         <field name="target"            id="56"  type="compId"/>
         <field name="seqNum"            id="34"  type="uint32"/>
@@ -407,7 +409,8 @@
          ═══════════════════════════════════════════════════════════════════ -->
     <sbe:message name="Logout" id="53" semanticType="5"
                  description="Session logout; either side may initiate">
-        <field name="header"        id="20001" type="header"/>
+        <field name="header"        id="20001" type="sequencedHeader"/>
+        <field name="direction"    id="20039" type="Direction"/>
         <field name="sender"        id="49" type="compId"/>
         <field name="target"        id="56" type="compId"/>
         <field name="seqNum"        id="34" type="uint32"/>
@@ -423,7 +426,8 @@
          ═══════════════════════════════════════════════════════════════════ -->
     <sbe:message name="Heartbeat" id="48" semanticType="0"
                  description="Liveness pulse; echoes TestReqID when responding to a TestRequest">
-        <field name="header"        id="20001" type="header"/>
+        <field name="header"        id="20001" type="sequencedHeader"/>
+        <field name="direction"    id="20039" type="Direction"/>
         <field name="sender"        id="49"  type="compId"/>
         <field name="target"        id="56"  type="compId"/>
         <field name="seqNum"        id="34"  type="uint32"/>
@@ -439,7 +443,8 @@
          ═══════════════════════════════════════════════════════════════════ -->
     <sbe:message name="TestRequest" id="49" semanticType="1"
                  description="Liveness probe; counterparty must echo TestReqID in a Heartbeat">
-        <field name="header"        id="20001" type="header"/>
+        <field name="header"        id="20001" type="sequencedHeader"/>
+        <field name="direction"    id="20039" type="Direction"/>
         <field name="sender"        id="49"  type="compId"/>
         <field name="target"        id="56"  type="compId"/>
         <field name="seqNum"        id="34"  type="uint32"/>
@@ -455,7 +460,8 @@
          ═══════════════════════════════════════════════════════════════════ -->
     <sbe:message name="ResendRequest" id="50" semanticType="2"
                  description="Requests retransmission of messages in a detected sequence gap">
-        <field name="header"        id="20001" type="header"/>
+        <field name="header"        id="20001" type="sequencedHeader"/>
+        <field name="direction"    id="20039" type="Direction"/>
         <field name="sender"        id="49" type="compId"/>
         <field name="target"        id="56" type="compId"/>
         <field name="seqNum"        id="34" type="uint32"/>
@@ -473,7 +479,8 @@
          ═══════════════════════════════════════════════════════════════════ -->
     <sbe:message name="Reject" id="51" semanticType="3"
                  description="Session-level rejection of a malformed or invalid inbound message">
-        <field name="header"              id="20001" type="header"/>
+        <field name="header"              id="20001" type="sequencedHeader"/>
+        <field name="direction"    id="20039" type="Direction"/>
         <field name="sender"              id="49"  type="compId"/>
         <field name="target"              id="56"  type="compId"/>
         <field name="seqNum"              id="34"  type="uint32"/>
@@ -498,7 +505,8 @@
          ═══════════════════════════════════════════════════════════════════ -->
     <sbe:message name="SequenceReset" id="52" semanticType="4"
                  description="Resets inbound sequence number; gap-fill or hard reset">
-        <field name="header"        id="20001" type="header"/>
+        <field name="header"        id="20001" type="sequencedHeader"/>
+        <field name="direction"    id="20039" type="Direction"/>
         <field name="sender"        id="49"  type="compId"/>
         <field name="target"        id="56"  type="compId"/>
         <field name="seqNum"        id="34"  type="uint32"/>
@@ -529,7 +537,8 @@
                               credentials, so re-encoding from them would put bytes on the wire that differ from the
                               ones the engine's own session logic assumed it had sent. Opaque also makes egress a
                               memcpy rather than a re-encode, which is what keeps every node's copy identical.">
-        <field name="header"        id="20001" type="header"/>
+        <field name="header"        id="20001" type="sequencedHeader"/>
+        <field name="direction"    id="20039" type="Direction"/>
         <field name="seqNum"        id="34"    type="uint32"
                description="MsgSeqNum (tag 34) reserved for this message when it was published; it is re-emitted at
                             exactly this number on the round trip, never re-derived"/>
@@ -548,7 +557,7 @@
          ═══════════════════════════════════════════════════════════════════ -->
     <sbe:message name="ExecutionReport" id="56" semanticType="8"
                  description="Reports the status of, or a fill against, an order">
-        <field name="header"        id="20001" type="header"/>
+        <field name="header"        id="20001" type="sequencedHeader"/>
         <field name="sender"        id="49"  type="compId"/>
         <field name="target"        id="56"  type="compId"/>
         <field name="seqNum"        id="34"  type="uint32"/>
@@ -580,7 +589,7 @@
          ═══════════════════════════════════════════════════════════════════ -->
     <sbe:message name="NewOrderSingle" id="68" semanticType="D"
                  description="Submits a new order to the counterparty">
-        <field name="header"        id="20001" type="header"/>
+        <field name="header"        id="20001" type="sequencedHeader"/>
         <field name="sender"        id="49"  type="compId"/>
         <field name="target"        id="56"  type="compId"/>
         <field name="seqNum"        id="34"  type="uint32"/>
@@ -609,48 +618,6 @@
          Lifecycle — not FIX messages; no StandardHeader fields, just header
          ═══════════════════════════════════════════════════════════════════ -->
 
-    <!-- ═══════════════════════════════════════════════════════════════════
-         ClientConnected  (template 1)
-         ═══════════════════════════════════════════════════════════════════ -->
-    <sbe:message name="ClientConnected" id="1"
-                 description="A client opened a TCP connection to the FIX gateway; senderComp/targetComp name the
-                              resolved FIX session (absent until a Logon resolves it) so a standby gateway can map
-                              the connection to a session deterministically. Symmetric with ClientDisconnected.">
-        <field name="header"     id="20001" type="header"/>
-        <field name="senderComp" id="20024" type="compId"/>
-        <field name="targetComp" id="20025" type="compId"/>
-    </sbe:message>
-
-    <!-- ═══════════════════════════════════════════════════════════════════
-         ClientDisconnected  (template 2)
-         ═══════════════════════════════════════════════════════════════════ -->
-    <sbe:message name="ClientDisconnected" id="2"
-                 description="A client closed (or lost) its TCP connection to the FIX gateway; senderComp/targetComp
-                              name the resolved FIX session (absent if it closed before Logon) so the standby sets
-                              exactly that session disconnected — the socket-death fact no consumer can otherwise
-                              derive. Symmetric with ClientConnected.">
-        <field name="header"     id="20001" type="header"/>
-        <field name="senderComp" id="20024" type="compId"/>
-        <field name="targetComp" id="20025" type="compId"/>
-    </sbe:message>
-
-    <!-- ═══════════════════════════════════════════════════════════════════
-         ClusterHeartbeat  (template 16) — the cluster's internal clock (~1 Hz).
-         Synthesized on a repeating cluster timer (see SequencerService), it
-         carries nothing but the header: its only payload is header.timestamp,
-         the cluster consensus time the leader assigned when the timer fired.
-         Emitted on every node (like every other message here) so the taps stay
-         byte-identical, but only the leader drives the timer's real-time
-         cadence — the one place real time enters the replicated log. It gives
-         every consumer a cluster-driven clock that keeps advancing even while a
-         given FIX session is silent, which is exactly when the keepalive
-         watchdog (FixConnection/Session) must fire. Synthesized-only — never
-         arrives on cluster ingress — so it has no sbe-unsequenced.xml twin.
-         ═══════════════════════════════════════════════════════════════════ -->
-    <sbe:message name="ClusterHeartbeat" id="16"
-                 description="Cluster internal clock; header.timestamp is the leader's consensus time at timer fire">
-        <field name="header" id="20001" type="header"/>
-    </sbe:message>
 
     <!-- ═══════════════════════════════════════════════════════════════════
          Risk engine query/reply — not FIX messages; no StandardHeader fields
@@ -664,7 +631,7 @@
                               cluster ingress like any other message and answered asynchronously,
                               on the cluster stream, by a PortfolioQueryReply from the risk engine
                               cluster client">
-        <field name="header"        id="20001" type="header"/>
+        <field name="header"        id="20001" type="sequencedHeader"/>
         <field name="correlationId" id="20002" type="correlationId"/>
         <field name="account"       id="1"     type="account"/>
     </sbe:message>
@@ -676,7 +643,7 @@
                  description="Risk engine's reply to a PortfolioQueryRequest. Submitted to cluster
                               ingress with header.sourceId copied from the original request so the
                               FIX gateway can route it back to the requesting TCP connection">
-        <field name="header"        id="20001" type="header"/>
+        <field name="header"        id="20001" type="sequencedHeader"/>
         <field name="correlationId" id="20002" type="correlationId"/>
         <field name="account"       id="1"     type="account"/>
         <field name="status"        id="20003" type="RiskQueryStatus"/>
@@ -691,21 +658,6 @@
                description="Optional free-text detail, e.g. an error message when status=Error; length 0 = absent"/>
     </sbe:message>
 
-    <!-- ═══════════════════════════════════════════════════════════════════
-         LeadershipChanged  (template 5)
-         Synthesized by SequencerService.applyLeadership onto the cluster stream
-         at a well-defined globalSeqNo whenever a new leadership term begins, so
-         every per-node replica switches leader-only emission on/off at the same
-         point in the ordered stream (ReplayerService design §3). Synthesized-only — never
-         arrives on cluster ingress — so it has no sbe-unsequenced.xml twin.
-         ═══════════════════════════════════════════════════════════════════ -->
-    <sbe:message name="LeadershipChanged" id="5"
-                 description="A new Aeron Cluster leadership term began; from this globalSeqNo on,
-                              newLeaderMemberId is the leader and only that node's replicas emit">
-        <field name="header"            id="20001" type="header"/>
-        <field name="newLeaderMemberId" id="20008" type="int32"
-               description="Aeron Cluster memberId of the node that is leader from this globalSeqNo onward"/>
-    </sbe:message>
 
     <!-- ═══════════════════════════════════════════════════════════════════
          Cluster life-cycle  (templates 10/11) — sequenced form of the operator
@@ -718,22 +670,10 @@
          ═══════════════════════════════════════════════════════════════════ -->
 
     <!-- Sequenced marker: the cluster is up and open for the day. -->
-    <sbe:message name="ClusterStarted" id="10"
-                 description="Operator marker recording that the cluster is up and open for the day;
-                              published by clusterctl once an elected leader exists">
-        <field name="header"        id="20001" type="header"/>
-        <field name="correlationId" id="20002" type="correlationId"
-               description="clusterctl-assigned id; echoed here so the tool matches its own marker"/>
-    </sbe:message>
+
 
     <!-- Sequenced marker: an orderly shutdown; the last business event in the log. -->
-    <sbe:message name="ClusterStopped" id="11"
-                 description="Operator marker recording an orderly shutdown; the last business event in the
-                              log. clusterctl aborts the cluster once it observes this message sequenced">
-        <field name="header"        id="20001" type="header"/>
-        <field name="correlationId" id="20002" type="correlationId"
-               description="clusterctl-assigned id; echoed here so the tool matches its own marker"/>
-    </sbe:message>
+
 
     <!-- ═══════════════════════════════════════════════════════════════════
          Basic data load  (templates 12–15) — sequenced form of the reference
@@ -750,20 +690,20 @@
     <!-- StartBasicData (template 12) — opens a load; sent once (not re-sent on resume). -->
     <sbe:message name="StartBasicData" id="12"
                  description="Opens a basic-data load; sectionCount is the number of sections (tables) that follow">
-        <field name="header"       id="20001" type="header"/>
+        <field name="header"       id="20001" type="sequencedHeader"/>
         <field name="sectionCount" id="20020" type="uint16"/>
     </sbe:message>
 
     <!-- EndBasicData (template 13) — closes a load; the FIX gateway's readiness gate (design §6). -->
     <sbe:message name="EndBasicData" id="13"
                  description="Closes a basic-data load; the FIX gateway admits new logons only once it has observed this">
-        <field name="header" id="20001" type="header"/>
+        <field name="header" id="20001" type="sequencedHeader"/>
     </sbe:message>
 
     <!-- BasicDataSession (template 14) — section: valid FIX session comp-id pairs (design §7). -->
     <sbe:message name="BasicDataSession" id="14"
                  description="One valid FIX session: the sender/target comp-id pair the gateway may admit">
-        <field name="header"          id="20001" type="header"/>
+        <field name="header"          id="20001" type="sequencedHeader"/>
         <field name="progress"        id="20021" type="basicDataProgress"/>
         <field name="sessionIdentity" id="20023" type="int32"/>
         <field name="senderComp"      id="20024" type="compId"/>
@@ -774,90 +714,12 @@
     <!-- TradingDay (template 15) — section: calendar + open/close, HHMM as uint16. -->
     <sbe:message name="BasicDataTradingDay" id="15"
                  description="One trading day: date plus open/close times (HHMM as uint16, e.g. 900 = 09:00, 1800 = 18:00)">
-        <field name="header"      id="20001" type="header"/>
+        <field name="header"      id="20001" type="sequencedHeader"/>
         <field name="progress"    id="20021" type="basicDataProgress"/>
         <field name="tradingDate" id="20026" type="dateOnlyMs"/>
         <field name="opening"     id="20027" type="uint16"/>
         <field name="closing"     id="20028" type="uint16"/>
     </sbe:message>
 
-    <!-- ═══════════════════════════════════════════════════════════════════
-         GatewayRegistered (template 17) — the FIX-gateway roster: one frame per
-         gateway instance, published by `clusterctl load-topology` (see
-         doc/basicdata-design.md §3a). Maps an instance's static identity
-         (gatewayName, matched against the PHIXERON_*_GATEWAY_NAME it was launched
-         with) to the ids it adopts: gatewayId (unique per instance, what a
-         GatewayActive names) and gatewaySourceId (the shared logical sourceId the
-         active and standby of one logical gateway both stamp into header.sourceId).
-         Lets a gateway derive its whole identity from the log rather than from
-         per-process config, so a standby derives the same. See doc/todo.md item 8c.
-         `remaining` counts DOWN to 0 over one roster run, and the row carrying 0 is
-         the sequencer's completeness edge: that is where it synthesizes the bootstrap
-         GatewayActive of each logical gateway. A *supplied* roster rather than
-         per-instance self-registration, because "have I seen everyone?" has to be
-         answerable from the log alone rather than from a grace timer, and because an
-         instance learns its own ids here — see doc/future-arch.md §3.5.
-         header.sourceId is the operator tool's (-1): the roster is a deployment
-         assertion, not traffic on behalf of any gateway.
-         ═══════════════════════════════════════════════════════════════════ -->
-    <sbe:message name="GatewayRegistered" id="17"
-                 description="One FIX gateway instance: static gatewayName -> gatewayId + shared gatewaySourceId; remaining=0 closes the roster">
-        <field name="header"          id="20001" type="header"/>
-        <field name="remaining"       id="20038" type="uint16"/>   <!-- roster rows after this one; 0 = last, roster complete -->
-        <field name="gatewayId"       id="20029" type="int32"/>
-        <field name="gatewaySourceId" id="20030" type="int32"/>
-        <field name="gatewayName"     id="20031" type="gatewayName"/>
-        <field name="preferenceRank"  id="20032" type="uint8"/>   <!-- 0 = designated primary; 1,2… = standbys of the same gatewaySourceId -->
-    </sbe:message>
-
-    <!-- ═══════════════════════════════════════════════════════════════════
-         GatewayActive (template 18) — activates one FIX gateway instance. Two
-         publishers, one frame: clusterctl sends it to promote a hot-standby, and
-         the cluster synthesizes it on the roster's last GatewayRegistered
-         row to activate the primary. Every
-         consumer, on observing it, sets all sessions this gateway serves to
-         disconnected (the deterministic close-out of any pre-activation session
-         state); the instance whose gatewayId matches then opens its accept gate,
-         the others stay standby. See doc/todo.md items 18 and 8c.
-         This is a *state assignment* for the logical gateway, not a one-shot event:
-         the last frame naming any instance of a gatewaySourceId designates that
-         group's active instance, and supersedes every earlier one. A consumer that
-         latched the first match instead would re-activate itself off a superseded
-         frame while replaying history at cold start, alongside the peer that
-         superseded it. Always a gatewayId, never a gatewaySourceId — the two are
-         separate id spaces and a pair shares its gatewaySourceId, so a frame
-         carrying one would match both instances at once.
-         ═══════════════════════════════════════════════════════════════════ -->
-    <sbe:message name="GatewayActive" id="18"
-                 description="Designates the FIX gateway instance whose gatewayId this carries as its group's active one">
-        <field name="header"    id="20001" type="header"/>
-        <field name="gatewayId" id="20029" type="int32"/>
-    </sbe:message>
-
-    <!-- ═══════════════════════════════════════════════════════════════════
-         GatewayStarted (template 19) — gateway-scoped restart/epoch marker.
-         Published once by the gateway itself, immediately after it activates and
-         finalizes recovery of any sessions a prior process instance left dangling —
-         every activation publishes this the same way, whether it is a cold-start
-         bootstrap, a restart after a crash, or a standby promotion (a SIGKILL/crash
-         can't publish ClientDisconnected for the sessions it was serving, so without
-         this the log has no event marking where a new instance took over).
-         firstConnectionId is the connectionId this instance starts allocating from,
-         so any consumer can tell a still-open ClientConnected under this sourceId is
-         stale as of this frame without needing this gateway's own recovery-finalize
-         state. See doc/todo.md "No gateway-scoped restart/epoch marker".
-         gatewayId names the *instance* that took over, where header.sourceId names
-         only the logical gateway both instances of a pair share. It is also the
-         sequencer's one source of truth for which cluster session an active gateway
-         is on: a routing header.sourceId is echoed by other clients (an
-         ExecutionReport carries the originating gateway's), so only a gateway
-         publishing this about itself may be taken for one.
-         ═══════════════════════════════════════════════════════════════════ -->
-    <sbe:message name="GatewayStarted" id="19"
-                 description="Gateway instance gatewayId activated for header.sourceId; firstConnectionId is where its connectionId allocation resumes">
-        <field name="header"            id="20001" type="header"/>
-        <field name="gatewayId"         id="20029" type="int32"/>
-        <field name="firstConnectionId" id="20034" type="int32"/>
-    </sbe:message>
 
 </sbe:messageSchema>

@@ -7,9 +7,8 @@ import java.util.List;
 import org.agrona.DirectBuffer;
 import org.agrona.concurrent.UnsafeBuffer;
 import org.limitless.phixeron.replayer.server.ReplayerService;
-import org.limitless.phixeron.sbe.sequenced.HeaderDecoder;
-import org.limitless.phixeron.sbe.sequenced.LeadershipChangedDecoder;
-import org.limitless.phixeron.sbe.sequenced.MessageHeaderDecoder;
+import org.limitless.phixeron.sbe.frame.LeadershipChangedDecoder;
+import org.limitless.phixeron.sbe.frame.MessageHeaderDecoder;
 import org.limitless.phixeron.sbe.unsequenced.ReplayPendingDecoder;
 import org.limitless.phixeron.sbe.unsequenced.ReplayUnavailableDecoder;
 import org.limitless.phixeron.sbe.unsequenced.ReplayingDecoder;
@@ -126,8 +125,7 @@ public final class ReplayerRecovery {
     private final LeadershipHandler onLeadershipChanged;
     private final CaughtUpHandler onCaughtUp;
 
-    private final MessageHeaderDecoder messageHeader = new MessageHeaderDecoder();
-    private final HeaderDecoder header = new HeaderDecoder();
+    private final FrameView view = new FrameView();
     private final LeadershipChangedDecoder leadershipChanged = new LeadershipChangedDecoder();
     private final org.limitless.phixeron.sbe.unsequenced.MessageHeaderDecoder controlHeader =
         new org.limitless.phixeron.sbe.unsequenced.MessageHeaderDecoder();
@@ -245,16 +243,10 @@ public final class ReplayerRecovery {
      */
     public void onFrame(final DirectBuffer buffer, final int offset, final int length, final long framePosition,
                         final long receiveNs, final boolean fromReplay) {
-        if (length < MessageHeaderDecoder.ENCODED_LENGTH + HeaderDecoder.ENCODED_LENGTH) {
+        if (!view.wrap(buffer, offset, length)) {
             return;
         }
-
-        messageHeader.wrap(buffer, offset);
-        if (messageHeader.schemaId() != MessageHeaderDecoder.SCHEMA_ID) {
-            return;
-        }
-        header.wrap(buffer, offset + MessageHeaderDecoder.ENCODED_LENGTH);
-        final long globalSeqNo = header.globalSeqNo();
+        final long globalSeqNo = view.globalSeqNo();
 
         // First frame off a resume replay: it must be the frame whose position we anchored the request on.
         // Anything else means that position no longer denotes that frame — the active recording rotated
@@ -771,12 +763,10 @@ public final class ReplayerRecovery {
         if (recoveryProgress.onProgress()) {
             actions.recoveryStalled(false);
         }
-        messageHeader.wrap(buffer, offset);
-        final int templateId = messageHeader.templateId();
-        final int blockLength = messageHeader.blockLength();
-        final int version = messageHeader.version();
-        final int bodyOffset = offset + MessageHeaderDecoder.ENCODED_LENGTH;
-        header.wrap(buffer, bodyOffset);
+        if (!view.wrap(buffer, offset, length)) {
+            return; // a frame the recording holds but neither shape can read
+        }
+        final int templateId = view.templateId();
 
         lastGlobalSeqNo = globalSeqNo;
         replayGapLogged = false;
@@ -788,8 +778,11 @@ public final class ReplayerRecovery {
             notifyCaughtUp();
         }
 
-        if (templateId == LEADERSHIP_CHANGED_TEMPLATE_ID) {
-            leadershipChanged.wrap(buffer, bodyOffset, blockLength, version);
+        // A template id means nothing without the protocol it belongs to: core's 5 is some other payload's
+        // 5, so both halves have to match before a frame is read as a leadership change.
+        if (view.payloadId() == FrameView.CORE_PAYLOAD_ID && templateId == LEADERSHIP_CHANGED_TEMPLATE_ID) {
+            leadershipChanged.wrap(buffer, view.payloadOffset() + MessageHeaderDecoder.ENCODED_LENGTH,
+                                   view.blockLength(), view.version());
             currentLeaderMemberId = leadershipChanged.newLeaderMemberId();
             if (onLeadershipChanged != null) {
                 onLeadershipChanged.onLeadershipChanged(currentLeaderMemberId, globalSeqNo);
@@ -797,9 +790,9 @@ public final class ReplayerRecovery {
             return;
         }
         if (onSequenced != null) {
-            event.set(globalSeqNo, header.sourceId(), header.connectionId(), header.sessionId(), header.timestamp(),
-                      receiveNs, header.origin(), templateId, blockLength, version, buffer, offset, length,
-                      framePosition);
+            event.set(globalSeqNo, view.sourceId(), view.connectionId(), view.sessionId(), view.timestamp(),
+                      receiveNs, view.payloadId(), templateId, view.blockLength(), view.version(), buffer,
+                      view.payloadOffset(), view.payloadLength(), framePosition);
             onSequenced.onSequenced(event);
         }
     }
