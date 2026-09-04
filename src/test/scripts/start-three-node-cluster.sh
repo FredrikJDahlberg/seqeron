@@ -162,7 +162,7 @@ echo "[start-three-node-cluster.sh] All 3 cluster members are running"
 # pair's primary is synthesized behind the roster's last row.
 echo "[start-three-node-cluster.sh] Loading the gateway roster"
 if ! CLUSTERCTL_AERON_DIR="${SEQ_AERON_DIR}" CLUSTERCTL_INGRESS_ENDPOINTS="$(ingress_endpoints_string 3)" \
-        "${MAIN_SCRIPTS}/clusterctl.sh" load-topology src/test/resources/topology-gw.csv \
+        "${MAIN_SCRIPTS}/clusterctl.sh" load-topology src/test/resources/topology-gw.xml \
         > "${LOG_DIR}/clusterctl-load-topology.log" 2>&1; then
     echo "ERROR: clusterctl load-topology failed — see ${LOG_DIR}/clusterctl-load-topology.log" >&2
     kill "${SEQ_PIDS[@]}" 2>/dev/null

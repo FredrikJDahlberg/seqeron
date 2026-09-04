@@ -1,0 +1,99 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    The topology document's schema — doc/seqeron-protocol-spec.md §6.4.
+
+    It is the loader's artifact, not the document's: clusterctl resolves it from its own jar and
+    ignores any schemaLocation a document names. A file that may name its own schema may name a lax
+    one, and C-1 (payloadId 1 is never registrable) would then be advisory.
+
+    Everything expressible per row lives here; what is left for the loader is the two checks a row
+    cannot make about itself — exactly one rank-0 per sourceId, and a sourceId that is none of §5's
+    reserved ids.
+
+    XSD 1.0 throughout: the JDK ships Xerces at 1.0, so xs:assert is unavailable.
+-->
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:t="http://limitless.org/seqeron/topology/1"
+           targetNamespace="http://limitless.org/seqeron/topology/1"
+           elementFormDefault="qualified">
+
+    <!-- The char[32] the name encodes into, and a launch-time join key: printable US-ASCII only. -->
+    <xs:simpleType name="Name">
+        <xs:restriction base="xs:string">
+            <xs:minLength value="1"/>
+            <xs:maxLength value="32"/>
+            <xs:pattern value="[ -~]+"/>
+        </xs:restriction>
+    </xs:simpleType>
+
+    <!-- -1 is the cluster's own (F-4) and never a roster row's. -->
+    <xs:simpleType name="SourceId">
+        <xs:restriction base="xs:int">
+            <xs:minInclusive value="0"/>
+        </xs:restriction>
+    </xs:simpleType>
+
+    <!-- C-1: 0 is invalid on the wire, 1 is core. This is the only enforcement C-1 has. -->
+    <xs:simpleType name="PayloadId">
+        <xs:restriction base="xs:unsignedShort">
+            <xs:minInclusive value="2"/>
+        </xs:restriction>
+    </xs:simpleType>
+
+    <xs:element name="topology">
+        <xs:complexType>
+            <!-- Document order is publish order: the roster first, its last row the completeness
+                 edge the bootstrap GatewayActives are synthesized behind, the protocol rows after. -->
+            <xs:sequence>
+                <xs:element name="gateways">
+                    <xs:complexType>
+                        <xs:sequence>
+                            <!-- Non-empty: an empty roster elects nobody. -->
+                            <xs:element name="gateway" maxOccurs="unbounded">
+                                <xs:complexType>
+                                    <xs:attribute name="name"        type="t:Name"          use="required"/>
+                                    <xs:attribute name="id"          type="xs:int"          use="required"/>
+                                    <xs:attribute name="sourceId"    type="t:SourceId"      use="required"/>
+                                    <xs:attribute name="rank"        type="xs:unsignedByte" use="required"/>
+                                    <xs:attribute name="description" type="xs:string"/>
+                                </xs:complexType>
+                            </xs:element>
+                        </xs:sequence>
+                    </xs:complexType>
+                </xs:element>
+
+                <!-- MAY be absent or empty: a deployment whose applications share no protocol
+                     declares none. -->
+                <xs:element name="protocols" minOccurs="0">
+                    <xs:complexType>
+                        <xs:sequence>
+                            <xs:element name="protocol" minOccurs="0" maxOccurs="unbounded">
+                                <xs:complexType>
+                                    <xs:attribute name="payloadId"   type="t:PayloadId"      use="required"/>
+                                    <xs:attribute name="version"     type="xs:unsignedShort" use="required"/>
+                                    <xs:attribute name="name"        type="t:Name"           use="required"/>
+                                    <xs:attribute name="description" type="xs:string"/>
+                                </xs:complexType>
+                            </xs:element>
+                        </xs:sequence>
+                    </xs:complexType>
+                </xs:element>
+            </xs:sequence>
+        </xs:complexType>
+
+        <!-- A duplicate gatewayId silently drops an instance; a duplicate payloadId is an operator
+             slip, not C-3's supersede. -->
+        <xs:unique name="uniqueGatewayId">
+            <xs:selector xpath="t:gateways/t:gateway"/>
+            <xs:field xpath="@id"/>
+        </xs:unique>
+        <xs:unique name="uniqueGatewayName">
+            <xs:selector xpath="t:gateways/t:gateway"/>
+            <xs:field xpath="@name"/>
+        </xs:unique>
+        <xs:unique name="uniquePayloadId">
+            <xs:selector xpath="t:protocols/t:protocol"/>
+            <xs:field xpath="@payloadId"/>
+        </xs:unique>
+    </xs:element>
+</xs:schema>

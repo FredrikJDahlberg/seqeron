@@ -10,8 +10,10 @@ import io.aeron.logbuffer.FrameDescriptor;
 import io.aeron.protocol.DataHeaderFlyweight;
 import java.io.File;
 import java.io.InputStream;
+import java.io.PrintStream;
 import java.io.RandomAccessFile;
 import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.nio.channels.FileChannel;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -19,6 +21,7 @@ import java.util.List;
 import java.util.Map;
 import org.agrona.BitUtil;
 import org.agrona.concurrent.UnsafeBuffer;
+import org.limitless.phixeron.sbe.frame.PayloadIdRegisteredDecoder;
 import uk.co.real_logic.sbe.ir.Ir;
 import uk.co.real_logic.sbe.ir.IrDecoder;
 import uk.co.real_logic.sbe.ir.Token;
@@ -61,6 +64,28 @@ public class SbeLogPrinter {
     private static final int PAYLOAD_PREFIX_LENGTH =
         org.limitless.phixeron.sbe.frame.SequencedDecoder.payloadHeaderLength();
 
+    /**
+     * {@code payloadId}'s offset within a frame header. One offset serves both templates: {@code
+     * unsequencedHeader} byte-prefixes {@code sequencedHeader} (F-3).
+     */
+    private static final int PAYLOAD_ID_OFFSET =
+        org.limitless.phixeron.sbe.frame.SequencedHeaderDecoder.payloadIdEncodingOffset();
+
+    /** payloadIdFilter value meaning "write no payloads" — {@code payloadId} 0 is invalid on the wire (§9.2). */
+    public static final int NO_PAYLOAD_OUTPUT = 0;
+
+    private static final int MAX_PAYLOAD_ID =
+        org.limitless.phixeron.sbe.frame.SequencedHeaderDecoder.payloadIdMaxValue();
+
+    /** A payload is bounded by {@code varDataEncoding}'s uint16 length. */
+    private static final int MAX_PAYLOAD_LENGTH = 65535;
+
+    /** seqeron's own payloadId — the only one this tool decodes unaided (§13.1). */
+    private static final int CORE_PAYLOAD_ID = 1;
+
+    /** No payloadId in hand: the frame under the cursor is not a schema-210 envelope. */
+    private static final int NO_PAYLOAD_ID = 0;
+
     /** One loaded schema: its IR (for template lookup) and the printer built from it. */
     private record Schema(Ir ir, JsonPrinter printer) {
     }
@@ -75,16 +100,28 @@ public class SbeLogPrinter {
 
     private final int streamIdFilter;
     private final boolean oneLine;
+    private final int payloadIdFilter;
+    private final byte[] payloadBytes;
+    /** Protocol labels harvested from the {@code PayloadIdRegistered} rows in this recording (§6.3). */
+    private final Map<Integer, String> protocolNames = new HashMap<>();
+    private final PayloadIdRegisteredDecoder registrationDecoder = new PayloadIdRegisteredDecoder();
+    /** payloadId of the frame whose payload {@link #appendNested} is about to print. */
+    private int nestedPayloadId = NO_PAYLOAD_ID;
+    /** Where every text line goes. Stdout belongs to the payload stream while -o is on. */
+    private final PrintStream text;
     private final StringBuilder builder = new StringBuilder();
 
     public SbeLogPrinter(final List<Ir> irs, final String archiveDirPath, final int streamIdFilter,
-                         final boolean oneLine) {
+                         final boolean oneLine, final int payloadIdFilter) {
         this.archiveDir = new File(archiveDirPath);
         if (!archiveDir.exists() || !archiveDir.isDirectory()) {
             throw new IllegalArgumentException("Invalid archive directory: " + archiveDirPath);
         }
         this.streamIdFilter = streamIdFilter;
         this.oneLine = oneLine;
+        this.payloadIdFilter = payloadIdFilter;
+        this.payloadBytes = NO_PAYLOAD_OUTPUT == payloadIdFilter ? null : new byte[MAX_PAYLOAD_LENGTH];
+        this.text = NO_PAYLOAD_OUTPUT == payloadIdFilter ? System.out : System.err;
         for (final Ir loaded : irs) {
             schemasBySchemaId.put(loaded.id(), new Schema(loaded, new JsonPrinter(loaded)));
         }
@@ -168,6 +205,8 @@ public class SbeLogPrinter {
         }
         if (SessionMessageHeaderDecoder.SCHEMA_ID == ir.id() &&
             SessionMessageHeaderDecoder.TEMPLATE_ID == message.id()) {
+            // A cluster-log entry: what follows is a frame of its own, not a payload.
+            nestedPayloadId = NO_PAYLOAD_ID;
             appendNested(buffer, payloadOffset + sbeHeaderDecoder.encodedLength() +
                                  sbeHeaderDecoder.getBlockLength(buffer, payloadOffset), frameEndOffset);
             return;
@@ -175,10 +214,83 @@ public class SbeLogPrinter {
         if (FRAME_SCHEMA_ID == ir.id()) {
             // The seqeron envelope: the message is one length-prefixed payload past the frame's block, and
             // the frame line alone would say only that a frame went by, never what it carried.
-            appendNested(buffer, payloadOffset + sbeHeaderDecoder.encodedLength() +
-                                 sbeHeaderDecoder.getBlockLength(buffer, payloadOffset) + PAYLOAD_PREFIX_LENGTH,
-                         frameEndOffset);
+            nestedPayloadId = framePayloadId(buffer, payloadOffset);
+            appendNested(buffer, payloadOffset(buffer, payloadOffset), frameEndOffset);
         }
+    }
+
+    /**
+     * The {@code payloadId} of the frame at {@code frameOffset}, or {@link #NO_PAYLOAD_ID} if that is
+     * not a schema-210 envelope. One offset serves both templates: {@code unsequencedHeader}
+     * byte-prefixes {@code sequencedHeader} (F-3).
+     * @param buffer segment buffer
+     * @param frameOffset offset of the frame's own SBE header
+     * @return the payloadId, or NO_PAYLOAD_ID
+     */
+    private int framePayloadId(final UnsafeBuffer buffer, final int frameOffset) {
+        if (FRAME_SCHEMA_ID != sbeHeaderDecoder.getSchemaId(buffer, frameOffset)) {
+            return NO_PAYLOAD_ID;
+        }
+        return buffer.getShort(frameOffset + sbeHeaderDecoder.encodedLength() + PAYLOAD_ID_OFFSET,
+                               ByteOrder.LITTLE_ENDIAN) & 0xFFFF;
+    }
+
+    /** Offset of the payload's own SBE header, past the frame's block and its length prefix. */
+    private int payloadOffset(final UnsafeBuffer buffer, final int frameOffset) {
+        return frameOffset + sbeHeaderDecoder.encodedLength() +
+               sbeHeaderDecoder.getBlockLength(buffer, frameOffset) + PAYLOAD_PREFIX_LENGTH;
+    }
+
+    /**
+     * Harvests a {@code PayloadIdRegistered} row into the label table (§6.3). An operator asserts the
+     * rows once at start-up, so a forward scan holds them long before the payloads they name; they are
+     * de-duplicated on {@code payloadId}, a later row superseding an earlier one (<b>C-3</b>).
+     * @param buffer segment buffer
+     * @param frameOffset offset of the frame's own SBE header
+     * @param frameEndOffset frame end offset
+     */
+    private void registerProtocol(final UnsafeBuffer buffer, final int frameOffset, final int frameEndOffset) {
+        if (CORE_PAYLOAD_ID != framePayloadId(buffer, frameOffset)) {
+            return;
+        }
+        final int offset = payloadOffset(buffer, frameOffset);
+        if (offset >= frameEndOffset ||
+            FRAME_SCHEMA_ID != sbeHeaderDecoder.getSchemaId(buffer, offset) ||
+            PayloadIdRegisteredDecoder.TEMPLATE_ID != sbeHeaderDecoder.getTemplateId(buffer, offset)) {
+            return;
+        }
+        registrationDecoder.wrap(buffer, offset + sbeHeaderDecoder.encodedLength(),
+                                 sbeHeaderDecoder.getBlockLength(buffer, offset),
+                                 sbeHeaderDecoder.getSchemaVersion(buffer, offset));
+        protocolNames.put(registrationDecoder.payloadId(),
+                          registrationDecoder.protocolName() + " v" + registrationDecoder.protocolVersion());
+    }
+
+    /**
+     * Writes a selected payload to stdout, verbatim and back to back with the rest (§13.1). The stream
+     * carries no framing of its own: the decoder on the other end of the pipe owns that payload's schema,
+     * and that is what delimits it. Everything the run has to say goes to stderr meanwhile, so nothing
+     * else touches these bytes.
+     * @param buffer segment buffer
+     * @param frameOffset offset of the frame's own SBE header
+     * @param frameEndOffset frame end offset
+     */
+    private void emitPayload(final UnsafeBuffer buffer, final int frameOffset, final int frameEndOffset) {
+        if (NO_PAYLOAD_OUTPUT == payloadIdFilter || payloadIdFilter != framePayloadId(buffer, frameOffset)) {
+            return;
+        }
+        final int lengthOffset = payloadOffset(buffer, frameOffset) - PAYLOAD_PREFIX_LENGTH;
+        if (lengthOffset + PAYLOAD_PREFIX_LENGTH > frameEndOffset) {
+            return;
+        }
+        final int length = buffer.getShort(lengthOffset, ByteOrder.LITTLE_ENDIAN) & 0xFFFF;
+        final int offset = lengthOffset + PAYLOAD_PREFIX_LENGTH;
+        if (offset + length > frameEndOffset) {
+            text.println("Truncated payload: " + length + " bytes claimed past the end of the frame");
+            return;
+        }
+        buffer.getBytes(offset, payloadBytes, 0, length);
+        System.out.write(payloadBytes, 0, length);
     }
 
     /**
@@ -186,18 +298,27 @@ public class SbeLogPrinter {
      *
      * <p>A payload seqeron does not own prints as its schema and template ids rather than being decoded —
      * the printer holds no descriptor for it, and guessing one would read a foreign schema's numbering as
-     * a known schema's (doc/seqeron-protocol-spec.md §13.1).
+     * a known schema's (doc/seqeron-protocol-spec.md §13.1). It is still <em>labelled</em>, from the
+     * {@code PayloadIdRegistered} rows in the recording this run is already reading; an unregistered
+     * payload prints under its number.
      */
     private void appendNested(final UnsafeBuffer buffer, final int nestedOffset, final int frameEndOffset) {
         if (nestedOffset >= frameEndOffset) {
             return;
         }
+        emitPayload(buffer, nestedOffset, frameEndOffset);
+        registerProtocol(buffer, nestedOffset, frameEndOffset);
         final int nestedSchemaId = sbeHeaderDecoder.getSchemaId(buffer, nestedOffset);
         final int nestedTemplateId = sbeHeaderDecoder.getTemplateId(buffer, nestedOffset);
         final Schema nestedSchema = schemasBySchemaId.get(nestedSchemaId);
         builder.append(' ');
         if (null == nestedSchema || null == nestedSchema.ir().getMessage(nestedTemplateId)) {
-            builder.append("<undecodable ingress payload: schema ").append(nestedSchemaId)
+            builder.append("<undecodable payload ").append(nestedPayloadId);
+            final String protocol = protocolNames.get(nestedPayloadId);
+            if (null != protocol) {
+                builder.append(" (").append(protocol).append(')');
+            }
+            builder.append(": schema ").append(nestedSchemaId)
                 .append(", templateId ").append(nestedTemplateId).append('>');
             return;
         }
@@ -303,8 +424,8 @@ public class SbeLogPrinter {
         final long stopPosition = descriptorDecoder.stopPosition();
         final int termBufferLength = descriptorDecoder.termBufferLength();
         final int segmentFileLength = descriptorDecoder.segmentFileLength();
-        System.out.printf("[Catalog] Recording ID: %d | Stream ID: %d | Start Pos: %d | Stop Pos: %d%n", recordingId,
-                          descriptorDecoder.streamId(), startPosition, stopPosition);
+        text.printf("[Catalog] Recording ID: %d | Stream ID: %d | Start Pos: %d | Stop Pos: %d%n", recordingId,
+                    descriptorDecoder.streamId(), startPosition, stopPosition);
         readPhysicalSegments(recordingId, startPosition, stopPosition, termBufferLength, segmentFileLength);
     }
 
@@ -360,17 +481,19 @@ public class SbeLogPrinter {
         final int frameLength = dataHeader.frameLength();
         if (frameLength >= 1 && dataHeader.headerType() == DataHeaderFlyweight.HDR_TYPE_DATA) {
             final int sbePayloadOffset = fileOffset + DataHeaderFlyweight.HEADER_LENGTH;
+            emitPayload(buffer, sbePayloadOffset, fileOffset + frameLength);
+            registerProtocol(buffer, sbePayloadOffset, fileOffset + frameLength);
             final int templateId = sbeHeaderDecoder.getTemplateId(buffer, sbePayloadOffset);
             final int schemaId = sbeHeaderDecoder.getSchemaId(buffer, sbePayloadOffset);
             final Schema schema = schemasBySchemaId.get(schemaId);
             if (null == schema) {
-                System.out.format("Position: %d, Error: Schema %d not loaded, templateId = %d\n",
-                    currentPosition, schemaId, templateId);
+                text.format("Position: %d, Error: Schema %d not loaded, templateId = %d\n",
+                            currentPosition, schemaId, templateId);
             } else {
                 final Ir ir = schema.ir();
                 if (null == ir.getMessage(templateId)) {
-                    System.out.format("Position: %d, Error: templpateId = %d not in schema\n",
-                        currentPosition, templateId);
+                    text.format("Position: %d, Error: templpateId = %d not in schema\n",
+                                currentPosition, templateId);
                 } else {
                     builder.setLength(0);
                     builder.append(messageName(ir, templateId)).append(" = ");
@@ -380,7 +503,7 @@ public class SbeLogPrinter {
                     if (oneLine) {
                         collapse(builder);
                     }
-                    System.out.println(builder);
+                    text.println(builder);
                 }
             }
         }
@@ -389,13 +512,15 @@ public class SbeLogPrinter {
 
     private static void usage() {
         System.out.println("Usage: sbe-log-printer.sh [--schema <name>|--spec <file.sbeir>] <archive-dir> " +
-                           "[--stream <id>] [--oneline]");
+                           "[--stream <id>] [--oneline] [-o <payloadId>]");
         System.out.println("  --schema <name>  decode only this bundled schema (default: all of " +
                            String.join(", ", BUNDLED_SCHEMAS) + ", each frame matched on its schema id)");
         System.out.println("  --spec <file>    decode against an IR file outside the jar instead");
         System.out.println("  --stream <id>    dump only the newest recording on that stream");
         System.out.println("  --oneline        print each message as a single line of JSON");
         System.out.println("  --list-schemas   list the bundled schema names and exit");
+        System.out.println("  -o <payloadId>   write that protocol's payloads to stdout, raw and back to back,");
+        System.out.println("                   for piping to its own decoder; every text line moves to stderr");
     }
 
     public static void main(String[] args) {
@@ -404,6 +529,7 @@ public class SbeLogPrinter {
         String archiveDirPath = null;
         int streamIdFilter = NO_STREAM_FILTER;
         boolean oneLine = false;
+        int payloadIdFilter = NO_PAYLOAD_OUTPUT;
 
         for (int i = 0; i < args.length; i++) {
             if ("--oneline".equals(args[i])) {
@@ -413,7 +539,8 @@ public class SbeLogPrinter {
                     System.out.println(name);
                 }
                 return;
-            } else if ("--stream".equals(args[i]) || "--schema".equals(args[i]) || "--spec".equals(args[i])) {
+            } else if ("--stream".equals(args[i]) || "--schema".equals(args[i]) || "--spec".equals(args[i]) ||
+                       "-o".equals(args[i])) {
                 final String option = args[i];
                 if (++i == args.length) {
                     System.err.println("Missing value for " + option);
@@ -423,6 +550,17 @@ public class SbeLogPrinter {
                 switch (option) {
                     case "--schema" -> schema = args[i];
                     case "--spec" -> specIrPath = args[i];
+                    case "-o" -> {
+                        try {
+                            payloadIdFilter = Integer.parseInt(args[i]);
+                        } catch (NumberFormatException e) {
+                            payloadIdFilter = -1;
+                        }
+                        if (payloadIdFilter < 1 || payloadIdFilter > MAX_PAYLOAD_ID) {
+                            System.err.println("Not a payloadId: " + args[i]);
+                            System.exit(1);
+                        }
+                    }
                     default -> {
                         try {
                             streamIdFilter = Integer.parseInt(args[i]);
@@ -458,8 +596,11 @@ public class SbeLogPrinter {
             final List<Ir> irs = specIrPath != null ? List.of(loadIrFile(specIrPath))
                                      : schema != null ? List.of(loadBundledIr(schema))
                                          : loadAllBundledIrs();
-            final SbeLogPrinter printer = new SbeLogPrinter(irs, archiveDirPath, streamIdFilter, oneLine);
-            if (!printer.scanAndDumpLog()) {
+            final SbeLogPrinter printer = new SbeLogPrinter(irs, archiveDirPath, streamIdFilter, oneLine,
+                                                           payloadIdFilter);
+            final boolean dumped = printer.scanAndDumpLog();
+            System.out.flush();
+            if (!dumped) {
                 System.exit(1);
             }
         } catch (Exception e) {

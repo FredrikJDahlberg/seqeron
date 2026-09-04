@@ -397,6 +397,45 @@ better than the default pretty print:
 Note the dump as a whole is not a JSON document either way — the `[Catalog]` and separator lines sit
 between the objects — but with `--oneline` each individual message line parses on its own.
 
+#### Piping payloads to another decoder
+
+`-o <payloadId>` writes that protocol's payloads to **stdout**, raw and back to back, for a decoder that
+owns their schema (`doc/seqeron-protocol-spec.md` §13.1). The printer decodes seqeron's own core
+payloads (`payloadId` 1) unaided; everything else is somebody else's protocol, and this is how it gets
+out:
+
+```bash
+./src/main/scripts/sbe-log-printer.sh "${TMPDIR:-/tmp}/phixeron-seq/archive-0" --stream 205 \
+    -o 2 2>frames.log | order-decode
+```
+
+Stdout belongs to the payload stream for the whole run, so **every text line moves to stderr** — the
+`[Catalog]` line, the dump itself, the errors. Redirect it as above to keep the frames beside the
+payloads; the two are emitted in the same order, and the frame line is where `globalSeqNo` is.
+
+The stream carries no framing of its own: an SBE payload declares its own block and var-data lengths, so
+the decoder that holds the schema is what delimits it. It works on the Raft log (`--stream 100`) as well
+as the tap, reading the ingress side of the same frames.
+
+There is no `-P` property for this on the Gradle task — Gradle decorates its own stdout, which would
+corrupt the stream. Use the script or the jar.
+
+#### Naming a payload it cannot decode
+
+A payload whose schema is not loaded prints as its ids rather than being decoded — but it is
+**labelled**, from the `PayloadIdRegistered` rows `clusterctl load-topology` put in the same recording
+(`doc/seqeron-protocol-spec.md` §6.3):
+
+```
+<undecodable payload 2 (phixeron-order v1): schema 220, templateId 1>
+<undecodable payload 7: schema 900, templateId 3>
+```
+
+The second is an unregistered `payloadId`, which prints under its number. Registration is labelling
+only: the sequencer never decodes those rows and they gate no frame. All four of this deployment's
+schemas ship in the jar today, so the label is what a reader sees once an application's schema is no
+longer seqeron's to bundle.
+
 ---
 
 ## Order execution client

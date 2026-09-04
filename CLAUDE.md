@@ -513,9 +513,11 @@ that makes an interrupted load detectable and resumable (recovery replays the sa
 load, resuming at the first incomplete section).
 
 **The gateway roster is not part of this load and not reference data.** `clusterctl load-topology
-src/main/resources/topology.csv` publishes it as `GatewayRegistered` frames — a deployment assertion
+src/main/resources/topology.xml` publishes it as `GatewayRegistered` frames — a deployment assertion
 an operator makes, the same kind of act as `activate` (`doc/basicdata-design.md` §2,
-`doc/future-arch.md` §3.5/§3.6). Its `remaining` counts down to 0 on the last row, and that row is
+`doc/future-arch.md` §3.5/§3.6). That file is XML validated against `topology.xsd` (spec §6.4), and its
+second section, `<protocols>`, publishes `PayloadIdRegistered` rows naming each `payloadId` — labelling
+for `SbeLogPrinter` only, decoded by nothing and gating nothing. Its `remaining` counts down to 0 on the last row, and that row is
 the sequencer's completeness edge: it synthesizes the bootstrap `GatewayActive` per logical gateway
 behind it. The cluster tier therefore decodes **no** reference data at all.
 

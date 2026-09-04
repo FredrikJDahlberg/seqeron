@@ -11,10 +11,16 @@ import io.aeron.logbuffer.FragmentHandler;
 import io.aeron.logbuffer.Header;
 import java.io.File;
 import java.io.IOException;
-import java.nio.file.Files;
+import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
+import javax.xml.XMLConstants;
+import javax.xml.parsers.DocumentBuilder;
+import javax.xml.parsers.DocumentBuilderFactory;
+import javax.xml.parsers.ParserConfigurationException;
+import javax.xml.transform.stream.StreamSource;
+import javax.xml.validation.SchemaFactory;
 import org.agrona.DirectBuffer;
 import org.agrona.ExpandableArrayBuffer;
 import org.agrona.concurrent.IdleStrategy;
@@ -32,8 +38,15 @@ import org.limitless.phixeron.sbe.frame.GatewayRegisteredEncoder;
 import org.limitless.phixeron.sequencer.CoreFrame;
 import org.limitless.phixeron.sbe.frame.MessageHeaderDecoder;
 import org.limitless.phixeron.sbe.frame.MessageHeaderEncoder;
+import org.limitless.phixeron.sbe.frame.PayloadIdRegisteredEncoder;
 import org.limitless.phixeron.sequencer.SequencerServer;
 import org.limitless.phixeron.sequencer.SequencerService;
+import org.w3c.dom.Element;
+import org.w3c.dom.Node;
+import org.w3c.dom.NodeList;
+import org.xml.sax.ErrorHandler;
+import org.xml.sax.SAXException;
+import org.xml.sax.SAXParseException;
 
 /**
  * clusterctl — the operator cluster life-cycle tool (see clusterctl.md). Node-local: run co-located
@@ -66,11 +79,15 @@ import org.limitless.phixeron.sequencer.SequencerService;
  *       bootstrap/promotion activations take. Every gateway instance reacts identically regardless of
  *       which of the two publishes it: the instance whose {@code gatewayId}/{@code gatewaySourceId}
  *       matches opens its accept gate, the others stay standby.</li>
- *   <li><b>load-topology &lt;file&gt;</b> — publishes the gateway roster: one unsequenced
- *       {@code GatewayRegistered} per row of a {@code name,gatewayId,gatewaySourceId,preferenceRank}
- *       CSV file, {@code remaining} counting down to 0 on the last, then waits for that last row's
- *       sequenced echo. The roster is a deployment assertion, the same kind of act as {@code
- *       activate}, which is why it lives here rather than riding along in the reference-data load:
+ *   <li><b>load-topology &lt;file&gt;</b> — publishes the deployment's topology document
+ *       (doc/seqeron-protocol-spec.md §6.4; XML, validated against the packaged {@code topology.xsd}).
+ *       Its {@code <gateways>} section becomes one unsequenced {@code GatewayRegistered} per row,
+ *       {@code remaining} counting down to 0 on the last; its optional {@code <protocols>} section
+ *       becomes one {@code PayloadIdRegistered} per row behind them, carrying no countdown of their
+ *       own — labelling for {@code SbeLogPrinter} and nothing more, since the sequencer never decodes
+ *       them and registration gates no frame (§6.3, <b>C-2</b>). Then waits for the last roster row's
+ *       sequenced echo. Both sections are one deployment assertion, the same kind of act as {@code
+ *       activate}, which is why they live here rather than riding along in the reference-data load:
  *       it changes when you deploy, where the comp-id table and the calendar change daily (see
  *       doc/future-arch.md §3.6). The {@code remaining == 0} row is the sequencer's completeness
  *       edge — it synthesizes one bootstrap {@code GatewayActive} per logical gateway behind it —
@@ -109,9 +126,11 @@ public final class ClusterCtl {
     /** header.sourceId/connectionId for markers this tool submits: no gateway process/TCP connection. */
     private static final int NO_ID = -1;
 
-    /** Roster-row field widths, from sbe-frame.xml's gatewayName type and preferenceRank uint8. */
-    private static final int GATEWAY_NAME_LENGTH = 32;
-    private static final int MAX_PREFERENCE_RANK = 255;
+    /** The topology document's namespace, fixed by topology.xsd. */
+    private static final String TOPOLOGY_NS = "http://limitless.org/seqeron/topology/1";
+
+    /** §5's other reserved sourceId — clusterctl's own; -1 the XSD refuses on its own. */
+    private static final int RESERVED_SOURCE_ID = 2;
 
     private static final IdleStrategy IDLE = new YieldingIdleStrategy();
     private static final EgressListener NULL_EGRESS = (sessionId, timestamp, buffer, offset, length, header) -> { };
@@ -233,42 +252,52 @@ public final class ClusterCtl {
         }
     }
 
-    /** One roster row as read from the topology file. */
+    /** One roster row as read from the topology document. */
     private record TopologyRow(String gatewayName, int gatewayId, int gatewaySourceId, int preferenceRank) { }
 
+    /** One protocol-registry row: what a shared payloadId is called in this deployment (§6.3). */
+    private record ProtocolRow(int payloadId, int protocolVersion, String protocolName) { }
+
+    /** A parsed topology document — the roster and, optionally, the protocol registry. */
+    private record Topology(List<TopologyRow> gateways, List<ProtocolRow> protocols) { }
+
     /**
-     * Publishes the gateway roster read from {@code args[1]} — one {@code GatewayRegistered} per row,
-     * {@code remaining} counting down to 0 — and waits for the last row's sequenced echo.
+     * Publishes the topology document read from {@code args[1]}: one {@code GatewayRegistered} per
+     * roster row, {@code remaining} counting down to 0, then one {@code PayloadIdRegistered} per
+     * protocol row, then waits for the last roster row's sequenced echo.
      *
-     * <p>Validated before a byte is published, because the checks are what the log cannot make for
-     * itself: the sequencer de-dups on {@code gatewayId} and elects the rank-0 row of each {@code
-     * gatewaySourceId}, so a duplicate id silently drops an instance and a missing (or second) rank-0
-     * leaves a logical gateway with no primary (or an arbitrary one). These used to be {@code
-     * static_assert}s over the hardcoded table in {@code BasicDataConstants.hpp}; a file read at load
-     * time is where they belong now.
+     * <p>The whole document is validated before a byte is published — a file that fails half-way
+     * leaves a roster the log has already closed. Nearly all of it is the XSD's ({@code topology.xsd},
+     * §6.4); what is left here is the two checks a row cannot make about itself.
      */
     private static int loadTopology(final String[] args) {
         if (args.length < 2) {
             System.err.println("[clusterctl] load-topology: missing <file>");
             return 2;
         }
-        final List<TopologyRow> rows;
+        final Topology topology;
         try {
-            rows = readTopology(new File(args[1]));
-            validateTopology(rows);
-        } catch (final IOException | IllegalArgumentException ex) {
+            topology = readTopology(new File(args[1]));
+            validateTopology(topology.gateways());
+        } catch (final SAXParseException ex) {
+            System.err.println("[clusterctl] load-topology: " + args[1] + ":" + ex.getLineNumber() + ":" +
+                               ex.getColumnNumber() + ": " + ex.getMessage());
+            return 2;
+        } catch (final IOException | SAXException | ParserConfigurationException |
+                       IllegalArgumentException ex) {
             System.err.println("[clusterctl] load-topology: " + args[1] + ": " + ex.getMessage());
             return 2;
         }
 
         try (AeronCluster cluster = connectCluster()) {
-            final long globalSeqNo = publishRosterAndAwaitEcho(cluster, rows);
+            final long globalSeqNo = publishTopologyAndAwaitEcho(cluster, topology);
             if (globalSeqNo < 0) {
                 System.err.println("[clusterctl] load-topology: no sequenced GatewayRegistered echo within timeout");
                 return 1;
             }
             System.out.printf("[clusterctl] load-topology: %d gateway row(s) recorded, roster complete at "
-                              + "globalSeqNo=%d%n", rows.size(), globalSeqNo);
+                              + "globalSeqNo=%d; %d protocol row(s) registered%n",
+                              topology.gateways().size(), globalSeqNo, topology.protocols().size());
             return 0;
         } catch (final Exception ex) {
             System.err.println("[clusterctl] load-topology: no elected leader / cluster unreachable (" +
@@ -277,55 +306,98 @@ public final class ClusterCtl {
         }
     }
 
-    /** Reads {@code name,gatewayId,gatewaySourceId,preferenceRank} rows; blank lines and {@code #} skipped. */
-    private static List<TopologyRow> readTopology(final File file) throws IOException {
-        final List<TopologyRow> rows = new ArrayList<>();
-        int lineNo = 0;
-        for (final String raw : Files.readAllLines(file.toPath())) {
-            lineNo++;
-            final String line = raw.trim();
-            if (line.isEmpty() || line.charAt(0) == '#') {
-                continue;
+    /**
+     * Builds a parser that validates against the packaged {@code topology.xsd} as it reads.
+     *
+     * <p>The schema is resolved from this jar and a {@code schemaLocation} the document names is
+     * ignored: a file that may name its own schema may name a lax one, and C-1 would be advisory
+     * (§6.4). Entity resolution is disabled outright — the threat is mild, since an operator who can
+     * edit the file already has a shell on the node, but the JDK's defaults are unsafe.
+     */
+    private static DocumentBuilder topologyParser() throws IOException, SAXException, ParserConfigurationException {
+        final SchemaFactory schemaFactory = SchemaFactory.newInstance(XMLConstants.W3C_XML_SCHEMA_NS_URI);
+        schemaFactory.setProperty(XMLConstants.ACCESS_EXTERNAL_DTD, "");
+        schemaFactory.setProperty(XMLConstants.ACCESS_EXTERNAL_SCHEMA, "");
+        final DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
+        try (InputStream xsd = ClusterCtl.class.getResourceAsStream("/topology.xsd")) {
+            if (null == xsd) {
+                throw new IOException("topology.xsd missing from the clusterctl jar");
             }
-            final String[] fields = line.split(",");
-            if (fields.length != 4) {
-                throw new IllegalArgumentException(
-                    "line " + lineNo + ": expected name,gatewayId,gatewaySourceId,preferenceRank, got '" + line + "'");
-            }
-            try {
-                rows.add(new TopologyRow(fields[0].trim(), Integer.parseInt(fields[1].trim()),
-                                         Integer.parseInt(fields[2].trim()), Integer.parseInt(fields[3].trim())));
-            } catch (final NumberFormatException ex) {
-                throw new IllegalArgumentException("line " + lineNo + ": " + ex.getMessage());
-            }
+            factory.setSchema(schemaFactory.newSchema(new StreamSource(xsd)));
         }
-        return rows;
+        factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
+        factory.setXIncludeAware(false);
+        factory.setExpandEntityReferences(false);
+        factory.setNamespaceAware(true);
+        final DocumentBuilder builder = factory.newDocumentBuilder();
+        builder.setErrorHandler(new ErrorHandler() {
+            @Override
+            public void warning(final SAXParseException ex) throws SAXException {
+                throw ex;
+            }
+
+            @Override
+            public void error(final SAXParseException ex) throws SAXException {
+                throw ex;
+            }
+
+            @Override
+            public void fatalError(final SAXParseException ex) throws SAXException {
+                throw ex;
+            }
+        });
+        return builder;
     }
 
+    /** Reads the {@code <gateways>} and {@code <protocols>} sections, validated against topology.xsd. */
+    private static Topology readTopology(final File file)
+        throws IOException, SAXException, ParserConfigurationException {
+        final Element root = topologyParser().parse(file).getDocumentElement();
+        final List<TopologyRow> gateways = new ArrayList<>();
+        for (final Element row : childElements(root, "gateways", "gateway")) {
+            gateways.add(new TopologyRow(row.getAttribute("name"),
+                                         Integer.parseInt(row.getAttribute("id")),
+                                         Integer.parseInt(row.getAttribute("sourceId")),
+                                         Integer.parseInt(row.getAttribute("rank"))));
+        }
+        final List<ProtocolRow> protocols = new ArrayList<>();
+        for (final Element row : childElements(root, "protocols", "protocol")) {
+            protocols.add(new ProtocolRow(Integer.parseInt(row.getAttribute("payloadId")),
+                                          Integer.parseInt(row.getAttribute("version")),
+                                          row.getAttribute("name")));
+        }
+        return new Topology(gateways, protocols);
+    }
+
+    /** The {@code <row>} elements of {@code root}'s {@code <section>}, in document order; empty if absent. */
+    private static List<Element> childElements(final Element root, final String section, final String row) {
+        final List<Element> elements = new ArrayList<>();
+        final NodeList sections = root.getElementsByTagNameNS(TOPOLOGY_NS, section);
+        if (sections.getLength() > 0) {
+            final NodeList rows = ((Element)sections.item(0)).getElementsByTagNameNS(TOPOLOGY_NS, row);
+            for (int i = 0; i < rows.getLength(); i++) {
+                final Node node = rows.item(i);
+                if (Node.ELEMENT_NODE == node.getNodeType()) {
+                    elements.add((Element)node);
+                }
+            }
+        }
+        return elements;
+    }
+
+    /**
+     * The two roster checks the XSD cannot make, both about a row's relation to the others: exactly
+     * one rank-0 per {@code sourceId} — a missing one leaves a logical gateway with no primary, a
+     * second an arbitrary one — and a {@code sourceId} that is none of §5's reserved ids. Everything
+     * else (field widths, name shape, uniqueness, {@code payloadId >= 2}) is declarative in
+     * topology.xsd.
+     */
     private static void validateTopology(final List<TopologyRow> rows) {
-        if (rows.isEmpty()) {
-            throw new IllegalArgumentException("no rows — an empty roster elects nobody");
-        }
-        for (int i = 0; i < rows.size(); i++) {
-            final TopologyRow row = rows.get(i);
-            if (row.gatewayName().isEmpty() || row.gatewayName().length() > GATEWAY_NAME_LENGTH) {
-                throw new IllegalArgumentException(
-                    "gatewayName '" + row.gatewayName() + "' must be 1.." + GATEWAY_NAME_LENGTH + " chars");
-            }
-            if (row.preferenceRank() < 0 || row.preferenceRank() > MAX_PREFERENCE_RANK) {
-                throw new IllegalArgumentException(
-                    row.gatewayName() + ": preferenceRank must be 0.." + MAX_PREFERENCE_RANK);
-            }
-            for (int j = i + 1; j < rows.size(); j++) {
-                if (rows.get(j).gatewayId() == row.gatewayId()) {
-                    throw new IllegalArgumentException("duplicate gatewayId " + row.gatewayId());
-                }
-                if (rows.get(j).gatewayName().equals(row.gatewayName())) {
-                    throw new IllegalArgumentException("duplicate gatewayName '" + row.gatewayName() + "'");
-                }
-            }
-        }
         for (final TopologyRow row : rows) {
+            if (RESERVED_SOURCE_ID == row.gatewaySourceId()) {
+                throw new IllegalArgumentException(row.gatewayName() + ": sourceId " + RESERVED_SOURCE_ID +
+                                                   " is reserved for clusterctl's own markers");
+            }
             int primaries = 0;
             for (final TopologyRow other : rows) {
                 if (other.gatewaySourceId() == row.gatewaySourceId() && other.preferenceRank() == 0) {
@@ -333,24 +405,29 @@ public final class ClusterCtl {
                 }
             }
             if (primaries != 1) {
-                throw new IllegalArgumentException("gatewaySourceId " + row.gatewaySourceId() + " has " + primaries +
-                                                   " preferenceRank-0 row(s), needs exactly 1");
+                throw new IllegalArgumentException("sourceId " + row.gatewaySourceId() + " has " + primaries +
+                                                   " rank-0 row(s), needs exactly 1");
             }
         }
     }
 
     /**
-     * Offers every roster row to cluster ingress, then reads this node's co-located tap for the sequenced
-     * echo of the last one. Returns its globalSeqNo, or -1 on timeout. Matched on the last row's {@code
-     * gatewayId}: that is the row the sequencer bootstraps behind, so its echo is exactly the "roster is
-     * in the log" edge the caller is waiting for.
+     * Offers every roster row to cluster ingress and every protocol row behind them, then reads this
+     * node's co-located tap for the sequenced echo of the last roster row. Returns its globalSeqNo,
+     * or -1 on timeout. Matched on the last row's {@code gatewayId}: that is the row the sequencer
+     * bootstraps behind, so its echo is exactly the "roster is in the log" edge the caller waits for.
+     *
+     * <p>The protocol rows are offered before the wait rather than after it, so they are ordered
+     * behind the roster on the one session — nothing may fall <em>between</em> the roster rows, and
+     * these carry no countdown of their own (§6.4).
      */
-    private static long publishRosterAndAwaitEcho(final AeronCluster cluster, final List<TopologyRow> rows) {
+    private static long publishTopologyAndAwaitEcho(final AeronCluster cluster, final Topology topology) {
         final Subscription tap = awaitTap(cluster);
         if (tap == null) {
             return -1;
         }
 
+        final List<TopologyRow> rows = topology.gateways();
         final ExpandableArrayBuffer buffer = new ExpandableArrayBuffer(128);
         final ExpandableArrayBuffer payload = new ExpandableArrayBuffer(128);
         final GatewayRegisteredEncoder encoder = new GatewayRegisteredEncoder();
@@ -363,6 +440,15 @@ public final class ClusterCtl {
                    .gatewayName(row.gatewayName())
                    .preferenceRank((short)row.preferenceRank());
             offer(cluster, buffer, wrapCore(buffer, payload, encoder.encodedLength()));
+        }
+
+        final PayloadIdRegisteredEncoder protocolEncoder = new PayloadIdRegisteredEncoder();
+        for (final ProtocolRow row : topology.protocols()) {
+            protocolEncoder.wrapAndApplyHeader(payload, 0, new MessageHeaderEncoder());
+            protocolEncoder.payloadId(row.payloadId())
+                           .protocolVersion(row.protocolVersion())
+                           .protocolName(row.protocolName());
+            offer(cluster, buffer, wrapCore(buffer, payload, protocolEncoder.encodedLength()));
         }
 
         final RosterEchoHandler handler = new RosterEchoHandler(rows.get(rows.size() - 1).gatewayId());
@@ -658,9 +744,10 @@ public final class ClusterCtl {
                            manual standby promotion; publishes GatewayActive(gatewayId) and
                            waits for its sequenced echo (requires an elected leader)
               load-topology <file>
-                           publish the gateway roster from a CSV file
-                           (name,gatewayId,gatewaySourceId,preferenceRank); run once per
-                           cluster lifetime, BEFORE the reference-data load
+                           publish the topology document (XML, validated against the
+                           packaged topology.xsd): the gateway roster, then the
+                           protocol registry; run once per cluster lifetime, BEFORE
+                           the reference-data load
               counters     list this node's phixeron operator counters (SequencerService/
                            ReplayerService); no cluster connection needed, safe on every node
               snapshot     this operation is not supported

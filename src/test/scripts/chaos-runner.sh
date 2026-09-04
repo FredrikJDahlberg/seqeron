@@ -19,7 +19,7 @@
 #   safety-oracle/tap-drop-target OrderExecServer consumer (PHIXERON_FAULT_INJECTION=1) and the primary FIX
 #   gateway GW-A (port 9000); member 1 (STANDBY_MEMBER) additionally hosts the hot-standby gateway GW-B
 #   (port 9001), the same active/standby pair gateway-failover-test.sh drives — sharing gatewaySourceId 0
-#   per src/test/resources/topology-gw.csv — the roster this run loads, naming only the pair it starts, so no
+#   per src/test/resources/topology-gw.xml — the roster this run loads, naming only the pair it starts, so no
 #   absent gateway is designated and handed over every 5s for the length of the run. All three
 #   members are legal fault targets; restart_colocated_apps brings each member's co-located apps (gateway
 #   and/or consumer included) back up in place. active_gateway_port tracks which of GW-A/GW-B is currently
@@ -214,7 +214,7 @@ start_seq 0; wait_running 0 || { echo "member 0 not up"; exit 1; }
 # BasicDataServer replicas below, or a gateway with no resolved gatewaySourceId drops every session row.
 CLUSTERCTL_AERON_DIR="${TMP_DIR}/phixeron-seq-aeron-0" \
   CLUSTERCTL_INGRESS_ENDPOINTS="$(ingress_endpoints_string 3)" \
-  "${SCRIPT_DIR}/../../main/scripts/clusterctl.sh" load-topology src/test/resources/topology-gw.csv \
+  "${SCRIPT_DIR}/../../main/scripts/clusterctl.sh" load-topology src/test/resources/topology-gw.xml \
   > "$LOG_DIR/clusterctl-load-topology.log" 2>&1 \
   || { echo "clusterctl load-topology failed — see $LOG_DIR/clusterctl-load-topology.log"; exit 1; }
 

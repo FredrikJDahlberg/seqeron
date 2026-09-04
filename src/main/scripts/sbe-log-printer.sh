@@ -31,22 +31,32 @@
 # multi-line pretty print — easier to grep, and compact enough that a whole
 # recording scrolls.
 #
-# Usage:
-#   ./sbe-log-printer.sh [--schema <name>|--spec <file.sbeir>] <archive-dir> [--stream <id>] [--oneline]
+# -o <payloadId> writes that protocol's payloads to stdout, raw and back to back,
+# for piping to a decoder that owns the schema (doc/seqeron-protocol-spec.md
+# §13.1). The stream carries no framing of its own — the decoder's schema is what
+# delimits each payload — so every text line, the dump included, moves to stderr
+# for the run.
 #
-# Example:
+# Usage:
+#   ./sbe-log-printer.sh [--schema <name>|--spec <file.sbeir>] <archive-dir> [--stream <id>] [--oneline] [-o <payloadId>]
+#
+# Examples:
 #   ./gradlew uberJar
 #   ./sbe-log-printer.sh "${TMPDIR:-/tmp}/phixeron-seq/archive-0" --stream 205
+#   ./sbe-log-printer.sh "${TMPDIR:-/tmp}/phixeron-seq/archive-0" --stream 205 -o 2 \
+#       2>frames.log | order-decode
 
 set -euo pipefail
 
 usage() {
-    echo "Usage: $0 [--schema <name>|--spec <file.sbeir>] <archive-dir> [--stream <id>] [--oneline]"
+    echo "Usage: $0 [--schema <name>|--spec <file.sbeir>] <archive-dir> [--stream <id>] [--oneline] [-o <payloadId>]"
     echo "  --schema <name>  decode only this schema (default: all six)"
     echo "  --spec <file>    decode against an IR file outside the jar instead"
     echo "  --stream <id>    dump only the newest recording on that stream"
     echo "  --oneline        print each message as a single line of JSON"
     echo "  --list-schemas   list the bundled schema names and exit"
+    echo "  -o <payloadId>   write that protocol's payloads to stdout, raw and back to back,"
+    echo "                   for piping to its own decoder; every text line moves to stderr"
 }
 
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then

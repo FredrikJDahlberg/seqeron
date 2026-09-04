@@ -283,8 +283,8 @@ application data loads. No frame depends on the `<protocols>` rows.
 One operator file, two sections, two core payloads: `<gateways>` produces the `GatewayRegistered`
 roster (§7), `<protocols>` the `PayloadIdRegistered` rows above — one per **shared** protocol, and
 nothing for an application's private `payloadId` (§6.1). It is XML with a schema shipped
-beside it _(today: CSV, roster only)_ — **C-1** is a constraint on what may be *written*, and the
-schema is where a constraint on writing belongs.
+beside it — **C-1** is a constraint on what may be *written*, and the schema is where a constraint on
+writing belongs.
 
 ```xml
 <topology>
@@ -854,15 +854,20 @@ sbe-log-printer.sh --payload … | application-decode.sh
 seqeron gains no application dependency, no descriptor loading and no `templateId → type` registry. It
 still **labels** a payload from the `PayloadIdRegistered` frames in the recording it is already reading
 (§6.3) — the shared protocols, which are the rows that exist; everything else prints under its number.
-Two requirements:
 
-1. **Binary-safe rendering.** `varDataEncoding` declares `characterEncoding="US-ASCII"` and SBE's
-   `JsonPrinter` renders var-data through it, so arbitrary payload bytes come out mangled. Emit
-   **base64 inside the existing frame line**.
-2. **Correlation.** Keep the frame line and carry the payload with it, beside its `globalSeqNo`. The
-   precedent is in the file (`<undecodable ingress payload: …>`).
+**Landed as `-o <payloadId>`** (§15 step 2). It names one protocol and writes that protocol's payloads to
+stdout, raw and back to back; every text line the run produces — the `[Catalog]` line, the frame dump, the
+errors — moves to stderr, so nothing else touches those bytes. Two things fell out of that shape rather
+than having to be designed:
 
-This is **required work before the first application message leaves seqeron's schemas** (§15 step 2).
+1. **Nothing to render.** `varDataEncoding` declares `characterEncoding="US-ASCII"` and SBE's
+   `JsonPrinter` renders var-data through it, so a payload printed *inside* the frame line comes out
+   mangled and needs base64 to survive the trip. A payload on a stream of its own is never rendered at
+   all, and base64 buys only printability.
+2. **No framing.** Nothing sits between one payload and the next. The decoder on the other end owns the
+   payload's schema, and that is what delimits it; a length or a correlation header would be seqeron
+   asserting something about bytes it has no business reading (**S-2**). Correlation is the frame dump
+   on stderr, which the run emits in the same order.
 
 ### 13.2 Non-SBE payloads
 
@@ -928,12 +933,16 @@ actually landed.
    `src/main/resources/sbe-frame.xml` and says `phixeron` throughout: the `seqeron` rename goes with the
    repo split (`doc/future-arch.md` §11 step 1), not with a protocol step, each of which is already a
    wire change on its own. **Step 6 landed in the same change** — see there for why it could not wait.
-2. **Postponed.** Land §13.1's payload pipe and its base64 frame line, before anything on the wire is
-   opaque. → `SbeLogPrinter` renders a frame's payload beside its `globalSeqNo` and round-trips
-   arbitrary bytes; no schema and no frame changes. It gates the **application** families, not core: a
-   core payload is decoded by the same tool that reads the frame around it, so this is a prerequisite
-   for step 3 rather than for step 1. `SbeLogPrinter` already unwraps the envelope and prints the core
-   payload inline; what is missing is rendering a payload it cannot decode.
+2. **Landed, out of order — after steps 3–7 rather than before them.** Land §13.1's payload pipe,
+   before anything on the wire is opaque. → `sbe-log-printer.sh -o <payloadId>` writes that protocol's
+   payloads to stdout for a decoder that owns their schema; no schema and no frame changes. It gates the
+   **application** families, not core: a core payload is decoded by the same tool that reads the frame
+   around it, so this is a prerequisite for step 3 rather than for step 1. Nothing broke while it was
+   postponed because the printer still bundles all six IR files, so the families that moved onto payloads
+   in steps 3 and 4 stayed readable inline the whole time — the pipe is what makes them readable once the
+   application schemas are *not* seqeron's to bundle, which is the repo split. **§13.1's base64 frame
+   line went with the postponement**: it was the answer to rendering a payload inside the frame line, and
+   a payload on a stream of its own is never rendered.
 3. **Landed.** Move `NewOrderSingle`/`ExecutionReport` onto a payload first. Blast radius: the C++ edge
    (`FixIngressHandler`, `FixConnection`, `Conversions`) plus `OrderExecServer`. → C++ suites and C++
    e2e green; that family has **one** codec set instead of a 200/202 pair. It is
@@ -983,12 +992,23 @@ actually landed.
    branch with it — see there for why the deletion is not a separate change. Step 5 took the last of
    the pair, `sbe-unsequenced.xml`, by moving the replay control protocol out of it. → `:cluster` and
    `core_tests` build and pass with **no application message defined anywhere in seqeron's schemas**.
-8. **Schema half landed with step 1.** `PayloadIdRegistered` is defined — §7's tenth core payload — and
-   nothing publishes it. What remains: convert the topology file to §6.4's document and schema, and
-   teach `SbeLogPrinter` to label payloads from it. The conversion is a hard cutover — the roster files
-   and every caller change in one commit — but it is **not** a wire change: past the new rows the frames
-   the loader publishes are unchanged. → a payload prints under its protocol's name, an unregistered one
-   under its number, no frame affected either way, both e2e suites green with no new start-up step.
+8. **Landed.** The schema half came with step 1 — `PayloadIdRegistered`, §7's tenth core payload — and
+   nothing published it. This converted the topology file to §6.4's document and schema and taught
+   `SbeLogPrinter` to label payloads from it. A hard cutover, as planned: `topology.csv` and the three
+   harness rosters became `.xml`, `topology.xsd` shipped beside them in the loader's own jar, and the
+   four script paths moved, in one commit. Not a wire change — past the new `PayloadIdRegistered` rows
+   the frames the loader publishes are byte-identical, and no archive needed purging. → a payload prints
+   under its protocol's name, an unregistered one under its number, no frame affected either way, both
+   e2e suites green with no new start-up step.
+
+   Three things settled here rather than in the design. **The flat `<gateway name id sourceId rank/>` of
+   §6.4 was built**, not `doc/clusterctl.md`'s nested `<primary>`/`<standby>` variant, which that
+   proposal preferred for turning three validation rules into content-model structure; the flat shape
+   keeps `preferenceRank` a field and leaves the rank-0 scan in the loader. **The document is validated
+   as it parses**, against a schema the loader resolves from its own artifact — a `schemaLocation` the
+   document names is ignored, or **C-1** would be advisory. And **the deployment registers `payloadId`
+   2 and 3 alongside 4**, though §6.1 calls the first two private: the rows cost nothing, and the label
+   is what a reader of a dump wants whether or not the protocol crosses an application boundary.
 9. §14's suite, both languages. → it fails on a deliberate field reorder and on a renumbered core frame.
 
 **Steps 1 and 3–6 are each a wire change**, and **V-3** applies to each.

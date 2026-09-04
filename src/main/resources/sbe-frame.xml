@@ -93,7 +93,7 @@
 
         <!-- The payload's length prefix. characterEncoding is inherited from the generators'
              defaults and is not a claim about the bytes: a payload is arbitrary binary, and
-             SbeLogPrinter renders it base64 rather than through this encoding (§13.1). -->
+             SbeLogPrinter never renders it through this encoding — -o pipes it out raw (§13.1). -->
         <composite name="varDataEncoding">
             <type name="length"  primitiveType="uint16" nullValue="65535" presence="optional"/>
             <type name="varData" primitiveType="uint8"  length="0"/>
