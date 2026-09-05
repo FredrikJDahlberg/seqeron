@@ -637,10 +637,10 @@ class ReplayerRecovery
         // lifecycle event.
         const bool isSystem = view.system;
         const std::uint16_t eventType = view.systemEventType;
-        if (isSystem && (eventType == sequencer::CLIENT_CONNECTED || eventType == sequencer::CLIENT_DISCONNECTED))
+        if (isSystem && (eventType == sequencer::CONNECTION_OPENED || eventType == sequencer::CONNECTION_CLOSED))
         {
             // Both carry the same header-only LifecycleEvent; only the callback differs.
-            const OnConnected& callback = eventType == sequencer::CLIENT_CONNECTED ? m_onConnected : m_onDisconnected;
+            const OnConnected& callback = eventType == sequencer::CONNECTION_OPENED ? m_onConnected : m_onDisconnected;
             if (callback)
             {
                 callback(LifecycleEvent{ .globalSeqNo = sequenceNumber,

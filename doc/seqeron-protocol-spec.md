@@ -161,7 +161,7 @@ The ingress contract; **S-1** is that the sequencer enforces it.
 
 | field | on ingress | on the tap |
 | --- | --- | --- |
-| `sourceId` | producer-set, MUST NOT be −1 (§9.2, condition 6), **checked against the roster** (**S-6**) | copied verbatim; −1 on a synthesized frame (**F-4**) |
+| `sourceId` | producer-set, MUST NOT be −1 (§9.2, condition 6), **checked against the list** (**S-6**) | copied verbatim; −1 on a synthesized frame (**F-4**) |
 | `connectionId` | producer-set | copied verbatim |
 | `sessionId` | producer-set, **advisory** | **overwritten** with the true Aeron Cluster session id the frame arrived on |
 | `payloadId` | producer-set, MUST be neither 0 nor 1 (condition 7) | copied verbatim |
@@ -182,33 +182,44 @@ The outer `MessageHeader` is the sequencer's on both sides, and is re-encoded ra
 `version` is 0 for the life of the frame schema, which is frozen (§11), and is not an extension point a
 producer may write into _(today the sequencer copies the ingress `version` onto the tap)_.
 
-**`sourceId` is one id space.** Two values are reserved; the rest is the roster's.
+**Two kinds of producer.** A **gateway** is an edge producer deployed as an **active/hot-standby pair**:
+it appears in the topology list (§6.4) and the cluster designates which instance is live, through
+`GatewayRegistered` / `GatewayStarted` / `GatewayActive` / `GatewayActivationRequested` (§7). `gateway`
+is seqeron's own word for that deployment role, not any application's — the election is the cluster's,
+and any protocol may sit behind it. A **co-located application** is the other kind: one replica per
+cluster node, named in no list row and needing no designation, because `LeadershipChanged` (§7) already
+picks exactly one — the replica on the leader node is the only one that submits. Only the first kind is
+listed, and only the first kind takes part in §7's election; everything in this section that speaks of a
+list row, a `gatewaySourceId` or a promotion is about gateways alone. Connections belong to neither kind
+exclusively, which is why `ConnectionOpened`/`ConnectionClosed` name no producer role.
 
-| `sourceId` | who | rostered? |
+**`sourceId` is one id space.** Two values are reserved; the rest is the list's.
+
+| `sourceId` | who | listed? |
 | --- | --- | --- |
 | **−1** | the cluster itself — the synthesized class, and nothing else (**F-4**) | never; **illegal on ingress** |
 | **2** | `clusterctl`, on every marker it submits | never |
-| 0, 3, 5, 6 … | gateways and node-local publishers _(today: the C++ gateway pair 0, an unrostered node-local publisher 3, the venue leg 5, the order-entry leg 6)_ | gateways by `GatewayRegistered.gatewaySourceId`; the rest not |
+| 0, 3, 5, 6, 7 … | every other producer, elected or not _(today: the C++ gateway pair 0, the reference-data application 3, the venue leg 5, the order-entry leg 6, the order-exec application 7)_ | gateways by `GatewayRegistered.gatewaySourceId`, applications by `ApplicationRegistered.applicationSourceId`; **S-6** checks only the first |
 
-`clusterctl`'s id MUST NOT be a `gatewaySourceId` any roster row claims. The roster check is scoped to
+`clusterctl`'s id MUST NOT be a `gatewaySourceId` any list row claims. The list check is scoped to
 the system family:
 
 > **S-6.** For an `UnsequencedSystem` frame (§9.2, condition 10):
 >
 > 1. **`GatewayStarted`, and `GatewayActivationRequested`** — the `gatewayId` each names MUST name a
->    roster row, and for `GatewayStarted` that row MUST also carry `gatewaySourceId == header.sourceId`.
->    A `gatewayId` the roster does not name is rejected whatever `sourceId` it carries.
-> 2. **Any other system frame whose `sourceId` the roster claims** — it MUST arrive on a cluster session
+>    list row, and for `GatewayStarted` that row MUST also carry `gatewaySourceId == header.sourceId`.
+>    A `gatewayId` the list does not name is rejected whatever `sourceId` it carries.
+> 2. **Any other system frame whose `sourceId` the list claims** — it MUST arrive on a cluster session
 >    already bound to a `gatewayId` of that `sourceId`.
 > 3. **Everything else is unchecked** — every application frame, and every system frame other than
->    those two carrying an unrostered `sourceId`.
+>    those two carrying an unlisted `sourceId`.
 >
 > The binding is created by `GatewayStarted` and removed when that cluster session closes — the same
 > event that promotes a standby (§7) — so the set holds one entry per live gateway session. Both edges
-> are log events and the roster is log-derived, so the check is **S-3**-safe. A binding MUST NOT be
+> are log events and the list is log-derived, so the check is **S-3**-safe. A binding MUST NOT be
 > removed on anything a node observes locally.
 
-Case 1 is total, so **a `GatewayStarted` arriving before `load-topology` is rejected**: the roster it
+Case 1 is total, so **a `GatewayStarted` arriving before `load-topology` is rejected**: the list it
 is checked against is empty. That is the existing start-up order as a wire rule.
 
 ## 6. `payloadId`
@@ -295,11 +306,12 @@ application data loads. No frame depends on the `<protocols>` rows.
 
 ### 6.4 The topology file
 
-One operator file, two sections, two system events: `<gateways>` produces the `GatewayRegistered`
-roster (§7), `<protocols>` the `PayloadIdRegistered` rows above — one per **shared** protocol, and
-nothing for an application's private `payloadId` (§6.1). It is XML with a schema shipped
-beside it — **C-1** is a constraint on what may be *written*, and the schema is where a constraint on
-writing belongs.
+One operator file, three sections, three system events, and between them **the complete producer view
+of the deployment**: `<gateways>` produces the `GatewayRegistered` list of elected pairs (§7),
+`<applications>` one `ApplicationRegistered` per co-located application — the producer kind §5 does not
+elect — and `<protocols>` the `PayloadIdRegistered` rows above, one per **shared** protocol and nothing
+for an application's private `payloadId` (§6.1). It is XML with a schema shipped beside it — **C-1** is
+a constraint on what may be *written*, and the schema is where a constraint on writing belongs.
 
 ```xml
 <topology>
@@ -307,6 +319,10 @@ writing belongs.
     <gateway name="GW-A" id="1" sourceId="0" rank="0"/>
     <gateway name="GW-B" id="2" sourceId="0" rank="1"/>
   </gateways>
+  <applications>
+    <application name="BasicDataServer" sourceId="3"/>
+    <application name="OrderExecServer"/>
+  </applications>
   <protocols>
     <protocol payloadId="4" version="1" name="phixeron-basicdata"/>
   </protocols>
@@ -314,20 +330,29 @@ writing belongs.
 ```
 
 Attributes are the payload fields under short names: `name`/`id`/`sourceId`/`rank` are
-`gatewayName`/`gatewayId`/`gatewaySourceId`/`preferenceRank` (§7.1), and
-`payloadId`/`version`/`name` are `payloadId`/`protocolVersion`/`protocolName` (§6.3). `remaining`
-appears in neither section — it is the publisher's, counted off the row count.
+`gatewayName`/`gatewayId`/`gatewaySourceId`/`preferenceRank` (§7.1), an application's `name`/`sourceId`
+are `applicationName`/`applicationSourceId`, and `payloadId`/`version`/`name` are
+`payloadId`/`protocolVersion`/`protocolName` (§6.3). `remaining` appears in no section — it is the
+publisher's, counted off the row count — and an application row carries no `id` and no `rank`, because
+nothing elects it: the instance is the node, and `LeadershipChanged` already names the one that submits.
+
+An application's `sourceId` is **required**, because §5 is one id space and a producer the document does
+not place in it is a hole in the deployment view. Declaring it does not require the process to stamp it
+yet: today `OrderExecServer` puts the **requesting gateway's** `sourceId` on every `ExecutionReport` and
+`PortfolioQueryReply` so that gateway can route the answer back, and so writes its own id nowhere. That
+is a gap in the process — the id it would need to identify itself is reserved to it either way.
 
 | constraint | enforced by | why there |
 | --- | --- | --- |
 | `name` 1..32 printable US-ASCII | schema | the `char[32]` it encodes into, and a launch-time join key |
 | `id` int32, `rank` uint8, `version` uint16 | schema | the field widths |
-| `sourceId >= 0` | schema | −1 is the cluster's own (**F-4**) and never a roster row's |
+| `sourceId >= 0` | schema | −1 is the cluster's own (**F-4**) and never a list row's |
 | `payloadId >= 2` | schema | **C-1** — 0 is invalid on the wire, 1 is retired |
 | `id`, `name` and `payloadId` each unique | schema, as identity constraints | a duplicate `gatewayId` silently drops an instance; a duplicate `payloadId` is an operator slip, not **C-3**'s supersede |
 | exactly one `rank="0"` per `sourceId` | the loader | not expressible per row; a second rank-0 leaves a logical gateway an arbitrary primary |
 | `sourceId` is none of the reserved ids (§5) | the loader | likewise — it is a check against a constant, not a field range |
-| `<gateways>` non-empty; `<protocols>` MAY be absent or empty | schema | an empty roster elects nobody; a deployment whose applications share no protocol declares none |
+| an application `sourceId` no gateway row claims | the loader | gateway `sourceId`s repeat by design, so cross-section uniqueness is not expressible; a collision is admitted here and then refused frame by frame by **S-6** case 2 |
+| `<gateways>` non-empty; `<applications>` and `<protocols>` MAY be absent or empty | schema | an empty list elects nobody; a deployment with no co-located application, or whose applications share no protocol, declares none |
 
 **The schema is the loader's, not the document's.** A loader MUST resolve the schema from its own
 artifact and MUST NOT honour a schema location the document names: a file that names its own schema
@@ -335,38 +360,40 @@ can name a lax one, and **C-1** would be advisory. A document MAY carry the loca
 affordance.
 
 **Publish order.** The loader MUST validate the whole file before publishing any row — a file that
-fails half-way leaves a roster the log has already closed. The roster rows are then published as one
+fails half-way leaves a list the log has already closed. The list rows are then published as one
 contiguous run in file order, `remaining` counting down to 0 on the last; **nothing may fall between
 them**, because that last row is the completeness edge §7.2 synthesizes the bootstrap `GatewayActive`s
-behind. The protocol rows follow it, and carry no countdown of their own.
+behind. The application rows and then the protocol rows follow it, and carry no countdown of their own:
+the sequencer acts on neither, so neither has a completeness edge to publish.
 
 ## 7. System messages
 
-**Eleven events in `seqeron-frame.xml` (schema 210), defined once each, beside the envelopes they ride
+**Twelve events in `seqeron-frame.xml` (schema 210), defined once each, beside the envelopes they ride
 in** — same owner, same artifact, same change rule, so they are one schema. Core is not an application
 and does not ride a `payloadId`: it has the system family of its own (§4), and the field at offset 16
 names the event rather than a protocol.
 
-**Eight are submitted and share `UnsequencedSystem`/`SequencedSystem`; three are synthesized and take
-top-level templates.** A pair exists to express a relation — submitted, then stamped — and all eight
+**Nine are submitted and share `UnsequencedSystem`/`SequencedSystem`; three are synthesized and take
+top-level templates.** A pair exists to express a relation — submitted, then stamped — and all nine
 undergo it. The three share only the absence of one, and a single template discriminating three
 unrelated bodies would express nothing.
 
 | event | `systemEventType` | shape | ingress-legal? | sequencer **decodes** it? |
 | --- | --- | --- | --- | --- |
-| `ClientConnected` | 1 | body | ✓ gateway | ✓ open-connection set |
-| `ClientDisconnected` | 2 | body | ✓ gateway | ✓ open-connection set |
+| `ConnectionOpened` | 1 | body | ✓ producer | ✓ open-connection set |
+| `ConnectionClosed` | 2 | body | ✓ producer | ✓ open-connection set |
 | `LeadershipChanged` | 5 | template **105** | ✗ | — (encode only) |
 | `ClusterStarted` | 10 | body | ✓ clusterctl | — |
 | `ClusterStopped` | 11 | body | ✓ clusterctl | — |
 | `ClusterHeartbeat` | 16 | template **104** | ✗ | — (encode only) |
-| `GatewayRegistered` | 17 | body | ✓ clusterctl `load-topology` | ✓ roster + `remaining == 0` election edge |
+| `GatewayRegistered` | 17 | body | ✓ clusterctl `load-topology` | ✓ list + `remaining == 0` election edge |
 | `GatewayActive` | 18 | template **106** | ✗ | — (encode only) |
 | `GatewayStarted` | 19 | body | ✓ gateway | ✓ binds cluster session → gatewayId; releases stale connections |
 | `PayloadIdRegistered` | 23 | body | ✓ clusterctl `load-topology` | — (encode only; §6.3) |
 | `GatewayActivationRequested` | 24 | body | ✓ clusterctl `activate` | ✓ validates the `gatewayId`, then synthesizes `GatewayActive` |
+| `ApplicationRegistered` | 25 | body | ✓ clusterctl `load-topology` | — (encode only; §6.4) |
 
-The eight submitted events keep the ids they have always held, and each is also its body codec's
+The nine submitted events keep the ids they have always held, and each is also its body codec's
 template id — a number never written to the wire, since a body carries no framing. The three
 synthesized events keep theirs too: **`systemEventType` is populated on all three**, redundant against
 the template id, so that offset 16 discriminates every frame on the tap and a consumer's delivery type
@@ -383,16 +410,16 @@ and is unrelated to `ReplayHeartbeat` (§10).
 > is 42 (§4.2).
 
 **`GatewayActive` has one producer: the sequencer.** It synthesizes it at bootstrap (one per rank-0
-roster row, behind the `GatewayRegistered` whose `remaining` reaches 0) and on three further paths — the
+list row, behind the `GatewayRegistered` whose `remaining` reaches 0) and on three further paths — the
 active instance's cluster session closing (`Sequencer.sessionClosed`), a designated instance failing to
 answer with a `GatewayStarted` within `GATEWAY_ACTIVATION_TIMEOUT_MS`
 (`Sequencer.pendingGatewayActivationTimeout`), and an operator's `GatewayActivationRequested`.
 
 **`clusterctl activate` records the operator's act, and the designation stays the cluster's.** The tool
-publishes `GatewayActivationRequested(gatewayId)`; the sequencer validates it against the roster,
+publishes `GatewayActivationRequested(gatewayId)`; the sequencer validates it against the list,
 forwards it, and synthesizes the `GatewayActive` answering it one `globalSeqNo` behind — through the
-same path the other three take, which is what gives the manual path the roster validation the others get
-from iterating the roster. That is also what leaves **no `SequencedSystem` without an
+same path the other three take, which is what gives the manual path the list validation the others get
+from iterating the list. That is also what leaves **no `SequencedSystem` without an
 `UnsequencedSystem` antecedent**, and makes the synthesized three synthesized-*only*.
 
 **Past participle, because the operator's act is the fact.** Every submitted system message names
@@ -434,14 +461,14 @@ that repeated it would nest one envelope inside another. This is the level of ne
 collapses, and it is why `GatewayStarted`'s floor in §9.2 condition 9 is 8 rather than 8 + 8.
 
 **Ten of the eleven have no var-data and no repeating group**, so a submitted body's encoded length is
-exactly its block, the sum of its fields with no padding. `ClientConnected` is the one exception and
+exactly its block, the sum of its fields with no padding. `ConnectionOpened` is the one exception and
 carries a single opaque var-data field (below). The three synthesized templates' blocks include the
 34-byte header composite, since the fields are inline.
 
 | event | `systemEventType` | block | frame bytes | fields |
 | --- | --- | --- | --- | --- |
-| `ClientConnected` | 1 | **0** | 46 + *n* | `connectionData` varData — **opaque to the cluster tier** |
-| `ClientDisconnected` | 2 | **0** | 44 | none — `header.connectionId` is the whole message |
+| `ConnectionOpened` | 1 | **0** | 46 + *n* | `connectionData` varData — **opaque to the cluster tier** |
+| `ConnectionClosed` | 2 | **0** | 44 | none — `header.connectionId` is the whole message |
 | `LeadershipChanged` | 5 | 38 | **46** | `newLeaderMemberId` int32 |
 | `ClusterStarted` | 10 | 8 | 52 | `correlationId` int64 |
 | `ClusterStopped` | 11 | 8 | 52 | `correlationId` int64 |
@@ -451,6 +478,7 @@ carries a single opaque var-data field (below). The three synthesized templates'
 | `GatewayStarted` | 19 | 8 | 52 | `gatewayId` int32, `firstConnectionId` int32 |
 | `PayloadIdRegistered` | 23 | 36 | 80 | `payloadId` uint16, `protocolVersion` uint16, `protocolName` char[32] |
 | `GatewayActivationRequested` | 24 | 4 | 48 | `gatewayId` int32 |
+| `ApplicationRegistered` | 25 | 36 | 80 | `applicationSourceId` int32, `applicationName` char[32] |
 
 Frame bytes are the sequenced form: 44 + block for a submitted body, 8 + block for a synthesized
 template.
@@ -462,14 +490,14 @@ Field semantics that other rules depend on:
   Synthesized once per term, de-duplicated on this value.
 - **`correlationId`** — assigned by `clusterctl` and echoed in the frame, so the tool can match its own
   marker coming back off the tap.
-- **`remaining`** — roster rows still to come after this one; **0 marks the last row**, which is the
+- **`remaining`** — list rows still to come after this one; **0 marks the last row**, which is the
   completeness edge the sequencer synthesizes the bootstrap `GatewayActive`s behind.
-- **`gatewayId`** — the roster row's own identity, unique across the roster. **`gatewaySourceId`** — the
+- **`gatewayId`** — the list row's own identity, unique across the list. **`gatewaySourceId`** — the
   logical gateway the row belongs to, shared by every instance of it, and the value **S-6** matches
   `header.sourceId` against. **`gatewayName`** char[32], US-ASCII, `0x00` in byte 0 signalling absent —
   the launch-time identity an instance resolves its own `{gatewayId, gatewaySourceId}` by.
 - **`preferenceRank`** uint8 — **0 is the designated primary**, 1, 2 … are standbys of the same
-  `gatewaySourceId`. This is what "one per rank-0 roster row" in the bootstrap synthesis means.
+  `gatewaySourceId`. This is what "one per rank-0 list row" in the bootstrap synthesis means.
 - **`firstConnectionId`** — the `header.connectionId` this gateway instance allocates from, chosen past
   the highest its own replay held, so connection ids do not collide across a restart.
 - **`protocolVersion` / `protocolName`** — §6.3; `protocolName` is `char[32]`, US-ASCII, trailing
@@ -479,33 +507,33 @@ Field semantics that other rules depend on:
 its content is entirely the frame's consensus `timestamp` and `globalSeqNo`, so the frame is its
 `MessageHeader` and its header composite and nothing else (§4.2's 42 bytes).
 
-**`ClientConnected` carries an opaque tail; `ClientDisconnected` does not, and the asymmetry is
+**`ConnectionOpened` carries an opaque tail; `ConnectionClosed` does not, and the asymmetry is
 deliberate.** Both are system events because connection lifecycle is core functionality: the sequencer
 keys its open-connection set on `header.sourceId` and `header.connectionId`, and releases every
 connection still open under a `gatewaySourceId` behind that logical gateway's next `GatewayStarted` — a
-crashed instance publishes none of the `ClientDisconnected`s that would have closed them out. **That set
-is node-local sequencer state and the release synthesizes no frame**: `ClientDisconnected` has one
+crashed instance publishes none of the `ConnectionClosed`s that would have closed them out. **That set
+is node-local sequencer state and the release synthesizes no frame**: `ConnectionClosed` has one
 producer, the gateway, and a promoted instance therefore inherits no open connection. A consumer keeping
 a view of its own derives it from the same replayed frames, and **S-3** keeps every node's set identical.
 For a **disconnect that is the whole message** — `header.connectionId` names a connection every
 consumer already saw connect, so there is nothing to add and the payload is its `MessageHeader` alone.
 
 A **connect** is different, and `header.connectionId` alone is not enough for it. The id is minted by
-the gateway, one per connection, so a counterparty that reconnects arrives under a *new* id while
+the producer, one per connection, so a counterparty that reconnects arrives under a *new* id while
 resuming the *same* session — which means the id cannot carry identity, and a standby that has never
 held the socket learns the id→session mapping from this frame or not at all. It needs that mapping at
 connect, before the session's first message. But *what* the identity is — a FIX comp-id pair for one
-gateway, something else for the next — is the producing application's, and the cluster tier has no use
+producer, something else for the next — is the producing application's, and the cluster tier has no use
 for it. So it rides in `connectionData`, and the following hold:
 
 - **The cluster tier MUST NOT decode `connectionData`.** The sequencer dispatches this event on
   `systemEventType` alone and reads nothing below `blockLength`; **S-2** is unchanged, because opening a
   system body is not the same as opening this field.
-- **Its encoding is the producing gateway's**, identified by `header.sourceId` — the same value that
+- **Its encoding is the producer's own**, identified by `header.sourceId` — the same value that
   routes the frame. A consumer that does not recognise the producer skips the tail exactly as **P-1**
   skips an unrecognised `payloadId`. **E-1** covers it: the frame arrives through ingress, so the tail is
-  encoded once by the gateway and replicated as bytes, and any encoding is therefore safe.
-- **It MAY be empty**, and a length prefix of 0 is well-formed: a gateway whose connections need no
+  encoded once by the producer and replicated as bytes, and any encoding is therefore safe.
+- **It MAY be empty**, and a length prefix of 0 is well-formed: a producer whose connections need no
   identity beyond the id sends nothing. Core MUST accept both.
 - **It counts against `MAX_PAYLOAD_LENGTH`** like any other body byte (§12): the whole message, tail
   included, is bounded by the frame it sits in.
@@ -520,9 +548,9 @@ a pair shares the sourceId, so a frame carrying one would designate both at once
 survive only by latching the first match it ever saw, and that in turn makes a restarting instance
 re-activate itself off a superseded frame during its cold-start replay.
 
-**The target.** Given the instance that lost the role, the target is the **lowest-`preferenceRank` roster
-row of the same `gatewaySourceId`, excluding that instance**, ties broken by **roster order** — the first
-such row in the log wins. If there is no such row, because the instance has no roster row or has no
+**The target.** Given the instance that lost the role, the target is the **lowest-`preferenceRank` list
+row of the same `gatewaySourceId`, excluding that instance**, ties broken by **list order** — the first
+such row in the log wins. If there is no such row, because the instance has no list row or has no
 sibling, the sequencer synthesizes **nothing**: it logs, `globalSeqNo` does not move, and that logical
 gateway has no active instance until one starts. Fail closed.
 
@@ -533,15 +561,15 @@ instance comes up first, rather than on the one the cluster happened to designat
 **Four triggers, one target rule:**
 
 1. **Bootstrap** — behind the `GatewayRegistered` whose `remaining` reaches 0, one `GatewayActive` per
-   **rank-0** row, iterated in roster order.
+   **rank-0** row, iterated in list order.
 2. **Session close** — the cluster session a `GatewayStarted` bound (§5, **S-6**) closes. The binding is
    removed first, then the target rule runs against the instance it named.
 3. **Activation timeout** — a designated instance has not answered with a `GatewayStarted` within
    `GATEWAY_ACTIVATION_TIMEOUT_MS`.
-4. **Operator request** — a `GatewayActivationRequested` naming a rostered `gatewayId`, which is
+4. **Operator request** — a `GatewayActivationRequested` naming a listed `gatewayId`, which is
    designated directly rather than through the target rule.
 
-A **fourth trigger** is the operator's: a `GatewayActivationRequested` whose `gatewayId` a roster row
+A **fourth trigger** is the operator's: a `GatewayActivationRequested` whose `gatewayId` a list row
 names (§7). It runs the same synthesis as the other three and therefore **arms the same deadline** — a
 manual activation naming an instance that never starts is handed on like any other. Trigger 3 exists
 because a
@@ -550,7 +578,7 @@ publishing one was never registered and no session close can promote past it.
 
 **The deadline.** `GATEWAY_ACTIVATION_TIMEOUT_MS` is **5 × `CLUSTER_HEARTBEAT_INTERVAL_MS` = 5000 ms**
 (§12). Every `GatewayActive` arms one at `timestamp + GATEWAY_ACTIVATION_TIMEOUT_MS` on the consensus
-clock — **including the one a promotion produces**, so successive failures walk the roster instead of
+clock — **including the one a promotion produces**, so successive failures walk the list instead of
 stalling on the first.
 
 At most **one armed activation per `gatewaySourceId`**, replaced in place, held in **arm order**. Both
@@ -563,7 +591,7 @@ order whose deadline has passed and removes it; if no `GatewayStarted` has meanw
 `gatewayId` to a session, it designates a new target from it by the rule above; otherwise the activation
 was answered and is simply dropped. **At most one promotion per heartbeat.**
 
-Every input is log-derived — the roster from `GatewayRegistered`, the binding set from `GatewayStarted`,
+Every input is log-derived — the list from `GatewayRegistered`, the binding set from `GatewayStarted`,
 the clock from the consensus timestamp — so **S-3** holds and every node synthesizes the same frame at the
 same `globalSeqNo`.
 
@@ -670,7 +698,7 @@ How to implement the sharp ones:
 > the committed log.** Not node config, not wall-clock time, not local state, not map iteration order.
 
 Conditions 1–9 are pure functions of the message bytes; condition 10 reads state, and every input it
-reads is log-derived (the roster from `GatewayRegistered`, the binding from `GatewayStarted`). That
+reads is log-derived (the list from `GatewayRegistered`, the binding from `GatewayStarted`). That
 split is a property to preserve.
 
 - `timestamp` is the **Raft consensus timestamp**, never `System.currentTimeMillis()`.
@@ -717,8 +745,8 @@ template of its own, fields inline, no body, no length prefix, no scratch buffer
   nothing that can amplify.
 
 Where the signal actually goes: under **T-3** a conforming producer is refused synchronously by its own
-encode method; the state conditions are gated by the implementation — a gateway MUST refuse to publish
-anything before it has resolved its own `{gatewayId, gatewaySourceId}` from the roster it read off the
+encode method; the state conditions are gated by the implementation — a producer MUST refuse to publish
+anything before it has resolved its own `{gatewayId, gatewaySourceId}` from the list it read off the
 tap (§5, **S-6**), which is what keeps a `GatewayStarted` from arriving ahead of `load-topology`. What
 is left for the counters is a producer not running a conforming implementation.
 
@@ -975,15 +1003,15 @@ driver, sub-second. The fixture is a **synthetic payload seqeron owns**.
 | --- | --- | --- |
 | 1 | **Copy fidelity.** Sequence an `Unsequenced` over known bytes; the sequenced payload is byte-identical and `payloadId` unchanged. Parameterised over empty, 1 byte, and `MAX_PAYLOAD_LENGTH` | §5 |
 | 2 | **Prefix property.** Each unsequenced composite's bytes 0..17 equal its sequenced counterpart's for the same values — the field at offset 16 included — the two pairs are byte-identical to each other, and the `ENCODED_LENGTH`s are 18 and 34. Pure schema check, no `Sequencer` | **F-3** |
-| 3 | **System frames round-trip unchanged.** Parameterised over the **eight** submitted events of §7: wrap as `UnsequencedSystem`, sequence, assert the egress body is byte-identical and the `systemEventType` carried, and for `ClientConnected` over an empty, a short and a `MAX_PAYLOAD_LENGTH`-filling `connectionData` (§7.1). The three synthesized templates are covered instead by encoding one of each through the `Sequencer`'s own synthesis path, asserting the template id, the inline fields and the redundant `systemEventType` | §7 |
+| 3 | **System frames round-trip unchanged.** Parameterised over the **eight** submitted events of §7: wrap as `UnsequencedSystem`, sequence, assert the egress body is byte-identical and the `systemEventType` carried, and for `ConnectionOpened` over an empty, a short and a `MAX_PAYLOAD_LENGTH`-filling `connectionData` (§7.1). The three synthesized templates are covered instead by encoding one of each through the `Sequencer`'s own synthesis path, asserting the template id, the inline fields and the redundant `systemEventType` | §7 |
 | 4 | **Rejection table.** One case per row of §9.2, each asserting that the rejected message was not sequenced, that **nothing at all was emitted** — `globalSeqNo` unmoved, no synthesized frame behind it — and that the rejected-frame counter advanced by exactly one. Cases: over `MAX_INGRESS_LENGTH` and under 28 (1); a `schemaId` that is not 210 and a non-zero `version` (2); a `templateId` that is neither ingress template, and each of the three synthesized ones (3); a `blockLength` that is not 18, below and above, on both ingress templates (4); a length prefix past the frame end, one short of it, and one equal to 65535 (5); an ingress `sourceId` of −1 (6); `payloadId` 0 and `payloadId` 1 (7); an unallocated `systemEventType` and each of the three synthesis-only ones (8); a `GatewayStarted` body shorter than its 8 bytes (9); S-6's cases (10) | **S-4**, **S-5**, **S-7** |
 | 4a | **Rejection denies nothing, and repeats identically.** Two rejections under the same application `payloadId` each advance the counter, neither emits anything, and a well-formed frame of that `payloadId` afterwards is accepted unchanged | **S-7**, **C-2** |
 | 4b | **The producer refuses before the wire, and survives it.** A payload of exactly `MAX_PAYLOAD_LENGTH` publishes; one byte longer is refused with **nothing offered to any transport**, distinguishably from back-pressure, and the very next well-formed publish succeeds. Against an in-memory transport seam, so no Aeron | **T-3**, §12 |
 | 5 | **Synthesis determinism.** Two independently constructed `Sequencer`s fed the same message sequence emit byte-identical frames, heartbeat for heartbeat | **S-3**, **F-2** |
 | 6 | **The frame layout is §4's tables.** Every frame-layer field sits at the offset §4.1 gives, on all four header composites; the frame sizes are §4.2's — `MessageHeader` 8, the composites 18 and 34, the var-data prefix 2, fixed overhead 28 and 44, a `ClusterHeartbeat` 42, a ceiling-sized payload frame 1360. And the three boundary payload sizes — empty, one byte, `MAX_PAYLOAD_LENGTH` — each cross and decode intact | **F-2**, **F-3**, §12 |
 | 7 | **Selective consumption.** A consumer fed an unallocated `payloadId`, and an unhandled `systemEventType`, ignores both without error — and its `globalSeqNo` continuity tracking advances across them, over all five sequenced shapes | **P-1**–**P-3** |
-| 8 | **S-6's three cases.** A `GatewayStarted` agreeing with its roster row binds and is accepted; four are rejected — the same frame naming a different `gatewaySourceId`, one whose `gatewayId` no roster row names while claiming a rostered `sourceId`, a `GatewayActivationRequested` naming an unrostered `gatewayId`, and another system frame claiming a rostered `sourceId` on an unbound session — and both negatives are accepted: an application payload carrying that `sourceId`, and a marker at −1 | **S-6** |
-| 9 | **Promotion order.** Against a roster of one `gatewaySourceId` with ranks 0, 1, 2: bootstrap activates rank 0 only; an operator's `GatewayActivationRequested` is forwarded and answered one `globalSeqNo` behind; closing rank 0's bound session promotes rank 1; closing rank 1's promotes rank 0 again (lowest-rank-excluding, not next-rank-up); a designated instance that publishes no `GatewayStarted` is handed on after exactly `GATEWAY_ACTIVATION_TIMEOUT_MS` of consensus time and not before; one that does publish one arms nothing further; and a `gatewaySourceId` with a single row synthesizes **no** frame on close, leaving `globalSeqNo` unmoved. Two `gatewaySourceId`s bootstrapped back to back each keep their own deadline | §7.2, **S-3** |
+| 8 | **S-6's three cases.** A `GatewayStarted` agreeing with its list row binds and is accepted; four are rejected — the same frame naming a different `gatewaySourceId`, one whose `gatewayId` no list row names while claiming a listed `sourceId`, a `GatewayActivationRequested` naming an unlisted `gatewayId`, and another system frame claiming a listed `sourceId` on an unbound session — and both negatives are accepted: an application payload carrying that `sourceId`, and a marker at −1 | **S-6** |
+| 9 | **Promotion order.** Against a list of one `gatewaySourceId` with ranks 0, 1, 2: bootstrap activates rank 0 only; an operator's `GatewayActivationRequested` is forwarded and answered one `globalSeqNo` behind; closing rank 0's bound session promotes rank 1; closing rank 1's promotes rank 0 again (lowest-rank-excluding, not next-rank-up); a designated instance that publishes no `GatewayStarted` is handed on after exactly `GATEWAY_ACTIVATION_TIMEOUT_MS` of consensus time and not before; one that does publish one arms nothing further; and a `gatewaySourceId` with a single row synthesizes **no** frame on close, leaving `globalSeqNo` unmoved. Two `gatewaySourceId`s bootstrapped back to back each keep their own deadline | §7.2, **S-3** |
 
 **Every row asserts a rule this document states, and builds the frames it reads.** There is no stored
 corpus of bytes from an earlier build. A corpus reports only that *something* moved and leaves a reader
@@ -997,8 +1025,8 @@ tool (**V-1**), not this protocol. What is worth testing per language is the han
 codecs — `unwrapFrame` and `SequencedFrameDecoder`, ported by hand and where a real defect was found — and
 that is what rows 3, 6 and 7 exercise.
 
-Row 8's "marker at −1" is `clusterctl`'s: `sourceId` 2, which no roster row claims (§5), carrying
-`connectionId` −1 because the marker is gateway-scoped. A `sourceId` of −1 is illegal on ingress under
+Row 8's "marker at −1" is `clusterctl`'s: `sourceId` 2, which no list row claims (§5), carrying
+`connectionId` −1 because the marker is producer-scoped. A `sourceId` of −1 is illegal on ingress under
 condition 6, and is row 4's case rather than row 8's.
 
 The suite asserts framing and copy fidelity only. A test that wants to decode a payload to check it has
@@ -1082,7 +1110,7 @@ actually landed.
 8. **Landed.** The schema half came with step 1 — `PayloadIdRegistered`, §7's tenth core payload — and
    nothing published it. This converted the topology file to §6.4's document and schema and taught
    `SbeLogPrinter` to label payloads from it. A hard cutover, as planned: `topology.csv` and the three
-   harness rosters became `.xml`, `topology.xsd` shipped beside them in the loader's own jar, and the
+   harness lists became `.xml`, `topology.xsd` shipped beside them in the loader's own jar, and the
    four script paths moved, in one commit. Not a wire change — past the new `PayloadIdRegistered` rows
    the frames the loader publishes are byte-identical, and no archive needed purging. → a payload prints
    under its protocol's name, an unregistered one under its number, no frame affected either way, both
@@ -1178,8 +1206,8 @@ actually landed.
     version declaration is 8 bytes verifying something already guaranteed. Six bytes come off every
     system frame; a `ClusterHeartbeat`, which needs no body at all, goes from 52 to **42**.
 
-    **The seven submitted messages keep their numbers as `systemEventType`s** — `ClientConnected` 1,
-    `ClientDisconnected` 2, `ClusterStarted` 10, `ClusterStopped` 11, `GatewayRegistered` 17,
+    **The seven submitted messages keep their numbers as `systemEventType`s** — `ConnectionOpened` 1,
+    `ConnectionClosed` 2, `ClusterStarted` 10, `ClusterStopped` 11, `GatewayRegistered` 17,
     `GatewayStarted` 19, `PayloadIdRegistered` 23 — and the three the cluster synthesizes leave the
     space entirely, because a template id already names them. `systemEventType` is populated on all three
     anyway, redundant against the template id, so that **offset 16 discriminates every frame on the tap**
@@ -1192,10 +1220,10 @@ actually landed.
     That is what makes the synthesized three synthesized-*only* and leaves no `SequencedSystem` without
     an `UnsequencedSystem` antecedent, which is the whole point of the split: **a sequenced shape asserts
     a transformation, and a frame with no ingress form must not claim one.** It also gives the manual
-    path the roster validation the other three have and it today lacks.
+    path the list validation the other three have and it today lacks.
 
     **Past participle, because the operator's act is the fact.** Every submitted system message names
-    something that happened — `ClientConnected`, `GatewayRegistered`, `GatewayStarted`. An imperative
+    something that happened — `ConnectionOpened`, `GatewayRegistered`, `GatewayStarted`. An imperative
     (`ActivateGateway`) or a bare request would be the one command in a family of events, and would name
     the effect asked for rather than the act performed. What happened is that an operator asked;
     the sequencer then designates (§7's verb for what `GatewayActive` does). So all eleven system
@@ -1260,7 +1288,7 @@ actually landed.
 
     Two things settled here rather than in the design. **The eight submitted bodies keep their template
     ids as their `systemEventType`s literally** — each is a `<sbe:message>` whose template id is never
-    written to the wire, so `ClientConnectedDecoder.TEMPLATE_ID` *is* the constant and there is no second
+    written to the wire, so `ConnectionOpenedDecoder.TEMPLATE_ID` *is* the constant and there is no second
     table to drift; only the three synthesized values (5, 16, 18) need naming in code, because their
     templates are numbered 104–106. And **`blockLength`/`version` are 0 on every system frame a consumer
     is handed**, synthesized ones included: the decoder's compiled constants are the only ones there are

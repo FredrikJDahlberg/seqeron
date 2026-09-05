@@ -58,7 +58,7 @@
         <composite name="unsequencedHeader"
                    description="Application frame header on cluster ingress: who produced this frame, over which connection and cluster session, and what its payload is">
             <type name="sourceId"     primitiveType="int32"
-                  description="Identifies the producer. Rostered gateways use their gatewaySourceId; -1 is reserved for the cluster itself and is illegal here"/>
+                  description="Identifies the producer. Listed producers use their gatewaySourceId; -1 is reserved for the cluster itself and is illegal here"/>
             <type name="connectionId" primitiveType="int32"
                   description="The producer's own connection id; unique within one producer process, never across processes"/>
             <type name="sessionId"    primitiveType="int64"
@@ -90,7 +90,7 @@
             <type name="sourceId"        primitiveType="int32"
                   description="Identifies the producer; -1 is reserved for the cluster itself and is illegal here"/>
             <type name="connectionId"    primitiveType="int32"
-                  description="The producer's own connection id, or -1 for a gateway-scoped event"/>
+                  description="The producer's own connection id, or -1 for a producer-scoped event"/>
             <type name="sessionId"       primitiveType="int64"
                   description="Aeron Cluster session id. Advisory on ingress — the sequencer overwrites it"/>
             <type name="systemEventType" primitiveType="uint16"
@@ -118,10 +118,13 @@
               description="clusterctl-assigned id, echoed in the frame so the tool matches its own marker"/>
 
         <type name="gatewayName" primitiveType="char" length="32" characterEncoding="US-ASCII"
-              description="Launch-time gateway identity (PHIXERON_*_GATEWAY_NAME); byte[0]==0x00 signals absent"/>
+              description="Launch-time producer identity, the list's join key (a deployment launch variable, e.g. PHIXERON_*_GATEWAY_NAME); byte[0]==0x00 signals absent"/>
 
         <type name="protocolName" primitiveType="char" length="32" characterEncoding="US-ASCII"
               description="Label SbeLogPrinter prints for a payload it cannot decode; byte[0]==0x00 signals absent"/>
+
+        <type name="applicationName" primitiveType="char" length="32" characterEncoding="US-ASCII"
+              description="The deployment's name for a co-located application; byte[0]==0x00 signals absent"/>
 
         <!-- The payload's (or system body's) length prefix. characterEncoding is inherited from the
              generators' defaults and is not a claim about the bytes: a payload is arbitrary binary, and
@@ -154,13 +157,13 @@
          MessageHeader, and a decoder supplies BLOCK_LENGTH and SCHEMA_VERSION from its own compiled
          constants. V-3 licenses that: no seqeron decoder ever meets bytes another build encoded.
 
-         Eleven events. Eight are submitted and share this pair; three have no ingress form and take
+         Twelve events. Nine are submitted and share this pair; three have no ingress form and take
          top-level templates of their own, because a sequenced shape asserts a transformation and a frame
          with no ingress form must not claim one.
     -->
 
     <sbe:message name="UnsequencedSystem" id="102"
-                 description="One system frame on cluster ingress, awaiting a globalSeqNo. Only the eight submitted systemEventTypes are legal here">
+                 description="One system frame on cluster ingress, awaiting a globalSeqNo. Only the nine submitted systemEventTypes are legal here">
         <field name="header" id="20001" type="unsequencedSystemHeader"/>
         <data  name="body"   id="20045" type="varDataEncoding"
                description="The event named by header.systemEventType, encoded as its own SBE block with no MessageHeader. MAY be empty where that event's block is"/>
@@ -192,27 +195,27 @@
     </sbe:message>
 
     <sbe:message name="GatewayActive" id="106"
-                 description="Designates one gateway instance as its logical gateway's active one. Synthesized on all four paths — bootstrap, session close, activation timeout, and an operator's GatewayActivationRequested">
+                 description="Designates one producer instance as its logical producer's active one. Synthesized on all four paths — bootstrap, session close, activation timeout, and an operator's GatewayActivationRequested">
         <field name="header"    id="20001" type="sequencedSystemHeader"/>
         <field name="gatewayId" id="20029" type="int32"/>
     </sbe:message>
 
-    <!-- ── The eight submitted system events ────────────────────────────────────────────────────────
+    <!-- ── The nine submitted system events ─────────────────────────────────────────────────────────
          Bodies only: each is the block that rides inside UnsequencedSystem/SequencedSystem, and none
          carries a header field of its own. Their template ids are never written to the wire — they are
          the systemEventType values, and are the ones these messages have always held, deliberately: a
          recording made by an older build must never read as one of these.
     -->
 
-    <sbe:message name="ClientConnected" id="1"
-                 description="A connection opened at a gateway. connectionData carries whatever identity that
-                              gateway's connections have — opaque to the cluster tier, encoded by the producer
+    <sbe:message name="ConnectionOpened" id="1"
+                 description="A connection opened at a producer. connectionData carries whatever identity that
+                              producer's connections have — opaque to the cluster tier, encoded by the producer
                               named by header.sourceId, and MAY be empty">
         <data name="connectionData" id="20041" type="varDataEncoding"/>
     </sbe:message>
 
-    <sbe:message name="ClientDisconnected" id="2"
-                 description="A connection closed at a gateway. No fields: header.connectionId names a connection
+    <sbe:message name="ConnectionClosed" id="2"
+                 description="A connection closed at a producer. No fields: header.connectionId names a connection
                               every consumer already saw connect, so there is nothing to add"/>
 
     <sbe:message name="ClusterStarted" id="10"
@@ -227,14 +230,14 @@
     </sbe:message>
 
     <sbe:message name="GatewayRegistered" id="17"
-                 description="One roster row, published by clusterctl load-topology. remaining=0 marks the last row
+                 description="One list row, published by clusterctl load-topology. remaining=0 marks the last row
                               and is the completeness edge the bootstrap GatewayActives are synthesized behind">
         <field name="remaining"       id="20038" type="uint16"
-               description="Roster rows still to come after this one; 0 = last"/>
+               description="List rows still to come after this one; 0 = last"/>
         <field name="gatewayId"       id="20029" type="int32"
-               description="The row's own identity, unique across the roster; what a GatewayActive names"/>
+               description="The row's own identity, unique across the list; what a GatewayActive names"/>
         <field name="gatewaySourceId" id="20030" type="int32"
-               description="The logical gateway this row belongs to, shared by every instance of it; the value
+               description="The logical producer this row belongs to, shared by every instance of it; the value
                             header.sourceId is matched against"/>
         <field name="gatewayName"     id="20031" type="gatewayName"/>
         <field name="preferenceRank"  id="20032" type="uint8"
@@ -242,7 +245,7 @@
     </sbe:message>
 
     <sbe:message name="GatewayStarted" id="19"
-                 description="A gateway instance activated. Binds its cluster session to this gatewayId, and
+                 description="A producer instance activated. Binds its cluster session to this gatewayId, and
                               releases every connection still open under its gatewaySourceId">
         <field name="gatewayId"         id="20029" type="int32"/>
         <field name="firstConnectionId" id="20034" type="int32"
@@ -261,12 +264,26 @@
     </sbe:message>
 
     <sbe:message name="GatewayActivationRequested" id="24"
-                 description="An operator asked for a gateway instance to be made active (clusterctl activate).
+                 description="An operator asked for a producer instance to be made active (clusterctl activate).
                               The sequencer answers it by synthesizing GatewayActive through the same path
                               bootstrap and both promotions take — so the operator's act is what is recorded, and
                               the designation is the cluster's. Id 24 is fresh, not GatewayActive's vacated 18, so
                               no mixed-vintage recording can read one as the other">
         <field name="gatewayId" id="20029" type="int32"/>
+    </sbe:message>
+
+    <sbe:message name="ApplicationRegistered" id="25"
+                 description="One co-located application, published by clusterctl load-topology. The other kind of
+                              producer (§5): one replica per cluster node, elected by nothing — LeadershipChanged
+                              already names the one that submits — so this row carries no instance id, no rank and
+                              no countdown. Labelling only, like PayloadIdRegistered: the sequencer never decodes
+                              it and registration gates nothing. What it buys is a log that describes the whole
+                              deployment, not only the half that is elected">
+        <field name="applicationSourceId" id="20046" type="int32"
+               description="The application's own id in §5's one id space. Declared here even where the process does
+                            not yet stamp it: the id is spoken for either way, and an application that submits only
+                            under a requesting gateway's id is a gap in that process, not in the deployment"/>
+        <field name="applicationName"     id="20047" type="applicationName"/>
     </sbe:message>
 
 </sbe:messageSchema>

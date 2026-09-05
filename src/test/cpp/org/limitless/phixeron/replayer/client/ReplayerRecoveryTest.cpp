@@ -135,7 +135,7 @@ struct Client final : ReplayerRecoveryActions
 };
 
 // One frame carrying a core ClusterHeartbeat payload (template id 16) at the given globalSeqNo — clear
-// of the ClientConnected/ClientDisconnected/LeadershipChanged special ids (1/2/5), so it always reaches
+// of the ConnectionOpened/ConnectionClosed/LeadershipChanged special ids (1/2/5), so it always reaches
 // onSequenced rather than being intercepted as a lifecycle/leadership event. The twin of the Java
 // ReplayerRecoveryTest's heartbeatBuffer; keep the two in step.
 std::vector<std::uint8_t> encodeHeartbeat(const std::int64_t globalSeqNo)

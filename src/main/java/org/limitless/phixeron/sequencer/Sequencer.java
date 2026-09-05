@@ -3,11 +3,12 @@ package org.limitless.phixeron.sequencer;
 import org.agrona.DirectBuffer;
 import org.agrona.ExpandableDirectByteBuffer;
 import org.agrona.MutableDirectBuffer;
-import org.limitless.phixeron.sbe.frame.ClientConnectedDecoder;
-import org.limitless.phixeron.sbe.frame.ClientDisconnectedDecoder;
+import org.limitless.phixeron.sbe.frame.ApplicationRegisteredDecoder;
 import org.limitless.phixeron.sbe.frame.ClusterHeartbeatEncoder;
 import org.limitless.phixeron.sbe.frame.ClusterStartedDecoder;
 import org.limitless.phixeron.sbe.frame.ClusterStoppedDecoder;
+import org.limitless.phixeron.sbe.frame.ConnectionClosedDecoder;
+import org.limitless.phixeron.sbe.frame.ConnectionOpenedDecoder;
 import org.limitless.phixeron.sbe.frame.GatewayActivationRequestedDecoder;
 import org.limitless.phixeron.sbe.frame.GatewayActiveEncoder;
 import org.limitless.phixeron.sbe.frame.GatewayRegisteredDecoder;
@@ -65,7 +66,7 @@ public final class Sequencer {
      * LeadershipChanged, GatewayActive): a clock heartbeat or an election has no gateway-process or
      * TCP-level connection id to carry, unlike the ingress messages it forwards.
      *
-     * <p>ClientConnected/ClientDisconnected are deliberately not in that list. They denote a FIX
+     * <p>ConnectionOpened/ConnectionClosed are deliberately not in that list. They denote a FIX
      * client's TCP session opening and closing — external events the gateway observes and publishes
      * on ingress like any other message, carrying the real sourceId/connectionId of the connection
      * they describe. The sequencer used to synthesize them for Aeron <em>cluster</em> sessions
@@ -192,7 +193,7 @@ public final class Sequencer {
     private record GatewayRow(int gatewayId, int gatewaySourceId, short preferenceRank) { }
 
     /**
-     * Every roster row seen, in log order, de-duplicated on {@code gatewayId} so a re-published roster
+     * Every list row seen, in log order, de-duplicated on {@code gatewayId} so a re-published list
      * (an operator re-running {@code load-topology}) re-asserts rather than duplicates. Read only by {@link #promotionTarget},
      * and only ever by index, so the iteration order is the log's and every node agrees.
      */
@@ -200,7 +201,7 @@ public final class Sequencer {
 
     /**
      * The {@code gatewayId}s still to be designated: the rank-0 row of each {@code gatewaySourceId} behind
-     * the first complete roster, and whatever a {@code GatewayActivationRequested} has since named.
+     * the first complete list, and whatever a {@code GatewayActivationRequested} has since named.
      * Filled by {@link #applySystem} and drained one frame per call by {@link #pendingGatewayActivation}.
      *
      * <p>One bootstrap entry per <em>logical</em> gateway, because the deployment has more than one: the
@@ -253,7 +254,7 @@ public final class Sequencer {
 
     /**
      * The connections currently open at each gateway: {@code header.sourceId} to the set of {@code
-     * header.connectionId}s that have had a {@code ClientConnected} and no {@code ClientDisconnected}
+     * header.connectionId}s that have had a {@code ConnectionOpened} and no {@code ConnectionClosed}
      * yet, maintained from those frames as they pass through {@link #sequenceMessage} — the same
      * pattern as {@link #gatewayRows}. Replicated state: every node sees the same frames in the same
      * order and holds the same set. Only ever {@code add}/{@code remove}/{@code size}-d, never
@@ -266,15 +267,15 @@ public final class Sequencer {
      * size, maintained incrementally rather than summed.
      *
      * <p>A live gauge, not a running tally. It moves only when a connection actually enters or leaves
-     * that map, so an unmatched {@code ClientDisconnected} cannot take it negative and a repeated
-     * {@code ClientConnected} cannot double-count — and a gateway that dies without disconnecting its
+     * that map, so an unmatched {@code ConnectionClosed} cannot take it negative and a repeated
+     * {@code ConnectionOpened} cannot double-count — and a gateway that dies without disconnecting its
      * clients has its still-open connections released by the {@code GatewayStarted} its successor
      * publishes (see {@link #releaseStaleConnections}), which is what keeps this from drifting upward
      * over a day of gateway restarts.
      */
     private int connectedClientCount = 0;
 
-    /** True once the bootstrap {@code GatewayActive} has been synthesized (on the first complete roster). */
+    /** True once the bootstrap {@code GatewayActive} has been synthesized (on the first complete list). */
     private boolean bootstrapActivationEmitted = false;
 
     /** An outstanding {@code GatewayActive}: which instance was named, and when it stops being excused. */
@@ -321,7 +322,7 @@ public final class Sequencer {
         return currentLeaderMemberId;
     }
 
-    /** Count of TCP clients currently connected across every gateway; 0 before any {@code ClientConnected}. */
+    /** Count of TCP clients currently connected across every gateway; 0 before any {@code ConnectionOpened}. */
     public int connectedClientCount() {
         return connectedClientCount;
     }
@@ -484,14 +485,15 @@ public final class Sequencer {
      */
     private static int ingressBlockLength(final int systemEventType) {
         return switch (systemEventType) {
-            case SystemFrame.CLIENT_CONNECTED -> ClientConnectedDecoder.BLOCK_LENGTH;
-            case SystemFrame.CLIENT_DISCONNECTED -> ClientDisconnectedDecoder.BLOCK_LENGTH;
+            case SystemFrame.CONNECTION_OPENED -> ConnectionOpenedDecoder.BLOCK_LENGTH;
+            case SystemFrame.CONNECTION_CLOSED -> ConnectionClosedDecoder.BLOCK_LENGTH;
             case SystemFrame.CLUSTER_STARTED -> ClusterStartedDecoder.BLOCK_LENGTH;
             case SystemFrame.CLUSTER_STOPPED -> ClusterStoppedDecoder.BLOCK_LENGTH;
             case SystemFrame.GATEWAY_REGISTERED -> GatewayRegisteredDecoder.BLOCK_LENGTH;
             case SystemFrame.GATEWAY_STARTED -> GatewayStartedDecoder.BLOCK_LENGTH;
             case SystemFrame.PAYLOAD_ID_REGISTERED -> PayloadIdRegisteredDecoder.BLOCK_LENGTH;
             case SystemFrame.GATEWAY_ACTIVATION_REQUESTED -> GatewayActivationRequestedDecoder.BLOCK_LENGTH;
+            case SystemFrame.APPLICATION_REGISTERED -> ApplicationRegisteredDecoder.BLOCK_LENGTH;
             default -> NOT_INGRESS_LEGAL;
         };
     }
@@ -507,13 +509,13 @@ public final class Sequencer {
      */
     private boolean applySystem(final DirectBuffer buffer, final int bodyOffset, final int systemEventType,
                                 final int sourceId, final int connectionId, final long sessionId) {
-        // S-6 case 2. A system frame claiming a sourceId the roster names must arrive on a session a
+        // S-6 case 2. A system frame claiming a sourceId the list names must arrive on a session a
         // GatewayStarted already bound to that sourceId, so one process cannot speak for another's logical
         // gateway. GatewayStarted is exempt because case 1 below is what creates the binding, and every
-        // unrostered sourceId is unchecked (case 3) — clusterctl's markers and the node-local publishers.
-        if (systemEventType != SystemFrame.GATEWAY_STARTED && rosterClaims(sourceId) &&
+        // unlisted sourceId is unchecked (case 3) — clusterctl's markers and the node-local publishers.
+        if (systemEventType != SystemFrame.GATEWAY_STARTED && listClaims(sourceId) &&
             !boundToGateway(sessionId, sourceId)) {
-            return rejectSystem("systemEventType " + systemEventType + " claims rostered sourceId " + sourceId +
+            return rejectSystem("systemEventType " + systemEventType + " claims listed sourceId " + sourceId +
                                  " on a session no GatewayStarted bound");
         }
 
@@ -523,7 +525,7 @@ public final class Sequencer {
                 gatewayRegisteredDecoder.wrap(buffer, bodyOffset, GatewayRegisteredDecoder.BLOCK_LENGTH, version);
                 addGatewayRow(gatewayRegisteredDecoder.gatewayId(), gatewayRegisteredDecoder.gatewaySourceId(),
                               gatewayRegisteredDecoder.preferenceRank());
-                // remaining == 0 is the roster's last row, and the whole completeness edge: the publisher
+                // remaining == 0 is the list's last row, and the whole completeness edge: the publisher
                 // counts the rows it read, so the cluster never has to infer "have I seen everyone?".
                 if (gatewayRegisteredDecoder.remaining() == 0 && !bootstrapActivationEmitted) {
                     bootstrapActivationEmitted = true;
@@ -537,11 +539,11 @@ public final class Sequencer {
             case SystemFrame.GATEWAY_STARTED -> {
                 gatewayStartedDecoder.wrap(buffer, bodyOffset, GatewayStartedDecoder.BLOCK_LENGTH, version);
                 // S-6 case 1, both halves. Total, so a GatewayStarted ahead of load-topology is rejected
-                // against an empty roster — the start-up order as a wire rule.
+                // against an empty list — the start-up order as a wire rule.
                 final int gatewayId = gatewayStartedDecoder.gatewayId();
                 final GatewayRow row = rowFor(gatewayId);
                 if (row == null) {
-                    return rejectSystem("GatewayStarted names gatewayId " + gatewayId + ", which no roster row does");
+                    return rejectSystem("GatewayStarted names gatewayId " + gatewayId + ", which no list row does");
                 }
                 if (row.gatewaySourceId() != sourceId) {
                     return rejectSystem("GatewayStarted for gatewayId " + gatewayId + " carries sourceId " +
@@ -555,22 +557,22 @@ public final class Sequencer {
                                                 version);
                 // The operator's act is the fact, and the designation is still the cluster's: the frame is
                 // forwarded and the GatewayActive answering it is synthesized behind it, through the path
-                // bootstrap and both promotions take. Which is what gives the manual path the roster
-                // validation the other three get from iterating the roster in the first place.
+                // bootstrap and both promotions take. Which is what gives the manual path the list
+                // validation the other three get from iterating the list in the first place.
                 final int gatewayId = activationRequestedDecoder.gatewayId();
                 if (rowFor(gatewayId) == null) {
                     return rejectSystem("GatewayActivationRequested names gatewayId " + gatewayId +
-                                         ", which no roster row does");
+                                         ", which no list row does");
                 }
                 activationQueue.add(gatewayId);
             }
-            case SystemFrame.CLIENT_CONNECTED -> {
+            case SystemFrame.CONNECTION_OPENED -> {
                 if (openConnections.computeIfAbsent(sourceId, source -> new java.util.HashSet<>())
                         .add(connectionId)) {
                     connectedClientCount++;
                 }
             }
-            case SystemFrame.CLIENT_DISCONNECTED -> {
+            case SystemFrame.CONNECTION_CLOSED -> {
                 final java.util.Set<Integer> open = openConnections.get(sourceId);
                 if (open != null && open.remove(connectionId)) {
                     connectedClientCount--;
@@ -636,7 +638,7 @@ public final class Sequencer {
     }
 
     /**
-     * The activations owed to the frame just sequenced: the bootstrap run behind the roster's last row —
+     * The activations owed to the frame just sequenced: the bootstrap run behind the list's last row —
      * the cluster designating the primary of each logical gateway by naming its {@code gatewayId} in a
      * {@code GatewayActive}, so exactly one instance of each pair opens its accept gate at cold start and
      * its standby waits — and the one a {@code GatewayActivationRequested} asks for.
@@ -651,7 +653,7 @@ public final class Sequencer {
      */
     public int pendingGatewayActivation(final long timestamp) {
         final Integer gatewayId = activationQueue.poll();
-        // Empty when no roster row designated a primary — nothing to activate (fail closed).
+        // Empty when no list row designated a primary — nothing to activate (fail closed).
         return gatewayId == null ? NO_FRAME : gatewayActive(gatewayId, timestamp);
     }
 
@@ -777,12 +779,12 @@ public final class Sequencer {
      * Drops every connection still open under {@code gatewaySourceId}. A {@code GatewayStarted} is a new
      * instance declaring it has taken that logical gateway over, so anything still open under it belongs
      * to the instance that went away, whose sockets died with it — a crash cannot publish the {@code
-     * ClientDisconnected}s that would have closed them out, which is the whole reason that frame exists
+     * ConnectionClosed}s that would have closed them out, which is the whole reason that frame exists
      * (it carries the {@code firstConnectionId} the new instance resumes allocating from for the same
      * reason). Without this, every gateway crash leaves its clients counted forever.
      *
      * <p>It cannot drop a live connection: a gateway publishes {@code GatewayStarted} before it opens its
-     * accept gate ({@code FixGateway.cpp}), so none of its own {@code ClientConnected}s can precede it.
+     * accept gate ({@code FixGateway.cpp}), so none of its own {@code ConnectionOpened}s can precede it.
      * @param gatewaySourceId the logical gateway whose epoch just rolled
      */
     private void releaseStaleConnections(final int gatewaySourceId) {
@@ -867,8 +869,8 @@ public final class Sequencer {
         pendingActivations.add(armed);
     }
 
-    /** Whether any roster row names {@code sourceId} as its logical gateway (<b>S-6</b> cases 2 and 3). */
-    private boolean rosterClaims(final int sourceId) {
+    /** Whether any list row names {@code sourceId} as its logical gateway (<b>S-6</b> cases 2 and 3). */
+    private boolean listClaims(final int sourceId) {
         for (final GatewayRow row : gatewayRows) {
             if (row.gatewaySourceId() == sourceId) {
                 return true;

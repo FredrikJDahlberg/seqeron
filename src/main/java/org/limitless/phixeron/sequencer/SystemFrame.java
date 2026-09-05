@@ -2,10 +2,11 @@ package org.limitless.phixeron.sequencer;
 
 import org.agrona.DirectBuffer;
 import org.agrona.MutableDirectBuffer;
-import org.limitless.phixeron.sbe.frame.ClientConnectedEncoder;
-import org.limitless.phixeron.sbe.frame.ClientDisconnectedEncoder;
+import org.limitless.phixeron.sbe.frame.ApplicationRegisteredEncoder;
 import org.limitless.phixeron.sbe.frame.ClusterStartedEncoder;
 import org.limitless.phixeron.sbe.frame.ClusterStoppedEncoder;
+import org.limitless.phixeron.sbe.frame.ConnectionClosedEncoder;
+import org.limitless.phixeron.sbe.frame.ConnectionOpenedEncoder;
 import org.limitless.phixeron.sbe.frame.GatewayActivationRequestedEncoder;
 import org.limitless.phixeron.sbe.frame.GatewayRegisteredEncoder;
 import org.limitless.phixeron.sbe.frame.GatewayStartedEncoder;
@@ -46,15 +47,15 @@ public final class SystemFrame {
     public static final int REFUSED = -1;
 
     /**
-     * The {@code systemEventType} table (§7). The eight submitted events are their own body codec's
+     * The {@code systemEventType} table (§7). The nine submitted events are their own body codec's
      * template id — the numbers they have always held, so a recording made by an older build can never
      * read as one of these. The three the sequencer synthesizes have no body codec: a top-level template
      * names each of them, and these are the values they nonetheless stamp at offset 16 so that field
      * discriminates every frame on the tap.
      */
-    public static final int CLIENT_CONNECTED = ClientConnectedEncoder.TEMPLATE_ID;
+    public static final int CONNECTION_OPENED = ConnectionOpenedEncoder.TEMPLATE_ID;
 
-    public static final int CLIENT_DISCONNECTED = ClientDisconnectedEncoder.TEMPLATE_ID;
+    public static final int CONNECTION_CLOSED = ConnectionClosedEncoder.TEMPLATE_ID;
 
     /** Synthesis-only; {@code LeadershipChangedEncoder.TEMPLATE_ID} is the frame's, not this. */
     public static final int LEADERSHIP_CHANGED = 5;
@@ -77,6 +78,8 @@ public final class SystemFrame {
 
     public static final int GATEWAY_ACTIVATION_REQUESTED = GatewayActivationRequestedEncoder.TEMPLATE_ID;
 
+    public static final int APPLICATION_REGISTERED = ApplicationRegisteredEncoder.TEMPLATE_ID;
+
     private SystemFrame() {
     }
 
@@ -84,8 +87,8 @@ public final class SystemFrame {
      * Encodes one {@code UnsequencedSystem} frame around {@code body}.
      *
      * @param frame           where the frame is written, from offset 0
-     * @param sourceId        the producing gateway's {@code gatewaySourceId}; -1 is reserved for the cluster
-     * @param connectionId    the connection this frame belongs to, or -1 for a gateway-scoped one
+     * @param sourceId        the producing process's {@code gatewaySourceId}; -1 is reserved for the cluster
+     * @param connectionId    the connection this frame belongs to, or -1 for a producer-scoped one
      * @param sessionId       this process's cluster session; advisory, the sequencer overwrites it
      * @param systemEventType which of §7's submitted events {@code body} holds
      * @param body            the event's SBE block, with no {@code MessageHeader} of its own
@@ -111,8 +114,8 @@ public final class SystemFrame {
      * The same, for an application's own payload rather than a system event's body.
      *
      * @param frame         where the frame is written, from offset 0
-     * @param sourceId      the producing gateway's {@code gatewaySourceId}; -1 is reserved for the cluster
-     * @param connectionId  the connection this frame belongs to, or -1 for a gateway-scoped one
+     * @param sourceId      the producing process's {@code gatewaySourceId}; -1 is reserved for the cluster
+     * @param connectionId  the connection this frame belongs to, or -1 for a producer-scoped one
      * @param sessionId     this process's cluster session; advisory, the sequencer overwrites it
      * @param payloadId     names the payload's decoder namespace and encoding; 0 and 1 are invalid on the wire
      * @param payload       the payload, its own 8-byte {@code MessageHeader} included

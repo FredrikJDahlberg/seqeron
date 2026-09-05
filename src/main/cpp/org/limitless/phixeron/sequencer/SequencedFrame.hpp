@@ -7,11 +7,12 @@
 #include "concurrent/logbuffer/LogBufferDescriptor.h"
 
 // Generated SBE C++ codecs from sbe-frame.xml (via GenerateFrameSbeCodecs)
-#include "org_limitless_phixeron_sbe_frame/ClientConnected.h"
-#include "org_limitless_phixeron_sbe_frame/ClientDisconnected.h"
+#include "org_limitless_phixeron_sbe_frame/ApplicationRegistered.h"
 #include "org_limitless_phixeron_sbe_frame/ClusterHeartbeat.h"
 #include "org_limitless_phixeron_sbe_frame/ClusterStarted.h"
 #include "org_limitless_phixeron_sbe_frame/ClusterStopped.h"
+#include "org_limitless_phixeron_sbe_frame/ConnectionClosed.h"
+#include "org_limitless_phixeron_sbe_frame/ConnectionOpened.h"
 #include "org_limitless_phixeron_sbe_frame/GatewayActivationRequested.h"
 #include "org_limitless_phixeron_sbe_frame/GatewayActive.h"
 #include "org_limitless_phixeron_sbe_frame/GatewayRegistered.h"
@@ -70,8 +71,8 @@ inline constexpr std::uint16_t MAX_INGRESS_LENGTH = MIN_INGRESS_LENGTH + MAX_PAY
 // sequencer synthesizes have no body codec: a top-level template names each of them, and these are
 // the values they nonetheless stamp at offset 16 so that field discriminates every frame on the tap.
 // The Java twin is SystemFrame; keep the two in step.
-inline constexpr std::uint16_t CLIENT_CONNECTED = sbe::frame::ClientConnected::sbeTemplateId();
-inline constexpr std::uint16_t CLIENT_DISCONNECTED = sbe::frame::ClientDisconnected::sbeTemplateId();
+inline constexpr std::uint16_t CONNECTION_OPENED = sbe::frame::ConnectionOpened::sbeTemplateId();
+inline constexpr std::uint16_t CONNECTION_CLOSED = sbe::frame::ConnectionClosed::sbeTemplateId();
 inline constexpr std::uint16_t LEADERSHIP_CHANGED = 5; // synthesis-only
 inline constexpr std::uint16_t CLUSTER_STARTED = sbe::frame::ClusterStarted::sbeTemplateId();
 inline constexpr std::uint16_t CLUSTER_STOPPED = sbe::frame::ClusterStopped::sbeTemplateId();
@@ -81,6 +82,7 @@ inline constexpr std::uint16_t GATEWAY_ACTIVE = 18; // synthesis-only
 inline constexpr std::uint16_t GATEWAY_STARTED = sbe::frame::GatewayStarted::sbeTemplateId();
 inline constexpr std::uint16_t PAYLOAD_ID_REGISTERED = sbe::frame::PayloadIdRegistered::sbeTemplateId();
 inline constexpr std::uint16_t GATEWAY_ACTIVATION_REQUESTED = sbe::frame::GatewayActivationRequested::sbeTemplateId();
+inline constexpr std::uint16_t APPLICATION_REGISTERED = sbe::frame::ApplicationRegistered::sbeTemplateId();
 
 /**
  * Carries one message from the cluster stream.
@@ -99,8 +101,8 @@ inline constexpr std::uint16_t GATEWAY_ACTIVATION_REQUESTED = sbe::frame::Gatewa
 struct SequencedEvent
 {
     std::int64_t globalSeqNo;
-    std::int32_t sourceId;         ///< Fixed constant identifying the submitting gateway process (header.sourceId)
-    std::int32_t connectionId;     ///< TCP connection id at that gateway; routes the reply (header.connectionId)
+    std::int32_t sourceId;         ///< Fixed constant identifying the submitting producer process (header.sourceId)
+    std::int32_t connectionId;     ///< Connection id at that producer; routes the reply (header.connectionId)
     std::int64_t sourceSessionId;  ///< Aeron Cluster client session id (header.sessionId)
     std::int64_t clusterTimestamp; ///< cluster consensus time (ms) when message was committed
     std::int64_t receiveTimeNs;    ///< wall-clock ns at receipt by this client
@@ -315,20 +317,20 @@ inline std::int64_t frameStartPosition(const aeron::Header& header)
 }
 
 /**
- * A FIX client's TCP connection to a gateway opening (ClientConnected) or closing
- * (ClientDisconnected). Published by the gateway that owns the socket — these are external
+ * A connection at a producer opening (ConnectionOpened) or closing
+ * (ConnectionClosed). Published by the producer that owns it — these are external
  * events it observes, forwarded on ingress like any other message, not something the
  * sequencer synthesizes.
  *
  * sourceId/connectionId name the connection the event refers to, and both are needed:
- * connectionId is unique only within the publishing gateway process, so a consumer serving
- * one gateway must match sourceId before acting on a connectionId (see FixGateway).
+ * connectionId is unique only within the publishing producer process, so a consumer serving
+ * one producer must match sourceId before acting on a connectionId (see FixGateway).
  */
 struct LifecycleEvent
 {
     std::int64_t globalSeqNo;
-    std::int32_t sourceId;         ///< publishing gateway process (header.sourceId)
-    std::int32_t connectionId;     ///< TCP connection at that gateway (header.connectionId)
+    std::int32_t sourceId;         ///< publishing producer process (header.sourceId)
+    std::int32_t connectionId;     ///< connection at that producer (header.connectionId)
     std::int64_t sourceSessionId;  ///< Aeron Cluster session the event was submitted on
     std::int64_t clusterTimestamp; ///< cluster consensus time (ms) when committed
     std::int64_t receiveTimeNs;    ///< wall-clock ns at receipt by this client

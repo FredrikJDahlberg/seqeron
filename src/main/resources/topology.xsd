@@ -26,7 +26,7 @@
         </xs:restriction>
     </xs:simpleType>
 
-    <!-- -1 is the cluster's own (F-4) and never a roster row's. -->
+    <!-- -1 is the cluster's own (F-4) and never a list row's. -->
     <xs:simpleType name="SourceId">
         <xs:restriction base="xs:int">
             <xs:minInclusive value="0"/>
@@ -42,19 +42,38 @@
 
     <xs:element name="topology">
         <xs:complexType>
-            <!-- Document order is publish order: the roster first, its last row the completeness
-                 edge the bootstrap GatewayActives are synthesized behind, the protocol rows after. -->
+            <!-- Document order is publish order: the gateway list first, its last row the completeness
+                 edge the bootstrap GatewayActives are synthesized behind, then the applications and the
+                 protocol rows, neither of which the sequencer waits on. The three together are the
+                 deployment: every producer, elected or not, and what the shared payloadIds are called. -->
             <xs:sequence>
                 <xs:element name="gateways">
                     <xs:complexType>
                         <xs:sequence>
-                            <!-- Non-empty: an empty roster elects nobody. -->
+                            <!-- Non-empty: an empty list elects nobody. -->
                             <xs:element name="gateway" maxOccurs="unbounded">
                                 <xs:complexType>
                                     <xs:attribute name="name"        type="t:Name"          use="required"/>
                                     <xs:attribute name="id"          type="xs:int"          use="required"/>
                                     <xs:attribute name="sourceId"    type="t:SourceId"      use="required"/>
                                     <xs:attribute name="rank"        type="xs:unsignedByte" use="required"/>
+                                    <xs:attribute name="description" type="xs:string"/>
+                                </xs:complexType>
+                            </xs:element>
+                        </xs:sequence>
+                    </xs:complexType>
+                </xs:element>
+
+                <!-- The other kind of producer (spec §5): one replica per cluster node, elected by
+                     nothing, so no instance id and no rank — the instance is the node. MAY be absent or
+                     empty: a deployment with no co-located application declares none. -->
+                <xs:element name="applications" minOccurs="0">
+                    <xs:complexType>
+                        <xs:sequence>
+                            <xs:element name="application" minOccurs="0" maxOccurs="unbounded">
+                                <xs:complexType>
+                                    <xs:attribute name="name"        type="t:Name"     use="required"/>
+                                    <xs:attribute name="sourceId"    type="t:SourceId"     use="required"/>
                                     <xs:attribute name="description" type="xs:string"/>
                                 </xs:complexType>
                             </xs:element>
@@ -81,7 +100,7 @@
             </xs:sequence>
         </xs:complexType>
 
-        <!-- A duplicate gatewayId silently drops an instance; a duplicate payloadId is an operator
+        <!-- A duplicate producer id silently drops an instance; a duplicate payloadId is an operator
              slip, not C-3's supersede. -->
         <xs:unique name="uniqueGatewayId">
             <xs:selector xpath="t:gateways/t:gateway"/>
@@ -90,6 +109,17 @@
         <xs:unique name="uniqueGatewayName">
             <xs:selector xpath="t:gateways/t:gateway"/>
             <xs:field xpath="@name"/>
+        </xs:unique>
+        <!-- Uniqueness within the section only. An application sourceId colliding with a gateway's is
+             the loader's check: gateway sourceIds repeat by design (a pair shares one), so it is not
+             expressible as an identity constraint over both sections. -->
+        <xs:unique name="uniqueApplicationName">
+            <xs:selector xpath="t:applications/t:application"/>
+            <xs:field xpath="@name"/>
+        </xs:unique>
+        <xs:unique name="uniqueApplicationSourceId">
+            <xs:selector xpath="t:applications/t:application"/>
+            <xs:field xpath="@sourceId"/>
         </xs:unique>
         <xs:unique name="uniquePayloadId">
             <xs:selector xpath="t:protocols/t:protocol"/>

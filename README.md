@@ -63,7 +63,7 @@ replica is dropped and heals by replay rather than back-pressuring the cluster.
   (`sbe-frame.xml`, schema 210) whose body is one opaque payload named by `header.payloadId`;
   `Sequencer` decodes the frame header, stamps it, and copies the payload through byte-identical.
   Only `payloadId` 1 — seqeron's own core payloads — is ever opened, and the one bounded exception
-  inside it is the `GatewayRegistered` roster row.
+  inside it is the `GatewayRegistered` list row.
 - **The log holds the authoritative state, and every decision consumers must agree on is
   emitted rather than inferred.** FIX session state is driven only by cluster-replicated
   callbacks, never straight off the TCP receive path; connects/disconnects, refusals, order

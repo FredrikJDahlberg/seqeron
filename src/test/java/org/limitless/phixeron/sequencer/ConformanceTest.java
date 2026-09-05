@@ -19,9 +19,10 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.limitless.phixeron.replayer.client.SequencedFrameDecoder;
-import org.limitless.phixeron.sbe.frame.ClientConnectedEncoder;
+import org.limitless.phixeron.sbe.frame.ApplicationRegisteredEncoder;
 import org.limitless.phixeron.sbe.frame.ClusterHeartbeatDecoder;
 import org.limitless.phixeron.sbe.frame.ClusterStartedEncoder;
+import org.limitless.phixeron.sbe.frame.ConnectionOpenedEncoder;
 import org.limitless.phixeron.sbe.frame.GatewayActivationRequestedEncoder;
 import org.limitless.phixeron.sbe.frame.GatewayActiveDecoder;
 import org.limitless.phixeron.sbe.frame.GatewayRegisteredEncoder;
@@ -56,11 +57,11 @@ class ConformanceTest {
     private static final long SESSION_ID = 0x5EE5_1000L;
     private static final long TIMESTAMP = 1_700_000_000_000L;
 
-    /** clusterctl's reserved {@code sourceId} (§5): never a {@code gatewaySourceId}, so never roster-checked. */
+    /** clusterctl's reserved {@code sourceId} (§5): never a {@code gatewaySourceId}, so never list-checked. */
     private static final int CLUSTERCTL_SOURCE_ID = 2;
 
-    /** A {@code gatewaySourceId} the roster rows below claim. */
-    private static final int ROSTERED_SOURCE_ID = 5;
+    /** A {@code gatewaySourceId} the list rows below claim. */
+    private static final int LISTED_SOURCE_ID = 5;
 
     /** Offset of the body's length prefix in an ingress frame: past the outer header and the composite. */
     private static final int PREFIX_OFFSET =
@@ -181,14 +182,14 @@ class ConformanceTest {
             final int systemEventType = event.getKey();
             final byte[] body = event.getValue();
 
-            // The two roster-checked events (S-6 case 1) need a row naming their gatewayId first.
+            // The two list-checked events (S-6 case 1) need a row naming their gatewayId first.
             if (systemEventType == SystemFrame.GATEWAY_STARTED ||
                 systemEventType == SystemFrame.GATEWAY_ACTIVATION_REQUESTED) {
-                loadRoster(target, 1);
+                loadList(target, 1);
             }
             // GatewayStarted must carry its row's gatewaySourceId; everything else publishes from an
-            // unrostered id, which is S-6 case 3 and unchecked.
-            final int sourceId = systemEventType == SystemFrame.GATEWAY_STARTED ? ROSTERED_SOURCE_ID
+            // unlisted id, which is S-6 case 3 and unchecked.
+            final int sourceId = systemEventType == SystemFrame.GATEWAY_STARTED ? LISTED_SOURCE_ID
                                                                                 : CLUSTERCTL_SOURCE_ID;
             final int length = systemFrame(systemEventType, sourceId, body);
             final int sequenced = target.sequenceMessage(ingress, 0, length, SESSION_ID, TIMESTAMP);
@@ -204,14 +205,14 @@ class ConformanceTest {
 
     @ParameterizedTest(name = "connectionData of {0} bytes")
     @ValueSource(ints = {0, 7, 1314})
-    @DisplayName("row 3: ClientConnected's connectionData crosses unchanged at every size §7.1 allows")
-    void clientConnectedCarriesAnyConnectionData(final int dataLength) {
+    @DisplayName("row 3: ConnectionOpened's connectionData crosses unchanged at every size §7.1 allows")
+    void connectionOpenedCarriesAnyConnectionData(final int dataLength) {
         // The body is the var-data prefix plus the data, so 1314 bytes of it fills MAX_PAYLOAD_LENGTH.
         final byte[] data = syntheticPayload(dataLength);
-        final byte[] body = clientConnectedBody(data);
+        final byte[] body = connectionOpenedBody(data);
         assertTrue(body.length <= FrameLayer.MAX_PAYLOAD_LENGTH);
 
-        final int length = systemFrame(SystemFrame.CLIENT_CONNECTED, SOURCE_ID, body);
+        final int length = systemFrame(SystemFrame.CONNECTION_OPENED, SOURCE_ID, body);
         final int sequenced = sequencer.sequenceMessage(ingress, 0, length, SESSION_ID, TIMESTAMP);
         assertNotEquals(Sequencer.NO_FRAME, sequenced);
 
@@ -235,7 +236,7 @@ class ConformanceTest {
         assertEquals(SystemFrame.LEADERSHIP_CHANGED, wrapSequenced(leadership).systemEventType());
         assertEquals(2, decodeLeadershipChanged(sequencer.buffer()).newLeaderMemberId());
 
-        loadRoster(sequencer, 0);
+        loadList(sequencer, 0);
         final int active = sequencer.pendingGatewayActivation(TIMESTAMP);
         assertEquals(GatewayActiveDecoder.TEMPLATE_ID, templateIdOf(active));
         assertEquals(SystemFrame.GATEWAY_ACTIVE, wrapSequenced(active).systemEventType());
@@ -293,7 +294,7 @@ class ConformanceTest {
             assertRejected(() -> sequencer.sequenceMessage(ingress, 0, payloadLength, SESSION_ID, TIMESTAMP),
                            "Unsequenced blockLength " + blockLength);
 
-            final int systemLength = systemFrame(SystemFrame.CLIENT_DISCONNECTED, SOURCE_ID, new byte[0]);
+            final int systemLength = systemFrame(SystemFrame.CONNECTION_CLOSED, SOURCE_ID, new byte[0]);
             ingress.putShort(BLOCK_LENGTH_OFFSET, (short)blockLength, ByteOrder.LITTLE_ENDIAN);
             assertRejected(() -> sequencer.sequenceMessage(ingress, 0, systemLength, SESSION_ID, TIMESTAMP),
                            "UnsequencedSystem blockLength " + blockLength);
@@ -350,11 +351,11 @@ class ConformanceTest {
     @Test
     @DisplayName("row 4 condition 10: a frame failing S-6 is refused")
     void conditionTenS6() {
-        loadRoster(sequencer, 1);
+        loadList(sequencer, 1);
         final long before = sequencer.globalSeqNo();
-        final int length = systemFrame(SystemFrame.GATEWAY_STARTED, ROSTERED_SOURCE_ID, gatewayStartedBody(99));
+        final int length = systemFrame(SystemFrame.GATEWAY_STARTED, LISTED_SOURCE_ID, gatewayStartedBody(99));
         assertRejected(() -> sequencer.sequenceMessage(ingress, 0, length, SESSION_ID, TIMESTAMP),
-                       "a gatewayId no roster row names", before);
+                       "a gatewayId no list row names", before);
     }
 
     // ── Row 4a. A rejection denies nothing (S-7, C-2) ────────────────────────────────────────────
@@ -408,7 +409,7 @@ class ConformanceTest {
 
         // The same holds for the system family, whose body is bounded by the same constant.
         assertEquals(SystemFrame.REFUSED,
-                     SystemFrame.wrap(frame, SOURCE_ID, CONNECTION_ID, SESSION_ID, SystemFrame.CLIENT_CONNECTED,
+                     SystemFrame.wrap(frame, SOURCE_ID, CONNECTION_ID, SESSION_ID, SystemFrame.CONNECTION_OPENED,
                                       payload, FrameLayer.MAX_PAYLOAD_LENGTH + 1));
     }
 
@@ -427,7 +428,7 @@ class ConformanceTest {
         long timestamp = TIMESTAMP;
 
         collect(frames, target, target.leadershipChanged(0, timestamp));
-        loadRoster(target, 0);
+        loadList(target, 0);
         collect(frames, target, target.sequenceMessage(ingress, 0, lastIngressLength, SESSION_ID, timestamp));
         collect(frames, target, target.pendingGatewayActivation(timestamp));
 
@@ -531,42 +532,42 @@ class ConformanceTest {
     @Test
     @DisplayName("row 8: a GatewayStarted agreeing with its row binds; four disagreements are refused")
     void s6BindsAndRefuses() {
-        loadRoster(sequencer, 1);
-        final long afterRoster = sequencer.globalSeqNo();
+        loadList(sequencer, 1);
+        final long afterList = sequencer.globalSeqNo();
 
         // Case 1, the positive: gatewayId 11 is a row, and its row's gatewaySourceId is what we carry.
-        int length = systemFrame(SystemFrame.GATEWAY_STARTED, ROSTERED_SOURCE_ID, gatewayStartedBody(11));
+        int length = systemFrame(SystemFrame.GATEWAY_STARTED, LISTED_SOURCE_ID, gatewayStartedBody(11));
         assertNotEquals(Sequencer.NO_FRAME, sequencer.sequenceMessage(ingress, 0, length, SESSION_ID, TIMESTAMP));
 
         // Case 1, negative a: the same frame under a different gatewaySourceId.
         final int wrongSource = systemFrame(SystemFrame.GATEWAY_STARTED, 6, gatewayStartedBody(11));
         assertRejected(() -> sequencer.sequenceMessage(ingress, 0, wrongSource, SESSION_ID + 1, TIMESTAMP));
 
-        // Case 1, negative b: a gatewayId no row names, on a rostered sourceId.
-        final int unknownGateway = systemFrame(SystemFrame.GATEWAY_STARTED, ROSTERED_SOURCE_ID,
+        // Case 1, negative b: a gatewayId no row names, on a listed sourceId.
+        final int unknownGateway = systemFrame(SystemFrame.GATEWAY_STARTED, LISTED_SOURCE_ID,
                                                gatewayStartedBody(404));
         assertRejected(() -> sequencer.sequenceMessage(ingress, 0, unknownGateway, SESSION_ID + 1, TIMESTAMP));
 
-        // Case 1, negative c: an activation request naming an unrostered gatewayId.
+        // Case 1, negative c: an activation request naming an unlisted gatewayId.
         final int unknownActivation = systemFrame(SystemFrame.GATEWAY_ACTIVATION_REQUESTED, CLUSTERCTL_SOURCE_ID,
                                                   activationRequestedBody(404));
         assertRejected(() -> sequencer.sequenceMessage(ingress, 0, unknownActivation, SESSION_ID + 1, TIMESTAMP));
 
-        // Case 2: another system frame claiming a rostered sourceId on a session no GatewayStarted bound.
-        final int unbound = systemFrame(SystemFrame.CLIENT_CONNECTED, ROSTERED_SOURCE_ID, clientConnectedBody(
+        // Case 2: another system frame claiming a listed sourceId on a session no GatewayStarted bound.
+        final int unbound = systemFrame(SystemFrame.CONNECTION_OPENED, LISTED_SOURCE_ID, connectionOpenedBody(
             new byte[0]));
         assertRejected(() -> sequencer.sequenceMessage(ingress, 0, unbound, SESSION_ID + 1, TIMESTAMP));
 
         // Case 3, both negatives: an application payload under that same sourceId, and clusterctl's marker.
-        final int application = payloadFrame(PAYLOAD_ID, ROSTERED_SOURCE_ID, syntheticPayload(8));
+        final int application = payloadFrame(PAYLOAD_ID, LISTED_SOURCE_ID, syntheticPayload(8));
         assertNotEquals(Sequencer.NO_FRAME,
                         sequencer.sequenceMessage(ingress, 0, application, SESSION_ID + 1, TIMESTAMP),
                         "S-6 is scoped to the system family");
         final int marker = systemFrame(SystemFrame.CLUSTER_STARTED, CLUSTERCTL_SOURCE_ID, clusterStartedBody());
         assertNotEquals(Sequencer.NO_FRAME, sequencer.sequenceMessage(ingress, 0, marker, SESSION_ID + 2, TIMESTAMP),
-                        "an unrostered sourceId is unchecked");
+                        "an unlisted sourceId is unchecked");
 
-        assertEquals(afterRoster + 3, sequencer.globalSeqNo(), "the four refusals consumed no sequence number");
+        assertEquals(afterList + 3, sequencer.globalSeqNo(), "the four refusals consumed no sequence number");
         assertEquals(4, sequencer.rejectedFrameCount());
     }
 
@@ -576,9 +577,9 @@ class ConformanceTest {
     @DisplayName("row 9: bootstrap takes rank 0, and a close promotes the lowest surviving rank")
     void promotionOrder() {
         // One logical gateway, three instances: gatewayIds 11/12/13 at ranks 0/1/2.
-        register(sequencer, 11, ROSTERED_SOURCE_ID, (short)0, 2);
-        register(sequencer, 12, ROSTERED_SOURCE_ID, (short)1, 1);
-        register(sequencer, 13, ROSTERED_SOURCE_ID, (short)2, 0);
+        register(sequencer, 11, LISTED_SOURCE_ID, (short)0, 2);
+        register(sequencer, 12, LISTED_SOURCE_ID, (short)1, 1);
+        register(sequencer, 13, LISTED_SOURCE_ID, (short)2, 0);
 
         assertEquals(11, activatedGatewayId(sequencer), "bootstrap designates rank 0, and only rank 0");
         assertEquals(Sequencer.NO_FRAME, sequencer.pendingGatewayActivation(TIMESTAMP), "and nothing else");
@@ -607,8 +608,8 @@ class ConformanceTest {
     @Test
     @DisplayName("row 9: a designated instance that never starts is handed on at the deadline, not before")
     void activationDeadline() {
-        register(sequencer, 11, ROSTERED_SOURCE_ID, (short)0, 1);
-        register(sequencer, 12, ROSTERED_SOURCE_ID, (short)1, 0);
+        register(sequencer, 11, LISTED_SOURCE_ID, (short)0, 1);
+        register(sequencer, 12, LISTED_SOURCE_ID, (short)1, 0);
         assertEquals(11, activatedGatewayId(sequencer));
 
         final long armed = TIMESTAMP;
@@ -624,8 +625,8 @@ class ConformanceTest {
     @Test
     @DisplayName("row 9: an instance that answered arms nothing further, and a sole instance promotes nothing")
     void answeredActivationAndSoleInstance() {
-        register(sequencer, 11, ROSTERED_SOURCE_ID, (short)0, 1);
-        register(sequencer, 12, ROSTERED_SOURCE_ID, (short)1, 0);
+        register(sequencer, 11, LISTED_SOURCE_ID, (short)0, 1);
+        register(sequencer, 12, LISTED_SOURCE_ID, (short)1, 0);
         assertEquals(11, activatedGatewayId(sequencer));
         bind(sequencer, 11, 100L);
         assertEquals(Sequencer.NO_FRAME,
@@ -645,8 +646,8 @@ class ConformanceTest {
     @Test
     @DisplayName("row 9: two logical gateways bootstrapped back to back each keep their own deadline")
     void twoLogicalGatewaysKeepTheirOwnDeadlines() {
-        register(sequencer, 11, ROSTERED_SOURCE_ID, (short)0, 3);
-        register(sequencer, 12, ROSTERED_SOURCE_ID, (short)1, 2);
+        register(sequencer, 11, LISTED_SOURCE_ID, (short)0, 3);
+        register(sequencer, 12, LISTED_SOURCE_ID, (short)1, 2);
         register(sequencer, 21, 6, (short)0, 1);
         register(sequencer, 22, 6, (short)1, 0);
         assertEquals(11, activatedGatewayId(sequencer));
@@ -730,23 +731,24 @@ class ConformanceTest {
         return copy(frame, 0, MessageHeaderEncoder.ENCODED_LENGTH + encoder.encodedLength());
     }
 
-    /** The eight submitted events of §7, each with a well-formed body. */
+    /** The nine submitted events of §7, each with a well-formed body. */
     private static Map<Integer, byte[]> submittedEvents() {
         final java.util.LinkedHashMap<Integer, byte[]> events = new java.util.LinkedHashMap<>();
-        events.put(SystemFrame.CLIENT_CONNECTED, clientConnectedBody(new byte[0]));
-        events.put(SystemFrame.CLIENT_DISCONNECTED, new byte[0]);
+        events.put(SystemFrame.CONNECTION_OPENED, connectionOpenedBody(new byte[0]));
+        events.put(SystemFrame.CONNECTION_CLOSED, new byte[0]);
         events.put(SystemFrame.CLUSTER_STARTED, clusterStartedBody());
         events.put(SystemFrame.CLUSTER_STOPPED, clusterStartedBody());
-        events.put(SystemFrame.GATEWAY_REGISTERED, gatewayRegisteredBody(11, ROSTERED_SOURCE_ID, (short)0, 1));
+        events.put(SystemFrame.GATEWAY_REGISTERED, gatewayRegisteredBody(11, LISTED_SOURCE_ID, (short)0, 1));
         events.put(SystemFrame.GATEWAY_STARTED, gatewayStartedBody(11));
         events.put(SystemFrame.PAYLOAD_ID_REGISTERED, payloadIdRegisteredBody());
         events.put(SystemFrame.GATEWAY_ACTIVATION_REQUESTED, activationRequestedBody(11));
+        events.put(SystemFrame.APPLICATION_REGISTERED, applicationRegisteredBody(3));
         return events;
     }
 
-    private static byte[] clientConnectedBody(final byte[] connectionData) {
+    private static byte[] connectionOpenedBody(final byte[] connectionData) {
         final MutableDirectBuffer body = new ExpandableArrayBuffer(connectionData.length + 16);
-        final ClientConnectedEncoder encoder = new ClientConnectedEncoder();
+        final ConnectionOpenedEncoder encoder = new ConnectionOpenedEncoder();
         encoder.wrap(body, 0);
         encoder.putConnectionData(connectionData, 0, connectionData.length);
         return copy(body, 0, encoder.encodedLength());
@@ -783,6 +785,13 @@ class ConformanceTest {
         return copy(body, 0, encoder.encodedLength());
     }
 
+    private static byte[] applicationRegisteredBody(final int applicationSourceId) {
+        final MutableDirectBuffer body = new ExpandableArrayBuffer(64);
+        final ApplicationRegisteredEncoder encoder = new ApplicationRegisteredEncoder();
+        encoder.wrap(body, 0).applicationSourceId(applicationSourceId).applicationName("BasicDataServer");
+        return copy(body, 0, encoder.encodedLength());
+    }
+
     private static byte[] payloadIdRegisteredBody() {
         final MutableDirectBuffer body = new ExpandableArrayBuffer(64);
         final org.limitless.phixeron.sbe.frame.PayloadIdRegisteredEncoder encoder =
@@ -791,7 +800,7 @@ class ConformanceTest {
         return copy(body, 0, encoder.encodedLength());
     }
 
-    /** Publishes one roster row; {@code remaining == 0} closes the roster and arms the bootstrap. */
+    /** Publishes one list row; {@code remaining == 0} closes the list and arms the bootstrap. */
     private void register(final Sequencer target, final int gatewayId, final int gatewaySourceId,
                           final short preferenceRank, final int remaining) {
         final int length = systemFrame(SystemFrame.GATEWAY_REGISTERED, CLUSTERCTL_SOURCE_ID,
@@ -799,14 +808,14 @@ class ConformanceTest {
         assertNotEquals(Sequencer.NO_FRAME, target.sequenceMessage(ingress, 0, length, SESSION_ID, TIMESTAMP));
     }
 
-    /** A one-row roster for {@code gatewayId} 11 at rank 0, left open when {@code remaining > 0}. */
-    private void loadRoster(final Sequencer target, final int remaining) {
-        register(target, 11, ROSTERED_SOURCE_ID, (short)0, remaining);
+    /** A one-row list for {@code gatewayId} 11 at rank 0, left open when {@code remaining > 0}. */
+    private void loadList(final Sequencer target, final int remaining) {
+        register(target, 11, LISTED_SOURCE_ID, (short)0, remaining);
     }
 
     /** Binds {@code sessionId} to {@code gatewayId} with the GatewayStarted that is the only thing that can. */
     private void bind(final Sequencer target, final int gatewayId, final long sessionId) {
-        final int length = systemFrame(SystemFrame.GATEWAY_STARTED, gatewayId < 20 ? ROSTERED_SOURCE_ID : 6,
+        final int length = systemFrame(SystemFrame.GATEWAY_STARTED, gatewayId < 20 ? LISTED_SOURCE_ID : 6,
                                        gatewayStartedBody(gatewayId));
         assertNotEquals(Sequencer.NO_FRAME, target.sequenceMessage(ingress, 0, length, sessionId, TIMESTAMP));
     }

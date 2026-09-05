@@ -553,7 +553,7 @@ class ClusterStreamClient
             m_lastGlobalSeqNo = gseq;
         }
         const bool isSystem = view.system;
-        if (isSystem && view.systemEventType == CLIENT_CONNECTED)
+        if (isSystem && view.systemEventType == CONNECTION_OPENED)
         {
             if (m_onConnected)
             {
@@ -566,7 +566,7 @@ class ClusterStreamClient
             }
             return;
         }
-        if (isSystem && view.systemEventType == CLIENT_DISCONNECTED)
+        if (isSystem && view.systemEventType == CONNECTION_CLOSED)
         {
             if (m_onDisconnected)
             {

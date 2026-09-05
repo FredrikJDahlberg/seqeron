@@ -1,5 +1,8 @@
 // :cluster — the sequencer, the replayer (both sides), the shared client classes, the tools, and the
-// SBE code generation. Nothing here may reference :gateways (doc/future-arch.md §11 step 1).
+// code generation for the schemas the cluster tier itself speaks. Nothing here may reference
+// :gateways (doc/future-arch.md §11 step 1), and nothing here touches an application payload at all —
+// not its codecs and not its IR. sbe-session.xml and sbe-basicdata.xml are :gateways', sbe-order.xml
+// the C++ edge's, and each is generated and staged by the module that owns it.
 
 plugins {
     id 'application'
@@ -69,56 +72,6 @@ tasks.register('generateReplaySbe', JavaExec) {
     }
 }
 
-tasks.register('generateSessionSbe', JavaExec) {
-    description = 'Generate Java SBE codecs from sbe-session.xml (the FIX session family, payloadId 3)'
-    classpath   = configurations.sbeCodegen
-    mainClass   = 'uk.co.real_logic.sbe.SbeTool'
-
-    jvmArgs '--add-opens=java.base/jdk.internal.misc=ALL-UNNAMED'
-
-    systemProperty 'sbe.output.dir',               sbeGeneratedSrcDir.absolutePath
-    systemProperty 'sbe.target.language',          'Java'
-    systemProperty 'sbe.java.generate.interfaces', 'false'
-    systemProperty 'sbe.xinclude.aware',           'true'
-    systemProperty 'sbe.generate.ir',              'true'
-
-    args new File(sbeResourceDir, 'sbe-session.xml')
-
-    inputs.file  new File(sbeResourceDir, 'sbe-session.xml')
-    outputs.dir  new File(sbeGeneratedSrcDir, 'org/limitless/phixeron/sbe/session')
-    outputs.file new File(sbeGeneratedSrcDir, 'sbe-session.sbeir')
-
-    doFirst {
-        new File(sbeGeneratedSrcDir, 'org/limitless/phixeron/sbe/session').deleteDir()
-        sbeGeneratedSrcDir.mkdirs()
-    }
-}
-
-tasks.register('generateBasicDataSbe', JavaExec) {
-    description = 'Generate Java SBE codecs from sbe-basicdata.xml (reference data, payloadId 4)'
-    classpath   = configurations.sbeCodegen
-    mainClass   = 'uk.co.real_logic.sbe.SbeTool'
-
-    jvmArgs '--add-opens=java.base/jdk.internal.misc=ALL-UNNAMED'
-
-    systemProperty 'sbe.output.dir',               sbeGeneratedSrcDir.absolutePath
-    systemProperty 'sbe.target.language',          'Java'
-    systemProperty 'sbe.java.generate.interfaces', 'false'
-    systemProperty 'sbe.xinclude.aware',           'true'
-    systemProperty 'sbe.generate.ir',              'true'
-
-    args new File(sbeResourceDir, 'sbe-basicdata.xml')
-
-    inputs.file  new File(sbeResourceDir, 'sbe-basicdata.xml')
-    outputs.dir  new File(sbeGeneratedSrcDir, 'org/limitless/phixeron/sbe/basicdata')
-    outputs.file new File(sbeGeneratedSrcDir, 'sbe-basicdata.sbeir')
-
-    doFirst {
-        new File(sbeGeneratedSrcDir, 'org/limitless/phixeron/sbe/basicdata').deleteDir()
-        sbeGeneratedSrcDir.mkdirs()
-    }
-}
-
 tasks.register('generateFrameSbe', JavaExec) {
     description = 'Generate Java SBE codecs from sbe-frame.xml (the Unsequenced/Sequenced envelope pair)'
     classpath   = configurations.sbeCodegen
@@ -144,9 +97,14 @@ tasks.register('generateFrameSbe', JavaExec) {
     }
 }
 
+// Only the two schemas the cluster tier speaks. The application payloads' codecs are :gateways',
+// generated there — this module compiles against none of them, and shipping them in its jar was what
+// let the "payload-agnostic" claim be true of the code and false of the artifact.
 tasks.named('compileJava') {
-    dependsOn 'generateReplaySbe', 'generateFrameSbe', 'generateSessionSbe', 'generateBasicDataSbe'
+    dependsOn 'generateReplaySbe', 'generateFrameSbe'
 }
+
+// ── IR-only schemas ────────────────────────────────────────────────────────────
 
 // IR only, no stubs: the Java side speaks the cluster protocol through io.aeron.cluster.codecs, so the
 // mirror schema's codecs would be dead classes in the jar. The IR alone is what SbeLogPrinter needs to
@@ -171,40 +129,20 @@ tasks.register('generateClusterSbeIr', JavaExec) {
     doFirst { sbeGeneratedSrcDir.mkdirs() }
 }
 
-// Same again for the order family: its codecs are C++-only (sbe-order.xml is the order application's,
-// and no Java consumer exists), so Java stubs would be dead classes. The IR alone is what lets
-// SbeLogPrinter name an order payload instead of printing it as an undecodable schema/template pair.
-tasks.register('generateOrderSbeIr', JavaExec) {
-    description = 'Generate the SBE IR (no codecs) from sbe-order.xml for SbeLogPrinter'
-    classpath   = configurations.sbeCodegen
-    mainClass   = 'uk.co.real_logic.sbe.SbeTool'
-
-    jvmArgs '--add-opens=java.base/jdk.internal.misc=ALL-UNNAMED'
-
-    systemProperty 'sbe.output.dir',      sbeGeneratedSrcDir.absolutePath
-    systemProperty 'sbe.xinclude.aware',  'true'
-    systemProperty 'sbe.generate.stubs',  'false'
-    systemProperty 'sbe.generate.ir',     'true'
-
-    args new File(sbeResourceDir, 'sbe-order.xml')
-
-    inputs.file  new File(sbeResourceDir, 'sbe-order.xml')
-    outputs.file new File(sbeGeneratedSrcDir, 'sbe-order.sbeir')
-
-    doFirst { sbeGeneratedSrcDir.mkdirs() }
-}
-
 // The SBE tasks above emit a .sbeir IR file alongside the generated Java (sbe.generate.ir). Copy those
 // into a resource dir so they ship inside the jar and SbeLogPrinter can decode a recording without a
 // path into build/. Copied rather than adding sbeGeneratedSrcDir to `resources` directly: that dir is
 // full of generated .java, and the only filter available is set-wide, which would drop the XMLs in
 // src/main/resources from the jar.
+//
+// Only the three schemas this module owns. SbeLogPrinter lists this directory on the classpath rather
+// than naming schemas, so :gateways stages its own into the same path and a run over both jars sees all
+// of them — while a run over this jar alone names no application protocol, which is the point.
 def sbeIrResourceDir = layout.buildDirectory.dir('generated/resources/sbeir')
 
 tasks.register('collectSbeIr', Copy) {
     description = 'Stage the generated SBE IR files as jar resources for SbeLogPrinter'
-    dependsOn 'generateReplaySbe', 'generateFrameSbe', 'generateSessionSbe', 'generateBasicDataSbe',
-              'generateClusterSbeIr', 'generateOrderSbeIr'
+    dependsOn 'generateReplaySbe', 'generateFrameSbe', 'generateClusterSbeIr'
     from(sbeGeneratedSrcDir) {
         include '*.sbeir'
         into 'org/limitless/phixeron/tools/sbeir'
@@ -214,45 +152,6 @@ tasks.register('collectSbeIr', Copy) {
 
 // The Copy's destination is the resource ROOT, so the package path above is what lands in the jar.
 sourceSets.main.resources.srcDir(tasks.named('collectSbeIr'))
-
-// ── SBE log printer ────────────────────────────────────────────────────────
-// Offline dump of an Aeron Archive recording as JSON using the generated SBE IR.
-
-tasks.register('sbeLogPrinter', JavaExec) {
-    description = 'Print an SBE archive recording as JSON: -PlogDir=<archive dir> [-Pschema=<name>] ' +
-                  '[-Pspec=<sbeir file>] [-Pstream=<id>] [-Poneline]'
-    group       = 'application'
-    dependsOn   'classes'
-
-    classpath  = sourceSets.main.runtimeClasspath
-    mainClass  = 'org.limitless.phixeron.tools.SbeLogPrinter'
-    jvmArgs    '--add-opens=java.base/jdk.internal.misc=ALL-UNNAMED'
-    // Relative paths on the command line are the caller's, and every caller runs from the repo root.
-    workingDir rootProject.projectDir
-
-    doFirst {
-        final String logDir = project.findProperty('logDir')
-        if (!logDir) {
-            throw new GradleException('Usage: ./gradlew sbeLogPrinter -PlogDir=<archive dir> [-Pschema=<name>] ' +
-                                      '[-Pspec=<sbeir file>] [-Pstream=<id>] [-Poneline]')
-        }
-        // No schema given: the printer defaults to the sequenced one, which is what the tap carries.
-        if (project.hasProperty('schema')) {
-            args '--schema', project.property('schema')
-        }
-        if (project.hasProperty('spec')) {
-            args '--spec', project.property('spec')
-        }
-        args logDir
-        // Opt-in: dump only the newest recording on this stream (205 = the sequenced tap).
-        if (project.hasProperty('stream')) {
-            args '--stream', project.property('stream')
-        }
-        if (project.hasProperty('oneline')) {
-            args '--oneline'
-        }
-    }
-}
 
 application {
     mainClass = 'org.limitless.phixeron.sequencer.SequencerServer'

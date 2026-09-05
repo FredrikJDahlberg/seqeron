@@ -23,7 +23,7 @@
 #include "org/limitless/phixeron/sequencer/ClusterStreamSender.hpp"
 #include "org/limitless/phixeron/sequencer/IngressPublisher.hpp"
 #include "org/limitless/phixeron/sequencer/SequencedFrame.hpp"
-#include "org_limitless_phixeron_sbe_frame/ClientConnected.h"
+#include "org_limitless_phixeron_sbe_frame/ConnectionOpened.h"
 #include "org_limitless_phixeron_sbe_frame/ClusterStarted.h"
 #include "org_limitless_phixeron_sbe_frame/ClusterHeartbeat.h"
 #include "org_limitless_phixeron_sbe_frame/GatewayActive.h"
@@ -228,8 +228,8 @@ TEST(Conformance, FrameSizesAreSection42sTable)
 
 TEST(Conformance, EverySystemShapeNamesItsEventAndDecodesItsBody)
 {
-    const auto connected = systemFrame(1, CLIENT_CONNECTED, [](char* body, std::size_t cap) {
-        frm::ClientConnected encoder;
+    const auto connected = systemFrame(1, CONNECTION_OPENED, [](char* body, std::size_t cap) {
+        frm::ConnectionOpened encoder;
         encoder.wrapForEncode(body, 0, cap);
         encoder.putConnectionData("GW-A/42", 7);
         return static_cast<std::uint16_t>(encoder.encodedLength());
@@ -237,7 +237,7 @@ TEST(Conformance, EverySystemShapeNamesItsEventAndDecodesItsBody)
     auto view = viewOf(connected);
     ASSERT_TRUE(view.valid);
     EXPECT_TRUE(view.system);
-    EXPECT_EQ(CLIENT_CONNECTED, view.systemEventType);
+    EXPECT_EQ(CONNECTION_OPENED, view.systemEventType);
     EXPECT_EQ(0U, view.blockLength) << "a system body carries no declaration of its own (V-3)";
 
     const auto startedMarker = systemFrame(2, CLUSTER_STARTED, [](char* body, std::size_t cap) {
@@ -366,14 +366,14 @@ class ConnectedSender : public ::testing::Test
 
 TEST_F(ConnectedSender, PublishPayloadAdmitsTheCeilingAndRefusesOneMore)
 {
-    // ClientConnected is var-data only, so the payload is its 8-byte header plus the 2-byte prefix plus
+    // ConnectionOpened is var-data only, so the payload is its 8-byte header plus the 2-byte prefix plus
     // the data: 1306 bytes of data is exactly MAX_PAYLOAD_LENGTH.
     const std::vector<char> atCeiling(MAX_PAYLOAD_LENGTH - frm::MessageHeader::encodedLength() -
-                                          frm::ClientConnected::connectionDataHeaderLength(),
+                                          frm::ConnectionOpened::connectionDataHeaderLength(),
                                       'x');
     EXPECT_EQ(
         Publish::Published,
-        publishPayload<frm::ClientConnected>(m_sender, SOURCE_ID, CONNECTION_ID, 2, [&](frm::ClientConnected& encoder) {
+        publishPayload<frm::ConnectionOpened>(m_sender, SOURCE_ID, CONNECTION_ID, 2, [&](frm::ConnectionOpened& encoder) {
             encoder.putConnectionData(atCeiling.data(), static_cast<std::uint16_t>(atCeiling.size()));
         }));
     ASSERT_EQ(1U, m_ingress->m_offered.size());
@@ -381,7 +381,7 @@ TEST_F(ConnectedSender, PublishPayloadAdmitsTheCeilingAndRefusesOneMore)
     const std::vector<char> overCeiling(atCeiling.size() + 1, 'x');
     EXPECT_EQ(
         Publish::Refused,
-        publishPayload<frm::ClientConnected>(m_sender, SOURCE_ID, CONNECTION_ID, 2, [&](frm::ClientConnected& encoder) {
+        publishPayload<frm::ConnectionOpened>(m_sender, SOURCE_ID, CONNECTION_ID, 2, [&](frm::ConnectionOpened& encoder) {
             encoder.putConnectionData(overCeiling.data(), static_cast<std::uint16_t>(overCeiling.size()));
         }));
     EXPECT_EQ(1U, m_ingress->m_offered.size()) << "nothing was offered to any transport";
@@ -396,11 +396,11 @@ TEST_F(ConnectedSender, PublishPayloadAdmitsTheCeilingAndRefusesOneMore)
 TEST_F(ConnectedSender, PublishSystemRefusesABodyOverTheCeiling)
 {
     // A system body carries no header of its own, so the ceiling is the prefix plus the data.
-    const std::vector<char> overCeiling(MAX_PAYLOAD_LENGTH - frm::ClientConnected::connectionDataHeaderLength() + 1,
+    const std::vector<char> overCeiling(MAX_PAYLOAD_LENGTH - frm::ConnectionOpened::connectionDataHeaderLength() + 1,
                                         'x');
     EXPECT_EQ(Publish::Refused,
-              publishSystem<frm::ClientConnected>(
-                  m_sender, SOURCE_ID, CONNECTION_ID, CLIENT_CONNECTED, [&](frm::ClientConnected& encoder) {
+              publishSystem<frm::ConnectionOpened>(
+                  m_sender, SOURCE_ID, CONNECTION_ID, CONNECTION_OPENED, [&](frm::ConnectionOpened& encoder) {
                       encoder.putConnectionData(overCeiling.data(), static_cast<std::uint16_t>(overCeiling.size()));
                   }));
     EXPECT_TRUE(m_ingress->m_offered.empty());

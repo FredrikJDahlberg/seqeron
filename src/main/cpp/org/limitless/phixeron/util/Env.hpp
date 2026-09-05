@@ -65,7 +65,7 @@ inline std::string resolveAeronDir(const char* envName, const std::int32_t membe
 
 // A "host:port" cluster-egress endpoint: the per-binary override, else localhost on the port this app
 // owns. Every client co-located on one node shares that node's media driver, so each needs a distinct
-// port — the defaults come from PortLayout's per-role bases.
+// port — the default is the caller's, from its own application port table.
 inline std::string resolveEgressEndpoint(const char* envName, const std::uint16_t defaultPort)
 {
     return envString(envName, "localhost:" + std::to_string(defaultPort));

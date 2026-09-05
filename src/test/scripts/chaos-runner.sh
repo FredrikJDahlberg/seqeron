@@ -19,7 +19,7 @@
 #   safety-oracle/tap-drop-target OrderExecServer consumer (PHIXERON_FAULT_INJECTION=1) and the primary FIX
 #   gateway GW-A (port 9000); member 1 (STANDBY_MEMBER) additionally hosts the hot-standby gateway GW-B
 #   (port 9001), the same active/standby pair gateway-failover-test.sh drives — sharing gatewaySourceId 0
-#   per src/test/resources/topology-gw.xml — the roster this run loads, naming only the pair it starts, so no
+#   per src/test/resources/topology-gw.xml — the list this run loads, naming only the pair it starts, so no
 #   absent gateway is designated and handed over every 5s for the length of the run. All three
 #   members are legal fault targets; restart_colocated_apps brings each member's co-located apps (gateway
 #   and/or consumer included) back up in place. active_gateway_port tracks which of GW-A/GW-B is currently
@@ -209,7 +209,7 @@ wait_running 1 && wait_running 2 || { echo "members 1/2 not up"; exit 1; }
 wait_for_leader >/dev/null || { echo "no initial leader among 1/2"; exit 1; }
 start_seq 0; wait_running 0 || { echo "member 0 not up"; exit 1; }
 
-# The gateway roster, ahead of everything that reads it (doc/future-arch.md §3.6): a deployment
+# The gateway list, ahead of everything that reads it (doc/future-arch.md §3.6): a deployment
 # assertion an operator publishes through clusterctl, not part of the reference-data load. Before the
 # BasicDataServer replicas below, or a gateway with no resolved gatewaySourceId drops every session row.
 CLUSTERCTL_AERON_DIR="${TMP_DIR}/phixeron-seq-aeron-0" \

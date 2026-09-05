@@ -70,15 +70,31 @@ The tree is split along the boundary `doc/future-arch.md` proposes for the event
 
 | module | Java | C++ |
 | --- | --- | --- |
-| cluster tier (seqeron-to-be) | `cluster/src/main/java` — `sequencer`, `replayer`, `tools`, `metrics`, `util`, plus `fixgateway/GatewayRecoveryStallPolicy` | `cluster/src/main/cpp` — `sequencer`, `replayer/client`, `util`, `basicdata/{Gateways,SectionAccumulator}.hpp`, `fix/GatewayRecoveryStallPolicy.hpp` |
+| cluster tier (seqeron-to-be) | `cluster/src/main/java` — `sequencer`, `replayer`, `tools`, `metrics`, `util`, plus `fixgateway/GatewayRecoveryStallPolicy` | `cluster/src/main/cpp` — `sequencer`, `replayer/client`, `util`, `fix/GatewayRecoveryStallPolicy.hpp` |
 | Artio legs | `gateways/src/main/java` — `exchange`, `order`, the rest of `fixgateway`, and `gateways/src/test/artio` | — |
-| C++ edge | — | `src/main/cpp` — `fix`, `order`, `risk`, `basicdata/BasicData{Server.cpp,Constants.hpp}` |
+| C++ edge | — | `src/main/cpp` — `fix`, `order`, `risk`, `basicdata`, plus `AppPorts.hpp` at its root |
+
+Port assignments follow the same line: `cluster/.../sequencer/PortLayout.hpp` holds the cluster
+member formula (`9300 + memberId*10 + offset`) and nothing else, while every application's own base —
+the FIX TCP port, each co-located client's egress port, the replay ports — is `AppPorts.hpp`'s, so the
+cluster tier names none of the processes that connect to it. `ClusterStreamSender` takes its egress
+channel from the caller for the same reason; it holds no default.
 
 The dependency runs one way, product → cluster, and the build enforces it: `:gateways` compiles
 against `:cluster`'s output and `:cluster` never sees it; the CMake pair is `phixeron_core` (its own
 include root, no simdfix, no generated FIX codecs) and `phixeron` (core plus the C++ edge's root).
 Two things are deliberately still shared, both at the root: `src/main/resources` (the SBE schemas —
 step 3 splits them) and `src/{main,test}/scripts`.
+
+**Each module generates the codecs for the protocols it owns**, and only those. `:cluster` /
+`phixeron_core` generate `sbe-frame.xml`, `sbe-replay.xml` and `sbe-cluster.xml`; the application
+payloads are the products' — `sbe-session.xml` and `sbe-basicdata.xml` in `:gateways`, and all three
+in the C++ `phixeron` target. The C++ generated root is split to match (`generated/sbe/core` and
+`generated/sbe/app`), so a cluster-tier file that reached for an application codec fails to compile
+rather than merely being asked not to. An application's **IR** is generated and staged by
+that application's own module too: `SbeLogPrinter` discovers whatever `.sbeir` resources are on its
+classpath rather than naming schemas, so the tool names a payload without the cluster tier holding a
+list of its applications' protocols.
 
 Both `fixgateway` packages split across the boundary, on purpose: the recovery-stall policy is a
 language-port pair and those live in the cluster tier (`doc/future-arch.md` §7), everything else in
@@ -106,15 +122,17 @@ GoogleTest binaries — `core_tests` (the cluster tier, linking `phixeron_core` 
 ```bash
 ./gradlew compileJava          # both modules
 ./gradlew uberJar              # fat jar over both: build/libs/phixeron-<version>-uber.jar
-./gradlew generateFrameSbe generateSessionSbe generateBasicDataSbe   # regenerate SBE Java codecs (also on compileJava)
+./gradlew generateFrameSbe generateReplaySbe        # :cluster's codecs (also on compileJava)
+./gradlew generateSessionSbe generateBasicDataSbe   # :gateways' codecs (also on compileJava)
 ```
 ```bash
 ./gradlew test                 # JUnit 5 unit tests for the Java state machines, both modules
 ```
-Task names are unqualified because each lives in exactly one module — `:cluster` owns the SBE
-codegen, `sbeLogPrinter` and `run`; `:gateways` owns `exchangeGateway`, `orderGateway`,
-`mockExchange`, `mockOrderClient`, `fixTestClient`, `sessionProxyTest` and the Artio codegen; the
-root owns `uberJar`. Coverage is one JaCoCo report per module
+Task names are unqualified because each lives in exactly one module — `:cluster` owns the frame and
+replay codegen, `generateClusterSbeIr` and `run`; `:gateways` owns the session and
+basicdata codegen, `generateOrderSbeIr`, `exchangeGateway`, `orderGateway`, `mockExchange`, `mockOrderClient`,
+`fixTestClient`, `sessionProxyTest` and the Artio codegen; the root owns `uberJar` and
+`sbeLogPrinter` (which needs both modules' IR on one classpath). Coverage is one JaCoCo report per module
 (`<module>/build/reports/jacoco/test/`).
 The Java suite covers the deterministic decision-making — `Sequencer`, and `ReplayerService` through
 its `Replayer` seam — and deliberately touches no Aeron runtime: no media driver, no
@@ -209,7 +227,7 @@ the message and `AgentRunner` keeps the agent alive, so a throw drops the frame 
 > the dated entries in `doc/todo.md` and `doc/audit.md`.
 
 Besides forwarded ingress, the sequencer synthesizes its own frames on the same `globalSeqNo`
-counter: `ClientConnected`/`ClientDisconnected` (cluster session lifecycle), `LeadershipChanged`
+counter: `ConnectionOpened`/`ConnectionClosed` (cluster session lifecycle), `LeadershipChanged`
 (de-duplicated per leader), and a **1 Hz `ClusterHeartbeat`** — the cluster clock, so consumers have a
 consensus-driven time source that keeps advancing while a FIX session is silent, which is exactly
 when the gateway's keepalive watchdog must probe (`CLUSTER_HEARTBEAT_INTERVAL_MS`).
@@ -225,11 +243,24 @@ grow with uptime (the 1 Hz heartbeat alone is ~86.4k frames/day) — see `doc/to
 family is `Unsequenced` (100) on ingress, republished as `Sequenced` (101) on the tap, carrying one
 opaque length-prefixed payload named by `header.payloadId`. The **system** family is seqeron's own
 vocabulary (spec §7), named by `header.systemEventType` at the same offset: `UnsequencedSystem` (102)
-→ `SequencedSystem` (103) for the eight events a producer submits, plus three templates of their own
+→ `SequencedSystem` (103) for the nine events a producer submits, plus three templates of their own
 for the three the sequencer synthesizes — `ClusterHeartbeat` (104), `LeadershipChanged` (105),
 `GatewayActive` (106). Sequencing is copy-18/append-16 for both, the body is never re-encoded, and
-`sequenceFrame` validates every frame against `doc/seqeron-protocol-spec.md` §9.2. Three `payloadId`s
-are allocated:
+`sequenceFrame` validates every frame against `doc/seqeron-protocol-spec.md` §9.2.
+
+**Two kinds of producer, and only one of them is elected.** A **gateway** is an edge producer deployed
+as an **active/hot-standby pair**: it is named in the topology list, and the cluster picks which instance
+is live — `GatewayRegistered` (the list row), `GatewayStarted` (the instance announcing itself),
+`GatewayActive` (the cluster's designation), `GatewayActivationRequested` (the operator asking for one).
+That vocabulary is the cluster tier's own, not FIX's: `gateway` names a deployment role seqeron defines
+and runs the election for. A **co-located application** — `OrderExecServer`, `BasicDataServer` — is the
+other kind: one replica per node, in the list nowhere, needing no election because
+`LeadershipChanged` already picks one. It publishes only while its own node is leader
+(`currentLeaderMemberId() == m_nodeMemberId`, plus caught-up). Naming those frames `Producer*` would
+imply a co-located replica could be listed and designated, which it cannot.
+
+Connections are the generic half: `ConnectionOpened`/`ConnectionClosed` say nothing about which kind of
+producer owns the socket, which is why they are not `Client*`. Three `payloadId`s are allocated:
 
 | id | schema | who speaks it |
 | --- | --- | --- |
@@ -289,7 +320,7 @@ vs `org::limitless::phixeron::fix::ClientSession`).
 no `ClusterHeartbeat` from the co-located tap for `TAP_STALL_TIMEOUT_MS`, or recovery dispatching nothing for
 `RECOVERY_STALL_TIMEOUT_MS` (`GatewayRecoveryStallPolicy`). Without it a demoted primary kept
 serving alongside the standby that replaced it, since `m_gateOpen` only ever latched true. It publishes
-no `ClientDisconnected` — the fence deliberately looks to the cluster exactly like this process dying,
+no `ConnectionClosed` — the fence deliberately looks to the cluster exactly like this process dying,
 which is the state the recovery path is built for — and snapshots live FIX session state into
 `m_recoveredSessions` on the way out. Being superseded keeps the cluster session, so that fence just
 drops the instance back to standby and the gate can re-open on a later promotion; the other three
@@ -314,17 +345,17 @@ sbe.basicdata, sbe.replay}`, `org.limitless.phixeron.cluster.sbe`):
   namespace and id changed — renumbering is free precisely because nothing records these and a
   node's Java and C++ builds ship together.
 - `sbe-frame.xml` (schema 210) — the seven top-level templates, their four header composites, and the
-  eight submitted **system** bodies (the TCP lifecycle events, the cluster markers, the gateway
-  roster/election frames, `GatewayActivationRequested`). No system message carries a `header` field —
+  nine submitted **system** bodies (the connection lifecycle events, the cluster markers, the gateway
+  list/election frames, `GatewayActivationRequested`, `ApplicationRegistered`). No system message carries a `header` field —
   the frame's is the only one — and a submitted body carries no `MessageHeader` either. Seqeron's own,
   and the only thing the cluster tier decodes.
 - `sbe-order.xml` (schema 220) — the order application's payload (`payloadId` 2):
   `NewOrderSingle` and `ExecutionReport`, the flow between the C++ FIX edge and `OrderExecServer`.
   **One codec set, not a 200/202 pair** — a payload carries no header, so its ingress and tap forms
   are the same bytes. Its `ORDER_PAYLOAD_ID` lives in `src/main/cpp/.../order/OrderPayload.hpp`, not in
-  the cluster tier. Java codecs would be dead classes (no Java consumer), so like `sbe-cluster.xml` the
-  Java side is **IR-only** (`generateOrderSbeIr`) — the IR is what lets `SbeLogPrinter` name an order
-  payload instead of printing `<undecodable ingress payload>`. `PortfolioQuery{Request,Reply}` are here
+  the cluster tier. Java codecs would be dead classes (no Java consumer), so the Java side is **IR-only**
+  (`generateOrderSbeIr`, in `:gateways` with the other application schemas) — the IR is what lets
+  `SbeLogPrinter` name an order payload instead of printing `<undecodable ingress payload>`. `PortfolioQuery{Request,Reply}` are here
   too: same application, same two processes, and a `payloadId` names a schema, never a message.
 - `sbe-session.xml` (schema 230) — the FIX session family (`payloadId` 3): `Logon`…`SequenceReset`, the
   structured templates the C++/simdfix edge encodes, plus `ClientSessionEvent`, the same protocol as
@@ -343,15 +374,16 @@ Separately, `fix-session.xml` / `fix-application.xml` / `config.xml` are simdfix
 **not** simdfix's own generated-headers location, to avoid colliding with simdfix's own
 (excluded-from-build) test-fixture generation.
 
-Both the Java (`generateReplaySbe`/`generateFrameSbe`/`generateSessionSbe`/`generateBasicDataSbe`
-codec tasks, plus `generateClusterSbeIr`/`generateOrderSbeIr` for the IR-only two) and C++
-(`GenerateReplaySbeCodecs`/`GenerateFrameSbeCodecs`/`GenerateSessionSbeCodecs`/
+Both the Java (`generateReplaySbe`/`generateFrameSbe`/`generateClusterSbeIr` in `:cluster`,
+`generateSessionSbe`/`generateBasicDataSbe`/`generateOrderSbeIr` in `:gateways`; each module's
+`collectSbeIr` stages its own schemas' IR into the jar for `SbeLogPrinter`) and C++ (`GenerateReplaySbeCodecs`/`GenerateFrameSbeCodecs`/`GenerateSessionSbeCodecs`/
 `GenerateBasicDataSbeCodecs`/`GenerateOrderSbeCodecs`/`GenerateClusterSbeCodecs` CMake targets) sides
 regenerate independently from the same XML — keep both in sync when editing a schema. SBE itself never
 deletes generated files for messages you removed, so **each schema owns a disjoint output directory and
 each codegen step wipes its own before running** — a regeneration is a replacement, and no manual purge
-of `cmake-build-*/generated/sbe` or `cluster/build/generated/sources/sbe` is needed. Keep that property
-when adding a schema: give it its own package/namespace directory, declare only that as the task's
+of `cmake-build-*/generated/sbe`, `cluster/build/generated/sources/sbe` or
+`gateways/build/generated/sources/sbe` is needed. Keep that property when adding a schema: give it its
+own package/namespace directory under its owning module's root, declare only that as the task's
 output, and wipe it in the same step.
 
 ### Order execution client — `OrderExecServer` (C++, under `src/main/cpp/.../order/OrderExecServer.cpp`)
@@ -498,7 +530,7 @@ through the engine's own proxy, straight to the wire past the cluster.
 A counterparty no `BasicDataSession` row names is **admitted and then logged out through the proxy**, on the
 first message rather than in an `AuthenticationStrategy` — an engine-level rejection bypasses the proxy, so
 it would reach the wire without ever being sequenced, breaking the invariant the C++ edge holds for every
-client-facing refusal. Follower writers are requested off `ClientConnected` frames, identically on the
+client-facing refusal. Follower writers are requested off `ConnectionOpened` frames, identically on the
 active instance and the standby, so promotion is a live-session takeover.
 
 The three fences are the venue leg's, in the same place in `doWork` and fatal for the same reason: cluster
@@ -528,20 +560,25 @@ rows → `EndBasicData`, each section's `remainingItems` counting down to 0 — 
 that makes an interrupted load detectable and resumable (recovery replays the same code path as first
 load, resuming at the first incomplete section).
 
-**The gateway roster is not part of this load and not reference data.** `clusterctl load-topology
+**The gateway list is not part of this load and not reference data.** `clusterctl load-topology
 src/main/resources/topology.xml` publishes it as `GatewayRegistered` frames — a deployment assertion
 an operator makes, the same kind of act as `activate` (`doc/basicdata-design.md` §2,
-`doc/future-arch.md` §3.5/§3.6). That file is XML validated against `topology.xsd` (spec §6.4), and its
-second section, `<protocols>`, publishes `PayloadIdRegistered` rows naming each `payloadId` — labelling
-for `SbeLogPrinter` only, decoded by nothing and gating nothing. Its `remaining` counts down to 0 on the last row, and that row is
-the sequencer's completeness edge: it synthesizes the bootstrap `GatewayActive` per logical gateway
-behind it. The cluster tier therefore decodes **no** reference data at all.
+`doc/future-arch.md` §3.5/§3.6). That file is XML validated against `topology.xsd` (spec §6.4) and its three
+sections are **the complete producer view of the deployment**: `<gateways>` (the elected pairs),
+`<applications>` (the co-located, leader-gated kind — `ApplicationRegistered`, one row per application,
+`sourceId` required so every producer sits in §5's one id space), and `<protocols>`
+(`PayloadIdRegistered` rows naming each `payloadId`). Only the first is acted on; the other two are
+labelling for `SbeLogPrinter`, decoded by nothing and gating nothing. `GatewayRegistered.remaining`
+counts down to 0 on the gateway section's last row, and that row is the sequencer's completeness edge:
+it synthesizes the bootstrap `GatewayActive` per logical gateway behind it. The application and protocol
+rows follow it and carry no countdown. The cluster tier therefore decodes **no** reference data at all.
 
 Run it **before** the reference-data load, once per cluster lifetime. A gateway resolves its own
-`{gatewayId, gatewaySourceId}` from the roster (`Gateways::resolve`, keyed on the launch-time
+`{gatewayId, gatewaySourceId}` from the list's `gatewayId`/`gatewaySourceId` (`Gateways::resolve`,
+keyed on the launch-time
 `PHIXERON_FIX_GATEWAY_NAME`), and until it has, it drops every session row — the same ingest filter
 that drops another logical gateway's rows, and the designed fail-closed answer to a load that beat
-the roster in. `resolve()` returns `nullopt` on no match — callers must fail closed rather than
+the list in. `resolve()` returns `nullopt` on no match — callers must fail closed rather than
 default to sourceId 0.
 
 This is also where FIX session identity comes from at runtime: CompIDs are never hardcoded per

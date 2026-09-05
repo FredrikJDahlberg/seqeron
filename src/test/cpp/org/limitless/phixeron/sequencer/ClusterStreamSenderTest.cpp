@@ -158,8 +158,12 @@ TEST(ClusterStreamSender, ConnectSendsSessionConnectRequestAndAdoptsSessionOnOk)
     auto ingress = std::make_unique<FakeIngressTransport>();
     auto* ingressPtr = ingress.get();
 
+    // The responseChannel is the caller's own UDP endpoint — the cluster tier holds no default
+    // for it, since the port belongs to whichever application is connecting (AppPorts.hpp).
+    const std::string egressChannel = "aeron:udp?endpoint=localhost:9330";
+
     ClusterStreamSender sender;
-    sender.connect(std::move(ingress), std::move(egress));
+    sender.connect(std::move(ingress), std::move(egress), egressChannel);
 
     EXPECT_TRUE(sender.isConnected());
     EXPECT_TRUE(egressPtr->m_queued.empty());
@@ -172,7 +176,7 @@ TEST(ClusterStreamSender, ConnectSendsSessionConnectRequestAndAdoptsSessionOnOk)
     // SBE var-data fields must be read in schema order (responseChannel,
     // encodedCredentials, clientInfo) — each getter advances the decoder's
     // internal read position, so skipping a field would misread the next one.
-    EXPECT_EQ(CLUSTER_EGRESS_CHANNEL, req.getResponseChannelAsString());
+    EXPECT_EQ(egressChannel, req.getResponseChannelAsString());
     EXPECT_EQ("", req.getEncodedCredentialsAsString());
     EXPECT_EQ(CLUSTER_CLIENT_INFO, req.getClientInfoAsString());
 }

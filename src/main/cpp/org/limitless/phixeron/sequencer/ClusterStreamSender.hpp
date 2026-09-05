@@ -69,10 +69,6 @@ namespace diag = org::limitless::phixeron::util;
 // endpoint from the wire CSV afterward.
 inline const std::string CLUSTER_INGRESS_ENDPOINT = "localhost:" + std::to_string(clusterIngressPort(0));
 inline const std::string CLUSTER_INGRESS_CHANNEL = "aeron:udp?endpoint=" + CLUSTER_INGRESS_ENDPOINT;
-inline const std::string CLUSTER_EGRESS_CHANNEL =
-    "aeron:udp?endpoint=localhost:" + std::to_string(FIX_TEST_CLIENT_EGRESS_PORT);
-inline const std::string CLUSTER_EGRESS_CHANNEL_COLOCATED =
-    "aeron:udp?endpoint=localhost:" + std::to_string(orderExecEgressPort(0));
 inline constexpr const char* CLUSTER_INGRESS_CHANNEL_IPC = "aeron:ipc";
 inline constexpr std::int32_t CLUSTER_INGRESS_STREAM_ID = 101;
 inline constexpr std::int32_t CLUSTER_EGRESS_STREAM_ID = 102;
@@ -225,18 +221,18 @@ class ClusterStreamSender
   public:
     static constexpr std::size_t MAX_PAYLOAD_LEN = 8192;
 
-
     // Real entry point: acquires the ingress publication + egress subscription
     // from Aeron (inherently async — driver IPC via addPublication/addSubscription
     // and find*), then hands off to the transport-agnostic handshake below.
     // Storing `aeron` (used by createIngressPublication) is what enables automatic
     // ingress reconnection on SessionEvent(REDIRECT)/NewLeaderEvent below.
-    void connect(std::shared_ptr<aeron::Aeron> aeron)
+    void connect(std::shared_ptr<aeron::Aeron> aeron, const std::string& egressChannel)
     {
         m_aeron = std::move(aeron);
         m_ingressEndpoint = CLUSTER_INGRESS_ENDPOINT;
+        m_egressChannel = egressChannel;
 
-        const auto subId = m_aeron->addSubscription(CLUSTER_EGRESS_CHANNEL, CLUSTER_EGRESS_STREAM_ID);
+        const auto subId = m_aeron->addSubscription(m_egressChannel, CLUSTER_EGRESS_STREAM_ID);
         std::shared_ptr<aeron::Subscription> egressSub;
         while (!(egressSub = m_aeron->findSubscription(subId)))
         {
@@ -244,14 +240,14 @@ class ClusterStreamSender
         }
 
         connect(std::make_unique<AeronIngressTransport>(createIngressPublication(m_ingressEndpoint)),
-                std::make_unique<AeronEgressTransport>(egressSub));
+                std::make_unique<AeronEgressTransport>(egressSub), m_egressChannel);
     }
 
     // Real entry point for a client deployed co-located with one cluster member — sharing
     // that member's own Aeron directory (see OrderExecServer's PHIXERON_ORDER_EXEC_AERON_DIR).
-    // Egress uses the given UDP egressChannel (default CLUSTER_EGRESS_CHANNEL_COLOCATED; a
-    // per-node replica passes a member-specific endpoint so co-located replicas on one host don't
-    // collide — see the parameter note below). It is unaffected by which member is leader: the
+    // Egress uses the given UDP egressChannel — a per-node replica passes a member-specific
+    // endpoint so co-located replicas on one host don't collide (see the parameter note below).
+    // It is unaffected by which member is leader: the
     // leader publishes to whatever responseChannel the client requests, over UDP loopback here
     // regardless of which host/process is currently leader. Ingress tries
     // CLUSTER_INGRESS_CHANNEL_IPC first, on the theory that the co-located member usually is
@@ -267,9 +263,8 @@ class ClusterStreamSender
     // automatically. Leadership later moving *back* to it is handled too (see onFragment's
     // NewLeaderEvent branch): `memberId` is this client's own co-located cluster member id, so a
     // NewLeaderEvent naming it can be recognised and re-chased back onto IPC.
-    void connectColocated(std::shared_ptr<aeron::Aeron> aeron, std::int32_t memberId,
-                          std::int64_t ipcConnectTimeoutMs = 1500,
-                          const std::string& egressChannel = CLUSTER_EGRESS_CHANNEL_COLOCATED)
+    void connectColocated(std::shared_ptr<aeron::Aeron> aeron, std::int32_t memberId, std::int64_t ipcConnectTimeoutMs,
+                          const std::string& egressChannel)
     {
         m_aeron = std::move(aeron);
         m_coLocatedMemberId = memberId;
@@ -277,7 +272,7 @@ class ClusterStreamSender
         // egressChannel must be a distinct UDP endpoint per co-located client: when a replica runs
         // on every cluster node, each one attaches to its own member's media driver, and two driver
         // processes on one host cannot both bind the same egress UDP port. Callers pass
-        // localhost:(9330 + memberId) or similar; the default keeps the single-replica behaviour.
+        // localhost:(9330 + memberId) or similar, from their own AppPorts.hpp base.
         m_egressChannel = egressChannel;
 
         const auto subId = m_aeron->addSubscription(m_egressChannel, CLUSTER_EGRESS_STREAM_ID);
@@ -355,7 +350,7 @@ class ClusterStreamSender
             m_connectTimeoutMs = primaryConnectTimeoutMs;
             try
             {
-                connect(std::move(primaryIngress), std::move(egress));
+                connect(std::move(primaryIngress), std::move(egress), m_egressChannel);
                 m_connectTimeoutMs = fullTimeoutMs;
                 return;
             }
@@ -370,7 +365,7 @@ class ClusterStreamSender
         diag::Logger::info(diag::Component::Cluster, "Co-located member not leader (%s) — falling back to UDP ingress",
                            primaryFailureReason != nullptr ? primaryFailureReason : "unknown");
         m_connectTimeoutMs = fullTimeoutMs;
-        connect(buildFallbackIngress(), std::move(egress));
+        connect(buildFallbackIngress(), std::move(egress), m_egressChannel);
     }
 
     // Test seam: drives the SessionConnectRequest → SessionEvent(OK) handshake
@@ -379,10 +374,15 @@ class ClusterStreamSender
     // SessionEvent(OK) makes this deterministic in a unit test. Redirect/reconnect
     // is skipped in this path since it has no Aeron client to build a new
     // Publication with (see the m_aeron guard in handleRedirect/onFragment).
-    void connect(std::unique_ptr<IngressTransport> ingress, std::unique_ptr<EgressTransport> egress)
+    // `egressChannel` is the responseChannel this client asks the cluster to publish egress on;
+    // it is the application's own UDP endpoint (AppPorts.hpp), so the Aeron-facing entry points
+    // above pass what their caller gave them and a bare test seam declares none.
+    void connect(std::unique_ptr<IngressTransport> ingress, std::unique_ptr<EgressTransport> egress,
+                 const std::string& egressChannel = "")
     {
         m_ingress = std::move(ingress);
         m_egress = std::move(egress);
+        m_egressChannel = egressChannel;
 
         sendConnectRequest();
 
@@ -919,7 +919,7 @@ class ClusterStreamSender
     std::string m_ingressEndpoint;
     std::int32_t m_coLocatedMemberId = -1;
     std::int64_t m_ipcConnectTimeoutMs = 1500;
-    std::string m_egressChannel = CLUSTER_EGRESS_CHANNEL;
+    std::string m_egressChannel;
     std::unique_ptr<IngressTransport> m_ingress;
     std::unique_ptr<EgressTransport> m_egress;
     aeron::concurrent::YieldingIdleStrategy m_idleStrategy;
