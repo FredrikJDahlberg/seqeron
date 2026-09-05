@@ -236,7 +236,7 @@ class SequencerTest {
         final int ingressLength = encodeIngressHeartbeat(ingress, 0);
 
         assertEquals(Sequencer.NO_FRAME,
-                     sequencer.sequenceMessage(ingress, 0, Sequencer.MIN_FRAME_LENGTH - 1, SESSION_ID, TIMESTAMP));
+                     sequencer.sequenceMessage(ingress, 0, FrameLayer.MIN_INGRESS_LENGTH - 1, SESSION_ID, TIMESTAMP));
         assertEquals(0L, sequencer.globalSeqNo(), "a skipped message must consume no sequence number");
 
         // The next good message is still globalSeqNo 1: consumers detect loss by gaps, so a skip has to
@@ -408,14 +408,14 @@ class SequencerTest {
         // refuses this on its own stack, so a frame that reaches here is one that is not conforming. The
         // ceiling is compiled in and never read off this node's MTU -- a node checking a smaller one than
         // its peers would fork globalSeqNo.
-        final MutableDirectBuffer payload = new ExpandableArrayBuffer(Sequencer.MAX_PAYLOAD_LENGTH + 1);
+        final MutableDirectBuffer payload = new ExpandableArrayBuffer(FrameLayer.MAX_PAYLOAD_LENGTH + 1);
         final int exact = encodeIngressPayloadFrame(ingress, 0, SOURCE_ID, CONNECTION_ID, SESSION_PAYLOAD_ID,
-                                                    payload, Sequencer.MAX_PAYLOAD_LENGTH);
-        assertEquals(Sequencer.MAX_FRAME_LENGTH, exact);
+                                                    payload, FrameLayer.MAX_PAYLOAD_LENGTH);
+        assertEquals(FrameLayer.MAX_INGRESS_LENGTH, exact);
         assertNotEquals(Sequencer.NO_FRAME, sequencer.sequenceMessage(ingress, 0, exact, SESSION_ID, TIMESTAMP));
 
         final int oversized = encodeIngressPayloadFrame(ingress, 0, SOURCE_ID, CONNECTION_ID, SESSION_PAYLOAD_ID,
-                                                        payload, Sequencer.MAX_PAYLOAD_LENGTH + 1);
+                                                        payload, FrameLayer.MAX_PAYLOAD_LENGTH + 1);
         assertEquals(Sequencer.NO_FRAME, sequencer.sequenceMessage(ingress, 0, oversized, SESSION_ID, TIMESTAMP));
         assertEquals(1L, sequencer.globalSeqNo(), "a skipped message must consume no sequence number");
     }

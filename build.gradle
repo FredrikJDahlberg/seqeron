@@ -33,6 +33,10 @@ dependencies {
 // The schemas stay at the repo root for now: one pair still serves both modules and the C++ build
 // generates from the same files. Splitting them per module is step 3 (doc/future-arch.md §3).
 
+// One root, but each schema owns a disjoint slice of it: its own package dir plus its own .sbeir.
+// Each task declares and wipes exactly that slice. Declaring the shared root instead made the codec
+// tasks overlap, and Gradle cannot clean an output it cannot attribute to one task — which is what let
+// a message deleted from a schema leave its codec on disk to be compiled against.
 def sbeGeneratedSrcDir = layout.buildDirectory.dir('generated/sources/sbe/main/java').get().asFile
 def sbeResourceDir     = rootProject.file('src/main/resources')
 
@@ -56,9 +60,13 @@ tasks.register('generateReplaySbe', JavaExec) {
     args new File(sbeResourceDir, 'sbe-replay.xml')
 
     inputs.file  new File(sbeResourceDir, 'sbe-replay.xml')
-    outputs.dir  sbeGeneratedSrcDir
+    outputs.dir  new File(sbeGeneratedSrcDir, 'org/limitless/phixeron/sbe/replay')
+    outputs.file new File(sbeGeneratedSrcDir, 'sbe-replay.sbeir')
 
-    doFirst { sbeGeneratedSrcDir.mkdirs() }
+    doFirst {
+        new File(sbeGeneratedSrcDir, 'org/limitless/phixeron/sbe/replay').deleteDir()
+        sbeGeneratedSrcDir.mkdirs()
+    }
 }
 
 tasks.register('generateSessionSbe', JavaExec) {
@@ -77,9 +85,13 @@ tasks.register('generateSessionSbe', JavaExec) {
     args new File(sbeResourceDir, 'sbe-session.xml')
 
     inputs.file  new File(sbeResourceDir, 'sbe-session.xml')
-    outputs.dir  sbeGeneratedSrcDir
+    outputs.dir  new File(sbeGeneratedSrcDir, 'org/limitless/phixeron/sbe/session')
+    outputs.file new File(sbeGeneratedSrcDir, 'sbe-session.sbeir')
 
-    doFirst { sbeGeneratedSrcDir.mkdirs() }
+    doFirst {
+        new File(sbeGeneratedSrcDir, 'org/limitless/phixeron/sbe/session').deleteDir()
+        sbeGeneratedSrcDir.mkdirs()
+    }
 }
 
 tasks.register('generateBasicDataSbe', JavaExec) {
@@ -98,9 +110,13 @@ tasks.register('generateBasicDataSbe', JavaExec) {
     args new File(sbeResourceDir, 'sbe-basicdata.xml')
 
     inputs.file  new File(sbeResourceDir, 'sbe-basicdata.xml')
-    outputs.dir  sbeGeneratedSrcDir
+    outputs.dir  new File(sbeGeneratedSrcDir, 'org/limitless/phixeron/sbe/basicdata')
+    outputs.file new File(sbeGeneratedSrcDir, 'sbe-basicdata.sbeir')
 
-    doFirst { sbeGeneratedSrcDir.mkdirs() }
+    doFirst {
+        new File(sbeGeneratedSrcDir, 'org/limitless/phixeron/sbe/basicdata').deleteDir()
+        sbeGeneratedSrcDir.mkdirs()
+    }
 }
 
 tasks.register('generateFrameSbe', JavaExec) {
@@ -119,9 +135,13 @@ tasks.register('generateFrameSbe', JavaExec) {
     args new File(sbeResourceDir, 'sbe-frame.xml')
 
     inputs.file  new File(sbeResourceDir, 'sbe-frame.xml')
-    outputs.dir  sbeGeneratedSrcDir
+    outputs.dir  new File(sbeGeneratedSrcDir, 'org/limitless/phixeron/sbe/frame')
+    outputs.file new File(sbeGeneratedSrcDir, 'sbe-frame.sbeir')
 
-    doFirst { sbeGeneratedSrcDir.mkdirs() }
+    doFirst {
+        new File(sbeGeneratedSrcDir, 'org/limitless/phixeron/sbe/frame').deleteDir()
+        sbeGeneratedSrcDir.mkdirs()
+    }
 }
 
 tasks.named('compileJava') {

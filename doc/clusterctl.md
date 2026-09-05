@@ -354,8 +354,8 @@ comparison passes cleanly. What such a check catches instead is deploy hygiene �
 shipped is not the one declared — and it catches it by stopping every application in the fleet on one
 wrong character in a hand-edited file. That is the same inverted error profile that retired the
 registry's ingress gate: the check polices the one input it depends on being right. The V-1 defence
-is mechanical and involves no operator — the cross-language golden corpus (§13 row 6 of the protocol
-spec) and the published library pins (§11).
+is mechanical and involves no operator — the conformance suite asserting the frame layout §4 states
+(§14 row 6 of the protocol spec) and the published library pins (§11).
 
 `@version` still reaches the log, because an operator's record of what a deployment runs is worth
 printing beside the protocol's name. It is read by `SbeLogPrinter` and by nobody else.

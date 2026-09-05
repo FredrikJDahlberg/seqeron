@@ -871,6 +871,13 @@ respectively.
 | `REPLAY_SLOT_TTL_MS` | **5000** — idle-slot reclamation, refreshed by `ReplayHeartbeat` | §10.1 |
 | maximum pending wait | `MAX_CONCURRENT_REPLAYS × REPLAY_SLOT_TTL_MS` — **20 000**; a consumer's recovery-stall fence MUST exceed it | §10.1 |
 
+**This table is where these constants reside.** They belong to the protocol rather than to any
+participant in it — the producer's encode methods enforce `MAX_PAYLOAD_LENGTH` (**T-3**), the sequencer's
+§9.2 condition 1 is the backstop behind it, and a consumer sizes its buffers from the same numbers — so
+each implementation compiles in a **mirror** of this table and none of them owns it. Today those mirrors
+are `sequencer/FrameLayer.java` and the `Limits` block in `sequencer/SequencedFrame.hpp`. A change starts
+here and lands in both, and is a wire change (**V-3**) whichever way round it is made.
+
 > **T-2. The message is pinned at one Aeron MTU of 1408: headers plus `MAX_PAYLOAD_LENGTH` = 1316.**
 > 92 is the larger of §3's two directions' header stacks. A consensus-log packet is `32 + 32 + 1344` =
 > **1408 exactly**; the tap's is `32 + 1360` = 1392. The number is a **protocol constant**, compiled
@@ -882,6 +889,10 @@ respectively.
 > backstop.** The refusal is **local and permanent** — not back-pressure, and MUST NOT be signalled as
 > something a caller retries. What a producer does with the message it could not publish is its own
 > business (**P-0**).
+
+Those encode methods are `SystemFrame.wrap`/`wrapPayload` (Java) and `publishPayload`/`publishSystem`
+(C++), and the refusal is a value, not an exception: several producer call sites sit inside Aeron poll
+callbacks, where a throw is swallowed and the frame silently dropped (§9.4).
 
 **Every frame is one packet, and nothing reassembles.** **T-3** refuses an oversized payload in the
 producer's own process, so no frame above the constant ever reaches a transport, and **T-2** keeps the
@@ -969,13 +980,26 @@ driver, sub-second. The fixture is a **synthetic payload seqeron owns**.
 | 4a | **Rejection denies nothing, and repeats identically.** Two rejections under the same application `payloadId` each advance the counter, neither emits anything, and a well-formed frame of that `payloadId` afterwards is accepted unchanged | **S-7**, **C-2** |
 | 4b | **The producer refuses before the wire, and survives it.** A payload of exactly `MAX_PAYLOAD_LENGTH` publishes; one byte longer is refused with **nothing offered to any transport**, distinguishably from back-pressure, and the very next well-formed publish succeeds. Against an in-memory transport seam, so no Aeron | **T-3**, §12 |
 | 5 | **Synthesis determinism.** Two independently constructed `Sequencer`s fed the same message sequence emit byte-identical frames, heartbeat for heartbeat | **S-3**, **F-2** |
-| 6 | **Cross-language golden vectors.** A checked-in binary corpus — one frame per system event, plus the boundary payload sizes — that both language suites decode and re-encode to the same bytes. **Java regenerates it, C++ only verifies.** Regenerated on every system-family bump; a change to a synthesized frame's bytes is what flags the release as a **V-3** one | **F-2**, **V-1** |
+| 6 | **The frame layout is §4's tables.** Every frame-layer field sits at the offset §4.1 gives, on all four header composites; the frame sizes are §4.2's — `MessageHeader` 8, the composites 18 and 34, the var-data prefix 2, fixed overhead 28 and 44, a `ClusterHeartbeat` 42, a ceiling-sized payload frame 1360. And the three boundary payload sizes — empty, one byte, `MAX_PAYLOAD_LENGTH` — each cross and decode intact | **F-2**, **F-3**, §12 |
 | 7 | **Selective consumption.** A consumer fed an unallocated `payloadId`, and an unhandled `systemEventType`, ignores both without error — and its `globalSeqNo` continuity tracking advances across them, over all five sequenced shapes | **P-1**–**P-3** |
 | 8 | **S-6's three cases.** A `GatewayStarted` agreeing with its roster row binds and is accepted; four are rejected — the same frame naming a different `gatewaySourceId`, one whose `gatewayId` no roster row names while claiming a rostered `sourceId`, a `GatewayActivationRequested` naming an unrostered `gatewayId`, and another system frame claiming a rostered `sourceId` on an unbound session — and both negatives are accepted: an application payload carrying that `sourceId`, and a marker at −1 | **S-6** |
 | 9 | **Promotion order.** Against a roster of one `gatewaySourceId` with ranks 0, 1, 2: bootstrap activates rank 0 only; an operator's `GatewayActivationRequested` is forwarded and answered one `globalSeqNo` behind; closing rank 0's bound session promotes rank 1; closing rank 1's promotes rank 0 again (lowest-rank-excluding, not next-rank-up); a designated instance that publishes no `GatewayStarted` is handed on after exactly `GATEWAY_ACTIVATION_TIMEOUT_MS` of consensus time and not before; one that does publish one arms nothing further; and a `gatewaySourceId` with a single row synthesizes **no** frame on close, leaving `globalSeqNo` unmoved. Two `gatewaySourceId`s bootstrapped back to back each keep their own deadline | §7.2, **S-3** |
 
-**Row 6 must land before extraction**, because afterwards it needs a published artifact rather than a
-checkout on both sides, and it must be regenerated and reviewed as a diff on every library bump.
+**Every row asserts a rule this document states, and builds the frames it reads.** There is no stored
+corpus of bytes from an earlier build. A corpus reports only that *something* moved and leaves a reader
+to diff hex; the rules above name what broke — which is the whole reason §4.1's offsets and §4.2's sizes
+are written down rather than left implied by field order. Anything a corpus would have caught that these
+rows do not is a property of the wire format that is missing from §4, and the fix is to state it there.
+
+This also keeps the suite honest about what the two languages share. Both compile codecs from one
+`sbe-frame.xml` through one generator, so an assertion that their two outputs agree would test the pinned
+tool (**V-1**), not this protocol. What is worth testing per language is the hand-written code above the
+codecs — `unwrapFrame` and `SequencedFrameDecoder`, ported by hand and where a real defect was found — and
+that is what rows 3, 6 and 7 exercise.
+
+Row 8's "marker at −1" is `clusterctl`'s: `sourceId` 2, which no roster row claims (§5), carrying
+`connectionId` −1 because the marker is gateway-scoped. A `sourceId` of −1 is illegal on ingress under
+condition 6, and is row 4's case rather than row 8's.
 
 The suite asserts framing and copy fidelity only. A test that wants to decode a payload to check it has
 crossed the `payloadId` boundary in the wrong direction.
@@ -1072,7 +1096,56 @@ actually landed.
    document names is ignored, or **C-1** would be advisory. And **the deployment registers `payloadId`
    2 and 3 alongside 4**, though §6.1 calls the first two private: the rows cost nothing, and the label
    is what a reader of a dump wants whether or not the protocol crosses an application boundary.
-9. §14's suite, both languages. → it fails on a deliberate field reorder and on a renumbered core frame.
+9. **Landed.** §14's suite, both languages. → it fails on a deliberate field reorder and on a renumbered
+   core frame. `ConformanceTest` beside `SequencerTest` in the Java suite and in `core_tests`.
+
+   **Only the rows with a C++ implementation behind them are mirrored.** There is no C++ sequencer, so
+   rows 1, 4, 4a, 5, 8 and 9 are Java's alone; rows 2, 3, 4b, 6 and 7 are in both. That is not a gap in
+   the suite — it is where the two languages actually meet, and what they meet on is this document: each
+   side asserts §4's tables against its own generated codecs.
+
+   Three things the suite needed that did not exist, and one it found:
+
+   - **`Sequencer` counts its own rejections.** **S-7**'s counter was `SequencerService`'s Aeron counter
+     and nothing else, so no Aeron-free test could assert a rejection cost exactly one. It is a plain
+     field now, mirrored onto the operator counter as before.
+   - **T-3 was unimplemented.** Both producers encoded any length handed to them and left §9.2 condition
+     1 to catch it on the far side of a transport, which is exactly what T-3 says must not happen.
+     `SystemFrame.wrap`/`wrapPayload` return `REFUSED` and `publishPayload`/`publishSystem` return
+     `Publish::Refused` — three-valued in C++ because `Declined` (the transport's answer) is the one a
+     caller may retry and `Refused` never is. The C++ encode buffer was 512 bytes, sized off the widest
+     message any current producer writes rather than off the constant, so a legal 1316-byte payload had
+     nowhere to go; it is `MAX_INGRESS_FRAME_LENGTH` now.
+   - **§12's constants had no home in either language.** `MAX_PAYLOAD_LENGTH` had no C++ definition at
+     all and a package-private Java one on `Sequencer`, and the two framing bounds were `Sequencer`'s
+     `MIN_FRAME_LENGTH`/`MAX_FRAME_LENGTH` — the replicated state machine holding the numbers a producer
+     and a consumer both answer to. §12 is the definition and each language now compiles in a mirror of
+     it: `sequencer/FrameLayer.java` and `SequencedFrame.hpp`'s `Limits` block, under §12's own names.
+     The encode methods enforce the ceiling; they do not own it.
+   - **What it found: both consumers dropped a frame whose payload was shorter than 8 bytes.**
+     `SequencedFrameDecoder` and `unwrapFrame` each refused one as "an empty or truncated payload names
+     no message to dispatch on" — true, and not a reason to withhold the frame. §5 admits an empty
+     payload, §13.2 admits a payload that is not SBE at all, and **P-3** requires continuity to hold over
+     frames the consumer comprehends nothing of; dropping one puts a hole in the `globalSeqNo` read that
+     reads as a gap that is not there. Both now return the frame with `templateId`/`blockLength`/
+     `version` at 0, which is what the system branches already did and what says "no inner declaration"
+     — no `(payloadId, templateId)` dispatch can match it, which is **P-1** doing its job. Row 1's empty
+     and 1-byte cases are what surfaced it.
+
+   And one thing row 6 asked for that does not work. It called for a checked-in binary corpus that both
+   languages **decode and re-encode to the same bytes** — which is an identity under any field layout, so
+   long as one build's decoder and encoder share it: two builds whose header composites permute the
+   same-width fields differently both pass it. Verified by permuting `sequencedSystemHeader`'s `sourceId`
+   and `connectionId` — the round trip stayed green.
+
+   Asserting the decoded values against the generator's literals does pin the layout, but only across
+   *builds that could disagree*, and today's two cannot: one SBE run over one `sbe-frame.xml`. What the
+   corpus was left doing was reporting that the bytes had moved — a tripwire carrying no knowledge, when
+   §4.1 and §4.2 already state the layout it was standing in for. **So the corpus is gone and row 6 now
+   asserts those two tables directly**, in both languages, off the generated offset accessors. A field
+   reorder fails naming the field and the offset it should have had. Two consequences worth recording:
+   the rule and its test are now the same statement in two places rather than a file of bytes between
+   them, and there is no regeneration ritual on a deliberate wire change.
 
 10. **Landed. Split core off the application envelope.** Core is not an application and `payloadId` 1 said
     it was. Ten messages that the cluster tier itself decodes rode inside the same

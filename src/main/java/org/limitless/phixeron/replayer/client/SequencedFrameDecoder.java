@@ -98,8 +98,19 @@ public final class SequencedFrameDecoder {
 
         payloadLength = source.getShort(prefixOffset, java.nio.ByteOrder.LITTLE_ENDIAN) & 0xFFFF;
         payloadOffset = prefixOffset + SequencedDecoder.payloadHeaderLength();
-        if (payloadLength < MessageHeaderDecoder.ENCODED_LENGTH || payloadOffset + payloadLength > offset + length) {
-            return false; // an empty or truncated payload names no message to dispatch on
+        if (payloadOffset + payloadLength > offset + length) {
+            return false; // a truncated payload: the recording itself is damaged
+        }
+        // A payload too short to carry a MessageHeader is still a frame. §5 admits an empty payload and
+        // §13.2 admits a payload that is not SBE at all, so there is not always an inner header to read --
+        // and P-3 requires the frame to reach the consumer regardless, or a globalSeqNo goes missing from
+        // the continuity read. Leaving the three at 0, as the system branch does, is what says "no inner
+        // declaration": no (payloadId, templateId) dispatch can match one, which is P-1 doing its job.
+        if (payloadLength < MessageHeaderDecoder.ENCODED_LENGTH) {
+            templateId = 0;
+            blockLength = 0;
+            version = 0;
+            return true;
         }
         payloadHeader.wrap(source, payloadOffset);
         templateId = payloadHeader.templateId();

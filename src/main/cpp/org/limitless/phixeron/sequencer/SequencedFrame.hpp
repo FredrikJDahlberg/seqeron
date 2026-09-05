@@ -42,6 +42,27 @@ namespace org::limitless::phixeron::sequencer {
 // open-ended archive replay instead (see start()/poll()).
 inline constexpr std::int32_t FEEDER_STREAM_ID = 205;
 
+// ── Limits ────────────────────────────────────────────────────────────────────
+//
+// These belong to the seqeron protocol, not to this file or to any participant in it: they are defined
+// by doc/seqeron-protocol-spec.md §12, and what follows is this language's compiled-in mirror of that
+// table. The Java mirror is FrameLayer. A change starts in the spec and lands in both, and is a wire
+// change (V-3) whichever way round it is made.
+//
+// Compiled in, and never read from a transport per frame: S-3 forbids checking against a node's own MTU,
+// which would let a node provisioned smaller than its peers fork globalSeqNo. Whether this node's MTUs
+// can carry the constant is a start-up question (T-2), not a per-frame one.
+
+// The pinned 1408-byte MTU less the 92-byte ingress header stack.
+inline constexpr std::uint16_t MAX_PAYLOAD_LENGTH = 1316;
+
+// Smallest ingress frame of either family: the framing header, the 18-byte header composite and the
+// body's own 2-byte length prefix. One constant for both templates -- both composites are 18 bytes (F-3).
+inline constexpr std::uint16_t MIN_INGRESS_LENGTH = 28;
+
+// Largest ingress frame: a full payload behind that framing -- 1344 bytes. §9.2 condition 1's ceiling.
+inline constexpr std::uint16_t MAX_INGRESS_LENGTH = MIN_INGRESS_LENGTH + MAX_PAYLOAD_LENGTH;
+
 // ── The systemEventType table (doc/seqeron-protocol-spec.md §7) ────────────────
 //
 // The eight submitted events are their own body codec's template id — the numbers they have always
@@ -181,25 +202,30 @@ inline FrameView unwrapFrame(const char* const frame, const std::uint64_t length
 
         const std::uint64_t payloadLength = sequenced.payloadLength();
         const char* const payload = sequenced.payload();
+        view.payload = payload;
+        view.payloadLength = payloadLength;
+        view.valid = true;
+        // A payload too short to carry a messageHeader is still a frame. §5 admits an empty payload and
+        // §13.2 admits a payload that is not SBE at all, so there is not always an inner header to read --
+        // and P-3 requires the frame to reach the consumer regardless, or a globalSeqNo goes missing from
+        // the continuity read. Leaving templateId/blockLength/version at 0, as the system branches do, is
+        // what says "no inner declaration": no (payloadId, templateId) dispatch can match one (P-1).
         if (payloadLength < sbe::frame::MessageHeader::encodedLength())
         {
-            return view; // an empty or truncated payload names no message to dispatch on
+            return view;
         }
         sbe::frame::MessageHeader payloadHdr;
         payloadHdr.wrap(const_cast<char*>(payload), 0U, 0U, payloadLength);
         view.templateId = payloadHdr.templateId();
         view.blockLength = payloadHdr.blockLength();
         view.version = payloadHdr.version();
-        view.payload = payload;
-        view.payloadLength = payloadLength;
-        view.valid = true;
         return view;
     }
 
     if (frameTemplateId == sbe::frame::SequencedSystem::sbeTemplateId())
     {
-        if (length < sbe::frame::SequencedSystem::sbeBlockAndHeaderLength() +
-                         sbe::frame::SequencedSystem::bodyHeaderLength())
+        if (length <
+            sbe::frame::SequencedSystem::sbeBlockAndHeaderLength() + sbe::frame::SequencedSystem::bodyHeaderLength())
         {
             return view;
         }

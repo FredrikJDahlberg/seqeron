@@ -144,24 +144,6 @@ public final class Sequencer {
     private static final int RETIRED_CORE_ID = 1;
 
     /**
-     * Smallest ingress frame of either family: the framing header, the 18-byte header composite and the
-     * body's own 2-byte length prefix. A frame this size carries an empty body, which is legal. One
-     * constant for both templates, because both header composites are 18 bytes (<b>F-3</b>).
-     */
-    static final int MIN_FRAME_LENGTH = MessageHeaderDecoder.ENCODED_LENGTH + UnsequencedHeaderDecoder.ENCODED_LENGTH +
-                                        UnsequencedDecoder.payloadHeaderLength();
-
-    /**
-     * Largest payload any frame may carry (<b>T-2</b>): the pinned 1408-byte MTU less the 92-byte ingress
-     * header stack. A compiled-in protocol constant, never a transport read per frame — checking against a
-     * node's own MTU would let a node provisioned smaller than its peers fork {@code globalSeqNo} (<b>S-3</b>).
-     */
-    static final int MAX_PAYLOAD_LENGTH = 1316;
-
-    /** Largest {@code Unsequenced} frame: {@link #MIN_FRAME_LENGTH} plus a full payload — 1344 bytes. */
-    static final int MAX_FRAME_LENGTH = MIN_FRAME_LENGTH + MAX_PAYLOAD_LENGTH;
-
-    /**
      * {@code varDataEncoding}'s {@code nullValue}. A prefix of 65535 is "absent", not a 65535-byte payload,
      * and admitting it would read the frame a length short of what it claims.
      */
@@ -233,6 +215,15 @@ public final class Sequencer {
 
     /** Cluster-wide monotone counter; advanced for messages and lifecycle events alike. */
     private long globalSeqNo = 0;
+
+    /**
+     * Ingress frames refused by §9.2, since this node started (<b>S-7</b>). Node-local and <em>not</em>
+     * replicated state — nothing reads it, so it cannot reach a frame — but every node rejects the same
+     * frames (<b>S-3</b>), so nodes that have applied the same log prefix must agree on it: a divergence is
+     * a forked tap. {@code SequencerService} mirrors it onto the operator counter of the same name; here it
+     * is what lets the conformance suite assert a rejection cost exactly one, with no Aeron in the test.
+     */
+    private long rejectedFrameCount = 0;
 
     /**
      * memberId of whichever node last reported itself the leader; -1 until the first leadership
@@ -335,6 +326,11 @@ public final class Sequencer {
         return connectedClientCount;
     }
 
+    /** Ingress frames refused by §9.2 since this node started; see {@link #rejectedFrameCount}. */
+    public long rejectedFrameCount() {
+        return rejectedFrameCount;
+    }
+
     /**
      * Names this node in the rejection log line; see {@link #memberId}.
      * @param memberId this node's cluster memberId
@@ -380,11 +376,13 @@ public final class Sequencer {
                               final long timestamp) {
         // Condition 1, both halves. The ceiling is the backstop of T-3: a conforming producer's encode
         // method refuses an oversized body on its own stack, so what reaches here is a producer that is not one.
-        if (length < MIN_FRAME_LENGTH) {
-            return reject("length " + length + " is below the " + MIN_FRAME_LENGTH + "-byte minimum framing");
+        if (length < FrameLayer.MIN_INGRESS_LENGTH) {
+            return reject("length " + length + " is below the " + FrameLayer.MIN_INGRESS_LENGTH +
+                          "-byte minimum framing");
         }
-        if (length > MAX_FRAME_LENGTH) {
-            return reject("length " + length + " is above the " + MAX_FRAME_LENGTH + "-byte maximum framing");
+        if (length > FrameLayer.MAX_INGRESS_LENGTH) {
+            return reject("length " + length + " is above the " + FrameLayer.MAX_INGRESS_LENGTH +
+                          "-byte maximum framing");
         }
         // Condition 2's second half; the schemaId is checked in sequenceMessage.
         if (msgHeaderDecoder.version() != MessageHeaderDecoder.SCHEMA_VERSION) {
@@ -411,7 +409,7 @@ public final class Sequencer {
         final int headerOffset = offset + MessageHeaderDecoder.ENCODED_LENGTH;
         final int prefixOffset = headerOffset + UnsequencedHeaderDecoder.ENCODED_LENGTH;
         final int bodyLength = buffer.getShort(prefixOffset, java.nio.ByteOrder.LITTLE_ENDIAN) & 0xFFFF;
-        if (bodyLength == NULL_PAYLOAD_LENGTH || MIN_FRAME_LENGTH + bodyLength != length) {
+        if (bodyLength == NULL_PAYLOAD_LENGTH || FrameLayer.MIN_INGRESS_LENGTH + bodyLength != length) {
             return reject("body length " + bodyLength + " does not fit a " + length + "-byte frame");
         }
 
@@ -599,6 +597,7 @@ public final class Sequencer {
      * @param reason rejection description
      */
     private int reject(final String reason) {
+        rejectedFrameCount++;
         Logger.error(Logger.Component.Sequencer, Logger.EventCode.MalformedIngressMessage, memberId,
                      "skipping malformed ingress message: %s (globalSeqNo stays %d)", reason, globalSeqNo);
         return NO_FRAME;

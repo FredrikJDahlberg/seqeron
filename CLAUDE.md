@@ -347,9 +347,12 @@ Both the Java (`generateReplaySbe`/`generateFrameSbe`/`generateSessionSbe`/`gene
 codec tasks, plus `generateClusterSbeIr`/`generateOrderSbeIr` for the IR-only two) and C++
 (`GenerateReplaySbeCodecs`/`GenerateFrameSbeCodecs`/`GenerateSessionSbeCodecs`/
 `GenerateBasicDataSbeCodecs`/`GenerateOrderSbeCodecs`/`GenerateClusterSbeCodecs` CMake targets) sides
-regenerate independently from the same XML — keep both in sync when editing a schema. **SBE never deletes generated files for
-messages you removed**, so after deleting from a schema, purge `cmake-build-*/generated/sbe` and
-`cluster/build/generated/sources/sbe` before trusting a build or a test run.
+regenerate independently from the same XML — keep both in sync when editing a schema. SBE itself never
+deletes generated files for messages you removed, so **each schema owns a disjoint output directory and
+each codegen step wipes its own before running** — a regeneration is a replacement, and no manual purge
+of `cmake-build-*/generated/sbe` or `cluster/build/generated/sources/sbe` is needed. Keep that property
+when adding a schema: give it its own package/namespace directory, declare only that as the task's
+output, and wipe it in the same step.
 
 ### Order execution client — `OrderExecServer` (C++, under `src/main/cpp/.../order/OrderExecServer.cpp`)
 Combines what used to be two separate binaries — `application_stream_client` and the C++

@@ -32,6 +32,20 @@ import org.limitless.phixeron.sbe.frame.UnsequencedSystemEncoder;
  */
 public final class SystemFrame {
     /**
+     * {@link #wrap} and {@link #wrapPayload} return this instead of a length when the body is above
+     * {@link FrameLayer#MAX_PAYLOAD_LENGTH}. Enforcing it here rather than leaving §9.2 condition 1 to
+     * catch it on the far side of a transport is <b>T-3</b>; the constant itself is the protocol's
+     * ({@link FrameLayer}), not this class's.
+     *
+     * <p><b>T-3.</b> The refusal is local and permanent, and is not back-pressure: nothing was encoded and
+     * nothing may be offered, and a caller that retries is retrying something that can never succeed. What
+     * it does instead is its own business (<b>P-0</b>) -- chunk, drop, or fail the session -- but it must
+     * not be to try again. Distinguishable from every length a successful encode can return, which is why
+     * this is a sentinel rather than a zero.
+     */
+    public static final int REFUSED = -1;
+
+    /**
      * The {@code systemEventType} table (§7). The eight submitted events are their own body codec's
      * template id — the numbers they have always held, so a recording made by an older build can never
      * read as one of these. The three the sequencer synthesizes have no body codec: a top-level template
@@ -76,11 +90,15 @@ public final class SystemFrame {
      * @param systemEventType which of §7's submitted events {@code body} holds
      * @param body            the event's SBE block, with no {@code MessageHeader} of its own
      * @param bodyLength      bytes of {@code body} to carry
-     * @return the frame's length in bytes
+     * @return the frame's length in bytes, or {@link #REFUSED} if {@code bodyLength} is above
+     *     {@link FrameLayer#MAX_PAYLOAD_LENGTH}
      */
     public static int wrap(final MutableDirectBuffer frame, final int sourceId, final int connectionId,
                            final long sessionId, final int systemEventType, final DirectBuffer body,
                            final int bodyLength) {
+        if (bodyLength > FrameLayer.MAX_PAYLOAD_LENGTH) {
+            return REFUSED;
+        }
         final UnsequencedSystemEncoder encoder = new UnsequencedSystemEncoder();
         encoder.wrapAndApplyHeader(frame, 0, new MessageHeaderEncoder());
         encoder.header().sourceId(sourceId).connectionId(connectionId).sessionId(sessionId)
@@ -99,11 +117,15 @@ public final class SystemFrame {
      * @param payloadId     names the payload's decoder namespace and encoding; 0 and 1 are invalid on the wire
      * @param payload       the payload, its own 8-byte {@code MessageHeader} included
      * @param payloadLength bytes of {@code payload} to carry
-     * @return the frame's length in bytes
+     * @return the frame's length in bytes, or {@link #REFUSED} if {@code payloadLength} is above
+     *     {@link FrameLayer#MAX_PAYLOAD_LENGTH}
      */
     public static int wrapPayload(final MutableDirectBuffer frame, final int sourceId, final int connectionId,
                                   final long sessionId, final int payloadId, final DirectBuffer payload,
                                   final int payloadLength) {
+        if (payloadLength > FrameLayer.MAX_PAYLOAD_LENGTH) {
+            return REFUSED;
+        }
         final UnsequencedEncoder encoder = new UnsequencedEncoder();
         encoder.wrapAndApplyHeader(frame, 0, new MessageHeaderEncoder());
         encoder.header().sourceId(sourceId).connectionId(connectionId).sessionId(sessionId).payloadId(payloadId);
