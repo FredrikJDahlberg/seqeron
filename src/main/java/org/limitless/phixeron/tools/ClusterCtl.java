@@ -123,13 +123,17 @@ public final class ClusterCtl {
     private static final long ECHO_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(5);
     private static final long OFFER_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(5);
 
-    /** header.sourceId/connectionId for markers this tool submits: no gateway process/TCP connection. */
+    /** header.connectionId/sessionId for markers this tool submits: no gateway process/TCP connection. */
     private static final int NO_ID = -1;
 
     /** The topology document's namespace, fixed by topology.xsd. */
     private static final String TOPOLOGY_NS = "http://limitless.org/seqeron/topology/1";
 
-    /** §5's other reserved sourceId — clusterctl's own; -1 the XSD refuses on its own. */
+    /**
+     * §5's other reserved sourceId — clusterctl's own, stamped on every marker it submits; -1 the XSD
+     * refuses on its own. It cannot be {@link #NO_ID}: that value is the cluster's (<b>F-4</b>) and the
+     * sequencer refuses it on ingress (§9.2, condition 6).
+     */
     private static final int RESERVED_SOURCE_ID = 2;
 
     private static final IdleStrategy IDLE = new YieldingIdleStrategy();
@@ -653,12 +657,11 @@ public final class ClusterCtl {
 
     /**
      * Wraps a core payload in an {@code Unsequenced} frame. clusterctl is not a gateway, so it publishes
-     * under no {@code sourceId} and no connection — {@code NO_ID} for both, which is also what the
-     * operator markers have always carried.
+     * under its own reserved {@code sourceId} (§5) and no connection.
      */
     private static int wrapCore(final ExpandableArrayBuffer frame, final ExpandableArrayBuffer payload,
                                 final int encodedLength) {
-        return CoreFrame.wrap(frame, NO_ID, NO_ID, NO_ID, payload,
+        return CoreFrame.wrap(frame, RESERVED_SOURCE_ID, NO_ID, NO_ID, payload,
                               MessageHeaderEncoder.ENCODED_LENGTH + encodedLength);
     }
 

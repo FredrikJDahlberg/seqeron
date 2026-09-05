@@ -382,6 +382,78 @@ class SequencerTest {
         assertEquals(1L, sequencer.globalSeqNo());
     }
 
+    @Test
+    @DisplayName("a frame above the payload ceiling is skipped, and one exactly at it is sequenced")
+    void oversizedFrameIsSkipped() {
+        // T-2's pinned constant, and condition 1's ceiling as the backstop behind it: a conforming producer
+        // refuses this on its own stack, so a frame that reaches here is one that is not conforming. The
+        // ceiling is compiled in and never read off this node's MTU -- a node checking a smaller one than
+        // its peers would fork globalSeqNo.
+        final MutableDirectBuffer payload = new ExpandableArrayBuffer(Sequencer.MAX_PAYLOAD_LENGTH + 1);
+        final int exact = encodeIngressPayloadFrame(ingress, 0, SOURCE_ID, CONNECTION_ID, SESSION_PAYLOAD_ID,
+                                                    payload, Sequencer.MAX_PAYLOAD_LENGTH);
+        assertEquals(Sequencer.MAX_FRAME_LENGTH, exact);
+        assertNotEquals(Sequencer.NO_FRAME, sequencer.sequenceMessage(ingress, 0, exact, SESSION_ID, TIMESTAMP));
+
+        final int oversized = encodeIngressPayloadFrame(ingress, 0, SOURCE_ID, CONNECTION_ID, SESSION_PAYLOAD_ID,
+                                                        payload, Sequencer.MAX_PAYLOAD_LENGTH + 1);
+        assertEquals(Sequencer.NO_FRAME, sequencer.sequenceMessage(ingress, 0, oversized, SESSION_ID, TIMESTAMP));
+        assertEquals(1L, sequencer.globalSeqNo(), "a skipped message must consume no sequence number");
+    }
+
+    @Test
+    @DisplayName("the sourceId reserved for the cluster's own frames is refused on ingress")
+    void reservedSourceIdIsSkipped() {
+        // -1 marks the synthesized class (F-4). Admitting one from a producer would let it forge that
+        // class -- a heartbeat or a leadership record no node encoded.
+        final MutableDirectBuffer payload = new ExpandableArrayBuffer(64);
+        final int length = encodeIngressPayloadFrame(ingress, 0, Sequencer.NO_SOURCE_ID, CONNECTION_ID,
+                                                     SESSION_PAYLOAD_ID, payload, 4);
+
+        assertEquals(Sequencer.NO_FRAME, sequencer.sequenceMessage(ingress, 0, length, SESSION_ID, TIMESTAMP));
+        assertEquals(0L, sequencer.globalSeqNo());
+    }
+
+    @Test
+    @DisplayName("S-6: a core frame claims a rostered sourceId only from a session bound to it")
+    void rosteredSourceIdNeedsABoundSession() {
+        // Without this a process that is not the gateway can speak for its logical gateway: publish a
+        // GatewayStarted under someone else's sourceId and the sequencer promotes on its session close.
+        sequencer.sequenceMessage(ingress, 0, encodeIngressGatewayRegistered(ingress, 0, 5, SOURCE_ID, "GW-A", 0, 0),
+                                  SESSION_ID, TIMESTAMP);
+        final long afterRoster = sequencer.globalSeqNo();
+        final long rogue = SESSION_ID + 1;
+
+        // Case 1's second half: the row's gatewaySourceId must be the one the frame carries.
+        assertEquals(Sequencer.NO_FRAME,
+                     sequencer.sequenceMessage(ingress, 0, encodeIngressGatewayStarted(ingress, 0, 5,
+                                                                                       EXCHANGE_SOURCE_ID),
+                                               rogue, TIMESTAMP));
+        // Case 2: no binding, so this session may not speak for that logical gateway.
+        assertEquals(Sequencer.NO_FRAME,
+                     sequencer.sequenceMessage(ingress, 0, encodeIngressClientConnected(ingress, 0, 1), rogue,
+                                               TIMESTAMP));
+        // Case 3: the same sourceId under an application payload is not core's to check.
+        assertNotEquals(Sequencer.NO_FRAME,
+                        sequencer.sequenceMessage(ingress, 0,
+                                                  encodeIngressPayloadFrame(ingress, 0, SOURCE_ID, CONNECTION_ID,
+                                                                            SESSION_PAYLOAD_ID,
+                                                                            new ExpandableArrayBuffer(8), 4),
+                                                  rogue, TIMESTAMP));
+
+        // The agreeing GatewayStarted binds, and only the session that made the binding is admitted.
+        assertNotEquals(Sequencer.NO_FRAME,
+                        sequencer.sequenceMessage(ingress, 0, encodeIngressGatewayStarted(ingress, 0, 5), rogue,
+                                                  TIMESTAMP));
+        assertNotEquals(Sequencer.NO_FRAME,
+                        sequencer.sequenceMessage(ingress, 0, encodeIngressClientConnected(ingress, 0, 1), rogue,
+                                                  TIMESTAMP));
+        assertEquals(Sequencer.NO_FRAME,
+                     sequencer.sequenceMessage(ingress, 0, encodeIngressClientConnected(ingress, 0, 2),
+                                               SESSION_ID + 2, TIMESTAMP));
+        assertEquals(afterRoster + 3, sequencer.globalSeqNo(), "every rejection left globalSeqNo where it was");
+    }
+
     // ── Determinism ───────────────────────────────────────────────────────────
 
     @Test
@@ -536,6 +608,11 @@ class SequencerTest {
         // that logical gateway belonged to the instance that went away, and died with its sockets.
         final Sequencer seq = new Sequencer();
         final MutableDirectBuffer buf = new ExpandableArrayBuffer(128);
+        // S-6 wants a roster to check the two GatewayStarteds against, and a bound session under each: a
+        // ClientConnected claiming a rostered sourceId is only admitted on one.
+        seq.sequenceMessage(buf, 0, encodeIngressGatewayRegistered(buf, 0, 5, SOURCE_ID, "GW-A", 0, 0), SESSION_ID,
+                            TIMESTAMP);
+        seq.sequenceMessage(buf, 0, encodeIngressGatewayStarted(buf, 0, 5), SESSION_ID, TIMESTAMP);
         seq.sequenceMessage(buf, 0, encodeIngressClientConnected(buf, 0, 1), SESSION_ID, TIMESTAMP);
         seq.sequenceMessage(buf, 0, encodeIngressClientConnected(buf, 0, 2), SESSION_ID, TIMESTAMP);
         assertEquals(2, seq.connectedClientCount());
@@ -808,7 +885,7 @@ class SequencerTest {
     }
 
     @Test
-    @DisplayName("a GatewayStarted from an unknown instance promotes nothing")
+    @DisplayName("a GatewayStarted naming an instance no roster row does is rejected")
     void unknownGatewayInstancePromotesNothing() {
         final Sequencer seq = new Sequencer();
         final MutableDirectBuffer buf = new ExpandableArrayBuffer(512);
@@ -818,10 +895,12 @@ class SequencerTest {
                             TIMESTAMP);
 
         final long rogueSession = 0xC0FFEEL;
-        seq.sequenceMessage(buf, 0, encodeIngressGatewayStarted(buf, 0, 99), rogueSession, TIMESTAMP);
+        assertEquals(Sequencer.NO_FRAME,
+                     seq.sequenceMessage(buf, 0, encodeIngressGatewayStarted(buf, 0, 99), rogueSession, TIMESTAMP),
+                     "S-6 case 1 is total: a gatewayId the roster does not name is rejected whatever it carries");
 
-        assertEquals(Sequencer.NO_PROMOTION_TARGET, seq.sessionClosed(rogueSession, TIMESTAMP + 1),
-                     "an instance with no Gateway row resolves to no group, so there is no sibling to promote");
+        assertEquals(Sequencer.NO_FRAME, seq.sessionClosed(rogueSession, TIMESTAMP + 1),
+                     "the rejected frame bound nothing, so the close is not an active gateway's");
     }
 
     // ── Two logical gateways ──────────────────────────────────────────────────
@@ -866,7 +945,8 @@ class SequencerTest {
         final long clientSession = 0xA11CEL;
         final long exchangeSession = 0xB0B0L;
         seq.sequenceMessage(buf, 0, encodeIngressGatewayStarted(buf, 0, 5), clientSession, TIMESTAMP);
-        seq.sequenceMessage(buf, 0, encodeIngressGatewayStarted(buf, 0, 8), exchangeSession, TIMESTAMP);
+        seq.sequenceMessage(buf, 0, encodeIngressGatewayStarted(buf, 0, 8, EXCHANGE_SOURCE_ID), exchangeSession,
+                            TIMESTAMP);
 
         final int promotion = seq.sessionClosed(exchangeSession, TIMESTAMP + 1);
         assertEquals(9, decodeGatewayActive(seq.buffer(), promotion).gatewayId(),
@@ -1039,11 +1119,15 @@ class SequencerTest {
      */
     private static int encodeIngressGatewayStarted(final MutableDirectBuffer buffer, final int offset,
                                                    final int gatewayId) {
+        return encodeIngressGatewayStarted(buffer, offset, gatewayId, SOURCE_ID);
+    }
+    private static int encodeIngressGatewayStarted(final MutableDirectBuffer buffer, final int offset,
+                                                   final int gatewayId, final int sourceId) {
         final MutableDirectBuffer payload = new ExpandableArrayBuffer(64);
         final org.limitless.phixeron.sbe.frame.GatewayStartedEncoder encoder = new org.limitless.phixeron.sbe.frame.GatewayStartedEncoder();
         encoder.wrapAndApplyHeader(payload, 0, new org.limitless.phixeron.sbe.frame.MessageHeaderEncoder());
         encoder.gatewayId(gatewayId).firstConnectionId(1);
-        return encodeIngressFrame(buffer, offset, SOURCE_ID, -1, payload,
+        return encodeIngressFrame(buffer, offset, sourceId, -1, payload,
                                   corePayloadLength(encoder.encodedLength()));
     }
 

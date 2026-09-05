@@ -140,6 +140,16 @@ public final class Sequencer {
                                         UnsequencedDecoder.payloadHeaderLength();
 
     /**
+     * Largest payload any frame may carry (<b>T-2</b>): the pinned 1408-byte MTU less the 92-byte ingress
+     * header stack. A compiled-in protocol constant, never a transport read per frame — checking against a
+     * node's own MTU would let a node provisioned smaller than its peers fork {@code globalSeqNo} (<b>S-3</b>).
+     */
+    static final int MAX_PAYLOAD_LENGTH = 1316;
+
+    /** Largest {@code Unsequenced} frame: {@link #MIN_FRAME_LENGTH} plus a full payload — 1344 bytes. */
+    static final int MAX_FRAME_LENGTH = MIN_FRAME_LENGTH + MAX_PAYLOAD_LENGTH;
+
+    /**
      * {@code varDataEncoding}'s {@code nullValue}. A prefix of 65535 is "absent", not a 65535-byte payload,
      * and admitting it would read the frame a length short of what it claims.
      */
@@ -357,6 +367,11 @@ public final class Sequencer {
         if (length < MIN_FRAME_LENGTH) {
             return reject("length " + length + " is below the " + MIN_FRAME_LENGTH + "-byte minimum framing");
         }
+        // The backstop half of the same condition (T-3): a conforming producer's encode method refuses an
+        // oversized payload on its own stack, so what reaches here is a producer that is not one.
+        if (length > MAX_FRAME_LENGTH) {
+            return reject("length " + length + " is above the " + MAX_FRAME_LENGTH + "-byte maximum framing");
+        }
         if (msgHeaderDecoder.version() != MessageHeaderDecoder.SCHEMA_VERSION) {
             return reject("version " + msgHeaderDecoder.version() + " is not " +
                           MessageHeaderDecoder.SCHEMA_VERSION);
@@ -380,11 +395,16 @@ public final class Sequencer {
         }
 
         frameHeaderDecoder.wrap(buffer, bodyOffset);
+        // An int32 compare, so nothing here can throw: -1 marks the frames the cluster synthesizes (F-4),
+        // and admitting one on ingress would let a producer forge that class.
+        final int sourceId = frameHeaderDecoder.sourceId();
+        if (sourceId == NO_SOURCE_ID) {
+            return reject("sourceId " + NO_SOURCE_ID + " is reserved for the cluster's own frames");
+        }
         final int payloadId = frameHeaderDecoder.payloadId();
         if (payloadId == 0) {
             return reject("payloadId 0 is not a protocol");
         }
-        final int sourceId = frameHeaderDecoder.sourceId();
         final int connectionId = frameHeaderDecoder.connectionId();
 
         if (payloadId == CORE_PAYLOAD_ID &&
@@ -435,6 +455,16 @@ public final class Sequencer {
             return rejectPayload("templateId " + templateId + " is synthesized by the cluster and illegal on ingress");
         }
 
+        // S-6 case 2. A core frame claiming a sourceId the roster names must arrive on a session a
+        // GatewayStarted already bound to that sourceId, so one process cannot speak for another's logical
+        // gateway. GatewayStarted is exempt because case 1 below is what creates the binding, and every
+        // unrostered sourceId is unchecked (case 3) — clusterctl's markers and the node-local publishers.
+        if (templateId != GatewayStartedDecoder.TEMPLATE_ID && rosterClaims(sourceId) &&
+            !boundToGateway(sessionId, sourceId)) {
+            return rejectPayload("templateId " + templateId + " claims rostered sourceId " + sourceId +
+                                 " on a session no GatewayStarted bound");
+        }
+
         final int bodyOffset = payloadOffset + MessageHeaderDecoder.ENCODED_LENGTH;
         final int bodyLength = payloadLength - MessageHeaderDecoder.ENCODED_LENGTH;
         final int version = payloadHeaderDecoder.version();
@@ -463,7 +493,18 @@ public final class Sequencer {
                               GatewayStartedDecoder.BLOCK_LENGTH);
             }
             gatewayStartedDecoder.wrap(buffer, bodyOffset, GatewayStartedDecoder.BLOCK_LENGTH, version);
-            activeGatewaySession.put(sessionId, gatewayStartedDecoder.gatewayId());
+            // S-6 case 1, both halves. Total, so a GatewayStarted ahead of load-topology is rejected against
+            // an empty roster — the start-up order as a wire rule.
+            final int gatewayId = gatewayStartedDecoder.gatewayId();
+            final GatewayRow row = rowFor(gatewayId);
+            if (row == null) {
+                return rejectPayload("GatewayStarted names gatewayId " + gatewayId + ", which no roster row does");
+            }
+            if (row.gatewaySourceId() != sourceId) {
+                return rejectPayload("GatewayStarted for gatewayId " + gatewayId + " carries sourceId " + sourceId +
+                                     ", not its row's " + row.gatewaySourceId());
+            }
+            activeGatewaySession.put(sessionId, gatewayId);
             releaseStaleConnections(sourceId);
         } else if (templateId == ClientConnectedDecoder.TEMPLATE_ID) {
             if (openConnections.computeIfAbsent(sourceId, source -> new java.util.HashSet<>()).add(connectionId)) {
@@ -772,6 +813,29 @@ public final class Sequencer {
             }
         }
         pendingActivations.add(armed);
+    }
+
+    /** Whether any roster row names {@code sourceId} as its logical gateway (<b>S-6</b> cases 2 and 3). */
+    private boolean rosterClaims(final int sourceId) {
+        for (final GatewayRow row : gatewayRows) {
+            if (row.gatewaySourceId() == sourceId) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Whether {@code sessionId} was bound by a {@code GatewayStarted} naming an instance of
+     * {@code sourceId} (<b>S-6</b> case 2). Bound to a different logical gateway does not count.
+     */
+    private boolean boundToGateway(final long sessionId, final int sourceId) {
+        final Integer boundGatewayId = activeGatewaySession.get(sessionId);
+        if (boundGatewayId == null) {
+            return false;
+        }
+        final GatewayRow row = rowFor(boundGatewayId);
+        return row != null && row.gatewaySourceId() == sourceId;
     }
 
     /** The Gateway row for {@code gatewayId}, or null if no load has named that instance. */
