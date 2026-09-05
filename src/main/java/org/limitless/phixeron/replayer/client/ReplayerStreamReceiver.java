@@ -11,10 +11,10 @@ import io.aeron.logbuffer.LogBufferDescriptor;
 import org.agrona.concurrent.UnsafeBuffer;
 import org.limitless.phixeron.metrics.PhixeronCounters;
 import org.limitless.phixeron.replayer.server.ReplayerService;
-import org.limitless.phixeron.sbe.unsequenced.MessageHeaderEncoder;
-import org.limitless.phixeron.sbe.unsequenced.ReplayCompleteEncoder;
-import org.limitless.phixeron.sbe.unsequenced.ReplayHeartbeatEncoder;
-import org.limitless.phixeron.sbe.unsequenced.ReplayRequestEncoder;
+import org.limitless.phixeron.sbe.replay.MessageHeaderEncoder;
+import org.limitless.phixeron.sbe.replay.ReplayCompleteEncoder;
+import org.limitless.phixeron.sbe.replay.ReplayHeartbeatEncoder;
+import org.limitless.phixeron.sbe.replay.ReplayRequestEncoder;
 import org.limitless.phixeron.sequencer.SequencerService;
 
 /**

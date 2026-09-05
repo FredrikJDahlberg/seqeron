@@ -57,9 +57,9 @@ import org.limitless.phixeron.util.Logger;
  *                               with escalating backoff — cheap when idle, still prompt when busy.
  * </pre>
  *
- * <p>Gateway topology (which sourceIds are FIX gateways, and which gatewayId is the designated
- * primary) is no longer configured here — the sequencer derives it from the {@code Gateway}
- * basic-data rows in the log (doc/todo.md item 8c).
+ * <p>Gateway topology (which sourceIds are gateways, and which gatewayId is the designated
+ * primary) is no longer configured here — the sequencer derives it from the list rows in the log
+ * (doc/todo.md item 8c).
  *
  * <p>Single-node launch example:
  * <pre>

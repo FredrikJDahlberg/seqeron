@@ -155,14 +155,14 @@ for SEQ_LOG in "${SEQ_LOGS[@]}"; do
 done
 echo "[start-three-node-cluster.sh] All 3 cluster members are running"
 
-# The gateway roster (doc/future-arch.md §3.6). Not reference data and not BasicDataServer's: it is a
+# The gateway list (doc/future-arch.md §3.6). Not reference data and not BasicDataServer's: it is a
 # deployment assertion an operator makes, so it comes in through clusterctl. It has to be in the log
 # before the reference-data load — a gateway that has not resolved its own gatewaySourceId from the
-# roster drops every session row on ingest — and the bootstrap GatewayActive that designates each
-# pair's primary is synthesized behind the roster's last row.
-echo "[start-three-node-cluster.sh] Loading the gateway roster"
+# list drops every session row on ingest — and the bootstrap GatewayActive that designates each
+# pair's primary is synthesized behind the list's last row.
+echo "[start-three-node-cluster.sh] Loading the gateway list"
 if ! CLUSTERCTL_AERON_DIR="${SEQ_AERON_DIR}" CLUSTERCTL_INGRESS_ENDPOINTS="$(ingress_endpoints_string 3)" \
-        "${MAIN_SCRIPTS}/clusterctl.sh" load-topology src/test/resources/topology-gw.csv \
+        "${MAIN_SCRIPTS}/clusterctl.sh" load-topology src/test/resources/topology-gw.xml \
         > "${LOG_DIR}/clusterctl-load-topology.log" 2>&1; then
     echo "ERROR: clusterctl load-topology failed — see ${LOG_DIR}/clusterctl-load-topology.log" >&2
     kill "${SEQ_PIDS[@]}" 2>/dev/null

@@ -9,8 +9,9 @@
 #   clusterctl.sh shutdown          # orderly stop; safe on every node, no-op on followers
 #   clusterctl.sh activate <id>     # manual standby promotion (requires an elected leader)
 #   clusterctl.sh load-topology <file>
-#                                   # publish the gateway roster (src/main/resources/topology.csv);
-#                                   # run once per cluster lifetime, BEFORE the reference-data load
+#                                   # publish the topology document — the gateway list and the
+#                                   # protocol registry (src/main/resources/topology.xml); run once
+#                                   # per cluster lifetime, BEFORE the reference-data load
 #   clusterctl.sh help
 #   clusterctl.sh describe …        # anything else → ClusterTool passthrough
 #

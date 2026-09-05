@@ -5,10 +5,13 @@
 # (see start-cluster.sh / SequencerServer, default $TMPDIR/phixeron-seq/archive-<id>)
 # and prints every recorded SBE message as JSON.
 #
-# All three IR files packaged in the uber jar are loaded by default — sequenced
-# (the tap, stream 205), unsequenced (cluster ingress) and cluster (the Raft
+# Every IR file packaged in the uber jar is loaded by default — frame (the
+# envelope and core, on the tap, stream 205), order/session/basicdata (the
+# payloads inside it), replay (the node-local control plane) and cluster (the Raft
 # consensus log, stream 100) — and each frame is decoded against the schema its
-# own header names. So one run reads an archive dir end to end, whichever mix of
+# own header names. The set is whatever is on the classpath, not a list in the
+# printer: each module stages its own schemas' IR, so it is the deployment that
+# decides which payloads can be named. --list-schemas prints what a run has. So one run reads an archive dir end to end, whichever mix of
 # recordings it holds. --schema <name> narrows the run to one of them;
 # --spec <file> decodes against an IR file outside the jar instead.
 #
@@ -30,22 +33,32 @@
 # multi-line pretty print — easier to grep, and compact enough that a whole
 # recording scrolls.
 #
-# Usage:
-#   ./sbe-log-printer.sh [--schema <name>|--spec <file.sbeir>] <archive-dir> [--stream <id>] [--oneline]
+# -o <payloadId> writes that protocol's payloads to stdout, raw and back to back,
+# for piping to a decoder that owns the schema (doc/seqeron-protocol-spec.md
+# §13.1). The stream carries no framing of its own — the decoder's schema is what
+# delimits each payload — so every text line, the dump included, moves to stderr
+# for the run.
 #
-# Example:
+# Usage:
+#   ./sbe-log-printer.sh [--schema <name>|--spec <file.sbeir>] <archive-dir> [--stream <id>] [--oneline] [-o <payloadId>]
+#
+# Examples:
 #   ./gradlew uberJar
 #   ./sbe-log-printer.sh "${TMPDIR:-/tmp}/phixeron-seq/archive-0" --stream 205
+#   ./sbe-log-printer.sh "${TMPDIR:-/tmp}/phixeron-seq/archive-0" --stream 205 -o 2 \
+#       2>frames.log | order-decode
 
 set -euo pipefail
 
 usage() {
-    echo "Usage: $0 [--schema <name>|--spec <file.sbeir>] <archive-dir> [--stream <id>] [--oneline]"
-    echo "  --schema <name>  decode only this schema (default: all of sequenced, unsequenced, cluster)"
+    echo "Usage: $0 [--schema <name>|--spec <file.sbeir>] <archive-dir> [--stream <id>] [--oneline] [-o <payloadId>]"
+    echo "  --schema <name>  decode only this schema (default: every bundled one)"
     echo "  --spec <file>    decode against an IR file outside the jar instead"
     echo "  --stream <id>    dump only the newest recording on that stream"
     echo "  --oneline        print each message as a single line of JSON"
     echo "  --list-schemas   list the bundled schema names and exit"
+    echo "  -o <payloadId>   write that protocol's payloads to stdout, raw and back to back,"
+    echo "                   for piping to its own decoder; every text line moves to stderr"
 }
 
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then

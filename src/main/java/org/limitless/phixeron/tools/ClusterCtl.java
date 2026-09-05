@@ -11,27 +11,43 @@ import io.aeron.logbuffer.FragmentHandler;
 import io.aeron.logbuffer.Header;
 import java.io.File;
 import java.io.IOException;
-import java.nio.file.Files;
+import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
+import javax.xml.XMLConstants;
+import javax.xml.parsers.DocumentBuilder;
+import javax.xml.parsers.DocumentBuilderFactory;
+import javax.xml.parsers.ParserConfigurationException;
+import javax.xml.transform.stream.StreamSource;
+import javax.xml.validation.SchemaFactory;
 import org.agrona.DirectBuffer;
 import org.agrona.ExpandableArrayBuffer;
 import org.agrona.concurrent.IdleStrategy;
 import org.agrona.concurrent.YieldingIdleStrategy;
 import org.agrona.concurrent.status.CountersReader;
 import org.limitless.phixeron.metrics.PhixeronCounters;
-import org.limitless.phixeron.sbe.sequenced.ClusterStartedDecoder;
-import org.limitless.phixeron.sbe.sequenced.GatewayActiveDecoder;
-import org.limitless.phixeron.sbe.sequenced.GatewayRegisteredDecoder;
-import org.limitless.phixeron.sbe.sequenced.MessageHeaderDecoder;
-import org.limitless.phixeron.sbe.unsequenced.ClusterStartedEncoder;
-import org.limitless.phixeron.sbe.unsequenced.ClusterStoppedEncoder;
-import org.limitless.phixeron.sbe.unsequenced.GatewayActiveEncoder;
-import org.limitless.phixeron.sbe.unsequenced.GatewayRegisteredEncoder;
-import org.limitless.phixeron.sbe.unsequenced.MessageHeaderEncoder;
+import org.limitless.phixeron.replayer.client.SequencedFrameDecoder;
+import org.limitless.phixeron.sbe.frame.ClusterStartedDecoder;
+import org.limitless.phixeron.sbe.frame.GatewayActiveDecoder;
+import org.limitless.phixeron.sbe.frame.ApplicationRegisteredEncoder;
+import org.limitless.phixeron.sbe.frame.GatewayRegisteredDecoder;
+import org.limitless.phixeron.sbe.frame.ClusterStartedEncoder;
+import org.limitless.phixeron.sbe.frame.ClusterStoppedEncoder;
+import org.limitless.phixeron.sbe.frame.GatewayActivationRequestedEncoder;
+import org.limitless.phixeron.sbe.frame.GatewayRegisteredEncoder;
+import org.limitless.phixeron.sequencer.SystemFrame;
+import org.limitless.phixeron.sbe.frame.MessageHeaderDecoder;
+import org.limitless.phixeron.sbe.frame.MessageHeaderEncoder;
+import org.limitless.phixeron.sbe.frame.PayloadIdRegisteredEncoder;
 import org.limitless.phixeron.sequencer.SequencerServer;
 import org.limitless.phixeron.sequencer.SequencerService;
+import org.w3c.dom.Element;
+import org.w3c.dom.Node;
+import org.w3c.dom.NodeList;
+import org.xml.sax.ErrorHandler;
+import org.xml.sax.SAXException;
+import org.xml.sax.SAXParseException;
 
 /**
  * clusterctl — the operator cluster life-cycle tool (see clusterctl.md). Node-local: run co-located
@@ -58,24 +74,33 @@ import org.limitless.phixeron.sequencer.SequencerService;
  *       effort: if the echo does not arrive (an unhealthy cluster — often why one stops early), it
  *       aborts anyway, still via {@code ABORT} rather than SIGKILL, so the log is preserved.</li>
  *   <li><b>activate &lt;gatewayId&gt;</b> — manual standby promotion: publishes an unsequenced
- *       {@code GatewayActive(gatewayId)} to cluster ingress and waits for its sequenced echo on the
- *       tap. No special-casing needed on the sequencer side — {@code GatewayActive} passes through
- *       {@code Sequencer.sequenceMessage} like any other message, the same path the sequencer's own
- *       bootstrap/promotion activations take. Every gateway instance reacts identically regardless of
- *       which of the two publishes it: the instance whose {@code gatewayId}/{@code gatewaySourceId}
- *       matches opens its accept gate, the others stay standby.</li>
- *   <li><b>load-topology &lt;file&gt;</b> — publishes the gateway roster: one unsequenced
- *       {@code GatewayRegistered} per row of a {@code name,gatewayId,gatewaySourceId,preferenceRank}
- *       CSV file, {@code remaining} counting down to 0 on the last, then waits for that last row's
- *       sequenced echo. The roster is a deployment assertion, the same kind of act as {@code
- *       activate}, which is why it lives here rather than riding along in the reference-data load:
+ *       {@code GatewayActivationRequested(gatewayId)} to cluster ingress and waits for the
+ *       {@code GatewayActive} the sequencer synthesizes behind it. The operator's act is what is
+ *       recorded and the designation stays the cluster's, through the same path bootstrap and both
+ *       promotions take — which is also what gets the manual path the list validation it would
+ *       otherwise lack, since a {@code gatewayId} no list row names is rejected on ingress. Every
+ *       gateway instance reacts to the resulting {@code GatewayActive} identically however it was
+ *       triggered: the instance whose {@code gatewayId} matches opens its accept gate, the others stay
+ *       standby.</li>
+ *   <li><b>load-topology &lt;file&gt;</b> — publishes the deployment's topology document
+ *       (doc/seqeron-protocol-spec.md §6.4; XML, validated against the packaged {@code topology.xsd}).
+ *       Its {@code <gateways>} section becomes one unsequenced {@code GatewayRegistered} per row,
+ *       {@code remaining} counting down to 0 on the last; its optional {@code <applications>} and
+ *       {@code <protocols>} sections become one {@code ApplicationRegistered} and one {@code
+ *       PayloadIdRegistered} per row behind them, carrying no countdown of their own — labelling for
+ *       {@code SbeLogPrinter} and nothing more, since the sequencer never decodes them and
+ *       registration gates no frame (§6.3, <b>C-2</b>). Between them the three sections put the whole
+ *       deployment in the log: the producers that are elected, the producers that are not (§5), and
+ *       what the shared payloadIds are called. Then waits for the last list row's
+ *       sequenced echo. The sections are one deployment assertion, the same kind of act as {@code
+ *       activate}, which is why they live here rather than riding along in the reference-data load:
  *       it changes when you deploy, where the comp-id table and the calendar change daily (see
  *       doc/future-arch.md §3.6). The {@code remaining == 0} row is the sequencer's completeness
  *       edge — it synthesizes one bootstrap {@code GatewayActive} per logical gateway behind it —
  *       so this tool, which counted the rows it read, is what authors that edge. Re-running is safe:
  *       the sequencer de-dups rows on {@code gatewayId} and latches the bootstrap once.
  *       <b>Run it before the reference-data load</b>: a session row whose {@code ownerSourceId} no
- *       roster row claims is dropped by every gateway on ingest, so a load that beats the roster in
+ *       list row claims is dropped by every gateway on ingest, so a load that beats the list in
  *       leaves the gateways with no sessions (fail closed, but a dead cluster).</li>
  *   <li><b>counters</b> — lists this node's phixeron operator counters ({@link
  *       org.limitless.phixeron.metrics.PhixeronCounters}), read directly off the co-located Aeron
@@ -104,12 +129,18 @@ public final class ClusterCtl {
     private static final long ECHO_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(5);
     private static final long OFFER_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(5);
 
-    /** header.sourceId/connectionId for markers this tool submits: no gateway process/TCP connection. */
+    /** header.connectionId/sessionId for markers this tool submits: no gateway process/TCP connection. */
     private static final int NO_ID = -1;
 
-    /** Roster-row field widths, from sbe-unsequenced.xml's gatewayName type and preferenceRank uint8. */
-    private static final int GATEWAY_NAME_LENGTH = 32;
-    private static final int MAX_PREFERENCE_RANK = 255;
+    /** The topology document's namespace, fixed by topology.xsd. */
+    private static final String TOPOLOGY_NS = "http://limitless.org/seqeron/topology/1";
+
+    /**
+     * §5's other reserved sourceId — clusterctl's own, stamped on every marker it submits; -1 the XSD
+     * refuses on its own. It cannot be {@link #NO_ID}: that value is the cluster's (<b>F-4</b>) and the
+     * sequencer refuses it on ingress (§9.2, condition 6).
+     */
+    private static final int RESERVED_SOURCE_ID = 2;
 
     private static final IdleStrategy IDLE = new YieldingIdleStrategy();
     private static final EgressListener NULL_EGRESS = (sessionId, timestamp, buffer, offset, length, header) -> { };
@@ -156,7 +187,7 @@ public final class ClusterCtl {
         final long correlationId = System.nanoTime();
         try (AeronCluster cluster = connectCluster()) {
             final long globalSeqNo =
-                publishMarkerAndAwaitEcho(cluster, ClusterStartedEncoder.TEMPLATE_ID, correlationId);
+                publishMarkerAndAwaitEcho(cluster, SystemFrame.CLUSTER_STARTED, correlationId);
             if (globalSeqNo < 0) {
                 System.err.println("[clusterctl] start: no sequenced ClusterStarted echo within timeout");
                 return 1;
@@ -178,7 +209,7 @@ public final class ClusterCtl {
         final long correlationId = System.nanoTime();
         try (AeronCluster cluster = connectCluster()) {
             final long globalSeqNo =
-                publishMarkerAndAwaitEcho(cluster, ClusterStoppedEncoder.TEMPLATE_ID, correlationId);
+                publishMarkerAndAwaitEcho(cluster, SystemFrame.CLUSTER_STOPPED, correlationId);
             if (globalSeqNo < 0) {
                 System.err.println("[clusterctl] shutdown: no ClusterStopped echo within timeout — aborting anyway");
             } else {
@@ -198,8 +229,9 @@ public final class ClusterCtl {
     }
 
     /**
-     * Manual standby promotion: publishes {@code GatewayActive(gatewayId)} to cluster ingress and
-     * waits for its sequenced echo, mirroring {@link #start()}'s connect/publish/await-echo shape.
+     * Manual standby promotion: publishes {@code GatewayActivationRequested(gatewayId)} to cluster
+     * ingress and waits for the {@code GatewayActive} synthesized behind it, mirroring {@link #start()}'s
+     * connect/publish/await-echo shape.
      * No leader gate — routing to the leader is cluster ingress's job, same as {@code start}.
      */
     private static int activate(final String[] args) {
@@ -218,7 +250,8 @@ public final class ClusterCtl {
         try (AeronCluster cluster = connectCluster()) {
             final long globalSeqNo = publishGatewayActiveAndAwaitEcho(cluster, gatewayId);
             if (globalSeqNo < 0) {
-                System.err.println("[clusterctl] activate: no sequenced GatewayActive echo within timeout");
+                System.err.println("[clusterctl] activate: no synthesized GatewayActive within timeout — is "
+                               + "<gatewayId> a list row?");
                 return 1;
             }
             System.out.printf("[clusterctl] activate: GatewayActive(gatewayId=%d) recorded at globalSeqNo=%d%n",
@@ -231,42 +264,58 @@ public final class ClusterCtl {
         }
     }
 
-    /** One roster row as read from the topology file. */
+    /** One list row as read from the topology document. */
     private record TopologyRow(String gatewayName, int gatewayId, int gatewaySourceId, int preferenceRank) { }
 
+    /** One co-located application: the producer kind that is not elected (§5). */
+    private record ApplicationRow(String applicationName, int sourceId) { }
+
+    /** One protocol-registry row: what a shared payloadId is called in this deployment (§6.3). */
+    private record ProtocolRow(int payloadId, int protocolVersion, String protocolName) { }
+
+    /** A parsed topology document — the gateway list, the applications, and the protocol registry. */
+    private record Topology(List<TopologyRow> gateways, List<ApplicationRow> applications,
+                            List<ProtocolRow> protocols) { }
+
+
     /**
-     * Publishes the gateway roster read from {@code args[1]} — one {@code GatewayRegistered} per row,
-     * {@code remaining} counting down to 0 — and waits for the last row's sequenced echo.
+     * Publishes the topology document read from {@code args[1]}: one {@code GatewayRegistered} per
+     * list row, {@code remaining} counting down to 0, then one {@code PayloadIdRegistered} per
+     * protocol row, then waits for the last list row's sequenced echo.
      *
-     * <p>Validated before a byte is published, because the checks are what the log cannot make for
-     * itself: the sequencer de-dups on {@code gatewayId} and elects the rank-0 row of each {@code
-     * gatewaySourceId}, so a duplicate id silently drops an instance and a missing (or second) rank-0
-     * leaves a logical gateway with no primary (or an arbitrary one). These used to be {@code
-     * static_assert}s over the hardcoded table in {@code BasicDataConstants.hpp}; a file read at load
-     * time is where they belong now.
+     * <p>The whole document is validated before a byte is published — a file that fails half-way
+     * leaves a list the log has already closed. Nearly all of it is the XSD's ({@code topology.xsd},
+     * §6.4); what is left here is the two checks a row cannot make about itself.
      */
     private static int loadTopology(final String[] args) {
         if (args.length < 2) {
             System.err.println("[clusterctl] load-topology: missing <file>");
             return 2;
         }
-        final List<TopologyRow> rows;
+        final Topology topology;
         try {
-            rows = readTopology(new File(args[1]));
-            validateTopology(rows);
-        } catch (final IOException | IllegalArgumentException ex) {
+            topology = readTopology(new File(args[1]));
+            validateTopology(topology.gateways(), topology.applications());
+        } catch (final SAXParseException ex) {
+            System.err.println("[clusterctl] load-topology: " + args[1] + ":" + ex.getLineNumber() + ":" +
+                               ex.getColumnNumber() + ": " + ex.getMessage());
+            return 2;
+        } catch (final IOException | SAXException | ParserConfigurationException |
+                       IllegalArgumentException ex) {
             System.err.println("[clusterctl] load-topology: " + args[1] + ": " + ex.getMessage());
             return 2;
         }
 
         try (AeronCluster cluster = connectCluster()) {
-            final long globalSeqNo = publishRosterAndAwaitEcho(cluster, rows);
+            final long globalSeqNo = publishTopologyAndAwaitEcho(cluster, topology);
             if (globalSeqNo < 0) {
                 System.err.println("[clusterctl] load-topology: no sequenced GatewayRegistered echo within timeout");
                 return 1;
             }
-            System.out.printf("[clusterctl] load-topology: %d gateway row(s) recorded, roster complete at "
-                              + "globalSeqNo=%d%n", rows.size(), globalSeqNo);
+            System.out.printf("[clusterctl] load-topology: %d gateway row(s) recorded, list complete at "
+                              + "globalSeqNo=%d; %d application row(s) and %d protocol row(s) registered%n",
+                              topology.gateways().size(), globalSeqNo, topology.applications().size(),
+                              topology.protocols().size());
             return 0;
         } catch (final Exception ex) {
             System.err.println("[clusterctl] load-topology: no elected leader / cluster unreachable (" +
@@ -275,55 +324,107 @@ public final class ClusterCtl {
         }
     }
 
-    /** Reads {@code name,gatewayId,gatewaySourceId,preferenceRank} rows; blank lines and {@code #} skipped. */
-    private static List<TopologyRow> readTopology(final File file) throws IOException {
-        final List<TopologyRow> rows = new ArrayList<>();
-        int lineNo = 0;
-        for (final String raw : Files.readAllLines(file.toPath())) {
-            lineNo++;
-            final String line = raw.trim();
-            if (line.isEmpty() || line.charAt(0) == '#') {
-                continue;
+    /**
+     * Builds a parser that validates against the packaged {@code topology.xsd} as it reads.
+     *
+     * <p>The schema is resolved from this jar and a {@code schemaLocation} the document names is
+     * ignored: a file that may name its own schema may name a lax one, and C-1 would be advisory
+     * (§6.4). Entity resolution is disabled outright — the threat is mild, since an operator who can
+     * edit the file already has a shell on the node, but the JDK's defaults are unsafe.
+     */
+    private static DocumentBuilder topologyParser() throws IOException, SAXException, ParserConfigurationException {
+        final SchemaFactory schemaFactory = SchemaFactory.newInstance(XMLConstants.W3C_XML_SCHEMA_NS_URI);
+        schemaFactory.setProperty(XMLConstants.ACCESS_EXTERNAL_DTD, "");
+        schemaFactory.setProperty(XMLConstants.ACCESS_EXTERNAL_SCHEMA, "");
+        final DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
+        try (InputStream xsd = ClusterCtl.class.getResourceAsStream("/topology.xsd")) {
+            if (null == xsd) {
+                throw new IOException("topology.xsd missing from the clusterctl jar");
             }
-            final String[] fields = line.split(",");
-            if (fields.length != 4) {
-                throw new IllegalArgumentException(
-                    "line " + lineNo + ": expected name,gatewayId,gatewaySourceId,preferenceRank, got '" + line + "'");
-            }
-            try {
-                rows.add(new TopologyRow(fields[0].trim(), Integer.parseInt(fields[1].trim()),
-                                         Integer.parseInt(fields[2].trim()), Integer.parseInt(fields[3].trim())));
-            } catch (final NumberFormatException ex) {
-                throw new IllegalArgumentException("line " + lineNo + ": " + ex.getMessage());
-            }
+            factory.setSchema(schemaFactory.newSchema(new StreamSource(xsd)));
         }
-        return rows;
+        factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
+        factory.setXIncludeAware(false);
+        factory.setExpandEntityReferences(false);
+        factory.setNamespaceAware(true);
+        final DocumentBuilder builder = factory.newDocumentBuilder();
+        builder.setErrorHandler(new ErrorHandler() {
+            @Override
+            public void warning(final SAXParseException ex) throws SAXException {
+                throw ex;
+            }
+
+            @Override
+            public void error(final SAXParseException ex) throws SAXException {
+                throw ex;
+            }
+
+            @Override
+            public void fatalError(final SAXParseException ex) throws SAXException {
+                throw ex;
+            }
+        });
+        return builder;
     }
 
-    private static void validateTopology(final List<TopologyRow> rows) {
-        if (rows.isEmpty()) {
-            throw new IllegalArgumentException("no rows — an empty roster elects nobody");
+    /** Reads the three sections, in document order, validated against topology.xsd. */
+    private static Topology readTopology(final File file)
+        throws IOException, SAXException, ParserConfigurationException {
+        final Element root = topologyParser().parse(file).getDocumentElement();
+        final List<TopologyRow> gateways = new ArrayList<>();
+        for (final Element row : childElements(root, "gateways", "gateway")) {
+            gateways.add(new TopologyRow(row.getAttribute("name"),
+                                         Integer.parseInt(row.getAttribute("id")),
+                                         Integer.parseInt(row.getAttribute("sourceId")),
+                                         Integer.parseInt(row.getAttribute("rank"))));
         }
-        for (int i = 0; i < rows.size(); i++) {
-            final TopologyRow row = rows.get(i);
-            if (row.gatewayName().isEmpty() || row.gatewayName().length() > GATEWAY_NAME_LENGTH) {
-                throw new IllegalArgumentException(
-                    "gatewayName '" + row.gatewayName() + "' must be 1.." + GATEWAY_NAME_LENGTH + " chars");
-            }
-            if (row.preferenceRank() < 0 || row.preferenceRank() > MAX_PREFERENCE_RANK) {
-                throw new IllegalArgumentException(
-                    row.gatewayName() + ": preferenceRank must be 0.." + MAX_PREFERENCE_RANK);
-            }
-            for (int j = i + 1; j < rows.size(); j++) {
-                if (rows.get(j).gatewayId() == row.gatewayId()) {
-                    throw new IllegalArgumentException("duplicate gatewayId " + row.gatewayId());
-                }
-                if (rows.get(j).gatewayName().equals(row.gatewayName())) {
-                    throw new IllegalArgumentException("duplicate gatewayName '" + row.gatewayName() + "'");
+        final List<ApplicationRow> applications = new ArrayList<>();
+        for (final Element row : childElements(root, "applications", "application")) {
+            applications.add(new ApplicationRow(row.getAttribute("name"),
+                                                Integer.parseInt(row.getAttribute("sourceId"))));
+        }
+        final List<ProtocolRow> protocols = new ArrayList<>();
+        for (final Element row : childElements(root, "protocols", "protocol")) {
+            protocols.add(new ProtocolRow(Integer.parseInt(row.getAttribute("payloadId")),
+                                          Integer.parseInt(row.getAttribute("version")),
+                                          row.getAttribute("name")));
+        }
+        return new Topology(gateways, applications, protocols);
+    }
+
+    /** The {@code <row>} elements of {@code root}'s {@code <section>}, in document order; empty if absent. */
+    private static List<Element> childElements(final Element root, final String section, final String row) {
+        final List<Element> elements = new ArrayList<>();
+        final NodeList sections = root.getElementsByTagNameNS(TOPOLOGY_NS, section);
+        if (sections.getLength() > 0) {
+            final NodeList rows = ((Element)sections.item(0)).getElementsByTagNameNS(TOPOLOGY_NS, row);
+            for (int i = 0; i < rows.getLength(); i++) {
+                final Node node = rows.item(i);
+                if (Node.ELEMENT_NODE == node.getNodeType()) {
+                    elements.add((Element)node);
                 }
             }
         }
+        return elements;
+    }
+
+    /**
+     * The checks the XSD cannot make, each about a row's relation to the others: exactly one rank-0
+     * per gateway {@code sourceId} — a missing one leaves a logical gateway with no primary, a second
+     * an arbitrary one — a {@code sourceId} that is none of §5's reserved ids, and an application
+     * {@code sourceId} no gateway row already claims. Everything else (field widths, name shape,
+     * uniqueness, {@code payloadId >= 2}) is declarative in topology.xsd.
+     *
+     * <p>The last is not cosmetic: an application sharing a listed {@code sourceId} is refused frame by
+     * frame at run time by <b>S-6</b> case 2 — it submits on a session no {@code GatewayStarted} bound —
+     * so the deployment would come up and then silently drop that application's traffic.
+     */
+    private static void validateTopology(final List<TopologyRow> rows, final List<ApplicationRow> applications) {
         for (final TopologyRow row : rows) {
+            if (RESERVED_SOURCE_ID == row.gatewaySourceId()) {
+                throw new IllegalArgumentException(row.gatewayName() + ": sourceId " + RESERVED_SOURCE_ID +
+                                                   " is reserved for clusterctl's own markers");
+            }
             int primaries = 0;
             for (final TopologyRow other : rows) {
                 if (other.gatewaySourceId() == row.gatewaySourceId() && other.preferenceRank() == 0) {
@@ -331,39 +432,79 @@ public final class ClusterCtl {
                 }
             }
             if (primaries != 1) {
-                throw new IllegalArgumentException("gatewaySourceId " + row.gatewaySourceId() + " has " + primaries +
-                                                   " preferenceRank-0 row(s), needs exactly 1");
+                throw new IllegalArgumentException("sourceId " + row.gatewaySourceId() + " has " + primaries +
+                                                   " rank-0 row(s), needs exactly 1");
+            }
+        }
+        for (final ApplicationRow application : applications) {
+            if (RESERVED_SOURCE_ID == application.sourceId()) {
+                throw new IllegalArgumentException(application.applicationName() + ": sourceId " +
+                                                   RESERVED_SOURCE_ID + " is reserved for clusterctl's own markers");
+            }
+            for (final TopologyRow row : rows) {
+                if (row.gatewaySourceId() == application.sourceId()) {
+                    throw new IllegalArgumentException(application.applicationName() + ": sourceId " +
+                                                       application.sourceId() + " is gateway " +
+                                                       row.gatewayName() + "'s");
+                }
             }
         }
     }
 
     /**
-     * Offers every roster row to cluster ingress, then reads this node's co-located tap for the sequenced
-     * echo of the last one. Returns its globalSeqNo, or -1 on timeout. Matched on the last row's {@code
-     * gatewayId}: that is the row the sequencer bootstraps behind, so its echo is exactly the "roster is
-     * in the log" edge the caller is waiting for.
+     * Offers every list row to cluster ingress and every protocol row behind them, then reads this
+     * node's co-located tap for the sequenced echo of the last list row. Returns its globalSeqNo,
+     * or -1 on timeout. Matched on the last row's {@code gatewayId}: that is the row the sequencer
+     * bootstraps behind, so its echo is exactly the "list is in the log" edge the caller waits for.
+     *
+     * <p>The application and protocol rows are offered before the wait rather than after it, so they are
+     * ordered behind the list on the one session — nothing may fall <em>between</em> the list rows, and
+     * neither carries a countdown of its own (§6.4). Neither is waited on: only the gateway list has a
+     * completeness edge, because only the gateway list is something the sequencer acts on.
      */
-    private static long publishRosterAndAwaitEcho(final AeronCluster cluster, final List<TopologyRow> rows) {
+    private static long publishTopologyAndAwaitEcho(final AeronCluster cluster, final Topology topology) {
         final Subscription tap = awaitTap(cluster);
         if (tap == null) {
             return -1;
         }
 
+        final List<TopologyRow> rows = topology.gateways();
         final ExpandableArrayBuffer buffer = new ExpandableArrayBuffer(128);
+        final ExpandableArrayBuffer payload = new ExpandableArrayBuffer(128);
         final GatewayRegisteredEncoder encoder = new GatewayRegisteredEncoder();
         for (int i = 0; i < rows.size(); i++) {
             final TopologyRow row = rows.get(i);
-            encoder.wrapAndApplyHeader(buffer, 0, new MessageHeaderEncoder());
-            encoder.header().sourceId(NO_ID).connectionId(NO_ID).sessionId(NO_ID);
+            encoder.wrap(payload, 0);
             encoder.remaining(rows.size() - 1 - i)
                    .gatewayId(row.gatewayId())
                    .gatewaySourceId(row.gatewaySourceId())
                    .gatewayName(row.gatewayName())
                    .preferenceRank((short)row.preferenceRank());
-            offer(cluster, buffer, MessageHeaderEncoder.ENCODED_LENGTH + encoder.encodedLength());
+            offer(cluster, buffer,
+                  wrapSystem(buffer, SystemFrame.GATEWAY_REGISTERED, payload, encoder.encodedLength()));
         }
 
-        final RosterEchoHandler handler = new RosterEchoHandler(rows.get(rows.size() - 1).gatewayId());
+        final ApplicationRegisteredEncoder applicationEncoder = new ApplicationRegisteredEncoder();
+        for (final ApplicationRow row : topology.applications()) {
+            applicationEncoder.wrap(payload, 0);
+            applicationEncoder.applicationSourceId(row.sourceId())
+                              .applicationName(row.applicationName());
+            offer(cluster, buffer,
+                  wrapSystem(buffer, SystemFrame.APPLICATION_REGISTERED, payload,
+                             applicationEncoder.encodedLength()));
+        }
+
+        final PayloadIdRegisteredEncoder protocolEncoder = new PayloadIdRegisteredEncoder();
+        for (final ProtocolRow row : topology.protocols()) {
+            protocolEncoder.wrap(payload, 0);
+            protocolEncoder.payloadId(row.payloadId())
+                           .protocolVersion(row.protocolVersion())
+                           .protocolName(row.protocolName());
+            offer(cluster, buffer,
+                  wrapSystem(buffer, SystemFrame.PAYLOAD_ID_REGISTERED, payload, protocolEncoder.encodedLength()));
+        }
+
+        final ListEchoHandler handler = new ListEchoHandler(rows.get(rows.size() - 1).gatewayId());
         final FragmentAssembler assembler = new FragmentAssembler(handler);
         final long deadline = System.nanoTime() + ECHO_TIMEOUT_NS;
         while (!handler.found && System.nanoTime() < deadline) {
@@ -374,15 +515,15 @@ public final class ClusterCtl {
         return handler.found ? handler.globalSeqNo : -1;
     }
 
-    /** Matches the sequenced echo of the roster's last row by gatewayId. */
-    private static final class RosterEchoHandler implements FragmentHandler {
+    /** Matches the sequenced echo of the list's last row by gatewayId. */
+    private static final class ListEchoHandler implements FragmentHandler {
         private final int gatewayId;
-        private final MessageHeaderDecoder messageHeader = new MessageHeaderDecoder();
+        private final SequencedFrameDecoder view = new SequencedFrameDecoder();
         private final GatewayRegisteredDecoder decoder = new GatewayRegisteredDecoder();
         private boolean found;
         private long globalSeqNo;
 
-        RosterEchoHandler(final int gatewayId) {
+        ListEchoHandler(final int gatewayId) {
             this.gatewayId = gatewayId;
         }
 
@@ -391,26 +532,24 @@ public final class ClusterCtl {
             if (found) {
                 return;
             }
-            messageHeader.wrap(buffer, offset);
-            if (messageHeader.schemaId() != GatewayRegisteredDecoder.SCHEMA_ID ||
-                messageHeader.templateId() != GatewayRegisteredDecoder.TEMPLATE_ID) {
+            if (!isSystem(view, buffer, offset, length, SystemFrame.GATEWAY_REGISTERED)) {
                 return;
             }
-            decoder.wrap(buffer, offset + MessageHeaderDecoder.ENCODED_LENGTH, messageHeader.blockLength(),
-                         messageHeader.version());
+            decoder.wrap(buffer, view.payloadOffset(), GatewayRegisteredDecoder.BLOCK_LENGTH,
+                         MessageHeaderDecoder.SCHEMA_VERSION);
             if (decoder.gatewayId() == gatewayId && decoder.remaining() == 0) {
-                globalSeqNo = decoder.header().globalSeqNo();
+                globalSeqNo = view.globalSeqNo();
                 found = true;
             }
         }
     }
 
     /**
-     * Publishes an unsequenced {@code GatewayActive(gatewayId)} marker, then reads this node's
-     * co-located tap for the matching sequenced echo. Returns the assigned globalSeqNo, or -1 on
-     * timeout (tap unavailable, or no echo within {@link #ECHO_TIMEOUT_NS}). Structured like {@link
-     * #publishMarkerAndAwaitEcho} but kept separate: {@code GatewayActive} has no correlationId to
-     * match on (it carries only {@code gatewayId}), so it matches the echo by {@code gatewayId} instead.
+     * Publishes an unsequenced {@code GatewayActivationRequested(gatewayId)}, then reads this node's
+     * co-located tap for the {@code GatewayActive} the sequencer synthesizes behind it. Returns that
+     * frame's globalSeqNo, or -1 on timeout (tap unavailable, no list row names the instance, or no
+     * echo within {@link #ECHO_TIMEOUT_NS}). Structured like {@link #publishMarkerAndAwaitEcho} but kept
+     * separate: neither message has a correlationId to match on, so it matches by {@code gatewayId}.
      */
     private static long publishGatewayActiveAndAwaitEcho(final AeronCluster cluster, final int gatewayId) {
         final Subscription tap = awaitTap(cluster);
@@ -419,12 +558,12 @@ public final class ClusterCtl {
         }
 
         final ExpandableArrayBuffer buffer = new ExpandableArrayBuffer(64);
-        final GatewayActiveEncoder encoder = new GatewayActiveEncoder();
-        encoder.wrapAndApplyHeader(buffer, 0, new MessageHeaderEncoder());
-        encoder.header().sourceId(NO_ID).connectionId(NO_ID).sessionId(NO_ID);
+        final ExpandableArrayBuffer payload = new ExpandableArrayBuffer(64);
+        final GatewayActivationRequestedEncoder encoder = new GatewayActivationRequestedEncoder();
+        encoder.wrap(payload, 0);
         encoder.gatewayId(gatewayId);
-        final int length = MessageHeaderEncoder.ENCODED_LENGTH + encoder.encodedLength();
-        offer(cluster, buffer, length);
+        offer(cluster, buffer,
+              wrapSystem(buffer, SystemFrame.GATEWAY_ACTIVATION_REQUESTED, payload, encoder.encodedLength()));
 
         final GatewayActiveEchoHandler handler = new GatewayActiveEchoHandler(gatewayId);
         final FragmentAssembler assembler = new FragmentAssembler(handler);
@@ -440,7 +579,7 @@ public final class ClusterCtl {
     /** Matches the sequenced {@code GatewayActive} echo of our own marker by gatewayId. */
     private static final class GatewayActiveEchoHandler implements FragmentHandler {
         private final int gatewayId;
-        private final MessageHeaderDecoder messageHeader = new MessageHeaderDecoder();
+        private final SequencedFrameDecoder view = new SequencedFrameDecoder();
         private final GatewayActiveDecoder decoder = new GatewayActiveDecoder();
         private boolean found;
         private long globalSeqNo;
@@ -454,15 +593,13 @@ public final class ClusterCtl {
             if (found) {
                 return;
             }
-            messageHeader.wrap(buffer, offset);
-            if (messageHeader.schemaId() != GatewayActiveDecoder.SCHEMA_ID ||
-                messageHeader.templateId() != GatewayActiveDecoder.TEMPLATE_ID) {
+            if (!isSystem(view, buffer, offset, length, SystemFrame.GATEWAY_ACTIVE)) {
                 return;
             }
-            decoder.wrap(buffer, offset + MessageHeaderDecoder.ENCODED_LENGTH, messageHeader.blockLength(),
-                         messageHeader.version());
+            // Synthesized, so its gatewayId is inline in the frame's own block rather than in a body.
+            decoder.wrap(buffer, view.payloadOffset(), view.blockLength(), view.version());
             if (decoder.gatewayId() == gatewayId) {
-                globalSeqNo = decoder.header().globalSeqNo();
+                globalSeqNo = view.globalSeqNo();
                 found = true;
             }
         }
@@ -517,11 +654,11 @@ public final class ClusterCtl {
     }
 
     /**
-     * Publishes the unsequenced marker for {@code templateId} with {@code correlationId} to cluster
+     * Publishes the unsequenced marker for {@code systemEventType} with {@code correlationId} to cluster
      * ingress, then reads this node's co-located tap for the matching sequenced echo. Returns the
      * assigned globalSeqNo, or -1 on timeout (tap unavailable, or no echo within {@link #ECHO_TIMEOUT_NS}).
      */
-    private static long publishMarkerAndAwaitEcho(final AeronCluster cluster, final int templateId,
+    private static long publishMarkerAndAwaitEcho(final AeronCluster cluster, final int systemEventType,
                                                   final long correlationId) {
         final Subscription tap = awaitTap(cluster);
         if (tap == null) {
@@ -529,10 +666,10 @@ public final class ClusterCtl {
         }
 
         final ExpandableArrayBuffer buffer = new ExpandableArrayBuffer(64);
-        final int length = encodeMarker(buffer, templateId, correlationId);
+        final int length = encodeMarker(buffer, systemEventType, correlationId);
         offer(cluster, buffer, length);
 
-        final EchoHandler handler = new EchoHandler(templateId, correlationId);
+        final EchoHandler handler = new EchoHandler(systemEventType, correlationId);
         final FragmentAssembler assembler = new FragmentAssembler(handler);
         final long deadline = System.nanoTime() + ECHO_TIMEOUT_NS;
         while (!handler.found && System.nanoTime() < deadline) {
@@ -543,20 +680,39 @@ public final class ClusterCtl {
         return handler.found ? handler.globalSeqNo : -1;
     }
 
-    private static int encodeMarker(final ExpandableArrayBuffer buffer, final int templateId,
+    private static int encodeMarker(final ExpandableArrayBuffer buffer, final int systemEventType,
                                     final long correlationId) {
-        if (templateId == ClusterStartedEncoder.TEMPLATE_ID) {
+        final ExpandableArrayBuffer payload = new ExpandableArrayBuffer(64);
+        if (systemEventType == SystemFrame.CLUSTER_STARTED) {
             final ClusterStartedEncoder encoder = new ClusterStartedEncoder();
-            encoder.wrapAndApplyHeader(buffer, 0, new MessageHeaderEncoder());
-            encoder.header().sourceId(NO_ID).connectionId(NO_ID).sessionId(NO_ID);
+            encoder.wrap(payload, 0);
             encoder.correlationId(correlationId);
-            return MessageHeaderEncoder.ENCODED_LENGTH + encoder.encodedLength();
+            return wrapSystem(buffer, systemEventType, payload, encoder.encodedLength());
         }
         final ClusterStoppedEncoder encoder = new ClusterStoppedEncoder();
-        encoder.wrapAndApplyHeader(buffer, 0, new MessageHeaderEncoder());
-        encoder.header().sourceId(NO_ID).connectionId(NO_ID).sessionId(NO_ID);
+        encoder.wrap(payload, 0);
         encoder.correlationId(correlationId);
-        return MessageHeaderEncoder.ENCODED_LENGTH + encoder.encodedLength();
+        return wrapSystem(buffer, systemEventType, payload, encoder.encodedLength());
+    }
+
+    /**
+     * Whether the fragment is a system frame carrying {@code systemEventType}. Every echo handler asks
+     * this: the same 2-byte field is an application payloadId on the other family, and the tap carries
+     * both.
+     */
+    private static boolean isSystem(final SequencedFrameDecoder view, final DirectBuffer buffer, final int offset,
+                                    final int length, final int systemEventType) {
+        return view.wrap(buffer, offset, length) && view.isSystem() && view.systemEventType() == systemEventType;
+    }
+
+    /**
+     * Wraps a system body in an {@code UnsequencedSystem} frame. clusterctl is not a gateway, so it
+     * publishes under its own reserved {@code sourceId} (§5) and no connection. The body carries no
+     * {@code MessageHeader} of its own — {@code header.systemEventType} is what names it.
+     */
+    private static int wrapSystem(final ExpandableArrayBuffer frame, final int systemEventType,
+                                  final ExpandableArrayBuffer body, final int encodedLength) {
+        return SystemFrame.wrap(frame, RESERVED_SOURCE_ID, NO_ID, NO_ID, systemEventType, body, encodedLength);
     }
 
     /**
@@ -600,15 +756,15 @@ public final class ClusterCtl {
      * past the header, so correlationId and header.globalSeqNo are at the same offsets for both.
      */
     private static final class EchoHandler implements FragmentHandler {
-        private final int templateId;
+        private final int systemEventType;
         private final long correlationId;
-        private final MessageHeaderDecoder messageHeader = new MessageHeaderDecoder();
+        private final SequencedFrameDecoder view = new SequencedFrameDecoder();
         private final ClusterStartedDecoder marker = new ClusterStartedDecoder();
         private boolean found;
         private long globalSeqNo;
 
-        EchoHandler(final int templateId, final long correlationId) {
-            this.templateId = templateId;
+        EchoHandler(final int systemEventType, final long correlationId) {
+            this.systemEventType = systemEventType;
             this.correlationId = correlationId;
         }
 
@@ -617,15 +773,13 @@ public final class ClusterCtl {
             if (found) {
                 return;
             }
-            messageHeader.wrap(buffer, offset);
-            if (messageHeader.schemaId() != ClusterStartedDecoder.SCHEMA_ID ||
-                messageHeader.templateId() != templateId) {
+            if (!isSystem(view, buffer, offset, length, systemEventType)) {
                 return;
             }
-            marker.wrap(buffer, offset + MessageHeaderDecoder.ENCODED_LENGTH, messageHeader.blockLength(),
-                        messageHeader.version());
+            marker.wrap(buffer, view.payloadOffset(), ClusterStartedDecoder.BLOCK_LENGTH,
+                        MessageHeaderDecoder.SCHEMA_VERSION);
             if (marker.correlationId() == correlationId) {
-                globalSeqNo = marker.header().globalSeqNo();
+                globalSeqNo = view.globalSeqNo();
                 found = true;
             }
         }
@@ -643,9 +797,10 @@ public final class ClusterCtl {
                            manual standby promotion; publishes GatewayActive(gatewayId) and
                            waits for its sequenced echo (requires an elected leader)
               load-topology <file>
-                           publish the gateway roster from a CSV file
-                           (name,gatewayId,gatewaySourceId,preferenceRank); run once per
-                           cluster lifetime, BEFORE the reference-data load
+                           publish the topology document (XML, validated against the
+                           packaged topology.xsd): the gateway list, then the
+                           co-located applications, then the protocol registry; run
+                           once per cluster lifetime, BEFORE the reference-data load
               counters     list this node's phixeron operator counters (SequencerService/
                            ReplayerService); no cluster connection needed, safe on every node
               snapshot     this operation is not supported

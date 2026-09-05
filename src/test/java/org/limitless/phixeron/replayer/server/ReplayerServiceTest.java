@@ -19,14 +19,14 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.limitless.phixeron.metrics.PhixeronCounters;
-import org.limitless.phixeron.sbe.unsequenced.MessageHeaderDecoder;
-import org.limitless.phixeron.sbe.unsequenced.MessageHeaderEncoder;
-import org.limitless.phixeron.sbe.unsequenced.ReplayCompleteEncoder;
-import org.limitless.phixeron.sbe.unsequenced.ReplayHeartbeatEncoder;
-import org.limitless.phixeron.sbe.unsequenced.ReplayPendingDecoder;
-import org.limitless.phixeron.sbe.unsequenced.ReplayRequestEncoder;
-import org.limitless.phixeron.sbe.unsequenced.ReplayUnavailableDecoder;
-import org.limitless.phixeron.sbe.unsequenced.ReplayingDecoder;
+import org.limitless.phixeron.sbe.replay.MessageHeaderDecoder;
+import org.limitless.phixeron.sbe.replay.MessageHeaderEncoder;
+import org.limitless.phixeron.sbe.replay.ReplayCompleteEncoder;
+import org.limitless.phixeron.sbe.replay.ReplayHeartbeatEncoder;
+import org.limitless.phixeron.sbe.replay.ReplayPendingDecoder;
+import org.limitless.phixeron.sbe.replay.ReplayRequestEncoder;
+import org.limitless.phixeron.sbe.replay.ReplayUnavailableDecoder;
+import org.limitless.phixeron.sbe.replay.ReplayingDecoder;
 import org.limitless.phixeron.util.Logger;
 
 /**
@@ -730,14 +730,17 @@ class ReplayerServiceTest {
         return encoded(encoder.encodedLength());
     }
 
-    /** One frame off the tap recording, as the self-check reads it back: sequenced schema, header only. */
+    /** One frame off the tap recording, as the self-check reads it back: a core ClusterHeartbeat. */
     private byte[] sequencedFrame(final long globalSeqNo) {
-        final org.limitless.phixeron.sbe.sequenced.MessageHeaderEncoder sequencedHeader =
-            new org.limitless.phixeron.sbe.sequenced.MessageHeaderEncoder();
-        final org.limitless.phixeron.sbe.sequenced.ClusterHeartbeatEncoder encoder =
-            new org.limitless.phixeron.sbe.sequenced.ClusterHeartbeatEncoder();
-        encoder.wrapAndApplyHeader(encodeBuffer, 0, sequencedHeader).header().globalSeqNo(globalSeqNo);
-        return encoded(encoder.encodedLength());
+        final org.limitless.phixeron.sbe.frame.ClusterHeartbeatEncoder frame =
+            new org.limitless.phixeron.sbe.frame.ClusterHeartbeatEncoder();
+        frame.wrapAndApplyHeader(encodeBuffer, 0, new org.limitless.phixeron.sbe.frame.MessageHeaderEncoder());
+        frame.header().sourceId(-1).connectionId(-1).sessionId(-1)
+            .systemEventType(org.limitless.phixeron.sequencer.SystemFrame.CLUSTER_HEARTBEAT)
+            .globalSeqNo(globalSeqNo).timestamp(0);
+        final byte[] message = new byte[org.limitless.phixeron.sbe.frame.MessageHeaderEncoder.ENCODED_LENGTH + frame.encodedLength()];
+        encodeBuffer.getBytes(0, message);
+        return message;
     }
 
     private byte[] encoded(final int bodyLength) {

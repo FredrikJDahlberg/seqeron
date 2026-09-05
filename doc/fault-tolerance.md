@@ -183,9 +183,9 @@ Two ways a `GatewayActive` is produced:
   special-casing — and waits for its sequenced echo, matched by `gatewayId`
   (`ClusterCtl.java:194-291`). This is the operator's lever for a planned failover.
 
-A **bootstrap** activation also runs once per cluster lifetime: the first complete roster — the
+A **bootstrap** activation also runs once per cluster lifetime: the first complete list — the
 `GatewayRegistered` row carrying `remaining == 0`, published by `clusterctl load-topology` — triggers
-`Sequencer.pendingGatewayBootstrapActivation`, which names the rank-0 (`preferenceRank == 0`) roster row — so exactly one instance opens its accept gate at
+`Sequencer.pendingGatewayBootstrapActivation`, which names the rank-0 (`preferenceRank == 0`) list row — so exactly one instance opens its accept gate at
 cold start and every sibling waits as a hot standby (`Sequencer.java:409-427`). A bootstrap with no
 rank-0 row produces no frame — fail closed rather than guess.
 
@@ -200,11 +200,11 @@ from two things: an in-memory snapshot taken on the way *out* (`closeSessions`, 
   `m_inboundGapRequestedThrough`, `m_inboundGapRunStart`, the fields `doc/gap.md`'s gap-1 fix added
   specifically so a mid-gap restart doesn't resume with the gap silently reopened) — is captured into
   `m_recoveredSessions`, keyed by client CompID.
-- **On restart**, before the accept gate opens, the gateway replays `ClientConnected`/
-  `ClientDisconnected` lifecycle frames off the cluster stream to reconstruct placeholder "recovering"
+- **On restart**, before the accept gate opens, the gateway replays `ConnectionOpened`/
+  `ConnectionClosed` lifecycle frames off the cluster stream to reconstruct placeholder "recovering"
   connections (`FixConnection` built with `fd = -1`), then `finalizeRecovery` turns each surviving
   placeholder into a `RecoveredSession` entry (a crash never got to publish the matching
-  `ClientDisconnected`, so the placeholder represents a session whose socket died with the old process)
+  `ConnectionClosed`, so the placeholder represents a session whose socket died with the old process)
   and bumps the next-connectionId counter past whatever was still pending recovery, so a freshly
   accepted TCP connection can never collide with one still being recovered
   (`FixGateway.cpp:634-664,698-734`).
@@ -293,8 +293,8 @@ gateway will fix them. `doc/ops.md`, "A venue that will not accept the logon".
 
 `GatewayStarted` goes out once per activation, not once per dial: it is this instance declaring the epoch
 rolled, which is what makes the sequencer release the connections its predecessor left dangling, and a
-retry inside one activation rolls nothing. A retry costs the log its `ClientConnected`, its `Logon` and
-its `ClientDisconnected`, and nothing else.
+retry inside one activation rolls nothing. A retry costs the log its `ConnectionOpened`, its `Logon` and
+its `ConnectionClosed`, and nothing else.
 
 **Not covered:** a venue whose `MsgSeqNum` state has diverged from the log is retried against, never
 reconciled with (§7, `doc/todo.md`) — the notification above is what surfaces it, not a resolution.

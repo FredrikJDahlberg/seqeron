@@ -1,5 +1,8 @@
 // :cluster — the sequencer, the replayer (both sides), the shared client classes, the tools, and the
-// SBE code generation. Nothing here may reference :gateways (doc/future-arch.md §11 step 1).
+// code generation for the schemas the cluster tier itself speaks. Nothing here may reference
+// :gateways (doc/future-arch.md §11 step 1), and nothing here touches an application payload at all —
+// not its codecs and not its IR. sbe-session.xml and sbe-basicdata.xml are :gateways', sbe-order.xml
+// the C++ edge's, and each is generated and staged by the module that owns it.
 
 plugins {
     id 'application'
@@ -33,14 +36,18 @@ dependencies {
 // The schemas stay at the repo root for now: one pair still serves both modules and the C++ build
 // generates from the same files. Splitting them per module is step 3 (doc/future-arch.md §3).
 
+// One root, but each schema owns a disjoint slice of it: its own package dir plus its own .sbeir.
+// Each task declares and wipes exactly that slice. Declaring the shared root instead made the codec
+// tasks overlap, and Gradle cannot clean an output it cannot attribute to one task — which is what let
+// a message deleted from a schema leave its codec on disk to be compiled against.
 def sbeGeneratedSrcDir = layout.buildDirectory.dir('generated/sources/sbe/main/java').get().asFile
 def sbeResourceDir     = rootProject.file('src/main/resources')
 
 sourceSets.main.java.srcDir sbeGeneratedSrcDir
 sourceSets.main.resources.srcDir sbeResourceDir
 
-tasks.register('generateUnsequencedSbe', JavaExec) {
-    description = 'Generate Java SBE codecs from sbe-unsequenced.xml (cluster ingress format)'
+tasks.register('generateReplaySbe', JavaExec) {
+    description = 'Generate Java SBE codecs from sbe-replay.xml (the node-local replay control protocol)'
     classpath   = configurations.sbeCodegen
     mainClass   = 'uk.co.real_logic.sbe.SbeTool'
 
@@ -53,16 +60,20 @@ tasks.register('generateUnsequencedSbe', JavaExec) {
     systemProperty 'sbe.xinclude.aware',           'true'
     systemProperty 'sbe.generate.ir',              'true'
 
-    args new File(sbeResourceDir, 'sbe-unsequenced.xml')
+    args new File(sbeResourceDir, 'sbe-replay.xml')
 
-    inputs.file  new File(sbeResourceDir, 'sbe-unsequenced.xml')
-    outputs.dir  sbeGeneratedSrcDir
+    inputs.file  new File(sbeResourceDir, 'sbe-replay.xml')
+    outputs.dir  new File(sbeGeneratedSrcDir, 'org/limitless/phixeron/sbe/replay')
+    outputs.file new File(sbeGeneratedSrcDir, 'sbe-replay.sbeir')
 
-    doFirst { sbeGeneratedSrcDir.mkdirs() }
+    doFirst {
+        new File(sbeGeneratedSrcDir, 'org/limitless/phixeron/sbe/replay').deleteDir()
+        sbeGeneratedSrcDir.mkdirs()
+    }
 }
 
-tasks.register('generateSequencedSbe', JavaExec) {
-    description = 'Generate Java SBE codecs from sbe-sequenced.xml (global stream / egress format)'
+tasks.register('generateFrameSbe', JavaExec) {
+    description = 'Generate Java SBE codecs from sbe-frame.xml (the Unsequenced/Sequenced envelope pair)'
     classpath   = configurations.sbeCodegen
     mainClass   = 'uk.co.real_logic.sbe.SbeTool'
 
@@ -74,15 +85,26 @@ tasks.register('generateSequencedSbe', JavaExec) {
     systemProperty 'sbe.xinclude.aware',           'true'
     systemProperty 'sbe.generate.ir',              'true'
 
-    args new File(sbeResourceDir, 'sbe-sequenced.xml')
+    args new File(sbeResourceDir, 'sbe-frame.xml')
 
-    inputs.file  new File(sbeResourceDir, 'sbe-sequenced.xml')
-    outputs.dir  sbeGeneratedSrcDir
+    inputs.file  new File(sbeResourceDir, 'sbe-frame.xml')
+    outputs.dir  new File(sbeGeneratedSrcDir, 'org/limitless/phixeron/sbe/frame')
+    outputs.file new File(sbeGeneratedSrcDir, 'sbe-frame.sbeir')
 
-    doFirst { sbeGeneratedSrcDir.mkdirs() }
+    doFirst {
+        new File(sbeGeneratedSrcDir, 'org/limitless/phixeron/sbe/frame').deleteDir()
+        sbeGeneratedSrcDir.mkdirs()
+    }
 }
 
-tasks.named('compileJava') { dependsOn 'generateUnsequencedSbe', 'generateSequencedSbe' }
+// Only the two schemas the cluster tier speaks. The application payloads' codecs are :gateways',
+// generated there — this module compiles against none of them, and shipping them in its jar was what
+// let the "payload-agnostic" claim be true of the code and false of the artifact.
+tasks.named('compileJava') {
+    dependsOn 'generateReplaySbe', 'generateFrameSbe'
+}
+
+// ── IR-only schemas ────────────────────────────────────────────────────────────
 
 // IR only, no stubs: the Java side speaks the cluster protocol through io.aeron.cluster.codecs, so the
 // mirror schema's codecs would be dead classes in the jar. The IR alone is what SbeLogPrinter needs to
@@ -112,11 +134,15 @@ tasks.register('generateClusterSbeIr', JavaExec) {
 // path into build/. Copied rather than adding sbeGeneratedSrcDir to `resources` directly: that dir is
 // full of generated .java, and the only filter available is set-wide, which would drop the XMLs in
 // src/main/resources from the jar.
+//
+// Only the three schemas this module owns. SbeLogPrinter lists this directory on the classpath rather
+// than naming schemas, so :gateways stages its own into the same path and a run over both jars sees all
+// of them — while a run over this jar alone names no application protocol, which is the point.
 def sbeIrResourceDir = layout.buildDirectory.dir('generated/resources/sbeir')
 
 tasks.register('collectSbeIr', Copy) {
     description = 'Stage the generated SBE IR files as jar resources for SbeLogPrinter'
-    dependsOn 'generateUnsequencedSbe', 'generateSequencedSbe', 'generateClusterSbeIr'
+    dependsOn 'generateReplaySbe', 'generateFrameSbe', 'generateClusterSbeIr'
     from(sbeGeneratedSrcDir) {
         include '*.sbeir'
         into 'org/limitless/phixeron/tools/sbeir'
@@ -126,45 +152,6 @@ tasks.register('collectSbeIr', Copy) {
 
 // The Copy's destination is the resource ROOT, so the package path above is what lands in the jar.
 sourceSets.main.resources.srcDir(tasks.named('collectSbeIr'))
-
-// ── SBE log printer ────────────────────────────────────────────────────────
-// Offline dump of an Aeron Archive recording as JSON using the generated SBE IR.
-
-tasks.register('sbeLogPrinter', JavaExec) {
-    description = 'Print an SBE archive recording as JSON: -PlogDir=<archive dir> [-Pschema=<name>] ' +
-                  '[-Pspec=<sbeir file>] [-Pstream=<id>] [-Poneline]'
-    group       = 'application'
-    dependsOn   'classes'
-
-    classpath  = sourceSets.main.runtimeClasspath
-    mainClass  = 'org.limitless.phixeron.tools.SbeLogPrinter'
-    jvmArgs    '--add-opens=java.base/jdk.internal.misc=ALL-UNNAMED'
-    // Relative paths on the command line are the caller's, and every caller runs from the repo root.
-    workingDir rootProject.projectDir
-
-    doFirst {
-        final String logDir = project.findProperty('logDir')
-        if (!logDir) {
-            throw new GradleException('Usage: ./gradlew sbeLogPrinter -PlogDir=<archive dir> [-Pschema=<name>] ' +
-                                      '[-Pspec=<sbeir file>] [-Pstream=<id>] [-Poneline]')
-        }
-        // No schema given: the printer defaults to the sequenced one, which is what the tap carries.
-        if (project.hasProperty('schema')) {
-            args '--schema', project.property('schema')
-        }
-        if (project.hasProperty('spec')) {
-            args '--spec', project.property('spec')
-        }
-        args logDir
-        // Opt-in: dump only the newest recording on this stream (205 = the sequenced tap).
-        if (project.hasProperty('stream')) {
-            args '--stream', project.property('stream')
-        }
-        if (project.hasProperty('oneline')) {
-            args '--oneline'
-        }
-    }
-}
 
 application {
     mainClass = 'org.limitless.phixeron.sequencer.SequencerServer'

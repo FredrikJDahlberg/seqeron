@@ -59,11 +59,11 @@ replica is dropped and heals by replay rather than back-pressuring the cluster.
 
 ### Load-bearing properties
 
-- **The cluster never parses FIX message bodies.** `Sequencer` decodes only the outer SBE
-  `MessageHeader` and the shared `header` composite; everything past that is copied through as
-  opaque bytes, because `sbe-sequenced.xml` (schema 202) is kept field-for-field identical to
-  `sbe-unsequenced.xml` (schema 200) past `header`. The one bounded exception is the
-  `GatewayRegistered` roster row.
+- **The cluster never parses FIX message bodies.** Every ingress message is an `Unsequenced` frame
+  (`sbe-frame.xml`, schema 210) whose body is one opaque payload named by `header.payloadId`;
+  `Sequencer` decodes the frame header, stamps it, and copies the payload through byte-identical.
+  Only `payloadId` 1 — seqeron's own core payloads — is ever opened, and the one bounded exception
+  inside it is the `GatewayRegistered` list row.
 - **The log holds the authoritative state, and every decision consumers must agree on is
   emitted rather than inferred.** FIX session state is driven only by cluster-replicated
   callbacks, never straight off the TCP receive path; connects/disconnects, refusals, order
@@ -113,6 +113,10 @@ cmake --build cmake-build-release
 
 # Fat jar (run without Gradle)
 ./gradlew uberJar
+
+# The artioSpike source set (MockExchange, MockOrderClient, FixTestClient) — neither
+# compileJava nor uberJar builds it, and the two Artio gateway e2e scripts need it
+./gradlew compileArtioSpikeJava
 ```
 
 ## Tests
@@ -318,15 +322,16 @@ Or via Gradle directly:
 
 #### Schemas
 
-All three generated IR files ship inside the uber jar — `sequenced` (the tap), `unsequenced`
-(cluster ingress) and `cluster` (the Raft consensus log) — and **all three are loaded by
-default**. Each frame is decoded against the schema its own header names, so a single run reads
-an archive dir end to end whatever mix of recordings it holds:
+Every generated IR file ships inside the uber jar — `frame` (the envelope and core), `order`,
+`session` and `basicdata` (the three application payloads), `unsequenced` (the node-local replay
+control plane) and `cluster` (the Raft consensus log) — and **all of them are loaded by default**.
+Each frame is decoded against the schema its own header names, and a payload inside an envelope the
+same way, so a single run reads an archive dir end to end whatever mix of recordings it holds:
 
 ```
-[Catalog] Recording ID: 0 | Stream ID: 205 | ...    → sequenced (schema 202)
-[Catalog] Recording ID: 1 | Stream ID: 100 | ...    → cluster   (schema 111)
-[Catalog] Recording ID: 2 | Stream ID: 205 | ...    → sequenced (schema 202)
+[Catalog] Recording ID: 0 | Stream ID: 205 | ...    → frames  (schema 210)
+[Catalog] Recording ID: 1 | Stream ID: 100 | ...    → cluster (schema 111)
+[Catalog] Recording ID: 2 | Stream ID: 205 | ...    → frames  (schema 210)
 ```
 
 `--schema <name>` narrows the run to one schema; frames of the others are then labelled
@@ -395,6 +400,45 @@ better than the default pretty print:
 
 Note the dump as a whole is not a JSON document either way — the `[Catalog]` and separator lines sit
 between the objects — but with `--oneline` each individual message line parses on its own.
+
+#### Piping payloads to another decoder
+
+`-o <payloadId>` writes that protocol's payloads to **stdout**, raw and back to back, for a decoder that
+owns their schema (`doc/seqeron-protocol-spec.md` §13.1). The printer decodes seqeron's own core
+payloads (`payloadId` 1) unaided; everything else is somebody else's protocol, and this is how it gets
+out:
+
+```bash
+./src/main/scripts/sbe-log-printer.sh "${TMPDIR:-/tmp}/phixeron-seq/archive-0" --stream 205 \
+    -o 2 2>frames.log | order-decode
+```
+
+Stdout belongs to the payload stream for the whole run, so **every text line moves to stderr** — the
+`[Catalog]` line, the dump itself, the errors. Redirect it as above to keep the frames beside the
+payloads; the two are emitted in the same order, and the frame line is where `globalSeqNo` is.
+
+The stream carries no framing of its own: an SBE payload declares its own block and var-data lengths, so
+the decoder that holds the schema is what delimits it. It works on the Raft log (`--stream 100`) as well
+as the tap, reading the ingress side of the same frames.
+
+There is no `-P` property for this on the Gradle task — Gradle decorates its own stdout, which would
+corrupt the stream. Use the script or the jar.
+
+#### Naming a payload it cannot decode
+
+A payload whose schema is not loaded prints as its ids rather than being decoded — but it is
+**labelled**, from the `PayloadIdRegistered` rows `clusterctl load-topology` put in the same recording
+(`doc/seqeron-protocol-spec.md` §6.3):
+
+```
+<undecodable payload 2 (phixeron-order v1): schema 220, templateId 1>
+<undecodable payload 7: schema 900, templateId 3>
+```
+
+The second is an unregistered `payloadId`, which prints under its number. Registration is labelling
+only: the sequencer never decodes those rows and they gate no frame. All four of this deployment's
+schemas ship in the jar today, so the label is what a reader sees once an application's schema is no
+longer seqeron's to bundle.
 
 ---
 

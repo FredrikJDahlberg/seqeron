@@ -15,14 +15,14 @@ import org.agrona.MutableDirectBuffer;
 import org.agrona.concurrent.IdleStrategy;
 import org.agrona.concurrent.status.AtomicCounter;
 import org.limitless.phixeron.metrics.PhixeronCounters;
-import org.limitless.phixeron.sbe.unsequenced.MessageHeaderDecoder;
-import org.limitless.phixeron.sbe.unsequenced.MessageHeaderEncoder;
-import org.limitless.phixeron.sbe.unsequenced.ReplayCompleteDecoder;
-import org.limitless.phixeron.sbe.unsequenced.ReplayHeartbeatDecoder;
-import org.limitless.phixeron.sbe.unsequenced.ReplayPendingEncoder;
-import org.limitless.phixeron.sbe.unsequenced.ReplayRequestDecoder;
-import org.limitless.phixeron.sbe.unsequenced.ReplayUnavailableEncoder;
-import org.limitless.phixeron.sbe.unsequenced.ReplayingEncoder;
+import org.limitless.phixeron.sbe.replay.MessageHeaderDecoder;
+import org.limitless.phixeron.sbe.replay.MessageHeaderEncoder;
+import org.limitless.phixeron.sbe.replay.ReplayCompleteDecoder;
+import org.limitless.phixeron.sbe.replay.ReplayHeartbeatDecoder;
+import org.limitless.phixeron.sbe.replay.ReplayPendingEncoder;
+import org.limitless.phixeron.sbe.replay.ReplayRequestDecoder;
+import org.limitless.phixeron.sbe.replay.ReplayUnavailableEncoder;
+import org.limitless.phixeron.sbe.replay.ReplayingEncoder;
 import org.limitless.phixeron.sequencer.SequencerService;
 import org.limitless.phixeron.util.Logger;
 
@@ -142,16 +142,14 @@ public final class ReplayerService {
     private final ReplayUnavailableEncoder unavailableEncoder = new ReplayUnavailableEncoder();
     private final MutableDirectBuffer controlBuffer = new ExpandableArrayBuffer(64);
 
-    private final org.limitless.phixeron.sbe.sequenced.MessageHeaderDecoder selfCheckMsgHeaderDecoder =
-        new org.limitless.phixeron.sbe.sequenced.MessageHeaderDecoder();
-    private final org.limitless.phixeron.sbe.sequenced.HeaderDecoder selfCheckHeaderDecoder =
-        new org.limitless.phixeron.sbe.sequenced.HeaderDecoder();
+    private final org.limitless.phixeron.replayer.client.SequencedFrameDecoder selfCheckView =
+        new org.limitless.phixeron.replayer.client.SequencedFrameDecoder();
 
     private final FragmentHandler requestHandler =
         (buffer, offset, length, header) -> onRequest(buffer, offset, length);
 
     private final FragmentHandler selfCheckHandler =
-        (buffer, offset, length, header) -> onSelfCheckFragment(buffer, offset);
+        (buffer, offset, length, header) -> onSelfCheckFragment(buffer, offset, length);
 
     /**
      * Production constructor: serves member {@code memberId}'s own Aeron client and archive.
@@ -394,16 +392,14 @@ public final class ReplayerService {
      * Reads globalSeqNo off the self-check replay's first fragment.
      * @param buffer fragment buffer
      * @param offset fragment offset
+     * @param length fragment length
      */
-    private void onSelfCheckFragment(final DirectBuffer buffer, final int offset) {
-        selfCheckMsgHeaderDecoder.wrap(buffer, offset);
-        if (selfCheckMsgHeaderDecoder.schemaId() !=
-            org.limitless.phixeron.sbe.sequenced.MessageHeaderDecoder.SCHEMA_ID) {
-            return;
+    private void onSelfCheckFragment(final DirectBuffer buffer, final int offset, final int length) {
+        // Any of the five sequenced shapes will do: the check only asks what globalSeqNo the recording
+        // starts at, and every one of them carries it at the same offset (F-3).
+        if (selfCheckView.wrap(buffer, offset, length)) {
+            selfCheckGlobalSeqNo = selfCheckView.globalSeqNo();
         }
-        final int bodyOffset = offset + org.limitless.phixeron.sbe.sequenced.MessageHeaderDecoder.ENCODED_LENGTH;
-        selfCheckHeaderDecoder.wrap(buffer, bodyOffset);
-        selfCheckGlobalSeqNo = selfCheckHeaderDecoder.globalSeqNo();
     }
 
     /** Tears down an in-flight self-check, whether it answered, expired, or never opened. */

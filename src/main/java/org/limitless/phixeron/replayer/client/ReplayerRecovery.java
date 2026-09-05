@@ -7,12 +7,12 @@ import java.util.List;
 import org.agrona.DirectBuffer;
 import org.agrona.concurrent.UnsafeBuffer;
 import org.limitless.phixeron.replayer.server.ReplayerService;
-import org.limitless.phixeron.sbe.sequenced.HeaderDecoder;
-import org.limitless.phixeron.sbe.sequenced.LeadershipChangedDecoder;
-import org.limitless.phixeron.sbe.sequenced.MessageHeaderDecoder;
-import org.limitless.phixeron.sbe.unsequenced.ReplayPendingDecoder;
-import org.limitless.phixeron.sbe.unsequenced.ReplayUnavailableDecoder;
-import org.limitless.phixeron.sbe.unsequenced.ReplayingDecoder;
+import org.limitless.phixeron.sbe.frame.LeadershipChangedDecoder;
+import org.limitless.phixeron.sequencer.SystemFrame;
+import org.limitless.phixeron.sbe.frame.MessageHeaderDecoder;
+import org.limitless.phixeron.sbe.replay.ReplayPendingDecoder;
+import org.limitless.phixeron.sbe.replay.ReplayUnavailableDecoder;
+import org.limitless.phixeron.sbe.replay.ReplayingDecoder;
 import org.limitless.phixeron.util.Logger;
 
 /**
@@ -110,7 +110,7 @@ public final class ReplayerRecovery {
     private static final int RESUME_SEGMENT_INDEX = -1;
 
     /** {@code LeadershipChanged}, synthesized onto the sequenced stream; intercepted, never dispatched. */
-    private static final int LEADERSHIP_CHANGED_TEMPLATE_ID = LeadershipChangedDecoder.TEMPLATE_ID;
+    private static final int LEADERSHIP_CHANGED = SystemFrame.LEADERSHIP_CHANGED;
 
     /**
      * Caps on frames retained ahead of a hole — enough to cover a walk over a normal recording, not a whole
@@ -126,11 +126,10 @@ public final class ReplayerRecovery {
     private final LeadershipHandler onLeadershipChanged;
     private final CaughtUpHandler onCaughtUp;
 
-    private final MessageHeaderDecoder messageHeader = new MessageHeaderDecoder();
-    private final HeaderDecoder header = new HeaderDecoder();
+    private final SequencedFrameDecoder view = new SequencedFrameDecoder();
     private final LeadershipChangedDecoder leadershipChanged = new LeadershipChangedDecoder();
-    private final org.limitless.phixeron.sbe.unsequenced.MessageHeaderDecoder controlHeader =
-        new org.limitless.phixeron.sbe.unsequenced.MessageHeaderDecoder();
+    private final org.limitless.phixeron.sbe.replay.MessageHeaderDecoder controlHeader =
+        new org.limitless.phixeron.sbe.replay.MessageHeaderDecoder();
     private final ReplayingDecoder replaying = new ReplayingDecoder();
     private final ReplayPendingDecoder replayPending = new ReplayPendingDecoder();
     private final ReplayUnavailableDecoder replayUnavailable = new ReplayUnavailableDecoder();
@@ -245,16 +244,10 @@ public final class ReplayerRecovery {
      */
     public void onFrame(final DirectBuffer buffer, final int offset, final int length, final long framePosition,
                         final long receiveNs, final boolean fromReplay) {
-        if (length < MessageHeaderDecoder.ENCODED_LENGTH + HeaderDecoder.ENCODED_LENGTH) {
+        if (!view.wrap(buffer, offset, length)) {
             return;
         }
-
-        messageHeader.wrap(buffer, offset);
-        if (messageHeader.schemaId() != MessageHeaderDecoder.SCHEMA_ID) {
-            return;
-        }
-        header.wrap(buffer, offset + MessageHeaderDecoder.ENCODED_LENGTH);
-        final long globalSeqNo = header.globalSeqNo();
+        final long globalSeqNo = view.globalSeqNo();
 
         // First frame off a resume replay: it must be the frame whose position we anchored the request on.
         // Anything else means that position no longer denotes that frame — the active recording rotated
@@ -342,7 +335,7 @@ public final class ReplayerRecovery {
 
     /** Decodes one Replayer control reply ({@code Replaying}/{@code ReplayPending}/{@code ReplayUnavailable}). */
     public void onControl(final DirectBuffer buffer, final int offset, final int length) {
-        if (length < org.limitless.phixeron.sbe.unsequenced.MessageHeaderDecoder.ENCODED_LENGTH) {
+        if (length < org.limitless.phixeron.sbe.replay.MessageHeaderDecoder.ENCODED_LENGTH) {
             return;
         }
         controlHeader.wrap(buffer, offset);
@@ -771,12 +764,9 @@ public final class ReplayerRecovery {
         if (recoveryProgress.onProgress()) {
             actions.recoveryStalled(false);
         }
-        messageHeader.wrap(buffer, offset);
-        final int templateId = messageHeader.templateId();
-        final int blockLength = messageHeader.blockLength();
-        final int version = messageHeader.version();
-        final int bodyOffset = offset + MessageHeaderDecoder.ENCODED_LENGTH;
-        header.wrap(buffer, bodyOffset);
+        if (!view.wrap(buffer, offset, length)) {
+            return; // a frame the recording holds but no shape can read
+        }
 
         lastGlobalSeqNo = globalSeqNo;
         replayGapLogged = false;
@@ -788,8 +778,11 @@ public final class ReplayerRecovery {
             notifyCaughtUp();
         }
 
-        if (templateId == LEADERSHIP_CHANGED_TEMPLATE_ID) {
-            leadershipChanged.wrap(buffer, bodyOffset, blockLength, version);
+        // A systemEventType is only a systemEventType on a system frame: an application payload's own 5
+        // sits at the same offset, so both halves have to match before a frame is read as a leadership
+        // change. Its fields are inline in the frame's block, so the decoder wraps that block directly.
+        if (view.isSystem() && view.systemEventType() == LEADERSHIP_CHANGED) {
+            leadershipChanged.wrap(buffer, view.payloadOffset(), view.blockLength(), view.version());
             currentLeaderMemberId = leadershipChanged.newLeaderMemberId();
             if (onLeadershipChanged != null) {
                 onLeadershipChanged.onLeadershipChanged(currentLeaderMemberId, globalSeqNo);
@@ -797,8 +790,9 @@ public final class ReplayerRecovery {
             return;
         }
         if (onSequenced != null) {
-            event.set(globalSeqNo, header.sourceId(), header.connectionId(), header.sessionId(), header.timestamp(),
-                      receiveNs, header.origin(), templateId, blockLength, version, buffer, offset, length,
+            event.set(globalSeqNo, view.sourceId(), view.connectionId(), view.sessionId(), view.timestamp(),
+                      receiveNs, view.isSystem(), view.payloadId(), view.systemEventType(), view.templateId(),
+                      view.blockLength(), view.version(), buffer, view.payloadOffset(), view.payloadLength(),
                       framePosition);
             onSequenced.onSequenced(event);
         }

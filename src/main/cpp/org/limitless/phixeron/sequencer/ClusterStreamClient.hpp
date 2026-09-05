@@ -521,9 +521,6 @@ class ClusterStreamClient
             m_archive->startReplay(segment.recordingId, m_replayChannel, REPLAY_STREAM_ID, replayParams);
     }
 
-    using HdrSbe = org::limitless::phixeron::sbe::sequenced::MessageHeader;
-    using HeaderComposite = org::limitless::phixeron::sbe::sequenced::Header;
-
     void onFragment(const aeron::concurrent::AtomicBuffer& buffer, const aeron::util::index_t offset,
                     const aeron::util::index_t length, const aeron::Header& header)
     {
@@ -533,31 +530,20 @@ class ClusterStreamClient
         const std::uint64_t cap = static_cast<std::uint64_t>(buffer.capacity());
         const std::uint64_t off = static_cast<std::uint64_t>(offset);
         const std::uint64_t len = static_cast<std::uint64_t>(length);
-        if (len < HdrSbe::encodedLength() + HeaderComposite::encodedLength())
+        const FrameView view = unwrapFrame(raw + off, len);
+        if (!view.valid)
         {
             diag::Logger::error(diag::Component::ClusterStreamClient, diag::EventCode::FragmentTooShort,
-                                "fragment too short: %" PRIu64 " bytes", len);
+                                "unreadable frame of %" PRIu64 " bytes; ignored", len);
             return;
         }
 
-        m_hdr.wrap(raw, off, 0U, cap);
-        if (m_hdr.schemaId() != HdrSbe::sbeSchemaId())
-        {
-            diag::Logger::error(diag::Component::ClusterStreamClient, diag::EventCode::UnexpectedSchemaId,
-                                "unexpected schemaId=%u; ignored", m_hdr.schemaId());
-            return;
-        }
-
-        const std::uint16_t templateId = m_hdr.templateId();
-        const std::uint64_t bodyOff = off + HdrSbe::encodedLength();
-
-        m_header.wrap(raw, bodyOff, 0U, cap);
-        const auto gseq = m_header.globalSeqNo();
-        const auto srcId = m_header.sourceId();
-        const auto connId = m_header.connectionId();
-        const auto sessId = m_header.sessionId();
-        const auto ts = m_header.timestamp();
-        const auto origin = m_header.origin();
+        const std::uint16_t templateId = view.templateId;
+        const auto gseq = view.globalSeqNo;
+        const auto srcId = view.sourceId;
+        const auto connId = view.connectionId;
+        const auto sessId = view.sessionId;
+        const auto ts = view.timestamp;
         if (!m_singleImageMode)
         {
             if (m_lastGlobalSeqNo != 0 && gseq <= m_lastGlobalSeqNo)
@@ -566,7 +552,8 @@ class ClusterStreamClient
             }
             m_lastGlobalSeqNo = gseq;
         }
-        if (templateId == CLIENT_CONNECTED_TEMPLATE_ID)
+        const bool isSystem = view.system;
+        if (isSystem && view.systemEventType == CONNECTION_OPENED)
         {
             if (m_onConnected)
             {
@@ -579,7 +566,7 @@ class ClusterStreamClient
             }
             return;
         }
-        if (templateId == CLIENT_DISCONNECTED_TEMPLATE_ID)
+        if (isSystem && view.systemEventType == CONNECTION_CLOSED)
         {
             if (m_onDisconnected)
             {
@@ -600,12 +587,14 @@ class ClusterStreamClient
                                           .sourceSessionId = sessId,
                                           .clusterTimestamp = ts,
                                           .receiveTimeNs = receiveNs,
-                                          .origin = origin,
+                                          .system = isSystem,
+                                          .payloadId = view.payloadId,
+                                          .systemEventType = view.systemEventType,
                                           .templateId = templateId,
-                                          .blockLength = m_hdr.blockLength(),
-                                          .version = m_hdr.version(),
-                                          .payload = raw + off,
-                                          .payloadLength = len,
+                                          .blockLength = view.blockLength,
+                                          .version = view.version,
+                                          .payload = view.payload,
+                                          .payloadLength = view.payloadLength,
                                           .position = framePosition });
         }
     }
@@ -649,9 +638,6 @@ class ClusterStreamClient
     // Composed once: FragmentAssembler::handler() builds a fresh std::function per call, and this is
     // polled every duty-cycle iteration.
     aeron::fragment_handler_t m_poll;
-
-    HdrSbe m_hdr;
-    HeaderComposite m_header;
 };
 
 } // namespace org::limitless::phixeron::sequencer

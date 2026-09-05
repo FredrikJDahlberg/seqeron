@@ -53,7 +53,8 @@ clusterctl.sh start          record a "system started" marker (precondition: ele
 clusterctl.sh shutdown       orderly stop; run on every node, no-op on followers
 clusterctl.sh activate <id>  manual standby promotion (precondition: elected leader)
 clusterctl.sh load-topology <file>
-                             publish the gateway roster (precondition: elected leader)
+                             publish the deployment topology — gateways, applications,
+                             protocols (precondition: elected leader)
 clusterctl.sh counters       list this node's phixeron operator counters; no cluster connection
                              needed, safe on every node
 clusterctl.sh help           list commands and exit
@@ -132,35 +133,53 @@ matches opens its accept gate, the others stay standby (or close, if previously 
 
 ### load-topology
 
-Publishes the **gateway roster**: one unsequenced `GatewayRegistered` per row of a flat
-`name,gatewayId,gatewaySourceId,preferenceRank` CSV file (`src/main/resources/topology.csv`; blank
-lines and `#` comments skipped), `remaining` counting down to 0 on the last, then waits for that last
-row's sequenced echo on the local tap. Same connect/publish/await-echo shape as `activate`, and the
-same failure mode with no elected leader.
+Publishes the **topology document** — `src/main/resources/topology.xml`, the XML of
+`doc/seqeron-protocol-spec.md` §6.4, validated against the packaged `topology.xsd`. Its `<gateways>`
+section becomes one unsequenced `GatewayRegistered` per row, `remaining` counting down to 0 on the
+last; its optional `<applications>` and `<protocols>` sections become one `ApplicationRegistered` and
+one `PayloadIdRegistered` per row behind them, with no countdown of their own. Between them the three
+sections put the whole deployment in the log — the producers the cluster elects, the producers it does
+not (§5), and what the shared payloadIds are called. Then waits for the last list row's sequenced echo
+on the local tap.
+Same connect/publish/await-echo shape as `activate`, and the same failure mode with no elected leader.
 
-The roster is a **deployment assertion**, the same kind of act as `activate` — which is why it is
+The application and protocol rows are **labelling and nothing else** (§6.3, §6.4): the sequencer never
+decodes them,
+registration gates no frame (**C-2**), and their one reader is `SbeLogPrinter`, which names a payload
+it cannot decode instead of printing bare numbers. `payloadId` 1 is core and unregistrable
+(**C-1**) — enforced by the XSD, which is where a constraint on what may be *written* belongs.
+
+The list is a **deployment assertion**, the same kind of act as `activate` — which is why it is
 here rather than riding along in `BasicDataServer`'s reference-data load. It changes when you deploy;
 the comp-id table and the trading-day calendar change daily (`doc/future-arch.md` §3.6). Keeping it
 out of the load is also what lets the cluster tier decode no reference data at all: the `remaining ==
 0` row is the sequencer's completeness edge, and it synthesizes one bootstrap `GatewayActive` per
 logical gateway behind it.
 
-Validated before a byte is published — unique `gatewayId`, unique `gatewayName`, exactly one rank-0
-row per `gatewaySourceId` — because the log cannot make those checks for itself: a duplicate id
-silently drops an instance, and a missing or second rank-0 leaves a logical gateway with no primary
-or an arbitrary one. These used to be `static_assert`s over the hardcoded table in
-`BasicDataConstants.hpp`.
+The whole document is validated before a byte is published, because a file that fails half-way
+leaves a list the log has already closed. Nearly all of it is declarative in `topology.xsd` — field
+widths, name shape, `sourceId >= 0`, `payloadId >= 2`, and unique `gatewayId`/`gatewayName`/`payloadId`
+as `xs:unique` — because the log cannot make those checks for itself: a duplicate id silently drops an
+instance. What is left in the loader is the two checks a row cannot make about itself: exactly one
+`rank="0"` per `sourceId` (a missing one leaves a logical gateway no primary, a second an arbitrary
+one) and a `sourceId` that is none of §5's reserved ids. These used to be `static_assert`s over the
+hardcoded table in `BasicDataConstants.hpp`.
+
+The parser resolves the XSD from its own jar and ignores a `schemaLocation` the document names: a file
+that may name its own schema may name a lax one, and **C-1** would then be advisory. Entity resolution
+is disabled outright — the threat is mild, since an operator who can edit the file already has a shell
+on the node, but the JDK's defaults are unsafe.
 
 **Run it before the reference-data load**, once per cluster lifetime: `start` → `load-topology` →
 the reference-data load. A load that gets in first produces session rows whose `ownerSourceId` no
-roster row claims, and every gateway drops them on ingest — fail closed, but a cluster that serves
+list row claims, and every gateway drops them on ingest — fail closed, but a cluster that serves
 nobody. Re-running is safe: the sequencer de-dups rows on `gatewayId` and latches the bootstrap once.
 
-**Roster only what the deployment runs.** A rostered pair that no process starts is designated, times
+**List only what the deployment runs.** A listed pair that no process starts is designated, times
 out after `GATEWAY_ACTIVATION_TIMEOUT_MS`, hands the role to its standby, and times out again — one
 `GatewayActive` frame every 5s for as long as the cluster is up, in a log recovery replays in full.
-`topology.csv` is the full three-pair deployment; the harnesses load the pair each one actually starts
-(`src/test/resources/topology-{gw,egw,ogw}.csv`), which is why a `load-topology` argument is
+`topology.xml` is the full three-pair deployment; the harnesses load the pair each one actually starts
+(`src/test/resources/topology-{gw,egw,ogw}.xml`), which is why a `load-topology` argument is
 a file rather than a constant.
 
 ### counters
@@ -244,11 +263,21 @@ _Proposal, 2026-08-29. `doc/future-arch.md` §3.6 chose flat CSV over JDK XML an
 for revisiting it: "worth it only if a row grows attributes." Two things have since met it, so this
 prices the move._
 
+> **Landed** as `doc/seqeron-protocol-spec.md` §15 step 8 — `topology.xml`, `topology.xsd`, the three
+> harness lists and the four script paths, in one commit. **With one divergence: the shape built is
+> §6.4's flat `<gateway name id sourceId rank/>`, not the nested `<primary>`/`<standby>` this section
+> recommends.** So the three rules "The nesting is the whole argument" turns into structure are not
+> structure: `preferenceRank` is still a field, the rank-0-per-`sourceId` scan is still in the loader
+> (with the reserved-`sourceId` check beside it), and an instance can still be written under the wrong
+> `sourceId`. What did land as costed is everything else — the XSD, the validating DOM parse with the
+> XXE hardening below, the merge of both sections into one file and one verb, and `load-protocols`
+> never built. Read the rest of this section as the pricing it was, not as a description of the file.
+
 **What changed.** The protocol registry (`doc/seqeron-protocol.md` §6.3) adds a **second record kind**
 an operator asserts into the log — `PayloadIdRegistered` — and it has the identical lifecycle to the
-roster: it changes when you deploy. Left in its own file it needs its own `load-protocols` verb and
+list: it changes when you deploy. Left in its own file it needs its own `load-protocols` verb and
 its own place in the runbook. §3.6's own criterion for
-bundling two things into one loader is lifecycle match, and these match exactly. Meanwhile the roster
+bundling two things into one loader is lifecycle match, and these match exactly. Meanwhile the list
 itself wants a `description` per logical gateway, which today lives in a `#` comment that no parser
 sees and nothing keeps honest.
 
@@ -310,7 +339,7 @@ is avoiding.
 
 | attribute | purpose | on the wire? |
 | --- | --- | --- |
-| `topology/@name` | names the deployment this file describes, so a roster cannot be read as generic. **Documentation only for now** — a load-time interlock ("refuse a topology whose name is not this cluster's") needs a cluster-side identity, which does not exist yet (`doc/seqeron-protocol.md` §15) | no |
+| `topology/@name` | names the deployment this file describes, so a list cannot be read as generic. **Documentation only for now** — a load-time interlock ("refuse a topology whose name is not this cluster's") needs a cluster-side identity, which does not exist yet (`doc/seqeron-protocol.md` §15) | no |
 | `protocol/@name` | the protocol's identity, and what `SbeLogPrinter` labels a payload with | **yes** — `PayloadIdRegistered.protocolName` |
 | `protocol/@version` | the operator's record of which revision this deployment runs, printed beside the name. **Nothing checks it** — the interlock this section used to specify was rejected, below | **yes** — `PayloadIdRegistered.protocolVersion` |
 | `protocol/@payloadId` | the numeric the frame carries (§6.1 of the protocol spec) | **yes** |
@@ -330,8 +359,8 @@ comparison passes cleanly. What such a check catches instead is deploy hygiene �
 shipped is not the one declared — and it catches it by stopping every application in the fleet on one
 wrong character in a hand-edited file. That is the same inverted error profile that retired the
 registry's ingress gate: the check polices the one input it depends on being right. The V-1 defence
-is mechanical and involves no operator — the cross-language golden corpus (§13 row 6 of the protocol
-spec) and the published library pins (§11).
+is mechanical and involves no operator — the conformance suite asserting the frame layout §4 states
+(§14 row 6 of the protocol spec) and the published library pins (§11).
 
 `@version` still reaches the log, because an operator's record of what a deployment runs is worth
 printing beside the protocol's name. It is read by `SbeLogPrinter` and by nobody else.
@@ -381,7 +410,7 @@ and would be the new dependency §3.6 refused.
 Validate against the XSD during the parse (`factory.setSchema(...)`) with an `ErrorHandler` that
 rethrows, so a schema violation and a malformed document arrive on the same path and carry
 `SAXParseException`'s line and column. Then walk the DOM into the existing `TopologyRow` records —
-`publishRosterAndAwaitEcho` and the `remaining` countdown are untouched, because the wire is untouched.
+`publishListAndAwaitEcho` and the `remaining` countdown are untouched, because the wire is untouched.
 
 **The one non-obvious cost is XXE hardening, and it is mandatory rather than optional:**
 
@@ -409,7 +438,7 @@ eight lines that a reviewer must recognise, not as eight lines.
 | hardening | none needed | **~8 lines**, mandatory, easy to get wrong |
 | declarative artifact | none | `topology.xsd`, **~70 lines** |
 | dependencies | none | none — `javax.xml` is JDK |
-| files to convert | 4 (`topology.csv` + 3 test rosters) | 4, plus 4 path strings in scripts |
+| files to convert | 4 (`topology.csv` + 3 test lists) | 4, plus 4 path strings in scripts |
 | operator errors caught | at load, by line number | in the editor, by XSD completion, before the cluster is touched |
 | verbs | `load-topology` + a new `load-protocols` | `load-topology` alone, publishing both sections |
 

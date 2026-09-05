@@ -3,6 +3,7 @@
 // ReplayerRecovery — the walk/resume/gap decision state machine behind ReplayerStreamReceiver.
 //
 #include <array>
+#include <cinttypes>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -14,28 +15,23 @@
 #include "org/limitless/phixeron/sequencer/SequencedFrame.hpp"
 #include "org/limitless/phixeron/util/Logger.hpp"
 
-// Replay-protocol control codecs (sbe-unsequenced.xml) + LeadershipChanged (sbe-sequenced.xml)
-#include "org_limitless_phixeron_sbe_sequenced/LeadershipChanged.h"
-#include "org_limitless_phixeron_sbe_unsequenced/MessageHeader.h"
-#include "org_limitless_phixeron_sbe_unsequenced/ReplayPending.h"
-#include "org_limitless_phixeron_sbe_unsequenced/ReplayUnavailable.h"
-#include "org_limitless_phixeron_sbe_unsequenced/Replaying.h"
+// Replay-protocol control codecs (sbe-replay.xml) + LeadershipChanged (core, sbe-frame.xml)
+#include "org_limitless_phixeron_sbe_frame/LeadershipChanged.h"
+#include "org_limitless_phixeron_sbe_replay/MessageHeader.h"
+#include "org_limitless_phixeron_sbe_replay/ReplayPending.h"
+#include "org_limitless_phixeron_sbe_replay/ReplayUnavailable.h"
+#include "org_limitless_phixeron_sbe_replay/Replaying.h"
 
 namespace org::limitless::phixeron::replayer::client {
 
-namespace usq = org::limitless::phixeron::sbe::unsequenced;
+namespace rpl = org::limitless::phixeron::sbe::replay;
 namespace diag = org::limitless::phixeron::util;
 
-using org::limitless::phixeron::sequencer::CLIENT_CONNECTED_TEMPLATE_ID;
-using org::limitless::phixeron::sequencer::CLIENT_DISCONNECTED_TEMPLATE_ID;
 using org::limitless::phixeron::sequencer::LifecycleEvent;
 using org::limitless::phixeron::sequencer::SequencedEvent;
 
 // Replaying.replaySessionId sentinel: "nothing to replay, you are at the tip — follow the live tap".
 inline constexpr std::int64_t REPLAYER_NO_REPLAY_NEEDED = -1;
-
-// LeadershipChanged (sbe-sequenced.xml template 5)
-inline constexpr std::uint16_t LEADERSHIP_CHANGED_TEMPLATE_ID = 5;
 
 /**
  * Everything ReplayerRecovery cannot do itself: the sends, the replay subscription, and the gauge.
@@ -136,9 +132,6 @@ class ReplayerRecovery
     static constexpr std::size_t MAX_MESSAGES_FRAMES = 65536;
     static constexpr std::size_t MAX_MESSAGES_BYTES = 16UL * 1024 * 1024;
 
-    using HdrSbe = org::limitless::phixeron::sbe::sequenced::MessageHeader;
-    using HeaderComposite = org::limitless::phixeron::sbe::sequenced::Header;
-
     const std::int32_t m_clientId;
     ReplayerRecoveryActions& m_actions;
     OnSequenced m_onSequenced;
@@ -181,9 +174,6 @@ class ReplayerRecovery
 
     std::int32_t m_currentLeaderMemberId = -1;
 
-    HdrSbe m_hdr;
-    HeaderComposite m_header;
-
   public:
     ReplayerRecovery(const std::int32_t clientId, ReplayerRecoveryActions& actions, OnSequenced onSequenced,
                      OnConnected onConnected = {}, OnDisconnected onDisconnected = {},
@@ -214,19 +204,13 @@ class ReplayerRecovery
     void onFrame(char* const frame, const std::uint64_t length, const std::int64_t framePosition,
                  const std::int64_t receiveNs, const bool fromReplay)
     {
-        if (length < HdrSbe::encodedLength() + HeaderComposite::encodedLength())
+        // The envelope is stripped once, here: both frame shapes carry globalSeqNo, at different offsets.
+        const sequencer::FrameView entry = sequencer::unwrapFrame(frame, length);
+        if (!entry.valid)
         {
             return;
         }
-
-        m_hdr.wrap(frame, 0U, 0U, length);
-        if (m_hdr.schemaId() != HdrSbe::sbeSchemaId())
-        {
-            return;
-        }
-
-        m_header.wrap(frame, HdrSbe::encodedLength(), 0U, length);
-        const auto sequenceNumber = m_header.globalSeqNo();
+        const auto sequenceNumber = entry.globalSeqNo;
         if (fromReplay && m_resumeAnchorSequenceNumber != 0)
         {
             const std::int64_t anchor = m_resumeAnchorSequenceNumber;
@@ -297,18 +281,18 @@ class ReplayerRecovery
     // One message off the Replayer's control stream (Replaying / ReplayPending / ReplayUnavailable).
     void onControl(char* const message, const std::uint64_t length)
     {
-        if (length < usq::MessageHeader::encodedLength())
+        if (length < rpl::MessageHeader::encodedLength())
         {
             return;
         }
 
-        usq::MessageHeader mh;
+        rpl::MessageHeader mh;
         mh.wrap(message, 0U, 0U, length);
-        const std::uint64_t bodyOff = usq::MessageHeader::encodedLength();
+        const std::uint64_t bodyOff = rpl::MessageHeader::encodedLength();
 
-        if (mh.templateId() == usq::Replaying::sbeTemplateId())
+        if (mh.templateId() == rpl::Replaying::sbeTemplateId())
         {
-            usq::Replaying replaying;
+            rpl::Replaying replaying;
             replaying.wrapForDecode(message, bodyOff, mh.blockLength(), mh.version(), length);
             if (replaying.clientId() != m_clientId || replaying.requestId() != m_requestId)
             {
@@ -316,9 +300,9 @@ class ReplayerRecovery
             }
             onReplaying(replaying.replaySessionId(), replaying.catchUpPosition(), replaying.recordingId());
         }
-        else if (mh.templateId() == usq::ReplayPending::sbeTemplateId())
+        else if (mh.templateId() == rpl::ReplayPending::sbeTemplateId())
         {
-            usq::ReplayPending replayPending;
+            rpl::ReplayPending replayPending;
             replayPending.wrapForDecode(message, bodyOff, mh.blockLength(), mh.version(), length);
             if (replayPending.clientId() == m_clientId && replayPending.requestId() == m_requestId)
             {
@@ -326,9 +310,9 @@ class ReplayerRecovery
                 m_replayerUnavailable = false; // queued, not refused — the episode ended (see Replaying)
             }
         }
-        else if (mh.templateId() == usq::ReplayUnavailable::sbeTemplateId())
+        else if (mh.templateId() == rpl::ReplayUnavailable::sbeTemplateId())
         {
-            usq::ReplayUnavailable replayUnavailable;
+            rpl::ReplayUnavailable replayUnavailable;
             replayUnavailable.wrapForDecode(message, bodyOff, mh.blockLength(), mh.version(), length);
             if (replayUnavailable.clientId() == m_clientId && replayUnavailable.requestId() == m_requestId)
             {
@@ -626,9 +610,8 @@ class ReplayerRecovery
         {
             m_actions.recoveryStalled(false);
         }
-        m_hdr.wrap(frame, 0U, 0U, length);
-        const std::uint16_t templateId = m_hdr.templateId();
-        m_header.wrap(frame, HdrSbe::encodedLength(), 0U, length);
+        const sequencer::FrameView view = sequencer::unwrapFrame(frame, length);
+        const std::uint16_t templateId = view.templateId;
 
         m_lastGlobalSeqNo = sequenceNumber;
         m_replayGapLogged = false;
@@ -638,15 +621,26 @@ class ReplayerRecovery
             notifyCaughtUp();
         }
 
-        const auto srcId = m_header.sourceId();
-        const auto connId = m_header.connectionId();
-        const auto sessId = m_header.sessionId();
-        const auto ts = m_header.timestamp();
-        const auto origin = m_header.origin();
-        if (templateId == CLIENT_CONNECTED_TEMPLATE_ID || templateId == CLIENT_DISCONNECTED_TEMPLATE_ID)
+        if (!view.valid)
+        {
+            diag::Logger::error(diag::Component::ReplayerStreamReceiver, diag::EventCode::FragmentTooShort,
+                                "unreadable frame of %" PRIu64 " bytes at gseq %" PRId64 "; ignored", length,
+                                sequenceNumber);
+            return;
+        }
+        const auto srcId = view.sourceId;
+        const auto connId = view.connectionId;
+        const auto sessId = view.sessionId;
+        const auto ts = view.timestamp;
+        // A systemEventType is only a systemEventType on a system frame: an application payload's own 1
+        // and 2 sit at the same offset, so both halves have to match before a frame is read as a
+        // lifecycle event.
+        const bool isSystem = view.system;
+        const std::uint16_t eventType = view.systemEventType;
+        if (isSystem && (eventType == sequencer::CONNECTION_OPENED || eventType == sequencer::CONNECTION_CLOSED))
         {
             // Both carry the same header-only LifecycleEvent; only the callback differs.
-            const OnConnected& callback = templateId == CLIENT_CONNECTED_TEMPLATE_ID ? m_onConnected : m_onDisconnected;
+            const OnConnected& callback = eventType == sequencer::CONNECTION_OPENED ? m_onConnected : m_onDisconnected;
             if (callback)
             {
                 callback(LifecycleEvent{ .globalSeqNo = sequenceNumber,
@@ -658,11 +652,12 @@ class ReplayerRecovery
             }
             return;
         }
-        if (templateId == LEADERSHIP_CHANGED_TEMPLATE_ID)
+        if (isSystem && eventType == sequencer::LEADERSHIP_CHANGED)
         {
-            sbe::sequenced::LeadershipChanged leadershipChanged;
-            leadershipChanged.wrapForDecode(frame, HdrSbe::encodedLength(), m_hdr.blockLength(), m_hdr.version(),
-                                            length);
+            // Synthesized, so its newLeaderMemberId is inline in the frame's own block, which is what
+            // view.payload addresses for these three.
+            auto leadershipChanged =
+                sequencer::decodeSystem<sbe::frame::LeadershipChanged>(view.payload, view.payloadLength);
             m_currentLeaderMemberId = leadershipChanged.newLeaderMemberId();
             if (m_onLeadershipChanged)
             {
@@ -678,12 +673,14 @@ class ReplayerRecovery
                                           .sourceSessionId = sessId,
                                           .clusterTimestamp = ts,
                                           .receiveTimeNs = receiveNs,
-                                          .origin = origin,
+                                          .system = isSystem,
+                                          .payloadId = view.payloadId,
+                                          .systemEventType = eventType,
                                           .templateId = templateId,
-                                          .blockLength = m_hdr.blockLength(),
-                                          .version = m_hdr.version(),
-                                          .payload = frame,
-                                          .payloadLength = length,
+                                          .blockLength = view.blockLength,
+                                          .version = view.version,
+                                          .payload = view.payload,
+                                          .payloadLength = view.payloadLength,
                                           .position = framePosition });
         }
     }
