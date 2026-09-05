@@ -83,8 +83,11 @@ channel from the caller for the same reason; it holds no default.
 The dependency runs one way, product → cluster, and the build enforces it: `:gateways` compiles
 against `:cluster`'s output and `:cluster` never sees it; the CMake pair is `phixeron_core` (its own
 include root, no simdfix, no generated FIX codecs) and `phixeron` (core plus the C++ edge's root).
-Two things are deliberately still shared, both at the root: `src/main/resources` (the SBE schemas —
-step 3 splits them) and `src/{main,test}/scripts`.
+Each module keeps the schemas it owns under `<module>/src/main/sbe` — a codegen-input directory, not a
+resource one, so no jar ships an XML; the C++ edge's (`sbe-order.xml` and the three simdfix generator
+files) stay in the root's `src/main/resources` beside `topology.xml`, the deployment document. The one
+XML a jar does need is `cluster/src/main/resources/topology.xsd`, which `clusterctl` resolves off its own
+classpath. `src/{main,test}/scripts` is still shared at the root (`doc/future-arch.md` §11 step 7a.2).
 
 **Each module generates the codecs for the protocols it owns**, and only those. `:cluster` /
 `phixeron_core` generate `sbe-frame.xml`, `sbe-replay.xml` and `sbe-cluster.xml`; the application
@@ -336,9 +339,10 @@ failover is *not* session loss: `NewLeaderEvent` swaps the ingress publication a
 See `doc/todo.md` "Gateway HA / multi-instance".
 
 ### SBE / FIX code generation
-Six SBE schemas under `src/main/resources/`, each generating into a distinct namespace so one
-include path covers all of them (`org.limitless.phixeron.{sbe.frame, sbe.order, sbe.session,
-sbe.basicdata, sbe.replay}`, `org.limitless.phixeron.cluster.sbe`):
+Six SBE schemas, each under its owning module — `cluster/src/main/sbe`, `gateways/src/main/sbe`, and
+the C++ edge's `sbe-order.xml` in the root's `src/main/resources` — each generating into a distinct
+namespace so one include path covers all of them (`org.limitless.phixeron.{sbe.frame, sbe.order,
+sbe.session, sbe.basicdata, sbe.replay}`, `org.limitless.phixeron.cluster.sbe`):
 - `sbe-cluster.xml` — trimmed mirror of `io.aeron.cluster.codecs` (SessionConnectRequest,
   SessionEvent, SessionKeepAlive, …), replacing a hand-written `ClusterProtocol.hpp`. Its last
   section is decode-only — the consensus-module log entries (`TimerEvent`, `SessionOpenEvent`, …)

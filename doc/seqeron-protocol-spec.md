@@ -1045,7 +1045,7 @@ actually landed.
    change, give the FIX session families in the running pair their own direction field. → both codegen
    paths green, the `unsequencedHeader`/`sequencedHeader` rename landed across the pair and every
    consumer of it, both edges reading direction from the payload, copy-through unchanged. The file is
-   `src/main/resources/sbe-frame.xml` and says `phixeron` throughout: the `seqeron` rename goes with the
+   `cluster/src/main/sbe/sbe-frame.xml` and says `phixeron` throughout: the `seqeron` rename goes with the
    repo split (`doc/future-arch.md` §11 step 1), not with a protocol step, each of which is already a
    wire change on its own. **Step 6 landed in the same change** — see there for why it could not wait.
 2. **Landed, out of order — after steps 3–7 rather than before them.** Land §13.1's payload pipe,
@@ -1089,7 +1089,7 @@ actually landed.
    step 1: the deletion is not a separate change, it is what the move *is*.
 5. **Landed.** Extract the replay set into its own schema. Namespace change only — the six messages,
    their fields and their template ids are untouched. → both `ReplayerRecoveryTest`s green, both e2e
-   paths green. The file is `src/main/resources/sbe-replay.xml`, not `seqeron-replay.xml`, for step
+   paths green. The file is `cluster/src/main/sbe/sbe-replay.xml`, not `seqeron-replay.xml`, for step
    1's reason: the `seqeron` rename goes with the repo split. The schema id **did** move, 200 → §8's
    **212**, because 200 was the old ingress pair's and dies with it — free here and nowhere else,
    since nothing records these six and a node's Replayer and its co-located apps are built and

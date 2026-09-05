@@ -33,17 +33,17 @@ dependencies {
 }
 
 // ── SBE code generation ────────────────────────────────────────────────────────
-// The schemas stay at the repo root for now: the C++ build generates from the same files, and
-// splitting them per module is doc/future-arch.md §11 step 7a.1. They are codegen inputs, named per
-// task below, and belong in no jar — topology.xsd moved ahead of them precisely because it is the one
-// file here a jar needs: ClusterCtl validates the topology document against it off its own classpath.
+// src/main/sbe, not src/main/resources: these are codegen inputs and belong in no jar. The one file
+// here a jar does need is topology.xsd, and it sits in resources for exactly that reason — ClusterCtl
+// validates the topology document against it off its own classpath. The C++ build generates from the
+// same three XMLs by path.
 
 // One root, but each schema owns a disjoint slice of it: its own package dir plus its own .sbeir.
 // Each task declares and wipes exactly that slice. Declaring the shared root instead made the codec
 // tasks overlap, and Gradle cannot clean an output it cannot attribute to one task — which is what let
 // a message deleted from a schema leave its codec on disk to be compiled against.
 def sbeGeneratedSrcDir = layout.buildDirectory.dir('generated/sources/sbe/main/java').get().asFile
-def sbeResourceDir     = rootProject.file('src/main/resources')
+def sbeSchemaDir       = file('src/main/sbe')
 
 sourceSets.main.java.srcDir sbeGeneratedSrcDir
 
@@ -61,9 +61,9 @@ tasks.register('generateReplaySbe', JavaExec) {
     systemProperty 'sbe.xinclude.aware',           'true'
     systemProperty 'sbe.generate.ir',              'true'
 
-    args new File(sbeResourceDir, 'sbe-replay.xml')
+    args new File(sbeSchemaDir, 'sbe-replay.xml')
 
-    inputs.file  new File(sbeResourceDir, 'sbe-replay.xml')
+    inputs.file  new File(sbeSchemaDir, 'sbe-replay.xml')
     outputs.dir  new File(sbeGeneratedSrcDir, 'org/limitless/phixeron/sbe/replay')
     outputs.file new File(sbeGeneratedSrcDir, 'sbe-replay.sbeir')
 
@@ -86,9 +86,9 @@ tasks.register('generateFrameSbe', JavaExec) {
     systemProperty 'sbe.xinclude.aware',           'true'
     systemProperty 'sbe.generate.ir',              'true'
 
-    args new File(sbeResourceDir, 'sbe-frame.xml')
+    args new File(sbeSchemaDir, 'sbe-frame.xml')
 
-    inputs.file  new File(sbeResourceDir, 'sbe-frame.xml')
+    inputs.file  new File(sbeSchemaDir, 'sbe-frame.xml')
     outputs.dir  new File(sbeGeneratedSrcDir, 'org/limitless/phixeron/sbe/frame')
     outputs.file new File(sbeGeneratedSrcDir, 'sbe-frame.sbeir')
 
@@ -122,9 +122,9 @@ tasks.register('generateClusterSbeIr', JavaExec) {
     systemProperty 'sbe.generate.stubs',  'false'
     systemProperty 'sbe.generate.ir',     'true'
 
-    args new File(sbeResourceDir, 'sbe-cluster.xml')
+    args new File(sbeSchemaDir, 'sbe-cluster.xml')
 
-    inputs.file  new File(sbeResourceDir, 'sbe-cluster.xml')
+    inputs.file  new File(sbeSchemaDir, 'sbe-cluster.xml')
     outputs.file new File(sbeGeneratedSrcDir, 'sbe-cluster.sbeir')
 
     doFirst { sbeGeneratedSrcDir.mkdirs() }
@@ -133,8 +133,8 @@ tasks.register('generateClusterSbeIr', JavaExec) {
 // The SBE tasks above emit a .sbeir IR file alongside the generated Java (sbe.generate.ir). Copy those
 // into a resource dir so they ship inside the jar and SbeLogPrinter can decode a recording without a
 // path into build/. Copied rather than adding sbeGeneratedSrcDir to `resources` directly: that dir is
-// full of generated .java, and the only filter available is set-wide, which would drop the XMLs in
-// src/main/resources from the jar.
+// full of generated .java, and the only filter available is set-wide, which would drop topology.xsd
+// from the jar.
 //
 // Only the three schemas this module owns. SbeLogPrinter lists this directory on the classpath rather
 // than naming schemas, so :gateways stages its own into the same path and a run over both jars sees all

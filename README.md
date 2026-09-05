@@ -91,8 +91,9 @@ cluster tier (the sequencer, the replayer, the shared client classes and the too
 languages), `gateways/` is the Java Artio FIX legs, and `src/main/cpp` is the C++ FIX edge. The
 dependency runs one way, product to cluster, and both builds enforce it — Gradle through
 `:gateways` depending on `:cluster`, CMake through the `phixeron_core` / `phixeron` target pair.
-The SBE schemas under `src/main/resources` and the scripts under `src/{main,test}/scripts` are
-shared and stay at the root. See `doc/future-arch.md` §11 for where this is going.
+Each module owns its schemas under `<module>/src/main/sbe` (the C++ edge's stay in the root's
+`src/main/resources`); the scripts under `src/{main,test}/scripts` are still shared at the root.
+See `doc/future-arch.md` §11 for where this is going.
 
 ### C++
 
