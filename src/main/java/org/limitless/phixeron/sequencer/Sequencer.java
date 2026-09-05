@@ -5,19 +5,25 @@ import org.agrona.ExpandableDirectByteBuffer;
 import org.agrona.MutableDirectBuffer;
 import org.limitless.phixeron.sbe.frame.ClientConnectedDecoder;
 import org.limitless.phixeron.sbe.frame.ClientDisconnectedDecoder;
-import org.limitless.phixeron.sbe.frame.ClusterHeartbeatDecoder;
 import org.limitless.phixeron.sbe.frame.ClusterHeartbeatEncoder;
+import org.limitless.phixeron.sbe.frame.ClusterStartedDecoder;
+import org.limitless.phixeron.sbe.frame.ClusterStoppedDecoder;
+import org.limitless.phixeron.sbe.frame.GatewayActivationRequestedDecoder;
 import org.limitless.phixeron.sbe.frame.GatewayActiveEncoder;
 import org.limitless.phixeron.sbe.frame.GatewayRegisteredDecoder;
 import org.limitless.phixeron.sbe.frame.GatewayStartedDecoder;
-import org.limitless.phixeron.sbe.frame.LeadershipChangedDecoder;
 import org.limitless.phixeron.sbe.frame.LeadershipChangedEncoder;
 import org.limitless.phixeron.sbe.frame.MessageHeaderDecoder;
 import org.limitless.phixeron.sbe.frame.MessageHeaderEncoder;
+import org.limitless.phixeron.sbe.frame.PayloadIdRegisteredDecoder;
 import org.limitless.phixeron.sbe.frame.SequencedEncoder;
 import org.limitless.phixeron.sbe.frame.SequencedHeaderEncoder;
+import org.limitless.phixeron.sbe.frame.SequencedSystemEncoder;
+import org.limitless.phixeron.sbe.frame.SequencedSystemHeaderEncoder;
 import org.limitless.phixeron.sbe.frame.UnsequencedDecoder;
 import org.limitless.phixeron.sbe.frame.UnsequencedHeaderDecoder;
+import org.limitless.phixeron.sbe.frame.UnsequencedSystemDecoder;
+import org.limitless.phixeron.sbe.frame.UnsequencedSystemHeaderDecoder;
 import org.limitless.phixeron.util.Logger;
 
 /**
@@ -34,13 +40,16 @@ import org.limitless.phixeron.util.Logger;
  * Aeron mock — {@link SequencerService} is the thin adapter that owns the tap publication, the
  * archive, and timer scheduling, and it is the only part that needs a live cluster to exercise.
  *
- * <p><b>The copy-through.</b> Every ingress message is an {@code Unsequenced} frame whose body is one
- * opaque length-prefixed payload, named by {@code header.payloadId} and owned by whoever that number
- * names. Sequencing is a copy of the 18-byte {@code unsequencedHeader} with the 16-byte stamp appended
- * ({@code globalSeqNo} and the consensus {@code timestamp}), and the payload copied through
- * byte-identical, never re-encoded (<b>E-1</b>). {@link #sequenceMessage} therefore needs to know
- * nothing about any application's message types — it opens {@code payloadId} 1, the core payloads that
- * are seqeron's own, and nothing else (<b>S-2</b>).
+ * <p><b>The copy-through.</b> Every ingress message is one of two shapes: an {@code Unsequenced} frame
+ * whose body is one opaque length-prefixed payload named by {@code header.payloadId} and owned by
+ * whoever that number names, or an {@code UnsequencedSystem} frame whose body is one of seqeron's own
+ * events, named by {@code header.systemEventType} (§7). Sequencing is the same for both — a copy of the
+ * 18-byte header with the 16-byte stamp appended ({@code globalSeqNo} and the consensus
+ * {@code timestamp}), and the body copied through byte-identical, never re-encoded (<b>E-1</b>) — which
+ * is what the two composites being byte-for-byte identical apart from that one field's name buys.
+ * {@link #sequenceMessage} therefore needs to know nothing about any application's message types: it
+ * decodes <b>no {@code payloadId} at all</b>, and opens only the system bodies it derives state from
+ * (<b>S-2</b>).
  *
  * <p><b>Determinism.</b> Every method is a pure function of its arguments and the current state —
  * no clock reads, no randomness, no I/O — so replaying the same call sequence on any node produces
@@ -52,9 +61,9 @@ import org.limitless.phixeron.util.Logger;
  */
 public final class Sequencer {
     /**
-     * header.sourceId/connectionId for events synthesized by the sequencer itself (ClusterHeartbeat /
-     * LeadershipChanged): a clock heartbeat or an election has no gateway-process or TCP-level
-     * connection id to carry, unlike the ingress messages it forwards.
+     * header.sourceId/connectionId for events synthesized by the sequencer itself (ClusterHeartbeat,
+     * LeadershipChanged, GatewayActive): a clock heartbeat or an election has no gateway-process or
+     * TCP-level connection id to carry, unlike the ingress messages it forwards.
      *
      * <p>ClientConnected/ClientDisconnected are deliberately not in that list. They denote a FIX
      * client's TCP session opening and closing — external events the gateway observes and publishes
@@ -127,14 +136,17 @@ public final class Sequencer {
     static final long GATEWAY_ACTIVATION_TIMEOUT_MS = 5 * CLUSTER_HEARTBEAT_INTERVAL_MS;
 
     /**
-     * The one {@code payloadId} the sequencer decodes: seqeron's own core payloads
-     * (doc/seqeron-protocol-spec.md §6.1). Every other value is copied through opaque.
+     * Core's retired {@code payloadId} (doc/seqeron-protocol-spec.md §15 step 10). Core is not an
+     * application and no longer rides a payload, so 1 is refused on ingress rather than reserved and
+     * decoded — a producer still on the old build fails loudly instead of having core bytes copied
+     * through as an application payload.
      */
-    public static final int CORE_PAYLOAD_ID = CoreFrame.PAYLOAD_ID;
+    private static final int RETIRED_CORE_ID = 1;
 
     /**
-     * Smallest {@code Unsequenced} frame: the framing header, the 18-byte {@code unsequencedHeader} and
-     * the payload's own 2-byte length prefix. A frame this size carries an empty payload, which is legal.
+     * Smallest ingress frame of either family: the framing header, the 18-byte header composite and the
+     * body's own 2-byte length prefix. A frame this size carries an empty body, which is legal. One
+     * constant for both templates, because both header composites are 18 bytes (<b>F-3</b>).
      */
     static final int MIN_FRAME_LENGTH = MessageHeaderDecoder.ENCODED_LENGTH + UnsequencedHeaderDecoder.ENCODED_LENGTH +
                                         UnsequencedDecoder.payloadHeaderLength();
@@ -155,33 +167,36 @@ public final class Sequencer {
      */
     private static final int NULL_PAYLOAD_LENGTH = 65535;
 
-    /** Offset of the payload's length prefix in every frame this class encodes. */
-    private static final int TAP_PAYLOAD_PREFIX_OFFSET =
-        MessageHeaderEncoder.ENCODED_LENGTH + SequencedHeaderEncoder.ENCODED_LENGTH;
-
-    /** Offset of the payload itself, one length prefix past that. */
-    private static final int TAP_PAYLOAD_OFFSET = TAP_PAYLOAD_PREFIX_OFFSET + UnsequencedDecoder.payloadHeaderLength();
+    /** {@link #ingressBlockLength}'s answer for a {@code systemEventType} that may not be submitted. */
+    private static final int NOT_INGRESS_LEGAL = -1;
 
     /**
-     * Largest value the framing header's uint16 {@code blockLength} can carry — 65535 is SBE's null
-     * value for the type. {@code MessageHeaderEncoder.blockLength(int)} casts to {@code short} without
-     * complaint, so anything above this has to be refused before it is written.
+     * Offset of the body's length prefix in every forwarded frame this class encodes — the same in both
+     * families, because both sequenced header composites are 34 bytes (<b>F-3</b>).
      */
-    private static final int MAX_BLOCK_LENGTH = 65534;
+    private static final int TAP_BODY_PREFIX_OFFSET =
+        MessageHeaderEncoder.ENCODED_LENGTH + SequencedHeaderEncoder.ENCODED_LENGTH;
 
-    // Frame decode (schema 210, sbe-frame.xml).
+    /** Offset of the body itself, one length prefix past that. */
+    private static final int TAP_BODY_OFFSET = TAP_BODY_PREFIX_OFFSET + UnsequencedDecoder.payloadHeaderLength();
+
+    // Frame decode (schema 210, sbe-frame.xml). The two ingress header composites are byte-identical
+    // apart from the name of the uint16 at offset 16, so the first covers every frame-layer field of
+    // both families and the second is wrapped only to read that one field under its own name.
     private final MessageHeaderDecoder msgHeaderDecoder = new MessageHeaderDecoder();
     private final UnsequencedHeaderDecoder frameHeaderDecoder = new UnsequencedHeaderDecoder();
+    private final UnsequencedSystemHeaderDecoder systemHeaderDecoder = new UnsequencedSystemHeaderDecoder();
 
-    // Core payload decode (payloadId 1). Body fields are read from exactly two of them — GatewayRegistered
-    // and GatewayStarted, whose scalars feed the derived topology below; the rest are matched on
-    // templateId alone, off identity the frame header already carries.
-    private final MessageHeaderDecoder payloadHeaderDecoder = new MessageHeaderDecoder();
+    // System body decode. Fields are read from exactly three of them — GatewayRegistered, GatewayStarted
+    // and GatewayActivationRequested, whose scalars feed the derived topology below; the rest are matched
+    // on systemEventType alone, off identity the frame header already carries.
     private final GatewayRegisteredDecoder gatewayRegisteredDecoder = new GatewayRegisteredDecoder();
     private final GatewayStartedDecoder gatewayStartedDecoder = new GatewayStartedDecoder();
+    private final GatewayActivationRequestedDecoder activationRequestedDecoder =
+        new GatewayActivationRequestedDecoder();
 
-    // Frame encode (schema 210). headerEncoder writes the outer framing header and, on a synthesized
-    // frame, the payload's own — at two different offsets, the outer one already written by then.
+    // Frame encode (schema 210). headerEncoder writes the outer framing header; tapHeaderEncoder writes
+    // the three stamp fields, whose offsets are common to both sequenced header composites.
     private final MessageHeaderEncoder headerEncoder = new MessageHeaderEncoder();
     private final SequencedHeaderEncoder tapHeaderEncoder = new SequencedHeaderEncoder();
     private final LeadershipChangedEncoder leadershipChangedEncoder = new LeadershipChangedEncoder();
@@ -202,17 +217,17 @@ public final class Sequencer {
     private final java.util.List<GatewayRow> gatewayRows = new java.util.ArrayList<>();
 
     /**
-     * The {@code gatewayId}s the bootstrap still has to activate — one per logical gateway, the rank-0
-     * row of each {@code gatewaySourceId}, filled from {@link #gatewayRows} behind the first complete
-     * roster and drained one frame per call by {@link #pendingGatewayBootstrapActivation}.
+     * The {@code gatewayId}s still to be designated: the rank-0 row of each {@code gatewaySourceId} behind
+     * the first complete roster, and whatever a {@code GatewayActivationRequested} has since named.
+     * Filled by {@link #applySystem} and drained one frame per call by {@link #pendingGatewayActivation}.
      *
-     * <p>One per <em>logical</em> gateway, because the deployment has more than one: the client-facing
-     * pair and the exchange-facing pair elect independently and neither may activate the other's
-     * instances. A single designated primary here (which is what this was) let whichever rank-0 row
-     * loaded last silently take the other pair's bootstrap. Empty when no row designated a primary —
+     * <p>One bootstrap entry per <em>logical</em> gateway, because the deployment has more than one: the
+     * client-facing pair and the exchange-facing pair elect independently and neither may activate the
+     * other's instances. A single designated primary here (which is what this was) let whichever rank-0
+     * row loaded last silently take the other pair's bootstrap. Empty when no row designated a primary —
      * nothing is activated, which is the fail-closed answer.
      */
-    private final java.util.ArrayDeque<Integer> bootstrapActivations = new java.util.ArrayDeque<>();
+    private final java.util.ArrayDeque<Integer> activationQueue = new java.util.ArrayDeque<>();
 
     // Replicated state (advanced identically on every node; not snapshotted)
 
@@ -329,8 +344,9 @@ public final class Sequencer {
     }
 
     /**
-     * Re-stamps one {@code Unsequenced} ingress frame as a {@code Sequenced} one, copying its payload
-     * through verbatim — see the class Javadoc.
+     * Re-stamps one ingress frame as its sequenced counterpart — {@code Unsequenced} as {@code Sequenced},
+     * {@code UnsequencedSystem} as {@code SequencedSystem} — copying its body through verbatim; see the
+     * class Javadoc.
      *
      * @param buffer    holding the ingress message
      * @param offset    of the ingress message's outer {@code MessageHeader}
@@ -354,166 +370,216 @@ public final class Sequencer {
     }
 
     /**
-     * Sequences an {@code Unsequenced} frame: the envelope's copy-18/append-16, plus the core state the
-     * sequencer derives when the payload is its own.
+     * Sequences one ingress frame of either family: the envelope's copy-18/append-16, plus the state the
+     * sequencer derives when the frame is a system one.
      *
-     * <p>The payload is copied verbatim, its length prefix included, and is never re-encoded (<b>E-1</b>).
-     * Decoding it at all happens only for {@code payloadId} 1, and only after the bounds each read needs
-     * have been established — reading a {@code templateId} out of an unverified payload is reading a
-     * foreign schema's numbering as core's (<b>P-4</b>).
+     * <p>The body is copied verbatim, its length prefix included, and is never re-encoded (<b>E-1</b>).
+     * The conditions are §9.2's, in §9.2's order — each establishes what the next may read.
      */
     private int sequenceFrame(final DirectBuffer buffer, final int offset, final int length, final long sessionId,
                               final long timestamp) {
+        // Condition 1, both halves. The ceiling is the backstop of T-3: a conforming producer's encode
+        // method refuses an oversized body on its own stack, so what reaches here is a producer that is not one.
         if (length < MIN_FRAME_LENGTH) {
             return reject("length " + length + " is below the " + MIN_FRAME_LENGTH + "-byte minimum framing");
         }
-        // The backstop half of the same condition (T-3): a conforming producer's encode method refuses an
-        // oversized payload on its own stack, so what reaches here is a producer that is not one.
         if (length > MAX_FRAME_LENGTH) {
             return reject("length " + length + " is above the " + MAX_FRAME_LENGTH + "-byte maximum framing");
         }
+        // Condition 2's second half; the schemaId is checked in sequenceMessage.
         if (msgHeaderDecoder.version() != MessageHeaderDecoder.SCHEMA_VERSION) {
             return reject("version " + msgHeaderDecoder.version() + " is not " +
                           MessageHeaderDecoder.SCHEMA_VERSION);
         }
-        if (msgHeaderDecoder.templateId() != UnsequencedDecoder.TEMPLATE_ID) {
-            return reject("templateId " + msgHeaderDecoder.templateId() + " is not Unsequenced (" +
-                          UnsequencedDecoder.TEMPLATE_ID + ")");
+        // Condition 3. Two ingress templates now, and admitting exactly those is also what refuses the
+        // three synthesis-only ones structurally, without opening a body.
+        final int templateId = msgHeaderDecoder.templateId();
+        final boolean system = templateId == UnsequencedSystemDecoder.TEMPLATE_ID;
+        if (!system && templateId != UnsequencedDecoder.TEMPLATE_ID) {
+            return reject("templateId " + templateId + " is neither Unsequenced (" + UnsequencedDecoder.TEMPLATE_ID +
+                          ") nor UnsequencedSystem (" + UnsequencedSystemDecoder.TEMPLATE_ID + ")");
         }
-        // An equality, not a floor, and against the composite's own constant: a short blockLength puts the
-        // var-data prefix inside the header composite, a long one silently drops bytes off the end.
+        // Condition 4. An equality, not a floor, and against the composite's own constant: a short
+        // blockLength puts the var-data prefix inside the header composite, a long one silently drops
+        // bytes off the end. One equality for both families — both composites are 18 bytes.
         if (msgHeaderDecoder.blockLength() != UnsequencedHeaderDecoder.ENCODED_LENGTH) {
             return reject("blockLength " + msgHeaderDecoder.blockLength() + " is not " +
                           UnsequencedHeaderDecoder.ENCODED_LENGTH);
         }
 
-        final int bodyOffset = offset + MessageHeaderDecoder.ENCODED_LENGTH;
-        final int prefixOffset = bodyOffset + UnsequencedHeaderDecoder.ENCODED_LENGTH;
-        final int payloadLength = buffer.getShort(prefixOffset, java.nio.ByteOrder.LITTLE_ENDIAN) & 0xFFFF;
-        if (payloadLength == NULL_PAYLOAD_LENGTH || MIN_FRAME_LENGTH + payloadLength != length) {
-            return reject("payload length " + payloadLength + " does not fit a " + length + "-byte frame");
+        // Condition 5.
+        final int headerOffset = offset + MessageHeaderDecoder.ENCODED_LENGTH;
+        final int prefixOffset = headerOffset + UnsequencedHeaderDecoder.ENCODED_LENGTH;
+        final int bodyLength = buffer.getShort(prefixOffset, java.nio.ByteOrder.LITTLE_ENDIAN) & 0xFFFF;
+        if (bodyLength == NULL_PAYLOAD_LENGTH || MIN_FRAME_LENGTH + bodyLength != length) {
+            return reject("body length " + bodyLength + " does not fit a " + length + "-byte frame");
         }
 
-        frameHeaderDecoder.wrap(buffer, bodyOffset);
-        // An int32 compare, so nothing here can throw: -1 marks the frames the cluster synthesizes (F-4),
-        // and admitting one on ingress would let a producer forge that class.
+        // Condition 6. An int32 compare, so nothing here can throw: -1 marks the frames the cluster
+        // synthesizes (F-4), and admitting one on ingress would let a producer forge that class.
+        frameHeaderDecoder.wrap(buffer, headerOffset);
         final int sourceId = frameHeaderDecoder.sourceId();
         if (sourceId == NO_SOURCE_ID) {
             return reject("sourceId " + NO_SOURCE_ID + " is reserved for the cluster's own frames");
         }
-        final int payloadId = frameHeaderDecoder.payloadId();
-        if (payloadId == 0) {
-            return reject("payloadId 0 is not a protocol");
-        }
         final int connectionId = frameHeaderDecoder.connectionId();
 
-        if (payloadId == CORE_PAYLOAD_ID &&
-            !applyCore(buffer, prefixOffset + UnsequencedDecoder.payloadHeaderLength(), payloadLength, sourceId,
-                       connectionId, sessionId)) {
-            return NO_FRAME;
+        if (system) {
+            systemHeaderDecoder.wrap(buffer, headerOffset);
+            final int systemEventType = systemHeaderDecoder.systemEventType();
+            // Condition 8.
+            final int blockLength = ingressBlockLength(systemEventType);
+            if (blockLength == NOT_INGRESS_LEGAL) {
+                return reject("systemEventType " + systemEventType + " is not an allocated, ingress-legal event");
+            }
+            // Condition 9. The floor is the decoder's compiled constant and never the wire's declared
+            // length: an SBE decoder reads a fixed-width field at its fixed offset whatever acting block
+            // length it was wrapped with, so a producer-declared length bounds nothing.
+            if (bodyLength < blockLength) {
+                return reject("systemEventType " + systemEventType + " body of " + bodyLength +
+                              " bytes is short of " + blockLength);
+            }
+            // Condition 10.
+            if (!applySystem(buffer, prefixOffset + UnsequencedDecoder.payloadHeaderLength(), systemEventType,
+                             sourceId, connectionId, sessionId)) {
+                return NO_FRAME;
+            }
+        } else {
+            // Condition 7. Nothing else about an application payload is read, ever (S-2).
+            final int payloadId = frameHeaderDecoder.payloadId();
+            if (payloadId == 0) {
+                return reject("payloadId 0 is not a protocol");
+            }
+            if (payloadId == RETIRED_CORE_ID) {
+                return reject("payloadId " + RETIRED_CORE_ID +
+                              " is core's retired id and carries no application protocol");
+            }
         }
 
         final long globalSeq = ++globalSeqNo;
         headerEncoder.wrap(encodeBuffer, 0)
-            .blockLength(SequencedEncoder.BLOCK_LENGTH)
-            .templateId(SequencedEncoder.TEMPLATE_ID)
+            .blockLength(system ? SequencedSystemEncoder.BLOCK_LENGTH : SequencedEncoder.BLOCK_LENGTH)
+            .templateId(system ? SequencedSystemEncoder.TEMPLATE_ID : SequencedEncoder.TEMPLATE_ID)
             .schemaId(MessageHeaderEncoder.SCHEMA_ID)
             .version(MessageHeaderEncoder.SCHEMA_VERSION);
+        // Copy-18, append-16 (§9.5). The 18 bytes go across verbatim, which is what keeps this one path
+        // for both families — the field at offset 16 is a payloadId or a systemEventType and neither is
+        // read here. The three fields written back are at offsets common to both sequenced composites.
+        encodeBuffer.putBytes(MessageHeaderEncoder.ENCODED_LENGTH, buffer, headerOffset,
+                              UnsequencedHeaderDecoder.ENCODED_LENGTH);
         tapHeaderEncoder.wrap(encodeBuffer, MessageHeaderEncoder.ENCODED_LENGTH)
-            .sourceId(sourceId)
-            .connectionId(connectionId)
             .sessionId(sessionId)
-            .payloadId(payloadId)
             .globalSeqNo(globalSeq)
             .timestamp(timestamp);
-        encodeBuffer.putBytes(TAP_PAYLOAD_PREFIX_OFFSET, buffer, prefixOffset,
-                              UnsequencedDecoder.payloadHeaderLength() + payloadLength);
-        return TAP_PAYLOAD_OFFSET + payloadLength;
+        encodeBuffer.putBytes(TAP_BODY_PREFIX_OFFSET, buffer, prefixOffset,
+                              UnsequencedDecoder.payloadHeaderLength() + bodyLength);
+        return TAP_BODY_OFFSET + bodyLength;
     }
 
     /**
-     * The core state the sequencer derives from a {@code payloadId} 1 payload, and the only place it
-     * decodes one. Returns {@link #NO_FRAME} to admit the frame, or a rejection.
+     * The compiled {@code BLOCK_LENGTH} of the event {@code systemEventType} names, or
+     * {@link #NOT_INGRESS_LEGAL} if that value is unallocated or has no ingress form — §9.2 conditions 8
+     * and 9 in one lookup, since the second's floor is only defined once the first has passed.
      *
-     * <p>Each condition establishes what the next may read: fitting the frame exactly says nothing about
-     * being long enough for a body field, and the floor a read needs is the decoder's compiled block
-     * length, never the wire's — an SBE decoder reads a fixed-width field at its fixed offset whatever
-     * acting block length it was wrapped with.
+     * <p>The three synthesis-only events are absent here rather than listed and refused: they have no
+     * ingress form to be short of, and the templates that carry them are already refused by condition 3.
      */
-    private boolean applyCore(final DirectBuffer buffer, final int payloadOffset, final int payloadLength,
-                              final int sourceId, final int connectionId, final long sessionId) {
-        if (payloadLength < MessageHeaderDecoder.ENCODED_LENGTH) {
-            return rejectPayload("core payload of " + payloadLength + " bytes is shorter than its framing header");
-        }
-        payloadHeaderDecoder.wrap(buffer, payloadOffset);
-        if (payloadHeaderDecoder.schemaId() != MessageHeaderDecoder.SCHEMA_ID) {
-            return rejectPayload("core payload declares schemaId " + payloadHeaderDecoder.schemaId() + ", not " +
-                          MessageHeaderDecoder.SCHEMA_ID);
-        }
-        final int templateId = payloadHeaderDecoder.templateId();
-        if (templateId == ClusterHeartbeatDecoder.TEMPLATE_ID || templateId == LeadershipChangedDecoder.TEMPLATE_ID) {
-            return rejectPayload("templateId " + templateId + " is synthesized by the cluster and illegal on ingress");
-        }
+    private static int ingressBlockLength(final int systemEventType) {
+        return switch (systemEventType) {
+            case SystemFrame.CLIENT_CONNECTED -> ClientConnectedDecoder.BLOCK_LENGTH;
+            case SystemFrame.CLIENT_DISCONNECTED -> ClientDisconnectedDecoder.BLOCK_LENGTH;
+            case SystemFrame.CLUSTER_STARTED -> ClusterStartedDecoder.BLOCK_LENGTH;
+            case SystemFrame.CLUSTER_STOPPED -> ClusterStoppedDecoder.BLOCK_LENGTH;
+            case SystemFrame.GATEWAY_REGISTERED -> GatewayRegisteredDecoder.BLOCK_LENGTH;
+            case SystemFrame.GATEWAY_STARTED -> GatewayStartedDecoder.BLOCK_LENGTH;
+            case SystemFrame.PAYLOAD_ID_REGISTERED -> PayloadIdRegisteredDecoder.BLOCK_LENGTH;
+            case SystemFrame.GATEWAY_ACTIVATION_REQUESTED -> GatewayActivationRequestedDecoder.BLOCK_LENGTH;
+            default -> NOT_INGRESS_LEGAL;
+        };
+    }
 
-        // S-6 case 2. A core frame claiming a sourceId the roster names must arrive on a session a
+    /**
+     * The state the sequencer derives from a system body, and the only place it decodes one. Returns
+     * whether the frame is admitted.
+     *
+     * <p>The body carries no {@code MessageHeader} of its own — {@code header.systemEventType} is what
+     * names it — so every decode here supplies {@code BLOCK_LENGTH} and {@code SCHEMA_VERSION} from the
+     * decoder's own compiled constants (<b>V-3</b>). Condition 9 has already established that the body
+     * is long enough for the block each read below sits in.
+     */
+    private boolean applySystem(final DirectBuffer buffer, final int bodyOffset, final int systemEventType,
+                                final int sourceId, final int connectionId, final long sessionId) {
+        // S-6 case 2. A system frame claiming a sourceId the roster names must arrive on a session a
         // GatewayStarted already bound to that sourceId, so one process cannot speak for another's logical
         // gateway. GatewayStarted is exempt because case 1 below is what creates the binding, and every
         // unrostered sourceId is unchecked (case 3) — clusterctl's markers and the node-local publishers.
-        if (templateId != GatewayStartedDecoder.TEMPLATE_ID && rosterClaims(sourceId) &&
+        if (systemEventType != SystemFrame.GATEWAY_STARTED && rosterClaims(sourceId) &&
             !boundToGateway(sessionId, sourceId)) {
-            return rejectPayload("templateId " + templateId + " claims rostered sourceId " + sourceId +
+            return rejectSystem("systemEventType " + systemEventType + " claims rostered sourceId " + sourceId +
                                  " on a session no GatewayStarted bound");
         }
 
-        final int bodyOffset = payloadOffset + MessageHeaderDecoder.ENCODED_LENGTH;
-        final int bodyLength = payloadLength - MessageHeaderDecoder.ENCODED_LENGTH;
-        final int version = payloadHeaderDecoder.version();
-
-        if (templateId == GatewayRegisteredDecoder.TEMPLATE_ID) {
-            if (bodyLength < GatewayRegisteredDecoder.BLOCK_LENGTH) {
-                return rejectPayload("GatewayRegistered body of " + bodyLength + " bytes is short of " +
-                              GatewayRegisteredDecoder.BLOCK_LENGTH);
-            }
-            gatewayRegisteredDecoder.wrap(buffer, bodyOffset, GatewayRegisteredDecoder.BLOCK_LENGTH, version);
-            addGatewayRow(gatewayRegisteredDecoder.gatewayId(), gatewayRegisteredDecoder.gatewaySourceId(),
-                          gatewayRegisteredDecoder.preferenceRank());
-            // remaining == 0 is the roster's last row, and the whole completeness edge: the publisher
-            // counts the rows it read, so the cluster never has to infer "have I seen everyone?".
-            if (gatewayRegisteredDecoder.remaining() == 0 && !bootstrapActivationEmitted) {
-                bootstrapActivationEmitted = true;
-                for (final GatewayRow row : gatewayRows) {
-                    if (row.preferenceRank() == 0) {
-                        bootstrapActivations.add(row.gatewayId());
+        final int version = MessageHeaderDecoder.SCHEMA_VERSION;
+        switch (systemEventType) {
+            case SystemFrame.GATEWAY_REGISTERED -> {
+                gatewayRegisteredDecoder.wrap(buffer, bodyOffset, GatewayRegisteredDecoder.BLOCK_LENGTH, version);
+                addGatewayRow(gatewayRegisteredDecoder.gatewayId(), gatewayRegisteredDecoder.gatewaySourceId(),
+                              gatewayRegisteredDecoder.preferenceRank());
+                // remaining == 0 is the roster's last row, and the whole completeness edge: the publisher
+                // counts the rows it read, so the cluster never has to infer "have I seen everyone?".
+                if (gatewayRegisteredDecoder.remaining() == 0 && !bootstrapActivationEmitted) {
+                    bootstrapActivationEmitted = true;
+                    for (final GatewayRow row : gatewayRows) {
+                        if (row.preferenceRank() == 0) {
+                            activationQueue.add(row.gatewayId());
+                        }
                     }
                 }
             }
-        } else if (templateId == GatewayStartedDecoder.TEMPLATE_ID) {
-            if (bodyLength < GatewayStartedDecoder.BLOCK_LENGTH) {
-                return rejectPayload("GatewayStarted body of " + bodyLength + " bytes is short of " +
-                              GatewayStartedDecoder.BLOCK_LENGTH);
+            case SystemFrame.GATEWAY_STARTED -> {
+                gatewayStartedDecoder.wrap(buffer, bodyOffset, GatewayStartedDecoder.BLOCK_LENGTH, version);
+                // S-6 case 1, both halves. Total, so a GatewayStarted ahead of load-topology is rejected
+                // against an empty roster — the start-up order as a wire rule.
+                final int gatewayId = gatewayStartedDecoder.gatewayId();
+                final GatewayRow row = rowFor(gatewayId);
+                if (row == null) {
+                    return rejectSystem("GatewayStarted names gatewayId " + gatewayId + ", which no roster row does");
+                }
+                if (row.gatewaySourceId() != sourceId) {
+                    return rejectSystem("GatewayStarted for gatewayId " + gatewayId + " carries sourceId " +
+                                         sourceId + ", not its row's " + row.gatewaySourceId());
+                }
+                activeGatewaySession.put(sessionId, gatewayId);
+                releaseStaleConnections(sourceId);
             }
-            gatewayStartedDecoder.wrap(buffer, bodyOffset, GatewayStartedDecoder.BLOCK_LENGTH, version);
-            // S-6 case 1, both halves. Total, so a GatewayStarted ahead of load-topology is rejected against
-            // an empty roster — the start-up order as a wire rule.
-            final int gatewayId = gatewayStartedDecoder.gatewayId();
-            final GatewayRow row = rowFor(gatewayId);
-            if (row == null) {
-                return rejectPayload("GatewayStarted names gatewayId " + gatewayId + ", which no roster row does");
+            case SystemFrame.GATEWAY_ACTIVATION_REQUESTED -> {
+                activationRequestedDecoder.wrap(buffer, bodyOffset, GatewayActivationRequestedDecoder.BLOCK_LENGTH,
+                                                version);
+                // The operator's act is the fact, and the designation is still the cluster's: the frame is
+                // forwarded and the GatewayActive answering it is synthesized behind it, through the path
+                // bootstrap and both promotions take. Which is what gives the manual path the roster
+                // validation the other three get from iterating the roster in the first place.
+                final int gatewayId = activationRequestedDecoder.gatewayId();
+                if (rowFor(gatewayId) == null) {
+                    return rejectSystem("GatewayActivationRequested names gatewayId " + gatewayId +
+                                         ", which no roster row does");
+                }
+                activationQueue.add(gatewayId);
             }
-            if (row.gatewaySourceId() != sourceId) {
-                return rejectPayload("GatewayStarted for gatewayId " + gatewayId + " carries sourceId " + sourceId +
-                                     ", not its row's " + row.gatewaySourceId());
+            case SystemFrame.CLIENT_CONNECTED -> {
+                if (openConnections.computeIfAbsent(sourceId, source -> new java.util.HashSet<>())
+                        .add(connectionId)) {
+                    connectedClientCount++;
+                }
             }
-            activeGatewaySession.put(sessionId, gatewayId);
-            releaseStaleConnections(sourceId);
-        } else if (templateId == ClientConnectedDecoder.TEMPLATE_ID) {
-            if (openConnections.computeIfAbsent(sourceId, source -> new java.util.HashSet<>()).add(connectionId)) {
-                connectedClientCount++;
+            case SystemFrame.CLIENT_DISCONNECTED -> {
+                final java.util.Set<Integer> open = openConnections.get(sourceId);
+                if (open != null && open.remove(connectionId)) {
+                    connectedClientCount--;
+                }
             }
-        } else if (templateId == ClientDisconnectedDecoder.TEMPLATE_ID) {
-            final java.util.Set<Integer> open = openConnections.get(sourceId);
-            if (open != null && open.remove(connectionId)) {
-                connectedClientCount--;
+            default -> {
+                // Allocated, ingress-legal and derived from by nothing: forwarded and not opened (S-2).
             }
         }
         return true;
@@ -523,7 +589,7 @@ public final class Sequencer {
      * Skips a malformed ingress message
      * @param reason rejection description
      */
-    private boolean rejectPayload(final String reason) {
+    private boolean rejectSystem(final String reason) {
         reject(reason);
         return false;
     }
@@ -545,9 +611,9 @@ public final class Sequencer {
      */
     public int clusterHeartbeat(final long timestamp) {
         final long globalSeq = ++globalSeqNo;
-        beginSynthesized(globalSeq, timestamp);
-        clusterHeartbeatEncoder.wrapAndApplyHeader(encodeBuffer, TAP_PAYLOAD_OFFSET, headerEncoder);
-        return endSynthesized(MessageHeaderEncoder.ENCODED_LENGTH + clusterHeartbeatEncoder.encodedLength());
+        clusterHeartbeatEncoder.wrapAndApplyHeader(encodeBuffer, 0, headerEncoder);
+        stampSynthesized(clusterHeartbeatEncoder.header(), SystemFrame.CLUSTER_HEARTBEAT, globalSeq, timestamp);
+        return MessageHeaderEncoder.ENCODED_LENGTH + clusterHeartbeatEncoder.encodedLength();
     }
 
     /**
@@ -564,28 +630,28 @@ public final class Sequencer {
         }
         currentLeaderMemberId = leaderMemberId;
         final long globalSeq = ++globalSeqNo;
-        beginSynthesized(globalSeq, timestamp);
-        leadershipChangedEncoder.wrapAndApplyHeader(encodeBuffer, TAP_PAYLOAD_OFFSET, headerEncoder);
+        leadershipChangedEncoder.wrapAndApplyHeader(encodeBuffer, 0, headerEncoder);
+        stampSynthesized(leadershipChangedEncoder.header(), SystemFrame.LEADERSHIP_CHANGED, globalSeq, timestamp);
         leadershipChangedEncoder.newLeaderMemberId(leaderMemberId);
-        return endSynthesized(MessageHeaderEncoder.ENCODED_LENGTH + leadershipChangedEncoder.encodedLength());
+        return MessageHeaderEncoder.ENCODED_LENGTH + leadershipChangedEncoder.encodedLength();
     }
 
     /**
-     * The bootstrap activations, synthesized once behind the roster's last row: the cluster designates
-     * the primary of each logical gateway by naming its {@code gatewayId} in a {@code GatewayActive}, so
-     * exactly one instance of each pair opens its accept gate at cold start and its standby waits.
+     * The activations owed to the frame just sequenced: the bootstrap run behind the roster's last row —
+     * the cluster designating the primary of each logical gateway by naming its {@code gatewayId} in a
+     * {@code GatewayActive}, so exactly one instance of each pair opens its accept gate at cold start and
+     * its standby waits — and the one a {@code GatewayActivationRequested} asks for.
      *
-     * <p><b>One frame per call.</b> There is one activation per logical gateway and each takes its own
-     * {@code globalSeqNo}, so the adapter calls this in a loop until {@link #NO_FRAME} — emitting what
-     * comes back before asking again, since every call re-encodes into the same {@link #buffer()}. The
-     * loop runs right after the {@link #sequenceMessage} that sequenced the roster's last row, so the
-     * frames take the next {@code globalSeqNo}s in {@link #gatewayRows} order — identically on every node
-     * and on replay.
+     * <p><b>One frame per call.</b> Each activation takes its own {@code globalSeqNo}, so the adapter
+     * calls this in a loop until {@link #NO_FRAME} — emitting what comes back before asking again, since
+     * every call re-encodes into the same {@link #buffer()}. The loop runs right after the
+     * {@link #sequenceMessage} that queued them, so the frames take the next {@code globalSeqNo}s in
+     * {@link #gatewayRows} order — identically on every node and on replay.
      * @param timestamp now
      * @return a {@code GatewayActive} frame length, or {@link #NO_FRAME} when none is left pending
      */
-    public int pendingGatewayBootstrapActivation(final long timestamp) {
-        final Integer gatewayId = bootstrapActivations.poll();
+    public int pendingGatewayActivation(final long timestamp) {
+        final Integer gatewayId = activationQueue.poll();
         // Empty when no roster row designated a primary — nothing to activate (fail closed).
         return gatewayId == null ? NO_FRAME : gatewayActive(gatewayId, timestamp);
     }
@@ -630,7 +696,7 @@ public final class Sequencer {
      *
      * <p>Deterministic off the cluster clock: driven from the 1 Hz {@code ClusterHeartbeat}'s consensus timestamp, so
      * every node evaluates the same deadline against the same time and synthesizes the same frame — like
-     * {@link #pendingGatewayBootstrapActivation}, the caller invokes it right after the {@link #clusterHeartbeat} it
+     * {@link #pendingGatewayActivation}, the caller invokes it right after the {@link #clusterHeartbeat} it
      * belongs to and simply publishes what comes back.
      * @param timestamp now
      * @return a {@code GatewayActive} frame length, {@link #NO_FRAME} if nothing was overdue, or {@link
@@ -750,44 +816,31 @@ public final class Sequencer {
     private int gatewayActive(final int gatewayId, final long timestamp) {
         armActivationDeadline(gatewayId, timestamp);
         final long globalSeq = ++globalSeqNo;
-        beginSynthesized(globalSeq, timestamp);
-        gatewayActiveEncoder.wrapAndApplyHeader(encodeBuffer, TAP_PAYLOAD_OFFSET, headerEncoder);
+        gatewayActiveEncoder.wrapAndApplyHeader(encodeBuffer, 0, headerEncoder);
+        stampSynthesized(gatewayActiveEncoder.header(), SystemFrame.GATEWAY_ACTIVE, globalSeq, timestamp);
         gatewayActiveEncoder.gatewayId(gatewayId);
-        return endSynthesized(MessageHeaderEncoder.ENCODED_LENGTH + gatewayActiveEncoder.encodedLength());
+        return MessageHeaderEncoder.ENCODED_LENGTH + gatewayActiveEncoder.encodedLength();
     }
 
     /**
-     * Opens a frame the cluster synthesized on its own initiative, leaving {@link #encodeBuffer} ready for
-     * the caller to encode its core payload at {@link #TAP_PAYLOAD_OFFSET}.
+     * Stamps the header of a frame the cluster synthesized on its own initiative. Each of the three has a
+     * template of its own and carries its fields inline, so there is no body, no length prefix and no
+     * scratch buffer — the whole frame is one flat encode.
      *
      * <p>These are the frames with no producer, so <b>F-4</b>'s {@code -1} stands in for the identity an
      * ingress frame carries, and <b>E-1</b>'s exception applies: every node encodes its own copy rather
      * than copying one through, which is why the encode must be a pure function of its arguments.
+     * {@code systemEventType} is redundant against the template id and written anyway, so that offset 16
+     * discriminates every frame on the tap.
      */
-    private void beginSynthesized(final long globalSeq, final long timestamp) {
-        headerEncoder.wrap(encodeBuffer, 0)
-            .blockLength(SequencedEncoder.BLOCK_LENGTH)
-            .templateId(SequencedEncoder.TEMPLATE_ID)
-            .schemaId(MessageHeaderEncoder.SCHEMA_ID)
-            .version(MessageHeaderEncoder.SCHEMA_VERSION);
-        tapHeaderEncoder.wrap(encodeBuffer, MessageHeaderEncoder.ENCODED_LENGTH)
-            .sourceId(NO_SOURCE_ID)
+    private static void stampSynthesized(final SequencedSystemHeaderEncoder header, final int systemEventType,
+                                         final long globalSeq, final long timestamp) {
+        header.sourceId(NO_SOURCE_ID)
             .connectionId(NO_SOURCE_ID)
             .sessionId(NO_SOURCE_ID)
-            .payloadId(CORE_PAYLOAD_ID)
+            .systemEventType(systemEventType)
             .globalSeqNo(globalSeq)
             .timestamp(timestamp);
-    }
-
-    /**
-     * Closes a synthesized frame by writing the payload's length prefix, which is only known once the
-     * payload is encoded.
-     * @param payloadLength bytes the caller wrote at {@link #TAP_PAYLOAD_OFFSET}
-     * @return length of the whole frame
-     */
-    private int endSynthesized(final int payloadLength) {
-        encodeBuffer.putShort(TAP_PAYLOAD_PREFIX_OFFSET, (short) payloadLength, java.nio.ByteOrder.LITTLE_ENDIAN);
-        return TAP_PAYLOAD_OFFSET + payloadLength;
     }
 
     /**

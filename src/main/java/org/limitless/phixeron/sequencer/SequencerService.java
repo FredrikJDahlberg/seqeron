@@ -426,10 +426,11 @@ public final class SequencerService implements ClusteredService {
         }
         // The roster's last row opens the trading day: the cluster designates the primary of each
         // logical gateway by synthesizing a bootstrap GatewayActive right behind it, one per pair on
-        // consecutive globalSeqNos. Drained rather than taken once — and each frame is emitted before the
-        // next is asked for, because they all encode into the sequencer's one buffer.
+        // consecutive globalSeqNos. A GatewayActivationRequested an operator submits is answered the same
+        // way, one frame behind the request. Drained rather than taken once — and each frame is emitted
+        // before the next is asked for, because they all encode into the sequencer's one buffer.
         int activation;
-        while ((activation = sequencer.pendingGatewayBootstrapActivation(timestamp)) != Sequencer.NO_FRAME) {
+        while ((activation = sequencer.pendingGatewayActivation(timestamp)) != Sequencer.NO_FRAME) {
             bootstrapActivatedCounter.set(1);
             emit(activation);
         }

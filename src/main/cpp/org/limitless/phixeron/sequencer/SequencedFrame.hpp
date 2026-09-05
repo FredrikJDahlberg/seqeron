@@ -7,9 +7,22 @@
 #include "concurrent/logbuffer/LogBufferDescriptor.h"
 
 // Generated SBE C++ codecs from sbe-frame.xml (via GenerateFrameSbeCodecs)
+#include "org_limitless_phixeron_sbe_frame/ClientConnected.h"
+#include "org_limitless_phixeron_sbe_frame/ClientDisconnected.h"
+#include "org_limitless_phixeron_sbe_frame/ClusterHeartbeat.h"
+#include "org_limitless_phixeron_sbe_frame/ClusterStarted.h"
+#include "org_limitless_phixeron_sbe_frame/ClusterStopped.h"
+#include "org_limitless_phixeron_sbe_frame/GatewayActivationRequested.h"
+#include "org_limitless_phixeron_sbe_frame/GatewayActive.h"
+#include "org_limitless_phixeron_sbe_frame/GatewayRegistered.h"
+#include "org_limitless_phixeron_sbe_frame/GatewayStarted.h"
+#include "org_limitless_phixeron_sbe_frame/LeadershipChanged.h"
 #include "org_limitless_phixeron_sbe_frame/MessageHeader.h"
+#include "org_limitless_phixeron_sbe_frame/PayloadIdRegistered.h"
 #include "org_limitless_phixeron_sbe_frame/Sequenced.h"
 #include "org_limitless_phixeron_sbe_frame/SequencedHeader.h"
+#include "org_limitless_phixeron_sbe_frame/SequencedSystem.h"
+#include "org_limitless_phixeron_sbe_frame/SequencedSystemHeader.h"
 
 // The sequenced stream's wire contract: what a frame on it is, how to decode one, and where it
 // sits. Everything here is shared by both stream clients — ClusterStreamClient (archive replay,
@@ -29,26 +42,33 @@ namespace org::limitless::phixeron::sequencer {
 // open-ended archive replay instead (see start()/poll()).
 inline constexpr std::int32_t FEEDER_STREAM_ID = 205;
 
-// ClientConnected/ClientDisconnected aren't FIX messages, so sbe-frame.xml gives
-// them small, non-ASCII-derived template ids, clear of the FIX-MsgType-derived
-// range the session family uses. They mark a FIX
-// client's TCP connection to the gateway opening and closing, and the gateway that owns
-// that socket publishes them; see LifecycleEvent below.
-inline constexpr std::uint16_t CLIENT_CONNECTED_TEMPLATE_ID = 1;
-inline constexpr std::uint16_t CLIENT_DISCONNECTED_TEMPLATE_ID = 2;
-
-// The one payloadId the cluster tier owns and decodes: seqeron's own core payloads
-// (doc/seqeron-protocol-spec.md §6.1). Frames carrying anything else are followed and forwarded
-// without being opened.
-inline constexpr std::uint16_t CORE_PAYLOAD_ID = 1;
+// ── The systemEventType table (doc/seqeron-protocol-spec.md §7) ────────────────
+//
+// The eight submitted events are their own body codec's template id — the numbers they have always
+// held, so a recording made by an older build can never read as one of these. The three the
+// sequencer synthesizes have no body codec: a top-level template names each of them, and these are
+// the values they nonetheless stamp at offset 16 so that field discriminates every frame on the tap.
+// The Java twin is SystemFrame; keep the two in step.
+inline constexpr std::uint16_t CLIENT_CONNECTED = sbe::frame::ClientConnected::sbeTemplateId();
+inline constexpr std::uint16_t CLIENT_DISCONNECTED = sbe::frame::ClientDisconnected::sbeTemplateId();
+inline constexpr std::uint16_t LEADERSHIP_CHANGED = 5; // synthesis-only
+inline constexpr std::uint16_t CLUSTER_STARTED = sbe::frame::ClusterStarted::sbeTemplateId();
+inline constexpr std::uint16_t CLUSTER_STOPPED = sbe::frame::ClusterStopped::sbeTemplateId();
+inline constexpr std::uint16_t CLUSTER_HEARTBEAT = 16; // synthesis-only
+inline constexpr std::uint16_t GATEWAY_REGISTERED = sbe::frame::GatewayRegistered::sbeTemplateId();
+inline constexpr std::uint16_t GATEWAY_ACTIVE = 18; // synthesis-only
+inline constexpr std::uint16_t GATEWAY_STARTED = sbe::frame::GatewayStarted::sbeTemplateId();
+inline constexpr std::uint16_t PAYLOAD_ID_REGISTERED = sbe::frame::PayloadIdRegistered::sbeTemplateId();
+inline constexpr std::uint16_t GATEWAY_ACTIVATION_REQUESTED = sbe::frame::GatewayActivationRequested::sbeTemplateId();
 
 /**
  * Carries one message from the cluster stream.
  *
- * Every fragment is a `Sequenced` frame (schemaId=210) whose header carries the identity below and whose
- * body is one opaque payload named by payloadId; the stream client strips the envelope and the fields
- * here describe the *payload*. A consumer dispatches on (payloadId, templateId) — never templateId
- * alone, which is unique per schema only.
+ * Every fragment on the tap is one of five shapes (doc/seqeron-protocol-spec.md §4), and the same
+ * 2-byte field at offset 16 discriminates all of them: a `Sequenced` frame carries one opaque
+ * application payload named by payloadId, the four system shapes carry seqeron's own vocabulary named
+ * by systemEventType. `system` says which. A consumer of an application frame dispatches on
+ * (payloadId, templateId) — never templateId alone, which is unique per schema only.
  *
  * payload/payloadLength point into the Aeron fragment buffer and are valid
  * only for the duration of the callback; payload addresses the start of the
@@ -63,11 +83,14 @@ struct SequencedEvent
     std::int64_t sourceSessionId;  ///< Aeron Cluster client session id (header.sessionId)
     std::int64_t clusterTimestamp; ///< cluster consensus time (ms) when message was committed
     std::int64_t receiveTimeNs;    ///< wall-clock ns at receipt by this client
-    std::uint16_t payloadId;       ///< which protocol templateId belongs to
+    bool system;                   ///< true: a system frame, named by systemEventType, and payloadId means nothing
+    std::uint16_t payloadId;       ///< which protocol templateId belongs to; 0 on a system frame
+    std::uint16_t systemEventType; ///< which of §7's eleven events; 0 on an application frame
     std::uint16_t templateId;      ///< the message's messageHeader templateId; picks the specific decode
-    std::uint16_t blockLength;     ///< outer messageHeader blockLength; pass straight to wrapForDecode
-    std::uint16_t version;         ///< outer messageHeader version; pass straight to wrapForDecode
-    const char* payload;           ///< the payload's own bytes, its 8-byte messageHeader included
+    std::uint16_t blockLength;     ///< payload messageHeader blockLength; 0 on a system frame (see decodeSystem)
+    std::uint16_t version;         ///< payload messageHeader version; 0 on a system frame
+    const char* payload;           ///< the payload's own bytes, its 8-byte messageHeader included; on a
+                                   ///< system frame, the message with no framing at all
     std::uint64_t payloadLength;   ///< total byte count
     std::int64_t position;         ///< recording/stream position of this frame's first byte;
                                    ///< pass to ReplayParams::position() to replay from here
@@ -78,23 +101,42 @@ struct SequencedEvent
  *
  * The two stream clients both build one of these and then differ only in what they do with it, which is
  * the point: the envelope is stripped here, once, rather than at every consumer. The identity is the
- * frame header's and the message is the payload.
+ * frame header's; what the message is depends on the family (see `payload` below).
  */
 struct FrameView
 {
-    bool valid; ///< false for a fragment that is not a frame, or too short to read
+    bool valid;  ///< false for a fragment that is not a frame, or too short to read
+    bool system; ///< true: one of the four system shapes; payloadId/templateId mean nothing
     std::uint16_t payloadId;
+    std::uint16_t systemEventType;
     std::int32_t sourceId;
     std::int32_t connectionId;
     std::int64_t sessionId;
     std::int64_t globalSeqNo;
     std::int64_t timestamp;
-    std::uint16_t templateId; ///< the message's own, never the envelope's
+    std::uint16_t templateId; ///< application family: the payload's own, never the envelope's
+    /// The payload's own, to wrap its decoder with; both 0 on any system frame, whose message carries
+    /// no declaration at all — its decoder's compiled constants are the only ones there are (V-3).
     std::uint16_t blockLength;
     std::uint16_t version;
-    const char* payload; ///< the message, its 8-byte messageHeader included
+    /// What a consumer decodes: the payload, its 8-byte messageHeader included, on an application
+    /// frame; the body on a submitted system frame; the frame's own block on one of the synthesized
+    /// three.
+    const char* payload;
     std::uint64_t payloadLength;
 };
+
+/// Copies the identity every system shape carries; the two composites are the same 34 bytes.
+inline void readSystemHeader(FrameView& view, sbe::frame::SequencedSystemHeader& header)
+{
+    view.system = true;
+    view.systemEventType = header.systemEventType();
+    view.sourceId = header.sourceId();
+    view.connectionId = header.connectionId();
+    view.sessionId = header.sessionId();
+    view.globalSeqNo = header.globalSeqNo();
+    view.timestamp = header.timestamp();
+}
 
 /**
  * Reads one fragment into a FrameView, stripping the envelope.
@@ -114,37 +156,81 @@ inline FrameView unwrapFrame(const char* const frame, const std::uint64_t length
 
     sbe::frame::MessageHeader hdr;
     hdr.wrap(bytes, 0U, 0U, length);
-    if (hdr.schemaId() != sbe::frame::Sequenced::sbeSchemaId() ||
-        hdr.templateId() != sbe::frame::Sequenced::sbeTemplateId() ||
-        length < sbe::frame::Sequenced::sbeBlockAndHeaderLength() + sbe::frame::Sequenced::payloadHeaderLength())
+    if (hdr.schemaId() != sbe::frame::Sequenced::sbeSchemaId())
     {
         return view;
     }
-    sbe::frame::Sequenced sequenced;
-    sequenced.wrapForDecode(bytes, sbe::frame::MessageHeader::encodedLength(), hdr.blockLength(), hdr.version(),
-                            length);
-    sbe::frame::SequencedHeader& header = sequenced.header();
-    view.payloadId = header.payloadId();
-    view.sourceId = header.sourceId();
-    view.connectionId = header.connectionId();
-    view.sessionId = header.sessionId();
-    view.globalSeqNo = header.globalSeqNo();
-    view.timestamp = header.timestamp();
+    const std::uint64_t blockOffset = sbe::frame::MessageHeader::encodedLength();
+    const std::uint16_t frameTemplateId = hdr.templateId();
 
-    const std::uint64_t payloadLength = sequenced.payloadLength();
-    const char* const payload = sequenced.payload();
-    if (payloadLength < sbe::frame::MessageHeader::encodedLength())
+    if (frameTemplateId == sbe::frame::Sequenced::sbeTemplateId())
     {
-        return view; // an empty or truncated payload names no message to dispatch on
+        if (length < sbe::frame::Sequenced::sbeBlockAndHeaderLength() + sbe::frame::Sequenced::payloadHeaderLength())
+        {
+            return view;
+        }
+        sbe::frame::Sequenced sequenced;
+        sequenced.wrapForDecode(bytes, blockOffset, hdr.blockLength(), hdr.version(), length);
+        sbe::frame::SequencedHeader& header = sequenced.header();
+        view.payloadId = header.payloadId();
+        view.sourceId = header.sourceId();
+        view.connectionId = header.connectionId();
+        view.sessionId = header.sessionId();
+        view.globalSeqNo = header.globalSeqNo();
+        view.timestamp = header.timestamp();
+
+        const std::uint64_t payloadLength = sequenced.payloadLength();
+        const char* const payload = sequenced.payload();
+        if (payloadLength < sbe::frame::MessageHeader::encodedLength())
+        {
+            return view; // an empty or truncated payload names no message to dispatch on
+        }
+        sbe::frame::MessageHeader payloadHdr;
+        payloadHdr.wrap(const_cast<char*>(payload), 0U, 0U, payloadLength);
+        view.templateId = payloadHdr.templateId();
+        view.blockLength = payloadHdr.blockLength();
+        view.version = payloadHdr.version();
+        view.payload = payload;
+        view.payloadLength = payloadLength;
+        view.valid = true;
+        return view;
     }
-    sbe::frame::MessageHeader payloadHdr;
-    payloadHdr.wrap(const_cast<char*>(payload), 0U, 0U, payloadLength);
-    view.templateId = payloadHdr.templateId();
-    view.blockLength = payloadHdr.blockLength();
-    view.version = payloadHdr.version();
-    view.payload = payload;
-    view.payloadLength = payloadLength;
-    view.valid = true;
+
+    if (frameTemplateId == sbe::frame::SequencedSystem::sbeTemplateId())
+    {
+        if (length < sbe::frame::SequencedSystem::sbeBlockAndHeaderLength() +
+                         sbe::frame::SequencedSystem::bodyHeaderLength())
+        {
+            return view;
+        }
+        sbe::frame::SequencedSystem sequenced;
+        sequenced.wrapForDecode(bytes, blockOffset, hdr.blockLength(), hdr.version(), length);
+        readSystemHeader(view, sequenced.header());
+        // The body carries no messageHeader — systemEventType named it — so blockLength and version
+        // stay 0 and a consumer supplies its own decoder's compiled constants (§7, V-3).
+        view.payloadLength = sequenced.bodyLength();
+        view.payload = sequenced.body();
+        view.valid = true;
+        return view;
+    }
+
+    if (frameTemplateId == sbe::frame::ClusterHeartbeat::sbeTemplateId() ||
+        frameTemplateId == sbe::frame::LeadershipChanged::sbeTemplateId() ||
+        frameTemplateId == sbe::frame::GatewayActive::sbeTemplateId())
+    {
+        if (length < blockOffset + sbe::frame::SequencedSystemHeader::encodedLength())
+        {
+            return view;
+        }
+        sbe::frame::SequencedSystemHeader header;
+        header.wrap(bytes, blockOffset, hdr.version(), length);
+        readSystemHeader(view, header);
+        // No body: the fields are inline in the frame's own block, so that block is what a consumer
+        // wraps its decoder over — with its own compiled constants, exactly as for a submitted body.
+        view.payload = frame + blockOffset;
+        view.payloadLength = length - blockOffset;
+        view.valid = true;
+    }
     return view;
 }
 
@@ -159,6 +245,25 @@ Decoder decodeSequenced(const char* payload, const std::uint64_t payloadLength, 
     decoder.wrapForDecode(const_cast<char*>(payload), sbe::frame::MessageHeader::encodedLength(), blockLength, version,
                           payloadLength);
     return decoder;
+}
+
+// The same for a system frame's message, which carries no framing of its own: header.systemEventType
+// named it, so the block length and version come from this build's own decoder rather than from the
+// wire (§7, V-3). One helper for both system shapes — a submitted body and a synthesized template's
+// inline block are alike in carrying no declaration, and `payload` addresses each of them.
+template<typename Decoder>
+Decoder decodeSystem(const char* message, const std::uint64_t messageLength)
+{
+    Decoder decoder;
+    decoder.wrapForDecode(const_cast<char*>(message), 0, Decoder::sbeBlockLength(), Decoder::sbeSchemaVersion(),
+                          messageLength);
+    return decoder;
+}
+
+template<typename Decoder>
+Decoder decodeSystem(const SequencedEvent& event)
+{
+    return decodeSystem<Decoder>(event.payload, event.payloadLength);
 }
 
 // Wraps an event's payload in the decoder the caller has already matched its (payloadId, templateId)

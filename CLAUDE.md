@@ -221,25 +221,38 @@ the whole log is what keeps each node's tap recording complete and gap-free — 
 snapshot would record only from wherever it resumed. The cost is that recovery time and archive size
 grow with uptime (the 1 Hz heartbeat alone is ~86.4k frames/day) — see `doc/todo.md`.
 
-**Everything on the wire is one shape: the `sbe-frame.xml` (schema 210) envelope.** An `Unsequenced`
-frame on ingress, republished as `Sequenced` on the tap, carrying one opaque length-prefixed payload
-named by `header.payloadId`. Sequencing is copy-18/append-16 and the payload is never re-encoded;
-`sequenceFrame` validates every frame against `doc/seqeron-protocol-spec.md` §9.2. Four `payloadId`s
+**Everything on the wire is `sbe-frame.xml` (schema 210), in two families.** The **application**
+family is `Unsequenced` (100) on ingress, republished as `Sequenced` (101) on the tap, carrying one
+opaque length-prefixed payload named by `header.payloadId`. The **system** family is seqeron's own
+vocabulary (spec §7), named by `header.systemEventType` at the same offset: `UnsequencedSystem` (102)
+→ `SequencedSystem` (103) for the eight events a producer submits, plus three templates of their own
+for the three the sequencer synthesizes — `ClusterHeartbeat` (104), `LeadershipChanged` (105),
+`GatewayActive` (106). Sequencing is copy-18/append-16 for both, the body is never re-encoded, and
+`sequenceFrame` validates every frame against `doc/seqeron-protocol-spec.md` §9.2. Three `payloadId`s
 are allocated:
 
 | id | schema | who speaks it |
 | --- | --- | --- |
-| 1 | `sbe-frame.xml` 210 | **core** — seqeron's own, and the only one the cluster tier decodes |
 | 2 | `sbe-order.xml` 220 | order flow + the portfolio query: C++ FIX edge ↔ `OrderExecServer` |
 | 3 | `sbe-session.xml` 230 | the FIX session family, both edges |
 | 4 | `sbe-basicdata.xml` 240 | reference data — the one protocol that crosses application boundaries |
 
-Everything but core is copied through unopened (**S-2**).
+**1 is retired and refused on ingress** — core was a `payloadId` until spec §15 step 10 gave it the
+system family — and the cluster tier now decodes **no `payloadId` at all**: every application payload
+is copied through unopened (**S-2**).
 
-**A consumer dispatches on `(payloadId, templateId)`, never `templateId` alone** — template ids are
-unique per schema, so a session template and an order template can collide. `unwrapFrame` (C++,
-`SequencedFrame.hpp`) and `SequencedFrameDecoder` (Java) are the one place the envelope is stripped;
-past them every consumer sees a `payloadId` and the message's own template.
+**A consumer splits by family first, then dispatches on `(payloadId, templateId)` — never `templateId`
+alone** — template ids are unique per schema, so a session template and an order template can collide;
+and the uint16 at offset 16 is a `payloadId` on one family and a `systemEventType` on the other.
+`unwrapFrame` (C++, `SequencedFrame.hpp`) and `SequencedFrameDecoder` (Java) are the one place the
+envelope is stripped; past them a consumer sees `isSystem()` plus either a `payloadId` and the
+message's own template, or a `systemEventType`.
+
+**A system body carries no `MessageHeader`** — `systemEventType` names it, so an encoder `wrap`s rather
+than `wrapAndApplyHeader`s and a decoder supplies `BLOCK_LENGTH`/`SCHEMA_VERSION` from its own compiled
+constants (**V-3**). `SystemFrame` (Java) and `publishSystem`/`decodeSystem` (C++) are that contract's
+one place per language; the `systemEventType` table lives in `SystemFrame.java` and `SequencedFrame.hpp`
+and the two must stay in step.
 
 ### C++ FIX gateway — `FixGateway` / `FixGateway.cpp`
 Deliberately stateless proxy: authoritative FIX session state (sequence numbers, session status)
@@ -300,11 +313,11 @@ sbe.basicdata, sbe.replay}`, `org.limitless.phixeron.cluster.sbe`):
   step 5 extracted from `sbe-unsequenced.xml`; schema 200 retired with that file, and nothing but
   namespace and id changed — renumbering is free precisely because nothing records these and a
   node's Java and C++ builds ship together.
-- `sbe-frame.xml` (schema 210) — the `Unsequenced`/`Sequenced` envelope pair, their two header
-  composites, and the ten **core** payloads (`payloadId` 1: the TCP lifecycle events, the cluster
-  markers, the 1 Hz `ClusterHeartbeat`, the gateway roster/election frames). A core payload carries
-  **no `header` field** — the frame's is the only one. Seqeron's own, and the only `payloadId` the
-  cluster tier decodes.
+- `sbe-frame.xml` (schema 210) — the seven top-level templates, their four header composites, and the
+  eight submitted **system** bodies (the TCP lifecycle events, the cluster markers, the gateway
+  roster/election frames, `GatewayActivationRequested`). No system message carries a `header` field —
+  the frame's is the only one — and a submitted body carries no `MessageHeader` either. Seqeron's own,
+  and the only thing the cluster tier decodes.
 - `sbe-order.xml` (schema 220) — the order application's payload (`payloadId` 2):
   `NewOrderSingle` and `ExecutionReport`, the flow between the C++ FIX edge and `OrderExecServer`.
   **One codec set, not a 200/202 pair** — a payload carries no header, so its ingress and tap forms

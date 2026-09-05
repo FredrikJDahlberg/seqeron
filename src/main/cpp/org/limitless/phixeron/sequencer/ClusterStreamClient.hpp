@@ -552,8 +552,8 @@ class ClusterStreamClient
             }
             m_lastGlobalSeqNo = gseq;
         }
-        const bool isCore = view.payloadId == CORE_PAYLOAD_ID;
-        if (isCore && templateId == CLIENT_CONNECTED_TEMPLATE_ID)
+        const bool isSystem = view.system;
+        if (isSystem && view.systemEventType == CLIENT_CONNECTED)
         {
             if (m_onConnected)
             {
@@ -566,7 +566,7 @@ class ClusterStreamClient
             }
             return;
         }
-        if (isCore && templateId == CLIENT_DISCONNECTED_TEMPLATE_ID)
+        if (isSystem && view.systemEventType == CLIENT_DISCONNECTED)
         {
             if (m_onDisconnected)
             {
@@ -587,7 +587,9 @@ class ClusterStreamClient
                                           .sourceSessionId = sessId,
                                           .clusterTimestamp = ts,
                                           .receiveTimeNs = receiveNs,
+                                          .system = isSystem,
                                           .payloadId = view.payloadId,
+                                          .systemEventType = view.systemEventType,
                                           .templateId = templateId,
                                           .blockLength = view.blockLength,
                                           .version = view.version,

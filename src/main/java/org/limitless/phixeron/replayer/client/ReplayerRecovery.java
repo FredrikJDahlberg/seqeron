@@ -8,6 +8,7 @@ import org.agrona.DirectBuffer;
 import org.agrona.concurrent.UnsafeBuffer;
 import org.limitless.phixeron.replayer.server.ReplayerService;
 import org.limitless.phixeron.sbe.frame.LeadershipChangedDecoder;
+import org.limitless.phixeron.sequencer.SystemFrame;
 import org.limitless.phixeron.sbe.frame.MessageHeaderDecoder;
 import org.limitless.phixeron.sbe.replay.ReplayPendingDecoder;
 import org.limitless.phixeron.sbe.replay.ReplayUnavailableDecoder;
@@ -109,7 +110,7 @@ public final class ReplayerRecovery {
     private static final int RESUME_SEGMENT_INDEX = -1;
 
     /** {@code LeadershipChanged}, synthesized onto the sequenced stream; intercepted, never dispatched. */
-    private static final int LEADERSHIP_CHANGED_TEMPLATE_ID = LeadershipChangedDecoder.TEMPLATE_ID;
+    private static final int LEADERSHIP_CHANGED = SystemFrame.LEADERSHIP_CHANGED;
 
     /**
      * Caps on frames retained ahead of a hole — enough to cover a walk over a normal recording, not a whole
@@ -764,9 +765,8 @@ public final class ReplayerRecovery {
             actions.recoveryStalled(false);
         }
         if (!view.wrap(buffer, offset, length)) {
-            return; // a frame the recording holds but neither shape can read
+            return; // a frame the recording holds but no shape can read
         }
-        final int templateId = view.templateId();
 
         lastGlobalSeqNo = globalSeqNo;
         replayGapLogged = false;
@@ -778,11 +778,11 @@ public final class ReplayerRecovery {
             notifyCaughtUp();
         }
 
-        // A template id means nothing without the protocol it belongs to: core's 5 is some other payload's
-        // 5, so both halves have to match before a frame is read as a leadership change.
-        if (view.payloadId() == SequencedFrameDecoder.CORE_PAYLOAD_ID && templateId == LEADERSHIP_CHANGED_TEMPLATE_ID) {
-            leadershipChanged.wrap(buffer, view.payloadOffset() + MessageHeaderDecoder.ENCODED_LENGTH,
-                                   view.blockLength(), view.version());
+        // A systemEventType is only a systemEventType on a system frame: an application payload's own 5
+        // sits at the same offset, so both halves have to match before a frame is read as a leadership
+        // change. Its fields are inline in the frame's block, so the decoder wraps that block directly.
+        if (view.isSystem() && view.systemEventType() == LEADERSHIP_CHANGED) {
+            leadershipChanged.wrap(buffer, view.payloadOffset(), view.blockLength(), view.version());
             currentLeaderMemberId = leadershipChanged.newLeaderMemberId();
             if (onLeadershipChanged != null) {
                 onLeadershipChanged.onLeadershipChanged(currentLeaderMemberId, globalSeqNo);
@@ -791,8 +791,9 @@ public final class ReplayerRecovery {
         }
         if (onSequenced != null) {
             event.set(globalSeqNo, view.sourceId(), view.connectionId(), view.sessionId(), view.timestamp(),
-                      receiveNs, view.payloadId(), templateId, view.blockLength(), view.version(), buffer,
-                      view.payloadOffset(), view.payloadLength(), framePosition);
+                      receiveNs, view.isSystem(), view.payloadId(), view.systemEventType(), view.templateId(),
+                      view.blockLength(), view.version(), buffer, view.payloadOffset(), view.payloadLength(),
+                      framePosition);
             onSequenced.onSequenced(event);
         }
     }

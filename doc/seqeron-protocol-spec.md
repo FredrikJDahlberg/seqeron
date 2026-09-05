@@ -4,12 +4,12 @@ _Normative specification, 2026-09-02. The **what** and **how** only; the design 
 behind each decision and the alternatives weighed are in `doc/seqeron-protocol.md`, which this
 condenses and does not supersede. Rule identifiers are that document's, unchanged._
 
-> **Status: specification of the target, not of the tree.** The tree is mid-§15: every message family
-> is on a payload now (`sbe-frame.xml` 210 with core, plus `sbe-order.xml` 220, `sbe-session.xml` 230
-> and `sbe-basicdata.xml` 240), the old pair is gone, and the replay control protocol stands alone in
-> `sbe-replay.xml` (212). What is left is the registry work of steps 2 and 8 and §14's conformance
-> suite. This states what `doc/future-arch.md` §11 step 3 lands; §15 is the migration and records what
-> has landed so far. Statements about today's code are marked _(today)_.
+> **Status: specification of the target, not of the tree.** The tree is mid-§15: every application
+> family is on a payload (`sbe-order.xml` 220, `sbe-session.xml` 230, `sbe-basicdata.xml` 240), seqeron's
+> own vocabulary has the system family of `sbe-frame.xml` 210 to itself, and the replay control protocol
+> stands alone in `sbe-replay.xml` (212). What is left is §14's conformance suite. This states what
+> `doc/future-arch.md` §11 step 3 lands; §15 is the migration and records what has landed so far.
+> Statements about today's code are marked _(today)_.
 >
 > **Normative language.** MUST / MUST NOT / SHOULD as usual. Rules carry identifiers — **F-n** frame,
 > **T-n** transport, **S-n** sequencer, **P-n** payload, **C-n** registration, **R-n** replay, **V-n**
@@ -19,14 +19,15 @@ condenses and does not supersede. Rule identifiers are that document's, unchange
 
 ## 1. Layers
 
-seqeron owns the frame; the application owns the payload. **The cluster tier decodes `payloadId` 1 and
-nothing else.**
+seqeron owns the frame; the application owns the payload. **The cluster tier decodes no `payloadId` at
+all** — its own vocabulary is a family of frames, not a payload.
 
 | layer | what it is | schema | owner |
 | --- | --- | --- | --- |
 | **L0 transport** | Aeron channels, stream ids, the cluster ingress/egress session protocol | `sbe-cluster.xml` (mirror of `io.aeron.cluster.codecs`) | Aeron, mirrored by seqeron |
-| **L1 frame** | the `Unsequenced`/`Sequenced` envelope pair — the only two templates on the recorded path | `seqeron-frame.xml` (210) | seqeron |
-| **L2 payload** | one opaque, length-prefixed byte range per frame, named by `payloadId` | core: `seqeron-frame.xml` (210), beside the envelope; applications: their own | whoever `payloadId` names |
+| **L1 frame** | two envelope pairs — `Unsequenced`/`Sequenced` for an application payload, `UnsequencedSystem`/`SequencedSystem` for seqeron's own — plus the three synthesized templates | `seqeron-frame.xml` (210) | seqeron |
+| **L2 payload** | one opaque, length-prefixed byte range per application frame, named by `payloadId` | the application's own | whoever `payloadId` names |
+| **system messages** | seqeron's own eleven events, named by `systemEventType`; a body with no framing of its own, or a template of its own | `seqeron-frame.xml` (210), beside the envelopes | seqeron |
 | **control plane** | replayer↔client replay control; off-frame, node-local, never sequenced, never recorded | `seqeron-replay.xml` (212) | seqeron |
 
 > **P-0. seqeron's obligation to a payload is discharged in full when the frame carrying it has been
@@ -47,18 +48,19 @@ conform.
 | **sequenced** | an external producer, admitted and stamped | the sequencer, from an unsequenced frame | the tap, and replays of it |
 | **synthesized** | the cluster itself | the sequencer, on its own initiative | the tap, and replays of it |
 
-Synthesis and forwarding draw from one `globalSeqNo` counter (§9.1). Sequenced and synthesized frames
-share the `Sequenced` template; the class is marked on the wire by the header — `sourceId`,
-`connectionId` and `sessionId` all −1, because each names an external producer, its connection and its
-session, and a cluster-originated message has none (§4.3, §7). **`sourceId == −1` is the mark proper**
-(**F-4**) — it alone is reserved and it alone is refused on ingress, and the other two follow it; a
-consumer MUST test `sourceId` and MUST NOT require the other two. All three are wire bytes under
-**F-2**, not defaults. The mark is only as good as ingress: §9.2 conditions 6 and 9 are what make it a
-statement of provenance rather than an unchecked assertion.
+Synthesis and forwarding draw from one `globalSeqNo` counter (§9.1). **The synthesized class is a
+template, not a flag**: the three events the cluster originates have top-level templates of their own
+(§7), no ingress form, and no `UnsequencedSystem` antecedent — a sequenced shape asserts a
+transformation, and a frame that never underwent one must not claim it. Their header is nonetheless
+`sourceId`, `connectionId` and `sessionId` all −1, because each names an external producer, its
+connection and its session, and a cluster-originated message has none (§4.3, §7). **`sourceId == −1` is
+the provenance mark** (**F-4**) — it alone is reserved and it alone is refused on ingress, and the other
+two follow it; a consumer MUST test `sourceId` and MUST NOT require the other two. All three are wire
+bytes under **F-2**, not defaults. It is corroboration now rather than the sole carrier, and §9.2
+condition 6 is what keeps it a statement of provenance rather than an unchecked assertion.
 
-The classes partition frames, not payloads — `GatewayActive` is synthesized at bootstrap and forwarded
-from `clusterctl` on promotion. The replay control messages (§10) are outside all three: not frames,
-no header composite, never sequenced, never recorded.
+The replay control messages (§10) are outside all three classes: not frames, no header composite, never
+sequenced, never recorded.
 
 ---
 
@@ -68,9 +70,9 @@ A consumer MUST validate `MessageHeader.schemaId` on every stream it reads (**T-
 
 | stream | channel / id | carries | recorded? |
 | --- | --- | --- | --- |
-| cluster ingress | Aeron Cluster ingress, inside the L0 session envelope | `Unsequenced` — schema 210, template 100 | in the Raft log |
-| **the tap (Feeder)** | `aeron:ipc`, stream **205** | `Sequenced` — schema 210, template 101 | **yes**, by the co-located archive, on every node |
-| replayer replay | stream **201** | `Sequenced` — replayed archive bytes, byte-identical to the tap | no |
+| cluster ingress | Aeron Cluster ingress, inside the L0 session envelope | `Unsequenced` (100) or `UnsequencedSystem` (102) — schema 210 | in the Raft log |
+| **the tap (Feeder)** | `aeron:ipc`, stream **205** | `Sequenced` (101), `SequencedSystem` (103), or one of the three synthesized templates (104–106) — schema 210 | **yes**, by the co-located archive, on every node |
+| replayer replay | stream **201** | replayed archive bytes, byte-identical to the tap | no |
 | replayer request | stream **202** | schema 212, client → replayer | no |
 | replayer control | stream **203** | schema 212, replayer → client | no |
 
@@ -82,61 +84,72 @@ A consumer MUST validate `MessageHeader.schemaId` on every stream it reads (**T-
 ## 4. The frame layer
 
 ```
-Unsequenced  (schema 210, template 100) { unsequencedHeader, payload:varData }
-Sequenced    (schema 210, template 101) { sequencedHeader,   payload:varData }
+Unsequenced        (schema 210, template 100) { unsequencedHeader,       payload:varData }
+Sequenced          (schema 210, template 101) { sequencedHeader,         payload:varData }
+UnsequencedSystem  (schema 210, template 102) { unsequencedSystemHeader, body:varData }
+SequencedSystem    (schema 210, template 103) { sequencedSystemHeader,   body:varData }
+ClusterHeartbeat   (schema 210, template 104) { sequencedSystemHeader }
+LeadershipChanged  (schema 210, template 105) { sequencedSystemHeader,   newLeaderMemberId }
+GatewayActive      (schema 210, template 106) { sequencedSystemHeader,   gatewayId }
 ```
 
-The two differ only by the stamp; each body is one length-prefixed payload and nothing else.
+Within each pair the two differ only by the stamp. An application body is one length-prefixed payload
+and nothing else; a system body is one length-prefixed message and nothing else. The last three are the
+frames the cluster synthesizes: no ingress form, and their fields inline in the block (§7).
 
 ### 4.1 Header layout
 
-**F-3. `unsequencedHeader` is a byte-prefix of `sequencedHeader`.**
+**F-3. Each unsequenced composite is a byte-prefix of its sequenced counterpart, and the two pairs are
+byte-for-byte identical apart from the name of the uint16 at offset 16.**
 
-| offset | field | type | `unsequencedHeader` | `sequencedHeader` |
+| offset | field | type | unsequenced | sequenced |
 | --- | --- | --- | --- | --- |
 | 0 | `sourceId` | int32 | ✓ | ✓ |
 | 4 | `connectionId` | int32 | ✓ | ✓ |
 | 8 | `sessionId` | int64 | ✓ | ✓ |
-| 16 | `payloadId` | uint16 | ✓ | ✓ |
+| 16 | `payloadId` / `systemEventType` | uint16 | ✓ | ✓ |
 | 18 | `globalSeqNo` | int64 | — | ✓ |
 | 26 | `timestamp` | int64 | — | ✓ |
 | | **ENCODED_LENGTH** | | **18** | **34** |
 
-Three changes from today: `globalSeqNo`/`timestamp` move to the **end**, `payloadId` becomes a header
-field rather than a message field, and `origin` is deleted (§4.3). Consequences that other rules depend
-on: every frame-layer field sits at a fixed offset on both sides, so one decoder covers both and a
-consumer routes on `payloadId` without knowing which template it holds; sequencing is **copy-18,
-append-16**; and `blockLength` is exactly the composite's `ENCODED_LENGTH`, which is what §9.2
-condition 4 compares against.
+Consequences that other rules depend on: every frame-layer field sits at a fixed offset on all five
+shapes, so one decoder reads the identity of any of them and **`globalSeqNo` is at 18 on every sequenced
+shape** — which is what keeps the continuity read (**P-3**) branch-free over every frame on the tap.
+Sequencing is **copy-18, append-16** for both families. And `blockLength` on an ingress frame is exactly
+18, whichever template it is, which is what §9.2 condition 4 compares against.
 
-**No pad.** `payloadId` is 2-byte aligned and `globalSeqNo` sits unaligned at 18. Both generators read
-fixed-width fields through `memcpy` (SBE C++) and `UnsafeBuffer` (Agrona), which compile to single
+**Offset 16 discriminates every frame on the tap.** It is a `payloadId` on the application family and a
+`systemEventType` on the system one; the template says which, and a consumer that reads one as the other
+is reading a foreign numbering as its own (**P-4**'s failure, one layer up).
+
+**No pad.** The uint16 at 16 is 2-byte aligned and `globalSeqNo` sits unaligned at 18. Both generators
+read fixed-width fields through `memcpy` (SBE C++) and `UnsafeBuffer` (Agrona), which compile to single
 unaligned loads on x86-64 and ARM64. **Plain accessors only** — `getLongVolatile`/`getAndAddLong` and
 C++ atomics on an unaligned address are undefined.
 
-**Both composites are renamed.** Both are `header` today, which is a collision once they share one file.
-`unsequencedHeader`/`sequencedHeader` splits the generated `HeaderDecoder`/`HeaderEncoder` into two
-names across **17 files** in Java and C++.
+**The composites are named for their templates** rather than all being `header`, which they cannot be
+once they share one file.
 
 ### 4.2 Frame sizes
 
-| | `Unsequenced` | `Sequenced` |
+| | ingress (100 / 102) | sequenced (101 / 103) |
 | --- | --- | --- |
 | `MessageHeader` | 8 | 8 |
-| `blockLength` (the header composite, `payloadId` included) | **18** | **34** |
+| `blockLength` (the header composite) | **18** | **34** |
 | var-data length prefix | 2 | 2 |
 | **fixed overhead** | **28** | **44** |
 
-`MIN_INGRESS_LENGTH` is 28 _(today: 25)_. A `ClusterHeartbeat` is 44 + 8 (its payload's own
-`MessageHeader`, zero body) = **52**.
+`MIN_INGRESS_LENGTH` is 28, one constant for both ingress templates. A `ClusterHeartbeat` is 8 + 34 =
+**42**: a template of its own, so no length prefix and no body at all.
 
 ### 4.3 Provenance
 
 There is no `origin` field _(today: `None`, `Client`, `Gateway`, `Application`)_. Provenance is
 `sourceId`:
 
-> **F-4. `sourceId == −1` is reserved for the cluster itself and marks the synthesized class.** Every
-> other value names an external producer. An ingress frame MUST NOT carry it (§9.2, condition 6).
+> **F-4. `sourceId == −1` is reserved for the cluster itself and corroborates the synthesized class.**
+> Every other value names an external producer. An ingress frame MUST NOT carry it (§9.2, condition 6).
+> What *marks* the class is the template (§2); this is the mark the header carries.
 
 The direction an application needs (`Client` vs `Gateway`) was one application's vocabulary and moves
 to the payload: a field of its own on the FIX session families, in the schemas that already define
@@ -146,22 +159,23 @@ them. `clusterctl` gets a reserved `sourceId` of its own (§5) so it no longer s
 
 The ingress contract; **S-1** is that the sequencer enforces it.
 
-| field | on `Unsequenced` | on `Sequenced` |
+| field | on ingress | on the tap |
 | --- | --- | --- |
-| `sourceId` | producer-set, MUST NOT be −1 (§9.2, condition 6), **checked against the roster** (**S-6**) | copied verbatim; −1 marks synthesized (**F-4**) |
+| `sourceId` | producer-set, MUST NOT be −1 (§9.2, condition 6), **checked against the roster** (**S-6**) | copied verbatim; −1 on a synthesized frame (**F-4**) |
 | `connectionId` | producer-set | copied verbatim |
 | `sessionId` | producer-set, **advisory** | **overwritten** with the true Aeron Cluster session id the frame arrived on |
-| `payloadId` | producer-set, MUST be non-zero | copied verbatim |
-| `globalSeqNo` | **no such field** on the unsequenced header | sequencer-assigned (§9.1) |
+| `payloadId` | producer-set, MUST be neither 0 nor 1 (condition 7) | copied verbatim |
+| `systemEventType` | producer-set, MUST be an allocated ingress-legal value (condition 8) | copied verbatim |
+| `globalSeqNo` | **no such field** on either unsequenced header | sequencer-assigned (§9.1) |
 | `timestamp` | **likewise** | Raft consensus time at commit |
-| `payload` | producer-set | copied **byte-identical** |
+| `payload` / `body` | producer-set | copied **byte-identical** |
 
 The outer `MessageHeader` is the sequencer's on both sides, and is re-encoded rather than copied:
 
-| field | on `Unsequenced` | on `Sequenced` |
+| field | on ingress | on the tap |
 | --- | --- | --- |
 | `schemaId` | producer-set, MUST be 210 (condition 2) | 210 |
-| `templateId` | producer-set, MUST be `Unsequenced` (condition 3) | **`Sequenced`** |
+| `templateId` | producer-set, MUST be `Unsequenced` or `UnsequencedSystem` (condition 3) | **`Sequenced`** / **`SequencedSystem`**, matching |
 | `blockLength` | producer-set, MUST be 18 (condition 4) | **34** |
 | `version` | producer-set, MUST be 0 | 0 |
 
@@ -177,17 +191,17 @@ producer may write into _(today the sequencer copies the ingress `version` onto 
 | 0, 3, 5, 6 … | gateways and node-local publishers _(today: the C++ gateway pair 0, an unrostered node-local publisher 3, the venue leg 5, the order-entry leg 6)_ | gateways by `GatewayRegistered.gatewaySourceId`; the rest not |
 
 `clusterctl`'s id MUST NOT be a `gatewaySourceId` any roster row claims. The roster check is scoped to
-`payloadId` 1 (**C-1**):
+the system family:
 
-> **S-6.** For a frame with `payloadId == 1` (§9.2, condition 10):
+> **S-6.** For an `UnsequencedSystem` frame (§9.2, condition 10):
 >
-> 1. **`GatewayStarted`** — its `gatewayId` MUST name a roster row, and that row MUST carry
->    `gatewaySourceId == header.sourceId`. Both halves are required, and a `gatewayId` the roster does
->    not name is rejected whatever `sourceId` it carries.
-> 2. **Any other core frame whose `sourceId` the roster claims** — it MUST arrive on a cluster session
+> 1. **`GatewayStarted`, and `GatewayActivationRequested`** — the `gatewayId` each names MUST name a
+>    roster row, and for `GatewayStarted` that row MUST also carry `gatewaySourceId == header.sourceId`.
+>    A `gatewayId` the roster does not name is rejected whatever `sourceId` it carries.
+> 2. **Any other system frame whose `sourceId` the roster claims** — it MUST arrive on a cluster session
 >    already bound to a `gatewayId` of that `sourceId`.
-> 3. **Everything else is unchecked** — every non-core payload, and every core frame other than
->    `GatewayStarted` carrying an unrostered `sourceId`.
+> 3. **Everything else is unchecked** — every application frame, and every system frame other than
+>    those two carrying an unrostered `sourceId`.
 >
 > The binding is created by `GatewayStarted` and removed when that cluster session closes — the same
 > event that promotes a standby (§7) — so the set holds one entry per live gateway session. Both edges
@@ -205,15 +219,15 @@ consumer maps it to a decoder module; that module reads its own framing.
 ### 6.1 Registry
 
 The registry lives in the log: `clusterctl load-topology <file>` publishes one `PayloadIdRegistered`
-core frame per row of the file's `<protocols>` section (§6.4).
+system frame per row of the file's `<protocols>` section (§6.4).
 
 | value | names | in scope here? |
 | --- | --- | --- |
 | 0 | unset — **invalid on the wire** | fixed by this document |
-| 1 | **seqeron core** (`seqeron-frame.xml`, schema 210) | fixed by this document; **implicit** — never registered (**C-1**) |
+| 1 | **retired.** seqeron's own vocabulary was a payload until §15 step 10 gave it the system family; the number is burned so a producer on an older build fails loudly rather than having core bytes copied through as an application payload | fixed by this document; **refused on ingress** (§9.2, condition 7) |
 | 2… | one per application schema or encoding | the deployment's to allocate; **registered only where the protocol is shared** |
 
-_(This deployment today, all four allocated by §15 steps 3 and 4: **2** = the order family
+_(This deployment today, all three allocated by §15 steps 3 and 4: **2** = the order family
 (`sbe-order.xml` 220, the order flow and the portfolio query over it), **3** = the FIX session family
 (`sbe-session.xml` 230, both edges' session layer), **4** = reference data (`sbe-basicdata.xml` 240).
 **4** is the only one that crosses application boundaries and so the only one §6.4's example declares;
@@ -247,14 +261,15 @@ the part this document requires.
 - **P-4. `payloadId` selects a decoder; the payload's own framing verifies it.** Before decoding a
   field, a consumer confirms against whatever the payload's encoding self-describes — for SBE,
   `MessageHeader.schemaId` against the schema the decoder was generated from (§13.2 for the others).
-  **Two dispositions:** a *consumer* whose check fails **skips** the frame, as P-1 skips an unrecognised
-  `payloadId`; the *sequencer at ingress* **rejects** (§9.2, condition 8), because it is deciding
-  admission rather than consumption.
+  It binds **consumers only**: the sequencer decodes no `payloadId` at all, so it has no decoder to
+  select and nothing to verify — a consumer whose check fails **skips** the frame, as P-1 skips an
+  unrecognised `payloadId`. What retired with §15 step 10 is the sequencer's instance of this rule, not
+  the rule.
 
 ### 6.3 Registration is labeling, not admission
 
 ```
-PayloadIdRegistered  (core, template 23, block 36)
+PayloadIdRegistered  (systemEventType 23, block 36)
     { payloadId:uint16, protocolVersion:uint16, protocolName:char[32] }
 ```
 
@@ -264,8 +279,8 @@ is which revision the deployment runs, printed beside it and checked by nothing.
 payload's `schemaId` — a `payloadId` may name an encoding that has none. No `description`, no
 `remaining` countdown.
 
-- **C-1. `payloadId` 1 is core, is never registered, and MUST NOT be registrable.** Enforced where the
-  row is written: the topology file's schema constrains `payloadId` to 2 or above (§6.4).
+- **C-1. `payloadId` 1 is retired and MUST NOT be registrable.** Enforced where the row is written: the
+  topology file's schema constrains `payloadId` to 2 or above (§6.4).
 - **C-2. Registration does not gate.** The sequencer MUST NOT reject a frame for carrying an
   unregistered `payloadId`, and MUST NOT decode `PayloadIdRegistered` at all. A consumer MUST NOT read
   registration as permission: **P-1** is unchanged and unconditional.
@@ -280,7 +295,7 @@ application data loads. No frame depends on the `<protocols>` rows.
 
 ### 6.4 The topology file
 
-One operator file, two sections, two core payloads: `<gateways>` produces the `GatewayRegistered`
+One operator file, two sections, two system events: `<gateways>` produces the `GatewayRegistered`
 roster (§7), `<protocols>` the `PayloadIdRegistered` rows above — one per **shared** protocol, and
 nothing for an application's private `payloadId` (§6.1). It is XML with a schema shipped
 beside it — **C-1** is a constraint on what may be *written*, and the schema is where a constraint on
@@ -308,7 +323,7 @@ appears in neither section — it is the publisher's, counted off the row count.
 | `name` 1..32 printable US-ASCII | schema | the `char[32]` it encodes into, and a launch-time join key |
 | `id` int32, `rank` uint8, `version` uint16 | schema | the field widths |
 | `sourceId >= 0` | schema | −1 is the cluster's own (**F-4**) and never a roster row's |
-| `payloadId >= 2` | schema | **C-1** — 0 is invalid on the wire, 1 is core |
+| `payloadId >= 2` | schema | **C-1** — 0 is invalid on the wire, 1 is retired |
 | `id`, `name` and `payloadId` each unique | schema, as identity constraints | a duplicate `gatewayId` silently drops an instance; a duplicate `payloadId` is an operator slip, not **C-3**'s supersede |
 | exactly one `rank="0"` per `sourceId` | the loader | not expressible per row; a second rank-0 leaves a logical gateway an arbitrary primary |
 | `sourceId` is none of the reserved ids (§5) | the loader | likewise — it is a check against a constant, not a field range |
@@ -325,88 +340,120 @@ contiguous run in file order, `remaining` counting down to 0 on the last; **noth
 them**, because that last row is the completeness edge §7.2 synthesizes the bootstrap `GatewayActive`s
 behind. The protocol rows follow it, and carry no countdown of their own.
 
-## 7. Core payloads — `payloadId` 1
+## 7. System messages
 
-Ten messages in `seqeron-frame.xml` (schema 210), **defined once each**, beside the envelope pair they
-ride in — same owner, same artifact, same change rule, so they are one schema. Core is an application
-of its own, read by the sequencer the way an application's payloads are read by that application.
+**Eleven events in `seqeron-frame.xml` (schema 210), defined once each, beside the envelopes they ride
+in** — same owner, same artifact, same change rule, so they are one schema. Core is not an application
+and does not ride a `payloadId`: it has the system family of its own (§4), and the field at offset 16
+names the event rather than a protocol.
 
-**Template ids are unique per schema, so the envelope pair moved rather than core.** `Unsequenced` and
-`Sequenced` are **100** and **101**; `ClientConnected` and `ClientDisconnected` keep 1 and 2. The
-envelope is new and nothing has ever encoded it, while core's ids are already in recordings — which is
-the same argument that fixes the rest of the ids below.
+**Eight are submitted and share `UnsequencedSystem`/`SequencedSystem`; three are synthesized and take
+top-level templates.** A pair exists to express a relation — submitted, then stamped — and all eight
+undergo it. The three share only the absence of one, and a single template discriminating three
+unrelated bodies would express nothing.
 
-| payload | id | ingress-legal? | synthesized? | sequencer **decodes** it? |
+| event | `systemEventType` | shape | ingress-legal? | sequencer **decodes** it? |
 | --- | --- | --- | --- | --- |
-| `ClientConnected` | 1 | ✓ gateway | — | ✓ open-connection set |
-| `ClientDisconnected` | 2 | ✓ gateway | — | ✓ open-connection set |
-| `LeadershipChanged` | 5 | ✗ | ✓ per term, de-duplicated | — (encode only) |
-| `ClusterStarted` | 10 | ✓ clusterctl | — | — |
-| `ClusterStopped` | 11 | ✓ clusterctl | — | — |
-| `ClusterHeartbeat` | 16 | ✗ | ✓ 1 Hz | — (encode only) |
-| `GatewayRegistered` | 17 | ✓ clusterctl `load-topology` | — | ✓ roster + `remaining == 0` election edge |
-| `GatewayActive` | 18 | ✓ clusterctl `activate` | ✓ bootstrap, and on every promotion | — (encode only) |
-| `GatewayStarted` | 19 | ✓ gateway | — | ✓ binds cluster session → gatewayId; releases stale connections |
-| `PayloadIdRegistered` | 23 | ✓ clusterctl `load-topology` | — | — (encode only; §6.3) |
+| `ClientConnected` | 1 | body | ✓ gateway | ✓ open-connection set |
+| `ClientDisconnected` | 2 | body | ✓ gateway | ✓ open-connection set |
+| `LeadershipChanged` | 5 | template **105** | ✗ | — (encode only) |
+| `ClusterStarted` | 10 | body | ✓ clusterctl | — |
+| `ClusterStopped` | 11 | body | ✓ clusterctl | — |
+| `ClusterHeartbeat` | 16 | template **104** | ✗ | — (encode only) |
+| `GatewayRegistered` | 17 | body | ✓ clusterctl `load-topology` | ✓ roster + `remaining == 0` election edge |
+| `GatewayActive` | 18 | template **106** | ✗ | — (encode only) |
+| `GatewayStarted` | 19 | body | ✓ gateway | ✓ binds cluster session → gatewayId; releases stale connections |
+| `PayloadIdRegistered` | 23 | body | ✓ clusterctl `load-topology` | — (encode only; §6.3) |
+| `GatewayActivationRequested` | 24 | body | ✓ clusterctl `activate` | ✓ validates the `gatewayId`, then synthesizes `GatewayActive` |
 
-Ids are the ones they hold today. `PayloadIdRegistered` is new and takes **23**, clear of the retired
-ids 12–15, so a mixed-vintage recording can never read as this frame. `ClusterHeartbeat` keeps id 16 under a new name (`Tick` until 2026-08-30) and is
-unrelated to `ReplayHeartbeat` (§10).
+The eight submitted events keep the ids they have always held, and each is also its body codec's
+template id — a number never written to the wire, since a body carries no framing. The three
+synthesized events keep theirs too: **`systemEventType` is populated on all three**, redundant against
+the template id, so that offset 16 discriminates every frame on the tap and a consumer's delivery type
+carries one field whichever family it came from. `GatewayActivationRequested` is new and takes **24** —
+a fresh number, not `GatewayActive`'s 18, which is still spoken for, so no mixed-vintage recording can
+read one as the other. `ClusterHeartbeat` keeps 16 under a name it took in 2026-08 (`Tick` before that)
+and is unrelated to `ReplayHeartbeat` (§10).
 
-**`GatewayActive` has four producers, three of them the cluster.** The sequencer synthesizes it at
-bootstrap (one per rank-0 roster row, behind the `GatewayRegistered` whose `remaining` reaches 0) and on
-promotion by two paths — the active instance's cluster session closing (`Sequencer.sessionClosed`), and
-a designated instance failing to answer with a `GatewayStarted` within `GATEWAY_ACTIVATION_TIMEOUT_MS`
-(`Sequencer.pendingGatewayActivationTimeout`). `clusterctl activate` is the fourth and the only ingress
-one.
+> **A system body carries no `MessageHeader`.** `header.systemEventType` is what names it, so an encoder
+> `wrap`s rather than `wrapAndApplyHeader`s and a decoder supplies `BLOCK_LENGTH` and `SCHEMA_VERSION`
+> from its own compiled constants. **V-3** is what licenses that: no seqeron decoder ever meets bytes
+> another build encoded, so a per-frame schema and version declaration verifies something already
+> guaranteed. Six bytes come off every system frame; a `ClusterHeartbeat`, which needs no body at all,
+> is 42 (§4.2).
+
+**`GatewayActive` has one producer: the sequencer.** It synthesizes it at bootstrap (one per rank-0
+roster row, behind the `GatewayRegistered` whose `remaining` reaches 0) and on three further paths — the
+active instance's cluster session closing (`Sequencer.sessionClosed`), a designated instance failing to
+answer with a `GatewayStarted` within `GATEWAY_ACTIVATION_TIMEOUT_MS`
+(`Sequencer.pendingGatewayActivationTimeout`), and an operator's `GatewayActivationRequested`.
+
+**`clusterctl activate` records the operator's act, and the designation stays the cluster's.** The tool
+publishes `GatewayActivationRequested(gatewayId)`; the sequencer validates it against the roster,
+forwards it, and synthesizes the `GatewayActive` answering it one `globalSeqNo` behind — through the
+same path the other three take, which is what gives the manual path the roster validation the others get
+from iterating the roster. That is also what leaves **no `SequencedSystem` without an
+`UnsequencedSystem` antecedent**, and makes the synthesized three synthesized-*only*.
+
+**Past participle, because the operator's act is the fact.** Every submitted system message names
+something that happened. An imperative (`ActivateGateway`) would be the one command in a family of
+events, and would name the effect asked for rather than the act performed. All eleven are events, and
+`systemEventType` names them with no outlier.
 
 **The header a synthesized frame carries** (§5's table is the ingress contract and does not cover it):
 
 | field | value |
 | --- | --- |
 | `sourceId`, `connectionId`, `sessionId` | **−1** _(today: `Sequencer.NO_SOURCE_ID`)_ — reserved for exactly this and refused on ingress (**F-4**) |
+| `systemEventType` | the value naming this frame's own template, redundant against the template id |
 | `globalSeqNo` | the next value off the counter ingress shares (§9.1) |
 | `timestamp` | the Raft consensus timestamp — never `System.currentTimeMillis()` (**S-3**) |
 
 These are wire bytes under **F-2**, not defaults.
 
-> **S-2. The sequencer's entire decode surface is core's inner framing plus the four rows marked ✓
-> above.** §9.2 conditions 8 and 9 read the inner `MessageHeader` — schema id and template id — of every
-> `payloadId` 1 frame; only those four templates are opened past it. Every application payload and
-> core's own encode-only frames are opaque to it.
+> **S-2. The sequencer's entire decode surface is the five rows marked ✓ above.** It reads
+> `header.systemEventType` on every ingress frame of the system family, and opens only those five
+> bodies past it. **It decodes no `payloadId` at all**: every application frame is opaque to it, and so
+> are core's own encode-only events.
 
-**Ingress-legal ✗ means the sequencer MUST reject it on ingress** (`ClusterHeartbeat`,
-`LeadershipChanged`). Condition 6 (reserved `sourceId`) and condition 9 (synthesis-only template) are
-independent: one catches an ingress-legal template submitted at −1, the other a `ClusterHeartbeat`
-submitted under a producer's own id.
+**Ingress-legal ✗ means the sequencer MUST reject it on ingress** — and there are two routes to close,
+because a synthesis-only event has both a template and a `systemEventType`. §9.2 condition 3 refuses the
+template (an ingress frame is `Unsequenced` or `UnsequencedSystem`, never one of the three), and
+condition 8 refuses the value inside an `UnsequencedSystem`. Condition 6 (reserved `sourceId`) is
+independent of both: it catches an ingress-legal event submitted at −1.
 
 **Ingress-legality is a well-formedness rule, not authorization.** Aeron Cluster is Raft —
 crash-fault tolerant, not Byzantine — so a dishonest producer is out of scope, and every rule here
 exists against misconfiguration and software defect. The trust boundary is the perimeter: network
 topology and authentication at the external FIX edges (`doc/todo.md`), which touches no rule here.
 
-### 7.1 Payload fields
+### 7.1 Message fields
 
-**A core payload carries no `header` field.** The header composite is the frame's (§4.1); a payload
+**No system message carries a `header` field.** The header composite is the frame's (§4.1); a message
 that repeated it would nest one envelope inside another. This is the level of nesting the envelope
-collapses, and it is why `GatewayStarted`'s floor in §9.2 condition 10 is 8 + 8 rather than 8 + 26.
+collapses, and it is why `GatewayStarted`'s floor in §9.2 condition 9 is 8 rather than 8 + 8.
 
-**Nine of the ten have no var-data and no repeating group**, so their encoded length is exactly their
-own 8-byte `MessageHeader` plus their block, and that block is the sum of their fields with no padding.
-`ClientConnected` is the one exception and carries a single opaque var-data field (below).
+**Ten of the eleven have no var-data and no repeating group**, so a submitted body's encoded length is
+exactly its block, the sum of its fields with no padding. `ClientConnected` is the one exception and
+carries a single opaque var-data field (below). The three synthesized templates' blocks include the
+34-byte header composite, since the fields are inline.
 
-| payload | id | block | payload bytes | fields |
+| event | `systemEventType` | block | frame bytes | fields |
 | --- | --- | --- | --- | --- |
-| `ClientConnected` | 1 | **0** | 10 + *n* | `connectionData` varData — **opaque to core** |
-| `ClientDisconnected` | 2 | **0** | 8 | none — `header.connectionId` is the whole message |
-| `LeadershipChanged` | 5 | 4 | 12 | `newLeaderMemberId` int32 |
-| `ClusterStarted` | 10 | 8 | 16 | `correlationId` int64 |
-| `ClusterStopped` | 11 | 8 | 16 | `correlationId` int64 |
-| `ClusterHeartbeat` | 16 | **0** | 8 | none — the frame's `timestamp` is the whole message |
-| `GatewayRegistered` | 17 | 43 | 51 | `remaining` uint16, `gatewayId` int32, `gatewaySourceId` int32, `gatewayName` char[32], `preferenceRank` uint8 |
-| `GatewayActive` | 18 | 4 | 12 | `gatewayId` int32 |
-| `GatewayStarted` | 19 | 8 | 16 | `gatewayId` int32, `firstConnectionId` int32 |
-| `PayloadIdRegistered` | 23 | 36 | 44 | `payloadId` uint16, `protocolVersion` uint16, `protocolName` char[32] |
+| `ClientConnected` | 1 | **0** | 46 + *n* | `connectionData` varData — **opaque to the cluster tier** |
+| `ClientDisconnected` | 2 | **0** | 44 | none — `header.connectionId` is the whole message |
+| `LeadershipChanged` | 5 | 38 | **46** | `newLeaderMemberId` int32 |
+| `ClusterStarted` | 10 | 8 | 52 | `correlationId` int64 |
+| `ClusterStopped` | 11 | 8 | 52 | `correlationId` int64 |
+| `ClusterHeartbeat` | 16 | 34 | **42** | none — the frame's `timestamp` is the whole message |
+| `GatewayRegistered` | 17 | 43 | 87 | `remaining` uint16, `gatewayId` int32, `gatewaySourceId` int32, `gatewayName` char[32], `preferenceRank` uint8 |
+| `GatewayActive` | 18 | 38 | **46** | `gatewayId` int32 |
+| `GatewayStarted` | 19 | 8 | 52 | `gatewayId` int32, `firstConnectionId` int32 |
+| `PayloadIdRegistered` | 23 | 36 | 80 | `payloadId` uint16, `protocolVersion` uint16, `protocolName` char[32] |
+| `GatewayActivationRequested` | 24 | 4 | 48 | `gatewayId` int32 |
+
+Frame bytes are the sequenced form: 44 + block for a submitted body, 8 + block for a synthesized
+template.
 
 Field semantics that other rules depend on:
 
@@ -428,12 +475,12 @@ Field semantics that other rules depend on:
 - **`protocolVersion` / `protocolName`** — §6.3; `protocolName` is `char[32]`, US-ASCII, trailing
   `0x00`, and neither field is read by the sequencer (**C-2**).
 
-`ClusterHeartbeat`'s empty block is deliberate and is what makes it the cheapest frame in the system:
-its content is entirely the frame's consensus `timestamp` and `globalSeqNo`, so the payload is its
-`MessageHeader` alone (§4.2's 52-byte frame).
+`ClusterHeartbeat`'s empty body is deliberate and is what makes it the cheapest frame in the system:
+its content is entirely the frame's consensus `timestamp` and `globalSeqNo`, so the frame is its
+`MessageHeader` and its header composite and nothing else (§4.2's 42 bytes).
 
 **`ClientConnected` carries an opaque tail; `ClientDisconnected` does not, and the asymmetry is
-deliberate.** Both *frames* are core because connection lifecycle is core functionality: the sequencer
+deliberate.** Both are system events because connection lifecycle is core functionality: the sequencer
 keys its open-connection set on `header.sourceId` and `header.connectionId`, and releases every
 connection still open under a `gatewaySourceId` behind that logical gateway's next `GatewayStarted` — a
 crashed instance publishes none of the `ClientDisconnected`s that would have closed them out. **That set
@@ -451,20 +498,20 @@ connect, before the session's first message. But *what* the identity is — a FI
 gateway, something else for the next — is the producing application's, and the cluster tier has no use
 for it. So it rides in `connectionData`, and the following hold:
 
-- **Core MUST NOT decode `connectionData`.** The sequencer dispatches this template on template id alone
-  and reads nothing below `blockLength`; **S-2** is unchanged, because opening a core template is not the
-  same as opening this field.
+- **The cluster tier MUST NOT decode `connectionData`.** The sequencer dispatches this event on
+  `systemEventType` alone and reads nothing below `blockLength`; **S-2** is unchanged, because opening a
+  system body is not the same as opening this field.
 - **Its encoding is the producing gateway's**, identified by `header.sourceId` — the same value that
   routes the frame. A consumer that does not recognise the producer skips the tail exactly as **P-1**
   skips an unrecognised `payloadId`. **E-1** covers it: the frame arrives through ingress, so the tail is
   encoded once by the gateway and replicated as bytes, and any encoding is therefore safe.
 - **It MAY be empty**, and a length prefix of 0 is well-formed: a gateway whose connections need no
   identity beyond the id sends nothing. Core MUST accept both.
-- **It counts against `MAX_PAYLOAD_LENGTH`** like any other payload byte (§12): the whole core payload,
-  tail included, is bounded by the frame it sits in.
-- **No new reject condition.** §9.2 condition 8 already establishes the 8-byte `MessageHeader` the frame
-  is read through, and nothing past it is read, so there is nothing further for the sequencer to check —
-  consistent with it passing through every core template it does not decode.
+- **It counts against `MAX_PAYLOAD_LENGTH`** like any other body byte (§12): the whole message, tail
+  included, is bounded by the frame it sits in.
+- **No new reject condition.** §9.2 conditions 8 and 9 already establish the event and its block, and
+  nothing past that block is read, so there is nothing further for the sequencer to check — consistent
+  with it passing through every system event it does not decode.
 
 ### 7.2 Promotion order
 
@@ -483,7 +530,7 @@ It is lowest-rank-**excluding**, not next-rank-up: after rank 0 loses the role t
 rank 1 hands it back to rank 0. That is what makes a wholly-down gateway tier converge on whichever
 instance comes up first, rather than on the one the cluster happened to designate first.
 
-**Three triggers, one target rule:**
+**Four triggers, one target rule:**
 
 1. **Bootstrap** — behind the `GatewayRegistered` whose `remaining` reaches 0, one `GatewayActive` per
    **rank-0** row, iterated in roster order.
@@ -491,17 +538,20 @@ instance comes up first, rather than on the one the cluster happened to designat
    removed first, then the target rule runs against the instance it named.
 3. **Activation timeout** — a designated instance has not answered with a `GatewayStarted` within
    `GATEWAY_ACTIVATION_TIMEOUT_MS`.
+4. **Operator request** — a `GatewayActivationRequested` naming a rostered `gatewayId`, which is
+   designated directly rather than through the target rule.
 
-An **ingress** `GatewayActive` — `clusterctl activate` — is none of these. It is forwarded like any other
-core frame, the sequencer decodes nothing of it (**S-2**), and it therefore **arms no deadline**: a manual
-activation naming an instance that never starts is not handed over. Trigger 3 exists because a
+A **fourth trigger** is the operator's: a `GatewayActivationRequested` whose `gatewayId` a roster row
+names (§7). It runs the same synthesis as the other three and therefore **arms the same deadline** — a
+manual activation naming an instance that never starts is handed on like any other. Trigger 3 exists
+because a
 `GatewayStarted` is the only frame that registers an instance, so an instance that dies or wedges before
 publishing one was never registered and no session close can promote past it.
 
 **The deadline.** `GATEWAY_ACTIVATION_TIMEOUT_MS` is **5 × `CLUSTER_HEARTBEAT_INTERVAL_MS` = 5000 ms**
-(§12). Every *synthesized* `GatewayActive` arms one at `timestamp + GATEWAY_ACTIVATION_TIMEOUT_MS` on the
-consensus clock — **including the one a promotion produces**, so successive failures walk the roster
-instead of stalling on the first.
+(§12). Every `GatewayActive` arms one at `timestamp + GATEWAY_ACTIVATION_TIMEOUT_MS` on the consensus
+clock — **including the one a promotion produces**, so successive failures walk the roster instead of
+stalling on the first.
 
 At most **one armed activation per `gatewaySourceId`**, replaced in place, held in **arm order**. Both
 halves matter: two logical gateways bootstrapping back to back must not overwrite each other's deadline,
@@ -523,14 +573,15 @@ same `globalSeqNo`.
 
 | file | schema id | holds | change policy (§11) |
 | --- | --- | --- | --- |
-| `seqeron-frame.xml` | **210** | `Unsequenced`, `Sequenced`, the two header composites, `messageHeader`, `varDataEncoding`, **and the ten core payloads** (§7) | the envelope **frozen**; core changeable under **V-3** |
+| `seqeron-frame.xml` | **210** | the seven top-level templates, the four header composites, `messageHeader`, `varDataEncoding`, **and the eight submitted system bodies** (§7) | the envelopes **frozen**; the system events changeable under **V-3** |
 | `seqeron-replay.xml` | **212** | the six `Replay*` control messages (§10) | in-place, no version bump |
 
-**The envelope and core are one schema because they are one thing.** Both are seqeron's, both ship in
-the same artifact, and **V-3** governs both identically — a separate schema id bought only a distinction
-nothing reads. `version` stays **0** for the life of the file, core changes included: **V-3** forbids a
-mixed-vintage cluster, so no decoder ever meets bytes another build encoded and there is nothing for a
-version to signal. Schema 211 is unallocated.
+**The envelopes and the system messages are one schema because they are one thing.** Both are seqeron's,
+both ship in the same artifact, and **V-3** governs both identically — a separate schema id bought only a
+distinction nothing reads. `version` stays **0** for the life of the file, system changes included:
+**V-3** forbids a mixed-vintage cluster, so no decoder ever meets bytes another build encoded and there
+is nothing for a version to signal. That is also what lets a system body go on the wire with no
+`MessageHeader` at all (§7). Schema 211 is unallocated.
 
 **An application `xi:include`s nothing of seqeron's and regenerates nothing of it.** It defines its own
 payload encoding — a schema if that encoding has one, nothing at all if it does not — and reads the
@@ -538,7 +589,7 @@ frame through seqeron's compiled codecs: the jar for Java, the published headers
 `common-types.xml`.
 
 seqeron ships both schemas' codecs as **one artifact per language**: `ReplayerRecovery` decodes
-`LeadershipChanged` (core) while handling a `Replaying` (control) inside a `Sequenced` walk, so the
+`LeadershipChanged` (schema 210) while handling a `Replaying` (control, 212) inside the same walk, so the
 two are one link-time unit.
 
 ## 9. Sequencer rules
@@ -552,9 +603,7 @@ two are one link-time unit.
 - **A rejected ingress message does not advance it and leaves no record in the log at all** — not of
   itself, not of the refusal. The whole trace is node-local (§9.6).
 - **S-5. Every reject condition of §9.2 is evaluated before the counter advances *and* before any state
-  mutation.** _(Today both halves bite: the sequencer increments, then mutates the roster, the session
-  binding and the open-connection set, and only then encodes `origin` — the field §4.3 deletes, and the
-  field whose out-of-range value throws there.)_
+  mutation.**
 - Recording *position* is only how the archive is addressed; the replayer needs no
   `globalSeqNo → position` index.
 
@@ -565,30 +614,38 @@ MUST NOT throw (§9.4).
 
 | # | reject when | today? |
 | --- | --- | --- |
-| 1 | `length < MIN_INGRESS_LENGTH` (28), or `length > MAX_INGRESS_LENGTH` (§12) | ✓ floor; ceiling **new** |
+| 1 | `length < MIN_INGRESS_LENGTH` (28), or `length > MAX_INGRESS_LENGTH` (§12) | ✓ |
 | 2 | `MessageHeader.schemaId != 210`, or `MessageHeader.version != 0` | ✓ |
-| 3 | `MessageHeader.templateId != Unsequenced` | ✓ |
-| 4 | `blockLength != unsequencedHeader.ENCODED_LENGTH` (18), exactly | ✓ |
-| 5 | the var-data length prefix is not a usable payload length: it is 65535 (`varDataEncoding`'s `nullValue`), or `MIN_INGRESS_LENGTH + payloadLength != length` | ✓ |
-| 6 | `sourceId == -1` — reserved for the cluster's own frames (**F-4**) | **new** |
-| 7 | `payloadId == 0` | ✓ |
-| 8 | `payloadId == 1` and the payload is shorter than the 8-byte `MessageHeader`, or that header's `schemaId` is not 210 (**P-4**) | ✓ |
-| 9 | `payloadId == 1` and the inner `templateId` is synthesis-only (`ClusterHeartbeat`, `LeadershipChanged`) | ✓ |
-| 10 | `payloadId == 1` and the frame fails **S-6** — a `GatewayStarted` whose payload is shorter than the 8-byte `MessageHeader` plus the **sequencer's own** `GatewayStarted` block length (**16 bytes in all**), or whose `gatewayId` names no roster row, or whose row names a different `gatewaySourceId`; or another core frame claiming a rostered `sourceId` on an unbound session | ✓ body floors; roster and session checks **new** |
+| 3 | `MessageHeader.templateId` is neither `Unsequenced` nor `UnsequencedSystem` | ✓ |
+| 4 | `blockLength != 18`, exactly — the ENCODED_LENGTH of both ingress composites | ✓ |
+| 5 | the var-data length prefix is not a usable body length: it is 65535 (`varDataEncoding`'s `nullValue`), or `MIN_INGRESS_LENGTH + bodyLength != length` | ✓ |
+| 6 | `sourceId == -1` — reserved for the cluster's own frames (**F-4**) | ✓ |
+| 7 | `Unsequenced` and `payloadId` is 0 or **1** | ✓ |
+| 8 | `UnsequencedSystem` and `systemEventType` is not an allocated, ingress-legal value | ✓ |
+| 9 | `UnsequencedSystem` and the body is shorter than that `systemEventType`'s compiled `BLOCK_LENGTH` | ✓ |
+| 10 | `UnsequencedSystem` and the frame fails **S-6** | ✓ |
 
 Rejection logs and counts (§9.6) and emits nothing — neither the rejected message nor any report of
 it — and `globalSeqNo` does not move.
 
 How to implement the sharp ones:
 
+- **Conditions 1–6 cover both ingress templates.** The two 18-byte composites make condition 4 the same
+  single equality and condition 5 the same arithmetic, and condition 6 the same int32 compare, whichever
+  template the frame is. Only 7–10 branch.
 - **Conditions 4 and 5 are equalities, not floors.** Both directions are silent if admitted: a short
   `blockLength` puts the var-data prefix inside the header composite; a long one, or a prefix short of
   the frame end, silently drops bytes and re-emits the frame a size smaller, deterministically, on every
   node. Condition 4 compares against the composite's own `ENCODED_LENGTH`, not a hand-written constant.
-  _(Today the 28-byte floor is `Sequencer.MIN_FRAME_LENGTH`.)_
+- **Condition 3 refuses the synthesis-only templates structurally.** `ClusterHeartbeat`,
+  `LeadershipChanged` and `GatewayActive` are top-level templates that are not ingress templates, so a
+  producer submitting one is caught before any body is opened. Condition 8 closes the other route in —
+  the same event named by `systemEventType` inside an `UnsequencedSystem`.
+- **Condition 7 refuses `payloadId` 1 rather than reserving it.** Core no longer rides a payload (§6.1),
+  so a producer still on an older build fails loudly instead of having core bytes copied through onto the
+  tap as an application payload nothing will ever decode.
 - **The `MAX_BLOCK_LENGTH` check is retired** — under the envelope the block is a constant and the only
-  varying length is the payload's, bounded by condition 1. _(Retired in the tree with §15 step 4, which
-  took the last traffic off the copy-through branch and the branch with it.)_
+  varying length is the body's, bounded by condition 1.
 - **The ceiling is a compiled-in protocol constant, never a transport read per frame.** **S-3** forbids
   checking against a node's MTU: a node provisioned smaller than its peers would fork `globalSeqNo`. The
   per-node part is **checked at start-up, never per frame** — a node whose ingress or tap MTU cannot
@@ -596,19 +653,16 @@ How to implement the sharp ones:
 - **Condition 1 is a backstop** (**T-3**): a conforming producer's encode method refuses an oversized
   payload on the caller's own stack. What condition 1 catches is a producer not running a conforming
   implementation.
-- **Conditions 8 and 10 each carry their own floor.** Fitting the frame exactly says nothing about being
-  long enough for what the next condition reads. Condition 9 needs no floor — 8 established the eight
-  bytes it reads `templateId` from.
+- **Conditions 9 and 10 each carry their own floor, and 9 is what establishes 10's.** Fitting the frame
+  exactly says nothing about being long enough for what the next condition reads. Condition 8 needs no
+  floor — it reads a header field, not a body one.
 - **That floor is the decoder's compiled constant, never the wire's `blockLength`.** An SBE decoder
   reads a fixed-width field at its fixed offset whatever acting block length it was wrapped with, so a
-  producer-declared length bounds nothing. The constant is `8 + GatewayStartedDecoder.BLOCK_LENGTH` = 16
-  (`gatewayId`, `firstConnectionId`), and the same rule holds for any core template a later condition
-  reads a body field from.
-- **Condition 6 is an int32 compare** — no enum to decode, nothing that can throw. The `Origin` enum it
-  replaces is already gone (§15 step 1), so what is left is the compare itself; until it lands, a frame
-  submitted at the reserved `sourceId` is sequenced like any other.
-- **Condition 8 precedes 9 and 10** and is the sequencer's instance of **P-4**: reading a `templateId`
-  out of an unverified payload is reading a foreign schema's numbering as core's.
+  producer-declared length bounds nothing. Condition 9 applies it to every system event a later condition
+  reads a body field from, rather than to `GatewayStarted` alone.
+- **The sequencer's instance of P-4 is retired with condition 8's predecessor.** There is no longer a
+  self-describing payload it must verify before trusting: it selects nothing by `payloadId` and opens no
+  payload. **P-4** still governs every application consumer (§6.2, §13.2).
 
 ### 9.3 Determinism
 
@@ -636,14 +690,15 @@ its own duty cycle instead.
 
 ### 9.5 Encoding a frame
 
-`sequenceMessage`: decode `MessageHeader` + `unsequencedHeader`; encode a fresh outer `MessageHeader`
-(`Sequenced`, `blockLength` 34, schema 210, version 0 — all four constants, none copied); copy the
-18-byte prefix (`payloadId` included); overwrite `sessionId`; append `globalSeqNo` + `timestamp`; copy
-the length-prefixed payload verbatim.
+`sequenceMessage`: decode `MessageHeader` + the 18-byte header; encode a fresh outer `MessageHeader`
+(`Sequenced` or `SequencedSystem` matching the ingress template, `blockLength` 34, schema 210, version 0
+— all four constants, none copied); copy the 18-byte prefix verbatim, the field at offset 16 included;
+overwrite `sessionId`; append `globalSeqNo` + `timestamp`; copy the length-prefixed body verbatim. **One
+path serves both families**, because the copy never reads offset 16 and the three fields written back
+are at offsets common to both sequenced composites.
 
-Synthesis (`ClusterHeartbeat`, `LeadershipChanged`, bootstrap `GatewayActive`) encodes the core payload
-**directly at the payload offset** and back-fills the var-data length — no scratch buffer, no second
-copy.
+Synthesis (`ClusterHeartbeat`, `LeadershipChanged`, `GatewayActive`) is one flat encode per frame: a
+template of its own, fields inline, no body, no length prefix, no scratch buffer.
 
 ### 9.6 What a rejection leaves behind
 
@@ -769,13 +824,19 @@ the deployment.
 
 | artifact | policy | blast radius |
 | --- | --- | --- |
-| `seqeron-frame.xml` (210) — the envelope | **frozen.** Any change is a new wire format; all three repos release together | everything |
-| `seqeron-frame.xml` (210) — the core payloads | changeable, under **V-3**. A core payload is a payload like any other, so a core change restamps *no* application frame — the frame around it is untouched | the cluster tier and core's consumers |
+| `seqeron-frame.xml` (210) — the envelopes | **frozen.** Any change is a new wire format; all three repos release together | everything |
+| `seqeron-frame.xml` (210) — a **submitted** system event | changeable, under **V-3**: a `systemEventType` allocation inside a frozen shape, which restamps *no* application frame | the cluster tier and the system family's consumers |
+| `seqeron-frame.xml` (210) — a **synthesized** system event | a frame-layer change: only the sequencer can emit one and it takes a template id | everything |
 | `seqeron-replay.xml` (212) | in place, no bump (§10) | one node's build |
 | an application schema | the application's business | one repo, one commit — **E-1** holds here |
 
-Core carries no `sinceVersion` discipline, because **V-3** leaves it nothing to be compatible with: no
-seqeron decoder ever meets bytes another build encoded.
+The system messages carry no `sinceVersion` discipline, because **V-3** leaves them nothing to be
+compatible with: no seqeron decoder ever meets bytes another build encoded. That is also what lets a
+system body ship with no schema or version declaration of its own (§7).
+
+**The row a change falls in is what the change *is*, not where it lives.** Adding a submitted event and
+adding a synthesized one are both edits to one file, and they are a registry allocation and a wire change
+respectively.
 
 - **V-1. Library versions are part of the wire format.** All three repos MUST pin the same Aeron /
   Agrona / SBE versions *for the frame*; skew corrupts frames rather than failing to build. seqeron
@@ -787,7 +848,7 @@ seqeron decoder ever meets bytes another build encoded.
   agreement problem to solve — only a cross-*time* one, whose rules are specific to the encoding the
   application chose and belong with it. How a version is signalled, which direction of compatibility is
   guaranteed, and what a replay of older bytes through today's decoder may do are not specified here.
-- **V-3. A frame or core change MUST NOT be rolled across a running cluster, and no seqeron decoder may
+- **V-3. A frame or system-message change MUST NOT be rolled across a running cluster, and no seqeron decoder may
   be required to read bytes an earlier build encoded.** Two builds encoding the same synthesized frame
   differently is **F-2** broken; a surviving archive is the same fault displaced in time.
   `seqeron-replay.xml` is exempt from both — nothing records it, and it is node-local.
@@ -796,7 +857,7 @@ seqeron decoder ever meets bytes another build encoded.
 
 | limit | value | source |
 | --- | --- | --- |
-| `blockLength` | **18 / 34**, constant — an equality, not a bound (§9.2) | §4.2 |
+| `blockLength` | **18 / 34** on the four envelope templates, constant — an equality, not a bound (§9.2); 34 / 38 on the synthesized three, whose fields are inline | §4.2 |
 | per-message overhead | **92** on ingress (32 Aeron data header + 32 Aeron Cluster session header + 28 frame), **76** on the tap (32 + 44 frame) | §4.2 |
 | max payload (`MAX_PAYLOAD_LENGTH`) | **1316 bytes**, a pinned constant: 1408 (the pinned MTU) − 92 | **T-2** |
 | max ingress frame (`MAX_INGRESS_LENGTH`) | 28 + `MAX_PAYLOAD_LENGTH` — **1344**; reject condition 1 | **T-2**, §9.2 |
@@ -844,8 +905,9 @@ to copy.
 
 ### 13.1 `SbeLogPrinter` pipes payloads; it does not decode them
 
-Core's ten are the only payloads it decodes unaided (seqeron owns schema 210, so a `payloadId` 1 frame
-prints in full). Everything else goes down a pipe:
+The system family is all it decodes unaided — seqeron owns schema 210, so every frame of it prints in
+full, a submitted body decoded through the `systemEventType` that names it rather than through a header
+the body does not carry. Everything else goes down a pipe:
 
 ```
 sbe-log-printer.sh --payload … | application-decode.sh
@@ -871,18 +933,19 @@ than having to be designed:
 
 ### 13.2 Non-SBE payloads
 
-> **E-1. A payload that arrived through ingress is encoded exactly once, by its producer, and is never
-> re-encoded after sequencing. The sequencer's synthesized frames are the exception —
-> `ClusterHeartbeat`, `LeadershipChanged`, and the bootstrap and promotion `GatewayActive`s — because
-> they have no producer: every node encodes its own copy.**
+> **E-1. A payload or system body that arrived through ingress is encoded exactly once, by its producer,
+> and is never re-encoded after sequencing. The sequencer's synthesized frames are the exception —
+> `ClusterHeartbeat`, `LeadershipChanged` and `GatewayActive` — because they have no producer: every node
+> encodes its own copy.**
 
 Application payloads may use **any encoding** — SBE, protobuf, raw FIX bytes, a proprietary binary.
 Every replica receives payload *bytes* (replicated through Raft, or read off its own recording), so two
 encoders never have to agree.
 
-**The frame and core are fixed-layout SBE and MUST NOT become tag-encoded.** The synthesized frames are
-core payloads encoded independently on every node, and the taps must come out byte-identical (**F-2**,
-**S-3**), so the requirement that two encoders agree binds core exactly as it binds the frame.
+**The frame and the system messages are fixed-layout SBE and MUST NOT become tag-encoded.** The
+synthesized frames are encoded independently on every node, and the taps must come out byte-identical
+(**F-2**, **S-3**), so the requirement that two encoders agree binds the system family exactly as it
+binds the frame.
 
 **The envelope is protobuf's framing protocol**: the var-data length prefix delimits, `payloadId` names
 the type — no `Any` wrapper or `type_url` needed. What each encoding affords **P-4** differs: SBE gives
@@ -900,16 +963,16 @@ driver, sub-second. The fixture is a **synthetic payload seqeron owns**.
 | # | asserts | rule |
 | --- | --- | --- |
 | 1 | **Copy fidelity.** Sequence an `Unsequenced` over known bytes; the sequenced payload is byte-identical and `payloadId` unchanged. Parameterised over empty, 1 byte, and `MAX_PAYLOAD_LENGTH` | §5 |
-| 2 | **Prefix property.** `unsequencedHeader` bytes 0..17 equal `sequencedHeader` bytes 0..17 for the same values — `payloadId` included — and the two `ENCODED_LENGTH`s are 18 and 34. Pure schema check, no `Sequencer` | **F-3** |
-| 3 | **Core frames round-trip unchanged.** Parameterised over the **eight** ingress-legal payloads of §7: wrap as `payloadId` 1, sequence, assert the egress payload is byte-identical including the inner `MessageHeader`, and for `ClientConnected` over an empty, a short and a `MAX_PAYLOAD_LENGTH`-filling `connectionData` (§7.1). The two synthesis-only templates are covered instead by encoding one of each through the `Sequencer`'s own synthesis path | §7 |
-| 4 | **Rejection table.** One case per row of §9.2, each asserting that the rejected message was not sequenced, that **nothing at all was emitted** — `globalSeqNo` unmoved, no synthesized frame behind it — and that the rejected-frame counter advanced by exactly one. Cases: over `MAX_INGRESS_LENGTH` and under 28 (1); a `schemaId` that is not 210 and a non-zero `version` (2); a `templateId` that is not `Unsequenced` (3); a `blockLength` that is not 18, below and above (4); a length prefix past the frame end, one short of it, and one equal to 65535 (5); an ingress `sourceId` of −1 (6); `payloadId` 0 (7); a `payloadId` 1 payload too short for its own `MessageHeader` and one whose `schemaId` is not 211 (8); a `ClusterHeartbeat` and a `LeadershipChanged` submitted on ingress (9); a `GatewayStarted` payload shorter than its 16 bytes and one declaring `blockLength` 0 (10) | **S-4**, **S-5**, **S-7**, **P-4** |
+| 2 | **Prefix property.** Each unsequenced composite's bytes 0..17 equal its sequenced counterpart's for the same values — the field at offset 16 included — the two pairs are byte-identical to each other, and the `ENCODED_LENGTH`s are 18 and 34. Pure schema check, no `Sequencer` | **F-3** |
+| 3 | **System frames round-trip unchanged.** Parameterised over the **eight** submitted events of §7: wrap as `UnsequencedSystem`, sequence, assert the egress body is byte-identical and the `systemEventType` carried, and for `ClientConnected` over an empty, a short and a `MAX_PAYLOAD_LENGTH`-filling `connectionData` (§7.1). The three synthesized templates are covered instead by encoding one of each through the `Sequencer`'s own synthesis path, asserting the template id, the inline fields and the redundant `systemEventType` | §7 |
+| 4 | **Rejection table.** One case per row of §9.2, each asserting that the rejected message was not sequenced, that **nothing at all was emitted** — `globalSeqNo` unmoved, no synthesized frame behind it — and that the rejected-frame counter advanced by exactly one. Cases: over `MAX_INGRESS_LENGTH` and under 28 (1); a `schemaId` that is not 210 and a non-zero `version` (2); a `templateId` that is neither ingress template, and each of the three synthesized ones (3); a `blockLength` that is not 18, below and above, on both ingress templates (4); a length prefix past the frame end, one short of it, and one equal to 65535 (5); an ingress `sourceId` of −1 (6); `payloadId` 0 and `payloadId` 1 (7); an unallocated `systemEventType` and each of the three synthesis-only ones (8); a `GatewayStarted` body shorter than its 8 bytes (9); S-6's cases (10) | **S-4**, **S-5**, **S-7** |
 | 4a | **Rejection denies nothing, and repeats identically.** Two rejections under the same application `payloadId` each advance the counter, neither emits anything, and a well-formed frame of that `payloadId` afterwards is accepted unchanged | **S-7**, **C-2** |
 | 4b | **The producer refuses before the wire, and survives it.** A payload of exactly `MAX_PAYLOAD_LENGTH` publishes; one byte longer is refused with **nothing offered to any transport**, distinguishably from back-pressure, and the very next well-formed publish succeeds. Against an in-memory transport seam, so no Aeron | **T-3**, §12 |
 | 5 | **Synthesis determinism.** Two independently constructed `Sequencer`s fed the same message sequence emit byte-identical frames, heartbeat for heartbeat | **S-3**, **F-2** |
-| 6 | **Cross-language golden vectors.** A checked-in binary corpus — one frame per core payload, plus the boundary payload sizes — that both language suites decode and re-encode to the same bytes. **Java regenerates it, C++ only verifies.** Regenerated on every core bump; a change to a synthesized frame's bytes is what flags the release as a **V-3** one | **F-2**, **V-1** |
-| 7 | **Selective consumption.** A consumer fed an unallocated `payloadId`, and an unhandled inner template within `payloadId` 1, ignores both without error — and its `globalSeqNo` continuity tracking advances across them | **P-1**–**P-3** |
-| 8 | **S-6's three cases.** A `GatewayStarted` agreeing with its roster row binds and is accepted; three are rejected — the same frame naming a different `gatewaySourceId`, one whose `gatewayId` no roster row names while claiming a rostered `sourceId`, and another core frame claiming a rostered `sourceId` on an unbound session — and both negatives are accepted: an application payload carrying that `sourceId`, and a marker at −1 | **S-6** |
-| 9 | **Promotion order.** Against a roster of one `gatewaySourceId` with ranks 0, 1, 2: bootstrap activates rank 0 only; closing rank 0's bound session promotes rank 1; closing rank 1's promotes rank 0 again (lowest-rank-excluding, not next-rank-up); a designated instance that publishes no `GatewayStarted` is handed on after exactly `GATEWAY_ACTIVATION_TIMEOUT_MS` of consensus time and not before; one that does publish one arms nothing further; and a `gatewaySourceId` with a single row synthesizes **no** frame on close, leaving `globalSeqNo` unmoved. Two `gatewaySourceId`s bootstrapped back to back each keep their own deadline | §7.2, **S-3** |
+| 6 | **Cross-language golden vectors.** A checked-in binary corpus — one frame per system event, plus the boundary payload sizes — that both language suites decode and re-encode to the same bytes. **Java regenerates it, C++ only verifies.** Regenerated on every system-family bump; a change to a synthesized frame's bytes is what flags the release as a **V-3** one | **F-2**, **V-1** |
+| 7 | **Selective consumption.** A consumer fed an unallocated `payloadId`, and an unhandled `systemEventType`, ignores both without error — and its `globalSeqNo` continuity tracking advances across them, over all five sequenced shapes | **P-1**–**P-3** |
+| 8 | **S-6's three cases.** A `GatewayStarted` agreeing with its roster row binds and is accepted; four are rejected — the same frame naming a different `gatewaySourceId`, one whose `gatewayId` no roster row names while claiming a rostered `sourceId`, a `GatewayActivationRequested` naming an unrostered `gatewayId`, and another system frame claiming a rostered `sourceId` on an unbound session — and both negatives are accepted: an application payload carrying that `sourceId`, and a marker at −1 | **S-6** |
+| 9 | **Promotion order.** Against a roster of one `gatewaySourceId` with ranks 0, 1, 2: bootstrap activates rank 0 only; an operator's `GatewayActivationRequested` is forwarded and answered one `globalSeqNo` behind; closing rank 0's bound session promotes rank 1; closing rank 1's promotes rank 0 again (lowest-rank-excluding, not next-rank-up); a designated instance that publishes no `GatewayStarted` is handed on after exactly `GATEWAY_ACTIVATION_TIMEOUT_MS` of consensus time and not before; one that does publish one arms nothing further; and a `gatewaySourceId` with a single row synthesizes **no** frame on close, leaving `globalSeqNo` unmoved. Two `gatewaySourceId`s bootstrapped back to back each keep their own deadline | §7.2, **S-3** |
 
 **Row 6 must land before extraction**, because afterwards it needs a published artifact rather than a
 checkout on both sides, and it must be regenerated and reviewed as a diff on every library bump.
@@ -1011,7 +1074,127 @@ actually landed.
    is what a reader of a dump wants whether or not the protocol crosses an application boundary.
 9. §14's suite, both languages. → it fails on a deliberate field reorder and on a renumbered core frame.
 
-**Steps 1 and 3–6 are each a wire change**, and **V-3** applies to each.
+10. **Landed. Split core off the application envelope.** Core is not an application and `payloadId` 1 said
+    it was. Ten messages that the cluster tier itself decodes rode inside the same
+    `Unsequenced`/`Sequenced` body that carries an application's opaque bytes, distinguished only by a
+    reserved value in the id space that names application protocols — so the sequencer's own vocabulary
+    is a special case of the thing it is supposed to be transparent to, and **P-4** has to be paid on
+    every frame to tell the two apart. This step gives core its own shapes and retires `payloadId` 1.
+
+    **Seven top-level templates in schema 210**, two composites, two layouts:
+
+    | template | id | header | body |
+    | --- | --- | --- | --- |
+    | `Unsequenced` | 100 | `unsequencedHeader` (18) | `payload:varData` |
+    | `Sequenced` | 101 | `sequencedHeader` (34) | `payload:varData` |
+    | `UnsequencedSystem` | 102 | `unsequencedSystemHeader` (18) | `body:varData` |
+    | `SequencedSystem` | 103 | `sequencedSystemHeader` (34) | `body:varData` |
+    | `ClusterHeartbeat` | 104 | `sequencedSystemHeader` (34) | — |
+    | `LeadershipChanged` | 105 | `sequencedSystemHeader` (34) | `newLeaderMemberId` |
+    | `GatewayActive` | 106 | `sequencedSystemHeader` (34) | `gatewayId` |
+
+    The system composites are the application ones byte-for-byte, with **`systemEventType` at offset 16 where
+    `payloadId` sits** — same width, same alignment, so **F-3** holds within each pair and `globalSeqNo`
+    stays at 18 on all five sequenced shapes. That last property is the one to defend: it is what keeps
+    the continuity read in both `ReplayerRecovery`s branch-free over every frame on the tap.
+
+    **`systemEventType` replaces the payload's inner `MessageHeader`.** A system body is its message's SBE
+    block with no framing of its own — encoders `wrap` rather than `wrapAndApplyHeader` — and a decoder
+    supplies `BLOCK_LENGTH` and `SCHEMA_VERSION` from its own compiled constants. **V-3** is what
+    licenses that: no seqeron decoder ever meets bytes another build encoded, so a per-frame schema and
+    version declaration is 8 bytes verifying something already guaranteed. Six bytes come off every
+    system frame; a `ClusterHeartbeat`, which needs no body at all, goes from 52 to **42**.
+
+    **The seven submitted messages keep their numbers as `systemEventType`s** — `ClientConnected` 1,
+    `ClientDisconnected` 2, `ClusterStarted` 10, `ClusterStopped` 11, `GatewayRegistered` 17,
+    `GatewayStarted` 19, `PayloadIdRegistered` 23 — and the three the cluster synthesizes leave the
+    space entirely, because a template id already names them. `systemEventType` is populated on all three
+    anyway, redundant against the template id, so that **offset 16 discriminates every frame on the tap**
+    and a consumer's delivery type carries one field whichever family it came from.
+
+    **`clusterctl activate` records the operator's act.** It publishes `GatewayActivationRequested(gatewayId)`,
+    `systemEventType` **24** — a fresh number, not `GatewayActive`'s vacated 18, so no mixed-vintage
+    recording can read one as the other (§7's rule for `PayloadIdRegistered`) — and the sequencer
+    answers it by synthesizing `GatewayActive` through the same path bootstrap and both promotions take.
+    That is what makes the synthesized three synthesized-*only* and leaves no `SequencedSystem` without
+    an `UnsequencedSystem` antecedent, which is the whole point of the split: **a sequenced shape asserts
+    a transformation, and a frame with no ingress form must not claim one.** It also gives the manual
+    path the roster validation the other three have and it today lacks.
+
+    **Past participle, because the operator's act is the fact.** Every submitted system message names
+    something that happened — `ClientConnected`, `GatewayRegistered`, `GatewayStarted`. An imperative
+    (`ActivateGateway`) or a bare request would be the one command in a family of events, and would name
+    the effect asked for rather than the act performed. What happened is that an operator asked;
+    the sequencer then designates (§7's verb for what `GatewayActive` does). So all eleven system
+    messages are events, and `systemEventType` names them with no outlier.
+
+    **Why the seven bundle and the three do not.** A pair exists to express a relation — submitted, then
+    stamped — and all seven undergo it. The three share only the absence of one. A single template
+    discriminating three unrelated bodies would express nothing, which is the pattern this step exists to
+    remove.
+
+    **§2 loses its awkward paragraph.** Sequenced and synthesized frames no longer share a template, so
+    the class is no longer marked only by `sourceId == -1` — it is the template. **F-4** stays as the
+    provenance mark and stays refused on ingress, but it is now corroboration rather than the sole
+    carrier, and §2's closing example inverts: `GatewayActive` stops being the frame that is synthesized
+    at bootstrap and forwarded on manual promotion, which is what made "the classes partition frames, not
+    payloads" need saying at all.
+
+    **§9.2 flattens.** Conditions 1–6 are unchanged and now cover both ingress templates: the two
+    18-byte composites make condition 4 the same single equality, and condition 5 the same arithmetic.
+    Condition 3 admits `Unsequenced` **and** `UnsequencedSystem` and thereby **absorbs condition 9** — a
+    `ClusterHeartbeat` or a `LeadershipChanged` on ingress is now a top-level template that is not an
+    ingress template, caught structurally rather than by opening a payload. **Condition 8 goes**: there
+    is no inner `MessageHeader` to verify. The remaining three branch on the template:
+
+    | # | reject when |
+    | --- | --- |
+    | 7 | `Unsequenced` and `payloadId` is 0 or **1** |
+    | 8 | `UnsequencedSystem` and `systemEventType` is not an allocated, ingress-legal value |
+    | 9 | `UnsequencedSystem` and the body is shorter than that `systemEventType`'s compiled `BLOCK_LENGTH` |
+    | 10 | `UnsequencedSystem` and the frame fails **S-6** |
+
+    `payloadId` 1 becomes **refused on ingress rather than reserved-and-decoded**, so a producer still on
+    the old build fails loudly instead of having core bytes copied through as an application payload.
+    Condition 9's floor is still the decoder's compiled constant and never the wire's declared length,
+    for the reason §9.2 already gives, and it now applies to every system template a later condition
+    reads a field from rather than to `GatewayStarted` alone.
+
+    **P-4 does not go with condition 8.** What retires is the *sequencer's* instance of it — there is no
+    longer a self-describing payload it must verify before trusting. The rule itself still governs every
+    application payload (§6.1, §13.2), where a wrongly selected decoder is still only catchable where the
+    encoding self-describes.
+
+    **§11 gets a sharper line than it has.** Adding a submitted system message is a `systemEventType`
+    allocation inside a frozen shape — the changeable row, under **V-3**. Adding a synthesized one is a
+    frame-layer change, because only the sequencer can emit it and it takes a template id. That splits
+    the two rows on what the change actually is, rather than on core-payload-versus-envelope.
+
+    **Blast radius.** Schema and both codegen paths; `unwrapFrame` (`SequencedFrame.hpp`) and
+    `SequencedFrameDecoder`, which grow a second family each; the `SequencedEvent` delivery types in both
+    languages and `LifecycleEvent`; `CoreFrame` → `SystemFrame`, `IngressPublisher::publishCore` →
+    `publishSystem`, `Sequencer.applyCore` → `applySystem`, `CORE_PAYLOAD_ID` deleted; the synthesis
+    path, which loses `beginSynthesized`/`endSynthesized`'s payload-length bookkeeping for three flat
+    encodes; `ReplayerService`'s `globalSeqNo` self-check, which must read all five sequenced shapes;
+    `SbeLogPrinter`; `ClusterCtl` (five publishers, and `activate` changes message); and the core
+    producers on both edges — `FixGateway`, `BasicDataServer`, `Gateways`, both `GatewayLifecycle`s,
+    `ClusterIngress` ×2. Application payload handling is untouched end to end, which is the test that
+    the split is in the right place.
+
+    → both suites and all three e2e paths green; the sequencer decodes **no `payloadId` at all**;
+    `grep -r CORE_PAYLOAD_ID` is empty. A wire change, and the largest since step 1: **V-3** applies, and
+    every archive purges.
+
+    Two things settled here rather than in the design. **The eight submitted bodies keep their template
+    ids as their `systemEventType`s literally** — each is a `<sbe:message>` whose template id is never
+    written to the wire, so `ClientConnectedDecoder.TEMPLATE_ID` *is* the constant and there is no second
+    table to drift; only the three synthesized values (5, 16, 18) need naming in code, because their
+    templates are numbered 104–106. And **`blockLength`/`version` are 0 on every system frame a consumer
+    is handed**, synthesized ones included: the decoder's compiled constants are the only ones there are
+    for a submitted body, and using them for the synthesized three too keeps one decode helper rather than
+    two (`decodeSystem`, `SystemFrame`).
+
+**Steps 1, 3–6 and 10 are each a wire change**, and **V-3** applies to each.
 
 **Between step 1 and step 4 the tap carried two shapes** — schema 210 envelopes beside bare schema 202
 messages — and `Sequencer.sequenceMessage` was a `schemaId` dispatcher over the two, a knowing,

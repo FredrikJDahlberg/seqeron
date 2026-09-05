@@ -17,6 +17,7 @@
 #include "org/limitless/phixeron/sequencer/SequencedFrame.hpp"
 #include "org_limitless_phixeron_sbe_frame/MessageHeader.h"
 #include "org_limitless_phixeron_sbe_frame/Unsequenced.h"
+#include "org_limitless_phixeron_sbe_frame/UnsequencedSystem.h"
 
 namespace org::limitless::phixeron::sequencer {
 
@@ -64,12 +65,33 @@ template<typename Encoder, typename Fill>
     return sender.send(buffer.data(), length);
 }
 
-// A core payload (payloadId 1) — the cluster tier's own, and the only payloadId it decodes.
+// One of seqeron's own events (doc/seqeron-protocol-spec.md §7), in an UnsequencedSystem frame.
+//
+// The body carries no messageHeader of its own — header.systemEventType is what names it — so `fill`
+// sees an encoder that has been `wrap`ped rather than `wrapAndApplyHeader`ed, and the six bytes the
+// system family saves over the application one are exactly that absence. V-3 licenses it: no seqeron
+// decoder ever meets bytes another build encoded.
 template<typename Encoder, typename Fill>
-[[nodiscard]] bool publishCore(ClusterStreamSender& sender, const std::int32_t sourceId,
-                               const std::int32_t connectionId, Fill&& fill)
+[[nodiscard]] bool publishSystem(ClusterStreamSender& sender, const std::int32_t sourceId,
+                                 const std::int32_t connectionId, const std::uint16_t systemEventType, Fill&& fill)
 {
-    return publishPayload<Encoder>(sender, sourceId, connectionId, CORE_PAYLOAD_ID, std::forward<Fill>(fill));
+    alignas(16) std::array<std::uint8_t, INGRESS_ENCODE_BUFFER_LEN> body{};
+    Encoder encoder;
+    encoder.wrapForEncode(reinterpret_cast<char*>(body.data()), 0, body.size());
+    std::forward<Fill>(fill)(encoder);
+    const auto bodyLength = static_cast<std::uint16_t>(encoder.encodedLength());
+
+    alignas(16) std::array<std::uint8_t, INGRESS_ENCODE_BUFFER_LEN> buffer{};
+    sbe::frame::UnsequencedSystem frame;
+    frame.wrapAndApplyHeader(reinterpret_cast<char*>(buffer.data()), 0, buffer.size());
+    frame.header()
+        .sourceId(sourceId)
+        .connectionId(connectionId)
+        .sessionId(sender.clusterSessionId())
+        .systemEventType(systemEventType);
+    frame.putBody(reinterpret_cast<const char*>(body.data()), bodyLength);
+    const auto length = static_cast<std::uint16_t>(sbe::frame::MessageHeader::encodedLength() + frame.encodedLength());
+    return sender.send(buffer.data(), length);
 }
 
 } // namespace org::limitless::phixeron::sequencer

@@ -140,23 +140,16 @@ struct Client final : ReplayerRecoveryActions
 // ReplayerRecoveryTest's heartbeatBuffer; keep the two in step.
 std::vector<std::uint8_t> encodeHeartbeat(const std::int64_t globalSeqNo)
 {
-    alignas(16) std::array<std::uint8_t, 64> payload{};
-    frm::ClusterHeartbeat heartbeat;
-    heartbeat.wrapAndApplyHeader(reinterpret_cast<char*>(payload.data()), 0, payload.size());
-    const auto payloadLength =
-        static_cast<std::uint16_t>(frm::MessageHeader::encodedLength() + heartbeat.encodedLength());
-
     std::vector<std::uint8_t> buf(256, 0);
-    frm::Sequenced frame;
+    frm::ClusterHeartbeat frame;
     frame.wrapAndApplyHeader(reinterpret_cast<char*>(buf.data()), 0, buf.size());
     frame.header()
         .sourceId(1)
         .connectionId(0)
         .sessionId(0)
-        .payloadId(sequencer::CORE_PAYLOAD_ID)
+        .systemEventType(sequencer::CLUSTER_HEARTBEAT)
         .globalSeqNo(globalSeqNo)
         .timestamp(globalSeqNo * 1000);
-    frame.putPayload(reinterpret_cast<const char*>(payload.data()), payloadLength);
     buf.resize(frm::MessageHeader::encodedLength() + frame.encodedLength());
     return buf;
 }

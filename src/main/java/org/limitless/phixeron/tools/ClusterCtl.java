@@ -33,9 +33,9 @@ import org.limitless.phixeron.sbe.frame.GatewayActiveDecoder;
 import org.limitless.phixeron.sbe.frame.GatewayRegisteredDecoder;
 import org.limitless.phixeron.sbe.frame.ClusterStartedEncoder;
 import org.limitless.phixeron.sbe.frame.ClusterStoppedEncoder;
-import org.limitless.phixeron.sbe.frame.GatewayActiveEncoder;
+import org.limitless.phixeron.sbe.frame.GatewayActivationRequestedEncoder;
 import org.limitless.phixeron.sbe.frame.GatewayRegisteredEncoder;
-import org.limitless.phixeron.sequencer.CoreFrame;
+import org.limitless.phixeron.sequencer.SystemFrame;
 import org.limitless.phixeron.sbe.frame.MessageHeaderDecoder;
 import org.limitless.phixeron.sbe.frame.MessageHeaderEncoder;
 import org.limitless.phixeron.sbe.frame.PayloadIdRegisteredEncoder;
@@ -73,12 +73,14 @@ import org.xml.sax.SAXParseException;
  *       effort: if the echo does not arrive (an unhealthy cluster — often why one stops early), it
  *       aborts anyway, still via {@code ABORT} rather than SIGKILL, so the log is preserved.</li>
  *   <li><b>activate &lt;gatewayId&gt;</b> — manual standby promotion: publishes an unsequenced
- *       {@code GatewayActive(gatewayId)} to cluster ingress and waits for its sequenced echo on the
- *       tap. No special-casing needed on the sequencer side — {@code GatewayActive} passes through
- *       {@code Sequencer.sequenceMessage} like any other message, the same path the sequencer's own
- *       bootstrap/promotion activations take. Every gateway instance reacts identically regardless of
- *       which of the two publishes it: the instance whose {@code gatewayId}/{@code gatewaySourceId}
- *       matches opens its accept gate, the others stay standby.</li>
+ *       {@code GatewayActivationRequested(gatewayId)} to cluster ingress and waits for the
+ *       {@code GatewayActive} the sequencer synthesizes behind it. The operator's act is what is
+ *       recorded and the designation stays the cluster's, through the same path bootstrap and both
+ *       promotions take — which is also what gets the manual path the roster validation it would
+ *       otherwise lack, since a {@code gatewayId} no roster row names is rejected on ingress. Every
+ *       gateway instance reacts to the resulting {@code GatewayActive} identically however it was
+ *       triggered: the instance whose {@code gatewayId} matches opens its accept gate, the others stay
+ *       standby.</li>
  *   <li><b>load-topology &lt;file&gt;</b> — publishes the deployment's topology document
  *       (doc/seqeron-protocol-spec.md §6.4; XML, validated against the packaged {@code topology.xsd}).
  *       Its {@code <gateways>} section becomes one unsequenced {@code GatewayRegistered} per row,
@@ -181,7 +183,7 @@ public final class ClusterCtl {
         final long correlationId = System.nanoTime();
         try (AeronCluster cluster = connectCluster()) {
             final long globalSeqNo =
-                publishMarkerAndAwaitEcho(cluster, ClusterStartedEncoder.TEMPLATE_ID, correlationId);
+                publishMarkerAndAwaitEcho(cluster, SystemFrame.CLUSTER_STARTED, correlationId);
             if (globalSeqNo < 0) {
                 System.err.println("[clusterctl] start: no sequenced ClusterStarted echo within timeout");
                 return 1;
@@ -203,7 +205,7 @@ public final class ClusterCtl {
         final long correlationId = System.nanoTime();
         try (AeronCluster cluster = connectCluster()) {
             final long globalSeqNo =
-                publishMarkerAndAwaitEcho(cluster, ClusterStoppedEncoder.TEMPLATE_ID, correlationId);
+                publishMarkerAndAwaitEcho(cluster, SystemFrame.CLUSTER_STOPPED, correlationId);
             if (globalSeqNo < 0) {
                 System.err.println("[clusterctl] shutdown: no ClusterStopped echo within timeout — aborting anyway");
             } else {
@@ -223,8 +225,9 @@ public final class ClusterCtl {
     }
 
     /**
-     * Manual standby promotion: publishes {@code GatewayActive(gatewayId)} to cluster ingress and
-     * waits for its sequenced echo, mirroring {@link #start()}'s connect/publish/await-echo shape.
+     * Manual standby promotion: publishes {@code GatewayActivationRequested(gatewayId)} to cluster
+     * ingress and waits for the {@code GatewayActive} synthesized behind it, mirroring {@link #start()}'s
+     * connect/publish/await-echo shape.
      * No leader gate — routing to the leader is cluster ingress's job, same as {@code start}.
      */
     private static int activate(final String[] args) {
@@ -243,7 +246,8 @@ public final class ClusterCtl {
         try (AeronCluster cluster = connectCluster()) {
             final long globalSeqNo = publishGatewayActiveAndAwaitEcho(cluster, gatewayId);
             if (globalSeqNo < 0) {
-                System.err.println("[clusterctl] activate: no sequenced GatewayActive echo within timeout");
+                System.err.println("[clusterctl] activate: no synthesized GatewayActive within timeout — is "
+                               + "<gatewayId> a roster row?");
                 return 1;
             }
             System.out.printf("[clusterctl] activate: GatewayActive(gatewayId=%d) recorded at globalSeqNo=%d%n",
@@ -437,22 +441,24 @@ public final class ClusterCtl {
         final GatewayRegisteredEncoder encoder = new GatewayRegisteredEncoder();
         for (int i = 0; i < rows.size(); i++) {
             final TopologyRow row = rows.get(i);
-            encoder.wrapAndApplyHeader(payload, 0, new MessageHeaderEncoder());
+            encoder.wrap(payload, 0);
             encoder.remaining(rows.size() - 1 - i)
                    .gatewayId(row.gatewayId())
                    .gatewaySourceId(row.gatewaySourceId())
                    .gatewayName(row.gatewayName())
                    .preferenceRank((short)row.preferenceRank());
-            offer(cluster, buffer, wrapCore(buffer, payload, encoder.encodedLength()));
+            offer(cluster, buffer,
+                  wrapSystem(buffer, SystemFrame.GATEWAY_REGISTERED, payload, encoder.encodedLength()));
         }
 
         final PayloadIdRegisteredEncoder protocolEncoder = new PayloadIdRegisteredEncoder();
         for (final ProtocolRow row : topology.protocols()) {
-            protocolEncoder.wrapAndApplyHeader(payload, 0, new MessageHeaderEncoder());
+            protocolEncoder.wrap(payload, 0);
             protocolEncoder.payloadId(row.payloadId())
                            .protocolVersion(row.protocolVersion())
                            .protocolName(row.protocolName());
-            offer(cluster, buffer, wrapCore(buffer, payload, protocolEncoder.encodedLength()));
+            offer(cluster, buffer,
+                  wrapSystem(buffer, SystemFrame.PAYLOAD_ID_REGISTERED, payload, protocolEncoder.encodedLength()));
         }
 
         final RosterEchoHandler handler = new RosterEchoHandler(rows.get(rows.size() - 1).gatewayId());
@@ -483,11 +489,11 @@ public final class ClusterCtl {
             if (found) {
                 return;
             }
-            if (!isCore(view, buffer, offset, length, GatewayRegisteredDecoder.TEMPLATE_ID)) {
+            if (!isSystem(view, buffer, offset, length, SystemFrame.GATEWAY_REGISTERED)) {
                 return;
             }
-            decoder.wrap(buffer, view.payloadOffset() + MessageHeaderDecoder.ENCODED_LENGTH, view.blockLength(),
-                         view.version());
+            decoder.wrap(buffer, view.payloadOffset(), GatewayRegisteredDecoder.BLOCK_LENGTH,
+                         MessageHeaderDecoder.SCHEMA_VERSION);
             if (decoder.gatewayId() == gatewayId && decoder.remaining() == 0) {
                 globalSeqNo = view.globalSeqNo();
                 found = true;
@@ -496,11 +502,11 @@ public final class ClusterCtl {
     }
 
     /**
-     * Publishes an unsequenced {@code GatewayActive(gatewayId)} marker, then reads this node's
-     * co-located tap for the matching sequenced echo. Returns the assigned globalSeqNo, or -1 on
-     * timeout (tap unavailable, or no echo within {@link #ECHO_TIMEOUT_NS}). Structured like {@link
-     * #publishMarkerAndAwaitEcho} but kept separate: {@code GatewayActive} has no correlationId to
-     * match on (it carries only {@code gatewayId}), so it matches the echo by {@code gatewayId} instead.
+     * Publishes an unsequenced {@code GatewayActivationRequested(gatewayId)}, then reads this node's
+     * co-located tap for the {@code GatewayActive} the sequencer synthesizes behind it. Returns that
+     * frame's globalSeqNo, or -1 on timeout (tap unavailable, no roster row names the instance, or no
+     * echo within {@link #ECHO_TIMEOUT_NS}). Structured like {@link #publishMarkerAndAwaitEcho} but kept
+     * separate: neither message has a correlationId to match on, so it matches by {@code gatewayId}.
      */
     private static long publishGatewayActiveAndAwaitEcho(final AeronCluster cluster, final int gatewayId) {
         final Subscription tap = awaitTap(cluster);
@@ -510,10 +516,11 @@ public final class ClusterCtl {
 
         final ExpandableArrayBuffer buffer = new ExpandableArrayBuffer(64);
         final ExpandableArrayBuffer payload = new ExpandableArrayBuffer(64);
-        final GatewayActiveEncoder encoder = new GatewayActiveEncoder();
-        encoder.wrapAndApplyHeader(payload, 0, new MessageHeaderEncoder());
+        final GatewayActivationRequestedEncoder encoder = new GatewayActivationRequestedEncoder();
+        encoder.wrap(payload, 0);
         encoder.gatewayId(gatewayId);
-        offer(cluster, buffer, wrapCore(buffer, payload, encoder.encodedLength()));
+        offer(cluster, buffer,
+              wrapSystem(buffer, SystemFrame.GATEWAY_ACTIVATION_REQUESTED, payload, encoder.encodedLength()));
 
         final GatewayActiveEchoHandler handler = new GatewayActiveEchoHandler(gatewayId);
         final FragmentAssembler assembler = new FragmentAssembler(handler);
@@ -543,11 +550,11 @@ public final class ClusterCtl {
             if (found) {
                 return;
             }
-            if (!isCore(view, buffer, offset, length, GatewayActiveDecoder.TEMPLATE_ID)) {
+            if (!isSystem(view, buffer, offset, length, SystemFrame.GATEWAY_ACTIVE)) {
                 return;
             }
-            decoder.wrap(buffer, view.payloadOffset() + MessageHeaderDecoder.ENCODED_LENGTH, view.blockLength(),
-                         view.version());
+            // Synthesized, so its gatewayId is inline in the frame's own block rather than in a body.
+            decoder.wrap(buffer, view.payloadOffset(), view.blockLength(), view.version());
             if (decoder.gatewayId() == gatewayId) {
                 globalSeqNo = view.globalSeqNo();
                 found = true;
@@ -604,11 +611,11 @@ public final class ClusterCtl {
     }
 
     /**
-     * Publishes the unsequenced marker for {@code templateId} with {@code correlationId} to cluster
+     * Publishes the unsequenced marker for {@code systemEventType} with {@code correlationId} to cluster
      * ingress, then reads this node's co-located tap for the matching sequenced echo. Returns the
      * assigned globalSeqNo, or -1 on timeout (tap unavailable, or no echo within {@link #ECHO_TIMEOUT_NS}).
      */
-    private static long publishMarkerAndAwaitEcho(final AeronCluster cluster, final int templateId,
+    private static long publishMarkerAndAwaitEcho(final AeronCluster cluster, final int systemEventType,
                                                   final long correlationId) {
         final Subscription tap = awaitTap(cluster);
         if (tap == null) {
@@ -616,10 +623,10 @@ public final class ClusterCtl {
         }
 
         final ExpandableArrayBuffer buffer = new ExpandableArrayBuffer(64);
-        final int length = encodeMarker(buffer, templateId, correlationId);
+        final int length = encodeMarker(buffer, systemEventType, correlationId);
         offer(cluster, buffer, length);
 
-        final EchoHandler handler = new EchoHandler(templateId, correlationId);
+        final EchoHandler handler = new EchoHandler(systemEventType, correlationId);
         final FragmentAssembler assembler = new FragmentAssembler(handler);
         final long deadline = System.nanoTime() + ECHO_TIMEOUT_NS;
         while (!handler.found && System.nanoTime() < deadline) {
@@ -630,39 +637,39 @@ public final class ClusterCtl {
         return handler.found ? handler.globalSeqNo : -1;
     }
 
-    private static int encodeMarker(final ExpandableArrayBuffer buffer, final int templateId,
+    private static int encodeMarker(final ExpandableArrayBuffer buffer, final int systemEventType,
                                     final long correlationId) {
         final ExpandableArrayBuffer payload = new ExpandableArrayBuffer(64);
-        if (templateId == ClusterStartedEncoder.TEMPLATE_ID) {
+        if (systemEventType == SystemFrame.CLUSTER_STARTED) {
             final ClusterStartedEncoder encoder = new ClusterStartedEncoder();
-            encoder.wrapAndApplyHeader(payload, 0, new MessageHeaderEncoder());
+            encoder.wrap(payload, 0);
             encoder.correlationId(correlationId);
-            return wrapCore(buffer, payload, encoder.encodedLength());
+            return wrapSystem(buffer, systemEventType, payload, encoder.encodedLength());
         }
         final ClusterStoppedEncoder encoder = new ClusterStoppedEncoder();
-        encoder.wrapAndApplyHeader(payload, 0, new MessageHeaderEncoder());
+        encoder.wrap(payload, 0);
         encoder.correlationId(correlationId);
-        return wrapCore(buffer, payload, encoder.encodedLength());
+        return wrapSystem(buffer, systemEventType, payload, encoder.encodedLength());
     }
 
     /**
-     * Whether the fragment is a core frame carrying {@code templateId}. Every echo handler asks this: a
-     * template id names nothing without the protocol it belongs to, and the tap carries other protocols.
+     * Whether the fragment is a system frame carrying {@code systemEventType}. Every echo handler asks
+     * this: the same 2-byte field is an application payloadId on the other family, and the tap carries
+     * both.
      */
-    private static boolean isCore(final SequencedFrameDecoder view, final DirectBuffer buffer, final int offset,
-                                  final int length, final int templateId) {
-        return view.wrap(buffer, offset, length) && view.payloadId() == SequencedFrameDecoder.CORE_PAYLOAD_ID &&
-               view.templateId() == templateId;
+    private static boolean isSystem(final SequencedFrameDecoder view, final DirectBuffer buffer, final int offset,
+                                    final int length, final int systemEventType) {
+        return view.wrap(buffer, offset, length) && view.isSystem() && view.systemEventType() == systemEventType;
     }
 
     /**
-     * Wraps a core payload in an {@code Unsequenced} frame. clusterctl is not a gateway, so it publishes
-     * under its own reserved {@code sourceId} (§5) and no connection.
+     * Wraps a system body in an {@code UnsequencedSystem} frame. clusterctl is not a gateway, so it
+     * publishes under its own reserved {@code sourceId} (§5) and no connection. The body carries no
+     * {@code MessageHeader} of its own — {@code header.systemEventType} is what names it.
      */
-    private static int wrapCore(final ExpandableArrayBuffer frame, final ExpandableArrayBuffer payload,
-                                final int encodedLength) {
-        return CoreFrame.wrap(frame, RESERVED_SOURCE_ID, NO_ID, NO_ID, payload,
-                              MessageHeaderEncoder.ENCODED_LENGTH + encodedLength);
+    private static int wrapSystem(final ExpandableArrayBuffer frame, final int systemEventType,
+                                  final ExpandableArrayBuffer body, final int encodedLength) {
+        return SystemFrame.wrap(frame, RESERVED_SOURCE_ID, NO_ID, NO_ID, systemEventType, body, encodedLength);
     }
 
     /**
@@ -706,15 +713,15 @@ public final class ClusterCtl {
      * past the header, so correlationId and header.globalSeqNo are at the same offsets for both.
      */
     private static final class EchoHandler implements FragmentHandler {
-        private final int templateId;
+        private final int systemEventType;
         private final long correlationId;
         private final SequencedFrameDecoder view = new SequencedFrameDecoder();
         private final ClusterStartedDecoder marker = new ClusterStartedDecoder();
         private boolean found;
         private long globalSeqNo;
 
-        EchoHandler(final int templateId, final long correlationId) {
-            this.templateId = templateId;
+        EchoHandler(final int systemEventType, final long correlationId) {
+            this.systemEventType = systemEventType;
             this.correlationId = correlationId;
         }
 
@@ -723,11 +730,11 @@ public final class ClusterCtl {
             if (found) {
                 return;
             }
-            if (!isCore(view, buffer, offset, length, templateId)) {
+            if (!isSystem(view, buffer, offset, length, systemEventType)) {
                 return;
             }
-            marker.wrap(buffer, view.payloadOffset() + MessageHeaderDecoder.ENCODED_LENGTH, view.blockLength(),
-                        view.version());
+            marker.wrap(buffer, view.payloadOffset(), ClusterStartedDecoder.BLOCK_LENGTH,
+                        MessageHeaderDecoder.SCHEMA_VERSION);
             if (marker.correlationId() == correlationId) {
                 globalSeqNo = view.globalSeqNo();
                 found = true;

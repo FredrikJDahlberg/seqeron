@@ -293,29 +293,20 @@ class ReplayerRecoveryTest {
         receiver.onFrame(heartbeatFrame(globalSeqNo), 0, heartbeatLength(), position, RECEIVE_NS, false);
     }
 
-    /** One core ClusterHeartbeat inside a Sequenced frame — the cheapest well-formed frame there is. */
+    /** One synthesized ClusterHeartbeat — the cheapest well-formed frame there is, at 42 bytes. */
     private static UnsafeBuffer heartbeatFrame(final long globalSeqNo) {
-        final UnsafeBuffer payload = new UnsafeBuffer(new byte[64]);
-        final ClusterHeartbeatEncoder heartbeat = new ClusterHeartbeatEncoder();
-        heartbeat.wrapAndApplyHeader(payload, 0, new org.limitless.phixeron.sbe.frame.MessageHeaderEncoder());
-
         final UnsafeBuffer buffer = new UnsafeBuffer(new byte[256]);
-        final org.limitless.phixeron.sbe.frame.SequencedEncoder frame = new org.limitless.phixeron.sbe.frame.SequencedEncoder();
+        final ClusterHeartbeatEncoder frame = new ClusterHeartbeatEncoder();
         frame.wrapAndApplyHeader(buffer, 0, new org.limitless.phixeron.sbe.frame.MessageHeaderEncoder());
-        frame.header().sourceId(1).connectionId(0).sessionId(0)
-            .payloadId(org.limitless.phixeron.sequencer.CoreFrame.PAYLOAD_ID)
+        frame.header().sourceId(-1).connectionId(-1).sessionId(-1)
+            .systemEventType(org.limitless.phixeron.sequencer.SystemFrame.CLUSTER_HEARTBEAT)
             .globalSeqNo(globalSeqNo).timestamp(globalSeqNo * 1000);
-        frame.putPayload(payload, 0, corePayloadLength());
         return buffer;
     }
 
-    private static int corePayloadLength() {
-        return org.limitless.phixeron.sbe.frame.MessageHeaderEncoder.ENCODED_LENGTH + ClusterHeartbeatEncoder.BLOCK_LENGTH;
-    }
-
     private static int heartbeatLength() {
-        return org.limitless.phixeron.sbe.frame.MessageHeaderEncoder.ENCODED_LENGTH + org.limitless.phixeron.sbe.frame.SequencedEncoder.BLOCK_LENGTH +
-               org.limitless.phixeron.sbe.frame.SequencedEncoder.payloadHeaderLength() + corePayloadLength();
+        return org.limitless.phixeron.sbe.frame.MessageHeaderEncoder.ENCODED_LENGTH +
+               ClusterHeartbeatEncoder.BLOCK_LENGTH;
     }
 
     private static UnsafeBuffer replayingBuffer(final long requestId, final long replaySessionId,

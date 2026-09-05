@@ -14,6 +14,12 @@ import org.agrona.DirectBuffer;
  * <p><b>The envelope is already stripped.</b> {@link #templateId()} and {@link #offset()} describe the
  * message, not the frame that carried it, and {@link #payloadId()} says which protocol that templateId
  * belongs to — so a consumer dispatches on the pair without knowing which shape arrived off the wire.
+ *
+ * <p><b>Only application frames reach a consumer this way.</b> The system family (§7) is delivered
+ * through the stream client's own callbacks, so {@link #isSystem()} is false on every event a
+ * {@code SequencedEvent} handler sees; the flag exists because the field at offset 16 means one thing or
+ * the other and a delivery type that hid the distinction would invite reading a systemEventType as a
+ * payloadId.
  */
 public final class SequencedEvent {
     private long globalSeqNo;
@@ -22,7 +28,9 @@ public final class SequencedEvent {
     private long sourceSessionId;
     private long clusterTimestamp;
     private long receiveTimeNs;
+    private boolean system;
     private int payloadId;
+    private int systemEventType;
     private int templateId;
     private int blockLength;
     private int version;
@@ -62,17 +70,22 @@ public final class SequencedEvent {
     }
 
     /**
-     * Which protocol {@link #templateId()} belongs to: {@link SequencedFrameDecoder#CORE_PAYLOAD_ID} for seqeron's own
-     * payloads, an application's own number otherwise. Template ids are unique only within a protocol, so a
-     * consumer that matches one without checking this is reading some other protocol's numbering as its own.
+     * Which protocol {@link #templateId()} belongs to. Template ids are unique only within a protocol, so
+     * a consumer that matches one without checking this is reading some other protocol's numbering as its
+     * own. 0 on a system frame.
      */
     public int payloadId() {
         return payloadId;
     }
 
-    /** True if this frame carries a seqeron core payload. */
-    public boolean isCore() {
-        return payloadId == SequencedFrameDecoder.CORE_PAYLOAD_ID;
+    /** True if this frame is one of §7's system shapes rather than an application payload. */
+    public boolean isSystem() {
+        return system;
+    }
+
+    /** Which of §7's eleven events this frame carries; 0 on an application frame. */
+    public int systemEventType() {
+        return systemEventType;
     }
 
     /** The message's {@code messageHeader} templateId; picks the specific decode. */
@@ -111,16 +124,18 @@ public final class SequencedEvent {
     }
 
     void set(final long globalSeqNo, final int sourceId, final int connectionId, final long sourceSessionId,
-             final long clusterTimestamp, final long receiveTimeNs, final int payloadId, final int templateId,
-             final int blockLength, final int version, final DirectBuffer buffer, final int offset, final int length,
-             final long position) {
+             final long clusterTimestamp, final long receiveTimeNs, final boolean system, final int payloadId,
+             final int systemEventType, final int templateId, final int blockLength, final int version,
+             final DirectBuffer buffer, final int offset, final int length, final long position) {
         this.globalSeqNo = globalSeqNo;
         this.sourceId = sourceId;
         this.connectionId = connectionId;
         this.sourceSessionId = sourceSessionId;
         this.clusterTimestamp = clusterTimestamp;
         this.receiveTimeNs = receiveTimeNs;
+        this.system = system;
         this.payloadId = payloadId;
+        this.systemEventType = systemEventType;
         this.templateId = templateId;
         this.blockLength = blockLength;
         this.version = version;

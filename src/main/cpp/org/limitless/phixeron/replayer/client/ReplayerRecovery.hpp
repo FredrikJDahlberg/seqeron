@@ -27,16 +27,11 @@ namespace org::limitless::phixeron::replayer::client {
 namespace rpl = org::limitless::phixeron::sbe::replay;
 namespace diag = org::limitless::phixeron::util;
 
-using org::limitless::phixeron::sequencer::CLIENT_CONNECTED_TEMPLATE_ID;
-using org::limitless::phixeron::sequencer::CLIENT_DISCONNECTED_TEMPLATE_ID;
 using org::limitless::phixeron::sequencer::LifecycleEvent;
 using org::limitless::phixeron::sequencer::SequencedEvent;
 
 // Replaying.replaySessionId sentinel: "nothing to replay, you are at the tip — follow the live tap".
 inline constexpr std::int64_t REPLAYER_NO_REPLAY_NEEDED = -1;
-
-// LeadershipChanged (core payload, sbe-frame.xml template 5)
-inline constexpr std::uint16_t LEADERSHIP_CHANGED_TEMPLATE_ID = 5;
 
 /**
  * Everything ReplayerRecovery cannot do itself: the sends, the replay subscription, and the gauge.
@@ -637,13 +632,15 @@ class ReplayerRecovery
         const auto connId = view.connectionId;
         const auto sessId = view.sessionId;
         const auto ts = view.timestamp;
-        // A template id means nothing without the protocol it belongs to: core's 1 and 2 are some other
-        // payload's 1 and 2, so both halves have to match before a frame is read as a lifecycle event.
-        const bool isCore = view.payloadId == sequencer::CORE_PAYLOAD_ID;
-        if (isCore && (templateId == CLIENT_CONNECTED_TEMPLATE_ID || templateId == CLIENT_DISCONNECTED_TEMPLATE_ID))
+        // A systemEventType is only a systemEventType on a system frame: an application payload's own 1
+        // and 2 sit at the same offset, so both halves have to match before a frame is read as a
+        // lifecycle event.
+        const bool isSystem = view.system;
+        const std::uint16_t eventType = view.systemEventType;
+        if (isSystem && (eventType == sequencer::CLIENT_CONNECTED || eventType == sequencer::CLIENT_DISCONNECTED))
         {
             // Both carry the same header-only LifecycleEvent; only the callback differs.
-            const OnConnected& callback = templateId == CLIENT_CONNECTED_TEMPLATE_ID ? m_onConnected : m_onDisconnected;
+            const OnConnected& callback = eventType == sequencer::CLIENT_CONNECTED ? m_onConnected : m_onDisconnected;
             if (callback)
             {
                 callback(LifecycleEvent{ .globalSeqNo = sequenceNumber,
@@ -655,11 +652,12 @@ class ReplayerRecovery
             }
             return;
         }
-        if (isCore && templateId == LEADERSHIP_CHANGED_TEMPLATE_ID)
+        if (isSystem && eventType == sequencer::LEADERSHIP_CHANGED)
         {
-            sbe::frame::LeadershipChanged leadershipChanged;
-            leadershipChanged.wrapForDecode(const_cast<char*>(view.payload), sbe::frame::MessageHeader::encodedLength(),
-                                            view.blockLength, view.version, view.payloadLength);
+            // Synthesized, so its newLeaderMemberId is inline in the frame's own block, which is what
+            // view.payload addresses for these three.
+            auto leadershipChanged =
+                sequencer::decodeSystem<sbe::frame::LeadershipChanged>(view.payload, view.payloadLength);
             m_currentLeaderMemberId = leadershipChanged.newLeaderMemberId();
             if (m_onLeadershipChanged)
             {
@@ -675,7 +673,9 @@ class ReplayerRecovery
                                           .sourceSessionId = sessId,
                                           .clusterTimestamp = ts,
                                           .receiveTimeNs = receiveNs,
+                                          .system = isSystem,
                                           .payloadId = view.payloadId,
+                                          .systemEventType = eventType,
                                           .templateId = templateId,
                                           .blockLength = view.blockLength,
                                           .version = view.version,

@@ -24,9 +24,12 @@ import org.agrona.concurrent.UnsafeBuffer;
 import org.limitless.phixeron.sbe.frame.PayloadIdRegisteredDecoder;
 import uk.co.real_logic.sbe.ir.Ir;
 import uk.co.real_logic.sbe.ir.IrDecoder;
+import org.limitless.phixeron.sequencer.SystemFrame;
 import uk.co.real_logic.sbe.ir.Token;
 import uk.co.real_logic.sbe.json.JsonPrinter;
+import uk.co.real_logic.sbe.json.JsonTokenListener;
 import uk.co.real_logic.sbe.otf.OtfHeaderDecoder;
+import uk.co.real_logic.sbe.otf.OtfMessageDecoder;
 
 /**
  * Offline dump of SBE messages recorded by Aeron Archive into an archive
@@ -65,11 +68,27 @@ public class SbeLogPrinter {
         org.limitless.phixeron.sbe.frame.SequencedDecoder.payloadHeaderLength();
 
     /**
-     * {@code payloadId}'s offset within a frame header. One offset serves both templates: {@code
-     * unsequencedHeader} byte-prefixes {@code sequencedHeader} (F-3).
+     * The offset of the 2-byte discriminator within every frame header — a {@code payloadId} on the
+     * application family, a {@code systemEventType} on the system one. One offset serves all five shapes:
+     * each unsequenced composite byte-prefixes its sequenced counterpart and the two pairs are identical
+     * apart from that field's name (F-3).
      */
-    private static final int PAYLOAD_ID_OFFSET =
+    private static final int DISCRIMINATOR_OFFSET =
         org.limitless.phixeron.sbe.frame.SequencedHeaderDecoder.payloadIdEncodingOffset();
+
+    /** The two application envelope templates, whose body is one opaque payload (§4). */
+    private static final int UNSEQUENCED_TEMPLATE_ID =
+        org.limitless.phixeron.sbe.frame.UnsequencedDecoder.TEMPLATE_ID;
+
+    private static final int SEQUENCED_TEMPLATE_ID =
+        org.limitless.phixeron.sbe.frame.SequencedDecoder.TEMPLATE_ID;
+
+    /** The two submitted-system envelope templates, whose body carries no {@code MessageHeader} (§7). */
+    private static final int UNSEQUENCED_SYSTEM_TEMPLATE_ID =
+        org.limitless.phixeron.sbe.frame.UnsequencedSystemDecoder.TEMPLATE_ID;
+
+    private static final int SEQUENCED_SYSTEM_TEMPLATE_ID =
+        org.limitless.phixeron.sbe.frame.SequencedSystemDecoder.TEMPLATE_ID;
 
     /** payloadIdFilter value meaning "write no payloads" — {@code payloadId} 0 is invalid on the wire (§9.2). */
     public static final int NO_PAYLOAD_OUTPUT = 0;
@@ -80,11 +99,11 @@ public class SbeLogPrinter {
     /** A payload is bounded by {@code varDataEncoding}'s uint16 length. */
     private static final int MAX_PAYLOAD_LENGTH = 65535;
 
-    /** seqeron's own payloadId — the only one this tool decodes unaided (§13.1). */
-    private static final int CORE_PAYLOAD_ID = 1;
-
-    /** No payloadId in hand: the frame under the cursor is not a schema-210 envelope. */
+    /** No payloadId in hand: the frame under the cursor is not an application envelope. */
     private static final int NO_PAYLOAD_ID = 0;
+
+    /** No systemEventType in hand: the frame under the cursor is not a submitted-system envelope. */
+    private static final int NO_SYSTEM_EVENT_TYPE = 0;
 
     /** One loaded schema: its IR (for template lookup) and the printer built from it. */
     private record Schema(Ir ir, JsonPrinter printer) {
@@ -212,30 +231,92 @@ public class SbeLogPrinter {
             return;
         }
         if (FRAME_SCHEMA_ID == ir.id()) {
-            // The seqeron envelope: the message is one length-prefixed payload past the frame's block, and
-            // the frame line alone would say only that a frame went by, never what it carried.
-            nestedPayloadId = framePayloadId(buffer, payloadOffset);
-            appendNested(buffer, payloadOffset(buffer, payloadOffset), frameEndOffset);
+            // A seqeron envelope: the message is one length-prefixed body past the frame's block, and the
+            // frame line alone would say only that a frame went by, never what it carried. The three
+            // synthesized templates fall through both branches — their fields are inline, so the line the
+            // caller already printed is the whole message.
+            if (UNSEQUENCED_TEMPLATE_ID == templateId || SEQUENCED_TEMPLATE_ID == templateId) {
+                nestedPayloadId = framePayloadId(buffer, payloadOffset);
+                appendNested(buffer, payloadOffset(buffer, payloadOffset), frameEndOffset);
+            } else if (UNSEQUENCED_SYSTEM_TEMPLATE_ID == templateId || SEQUENCED_SYSTEM_TEMPLATE_ID == templateId) {
+                appendSystemBody(schema, buffer, payloadOffset, frameEndOffset);
+            }
         }
     }
 
     /**
-     * The {@code payloadId} of the frame at {@code frameOffset}, or {@link #NO_PAYLOAD_ID} if that is
-     * not a schema-210 envelope. One offset serves both templates: {@code unsequencedHeader}
-     * byte-prefixes {@code sequencedHeader} (F-3).
+     * Prints a system frame's body beside the frame that carried it. The body carries no
+     * {@code MessageHeader} of its own — {@code header.systemEventType} is what names it — so the message
+     * tokens, the block length and the version all come from this build's own schema (§7, <b>V-3</b>),
+     * which is the whole reason those eight bytes are not on the wire.
+     * @param schema the frame layer's own, which is also the body's
+     * @param buffer segment buffer
+     * @param frameOffset offset of the frame's own SBE header
+     * @param frameEndOffset frame end offset
+     */
+    private void appendSystemBody(final Schema schema, final UnsafeBuffer buffer, final int frameOffset,
+                                  final int frameEndOffset) {
+        final int systemEventType = frameSystemEventType(buffer, frameOffset);
+        final List<Token> tokens = schema.ir().getMessage(systemEventType);
+        builder.append(' ');
+        if (null == tokens || tokens.isEmpty()) {
+            builder.append("<unknown systemEventType ").append(systemEventType).append('>');
+            return;
+        }
+        final Token message = tokens.getFirst();
+        final int bodyOffset = payloadOffset(buffer, frameOffset);
+        if (bodyOffset + message.encodedLength() > frameEndOffset) {
+            builder.append("<truncated ").append(message.name()).append(" body>");
+            return;
+        }
+        builder.append(message.name()).append('=');
+        OtfMessageDecoder.decode(buffer, bodyOffset,
+                                 org.limitless.phixeron.sbe.frame.MessageHeaderDecoder.SCHEMA_VERSION,
+                                 message.encodedLength(), tokens, new JsonTokenListener(builder));
+    }
+
+    /**
+     * The {@code payloadId} of the frame at {@code frameOffset}, or {@link #NO_PAYLOAD_ID} if that is not
+     * an application envelope. The template has to be checked and not just the schema: a system frame
+     * carries a {@code systemEventType} at the very same offset, and reading one as the other is exactly
+     * the confusion the two families exist to prevent.
      * @param buffer segment buffer
      * @param frameOffset offset of the frame's own SBE header
      * @return the payloadId, or NO_PAYLOAD_ID
      */
     private int framePayloadId(final UnsafeBuffer buffer, final int frameOffset) {
-        if (FRAME_SCHEMA_ID != sbeHeaderDecoder.getSchemaId(buffer, frameOffset)) {
+        final int templateId = sbeHeaderDecoder.getTemplateId(buffer, frameOffset);
+        if (FRAME_SCHEMA_ID != sbeHeaderDecoder.getSchemaId(buffer, frameOffset) ||
+            (UNSEQUENCED_TEMPLATE_ID != templateId && SEQUENCED_TEMPLATE_ID != templateId)) {
             return NO_PAYLOAD_ID;
         }
-        return buffer.getShort(frameOffset + sbeHeaderDecoder.encodedLength() + PAYLOAD_ID_OFFSET,
+        return frameDiscriminator(buffer, frameOffset);
+    }
+
+    /**
+     * The {@code systemEventType} of the frame at {@code frameOffset}, or {@link #NO_SYSTEM_EVENT_TYPE} if
+     * that is not a submitted-system envelope. The three synthesized templates are deliberately not
+     * matched here: their fields are inline, so the frame line already prints them whole and there is no
+     * body to nest.
+     * @param buffer segment buffer
+     * @param frameOffset offset of the frame's own SBE header
+     * @return the systemEventType, or NO_SYSTEM_EVENT_TYPE
+     */
+    private int frameSystemEventType(final UnsafeBuffer buffer, final int frameOffset) {
+        final int templateId = sbeHeaderDecoder.getTemplateId(buffer, frameOffset);
+        if (FRAME_SCHEMA_ID != sbeHeaderDecoder.getSchemaId(buffer, frameOffset) ||
+            (UNSEQUENCED_SYSTEM_TEMPLATE_ID != templateId && SEQUENCED_SYSTEM_TEMPLATE_ID != templateId)) {
+            return NO_SYSTEM_EVENT_TYPE;
+        }
+        return frameDiscriminator(buffer, frameOffset);
+    }
+
+    private int frameDiscriminator(final UnsafeBuffer buffer, final int frameOffset) {
+        return buffer.getShort(frameOffset + sbeHeaderDecoder.encodedLength() + DISCRIMINATOR_OFFSET,
                                ByteOrder.LITTLE_ENDIAN) & 0xFFFF;
     }
 
-    /** Offset of the payload's own SBE header, past the frame's block and its length prefix. */
+    /** Offset of the frame's body, past its block and the body's length prefix. */
     private int payloadOffset(final UnsafeBuffer buffer, final int frameOffset) {
         return frameOffset + sbeHeaderDecoder.encodedLength() +
                sbeHeaderDecoder.getBlockLength(buffer, frameOffset) + PAYLOAD_PREFIX_LENGTH;
@@ -250,18 +331,17 @@ public class SbeLogPrinter {
      * @param frameEndOffset frame end offset
      */
     private void registerProtocol(final UnsafeBuffer buffer, final int frameOffset, final int frameEndOffset) {
-        if (CORE_PAYLOAD_ID != framePayloadId(buffer, frameOffset)) {
+        if (SystemFrame.PAYLOAD_ID_REGISTERED != frameSystemEventType(buffer, frameOffset)) {
             return;
         }
         final int offset = payloadOffset(buffer, frameOffset);
-        if (offset >= frameEndOffset ||
-            FRAME_SCHEMA_ID != sbeHeaderDecoder.getSchemaId(buffer, offset) ||
-            PayloadIdRegisteredDecoder.TEMPLATE_ID != sbeHeaderDecoder.getTemplateId(buffer, offset)) {
+        if (offset + PayloadIdRegisteredDecoder.BLOCK_LENGTH > frameEndOffset) {
             return;
         }
-        registrationDecoder.wrap(buffer, offset + sbeHeaderDecoder.encodedLength(),
-                                 sbeHeaderDecoder.getBlockLength(buffer, offset),
-                                 sbeHeaderDecoder.getSchemaVersion(buffer, offset));
+        // The body carries no MessageHeader — systemEventType named it — so its block length and version
+        // come from this build's own constants (§7, V-3).
+        registrationDecoder.wrap(buffer, offset, PayloadIdRegisteredDecoder.BLOCK_LENGTH,
+                                 org.limitless.phixeron.sbe.frame.MessageHeaderDecoder.SCHEMA_VERSION);
         protocolNames.put(registrationDecoder.payloadId(),
                           registrationDecoder.protocolName() + " v" + registrationDecoder.protocolVersion());
     }
