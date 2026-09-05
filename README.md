@@ -113,6 +113,10 @@ cmake --build cmake-build-release
 
 # Fat jar (run without Gradle)
 ./gradlew uberJar
+
+# The artioSpike source set (MockExchange, MockOrderClient, FixTestClient) — neither
+# compileJava nor uberJar builds it, and the two Artio gateway e2e scripts need it
+./gradlew compileArtioSpikeJava
 ```
 
 ## Tests

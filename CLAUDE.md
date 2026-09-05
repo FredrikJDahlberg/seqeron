@@ -124,7 +124,12 @@ GoogleTest binaries — `core_tests` (the cluster tier, linking `phixeron_core` 
 ./gradlew uberJar              # fat jar over both: build/libs/phixeron-<version>-uber.jar
 ./gradlew generateFrameSbe generateReplaySbe        # :cluster's codecs (also on compileJava)
 ./gradlew generateSessionSbe generateBasicDataSbe   # :gateways' codecs (also on compileJava)
+./gradlew compileArtioSpikeJava # the artioSpike source set — NOT built by compileJava or uberJar
 ```
+`artioSpike` (`gateways/src/test/artio`) holds `MockExchange`, `MockOrderClient` and `FixTestClient`.
+The `./gradlew` tasks that run them build it themselves, but `exchange-gateway-test.sh` and
+`order-gateway-test.sh` launch the classes directly and fail with
+`gateways/build/classes/java/artioSpike not found` unless it has been compiled.
 ```bash
 ./gradlew test                 # JUnit 5 unit tests for the Java state machines, both modules
 ```
