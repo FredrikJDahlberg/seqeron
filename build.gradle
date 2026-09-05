@@ -33,8 +33,10 @@ dependencies {
 }
 
 // ── SBE code generation ────────────────────────────────────────────────────────
-// The schemas stay at the repo root for now: one pair still serves both modules and the C++ build
-// generates from the same files. Splitting them per module is step 3 (doc/future-arch.md §3).
+// The schemas stay at the repo root for now: the C++ build generates from the same files, and
+// splitting them per module is doc/future-arch.md §11 step 7a.1. They are codegen inputs, named per
+// task below, and belong in no jar — topology.xsd moved ahead of them precisely because it is the one
+// file here a jar needs: ClusterCtl validates the topology document against it off its own classpath.
 
 // One root, but each schema owns a disjoint slice of it: its own package dir plus its own .sbeir.
 // Each task declares and wipes exactly that slice. Declaring the shared root instead made the codec
@@ -44,7 +46,6 @@ def sbeGeneratedSrcDir = layout.buildDirectory.dir('generated/sources/sbe/main/j
 def sbeResourceDir     = rootProject.file('src/main/resources')
 
 sourceSets.main.java.srcDir sbeGeneratedSrcDir
-sourceSets.main.resources.srcDir sbeResourceDir
 
 tasks.register('generateReplaySbe', JavaExec) {
     description = 'Generate Java SBE codecs from sbe-replay.xml (the node-local replay control protocol)'

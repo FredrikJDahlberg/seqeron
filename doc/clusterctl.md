@@ -376,7 +376,7 @@ already edits. `gatewayId` can be learned because nothing is published before ac
 
 ### The XSD
 
-`src/main/resources/topology.xsd`, ~70 lines, sketched:
+`cluster/src/main/resources/topology.xsd`, ~70 lines, sketched:
 
 ```xml
 <xs:element name="gateway">
