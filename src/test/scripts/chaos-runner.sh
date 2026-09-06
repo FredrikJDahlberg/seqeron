@@ -29,7 +29,7 @@
 #   dedicated ONLY_FAULT=fault_kill_leader run (every round is a genuine failover, since every member is a
 #   legal kill target).
 #
-# The gateway list loaded is cluster/src/test/resources/topology-test-gateway.xml, and it names exactly the two
+# The gateway list loaded is src/test/resources/topology-test-gateway.xml, and it names exactly the two
 #   instances this script starts: a listed pair no process starts is designated, times out after
 #   GATEWAY_ACTIVATION_TIMEOUT_MS, hands over to its standby and times out again, forever. Both gateways go
 #   up immediately behind load-topology for that reason.
@@ -55,8 +55,8 @@ source "${SCRIPT_DIR}/../../main/scripts/paths.sh"
 # ── Config ────────────────────────────────────────────────────────────────────
 JAR="build/libs/phixeron-0.1.0-uber.jar"
 # TestGateway is harness code and lives in :cluster's TEST source set, so it is in no jar — launched off
-# the compiled test classes beside it, the way gateways/src/test/artio's classes are.
-TEST_CLASSES="cluster/build/classes/java/test"
+# the compiled test classes beside it.
+TEST_CLASSES="build/classes/java/test"
 GW_CP="$JAR:$TEST_CLASSES"
 LOG_DIR="logs/chaos"
 ROUNDS="${ROUNDS:-20}"
@@ -105,7 +105,7 @@ GW_A_MEMBER=$CN
 GW_B_MEMBER=1
 GW_A_PORT="$(test_gateway_port 0)"
 GW_B_PORT="$(test_gateway_port 1)"
-TOPOLOGY="cluster/src/test/resources/topology-test-gateway.xml"
+TOPOLOGY="src/test/resources/topology-test-gateway.xml"
 
 rm -rf "$LOG_DIR"; mkdir -p "$LOG_DIR"
 declare -a SEQ_PIDS REPLAYER_PIDS EXTRA_CONSUMER_PIDS GW_PIDS
@@ -202,7 +202,7 @@ trap cleanup EXIT INT TERM
 # ── Bring-up ─────────────────────────────────────────────────────────────────────
 [[ -f "$JAR" ]] || { echo "missing $JAR — run ./gradlew uberJar"; exit 1; }
 [[ -f "$TEST_CLASSES/org/limitless/phixeron/tools/TestGateway.class" ]] \
-  || { echo "missing TestGateway in $TEST_CLASSES — run ./gradlew :cluster:compileTestJava"; exit 1; }
+  || { echo "missing TestGateway in $TEST_CLASSES — run ./gradlew compileTestJava"; exit 1; }
 
 # Idempotent pre-clean so back-to-back runs don't collide: SIGKILL any survivors, then WAIT for the
 # member archive-control ports (Aeron binds these as UDP) to actually release.
@@ -260,7 +260,7 @@ for m in 1 2; do W=0; until grep -q "following live" "$LOG_DIR/consumer-$m.log" 
 # The gateway list is not reference data: `clusterctl load-topology` puts it in the ordered log, and the
 # sequencer synthesizes the bootstrap GatewayActive behind its last row. Both instances go up right after,
 # or the pair ping-pongs on GATEWAY_ACTIVATION_TIMEOUT_MS until one of them registers.
-if ! cluster/src/main/scripts/clusterctl.sh load-topology "$TOPOLOGY" > "$LOG_DIR/load-topology.log" 2>&1; then
+if ! src/main/scripts/clusterctl.sh load-topology "$TOPOLOGY" > "$LOG_DIR/load-topology.log" 2>&1; then
   echo "clusterctl load-topology failed — see $LOG_DIR/load-topology.log"; exit 1
 fi
 
@@ -621,7 +621,7 @@ FAULTS=(fault_kill_leader fault_kill_follower fault_sigkill_node fault_pause_nod
 # ── Steady-state oracle ──────────────────────────────────────────────────────────
 # Liveness + a safety PROXY via log grep. The RIGOROUS safety oracle (gap-free, monotone globalSeqNo across
 # the ordered stream, and replica convergence) should be a decode of the cluster log, not grep — pipe the
-# recording through cluster/src/main/scripts/sbe-log-printer.sh and assert no globalSeqNo gap. That is the TODO seam
+# recording through src/main/scripts/sbe-log-printer.sh and assert no globalSeqNo gap. That is the TODO seam
 # marked below; grep gives liveness + smoke, the decoder gives the actual proof.
 check_invariants() {
   local fail=0
@@ -778,7 +778,7 @@ verify_sequence() {
   local -a highwater=("" "" "")
   for m in 0 1 2; do
     local archive="${BASE_DIR}/archive-${m}"
-    [[ -f "$archive/archive.catalog" ]] && ./cluster/src/main/scripts/sbe-log-printer.sh "$archive" \
+    [[ -f "$archive/archive.catalog" ]] && ./src/main/scripts/sbe-log-printer.sh "$archive" \
       > "$LOG_DIR/sequenced-dump-$m.txt" 2>&1 || { log "  member $m: no recording at $archive"; rc=1; continue; }
     local hw
     hw=$(awk -v member="$m" '

@@ -26,11 +26,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # The root CMakeLists.txt declares simdfix over SSH, which no runner can authenticate.
-      # simdfix is public, so rewrite the URL rather than provision a deploy key.
-      - name: Clone simdfix over HTTPS
-        run: git config --global url."https://github.com/".insteadOf "git@github.com:"
-
       # Aeron 1.51.0's own CMakeLists requires CMake >= 3.30; noble ships 3.28.3.
       - name: Add Kitware's CMake repository
         run: |
@@ -39,13 +34,12 @@ jobs:
           echo 'deb [signed-by=/usr/share/keyrings/kitware-archive-keyring.gpg] https://apt.kitware.com/ubuntu/ noble main' \
             | sudo tee /etc/apt/sources.list.d/kitware.list > /dev/null
 
-      # libpugixml-dev: simdfix's Generator, which phixeron builds for its FIX codecs.
       # uuid-dev: Aeron's C driver, which only warns when libuuid is missing.
       - name: Install dependencies
         run: |
           sudo apt-get update
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
-            cmake clang g++-14 libpugixml-dev uuid-dev
+            cmake clang g++-14 uuid-dev
 
       - uses: actions/setup-java@v4
         with:
@@ -59,7 +53,7 @@ jobs:
           path: |
             ~/.gradle/caches
             ~/.gradle/wrapper
-          key: gradle-${{ hashFiles('CMakeLists.txt', 'cluster/CMakeLists.txt') }}
+          key: gradle-${{ hashFiles('CMakeLists.txt') }}
           restore-keys: gradle-
 
       - name: Configure
@@ -71,8 +65,6 @@ jobs:
       - name: Build
         run: cmake --build build -j $(nproc)
 
-      # Not plain ctest: simdfix's own suite is registered here too and reports
-      # spurious ..._NOT_BUILT failures — see CLAUDE.md.
       - name: Test
         run: cmake --build build --target run_tests
 
@@ -94,7 +86,7 @@ jobs:
           path: |
             ~/.gradle/caches
             ~/.gradle/wrapper
-          key: gradle-java-${{ hashFiles('*.gradle', '*/build.gradle', 'gradle/wrapper/gradle-wrapper.properties') }}
+          key: gradle-java-${{ hashFiles('*.gradle', 'gradle/wrapper/gradle-wrapper.properties') }}
           restore-keys: gradle-java-
 
       # JUnit 5 suite for the Java state machines; no Aeron runtime, no C++ build.
@@ -102,20 +94,18 @@ jobs:
       - name: Test
         run: ./gradlew test
 
-      # One report per Gradle module since the :cluster/:gateways split (doc/future-arch.md §8.6).
       - name: Coverage summary
         if: always()
         run: |
           python3 - <<'EOF' >> "$GITHUB_STEP_SUMMARY"
           import xml.etree.ElementTree as ET
-          print('| module | metric | covered | total | % |')
-          print('|---|---|---|---|---|')
-          for mod in ('cluster', 'gateways'):
-              r = ET.parse(f'{mod}/build/reports/jacoco/test/jacocoTestReport.xml').getroot()
-              for c in r.findall('counter'):
-                  m, cv = int(c.get('missed')), int(c.get('covered'))
-                  t = m + cv
-                  print(f"| {mod} | {c.get('type').title()} | {cv} | {t} | {100*cv/t if t else 0:.1f}% |")
+          print('| metric | covered | total | % |')
+          print('|---|---|---|---|')
+          r = ET.parse('build/reports/jacoco/test/jacocoTestReport.xml').getroot()
+          for c in r.findall('counter'):
+              m, cv = int(c.get('missed')), int(c.get('covered'))
+              t = m + cv
+              print(f"| {c.get('type').title()} | {cv} | {t} | {100*cv/t if t else 0:.1f}% |")
           EOF
 
       - name: Upload coverage report
@@ -123,6 +113,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: jacoco-report
-          path: |
-            cluster/build/reports/jacoco/test/
-            gateways/build/reports/jacoco/test/
+          path: build/reports/jacoco/test/

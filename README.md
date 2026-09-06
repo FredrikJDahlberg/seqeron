@@ -1,178 +1,190 @@
-![phixeron](doc/phixeron.png)
+# seqeron
 
 ## Overview
 
-phixeron assigns a single global, gap-free, replicated total order to inbound FIX messages
-arriving over TCP, using an Aeron Cluster (Raft) replicated state machine as the sequencer.
-Everything downstream of that point — order execution, position tracking, risk queries, FIX
-resend/replay — reads from that one authoritative ordered stream instead of coordinating
-directly with each other.
+**seqeron** assigns a single global, gap-free, replicated total order to messages arriving from
+external producers, using an Aeron Cluster (Raft) replicated state machine as the sequencer.
+Everything downstream of that point reads from one authoritative ordered stream instead of
+coordinating directly with each other.
 
-Each node republishes every sequenced frame onto a **node-local `aeron:ipc` tap** (stream 205)
-that its own co-located Aeron Archive records. Leader and follower alike publish and record
-their own tap, and since every node processes the same committed log in the same order the taps
-are byte-identical — each node's archive independently holds a complete copy of sequenced
-history, with no cross-node replication. Co-located C++ replicas read the tap *directly* and
-untethered for the live feed, and ask a per-node **Replayer** to serve cold-start history and
-gaps off the recording. The sequencer therefore has **zero live network subscribers**: a slow
-replica is dropped and heals by replay rather than back-pressuring the cluster.
+This repository is the **sequencing tier alone** — the sequencer, the replayer (both sides), the
+client-side plumbing that follows the ordered stream, and the operator tooling. It carries **no FIX
+code, no order flow and no reference data**: the edges that speak those protocols are their own
+project, and the boundary is enforced rather than agreed. Nothing here decodes a `payloadId`, and the
+build reaches for no application schema.
+
+Each node republishes every sequenced frame onto a **node-local `aeron:ipc` tap** (stream 205) that
+its own co-located Aeron Archive records. Leader and follower alike publish and record their own tap,
+and since every node processes the same committed log in the same order the taps are byte-identical —
+each node's archive independently holds a complete copy of sequenced history, with no cross-node
+replication. Co-located applications read the tap *directly* and untethered for the live feed, and ask
+a per-node **Replayer** to serve cold-start history and gaps off the recording. The sequencer therefore
+has **zero live network subscribers**: a slow replica is dropped and heals by replay rather than
+back-pressuring the cluster.
+
+> **A note on names.** The repository is `seqeron`; the artifacts inside it still say `phixeron` —
+> the Java package is `org.limitless.phixeron`, the Gradle project and its fat jar are
+> `phixeron-<version>-uber.jar`, the CMake targets are `phixeron_core`/`phixeron_flags`, and the
+> environment variables are `PHIXERON_*`. That is the name of the project this tier was carved out
+> of, and every script resolves the jar by it. Renaming is a separate, mechanical change.
 
 ### Processes
 
-- **`SequencerServer` / `SequencerService` / `Sequencer`** (Java) — the cluster node. `Sequencer`
-  is the replicated state machine proper (no Aeron dependency, unit-tested directly): it stamps
-  each ingress message with a monotone `globalSeqNo` plus the Raft consensus timestamp and
-  synthesizes the frames the cluster itself owns (`ClusterHeartbeat`, `LeadershipChanged`, `GatewayActive`).
+- **`SequencerServer` / `SequencerService` / `Sequencer`** (Java) — the cluster node. `Sequencer` is
+  the replicated state machine proper (no Aeron dependency, unit-tested directly): it stamps each
+  ingress message with a monotone `globalSeqNo` plus the Raft consensus timestamp and synthesizes the
+  frames the cluster itself owns (`ClusterHeartbeat`, `LeadershipChanged`, `GatewayActive`).
   `SequencerService` is its Aeron adapter and holds no replicated state of its own.
-- **`ReplayerServer` / `ReplayerService`** (Java) — one per member, co-located in that member's
-  Aeron directory. The only process that reads the archive: it serves an on-demand replay
-  protocol to the co-located replicas, and sits off the live delivery path entirely.
-- **`FixGateway`** (C++) — the FIX edge process, deployed as one active instance plus optional
-  hot standbys of the same logical gateway. It bridges FIX TCP sessions to cluster ingress and
-  frames execution reports arriving on the tap back to the originating connection. It holds no
-  authoritative session state: a standby or restarted instance rebuilds every session by
-  shadowing the tap, and serves clients only once a `GatewayActive` names it. Owns FIX resend
-  recovery.
-- **`ExchangeGateway`** (Java) — the **venue-facing** edge, the mirror of `FixGateway` pointing
-  outward: an [Artio](https://github.com/real-logic/artio) initiator that logs on to an exchange,
-  deployed as its own active/passive pair under a second `gatewaySourceId`. Artio owns the socket,
-  the codecs and the session FSM, but every message it decides to send goes to cluster ingress first
-  and reaches the venue only when it comes back on the tap — the same invariant the C++ edge holds,
-  reached by a different mechanism. Session layer only: no order flow crosses it yet.
-- **`OrderExecServer`** (C++) — a replica on *every* node, and the system's **execution venue**:
-  it acknowledges each `NewOrderSingle` with an `ExecutionReport(New)` whose `ExecID` derives
-  from the order's `globalSeqNo`, tracks per-account positions from fills, and answers
-  `PortfolioQueryRequest` from an in-process `MockRiskEngine`. All replicas track state; only
-  the replica on the current leader emits, with `OutstandingQueries` keeping query replies
-  exactly-once across a failover.
-- **`BasicDataServer`** (C++) — the reference-data gateway, a replica on every node and
-  dual-role: on the leader it publishes the static reference data (FIX session comp-id pairs,
-  gateway topology, trading-day calendar) into cluster ingress as ordinary messages; on every
-  node it consumes them back off the tap into identical in-memory tables. This is what makes
-  session identity and gateway topology properties of the log rather than of per-process config.
-- **`ClusterCtl`** (Java, `clusterctl`) — start/status/shutdown tooling. Its `start` and
-  `shutdown` publish `ClusterStarted`/`ClusterStopped` markers *through* the log, so the
-  boundaries of a run are themselves sequenced.
-- **`MetricsExporter` / `MetricsAggregator`** (Java) — the ops plane, orthogonal to the FIX data
-  flow: a node-local exporter serves `/metrics` off the Aeron CnC counters, and the aggregator
-  pulls every node's exporter into one combined Prometheus endpoint.
+- **`ReplayerServer` / `ReplayerService`** (Java, `replayer/server`) — one per member, co-located in
+  that member's Aeron directory. The only process that reads the archive: it serves an on-demand
+  replay protocol to the co-located replicas, and sits off the live delivery path entirely. Its
+  decisions live in pure seams — `Replayer`, `ReplaySlotAllocator`, `ReplayRecordings`,
+  `ReplayClientIdCollisions` — with `AeronReplayer` the only part that touches Aeron.
+- **`ClusterCtl`** (Java, `clusterctl`) — start/status/shutdown/activation tooling. Its `start` and
+  `shutdown` publish `ClusterStarted`/`ClusterStopped` markers *through* the log, so the boundaries of
+  a run are themselves sequenced. See [Operator tooling](#operator-tooling).
+- **`ClusterProbe`** (Java) — the edge-neutral load generator and tap consumer this tier's own
+  end-to-end scripts drive a cluster with. Three modes: `submit` (flood `ProbeMarker`s at ingress),
+  `ping` (round-trip one through consensus and back off the tap) and `follow` (replay history through
+  the co-located Replayer, then follow the tap live). It exists so core's e2e suite needs no product
+  binary built.
+- **`MetricsExporter` / `MetricsAggregator`** (Java) — the ops plane, orthogonal to the data flow: a
+  node-local exporter serves `/metrics` off the Aeron CnC counters, and the aggregator pulls every
+  node's exporter into one combined Prometheus endpoint (`doc/ops.md`).
+- **`TestGateway`** (Java, `src/test/java`) — an elected active/standby producer used only by
+  `chaos-runner.sh`. It speaks no application protocol and holds no session state, but it holds the
+  same four fences a real gateway does, so the recovery-stall policy gets exercised inside this repo.
+  It is in the test source set and therefore in no jar.
+
+The **C++ half is a client library, not a set of executables**: `phixeron_core` is header-only, and
+the only binary this build produces is `core_tests`. It gives an application written in C++ the
+consumer side of everything above — `ClusterStreamSender` (the cluster client session state machine),
+`ClusterStreamClient` / `ReplayerStreamReceiver` (replay history, then follow the tap live),
+`SequencedFrame` (the envelope), `PortLayout`, and the pure policy classes. There is **no C++ replay
+server**; the server side of the replay protocol is Java only.
 
 ### Load-bearing properties
 
-- **The cluster never parses FIX message bodies.** Every ingress message is an `Unsequenced` frame
+- **The cluster parses no application payload.** Every ingress message is an `Unsequenced` frame
   (`sbe-frame.xml`, schema 210) whose body is one opaque payload named by `header.payloadId`;
   `Sequencer` decodes the frame header, stamps it, and copies the payload through byte-identical.
-  Only `payloadId` 1 — seqeron's own core payloads — is ever opened, and the one bounded exception
-  inside it is the `GatewayRegistered` list row.
-- **The log holds the authoritative state, and every decision consumers must agree on is
-  emitted rather than inferred.** FIX session state is driven only by cluster-replicated
-  callbacks, never straight off the TCP receive path; connects/disconnects, refusals, order
-  acks, promotions and the clock all round-trip through the sequencer.
-- **No snapshots — recovery is always full-log replay from `globalSeqNo` 1.** That is what
-  keeps every node's tap recording complete, and all derived state is a pure function of the
-  log. The cost is recovery time and archive size growing with uptime, bounded in practice by a
-  one-trading-day log.
+  Sequencing is copy-18/append-16, the body is never re-encoded, and `payloadId` 1 is retired and
+  refused on ingress — what used to travel under it is now the **system family**, seqeron's own
+  vocabulary, named by `header.systemEventType` at the same offset.
+- **A consumer splits by family first, then dispatches on `(payloadId, templateId)` — never
+  `templateId` alone.** Template ids are unique per schema, so two applications' templates can
+  collide, and the uint16 at offset 16 is a `payloadId` on one family and a `systemEventType` on the
+  other. `unwrapFrame` (C++, `SequencedFrame.hpp`) and `SequencedFrameDecoder` (Java) are the one
+  place the envelope is stripped.
+- **The log holds the authoritative state, and every decision consumers must agree on is emitted
+  rather than inferred.** Connects, disconnects, promotions and the clock all round-trip through the
+  sequencer, so a restarted or standby replica rebuilds by replaying rather than by asking anyone.
+- **No snapshots — recovery is always full-log replay from `globalSeqNo` 1.** `SequencerService`
+  refuses to take or restore one. That is what keeps every node's tap recording complete: a node
+  restored from a snapshot would record only from wherever it resumed. The cost is recovery time and
+  archive size growing with uptime — the 1 Hz heartbeat alone is ~86.4k frames/day.
+- **A node that cannot record terminates itself.** `TapStallPolicy` watches the archive's
+  `RecordingPos` counter, and a node whose recording has stopped or stopped advancing exits (70)
+  rather than sequence history it cannot keep. Peers keep quorum, and the restart rebuilds its
+  recording over the full-log replay it does anyway.
 
-It depends on a sibling project, **simdfix**
-(`git@github.com:FredrikJDahlberg/simdfix.git`, fetched via CMake `FetchContent`), which
-provides the generic FIX wire-format codec, session state machine base classes, and the code
-generator used to turn `fix-session.xml`/`fix-application.xml` into C++ FIX message headers.
-phixeron generates its own copy of those headers rather than reusing simdfix's test fixtures.
-
-`doc/design.md` is the full design description this summarizes; its *Known gaps* section and
-`doc/todo.md` are the authority on what is not built yet — most notably there is no matching
-engine (no fills, cancels or replaces past the `New` ack), no pre-trade risk gating, and no
-edge authentication.
+`doc/seqeron-protocol-spec.md` is the normative protocol specification; `doc/fault-tolerance.md`
+covers what survives node loss, failover, a stuck archive and a lost frame.
 
 ## Build
 
-The source is split by module, and the directory a file is in is what owns it: `cluster/` is the
-cluster tier (the sequencer, the replayer, the shared client classes and the tools, in both
-languages), `gateways/` is the Java Artio FIX legs, and `src/main/cpp` is the C++ FIX edge. The
-dependency runs one way, product to cluster, and both builds enforce it — Gradle through
-`:gateways` depending on `:cluster`, CMake through the `phixeron_core` / `phixeron` target pair.
-Each module owns its schemas under `<module>/src/main/sbe` (the C++ edge's stay in the root's
-`src/main/resources`); the scripts under `src/{main,test}/scripts` are still shared at the root.
-See `doc/future-arch.md` §11 for where this is going.
-
-### C++
-
-```bash
-# Debug build (AddressSanitizer + coverage)
-cmake -B cmake-build-debug -DCMAKE_BUILD_TYPE=Debug
-cmake --build cmake-build-debug
-
-# Release build
-cmake -B cmake-build-release -DCMAKE_BUILD_TYPE=Release
-cmake --build cmake-build-release
-```
+Requires **JDK 21** and a **C++23** compiler. The C++ build needs Java on `PATH` too — the SBE tool
+is a jar, downloaded once at configure time — and fetches Aeron 1.51.0 and GoogleTest from source.
+Both halves generate independently from the same schemas under `src/main/sbe`, so their Aeron and SBE
+versions are pinned to match (`build.gradle`'s `ext` block, `CMakeLists.txt`'s `FetchContent`).
 
 ### Java
 
 ```bash
 ./gradlew compileJava
-
-# Fat jar (run without Gradle)
-./gradlew uberJar
-
-# The artioSpike source set (MockExchange, MockOrderClient, FixTestClient) — neither
-# compileJava nor uberJar builds it, and the two Artio gateway e2e scripts need it
-./gradlew compileArtioSpikeJava
+./gradlew uberJar     # fat jar, run without Gradle: build/libs/phixeron-0.1.0-uber.jar
+./gradlew test        # JUnit 5, ~1s
 ```
+
+Every script resolves `build/libs/phixeron-0.1.0-uber.jar`, so `uberJar` is the prerequisite for all
+of them; `PHIXERON_JAR` overrides the path.
+
+The codegen tasks run as part of `compileJava` and can be invoked on their own:
+
+```bash
+./gradlew generateFrameSbe generateReplaySbe generateProbeSbe   # Java codecs + IR
+./gradlew generateClusterSbeIr                                  # IR only, no codecs
+./gradlew compileTestJava                                       # TestGateway, for chaos-runner.sh
+```
+
+### C++
+
+```bash
+cmake -B cmake-build-debug -DCMAKE_BUILD_TYPE=Debug      # AddressSanitizer
+cmake --build cmake-build-debug
+
+cmake -B cmake-build-release -DCMAKE_BUILD_TYPE=Release
+cmake --build cmake-build-release
+```
+
+`-DPHIXERON_COVERAGE=ON` adds coverage instrumentation. The tree is developed on macOS/arm64 with
+Apple clang; `doc/portability-linux.md` records what a RHEL bring-up has to fix, and CI builds it on
+Ubuntu with both clang and gcc-14.
 
 ## Tests
 
 ```bash
-cd cmake-build-debug && cmake --build . --target run_tests
+cmake --build cmake-build-debug --target run_tests   # C++: 115 cases
+./gradlew test                                       # Java: 168 cases
 ```
 
-`run_tests` runs both GoogleTest binaries: `core_tests` (the cluster tier) then `phixeron_tests`
-(the C++ FIX edge). On the Java side `./gradlew test` runs both modules' suites.
+`run_tests` is `ctest --output-on-failure` with the build dependency wired up; plain `ctest` works
+too, and the `..._NOT_BUILT` noise the old tree had to filter is gone with simdfix.
 
-Use `run_tests`, not plain `ctest`: simdfix's own test suite is registered here too, and since
-its targets are `EXCLUDE_FROM_ALL` and never built in this project, `ctest` reports them as
-spurious `..._NOT_BUILT` failures alongside phixeron's real results. If you do need `ctest`,
-filter them out with `ctest --output-on-failure -E "_NOT_BUILT"`.
+Run a single C++ suite by filter, or a single Java test class:
 
----
+```bash
+./cmake-build-debug/core_tests --gtest_filter='ReplayerRecovery*'
+./gradlew test --tests '*SequencerTest'
+```
+
+The Java suite covers the deterministic decision-making — `Sequencer`, and `ReplayerService` through
+its `Replayer` seam — and deliberately touches no Aeron runtime: no media driver, no cluster, no Aeron
+mocks. Everything Aeron-shaped is covered by `core_tests` and by the end-to-end scripts below.
+Coverage is a JaCoCo report at `build/reports/jacoco/test/`, written by `./gradlew test`.
 
 ## Scripts
 
-Cluster start/stop and utility scripts live under `cluster/src/main/scripts/` — these only start and
-stop the cluster (or are standalone tools); they run no tests. `start-three-node-cluster.sh` is the
-exception that moved: it stands up a cluster for the harnesses below and nothing deploys from it, so
-it lives with them:
+Operator and cluster-lifecycle scripts live under `src/main/scripts/`; they start and stop things or
+are standalone tools, and run no tests. `ports.sh` and `paths.sh` are sourced by every other script.
 
 | Script | Purpose |
 |--------|---------|
-| `start-cluster.sh [debug\|release]` | Start the single-node cluster (`SequencerServer`, `aeronmd`, `FixGateway`, `ReplayerServer`, `OrderExecServer`) in the background; Ctrl-C stops all of them |
-| `stop-cluster.sh` | Stop all cluster processes started by either start script |
-| `sbe-log-printer.sh <archive-dir>` | Dump an Aeron Archive recording as JSON (see [Log printer](#log-printer)) |
-| `purgelog.sh [--force]` | Delete archive/cluster directories under `$TMPDIR/phixeron-seq` and the `logs/` directory; cluster must be stopped first |
+| `start-cluster.sh [debug\|release]` | Start the single-node cluster — `SequencerServer`, `ReplayerServer` and a `ClusterProbe follow` replica — in the background; Ctrl-C stops all of them. `PHIXERON_PRODUCT_APPS=1` additionally launches the product repo's C++ processes, which must already be built |
+| `stop-cluster.sh` | Stop everything either start script launched |
+| `clusterctl.sh <command>` | Cluster life cycle: `start`, `shutdown`, `activate`, `load-topology`, `counters` — see [Operator tooling](#operator-tooling) |
+| `sbe-log-printer.sh <archive-dir>` | Dump an Aeron Archive recording as JSON — see [Log printer](#log-printer) |
+| `metrics-exporter.sh` / `metrics-aggregator.sh` | The Prometheus ops plane (`doc/ops.md`) |
+| `purgelog.sh [--force]` | Delete archive/cluster directories under `$TMPDIR/phixeron-seq` and the `logs/` directory; the cluster must be stopped first |
 
-Test scripts sit under the module whose side they exercise (`doc/future-arch.md` §11 step 7a.2):
-`cluster/src/test/scripts/` for the cluster tier's, `gateways/src/test/scripts/` for the Artio legs',
-and the root's `src/test/scripts/` for the C++ edge's. Each brings the cluster up (via
-`start-cluster.sh` above or `start-three-node-cluster.sh`) and tears it down via `stop-cluster.sh`
-(run them from the repository root):
+The end-to-end harnesses live under `src/test/scripts/`. **All five are Java-only** — they drive the
+cluster through `ClusterProbe`, which attaches to a member's own embedded media driver, so three of
+them need no standalone `aeronmd` at all. Each brings a cluster up and tears it down again; run them
+from the repository root, with `./gradlew uberJar` done first.
 
 | Script | Purpose |
 |--------|---------|
-| `cluster/src/test/scripts/start-three-node-cluster.sh [debug\|release]` | Start a local 3-node Raft cluster with a per-node `ReplayerServer` + `ClusterProbe` consumer replica; blocks until Ctrl-C, then stops all of them. Java only — set `PHIXERON_PRODUCT_APPS=1` to add the C++ edge's `FixGateway`, `OrderExecServer` and `BasicDataServer` (what the C++ harnesses below do) |
-| `src/test/scripts/three-node-e2e-test.sh [debug\|release]` | Start the 3-node cluster, run `fix_test_server` against it once, then tear everything down and exit with its pass/fail status (set `PHIXERON_FLOOD_ORDERS=<N>` for the delivery-latency-under-load run) |
-| `src/test/scripts/fix-test-server.sh [debug\|release] [host [port]]` | Run a single FIX session (Logon → Heartbeat → NewOrderSingle → Logout) against a live `FixGateway` |
-| `cluster/src/test/scripts/failover-test.sh` | Force a failover, then cold-start a fresh `ClusterProbe` follower on the new leader and verify it catches up on full history (each node's tap recording is one continuous run spanning both tenures) |
-| `cluster/src/test/scripts/gap-recovery-test.sh` | Drop a live tap frame on a caught-up consumer (SIGUSR1 fault-injection) and verify it re-walks its recording and heals rather than wedging |
-| `gateways/src/test/scripts/exchange-gateway-test.sh` | Bring up the venue leg — the `EGW-A`/`EGW-B` pair against a `MockExchange` — and verify nothing reaches the venue that has not round-tripped consensus, that a restart rebuilds session state from the log, and that failover works both automatically and via `clusterctl`. All-Java; no C++ build needed |
-| `cluster/src/test/scripts/chaos-runner.sh` | Randomized fault injection against a live 3-node cluster, with core's own `TestGateway` pair (`GW-T-A`/`GW-T-B`, ports 9200/9201) taking the load through its accept gate; every run prints its `SEED` to replay the exact fault sequence. Java only — needs `./gradlew uberJar :cluster:compileTestJava` |
-| `cluster/src/test/scripts/replayer-restart-test.sh` | Kill and restart a node's `ReplayerServer` while a client is riding a replay from it, then kill and restart the client's own node entirely and verify its fresh cold-start walk crosses a real multi-recording chain |
-
----
+| `start-three-node-cluster.sh [debug\|release]` | Start a local 3-node Raft cluster with a per-node `ReplayerServer` and `ClusterProbe` replica; blocks until Ctrl-C. `PHIXERON_PRODUCT_APPS=1` adds the product repo's processes |
+| `failover-test.sh` | Force a failover, then cold-start a fresh `ClusterProbe` follower on the new leader and verify it catches up on full history — each node's tap recording is one continuous run spanning both tenures |
+| `gap-recovery-test.sh` | Drop a live tap frame on a caught-up consumer (SIGUSR1 fault injection) and verify it re-walks its recording and heals rather than wedging |
+| `replayer-restart-test.sh` | Kill and restart a node's `ReplayerServer` while a client is riding a replay from it, then kill and restart the client's own node and verify its cold-start walk crosses a real multi-recording chain |
+| `chaos-runner.sh` | Randomized fault injection against a live 3-node cluster, with the `TestGateway` pair (`GW-T-A`/`GW-T-B`, ports 9200/9201) taking load through its accept gate; every run prints its `SEED` to replay the exact fault sequence. Needs `./gradlew uberJar compileTestJava` |
+| `replay-bench.sh <preload> [load-during]` | How fast a cold replica replays recorded history to caught-up; prints archive size, elapsed seconds and MB/s |
 
 ## Sequencer
 
-The sequencer runs as a 1- or 3-node Aeron Cluster. Each node is launched with
-`SequencerServer` and configured entirely via system properties.
+The sequencer runs as a 1- or 3-node Aeron Cluster. Each node is launched with `SequencerServer` and
+configured entirely via system properties.
 
 ### Single-node (development)
 
@@ -189,20 +201,24 @@ java \
 # [SequencerServer/0] Running — Ctrl-C to stop
 ```
 
-The node embeds its own MediaDriver and Archive — no separate `aeronmd` needed.
-Data is written to `/tmp/phixeron-seq/archive-0` and `/tmp/phixeron-seq/cluster-0`.
+The node embeds its own MediaDriver and Archive — no separate `aeronmd` needed. Data is written to
+`$TMPDIR/phixeron-seq/archive-0` and `$TMPDIR/phixeron-seq/cluster-0`.
 
-Each node publishes the sequenced stream onto a node-local `aeron:ipc` tap (stream 205) and records
-it into its own co-located Archive. Co-located clients read the tap live **directly** and ask the
-per-node Replayer to serve an archive replay on a gap or cold start; a remote client can replay the
-recording directly from any member's archive. Every node records an identical continuous copy, so
-there is no separate network global stream and no cross-node replication.
+`src/main/scripts/start-cluster.sh` does the same thing plus a co-located `ReplayerServer` and a
+consumer replica, which is usually what you want:
+
+```bash
+./src/main/scripts/start-cluster.sh
+# [cluster.sh] SequencerServer is running
+# [ReplayerService/0] ready — tap recording 0 live, 1-recording chain verified from globalSeqNo 1; serving replay
+# [ClusterProbe/0] Caught up — following live
+```
 
 ### Three-node cluster
 
-Run each command on its respective host (or in separate terminals on localhost for testing):
+Run each command on its respective host (or in separate terminals on localhost for testing) — only
+`-Dsequencer.memberId` differs between them:
 
-**Member 0**
 ```bash
 java \
   --add-opens=java.base/sun.nio.ch=ALL-UNNAMED \
@@ -214,33 +230,13 @@ java \
   -jar phixeron-0.1.0-uber.jar
 ```
 
-**Member 1**
-```bash
-java \
-  --add-opens=java.base/sun.nio.ch=ALL-UNNAMED \
-  --add-opens=java.base/java.lang=ALL-UNNAMED \
-  --add-opens=java.base/java.lang.reflect=ALL-UNNAMED \
-  -Dsequencer.memberId=1 \
-  -Dsequencer.baseDir=/var/phixeron-seq \
-  "-Dsequencer.clusterMembers=0,host0:9302,host0:9303,host0:9304,host0:9305,host0:9301|1,host1:9312,host1:9313,host1:9314,host1:9315,host1:9311|2,host2:9322,host2:9323,host2:9324,host2:9325,host2:9321" \
-  -jar phixeron-0.1.0-uber.jar
-```
-
-**Member 2**
-```bash
-java \
-  --add-opens=java.base/sun.nio.ch=ALL-UNNAMED \
-  --add-opens=java.base/java.lang=ALL-UNNAMED \
-  --add-opens=java.base/java.lang.reflect=ALL-UNNAMED \
-  -Dsequencer.memberId=2 \
-  -Dsequencer.baseDir=/var/phixeron-seq \
-  "-Dsequencer.clusterMembers=0,host0:9302,host0:9303,host0:9304,host0:9305,host0:9301|1,host1:9312,host1:9313,host1:9314,host1:9315,host1:9311|2,host2:9322,host2:9323,host2:9324,host2:9325,host2:9321" \
-  -jar phixeron-0.1.0-uber.jar
-```
+`src/test/scripts/start-three-node-cluster.sh` builds that string with `ports.sh`'s
+`cluster_members_string` and brings all three up on localhost.
 
 ### Port layout
 
-Each member's ports are `9300 + memberId × 10 + offset`:
+Each member's ports are `9300 + memberId × 10 + offset` — the formula lives in
+`sequencer/PortLayout.hpp`, `SequencerServer`'s Javadoc and `scripts/ports.sh`, and nowhere else:
 
 | Offset | Purpose          | Member 0 | Member 1 | Member 2 |
 |--------|------------------|----------|----------|----------|
@@ -250,19 +246,14 @@ Each member's ports are `9300 + memberId × 10 + offset`:
 | +4     | Cluster log      | 9304     | 9314     | 9324     |
 | +5     | File transfer    | 9305     | 9315     | 9325     |
 
-Core reserves 9300–9329 for these — three members of stride 10, wider than the 9301–9325 three
-nodes actually bind. Which block every other process draws from is `doc/registries.md` §2.
+This tier reserves **9300–9329** for those (three members of stride 10, wider than the 9301–9325 three
+nodes actually bind), **9200–9209** for its own harness listeners, and `9400 + memberId` / 9500 for
+the metrics plane. Every other block — an application's TCP listen port, each co-located client's
+cluster egress port, the replay ports — belongs to the process that binds it, so this repo names none
+of them. `doc/registries.md` §2 is the block table across all of them.
 
-Clients connect to archive control on port 9301 (member 0) to replay history, and to
-ingress on port 9302 to send messages. The sequenced stream is a node-local `aeron:ipc` tap
-(stream 205) recorded into each member's own archive — no network stream port. Cluster egress is a
-fixed UDP port too — 9340 for `FixGateway`, 9403 for `fix_test_server`, 9330 for `OrderExecServer` (see
-[Order execution client](#order-execution-client)), 9360 for `ExchangeGateway` and 9380 for
-`OrderGateway` — kept distinct because these sit on independent media driver processes that can't both
-bind the same UDP port on `localhost`. The Artio-backed gateways each run their own Aeron Archive as
-well, whose control channel needs a UDP port of its own: 9370 for `ExchangeGateway`, 9390 for
-`OrderGateway`. On the FIX side, `FixGateway` accepts on 9000, `MockExchange` stands in for the venue
-on 9010, and `OrderGateway` accepts on 9020.
+The sequenced stream itself has **no port**: it is a node-local `aeron:ipc` tap (stream 205) recorded
+into each member's own archive.
 
 ### System properties
 
@@ -272,170 +263,138 @@ on 9010, and `OrderGateway` accepts on 9020.
 | `sequencer.baseDir`         | `$TMPDIR/phixeron-seq`           | Root for archive and cluster dirs  |
 | `sequencer.aeronDir`        | `$TMPDIR/phixeron-seq-aeron-<id>`| Aeron media driver directory       |
 | `sequencer.clusterMembers`  | single-node localhost            | Full Aeron clusterMembers string   |
+| `sequencer.idleStrategy`    | `backoff`                        | `backoff` or `yielding`            |
 
-### Client startup
-
-`SequencerClient` (abstract base) handles driver launch, archive connection, replay,
-and cluster ingress. Extend it and implement `onSequencedMessage`:
-
-```java
-public class MyClient extends SequencerClient {
-    @Override
-    protected void onSequencedMessage(long globalSeqNo, long sourceSessionId,
-                                      long appSeqNo, long timestamp,
-                                      SequencedMessageDecoder decoder) {
-        // process message
-    }
-}
-
-// Drive the client
-try (MyClient client = new MyClient()) {
-    client.start();           // connects to single-node defaults (localhost:9301 / 9302)
-    while (running) {
-        idleStrategy.idle(client.poll());
-    }
-}
-```
-
-On startup the client replays the full history from the Archive and then follows
-live data seamlessly on the same image. Override `replayStartPosition()` to return
-the last-processed archive byte position to skip already-applied history on restart.
+`ReplayerServer` takes `replayer.memberId` and `replayer.aeronDir` on the same defaults, so a
+co-located pair needs only a matching `memberId`.
 
 ### Restart and failover
 
 Archive and cluster directories are preserved on restart (`deleteArchiveOnStart=false`,
-`deleteDirOnStart=false`). A node rejoins the cluster and replays the log in full — there are no
-snapshots, and `SequencerService` refuses to take or restore one, so recovery always starts from
-`globalSeqNo` 1 (which is what keeps every node's tap recording a complete copy of history). To wipe
-state for a clean start, delete the `archive-<id>` and `cluster-<id>` subdirectories under `baseDir`.
+`deleteDirOnStart=false`). A node rejoins and replays the log in full — there are no snapshots, so
+recovery always starts from `globalSeqNo` 1, which is what keeps every node's tap recording a
+complete copy of history. `clusterctl shutdown` uses `ABORT` for the same reason. To wipe state for a
+clean start, delete the `archive-<id>` and `cluster-<id>` subdirectories under `baseDir` — or run
+`purgelog.sh`.
 
-### Log printer
+A leader failover is not a break in the tap: the tap publication is created once in `onStart` and
+never re-created on a leadership change (`aeron:ipc` has no port to collide on), so a node's recording
+is one continuous run spanning every leader tenure.
 
-`SbeLogPrinter` dumps an Archive recording (`archive.catalog` + segment files under
-`archive-<id>`) as JSON, decoded against the generated SBE IR schema. It works on a
-still-running cluster — an in-progress recording is printed up to whatever has been
-written so far — so the cluster does not need to be stopped first.
+## Operator tooling
+
+`clusterctl` is node-local — run it co-located with a `SequencerServer`, on any member:
 
 ```bash
-./gradlew uberJar
-
-./cluster/src/main/scripts/sbe-log-printer.sh "${TMPDIR:-/tmp}/phixeron-seq/archive-0" --stream 205
+./src/main/scripts/clusterctl.sh counters        # this node's operator counters; needs no cluster connection
+./src/main/scripts/clusterctl.sh start           # record a "system started" marker (requires an elected leader)
+./src/main/scripts/clusterctl.sh shutdown        # orderly stop; safe on every node, a no-op on followers
+./src/main/scripts/clusterctl.sh activate <gatewayId>
+./src/main/scripts/clusterctl.sh load-topology <file.xml>
 ```
 
-Or via Gradle directly — a `:cluster` task, so it runs on the cluster tier's classpath: core frames
-print in full and an application payload is labelled from the recording's own `PayloadIdRegistered`
-rows but not decoded. The wrapper above is the one that names payloads inline, because the uber jar
-carries every module's IR; `-o` is the wrapper's too (Gradle re-encodes a child's stdout, which
-corrupts raw payload bytes).
+`load-topology` publishes the deployment document — the gateway list, the co-located applications,
+then the protocol registry — validated against the packaged `topology.xsd`. Run it once per cluster
+lifetime, before any reference-data load. Only the gateway list is acted on: the sequencer synthesizes
+the bootstrap `GatewayActive` per logical gateway behind the row whose `remaining` counts down to 0.
+The application and protocol rows are labelling for `SbeLogPrinter`, decoded by nothing and gating
+nothing.
+
+Anything `clusterctl` does not recognize is passed through to `io.aeron.cluster.ClusterTool` against
+this node's cluster dir (`describe`, `errors`, `list-members`, `recording-log`, …). `snapshot` is
+refused. `CLUSTERCTL_*` environment variables map onto the `clusterctl.*` system properties; the full
+runbook is `doc/clusterctl.md`.
+
+## Log printer
+
+`SbeLogPrinter` dumps an Archive recording (`archive.catalog` plus segment files under `archive-<id>`)
+as JSON, decoded against the generated SBE IR. It works on a still-running cluster — an in-progress
+recording is printed up to whatever has been written so far.
+
 ```bash
-./gradlew sbeLogPrinter -PlogDir="${TMPDIR:-/tmp}/phixeron-seq/archive-0" -Pstream=205
+./src/main/scripts/sbe-log-printer.sh "${TMPDIR:-/tmp}/phixeron-seq/archive-0" --stream 205 --oneline
 ```
 
-#### Schemas
+Or through Gradle, which takes the same options as `-P` properties:
 
-Every generated IR file ships inside the uber jar — `frame` (the envelope and core), `order`,
-`session` and `basicdata` (the three application payloads), `unsequenced` (the node-local replay
-control plane) and `cluster` (the Raft consensus log) — and **all of them are loaded by default**.
-Each frame is decoded against the schema its own header names, and a payload inside an envelope the
-same way, so a single run reads an archive dir end to end whatever mix of recordings it holds:
+```bash
+./gradlew sbeLogPrinter -PlogDir="${TMPDIR:-/tmp}/phixeron-seq/archive-0" -Pstream=205 -Poneline
+```
+
+### Schemas
+
+Four IR files ship inside the jar and **all of them are loaded by default** — `frame` (schema 210, the
+envelope and the system family), `replay` (212, the node-local replay control plane), `probe` (214,
+`ClusterProbe`'s own payload) and `cluster` (111, the Raft consensus log). Each frame is decoded
+against the schema its own header names, so a single run reads an archive dir end to end whatever mix
+of recordings it holds:
 
 ```
 [Catalog] Recording ID: 0 | Stream ID: 205 | ...    → frames  (schema 210)
 [Catalog] Recording ID: 1 | Stream ID: 100 | ...    → cluster (schema 111)
-[Catalog] Recording ID: 2 | Stream ID: 205 | ...    → frames  (schema 210)
 ```
 
-`--schema <name>` narrows the run to one schema; frames of the others are then labelled
-`<schema N not loaded>` and skipped. `--list-schemas` prints the bundled names.
-`--spec <file.sbeir>` decodes against an IR file outside the jar instead — the two are mutually
-exclusive. The Gradle task takes the same as `-Pschema=` / `-Pspec=`.
+`--schema <name>` narrows the run to one; frames of the others are then labelled `<schema N not
+loaded>` and skipped. `--list-schemas` prints the bundled names. `--spec <file.sbeir>` decodes against
+an IR file outside the jar instead — the two are mutually exclusive, and it is how an application's
+own schema gets in front of the tool.
 
-`sbe-cluster.xml` is a trimmed mirror of `io.aeron.cluster.codecs`: the subset the C++ cluster
-client needs to speak the wire protocol, plus a decode-only section covering what
+`sbe-cluster.xml` is a trimmed mirror of `io.aeron.cluster.codecs`: the subset the C++ cluster client
+needs in order to speak the wire protocol, plus a decode-only section covering what
 `io.aeron.cluster.LogPublisher` appends to the Raft log — `TimerEvent`, `SessionOpenEvent`,
-`SessionCloseEvent`, `ClusterActionRequest`, `NewLeadershipTermEvent`. Between those and
-`SessionMessageHeader` (the envelope around every ingress message), a cluster-log recording
-decodes end to end:
+`SessionCloseEvent`, `ClusterActionRequest`, `NewLeadershipTermEvent`. A frame whose template the
+schema does not define prints as `<not in schema>` with its template id rather than aborting the
+scan, which is what a future Aeron version appending something new would look like.
 
-```
---- Log File Offset: 0 | NewLeadershipTermEvent (templateId 24) ---
-{ "leadershipTermId": 0, "logPosition": 96, "timestamp": ..., "termBaseLogPosition": 0,
-  "leaderMemberId": 0, "logSessionId": 1548081610, "timeUnit": "MILLIS", "appVersion": 1 }
---- Log File Offset: 224 | SessionOpenEvent (templateId 21) ---
-{ "leadershipTermId": 0, "correlationId": 137, "clusterSessionId": 1, "timestamp": ...,
-  "responseStreamId": 102, "responseChannel": "aeron:udp?...", "encodedPrincipal": "" }
-```
+### Selecting a recording
 
-A frame whose template the schema does not define prints as `<not in schema>` with its template
-id rather than aborting the scan — which is what you would see if a future Aeron version appended
-something new to the log.
+An archive dir holds more than one recording, so by default the printer dumps **all** of them. Stream
+100 is the Raft cluster log; each recording on 205 is one generation of the sequenced tap, because a
+node restart replays its whole cluster log and re-emits every message onto a *new* tap recording — so
+a later recording starts again at `globalSeqNo` 1 and the earlier one is a strict prefix of it.
 
-#### Selecting a recording
+`--stream 205` dumps only the **newest** recording on that stream — one complete copy of sequenced
+history, no repeats. Recording ids are not stable across restarts, which is why the selector is the
+stream rather than the id. Omit it to get everything, stale tap generations included. The printer
+exits non-zero if the requested stream matches no recording.
 
-An archive dir holds more than one recording, so by default the printer dumps **all** of them:
-
-```
-[Catalog] Recording ID: 0 | Stream ID: 205 | Start Pos: 0 | Stop Pos: 6336
-[Catalog] Recording ID: 1 | Stream ID: 100 | Start Pos: 0 | Stop Pos: 8448
-[Catalog] Recording ID: 2 | Stream ID: 205 | Start Pos: 0 | Stop Pos: 12480
-```
-
-Stream 100 is the Raft cluster log; the two on 205 are successive generations of the sequenced
-tap, because a node restart replays its whole cluster log and re-emits every message onto a *new*
-tap recording — so recording 2 starts again at `globalSeqNo` 1 and recording 0 is a strict prefix
-of it.
-
-`--stream 205` (or `-Pstream=205`) dumps only the **newest** recording on that stream — one
-complete copy of sequenced history, no repeats. Recording ids are not stable across restarts,
-which is why the selector is the stream rather than the id.
-
-Omit the flag when you want everything, including stale tap generations. Exits non-zero if the
-requested stream matches no recording.
-
-#### Output format
+### Output format
 
 Each message is preceded by a separator naming it — the JSON carries field values only, so a
-header-only message such as `ClusterHeartbeat` is otherwise indistinguishable from any other:
+header-only message such as `ClusterHeartbeat` would otherwise be indistinguishable from any other.
+`--oneline` collapses each message onto a single line, which greps and diffs far better than the
+default pretty print:
 
 ```
---- Log File Offset: 96 | ClusterHeartbeat (templateId 16) ---
+LeadershipChanged = { "header": { "sourceId": -1, "connectionId": -1, "sessionId": -1, "systemEventType": 5, "globalSeqNo": 1, "timestamp": 1788716861366 }, "newLeaderMemberId": 0 }
+ClusterHeartbeat = { "header": { "sourceId": -1, "connectionId": -1, "sessionId": -1, "systemEventType": 16, "globalSeqNo": 2, "timestamp": 1788716862367 } }
 ```
 
-`--oneline` (or `-Poneline`) collapses each message onto a single line, which greps and diffs far
-better than the default pretty print:
-
-```
---- Log File Offset: 0 | LeadershipChanged (templateId 5) ---
-{ "header": { "sourceId": -1, "connectionId": -1, "sessionId": -1, "globalSeqNo": 1, "timestamp": 1784483030632 }, "newLeaderMemberId": 0 }
-```
-
-Note the dump as a whole is not a JSON document either way — the `[Catalog]` and separator lines sit
+The dump as a whole is not a JSON document either way — the `[Catalog]` and separator lines sit
 between the objects — but with `--oneline` each individual message line parses on its own.
 
-#### Piping payloads to another decoder
+### Piping payloads to another decoder
 
-`-o <payloadId>` writes that protocol's payloads to **stdout**, raw and back to back, for a decoder that
-owns their schema (`doc/seqeron-protocol-spec.md` §13.1). The printer decodes seqeron's own core
-payloads (`payloadId` 1) unaided; everything else is somebody else's protocol, and this is how it gets
-out:
+`-o <payloadId>` writes that protocol's payloads to **stdout**, raw and back to back, for a decoder
+that owns their schema (`doc/seqeron-protocol-spec.md` §13.1). This tier decodes no application
+payload at all, so this is how one gets out to something that does:
 
 ```bash
-./cluster/src/main/scripts/sbe-log-printer.sh "${TMPDIR:-/tmp}/phixeron-seq/archive-0" --stream 205 \
+./src/main/scripts/sbe-log-printer.sh "${TMPDIR:-/tmp}/phixeron-seq/archive-0" --stream 205 \
     -o 2 2>frames.log | order-decode
 ```
 
 Stdout belongs to the payload stream for the whole run, so **every text line moves to stderr** — the
 `[Catalog]` line, the dump itself, the errors. Redirect it as above to keep the frames beside the
-payloads; the two are emitted in the same order, and the frame line is where `globalSeqNo` is.
+payloads; the two are emitted in the same order, and the frame line is where `globalSeqNo` is. The
+stream carries no framing of its own: an SBE payload declares its own block and var-data lengths, so
+the decoder that holds the schema is what delimits it. It works on the Raft log (`--stream 100`) as
+well as the tap, reading the ingress side of the same frames.
 
-The stream carries no framing of its own: an SBE payload declares its own block and var-data lengths, so
-the decoder that holds the schema is what delimits it. It works on the Raft log (`--stream 100`) as well
-as the tap, reading the ingress side of the same frames.
+There is no `-P` property for this on the Gradle task — Gradle re-encodes a child process's stdout,
+which corrupts the payload bytes. Use the script or the jar directly.
 
-There is no `-P` property for this on the Gradle task — Gradle decorates its own stdout, which would
-corrupt the stream. Use the script or the jar.
-
-#### Naming a payload it cannot decode
+### Naming a payload it cannot decode
 
 A payload whose schema is not loaded prints as its ids rather than being decoded — but it is
 **labelled**, from the `PayloadIdRegistered` rows `clusterctl load-topology` put in the same recording
@@ -447,125 +406,16 @@ A payload whose schema is not loaded prints as its ids rather than being decoded
 ```
 
 The second is an unregistered `payloadId`, which prints under its number. Registration is labelling
-only: the sequencer never decodes those rows and they gate no frame. All four of this deployment's
-schemas ship in the jar today, so the label is what a reader sees once an application's schema is no
-longer seqeron's to bundle.
+only: the sequencer never decodes those rows and they gate no frame.
 
----
+## Documentation
 
-## Order execution client
-
-`OrderExecServer` (C++, `src/main/cpp/.../order/OrderExecServer.cpp`) combines what used to
-be two separate binaries — `application_stream_client` and the C++ `RiskEngineClient` — into one
-cluster ingress client. It replays the cluster stream then follows it live, printing every
-`NewOrderSingle`/`ExecutionReport` it sees, tracking each account's positions from those same
-fills, answering `PortfolioQueryRequest`s with a risk assessment from a mocked external risk
-engine, and submitting the `PortfolioQueryReply` back to cluster ingress. The mock engine is
-synchronous, slow, and only services 5 requests at once (`MockRiskEngine`); queries beyond that
-are throttled by leaving the `PortfolioQueryRequest` fragment unconsumed on the cluster stream
-until a slot frees up, rather than blocking or dropping them.
-
-Unlike `FixGateway` (which serves external, potentially remote TCP FIX clients over UDP),
-`OrderExecServer` is deliberately deployed **co-located** with one `SequencerServer` member —
-sharing that member's own embedded Aeron directory rather than the standalone `aeronmd` — so
-archive access/replay, the live (post-catch-up) sequenced-stream tail (the co-located member's
-`aeron:ipc` tap, read directly), and — while that member is leader — cluster ingress all go over `aeron:ipc`
-instead of looping through two independent UDP media drivers. Cluster egress stays UDP regardless
-(see `doc/design.md` §2.7 for the full rationale and fallback behavior when the co-located member
-isn't currently leader).
-
-```bash
-cmake --build cmake-build-release --target OrderExecServer
-PHIXERON_ORDER_EXEC_AERON_DIR="${TMPDIR:-/tmp}/phixeron-seq-aeron-0" ./cmake-build-release/OrderExecServer
-# [OrderExecServer] Connected to co-located Aeron media driver at .../phixeron-seq-aeron-0
-# [OrderExecServer] Connected to co-located Aeron Archive via IPC (holds the cluster stream recording)
-# [OrderExecServer] Live from start
-```
-
-`PHIXERON_ORDER_EXEC_AERON_DIR` defaults to member 0's own `sequencer.aeronDir` default
-(`$TMPDIR/phixeron-seq-aeron-0`, see [System properties](#system-properties)) — start the
-sequencer node first (see [Sequencer](#sequencer)) and only override this if co-locating with a
-different member.
-
----
-
-## FIX TCP test client
-
-`src/test/cpp/org/limitless/phixeron/session/FixTestServer.cpp` connects to the
-`FixGateway` on TCP port 9000 and runs a minimal FIX session
-using the simdfix `ClientSession` and generated message encoders:
-
-1. **Logon** — negotiates the session (EncryptMethod=None, HeartbeatInterval=30 s)
-2. **Heartbeat** — verifies the session is active
-3. **NewOrderSingle** — sends a limit Buy order (Account=ACC1, ClOrdID=ORD-0001, AAPL, 100 @ 150.00)
-4. **Logout** — tears the session down cleanly
-5. **Risk engine query test** — since there is no downstream matching engine, submits a
-   synthetic Trade `ExecutionReport` and a `PortfolioQueryRequest` directly to cluster
-   ingress (bypassing the FIX/TCP gateway — see
-   [order execution client](#order-execution-client)) and prints the resulting
-   `PortfolioQueryReply`. Requires `aeronmd` (for `fix_test_server`'s own connection) and
-   `OrderExecServer` to be running.
-
-```
-SenderCompID = CLIENT
-TargetCompID = PHIXERON   (the gateway's identity)
-```
-
-### How to run
-
-**1. Start the sequencer node** (single-node dev mode — see [Sequencer](#sequencer)):
-```bash
-./gradlew uberJar
-java \
-  --add-opens=java.base/sun.nio.ch=ALL-UNNAMED \
-  --add-opens=java.base/java.lang=ALL-UNNAMED \
-  --add-opens=java.base/java.lang.reflect=ALL-UNNAMED \
-  -Dsequencer.memberId=0 \
-  -jar build/libs/phixeron-0.1.0-uber.jar
-```
-
-**2. Start `aeronmd`** (separate terminal) — the C++ clients below need a media driver of
-their own, since (unlike `SequencerServer`) they don't embed one:
-```bash
-source cluster/src/main/scripts/paths.sh   # aeron_default_dir: /dev/shm/aeron-<user> on Linux, $TMPDIR/aeron-<user> on macOS
-AERON_DIR="$(aeron_default_dir)" ./cmake-build-release/_deps/aeron-build/binaries/aeronmd
-```
-
-**3. Start the FIX gateway** (separate terminal):
-```bash
-cmake --build cmake-build-release --target FixGateway
-source cluster/src/main/scripts/paths.sh
-AERON_DIR="$(aeron_default_dir)" ./cmake-build-release/FixGateway
-# [TCP] Listening on port 9000
-# [FixGateway] Caught up — following live stream
-```
-
-**4. Start `OrderExecServer`** (separate terminal — see
-[Order execution client](#order-execution-client)), needed for step 5 below.
-
-**5. Build and run the test client** (separate terminal):
-```bash
-cmake --build cmake-build-release --target fix_test_server
-source cluster/src/main/scripts/paths.sh
-AERON_DIR="$(aeron_default_dir)" ./cmake-build-release/fix_test_server
-# [FixTestServer] Connecting to 127.0.0.1:9000
-# [FixTestServer] Connected
-# [FixTestServer] Sent  Logon          seq=1
-# [FixTestServer] Recv  8=FIXT.1.1|9=...|35=A|49=PHIXERON|56=CLIENT|...
-# [FixTestServer] Sent  Heartbeat      seq=2
-# [FixTestServer] Sent  NewOrderSingle seq=3  Account=ACC1  ClOrdID=ORD-0001  AAPL Buy 100 @ 150.00
-# [FixTestServer] Recv  8=FIXT.1.1|9=...|35=8|...                       (ExecutionReport ack)
-# ...
-# [FixTestServer] Sent  Logout         seq=6
-# [FixTestServer] Recv  8=FIXT.1.1|9=...|35=5|...
-# [FixTestServer] Starting risk engine query test
-# [FixTestServer] Sent  ExecutionReport (Trade fill)  clOrdID=ORD-0001 [direct cluster ingress]
-# [FixTestServer] Sent  PortfolioQueryRequest  account=ACC1 correlationId=777 [direct cluster ingress]
-# [FixTestServer] Recv  PortfolioQueryReply  status=Ok riskScore=15 gross=1500000000000 net=1500000000000 positions=1
-# [FixTestServer] Done.
-```
-
-Connect to a non-default host or port:
-```bash
-./cmake-build-release/fix_test_server 192.168.1.10 9000
-```
+| Document | What it is |
+|----------|------------|
+| `doc/seqeron-protocol-spec.md` | The normative protocol specification — frames, families, the system vocabulary, the topology document |
+| `doc/fault-tolerance.md` | Node loss, leader failover, a stuck archive, a lost frame: what survives each and how it recovers |
+| `doc/registries.md` | The two shared namespaces — the producer `sourceId` space and the UDP port blocks |
+| `doc/clusterctl.md` | The operator tool's runbook |
+| `doc/ops.md` | The Prometheus/Grafana metrics stack |
+| `doc/portability-linux.md` | What a RHEL 9/10 bring-up has to fix; the tree is macOS/clang-developed |
+| `doc/replayer-issue3.md` | A rejected design (shared bootstrap replay), kept for the reasoning |

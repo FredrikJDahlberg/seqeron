@@ -1,22 +1,31 @@
 #!/usr/bin/env bash
-# cluster.sh — start the phixeron single-node cluster and its C++ clients.
+# start-cluster.sh — start the single-node cluster and a co-located consumer replica.
 #
-# Launches four processes in the background, each writing to its own log file:
-#   1. SequencerServer  (Java, single-node Aeron Cluster, member 0)
-#   2. FixGateway  (C++, FIX TCP gateway on port 9000)
-#   3. ReplayerServer  (Java, co-located with member 0: serves archive replay to co-located apps over
-#                     aeron:ipc — doc/router-design.md; apps read the tap directly for live)
-#   4. OrderExecServer  (C++, a replica co-located with member 0: reads the tap directly, tracks
-#                        positions, answers risk queries while its node is leader)
+# TWO MODES, and the default is the cluster tier alone — this repo builds no product binary, so its
+# own dev cluster must come up without one (the same split start-three-node-cluster.sh makes):
 #
-# Ctrl-C (or kill $$ / kill -- -$$) stops all four cleanly.
+#   default (PHIXERON_PRODUCT_APPS unset) — Java only, each process to its own log file:
+#     1. SequencerServer  (Java, single-node Aeron Cluster, member 0)
+#     2. ReplayerServer   (Java, co-located with member 0: serves archive replay to co-located apps
+#                          over aeron:ipc; apps read the tap directly for live)
+#     3. ClusterProbe follow (Java, the edge-neutral consumer replica standing in for a product one)
+#
+#   PHIXERON_PRODUCT_APPS=1 — additionally the product repo's C++ processes, which must already be
+#   built into ${BUILD_DIR} by that repo:
+#     4. aeronmd          (standalone Aeron media driver, for C++ clients that do NOT co-locate)
+#     5. FixGateway       (C++, FIX TCP gateway on port 9000)
+#     6. OrderExecServer  (C++, a replica co-located with member 0: reads the tap directly, tracks
+#                          positions, answers risk queries while its node is leader) — REPLACES the
+#                          probe replica above
+#
+# Ctrl-C (or kill $$ / kill -- -$$) stops all of them cleanly.
 #
 # Prerequisites:
 #   ./gradlew uberJar                              # build the fat jar
-#   cmake --build cmake-build-release              # build C++ targets
+#   cmake --build cmake-build-release              # product mode only, in the product repo
 #
 # Usage:
-#   ./cluster.sh [debug|release]     default: release
+#   ./start-cluster.sh [debug|release]     default: release
 
 set -euo pipefail
 
@@ -44,6 +53,8 @@ JAVA_OPTS=(
     --add-opens=java.base/java.lang.reflect=ALL-UNNAMED
     --add-opens=java.base/jdk.internal.misc=ALL-UNNAMED
 )
+
+PRODUCT_APPS="${PHIXERON_PRODUCT_APPS:-}"
 
 LOG_DIR="logs"
 SEQ_LOG="${LOG_DIR}/sequencer.log"
@@ -77,16 +88,18 @@ if [[ ! -f "${JAR}" ]]; then
     exit 1
 fi
 
-for bin in FixGateway OrderExecServer; do
-    if [[ ! -x "${BUILD_DIR}/${bin}" ]]; then
-        echo "ERROR: ${BUILD_DIR}/${bin} not found — run: cmake --build ${BUILD_DIR}" >&2
+if [[ -n "${PRODUCT_APPS}" ]]; then
+    for bin in FixGateway OrderExecServer; do
+        if [[ ! -x "${BUILD_DIR}/${bin}" ]]; then
+            echo "ERROR: ${BUILD_DIR}/${bin} not found — it is the product repo's binary, built there" >&2
+            exit 1
+        fi
+    done
+
+    if [[ ! -x "${AERONMD}" ]]; then
+        echo "ERROR: ${AERONMD} not found — run: cmake --build ${BUILD_DIR}" >&2
         exit 1
     fi
-done
-
-if [[ ! -x "${AERONMD}" ]]; then
-    echo "ERROR: ${AERONMD} not found — run: cmake --build ${BUILD_DIR}" >&2
-    exit 1
 fi
 
 mkdir -p "${LOG_DIR}"
@@ -114,27 +127,31 @@ until grep -q "Running" "${SEQ_LOG}" 2>/dev/null; do
 done
 echo "[cluster.sh] SequencerServer is running"
 
-echo "[cluster.sh] Starting Aeron media driver → ${MD_LOG}"
-AERON_DIR="${AERON_DIR}" "${AERONMD}" > "${MD_LOG}" 2>&1 &
-MD_PID=$!
+MD_PID=""
+FIX_PID=""
+if [[ -n "${PRODUCT_APPS}" ]]; then
+    echo "[cluster.sh] Starting Aeron media driver → ${MD_LOG}"
+    AERON_DIR="${AERON_DIR}" "${AERONMD}" > "${MD_LOG}" 2>&1 &
+    MD_PID=$!
 
-# Wait for aeronmd to create its CnC file so C++ clients can attach.
-echo "[cluster.sh] Waiting for media driver CnC file…"
-WAIT=0
-until [[ -f "${AERON_DIR}/cnc.dat" ]]; do
-    sleep 0.2
-    WAIT=$(( WAIT + 1 ))
-    if (( WAIT > 25 )); then
-        echo "ERROR: aeronmd CnC file not created after 5 s at ${AERON_DIR}/cnc.dat" >&2
-        kill "${MD_PID}" "${SEQ_PID}" 2>/dev/null
-        exit 1
-    fi
-done
-echo "[cluster.sh] Media driver ready"
+    # Wait for aeronmd to create its CnC file so C++ clients can attach.
+    echo "[cluster.sh] Waiting for media driver CnC file…"
+    WAIT=0
+    until [[ -f "${AERON_DIR}/cnc.dat" ]]; do
+        sleep 0.2
+        WAIT=$(( WAIT + 1 ))
+        if (( WAIT > 25 )); then
+            echo "ERROR: aeronmd CnC file not created after 5 s at ${AERON_DIR}/cnc.dat" >&2
+            kill "${MD_PID}" "${SEQ_PID}" 2>/dev/null
+            exit 1
+        fi
+    done
+    echo "[cluster.sh] Media driver ready"
 
-echo "[cluster.sh] Starting FixGateway → ${FIX_LOG}"
-stdbuf -oL -eL "${BUILD_DIR}/FixGateway" > "${FIX_LOG}" 2>&1 &
-FIX_PID=$!
+    echo "[cluster.sh] Starting FixGateway → ${FIX_LOG}"
+    stdbuf -oL -eL "${BUILD_DIR}/FixGateway" > "${FIX_LOG}" 2>&1 &
+    FIX_PID=$!
+fi
 
 echo "[cluster.sh] Starting ReplayerServer (co-located with SequencerServer member 0) → ${REPLAYER_LOG}"
 java "${JAVA_OPTS[@]}" \
@@ -155,17 +172,34 @@ until grep -q "serving replay" "${REPLAYER_LOG}" 2>/dev/null; do
     fi
 done
 
-echo "[cluster.sh] Starting OrderExecServer (replica co-located with member 0) → ${APP_LOG}"
-PHIXERON_ORDER_EXEC_AERON_DIR="${SEQ_AERON_DIR}" \
-    stdbuf -oL -eL "${BUILD_DIR}/OrderExecServer" > "${APP_LOG}" 2>&1 &
-APP_PID=$!
+if [[ -n "${PRODUCT_APPS}" ]]; then
+    echo "[cluster.sh] Starting OrderExecServer (replica co-located with member 0) → ${APP_LOG}"
+    PHIXERON_ORDER_EXEC_AERON_DIR="${SEQ_AERON_DIR}" \
+        stdbuf -oL -eL "${BUILD_DIR}/OrderExecServer" > "${APP_LOG}" 2>&1 &
+    APP_PID=$!
+else
+    APP_LOG="${LOG_DIR}/ClusterProbe.log"
+    echo "[cluster.sh] Starting ClusterProbe follower (replica on member 0) → ${APP_LOG}"
+    java "${JAVA_OPTS[@]}" -Dprobe.memberId=0 -Dprobe.clientId=1 -Dprobe.latencyStats=true \
+        -cp "${JAR}" org.limitless.phixeron.tools.ClusterProbe follow > "${APP_LOG}" 2>&1 &
+    APP_PID=$!
+fi
+
+ALL_PIDS=("${SEQ_PID}" "${REPLAYER_PID}" "${APP_PID}")
+for pid in "${MD_PID}" "${FIX_PID}"; do
+    [[ -n "${pid}" ]] && ALL_PIDS+=("${pid}")
+done
 
 echo "[cluster.sh] All processes started"
-echo "  SequencerServer     pid=${SEQ_PID}  log=${SEQ_LOG}"
-echo "  aeronmd           pid=${MD_PID}   log=${MD_LOG}"
-echo "  FixGateway  pid=${FIX_PID}  log=${FIX_LOG}"
-echo "  ReplayerServer      pid=${REPLAYER_PID}  log=${REPLAYER_LOG}"
-echo "  OrderExecServer   pid=${APP_PID}  log=${APP_LOG}"
+echo "  SequencerServer   pid=${SEQ_PID}  log=${SEQ_LOG}"
+echo "  ReplayerServer    pid=${REPLAYER_PID}  log=${REPLAYER_LOG}"
+if [[ -n "${PRODUCT_APPS}" ]]; then
+    echo "  aeronmd           pid=${MD_PID}   log=${MD_LOG}"
+    echo "  FixGateway        pid=${FIX_PID}  log=${FIX_LOG}"
+    echo "  OrderExecServer   pid=${APP_PID}  log=${APP_LOG}"
+else
+    echo "  ClusterProbe      pid=${APP_PID}  log=${APP_LOG}   (Java-only mode)"
+fi
 echo "[cluster.sh] Press Ctrl-C to stop"
 
 # ── Shutdown on Ctrl-C ────────────────────────────────────────────────────────
@@ -173,8 +207,8 @@ echo "[cluster.sh] Press Ctrl-C to stop"
 cleanup() {
     echo ""
     echo "[cluster.sh] Stopping…"
-    kill "${APP_PID}" "${REPLAYER_PID}" "${FIX_PID}" "${MD_PID}" "${SEQ_PID}" 2>/dev/null
-    wait "${APP_PID}" "${REPLAYER_PID}" "${FIX_PID}" "${MD_PID}" "${SEQ_PID}" 2>/dev/null
+    kill "${ALL_PIDS[@]}" 2>/dev/null
+    wait "${ALL_PIDS[@]}" 2>/dev/null
     echo "[cluster.sh] Done"
 }
 trap cleanup INT TERM
@@ -184,7 +218,7 @@ trap cleanup INT TERM
 
 wait_any() {
     while true; do
-        for pid in "${SEQ_PID}" "${MD_PID}" "${FIX_PID}" "${REPLAYER_PID}" "${APP_PID}"; do
+        for pid in "${ALL_PIDS[@]}"; do
             if ! kill -0 "${pid}" 2>/dev/null; then
                 echo "[cluster.sh] Process ${pid} exited — shutting down"
                 return

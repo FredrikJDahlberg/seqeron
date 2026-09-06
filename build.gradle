@@ -1,16 +1,39 @@
-// :cluster — the sequencer, the replayer (both sides), the shared client classes, the tools, and the
-// code generation for the schemas the cluster tier itself speaks. Nothing here may reference
-// :gateways (doc/future-arch.md §11 step 1), and nothing here touches a PRODUCT payload — not its
-// codecs and not its IR. sbe-session.xml and sbe-basicdata.xml are :gateways', sbe-order.xml the C++
-// edge's, and each is generated and staged by the module that owns it.
+// seqeron's Java half — the sequencer, the replayer (both sides), the tools, and the code generation
+// for the schemas the cluster tier itself speaks. Nothing here touches an APPLICATION payload: not its
+// codecs and not its IR. The product protocols (sbe-session.xml, sbe-basicdata.xml, sbe-order.xml) are
+// their own repo's, generated and staged there, and this build compiles against none of them.
 //
 // The one application-family schema generated here is core's own: sbe-probe.xml (payloadId 5), the
-// protocol ClusterProbe speaks so this module's e2e scripts can drive a cluster with no product binary
-// built (§11 step 5). It is private to tools/ClusterProbe — sequencer/ and replayer/ import it nowhere,
-// and the sequencer still decodes no payloadId at all.
+// protocol ClusterProbe speaks so this repo's e2e scripts can drive a cluster with no product binary
+// built. It is private to tools/ClusterProbe — sequencer/ and replayer/ import it nowhere, and the
+// sequencer still decodes no payloadId at all.
 
 plugins {
     id 'application'
+    id 'jacoco'
+}
+
+group   = 'org.limitless'
+version = '0.1.0'
+
+repositories {
+    mavenCentral()
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+}
+
+// Aeron and SBE are pinned to the same versions CMakeLists.txt fetches for the C++ half — the two
+// sides generate independently from the same schemas and speak the same wire protocol, so a version
+// that differs across them is a decode failure at runtime rather than a build error.
+ext {
+    aeronVersion  = '1.51.0'
+    agronaVersion = '2.4.1'
+    sbeVersion    = '1.38.1'
+    junitVersion  = '5.10.2'
 }
 
 configurations {
@@ -130,8 +153,8 @@ tasks.register('generateProbeSbe', JavaExec) {
 }
 
 // The two schemas the cluster tier speaks, plus its own probe payload. The PRODUCT payloads' codecs
-// are :gateways', generated there — this module compiles against none of them, and shipping them in its
-// jar was what let the "payload-agnostic" claim be true of the code and false of the artifact.
+// belong to the product repo, generated there — this build compiles against none of them, and shipping
+// them here was what let the "payload-agnostic" claim be true of the code and false of the artifact.
 tasks.named('compileJava') {
     dependsOn 'generateReplaySbe', 'generateFrameSbe', 'generateProbeSbe'
 }
@@ -167,8 +190,8 @@ tasks.register('generateClusterSbeIr', JavaExec) {
 // full of generated .java, and the only filter available is set-wide, which would drop topology.xsd
 // from the jar.
 //
-// Only the four schemas this module owns. SbeLogPrinter lists this directory on the classpath rather
-// than naming schemas, so :gateways stages its own into the same path and a run over both jars sees all
+// Only the four schemas this repo owns. SbeLogPrinter lists this directory on the classpath rather
+// than naming schemas, so a product jar stages its own into the same path and a run over both sees all
 // of them — while a run over this jar alone names no PRODUCT protocol, which is the point. sbe-probe is
 // here so a probe-driven recording reads as ProbeMarker rather than as an undecodable payload.
 def sbeIrResourceDir = layout.buildDirectory.dir('generated/resources/sbeir')
@@ -188,11 +211,11 @@ sourceSets.main.resources.srcDir(tasks.named('collectSbeIr'))
 
 // ── SBE log printer ────────────────────────────────────────────────────────────
 // Offline dump of an Aeron Archive recording as JSON. The tool is the cluster tier's, and so is this
-// task's classpath: this module's runtime, which carries the three schemas it owns and no application
-// IR at all (doc/future-arch.md §11 step 7a.4). A core frame therefore prints in full and an
-// application payload prints under its payloadId, labelled from the recording's own
-// PayloadIdRegistered rows and not decoded. To name payloads inline instead, put a deployment's IR in
-// front of the tool: sbe-log-printer.sh, which runs it over a jar holding every module's.
+// task's classpath: this repo's runtime, which carries the four schemas it owns and no application
+// IR at all. A core frame therefore prints in full and an application payload prints under its
+// payloadId, labelled from the recording's own PayloadIdRegistered rows and not decoded. To name
+// payloads inline instead, put a deployment's IR in front of the tool: sbe-log-printer.sh, and point
+// PHIXERON_JAR at a jar that holds it.
 //
 // No -o here on purpose. §13.1's pipe writes raw payload bytes to stdout, and Gradle re-encodes a
 // child process's stdout as text — every non-ASCII byte comes out as U+FFFD. The pipe is the shell
@@ -245,4 +268,59 @@ tasks.named('run') {
             '--add-opens=java.base/jdk.internal.misc=ALL-UNNAMED'
     workingDir rootProject.projectDir
     standardInput = System.in
+}
+
+// ── Tests ──────────────────────────────────────────────────────────────────────
+// The suite covers the deterministic decision-making — Sequencer, and ReplayerService through its
+// Replayer seam — and deliberately touches no Aeron runtime: no media driver, no cluster, no Aeron
+// mocks, so it runs in about a second. Everything Aeron-shaped is covered by core_tests (C++) and the
+// end-to-end scripts under src/test/scripts.
+
+tasks.named('test') {
+    useJUnitPlatform()
+    // Agrona's UnsafeBuffer needs this to access jdk.internal.misc.Unsafe on JDK 21+.
+    jvmArgs '--add-opens=java.base/jdk.internal.misc=ALL-UNNAMED'
+    finalizedBy 'jacocoTestReport'
+}
+
+tasks.named('jacocoTestReport') {
+    dependsOn 'test'
+    reports {
+        xml.required  = true
+        html.required = true
+    }
+    // Generated SBE codecs are the tool's output, not this repo's code; counting them buries the
+    // hand-written classes the report exists to measure.
+    classDirectories.setFrom(
+        files(classDirectories.files.collect {
+            fileTree(dir: it, exclude: 'org/limitless/phixeron/sbe/**')
+        })
+    )
+}
+
+// ── Uber jar ───────────────────────────────────────────────────────────────────
+// Every script resolves build/libs/phixeron-<version>-uber.jar: clusterctl.sh, sbe-log-printer.sh, the
+// metrics scripts, and each harness under src/test/scripts. They run it two ways — `java -jar` for the
+// sequencer (Main-Class below) and `java -cp` for ReplayerServer, ClusterProbe, ClusterCtl and the rest
+// — so the jar carries every runtime dependency plus the staged .sbeir resources SbeLogPrinter reads
+// off its own classpath.
+
+tasks.register('uberJar', Jar) {
+    description = 'Fat jar carrying every runtime dependency: build/libs/phixeron-<version>-uber.jar'
+    group       = 'build'
+
+    archiveClassifier = 'uber'
+    manifest {
+        attributes 'Main-Class': application.mainClass.get()
+    }
+
+    from sourceSets.main.output
+    from {
+        configurations.runtimeClasspath.collect { it.isDirectory() ? it : zipTree(it) }
+    }
+    // Dependency jars collide on module-info and on their signatures; a signed entry in a repacked jar
+    // fails verification at load rather than at build time.
+    exclude 'META-INF/*.SF', 'META-INF/*.DSA', 'META-INF/*.RSA', 'META-INF/versions/**/module-info.class',
+            'module-info.class'
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
 }
