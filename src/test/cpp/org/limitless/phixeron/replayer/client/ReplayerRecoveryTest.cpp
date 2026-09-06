@@ -11,7 +11,7 @@
 // transport is recorded through ReplayerRecoveryActions and its clock is owned by the test. The
 // receiver's own Aeron side — subscription polling, image attach, and its guarantee to always drain AND
 // dispatch the tap regardless of state — has no seam here and is exercised by
-// src/test/scripts/gap-recovery-test.sh.
+// cluster/src/test/scripts/gap-recovery-test.sh.
 
 #include <cstdint>
 #include <string>
@@ -384,7 +384,7 @@ TEST(ReplayerRecoveryGapRecovery, TapFrameAheadOfAnInFlightWalkDoesNotSupersedeI
 // discard handler while recovering, consuming exactly these frames — so every walk ended one guaranteed
 // gap short of live and re-walked the whole chain, converging only if nothing was published during the
 // final round trip. NOTE: poll()'s handler *routing* needs a live tap subscription and is exercised only
-// by src/test/scripts/gap-recovery-test.sh; what is locked here is the decision logic it feeds.
+// by cluster/src/test/scripts/gap-recovery-test.sh; what is locked here is the decision logic it feeds.
 TEST(ReplayerRecoveryGapRecovery, LiveTapFrameAtTheSeamIsDispatchedWhileTheWalkIsStillInFlight)
 {
     int delivered = 0;

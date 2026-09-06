@@ -642,7 +642,7 @@ FAULTS=(fault_kill_leader fault_kill_follower fault_sigkill_node fault_pause_nod
 # ── Steady-state oracle ──────────────────────────────────────────────────────────
 # Liveness + a safety PROXY via log grep. The RIGOROUS safety oracle (gap-free, monotone globalSeqNo across
 # the ordered stream, and replica convergence) should be a decode of the cluster log, not grep — pipe the
-# recording through src/main/scripts/sbe-log-printer.sh and assert no globalSeqNo gap. That is the TODO seam
+# recording through cluster/src/main/scripts/sbe-log-printer.sh and assert no globalSeqNo gap. That is the TODO seam
 # marked below; grep gives liveness + smoke, the decoder gives the actual proof.
 check_invariants() {
   local fail=0
@@ -771,7 +771,7 @@ verify_sequence() {
   local -a highwater=("" "" "")
   for m in 0 1 2; do
     local archive="${BASE_DIR}/archive-${m}"
-    [[ -f "$archive/archive.catalog" ]] && ./src/main/scripts/sbe-log-printer.sh "$archive" \
+    [[ -f "$archive/archive.catalog" ]] && ./cluster/src/main/scripts/sbe-log-printer.sh "$archive" \
       > "$LOG_DIR/sequenced-dump-$m.txt" 2>&1 || { log "  member $m: no recording at $archive"; rc=1; continue; }
     local hw
     hw=$(awk -v member="$m" '

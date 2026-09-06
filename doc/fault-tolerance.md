@@ -480,7 +480,7 @@ section after a failover.
   family (§3.1), and `phixeron_node_up` (an aggregator-synthesized per-node reachability gauge,
   independent of what else that node reports) give an operator the same signals this document
   describes, on a dashboard.
-- **`src/test/scripts/chaos-runner.sh`** — randomized fault injection against a live 3-node cluster with
+- **`cluster/src/test/scripts/chaos-runner.sh`** — randomized fault injection against a live 3-node cluster with
   a hot-standby gateway pair, replayable by seed. Injects: `fault_kill_leader`/`fault_kill_follower`
   (kill + restart a node, verifying quorum/leadership behave as above), `fault_pause_node` (`SIGSTOP` to
   simulate a GC pause), `fault_tap_drop` (one synthetic dropped live-tap frame, exercising §3.2's
@@ -491,7 +491,7 @@ section after a failover.
   simultaneously and asserts every node's tap recording is gap-free, strictly monotone in `globalSeqNo`,
   and converged to the same high-water mark across all three nodes — the strongest available proof that
   §1.1's "byte-identical taps" invariant actually held for the run.
-- **`src/test/scripts/replay-bench.sh`** — times a cold replica from launch to "Caught up" against a
+- **`cluster/src/test/scripts/replay-bench.sh`** — times a cold replica from launch to "Caught up" against a
   preloaded archive, optionally while load keeps arriving. It adds a fresh `OrderExecServer` beside a
   running cluster rather than restarting one (the launch script tears the cluster down when a child
   exits), so it walks the whole recording chain exactly as a restarted replica does. Written to chase
@@ -500,7 +500,7 @@ section after a failover.
   a run reporting `NEVER CAUGHT UP` is that class of bug rather than a slow machine. This is also the
   measurement that matters for `fault_kill_leader` above, since a restarted replica has to catch up
   inside the harness's probe window; the replay wedge is what made those rounds fail.
-- **`src/test/scripts/replayer-restart-test.sh`** (added 2026-08-10) — the directed, deterministic
+- **`cluster/src/test/scripts/replayer-restart-test.sh`** (added 2026-08-10) — the directed, deterministic
   counterpart to `chaos-runner.sh`'s randomized coverage of the same territory: kills and restarts
   member 0's `ReplayerServer` alone (leaving its `SequencerServer` and client untouched) the instant it
   starts serving a cold-starting client's first segment, then separately kills member 0's `SequencerServer`

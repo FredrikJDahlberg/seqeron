@@ -111,7 +111,7 @@ class ReplayerStreamReceiver final : private ReplayerRecoveryActions
 
     // Test-only (see OrderExecServer's PHIXERON_FAULT_INJECTION hook): enable dropping live tap frames on
     // demand, to synthesize a consumer-side globalSeqNo gap so a test can drive the re-walk gap recovery
-    // deterministically (src/test/scripts/gap-recovery-test.sh). A no-op in production (never enabled).
+    // deterministically (cluster/src/test/scripts/gap-recovery-test.sh). A no-op in production (never enabled).
     void enableFaultInjection()
     {
         m_faultInjection = true;
@@ -391,7 +391,7 @@ class ReplayerStreamReceiver final : private ReplayerRecoveryActions
     std::shared_ptr<aeron::Counter> m_recoveryStalledCounter;
 
     // Test-only fault injection (gated by enableFaultInjection): drop the next N live tap frames to
-    // synthesize a consumer-side globalSeqNo gap (src/test/scripts/gap-recovery-test.sh). Armed on the
+    // synthesize a consumer-side globalSeqNo gap (cluster/src/test/scripts/gap-recovery-test.sh). Armed on the
     // poll thread (deferred from OrderExecServer's SIGUSR1 handler) and consumed on the poll thread; the
     // atomic mirrors the Java side and stays safe if a caller ever arms it from another thread.
     bool m_faultInjection = false;

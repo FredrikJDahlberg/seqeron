@@ -138,10 +138,10 @@ filter them out with `ctest --output-on-failure -E "_NOT_BUILT"`.
 
 ## Scripts
 
-Cluster start/stop and utility scripts live under `src/main/scripts/` — these only start and stop the
-cluster (or are standalone tools); they run no tests. `start-three-node-cluster.sh` is the exception
-that moved: it stands up a cluster for the harnesses below and nothing deploys from it, so it lives
-with them:
+Cluster start/stop and utility scripts live under `cluster/src/main/scripts/` — these only start and
+stop the cluster (or are standalone tools); they run no tests. `start-three-node-cluster.sh` is the
+exception that moved: it stands up a cluster for the harnesses below and nothing deploys from it, so
+it lives with them:
 
 | Script | Purpose |
 |--------|---------|
@@ -150,19 +150,21 @@ with them:
 | `sbe-log-printer.sh <archive-dir>` | Dump an Aeron Archive recording as JSON (see [Log printer](#log-printer)) |
 | `purgelog.sh [--force]` | Delete archive/cluster directories under `$TMPDIR/phixeron-seq` and the `logs/` directory; cluster must be stopped first |
 
-Test scripts live under `src/test/scripts/` — each brings the cluster up (via `start-cluster.sh`
-above or the sibling `start-three-node-cluster.sh`) and tears it down via `stop-cluster.sh` (run them
-from the repository root):
+Test scripts sit under the module whose side they exercise (`doc/future-arch.md` §11 step 7a.2):
+`cluster/src/test/scripts/` for the cluster tier's, `gateways/src/test/scripts/` for the Artio legs',
+and the root's `src/test/scripts/` for the C++ edge's. Each brings the cluster up (via
+`start-cluster.sh` above or `start-three-node-cluster.sh`) and tears it down via `stop-cluster.sh`
+(run them from the repository root):
 
 | Script | Purpose |
 |--------|---------|
-| `start-three-node-cluster.sh [debug\|release]` | Start a local 3-node Raft cluster with a `FixGateway` and a per-node `ReplayerServer` + `OrderExecServer` replica; blocks until Ctrl-C, then stops all of them |
-| `three-node-e2e-test.sh [debug\|release]` | Start the 3-node cluster, run `fix_test_server` against it once, then tear everything down and exit with its pass/fail status (set `PHIXERON_FLOOD_ORDERS=<N>` for the delivery-latency-under-load run) |
-| `fix-test-server.sh [debug\|release] [host [port]]` | Run a single FIX session (Logon → Heartbeat → NewOrderSingle → Logout) against a live `FixGateway` |
-| `failover-test.sh` | Force a failover, then cold-start a fresh `OrderExecServer` on the new leader and verify it catches up on full history (each node's tap recording is one continuous run spanning both tenures) |
-| `gap-recovery-test.sh` | Drop a live tap frame on a caught-up consumer (SIGUSR1 fault-injection) and verify it re-walks its recording and heals rather than wedging |
-| `exchange-gateway-test.sh` | Bring up the venue leg — the `EGW-A`/`EGW-B` pair against a `MockExchange` — and verify nothing reaches the venue that has not round-tripped consensus, that a restart rebuilds session state from the log, and that failover works both automatically and via `clusterctl`. All-Java; no C++ build needed |
-| `replayer-restart-test.sh` | Kill and restart a node's `ReplayerServer` while a client is riding a replay from it, then kill and restart the client's own node entirely and verify its fresh cold-start walk crosses a real multi-recording chain |
+| `cluster/src/test/scripts/start-three-node-cluster.sh [debug\|release]` | Start a local 3-node Raft cluster with a `FixGateway` and a per-node `ReplayerServer` + `OrderExecServer` replica; blocks until Ctrl-C, then stops all of them |
+| `src/test/scripts/three-node-e2e-test.sh [debug\|release]` | Start the 3-node cluster, run `fix_test_server` against it once, then tear everything down and exit with its pass/fail status (set `PHIXERON_FLOOD_ORDERS=<N>` for the delivery-latency-under-load run) |
+| `src/test/scripts/fix-test-server.sh [debug\|release] [host [port]]` | Run a single FIX session (Logon → Heartbeat → NewOrderSingle → Logout) against a live `FixGateway` |
+| `cluster/src/test/scripts/failover-test.sh` | Force a failover, then cold-start a fresh `OrderExecServer` on the new leader and verify it catches up on full history (each node's tap recording is one continuous run spanning both tenures) |
+| `cluster/src/test/scripts/gap-recovery-test.sh` | Drop a live tap frame on a caught-up consumer (SIGUSR1 fault-injection) and verify it re-walks its recording and heals rather than wedging |
+| `gateways/src/test/scripts/exchange-gateway-test.sh` | Bring up the venue leg — the `EGW-A`/`EGW-B` pair against a `MockExchange` — and verify nothing reaches the venue that has not round-tripped consensus, that a restart rebuilds session state from the log, and that failover works both automatically and via `clusterctl`. All-Java; no C++ build needed |
+| `cluster/src/test/scripts/replayer-restart-test.sh` | Kill and restart a node's `ReplayerServer` while a client is riding a replay from it, then kill and restart the client's own node entirely and verify its fresh cold-start walk crosses a real multi-recording chain |
 
 ---
 
@@ -313,7 +315,7 @@ written so far — so the cluster does not need to be stopped first.
 ```bash
 ./gradlew uberJar
 
-./src/main/scripts/sbe-log-printer.sh "${TMPDIR:-/tmp}/phixeron-seq/archive-0" --stream 205
+./cluster/src/main/scripts/sbe-log-printer.sh "${TMPDIR:-/tmp}/phixeron-seq/archive-0" --stream 205
 ```
 
 Or via Gradle directly:
@@ -410,7 +412,7 @@ payloads (`payloadId` 1) unaided; everything else is somebody else's protocol, a
 out:
 
 ```bash
-./src/main/scripts/sbe-log-printer.sh "${TMPDIR:-/tmp}/phixeron-seq/archive-0" --stream 205 \
+./cluster/src/main/scripts/sbe-log-printer.sh "${TMPDIR:-/tmp}/phixeron-seq/archive-0" --stream 205 \
     -o 2 2>frames.log | order-decode
 ```
 
@@ -517,14 +519,14 @@ java \
 **2. Start `aeronmd`** (separate terminal) — the C++ clients below need a media driver of
 their own, since (unlike `SequencerServer`) they don't embed one:
 ```bash
-source src/main/scripts/paths.sh   # aeron_default_dir: /dev/shm/aeron-<user> on Linux, $TMPDIR/aeron-<user> on macOS
+source cluster/src/main/scripts/paths.sh   # aeron_default_dir: /dev/shm/aeron-<user> on Linux, $TMPDIR/aeron-<user> on macOS
 AERON_DIR="$(aeron_default_dir)" ./cmake-build-release/_deps/aeron-build/binaries/aeronmd
 ```
 
 **3. Start the FIX gateway** (separate terminal):
 ```bash
 cmake --build cmake-build-release --target FixGateway
-source src/main/scripts/paths.sh
+source cluster/src/main/scripts/paths.sh
 AERON_DIR="$(aeron_default_dir)" ./cmake-build-release/FixGateway
 # [TCP] Listening on port 9000
 # [FixGateway] Caught up — following live stream
@@ -536,7 +538,7 @@ AERON_DIR="$(aeron_default_dir)" ./cmake-build-release/FixGateway
 **5. Build and run the test client** (separate terminal):
 ```bash
 cmake --build cmake-build-release --target fix_test_server
-source src/main/scripts/paths.sh
+source cluster/src/main/scripts/paths.sh
 AERON_DIR="$(aeron_default_dir)" ./cmake-build-release/fix_test_server
 # [FixTestServer] Connecting to 127.0.0.1:9000
 # [FixTestServer] Connected

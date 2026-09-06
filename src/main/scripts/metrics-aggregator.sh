@@ -20,7 +20,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../../../.." && pwd)"
 JAR="${PHIXERON_JAR:-${REPO_ROOT}/build/libs/phixeron-0.1.0-uber.jar}"
 
 if [[ ! -f "${JAR}" ]]; then

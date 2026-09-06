@@ -478,7 +478,7 @@ public final class SequencerService implements ClusteredService {
     }
 
     /**
-     * Test-only fault injection (src/test/scripts/chaos-runner.sh), inert unless {@link
+     * Test-only fault injection (cluster/src/test/scripts/chaos-runner.sh), inert unless {@link
      * #FAULT_INJECTION_ENV} was set at launch: touching {@code <clusterDir>/tap-stall-fault} makes this node
      * stop recording its own tap, which is the only way to provoke {@link #checkTapRecordingAlive} from
      * outside the process — the archive runs inside this JVM, so its recorder cannot be paused or killed on

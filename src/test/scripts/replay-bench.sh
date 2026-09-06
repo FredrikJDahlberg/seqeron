@@ -8,18 +8,18 @@
 # ReplayerStreamReceiver::openReplaySubscription now documents — and stays as the regression measurement
 # for it: a run that reports NEVER CAUGHT UP is that class of bug, not a slow machine.
 #
-#   ./src/test/scripts/replay-bench.sh <preload> [load-during]
+#   ./cluster/src/test/scripts/replay-bench.sh <preload> [load-during]
 #     preload       orders flooded to cluster ingress to build the archive before the cold start
 #     load-during   1 = keep flooding while the replica catches up (moving-target case), default 0
 #
-#   ./src/test/scripts/replay-bench.sh 20000        # small archive, quiet
-#   ./src/test/scripts/replay-bench.sh 400000       # ~70 MB of history — the case that used to hang
+#   ./cluster/src/test/scripts/replay-bench.sh 20000        # small archive, quiet
+#   ./cluster/src/test/scripts/replay-bench.sh 400000       # ~70 MB of history — the case that used to hang
 #
 # Prints one result line: archive size, elapsed seconds, MB/s, and whether it caught up at all.
 set -uo pipefail
-cd "$(dirname "$0")/../../.." || exit 1
-source src/main/scripts/ports.sh
-source src/main/scripts/paths.sh
+cd "$(dirname "$0")/../../../.." || exit 1
+source cluster/src/main/scripts/ports.sh
+source cluster/src/main/scripts/paths.sh
 
 PRELOAD="${1:-20000}"
 LOAD_DURING="${2:-0}"
@@ -36,7 +36,7 @@ cleanup() {
     [[ -n "${COLD_PID:-}" ]] && kill "$COLD_PID" 2>/dev/null
     [[ -n "${LOAD_PID:-}" ]] && kill "$LOAD_PID" 2>/dev/null
     pkill -f fix_test_server 2>/dev/null
-    ./src/main/scripts/stop-cluster.sh >/dev/null 2>&1
+    ./cluster/src/main/scripts/stop-cluster.sh >/dev/null 2>&1
     pkill -9 -f "uber.jar" 2>/dev/null
     pkill -9 -f aeronmd 2>/dev/null
 }
@@ -44,8 +44,8 @@ trap cleanup EXIT
 
 # Stale recordings are not merely noise here — they are counted in the archive size and replayed by
 # the cold replica, so the number this prints would be measuring the wrong history.
-./src/main/scripts/purgelog.sh --force >/dev/null 2>&1
-./src/test/scripts/start-three-node-cluster.sh > "$START_LOG" 2>&1 &
+./cluster/src/main/scripts/purgelog.sh --force >/dev/null 2>&1
+./cluster/src/test/scripts/start-three-node-cluster.sh > "$START_LOG" 2>&1 &
 W=0
 until grep -q "READY" "$START_LOG" 2>/dev/null; do
     sleep 2

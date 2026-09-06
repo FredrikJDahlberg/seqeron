@@ -87,7 +87,10 @@ Each module keeps the schemas it owns under `<module>/src/main/sbe` — a codege
 resource one, so no jar ships an XML; the C++ edge's (`sbe-order.xml` and the three simdfix generator
 files) stay in the root's `src/main/resources` beside `topology.xml`, the deployment document. The one
 XML a jar does need is `cluster/src/main/resources/topology.xsd`, which `clusterctl` resolves off its own
-classpath. `src/{main,test}/scripts` is still shared at the root (`doc/future-arch.md` §11 step 7a.2).
+classpath. The scripts follow the same line: the operator and cluster-lifecycle ones are
+`cluster/src/main/scripts` (`ports.sh` and `paths.sh` among them, sourced by every other module's
+scripts), and each test harness sits under the module it exercises — `cluster/src/test/scripts`,
+`gateways/src/test/scripts`, and the C++ edge's `src/test/scripts`.
 
 **Each module generates the codecs for the protocols it owns**, and only those. `:cluster` /
 `phixeron_core` generate `sbe-frame.xml`, `sbe-replay.xml` and `sbe-cluster.xml`; the application
@@ -145,7 +148,8 @@ basicdata codegen, `generateOrderSbeIr`, `exchangeGateway`, `orderGateway`, `moc
 The Java suite covers the deterministic decision-making — `Sequencer`, and `ReplayerService` through
 its `Replayer` seam — and deliberately touches no Aeron runtime: no media driver, no
 cluster, no Aeron mocks, so it runs in ~1s. Everything Aeron-shaped stays covered by the C++
-GoogleTest suite and the end-to-end scripts in `src/test/scripts/`.
+GoogleTest suite and the end-to-end scripts, which live under the module they exercise
+(`cluster/src/test/scripts`, `gateways/src/test/scripts`, and the C++ edge's `src/test/scripts`).
 
 ## Tests
 
@@ -476,7 +480,7 @@ live-session hand-over. Session layer only — no order flow.
 ```bash
 ./gradlew mockExchange                     # FIX acceptor standing in for the venue (port 9010)
 ./gradlew exchangeGateway                  # the gateway itself (needs a running cluster)
-src/test/scripts/exchange-gateway-test.sh  # all-Java e2e; no C++ build needed
+gateways/src/test/scripts/exchange-gateway-test.sh  # all-Java e2e; no C++ build needed
 ```
 The e2e purges Artio's own log dir alongside `purgelog.sh` — the two hold the same session's sequence
 numbers, and purging one alone trips the gateway's "sent-sequence disagreement" check.
@@ -550,7 +554,7 @@ instance the cluster holds active with nothing listening, so `checkBind` raises 
 ```bash
 ./gradlew orderGateway                  # the gateway itself (needs a running cluster)
 ./gradlew mockOrderClient -Pargs="OCLIENT PHIXERON 127.0.0.1:9020"
-src/test/scripts/order-gateway-test.sh  # all-Java e2e; no C++ build needed
+gateways/src/test/scripts/order-gateway-test.sh  # all-Java e2e; no C++ build needed
 ```
 Like the venue leg's, the e2e purges Artio's log dirs — the gateways' and the clients' — alongside
 `purgelog.sh`, or the two rebuild paths disagree.

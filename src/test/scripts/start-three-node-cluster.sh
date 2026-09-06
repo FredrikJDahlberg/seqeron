@@ -15,8 +15,8 @@
 #                          the same ordered stream; only the leader node's replica answers risk queries)
 # then blocks, monitoring the launched processes; Ctrl-C (or kill) stops all of them cleanly. This
 # script only starts and stops the cluster — it runs no tests. To drive it end-to-end, use the test
-# scripts under src/test/scripts/ (e.g. three-node-e2e-test.sh), which start it via this script and
-# tear it down via stop-cluster.sh.
+# scripts (e.g. the C++ edge's src/test/scripts/three-node-e2e-test.sh), which start it via this
+# script and tear it down via stop-cluster.sh.
 #
 # FixGateway is co-located with member 0 (shares its Aeron directory, SEQ_AERON_DIR): it
 # follows that node's SequencerService tap over aeron:ipc and reaches member 0's local archive over

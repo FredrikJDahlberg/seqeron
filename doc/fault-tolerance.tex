@@ -703,7 +703,7 @@ verification}\label{operational-tooling-and-verification}
   reachability gauge, independent of what else that node reports) give
   an operator the same signals this document describes, on a dashboard.
 \item
-  \textbf{\texttt{src/test/scripts/chaos-runner.sh}} --- randomized
+  \textbf{\texttt{cluster/src/test/scripts/chaos-runner.sh}} --- randomized
   fault injection against a live 3-node cluster with a hot-standby
   gateway pair, replayable by seed. Injects:
   \texttt{fault\_kill\_leader}/\texttt{fault\_kill\_follower} (kill +
@@ -722,7 +722,7 @@ verification}\label{operational-tooling-and-verification}
   strongest available proof that §1.1's ``byte-identical taps''
   invariant actually held for the run.
 \item
-  \textbf{\texttt{src/test/scripts/replay-bench.sh}} --- times a cold
+  \textbf{\texttt{cluster/src/test/scripts/replay-bench.sh}} --- times a cold
   replica from launch to ``Caught up'' against a preloaded archive,
   optionally while load keeps arriving. It adds a fresh
   \texttt{OrderExecServer} beside a running cluster rather than

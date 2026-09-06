@@ -18,7 +18,7 @@
 > C++23 setting was gratuitous was wrong and is corrected in §1c.
 >
 > Updated 2026-08-29: §2 and §4 are **fixed** — path joining now goes through
-> `src/main/scripts/paths.sh` (`TMP_DIR`, `aeron_default_dir`) on the shell side, `Env.hpp`'s
+> `cluster/src/main/scripts/paths.sh` (`TMP_DIR`, `aeron_default_dir`) on the shell side, `Env.hpp`'s
 > `joinPath` on the C++ side and `new File(parent, child)` in `BasicDataLoader`; the missing
 > includes and the two non-standard header spellings are in. What remains untried is a real
 > libstdc++ compile, which is where anything §4 missed will surface. §3 is still open.
@@ -139,9 +139,9 @@ mode.
 
 | Site | |
 |---|---|
-| `src/main/scripts/start-cluster.sh:54,60` | `AERON_DIR`, `SEQ_AERON_DIR` |
-| `src/test/scripts/start-three-node-cluster.sh:86,91,264` | `AERON_DIR`, `SEQ_AERON_DIR`, per-member `MDIR` |
-| `src/test/scripts/{chaos-runner,failover-test,gap-recovery-test,replayer-restart-test,replay-bench}.sh` | base dirs and per-member Aeron dirs |
+| `cluster/src/main/scripts/start-cluster.sh:54,60` | `AERON_DIR`, `SEQ_AERON_DIR` |
+| `cluster/src/test/scripts/start-three-node-cluster.sh:86,91,264` | `AERON_DIR`, `SEQ_AERON_DIR`, per-member `MDIR` |
+| `cluster/src/test/scripts/{chaos-runner,failover-test,gap-recovery-test,replayer-restart-test,replay-bench}.sh` | base dirs and per-member Aeron dirs |
 
 RHEL leaves `TMPDIR` unset in a normal login shell. Every one of these scripts runs `set -euo
 pipefail`, so the first bare `${TMPDIR}` aborts with `TMPDIR: unbound variable` — `start-cluster.sh`
@@ -154,7 +154,7 @@ This one is loud, which makes it the least dangerous of the four.
 19 occurrences. The default has no separator because on macOS the variable supplies one:
 
 ```bash
-# src/main/scripts/purgelog.sh:35
+# cluster/src/main/scripts/purgelog.sh:35
 BASE_DIRS=("${TMPDIR:-/tmp}phixeron-seq" "${TMPDIR:-/tmp}phixeron-seq3")   # RHEL → /tmpphixeron-seq
 ```
 
@@ -250,7 +250,7 @@ deployment needs `sequencer.baseDir` on managed storage.
 Aeron's term buffers. Needs an explicit `--shm-size` / tmpfs mount wherever this runs containerised.
 
 **firewalld is enabled by default.** The cluster block (9300–9325 for three nodes, per
-`src/main/scripts/ports.sh`) plus 9000 (C++ FIX gateway), 9010 (mock exchange), 9020 (OrderGateway),
+`cluster/src/main/scripts/ports.sh`) plus 9000 (C++ FIX gateway), 9010 (mock exchange), 9020 (OrderGateway),
 9400+ (metrics exporters) and 9500 (aggregator) need opening for anything multi-host. Localhost-only
 runs are unaffected.
 
@@ -317,7 +317,7 @@ Adding the attribute is the cheap way to find the sites that were missed — suc
 
 1. **Done** — the compiler fork (§1a). Debug now builds with either GCC or clang; coverage is opt-in
    and forks on `CMAKE_CXX_COMPILER_ID`; `-march=native` is gone.
-2. **Done** — path joining, all four sites (§2a–§2d), via `src/main/scripts/paths.sh` on the
+2. **Done** — path joining, all four sites (§2a–§2d), via `cluster/src/main/scripts/paths.sh` on the
    shell side and `Env.hpp::joinPath` on the C++ side.
 3. **Done** — `AERON_DIR` against the platform default (§2e): `aeron_default_dir` in `paths.sh`,
    which every launcher and cleanup now calls.
