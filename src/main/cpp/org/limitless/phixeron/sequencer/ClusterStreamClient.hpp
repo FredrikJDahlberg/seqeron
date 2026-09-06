@@ -34,12 +34,12 @@ namespace diag = org::limitless::phixeron::util;
 
 // Each UDP-replaying binary uses a distinct port.
 // FixGateway  → 9310 (env PHIXERON_FIX_REPLAY_PORT)
-// fix_test_server   → 9400 (env PHIXERON_RISK_TEST_REPLAY_PORT; kept outside the
-//                     9300-9325 cluster port block — see SequencerServer's port layout —
-//                     since 9312 used to alias member 1's cluster ingress port)
+// fix_test_server   → 9400 (env PHIXERON_RISK_TEST_REPLAY_PORT; kept outside core's reserved
+//                     block — isClusterPort, doc/registries.md §2 — since 9312 used to alias
+//                     member 1's cluster ingress port)
 // FixGateway's resend-recovery replay → 9401 (env PHIXERON_RESEND_REPLAY_PORT; also outside
-//                     the 9300-9325 cluster block for the same reason — 9313, the previous default,
-//                     aliased member 1's Raft consensus port and failed to bind whenever member 1 was up)
+//                     the block for the same reason — 9313, the previous default, aliased
+//                     member 1's Raft consensus port and failed to bind whenever member 1 was up)
 // OrderExecServer, deployed co-located with one SequencerServer member (see
 // connectLocalArchive/ClusterStreamSender::connectColocated), replays over
 // REPLAY_CHANNEL_IPC below instead — no port needed.

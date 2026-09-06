@@ -255,7 +255,7 @@ APP_PID=$!
 # PHIXERON_REPLAYER_CLIENT_ID=3 keeps it distinct from the co-located OrderExecServer (1) and
 # FixGateway (2). Its cluster egress port must be given explicitly: the default is 9340+memberId,
 # which is exactly FixGateway's, so co-locating both on member 0 would collide — use 9350+memberId
-# (clear of the 9300-9325 cluster block, the replica's 9330+m and the gateway's 9340+m).
+# (clear of the 9300-9329 cluster block, the replica's 9330+m and the gateway's 9340+m).
 echo "[start-three-node-cluster.sh] Starting BasicDataServer (replica on member 0) → ${BASICDATA_LOG}"
 PHIXERON_BASICDATA_AERON_DIR="${SEQ_AERON_DIR}" \
     PHIXERON_NODE_MEMBER_ID=0 \

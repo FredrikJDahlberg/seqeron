@@ -4,7 +4,9 @@
 // PORT_BASE + memberId*10 + offset scheme (see SequencerServer.java's class Javadoc and
 // doc/design.md's "Port layout" section, the source of truth both sides cite). Cluster
 // member ports only: the applications' own bases live in src/main/cpp/.../AppPorts.hpp,
-// because a reusable sequencer must not name the processes that talk to it.
+// because a reusable sequencer must not name the processes that talk to it. Which block
+// each product owns is doc/registries.md's; the only thing core states in code is its own
+// reservation, below.
 // Every port constant used to be an independently hand-typed literal restating this
 // formula (or a satellite base "known" to sit outside it) — that drift is how FixGateway's
 // and BasicDataServer's co-located egress ports ended up both defaulting to 9340+memberId.
@@ -20,6 +22,19 @@ namespace org::limitless::phixeron::sequencer {
 // ── Aeron Cluster member ports: archive / ingress / consensus / log / transfer ───────────────
 inline constexpr int CLUSTER_PORT_BASE = 9300;
 inline constexpr int CLUSTER_PORT_STRIDE = 10;
+
+// Core's reserved block (doc/registries.md §2). Three members wide, one stride each — NOT the
+// 9301-9325 a three-node cluster happens to bind, which is what every restatement of this
+// boundary used to say and how an application port ended up squatting on 9320.
+inline constexpr int CLUSTER_PORT_BLOCK_FIRST = CLUSTER_PORT_BASE;
+inline constexpr int CLUSTER_PORT_BLOCK_LAST = CLUSTER_PORT_BASE + 3 * CLUSTER_PORT_STRIDE - 1;
+
+// For a product asserting its own bases sit outside core's block, so the boundary is read from
+// here rather than copied.
+constexpr bool isClusterPort(int port)
+{
+    return port >= CLUSTER_PORT_BLOCK_FIRST && port <= CLUSTER_PORT_BLOCK_LAST;
+}
 
 constexpr int clusterMemberPortBase(int memberId)
 {

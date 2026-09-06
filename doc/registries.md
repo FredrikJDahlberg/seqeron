@@ -1,0 +1,100 @@
+# Shared registries
+
+Two namespaces are shared by every process in the deployment and owned by neither product: the
+producer `sourceId` space, and the UDP port space. Inside one repository both are held by
+convention. The moment seqeron is extracted (`future-arch.md` §11 step 7) convention becomes a
+cross-repo race — nothing stops two repositories claiming the same number, and the collision shows
+up as a start-up failure at best and a mis-routed election at worst. So both are written down here,
+and **core owns both registries**: an allocation is taken by editing this file.
+
+Both have drifted once already, and the two drifts are the shape to expect.
+
+- `FixGateway` and `BasicDataServer` co-located egress both defaulted to `9340 + memberId` — two
+  claims on one port, inside a single repo, found only when they were run on the same node.
+- The cluster reservation is **9300–9329**; a dozen comments and one test restated it as
+  "9300–9325", which is not the reservation but what a *three-node* cluster happens to bind.
+  `fix_test_server`'s cluster egress sat on 9320 — inside the reservation, outside the
+  restatement — so the check that should have caught it was looking at the wrong number.
+
+The second is why core now states its own reservation in code (§2) rather than in prose: a
+restated boundary is a copy, and a copy is what drifts.
+
+## 1. `sourceId`
+
+**Normative in `seqeron-protocol-spec.md` §5** ("`sourceId` is one id space"), and that table *is*
+the registry — this document does not restate it, because two copies of an allocation table is the
+failure mode the registry exists to prevent. One id space over both kinds of producer, §5's elected
+gateways and co-located applications alike; −1 and 2 are reserved by the specification and every
+other value is allocated in that table.
+
+The registry is held by the **log**, not by code. No product compiles an id in: a gateway resolves
+its own `{gatewayId, gatewaySourceId}` from the `GatewayRegistered` row keyed on its launch-time
+name (`PHIXERON_*_GATEWAY_NAME`), and fails closed when the list names none. The allocation reaches
+a running deployment through the `sourceId` attributes of the topology file
+(`src/main/resources/topology.xml`, spec §6.4) — the registry's one machine-readable form, and the
+only place a number is typed.
+
+What a wrong allocation costs: two logical gateways sharing a `gatewaySourceId` share one election.
+`GatewayActive` designates both, and `releaseStaleConnections` drops the other pair's connections.
+
+`payloadId` is a third shared space with the same property, and it is likewise the specification's:
+§6.1. It is not repeated here for the same reason §5 is not.
+
+## 2. Ports
+
+**Core reserves the blocks; each product declares its own bases inside its own block, in its own
+language.** Core states only its own reservation in code — `CLUSTER_PORT_BLOCK_FIRST` /
+`CLUSTER_PORT_BLOCK_LAST` and `isClusterPort()`, in `PortLayout.hpp` and `SequencerServer` — because
+a reusable sequencer must not name the processes that connect to it. Which product owns which of the
+other blocks is this table's alone.
+
+| block | owner | what is in it |
+| --- | --- | --- |
+| 9300–9329 | core | cluster member ports, `9300 + memberId*10 + {1..5}` — three members, one decade each |
+| 9330–9359 | simdfixgw | `OrderExecServer` egress `9330+m`, `FixGateway` egress `9340+m`, `BasicDataServer` egress `9350+m` (→ core after `future-arch.md` §4); the harnesses' 9348 and 9349 |
+| 9360–9399 | phixeron | `ExchangeGateway` egress `9360+m` and Artio archive control `9370+m`, `OrderGateway` egress `9380+m` and Artio archive control `9390+m` |
+| 9000–9029 | products | TCP listen: `FixGateway` `9000+gatewayIndex`, the mock venue 9010, `OrderGateway` 9020 |
+| 9400+ | **shared** | see below |
+| 8010–8019 | products | the Artio spike's own archive control — 8011 (`ArtioTest`), 8013 (`FixClientTester`) |
+
+Two independent Aeron media drivers on one host cannot bind the same UDP port, which is why every
+co-located process needs a base of its own rather than sharing one.
+
+### 9400+ is the one block with no single owner
+
+It holds both core's observability HTTP and the products' Aeron replay and test ports, and they
+overlap:
+
+| port | owner | transport |
+| --- | --- | --- |
+| `9400 + memberId` | core — `metrics-exporter.sh` `/metrics` | TCP |
+| 9500 | core — `metrics-aggregator.sh` | TCP |
+| 9400 | products — `fix_test_server` risk-test replay (`PHIXERON_RISK_TEST_REPLAY_PORT`) | UDP |
+| 9401 | products — `FixGateway` resend-recovery replay (`PHIXERON_RESEND_REPLAY_PORT`) | UDP |
+| 9403 | products — `fix_test_server` cluster egress | UDP |
+
+9400 and 9401 are claimed twice and coexist only because a TCP listener and a UDP endpoint on one
+number do not collide. That is not a property to lean on across two repositories, and **this block
+wants splitting before the extraction** — core's exporters into a range of their own, the replay
+ports into the products'. Until then the rule is the narrow one: a new UDP port here must avoid
+`9400 + memberId` for the deployment's member count, which is why the egress above is 9403 and not
+9402.
+
+### The cluster block bounds the cluster at three members
+
+`9300 + memberId*10` gives member 2 the decade 9320–9329, so the reservation is exactly three
+members wide. **A fourth member would take 9330–9339, which is simdfixgw's.** Growing the cluster
+is therefore a registry change here first, not a `nodeCount` change — the formula alone will hand
+out a port another product owns, and the failure is a bind error on whichever process starts second.
+
+### The formula is a three-way mirror
+
+`PortLayout.hpp` (C++), `SequencerServer` (Java) and `cluster/src/main/scripts/ports.sh` (bash) each
+carry it, pinned against the same `(memberId → port)` pairs by `PortLayoutTest` and
+`SequencerServerTest` so a change to one side without the others fails a build. All three, and both
+tests, are core's and go with it (`future-arch.md` §5.2).
+
+The satellite bases are the products' own, in the products' own files: `AppPorts.hpp` (pinned by
+`AppPortsTest`) and `ports.sh` on the C++ side, `ExchangeGatewayConfig` and `OrderGatewayConfig` on
+the Java side (pinned by `GatewayPortsTest`). Each of those tests asserts its bases fall **outside**
+core's reservation by calling core's own predicate — which is the whole point of exporting one.

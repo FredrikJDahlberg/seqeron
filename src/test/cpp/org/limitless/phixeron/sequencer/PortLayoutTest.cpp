@@ -26,6 +26,21 @@ TEST(PortLayout, ClusterMemberPortsMatchDocumentedLayout)
     EXPECT_EQ(9322, clusterIngressPort(2));
 }
 
+// The reservation is wider than what three members bind, and products check themselves against it
+// (doc/registries.md §2). Pinned here so it cannot quietly narrow back to 9325.
+TEST(PortLayout, ReservedBlockCoversThreeMemberStrides)
+{
+    EXPECT_EQ(9300, CLUSTER_PORT_BLOCK_FIRST);
+    EXPECT_EQ(9329, CLUSTER_PORT_BLOCK_LAST);
+
+    EXPECT_TRUE(isClusterPort(9300));
+    EXPECT_TRUE(isClusterPort(clusterTransferPort(2)));
+    EXPECT_TRUE(isClusterPort(9320)); // member 2's base — reserved though no member binds it
+    EXPECT_TRUE(isClusterPort(9329));
+    EXPECT_FALSE(isClusterPort(9299));
+    EXPECT_FALSE(isClusterPort(9330));
+}
+
 TEST(PortLayout, ArchiveEndpointsCsvMatchesThreeNodeLayout)
 {
     EXPECT_EQ("localhost:9301,localhost:9311,localhost:9321", archiveEndpointsCsv(3));

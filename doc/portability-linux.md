@@ -249,8 +249,8 @@ deployment needs `sequencer.baseDir` on managed storage.
 **`/dev/shm` sizing.** Default is half of RAM on a host, but **64 MB in a container** — well under
 Aeron's term buffers. Needs an explicit `--shm-size` / tmpfs mount wherever this runs containerised.
 
-**firewalld is enabled by default.** The cluster block (9300–9325 for three nodes, per
-`cluster/src/main/scripts/ports.sh`) plus 9000 (C++ FIX gateway), 9010 (mock exchange), 9020 (OrderGateway),
+**firewalld is enabled by default.** The cluster block (9300–9329 reserved, of which three nodes
+bind 9301–9325 — `cluster/src/main/scripts/ports.sh`, `doc/registries.md` §2) plus 9000 (C++ FIX gateway), 9010 (mock exchange), 9020 (OrderGateway),
 9400+ (metrics exporters) and 9500 (aggregator) need opening for anything multi-host. Localhost-only
 runs are unaffected.
 

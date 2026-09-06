@@ -249,10 +249,13 @@ Each member's ports are `9300 + memberId × 10 + offset`:
 | +4     | Cluster log      | 9304     | 9314     | 9324     |
 | +5     | File transfer    | 9305     | 9315     | 9325     |
 
+Core reserves 9300–9329 for these — three members of stride 10, wider than the 9301–9325 three
+nodes actually bind. Which block every other process draws from is `doc/registries.md` §2.
+
 Clients connect to archive control on port 9301 (member 0) to replay history, and to
 ingress on port 9302 to send messages. The sequenced stream is a node-local `aeron:ipc` tap
 (stream 205) recorded into each member's own archive — no network stream port. Cluster egress is a
-fixed UDP port too — 9320 for `FixGateway`/`fix_test_server`, 9330 for `OrderExecServer` (see
+fixed UDP port too — 9340 for `FixGateway`, 9403 for `fix_test_server`, 9330 for `OrderExecServer` (see
 [Order execution client](#order-execution-client)), 9360 for `ExchangeGateway` and 9380 for
 `OrderGateway` — kept distinct because these sit on independent media driver processes that can't both
 bind the same UDP port on `localhost`. The Artio-backed gateways each run their own Aeron Archive as

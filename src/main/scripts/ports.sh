@@ -39,10 +39,11 @@ ingress_endpoints_string() {
 }
 
 # ── Satellite ports — one dedicated base per client role, deliberately outside the cluster's
-#    own 9300-9325 (3-node) block; offset by memberId for a role with one co-located replica
-#    per node. Must match AppPorts.hpp (C++); the cluster block above is PortLayout.hpp's. ──────
+#    own reserved block (9300-9329, three members of stride 10); offset by memberId for a role
+#    with one co-located replica per node. Must match AppPorts.hpp (C++); the cluster block above
+#    is PortLayout.hpp's, and the block table is doc/registries.md §2's. ────────────────────────
 FIX_TCP_PORT_BASE=9000               # FixGateway TCP listen port
-FIX_TEST_CLIENT_EGRESS_PORT=9320     # fix_test_server's own (non-colocated) cluster egress
+FIX_TEST_CLIENT_EGRESS_PORT=9403     # fix_test_server's own (non-colocated) cluster egress
 ORDER_EXEC_EGRESS_PORT_BASE=9330     # OrderExecServer co-located egress
 FIX_GATEWAY_EGRESS_PORT_BASE=9340    # FixGateway co-located egress
 BASICDATA_EGRESS_PORT_BASE=9350      # BasicDataServer co-located egress

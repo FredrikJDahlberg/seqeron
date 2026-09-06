@@ -39,6 +39,10 @@ import org.limitless.phixeron.util.Logger;
  *   +5  file transfer     (9305, 9315, 9325)
  * </pre>
  *
+ * <p>The block core <i>reserves</i> is wider than what three members bind — see
+ * {@link #CLUSTER_PORT_BLOCK_FIRST} and {@code doc/registries.md} §2, which is where a product
+ * takes a block of its own.
+ *
  * <p><b>System properties</b>:
  * <pre>
  *   sequencer.memberId        — this node's Raft member ID (0, 1, or 2); default 0
@@ -79,6 +83,18 @@ public final class SequencerServer {
 
     private static final String DEFAULT_HOST = "localhost";
     private static final int PORT_BASE = 9300;
+    private static final int PORT_STRIDE = 10;
+
+    /**
+     * Core's reserved port block (doc/registries.md §2) — three members wide, one stride each.
+     * Deliberately <i>not</i> the 9301-9325 a three-node cluster actually binds: that is the number
+     * every restatement of this boundary used to carry, and the gap between the two is where an
+     * application port ended up squatting on 9320.
+     */
+    public static final int CLUSTER_PORT_BLOCK_FIRST = PORT_BASE;
+
+    /** Last port of core's reserved block. See {@link #CLUSTER_PORT_BLOCK_FIRST}. */
+    public static final int CLUSTER_PORT_BLOCK_LAST = PORT_BASE + 3 * PORT_STRIDE - 1;
 
     /**
      * Control-response stream for this member's own archive clients (ConsensusModule +
@@ -225,6 +241,15 @@ public final class SequencerServer {
 
     private static String udp(final String host, final int port) {
         return "aeron:udp?endpoint=" + host + ":" + port;
+    }
+
+    /**
+     * Whether a port falls inside core's reservation. For a product asserting its own bases sit
+     * outside it, so the boundary is read from here rather than copied — the C++ mirror is
+     * {@code PortLayout.hpp}'s {@code isClusterPort}.
+     */
+    public static boolean isClusterPort(final int port) {
+        return port >= CLUSTER_PORT_BLOCK_FIRST && port <= CLUSTER_PORT_BLOCK_LAST;
     }
 
     /**
