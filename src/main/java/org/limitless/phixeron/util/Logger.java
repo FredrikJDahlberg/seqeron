@@ -14,7 +14,7 @@ public final class Logger {
 
     public enum Component {
         Sequencer, SequencerServer, SequencerService, ConsensusModule, ReplayerServer, ReplayerService,
-        ReplayerStreamReceiver, ExchangeGateway, OrderGateway
+        ReplayerStreamReceiver, ClusterProbe, TestGateway, ExchangeGateway, OrderGateway
     }
 
     public enum Severity { Info, Warn, Error, Fault }

@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    The cluster tier's OWN topology document — the gateway pair chaos-runner.sh runs, and the only one
+    core owns. src/test/resources/topology-{gw,egw,ogw}.xml are the products' and name product binaries,
+    which is why Java-only mode could load no list at all before this file existed and so exercised
+    neither the election path nor the bootstrap GatewayActive.
+
+      clusterctl.sh load-topology cluster/src/test/resources/topology-test-gateway.xml
+
+    Schema: cluster/src/main/resources/topology.xsd (doc/seqeron-protocol-spec.md §6.4). The loader
+    resolves it from its own jar and ignores a schemaLocation named here, so none is named.
+
+    List only what you run: a pair no process starts is designated, times out, hands over to its standby
+    and times out again, forever.
+-->
+<topology xmlns="http://limitless.org/seqeron/topology/1">
+
+    <!-- sourceId 9, allocated in doc/seqeron-protocol-spec.md §5 — the one id space over both kinds of
+         producer. gatewayIds 10 and 11 rather than the next free pair, so a log line or a dump can never
+         be confused with the C++ pair's 1/2. -->
+    <gateways>
+        <gateway name="GW-T-A" id="10" sourceId="9" rank="0"
+                 description="TestGateway, the edge-neutral test gateway (tools/TestGateway serve)"/>
+        <gateway name="GW-T-B" id="11" sourceId="9" rank="1"
+                 description="TestGateway standby"/>
+    </gateways>
+
+    <!-- No <applications>: ClusterProbe follow is a tap consumer, not a producer. No <protocols>: the
+         probe's payloadId 5 is private in the §6.1 sense — one publisher, one consumer, both the probe. -->
+
+</topology>

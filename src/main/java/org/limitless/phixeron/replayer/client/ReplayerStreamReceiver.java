@@ -8,6 +8,7 @@ import io.aeron.Publication;
 import io.aeron.Subscription;
 import io.aeron.logbuffer.FragmentHandler;
 import io.aeron.logbuffer.LogBufferDescriptor;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.agrona.concurrent.UnsafeBuffer;
 import org.limitless.phixeron.metrics.PhixeronCounters;
 import org.limitless.phixeron.replayer.server.ReplayerService;
@@ -65,6 +66,9 @@ public final class ReplayerStreamReceiver implements AutoCloseable, ReplayerReco
     private final FragmentHandler replayHandler;
     private final FragmentHandler controlFragmentHandler;
 
+    private final AtomicInteger faultDropPending = new AtomicInteger();
+    private boolean faultInjection;
+
     private Aeron aeron;
     private Integer memberId;
     private Subscription tapSubscription;
@@ -87,9 +91,7 @@ public final class ReplayerStreamReceiver implements AutoCloseable, ReplayerReco
                                   final ReplayerRecovery.CaughtUpHandler onCaughtUp) {
         this.clientId = clientId;
         this.recovery = new ReplayerRecovery(clientId, this, onSequenced, onLeadershipChanged, onCaughtUp);
-        this.tapHandler = new FragmentAssembler(
-            (buffer, offset, length, hdr) ->
-                recovery.onFrame(buffer, offset, length, frameStartPosition(hdr), nowNs(), false));
+        this.tapHandler = new FragmentAssembler(this::onTapFragment);
         this.replayHandler = new FragmentAssembler(
             (buffer, offset, length, hdr) ->
                 recovery.onFrame(buffer, offset, length, frameStartPosition(hdr), nowNs(), true));
@@ -116,6 +118,28 @@ public final class ReplayerStreamReceiver implements AutoCloseable, ReplayerReco
         controlSubscription = aeron.addSubscription(CONTROL_CHANNEL, ReplayerService.CONTROL_STREAM_ID);
         requestPublication = aeron.addPublication(ReplayerService.IPC_CHANNEL, ReplayerService.REQUEST_STREAM_ID);
         recovery.start();
+    }
+
+    /**
+     * Test-only (see {@code ClusterProbe}'s {@code PHIXERON_PROBE_FAULT_INJECTION} hook): enable dropping
+     * live tap frames on demand, to synthesize a consumer-side globalSeqNo gap so a test can drive gap
+     * recovery deterministically ({@code cluster/src/test/scripts/gap-recovery-test.sh}). A no-op in
+     * production (never enabled). The C++ twin is {@code enableFaultInjection} in
+     * {@code replayer/client/ReplayerStreamReceiver.hpp}.
+     */
+    public void enableFaultInjection() {
+        faultInjection = true;
+    }
+
+    /**
+     * Arms a drop of the next {@code n} live tap frames. Called on the poll thread (deferred from a signal
+     * handler); a no-op unless fault injection was enabled.
+     * @param n frames to drop
+     */
+    public void injectTapDrop(final int n) {
+        if (faultInjection) {
+            faultDropPending.addAndGet(n);
+        }
     }
 
     /**
@@ -304,6 +328,18 @@ public final class ReplayerStreamReceiver implements AutoCloseable, ReplayerReco
      * Under a FragmentAssembler it is further off. Term offsets are always frame-aligned, so this form is
      * exact in both cases.
      */
+    private void onTapFragment(final org.agrona.DirectBuffer buffer, final int offset, final int length,
+                               final io.aeron.logbuffer.Header header) {
+        // Test-only fault injection (see enableFaultInjection): drop this live tap frame to synthesize a
+        // consumer-side globalSeqNo gap, so gap recovery can be driven deterministically. Dropped before
+        // the recovery sees it, so the NEXT frame reads as a gap.
+        if (faultInjection && faultDropPending.get() > 0) {
+            faultDropPending.decrementAndGet();
+            return;
+        }
+        recovery.onFrame(buffer, offset, length, frameStartPosition(header), nowNs(), false);
+    }
+
     private static long frameStartPosition(final io.aeron.logbuffer.Header header) {
         return LogBufferDescriptor.computePosition(header.termId(), header.termOffset(),
                                                    header.positionBitsToShift(), header.initialTermId());

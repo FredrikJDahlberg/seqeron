@@ -49,12 +49,14 @@ FIX_GATEWAY_EGRESS_PORT_BASE=9340    # FixGateway co-located egress
 BASICDATA_EGRESS_PORT_BASE=9350      # BasicDataServer co-located egress
 RISK_TEST_REPLAY_PORT_DEFAULT=9400   # fix_test_server risk-test replay
 RESEND_REPLAY_PORT_DEFAULT=9401      # FixGateway resend-recovery replay
-TEST_CONSUMER_EGRESS_PORT=9349       # test-only: gap-recovery-test.sh/chaos-runner.sh's own
-                                      # observation-consumer OrderExecServer (replayerClientId=9),
-                                      # distinct from ORDER_EXEC_EGRESS_PORT_BASE+id
-REPLAY_BENCH_EGRESS_PORT=9348        # test-only: replay-bench.sh's cold OrderExecServer
-                                      # (replayerClientId=7), added alongside a running cluster
+TEST_GATEWAY_PORT_BASE=9200          # TestGateway TCP listen (9200 GW-T-A, 9201 GW-T-B) — the cluster
+                                     # tier's OWN harness block, 9200-9209 (doc/registries.md §2). Not in
+                                     # the 9300 block: that is three members of stride 10 with nothing spare.
+# 9348 and 9349 were the cluster-tier harnesses' own test-consumer egress ports, and are now free:
+# those harnesses run ClusterProbe follow, which opens no cluster session at all (doc/future-arch.md
+# §11 step 5). Left unallocated rather than reused, since doc/registries.md §2 records the block.
 
+test_gateway_port()       { echo $(( TEST_GATEWAY_PORT_BASE + ${1:-0} )); }
 fix_tcp_port()            { echo $(( FIX_TCP_PORT_BASE + ${1:-0} )); }
 order_exec_egress_port()  { echo $(( ORDER_EXEC_EGRESS_PORT_BASE + $1 )); }
 fix_gateway_egress_port() { echo $(( FIX_GATEWAY_EGRESS_PORT_BASE + $1 )); }

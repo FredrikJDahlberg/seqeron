@@ -98,7 +98,8 @@ scripts), and each test harness sits under the module it exercises — `cluster/
 `gateways/src/test/scripts`, and the C++ edge's `src/test/scripts`.
 
 **Each module generates the codecs for the protocols it owns**, and only those. `:cluster` /
-`phixeron_core` generate `sbe-frame.xml`, `sbe-replay.xml` and `sbe-cluster.xml`; the application
+`phixeron_core` generate `sbe-frame.xml`, `sbe-replay.xml` and `sbe-cluster.xml`, plus `sbe-probe.xml`
+in Java only (core's own e2e payload — see `ClusterProbe` below); the *product* application
 payloads are the products' — `sbe-session.xml` and `sbe-basicdata.xml` in `:gateways`, and all three
 in the C++ `phixeron` target. The C++ generated root is split to match (`generated/sbe/core` and
 `generated/sbe/app`), so a cluster-tier file that reached for an application codec fails to compile
@@ -133,7 +134,7 @@ GoogleTest binaries — `core_tests` (the cluster tier, linking `phixeron_core` 
 ```bash
 ./gradlew compileJava          # both modules
 ./gradlew uberJar              # fat jar over both: build/libs/phixeron-<version>-uber.jar
-./gradlew generateFrameSbe generateReplaySbe        # :cluster's codecs (also on compileJava)
+./gradlew generateFrameSbe generateReplaySbe generateProbeSbe   # :cluster's codecs (also on compileJava)
 ./gradlew generateSessionSbe generateBasicDataSbe   # :gateways' codecs (also on compileJava)
 ./gradlew compileArtioSpikeJava # the artioSpike source set — NOT built by compileJava or uberJar
 ```
@@ -144,8 +145,8 @@ The `./gradlew` tasks that run them build it themselves, but `exchange-gateway-t
 ```bash
 ./gradlew test                 # JUnit 5 unit tests for the Java state machines, both modules
 ```
-Task names are unqualified because each lives in exactly one module — `:cluster` owns the frame and
-replay codegen, `generateClusterSbeIr`, `run` and `sbeLogPrinter`; `:gateways` owns the session and
+Task names are unqualified because each lives in exactly one module — `:cluster` owns the frame,
+replay and probe codegen, `generateClusterSbeIr`, `run` and `sbeLogPrinter`; `:gateways` owns the session and
 basicdata codegen, `generateOrderSbeIr`, `exchangeGateway`, `orderGateway`, `mockExchange`, `mockOrderClient`,
 `fixTestClient`, `sessionProxyTest` and the Artio codegen; the root owns `uberJar` alone, which spans both
 modules because a deployment artifact is what it is. `sbeLogPrinter` runs on `:cluster`'s classpath, so it
@@ -159,6 +160,31 @@ its `Replayer` seam — and deliberately touches no Aeron runtime: no media driv
 cluster, no Aeron mocks, so it runs in ~1s. Everything Aeron-shaped stays covered by the C++
 GoogleTest suite and the end-to-end scripts, which live under the module they exercise
 (`cluster/src/test/scripts`, `gateways/src/test/scripts`, and the C++ edge's `src/test/scripts`).
+
+**The cluster tier's five harnesses run Java only** (`failover`, `gap-recovery`, `replayer-restart`,
+`chaos-runner`, `replay-bench`): they drive the cluster through `tools/ClusterProbe`, which submits
+`ProbeMarker` payloads at ingress (`submit`), round-trips one through consensus and back off the tap
+(`ping`), or replays history through the co-located Replayer and then follows the tap live (`follow`)
+— the load generator and tap consumer they used to borrow from `fix_test_server` and `OrderExecServer`
+(`doc/future-arch.md` §11 step 5). `chaos-runner` needs a sixth thing those cannot supply, a **gateway
+pair under the faults**, and `TestGateway` is it: an elected active/standby producer
+(`GW-T-A`/`GW-T-B`, `gatewaySourceId` 9, listening on 9200/9201) that speaks no FIX and holds no session
+state — `GatewayStarted` on activation, `ConnectionOpened`/`ConnectionClosed` per socket, a
+`ProbeMarker` per request line, and the reply written only when that frame comes back off the tap. It
+holds the same four fences the Artio legs do, on the same constants, so the recovery-stall policy core
+already owns gets exercised inside core. Its list is
+`cluster/src/test/resources/topology-test-gateway.xml`, the only topology document core owns;
+`src/test/resources/topology-{gw,egw,ogw}.xml` name product binaries and are the products'. Its `serve`
+mode is the gateway and its `client` mode the line client the harness drives it with, so no `nc` is
+needed.
+
+Unlike `ClusterProbe`, `TestGateway` is in **`cluster/src/test/java`** (same package, for the connect and
+offer plumbing it reuses) and therefore in no jar: `chaos-runner.sh` puts
+`cluster/build/classes/java/test` on the classpath beside the uber jar and refuses to start without it —
+`./gradlew :cluster:compileTestJava`, the same shape as `artioSpike`'s. `start-three-node-cluster.sh` follows the same line: its default
+brings up the cluster tier alone, and `PHIXERON_PRODUCT_APPS=1` adds the C++ edge's processes, which is
+what `three-node-e2e-test.sh` and `gateway-failover-test.sh` set. Three of the five need no standalone
+`aeronmd` at all now — the probe attaches to a member's own embedded driver.
 
 ## Tests
 
@@ -353,7 +379,7 @@ failover is *not* session loss: `NewLeaderEvent` swaps the ingress publication a
 See `doc/todo.md` "Gateway HA / multi-instance".
 
 ### SBE / FIX code generation
-Six SBE schemas, each under its owning module — `cluster/src/main/sbe`, `gateways/src/main/sbe`, and
+Seven SBE schemas, each under its owning module — `cluster/src/main/sbe`, `gateways/src/main/sbe`, and
 the C++ edge's `sbe-order.xml` in the root's `src/main/resources` — each generating into a distinct
 namespace so one include path covers all of them (`org.limitless.phixeron.{sbe.frame, sbe.order,
 sbe.session, sbe.basicdata, sbe.replay}`, `org.limitless.phixeron.cluster.sbe`):
@@ -385,6 +411,14 @@ sbe.session, sbe.basicdata, sbe.replay}`, `org.limitless.phixeron.cluster.sbe`):
   opaque pre-encoded FIX bytes for the Artio legs. One schema because it is one protocol at two
   fidelities. `SESSION_PAYLOAD_ID` lives in `src/main/cpp/.../fix/SessionPayload.hpp` and
   `gateways/.../fixgateway/SessionPayload.java`.
+- `sbe-probe.xml` (schema 214) — **core's own** application payload (`payloadId` 5): one message,
+  `ProbeMarker`, carrying a submitter-side `seqNo` and variable-length filler. What `tools/ClusterProbe`
+  speaks, so the cluster tier's e2e scripts can drive a cluster with no product binary built
+  (`doc/future-arch.md` §11 step 5). A payload rather than a system event precisely because the
+  sequencer decodes no `payloadId` at all — a probe frame exercises the real copy-through path and
+  needs no change to `sbe-frame.xml`. **Java only**: the probe is, and that keeps the C++ core's
+  `generated/sbe/core` root free of any application codec. `payloadId` 5 is private (one publisher, one
+  consumer, both the probe), so it needs no `PayloadIdRegistered` row; its `sourceId` is 8.
 - `sbe-basicdata.xml` (schema 240) — reference data (`payloadId` 4): the bracketed `BasicData*` load.
   **The one shared protocol** — published by the C++ edge, read by both edges and both Java Artio legs —
   and so the only `payloadId` the topology file's `<protocols>` section declares (spec §6.4).
@@ -397,7 +431,7 @@ Separately, `fix-session.xml` / `fix-application.xml` / `config.xml` are simdfix
 **not** simdfix's own generated-headers location, to avoid colliding with simdfix's own
 (excluded-from-build) test-fixture generation.
 
-Both the Java (`generateReplaySbe`/`generateFrameSbe`/`generateClusterSbeIr` in `:cluster`,
+Both the Java (`generateReplaySbe`/`generateFrameSbe`/`generateProbeSbe`/`generateClusterSbeIr` in `:cluster`,
 `generateSessionSbe`/`generateBasicDataSbe`/`generateOrderSbeIr` in `:gateways`; each module's
 `collectSbeIr` stages its own schemas' IR into the jar for `SbeLogPrinter`) and C++ (`GenerateReplaySbeCodecs`/`GenerateFrameSbeCodecs`/`GenerateSessionSbeCodecs`/
 `GenerateBasicDataSbeCodecs`/`GenerateOrderSbeCodecs`/`GenerateClusterSbeCodecs` CMake targets) sides

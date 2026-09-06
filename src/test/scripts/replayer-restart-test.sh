@@ -13,7 +13,7 @@
 #
 #   PHASE 1 — Replayer restart under a riding client.
 #     A backlog is flooded onto cluster ingress BEFORE the client starts, so its cold-start walk has real
-#     work to do. The client (OrderExecServer, clientId 9) starts and its walk begins; the instant member
+#     work to do. The client (ClusterProbe follow, clientId 9) starts and its walk begins; the instant member
 #     0's ReplayerService logs that it has started serving client 9's first segment, member 0's ReplayerServer
 #     is killed outright. This is deliberately ordering-based, not timing-based: the server log line is
 #     guaranteed to precede whatever the client does with the reply, so the kill always lands no later than
@@ -24,7 +24,7 @@
 #     the client must survive (not crash) and eventually converge to "following live".
 #
 #   PHASE 2 — the client's own node restarts, producing a genuine (not fabricated) multi-recording chain.
-#     Member 0's SequencerServer itself is killed. Its co-located ReplayerServer and OrderExecServer share its
+#     Member 0's SequencerServer itself is killed. Its co-located ReplayerServer and probe client share its
 #     embedded media driver and must fail fast (die within the driver-loss grace window) rather than spin
 #     forever against a dead driver — the same invariant chaos-runner.sh's assert_died_on_driver_loss checks,
 #     asserted here directly rather than as one random outcome among many. Member 0 is restarted: with no
@@ -36,6 +36,10 @@
 #     2026-08-10 recordingId-echo hardening (review-2.md #4) exist for, exercised here for real rather than
 #     via hand-fabricated Replaying replies.
 #
+# Java only — no C++ binary is built or launched (doc/future-arch.md §11 step 5): the backlog is
+# ClusterProbe submit and the client is ClusterProbe follow, which attaches to the member's own media
+# driver, so this script needs no standalone aeronmd either.
+#
 # PASS iff: phase 1's client survives the Replayer kill and reaches "following live" once it is back; phase
 # 2's ReplayerServer/client both exit within the driver-loss grace window when their node dies, both come back
 # after the restart, and the fresh client's cold-start walk is served (at least) two segments naming two
@@ -46,10 +50,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../../main/scripts/ports.sh"
 source "${SCRIPT_DIR}/../../main/scripts/paths.sh"
 
-BUILD_DIR="cmake-build-release"
 JAR="build/libs/phixeron-0.1.0-uber.jar"
 LOG_DIR="logs/replayer-restart"
-FLOOD_ORDERS=1000
+FLOOD_FRAMES=1000
 CN=0            # client/Replayer restart target — member 0, never the leader (see header)
 CLIENT_ID=9     # matches gap-recovery-test.sh/chaos-runner.sh's dedicated test-consumer clientId/port
 
@@ -68,9 +71,6 @@ JAVA_OPTS=(
 )
 BASE_DIR="${TMP_DIR}/phixeron-seqfo"
 CLUSTER_MEMBERS="$(cluster_members_string 3)"
-AERON_DIR="$(aeron_default_dir)"
-
-if command -v aeronmd >/dev/null 2>&1; then AERONMD="$(command -v aeronmd)"; else AERONMD="${BUILD_DIR}/_deps/aeron-build/binaries/aeronmd"; fi
 
 start_seq() {  # start_seq <memberId> <logfile>
   local m="$1" log="$2"
@@ -86,11 +86,8 @@ start_replayer() {  # start_replayer <memberId> <logfile>
 }
 start_client() {  # start_client <logfile>
   local log="$1"
-  PHIXERON_ORDER_EXEC_AERON_DIR="${TMP_DIR}/phixeron-seq-aeron-${CN}" \
-    PHIXERON_NODE_MEMBER_ID="$CN" \
-    PHIXERON_REPLAYER_CLIENT_ID="$CLIENT_ID" \
-    PHIXERON_CLUSTER_EGRESS_ENDPOINT="localhost:${TEST_CONSUMER_EGRESS_PORT}" \
-    stdbuf -oL -eL "$BUILD_DIR/OrderExecServer" > "$log" 2>&1 &
+  java "${JAVA_OPTS[@]}" -Dprobe.memberId="$CN" -Dprobe.clientId="$CLIENT_ID" -cp "$JAR" \
+       org.limitless.phixeron.tools.ClusterProbe follow > "$log" 2>&1 &
   CLIENT_PID=$!
 }
 wait_for() {  # wait_for <pattern> <logfile> <timeout_iters (x0.5s)> <description>
@@ -106,15 +103,15 @@ wait_for_exit() {  # wait_for_exit <pid> <timeout_iters (x0.5s)>
   return 0
 }
 
-pkill -f SequencerServer 2>/dev/null; pkill -f ReplayerServer 2>/dev/null; pkill -f OrderExecServer 2>/dev/null
-pkill -f FixGateway 2>/dev/null; pkill -f fix_test_server 2>/dev/null; pkill -f aeronmd 2>/dev/null; sleep 1
+pkill -f SequencerServer 2>/dev/null; pkill -f ReplayerServer 2>/dev/null; pkill -f ClusterProbe 2>/dev/null
+sleep 1
 rm -rf "$BASE_DIR" "${TMP_DIR}/phixeron-seq-aeron-0" "${TMP_DIR}/phixeron-seq-aeron-1" \
-       "${TMP_DIR}/phixeron-seq-aeron-2" "$AERON_DIR" 2>/dev/null
+       "${TMP_DIR}/phixeron-seq-aeron-2" 2>/dev/null
 
-CLIENT_PID=""; MD_PID=""
+CLIENT_PID=""
 declare -a SEQ_PIDS REPLAYER_PIDS
 cleanup() {
-  kill "${CLIENT_PID:-0}" "${REPLAYER_PIDS[@]:-}" "$MD_PID" "${SEQ_PIDS[@]:-}" 2>/dev/null
+  kill "${CLIENT_PID:-0}" "${REPLAYER_PIDS[@]:-}" "${SEQ_PIDS[@]:-}" 2>/dev/null
   wait 2>/dev/null
 }
 trap cleanup EXIT INT TERM
@@ -132,10 +129,6 @@ start_seq 0 "$LOG_DIR/seq-0.log"
 wait_for "Running" "$LOG_DIR/seq-0.log" 120 "seq 0 up" || exit 1
 echo "cluster up; tenure-1 leader = member $LEADER ; restart target = member $CN (never the leader)"
 
-AERON_DIR="$AERON_DIR" "$AERONMD" > "$LOG_DIR/aeronmd.log" 2>&1 &
-MD_PID=$!
-W=0; until [[ -f "$AERON_DIR/cnc.dat" ]]; do sleep 0.2; W=$((W+1)); ((W>25)) && { echo "md not up"; exit 1; }; done
-
 for m in 0 1 2; do start_replayer "$m" "$LOG_DIR/replayer-$m.log"; done
 for m in 0 1 2; do wait_for "serving replay" "$LOG_DIR/replayer-$m.log" 120 "replayer $m serving" || exit 1; done
 echo "replayers serving"
@@ -147,9 +140,9 @@ PHASE2_PASS=0
 # ═══════════════════════════ PHASE 1 — Replayer restart under a riding client ═══════════════════════════
 echo ""
 echo "── phase 1: Replayer restart under a riding client ──"
-echo "flooding $FLOOD_ORDERS messages onto cluster ingress to give the cold-start walk real work"
-PHIXERON_FLOOD_ORDERS="$FLOOD_ORDERS" stdbuf -oL -eL "$BUILD_DIR/fix_test_server" 127.0.0.1 9000 \
-  > "$LOG_DIR/flood.log" 2>&1 || true
+echo "flooding $FLOOD_FRAMES frames onto cluster ingress to give the cold-start walk real work"
+java "${JAVA_OPTS[@]}" -Dprobe.memberId="$CN" -Dprobe.count="$FLOOD_FRAMES" -cp "$JAR" \
+     org.limitless.phixeron.tools.ClusterProbe submit > "$LOG_DIR/flood.log" 2>&1 || true
 sleep 1   # let the flood replicate before the client's cold walk starts racing it
 
 CLIENT_LOG_P1="$LOG_DIR/client-phase1.log"

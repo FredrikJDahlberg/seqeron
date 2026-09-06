@@ -199,7 +199,7 @@ exclusively, which is why `ConnectionOpened`/`ConnectionClosed` name no producer
 | --- | --- | --- |
 | **−1** | the cluster itself — the synthesized class, and nothing else (**F-4**) | never; **illegal on ingress** |
 | **2** | `clusterctl`, on every marker it submits | never |
-| 0, 3, 5, 6, 7 … | every other producer, elected or not _(today: the C++ gateway pair 0, the reference-data application 3, the venue leg 5, the order-entry leg 6, the order-exec application 7)_ | gateways by `GatewayRegistered.gatewaySourceId`, applications by `ApplicationRegistered.applicationSourceId`; **S-6** checks only the first |
+| 0, 3, 5, 6, 7, 8, 9 … | every other producer, elected or not _(today: the C++ gateway pair 0, the reference-data application 3, the venue leg 5, the order-entry leg 6, the order-exec application 7, seqeron's own e2e probe 8, its e2e gateway pair 9)_ | gateways by `GatewayRegistered.gatewaySourceId`, applications by `ApplicationRegistered.applicationSourceId`; **S-6** checks only the first |
 
 This table is the registry: a new producer takes its id here, and `doc/registries.md` §1 records
 that ownership rather than keeping a second copy of the allocation.
@@ -241,11 +241,15 @@ system frame per row of the file's `<protocols>` section (§6.4).
 | 1 | **retired.** seqeron's own vocabulary was a payload until §15 step 10 gave it the system family; the number is burned so a producer on an older build fails loudly rather than having core bytes copied through as an application payload | fixed by this document; **refused on ingress** (§9.2, condition 7) |
 | 2… | one per application schema or encoding | the deployment's to allocate; **registered only where the protocol is shared** |
 
-_(This deployment today, all three allocated by §15 steps 3 and 4: **2** = the order family
+_(This deployment today, the first three allocated by §15 steps 3 and 4: **2** = the order family
 (`sbe-order.xml` 220, the order flow and the portfolio query over it), **3** = the FIX session family
-(`sbe-session.xml` 230, both edges' session layer), **4** = reference data (`sbe-basicdata.xml` 240).
-**4** is the only one that crosses application boundaries and so the only one §6.4's example declares;
-2 and 3 are private between the processes that speak them and need no row.)_
+(`sbe-session.xml` 230, both edges' session layer), **4** = reference data (`sbe-basicdata.xml` 240),
+**5** = seqeron's own end-to-end probe (`sbe-probe.xml` 214, one `ProbeMarker`; `doc/future-arch.md`
+§11 step 5). **4** is the only one that crosses application boundaries and so the only one §6.4's
+example declares; 2, 3 and 5 are private between the processes that speak them and need no row. 5 is
+recorded here despite being out of the registry's scope for the reason the last paragraph of this
+section gives: it is nonetheless one id space, and a number nobody wrote down is a number two
+applications can pick.)_
 
 **The registry's subject is the shared protocol.** A `payloadId` that one application publishes and
 that same application alone reads is **out of scope**: seqeron neither allocates it nor requires it

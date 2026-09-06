@@ -33,7 +33,6 @@ namespace org::limitless::phixeron::sequencer {
 namespace diag = org::limitless::phixeron::util;
 
 // Each UDP-replaying binary uses a distinct port.
-// FixGateway  → 9310 (env PHIXERON_FIX_REPLAY_PORT)
 // fix_test_server   → 9400 (env PHIXERON_RISK_TEST_REPLAY_PORT; kept outside core's reserved
 //                     block — isClusterPort, doc/registries.md §2 — since 9312 used to alias
 //                     member 1's cluster ingress port)

@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!--
+    The probe protocol (doc/future-arch.md §11 step 5) — payloadId 5.
+
+    One message, and it exists so that the cluster tier's end-to-end scripts can drive a cluster
+    without a product binary. Before this, all five of them generated load with the C++ fix_test_server
+    and consumed the tap with OrderExecServer, which made :cluster's own e2e suite depend on the C++
+    edge — the one dependency still running product -> cluster the wrong way, and invisible to a build
+    that only checks Java and C++.
+
+    An application schema, deliberately: the sequencer decodes no payloadId at all (spec §6, S-2), so a
+    probe frame exercises the same copy-through path a product payload does, and needs no change to
+    sbe-frame.xml and no new systemEventType. That also makes it the application schema with the
+    shortest possible blast radius (§11: "one repo, one commit").
+
+    payloadId 5, private: one publisher (ClusterProbe submit) and one consumer (ClusterProbe follow),
+    both in this module, so spec §6.1 puts it out of the registry's scope entirely — no
+    PayloadIdRegistered row and no <protocols> entry. 2/3/4 are the deployment's product protocols.
+
+    Schema 214 sits in the cluster tier's block (210 frame, 212 replay) rather than the applications'
+    (220/230/240), because this protocol is core's own.
+-->
+<sbe:messageSchema xmlns:sbe="http://fixprotocol.io/2016/sbe"
+                   package="org.limitless.phixeron.sbe.probe"
+                   id="214"
+                   version="0"
+                   description="Edge-neutral probe payload: the load and liveness protocol the cluster tier's e2e scripts speak"
+                   byteOrder="littleEndian">
+
+    <types>
+
+        <!-- SBE framing header required by all SBE codecs. A payload carries its own, unlike a system
+             body, whose systemEventType names it instead (spec §7). -->
+        <composite name="messageHeader">
+            <type name="blockLength" primitiveType="uint16"/>
+            <type name="templateId"  primitiveType="uint16"/>
+            <type name="schemaId"    primitiveType="uint16"/>
+            <type name="version"     primitiveType="uint16"/>
+        </composite>
+
+        <composite name="varDataEncoding">
+            <type name="length"  primitiveType="uint16" nullValue="65535" presence="optional"/>
+            <type name="varData" primitiveType="uint8"  length="0"/>
+        </composite>
+
+    </types>
+
+    <sbe:message name="ProbeMarker" id="1"
+                 description="One probe frame. seqNo is the submitter's own count, independent of the
+                              globalSeqNo the cluster assigns: it is what lets a follower verify that
+                              what came back off the tap is what went in, and what a liveness check
+                              matches its own submission on. filler sizes the frame, so a load run can
+                              build an archive of a chosen byte size rather than of a chosen frame
+                              count — replay-bench.sh reports MB/s and would otherwise measure a
+                              different shape of history than the order flood it replaced">
+        <field name="seqNo"  id="1" type="uint64"
+               description="Monotone per-submitter counter, from 1"/>
+        <data  name="filler" id="2" type="varDataEncoding"
+               description="Arbitrary bytes, read by nobody; MAY be empty"/>
+    </sbe:message>
+
+</sbe:messageSchema>

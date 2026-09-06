@@ -158,12 +158,13 @@ and the root's `src/test/scripts/` for the C++ edge's. Each brings the cluster u
 
 | Script | Purpose |
 |--------|---------|
-| `cluster/src/test/scripts/start-three-node-cluster.sh [debug\|release]` | Start a local 3-node Raft cluster with a `FixGateway` and a per-node `ReplayerServer` + `OrderExecServer` replica; blocks until Ctrl-C, then stops all of them |
+| `cluster/src/test/scripts/start-three-node-cluster.sh [debug\|release]` | Start a local 3-node Raft cluster with a per-node `ReplayerServer` + `ClusterProbe` consumer replica; blocks until Ctrl-C, then stops all of them. Java only — set `PHIXERON_PRODUCT_APPS=1` to add the C++ edge's `FixGateway`, `OrderExecServer` and `BasicDataServer` (what the C++ harnesses below do) |
 | `src/test/scripts/three-node-e2e-test.sh [debug\|release]` | Start the 3-node cluster, run `fix_test_server` against it once, then tear everything down and exit with its pass/fail status (set `PHIXERON_FLOOD_ORDERS=<N>` for the delivery-latency-under-load run) |
 | `src/test/scripts/fix-test-server.sh [debug\|release] [host [port]]` | Run a single FIX session (Logon → Heartbeat → NewOrderSingle → Logout) against a live `FixGateway` |
-| `cluster/src/test/scripts/failover-test.sh` | Force a failover, then cold-start a fresh `OrderExecServer` on the new leader and verify it catches up on full history (each node's tap recording is one continuous run spanning both tenures) |
+| `cluster/src/test/scripts/failover-test.sh` | Force a failover, then cold-start a fresh `ClusterProbe` follower on the new leader and verify it catches up on full history (each node's tap recording is one continuous run spanning both tenures) |
 | `cluster/src/test/scripts/gap-recovery-test.sh` | Drop a live tap frame on a caught-up consumer (SIGUSR1 fault-injection) and verify it re-walks its recording and heals rather than wedging |
 | `gateways/src/test/scripts/exchange-gateway-test.sh` | Bring up the venue leg — the `EGW-A`/`EGW-B` pair against a `MockExchange` — and verify nothing reaches the venue that has not round-tripped consensus, that a restart rebuilds session state from the log, and that failover works both automatically and via `clusterctl`. All-Java; no C++ build needed |
+| `cluster/src/test/scripts/chaos-runner.sh` | Randomized fault injection against a live 3-node cluster, with core's own `TestGateway` pair (`GW-T-A`/`GW-T-B`, ports 9200/9201) taking the load through its accept gate; every run prints its `SEED` to replay the exact fault sequence. Java only — needs `./gradlew uberJar :cluster:compileTestJava` |
 | `cluster/src/test/scripts/replayer-restart-test.sh` | Kill and restart a node's `ReplayerServer` while a client is riding a replay from it, then kill and restart the client's own node entirely and verify its fresh cold-start walk crosses a real multi-recording chain |
 
 ---

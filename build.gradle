@@ -1,8 +1,13 @@
 // :cluster — the sequencer, the replayer (both sides), the shared client classes, the tools, and the
 // code generation for the schemas the cluster tier itself speaks. Nothing here may reference
-// :gateways (doc/future-arch.md §11 step 1), and nothing here touches an application payload at all —
-// not its codecs and not its IR. sbe-session.xml and sbe-basicdata.xml are :gateways', sbe-order.xml
-// the C++ edge's, and each is generated and staged by the module that owns it.
+// :gateways (doc/future-arch.md §11 step 1), and nothing here touches a PRODUCT payload — not its
+// codecs and not its IR. sbe-session.xml and sbe-basicdata.xml are :gateways', sbe-order.xml the C++
+// edge's, and each is generated and staged by the module that owns it.
+//
+// The one application-family schema generated here is core's own: sbe-probe.xml (payloadId 5), the
+// protocol ClusterProbe speaks so this module's e2e scripts can drive a cluster with no product binary
+// built (§11 step 5). It is private to tools/ClusterProbe — sequencer/ and replayer/ import it nowhere,
+// and the sequencer still decodes no payloadId at all.
 
 plugins {
     id 'application'
@@ -35,8 +40,9 @@ dependencies {
 // ── SBE code generation ────────────────────────────────────────────────────────
 // src/main/sbe, not src/main/resources: these are codegen inputs and belong in no jar. The one file
 // here a jar does need is topology.xsd, and it sits in resources for exactly that reason — ClusterCtl
-// validates the topology document against it off its own classpath. The C++ build generates from the
-// same three XMLs by path.
+// validates the topology document against it off its own classpath. The C++ build generates from three
+// of these four by path — sbe-probe.xml is Java-only, because the probe is, which is also what keeps
+// the C++ core's generated/sbe/core root free of any application codec.
 
 // One root, but each schema owns a disjoint slice of it: its own package dir plus its own .sbeir.
 // Each task declares and wipes exactly that slice. Declaring the shared root instead made the codec
@@ -98,11 +104,36 @@ tasks.register('generateFrameSbe', JavaExec) {
     }
 }
 
-// Only the two schemas the cluster tier speaks. The application payloads' codecs are :gateways',
-// generated there — this module compiles against none of them, and shipping them in its jar was what
-// let the "payload-agnostic" claim be true of the code and false of the artifact.
+tasks.register('generateProbeSbe', JavaExec) {
+    description = 'Generate Java SBE codecs from sbe-probe.xml (the ClusterProbe load/liveness payload)'
+    classpath   = configurations.sbeCodegen
+    mainClass   = 'uk.co.real_logic.sbe.SbeTool'
+
+    jvmArgs '--add-opens=java.base/jdk.internal.misc=ALL-UNNAMED'
+
+    systemProperty 'sbe.output.dir',               sbeGeneratedSrcDir.absolutePath
+    systemProperty 'sbe.target.language',          'Java'
+    systemProperty 'sbe.java.generate.interfaces', 'false'
+    systemProperty 'sbe.xinclude.aware',           'true'
+    systemProperty 'sbe.generate.ir',              'true'
+
+    args new File(sbeSchemaDir, 'sbe-probe.xml')
+
+    inputs.file  new File(sbeSchemaDir, 'sbe-probe.xml')
+    outputs.dir  new File(sbeGeneratedSrcDir, 'org/limitless/phixeron/sbe/probe')
+    outputs.file new File(sbeGeneratedSrcDir, 'sbe-probe.sbeir')
+
+    doFirst {
+        new File(sbeGeneratedSrcDir, 'org/limitless/phixeron/sbe/probe').deleteDir()
+        sbeGeneratedSrcDir.mkdirs()
+    }
+}
+
+// The two schemas the cluster tier speaks, plus its own probe payload. The PRODUCT payloads' codecs
+// are :gateways', generated there — this module compiles against none of them, and shipping them in its
+// jar was what let the "payload-agnostic" claim be true of the code and false of the artifact.
 tasks.named('compileJava') {
-    dependsOn 'generateReplaySbe', 'generateFrameSbe'
+    dependsOn 'generateReplaySbe', 'generateFrameSbe', 'generateProbeSbe'
 }
 
 // ── IR-only schemas ────────────────────────────────────────────────────────────
@@ -136,14 +167,15 @@ tasks.register('generateClusterSbeIr', JavaExec) {
 // full of generated .java, and the only filter available is set-wide, which would drop topology.xsd
 // from the jar.
 //
-// Only the three schemas this module owns. SbeLogPrinter lists this directory on the classpath rather
+// Only the four schemas this module owns. SbeLogPrinter lists this directory on the classpath rather
 // than naming schemas, so :gateways stages its own into the same path and a run over both jars sees all
-// of them — while a run over this jar alone names no application protocol, which is the point.
+// of them — while a run over this jar alone names no PRODUCT protocol, which is the point. sbe-probe is
+// here so a probe-driven recording reads as ProbeMarker rather than as an undecodable payload.
 def sbeIrResourceDir = layout.buildDirectory.dir('generated/resources/sbeir')
 
 tasks.register('collectSbeIr', Copy) {
     description = 'Stage the generated SBE IR files as jar resources for SbeLogPrinter'
-    dependsOn 'generateReplaySbe', 'generateFrameSbe', 'generateClusterSbeIr'
+    dependsOn 'generateReplaySbe', 'generateFrameSbe', 'generateProbeSbe', 'generateClusterSbeIr'
     from(sbeGeneratedSrcDir) {
         include '*.sbeir'
         into 'org/limitless/phixeron/tools/sbeir'

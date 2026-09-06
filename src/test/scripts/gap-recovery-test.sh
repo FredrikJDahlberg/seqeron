@@ -11,7 +11,7 @@
 # recording is continuous, never rotated).
 #
 # The gap is synthesized on the CONSUMER side: the ReplayerStreamReceiver drops the next live tap frame when
-# armed via SIGUSR1 (gated by PHIXERON_FAULT_INJECTION=1 at consumer launch). With apps reading the tap
+# armed via SIGUSR1 (gated by -Dprobe.faultInjection=true at consumer launch). With apps reading the tap
 # directly there is no fan-out relay to drop a frame in, so the drop lives where the app reads live.
 #
 # Topology keeps member 0 alive throughout: the flood's ClusterStreamSender (and the consumer's)
@@ -20,10 +20,16 @@
 # killed leader is NOT member 0, members 1 and 2 are started first so one of THEM wins the initial
 # election (2 of 3 is a quorum); member 0 then joins as a follower and is never killed.
 #
+# Java only — no C++ binary is built or launched (doc/future-arch.md §11 step 5): the load is
+# ClusterProbe submit and the consumer is ClusterProbe follow. The flood is PACED, and that pacing is
+# load-bearing: an unpaced probe outruns the heal, every post-gap frame then arrives by replay rather
+# than live, and the delivered-while-caught-up count this asserts on collapses to a handful. The FIX
+# path it replaced was paced by TCP and codec work rather than deliberately.
+#
 # Sequence:
 #   1. Start members 1 and 2 -> one becomes the tenure-1 leader. Then start member 0 (follower) and a
 #      ReplayerServer per member.
-#   2. Consumer (OrderExecServer, PHIXERON_FAULT_INJECTION=1) on member 0 catches up (following the
+#   2. Consumer (ClusterProbe follow, -Dprobe.faultInjection=true) on member 0 catches up (following the
 #      live tap).
 #   3. Kill the tenure-1 leader -> a survivor becomes the tenure-2 leader. Member 0's own tap recording
 #      keeps flowing across the failover (it is continuous, never rotated).
@@ -39,9 +45,8 @@
 # A second scenario ("larger deliberate gaps") is folded into this same script via an env var, rather
 # than duplicating the whole cluster bootstrap above:
 #   GAP_SIZE=<n>          drop n consecutive live tap frames per arm instead of 1 — sent as
-#                         PHIXERON_FAULT_DROP_COUNT, fixed at consumer startup: standard POSIX signals
-#                         are not queued, so sending SIGUSR1 n times would not reliably accumulate to n
-#                         — see OrderExecServer.cpp.
+#                         -Dprobe.faultDropCount, fixed at consumer startup: standard POSIX signals
+#                         are not queued, so sending SIGUSR1 n times would not reliably accumulate to n.
 #
 # A third scenario ("gap discovered mid-replay" — re-arm a second drop while the first walk is still
 # actively replaying) was attempted and abandoned: see doc/todo.md's 2026-08-02 note. Local Aeron IPC
@@ -58,13 +63,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../../main/scripts/ports.sh"
 source "${SCRIPT_DIR}/../../main/scripts/paths.sh"
 
-BUILD_DIR="cmake-build-release"
 JAR="build/libs/phixeron-0.1.0-uber.jar"
 LOG_DIR="logs/gap-recovery"
-FLOOD_ORDERS=300
+FLOOD_FRAMES=300
+FLOOD_PACING_US=10000   # 300 frames over ~3s — see the header note on pacing
 DELIVER_THRESHOLD=120
 CN=0            # consumer's member — member 0, never killed, stable local ingress
-GAP_SIZE="${GAP_SIZE:-1}"  # frames dropped per arm (keep comfortably below FLOOD_ORDERS)
+GAP_SIZE="${GAP_SIZE:-1}"  # frames dropped per arm (keep comfortably below FLOOD_FRAMES)
 
 rm -rf "$LOG_DIR"; mkdir -p "$LOG_DIR"
 
@@ -76,9 +81,6 @@ JAVA_OPTS=(
 )
 BASE_DIR="${TMP_DIR}/phixeron-seqfo"
 CLUSTER_MEMBERS="$(cluster_members_string 3)"
-AERON_DIR="$(aeron_default_dir)"
-
-if command -v aeronmd >/dev/null 2>&1; then AERONMD="$(command -v aeronmd)"; else AERONMD="${BUILD_DIR}/_deps/aeron-build/binaries/aeronmd"; fi
 
 start_seq() {  # start_seq <memberId>
   local m="$1"
@@ -87,15 +89,15 @@ start_seq() {  # start_seq <memberId>
   SEQ_PIDS[$m]=$!
 }
 
-pkill -f SequencerServer 2>/dev/null; pkill -f ReplayerServer 2>/dev/null; pkill -f OrderExecServer 2>/dev/null
-pkill -f FixGateway 2>/dev/null; pkill -f fix_test_server 2>/dev/null; pkill -f aeronmd 2>/dev/null; sleep 1
+pkill -f SequencerServer 2>/dev/null; pkill -f ReplayerServer 2>/dev/null; pkill -f ClusterProbe 2>/dev/null
+sleep 1
 rm -rf "$BASE_DIR" "${TMP_DIR}/phixeron-seq-aeron-0" "${TMP_DIR}/phixeron-seq-aeron-1" \
-       "${TMP_DIR}/phixeron-seq-aeron-2" "$AERON_DIR" 2>/dev/null
+       "${TMP_DIR}/phixeron-seq-aeron-2" 2>/dev/null
 
-CONSUMER_PID=""; MD_PID=""
+CONSUMER_PID=""
 declare -a SEQ_PIDS REPLAYER_PIDS
 cleanup() {
-  kill "$CONSUMER_PID" "${REPLAYER_PIDS[@]:-}" "$MD_PID" "${SEQ_PIDS[@]:-}" 2>/dev/null
+  kill "$CONSUMER_PID" "${REPLAYER_PIDS[@]:-}" "${SEQ_PIDS[@]:-}" 2>/dev/null
   wait 2>/dev/null
 }
 trap cleanup EXIT INT TERM
@@ -116,10 +118,6 @@ start_seq 0
 W=0; until grep -q "Running" "$LOG_DIR/seq-0.log" 2>/dev/null; do sleep 0.5; W=$((W+1)); ((W>60)) && { echo "seq 0 not up"; exit 1; }; done
 echo "cluster up; tenure-1 leader = member $LEADER ; consumer co-located with member $CN"
 
-AERON_DIR="$AERON_DIR" "$AERONMD" > "$LOG_DIR/aeronmd.log" 2>&1 &
-MD_PID=$!
-W=0; until [[ -f "$AERON_DIR/cnc.dat" ]]; do sleep 0.2; W=$((W+1)); ((W>25)) && { echo "md not up"; exit 1; }; done
-
 for m in 0 1 2; do
   java "${JAVA_OPTS[@]}" -Dreplayer.memberId="$m" -cp "$JAR" \
        org.limitless.phixeron.replayer.server.ReplayerServer > "$LOG_DIR/replayer-$m.log" 2>&1 &
@@ -132,17 +130,12 @@ echo "replayers serving"
 sleep 2
 
 # ── 2. Consumer catches up BEFORE the failover (following the live tap) ────────
-# PHIXERON_FAULT_INJECTION=1 installs the consumer's SIGUSR1 handler and enables the ReplayerStreamReceiver's
-# live-tap drop; without it a stray SIGUSR1 would kill the process (default action).
+# -Dprobe.faultInjection=true installs the consumer's SIGUSR1 handler and enables the
+# ReplayerStreamReceiver's live-tap drop; without it a stray SIGUSR1 would kill the process.
 CONSUMER_LOG="$LOG_DIR/consumer.log"
-PHIXERON_ORDER_EXEC_AERON_DIR="${TMP_DIR}/phixeron-seq-aeron-${CN}" \
-  PHIXERON_NODE_MEMBER_ID="$CN" \
-  PHIXERON_REPLAYER_CLIENT_ID=9 \
-  PHIXERON_CLUSTER_EGRESS_ENDPOINT="localhost:${TEST_CONSUMER_EGRESS_PORT}" \
-  PHIXERON_LATENCY_STATS=1 \
-  PHIXERON_FAULT_INJECTION=1 \
-  PHIXERON_FAULT_DROP_COUNT="$GAP_SIZE" \
-  stdbuf -oL -eL "$BUILD_DIR/OrderExecServer" > "$CONSUMER_LOG" 2>&1 &
+java "${JAVA_OPTS[@]}" -Dprobe.memberId="$CN" -Dprobe.clientId=9 \
+     -Dprobe.latencyStats=true -Dprobe.faultInjection=true -Dprobe.faultDropCount="$GAP_SIZE" \
+     -cp "$JAR" org.limitless.phixeron.tools.ClusterProbe follow > "$CONSUMER_LOG" 2>&1 &
 CONSUMER_PID=$!
 W=0; until grep -q "following live" "$CONSUMER_LOG" 2>/dev/null; do sleep 0.5; W=$((W+1)); ((W>60)) && { echo "consumer never caught up"; exit 1; }; done
 echo "consumer caught up (following live) on tenure 1"
@@ -161,11 +154,12 @@ sleep 3  # let tenure-2 recording start and settle
 
 # ── 4. Arm a live-tap drop on the consumer, then flood ingress ────────────────
 kill -USR1 "$CONSUMER_PID" 2>/dev/null
-echo "armed a $GAP_SIZE-frame live-tap drop on the consumer (SIGUSR1, PHIXERON_FAULT_DROP_COUNT=$GAP_SIZE)"
+echo "armed a $GAP_SIZE-frame live-tap drop on the consumer (SIGUSR1, -Dprobe.faultDropCount=$GAP_SIZE)"
 sleep 0.5
-echo "flooding $FLOOD_ORDERS messages to cluster ingress (first $GAP_SIZE live tap frame(s) will be dropped)"
-PHIXERON_FLOOD_ORDERS="$FLOOD_ORDERS" stdbuf -oL -eL "$BUILD_DIR/fix_test_server" 127.0.0.1 9000 \
-  > "$LOG_DIR/flood.log" 2>&1 || true
+echo "flooding $FLOOD_FRAMES frames to cluster ingress (first $GAP_SIZE live tap frame(s) will be dropped)"
+java "${JAVA_OPTS[@]}" -Dprobe.memberId="$CN" -Dprobe.count="$FLOOD_FRAMES" \
+     -Dprobe.pacingMicros="$FLOOD_PACING_US" \
+     -cp "$JAR" org.limitless.phixeron.tools.ClusterProbe submit > "$LOG_DIR/flood.log" 2>&1 || true
 sleep 8  # let the consumer resume, heal, and drain the flood tail
 
 # ── 5. Flush the consumer's delivery-latency report ───────────────────────────

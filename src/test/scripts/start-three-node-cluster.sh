@@ -1,24 +1,37 @@
 #!/usr/bin/env bash
-# start-three-node-cluster.sh — bring up a local 3-node Aeron Cluster with a
-# FixGateway and a per-node ReplayerServer + OrderExecServer replica on every
-# member, then keep it running until interrupted.
+# start-three-node-cluster.sh — bring up a local 3-node Aeron Cluster with a per-node ReplayerServer
+# and a per-node consumer replica, then keep it running until interrupted.
 #
-# Launches, each writing to its own log file under logs/:
-#   1. SequencerServer  x3  (Java, Raft members 0/1/2, all on localhost)
-#   2. aeronmd            (standalone Aeron media driver, for C++ clients that DON'T co-locate with a
-#                          member — in practice fix_test_server, which the e2e scripts launch against
-#                          this cluster. Every long-running app below uses a member's embedded driver.)
-#   3. FixGateway   (C++, FIX TCP gateway on port 9000)
-#   4. ReplayerServer   x3  (Java, one co-located with each member: serves archive replay to co-located
-#                          apps over aeron:ipc — router-design.md; apps read the tap directly for live)
-#   5. OrderExecServer x3 (C++, one per-node replica co-located with each member: all track positions from
-#                          the same ordered stream; only the leader node's replica answers risk queries)
+# TWO MODES, and the default is the cluster tier alone (doc/future-arch.md §11 step 5). This script is
+# core's, and core's own e2e must run with no C++ binary built:
+#
+#   default (PHIXERON_PRODUCT_APPS unset)  — Java only:
+#     1. SequencerServer  x3  (Java, Raft members 0/1/2, all on localhost)
+#     2. ReplayerServer   x3  (Java, one co-located with each member: serves archive replay to co-located
+#                              apps over aeron:ipc; apps read the tap directly for live)
+#     3. ClusterProbe follow x3 (Java, one per-node consumer replica — the edge-neutral probe, standing
+#                              in for the product replicas so READY still means "every node is following
+#                              the live tail")
+#
+#   PHIXERON_PRODUCT_APPS=1 — additionally the C++ edge's processes, which is what the product e2e
+#   scripts (src/test/scripts/three-node-e2e-test.sh) set:
+#     4. aeronmd            (standalone Aeron media driver, for C++ clients that DON'T co-locate with a
+#                            member — in practice fix_test_server, which those scripts launch against
+#                            this cluster. Every long-running app below uses a member's embedded driver.)
+#     5. FixGateway   (C++, FIX TCP gateway on port 9000)
+#     6. OrderExecServer x3 (C++, one per-node replica co-located with each member: all track positions
+#                            from the same ordered stream; only the leader node's replica answers risk
+#                            queries) — these REPLACE the probe replicas above
+#     7. BasicDataServer x3 (C++, the reference-data gateway)
+#
 # then blocks, monitoring the launched processes; Ctrl-C (or kill) stops all of them cleanly. This
-# script only starts and stops the cluster — it runs no tests. To drive it end-to-end, use the test
-# scripts (e.g. the C++ edge's src/test/scripts/three-node-e2e-test.sh), which start it via this
-# script and tear it down via stop-cluster.sh.
+# script only starts and stops the cluster — it runs no tests.
 #
-# FixGateway is co-located with member 0 (shares its Aeron directory, SEQ_AERON_DIR): it
+# The product half is still written here rather than in a launcher the C++ edge owns. That is the
+# remaining half of the cross-module reference §11 step 7a.2 recorded: the flag makes core's own suite
+# independent of it, and 7b.6's carve is what deletes it from seqeron's copy.
+#
+# In product mode, FixGateway is co-located with member 0 (shares its Aeron directory, SEQ_AERON_DIR): it
 # follows that node's SequencerService tap over aeron:ipc and reaches member 0's local archive over
 # aeron:ipc for FIX-session resend recovery. Cluster ingress tries aeron:ipc first and falls back to
 # UDP + SessionEvent REDIRECT/NewLeaderEvent to the real leader, so this works regardless of which
@@ -35,7 +48,7 @@
 #
 # Prerequisites:
 #   ./gradlew uberJar                              # build the fat jar
-#   cmake --build cmake-build-release              # build C++ targets
+#   cmake --build cmake-build-release              # C++ targets — PHIXERON_PRODUCT_APPS=1 only
 #
 # Usage:
 #   ./start-three-node-cluster.sh [debug|release]     default: release
@@ -62,6 +75,9 @@ fi
 BUILD_TYPE="${1:-release}"
 BUILD_DIR="cmake-build-${BUILD_TYPE}"
 JAR="build/libs/phixeron-0.1.0-uber.jar"
+
+# 1 = also launch the C++ edge's processes (see the header). Default off: core's e2e runs Java-only.
+PRODUCT_APPS="${PHIXERON_PRODUCT_APPS:-0}"
 
 JAVA_OPTS=(
     --add-opens=java.base/sun.nio.ch=ALL-UNNAMED
@@ -107,16 +123,18 @@ if [[ ! -f "${JAR}" ]]; then
     exit 1
 fi
 
-for bin in FixGateway OrderExecServer BasicDataServer; do
-    if [[ ! -x "${BUILD_DIR}/${bin}" ]]; then
-        echo "ERROR: ${BUILD_DIR}/${bin} not found — run: cmake --build ${BUILD_DIR}" >&2
+if [[ "${PRODUCT_APPS}" == "1" ]]; then
+    for bin in FixGateway OrderExecServer BasicDataServer; do
+        if [[ ! -x "${BUILD_DIR}/${bin}" ]]; then
+            echo "ERROR: ${BUILD_DIR}/${bin} not found — run: cmake --build ${BUILD_DIR}" >&2
+            exit 1
+        fi
+    done
+
+    if [[ ! -x "${AERONMD}" ]]; then
+        echo "ERROR: ${AERONMD} not found — run: cmake --build ${BUILD_DIR}" >&2
         exit 1
     fi
-done
-
-if [[ ! -x "${AERONMD}" ]]; then
-    echo "ERROR: ${AERONMD} not found — run: cmake --build ${BUILD_DIR}" >&2
-    exit 1
 fi
 
 mkdir -p "${LOG_DIR}"
@@ -160,32 +178,46 @@ echo "[start-three-node-cluster.sh] All 3 cluster members are running"
 # before the reference-data load — a gateway that has not resolved its own gatewaySourceId from the
 # list drops every session row on ingest — and the bootstrap GatewayActive that designates each
 # pair's primary is synthesized behind the list's last row.
-echo "[start-three-node-cluster.sh] Loading the gateway list"
-if ! CLUSTERCTL_AERON_DIR="${SEQ_AERON_DIR}" CLUSTERCTL_INGRESS_ENDPOINTS="$(ingress_endpoints_string 3)" \
-        "${MAIN_SCRIPTS}/clusterctl.sh" load-topology src/test/resources/topology-gw.xml \
-        > "${LOG_DIR}/clusterctl-load-topology.log" 2>&1; then
-    echo "ERROR: clusterctl load-topology failed — see ${LOG_DIR}/clusterctl-load-topology.log" >&2
-    kill "${SEQ_PIDS[@]}" 2>/dev/null
-    exit 1
-fi
-
-echo "[start-three-node-cluster.sh] Starting Aeron media driver → ${MD_LOG}"
-AERON_DIR="${AERON_DIR}" "${AERONMD}" > "${MD_LOG}" 2>&1 &
-MD_PID=$!
-
-# Wait for aeronmd to create its CnC file so C++ clients can attach.
-echo "[start-three-node-cluster.sh] Waiting for media driver CnC file…"
-WAIT=0
-until [[ -f "${AERON_DIR}/cnc.dat" ]]; do
-    sleep 0.2
-    WAIT=$(( WAIT + 1 ))
-    if (( WAIT > 25 )); then
-        echo "ERROR: aeronmd CnC file not created after 5 s at ${AERON_DIR}/cnc.dat" >&2
-        kill "${MD_PID}" "${SEQ_PIDS[@]}" 2>/dev/null
+#
+# Java-only mode loads no list, and deliberately: a list is a deployment assertion naming instances
+# this deployment actually runs, and there is no gateway process here to name. Listing one anyway
+# makes the sequencer designate it, time out after GATEWAY_ACTIVATION_TIMEOUT_MS, hand the role to its
+# standby and time out again — a GatewayActive every 5s, forever. The list itself is a product file
+# (src/test/resources/topology-gw.xml names the C++ pair), which is the other reason. The election path
+# stays covered by SequencerTest/SequencerServerTest and by the product e2e.
+if [[ "${PRODUCT_APPS}" == "1" ]]; then
+    echo "[start-three-node-cluster.sh] Loading the gateway list"
+    if ! CLUSTERCTL_AERON_DIR="${SEQ_AERON_DIR}" CLUSTERCTL_INGRESS_ENDPOINTS="$(ingress_endpoints_string 3)" \
+            "${MAIN_SCRIPTS}/clusterctl.sh" load-topology src/test/resources/topology-gw.xml \
+            > "${LOG_DIR}/clusterctl-load-topology.log" 2>&1; then
+        echo "ERROR: clusterctl load-topology failed — see ${LOG_DIR}/clusterctl-load-topology.log" >&2
+        kill "${SEQ_PIDS[@]}" 2>/dev/null
         exit 1
     fi
-done
-echo "[start-three-node-cluster.sh] Media driver ready"
+fi
+
+# The standalone driver serves only the C++ clients that do not co-locate with a member; every Java
+# process here attaches to a member's own embedded driver, so it is product mode's alone.
+MD_PID=""
+if [[ "${PRODUCT_APPS}" == "1" ]]; then
+    echo "[start-three-node-cluster.sh] Starting Aeron media driver → ${MD_LOG}"
+    AERON_DIR="${AERON_DIR}" "${AERONMD}" > "${MD_LOG}" 2>&1 &
+    MD_PID=$!
+
+    # Wait for aeronmd to create its CnC file so C++ clients can attach.
+    echo "[start-three-node-cluster.sh] Waiting for media driver CnC file…"
+    WAIT=0
+    until [[ -f "${AERON_DIR}/cnc.dat" ]]; do
+        sleep 0.2
+        WAIT=$(( WAIT + 1 ))
+        if (( WAIT > 25 )); then
+            echo "ERROR: aeronmd CnC file not created after 5 s at ${AERON_DIR}/cnc.dat" >&2
+            kill "${MD_PID}" "${SEQ_PIDS[@]}" 2>/dev/null
+            exit 1
+        fi
+    done
+    echo "[start-three-node-cluster.sh] Media driver ready"
+fi
 
 echo "[start-three-node-cluster.sh] Starting ReplayerServer (co-located with SequencerServer member 0) → ${REPLAYER_LOG}"
 # Attaches to member 0's embedded media driver (replayer.memberId=0 → phixeron-seq-aeron-0, i.e.
@@ -223,7 +255,7 @@ done
 # launch and monitor one — needed by the two-gateway failover harness, which runs a primary and a hot
 # standby and must kill the primary WITHOUT this script's monitor tearing down the whole cluster.
 FIX_PID=""
-if [[ -z "${PHIXERON_SKIP_FIX_GATEWAY:-}" ]]; then
+if [[ "${PRODUCT_APPS}" == "1" && -z "${PHIXERON_SKIP_FIX_GATEWAY:-}" ]]; then
     echo "[start-three-node-cluster.sh] Starting FixGateway (co-located with member 0) → ${FIX_LOG}"
     PHIXERON_FIX_GATEWAY_AERON_DIR="${SEQ_AERON_DIR}" \
         PHIXERON_NODE_MEMBER_ID=0 \
@@ -232,37 +264,46 @@ if [[ -z "${PHIXERON_SKIP_FIX_GATEWAY:-}" ]]; then
         PHIXERON_FIX_TCP_PORT="${FIX_TCP_PORT}" \
         stdbuf -oL -eL "${BUILD_DIR}/FixGateway" > "${FIX_LOG}" 2>&1 &
     FIX_PID=$!
-else
+elif [[ "${PRODUCT_APPS}" == "1" ]]; then
     echo "[start-three-node-cluster.sh] PHIXERON_SKIP_FIX_GATEWAY set — not launching the FIX gateway (caller-owned)"
 fi
 
-echo "[start-three-node-cluster.sh] Starting OrderExecServer (replica on member 0) → ${APP_LOG}"
-# Member 0's replica is the latency-instrumented one: PHIXERON_LATENCY_STATS=1 makes it record the
+# The per-node consumer replica. Member 0's is the latency-instrumented one: it records the
 # post-consensus delivery latency (cluster-commit → its aeron:ipc tap tail) of every caught-up
-# sequenced message and print p50/p99/p99.9 on shutdown — the Variant-B "record→deliver" latency the
-# ReplayerService design's per-node consumers inherit. Harmless when unused (it only prints on shutdown); the
-# S4 wedge test reads it. The members 1 & 2 replicas below run without it (one measurement is enough).
-PHIXERON_ORDER_EXEC_AERON_DIR="${SEQ_AERON_DIR}" \
-    PHIXERON_NODE_MEMBER_ID=0 \
-    PHIXERON_LATENCY_STATS=1 \
-    stdbuf -oL -eL "${BUILD_DIR}/OrderExecServer" > "${APP_LOG}" 2>&1 &
-APP_PID=$!
+# sequenced message and prints p50/p99/p99.9 on shutdown — the Variant-B "record→deliver" latency the
+# ReplayerService design's per-node consumers inherit. Harmless when unused (it only prints on
+# shutdown); the S4 wedge test reads it. The members 1 & 2 replicas run without it (one is enough).
+BASICDATA_PID=""
+if [[ "${PRODUCT_APPS}" == "1" ]]; then
+    echo "[start-three-node-cluster.sh] Starting OrderExecServer (replica on member 0) → ${APP_LOG}"
+    PHIXERON_ORDER_EXEC_AERON_DIR="${SEQ_AERON_DIR}" \
+        PHIXERON_NODE_MEMBER_ID=0 \
+        PHIXERON_LATENCY_STATS=1 \
+        stdbuf -oL -eL "${BUILD_DIR}/OrderExecServer" > "${APP_LOG}" 2>&1 &
+    APP_PID=$!
 
-# BasicDataServer (replica on member 0) — the reference-data gateway. Dual-role: the replica on
-# whichever member is leader produces the session/trading-day rows into the sequenced log once; every
-# replica consumes them back off the tap. The FIX gateway builds its SessionMap from those
-# BasicDataSession rows, so without this running every Logon is refused "Unknown SenderCompID".
-# PHIXERON_REPLAYER_CLIENT_ID=3 keeps it distinct from the co-located OrderExecServer (1) and
-# FixGateway (2). Its cluster egress port must be given explicitly: the default is 9340+memberId,
-# which is exactly FixGateway's, so co-locating both on member 0 would collide — use 9350+memberId
-# (clear of the 9300-9329 cluster block, the replica's 9330+m and the gateway's 9340+m).
-echo "[start-three-node-cluster.sh] Starting BasicDataServer (replica on member 0) → ${BASICDATA_LOG}"
-PHIXERON_BASICDATA_AERON_DIR="${SEQ_AERON_DIR}" \
-    PHIXERON_NODE_MEMBER_ID=0 \
-    PHIXERON_REPLAYER_CLIENT_ID=3 \
-    PHIXERON_BASICDATA_EGRESS_ENDPOINT="localhost:$(basicdata_egress_port 0)" \
-    stdbuf -oL -eL "${BUILD_DIR}/BasicDataServer" > "${BASICDATA_LOG}" 2>&1 &
-BASICDATA_PID=$!
+    # BasicDataServer (replica on member 0) — the reference-data gateway. Dual-role: the replica on
+    # whichever member is leader produces the session/trading-day rows into the sequenced log once; every
+    # replica consumes them back off the tap. The FIX gateway builds its SessionMap from those
+    # BasicDataSession rows, so without this running every Logon is refused "Unknown SenderCompID".
+    # PHIXERON_REPLAYER_CLIENT_ID=3 keeps it distinct from the co-located OrderExecServer (1) and
+    # FixGateway (2). Its cluster egress port must be given explicitly: the default is 9340+memberId,
+    # which is exactly FixGateway's, so co-locating both on member 0 would collide — use 9350+memberId
+    # (clear of the 9300-9329 cluster block, the replica's 9330+m and the gateway's 9340+m).
+    echo "[start-three-node-cluster.sh] Starting BasicDataServer (replica on member 0) → ${BASICDATA_LOG}"
+    PHIXERON_BASICDATA_AERON_DIR="${SEQ_AERON_DIR}" \
+        PHIXERON_NODE_MEMBER_ID=0 \
+        PHIXERON_REPLAYER_CLIENT_ID=3 \
+        PHIXERON_BASICDATA_EGRESS_ENDPOINT="localhost:$(basicdata_egress_port 0)" \
+        stdbuf -oL -eL "${BUILD_DIR}/BasicDataServer" > "${BASICDATA_LOG}" 2>&1 &
+    BASICDATA_PID=$!
+else
+    APP_LOG="${LOG_DIR}/ClusterProbe.log"
+    echo "[start-three-node-cluster.sh] Starting ClusterProbe follower (replica on member 0) → ${APP_LOG}"
+    java "${JAVA_OPTS[@]}" -Dprobe.memberId=0 -Dprobe.clientId=1 -Dprobe.latencyStats=true \
+        -cp "${JAR}" org.limitless.phixeron.tools.ClusterProbe follow > "${APP_LOG}" 2>&1 &
+    APP_PID=$!
+fi
 
 # A replica on every node (design §3): start a ReplayerServer + OrderExecServer co-located with members 1
 # and 2 too. Each attaches to its own member's media driver (phixeron-seq-aeron-<m>), reads that
@@ -278,7 +319,7 @@ for m in 1 2; do
     ALOG="${LOG_DIR}/OrderExecServer-${m}.log"
     BDLOG="${LOG_DIR}/BasicDataServer-${m}.log"
     MDIR="${TMP_DIR}/phixeron-seq-aeron-${m}"
-    echo "[start-three-node-cluster.sh] Starting ReplayerServer + OrderExecServer (replica on member ${m})"
+    echo "[start-three-node-cluster.sh] Starting ReplayerServer + consumer replica (member ${m})"
     java "${JAVA_OPTS[@]}" -Dreplayer.memberId="${m}" -cp "${JAR}" \
         org.limitless.phixeron.replayer.server.ReplayerServer > "${RLOG}" 2>&1 &
     EXTRA_REPLAYER_PIDS+=("$!")
@@ -288,26 +329,34 @@ for m in 1 2; do
         WAIT=$(( WAIT + 1 ))
         (( WAIT > 60 )) && { echo "[start-three-node-cluster.sh] WARN: ReplayerServer-${m} not serving after 30s" >&2; break; }
     done
-    PHIXERON_ORDER_EXEC_AERON_DIR="${MDIR}" \
-        PHIXERON_NODE_MEMBER_ID="${m}" \
-        stdbuf -oL -eL "${BUILD_DIR}/OrderExecServer" > "${ALOG}" 2>&1 &
-    EXTRA_APP_PIDS+=("$!")
-    EXTRA_APP_LOGS+=("${ALOG}")
-    # One BasicDataServer replica per node too, so whichever member is elected leader has a local
-    # replica able to produce the load (and every node keeps the consumed tables warm for failover).
-    PHIXERON_BASICDATA_AERON_DIR="${MDIR}" \
-        PHIXERON_NODE_MEMBER_ID="${m}" \
-        PHIXERON_REPLAYER_CLIENT_ID=3 \
-        PHIXERON_BASICDATA_EGRESS_ENDPOINT="localhost:$(basicdata_egress_port "${m}")" \
-        stdbuf -oL -eL "${BUILD_DIR}/BasicDataServer" > "${BDLOG}" 2>&1 &
-    EXTRA_BASICDATA_PIDS+=("$!")
+    if [[ "${PRODUCT_APPS}" == "1" ]]; then
+        PHIXERON_ORDER_EXEC_AERON_DIR="${MDIR}" \
+            PHIXERON_NODE_MEMBER_ID="${m}" \
+            stdbuf -oL -eL "${BUILD_DIR}/OrderExecServer" > "${ALOG}" 2>&1 &
+        EXTRA_APP_PIDS+=("$!")
+        EXTRA_APP_LOGS+=("${ALOG}")
+        # One BasicDataServer replica per node too, so whichever member is elected leader has a local
+        # replica able to produce the load (and every node keeps the consumed tables warm for failover).
+        PHIXERON_BASICDATA_AERON_DIR="${MDIR}" \
+            PHIXERON_NODE_MEMBER_ID="${m}" \
+            PHIXERON_REPLAYER_CLIENT_ID=3 \
+            PHIXERON_BASICDATA_EGRESS_ENDPOINT="localhost:$(basicdata_egress_port "${m}")" \
+            stdbuf -oL -eL "${BUILD_DIR}/BasicDataServer" > "${BDLOG}" 2>&1 &
+        EXTRA_BASICDATA_PIDS+=("$!")
+    else
+        ALOG="${LOG_DIR}/ClusterProbe-${m}.log"
+        java "${JAVA_OPTS[@]}" -Dprobe.memberId="${m}" -Dprobe.clientId=1 \
+            -cp "${JAR}" org.limitless.phixeron.tools.ClusterProbe follow > "${ALOG}" 2>&1 &
+        EXTRA_APP_PIDS+=("$!")
+        EXTRA_APP_LOGS+=("${ALOG}")
+    fi
 done
 
 ALL_PIDS=("${APP_PID}" "${REPLAYER_PID}" "${EXTRA_APP_PIDS[@]}" "${EXTRA_REPLAYER_PIDS[@]}" \
-          "${BASICDATA_PID}" "${EXTRA_BASICDATA_PIDS[@]}" "${MD_PID}" "${SEQ_PIDS[@]}")
-if [[ -n "${FIX_PID}" ]]; then
-    ALL_PIDS+=("${FIX_PID}")
-fi
+          "${SEQ_PIDS[@]}")
+for pid in "${EXTRA_BASICDATA_PIDS[@]+"${EXTRA_BASICDATA_PIDS[@]}"}" "${BASICDATA_PID}" "${MD_PID}" "${FIX_PID}"; do
+    [[ -n "${pid}" ]] && ALL_PIDS+=("${pid}")
+done
 
 # ── Shutdown handling ─────────────────────────────────────────────────────────
 
@@ -340,7 +389,7 @@ fi
 # Only a caught-up replica answers a PortfolioQueryRequest (the isCaughtUp gate against re-answering
 # replayed history, design §3). We don't know which member won the election, so wait for ALL three
 # replicas to reach the live tail — that guarantees the leader's replica is ready to answer.
-echo "[start-three-node-cluster.sh] Waiting for all OrderExecServer replicas to catch up to the live tail…"
+echo "[start-three-node-cluster.sh] Waiting for all consumer replicas to catch up to the live tail…"
 for LOG in "${APP_LOG}" "${EXTRA_APP_LOGS[@]}"; do
     WAIT=0
     until grep -q "following live" "${LOG}" 2>/dev/null; do
@@ -373,15 +422,19 @@ fi
 
 echo "[start-three-node-cluster.sh] READY — cluster is up and all replicas are following the live tail"
 echo "  SequencerServer     pids=${SEQ_PIDS[*]}"
-echo "  aeronmd           pid=${MD_PID}"
-if [[ -n "${FIX_PID}" ]]; then
-    echo "  FixGateway  pid=${FIX_PID}   log=${FIX_LOG}"
-else
-    echo "  FixGateway  (skipped — caller-owned)"
-fi
 echo "  ReplayerServer      pids=${REPLAYER_PID} ${EXTRA_REPLAYER_PIDS[*]}"
-echo "  OrderExecServer   pids=${APP_PID} ${EXTRA_APP_PIDS[*]}"
-echo "  BasicDataServer   pids=${BASICDATA_PID} ${EXTRA_BASICDATA_PIDS[*]}"
+if [[ "${PRODUCT_APPS}" == "1" ]]; then
+    echo "  aeronmd           pid=${MD_PID}"
+    if [[ -n "${FIX_PID}" ]]; then
+        echo "  FixGateway  pid=${FIX_PID}   log=${FIX_LOG}"
+    else
+        echo "  FixGateway  (skipped — caller-owned)"
+    fi
+    echo "  OrderExecServer   pids=${APP_PID} ${EXTRA_APP_PIDS[*]}"
+    echo "  BasicDataServer   pids=${BASICDATA_PID} ${EXTRA_BASICDATA_PIDS[*]}"
+else
+    echo "  ClusterProbe      pids=${APP_PID} ${EXTRA_APP_PIDS[*]}   (Java-only mode)"
+fi
 echo "[start-three-node-cluster.sh] Press Ctrl-C to stop"
 
 # ── Monitor ───────────────────────────────────────────────────────────────────
