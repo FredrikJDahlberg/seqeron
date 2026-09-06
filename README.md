@@ -318,7 +318,11 @@ written so far — so the cluster does not need to be stopped first.
 ./cluster/src/main/scripts/sbe-log-printer.sh "${TMPDIR:-/tmp}/phixeron-seq/archive-0" --stream 205
 ```
 
-Or via Gradle directly:
+Or via Gradle directly — a `:cluster` task, so it runs on the cluster tier's classpath: core frames
+print in full and an application payload is labelled from the recording's own `PayloadIdRegistered`
+rows but not decoded. The wrapper above is the one that names payloads inline, because the uber jar
+carries every module's IR; `-o` is the wrapper's too (Gradle re-encodes a child's stdout, which
+corrupts raw payload bytes).
 ```bash
 ./gradlew sbeLogPrinter -PlogDir="${TMPDIR:-/tmp}/phixeron-seq/archive-0" -Pstream=205
 ```

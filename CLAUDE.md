@@ -145,11 +145,15 @@ The `./gradlew` tasks that run them build it themselves, but `exchange-gateway-t
 ./gradlew test                 # JUnit 5 unit tests for the Java state machines, both modules
 ```
 Task names are unqualified because each lives in exactly one module — `:cluster` owns the frame and
-replay codegen, `generateClusterSbeIr` and `run`; `:gateways` owns the session and
+replay codegen, `generateClusterSbeIr`, `run` and `sbeLogPrinter`; `:gateways` owns the session and
 basicdata codegen, `generateOrderSbeIr`, `exchangeGateway`, `orderGateway`, `mockExchange`, `mockOrderClient`,
-`fixTestClient`, `sessionProxyTest` and the Artio codegen; the root owns `uberJar` and
-`sbeLogPrinter` (which needs both modules' IR on one classpath). Coverage is one JaCoCo report per module
-(`<module>/build/reports/jacoco/test/`).
+`fixTestClient`, `sessionProxyTest` and the Artio codegen; the root owns `uberJar` alone, which spans both
+modules because a deployment artifact is what it is. `sbeLogPrinter` runs on `:cluster`'s classpath, so it
+prints core frames in full and leaves an application payload labelled but undecoded; to name payloads
+inline, run `cluster/src/main/scripts/sbe-log-printer.sh`, which puts a whole deployment's IR in front of
+the same tool (`PHIXERON_JAR` picks the jar). `-o <payloadId>` — the §13.1 pipe — is the wrapper's only:
+Gradle re-encodes a child's stdout and would corrupt the payload bytes. Coverage is one JaCoCo report per
+module (`<module>/build/reports/jacoco/test/`).
 The Java suite covers the deterministic decision-making — `Sequencer`, and `ReplayerService` through
 its `Replayer` seam — and deliberately touches no Aeron runtime: no media driver, no
 cluster, no Aeron mocks, so it runs in ~1s. Everything Aeron-shaped stays covered by the C++

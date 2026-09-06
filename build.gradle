@@ -154,6 +154,53 @@ tasks.register('collectSbeIr', Copy) {
 // The Copy's destination is the resource ROOT, so the package path above is what lands in the jar.
 sourceSets.main.resources.srcDir(tasks.named('collectSbeIr'))
 
+// ── SBE log printer ────────────────────────────────────────────────────────────
+// Offline dump of an Aeron Archive recording as JSON. The tool is the cluster tier's, and so is this
+// task's classpath: this module's runtime, which carries the three schemas it owns and no application
+// IR at all (doc/future-arch.md §11 step 7a.4). A core frame therefore prints in full and an
+// application payload prints under its payloadId, labelled from the recording's own
+// PayloadIdRegistered rows and not decoded. To name payloads inline instead, put a deployment's IR in
+// front of the tool: sbe-log-printer.sh, which runs it over a jar holding every module's.
+//
+// No -o here on purpose. §13.1's pipe writes raw payload bytes to stdout, and Gradle re-encodes a
+// child process's stdout as text — every non-ASCII byte comes out as U+FFFD. The pipe is the shell
+// wrapper's, which execs the JVM directly.
+
+tasks.register('sbeLogPrinter', JavaExec) {
+    description = 'Print an SBE archive recording as JSON: -PlogDir=<archive dir> [-Pschema=<name>] ' +
+                  '[-Pspec=<sbeir file>] [-Pstream=<id>] [-Poneline]'
+    group       = 'application'
+
+    classpath  = sourceSets.main.runtimeClasspath
+    mainClass  = 'org.limitless.phixeron.tools.SbeLogPrinter'
+    jvmArgs    '--add-opens=java.base/jdk.internal.misc=ALL-UNNAMED'
+    // Relative paths on the command line are the caller's, and every caller runs from the repo root.
+    workingDir rootProject.projectDir
+
+    doFirst {
+        final String logDir = project.findProperty('logDir')
+        if (!logDir) {
+            throw new GradleException('Usage: ./gradlew sbeLogPrinter -PlogDir=<archive dir> [-Pschema=<name>] ' +
+                                      '[-Pspec=<sbeir file>] [-Pstream=<id>] [-Poneline]')
+        }
+        // No schema given: the printer decodes each frame against whichever bundled schema its header names.
+        if (project.hasProperty('schema')) {
+            args '--schema', project.property('schema')
+        }
+        if (project.hasProperty('spec')) {
+            args '--spec', project.property('spec')
+        }
+        args logDir
+        // Opt-in: dump only the newest recording on this stream (205 = the sequenced tap).
+        if (project.hasProperty('stream')) {
+            args '--stream', project.property('stream')
+        }
+        if (project.hasProperty('oneline')) {
+            args '--oneline'
+        }
+    }
+}
+
 application {
     mainClass = 'org.limitless.phixeron.sequencer.SequencerServer'
 }

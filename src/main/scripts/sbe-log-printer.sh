@@ -5,7 +5,7 @@
 # (see start-cluster.sh / SequencerServer, default $TMPDIR/phixeron-seq/archive-<id>)
 # and prints every recorded SBE message as JSON.
 #
-# Every IR file packaged in the uber jar is loaded by default — frame (the
+# Every IR file packaged in the jar is loaded by default — frame (the
 # envelope and core, on the tap, stream 205), order/session/basicdata (the
 # payloads inside it), replay (the node-local control plane) and cluster (the Raft
 # consensus log, stream 100) — and each frame is decoded against the schema its
@@ -71,7 +71,10 @@ if [[ $# -lt 1 ]]; then
     exit 1
 fi
 
-JAR="build/libs/phixeron-0.1.0-uber.jar"
+# PHIXERON_JAR overrides, as it does for clusterctl.sh and the metrics scripts. Which IR the run has in
+# front of it is the classpath's, not the printer's (doc/future-arch.md §11 step 7a.4): the uber jar holds
+# every module's and names every payload, the cluster tier's own artifact holds three and names none.
+JAR="${PHIXERON_JAR:-build/libs/phixeron-0.1.0-uber.jar}"
 
 # ── Pre-flight checks ─────────────────────────────────────────────────────────
 
