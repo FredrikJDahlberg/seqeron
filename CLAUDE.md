@@ -83,6 +83,11 @@ channel from the caller for the same reason; it holds no default.
 The dependency runs one way, product → cluster, and the build enforces it: `:gateways` compiles
 against `:cluster`'s output and `:cluster` never sees it; the CMake pair is `phixeron_core` (its own
 include root, no simdfix, no generated FIX codecs) and `phixeron` (core plus the C++ edge's root).
+There are two `CMakeLists.txt` on the same line: `cluster/CMakeLists.txt` defines `phixeron_core`, its
+three codegen steps, `core_tests` and the toolchain both sides share (`phixeron_flags`, the Aeron and
+GoogleTest fetches, the SBE tool), and configures standing alone — `cmake -S cluster -B <dir>`. The root
+one `add_subdirectory(cluster)`s it and adds the products': simdfix, the three application schemas, the
+FIX codegen, `phixeron`, `phixeron_tests` and the executables.
 Each module keeps the schemas it owns under `<module>/src/main/sbe` — a codegen-input directory, not a
 resource one, so no jar ships an XML; the C++ edge's (`sbe-order.xml` and the three simdfix generator
 files) stay in the root's `src/main/resources` beside `topology.xml`, the deployment document. The one
@@ -162,7 +167,8 @@ those as spurious `..._NOT_BUILT` failures alongside phixeron's real results. If
 `ctest`, filter them out: `ctest --output-on-failure -E "_NOT_BUILT"`.
 
 `run_tests` runs both binaries in order, `core_tests` first. Run a single test:
-`./cmake-build-debug/phixeron_tests --gtest_filter='FixIngressHandler*'` (or `core_tests` for a
+`./cmake-build-debug/phixeron_tests --gtest_filter='FixIngressHandler*'` (or
+`./cmake-build-debug/cluster/core_tests` — it builds under its own module's directory — for a
 cluster-tier suite; GoogleTest name-filter syntax, and test suite/case names are visible in the
 `ctest`/`run_tests` output).
 

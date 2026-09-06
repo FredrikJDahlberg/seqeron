@@ -26,7 +26,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # CMakeLists.txt declares simdfix over SSH, which no runner can authenticate.
+      # The root CMakeLists.txt declares simdfix over SSH, which no runner can authenticate.
       # simdfix is public, so rewrite the URL rather than provision a deploy key.
       - name: Clone simdfix over HTTPS
         run: git config --global url."https://github.com/".insteadOf "git@github.com:"
@@ -59,7 +59,7 @@ jobs:
           path: |
             ~/.gradle/caches
             ~/.gradle/wrapper
-          key: gradle-${{ hashFiles('CMakeLists.txt') }}
+          key: gradle-${{ hashFiles('CMakeLists.txt', 'cluster/CMakeLists.txt') }}
           restore-keys: gradle-
 
       - name: Configure
