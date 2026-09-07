@@ -31,10 +31,12 @@ cluster_members_string() {
 }
 
 # Builds the ingressEndpoints string clusterctl takes (CLUSTERCTL_INGRESS_ENDPOINTS) for a
-# nodeCount-member cluster: "0=host:9302,1=host:9312,…". Usage: ingress_endpoints_string 3 [host]
+# nodeCount-member cluster: "0=host:9302,1=host:9312,…". The host argument takes {id} the same way
+# cluster_members_string's does. Usage: ingress_endpoints_string 3 [host]
 ingress_endpoints_string() {
-    local node_count="$1" host="${2:-localhost}" out="" id
+    local node_count="$1" host_template="${2:-localhost}" out="" id host
     for (( id = 0; id < node_count; id++ )); do
+        host="${host_template//\{id\}/${id}}"
         [[ -n "${out}" ]] && out+=","
         out+="${id}=${host}:$(ingress_port "${id}")"
     done

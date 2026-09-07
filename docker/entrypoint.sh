@@ -21,7 +21,11 @@ mkdir -p "$(dirname "${LOG_FILE}")"
 
 # Output goes to both the container log (docker logs, what the harness reads) and a file (what the
 # healthcheck greps). Redirecting the shell's own descriptors means both JVMs inherit them.
-exec > >(tee -a "${LOG_FILE}") 2>&1
+#
+# Truncated, not appended: `docker start` re-runs this entrypoint, and a previous run's "Running"
+# left in the file would both start the replayer before this member's archive exists and make the
+# healthcheck pass on stale text. docker logs keeps the full history across restarts regardless.
+exec > >(tee "${LOG_FILE}") 2>&1
 
 JAVA_OPTS=(
     --add-opens=java.base/sun.nio.ch=ALL-UNNAMED

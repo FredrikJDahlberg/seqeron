@@ -59,6 +59,10 @@ import org.limitless.phixeron.util.Logger;
  *   probe.memberId          — which cluster member this probe co-locates with (0/1/2); default 0
  *   probe.aeronDir          — that member's Aeron directory; default {tmpdir}/phixeron-seq-aeron-{memberId}
  *   probe.ingressEndpoints  — cluster ingress endpoints; default the three-node localhost set
+ *   probe.egressHost        — hostname this client advertises for the cluster's egress back to it;
+ *                             default localhost. The leader sends session responses there, so when
+ *                             the leader is on another host — a container topology, say — localhost
+ *                             is the leader's own loopback and the session never establishes.
  *   probe.clientId          — follow: this replica's Replayer client id; default 9
  *   probe.count             — submit: frames to send; default 1000
  *   probe.fillerBytes       — submit: bytes of filler per frame; default 0
@@ -99,6 +103,8 @@ public final class ClusterProbe {
 
     private static final String INGRESS_ENDPOINTS =
         System.getProperty("probe.ingressEndpoints", "0=localhost:9302,1=localhost:9312,2=localhost:9322");
+
+    private static final String EGRESS_HOST = System.getProperty("probe.egressHost", "localhost");
 
     private static final long CONNECT_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(5);
     private static final long OFFER_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(5);
@@ -412,7 +418,7 @@ public final class ClusterProbe {
             .aeronDirectoryName(AERON_DIR)
             .ingressChannel("aeron:udp")
             .ingressEndpoints(INGRESS_ENDPOINTS)
-            .egressChannel("aeron:udp?endpoint=localhost:0")
+            .egressChannel("aeron:udp?endpoint=" + EGRESS_HOST + ":0")
             .egressListener(egressListener)
             .messageTimeoutNs(CONNECT_TIMEOUT_NS));
     }
