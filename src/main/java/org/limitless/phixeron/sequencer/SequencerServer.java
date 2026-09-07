@@ -121,12 +121,9 @@ public final class SequencerServer {
             System.getProperty(PROP_BASE_DIR, System.getProperty("java.io.tmpdir") + "/phixeron-seq");
         final String aeronDir = System.getProperty(
             PROP_AERON_DIR, System.getProperty("java.io.tmpdir") + "/phixeron-seq-aeron-" + memberId);
-        final int portBase = PORT_BASE + memberId * 10;
+        final int portBase = PORT_BASE + memberId * PORT_STRIDE;
         final int archivePort = portBase + 1;
         final int ingressPort = portBase + 2;
-        final int memberPort = portBase + 3;
-        final int logPort = portBase + 4;
-        final int transferPort = portBase + 5;
 
         final String clusterMembers = System.getProperty(PROP_CLUSTER_MEMBERS, buildClusterMembers(nodeCount));
 

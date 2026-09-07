@@ -325,9 +325,9 @@ public final class ReplayerService {
             }
             selfCheckRecordingId = span.recordingId();
             selfCheckGlobalSeqNo = NULL_VALUE;
+            selfCheckSub = replayer.openSelfCheckStream();
             selfCheckReplaySessionId =
                 replayer.startReplay(span.recordingId(), span.startPosition(), replayLength, SELF_CHECK_STREAM_ID);
-            selfCheckSub = replayer.openSelfCheckStream();
             selfCheckDeadlineNs = replayer.nanoTime() + SELF_CHECK_TIMEOUT_NS;
             onArchiveRecovered(); // it served a replay: whatever refused one earlier is over
         } catch (final RuntimeException ex) {

@@ -388,8 +388,9 @@ public final class ClusterProbe {
             Arrays.sort(sorted);
             Logger.info(Logger.Component.ClusterProbe, MEMBER_ID,
                         "delivery latency (cluster-commit -> tap, n=%d): p50=%dus p90=%dus p99=%dus p99.9=%dus "
-                            + "max=%dus (TRUST THE TAIL; both clocks are millisecond-resolution here — the "
-                            + "receiver's nowNs() is currentTimeMillis, so sub-ms detail does not exist)",
+                            + "max=%dus (the receive stamp is nanosecond-resolution, but the cluster commit "
+                            + "timestamp it is measured from is milliseconds, so every sample carries up to 1ms "
+                            + "of quantisation on top of the true latency)",
                         sampleCount, pct(sorted, 0.50), pct(sorted, 0.90), pct(sorted, 0.99), pct(sorted, 0.999),
                         sorted[sampleCount - 1]);
         }

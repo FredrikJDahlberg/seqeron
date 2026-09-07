@@ -111,6 +111,7 @@ struct Client final : ReplayerRecoveryActions
 
     bool sendReplayHeartbeat() override
     {
+        ++heartbeatsSent;
         return false;
     }
 
@@ -130,6 +131,7 @@ struct Client final : ReplayerRecoveryActions
 
     std::int64_t clockMs = CLOCK_MS;
     int requestsSent = 0;
+    int heartbeatsSent = 0;
 
     ReplayerRecovery recovery;
 };
@@ -620,6 +622,27 @@ TEST(ReplayerRecoveryGapRecovery, ReplayThatStopsAdvancingReRequestsTheSameSegme
     EXPECT_NE(requestId, client.recovery.requestId()) << "re-requesting is a new request, so the reply to the "
                                                          "stalled one is recognisably stale";
     EXPECT_EQ(1u, sink.events.size()) << "a stalled replay is reported, not silently absorbed";
+}
+
+// Session id 0 is an ordinary archive replaySessionId; -1 is the only value that means "no replay".
+// doTimers testing >= 1 skipped both of its watchdogs for it — no ReplayHeartbeat, so the Replayer's
+// idle TTL reclaimed the slot out from under a healthy replay, and no stall watchdog to notice once it
+// stopped delivering. The Java twin tests >= 0, as isRecovering() and the receiver's poll() do here.
+TEST(ReplayerRecoveryGapRecovery, ReplaySessionZeroIsHeartbeatedAndWatchdoggedLikeAnyOther)
+{
+    ScopedLoggerSink sink;
+    Client client{ [](const SequencedEvent&) {} };
+    deliverControl(client, encodeReplaying(/*clientId=*/1, client.recovery.requestId(), /*replaySessionId=*/0,
+                                           /*catchUpPosition=*/500));
+    ASSERT_EQ(0, client.recovery.replaySessionId()) << "session 0 is a replay this client is riding, not the "
+                                                       "absence of one";
+
+    advancePastTimers(client);
+
+    EXPECT_EQ(1, client.heartbeatsSent) << "a slot held on session 0 must still be heart-beaten, or the "
+                                           "Replayer's idle TTL reclaims it mid-replay";
+    EXPECT_TRUE(client.recovery.isAwaitingReplay()) << "and its stall watchdog must still re-request it";
+    EXPECT_EQ(-1, client.recovery.replaySessionId());
 }
 
 TEST(ReplayerRecoveryGapRecovery, ReplayPendingHoldsAtTheGapWithoutAssigningASession)

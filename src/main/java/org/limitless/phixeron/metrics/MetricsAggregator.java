@@ -62,16 +62,31 @@ public final class MetricsAggregator {
 
     /**
      * Parse end-point
+     *
+     * <p>A malformed entry stops start-up rather than being skipped: a dropped target is a node that
+     * appears nowhere in the aggregate, not even as {@code phixeron_node_up 0}, so the operator would
+     * read a full house while a node was never scraped at all.
      * @param targets end-point
      * @return end-points by identity
      */
-    private static Map<Integer, String> parseTargets(final String targets) {
+    static Map<Integer, String> parseTargets(final String targets) {
         final Map<Integer, String> map = new TreeMap<>();
         for (final String entry : targets.split(",")) {
-            final String[] parts = entry.split("=", 2);
-            map.put(Integer.parseInt(parts[0].trim()), parts[1].trim());
+            final int equals = entry.indexOf('=');
+            if (equals < 0) {
+                throw new IllegalArgumentException(malformedTarget(targets, entry));
+            }
+            try {
+                map.put(Integer.parseInt(entry.substring(0, equals).trim()), entry.substring(equals + 1).trim());
+            } catch (final NumberFormatException ex) {
+                throw new IllegalArgumentException(malformedTarget(targets, entry), ex);
+            }
         }
         return map;
+    }
+
+    private static String malformedTarget(final String targets, final String entry) {
+        return "-DmetricsAggregator.targets=\"" + targets + "\": entry \"" + entry + "\" is not memberId=host:port";
     }
 
     private void handleMetrics(final HttpExchange exchange) throws IOException {
@@ -160,26 +175,49 @@ public final class MetricsAggregator {
      * @param typeByName type
      * @param samplesByName sample
      */
-    private static void parseResponse(final String response,
-                                      final Map<String, String> helpByName,
-                                      final Map<String, String> typeByName,
-                                      final Map<String, StringBuilder> samplesByName) {
+    static void parseResponse(final String response,
+                              final Map<String, String> helpByName,
+                              final Map<String, String> typeByName,
+                              final Map<String, StringBuilder> samplesByName) {
         for (final String line : response.split("\n")) {
             if (line.isEmpty()) {
                 continue;
             }
-            if (line.startsWith("# HELP ")) {
-                final String rest = line.substring("# HELP ".length());
-                final int sp = rest.indexOf(' ');
-                helpByName.putIfAbsent(rest.substring(0, sp), rest.substring(sp + 1));
-            } else if (line.startsWith("# TYPE ")) {
-                final String rest = line.substring("# TYPE ".length());
-                final int sp = rest.indexOf(' ');
-                typeByName.putIfAbsent(rest.substring(0, sp), rest.substring(sp + 1));
-            } else {
-                final String name = line.substring(0, line.indexOf('{'));
+            if (line.charAt(0) == '#') {
+                // Every other comment form is dropped, not parsed as a sample. Read as one, a line with
+                // no '{' threw out of renderMetrics, and the 500 that followed took the whole aggregate
+                // with it: every healthy node's metrics, and the phixeron_node_up gauge that is the one
+                // thing meant to survive a bad node.
+                if (line.startsWith("# HELP ")) {
+                    putHeader(helpByName, line.substring("# HELP ".length()));
+                } else if (line.startsWith("# TYPE ")) {
+                    putHeader(typeByName, line.substring("# TYPE ".length()));
+                }
+                continue;
+            }
+            final String name = sampleName(line);
+            if (!name.isEmpty()) {
                 samplesByName.computeIfAbsent(name, k -> new StringBuilder()).append(line).append('\n');
             }
         }
+    }
+
+    /** Splits a HELP/TYPE body into name and text; first node seen wins, and an empty text is legal. */
+    private static void putHeader(final Map<String, String> byName, final String rest) {
+        final int sp = rest.indexOf(' ');
+        byName.putIfAbsent(sp < 0 ? rest : rest.substring(0, sp), sp < 0 ? "" : rest.substring(sp + 1));
+    }
+
+    /**
+     * A sample line's metric name: everything before its label brace or its value. Empty when the line
+     * carries neither — not a sample, so the caller drops it rather than re-emitting it into a body
+     * Prometheus has to parse.
+     */
+    private static String sampleName(final String line) {
+        int end = 0;
+        while (end < line.length() && line.charAt(end) != '{' && line.charAt(end) != ' ') {
+            ++end;
+        }
+        return end == line.length() ? "" : line.substring(0, end);
     }
 }

@@ -2,8 +2,10 @@ package org.limitless.phixeron.sequencer;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import org.agrona.ExpandableArrayBuffer;
 import org.agrona.MutableDirectBuffer;
@@ -724,6 +726,50 @@ class SequencerTest {
     }
 
     @Test
+    @DisplayName("only the cold-start designation opens the trading day, not an operator's activation")
+    void bootstrapActivationEmittedAnswersForTheBootstrapRunAlone() {
+        // The gauge behind this is the "did the day open?" alarm, and the deployment it is read on is the
+        // one whose list arrived truncated — which is also the deployment where an operator reaches for
+        // clusterctl activate. That designation drains through this same queue, so counting drains let the
+        // manual repair answer the alarm that was there to say the repair is incomplete.
+        final Sequencer seq = new Sequencer();
+        final MutableDirectBuffer buf = new ExpandableArrayBuffer(512);
+        assertFalse(seq.bootstrapActivationEmitted());
+
+        // remaining never reaches 0: the list is incomplete, so nothing bootstraps.
+        seq.sequenceMessage(buf, 0, encodeIngressGatewayRegistered(buf, 0, 5, SOURCE_ID, "GW-A", 0, 1), SESSION_ID,
+                            TIMESTAMP);
+        assertEquals(Sequencer.NO_FRAME, seq.pendingGatewayActivation(TIMESTAMP));
+        assertFalse(seq.bootstrapActivationEmitted());
+
+        // The operator designates 5 by hand. A real GatewayActive comes out, and the day is still not open.
+        seq.sequenceMessage(buf, 0, encodeIngressActivationRequested(buf, 0, 5), SESSION_ID, TIMESTAMP + 1);
+        final int manual = seq.pendingGatewayActivation(TIMESTAMP + 2);
+        assertEquals(5, decodeGatewayActive(seq.buffer(), manual).gatewayId());
+        assertFalse(seq.bootstrapActivationEmitted(), "an operator's activation is not the bootstrap");
+
+        // The last row lands; now the cluster makes the cold-start designation itself.
+        seq.sequenceMessage(buf, 0, encodeIngressGatewayRegistered(buf, 0, 6, SOURCE_ID, "GW-B", 1, 0), SESSION_ID,
+                            TIMESTAMP + 3);
+        assertNotEquals(Sequencer.NO_FRAME, seq.pendingGatewayActivation(TIMESTAMP + 4));
+        assertTrue(seq.bootstrapActivationEmitted());
+    }
+
+    @Test
+    @DisplayName("a complete list that designates nobody does not open the trading day either")
+    void bootstrapActivationEmittedStaysFalseWhenNothingIsDesignated() {
+        // Fail closed: no rank-0 row, so the bootstrap run queues nothing and no instance is ever
+        // designated. The list did complete, which is why the gauge cannot be driven off that edge.
+        final Sequencer seq = new Sequencer();
+        final MutableDirectBuffer buf = new ExpandableArrayBuffer(512);
+        seq.sequenceMessage(buf, 0, encodeIngressGatewayRegistered(buf, 0, 5, SOURCE_ID, "GW-A", 1, 0), SESSION_ID,
+                            TIMESTAMP);
+
+        assertEquals(Sequencer.NO_FRAME, seq.pendingGatewayActivation(TIMESTAMP + 1));
+        assertFalse(seq.bootstrapActivationEmitted());
+    }
+
+    @Test
     @DisplayName("a GatewayActivationRequested naming an instance no list row does is rejected")
     void activationRequestForAnUnknownInstanceIsRejected() {
         // The validation the manual path lacked while it published GatewayActive directly: an operator
@@ -791,6 +837,36 @@ class SequencerTest {
 
         // The session is forgotten: a duplicate close does not re-promote.
         assertEquals(Sequencer.NO_FRAME, seq.sessionClosed(gatewaySession, TIMESTAMP + 3));
+    }
+
+    @Test
+    @DisplayName("a restarted instance's stale session close does not demote the instance that replaced it")
+    void staleGatewaySessionCloseDoesNotDemoteTheSuccessor() {
+        // An instance that reconnects before the cluster times its old session out declared itself on the
+        // new session while the dead one was still bound to the same gatewayId. The dead one's close then
+        // read as "the active instance went away" and handed the role to the standby — while 5 was serving.
+        final Sequencer seq = new Sequencer();
+        final MutableDirectBuffer buf = new ExpandableArrayBuffer(512);
+        seq.sequenceMessage(buf, 0, encodeIngressGatewayRegistered(buf, 0, 5, SOURCE_ID, "GW-A", 0, 1), SESSION_ID,
+                            TIMESTAMP);
+        seq.sequenceMessage(buf, 0, encodeIngressGatewayRegistered(buf, 0, 6, SOURCE_ID, "GW-B", 1, 0), SESSION_ID,
+                            TIMESTAMP);
+
+        final long deadSession = 0xDEADL;
+        final long liveSession = 0xA11CEL;
+        seq.sequenceMessage(buf, 0, encodeIngressGatewayStarted(buf, 0, 5), deadSession, TIMESTAMP);
+        seq.sequenceMessage(buf, 0, encodeIngressGatewayStarted(buf, 0, 5), liveSession, TIMESTAMP + 1);
+        final long beforeClose = frameHeaderOf(seq.buffer()).globalSeqNo();
+
+        assertEquals(Sequencer.NO_FRAME, seq.sessionClosed(deadSession, TIMESTAMP + 2),
+                     "the superseded session is not instance 5's session any more");
+
+        // The live one still is, and its close is what promotes.
+        final int promotionLength = seq.sessionClosed(liveSession, TIMESTAMP + 3);
+        assertNotEquals(Sequencer.NO_FRAME, promotionLength);
+        assertEquals(6, decodeGatewayActive(seq.buffer(), promotionLength).gatewayId());
+        assertEquals(beforeClose + 1, frameHeaderOf(seq.buffer()).globalSeqNo(),
+                     "the stale close consumed no sequence number");
     }
 
     @Test

@@ -8,6 +8,7 @@ import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import org.agrona.concurrent.status.CountersReader;
@@ -128,15 +129,16 @@ public final class MetricsExporter {
         return map;
     }
 
-    private final Aeron aeron;
+    /** The co-located node's CnC counters — the only thing this reads; an Aeron client is not needed. */
+    private final CountersReader reader;
 
-    private MetricsExporter(final Aeron aeron) {
-        this.aeron = aeron;
+    MetricsExporter(final CountersReader reader) {
+        this.reader = reader;
     }
 
     public static void main(final String[] args) throws IOException {
         final Aeron aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(AERON_DIR));
-        final MetricsExporter exporter = new MetricsExporter(aeron);
+        final MetricsExporter exporter = new MetricsExporter(aeron.countersReader());
 
         final HttpServer server = HttpServer.create(new InetSocketAddress(PORT), 0);
         server.createContext("/metrics", exporter::handleMetrics);
@@ -172,24 +174,41 @@ public final class MetricsExporter {
         }
     }
 
-    private String renderMetrics() {
-        final CountersReader reader = aeron.countersReader();
-        final StringBuilder body = new StringBuilder();
+    /**
+     * Renders every phixeron counter this node's CnC file holds as one Prometheus exposition body.
+     *
+     * <p>Samples are grouped by metric first, because {@code HELP}/{@code TYPE} belongs to a metric
+     * <b>name</b> and a name may carry more than one counter: a node runs several co-located replicas,
+     * each with its own client-labelled counter of the same type id (see {@link
+     * PhixeronCounters#addAppCounter}). Emitted per counter instead, the second header line makes the
+     * whole scrape unparseable — Prometheus rejects a repeated HELP for one name, so every other
+     * metric in the body goes with it.
+     */
+    String renderMetrics() {
+        final Map<MetricMeta, StringBuilder> samplesByMetric = new LinkedHashMap<>();
         reader.forEach((counterId, typeId, keyBuffer, label) -> {
             final MetricMeta meta = METRICS_BY_TYPE_ID.get(typeId);
             if (meta == null) {
                 return;
             }
-            final int memberId = keyBuffer.getInt(PhixeronCounters.KEY_MEMBER_ID_OFFSET);
-            final long value = reader.getCounterValue(counterId);
+            final StringBuilder samples = samplesByMetric.computeIfAbsent(meta, name -> new StringBuilder());
+            samples.append(meta.name())
+                .append("{member=\"")
+                .append(keyBuffer.getInt(PhixeronCounters.KEY_MEMBER_ID_OFFSET))
+                .append('"');
+            if (typeId >= PhixeronCounters.APP_TYPE_ID_MIN && typeId <= PhixeronCounters.APP_TYPE_ID_MAX) {
+                samples.append(",client=\"").append(keyBuffer.getInt(PhixeronCounters.KEY_CLIENT_ID_OFFSET)).append('"');
+            }
+            samples.append("} ").append(reader.getCounterValue(counterId)).append('\n');
+        });
+
+        final StringBuilder body = new StringBuilder();
+        for (final Map.Entry<MetricMeta, StringBuilder> entry : samplesByMetric.entrySet()) {
+            final MetricMeta meta = entry.getKey();
             body.append("# HELP ").append(meta.name()).append(' ').append(meta.help()).append('\n');
             body.append("# TYPE ").append(meta.name()).append(' ').append(meta.type()).append('\n');
-            body.append(meta.name()).append("{member=\"").append(memberId).append('"');
-            if (typeId >= PhixeronCounters.APP_TYPE_ID_MIN && typeId <= PhixeronCounters.APP_TYPE_ID_MAX) {
-                body.append(",client=\"").append(keyBuffer.getInt(PhixeronCounters.KEY_CLIENT_ID_OFFSET)).append('"');
-            }
-            body.append("} ").append(value).append('\n');
-        });
+            body.append(entry.getValue());
+        }
         return body.toString();
     }
 }

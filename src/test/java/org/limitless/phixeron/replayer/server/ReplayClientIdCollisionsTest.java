@@ -59,6 +59,25 @@ class ReplayClientIdCollisionsTest {
     }
 
     @Test
+    @DisplayName("two restarts inside one window are still not a collision")
+    void twoRestartsInsideTheWindowAreNotACollision() {
+        final ReplayClientIdCollisions collisions = new ReplayClientIdCollisions(WINDOW_MS);
+        long nowMs = 0;
+
+        // One live client, then two restarts back to back: two backwards steps, one short of the
+        // threshold. It only reaches three if the client's very first request is miscounted as a step.
+        for (int run = 0; run < 3; run++) {
+            assertFalse(collisions.onRequest(CLIENT, 1, nowMs += 500),
+                        run == 0 ? "the first request is evidence of nothing" : "the restart itself is one step back");
+            for (long requestId = 2; requestId <= 5; requestId++) {
+                assertFalse(collisions.onRequest(CLIENT, requestId, nowMs += 500),
+                            "a restarted client is monotone again — never a collision");
+            }
+        }
+        assertTrue(nowMs < WINDOW_MS, "all three runs fall in one window, so their steps accumulate");
+    }
+
+    @Test
     @DisplayName("two live clients interleaving their counters are reported, once")
     void interleavedCountersAreReportedOnce() {
         final ReplayClientIdCollisions collisions = new ReplayClientIdCollisions(WINDOW_MS);

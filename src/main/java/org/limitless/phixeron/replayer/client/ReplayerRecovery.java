@@ -764,9 +764,9 @@ public final class ReplayerRecovery {
         if (recoveryProgress.onProgress()) {
             actions.recoveryStalled(false);
         }
-        if (!view.wrap(buffer, offset, length)) {
-            return; // a frame the recording holds but no shape can read
-        }
+        // onFrame wrapped and validated this frame already, and the retained FIFO holds only frames that
+        // passed there — the wrap here is to re-address view at the caller's buffer, not to re-check it.
+        view.wrap(buffer, offset, length);
 
         lastGlobalSeqNo = globalSeqNo;
         replayGapLogged = false;

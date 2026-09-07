@@ -9,6 +9,7 @@ import io.aeron.Subscription;
 import io.aeron.logbuffer.FragmentHandler;
 import io.aeron.logbuffer.LogBufferDescriptor;
 import java.util.concurrent.atomic.AtomicInteger;
+import org.agrona.concurrent.SystemEpochNanoClock;
 import org.agrona.concurrent.UnsafeBuffer;
 import org.limitless.phixeron.metrics.PhixeronCounters;
 import org.limitless.phixeron.replayer.server.ReplayerService;
@@ -345,7 +346,13 @@ public final class ReplayerStreamReceiver implements AutoCloseable, ReplayerReco
                                                    header.positionBitsToShift(), header.initialTermId());
     }
 
-    private static long nowNs() {
-        return System.currentTimeMillis() * 1_000_000L;
+    /**
+     * The wall-clock stamp every frame is delivered with, on the same epoch as the cluster consensus
+     * timestamp a consumer measures it against. {@code currentTimeMillis() * 1_000_000} quantised every
+     * sample to a whole millisecond — coarser than the latency it is there to measure — so this is
+     * {@code Instant.now()} in nanoseconds, the C++ twin's {@code system_clock::now()}.
+     */
+    static long nowNs() {
+        return SystemEpochNanoClock.INSTANCE.nanoTime();
     }
 }

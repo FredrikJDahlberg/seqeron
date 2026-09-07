@@ -3,7 +3,6 @@
 // ReplayerRecovery — the walk/resume/gap decision state machine behind ReplayerStreamReceiver.
 //
 #include <array>
-#include <cinttypes>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -362,7 +361,11 @@ class ReplayerRecovery
         {
             sendReplayComplete();
         }
-        if (m_replaySessionId >= 1)
+        // >= 0, the same "a replay is attached" test isRecovering() and the receiver's poll() make: 0 is
+        // an ordinary archive replaySessionId, and -1 is the only value that means none. Reading it as
+        // >= 1 left a replay on session 0 with no heartbeat — so the Replayer's idle TTL reclaimed its
+        // slot mid-replay — and no stall watchdog to notice.
+        if (m_replaySessionId >= 0)
         {
             if ((nowMs - m_lastHeartbeatMs) > RESEND_INTERVAL_MS)
             {
@@ -610,6 +613,8 @@ class ReplayerRecovery
         {
             m_actions.recoveryStalled(false);
         }
+        // onFrame unwrapped and validated this frame already, and the retained FIFO holds only frames that
+        // passed there — the unwrap here re-addresses the caller's bytes, it does not re-check them.
         const sequencer::FrameView view = sequencer::unwrapFrame(frame, length);
         const std::uint16_t templateId = view.templateId;
 
@@ -621,13 +626,6 @@ class ReplayerRecovery
             notifyCaughtUp();
         }
 
-        if (!view.valid)
-        {
-            diag::Logger::error(diag::Component::ReplayerStreamReceiver, diag::EventCode::FragmentTooShort,
-                                "unreadable frame of %" PRIu64 " bytes at gseq %" PRId64 "; ignored", length,
-                                sequenceNumber);
-            return;
-        }
         const auto srcId = view.sourceId;
         const auto connId = view.connectionId;
         const auto sessId = view.sessionId;

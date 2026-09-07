@@ -210,7 +210,14 @@ public final class Sequencer {
      * row loaded last silently take the other pair's bootstrap. Empty when no row designated a primary —
      * nothing is activated, which is the fail-closed answer.
      */
-    private final java.util.ArrayDeque<Integer> activationQueue = new java.util.ArrayDeque<>();
+    private final java.util.ArrayDeque<QueuedActivation> activationQueue = new java.util.ArrayDeque<>();
+
+    /**
+     * A designation waiting for its {@code globalSeqNo}, and which of the two paths queued it. The
+     * provenance is carried because the operator's path and the cold-start path are indistinguishable
+     * once drained, and {@link #bootstrapActivationEmitted} must not answer yes to the wrong one.
+     */
+    private record QueuedActivation(int gatewayId, boolean bootstrap) { }
 
     // Replicated state (advanced identically on every node; not snapshotted)
 
@@ -275,7 +282,22 @@ public final class Sequencer {
      */
     private int connectedClientCount = 0;
 
-    /** True once the bootstrap {@code GatewayActive} has been synthesized (on the first complete list). */
+    /** True once the first complete list has queued its bootstrap run, so a re-published list re-asserts
+     * the rows without re-designating anybody. */
+    private boolean bootstrapActivationQueued = false;
+
+    /**
+     * True once a <em>bootstrap</em> {@code GatewayActive} has actually left {@link
+     * #pendingGatewayActivation} — the trading day is open. Replicated state in the same sense as {@link
+     * #rejectedFrameCount}: derived identically on every node and on replay, and read by nothing that can
+     * reach a frame. {@code SequencerService} mirrors it onto the operator gauge of the same name.
+     *
+     * <p>Separate from {@link #bootstrapActivationQueued} on both edges. A list whose rank-0 rows are all
+     * missing queues nothing, so the day never opened even though the list completed; and an operator's
+     * {@code GatewayActivationRequested} drains through the same queue, so counting drains alone let a
+     * manual activation report a bootstrap that never happened — on a truncated list, which is exactly
+     * when an operator reaches for the manual path and exactly when the gauge must still read 0.
+     */
     private boolean bootstrapActivationEmitted = false;
 
     /** An outstanding {@code GatewayActive}: which instance was named, and when it stops being excused. */
@@ -527,11 +549,11 @@ public final class Sequencer {
                               gatewayRegisteredDecoder.preferenceRank());
                 // remaining == 0 is the list's last row, and the whole completeness edge: the publisher
                 // counts the rows it read, so the cluster never has to infer "have I seen everyone?".
-                if (gatewayRegisteredDecoder.remaining() == 0 && !bootstrapActivationEmitted) {
-                    bootstrapActivationEmitted = true;
+                if (gatewayRegisteredDecoder.remaining() == 0 && !bootstrapActivationQueued) {
+                    bootstrapActivationQueued = true;
                     for (final GatewayRow row : gatewayRows) {
                         if (row.preferenceRank() == 0) {
-                            activationQueue.add(row.gatewayId());
+                            activationQueue.add(new QueuedActivation(row.gatewayId(), true));
                         }
                     }
                 }
@@ -549,6 +571,12 @@ public final class Sequencer {
                     return rejectSystem("GatewayStarted for gatewayId " + gatewayId + " carries sourceId " +
                                          sourceId + ", not its row's " + row.gatewaySourceId());
                 }
+                // One session per instance. An instance that restarts and reconnects before the cluster
+                // times its old session out declares itself on the new one while the dead one is still
+                // bound, and the late close of that dead session promoted a sibling out from under the
+                // instance that had just started. Its epoch is over either way — releaseStaleConnections
+                // below already says so — so the superseded binding goes with it.
+                activeGatewaySession.values().removeIf(bound -> bound == gatewayId);
                 activeGatewaySession.put(sessionId, gatewayId);
                 releaseStaleConnections(sourceId);
             }
@@ -564,7 +592,7 @@ public final class Sequencer {
                     return rejectSystem("GatewayActivationRequested names gatewayId " + gatewayId +
                                          ", which no list row does");
                 }
-                activationQueue.add(gatewayId);
+                activationQueue.add(new QueuedActivation(gatewayId, false));
             }
             case SystemFrame.CONNECTION_OPENED -> {
                 if (openConnections.computeIfAbsent(sourceId, source -> new java.util.HashSet<>())
@@ -652,9 +680,23 @@ public final class Sequencer {
      * @return a {@code GatewayActive} frame length, or {@link #NO_FRAME} when none is left pending
      */
     public int pendingGatewayActivation(final long timestamp) {
-        final Integer gatewayId = activationQueue.poll();
+        final QueuedActivation queued = activationQueue.poll();
         // Empty when no list row designated a primary — nothing to activate (fail closed).
-        return gatewayId == null ? NO_FRAME : gatewayActive(gatewayId, timestamp);
+        if (queued == null) {
+            return NO_FRAME;
+        }
+        bootstrapActivationEmitted |= queued.bootstrap();
+        return gatewayActive(queued.gatewayId(), timestamp);
+    }
+
+    /**
+     * Whether the cold-start designation has been made — the gauge {@code SequencerService} publishes as
+     * {@code phixeron_sequencer_bootstrap_activated}.
+     * @return true once a bootstrap {@code GatewayActive} has been handed back by {@link
+     *     #pendingGatewayActivation}
+     */
+    public boolean bootstrapActivationEmitted() {
+        return bootstrapActivationEmitted;
     }
 
     /**

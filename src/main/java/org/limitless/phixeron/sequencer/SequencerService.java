@@ -15,6 +15,7 @@ import io.aeron.logbuffer.Header;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.concurrent.TimeUnit;
+import org.agrona.CloseHelper;
 import org.agrona.DirectBuffer;
 import org.agrona.concurrent.NoOpLock;
 import org.agrona.concurrent.status.CountersReader;
@@ -248,50 +249,72 @@ public final class SequencerService implements ClusteredService {
      */
     @Override
     public void onStart(final Cluster cluster, final Image snapshotImage) {
+        // Snapshots are not supported, and the refusal comes before anything is acquired: refusing after
+        // the archive connect, the tap publication and startRecording left all three behind, plus a
+        // stillborn recording in this node's catalog.
+        if (snapshotImage != null) {
+            throw refuseStart("[SequencerService] Refusing to start from a snapshot: recovery is full-log replay from "
+                              + "globalSeqNo 1 (see the class javadoc). Remove the snapshot from the cluster directory "
+                              + "so the log replays in full.");
+        }
+
         this.cluster = cluster;
         this.counters = cluster.context().aeron().countersReader();
         if (null != System.getenv(FAULT_INJECTION_ENV)) {
             tapFaultTrigger = cluster.context().clusterDir().toPath().resolve(TAP_FAULT_TRIGGER_FILE);
         }
 
-        aeronArchive = AeronArchive.connect(new AeronArchive.Context()
-                                                .aeron(cluster.context().aeron())
-                                                .controlRequestChannel("aeron:ipc")
-                                                .controlRequestStreamId(100)
-                                                .controlResponseChannel("aeron:ipc")
-                                                .controlResponseStreamId(ARCHIVE_CONTROL_RESPONSE_STREAM_ID)
-                                                .lock(NoOpLock.INSTANCE));
-        tapPub = cluster.context().aeron().addExclusivePublication(FEEDER_CHANNEL, FEEDER_STREAM_ID);
-        aeronArchive.startRecording(FEEDER_CHANNEL, FEEDER_STREAM_ID, SourceLocation.LOCAL);
-        awaitTapRecordingActive();
-        // Counters are NOT created here: cluster.memberId() is still NULL_VALUE during onStart
-        // snapshots are not supported
-        if (snapshotImage != null) {
-            throw refuseStart("[SequencerService] Refusing to start from a snapshot: recovery is full-log replay from "
-                              + "globalSeqNo 1 (see the class javadoc). Remove the snapshot from the cluster directory "
-                              + "so the log replays in full.");
+        // Every way of failing to arm the tap leaves by one door. A throw from the archive connect, the
+        // publication or startRecording used to leave by none: it escaped onStart without refuseStart, so
+        // nothing signalled the fatal handler and the node stayed up headless — a media driver and a
+        // consensus module with no service behind them, which is the state refuseStart exists to prevent.
+        try {
+            aeronArchive = AeronArchive.connect(new AeronArchive.Context()
+                                                    .aeron(cluster.context().aeron())
+                                                    .controlRequestChannel("aeron:ipc")
+                                                    .controlRequestStreamId(100)
+                                                    .controlResponseChannel("aeron:ipc")
+                                                    .controlResponseStreamId(ARCHIVE_CONTROL_RESPONSE_STREAM_ID)
+                                                    .lock(NoOpLock.INSTANCE));
+            tapPub = cluster.context().aeron().addExclusivePublication(FEEDER_CHANNEL, FEEDER_STREAM_ID);
+            aeronArchive.startRecording(FEEDER_CHANNEL, FEEDER_STREAM_ID, SourceLocation.LOCAL);
+            if (!awaitTapRecordingActive()) {
+                throw new IllegalStateException("the co-located archive did not start recording the tap within "
+                                                + TimeUnit.NANOSECONDS.toMillis(TAP_RECORDING_START_TIMEOUT_NS) + "ms");
+            }
+        } catch (final RuntimeException ex) {
+            // Released before the refusal, never after: refuseStart signals the shutdown, and closing
+            // these once that is under way races the driver being torn down beneath them. Quietly,
+            // because a wedged archive is the likeliest thing to have brought us here, and a throw from
+            // the close would put us back through the door this catch exists to shut.
+            CloseHelper.quietCloseAll(aeronArchive, tapPub);
+            // Carried in the message, not as a cause: the container's error handler prints getMessage().
+            throw refuseStart("[SequencerService] Refusing to start, the tap cannot be recorded: " + ex);
         }
+        // Counters are NOT created here: cluster.memberId() is still NULL_VALUE during onStart
     }
 
     /**
      * Blocks until the co-located archive's recording subscription has attached to the tap publication, and
      * keeps its counter so {@link #tapRecordingActive} can tell later whether that recording is still there.
      * Bounded by TAP_RECORDING_START_TIMEOUT_NS so an absent local archive fails start-up fast rather than hanging.
+     * @return whether the recording attached before the deadline; the caller refuses the start if not
      */
 
-    private void awaitTapRecordingActive() {
+    private boolean awaitTapRecordingActive() {
         final long archiveId = aeronArchive.archiveId();
         final long deadlineNs = System.nanoTime() + TAP_RECORDING_START_TIMEOUT_NS;
         int counterId;
         while ((counterId = RecordingPos.findCounterIdBySession(counters, tapPub.sessionId(), archiveId)) ==
                CountersReader.NULL_COUNTER_ID) {
             if (System.nanoTime() >= deadlineNs) {
-                throw refuseStart("[SequencerService] replayer recording did not start within timeout");
+                return false;
             }
             cluster.idleStrategy().idle();
         }
         tapRecordingCounterId = counterId;
         tapRecordingId = RecordingPos.getRecordingId(counters, counterId);
+        return true;
     }
 
     /**
@@ -431,8 +454,13 @@ public final class SequencerService implements ClusteredService {
         // before the next is asked for, because they all encode into the sequencer's one buffer.
         int activation;
         while ((activation = sequencer.pendingGatewayActivation(timestamp)) != Sequencer.NO_FRAME) {
-            bootstrapActivatedCounter.set(1);
             emit(activation);
+            // Asked of the sequencer rather than inferred from the drain: an operator's activation comes
+            // out of the same loop, and setting the gauge for it reported an open trading day on a
+            // deployment whose list never completed.
+            if (sequencer.bootstrapActivationEmitted()) {
+                bootstrapActivatedCounter.set(1);
+            }
         }
     }
 
