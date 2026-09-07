@@ -1,0 +1,6 @@
+# Whitelist: the build context is only what docker/Dockerfile copies. Without this the context is
+# the whole tree, cmake-build-*/ included.
+*
+!build/libs/*.jar
+!src/main/scripts/ports.sh
+!docker/entrypoint.sh

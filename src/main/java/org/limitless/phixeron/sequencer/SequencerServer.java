@@ -50,6 +50,11 @@ import org.limitless.phixeron.util.Logger;
  *                               property is not set explicitly; default 1
  *   sequencer.clusterMembers  — full clusterMembers string (Aeron format); overrides
  *                               nodeCount-based generation when set
+ *   sequencer.host            — hostname the archive control, ingress and replication channels
+ *                               bind to and advertise; default localhost. One member per host —
+ *                               a container topology, say — needs this member's own resolvable
+ *                               name here, since localhost is that host's loopback alone. The
+ *                               consensus/log/transfer endpoints come from clusterMembers instead.
  *   sequencer.baseDir         — data directory root; default /tmp/phixeron-seq
  *   sequencer.aeronDir        — Aeron media driver directory
  *   sequencer.idleStrategy    — duty-cycle idle strategy for the driver/archive/consensus/service
@@ -77,6 +82,7 @@ public final class SequencerServer {
     private static final String PROP_MEMBER_ID = "sequencer.memberId";
     private static final String PROP_NODE_COUNT = "sequencer.nodeCount";
     private static final String PROP_CLUSTER_MEMBERS = "sequencer.clusterMembers";
+    private static final String PROP_HOST = "sequencer.host";
     private static final String PROP_BASE_DIR = "sequencer.baseDir";
     private static final String PROP_AERON_DIR = "sequencer.aeronDir";
     private static final String PROP_IDLE_STRATEGY = "sequencer.idleStrategy";
@@ -117,6 +123,7 @@ public final class SequencerServer {
     public static void main(final String[] args) {
         final int memberId = Integer.getInteger(PROP_MEMBER_ID, 0);
         final int nodeCount = Integer.getInteger(PROP_NODE_COUNT, 1);
+        final String host = System.getProperty(PROP_HOST, DEFAULT_HOST);
         final String baseDir =
             System.getProperty(PROP_BASE_DIR, System.getProperty("java.io.tmpdir") + "/phixeron-seq");
         final String aeronDir = System.getProperty(
@@ -151,11 +158,11 @@ public final class SequencerServer {
             new Archive.Context()
                 .aeronDirectoryName(aeronDir)
                 .archiveDir(archiveDir)
-                .controlChannel(udp(DEFAULT_HOST, archivePort)) // UDP: remote clients reach the archive here
+                .controlChannel(udp(host, archivePort)) // UDP: remote clients reach the archive here
                 .controlStreamId(100) // must match C++ clients
                 .localControlChannel("aeron:ipc")
                 .localControlStreamId(100)
-                .replicationChannel(udp(DEFAULT_HOST, 0))
+                .replicationChannel(udp(host, 0))
                 .recordingEventsEnabled(false)
                 .deleteArchiveOnStart(false)
                 .idleStrategySupplier(idleStrategySupplier);
@@ -167,8 +174,8 @@ public final class SequencerServer {
                 .clusterMemberId(memberId)
                 .clusterMembers(clusterMembers)
                 .clusterDir(clusterDir)
-                .ingressChannel(udp(DEFAULT_HOST, ingressPort))
-                .replicationChannel(udp(DEFAULT_HOST, 0))
+                .ingressChannel(udp(host, ingressPort))
+                .replicationChannel(udp(host, 0))
                 .archiveContext(localArchiveCtx.clone())
                 .isIpcIngressAllowed(true) // Lets a co-located client share aeron directory
                 .terminationHook(barrier::signalAll)
@@ -204,7 +211,7 @@ public final class SequencerServer {
 
         Logger.info(Logger.Component.SequencerServer, memberId,
                     "Starting member %d | ingress=%s | archive=%s | baseDir=%s | idle=%s", memberId,
-                    udp(DEFAULT_HOST, ingressPort), udp(DEFAULT_HOST, archivePort), baseDir,
+                    udp(host, ingressPort), udp(host, archivePort), baseDir,
                     System.getProperty(PROP_IDLE_STRATEGY, "backoff"));
 
         try (barrier; ClusteredMediaDriver cmd = ClusteredMediaDriver.launch(driverCtx, archiveCtx, consensusCtx);

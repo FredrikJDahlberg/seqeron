@@ -16,11 +16,14 @@ member_port()   { echo $(( $(cluster_member_port_base "$1") + 3 )); }
 log_port()      { echo $(( $(cluster_member_port_base "$1") + 4 )); }
 transfer_port() { echo $(( $(cluster_member_port_base "$1") + 5 )); }
 
-# Builds the Aeron clusterMembers string for a nodeCount-member cluster, all on one host — the
-# bash mirror of SequencerServer.buildClusterMembers. Usage: cluster_members_string 3 [host]
+# Builds the Aeron clusterMembers string for a nodeCount-member cluster — the bash mirror of
+# SequencerServer.buildClusterMembers. The host argument may carry a literal {id}, replaced by each
+# member's id, for a topology giving every member its own host (docker/compose.yml does).
+# Usage: cluster_members_string 3 [host]   e.g. cluster_members_string 3 'node-{id}'
 cluster_members_string() {
-    local node_count="$1" host="${2:-localhost}" out="" id
+    local node_count="$1" host_template="${2:-localhost}" out="" id host
     for (( id = 0; id < node_count; id++ )); do
+        host="${host_template//\{id\}/${id}}"
         out+="${id},${host}:$(ingress_port "${id}"),${host}:$(member_port "${id}"),"
         out+="${host}:$(log_port "${id}"),${host}:$(transfer_port "${id}"),${host}:$(archive_port "${id}")|"
     done

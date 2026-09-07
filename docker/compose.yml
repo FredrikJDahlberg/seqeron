@@ -1,0 +1,68 @@
+# Three-node cluster, one member per container — the topology a failover test needs, since docker's
+# kill/pause/partition primitives act on a container and a node is the smallest thing worth losing.
+#
+# Prerequisite: ./gradlew uberJar (the Dockerfile copies the jar, it does not build it).
+#   docker compose -f docker/compose.yml up --build -d
+#   docker compose -f docker/compose.yml down -v
+#
+# Ports are the same PORT_BASE + memberId*10 + offset layout as a single-host run (ports.sh,
+# PortLayout.hpp): each container has its own network namespace so they need not differ, but
+# keeping them means one formula, not two. Nothing is published to the host — the harness reaches
+# the cluster with docker exec.
+name: phixeron-failover
+
+x-node: &node
+  image: phixeron/node:local
+  # The image is local and lives in no registry; without this the two services that do not build it
+  # try to pull it first and log a pull-access-denied error before falling back to the built tag.
+  pull_policy: never
+  networks: [seqnet]
+  # Aeron's directory is memory-mapped; the default 64m /dev/shm is far too small for it.
+  shm_size: 1gb
+  healthcheck:
+    # Both node processes are up. Container liveness only — a member that is Running has not
+    # necessarily won or joined an election yet, which is the harness's assertion to make.
+    test: ["CMD-SHELL", "grep -q 'SequencerServer/.\\] Running' /var/log/phixeron/node.log && grep -q 'ReplayerServer/.\\] Running' /var/log/phixeron/node.log"]
+    interval: 2s
+    timeout: 2s
+    retries: 45
+    start_period: 3s
+
+services:
+  # container_name is fixed so faults address a stable name (docker kill node-0), not a
+  # compose-generated one. The volume holds baseDir — the archive and the Raft log — so a
+  # restarted member recovers from its own log; `down -v` is the wipe-and-rejoin case instead.
+  # Only this service carries `build` — the three are the same image, and three identical build
+  # blocks race to tag it. Compose runs the build phase before the create phase, so node-1 and
+  # node-2 find the tag already there.
+  node-0:
+    <<: *node
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: node-0
+    hostname: node-0
+    environment: { MEMBER_ID: "0" }
+    volumes: [node-0-data:/var/lib/phixeron]
+
+  node-1:
+    <<: *node
+    container_name: node-1
+    hostname: node-1
+    environment: { MEMBER_ID: "1" }
+    volumes: [node-1-data:/var/lib/phixeron]
+
+  node-2:
+    <<: *node
+    container_name: node-2
+    hostname: node-2
+    environment: { MEMBER_ID: "2" }
+    volumes: [node-2-data:/var/lib/phixeron]
+
+networks:
+  seqnet:
+
+volumes:
+  node-0-data:
+  node-1-data:
+  node-2-data:
