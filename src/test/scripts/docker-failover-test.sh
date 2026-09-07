@@ -150,7 +150,7 @@ echo "observers following on all ${NODE_COUNT} nodes"
 touch "${LOAD_FLAG}"
 (
     while [[ -f "${LOAD_FLAG}" ]]; do
-        target="$(running_nodes | head -1)"
+        target="$(running_nodes)"; target="${target%%$'\n'*}"
         if [[ -z "${target}" ]]; then sleep 1; continue; fi
         docker exec "node-${target}" java "${JAVA_OPTS[@]}" \
             -Dprobe.memberId="${target}" -Dprobe.aeronDir="/dev/shm/aeron-${target}" \
