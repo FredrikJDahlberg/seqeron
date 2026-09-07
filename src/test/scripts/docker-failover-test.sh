@@ -36,7 +36,11 @@ NODE_COUNT=3
 OBSERVER_CLIENT_ID=1
 COLD_CLIENT_ID=9
 
-ROUNDS="${ROUNDS:-3}"                       # failovers to perform
+# 15 rounds is ~11 min of wall clock, which a public repo's GitHub-hosted runners cost nothing
+# for. It is not just "more of the same": there are no snapshots, so every rejoin replays the
+# whole Raft log, and by the last round that log holds fourteen rounds of load — the recovery
+# path is exercised against a history that grew under it. ROUNDS=3 for a quick local run.
+ROUNDS="${ROUNDS:-15}"                      # failovers to perform
 SOAK_SECS="${SOAK_SECS:-20}"                # load time per round before the kill
 SUBMIT_COUNT="${SUBMIT_COUNT:-5000}"        # ProbeMarkers per submit invocation
 SUBMIT_PACING_MICROS="${SUBMIT_PACING_MICROS:-1000}"   # 5000 @ 1ms = ~5s of load per invocation
