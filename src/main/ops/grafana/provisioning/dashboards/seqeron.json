@@ -1,0 +1,237 @@
+{
+  "uid": "seqeron",
+  "title": "seqeron",
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "time": { "from": "now-1h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Node up",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "x": 0, "y": 0, "w": 4, "h": 4 },
+      "targets": [
+        { "refId": "A", "expr": "seqeron_node_up", "legendFormat": "member {{member}}" }
+      ],
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "orientation": "auto", "textMode": "auto", "colorMode": "value", "graphMode": "none", "justifyMode": "auto"
+      }
+    },
+    {
+      "id": 2,
+      "title": "Current leader member id",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "x": 4, "y": 0, "w": 4, "h": 4 },
+      "targets": [
+        { "refId": "A", "expr": "seqeron_sequencer_current_leader_member_id", "legendFormat": "member {{member}}" }
+      ],
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "orientation": "auto", "textMode": "auto", "colorMode": "value", "graphMode": "none", "justifyMode": "auto"
+      }
+    },
+    {
+      "id": 3,
+      "title": "Replayer ready",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "x": 8, "y": 0, "w": 4, "h": 4 },
+      "targets": [
+        { "refId": "A", "expr": "seqeron_replayer_ready", "legendFormat": "member {{member}}" }
+      ],
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "orientation": "auto", "textMode": "auto", "colorMode": "value", "graphMode": "none", "justifyMode": "auto"
+      }
+    },
+    {
+      "id": 4,
+      "title": "Replayer stalled",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "x": 12, "y": 0, "w": 4, "h": 4 },
+      "targets": [
+        { "refId": "A", "expr": "seqeron_replayer_stalled", "legendFormat": "member {{member}}" }
+      ],
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "orientation": "auto", "textMode": "auto", "colorMode": "value", "graphMode": "none", "justifyMode": "auto"
+      }
+    },
+    {
+      "id": 5,
+      "title": "Bootstrap activated",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "x": 16, "y": 0, "w": 4, "h": 4 },
+      "targets": [
+        { "refId": "A", "expr": "seqeron_sequencer_bootstrap_activated", "legendFormat": "member {{member}}" }
+      ],
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "orientation": "auto", "textMode": "auto", "colorMode": "value", "graphMode": "none", "justifyMode": "auto"
+      }
+    },
+    {
+      "id": 6,
+      "title": "Global seq no",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "x": 0, "y": 4, "w": 12, "h": 8 },
+      "targets": [
+        { "refId": "A", "expr": "seqeron_sequencer_global_seq_no", "legendFormat": "member {{member}}" }
+      ],
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single" } }
+    },
+    {
+      "id": 7,
+      "title": "Node apply lag (ms)",
+      "description": "How far behind the cluster each node's SequencerService is: scrape time minus the consensus timestamp of the last 1 Hz ClusterHeartbeat it applied. A node lagging here publishes a contiguous, gap-free tap that is simply OLD, so its co-located apps serve stale state — a condition neither the tap-stall (silence) nor the recovery-stall watchdog can see. Steady state is a sawtooth bounded by the 1 s heartbeat period plus the 15 s scrape interval; a sustained climb on one member is that member falling behind. Reads the leader's clock against Prometheus's, so it also carries any NTP skew between them.",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "x": 12, "y": 4, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "time() * 1000 - seqeron_sequencer_last_tick_timestamp_ms",
+          "legendFormat": "member {{member}}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "ms" }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single" } }
+    },
+    {
+      "id": 8,
+      "title": "Leadership changes/s",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "x": 0, "y": 12, "w": 12, "h": 8 },
+      "targets": [
+        { "refId": "A", "expr": "rate(seqeron_sequencer_leadership_change_total[5m])", "legendFormat": "member {{member}}" }
+      ],
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single" } }
+    },
+    {
+      "id": 9,
+      "title": "Rejected ingress/s",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "x": 12, "y": 12, "w": 12, "h": 8 },
+      "targets": [
+        { "refId": "A", "expr": "rate(seqeron_sequencer_rejected_ingress_total[5m])", "legendFormat": "member {{member}}" }
+      ],
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single" } }
+    },
+    {
+      "id": 10,
+      "title": "Tap back-pressure alerts/s",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "x": 0, "y": 20, "w": 12, "h": 8 },
+      "targets": [
+        { "refId": "A", "expr": "rate(seqeron_sequencer_tap_backpressure_alerts_total[5m])", "legendFormat": "member {{member}}" }
+      ],
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single" } }
+    },
+    {
+      "id": 11,
+      "title": "Gateway promotions/s",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "x": 12, "y": 20, "w": 12, "h": 8 },
+      "targets": [
+        { "refId": "A", "expr": "rate(seqeron_sequencer_gateway_promotion_total[5m])", "legendFormat": "member {{member}}" }
+      ],
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single" } }
+    },
+    {
+      "id": 12,
+      "title": "Replayer active slots",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "x": 0, "y": 28, "w": 12, "h": 8 },
+      "targets": [
+        { "refId": "A", "expr": "seqeron_replayer_active_slots", "legendFormat": "member {{member}}" }
+      ],
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single" } }
+    },
+    {
+      "id": 13,
+      "title": "Replayer pending requests",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "x": 12, "y": 28, "w": 12, "h": 8 },
+      "targets": [
+        { "refId": "A", "expr": "seqeron_replayer_pending_requests", "legendFormat": "member {{member}}" }
+      ],
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single" } }
+    },
+    {
+      "id": 14,
+      "title": "Replays served/s",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "x": 0, "y": 36, "w": 12, "h": 8 },
+      "targets": [
+        { "refId": "A", "expr": "rate(seqeron_replayer_replays_served_total[5m])", "legendFormat": "member {{member}}" }
+      ],
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single" } }
+    },
+    {
+      "id": 15,
+      "title": "Idle TTL reclaimed/s",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "x": 12, "y": 36, "w": 12, "h": 8 },
+      "targets": [
+        { "refId": "A", "expr": "rate(seqeron_replayer_idle_ttl_reclaimed_total[5m])", "legendFormat": "member {{member}}" }
+      ],
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single" } }
+    },
+    {
+      "id": 16,
+      "title": "Control replies dropped/s",
+      "description": "Replay control replies (Replaying/ReplayPending/ReplayUnavailable) the Replayer dropped at its offer-spin bound rather than spin on. Expected to sit at zero, and it is the RATE that means something — the counter never resets while a node is up, so a flat non-zero line is only old history. A sustained rate means one co-located app subscribed to the control stream and stopped draining it; dropping is deliberate, since the Replayer answers every app from one duty-cycle thread and must not let a wedged one hold the rest. The cost falls on the offending app alone: one ~500 ms resend per drop. NOT_CONNECTED (an app whose subscription is not registered yet) is excluded at the source and never counts here.",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "x": 0, "y": 44, "w": 12, "h": 8 },
+      "targets": [
+        { "refId": "A", "expr": "rate(seqeron_replayer_control_replies_dropped_total[5m])", "legendFormat": "member {{member}}" }
+      ],
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single" } }
+    },
+    {
+      "id": 17,
+      "title": "App recovery stalled",
+      "description": "1 while a co-located replica's recovery has dispatched nothing for 30s while not caught up, else 0. One series per replica (member + replayer clientId), because several run per node. The replica is HOLDING, not corrupting anything — nothing is dispatched from a baseline it cannot establish, so its consumer gates stay shut — but it is also not serving, and it will not recover on its own: the causes are a ReplayUnavailable refusal, a Replayer that never answers, and a hole this node's recording chain cannot cover. Read it with seqeron_replayer_ready and seqeron_replayer_integrity_failure for the node it sits on, and with the replica's own RecoveryStalled fault line, which names the state telling those three apart. Any sustained 1 warrants a look; it clears by itself the moment recovery delivers a frame.",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "x": 12, "y": 44, "w": 12, "h": 8 },
+      "targets": [
+        { "refId": "A", "expr": "seqeron_app_recovery_stalled", "legendFormat": "member {{member}} client {{client}}" }
+      ],
+      "fieldConfig": { "defaults": { "min": 0, "max": 1 }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single" } }
+    }
+  ]
+}

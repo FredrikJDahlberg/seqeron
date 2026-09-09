@@ -4,6 +4,5 @@
 // the phixeron repo, and the product half of it went the other way.
 //
 // The project name is what the uber jar is named after, and every script resolves
-// build/libs/phixeron-<version>-uber.jar by that name — see README.md's note on the phixeron
-// identifiers this repo still carries.
-rootProject.name = 'phixeron'
+// build/libs/seqeron-<version>-uber.jar by that name.
+rootProject.name = 'seqeron'

@@ -29,7 +29,7 @@ other value is allocated in that table.
 
 The registry is held by the **log**, not by code. No product compiles an id in: a gateway resolves
 its own `{gatewayId, gatewaySourceId}` from the `GatewayRegistered` row keyed on its launch-time
-name (`PHIXERON_*_GATEWAY_NAME`), and fails closed when the list names none. The allocation reaches
+name (`SEQERON_*_GATEWAY_NAME`), and fails closed when the list names none. The allocation reaches
 a running deployment through the `sourceId` attributes of the topology file
 (`src/main/resources/topology.xml`, spec §6.4) — the registry's one machine-readable form, and the
 only place a number is typed.
@@ -70,8 +70,8 @@ overlap:
 | --- | --- | --- |
 | `9400 + memberId` | core — `metrics-exporter.sh` `/metrics` | TCP |
 | 9500 | core — `metrics-aggregator.sh` | TCP |
-| 9400 | products — `fix_test_server` risk-test replay (`PHIXERON_RISK_TEST_REPLAY_PORT`) | UDP |
-| 9401 | products — `FixGateway` resend-recovery replay (`PHIXERON_RESEND_REPLAY_PORT`) | UDP |
+| 9400 | products — `fix_test_server` risk-test replay (`SEQERON_RISK_TEST_REPLAY_PORT`) | UDP |
+| 9401 | products — `FixGateway` resend-recovery replay (`SEQERON_RESEND_REPLAY_PORT`) | UDP |
 | 9403 | products — `fix_test_server` cluster egress | UDP |
 
 9400 and 9401 are claimed twice and coexist only because a TCP listener and a UDP endpoint on one

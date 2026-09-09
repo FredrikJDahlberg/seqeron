@@ -72,16 +72,17 @@ edges — the C++/simdfix FIX gateway, `OrderExecServer`, `BasicDataServer`, and
 `artio-integration.md`, `gap.md`, `audit.md`). Comments across the tree still cite them; treat such a
 citation as history, not as a file to open.
 
-**The naming is split and stays that way for now.** The repository is `seqeron`; every artifact inside
-says `phixeron` — package `org.limitless.phixeron`, Gradle project `phixeron`, the fat jar
-`phixeron-0.1.0-uber.jar`, CMake targets `phixeron_core`/`phixeron_flags`, environment variables
-`PHIXERON_*`. Every script resolves the jar by that name, so don't rename one side in passing.
+**Every artifact says `seqeron`** — package `org.limitless.seqeron`, Gradle project `seqeron`, the fat
+jar `seqeron-0.1.0-uber.jar`, CMake targets `seqeron_core`/`seqeron_flags`, environment variables
+`SEQERON_*`, Prometheus metrics `seqeron_*`. The product repo is still `phixeron` and its own
+identifiers stay that way; where a doc here cites one of its files or protocol names, that name is
+`phixeron` on purpose.
 
 ## Module layout
 
 One Gradle project, one CMake project, one source tree — `src/main/{java,cpp,sbe,resources,scripts,ops}`
 and `src/test/{java,cpp,resources,scripts}`. The `:cluster`/`:gateways` split and the
-`phixeron_core`/`phixeron` target pair are gone with the product half; **the repository boundary is what
+core-library/executable target pair are gone with the product half; **the repository boundary is what
 enforces the dependency direction now**, so there is nothing to keep on the right side of a line within
 this tree.
 
@@ -90,7 +91,7 @@ this tree.
 | the sequencer | `sequencer/` — `Sequencer`, `SequencerService`, `SequencerServer`, `FrameLayer`, `SystemFrame`, `TapPublisher`, `TapStallPolicy` | `sequencer/` — `SequencedFrame`, `ClusterStreamSender`, `ClusterStreamClient`, `IngressPublisher`, `PortLayout` |
 | the replayer | `replayer/server/` and `replayer/client/` | `replayer/client/` only |
 | the tools | `tools/` — `ClusterCtl`, `TopologyDocument`, `ClusterProbe`, `SbeLogPrinter` | — |
-| the ops plane | `metrics/` — `MetricsExporter`, `MetricsAggregator`, `PhixeronCounters` | `util/PhixeronCounters.hpp` |
+| the ops plane | `metrics/` — `MetricsExporter`, `MetricsAggregator`, `SeqeronCounters` | `util/SeqeronCounters.hpp` |
 | the gateway fence | `fixgateway/GatewayRecoveryStallPolicy` | `fix/GatewayRecoveryStallPolicy.hpp` |
 
 `fixgateway`/`fix` hold exactly one class each and are not a FIX implementation: the recovery-stall
@@ -98,7 +99,7 @@ policy is a language-port pair that any edge gateway needs, and the pair lives h
 it decides is the cluster tier's contract with its producers. Keep the two files and both
 `GatewayRecoveryStallPolicyTest`s in step.
 
-**The C++ half is a client library, not a program.** `phixeron_core` is a header-only INTERFACE
+**The C++ half is a client library, not a program.** `seqeron_core` is a header-only INTERFACE
 target and the only binary the build produces is `core_tests`. There is **no C++ replay server** —
 the server side of the replay protocol is Java only.
 
@@ -110,12 +111,12 @@ the server side of the replay protocol is Java only.
 ### Java
 ```bash
 ./gradlew compileJava
-./gradlew uberJar     # build/libs/phixeron-0.1.0-uber.jar — every script's prerequisite
+./gradlew uberJar     # build/libs/seqeron-0.1.0-uber.jar — every script's prerequisite
 ./gradlew test        # JUnit 5, 286 tests, ~1s
 ./gradlew generateFrameSbe generateReplaySbe generateProbeSbe generateClusterSbeIr
 ./gradlew compileTestJava   # TestGateway, which chaos-runner.sh needs and no jar carries
 ```
-JDK 21. `PHIXERON_JAR` overrides the jar path for every script that resolves it.
+JDK 21. `SEQERON_JAR` overrides the jar path for every script that resolves it.
 
 ### C++
 ```bash
@@ -123,7 +124,7 @@ cmake -B cmake-build-debug -DCMAKE_BUILD_TYPE=Debug      # AddressSanitizer
 cmake --build cmake-build-debug
 ```
 C++23, requires Java (Runtime) on PATH for the SBE tool, and fetches Aeron 1.51.0 and GoogleTest from
-source. `-DPHIXERON_COVERAGE=ON` adds instrumentation. No simdfix, and therefore **no SSH remote is
+source. `-DSEQERON_COVERAGE=ON` adds instrumentation. No simdfix, and therefore **no SSH remote is
 needed** — the FetchContent clone that used to require one went with the product half.
 
 **Aeron and SBE versions are pinned twice** — `build.gradle`'s `ext` block and `CMakeLists.txt`'s
@@ -162,7 +163,7 @@ here. It is in **`src/test/java`** and therefore in no jar: `chaos-runner.sh` pu
 list is `src/test/resources/topology-test-gateway.xml`, the only topology document in this repo.
 
 `start-cluster.sh` and `start-three-node-cluster.sh` both default to the cluster tier alone;
-`PHIXERON_PRODUCT_APPS=1` additionally launches the product repo's binaries, which must already be
+`SEQERON_PRODUCT_APPS=1` additionally launches the product repo's binaries, which must already be
 built there.
 
 ## Architecture
@@ -231,7 +232,7 @@ record only from wherever it resumed. The cost is that recovery time and archive
 `ReplaySlotAllocator`, `ReplayRecordings`, `ReplayClientIdCollisions`, with `AeronReplayer` the only
 part that touches Aeron. **`replayer.client`** is `ReplayerStreamReceiver` and its pure seam
 `ReplayerRecovery`, plus `RecoveryProgressPolicy`, `SequencedEvent`, `SequencedFrameDecoder` — Java, and
-C++ in `org::limitless::phixeron::replayer::client`. The only edge across is client→server: the client
+C++ in `org::limitless::seqeron::replayer::client`. The only edge across is client→server: the client
 reads `ReplayerService`'s channel and stream-id constants (`IPC_CHANNEL`, `REPLAY_STREAM_ID` 201,
 `REQUEST_STREAM_ID` 202, `CONTROL_STREAM_ID` 203), which are the wire contract between them.
 
@@ -358,12 +359,12 @@ were written when this tree sat under `cluster/`, so check the depth of any `../
 `help`; anything unrecognized passes through to `io.aeron.cluster.ClusterTool` against this node's cluster
 dir. `snapshot` is refused.
 
-`sbe-log-printer.sh` puts a whole deployment's IR in front of `SbeLogPrinter` (`PHIXERON_JAR` picks the
+`sbe-log-printer.sh` puts a whole deployment's IR in front of `SbeLogPrinter` (`SEQERON_JAR` picks the
 jar); `-o <payloadId>` — the spec §13.1 pipe — is the wrapper's only, because Gradle re-encodes a child's
 stdout and would corrupt the payload bytes.
 
 `stop-cluster.sh` stops everything either start script launched, product processes included, so that a
-harness cleaning up after a `PHIXERON_PRODUCT_APPS=1` run finds nothing left behind.
+harness cleaning up after a `SEQERON_PRODUCT_APPS=1` run finds nothing left behind.
 
 ## Known gaps
 

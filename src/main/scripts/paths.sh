@@ -1,9 +1,9 @@
-# paths.sh — canonical temporary-directory resolution shared by every phixeron launch/test
+# paths.sh — canonical temporary-directory resolution shared by every seqeron launch/test
 # script, alongside ports.sh. Meant to be sourced, not executed.
 #
 # macOS's $TMPDIR ends in a slash and Linux's /tmp does not, and $TMPDIR is unset in a normal
-# RHEL login shell, so the "${TMPDIR}phixeron-seq" idiom this replaces was both an unbound-variable
-# abort under `set -u` and, in its "${TMPDIR:-/tmp}" form, a silent wrong path (/tmpphixeron-seq)
+# RHEL login shell, so the "${TMPDIR}seqeron-seq" idiom this replaces was both an unbound-variable
+# abort under `set -u` and, in its "${TMPDIR:-/tmp}" form, a silent wrong path (/tmpseqeron-seq)
 # that the cluster never writes to — see doc/portability-linux.md §2a/§2b. Join, never concatenate:
 # the shell mirror of OrderGatewayConfig's new File(tmpdir, ...) and Env.hpp's joinPath.
 

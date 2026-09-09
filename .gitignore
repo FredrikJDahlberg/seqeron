@@ -7,7 +7,7 @@ cmake-build-*/
 # Gradle
 /.gradle/
 
-# Coverage instrumentation dumps (PHIXERON_COVERAGE=ON, clang)
+# Coverage instrumentation dumps (SEQERON_COVERAGE=ON, clang)
 *.profraw
 *.profdata
 

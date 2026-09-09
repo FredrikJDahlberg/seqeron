@@ -30,7 +30,7 @@ Java. There is no existing Java cluster-*client* today (the Java side is only th
 so the ingress-connect/echo handshake is new Java code modelled on the C++ `ClusterStreamSender` +
 tap-follow path, not shared with it.
 
-The tool is one Java class, `org.limitless.phixeron.tools.ClusterCtl` (alongside `SbeLogPrinter`),
+The tool is one Java class, `org.limitless.seqeron.tools.ClusterCtl` (alongside `SbeLogPrinter`),
 launched by `cluster/src/main/scripts/clusterctl.sh` — a thin wrapper matching the other scripts that sets
 the classpath / `--add-opens` JVM options and forwards the subcommand and its arguments:
 
@@ -55,7 +55,7 @@ clusterctl.sh activate <id>  manual standby promotion (precondition: elected lea
 clusterctl.sh load-topology <file>
                              publish the deployment topology — gateways, applications,
                              protocols (precondition: elected leader)
-clusterctl.sh counters       list this node's phixeron operator counters; no cluster connection
+clusterctl.sh counters       list this node's seqeron operator counters; no cluster connection
                              needed, safe on every node
 clusterctl.sh help           list commands and exit
 clusterctl.sh <other...>     pass through to ClusterTool (describe / errors / list-members / …)
@@ -184,8 +184,8 @@ a file rather than a constant.
 
 ### counters
 
-Lists this node's phixeron operator counters — the `SequencerService`/`ReplayerService` gauges and
-event counts (`org.limitless.phixeron.PhixeronCounters`) — read directly off the co-located Aeron
+Lists this node's seqeron operator counters — the `SequencerService`/`ReplayerService` gauges and
+event counts (`org.limitless.seqeron.SeqeronCounters`) — read directly off the co-located Aeron
 directory's CnC file via `CountersReader`. No cluster connection (unlike `start`/`shutdown`), so it
 works with no elected leader and is safe to run on every node.
 
@@ -287,12 +287,12 @@ One file, two sections, `gatewaySourceId` as a container rather than a repeated 
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
-<topology xmlns="http://limitless.org/seqeron/topology/1" name="phixeron-dev">
+<topology xmlns="http://limitless.org/seqeron/topology/1" name="seqeron-dev">
 
   <protocols>
     <protocol name="simdfixgw" version="1" payloadId="2"
               description="C++/simdfix edge — FIX admin + application messages"/>
-    <protocol name="phixeron"  version="1" payloadId="3"
+    <protocol name="phixeron" version="1" payloadId="3"
               description="Java/Artio edges — pre-encoded FIX session bytes"/>
   </protocols>
 
@@ -346,7 +346,7 @@ is avoiding.
 | `protocol/@description` | free text for the operator reading the file | no |
 | `gateway/@sourceId` | `header.sourceId` of the logical gateway | yes, per instance |
 | `gateway/@description` | free text; replaces the `#` comment nothing kept honest | no |
-| `primary/@name`, `standby/@name` | the launch-time join key (`PHIXERON_*_GATEWAY_NAME`) | yes |
+| `primary/@name`, `standby/@name` | the launch-time join key (`SEQERON_*_GATEWAY_NAME`) | yes |
 | `primary/@id`, `standby/@id` | instance identity, what a `GatewayActive` names | yes |
 
 **`@version` carries no interlock, and that is a reversal.** This section specified one until

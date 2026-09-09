@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# purgelog.sh — delete all phixeron transaction logs and text log files.
+# purgelog.sh — delete all seqeron transaction logs and text log files.
 #
 # Removes:
-#   /tmp/phixeron-seq/archive-*   Aeron Archive recordings (transaction log)
-#   /tmp/phixeron-seq/cluster-*   Aeron Cluster consensus log
+#   /tmp/seqeron-seq/archive-*   Aeron Archive recordings (transaction log)
+#   /tmp/seqeron-seq/cluster-*   Aeron Cluster consensus log
 #   logs/                         stdout/stderr captures from cluster.sh
 #
 # The cluster must be stopped before running this script.
@@ -31,10 +31,10 @@ case "${1:-}" in
         ;;
 esac
 
-# start-cluster.sh (single node) uses the SequencerServer default baseDir (phixeron-seq);
-# start-three-node-cluster.sh overrides it to phixeron-seq3. Purge both, else stale per-tenure
+# start-cluster.sh (single node) uses the SequencerServer default baseDir (seqeron-seq);
+# start-three-node-cluster.sh overrides it to seqeron-seq3. Purge both, else stale per-tenure
 # recordings accumulate across runs (a fresh run recovers them and grows the catalog).
-BASE_DIRS=("${TMP_DIR}/phixeron-seq" "${TMP_DIR}/phixeron-seq3")
+BASE_DIRS=("${TMP_DIR}/seqeron-seq" "${TMP_DIR}/seqeron-seq3")
 LOG_DIR="logs"
 
 echo "[purgelog.sh] The following will be deleted:"

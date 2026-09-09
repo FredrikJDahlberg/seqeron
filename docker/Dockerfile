@@ -7,10 +7,10 @@
 # CI already caches Gradle on the runner, and a Gradle stage would miss that cache every run.
 FROM eclipse-temurin:21-jre
 
-COPY build/libs/phixeron-0.1.0-uber.jar /opt/phixeron/phixeron.jar
-COPY src/main/scripts/ports.sh          /opt/phixeron/ports.sh
-COPY docker/entrypoint.sh               /opt/phixeron/entrypoint.sh
+COPY build/libs/seqeron-0.1.0-uber.jar /opt/seqeron/seqeron.jar
+COPY src/main/scripts/ports.sh          /opt/seqeron/ports.sh
+COPY docker/entrypoint.sh               /opt/seqeron/entrypoint.sh
 
-ENV PHIXERON_JAR=/opt/phixeron/phixeron.jar
+ENV SEQERON_JAR=/opt/seqeron/seqeron.jar
 
-ENTRYPOINT ["/opt/phixeron/entrypoint.sh"]
+ENTRYPOINT ["/opt/seqeron/entrypoint.sh"]

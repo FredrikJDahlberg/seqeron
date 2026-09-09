@@ -66,7 +66,7 @@
 \@ifundefined{xmpquote}{\newcommand{\xmpquote}[1]{#1}}{}
 \makeatother
 \hypersetup{
-  pdftitle={Fault tolerance and recovery --- phixeron},
+  pdftitle={Fault tolerance and recovery --- seqeron},
   colorlinks=true,
   linkcolor={blue},
   filecolor={Maroon},
@@ -74,7 +74,7 @@
   urlcolor={blue},
   pdfcreator={LaTeX via pandoc}}
 
-\title{Fault tolerance and recovery --- phixeron}
+\title{Fault tolerance and recovery --- seqeron}
 \author{}
 \date{}
 
@@ -86,7 +86,7 @@
 \tableofcontents
 }
 \section{Fault tolerance and recovery ---
-phixeron}\label{fault-tolerance-and-recovery-phixeron}
+seqeron}\label{fault-tolerance-and-recovery-seqeron}
 
 How this system survives node loss, leader failover, a stuck local
 archive, a crashed gateway, and a lost network frame --- and how each
@@ -103,10 +103,10 @@ Every recovery path in this document reduces to the same primitive:
 \textbf{replay the sequenced log from \texttt{globalSeqNo} 1}.
 \texttt{SequencerService.onTakeSnapshot} throws and \texttt{onStart}
 refuses a snapshot image
-(\texttt{src/main/java/org/limitless/phixeron/sequencer/SequencerService.java:295-300,544-550});
+(\texttt{src/main/java/org/limitless/seqeron/sequencer/SequencerService.java:295-300,544-550});
 \texttt{clusterctl\ shutdown} uses Aeron's \texttt{ABORT} action, which
 takes no snapshot, never \texttt{SHUTDOWN}
-(\texttt{src/main/java/org/limitless/phixeron/tools/ClusterCtl.java:151-185}
+(\texttt{src/main/java/org/limitless/seqeron/tools/ClusterCtl.java:151-185}
 --- \texttt{SHUTDOWN} snapshots first, which would silently break the
 invariant below).
 
@@ -159,7 +159,7 @@ already hold an identical complete copy.
 
 \subsubsection{1.2 Leader failover}\label{leader-failover}
 
-Raft election is Aeron Cluster's own mechanism; phixeron's contribution
+Raft election is Aeron Cluster's own mechanism; seqeron's contribution
 is what rides on top of it.
 \texttt{SequencerService.onNewLeadershipTermEvent} fires on every node
 on a new term and calls \texttt{applyLeadership}, which asks
@@ -179,7 +179,7 @@ its cluster session}: a \texttt{NewLeaderEvent} swaps only the ingress
 \texttt{Publication} to the new leader's endpoint, re-resolved out of
 the event's member CSV --- the cluster session id and leadership term id
 are updated in place, never re-created
-(\texttt{src/main/cpp/org/limitless/phixeron/sequencer/ClusterStreamSender.hpp:632-689}).
+(\texttt{src/main/cpp/org/limitless/seqeron/sequencer/ClusterStreamSender.hpp:632-689}).
 \texttt{send()}'s retry loop pumps the egress control stream between
 offer attempts specifically so an in-flight \texttt{NewLeaderEvent} can
 land and swap the publication mid-spin --- a naive
@@ -487,7 +487,7 @@ frame that isn't 1 means this node's own recording is missing or
 corrupted, and centralizing the check here means every app on the node
 is told \texttt{ReplayUnavailable} instead of independently discovering
 the same broken archive
-(\texttt{src/main/java/org/limitless/phixeron/replayer/server/ReplayerService.java},
+(\texttt{src/main/java/org/limitless/seqeron/replayer/server/ReplayerService.java},
 \texttt{checkReady}/ \texttt{peekFirstGlobalSeqNo}). An archive call
 that throws mid-replay flips the service into a \texttt{stalled} state
 --- retried at 1s intervals, answering requests \texttt{ReplayPending}
@@ -695,11 +695,11 @@ verification}\label{operational-tooling-and-verification}
   (§2.2); \texttt{snapshot} is explicitly refused. See §1.4.
 \item
   \textbf{Metrics} (\texttt{doc/ops.md}) ---
-  \texttt{phixeron\_sequencer\_tap\_stalled} (latches at 1 when a node
+  \texttt{seqeron\_sequencer\_tap\_stalled} (latches at 1 when a node
   is about to terminate itself, §1.3),
-  \texttt{phixeron\_sequencer\_gateway\_promotion\_total} (§2.2), the
-  \texttt{phixeron\_replayer\_*} family (§3.1), and
-  \texttt{phixeron\_node\_up} (an aggregator-synthesized per-node
+  \texttt{seqeron\_sequencer\_gateway\_promotion\_total} (§2.2), the
+  \texttt{seqeron\_replayer\_*} family (§3.1), and
+  \texttt{seqeron\_node\_up} (an aggregator-synthesized per-node
   reachability gauge, independent of what else that node reports) give
   an operator the same signals this document describes, on a dashboard.
 \item

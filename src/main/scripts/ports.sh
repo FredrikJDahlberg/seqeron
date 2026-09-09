@@ -1,4 +1,4 @@
-# ports.sh — canonical port-layout formula shared by every phixeron launch/test script, the
+# ports.sh — canonical port-layout formula shared by every seqeron launch/test script, the
 # bash mirror of SequencerServer's PORT_BASE + memberId*10 + offset scheme (see
 # SequencerServer.java's class Javadoc, PortLayout.hpp on the C++ side, and doc/design.md's
 # "Port layout" section — the source of truth all three cite). Meant to be sourced, not

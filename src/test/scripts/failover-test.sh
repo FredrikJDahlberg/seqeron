@@ -19,7 +19,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../../main/scripts/ports.sh"
 source "${SCRIPT_DIR}/../../main/scripts/paths.sh"
 
-JAR="build/libs/phixeron-0.1.0-uber.jar"
+JAR="build/libs/seqeron-0.1.0-uber.jar"
 LOG_DIR="logs/failover"
 rm -rf "$LOG_DIR"; mkdir -p "$LOG_DIR"
 
@@ -29,13 +29,13 @@ JAVA_OPTS=(
   --add-opens=java.base/java.lang.reflect=ALL-UNNAMED
   --add-opens=java.base/jdk.internal.misc=ALL-UNNAMED
 )
-BASE_DIR="${TMP_DIR}/phixeron-seqfo"
+BASE_DIR="${TMP_DIR}/seqeron-seqfo"
 CLUSTER_MEMBERS="$(cluster_members_string 3)"
 
 pkill -f SequencerServer 2>/dev/null; pkill -f ReplayerServer 2>/dev/null; pkill -f ClusterProbe 2>/dev/null
 sleep 1
-rm -rf "$BASE_DIR" "${TMP_DIR}/phixeron-seq-aeron-0" "${TMP_DIR}/phixeron-seq-aeron-1" \
-       "${TMP_DIR}/phixeron-seq-aeron-2" 2>/dev/null
+rm -rf "$BASE_DIR" "${TMP_DIR}/seqeron-seq-aeron-0" "${TMP_DIR}/seqeron-seq-aeron-1" \
+       "${TMP_DIR}/seqeron-seq-aeron-2" 2>/dev/null
 
 declare -a SEQ_PIDS
 for m in 0 1 2; do
@@ -51,7 +51,7 @@ echo "cluster up"
 declare -a REPLAYER_PIDS
 for m in 0 1 2; do
   java "${JAVA_OPTS[@]}" -Dreplayer.memberId="$m" -cp "$JAR" \
-       org.limitless.phixeron.replayer.server.ReplayerServer > "$LOG_DIR/replayer-$m.log" 2>&1 &
+       org.limitless.seqeron.replayer.server.ReplayerServer > "$LOG_DIR/replayer-$m.log" 2>&1 &
   REPLAYER_PIDS[$m]=$!
 done
 for m in 0 1 2; do
@@ -80,7 +80,7 @@ sleep 3  # let the new leader settle (its tap recording is continuous across the
 
 FRESH_LOG="$LOG_DIR/fresh-follower.log"
 java "${JAVA_OPTS[@]}" -Dprobe.memberId="$NEWLEADER" -Dprobe.clientId=9 -cp "$JAR" \
-     org.limitless.phixeron.tools.ClusterProbe follow > "$FRESH_LOG" 2>&1 &
+     org.limitless.seqeron.tools.ClusterProbe follow > "$FRESH_LOG" 2>&1 &
 FRESH_PID=$!
 echo "started fresh cold probe follower (client 9) co-located with new leader member $NEWLEADER"
 

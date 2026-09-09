@@ -5,7 +5,7 @@
 # TWO MODES, and the default is the cluster tier alone (doc/future-arch.md §11 step 5). This script is
 # core's, and core's own e2e must run with no C++ binary built:
 #
-#   default (PHIXERON_PRODUCT_APPS unset)  — Java only:
+#   default (SEQERON_PRODUCT_APPS unset)  — Java only:
 #     1. SequencerServer  x3  (Java, Raft members 0/1/2, all on localhost)
 #     2. ReplayerServer   x3  (Java, one co-located with each member: serves archive replay to co-located
 #                              apps over aeron:ipc; apps read the tap directly for live)
@@ -13,7 +13,7 @@
 #                              in for the product replicas so READY still means "every node is following
 #                              the live tail")
 #
-#   PHIXERON_PRODUCT_APPS=1 — additionally the C++ edge's processes, which is what the product e2e
+#   SEQERON_PRODUCT_APPS=1 — additionally the C++ edge's processes, which is what the product e2e
 #   scripts (src/test/scripts/three-node-e2e-test.sh) set:
 #     4. aeronmd            (standalone Aeron media driver, for C++ clients that DON'T co-locate with a
 #                            member — in practice fix_test_server, which those scripts launch against
@@ -43,12 +43,12 @@
 # emission, design §3) — no dependence on which member wins the election. Each replica uses a distinct
 # cluster egress port (9330 + memberId) so the three co-located clients don't collide on one host.
 #
-# Uses a dedicated baseDir (phixeron-seq3 under the temp dir) so it doesn't collide
+# Uses a dedicated baseDir (seqeron-seq3 under the temp dir) so it doesn't collide
 # with single-node dev state left behind by start-cluster.sh.
 #
 # Prerequisites:
 #   ./gradlew uberJar                              # build the fat jar
-#   cmake --build cmake-build-release              # C++ targets — PHIXERON_PRODUCT_APPS=1 only
+#   cmake --build cmake-build-release              # C++ targets — SEQERON_PRODUCT_APPS=1 only
 #
 # Usage:
 #   ./start-three-node-cluster.sh [debug|release]     default: release
@@ -74,10 +74,10 @@ fi
 
 BUILD_TYPE="${1:-release}"
 BUILD_DIR="cmake-build-${BUILD_TYPE}"
-JAR="build/libs/phixeron-0.1.0-uber.jar"
+JAR="build/libs/seqeron-0.1.0-uber.jar"
 
 # 1 = also launch the C++ edge's processes (see the header). Default off: core's e2e runs Java-only.
-PRODUCT_APPS="${PHIXERON_PRODUCT_APPS:-0}"
+PRODUCT_APPS="${SEQERON_PRODUCT_APPS:-0}"
 
 JAVA_OPTS=(
     --add-opens=java.base/sun.nio.ch=ALL-UNNAMED
@@ -93,20 +93,20 @@ REPLAYER_LOG="${LOG_DIR}/ReplayerServer.log"
 APP_LOG="${LOG_DIR}/OrderExecServer.log"
 BASICDATA_LOG="${LOG_DIR}/BasicDataServer.log"
 
-BASE_DIR="${TMP_DIR}/phixeron-seq3"
+BASE_DIR="${TMP_DIR}/seqeron-seq3"
 
 CLUSTER_MEMBERS="$(cluster_members_string 3)"
 FIX_TCP_PORT="$(fix_tcp_port)"
 
 # Default Aeron directory: the standalone aeronmd's own, and what a C++ client that sets no
-# PHIXERON_*_AERON_DIR attaches to. NOT FixGateway's — that is pointed at SEQ_AERON_DIR below, as are
+# SEQERON_*_AERON_DIR attaches to. NOT FixGateway's — that is pointed at SEQ_AERON_DIR below, as are
 # OrderExecServer and BasicDataServer, so nothing this script launches uses this directory.
 AERON_DIR="$(aeron_default_dir)"
 
 # SequencerServer member 0's own embedded media driver directory — matches its default
 # when -Dsequencer.aeronDir isn't overridden (it isn't, below). OrderExecServer is
 # co-located with member 0, sharing this directory instead of the standalone aeronmd's.
-SEQ_AERON_DIR="${TMP_DIR}/phixeron-seq-aeron-0"
+SEQ_AERON_DIR="${TMP_DIR}/seqeron-seq-aeron-0"
 
 # Prefer a system-installed aeronmd (e.g. Homebrew or a system package) on PATH;
 # fall back to the CMake FetchContent build-tree copy if none is found there.
@@ -220,14 +220,14 @@ if [[ "${PRODUCT_APPS}" == "1" ]]; then
 fi
 
 echo "[start-three-node-cluster.sh] Starting ReplayerServer (co-located with SequencerServer member 0) → ${REPLAYER_LOG}"
-# Attaches to member 0's embedded media driver (replayer.memberId=0 → phixeron-seq-aeron-0, i.e.
+# Attaches to member 0's embedded media driver (replayer.memberId=0 → seqeron-seq-aeron-0, i.e.
 # SEQ_AERON_DIR) and serves archive replay of that node's local tap recording over aeron:ipc.
 # OrderExecServer (below) shares the same directory, reads the tap directly for live, and asks this
 # ReplayerService to replay on a gap / for cold-start history.
 java "${JAVA_OPTS[@]}" \
     -Dreplayer.memberId=0 \
     -cp "${JAR}" \
-    org.limitless.phixeron.replayer.server.ReplayerServer \
+    org.limitless.seqeron.replayer.server.ReplayerServer \
     > "${REPLAYER_LOG}" 2>&1 &
 REPLAYER_PID=$!
 
@@ -249,23 +249,23 @@ done
 # SequencerService tap over aeron:ipc and uses member 0's local archive over aeron:ipc for FIX-session
 # resend recovery. Started only now — after member 0's ReplayerService is serving replay — so the tap exists
 # and the local archive already holds the tap recording connectLocalArchive needs.
-# PHIXERON_REPLAYER_CLIENT_ID=2 keeps it distinct from the co-located OrderExecServer replica (id 1);
+# SEQERON_REPLAYER_CLIENT_ID=2 keeps it distinct from the co-located OrderExecServer replica (id 1);
 # its cluster egress port defaults to 9340+memberId, clear of the replica's 9330+memberId.
-# PHIXERON_SKIP_FIX_GATEWAY lets a caller own the FIX gateway itself instead of having this script
+# SEQERON_SKIP_FIX_GATEWAY lets a caller own the FIX gateway itself instead of having this script
 # launch and monitor one — needed by the two-gateway failover harness, which runs a primary and a hot
 # standby and must kill the primary WITHOUT this script's monitor tearing down the whole cluster.
 FIX_PID=""
-if [[ "${PRODUCT_APPS}" == "1" && -z "${PHIXERON_SKIP_FIX_GATEWAY:-}" ]]; then
+if [[ "${PRODUCT_APPS}" == "1" && -z "${SEQERON_SKIP_FIX_GATEWAY:-}" ]]; then
     echo "[start-three-node-cluster.sh] Starting FixGateway (co-located with member 0) → ${FIX_LOG}"
-    PHIXERON_FIX_GATEWAY_AERON_DIR="${SEQ_AERON_DIR}" \
-        PHIXERON_NODE_MEMBER_ID=0 \
-        PHIXERON_REPLAYER_CLIENT_ID=2 \
-        PHIXERON_FIX_GATEWAY_NAME=GW-A \
-        PHIXERON_FIX_TCP_PORT="${FIX_TCP_PORT}" \
+    SEQERON_FIX_GATEWAY_AERON_DIR="${SEQ_AERON_DIR}" \
+        SEQERON_NODE_MEMBER_ID=0 \
+        SEQERON_REPLAYER_CLIENT_ID=2 \
+        SEQERON_FIX_GATEWAY_NAME=GW-A \
+        SEQERON_FIX_TCP_PORT="${FIX_TCP_PORT}" \
         stdbuf -oL -eL "${BUILD_DIR}/FixGateway" > "${FIX_LOG}" 2>&1 &
     FIX_PID=$!
 elif [[ "${PRODUCT_APPS}" == "1" ]]; then
-    echo "[start-three-node-cluster.sh] PHIXERON_SKIP_FIX_GATEWAY set — not launching the FIX gateway (caller-owned)"
+    echo "[start-three-node-cluster.sh] SEQERON_SKIP_FIX_GATEWAY set — not launching the FIX gateway (caller-owned)"
 fi
 
 # The per-node consumer replica. Member 0's is the latency-instrumented one: it records the
@@ -276,9 +276,9 @@ fi
 BASICDATA_PID=""
 if [[ "${PRODUCT_APPS}" == "1" ]]; then
     echo "[start-three-node-cluster.sh] Starting OrderExecServer (replica on member 0) → ${APP_LOG}"
-    PHIXERON_ORDER_EXEC_AERON_DIR="${SEQ_AERON_DIR}" \
-        PHIXERON_NODE_MEMBER_ID=0 \
-        PHIXERON_LATENCY_STATS=1 \
+    SEQERON_ORDER_EXEC_AERON_DIR="${SEQ_AERON_DIR}" \
+        SEQERON_NODE_MEMBER_ID=0 \
+        SEQERON_LATENCY_STATS=1 \
         stdbuf -oL -eL "${BUILD_DIR}/OrderExecServer" > "${APP_LOG}" 2>&1 &
     APP_PID=$!
 
@@ -286,29 +286,29 @@ if [[ "${PRODUCT_APPS}" == "1" ]]; then
     # whichever member is leader produces the session/trading-day rows into the sequenced log once; every
     # replica consumes them back off the tap. The FIX gateway builds its SessionMap from those
     # BasicDataSession rows, so without this running every Logon is refused "Unknown SenderCompID".
-    # PHIXERON_REPLAYER_CLIENT_ID=3 keeps it distinct from the co-located OrderExecServer (1) and
+    # SEQERON_REPLAYER_CLIENT_ID=3 keeps it distinct from the co-located OrderExecServer (1) and
     # FixGateway (2). Its cluster egress port must be given explicitly: the default is 9340+memberId,
     # which is exactly FixGateway's, so co-locating both on member 0 would collide — use 9350+memberId
     # (clear of the 9300-9329 cluster block, the replica's 9330+m and the gateway's 9340+m).
     echo "[start-three-node-cluster.sh] Starting BasicDataServer (replica on member 0) → ${BASICDATA_LOG}"
-    PHIXERON_BASICDATA_AERON_DIR="${SEQ_AERON_DIR}" \
-        PHIXERON_NODE_MEMBER_ID=0 \
-        PHIXERON_REPLAYER_CLIENT_ID=3 \
-        PHIXERON_BASICDATA_EGRESS_ENDPOINT="localhost:$(basicdata_egress_port 0)" \
+    SEQERON_BASICDATA_AERON_DIR="${SEQ_AERON_DIR}" \
+        SEQERON_NODE_MEMBER_ID=0 \
+        SEQERON_REPLAYER_CLIENT_ID=3 \
+        SEQERON_BASICDATA_EGRESS_ENDPOINT="localhost:$(basicdata_egress_port 0)" \
         stdbuf -oL -eL "${BUILD_DIR}/BasicDataServer" > "${BASICDATA_LOG}" 2>&1 &
     BASICDATA_PID=$!
 else
     APP_LOG="${LOG_DIR}/ClusterProbe.log"
     echo "[start-three-node-cluster.sh] Starting ClusterProbe follower (replica on member 0) → ${APP_LOG}"
     java "${JAVA_OPTS[@]}" -Dprobe.memberId=0 -Dprobe.clientId=1 -Dprobe.latencyStats=true \
-        -cp "${JAR}" org.limitless.phixeron.tools.ClusterProbe follow > "${APP_LOG}" 2>&1 &
+        -cp "${JAR}" org.limitless.seqeron.tools.ClusterProbe follow > "${APP_LOG}" 2>&1 &
     APP_PID=$!
 fi
 
 # A replica on every node (design §3): start a ReplayerServer + OrderExecServer co-located with members 1
-# and 2 too. Each attaches to its own member's media driver (phixeron-seq-aeron-<m>), reads that
+# and 2 too. Each attaches to its own member's media driver (seqeron-seq-aeron-<m>), reads that
 # node's SequencerService tap over aeron:ipc, and uses a distinct cluster egress port (9330 + m, derived
-# from PHIXERON_NODE_MEMBER_ID) so the three co-located clients don't collide on one host. Whichever
+# from SEQERON_NODE_MEMBER_ID) so the three co-located clients don't collide on one host. Whichever
 # member is leader then has a local replica ready to answer risk queries.
 EXTRA_REPLAYER_PIDS=()
 EXTRA_APP_PIDS=()
@@ -318,10 +318,10 @@ for m in 1 2; do
     RLOG="${LOG_DIR}/ReplayerServer-${m}.log"
     ALOG="${LOG_DIR}/OrderExecServer-${m}.log"
     BDLOG="${LOG_DIR}/BasicDataServer-${m}.log"
-    MDIR="${TMP_DIR}/phixeron-seq-aeron-${m}"
+    MDIR="${TMP_DIR}/seqeron-seq-aeron-${m}"
     echo "[start-three-node-cluster.sh] Starting ReplayerServer + consumer replica (member ${m})"
     java "${JAVA_OPTS[@]}" -Dreplayer.memberId="${m}" -cp "${JAR}" \
-        org.limitless.phixeron.replayer.server.ReplayerServer > "${RLOG}" 2>&1 &
+        org.limitless.seqeron.replayer.server.ReplayerServer > "${RLOG}" 2>&1 &
     EXTRA_REPLAYER_PIDS+=("$!")
     WAIT=0
     until grep -q "serving replay" "${RLOG}" 2>/dev/null; do
@@ -330,23 +330,23 @@ for m in 1 2; do
         (( WAIT > 60 )) && { echo "[start-three-node-cluster.sh] WARN: ReplayerServer-${m} not serving after 30s" >&2; break; }
     done
     if [[ "${PRODUCT_APPS}" == "1" ]]; then
-        PHIXERON_ORDER_EXEC_AERON_DIR="${MDIR}" \
-            PHIXERON_NODE_MEMBER_ID="${m}" \
+        SEQERON_ORDER_EXEC_AERON_DIR="${MDIR}" \
+            SEQERON_NODE_MEMBER_ID="${m}" \
             stdbuf -oL -eL "${BUILD_DIR}/OrderExecServer" > "${ALOG}" 2>&1 &
         EXTRA_APP_PIDS+=("$!")
         EXTRA_APP_LOGS+=("${ALOG}")
         # One BasicDataServer replica per node too, so whichever member is elected leader has a local
         # replica able to produce the load (and every node keeps the consumed tables warm for failover).
-        PHIXERON_BASICDATA_AERON_DIR="${MDIR}" \
-            PHIXERON_NODE_MEMBER_ID="${m}" \
-            PHIXERON_REPLAYER_CLIENT_ID=3 \
-            PHIXERON_BASICDATA_EGRESS_ENDPOINT="localhost:$(basicdata_egress_port "${m}")" \
+        SEQERON_BASICDATA_AERON_DIR="${MDIR}" \
+            SEQERON_NODE_MEMBER_ID="${m}" \
+            SEQERON_REPLAYER_CLIENT_ID=3 \
+            SEQERON_BASICDATA_EGRESS_ENDPOINT="localhost:$(basicdata_egress_port "${m}")" \
             stdbuf -oL -eL "${BUILD_DIR}/BasicDataServer" > "${BDLOG}" 2>&1 &
         EXTRA_BASICDATA_PIDS+=("$!")
     else
         ALOG="${LOG_DIR}/ClusterProbe-${m}.log"
         java "${JAVA_OPTS[@]}" -Dprobe.memberId="${m}" -Dprobe.clientId=1 \
-            -cp "${JAR}" org.limitless.phixeron.tools.ClusterProbe follow > "${ALOG}" 2>&1 &
+            -cp "${JAR}" org.limitless.seqeron.tools.ClusterProbe follow > "${ALOG}" 2>&1 &
         EXTRA_APP_PIDS+=("$!")
         EXTRA_APP_LOGS+=("${ALOG}")
     fi

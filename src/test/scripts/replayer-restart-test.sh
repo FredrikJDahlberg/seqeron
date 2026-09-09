@@ -50,7 +50,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../../main/scripts/ports.sh"
 source "${SCRIPT_DIR}/../../main/scripts/paths.sh"
 
-JAR="build/libs/phixeron-0.1.0-uber.jar"
+JAR="build/libs/seqeron-0.1.0-uber.jar"
 LOG_DIR="logs/replayer-restart"
 FLOOD_FRAMES=1000
 CN=0            # client/Replayer restart target — member 0, never the leader (see header)
@@ -69,7 +69,7 @@ JAVA_OPTS=(
   --add-opens=java.base/java.lang.reflect=ALL-UNNAMED
   --add-opens=java.base/jdk.internal.misc=ALL-UNNAMED
 )
-BASE_DIR="${TMP_DIR}/phixeron-seqfo"
+BASE_DIR="${TMP_DIR}/seqeron-seqfo"
 CLUSTER_MEMBERS="$(cluster_members_string 3)"
 
 start_seq() {  # start_seq <memberId> <logfile>
@@ -81,13 +81,13 @@ start_seq() {  # start_seq <memberId> <logfile>
 start_replayer() {  # start_replayer <memberId> <logfile>
   local m="$1" log="$2"
   java "${JAVA_OPTS[@]}" -Dreplayer.memberId="$m" -cp "$JAR" \
-       org.limitless.phixeron.replayer.server.ReplayerServer > "$log" 2>&1 &
+       org.limitless.seqeron.replayer.server.ReplayerServer > "$log" 2>&1 &
   REPLAYER_PIDS[$m]=$!
 }
 start_client() {  # start_client <logfile>
   local log="$1"
   java "${JAVA_OPTS[@]}" -Dprobe.memberId="$CN" -Dprobe.clientId="$CLIENT_ID" -cp "$JAR" \
-       org.limitless.phixeron.tools.ClusterProbe follow > "$log" 2>&1 &
+       org.limitless.seqeron.tools.ClusterProbe follow > "$log" 2>&1 &
   CLIENT_PID=$!
 }
 wait_for() {  # wait_for <pattern> <logfile> <timeout_iters (x0.5s)> <description>
@@ -105,8 +105,8 @@ wait_for_exit() {  # wait_for_exit <pid> <timeout_iters (x0.5s)>
 
 pkill -f SequencerServer 2>/dev/null; pkill -f ReplayerServer 2>/dev/null; pkill -f ClusterProbe 2>/dev/null
 sleep 1
-rm -rf "$BASE_DIR" "${TMP_DIR}/phixeron-seq-aeron-0" "${TMP_DIR}/phixeron-seq-aeron-1" \
-       "${TMP_DIR}/phixeron-seq-aeron-2" 2>/dev/null
+rm -rf "$BASE_DIR" "${TMP_DIR}/seqeron-seq-aeron-0" "${TMP_DIR}/seqeron-seq-aeron-1" \
+       "${TMP_DIR}/seqeron-seq-aeron-2" 2>/dev/null
 
 CLIENT_PID=""
 declare -a SEQ_PIDS REPLAYER_PIDS
@@ -142,7 +142,7 @@ echo ""
 echo "── phase 1: Replayer restart under a riding client ──"
 echo "flooding $FLOOD_FRAMES frames onto cluster ingress to give the cold-start walk real work"
 java "${JAVA_OPTS[@]}" -Dprobe.memberId="$CN" -Dprobe.count="$FLOOD_FRAMES" -cp "$JAR" \
-     org.limitless.phixeron.tools.ClusterProbe submit > "$LOG_DIR/flood.log" 2>&1 || true
+     org.limitless.seqeron.tools.ClusterProbe submit > "$LOG_DIR/flood.log" 2>&1 || true
 sleep 1   # let the flood replicate before the client's cold walk starts racing it
 
 CLIENT_LOG_P1="$LOG_DIR/client-phase1.log"

@@ -93,11 +93,11 @@ tasks.register('generateReplaySbe', JavaExec) {
     args new File(sbeSchemaDir, 'sbe-replay.xml')
 
     inputs.file  new File(sbeSchemaDir, 'sbe-replay.xml')
-    outputs.dir  new File(sbeGeneratedSrcDir, 'org/limitless/phixeron/sbe/replay')
+    outputs.dir  new File(sbeGeneratedSrcDir, 'org/limitless/seqeron/sbe/replay')
     outputs.file new File(sbeGeneratedSrcDir, 'sbe-replay.sbeir')
 
     doFirst {
-        new File(sbeGeneratedSrcDir, 'org/limitless/phixeron/sbe/replay').deleteDir()
+        new File(sbeGeneratedSrcDir, 'org/limitless/seqeron/sbe/replay').deleteDir()
         sbeGeneratedSrcDir.mkdirs()
     }
 }
@@ -118,11 +118,11 @@ tasks.register('generateFrameSbe', JavaExec) {
     args new File(sbeSchemaDir, 'sbe-frame.xml')
 
     inputs.file  new File(sbeSchemaDir, 'sbe-frame.xml')
-    outputs.dir  new File(sbeGeneratedSrcDir, 'org/limitless/phixeron/sbe/frame')
+    outputs.dir  new File(sbeGeneratedSrcDir, 'org/limitless/seqeron/sbe/frame')
     outputs.file new File(sbeGeneratedSrcDir, 'sbe-frame.sbeir')
 
     doFirst {
-        new File(sbeGeneratedSrcDir, 'org/limitless/phixeron/sbe/frame').deleteDir()
+        new File(sbeGeneratedSrcDir, 'org/limitless/seqeron/sbe/frame').deleteDir()
         sbeGeneratedSrcDir.mkdirs()
     }
 }
@@ -143,11 +143,11 @@ tasks.register('generateProbeSbe', JavaExec) {
     args new File(sbeSchemaDir, 'sbe-probe.xml')
 
     inputs.file  new File(sbeSchemaDir, 'sbe-probe.xml')
-    outputs.dir  new File(sbeGeneratedSrcDir, 'org/limitless/phixeron/sbe/probe')
+    outputs.dir  new File(sbeGeneratedSrcDir, 'org/limitless/seqeron/sbe/probe')
     outputs.file new File(sbeGeneratedSrcDir, 'sbe-probe.sbeir')
 
     doFirst {
-        new File(sbeGeneratedSrcDir, 'org/limitless/phixeron/sbe/probe').deleteDir()
+        new File(sbeGeneratedSrcDir, 'org/limitless/seqeron/sbe/probe').deleteDir()
         sbeGeneratedSrcDir.mkdirs()
     }
 }
@@ -201,7 +201,7 @@ tasks.register('collectSbeIr', Copy) {
     dependsOn 'generateReplaySbe', 'generateFrameSbe', 'generateProbeSbe', 'generateClusterSbeIr'
     from(sbeGeneratedSrcDir) {
         include '*.sbeir'
-        into 'org/limitless/phixeron/tools/sbeir'
+        into 'org/limitless/seqeron/tools/sbeir'
     }
     into sbeIrResourceDir
 }
@@ -215,7 +215,7 @@ sourceSets.main.resources.srcDir(tasks.named('collectSbeIr'))
 // IR at all. A core frame therefore prints in full and an application payload prints under its
 // payloadId, labelled from the recording's own PayloadIdRegistered rows and not decoded. To name
 // payloads inline instead, put a deployment's IR in front of the tool: sbe-log-printer.sh, and point
-// PHIXERON_JAR at a jar that holds it.
+// SEQERON_JAR at a jar that holds it.
 //
 // No -o here on purpose. §13.1's pipe writes raw payload bytes to stdout, and Gradle re-encodes a
 // child process's stdout as text — every non-ASCII byte comes out as U+FFFD. The pipe is the shell
@@ -227,7 +227,7 @@ tasks.register('sbeLogPrinter', JavaExec) {
     group       = 'application'
 
     classpath  = sourceSets.main.runtimeClasspath
-    mainClass  = 'org.limitless.phixeron.tools.SbeLogPrinter'
+    mainClass  = 'org.limitless.seqeron.tools.SbeLogPrinter'
     jvmArgs    '--add-opens=java.base/jdk.internal.misc=ALL-UNNAMED'
     // Relative paths on the command line are the caller's, and every caller runs from the repo root.
     workingDir rootProject.projectDir
@@ -257,7 +257,7 @@ tasks.register('sbeLogPrinter', JavaExec) {
 }
 
 application {
-    mainClass = 'org.limitless.phixeron.sequencer.SequencerServer'
+    mainClass = 'org.limitless.seqeron.sequencer.SequencerServer'
 }
 
 tasks.named('run') {
@@ -293,20 +293,20 @@ tasks.named('jacocoTestReport') {
     // hand-written classes the report exists to measure.
     classDirectories.setFrom(
         files(classDirectories.files.collect {
-            fileTree(dir: it, exclude: 'org/limitless/phixeron/sbe/**')
+            fileTree(dir: it, exclude: 'org/limitless/seqeron/sbe/**')
         })
     )
 }
 
 // ── Uber jar ───────────────────────────────────────────────────────────────────
-// Every script resolves build/libs/phixeron-<version>-uber.jar: clusterctl.sh, sbe-log-printer.sh, the
+// Every script resolves build/libs/seqeron-<version>-uber.jar: clusterctl.sh, sbe-log-printer.sh, the
 // metrics scripts, and each harness under src/test/scripts. They run it two ways — `java -jar` for the
 // sequencer (Main-Class below) and `java -cp` for ReplayerServer, ClusterProbe, ClusterCtl and the rest
 // — so the jar carries every runtime dependency plus the staged .sbeir resources SbeLogPrinter reads
 // off its own classpath.
 
 tasks.register('uberJar', Jar) {
-    description = 'Fat jar carrying every runtime dependency: build/libs/phixeron-<version>-uber.jar'
+    description = 'Fat jar carrying every runtime dependency: build/libs/seqeron-<version>-uber.jar'
     group       = 'build'
 
     archiveClassifier = 'uber'

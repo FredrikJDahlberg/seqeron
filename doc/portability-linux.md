@@ -1,6 +1,6 @@
 # Linux portability — RHEL 9 / RHEL 10
 
-> Written 2026-08-23 against the tree as it stands. phixeron is developed on macOS/arm64 with
+> Written 2026-08-23 against the tree as it stands. seqeron is developed on macOS/arm64 with
 > Apple clang and libc++; nothing has ever been built or run on Linux. This records what a first
 > RHEL bring-up has to fix, in the order it will hit.
 >
@@ -40,10 +40,10 @@ Platform baselines assumed below:
 Nothing here stops a RHEL build outright. What it does is **pin RHEL 9 to a non-default toolchain**
 on two independent axes — CMake and the compiler — while RHEL 10 handles both from stock packages.
 
-### 1a. Clang-only coverage flags reached every phixeron target — **fixed**
+### 1a. Clang-only coverage flags reached every seqeron target — **fixed**
 
 `SimdFix::SimdFix` is an INTERFACE dependency, so simdfix's own `target_compile_options`
-(`CMakeLists.txt:89-96` in its tree) propagated into every phixeron TU. In Debug that was:
+(`CMakeLists.txt:89-96` in its tree) propagated into every seqeron TU. In Debug that was:
 
 ```
 -Wall -Wextra -g -O0 -fsanitize=address -fno-omit-frame-pointer -fprofile-instr-generate -fcoverage-mapping
@@ -60,9 +60,9 @@ compiler.
 
 Fixed in `CMakeLists.txt` by taking simdfix's headers and owning the flags locally: its
 `INTERFACE_COMPILE_OPTIONS` / `INTERFACE_LINK_OPTIONS` are cleared after
-`FetchContent_MakeAvailable`, and a `phixeron_flags` INTERFACE target re-establishes `-Wall -Wextra`,
+`FetchContent_MakeAvailable`, and a `seqeron_flags` INTERFACE target re-establishes `-Wall -Wextra`,
 the Debug/Release flags, and simdfix's probed `-msse4.1` (load-bearing — `Uint8x16_sse.inl` needs
-`_mm_blendv_epi8`). Coverage became an opt-in `PHIXERON_COVERAGE` option that forks on
+`_mm_blendv_epi8`). Coverage became an opt-in `SEQERON_COVERAGE` option that forks on
 `CMAKE_CXX_COMPILER_ID`, and `-march=native` is gone. `-Wno-character-conversion` is now applied only
 where the compiler knows the warning; the probe tests the **positive** form, since clang accepts any
 unknown `-Wno-*` silently and would false-positive on the negative one.
@@ -70,7 +70,7 @@ unknown `-Wno-*` silently and would false-positive on the negative one.
 Two notes that outlive the fix. First, the coverage *artifacts* differ too — clang writes `.profraw`
 (`llvm-profdata merge` → `llvm-cov`), GCC writes `.gcno`/`.gcda` (`gcov`/`lcov`) — so any report step
 has to fork the same way. Second, simdfix's own test targets still carry the clang flags, but they
-are `EXCLUDE_FROM_ALL` and never built here; `Generator`, which phixeron *does* build, does not.
+are `EXCLUDE_FROM_ALL` and never built here; `Generator`, which seqeron *does* build, does not.
 
 ### 1b. `cmake_minimum_required(VERSION 3.28)` — a real floor
 
@@ -149,17 +149,17 @@ dies at line 54, before it has launched anything.
 
 This one is loud, which makes it the least dangerous of the four.
 
-### 2b. `${TMPDIR:-/tmp}phixeron-…` — the silent half
+### 2b. `${TMPDIR:-/tmp}seqeron-…` — the silent half
 
 19 occurrences. The default has no separator because on macOS the variable supplies one:
 
 ```bash
 # cluster/src/main/scripts/purgelog.sh:35
-BASE_DIRS=("${TMPDIR:-/tmp}phixeron-seq" "${TMPDIR:-/tmp}phixeron-seq3")   # RHEL → /tmpphixeron-seq
+BASE_DIRS=("${TMPDIR:-/tmp}seqeron-seq" "${TMPDIR:-/tmp}seqeron-seq3")   # RHEL → /tmpseqeron-seq
 ```
 
-while the cluster itself writes to `java.io.tmpdir + "/phixeron-seq"` (`SequencerServer.java:105`)
-→ `/tmp/phixeron-seq`. On RHEL the launchers, `sbe-log-printer.sh`, and the e2e scripts all address
+while the cluster itself writes to `java.io.tmpdir + "/seqeron-seq"` (`SequencerServer.java:105`)
+→ `/tmp/seqeron-seq`. On RHEL the launchers, `sbe-log-printer.sh`, and the e2e scripts all address
 a directory the cluster never touches, and **`purgelog.sh` reports success having deleted nothing**
 — its `ls "${BASE_DIR}"/archive-* >/dev/null 2>&1` guard just fails quietly.
 
@@ -175,13 +175,13 @@ Also affected: `start-three-node-cluster.sh:78` (`BASE_DIR`), `order-gateway-tes
 
 ```java
 System.getProperty("basicdata.aeronDir",
-                   System.getProperty("java.io.tmpdir") + "phixeron-seq-aeron-0");
+                   System.getProperty("java.io.tmpdir") + "seqeron-seq-aeron-0");
 ```
 
 Every other Java site uses `new File(tmpdir, …)` (`OrderGatewayConfig.java:59,69`,
 `ExchangeGatewayConfig.java:58,70`) or `+ "/…"` (`SequencerServer.java:105-107`,
 `ReplayerServer.java:96`, `ClusterCtl.java:77,79`, `MetricsExporter.java:31`). This one line does
-neither, so on Linux it resolves to `/tmpphixeron-seq-aeron-0` and the loader attaches to a media
+neither, so on Linux it resolves to `/tmpseqeron-seq-aeron-0` and the loader attaches to a media
 driver directory that does not exist. On macOS it happens to be correct.
 
 The `+ "/…"` sites are the mirror image — harmless on Linux, producing a cosmetic `//` on macOS.
@@ -190,15 +190,15 @@ Only `BasicDataLoader` is actually wrong, and it is wrong only on Linux.
 ### 2d. `Env.hpp:resolveAeronDir` — a trailing slash baked into the fallback
 
 ```cpp
-// cluster/src/main/cpp/org/limitless/phixeron/util/Env.hpp:49-51
+// cluster/src/main/cpp/org/limitless/seqeron/util/Env.hpp:49-51
 const char* tmpDir = std::getenv("TMPDIR");
-return std::string(tmpDir != nullptr && *tmpDir != '\0' ? tmpDir : "/tmp/") + "phixeron-seq-aeron-" +
+return std::string(tmpDir != nullptr && *tmpDir != '\0' ? tmpDir : "/tmp/") + "seqeron-seq-aeron-" +
        std::to_string(memberId);
 ```
 
 The literal fallback carries the slash, so this is correct on RHEL **only while `TMPDIR` is unset**.
 Set it — systemd, a batch scheduler, a site profile, `TMPDIR=/var/tmp` — and every C++ binary that
-does not get an explicit `PHIXERON_*_AERON_DIR` resolves `/var/tmpphixeron-seq-aeron-0` and silently
+does not get an explicit `SEQERON_*_AERON_DIR` resolves `/var/tmpseqeron-seq-aeron-0` and silently
 attaches to nothing. The scripts do set the override on every launch, so this only bites a
 hand-started process, which is precisely the debugging session where it will cost the most.
 
@@ -228,7 +228,7 @@ purge the real default too.
 
 None of these are code defects; they are things a macOS-only history has never had to answer.
 
-**Arch baseline.** `-march=native` is gone from phixeron's Release build (§1a), so binaries no longer
+**Arch baseline.** `-march=native` is gone from seqeron's Release build (§1a), so binaries no longer
 carry the build host's ISA. Nothing replaces it yet: Release is plain `-O3` plus the probed
 `-msse4.1` that `_mm_blendv_epi8` needs. If Release builds move to a dedicated build host, pin the
 platform baseline explicitly — `-march=x86-64-v2` for RHEL 9, `-march=x86-64-v3` for RHEL 10 — via
@@ -283,7 +283,7 @@ and it is the standard library that changes here. Expect these regardless of §1
 | `fix/TcpServer.hpp` | `<cerrno>`, `<cstring>`, `<stdexcept>`, `<string>` | `errno`, `std::strerror`, `std::runtime_error`, `std::string` — lines 29, 42, 46 |
 | `fix/FixIngressHandler.hpp` | `<algorithm>`, `<cstdint>` | `std::min` at 605, 639 |
 | `fix/ClientSession.hpp`, `fix/ServerSession.hpp` | `<cstdint>` | fixed-width types throughout |
-| `util/PhixeronCounters.hpp` | `<cstring>`, `<memory>` | `std::memcpy` at 40-41, `std::shared_ptr` at 36 |
+| `util/SeqeronCounters.hpp` | `<cstring>`, `<memory>` | `std::memcpy` at 40-41, `std::shared_ptr` at 36 |
 
 `TcpServer.hpp` is the clearest case: it includes only `<arpa/inet.h>`, `<netinet/in.h>`,
 `<sys/fcntl.h>`, `<unistd.h>` and `Logger.hpp`, and `Logger.hpp` supplies only

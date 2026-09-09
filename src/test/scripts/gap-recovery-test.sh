@@ -63,7 +63,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../../main/scripts/ports.sh"
 source "${SCRIPT_DIR}/../../main/scripts/paths.sh"
 
-JAR="build/libs/phixeron-0.1.0-uber.jar"
+JAR="build/libs/seqeron-0.1.0-uber.jar"
 LOG_DIR="logs/gap-recovery"
 FLOOD_FRAMES=300
 FLOOD_PACING_US=10000   # 300 frames over ~3s — see the header note on pacing
@@ -79,7 +79,7 @@ JAVA_OPTS=(
   --add-opens=java.base/java.lang.reflect=ALL-UNNAMED
   --add-opens=java.base/jdk.internal.misc=ALL-UNNAMED
 )
-BASE_DIR="${TMP_DIR}/phixeron-seqfo"
+BASE_DIR="${TMP_DIR}/seqeron-seqfo"
 CLUSTER_MEMBERS="$(cluster_members_string 3)"
 
 start_seq() {  # start_seq <memberId>
@@ -91,8 +91,8 @@ start_seq() {  # start_seq <memberId>
 
 pkill -f SequencerServer 2>/dev/null; pkill -f ReplayerServer 2>/dev/null; pkill -f ClusterProbe 2>/dev/null
 sleep 1
-rm -rf "$BASE_DIR" "${TMP_DIR}/phixeron-seq-aeron-0" "${TMP_DIR}/phixeron-seq-aeron-1" \
-       "${TMP_DIR}/phixeron-seq-aeron-2" 2>/dev/null
+rm -rf "$BASE_DIR" "${TMP_DIR}/seqeron-seq-aeron-0" "${TMP_DIR}/seqeron-seq-aeron-1" \
+       "${TMP_DIR}/seqeron-seq-aeron-2" 2>/dev/null
 
 CONSUMER_PID=""
 declare -a SEQ_PIDS REPLAYER_PIDS
@@ -120,7 +120,7 @@ echo "cluster up; tenure-1 leader = member $LEADER ; consumer co-located with me
 
 for m in 0 1 2; do
   java "${JAVA_OPTS[@]}" -Dreplayer.memberId="$m" -cp "$JAR" \
-       org.limitless.phixeron.replayer.server.ReplayerServer > "$LOG_DIR/replayer-$m.log" 2>&1 &
+       org.limitless.seqeron.replayer.server.ReplayerServer > "$LOG_DIR/replayer-$m.log" 2>&1 &
   REPLAYER_PIDS[$m]=$!
 done
 for m in 0 1 2; do
@@ -135,7 +135,7 @@ sleep 2
 CONSUMER_LOG="$LOG_DIR/consumer.log"
 java "${JAVA_OPTS[@]}" -Dprobe.memberId="$CN" -Dprobe.clientId=9 \
      -Dprobe.latencyStats=true -Dprobe.faultInjection=true -Dprobe.faultDropCount="$GAP_SIZE" \
-     -cp "$JAR" org.limitless.phixeron.tools.ClusterProbe follow > "$CONSUMER_LOG" 2>&1 &
+     -cp "$JAR" org.limitless.seqeron.tools.ClusterProbe follow > "$CONSUMER_LOG" 2>&1 &
 CONSUMER_PID=$!
 W=0; until grep -q "following live" "$CONSUMER_LOG" 2>/dev/null; do sleep 0.5; W=$((W+1)); ((W>60)) && { echo "consumer never caught up"; exit 1; }; done
 echo "consumer caught up (following live) on tenure 1"
@@ -159,7 +159,7 @@ sleep 0.5
 echo "flooding $FLOOD_FRAMES frames to cluster ingress (first $GAP_SIZE live tap frame(s) will be dropped)"
 java "${JAVA_OPTS[@]}" -Dprobe.memberId="$CN" -Dprobe.count="$FLOOD_FRAMES" \
      -Dprobe.pacingMicros="$FLOOD_PACING_US" \
-     -cp "$JAR" org.limitless.phixeron.tools.ClusterProbe submit > "$LOG_DIR/flood.log" 2>&1 || true
+     -cp "$JAR" org.limitless.seqeron.tools.ClusterProbe submit > "$LOG_DIR/flood.log" 2>&1 || true
 sleep 8  # let the consumer resume, heal, and drain the flood tail
 
 # ── 5. Flush the consumer's delivery-latency report ───────────────────────────

@@ -19,7 +19,7 @@
     this schema for the same reason). Template ids are the ones these six have always had.
 -->
 <sbe:messageSchema xmlns:sbe="http://fixprotocol.io/2016/sbe"
-                   package="org.limitless.phixeron.sbe.replay"
+                   package="org.limitless.seqeron.sbe.replay"
                    id="212"
                    version="0"
                    description="Node-local replay control protocol between a ReplayerService and its co-located app replicas"

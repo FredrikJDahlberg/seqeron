@@ -30,7 +30,7 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 source "${SCRIPT_DIR}/../../main/scripts/ports.sh"
 COMPOSE=(docker compose -f "${REPO_ROOT}/docker/compose.yml")
 
-JAR="${REPO_ROOT}/build/libs/phixeron-0.1.0-uber.jar"
+JAR="${REPO_ROOT}/build/libs/seqeron-0.1.0-uber.jar"
 LOG_DIR="${REPO_ROOT}/logs/docker-failover"
 NODE_COUNT=3
 OBSERVER_CLIENT_ID=1
@@ -139,7 +139,7 @@ start_observer() {
     docker exec "node-${m}" java "${JAVA_OPTS[@]}" \
         -Dprobe.memberId="${m}" -Dprobe.aeronDir="/dev/shm/aeron-${m}" \
         -Dprobe.clientId="${OBSERVER_CLIENT_ID}" \
-        -cp /opt/phixeron/phixeron.jar org.limitless.phixeron.tools.ClusterProbe follow \
+        -cp /opt/seqeron/seqeron.jar org.limitless.seqeron.tools.ClusterProbe follow \
         >> "${LOG_DIR}/observer-${m}.log" 2>&1 &
 }
 
@@ -157,7 +157,7 @@ touch "${LOAD_FLAG}"
             -Dprobe.ingressEndpoints="${INGRESS_ENDPOINTS}" \
             -Dprobe.egressHost="node-${target}" \
             -Dprobe.count="${SUBMIT_COUNT}" -Dprobe.pacingMicros="${SUBMIT_PACING_MICROS}" \
-            -cp /opt/phixeron/phixeron.jar org.limitless.phixeron.tools.ClusterProbe submit \
+            -cp /opt/seqeron/seqeron.jar org.limitless.seqeron.tools.ClusterProbe submit \
             >> "${LOG_DIR}/load.log" 2>&1
         sleep 0.5
     done
@@ -209,7 +209,7 @@ COLD_LOG="${LOG_DIR}/cold-follower.log"
 docker exec "node-${LEADER}" java "${JAVA_OPTS[@]}" \
     -Dprobe.memberId="${LEADER}" -Dprobe.aeronDir="/dev/shm/aeron-${LEADER}" \
     -Dprobe.clientId="${COLD_CLIENT_ID}" \
-    -cp /opt/phixeron/phixeron.jar org.limitless.phixeron.tools.ClusterProbe follow \
+    -cp /opt/seqeron/seqeron.jar org.limitless.seqeron.tools.ClusterProbe follow \
     > "${COLD_LOG}" 2>&1 &
 COLD_PID=$!
 echo "started cold probe follower (client ${COLD_CLIENT_ID}) inside node-${LEADER}"

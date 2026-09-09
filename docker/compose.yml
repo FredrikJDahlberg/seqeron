@@ -9,10 +9,10 @@
 # PortLayout.hpp): each container has its own network namespace so they need not differ, but
 # keeping them means one formula, not two. Nothing is published to the host — the harness reaches
 # the cluster with docker exec.
-name: phixeron-failover
+name: seqeron-failover
 
 x-node: &node
-  image: phixeron/node:local
+  image: seqeron/node:local
   # The image is local and lives in no registry; without this the two services that do not build it
   # try to pull it first and log a pull-access-denied error before falling back to the built tag.
   pull_policy: never
@@ -22,7 +22,7 @@ x-node: &node
   healthcheck:
     # Both node processes are up. Container liveness only — a member that is Running has not
     # necessarily won or joined an election yet, which is the harness's assertion to make.
-    test: ["CMD-SHELL", "grep -q 'SequencerServer/.\\] Running' /var/log/phixeron/node.log && grep -q 'ReplayerServer/.\\] Running' /var/log/phixeron/node.log"]
+    test: ["CMD-SHELL", "grep -q 'SequencerServer/.\\] Running' /var/log/seqeron/node.log && grep -q 'ReplayerServer/.\\] Running' /var/log/seqeron/node.log"]
     interval: 2s
     timeout: 2s
     retries: 45
@@ -43,21 +43,21 @@ services:
     container_name: node-0
     hostname: node-0
     environment: { MEMBER_ID: "0" }
-    volumes: [node-0-data:/var/lib/phixeron]
+    volumes: [node-0-data:/var/lib/seqeron]
 
   node-1:
     <<: *node
     container_name: node-1
     hostname: node-1
     environment: { MEMBER_ID: "1" }
-    volumes: [node-1-data:/var/lib/phixeron]
+    volumes: [node-1-data:/var/lib/seqeron]
 
   node-2:
     <<: *node
     container_name: node-2
     hostname: node-2
     environment: { MEMBER_ID: "2" }
-    volumes: [node-2-data:/var/lib/phixeron]
+    volumes: [node-2-data:/var/lib/seqeron]
 
 networks:
   seqnet:

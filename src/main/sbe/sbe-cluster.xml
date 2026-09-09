@@ -4,7 +4,7 @@
 
     This is the subset of io.aeron.cluster.codecs (schemaId=111, version=16,
     see aeron-cluster/src/main/resources/cluster/aeron-cluster-codecs.xml)
-    that phixeron needs to speak the wire protocol as a C++ cluster client:
+    that seqeron needs to speak the wire protocol as a C++ cluster client:
     session connect/close/keep-alive, the session message envelope, session
     events and leader-change notification, plus the consensus-module log
     entries SbeLogPrinter decodes (see the decode-only section at the end).
@@ -15,11 +15,11 @@
     mirror, not an independent design.
 -->
 <sbe:messageSchema xmlns:sbe="http://fixprotocol.io/2016/sbe"
-                   package="org.limitless.phixeron.cluster.sbe"
+                   package="org.limitless.seqeron.cluster.sbe"
                    id="111"
                    version="16"
                    semanticVersion="5.4"
-                   description="Aeron Cluster session protocol (subset of io.aeron.cluster.codecs used by phixeron)"
+                   description="Aeron Cluster session protocol (subset of io.aeron.cluster.codecs used by seqeron)"
                    byteOrder="littleEndian">
 
     <types>

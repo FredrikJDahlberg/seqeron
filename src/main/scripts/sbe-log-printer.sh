@@ -2,7 +2,7 @@
 # sbe-log-printer.sh — dump an Aeron Archive recording as JSON using an SBE schema.
 #
 # Reads archive.catalog + segment files under the given archive directory
-# (see start-cluster.sh / SequencerServer, default $TMPDIR/phixeron-seq/archive-<id>)
+# (see start-cluster.sh / SequencerServer, default $TMPDIR/seqeron-seq/archive-<id>)
 # and prints every recorded SBE message as JSON.
 #
 # Every IR file packaged in the jar is loaded by default — frame (the
@@ -44,8 +44,8 @@
 #
 # Examples:
 #   ./gradlew uberJar
-#   ./sbe-log-printer.sh "${TMPDIR:-/tmp}/phixeron-seq/archive-0" --stream 205
-#   ./sbe-log-printer.sh "${TMPDIR:-/tmp}/phixeron-seq/archive-0" --stream 205 -o 2 \
+#   ./sbe-log-printer.sh "${TMPDIR:-/tmp}/seqeron-seq/archive-0" --stream 205
+#   ./sbe-log-printer.sh "${TMPDIR:-/tmp}/seqeron-seq/archive-0" --stream 205 -o 2 \
 #       2>frames.log | order-decode
 
 set -euo pipefail
@@ -71,10 +71,10 @@ if [[ $# -lt 1 ]]; then
     exit 1
 fi
 
-# PHIXERON_JAR overrides, as it does for clusterctl.sh and the metrics scripts. Which IR the run has in
+# SEQERON_JAR overrides, as it does for clusterctl.sh and the metrics scripts. Which IR the run has in
 # front of it is the classpath's, not the printer's (doc/future-arch.md §11 step 7a.4): the uber jar holds
 # every module's and names every payload, the cluster tier's own artifact holds three and names none.
-JAR="${PHIXERON_JAR:-build/libs/phixeron-0.1.0-uber.jar}"
+JAR="${SEQERON_JAR:-build/libs/seqeron-0.1.0-uber.jar}"
 
 # ── Pre-flight checks ─────────────────────────────────────────────────────────
 
@@ -87,4 +87,4 @@ fi
 # Argument validation (including the archive dir) is the printer's; it holds the option table.
 
 exec java --add-opens=java.base/jdk.internal.misc=ALL-UNNAMED \
-    -cp "${JAR}" org.limitless.phixeron.tools.SbeLogPrinter "$@"
+    -cp "${JAR}" org.limitless.seqeron.tools.SbeLogPrinter "$@"

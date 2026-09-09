@@ -1,4 +1,4 @@
-# Fault tolerance and recovery — phixeron
+# Fault tolerance and recovery — seqeron
 
 How this system survives node loss, leader failover, a stuck local archive, a crashed gateway, and a
 lost network frame — and how each surviving/restarted part gets back to a correct state. This is a
@@ -9,9 +9,9 @@ description of what the code does today, not the aspirational superset in `doc/0
 
 Every recovery path in this document reduces to the same primitive: **replay the sequenced log from
 `globalSeqNo` 1**. `SequencerService.onTakeSnapshot` throws and `onStart` refuses a snapshot image
-(`cluster/src/main/java/org/limitless/phixeron/sequencer/SequencerService.java:295-300,544-550`); `clusterctl
+(`cluster/src/main/java/org/limitless/seqeron/sequencer/SequencerService.java:295-300,544-550`); `clusterctl
 shutdown` uses Aeron's `ABORT` action, which takes no snapshot, never `SHUTDOWN`
-(`cluster/src/main/java/org/limitless/phixeron/tools/ClusterCtl.java:151-185` — `SHUTDOWN` snapshots first,
+(`cluster/src/main/java/org/limitless/seqeron/tools/ClusterCtl.java:151-185` — `SHUTDOWN` snapshots first,
 which would silently break the invariant below).
 
 This is deliberate, not an oversight: **every node publishes and records its own copy of the
@@ -47,7 +47,7 @@ node loses no history — its peers already hold an identical complete copy.
 
 ### 1.2 Leader failover
 
-Raft election is Aeron Cluster's own mechanism; phixeron's contribution is what rides on top of it.
+Raft election is Aeron Cluster's own mechanism; seqeron's contribution is what rides on top of it.
 `SequencerService.onNewLeadershipTermEvent` fires on every node on a new term and calls
 `applyLeadership`, which asks `Sequencer.leadershipChanged` to synthesize a `LeadershipChanged` frame
 — de-duplicated against the leader already on record, so a node re-observing its own term doesn't
@@ -61,7 +61,7 @@ On the C++ client side, `ClusterStreamSender` (the Aeron Cluster ingress session
 session**: a `NewLeaderEvent` swaps only the ingress `Publication` to the new leader's endpoint,
 re-resolved out of the event's member CSV — the cluster session id and leadership term id are updated
 in place, never re-created
-(`cluster/src/main/cpp/org/limitless/phixeron/sequencer/ClusterStreamSender.hpp:632-689`). `send()`'s retry
+(`cluster/src/main/cpp/org/limitless/seqeron/sequencer/ClusterStreamSender.hpp:632-689`). `send()`'s retry
 loop pumps the egress control stream between offer attempts specifically so an in-flight
 `NewLeaderEvent` can land and swap the publication mid-spin — a naive `while(!offer) idle()` would
 deadlock, spinning on the dead leader's publication while the poll that would revive it never runs
@@ -315,7 +315,7 @@ recording and checks `globalSeqNo == 1`; if that fails, `ready` latches false fo
 lifetime (`integrityFailed`) — a deliberate refusal, because a first frame that isn't 1 means this
 node's own recording is missing or corrupted, and centralizing the check here means every app on the
 node is told `ReplayUnavailable` instead of independently discovering the same broken archive
-(`cluster/src/main/java/org/limitless/phixeron/replayer/server/ReplayerService.java`, `checkReady`/
+(`cluster/src/main/java/org/limitless/seqeron/replayer/server/ReplayerService.java`, `checkReady`/
 `peekFirstGlobalSeqNo`). An archive call that throws mid-replay flips the service into a `stalled`
 state — retried at 1s intervals, answering requests `ReplayPending` in the meantime — without
 crashing the process or touching live delivery, since live reads never go through this service.
@@ -328,7 +328,7 @@ couple every other app's replay to it, the same untethered-drop philosophy as th
 to the control plane.
 
 An uncaught exception escaping the duty-cycle loop (e.g. `offerControl`'s `CLOSED`/
-`MAX_POSITION_EXCEEDED`) used to unwind the thread silently, leaving `phixeron.replayer.ready` latched
+`MAX_POSITION_EXCEEDED`) used to unwind the thread silently, leaving `seqeron.replayer.ready` latched
 at 1 while nothing polled requests any more — a healthy-looking, dead process, with every co-located
 app resending into the void (fixed 2026-08-10). `ReplayerService.run()` now catches it,
 clears `ready`/`readyCounter` back to 0, and calls an injected `fatalHandler`; `ReplayerServer` wires that
@@ -475,9 +475,9 @@ section after a failover.
 - **`clusterctl`** (`doc/clusterctl.md`) — `start`/`shutdown` bracket a run with sequenced markers so
   the log itself records "the cluster was up between these two points"; `activate` is the manual
   standby-promotion lever (§2.2); `snapshot` is explicitly refused. See §1.4.
-- **Metrics** (`doc/ops.md`) — `phixeron_sequencer_tap_stalled` (latches at 1 when a node is about to
-  terminate itself, §1.3), `phixeron_sequencer_gateway_promotion_total` (§2.2), the `phixeron_replayer_*`
-  family (§3.1), and `phixeron_node_up` (an aggregator-synthesized per-node reachability gauge,
+- **Metrics** (`doc/ops.md`) — `seqeron_sequencer_tap_stalled` (latches at 1 when a node is about to
+  terminate itself, §1.3), `seqeron_sequencer_gateway_promotion_total` (§2.2), the `seqeron_replayer_*`
+  family (§3.1), and `seqeron_node_up` (an aggregator-synthesized per-node reachability gauge,
   independent of what else that node reports) give an operator the same signals this document
   describes, on a dashboard.
 - **`cluster/src/test/scripts/chaos-runner.sh`** — randomized fault injection against a live 3-node cluster with
@@ -529,5 +529,5 @@ section after a failover.
   until the cluster closes its session, and asserts the exit was that fence rather than an incidental
   crash. The tap-stall, recovery-stall and emit-wedge paths have only been verified by shrinking their
   timeouts; nothing drives the states they exist for, and the Java gateway has no equivalent of the C++
-  `PHIXERON_FAULT_INJECTION` hook. That script also co-locates both instances on one cluster member, so
+  `SEQERON_FAULT_INJECTION` hook. That script also co-locates both instances on one cluster member, so
   the pair on separate members — the production topology — is untested.

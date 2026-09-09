@@ -1052,8 +1052,8 @@ actually landed.
    change, give the FIX session families in the running pair their own direction field. → both codegen
    paths green, the `unsequencedHeader`/`sequencedHeader` rename landed across the pair and every
    consumer of it, both edges reading direction from the payload, copy-through unchanged. The file is
-   `cluster/src/main/sbe/sbe-frame.xml` and says `phixeron` throughout: the `seqeron` rename goes with the
-   repo split (`doc/future-arch.md` §11 step 1), not with a protocol step, each of which is already a
+   `cluster/src/main/sbe/sbe-frame.xml` and said `phixeron` throughout: the `seqeron` rename followed the
+   repo split (`doc/future-arch.md` §11 step 1), not a protocol step, each of which is already a
    wire change on its own. **Step 6 landed in the same change** — see there for why it could not wait.
 2. **Landed, out of order — after steps 3–7 rather than before them.** Land §13.1's payload pipe,
    before anything on the wire is opaque. → `sbe-log-printer.sh -o <payloadId>` writes that protocol's

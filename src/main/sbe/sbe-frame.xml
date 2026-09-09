@@ -31,17 +31,17 @@
     The composites are named for their templates rather than all being `header`, which
     they cannot be once they share one file.
 
-    Naming: `phixeron` throughout, not `seqeron`. The spec names the target file
+    Naming: `seqeron` throughout, not `seqeron`. The spec names the target file
     seqeron-frame.xml; that rename lands with the actual repo split
     (doc/future-arch.md §11 step 1), not with the protocol steps, each of which is
     already a wire change on its own.
 -->
 <sbe:messageSchema xmlns:sbe="http://fixprotocol.io/2016/sbe"
-                   package="org.limitless.phixeron.sbe.frame"
+                   package="org.limitless.seqeron.sbe.frame"
                    id="210"
                    version="0"
                    semanticVersion="1.0"
-                   description="phixeron frame layer: the application and system envelope pairs"
+                   description="seqeron frame layer: the application and system envelope pairs"
                    byteOrder="littleEndian">
 
     <types>
@@ -118,7 +118,7 @@
               description="clusterctl-assigned id, echoed in the frame so the tool matches its own marker"/>
 
         <type name="gatewayName" primitiveType="char" length="32" characterEncoding="US-ASCII"
-              description="Launch-time producer identity, the list's join key (a deployment launch variable, e.g. PHIXERON_*_GATEWAY_NAME); byte[0]==0x00 signals absent"/>
+              description="Launch-time producer identity, the list's join key (a deployment launch variable, e.g. SEQERON_*_GATEWAY_NAME); byte[0]==0x00 signals absent"/>
 
         <type name="protocolName" primitiveType="char" length="32" characterEncoding="US-ASCII"
               description="Label SbeLogPrinter prints for a payload it cannot decode; byte[0]==0x00 signals absent"/>

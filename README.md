@@ -22,12 +22,6 @@ a per-node **Replayer** to serve cold-start history and gaps off the recording. 
 has **zero live network subscribers**: a slow replica is dropped and heals by replay rather than
 back-pressuring the cluster.
 
-> **A note on names.** The repository is `seqeron`; the artifacts inside it still say `phixeron` —
-> the Java package is `org.limitless.phixeron`, the Gradle project and its fat jar are
-> `phixeron-<version>-uber.jar`, the CMake targets are `phixeron_core`/`phixeron_flags`, and the
-> environment variables are `PHIXERON_*`. That is the name of the project this tier was carved out
-> of, and every script resolves the jar by it. Renaming is a separate, mechanical change.
-
 ### Processes
 
 - **`SequencerServer` / `SequencerService` / `Sequencer`** (Java) — the cluster node. `Sequencer` is
@@ -56,7 +50,7 @@ back-pressuring the cluster.
   same four fences a real gateway does, so the recovery-stall policy gets exercised inside this repo.
   It is in the test source set and therefore in no jar.
 
-The **C++ half is a client library, not a set of executables**: `phixeron_core` is header-only, and
+The **C++ half is a client library, not a set of executables**: `seqeron_core` is header-only, and
 the only binary this build produces is `core_tests`. It gives an application written in C++ the
 consumer side of everything above — `ClusterStreamSender` (the cluster client session state machine),
 `ClusterStreamClient` / `ReplayerStreamReceiver` (replay history, then follow the tap live),
@@ -102,12 +96,12 @@ versions are pinned to match (`build.gradle`'s `ext` block, `CMakeLists.txt`'s `
 
 ```bash
 ./gradlew compileJava
-./gradlew uberJar     # fat jar, run without Gradle: build/libs/phixeron-0.1.0-uber.jar
+./gradlew uberJar     # fat jar, run without Gradle: build/libs/seqeron-0.1.0-uber.jar
 ./gradlew test        # JUnit 5, ~1s
 ```
 
-Every script resolves `build/libs/phixeron-0.1.0-uber.jar`, so `uberJar` is the prerequisite for all
-of them; `PHIXERON_JAR` overrides the path.
+Every script resolves `build/libs/seqeron-0.1.0-uber.jar`, so `uberJar` is the prerequisite for all
+of them; `SEQERON_JAR` overrides the path.
 
 The codegen tasks run as part of `compileJava` and can be invoked on their own:
 
@@ -127,7 +121,7 @@ cmake -B cmake-build-release -DCMAKE_BUILD_TYPE=Release
 cmake --build cmake-build-release
 ```
 
-`-DPHIXERON_COVERAGE=ON` adds coverage instrumentation. The tree is developed on macOS/arm64 with
+`-DSEQERON_COVERAGE=ON` adds coverage instrumentation. The tree is developed on macOS/arm64 with
 Apple clang; `doc/portability-linux.md` records what a RHEL bring-up has to fix, and CI builds it on
 Ubuntu with both clang and gcc-14.
 
@@ -160,12 +154,12 @@ are standalone tools, and run no tests. `ports.sh` and `paths.sh` are sourced by
 
 | Script | Purpose |
 |--------|---------|
-| `start-cluster.sh [debug\|release]` | Start the single-node cluster — `SequencerServer`, `ReplayerServer` and a `ClusterProbe follow` replica — in the background; Ctrl-C stops all of them. `PHIXERON_PRODUCT_APPS=1` additionally launches the product repo's C++ processes, which must already be built |
+| `start-cluster.sh [debug\|release]` | Start the single-node cluster — `SequencerServer`, `ReplayerServer` and a `ClusterProbe follow` replica — in the background; Ctrl-C stops all of them. `SEQERON_PRODUCT_APPS=1` additionally launches the product repo's C++ processes, which must already be built |
 | `stop-cluster.sh` | Stop everything either start script launched |
 | `clusterctl.sh <command>` | Cluster life cycle: `start`, `shutdown`, `activate`, `load-topology`, `counters` — see [Operator tooling](#operator-tooling) |
 | `sbe-log-printer.sh <archive-dir>` | Dump an Aeron Archive recording as JSON — see [Log printer](#log-printer) |
 | `metrics-exporter.sh` / `metrics-aggregator.sh` | The Prometheus ops plane (`doc/ops.md`) |
-| `purgelog.sh [--force]` | Delete archive/cluster directories under `$TMPDIR/phixeron-seq` and the `logs/` directory; the cluster must be stopped first |
+| `purgelog.sh [--force]` | Delete archive/cluster directories under `$TMPDIR/seqeron-seq` and the `logs/` directory; the cluster must be stopped first |
 
 The end-to-end harnesses live under `src/test/scripts/`. **All five are Java-only** — they drive the
 cluster through `ClusterProbe`, which attaches to a member's own embedded media driver, so three of
@@ -174,7 +168,7 @@ from the repository root, with `./gradlew uberJar` done first.
 
 | Script | Purpose |
 |--------|---------|
-| `start-three-node-cluster.sh [debug\|release]` | Start a local 3-node Raft cluster with a per-node `ReplayerServer` and `ClusterProbe` replica; blocks until Ctrl-C. `PHIXERON_PRODUCT_APPS=1` adds the product repo's processes |
+| `start-three-node-cluster.sh [debug\|release]` | Start a local 3-node Raft cluster with a per-node `ReplayerServer` and `ClusterProbe` replica; blocks until Ctrl-C. `SEQERON_PRODUCT_APPS=1` adds the product repo's processes |
 | `failover-test.sh` | Force a failover, then cold-start a fresh `ClusterProbe` follower on the new leader and verify it catches up on full history — each node's tap recording is one continuous run spanning both tenures |
 | `gap-recovery-test.sh` | Drop a live tap frame on a caught-up consumer (SIGUSR1 fault injection) and verify it re-walks its recording and heals rather than wedging |
 | `replayer-restart-test.sh` | Kill and restart a node's `ReplayerServer` while a client is riding a replay from it, then kill and restart the client's own node and verify its cold-start walk crosses a real multi-recording chain |
@@ -196,13 +190,13 @@ java \
   --add-opens=java.base/java.lang=ALL-UNNAMED \
   --add-opens=java.base/java.lang.reflect=ALL-UNNAMED \
   -Dsequencer.memberId=0 \
-  -jar build/libs/phixeron-0.1.0-uber.jar
-# [SequencerServer] Starting member 0 | ingress=aeron:udp?endpoint=localhost:9302 | archive=aeron:udp?endpoint=localhost:9301 | baseDir=/tmp/phixeron-seq
+  -jar build/libs/seqeron-0.1.0-uber.jar
+# [SequencerServer] Starting member 0 | ingress=aeron:udp?endpoint=localhost:9302 | archive=aeron:udp?endpoint=localhost:9301 | baseDir=/tmp/seqeron-seq
 # [SequencerServer/0] Running — Ctrl-C to stop
 ```
 
 The node embeds its own MediaDriver and Archive — no separate `aeronmd` needed. Data is written to
-`$TMPDIR/phixeron-seq/archive-0` and `$TMPDIR/phixeron-seq/cluster-0`.
+`$TMPDIR/seqeron-seq/archive-0` and `$TMPDIR/seqeron-seq/cluster-0`.
 
 `src/main/scripts/start-cluster.sh` does the same thing plus a co-located `ReplayerServer` and a
 consumer replica, which is usually what you want:
@@ -225,9 +219,9 @@ java \
   --add-opens=java.base/java.lang=ALL-UNNAMED \
   --add-opens=java.base/java.lang.reflect=ALL-UNNAMED \
   -Dsequencer.memberId=0 \
-  -Dsequencer.baseDir=/var/phixeron-seq \
+  -Dsequencer.baseDir=/var/seqeron-seq \
   "-Dsequencer.clusterMembers=0,host0:9302,host0:9303,host0:9304,host0:9305,host0:9301|1,host1:9312,host1:9313,host1:9314,host1:9315,host1:9311|2,host2:9322,host2:9323,host2:9324,host2:9325,host2:9321" \
-  -jar phixeron-0.1.0-uber.jar
+  -jar seqeron-0.1.0-uber.jar
 ```
 
 `src/test/scripts/start-three-node-cluster.sh` builds that string with `ports.sh`'s
@@ -260,8 +254,8 @@ into each member's own archive.
 | Property                    | Default                          | Description                        |
 |-----------------------------|----------------------------------|------------------------------------|
 | `sequencer.memberId`        | `0`                              | Raft member ID for this node       |
-| `sequencer.baseDir`         | `$TMPDIR/phixeron-seq`           | Root for archive and cluster dirs  |
-| `sequencer.aeronDir`        | `$TMPDIR/phixeron-seq-aeron-<id>`| Aeron media driver directory       |
+| `sequencer.baseDir`         | `$TMPDIR/seqeron-seq`           | Root for archive and cluster dirs  |
+| `sequencer.aeronDir`        | `$TMPDIR/seqeron-seq-aeron-<id>`| Aeron media driver directory       |
 | `sequencer.clusterMembers`  | single-node localhost            | Full Aeron clusterMembers string   |
 | `sequencer.idleStrategy`    | `backoff`                        | `backoff` or `yielding`            |
 
@@ -312,13 +306,13 @@ as JSON, decoded against the generated SBE IR. It works on a still-running clust
 recording is printed up to whatever has been written so far.
 
 ```bash
-./src/main/scripts/sbe-log-printer.sh "${TMPDIR:-/tmp}/phixeron-seq/archive-0" --stream 205 --oneline
+./src/main/scripts/sbe-log-printer.sh "${TMPDIR:-/tmp}/seqeron-seq/archive-0" --stream 205 --oneline
 ```
 
 Or through Gradle, which takes the same options as `-P` properties:
 
 ```bash
-./gradlew sbeLogPrinter -PlogDir="${TMPDIR:-/tmp}/phixeron-seq/archive-0" -Pstream=205 -Poneline
+./gradlew sbeLogPrinter -PlogDir="${TMPDIR:-/tmp}/seqeron-seq/archive-0" -Pstream=205 -Poneline
 ```
 
 ### Schemas
@@ -380,7 +374,7 @@ that owns their schema (`doc/seqeron-protocol-spec.md` §13.1). This tier decode
 payload at all, so this is how one gets out to something that does:
 
 ```bash
-./src/main/scripts/sbe-log-printer.sh "${TMPDIR:-/tmp}/phixeron-seq/archive-0" --stream 205 \
+./src/main/scripts/sbe-log-printer.sh "${TMPDIR:-/tmp}/seqeron-seq/archive-0" --stream 205 \
     -o 2 2>frames.log | order-decode
 ```
 
@@ -401,7 +395,7 @@ A payload whose schema is not loaded prints as its ids rather than being decoded
 (`doc/seqeron-protocol-spec.md` §6.3):
 
 ```
-<undecodable payload 2 (phixeron-order v1): schema 220, templateId 1>
+<undecodable payload 2 (order v1): schema 220, templateId 1>
 <undecodable payload 7: schema 900, templateId 3>
 ```
 

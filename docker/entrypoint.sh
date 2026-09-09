@@ -8,13 +8,13 @@
 # is copied into the image rather than restated here so the port formula keeps its single home.
 set -euo pipefail
 
-source /opt/phixeron/ports.sh
+source /opt/seqeron/ports.sh
 
 MEMBER_ID="${MEMBER_ID:?MEMBER_ID must be set}"
 NODE_COUNT="${NODE_COUNT:-3}"
 HOST_TEMPLATE="${HOST_TEMPLATE:-node-{id}}"       # {id} -> member id; the compose service names
 HOST="${HOST_TEMPLATE//\{id\}/${MEMBER_ID}}"
-LOG_FILE="${LOG_FILE:-/var/log/phixeron/node.log}"
+LOG_FILE="${LOG_FILE:-/var/log/seqeron/node.log}"
 AERON_DIR="/dev/shm/aeron-${MEMBER_ID}"
 
 mkdir -p "$(dirname "${LOG_FILE}")"
@@ -41,10 +41,10 @@ java "${JAVA_OPTS[@]}" \
     -Dsequencer.memberId="${MEMBER_ID}" \
     -Dsequencer.host="${HOST}" \
     -Dsequencer.clusterMembers="$(cluster_members_string "${NODE_COUNT}" "${HOST_TEMPLATE}")" \
-    -Dsequencer.baseDir=/var/lib/phixeron \
+    -Dsequencer.baseDir=/var/lib/seqeron \
     -Dsequencer.aeronDir="${AERON_DIR}" \
     -Dsequencer.idleStrategy="${IDLE_STRATEGY:-backoff}" \
-    -jar "${PHIXERON_JAR}" &
+    -jar "${SEQERON_JAR}" &
 SEQUENCER_PID=$!
 
 # The replayer connects to the member's archive over aeron:ipc, so it cannot start before the
@@ -59,7 +59,7 @@ java "${JAVA_OPTS[@]}" \
     -Dreplayer.memberId="${MEMBER_ID}" \
     -Dreplayer.aeronDir="${AERON_DIR}" \
     -Dreplayer.idleStrategy="${IDLE_STRATEGY:-backoff}" \
-    -cp "${PHIXERON_JAR}" org.limitless.phixeron.replayer.server.ReplayerServer &
+    -cp "${SEQERON_JAR}" org.limitless.seqeron.replayer.server.ReplayerServer &
 REPLAYER_PID=$!
 
 # docker stop's SIGTERM has to reach both ShutdownSignalBarriers, and whichever process exits first

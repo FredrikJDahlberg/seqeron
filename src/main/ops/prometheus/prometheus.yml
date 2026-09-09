@@ -1,4 +1,4 @@
-# Prometheus scrape config for phixeron. Under the aggregating-proxy topology, Prometheus talks
+# Prometheus scrape config for seqeron. Under the aggregating-proxy topology, Prometheus talks
 # only to the central MetricsAggregator (metrics-aggregator.sh, default port 9500) — it re-exposes
 # every node's metrics from metrics-exporter.sh under one endpoint, so no per-node scrape targets
 # or network reach to individual nodes is needed here.
@@ -7,6 +7,6 @@ global:
   scrape_interval: 15s
 
 scrape_configs:
-  - job_name: phixeron
+  - job_name: seqeron
     static_configs:
       - targets: ['localhost:9500']

@@ -4,7 +4,7 @@
 #
 # Sends SIGTERM to the consumer replicas (ClusterProbe, TestGateway), then to the cluster itself
 # (SequencerServer, ReplayerServer, aeronmd) and to the product processes either start script
-# launches under PHIXERON_PRODUCT_APPS=1 (FixGateway, OrderExecServer, BasicDataServer) — those
+# launches under SEQERON_PRODUCT_APPS=1 (FixGateway, OrderExecServer, BasicDataServer) — those
 # are another repo's binaries, kept here so a run that launched them leaves nothing behind. Then
 # waits up to 10 s for each to exit before sending SIGKILL to any survivors.
 #

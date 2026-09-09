@@ -3,7 +3,7 @@
 # declares no simdfix and generates no application codecs, and there is no C++ replay server: the
 # server side of the replay protocol is Java only.
 cmake_minimum_required(VERSION 3.28)
-project(phixeron_core VERSION 0.1.0 LANGUAGES CXX)
+project(seqeron_core VERSION 0.1.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -12,29 +12,29 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 include(FetchContent)
 include(CheckCXXCompilerFlag)
 
-check_cxx_compiler_flag("-msse4.1" PHIXERON_HAS_MSSE41)
+check_cxx_compiler_flag("-msse4.1" SEQERON_HAS_MSSE41)
 
-add_library(phixeron_flags INTERFACE)
-target_compile_options(phixeron_flags INTERFACE
+add_library(seqeron_flags INTERFACE)
+target_compile_options(seqeron_flags INTERFACE
     -Wall -Wextra
     $<$<CONFIG:Debug>:-g -O0 -fsanitize=address -fno-omit-frame-pointer>
     $<$<CONFIG:Release>:-O3>
-    $<$<BOOL:${PHIXERON_HAS_MSSE41}>:-msse4.1>
+    $<$<BOOL:${SEQERON_HAS_MSSE41}>:-msse4.1>
 )
-target_link_options(phixeron_flags INTERFACE
+target_link_options(seqeron_flags INTERFACE
     $<$<CONFIG:Debug>:-fsanitize=address>
 )
 
-option(PHIXERON_COVERAGE "Instrument for coverage" OFF)
-if(PHIXERON_COVERAGE)
+option(SEQERON_COVERAGE "Instrument for coverage" OFF)
+if(SEQERON_COVERAGE)
     if(CMAKE_CXX_COMPILER_ID MATCHES "Clang") # matches both Clang and AppleClang
-        target_compile_options(phixeron_flags INTERFACE -fprofile-instr-generate -fcoverage-mapping)
-        target_link_options(phixeron_flags INTERFACE -fprofile-instr-generate)
+        target_compile_options(seqeron_flags INTERFACE -fprofile-instr-generate -fcoverage-mapping)
+        target_link_options(seqeron_flags INTERFACE -fprofile-instr-generate)
     elseif(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
-        target_compile_options(phixeron_flags INTERFACE --coverage)
-        target_link_options(phixeron_flags INTERFACE --coverage)
+        target_compile_options(seqeron_flags INTERFACE --coverage)
+        target_link_options(seqeron_flags INTERFACE --coverage)
     else()
-        message(WARNING "PHIXERON_COVERAGE=ON but ${CMAKE_CXX_COMPILER_ID} has no known coverage flags")
+        message(WARNING "SEQERON_COVERAGE=ON but ${CMAKE_CXX_COMPILER_ID} has no known coverage flags")
     endif()
 endif()
 
@@ -107,7 +107,7 @@ set(CLUSTER_SBE_STAMP  "${SBE_CORE_DIR}/.cluster_sbe_stamp")
 
 add_custom_command(
     OUTPUT  ${CLUSTER_SBE_STAMP}
-    COMMAND ${CMAKE_COMMAND} -E rm -rf ${SBE_CORE_DIR}/org_limitless_phixeron_cluster_sbe
+    COMMAND ${CMAKE_COMMAND} -E rm -rf ${SBE_CORE_DIR}/org_limitless_seqeron_cluster_sbe
     COMMAND ${CMAKE_COMMAND} -E make_directory ${SBE_CORE_DIR}
     COMMAND ${Java_JAVA_EXECUTABLE}
                 -Dsbe.output.dir=${SBE_CORE_DIR}
@@ -129,7 +129,7 @@ set(REPLAY_SBE_STAMP  "${SBE_CORE_DIR}/.replay_sbe_stamp")
 
 add_custom_command(
     OUTPUT  ${REPLAY_SBE_STAMP}
-    COMMAND ${CMAKE_COMMAND} -E rm -rf ${SBE_CORE_DIR}/org_limitless_phixeron_sbe_replay
+    COMMAND ${CMAKE_COMMAND} -E rm -rf ${SBE_CORE_DIR}/org_limitless_seqeron_sbe_replay
     COMMAND ${CMAKE_COMMAND} -E make_directory ${SBE_CORE_DIR}
     COMMAND ${Java_JAVA_EXECUTABLE}
                 -Dsbe.output.dir=${SBE_CORE_DIR}
@@ -151,7 +151,7 @@ set(FRAME_SBE_STAMP  "${SBE_CORE_DIR}/.frame_sbe_stamp")
 
 add_custom_command(
     OUTPUT  ${FRAME_SBE_STAMP}
-    COMMAND ${CMAKE_COMMAND} -E rm -rf ${SBE_CORE_DIR}/org_limitless_phixeron_sbe_frame
+    COMMAND ${CMAKE_COMMAND} -E rm -rf ${SBE_CORE_DIR}/org_limitless_seqeron_sbe_frame
     COMMAND ${CMAKE_COMMAND} -E make_directory ${SBE_CORE_DIR}
     COMMAND ${Java_JAVA_EXECUTABLE}
                 -Dsbe.output.dir=${SBE_CORE_DIR}
@@ -167,46 +167,46 @@ add_custom_command(
 
 add_custom_target(GenerateFrameSbeCodecs DEPENDS ${FRAME_SBE_STAMP})
 
-# phixeron_core — header-only interface library for the cluster tier. Its include root is
+# seqeron_core — header-only interface library for the cluster tier. Its include root is
 # src/main/cpp, so nothing linking only this can reach a product header,
 # and it carries no simdfix and no generated FIX codecs: its SBE root is SBE_CORE_DIR, which holds
 # only frame/replay/cluster, so the cluster tier decodes no FIX by construction rather than by habit.
-add_library(phixeron_core INTERFACE)
-target_include_directories(phixeron_core INTERFACE
+add_library(seqeron_core INTERFACE)
+target_include_directories(seqeron_core INTERFACE
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/main/cpp>
     $<INSTALL_INTERFACE:include>
 )
 # SYSTEM: SBE-tool output. Regenerating from the schema is the only way to change these, so their
 # diagnostics are noise — -Wtype-limits fires on every get*AsJsonEscapedString wherever char is
 # unsigned (aarch64). Keeps -Wall -Wextra live on the hand-written sources.
-target_include_directories(phixeron_core SYSTEM INTERFACE
+target_include_directories(seqeron_core SYSTEM INTERFACE
     $<BUILD_INTERFACE:${SBE_CORE_DIR}>
 )
-target_link_libraries(phixeron_core INTERFACE
-    phixeron_flags
+target_link_libraries(seqeron_core INTERFACE
+    seqeron_flags
     aeron_client_wrapper
 )
 
-# core_tests — the cluster tier's own suite. Links phixeron_core only, so a core file that reached for
+# core_tests — the cluster tier's own suite. Links seqeron_core only, so a core file that reached for
 # a product header fails to build.
 enable_testing()
 
 add_executable(core_tests
-    src/test/cpp/org/limitless/phixeron/sequencer/ClusterCodecTest.cpp
-    src/test/cpp/org/limitless/phixeron/sequencer/ConformanceTest.cpp
-    src/test/cpp/org/limitless/phixeron/sequencer/ClusterStreamSenderTest.cpp
-    src/test/cpp/org/limitless/phixeron/sequencer/FrameStartPositionTest.cpp
-    src/test/cpp/org/limitless/phixeron/sequencer/PortLayoutTest.cpp
-    src/test/cpp/org/limitless/phixeron/replayer/client/ReplayerRecoveryTest.cpp
-    src/test/cpp/org/limitless/phixeron/replayer/client/ReplayerRecoveryPropertyTest.cpp
-    src/test/cpp/org/limitless/phixeron/replayer/client/RecoveryProgressPolicyTest.cpp
-    src/test/cpp/org/limitless/phixeron/fix/GatewayRecoveryStallPolicyTest.cpp
-    src/main/cpp/org/limitless/phixeron/sequencer/ClusterStreamSender.hpp
-    src/main/cpp/org/limitless/phixeron/fix/GatewayRecoveryStallPolicy.hpp
-    src/main/cpp/org/limitless/phixeron/util/Logger.hpp
+    src/test/cpp/org/limitless/seqeron/sequencer/ClusterCodecTest.cpp
+    src/test/cpp/org/limitless/seqeron/sequencer/ConformanceTest.cpp
+    src/test/cpp/org/limitless/seqeron/sequencer/ClusterStreamSenderTest.cpp
+    src/test/cpp/org/limitless/seqeron/sequencer/FrameStartPositionTest.cpp
+    src/test/cpp/org/limitless/seqeron/sequencer/PortLayoutTest.cpp
+    src/test/cpp/org/limitless/seqeron/replayer/client/ReplayerRecoveryTest.cpp
+    src/test/cpp/org/limitless/seqeron/replayer/client/ReplayerRecoveryPropertyTest.cpp
+    src/test/cpp/org/limitless/seqeron/replayer/client/RecoveryProgressPolicyTest.cpp
+    src/test/cpp/org/limitless/seqeron/fix/GatewayRecoveryStallPolicyTest.cpp
+    src/main/cpp/org/limitless/seqeron/sequencer/ClusterStreamSender.hpp
+    src/main/cpp/org/limitless/seqeron/fix/GatewayRecoveryStallPolicy.hpp
+    src/main/cpp/org/limitless/seqeron/util/Logger.hpp
 )
 target_link_libraries(core_tests PRIVATE
-    phixeron_core
+    seqeron_core
     aeron_archive_wrapper
     aeron_archive_c_client
     aeron
@@ -215,8 +215,8 @@ target_link_libraries(core_tests PRIVATE
 add_dependencies(core_tests GenerateReplaySbeCodecs GenerateClusterSbeCodecs
     GenerateFrameSbeCodecs)
 
-check_cxx_compiler_flag("-Wcharacter-conversion" PHIXERON_HAS_WCHARACTER_CONVERSION)
-if(PHIXERON_HAS_WCHARACTER_CONVERSION)
+check_cxx_compiler_flag("-Wcharacter-conversion" SEQERON_HAS_WCHARACTER_CONVERSION)
+if(SEQERON_HAS_WCHARACTER_CONVERSION)
     target_compile_options(core_tests PRIVATE -Wno-character-conversion)
 endif()
 

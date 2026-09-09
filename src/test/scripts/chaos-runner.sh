@@ -5,7 +5,7 @@
 #   This script CONDUCTS and CHECKS INVARIANTS. Each round it perturbs the running system with one
 #   randomly-chosen fault, lets it heal, then asserts steady-state invariants (a leader exists, the
 #   FIX path still round-trips, the consumer is still delivering in order). It is deliberately NOT a
-#   latency/throughput measurement tool — that belongs in a purpose-built driver (PHIXERON_LATENCY_STATS
+#   latency/throughput measurement tool — that belongs in a purpose-built driver (SEQERON_LATENCY_STATS
 #   already records post-consensus delivery latency; a load harness generates the arrival process). A
 #   shell loop cannot make defensible tail-latency claims, so it does not try to. It kills, pauses,
 #   drops, and probes — nothing it does produces a number you would put in a non-functional report.
@@ -53,7 +53,7 @@ source "${SCRIPT_DIR}/../../main/scripts/ports.sh"
 source "${SCRIPT_DIR}/../../main/scripts/paths.sh"
 
 # ── Config ────────────────────────────────────────────────────────────────────
-JAR="build/libs/phixeron-0.1.0-uber.jar"
+JAR="build/libs/seqeron-0.1.0-uber.jar"
 # TestGateway is harness code and lives in :cluster's TEST source set, so it is in no jar — launched off
 # the compiled test classes beside it.
 TEST_CLASSES="build/classes/java/test"
@@ -99,7 +99,7 @@ JAVA_OPTS=(
   --add-opens=java.base/java.lang.reflect=ALL-UNNAMED
   --add-opens=java.base/jdk.internal.misc=ALL-UNNAMED
 )
-BASE_DIR="${TMP_DIR}/phixeron-seqfo"
+BASE_DIR="${TMP_DIR}/seqeron-seqfo"
 CLUSTER_MEMBERS="$(cluster_members_string 3)"
 CN=0            # observation / tap-drop-target consumer host — a fault target like any other member
 # The gateway pair, one instance per member so a kill of either host is a genuine promotion. Rank 0 is
@@ -133,9 +133,9 @@ start_seq() {  # start_seq <memberId> — append so leadership history survives 
   # "Running" from the one the previous boot left in the same (appended-to) file.
   SEQ_LOG_OFFSET[$m]=0
   [[ -f "$LOG_DIR/seq-$m.log" ]] && SEQ_LOG_OFFSET[$m]=$(wc -l < "$LOG_DIR/seq-$m.log")
-  # PHIXERON_FAULT_INJECTION arms the tap-recording fault fault_tap_stall triggers by file (the archive is
+  # SEQERON_FAULT_INJECTION arms the tap-recording fault fault_tap_stall triggers by file (the archive is
   # in-process, so it cannot be stalled from outside); inert until that file appears.
-  PHIXERON_FAULT_INJECTION=1 \
+  SEQERON_FAULT_INJECTION=1 \
   java "${JAVA_OPTS[@]}" -Dsequencer.memberId="$m" -Dsequencer.baseDir="$BASE_DIR" \
        -Dsequencer.clusterMembers="$CLUSTER_MEMBERS" -jar "$JAR" >> "$LOG_DIR/seq-$m.log" 2>&1 &
   SEQ_PIDS[$m]=$!
@@ -204,7 +204,7 @@ trap cleanup EXIT INT TERM
 
 # ── Bring-up ─────────────────────────────────────────────────────────────────────
 [[ -f "$JAR" ]] || { echo "missing $JAR — run ./gradlew uberJar"; exit 1; }
-[[ -f "$TEST_CLASSES/org/limitless/phixeron/tools/TestGateway.class" ]] \
+[[ -f "$TEST_CLASSES/org/limitless/seqeron/tools/TestGateway.class" ]] \
   || { echo "missing TestGateway in $TEST_CLASSES — run ./gradlew compileTestJava"; exit 1; }
 
 # Idempotent pre-clean so back-to-back runs don't collide: SIGKILL any survivors, then WAIT for the
@@ -214,8 +214,8 @@ trap cleanup EXIT INT TERM
 # ReplayerServer's `-cp` lines) and the -Dsequencer marker instead.
 pkill -9 -f "$JAR" 2>/dev/null; pkill -9 -f "sequencer.memberId" 2>/dev/null
 pkill -9 -f "probe.gatewayName" 2>/dev/null
-rm -rf "$BASE_DIR" "${TMP_DIR}/phixeron-seq-aeron-0" "${TMP_DIR}/phixeron-seq-aeron-1" \
-       "${TMP_DIR}/phixeron-seq-aeron-2" 2>/dev/null
+rm -rf "$BASE_DIR" "${TMP_DIR}/seqeron-seq-aeron-0" "${TMP_DIR}/seqeron-seq-aeron-1" \
+       "${TMP_DIR}/seqeron-seq-aeron-2" 2>/dev/null
 W=0; while lsof -nP -iUDP:"$(archive_port 0)" -iUDP:"$(archive_port 1)" -iUDP:"$(archive_port 2)" 2>/dev/null \
   | grep -q java; do sleep 0.5; W=$((W+1)); ((W>20)) && { echo "UDP archive ports still held after 10s — stale cluster?"; exit 1; }; done
 
@@ -227,7 +227,7 @@ start_seq 0; wait_running 0 || { echo "member 0 not up"; exit 1; }
 
 for m in 0 1 2; do
   java "${JAVA_OPTS[@]}" -Dreplayer.memberId="$m" -cp "$JAR" \
-       org.limitless.phixeron.replayer.server.ReplayerServer > "$LOG_DIR/replayer-$m.log" 2>&1 &
+       org.limitless.seqeron.replayer.server.ReplayerServer > "$LOG_DIR/replayer-$m.log" 2>&1 &
   REPLAYER_PIDS[$m]=$!
 done
 for m in 0 1 2; do W=0; until grep -q "serving replay" "$LOG_DIR/replayer-$m.log" 2>/dev/null; do sleep 0.5; W=$((W+1)); ((W > APP_CATCHUP_TIMEOUT_SECS * 2)) && break; done; done
@@ -239,7 +239,7 @@ CONSUMER_LOG="$LOG_DIR/consumer.log"
 start_consumer() {
   java "${JAVA_OPTS[@]}" -Dprobe.memberId="$CN" -Dprobe.clientId=9 \
        -Dprobe.latencyStats=true -Dprobe.faultInjection=true \
-       -cp "$JAR" org.limitless.phixeron.tools.ClusterProbe follow > "$CONSUMER_LOG" 2>&1 &
+       -cp "$JAR" org.limitless.seqeron.tools.ClusterProbe follow > "$CONSUMER_LOG" 2>&1 &
   CONSUMER_PID=$!
 }
 start_consumer
@@ -254,7 +254,7 @@ W=0; until grep -q "following live" "$CONSUMER_LOG" 2>/dev/null; do sleep 0.5; W
 start_replica() {  # start_replica <memberId>  (members 1/2; member 0's replica is start_consumer)
   local m="$1"
   java "${JAVA_OPTS[@]}" -Dprobe.memberId="$m" -Dprobe.clientId=9 -Dprobe.faultInjection=true \
-       -cp "$JAR" org.limitless.phixeron.tools.ClusterProbe follow > "$LOG_DIR/consumer-$m.log" 2>&1 &
+       -cp "$JAR" org.limitless.seqeron.tools.ClusterProbe follow > "$LOG_DIR/consumer-$m.log" 2>&1 &
   EXTRA_CONSUMER_PIDS[$m]=$!
 }
 for m in 1 2; do start_replica "$m"; done
@@ -277,7 +277,7 @@ start_gateway() {  # start_gateway <memberId>
   local m="$1"
   java "${JAVA_OPTS[@]}" -Dprobe.memberId="$m" -Dprobe.clientId=10 \
        -Dprobe.gatewayName="$(gateway_name "$m")" -Dprobe.listenPort="$(gateway_port "$m")" \
-       -cp "$GW_CP" org.limitless.phixeron.tools.TestGateway serve > "$(gateway_log "$m")" 2>&1 &
+       -cp "$GW_CP" org.limitless.seqeron.tools.TestGateway serve > "$(gateway_log "$m")" 2>&1 &
   GW_PIDS[$m]=$!
 }
 for m in "$GW_A_MEMBER" "$GW_B_MEMBER"; do start_gateway "$m"; done
@@ -301,7 +301,7 @@ active_gateway_port() {
 # outside the process, which is the whole reason this pair has a socket.
 gateway_roundtrip() {  # gateway_roundtrip <port> <lines> <log label>
   java "${JAVA_OPTS[@]}" -Dprobe.listenPort="$1" -Dprobe.count="$2" \
-       -cp "$GW_CP" org.limitless.phixeron.tools.TestGateway client > "$LOG_DIR/gateway-$3.log" 2>&1
+       -cp "$GW_CP" org.limitless.seqeron.tools.TestGateway client > "$LOG_DIR/gateway-$3.log" 2>&1
 }
 
 W=0; until [[ -n "$(active_gateway_port)" ]]; do
@@ -431,7 +431,7 @@ restart_colocated_apps() {
     kill "${EXTRA_CONSUMER_PIDS[$m]:-0}" 2>/dev/null
   fi
   java "${JAVA_OPTS[@]}" -Dreplayer.memberId="$m" -cp "$JAR" \
-       org.limitless.phixeron.replayer.server.ReplayerServer > "$LOG_DIR/replayer-$m.log" 2>&1 &
+       org.limitless.seqeron.replayer.server.ReplayerServer > "$LOG_DIR/replayer-$m.log" 2>&1 &
   REPLAYER_PIDS[$m]=$!
   until grep -q "serving replay" "$LOG_DIR/replayer-$m.log" 2>/dev/null; do
     sleep 0.5; W=$((W+1)); ((W > APP_CATCHUP_TIMEOUT_SECS * 2)) && { log "  WARN replayer-$m not serving after restart"; break; }
@@ -609,7 +609,7 @@ FAULTS=(fault_kill_leader fault_kill_follower fault_sigkill_node fault_pause_nod
 
 # NOTE — on killing the media driver: there is deliberately no fault_kill_aeronmd, and there is no
 #   standalone aeronmd left to kill. Every process here is on a per-member driver embedded in its
-#   SequencerServer (ClusteredMediaDriver at ${TMP_DIR}/phixeron-seq-aeron-<m>): ReplayerServer
+#   SequencerServer (ClusteredMediaDriver at ${TMP_DIR}/seqeron-seq-aeron-<m>): ReplayerServer
 #   (ReplayerServer.java:67) and every ClusterProbe attach there, and the probe's submit/ping runs attach
 #   to member $CN's. So the real "driver dies and restarts at the same path" fault is ALREADY injected by
 #   every kill fault above — asserted by check_driver_loss_failfast.
@@ -636,7 +636,7 @@ check_invariants() {
   # committed it, and it came back. Its seqNo is a timestamp, so the background load's 1..N cannot be
   # mistaken for it.
   if java "${JAVA_OPTS[@]}" -Dprobe.memberId="$CN" -cp "$JAR" \
-       org.limitless.phixeron.tools.ClusterProbe ping > "$LOG_DIR/probe.log" 2>&1; then
+       org.limitless.seqeron.tools.ClusterProbe ping > "$LOG_DIR/probe.log" 2>&1; then
     log "  ok: ingress->consensus->tap round-trip probe passed"
   else
     log "  INVARIANT FAIL: round-trip probe failed (see $LOG_DIR/probe.log)"; fail=1
@@ -756,7 +756,7 @@ check_invariants() {
 # a globalSeqNo, so it contributes nothing to the scan below. The node's high-water mark is the max globalSeqNo it recorded;
 # all nodes' high-water marks must match (convergence).
 verify_sequence() {
-  local jar="build/libs/phixeron-0.1.0-uber.jar" m rc=0
+  local jar="build/libs/seqeron-0.1.0-uber.jar" m rc=0
   [[ -f "$jar" ]] || { log "SAFETY: skipped (no $jar — run ./gradlew uberJar)"; return 0; }
   # Quiesce first: stop the background load and let the last sequenced messages replicate to every node.
   # That alone isn't enough for a stationary stream, though: the 1 Hz ClusterHeartbeat (the cluster clock) keeps

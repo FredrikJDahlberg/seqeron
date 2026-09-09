@@ -37,7 +37,7 @@ CAP_SECONDS=120
 # size on the wire and in the archive.
 FILLER_BYTES="${FILLER_BYTES:-175}"
 
-BENCH_LOG_DIR="/tmp/phixeron-replay-bench"
+BENCH_LOG_DIR="/tmp/seqeron-replay-bench"
 mkdir -p "$BENCH_LOG_DIR"
 START_LOG="$BENCH_LOG_DIR/cluster.log"
 COLD_LOG="$BENCH_LOG_DIR/cold-replica.log"
@@ -72,17 +72,17 @@ JAVA_OPTS=(
     --add-opens=java.base/java.lang.reflect=ALL-UNNAMED
     --add-opens=java.base/jdk.internal.misc=ALL-UNNAMED
 )
-JAR="build/libs/phixeron-0.1.0-uber.jar"
+JAR="build/libs/seqeron-0.1.0-uber.jar"
 java "${JAVA_OPTS[@]}" -Dprobe.memberId=0 -Dprobe.count="$PRELOAD" -Dprobe.fillerBytes="$FILLER_BYTES" \
-    -cp "$JAR" org.limitless.phixeron.tools.ClusterProbe submit > "$BENCH_LOG_DIR/preload.log" 2>&1
+    -cp "$JAR" org.limitless.seqeron.tools.ClusterProbe submit > "$BENCH_LOG_DIR/preload.log" 2>&1
 sleep 3
 
-ARCHIVE_BYTES=$(du -sk "${TMP_DIR}/phixeron-seq3/archive-1" 2>/dev/null | awk '{print $1*1024}')
+ARCHIVE_BYTES=$(du -sk "${TMP_DIR}/seqeron-seq3/archive-1" 2>/dev/null | awk '{print $1*1024}')
 
 if [[ "$LOAD_DURING" == "1" ]]; then
     ( java "${JAVA_OPTS[@]}" -Dprobe.memberId=0 -Dprobe.count=$((PRELOAD * 4)) \
         -Dprobe.fillerBytes="$FILLER_BYTES" \
-        -cp "$JAR" org.limitless.phixeron.tools.ClusterProbe submit > "$BENCH_LOG_DIR/load.log" 2>&1 ) &
+        -cp "$JAR" org.limitless.seqeron.tools.ClusterProbe submit > "$BENCH_LOG_DIR/load.log" 2>&1 ) &
     LOAD_PID=$!
     disown "$LOAD_PID"  # cleanup kills it by pid; this just keeps bash from reporting the kill
 fi
@@ -94,7 +94,7 @@ fi
 : > "$COLD_LOG"
 START=$(python3 -c 'import time; print(time.time())')
 java "${JAVA_OPTS[@]}" -Dprobe.memberId=1 -Dprobe.clientId=7 -cp "$JAR" \
-    org.limitless.phixeron.tools.ClusterProbe follow > "$COLD_LOG" 2>&1 &
+    org.limitless.seqeron.tools.ClusterProbe follow > "$COLD_LOG" 2>&1 &
 COLD_PID=$!
 
 W=0

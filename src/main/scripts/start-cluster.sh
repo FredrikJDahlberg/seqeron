@@ -4,13 +4,13 @@
 # TWO MODES, and the default is the cluster tier alone — this repo builds no product binary, so its
 # own dev cluster must come up without one (the same split start-three-node-cluster.sh makes):
 #
-#   default (PHIXERON_PRODUCT_APPS unset) — Java only, each process to its own log file:
+#   default (SEQERON_PRODUCT_APPS unset) — Java only, each process to its own log file:
 #     1. SequencerServer  (Java, single-node Aeron Cluster, member 0)
 #     2. ReplayerServer   (Java, co-located with member 0: serves archive replay to co-located apps
 #                          over aeron:ipc; apps read the tap directly for live)
 #     3. ClusterProbe follow (Java, the edge-neutral consumer replica standing in for a product one)
 #
-#   PHIXERON_PRODUCT_APPS=1 — additionally the product repo's C++ processes, which must already be
+#   SEQERON_PRODUCT_APPS=1 — additionally the product repo's C++ processes, which must already be
 #   built into ${BUILD_DIR} by that repo:
 #     4. aeronmd          (standalone Aeron media driver, for C++ clients that do NOT co-locate)
 #     5. FixGateway       (C++, FIX TCP gateway on port 9000)
@@ -45,7 +45,7 @@ fi
 
 BUILD_TYPE="${1:-release}"
 BUILD_DIR="cmake-build-${BUILD_TYPE}"
-JAR="build/libs/phixeron-0.1.0-uber.jar"
+JAR="build/libs/seqeron-0.1.0-uber.jar"
 
 JAVA_OPTS=(
     --add-opens=java.base/sun.nio.ch=ALL-UNNAMED
@@ -54,7 +54,7 @@ JAVA_OPTS=(
     --add-opens=java.base/jdk.internal.misc=ALL-UNNAMED
 )
 
-PRODUCT_APPS="${PHIXERON_PRODUCT_APPS:-}"
+PRODUCT_APPS="${SEQERON_PRODUCT_APPS:-}"
 
 LOG_DIR="logs"
 SEQ_LOG="${LOG_DIR}/sequencer.log"
@@ -70,7 +70,7 @@ AERON_DIR="$(aeron_default_dir)"
 # when -Dsequencer.aeronDir isn't overridden. OrderExecServer is co-located with this
 # member (shares its Aeron directory) so archive/replay/ingress can use aeron:ipc instead
 # of looping through the standalone aeronmd above — see ClusterStreamSender::connectColocated.
-SEQ_AERON_DIR="${TMP_DIR}/phixeron-seq-aeron-0"
+SEQ_AERON_DIR="${TMP_DIR}/seqeron-seq-aeron-0"
 
 # Prefer a system-installed aeronmd (e.g. Homebrew or a system package) on PATH;
 # fall back to the CMake FetchContent build-tree copy if none is found there.
@@ -157,7 +157,7 @@ echo "[cluster.sh] Starting ReplayerServer (co-located with SequencerServer memb
 java "${JAVA_OPTS[@]}" \
     -Dreplayer.memberId=0 \
     -cp "${JAR}" \
-    org.limitless.phixeron.replayer.server.ReplayerServer \
+    org.limitless.seqeron.replayer.server.ReplayerServer \
     > "${REPLAYER_LOG}" 2>&1 &
 REPLAYER_PID=$!
 
@@ -174,14 +174,14 @@ done
 
 if [[ -n "${PRODUCT_APPS}" ]]; then
     echo "[cluster.sh] Starting OrderExecServer (replica co-located with member 0) → ${APP_LOG}"
-    PHIXERON_ORDER_EXEC_AERON_DIR="${SEQ_AERON_DIR}" \
+    SEQERON_ORDER_EXEC_AERON_DIR="${SEQ_AERON_DIR}" \
         stdbuf -oL -eL "${BUILD_DIR}/OrderExecServer" > "${APP_LOG}" 2>&1 &
     APP_PID=$!
 else
     APP_LOG="${LOG_DIR}/ClusterProbe.log"
     echo "[cluster.sh] Starting ClusterProbe follower (replica on member 0) → ${APP_LOG}"
     java "${JAVA_OPTS[@]}" -Dprobe.memberId=0 -Dprobe.clientId=1 -Dprobe.latencyStats=true \
-        -cp "${JAR}" org.limitless.phixeron.tools.ClusterProbe follow > "${APP_LOG}" 2>&1 &
+        -cp "${JAR}" org.limitless.seqeron.tools.ClusterProbe follow > "${APP_LOG}" 2>&1 &
     APP_PID=$!
 fi
 
