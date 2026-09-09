@@ -41,7 +41,7 @@
          Replay protocol  (templates 6/7/8/9/20/21) — node-local control plane between
          the node's ReplayerService and its co-located app replicas, over aeron:ipc. Never
          sequenced (no globalSeqNo), so they carry no `header` composite. See the
-         ReplayerService design, doc/router-design.md §4. clientId identifies the
+         ReplayerService design. clientId identifies the
          requesting replica so the ReplayerService can cap concurrent replays at 2 (one
          in-flight per client), and requestId identifies WHICH request a
          Replaying/ReplayPending answers — clientId alone cannot, because a resend

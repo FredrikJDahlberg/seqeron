@@ -70,7 +70,7 @@ inline std::string resolveEgressEndpoint(const char* envName, const std::uint16_
     return envString(envName, "localhost:" + std::to_string(defaultPort));
 }
 
-// Per-message logging on the poll thread (doc/audit.md C1) blocks on stdout under load, so it is opt-in
+// Per-message logging on the poll thread blocks on stdout under load, so it is opt-in
 // via SEQERON_VERBOSE_LOG rather than unconditional: a normal run's poll thread never stalls on a
 // write() nobody is watching. Cached — this is checked once per message.
 inline bool verboseLoggingEnabled()

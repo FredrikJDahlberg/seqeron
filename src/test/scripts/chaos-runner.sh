@@ -14,7 +14,7 @@
 #   (the whole point of chaos testing is a reproducing case, not noise). ROUNDS and STEADY_STATE_SECS
 #   are env-overridable.
 #
-# JAVA ONLY — no C++ binary is built or launched (doc/future-arch.md §11 step 5). Consumer replicas are
+# JAVA ONLY — no C++ binary is built or launched. Consumer replicas are
 #   ClusterProbe follow; the gateway pair under the faults is the core-owned TestGateway (GW-T-A/GW-T-B,
 #   gatewaySourceId 9), which speaks no FIX and holds no session state — an elected active/standby producer
 #   with a real listening socket and nothing else. It restores what retargeting this harness off the C++

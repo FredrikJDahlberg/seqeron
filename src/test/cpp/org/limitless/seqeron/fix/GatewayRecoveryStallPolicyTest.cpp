@@ -1,5 +1,5 @@
 // Unit tests for the pure recovery-deadline verdict behind FixGateway::checkTapStall's !isCaughtUp()
-// branch (doc/review-2026-07-25.md #1). No Aeron runtime: isCaughtUp()/onCaughtUp() and the dispatched
+// branch. No Aeron runtime: isCaughtUp()/onCaughtUp() and the dispatched
 // globalSeqNo are exactly the three signals FixGateway feeds in off ReplayerStreamReceiver.
 
 #include <gtest/gtest.h>
@@ -72,7 +72,7 @@ TEST(GatewayRecoveryStallPolicy, ReconvergingAfterATripResetsTheClockForTheNextE
     EXPECT_TRUE(policy.onNotCaughtUp(seconds(121), STUCK));
 }
 
-// ── Progress, not elapsed recovery (review-3.md #6's follow-up) ───────────────────────────────────
+// ── Progress, not elapsed recovery ─────────────────────────────────────────────────────────────────────────────
 
 TEST(GatewayRecoveryStallPolicy, RecoveryThatKeepsDispatchingIsNeverFencedHoweverLongItRuns)
 {

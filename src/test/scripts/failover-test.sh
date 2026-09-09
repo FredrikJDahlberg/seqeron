@@ -10,7 +10,7 @@
 #
 # PASS iff the fresh client prints "following live" AND its ReplayerService served it >= 1 replay segment.
 #
-# Java only — no C++ binary is built or launched (doc/future-arch.md §11 step 5). The client is the
+# Java only — no C++ binary is built or launched. The client is the
 # edge-neutral probe, which attaches to the member's own media driver, so this script needs no
 # standalone aeronmd either.
 set -uo pipefail

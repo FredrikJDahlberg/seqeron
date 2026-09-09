@@ -258,15 +258,14 @@ struct RecordingSegment
 /**
  * Lists every FEEDER_STREAM_ID recording on an already-connected archive,
  * ordered oldest-to-newest by recordingId — each one is a prior leader's
- * tenure (see todo.md's "Cross-failover cluster-stream recording continuity"
- * entry), so replaying them in this order and concatenating reproduces full
+ * tenure, so replaying them in this order and concatenating reproduces full
  * history. The current leader's own archive holds every earlier tenure's
  * segment too, because every follower continuously replicates the leader's
  * recording into its own archive the whole time it isn't leader.
  * recordingId is monotone as the archive creates recordings; startTimestamp
  * is archive wall clock, which a backward clock step can invert.
  *
- * The abrupt-leader-death race documented in the same todo.md entry can
+ * The abrupt-leader-death race in that same area can
  * leave two segments both reporting stopPosition == NULL_POSITION (active);
  * since the newer holds the older's content, only the most recent is kept and
  * any earlier "active" duplicate is dropped rather than replayed twice.

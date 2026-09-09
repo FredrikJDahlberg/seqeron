@@ -85,8 +85,8 @@ import org.xml.sax.SAXParseException;
  *       what the shared payloadIds are called. Then waits for the last list row's
  *       sequenced echo. The sections are one deployment assertion, the same kind of act as {@code
  *       activate}, which is why they live here rather than riding along in the reference-data load:
- *       it changes when you deploy, where the comp-id table and the calendar change daily (see
- *       doc/future-arch.md §3.6). The {@code remaining == 0} row is the sequencer's completeness
+ *       it changes when you deploy, where the comp-id table and the calendar change daily.
+ *       The {@code remaining == 0} row is the sequencer's completeness
  *       edge — it synthesizes one bootstrap {@code GatewayActive} per logical gateway behind it —
  *       so this tool, which counted the rows it read, is what authors that edge. Re-running is safe:
  *       the sequencer de-dups rows on {@code gatewayId} and latches the bootstrap once.

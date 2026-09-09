@@ -2,8 +2,8 @@
 
 How this system survives node loss, leader failover, a stuck local archive, a crashed gateway, and a
 lost network frame — and how each surviving/restarted part gets back to a correct state. This is a
-description of what the code does today, not the aspirational superset in `doc/0-overview.md` …
-`doc/6-detailed-architecture.md` — cross-check against source before trusting specifics there.
+description of what the code does today, not the aspirational superset the older architecture
+documents describe — cross-check against source before trusting specifics there.
 
 ## 0. The one governing invariant: no snapshots, full-log replay
 
@@ -20,8 +20,7 @@ would hold a recording that starts wherever the snapshot did, not at the beginni
 Full-log replay is what keeps every node's tap recording a *complete* copy of history, which is what
 lets any node serve a cold-start or gap replay to its co-located apps without depending on a peer. The
 cost is that recovery time and archive size grow with uptime — bounded in practice because the log is
-scoped to one trading day (daily rollover), not unbounded (`doc/todo.md`, `[[project-no-snapshots]]`
-memory).
+scoped to one trading day (daily rollover), not unbounded.
 
 Everything downstream of the log — `globalSeqNo`, the gateway topology, FIX session sequence numbers,
 positions, reference data — is a **pure function of replaying that log**, so nothing needs its own
@@ -197,8 +196,8 @@ from two things: an in-memory snapshot taken on the way *out* (`closeSessions`, 
 
 - **On fencing/shutdown**, every active FIX session's `RecoveredSession` state — next outgoing/expected
   sequence numbers plus the three-field inbound-gap state (`m_inboundGapHighSeqNum`,
-  `m_inboundGapRequestedThrough`, `m_inboundGapRunStart`, the fields `doc/gap.md`'s gap-1 fix added
-  specifically so a mid-gap restart doesn't resume with the gap silently reopened) — is captured into
+  `m_inboundGapRequestedThrough`, `m_inboundGapRunStart`, the fields the gap-1 fix added specifically
+  so a mid-gap restart doesn't resume with the gap silently reopened) — is captured into
   `m_recoveredSessions`, keyed by client CompID.
 - **On restart**, before the accept gate opens, the gateway replays `ConnectionOpened`/
   `ConnectionClosed` lifecycle frames off the cluster stream to reconstruct placeholder "recovering"
@@ -232,7 +231,7 @@ externally and unambiguously.
 Same position, reached differently. `FixGateway` is stateless because it never decides anything;
 `ExchangeGateway` embeds a FIX engine that decides constantly, and is stateless anyway because every
 decision is published to the cluster before it is acted on and is emitted only when it comes back on
-the tap (`doc/design.md` §2.12). A crash therefore loses nothing either: the log holds the session,
+the tap. A crash therefore loses nothing either: the log holds the session,
 and the instance that next holds it rebuilds from the log.
 
 **Five fences, four of them fatal.** Being superseded is the exception: a `GatewayActive` naming the
@@ -297,14 +296,14 @@ retry inside one activation rolls nothing. A retry costs the log its `Connection
 its `ConnectionClosed`, and nothing else.
 
 **Not covered:** a venue whose `MsgSeqNum` state has diverged from the log is retried against, never
-reconciled with (§7, `doc/todo.md`) — the notification above is what surfaces it, not a resolution.
+reconciled with (§7) — the notification above is what surfaces it, not a resolution.
 
 ## 3. Stream recovery — cold start, gaps, and the live/history split
 
 Every app that consumes the sequenced stream (the FIX gateway, `OrderExecServer`, `BasicDataServer`,
 `fix_test_server`) uses the same split: read the co-located `SequencerService`'s tap **directly and
 live** (untethered `aeron:ipc?tether=false`, so a slow consumer is dropped rather than back-pressuring
-the sequencer — see §1.3 and `doc/audit.md` S4), and ask the co-located `ReplayerService` to fill in
+the sequencer — see §1.3), and ask the co-located `ReplayerService` to fill in
 history on cold start or a detected gap.
 
 ### 3.1 `ReplayerService` (Java, one per node)
@@ -455,15 +454,14 @@ retried and handed off across a failover exactly like a real one instead of bein
 
 `BasicDataServer`/`Gateways` treat reference data with the same fault-tolerance shape as everything
 else: every node builds an identical in-memory view by following its co-located tap, so losing a node
-loses no reference data — a neighbour already holds it (`doc/basicdata-design.md` §0, mirroring
-`doc/audit.md` S1). The producer role (reading the source-of-truth and publishing `BasicData*` rows) is
+loses no reference data — a neighbour already holds it. The producer role (reading the source-of-truth and publishing `BasicData*` rows) is
 strictly leader-only and gated the same way as query dispatch (§4) — `isCaughtUp` plus
 "is this node's memberId the current leader" — so a failover doesn't produce two competing loads; the
 new leader's replica simply opens its own upstream connection and resumes.
 
 Recovery deliberately has **no separate progress record**: a newly promoted leader scans what's already
 in the log — `EndBasicData` seen → nothing to do; all sections complete but no `EndBasicData` → emit
-it; otherwise resume the first incomplete section from row 0 (`doc/basicdata-design.md` §4). One rule
+it; otherwise resume the first incomplete section from row 0. One rule
 covers every failure mode (DB error mid-section, plain crash, a failover mid-load) uniformly, because
 it's derived from the log rather than tracked separately from it — the same principle as §0. Consumers
 correspondingly commit a section only when its `remainingItems` counter reaches 0, discarding any
@@ -512,8 +510,8 @@ section after a failover.
 ## 7. What this does not cover
 
 - **No pre-trade risk gating and no matching engine** — a failover-safe query responder (§4) is not the
-  same as a durable *order acceptance* decision; see `doc/todo.md` items 1–2.
-- **No edge authentication** — CompID validation only; see `doc/todo.md` item 3. Orthogonal to recovery,
+  same as a durable *order acceptance* decision.
+- **No edge authentication** — CompID validation only. Orthogonal to recovery,
   but relevant if a "fault" is ever adversarial rather than accidental.
 - **`aeronmd` itself and network partition/latency faults** are not exercised by `chaos-runner.sh` —
   noted there as unwired seams (killing the media driver is destructive to co-located C++ clients;
@@ -523,7 +521,7 @@ section after a failover.
 - **A venue whose sequence state has diverged from the log is retried against, never reconciled with**
   (§2.5). The refusal names the number the venue expected, so a `SequenceReset` published through the
   cluster could adopt it; nothing does. The retry is bounded in cost and now raises an operator
-  notification, which is not the same as resolving it. `doc/todo.md`.
+  notification, which is not the same as resolving it.
 - **Three of the venue leg's four fatal fences are unexercised by any script.**
   `exchange-gateway-test.sh` drives the session-loss one for real — it starves the standby's keepalive
   until the cluster closes its session, and asserts the exit was that fence rather than an incidental

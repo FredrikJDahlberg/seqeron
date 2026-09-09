@@ -57,7 +57,7 @@ import org.limitless.seqeron.util.Logger;
  *
  * <p><b>Durability:</b> {@link #emit} is <em>reliable</em> (it spins until the offer lands), because
  * the tap recording is the authoritative history — a dropped frame would be an unrecoverable gap. This
- * cannot wedge structurally the way the retired UDP global stream did (audit.md S4, where {@code
+ * cannot wedge structurally the way the retired UDP global stream did (where {@code
  * MaxMulticastFlowControl} never advanced the sender limit with zero network subscribers): the only
  * tethered subscriber of the tap is the co-located archive recording, so {@link #emit} blocks only on
  * real local-archive write back-pressure, which clears as the archive drains to disk. The app replicas'
@@ -82,7 +82,7 @@ import org.limitless.seqeron.util.Logger;
  * node from its peers, breaking the byte-identical-taps invariant above. So {@link #onTakeSnapshot}
  * throws rather than persisting a partial state, and {@link #onStart} refuses a snapshot image
  * rather than restoring from one. Nothing in normal operation reaches either: {@code clusterctl
- * shutdown} uses {@code ABORT}, which takes no snapshot. See doc/review-2026-07-25.md #5.
+ * shutdown} uses {@code ABORT}, which takes no snapshot.
  */
 public final class SequencerService implements ClusteredService {
     /**

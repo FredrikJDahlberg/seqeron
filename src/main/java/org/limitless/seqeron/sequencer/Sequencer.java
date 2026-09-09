@@ -103,7 +103,7 @@ public final class Sequencer {
      * thresholds. Trade-off: every heartbeat appends a timer event + a heartbeat frame to the replicated
      * log/recording, so full-log-replay recovery grows with uptime; this constant is the single knob to
      * trade watchdog resolution against that cost. (A tighter win — gating clock emission on active FIX
-     * sessions — is noted in doc/gap.md; 1 Hz is the low-risk interim.)
+     * sessions — is possible; 1 Hz is the low-risk interim.)
      *
      * <p>It lives here rather than in the adapter because the state machine's own deadlines are evaluated
      * in cluster time, on heartbeat timestamps, so this is the resolution every one of them is quantised to.

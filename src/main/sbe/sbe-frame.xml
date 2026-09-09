@@ -33,7 +33,7 @@
 
     Naming: `seqeron` throughout, not `seqeron`. The spec names the target file
     seqeron-frame.xml; that rename lands with the actual repo split
-    (doc/future-arch.md §11 step 1), not with the protocol steps, each of which is
+    not with the protocol steps, each of which is
     already a wire change on its own.
 -->
 <sbe:messageSchema xmlns:sbe="http://fixprotocol.io/2016/sbe"

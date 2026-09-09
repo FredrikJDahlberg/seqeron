@@ -5,7 +5,7 @@
 // checkpoints it in m_seqOffsetIndex and later hands it to ReplayParams::position() to seek an
 // archive-backed resend. A position past the target restarts the scan too late, finds nothing, and
 // the resend GapFills messages that are sitting in the recording — the same silent-loss shape as the
-// seek-index bug in doc/review-2026-07-25.md #6.
+// seek-index bug this file's suite was added for.
 //
 // The headers are fabricated rather than produced by a live subscription because the C++ suite runs
 // no Aeron media driver (see CLAUDE.md). That is the point of the test: aeron_header_position's

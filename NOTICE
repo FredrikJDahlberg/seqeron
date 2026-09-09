@@ -1,0 +1,7 @@
+seqeron
+Copyright 2026 Fredrik Dahlberg
+
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+The uber jar redistributes Aeron, Agrona and simple-binary-encoding (sbe-tool),
+each under the Apache License, Version 2.0; none of them ships a NOTICE of its own.

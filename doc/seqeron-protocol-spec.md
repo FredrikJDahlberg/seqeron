@@ -1,14 +1,14 @@
 # seqeron protocol — specification
 
 _Normative specification, 2026-09-02. The **what** and **how** only; the design record, the forces
-behind each decision and the alternatives weighed are in `doc/seqeron-protocol.md`, which this
-condenses and does not supersede. Rule identifiers are that document's, unchanged._
+behind each decision and the alternatives weighed are in the design record this condenses and does
+not supersede. Rule identifiers are that document's, unchanged._
 
 > **Status: specification of the target, not of the tree.** The tree is mid-§15: every application
 > family is on a payload (`sbe-order.xml` 220, `sbe-session.xml` 230, `sbe-basicdata.xml` 240), seqeron's
 > own vocabulary has the system family of `sbe-frame.xml` 210 to itself, and the replay control protocol
-> stands alone in `sbe-replay.xml` (212). What is left is §14's conformance suite. This states what
-> `doc/future-arch.md` §11 step 3 lands; §15 is the migration and records what has landed so far.
+> stands alone in `sbe-replay.xml` (212). What is left is §14's conformance suite. §15 is the
+> migration and records what has landed so far.
 > Statements about today's code are marked _(today)_.
 >
 > **Normative language.** MUST / MUST NOT / SHOULD as usual. Rules carry identifiers — **F-n** frame,
@@ -244,8 +244,7 @@ system frame per row of the file's `<protocols>` section (§6.4).
 _(This deployment today, the first three allocated by §15 steps 3 and 4: **2** = the order family
 (`sbe-order.xml` 220, the order flow and the portfolio query over it), **3** = the FIX session family
 (`sbe-session.xml` 230, both edges' session layer), **4** = reference data (`sbe-basicdata.xml` 240),
-**5** = seqeron's own end-to-end probe (`sbe-probe.xml` 214, one `ProbeMarker`; `doc/future-arch.md`
-§11 step 5). **4** is the only one that crosses application boundaries and so the only one §6.4's
+**5** = seqeron's own end-to-end probe (`sbe-probe.xml` 214, one `ProbeMarker`). **4** is the only one that crosses application boundaries and so the only one §6.4's
 example declares; 2, 3 and 5 are private between the processes that speak them and need no row. 5 is
 recorded here despite being out of the registry's scope for the reason the last paragraph of this
 section gives: it is nonetheless one id space, and a number nobody wrote down is a number two
@@ -459,7 +458,7 @@ independent of both: it catches an ingress-legal event submitted at −1.
 **Ingress-legality is a well-formedness rule, not authorization.** Aeron Cluster is Raft —
 crash-fault tolerant, not Byzantine — so a dishonest producer is out of scope, and every rule here
 exists against misconfiguration and software defect. The trust boundary is the perimeter: network
-topology and authentication at the external FIX edges (`doc/todo.md`), which touches no rule here.
+topology and authentication at the external FIX edges, which touches no rule here.
 
 ### 7.1 Message fields
 
@@ -1041,11 +1040,10 @@ crossed the `payloadId` boundary in the wrong direction.
 
 ---
 
-## 15. Landing it (`doc/future-arch.md` §11 step 3)
+## 15. Landing it
 
-Each sub-step green before the next, all in one repo. The numbering is fixed — `sbe-frame.xml` and
-`doc/future-arch.md` cite these step numbers — so a landed step keeps its place and records what
-actually landed.
+Each sub-step green before the next, all in one repo. The numbering is fixed — other documents cite
+these step numbers — so a landed step keeps its place and records what actually landed.
 
 1. **Landed.** Add the frame schema with the two envelopes, the two renamed composites and the ten core
    payloads (prefix-extended, `payloadId` moved in, `origin` deleted, unpadded) — and, in the same wire
@@ -1053,7 +1051,7 @@ actually landed.
    paths green, the `unsequencedHeader`/`sequencedHeader` rename landed across the pair and every
    consumer of it, both edges reading direction from the payload, copy-through unchanged. The file is
    `cluster/src/main/sbe/sbe-frame.xml` and said `phixeron` throughout: the `seqeron` rename followed the
-   repo split (`doc/future-arch.md` §11 step 1), not a protocol step, each of which is already a
+   repo split, not a protocol step, each of which is already a
    wire change on its own. **Step 6 landed in the same change** — see there for why it could not wait.
 2. **Landed, out of order — after steps 3–7 rather than before them.** Land §13.1's payload pipe,
    before anything on the wire is opaque. → `sbe-log-printer.sh -o <payloadId>` writes that protocol's
@@ -1084,7 +1082,7 @@ actually landed.
    same two processes as the order flow, and a `payloadId` names a schema, never a message. Reference
    data goes to `sbe-basicdata.xml`, **schema 240, `payloadId` 4** — the one protocol here that crosses
    application boundaries, and so the only one §6.4's example declares. Its owning repo settles with the
-   repo split (`doc/future-arch.md` §11 step 1); until then every schema lives at the shared root, as
+   repo split; until then every schema lives at the shared root, as
    `sbe-order.xml` already did. → both all-Java e2e and the C++ e2e green.
 
    **Step 7's code half landed here**, because this step is what makes it true: with the last family on

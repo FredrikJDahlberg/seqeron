@@ -1,5 +1,5 @@
 // Unit tests for the pure convergence verdict behind ReplayerStreamReceiver's recovery alarm
-// (review-3.md #6). No Aeron runtime: onProgress()/onNoProgress() are exactly the two signals the
+// No Aeron runtime: onProgress()/onNoProgress() are exactly the two signals the
 // receiver feeds in — an in-order dispatch, and one duty-cycle observation while !isCaughtUp().
 
 #include <gtest/gtest.h>

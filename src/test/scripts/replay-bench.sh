@@ -3,7 +3,7 @@
 #
 # This is the measurement behind the chaos-runner's kill-leader failures: a restarted replica has to
 # reach "Caught up — following live" before the harness's window expires, and with no snapshots
-# (doc/todo.md) the history it must walk is the whole trading day. It was written to chase a cold start
+# the history it must walk is the whole trading day. It was written to chase a cold start
 # that never converged at all past ~32 MiB of history — the shared-replay-stream flow-control wedge
 # ReplayerStreamReceiver::openReplaySubscription now documents — and stays as the regression measurement
 # for it: a run that reports NEVER CAUGHT UP is that class of bug, not a slow machine.
@@ -12,7 +12,7 @@
 #     preload       frames flooded to cluster ingress to build the archive before the cold start
 #     load-during   1 = keep flooding while the replica catches up (moving-target case), default 0
 #
-# Java only — no C++ binary is built or launched (doc/future-arch.md §11 step 5). The load is
+# Java only — no C++ binary is built or launched. The load is
 # ClusterProbe submit and the cold replica is ClusterProbe follow; the cluster comes up in
 # start-three-node-cluster.sh's default Java-only mode. FILLER_BYTES below is what keeps the MB/s
 # number meaningful: a bare ProbeMarker is tiny, so it is padded to the size of the NewOrderSingle

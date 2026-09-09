@@ -2,7 +2,7 @@
 
 Two namespaces are shared by every process in the deployment and owned by neither product: the
 producer `sourceId` space, and the UDP port space. Inside one repository both are held by
-convention. The moment seqeron is extracted (`future-arch.md` §11 step 7) convention becomes a
+convention. Now that seqeron is extracted, convention has become a
 cross-repo race — nothing stops two repositories claiming the same number, and the collision shows
 up as a start-up failure at best and a mis-routed election at worst. So both are written down here,
 and **core owns both registries**: an allocation is taken by editing this file.
@@ -52,7 +52,7 @@ other blocks is this table's alone.
 | --- | --- | --- |
 | 9200–9209 | core | the cluster tier's own harness listeners: `TestGateway` TCP listen `9200 + instance` (9200 GW-T-A, 9201 GW-T-B), `cluster/src/main/scripts/ports.sh`. Deliberately **not** inside 9300–9329 — that block is three members of stride 10 with nothing spare, and `isClusterPort()` names cluster member ports, which these are not |
 | 9300–9329 | core | cluster member ports, `9300 + memberId*10 + {1..5}` — three members, one decade each |
-| 9330–9359 | simdfixgw | `OrderExecServer` egress `9330+m`, `FixGateway` egress `9340+m`, `BasicDataServer` egress `9350+m` (→ core after `future-arch.md` §4). 9348 and 9349 were the cluster-tier harnesses' own test-consumer egress and are now free: those harnesses run `ClusterProbe follow`, which opens no cluster session (§11 step 5) |
+| 9330–9359 | simdfixgw | `OrderExecServer` egress `9330+m`, `FixGateway` egress `9340+m`, `BasicDataServer` egress `9350+m`. 9348 and 9349 were the cluster-tier harnesses' own test-consumer egress and are now free: those harnesses run `ClusterProbe follow`, which opens no cluster session (§11 step 5) |
 | 9360–9399 | phixeron | `ExchangeGateway` egress `9360+m` and Artio archive control `9370+m`, `OrderGateway` egress `9380+m` and Artio archive control `9390+m` |
 | 9000–9029 | products | TCP listen: `FixGateway` `9000+gatewayIndex`, the mock venue 9010, `OrderGateway` 9020 |
 | 9400+ | **shared** | see below |
@@ -93,7 +93,7 @@ out a port another product owns, and the failure is a bind error on whichever pr
 `PortLayout.hpp` (C++), `SequencerServer` (Java) and `cluster/src/main/scripts/ports.sh` (bash) each
 carry it, pinned against the same `(memberId → port)` pairs by `PortLayoutTest` and
 `SequencerServerTest` so a change to one side without the others fails a build. All three, and both
-tests, are core's and go with it (`future-arch.md` §5.2).
+tests, are core's and go with it.
 
 The satellite bases are the products' own, in the products' own files: `AppPorts.hpp` (pinned by
 `AppPortsTest`) and `ports.sh` on the C++ side, `ExchangeGatewayConfig` and `OrderGatewayConfig` on

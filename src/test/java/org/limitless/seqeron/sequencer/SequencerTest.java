@@ -230,7 +230,7 @@ class SequencerTest {
     void shortFrameIsSkippedRatherThanThrownOn() {
         // Throwing here would land on every node — the frame is already committed to the replicated log
         // — and again on every replay of it, leaving the log unreplayable and the cluster unrecoverable
-        // without surgery (doc/review-2026-07-25.md #7). Before the length check this computed a
+        // without surgery. Before the length check this computed a
         // negative copyLength and threw out of putBytes.
         final int ingressLength = encodeIngressPayload(ingress, 0);
 
@@ -534,7 +534,7 @@ class SequencerTest {
         // precedes any use of the publication, which is why null is safe to pass. This used to persist
         // globalSeqNo alone and drop the six other replicated fields, so a restored node re-emitted the
         // bootstrap GatewayActive and stopped producing frames identical to its peers'
-        // (doc/review-2026-07-25.md #5). Recovery is full-log replay, which rebuilds all of it.
+        // Recovery is full-log replay, which rebuilds all of it.
         assertThrows(UnsupportedOperationException.class, () -> new SequencerService(() -> { }).onTakeSnapshot(null));
     }
 
@@ -655,8 +655,8 @@ class SequencerTest {
     @DisplayName("the list's last row is followed by a bootstrap GatewayActive naming the rank-0 primary")
     void listsLastRowSynthesizesBootstrapActivation() {
         // Cold-start designation: one instance must open its gate and the standby must wait, so the
-        // cluster names the primary's gatewayId behind the row that completes the list (doc/todo.md
-        // item 18). The primary is derived from those rows — the rank-0 one — not configured.
+        // cluster names the primary's gatewayId behind the row that completes the list. The primary
+        // is derived from those rows — the rank-0 one — not configured.
         final int primaryGatewayId = 5;
         final Sequencer seq = new Sequencer();
         final MutableDirectBuffer buf = new ExpandableArrayBuffer(128);
@@ -919,7 +919,7 @@ class SequencerTest {
     @Test
     @DisplayName("a designated primary that never declares itself started is handed over to the standby")
     void designatedPrimaryThatNeverStartsIsHandedOver() {
-        // The gap this closes (review-3.md #6's follow-up): only GatewayStarted registers an instance,
+        // The gap this closes: only GatewayStarted registers an instance,
         // and it is published at gate-open, AFTER catch-up. An instance that dies or wedges in cold start
         // was never registered, so no session close could ever promote past it — the cluster kept a
         // designated primary that was never going to serve, with nothing to say so.

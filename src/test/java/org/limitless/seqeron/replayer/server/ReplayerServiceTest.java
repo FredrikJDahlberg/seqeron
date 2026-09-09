@@ -32,7 +32,7 @@ import org.limitless.seqeron.util.Logger;
 /**
  * The replay protocol's own decisions — which recording answers a request, when the archive cannot be
  * believed, when to hold, when to refuse, when to stall — driven against {@link
- * FakeReplayer} rather than a live node (review-3.md finding 11). Requests go in as real
+ * FakeReplayer} rather than a live node. Requests go in as real
  * SBE bytes on the request stream and replies are decoded off the control stream, so the wire format
  * is under test alongside the logic.
  *
@@ -143,7 +143,7 @@ class ReplayerServiceTest {
         replayerService.poll();
 
         // The hole itself is invisible from here — only a walking app ever meets it, and then only as a
-        // recovery that never converges (review-3.md finding 6). This is where it is catchable.
+        // recovery that never converges. This is where it is catchable.
         assertEquals(1, fakeReplayer.counter(SeqeronCounters.REPLAYER_INTEGRITY_FAILURE_TYPE_ID));
         assertEquals(0, fakeReplayer.counter(SeqeronCounters.REPLAYER_READY_TYPE_ID));
         assertTrue(loggedOnce(Logger.EventCode.ArchiveIntegrityFailure));
@@ -399,7 +399,7 @@ class ReplayerServiceTest {
 
     @Test
     void aResumeAnArchiveOutageRefusesIsHeldRatherThanSteeredOntoAReWalk() {
-        // The same exception, the opposite fault (review-3.md #10). Reading every refused resume as a bad
+        // The same exception, the opposite fault. Reading every refused resume as a bad
         // position sent a whole node's worth of apps off their positions and onto full chain re-walks
         // because the archive was down, and reported nothing until one of those walks came back.
         fakeReplayer.addRecording(6, 0, true, 4096);
@@ -415,7 +415,7 @@ class ReplayerServiceTest {
     @Test
     void anArchiveThatComesBackIsNoticedWithNoRequestToNoticeItOn() {
         // A Replayer whose apps have all caught up is asked for nothing, so the stall used to have no
-        // way back: seqeron.replayer.stalled stayed at 1 for the rest of the process (review-3.md #10).
+        // way back: seqeron.replayer.stalled stayed at 1 for the rest of the process.
         fakeReplayer.addRecording(6, 0, true, 4096);
         makeReady();
         fakeReplayer.failReplays(new IllegalStateException("archive gone"));
@@ -450,7 +450,7 @@ class ReplayerServiceTest {
 
     @Test
     void anArchiveThatRefusesTheStartupSelfCheckIsReportedRatherThanLookingMerelySlow() {
-        // The self-check used to swallow exactly the faults the replay path reports (review-3.md #10), so
+        // The self-check used to swallow exactly the faults the replay path reports, so
         // a node whose archive never answered looked like one that was merely slow to become ready.
         fakeReplayer.addRecording(6, 0, true, 4096);
         fakeReplayer.failArchive(new IllegalStateException("archive gone"));

@@ -34,7 +34,7 @@ import org.limitless.seqeron.sequencer.SystemFrame;
 import org.limitless.seqeron.util.Logger;
 
 /**
- * The edge-neutral probe's gateway (doc/future-arch.md §11 step 5) — an elected active/standby producer
+ * The edge-neutral probe's gateway — an elected active/standby producer
  * with a real listening socket, owned by the cluster tier and speaking no FIX.
  *
  * <p><b>Harness code, and it lives in the test source set</b> — nothing in a deployment runs it, so it is

@@ -151,7 +151,7 @@ it cannot decode instead of printing bare numbers. `payloadId` 1 is core and unr
 
 The list is a **deployment assertion**, the same kind of act as `activate` — which is why it is
 here rather than riding along in `BasicDataServer`'s reference-data load. It changes when you deploy;
-the comp-id table and the trading-day calendar change daily (`doc/future-arch.md` §3.6). Keeping it
+the comp-id table and the trading-day calendar change daily. Keeping it
 out of the load is also what lets the cluster tier decode no reference data at all: the `remaining ==
 0` row is the sequencer's completeness edge, and it synthesizes one bootstrap `GatewayActive` per
 logical gateway behind it.
@@ -259,7 +259,7 @@ through by template id.
 
 ## Topology file format — XML, and what the parser costs
 
-_Proposal, 2026-08-29. `doc/future-arch.md` §3.6 chose flat CSV over JDK XML and named the condition
+_Proposal, 2026-08-29. The original design chose flat CSV over JDK XML and named the condition
 for revisiting it: "worth it only if a row grows attributes." Two things have since met it, so this
 prices the move._
 
@@ -273,7 +273,7 @@ prices the move._
 > XXE hardening below, the merge of both sections into one file and one verb, and `load-protocols`
 > never built. Read the rest of this section as the pricing it was, not as a description of the file.
 
-**What changed.** The protocol registry (`doc/seqeron-protocol.md` §6.3) adds a **second record kind**
+**What changed.** The protocol registry (`doc/seqeron-protocol-spec.md` §6.3) adds a **second record kind**
 an operator asserts into the log — `PayloadIdRegistered` — and it has the identical lifecycle to the
 list: it changes when you deploy. Left in its own file it needs its own `load-protocols` verb and
 its own place in the runbook. §3.6's own criterion for
@@ -339,7 +339,7 @@ is avoiding.
 
 | attribute | purpose | on the wire? |
 | --- | --- | --- |
-| `topology/@name` | names the deployment this file describes, so a list cannot be read as generic. **Documentation only for now** — a load-time interlock ("refuse a topology whose name is not this cluster's") needs a cluster-side identity, which does not exist yet (`doc/seqeron-protocol.md` §15) | no |
+| `topology/@name` | names the deployment this file describes, so a list cannot be read as generic. **Documentation only for now** — a load-time interlock ("refuse a topology whose name is not this cluster's") needs a cluster-side identity, which does not exist yet (`doc/seqeron-protocol-spec.md` §15) | no |
 | `protocol/@name` | the protocol's identity, and what `SbeLogPrinter` labels a payload with | **yes** — `PayloadIdRegistered.protocolName` |
 | `protocol/@version` | the operator's record of which revision this deployment runs, printed beside the name. **Nothing checks it** — the interlock this section used to specify was rejected, below | **yes** — `PayloadIdRegistered.protocolVersion` |
 | `protocol/@payloadId` | the numeric the frame carries (§6.1 of the protocol spec) | **yes** |
@@ -352,7 +352,7 @@ is avoiding.
 **`@version` carries no interlock, and that is a reversal.** This section specified one until
 2026-08-30 — each application comparing the asserted version against its own compiled-in constant and
 refusing to start on a mismatch — on the ground that it was a direct attack on **V-1**, the silent
-disagreement between three repos about a shared format. `doc/seqeron-protocol.md` §6.3 retired it,
+disagreement between three repos about a shared format. `doc/seqeron-protocol-spec.md` §6.3 retired it,
 and the reason is that it never touched V-1: V-1 is two builds producing different frame bytes from
 skewed Aeron / Agrona / SBE **while both declare the same number**, which a number-against-number
 comparison passes cleanly. What such a check catches instead is deploy hygiene — the build that
@@ -457,7 +457,7 @@ and it is honest to call that a trade rather than a win.
   load-topology <path>` call sites in four scripts, so the conversion is an extension rename.
 - **One fewer runbook step.** A separate protocols file needs its own command, run ahead of
   `load-topology`; merging the sections into one file and one command is what lets
-  `doc/seqeron-protocol.md` §6.3 cost no new step at all, leaving today's `start` → `load-topology` →
+  `doc/seqeron-protocol-spec.md` §6.3 cost no new step at all, leaving today's `start` → `load-topology` →
   reference-data load. The tool publishes protocols before gateways
   regardless of document order, and the XSD's `xs:sequence` fixes document order to match so the file
   reads the way it publishes.

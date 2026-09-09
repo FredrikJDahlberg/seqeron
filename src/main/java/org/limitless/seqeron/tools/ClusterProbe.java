@@ -32,7 +32,7 @@ import org.limitless.seqeron.sequencer.SystemFrame;
 import org.limitless.seqeron.util.Logger;
 
 /**
- * The edge-neutral probe (doc/future-arch.md §11 step 5) — the cluster tier's own load generator and
+ * The edge-neutral probe — the cluster tier's own load generator and
  * tap consumer, so its end-to-end scripts can drive a cluster with no product binary built.
  *
  * <p>Before this, all five harnesses in {@code cluster/src/test/scripts} generated load with the C++

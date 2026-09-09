@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# replayer-restart-test.sh — the failover test-coverage gap flagged in review-2.md: nothing exercised an
+# replayer-restart-test.sh — the failover test-coverage gap: nothing exercised an
 # app running through its own node's restart, a Replayer restart under a riding client, or a resume/walk
 # crossing a genuine recording rotation (where findings 2, 4 and 5 live). failover-test.sh only cold-starts
 # a FRESH client after a leader kill against a node whose own tap recording was never rotated; gap-recovery-
@@ -28,15 +28,15 @@
 #     embedded media driver and must fail fast (die within the driver-loss grace window) rather than spin
 #     forever against a dead driver — the same invariant chaos-runner.sh's assert_died_on_driver_loss checks,
 #     asserted here directly rather than as one random outcome among many. Member 0 is restarted: with no
-#     snapshots, recovery is a full-log replay onto a BRAND NEW tap publication/recording (design.md §0),
+#     snapshots, recovery is a full-log replay onto a BRAND NEW tap publication/recording,
 #     leaving the pre-restart recording as a real, stopped, cold-start-walk segment rather than the current
 #     active one. Once member 0's ReplayerServer and the client (same clientId) are restarted fresh, the
 #     client's cold-start walk must cross that real 2-recording chain — segment 0 the old recording, segment
 #     1 the new one — the live boundary case ReplayerService.serveReplay/ReplayRecordings.stitch and the
-#     2026-08-10 recordingId-echo hardening (review-2.md #4) exist for, exercised here for real rather than
+#     2026-08-10 recordingId-echo hardening exist for, exercised here for real rather than
 #     via hand-fabricated Replaying replies.
 #
-# Java only — no C++ binary is built or launched (doc/future-arch.md §11 step 5): the backlog is
+# Java only — no C++ binary is built or launched: the backlog is
 # ClusterProbe submit and the client is ClusterProbe follow, which attaches to the member's own media
 # driver, so this script needs no standalone aeronmd either.
 #

@@ -15,7 +15,7 @@ namespace org::limitless::seqeron::util {
 // tryReserveSlot()/execute() are split so a caller can find out whether a slot was available
 // before committing to (moving) the query it would run.
 //
-// A fixed pool of poolSize persistent workers (doc/audit.md C3) backs the queries admission
+// A fixed pool of poolSize persistent workers backs the queries admission
 // already caps: since a query only ever starts once a slot is free, the pool never needs more
 // workers than that to keep every admitted query running immediately, and no query pays a
 // clone()/stack-alloc for a thread that's spun up and torn down just for it.

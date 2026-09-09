@@ -20,7 +20,7 @@
 # killed leader is NOT member 0, members 1 and 2 are started first so one of THEM wins the initial
 # election (2 of 3 is a quorum); member 0 then joins as a follower and is never killed.
 #
-# Java only — no C++ binary is built or launched (doc/future-arch.md §11 step 5): the load is
+# Java only — no C++ binary is built or launched: the load is
 # ClusterProbe submit and the consumer is ClusterProbe follow. The flood is PACED, and that pacing is
 # load-bearing: an unpaced probe outruns the heal, every post-gap frame then arrives by replay rather
 # than live, and the delivered-while-caught-up count this asserts on collapses to a handful. The FIX
@@ -49,7 +49,7 @@
 #                         are not queued, so sending SIGUSR1 n times would not reliably accumulate to n.
 #
 # A third scenario ("gap discovered mid-replay" — re-arm a second drop while the first walk is still
-# actively replaying) was attempted and abandoned: see doc/todo.md's 2026-08-02 note. Local Aeron IPC
+# actively replaying) was attempted and abandoned during the 2026-08-02 investigation. Local Aeron IPC
 # replay of a small gap completes too fast (likely sub-millisecond) for a bash-level poll-then-signal
 # loop to reliably land inside that window — every attempt measured zero genuine overlaps. The state
 # transition itself (a non-contiguous tap frame arriving while `m_replaySessionId >= 0`, not just

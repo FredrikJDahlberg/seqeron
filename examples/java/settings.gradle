@@ -1,0 +1,3 @@
+// Deliberately not part of the root build: this project resolves seqeron as a published artifact, which
+// is the only way an example can prove the artifact is consumable at all.
+rootProject.name = 'seqeron-follow-example'

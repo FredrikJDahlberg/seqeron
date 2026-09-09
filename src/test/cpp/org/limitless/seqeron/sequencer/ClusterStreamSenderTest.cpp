@@ -187,7 +187,7 @@ TEST(ClusterStreamSender, ConnectSendsSessionConnectRequestAndAdoptsSessionOnOk)
 // no reply). The OK names the leader, and that is the only signal available: unlike REDIRECT and
 // NewLeaderEvent it carries no endpoint CSV, so the endpoint is derived from the member id. Without
 // this the client looked connected, had nothing it published sequenced, and died of a genuine session
-// timeout ~10s later (doc/todo.md).
+// timeout ~10s later.
 TEST(ClusterStreamSender, MemberIngressEndpointMatchesTheInitialEndpointFormula)
 {
     // Member 0's derived endpoint must be exactly the constant connectColocated's UDP fallback aims
@@ -308,7 +308,7 @@ TEST_F(ConnectedClusterStreamSender, SendFramesAPayloadOfTheLargestSupportedSize
 {
     // send()'s framing buffer is sized from MAX_PAYLOAD_LEN, which is also what every caller sizes its
     // encode buffer from. The two used to disagree — a 8192-byte encode buffer against a 4138-byte
-    // framing array — so a full-size message memcpy'd past the end of it (doc/review-2026-07-25.md #4).
+    // framing array — so a full-size message memcpy'd past the end of it.
     // Under the Debug build's AddressSanitizer this fails on the write, not on the size assertion.
     const std::vector<std::uint8_t> body(ClusterStreamSender::MAX_PAYLOAD_LEN, 0xAB);
     EXPECT_TRUE(sender_.send(body.data(), static_cast<std::uint16_t>(body.size())));
@@ -336,7 +336,7 @@ TEST_F(ConnectedClusterStreamSender, SendReportsFailureOnceTheSessionIsClosed)
     // The one outcome the reliable-offer spin cannot fix: with no cluster session there is nothing to
     // offer to and no amount of waiting helps (a leader failover, which the spin does handle, keeps
     // the session id). Reporting it is what lets Session::publishOutbound leave the outbound MsgSeqNum
-    // unspent instead of tearing a hole no resend can fill — doc/review-2026-07-25.md #4.
+    // unspent instead of tearing a hole no resend can fill.
     sender_.close();
     ASSERT_FALSE(sender_.isConnected());
     ingress_->m_offered.clear();

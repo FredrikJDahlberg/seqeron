@@ -72,7 +72,7 @@ if [[ $# -lt 1 ]]; then
 fi
 
 # SEQERON_JAR overrides, as it does for clusterctl.sh and the metrics scripts. Which IR the run has in
-# front of it is the classpath's, not the printer's (doc/future-arch.md §11 step 7a.4): the uber jar holds
+# front of it is the classpath's, not the printer's: the uber jar holds
 # every module's and names every payload, the cluster tier's own artifact holds three and names none.
 JAR="${SEQERON_JAR:-build/libs/seqeron-0.1.0-uber.jar}"
 

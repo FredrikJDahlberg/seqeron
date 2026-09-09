@@ -314,6 +314,12 @@ tasks.register('uberJar', Jar) {
         attributes 'Main-Class': application.mainClass.get()
     }
 
+    // The jar redistributes Aeron, Agrona and sbe-tool, so it must carry a copy of the license they
+    // and this repo share (Apache 2.0 §4a) and this repo's NOTICE (§4d). First, so
+    // DuplicatesStrategy.EXCLUDE keeps these.
+    from('LICENSE') { into 'META-INF' }
+    from('NOTICE') { into 'META-INF' }
+
     from sourceSets.main.output
     from {
         configurations.runtimeClasspath.collect { it.isDirectory() ? it : zipTree(it) }

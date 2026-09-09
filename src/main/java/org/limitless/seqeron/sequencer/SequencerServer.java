@@ -68,7 +68,6 @@ import org.limitless.seqeron.util.Logger;
  *
  * <p>Gateway topology (which sourceIds are gateways, and which gatewayId is the designated
  * primary) is no longer configured here — the sequencer derives it from the list rows in the log
- * (doc/todo.md item 8c).
  *
  * <p>Single-node launch example:
  * <pre>

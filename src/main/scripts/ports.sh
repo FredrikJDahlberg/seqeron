@@ -1,6 +1,6 @@
 # ports.sh — canonical port-layout formula shared by every seqeron launch/test script, the
 # bash mirror of SequencerServer's PORT_BASE + memberId*10 + offset scheme (see
-# SequencerServer.java's class Javadoc, PortLayout.hpp on the C++ side, and doc/design.md's
+# SequencerServer.java's class Javadoc, PortLayout.hpp on the C++ side, and the
 # "Port layout" section — the source of truth all three cite). Meant to be sourced, not
 # executed: every script that built a CLUSTER_MEMBERS string used to hand-type the same
 # three-line block, which is how BasicDataServer's and FixGateway's egress-port defaults
@@ -58,8 +58,7 @@ TEST_GATEWAY_PORT_BASE=9200          # TestGateway TCP listen (9200 GW-T-A, 9201
                                      # tier's OWN harness block, 9200-9209 (doc/registries.md §2). Not in
                                      # the 9300 block: that is three members of stride 10 with nothing spare.
 # 9348 and 9349 were the cluster-tier harnesses' own test-consumer egress ports, and are now free:
-# those harnesses run ClusterProbe follow, which opens no cluster session at all (doc/future-arch.md
-# §11 step 5). Left unallocated rather than reused, since doc/registries.md §2 records the block.
+# those harnesses run ClusterProbe follow, which opens no cluster session at all. Left unallocated rather than reused, since doc/registries.md §2 records the block.
 
 test_gateway_port()       { echo $(( TEST_GATEWAY_PORT_BASE + ${1:-0} )); }
 fix_tcp_port()            { echo $(( FIX_TCP_PORT_BASE + ${1:-0} )); }

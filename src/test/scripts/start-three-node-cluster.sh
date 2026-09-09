@@ -2,7 +2,7 @@
 # start-three-node-cluster.sh — bring up a local 3-node Aeron Cluster with a per-node ReplayerServer
 # and a per-node consumer replica, then keep it running until interrupted.
 #
-# TWO MODES, and the default is the cluster tier alone (doc/future-arch.md §11 step 5). This script is
+# TWO MODES, and the default is the cluster tier alone. This script is
 # core's, and core's own e2e must run with no C++ binary built:
 #
 #   default (SEQERON_PRODUCT_APPS unset)  — Java only:
@@ -173,7 +173,7 @@ for SEQ_LOG in "${SEQ_LOGS[@]}"; do
 done
 echo "[start-three-node-cluster.sh] All 3 cluster members are running"
 
-# The gateway list (doc/future-arch.md §3.6). Not reference data and not BasicDataServer's: it is a
+# The gateway list. Not reference data and not BasicDataServer's: it is a
 # deployment assertion an operator makes, so it comes in through clusterctl. It has to be in the log
 # before the reference-data load — a gateway that has not resolved its own gatewaySourceId from the
 # list drops every session row on ingest — and the bootstrap GatewayActive that designates each
@@ -402,7 +402,7 @@ for LOG in "${APP_LOG}" "${EXTRA_APP_LOGS[@]}"; do
     done
 done
 
-# The gateway gates logons on EndBasicData itself (doc/basicdata-design.md §6), so a client that
+# The gateway gates logons on EndBasicData itself, so a client that
 # connects early queues in the listen backlog rather than being refused — this wait is not needed for
 # correctness. It is here so READY means "a Logon will be answered now", keeping the harness's
 # failure modes distinguishable: a genuine hang shows up here, not as a client-side connect timeout.

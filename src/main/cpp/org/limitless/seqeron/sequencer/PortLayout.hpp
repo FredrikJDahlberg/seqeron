@@ -1,8 +1,8 @@
 #pragma once
 
 // Canonical cluster port-layout formula — the C++ mirror of SequencerServer's
-// PORT_BASE + memberId*10 + offset scheme (see SequencerServer.java's class Javadoc and
-// doc/design.md's "Port layout" section, the source of truth both sides cite). Cluster
+// PORT_BASE + memberId*10 + offset scheme (see SequencerServer.java's class Javadoc, the
+// source of truth both sides cite). Cluster
 // member ports only: the applications' own bases live in src/main/cpp/.../AppPorts.hpp,
 // because a reusable sequencer must not name the processes that talk to it. Which block
 // each product owns is doc/registries.md's; the only thing core states in code is its own

@@ -1,0 +1,44 @@
+// A consumer of seqeron, built outside its build: no source dependency, no subproject, just the jar
+// the repo produces. That is the point — anything the jar fails to expose fails here rather than
+// passing on a source dependency.
+//
+// The uber jar, because it is the only artifact this repo publishes anywhere: it carries Aeron and
+// Agrona inside it, so this build needs no repositories and no other dependency at all.
+
+plugins {
+    id 'application'
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+}
+
+// SEQERON_JAR overrides the path, the way the repo's own scripts resolve it.
+def seqeronJar = file(System.getenv('SEQERON_JAR') ?: "${projectDir}/../../build/libs/seqeron-0.1.0-uber.jar")
+
+dependencies {
+    implementation files(seqeronJar)
+}
+
+tasks.named('compileJava') {
+    doFirst {
+        if (!seqeronJar.exists()) {
+            throw new GradleException("No seqeron jar at ${seqeronJar} — run ./gradlew uberJar in the repo root")
+        }
+    }
+}
+
+application {
+    mainClass = 'example.FollowStream'
+    // Aeron's off-heap access, the same flags every script in the seqeron repo passes.
+    applicationDefaultJvmArgs = ['--add-opens=java.base/sun.nio.ch=ALL-UNNAMED',
+                                 '--add-opens=java.base/java.lang=ALL-UNNAMED',
+                                 '--add-opens=java.base/java.lang.reflect=ALL-UNNAMED',
+                                 '--add-opens=java.base/jdk.internal.misc=ALL-UNNAMED']
+}
+
+tasks.named('run') {
+    systemProperties System.getProperties().findAll { k, v -> k.toString().startsWith('follow.') }
+}

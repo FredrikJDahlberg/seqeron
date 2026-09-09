@@ -27,12 +27,12 @@ import org.limitless.seqeron.sequencer.SequencerService;
 import org.limitless.seqeron.util.Logger;
 
 /**
- * Per-node archive <b>replay server</b> for co-located application replicas (ReplayerService design,
- * {@code doc/router-design.md}). It is deliberately <em>not</em> on the live delivery path: every
+ * Per-node archive <b>replay server</b> for co-located application replicas.
+ * It is deliberately <em>not</em> on the live delivery path: every
  * app reads the co-located {@code SequencerService}'s node-local IPC tap ({@link
  * SequencerService#FEEDER_CHANNEL} / {@link SequencerService#FEEDER_STREAM_ID}) <b>directly</b> for the
  * live feed, so the sequencer has no live network data subscribers (the UDP multi-destination-cast
- * global stream is retired) and audit.md S4 (sequencer liveness coupled to its slowest consumer)
+ * global stream is retired) and the coupling of sequencer liveness to its slowest consumer
  * dissolves structurally. The apps' tap subscriptions are untethered, so a slow app is dropped (and
  * heals via the replay protocol below) rather than back-pressuring the sequencer.
  */

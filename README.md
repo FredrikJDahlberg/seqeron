@@ -130,8 +130,8 @@ Apple clang; CI builds it on Ubuntu with both clang and gcc-14.
 ## Tests
 
 ```bash
-cmake --build cmake-build-debug --target run_tests   # C++: 115 cases
-./gradlew test                                       # Java: 168 cases
+cmake --build cmake-build-debug --target run_tests   # C++: 132 cases
+./gradlew test                                       # Java: 286 cases
 ```
 
 `run_tests` is `ctest --output-on-failure` with the build dependency wired up; plain `ctest` works
@@ -404,6 +404,29 @@ A payload whose schema is not loaded prints as its ids rather than being decoded
 The second is an unregistered `payloadId`, which prints under its number. Registration is labelling
 only: the sequencer never decodes those rows and they gate no frame.
 
+## Example consumer
+
+`examples/java` and `examples/cpp` are the smallest consumers there are, one per language and the same
+flow in both: replay a node's history through that node's co-located Replayer, switch to the live tap on
+catching up, and print every frame in `globalSeqNo` order. Each is a **separate build** — the Java one
+depends on the uber jar and nothing else, the C++ one pulls `seqeron_core` in with `FetchContent` — so
+what the artifacts fail to expose fails there rather than passing on a source dependency.
+
+```bash
+./src/main/scripts/start-cluster.sh                              # in another shell
+
+./gradlew uberJar && ./gradlew -p examples/java run              # Java
+
+cmake -S examples/cpp -B examples/cpp/cmake-build-release \
+      -DCMAKE_BUILD_TYPE=Release                                 # C++
+cmake --build examples/cpp/cmake-build-release --target follow_stream
+./examples/cpp/cmake-build-release/follow_stream
+```
+
+`ClusterProbe follow` does the same thing with three modes, latency stats and fault injection on top;
+the examples are that one flow with nothing else in them. See
+[examples/java/README.md](examples/java/README.md) and [examples/cpp/README.md](examples/cpp/README.md).
+
 ## Documentation
 
 | Document | What it is |
@@ -413,3 +436,13 @@ only: the sequencer never decodes those rows and they gate no frame.
 | `doc/registries.md` | The two shared namespaces — the producer `sourceId` space and the UDP port blocks |
 | `doc/clusterctl.md` | The operator tool's runbook |
 | `doc/ops.md` | The Prometheus/Grafana metrics stack |
+
+Those five are the whole doc set, and every document reference in this tree resolves inside it.
+
+## License
+
+Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) for the full text, and
+<https://www.apache.org/licenses/LICENSE-2.0> for the canonical copy. Copyright is recorded in
+[NOTICE](NOTICE); §4d obliges anyone redistributing seqeron to carry that file forward. Every
+dependency the uber jar redistributes — Aeron, Agrona, sbe-tool — is under the same license, and
+both files ship inside the jar under `META-INF/`.

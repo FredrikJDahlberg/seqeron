@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <!--
-    The probe protocol (doc/future-arch.md §11 step 5) — payloadId 5.
+    The probe protocol — payloadId 5.
 
     One message, and it exists so that the cluster tier's end-to-end scripts can drive a cluster
     without a product binary. Before this, all five of them generated load with the C++ fix_test_server

@@ -5,7 +5,7 @@
 namespace org::limitless::seqeron::fix {
 
 // Pure decision logic behind FixGateway::checkTapStall's second, symmetric case: recovery that never
-// converges (doc/review-2026-07-25.md #1). checkTapStall's own silence-while-caught-up fence is gated
+// converges. checkTapStall's own silence-while-caught-up fence is gated
 // on isCaughtUp(), which leaves the opposite state — continuously !isCaughtUp() — with no bound at all:
 // a Replayer that never answers, an onReplayUnavailable refusal, or a "gap in REPLAYED history" this
 // node's chain cannot cover all hold isCaughtUp() false indefinitely without ever being fatal on their
@@ -19,7 +19,7 @@ namespace org::limitless::seqeron::fix {
 // least once. Free of Aeron/logging types so it is unit-testable directly, mirroring how
 // TapStallPolicy (Java, SequencerService) is split out from its caller.
 //
-// PROGRESS, not elapsed recovery (review-3.md #6's follow-up): the deadline used to measure how long
+// PROGRESS, not elapsed recovery: the deadline used to measure how long
 // !isCaughtUp() had held, which fences a re-walk that is legitimately working through the whole chain —
 // the very path a recovery takes. A converging recovery always advances the globalSeqNo it has
 // dispatched; a non-converging one never does (the re-walk loop re-delivers history it already holds and

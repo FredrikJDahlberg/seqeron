@@ -83,8 +83,8 @@ metric family — see the reference below. One panel plots a derived value rathe
 itself: **Node apply lag (ms)** is `time() * 1000 - seqeron_sequencer_last_tick_timestamp_ms`, since
 the raw consensus timestamp is an epoch value no operator can read. Per member, that difference is how
 far behind the cluster that node's `SequencerService` is — the one place a node publishing a
-contiguous but *stale* tap becomes visible (see `review-2.md` #7; neither the tap-stall silence
-watchdog nor the recovery-stall watchdog can see that state).
+contiguous but *stale* tap becomes visible (neither the tap-stall silence watchdog nor the
+recovery-stall watchdog can see that state).
 
 Deploy by mounting the whole `src/main/ops/grafana/provisioning` tree at Grafana's own provisioning root.
 Under the standard Grafana Docker image that's already `/etc/grafana/provisioning` by default:
@@ -198,8 +198,8 @@ instance's socket after a promotion, has been ruled out.
   repeated, so a session that recovers leaves one `Error` line behind and nothing else.
 - **Otherwise it needs a human, and not a restart** — the state that is being refused is in the
   replicated log, so a restarted gateway replays straight back into the same refusal. Compare what the
-  venue expects against what the log holds (`SbeLogPrinter`), and see `doc/todo.md`, "A venue that
-  disagrees with the log is never reconciled with".
+  venue expects against what the log holds (`SbeLogPrinter`). A venue that disagrees with the log is
+  never reconciled with automatically.
 - **`seqeron_exchange_gateway_*`: nothing.** As above, the gateway publishes no counters, so this
   cannot be alerted on from Prometheus today — it is a log-scrape signal.
 
@@ -219,7 +219,7 @@ up, holding its cluster session, answering the keep-alive, and it will accept a 
 not dial. Fix it in reference data (`BasicDataConstants.hpp`), reload, and no restart is needed — the row
 resolves off the tap like any other frame. The sibling line, `a second venue session … is owned by
 gatewaySourceId=N`, is the opposite mistake and is not fatal: the gateway stays on the first row and
-refuses the second, because one venue session is all this build serves (`doc/design.md` known gap 12).
+refuses the second, because one venue session is all this build serves.
 
 ## Non-goals / open items
 

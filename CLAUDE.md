@@ -69,8 +69,11 @@ This repository is that tier **alone**. It was carved out of **phixeron**, which
 edges — the C++/simdfix FIX gateway, `OrderExecServer`, `BasicDataServer`, and the two Artio legs
 (`ExchangeGateway`, `OrderGateway`). Those are gone from here, and so are the docs that described them
 (`design.md`, `todo.md`, `future-arch.md`, `architecture-primer.md`, `basicdata-design.md`,
-`artio-integration.md`, `gap.md`, `audit.md`). Comments across the tree still cite them; treat such a
-citation as history, not as a file to open.
+`artio-integration.md`, `gap.md`, `audit.md`, `router-design.md`, `seqeron-protocol.md`,
+`0-overview.md`, `6-detailed-architecture.md`, and the `review-*.md` notes). **The citations of them
+that comments across the tree used to carry have been removed**, so every `doc/<name>.md` reference in
+this tree resolves inside it. Do not add a citation of a document that is not here — state the reason
+inline instead.
 
 **Every artifact says `seqeron`** — package `org.limitless.seqeron`, Gradle project `seqeron`, the fat
 jar `seqeron-0.1.0-uber.jar`, CMake targets `seqeron_core`/`seqeron_flags`, environment variables
@@ -368,7 +371,7 @@ harness cleaning up after a `SEQERON_PRODUCT_APPS=1` run finds nothing left behi
 
 ## Known gaps
 
-`doc/todo.md` went with the product half, so there is no gap list in this repo. The two structural costs
+The gap list went with the product half, so there is none in this repo. The two structural costs
 recorded above are the standing ones: **no snapshots** (recovery time and archive size grow with uptime),
 and **the cluster is bounded at three members** by the 9300–9329 port block (`doc/registries.md` §2).
 

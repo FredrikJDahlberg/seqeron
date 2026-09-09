@@ -1,11 +1,13 @@
 # Build output
 /build/
 /*/build/
+/examples/*/build/
 cmake-build-*/
 /out/
 
 # Gradle
 /.gradle/
+/examples/*/.gradle/
 
 # Coverage instrumentation dumps (SEQERON_COVERAGE=ON, clang)
 *.profraw

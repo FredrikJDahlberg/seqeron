@@ -1,7 +1,7 @@
 // ReplayerRecovery — the walk/resume/gap decision state machine ReplayerStreamReceiver drives.
 //
 // Locked here: the contiguity/de-dupe decision and the first-frame-must-be-globalSeqNo-1 baseline check
-// (doc/todo.md "Replayer / ingress" — a cold start answered NO_REPLAY_NEEDED used to adopt an arbitrary
+// (a cold start answered NO_REPLAY_NEEDED used to adopt an arbitrary
 // mid-stream baseline; globalSeqNo only increases, so once the first frame observed isn't 1 no later one
 // ever can be, and it aborts rather than latching a flag a caller might not check), the Replayer
 // control-stream transitions, the retained-ahead FIFO, the segment-chain walk, the steady-state resume,
@@ -275,8 +275,8 @@ TEST(ReplayerRecoveryBaseline, FirstFrameNotAtGlobalSeqNoOneAbortsTheProcess)
         << "must not silently adopt a mid-stream baseline";
 }
 
-// Coverage for the gap-recovery/re-walk state machine (doc/todo.md "gap re-walk starves the tap it is
-// recovering", fixed 2026-07-31): mid-stream gap detection, de-dup of already-seen replayed frames, the
+// Coverage for the gap-recovery/re-walk state machine (the "gap re-walk starves the tap it is
+// recovering" fault, fixed 2026-07-31): mid-stream gap detection, de-dup of already-seen replayed frames, the
 // Replayer control-stream transitions (Replaying / NO_REPLAY_NEEDED / ReplayPending), and the
 // segment-chain walk advancing on completion — the contiguity/de-dupe decision, the isRecovering()
 // predicate that separates a real hole from the tap running ahead of an in-flight walk, and the
@@ -363,7 +363,7 @@ TEST(ReplayerRecoveryGapRecovery, TapFrameAheadOfAnInFlightWalkDoesNotSupersedeI
     // awaiting an answer. (The e2e version of this scenario — re-arming a live-tap drop while a real walk
     // is in flight — was attempted and abandoned as impractical: local Aeron IPC replay of a small gap
     // completes too fast for a shell-level poll-then-signal loop to reliably land inside the window; see
-    // doc/todo.md's 2026-08-02 note. This state transition is locked down here instead.)
+    // the 2026-08-02 investigation. This state transition is locked down here instead.)
     deliverControl(client, encodeReplaying(/*clientId=*/1, client.recovery.requestId(), /*replaySessionId=*/99,
                                            /*catchUpPosition=*/500));
     ASSERT_EQ(99, client.recovery.replaySessionId());
@@ -692,7 +692,7 @@ TEST(ReplayerRecoveryGapRecovery, ReplayUnavailableHoldsWithoutAbortingOrAdvanci
 }
 
 // A second, distinct outage hours later must report itself: the latch is on the episode, not on the
-// process (review-3.md #12). The intervening reply is what ends the first episode — an operator
+// process. The intervening reply is what ends the first episode — an operator
 // repaired the archive and restarted the Replayer, exactly the recovery onReplayUnavailable describes.
 TEST(ReplayerRecoveryGapRecovery, ARefusalAfterTheReplayerRecoveredIsReportedAgain)
 {
@@ -777,8 +777,8 @@ TEST(ReplayerRecoveryGapRecovery, StuckAwaitingReplayResendsAfterTheIntervalElap
 // isRecovering() is what separates "the tap is ahead of my replay" from "there is a hole" — narrowing it
 // to miss a state means a walk supersedes itself on its own in-flight frames (see
 // TapFrameAheadOfAnInFlightWalkDoesNotSupersedeIt), widening it means a real gap goes unreported. This
-// walks every transition it must track. (It also guarded the discard routing behind doc/todo.md's
-// 2026-07-31 "gap re-walk starves the tap it is recovering"; that discard is gone as of 2026-08-05 —
+// walks every transition it must track. (It also guarded the discard routing behind the
+// 2026-07-31 "gap re-walk starves the tap it is recovering" fault; that discard is gone as of 2026-08-05 —
 // poll() now always drains AND dispatches the tap — but the predicate itself carries more weight, not
 // less.)
 TEST(ReplayerRecoveryGapRecovery, RecoveringFlagTracksWalkAndAwaitingReplayState)
@@ -1052,7 +1052,7 @@ TEST(ReplayerRecoveryGapRecovery, ResumeReachingItsBoundCatchesUpWithoutRequesti
     EXPECT_EQ(2, caughtUpNotifications) << "re-fired, so consumers re-arm on re-convergence";
 }
 
-// review-3.md #9: the release was a fire-and-forget offer, so an offer that did not land was
+// The release was a fire-and-forget offer, so an offer that did not land was
 // indistinguishable from one that did — and nothing re-sent it, leaving the slot to the 60s TTL. There
 // is no publication in these tests, so every send here is a send that never went out.
 TEST(ReplayerRecoveryGapRecovery, AReplayCompleteThatNeverWentOutStaysPending)
@@ -1152,7 +1152,7 @@ TEST(ReplayerRecoveryGapRecovery, ResumeReachingItsBoundWithARetainedHoleStillOp
     EXPECT_EQ(-1, client.recovery.replaySessionId());
 }
 
-// The overflow half of the same guard (review-3.md #12). When retainMessages had to DROP tap frames, the
+// The overflow half of the same guard. When retainMessages had to DROP tap frames, the
 // frontier is short by frames that are gone from the tap for good, and every retained frame draining
 // cleanly says nothing about them. drainRetained used to clear the overflow on its first dispatch —
 // before this check could read it — so precisely the run that drained successfully was the one that
@@ -1392,7 +1392,7 @@ TEST(ReplayerRecoveryGapRecovery, WalkSegmentRetryOnADifferentRecordingAbandonsT
     EXPECT_EQ(1u, sink.events.size()) << "the shift is reported, not silently absorbed";
 }
 
-// ── Convergence alarm (review-3.md #6) ───────────────────────────────────────────────────────
+// ── Convergence alarm ─────────────────────────────────────────────────────────────────────────────────────
 // RecoveryProgressPolicyTest covers the verdict itself; what is locked here is the wiring around it —
 // that an in-order dispatch counts as progress, that catching up without dispatching does too, and that
 // the report carries the state telling the causes apart.
