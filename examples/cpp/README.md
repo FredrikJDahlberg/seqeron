@@ -22,8 +22,10 @@ Then, here:
     cmake --build cmake-build-release --target follow_stream
     ./cmake-build-release/follow_stream
 
-The first configure fetches and builds Aeron and GoogleTest from source, which is what
-`add_subdirectory` of the whole repo costs. Output is one line per frame:
+The first configure fetches and builds Aeron from source, which is what `add_subdirectory` of the whole
+repo costs. GoogleTest is not fetched — that is seqeron's test dependency, not part of what it exports.
+
+Output is one line per frame:
 
     # following member 0 via /var/folders/…/seqeron-seq-aeron-0
     1 leader=member 0
@@ -58,7 +60,9 @@ replays and neither catches up.
   consumer that passes `{}` for it sees a hole in `globalSeqNo` at every leadership change — including
   `globalSeqNo` 1, which always is one.
 
-## One thing to know
+## What a consumer does not inherit
 
-`seqeron_core` interface-links `seqeron_flags`, which carries `-Wall -Wextra` and, in a Debug build,
-`-fsanitize=address`. A consumer inherits both. Configure Release unless you want the sanitizer.
+`seqeron_core` carries the include roots and `aeron_client_wrapper`, and nothing else. seqeron's own
+`-Wall -Wextra` and its Debug `-fsanitize=address` live on `seqeron_flags`, which only targets inside
+that repo link, and `core_tests` is not configured at all here — `SEQERON_BUILD_TESTS` defaults off
+when seqeron is added as a subdirectory, so neither the suite nor GoogleTest is fetched or built.

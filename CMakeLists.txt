@@ -58,17 +58,25 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(aeron)
 
+# core_tests and everything it needs belong to whoever builds this repo, not to a consumer that adds
+# it: without this, `cmake --build .` in a consumer's tree compiles all nine test files and GoogleTest.
+# Off by default when added as a subdirectory — a parent that vendors this build AND wants GoogleTest
+# registered by it (rather than fetching its own) turns it back on.
+option(SEQERON_BUILD_TESTS "Build seqeron's own test suite" ${PROJECT_IS_TOP_LEVEL})
+
 # Google Test — FetchContent rather than find_package, so a consumer that vendors this build and looks
 # GTest up with find_package resolves the targets FetchContent already registered.
-FetchContent_Declare(
-    googletest
-    GIT_REPOSITORY https://github.com/google/googletest.git
-    GIT_TAG        v1.16.0
-    GIT_SHALLOW    TRUE
-)
-set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
-set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
-FetchContent_MakeAvailable(googletest)
+if(SEQERON_BUILD_TESTS)
+    FetchContent_Declare(
+        googletest
+        GIT_REPOSITORY https://github.com/google/googletest.git
+        GIT_TAG        v1.16.0
+        GIT_SHALLOW    TRUE
+    )
+    set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+    set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
+    FetchContent_MakeAvailable(googletest)
+endif()
 
 # SBE tool — downloaded once at configure time
 find_package(Java REQUIRED COMPONENTS Runtime)
@@ -171,10 +179,14 @@ add_custom_target(GenerateFrameSbeCodecs DEPENDS ${FRAME_SBE_STAMP})
 # src/main/cpp, so nothing linking only this can reach a product header,
 # and it carries no simdfix and no generated FIX codecs: its SBE root is SBE_CORE_DIR, which holds
 # only frame/replay/cluster, so the cluster tier decodes no FIX by construction rather than by habit.
+#
+# BUILD_INTERFACE only, and no install()/export(): seqeron_core interface-links aeron_client_wrapper,
+# whose own install is gated on Aeron's AERON_INSTALL_TARGETS (default ${STANDALONE_BUILD}, off under
+# FetchContent), so install(EXPORT) would fail at generate time on a target in no export set. A
+# consumer adds this build — see examples/cpp — rather than find_package()ing it.
 add_library(seqeron_core INTERFACE)
 target_include_directories(seqeron_core INTERFACE
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/main/cpp>
-    $<INSTALL_INTERFACE:include>
 )
 # SYSTEM: SBE-tool output. Regenerating from the schema is the only way to change these, so their
 # diagnostics are noise — -Wtype-limits fires on every get*AsJsonEscapedString wherever char is
@@ -182,56 +194,61 @@ target_include_directories(seqeron_core INTERFACE
 target_include_directories(seqeron_core SYSTEM INTERFACE
     $<BUILD_INTERFACE:${SBE_CORE_DIR}>
 )
+# Not seqeron_flags: those are THIS build's policy, not part of the library's interface, and in Debug
+# they carry -fsanitize=address — a consumer linking seqeron_core would silently get AddressSanitizer
+# in its own code. Targets in this repo add seqeron_flags themselves.
 target_link_libraries(seqeron_core INTERFACE
-    seqeron_flags
     aeron_client_wrapper
 )
 # On the library, not on each consumer: SBE_CORE_DIR is on seqeron_core's include path, so anything
 # linking it needs those codecs generated first — an out-of-tree consumer as much as core_tests.
 add_dependencies(seqeron_core GenerateFrameSbeCodecs GenerateReplaySbeCodecs GenerateClusterSbeCodecs)
 
-# core_tests — the cluster tier's own suite. Links seqeron_core only, so a core file that reached for
-# a product header fails to build.
-enable_testing()
+if(SEQERON_BUILD_TESTS)
+    # core_tests — the cluster tier's own suite. Links seqeron_core only, so a core file that reached for
+    # a product header fails to build.
+    enable_testing()
 
-add_executable(core_tests
-    src/test/cpp/org/limitless/seqeron/sequencer/ClusterCodecTest.cpp
-    src/test/cpp/org/limitless/seqeron/sequencer/ConformanceTest.cpp
-    src/test/cpp/org/limitless/seqeron/sequencer/ClusterStreamSenderTest.cpp
-    src/test/cpp/org/limitless/seqeron/sequencer/FrameStartPositionTest.cpp
-    src/test/cpp/org/limitless/seqeron/sequencer/PortLayoutTest.cpp
-    src/test/cpp/org/limitless/seqeron/replayer/client/ReplayerRecoveryTest.cpp
-    src/test/cpp/org/limitless/seqeron/replayer/client/ReplayerRecoveryPropertyTest.cpp
-    src/test/cpp/org/limitless/seqeron/replayer/client/RecoveryProgressPolicyTest.cpp
-    src/test/cpp/org/limitless/seqeron/fix/GatewayRecoveryStallPolicyTest.cpp
-    src/main/cpp/org/limitless/seqeron/sequencer/ClusterStreamSender.hpp
-    src/main/cpp/org/limitless/seqeron/fix/GatewayRecoveryStallPolicy.hpp
-    src/main/cpp/org/limitless/seqeron/util/Logger.hpp
-)
-target_link_libraries(core_tests PRIVATE
-    seqeron_core
-    aeron_archive_wrapper
-    aeron_archive_c_client
-    aeron
-    GTest::gtest_main
-)
+    add_executable(core_tests
+        src/test/cpp/org/limitless/seqeron/sequencer/ClusterCodecTest.cpp
+        src/test/cpp/org/limitless/seqeron/sequencer/ConformanceTest.cpp
+        src/test/cpp/org/limitless/seqeron/sequencer/ClusterStreamSenderTest.cpp
+        src/test/cpp/org/limitless/seqeron/sequencer/FrameStartPositionTest.cpp
+        src/test/cpp/org/limitless/seqeron/sequencer/PortLayoutTest.cpp
+        src/test/cpp/org/limitless/seqeron/replayer/client/ReplayerRecoveryTest.cpp
+        src/test/cpp/org/limitless/seqeron/replayer/client/ReplayerRecoveryPropertyTest.cpp
+        src/test/cpp/org/limitless/seqeron/replayer/client/RecoveryProgressPolicyTest.cpp
+        src/test/cpp/org/limitless/seqeron/fix/GatewayRecoveryStallPolicyTest.cpp
+        src/main/cpp/org/limitless/seqeron/sequencer/ClusterStreamSender.hpp
+        src/main/cpp/org/limitless/seqeron/fix/GatewayRecoveryStallPolicy.hpp
+        src/main/cpp/org/limitless/seqeron/util/Logger.hpp
+    )
+    target_link_libraries(core_tests PRIVATE
+        seqeron_core
+        seqeron_flags
+        aeron_archive_wrapper
+        aeron_archive_c_client
+        aeron
+        GTest::gtest_main
+    )
 
-check_cxx_compiler_flag("-Wcharacter-conversion" SEQERON_HAS_WCHARACTER_CONVERSION)
-if(SEQERON_HAS_WCHARACTER_CONVERSION)
-    target_compile_options(core_tests PRIVATE -Wno-character-conversion)
+    check_cxx_compiler_flag("-Wcharacter-conversion" SEQERON_HAS_WCHARACTER_CONVERSION)
+    if(SEQERON_HAS_WCHARACTER_CONVERSION)
+        target_compile_options(core_tests PRIVATE -Wno-character-conversion)
+    endif()
+
+    include(GoogleTest)
+    gtest_discover_tests(core_tests)
+
+    # run_tests — build the suite and run it. One binary now that the product half is its own repo, so
+    # this is `ctest` with the output turned on; the target keeps its name because the CI workflow, the
+    # docs and habit all name it. Plain ctest is clean here too: simdfix's own suite was what used to be
+    # registered alongside and report spurious ..._NOT_BUILT failures, and this build declares no simdfix.
+    add_custom_target(run_tests
+        COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure
+        DEPENDS core_tests
+        WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+        COMMENT "Running core_tests"
+        USES_TERMINAL
+    )
 endif()
-
-include(GoogleTest)
-gtest_discover_tests(core_tests)
-
-# run_tests — build the suite and run it. One binary now that the product half is its own repo, so
-# this is `ctest` with the output turned on; the target keeps its name because the CI workflow, the
-# docs and habit all name it. Plain ctest is clean here too: simdfix's own suite was what used to be
-# registered alongside and report spurious ..._NOT_BUILT failures, and this build declares no simdfix.
-add_custom_target(run_tests
-    COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure
-    DEPENDS core_tests
-    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
-    COMMENT "Running core_tests"
-    USES_TERMINAL
-)

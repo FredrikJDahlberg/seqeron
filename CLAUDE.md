@@ -127,7 +127,8 @@ cmake -B cmake-build-debug -DCMAKE_BUILD_TYPE=Debug      # AddressSanitizer
 cmake --build cmake-build-debug
 ```
 C++23, requires Java (Runtime) on PATH for the SBE tool, and fetches Aeron 1.51.0 and GoogleTest from
-source. `-DSEQERON_COVERAGE=ON` adds instrumentation. No simdfix, and therefore **no SSH remote is
+source. GoogleTest and `core_tests` are gated on `SEQERON_BUILD_TESTS`, which defaults to
+`PROJECT_IS_TOP_LEVEL` — a build that adds this one gets neither unless it asks. `-DSEQERON_COVERAGE=ON` adds instrumentation. No simdfix, and therefore **no SSH remote is
 needed** — the FetchContent clone that used to require one went with the product half.
 
 **Aeron and SBE versions are pinned twice** — `build.gradle`'s `ext` block and `CMakeLists.txt`'s

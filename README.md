@@ -409,13 +409,14 @@ only: the sequencer never decodes those rows and they gate no frame.
 `examples/java` and `examples/cpp` are the smallest consumers there are, one per language and the same
 flow in both: replay a node's history through that node's co-located Replayer, switch to the live tap on
 catching up, and print every frame in `globalSeqNo` order. Each is a **separate build** — the Java one
-depends on the uber jar and nothing else, the C++ one pulls `seqeron_core` in with `FetchContent` — so
-what the artifacts fail to expose fails there rather than passing on a source dependency.
+resolves `org.limitless:seqeron` as a published artifact, the C++ one pulls `seqeron_core` in with
+`FetchContent` — so what the artifacts fail to expose fails there rather than passing on a source
+dependency.
 
 ```bash
 ./src/main/scripts/start-cluster.sh                              # in another shell
 
-./gradlew uberJar && ./gradlew -p examples/java run              # Java
+./gradlew publishToMavenLocal && ./gradlew -p examples/java run  # Java
 
 cmake -S examples/cpp -B examples/cpp/cmake-build-release \
       -DCMAKE_BUILD_TYPE=Release                                 # C++

@@ -4,16 +4,15 @@ The smallest consumer of seqeron there is: it replays a node's history through t
 `ReplayerService`, switches to the live tap when it catches up, and prints every frame in `globalSeqNo`
 order.
 
-This is a **separate build**, not a subproject. It depends on the uber jar the repo produces and on
-nothing else — the jar carries Aeron and Agrona inside it — so anything the jar fails to expose fails
-here rather than passing on a source dependency. `SEQERON_JAR` overrides the path, the way the repo's
-own scripts resolve it.
+This is a **separate build**, not a subproject. It resolves `org.limitless:seqeron` as a published
+artifact, which is the only way an example can show the artifact is consumable at all — anything it
+fails to expose fails here rather than passing on a source dependency.
 
 ## Run it
 
-In the seqeron repo root, build the jar and start a node:
+In the seqeron repo root, publish the artifact and start a node:
 
-    ./gradlew uberJar
+    ./gradlew publishToMavenLocal
     ./src/main/scripts/start-cluster.sh
 
 Then, here:
@@ -43,7 +42,8 @@ other's replays and neither catches up.
 
 ## What it shows
 
-- **One dependency.** The uber jar and nothing else; Aeron and Agrona are inside it.
+- **One dependency.** `org.limitless:seqeron` brings Aeron and Agrona with it — seqeron declares them
+  `api`, since they are in the signatures a consumer compiles against.
 - **The receiver owns the history/live split.** There is no code here for requesting a replay, tracking
   the archive, or noticing a gap: `ReplayerStreamReceiver` does all of it and dispatches nothing out of
   order, which is why the gap check in `onSequenced` can be an assertion rather than a recovery path.

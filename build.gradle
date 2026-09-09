@@ -10,7 +10,9 @@
 
 plugins {
     id 'application'
+    id 'java-library'
     id 'jacoco'
+    id 'maven-publish'
 }
 
 group   = 'org.limitless'
@@ -40,12 +42,19 @@ configurations {
     sbeCodegen
 }
 
+// api, not implementation, for the four that appear in this repo's own public signatures: anything
+// consuming these classes compiles against DirectBuffer (SequencedFrameDecoder, SystemFrame), Aeron and
+// Image (ReplayerStreamReceiver), AeronArchive (ReplayerService) and ClusteredService
+// (SequencerService), so they belong on a consumer's compile classpath rather than being redeclared
+// there. aeron-driver stays implementation — SequencerServer embeds a MediaDriver but exposes none. So
+// does sbe-tool: SbeLogPrinter's List<Ir> constructor is the one leak, and the printer is a CLI, not a
+// library entry point.
 dependencies {
-    implementation "io.aeron:aeron-cluster:${aeronVersion}"
-    implementation "io.aeron:aeron-archive:${aeronVersion}"
+    api "io.aeron:aeron-cluster:${aeronVersion}"
+    api "io.aeron:aeron-archive:${aeronVersion}"
+    api "io.aeron:aeron-client:${aeronVersion}"
+    api "org.agrona:agrona:${agronaVersion}"
     implementation "io.aeron:aeron-driver:${aeronVersion}"
-    implementation "io.aeron:aeron-client:${aeronVersion}"
-    implementation "org.agrona:agrona:${agronaVersion}"
     implementation "uk.co.real-logic:sbe-tool:${sbeVersion}"
 
     testImplementation "io.aeron:aeron-cluster:${aeronVersion}"
@@ -329,4 +338,19 @@ tasks.register('uberJar', Jar) {
     exclude 'META-INF/*.SF', 'META-INF/*.DSA', 'META-INF/*.RSA', 'META-INF/versions/**/module-info.class',
             'module-info.class'
     duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+}
+
+// ── Publishing ─────────────────────────────────────────────────────────────────
+// The library artifact — the plain jar, whose POM carries the api dependencies above so a consumer
+// declares seqeron and gets Aeron and Agrona with it. `./gradlew publishToMavenLocal` is the whole
+// workflow for now; no remote repository is declared.
+//
+// The uber jar is deliberately NOT published. It is the runnable artifact every script resolves out of
+// build/libs, and it repacks Aeron and Agrona — publishing it would put a shaded copy of them on a
+// consumer's classpath beside the real ones.
+
+publishing {
+    publications {
+        maven(MavenPublication) { from components.java }
+    }
 }

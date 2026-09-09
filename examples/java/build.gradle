@@ -1,9 +1,6 @@
-// A consumer of seqeron, built outside its build: no source dependency, no subproject, just the jar
-// the repo produces. That is the point — anything the jar fails to expose fails here rather than
-// passing on a source dependency.
-//
-// The uber jar, because it is the only artifact this repo publishes anywhere: it carries Aeron and
-// Agrona inside it, so this build needs no repositories and no other dependency at all.
+// A consumer of seqeron, built outside its build: no source dependency, no subproject, just the
+// published coordinate. That is the point — anything the artifact fails to expose fails here rather
+// than passing on a source dependency.
 
 plugins {
     id 'application'
@@ -15,19 +12,17 @@ java {
     }
 }
 
-// SEQERON_JAR overrides the path, the way the repo's own scripts resolve it.
-def seqeronJar = file(System.getenv('SEQERON_JAR') ?: "${projectDir}/../../build/libs/seqeron-0.1.0-uber.jar")
-
-dependencies {
-    implementation files(seqeronJar)
+repositories {
+    // ./gradlew publishToMavenLocal in the repo root puts seqeron here; Aeron and Agrona come from
+    // Central, as the transitive dependencies its POM declares.
+    mavenLocal()
+    mavenCentral()
 }
 
-tasks.named('compileJava') {
-    doFirst {
-        if (!seqeronJar.exists()) {
-            throw new GradleException("No seqeron jar at ${seqeronJar} — run ./gradlew uberJar in the repo root")
-        }
-    }
+// One dependency. seqeron declares Aeron and Agrona api, since they are in the signatures a consumer
+// compiles against, so they arrive with it and are not redeclared here.
+dependencies {
+    implementation 'org.limitless:seqeron:0.1.0'
 }
 
 application {
