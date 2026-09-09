@@ -1,3 +1,8 @@
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="doc/branding/seqeron-wordmark-dark.svg">
+  <img src="doc/branding/seqeron-wordmark.svg" alt="seqeron" width="248" height="60">
+</picture>
+
 # seqeron
 
 ## Overview

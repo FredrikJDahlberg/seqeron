@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="seqeron">
+  <title>seqeron</title>
+  <style>
+    .ink { fill: #0E1317 }
+    @media (prefers-color-scheme: dark) { .ink { fill: #E9EDF1 } }
+  </style>
+  <g class="ink" fill="#0E1317">
+    <rect x="6" y="13" width="9" height="10" rx="2"/><rect x="17" y="13" width="7" height="10" rx="2"/><rect x="26" y="13" width="12" height="10" rx="2"/><rect x="40" y="13" width="6" height="10" rx="2"/>
+    <rect x="6" y="27" width="9" height="10" rx="2"/><rect x="17" y="27" width="7" height="10" rx="2"/><rect x="26" y="27" width="12" height="10" rx="2"/><rect x="40" y="27" width="6" height="10" rx="2"/>
+    <rect x="6" y="41" width="9" height="10" rx="2"/><rect x="17" y="41" width="7" height="10" rx="2"/><rect x="26" y="41" width="12" height="10" rx="2"/><rect x="40" y="41" width="6" height="10" rx="2"/>
+  </g>
+  <g fill="#FF6A3D">
+    <rect x="48" y="13" width="10" height="10" rx="2"/><rect x="48" y="27" width="10" height="10" rx="2"/><rect x="48" y="41" width="10" height="10" rx="2"/>
+  </g>
+</svg>
