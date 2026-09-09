@@ -22,8 +22,3 @@ add_executable(follow_stream FollowStream.cpp)
 # seqeron_core is header-only and carries its own include roots and aeron_client_wrapper; the C client
 # is what the wrapper links against.
 target_link_libraries(follow_stream PRIVATE seqeron_core aeron)
-
-# seqeron_core names the generated SBE include dir but depends on nothing that fills it — only
-# core_tests does, in the parent build. A consumer therefore has to ask for the codecs itself, or the
-# first seqeron header it includes fails on a missing org_limitless_seqeron_sbe_frame/*.h.
-add_dependencies(follow_stream GenerateFrameSbeCodecs GenerateReplaySbeCodecs GenerateClusterSbeCodecs)

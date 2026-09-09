@@ -186,6 +186,9 @@ target_link_libraries(seqeron_core INTERFACE
     seqeron_flags
     aeron_client_wrapper
 )
+# On the library, not on each consumer: SBE_CORE_DIR is on seqeron_core's include path, so anything
+# linking it needs those codecs generated first — an out-of-tree consumer as much as core_tests.
+add_dependencies(seqeron_core GenerateFrameSbeCodecs GenerateReplaySbeCodecs GenerateClusterSbeCodecs)
 
 # core_tests — the cluster tier's own suite. Links seqeron_core only, so a core file that reached for
 # a product header fails to build.
@@ -212,8 +215,6 @@ target_link_libraries(core_tests PRIVATE
     aeron
     GTest::gtest_main
 )
-add_dependencies(core_tests GenerateReplaySbeCodecs GenerateClusterSbeCodecs
-    GenerateFrameSbeCodecs)
 
 check_cxx_compiler_flag("-Wcharacter-conversion" SEQERON_HAS_WCHARACTER_CONVERSION)
 if(SEQERON_HAS_WCHARACTER_CONVERSION)
