@@ -82,12 +82,15 @@ DRIVER_LOSS_STRICT="${DRIVER_LOSS_STRICT:-1}"
 # mark files the kill left "active". Must exceed the mark-file liveness timeout (driverTimeoutMs, 10s).
 SIGKILL_MARKFILE_SETTLE_SECS="${SIGKILL_MARKFILE_SETTLE_SECS:-12}"
 
-LEADER_TIMEOUT_SECS=30
-ELECTION_TIMEOUT_SECS=15
-NODE_START_TIMEOUT_SECS=15
-APP_CATCHUP_TIMEOUT_SECS=30
-PROC_EXIT_TIMEOUT_SECS=10      # a signalled member actually dying: measured 0.2s
-TAP_STALL_DEADLINE_SECS=10
+# Env-overridable, defaults unchanged: a shared CI runner puts three members, their embedded
+# drivers and archives, a gateway pair and the consumer replicas on 4 vCPUs, and every one of these
+# measures WALL clock — so the runner needs to raise them without editing the script.
+LEADER_TIMEOUT_SECS="${LEADER_TIMEOUT_SECS:-30}"
+ELECTION_TIMEOUT_SECS="${ELECTION_TIMEOUT_SECS:-15}"
+NODE_START_TIMEOUT_SECS="${NODE_START_TIMEOUT_SECS:-15}"
+APP_CATCHUP_TIMEOUT_SECS="${APP_CATCHUP_TIMEOUT_SECS:-30}"
+PROC_EXIT_TIMEOUT_SECS="${PROC_EXIT_TIMEOUT_SECS:-10}"   # a signalled member actually dying: measured 0.2s
+TAP_STALL_DEADLINE_SECS="${TAP_STALL_DEADLINE_SECS:-10}"
 PAUSE_SECS=0.5
 
 JAVA_OPTS=(

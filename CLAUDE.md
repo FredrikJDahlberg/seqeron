@@ -87,9 +87,9 @@ this tree.
 
 | | Java | C++ |
 | --- | --- | --- |
-| the sequencer | `sequencer/` — `Sequencer`, `SequencerService`, `SequencerServer`, `FrameLayer`, `SystemFrame`, `TapStallPolicy` | `sequencer/` — `SequencedFrame`, `ClusterStreamSender`, `ClusterStreamClient`, `IngressPublisher`, `PortLayout` |
+| the sequencer | `sequencer/` — `Sequencer`, `SequencerService`, `SequencerServer`, `FrameLayer`, `SystemFrame`, `TapPublisher`, `TapStallPolicy` | `sequencer/` — `SequencedFrame`, `ClusterStreamSender`, `ClusterStreamClient`, `IngressPublisher`, `PortLayout` |
 | the replayer | `replayer/server/` and `replayer/client/` | `replayer/client/` only |
-| the tools | `tools/` — `ClusterCtl`, `ClusterProbe`, `SbeLogPrinter` | — |
+| the tools | `tools/` — `ClusterCtl`, `TopologyDocument`, `ClusterProbe`, `SbeLogPrinter` | — |
 | the ops plane | `metrics/` — `MetricsExporter`, `MetricsAggregator`, `PhixeronCounters` | `util/PhixeronCounters.hpp` |
 | the gateway fence | `fixgateway/GatewayRecoveryStallPolicy` | `fix/GatewayRecoveryStallPolicy.hpp` |
 
@@ -111,7 +111,7 @@ the server side of the replay protocol is Java only.
 ```bash
 ./gradlew compileJava
 ./gradlew uberJar     # build/libs/phixeron-0.1.0-uber.jar — every script's prerequisite
-./gradlew test        # JUnit 5, 168 tests, ~1s
+./gradlew test        # JUnit 5, 286 tests, ~1s
 ./gradlew generateFrameSbe generateReplaySbe generateProbeSbe generateClusterSbeIr
 ./gradlew compileTestJava   # TestGateway, which chaos-runner.sh needs and no jar carries
 ```
@@ -134,8 +134,8 @@ error. Change both together.
 ## Tests
 
 ```bash
-cmake --build cmake-build-debug --target run_tests   # 115 GoogleTest cases
-./gradlew test                                       # 168 JUnit cases
+cmake --build cmake-build-debug --target run_tests   # 132 GoogleTest cases
+./gradlew test                                       # 286 JUnit cases
 ```
 `run_tests` is `ctest --output-on-failure` with the build dependency wired. **Plain `ctest` is fine
 here** — the `..._NOT_BUILT` noise that had to be filtered was simdfix's own registered suite, and this
@@ -199,8 +199,9 @@ Consumers split live from history: co-located apps subscribe to the tap **direct
 co-located `ReplayerService` serves cold-start/gap replay off the same recording. `emit` is reliable —
 it spins until the offer lands, since a dropped frame would be an unrecoverable hole — and can only
 block on local-archive write back-pressure, because the recording is the tap's one tethered subscriber.
-Reliable is not unbounded: `TapStallPolicy` watches the archive's `RecordingPos` counter, and a node
-whose recording has stopped or stopped advancing **terminates itself** (`EXIT_TAP_FATAL` = 70) rather
+Reliable is not unbounded: `TapPublisher` — the reliable-offer discipline, split off the way `Sequencer` is
+and unit-tested the same way — applies `TapStallPolicy`'s verdict to the archive's `RecordingPos` counter,
+and a node whose recording has stopped or stopped advancing **terminates itself** (`EXIT_TAP_FATAL` = 70) rather
 than sequence history it cannot keep. Peers keep quorum, and the restart rebuilds its recording over the
 full-log replay it does anyway. The 1 Hz heartbeat runs the same liveness check, because a *stopped*
 recording back-pressures nothing at all (the untethered app subscribers keep the publication connected)
@@ -236,9 +237,13 @@ reads `ReplayerService`'s channel and stream-id constants (`IPC_CHANNEL`, `REPLA
 
 `ReplayerStreamReceiver` is the Aeron adapter only — subscriptions, the replay image, the clocks; every
 decision it makes about them lives in **`ReplayerRecovery`**, which holds none of them and is where the
-unit suite drives the walk/resume/gap state machine (`ReplayerRecoveryTest`, both languages). The Java
+unit suite drives the walk/resume/gap state machine — `ReplayerRecoveryTest` names one situation per case,
+`ReplayerRecoveryPropertyTest` drives seeded fault sequences against a model of the archive/tap/Replayer and
+asserts gap-freedom and convergence over whatever comes out; both tests exist in both languages. The Java
 and C++ classes are faithful ports of each other: same protocol, same state machine, same adapter/seam
-split. Keep all four files and both tests in step.
+split. Keep all four files and all four tests in step — the two `ReplayerRecoveryTest`s are case for
+case in the same order precisely so a divergence is visible as a missing case rather than as a
+runtime decode failure on a live tap.
 
 ### Frames: two families, one envelope
 **Everything on the wire is `sbe-frame.xml` (schema 210), in two families.** The **application** family
@@ -281,7 +286,8 @@ cannot. Connections are the generic half: `ConnectionOpened`/`ConnectionClosed` 
 kind of producer owns the socket, which is why they are not `Client*`.
 
 `clusterctl load-topology <file>` publishes the deployment document — XML validated against
-`topology.xsd`, which ships in the jar and `ClusterCtl` resolves off its own classpath. Its three
+`topology.xsd`, which ships in the jar and `TopologyDocument` — the parse/validate half, split off
+and unit-tested the way `Sequencer` and `TapPublisher` are — resolves off its own classpath. Its three
 sections are the complete producer view of a deployment: `<gateways>` (the elected pairs),
 `<applications>` (the co-located, leader-gated kind, `sourceId` required so every producer sits in spec
 §5's one id space), and `<protocols>` (`PayloadIdRegistered` rows naming each `payloadId`). **Only the

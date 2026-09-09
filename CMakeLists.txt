@@ -198,6 +198,7 @@ add_executable(core_tests
     src/test/cpp/org/limitless/phixeron/sequencer/FrameStartPositionTest.cpp
     src/test/cpp/org/limitless/phixeron/sequencer/PortLayoutTest.cpp
     src/test/cpp/org/limitless/phixeron/replayer/client/ReplayerRecoveryTest.cpp
+    src/test/cpp/org/limitless/phixeron/replayer/client/ReplayerRecoveryPropertyTest.cpp
     src/test/cpp/org/limitless/phixeron/replayer/client/RecoveryProgressPolicyTest.cpp
     src/test/cpp/org/limitless/phixeron/fix/GatewayRecoveryStallPolicyTest.cpp
     src/main/cpp/org/limitless/phixeron/sequencer/ClusterStreamSender.hpp
