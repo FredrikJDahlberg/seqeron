@@ -37,6 +37,7 @@ jobs:
       # uuid-dev: Aeron's C driver, which only warns when libuuid is missing.
       - name: Install dependencies
         run: |
+          grep -rl 'dl\.google\.com' /etc/apt/sources.list.d/ | sudo xargs -r rm -f || true
           sudo apt-get update
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
             cmake clang g++-14 uuid-dev
