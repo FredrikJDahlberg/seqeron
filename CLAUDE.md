@@ -375,10 +375,9 @@ and **the cluster is bounded at three members** by the 9300–9329 port block (`
 `doc/` holds what survived the split: `seqeron-protocol-spec.md` (normative — the frames, the families,
 the system vocabulary, the topology document), `fault-tolerance.md`, `registries.md` (the two shared
 namespaces this tier owns — `sourceId`, and the port blocks each repo draws from),
-`portability-linux.md` (what a RHEL 9/10 bring-up has to fix; the tree is macOS/clang-only today),
-`clusterctl.md` and `ops.md` (runbooks), and `replayer-issue3.md` (a rejected design, kept for the
-reasoning). Note that `registries.md` still points at `src/main/resources/topology.xml`, which left with
-the product half — the only topology document here is `src/test/resources/topology-test-gateway.xml`.
+and `clusterctl.md` and `ops.md` (runbooks). Note that `registries.md` still points at
+`src/main/resources/topology.xml`, which left with the product half — the only topology document here
+is `src/test/resources/topology-test-gateway.xml`.
 
 ## Code Formatting Mandate
 - Explicitly respect all style, brace, and indentation configurations found in the local `.clang-format` file.

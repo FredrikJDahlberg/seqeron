@@ -31,8 +31,7 @@ inline bool envFlag(const char* name)
 }
 
 // Joins a directory and a name with exactly one separator. macOS's $TMPDIR ends in a slash and Linux's
-// /tmp does not, so concatenating a name onto either gets one of the two platforms wrong — see
-// doc/portability-linux.md §2d.
+// /tmp does not, so concatenating a name onto either gets one of the two platforms wrong.
 inline std::string joinPath(const std::string& dir, const std::string& name)
 {
     if (dir.empty())

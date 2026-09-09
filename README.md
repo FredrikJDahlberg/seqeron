@@ -127,8 +127,7 @@ cmake --build cmake-build-release
 ```
 
 `-DSEQERON_COVERAGE=ON` adds coverage instrumentation. The tree is developed on macOS/arm64 with
-Apple clang; `doc/portability-linux.md` records what a RHEL bring-up has to fix, and CI builds it on
-Ubuntu with both clang and gcc-14.
+Apple clang; CI builds it on Ubuntu with both clang and gcc-14.
 
 ## Tests
 
@@ -416,5 +415,3 @@ only: the sequencer never decodes those rows and they gate no frame.
 | `doc/registries.md` | The two shared namespaces — the producer `sourceId` space and the UDP port blocks |
 | `doc/clusterctl.md` | The operator tool's runbook |
 | `doc/ops.md` | The Prometheus/Grafana metrics stack |
-| `doc/portability-linux.md` | What a RHEL 9/10 bring-up has to fix; the tree is macOS/clang-developed |
-| `doc/replayer-issue3.md` | A rejected design (shared bootstrap replay), kept for the reasoning |
