@@ -65,7 +65,8 @@ replays and neither catches up.
   the consumer side.
 - **`connectColocated` is the co-located producer's entry point.** Ingress goes over the member's own
   `aeron:ipc` and falls back to its UDP endpoint — with a REDIRECT to the real leader — when that member
-  is not leading, so this one works against a follower where the Java twin's plain IPC ingress does not.
+  is not leading. The Java twin carries the same call with the same semantics, so both examples run
+  attached to any member.
 - **One session, kept alive.** The session is opened once and pinged every second, so the duty cycle also
   calls `keepAlive()` every 200ms — the cluster's `sessionTimeoutMs` is 1s, which one ping a second does
   not meet on its own.

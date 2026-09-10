@@ -1,18 +1,17 @@
 package example;
 
 import io.aeron.Aeron;
-import io.aeron.cluster.client.AeronCluster;
 import java.nio.ByteOrder;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
-import org.agrona.ExpandableArrayBuffer;
 import org.agrona.MutableDirectBuffer;
 import org.agrona.concurrent.BackoffIdleStrategy;
 import org.agrona.concurrent.IdleStrategy;
 import org.agrona.concurrent.UnsafeBuffer;
 import org.limitless.seqeron.replayer.client.ReplayerStreamReceiver;
 import org.limitless.seqeron.replayer.client.SequencedEvent;
-import org.limitless.seqeron.sequencer.SystemFrame;
+import org.limitless.seqeron.sequencer.ClusterStreamSender;
+import org.limitless.seqeron.sequencer.IngressPublisher;
 
 /**
  * Follows one node's ordered stream end to end: history replayed through that node's co-located
@@ -34,10 +33,13 @@ public final class FollowStream {
 
     private static final long PING_INTERVAL_NS = TimeUnit.SECONDS.toNanos(1);
 
-    /** Well inside the cluster's 1s sessionTimeoutMs, which one ping a second does not meet on its own. */
-    private static final long KEEP_ALIVE_INTERVAL_NS = TimeUnit.MILLISECONDS.toNanos(200);
+    /** Ingress is tried on this member's own aeron:ipc first; a follower answers there on neither. */
+    private static final long IPC_CONNECT_TIMEOUT_MS = 500;
 
-    private static final ExpandableArrayBuffer PING_FRAME = new ExpandableArrayBuffer();
+    /** Ephemeral: this example runs one session and needs no port of its own (doc/registries.md §2). */
+    private static final String EGRESS_CHANNEL = "aeron:udp?endpoint=localhost:0";
+
+    private static final IngressPublisher PUBLISHER = new IngressPublisher();
     private static final MutableDirectBuffer PING_BODY = new UnsafeBuffer(new byte[Long.BYTES]);
 
     private static long lastGlobalSeqNo;
@@ -61,33 +63,32 @@ public final class FollowStream {
             }
         }));
 
+        // connectColocated is what a co-located producer wants: ingress over its own member's aeron:ipc —
+        // no endpoints, no ports — falling back to the UDP endpoint set when that member is not the leader,
+        // which is the only member that subscribes to IPC ingress.
         try (Aeron aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(aeronDir));
-             AeronCluster cluster = AeronCluster.connect(new AeronCluster.Context()
-                 .aeron(aeron)
-                 .ingressChannel("aeron:ipc")
-                 .egressChannel("aeron:udp?endpoint=localhost:0"));
+             ClusterStreamSender sender = new ClusterStreamSender();
              ReplayerStreamReceiver receiver = new ReplayerStreamReceiver(
                  clientId, FollowStream::onSequenced, FollowStream::onLeadershipChanged,
                  () -> System.out.println("# caught up — following the tap live"))) {
 
+            sender.connectColocated(aeron, memberId, IPC_CONNECT_TIMEOUT_MS, EGRESS_CHANNEL);
             receiver.start(aeron, memberId);
             System.out.printf("# following member %d via %s%n", memberId, aeronDir);
 
-            // The one duty cycle. Every receiver and cluster method belongs to this thread.
+            // The one duty cycle. Every receiver and sender method belongs to this thread.
             final IdleStrategy idle = new BackoffIdleStrategy();
-            long nextKeepAliveNs = 0;
             long nextPingNs = 0;
             while (running.get() && fault == null) {
-                final int work = receiver.poll() + cluster.pollEgress();
-                final long now = System.nanoTime();
-                if (now >= nextKeepAliveNs) {
-                    cluster.sendKeepAlive();
-                    nextKeepAliveNs = now + KEEP_ALIVE_INTERVAL_NS;
-                }
+                final int work = receiver.poll() + sender.pollEgress();
+                // Self-throttling: the sender decides when a keep-alive is due, so this just says when it
+                // had the chance to send one.
+                sender.keepAlive();
                 // Only once caught up: a ping submitted during the replay walk would be echoed behind the
                 // history still being read, and the round trip would measure the walk rather than the path.
+                final long now = System.nanoTime();
                 if (receiver.isCaughtUp() && now >= nextPingNs) {
-                    ping(cluster);
+                    ping(sender);
                     nextPingNs = now + PING_INTERVAL_NS;
                 }
                 idle.idle(work);
@@ -109,12 +110,13 @@ public final class FollowStream {
      * <p>Nothing waits here for the echo: the consumer this process already is picks it up off the tap
      * like every other frame.
      */
-    private static void ping(final AeronCluster cluster) {
+    private static void ping(final ClusterStreamSender sender) {
         pingSentNs = System.nanoTime();
         PING_BODY.putLong(0, pingSentNs, ByteOrder.LITTLE_ENDIAN);
-        final int length = SystemFrame.wrapPayload(PING_FRAME, PING_SOURCE_ID, NO_ID, NO_ID, PING_PAYLOAD_ID,
-                                                   PING_BODY, Long.BYTES);
-        if (cluster.offer(PING_FRAME, 0, length) < 0) {
+        if (PUBLISHER.publishPayload(sender, PING_SOURCE_ID, NO_ID, PING_PAYLOAD_ID, PING_BODY, Long.BYTES)
+            != IngressPublisher.Publish.Published) {
+            // Declined: the sender spun through back-pressure and an election and found no session at the
+            // end of it. Next second's ping is the retry.
             pingSentNs = 0;
         }
     }

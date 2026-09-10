@@ -14,7 +14,7 @@ public final class Logger {
 
     public enum Component {
         Sequencer, SequencerServer, SequencerService, ConsensusModule, ReplayerServer, ReplayerService,
-        ReplayerStreamReceiver, ClusterProbe, TestGateway, ExchangeGateway, OrderGateway
+        ReplayerStreamReceiver, Cluster, ClusterProbe, TestGateway, ExchangeGateway, OrderGateway
     }
 
     public enum Severity { Info, Warn, Error, Fault }
@@ -41,8 +41,10 @@ public final class Logger {
         ReplayUnavailable,
         RecoveryStalled,
         FirstFrameNotOne,
-        // Artio FIX gateways, both legs.
+        // Cluster session client (ClusterStreamSender) — the C++ twin uses the same names.
         ClusterSessionError,
+        ClusterOfferFailed,
+        ClusterIpcFallback,
         // Exchange-facing (venue) leg.
         VenueSessionError,
         VenueLogonRefused,

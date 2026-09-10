@@ -47,9 +47,6 @@ constexpr std::int64_t IPC_CONNECT_TIMEOUT_MS = 500;
 
 constexpr std::int64_t PING_INTERVAL_NS = 1'000'000'000;
 
-// Well inside the cluster's 1s sessionTimeoutMs, which one ping a second does not meet on its own.
-constexpr std::int64_t KEEP_ALIVE_INTERVAL_NS = 200'000'000;
-
 std::atomic_bool running{ true };
 std::int64_t lastGlobalSeqNo = 0;
 std::string fault;
@@ -188,18 +185,17 @@ int main()
 
     // The one duty cycle. Every receiver and sender method belongs to this thread.
     auto idle = util::resolveIdleStrategy();
-    std::int64_t nextKeepAliveNs = 0;
     std::int64_t nextPingNs = 0;
     while (running.load(std::memory_order_relaxed) && fault.empty())
     {
         const int work = receiver.poll();
         sender.pollEgress([](const std::uint8_t*, std::int32_t) {}); // session events; the ping has no reply
+        // Self-throttling: the sender decides when a keep-alive is due, so this just says when it had the
+        // chance to send one.
+        sender.keepAlive();
+        // Only once caught up: a ping submitted during the replay walk would be echoed behind the history
+        // still being read, and the round trip would measure the walk rather than the path.
         const std::int64_t now = nowNs();
-        if (now >= nextKeepAliveNs)
-        {
-            sender.keepAlive();
-            nextKeepAliveNs = now + KEEP_ALIVE_INTERVAL_NS;
-        }
         if (receiver.isCaughtUp() && now >= nextPingNs)
         {
             ping(sender);

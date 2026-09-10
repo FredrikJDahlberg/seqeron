@@ -91,11 +91,23 @@ this tree.
 
 | | Java | C++ |
 | --- | --- | --- |
-| the sequencer | `sequencer/` — `Sequencer`, `SequencerService`, `SequencerServer`, `FrameLayer`, `SystemFrame`, `TapPublisher`, `TapStallPolicy` | `sequencer/` — `SequencedFrame`, `ClusterStreamSender`, `ClusterStreamClient`, `IngressPublisher`, `PortLayout` |
+| the sequencer | `sequencer/` — `Sequencer`, `SequencerService`, `SequencerServer`, `FrameLayer`, `SystemFrame`, `TapPublisher`, `TapStallPolicy`, and the producer side: `ClusterStreamSender`, `IngressPublisher`, `IngressSender` | `sequencer/` — `SequencedFrame`, `ClusterStreamSender`, `ClusterStreamClient`, `IngressPublisher`, `PortLayout` |
 | the replayer | `replayer/server/` and `replayer/client/` | `replayer/client/` only |
 | the tools | `tools/` — `ClusterCtl`, `TopologyDocument`, `ClusterProbe`, `SbeLogPrinter` | — |
 | the ops plane | `metrics/` — `MetricsExporter`, `MetricsAggregator`, `SeqeronCounters` | `util/SeqeronCounters.hpp` |
 | the gateway fence | `fixgateway/GatewayRecoveryStallPolicy` | `fix/GatewayRecoveryStallPolicy.hpp` |
+
+**The producer side is a language-port pair too.** Java's `ClusterStreamSender`/`IngressPublisher` carry
+the C++ files' names and semantics — `connectColocated` (IPC ingress on the co-located member, UDP
+endpoints when it is not leading), a `send` that spins through back-pressure and an election rather than
+dropping the frame, a self-throttling `keepAlive`, and the three-valued `Publish`. They are far smaller
+than their twins because `AeronCluster` already is the cluster protocol that `ClusterStreamSender.hpp`
+implements by hand; what the Java side adds is only what that client does not do. Two divergences are
+deliberate and documented in the class: the body arrives pre-encoded rather than through a `Fill` over an
+encoder (Java's SBE codecs share no interface), and leadership moving off the co-located member costs a
+session rather than a publication swap (`AeronCluster` owns its publication). `IngressSender` exists so
+`IngressPublisher` has a seam the Java suite can drive without an Aeron runtime — the C++ transport seam
+has no Java equivalent, so the state machine those 778 C++ test lines cover is Aeron's here, not ours.
 
 `fixgateway`/`fix` hold exactly one class each and are not a FIX implementation: the recovery-stall
 policy is a language-port pair that any edge gateway needs, and the pair lives here because the fence
@@ -115,7 +127,7 @@ the server side of the replay protocol is Java only.
 ```bash
 ./gradlew compileJava
 ./gradlew uberJar     # build/libs/seqeron-0.1.0-uber.jar — every script's prerequisite
-./gradlew test        # JUnit 5, 286 tests, ~1s
+./gradlew test        # JUnit 5, 295 tests, ~1s
 ./gradlew generateFrameSbe generateReplaySbe generateProbeSbe generateClusterSbeIr
 ./gradlew compileTestJava   # TestGateway, which chaos-runner.sh needs and no jar carries
 ```

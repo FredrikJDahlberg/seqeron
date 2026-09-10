@@ -2,11 +2,8 @@ package org.limitless.seqeron.tools;
 
 import io.aeron.Aeron;
 import io.aeron.FragmentAssembler;
-import io.aeron.Publication;
 import io.aeron.Subscription;
 import io.aeron.cluster.ClusterTool;
-import io.aeron.cluster.client.AeronCluster;
-import io.aeron.cluster.client.EgressListener;
 import io.aeron.logbuffer.FragmentHandler;
 import io.aeron.logbuffer.Header;
 import java.io.File;
@@ -29,6 +26,8 @@ import org.limitless.seqeron.sbe.frame.ClusterStartedEncoder;
 import org.limitless.seqeron.sbe.frame.ClusterStoppedEncoder;
 import org.limitless.seqeron.sbe.frame.GatewayActivationRequestedEncoder;
 import org.limitless.seqeron.sbe.frame.GatewayRegisteredEncoder;
+import org.limitless.seqeron.sequencer.ClusterStreamSender;
+import org.limitless.seqeron.sequencer.IngressPublisher;
 import org.limitless.seqeron.sequencer.SystemFrame;
 import org.limitless.seqeron.sbe.frame.MessageHeaderDecoder;
 import org.limitless.seqeron.sbe.frame.PayloadIdRegisteredEncoder;
@@ -118,7 +117,12 @@ public final class ClusterCtl {
 
     private static final long CONNECT_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(5);
     private static final long ECHO_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(5);
-    private static final long OFFER_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(5);
+
+    /** Ingress is tried over this node's own aeron:ipc first; a follower answers on neither, so keep it short. */
+    private static final long IPC_CONNECT_TIMEOUT_MS = 500;
+
+    /** Ephemeral: this tool runs for one command and needs no port of its own (doc/registries.md §2). */
+    private static final String EGRESS_CHANNEL = "aeron:udp?endpoint=localhost:0";
 
     /** header.connectionId/sessionId for markers this tool submits: no gateway process/TCP connection. */
     private static final int NO_ID = -1;
@@ -134,7 +138,6 @@ public final class ClusterCtl {
     private static final int RESERVED_SOURCE_ID = 2;
 
     private static final IdleStrategy IDLE = new YieldingIdleStrategy();
-    private static final EgressListener NULL_EGRESS = (sessionId, timestamp, buffer, offset, length, header) -> { };
 
     private ClusterCtl() {
     }
@@ -176,9 +179,9 @@ public final class ClusterCtl {
 
     private static int start() {
         final long correlationId = System.nanoTime();
-        try (AeronCluster cluster = connectCluster()) {
+        try (Session session = new Session()) {
             final long globalSeqNo =
-                publishMarkerAndAwaitEcho(cluster, SystemFrame.CLUSTER_STARTED, correlationId);
+                publishMarkerAndAwaitEcho(session, SystemFrame.CLUSTER_STARTED, correlationId);
             if (globalSeqNo < 0) {
                 System.err.println("[clusterctl] start: no sequenced ClusterStarted echo within timeout");
                 return 1;
@@ -198,9 +201,9 @@ public final class ClusterCtl {
         }
 
         final long correlationId = System.nanoTime();
-        try (AeronCluster cluster = connectCluster()) {
+        try (Session session = new Session()) {
             final long globalSeqNo =
-                publishMarkerAndAwaitEcho(cluster, SystemFrame.CLUSTER_STOPPED, correlationId);
+                publishMarkerAndAwaitEcho(session, SystemFrame.CLUSTER_STOPPED, correlationId);
             if (globalSeqNo < 0) {
                 System.err.println("[clusterctl] shutdown: no ClusterStopped echo within timeout — aborting anyway");
             } else {
@@ -238,8 +241,8 @@ public final class ClusterCtl {
             return 2;
         }
 
-        try (AeronCluster cluster = connectCluster()) {
-            final long globalSeqNo = publishGatewayActiveAndAwaitEcho(cluster, gatewayId);
+        try (Session session = new Session()) {
+            final long globalSeqNo = publishGatewayActiveAndAwaitEcho(session, gatewayId);
             if (globalSeqNo < 0) {
                 System.err.println("[clusterctl] activate: no synthesized GatewayActive within timeout — is "
                                + "<gatewayId> a list row?");
@@ -281,8 +284,8 @@ public final class ClusterCtl {
             return 2;
         }
 
-        try (AeronCluster cluster = connectCluster()) {
-            final long globalSeqNo = publishTopologyAndAwaitEcho(cluster, topology);
+        try (Session session = new Session()) {
+            final long globalSeqNo = publishTopologyAndAwaitEcho(session, topology);
             if (globalSeqNo < 0) {
                 System.err.println("[clusterctl] load-topology: no sequenced GatewayRegistered echo within timeout");
                 return 1;
@@ -310,9 +313,8 @@ public final class ClusterCtl {
      * neither carries a countdown of its own (§6.4). Neither is waited on: only the gateway list has a
      * completeness edge, because only the gateway list is something the sequencer acts on.
      */
-    private static long publishTopologyAndAwaitEcho(final AeronCluster cluster,
-                                                final TopologyDocument topology) {
-        final Subscription tap = awaitTap(cluster);
+    private static long publishTopologyAndAwaitEcho(final Session session, final TopologyDocument topology) {
+        final Subscription tap = awaitTap(session);
         if (tap == null) {
             return -1;
         }
@@ -329,8 +331,7 @@ public final class ClusterCtl {
                    .gatewaySourceId(row.gatewaySourceId())
                    .gatewayName(row.gatewayName())
                    .preferenceRank((short)row.preferenceRank());
-            offer(cluster, buffer,
-                  wrapSystem(buffer, SystemFrame.GATEWAY_REGISTERED, payload, encoder.encodedLength()));
+            publish(session, SystemFrame.GATEWAY_REGISTERED, payload, encoder.encodedLength());
         }
 
         final ApplicationRegisteredEncoder applicationEncoder = new ApplicationRegisteredEncoder();
@@ -338,9 +339,7 @@ public final class ClusterCtl {
             applicationEncoder.wrap(payload, 0);
             applicationEncoder.applicationSourceId(row.sourceId())
                               .applicationName(row.applicationName());
-            offer(cluster, buffer,
-                  wrapSystem(buffer, SystemFrame.APPLICATION_REGISTERED, payload,
-                             applicationEncoder.encodedLength()));
+            publish(session, SystemFrame.APPLICATION_REGISTERED, payload, applicationEncoder.encodedLength());
         }
 
         final PayloadIdRegisteredEncoder protocolEncoder = new PayloadIdRegisteredEncoder();
@@ -349,8 +348,7 @@ public final class ClusterCtl {
             protocolEncoder.payloadId(row.payloadId())
                            .protocolVersion(row.protocolVersion())
                            .protocolName(row.protocolName());
-            offer(cluster, buffer,
-                  wrapSystem(buffer, SystemFrame.PAYLOAD_ID_REGISTERED, payload, protocolEncoder.encodedLength()));
+            publish(session, SystemFrame.PAYLOAD_ID_REGISTERED, payload, protocolEncoder.encodedLength());
         }
 
         final ListEchoHandler handler = new ListEchoHandler(rows.get(rows.size() - 1).gatewayId());
@@ -358,7 +356,7 @@ public final class ClusterCtl {
         final long deadline = System.nanoTime() + ECHO_TIMEOUT_NS;
         while (!handler.found && System.nanoTime() < deadline) {
             final int fragments = tap.poll(assembler, 10);
-            cluster.pollEgress();
+            session.sender.pollEgress();
             IDLE.idle(fragments);
         }
         return handler.found ? handler.globalSeqNo : -1;
@@ -400,8 +398,8 @@ public final class ClusterCtl {
      * echo within {@link #ECHO_TIMEOUT_NS}). Structured like {@link #publishMarkerAndAwaitEcho} but kept
      * separate: neither message has a correlationId to match on, so it matches by {@code gatewayId}.
      */
-    private static long publishGatewayActiveAndAwaitEcho(final AeronCluster cluster, final int gatewayId) {
-        final Subscription tap = awaitTap(cluster);
+    private static long publishGatewayActiveAndAwaitEcho(final Session session, final int gatewayId) {
+        final Subscription tap = awaitTap(session);
         if (tap == null) {
             return -1;
         }
@@ -411,15 +409,14 @@ public final class ClusterCtl {
         final GatewayActivationRequestedEncoder encoder = new GatewayActivationRequestedEncoder();
         encoder.wrap(payload, 0);
         encoder.gatewayId(gatewayId);
-        offer(cluster, buffer,
-              wrapSystem(buffer, SystemFrame.GATEWAY_ACTIVATION_REQUESTED, payload, encoder.encodedLength()));
+        publish(session, SystemFrame.GATEWAY_ACTIVATION_REQUESTED, payload, encoder.encodedLength());
 
         final GatewayActiveEchoHandler handler = new GatewayActiveEchoHandler(gatewayId);
         final FragmentAssembler assembler = new FragmentAssembler(handler);
         final long deadline = System.nanoTime() + ECHO_TIMEOUT_NS;
         while (!handler.found && System.nanoTime() < deadline) {
             final int fragments = tap.poll(assembler, 10);
-            cluster.pollEgress();
+            session.sender.pollEgress();
             IDLE.idle(fragments);
         }
         return handler.found ? handler.globalSeqNo : -1;
@@ -492,14 +489,45 @@ public final class ClusterCtl {
         ClusterTool.main(toolArgs);
     }
 
-    private static AeronCluster connectCluster() {
-        return AeronCluster.connect(new AeronCluster.Context()
-            .aeronDirectoryName(AERON_DIR)
-            .ingressChannel("aeron:udp")
-            .ingressEndpoints(INGRESS_ENDPOINTS)
-            .egressChannel("aeron:udp?endpoint=localhost:0")
-            .egressListener(NULL_EGRESS)
-            .messageTimeoutNs(CONNECT_TIMEOUT_NS));
+    /**
+     * This tool's cluster session, and the media driver it borrows to reach both the cluster and the tap.
+     * Co-located by construction: {@code clusterctl} runs on a node, against that node's {@code clusterDir}.
+     */
+    private static final class Session implements AutoCloseable {
+        private final Aeron aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(AERON_DIR));
+        private final ClusterStreamSender sender = new ClusterStreamSender();
+        private final IngressPublisher publisher = new IngressPublisher();
+
+        private Session() {
+            sender.setIngressEndpoints(INGRESS_ENDPOINTS);
+            try {
+                sender.connectColocated(aeron, MEMBER_ID, IPC_CONNECT_TIMEOUT_MS, EGRESS_CHANNEL);
+            } catch (final RuntimeException ex) {
+                aeron.close();
+                throw ex;
+            }
+        }
+
+        @Override
+        public void close() {
+            sender.close();
+            aeron.close();
+        }
+    }
+
+    /**
+     * Publishes one system event on this session, or fails the command. {@code Declined} is the sender
+     * having spun through back-pressure and an election and found no session left at the end of it — a
+     * marker half-published is not something a caller here can carry on from.
+     */
+    private static void publish(final Session session, final int systemEventType,
+                                final ExpandableArrayBuffer body, final int bodyLength) {
+        final IngressPublisher.Publish outcome =
+            session.publisher.publishSystem(session.sender, RESERVED_SOURCE_ID, NO_ID, systemEventType, body,
+                                            bodyLength);
+        if (outcome != IngressPublisher.Publish.Published) {
+            throw new IllegalStateException("cluster ingress " + outcome + " a " + systemEventType + " marker");
+        }
     }
 
     /**
@@ -507,41 +535,40 @@ public final class ClusterCtl {
      * ingress, then reads this node's co-located tap for the matching sequenced echo. Returns the
      * assigned globalSeqNo, or -1 on timeout (tap unavailable, or no echo within {@link #ECHO_TIMEOUT_NS}).
      */
-    private static long publishMarkerAndAwaitEcho(final AeronCluster cluster, final int systemEventType,
+    private static long publishMarkerAndAwaitEcho(final Session session, final int systemEventType,
                                                   final long correlationId) {
-        final Subscription tap = awaitTap(cluster);
+        final Subscription tap = awaitTap(session);
         if (tap == null) {
             return -1;
         }
 
-        final ExpandableArrayBuffer buffer = new ExpandableArrayBuffer(64);
-        final int length = encodeMarker(buffer, systemEventType, correlationId);
-        offer(cluster, buffer, length);
+        publishMarker(session, systemEventType, correlationId);
 
         final EchoHandler handler = new EchoHandler(systemEventType, correlationId);
         final FragmentAssembler assembler = new FragmentAssembler(handler);
         final long deadline = System.nanoTime() + ECHO_TIMEOUT_NS;
         while (!handler.found && System.nanoTime() < deadline) {
             final int fragments = tap.poll(assembler, 10);
-            cluster.pollEgress();
+            session.sender.pollEgress();
             IDLE.idle(fragments);
         }
         return handler.found ? handler.globalSeqNo : -1;
     }
 
-    private static int encodeMarker(final ExpandableArrayBuffer buffer, final int systemEventType,
-                                    final long correlationId) {
+    /** Encodes and publishes the ClusterStarted/ClusterStopped marker for {@code systemEventType}. */
+    private static void publishMarker(final Session session, final int systemEventType, final long correlationId) {
         final ExpandableArrayBuffer payload = new ExpandableArrayBuffer(64);
         if (systemEventType == SystemFrame.CLUSTER_STARTED) {
             final ClusterStartedEncoder encoder = new ClusterStartedEncoder();
             encoder.wrap(payload, 0);
             encoder.correlationId(correlationId);
-            return wrapSystem(buffer, systemEventType, payload, encoder.encodedLength());
+            publish(session, systemEventType, payload, encoder.encodedLength());
+            return;
         }
         final ClusterStoppedEncoder encoder = new ClusterStoppedEncoder();
         encoder.wrap(payload, 0);
         encoder.correlationId(correlationId);
-        return wrapSystem(buffer, systemEventType, payload, encoder.encodedLength());
+        publish(session, systemEventType, payload, encoder.encodedLength());
     }
 
     /**
@@ -555,22 +582,12 @@ public final class ClusterCtl {
     }
 
     /**
-     * Wraps a system body in an {@code UnsequencedSystem} frame. clusterctl is not a gateway, so it
-     * publishes under its own reserved {@code sourceId} (§5) and no connection. The body carries no
-     * {@code MessageHeader} of its own — {@code header.systemEventType} is what names it.
-     */
-    private static int wrapSystem(final ExpandableArrayBuffer frame, final int systemEventType,
-                                  final ExpandableArrayBuffer body, final int encodedLength) {
-        return SystemFrame.wrap(frame, RESERVED_SOURCE_ID, NO_ID, NO_ID, systemEventType, body, encodedLength);
-    }
-
-    /**
      * Subscribes to this node's co-located tap and waits for it to connect, which is where every
      * await-my-own-echo path starts. Returns null (having said why) if it never does.
      */
-    private static Subscription awaitTap(final AeronCluster cluster) {
-        final Subscription tap = cluster.context().aeron().addSubscription(SequencerService.FEEDER_CHANNEL,
-                                                                          SequencerService.FEEDER_STREAM_ID);
+    private static Subscription awaitTap(final Session session) {
+        final Subscription tap = session.aeron.addSubscription(SequencerService.FEEDER_CHANNEL,
+                                                               SequencerService.FEEDER_STREAM_ID);
         final long connectDeadline = System.nanoTime() + CONNECT_TIMEOUT_NS;
         while (!tap.isConnected()) {
             if (System.nanoTime() >= connectDeadline) {
@@ -578,25 +595,10 @@ public final class ClusterCtl {
                                   SequencerService.FEEDER_STREAM_ID);
                 return null;
             }
-            cluster.pollEgress();
+            session.sender.pollEgress();
             IDLE.idle();
         }
         return tap;
-    }
-
-    private static void offer(final AeronCluster cluster, final DirectBuffer buffer, final int length) {
-        final long deadline = System.nanoTime() + OFFER_TIMEOUT_NS;
-        long result;
-        while ((result = cluster.offer(buffer, 0, length)) < 0) {
-            if (result == Publication.CLOSED || result == Publication.MAX_POSITION_EXCEEDED) {
-                throw new IllegalStateException("cluster ingress offer failed: " + result);
-            }
-            if (System.nanoTime() >= deadline) {
-                throw new IllegalStateException("cluster ingress offer timed out (back-pressure / not connected)");
-            }
-            cluster.pollEgress();
-            IDLE.idle();
-        }
     }
 
     /**

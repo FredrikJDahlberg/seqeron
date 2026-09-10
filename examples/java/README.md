@@ -57,13 +57,16 @@ other's replays and neither catches up.
   examples' own `payloadId` 6, because the cluster decodes no `payloadId` and copies every payload
   through unopened. Producing needs `SystemFrame.wrapPayload` and an `AeronCluster` session, and nothing
   from the consumer side.
-- **A co-located producer needs no endpoints.** Ingress is `aeron:ipc` on the member's own media driver:
-  no `ingressEndpoints`, no ports. The leader is the only member that subscribes to it, which is the
-  co-located kind's rule anyway — it publishes only while its own node leads. Against a three-node
-  cluster, point `follow.member` at the leader.
-- **One session, kept alive.** The session is opened once and pinged every second, so the duty cycle also
-  sends a keep-alive every 200ms — the cluster's `sessionTimeoutMs` is 1s, which one ping a second does
-  not meet on its own.
+- **`connectColocated` is the co-located producer's entry point.** Ingress goes over the member's own
+  `aeron:ipc` — no endpoints to name, no ports to allocate — and falls back to the UDP endpoint set when
+  that member is not the leader, which is the only member that subscribes to IPC ingress. Nothing here
+  configures a cluster: the member id it follows is the member id it produces to.
+- **One session, kept alive.** The session is opened once and pinged every second, so the duty cycle calls
+  `sender.keepAlive()` every iteration — the cluster's `sessionTimeoutMs` is 1s, which one ping a second
+  does not meet on its own, and the sender decides when one is actually due.
+- **One publish, three answers.** `IngressPublisher.Publish` is `Published`, `Refused` (the body is above
+  `MAX_PAYLOAD_LENGTH` — local, permanent, nothing was offered) or `Declined` (the transport's answer,
+  and the one worth retrying). The ping retries a `Declined` by simply sending the next second's.
 - **The producer does not wait for its own frame.** `ping` submits and returns; the echo arrives in
   `onSequenced` in `globalSeqNo` order like everything else, which is what a real producer that is also a
   consumer looks like.
