@@ -379,7 +379,8 @@ and **the cluster is bounded at three members** by the 9300–9329 port block (`
 `doc/` holds what survived the split: `seqeron-protocol-spec.md` (normative — the frames, the families,
 the system vocabulary, the topology document), `fault-tolerance.md`, `registries.md` (the two shared
 namespaces this tier owns — `sourceId`, and the port blocks each repo draws from),
-and `clusterctl.md` and `ops.md` (runbooks). Note that `registries.md` still points at
+`clusterctl.md` and `ops.md` (runbooks), and `publishing.md` (the standing backlog between
+`publishToMavenLocal`/`FetchContent` and a coordinate someone else can resolve). Note that `registries.md` still points at
 `src/main/resources/topology.xml`, which left with the product half — the only topology document here
 is `src/test/resources/topology-test-gateway.xml`.
 

@@ -64,6 +64,12 @@ import org.limitless.seqeron.util.Logger;
  *                               replayer/consumer/gateway processes sharing one dev machine) it starves
  *                               everything else instead. Backoff spins briefly, then yields, then sleeps
  *                               with escalating backoff — cheap when idle, still prompt when busy.
+ *   sequencer.sessionTimeoutMs — how long the cluster keeps a client session whose keep-alives have
+ *                               stopped arriving; default 1000. A client that misses the window is
+ *                               closed and, for a gateway, its standby is promoted — so on an
+ *                               oversubscribed host, where a duty cycle can stall for longer than a
+ *                               second under a failover, this needs raising rather than the client
+ *                               needing fixing. See src/test/scripts/chaos-runner.sh.
  * </pre>
  *
  * <p>Gateway topology (which sourceIds are gateways, and which gatewayId is the designated
@@ -85,6 +91,9 @@ public final class SequencerServer {
     private static final String PROP_BASE_DIR = "sequencer.baseDir";
     private static final String PROP_AERON_DIR = "sequencer.aeronDir";
     private static final String PROP_IDLE_STRATEGY = "sequencer.idleStrategy";
+    private static final String PROP_SESSION_TIMEOUT_MS = "sequencer.sessionTimeoutMs";
+
+    private static final long DEFAULT_SESSION_TIMEOUT_MS = 1000;
 
     private static final String DEFAULT_HOST = "localhost";
     private static final int PORT_BASE = 9300;
@@ -184,7 +193,8 @@ public final class SequencerServer {
                 .electionTimeoutNs(TimeUnit.MILLISECONDS.toNanos(200))
                 .electionStatusIntervalNs(TimeUnit.MILLISECONDS.toNanos(20))
                 .startupCanvassTimeoutNs(TimeUnit.SECONDS.toNanos(5))
-                .sessionTimeoutNs(TimeUnit.SECONDS.toNanos(1))
+                .sessionTimeoutNs(TimeUnit.MILLISECONDS.toNanos(
+                    Long.getLong(PROP_SESSION_TIMEOUT_MS, DEFAULT_SESSION_TIMEOUT_MS)))
                 .idleStrategySupplier(idleStrategySupplier)
                 .errorHandler(t
                               -> Logger.error(Logger.Component.ConsensusModule, Logger.EventCode.ConsensusModuleError,

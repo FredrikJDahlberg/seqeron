@@ -68,12 +68,20 @@ jobs:
       # embedded drivers and archives, a gateway pair and three consumer replicas, and Aeron's
       # liveness timeouts measure wall clock. The mark-file settle and driver-loss grace are NOT
       # raised — they are Aeron's own 10s timeout, which a slow host does not lengthen.
+      #
+      # SESSION_TIMEOUT_MS is the one cluster-side timing raised here, and it is not a deadline the
+      # harness measures: the gateway pair's keep-alives share a duty cycle with a blocking ingress
+      # offer, so a kill-leader round that leaves ingress unconnected can starve them past the 1s
+      # default. Both instances then fence on a healthy cluster and the round fails on a pair that is
+      # gone. 5s covers the stall this runner produces; it does not paper over a real session loss,
+      # which closes the session outright rather than letting it age out.
       - name: Chaos run
         run: ./src/test/scripts/chaos-runner.sh
         env:
           SEED: ${{ github.event.inputs.seed }}
           ROUNDS: ${{ github.event.inputs.rounds || '20' }}
           ONLY_FAULT: ${{ matrix.only_fault }}
+          SESSION_TIMEOUT_MS: '5000'
           LEADER_TIMEOUT_SECS: '60'
           ELECTION_TIMEOUT_SECS: '30'
           NODE_START_TIMEOUT_SECS: '30'

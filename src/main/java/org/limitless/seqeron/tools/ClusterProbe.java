@@ -108,6 +108,20 @@ public final class ClusterProbe {
 
     private static final long CONNECT_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(5);
     private static final long OFFER_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(5);
+
+    /**
+     * How often {@link #offer} keeps its own session alive while it spins. Must stay well inside the
+     * cluster's {@code sessionTimeoutNs} (1s by default, {@code sequencer.sessionTimeoutMs}).
+     */
+    private static final long KEEP_ALIVE_INTERVAL_NS = TimeUnit.MILLISECONDS.toNanos(200);
+
+    /**
+     * How long the client waits for a {@code NewLeader} event before closing itself. Set explicitly
+     * because the default is 2x the cluster's {@code leaderHeartbeatTimeoutNs}, which
+     * {@code SequencerServer} tunes to 200ms — leaving a client 400ms of patience for an election that
+     * takes closer to a second. A client that runs out kills a session the cluster never closed.
+     */
+    private static final long NEW_LEADER_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(5);
     private static final long ECHO_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(10);
 
     /** Exit status of a follower whose duty cycle died — its media driver went away. Mirrors ReplayerServer's. */
@@ -420,7 +434,8 @@ public final class ClusterProbe {
             .ingressEndpoints(INGRESS_ENDPOINTS)
             .egressChannel("aeron:udp?endpoint=" + EGRESS_HOST + ":0")
             .egressListener(egressListener)
-            .messageTimeoutNs(CONNECT_TIMEOUT_NS));
+            .messageTimeoutNs(CONNECT_TIMEOUT_NS)
+            .newLeaderTimeoutNs(NEW_LEADER_TIMEOUT_NS));
     }
 
     /**
@@ -445,16 +460,38 @@ public final class ClusterProbe {
         return tap;
     }
 
+    /**
+     * Offers to cluster ingress, spinning through back-pressure and a leadership change.
+     *
+     * <p><b>{@code CLOSED} is not terminal here.</b> A leader that dies closes the client's egress
+     * image, and {@code AeronCluster} responds by closing the ingress publication and waiting for a
+     * {@code NewLeader} event — so every offer returns {@code CLOSED} for the length of the election,
+     * on a session the cluster still holds. The publication that replaces it is installed by
+     * {@code pollEgress}, which is why the spin polls, and the client closing itself
+     * ({@link AeronCluster#isClosed()}) is the only end of that road that is really fatal.
+     *
+     * <p>The spin also sends this session's keep-alives, since a caller offers from its duty cycle and
+     * this loop is that duty cycle while it runs. They cannot reach a cluster with no leader — Aeron
+     * says as much on {@code sendKeepAlive} — so this covers the other case: a long spin against a
+     * leader that is live but back-pressuring, which would otherwise let the session time out.
+     */
     static void offer(final AeronCluster cluster, final DirectBuffer buffer, final int length) {
         final IdleStrategy idle = new YieldingIdleStrategy();
-        final long deadline = System.nanoTime() + OFFER_TIMEOUT_NS;
+        final long start = System.nanoTime();
+        final long deadline = start + OFFER_TIMEOUT_NS;
+        long nextKeepAlive = start + KEEP_ALIVE_INTERVAL_NS;
         long result;
         while ((result = cluster.offer(buffer, 0, length)) < 0) {
-            if (result == Publication.CLOSED || result == Publication.MAX_POSITION_EXCEEDED) {
+            if (result == Publication.MAX_POSITION_EXCEEDED || cluster.isClosed()) {
                 throw new IllegalStateException("cluster ingress offer failed: " + result);
             }
-            if (System.nanoTime() >= deadline) {
-                throw new IllegalStateException("cluster ingress offer timed out (back-pressure / not connected)");
+            final long now = System.nanoTime();
+            if (now >= deadline) {
+                throw new IllegalStateException("cluster ingress offer timed out (back-pressure / no leader)");
+            }
+            if (now >= nextKeepAlive) {
+                cluster.sendKeepAlive();
+                nextKeepAlive = now + KEEP_ALIVE_INTERVAL_NS;
             }
             cluster.pollEgress();
             idle.idle();

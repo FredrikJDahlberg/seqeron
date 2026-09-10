@@ -437,8 +437,9 @@ the examples are that one flow with nothing else in them. See
 | `doc/registries.md` | The two shared namespaces — the producer `sourceId` space and the UDP port blocks |
 | `doc/clusterctl.md` | The operator tool's runbook |
 | `doc/ops.md` | The Prometheus/Grafana metrics stack |
+| `doc/publishing.md` | What a consumer can resolve today, and the open items between that and a published coordinate |
 
-Those five are the whole doc set, and every document reference in this tree resolves inside it.
+Those six are the whole doc set, and every document reference in this tree resolves inside it.
 
 ## License
 

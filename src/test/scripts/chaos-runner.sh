@@ -91,6 +91,11 @@ NODE_START_TIMEOUT_SECS="${NODE_START_TIMEOUT_SECS:-15}"
 APP_CATCHUP_TIMEOUT_SECS="${APP_CATCHUP_TIMEOUT_SECS:-30}"
 PROC_EXIT_TIMEOUT_SECS="${PROC_EXIT_TIMEOUT_SECS:-10}"   # a signalled member actually dying: measured 0.2s
 TAP_STALL_DEADLINE_SECS="${TAP_STALL_DEADLINE_SECS:-10}"
+# Not a harness deadline — the CLUSTER's own session timeout, passed to every member below. It is the
+# one Aeron timeout a slow host does lengthen: a gateway's keep-alive shares its duty cycle with a
+# blocking ingress offer, so a failover that leaves ingress unconnected can starve keep-alives past
+# the 1s default, and the pair fences itself on a cluster that is otherwise healthy.
+SESSION_TIMEOUT_MS="${SESSION_TIMEOUT_MS:-1000}"
 PAUSE_SECS=0.5
 
 JAVA_OPTS=(
@@ -137,7 +142,8 @@ start_seq() {  # start_seq <memberId> — append so leadership history survives 
   # in-process, so it cannot be stalled from outside); inert until that file appears.
   SEQERON_FAULT_INJECTION=1 \
   java "${JAVA_OPTS[@]}" -Dsequencer.memberId="$m" -Dsequencer.baseDir="$BASE_DIR" \
-       -Dsequencer.clusterMembers="$CLUSTER_MEMBERS" -jar "$JAR" >> "$LOG_DIR/seq-$m.log" 2>&1 &
+       -Dsequencer.clusterMembers="$CLUSTER_MEMBERS" -Dsequencer.sessionTimeoutMs="$SESSION_TIMEOUT_MS" \
+       -jar "$JAR" >> "$LOG_DIR/seq-$m.log" 2>&1 &
   SEQ_PIDS[$m]=$!
 }
 # NB: a bash loop's exit status is that of the last command in its body, so we MUST end with an explicit
