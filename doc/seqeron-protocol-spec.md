@@ -199,7 +199,7 @@ exclusively, which is why `ConnectionOpened`/`ConnectionClosed` name no producer
 | --- | --- | --- |
 | **−1** | the cluster itself — the synthesized class, and nothing else (**F-4**) | never; **illegal on ingress** |
 | **2** | `clusterctl`, on every marker it submits | never |
-| 0, 3, 5, 6, 7, 8, 9 … | every other producer, elected or not _(today: the C++ gateway pair 0, the reference-data application 3, the venue leg 5, the order-entry leg 6, the order-exec application 7, seqeron's own e2e probe 8, its e2e gateway pair 9)_ | gateways by `GatewayRegistered.gatewaySourceId`, applications by `ApplicationRegistered.applicationSourceId`; **S-6** checks only the first |
+| 0, 3, 5, 6, 7, 8, 9 … | every other producer, elected or not _(today: the C++ gateway pair 0, the reference-data application 3, the venue leg 5, the order-entry leg 6, the order-exec application 7, seqeron's own e2e probe 8, its e2e gateway pair 9, the `examples/` ping 10)_ | gateways by `GatewayRegistered.gatewaySourceId`, applications by `ApplicationRegistered.applicationSourceId`; **S-6** checks only the first |
 
 This table is the registry: a new producer takes its id here, and `doc/registries.md` §1 records
 that ownership rather than keeping a second copy of the allocation.
@@ -244,8 +244,9 @@ system frame per row of the file's `<protocols>` section (§6.4).
 _(This deployment today, the first three allocated by §15 steps 3 and 4: **2** = the order family
 (`sbe-order.xml` 220, the order flow and the portfolio query over it), **3** = the FIX session family
 (`sbe-session.xml` 230, both edges' session layer), **4** = reference data (`sbe-basicdata.xml` 240),
-**5** = seqeron's own end-to-end probe (`sbe-probe.xml` 214, one `ProbeMarker`). **4** is the only one that crosses application boundaries and so the only one §6.4's
-example declares; 2, 3 and 5 are private between the processes that speak them and need no row. 5 is
+**5** = seqeron's own end-to-end probe (`sbe-probe.xml` 214, one `ProbeMarker`), **6** = the `examples/`
+ping (no schema at all: eight raw bytes, which §13.2 admits). **4** is the only one that crosses application boundaries and so the only one §6.4's
+example declares; 2, 3, 5 and 6 are private between the processes that speak them and need no row. 5 and 6 are
 recorded here despite being out of the registry's scope for the reason the last paragraph of this
 section gives: it is nonetheless one id space, and a number nobody wrote down is a number two
 applications can pick.)_

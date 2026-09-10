@@ -50,7 +50,7 @@ other blocks is this table's alone.
 
 | block | owner | what is in it |
 | --- | --- | --- |
-| 9200–9209 | core | the cluster tier's own harness listeners: `TestGateway` TCP listen `9200 + instance` (9200 GW-T-A, 9201 GW-T-B), `cluster/src/main/scripts/ports.sh`. Deliberately **not** inside 9300–9329 — that block is three members of stride 10 with nothing spare, and `isClusterPort()` names cluster member ports, which these are not |
+| 9200–9209 | core | the cluster tier's own harness listeners: `TestGateway` TCP listen `9200 + instance` (9200 GW-T-A, 9201 GW-T-B), `cluster/src/main/scripts/ports.sh`, and `examples/cpp`'s cluster egress `9202 + memberId` (UDP, `SEQERON_EXAMPLE_EGRESS_PORT`). Deliberately **not** inside 9300–9329 — that block is three members of stride 10 with nothing spare, and `isClusterPort()` names cluster member ports, which these are not |
 | 9300–9329 | core | cluster member ports, `9300 + memberId*10 + {1..5}` — three members, one decade each |
 | 9330–9359 | simdfixgw | `OrderExecServer` egress `9330+m`, `FixGateway` egress `9340+m`, `BasicDataServer` egress `9350+m`. 9348 and 9349 were the cluster-tier harnesses' own test-consumer egress and are now free: those harnesses run `ClusterProbe follow`, which opens no cluster session (§11 step 5) |
 | 9360–9399 | phixeron | `ExchangeGateway` egress `9360+m` and Artio archive control `9370+m`, `OrderGateway` egress `9380+m` and Artio archive control `9390+m` |
