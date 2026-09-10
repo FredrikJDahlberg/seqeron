@@ -74,15 +74,18 @@ public final class ClusterStreamSender implements IngressSender, AutoCloseable {
     private final IdleStrategy idle = new YieldingIdleStrategy();
     private final EgressListener listener = new SessionListener();
 
+    /** The two decisions this class makes about a session, held where a test can drive them. */
+    private final IngressStallPolicy stallPolicy =
+        new IngressStallPolicy(INGRESS_STALL_FATAL_TIMEOUT_NS, BACKPRESSURE_ALERT_INTERVAL_NS);
+    private IngressLeaderPolicy leaderPolicy = new IngressLeaderPolicy(IngressLeaderPolicy.NO_MEMBER);
+
     private Aeron aeron;
     private AeronCluster cluster;
     private EgressListener appListener;
     private String egressChannel;
     private String ingressEndpoints;
     private int colocatedMemberId = NO_MEMBER;
-    private boolean ipcIngress;
     private boolean sessionLost;
-    private boolean reconnectPending;
     private int newLeaderMemberId = NO_MEMBER;
     private int sourceId;
     private long lastKeepAliveNs;
@@ -104,6 +107,7 @@ public final class ClusterStreamSender implements IngressSender, AutoCloseable {
         this.egressChannel = egressChannel;
         this.appListener = appListener;
         cluster = openSession(INGRESS_CHANNEL_UDP, udpEndpoints(), CONNECT_TIMEOUT_NS);
+        leaderPolicy.onConnected(false);
     }
 
     /**
@@ -129,15 +133,17 @@ public final class ClusterStreamSender implements IngressSender, AutoCloseable {
         this.colocatedMemberId = memberId;
         this.egressChannel = egressChannel;
         this.appListener = appListener;
+        leaderPolicy = new IngressLeaderPolicy(memberId);
         try {
             // No endpoints with IPC ingress: AeronCluster refuses the pair, and there is nothing to name.
             cluster = openSession(INGRESS_CHANNEL_IPC, null, TimeUnit.MILLISECONDS.toNanos(ipcConnectTimeoutMs));
-            ipcIngress = true;
+            leaderPolicy.onConnected(true);
         } catch (final AeronException ex) {
             Logger.error(Logger.Component.Cluster, Logger.EventCode.ClusterIpcFallback, memberId,
                          "member %d did not answer ingress on %s (%s) — falling back to UDP", memberId,
                          INGRESS_CHANNEL_IPC, ex.getMessage());
             cluster = openSession(INGRESS_CHANNEL_UDP, udpEndpoints(), CONNECT_TIMEOUT_NS);
+            leaderPolicy.onConnected(false);
         }
     }
 
@@ -182,37 +188,35 @@ public final class ClusterStreamSender implements IngressSender, AutoCloseable {
             throw new IllegalArgumentException("ingress frame " + length + " exceeds MAX_INGRESS_LENGTH "
                                                + FrameLayer.MAX_INGRESS_LENGTH);
         }
-        long blockedSinceNs = 0;
-        long nextAlertNs = 0;
         long result;
         while ((result = cluster.offer(frame, 0, length)) < 0) {
-            if (result == Publication.MAX_POSITION_EXCEEDED) {
-                throw new IllegalStateException("cluster ingress offer failed: " + result);
-            }
             final long now = System.nanoTime();
-            if (blockedSinceNs == 0) {
-                blockedSinceNs = now;
-                nextAlertNs = now + BACKPRESSURE_ALERT_INTERVAL_NS;
-            }
-            if (sessionLost || cluster.isClosed()) {
+            switch (stallPolicy.onOfferFailed(now, result, sessionLost, cluster.isClosed())) {
+            case FATAL:
+                throw new IllegalStateException("cluster ingress offer failed: " + result);
+            case SESSION_GONE:
                 return false;
-            }
-            if (now - blockedSinceNs >= INGRESS_STALL_FATAL_TIMEOUT_NS) {
+            case STALLED:
                 Logger.error(Logger.Component.Cluster, Logger.EventCode.ClusterOfferFailed, member(),
                              "cluster ingress took no frame for %ds — calling the session lost",
                              TimeUnit.NANOSECONDS.toSeconds(INGRESS_STALL_FATAL_TIMEOUT_NS));
                 sessionLost = true;
                 return false;
-            }
-            if (now >= nextAlertNs) {
+            case ALERT:
                 Logger.error(Logger.Component.Cluster, Logger.EventCode.ClusterOfferFailed, member(),
                              "cluster ingress back-pressured (offer=%d) for %dms", result,
-                             TimeUnit.NANOSECONDS.toMillis(now - blockedSinceNs));
-                nextAlertNs = now + BACKPRESSURE_ALERT_INTERVAL_NS;
+                             TimeUnit.NANOSECONDS.toMillis(stallPolicy.blockedNs(now)));
+                break;
+            case RETRY:
+            default:
+                break;
             }
+            // The publication that replaces the one an election closed is installed here, which is why a
+            // spin that does not poll would wait on the dead leader's forever.
             pollEgress();
             idle.idle();
         }
+        stallPolicy.onOffered();
         return true;
     }
 
@@ -246,8 +250,7 @@ public final class ClusterStreamSender implements IngressSender, AutoCloseable {
             return 0;
         }
         final int fragments = cluster.pollEgress();
-        if (reconnectPending) {
-            reconnectPending = false;
+        if (leaderPolicy.reconnectDue()) {
             reconnectOverUdp();
         }
         return fragments;
@@ -329,7 +332,7 @@ public final class ClusterStreamSender implements IngressSender, AutoCloseable {
                     "leadership moved to member %d — reconnecting ingress over UDP", newLeaderMemberId);
         CloseHelper.quietClose(cluster);
         cluster = openSession(INGRESS_CHANNEL_UDP, udpEndpoints(), CONNECT_TIMEOUT_NS);
-        ipcIngress = false;
+        leaderPolicy.onConnected(false);
     }
 
     private Integer member() {
@@ -363,7 +366,7 @@ public final class ClusterStreamSender implements IngressSender, AutoCloseable {
         public void onNewLeader(final long clusterSessionId, final long leadershipTermId,
                                final int leaderMemberId, final String ingressEndpoints) {
             newLeaderMemberId = leaderMemberId;
-            reconnectPending = ipcIngress && leaderMemberId != colocatedMemberId;
+            leaderPolicy.onNewLeader(leaderMemberId);
             if (appListener != null) {
                 appListener.onNewLeader(clusterSessionId, leadershipTermId, leaderMemberId, ingressEndpoints);
             }

@@ -91,7 +91,7 @@ this tree.
 
 | | Java | C++ |
 | --- | --- | --- |
-| the sequencer | `sequencer/` — `Sequencer`, `SequencerService`, `SequencerServer`, `FrameLayer`, `SystemFrame`, `TapPublisher`, `TapStallPolicy`, and the producer side: `ClusterStreamSender`, `IngressPublisher`, `IngressSender` | `sequencer/` — `SequencedFrame`, `ClusterStreamSender`, `ClusterStreamClient`, `IngressPublisher`, `PortLayout` |
+| the sequencer | `sequencer/` — `Sequencer`, `SequencerService`, `SequencerServer`, `FrameLayer`, `SystemFrame`, `TapPublisher`, `TapStallPolicy`, and the producer side: `ClusterStreamSender`, `IngressPublisher`, `IngressSender`, `IngressStallPolicy`, `IngressLeaderPolicy` | `sequencer/` — `SequencedFrame`, `ClusterStreamSender`, `ClusterStreamClient`, `IngressPublisher`, `PortLayout` |
 | the replayer | `replayer/server/` and `replayer/client/` | `replayer/client/` only |
 | the tools | `tools/` — `ClusterCtl`, `TopologyDocument`, `ClusterProbe`, `SbeLogPrinter` | — |
 | the ops plane | `metrics/` — `MetricsExporter`, `MetricsAggregator`, `SeqeronCounters` | `util/SeqeronCounters.hpp` |
@@ -108,6 +108,11 @@ encoder (Java's SBE codecs share no interface), and leadership moving off the co
 session rather than a publication swap (`AeronCluster` owns its publication). `IngressSender` exists so
 `IngressPublisher` has a seam the Java suite can drive without an Aeron runtime — the C++ transport seam
 has no Java equivalent, so the state machine those 778 C++ test lines cover is Aeron's here, not ours.
+What is left of ours is split off and unit-tested the way `TapStallPolicy` is: **`IngressStallPolicy`**
+(which offer results are terminal — `CLOSED` is not, it is an election in progress) and
+**`IngressLeaderPolicy`** (whether IPC ingress has lost its leader and the session must be replaced).
+`ClusterStreamSender` itself is then the Aeron adapter and holds no decision of its own, so its low line
+coverage is the same statement `SequencerService`'s is.
 
 `fixgateway`/`fix` hold exactly one class each and are not a FIX implementation: the recovery-stall
 policy is a language-port pair that any edge gateway needs, and the pair lives here because the fence
@@ -127,7 +132,7 @@ the server side of the replay protocol is Java only.
 ```bash
 ./gradlew compileJava
 ./gradlew uberJar     # build/libs/seqeron-0.1.0-uber.jar — every script's prerequisite
-./gradlew test        # JUnit 5, 295 tests, ~1s
+./gradlew test        # JUnit 5, 310 tests, ~1s
 ./gradlew generateFrameSbe generateReplaySbe generateProbeSbe generateClusterSbeIr
 ./gradlew compileTestJava   # TestGateway, which chaos-runner.sh needs and no jar carries
 ```

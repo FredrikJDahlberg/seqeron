@@ -111,6 +111,9 @@ CN=0            # observation / tap-drop-target consumer host — a fault target
 # GW-T-A, so a quiet run has A serving on member CN and B standing by on GW_B_MEMBER.
 GW_A_MEMBER=$CN
 GW_B_MEMBER=1
+# The gatewayIds $TOPOLOGY names for the pair above; clusterctl addresses an instance by id, not by name.
+GW_A_ID=10
+GW_B_ID=11
 GW_A_PORT="$(test_gateway_port 0)"
 GW_B_PORT="$(test_gateway_port 1)"
 TOPOLOGY="src/test/resources/topology-test-gateway.xml"
@@ -314,6 +317,34 @@ W=0; until [[ -n "$(active_gateway_port)" ]]; do
   sleep 0.5; W=$((W+1)); ((W > APP_CATCHUP_TIMEOUT_SECS * 2)) && { echo "no gateway instance was designated active"; exit 1; }
 done
 log "cluster READY — consumer following live, gateway active on port $(active_gateway_port)"
+
+# One operator handover before the faults start. `clusterctl activate` is the only path that submits a
+# GatewayActivationRequested at ingress and waits for the GatewayActive the sequencer synthesizes behind
+# it, and nothing else in these harnesses walks it. What it proves is an ordinary ingress submit making
+# the full round trip — the thing that breaks when a leadership change is read as a dead session — so it
+# runs here, where a pair is up and a promotion is observable from outside both processes.
+gateway_id() { [[ "$1" == "$GW_A_MEMBER" ]] && echo "$GW_A_ID" || echo "$GW_B_ID"; }
+# The standby is whichever instance the designation did not name: an instance that has never been
+# superseded logs no state assignment of its own, so gateway_status reads empty for it rather than
+# "standby".
+active_gateway_member() {
+  local m
+  for m in "$GW_A_MEMBER" "$GW_B_MEMBER"; do
+    [[ "$(gateway_status "$(gateway_log "$m")")" == "active" ]] && { echo "$m"; return; }
+  done
+  echo ""
+}
+ACTIVE_MEMBER="$(active_gateway_member)"
+[[ -n "$ACTIVE_MEMBER" ]] || { echo "no active gateway instance to hand over from"; exit 1; }
+if [[ "$ACTIVE_MEMBER" == "$GW_A_MEMBER" ]]; then STANDBY_MEMBER="$GW_B_MEMBER"; else STANDBY_MEMBER="$GW_A_MEMBER"; fi
+if ! src/main/scripts/clusterctl.sh activate "$(gateway_id "$STANDBY_MEMBER")" > "$LOG_DIR/activate.log" 2>&1; then
+  echo "clusterctl activate failed — see $LOG_DIR/activate.log"; exit 1
+fi
+W=0; until [[ "$(gateway_status "$(gateway_log "$STANDBY_MEMBER")")" == "active" ]]; do
+  sleep 0.5; W=$((W+1))
+  ((W > APP_CATCHUP_TIMEOUT_SECS * 2)) && { echo "activate: $(gateway_name "$STANDBY_MEMBER") never took the role"; exit 1; }
+done
+log "operator handover OK — $(gateway_name "$STANDBY_MEMBER") active on port $(active_gateway_port)"
 
 # Optional steady background frame flow so faults land on a system that is actually doing work.
 # Batched rather than one endless submit, so a batch interrupted mid leader-failover simply ends and the
