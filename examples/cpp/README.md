@@ -6,10 +6,11 @@ order. Once caught up it submits one ping frame a second at cluster ingress and 
 when each echo comes back. Same flow, same output.
 
 This is a **separate build**, not part of the repo's CMake project. It pulls `seqeron_core` in with
-`FetchContent`, which is the one way that target is consumable today: there is no `install()` or
-`export()` for it, so `find_package(seqeron)` cannot work. `SEQERON_SOURCE_DIR` defaults to the checkout
-this example ships in; an outside consumer swaps it for `GIT_REPOSITORY`/`GIT_TAG` and changes nothing
-else.
+`FetchContent`; `SEQERON_SOURCE_DIR` defaults to the checkout this example ships in, and an outside
+consumer swaps it for `GIT_REPOSITORY`/`GIT_TAG` and changes nothing else. The other supported path is
+`find_package(seqeron)` against a `cmake --install`ed tree (`doc/publishing.md` §7), which needs an
+installed Aeron beside it; this example builds Aeron from source regardless, so `FetchContent` costs it
+nothing.
 
 ## Run it
 
@@ -53,7 +54,8 @@ replays and neither catches up.
 
 ## What it shows
 
-- **Header-only.** `seqeron_core` is an INTERFACE target; there is nothing to link but Aeron's C client.
+- **Header-only.** `seqeron_core` is an INTERFACE target, and it carries every Aeron target its headers
+  reach for, so `target_link_libraries(follow_stream PRIVATE seqeron_core)` is the whole link line.
 - **The receiver owns the history/live split.** No code here requests a replay, tracks the archive or
   notices a gap: `ReplayerStreamReceiver` does all of it and dispatches nothing out of order, which is
   why the check in `inOrder` can be an assertion rather than a recovery path.
@@ -81,7 +83,7 @@ replays and neither catches up.
 
 ## What a consumer does not inherit
 
-`seqeron_core` carries the include roots and `aeron_client_wrapper`, and nothing else. seqeron's own
+`seqeron_core` carries the include roots and the four Aeron targets its headers need, and nothing else. seqeron's own
 `-Wall -Wextra` and its Debug `-fsanitize=address` live on `seqeron_flags`, which only targets inside
 that repo link, and `core_tests` is not configured at all here — `SEQERON_BUILD_TESTS` defaults off
 when seqeron is added as a subdirectory, so neither the suite nor GoogleTest is fetched or built.

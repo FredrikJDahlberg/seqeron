@@ -1,0 +1,36 @@
+# What `find_package(seqeron)` resolves against an installed tree.
+#
+# seqeron_core is header-only, so the install is headers plus these three files and there is no
+# compiled artifact — and therefore no ABI tying a consumer to the Aeron that seqeron itself was built
+# against. The consumer's Aeron is the only one that matters, which is why this file finds one rather
+# than carrying one.
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+
+# Aeron is not vendored. seqeron's own build pulls it in with FetchContent, where AERON_INSTALL_TARGETS
+# defaults off and nothing Aeron declares is exported, so the exported seqeron_core deliberately names
+# no Aeron target (its link interface is BUILD_INTERFACE-only) and picks one up here instead. A
+# consumer therefore needs an Aeron built with -DAERON_INSTALL_TARGETS=ON on CMAKE_PREFIX_PATH.
+find_dependency(aeron @SEQERON_AERON_VERSION@)
+
+include("${CMAKE_CURRENT_LIST_DIR}/seqeronTargets.cmake")
+
+# INTERFACE_SYSTEM_INCLUDE_DIRECTORIES is not prefix-rewritten on export the way
+# INTERFACE_INCLUDE_DIRECTORIES is: CMake copies the $<INSTALL_INTERFACE:> text through verbatim, so the
+# exported entry is a relative path that matches no include root and the marking silently does nothing.
+# Restate it absolutely, or a find_package consumer gets every -Wtype-limits the SBE codecs emit.
+set_property(TARGET seqeron::seqeron_core PROPERTY
+    INTERFACE_SYSTEM_INCLUDE_DIRECTORIES "@PACKAGE_CMAKE_INSTALL_INCLUDEDIR@/seqeron-sbe")
+
+# The four Aeron targets the headers need: Aeron.h and the C client behind it (aeronc.h), then
+# client/archive/AeronArchive.h and the C archive client behind that, which ClusterStreamClient.hpp
+# uses to read the tap's recording back.
+set_property(TARGET seqeron::seqeron_core APPEND PROPERTY INTERFACE_LINK_LIBRARIES
+    aeron::aeron_client_wrapper
+    aeron::aeron
+    aeron::aeron_archive_wrapper
+    aeron::aeron_archive_c_client
+)
+
+check_required_components(seqeron)

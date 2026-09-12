@@ -5,14 +5,14 @@ resolve. This is a **backlog**, not a runbook: nothing here is required to build
 repo, and every item is a cost paid only when someone outside this machine wants to depend on it.
 
 The two halves are independent and in different states. Java has an artifact that is not published
-anywhere; C++ has no artifact at all and cannot have one without owning Aeron's packaging.
+anywhere; C++ has one — the git tag, consumable two ways — that no registry indexes.
 
 ## What exists
 
 | | Java | C++ |
 | --- | --- | --- |
-| artifact | two, by audience: `org.limitless:seqeron:0.1.0` (the client tier) and `org.limitless:seqeron-node:0.1.0` (the cluster), the second depending on the first | none |
-| how a consumer gets it | `./gradlew publishToMavenLocal`, then `mavenLocal()` | `FetchContent` over the checkout, `add_subdirectory` under the hood |
+| artifact | two, by audience: `org.limitless:seqeron:0.1.0` (the client tier) and `org.limitless:seqeron-node:0.1.0` (the cluster), the second depending on the first | the git tag: the headers plus a CMake package, `seqeron::seqeron_core` |
+| how a consumer gets it | `./gradlew publishToMavenLocal`, then `mavenLocal()` | `FetchContent` over the checkout (`add_subdirectory` under the hood), or `cmake --install` then `find_package(seqeron)` |
 | proof it works | [`examples/java`](../examples/java) — resolves `seqeron` alone, no source dependency and no node classes | [`examples/cpp`](../examples/cpp) — `SEQERON_SOURCE_DIR`, swappable for `GIT_REPOSITORY`/`GIT_TAG` |
 | reach | this machine's `~/.m2` | anyone who can clone the repo |
 
@@ -104,31 +104,47 @@ enabling it wants an exclusion for the generated source roots rather than needin
 version-pinning story at once. The version is a hand-typed `0.1.0` in `build.gradle` with nothing
 tying it to a tag, so the first release also has to decide who owns that number.
 
-## C++ — the one structural item
+## C++ — the one open item
 
-### 7. `seqeron_core` cannot be installed or exported
+### 7. An installed consumer supplies its own Aeron
 
-`find_package(seqeron)` cannot work, and this is not a matter of writing the missing `install()`
-rules. `seqeron_core` interface-links `aeron_client_wrapper`, whose own `install()`/`export()` is
-gated on Aeron's `AERON_INSTALL_TARGETS`, defaulting to `${STANDALONE_BUILD}` — off when Aeron is
-pulled in with `FetchContent`, which is how this build pulls it. An `install(EXPORT)` of
-`seqeron_core` therefore fails **at generate time**, on a dependency that is in no export set.
+`find_package(seqeron)` works. `cmake --install` writes the hand-written headers, the committed SBE
+ones, `seqeronTargets.cmake` and `seqeronConfig.cmake` under the prefix, and a consumer links
+`seqeron::seqeron_core` — the same target name the `FetchContent` path gives it — with no source
+dependency on this repo. What the package cannot do is bring Aeron with it.
 
-Getting past it means one of:
+Every Aeron target in `seqeron_core`'s link interface is wrapped in `$<BUILD_INTERFACE:>`, and that is
+not tidiness. This build pulls Aeron in with `FetchContent`, where `AERON_INSTALL_TARGETS` defaults to
+`${STANDALONE_BUILD}` — off — so none of those targets is in any export set, and an `install(EXPORT)`
+naming one fails **at generate time**: `requires target "aeron_client_wrapper" that is not in any
+export set`. The wrapper strips them from the exported target, and `seqeronConfig.cmake` re-attaches
+the same four under `aeron::` behind a `find_dependency(aeron 1.51.0)` configured from
+`SEQERON_AERON_VERSION`, so the floor is stated in one place.
 
-- requiring a **pre-installed Aeron** and `find_package`ing it rather than fetching it, which moves
-  a build-from-source cost onto every consumer;
-- vendoring or patching Aeron's install gating, which means owning someone else's packaging;
-- exporting a target that does *not* carry `aeron_client_wrapper` and making the consumer supply
-  Aeron itself — an interface that no longer describes what the header-only library needs.
+The cost therefore lands on the consumer: an Aeron built with `-DAERON_INSTALL_TARGETS=ON` and
+installed, on `CMAKE_PREFIX_PATH` beside seqeron. That is the honest shape — seqeron does not own
+Aeron's packaging, and vendoring its install gating would mean maintaining someone else's.
+`FetchContent` stays the simpler path for a consumer that builds Aeron from source anyway, which is
+why `examples/cpp` uses it.
 
-None of the three is small, and `FetchContent` works today. This is recorded so the absence reads
-as a decision rather than an oversight.
+Two details bite silently if this is ever rewritten:
 
-`seqeron_core`'s include roots are still `$<BUILD_INTERFACE:>` only, but that is now the single
-reason above and not two: the generated SBE headers used to live in the build tree, so any install
-would have had to install generated output. They are committed under `src/main/generated/sbe/core`
-now, so both include roots are ordinary source paths.
+- **`seqeron_core` declares four Aeron targets, not one.** `Aeron.h` reaches for `aeronc.h` in the C
+  client, and `ClusterStreamClient.hpp` for `client/archive/AeronArchive.h` and the C archive client
+  behind it. Declaring `aeron_client_wrapper` alone left every consumer to work the rest out — which
+  `examples/cpp` duly did, by adding `aeron` to its own link line.
+- **`INTERFACE_SYSTEM_INCLUDE_DIRECTORIES` is not prefix-rewritten on export.** CMake copies the
+  `$<INSTALL_INTERFACE:>` text through verbatim, so the exported entry is a relative path matching no
+  include root and the SYSTEM marking quietly does nothing. `seqeronConfig.cmake` restates it
+  absolutely; without that a `find_package` consumer gets every `-Wtype-limits` the SBE codecs emit.
+
+The install rules are gated on `SEQERON_INSTALL`, defaulting to `PROJECT_IS_TOP_LEVEL` as
+`SEQERON_BUILD_TESTS` does: a parent that vendors this build should not find seqeron's headers landing
+in its own `install` target.
+
+Nothing exercises the installed path automatically — `examples/cpp` takes the `FetchContent` one, and
+the CI `examples` job with it — so verifying a change to the package means installing Aeron and seqeron
+to a prefix by hand.
 
 ## Cross-cutting
 

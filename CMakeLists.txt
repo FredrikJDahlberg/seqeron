@@ -11,6 +11,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 include(FetchContent)
 include(CheckCXXCompilerFlag)
+include(GNUInstallDirs)
 
 check_cxx_compiler_flag("-msse4.1" SEQERON_HAS_MSSE41)
 
@@ -38,7 +39,11 @@ if(SEQERON_COVERAGE)
     endif()
 endif()
 
-# Aeron — fetched and built from source.
+# Aeron — fetched and built from source. The version is a variable because the installed package
+# states the same floor: cmake/seqeronConfig.cmake.in's find_dependency(aeron) is configured from it,
+# so a consumer's Aeron cannot be older than the one this repo develops against.
+set(SEQERON_AERON_VERSION "1.51.0")
+
 set(AERON_TESTS            OFF CACHE BOOL "" FORCE)
 set(AERON_SAMPLES          OFF CACHE BOOL "" FORCE)
 set(AERON_BUILD_SAMPLES    OFF CACHE BOOL "" FORCE)
@@ -50,7 +55,7 @@ set(BUILD_AERON_ARCHIVE_API ON  CACHE BOOL "" FORCE)
 FetchContent_Declare(
     aeron
     GIT_REPOSITORY https://github.com/real-logic/aeron.git
-    GIT_TAG        1.51.0
+    GIT_TAG        ${SEQERON_AERON_VERSION}
     GIT_SHALLOW    TRUE
     SYSTEM
     UPDATE_COMMAND ""
@@ -169,26 +174,79 @@ endif()
 # and it carries no simdfix and no generated FIX codecs: its SBE root is SBE_CORE_DIR, which holds
 # only frame/replay/cluster, so the cluster tier decodes no FIX by construction rather than by habit.
 #
-# BUILD_INTERFACE only, and no install()/export(): seqeron_core interface-links aeron_client_wrapper,
-# whose own install is gated on Aeron's AERON_INSTALL_TARGETS (default ${STANDALONE_BUILD}, off under
-# FetchContent), so install(EXPORT) would fail at generate time on a target in no export set. A
-# consumer adds this build — see examples/cpp — rather than find_package()ing it.
+# Consumable two ways and the target name is the same in both: add_subdirectory/FetchContent over the
+# checkout (examples/cpp), or find_package(seqeron) against an installed tree (the SEQERON_INSTALL
+# block below).
 add_library(seqeron_core INTERFACE)
+add_library(seqeron::seqeron_core ALIAS seqeron_core)
 target_include_directories(seqeron_core INTERFACE
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/main/cpp>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
 )
 # SYSTEM: SBE-tool output. Regenerating from the schema is the only way to change these, so their
 # diagnostics are noise — -Wtype-limits fires on every get*AsJsonEscapedString wherever char is
-# unsigned (aarch64). Keeps -Wall -Wextra live on the hand-written sources.
+# unsigned (aarch64). Keeps -Wall -Wextra live on the hand-written sources. It installs to a directory
+# of its own rather than merging into the include root, because SYSTEM is a property of the root.
 target_include_directories(seqeron_core SYSTEM INTERFACE
     $<BUILD_INTERFACE:${SBE_CORE_DIR}>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}/seqeron-sbe>
 )
+# The whole Aeron surface these headers need, not just the C++ client wrapper: Aeron.h reaches for
+# aeronc.h in the C client, and ClusterStreamClient.hpp for client/archive/AeronArchive.h and the C
+# archive client behind that. Declaring the wrapper alone left every consumer to work the rest out.
+#
+# $<BUILD_INTERFACE:> on all four: Aeron arrives by FetchContent, where AERON_INSTALL_TARGETS defaults
+# off and none of these is in an export set, so an install(EXPORT) that named them would fail at
+# generate time. The exported target carries no Aeron at all and cmake/seqeronConfig.cmake.in
+# re-attaches the same four under aeron::, which is what lets find_package(seqeron) work.
+#
 # Not seqeron_flags: those are THIS build's policy, not part of the library's interface, and in Debug
 # they carry -fsanitize=address — a consumer linking seqeron_core would silently get AddressSanitizer
 # in its own code. Targets in this repo add seqeron_flags themselves.
 target_link_libraries(seqeron_core INTERFACE
-    aeron_client_wrapper
+    $<BUILD_INTERFACE:aeron_client_wrapper>
+    $<BUILD_INTERFACE:aeron>
+    $<BUILD_INTERFACE:aeron_archive_wrapper>
+    $<BUILD_INTERFACE:aeron_archive_c_client>
 )
+
+# Installing is the top-level build's business: a parent that vendors this one should not find
+# seqeron's headers landing in its own `install` target.
+option(SEQERON_INSTALL "Generate seqeron's install and export rules" ${PROJECT_IS_TOP_LEVEL})
+
+if(SEQERON_INSTALL)
+    include(CMakePackageConfigHelpers)
+
+    install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/src/main/cpp/"
+        DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
+        FILES_MATCHING PATTERN "*.hpp")
+    install(DIRECTORY "${SBE_CORE_DIR}/"
+        DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/seqeron-sbe"
+        FILES_MATCHING PATTERN "*.h")
+
+    install(TARGETS seqeron_core EXPORT seqeronTargets)
+    install(EXPORT seqeronTargets
+        FILE seqeronTargets.cmake
+        NAMESPACE seqeron::
+        DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/seqeron")
+
+    configure_package_config_file(
+        "${CMAKE_CURRENT_SOURCE_DIR}/cmake/seqeronConfig.cmake.in"
+        "${CMAKE_CURRENT_BINARY_DIR}/seqeronConfig.cmake"
+        INSTALL_DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/seqeron"
+        PATH_VARS CMAKE_INSTALL_INCLUDEDIR)
+
+    # SameMinorVersion, not SameMajorVersion: at 0.x the minor is the breaking number.
+    write_basic_package_version_file(
+        "${CMAKE_CURRENT_BINARY_DIR}/seqeronConfigVersion.cmake"
+        VERSION ${PROJECT_VERSION}
+        COMPATIBILITY SameMinorVersion)
+
+    install(FILES
+        "${CMAKE_CURRENT_BINARY_DIR}/seqeronConfig.cmake"
+        "${CMAKE_CURRENT_BINARY_DIR}/seqeronConfigVersion.cmake"
+        DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/seqeron")
+endif()
 
 if(SEQERON_BUILD_TESTS)
     # core_tests — the cluster tier's own suite. Links seqeron_core only, so a core file that reached for

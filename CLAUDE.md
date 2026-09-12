@@ -162,6 +162,14 @@ what keeps the committed copy from drifting away from `src/main/sbe`. GoogleTest
 `PROJECT_IS_TOP_LEVEL` — a build that adds this one gets neither unless it asks. `-DSEQERON_COVERAGE=ON` adds instrumentation. No simdfix, and therefore **no SSH remote is
 needed** — the FetchContent clone that used to require one went with the product half.
 
+**Consumable two ways, under the same target name.** `add_subdirectory`/`FetchContent` over the
+checkout (`examples/cpp`), or `find_package(seqeron)` against a `cmake --install`ed prefix —
+`SEQERON_INSTALL` gates the install rules and defaults to `PROJECT_IS_TOP_LEVEL`. The exported target
+names no Aeron target, because FetchContent leaves Aeron's in no export set and an `install(EXPORT)`
+naming one fails at generate time; they are `$<BUILD_INTERFACE:>`-wrapped and
+`cmake/seqeronConfig.cmake.in` re-attaches them under `aeron::`, so an installed consumer brings its
+own installed Aeron. `doc/publishing.md` §7.
+
 **Aeron and SBE versions are pinned twice** — `build.gradle`'s `ext` block and `CMakeLists.txt`'s
 `FetchContent`/`SBE_VERSION`. The two sides generate independently from the same schemas and speak the
 same wire protocol, so a version that differs across them is a runtime decode failure, not a build

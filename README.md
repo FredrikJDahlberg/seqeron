@@ -416,7 +416,9 @@ flow in both: replay a node's history through that node's co-located Replayer, s
 catching up, and print every frame in `globalSeqNo` order. Each is a **separate build** — the Java one
 resolves `org.limitless:seqeron` — the client tier alone, no sequencer and no archive — the C++ one pulls `seqeron_core` in with
 `FetchContent` — so what the artifacts fail to expose fails there rather than passing on a source
-dependency.
+dependency. The C++ half also installs: `cmake --install` writes a CMake package, and a consumer takes
+`seqeron::seqeron_core` off `find_package(seqeron)` instead, supplying its own installed Aeron
+(`doc/publishing.md` §7).
 
 ```bash
 ./src/main/scripts/start-cluster.sh                              # in another shell
