@@ -30,7 +30,9 @@ import org.limitless.seqeron.util.Logger;
  * {@code aeron:ipc} tap ({@link SequencerService#FEEDER_CHANNEL}) which is simultaneously
  * recorded by the co-located Archive for client replay on startup.
  *
- * <p><b>Port layout</b> (member 0 on base 9300; members 1 and 2 use base+10, base+20):
+ * <p><b>Port layout</b> (member 0 on the base; members 1 and 2 use base+10, base+20). The base is
+ * 9300 unless {@code SEQERON_PORT_BASE} overrides it deployment-wide — see
+ * {@link PortLayout#ENV_PORT_BASE} — so the numbers below are the default's:
  * <pre>
  *   +1  archive control   (9301, 9311, 9321)
  *   +2  cluster ingress   (9302, 9312, 9322)

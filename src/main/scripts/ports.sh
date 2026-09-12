@@ -6,8 +6,20 @@
 # three-line block, which is how BasicDataServer's and FixGateway's egress-port defaults
 # once drifted onto the same value (9340+memberId) without anyone noticing.
 
-CLUSTER_PORT_BASE=9300
+# The stride is fixed; the base is a deployment knob read by all three mirrors (this file,
+# PortLayout.java, PortLayout.hpp). Set it identically for every seqeron process on every host, or a
+# node and a client will disagree about which ports to bind and dial — a connection that never
+# completes rather than an error naming the cause.
+CLUSTER_PORT_BASE="${SEQERON_PORT_BASE:-9300}"
 CLUSTER_PORT_STRIDE=10
+
+# Sourced, so this exits the caller — which is the point: a bad base is better caught here than as a
+# bind error on a port nobody chose.
+if ! [[ "${CLUSTER_PORT_BASE}" =~ ^[0-9]+$ ]] ||
+   (( CLUSTER_PORT_BASE < 1024 || CLUSTER_PORT_BASE + 3 * CLUSTER_PORT_STRIDE - 1 > 65535 )); then
+    echo "ERROR: SEQERON_PORT_BASE='${CLUSTER_PORT_BASE}' must be an integer in 1024..65506" >&2
+    exit 1
+fi
 
 cluster_member_port_base() { echo $(( CLUSTER_PORT_BASE + $1 * CLUSTER_PORT_STRIDE )); }
 archive_port()  { echo $(( $(cluster_member_port_base "$1") + 1 )); }

@@ -43,15 +43,18 @@ What a wrong allocation costs: two logical gateways sharing a `gatewaySourceId` 
 ## 2. Ports
 
 **Core reserves the blocks; each product declares its own bases inside its own block, in its own
-language.** Core states only its own reservation in code — `CLUSTER_PORT_BLOCK_FIRST` /
-`CLUSTER_PORT_BLOCK_LAST` and `isClusterPort()`, in `PortLayout.hpp` and `SequencerServer` — because
-a reusable sequencer must not name the processes that connect to it. Which product owns which of the
-other blocks is this table's alone.
+language.** Core states only its own reservation in code — `isClusterPort()` and the block bounds,
+spelled `clusterPortBlockFirst()`/`clusterPortBlockLast()` in `PortLayout.hpp` and
+`CLUSTER_PORT_BLOCK_FIRST`/`CLUSTER_PORT_BLOCK_LAST` in `PortLayout.java` — because a reusable
+sequencer must not name the processes that connect to it. Functions on the C++ side and fields on the
+Java side because the base became configurable: C++ cannot both read the environment and stay
+`constexpr`, while a Java `static final` reads the same at every call site either way. Which product
+owns which of the other blocks is this table's alone.
 
 | block | owner | what is in it |
 | --- | --- | --- |
 | 9200–9209 | core | the cluster tier's own harness listeners: `TestGateway` TCP listen `9200 + instance` (9200 GW-T-A, 9201 GW-T-B), `cluster/src/main/scripts/ports.sh`, and `examples/cpp`'s cluster egress `9202 + memberId` (UDP, `SEQERON_EXAMPLE_EGRESS_PORT`). Deliberately **not** inside 9300–9329 — that block is three members of stride 10 with nothing spare, and `isClusterPort()` names cluster member ports, which these are not |
-| 9300–9329 | core | cluster member ports, `9300 + memberId*10 + {1..5}` — three members, one decade each |
+| 9300–9329 | core | cluster member ports, `base + memberId*10 + {1..5}` — three members, one decade each. The base defaults to 9300 and moves with `SEQERON_PORT_BASE` (see below); this row registers the default |
 | 9330–9359 | simdfixgw | `OrderExecServer` egress `9330+m`, `FixGateway` egress `9340+m`, `BasicDataServer` egress `9350+m`. 9348 and 9349 were the cluster-tier harnesses' own test-consumer egress and are now free: those harnesses run `ClusterProbe follow`, which opens no cluster session (§11 step 5) |
 | 9360–9399 | phixeron | `ExchangeGateway` egress `9360+m` and its archive control `9370+m`, `OrderGateway` egress `9380+m` and its archive control `9390+m` |
 | 9000–9029 | products | TCP listen: `FixGateway` `9000+gatewayIndex`, the mock venue 9010, `OrderGateway` 9020 |
@@ -83,17 +86,30 @@ ports into the products'. Until then the rule is the narrow one: a new UDP port 
 
 ### The cluster block bounds the cluster at three members
 
-`9300 + memberId*10` gives member 2 the decade 9320–9329, so the reservation is exactly three
-members wide. **A fourth member would take 9330–9339, which is simdfixgw's.** Growing the cluster
-is therefore a registry change here first, not a `nodeCount` change — the formula alone will hand
-out a port another product owns, and the failure is a bind error on whichever process starts second.
+`base + memberId*10` gives member 2 the decade `base+20`–`base+29`, so the reservation is exactly
+three members wide. **At the default base a fourth member would take 9330–9339, which is
+simdfixgw's.** Growing the cluster is therefore a registry change here first, not a `nodeCount`
+change — the formula alone will hand out a port another product owns, and the failure is a bind error
+on whichever process starts second. `SEQERON_PORT_BASE` relocates the block without widening it, so it
+moves that collision rather than removing it.
 
 ### The formula is a three-way mirror
 
-`PortLayout.hpp` (C++), `SequencerServer` (Java) and `cluster/src/main/scripts/ports.sh` (bash) each
-carry it, pinned against the same `(memberId → port)` pairs by `PortLayoutTest` and
-`SequencerServerTest` so a change to one side without the others fails a build. All three, and both
-tests, are core's and go with it.
+`PortLayout.hpp` (C++), `PortLayout.java` (Java) and `src/main/scripts/ports.sh` (bash) each carry it,
+pinned against the same `(memberId → port)` pairs by `PortLayoutTest` and `SequencerServerTest` so a
+change to one side without the others fails a build. All three, and both tests, are core's and go
+with it.
+
+**The base is a deployment knob**, `SEQERON_PORT_BASE`, defaulting to the 9300 this table registers.
+Being a three-way mirror is what decides its shape: an environment variable is the one mechanism all
+three languages read, so it is that rather than a system property, and it has to be set identically
+for every seqeron process on every host — a node that disagrees with a client about the base binds and
+dials different ports, and the symptom is a connection that never completes rather than an error
+naming the cause. Each mirror validates it (1024 ≤ base ≤ 65506) and fails at startup instead of
+half-applying it; the rules sit behind a pure seam in each language — `resolveClusterPortBase` and
+`parseClusterPortBase` — so the boundaries are unit-tested rather than exercised through the
+environment. Moving the base does **not** move the satellite blocks below, which is the operator's
+problem to keep disjoint.
 
 The satellite bases are the products' own, in the products' own files: `AppPorts.hpp` (pinned by
 `AppPortsTest`) and `ports.sh` on the C++ side, `ExchangeGatewayConfig` and `OrderGatewayConfig` on

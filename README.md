@@ -245,8 +245,9 @@ java \
 
 ### Port layout
 
-Each member's ports are `9300 + memberId × 10 + offset` — the formula lives in
-`sequencer/PortLayout.hpp`, `SequencerServer`'s Javadoc and `scripts/ports.sh`, and nowhere else:
+Each member's ports are `base + memberId × 10 + offset`, where the base is **9300** unless
+`SEQERON_PORT_BASE` says otherwise — the formula lives in `sequencer/PortLayout.hpp`,
+`sequencer/PortLayout.java` and `scripts/ports.sh`, and nowhere else:
 
 | Offset | Purpose          | Member 0 | Member 1 | Member 2 |
 |--------|------------------|----------|----------|----------|
@@ -256,7 +257,14 @@ Each member's ports are `9300 + memberId × 10 + offset` — the formula lives i
 | +4     | Cluster log      | 9304     | 9314     | 9324     |
 | +5     | File transfer    | 9305     | 9315     | 9325     |
 
-This tier reserves **9300–9329** for those (three members of stride 10, wider than the 9301–9325 three
+`SEQERON_PORT_BASE` moves the whole block when 9300 is already taken where seqeron has to run. It is
+**deployment-wide**: all three mirrors read it, so every seqeron process on every host must see the
+same value, or a node and a client bind and dial different ports and the symptom is a connection that
+never completes. A base below 1024 or too high to fit the 30-port block is refused at startup rather
+than half-applied. The satellite blocks below do **not** move with it — keeping them clear of the new
+base is the operator's job.
+
+This tier reserves **9300–9329** by default (three members of stride 10, wider than the 9301–9325 three
 nodes actually bind), **9200–9209** for its own harness listeners, and `9400 + memberId` / 9500 for
 the metrics plane. Every other block — an application's TCP listen port, each co-located client's
 cluster egress port, the replay ports — belongs to the process that binds it, so this repo names none

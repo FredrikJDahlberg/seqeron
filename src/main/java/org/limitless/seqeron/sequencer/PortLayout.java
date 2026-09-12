@@ -21,21 +21,76 @@ public final class PortLayout {
     /** Every default endpoint below is on one host; a real deployment overrides them wholesale. */
     public static final String DEFAULT_HOST = "localhost";
 
-    public static final int CLUSTER_PORT_BASE = 9300;
+    /**
+     * Deployment-wide port-base override, read by all three mirrors — this class,
+     * {@code PortLayout.hpp} and {@code ports.sh}. It must be set identically for <i>every</i> seqeron
+     * process on every host: a node that disagrees with a client about the base binds and dials
+     * different ports, and the symptom is a connection that never completes rather than an error
+     * naming the cause. An environment variable rather than a system property because it is the one
+     * knob all three languages have to read.
+     */
+    public static final String ENV_PORT_BASE = "SEQERON_PORT_BASE";
+
+    /** The base when {@link #ENV_PORT_BASE} is unset — core's registered block, doc/registries.md §2. */
+    public static final int DEFAULT_CLUSTER_PORT_BASE = 9300;
+
     public static final int CLUSTER_PORT_STRIDE = 10;
+
+    /** Three members, one stride each. See {@link #CLUSTER_PORT_BLOCK_FIRST}. */
+    private static final int CLUSTER_PORT_BLOCK_WIDTH = 3 * CLUSTER_PORT_STRIDE;
+
+    private static final int MIN_PORT_BASE = 1024;
+    private static final int MAX_PORT = 65535;
+
+    public static final int CLUSTER_PORT_BASE = resolveClusterPortBase(System.getenv(ENV_PORT_BASE));
 
     /**
      * Core's reserved port block (doc/registries.md §2) — three members wide, one stride each.
-     * Deliberately <i>not</i> the 9301-9325 a three-node cluster actually binds: that is the number
-     * every restatement of this boundary used to carry, and the gap between the two is where an
-     * application port ended up squatting on 9320.
+     * Deliberately <i>not</i> the base+1..base+25 a three-node cluster actually binds: that is the
+     * number every restatement of this boundary used to carry, and the gap between the two is where an
+     * application port ended up squatting on the third member's base.
      */
     public static final int CLUSTER_PORT_BLOCK_FIRST = CLUSTER_PORT_BASE;
 
     /** Last port of core's reserved block. See {@link #CLUSTER_PORT_BLOCK_FIRST}. */
-    public static final int CLUSTER_PORT_BLOCK_LAST = CLUSTER_PORT_BASE + 3 * CLUSTER_PORT_STRIDE - 1;
+    public static final int CLUSTER_PORT_BLOCK_LAST = CLUSTER_PORT_BASE + CLUSTER_PORT_BLOCK_WIDTH - 1;
 
     private PortLayout() {
+    }
+
+    /**
+     * Parses {@link #ENV_PORT_BASE}. The environment read is the caller's, so this stays a pure
+     * function and the rules are unit-testable without touching the process environment — the same
+     * seam {@code parseClusterPortBase} is on the C++ side.
+     *
+     * <p>A bad value fails here, loudly, rather than surfacing later as a bind error on a port nobody
+     * chose.
+     *
+     * @param raw the raw environment value, or {@code null} when unset
+     * @return the configured base, or {@link #DEFAULT_CLUSTER_PORT_BASE}
+     */
+    static int resolveClusterPortBase(final String raw) {
+        if (null == raw || raw.isBlank()) {
+            return DEFAULT_CLUSTER_PORT_BASE;
+        }
+
+        final int base;
+        try {
+            base = Integer.parseInt(raw.trim());
+        } catch (final NumberFormatException ex) {
+            throw new IllegalArgumentException(ENV_PORT_BASE + " is not a number: '" + raw + "'", ex);
+        }
+
+        if (base < MIN_PORT_BASE) {
+            throw new IllegalArgumentException(
+                ENV_PORT_BASE + "=" + base + " is below " + MIN_PORT_BASE + " (privileged ports)");
+        }
+        if (base + CLUSTER_PORT_BLOCK_WIDTH - 1 > MAX_PORT) {
+            throw new IllegalArgumentException(
+                ENV_PORT_BASE + "=" + base + " leaves no room for the " + CLUSTER_PORT_BLOCK_WIDTH
+                    + "-port cluster block below " + MAX_PORT);
+        }
+        return base;
     }
 
     /**

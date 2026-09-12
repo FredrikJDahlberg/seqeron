@@ -417,7 +417,9 @@ harness can clean up its own processes through the same sweep without core namin
 
 The gap list went with the product half, so there is none in this repo. The two structural costs
 recorded above are the standing ones: **no snapshots** (recovery time and archive size grow with uptime),
-and **the cluster is bounded at three members** by the 9300–9329 port block (`doc/registries.md` §2).
+and **the cluster is bounded at three members** by the 30-port cluster block (`doc/registries.md` §2).
+`SEQERON_PORT_BASE` moves that block off its 9300 default — deployment-wide, read by all three mirrors
+— but does not widen it.
 
 `doc/` holds what survived the split: `seqeron-protocol-spec.md` (normative — the frames, the families,
 the system vocabulary, the topology document), `fault-tolerance.md`, `registries.md` (the two shared
