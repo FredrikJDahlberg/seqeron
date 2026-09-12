@@ -151,8 +151,14 @@ JDK 21. `SEQERON_JAR` overrides the jar path for every script that resolves it.
 cmake -B cmake-build-debug -DCMAKE_BUILD_TYPE=Debug      # AddressSanitizer
 cmake --build cmake-build-debug
 ```
-C++23, requires Java (Runtime) on PATH for the SBE tool, and fetches Aeron 1.51.0 and GoogleTest from
-source. GoogleTest and `core_tests` are gated on `SEQERON_BUILD_TESTS`, which defaults to
+C++23, and fetches Aeron 1.51.0 and GoogleTest from source. **The core SBE codecs are generated and
+committed**, under `src/main/generated/sbe/core` — the git tag is the C++ artifact, so shipping them
+with it is what lets a consumer build with no SBE tool and no JDK of seqeron's asking (Aeron's own
+build still wants a JDK 17+). `find_package(Java)` is therefore `QUIET`, not `REQUIRED`, and is used
+only by `RegenerateSbeCodecs` (rewrites the committed tree — run it when a schema changes, then commit
+what it produced) and `CheckSbeCodecsCurrent`, which regenerates into the build tree and compares.
+SBE's C++ output is deterministic, so that comparison is exact; `run_tests` depends on it, which is
+what keeps the committed copy from drifting away from `src/main/sbe`. GoogleTest and `core_tests` are gated on `SEQERON_BUILD_TESTS`, which defaults to
 `PROJECT_IS_TOP_LEVEL` — a build that adds this one gets neither unless it asks. `-DSEQERON_COVERAGE=ON` adds instrumentation. No simdfix, and therefore **no SSH remote is
 needed** — the FetchContent clone that used to require one went with the product half.
 

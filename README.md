@@ -90,8 +90,13 @@ covers what survives node loss, failover, a stuck archive and a lost frame.
 
 ## Build
 
-Requires **JDK 21** and a **C++23** compiler. The C++ build needs Java on `PATH` too — the SBE tool
-is a jar, downloaded once at configure time — and fetches Aeron 1.51.0 and GoogleTest from source.
+Requires **JDK 21** for the Java half and a **C++23** compiler for the C++ one, and fetches Aeron
+1.51.0 and GoogleTest from source. The C++ half needs no JDK of seqeron's own making: the codecs for
+the three schemas this repo owns are generated and committed under `src/main/generated/sbe/core`, so
+a consumer compiles them rather than running the SBE tool (`doc/publishing.md`). Java is still needed
+to *change* them — `RegenerateSbeCodecs`, then commit — and Aeron's own build requires a JDK 17+
+regardless (`aeron-archive/src/main/c` does `find_package(Java 17 REQUIRED)` and Aeron's CMake shells
+out to its Gradle build), so a from-source Aeron keeps one on the machine either way.
 Both halves generate independently from the same schemas under `src/main/sbe`, so their Aeron and SBE
 versions are pinned to match (`build.gradle`'s `ext` block, `CMakeLists.txt`'s `FetchContent`).
 

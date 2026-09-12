@@ -21,6 +21,16 @@ Two decisions are already made and are **not** open items:
 - **The uber jar is not published.** It is the runnable artifact every script resolves out of
   `build/libs`, and it repacks Aeron and Agrona — publishing it would put a shaded copy of both on a
   consumer's classpath beside the real ones.
+- **The C++ codecs are generated and committed**, under `src/main/generated/sbe/core`. The git tag is
+  the C++ artifact, so a codec that only exists in a build tree is not shipped at all: a consumer would
+  have to own the SBE tool, the JDK and the codegen step to use headers whose schema is core's and
+  which it has no business regenerating. Committed, `FetchContent` over the tag plus a C++23 compiler
+  is the whole prerequisite list on seqeron's side. (Aeron's own build still requires a JDK 17+ —
+  `aeron-archive/src/main/c` does `find_package(Java 17 REQUIRED)` — so a from-source Aeron keeps one
+  on the machine; what this removes is seqeron's *own* demand for one.) The cost is a second copy of
+  the schemas, and `CheckSbeCodecsCurrent` is what stops it drifting: SBE's C++ output is
+  deterministic, so it regenerates into the build tree and compares exactly, and `run_tests` depends
+  on it. `RegenerateSbeCodecs` is the only thing that writes into the source tree.
 - **Aeron, Agrona and the two Aeron modules are `api` dependencies**, because they appear in this
   repo's own public signatures (`DirectBuffer` in `SequencedFrameDecoder`/`SystemFrame`, `Aeron` and
   `Image` in `ReplayerStreamReceiver`, `AeronArchive` in `ReplayerService`, `ClusteredService` in
@@ -115,9 +125,10 @@ Getting past it means one of:
 None of the three is small, and `FetchContent` works today. This is recorded so the absence reads
 as a decision rather than an oversight.
 
-A second, smaller consequence: the generated SBE headers live in the build tree, so
-`seqeron_core`'s include roots are `$<BUILD_INTERFACE:>` only. Any install would have to install
-generated output, which is a second reason the export is not a five-line addition.
+`seqeron_core`'s include roots are still `$<BUILD_INTERFACE:>` only, but that is now the single
+reason above and not two: the generated SBE headers used to live in the build tree, so any install
+would have had to install generated output. They are committed under `src/main/generated/sbe/core`
+now, so both include roots are ordinary source paths.
 
 ## Cross-cutting
 

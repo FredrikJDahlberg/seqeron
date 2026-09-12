@@ -78,102 +78,91 @@ if(SEQERON_BUILD_TESTS)
     FetchContent_MakeAvailable(googletest)
 endif()
 
-# SBE tool — downloaded once at configure time
-find_package(Java REQUIRED COMPONENTS Runtime)
-
-set(SBE_VERSION    "1.38.1")
-set(SBE_JAR        "${CMAKE_BINARY_DIR}/sbe-all-${SBE_VERSION}.jar")
-# Each schema generates into its own namespace directory below, and each codegen command wipes that
-# directory before running: SBE only ever writes, so without this a message deleted from a schema leaves
-# its header behind and stays compilable. The stamp file is the command's only tracked output, so CMake
-# cannot notice a stale header on its own.
+# ── SBE C++ codecs ─────────────────────────────────────────────────────────────
+# The codecs for the three schemas this repo owns are GENERATED AND COMMITTED, under
+# src/main/generated/sbe/core. The git tag is the C++ artifact (doc/future-arch.md §6), so shipping
+# them with it is what lets a consumer build against seqeron with no JDK and no SBE tool — a C++23
+# compiler is the whole prerequisite list. The schema is core's; there is nothing for a consumer to
+# regenerate.
+#
+# The cost is a second copy of the schemas, and a second copy drifts. SBE's C++ output is
+# deterministic, so CheckSbeCodecsCurrent regenerates into the build tree and compares — exactly,
+# not approximately — and this repo's own run_tests depends on it.
 #
 # generated/sbe/core, not generated/sbe: the root is named for what it holds — the schemas the cluster
 # tier owns (frame, replay, cluster) and nothing else. A deployment that builds an application's codecs
 # alongside these gives them their own root, so a cluster-tier file that reached for an application
 # codec fails to compile rather than merely being asked not to.
-set(SBE_CORE_DIR "${CMAKE_BINARY_DIR}/generated/sbe/core")
+set(SBE_CORE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src/main/generated/sbe/core")
 
-if(NOT EXISTS "${SBE_JAR}")
-    message(STATUS "Downloading SBE tool ${SBE_VERSION}…")
-    file(DOWNLOAD
-        "https://repo1.maven.org/maven2/uk/co/real-logic/sbe-all/${SBE_VERSION}/sbe-all-${SBE_VERSION}.jar"
-        "${SBE_JAR}"
-        TLS_VERIFY ON
-        SHOW_PROGRESS
+set(SBE_VERSION "1.38.1")
+set(SBE_SCHEMAS
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/main/sbe/sbe-cluster.xml"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/main/sbe/sbe-replay.xml"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/main/sbe/sbe-frame.xml"
+)
+
+# QUIET, not REQUIRED: a consumer compiles the committed codecs and never runs the tool. Java is
+# needed only to regenerate them, to check them, or by a parent build generating its own schemas.
+find_package(Java QUIET COMPONENTS Runtime)
+
+if(Java_JAVA_EXECUTABLE)
+    set(SBE_JAR "${CMAKE_BINARY_DIR}/sbe-all-${SBE_VERSION}.jar")
+
+    if(NOT EXISTS "${SBE_JAR}")
+        message(STATUS "Downloading SBE tool ${SBE_VERSION}…")
+        file(DOWNLOAD
+            "https://repo1.maven.org/maven2/uk/co/real-logic/sbe-all/${SBE_VERSION}/sbe-all-${SBE_VERSION}.jar"
+            "${SBE_JAR}"
+            TLS_VERIFY ON
+            SHOW_PROGRESS
+        )
+    endif()
+
+    # A parent build that adds this one generates its own schemas with the same downloaded tool.
+    if(NOT PROJECT_IS_TOP_LEVEL)
+        set(SBE_JAR "${SBE_JAR}" PARENT_SCOPE)
+    endif()
+
+    # Wipes `dir` first: SBE only ever writes, so without that a message deleted from a schema leaves
+    # its header behind and stays compilable.
+    function(sbe_generate_target name dir)
+        add_custom_target(${name}
+            COMMAND ${CMAKE_COMMAND} -E rm -rf "${dir}"
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${dir}"
+            COMMENT "Generating SBE C++ codecs into ${dir}"
+            VERBATIM
+        )
+        foreach(schema IN LISTS SBE_SCHEMAS)
+            add_custom_command(TARGET ${name} POST_BUILD
+                COMMAND ${Java_JAVA_EXECUTABLE}
+                            -Dsbe.output.dir=${dir}
+                            -Dsbe.target.language=Cpp
+                            -Dsbe.cpp.namespaces.collapse=false
+                            -jar ${SBE_JAR}
+                            ${schema}
+                VERBATIM
+            )
+        endforeach()
+    endfunction()
+
+    # Explicit, and the only thing that writes into the source tree: run it when a schema changes,
+    # then commit what it produced.
+    sbe_generate_target(RegenerateSbeCodecs "${SBE_CORE_DIR}")
+
+    set(SBE_CHECK_DIR "${CMAKE_BINARY_DIR}/sbe-codec-check")
+    sbe_generate_target(SbeCodecsForCheck "${SBE_CHECK_DIR}")
+
+    add_custom_target(CheckSbeCodecsCurrent
+        COMMAND ${CMAKE_COMMAND}
+                    -DCOMMITTED=${SBE_CORE_DIR}
+                    -DFRESH=${SBE_CHECK_DIR}
+                    -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/CheckSbeCodecs.cmake
+        COMMENT "Checking the committed SBE C++ codecs against src/main/sbe"
+        VERBATIM
     )
+    add_dependencies(CheckSbeCodecsCurrent SbeCodecsForCheck)
 endif()
-
-# A parent build that adds this one generates its own schemas with the same downloaded tool.
-if(NOT PROJECT_IS_TOP_LEVEL)
-    set(SBE_JAR "${SBE_JAR}" PARENT_SCOPE)
-endif()
-
-# SBE C++ codegen for sbe-cluster.xml
-set(CLUSTER_SBE_SCHEMA "${CMAKE_CURRENT_SOURCE_DIR}/src/main/sbe/sbe-cluster.xml")
-set(CLUSTER_SBE_STAMP  "${SBE_CORE_DIR}/.cluster_sbe_stamp")
-
-add_custom_command(
-    OUTPUT  ${CLUSTER_SBE_STAMP}
-    COMMAND ${CMAKE_COMMAND} -E rm -rf ${SBE_CORE_DIR}/org_limitless_seqeron_cluster_sbe
-    COMMAND ${CMAKE_COMMAND} -E make_directory ${SBE_CORE_DIR}
-    COMMAND ${Java_JAVA_EXECUTABLE}
-                -Dsbe.output.dir=${SBE_CORE_DIR}
-                -Dsbe.target.language=Cpp
-                -Dsbe.cpp.namespaces.collapse=false
-                -jar ${SBE_JAR}
-                ${CLUSTER_SBE_SCHEMA}
-    COMMAND ${CMAKE_COMMAND} -E touch ${CLUSTER_SBE_STAMP}
-    DEPENDS ${CLUSTER_SBE_SCHEMA} ${SBE_JAR}
-    COMMENT "Generating SBE C++ codecs from sbe-cluster.xml"
-    VERBATIM
-)
-
-add_custom_target(GenerateClusterSbeCodecs DEPENDS ${CLUSTER_SBE_STAMP})
-
-# SBE C++ codegen for sbe-replay.xml (the node-local replay control protocol)
-set(REPLAY_SBE_SCHEMA "${CMAKE_CURRENT_SOURCE_DIR}/src/main/sbe/sbe-replay.xml")
-set(REPLAY_SBE_STAMP  "${SBE_CORE_DIR}/.replay_sbe_stamp")
-
-add_custom_command(
-    OUTPUT  ${REPLAY_SBE_STAMP}
-    COMMAND ${CMAKE_COMMAND} -E rm -rf ${SBE_CORE_DIR}/org_limitless_seqeron_sbe_replay
-    COMMAND ${CMAKE_COMMAND} -E make_directory ${SBE_CORE_DIR}
-    COMMAND ${Java_JAVA_EXECUTABLE}
-                -Dsbe.output.dir=${SBE_CORE_DIR}
-                -Dsbe.target.language=Cpp
-                -Dsbe.cpp.namespaces.collapse=false
-                -jar ${SBE_JAR}
-                ${REPLAY_SBE_SCHEMA}
-    COMMAND ${CMAKE_COMMAND} -E touch ${REPLAY_SBE_STAMP}
-    DEPENDS ${REPLAY_SBE_SCHEMA} ${SBE_JAR}
-    COMMENT "Generating SBE C++ codecs from sbe-replay.xml"
-    VERBATIM
-)
-
-add_custom_target(GenerateReplaySbeCodecs DEPENDS ${REPLAY_SBE_STAMP})
-
-# SBE C++ codegen for sbe-frame.xml (the Unsequenced/Sequenced envelope pair)
-set(FRAME_SBE_SCHEMA "${CMAKE_CURRENT_SOURCE_DIR}/src/main/sbe/sbe-frame.xml")
-set(FRAME_SBE_STAMP  "${SBE_CORE_DIR}/.frame_sbe_stamp")
-
-add_custom_command(
-    OUTPUT  ${FRAME_SBE_STAMP}
-    COMMAND ${CMAKE_COMMAND} -E rm -rf ${SBE_CORE_DIR}/org_limitless_seqeron_sbe_frame
-    COMMAND ${CMAKE_COMMAND} -E make_directory ${SBE_CORE_DIR}
-    COMMAND ${Java_JAVA_EXECUTABLE}
-                -Dsbe.output.dir=${SBE_CORE_DIR}
-                -Dsbe.target.language=Cpp
-                -Dsbe.cpp.namespaces.collapse=false
-                -jar ${SBE_JAR}
-                ${FRAME_SBE_SCHEMA}
-    COMMAND ${CMAKE_COMMAND} -E touch ${FRAME_SBE_STAMP}
-    DEPENDS ${FRAME_SBE_SCHEMA} ${SBE_JAR}
-    COMMENT "Generating SBE C++ codecs from sbe-frame.xml"
-    VERBATIM
-)
-
-add_custom_target(GenerateFrameSbeCodecs DEPENDS ${FRAME_SBE_STAMP})
 
 # seqeron_core — header-only interface library for the cluster tier. Its include root is
 # src/main/cpp, so nothing linking only this can reach a product header,
@@ -200,9 +189,6 @@ target_include_directories(seqeron_core SYSTEM INTERFACE
 target_link_libraries(seqeron_core INTERFACE
     aeron_client_wrapper
 )
-# On the library, not on each consumer: SBE_CORE_DIR is on seqeron_core's include path, so anything
-# linking it needs those codecs generated first — an out-of-tree consumer as much as core_tests.
-add_dependencies(seqeron_core GenerateFrameSbeCodecs GenerateReplaySbeCodecs GenerateClusterSbeCodecs)
 
 if(SEQERON_BUILD_TESTS)
     # core_tests — the cluster tier's own suite. Links seqeron_core only, so a core file that reached for
@@ -249,4 +235,10 @@ if(SEQERON_BUILD_TESTS)
         COMMENT "Running core_tests"
         USES_TERMINAL
     )
+
+    # The committed codecs are a second copy of the schemas; this is what keeps them honest, and it
+    # runs in the build that owns them rather than in a consumer's.
+    if(TARGET CheckSbeCodecsCurrent)
+        add_dependencies(run_tests CheckSbeCodecsCurrent)
+    endif()
 endif()
