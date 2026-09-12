@@ -197,7 +197,8 @@ public final class SequencerServer {
                     Long.getLong(PROP_SESSION_TIMEOUT_MS, DEFAULT_SESSION_TIMEOUT_MS)))
                 .idleStrategySupplier(idleStrategySupplier)
                 .errorHandler(t
-                              -> Logger.error(Logger.Component.ConsensusModule, Logger.EventCode.ConsensusModuleError,
+                              -> Logger.error(Logger.CoreComponent.ConsensusModule,
+                                              Logger.CoreEventCode.ConsensusModuleError,
                                               memberId, "%s", t.getMessage()));
 
         final AtomicBoolean tapFatal = new AtomicBoolean();
@@ -215,20 +216,20 @@ public final class SequencerServer {
                 .terminationHook(barrier::signalAll)
                 .idleStrategySupplier(idleStrategySupplier)
                 .errorHandler(t
-                              -> Logger.error(Logger.Component.SequencerService, Logger.EventCode.ServiceError,
+                              -> Logger.error(Logger.CoreComponent.SequencerService, Logger.CoreEventCode.ServiceError,
                                               memberId, "%s", t.getMessage()));
 
-        Logger.info(Logger.Component.SequencerServer, memberId,
+        Logger.info(Logger.CoreComponent.SequencerServer, memberId,
                     "Starting member %d | ingress=%s | archive=%s | baseDir=%s | idle=%s", memberId,
                     udp(host, ingressPort), udp(host, archivePort), baseDir,
                     System.getProperty(PROP_IDLE_STRATEGY, "backoff"));
 
         try (barrier; ClusteredMediaDriver cmd = ClusteredMediaDriver.launch(driverCtx, archiveCtx, consensusCtx);
              ClusteredServiceContainer container = ClusteredServiceContainer.launch(serviceCtx)) {
-            Logger.info(Logger.Component.SequencerServer, memberId, "Running — Ctrl-C to stop");
+            Logger.info(Logger.CoreComponent.SequencerServer, memberId, "Running — Ctrl-C to stop");
             barrier.await();
         } finally {
-            Logger.info(Logger.Component.SequencerServer, memberId, "Shutdown complete");
+            Logger.info(Logger.CoreComponent.SequencerServer, memberId, "Shutdown complete");
         }
         if (tapFatal.get()) {
             System.exit(EXIT_TAP_FATAL);

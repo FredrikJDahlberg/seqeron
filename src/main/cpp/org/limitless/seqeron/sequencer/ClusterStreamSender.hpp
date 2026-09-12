@@ -362,7 +362,7 @@ class ClusterStreamSender
             }
         }
 
-        diag::Logger::info(diag::Component::Cluster, "Co-located member not leader (%s) — falling back to UDP ingress",
+        diag::Logger::info(diag::component::Cluster, "Co-located member not leader (%s) — falling back to UDP ingress",
                            primaryFailureReason != nullptr ? primaryFailureReason : "unknown");
         m_connectTimeoutMs = fullTimeoutMs;
         connect(buildFallbackIngress(), std::move(egress), m_egressChannel);
@@ -409,7 +409,7 @@ class ClusterStreamSender
                 m_clusterSessionId = evt.clusterSessionId();
                 m_leadershipTermId = evt.leadershipTermId();
                 diag::Logger::info(
-                    diag::Component::Cluster,
+                    diag::component::Cluster,
                     "Session opened  sessionId=%" PRId64 "  termId=%" PRId64 "  leader=%d  via ingress %s",
                     m_clusterSessionId, m_leadershipTermId, evt.leaderMemberId(), m_ingressEndpoint.c_str());
                 ensureIngressTargetsLeader(evt.leaderMemberId());
@@ -420,7 +420,7 @@ class ClusterStreamSender
             }
             else
             {
-                diag::Logger::error(diag::Component::Cluster, diag::EventCode::ClusterSessionError,
+                diag::Logger::error(diag::component::Cluster, diag::eventCode::ClusterSessionError,
                                     "SessionEvent error code=%d", static_cast<int>(evt.code()));
                 if (m_clusterSessionId >= 0 && evt.clusterSessionId() == m_clusterSessionId)
                 {
@@ -499,7 +499,7 @@ class ClusterStreamSender
             .clusterSessionId(m_clusterSessionId);
         if (!m_ingress->offer(std::span<const std::uint8_t>(kaBuf.data(), static_cast<std::size_t>(ka.sbePosition()))))
         {
-            diag::Logger::error(diag::Component::Cluster, diag::EventCode::ClusterOfferFailed,
+            diag::Logger::error(diag::component::Cluster, diag::eventCode::ClusterOfferFailed,
                                 "keep-alive offer failed");
         }
     }
@@ -520,7 +520,7 @@ class ClusterStreamSender
             .clusterSessionId(m_clusterSessionId);
         if (!m_ingress->offer(std::span<const std::uint8_t>(buf.data(), static_cast<std::size_t>(req.sbePosition()))))
         {
-            diag::Logger::error(diag::Component::Cluster, diag::EventCode::ClusterOfferFailed, "close offer failed");
+            diag::Logger::error(diag::component::Cluster, diag::eventCode::ClusterOfferFailed, "close offer failed");
         }
 
         m_clusterSessionId = -1;
@@ -612,7 +612,7 @@ class ClusterStreamSender
                 std::chrono::duration_cast<std::chrono::milliseconds>(now - blockedSince).count());
             if (blockedMs >= m_ingressStallFatalTimeoutMs)
             {
-                diag::Logger::error(diag::Component::Cluster, diag::EventCode::ClusterSessionError,
+                diag::Logger::error(diag::component::Cluster, diag::eventCode::ClusterSessionError,
                                     "no leader has accepted cluster ingress for %" PRId64 "ms — giving the session "
                                     "up rather than spin on with the duty cycle stopped",
                                     blockedMs);
@@ -623,7 +623,7 @@ class ClusterStreamSender
             if (now >= nextAlert)
             {
                 nextAlert = now + INGRESS_BACKPRESSURE_ALERT_INTERVAL;
-                diag::Logger::error(diag::Component::Cluster, diag::EventCode::ClusterOfferFailed,
+                diag::Logger::error(diag::component::Cluster, diag::eventCode::ClusterOfferFailed,
                                     "cluster ingress has refused this frame for %" PRId64 "ms — still retrying",
                                     blockedMs);
             }
@@ -696,7 +696,7 @@ class ClusterStreamSender
             {
                 // Every close reason is trusted, TIMEOUT included.
                 const std::string detail = evt.getDetailAsString();
-                diag::Logger::error(diag::Component::Cluster, diag::EventCode::ClusterSessionError,
+                diag::Logger::error(diag::component::Cluster, diag::eventCode::ClusterSessionError,
                                     "Cluster closed session %" PRId64 " (code=%d, %s)", m_clusterSessionId,
                                     static_cast<int>(evt.code()), detail.c_str());
                 m_clusterSessionId = -1;
@@ -718,7 +718,7 @@ class ClusterStreamSender
             if (m_aeron && m_coLocatedMemberId >= 0 && leaderMemberId == m_coLocatedMemberId &&
                 m_ingressEndpoint != "ipc")
             {
-                diag::Logger::info(diag::Component::Cluster,
+                diag::Logger::info(diag::component::Cluster,
                                    "New leader  termId=%" PRId64
                                    "  member=%d is co-located — switching back to IPC ingress",
                                    m_leadershipTermId, leaderMemberId);
@@ -732,14 +732,14 @@ class ClusterStreamSender
             if (m_aeron && findIngressEndpoint(ingressEndpoints, leaderMemberId, endpoint) &&
                 endpoint != m_ingressEndpoint)
             {
-                diag::Logger::info(diag::Component::Cluster, "New leader  termId=%" PRId64 "  member=%d  endpoint=%s",
+                diag::Logger::info(diag::component::Cluster, "New leader  termId=%" PRId64 "  member=%d  endpoint=%s",
                                    m_leadershipTermId, leaderMemberId, endpoint.c_str());
                 m_pendingIngress =
                     PendingIngressSwitch{ .pending = true, .endpoint = endpoint, .timeoutMs = m_connectTimeoutMs };
             }
             else
             {
-                diag::Logger::info(diag::Component::Cluster, "New leader  termId=%" PRId64, m_leadershipTermId);
+                diag::Logger::info(diag::component::Cluster, "New leader  termId=%" PRId64, m_leadershipTermId);
             }
             return;
         }
@@ -799,7 +799,7 @@ class ClusterStreamSender
             return;
         }
 
-        diag::Logger::info(diag::Component::Cluster,
+        diag::Logger::info(diag::component::Cluster,
                            "Session opened through non-leader ingress %s — leader is member=%d, switching to %s",
                            m_ingressEndpoint.c_str(), leaderMemberId, endpoint.c_str());
         m_pendingIngress =
@@ -814,14 +814,14 @@ class ClusterStreamSender
         std::string endpoint;
         if (!m_aeron || !findIngressEndpoint(detail, leaderMemberId, endpoint) || endpoint == m_ingressEndpoint)
         {
-            diag::Logger::error(diag::Component::Cluster, diag::EventCode::ClusterRedirectUnresolved,
+            diag::Logger::error(diag::component::Cluster, diag::eventCode::ClusterRedirectUnresolved,
                                 "Redirected to member=%d but could not resolve a new "
                                 "ingress endpoint from \"%s\"",
                                 leaderMemberId, detail.c_str());
             return;
         }
 
-        diag::Logger::info(diag::Component::Cluster, "Redirected to leader  member=%d  endpoint=%s", leaderMemberId,
+        diag::Logger::info(diag::component::Cluster, "Redirected to leader  member=%d  endpoint=%s", leaderMemberId,
                            endpoint.c_str());
         m_pendingIngress = PendingIngressSwitch{
             .pending = true, .endpoint = endpoint, .timeoutMs = m_connectTimeoutMs, .resendConnectRequest = true
@@ -847,7 +847,7 @@ class ClusterStreamSender
             m_connectTimeoutMs = fullTimeoutMs;
             m_ingress = std::make_unique<AeronIngressTransport>(std::move(pub));
             m_ingressEndpoint = req.endpoint;
-            diag::Logger::info(diag::Component::Cluster, "Ingress switched to %s", req.endpoint.c_str());
+            diag::Logger::info(diag::component::Cluster, "Ingress switched to %s", req.endpoint.c_str());
             if (req.resendConnectRequest || m_clusterSessionId < 0)
             {
                 sendConnectRequest();
@@ -858,13 +858,13 @@ class ClusterStreamSender
             m_connectTimeoutMs = fullTimeoutMs;
             if (req.keepCurrentOnFailure)
             {
-                diag::Logger::error(diag::Component::Cluster, diag::EventCode::ClusterIpcFallback,
+                diag::Logger::error(diag::component::Cluster, diag::eventCode::ClusterIpcFallback,
                                     "Ingress %s not ready yet (%s) — staying on %s", req.endpoint.c_str(), ex.what(),
                                     m_ingressEndpoint.c_str());
             }
             else
             {
-                diag::Logger::error(diag::Component::Cluster, diag::EventCode::ClusterRedirectUnresolved,
+                diag::Logger::error(diag::component::Cluster, diag::eventCode::ClusterRedirectUnresolved,
                                     "Could not build ingress publication to %s (%s)", req.endpoint.c_str(), ex.what());
             }
         }

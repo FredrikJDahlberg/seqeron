@@ -1,11 +1,11 @@
 # Shared registries
 
-Two namespaces are shared by every process in the deployment and owned by neither product: the
-producer `sourceId` space, and the UDP port space. Inside one repository both are held by
-convention. Now that seqeron is extracted, convention has become a
+Three namespaces are shared by every process in the deployment and owned by neither product: the
+producer `sourceId` space, the UDP port space, and the Aeron counter type-id space. Inside one
+repository all three are held by convention. Now that seqeron is extracted, convention has become a
 cross-repo race — nothing stops two repositories claiming the same number, and the collision shows
-up as a start-up failure at best and a mis-routed election at worst. So both are written down here,
-and **core owns both registries**: an allocation is taken by editing this file.
+up as a start-up failure at best and a mis-routed election at worst. So all three are written down
+here, and **core owns the registries**: an allocation is taken by editing this file.
 
 Both have drifted once already, and the two drifts are the shape to expect.
 
@@ -99,3 +99,43 @@ The satellite bases are the products' own, in the products' own files: `AppPorts
 `AppPortsTest`) and `ports.sh` on the C++ side, `ExchangeGatewayConfig` and `OrderGatewayConfig` on
 the Java side (pinned by `GatewayPortsTest`). Each of those tests asserts its bases fall **outside**
 core's reservation by calling core's own predicate — which is the whole point of exporting one.
+
+## 3. Aeron counter type ids
+
+Aeron reserves 0–999 for itself (client/driver 0–99, archive 100–199, cluster 200–299); everything
+above is a deployment's own. The blocks below are typed in two files, `SeqeronCounters.java` and its
+C++ half `util/SeqeronCounters.hpp`, and read by one — `MetricsExporter` maps a counter to a metric
+**by type id**.
+
+| block | owner | what is in it |
+| --- | --- | --- |
+| 5000–5099 | core | `SequencerService`'s counters |
+| 5100–5199 | core | `ReplayerService`'s counters |
+| 5200 | core | `APP_RECOVERY_STALLED`, published by `ReplayerStreamReceiver` — core's class, running inside a consumer's replica, in both languages |
+| 5201–5299 | consumers | a co-located replica's own counters |
+
+**5200–5299 is the app range**: counters a co-located replica publishes rather than a cluster-tier
+process. They carry `{memberId, clientId}` in the key where the others carry `memberId` alone, because
+a node runs several replicas publishing the same type id and the memberId alone would render them as
+one Prometheus series — the same label set, silently overwritten.
+
+Core reserves 5200 and states no owner for the rest: **which consumer holds which sub-block is the
+deployment's registry, not core's** — a deployment running two consumers keeps that table in whichever
+repository owns the deployment (in this one's case, `phixeron`'s copy of this document).
+
+### Core exports its own counters by name and a consumer's by label
+
+`MetricsExporter` holds a curated name, help text and type for every counter in **core's** blocks. It
+cannot hold one for a consumer's — that is the same "core names its consumers" coupling the port
+registry exists to avoid — so an app-range counter it has no metadata for is exported anyway, under a
+name taken from **the first token of the counter's own label**, sanitised to a Prometheus name
+(`MetricsExporterTest` pins both halves). A consumer therefore labels its counters
+`<product>.<area>.<metric> member=… client=…`, exactly as core's own `seqeron.app.recoveryStalled`
+does, and adding one needs no edit to seqeron.
+
+Nothing outside core's two blocks and the app range is exported at all: a type id core has never
+reserved is another library's.
+
+What a wrong allocation costs: two consumers on one type id render as one metric with two meanings,
+and the exporter has no way to tell them apart — the label they are named from is the only thing that
+differs, and the first one scraped names the series.

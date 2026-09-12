@@ -208,14 +208,19 @@ def sbeIrResourceDir = layout.buildDirectory.dir('generated/resources/sbeir')
 tasks.register('collectSbeIr', Copy) {
     description = 'Stage the generated SBE IR files as jar resources for SbeLogPrinter'
     dependsOn 'generateReplaySbe', 'generateFrameSbe', 'generateProbeSbe', 'generateClusterSbeIr'
+    // Wiped first, like every codegen step here: a Copy leaves whatever an earlier run put in the
+    // destination, so a moved staging path would otherwise ship in the jar twice.
+    doFirst { delete sbeIrResourceDir }
     from(sbeGeneratedSrcDir) {
         include '*.sbeir'
-        into 'org/limitless/seqeron/tools/sbeir'
+        into 'META-INF/seqeron/sbeir'
     }
     into sbeIrResourceDir
 }
 
-// The Copy's destination is the resource ROOT, so the package path above is what lands in the jar.
+// The Copy's destination is the resource ROOT, so the path above is what lands in the jar. It is
+// META-INF rather than a package dir: a consumer stages its own protocol's IR into the same
+// directory, and that must not mean writing into seqeron's package namespace (registries.md's rule).
 sourceSets.main.resources.srcDir(tasks.named('collectSbeIr'))
 
 // ── SBE log printer ────────────────────────────────────────────────────────────

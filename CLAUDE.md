@@ -178,9 +178,10 @@ non-converging recovery to a handover rather than a hang. It is in **`src/test/j
 `build/classes/java/test` on the classpath beside the uber jar and refuses to start without it. Its
 list is `src/test/resources/topology-test-gateway.xml`, the only topology document in this repo.
 
-`start-cluster.sh` and `start-three-node-cluster.sh` both default to the cluster tier alone;
-`SEQERON_PRODUCT_APPS=1` additionally launches the product repo's binaries, which must already be
-built there.
+`start-cluster.sh` and `start-three-node-cluster.sh` launch the cluster tier and nothing else — core
+starts no process it does not own. A consumer that wants its own replicas or gateways alongside runs
+them itself: `SEQERON_NO_CONSUMERS=1` leaves out the probe followers, the caller launches its own
+after READY, and names them in `SEQERON_EXTRA_PROCESSES` so `stop-cluster.sh` sweeps them too.
 
 ## Architecture
 
@@ -346,10 +347,12 @@ never deletes generated files for messages you removed, so **each schema owns a 
 and each codegen step wipes its own before running**; a regeneration is a replacement, and no manual purge
 of `cmake-build-*/generated/sbe` or `build/generated/sources/sbe` is needed. Keep that property when
 adding a schema: give it its own package/namespace directory, declare only that as the task's output, and
-wipe it in the same step. `collectSbeIr` stages each schema's `.sbeir` into the jar for `SbeLogPrinter`,
-which **discovers whatever `.sbeir` resources are on its classpath rather than naming schemas** — so a
-product jar beside this one lets the same tool name an application payload, and this jar alone names none,
-which is the point.
+wipe it in the same step. `collectSbeIr` stages each schema's `.sbeir` into the jar under
+**`META-INF/seqeron/sbeir/`** for `SbeLogPrinter`, which **discovers whatever `.sbeir` resources are on
+its classpath rather than naming schemas** — so a product jar beside this one lets the same tool name an
+application payload, and this jar alone names none, which is the point. The staging directory is
+`META-INF`, not a package dir, because a consumer contributing its IR must not have to write into
+seqeron's own package namespace; `collectSbeIr` wipes its destination first, like every codegen step.
 
 ## Scripts
 
@@ -366,8 +369,9 @@ dir. `snapshot` is refused.
 jar); `-o <payloadId>` — the spec §13.1 pipe — is the wrapper's only, because Gradle re-encodes a child's
 stdout and would corrupt the payload bytes.
 
-`stop-cluster.sh` stops everything either start script launched, product processes included, so that a
-harness cleaning up after a `SEQERON_PRODUCT_APPS=1` run finds nothing left behind.
+`stop-cluster.sh` stops everything either start script launched, plus whatever
+`SEQERON_EXTRA_PROCESSES` names (`"label|pgrep-pattern"` entries, semicolon-separated), so a consumer's
+harness can clean up its own processes through the same sweep without core naming them.
 
 ## Known gaps
 

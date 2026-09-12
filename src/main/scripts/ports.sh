@@ -43,17 +43,9 @@ ingress_endpoints_string() {
     echo "${out}"
 }
 
-# ── Satellite ports — one dedicated base per client role, deliberately outside the cluster's
-#    own reserved block (9300-9329, three members of stride 10); offset by memberId for a role
-#    with one co-located replica per node. Must match AppPorts.hpp (C++); the cluster block above
-#    is PortLayout.hpp's, and the block table is doc/registries.md §2's. ────────────────────────
-FIX_TCP_PORT_BASE=9000               # FixGateway TCP listen port
-FIX_TEST_CLIENT_EGRESS_PORT=9403     # fix_test_server's own (non-colocated) cluster egress
-ORDER_EXEC_EGRESS_PORT_BASE=9330     # OrderExecServer co-located egress
-FIX_GATEWAY_EGRESS_PORT_BASE=9340    # FixGateway co-located egress
-BASICDATA_EGRESS_PORT_BASE=9350      # BasicDataServer co-located egress
-RISK_TEST_REPLAY_PORT_DEFAULT=9400   # fix_test_server risk-test replay
-RESEND_REPLAY_PORT_DEFAULT=9401      # FixGateway resend-recovery replay
+# ── Core's own satellite port block. A consumer's bases are the consumer's own, in the consumer's
+#    own file (the C++ mirror of that split is AppPorts.hpp beside PortLayout.hpp); which block each
+#    repo draws from is doc/registries.md §2's table, and core states only its own here. ──────────
 TEST_GATEWAY_PORT_BASE=9200          # TestGateway TCP listen (9200 GW-T-A, 9201 GW-T-B) — the cluster
                                      # tier's OWN harness block, 9200-9209 (doc/registries.md §2). Not in
                                      # the 9300 block: that is three members of stride 10 with nothing spare.
@@ -61,7 +53,3 @@ TEST_GATEWAY_PORT_BASE=9200          # TestGateway TCP listen (9200 GW-T-A, 9201
 # those harnesses run ClusterProbe follow, which opens no cluster session at all. Left unallocated rather than reused, since doc/registries.md §2 records the block.
 
 test_gateway_port()       { echo $(( TEST_GATEWAY_PORT_BASE + ${1:-0} )); }
-fix_tcp_port()            { echo $(( FIX_TCP_PORT_BASE + ${1:-0} )); }
-order_exec_egress_port()  { echo $(( ORDER_EXEC_EGRESS_PORT_BASE + $1 )); }
-fix_gateway_egress_port() { echo $(( FIX_GATEWAY_EGRESS_PORT_BASE + $1 )); }
-basicdata_egress_port()   { echo $(( BASICDATA_EGRESS_PORT_BASE + $1 )); }

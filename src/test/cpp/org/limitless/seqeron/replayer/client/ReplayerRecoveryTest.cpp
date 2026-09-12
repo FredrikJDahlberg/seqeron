@@ -63,12 +63,12 @@ std::size_t refusalCount(const ScopedLoggerSink& sink)
     std::size_t count = 0;
     for (const diag::LoggerEvent& event : sink.events)
     {
-        count += event.code == diag::EventCode::ReplayUnavailable ? 1 : 0;
+        count += event.code == diag::eventCode::ReplayUnavailable ? 1 : 0;
     }
     return count;
 }
 
-// Retained-buffer overflows only: every gap/re-walk warn shares EventCode::TapGap, so only the text
+// Retained-buffer overflows only: every gap/re-walk warn shares eventCode::TapGap, so only the text
 // separates them.
 std::size_t overflowReports(const ScopedLoggerSink& sink)
 {
@@ -336,9 +336,9 @@ TEST(ReplayerRecoveryGapRecovery, TapGapReportsAStructuredDiagnosticEvent)
 
     ASSERT_EQ(1u, sink.events.size()) << "exactly the one gap detected above, nothing from setup";
     const auto& event = sink.events[0];
-    EXPECT_EQ(diag::Component::ReplayerStreamReceiver, event.component);
+    EXPECT_EQ(diag::component::ReplayerStreamReceiver, event.component);
     EXPECT_EQ(diag::Severity::Warn, event.severity);
-    EXPECT_EQ(diag::EventCode::TapGap, event.code);
+    EXPECT_EQ(diag::eventCode::TapGap, event.code);
     const std::string text(event.text.data(), event.textLen);
     EXPECT_EQ("tap gap: expected globalSeqNo=3 got 5 — resuming the recording at globalSeqNo=2", text);
 }
@@ -684,7 +684,7 @@ TEST(ReplayerRecoveryGapRecovery, ReplayUnavailableHoldsWithoutAbortingOrAdvanci
 
     ASSERT_EQ(1u, sink.events.size());
     EXPECT_EQ(diag::Severity::Fault, sink.events[0].severity);
-    EXPECT_EQ(diag::EventCode::ReplayUnavailable, sink.events[0].code);
+    EXPECT_EQ(diag::eventCode::ReplayUnavailable, sink.events[0].code);
 
     // The Replayer answers every resend the same way; the fault line must not repeat per reply.
     deliverControl(client, encodeReplayUnavailable(/*clientId=*/1, client.recovery.requestId()));
@@ -898,7 +898,7 @@ TEST(ReplayerRecoveryGapRecovery, GapInReplayedHistoryIsReportedOncePerEpisode)
     EXPECT_EQ(1, delivered) << "the frame past the hole must not be dispatched";
     ASSERT_EQ(1u, sink.events.size());
     EXPECT_EQ(diag::Severity::Warn, sink.events[0].severity);
-    EXPECT_EQ(diag::EventCode::TapGap, sink.events[0].code);
+    EXPECT_EQ(diag::eventCode::TapGap, sink.events[0].code);
 
     deliverReplay(client, 8);
     EXPECT_EQ(1u, sink.events.size()) << "the walk retries against the same chain — report the episode, not "
@@ -937,7 +937,7 @@ TEST(ReplayerRecoveryGapRecovery, ResumeOpeningOnTheWrongFrameFallsBackToTheChai
     EXPECT_EQ(1, delivered) << "the frame it opened on must not be dispatched";
     EXPECT_FALSE(client.recovery.isCaughtUp());
     ASSERT_EQ(2u, sink.events.size()) << "the gap, then the mismatch";
-    EXPECT_EQ(diag::EventCode::TapGap, sink.events[1].code);
+    EXPECT_EQ(diag::eventCode::TapGap, sink.events[1].code);
 }
 
 // The resume anchor is consumed by the first frame of ONE replay episode (doc/review A9) — a retry of
@@ -1408,9 +1408,9 @@ TEST(ReplayerRecoveryConvergence, RecoveryDeliveringNothingIsReportedOncePerEpis
     EXPECT_TRUE(checkProgressAt(client, PAST_DEADLINE_MS));
 
     ASSERT_EQ(1u, sink.events.size());
-    EXPECT_EQ(diag::Component::ReplayerStreamReceiver, sink.events[0].component);
+    EXPECT_EQ(diag::component::ReplayerStreamReceiver, sink.events[0].component);
     EXPECT_EQ(diag::Severity::Fault, sink.events[0].severity);
-    EXPECT_EQ(diag::EventCode::RecoveryStalled, sink.events[0].code);
+    EXPECT_EQ(diag::eventCode::RecoveryStalled, sink.events[0].code);
 
     // The condition persists for as long as the archive is broken; the caller logs, so it must not
     // repeat every duty cycle.
@@ -1447,7 +1447,7 @@ TEST(ReplayerRecoveryConvergence, AGapAfterAHealthyRunStartsItsOwnEpisodeRatherT
     // it triggers had any chance to converge.
     EXPECT_FALSE(checkProgressAt(client, PAST_DEADLINE_MS));
     ASSERT_EQ(1u, sink.events.size()) << "the tap-gap warn only — no convergence report";
-    EXPECT_EQ(diag::EventCode::TapGap, sink.events[0].code);
+    EXPECT_EQ(diag::eventCode::TapGap, sink.events[0].code);
 }
 
 TEST(ReplayerRecoveryConvergence, ACaughtUpClientThatSimplyGoesQuietIsNotReported)

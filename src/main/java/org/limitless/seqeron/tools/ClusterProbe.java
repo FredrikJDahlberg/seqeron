@@ -169,12 +169,12 @@ public final class ClusterProbe {
                 offer(cluster, marker.frame(), marker.encode(seqNo, NO_ID, PROBE_SOURCE_ID, filler));
                 pause(pacingMicros);
             }
-            Logger.info(Logger.Component.ClusterProbe, MEMBER_ID,
+            Logger.info(Logger.CoreComponent.ClusterProbe, MEMBER_ID,
                         "submitted %d ProbeMarker(s), filler %d bytes, pacing %dus", count, fillerBytes,
                         pacingMicros);
             return 0;
         } catch (final RuntimeException ex) {
-            Logger.error(Logger.Component.ClusterProbe, Logger.EventCode.ClusterSessionError, MEMBER_ID,
+            Logger.error(Logger.CoreComponent.ClusterProbe, Logger.CoreEventCode.ClusterSessionError, MEMBER_ID,
                          "submit failed: %s", ex);
             return 1;
         }
@@ -206,16 +206,16 @@ public final class ClusterProbe {
                 idle.idle(fragments);
             }
             if (!handler.found) {
-                Logger.error(Logger.Component.ClusterProbe, Logger.EventCode.ClusterSessionError, MEMBER_ID,
+                Logger.error(Logger.CoreComponent.ClusterProbe, Logger.CoreEventCode.ClusterSessionError, MEMBER_ID,
                              "ping seqNo %d was not echoed on the tap within %ds", seqNo,
                              TimeUnit.NANOSECONDS.toSeconds(ECHO_TIMEOUT_NS));
                 return 1;
             }
-            Logger.info(Logger.Component.ClusterProbe, MEMBER_ID, "ping seqNo %d echoed at globalSeqNo %d",
+            Logger.info(Logger.CoreComponent.ClusterProbe, MEMBER_ID, "ping seqNo %d echoed at globalSeqNo %d",
                         seqNo, handler.globalSeqNo);
             return 0;
         } catch (final RuntimeException ex) {
-            Logger.error(Logger.Component.ClusterProbe, Logger.EventCode.ClusterSessionError, MEMBER_ID,
+            Logger.error(Logger.CoreComponent.ClusterProbe, Logger.CoreEventCode.ClusterSessionError, MEMBER_ID,
                          "ping failed: %s", ex);
             return 1;
         }
@@ -303,11 +303,11 @@ public final class ClusterProbe {
 
         final DeliveryStats stats = new DeliveryStats(latencyStats);
         if (latencyStats) {
-            Logger.info(Logger.Component.ClusterProbe, MEMBER_ID, "delivery-latency stats ENABLED");
+            Logger.info(Logger.CoreComponent.ClusterProbe, MEMBER_ID, "delivery-latency stats ENABLED");
         }
 
         final Aeron aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(AERON_DIR));
-        Logger.info(Logger.Component.ClusterProbe, MEMBER_ID,
+        Logger.info(Logger.CoreComponent.ClusterProbe, MEMBER_ID,
                     "Connected to co-located Aeron media driver at %s | clientId %d", AERON_DIR, clientId);
 
         // The receiver is its own callbacks' subject, so it cannot be a constructor argument to them.
@@ -318,22 +318,22 @@ public final class ClusterProbe {
             // re-converges, and which frames were delivered live rather than by the healing replay is
             // exactly what these tests measure.
             if (announcedLive.compareAndSet(false, true)) {
-                Logger.info(Logger.Component.ClusterProbe, MEMBER_ID, "Caught up — following live");
+                Logger.info(Logger.CoreComponent.ClusterProbe, MEMBER_ID, "Caught up — following live");
             } else {
-                Logger.info(Logger.Component.ClusterProbe, MEMBER_ID, "re-converged at globalSeqNo %d",
+                Logger.info(Logger.CoreComponent.ClusterProbe, MEMBER_ID, "re-converged at globalSeqNo %d",
                             self.get().lastGlobalSeqNo());
             }
         });
         self.set(receiver);
         stats.receiver = receiver;
         receiver.start(aeron, MEMBER_ID);
-        Logger.info(Logger.Component.ClusterProbe, MEMBER_ID,
+        Logger.info(Logger.CoreComponent.ClusterProbe, MEMBER_ID,
                     "Following the node tap — replaying history via the Replayer, then live");
 
         if (faultInjection) {
             receiver.enableFaultInjection();
             sun.misc.Signal.handle(new sun.misc.Signal("USR1"), signal -> faultDropArmed.addAndGet(dropPerSignal));
-            Logger.info(Logger.Component.ClusterProbe, MEMBER_ID,
+            Logger.info(Logger.CoreComponent.ClusterProbe, MEMBER_ID,
                         "fault injection ENABLED — SIGUSR1 drops %d live tap frame(s)", dropPerSignal);
         }
 
@@ -347,7 +347,8 @@ public final class ClusterProbe {
                     if (faultInjection && faultDropArmed.get() > 0) {
                         final int armed = faultDropArmed.getAndSet(0);
                         receiver.injectTapDrop(armed);
-                        Logger.info(Logger.Component.ClusterProbe, MEMBER_ID, "fault injection: armed %d tap drop(s)",
+                        Logger.info(Logger.CoreComponent.ClusterProbe, MEMBER_ID,
+                                    "fault injection: armed %d tap drop(s)",
                                     armed);
                     }
                     idle.idle(receiver.poll());
@@ -356,7 +357,7 @@ public final class ClusterProbe {
                 // The media driver going away closes the Aeron client under us, and every poll past that
                 // throws. Failing fast is the invariant replayer-restart-test.sh phase 2 asserts: a
                 // co-located process must die with its node rather than spin against a dead driver.
-                Logger.error(Logger.Component.ClusterProbe, Logger.EventCode.ReplayDutyCycleFailure, MEMBER_ID,
+                Logger.error(Logger.CoreComponent.ClusterProbe, Logger.CoreEventCode.ReplayDutyCycleFailure, MEMBER_ID,
                              "duty cycle failed — media driver gone? %s", ex);
                 fatal.set(true);
                 barrier.signalAll();
@@ -415,18 +416,18 @@ public final class ClusterProbe {
         }
 
         private void report() {
-            Logger.info(Logger.Component.ClusterProbe, MEMBER_ID, "frames delivered in order: %d", delivered);
+            Logger.info(Logger.CoreComponent.ClusterProbe, MEMBER_ID, "frames delivered in order: %d", delivered);
             if (!enabled) {
                 return;
             }
             if (sampleCount == 0) {
-                Logger.info(Logger.Component.ClusterProbe, MEMBER_ID,
+                Logger.info(Logger.CoreComponent.ClusterProbe, MEMBER_ID,
                             "delivery latency: no caught-up (live) samples recorded");
                 return;
             }
             final long[] sorted = Arrays.copyOf(samplesUs, sampleCount);
             Arrays.sort(sorted);
-            Logger.info(Logger.Component.ClusterProbe, MEMBER_ID,
+            Logger.info(Logger.CoreComponent.ClusterProbe, MEMBER_ID,
                         "delivery latency (cluster-commit -> tap, n=%d): p50=%dus p90=%dus p99=%dus p99.9=%dus "
                             + "max=%dus (the receive stamp is nanosecond-resolution, but the cluster commit "
                             + "timestamp it is measured from is milliseconds, so every sample carries up to 1ms "
@@ -469,7 +470,7 @@ public final class ClusterProbe {
         final long deadline = System.nanoTime() + CONNECT_TIMEOUT_NS;
         while (!tap.isConnected()) {
             if (System.nanoTime() >= deadline) {
-                Logger.error(Logger.Component.ClusterProbe, Logger.EventCode.ClusterSessionError, MEMBER_ID,
+                Logger.error(Logger.CoreComponent.ClusterProbe, Logger.CoreEventCode.ClusterSessionError, MEMBER_ID,
                              "tap (aeron:ipc/%d) not available — co-located with a SequencerServer?",
                              SequencerService.FEEDER_STREAM_ID);
                 return null;

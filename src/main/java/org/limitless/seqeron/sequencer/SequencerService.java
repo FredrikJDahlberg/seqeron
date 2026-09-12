@@ -330,7 +330,7 @@ public final class SequencerService implements ClusteredService {
             gatewayPromotionFailedCounter.increment();
         } else if (activation != Sequencer.NO_FRAME) {
             gatewayPromotionCounter.increment();
-            Logger.info(Logger.Component.SequencerService, cluster.memberId(), "%s — promoting standby", reason);
+            Logger.info(Logger.CoreComponent.SequencerService, cluster.memberId(), "%s — promoting standby", reason);
             emit(activation);
         }
     }
@@ -350,7 +350,7 @@ public final class SequencerService implements ClusteredService {
         ensureCounters();
         if (session == null) {
             rejectedIngressCounter.increment();
-            Logger.error(Logger.Component.SequencerService, Logger.EventCode.MalformedIngressMessage,
+            Logger.error(Logger.CoreComponent.SequencerService, Logger.CoreEventCode.MalformedIngressMessage,
                          cluster.memberId(), "skipping ingress message with no client session (globalSeqNo stays %d)",
                          sequencer.globalSeqNo());
             return;
@@ -407,7 +407,7 @@ public final class SequencerService implements ClusteredService {
             return;
         }
         tapFaultTrigger = null;
-        Logger.info(Logger.Component.SequencerService, cluster.memberId(),
+        Logger.info(Logger.CoreComponent.SequencerService, cluster.memberId(),
                     "fault injection: stopping this node's tap recording");
         aeronArchive.stopRecording(FEEDER_CHANNEL, FEEDER_STREAM_ID);
     }
@@ -476,7 +476,7 @@ public final class SequencerService implements ClusteredService {
         leadershipChangeCounter.increment();
         currentLeaderMemberIdCounter.set(leaderMemberId);
         final boolean leader = leaderMemberId == cluster.memberId();
-        Logger.info(Logger.Component.SequencerService, cluster.memberId(),
+        Logger.info(Logger.CoreComponent.SequencerService, cluster.memberId(),
                     "leadership change: new leader is memberId=%d (isLeader=%b)", leaderMemberId, leader);
         emit(length);
     }

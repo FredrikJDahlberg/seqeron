@@ -156,8 +156,8 @@ are standalone tools, and run no tests. `ports.sh` and `paths.sh` are sourced by
 
 | Script | Purpose |
 |--------|---------|
-| `start-cluster.sh [debug\|release]` | Start the single-node cluster — `SequencerServer`, `ReplayerServer` and a `ClusterProbe follow` replica — in the background; Ctrl-C stops all of them. `SEQERON_PRODUCT_APPS=1` additionally launches the product repo's C++ processes, which must already be built |
-| `stop-cluster.sh` | Stop everything either start script launched |
+| `start-cluster.sh` | Start the single-node cluster — `SequencerServer`, `ReplayerServer` and a `ClusterProbe follow` replica — in the background; Ctrl-C stops all of them. `SEQERON_NO_CONSUMERS=1` leaves out the replica, for a caller that runs its own |
+| `stop-cluster.sh` | Stop everything either start script launched, plus any `SEQERON_EXTRA_PROCESSES="label\|pattern;…"` a caller adds |
 | `clusterctl.sh <command>` | Cluster life cycle: `start`, `shutdown`, `activate`, `load-topology`, `counters` — see [Operator tooling](#operator-tooling) |
 | `sbe-log-printer.sh <archive-dir>` | Dump an Aeron Archive recording as JSON — see [Log printer](#log-printer) |
 | `metrics-exporter.sh` / `metrics-aggregator.sh` | The Prometheus ops plane (`doc/ops.md`) |
@@ -170,7 +170,7 @@ from the repository root, with `./gradlew uberJar` done first.
 
 | Script | Purpose |
 |--------|---------|
-| `start-three-node-cluster.sh [debug\|release]` | Start a local 3-node Raft cluster with a per-node `ReplayerServer` and `ClusterProbe` replica; blocks until Ctrl-C. `SEQERON_PRODUCT_APPS=1` adds the product repo's processes |
+| `start-three-node-cluster.sh` | Start a local 3-node Raft cluster with a per-node `ReplayerServer` and `ClusterProbe` replica; blocks until Ctrl-C. `SEQERON_NO_CONSUMERS=1` leaves out the replicas, for a caller that runs its own |
 | `failover-test.sh` | Force a failover, then cold-start a fresh `ClusterProbe` follower on the new leader and verify it catches up on full history — each node's tap recording is one continuous run spanning both tenures |
 | `gap-recovery-test.sh` | Drop a live tap frame on a caught-up consumer (SIGUSR1 fault injection) and verify it re-walks its recording and heals rather than wedging |
 | `replayer-restart-test.sh` | Kill and restart a node's `ReplayerServer` while a client is riding a replay from it, then kill and restart the client's own node and verify its cold-start walk crosses a real multi-recording chain |

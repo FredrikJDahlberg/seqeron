@@ -210,9 +210,9 @@ class ReplayerRecoveryTest {
 
         assertEquals(1, logged.size(), "exactly the one gap detected above, nothing from setup");
         final Logger.LoggerEvent event = logged.get(0);
-        assertEquals(Logger.Component.ReplayerStreamReceiver, event.component());
+        assertEquals(Logger.CoreComponent.ReplayerStreamReceiver, event.component());
         assertEquals(Logger.Severity.Warn, event.severity());
-        assertEquals(Logger.EventCode.TapGap, event.code());
+        assertEquals(Logger.CoreEventCode.TapGap, event.code());
         assertEquals("tap gap: expected globalSeqNo=3 got 5 — resuming the recording at globalSeqNo=2",
                      event.message());
     }
@@ -517,7 +517,7 @@ class ReplayerRecoveryTest {
         assertFalse(receiver.isCaughtUp(), "consumer gates must stay shut while history is unavailable");
         assertEquals(1, logged.size());
         assertEquals(Logger.Severity.Fault, logged.get(0).severity());
-        assertEquals(Logger.EventCode.ReplayUnavailable, logged.get(0).code());
+        assertEquals(Logger.CoreEventCode.ReplayUnavailable, logged.get(0).code());
 
         // The Replayer answers every resend the same way; the fault line must not repeat per reply.
         deliverUnavailable(receiver.requestId());
@@ -759,7 +759,7 @@ class ReplayerRecoveryTest {
         assertEquals(1, dispatched.size(), "the frame past the hole must not be dispatched");
         assertEquals(1, logged.size());
         assertEquals(Logger.Severity.Warn, logged.get(0).severity());
-        assertEquals(Logger.EventCode.TapGap, logged.get(0).code());
+        assertEquals(Logger.CoreEventCode.TapGap, logged.get(0).code());
 
         deliverReplay(8);
         assertEquals(1, logged.size(), "report the episode, not every frame of a walk retrying the same chain");
@@ -1139,9 +1139,9 @@ class ReplayerRecoveryTest {
         assertTrue(checkProgressAt(PAST_DEADLINE_MS));
 
         assertEquals(1, logged.size());
-        assertEquals(Logger.Component.ReplayerStreamReceiver, logged.get(0).component());
+        assertEquals(Logger.CoreComponent.ReplayerStreamReceiver, logged.get(0).component());
         assertEquals(Logger.Severity.Fault, logged.get(0).severity());
-        assertEquals(Logger.EventCode.RecoveryStalled, logged.get(0).code());
+        assertEquals(Logger.CoreEventCode.RecoveryStalled, logged.get(0).code());
 
         // The condition persists for as long as the archive is broken; the caller logs, so it must not
         // repeat every duty cycle.
@@ -1177,7 +1177,7 @@ class ReplayerRecoveryTest {
         // it triggers had any chance to converge.
         assertFalse(checkProgressAt(PAST_DEADLINE_MS));
         assertEquals(1, logged.size(), "the tap-gap warn only — no convergence report");
-        assertEquals(Logger.EventCode.TapGap, logged.get(0).code());
+        assertEquals(Logger.CoreEventCode.TapGap, logged.get(0).code());
     }
 
     @Test
@@ -1244,7 +1244,7 @@ class ReplayerRecoveryTest {
 
     /** Refusals only: a re-request logs its own line between two of them, so size() cannot count these. */
     private long refusals() {
-        return logged.stream().filter(event -> Logger.EventCode.ReplayUnavailable == event.code()).count();
+        return logged.stream().filter(event -> Logger.CoreEventCode.ReplayUnavailable == event.code()).count();
     }
 
     /** Retained-buffer overflows only: every gap/re-walk warn shares TapGap, so only the text separates them. */

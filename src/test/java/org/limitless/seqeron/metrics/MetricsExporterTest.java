@@ -75,6 +75,35 @@ class MetricsExporterTest {
         assertEquals("", new MetricsExporter(counters).renderMetrics());
     }
 
+    @Test
+    @DisplayName("a consumer's app counter core has no metadata for renders under its own label")
+    void unknownAppCounterIsNamedFromItsLabel() {
+        counters.newCounter("simdfixgw.fix.sessionsUp member=1 client=3", SeqeronCounters.APP_TYPE_ID_MIN + 42,
+                            keyBuffer -> {
+                                keyBuffer.putInt(SeqeronCounters.KEY_MEMBER_ID_OFFSET, MEMBER);
+                                keyBuffer.putInt(SeqeronCounters.KEY_CLIENT_ID_OFFSET, 3);
+                            })
+            .set(7);
+
+        final String body = new MetricsExporter(counters).renderMetrics();
+
+        assertEquals(1, count(body, "# TYPE simdfixgw_fix_sessionsUp untyped"), body);
+        assertTrue(body.contains("simdfixgw_fix_sessionsUp{member=\"1\",client=\"3\"} 7"), body);
+    }
+
+    @Test
+    @DisplayName("an app counter whose label cannot be a metric name falls back to its type id")
+    void unusableLabelFallsBackToTheTypeId() {
+        counters.newCounter("7up member=1 client=0", SeqeronCounters.APP_TYPE_ID_MIN + 1,
+                            keyBuffer -> keyBuffer.putInt(SeqeronCounters.KEY_MEMBER_ID_OFFSET, MEMBER))
+            .set(1);
+
+        final String body = new MetricsExporter(counters).renderMetrics();
+
+        assertTrue(body.contains("seqeron_app_counter_5201{member=\"1\",client=\"0\"} 1"), body);
+        assertFalse(body.contains("7up"), body);
+    }
+
     private void addCounter(final int typeId, final int memberId, final long value) {
         counters.newCounter("seqeron member=" + memberId, typeId,
                             keyBuffer -> keyBuffer.putInt(SeqeronCounters.KEY_MEMBER_ID_OFFSET, memberId))

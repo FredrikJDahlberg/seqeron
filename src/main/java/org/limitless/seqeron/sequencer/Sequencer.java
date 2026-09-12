@@ -593,7 +593,7 @@ public final class Sequencer {
      */
     private int reject(final String reason) {
         rejectedFrameCount++;
-        Logger.error(Logger.Component.Sequencer, Logger.EventCode.MalformedIngressMessage, memberId,
+        Logger.error(Logger.CoreComponent.Sequencer, Logger.CoreEventCode.MalformedIngressMessage, memberId,
                      "skipping malformed ingress message: %s (globalSeqNo stays %d)", reason, globalSeqNo);
         return NO_FRAME;
     }
@@ -679,7 +679,7 @@ public final class Sequencer {
         }
         final int promoted = promotionTarget(closedGatewayId);
         if (promoted == NO_GATEWAY_ID) {
-            Logger.error(Logger.Component.Sequencer, Logger.EventCode.GatewayPromotionFailed, memberId,
+            Logger.error(Logger.CoreComponent.Sequencer, Logger.CoreEventCode.GatewayPromotionFailed, memberId,
                          "gateway instance %d's session closed with no standby to promote — this logical "
                              + "gateway has no active instance until one starts (globalSeqNo stays %d)",
                          closedGatewayId, globalSeqNo);
@@ -717,14 +717,14 @@ public final class Sequencer {
         }
         final int promoted = promotionTarget(designated);
         if (promoted == NO_GATEWAY_ID) {
-            Logger.error(Logger.Component.Sequencer, Logger.EventCode.GatewayPromotionFailed, memberId,
+            Logger.error(Logger.CoreComponent.Sequencer, Logger.CoreEventCode.GatewayPromotionFailed, memberId,
                          "gateway instance %d never declared itself started within %dms and has no sibling to "
                              + "promote — this logical gateway has no active instance until one starts "
                              + "(globalSeqNo stays %d)",
                          designated, GATEWAY_ACTIVATION_TIMEOUT_MS, globalSeqNo);
             return NO_PROMOTION_TARGET;
         }
-        Logger.error(Logger.Component.Sequencer, Logger.EventCode.GatewayActivationTimeout, memberId,
+        Logger.error(Logger.CoreComponent.Sequencer, Logger.CoreEventCode.GatewayActivationTimeout, memberId,
                      "gateway instance %d never declared itself started within %dms of being designated — "
                          + "handing the role to instance %d",
                      designated, GATEWAY_ACTIVATION_TIMEOUT_MS, promoted);

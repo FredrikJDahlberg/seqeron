@@ -179,7 +179,7 @@ inline std::shared_ptr<aeron::archive::client::AeronArchive> connectToArchiveWit
         }
         catch (const std::exception& ex)
         {
-            diag::Logger::warn(diag::Component::ClusterStreamClient, diag::EventCode::ArchiveConnectFailed,
+            diag::Logger::warn(diag::component::ClusterStreamClient, diag::eventCode::ArchiveConnectFailed,
                                "%s Archive connect to %s failed: %s", logPrefix, endpoint.c_str(), ex.what());
             lastError = ex.what();
             continue;
@@ -187,7 +187,7 @@ inline std::shared_ptr<aeron::archive::client::AeronArchive> connectToArchiveWit
 
         if (!findClusterStreamRecording(archive, recordingId, catchUpPosition))
         {
-            diag::Logger::info(diag::Component::ClusterStreamClient,
+            diag::Logger::info(diag::component::ClusterStreamClient,
                                "%s Connected to %s but it has no cluster stream recording"
                                " (not currently/recently leader) — trying next endpoint",
                                logPrefix, endpoint.c_str());
@@ -195,7 +195,7 @@ inline std::shared_ptr<aeron::archive::client::AeronArchive> connectToArchiveWit
             continue;
         }
 
-        diag::Logger::info(diag::Component::ClusterStreamClient,
+        diag::Logger::info(diag::component::ClusterStreamClient,
                            "%s Connected to Aeron Archive at %s (holds the cluster stream recording)", logPrefix,
                            endpoint.c_str());
         return archive;
@@ -238,7 +238,7 @@ inline std::shared_ptr<aeron::archive::client::AeronArchive> connectLocalArchive
         throw std::runtime_error(std::string(logPrefix) + " Co-located archive has no cluster stream recording");
     }
 
-    diag::Logger::info(diag::Component::ClusterStreamClient,
+    diag::Logger::info(diag::component::ClusterStreamClient,
                        "%s Connected to co-located Aeron Archive via IPC (holds the cluster stream recording)",
                        logPrefix);
     return archive;
@@ -531,7 +531,7 @@ class ClusterStreamClient
         const FrameView view = unwrapFrame(raw + off, len);
         if (!view.valid)
         {
-            diag::Logger::error(diag::Component::ClusterStreamClient, diag::EventCode::FragmentTooShort,
+            diag::Logger::error(diag::component::ClusterStreamClient, diag::eventCode::FragmentTooShort,
                                 "unreadable frame of %" PRIu64 " bytes; ignored", len);
             return;
         }

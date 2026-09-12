@@ -138,7 +138,7 @@ public final class ClusterStreamSender implements IngressSender, AutoCloseable {
             cluster = openSession(INGRESS_CHANNEL_IPC, null, TimeUnit.MILLISECONDS.toNanos(ipcConnectTimeoutMs));
             leaderPolicy.onConnected(true);
         } catch (final AeronException ex) {
-            Logger.error(Logger.Component.Cluster, Logger.EventCode.ClusterIpcFallback, memberId,
+            Logger.error(Logger.CoreComponent.Cluster, Logger.CoreEventCode.ClusterIpcFallback, memberId,
                          "member %d did not answer ingress on %s (%s) — falling back to UDP", memberId,
                          INGRESS_CHANNEL_IPC, ex.getMessage());
             cluster = openSession(INGRESS_CHANNEL_UDP, udpEndpoints(), CONNECT_TIMEOUT_NS);
@@ -194,13 +194,13 @@ public final class ClusterStreamSender implements IngressSender, AutoCloseable {
             case SESSION_GONE:
                 return false;
             case STALLED:
-                Logger.error(Logger.Component.Cluster, Logger.EventCode.ClusterOfferFailed, member(),
+                Logger.error(Logger.CoreComponent.Cluster, Logger.CoreEventCode.ClusterOfferFailed, member(),
                              "cluster ingress took no frame for %ds — calling the session lost",
                              TimeUnit.NANOSECONDS.toSeconds(INGRESS_STALL_FATAL_TIMEOUT_NS));
                 sessionLost = true;
                 return false;
             case ALERT:
-                Logger.error(Logger.Component.Cluster, Logger.EventCode.ClusterOfferFailed, member(),
+                Logger.error(Logger.CoreComponent.Cluster, Logger.CoreEventCode.ClusterOfferFailed, member(),
                              "cluster ingress back-pressured (offer=%d) for %dms", result,
                              TimeUnit.NANOSECONDS.toMillis(stallPolicy.blockedNs(now)));
                 break;
@@ -229,7 +229,7 @@ public final class ClusterStreamSender implements IngressSender, AutoCloseable {
         }
         lastKeepAliveNs = now;
         if (!cluster.sendKeepAlive()) {
-            Logger.error(Logger.Component.Cluster, Logger.EventCode.ClusterOfferFailed, member(),
+            Logger.error(Logger.CoreComponent.Cluster, Logger.CoreEventCode.ClusterOfferFailed, member(),
                          "keep-alive offer failed");
         }
     }
@@ -323,7 +323,7 @@ public final class ClusterStreamSender implements IngressSender, AutoCloseable {
      * there. So the session is replaced by one over UDP, where the cluster's own leader chasing works.
      */
     private void reconnectOverUdp() {
-        Logger.info(Logger.Component.Cluster, member(),
+        Logger.info(Logger.CoreComponent.Cluster, member(),
                     "leadership moved to member %d — reconnecting ingress over UDP", newLeaderMemberId);
         CloseHelper.quietClose(cluster);
         cluster = openSession(INGRESS_CHANNEL_UDP, udpEndpoints(), CONNECT_TIMEOUT_NS);

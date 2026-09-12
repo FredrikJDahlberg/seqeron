@@ -14,22 +14,47 @@
 
 namespace org::limitless::seqeron::util {
 
-enum class Component : std::uint8_t
+// A component and an anomaly class are OPEN values: core declares its own below, and a consumer
+// declares its own alongside them rather than growing core's set — the cluster tier names none of the
+// processes that log through it. Each is a pointer to a string literal rather than an enumerator, so a
+// future SBE ErrorNotification encoder writes the name; the rest of the event keeps its fixed width.
+// The Java twin is Logger.Component / Logger.EventCode, open the same way.
+struct Component
 {
-    FixGateway,
-    OrderExecServer,
-    ReplayerStreamReceiver,
-    BasicDataServer,
-    Cluster,
-    Tcp,
-    FixSession,
-    FixConnection,
-    Resend,
-    ClusterStreamClient,
-    Ingress,
-    App,
-    TcpTransport
+    const char* name;
+
+    bool operator==(const Component&) const = default;
 };
+
+struct EventCode
+{
+    const char* name;
+
+    bool operator==(const EventCode&) const = default;
+};
+
+// Core's own components; a consumer opens this namespace again in its own header to add its own.
+namespace component {
+inline constexpr Component Cluster{ "Cluster" };
+inline constexpr Component ClusterStreamClient{ "ClusterStreamClient" };
+inline constexpr Component ReplayerStreamReceiver{ "ReplayerStreamReceiver" };
+} // namespace component
+
+// Core's own anomaly classes, on the same terms. Info is the generic one: a routine status line with
+// no anomaly of its own to identify.
+namespace eventCode {
+inline constexpr EventCode Info{ "Info" };
+inline constexpr EventCode TapGap{ "TapGap" };
+inline constexpr EventCode FirstFrameNotOne{ "FirstFrameNotOne" };
+inline constexpr EventCode ClusterSessionError{ "ClusterSessionError" };
+inline constexpr EventCode ClusterOfferFailed{ "ClusterOfferFailed" };
+inline constexpr EventCode ClusterIpcFallback{ "ClusterIpcFallback" };
+inline constexpr EventCode ClusterRedirectUnresolved{ "ClusterRedirectUnresolved" };
+inline constexpr EventCode FragmentTooShort{ "FragmentTooShort" };
+inline constexpr EventCode ArchiveConnectFailed{ "ArchiveConnectFailed" };
+inline constexpr EventCode ReplayUnavailable{ "ReplayUnavailable" };
+inline constexpr EventCode RecoveryStalled{ "RecoveryStalled" };
+} // namespace eventCode
 
 enum class Severity : std::uint8_t
 {
@@ -39,53 +64,7 @@ enum class Severity : std::uint8_t
     Fault
 };
 
-enum class EventCode : std::uint16_t
-{
-    TapGap,
-    FirstFrameNotOne,
-    Info,
-    // Specific errors
-    ClusterSessionError,
-    ClusterOfferFailed,
-    ClusterIpcFallback,
-    ClusterRedirectUnresolved,
-    FragmentTooShort,
-    UnexpectedSchemaId,
-    InboundSeqNumTooLow,
-    InboundGap,
-    InboundSeqNumDiscarded,
-    ResendIgnored,
-    ArchiveScanStalled,
-    ArchiveRecoveryFailed,
-    ArchiveConnectFailed,
-    MessageRejected,
-    StreamCorrupt,
-    MessageTooLarge,
-    UnknownTemplateId,
-    RejectedByCluster,
-    LogonQuickResync,
-    LogonRejected,
-    LogoutRejected,
-    HeartbeatRejected,
-    TestRequestRejected,
-    ResendRequestRejected,
-    SequenceResetRejected,
-    NewOrderRejected,
-    NewOrderAppRejected,
-    NewOrderReceived,
-    TcpSendFailed,
-    GatewayNameUnresolved,
-    GatewayNameMissing,
-    TapStalled,
-    TapLagging,
-    RecoveryStalled,
-    GatewayFenced,
-    ReplayUnavailable,
-    MalformedFill,
-    OrderAccountsEvicted
-};
-
-// Fixed-size, no heap allocation — mirrors the field widths a future SBE encoding would use.
+// Fixed-size, no heap allocation — the shape a future SBE encoding would take.
 struct LoggerEvent
 {
     Component component;
@@ -102,52 +81,13 @@ class LoggerSink
     virtual void record(const LoggerEvent& event) = 0;
 };
 
-namespace diagnostic_detail {
-
-inline const char* componentName(const Component component)
-{
-    switch (component)
-    {
-        case Component::FixGateway:
-            return "FixGateway";
-        case Component::OrderExecServer:
-            return "OrderExecServer";
-        case Component::ReplayerStreamReceiver:
-            return "ReplayerStreamReceiver";
-        case Component::BasicDataServer:
-            return "BasicDataServer";
-        case Component::Cluster:
-            return "Cluster";
-        case Component::Tcp:
-            return "TCP";
-        case Component::FixSession:
-            return "FixSession";
-        case Component::FixConnection:
-            return "FixConnection";
-        case Component::Resend:
-            return "Resend";
-        case Component::ClusterStreamClient:
-            return "ClusterStreamClient";
-        case Component::Ingress:
-            return "Ingress";
-        case Component::App:
-            return "App";
-        case Component::TcpTransport:
-            return "TcpTransport";
-    }
-    return "Unknown";
-}
-
-} // namespace diagnostic_detail
-
 // Default sink: reproduces today's "[Component] message" stderr line.
 class StderrLoggerSink final : public LoggerSink
 {
   public:
     void record(const LoggerEvent& event) override
     {
-        std::fprintf(stderr, "[%s] %.*s\n", diagnostic_detail::componentName(event.component),
-                     static_cast<int>(event.textLen), event.text.data());
+        std::fprintf(stderr, "[%s] %.*s\n", event.component.name, static_cast<int>(event.textLen), event.text.data());
     }
 };
 
@@ -211,7 +151,7 @@ inline void info(const Component component, const char* format, ...)
 {
     va_list args;
     va_start(args, format);
-    vlog(component, Severity::Info, EventCode::Info, format, args);
+    vlog(component, Severity::Info, eventCode::Info, format, args);
     va_end(args);
 }
 
@@ -239,6 +179,6 @@ inline void fault(const Component component, const EventCode code, const char* f
     va_end(args);
 }
 
-} // namespace diagnostic_detail
+} // namespace Logger
 
 } // namespace org::limitless::seqeron::util

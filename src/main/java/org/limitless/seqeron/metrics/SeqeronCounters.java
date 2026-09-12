@@ -107,7 +107,10 @@ public final class SeqeronCounters {
      */
     public static final int REPLAYER_CLIENT_ID_COLLISION_TYPE_ID = 5108;
 
-    // ── Co-located C++ application replicas (FixGateway / OrderExecServer / BasicDataServer) ───
+    // ── Co-located application replicas (5200-5299) ────────────────────────────────────────────
+    // Core reserves 5200 and nothing else in the range; a consumer allocates its own inside it
+    // (doc/registries.md §3), which is also why MetricsExporter names an unrecognised app counter from
+    // its label rather than from a table here.
     // Published by the apps themselves, not by any Java process — see the C++ half in
     // {@code util/SeqeronCounters.hpp}, which must be kept in step with the ids and key layout here.
     public static final int APP_TYPE_ID_MIN = 5200;

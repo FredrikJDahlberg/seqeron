@@ -12,14 +12,29 @@ public final class Logger {
     private Logger() {
     }
 
-    public enum Component {
+    /**
+     * A component name. Core's own are {@link CoreComponent}; a consumer declares its own enum
+     * implementing this interface rather than being added to that one — the cluster tier names none of
+     * the processes that log through it.
+     */
+    public interface Component {
+        String name();
+    }
+
+    /** The components core itself logs as. */
+    public enum CoreComponent implements Component {
         Sequencer, SequencerServer, SequencerService, ConsensusModule, ReplayerServer, ReplayerService,
-        ReplayerStreamReceiver, Cluster, ClusterProbe, TestGateway, ExchangeGateway, OrderGateway
+        ReplayerStreamReceiver, Cluster, ClusterProbe
     }
 
     public enum Severity { Info, Warn, Error, Fault }
 
-    public enum EventCode {
+    /** An anomaly class, open the same way {@link Component} is. Core's own are {@link CoreEventCode}. */
+    public interface EventCode {
+        String name();
+    }
+
+    public enum CoreEventCode implements EventCode {
         // Generic: routine status lines with no anomaly of their own to identify.
         Info,
         // Specific: one per distinguishable anomaly class (mirrors the C++ side's convention).
@@ -44,12 +59,7 @@ public final class Logger {
         // Cluster session client (ClusterStreamSender) — the C++ twin uses the same names.
         ClusterSessionError,
         ClusterOfferFailed,
-        ClusterIpcFallback,
-        // Exchange-facing (venue) leg.
-        VenueSessionError,
-        VenueLogonRefused,
-        // Client-facing (order-entry) leg.
-        ClientSessionError
+        ClusterIpcFallback
     }
 
     public record
@@ -63,8 +73,8 @@ public final class Logger {
     private static final class StderrLoggerSink implements LoggerSink {
         @Override
         public void record(final LoggerEvent event) {
-            final String tag = event.memberId() == null ? "[" + event.component() + "]"
-                                                        : "[" + event.component() + "/" + event.memberId() + "]";
+            final String name = event.component().name();
+            final String tag = event.memberId() == null ? "[" + name + "]" : "[" + name + "/" + event.memberId() + "]";
             System.err.println(tag + " " + event.message());
         }
     }
@@ -84,7 +94,7 @@ public final class Logger {
 
     public static void info(final Component component, final Integer memberId, final String format,
                             final Object... args) {
-        log(component, Severity.Info, EventCode.Info, memberId, format, args);
+        log(component, Severity.Info, CoreEventCode.Info, memberId, format, args);
     }
 
     public static void error(final Component component, final EventCode code, final Integer memberId,

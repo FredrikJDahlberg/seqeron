@@ -179,7 +179,7 @@ public final class TapPublisher {
         }
         if (stallPolicy.onEmitted() && !fatalSignalled) {
             actions.tapStalled(false);
-            Logger.info(Logger.Component.Sequencer, actions.memberId(),
+            Logger.info(Logger.CoreComponent.Sequencer, actions.memberId(),
                         "RECOVERED: tap back-pressure cleared at globalSeqNo=%d", actions.globalSeqNo());
         }
     }
@@ -207,7 +207,7 @@ public final class TapPublisher {
                 } else if (fatalSignalled) {
                     haltIfShutdownStalled(nowNs); // keep the backstop alive: no heartbeat reaches it now
                 } else if (nowNs - backPressuredSinceNs >= HEARTBEAT_SCHEDULE_FATAL_TIMEOUT_NS) {
-                    fatalFailure(Logger.EventCode.ServiceError,
+                    fatalFailure(Logger.CoreEventCode.ServiceError,
                                  "the consensus module did not accept the cluster-clock timer for " +
                                      TimeUnit.NANOSECONDS.toSeconds(HEARTBEAT_SCHEDULE_FATAL_TIMEOUT_NS) +
                                      "s of continuous back-pressure");
@@ -251,14 +251,14 @@ public final class TapPublisher {
             haltIfShutdownStalled(nowNs);
             return;
         }
-        Logger.error(Logger.Component.Sequencer, Logger.EventCode.ReplayerBackpressure, actions.memberId(),
+        Logger.error(Logger.CoreComponent.Sequencer, Logger.CoreEventCode.ReplayerBackpressure, actions.memberId(),
                      "ALERT: replayer back-pressure at globalSeqNo=%d", actions.globalSeqNo());
         actions.tapBackPressureAlert();
         switch (stallPolicy.onBackPressure(nowNs, actions.recordingActive(), actions.recordedPosition())) {
         case STALLED -> {
             actions.tapStalled(true);
             Logger.error(
-                Logger.Component.Sequencer, Logger.EventCode.ReplayerBackpressure, actions.memberId(),
+                Logger.CoreComponent.Sequencer, Logger.CoreEventCode.ReplayerBackpressure, actions.memberId(),
                 "STALLED: tap back-pressure sustained beyond %dms with no recording progress at globalSeqNo=%d",
                 TimeUnit.NANOSECONDS.toMillis(SUSTAINED_BACKPRESSURE_THRESHOLD_NS), actions.globalSeqNo());
         }
@@ -284,7 +284,7 @@ public final class TapPublisher {
         if (!fatalSignalled) {
             actions.tapStalled(true);
         }
-        fatalFailure(Logger.EventCode.TapRecordingFailure,
+        fatalFailure(Logger.CoreEventCode.TapRecordingFailure,
                      reason + ", so it can no longer record the history it is responsible for");
     }
 
@@ -303,7 +303,7 @@ public final class TapPublisher {
         }
         fatalSignalled = true;
         fatalSignalledNs = actions.nanoTime();
-        Logger.fault(Logger.Component.SequencerService, code, actions.memberId(),
+        Logger.fault(Logger.CoreComponent.SequencerService, code, actions.memberId(),
                      "FATAL: %s at globalSeqNo=%d — terminating this node; its peers keep quorum and its restart "
                          + "replays the full log",
                      reason, actions.globalSeqNo());

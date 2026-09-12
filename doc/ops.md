@@ -107,11 +107,16 @@ GF_PATHS_PROVISIONING="$(pwd)/src/main/ops/grafana/provisioning" grafana server 
 Every metric carries a `member="N"` label (the memberId, read from the counter's structured key
 buffer — see `SeqeronCounters.addCounter`/`KEY_MEMBER_ID_OFFSET`).
 
-`seqeron_app_*` metrics carry a second label, `client="M"` — the replayer clientId. They are published
-by the co-located C++ replicas (`FixGateway`, `OrderExecServer`, `BasicDataServer`) rather than by a
-Java process, and several of them run per node publishing the same counter, so `member` alone would
-collapse them into one repeated series. The C++ half of the registry is
-`org/limitless/seqeron/util/SeqeronCounters.hpp`, which must be kept in step with the Java one.
+App-range metrics carry a second label, `client="M"` — the replayer clientId. They are published by
+the co-located replicas rather than by a cluster-tier process, and several of them run per node
+publishing the same counter, so `member` alone would collapse them into one repeated series. The C++
+half of the registry is `org/limitless/seqeron/util/SeqeronCounters.hpp`, which must be kept in step
+with the Java one.
+
+The table below is what **core** publishes. A consumer's own counter (type id 5201–5299,
+`registries.md` §3) is exported too, under the first token of its own label — `simdfixgw.fix.sessionsUp
+member=0 client=3` scrapes as `simdfixgw_fix_sessionsUp{member="0",client="3"}` — so a deployment's
+metrics are not limited to the names seqeron happens to know.
 
 | Metric | Type | Meaning |
 |---|---|---|

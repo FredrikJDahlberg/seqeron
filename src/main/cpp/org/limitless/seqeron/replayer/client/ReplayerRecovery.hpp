@@ -216,7 +216,7 @@ class ReplayerRecovery
             m_resumeAnchorSequenceNumber = 0;
             if (sequenceNumber != anchor)
             {
-                diag::Logger::warn(diag::Component::ReplayerStreamReceiver, diag::EventCode::TapGap,
+                diag::Logger::warn(diag::component::ReplayerStreamReceiver, diag::eventCode::TapGap,
                                    "resume replay opened at globalSeqNo=%lld, expected %lld — the active "
                                    "recording rotated under us; re-walking the recording chain from segment 0",
                                    static_cast<long long>(sequenceNumber), static_cast<long long>(anchor));
@@ -234,7 +234,7 @@ class ReplayerRecovery
             {
                 if (!fromReplay && !isRecovering())
                 {
-                    diag::Logger::warn(diag::Component::ReplayerStreamReceiver, diag::EventCode::TapGap,
+                    diag::Logger::warn(diag::component::ReplayerStreamReceiver, diag::eventCode::TapGap,
                                        "tap gap: expected globalSeqNo=%lld got %lld — "
                                        "resuming the recording at globalSeqNo=%lld",
                                        static_cast<long long>(m_lastGlobalSeqNo + 1),
@@ -250,7 +250,7 @@ class ReplayerRecovery
                 else if (!m_replayGapLogged)
                 {
                     m_replayGapLogged = true;
-                    diag::Logger::warn(diag::Component::ReplayerStreamReceiver, diag::EventCode::TapGap,
+                    diag::Logger::warn(diag::component::ReplayerStreamReceiver, diag::eventCode::TapGap,
                                        "gap in REPLAYED history: expected globalSeqNo=%lld got %lld — this "
                                        "node's recording chain does not cover the hole; recovery cannot "
                                        "converge until it does",
@@ -267,7 +267,7 @@ class ReplayerRecovery
                 retainMessages(sequenceNumber, frame, length, framePosition, receiveNs);
                 return;
             }
-            diag::Logger::fault(diag::Component::ReplayerStreamReceiver, diag::EventCode::FirstFrameNotOne,
+            diag::Logger::fault(diag::component::ReplayerStreamReceiver, diag::eventCode::FirstFrameNotOne,
                                 "FATAL: first frame observed has globalSeqNo=%lld, expected 1 — "
                                 "this node's recording does not reach the start of the log; aborting",
                                 static_cast<long long>(sequenceNumber));
@@ -341,7 +341,7 @@ class ReplayerRecovery
         }
         else
         {
-            diag::Logger::warn(diag::Component::ReplayerStreamReceiver, diag::EventCode::TapGap,
+            diag::Logger::warn(diag::component::ReplayerStreamReceiver, diag::eventCode::TapGap,
                                "replay image closed at position %lld, short of catchUpPosition %lld — the replay was "
                                "stopped under us; re-requesting the same segment (index %d)",
                                static_cast<long long>(finalPosition), static_cast<long long>(m_catchUpPosition),
@@ -384,7 +384,7 @@ class ReplayerRecovery
         {
             return false;
         }
-        diag::Logger::fault(diag::Component::ReplayerStreamReceiver, diag::EventCode::RecoveryStalled,
+        diag::Logger::fault(diag::component::ReplayerStreamReceiver, diag::eventCode::RecoveryStalled,
                             "recovery has dispatched nothing for >%lldms: lastGlobalSeqNo=%lld segment=%d "
                             "awaitingReplay=%d replaySession=%lld replayerUnavailable=%d — holding; check "
                             "this node's Replayer and its recording chain",
@@ -505,7 +505,7 @@ class ReplayerRecovery
         {
             if (m_walkSegmentIndex < 0)
             {
-                diag::Logger::warn(diag::Component::ReplayerStreamReceiver, diag::EventCode::TapGap,
+                diag::Logger::warn(diag::component::ReplayerStreamReceiver, diag::eventCode::TapGap,
                                    "resume at position %lld answered 'nothing to replay' while a hole is open "
                                    "above globalSeqNo=%lld — the active recording rotated under us; re-walking "
                                    "the recording chain from segment 0",
@@ -532,7 +532,7 @@ class ReplayerRecovery
         {
             if (m_walkRecordingId >= 0 && recordingId != m_walkRecordingId)
             {
-                diag::Logger::warn(diag::Component::ReplayerStreamReceiver, diag::EventCode::TapGap,
+                diag::Logger::warn(diag::component::ReplayerStreamReceiver, diag::eventCode::TapGap,
                                    "walk segment %d now resolves to recording %lld, previously %lld — the "
                                    "recording chain shifted under us; re-walking from segment 0",
                                    static_cast<int>(m_walkSegmentIndex), static_cast<long long>(recordingId),
@@ -567,7 +567,7 @@ class ReplayerRecovery
         if (!m_replayerUnavailable)
         {
             m_replayerUnavailable = true;
-            diag::Logger::fault(diag::Component::ReplayerStreamReceiver, diag::EventCode::ReplayUnavailable,
+            diag::Logger::fault(diag::component::ReplayerStreamReceiver, diag::eventCode::ReplayUnavailable,
                                 "this node's Replayer has no valid history to serve (its archive failed the "
                                 "globalSeqNo-1 integrity check) — holding, not dispatching; repair the node's "
                                 "archive and restart its Replayer");
@@ -578,7 +578,7 @@ class ReplayerRecovery
     // An attached (or expected) replay stopped delivering — see the watchdog in doTimers.
     void onReplayStalled()
     {
-        diag::Logger::warn(diag::Component::ReplayerStreamReceiver, diag::EventCode::TapGap,
+        diag::Logger::warn(diag::component::ReplayerStreamReceiver, diag::eventCode::TapGap,
                            "replay session %lld made no progress for %lldms at position %lld of "
                            "catchUpPosition %lld — re-requesting segment %d",
                            static_cast<long long>(m_replaySessionId), static_cast<long long>(REPLAY_STALL_TIMEOUT_MS),
@@ -694,7 +694,7 @@ class ReplayerRecovery
             if (!m_messagesOverflowLogged)
             {
                 m_messagesOverflowLogged = true;
-                diag::Logger::warn(diag::Component::ReplayerStreamReceiver, diag::EventCode::TapGap,
+                diag::Logger::warn(diag::component::ReplayerStreamReceiver, diag::eventCode::TapGap,
                                    "retained-frame buffer full at globalSeqNo=%lld (%zu frames, %zu bytes) — "
                                    "dropping ahead-of-hole frames; recovery falls back to re-walking",
                                    static_cast<long long>(sequenceNumber), m_messagesFrameCount, m_messagesBytes);

@@ -43,8 +43,10 @@ import uk.co.real_logic.sbe.otf.OtfMessageDecoder;
  * directory (archive.catalog + segment files), printed as JSON using an
  * SBE IR (.sbeir) schema file.
  *
- * <p>Schemas ship inside a jar as resources under {@code sbeir/} (see each module's {@code collectSbeIr}
- * Gradle task) and are <em>discovered</em> on the classpath rather than listed in this class. The cluster
+ * <p>Schemas ship inside a jar as resources under {@code META-INF/seqeron/sbeir/} (see each module's
+ * {@code collectSbeIr} Gradle task) and are <em>discovered</em> on the classpath rather than listed in
+ * this class. That directory is deliberately outside any package: a consumer contributing its own
+ * protocol's IR would otherwise be writing into seqeron's own package namespace. The cluster
  * tier contributes the three schemas it owns — {@code frame} (the envelope), {@code replay} (the
  * node-local control plane) and {@code cluster} (the Raft consensus log); an application's schema comes
  * from the module that owns that protocol, so running this tool over the cluster tier alone names no
@@ -59,8 +61,11 @@ import uk.co.real_logic.sbe.otf.OtfMessageDecoder;
  * stream id to select instead; see {@link #scanAndDumpLog()}.
  */
 public class SbeLogPrinter {
-    /** The resource directory every module stages its {@code .sbeir} files into. */
-    private static final String IR_RESOURCE_DIR = "org/limitless/seqeron/tools/sbeir";
+    /**
+     * The resource directory every module stages its {@code .sbeir} files into — a neutral, package-less
+     * extension point, because the modules that contribute one are not seqeron's to name.
+     */
+    private static final String IR_RESOURCE_DIR = "META-INF/seqeron/sbeir";
 
     private static final String IR_PREFIX = "sbe-";
     private static final String IR_SUFFIX = ".sbeir";
@@ -213,7 +218,8 @@ public class SbeLogPrinter {
 
     /** Loads one of the IR files packaged in the jar, by schema name. */
     private static Ir loadBundledIr(final String schema) throws Exception {
-        try (InputStream in = SbeLogPrinter.class.getResourceAsStream("sbeir/sbe-" + schema + ".sbeir")) {
+        final String resource = IR_RESOURCE_DIR + "/" + IR_PREFIX + schema + IR_SUFFIX;
+        try (InputStream in = SbeLogPrinter.class.getClassLoader().getResourceAsStream(resource)) {
             if (null == in) {
                 throw new IllegalArgumentException("Unknown schema '" + schema + "' — bundled: " +
                                                    String.join(", ", BUNDLED_SCHEMAS));

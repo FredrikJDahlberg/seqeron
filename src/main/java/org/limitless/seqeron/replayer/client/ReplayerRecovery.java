@@ -228,7 +228,8 @@ public final class ReplayerRecovery {
             final long anchor = resumeAnchorGlobalSeqNo;
             resumeAnchorGlobalSeqNo = 0;
             if (globalSeqNo != anchor) {
-                Logger.log(Logger.Component.ReplayerStreamReceiver, Logger.Severity.Warn, Logger.EventCode.TapGap,
+                Logger.log(Logger.CoreComponent.ReplayerStreamReceiver, Logger.Severity.Warn,
+                           Logger.CoreEventCode.TapGap,
                            actions.memberId(),
                            "resume replay opened at globalSeqNo=%d, expected %d — the active recording rotated "
                                + "under us; re-walking the recording chain from segment 0",
@@ -243,8 +244,8 @@ public final class ReplayerRecovery {
             }
             if (globalSeqNo > lastGlobalSeqNo + 1) {
                 if (!fromReplay && !isRecovering()) {
-                    Logger.log(Logger.Component.ReplayerStreamReceiver, Logger.Severity.Warn,
-                               Logger.EventCode.TapGap, actions.memberId(),
+                    Logger.log(Logger.CoreComponent.ReplayerStreamReceiver, Logger.Severity.Warn,
+                               Logger.CoreEventCode.TapGap, actions.memberId(),
                                "tap gap: expected globalSeqNo=%d got %d — resuming the recording at "
                                    + "globalSeqNo=%d",
                                lastGlobalSeqNo + 1, globalSeqNo, lastGlobalSeqNo);
@@ -257,8 +258,8 @@ public final class ReplayerRecovery {
                     retainFrame(globalSeqNo, buffer, offset, length, framePosition, receiveNs);
                 } else if (!replayGapLogged) {
                     replayGapLogged = true;
-                    Logger.log(Logger.Component.ReplayerStreamReceiver, Logger.Severity.Warn,
-                               Logger.EventCode.TapGap, actions.memberId(),
+                    Logger.log(Logger.CoreComponent.ReplayerStreamReceiver, Logger.Severity.Warn,
+                               Logger.CoreEventCode.TapGap, actions.memberId(),
                                "gap in REPLAYED history: expected globalSeqNo=%d got %d — this node's recording "
                                    + "chain does not cover the hole; recovery cannot converge until it does",
                                lastGlobalSeqNo + 1, globalSeqNo);
@@ -270,7 +271,7 @@ public final class ReplayerRecovery {
                 retainFrame(globalSeqNo, buffer, offset, length, framePosition, receiveNs);
                 return;
             }
-            Logger.fault(Logger.Component.ReplayerStreamReceiver, Logger.EventCode.FirstFrameNotOne,
+            Logger.fault(Logger.CoreComponent.ReplayerStreamReceiver, Logger.CoreEventCode.FirstFrameNotOne,
                          actions.memberId(),
                          "FATAL: first frame observed has globalSeqNo=%d, expected 1 — this node's recording "
                              + "does not reach the start of the log",
@@ -346,7 +347,7 @@ public final class ReplayerRecovery {
             onReplaySegmentComplete();
             return;
         }
-        Logger.log(Logger.Component.ReplayerStreamReceiver, Logger.Severity.Warn, Logger.EventCode.TapGap,
+        Logger.log(Logger.CoreComponent.ReplayerStreamReceiver, Logger.Severity.Warn, Logger.CoreEventCode.TapGap,
                    actions.memberId(),
                    "replay image closed at position %d, short of catchUpPosition %d — the replay was stopped "
                        + "under us; re-requesting the same segment (index %d)",
@@ -390,7 +391,8 @@ public final class ReplayerRecovery {
         if (caughtUp || !recoveryProgress.onNoProgress(actions.nowMs())) {
             return false;
         }
-        Logger.fault(Logger.Component.ReplayerStreamReceiver, Logger.EventCode.RecoveryStalled, actions.memberId(),
+        Logger.fault(Logger.CoreComponent.ReplayerStreamReceiver, Logger.CoreEventCode.RecoveryStalled,
+                     actions.memberId(),
                      "recovery has dispatched nothing for >%dms: lastGlobalSeqNo=%d segment=%d awaitingReplay=%b "
                          + "replaySession=%d replayerUnavailable=%b — holding; check this node's Replayer and "
                          + "its recording chain",
@@ -537,7 +539,8 @@ public final class ReplayerRecovery {
         replayerUnavailable = false;
         if (session == ReplayerService.NO_REPLAY_NEEDED) {
             if (walkSegmentIndex < 0) {
-                Logger.log(Logger.Component.ReplayerStreamReceiver, Logger.Severity.Warn, Logger.EventCode.TapGap,
+                Logger.log(Logger.CoreComponent.ReplayerStreamReceiver, Logger.Severity.Warn,
+                           Logger.CoreEventCode.TapGap,
                            actions.memberId(),
                            "resume at position %d answered 'nothing to replay' while a hole is open above "
                                + "globalSeqNo=%d — the active recording rotated under us; re-walking the "
@@ -560,7 +563,8 @@ public final class ReplayerRecovery {
 
         if (walkSegmentIndex >= 0) {
             if (walkRecordingId >= 0 && recordingId != walkRecordingId) {
-                Logger.log(Logger.Component.ReplayerStreamReceiver, Logger.Severity.Warn, Logger.EventCode.TapGap,
+                Logger.log(Logger.CoreComponent.ReplayerStreamReceiver, Logger.Severity.Warn,
+                           Logger.CoreEventCode.TapGap,
                            actions.memberId(),
                            "walk segment %d now resolves to recording %d, previously %d — the recording chain "
                                + "shifted under us; re-walking from segment 0",
@@ -587,7 +591,7 @@ public final class ReplayerRecovery {
     private void onReplayUnavailable() {
         if (!replayerUnavailable) {
             replayerUnavailable = true;
-            Logger.fault(Logger.Component.ReplayerStreamReceiver, Logger.EventCode.ReplayUnavailable,
+            Logger.fault(Logger.CoreComponent.ReplayerStreamReceiver, Logger.CoreEventCode.ReplayUnavailable,
                          actions.memberId(),
                          "this node's Replayer has no valid history to serve (its archive failed the "
                              + "globalSeqNo-1 integrity check) — holding, not dispatching; repair the node's "
@@ -622,7 +626,7 @@ public final class ReplayerRecovery {
 
     /** An attached (or expected) replay stopped delivering — see the watchdog in {@link #doTimers}. */
     private void onReplayStalled() {
-        Logger.log(Logger.Component.ReplayerStreamReceiver, Logger.Severity.Warn, Logger.EventCode.TapGap,
+        Logger.log(Logger.CoreComponent.ReplayerStreamReceiver, Logger.Severity.Warn, Logger.CoreEventCode.TapGap,
                    actions.memberId(),
                    "replay session %d made no progress for %dms at position %d of catchUpPosition %d — "
                        + "re-requesting segment %d",
@@ -700,7 +704,8 @@ public final class ReplayerRecovery {
             retainOverflowed = true;
             if (!retainOverflowLogged) {
                 retainOverflowLogged = true;
-                Logger.log(Logger.Component.ReplayerStreamReceiver, Logger.Severity.Warn, Logger.EventCode.TapGap,
+                Logger.log(Logger.CoreComponent.ReplayerStreamReceiver, Logger.Severity.Warn,
+                           Logger.CoreEventCode.TapGap,
                            actions.memberId(),
                            "retained-frame buffer full at globalSeqNo=%d (%d frames, %d bytes) — dropping "
                                + "ahead-of-hole frames; recovery falls back to re-walking",

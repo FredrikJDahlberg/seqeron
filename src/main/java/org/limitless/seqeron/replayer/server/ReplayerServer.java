@@ -116,7 +116,7 @@ public final class ReplayerServer {
         final Thread replayerThread = new Thread(() -> replayer.run(running), "replayer-" + memberId);
         replayerThread.start();
 
-        Logger.info(Logger.Component.ReplayerServer, memberId, "Running — Ctrl-C to stop | aeronDir=%s | idle=%s",
+        Logger.info(Logger.CoreComponent.ReplayerServer, memberId, "Running — Ctrl-C to stop | aeronDir=%s | idle=%s",
                     aeronDir, idleStrategy.getClass().getSimpleName());
         barrier.await();
         running.set(false);
@@ -130,9 +130,9 @@ public final class ReplayerServer {
         if (stopped) {
             archive.close();
             aeron.close();
-            Logger.info(Logger.Component.ReplayerServer, memberId, "Shutdown complete");
+            Logger.info(Logger.CoreComponent.ReplayerServer, memberId, "Shutdown complete");
         } else {
-            Logger.error(Logger.Component.ReplayerServer, Logger.EventCode.ShutdownTimeout, memberId,
+            Logger.error(Logger.CoreComponent.ReplayerServer, Logger.CoreEventCode.ShutdownTimeout, memberId,
                          "duty-cycle thread still running %dms after being told to stop — exiting without "
                              + "closing the archive/Aeron client rather than closing them under it",
                          SHUTDOWN_JOIN_TIMEOUT_MS);

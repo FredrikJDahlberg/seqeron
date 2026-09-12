@@ -209,7 +209,7 @@ public final class ReplayerService {
      * @param running true while running
      */
     public void run(final AtomicBoolean running) {
-        Logger.info(Logger.Component.ReplayerService, memberId,
+        Logger.info(Logger.CoreComponent.ReplayerService, memberId,
                     "starting; serving replay from the co-located archive…");
         try {
             while (running.get()) {
@@ -219,7 +219,7 @@ public final class ReplayerService {
         } catch (final RuntimeException ex) {
             fatalDutyCycleFailure(ex);
         }
-        Logger.info(Logger.Component.ReplayerService, memberId, "shutting down");
+        Logger.info(Logger.CoreComponent.ReplayerService, memberId, "shutting down");
         stopAllReplays();
         closeSelfCheck(); // a check still in flight owns an archive replay and a subscription
     }
@@ -236,7 +236,7 @@ public final class ReplayerService {
     private void fatalDutyCycleFailure(final RuntimeException ex) {
         ready = false;
         readyCounter.set(0);
-        Logger.fault(Logger.Component.ReplayerService, Logger.EventCode.ReplayDutyCycleFailure, memberId,
+        Logger.fault(Logger.CoreComponent.ReplayerService, Logger.CoreEventCode.ReplayDutyCycleFailure, memberId,
                      "FATAL: replay duty cycle terminated by an uncaught exception (%s) — clearing readiness "
                          + "and exiting; process supervision should restart this node",
                      ex.getMessage());
@@ -362,7 +362,7 @@ public final class ReplayerService {
         if (firstGlobalSeqNo != 1L) {
             integrityFailed = true;
             integrityFailureCounter.set(1);
-            Logger.fault(Logger.Component.ReplayerService, Logger.EventCode.ArchiveIntegrityFailure, memberId,
+            Logger.fault(Logger.CoreComponent.ReplayerService, Logger.CoreEventCode.ArchiveIntegrityFailure, memberId,
                          "FATAL: tap recording %d (%d of %d in this node's chain) has first frame globalSeqNo=%d, "
                              + "expected 1 — this node's recording chain does not cover the log from the start "
                              + "(deleted, corrupted, or a partial restore?); refusing to mark ready",
@@ -384,7 +384,7 @@ public final class ReplayerService {
         }
         ready = true;
         readyCounter.set(1);
-        Logger.info(Logger.Component.ReplayerService, memberId,
+        Logger.info(Logger.CoreComponent.ReplayerService, memberId,
                     "ready — tap recording %d live, %d-recording chain verified from globalSeqNo 1; serving replay",
                     selfCheckActiveRecordingId, selfCheckSpans.size());
         selfCheckSpans = null; // the sweep is over; a later one resolves the chain again rather than resuming this
@@ -470,7 +470,7 @@ public final class ReplayerService {
         if (!replaySlots.hasCapacity()) {
             replaySlots.enqueue(clientId, requestId, segmentIndex, fromPosition);
             sendPending(clientId, requestId);
-            Logger.info(Logger.Component.ReplayerService, memberId,
+            Logger.info(Logger.CoreComponent.ReplayerService, memberId,
                         "client %d queued: no free replay slot (active=%d/%d, pending=%d)", clientId,
                         replaySlots.activeCount(), MAX_CONCURRENT_REPLAYS, replaySlots.pendingCount());
             return;
@@ -559,7 +559,7 @@ public final class ReplayerService {
      * @param reason what was wrong with the position, for the log
      */
     private void rejectResume(final int clientId, final long requestId, final String reason) {
-        Logger.info(Logger.Component.ReplayerService, memberId,
+        Logger.info(Logger.CoreComponent.ReplayerService, memberId,
                     "client %d's resume refused (%s) — answering NO_REPLAY_NEEDED so it re-walks the chain", clientId,
                     reason);
         sendReplaying(clientId, requestId, NO_REPLAY_NEEDED, 0, NULL_VALUE);
@@ -631,7 +631,7 @@ public final class ReplayerService {
         final long replaySessionId = replayer.startReplay(recordingId, replayFrom, boundedLength, REPLAY_STREAM_ID);
         replaysServedCounter.increment();
         replaySlots.activate(clientId, replaySessionId, replayer.epochMillis());
-        Logger.info(Logger.Component.ReplayerService, memberId,
+        Logger.info(Logger.CoreComponent.ReplayerService, memberId,
                     "replay for client %d: segment %d recording %d [%d,%d) session %d", clientId, segmentIndex,
                     recordingId, replayFrom, tip, replaySessionId);
         sendReplaying(clientId, requestId, replaySessionId, tip, recordingId);
@@ -773,7 +773,7 @@ public final class ReplayerService {
      */
     private void onClientIdCollision(final int clientId) {
         clientIdCollisionCounter.set(1);
-        Logger.error(Logger.Component.ReplayerService, Logger.EventCode.ReplayClientIdCollision, memberId,
+        Logger.error(Logger.CoreComponent.ReplayerService, Logger.CoreEventCode.ReplayClientIdCollision, memberId,
                      "two co-located apps are both using SEQERON_REPLAYER_CLIENT_ID=%d — their requestId "
                          + "sequences interleave, so each request stops the other's replay and NEITHER will "
                          + "ever catch up; give them distinct ids and restart them",
@@ -790,7 +790,7 @@ public final class ReplayerService {
         final boolean newEpisode = lastControlDropMs == 0 || nowMs - lastControlDropMs >= CONTROL_DROP_QUIET_MS;
         lastControlDropMs = nowMs;
         if (newEpisode) {
-            Logger.error(Logger.Component.ReplayerService, Logger.EventCode.ControlReplyDropped, memberId,
+            Logger.error(Logger.CoreComponent.ReplayerService, Logger.CoreEventCode.ControlReplyDropped, memberId,
                          "dropped a control reply (offer=%d): an app subscribed to stream %d and stopped "
                              + "reading it. Its replays are delayed by a resend; every other app is "
                              + "unaffected — see seqeron.replayer.controlRepliesDroppedCount",
@@ -809,7 +809,7 @@ public final class ReplayerService {
         if (!stalled) {
             stalled = true;
             stalledCounter.set(1);
-            Logger.info(Logger.Component.ReplayerService, memberId,
+            Logger.info(Logger.CoreComponent.ReplayerService, memberId,
                         "STALLED: the local archive refused %s (%s); live delivery unaffected "
                             + "(apps read the tap directly), probing until it answers",
                         message, exception.getMessage());
@@ -821,7 +821,7 @@ public final class ReplayerService {
         if (stalled) {
             stalled = false;
             stalledCounter.set(0);
-            Logger.info(Logger.Component.ReplayerService, memberId, "RECOVERED: local archive reachable again");
+            Logger.info(Logger.CoreComponent.ReplayerService, memberId, "RECOVERED: local archive reachable again");
         }
     }
 
@@ -842,7 +842,7 @@ public final class ReplayerService {
         final List<ReplayRecordings.RecordingSpan> spans = replayer.listTapRecordings();
         final long activeCount = spans.stream().filter(ReplayRecordings.RecordingSpan::active).count();
         if (activeCount > 1 && !staleActiveRecordingLogged) {
-            Logger.error(Logger.Component.ReplayerService, Logger.EventCode.StaleActiveRecording, memberId,
+            Logger.error(Logger.CoreComponent.ReplayerService, Logger.CoreEventCode.StaleActiveRecording, memberId,
                          "%d tap recordings report as still recording — an unclean shutdown left an older one "
                              + "unstopped; serving the newest and skipping the stale one(s)",
                          activeCount);

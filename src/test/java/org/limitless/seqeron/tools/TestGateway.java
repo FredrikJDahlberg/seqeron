@@ -81,6 +81,11 @@ import org.limitless.seqeron.util.Logger;
  * </pre>
  */
 public final class TestGateway {
+    /** This harness's own {@link Logger} component — core's enum names only core's processes. */
+    private enum Component implements Logger.Component {
+        TestGateway
+    }
+
     /** No {@code Gateway} row has named this instance yet. */
     private static final int UNRESOLVED = -1;
 
@@ -220,7 +225,7 @@ public final class TestGateway {
                 // recovery stalled) arrives here, and so does the media driver going away. The gate is shut
                 // and the process exits, which closes the cluster session — and that close is what makes
                 // the sequencer promote the standby.
-                Logger.error(Logger.Component.TestGateway, Logger.EventCode.ClusterSessionError,
+                Logger.error(Component.TestGateway, Logger.CoreEventCode.ClusterSessionError,
                              ClusterProbe.memberId(), "FENCED: %s", ex.getMessage());
                 fenced.set(true);
                 barrier.signalAll();
@@ -634,7 +639,7 @@ public final class TestGateway {
     }
 
     private static void log(final String format, final Object... args) {
-        Logger.info(Logger.Component.TestGateway, ClusterProbe.memberId(), format, args);
+        Logger.info(Component.TestGateway, ClusterProbe.memberId(), format, args);
     }
 
     private static void usage() {

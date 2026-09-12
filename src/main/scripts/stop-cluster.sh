@@ -3,10 +3,15 @@
 # start-three-node-cluster.sh.
 #
 # Sends SIGTERM to the consumer replicas (ClusterProbe, TestGateway), then to the cluster itself
-# (SequencerServer, ReplayerServer, aeronmd) and to the product processes either start script
-# launches under SEQERON_PRODUCT_APPS=1 (FixGateway, OrderExecServer, BasicDataServer) — those
-# are another repo's binaries, kept here so a run that launched them leaves nothing behind. Then
-# waits up to 10 s for each to exit before sending SIGKILL to any survivors.
+# (SequencerServer, ReplayerServer, aeronmd), then waits up to 10 s for each to exit before sending
+# SIGKILL to any survivors.
+#
+# Core's own processes, and no others: a caller that starts its own consumers alongside the cluster
+# (SEQERON_NO_CONSUMERS=1, see start-three-node-cluster.sh) names them in SEQERON_EXTRA_PROCESSES and
+# they are swept first, with the replicas. The format is one "label|pgrep-pattern" per entry,
+# semicolon-separated:
+#
+#   SEQERON_EXTRA_PROCESSES="FixGateway|FixGateway;OrderExecServer|OrderExecServer" ./stop-cluster.sh
 #
 # Usage:
 #   ./stop-cluster.sh
@@ -34,11 +39,16 @@ PROCESSES=(
     "TestGateway|TestGateway"
     "SequencerServer|sequencer.memberId"
     "aeronmd|aeronmd"
-    "FixGateway|FixGateway"
     "ReplayerServer|ReplayerServer"
-    "OrderExecServer|OrderExecServer"
-    "BasicDataServer|BasicDataServer"
 )
+
+# A caller's own processes, swept ahead of the cluster for the same reason the replicas are.
+if [[ -n "${SEQERON_EXTRA_PROCESSES:-}" ]]; then
+    IFS=';' read -r -a EXTRA <<< "${SEQERON_EXTRA_PROCESSES}"
+    for entry in "${EXTRA[@]}"; do
+        [[ -n "${entry}" ]] && PROCESSES=("${entry}" "${PROCESSES[@]}")
+    done
+fi
 TIMEOUT=10
 
 kill_by_name() {
