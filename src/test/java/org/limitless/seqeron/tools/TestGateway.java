@@ -19,7 +19,6 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import org.agrona.ExpandableArrayBuffer;
 import org.agrona.concurrent.IdleStrategy;
 import org.agrona.concurrent.ShutdownSignalBarrier;
-import org.limitless.seqeron.fixgateway.GatewayRecoveryStallPolicy;
 import org.limitless.seqeron.replayer.client.ReplayerStreamReceiver;
 import org.limitless.seqeron.replayer.client.SequencedEvent;
 import org.limitless.seqeron.sbe.frame.ConnectionClosedEncoder;
@@ -39,7 +38,7 @@ import org.limitless.seqeron.util.Logger;
  *
  * <p><b>Harness code, and it lives in the test source set</b> — nothing in a deployment runs it, so it is
  * in no jar. {@code chaos-runner.sh} launches it from {@code cluster/build/classes/java/test} beside the
- * uber jar, the way {@code gateways/src/test/artio}'s classes are launched, and fails with a message
+ * uber jar, the way a test-tier tool is launched, and fails with a message
  * naming {@code ./gradlew :cluster:compileTestJava} if that has not been built. It sits in
  * {@link ClusterProbe}'s package because it reuses that class's cluster-connect and offer plumbing, which
  * is package-private and stays that way.
@@ -89,7 +88,7 @@ public final class TestGateway {
     private static final int NO_CONNECTION = -1;
 
     /**
-     * The two fences that are a clock, both the Artio legs' constants verbatim — this holds the same
+     * The two fences that are a clock, the product gateways' constants verbatim — this holds the same
      * position they do, so a divergence here would make the harness prove something no gateway does.
      */
     private static final long TAP_STALL_TIMEOUT_MS = 20 * Sequencer.CLUSTER_HEARTBEAT_INTERVAL_MS;
@@ -97,7 +96,7 @@ public final class TestGateway {
     private static final long RECOVERY_STALL_TIMEOUT_MS = 3 * TAP_STALL_TIMEOUT_MS;
 
     /**
-     * Both Artio legs' interval, and it has to be this short: {@code SequencerServer} runs the consensus
+     * The product gateways' interval, and it has to be this short: {@code SequencerServer} runs the consensus
      * module at {@code sessionTimeoutNs} of one second, so a keep-alive per second is a coin flip against
      * scheduler jitter — the session is closed with {@code TIMEOUT} and the instance fenced, on a cluster
      * that is perfectly healthy.
@@ -132,8 +131,7 @@ public final class TestGateway {
     private final GatewayActiveDecoder gatewayActive = new GatewayActiveDecoder();
     private final ProbeMarkerDecoder probeMarker = new ProbeMarkerDecoder();
 
-    private final GatewayRecoveryStallPolicy recoveryStall =
-        new GatewayRecoveryStallPolicy(RECOVERY_STALL_TIMEOUT_MS);
+    private final RecoveryStallFence recoveryStall = new RecoveryStallFence(RECOVERY_STALL_TIMEOUT_MS);
 
     /**
      * Every {@code Gateway} row's {@code gatewayId -> gatewaySourceId}. A {@code GatewayActive} carries
@@ -236,7 +234,7 @@ public final class TestGateway {
         } catch (final InterruptedException ie) {
             Thread.currentThread().interrupt();
         }
-        // Sockets before the cluster session, as both Artio legs close: a standby must be promoted against
+        // Sockets before the cluster session, as the product gateways close: a standby must be promoted against
         // an edge that is already free.
         closeGate();
         if (!fenced.get()) {
@@ -261,7 +259,7 @@ public final class TestGateway {
 
     /**
      * The two fences that are a clock. The third — the cluster closing this session, with an event or
-     * silently on a leader that never arrives — is read the same way both Artio legs read it.
+     * silently on a leader that never arrives — is read the same way the product gateways read it.
      */
     private void checkFences() {
         if (sessionFault != null || cluster.isClosed()) {

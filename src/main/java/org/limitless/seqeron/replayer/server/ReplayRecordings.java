@@ -14,7 +14,6 @@ import java.util.List;
 public final class ReplayRecordings {
     /**
      * One tap recording as read off an archive listing, before ordering/stitching.
-     *
      * <p>{@code startPosition} is carried rather than assumed to be 0: it is where the archive began
      * recording the tap publication, and every replay of this recording must start at or after it.
      * Today it is always 0 (SequencerService arms recording on a brand-new publication before emitting

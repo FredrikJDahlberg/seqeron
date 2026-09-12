@@ -218,9 +218,7 @@ if(SEQERON_BUILD_TESTS)
         src/test/cpp/org/limitless/seqeron/replayer/client/ReplayerRecoveryTest.cpp
         src/test/cpp/org/limitless/seqeron/replayer/client/ReplayerRecoveryPropertyTest.cpp
         src/test/cpp/org/limitless/seqeron/replayer/client/RecoveryProgressPolicyTest.cpp
-        src/test/cpp/org/limitless/seqeron/fix/GatewayRecoveryStallPolicyTest.cpp
         src/main/cpp/org/limitless/seqeron/sequencer/ClusterStreamSender.hpp
-        src/main/cpp/org/limitless/seqeron/fix/GatewayRecoveryStallPolicy.hpp
         src/main/cpp/org/limitless/seqeron/util/Logger.hpp
     )
     target_link_libraries(core_tests PRIVATE

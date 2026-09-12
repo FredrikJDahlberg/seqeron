@@ -1,4 +1,4 @@
-package org.limitless.seqeron.fixgateway;
+package org.limitless.seqeron.tools;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -8,13 +8,11 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 /**
- * Unit tests for the pure recovery-deadline verdict behind {@code ExchangeGateway.checkTapStall}'s
- * not-caught-up branch. No Aeron runtime: {@code isCaughtUp()}/{@code onCaughtUp()} and the dispatched
- * globalSeqNo are exactly the three signals the gateway feeds in off {@code ReplayerStreamReceiver}.
- *
- * <p>The C++ twin is {@code GatewayRecoveryStallPolicyTest.cpp}; keep the two in step.
+ * Unit tests for the recovery-deadline verdict behind {@code TestGateway.checkFences}'s not-caught-up
+ * branch. No Aeron runtime: {@code isCaughtUp()}/{@code onCaughtUp()} and the dispatched globalSeqNo are
+ * exactly the three signals the gateway feeds in off {@code ReplayerStreamReceiver}.
  */
-class GatewayRecoveryStallPolicyTest {
+class RecoveryStallFenceTest {
     private static final long DEADLINE_MS = TimeUnit.SECONDS.toMillis(60);
     /** Arbitrary non-zero clock origin — 0 is the policy's "no recovery episode timed" sentinel. */
     private static final long T0 = TimeUnit.HOURS.toMillis(3);
@@ -25,7 +23,7 @@ class GatewayRecoveryStallPolicyTest {
         return T0 + TimeUnit.SECONDS.toMillis(s);
     }
 
-    private final GatewayRecoveryStallPolicy policy = new GatewayRecoveryStallPolicy(DEADLINE_MS);
+    private final RecoveryStallFence policy = new RecoveryStallFence(DEADLINE_MS);
 
     @Test
     @DisplayName("a cold start is never fenced, however long it takes")

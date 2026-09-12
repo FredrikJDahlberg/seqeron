@@ -53,10 +53,10 @@ other blocks is this table's alone.
 | 9200–9209 | core | the cluster tier's own harness listeners: `TestGateway` TCP listen `9200 + instance` (9200 GW-T-A, 9201 GW-T-B), `cluster/src/main/scripts/ports.sh`, and `examples/cpp`'s cluster egress `9202 + memberId` (UDP, `SEQERON_EXAMPLE_EGRESS_PORT`). Deliberately **not** inside 9300–9329 — that block is three members of stride 10 with nothing spare, and `isClusterPort()` names cluster member ports, which these are not |
 | 9300–9329 | core | cluster member ports, `9300 + memberId*10 + {1..5}` — three members, one decade each |
 | 9330–9359 | simdfixgw | `OrderExecServer` egress `9330+m`, `FixGateway` egress `9340+m`, `BasicDataServer` egress `9350+m`. 9348 and 9349 were the cluster-tier harnesses' own test-consumer egress and are now free: those harnesses run `ClusterProbe follow`, which opens no cluster session (§11 step 5) |
-| 9360–9399 | phixeron | `ExchangeGateway` egress `9360+m` and Artio archive control `9370+m`, `OrderGateway` egress `9380+m` and Artio archive control `9390+m` |
+| 9360–9399 | phixeron | `ExchangeGateway` egress `9360+m` and its archive control `9370+m`, `OrderGateway` egress `9380+m` and its archive control `9390+m` |
 | 9000–9029 | products | TCP listen: `FixGateway` `9000+gatewayIndex`, the mock venue 9010, `OrderGateway` 9020 |
 | 9400+ | **shared** | see below |
-| 8010–8019 | products | the Artio spike's own archive control — 8011 (`ArtioTest`), 8013 (`FixClientTester`) |
+| 8010–8019 | products | a product FIX-engine spike's own archive control — 8011, 8013 |
 
 Two independent Aeron media drivers on one host cannot bind the same UDP port, which is why every
 co-located process needs a base of its own rather than sharing one.

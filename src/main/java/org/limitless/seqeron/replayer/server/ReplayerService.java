@@ -163,8 +163,7 @@ public final class ReplayerService {
     }
 
     /**
-     * Serves whatever {@link Replayer} it is handed — the seam a test substitutes a fake
-     * node for.
+     * Serves the {@link Replayer}.
      * @param replayer the node's archive, app-facing streams, counters and clock
      * @param memberId which cluster member this ReplayerService co-locates with
      * @param idleStrategy duty-cycle and control-offer idle strategy
@@ -179,26 +178,29 @@ public final class ReplayerService {
         this.idleStrategy = idleStrategy;
         this.fatalHandler = fatalHandler;
 
-        this.stalledCounter = replayer.newCounter(SeqeronCounters.REPLAYER_STALLED_TYPE_ID,
-                                                  "seqeron.replayer.stalled member=" + memberId);
-        this.readyCounter =
-            replayer.newCounter(SeqeronCounters.REPLAYER_READY_TYPE_ID, "seqeron.replayer.ready member=" + memberId);
-        this.activeReplaySlotsCounter = replayer.newCounter(SeqeronCounters.REPLAYER_ACTIVE_SLOTS_TYPE_ID,
-                                                            "seqeron.replayer.activeSlots member=" + memberId);
-        this.pendingRequestsCounter = replayer.newCounter(SeqeronCounters.REPLAYER_PENDING_REQUESTS_TYPE_ID,
-                                                          "seqeron.replayer.pendingRequests member=" + memberId);
-        this.replaysServedCounter = replayer.newCounter(SeqeronCounters.REPLAYER_REPLAYS_SERVED_COUNT_TYPE_ID,
-                                                        "seqeron.replayer.replaysServedCount member=" + memberId);
+        this.stalledCounter = counter(SeqeronCounters.REPLAYER_STALLED_TYPE_ID, "stalled");
+        this.readyCounter = counter(SeqeronCounters.REPLAYER_READY_TYPE_ID, "ready");
+        this.activeReplaySlotsCounter = counter(SeqeronCounters.REPLAYER_ACTIVE_SLOTS_TYPE_ID, "activeSlots");
+        this.pendingRequestsCounter = counter(SeqeronCounters.REPLAYER_PENDING_REQUESTS_TYPE_ID, "pendingRequests");
+        this.replaysServedCounter =
+            counter(SeqeronCounters.REPLAYER_REPLAYS_SERVED_COUNT_TYPE_ID, "replaysServedCount");
         this.idleTtlReclaimedCounter =
-            replayer.newCounter(SeqeronCounters.REPLAYER_IDLE_TTL_RECLAIMED_COUNT_TYPE_ID,
-                                "seqeron.replayer.idleTtlReclaimedCount member=" + memberId);
-        this.integrityFailureCounter = replayer.newCounter(SeqeronCounters.REPLAYER_INTEGRITY_FAILURE_TYPE_ID,
-                                                           "seqeron.replayer.integrityFailure member=" + memberId);
+            counter(SeqeronCounters.REPLAYER_IDLE_TTL_RECLAIMED_COUNT_TYPE_ID, "idleTtlReclaimedCount");
+        this.integrityFailureCounter = counter(SeqeronCounters.REPLAYER_INTEGRITY_FAILURE_TYPE_ID, "integrityFailure");
         this.controlRepliesDroppedCounter =
-            replayer.newCounter(SeqeronCounters.REPLAYER_CONTROL_REPLIES_DROPPED_COUNT_TYPE_ID,
-                                "seqeron.replayer.controlRepliesDroppedCount member=" + memberId);
-        this.clientIdCollisionCounter = replayer.newCounter(SeqeronCounters.REPLAYER_CLIENT_ID_COLLISION_TYPE_ID,
-                                                            "seqeron.replayer.clientIdCollision member=" + memberId);
+            counter(SeqeronCounters.REPLAYER_CONTROL_REPLIES_DROPPED_COUNT_TYPE_ID, "controlRepliesDroppedCount");
+        this.clientIdCollisionCounter =
+            counter(SeqeronCounters.REPLAYER_CLIENT_ID_COLLISION_TYPE_ID, "clientIdCollision");
+    }
+
+    /**
+     * One operator counter, labelled {@code seqeron.replayer.<name> member=<memberId>} so a reader
+     * disambiguates nodes sharing one host.
+     * @param typeId which counter, from {@link SeqeronCounters}
+     * @param name   its name within the {@code seqeron.replayer} namespace
+     */
+    private AtomicCounter counter(final int typeId, final String name) {
+        return replayer.newCounter(typeId, "seqeron.replayer." + name + " member=" + memberId);
     }
 
     /**
@@ -856,17 +858,13 @@ public final class ReplayerService {
     private List<ReplayRecordings.RecordingSpan> resolveSegments() {
         final List<ReplayRecordings.RecordingSpan> spans = replayer.listTapRecordings();
         final long activeCount = spans.stream().filter(ReplayRecordings.RecordingSpan::active).count();
-        if (activeCount > 1) {
-            if (!staleActiveRecordingLogged) {
-                staleActiveRecordingLogged = true;
-                Logger.error(Logger.Component.ReplayerService, Logger.EventCode.StaleActiveRecording, memberId,
-                             "%d tap recordings report as still recording — an unclean shutdown left an older one "
-                                 + "unstopped; serving the newest and skipping the stale one(s)",
-                             activeCount);
-            }
-        } else {
-            staleActiveRecordingLogged = false;
+        if (activeCount > 1 && !staleActiveRecordingLogged) {
+            Logger.error(Logger.Component.ReplayerService, Logger.EventCode.StaleActiveRecording, memberId,
+                         "%d tap recordings report as still recording — an unclean shutdown left an older one "
+                             + "unstopped; serving the newest and skipping the stale one(s)",
+                         activeCount);
         }
+        staleActiveRecordingLogged = activeCount > 1;
         return ReplayRecordings.stitch(spans);
     }
 }

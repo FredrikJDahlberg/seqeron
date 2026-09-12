@@ -66,10 +66,10 @@ external producers, plus the replayer that serves history off each node's record
 plumbing that follows the ordered stream.
 
 This repository is that tier **alone**. It was carved out of **phixeron**, which keeps the product
-edges — the C++/simdfix FIX gateway, `OrderExecServer`, `BasicDataServer`, and the two Artio legs
+edges — the C++/simdfix FIX gateway, `OrderExecServer`, `BasicDataServer`, and the two Java FIX legs
 (`ExchangeGateway`, `OrderGateway`). Those are gone from here, and so are the docs that described them
 (`design.md`, `todo.md`, `future-arch.md`, `architecture-primer.md`, `basicdata-design.md`,
-`artio-integration.md`, `gap.md`, `audit.md`, `router-design.md`, `seqeron-protocol.md`,
+`gap.md`, `audit.md`, `router-design.md`, `seqeron-protocol.md`,
 `0-overview.md`, `6-detailed-architecture.md`, and the `review-*.md` notes). **The citations of them
 that comments across the tree used to carry have been removed**, so every `doc/<name>.md` reference in
 this tree resolves inside it. Do not add a citation of a document that is not here — state the reason
@@ -95,7 +95,6 @@ this tree.
 | the replayer | `replayer/server/` and `replayer/client/` | `replayer/client/` only |
 | the tools | `tools/` — `ClusterCtl`, `TopologyDocument`, `ClusterProbe`, `SbeLogPrinter` | — |
 | the ops plane | `metrics/` — `MetricsExporter`, `MetricsAggregator`, `SeqeronCounters` | `util/SeqeronCounters.hpp` |
-| the gateway fence | `fixgateway/GatewayRecoveryStallPolicy` | `fix/GatewayRecoveryStallPolicy.hpp` |
 
 **The producer side is a language-port pair too.** Java's `ClusterStreamSender`/`IngressPublisher` carry
 the C++ files' names and semantics — `connectColocated` (IPC ingress on the co-located member, UDP
@@ -113,11 +112,6 @@ What is left of ours is split off and unit-tested the way `TapStallPolicy` is: *
 **`IngressLeaderPolicy`** (whether IPC ingress has lost its leader and the session must be replaced).
 `ClusterStreamSender` itself is then the Aeron adapter and holds no decision of its own, so its low line
 coverage is the same statement `SequencerService`'s is.
-
-`fixgateway`/`fix` hold exactly one class each and are not a FIX implementation: the recovery-stall
-policy is a language-port pair that any edge gateway needs, and the pair lives here because the fence
-it decides is the cluster tier's contract with its producers. Keep the two files and both
-`GatewayRecoveryStallPolicyTest`s in step.
 
 **The C++ half is a client library, not a program.** `seqeron_core` is a header-only INTERFACE
 target and the only binary the build produces is `core_tests`. There is **no C++ replay server** —
@@ -156,7 +150,7 @@ error. Change both together.
 ## Tests
 
 ```bash
-cmake --build cmake-build-debug --target run_tests   # 132 GoogleTest cases
+cmake --build cmake-build-debug --target run_tests   # 126 GoogleTest cases
 ./gradlew test                                       # 286 JUnit cases
 ```
 `run_tests` is `ctest --output-on-failure` with the build dependency wired. **Plain `ctest` is fine
@@ -178,8 +172,9 @@ the tap (`ping`), or replays history through the co-located Replayer and then fo
 standalone `aeronmd` at all. `chaos-runner` needs a sixth thing the probe cannot supply — a **gateway
 pair under the faults** — and `TestGateway` is it: an elected active/standby producer (`GW-T-A`/`GW-T-B`,
 `gatewaySourceId` 9, listening on 9200/9201) that speaks no application protocol and holds no session
-state, but holds the same four fences a real gateway does, so the recovery-stall policy gets exercised
-here. It is in **`src/test/java`** and therefore in no jar: `chaos-runner.sh` puts
+state, but holds the same four fences a real gateway does — including a recovery-stall fence of its own
+(`tools/RecoveryStallFence`, unit-tested beside it), which is why `chaos-runner.sh` can drive a
+non-converging recovery to a handover rather than a hang. It is in **`src/test/java`** and therefore in no jar: `chaos-runner.sh` puts
 `build/classes/java/test` on the classpath beside the uber jar and refuses to start without it. Its
 list is `src/test/resources/topology-test-gateway.xml`, the only topology document in this repo.
 
@@ -317,19 +312,6 @@ first is acted on**: `GatewayRegistered.remaining` counts down to 0 on the gatew
 that row is the sequencer's completeness edge — it synthesizes the bootstrap `GatewayActive` per logical
 gateway behind it. The application and protocol rows follow it, carry no countdown, and are labelling for
 `SbeLogPrinter`: decoded by nothing, gating nothing.
-
-### The gateway fence
-`GatewayRecoveryStallPolicy` (both languages) decides one of the four signals on which an edge gateway
-stops serving its counterparties: recovery dispatching nothing for a deadline once the instance has been
-caught up at least once. It measures **progress, not elapsed recovery** — a converging re-walk always
-advances the `globalSeqNo` it has dispatched, and a non-converging one never does, so timing elapsed
-recovery would fence the very path a recovery takes. It never arms before the first catch-up, because a
-cold start replays the whole log (no snapshots) and has no useful time bound. `RecoveryProgressPolicy`
-alarms on the same predicate at a longer deadline; this one fences.
-
-The other three signals and the gateway behaviour behind them live with the gateways, in the product
-repo. What matters here is that the fence deliberately looks to the cluster exactly like the gateway
-process dying — that is the state the recovery path is built for.
 
 ### SBE code generation
 Four schemas, all under `src/main/sbe`, each generating into a distinct namespace so one include path

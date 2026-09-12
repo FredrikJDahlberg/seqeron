@@ -1077,7 +1077,7 @@ these step numbers — so a landed step keeps its place and records what actuall
    until then.
 4. **Landed.** Move the rest: the FIX session family and `ClientSessionEvent` to `sbe-session.xml`,
    **schema 230, `payloadId` 3** — one schema, because they are one protocol at two fidelities (this
-   edge's structured templates, the Artio legs' opaque bytes), and when the C++ edge retires the seven
+   edge's structured templates, the Java legs' opaque bytes), and when the C++ edge retires the seven
    templates go while `ClientSessionEvent` stays. `PortfolioQuery{Request,Reply}` fold into
    `sbe-order.xml` rather than taking a number of their own: they are the same application, between the
    same two processes as the order flow, and a `payloadId` names a schema, never a message. Reference

@@ -129,7 +129,7 @@ public class SbeLogPrinter {
 
     private final OtfHeaderDecoder sbeHeaderDecoder;
     private final DataHeaderFlyweight dataHeader;
-        private final RecordingDescriptorHeaderDecoder headerDecoder = new RecordingDescriptorHeaderDecoder();
+    private final RecordingDescriptorHeaderDecoder headerDecoder = new RecordingDescriptorHeaderDecoder();
     private final RecordingDescriptorDecoder descriptorDecoder = new RecordingDescriptorDecoder();
 
     private final int streamIdFilter;
@@ -250,8 +250,8 @@ public class SbeLogPrinter {
      * @return message name
      */
     private static String messageName(final Ir ir, final int templateId) {
-        final List<Token> tokens = ir.getMessage(templateId);
-        return null == tokens || tokens.isEmpty() ? "<unknown>" : tokens.getFirst().name();
+        final Token message = messageToken(ir, templateId);
+        return null == message ? "<unknown>" : message.name();
     }
 
     /**
@@ -523,31 +523,29 @@ public class SbeLogPrinter {
         int offset = CATALOG_HEADER_LENGTH;
         int selectedOffset = -1;
         long selectedRecordingId = -1;
-        int recordingLength = 1;
         boolean found = false;
-        while (recordingLength >= 1 && offset + DESCRIPTOR_HEADER_LENGTH <= fileLength) {
+        while (offset + DESCRIPTOR_HEADER_LENGTH <= fileLength) {
             headerDecoder.wrap(buffer, offset, RecordingDescriptorHeaderDecoder.BLOCK_LENGTH,
                 RecordingDescriptorHeaderDecoder.SCHEMA_VERSION);
-            recordingLength = headerDecoder.length();
-            if (recordingLength >= 1) {
-                final int frameLength = BitUtil.align(recordingLength + DESCRIPTOR_HEADER_LENGTH,
-                    BitUtil.CACHE_LINE_LENGTH);
-                if (headerDecoder.state() == RecordingState.VALID) {
-                    final int descriptorOffset = offset + DESCRIPTOR_HEADER_LENGTH;
-                    descriptorDecoder.wrap(buffer, descriptorOffset,
-                        RecordingDescriptorDecoder.BLOCK_LENGTH,
-                        RecordingDescriptorDecoder.SCHEMA_VERSION);
-                    if (NO_STREAM_FILTER == streamIdFilter) {
-                        dumpRecording(descriptorDecoder);
-                        found = true;
-                    } else if (descriptorDecoder.streamId() == streamIdFilter &&
-                        descriptorDecoder.recordingId() > selectedRecordingId) {
-                        selectedRecordingId = descriptorDecoder.recordingId();
-                        selectedOffset = descriptorOffset;
-                    }
-                }
-                offset += frameLength;
+            final int recordingLength = headerDecoder.length();
+            if (recordingLength < 1) {
+                break; // zero-filled tail: the end of the written catalog
             }
+            if (headerDecoder.state() == RecordingState.VALID) {
+                final int descriptorOffset = offset + DESCRIPTOR_HEADER_LENGTH;
+                descriptorDecoder.wrap(buffer, descriptorOffset,
+                    RecordingDescriptorDecoder.BLOCK_LENGTH,
+                    RecordingDescriptorDecoder.SCHEMA_VERSION);
+                if (NO_STREAM_FILTER == streamIdFilter) {
+                    dumpRecording(descriptorDecoder);
+                    found = true;
+                } else if (descriptorDecoder.streamId() == streamIdFilter &&
+                    descriptorDecoder.recordingId() > selectedRecordingId) {
+                    selectedRecordingId = descriptorDecoder.recordingId();
+                    selectedOffset = descriptorOffset;
+                }
+            }
+            offset += BitUtil.align(recordingLength + DESCRIPTOR_HEADER_LENGTH, BitUtil.CACHE_LINE_LENGTH);
         }
         if (NO_STREAM_FILTER != streamIdFilter && selectedOffset >= 0) {
             descriptorDecoder.wrap(buffer, selectedOffset, RecordingDescriptorDecoder.BLOCK_LENGTH,
@@ -636,7 +634,7 @@ public class SbeLogPrinter {
             } else {
                 final Ir ir = schema.ir();
                 if (null == ir.getMessage(templateId)) {
-                    text.format("Position: %d, Error: templpateId = %d not in schema\n",
+                    text.format("Position: %d, Error: templateId = %d not in schema\n",
                                 currentPosition, templateId);
                 } else {
                     builder.setLength(0);
@@ -705,7 +703,7 @@ public class SbeLogPrinter {
                             System.exit(1);
                         }
                     }
-                    default -> {
+                    case "--stream" -> {
                         try {
                             streamIdFilter = Integer.parseInt(args[i]);
                         } catch (NumberFormatException e) {
@@ -713,6 +711,7 @@ public class SbeLogPrinter {
                             System.exit(1);
                         }
                     }
+                    default -> throw new IllegalStateException("unhandled option " + option);
                 }
             } else if (archiveDirPath == null) {
                 archiveDirPath = args[i];

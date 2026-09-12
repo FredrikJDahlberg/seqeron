@@ -23,7 +23,6 @@ import org.limitless.seqeron.sbe.frame.GatewayActiveDecoder;
 import org.limitless.seqeron.sbe.frame.ApplicationRegisteredEncoder;
 import org.limitless.seqeron.sbe.frame.GatewayRegisteredDecoder;
 import org.limitless.seqeron.sbe.frame.ClusterStartedEncoder;
-import org.limitless.seqeron.sbe.frame.ClusterStoppedEncoder;
 import org.limitless.seqeron.sbe.frame.GatewayActivationRequestedEncoder;
 import org.limitless.seqeron.sbe.frame.GatewayRegisteredEncoder;
 import org.limitless.seqeron.sequencer.ClusterStreamSender;
@@ -54,15 +53,7 @@ import org.xml.sax.SAXParseException;
  *       to cluster ingress and waits for its own sequenced echo on the tap; exits non-zero if the
  *       cluster has no elected leader (the ingress connect times out) or the echo never arrives. It
  *       records that the system is up — it does not start any process.</li>
- *   <li><b>shutdown</b> — safe to fire on every node. On a follower it is a no-op (leader gate via
- *       {@link ClusterTool#isLeader}); on the leader it publishes a {@code ClusterStopped} marker,
- *       waits (best-effort) for its sequenced echo, then requests {@link ClusterTool#abort} — a
- *       consensus-coordinated, snapshot-free termination of every node. Because {@code SequencerServer}
- *       wires its termination hook, that abort unwinds each node cleanly through try-with-resources,
- *       closing the Archive and draining the tap recording (including the just-observed
- *       {@code ClusterStopped}) to disk — so the log stays replayable/analysable afterwards. Best
- *       effort: if the echo does not arrive (an unhealthy cluster — often why one stops early), it
- *       aborts anyway, still via {@code ABORT} rather than SIGKILL, so the log is preserved.</li>
+ *   <li><b>shutdown</b> — safe to execute on every node.
  *   <li><b>activate &lt;gatewayId&gt;</b> — manual standby promotion: publishes an unsequenced
  *       {@code GatewayActivationRequested(gatewayId)} to cluster ingress and waits for the
  *       {@code GatewayActive} the sequencer synthesizes behind it. The operator's act is what is
@@ -72,26 +63,7 @@ import org.xml.sax.SAXParseException;
  *       gateway instance reacts to the resulting {@code GatewayActive} identically however it was
  *       triggered: the instance whose {@code gatewayId} matches opens its accept gate, the others stay
  *       standby.</li>
- *   <li><b>load-topology &lt;file&gt;</b> — publishes the deployment's topology document
- *       (doc/seqeron-protocol-spec.md §6.4; XML, validated against the packaged {@code topology.xsd}).
- *       Its {@code <gateways>} section becomes one unsequenced {@code GatewayRegistered} per row,
- *       {@code remaining} counting down to 0 on the last; its optional {@code <applications>} and
- *       {@code <protocols>} sections become one {@code ApplicationRegistered} and one {@code
- *       PayloadIdRegistered} per row behind them, carrying no countdown of their own — labelling for
- *       {@code SbeLogPrinter} and nothing more, since the sequencer never decodes them and
- *       registration gates no frame (§6.3, <b>C-2</b>). Between them the three sections put the whole
- *       deployment in the log: the producers that are elected, the producers that are not (§5), and
- *       what the shared payloadIds are called. Then waits for the last list row's
- *       sequenced echo. The sections are one deployment assertion, the same kind of act as {@code
- *       activate}, which is why they live here rather than riding along in the reference-data load:
- *       it changes when you deploy, where the comp-id table and the calendar change daily.
- *       The {@code remaining == 0} row is the sequencer's completeness
- *       edge — it synthesizes one bootstrap {@code GatewayActive} per logical gateway behind it —
- *       so this tool, which counted the rows it read, is what authors that edge. Re-running is safe:
- *       the sequencer de-dups rows on {@code gatewayId} and latches the bootstrap once.
- *       <b>Run it before the reference-data load</b>: a session row whose {@code ownerSourceId} no
- *       list row claims is dropped by every gateway on ingest, so a load that beats the list in
- *       leaves the gateways with no sessions (fail closed, but a dead cluster).</li>
+ *   <li><b>load-topology &lt;file&gt;</b> — publishes the deployment's topology document validated XML.
  *   <li><b>counters</b> — lists this node's seqeron operator counters ({@link
  *       org.limitless.seqeron.metrics.SeqeronCounters}), read directly off the co-located Aeron
  *       directory's CnC file. No cluster connection, so it works with no elected leader and is
@@ -127,15 +99,13 @@ public final class ClusterCtl {
     /** header.connectionId/sessionId for markers this tool submits: no gateway process/TCP connection. */
     private static final int NO_ID = -1;
 
-    /** The topology document's namespace, fixed by topology.xsd. */
-    private static final String TOPOLOGY_NS = "http://limitless.org/seqeron/topology/1";
-
     /**
      * §5's other reserved sourceId — clusterctl's own, stamped on every marker it submits; -1 the XSD
      * refuses on its own. It cannot be {@link #NO_ID}: that value is the cluster's (<b>F-4</b>) and the
-     * sequencer refuses it on ingress (§9.2, condition 6).
+     * sequencer refuses it on ingress (§9.2, condition 6). Read from {@link TopologyDocument}, which
+     * refuses a document claiming it — the two must name the same number.
      */
-    private static final int RESERVED_SOURCE_ID = 2;
+    private static final int RESERVED_SOURCE_ID = TopologyDocument.RESERVED_SOURCE_ID;
 
     private static final IdleStrategy IDLE = new YieldingIdleStrategy();
 
@@ -303,15 +273,9 @@ public final class ClusterCtl {
     }
 
     /**
-     * Offers every list row to cluster ingress and every protocol row behind them, then reads this
-     * node's co-located tap for the sequenced echo of the last list row. Returns its globalSeqNo,
-     * or -1 on timeout. Matched on the last row's {@code gatewayId}: that is the row the sequencer
-     * bootstraps behind, so its echo is exactly the "list is in the log" edge the caller waits for.
-     *
-     * <p>The application and protocol rows are offered before the wait rather than after it, so they are
-     * ordered behind the list on the one session — nothing may fall <em>between</em> the list rows, and
-     * neither carries a countdown of its own (§6.4). Neither is waited on: only the gateway list has a
-     * completeness edge, because only the gateway list is something the sequencer acts on.
+     * Publishes the topology document.
+     * @param session cluster session
+     * @param topology topology definition
      */
     private static long publishTopologyAndAwaitEcho(final Session session, final TopologyDocument topology) {
         final Subscription tap = awaitTap(session);
@@ -320,7 +284,6 @@ public final class ClusterCtl {
         }
 
         final List<TopologyRow> rows = topology.gateways();
-        final ExpandableArrayBuffer buffer = new ExpandableArrayBuffer(128);
         final ExpandableArrayBuffer payload = new ExpandableArrayBuffer(128);
         final GatewayRegisteredEncoder encoder = new GatewayRegisteredEncoder();
         for (int i = 0; i < rows.size(); i++) {
@@ -351,43 +314,24 @@ public final class ClusterCtl {
             publish(session, SystemFrame.PAYLOAD_ID_REGISTERED, payload, protocolEncoder.encodedLength());
         }
 
-        final ListEchoHandler handler = new ListEchoHandler(rows.get(rows.size() - 1).gatewayId());
-        final FragmentAssembler assembler = new FragmentAssembler(handler);
-        final long deadline = System.nanoTime() + ECHO_TIMEOUT_NS;
-        while (!handler.found && System.nanoTime() < deadline) {
-            final int fragments = tap.poll(assembler, 10);
-            session.sender.pollEgress();
-            IDLE.idle(fragments);
-        }
-        return handler.found ? handler.globalSeqNo : -1;
+        return awaitEcho(session, tap, new ListEchoHandler(rows.get(rows.size() - 1).gatewayId()));
     }
 
     /** Matches the sequenced echo of the list's last row by gatewayId. */
-    private static final class ListEchoHandler implements FragmentHandler {
+    private static final class ListEchoHandler extends EchoHandler {
         private final int gatewayId;
-        private final SequencedFrameDecoder view = new SequencedFrameDecoder();
         private final GatewayRegisteredDecoder decoder = new GatewayRegisteredDecoder();
-        private boolean found;
-        private long globalSeqNo;
 
         ListEchoHandler(final int gatewayId) {
+            super(SystemFrame.GATEWAY_REGISTERED);
             this.gatewayId = gatewayId;
         }
 
         @Override
-        public void onFragment(final DirectBuffer buffer, final int offset, final int length, final Header header) {
-            if (found) {
-                return;
-            }
-            if (!isSystem(view, buffer, offset, length, SystemFrame.GATEWAY_REGISTERED)) {
-                return;
-            }
+        boolean matches(final DirectBuffer buffer) {
             decoder.wrap(buffer, view.payloadOffset(), GatewayRegisteredDecoder.BLOCK_LENGTH,
                          MessageHeaderDecoder.SCHEMA_VERSION);
-            if (decoder.gatewayId() == gatewayId && decoder.remaining() == 0) {
-                globalSeqNo = view.globalSeqNo();
-                found = true;
-            }
+            return decoder.gatewayId() == gatewayId && decoder.remaining() == 0;
         }
     }
 
@@ -404,50 +348,30 @@ public final class ClusterCtl {
             return -1;
         }
 
-        final ExpandableArrayBuffer buffer = new ExpandableArrayBuffer(64);
         final ExpandableArrayBuffer payload = new ExpandableArrayBuffer(64);
         final GatewayActivationRequestedEncoder encoder = new GatewayActivationRequestedEncoder();
         encoder.wrap(payload, 0);
         encoder.gatewayId(gatewayId);
         publish(session, SystemFrame.GATEWAY_ACTIVATION_REQUESTED, payload, encoder.encodedLength());
 
-        final GatewayActiveEchoHandler handler = new GatewayActiveEchoHandler(gatewayId);
-        final FragmentAssembler assembler = new FragmentAssembler(handler);
-        final long deadline = System.nanoTime() + ECHO_TIMEOUT_NS;
-        while (!handler.found && System.nanoTime() < deadline) {
-            final int fragments = tap.poll(assembler, 10);
-            session.sender.pollEgress();
-            IDLE.idle(fragments);
-        }
-        return handler.found ? handler.globalSeqNo : -1;
+        return awaitEcho(session, tap, new GatewayActiveEchoHandler(gatewayId));
     }
 
     /** Matches the sequenced {@code GatewayActive} echo of our own marker by gatewayId. */
-    private static final class GatewayActiveEchoHandler implements FragmentHandler {
+    private static final class GatewayActiveEchoHandler extends EchoHandler {
         private final int gatewayId;
-        private final SequencedFrameDecoder view = new SequencedFrameDecoder();
         private final GatewayActiveDecoder decoder = new GatewayActiveDecoder();
-        private boolean found;
-        private long globalSeqNo;
 
         GatewayActiveEchoHandler(final int gatewayId) {
+            super(SystemFrame.GATEWAY_ACTIVE);
             this.gatewayId = gatewayId;
         }
 
         @Override
-        public void onFragment(final DirectBuffer buffer, final int offset, final int length, final Header header) {
-            if (found) {
-                return;
-            }
-            if (!isSystem(view, buffer, offset, length, SystemFrame.GATEWAY_ACTIVE)) {
-                return;
-            }
+        boolean matches(final DirectBuffer buffer) {
             // Synthesized, so its gatewayId is inline in the frame's own block rather than in a body.
             decoder.wrap(buffer, view.payloadOffset(), view.blockLength(), view.version());
-            if (decoder.gatewayId() == gatewayId) {
-                globalSeqNo = view.globalSeqNo();
-                found = true;
-            }
+            return decoder.gatewayId() == gatewayId;
         }
     }
 
@@ -544,7 +468,29 @@ public final class ClusterCtl {
 
         publishMarker(session, systemEventType, correlationId);
 
-        final EchoHandler handler = new EchoHandler(systemEventType, correlationId);
+        return awaitEcho(session, tap, new MarkerEchoHandler(systemEventType, correlationId));
+    }
+
+    /**
+     * Encodes and publishes the ClusterStarted/ClusterStopped marker for {@code systemEventType}. One
+     * encoder for both: they are byte-identical past the header, which is the same fact {@link
+     * MarkerEchoHandler} decodes both with one decoder on.
+     */
+    private static void publishMarker(final Session session, final int systemEventType, final long correlationId) {
+        final ExpandableArrayBuffer payload = new ExpandableArrayBuffer(64);
+        final ClusterStartedEncoder encoder = new ClusterStartedEncoder();
+        encoder.wrap(payload, 0);
+        encoder.correlationId(correlationId);
+        publish(session, systemEventType, payload, encoder.encodedLength());
+    }
+
+    /**
+     * Reads the tap until {@code handler} sees the echo it is waiting for, or {@link #ECHO_TIMEOUT_NS}
+     * passes. Egress is polled alongside it: the session that published the marker has to stay alive for
+     * the echo to arrive at all.
+     * @return the echoed frame's globalSeqNo, or -1 on timeout
+     */
+    private static long awaitEcho(final Session session, final Subscription tap, final EchoHandler handler) {
         final FragmentAssembler assembler = new FragmentAssembler(handler);
         final long deadline = System.nanoTime() + ECHO_TIMEOUT_NS;
         while (!handler.found && System.nanoTime() < deadline) {
@@ -555,30 +501,36 @@ public final class ClusterCtl {
         return handler.found ? handler.globalSeqNo : -1;
     }
 
-    /** Encodes and publishes the ClusterStarted/ClusterStopped marker for {@code systemEventType}. */
-    private static void publishMarker(final Session session, final int systemEventType, final long correlationId) {
-        final ExpandableArrayBuffer payload = new ExpandableArrayBuffer(64);
-        if (systemEventType == SystemFrame.CLUSTER_STARTED) {
-            final ClusterStartedEncoder encoder = new ClusterStartedEncoder();
-            encoder.wrap(payload, 0);
-            encoder.correlationId(correlationId);
-            publish(session, systemEventType, payload, encoder.encodedLength());
-            return;
-        }
-        final ClusterStoppedEncoder encoder = new ClusterStoppedEncoder();
-        encoder.wrap(payload, 0);
-        encoder.correlationId(correlationId);
-        publish(session, systemEventType, payload, encoder.encodedLength());
-    }
-
     /**
-     * Whether the fragment is a system frame carrying {@code systemEventType}. Every echo handler asks
-     * this: the same 2-byte field is an application payloadId on the other family, and the tap carries
-     * both.
+     * Waits for one sequenced echo of a marker this tool published. Subclasses supply only what makes a
+     * frame theirs; the family check is common because the same 2-byte field is an application payloadId
+     * on the other family and the tap carries both.
      */
-    private static boolean isSystem(final SequencedFrameDecoder view, final DirectBuffer buffer, final int offset,
-                                    final int length, final int systemEventType) {
-        return view.wrap(buffer, offset, length) && view.isSystem() && view.systemEventType() == systemEventType;
+    private abstract static class EchoHandler implements FragmentHandler {
+        final SequencedFrameDecoder view = new SequencedFrameDecoder();
+        private final int systemEventType;
+        private boolean found;
+        private long globalSeqNo;
+
+        EchoHandler(final int systemEventType) {
+            this.systemEventType = systemEventType;
+        }
+
+        /** Whether this frame — already unwrapped into {@link #view} — is the echo being waited for. */
+        abstract boolean matches(DirectBuffer buffer);
+
+        @Override
+        public final void onFragment(final DirectBuffer buffer, final int offset, final int length,
+                                     final Header header) {
+            if (found || !view.wrap(buffer, offset, length) || !view.isSystem() ||
+                view.systemEventType() != systemEventType) {
+                return;
+            }
+            if (matches(buffer)) {
+                globalSeqNo = view.globalSeqNo();
+                found = true;
+            }
+        }
     }
 
     /**
@@ -602,37 +554,24 @@ public final class ClusterCtl {
     }
 
     /**
-     * Matches the sequenced echo of our own marker by schema/template id and correlationId. Decodes with
-     * {@link ClusterStartedDecoder} for either marker — ClusterStarted/ClusterStopped are byte-identical
-     * past the header, so correlationId and header.globalSeqNo are at the same offsets for both.
+     * Matches the sequenced echo of our own marker by correlationId. Decodes with {@link
+     * ClusterStartedDecoder} for either marker — ClusterStarted/ClusterStopped are byte-identical past the
+     * header, so correlationId and header.globalSeqNo are at the same offsets for both.
      */
-    private static final class EchoHandler implements FragmentHandler {
-        private final int systemEventType;
+    private static final class MarkerEchoHandler extends EchoHandler {
         private final long correlationId;
-        private final SequencedFrameDecoder view = new SequencedFrameDecoder();
         private final ClusterStartedDecoder marker = new ClusterStartedDecoder();
-        private boolean found;
-        private long globalSeqNo;
 
-        EchoHandler(final int systemEventType, final long correlationId) {
-            this.systemEventType = systemEventType;
+        MarkerEchoHandler(final int systemEventType, final long correlationId) {
+            super(systemEventType);
             this.correlationId = correlationId;
         }
 
         @Override
-        public void onFragment(final DirectBuffer buffer, final int offset, final int length, final Header header) {
-            if (found) {
-                return;
-            }
-            if (!isSystem(view, buffer, offset, length, systemEventType)) {
-                return;
-            }
+        boolean matches(final DirectBuffer buffer) {
             marker.wrap(buffer, view.payloadOffset(), ClusterStartedDecoder.BLOCK_LENGTH,
                         MessageHeaderDecoder.SCHEMA_VERSION);
-            if (marker.correlationId() == correlationId) {
-                globalSeqNo = view.globalSeqNo();
-                found = true;
-            }
+            return marker.correlationId() == correlationId;
         }
     }
 

@@ -1,7 +1,6 @@
 package org.limitless.seqeron.sequencer;
 
 import io.aeron.Aeron;
-import io.aeron.Publication;
 import io.aeron.cluster.client.AeronCluster;
 import io.aeron.cluster.client.EgressListener;
 import io.aeron.cluster.codecs.EventCode;

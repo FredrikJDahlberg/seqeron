@@ -293,7 +293,7 @@ One file, two sections, `gatewaySourceId` as a container rather than a repeated 
     <protocol name="simdfixgw" version="1" payloadId="2"
               description="C++/simdfix edge — FIX admin + application messages"/>
     <protocol name="phixeron" version="1" payloadId="3"
-              description="Java/Artio edges — pre-encoded FIX session bytes"/>
+              description="Java FIX edges — pre-encoded FIX session bytes"/>
   </protocols>
 
   <gateways>

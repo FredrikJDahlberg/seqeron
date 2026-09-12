@@ -19,15 +19,6 @@ import org.xml.sax.SAXException;
 import org.xml.sax.SAXParseException;
 
 /**
- * The deployment document {@code clusterctl load-topology} publishes (spec §6.4), read and validated. Its
- * three sections are the complete producer view of a deployment: the elected gateway pairs, the co-located
- * applications, and the protocol registry naming each shared {@code payloadId}.
- *
- * <p>Split out of {@link ClusterCtl} for the reason {@code Sequencer} and {@code TapPublisher} are: this
- * half touches no Aeron and no cluster, so it is unit-testable directly — which matters because every check
- * here is one an operator only ever meets as a refusal, and a check that silently stopped applying would
- * look exactly like a document that was fine.
- *
  * <p><b>An instance of this class is a valid document.</b> {@link #read} parses and validates in one step,
  * before {@link ClusterCtl} publishes a byte: a file that failed half-way through publishing would leave a
  * gateway list the log has already closed.

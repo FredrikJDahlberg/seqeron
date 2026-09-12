@@ -16,15 +16,7 @@ import java.util.Map;
 import java.util.TreeMap;
 
 /**
- * Central ops-server aggregator (see {@code doc/ops.md}): pulls every node's {@code /metrics}
- * (see {@link MetricsExporter})
- * over HTTP and re-exposes one combined {@code /metrics} endpoint — the "aggregating proxy" topology,
- * so Prometheus itself only ever talks to this one process rather than needing network reach to every
- * node. Purely an HTTP client/server; unlike {@link MetricsExporter} it has no Aeron dependency at all.
- *
- * <p>Also synthesizes {@code seqeron_node_up{member="N"}}: Prometheus's own built-in {@code up{}}
- * metric would only reflect reachability to this aggregator, not to each individual node, under this
- * topology — so this process records its own per-node scrape success/failure as a gauge instead.
+ * Central ops-server aggregator over HTTP and re-exposes one combined {@code /metrics} endpoint.
  */
 public final class MetricsAggregator {
     // ── Configuration ──
@@ -62,10 +54,6 @@ public final class MetricsAggregator {
 
     /**
      * Parse end-point
-     *
-     * <p>A malformed entry stops start-up rather than being skipped: a dropped target is a node that
-     * appears nowhere in the aggregate, not even as {@code seqeron_node_up 0}, so the operator would
-     * read a full house while a node was never scraped at all.
      * @param targets end-point
      * @return end-points by identity
      */

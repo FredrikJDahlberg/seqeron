@@ -40,9 +40,6 @@ public final class ReplayClientIdCollisions {
     public boolean onRequest(final int clientId, final long requestId, final long nowMs) {
         final Sequence sequence = byClientId.get(clientId);
         if (sequence == null) {
-            // First request from this id: it seeds the baseline and is evidence of nothing. Comparing it
-            // against a baseline seeded from itself counted every client's first request as a backwards
-            // step, which put the threshold one real regression lower than it reads.
             final Sequence created = new Sequence();
             created.lastRequestId = requestId;
             created.windowStartMs = nowMs;

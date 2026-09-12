@@ -1,6 +1,5 @@
 package org.limitless.seqeron.sequencer;
 
-import io.aeron.Aeron;
 import io.aeron.Counter;
 import io.aeron.ExclusivePublication;
 import io.aeron.Image;
@@ -67,9 +66,9 @@ import org.limitless.seqeron.util.Logger;
  * <p><b>…but reliable is not unbounded: a node that cannot record its tap terminates.</b> Spinning is
  * right for an archive that is merely busy and wrong for one that is dead, and the two are told apart by
  * whether the recording behind the tap is still there and still advancing ({@link TapStallPolicy}, driven
- * from {@link #emit} on back-pressure and from the 1 Hz heartbeat on liveness — {@link
- * #checkTapRecordingAlive} covers the case that never back-pressures at all). Once the archive is
- * provably not recording, this node cannot do the job it exists to do, so {@link TapPublisher} takes
+ * from {@link #emit} on back-pressure and from the 1 Hz heartbeat on liveness —
+ * {@link TapPublisher#checkRecordingAlive} covers the case that never back-pressures at all). Once the
+ * archive is provably not recording, this node cannot do the job it exists to do, so {@link TapPublisher} takes
  * it down: the peers hold identical complete recordings and keep quorum, and the restart rebuilds this
  * node's recording from {@code globalSeqNo} 1 over the full-log replay it performs anyway. Note that
  * <em>throwing</em> is not an option in any of the callbacks below — see {@link #emit}.
@@ -241,7 +240,7 @@ public final class SequencerService implements ClusteredService {
 
     /**
      * Blocks until the co-located archive's recording subscription has attached to the tap publication, and
-     * keeps its counter so {@link #checkTapRecordingAlive} can tell later whether it is still there.
+     * keeps its counter so {@link TapPublisher#checkRecordingAlive} can tell later whether it is still there.
      * Bounded by TAP_RECORDING_START_TIMEOUT_NS so an absent local archive fails start-up fast rather than hanging.
      * @return whether the recording attached before the deadline; the caller refuses the start if not
      */
@@ -289,41 +288,42 @@ public final class SequencerService implements ClusteredService {
         }
         final int memberId = cluster.memberId();
         sequencer.memberId(memberId);
-        final Aeron aeron = cluster.context().aeron();
-        globalSeqNoCounter = SeqeronCounters.addCounter(aeron, SeqeronCounters.SEQUENCER_GLOBAL_SEQ_NO_TYPE_ID,
-                                                         "seqeron.sequencer.globalSeqNo member=" + memberId, memberId);
+        globalSeqNoCounter = counter(SeqeronCounters.SEQUENCER_GLOBAL_SEQ_NO_TYPE_ID, "globalSeqNo", memberId);
         tapBackPressureAlertCounter =
-            SeqeronCounters.addCounter(aeron, SeqeronCounters.SEQUENCER_TAP_BACKPRESSURE_ALERTS_TYPE_ID,
-                                        "seqeron.sequencer.tapBackPressureAlerts member=" + memberId, memberId);
-        tapStalledCounter = SeqeronCounters.addCounter(aeron, SeqeronCounters.SEQUENCER_TAP_STALLED_TYPE_ID,
-                                                        "seqeron.sequencer.tapStalled member=" + memberId, memberId);
+            counter(SeqeronCounters.SEQUENCER_TAP_BACKPRESSURE_ALERTS_TYPE_ID, "tapBackPressureAlerts", memberId);
+        tapStalledCounter = counter(SeqeronCounters.SEQUENCER_TAP_STALLED_TYPE_ID, "tapStalled", memberId);
         rejectedIngressCounter =
-            SeqeronCounters.addCounter(aeron, SeqeronCounters.SEQUENCER_REJECTED_INGRESS_COUNT_TYPE_ID,
-                                        "seqeron.sequencer.rejectedIngressCount member=" + memberId, memberId);
+            counter(SeqeronCounters.SEQUENCER_REJECTED_INGRESS_COUNT_TYPE_ID, "rejectedIngressCount", memberId);
         leadershipChangeCounter =
-            SeqeronCounters.addCounter(aeron, SeqeronCounters.SEQUENCER_LEADERSHIP_CHANGE_COUNT_TYPE_ID,
-                                        "seqeron.sequencer.leadershipChangeCount member=" + memberId, memberId);
+            counter(SeqeronCounters.SEQUENCER_LEADERSHIP_CHANGE_COUNT_TYPE_ID, "leadershipChangeCount", memberId);
         currentLeaderMemberIdCounter =
-            SeqeronCounters.addCounter(aeron, SeqeronCounters.SEQUENCER_CURRENT_LEADER_MEMBER_ID_TYPE_ID,
-                                        "seqeron.sequencer.currentLeaderMemberId member=" + memberId, memberId);
+            counter(SeqeronCounters.SEQUENCER_CURRENT_LEADER_MEMBER_ID_TYPE_ID, "currentLeaderMemberId", memberId);
         lastHeartbeatTimestampCounter =
-            SeqeronCounters.addCounter(aeron, SeqeronCounters.SEQUENCER_LAST_CLUSTER_HEARTBEAT_TIMESTAMP_TYPE_ID,
-                                        "seqeron.sequencer.lastHeartbeatTimestamp member=" + memberId, memberId);
+            counter(SeqeronCounters.SEQUENCER_LAST_CLUSTER_HEARTBEAT_TIMESTAMP_TYPE_ID, "lastHeartbeatTimestamp",
+                    memberId);
         gatewayPromotionCounter =
-            SeqeronCounters.addCounter(aeron, SeqeronCounters.SEQUENCER_GATEWAY_PROMOTION_COUNT_TYPE_ID,
-                                        "seqeron.sequencer.gatewayPromotionCount member=" + memberId, memberId);
+            counter(SeqeronCounters.SEQUENCER_GATEWAY_PROMOTION_COUNT_TYPE_ID, "gatewayPromotionCount", memberId);
         gatewayPromotionFailedCounter =
-            SeqeronCounters.addCounter(aeron, SeqeronCounters.SEQUENCER_GATEWAY_PROMOTION_FAILED_COUNT_TYPE_ID,
-                                        "seqeron.sequencer.gatewayPromotionFailedCount member=" + memberId, memberId);
+            counter(SeqeronCounters.SEQUENCER_GATEWAY_PROMOTION_FAILED_COUNT_TYPE_ID, "gatewayPromotionFailedCount",
+                    memberId);
         bootstrapActivatedCounter =
-            SeqeronCounters.addCounter(aeron, SeqeronCounters.SEQUENCER_BOOTSTRAP_ACTIVATED_TYPE_ID,
-                                        "seqeron.sequencer.bootstrapActivated member=" + memberId, memberId);
+            counter(SeqeronCounters.SEQUENCER_BOOTSTRAP_ACTIVATED_TYPE_ID, "bootstrapActivated", memberId);
         connectedClientsCounter =
-            SeqeronCounters.addCounter(aeron, SeqeronCounters.SEQUENCER_CONNECTED_CLIENTS_TYPE_ID,
-                                        "seqeron.sequencer.connectedClients member=" + memberId, memberId);
+            counter(SeqeronCounters.SEQUENCER_CONNECTED_CLIENTS_TYPE_ID, "connectedClients", memberId);
         messagesSequencedCounter =
-            SeqeronCounters.addCounter(aeron, SeqeronCounters.SEQUENCER_INGRESS_MESSAGES_TYPE_ID,
-                                        "seqeron.sequencer.ingressMessages member=" + memberId, memberId);
+            counter(SeqeronCounters.SEQUENCER_INGRESS_MESSAGES_TYPE_ID, "ingressMessages", memberId);
+    }
+
+    /**
+     * One operator counter, labelled {@code seqeron.sequencer.<name> member=<memberId>} so {@code
+     * aeron-stat}/{@code clusterctl counters} disambiguate nodes sharing one host.
+     * @param typeId   which counter, from {@link SeqeronCounters}
+     * @param name     its name within the {@code seqeron.sequencer} namespace
+     * @param memberId this node
+     */
+    private Counter counter(final int typeId, final String name, final int memberId) {
+        return SeqeronCounters.addCounter(cluster.context().aeron(), typeId,
+                                          "seqeron.sequencer." + name + " member=" + memberId, memberId);
     }
 
     /**
@@ -429,24 +429,17 @@ public final class SequencerService implements ClusteredService {
             }
             lastHeartbeatTimestampCounter.set(timestamp);
             injectTapRecordingFault();
-            checkTapRecordingAlive();
+            // Run from the heartbeat because a recording that has *stopped* back-pressures nothing at all,
+            // so emit's bound never sees it — see TapPublisher.checkRecordingAlive.
+            tap.checkRecordingAlive();
             scheduleHeartbeat();
         }
     }
 
     /**
-     * The 1 Hz liveness check on the co-located archive's recording of the tap. Run from the heartbeat
-     * because a recording that has <em>stopped</em> back-pressures nothing at all, so {@link #emit}'s bound
-     * never sees it — see {@link TapPublisher#checkRecordingAlive}.
-     */
-    private void checkTapRecordingAlive() {
-        tap.checkRecordingAlive();
-    }
-
-    /**
      * Test-only fault injection (cluster/src/test/scripts/chaos-runner.sh), inert unless {@link
      * #FAULT_INJECTION_ENV} was set at launch: touching {@code <clusterDir>/tap-stall-fault} makes this node
-     * stop recording its own tap, which is the only way to provoke {@link #checkTapRecordingAlive} from
+     * stop recording its own tap, which is the only way to provoke {@link TapPublisher#checkRecordingAlive} from
      * outside the process — the archive runs inside this JVM, so its recorder cannot be paused or killed on
      * its own. A file trigger rather than a signal: no unsupported JDK signal API, and none of the
      * coalescing caveats the C++ side's SIGUSR1 injector carries. One-shot per process.
@@ -537,32 +530,22 @@ public final class SequencerService implements ClusteredService {
      */
     @Override
     public void onTerminate(final Cluster cluster) {
-        if (aeronArchive != null) {
-            aeronArchive.close();
-        }
-        if (tapPub != null) {
-            // Closing the publication ends the recording's source image, so the archive stops the tap
-            // recording (sets its stopPosition) without an explicit stopRecording call.
-            tapPub.close();
-        }
+        // Closing the tap publication ends the recording's source image, so the archive stops the tap
+        // recording (sets its stopPosition) without an explicit stopRecording call.
+        CloseHelper.quietCloseAll(aeronArchive, tapPub);
         closeCounters();
     }
 
     /**
-     * Closes this node's operator counters, freeing their slots in the CnC counters file.
+     * Closes this node's operator counters, freeing their slots in the CnC counters file. Quietly and
+     * null-tolerantly: a node that never reached its first callback created none of them.
      */
     private void closeCounters() {
-        final Counter[] counters = {
-            globalSeqNoCounter,        tapBackPressureAlertCounter, tapStalledCounter,
-            rejectedIngressCounter,    leadershipChangeCounter,     currentLeaderMemberIdCounter,
-            lastHeartbeatTimestampCounter,  gatewayPromotionCounter,     gatewayPromotionFailedCounter,
-            bootstrapActivatedCounter, connectedClientsCounter,     messagesSequencedCounter
-        };
-        for (final Counter counter : counters) {
-            if (counter != null) {
-                counter.close();
-            }
-        }
+        CloseHelper.quietCloseAll(globalSeqNoCounter, tapBackPressureAlertCounter, tapStalledCounter,
+                                  rejectedIngressCounter, leadershipChangeCounter, currentLeaderMemberIdCounter,
+                                  lastHeartbeatTimestampCounter, gatewayPromotionCounter,
+                                  gatewayPromotionFailedCounter, bootstrapActivatedCounter, connectedClientsCounter,
+                                  messagesSequencedCounter);
     }
 
     /**

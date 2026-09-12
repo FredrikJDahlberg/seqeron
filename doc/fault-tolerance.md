@@ -119,7 +119,7 @@ leader, ingress accepted) rather than merely that processes launched.
 ## 2. FIX gateway fault tolerance
 
 There are two FIX edges — `FixGateway` (C++, client-facing, §2.1–§2.4) and `ExchangeGateway`
-(Java/Artio, venue-facing, §2.5) — and they hold the same position by the same two mechanisms:
+(Java, venue-facing, §2.5) — and they hold the same position by the same two mechanisms:
 fencing (stop serving before you're wrong) and standby promotion (someone else takes over).
 
 `FixGateway` is a deliberately stateless proxy: authoritative FIX session state (sequence numbers,
@@ -144,15 +144,16 @@ equivalent — one of them is not a fault at all:
 | A `GatewayActive` names a **sibling** instance while this one was active | `sequencedEvent`, `FixGateway.cpp:557-577` | Fences, `m_activated = false`, but **keeps running** — drops to standby, keeps following the tap, and can be re-promoted later. The cluster session is untouched. |
 | The cluster closes this gateway's ingress session (`ClusterStreamSender::isSessionLost()`) | `doWork`, `FixGateway.cpp:315-319` | Fences and **exits the process** (`running = false`) — a lost session cannot be re-established in-process (§2.3), so an instance in this state could never be promoted again; fail closed by exiting rather than idling with no session. |
 | No `ClusterHeartbeat` from the co-located tap for `TAP_STALL_TIMEOUT_MS` (20s = 20× the 1 Hz heartbeat period), while caught up | `checkTapStall`, `FixGateway.cpp:352-369` | Closes its own cluster session first, then fences and **exits**. Voluntary: rather than sit "connected" behind a dead tap, it forces the same session-loss path as the row above, which drives standby promotion on the cluster side. |
-| Continuous `!isCaughtUp()` for `RECOVERY_STALL_TIMEOUT_MS` (60s = 3× `TAP_STALL_TIMEOUT_MS`), once this instance has been caught up before | `checkTapStall`, `GatewayRecoveryStallPolicy` | Same as the row above — closes its own cluster session, then fences and **exits**. The symmetric case (2026-08-10 fix): a recovery that never converges (Replayer down, `onReplayUnavailable`, or a gap in replayed history this node's chain doesn't cover) used to leave the tap-stall watchdog fully gated with no bound, so an already-active gateway kept the gate open and the cluster session alive behind a view of the log frozen behind a hole it could never close. A cold start (never yet caught up) is exempt — its gate legitimately stays closed however long the initial walk takes. |
+| Continuous `!isCaughtUp()` for `RECOVERY_STALL_TIMEOUT_MS` (60s = 3× `TAP_STALL_TIMEOUT_MS`), once this instance has been caught up before | `checkTapStall`'s recovery-deadline fence | Same as the row above — closes its own cluster session, then fences and **exits**. The symmetric case (2026-08-10 fix): a recovery that never converges (Replayer down, `onReplayUnavailable`, or a gap in replayed history this node's chain doesn't cover) used to leave the tap-stall watchdog fully gated with no bound, so an already-active gateway kept the gate open and the cluster session alive behind a view of the log frozen behind a hole it could never close. A cold start (never yet caught up) is exempt — its gate legitimately stays closed however long the initial walk takes. |
 
 The tap-stall watchdog is gated on `m_replayer.isCaughtUp()` so an in-progress cold-start/gap replay
 never reads as a stall, and it measures **monotonic wall-clock time**, not cluster-consensus time —
 deliberately, since consensus time is itself delivered by the very `ClusterHeartbeat` frames being watched for, so
 it would freeze along with a stalled tap and never trip (`FixGateway.cpp:241-244`). Its `!isCaughtUp()`
-branch is not simply skipped, though: `GatewayRecoveryStallPolicy` (pure, Aeron-free, unit-tested in
-`GatewayRecoveryStallPolicyTest.cpp`) provides the row above — the deadline is armed only once
-`onCaughtUp()` has fired at least once, so it can never fire during a legitimate cold start.
+branch is not simply skipped, though: a pure, Aeron-free recovery-deadline predicate provides the row
+above — the deadline is armed only once `onCaughtUp()` has fired at least once, so it can never fire
+during a legitimate cold start. That predicate is the gateway's own and lives with it; seqeron carries
+only the test gateway's copy (`tools/RecoveryStallFence`, `src/test/java`), which its chaos harness drives.
 
 A `GatewayActive` naming *this* instance while it was standby is the mirror case: `m_activated` flips
 true and the accept gate can open once every other gate condition is met (§2.4) — no fence involved.
@@ -226,7 +227,7 @@ this process attempts on its own. This is a deliberate simplification: a session
 have to re-derive whether it's still safe to be active, which the promotion mechanism already decides
 externally and unambiguously.
 
-### 2.5 The venue-facing gateway (`ExchangeGateway`, Java/Artio)
+### 2.5 The venue-facing gateway (`ExchangeGateway`, Java)
 
 Same position, reached differently. `FixGateway` is stateless because it never decides anything;
 `ExchangeGateway` embeds a FIX engine that decides constantly, and is stateless anyway because every
@@ -244,7 +245,7 @@ for. The other four end the process:
 |---|---|---|
 | Cluster session lost | an `ERROR`/`CLOSED` egress event, **or** `!isConnected()` with no event at all — `AeronCluster` closes itself when a new leader does not arrive before its timeout, and an `ERROR` event, unlike `CLOSED`, leaves the client open | `checkClusterSession`, from `doWork` |
 | Tap stall | no `ClusterHeartbeat` from the co-located tap for 20 heartbeat periods while caught up | `checkTapStall`, from `doWork` |
-| Recovery stall | recovery dispatching nothing for 3× that | `GatewayRecoveryStallPolicy` (a port of the C++ class of the same name) |
+| Recovery stall | recovery dispatching nothing for 3× that | the gateway's own recovery-deadline predicate |
 | Emit wedge | one outbound frame continuously back-pressured on the `SessionWriter` for the same 20 heartbeat periods | `emit` → `haltWedged` |
 
 The two stall fences are fatal for the reason session loss is: everything this gateway decides reaches
@@ -265,11 +266,11 @@ The emit wedge is the one that cannot unwind — `emit` must not return without 
 cannot throw from inside the tap's fragment handler for the reason just given — so it `halt`s (70)
 instead. That costs nothing the ordered teardown was buying: dying drops the venue socket with the
 process, and the cluster session outlives it by at most `sessionTimeoutNs`. The frame is in the
-replicated log, so the promoted instance's own Artio log holds it and the venue's `ResendRequest`
+replicated log, so the promoted instance's own FIX engine log holds it and the venue's `ResendRequest`
 closes the gap.
 
 **Promotion is a dial-out rather than a hand-over.** The passive instance follows the tap and fills its
-local Artio log through a `NO_CONNECTION_ID` follower writer, so it is already at the right
+local FIX engine log through a `NO_CONNECTION_ID` follower writer, so it is already at the right
 `MsgSeqNum` when a `GatewayActive` names it; it then opens a fresh socket. Retry after a failed dial is
 backed off, because each attempt writes frames into a log that takes no snapshots, and at which rate
 depends on the only thing the gateway can honestly tell apart — whether a socket ever came up:
