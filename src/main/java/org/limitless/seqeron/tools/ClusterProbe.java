@@ -91,6 +91,9 @@ public final class ClusterProbe {
     /** No connection and no advisory session: the probe is a producer, not a gateway with sockets. */
     private static final int NO_ID = -1;
 
+    /** {@code ping} and {@code TestGateway} carry no filler; only {@code submit} pads a frame. */
+    static final byte[] NO_FILLER = new byte[0];
+
     private static final int MEMBER_ID = Integer.getInteger("probe.memberId", 0);
 
     /** Which cluster member every {@code probe.*} process co-locates with; {@code TestGateway} shares it. */
@@ -159,13 +162,11 @@ public final class ClusterProbe {
         final int fillerBytes = Integer.getInteger("probe.fillerBytes", 0);
         final long pacingMicros = Long.getLong("probe.pacingMicros", 0L);
         try (AeronCluster cluster = connectCluster()) {
-            final ExpandableArrayBuffer frame = new ExpandableArrayBuffer();
-            final ExpandableArrayBuffer payload = new ExpandableArrayBuffer();
+            final MarkerEncoder marker = new MarkerEncoder();
             final byte[] filler = new byte[fillerBytes];
             Arrays.fill(filler, (byte)'x');
             for (long seqNo = 1; seqNo <= count; seqNo++) {
-                final int length = encode(frame, payload, seqNo, NO_ID, PROBE_SOURCE_ID, filler);
-                offer(cluster, frame, length);
+                offer(cluster, marker.frame(), marker.encode(seqNo, NO_ID, PROBE_SOURCE_ID, filler));
                 pause(pacingMicros);
             }
             Logger.info(Logger.Component.ClusterProbe, MEMBER_ID,
@@ -192,9 +193,8 @@ public final class ClusterProbe {
             if (tap == null) {
                 return 1;
             }
-            final ExpandableArrayBuffer frame = new ExpandableArrayBuffer();
-            final ExpandableArrayBuffer payload = new ExpandableArrayBuffer();
-            offer(cluster, frame, encode(frame, payload, seqNo, NO_ID, PROBE_SOURCE_ID, new byte[0]));
+            final MarkerEncoder marker = new MarkerEncoder();
+            offer(cluster, marker.frame(), marker.encode(seqNo, NO_ID, PROBE_SOURCE_ID, NO_FILLER));
 
             final EchoHandler handler = new EchoHandler(seqNo);
             final FragmentAssembler assembler = new FragmentAssembler(handler);
@@ -222,26 +222,46 @@ public final class ClusterProbe {
     }
 
     /**
-     * Encodes one {@code ProbeMarker} into {@code payload}, then wraps it as an {@code Unsequenced} frame
-     * in {@code frame}. The payload carries its own {@code MessageHeader}, as every payload does.
-     * @param connectionId the connection this frame belongs to, or -1 for a producer-scoped one
-     * @param sourceId     the producer stamping it: this class's own, or a {@code TestGateway}'s resolved
-     *                     {@code gatewaySourceId}
-     * @return the frame's length in bytes
+     * Everything one producing thread needs to encode {@code ProbeMarker} frames: the two buffers, the
+     * payload's own encoders, and the frame envelope. Held rather than allocated per call, like every
+     * other flyweight here — {@code submit} encodes in a tight loop and {@code TestGateway} encodes per
+     * line off a socket, so neither wants a per-frame allocation.
+     *
+     * <p>Not thread-safe: one per producing thread, like the buffers it holds.
      */
-    static int encode(final ExpandableArrayBuffer frame, final ExpandableArrayBuffer payload, final long seqNo,
-                      final int connectionId, final int sourceId, final byte[] filler) {
-        final ProbeMarkerEncoder encoder = new ProbeMarkerEncoder();
-        encoder.wrapAndApplyHeader(payload, 0, new MessageHeaderEncoder());
-        encoder.seqNo(seqNo);
-        encoder.putFiller(filler, 0, filler.length);
-        final int payloadLength = MessageHeaderEncoder.ENCODED_LENGTH + encoder.encodedLength();
-        final int length = SystemFrame.wrapPayload(frame, sourceId, connectionId, NO_ID, PROBE_PAYLOAD_ID,
-                                                   payload, payloadLength);
-        if (length == SystemFrame.REFUSED) {
-            throw new IllegalArgumentException("probe.fillerBytes makes the payload larger than a frame may carry");
+    static final class MarkerEncoder {
+        private final SystemFrame envelope = new SystemFrame();
+        private final ExpandableArrayBuffer frame = new ExpandableArrayBuffer();
+        private final ExpandableArrayBuffer payload = new ExpandableArrayBuffer();
+        private final MessageHeaderEncoder payloadHeader = new MessageHeaderEncoder();
+        private final ProbeMarkerEncoder marker = new ProbeMarkerEncoder();
+
+        /** The frame the last {@link #encode} wrote, valid up to the length it returned. */
+        ExpandableArrayBuffer frame() {
+            return frame;
         }
-        return length;
+
+        /**
+         * Encodes one {@code ProbeMarker} into the payload buffer, then wraps it as an {@code Unsequenced}
+         * frame. The payload carries its own {@code MessageHeader}, as every payload does.
+         * @param connectionId the connection this frame belongs to, or -1 for a producer-scoped one
+         * @param sourceId     the producer stamping it: this class's own, or a {@code TestGateway}'s
+         *                     resolved {@code gatewaySourceId}
+         * @return the frame's length in bytes
+         */
+        int encode(final long seqNo, final int connectionId, final int sourceId, final byte[] filler) {
+            marker.wrapAndApplyHeader(payload, 0, payloadHeader);
+            marker.seqNo(seqNo);
+            marker.putFiller(filler, 0, filler.length);
+            final int payloadLength = MessageHeaderEncoder.ENCODED_LENGTH + marker.encodedLength();
+            final int length = envelope.wrapPayload(frame, sourceId, connectionId, NO_ID, PROBE_PAYLOAD_ID,
+                                                    payload, payloadLength);
+            if (length == SystemFrame.REFUSED) {
+                throw new IllegalArgumentException(
+                    "probe.fillerBytes makes the payload larger than a frame may carry");
+            }
+            return length;
+        }
     }
 
     /** Matches this ping's own sequenced echo: our payloadId, our template, our seqNo. */

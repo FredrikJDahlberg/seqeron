@@ -61,8 +61,6 @@ public final class ReplayerStreamReceiver implements AutoCloseable, ReplayerReco
     private final ReplayHeartbeatEncoder replayHeartbeat = new ReplayHeartbeatEncoder();
     private final UnsafeBuffer requestBuffer = new UnsafeBuffer(new byte[REQUEST_BUFFER_LENGTH]);
 
-    // Assigned in the constructor, not here: they capture recovery, which is not definitely assigned until
-    // the constructor body has run.
     private final FragmentHandler tapHandler;
     private final FragmentHandler replayHandler;
     private final FragmentHandler controlFragmentHandler;
@@ -114,8 +112,6 @@ public final class ReplayerStreamReceiver implements AutoCloseable, ReplayerReco
             aeron, SeqeronCounters.APP_RECOVERY_STALLED_TYPE_ID,
             "seqeron.app.recoveryStalled member=" + memberId + " client=" + clientId, memberId, clientId);
         tapSubscription = aeron.addSubscription(FEEDER_CONSUMER_CHANNEL, SequencerService.FEEDER_STREAM_ID);
-        // No standing replay subscription — see openReplay: one is opened per replay episode, filtered to
-        // that replay's own session id, and closed when the episode ends.
         controlSubscription = aeron.addSubscription(CONTROL_CHANNEL, ReplayerService.CONTROL_STREAM_ID);
         requestPublication = aeron.addPublication(ReplayerService.IPC_CHANNEL, ReplayerService.REQUEST_STREAM_ID);
         recovery.start();
@@ -156,8 +152,6 @@ public final class ReplayerStreamReceiver implements AutoCloseable, ReplayerReco
             work += controlSubscription.poll(controlFragmentHandler, FRAGMENT_LIMIT);
         }
 
-        // The request publication connecting is a short race, so the resend retries every poll while it is
-        // still pending rather than eating a full resend interval of pure cold-start latency for it.
         final boolean requestPubPending = requestPublication != null && !requestPublication.isConnected();
         recovery.doTimers(requestPubPending);
 
@@ -166,8 +160,6 @@ public final class ReplayerStreamReceiver implements AutoCloseable, ReplayerReco
                 replayImage = replaySubscription.imageBySessionId((int)recovery.replaySessionId());
             }
             if (replayImage != null) {
-                // Held locally across the poll: a replayed frame can abandon this replay from inside the
-                // handler (an anchor mismatch re-walks), which drops replayImage.
                 final Image image = replayImage;
                 if (!image.isClosed()) {
                     work += image.poll(replayHandler, FRAGMENT_LIMIT);
@@ -175,18 +167,10 @@ public final class ReplayerStreamReceiver implements AutoCloseable, ReplayerReco
                         recovery.onReplayPosition(image.position());
                     }
                 } else {
-                    // A closed image still reports its final position, so this is exact.
                     recovery.onReplayImageClosed(image.position());
                 }
             }
-            // else: Replaying received, image not yet attached — nothing to poll this cycle, fall through
-            // to the tap drain below rather than holding the whole duty cycle on it.
         }
-
-        // Always drain the tap, even mid-walk or while merely awaiting the Replayer's answer: it is
-        // untethered, so a subscription that goes unpolled falls behind the publisher's log buffer. Always
-        // dispatch through the same handler too — frames ahead of an in-flight replay are retained or
-        // dropped on the contiguity check anyway, and the one at the seam must not be thrown away.
         if (tapSubscription != null) {
             work += tapSubscription.poll(tapHandler, FRAGMENT_LIMIT);
         }
@@ -247,7 +231,6 @@ public final class ReplayerStreamReceiver implements AutoCloseable, ReplayerReco
                      .requestId(requestId)
                      .fromPosition(fromPosition)
                      .segmentIndex(segmentIndex);
-        // Result deliberately discarded — see ReplayerRecovery.requestReplay.
         requestPublication.offer(requestBuffer, 0,
                                  MessageHeaderEncoder.ENCODED_LENGTH + replayRequest.encodedLength());
     }
@@ -290,7 +273,7 @@ public final class ReplayerStreamReceiver implements AutoCloseable, ReplayerReco
         if (aeron == null) {
             return;
         }
-        // The archive's replaySessionId carries the Aeron image session id in its low 32 bits.
+
         final String channel = ReplayerService.IPC_CHANNEL + "?session-id=" + (int)replaySessionId;
         replaySubscription = aeron.addSubscription(channel, ReplayerService.REPLAY_STREAM_ID);
     }
@@ -331,9 +314,6 @@ public final class ReplayerStreamReceiver implements AutoCloseable, ReplayerReco
      */
     private void onTapFragment(final org.agrona.DirectBuffer buffer, final int offset, final int length,
                                final io.aeron.logbuffer.Header header) {
-        // Test-only fault injection (see enableFaultInjection): drop this live tap frame to synthesize a
-        // consumer-side globalSeqNo gap, so gap recovery can be driven deterministically. Dropped before
-        // the recovery sees it, so the NEXT frame reads as a gap.
         if (faultInjection && faultDropPending.get() > 0) {
             faultDropPending.decrementAndGet();
             return;

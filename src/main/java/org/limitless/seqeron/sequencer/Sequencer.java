@@ -397,8 +397,6 @@ public final class Sequencer {
      */
     private int sequenceFrame(final DirectBuffer buffer, final int offset, final int length, final long sessionId,
                               final long timestamp) {
-        // Condition 1, both halves. The ceiling is the backstop of T-3: a conforming producer's encode
-        // method refuses an oversized body on its own stack, so what reaches here is a producer that is not one.
         if (length < FrameLayer.MIN_INGRESS_LENGTH) {
             return reject("length " + length + " is below the " + FrameLayer.MIN_INGRESS_LENGTH +
                           "-byte minimum framing");
@@ -407,28 +405,22 @@ public final class Sequencer {
             return reject("length " + length + " is above the " + FrameLayer.MAX_INGRESS_LENGTH +
                           "-byte maximum framing");
         }
-        // Condition 2's second half; the schemaId is checked in sequenceMessage.
-        if (msgHeaderDecoder.version() != MessageHeaderDecoder.SCHEMA_VERSION) {
+           if (msgHeaderDecoder.version() != MessageHeaderDecoder.SCHEMA_VERSION) {
             return reject("version " + msgHeaderDecoder.version() + " is not " +
                           MessageHeaderDecoder.SCHEMA_VERSION);
         }
-        // Condition 3. Two ingress templates now, and admitting exactly those is also what refuses the
-        // three synthesis-only ones structurally, without opening a body.
+
         final int templateId = msgHeaderDecoder.templateId();
         final boolean system = templateId == UnsequencedSystemDecoder.TEMPLATE_ID;
         if (!system && templateId != UnsequencedDecoder.TEMPLATE_ID) {
             return reject("templateId " + templateId + " is neither Unsequenced (" + UnsequencedDecoder.TEMPLATE_ID +
                           ") nor UnsequencedSystem (" + UnsequencedSystemDecoder.TEMPLATE_ID + ")");
         }
-        // Condition 4. An equality, not a floor, and against the composite's own constant: a short
-        // blockLength puts the var-data prefix inside the header composite, a long one silently drops
-        // bytes off the end. One equality for both families — both composites are 18 bytes.
         if (msgHeaderDecoder.blockLength() != UnsequencedHeaderDecoder.ENCODED_LENGTH) {
             return reject("blockLength " + msgHeaderDecoder.blockLength() + " is not " +
                           UnsequencedHeaderDecoder.ENCODED_LENGTH);
         }
 
-        // Condition 5.
         final int headerOffset = offset + MessageHeaderDecoder.ENCODED_LENGTH;
         final int prefixOffset = headerOffset + UnsequencedHeaderDecoder.ENCODED_LENGTH;
         final int bodyLength = buffer.getShort(prefixOffset, java.nio.ByteOrder.LITTLE_ENDIAN) & 0xFFFF;
@@ -436,8 +428,6 @@ public final class Sequencer {
             return reject("body length " + bodyLength + " does not fit a " + length + "-byte frame");
         }
 
-        // Condition 6. An int32 compare, so nothing here can throw: -1 marks the frames the cluster
-        // synthesizes (F-4), and admitting one on ingress would let a producer forge that class.
         frameHeaderDecoder.wrap(buffer, headerOffset);
         final int sourceId = frameHeaderDecoder.sourceId();
         if (sourceId == NO_SOURCE_ID) {
@@ -448,25 +438,19 @@ public final class Sequencer {
         if (system) {
             systemHeaderDecoder.wrap(buffer, headerOffset);
             final int systemEventType = systemHeaderDecoder.systemEventType();
-            // Condition 8.
             final int blockLength = ingressBlockLength(systemEventType);
             if (blockLength == NOT_INGRESS_LEGAL) {
                 return reject("systemEventType " + systemEventType + " is not an allocated, ingress-legal event");
             }
-            // Condition 9. The floor is the decoder's compiled constant and never the wire's declared
-            // length: an SBE decoder reads a fixed-width field at its fixed offset whatever acting block
-            // length it was wrapped with, so a producer-declared length bounds nothing.
             if (bodyLength < blockLength) {
                 return reject("systemEventType " + systemEventType + " body of " + bodyLength +
                               " bytes is short of " + blockLength);
             }
-            // Condition 10.
             if (!applySystem(buffer, prefixOffset + UnsequencedDecoder.payloadHeaderLength(), systemEventType,
                              sourceId, connectionId, sessionId)) {
                 return NO_FRAME;
             }
         } else {
-            // Condition 7. Nothing else about an application payload is read, ever (S-2).
             final int payloadId = frameHeaderDecoder.payloadId();
             if (payloadId == 0) {
                 return reject("payloadId 0 is not a protocol");
@@ -483,9 +467,6 @@ public final class Sequencer {
             .templateId(system ? SequencedSystemEncoder.TEMPLATE_ID : SequencedEncoder.TEMPLATE_ID)
             .schemaId(MessageHeaderEncoder.SCHEMA_ID)
             .version(MessageHeaderEncoder.SCHEMA_VERSION);
-        // Copy-18, append-16 (§9.5). The 18 bytes go across verbatim, which is what keeps this one path
-        // for both families — the field at offset 16 is a payloadId or a systemEventType and neither is
-        // read here. The three fields written back are at offsets common to both sequenced composites.
         encodeBuffer.putBytes(MessageHeaderEncoder.ENCODED_LENGTH, buffer, headerOffset,
                               UnsequencedHeaderDecoder.ENCODED_LENGTH);
         tapHeaderEncoder.wrap(encodeBuffer, MessageHeaderEncoder.ENCODED_LENGTH)
@@ -531,10 +512,6 @@ public final class Sequencer {
      */
     private boolean applySystem(final DirectBuffer buffer, final int bodyOffset, final int systemEventType,
                                 final int sourceId, final int connectionId, final long sessionId) {
-        // S-6 case 2. A system frame claiming a sourceId the list names must arrive on a session a
-        // GatewayStarted already bound to that sourceId, so one process cannot speak for another's logical
-        // gateway. GatewayStarted is exempt because case 1 below is what creates the binding, and every
-        // unlisted sourceId is unchecked (case 3) — clusterctl's markers and the node-local publishers.
         if (systemEventType != SystemFrame.GATEWAY_STARTED && listClaims(sourceId) &&
             !boundToGateway(sessionId, sourceId)) {
             return rejectSystem("systemEventType " + systemEventType + " claims listed sourceId " + sourceId +
@@ -547,8 +524,6 @@ public final class Sequencer {
                 gatewayRegisteredDecoder.wrap(buffer, bodyOffset, GatewayRegisteredDecoder.BLOCK_LENGTH, version);
                 addGatewayRow(gatewayRegisteredDecoder.gatewayId(), gatewayRegisteredDecoder.gatewaySourceId(),
                               gatewayRegisteredDecoder.preferenceRank());
-                // remaining == 0 is the list's last row, and the whole completeness edge: the publisher
-                // counts the rows it read, so the cluster never has to infer "have I seen everyone?".
                 if (gatewayRegisteredDecoder.remaining() == 0 && !bootstrapActivationQueued) {
                     bootstrapActivationQueued = true;
                     for (final GatewayRow row : gatewayRows) {
@@ -560,8 +535,7 @@ public final class Sequencer {
             }
             case SystemFrame.GATEWAY_STARTED -> {
                 gatewayStartedDecoder.wrap(buffer, bodyOffset, GatewayStartedDecoder.BLOCK_LENGTH, version);
-                // S-6 case 1, both halves. Total, so a GatewayStarted ahead of load-topology is rejected
-                // against an empty list — the start-up order as a wire rule.
+
                 final int gatewayId = gatewayStartedDecoder.gatewayId();
                 final GatewayRow row = rowFor(gatewayId);
                 if (row == null) {
@@ -571,11 +545,6 @@ public final class Sequencer {
                     return rejectSystem("GatewayStarted for gatewayId " + gatewayId + " carries sourceId " +
                                          sourceId + ", not its row's " + row.gatewaySourceId());
                 }
-                // One session per instance. An instance that restarts and reconnects before the cluster
-                // times its old session out declares itself on the new one while the dead one is still
-                // bound, and the late close of that dead session promoted a sibling out from under the
-                // instance that had just started. Its epoch is over either way — releaseStaleConnections
-                // below already says so — so the superseded binding goes with it.
                 activeGatewaySession.values().removeIf(bound -> bound == gatewayId);
                 activeGatewaySession.put(sessionId, gatewayId);
                 releaseStaleConnections(sourceId);
@@ -583,10 +552,6 @@ public final class Sequencer {
             case SystemFrame.GATEWAY_ACTIVATION_REQUESTED -> {
                 activationRequestedDecoder.wrap(buffer, bodyOffset, GatewayActivationRequestedDecoder.BLOCK_LENGTH,
                                                 version);
-                // The operator's act is the fact, and the designation is still the cluster's: the frame is
-                // forwarded and the GatewayActive answering it is synthesized behind it, through the path
-                // bootstrap and both promotions take. Which is what gives the manual path the list
-                // validation the other three get from iterating the list in the first place.
                 final int gatewayId = activationRequestedDecoder.gatewayId();
                 if (rowFor(gatewayId) == null) {
                     return rejectSystem("GatewayActivationRequested names gatewayId " + gatewayId +

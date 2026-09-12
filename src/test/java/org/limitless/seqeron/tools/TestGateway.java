@@ -121,9 +121,10 @@ public final class TestGateway {
     private final int listenPort;
     private final int clientId;
 
+    private final SystemFrame envelope = new SystemFrame();
     private final ExpandableArrayBuffer frame = new ExpandableArrayBuffer(1024);
     private final ExpandableArrayBuffer body = new ExpandableArrayBuffer(256);
-    private final ExpandableArrayBuffer payload = new ExpandableArrayBuffer(256);
+    private final ClusterProbe.MarkerEncoder marker = new ClusterProbe.MarkerEncoder();
     private final GatewayStartedEncoder gatewayStarted = new GatewayStartedEncoder();
     private final ConnectionOpenedEncoder connectionOpened = new ConnectionOpenedEncoder();
     private final ConnectionClosedEncoder connectionClosed = new ConnectionClosedEncoder();
@@ -381,8 +382,9 @@ public final class TestGateway {
             if (connection.in.get(i) != '\n') {
                 continue;
             }
-            ClusterProbe.offer(cluster, frame, ClusterProbe.encode(frame, payload, ++markerSeqNo, connection.id,
-                                                                   gatewaySourceId, EMPTY));
+            ClusterProbe.offer(cluster, marker.frame(),
+                               marker.encode(++markerSeqNo, connection.id, gatewaySourceId,
+                                             ClusterProbe.NO_FILLER));
             consumed = i + 1;
             work++;
         }
@@ -529,8 +531,8 @@ public final class TestGateway {
     }
 
     private void offerSystem(final int systemEventType, final int connectionId, final int bodyLength) {
-        final int length = SystemFrame.wrap(frame, gatewaySourceId, connectionId, cluster.clusterSessionId(),
-                                            systemEventType, body, bodyLength);
+        final int length = envelope.wrap(frame, gatewaySourceId, connectionId, cluster.clusterSessionId(),
+                                         systemEventType, body, bodyLength);
         if (length == SystemFrame.REFUSED) {
             throw new IllegalStateException("system body too large for a frame: systemEventType " + systemEventType);
         }

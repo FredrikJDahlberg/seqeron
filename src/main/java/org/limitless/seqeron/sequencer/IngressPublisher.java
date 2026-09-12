@@ -31,6 +31,7 @@ public final class IngressPublisher {
     }
 
     private final ExpandableArrayBuffer frame = new ExpandableArrayBuffer(FrameLayer.MAX_INGRESS_LENGTH);
+    private final SystemFrame envelope = new SystemFrame();
 
     /**
      * Wraps one application payload in an {@code Unsequenced} frame and offers it.
@@ -43,8 +44,8 @@ public final class IngressPublisher {
      */
     public Publish publishPayload(final IngressSender sender, final int sourceId, final int connectionId,
                                   final int payloadId, final DirectBuffer payload, final int payloadLength) {
-        final int length = SystemFrame.wrapPayload(frame, sourceId, connectionId, sender.clusterSessionId(),
-                                                   payloadId, payload, payloadLength);
+        final int length = envelope.wrapPayload(frame, sourceId, connectionId, sender.clusterSessionId(),
+                                                payloadId, payload, payloadLength);
         return offer(sender, length);
     }
 
@@ -57,8 +58,8 @@ public final class IngressPublisher {
      */
     public Publish publishSystem(final IngressSender sender, final int sourceId, final int connectionId,
                                  final int systemEventType, final DirectBuffer body, final int bodyLength) {
-        final int length = SystemFrame.wrap(frame, sourceId, connectionId, sender.clusterSessionId(),
-                                            systemEventType, body, bodyLength);
+        final int length = envelope.wrap(frame, sourceId, connectionId, sender.clusterSessionId(),
+                                         systemEventType, body, bodyLength);
         return offer(sender, length);
     }
 

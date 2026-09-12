@@ -182,8 +182,6 @@ public final class ClusterStreamSender implements IngressSender, AutoCloseable {
             return false;
         }
         if (length > FrameLayer.MAX_INGRESS_LENGTH) {
-            // A frame too large to place is a programming error no runtime handling repairs, and silently
-            // dropping it would tear the very continuity the caller is submitting to preserve.
             throw new IllegalArgumentException("ingress frame " + length + " exceeds MAX_INGRESS_LENGTH "
                                                + FrameLayer.MAX_INGRESS_LENGTH);
         }
@@ -210,8 +208,6 @@ public final class ClusterStreamSender implements IngressSender, AutoCloseable {
             default:
                 break;
             }
-            // The publication that replaces the one an election closed is installed here, which is why a
-            // spin that does not poll would wait on the dead leader's forever.
             pollEgress();
             idle.idle();
         }

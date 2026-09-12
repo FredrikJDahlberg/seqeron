@@ -387,30 +387,33 @@ class ConformanceTest {
     @DisplayName("row 4b: the encode method admits MAX_PAYLOAD_LENGTH, refuses one more, and survives it")
     void producerRefusesBeforeTheWire() {
         final Transport transport = new Transport();
+        // One producer, reused across all four encodes below — which is what makes "the refusal left the
+        // producer usable" an assertion about the encoder's own state rather than about a fresh one.
+        final SystemFrame envelope = new SystemFrame();
         final MutableDirectBuffer frame = new ExpandableArrayBuffer(2048);
         final MutableDirectBuffer payload = new ExpandableArrayBuffer(FrameLayer.MAX_PAYLOAD_LENGTH + 1);
 
-        final int exact = SystemFrame.wrapPayload(frame, SOURCE_ID, CONNECTION_ID, SESSION_ID, PAYLOAD_ID, payload,
+        final int exact = envelope.wrapPayload(frame, SOURCE_ID, CONNECTION_ID, SESSION_ID, PAYLOAD_ID, payload,
                                                   FrameLayer.MAX_PAYLOAD_LENGTH);
         assertNotEquals(SystemFrame.REFUSED, exact);
         transport.offer(frame, exact);
 
-        final int oversized = SystemFrame.wrapPayload(frame, SOURCE_ID, CONNECTION_ID, SESSION_ID, PAYLOAD_ID,
-                                                      payload, FrameLayer.MAX_PAYLOAD_LENGTH + 1);
+        final int oversized = envelope.wrapPayload(frame, SOURCE_ID, CONNECTION_ID, SESSION_ID, PAYLOAD_ID,
+                                                   payload, FrameLayer.MAX_PAYLOAD_LENGTH + 1);
         assertEquals(SystemFrame.REFUSED, oversized,
                      "T-3: local and permanent, and distinguishable from a transport's back-pressure");
         assertEquals(1, transport.offers.size(), "nothing was offered to any transport");
 
-        final int again = SystemFrame.wrapPayload(frame, SOURCE_ID, CONNECTION_ID, SESSION_ID, PAYLOAD_ID, payload,
-                                                  16);
+        final int again = envelope.wrapPayload(frame, SOURCE_ID, CONNECTION_ID, SESSION_ID, PAYLOAD_ID, payload,
+                                               16);
         assertNotEquals(SystemFrame.REFUSED, again, "the refusal left the producer usable");
         transport.offer(frame, again);
         assertEquals(2, transport.offers.size());
 
         // The same holds for the system family, whose body is bounded by the same constant.
         assertEquals(SystemFrame.REFUSED,
-                     SystemFrame.wrap(frame, SOURCE_ID, CONNECTION_ID, SESSION_ID, SystemFrame.CONNECTION_OPENED,
-                                      payload, FrameLayer.MAX_PAYLOAD_LENGTH + 1));
+                     envelope.wrap(frame, SOURCE_ID, CONNECTION_ID, SESSION_ID, SystemFrame.CONNECTION_OPENED,
+                                   payload, FrameLayer.MAX_PAYLOAD_LENGTH + 1));
     }
 
     // ── Row 5. Synthesis determinism (S-3, F-2) ──────────────────────────────────────────────────

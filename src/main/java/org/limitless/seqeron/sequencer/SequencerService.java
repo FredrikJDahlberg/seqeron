@@ -25,10 +25,8 @@ import org.limitless.seqeron.util.Logger;
 /**
  * Aeron Cluster service that imposes a total order on messages arriving from multiple clients.
  *
- * <p>For every committed {@link #onSessionMessage} the service assigns a
- * <b>globalSeqNo</b> — a cluster-wide monotone counter shared across all sources and
- * lifecycle events (connect / disconnect / leadership change) — and stamps it, together with the cluster
- * consensus timestamp, into the message's {@code header} composite before republishing it.
+ * <p>For every committed {@link #onSessionMessage} the service assigns timestamp and <b>globalSeqNo</b> a cluster-wide
+ * monotone counter shared across all sources and lifecycle events (connect / disconnect / leadership change).
  *
  * <p><b>This class is the Aeron adapter, not the state machine.</b> All sequencing state and every
  * frame encode — including the {@code Unsequenced} → {@code Sequenced} copy-through
@@ -54,27 +52,8 @@ import org.limitless.seqeron.util.Logger;
  * collide on across a failover, unlike the retired UDP global stream), so a given node's recording is a
  * single continuous run spanning every leader tenure rather than one recording per tenure.
  *
- * <p><b>Durability:</b> {@link #emit} is <em>reliable</em> (it spins until the offer lands), because
- * the tap recording is the authoritative history — a dropped frame would be an unrecoverable gap. This
- * cannot wedge structurally the way the retired UDP global stream did (where {@code
- * MaxMulticastFlowControl} never advanced the sender limit with zero network subscribers): the only
- * tethered subscriber of the tap is the co-located archive recording, so {@link #emit} blocks only on
- * real local-archive write back-pressure, which clears as the archive drains to disk. The app replicas'
- * own tap subscriptions are untethered, so a slow app is dropped (and heals via the ReplayerService replay
- * protocol) rather than back-pressuring the recording.
- *
- * <p><b>…but reliable is not unbounded: a node that cannot record its tap terminates.</b> Spinning is
- * right for an archive that is merely busy and wrong for one that is dead, and the two are told apart by
- * whether the recording behind the tap is still there and still advancing ({@link TapStallPolicy}, driven
- * from {@link #emit} on back-pressure and from the 1 Hz heartbeat on liveness —
- * {@link TapPublisher#checkRecordingAlive} covers the case that never back-pressures at all). Once the
- * archive is provably not recording, this node cannot do the job it exists to do, so {@link TapPublisher} takes
- * it down: the peers hold identical complete recordings and keep quorum, and the restart rebuilds this
- * node's recording from {@code globalSeqNo} 1 over the full-log replay it performs anyway. Note that
- * <em>throwing</em> is not an option in any of the callbacks below — see {@link #emit}.
- *
- * <p><b>No snapshots — both hooks refuse.</b> Recovery here is always full-log replay from {@code
- * globalSeqNo} 1, and that is what makes a node's tap recording a complete copy of history rather
+ * <p><b>No snapshots (the cluster supports non-java clients).</b> Recovery here is always full-log replay
+ * from {@code globalSeqNo} 1, and that is what makes a node's tap recording a complete copy of history rather
  * than one beginning wherever a snapshot left off. A snapshot would also have to carry all of {@link
  * Sequencer}'s replicated state — the gateway topology, the standby-promotion session map, the
  * bootstrap-activation latch — and one that silently dropped any of it would diverge the restored
@@ -208,10 +187,6 @@ public final class SequencerService implements ClusteredService {
             tapFaultTrigger = cluster.context().clusterDir().toPath().resolve(TAP_FAULT_TRIGGER_FILE);
         }
 
-        // Every way of failing to arm the tap leaves by one door. A throw from the archive connect, the
-        // publication or startRecording used to leave by none: it escaped onStart without refuseStart, so
-        // nothing signalled the fatal handler and the node stayed up headless — a media driver and a
-        // consensus module with no service behind them, which is the state refuseStart exists to prevent.
         try {
             aeronArchive = AeronArchive.connect(new AeronArchive.Context()
                                                     .aeron(cluster.context().aeron())
@@ -227,12 +202,7 @@ public final class SequencerService implements ClusteredService {
                                                 + TimeUnit.NANOSECONDS.toMillis(TAP_RECORDING_START_TIMEOUT_NS) + "ms");
             }
         } catch (final RuntimeException ex) {
-            // Released before the refusal, never after: refuseStart signals the shutdown, and closing
-            // these once that is under way races the driver being torn down beneath them. Quietly,
-            // because a wedged archive is the likeliest thing to have brought us here, and a throw from
-            // the close would put us back through the door this catch exists to shut.
             CloseHelper.quietCloseAll(aeronArchive, tapPub);
-            // Carried in the message, not as a cause: the container's error handler prints getMessage().
             throw refuseStart("[SequencerService] Refusing to start, the tap cannot be recorded: " + ex);
         }
         // Counters are NOT created here: cluster.memberId() is still NULL_VALUE during onStart
@@ -392,17 +362,10 @@ public final class SequencerService implements ClusteredService {
         } else {
             rejectedIngressCounter.increment();
         }
-        // The list's last row opens the trading day: the cluster designates the primary of each
-        // logical gateway by synthesizing a bootstrap GatewayActive right behind it, one per pair on
-        // consecutive globalSeqNos. A GatewayActivationRequested an operator submits is answered the same
-        // way, one frame behind the request. Drained rather than taken once — and each frame is emitted
-        // before the next is asked for, because they all encode into the sequencer's one buffer.
+
         int activation;
         while ((activation = sequencer.pendingGatewayActivation(timestamp)) != Sequencer.NO_FRAME) {
             emit(activation);
-            // Asked of the sequencer rather than inferred from the drain: an operator's activation comes
-            // out of the same loop, and setting the gauge for it reported an open trading day on a
-            // deployment whose list never completed.
             if (sequencer.bootstrapActivationEmitted()) {
                 bootstrapActivatedCounter.set(1);
             }
@@ -419,18 +382,13 @@ public final class SequencerService implements ClusteredService {
         if (correlationId == HEARTBEAT_TIMER_CORRELATION_ID) {
             ensureCounters();
             emit(sequencer.clusterHeartbeat(timestamp));
-            // The cluster clock is also the deadline clock: a designated gateway instance that never
-            // declared itself started is handed over on this same consensus time, on every node alike.
-            // Drained for the same reason as the bootstrap: each logical gateway keeps its own deadline,
-            // so more than one can come due on the same heartbeat.
+
             int overdue;
             while ((overdue = sequencer.pendingGatewayActivationTimeout(timestamp)) != Sequencer.NO_FRAME) {
                 publishPromotion(overdue, "a designated gateway instance never declared itself started");
             }
             lastHeartbeatTimestampCounter.set(timestamp);
             injectTapRecordingFault();
-            // Run from the heartbeat because a recording that has *stopped* back-pressures nothing at all,
-            // so emit's bound never sees it — see TapPublisher.checkRecordingAlive.
             tap.checkRecordingAlive();
             scheduleHeartbeat();
         }
@@ -510,8 +468,7 @@ public final class SequencerService implements ClusteredService {
      */
     private void applyLeadership(final int leaderMemberId, final long timestamp) {
         ensureCounters();
-        // Encoded and emitted on every node, so each node's replayer (and its recording) carries this
-        // globalSeqNo gap-free. The sequencer suppresses a repeat of the leader already on record.
+
         final int length = sequencer.leadershipChanged(leaderMemberId, timestamp);
         if (length == Sequencer.NO_FRAME) {
             return;
@@ -530,8 +487,6 @@ public final class SequencerService implements ClusteredService {
      */
     @Override
     public void onTerminate(final Cluster cluster) {
-        // Closing the tap publication ends the recording's source image, so the archive stops the tap
-        // recording (sets its stopPosition) without an explicit stopRecording call.
         CloseHelper.quietCloseAll(aeronArchive, tapPub);
         closeCounters();
     }

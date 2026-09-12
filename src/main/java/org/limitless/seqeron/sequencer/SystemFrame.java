@@ -22,6 +22,13 @@ import org.limitless.seqeron.sbe.frame.UnsequencedSystemEncoder;
  * <p>Encoding only — every producer owns its own buffer and its own way of offering, so this returns a
  * length and leaves the offer to the caller.
  *
+ * <p><b>The encoders are flyweights owned once, not allocated per call</b> — the same reason {@link
+ * IngressPublisher} holds its buffer rather than taking one: the C++ twin encodes into a stack array, and
+ * Java's equivalent of that is an instance reused across calls. The {@code systemEventType} table below
+ * stays static, since it is the protocol's and not any producer's.
+ *
+ * <p>Not thread-safe: one instance per producing thread, like the buffer it writes into.
+ *
  * <p><b>Two families, and the choice is the caller's</b> (doc/seqeron-protocol-spec.md §4). A system
  * frame carries seqeron's own vocabulary, named by {@code header.systemEventType} and decoded by the
  * cluster tier; an application frame carries one opaque payload named by {@code header.payloadId},
@@ -80,7 +87,13 @@ public final class SystemFrame {
 
     public static final int APPLICATION_REGISTERED = ApplicationRegisteredEncoder.TEMPLATE_ID;
 
-    private SystemFrame() {
+    // Reused across calls; see the class Javadoc for why they are fields rather than locals.
+    private final MessageHeaderEncoder headerEncoder = new MessageHeaderEncoder();
+    private final UnsequencedSystemEncoder systemEncoder = new UnsequencedSystemEncoder();
+    private final UnsequencedEncoder payloadEncoder = new UnsequencedEncoder();
+
+    /** One per producing thread. */
+    public SystemFrame() {
     }
 
     /**
@@ -96,18 +109,18 @@ public final class SystemFrame {
      * @return the frame's length in bytes, or {@link #REFUSED} if {@code bodyLength} is above
      *     {@link FrameLayer#MAX_PAYLOAD_LENGTH}
      */
-    public static int wrap(final MutableDirectBuffer frame, final int sourceId, final int connectionId,
-                           final long sessionId, final int systemEventType, final DirectBuffer body,
-                           final int bodyLength) {
+    public int wrap(final MutableDirectBuffer frame, final int sourceId, final int connectionId,
+                    final long sessionId, final int systemEventType, final DirectBuffer body,
+                    final int bodyLength) {
+        // Ahead of every wrap, so a refusal leaves the encoders exactly as it found them (T-3).
         if (bodyLength > FrameLayer.MAX_PAYLOAD_LENGTH) {
             return REFUSED;
         }
-        final UnsequencedSystemEncoder encoder = new UnsequencedSystemEncoder();
-        encoder.wrapAndApplyHeader(frame, 0, new MessageHeaderEncoder());
-        encoder.header().sourceId(sourceId).connectionId(connectionId).sessionId(sessionId)
+        systemEncoder.wrapAndApplyHeader(frame, 0, headerEncoder);
+        systemEncoder.header().sourceId(sourceId).connectionId(connectionId).sessionId(sessionId)
             .systemEventType(systemEventType);
-        encoder.putBody(body, 0, bodyLength);
-        return MessageHeaderEncoder.ENCODED_LENGTH + encoder.encodedLength();
+        systemEncoder.putBody(body, 0, bodyLength);
+        return MessageHeaderEncoder.ENCODED_LENGTH + systemEncoder.encodedLength();
     }
 
     /**
@@ -123,16 +136,16 @@ public final class SystemFrame {
      * @return the frame's length in bytes, or {@link #REFUSED} if {@code payloadLength} is above
      *     {@link FrameLayer#MAX_PAYLOAD_LENGTH}
      */
-    public static int wrapPayload(final MutableDirectBuffer frame, final int sourceId, final int connectionId,
-                                  final long sessionId, final int payloadId, final DirectBuffer payload,
-                                  final int payloadLength) {
+    public int wrapPayload(final MutableDirectBuffer frame, final int sourceId, final int connectionId,
+                           final long sessionId, final int payloadId, final DirectBuffer payload,
+                           final int payloadLength) {
         if (payloadLength > FrameLayer.MAX_PAYLOAD_LENGTH) {
             return REFUSED;
         }
-        final UnsequencedEncoder encoder = new UnsequencedEncoder();
-        encoder.wrapAndApplyHeader(frame, 0, new MessageHeaderEncoder());
-        encoder.header().sourceId(sourceId).connectionId(connectionId).sessionId(sessionId).payloadId(payloadId);
-        encoder.putPayload(payload, 0, payloadLength);
-        return MessageHeaderEncoder.ENCODED_LENGTH + encoder.encodedLength();
+        payloadEncoder.wrapAndApplyHeader(frame, 0, headerEncoder);
+        payloadEncoder.header().sourceId(sourceId).connectionId(connectionId).sessionId(sessionId)
+            .payloadId(payloadId);
+        payloadEncoder.putPayload(payload, 0, payloadLength);
+        return MessageHeaderEncoder.ENCODED_LENGTH + payloadEncoder.encodedLength();
     }
 }
