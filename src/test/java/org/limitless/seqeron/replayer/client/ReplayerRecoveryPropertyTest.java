@@ -244,20 +244,20 @@ class ReplayerRecoveryPropertyTest {
                 final long anchor = fromPosition / STRIDE + 1;
                 if (anchor < active.first || anchor > active.last) {
                     // The position no longer sits in the active recording — it rotated under the client.
-                    control(replaying(requestId, ReplayerService.NO_REPLAY_NEEDED, 0, CHAIN_EXHAUSTED), REPLAYING_LENGTH);
+                    control(replaying(requestId, ReplayerStreamReceiver.NO_REPLAY_NEEDED, 0, CHAIN_EXHAUSTED), REPLAYING_LENGTH);
                     return;
                 }
                 serveReplay(requestId, anchor, active.last, active.recordingId);
                 return;
             }
             if (segmentIndex >= segments.size()) {
-                control(replaying(requestId, ReplayerService.NO_REPLAY_NEEDED, 0, CHAIN_EXHAUSTED), REPLAYING_LENGTH);
+                control(replaying(requestId, ReplayerStreamReceiver.NO_REPLAY_NEEDED, 0, CHAIN_EXHAUSTED), REPLAYING_LENGTH);
                 return;
             }
             final Segment segment = segments.get(segmentIndex);
             if (segment.last < segment.first) {
                 // Empty, not exhausted: the recording is named, which is what tells the two apart.
-                control(replaying(requestId, ReplayerService.NO_REPLAY_NEEDED, 0, segment.recordingId), REPLAYING_LENGTH);
+                control(replaying(requestId, ReplayerStreamReceiver.NO_REPLAY_NEEDED, 0, segment.recordingId), REPLAYING_LENGTH);
                 return;
             }
             serveReplay(requestId, segment.first, segment.last, segment.recordingId);

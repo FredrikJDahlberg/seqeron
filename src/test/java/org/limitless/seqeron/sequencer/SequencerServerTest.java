@@ -15,22 +15,22 @@ class SequencerServerTest {
 
     @Test
     void ingressEndpointMatchesDocumentedLayout() {
-        assertEquals("localhost:9302", SequencerServer.ingressEndpoint(0));
-        assertEquals("localhost:9312", SequencerServer.ingressEndpoint(1));
+        assertEquals("localhost:9302", PortLayout.ingressEndpoint(0));
+        assertEquals("localhost:9312", PortLayout.ingressEndpoint(1));
     }
 
     // The reservation is wider than what three members bind, and products check themselves against it
     // (doc/registries.md §2). Pinned here, and in PortLayoutTest, so it cannot quietly narrow to 9325.
     @Test
     void reservedBlockCoversThreeMemberStrides() {
-        assertEquals(9300, SequencerServer.CLUSTER_PORT_BLOCK_FIRST);
-        assertEquals(9329, SequencerServer.CLUSTER_PORT_BLOCK_LAST);
+        assertEquals(9300, PortLayout.CLUSTER_PORT_BLOCK_FIRST);
+        assertEquals(9329, PortLayout.CLUSTER_PORT_BLOCK_LAST);
 
-        assertTrue(SequencerServer.isClusterPort(9300));
-        assertTrue(SequencerServer.isClusterPort(9320)); // member 2's base — reserved though unbound
-        assertTrue(SequencerServer.isClusterPort(9329));
-        assertFalse(SequencerServer.isClusterPort(9299));
-        assertFalse(SequencerServer.isClusterPort(9330));
+        assertTrue(PortLayout.isClusterPort(9300));
+        assertTrue(PortLayout.isClusterPort(9320)); // member 2's base — reserved though unbound
+        assertTrue(PortLayout.isClusterPort(9329));
+        assertFalse(PortLayout.isClusterPort(9299));
+        assertFalse(PortLayout.isClusterPort(9330));
     }
 
     @Test

@@ -296,7 +296,7 @@ public final class ClusterStreamSender implements IngressSender, AutoCloseable {
             if (id > 0) {
                 endpoints.append(',');
             }
-            endpoints.append(id).append('=').append(SequencerServer.ingressEndpoint(id));
+            endpoints.append(id).append('=').append(PortLayout.ingressEndpoint(id));
         }
         return endpoints.toString();
     }

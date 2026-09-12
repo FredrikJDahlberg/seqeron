@@ -11,9 +11,9 @@ anywhere; C++ has no artifact at all and cannot have one without owning Aeron's 
 
 | | Java | C++ |
 | --- | --- | --- |
-| artifact | `org.limitless:seqeron:0.1.0` — the plain jar, `components.java` | none |
+| artifact | two, by audience: `org.limitless:seqeron:0.1.0` (the client tier) and `org.limitless:seqeron-node:0.1.0` (the cluster), the second depending on the first | none |
 | how a consumer gets it | `./gradlew publishToMavenLocal`, then `mavenLocal()` | `FetchContent` over the checkout, `add_subdirectory` under the hood |
-| proof it works | [`examples/java`](../examples/java) — resolves the coordinate, no source dependency | [`examples/cpp`](../examples/cpp) — `SEQERON_SOURCE_DIR`, swappable for `GIT_REPOSITORY`/`GIT_TAG` |
+| proof it works | [`examples/java`](../examples/java) — resolves `seqeron` alone, no source dependency and no node classes | [`examples/cpp`](../examples/cpp) — `SEQERON_SOURCE_DIR`, swappable for `GIT_REPOSITORY`/`GIT_TAG` |
 | reach | this machine's `~/.m2` | anyone who can clone the repo |
 
 Two decisions are already made and are **not** open items:
@@ -24,8 +24,22 @@ Two decisions are already made and are **not** open items:
 - **Aeron, Agrona and the two Aeron modules are `api` dependencies**, because they appear in this
   repo's own public signatures (`DirectBuffer` in `SequencedFrameDecoder`/`SystemFrame`, `Aeron` and
   `Image` in `ReplayerStreamReceiver`, `AeronArchive` in `ReplayerService`, `ClusteredService` in
-  `SequencerService`). `aeron-driver` and `sbe-tool` stay `implementation`. So the POM carries them
-  at compile scope and a consumer declares one dependency.
+  `SequencerService`). `aeron-driver` and `sbe-tool` stay `implementation`. So each POM carries its
+  own at compile scope and a consumer declares one dependency.
+- **The jar is split by audience, and the split is by package.** `seqeron` is what a process that
+  merely talks to a cluster needs — the frame and replay codecs, `replayer.client`, the ingress client,
+  `util.Logger`, `SeqeronCounters`, and `sequencer`'s `FrameLayer`, `SystemFrame` and `PortLayout` —
+  and `seqeron-node` is the cluster: the sequencer, the Replayer, the tools, the metrics exporter, the
+  probe codecs and the `.sbeir` resources. A gateway is not a node, so it takes the first alone and the
+  archive and the media driver stay off its classpath. `aeron-cluster` is the exception and not ours to
+  fix: the cluster *client* and the consensus module ship in one upstream artifact.
+
+  The tiers are packages rather than source sets because the line runs through `sequencer`, so
+  `checkTierSeparation` (wired into `check`) scans the compiled client classes and fails on a reference
+  to a node type or to `io.aeron.{archive,driver}` — a same-package reference needs no import, so
+  imports are not enough to check. Keeping the client tier closed is what put the constants a client
+  needs into client-tier classes: the tap's identity and the cluster clock in `FrameLayer`, the port
+  block in `PortLayout`, the replay protocol's addresses in `ReplayerStreamReceiver`.
 
 ## Java — open items
 

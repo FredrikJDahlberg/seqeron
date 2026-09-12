@@ -40,7 +40,7 @@ import org.limitless.seqeron.util.Logger;
  * </pre>
  *
  * <p>The block core <i>reserves</i> is wider than what three members bind — see
- * {@link #CLUSTER_PORT_BLOCK_FIRST} and {@code doc/registries.md} §2, which is where a product
+ * {@link PortLayout#CLUSTER_PORT_BLOCK_FIRST} and {@code doc/registries.md} §2, which is where a product
  * takes a block of its own.
  *
  * <p><b>System properties</b>:
@@ -95,21 +95,6 @@ public final class SequencerServer {
 
     private static final long DEFAULT_SESSION_TIMEOUT_MS = 1000;
 
-    private static final String DEFAULT_HOST = "localhost";
-    private static final int PORT_BASE = 9300;
-    private static final int PORT_STRIDE = 10;
-
-    /**
-     * Core's reserved port block (doc/registries.md §2) — three members wide, one stride each.
-     * Deliberately <i>not</i> the 9301-9325 a three-node cluster actually binds: that is the number
-     * every restatement of this boundary used to carry, and the gap between the two is where an
-     * application port ended up squatting on 9320.
-     */
-    public static final int CLUSTER_PORT_BLOCK_FIRST = PORT_BASE;
-
-    /** Last port of core's reserved block. See {@link #CLUSTER_PORT_BLOCK_FIRST}. */
-    public static final int CLUSTER_PORT_BLOCK_LAST = PORT_BASE + 3 * PORT_STRIDE - 1;
-
     /**
      * Control-response stream for this member's own archive clients (ConsensusModule +
      * ClusteredServiceContainer). Must not be 101: that's Aeron Cluster's default
@@ -131,14 +116,13 @@ public final class SequencerServer {
     public static void main(final String[] args) {
         final int memberId = Integer.getInteger(PROP_MEMBER_ID, 0);
         final int nodeCount = Integer.getInteger(PROP_NODE_COUNT, 1);
-        final String host = System.getProperty(PROP_HOST, DEFAULT_HOST);
+        final String host = System.getProperty(PROP_HOST, PortLayout.DEFAULT_HOST);
         final String baseDir =
             System.getProperty(PROP_BASE_DIR, System.getProperty("java.io.tmpdir") + "/seqeron-seq");
         final String aeronDir = System.getProperty(
             PROP_AERON_DIR, System.getProperty("java.io.tmpdir") + "/seqeron-seq-aeron-" + memberId);
-        final int portBase = PORT_BASE + memberId * PORT_STRIDE;
-        final int archivePort = portBase + 1;
-        final int ingressPort = portBase + 2;
+        final int archivePort = PortLayout.archivePort(memberId);
+        final int ingressPort = PortLayout.ingressPort(memberId);
 
         final String clusterMembers = System.getProperty(PROP_CLUSTER_MEMBERS, buildClusterMembers(nodeCount));
 
@@ -258,40 +242,21 @@ public final class SequencerServer {
     }
 
     /**
-     * Whether a port falls inside core's reservation. For a product asserting its own bases sit
-     * outside it, so the boundary is read from here rather than copied — the C++ mirror is
-     * {@code PortLayout.hpp}'s {@code isClusterPort}.
-     */
-    public static boolean isClusterPort(final int port) {
-        return port >= CLUSTER_PORT_BLOCK_FIRST && port <= CLUSTER_PORT_BLOCK_LAST;
-    }
-
-    /**
-     * A member's cluster-ingress endpoint ("host:port"), per this class's {@link #PORT_BASE}
-     * port-layout formula. Exposed so other callers co-located with the default single-node
-     * cluster (e.g. {@code ClusterCtl}) can derive their default from here instead of restating
-     * the port number.
-     */
-    public static String ingressEndpoint(final int memberId) {
-        return DEFAULT_HOST + ":" + (PORT_BASE + memberId * 10 + 2);
-    }
-
-    /**
      * Generates the Aeron {@code clusterMembers} string for a {@code nodeCount}-member cluster,
-     * all on {@link #DEFAULT_HOST}, using this class's {@link #PORT_BASE} port-layout formula
-     * (see the class Javadoc). This is the single source of truth other launchers (shell scripts)
-     * should defer to rather than restating the port numbers themselves.
+     * all on {@link PortLayout#DEFAULT_HOST}, using {@link PortLayout}'s formula. This is the single
+     * source of truth other launchers (shell scripts) should defer to rather than restating the port
+     * numbers themselves.
      */
     static String buildClusterMembers(final int nodeCount) {
         final StringBuilder members = new StringBuilder();
         for (int id = 0; id < nodeCount; id++) {
-            final int base = PORT_BASE + id * 10;
+            final String host = PortLayout.DEFAULT_HOST;
             members.append(id)
-                .append(',').append(DEFAULT_HOST).append(':').append(base + 2)
-                .append(',').append(DEFAULT_HOST).append(':').append(base + 3)
-                .append(',').append(DEFAULT_HOST).append(':').append(base + 4)
-                .append(',').append(DEFAULT_HOST).append(':').append(base + 5)
-                .append(',').append(DEFAULT_HOST).append(':').append(base + 1)
+                .append(',').append(host).append(':').append(PortLayout.ingressPort(id))
+                .append(',').append(host).append(':').append(PortLayout.consensusPort(id))
+                .append(',').append(host).append(':').append(PortLayout.logPort(id))
+                .append(',').append(host).append(':').append(PortLayout.transferPort(id))
+                .append(',').append(host).append(':').append(PortLayout.archivePort(id))
                 .append('|');
         }
         return members.toString();

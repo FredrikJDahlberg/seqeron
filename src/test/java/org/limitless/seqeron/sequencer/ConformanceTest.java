@@ -436,7 +436,7 @@ class ConformanceTest {
         collect(frames, target, target.pendingGatewayActivation(timestamp));
 
         for (int i = 0; i < 3; i++) {
-            timestamp += Sequencer.CLUSTER_HEARTBEAT_INTERVAL_MS;
+            timestamp += FrameLayer.CLUSTER_HEARTBEAT_INTERVAL_MS;
             collect(frames, target, target.clusterHeartbeat(timestamp));
             final int length = payloadFrame(PAYLOAD_ID, SOURCE_ID, syntheticPayload(8 + i));
             collect(frames, target, target.sequenceMessage(ingress, 0, length, SESSION_ID, timestamp));

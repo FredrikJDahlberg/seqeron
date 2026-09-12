@@ -16,6 +16,7 @@ import org.agrona.ExpandableArrayBuffer;
 import org.agrona.concurrent.IdleStrategy;
 import org.agrona.concurrent.YieldingIdleStrategy;
 import org.agrona.concurrent.status.CountersReader;
+import org.limitless.seqeron.sequencer.FrameLayer;
 import org.limitless.seqeron.metrics.SeqeronCounters;
 import org.limitless.seqeron.replayer.client.SequencedFrameDecoder;
 import org.limitless.seqeron.sbe.frame.ClusterStartedDecoder;
@@ -25,12 +26,12 @@ import org.limitless.seqeron.sbe.frame.GatewayRegisteredDecoder;
 import org.limitless.seqeron.sbe.frame.ClusterStartedEncoder;
 import org.limitless.seqeron.sbe.frame.GatewayActivationRequestedEncoder;
 import org.limitless.seqeron.sbe.frame.GatewayRegisteredEncoder;
+import org.limitless.seqeron.sequencer.PortLayout;
 import org.limitless.seqeron.sequencer.ClusterStreamSender;
 import org.limitless.seqeron.sequencer.IngressPublisher;
 import org.limitless.seqeron.sequencer.SystemFrame;
 import org.limitless.seqeron.sbe.frame.MessageHeaderDecoder;
 import org.limitless.seqeron.sbe.frame.PayloadIdRegisteredEncoder;
-import org.limitless.seqeron.sequencer.SequencerServer;
 import org.limitless.seqeron.sequencer.SequencerService;
 import org.limitless.seqeron.tools.TopologyDocument.ApplicationRow;
 import org.limitless.seqeron.tools.TopologyDocument.ProtocolRow;
@@ -85,7 +86,7 @@ public final class ClusterCtl {
         "clusterctl.aeronDir", System.getProperty("java.io.tmpdir") + "/seqeron-seq-aeron-" + MEMBER_ID);
     private static final File CLUSTER_DIR = new File(BASE_DIR + "/cluster-" + MEMBER_ID);
     private static final String INGRESS_ENDPOINTS =
-        System.getProperty("clusterctl.ingressEndpoints", "0=" + SequencerServer.ingressEndpoint(0));
+        System.getProperty("clusterctl.ingressEndpoints", "0=" + PortLayout.ingressEndpoint(0));
 
     private static final long CONNECT_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(5);
     private static final long ECHO_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(5);
@@ -538,13 +539,13 @@ public final class ClusterCtl {
      * await-my-own-echo path starts. Returns null (having said why) if it never does.
      */
     private static Subscription awaitTap(final Session session) {
-        final Subscription tap = session.aeron.addSubscription(SequencerService.FEEDER_CHANNEL,
-                                                               SequencerService.FEEDER_STREAM_ID);
+        final Subscription tap = session.aeron.addSubscription(FrameLayer.FEEDER_CHANNEL,
+                                                               FrameLayer.FEEDER_STREAM_ID);
         final long connectDeadline = System.nanoTime() + CONNECT_TIMEOUT_NS;
         while (!tap.isConnected()) {
             if (System.nanoTime() >= connectDeadline) {
                 System.err.printf("[clusterctl] tap (aeron:ipc/%d) not available — co-located with a SequencerServer?%n",
-                                  SequencerService.FEEDER_STREAM_ID);
+                                  FrameLayer.FEEDER_STREAM_ID);
                 return null;
             }
             session.sender.pollEgress();

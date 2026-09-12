@@ -1,5 +1,7 @@
 package org.limitless.seqeron.replayer.client;
 
+import static io.aeron.Aeron.NULL_VALUE;
+
 import io.aeron.Aeron;
 import io.aeron.Counter;
 import io.aeron.FragmentAssembler;
@@ -12,15 +14,14 @@ import java.util.concurrent.atomic.AtomicInteger;
 import org.agrona.concurrent.SystemEpochNanoClock;
 import org.agrona.concurrent.UnsafeBuffer;
 import org.limitless.seqeron.metrics.SeqeronCounters;
-import org.limitless.seqeron.replayer.server.ReplayerService;
 import org.limitless.seqeron.sbe.replay.MessageHeaderEncoder;
 import org.limitless.seqeron.sbe.replay.ReplayCompleteEncoder;
 import org.limitless.seqeron.sbe.replay.ReplayHeartbeatEncoder;
 import org.limitless.seqeron.sbe.replay.ReplayRequestEncoder;
-import org.limitless.seqeron.sequencer.SequencerService;
+import org.limitless.seqeron.sequencer.FrameLayer;
 
 /**
- * App-replica side of the per-node {@link ReplayerService} — the Java twin of the C++
+ * App-replica side of the per-node {@code ReplayerService} — the Java twin of the C++
  * {@code replayer/client/ReplayerStreamReceiver.hpp}.
  *
  * <p>It reads the co-located {@code SequencerService} IPC tap ({@link SequencerService#FEEDER_STREAM_ID})
@@ -35,17 +36,37 @@ import org.limitless.seqeron.sequencer.SequencerService;
  */
 public final class ReplayerStreamReceiver implements AutoCloseable, ReplayerRecoveryActions {
     /**
+     * The replay protocol's addresses — node-local IPC between an app and its co-located
+     * {@code ReplayerService}, and the wire contract between the two. They are the client's rather than the
+     * server's because the client tier is the one a consumer depends on: the server reads them from here,
+     * which is also how the C++ side has it ({@code replayer/client/ReplayerStreamReceiver.hpp}).
+     */
+    public static final String IPC_CHANNEL = "aeron:ipc";
+
+    /** ReplayerService → apps: on-demand archive replays (one Aeron session per in-flight replay). */
+    public static final int REPLAY_STREAM_ID = 201;
+
+    /** Apps → ReplayerService: {@code ReplayRequest}. */
+    public static final int REQUEST_STREAM_ID = 202;
+
+    /** ReplayerService → apps: {@code Replaying} / {@code ReplayPending}. */
+    public static final int CONTROL_STREAM_ID = 203;
+
+    /** Answer to a resume request the Replayer refuses, or one that needs no replay at all. */
+    public static final long NO_REPLAY_NEEDED = NULL_VALUE;
+
+    /**
      * The tap as a consumer addresses it: untethered, so a slow app is dropped and heals via replay rather
      * than back-pressuring the sequencer.
      */
-    public static final String FEEDER_CONSUMER_CHANNEL = SequencerService.FEEDER_CHANNEL + "?tether=false";
+    public static final String FEEDER_CONSUMER_CHANNEL = FrameLayer.FEEDER_CHANNEL + "?tether=false";
 
     /**
      * Untethered like the tap, and for the same reason: the Replayer answers every app from one duty-cycle
      * thread, so an app that stops polling must not be able to back-pressure the stream the others are
      * answered on. A dropped reply costs one resend interval, which the resend timer already covers.
      */
-    public static final String CONTROL_CHANNEL = ReplayerService.IPC_CHANNEL + "?tether=false";
+    public static final String CONTROL_CHANNEL = IPC_CHANNEL + "?tether=false";
 
     private static final int FRAGMENT_LIMIT = 16;
 
@@ -111,9 +132,9 @@ public final class ReplayerStreamReceiver implements AutoCloseable, ReplayerReco
         recoveryStalledCounter = SeqeronCounters.addAppCounter(
             aeron, SeqeronCounters.APP_RECOVERY_STALLED_TYPE_ID,
             "seqeron.app.recoveryStalled member=" + memberId + " client=" + clientId, memberId, clientId);
-        tapSubscription = aeron.addSubscription(FEEDER_CONSUMER_CHANNEL, SequencerService.FEEDER_STREAM_ID);
-        controlSubscription = aeron.addSubscription(CONTROL_CHANNEL, ReplayerService.CONTROL_STREAM_ID);
-        requestPublication = aeron.addPublication(ReplayerService.IPC_CHANNEL, ReplayerService.REQUEST_STREAM_ID);
+        tapSubscription = aeron.addSubscription(FEEDER_CONSUMER_CHANNEL, FrameLayer.FEEDER_STREAM_ID);
+        controlSubscription = aeron.addSubscription(CONTROL_CHANNEL, CONTROL_STREAM_ID);
+        requestPublication = aeron.addPublication(IPC_CHANNEL, REQUEST_STREAM_ID);
         recovery.start();
     }
 
@@ -274,8 +295,8 @@ public final class ReplayerStreamReceiver implements AutoCloseable, ReplayerReco
             return;
         }
 
-        final String channel = ReplayerService.IPC_CHANNEL + "?session-id=" + (int)replaySessionId;
-        replaySubscription = aeron.addSubscription(channel, ReplayerService.REPLAY_STREAM_ID);
+        final String channel = IPC_CHANNEL + "?session-id=" + (int)replaySessionId;
+        replaySubscription = aeron.addSubscription(channel, REPLAY_STREAM_ID);
     }
 
     @Override

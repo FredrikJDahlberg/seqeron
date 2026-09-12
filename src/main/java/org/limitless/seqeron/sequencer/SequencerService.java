@@ -36,7 +36,7 @@ import org.limitless.seqeron.util.Logger;
  * timer scheduling, and the reliable-offer discipline in {@link #emit}.
  *
  * <p>The decorated message is published on the node-local <em>tap</em>
- * ({@link #FEEDER_CHANNEL} / {@link #FEEDER_STREAM_ID}), an {@code aeron:ipc} stream that this node's
+ * ({@link #FrameLayer.FEEDER_CHANNEL} / {@link #FrameLayer.FEEDER_STREAM_ID}), an {@code aeron:ipc} stream that this node's
  * co-located Aeron Archive records. Co-located app replicas follow it live directly, and the
  * co-located {@link ReplayerService} serves history/gap replay of this
  * recording to those apps on startup.
@@ -63,23 +63,6 @@ import org.limitless.seqeron.util.Logger;
  * shutdown} uses {@code ABORT}, which takes no snapshot.
  */
 public final class SequencerService implements ClusteredService {
-    /**
-     * Node-local IPC channel and stream the sequenced stream is tapped onto. Every node — leader
-     * <em>and</em> follower — republishes each sequenced frame here in {@code globalSeqNo} order (the
-     * taps are byte-identical across nodes, since every node processes the same committed log in the
-     * same order) and records it into its own co-located archive. The co-located app replicas follow it
-     * directly as their live feed, and the co-located {@link ReplayerService}
-     * serves history/gap replay of this recording — the same node-local archive serves both.
-     *
-     * <p>Created and recorded once in {@link #onStart} and continuous per node across leadership changes
-     * ({@code aeron:ipc} has no fixed port to collide on across a failover, unlike the retired UDP global
-     * stream), so a node's recording is one continuous run spanning every leader tenure that consumers
-     * never re-resolve. Reliable, not lossy ({@link #emit} spins until the offer lands): the recording
-     * is the authoritative history, so a dropped frame would be an unrecoverable gap.
-     */
-    public static final String FEEDER_CHANNEL = "aeron:ipc";
-    public static final int FEEDER_STREAM_ID = 205;
-
     /**
      * Control-response stream for this service's own archive client (startRecording/stopRecording).
      * Must not be 101: that's Aeron Cluster's default {@code ingressStreamId}, and
@@ -195,8 +178,8 @@ public final class SequencerService implements ClusteredService {
                                                     .controlResponseChannel("aeron:ipc")
                                                     .controlResponseStreamId(ARCHIVE_CONTROL_RESPONSE_STREAM_ID)
                                                     .lock(NoOpLock.INSTANCE));
-            tapPub = cluster.context().aeron().addExclusivePublication(FEEDER_CHANNEL, FEEDER_STREAM_ID);
-            aeronArchive.startRecording(FEEDER_CHANNEL, FEEDER_STREAM_ID, SourceLocation.LOCAL);
+            tapPub = cluster.context().aeron().addExclusivePublication(FrameLayer.FEEDER_CHANNEL, FrameLayer.FEEDER_STREAM_ID);
+            aeronArchive.startRecording(FrameLayer.FEEDER_CHANNEL, FrameLayer.FEEDER_STREAM_ID, SourceLocation.LOCAL);
             if (!awaitTapRecordingActive()) {
                 throw new IllegalStateException("the co-located archive did not start recording the tap within "
                                                 + TimeUnit.NANOSECONDS.toMillis(TAP_RECORDING_START_TIMEOUT_NS) + "ms");
@@ -409,7 +392,7 @@ public final class SequencerService implements ClusteredService {
         tapFaultTrigger = null;
         Logger.info(Logger.CoreComponent.SequencerService, cluster.memberId(),
                     "fault injection: stopping this node's tap recording");
-        aeronArchive.stopRecording(FEEDER_CHANNEL, FEEDER_STREAM_ID);
+        aeronArchive.stopRecording(FrameLayer.FEEDER_CHANNEL, FrameLayer.FEEDER_STREAM_ID);
     }
 
     /**
@@ -418,7 +401,7 @@ public final class SequencerService implements ClusteredService {
      * {@link TapPublisher#scheduleHeartbeat}.
      */
     private void scheduleHeartbeat() {
-        tap.scheduleHeartbeat(cluster.time() + Sequencer.CLUSTER_HEARTBEAT_INTERVAL_MS);
+        tap.scheduleHeartbeat(cluster.time() + FrameLayer.CLUSTER_HEARTBEAT_INTERVAL_MS);
     }
 
     /**

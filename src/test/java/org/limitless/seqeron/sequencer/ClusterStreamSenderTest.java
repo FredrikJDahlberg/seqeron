@@ -19,7 +19,7 @@ class ClusterStreamSenderTest {
             if (id > 0) {
                 expected.append(',');
             }
-            expected.append(id).append('=').append(SequencerServer.ingressEndpoint(id));
+            expected.append(id).append('=').append(PortLayout.ingressEndpoint(id));
         }
         assertEquals(expected.toString(), ClusterStreamSender.ingressEndpoints(3));
     }
@@ -27,7 +27,7 @@ class ClusterStreamSenderTest {
     @Test
     @DisplayName("a single-node cluster names one member")
     void singleNodeEndpointSet() {
-        assertEquals("0=" + SequencerServer.ingressEndpoint(0), ClusterStreamSender.ingressEndpoints(1));
+        assertEquals("0=" + PortLayout.ingressEndpoint(0), ClusterStreamSender.ingressEndpoints(1));
     }
 
     @Test
@@ -36,7 +36,7 @@ class ClusterStreamSenderTest {
         for (final String entry : ClusterStreamSender.ingressEndpoints(ClusterStreamSender.DEFAULT_NODE_COUNT)
                                       .split(",")) {
             final int port = Integer.parseInt(entry.substring(entry.lastIndexOf(':') + 1));
-            assertEquals(true, SequencerServer.isClusterPort(port), entry);
+            assertEquals(true, PortLayout.isClusterPort(port), entry);
         }
     }
 }

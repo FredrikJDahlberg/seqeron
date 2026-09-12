@@ -91,10 +91,23 @@ this tree.
 
 | | Java | C++ |
 | --- | --- | --- |
-| the sequencer | `sequencer/` — `Sequencer`, `SequencerService`, `SequencerServer`, `FrameLayer`, `SystemFrame`, `TapPublisher`, `TapStallPolicy`, and the producer side: `ClusterStreamSender`, `IngressPublisher`, `IngressSender`, `IngressStallPolicy`, `IngressLeaderPolicy` | `sequencer/` — `SequencedFrame`, `ClusterStreamSender`, `ClusterStreamClient`, `IngressPublisher`, `PortLayout` |
+| the sequencer | `sequencer/` — `Sequencer`, `SequencerService`, `SequencerServer`, `FrameLayer`, `SystemFrame`, `PortLayout`, `TapPublisher`, `TapStallPolicy`, and the producer side: `ClusterStreamSender`, `IngressPublisher`, `IngressSender`, `IngressStallPolicy`, `IngressLeaderPolicy` | `sequencer/` — `SequencedFrame`, `ClusterStreamSender`, `ClusterStreamClient`, `IngressPublisher`, `PortLayout` |
 | the replayer | `replayer/server/` and `replayer/client/` | `replayer/client/` only |
 | the tools | `tools/` — `ClusterCtl`, `TopologyDocument`, `ClusterProbe`, `SbeLogPrinter` | — |
 | the ops plane | `metrics/` — `MetricsExporter`, `MetricsAggregator`, `SeqeronCounters` | `util/SeqeronCounters.hpp` |
+
+**One tree, two audiences.** The jar is split by package into `seqeron` (the **client tier**: the frame
+and replay codecs, `replayer.client`, the producer side, `util`, `SeqeronCounters`, and `sequencer`'s
+`FrameLayer`, `SystemFrame` and `PortLayout`) and `seqeron-node` (the **node tier**: everything else —
+`Sequencer`, `SequencerService`, `SequencerServer`, `TapPublisher`, `TapStallPolicy`, `replayer/server/`,
+`tools/`, the metrics exporter, the probe codecs and the jar resources). A process that merely talks to a
+cluster takes the first alone, and `examples/java` is the proof: it resolves `org.limitless:seqeron` and
+compiles. The line runs *through* `sequencer`, so the tiers are packages rather than source sets and
+`checkTierSeparation` (wired into `check`) enforces them against the compiled classes — a same-package
+reference needs no import, so checking imports would not do. It is also why the constants a client needs
+are in client-tier classes: the tap's identity (`FEEDER_CHANNEL`/`FEEDER_STREAM_ID`) and the cluster clock
+(`CLUSTER_HEARTBEAT_INTERVAL_MS`) in `FrameLayer`, the port block in `PortLayout`, the replay protocol's
+addresses in `ReplayerStreamReceiver`. See `doc/publishing.md`.
 
 **The producer side is a language-port pair too.** Java's `ClusterStreamSender`/`IngressPublisher` carry
 the C++ files' names and semantics — `connectColocated` (IPC ingress on the co-located member, UDP
@@ -129,6 +142,7 @@ the server side of the replay protocol is Java only.
 ./gradlew test        # JUnit 5, 310 tests, ~1s
 ./gradlew generateFrameSbe generateReplaySbe generateProbeSbe generateClusterSbeIr
 ./gradlew compileTestJava   # TestGateway, which chaos-runner.sh needs and no jar carries
+./gradlew clientJar nodeJar # the two published artifacts; checkTierSeparation guards the line
 ```
 JDK 21. `SEQERON_JAR` overrides the jar path for every script that resolves it.
 
@@ -249,9 +263,11 @@ record only from wherever it resumed. The cost is that recovery time and archive
 `ReplaySlotAllocator`, `ReplayRecordings`, `ReplayClientIdCollisions`, with `AeronReplayer` the only
 part that touches Aeron. **`replayer.client`** is `ReplayerStreamReceiver` and its pure seam
 `ReplayerRecovery`, plus `RecoveryProgressPolicy`, `SequencedEvent`, `SequencedFrameDecoder` — Java, and
-C++ in `org::limitless::seqeron::replayer::client`. The only edge across is client→server: the client
-reads `ReplayerService`'s channel and stream-id constants (`IPC_CHANNEL`, `REPLAY_STREAM_ID` 201,
-`REQUEST_STREAM_ID` 202, `CONTROL_STREAM_ID` 203), which are the wire contract between them.
+C++ in `org::limitless::seqeron::replayer::client`. The only edge across is server→client, and it is the
+protocol's addresses: `ReplayerStreamReceiver` holds `IPC_CHANNEL`, `REPLAY_STREAM_ID` 201,
+`REQUEST_STREAM_ID` 202 and `CONTROL_STREAM_ID` 203, and the server reads them from there — the wire
+contract between the two belongs to the tier both ends depend on, which is the client's (the C++ side has
+it the same way round).
 
 `ReplayerStreamReceiver` is the Aeron adapter only — subscriptions, the replay image, the clocks; every
 decision it makes about them lives in **`ReplayerRecovery`**, which holds none of them and is where the
@@ -357,7 +373,7 @@ seqeron's own package namespace; `collectSbeIr` wipes its destination first, lik
 ## Scripts
 
 `src/main/scripts` holds the operator and cluster-lifecycle scripts; `ports.sh` (the port formula, mirrored
-by `PortLayout.hpp` and `SequencerServer`'s Javadoc) and `paths.sh` are sourced by every other script.
+by `PortLayout`, both languages) and `paths.sh` are sourced by every other script.
 `src/test/scripts` holds the five harnesses. Both resolve paths relative to the repository root — they
 were written when this tree sat under `cluster/`, so check the depth of any `../..` you add.
 

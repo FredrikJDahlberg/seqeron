@@ -409,7 +409,7 @@ only: the sequencer never decodes those rows and they gate no frame.
 `examples/java` and `examples/cpp` are the smallest consumers there are, one per language and the same
 flow in both: replay a node's history through that node's co-located Replayer, switch to the live tap on
 catching up, and print every frame in `globalSeqNo` order. Each is a **separate build** — the Java one
-resolves `org.limitless:seqeron` as a published artifact, the C++ one pulls `seqeron_core` in with
+resolves `org.limitless:seqeron` — the client tier alone, no sequencer and no archive — the C++ one pulls `seqeron_core` in with
 `FetchContent` — so what the artifacts fail to expose fails there rather than passing on a source
 dependency.
 

@@ -19,6 +19,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import org.agrona.ExpandableArrayBuffer;
 import org.agrona.concurrent.IdleStrategy;
 import org.agrona.concurrent.ShutdownSignalBarrier;
+import org.limitless.seqeron.sequencer.FrameLayer;
 import org.limitless.seqeron.replayer.client.ReplayerStreamReceiver;
 import org.limitless.seqeron.replayer.client.SequencedEvent;
 import org.limitless.seqeron.sbe.frame.ConnectionClosedEncoder;
@@ -96,7 +97,7 @@ public final class TestGateway {
      * The two fences that are a clock, the product gateways' constants verbatim — this holds the same
      * position they do, so a divergence here would make the harness prove something no gateway does.
      */
-    private static final long TAP_STALL_TIMEOUT_MS = 20 * Sequencer.CLUSTER_HEARTBEAT_INTERVAL_MS;
+    private static final long TAP_STALL_TIMEOUT_MS = 20 * FrameLayer.CLUSTER_HEARTBEAT_INTERVAL_MS;
 
     private static final long RECOVERY_STALL_TIMEOUT_MS = 3 * TAP_STALL_TIMEOUT_MS;
 
@@ -286,7 +287,7 @@ public final class TestGateway {
         if ((System.currentTimeMillis() - lastTapProgressMs) >= TAP_STALL_TIMEOUT_MS) {
             throw new IllegalStateException(
                 "co-located tap stalled: no ClusterHeartbeat for >" + TAP_STALL_TIMEOUT_MS + "ms ("
-                    + (TAP_STALL_TIMEOUT_MS / Sequencer.CLUSTER_HEARTBEAT_INTERVAL_MS)
+                    + (TAP_STALL_TIMEOUT_MS / FrameLayer.CLUSTER_HEARTBEAT_INTERVAL_MS)
                     + " heartbeat periods) — releasing the cluster session so a standby can take over");
         }
     }

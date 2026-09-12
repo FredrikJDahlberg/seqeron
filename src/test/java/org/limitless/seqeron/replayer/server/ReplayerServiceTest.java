@@ -18,6 +18,7 @@ import org.agrona.concurrent.UnsafeBuffer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.limitless.seqeron.replayer.client.ReplayerStreamReceiver;
 import org.limitless.seqeron.metrics.SeqeronCounters;
 import org.limitless.seqeron.sbe.replay.MessageHeaderDecoder;
 import org.limitless.seqeron.sbe.replay.MessageHeaderEncoder;
@@ -258,7 +259,7 @@ class ReplayerServiceTest {
 
         final Reply terminator = request(CLIENT, 1, 3, 0);
 
-        assertEquals(ReplayerService.NO_REPLAY_NEEDED, terminator.replaySessionId());
+        assertEquals(ReplayerStreamReceiver.NO_REPLAY_NEEDED, terminator.replaySessionId());
         assertEquals(Aeron.NULL_VALUE, terminator.recordingId());
     }
 
@@ -269,7 +270,7 @@ class ReplayerServiceTest {
 
         final Reply empty = request(CLIENT, 1, 1, 0);
 
-        assertEquals(ReplayerService.NO_REPLAY_NEEDED, empty.replaySessionId());
+        assertEquals(ReplayerStreamReceiver.NO_REPLAY_NEEDED, empty.replaySessionId());
         // Names the recording it found nothing in. That is what tells the app to skip this segment and
         // keep walking instead of declaring itself caught up with segment 2 unreplayed.
         assertEquals(6, empty.recordingId());
@@ -344,7 +345,7 @@ class ReplayerServiceTest {
 
         final Reply reply = request(CLIENT, 1, RESUME, 1024);
 
-        assertEquals(ReplayerService.NO_REPLAY_NEEDED, reply.replaySessionId());
+        assertEquals(ReplayerStreamReceiver.NO_REPLAY_NEEDED, reply.replaySessionId());
         assertEquals(Aeron.NULL_VALUE, reply.recordingId());
         assertTrue(noClientReplayStarted());
     }
@@ -405,7 +406,7 @@ class ReplayerServiceTest {
         // The archive still answers, so it is the position that is wrong — one the client supplied, in
         // range but not on a frame boundary of a recording that has rotated. Answering ReplayPending to a
         // position that can never work would hold that app forever.
-        assertEquals(ReplayerService.NO_REPLAY_NEEDED, reply.replaySessionId());
+        assertEquals(ReplayerStreamReceiver.NO_REPLAY_NEEDED, reply.replaySessionId());
         assertEquals(0, fakeReplayer.counter(SeqeronCounters.REPLAYER_STALLED_TYPE_ID));
     }
 
@@ -693,20 +694,20 @@ class ReplayerServiceTest {
         final List<FakeReplayer.StartedReplay> clientReplays =
             fakeReplayer.startedReplays()
                 .stream()
-                .filter(replay -> replay.streamId() == ReplayerService.REPLAY_STREAM_ID)
+                .filter(replay -> replay.streamId() == ReplayerStreamReceiver.REPLAY_STREAM_ID)
                 .toList();
         assertFalse(clientReplays.isEmpty(), "no replay was started for an app");
         return clientReplays.getLast();
     }
 
     private boolean noClientReplayStarted() {
-        return fakeReplayer.startedReplays().stream().noneMatch(r -> r.streamId() == ReplayerService.REPLAY_STREAM_ID);
+        return fakeReplayer.startedReplays().stream().noneMatch(r -> r.streamId() == ReplayerStreamReceiver.REPLAY_STREAM_ID);
     }
 
     /** No app was served out of {@code recordingId} — ignoring the startup self-check's own replay of it. */
     private boolean noClientReplayFor(final long recordingId) {
         return fakeReplayer.startedReplays().stream().noneMatch(
-            r -> r.recordingId() == recordingId && r.streamId() == ReplayerService.REPLAY_STREAM_ID);
+            r -> r.recordingId() == recordingId && r.streamId() == ReplayerStreamReceiver.REPLAY_STREAM_ID);
     }
 
     private boolean loggedOnce(final Logger.EventCode code) {

@@ -32,7 +32,7 @@ import org.limitless.seqeron.util.Logger;
  */
 class ReplayerRecoveryTest {
     private static final int CLIENT_ID = 4;
-    private static final long NO_REPLAY_NEEDED = ReplayerService.NO_REPLAY_NEEDED;
+    private static final long NO_REPLAY_NEEDED = ReplayerStreamReceiver.NO_REPLAY_NEEDED;
 
     /** The walk terminator: nothing left to replay AND no recording named. */
     private static final long CHAIN_EXHAUSTED = -1;

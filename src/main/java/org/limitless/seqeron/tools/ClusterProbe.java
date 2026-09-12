@@ -20,6 +20,7 @@ import org.agrona.concurrent.BackoffIdleStrategy;
 import org.agrona.concurrent.IdleStrategy;
 import org.agrona.concurrent.ShutdownSignalBarrier;
 import org.agrona.concurrent.YieldingIdleStrategy;
+import org.limitless.seqeron.sequencer.FrameLayer;
 import org.limitless.seqeron.replayer.client.ReplayerStreamReceiver;
 import org.limitless.seqeron.replayer.client.SequencedEvent;
 import org.limitless.seqeron.replayer.client.SequencedFrameDecoder;
@@ -465,14 +466,14 @@ public final class ClusterProbe {
      */
     private static Subscription awaitTap(final AeronCluster cluster) {
         final Subscription tap = cluster.context().aeron()
-            .addSubscription(ReplayerStreamReceiver.FEEDER_CONSUMER_CHANNEL, SequencerService.FEEDER_STREAM_ID);
+            .addSubscription(ReplayerStreamReceiver.FEEDER_CONSUMER_CHANNEL, FrameLayer.FEEDER_STREAM_ID);
         final IdleStrategy idle = new YieldingIdleStrategy();
         final long deadline = System.nanoTime() + CONNECT_TIMEOUT_NS;
         while (!tap.isConnected()) {
             if (System.nanoTime() >= deadline) {
                 Logger.error(Logger.CoreComponent.ClusterProbe, Logger.CoreEventCode.ClusterSessionError, MEMBER_ID,
                              "tap (aeron:ipc/%d) not available — co-located with a SequencerServer?",
-                             SequencerService.FEEDER_STREAM_ID);
+                             FrameLayer.FEEDER_STREAM_ID);
                 return null;
             }
             cluster.pollEgress();

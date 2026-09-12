@@ -6,7 +6,6 @@ import java.util.Deque;
 import java.util.List;
 import org.agrona.DirectBuffer;
 import org.agrona.concurrent.UnsafeBuffer;
-import org.limitless.seqeron.replayer.server.ReplayerService;
 import org.limitless.seqeron.sbe.frame.LeadershipChangedDecoder;
 import org.limitless.seqeron.sequencer.SystemFrame;
 import org.limitless.seqeron.sbe.frame.MessageHeaderDecoder;
@@ -537,7 +536,7 @@ public final class ReplayerRecovery {
     private void onReplaying(final long session, final long replayCatchUpPosition, final long recordingId) {
         awaitingReplay = false;
         replayerUnavailable = false;
-        if (session == ReplayerService.NO_REPLAY_NEEDED) {
+        if (session == ReplayerStreamReceiver.NO_REPLAY_NEEDED) {
             if (walkSegmentIndex < 0) {
                 Logger.log(Logger.CoreComponent.ReplayerStreamReceiver, Logger.Severity.Warn,
                            Logger.CoreEventCode.TapGap,

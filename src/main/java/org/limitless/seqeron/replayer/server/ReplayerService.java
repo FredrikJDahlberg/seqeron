@@ -14,6 +14,7 @@ import org.agrona.ExpandableArrayBuffer;
 import org.agrona.MutableDirectBuffer;
 import org.agrona.concurrent.IdleStrategy;
 import org.agrona.concurrent.status.AtomicCounter;
+import org.limitless.seqeron.replayer.client.ReplayerStreamReceiver;
 import org.limitless.seqeron.metrics.SeqeronCounters;
 import org.limitless.seqeron.sbe.replay.MessageHeaderDecoder;
 import org.limitless.seqeron.sbe.replay.MessageHeaderEncoder;
@@ -37,22 +38,10 @@ import org.limitless.seqeron.util.Logger;
  * heals via the replay protocol below) rather than back-pressuring the sequencer.
  */
 public final class ReplayerService {
-    /** Node-local IPC channel every ReplayerService↔app stream runs over. */
-    public static final String IPC_CHANNEL = "aeron:ipc";
-
-    /** ReplayerService → apps: on-demand archive replays (one Aeron session per in-flight replay). */
-    public static final int REPLAY_STREAM_ID = 201;
-
-    /** Apps → ReplayerService: {@code ReplayRequest}. */
-    public static final int REQUEST_STREAM_ID = 202;
-
-    /** ReplayerService → apps: {@code Replaying} / {@code ReplayPending}. */
-    public static final int CONTROL_STREAM_ID = 203;
-
     /**
      * Internal-only IPC stream the startup self-check replays onto to read back each tap recording's
      * first frame (see {@link #checkReady}). Never used by any app-facing
-     * protocol — distinct from {@link #REPLAY_STREAM_ID} purely so this one-shot self-check can never
+     * protocol — distinct from {@link #ReplayerStreamReceiver.REPLAY_STREAM_ID} purely so this one-shot self-check can never
      * cross-talk with a real client replay. Package-private rather than private: {@link
      * AeronReplayer} subscribes to it on this class's behalf.
      */
@@ -65,7 +54,6 @@ public final class ReplayerService {
     private static final long SELF_CHECK_REPLAY_LENGTH = 4096;
 
     static final int MAX_CONCURRENT_REPLAYS = 4;
-    public static final long NO_REPLAY_NEEDED = NULL_VALUE;
 
     // Idle-TTL slot reclamation (see class Javadoc): a slot untouched this long is reclaimed.
     static final long REPLAY_SLOT_TTL_MS = 5_000;
@@ -551,7 +539,7 @@ public final class ReplayerService {
     }
 
     /**
-     * Refuses a resume request: answers NO_REPLAY_NEEDED, which an app that resumed only
+     * Refuses a resume request: answers ReplayerStreamReceiver.NO_REPLAY_NEEDED, which an app that resumed only
      * because it has an open hole reads as "that position is no good here" and falls back to walking the
      * recording chain — the path that needs no position to be sound.
      * @param clientId client identity
@@ -560,16 +548,16 @@ public final class ReplayerService {
      */
     private void rejectResume(final int clientId, final long requestId, final String reason) {
         Logger.info(Logger.CoreComponent.ReplayerService, memberId,
-                    "client %d's resume refused (%s) — answering NO_REPLAY_NEEDED so it re-walks the chain", clientId,
+                    "client %d's resume refused (%s) — answering ReplayerStreamReceiver.NO_REPLAY_NEEDED so it re-walks the chain", clientId,
                     reason);
-        sendReplaying(clientId, requestId, NO_REPLAY_NEEDED, 0, NULL_VALUE);
+        sendReplaying(clientId, requestId, ReplayerStreamReceiver.NO_REPLAY_NEEDED, 0, NULL_VALUE);
     }
 
     /**
      * Serves one replay to a client. segmentIndex < 0 resumes the current active recording at
      * fromPosition (steady-state gap recovery); segmentIndex >= 0 is one step of a cold-start walk over
      * the per-leader-tenure recording chain — serving the segmentIndex-th recording from position 0, or
-     * NO_REPLAY_NEEDED once the walk runs past the last tenure (which is what marks the app caught up).
+     * ReplayerStreamReceiver.NO_REPLAY_NEEDED once the walk runs past the last tenure (which is what marks the app caught up).
      * @param clientId client identity
      * @param requestId the request being answered, echoed in every reply
      * @param segmentIndex segment index
@@ -604,7 +592,7 @@ public final class ReplayerService {
                 return;
             }
             if (segmentIndex >= segments.size()) {
-                sendReplaying(clientId, requestId, NO_REPLAY_NEEDED, 0, NULL_VALUE);
+                sendReplaying(clientId, requestId, ReplayerStreamReceiver.NO_REPLAY_NEEDED, 0, NULL_VALUE);
                 return;
             }
 
@@ -624,11 +612,11 @@ public final class ReplayerService {
         }
         final long boundedLength = tip - replayFrom;
         if (boundedLength <= 0) {
-            sendReplaying(clientId, requestId, NO_REPLAY_NEEDED, tip, recordingId);
+            sendReplaying(clientId, requestId, ReplayerStreamReceiver.NO_REPLAY_NEEDED, tip, recordingId);
             return;
         }
 
-        final long replaySessionId = replayer.startReplay(recordingId, replayFrom, boundedLength, REPLAY_STREAM_ID);
+        final long replaySessionId = replayer.startReplay(recordingId, replayFrom, boundedLength, ReplayerStreamReceiver.REPLAY_STREAM_ID);
         replaysServedCounter.increment();
         replaySlots.activate(clientId, replaySessionId, replayer.epochMillis());
         Logger.info(Logger.CoreComponent.ReplayerService, memberId,
@@ -794,7 +782,7 @@ public final class ReplayerService {
                          "dropped a control reply (offer=%d): an app subscribed to stream %d and stopped "
                              + "reading it. Its replays are delayed by a resend; every other app is "
                              + "unaffected — see seqeron.replayer.controlRepliesDroppedCount",
-                         result, CONTROL_STREAM_ID);
+                         result, ReplayerStreamReceiver.CONTROL_STREAM_ID);
         }
     }
 

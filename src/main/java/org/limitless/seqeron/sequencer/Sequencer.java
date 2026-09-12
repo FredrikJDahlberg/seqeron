@@ -94,27 +94,6 @@ public final class Sequencer {
     private static final int NO_GATEWAY_ID = -1;
 
     /**
-     * Period of the internal cluster clock ({@link #clusterHeartbeat}): the leader fires this timer once per
-     * second and every node emits a header-only {@code ClusterHeartbeat} carrying the consensus timestamp. It exists
-     * so every consumer has a cluster-driven clock that keeps advancing even while an individual FIX
-     * session is silent — which is exactly when the gateway's keepalive watchdog must probe/disconnect
-     * (the sequenced-header timestamp is the only clock the watchdog is allowed to trust, since only the
-     * leader assigns real time). 1 Hz gives ±1 s resolution, ample for the watchdog's tens-of-seconds
-     * thresholds. Trade-off: every heartbeat appends a timer event + a heartbeat frame to the replicated
-     * log/recording, so full-log-replay recovery grows with uptime; this constant is the single knob to
-     * trade watchdog resolution against that cost. (A tighter win — gating clock emission on active FIX
-     * sessions — is possible; 1 Hz is the low-risk interim.)
-     *
-     * <p>It lives here rather than in the adapter because the state machine's own deadlines are evaluated
-     * in cluster time, on heartbeat timestamps, so this is the resolution every one of them is quantised to.
-     * Public because it is a contract rather than an internal: consumers size their own tap watchdogs in
-     * heartbeat periods (the C++ edge duplicates it as
-     * {@code FixGateway::CLUSTER_HEARTBEAT_INTERVAL_MS} for want of a way to
-     * share it), and a watchdog tighter than the clock it watches fires on a healthy stream.
-     */
-    public static final long CLUSTER_HEARTBEAT_INTERVAL_MS = 1000;
-
-    /**
      * How long a designated instance has, in cluster time, to answer a {@code GatewayActive} with a
      * {@code GatewayStarted} before {@link #pendingGatewayActivationTimeout} hands the role to a sibling.
      *
@@ -134,7 +113,7 @@ public final class Sequencer {
      * <p>Package-private so {@code SequencerTest} drives exactly this deadline rather than hardcoding it
      * a second time.
      */
-    static final long GATEWAY_ACTIVATION_TIMEOUT_MS = 5 * CLUSTER_HEARTBEAT_INTERVAL_MS;
+    static final long GATEWAY_ACTIVATION_TIMEOUT_MS = 5 * FrameLayer.CLUSTER_HEARTBEAT_INTERVAL_MS;
 
     /**
      * Core's retired {@code payloadId} (doc/seqeron-protocol-spec.md §15 step 10). Core is not an

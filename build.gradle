@@ -345,10 +345,96 @@ tasks.register('uberJar', Jar) {
     duplicatesStrategy = DuplicatesStrategy.EXCLUDE
 }
 
+// ── Split by audience ──────────────────────────────────────────────────────────
+// Two published artifacts out of one source tree (doc/future-arch.md §6): `seqeron` is the CLIENT tier —
+// what a process that merely talks to a cluster needs: the envelope, the ingress client, the replay
+// client, the port block, the logger and the counters — and `seqeron-node` is the cluster itself: the
+// sequencer, the Replayer, the tools and the metrics exporter. A producer should not put the archive and
+// the media driver on its classpath to encode a frame. (aeron-cluster stays a client dependency: the
+// cluster client and the consensus module ship in one upstream artifact, so it is not ours to split.)
+//
+// The tiers are packages, not source sets, because the line runs through `sequencer` — FrameLayer,
+// SystemFrame, PortLayout and the Ingress* classes are the client's, Sequencer and SequencerServer the
+// node's — and splitting a package across two source roots costs more than the check below.
+ext.clientTierPatterns = [
+    'org/limitless/seqeron/sbe/frame/**',
+    'org/limitless/seqeron/sbe/replay/**',
+    'org/limitless/seqeron/replayer/client/**',
+    'org/limitless/seqeron/util/**',
+    'org/limitless/seqeron/metrics/SeqeronCounters*',
+    'org/limitless/seqeron/sequencer/FrameLayer*',
+    'org/limitless/seqeron/sequencer/SystemFrame*',
+    'org/limitless/seqeron/sequencer/PortLayout*',
+    'org/limitless/seqeron/sequencer/Ingress*',
+    'org/limitless/seqeron/sequencer/ClusterStreamSender*',
+]
+
+tasks.register('clientJar', Jar) {
+    description = 'The client tier alone — what a producer or consumer needs to talk to a cluster'
+    group       = 'build'
+    archiveAppendix = 'client'
+    from sourceSets.main.output
+    include clientTierPatterns
+}
+
+tasks.register('nodeJar', Jar) {
+    description = 'The node tier: the sequencer, the Replayer, the tools and the metrics exporter'
+    group       = 'build'
+    archiveAppendix = 'node'
+    from sourceSets.main.output
+    exclude clientTierPatterns
+}
+
+// The client tier must stay a tier: a client class that reaches for the node compiles here (one source
+// set) and then fails at runtime in a consumer that took `seqeron` alone, which is the worst place to
+// find out. Checked on the compiled classes rather than on imports, so a same-package reference —
+// sequencer/ holds both tiers — cannot slip through unimported.
+tasks.register('checkTierSeparation') {
+    description = 'Fails if the client tier references the node tier, or Aeron beyond the client'
+    group       = 'verification'
+    dependsOn tasks.named('classes')
+
+    final FileCollection clientClasses =
+        fileTree(sourceSets.main.output.classesDirs.singleFile).matching { include clientTierPatterns }
+    inputs.files clientClasses
+
+    doLast {
+        final List<String> forbidden = [
+            'org/limitless/seqeron/sequencer/Sequencer',
+            'org/limitless/seqeron/sequencer/TapPublisher',
+            'org/limitless/seqeron/sequencer/TapStallPolicy',
+            'org/limitless/seqeron/replayer/server/',
+            'org/limitless/seqeron/tools/',
+            'org/limitless/seqeron/metrics/Metrics',
+            'io/aeron/archive/',
+            'io/aeron/driver/',
+        ]
+        final List<String> leaks = []
+        clientClasses.each { File f ->
+            final String pool = new String(f.bytes, 'ISO-8859-1')
+            forbidden.each { String ref ->
+                if (pool.contains(ref)) {
+                    leaks << "${f.name} -> ${ref}"
+                }
+            }
+        }
+        if (!leaks.isEmpty()) {
+            throw new GradleException(
+                "client tier references the node tier:\n  " + leaks.join('\n  ') +
+                "\nEither the class belongs in the node tier, or the constant it reached for belongs in " +
+                "the client tier (FrameLayer, PortLayout, ReplayerStreamReceiver).")
+        }
+    }
+}
+
+tasks.named('check') { dependsOn 'checkTierSeparation' }
+
 // ── Publishing ─────────────────────────────────────────────────────────────────
-// The library artifact — the plain jar, whose POM carries the api dependencies above so a consumer
-// declares seqeron and gets Aeron and Agrona with it. `./gradlew publishToMavenLocal` is the whole
-// workflow for now; no remote repository is declared.
+// Two artifacts, by audience (see "Split by audience" below): `seqeron` is the client tier and
+// `seqeron-node` the cluster, the latter depending on the former. A consumer that only talks to a
+// cluster declares `seqeron` and gets aeron-client, aeron-cluster and Agrona with it — not the archive,
+// not the media driver, and none of the sequencer. `./gradlew publishToMavenLocal` is the whole workflow
+// for now; no remote repository is declared.
 //
 // The uber jar is deliberately NOT published. It is the runnable artifact every script resolves out of
 // build/libs, and it repacks Aeron and Agrona — publishing it would put a shaded copy of them on a
@@ -356,6 +442,38 @@ tasks.register('uberJar', Jar) {
 
 publishing {
     publications {
-        maven(MavenPublication) { from components.java }
+        client(MavenPublication) {
+            artifactId = 'seqeron'
+            artifact tasks.named('clientJar')
+            pom.withXml {
+                final Node deps = asNode().appendNode('dependencies')
+                [['io.aeron', 'aeron-client', aeronVersion],
+                 ['io.aeron', 'aeron-cluster', aeronVersion],
+                 ['org.agrona', 'agrona', agronaVersion]].each { g, a, v ->
+                    final Node d = deps.appendNode('dependency')
+                    d.appendNode('groupId', g)
+                    d.appendNode('artifactId', a)
+                    d.appendNode('version', v)
+                    d.appendNode('scope', 'compile')
+                }
+            }
+        }
+        node(MavenPublication) {
+            artifactId = 'seqeron-node'
+            artifact tasks.named('nodeJar')
+            pom.withXml {
+                final Node deps = asNode().appendNode('dependencies')
+                [[project.group, 'seqeron', project.version],
+                 ['io.aeron', 'aeron-archive', aeronVersion],
+                 ['io.aeron', 'aeron-driver', aeronVersion],
+                 ['uk.co.real-logic', 'sbe-tool', sbeVersion]].each { g, a, v ->
+                    final Node d = deps.appendNode('dependency')
+                    d.appendNode('groupId', g)
+                    d.appendNode('artifactId', a)
+                    d.appendNode('version', v)
+                    d.appendNode('scope', 'compile')
+                }
+            }
+        }
     }
 }
