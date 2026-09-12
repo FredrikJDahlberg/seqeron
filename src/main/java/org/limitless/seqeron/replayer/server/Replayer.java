@@ -68,11 +68,15 @@ public interface Replayer {
     long offerControl(DirectBuffer buffer, int offset, int length);
 
     /**
-     * Opens a fresh subscription to the internal self-check stream. One per check, never pooled: a
-     * previous check's abandoned replay must not be able to deliver into the next one.
+     * Opens a fresh subscription to the internal self-check stream, filtered to one replay session.
+     * Called after {@link #startReplay} so the session id is known: a fresh subscription alone does not
+     * isolate a check, because an earlier check's replay publication lingers on the same stream and a new
+     * subscription joins its image mid-replay — delivering that replay's second frame as if it were the
+     * next span's first.
+     * @param replaySessionId the session returned by {@link #startReplay}
      * @return the stream, to be {@link SelfCheckStream#close}d when the check ends
      */
-    SelfCheckStream openSelfCheckStream();
+    SelfCheckStream openSelfCheckStream(long replaySessionId);
 
     /**
      * Allocates one operator counter (see {@code SeqeronCounters}); the member id is the

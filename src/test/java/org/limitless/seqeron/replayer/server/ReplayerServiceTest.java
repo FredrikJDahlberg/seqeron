@@ -178,6 +178,18 @@ class ReplayerServiceTest {
     }
 
     @Test
+    void eachSelfCheckReadsOnlyItsOwnReplaySession() {
+        fakeReplayer.addRecording(6, 0, true, 4096);
+
+        replayerService.poll();
+
+        // Unscoped, the subscription also joins the previous check's lingering replay image mid-stream
+        // and reads its second frame as this span's first.
+        final long session = fakeReplayer.startedReplays().getLast().replaySessionId();
+        assertEquals(session, fakeReplayer.selfCheckSessionId());
+    }
+
+    @Test
     void aSelfCheckThatDeliversNothingInTimeIsStartedOverRatherThanFailed() {
         fakeReplayer.addRecording(6, 0, true, 4096); // no self-check frame queued
 

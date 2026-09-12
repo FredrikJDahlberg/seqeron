@@ -327,9 +327,9 @@ public final class ReplayerService {
             }
             selfCheckRecordingId = span.recordingId();
             selfCheckGlobalSeqNo = NULL_VALUE;
-            selfCheckSub = replayer.openSelfCheckStream();
             selfCheckReplaySessionId =
                 replayer.startReplay(span.recordingId(), span.startPosition(), replayLength, SELF_CHECK_STREAM_ID);
+            selfCheckSub = replayer.openSelfCheckStream(selfCheckReplaySessionId);
             selfCheckDeadlineNs = replayer.nanoTime() + SELF_CHECK_TIMEOUT_NS;
             onArchiveRecovered(); // it served a replay: whatever refused one earlier is over
         } catch (final RuntimeException ex) {
@@ -430,7 +430,6 @@ public final class ReplayerService {
             return;
         }
 
-        // ReplayComplete: the app caught up and is now on the live tap.
         if (inHeaderDecoder.templateId() == ReplayCompleteDecoder.TEMPLATE_ID) {
             replayCompleteDecoder.wrap(buffer, offset + MessageHeaderDecoder.ENCODED_LENGTH,
                                        inHeaderDecoder.blockLength(), inHeaderDecoder.version());
@@ -438,7 +437,6 @@ public final class ReplayerService {
             drainPending();
             return;
         }
-        // ReplayHeartbeat: the app is still riding its replay image. Refresh its slot so the TTL ages.
         if (inHeaderDecoder.templateId() == ReplayHeartbeatDecoder.TEMPLATE_ID) {
             replayHeartbeatDecoder.wrap(buffer, offset + MessageHeaderDecoder.ENCODED_LENGTH,
                                         inHeaderDecoder.blockLength(), inHeaderDecoder.version());
@@ -459,7 +457,6 @@ public final class ReplayerService {
             onClientIdCollision(clientId);
         }
 
-        // Answer from this node's own health before touching a slot or the archive — see checkReady.
         if (integrityFailed) {
             sendUnavailable(clientId, requestId);
             return;
@@ -587,15 +584,11 @@ public final class ReplayerService {
         if (segmentIndex < 0) {
             final ReplayRecordings.RecordingSpan active = findActiveRecording();
             if (active == null) {
-                // No recording to replay from yet; ask the app to hold and retry.
                 replaySlots.enqueue(clientId, requestId, segmentIndex, fromPosition);
                 sendPending(clientId, requestId);
                 return;
             }
             if (fromPosition < active.startPosition()) {
-                // The app is resuming at a position from a recording this one replaced: it predates
-                // anything we hold. Steer it onto the chain walk (see rejectResume) instead of handing
-                // the archive a position it will refuse.
                 rejectResume(clientId, requestId,
                              "position " + fromPosition + " predates recording " + active.recordingId() +
                                  "'s startPosition " + active.startPosition());
@@ -606,18 +599,15 @@ public final class ReplayerService {
         } else {
             final List<ReplayRecordings.RecordingSpan> segments = resolveSegments();
             if (segments.isEmpty()) {
-                // No tap recording on the local archive yet; hold and retry.
                 replaySlots.enqueue(clientId, requestId, segmentIndex, fromPosition);
                 sendPending(clientId, requestId);
                 return;
             }
             if (segmentIndex >= segments.size()) {
-                // The app has replayed all history.
                 sendReplaying(clientId, requestId, NO_REPLAY_NEEDED, 0, NULL_VALUE);
                 return;
             }
-            // The recording's own startPosition, not a hardcoded 0: a walk step means "this whole
-            // segment from its beginning", and the archive is the authority on where that is.
+
             final ReplayRecordings.RecordingSpan segment = segments.get(segmentIndex);
             recordingId = segment.recordingId();
             replayFrom = segment.startPosition();
@@ -628,15 +618,12 @@ public final class ReplayerService {
             tip = replayer.stopPosition(recordingId);
         }
         if (tip < 0) {
-            // Neither counter could say where this recording ends: its RecordingPos counter is already
-            // gone and its stopPosition is not written yet.
             replaySlots.enqueue(clientId, requestId, segmentIndex, fromPosition);
             sendPending(clientId, requestId);
             return;
         }
         final long boundedLength = tip - replayFrom;
         if (boundedLength <= 0) {
-            // Already at (or past) the tip — nothing historical to serve.
             sendReplaying(clientId, requestId, NO_REPLAY_NEEDED, tip, recordingId);
             return;
         }
@@ -768,9 +755,6 @@ public final class ReplayerService {
                 throw new IllegalStateException("[ReplayerService] control publication failed: " + result);
             }
             if (++spins > MAX_CONTROL_OFFER_SPINS) {
-                // NOT_CONNECTED is ordinary: an app's control subscription need not be registered yet
-                // when its first request lands, and the resend covers it. Back-pressure at the bound is
-                // not ordinary — that is an app that subscribed and stopped reading.
                 if (result != ExclusivePublication.NOT_CONNECTED) {
                     onControlReplyDropped(result);
                 }
@@ -852,9 +836,8 @@ public final class ReplayerService {
         return found;
     }
 
-    // Ordered oldest→newest list of tap recordings on the local archive. With every node recording its
-    // own continuous tap this is normally a single recording spanning every leader tenure, so there is usually nothing
-    // to stitch.
+    // Ordered oldest→newest list of recordings on the local archive. With every node recording its own continuous
+    // tap this is normally a single recording spanning every leader tenure, so there is usually nothing to stitch.
     private List<ReplayRecordings.RecordingSpan> resolveSegments() {
         final List<ReplayRecordings.RecordingSpan> spans = replayer.listTapRecordings();
         final long activeCount = spans.stream().filter(ReplayRecordings.RecordingSpan::active).count();

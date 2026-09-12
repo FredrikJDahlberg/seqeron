@@ -80,9 +80,9 @@ public final class AeronReplayer implements Replayer {
     }
 
     @Override
-    public SelfCheckStream openSelfCheckStream() {
-        final Subscription subscription =
-            aeron.addSubscription(ReplayerService.IPC_CHANNEL, ReplayerService.SELF_CHECK_STREAM_ID);
+    public SelfCheckStream openSelfCheckStream(final long replaySessionId) {
+        final String channel = ReplayerService.IPC_CHANNEL + "?session-id=" + (int)replaySessionId;
+        final Subscription subscription = aeron.addSubscription(channel, ReplayerService.SELF_CHECK_STREAM_ID);
         return new SelfCheckStream() {
             @Override
             public int poll(final FragmentHandler handler, final int fragmentLimit) {

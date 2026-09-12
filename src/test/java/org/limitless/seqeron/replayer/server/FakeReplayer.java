@@ -48,6 +48,7 @@ final class FakeReplayer implements Replayer {
 
     private final Deque<byte[]> selfCheckFrames = new ArrayDeque<>();
     private int selfCheckStreamsOpened;
+    private long selfCheckSessionId = -1;
 
     // Direct buffers, not byte[]: CountersManager requires 8-byte alignment.
     private final CountersManager countersManager = new CountersManager(
@@ -153,6 +154,11 @@ final class FakeReplayer implements Replayer {
         return selfCheckStreamsOpened;
     }
 
+    /** The replay session the most recent self-check subscription was scoped to. */
+    long selfCheckSessionId() {
+        return selfCheckSessionId;
+    }
+
     long counter(final int typeId) {
         return countersByTypeId.get(typeId).get();
     }
@@ -217,8 +223,9 @@ final class FakeReplayer implements Replayer {
     }
 
     @Override
-    public SelfCheckStream openSelfCheckStream() {
+    public SelfCheckStream openSelfCheckStream(final long replaySessionId) {
         ++selfCheckStreamsOpened;
+        selfCheckSessionId = replaySessionId;
         return new SelfCheckStream() {
             @Override
             public int poll(final FragmentHandler handler, final int fragmentLimit) {
