@@ -108,8 +108,10 @@ versions are pinned to match (`build.gradle`'s `ext` block, `CMakeLists.txt`'s `
 ./gradlew test        # JUnit 5, ~1s
 ```
 
-Every script resolves `build/libs/seqeron-0.1.0-uber.jar`, so `uberJar` is the prerequisite for all
-of them; `SEQERON_JAR` overrides the path.
+Every script needs that jar, so `uberJar` is the prerequisite for all of them. The operator scripts
+find it themselves — `build/libs/` in this checkout, `lib/` in an installed distribution — while the
+harnesses under `src/test/scripts` still name `build/libs/` and run from the repository root.
+`SEQERON_JAR` overrides the path either way, and `SEQERON_HOME` the root it is resolved from.
 
 The codegen tasks run as part of `compileJava` and can be invoked on their own:
 
@@ -157,7 +159,14 @@ Coverage is a JaCoCo report at `build/reports/jacoco/test/`, written by `./gradl
 ## Scripts
 
 Operator and cluster-lifecycle scripts live under `src/main/scripts/`; they start and stop things or
-are standalone tools, and run no tests. `ports.sh` and `paths.sh` are sourced by every other script.
+are standalone tools, and run no tests. `ports.sh`, `paths.sh` and `seqeron-home.sh` are sourced by
+every other script.
+
+They run from this checkout or from an installed distribution, working out which from what sits beside
+them; `SEQERON_HOME` overrides that and `SEQERON_JAR` the jar it resolves. `./gradlew operatorDist`
+writes the distribution to `build/install/seqeron` — `bin/` (these scripts), `lib/` (the uber jar) and
+`ops/` (the Prometheus and Grafana provisioning) — and `./gradlew operatorDistZip` archives it as
+`build/distributions/seqeron-<version>.zip`.
 
 | Script | Purpose |
 |--------|---------|

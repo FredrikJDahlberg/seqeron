@@ -19,14 +19,9 @@
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
-JAR="${SEQERON_JAR:-${REPO_ROOT}/build/libs/seqeron-0.1.0-uber.jar}"
-
-if [[ ! -f "${JAR}" ]]; then
-    echo "ERROR: ${JAR} not found — run: ./gradlew uberJar" >&2
-    exit 1
-fi
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/seqeron-home.sh"
+seqeron_require_jar
+JAR="${SEQERON_JAR}"
 
 DPROPS=()
 [[ -n "${METRICS_AGGREGATOR_PORT:-}" ]]    && DPROPS+=( "-DmetricsAggregator.port=${METRICS_AGGREGATOR_PORT}" )

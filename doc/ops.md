@@ -69,6 +69,9 @@ exporter.
 
 ### Prometheus
 
+The paths below are this checkout's. In an installed distribution (`./gradlew operatorDist`) the same
+tree is `ops/`, beside `bin/` and `lib/`.
+
 `src/main/ops/prometheus/prometheus.yml` — one job, scraping the aggregator's combined endpoint:
 
 ```

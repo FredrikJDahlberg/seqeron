@@ -345,6 +345,50 @@ tasks.register('uberJar', Jar) {
     duplicatesStrategy = DuplicatesStrategy.EXCLUDE
 }
 
+// ── Operator distribution ──────────────────────────────────────────────────────
+// What an operator installs: the launchers, the jar they run, and the ops-plane provisioning they point
+// Prometheus and Grafana at. Until this existed the scripts ran only from a source checkout — they
+// resolved the jar by walking `../../..` up to a repo root and naming build/libs, so getting a launcher
+// meant cloning and building. seqeron-home.sh reads either layout and SEQERON_HOME overrides both.
+//
+// bin/ carries the sourced files (paths.sh, ports.sh, seqeron-home.sh) beside the executable ones:
+// every `source` in them is "$(dirname "${BASH_SOURCE[0]}")/<name>", so adjacency is the contract and
+// separating them is the one thing that would break it.
+
+tasks.register('operatorDist', Sync) {
+    description = 'Lays out the operator distribution: build/install/seqeron/{bin,lib,ops}'
+    group       = 'distribution'
+
+    into layout.buildDirectory.dir('install/seqeron')
+
+    into('bin') {
+        from 'src/main/scripts'
+        filePermissions { unix('0755') }
+    }
+    into('lib') { from tasks.named('uberJar') }
+    into('ops') { from 'src/main/ops' }
+    from 'LICENSE'
+    from 'NOTICE'
+}
+
+tasks.register('operatorDistZip', Zip) {
+    description = 'Archives the operator distribution: build/distributions/seqeron-<version>.zip'
+    group       = 'distribution'
+
+    from tasks.named('operatorDist')
+    into "seqeron-${project.version}"
+    archiveFileName      = "seqeron-${project.version}.zip"
+    destinationDirectory = layout.buildDirectory.dir('distributions')
+}
+
+// The application plugin brings its own distZip/distTar/installDist, which ship Gradle's generated
+// start scripts over a lib/ of loose jars — a second, different "distribution" that nothing here wants
+// and that would be the wrong answer to "how do I install seqeron". The plugin stays for mainClass,
+// which `run` and the uber jar's manifest both read.
+tasks.named('distZip')     { enabled = false }
+tasks.named('distTar')     { enabled = false }
+tasks.named('installDist') { enabled = false }
+
 // ── Split by audience ──────────────────────────────────────────────────────────
 // Two published artifacts out of one source tree (doc/future-arch.md §6): `seqeron` is the CLIENT tier —
 // what a process that merely talks to a cluster needs: the envelope, the ingress client, the replay

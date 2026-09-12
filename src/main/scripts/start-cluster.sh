@@ -23,7 +23,9 @@
 
 set -euo pipefail
 
-source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/paths.sh"
+_seqeron_scripts="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${_seqeron_scripts}/paths.sh"
+source "${_seqeron_scripts}/seqeron-home.sh"
 
 usage() {
     echo "Usage: $0"
@@ -36,7 +38,8 @@ fi
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
-JAR="build/libs/seqeron-0.1.0-uber.jar"
+seqeron_require_jar
+JAR="${SEQERON_JAR}"
 
 JAVA_OPTS=(
     --add-opens=java.base/sun.nio.ch=ALL-UNNAMED
@@ -57,11 +60,6 @@ REPLAYER_LOG="${LOG_DIR}/ReplayerServer.log"
 # so archive/replay/ingress use aeron:ipc rather than a standalone driver.
 
 # ── Pre-flight checks ─────────────────────────────────────────────────────────
-
-if [[ ! -f "${JAR}" ]]; then
-    echo "ERROR: ${JAR} not found — run: ./gradlew uberJar" >&2
-    exit 1
-fi
 
 mkdir -p "${LOG_DIR}"
 

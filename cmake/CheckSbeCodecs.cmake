@@ -5,6 +5,12 @@
 # deterministic, so "generate again and compare" is exact rather than approximate.
 #
 # Invoked as: cmake -DCOMMITTED=<dir> -DFRESH=<dir> -P CheckSbeCodecs.cmake
+#
+# Required, and not boilerplate: `cmake -P` sets no policy version, so under CMake 3.x every policy is
+# unset and `if(... IN_LIST ...)` (CMP0057) is not recognised — the script dies with "Unknown arguments
+# specified" rather than running. CMake 4.x defaults them NEW in script mode, which is why this passed
+# locally and failed in CI. Stating the floor sets CMP0057 NEW on every version.
+cmake_minimum_required(VERSION 3.28)
 
 file(GLOB_RECURSE committed_files RELATIVE "${COMMITTED}" "${COMMITTED}/*.h")
 file(GLOB_RECURSE fresh_files     RELATIVE "${FRESH}"     "${FRESH}/*.h")

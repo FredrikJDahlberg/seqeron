@@ -71,17 +71,17 @@ if [[ $# -lt 1 ]]; then
     exit 1
 fi
 
-# SEQERON_JAR overrides, as it does for clusterctl.sh and the metrics scripts. Which IR the run has in
-# front of it is the classpath's, not the printer's: the uber jar holds
-# every module's and names every payload, the cluster tier's own artifact holds three and names none.
-JAR="${SEQERON_JAR:-build/libs/seqeron-0.1.0-uber.jar}"
+# SEQERON_JAR overrides, as it does for clusterctl.sh and the metrics scripts — and now, unlike before,
+# the default resolves against SEQERON_HOME rather than the caller's working directory, so this runs
+# from anywhere rather than only from the repository root. Which IR the run has in front of it is the
+# classpath's, not the printer's: the uber jar holds every module's and names every payload, the
+# cluster tier's own artifact holds three and names none.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/seqeron-home.sh"
 
 # ── Pre-flight checks ─────────────────────────────────────────────────────────
 
-if [[ ! -f "${JAR}" ]]; then
-    echo "ERROR: ${JAR} not found — run: ./gradlew uberJar" >&2
-    exit 1
-fi
+seqeron_require_jar
+JAR="${SEQERON_JAR}"
 
 # ── Run ───────────────────────────────────────────────────────────────────────
 # Argument validation (including the archive dir) is the printer's; it holds the option table.

@@ -387,9 +387,19 @@ seqeron's own package namespace; `collectSbeIr` wipes its destination first, lik
 ## Scripts
 
 `src/main/scripts` holds the operator and cluster-lifecycle scripts; `ports.sh` (the port formula, mirrored
-by `PortLayout`, both languages) and `paths.sh` are sourced by every other script.
-`src/test/scripts` holds the five harnesses. Both resolve paths relative to the repository root — they
-were written when this tree sat under `cluster/`, so check the depth of any `../..` you add.
+by `PortLayout`, both languages), `paths.sh` and `seqeron-home.sh` are sourced by every other script.
+`src/test/scripts` holds the five harnesses, and those still resolve paths relative to the repository
+root — they were written when this tree sat under `cluster/`, so check the depth of any `../..` you add.
+
+**The operator scripts no longer do.** `seqeron-home.sh` sets `SEQERON_HOME` by recognising which layout
+it is in — a distribution, where `bin/` sits beside `lib/`, or this checkout, where the scripts sit at
+`src/main/scripts` — and `seqeron_require_jar` then globs the uber jar out of `lib/` or `build/libs`.
+Both are overridable (`SEQERON_HOME`, `SEQERON_JAR`). That replaced a
+`REPO_ROOT="${SCRIPT_DIR}/../../.."` in four scripts, which was wrong silently rather than loudly (`cd`
+up three succeeds in any tree deep enough) and carried the version literal `0.1.0` in each of them.
+`./gradlew operatorDist` lays the distribution out under `build/install/seqeron`, `operatorDistZip`
+archives it, and the application plugin's own `distZip`/`distTar`/`installDist` are disabled so there is
+one answer to how seqeron is installed.
 
 `clusterctl.sh` commands: `start`, `shutdown`, `activate <gatewayId>`, `load-topology <file>`, `counters`,
 `help`; anything unrecognized passes through to `io.aeron.cluster.ClusterTool` against this node's cluster
