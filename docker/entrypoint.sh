@@ -9,6 +9,7 @@
 set -euo pipefail
 
 source /opt/seqeron/ports.sh
+source /opt/seqeron/seqeron-home.sh
 
 MEMBER_ID="${MEMBER_ID:?MEMBER_ID must be set}"
 NODE_COUNT="${NODE_COUNT:-3}"
@@ -27,12 +28,7 @@ mkdir -p "$(dirname "${LOG_FILE}")"
 # healthcheck pass on stale text. docker logs keeps the full history across restarts regardless.
 exec > >(tee "${LOG_FILE}") 2>&1
 
-JAVA_OPTS=(
-    --add-opens=java.base/sun.nio.ch=ALL-UNNAMED
-    --add-opens=java.base/java.lang=ALL-UNNAMED
-    --add-opens=java.base/java.lang.reflect=ALL-UNNAMED
-    --add-opens=java.base/jdk.internal.misc=ALL-UNNAMED
-)
+JAVA_OPTS=("${SEQERON_JAVA_OPTS[@]}")
 
 # sequencer.host is what the archive control, ingress and replication channels bind to and
 # advertise; localhost would be this container's loopback alone and no peer could reach it. The

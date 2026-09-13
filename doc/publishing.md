@@ -34,8 +34,8 @@ Two decisions are already made and are **not** open items:
 - **Aeron, Agrona and the two Aeron modules are `api` dependencies**, because they appear in this
   repo's own public signatures (`DirectBuffer` in `SequencedFrameDecoder`/`SystemFrame`, `Aeron` and
   `Image` in `ReplayerStreamReceiver`, `AeronArchive` in `ReplayerService`, `ClusteredService` in
-  `SequencerService`). `aeron-driver` and `sbe-tool` stay `implementation`. So each POM carries its
-  own at compile scope and a consumer declares one dependency.
+  `SequencerService`). `aeron-driver` and `sbe-tool` stay `implementation`, and `seqeron-node`'s
+  POM carries them at runtime scope. A consumer declares one dependency.
 - **The jar is split by audience, and the split is by package.** `seqeron` is what a process that
   merely talks to a cluster needs — the frame and replay codecs, `replayer.client`, the ingress client,
   `util.Logger`, `SeqeronCounters`, and `sequencer`'s `FrameLayer`, `SystemFrame` and `PortLayout` —
@@ -90,9 +90,10 @@ Central requires every artifact signed. That means the `signing` plugin, a key, 
 private half reachable from wherever the publish runs — a real secret-management question if it
 ever runs in CI. JitPack and GitHub Packages require none of it.
 
-### 5. No sources or javadoc jar
+### 5. No javadoc jar
 
-`withSourcesJar()` and `withJavadocJar()` are not enabled. Central requires both. Sources is free.
+Both publications carry a sources jar (`clientSourcesJar`, `nodeSourcesJar`), cut by the same tier
+patterns as the classes. There is no javadoc jar, and Central requires one.
 Javadoc runs clean today (`./gradlew javadoc` succeeds) but emits ~100 `no comment` warnings, all
 from the generated SBE codecs, and would publish a jar that is mostly generated accessors — so
 enabling it wants an exclusion for the generated source roots rather than needing one.
@@ -153,13 +154,13 @@ to a prefix by hand.
 
 ## Cross-cutting
 
-### 8. Nothing in CI builds the examples
+### 8. CI builds the examples — closed
 
-`.github/workflows/ci.yml` builds and tests the repo; it never configures `examples/cpp` or runs
-`publishToMavenLocal` and builds `examples/java`. The examples are the only thing that exercises
-the consumable surface — a change that breaks the artifact (a dependency re-scoped back to
-`implementation`, an include root that stops resolving out-of-tree) passes CI today and is found
-by whoever tries to consume it.
+The `examples` job in `.github/workflows/ci.yml` runs `publishToMavenLocal`, builds `examples/java`
+against it, and builds `examples/cpp` over the checkout with `FetchContent`. A change that breaks the
+consumable surface (a dependency re-scoped back to `implementation`, an include root that stops
+resolving out-of-tree) now fails CI. Neither example is run, since following a tap needs a live
+cluster, and the installed `find_package` path is still unexercised (§7).
 
 ### 9. A consumer inherits this repo's Aeron pin
 

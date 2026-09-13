@@ -34,7 +34,7 @@ jobs:
           path: |
             ~/.gradle/caches
             ~/.gradle/wrapper
-          key: gradle-java-${{ hashFiles('*.gradle', 'gradle/wrapper/gradle-wrapper.properties') }}
+          key: gradle-java-${{ hashFiles('*.gradle', 'versions.properties', 'gradle/wrapper/gradle-wrapper.properties') }}
           restore-keys: gradle-java-
 
       # docker/Dockerfile copies the jar rather than building it — a Gradle stage inside the image

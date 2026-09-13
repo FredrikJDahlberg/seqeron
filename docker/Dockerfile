@@ -7,10 +7,14 @@
 # CI already caches Gradle on the runner, and a Gradle stage would miss that cache every run.
 FROM eclipse-temurin:21-jre
 
-COPY build/libs/seqeron-0.1.0-uber.jar /opt/seqeron/seqeron.jar
-COPY src/main/scripts/ports.sh          /opt/seqeron/ports.sh
-COPY docker/entrypoint.sh               /opt/seqeron/entrypoint.sh
+# Globbed so the version is not written here; more than one uber jar in build/libs fails the COPY.
+COPY build/libs/seqeron-*-uber.jar       /opt/seqeron/seqeron.jar
+COPY src/main/scripts/ports.sh           /opt/seqeron/ports.sh
+COPY src/main/scripts/seqeron-home.sh    /opt/seqeron/seqeron-home.sh
+COPY docker/entrypoint.sh                /opt/seqeron/entrypoint.sh
 
+# SEQERON_HOME set, so seqeron-home.sh does not guess a layout this image does not have.
+ENV SEQERON_HOME=/opt/seqeron
 ENV SEQERON_JAR=/opt/seqeron/seqeron.jar
 
 ENTRYPOINT ["/opt/seqeron/entrypoint.sh"]

@@ -21,8 +21,10 @@ repositories {
 
 // One dependency. seqeron declares Aeron and Agrona api, since they are in the signatures a consumer
 // compiles against, so they arrive with it and are not redeclared here.
+// The version is read from the checkout this example ships in, so a bump does not break it. An outside
+// consumer writes the number instead.
 dependencies {
-    implementation 'org.limitless:seqeron:0.1.0'
+    implementation "org.limitless:seqeron:${file('../../VERSION').text.trim()}"
 }
 
 application {

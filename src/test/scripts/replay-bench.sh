@@ -28,6 +28,8 @@ set -uo pipefail
 cd "$(dirname "$0")/../../.." || exit 1
 source src/main/scripts/ports.sh
 source src/main/scripts/paths.sh
+source src/main/scripts/seqeron-home.sh
+seqeron_require_jar
 
 PRELOAD="${1:-20000}"
 LOAD_DURING="${2:-0}"
@@ -66,13 +68,8 @@ until grep -q "READY" "$START_LOG" 2>/dev/null; do
 done
 
 # Build the archive.
-JAVA_OPTS=(
-    --add-opens=java.base/sun.nio.ch=ALL-UNNAMED
-    --add-opens=java.base/java.lang=ALL-UNNAMED
-    --add-opens=java.base/java.lang.reflect=ALL-UNNAMED
-    --add-opens=java.base/jdk.internal.misc=ALL-UNNAMED
-)
-JAR="build/libs/seqeron-0.1.0-uber.jar"
+JAVA_OPTS=("${SEQERON_JAVA_OPTS[@]}")
+JAR="${SEQERON_JAR}"
 java "${JAVA_OPTS[@]}" -Dprobe.memberId=0 -Dprobe.count="$PRELOAD" -Dprobe.fillerBytes="$FILLER_BYTES" \
     -cp "$JAR" org.limitless.seqeron.tools.ClusterProbe submit > "$BENCH_LOG_DIR/preload.log" 2>&1
 sleep 3

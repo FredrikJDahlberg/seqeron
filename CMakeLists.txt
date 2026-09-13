@@ -2,8 +2,18 @@
 # client, the pure policy classes, and the codecs for the three schemas the cluster tier speaks. It
 # declares no simdfix and generates no application codecs, and there is no C++ replay server: the
 # server side of the replay protocol is Java only.
-cmake_minimum_required(VERSION 3.28)
-project(seqeron_core VERSION 0.1.0 LANGUAGES CXX)
+# 3.30: Aeron 1.51.0's own CMakeLists requires it, so an older CMake should stop here, not inside Aeron.
+cmake_minimum_required(VERSION 3.30)
+# VERSION is the one place the number is written; build.gradle reads the same file.
+file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/VERSION" SEQERON_VERSION LIMIT_COUNT 1)
+# Aeron and SBE versions come from versions.properties, which build.gradle reads too.
+file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/versions.properties" SEQERON_AERON_VERSION REGEX "^aeron=")
+string(REPLACE "aeron=" "" SEQERON_AERON_VERSION "${SEQERON_AERON_VERSION}")
+file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/versions.properties" SBE_VERSION REGEX "^sbe=")
+string(REPLACE "sbe=" "" SBE_VERSION "${SBE_VERSION}")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/VERSION" "${CMAKE_CURRENT_SOURCE_DIR}/versions.properties")
+project(seqeron_core VERSION ${SEQERON_VERSION} LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -39,10 +49,11 @@ if(SEQERON_COVERAGE)
     endif()
 endif()
 
-# Aeron — fetched and built from source. The version is a variable because the installed package
-# states the same floor: cmake/seqeronConfig.cmake.in's find_dependency(aeron) is configured from it,
-# so a consumer's Aeron cannot be older than the one this repo develops against.
-set(SEQERON_AERON_VERSION "1.51.0")
+# Aeron — an installed one (built with -DAERON_INSTALL_TARGETS=ON, on CMAKE_PREFIX_PATH) is used when
+# find_package finds one at or above SEQERON_AERON_VERSION, the same floor cmake/seqeronConfig.cmake.in
+# states; otherwise it is fetched and built from source. GLOBAL, so the imported targets reach a parent
+# that adds this build. Everything below links the aeron:: names, which Aeron defines as aliases when
+# fetched and exports when installed.
 
 set(AERON_TESTS            OFF CACHE BOOL "" FORCE)
 set(AERON_SAMPLES          OFF CACHE BOOL "" FORCE)
@@ -60,6 +71,7 @@ FetchContent_Declare(
     SYSTEM
     UPDATE_COMMAND ""
     PATCH_COMMAND  ${CMAKE_COMMAND} -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/FixAeronCodecOutputs.cmake
+    FIND_PACKAGE_ARGS ${SEQERON_AERON_VERSION} GLOBAL
 )
 FetchContent_MakeAvailable(aeron)
 
@@ -85,7 +97,7 @@ endif()
 
 # ── SBE C++ codecs ─────────────────────────────────────────────────────────────
 # The codecs for the three schemas this repo owns are GENERATED AND COMMITTED, under
-# src/main/generated/sbe/core. The git tag is the C++ artifact (doc/future-arch.md §6), so shipping
+# src/main/generated/sbe/core. The git tag is the C++ artifact, so shipping
 # them with it is what lets a consumer build against seqeron with no JDK and no SBE tool — a C++23
 # compiler is the whole prerequisite list. The schema is core's; there is nothing for a consumer to
 # regenerate.
@@ -100,7 +112,6 @@ endif()
 # codec fails to compile rather than merely being asked not to.
 set(SBE_CORE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src/main/generated/sbe/core")
 
-set(SBE_VERSION "1.38.1")
 set(SBE_SCHEMAS
     "${CMAKE_CURRENT_SOURCE_DIR}/src/main/sbe/sbe-cluster.xml"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/main/sbe/sbe-replay.xml"
@@ -204,10 +215,10 @@ target_include_directories(seqeron_core SYSTEM INTERFACE
 # they carry -fsanitize=address — a consumer linking seqeron_core would silently get AddressSanitizer
 # in its own code. Targets in this repo add seqeron_flags themselves.
 target_link_libraries(seqeron_core INTERFACE
-    $<BUILD_INTERFACE:aeron_client_wrapper>
-    $<BUILD_INTERFACE:aeron>
-    $<BUILD_INTERFACE:aeron_archive_wrapper>
-    $<BUILD_INTERFACE:aeron_archive_c_client>
+    $<BUILD_INTERFACE:aeron::aeron_client_wrapper>
+    $<BUILD_INTERFACE:aeron::aeron>
+    $<BUILD_INTERFACE:aeron::aeron_archive_wrapper>
+    $<BUILD_INTERFACE:aeron::aeron_archive_c_client>
 )
 
 # Installing is the top-level build's business: a parent that vendors this one should not find
@@ -268,9 +279,9 @@ if(SEQERON_BUILD_TESTS)
     target_link_libraries(core_tests PRIVATE
         seqeron_core
         seqeron_flags
-        aeron_archive_wrapper
-        aeron_archive_c_client
-        aeron
+        aeron::aeron_archive_wrapper
+        aeron::aeron_archive_c_client
+        aeron::aeron
         GTest::gtest_main
     )
 

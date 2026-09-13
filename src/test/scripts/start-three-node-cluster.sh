@@ -57,12 +57,7 @@ JAR="${SEQERON_JAR}"
 # 1 = the caller supplies the node consumers, so don't start the probe followers (see the header).
 NO_CONSUMERS="${SEQERON_NO_CONSUMERS:-0}"
 
-JAVA_OPTS=(
-    --add-opens=java.base/sun.nio.ch=ALL-UNNAMED
-    --add-opens=java.base/java.lang=ALL-UNNAMED
-    --add-opens=java.base/java.lang.reflect=ALL-UNNAMED
-    --add-opens=java.base/jdk.internal.misc=ALL-UNNAMED
-)
+JAVA_OPTS=("${SEQERON_JAVA_OPTS[@]}")
 
 LOG_DIR="logs"
 REPLAYER_LOG="${LOG_DIR}/ReplayerServer.log"

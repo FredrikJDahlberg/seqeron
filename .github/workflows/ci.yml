@@ -54,7 +54,7 @@ jobs:
           path: |
             ~/.gradle/caches
             ~/.gradle/wrapper
-          key: gradle-${{ hashFiles('CMakeLists.txt') }}
+          key: gradle-${{ hashFiles('CMakeLists.txt', 'versions.properties') }}
           restore-keys: gradle-
 
       - name: Configure
@@ -87,7 +87,7 @@ jobs:
           path: |
             ~/.gradle/caches
             ~/.gradle/wrapper
-          key: gradle-java-${{ hashFiles('*.gradle', 'gradle/wrapper/gradle-wrapper.properties') }}
+          key: gradle-java-${{ hashFiles('*.gradle', 'versions.properties', 'gradle/wrapper/gradle-wrapper.properties') }}
           restore-keys: gradle-java-
 
       # JUnit 5 suite for the Java state machines; no Aeron runtime, no C++ build.
@@ -116,8 +116,8 @@ jobs:
           name: jacoco-report
           path: build/reports/jacoco/test/
 
-  # The only thing that exercises the consumable surface. Both examples resolve seqeron the way an
-  # outside consumer does — a published coordinate, and FetchContent over the checkout — so a
+  # The consumable surface from source; the `installed` job below takes the find_package path. Both
+  # examples resolve seqeron the way an outside consumer does — a published coordinate, and FetchContent over the checkout — so a
   # dependency re-scoped back to `implementation` or an include root that stops resolving
   # out-of-tree fails here rather than in someone else's build. Neither is run: following a tap
   # needs a live cluster, which is what the harnesses under src/test/scripts are for.
@@ -154,7 +154,7 @@ jobs:
           path: |
             ~/.gradle/caches
             ~/.gradle/wrapper
-          key: gradle-examples-${{ hashFiles('CMakeLists.txt', '*.gradle') }}
+          key: gradle-examples-${{ hashFiles('CMakeLists.txt', '*.gradle', 'versions.properties') }}
           restore-keys: gradle-examples-
 
       # ~/.m2 is the whole distribution channel today (doc/publishing.md): no remote repository is
@@ -172,3 +172,71 @@ jobs:
 
       - name: Build the C++ example
         run: cmake --build examples/cpp/build --target follow_stream -j $(nproc)
+
+  # find_package(seqeron) against an installed tree, with an installed Aeron beside it
+  # (doc/publishing.md §7). The config file, the export set and the found-Aeron branch of
+  # CMakeLists.txt are only exercised here.
+  installed:
+    name: installed package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      PREFIX: ${{ github.workspace }}/prefix
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Add Kitware's CMake repository
+        run: |
+          wget -qO - https://apt.kitware.com/keys/kitware-archive-latest.asc \
+            | gpg --dearmor - | sudo tee /usr/share/keyrings/kitware-archive-keyring.gpg > /dev/null
+          echo 'deb [signed-by=/usr/share/keyrings/kitware-archive-keyring.gpg] https://apt.kitware.com/ubuntu/ noble main' \
+            | sudo tee /etc/apt/sources.list.d/kitware.list > /dev/null
+
+      - name: Install dependencies
+        run: |
+          grep -rl 'dl\.google\.com' /etc/apt/sources.list.d/ | sudo xargs -r rm -f || true
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y cmake uuid-dev
+
+      # Aeron's archive client generates its codecs through Aeron's own Gradle build.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-installed-${{ hashFiles('versions.properties') }}
+          restore-keys: gradle-installed-
+
+      # The version seqeron pins, with the same codec-output patch its FetchContent applies. No driver:
+      # seqeron_core needs only the clients.
+      - name: Install Aeron
+        run: |
+          AERON_VERSION="$(sed -n 's/^aeron=//p' versions.properties)"
+          git clone --depth 1 --branch "${AERON_VERSION}" https://github.com/real-logic/aeron.git "${RUNNER_TEMP}/aeron"
+          (cd "${RUNNER_TEMP}/aeron" && cmake -P "${GITHUB_WORKSPACE}/cmake/FixAeronCodecOutputs.cmake")
+          cmake -S "${RUNNER_TEMP}/aeron" -B "${RUNNER_TEMP}/aeron-build" -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="${PREFIX}" -DAERON_INSTALL_TARGETS=ON -DBUILD_AERON_DRIVER=OFF \
+            -DAERON_TESTS=OFF -DAERON_BUILD_SAMPLES=OFF -DAERON_BUILD_DOCUMENTATION=OFF
+          cmake --build "${RUNNER_TEMP}/aeron-build" -j "$(nproc)"
+          cmake --install "${RUNNER_TEMP}/aeron-build"
+
+      # Header-only, so installing needs a configure and no build. No _deps/aeron-src means the
+      # installed Aeron was found rather than fetched.
+      - name: Install seqeron
+        run: |
+          cmake -S . -B build-install -DCMAKE_PREFIX_PATH="${PREFIX}" -DCMAKE_INSTALL_PREFIX="${PREFIX}" \
+            -DSEQERON_BUILD_TESTS=OFF
+          test ! -d build-install/_deps/aeron-src
+          cmake --install build-install
+
+      - name: Build the C++ example against the installed package
+        run: |
+          cmake -S examples/cpp -B examples/cpp/build-installed -DCMAKE_BUILD_TYPE=Release \
+            -DSEQERON_FIND_PACKAGE=ON -DCMAKE_PREFIX_PATH="${PREFIX}"
+          cmake --build examples/cpp/build-installed --target follow_stream -j "$(nproc)"

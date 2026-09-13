@@ -51,9 +51,11 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../../main/scripts/ports.sh"
 source "${SCRIPT_DIR}/../../main/scripts/paths.sh"
+source "${SCRIPT_DIR}/../../main/scripts/seqeron-home.sh"
 
 # ── Config ────────────────────────────────────────────────────────────────────
-JAR="build/libs/seqeron-0.1.0-uber.jar"
+seqeron_require_jar
+JAR="${SEQERON_JAR}"
 # TestGateway is harness code and lives in :cluster's TEST source set, so it is in no jar — launched off
 # the compiled test classes beside it.
 TEST_CLASSES="build/classes/java/test"
@@ -98,12 +100,7 @@ TAP_STALL_DEADLINE_SECS="${TAP_STALL_DEADLINE_SECS:-10}"
 SESSION_TIMEOUT_MS="${SESSION_TIMEOUT_MS:-1000}"
 PAUSE_SECS=0.5
 
-JAVA_OPTS=(
-  --add-opens=java.base/sun.nio.ch=ALL-UNNAMED
-  --add-opens=java.base/java.lang=ALL-UNNAMED
-  --add-opens=java.base/java.lang.reflect=ALL-UNNAMED
-  --add-opens=java.base/jdk.internal.misc=ALL-UNNAMED
-)
+JAVA_OPTS=("${SEQERON_JAVA_OPTS[@]}")
 BASE_DIR="${TMP_DIR}/seqeron-seqfo"
 CLUSTER_MEMBERS="$(cluster_members_string 3)"
 CN=0            # observation / tap-drop-target consumer host — a fault target like any other member
@@ -212,7 +209,6 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 # ── Bring-up ─────────────────────────────────────────────────────────────────────
-[[ -f "$JAR" ]] || { echo "missing $JAR — run ./gradlew uberJar"; exit 1; }
 [[ -f "$TEST_CLASSES/org/limitless/seqeron/tools/TestGateway.class" ]] \
   || { echo "missing TestGateway in $TEST_CLASSES — run ./gradlew compileTestJava"; exit 1; }
 
@@ -793,8 +789,7 @@ check_invariants() {
 # a globalSeqNo, so it contributes nothing to the scan below. The node's high-water mark is the max globalSeqNo it recorded;
 # all nodes' high-water marks must match (convergence).
 verify_sequence() {
-  local jar="build/libs/seqeron-0.1.0-uber.jar" m rc=0
-  [[ -f "$jar" ]] || { log "SAFETY: skipped (no $jar — run ./gradlew uberJar)"; return 0; }
+  local jar="$JAR" m rc=0
   # Quiesce first: stop the background load and let the last sequenced messages replicate to every node.
   # That alone isn't enough for a stationary stream, though: the 1 Hz ClusterHeartbeat (the cluster clock) keeps
   # advancing globalSeqNo forever by design, background load or not, and the three archives are dumped

@@ -2,7 +2,7 @@ package org.limitless.seqeron.sequencer;
 
 /**
  * Canonical cluster port-layout formula — the Java twin of {@code sequencer/PortLayout.hpp}, which
- * carried it alone until the jar was split by audience (doc/future-arch.md §6). Cluster member ports
+ * carried it alone until the jar was split by audience. Cluster member ports
  * only: an application's own bases are its own, because a reusable sequencer must not name the
  * processes that talk to it. Which block each product owns is {@code doc/registries.md} §2's; the
  * only thing core states in code is its own reservation, below.

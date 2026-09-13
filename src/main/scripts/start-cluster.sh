@@ -41,12 +41,7 @@ fi
 seqeron_require_jar
 JAR="${SEQERON_JAR}"
 
-JAVA_OPTS=(
-    --add-opens=java.base/sun.nio.ch=ALL-UNNAMED
-    --add-opens=java.base/java.lang=ALL-UNNAMED
-    --add-opens=java.base/java.lang.reflect=ALL-UNNAMED
-    --add-opens=java.base/jdk.internal.misc=ALL-UNNAMED
-)
+JAVA_OPTS=("${SEQERON_JAVA_OPTS[@]}")
 
 # 1 = the caller supplies the consumer replica, so don't start the probe follower.
 NO_CONSUMERS="${SEQERON_NO_CONSUMERS:-0}"

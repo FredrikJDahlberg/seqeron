@@ -91,14 +91,15 @@ covers what survives node loss, failover, a stuck archive and a lost frame.
 ## Build
 
 Requires **JDK 21** for the Java half and a **C++23** compiler for the C++ one, and fetches Aeron
-1.51.0 and GoogleTest from source. The C++ half needs no JDK of seqeron's own making: the codecs for
+1.51.0 and GoogleTest from source — Aeron only when `find_package` finds no installed one at that
+version or newer (built with `-DAERON_INSTALL_TARGETS=ON`, on `CMAKE_PREFIX_PATH`). The C++ half needs no JDK of seqeron's own making: the codecs for
 the three schemas this repo owns are generated and committed under `src/main/generated/sbe/core`, so
 a consumer compiles them rather than running the SBE tool (`doc/publishing.md`). Java is still needed
 to *change* them — `RegenerateSbeCodecs`, then commit — and Aeron's own build requires a JDK 17+
 regardless (`aeron-archive/src/main/c` does `find_package(Java 17 REQUIRED)` and Aeron's CMake shells
 out to its Gradle build), so a from-source Aeron keeps one on the machine either way.
 Both halves generate independently from the same schemas under `src/main/sbe`, so their Aeron and SBE
-versions are pinned to match (`build.gradle`'s `ext` block, `CMakeLists.txt`'s `FetchContent`).
+versions are pinned once, in `versions.properties`, which both builds read.
 
 ### Java
 
@@ -137,8 +138,8 @@ Apple clang; CI builds it on Ubuntu with both clang and gcc-14.
 ## Tests
 
 ```bash
-cmake --build cmake-build-debug --target run_tests   # C++: 132 cases
-./gradlew test                                       # Java: 286 cases
+cmake --build cmake-build-debug --target run_tests   # C++: 130 cases
+./gradlew test                                       # Java: 317 cases
 ```
 
 `run_tests` is `ctest --output-on-failure` with the build dependency wired up; plain `ctest` works
@@ -201,17 +202,14 @@ configured entirely via system properties.
 ```bash
 ./gradlew uberJar
 
-java \
-  --add-opens=java.base/sun.nio.ch=ALL-UNNAMED \
-  --add-opens=java.base/java.lang=ALL-UNNAMED \
-  --add-opens=java.base/java.lang.reflect=ALL-UNNAMED \
-  -Dsequencer.memberId=0 \
-  -jar build/libs/seqeron-0.1.0-uber.jar
+java -Dsequencer.memberId=0 -jar build/libs/seqeron-0.1.0-uber.jar
 # [SequencerServer] Starting member 0 | ingress=aeron:udp?endpoint=localhost:9302 | archive=aeron:udp?endpoint=localhost:9301 | baseDir=/tmp/seqeron-seq
 # [SequencerServer/0] Running — Ctrl-C to stop
 ```
 
-The node embeds its own MediaDriver and Archive — no separate `aeronmd` needed. Data is written to
+The `--add-opens` flags Aeron needs are in the jar's manifest, which `java -jar` honours; a `-cp`
+launch still passes them (`seqeron-home.sh`'s `SEQERON_JAVA_OPTS`). The node embeds its own MediaDriver
+and Archive — no separate `aeronmd` needed. Data is written to
 `$TMPDIR/seqeron-seq/archive-0` and `$TMPDIR/seqeron-seq/cluster-0`.
 
 `src/main/scripts/start-cluster.sh` does the same thing plus a co-located `ReplayerServer` and a
@@ -231,9 +229,6 @@ Run each command on its respective host (or in separate terminals on localhost f
 
 ```bash
 java \
-  --add-opens=java.base/sun.nio.ch=ALL-UNNAMED \
-  --add-opens=java.base/java.lang=ALL-UNNAMED \
-  --add-opens=java.base/java.lang.reflect=ALL-UNNAMED \
   -Dsequencer.memberId=0 \
   -Dsequencer.baseDir=/var/seqeron-seq \
   "-Dsequencer.clusterMembers=0,host0:9302,host0:9303,host0:9304,host0:9305,host0:9301|1,host1:9312,host1:9313,host1:9314,host1:9315,host1:9311|2,host2:9322,host2:9323,host2:9324,host2:9325,host2:9321" \
@@ -451,6 +446,19 @@ cmake --build examples/cpp/cmake-build-release --target follow_stream
 `ClusterProbe follow` does the same thing with three modes, latency stats and fault injection on top;
 the examples are that one flow with nothing else in them. See
 [examples/java/README.md](examples/java/README.md) and [examples/cpp/README.md](examples/cpp/README.md).
+
+Outside this checkout the Java artifacts come from JitPack, built from a release tag
+(`doc/publishing.md` §1):
+
+```gradle
+repositories {
+    mavenCentral()
+    maven { url 'https://jitpack.io' }
+}
+dependencies {
+    implementation 'com.github.FredrikJDahlberg.seqeron:seqeron:<tag>'   // or seqeron-node
+}
+```
 
 ## Documentation
 

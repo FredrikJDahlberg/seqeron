@@ -56,7 +56,7 @@ jobs:
           path: |
             ~/.gradle/caches
             ~/.gradle/wrapper
-          key: gradle-java-${{ hashFiles('*.gradle', 'gradle/wrapper/gradle-wrapper.properties') }}
+          key: gradle-java-${{ hashFiles('*.gradle', 'versions.properties', 'gradle/wrapper/gradle-wrapper.properties') }}
           restore-keys: gradle-java-
 
       # TestGateway — the gateway pair the faults run against — is test-source and in no jar, so the

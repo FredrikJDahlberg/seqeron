@@ -30,12 +30,7 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/seqeron-home.sh"
 seqeron_require_jar
 JAR="${SEQERON_JAR}"
 
-JAVA_OPTS=(
-    --add-opens=java.base/sun.nio.ch=ALL-UNNAMED
-    --add-opens=java.base/java.lang=ALL-UNNAMED
-    --add-opens=java.base/java.lang.reflect=ALL-UNNAMED
-    --add-opens=java.base/jdk.internal.misc=ALL-UNNAMED
-)
+JAVA_OPTS=("${SEQERON_JAVA_OPTS[@]}")
 
 # Map CLUSTERCTL_* env onto -Dclusterctl.* system properties; unset ones fall back to ClusterCtl's
 # SequencerServer-mirroring defaults.

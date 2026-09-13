@@ -49,8 +49,10 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../../main/scripts/ports.sh"
 source "${SCRIPT_DIR}/../../main/scripts/paths.sh"
+source "${SCRIPT_DIR}/../../main/scripts/seqeron-home.sh"
 
-JAR="build/libs/seqeron-0.1.0-uber.jar"
+seqeron_require_jar
+JAR="${SEQERON_JAR}"
 LOG_DIR="logs/replayer-restart"
 FLOOD_FRAMES=1000
 CN=0            # client/Replayer restart target — member 0, never the leader (see header)
@@ -63,12 +65,7 @@ DRIVER_LOSS_GRACE_SECS=15   # must exceed Aeron's DEFAULT_MEDIA_DRIVER_TIMEOUT_M
 
 rm -rf "$LOG_DIR"; mkdir -p "$LOG_DIR"
 
-JAVA_OPTS=(
-  --add-opens=java.base/sun.nio.ch=ALL-UNNAMED
-  --add-opens=java.base/java.lang=ALL-UNNAMED
-  --add-opens=java.base/java.lang.reflect=ALL-UNNAMED
-  --add-opens=java.base/jdk.internal.misc=ALL-UNNAMED
-)
+JAVA_OPTS=("${SEQERON_JAVA_OPTS[@]}")
 BASE_DIR="${TMP_DIR}/seqeron-seqfo"
 CLUSTER_MEMBERS="$(cluster_members_string 3)"
 

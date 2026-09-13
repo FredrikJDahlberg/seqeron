@@ -25,9 +25,17 @@ if [[ -z "${SEQERON_HOME:-}" ]]; then
 fi
 export SEQERON_HOME
 
+# The JVM flags every launcher that loads Aeron passes, for its off-heap access.
+SEQERON_JAVA_OPTS=(
+    --add-opens=java.base/sun.nio.ch=ALL-UNNAMED
+    --add-opens=java.base/java.lang=ALL-UNNAMED
+    --add-opens=java.base/java.lang.reflect=ALL-UNNAMED
+    --add-opens=java.base/jdk.internal.misc=ALL-UNNAMED
+)
+
 # Call from a script that launches Java; the ones that only signal or delete files do not.
-# The jar is globbed rather than named: its version is build.gradle's, and hand-copying it into each
-# launcher is how four scripts came to carry the same literal.
+# The jar is globbed rather than named: its version is the VERSION file's, and hand-copying it into
+# each launcher is how the scripts came to carry the same literal.
 seqeron_require_jar() {
     if [[ -z "${SEQERON_JAR:-}" ]]; then
         local candidate

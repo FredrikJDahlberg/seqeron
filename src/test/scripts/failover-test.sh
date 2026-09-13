@@ -18,17 +18,14 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../../main/scripts/ports.sh"
 source "${SCRIPT_DIR}/../../main/scripts/paths.sh"
+source "${SCRIPT_DIR}/../../main/scripts/seqeron-home.sh"
 
-JAR="build/libs/seqeron-0.1.0-uber.jar"
+seqeron_require_jar
+JAR="${SEQERON_JAR}"
 LOG_DIR="logs/failover"
 rm -rf "$LOG_DIR"; mkdir -p "$LOG_DIR"
 
-JAVA_OPTS=(
-  --add-opens=java.base/sun.nio.ch=ALL-UNNAMED
-  --add-opens=java.base/java.lang=ALL-UNNAMED
-  --add-opens=java.base/java.lang.reflect=ALL-UNNAMED
-  --add-opens=java.base/jdk.internal.misc=ALL-UNNAMED
-)
+JAVA_OPTS=("${SEQERON_JAVA_OPTS[@]}")
 BASE_DIR="${TMP_DIR}/seqeron-seqfo"
 CLUSTER_MEMBERS="$(cluster_members_string 3)"
 

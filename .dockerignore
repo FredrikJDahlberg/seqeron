@@ -3,4 +3,5 @@
 *
 !build/libs/*.jar
 !src/main/scripts/ports.sh
+!src/main/scripts/seqeron-home.sh
 !docker/entrypoint.sh

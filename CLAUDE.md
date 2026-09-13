@@ -139,19 +139,25 @@ the server side of the replay protocol is Java only.
 ```bash
 ./gradlew compileJava
 ./gradlew uberJar     # build/libs/seqeron-0.1.0-uber.jar — every script's prerequisite
-./gradlew test        # JUnit 5, 310 tests, ~1s
+./gradlew test        # JUnit 5, 317 tests, ~1s
 ./gradlew generateFrameSbe generateReplaySbe generateProbeSbe generateClusterSbeIr
 ./gradlew compileTestJava   # TestGateway, which chaos-runner.sh needs and no jar carries
 ./gradlew clientJar nodeJar # the two published artifacts; checkTierSeparation guards the line
 ```
 JDK 21. `SEQERON_JAR` overrides the jar path for every script that resolves it.
 
+**JitPack is the Java release channel.** `jitpack.yml` builds a tag with `check publishToMavenLocal`,
+and it is served as `com.github.FredrikJDahlberg.seqeron:{seqeron,seqeron-node}:<tag>`. Under
+`JITPACK=true`, `build.gradle` publishes with that group and the tag as version, so `seqeron-node`'s
+POM dependency on `seqeron` resolves there; everywhere else the group stays `org.limitless` and the
+version `VERSION`'s. See `doc/publishing.md` §1.
+
 ### C++
 ```bash
 cmake -B cmake-build-debug -DCMAKE_BUILD_TYPE=Debug      # AddressSanitizer
 cmake --build cmake-build-debug
 ```
-C++23, and fetches Aeron 1.51.0 and GoogleTest from source. **The core SBE codecs are generated and
+C++23, and fetches Aeron 1.51.0 (unless an installed one is found) and GoogleTest from source. **The core SBE codecs are generated and
 committed**, under `src/main/generated/sbe/core` — the git tag is the C++ artifact, so shipping them
 with it is what lets a consumer build with no SBE tool and no JDK of seqeron's asking (Aeron's own
 build still wants a JDK 17+). `find_package(Java)` is therefore `QUIET`, not `REQUIRED`, and is used
@@ -170,16 +176,18 @@ naming one fails at generate time; they are `$<BUILD_INTERFACE:>`-wrapped and
 `cmake/seqeronConfig.cmake.in` re-attaches them under `aeron::`, so an installed consumer brings its
 own installed Aeron. `doc/publishing.md` §7.
 
-**Aeron and SBE versions are pinned twice** — `build.gradle`'s `ext` block and `CMakeLists.txt`'s
-`FetchContent`/`SBE_VERSION`. The two sides generate independently from the same schemas and speak the
-same wire protocol, so a version that differs across them is a runtime decode failure, not a build
-error. Change both together.
+**Aeron, Agrona and SBE versions are pinned once**, in `versions.properties` — `build.gradle` loads it
+and `CMakeLists.txt` parses it. The two sides generate independently from the same schemas and speak
+the same wire protocol, so a version that differs across them is a runtime decode failure, not a build
+error. The C++ build uses an installed Aeron when `find_package(aeron)` finds one at or above that
+version, and fetches it otherwise; the project links Aeron only by its `aeron::` names, which work
+either way.
 
 ## Tests
 
 ```bash
-cmake --build cmake-build-debug --target run_tests   # 126 GoogleTest cases
-./gradlew test                                       # 286 JUnit cases
+cmake --build cmake-build-debug --target run_tests   # 130 GoogleTest cases
+./gradlew test                                       # 317 JUnit cases
 ```
 `run_tests` is `ctest --output-on-failure` with the build dependency wired. **Plain `ctest` is fine
 here** — the `..._NOT_BUILT` noise that had to be filtered was simdfix's own registered suite, and this

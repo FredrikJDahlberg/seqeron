@@ -16,7 +16,15 @@ plugins {
 }
 
 group   = 'org.limitless'
-version = '0.1.0'
+// VERSION is the one place the number is written; CMakeLists.txt reads the same file.
+version = file('VERSION').text.trim()
+
+// On JitPack, publish under the coordinates it serves — com.github.<user>.<repo>:<artifactId>:<tag> —
+// so seqeron-node's POM dependency on seqeron names an artifact that exists there.
+if (System.getenv('JITPACK')) {
+    group   = "${System.getenv('GROUP')}.${System.getenv('ARTIFACT')}"
+    version = System.getenv('VERSION')
+}
 
 repositories {
     mavenCentral()
@@ -28,13 +36,14 @@ java {
     }
 }
 
-// Aeron and SBE are pinned to the same versions CMakeLists.txt fetches for the C++ half — the two
-// sides generate independently from the same schemas and speak the same wire protocol, so a version
-// that differs across them is a decode failure at runtime rather than a build error.
+// Aeron, Agrona and SBE come from versions.properties, which CMakeLists.txt reads too.
+def pins = new Properties()
+file('versions.properties').withInputStream { pins.load(it) }
+
 ext {
-    aeronVersion  = '1.51.0'
-    agronaVersion = '2.4.1'
-    sbeVersion    = '1.38.1'
+    aeronVersion  = pins.getProperty('aeron')
+    agronaVersion = pins.getProperty('agrona')
+    sbeVersion    = pins.getProperty('sbe')
     junitVersion  = '5.10.2'
 }
 
@@ -324,8 +333,12 @@ tasks.register('uberJar', Jar) {
     group       = 'build'
 
     archiveClassifier = 'uber'
+    // Add-Opens is honoured only by `java -jar`, so it covers SequencerServer; the `-cp` launches still
+    // pass seqeron-home.sh's SEQERON_JAVA_OPTS.
     manifest {
-        attributes 'Main-Class': application.mainClass.get()
+        attributes 'Main-Class': application.mainClass.get(),
+                   'Add-Opens': 'java.base/sun.nio.ch java.base/java.lang java.base/java.lang.reflect ' +
+                                'java.base/jdk.internal.misc'
     }
 
     // The jar redistributes Aeron, Agrona and sbe-tool, so it must carry a copy of the license they
@@ -390,7 +403,7 @@ tasks.named('distTar')     { enabled = false }
 tasks.named('installDist') { enabled = false }
 
 // ── Split by audience ──────────────────────────────────────────────────────────
-// Two published artifacts out of one source tree (doc/future-arch.md §6): `seqeron` is the CLIENT tier —
+// Two published artifacts out of one source tree: `seqeron` is the CLIENT tier —
 // what a process that merely talks to a cluster needs: the envelope, the ingress client, the replay
 // client, the port block, the logger and the counters — and `seqeron-node` is the cluster itself: the
 // sequencer, the Replayer, the tools and the metrics exporter. A producer should not put the archive and
@@ -413,20 +426,54 @@ ext.clientTierPatterns = [
     'org/limitless/seqeron/sequencer/ClusterStreamSender*',
 ]
 
+// What every published jar carries besides its classes: the license and NOTICE, for the same Apache 2.0
+// §4a/§4d reason the uber jar does, and the artifact it belongs to. The tier filters go on each jar's
+// `from`, not on the task, because a task-level filter would also drop these META-INF entries.
+def publishedJar = { Jar jar, String artifactId ->
+    jar.from('LICENSE') { into 'META-INF' }
+    jar.from('NOTICE') { into 'META-INF' }
+    jar.manifest.attributes('Implementation-Title': artifactId, 'Implementation-Version': project.version)
+}
+
+// Only the client names a module. The node cannot be one beside it: `sequencer` and `metrics` are split
+// across the two jars, and the module path refuses a package in two modules.
 tasks.register('clientJar', Jar) {
     description = 'The client tier alone — what a producer or consumer needs to talk to a cluster'
     group       = 'build'
     archiveAppendix = 'client'
-    from sourceSets.main.output
-    include clientTierPatterns
+    from(sourceSets.main.output) { include clientTierPatterns }
+    publishedJar(it, 'seqeron')
+    manifest.attributes('Automatic-Module-Name': 'org.limitless.seqeron')
 }
 
 tasks.register('nodeJar', Jar) {
     description = 'The node tier: the sequencer, the Replayer, the tools and the metrics exporter'
     group       = 'build'
     archiveAppendix = 'node'
-    from sourceSets.main.output
-    exclude clientTierPatterns
+    from(sourceSets.main.output) { exclude clientTierPatterns }
+    publishedJar(it, 'seqeron-node')
+}
+
+// allJava includes the generated SBE codecs, which are part of the published classes. The tier patterns
+// match .java names as well as .class ones.
+tasks.register('clientSourcesJar', Jar) {
+    description = 'Sources for the client tier'
+    group       = 'build'
+    archiveAppendix   = 'client'
+    archiveClassifier = 'sources'
+    dependsOn 'generateReplaySbe', 'generateFrameSbe', 'generateProbeSbe'
+    from(sourceSets.main.allJava) { include clientTierPatterns }
+    publishedJar(it, 'seqeron')
+}
+
+tasks.register('nodeSourcesJar', Jar) {
+    description = 'Sources for the node tier'
+    group       = 'build'
+    archiveAppendix   = 'node'
+    archiveClassifier = 'sources'
+    dependsOn 'generateReplaySbe', 'generateFrameSbe', 'generateProbeSbe'
+    from(sourceSets.main.allJava) { exclude clientTierPatterns }
+    publishedJar(it, 'seqeron-node')
 }
 
 // The client tier must stay a tier: a client class that reaches for the node compiles here (one source
@@ -474,48 +521,53 @@ tasks.register('checkTierSeparation') {
 tasks.named('check') { dependsOn 'checkTierSeparation' }
 
 // ── Publishing ─────────────────────────────────────────────────────────────────
-// Two artifacts, by audience (see "Split by audience" below): `seqeron` is the client tier and
+// Two artifacts, by audience (see "Split by audience" above): `seqeron` is the client tier and
 // `seqeron-node` the cluster, the latter depending on the former. A consumer that only talks to a
 // cluster declares `seqeron` and gets aeron-client, aeron-cluster and Agrona with it — not the archive,
-// not the media driver, and none of the sequencer. `./gradlew publishToMavenLocal` is the whole workflow
-// for now; no remote repository is declared.
+// not the media driver, and none of the sequencer. JitPack builds a tag with publishToMavenLocal
+// (jitpack.yml) and serves the result, so no remote repository is declared here.
 //
 // The uber jar is deliberately NOT published. It is the runnable artifact every script resolves out of
 // build/libs, and it repacks Aeron and Agrona — publishing it would put a shaded copy of them on a
 // consumer's classpath beside the real ones.
 
+// The POMs are written by hand because the tiers are packages, not components, so neither publication
+// can take `from components.java`. The scopes mirror the dependencies block: `api` is compile, and
+// `implementation` is runtime, which keeps aeron-driver and sbe-tool off a consumer's compile classpath.
 publishing {
     publications {
         client(MavenPublication) {
             artifactId = 'seqeron'
             artifact tasks.named('clientJar')
+            artifact tasks.named('clientSourcesJar')
             pom.withXml {
                 final Node deps = asNode().appendNode('dependencies')
-                [['io.aeron', 'aeron-client', aeronVersion],
-                 ['io.aeron', 'aeron-cluster', aeronVersion],
-                 ['org.agrona', 'agrona', agronaVersion]].each { g, a, v ->
+                [['io.aeron', 'aeron-client', aeronVersion, 'compile'],
+                 ['io.aeron', 'aeron-cluster', aeronVersion, 'compile'],
+                 ['org.agrona', 'agrona', agronaVersion, 'compile']].each { g, a, v, s ->
                     final Node d = deps.appendNode('dependency')
                     d.appendNode('groupId', g)
                     d.appendNode('artifactId', a)
                     d.appendNode('version', v)
-                    d.appendNode('scope', 'compile')
+                    d.appendNode('scope', s)
                 }
             }
         }
         node(MavenPublication) {
             artifactId = 'seqeron-node'
             artifact tasks.named('nodeJar')
+            artifact tasks.named('nodeSourcesJar')
             pom.withXml {
                 final Node deps = asNode().appendNode('dependencies')
-                [[project.group, 'seqeron', project.version],
-                 ['io.aeron', 'aeron-archive', aeronVersion],
-                 ['io.aeron', 'aeron-driver', aeronVersion],
-                 ['uk.co.real-logic', 'sbe-tool', sbeVersion]].each { g, a, v ->
+                [[project.group, 'seqeron', project.version, 'compile'],
+                 ['io.aeron', 'aeron-archive', aeronVersion, 'compile'],
+                 ['io.aeron', 'aeron-driver', aeronVersion, 'runtime'],
+                 ['uk.co.real-logic', 'sbe-tool', sbeVersion, 'runtime']].each { g, a, v, s ->
                     final Node d = deps.appendNode('dependency')
                     d.appendNode('groupId', g)
                     d.appendNode('artifactId', a)
                     d.appendNode('version', v)
-                    d.appendNode('scope', 'compile')
+                    d.appendNode('scope', s)
                 }
             }
         }

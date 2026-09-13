@@ -28,9 +28,11 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 source "${SCRIPT_DIR}/../../main/scripts/ports.sh"
+source "${SCRIPT_DIR}/../../main/scripts/seqeron-home.sh"
 COMPOSE=(docker compose -f "${REPO_ROOT}/docker/compose.yml")
 
-JAR="${REPO_ROOT}/build/libs/seqeron-0.1.0-uber.jar"
+seqeron_require_jar
+JAR="${SEQERON_JAR}"
 LOG_DIR="${REPO_ROOT}/logs/docker-failover"
 NODE_COUNT=3
 OBSERVER_CLIENT_ID=1
@@ -64,14 +66,7 @@ deadline() { echo $(( $1 * TIMEOUT_SCALE )); }
 COMPOSE_BUILD="${COMPOSE_BUILD:-1}"
 
 INGRESS_ENDPOINTS="$(ingress_endpoints_string "${NODE_COUNT}" 'node-{id}')"
-JAVA_OPTS=(
-    --add-opens=java.base/sun.nio.ch=ALL-UNNAMED
-    --add-opens=java.base/java.lang=ALL-UNNAMED
-    --add-opens=java.base/java.lang.reflect=ALL-UNNAMED
-    --add-opens=java.base/jdk.internal.misc=ALL-UNNAMED
-)
-
-[[ -f "${JAR}" ]] || { echo "missing ${JAR} — run ./gradlew uberJar"; exit 1; }
+JAVA_OPTS=("${SEQERON_JAVA_OPTS[@]}")
 
 rm -rf "${LOG_DIR}"; mkdir -p "${LOG_DIR}"
 LOAD_FLAG="${LOG_DIR}/.load-running"
