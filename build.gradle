@@ -534,6 +534,20 @@ tasks.named('check') { dependsOn 'checkTierSeparation' }
 // The POMs are written by hand because the tiers are packages, not components, so neither publication
 // can take `from components.java`. The scopes mirror the dependencies block: `api` is compile, and
 // `implementation` is runtime, which keeps aeron-driver and sbe-tool off a consumer's compile classpath.
+// Rows are [groupId, artifactId, version, scope]; a null scope writes none.
+def appendDependencies = { Node parent, List rows ->
+    final Node deps = parent.appendNode('dependencies')
+    rows.each { g, a, v, s ->
+        final Node d = deps.appendNode('dependency')
+        d.appendNode('groupId', g)
+        d.appendNode('artifactId', a)
+        d.appendNode('version', v)
+        if (s) {
+            d.appendNode('scope', s)
+        }
+    }
+}
+
 publishing {
     publications {
         client(MavenPublication) {
@@ -541,16 +555,10 @@ publishing {
             artifact tasks.named('clientJar')
             artifact tasks.named('clientSourcesJar')
             pom.withXml {
-                final Node deps = asNode().appendNode('dependencies')
-                [['io.aeron', 'aeron-client', aeronVersion, 'compile'],
-                 ['io.aeron', 'aeron-cluster', aeronVersion, 'compile'],
-                 ['org.agrona', 'agrona', agronaVersion, 'compile']].each { g, a, v, s ->
-                    final Node d = deps.appendNode('dependency')
-                    d.appendNode('groupId', g)
-                    d.appendNode('artifactId', a)
-                    d.appendNode('version', v)
-                    d.appendNode('scope', s)
-                }
+                appendDependencies(asNode(), [
+                    ['io.aeron', 'aeron-client', aeronVersion, 'compile'],
+                    ['io.aeron', 'aeron-cluster', aeronVersion, 'compile'],
+                    ['org.agrona', 'agrona', agronaVersion, 'compile']])
             }
         }
         node(MavenPublication) {
@@ -558,17 +566,29 @@ publishing {
             artifact tasks.named('nodeJar')
             artifact tasks.named('nodeSourcesJar')
             pom.withXml {
-                final Node deps = asNode().appendNode('dependencies')
-                [[project.group, 'seqeron', project.version, 'compile'],
-                 ['io.aeron', 'aeron-archive', aeronVersion, 'compile'],
-                 ['io.aeron', 'aeron-driver', aeronVersion, 'runtime'],
-                 ['uk.co.real-logic', 'sbe-tool', sbeVersion, 'runtime']].each { g, a, v, s ->
-                    final Node d = deps.appendNode('dependency')
-                    d.appendNode('groupId', g)
-                    d.appendNode('artifactId', a)
-                    d.appendNode('version', v)
-                    d.appendNode('scope', s)
-                }
+                appendDependencies(asNode(), [
+                    [project.group, 'seqeron', project.version, 'compile'],
+                    ['io.aeron', 'aeron-archive', aeronVersion, 'compile'],
+                    ['io.aeron', 'aeron-driver', aeronVersion, 'runtime'],
+                    ['uk.co.real-logic', 'sbe-tool', sbeVersion, 'runtime']])
+            }
+        }
+        // Aeron, Agrona and SBE at the versions seqeron was built against. Gradle otherwise resolves a
+        // consumer's own Aeron pin against ours by taking the higher, and a version that differs from
+        // the cluster's fails as frames that do not decode, not at build time.
+        bom(MavenPublication) {
+            artifactId = 'seqeron-bom'
+            pom.packaging = 'pom'
+            pom.withXml {
+                appendDependencies(asNode().appendNode('dependencyManagement'), [
+                    [project.group, 'seqeron', project.version, null],
+                    [project.group, 'seqeron-node', project.version, null],
+                    ['io.aeron', 'aeron-client', aeronVersion, null],
+                    ['io.aeron', 'aeron-cluster', aeronVersion, null],
+                    ['io.aeron', 'aeron-archive', aeronVersion, null],
+                    ['io.aeron', 'aeron-driver', aeronVersion, null],
+                    ['org.agrona', 'agrona', agronaVersion, null],
+                    ['uk.co.real-logic', 'sbe-tool', sbeVersion, null]])
             }
         }
     }

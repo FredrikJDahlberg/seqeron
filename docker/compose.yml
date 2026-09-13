@@ -1,14 +1,14 @@
 # Three-node cluster, one member per container — the topology a failover test needs, since docker's
 # kill/pause/partition primitives act on a container and a node is the smallest thing worth losing.
 #
-# Prerequisite: ./gradlew uberJar (the Dockerfile copies the jar, it does not build it).
+# Prerequisite: ./gradlew operatorDist (the Dockerfile copies the distribution, it does not build it).
 #   docker compose -f docker/compose.yml up --build -d
 #   docker compose -f docker/compose.yml down -v
 #
 # Ports are the same PORT_BASE + memberId*10 + offset layout as a single-host run (ports.sh,
 # PortLayout.hpp): each container has its own network namespace so they need not differ, but
 # keeping them means one formula, not two. Nothing is published to the host — the harness reaches
-# the cluster with docker exec.
+# the cluster with docker exec, and so does an operator: docker exec node-0 clusterctl describe.
 name: seqeron-failover
 
 x-node: &node

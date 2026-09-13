@@ -94,7 +94,7 @@ Requires **JDK 21** for the Java half and a **C++23** compiler for the C++ one, 
 1.51.0 and GoogleTest from source — Aeron only when `find_package` finds no installed one at that
 version or newer (built with `-DAERON_INSTALL_TARGETS=ON`, on `CMAKE_PREFIX_PATH`). The C++ half needs no JDK of seqeron's own making: the codecs for
 the three schemas this repo owns are generated and committed under `src/main/generated/sbe/core`, so
-a consumer compiles them rather than running the SBE tool (`doc/publishing.md`). Java is still needed
+a consumer compiles them rather than running the SBE tool. Java is still needed
 to *change* them — `RegenerateSbeCodecs`, then commit — and Aeron's own build requires a JDK 17+
 regardless (`aeron-archive/src/main/c` does `find_package(Java 17 REQUIRED)` and Aeron's CMake shells
 out to its Gradle build), so a from-source Aeron keeps one on the machine either way.
@@ -318,6 +318,9 @@ this node's cluster dir (`describe`, `errors`, `list-members`, `recording-log`, 
 refused. `CLUSTERCTL_*` environment variables map onto the `clusterctl.*` system properties; the full
 runbook is `doc/clusterctl.md`.
 
+In a node container the image has `clusterctl` on the `PATH`, already set to that container's member:
+`docker exec node-0 clusterctl describe`.
+
 ## Log printer
 
 `SbeLogPrinter` dumps an Archive recording (`archive.catalog` plus segment files under `archive-<id>`)
@@ -429,8 +432,7 @@ catching up, and print every frame in `globalSeqNo` order. Each is a **separate 
 resolves `org.limitless:seqeron` — the client tier alone, no sequencer and no archive — the C++ one pulls `seqeron_core` in with
 `FetchContent` — so what the artifacts fail to expose fails there rather than passing on a source
 dependency. The C++ half also installs: `cmake --install` writes a CMake package, and a consumer takes
-`seqeron::seqeron_core` off `find_package(seqeron)` instead, supplying its own installed Aeron
-(`doc/publishing.md` §7).
+`seqeron::seqeron_core` off `find_package(seqeron)` instead, supplying its own installed Aeron.
 
 ```bash
 ./src/main/scripts/start-cluster.sh                              # in another shell
@@ -447,8 +449,11 @@ cmake --build examples/cpp/cmake-build-release --target follow_stream
 the examples are that one flow with nothing else in them. See
 [examples/java/README.md](examples/java/README.md) and [examples/cpp/README.md](examples/cpp/README.md).
 
-Outside this checkout the Java artifacts come from JitPack, built from a release tag
-(`doc/publishing.md` §1):
+Outside this checkout the Java artifacts come from JitPack, built from a release tag. `seqeron-bom`
+pins Aeron, Agrona and SBE at the versions seqeron was built against. Without it Gradle takes the higher
+of your Aeron and seqeron's, and a version the cluster does not speak fails only when frames do not
+decode. An application takes it as `enforcedPlatform`; a library built on seqeron takes `platform`,
+which leaves the final choice to its own consumer:
 
 ```gradle
 repositories {
@@ -456,9 +461,21 @@ repositories {
     maven { url 'https://jitpack.io' }
 }
 dependencies {
-    implementation 'com.github.FredrikJDahlberg.seqeron:seqeron:<tag>'   // or seqeron-node
+    implementation enforcedPlatform('com.github.FredrikJDahlberg.seqeron:seqeron-bom:<tag>')
+    implementation 'com.github.FredrikJDahlberg.seqeron:seqeron'   // or seqeron-node
 }
 ```
+
+## Releases
+
+A tag `v<version>` runs `.github/workflows/release.yml`, which fails unless the tag matches `VERSION`.
+It publishes:
+
+- the Java artifacts on JitPack (`seqeron`, `seqeron-node`, `seqeron-bom`);
+- the node image, `ghcr.io/fredrikjdahlberg/seqeron-node:<version>` — the image `docker/compose.yml`
+  builds locally as `seqeron/node:local`;
+- a GitHub Release with the operator distribution, `seqeron-<version>.zip` (`bin/`, `lib/`, `ops/`),
+  and the uber, client and node jars.
 
 ## Documentation
 
@@ -469,7 +486,7 @@ dependencies {
 | `doc/registries.md` | The two shared namespaces — the producer `sourceId` space and the UDP port blocks |
 | `doc/clusterctl.md` | The operator tool's runbook |
 | `doc/ops.md` | The Prometheus/Grafana metrics stack |
-| `doc/publishing.md` | What a consumer can resolve today, and the open items between that and a published coordinate |
+| `doc/package.md` | The packaging review list |
 
 Those six are the whole doc set, and every document reference in this tree resolves inside it.
 

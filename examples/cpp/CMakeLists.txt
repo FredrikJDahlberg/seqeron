@@ -1,7 +1,7 @@
 # A consumer of seqeron, built outside its build: the header-only seqeron_core target, pulled in over
 # the repository with FetchContent — the same way seqeron itself consumes Aeron and GoogleTest — or,
 # with SEQERON_FIND_PACKAGE=ON, found in a `cmake --install`ed tree with an installed Aeron beside it
-# on CMAKE_PREFIX_PATH (doc/publishing.md §7). CI builds it both ways.
+# on CMAKE_PREFIX_PATH. CI builds it both ways.
 cmake_minimum_required(VERSION 3.30)
 project(seqeron_follow_example VERSION 0.1.0 LANGUAGES CXX)
 

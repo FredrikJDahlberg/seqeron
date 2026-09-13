@@ -22,7 +22,7 @@
 # on a leadership change — so each node's recording is one run spanning every tenure it lived
 # through, which is what makes assertion 3 possible on a member that was a follower for most of them.
 #
-# Prerequisite: ./gradlew uberJar (docker/Dockerfile copies the jar, it does not build it).
+# Prerequisite: ./gradlew operatorDist (docker/Dockerfile copies the distribution, it does not build it).
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -31,8 +31,10 @@ source "${SCRIPT_DIR}/../../main/scripts/ports.sh"
 source "${SCRIPT_DIR}/../../main/scripts/seqeron-home.sh"
 COMPOSE=(docker compose -f "${REPO_ROOT}/docker/compose.yml")
 
-seqeron_require_jar
-JAR="${SEQERON_JAR}"
+if [[ ! -d "${REPO_ROOT}/build/install/seqeron/lib" ]]; then
+    echo "ERROR: no operator distribution under build/install/seqeron — run: ./gradlew operatorDist" >&2
+    exit 1
+fi
 LOG_DIR="${REPO_ROOT}/logs/docker-failover"
 NODE_COUNT=3
 OBSERVER_CLIENT_ID=1
@@ -134,7 +136,7 @@ start_observer() {
     docker exec "node-${m}" java "${JAVA_OPTS[@]}" \
         -Dprobe.memberId="${m}" -Dprobe.aeronDir="/dev/shm/aeron-${m}" \
         -Dprobe.clientId="${OBSERVER_CLIENT_ID}" \
-        -cp /opt/seqeron/seqeron.jar org.limitless.seqeron.tools.ClusterProbe follow \
+        -cp '/opt/seqeron/lib/*' org.limitless.seqeron.tools.ClusterProbe follow \
         >> "${LOG_DIR}/observer-${m}.log" 2>&1 &
 }
 
@@ -152,7 +154,7 @@ touch "${LOAD_FLAG}"
             -Dprobe.ingressEndpoints="${INGRESS_ENDPOINTS}" \
             -Dprobe.egressHost="node-${target}" \
             -Dprobe.count="${SUBMIT_COUNT}" -Dprobe.pacingMicros="${SUBMIT_PACING_MICROS}" \
-            -cp /opt/seqeron/seqeron.jar org.limitless.seqeron.tools.ClusterProbe submit \
+            -cp '/opt/seqeron/lib/*' org.limitless.seqeron.tools.ClusterProbe submit \
             >> "${LOG_DIR}/load.log" 2>&1
         sleep 0.5
     done
@@ -204,7 +206,7 @@ COLD_LOG="${LOG_DIR}/cold-follower.log"
 docker exec "node-${LEADER}" java "${JAVA_OPTS[@]}" \
     -Dprobe.memberId="${LEADER}" -Dprobe.aeronDir="/dev/shm/aeron-${LEADER}" \
     -Dprobe.clientId="${COLD_CLIENT_ID}" \
-    -cp /opt/seqeron/seqeron.jar org.limitless.seqeron.tools.ClusterProbe follow \
+    -cp '/opt/seqeron/lib/*' org.limitless.seqeron.tools.ClusterProbe follow \
     > "${COLD_LOG}" 2>&1 &
 COLD_PID=$!
 echo "started cold probe follower (client ${COLD_CLIENT_ID}) inside node-${LEADER}"

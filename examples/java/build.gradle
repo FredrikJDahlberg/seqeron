@@ -19,12 +19,14 @@ repositories {
     mavenCentral()
 }
 
-// One dependency. seqeron declares Aeron and Agrona api, since they are in the signatures a consumer
-// compiles against, so they arrive with it and are not redeclared here.
+// One dependency, versioned by the BOM. seqeron declares Aeron and Agrona api, since they are in the
+// signatures a consumer compiles against, so they arrive with it and are not redeclared here; the
+// enforced platform holds them at seqeron's versions even if something else on the classpath asks for another.
 // The version is read from the checkout this example ships in, so a bump does not break it. An outside
 // consumer writes the number instead.
 dependencies {
-    implementation "org.limitless:seqeron:${file('../../VERSION').text.trim()}"
+    implementation enforcedPlatform("org.limitless:seqeron-bom:${file('../../VERSION').text.trim()}")
+    implementation 'org.limitless:seqeron'
 }
 
 application {

@@ -1,0 +1,79 @@
+name: release
+
+# A v* tag publishes what that commit is: the Java artifacts on JitPack, the node image on GHCR, and a
+# GitHub Release carrying the operator distribution and the jars. The Release is created last, so it
+# exists only once everything it points at does.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  release:
+    name: release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      # v0.2.0 was tagged on a commit whose VERSION still said 0.1.0.
+      - name: Tag matches VERSION
+        id: version
+        run: |
+          VERSION="$(cat VERSION)"
+          if [[ "${GITHUB_REF_NAME}" != "v${VERSION}" ]]; then
+              echo "::error::tag ${GITHUB_REF_NAME} does not match VERSION ${VERSION}"
+              exit 1
+          fi
+          echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
+          echo "image=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/seqeron-node" >> "${GITHUB_OUTPUT}"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Build
+        run: ./gradlew check operatorDistZip clientJar nodeJar
+
+      # JitPack builds a tag on its first request and serves nothing until it has. Asking here means no
+      # consumer waits on that build, and a tag JitPack cannot build fails the release.
+      - name: JitPack build
+        run: |
+          POM="https://jitpack.io/com/github/${GITHUB_REPOSITORY}/seqeron-node/${GITHUB_REF_NAME}/seqeron-node-${GITHUB_REF_NAME}.pom"
+          for _ in $(seq 1 20); do
+              curl -sf -o /dev/null --max-time 60 "${POM}" && exit 0
+              sleep 30
+          done
+          curl -s "https://jitpack.io/com/github/${GITHUB_REPOSITORY}/${GITHUB_REF_NAME}/build.log" | tail -n 50
+          exit 1
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Push node image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          push: true
+          tags: ${{ steps.version.outputs.image }}:${{ steps.version.outputs.version }}
+
+      - name: GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" --generate-notes \
+            "build/distributions/seqeron-${VERSION}.zip" \
+            "build/libs/seqeron-${VERSION}-uber.jar" \
+            "build/libs/seqeron-client-${VERSION}.jar" \
+            "build/libs/seqeron-node-${VERSION}.jar"

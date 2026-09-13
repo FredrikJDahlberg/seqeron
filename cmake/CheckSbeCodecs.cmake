@@ -1,6 +1,6 @@
 # Fails if the committed SBE C++ codecs differ from what the schemas generate now.
 #
-# The codecs are checked in so a C++ consumer needs no JDK and no SBE tool (doc/publishing.md), which
+# The codecs are checked in so a C++ consumer needs no JDK and no SBE tool, which
 # makes them a second copy of the schemas — and a second copy drifts. SBE's C++ output is
 # deterministic, so "generate again and compare" is exact rather than approximate.
 #

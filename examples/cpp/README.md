@@ -8,7 +8,7 @@ when each echo comes back. Same flow, same output.
 This is a **separate build**, not part of the repo's CMake project. It pulls `seqeron_core` in with
 `FetchContent`; `SEQERON_SOURCE_DIR` defaults to the checkout this example ships in, and an outside
 consumer swaps it for `GIT_REPOSITORY`/`GIT_TAG` and changes nothing else. The other supported path is
-`find_package(seqeron)` against a `cmake --install`ed tree (`doc/publishing.md` §7), which needs an
+`find_package(seqeron)` against a `cmake --install`ed tree, which needs an
 installed Aeron beside it. `-DSEQERON_FIND_PACKAGE=ON` builds the example that way:
 
     cmake -S . -B cmake-build-installed -DCMAKE_BUILD_TYPE=Release \

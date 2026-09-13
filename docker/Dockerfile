@@ -3,18 +3,15 @@
 # the tap is aeron:ipc and co-located apps attach to this member's embedded media driver, so
 # anything co-located belongs in this container beside it.
 #
-# The uber jar is built on the host (./gradlew uberJar) and copied in, not built in a stage here —
-# CI already caches Gradle on the runner, and a Gradle stage would miss that cache every run.
+# The operator distribution is built on the host (./gradlew operatorDist) and copied in, not built in a
+# stage here — CI already caches Gradle on the runner, and a Gradle stage would miss that cache every run.
+# Tagged releases push this image to GHCR (.github/workflows/release.yml).
 FROM eclipse-temurin:21-jre
 
-# Globbed so the version is not written here; more than one uber jar in build/libs fails the COPY.
-COPY build/libs/seqeron-*-uber.jar       /opt/seqeron/seqeron.jar
-COPY src/main/scripts/ports.sh           /opt/seqeron/ports.sh
-COPY src/main/scripts/seqeron-home.sh    /opt/seqeron/seqeron-home.sh
-COPY docker/entrypoint.sh                /opt/seqeron/entrypoint.sh
+# bin/ beside lib/ is the layout seqeron-home.sh recognises, so no SEQERON_HOME or SEQERON_JAR is set.
+COPY build/install/seqeron     /opt/seqeron
+COPY docker/node-env.sh        /opt/seqeron/docker/node-env.sh
+COPY docker/entrypoint.sh      /opt/seqeron/docker/entrypoint.sh
+COPY docker/clusterctl         /usr/local/bin/clusterctl
 
-# SEQERON_HOME set, so seqeron-home.sh does not guess a layout this image does not have.
-ENV SEQERON_HOME=/opt/seqeron
-ENV SEQERON_JAR=/opt/seqeron/seqeron.jar
-
-ENTRYPOINT ["/opt/seqeron/entrypoint.sh"]
+ENTRYPOINT ["/opt/seqeron/docker/entrypoint.sh"]

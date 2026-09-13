@@ -71,8 +71,8 @@ public final class FrameLayer {
      * leader assigns real time). 1 Hz gives ±1 s resolution, ample for the watchdog's tens-of-seconds
      * thresholds. Trade-off: every heartbeat appends a timer event + a heartbeat frame to the replicated
      * log/recording, so full-log-replay recovery grows with uptime; this constant is the single knob to
-     * trade watchdog resolution against that cost. (A tighter win — gating clock emission on active FIX
-     * sessions — is noted in doc/gap.md; 1 Hz is the low-risk interim.)
+     * trade watchdog resolution against that cost. (A tighter win would gate clock emission on active FIX
+     * sessions; 1 Hz is the low-risk interim.)
      *
      * <p>Here rather than in {@link Sequencer} for the reason the limits above are: every participant
      * answers to it. The state machine's own deadlines are evaluated in cluster time, on heartbeat

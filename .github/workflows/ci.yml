@@ -157,8 +157,8 @@ jobs:
           key: gradle-examples-${{ hashFiles('CMakeLists.txt', '*.gradle', 'versions.properties') }}
           restore-keys: gradle-examples-
 
-      # ~/.m2 is the whole distribution channel today (doc/publishing.md): no remote repository is
-      # declared, so the example resolves org.limitless:seqeron only after this step.
+      # The example resolves org.limitless:seqeron from ~/.m2, so it builds against this checkout's
+      # artifacts rather than a released tag's, and only after this step.
       - name: Publish seqeron to the local repository
         run: ./gradlew publishToMavenLocal
 
@@ -173,8 +173,8 @@ jobs:
       - name: Build the C++ example
         run: cmake --build examples/cpp/build --target follow_stream -j $(nproc)
 
-  # find_package(seqeron) against an installed tree, with an installed Aeron beside it
-  # (doc/publishing.md §7). The config file, the export set and the found-Aeron branch of
+  # find_package(seqeron) against an installed tree, with an installed Aeron beside it.
+  # The config file, the export set and the found-Aeron branch of
   # CMakeLists.txt are only exercised here.
   installed:
     name: installed package

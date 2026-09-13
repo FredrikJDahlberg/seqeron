@@ -7,7 +7,7 @@ places. Checked against the built client, node and uber jars and the generated P
 ## Java artifacts
 
 1. **Publish it somewhere.** Right now the only way to get `org.limitless:seqeron` is
-   `publishToMavenLocal` on your own machine (`doc/publishing.md` §1). Pick the coordinate before anyone
+   `publishToMavenLocal` on your own machine. Pick the coordinate before anyone
    depends on it: JitPack changes it to `com.github.<owner>:seqeron`, while GitHub Packages keeps
    `org.limitless` but makes every user set up a token just to download.
 
@@ -50,7 +50,7 @@ places. Checked against the built client, node and uber jars and the generated P
 
 8. **Let users bring their own Aeron.** Adding `FIND_PACKAGE_ARGS` to the Aeron `FetchContent_Declare`
    means an installed or already-declared Aeron is used when present, and fetched only when absent. That
-   closes `publishing.md` §9, where today a user's own Aeron pin silently loses.
+   closes the case where today a user's own Aeron pin silently loses.
 
 9. **The CMake minimum version is wrong.** `CMakeLists.txt` asks for CMake 3.28, but the CI file notes
    Aeron 1.51.0 needs 3.30 or newer. A user on 3.28 gets past seqeron's check and then hits an error deep
@@ -58,7 +58,7 @@ places. Checked against the built client, node and uber jars and the generated P
 
 10. **Test the installed package in CI.** CI builds `examples/cpp` only through `FetchContent`. Nothing
     runs `cmake --install` followed by `find_package(seqeron)`, so a break in `seqeronConfig.cmake` goes
-    unnoticed (`publishing.md` §7 says so itself).
+    unnoticed.
 
 ## Releases and Docker
 

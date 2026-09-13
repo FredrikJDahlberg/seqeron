@@ -37,10 +37,10 @@ jobs:
           key: gradle-java-${{ hashFiles('*.gradle', 'versions.properties', 'gradle/wrapper/gradle-wrapper.properties') }}
           restore-keys: gradle-java-
 
-      # docker/Dockerfile copies the jar rather than building it — a Gradle stage inside the image
-      # would miss the runner cache restored above.
-      - name: Build uber jar
-        run: ./gradlew uberJar
+      # docker/Dockerfile copies the distribution rather than building it — a Gradle stage inside the
+      # image would miss the runner cache restored above.
+      - name: Build operator distribution
+        run: ./gradlew operatorDist
 
       - uses: docker/setup-buildx-action@v3
 

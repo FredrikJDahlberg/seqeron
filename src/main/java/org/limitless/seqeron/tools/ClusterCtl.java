@@ -94,8 +94,12 @@ public final class ClusterCtl {
     /** Ingress is tried over this node's own aeron:ipc first; a follower answers on neither, so keep it short. */
     private static final long IPC_CONNECT_TIMEOUT_MS = 500;
 
-    /** Ephemeral: this tool runs for one command and needs no port of its own (doc/registries.md §2). */
-    private static final String EGRESS_CHANNEL = "aeron:udp?endpoint=localhost:0";
+    /**
+     * Ephemeral: this tool runs for one command and needs no port of its own (doc/registries.md §2). The host
+     * is what the leader replies to, so on a follower of a multi-host cluster it must be this node's own name.
+     */
+    private static final String EGRESS_CHANNEL =
+        "aeron:udp?endpoint=" + System.getProperty("clusterctl.egressHost", "localhost") + ":0";
 
     /** header.connectionId/sessionId for markers this tool submits: no gateway process/TCP connection. */
     private static final int NO_ID = -1;
@@ -603,6 +607,7 @@ public final class ClusterCtl {
               clusterctl.memberId          co-located member id             (default 0)
               clusterctl.baseDir           cluster data dir root            (default $TMPDIR/seqeron-seq)
               clusterctl.aeronDir          co-located member's Aeron dir     (default $TMPDIR/seqeron-seq-aeron-<id>)
-              clusterctl.ingressEndpoints  member ingress endpoints          (default 0=localhost:9302)""");
+              clusterctl.ingressEndpoints  member ingress endpoints          (default 0=localhost:9302)
+              clusterctl.egressHost        host the leader replies to        (default localhost)""");
     }
 }

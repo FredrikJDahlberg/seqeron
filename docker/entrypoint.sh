@@ -4,19 +4,16 @@
 # own archive through its embedded media driver — a node is the smallest thing worth losing, so
 # docker kill/stop/pause takes the pair down together and a restart brings the pair back.
 #
-# MEMBER_ID is the only thing compose has to supply; every endpoint is derived from ports.sh, which
-# is copied into the image rather than restated here so the port formula keeps its single home.
+# The member comes from node-env.sh; every endpoint is derived from the distribution's ports.sh, so
+# the port formula keeps its single home.
 set -euo pipefail
 
-source /opt/seqeron/ports.sh
-source /opt/seqeron/seqeron-home.sh
+source /opt/seqeron/bin/ports.sh
+source /opt/seqeron/bin/seqeron-home.sh
+source /opt/seqeron/docker/node-env.sh
+seqeron_require_jar
 
-MEMBER_ID="${MEMBER_ID:?MEMBER_ID must be set}"
-NODE_COUNT="${NODE_COUNT:-3}"
-HOST_TEMPLATE="${HOST_TEMPLATE:-node-{id}}"       # {id} -> member id; the compose service names
-HOST="${HOST_TEMPLATE//\{id\}/${MEMBER_ID}}"
 LOG_FILE="${LOG_FILE:-/var/log/seqeron/node.log}"
-AERON_DIR="/dev/shm/aeron-${MEMBER_ID}"
 
 mkdir -p "$(dirname "${LOG_FILE}")"
 
@@ -37,7 +34,7 @@ java "${JAVA_OPTS[@]}" \
     -Dsequencer.memberId="${MEMBER_ID}" \
     -Dsequencer.host="${HOST}" \
     -Dsequencer.clusterMembers="$(cluster_members_string "${NODE_COUNT}" "${HOST_TEMPLATE}")" \
-    -Dsequencer.baseDir=/var/lib/seqeron \
+    -Dsequencer.baseDir="${BASE_DIR}" \
     -Dsequencer.aeronDir="${AERON_DIR}" \
     -Dsequencer.idleStrategy="${IDLE_STRATEGY:-backoff}" \
     -jar "${SEQERON_JAR}" &

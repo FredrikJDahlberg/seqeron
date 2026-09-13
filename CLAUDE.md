@@ -107,7 +107,7 @@ compiles. The line runs *through* `sequencer`, so the tiers are packages rather 
 reference needs no import, so checking imports would not do. It is also why the constants a client needs
 are in client-tier classes: the tap's identity (`FEEDER_CHANNEL`/`FEEDER_STREAM_ID`) and the cluster clock
 (`CLUSTER_HEARTBEAT_INTERVAL_MS`) in `FrameLayer`, the port block in `PortLayout`, the replay protocol's
-addresses in `ReplayerStreamReceiver`. See `doc/publishing.md`.
+addresses in `ReplayerStreamReceiver`.
 
 **The producer side is a language-port pair too.** Java's `ClusterStreamSender`/`IngressPublisher` carry
 the C++ files' names and semantics — `connectColocated` (IPC ingress on the co-located member, UDP
@@ -150,7 +150,11 @@ JDK 21. `SEQERON_JAR` overrides the jar path for every script that resolves it.
 and it is served as `com.github.FredrikJDahlberg.seqeron:{seqeron,seqeron-node}:<tag>`. Under
 `JITPACK=true`, `build.gradle` publishes with that group and the tag as version, so `seqeron-node`'s
 POM dependency on `seqeron` resolves there; everywhere else the group stays `org.limitless` and the
-version `VERSION`'s. See `doc/publishing.md` §1.
+version `VERSION`'s. A third publication, the pom-only `seqeron-bom`, pins
+Aeron, Agrona and SBE at `versions.properties`. A `v*` tag runs `release.yml`: it fails unless the tag
+is `v` + `VERSION`, waits for JitPack's build, pushes the node image to GHCR, and creates a GitHub Release
+with the operator distribution. The image is built from `operatorDist`, so a node container has
+`bin/` and a `clusterctl` on the `PATH` set to its own member (`docker/clusterctl`).
 
 ### C++
 ```bash
@@ -174,7 +178,7 @@ checkout (`examples/cpp`), or `find_package(seqeron)` against a `cmake --install
 names no Aeron target, because FetchContent leaves Aeron's in no export set and an `install(EXPORT)`
 naming one fails at generate time; they are `$<BUILD_INTERFACE:>`-wrapped and
 `cmake/seqeronConfig.cmake.in` re-attaches them under `aeron::`, so an installed consumer brings its
-own installed Aeron. `doc/publishing.md` §7.
+own installed Aeron. CI's `installed` job is the only thing that exercises this path.
 
 **Aeron, Agrona and SBE versions are pinned once**, in `versions.properties` — `build.gradle` loads it
 and `CMakeLists.txt` parses it. The two sides generate independently from the same schemas and speak
@@ -432,8 +436,7 @@ and **the cluster is bounded at three members** by the 30-port cluster block (`d
 `doc/` holds what survived the split: `seqeron-protocol-spec.md` (normative — the frames, the families,
 the system vocabulary, the topology document), `fault-tolerance.md`, `registries.md` (the two shared
 namespaces this tier owns — `sourceId`, and the port blocks each repo draws from),
-`clusterctl.md` and `ops.md` (runbooks), and `publishing.md` (the standing backlog between
-`publishToMavenLocal`/`FetchContent` and a coordinate someone else can resolve). Note that `registries.md` still points at
+`clusterctl.md` and `ops.md` (runbooks), and `package.md` (the packaging review list). Note that `registries.md` still points at
 `src/main/resources/topology.xml`, which left with the product half — the only topology document here
 is `src/test/resources/topology-test-gateway.xml`.
 
