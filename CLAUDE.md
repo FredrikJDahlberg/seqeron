@@ -76,7 +76,7 @@ this tree resolves inside it. Do not add a citation of a document that is not he
 inline instead.
 
 **Every artifact says `seqeron`** — package `org.limitless.seqeron`, Gradle project `seqeron`, the fat
-jar `seqeron-0.1.0-uber.jar`, CMake targets `seqeron_core`/`seqeron_flags`, environment variables
+jar `seqeron-<version>-uber.jar`, CMake targets `seqeron_core`/`seqeron_flags`, environment variables
 `SEQERON_*`, Prometheus metrics `seqeron_*`. The product repo is still `phixeron` and its own
 identifiers stay that way; where a doc here cites one of its files or protocol names, that name is
 `phixeron` on purpose.
@@ -138,7 +138,7 @@ the server side of the replay protocol is Java only.
 ### Java
 ```bash
 ./gradlew compileJava
-./gradlew uberJar     # build/libs/seqeron-0.1.0-uber.jar — every script's prerequisite
+./gradlew uberJar     # build/libs/seqeron-<version>-uber.jar — every script's prerequisite
 ./gradlew test        # JUnit 5, 317 tests, ~1s
 ./gradlew generateFrameSbe generateReplaySbe generateProbeSbe generateClusterSbeIr
 ./gradlew compileTestJava   # TestGateway, which chaos-runner.sh needs and no jar carries

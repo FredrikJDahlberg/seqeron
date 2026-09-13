@@ -105,7 +105,7 @@ versions are pinned once, in `versions.properties`, which both builds read.
 
 ```bash
 ./gradlew compileJava
-./gradlew uberJar     # fat jar, run without Gradle: build/libs/seqeron-0.1.0-uber.jar
+./gradlew uberJar     # fat jar, run without Gradle: build/libs/seqeron-<version>-uber.jar
 ./gradlew test        # JUnit 5, ~1s
 ```
 
@@ -202,7 +202,7 @@ configured entirely via system properties.
 ```bash
 ./gradlew uberJar
 
-java -Dsequencer.memberId=0 -jar build/libs/seqeron-0.1.0-uber.jar
+java -Dsequencer.memberId=0 -jar build/libs/seqeron-*-uber.jar
 # [SequencerServer] Starting member 0 | ingress=aeron:udp?endpoint=localhost:9302 | archive=aeron:udp?endpoint=localhost:9301 | baseDir=/tmp/seqeron-seq
 # [SequencerServer/0] Running — Ctrl-C to stop
 ```
@@ -232,7 +232,7 @@ java \
   -Dsequencer.memberId=0 \
   -Dsequencer.baseDir=/var/seqeron-seq \
   "-Dsequencer.clusterMembers=0,host0:9302,host0:9303,host0:9304,host0:9305,host0:9301|1,host1:9312,host1:9313,host1:9314,host1:9315,host1:9311|2,host2:9322,host2:9323,host2:9324,host2:9325,host2:9321" \
-  -jar seqeron-0.1.0-uber.jar
+  -jar seqeron-*-uber.jar
 ```
 
 `src/test/scripts/start-three-node-cluster.sh` builds that string with `ports.sh`'s
