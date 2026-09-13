@@ -477,6 +477,21 @@ It publishes:
 - a GitHub Release with the operator distribution, `seqeron-<version>.zip` (`bin/`, `lib/`, `ops/`),
   and the uber, client and node jars.
 
+To cut one:
+
+1. Start from `main` with CI green.
+2. Set `VERSION` to the new number and commit it. Both builds read the number from there, so it is the
+   only place to change it.
+3. Tag that commit and push the branch and the tag:
+   ```bash
+   git tag v<version>
+   git push origin main v<version>
+   ```
+4. Watch the `release` workflow. It fails when the tag does not match `VERSION`, and when JitPack has not
+   built the tag within about ten minutes (it prints the tail of JitPack's build log).
+5. Check the GitHub Release lists the zip and the three jars. It is created last, so it exists only
+   when the JitPack build and the image push have succeeded.
+
 ## Documentation
 
 | Document | What it is |
