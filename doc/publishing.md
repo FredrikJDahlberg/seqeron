@@ -97,12 +97,17 @@ Javadoc runs clean today (`./gradlew javadoc` succeeds) but emits ~100 `no comme
 from the generated SBE codecs, and would publish a jar that is mostly generated accessors — so
 enabling it wants an exclusion for the generated source roots rather than needing one.
 
-### 6. No tags, and no release process
+### 6. Tagged, but still no release process
 
-`git tag` is empty. Both JitPack (which resolves a tag) and a C++ consumer's
-`FetchContent GIT_TAG` need one, so this blocks item 1's cheapest option and the C++ side's only
-version-pinning story at once. The version is a hand-typed `0.1.0` in `build.gradle` with nothing
-tying it to a tag, so the first release also has to decide who owns that number.
+`v0.1.0` is tagged — annotated, at `3d04954`, pushed 2026-09-12 — and agrees with the hand-typed
+`0.1.0` in `build.gradle` and the `project(seqeron_core VERSION 0.1.0)` in `CMakeLists.txt`. **That
+closes the C++ side's version-pinning story**: a consumer's `FetchContent GIT_TAG` now has something
+to resolve. It also gives item 1's cheapest option, JitPack, a tag to build.
+
+What is missing is the process around it. The number is typed in two build files with nothing tying
+either to the tag, so a release moves three things by hand and a tag that disagrees with the build
+files fails no build — the first symptom is a consumer resolving a version whose artifacts say
+something else.
 
 ## C++ — the one open item
 
@@ -165,7 +170,12 @@ Gradle resolves conflicts visibly.
 
 ## Smallest useful next step
 
-Item 6 then item 1's JitPack option: tag a release, add `jitpack.yml` pinning JDK 21, and the same
-tag serves both the Java coordinate and a C++ consumer's `GIT_TAG`. Total cost is one file and one
-tag, no credentials on either side, and it does not foreclose Central later — items 2–5 are
-additive.
+Item 6's half is done — `v0.1.0` is tagged and pushed. What is left is item 1's JitPack option: add
+`jitpack.yml` pinning JDK 21, and that same tag serves both the Java coordinate and a C++ consumer's
+`GIT_TAG`. Total cost is one file, no credentials on either side, and it does not foreclose Central
+later — items 2–5 are additive.
+
+One thing to carry into a consumer's build files: the coordinate JitPack serves is
+`com.github.<Owner>:seqeron:v0.1.0`, **not** `org.limitless:seqeron:0.1.0`. Choosing JitPack therefore
+rewrites every consumer's dependency line, which is the one cost GitHub Packages avoids and the reason
+that choice is worth making before a consumer starts editing rather than after.

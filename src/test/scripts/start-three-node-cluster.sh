@@ -33,6 +33,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MAIN_SCRIPTS="${SCRIPT_DIR}/../../main/scripts"
 source "${MAIN_SCRIPTS}/ports.sh"
 source "${MAIN_SCRIPTS}/paths.sh"
+source "${MAIN_SCRIPTS}/seqeron-home.sh"
 
 usage() {
     echo "Usage: $0"
@@ -45,7 +46,13 @@ fi
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
-JAR="build/libs/seqeron-0.1.0-uber.jar"
+# Resolved the way the operator scripts resolve it (seqeron-home.sh), not as a path relative to the
+# caller's cwd with the version written into it. The old form resolved only when the cwd happened to be
+# this repo's root, so the launcher could not be driven from anywhere else — and a consuming product's
+# end-to-end suite is exactly a caller that lives somewhere else. SEQERON_JAR overrides it, which is how
+# such a product points this launcher at its own uber jar.
+seqeron_require_jar
+JAR="${SEQERON_JAR}"
 
 # 1 = the caller supplies the node consumers, so don't start the probe followers (see the header).
 NO_CONSUMERS="${SEQERON_NO_CONSUMERS:-0}"
@@ -73,11 +80,6 @@ SEQ_AERON_DIR="${TMP_DIR}/seqeron-seq-aeron-0"
 
 
 # ── Pre-flight checks ─────────────────────────────────────────────────────────
-
-if [[ ! -f "${JAR}" ]]; then
-    echo "ERROR: ${JAR} not found — run: ./gradlew uberJar" >&2
-    exit 1
-fi
 
 mkdir -p "${LOG_DIR}"
 
