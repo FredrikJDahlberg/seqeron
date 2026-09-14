@@ -27,7 +27,7 @@ class ReplayerStreamReceiverTest {
     @Test
     @DisplayName("the receive stamp is on the epoch the cluster timestamp is measured in")
     void receiveStampIsEpochBased() {
-        // It is subtracted from clusterTimestamp * 1_000_000 (ClusterProbe's delivery-latency sample), so a
+        // It is subtracted from clusterTimestamp (ClusterProbe's delivery-latency sample), so a
         // monotonic-since-boot clock would be meaningless here however fine its resolution.
         final long epochMs = ReplayerStreamReceiver.nowNs() / 1_000_000L;
 

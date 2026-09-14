@@ -104,7 +104,7 @@ struct SequencedEvent
     std::int32_t sourceId;         ///< Fixed constant identifying the submitting producer process (header.sourceId)
     std::int32_t connectionId;     ///< Connection id at that producer; routes the reply (header.connectionId)
     std::int64_t sourceSessionId;  ///< Aeron Cluster client session id (header.sessionId)
-    std::int64_t clusterTimestamp; ///< cluster consensus time (ms) when message was committed
+    std::int64_t clusterTimestamp; ///< cluster consensus time (epoch ns) when message was committed
     std::int64_t receiveTimeNs;    ///< wall-clock ns at receipt by this client
     bool system;                   ///< true: a system frame, named by systemEventType, and payloadId means nothing
     std::uint16_t payloadId;       ///< which protocol templateId belongs to; 0 on a system frame
@@ -332,7 +332,7 @@ struct LifecycleEvent
     std::int32_t sourceId;         ///< publishing producer process (header.sourceId)
     std::int32_t connectionId;     ///< connection at that producer (header.connectionId)
     std::int64_t sourceSessionId;  ///< Aeron Cluster session the event was submitted on
-    std::int64_t clusterTimestamp; ///< cluster consensus time (ms) when committed
+    std::int64_t clusterTimestamp; ///< cluster consensus time (epoch ns) when committed
     std::int64_t receiveTimeNs;    ///< wall-clock ns at receipt by this client
 };
 

@@ -129,7 +129,7 @@ metrics are not limited to the names seqeron happens to know.
 | `seqeron_sequencer_rejected_ingress_total` | counter | Count of malformed ingress messages skipped by `Sequencer.sequenceMessage` |
 | `seqeron_sequencer_leadership_change_total` | counter | Count of leadership changes this node has observed and sequenced |
 | `seqeron_sequencer_current_leader_member_id` | gauge | memberId of the leader last recorded by this node's Sequencer |
-| `seqeron_sequencer_last_tick_timestamp_ms` | gauge | Consensus timestamp of the last 1Hz ClusterHeartbeat emitted |
+| `seqeron_sequencer_last_tick_timestamp_ms` | gauge | Consensus timestamp of the last 1Hz ClusterHeartbeat emitted, in ms (the frame carries ns) |
 | `seqeron_sequencer_gateway_promotion_total` | counter | Count of standby-promotion GatewayActive frames emitted — on a gateway session close, or on a designated instance failing to publish `GatewayStarted` within 60s of being named |
 | `seqeron_sequencer_bootstrap_activated` | gauge | 1 once the bootstrap GatewayActive has been emitted for the trading day, else 0 |
 | `seqeron_sequencer_tap_stalled` | gauge | 1 while the tap recording has made no progress for longer than the stall threshold (2s) under back-pressure, else 0. Latches at 1 when the node terminates for an unrecordable tap — see below |

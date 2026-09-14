@@ -115,6 +115,9 @@ public final class Sequencer {
      */
     static final long GATEWAY_ACTIVATION_TIMEOUT_MS = 5 * FrameLayer.CLUSTER_HEARTBEAT_INTERVAL_MS;
 
+    /** {@link #GATEWAY_ACTIVATION_TIMEOUT_MS} in consensus time, which is epoch nanoseconds. */
+    static final long GATEWAY_ACTIVATION_TIMEOUT_NS = 5 * FrameLayer.CLUSTER_HEARTBEAT_INTERVAL_NS;
+
     /**
      * Core's retired {@code payloadId} (doc/seqeron-protocol-spec.md §15 step 10). Core is not an
      * application and no longer rides a payload, so 1 is refused on ingress rather than reserved and
@@ -845,7 +848,7 @@ public final class Sequencer {
             return;
         }
         final PendingActivation armed =
-            new PendingActivation(row.gatewaySourceId(), gatewayId, timestamp + GATEWAY_ACTIVATION_TIMEOUT_MS);
+            new PendingActivation(row.gatewaySourceId(), gatewayId, timestamp + GATEWAY_ACTIVATION_TIMEOUT_NS);
         for (int i = 0; i < pendingActivations.size(); i++) {
             if (pendingActivations.get(i).gatewaySourceId() == row.gatewaySourceId()) {
                 pendingActivations.set(i, armed);

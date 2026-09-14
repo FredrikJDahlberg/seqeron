@@ -40,7 +40,7 @@ class SequencerTest {
     private static final int EXCHANGE_SOURCE_ID = 8;
     private static final int CONNECTION_ID = 42;
     private static final long SESSION_ID = 0x5EE51_0000L;
-    private static final long TIMESTAMP = 1_700_000_000_000L;
+    private static final long TIMESTAMP = 1_700_000_000_000_000_000L; // consensus time is epoch ns
 
     /**
      * An allocated payloadId the sequencer does not own — 3 is the FIX session family's — standing in
@@ -722,7 +722,7 @@ class SequencerTest {
         // And it arms the deadline like every other synthesized activation: instance 6 has to answer.
         assertEquals(5, decodeGatewayActive(
             seq.buffer(),
-            seq.pendingGatewayActivationTimeout(TIMESTAMP + 2 + Sequencer.GATEWAY_ACTIVATION_TIMEOUT_MS)).gatewayId());
+            seq.pendingGatewayActivationTimeout(TIMESTAMP + 2 + Sequencer.GATEWAY_ACTIVATION_TIMEOUT_NS)).gatewayId());
     }
 
     @Test
@@ -934,7 +934,7 @@ class SequencerTest {
                             TIMESTAMP);
         assertNotEquals(Sequencer.NO_FRAME, seq.pendingGatewayActivation(TIMESTAMP)); // designates 5
 
-        final long deadline = TIMESTAMP + Sequencer.GATEWAY_ACTIVATION_TIMEOUT_MS;
+        final long deadline = TIMESTAMP + Sequencer.GATEWAY_ACTIVATION_TIMEOUT_NS;
         assertEquals(Sequencer.NO_FRAME, seq.pendingGatewayActivationTimeout(deadline - 1),
                      "a cold start still inside the deadline is not overdue");
 
@@ -959,11 +959,11 @@ class SequencerTest {
         seq.sequenceMessage(buf, 0, encodeIngressGatewayStarted(buf, 0, 5), gatewaySession, TIMESTAMP + 1);
         final long globalSeqNo = seq.globalSeqNo();
 
-        final long deadline = TIMESTAMP + Sequencer.GATEWAY_ACTIVATION_TIMEOUT_MS;
+        final long deadline = TIMESTAMP + Sequencer.GATEWAY_ACTIVATION_TIMEOUT_NS;
         assertEquals(Sequencer.NO_FRAME, seq.pendingGatewayActivationTimeout(deadline));
         // Disarmed, not merely quiet: a healthy primary must not be demoted one deadline later.
         assertEquals(Sequencer.NO_FRAME,
-                     seq.pendingGatewayActivationTimeout(deadline + 10 * Sequencer.GATEWAY_ACTIVATION_TIMEOUT_MS));
+                     seq.pendingGatewayActivationTimeout(deadline + 10 * Sequencer.GATEWAY_ACTIVATION_TIMEOUT_NS));
         assertEquals(globalSeqNo, seq.globalSeqNo(), "an answered activation synthesizes nothing");
     }
 
@@ -980,13 +980,13 @@ class SequencerTest {
                             TIMESTAMP);
         seq.pendingGatewayActivation(TIMESTAMP);
 
-        final long first = TIMESTAMP + Sequencer.GATEWAY_ACTIVATION_TIMEOUT_MS;
+        final long first = TIMESTAMP + Sequencer.GATEWAY_ACTIVATION_TIMEOUT_NS;
         assertEquals(6, decodeGatewayActive(seq.buffer(), seq.pendingGatewayActivationTimeout(first)).gatewayId());
 
         assertEquals(Sequencer.NO_FRAME, seq.pendingGatewayActivationTimeout(first + 1),
                      "the hand-over restarts the deadline rather than firing again immediately");
 
-        final long second = first + Sequencer.GATEWAY_ACTIVATION_TIMEOUT_MS;
+        final long second = first + Sequencer.GATEWAY_ACTIVATION_TIMEOUT_NS;
         assertEquals(5, decodeGatewayActive(seq.buffer(), seq.pendingGatewayActivationTimeout(second)).gatewayId(),
                      "the standby did not start either — the role goes back rather than stopping here");
     }
@@ -1001,12 +1001,12 @@ class SequencerTest {
         seq.pendingGatewayActivation(TIMESTAMP);
         final long globalSeqNo = seq.globalSeqNo();
 
-        final long deadline = TIMESTAMP + Sequencer.GATEWAY_ACTIVATION_TIMEOUT_MS;
+        final long deadline = TIMESTAMP + Sequencer.GATEWAY_ACTIVATION_TIMEOUT_NS;
         assertEquals(Sequencer.NO_PROMOTION_TARGET, seq.pendingGatewayActivationTimeout(deadline),
                      "distinct from NO_FRAME: an activation WAS missed, there is just nobody to hand it to");
         assertEquals(globalSeqNo, seq.globalSeqNo(), "a hand-over with no target consumes no sequence number");
         assertEquals(Sequencer.NO_FRAME,
-                     seq.pendingGatewayActivationTimeout(deadline + Sequencer.GATEWAY_ACTIVATION_TIMEOUT_MS),
+                     seq.pendingGatewayActivationTimeout(deadline + Sequencer.GATEWAY_ACTIVATION_TIMEOUT_NS),
                      "reported once — a sole instance has nothing to re-designate to");
     }
 
@@ -1026,7 +1026,7 @@ class SequencerTest {
 
         // The standby it promoted has to declare itself started like any other designated instance —
         // otherwise a crash of the primary while the standby is also down leaves the same dead end.
-        final int handover = seq.pendingGatewayActivationTimeout(TIMESTAMP + Sequencer.GATEWAY_ACTIVATION_TIMEOUT_MS);
+        final int handover = seq.pendingGatewayActivationTimeout(TIMESTAMP + Sequencer.GATEWAY_ACTIVATION_TIMEOUT_NS);
         assertNotEquals(Sequencer.NO_FRAME, handover);
         assertEquals(5, decodeGatewayActive(seq.buffer(), handover).gatewayId());
     }
@@ -1117,7 +1117,7 @@ class SequencerTest {
         assertNotEquals(Sequencer.NO_FRAME, seq.pendingGatewayActivation(TIMESTAMP)); // designates 5
         assertNotEquals(Sequencer.NO_FRAME, seq.pendingGatewayActivation(TIMESTAMP)); // designates 8
 
-        final long deadline = TIMESTAMP + Sequencer.GATEWAY_ACTIVATION_TIMEOUT_MS;
+        final long deadline = TIMESTAMP + Sequencer.GATEWAY_ACTIVATION_TIMEOUT_NS;
         assertEquals(Sequencer.NO_FRAME, seq.pendingGatewayActivationTimeout(deadline - 1));
 
         // Both come due on the same heartbeat, and both are handed over — the adapter drains this too.
@@ -1139,7 +1139,7 @@ class SequencerTest {
         // Only the client pair's primary comes up.
         seq.sequenceMessage(buf, 0, encodeIngressGatewayStarted(buf, 0, 5), 0xA11CEL, TIMESTAMP + 1);
 
-        final long deadline = TIMESTAMP + Sequencer.GATEWAY_ACTIVATION_TIMEOUT_MS;
+        final long deadline = TIMESTAMP + Sequencer.GATEWAY_ACTIVATION_TIMEOUT_NS;
         assertEquals(9, decodeGatewayActive(seq.buffer(), seq.pendingGatewayActivationTimeout(deadline)).gatewayId(),
                      "the exchange pair is still overdue, and is walked past the answered entry to reach it");
         assertEquals(Sequencer.NO_FRAME, seq.pendingGatewayActivationTimeout(deadline),

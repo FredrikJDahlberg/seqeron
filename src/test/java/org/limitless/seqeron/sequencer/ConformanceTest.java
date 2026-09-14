@@ -55,7 +55,7 @@ class ConformanceTest {
     private static final int SOURCE_ID = 7;
     private static final int CONNECTION_ID = 42;
     private static final long SESSION_ID = 0x5EE5_1000L;
-    private static final long TIMESTAMP = 1_700_000_000_000L;
+    private static final long TIMESTAMP = 1_700_000_000_000_000_000L; // consensus time is epoch ns
 
     /** clusterctl's reserved {@code sourceId} (§5): never a {@code gatewaySourceId}, so never list-checked. */
     private static final int CLUSTERCTL_SOURCE_ID = 2;
@@ -436,7 +436,7 @@ class ConformanceTest {
         collect(frames, target, target.pendingGatewayActivation(timestamp));
 
         for (int i = 0; i < 3; i++) {
-            timestamp += FrameLayer.CLUSTER_HEARTBEAT_INTERVAL_MS;
+            timestamp += FrameLayer.CLUSTER_HEARTBEAT_INTERVAL_NS;
             collect(frames, target, target.clusterHeartbeat(timestamp));
             final int length = payloadFrame(PAYLOAD_ID, SOURCE_ID, syntheticPayload(8 + i));
             collect(frames, target, target.sequenceMessage(ingress, 0, length, SESSION_ID, timestamp));
@@ -617,10 +617,10 @@ class ConformanceTest {
 
         final long armed = TIMESTAMP;
         assertEquals(Sequencer.NO_FRAME,
-                     sequencer.pendingGatewayActivationTimeout(armed + Sequencer.GATEWAY_ACTIVATION_TIMEOUT_MS - 1),
+                     sequencer.pendingGatewayActivationTimeout(armed + Sequencer.GATEWAY_ACTIVATION_TIMEOUT_NS - 1),
                      "not one heartbeat before the deadline");
         final int handover =
-            sequencer.pendingGatewayActivationTimeout(armed + Sequencer.GATEWAY_ACTIVATION_TIMEOUT_MS);
+            sequencer.pendingGatewayActivationTimeout(armed + Sequencer.GATEWAY_ACTIVATION_TIMEOUT_NS);
         assertNotEquals(Sequencer.NO_FRAME, handover);
         assertEquals(12, decodeGatewayActive(sequencer.buffer()).gatewayId());
     }
@@ -634,7 +634,7 @@ class ConformanceTest {
         bind(sequencer, 11, 100L);
         assertEquals(Sequencer.NO_FRAME,
                      sequencer.pendingGatewayActivationTimeout(TIMESTAMP + 10 *
-                                                               Sequencer.GATEWAY_ACTIVATION_TIMEOUT_MS),
+                                                               Sequencer.GATEWAY_ACTIVATION_TIMEOUT_NS),
                      "a GatewayStarted drops the deadline it answered");
 
         final Sequencer sole = new Sequencer();
@@ -657,7 +657,7 @@ class ConformanceTest {
         assertEquals(21, activatedGatewayId(sequencer));
 
         // Neither answered, so both deadlines are live and both hand over at the same consensus time.
-        final long deadline = TIMESTAMP + Sequencer.GATEWAY_ACTIVATION_TIMEOUT_MS;
+        final long deadline = TIMESTAMP + Sequencer.GATEWAY_ACTIVATION_TIMEOUT_NS;
         assertNotEquals(Sequencer.NO_FRAME, sequencer.pendingGatewayActivationTimeout(deadline));
         assertEquals(12, decodeGatewayActive(sequencer.buffer()).gatewayId());
         assertNotEquals(Sequencer.NO_FRAME, sequencer.pendingGatewayActivationTimeout(deadline));

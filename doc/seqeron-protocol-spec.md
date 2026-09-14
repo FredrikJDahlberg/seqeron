@@ -584,8 +584,8 @@ because a
 publishing one was never registered and no session close can promote past it.
 
 **The deadline.** `GATEWAY_ACTIVATION_TIMEOUT_MS` is **5 × `CLUSTER_HEARTBEAT_INTERVAL_MS` = 5000 ms**
-(§12). Every `GatewayActive` arms one at `timestamp + GATEWAY_ACTIVATION_TIMEOUT_MS` on the consensus
-clock — **including the one a promotion produces**, so successive failures walk the list instead of
+(§12). Every `GatewayActive` arms one at `timestamp + GATEWAY_ACTIVATION_TIMEOUT_NS` on the consensus
+clock, whose unit is nanoseconds (§9.3) — **including the one a promotion produces**, so successive failures walk the list instead of
 stalling on the first.
 
 At most **one armed activation per `gatewaySourceId`**, replaced in place, held in **arm order**. Both
@@ -708,7 +708,8 @@ Conditions 1–9 are pure functions of the message bytes; condition 10 reads sta
 reads is log-derived (the list from `GatewayRegistered`, the binding from `GatewayStarted`). That
 split is a property to preserve.
 
-- `timestamp` is the **Raft consensus timestamp**, never `System.currentTimeMillis()`.
+- `timestamp` is the **Raft consensus timestamp** in **epoch nanoseconds**, never `System.currentTimeMillis()`.
+  The unit says nothing of the clock's precision or accuracy, which are the leader host's.
 - Synthesis over a collection (the bootstrap `GatewayActive` per rank-0 row) MUST iterate a
   deterministically ordered structure.
 - Every synthesis *deadline* MUST be evaluated against the consensus clock, never a local timer. The
@@ -900,6 +901,7 @@ respectively.
 | max sequenced frame | 44 + `MAX_PAYLOAD_LENGTH` — **1360** | **T-2**, §4.2 |
 | consensus log | MUST carry a `32 + MAX_INGRESS_LENGTH` = **1376**-byte message in one packet; MTU 1408 gives a `maxPayloadLength` of exactly 1376 | Aeron Cluster; cluster-wide config |
 | `globalSeqNo` | int64, starts at 1 | §9.1 |
+| `timestamp` | int64, **epoch nanoseconds** — Aeron's `NanosecondClusterClock`; a log recorded in another unit is refused | §9.3 |
 | `CLUSTER_HEARTBEAT_INTERVAL_MS` | **1000** — the 1 Hz cluster clock | §7, §9.3 |
 | `GATEWAY_ACTIVATION_TIMEOUT_MS` | **5000** = 5 × `CLUSTER_HEARTBEAT_INTERVAL_MS` | §7.2 |
 | `MAX_CONCURRENT_REPLAYS` | **4** replays served at once; `ReplayPending` beyond | §10.1 |

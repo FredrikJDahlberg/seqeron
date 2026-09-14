@@ -370,7 +370,7 @@ public final class SequencerService implements ClusteredService {
             while ((overdue = sequencer.pendingGatewayActivationTimeout(timestamp)) != Sequencer.NO_FRAME) {
                 publishPromotion(overdue, "a designated gateway instance never declared itself started");
             }
-            lastHeartbeatTimestampCounter.set(timestamp);
+            lastHeartbeatTimestampCounter.set(TimeUnit.NANOSECONDS.toMillis(timestamp)); // exported as ms
             injectTapRecordingFault();
             tap.checkRecordingAlive();
             scheduleHeartbeat();
@@ -396,12 +396,12 @@ public final class SequencerService implements ClusteredService {
     }
 
     /**
-     * Re-arms the cluster clock, {@link Sequencer#CLUSTER_HEARTBEAT_INTERVAL_MS} ahead of current cluster
+     * Re-arms the cluster clock, {@link FrameLayer#CLUSTER_HEARTBEAT_INTERVAL_NS} ahead of current cluster
      * time. Bounded and fatal if the consensus module will not take it — see
      * {@link TapPublisher#scheduleHeartbeat}.
      */
     private void scheduleHeartbeat() {
-        tap.scheduleHeartbeat(cluster.time() + FrameLayer.CLUSTER_HEARTBEAT_INTERVAL_MS);
+        tap.scheduleHeartbeat(cluster.time() + FrameLayer.CLUSTER_HEARTBEAT_INTERVAL_NS);
     }
 
     /**

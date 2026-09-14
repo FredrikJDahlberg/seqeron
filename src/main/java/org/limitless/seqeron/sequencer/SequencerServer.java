@@ -4,6 +4,7 @@ import io.aeron.archive.Archive;
 import io.aeron.archive.client.AeronArchive;
 import io.aeron.cluster.ClusteredMediaDriver;
 import io.aeron.cluster.ConsensusModule;
+import io.aeron.cluster.NanosecondClusterClock;
 import io.aeron.cluster.service.ClusteredServiceContainer;
 import io.aeron.driver.MediaDriver;
 import io.aeron.driver.ThreadingMode;
@@ -167,6 +168,7 @@ public final class SequencerServer {
                 .aeronDirectoryName(aeronDir)
                 .clusterMemberId(memberId)
                 .clusterMembers(clusterMembers)
+                .clusterClock(new NanosecondClusterClock())
                 .clusterDir(clusterDir)
                 .ingressChannel(udp(host, ingressPort))
                 .replicationChannel(udp(host, 0))

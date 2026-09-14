@@ -59,7 +59,7 @@ public final class SequencedEvent {
         return sourceSessionId;
     }
 
-    /** Cluster consensus time (ms) at which the frame was committed. */
+    /** Cluster consensus time (epoch ns) at which the frame was committed. */
     public long clusterTimestamp() {
         return clusterTimestamp;
     }

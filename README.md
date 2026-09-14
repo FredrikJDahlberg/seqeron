@@ -382,8 +382,8 @@ header-only message such as `ClusterHeartbeat` would otherwise be indistinguisha
 default pretty print:
 
 ```
-LeadershipChanged = { "header": { "sourceId": -1, "connectionId": -1, "sessionId": -1, "systemEventType": 5, "globalSeqNo": 1, "timestamp": 1788716861366 }, "newLeaderMemberId": 0 }
-ClusterHeartbeat = { "header": { "sourceId": -1, "connectionId": -1, "sessionId": -1, "systemEventType": 16, "globalSeqNo": 2, "timestamp": 1788716862367 } }
+LeadershipChanged = { "header": { "sourceId": -1, "connectionId": -1, "sessionId": -1, "systemEventType": 5, "globalSeqNo": 1, "timestamp": 1789409115713932000 }, "newLeaderMemberId": 0 }
+ClusterHeartbeat = { "header": { "sourceId": -1, "connectionId": -1, "sessionId": -1, "systemEventType": 16, "globalSeqNo": 2, "timestamp": 1789409116715140000 } }
 ```
 
 The dump as a whole is not a JSON document either way — the `[Catalog]` and separator lines sit

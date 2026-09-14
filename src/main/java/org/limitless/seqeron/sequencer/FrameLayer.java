@@ -1,5 +1,6 @@
 package org.limitless.seqeron.sequencer;
 
+import java.util.concurrent.TimeUnit;
 import org.limitless.seqeron.sbe.frame.MessageHeaderDecoder;
 import org.limitless.seqeron.sbe.frame.UnsequencedDecoder;
 import org.limitless.seqeron.sbe.frame.UnsequencedHeaderDecoder;
@@ -82,6 +83,10 @@ public final class FrameLayer {
      * want of a way to share it.
      */
     public static final long CLUSTER_HEARTBEAT_INTERVAL_MS = 1000;
+
+    /** {@link #CLUSTER_HEARTBEAT_INTERVAL_MS} in consensus time, which is epoch nanoseconds. */
+    public static final long CLUSTER_HEARTBEAT_INTERVAL_NS =
+        TimeUnit.MILLISECONDS.toNanos(CLUSTER_HEARTBEAT_INTERVAL_MS);
 
     private FrameLayer() {
     }
