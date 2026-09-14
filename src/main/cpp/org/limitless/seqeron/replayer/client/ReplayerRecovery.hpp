@@ -645,7 +645,7 @@ class ReplayerRecovery
                                          .sourceId = srcId,
                                          .connectionId = connId,
                                          .sourceSessionId = sessId,
-                                         .clusterTimestamp = ts,
+                                         .clusterTimestampNs = ts,
                                          .receiveTimeNs = receiveNs });
             }
             return;
@@ -669,7 +669,7 @@ class ReplayerRecovery
                                           .sourceId = srcId,
                                           .connectionId = connId,
                                           .sourceSessionId = sessId,
-                                          .clusterTimestamp = ts,
+                                          .clusterTimestampNs = ts,
                                           .receiveTimeNs = receiveNs,
                                           .system = isSystem,
                                           .payloadId = view.payloadId,

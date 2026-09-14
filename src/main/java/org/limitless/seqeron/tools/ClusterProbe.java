@@ -413,7 +413,7 @@ public final class ClusterProbe {
             if (sampleCount == samplesUs.length) {
                 samplesUs = Arrays.copyOf(samplesUs, samplesUs.length * 2);
             }
-            samplesUs[sampleCount++] = (event.receiveTimeNs() - event.clusterTimestamp()) / 1_000L;
+            samplesUs[sampleCount++] = (event.receiveTimeNs() - event.clusterTimestampNs()) / 1_000L;
         }
 
         private void report() {

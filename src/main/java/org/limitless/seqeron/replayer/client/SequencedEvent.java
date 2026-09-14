@@ -26,7 +26,7 @@ public final class SequencedEvent {
     private int sourceId;
     private int connectionId;
     private long sourceSessionId;
-    private long clusterTimestamp;
+    private long clusterTimestampNs;
     private long receiveTimeNs;
     private boolean system;
     private int payloadId;
@@ -60,8 +60,8 @@ public final class SequencedEvent {
     }
 
     /** Cluster consensus time (epoch ns) at which the frame was committed. */
-    public long clusterTimestamp() {
-        return clusterTimestamp;
+    public long clusterTimestampNs() {
+        return clusterTimestampNs;
     }
 
     /** Wall-clock ns at receipt by this client. */
@@ -124,14 +124,14 @@ public final class SequencedEvent {
     }
 
     void set(final long globalSeqNo, final int sourceId, final int connectionId, final long sourceSessionId,
-             final long clusterTimestamp, final long receiveTimeNs, final boolean system, final int payloadId,
+             final long clusterTimestampNs, final long receiveTimeNs, final boolean system, final int payloadId,
              final int systemEventType, final int templateId, final int blockLength, final int version,
              final DirectBuffer buffer, final int offset, final int length, final long position) {
         this.globalSeqNo = globalSeqNo;
         this.sourceId = sourceId;
         this.connectionId = connectionId;
         this.sourceSessionId = sourceSessionId;
-        this.clusterTimestamp = clusterTimestamp;
+        this.clusterTimestampNs = clusterTimestampNs;
         this.receiveTimeNs = receiveTimeNs;
         this.system = system;
         this.payloadId = payloadId;

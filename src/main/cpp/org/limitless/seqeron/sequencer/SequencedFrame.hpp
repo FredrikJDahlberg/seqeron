@@ -101,22 +101,22 @@ inline constexpr std::uint16_t APPLICATION_REGISTERED = sbe::frame::ApplicationR
 struct SequencedEvent
 {
     std::int64_t globalSeqNo;
-    std::int32_t sourceId;         ///< Fixed constant identifying the submitting producer process (header.sourceId)
-    std::int32_t connectionId;     ///< Connection id at that producer; routes the reply (header.connectionId)
-    std::int64_t sourceSessionId;  ///< Aeron Cluster client session id (header.sessionId)
-    std::int64_t clusterTimestamp; ///< cluster consensus time (epoch ns) when message was committed
-    std::int64_t receiveTimeNs;    ///< wall-clock ns at receipt by this client
-    bool system;                   ///< true: a system frame, named by systemEventType, and payloadId means nothing
-    std::uint16_t payloadId;       ///< which protocol templateId belongs to; 0 on a system frame
-    std::uint16_t systemEventType; ///< which of §7's eleven events; 0 on an application frame
-    std::uint16_t templateId;      ///< the message's messageHeader templateId; picks the specific decode
-    std::uint16_t blockLength;     ///< payload messageHeader blockLength; 0 on a system frame (see decodeSystem)
-    std::uint16_t version;         ///< payload messageHeader version; 0 on a system frame
-    const char* payload;           ///< the payload's own bytes, its 8-byte messageHeader included; on a
-                                   ///< system frame, the message with no framing at all
-    std::uint64_t payloadLength;   ///< total byte count
-    std::int64_t position;         ///< recording/stream position of this frame's first byte;
-                                   ///< pass to ReplayParams::position() to replay from here
+    std::int32_t sourceId;           ///< Fixed constant identifying the submitting producer process (header.sourceId)
+    std::int32_t connectionId;       ///< Connection id at that producer; routes the reply (header.connectionId)
+    std::int64_t sourceSessionId;    ///< Aeron Cluster client session id (header.sessionId)
+    std::int64_t clusterTimestampNs; ///< cluster consensus time (epoch ns) when message was committed
+    std::int64_t receiveTimeNs;      ///< wall-clock ns at receipt by this client
+    bool system;                     ///< true: a system frame, named by systemEventType, and payloadId means nothing
+    std::uint16_t payloadId;         ///< which protocol templateId belongs to; 0 on a system frame
+    std::uint16_t systemEventType;   ///< which of §7's eleven events; 0 on an application frame
+    std::uint16_t templateId;        ///< the message's messageHeader templateId; picks the specific decode
+    std::uint16_t blockLength;       ///< payload messageHeader blockLength; 0 on a system frame (see decodeSystem)
+    std::uint16_t version;           ///< payload messageHeader version; 0 on a system frame
+    const char* payload;             ///< the payload's own bytes, its 8-byte messageHeader included; on a
+                                     ///< system frame, the message with no framing at all
+    std::uint64_t payloadLength;     ///< total byte count
+    std::int64_t position;           ///< recording/stream position of this frame's first byte;
+                                     ///< pass to ReplayParams::position() to replay from here
 };
 
 /**
@@ -329,11 +329,11 @@ inline std::int64_t frameStartPosition(const aeron::Header& header)
 struct LifecycleEvent
 {
     std::int64_t globalSeqNo;
-    std::int32_t sourceId;         ///< publishing producer process (header.sourceId)
-    std::int32_t connectionId;     ///< connection at that producer (header.connectionId)
-    std::int64_t sourceSessionId;  ///< Aeron Cluster session the event was submitted on
-    std::int64_t clusterTimestamp; ///< cluster consensus time (epoch ns) when committed
-    std::int64_t receiveTimeNs;    ///< wall-clock ns at receipt by this client
+    std::int32_t sourceId;           ///< publishing producer process (header.sourceId)
+    std::int32_t connectionId;       ///< connection at that producer (header.connectionId)
+    std::int64_t sourceSessionId;    ///< Aeron Cluster session the event was submitted on
+    std::int64_t clusterTimestampNs; ///< cluster consensus time (epoch ns) when committed
+    std::int64_t receiveTimeNs;      ///< wall-clock ns at receipt by this client
 };
 
 // The wall-clock stamp SequencedEvent/LifecycleEvent carry as receiveTimeNs. Free rather than a
