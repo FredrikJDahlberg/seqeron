@@ -265,6 +265,8 @@ if(SEQERON_BUILD_TESTS)
     enable_testing()
 
     add_executable(core_tests
+        src/test/cpp/org/limitless/seqeron/app/RecoveryStallFenceTest.cpp
+        src/test/cpp/org/limitless/seqeron/app/TapLagMonitorTest.cpp
         src/test/cpp/org/limitless/seqeron/sequencer/ClusterCodecTest.cpp
         src/test/cpp/org/limitless/seqeron/sequencer/ConformanceTest.cpp
         src/test/cpp/org/limitless/seqeron/sequencer/ClusterStreamSenderTest.cpp

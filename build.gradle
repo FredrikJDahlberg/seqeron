@@ -414,6 +414,7 @@ tasks.named('installDist') { enabled = false }
 // SystemFrame, PortLayout and the Ingress* classes are the client's, Sequencer and SequencerServer the
 // node's — and splitting a package across two source roots costs more than the check below.
 ext.clientTierPatterns = [
+    'org/limitless/seqeron/app/**',
     'org/limitless/seqeron/sbe/frame/**',
     'org/limitless/seqeron/sbe/replay/**',
     'org/limitless/seqeron/replayer/client/**',

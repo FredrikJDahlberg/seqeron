@@ -1,4 +1,4 @@
-package org.limitless.seqeron.tools;
+package org.limitless.seqeron.app;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -8,9 +8,9 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 /**
- * Unit tests for the recovery-deadline verdict behind {@code TestGateway.checkFences}'s not-caught-up
- * branch. No Aeron runtime: {@code isCaughtUp()}/{@code onCaughtUp()} and the dispatched globalSeqNo are
- * exactly the three signals the gateway feeds in off {@code ReplayerStreamReceiver}.
+ * Unit tests for the recovery-deadline verdict a gateway applies while not caught up. No Aeron runtime:
+ * {@code isCaughtUp()}/{@code onCaughtUp()} and the dispatched globalSeqNo are exactly the three signals a
+ * gateway feeds in off {@code ReplayerStreamReceiver}. Case for case with {@code RecoveryStallFenceTest.cpp}.
  */
 class RecoveryStallFenceTest {
     private static final long DEADLINE_MS = TimeUnit.SECONDS.toMillis(60);

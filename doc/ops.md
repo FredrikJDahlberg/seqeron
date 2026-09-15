@@ -229,7 +229,27 @@ resolves off the tap like any other frame. The sibling line, `a second venue ses
 gatewaySourceId=N`, is the opposite mistake and is not fatal: the gateway stays on the first row and
 refuses the second, because one venue session is all this build serves.
 
+## The consensus clock
+
+Every frame's `timestamp` is epoch nanoseconds read from the **leader host's** clock when it appends
+the entry (spec §9.3). The unit is fixed; the precision and accuracy are the host's, and seqeron does
+nothing to discipline them.
+
+- **Discipline every member, not just the current leader.** Any member can be elected, and an offset
+  between members shows up in the timestamp at the leadership change. Where UTC traceability is
+  required (MiFID II RTS 25), that is PTP or an equivalent traceable source on all three hosts,
+  with its offset monitored outside seqeron.
+- **It is commit time, not event time.** It stamps when the cluster ordered a message, after ingress
+  transit and Raft replication. A regulatory event timestamp — order receipt, execution — belongs to
+  the application that saw the event, taken at its own edge and carried in its payload.
+- **A client can see gross skew.** `app/TapLagMonitor` reports `SKEW_SUSPECTED` when a heartbeat
+  arrives a threshold or more before its own commit timestamp, which only an offset between this host's
+  clock and the leader's can cause. It catches offsets of seconds, not the microseconds RTS 25 cares about.
+
 ## Non-goals / open items
+
+- No clock-offset metric. Neither `/metrics` endpoint reports a member's offset from UTC or from its
+  peers; that comes from the host's time daemon.
 
 - No authentication on either `/metrics` endpoint — see "Shape" above; both are meant to sit behind
   the same network boundary as the nodes.

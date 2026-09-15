@@ -1,20 +1,21 @@
-package org.limitless.seqeron.tools;
+package org.limitless.seqeron.app;
 
 /**
- * The recovery-stall fence {@link TestGateway} holds: recovery dispatching nothing for a deadline, once
- * this instance has been caught up at least once. One of the four signals on which that harness gateway
- * stops serving, and the reason {@code chaos-runner.sh} can drive a non-converging recovery to a handover
- * rather than a hang.
+ * A gateway's recovery-stall fence: recovery dispatching nothing for a deadline, once this instance has been
+ * caught up at least once. It covers the state a tap-silence watchdog cannot, because that watchdog is gated
+ * on {@code isCaughtUp()}: a recovery that never converges would otherwise keep an active gateway serving
+ * behind a view of the log frozen at a hole it cannot close.
  *
  * <p><b>Progress, not elapsed recovery.</b> A converging re-walk always advances the {@code globalSeqNo}
  * it has dispatched and a non-converging one never does, so timing elapsed recovery would fence the very
  * path a recovery takes. It never arms before the first catch-up: a cold start replays the whole log (no
  * snapshots) and has no useful time bound.
  *
- * <p>Lives here rather than in {@code src/main} because the only thing in this repository that needs it is
- * the test gateway below it. A real edge gateway's version of this fence belongs with that gateway.
+ * <p>A fence, where {@link org.limitless.seqeron.replayer.client.RecoveryProgressPolicy} is the alarm on the
+ * same predicate; set this deadline longer. The C++ twin is {@code app/RecoveryStallFence.hpp}; keep the two
+ * in step.
  */
-final class RecoveryStallFence {
+public final class RecoveryStallFence {
     private final long deadlineMs;
 
     private boolean everCaughtUp;
@@ -31,7 +32,7 @@ final class RecoveryStallFence {
      *                   relative to a normal gap-recovery re-walk (seconds) so that is never mistaken for the
      *                   pathological case this exists to catch.
      */
-    RecoveryStallFence(final long deadlineMs) {
+    public RecoveryStallFence(final long deadlineMs) {
         this.deadlineMs = deadlineMs;
     }
 
@@ -39,7 +40,7 @@ final class RecoveryStallFence {
      * Caught up: not, or no longer, recovering. Latches {@code everCaughtUp} forever and clears the recovery
      * clock, so re-convergence after a legitimate re-walk re-arms cleanly for the next one.
      */
-    void onCaughtUp() {
+    public void onCaughtUp() {
         everCaughtUp = true;
         recoveryStartMs = 0;
     }
@@ -52,7 +53,7 @@ final class RecoveryStallFence {
      * @return true once recovery has dispatched nothing for at least the deadline, on an instance that has
      *         been caught up before; always false for a cold start
      */
-    boolean onNotCaughtUp(final long nowMs, final long globalSeqNo) {
+    public boolean onNotCaughtUp(final long nowMs, final long globalSeqNo) {
         if (!everCaughtUp) {
             return false;
         }

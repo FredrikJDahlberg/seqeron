@@ -19,6 +19,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import org.agrona.ExpandableArrayBuffer;
 import org.agrona.concurrent.IdleStrategy;
 import org.agrona.concurrent.ShutdownSignalBarrier;
+import org.limitless.seqeron.app.RecoveryStallFence;
 import org.limitless.seqeron.sequencer.FrameLayer;
 import org.limitless.seqeron.replayer.client.ReplayerStreamReceiver;
 import org.limitless.seqeron.replayer.client.SequencedEvent;

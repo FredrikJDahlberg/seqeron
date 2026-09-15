@@ -152,8 +152,8 @@ deliberately, since consensus time is itself delivered by the very `ClusterHeart
 it would freeze along with a stalled tap and never trip (`FixGateway.cpp:241-244`). Its `!isCaughtUp()`
 branch is not simply skipped, though: a pure, Aeron-free recovery-deadline predicate provides the row
 above — the deadline is armed only once `onCaughtUp()` has fired at least once, so it can never fire
-during a legitimate cold start. That predicate is the gateway's own and lives with it; seqeron carries
-only the test gateway's copy (`tools/RecoveryStallFence`, `src/test/java`), which its chaos harness drives.
+during a legitimate cold start. seqeron ships that predicate as `app/RecoveryStallFence` (Java and C++,
+in the client tier); its own test gateway holds it, which is what the chaos harness drives.
 
 A `GatewayActive` naming *this* instance while it was standby is the mirror case: `m_activated` flips
 true and the accept gate can open once every other gate condition is met (§2.4) — no fence involved.
