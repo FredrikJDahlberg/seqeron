@@ -13,7 +13,7 @@ not supersede. Rule identifiers are that document's, unchanged._
 >
 > **Normative language.** MUST / MUST NOT / SHOULD as usual. Rules carry identifiers — **F-n** frame,
 > **T-n** transport, **S-n** sequencer, **P-n** payload, **C-n** registration, **R-n** replay, **V-n**
-> versioning, **E-1** encoding. §14 lists the ones a conformance test exists for.
+> versioning, **E-1** encoding, **A-n** application (§16). §14 lists the ones a conformance test exists for.
 
 ---
 
@@ -1309,3 +1309,23 @@ these step numbers — so a landed step keeps its place and records what actuall
 messages — and `Sequencer.sequenceMessage` was a `schemaId` dispatcher over the two, a knowing,
 temporary divergence from **§9.2 condition 2**. Step 4 ended it: every frame on the tap is an envelope,
 every consumer dispatches on `(payloadId, templateId)`, and condition 2 holds as written.
+
+---
+
+## 16. Producer and replica obligations
+
+What an application must do for §9.1's order to reach its own consumers intact. seqeron cannot enforce
+these — they are behaviour past the tap — so they are rules for the application, and
+`org.limitless.seqeron.app` (Java and C++) implements each.
+
+- **A-1 Leader-only work is gated.** A co-located replica MUST emit a leader-only side effect only while
+  it is caught up and its own member is the leader, and MUST treat every applied `LeadershipChanged` as
+  closing that gate, including one that names its own member again: a reply sent during that election
+  may have been lost with it. (`LeaderGate`)
+- **A-2 Leader-only work is tracked as outstanding.** A request is outstanding on every replica from its
+  sequenced request until its sequenced reply. The leader MUST dispatch every outstanding request not
+  already dispatched since its gate opened, in `globalSeqNo` order, and a reply offer that fails MUST
+  release that dispatch. (`OutstandingWork`)
+- **A-3 A re-emission is identical.** A-2 emits at least once. The reply MUST be a pure function of the
+  sequenced request and SHOULD be keyed on the request's `globalSeqNo`, so a duplicate is byte-identical;
+  consumers MUST drop duplicates by that key.

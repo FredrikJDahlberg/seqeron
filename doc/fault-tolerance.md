@@ -413,9 +413,10 @@ messages without a subscription switch.
 
 ## 4. Exactly-once query replies across a failover — `OutstandingQueries`
 
-`PortfolioQueryRequest` handling (`OrderExecServer`) needs a leader-only responder, but the leader can
-change mid-flight. `OutstandingQueries.hpp` (templated, Aeron-free, unit-tested standalone, mirroring
-the split between `Sequencer` and `SequencerService`) keeps two separate notions of state:
+`PortfolioQueryRequest` handling (phixeron's `OrderExecServer`) needs a leader-only responder, but the
+leader can change mid-flight. seqeron ships the pattern as `app/OutstandingWork` and `app/LeaderGate`
+(Java and C++, spec §16); phixeron's `OutstandingQueries.hpp` is where it came from. It keeps two
+separate notions of state:
 
 - **Outstanding-ness is replicated** — a request is outstanding from the moment it's sequenced until a
   matching *sequenced* reply discharges it (`onRequest`/`onReply`), so every replica derives the same
@@ -430,6 +431,14 @@ A freshly promoted leader simply calls `dispatchUndispatched()` against state ev
 holds identically — no special-cased failover recovery logic, no risk of answering a query twice
 (discharge only ever happens via a sequenced reply) or losing one (a reply that doesn't land leaves the
 request outstanding for the next leader to pick up).
+
+**Every leadership change closes the gate**, not only one that names another member. A replica applies a
+batch of frames per duty cycle, so it can apply a flip away and back and read itself as leader both
+before and after; a reply it sent during that election may have been truncated with the old leader's
+uncommitted log, and without a close it stays dispatched and is never sent again. `LeaderGate` closes on
+every applied `LeadershipChanged` for that reason. `OrderExecServer`'s per-cycle
+`isCaughtUp() && currentLeaderMemberId() == memberId` test does not, and `OutstandingWorkPropertyTest`
+finds that case within its fixed seeds.
 
 Dispatch runs in **insertion order**, which — fed from the sequenced stream — is `globalSeqNo` order.
 That is load-bearing rather than tidiness: these side effects are externally visible in the order they
