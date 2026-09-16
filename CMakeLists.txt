@@ -265,6 +265,7 @@ if(SEQERON_BUILD_TESTS)
     enable_testing()
 
     add_executable(core_tests
+        src/test/cpp/org/limitless/seqeron/app/GatewayLifecycleTest.cpp
         src/test/cpp/org/limitless/seqeron/app/LeaderGateTest.cpp
         src/test/cpp/org/limitless/seqeron/app/OutstandingWorkTest.cpp
         src/test/cpp/org/limitless/seqeron/app/OutstandingWorkPropertyTest.cpp

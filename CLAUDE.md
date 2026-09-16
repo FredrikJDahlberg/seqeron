@@ -93,7 +93,7 @@ this tree.
 | --- | --- | --- |
 | the sequencer | `sequencer/` — `Sequencer`, `SequencerService`, `SequencerServer`, `FrameLayer`, `SystemFrame`, `PortLayout`, `TapPublisher`, `TapStallPolicy`, and the producer side: `ClusterStreamSender`, `IngressPublisher`, `IngressSender`, `IngressStallPolicy`, `IngressLeaderPolicy` | `sequencer/` — `SequencedFrame`, `ClusterStreamSender`, `ClusterStreamClient`, `IngressPublisher`, `PortLayout` |
 | the replayer | `replayer/server/` and `replayer/client/` | `replayer/client/` only |
-| the application patterns | `app/` — `RecoveryStallFence`, `TapLagMonitor`, `LeaderGate`, `OutstandingWork` | `app/` — the same four |
+| the application patterns | `app/` — `RecoveryStallFence`, `TapLagMonitor`, `LeaderGate`, `OutstandingWork`, `GatewayLifecycle` | `app/` — the same five |
 | the tools | `tools/` — `ClusterCtl`, `TopologyDocument`, `ClusterProbe`, `SbeLogPrinter` | — |
 | the ops plane | `metrics/` — `MetricsExporter`, `MetricsAggregator`, `SeqeronCounters` | `util/SeqeronCounters.hpp` |
 
@@ -140,7 +140,7 @@ the server side of the replay protocol is Java only.
 ```bash
 ./gradlew compileJava
 ./gradlew uberJar     # build/libs/seqeron-<version>-uber.jar — every script's prerequisite
-./gradlew test        # JUnit 5, 355 tests, ~1s
+./gradlew test        # JUnit 5, 369 tests, ~1s
 ./gradlew generateFrameSbe generateReplaySbe generateProbeSbe generateClusterSbeIr
 ./gradlew compileTestJava   # TestGateway, which chaos-runner.sh needs and no jar carries
 ./gradlew clientJar nodeJar # the two published artifacts; checkTierSeparation guards the line
@@ -191,8 +191,8 @@ either way.
 ## Tests
 
 ```bash
-cmake --build cmake-build-debug --target run_tests   # 174 GoogleTest cases
-./gradlew test                                       # 355 JUnit cases
+cmake --build cmake-build-debug --target run_tests   # 188 GoogleTest cases
+./gradlew test                                       # 369 JUnit cases
 ```
 `run_tests` is `ctest --output-on-failure` with the build dependency wired. **Plain `ctest` is fine
 here** — the `..._NOT_BUILT` noise that had to be filtered was simdfix's own registered suite, and this
@@ -215,7 +215,8 @@ pair under the faults** — and `TestGateway` is it: an elected active/standby p
 `gatewaySourceId` 9, listening on 9200/9201) that speaks no application protocol and holds no session
 state, but holds the same four fences a real gateway does — including the client tier's recovery-stall
 fence (`app/RecoveryStallFence`), which is why `chaos-runner.sh` can drive a
-non-converging recovery to a handover rather than a hang. It is in **`src/test/java`** and therefore in no jar: `chaos-runner.sh` puts
+non-converging recovery to a handover rather than a hang. Its activation and stand-down are
+`app/GatewayLifecycle`, the class a real gateway uses. It is in **`src/test/java`** and therefore in no jar: `chaos-runner.sh` puts
 `build/classes/java/test` on the classpath beside the uber jar and refuses to start without it. Its
 list is `src/test/resources/topology-test-gateway.xml`, the only topology document in this repo.
 

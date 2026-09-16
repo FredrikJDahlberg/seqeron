@@ -5,6 +5,7 @@ import io.aeron.cluster.client.AeronCluster;
 import io.aeron.cluster.client.EgressListener;
 import io.aeron.cluster.codecs.EventCode;
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.net.InetSocketAddress;
 import java.net.StandardSocketOptions;
 import java.nio.ByteBuffer;
@@ -19,6 +20,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import org.agrona.ExpandableArrayBuffer;
 import org.agrona.concurrent.IdleStrategy;
 import org.agrona.concurrent.ShutdownSignalBarrier;
+import org.limitless.seqeron.app.GatewayLifecycle;
 import org.limitless.seqeron.app.RecoveryStallFence;
 import org.limitless.seqeron.sequencer.FrameLayer;
 import org.limitless.seqeron.replayer.client.ReplayerStreamReceiver;
@@ -88,9 +90,6 @@ public final class TestGateway {
         TestGateway
     }
 
-    /** No {@code Gateway} row has named this instance yet. */
-    private static final int UNRESOLVED = -1;
-
     /** No single connection: a gateway-scoped frame, matching {@code ClusterIngress.NO_CONNECTION}. */
     private static final int NO_CONNECTION = -1;
 
@@ -140,13 +139,7 @@ public final class TestGateway {
     private final ProbeMarkerDecoder probeMarker = new ProbeMarkerDecoder();
 
     private final RecoveryStallFence recoveryStall = new RecoveryStallFence(RECOVERY_STALL_TIMEOUT_MS);
-
-    /**
-     * Every {@code Gateway} row's {@code gatewayId -> gatewaySourceId}. A {@code GatewayActive} carries
-     * only a {@code gatewayId} and the two id spaces are separate, so this is the only way to tell an
-     * activation of this pair from one of another logical gateway's.
-     */
-    private final Map<Integer, Integer> gatewaySourceIds = new HashMap<>();
+    private final GatewayLifecycle lifecycle;
 
     private final Map<Integer, Connection> connections = new HashMap<>();
 
@@ -154,10 +147,6 @@ public final class TestGateway {
     private ReplayerStreamReceiver tap;
     private ServerSocketChannel acceptor;
 
-    private int gatewayId = UNRESOLVED;
-    private int gatewaySourceId = UNRESOLVED;
-    private boolean activated;
-    private boolean registered;
     private boolean announcedCaughtUp;
 
     /** The highest {@code connectionId} this logical gateway's history holds; the resume point for §7's row. */
@@ -180,6 +169,7 @@ public final class TestGateway {
         this.gatewayName = gatewayName;
         this.listenPort = listenPort;
         this.clientId = clientId;
+        this.lifecycle = new GatewayLifecycle(gatewayName, new LifecycleActions());
     }
 
     public static void main(final String[] args) {
@@ -303,36 +293,12 @@ public final class TestGateway {
         return 1;
     }
 
-    /**
-     * Opens the gate once this instance is designated <em>and</em> caught up, never before.
-     *
-     * <p>{@code GatewayStarted} goes first and the socket binds behind it: the frame is what makes the
-     * sequencer release the connections a predecessor left dangling, so opening first would let this
-     * instance's own {@code ConnectionOpened}s precede it and be released as stale.
-     */
-    private int advanceGate() throws IOException {
-        if (!activated || !tap.isCaughtUp() || acceptor != null) {
-            return 0;
-        }
-        if (!registered) {
-            nextConnectionId = highestConnectionId + 1;
-            publishGatewayStarted(nextConnectionId);
-            registered = true;
-        }
-        acceptor = ServerSocketChannel.open();
-        acceptor.configureBlocking(false);
-        acceptor.setOption(StandardSocketOptions.SO_REUSEADDR, true);
-        acceptor.bind(new InetSocketAddress(listenPort));
-        log("gate OPEN on port %d — gatewayId=%d gatewaySourceId=%d, connectionIds resume at %d",
-            listenPort, gatewayId, gatewaySourceId, nextConnectionId);
-        return 1;
+    /** Opens the gate once this instance is designated <em>and</em> caught up, never before. */
+    private int advanceGate() {
+        return tap.isCaughtUp() ? lifecycle.advance() : 0;
     }
 
-    /**
-     * The non-fatal fence: a {@code GatewayActive} named a sibling, so this instance drops back to standby.
-     * Its cluster session is kept — the gate can re-open on a later promotion — and it publishes nothing on
-     * the way out, so to the cluster this looks exactly like the process dying.
-     */
+    /** Shuts the listener and every connection; the lifecycle's stand-down and shutdown both come here. */
     private void closeGate() {
         if (acceptor != null) {
             close(acceptor);
@@ -389,9 +355,9 @@ public final class TestGateway {
             if (connection.in.get(i) != '\n') {
                 continue;
             }
-            ClusterProbe.offer(cluster, marker.frame(),
-                               marker.encode(++markerSeqNo, connection.id, gatewaySourceId,
-                                             ClusterProbe.NO_FILLER));
+            ClusterProbe.offer(
+                cluster, marker.frame(),
+                marker.encode(++markerSeqNo, connection.id, lifecycle.gatewaySourceId(), ClusterProbe.NO_FILLER));
             consumed = i + 1;
             work++;
         }
@@ -418,9 +384,8 @@ public final class TestGateway {
             }
             return;
         }
-        if (event.payloadId() != ClusterProbe.PROBE_PAYLOAD_ID
-            || event.templateId() != ProbeMarkerDecoder.TEMPLATE_ID
-            || event.sourceId() != gatewaySourceId) {
+        if (event.payloadId() != ClusterProbe.PROBE_PAYLOAD_ID ||
+            event.templateId() != ProbeMarkerDecoder.TEMPLATE_ID || event.sourceId() != lifecycle.gatewaySourceId()) {
             return;
         }
         probeMarker.wrap(event.buffer(), event.offset() + MessageHeaderDecoder.ENCODED_LENGTH,
@@ -434,8 +399,8 @@ public final class TestGateway {
      * {@code ConnectionOpened} alone so a standby's view cannot lag its predecessor's allocation.
      */
     private void observeConnectionId(final SequencedEvent event) {
-        if (gatewaySourceId != UNRESOLVED && event.sourceId() == gatewaySourceId
-            && event.connectionId() > highestConnectionId) {
+        if (lifecycle.gatewaySourceId() != GatewayLifecycle.UNRESOLVED &&
+            event.sourceId() == lifecycle.gatewaySourceId() && event.connectionId() > highestConnectionId) {
             highestConnectionId = event.connectionId();
         }
     }
@@ -460,43 +425,18 @@ public final class TestGateway {
         // build's own constants (doc/seqeron-protocol-spec.md §7, V-3).
         gatewayRow.wrap(event.buffer(), event.offset(), GatewayRegisteredDecoder.BLOCK_LENGTH,
                                 MessageHeaderDecoder.SCHEMA_VERSION);
-        gatewaySourceIds.put(gatewayRow.gatewayId(), gatewayRow.gatewaySourceId());
-        if (!gatewayName.equals(gatewayRow.gatewayName())) {
-            return;
-        }
-        gatewayId = gatewayRow.gatewayId();
-        gatewaySourceId = gatewayRow.gatewaySourceId();
-        log("resolved: gatewayId=%d gatewaySourceId=%d rank=%d", gatewayId, gatewaySourceId,
-            gatewayRow.preferenceRank());
+        lifecycle.onGatewayRegistered(gatewayRow.gatewayId(), gatewayRow.gatewaySourceId(), gatewayRow.gatewayName(),
+                                      gatewayRow.preferenceRank());
     }
 
-    /**
-     * The cluster designating one instance active. A state assignment, not an event: the last one naming
-     * any instance of this pair is the one in force, so this tracks rather than latches — a latch would
-     * have a restarting instance re-activate itself off a superseded frame while replaying history.
-     */
     private void onGatewayActive(final SequencedEvent event) {
         gatewayActive.wrap(event.buffer(), event.offset(), event.blockLength(), event.version());
         final int target = gatewayActive.gatewayId();
-        if (gatewayId == UNRESOLVED) {
-            return; // no row has named this process yet, so no activation can be about it
-        }
-        final Integer targetSourceId = gatewaySourceIds.get(target);
-        if (targetSourceId == null || targetSourceId != gatewaySourceId) {
-            return; // another logical gateway's election
-        }
-        final boolean wasActivated = activated;
-        activated = target == gatewayId;
-        if (activated == wasActivated) {
-            return;
-        }
-        log("GatewayActive(gatewayId=%d) — this instance (gatewayId=%d) is now %s", target, gatewayId,
-            activated ? "active" : "standby");
-        if (!activated) {
-            // The epoch this instance registered under is over; being asked back is a new one, and the
-            // GatewayStarted announcing it is what releases whatever its replacement left dangling.
-            registered = false;
-            closeGate();
+        final boolean wasActivated = lifecycle.isActivated();
+        lifecycle.onGatewayActive(target);
+        if (lifecycle.isActivated() != wasActivated) {
+            log("GatewayActive(gatewayId=%d) — this instance (gatewayId=%d) is now %s", target, lifecycle.gatewayId(),
+                wasActivated ? "standby" : "active");
         }
     }
 
@@ -512,16 +452,48 @@ public final class TestGateway {
         }
         announcedCaughtUp = true;
         recoveryStall.onCaughtUp();
+        lifecycle.onCaughtUp();
         log("Caught up — following live at globalSeqNo %d", tap.lastGlobalSeqNo());
         return 1;
     }
 
     // ── ingress ───────────────────────────────────────────────────────────────────
 
-    private void publishGatewayStarted(final int firstConnectionId) {
-        gatewayStarted.wrap(body, 0);
-        gatewayStarted.gatewayId(gatewayId).firstConnectionId(firstConnectionId);
-        offerSystem(SystemFrame.GATEWAY_STARTED, NO_CONNECTION, gatewayStarted.encodedLength());
+    /** {@link GatewayLifecycle}'s side effects: the listener is the gate. */
+    private final class LifecycleActions implements GatewayLifecycle.Actions {
+        @Override
+        public void identityResolved(final int gatewayId, final int gatewaySourceId, final int preferenceRank) {
+            log("resolved: gatewayId=%d gatewaySourceId=%d rank=%d", gatewayId, gatewaySourceId, preferenceRank);
+        }
+
+        @Override
+        public boolean publishGatewayStarted(final int gatewayId) {
+            nextConnectionId = highestConnectionId + 1;
+            gatewayStarted.wrap(body, 0);
+            gatewayStarted.gatewayId(gatewayId).firstConnectionId(nextConnectionId);
+            offerSystem(SystemFrame.GATEWAY_STARTED, NO_CONNECTION, gatewayStarted.encodedLength());
+            return true; // offer spins until it lands
+        }
+
+        @Override
+        public boolean openGate() {
+            try {
+                acceptor = ServerSocketChannel.open();
+                acceptor.configureBlocking(false);
+                acceptor.setOption(StandardSocketOptions.SO_REUSEADDR, true);
+                acceptor.bind(new InetSocketAddress(listenPort));
+            } catch (final IOException ex) {
+                throw new UncheckedIOException(ex); // fatal, as it was before
+            }
+            log("gate OPEN on port %d — gatewayId=%d gatewaySourceId=%d, connectionIds resume at %d", listenPort,
+                lifecycle.gatewayId(), lifecycle.gatewaySourceId(), nextConnectionId);
+            return true;
+        }
+
+        @Override
+        public void closeGate() {
+            TestGateway.this.closeGate();
+        }
     }
 
     private void publishConnection(final int systemEventType, final int connectionId) {
@@ -538,7 +510,7 @@ public final class TestGateway {
     }
 
     private void offerSystem(final int systemEventType, final int connectionId, final int bodyLength) {
-        final int length = envelope.wrap(frame, gatewaySourceId, connectionId, cluster.clusterSessionId(),
+        final int length = envelope.wrap(frame, lifecycle.gatewaySourceId(), connectionId, cluster.clusterSessionId(),
                                          systemEventType, body, bodyLength);
         if (length == SystemFrame.REFUSED) {
             throw new IllegalStateException("system body too large for a frame: systemEventType " + systemEventType);

@@ -183,6 +183,10 @@ Two ways a `GatewayActive` is produced:
   special-casing — and waits for its sequenced echo, matched by `gatewayId`
   (`ClusterCtl.java:194-291`). This is the operator's lever for a planned failover.
 
+On the gateway side, `app/GatewayLifecycle` (Java and C++, in the client tier) is what acts on that frame:
+it tracks the last `GatewayActive` for its pair rather than latching one, publishes `GatewayStarted` before
+opening its gate, and stands down without publishing when a sibling is named.
+
 A **bootstrap** activation also runs once per cluster lifetime: the first complete list — the
 `GatewayRegistered` row carrying `remaining == 0`, published by `clusterctl load-topology` — triggers
 `Sequencer.pendingGatewayBootstrapActivation`, which names the rank-0 (`preferenceRank == 0`) list row — so exactly one instance opens its accept gate at
