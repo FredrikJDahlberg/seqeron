@@ -89,14 +89,6 @@ core-library/executable target pair are gone with the product half; **the reposi
 enforces the dependency direction now**, so there is nothing to keep on the right side of a line within
 this tree.
 
-| | Java | C++ |
-| --- | --- | --- |
-| the sequencer | `sequencer/` — `Sequencer`, `SequencerService`, `SequencerServer`, `FrameLayer`, `SystemFrame`, `PortLayout`, `TapPublisher`, `TapStallPolicy`, and the producer side: `ClusterStreamSender`, `IngressPublisher`, `IngressSender`, `IngressStallPolicy`, `IngressLeaderPolicy` | `sequencer/` — `SequencedFrame`, `ClusterStreamSender`, `ClusterStreamClient`, `IngressPublisher`, `PortLayout` |
-| the replayer | `replayer/server/` and `replayer/client/` | `replayer/client/` only |
-| the application patterns | `app/` — `RecoveryStallFence`, `TapLagMonitor`, `LeaderGate`, `OutstandingWork`, `GatewayLifecycle` | `app/` — the same five |
-| the tools | `tools/` — `ClusterCtl`, `TopologyDocument`, `ClusterProbe`, `SbeLogPrinter` | — |
-| the ops plane | `metrics/` — `MetricsExporter`, `MetricsAggregator`, `SeqeronCounters` | `util/SeqeronCounters.hpp` |
-
 **One tree, two audiences.** The jar is split by package into `seqeron` (the **client tier**: the frame
 and replay codecs, `replayer.client`, `app`, the producer side, `util`, `SeqeronCounters`, and `sequencer`'s
 `FrameLayer`, `SystemFrame` and `PortLayout`) and `seqeron-node` (the **node tier**: everything else —
@@ -140,22 +132,12 @@ the server side of the replay protocol is Java only.
 ```bash
 ./gradlew compileJava
 ./gradlew uberJar     # build/libs/seqeron-<version>-uber.jar — every script's prerequisite
-./gradlew test        # JUnit 5, 369 tests, ~1s
+./gradlew test        # JUnit 5, ~1s
 ./gradlew generateFrameSbe generateReplaySbe generateProbeSbe generateClusterSbeIr
 ./gradlew compileTestJava   # TestGateway, which chaos-runner.sh needs and no jar carries
 ./gradlew clientJar nodeJar # the two published artifacts; checkTierSeparation guards the line
 ```
 JDK 21. `SEQERON_JAR` overrides the jar path for every script that resolves it.
-
-**JitPack is the Java release channel.** `jitpack.yml` builds a tag with `check publishToMavenLocal`,
-and it is served as `com.github.FredrikJDahlberg.seqeron:{seqeron,seqeron-node}:<tag>`. Under
-`JITPACK=true`, `build.gradle` publishes with that group and the tag as version, so `seqeron-node`'s
-POM dependency on `seqeron` resolves there; everywhere else the group stays `org.limitless` and the
-version `VERSION`'s. A third publication, the pom-only `seqeron-bom`, pins
-Aeron, Agrona and SBE at `versions.properties`. A `v*` tag runs `release.yml`: it fails unless the tag
-is `v` + `VERSION`, waits for JitPack's build, pushes the node image to GHCR, and creates a GitHub Release
-with the operator distribution. The image is built from `operatorDist`, so a node container has
-`bin/` and a `clusterctl` on the `PATH` set to its own member (`docker/clusterctl`).
 
 ### C++
 ```bash
@@ -191,8 +173,8 @@ either way.
 ## Tests
 
 ```bash
-cmake --build cmake-build-debug --target run_tests   # 188 GoogleTest cases
-./gradlew test                                       # 369 JUnit cases
+cmake --build cmake-build-debug --target run_tests   # GoogleTest
+./gradlew test                                       # JUnit
 ```
 `run_tests` is `ctest --output-on-failure` with the build dependency wired. **Plain `ctest` is fine
 here** — the `..._NOT_BUILT` noise that had to be filtered was simdfix's own registered suite, and this
@@ -216,7 +198,7 @@ pair under the faults** — and `TestGateway` is it: an elected active/standby p
 state, but holds the same four fences a real gateway does — including the client tier's recovery-stall
 fence (`app/RecoveryStallFence`), which is why `chaos-runner.sh` can drive a
 non-converging recovery to a handover rather than a hang. Its activation and stand-down are
-`app/GatewayLifecycle`, the class a real gateway uses. It is in **`src/test/java`** and therefore in no jar: `chaos-runner.sh` puts
+`app/GatewayLifecycle`, the client tier's class for a gateway's election. It is in **`src/test/java`** and therefore in no jar: `chaos-runner.sh` puts
 `build/classes/java/test` on the classpath beside the uber jar and refuses to start without it. Its
 list is `src/test/resources/topology-test-gateway.xml`, the only topology document in this repo.
 
@@ -226,16 +208,6 @@ them itself: `SEQERON_NO_CONSUMERS=1` leaves out the probe followers, the caller
 after READY, and names them in `SEQERON_EXTRA_PROCESSES` so `stop-cluster.sh` sweeps them too.
 
 ## Architecture
-
-### Data flow
-```
-producers ──ingress──▶  Aeron Cluster (Java, Raft-replicated)
-                                    │
-    IPC (aeron:ipc 205), sequenced frames — recorded on every node
-     live tap: read directly · history/gaps: replay via co-located ReplayerService
-                                    │
-                  co-located application replicas (this repo's is ClusterProbe)
-```
 
 ### Aeron Cluster sequencer — `SequencerServer` / `SequencerService` / `Sequencer`
 `Sequencer` is the replicated state machine proper — it owns `globalSeqNo` and every frame encode, has
@@ -400,32 +372,8 @@ seqeron's own package namespace; `collectSbeIr` wipes its destination first, lik
 
 ## Scripts
 
-`src/main/scripts` holds the operator and cluster-lifecycle scripts; `ports.sh` (the port formula, mirrored
-by `PortLayout`, both languages), `paths.sh` and `seqeron-home.sh` are sourced by every other script.
-`src/test/scripts` holds the five harnesses, and those still resolve paths relative to the repository
-root — they were written when this tree sat under `cluster/`, so check the depth of any `../..` you add.
-
-**The operator scripts no longer do.** `seqeron-home.sh` sets `SEQERON_HOME` by recognising which layout
-it is in — a distribution, where `bin/` sits beside `lib/`, or this checkout, where the scripts sit at
-`src/main/scripts` — and `seqeron_require_jar` then globs the uber jar out of `lib/` or `build/libs`.
-Both are overridable (`SEQERON_HOME`, `SEQERON_JAR`). That replaced a
-`REPO_ROOT="${SCRIPT_DIR}/../../.."` in four scripts, which was wrong silently rather than loudly (`cd`
-up three succeeds in any tree deep enough) and carried the version literal `0.1.0` in each of them.
-`./gradlew operatorDist` lays the distribution out under `build/install/seqeron`, `operatorDistZip`
-archives it, and the application plugin's own `distZip`/`distTar`/`installDist` are disabled so there is
-one answer to how seqeron is installed.
-
-`clusterctl.sh` commands: `start`, `shutdown`, `activate <gatewayId>`, `load-topology <file>`, `counters`,
-`help`; anything unrecognized passes through to `io.aeron.cluster.ClusterTool` against this node's cluster
-dir. `snapshot` is refused.
-
-`sbe-log-printer.sh` puts a whole deployment's IR in front of `SbeLogPrinter` (`SEQERON_JAR` picks the
-jar); `-o <payloadId>` — the spec §13.1 pipe — is the wrapper's only, because Gradle re-encodes a child's
-stdout and would corrupt the payload bytes.
-
-`stop-cluster.sh` stops everything either start script launched, plus whatever
-`SEQERON_EXTRA_PROCESSES` names (`"label|pgrep-pattern"` entries, semicolon-separated), so a consumer's
-harness can clean up its own processes through the same sweep without core naming them.
+`.claude/rules/operator-scripts.md` and `src/test/scripts/CLAUDE.md` cover the scripts. `ports.sh` is
+mirrored by `PortLayout` in both languages; change all three together.
 
 ## Known gaps
 
