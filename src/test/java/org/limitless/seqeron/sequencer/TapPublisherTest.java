@@ -69,6 +69,8 @@ class TapPublisherTest {
         boolean recordingActive = true;
         long recordedPosition;
         long recordedAdvancePerIdle; // an archive that is slow but still draining
+        long idlesPerAdvance = 1; // ... or one that drains only now and then
+        long idles;
 
         int offers;
         int alerts;
@@ -95,7 +97,9 @@ class TapPublisherTest {
         @Override
         public void idle() {
             nowNs += nanosPerIdle;
-            recordedPosition += recordedAdvancePerIdle;
+            if (++idles % idlesPerAdvance == 0) {
+                recordedPosition += recordedAdvancePerIdle;
+            }
         }
 
         @Override
@@ -223,6 +227,40 @@ class TapPublisherTest {
         assertFalse(publisher.isFatalSignalled(), "this bounds an archive that has stopped, not a busy one");
         assertEquals(List.of(), actions.stalledGauge);
         assertTrue(actions.alerts > 0, "the operator is still told it is happening");
+    }
+
+    @Test
+    @DisplayName("intermittent recording progress re-arms the clock: the gauge can raise, the node still lives")
+    void intermittentProgressRaisesTheGaugeButNeverTerminates() {
+        // One idle per threshold period; progress every fourth, so each quiet stretch crosses the stall
+        // threshold but never the fatal timeout, which is measured from the last advance.
+        actions.nanosPerIdle = periodOf(TapPublisher.SUSTAINED_BACKPRESSURE_THRESHOLD_NS);
+        actions.recordedAdvancePerIdle = 1;
+        actions.idlesPerAdvance = 4 * TapPublisher.SPINS_PER_CLOCK_CHECK;
+        actions.failedOffers = clockReads(40);
+
+        publisher.emit(64);
+
+        assertFalse(publisher.isFatalSignalled(), "the fatal timeout runs from the last advance");
+        assertEquals(List.of(true, false), actions.stalledGauge, "raised by a quiet stretch, cleared on landing");
+    }
+
+    @Test
+    @DisplayName("a landed offer starts the next stall on a fresh clock, not the recording position's age")
+    void nextStallStartsOnAFreshClock() {
+        actions.nanosPerIdle = periodOf(TapPublisher.SUSTAINED_BACKPRESSURE_THRESHOLD_NS);
+        actions.failedOffers = clockReads(3);
+        publisher.emit(64);
+        assertEquals(List.of(true, false), actions.stalledGauge);
+
+        // Same recording position as before, and more than the fatal timeout since it last moved: it is the
+        // time since THIS stall began that counts, so the next emit may only raise the gauge again.
+        actions.nowNs += TapPublisher.TAP_STALL_FATAL_TIMEOUT_NS;
+        actions.offers = 0;
+        publisher.emit(64);
+
+        assertFalse(publisher.isFatalSignalled());
+        assertEquals(List.of(true, false, true, false), actions.stalledGauge);
     }
 
     @Test

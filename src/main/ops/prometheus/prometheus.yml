@@ -1,12 +1,17 @@
-# Prometheus scrape config for seqeron. Under the aggregating-proxy topology, Prometheus talks
-# only to the central MetricsAggregator (metrics-aggregator.sh, default port 9500) — it re-exposes
-# every node's metrics from metrics-exporter.sh under one endpoint, so no per-node scrape targets
-# or network reach to individual nodes is needed here.
+# Prometheus scrape config for seqeron: every member's metrics-exporter.sh (port 9400 + memberId)
+# scraped directly. The target labels name the member on Prometheus's own `up`, the per-node
+# reachability gauge; honor_labels keeps the `member` label the exporter puts on every sample.
 
 global:
   scrape_interval: 15s
 
 scrape_configs:
   - job_name: seqeron
+    honor_labels: true
     static_configs:
-      - targets: ['localhost:9500']
+      - targets: ['localhost:9400']
+        labels: { member: '0' }
+      - targets: ['localhost:9401']
+        labels: { member: '1' }
+      - targets: ['localhost:9402']
+        labels: { member: '2' }

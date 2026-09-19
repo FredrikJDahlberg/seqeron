@@ -73,10 +73,9 @@ public final class ClusterStreamSender implements IngressSender, AutoCloseable {
     private final IdleStrategy idle = new YieldingIdleStrategy();
     private final EgressListener listener = new SessionListener();
 
-    /** The two decisions this class makes about a session, held where a test can drive them. */
+    /** Which offer results are terminal, held where a test can drive it. */
     private final IngressStallPolicy stallPolicy =
         new IngressStallPolicy(INGRESS_STALL_FATAL_TIMEOUT_NS, BACKPRESSURE_ALERT_INTERVAL_NS);
-    private IngressLeaderPolicy leaderPolicy = new IngressLeaderPolicy(IngressLeaderPolicy.NO_MEMBER);
 
     private Aeron aeron;
     private AeronCluster cluster;
@@ -86,9 +85,12 @@ public final class ClusterStreamSender implements IngressSender, AutoCloseable {
     private int colocatedMemberId = NO_MEMBER;
     private boolean sessionLost;
     private int newLeaderMemberId = NO_MEMBER;
+    /** Whether the open session's ingress is the co-located member's {@code aeron:ipc}. */
+    private boolean overIpc;
+    /** IPC ingress lost its leader and reaches nobody else, so the session must be replaced. */
+    private boolean reconnectDue;
     private IngressHold hold;
     private boolean newLeaderDuringSend;
-    private int sourceId;
     private long lastKeepAliveNs;
 
     /**
@@ -108,7 +110,6 @@ public final class ClusterStreamSender implements IngressSender, AutoCloseable {
         this.egressChannel = egressChannel;
         this.appListener = appListener;
         cluster = openSession(INGRESS_CHANNEL_UDP, udpEndpoints(), CONNECT_TIMEOUT_NS);
-        leaderPolicy.onConnected(false);
     }
 
     /**
@@ -134,17 +135,14 @@ public final class ClusterStreamSender implements IngressSender, AutoCloseable {
         this.colocatedMemberId = memberId;
         this.egressChannel = egressChannel;
         this.appListener = appListener;
-        leaderPolicy = new IngressLeaderPolicy(memberId);
         try {
             // No endpoints with IPC ingress: AeronCluster refuses the pair, and there is nothing to name.
             cluster = openSession(INGRESS_CHANNEL_IPC, null, TimeUnit.MILLISECONDS.toNanos(ipcConnectTimeoutMs));
-            leaderPolicy.onConnected(true);
         } catch (final AeronException ex) {
             Logger.error(Logger.CoreComponent.Cluster, Logger.CoreEventCode.ClusterIpcFallback, memberId,
                          "member %d did not answer ingress on %s (%s) — falling back to UDP", memberId,
                          INGRESS_CHANNEL_IPC, ex.getMessage());
             cluster = openSession(INGRESS_CHANNEL_UDP, udpEndpoints(), CONNECT_TIMEOUT_NS);
-            leaderPolicy.onConnected(false);
         }
     }
 
@@ -257,7 +255,7 @@ public final class ClusterStreamSender implements IngressSender, AutoCloseable {
             return 0;
         }
         final int fragments = cluster.pollEgress();
-        if (leaderPolicy.reconnectDue()) {
+        if (reconnectDue) {
             reconnectOverUdp();
         }
         return fragments;
@@ -285,15 +283,6 @@ public final class ClusterStreamSender implements IngressSender, AutoCloseable {
     @Override
     public long leadershipTermId() {
         return cluster == null ? Aeron.NULL_VALUE : cluster.leadershipTermId();
-    }
-
-    /** This process's fixed identity in spec §5's one id space; the caller stamps it into each frame. */
-    public int sourceId() {
-        return sourceId;
-    }
-
-    public void setSourceId(final int sourceId) {
-        this.sourceId = sourceId;
     }
 
     /** Closes the session. The Aeron client is the caller's and is left open. */
@@ -325,7 +314,7 @@ public final class ClusterStreamSender implements IngressSender, AutoCloseable {
 
     private AeronCluster openSession(final String ingressChannel, final String ingressEndpoints,
                                      final long timeoutNs) {
-        return AeronCluster.connect(new AeronCluster.Context()
+        final AeronCluster session = AeronCluster.connect(new AeronCluster.Context()
             .aeron(aeron)
             .ingressChannel(ingressChannel)
             .ingressEndpoints(ingressEndpoints)
@@ -333,6 +322,9 @@ public final class ClusterStreamSender implements IngressSender, AutoCloseable {
             .egressListener(listener)
             .messageTimeoutNs(timeoutNs)
             .newLeaderTimeoutNs(NEW_LEADER_TIMEOUT_NS));
+        overIpc = INGRESS_CHANNEL_IPC.equals(ingressChannel);
+        reconnectDue = false;
+        return session;
     }
 
     /**
@@ -345,7 +337,6 @@ public final class ClusterStreamSender implements IngressSender, AutoCloseable {
                     "leadership moved to member %d — reconnecting ingress over UDP", newLeaderMemberId);
         CloseHelper.quietClose(cluster);
         cluster = openSession(INGRESS_CHANNEL_UDP, udpEndpoints(), CONNECT_TIMEOUT_NS);
-        leaderPolicy.onConnected(false);
     }
 
     private Integer member() {
@@ -383,7 +374,8 @@ public final class ClusterStreamSender implements IngressSender, AutoCloseable {
             if (hold != null) {
                 hold.onNewLeader(leadershipTermId);
             }
-            leaderPolicy.onNewLeader(leaderMemberId);
+            // Leadership coming back is deliberately not chased, unlike the C++ twin: it would cost a session.
+            reconnectDue = overIpc && leaderMemberId != colocatedMemberId;
             if (appListener != null) {
                 appListener.onNewLeader(clusterSessionId, leadershipTermId, leaderMemberId, ingressEndpoints);
             }

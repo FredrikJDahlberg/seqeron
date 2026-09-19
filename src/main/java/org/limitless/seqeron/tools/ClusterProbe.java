@@ -67,7 +67,8 @@ import org.limitless.seqeron.util.Logger;
  * <pre>
  *   probe.memberId          — which cluster member this probe co-locates with (0/1/2); default 0
  *   probe.aeronDir          — that member's Aeron directory; default {tmpdir}/seqeron-seq-aeron-{memberId}
- *   probe.ingressEndpoints  — cluster ingress endpoints; default the three-node localhost set
+ *   probe.ingressEndpoints  — cluster ingress endpoints; default the three-node localhost set on
+ *                             {@code SEQERON_PORT_BASE}'s ports
  *   probe.egressHost        — hostname this client advertises for the cluster's egress back to it;
  *                             default localhost. The leader sends session responses there, so when
  *                             the leader is on another host — a container topology, say — localhost
@@ -114,8 +115,8 @@ public final class ClusterProbe {
     private static final String AERON_DIR = System.getProperty(
         "probe.aeronDir", System.getProperty("java.io.tmpdir") + "/seqeron-seq-aeron-" + MEMBER_ID);
 
-    private static final String INGRESS_ENDPOINTS =
-        System.getProperty("probe.ingressEndpoints", "0=localhost:9302,1=localhost:9312,2=localhost:9322");
+    private static final String INGRESS_ENDPOINTS = System.getProperty(
+        "probe.ingressEndpoints", ClusterStreamSender.ingressEndpoints(ClusterStreamSender.DEFAULT_NODE_COUNT));
 
     private static final String EGRESS_HOST = System.getProperty("probe.egressHost", "localhost");
 

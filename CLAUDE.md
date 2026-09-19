@@ -92,7 +92,7 @@ this tree.
 **One tree, two audiences.** The jar is split by package into `seqeron` (the **client tier**: the frame
 and replay codecs, `replayer.client`, `app`, the producer side, `util`, `SeqeronCounters`, and `sequencer`'s
 `FrameLayer`, `SystemFrame` and `PortLayout`) and `seqeron-node` (the **node tier**: everything else —
-`Sequencer`, `SequencerService`, `SequencerServer`, `TapPublisher`, `TapStallPolicy`, `replayer/server/`,
+`Sequencer`, `SequencerService`, `SequencerServer`, `TapPublisher`, `replayer/server/`,
 `tools/`, the metrics exporter, the probe codecs and the jar resources). A process that merely talks to a
 cluster takes the first alone, and `examples/java` is the proof: it resolves `org.limitless:seqeron` and
 compiles. The line runs *through* `sequencer`, so the tiers are packages rather than source sets and
@@ -114,11 +114,10 @@ encoder (Java's SBE codecs share no interface), and leadership moving off the co
 session rather than a publication swap (`AeronCluster` owns its publication). `IngressSender` exists so
 `IngressPublisher` has a seam the Java suite can drive without an Aeron runtime — the C++ transport seam
 has no Java equivalent, so the state machine those 868 C++ test lines cover is Aeron's here, not ours.
-What is left of ours is split off and unit-tested the way `TapStallPolicy` is: **`IngressStallPolicy`**
-(which offer results are terminal — `CLOSED` is not, it is an election in progress) and
-**`IngressLeaderPolicy`** (whether IPC ingress has lost its leader and the session must be replaced).
-`ClusterStreamSender` itself is then the Aeron adapter and holds no decision of its own, so its low line
-coverage is the same statement `SequencerService`'s is.
+What is left of ours that is easy to get wrong is split off and unit-tested: **`IngressStallPolicy`**
+(which offer results are terminal — `CLOSED` is not, it is an election in progress). `ClusterStreamSender`
+itself is then the Aeron adapter, whose one other decision — replacing an IPC session whose leader moved
+away — is a single comparison, so its low line coverage is the same statement `SequencerService`'s is.
 
 **A send that succeeds is not a frame sequenced.** Nothing confirms ingress on egress, and a leader
 failover silently loses whatever the old leader had not committed — the session survives it.
@@ -245,7 +244,7 @@ co-located `ReplayerService` serves cold-start/gap replay off the same recording
 it spins until the offer lands, since a dropped frame would be an unrecoverable hole — and can only
 block on local-archive write back-pressure, because the recording is the tap's one tethered subscriber.
 Reliable is not unbounded: `TapPublisher` — the reliable-offer discipline, split off the way `Sequencer` is
-and unit-tested the same way — applies `TapStallPolicy`'s verdict to the archive's `RecordingPos` counter,
+and unit-tested the same way — watches the archive's `RecordingPos` counter,
 and a node whose recording has stopped or stopped advancing **terminates itself** (`EXIT_TAP_FATAL` = 70) rather
 than sequence history it cannot keep. Peers keep quorum, and the restart rebuilds its recording over the
 full-log replay it does anyway. The 1 Hz heartbeat runs the same liveness check, because a *stopped*

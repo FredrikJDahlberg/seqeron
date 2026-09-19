@@ -72,7 +72,6 @@ overlap:
 | port | owner | transport |
 | --- | --- | --- |
 | `9400 + memberId` | core — `metrics-exporter.sh` `/metrics` | TCP |
-| 9500 | core — `metrics-aggregator.sh` | TCP |
 | 9400 | products — `fix_test_server` risk-test replay (`SEQERON_RISK_TEST_REPLAY_PORT`) | UDP |
 | 9401 | products — `FixGateway` resend-recovery replay (`SEQERON_RESEND_REPLAY_PORT`) | UDP |
 | 9403 | products — `fix_test_server` cluster egress | UDP |

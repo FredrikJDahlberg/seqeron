@@ -9,7 +9,7 @@ import org.limitless.seqeron.util.Logger;
  * impose: <b>never return with the work undone, and never throw.</b> Both spin, and both are bounded by the
  * same escalation: once the thing being waited on is provably not going to clear, the node terminates.
  *
- * <p>Split out of {@link SequencerService} for the reason {@link Sequencer} and {@link TapStallPolicy} are:
+ * <p>Split out of {@link SequencerService} for the reason {@link Sequencer} is:
  * this is the decision half, free of every Aeron type, with the transport behind {@link Actions} so the
  * unit suite drives it directly. It also owns the node-fatal latch both paths escalate to, which is why
  * they live in one class rather than two — the second failure must fall through to the shutdown backstop
@@ -77,7 +77,7 @@ public final class TapPublisher {
     }
 
     /**
-     * How often, in wall time, back-pressure in {@link #emit} is alerted on and {@link TapStallPolicy}
+     * How often, in wall time, back-pressure in {@link #emit} is alerted on and the stall
      * re-evaluated. This used to be a spin count (1,000,000, documented as "~10 ms at ~10 ns/spin"), which
      * is only true when the loop spins on an idle core: the container idles with a {@code
      * YieldingIdleStrategy}, and on a loaded host a yield costs microseconds, so the same count took over
@@ -134,9 +134,10 @@ public final class TapPublisher {
 
     private final Actions actions;
 
-    /** When to stop waiting on a back-pressured tap and terminate instead. Pure; see {@link TapStallPolicy}. */
-    private final TapStallPolicy stallPolicy =
-        new TapStallPolicy(SUSTAINED_BACKPRESSURE_THRESHOLD_NS, TAP_STALL_FATAL_TIMEOUT_NS);
+    /** Monotonic reading at the last observed recording advance; 0 when no stall is in progress. */
+    private long stallSinceNs;
+    private long stallRecordedPosition;
+    private boolean stalled;
 
     private boolean fatalSignalled;
     private long fatalSignalledNs;
@@ -148,7 +149,7 @@ public final class TapPublisher {
     /**
      * Publishes the frame in the sequencer's buffer onto the node-local tap. Spins on back-pressure — the
      * tap recording is the authoritative history, so a dropped frame would be an unrecoverable gap — but
-     * not blindly: {@link TapStallPolicy} watches the recording behind the tap, and once it is provably not
+     * not blindly: it watches the recording behind the tap, and once it is provably not
      * draining (or gone) the node terminates rather than wait out a failure that will not clear.
      *
      * <p><b>The only two exits are a landed offer and process death.</b> The spin does unwind on the way
@@ -177,7 +178,11 @@ public final class TapPublisher {
             }
             actions.idle();
         }
-        if (stallPolicy.onEmitted() && !fatalSignalled) {
+        final boolean wasStalled = stalled;
+        stallSinceNs = 0;
+        stallRecordedPosition = 0;
+        stalled = false;
+        if (wasStalled && !fatalSignalled) {
             actions.tapStalled(false);
             Logger.info(Logger.CoreComponent.Sequencer, actions.memberId(),
                         "RECOVERED: tap back-pressure cleared at globalSeqNo=%d", actions.globalSeqNo());
@@ -241,9 +246,10 @@ public final class TapPublisher {
 
     /**
      * One {@link #BACK_PRESSURE_ALERT_INTERVAL_NS} of continuous back-pressure has elapsed in {@link #emit}:
-     * alert, then ask {@link TapStallPolicy} whether this is an archive that is merely busy or one that has
-     * stopped draining. All of the per-period work lives here rather than in the spin, so the normal emit —
-     * where the first offer lands — pays none of it.
+     * alert, then decide whether this is an archive that is merely busy or one that has stopped draining.
+     * Only a recording that makes no progress is timed — a slow one that keeps advancing re-arms the clock,
+     * however long it back-pressures. All of the per-period work lives here rather than in the spin, so the
+     * normal emit — where the first offer lands — pays none of it.
      * @param nowNs the clock reading that triggered this period, reused rather than read again
      */
     private void onBackPressureThreshold(final long nowNs) {
@@ -251,25 +257,32 @@ public final class TapPublisher {
             haltIfShutdownStalled(nowNs);
             return;
         }
-        Logger.error(Logger.CoreComponent.Sequencer, Logger.CoreEventCode.ReplayerBackpressure, actions.memberId(),
-                     "ALERT: replayer back-pressure at globalSeqNo=%d", actions.globalSeqNo());
+        Logger.error(Logger.CoreComponent.Sequencer, Logger.CoreEventCode.TapBackpressure, actions.memberId(),
+                     "ALERT: tap back-pressure at globalSeqNo=%d", actions.globalSeqNo());
         actions.tapBackPressureAlert();
-        switch (stallPolicy.onBackPressure(nowNs, actions.recordingActive(), actions.recordedPosition())) {
-        case STALLED -> {
-            actions.tapStalled(true);
-            Logger.error(
-                Logger.CoreComponent.Sequencer, Logger.CoreEventCode.ReplayerBackpressure, actions.memberId(),
-                "STALLED: tap back-pressure sustained beyond %dms with no recording progress at globalSeqNo=%d",
-                TimeUnit.NANOSECONDS.toMillis(SUSTAINED_BACKPRESSURE_THRESHOLD_NS), actions.globalSeqNo());
-        }
-        case FATAL_RECORDING_GONE ->
+        if (!actions.recordingActive()) {
             fatalTapFailure("the local archive stopped recording the tap (recording " + actions.recordingId() + ")");
-        case FATAL_NO_PROGRESS ->
+            return;
+        }
+        final long recordedPosition = actions.recordedPosition();
+        if (stallSinceNs == 0 || recordedPosition > stallRecordedPosition) {
+            // The first observation only anchors the clock: how long back-pressure lasted before it is unknown.
+            stallRecordedPosition = recordedPosition;
+            stallSinceNs = nowNs;
+            return;
+        }
+        final long stalledNs = nowNs - stallSinceNs;
+        if (stalledNs >= TAP_STALL_FATAL_TIMEOUT_NS) {
             fatalTapFailure("the tap recording made no progress for " +
                             TimeUnit.NANOSECONDS.toMillis(TAP_STALL_FATAL_TIMEOUT_NS) +
                             "ms of continuous back-pressure");
-        case CONTINUE -> {
-        }
+        } else if (stalledNs >= SUSTAINED_BACKPRESSURE_THRESHOLD_NS && !stalled) {
+            stalled = true;
+            actions.tapStalled(true);
+            Logger.error(
+                Logger.CoreComponent.Sequencer, Logger.CoreEventCode.TapBackpressure, actions.memberId(),
+                "STALLED: tap back-pressure sustained beyond %dms with no recording progress at globalSeqNo=%d",
+                TimeUnit.NANOSECONDS.toMillis(SUSTAINED_BACKPRESSURE_THRESHOLD_NS), actions.globalSeqNo());
         }
     }
 

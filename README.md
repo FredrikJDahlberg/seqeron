@@ -45,9 +45,8 @@ back-pressuring the cluster.
   `ping` (round-trip one through consensus and back off the tap) and `follow` (replay history through
   the co-located Replayer, then follow the tap live). It exists so core's e2e suite needs no product
   binary built.
-- **`MetricsExporter` / `MetricsAggregator`** (Java) — the ops plane, orthogonal to the data flow: a
-  node-local exporter serves `/metrics` off the Aeron CnC counters, and the aggregator pulls every
-  node's exporter into one combined Prometheus endpoint (`doc/ops.md`).
+- **`MetricsExporter`** (Java) — the ops plane, orthogonal to the data flow: a node-local exporter
+  serves `/metrics` off the Aeron CnC counters, and Prometheus scrapes each node's (`doc/ops.md`).
 - **`TestGateway`** (Java, `src/test/java`) — an elected active/standby producer used only by
   `chaos-runner.sh`. It speaks no application protocol and holds no session state, but it holds the
   same four fences a real gateway does, so the recovery-stall policy gets exercised inside this repo.
@@ -80,7 +79,7 @@ server**; the server side of the replay protocol is Java only.
   refuses to take or restore one. That is what keeps every node's tap recording complete: a node
   restored from a snapshot would record only from wherever it resumed. The cost is recovery time and
   archive size growing with uptime — the 1 Hz heartbeat alone is ~86.4k frames/day.
-- **A node that cannot record terminates itself.** `TapStallPolicy` watches the archive's
+- **A node that cannot record terminates itself.** `TapPublisher` watches the archive's
   `RecordingPos` counter, and a node whose recording has stopped or stopped advancing exits (70)
   rather than sequence history it cannot keep. Peers keep quorum, and the restart rebuilds its
   recording over the full-log replay it does anyway.
@@ -175,7 +174,7 @@ writes the distribution to `build/install/seqeron` — `bin/` (these scripts), `
 | `stop-cluster.sh` | Stop everything either start script launched, plus any `SEQERON_EXTRA_PROCESSES="label\|pattern;…"` a caller adds |
 | `clusterctl.sh <command>` | Cluster life cycle: `start`, `shutdown`, `activate`, `load-topology`, `counters` — see [Operator tooling](#operator-tooling) |
 | `sbe-log-printer.sh <archive-dir>` | Dump an Aeron Archive recording as JSON — see [Log printer](#log-printer) |
-| `metrics-exporter.sh` / `metrics-aggregator.sh` | The Prometheus ops plane (`doc/ops.md`) |
+| `metrics-exporter.sh` | The Prometheus ops plane (`doc/ops.md`) |
 | `purgelog.sh [--force]` | Delete archive/cluster directories under `$TMPDIR/seqeron-seq` and the `logs/` directory; the cluster must be stopped first |
 
 The end-to-end harnesses live under `src/test/scripts/`. **All five are Java-only** — they drive the
@@ -260,7 +259,7 @@ than half-applied. The satellite blocks below do **not** move with it — keepin
 base is the operator's job.
 
 This tier reserves **9300–9329** by default (three members of stride 10, wider than the 9301–9325 three
-nodes actually bind), **9200–9209** for its own harness listeners, and `9400 + memberId` / 9500 for
+nodes actually bind), **9200–9209** for its own harness listeners, and `9400 + memberId` for
 the metrics plane. Every other block — an application's TCP listen port, each co-located client's
 cluster egress port, the replay ports — belongs to the process that binds it, so this repo names none
 of them. `doc/registries.md` §2 is the block table across all of them.

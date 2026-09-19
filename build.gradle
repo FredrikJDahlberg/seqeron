@@ -94,79 +94,39 @@ def sbeSchemaDir       = file('src/main/sbe')
 
 sourceSets.main.java.srcDir sbeGeneratedSrcDir
 
-tasks.register('generateReplaySbe', JavaExec) {
-    description = 'Generate Java SBE codecs from sbe-replay.xml (the node-local replay control protocol)'
-    classpath   = configurations.sbeCodegen
-    mainClass   = 'uk.co.real_logic.sbe.SbeTool'
+[
+    generateReplaySbe: ['replay', 'sbe-replay.xml (the node-local replay control protocol)'],
+    generateFrameSbe : ['frame',  'sbe-frame.xml (the Unsequenced/Sequenced envelope pair)'],
+    generateProbeSbe : ['probe',  'sbe-probe.xml (the ClusterProbe load/liveness payload)'],
+].each { taskName, spec ->
+    def (schema, about) = spec
+    def schemaFile = new File(sbeSchemaDir, "sbe-${schema}.xml")
+    def packageDir = new File(sbeGeneratedSrcDir, "org/limitless/seqeron/sbe/${schema}")
 
-    // Agrona's UnsafeBuffer needs this to access jdk.internal.misc.Unsafe on JDK 21+.
-    jvmArgs '--add-opens=java.base/jdk.internal.misc=ALL-UNNAMED'
+    tasks.register(taskName, JavaExec) {
+        description = "Generate Java SBE codecs from ${about}"
+        classpath   = configurations.sbeCodegen
+        mainClass   = 'uk.co.real_logic.sbe.SbeTool'
 
-    systemProperty 'sbe.output.dir',               sbeGeneratedSrcDir.absolutePath
-    systemProperty 'sbe.target.language',          'Java'
-    systemProperty 'sbe.java.generate.interfaces', 'false'
-    systemProperty 'sbe.xinclude.aware',           'true'
-    systemProperty 'sbe.generate.ir',              'true'
+        // Agrona's UnsafeBuffer needs this to access jdk.internal.misc.Unsafe on JDK 21+.
+        jvmArgs '--add-opens=java.base/jdk.internal.misc=ALL-UNNAMED'
 
-    args new File(sbeSchemaDir, 'sbe-replay.xml')
+        systemProperty 'sbe.output.dir',               sbeGeneratedSrcDir.absolutePath
+        systemProperty 'sbe.target.language',          'Java'
+        systemProperty 'sbe.java.generate.interfaces', 'false'
+        systemProperty 'sbe.xinclude.aware',           'true'
+        systemProperty 'sbe.generate.ir',              'true'
 
-    inputs.file  new File(sbeSchemaDir, 'sbe-replay.xml')
-    outputs.dir  new File(sbeGeneratedSrcDir, 'org/limitless/seqeron/sbe/replay')
-    outputs.file new File(sbeGeneratedSrcDir, 'sbe-replay.sbeir')
+        args schemaFile
 
-    doFirst {
-        new File(sbeGeneratedSrcDir, 'org/limitless/seqeron/sbe/replay').deleteDir()
-        sbeGeneratedSrcDir.mkdirs()
-    }
-}
+        inputs.file  schemaFile
+        outputs.dir  packageDir
+        outputs.file new File(sbeGeneratedSrcDir, "sbe-${schema}.sbeir")
 
-tasks.register('generateFrameSbe', JavaExec) {
-    description = 'Generate Java SBE codecs from sbe-frame.xml (the Unsequenced/Sequenced envelope pair)'
-    classpath   = configurations.sbeCodegen
-    mainClass   = 'uk.co.real_logic.sbe.SbeTool'
-
-    jvmArgs '--add-opens=java.base/jdk.internal.misc=ALL-UNNAMED'
-
-    systemProperty 'sbe.output.dir',               sbeGeneratedSrcDir.absolutePath
-    systemProperty 'sbe.target.language',          'Java'
-    systemProperty 'sbe.java.generate.interfaces', 'false'
-    systemProperty 'sbe.xinclude.aware',           'true'
-    systemProperty 'sbe.generate.ir',              'true'
-
-    args new File(sbeSchemaDir, 'sbe-frame.xml')
-
-    inputs.file  new File(sbeSchemaDir, 'sbe-frame.xml')
-    outputs.dir  new File(sbeGeneratedSrcDir, 'org/limitless/seqeron/sbe/frame')
-    outputs.file new File(sbeGeneratedSrcDir, 'sbe-frame.sbeir')
-
-    doFirst {
-        new File(sbeGeneratedSrcDir, 'org/limitless/seqeron/sbe/frame').deleteDir()
-        sbeGeneratedSrcDir.mkdirs()
-    }
-}
-
-tasks.register('generateProbeSbe', JavaExec) {
-    description = 'Generate Java SBE codecs from sbe-probe.xml (the ClusterProbe load/liveness payload)'
-    classpath   = configurations.sbeCodegen
-    mainClass   = 'uk.co.real_logic.sbe.SbeTool'
-
-    jvmArgs '--add-opens=java.base/jdk.internal.misc=ALL-UNNAMED'
-
-    systemProperty 'sbe.output.dir',               sbeGeneratedSrcDir.absolutePath
-    systemProperty 'sbe.target.language',          'Java'
-    systemProperty 'sbe.java.generate.interfaces', 'false'
-    systemProperty 'sbe.xinclude.aware',           'true'
-    systemProperty 'sbe.generate.ir',              'true'
-
-    args new File(sbeSchemaDir, 'sbe-probe.xml')
-
-    inputs.file  new File(sbeSchemaDir, 'sbe-probe.xml')
-    outputs.dir  new File(sbeGeneratedSrcDir, 'org/limitless/seqeron/sbe/probe')
-    outputs.file new File(sbeGeneratedSrcDir, 'sbe-probe.sbeir')
-
-    doFirst {
-        new File(sbeGeneratedSrcDir, 'org/limitless/seqeron/sbe/probe').deleteDir()
-        sbeGeneratedSrcDir.mkdirs()
+        doFirst {
+            packageDir.deleteDir()
+            sbeGeneratedSrcDir.mkdirs()
+        }
     }
 }
 
@@ -494,7 +454,6 @@ tasks.register('checkTierSeparation') {
         final List<String> forbidden = [
             'org/limitless/seqeron/sequencer/Sequencer',
             'org/limitless/seqeron/sequencer/TapPublisher',
-            'org/limitless/seqeron/sequencer/TapStallPolicy',
             'org/limitless/seqeron/replayer/server/',
             'org/limitless/seqeron/tools/',
             'org/limitless/seqeron/metrics/Metrics',

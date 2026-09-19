@@ -41,7 +41,7 @@ public final class Logger {
         MalformedIngressMessage,
         ConsensusModuleError,
         ServiceError,
-        ReplayerBackpressure,
+        TapBackpressure,
         ArchiveIntegrityFailure,
         StaleActiveRecording,
         TapRecordingFailure,

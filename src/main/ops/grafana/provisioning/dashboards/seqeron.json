@@ -14,7 +14,7 @@
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "x": 0, "y": 0, "w": 4, "h": 4 },
       "targets": [
-        { "refId": "A", "expr": "seqeron_node_up", "legendFormat": "member {{member}}" }
+        { "refId": "A", "expr": "up{job=\"seqeron\"}", "legendFormat": "member {{member}}" }
       ],
       "fieldConfig": { "defaults": {}, "overrides": [] },
       "options": {

@@ -1,29 +1,23 @@
 # Ops — Prometheus/Grafana monitoring stack
 
-Node-local metrics exporter + central aggregating ops server, feeding Prometheus + Grafana. Covers
+Node-local metrics exporter, scraped by Prometheus and feeding Grafana. Covers
 `org.limitless.seqeron.SeqeronCounters` — every `SequencerService`/`ReplayerService` operator
 counter — end to end from a running node to a dashboard panel.
 
 ## Shape
 
-Pull, not push, and an **aggregating proxy**, not service discovery:
+Pull, not push, and a **static target list**, not service discovery:
 
 - Each node runs `metrics-exporter.sh` (`MetricsExporter`), co-located with a `SequencerServer`/
   `ReplayerServer` the same way `clusterctl` is — sharing that node's Aeron directory — and serves
   `/metrics` in Prometheus text exposition format, read live off the CnC file via
   `CountersReader.forEach`.
-- One central `metrics-aggregator.sh` (`MetricsAggregator`) scrapes every node's exporter over HTTP
-  and re-exposes one combined `/metrics`. Prometheus's own scrape config then only ever needs
-  network reach to this **one** process rather than to every node — a smaller, more easily
-  firewalled surface than opening each node's `/metrics` port to wherever Prometheus runs.
-- Trade-off taken deliberately: Prometheus's own built-in `up{}` metric would, under this topology,
-  only ever reflect reachability to the aggregator, not to each node. `MetricsAggregator` closes
-  that gap itself — it records its own per-node scrape success/failure as
-  `seqeron_node_up{member="N"}`, independent of whatever else that scrape returned (a node that's
-  down still shows `up=0`; it just drops out of the rest of the combined output).
-- Neither exporter nor aggregator touch cluster ingress or authenticate callers — same trust model
-  as `clusterctl`: reachability is the access control. Put them behind the same network boundary as
-  the nodes themselves.
+- Prometheus scrapes every node's exporter directly, one target per member
+  (`src/main/ops/prometheus/prometheus.yml`). Its own `up{job="seqeron",member="N"}` is the per-node
+  reachability gauge: a node that's down reads 0.
+- The exporter doesn't touch cluster ingress or authenticate callers — same trust model as
+  `clusterctl`: reachability is the access control. Put it behind the same network boundary as the
+  nodes themselves, and Prometheus inside it.
 
 ## Running it
 
@@ -44,39 +38,21 @@ Run one per node, co-located with that node's `SequencerServer`/`ReplayerServer`
 `--add-opens` JVM flags as every other seqeron Java process that touches Agrona; the script sets
 them.
 
-### Central — metrics-aggregator.sh
-
-```
-metrics-aggregator.sh        # serve combined /metrics on port 9500
-```
-
-| Env var | Property | Default |
-|---|---|---|
-| `METRICS_AGGREGATOR_PORT` | `metricsAggregator.port` | `9500` |
-| `METRICS_AGGREGATOR_TARGETS` | `metricsAggregator.targets` | `0=localhost:9400` |
-
-`targets` is `memberId=host:port`, comma-separated — the same `id=endpoint` shape
-`clusterctl.sh`'s `ingressEndpoints` uses. For the 3-node dev cluster
-(`start-three-node-cluster.sh`, one exporter per member on `localhost:9400`/`9401`/`9402`):
-
-```
-METRICS_AGGREGATOR_TARGETS="0=localhost:9400,1=localhost:9401,2=localhost:9402" metrics-aggregator.sh
-```
-
-Pure HTTP client/server — no Aeron dependency, so unlike every other seqeron tool it needs no
-`--add-opens` flags and doesn't need to be co-located with any node, only HTTP reach to each
-exporter.
-
 ### Prometheus
 
 The paths below are this checkout's. In an installed distribution (`./gradlew operatorDist`) the same
 tree is `ops/`, beside `bin/` and `lib/`.
 
-`src/main/ops/prometheus/prometheus.yml` — one job, scraping the aggregator's combined endpoint:
+`src/main/ops/prometheus/prometheus.yml` — one job, one target per member's exporter:
 
 ```
 prometheus --config.file=src/main/ops/prometheus/prometheus.yml
 ```
+
+The targets are the 3-node dev cluster's (`localhost:9400`/`9401`/`9402`, from
+`start-three-node-cluster.sh`); name the real hosts for a deployment. Each target carries a `member`
+label so `up` names the node, and `honor_labels: true` keeps the `member` label the exporter already puts
+on every sample.
 
 ### Grafana
 
@@ -123,7 +99,7 @@ metrics are not limited to the names seqeron happens to know.
 
 | Metric | Type | Meaning |
 |---|---|---|
-| `seqeron_node_up` | gauge | Synthesized by the aggregator, not read from a counter: 1 if its last scrape of that node's exporter succeeded, else 0 |
+| `up` | gauge | Prometheus's own, not read from a counter: 1 if its last scrape of that member's exporter succeeded, else 0 |
 | `seqeron_sequencer_global_seq_no` | gauge | Last globalSeqNo emitted on this node's tap |
 | `seqeron_sequencer_tap_backpressure_alerts_total` | counter | Count of times the tap-emit back-pressure alert threshold has fired |
 | `seqeron_sequencer_rejected_ingress_total` | counter | Count of malformed ingress messages skipped by `Sequencer.sequenceMessage` |
@@ -153,7 +129,7 @@ silent holes in it. What to expect and what to do:
 
 - **In the log:** a `[SequencerService/N] FATAL: … terminating this node` line naming the reason, and
   `seqeron_sequencer_tap_stalled{member="N"}` at 1 until the process (and its counters) go away.
-  `seqeron_node_up{member="N"}` then drops to 0.
+  `up{job="seqeron",member="N"}` then drops to 0.
 - **The cluster keeps going** on the remaining members — every node holds an identical, complete
   recording, so nothing is lost with the node itself, and an election moves leadership if it held it.
   **Two nodes down is a quorum loss**, so treat a second one as an emergency rather than a repeat.
@@ -248,15 +224,13 @@ nothing to discipline them.
 
 ## Non-goals / open items
 
-- No clock-offset metric. Neither `/metrics` endpoint reports a member's offset from UTC or from its
+- No clock-offset metric. The `/metrics` endpoint doesn't report a member's offset from UTC or from its
   peers; that comes from the host's time daemon.
 
-- No authentication on either `/metrics` endpoint — see "Shape" above; both are meant to sit behind
-  the same network boundary as the nodes.
+- No authentication on the `/metrics` endpoint — see "Shape" above; it is meant to sit behind the
+  same network boundary as the nodes.
 - No Prometheus alerting rules or Grafana alert provisioning — dashboard only.
-- Single aggregator instance; no HA (a downed aggregator is a downed Prometheus scrape target, not a
-  downed node — `seqeron_node_up` simply stops updating rather than misreporting).
-- `metricsAggregator.targets` is a fixed, hand-maintained list — no service discovery. For a cluster
+- `prometheus.yml`'s target list is fixed and hand-maintained — no service discovery. For a cluster
   whose membership changes, keep it in sync with `clusterMembers`.
 - **Neither FIX gateway is instrumented.** `SeqeronCounters` covers `SequencerService`/
   `ReplayerService` only, so `FixGateway` and `ExchangeGateway` contribute nothing to `/metrics`:

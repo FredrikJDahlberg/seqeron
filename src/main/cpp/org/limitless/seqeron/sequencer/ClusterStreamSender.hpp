@@ -233,15 +233,10 @@ class ClusterStreamSender
         m_ingressEndpoint = CLUSTER_INGRESS_ENDPOINT;
         m_egressChannel = egressChannel;
 
-        const auto subId = m_aeron->addSubscription(m_egressChannel, CLUSTER_EGRESS_STREAM_ID);
-        std::shared_ptr<aeron::Subscription> egressSub;
-        while (!(egressSub = m_aeron->findSubscription(subId)))
-        {
-            m_idleStrategy.idle();
-        }
-
-        connect(std::make_unique<AeronIngressTransport>(createIngressPublication(m_ingressEndpoint)),
-                std::make_unique<AeronEgressTransport>(egressSub), m_egressChannel);
+        auto egress = std::make_unique<AeronEgressTransport>(awaitEgressSubscription());
+        connect(
+            std::make_unique<AeronIngressTransport>(createIngressPublication(m_ingressEndpoint, m_connectTimeoutMs)),
+            std::move(egress), m_egressChannel);
     }
 
     // Real entry point for a client deployed co-located with one cluster member — sharing
@@ -276,49 +271,30 @@ class ClusterStreamSender
         // localhost:(9330 + memberId) or similar, from their own AppPorts.hpp base.
         m_egressChannel = egressChannel;
 
-        const auto subId = m_aeron->addSubscription(m_egressChannel, CLUSTER_EGRESS_STREAM_ID);
-        std::shared_ptr<aeron::Subscription> egressSub;
-        while (!(egressSub = m_aeron->findSubscription(subId)))
-        {
-            m_idleStrategy.idle();
-        }
+        auto egress = std::make_unique<AeronEgressTransport>(awaitEgressSubscription());
 
+        // A follower never connects the IPC publication, so building it is bounded by the short
+        // ipcConnectTimeoutMs; a timeout there is treated like a failed handshake on it.
         m_ingressEndpoint = "ipc";
         std::unique_ptr<IngressTransport> primary;
-        // createIpcIngressPublication() blocks on m_connectTimeoutMs, which otherwise still holds
-        // its full-default value here — without this swap, a co-located member that isn't currently
-        // leader (so the IPC publication never connects) burns the full 10s default before falling
-        // back to UDP instead of failing fast in ipcConnectTimeoutMs as intended. Restored before the
-        // fallback connectColocated() call below so ITS attempt still gets the full budget.
-        const std::int64_t fullTimeoutMs = m_connectTimeoutMs;
-        m_connectTimeoutMs = ipcConnectTimeoutMs;
+        std::string primaryFailureReason;
         try
         {
-            primary = std::make_unique<AeronIngressTransport>(createIpcIngressPublication());
-            m_connectTimeoutMs = fullTimeoutMs;
+            primary = std::make_unique<AeronIngressTransport>(createIpcIngressPublication(ipcConnectTimeoutMs));
         }
         catch (const std::exception& ex)
         {
-            m_connectTimeoutMs = fullTimeoutMs;
-            // Building the IPC publication itself timed out (createIpcIngressPublication's own
-            // deadline) — treat exactly like a failed handshake attempt below.
-            connectColocated(
-                nullptr,
-                [this] {
-                    m_ingressEndpoint = CLUSTER_INGRESS_ENDPOINT;
-                    return std::make_unique<AeronIngressTransport>(createIngressPublication(m_ingressEndpoint));
-                },
-                std::make_unique<AeronEgressTransport>(egressSub), ipcConnectTimeoutMs, ex.what(), memberId);
-            return;
+            primaryFailureReason = ex.what();
         }
 
         connectColocated(
             std::move(primary),
             [this] {
                 m_ingressEndpoint = CLUSTER_INGRESS_ENDPOINT;
-                return std::make_unique<AeronIngressTransport>(createIngressPublication(m_ingressEndpoint));
+                return std::make_unique<AeronIngressTransport>(
+                    createIngressPublication(m_ingressEndpoint, m_connectTimeoutMs));
             },
-            std::make_unique<AeronEgressTransport>(egressSub), ipcConnectTimeoutMs, nullptr, memberId);
+            std::move(egress), ipcConnectTimeoutMs, primaryFailureReason.c_str(), memberId);
     }
 
     // Test seam for connectColocated: exercises the same "try the primary ingress transport
@@ -864,12 +840,10 @@ class ClusterStreamSender
         const PendingIngressSwitch req = m_pendingIngress;
         m_pendingIngress = PendingIngressSwitch{};
 
-        const std::int64_t fullTimeoutMs = m_connectTimeoutMs;
-        m_connectTimeoutMs = req.timeoutMs;
         try
         {
-            auto pub = req.endpoint == "ipc" ? createIpcIngressPublication() : createIngressPublication(req.endpoint);
-            m_connectTimeoutMs = fullTimeoutMs;
+            auto pub = req.endpoint == "ipc" ? createIpcIngressPublication(req.timeoutMs)
+                                             : createIngressPublication(req.endpoint, req.timeoutMs);
             m_ingress = std::make_unique<AeronIngressTransport>(std::move(pub));
             m_ingressEndpoint = req.endpoint;
             diag::Logger::info(diag::component::Cluster, "Ingress switched to %s", req.endpoint.c_str());
@@ -880,7 +854,6 @@ class ClusterStreamSender
         }
         catch (const std::exception& ex)
         {
-            m_connectTimeoutMs = fullTimeoutMs;
             if (req.keepCurrentOnFailure)
             {
                 diag::Logger::error(diag::component::Cluster, diag::eventCode::ClusterIpcFallback,
@@ -895,13 +868,25 @@ class ClusterStreamSender
         }
     }
 
+    // Adds this client's egress subscription on m_egressChannel and blocks until it is resolved.
+    std::shared_ptr<aeron::Subscription> awaitEgressSubscription()
+    {
+        const auto subId = m_aeron->addSubscription(m_egressChannel, CLUSTER_EGRESS_STREAM_ID);
+        std::shared_ptr<aeron::Subscription> egressSub;
+        while (!(egressSub = m_aeron->findSubscription(subId)))
+        {
+            m_idleStrategy.idle();
+        }
+        return egressSub;
+    }
+
     // Adds a cluster-ingress publication on `channel` and blocks until it is both resolved and
-    // connected, or m_connectTimeoutMs elapses. `description` names it in the timeout messages.
+    // connected, or timeoutMs elapses. `description` names it in the timeout messages.
     // Only valid when connect(aeron) was used — m_aeron is null in the transport-agnostic test seam.
     std::shared_ptr<aeron::Publication> awaitIngressPublication(const std::string& channel,
-                                                                const std::string& description)
+                                                                const std::string& description, std::int64_t timeoutMs)
     {
-        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(m_connectTimeoutMs);
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
 
         const auto pubId = m_aeron->addPublication(channel, CLUSTER_INGRESS_STREAM_ID);
         std::shared_ptr<aeron::Publication> pub;
@@ -925,19 +910,20 @@ class ClusterStreamSender
     }
 
     // The cluster ingress at `endpoint` ("host:port").
-    std::shared_ptr<aeron::Publication> createIngressPublication(const std::string& endpoint)
+    std::shared_ptr<aeron::Publication> createIngressPublication(const std::string& endpoint, std::int64_t timeoutMs)
     {
-        return awaitIngressPublication("aeron:udp?endpoint=" + endpoint, "ingress publication to " + endpoint);
+        return awaitIngressPublication("aeron:udp?endpoint=" + endpoint, "ingress publication to " + endpoint,
+                                       timeoutMs);
     }
 
     // Same, but over CLUSTER_INGRESS_CHANNEL_IPC — only ever reachable by an ingress subscription
     // the co-located member opens while it is leader (see SequencerServer's isIpcIngressAllowed), so
-    // isConnected() may simply never become true when it isn't; the m_connectTimeoutMs deadline is
+    // isConnected() may simply never become true when it isn't; the timeoutMs deadline is
     // what bounds that, same as the UDP case, and connectColocated relies on it to trigger the UDP
     // fallback.
-    std::shared_ptr<aeron::Publication> createIpcIngressPublication()
+    std::shared_ptr<aeron::Publication> createIpcIngressPublication(std::int64_t timeoutMs)
     {
-        return awaitIngressPublication(CLUSTER_INGRESS_CHANNEL_IPC, "IPC ingress publication");
+        return awaitIngressPublication(CLUSTER_INGRESS_CHANNEL_IPC, "IPC ingress publication", timeoutMs);
     }
 
     std::shared_ptr<aeron::Aeron> m_aeron;

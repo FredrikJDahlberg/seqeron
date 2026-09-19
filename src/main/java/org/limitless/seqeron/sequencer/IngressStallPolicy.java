@@ -5,9 +5,9 @@ import io.aeron.Publication;
 /**
  * Pure decision logic behind {@link ClusterStreamSender#send}'s spin: given what the offer returned and
  * how long it has been failing, it decides whether to keep spinning, alert, give the session up, or fail
- * outright. Split off and unit-tested the way {@link TapStallPolicy} is, and for the same reason — the
- * classification below is the part that is easy to get wrong and impossible to observe once it is inside
- * a loop.
+ * outright. Split off because {@link ClusterStreamSender} cannot be driven without an Aeron runtime, and
+ * the classification below is the part that is easy to get wrong and impossible to observe once it is
+ * inside a loop.
  *
  * <p><b>{@code CLOSED} is a retry, and that is the whole point of testing this.</b> A leader that dies
  * closes the client's egress image, and {@code AeronCluster} responds by closing the ingress publication

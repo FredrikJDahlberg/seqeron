@@ -85,10 +85,10 @@ every frame on the tap exactly once, in order; the other, untracked, reports wha
 the recording is the authoritative copy of history and a dropped frame would be an unrecoverable gap
 (`SequencerService.java:640-688`). This can only block on genuine local-archive back-pressure — the
 tap's only tethered subscriber is the recording itself, app replicas are untethered — but reliable is
-not the same as unbounded. `TapStallPolicy` (pure, Aeron-free, unit-tested in isolation —
-`TapStallPolicy.java`) distinguishes an archive that is merely slow (back-pressured but its recording
-position keeps advancing → `CONTINUE`) from one that has stopped draining (`FATAL_NO_PROGRESS` after
-30s of zero progress) or gone away entirely (`FATAL_RECORDING_GONE`). The same 1 Hz heartbeat that drives
+not the same as unbounded. `TapPublisher` (pure, Aeron-free, unit-tested in isolation —
+`TapPublisher.java`) distinguishes an archive that is merely slow (back-pressured but its recording
+position keeps advancing, so it keeps waiting) from one that has stopped draining (fatal after
+30s of zero progress) or gone away entirely (fatal at once). The same 1 Hz heartbeat that drives
 the cluster clock also runs `checkTapRecordingAlive` (`SequencerService.java:480-486`), because a
 *stopped* recording doesn't back-pressure anything at all — the tap's untethered app subscribers keep
 it looking connected — so liveness has to be polled, not just inferred from back-pressure.
@@ -497,8 +497,8 @@ section after a failover.
   standby-promotion lever (§2.2); `snapshot` is explicitly refused. See §1.4.
 - **Metrics** (`doc/ops.md`) — `seqeron_sequencer_tap_stalled` (latches at 1 when a node is about to
   terminate itself, §1.3), `seqeron_sequencer_gateway_promotion_total` (§2.2), the `seqeron_replayer_*`
-  family (§3.1), and `seqeron_node_up` (an aggregator-synthesized per-node reachability gauge,
-  independent of what else that node reports) give an operator the same signals this document
+  family (§3.1), and Prometheus's own per-node `up` (reachability, independent of what else that
+  node reports) give an operator the same signals this document
   describes, on a dashboard.
 - **`cluster/src/test/scripts/chaos-runner.sh`** — randomized fault injection against a live 3-node cluster with
   a hot-standby gateway pair, replayable by seed. Injects: `fault_kill_leader`/`fault_kill_follower`
