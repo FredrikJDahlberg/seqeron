@@ -47,7 +47,7 @@ for m in 0 1 2; do
   SEQ_PIDS[$m]=$!
 done
 for m in 0 1 2; do
-  W=0; until grep -q "Running" "$LOG_DIR/seq-$m.log" 2>/dev/null; do sleep 0.5; W=$((W+1)); ((W>60)) && { echo "seq $m not up"; exit 1; }; done
+  wait_for_log "$LOG_DIR/seq-$m.log" "Running" 30 || { echo "seq $m not up"; exit 1; }
 done
 echo "cluster up"
 
@@ -58,7 +58,7 @@ for m in 0 1 2; do
   REPLAYER_PIDS[$m]=$!
 done
 for m in 0 1 2; do
-  W=0; until grep -q "serving replay" "$LOG_DIR/replayer-$m.log" 2>/dev/null; do sleep 0.5; W=$((W+1)); ((W>60)) && break; done
+  wait_for_log "$LOG_DIR/replayer-$m.log" "serving replay" 30 || true
 done
 echo "replayers serving"
 
@@ -76,7 +76,7 @@ java "${JAVA_OPTS[@]}" "${PRODUCER_OPTS[@]}" -Dprobe.clientId=12 -Dprobe.pending
      org.limitless.seqeron.tools.ClusterProbe confirm > "$LOG_DIR/control.log" 2>&1 &
 CONTROL_PID=$!
 for f in confirm control; do
-  W=0; until grep -q "confirm: sending" "$LOG_DIR/$f.log" 2>/dev/null; do sleep 0.2; W=$((W+1)); ((W>150)) && { echo "$f producer never started"; break; }; done
+  wait_for_log "$LOG_DIR/$f.log" "confirm: sending" 30 || echo "$f producer never started"
 done
 echo "confirm + control producers streaming on member $P"
 sleep 1  # both mid-stream when the leader dies
@@ -102,8 +102,7 @@ java "${JAVA_OPTS[@]}" -Dprobe.memberId="$NEWLEADER" -Dprobe.clientId=9 -cp "$JA
 FRESH_PID=$!
 echo "started fresh cold probe follower (client 9) co-located with new leader member $NEWLEADER"
 
-W=0; until grep -q "following live" "$FRESH_LOG" 2>/dev/null; do sleep 0.5; W=$((W+1)); ((W>60)) && break; done
-CAUGHT=0; grep -q "following live" "$FRESH_LOG" && CAUGHT=1
+CAUGHT=0; wait_for_log "$FRESH_LOG" "following live" 30 && CAUGHT=1
 
 # Each producer judges itself once its stream has drained; its own drain timeout bounds the wait.
 wait "$CONFIRM_PID"; CONFIRM_RC=$?

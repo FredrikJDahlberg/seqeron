@@ -88,11 +88,7 @@ start_client() {  # start_client <logfile>
   CLIENT_PID=$!
 }
 wait_for() {  # wait_for <pattern> <logfile> <timeout_iters (x0.5s)> <description>
-  local pattern="$1" log="$2" timeout="$3" desc="$4" W=0
-  until grep -q "$pattern" "$log" 2>/dev/null; do
-    sleep 0.5; W=$((W+1)); ((W>timeout)) && { echo "TIMEOUT waiting for $desc (see $log)"; return 1; }
-  done
-  return 0
+  wait_for_log "$2" "$1" $(( $3 / 2 )) || { echo "TIMEOUT waiting for $4 (see $2)"; return 1; }
 }
 wait_for_exit() {  # wait_for_exit <pid> <timeout_iters (x0.5s)>
   local pid="$1" timeout="$2" W=0

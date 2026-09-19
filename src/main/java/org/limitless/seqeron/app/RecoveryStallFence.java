@@ -27,19 +27,14 @@ public final class RecoveryStallFence {
     private long lastGlobalSeqNo;
 
     /**
-     * @param deadlineMs how long recovery may run without dispatching a single frame, once this instance has
-     *                   been caught up before, before it is declared unconvergent. Deliberately generous
-     *                   relative to a normal gap-recovery re-walk (seconds) so that is never mistaken for the
-     *                   pathological case this exists to catch.
+     * @param deadlineMs how long recovery may dispatch nothing, once caught up before, before it is declared
+     *                   unconvergent; generous against a normal re-walk's seconds
      */
     public RecoveryStallFence(final long deadlineMs) {
         this.deadlineMs = deadlineMs;
     }
 
-    /**
-     * Caught up: not, or no longer, recovering. Latches {@code everCaughtUp} forever and clears the recovery
-     * clock, so re-convergence after a legitimate re-walk re-arms cleanly for the next one.
-     */
+    /** Caught up: latches {@code everCaughtUp} and clears the clock, so the next re-walk is timed afresh. */
     public void onCaughtUp() {
         everCaughtUp = true;
         recoveryStartMs = 0;

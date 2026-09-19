@@ -71,12 +71,8 @@ public record TopologyDocument(List<TopologyRow> gateways, List<ApplicationRow> 
     }
 
     /**
-     * Builds a parser that validates against the packaged {@code topology.xsd} as it reads.
-     *
-     * <p>The schema is resolved from this jar and a {@code schemaLocation} the document names is
-     * ignored: a file that may name its own schema may name a lax one, and C-1 would be advisory
-     * (§6.4). Entity resolution is disabled outright — the threat is mild, since an operator who can
-     * edit the file already has a shell on the node, but the JDK's defaults are unsafe.
+     * Builds a parser that validates against the packaged {@code topology.xsd} as it reads, ignoring any
+     * {@code schemaLocation} the document names (§6.4), with entity resolution disabled.
      */
     private static DocumentBuilder parser() throws IOException, SAXException, ParserConfigurationException {
         final SchemaFactory schemaFactory = SchemaFactory.newInstance(XMLConstants.W3C_XML_SCHEMA_NS_URI);
@@ -130,15 +126,9 @@ public record TopologyDocument(List<TopologyRow> gateways, List<ApplicationRow> 
     }
 
     /**
-     * The checks the XSD cannot make, each about a row's relation to the others: exactly one rank-0
-     * per gateway {@code sourceId} — a missing one leaves a logical gateway with no primary, a second
-     * an arbitrary one — a {@code sourceId} that is none of §5's reserved ids, and an application
-     * {@code sourceId} no gateway row already claims. Everything else (field widths, name shape,
-     * uniqueness, {@code payloadId >= 2}) is declarative in topology.xsd.
-     *
-     * <p>The last is not cosmetic: an application sharing a listed {@code sourceId} is refused frame by
-     * frame at run time by <b>S-6</b> case 2 — it submits on a session no {@code GatewayStarted} bound —
-     * so the deployment would come up and then silently drop that application's traffic.
+     * The checks the XSD cannot make about rows' relations: exactly one rank-0 per gateway {@code sourceId},
+     * no §5-reserved {@code sourceId}, and no application {@code sourceId} a gateway row claims — which
+     * <b>S-6</b> would otherwise silently refuse frame by frame at run time.
      */
     private static void validate(final List<TopologyRow> rows, final List<ApplicationRow> applications) {
         for (final TopologyRow row : rows) {

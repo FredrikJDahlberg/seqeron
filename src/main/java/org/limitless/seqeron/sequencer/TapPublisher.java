@@ -4,31 +4,15 @@ import java.util.concurrent.TimeUnit;
 import org.limitless.seqeron.util.Logger;
 
 /**
- * The two things {@link SequencerService} must do from inside a cluster callback that can back-pressure —
- * put a frame on the node-local tap, and re-arm the cluster clock — under the one rule those callbacks
- * impose: <b>never return with the work undone, and never throw.</b> Both spin, and both are bounded by the
- * same escalation: once the thing being waited on is provably not going to clear, the node terminates.
+ * The two things {@link SequencerService} does from a cluster callback that can back-pressure — put a frame
+ * on the tap, and re-arm the cluster clock — under that callback's rule: never return with the work undone,
+ * and never throw (a throw skips the message). Both spin, bounded by the node terminating once the wait
+ * provably will not clear; one class, so a second failure falls through to the shutdown backstop.
  *
- * <p>Split out of {@link SequencerService} for the reason {@link Sequencer} is:
- * this is the decision half, free of every Aeron type, with the transport behind {@link Actions} so the
- * unit suite drives it directly. It also owns the node-fatal latch both paths escalate to, which is why
- * they live in one class rather than two — the second failure must fall through to the shutdown backstop
- * rather than start a second shutdown.
- *
- * <p>Why the failure paths signal and keep spinning rather than throw: an exception raised in any cluster
- * callback is caught by {@code Image.boundedControlledPoll}, which has <em>already advanced the log
- * position past the message</em>, and {@code AgentRunner} keeps the agent running — so the service would
- * resume at the next message, around a hole in its own recording, with {@code globalSeqNo} already
- * consumed. That is exactly the unrecoverable gap all of this exists to prevent.
- *
- * <p><b>Single-threaded.</b> Every method must be called from the one cluster-callback thread.
+ * <p>Free of Aeron types: the transport is behind {@link Actions}. Single-threaded: the cluster-callback thread.
  */
 public final class TapPublisher {
-    /**
-     * Everything {@link TapPublisher} cannot do itself: the offers, the archive's recording state, the two
-     * gauges this discipline owns, and the way out. {@link SequencerService} implements it against Aeron;
-     * the unit suite substitutes a recorder.
-     */
+    /** Everything {@link TapPublisher} cannot do itself; {@link SequencerService} implements it against Aeron. */
     public interface Actions {
         /**
          * Offers the frame at offset 0 of the sequencer's buffer onto the tap.
@@ -77,58 +61,36 @@ public final class TapPublisher {
     }
 
     /**
-     * How often, in wall time, back-pressure in {@link #emit} is alerted on and the stall
-     * re-evaluated. This used to be a spin count (1,000,000, documented as "~10 ms at ~10 ns/spin"), which
-     * is only true when the loop spins on an idle core: the container idles with a {@code
-     * YieldingIdleStrategy}, and on a loaded host a yield costs microseconds, so the same count took over
-     * ten seconds — long enough that a node whose archive had died sat there spinning without ever
-     * reaching the evaluation that would have terminated it. The stall thresholds below are wall-clock
-     * durations, so what samples them has to be too.
+     * How often, in wall time, back-pressure in {@link #emit} is alerted on and the stall re-evaluated.
+     * Wall time, not a spin count: under a yielding idle strategy on a loaded host a spin count can stretch
+     * to seconds, past the thresholds it samples.
      */
     static final long BACK_PRESSURE_ALERT_INTERVAL_NS = TimeUnit.MILLISECONDS.toNanos(10);
 
-    /**
-     * Spins between clock reads while back-pressured. {@code System.nanoTime} is cheap but not free, and
-     * the idle strategy may be a busy-spin one, so the clock is not read on every iteration.
-     */
+    /** Spins between clock reads while back-pressured, so the clock is not read on every iteration. */
     static final int SPINS_PER_CLOCK_CHECK = 1024;
 
-    /**
-     * How long tap-emit back-pressure must persist, continuously, before {@link #emit} treats it as a
-     * genuine local-archive stall.
-     */
+    /** How long the recording may make no progress under back-pressure before the stall gauge is raised. */
     static final long SUSTAINED_BACKPRESSURE_THRESHOLD_NS = TimeUnit.MILLISECONDS.toNanos(200);
 
     /**
-     * How long the tap recording may make <em>zero</em> progress, while {@link #emit} is back-pressured,
-     * before this node gives up on the local archive and terminates (see {@link #fatalTapFailure}). Not a
-     * back-pressure timeout: an archive draining slowly under load back-pressures continuously and keeps
-     * advancing, and is left alone however long that lasts — this bounds only an archive that has stopped
-     * draining. Kept at 5x the stall gauge, the same margin {@code sessionTimeoutNs} keeps over the
-     * keep-alive interval, and lands this node's own fatal judgement in the same order of magnitude as
-     * {@code sessionTimeoutNs}'s 1s — the other threshold governing how long this cluster tolerates a
-     * dependency going quiet. Re-tune against real production storage before trusting it off loopback.
+     * How long the recording may make <em>zero</em> progress under back-pressure before the node
+     * terminates. An archive that is slow but still advancing is never timed out. 5x the stall gauge, on
+     * the order of the cluster's 1s {@code sessionTimeoutNs}; re-tune against production storage.
      */
     static final long TAP_STALL_FATAL_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(1);
 
     /**
-     * How long the consensus module may refuse the cluster-clock timer, continuously, before {@link
-     * #scheduleHeartbeat} gives up on this node. The same judgement {@link #TAP_STALL_FATAL_TIMEOUT_NS} makes
-     * about the archive, applied to the other end of the service: back-pressure on the consensus-module
-     * proxy is ordinary and self-clearing, and a full second of it without a single accepted timer is not
-     * a busy module but a wedged one. Matched to that constant deliberately — both bound the same
-     * question, "is the thing this node depends on still draining?", and there is no reason for the two
-     * answers to differ.
+     * How long the consensus module may refuse the cluster-clock timer before {@link #scheduleHeartbeat}
+     * gives up on this node; a second without one accepted is wedged, not busy. Matches
+     * {@link #TAP_STALL_FATAL_TIMEOUT_NS}.
      */
     static final long HEARTBEAT_SCHEDULE_FATAL_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(1);
 
     /**
-     * How long after signalling a fatal tap failure the process may still be alive before it is halted
-     * outright. The graceful path has to close the very archive that may be the thing wedged, so it can
-     * hang; by this point the node is committed to dying and nothing is lost by skipping the niceties.
-     * Well above the ~7s a healthy teardown takes when {@link #emit} is the wedged party — the container's
-     * close has to wait out its own retry timeout and then interrupt this thread out of the spin — so the
-     * backstop cannot pre-empt a shutdown that was about to succeed. It is a backstop, not a deadline.
+     * How long a signalled fatal may take before the process is halted outright: the graceful path closes
+     * the archive that may be what is wedged. Well above the ~7s a healthy teardown takes, so it never
+     * pre-empts one about to succeed.
      */
     static final long FATAL_SHUTDOWN_BACKSTOP_NS = TimeUnit.SECONDS.toNanos(30);
 
@@ -147,15 +109,9 @@ public final class TapPublisher {
     }
 
     /**
-     * Publishes the frame in the sequencer's buffer onto the node-local tap. Spins on back-pressure — the
-     * tap recording is the authoritative history, so a dropped frame would be an unrecoverable gap — but
-     * not blindly: it watches the recording behind the tap, and once it is provably not
-     * draining (or gone) the node terminates rather than wait out a failure that will not clear.
-     *
-     * <p><b>The only two exits are a landed offer and process death.</b> The spin does unwind on the way
-     * out — closing the container interrupts this thread and the idle strategy raises {@code
-     * AgentTerminationException} — but only once the process is already going down, which is why that stack
-     * trace appears in the log after a fatal.
+     * Publishes the frame in the sequencer's buffer onto the tap. Spins on back-pressure, since a dropped
+     * frame is an unrecoverable gap, but terminates the node once the recording is provably not draining.
+     * The only exits are a landed offer and process death.
      * @param length of the encoded frame at offset 0 of the sequencer's buffer
      */
     public void emit(final int length) {
@@ -190,14 +146,10 @@ public final class TapPublisher {
     }
 
     /**
-     * Re-arms the cluster clock, spinning until the consensus module accepts the timer — bounded, for the
-     * same reason {@link #emit} is. Returning with the timer unscheduled would stop the clock outright:
-     * nothing else re-arms it until the next leadership term, so every consumer's session clock would
-     * silently stop advancing. Spinning forever is no better — the callback would never return and this
-     * node would go dark with none of the failure paths ever running. So a consensus module that has not
-     * accepted a timer for {@link #HEARTBEAT_SCHEDULE_FATAL_TIMEOUT_NS} is treated as wedged and this node
-     * terminates, as visibly as it does when it cannot record its own tap. (The only false return is
-     * back-pressure: Aeron throws for a closed/disconnected proxy publication rather than returning.)
+     * Re-arms the cluster clock, spinning until the consensus module accepts the timer. An unscheduled timer
+     * would stop the clock silently until the next term, so a module that refuses it for {@link
+     * #HEARTBEAT_SCHEDULE_FATAL_TIMEOUT_NS} terminates the node. (False means back-pressure only: Aeron
+     * throws for a closed proxy publication.)
      * @param deadline cluster time the timer should fire at
      */
     public void scheduleHeartbeat(final long deadline) {
@@ -223,13 +175,9 @@ public final class TapPublisher {
     }
 
     /**
-     * Liveness check on the co-located archive's recording of the tap — and the reason {@link #emit}'s
-     * back-pressure bound is not enough on its own: <b>a recording that stops does not back-pressure
-     * anything.</b> The tap publication still has the app replicas attached (untethered), so offers keep
-     * landing and frames keep flowing live while nothing at all is being recorded — this node silently
-     * losing the history it is responsible for, discovered only when someone later asks it for a replay.
-     * The recording counter going away is the only symptom, so the caller runs this on the cluster's own
-     * 1 Hz clock.
+     * Liveness check on the tap recording, run on the 1 Hz clock: a recording that stops back-pressures
+     * nothing (the untethered app subscribers keep the publication connected), so {@link #emit}'s bound
+     * would never see it.
      */
     public void checkRecordingAlive() {
         if (fatalSignalled) {
@@ -246,10 +194,8 @@ public final class TapPublisher {
 
     /**
      * One {@link #BACK_PRESSURE_ALERT_INTERVAL_NS} of continuous back-pressure has elapsed in {@link #emit}:
-     * alert, then decide whether this is an archive that is merely busy or one that has stopped draining.
-     * Only a recording that makes no progress is timed — a slow one that keeps advancing re-arms the clock,
-     * however long it back-pressures. All of the per-period work lives here rather than in the spin, so the
-     * normal emit — where the first offer lands — pays none of it.
+     * alert, then time how long the recording has made no progress. Kept out of the spin, so an emit whose
+     * first offer lands pays none of it.
      * @param nowNs the clock reading that triggered this period, reused rather than read again
      */
     private void onBackPressureThreshold(final long nowNs) {
@@ -287,10 +233,7 @@ public final class TapPublisher {
     }
 
     /**
-     * Gives up on this node, because its archive is the authoritative copy of the sequenced history and a
-     * frame that cannot be recorded is a hole that no later work can fill: a node that cannot record is no
-     * longer doing the job it exists to do, and is better dead than silently incomplete. Also latches the
-     * stall gauge, so an operator watching it does not see the stall clear on the way out.
+     * Terminates the node over its tap recording, latching the stall gauge so it does not clear on the way out.
      * @param reason what failed, for the operator
      */
     private void fatalTapFailure(final String reason) {
@@ -302,11 +245,8 @@ public final class TapPublisher {
     }
 
     /**
-     * Brings this node down: the peers hold identical, complete recordings and keep quorum without it, and
-     * its restart rebuilds everything it held from {@code globalSeqNo} 1 over the full-log replay it
-     * performs anyway — so failing loudly and early costs the cluster nothing and costs a silently degraded
-     * node everything. Latched: the first call decides, and later ones only fall through to {@link
-     * #haltIfShutdownStalled}.
+     * Brings this node down: peers keep quorum, and its restart rebuilds its recording over full-log replay.
+     * Latched: later calls only fall through to {@link #haltIfShutdownStalled}.
      * @param code   which failure class this is, for the operator's log
      * @param reason what failed
      */
@@ -324,9 +264,8 @@ public final class TapPublisher {
     }
 
     /**
-     * Backstop for the graceful teardown {@link Actions#signalFatal} kicks off: that path has to close the
-     * very archive that may be what is wedged, so it can hang. By this point the node is committed to dying
-     * and everything it holds is either replicated or replayable, so stop waiting and halt.
+     * Halts once the graceful teardown {@link Actions#signalFatal} started has taken {@link
+     * #FATAL_SHUTDOWN_BACKSTOP_NS}.
      * @param nowNs monotonic clock reading
      */
     private void haltIfShutdownStalled(final long nowNs) {

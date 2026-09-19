@@ -2,43 +2,25 @@ package org.limitless.seqeron.replayer.server;
 
 import io.aeron.Aeron;
 import io.aeron.archive.client.AeronArchive;
-import java.util.Locale;
 import java.util.concurrent.atomic.AtomicBoolean;
-import org.agrona.concurrent.BackoffIdleStrategy;
-import org.agrona.concurrent.BusySpinIdleStrategy;
 import org.agrona.concurrent.IdleStrategy;
 import org.agrona.concurrent.NoOpLock;
 import org.agrona.concurrent.ShutdownSignalBarrier;
-import org.agrona.concurrent.YieldingIdleStrategy;
+import org.limitless.seqeron.util.IdleStrategies;
 import org.limitless.seqeron.util.Logger;
 
 /**
- * Launches one {@link ReplayerService} co-located with a Sequencer cluster member.
- *
- * <p>The ReplayerService does not run its own media driver: it attaches to the member's Aeron directory
- * (the same one {@code SequencerServer} launched its {@code ClusteredMediaDriver} in) so it can reach
- * that member's local {@code Archive} over {@code aeron:ipc} — exactly like {@code OrderExecServer}
- * co-locates via {@code SEQERON_ORDER_EXEC_AERON_DIR}. Every node runs one of these; each ReplayerService
- * serves replays from its own local archive regardless of leadership (each member records its own
- * complete copy of the sequenced stream — no cross-node replication). It is off the live path: apps
- * read the co-located {@code SequencerService} tap directly and only ask the ReplayerService to replay
- * history/gaps.
+ * Launches one {@link ReplayerService} co-located with a Sequencer cluster member. It runs no media driver
+ * of its own: it attaches to the member's Aeron directory to reach that member's archive over
+ * {@code aeron:ipc}, and serves replays from it regardless of leadership.
  *
  * <p>System properties:
  * <pre>
  *   replayer.memberId      — which cluster member this ReplayerService co-locates with (0/1/2); default 0
  *   replayer.aeronDir      — that member's Aeron directory; default {tmpdir}/seqeron-seq-aeron-{memberId}
  *   replayer.idleStrategy  — duty-cycle idle strategy: {@code backoff} (default), {@code yielding}, or
- *                            {@code busyspin}
+ *                            {@code busyspin}; busy-spin pays only on an isolated core
  * </pre>
- *
- * <p>The default is {@code backoff} rather than {@code busyspin} or {@code yielding} because busy-spin
- * (and, under sustained contention, yielding too) only pays off when the ReplayerService thread owns an
- * isolated core. On the tuned target deployment (core-pinned, {@code isolcpus}/{@code nohz_full}) set
- * {@code -Dreplayer.idleStrategy=busyspin}; on an oversubscribed host (e.g. a dev box already running the
- * cluster's own busy-spin/backoff driver threads) busy-spin steals cycles from everything else, so the
- * default backs off instead. (The ReplayerService is off the live delivery path, so this only affects how
- * promptly it services replay requests.)
  *
  * <p>Launch example (co-located with member 0):
  * <pre>
@@ -57,36 +39,21 @@ public final class ReplayerServer {
     /** Must match SequencerServer's Archive.localControlStreamId(100). */
     private static final int ARCHIVE_CONTROL_STREAM_ID = 100;
 
-    /**
-     * Control-response stream for the ReplayerService's own archive control session — distinct from the
-     * member's SequencerService client (101) so archive replies never cross-talk, even though they
-     * share the member's {@code aeron:ipc} driver.
-     */
+    /** Control-response stream of this service's archive session, distinct from SequencerService's 121. */
     private static final int ARCHIVE_CONTROL_RESPONSE_STREAM_ID = 120;
 
-    /**
-     * Exit status of a node whose replay duty cycle died on an uncaught exception (see {@code
-     * ReplayerService.fatalDutyCycleFailure}), as opposed to the 0 of an orderly shutdown — the signal
-     * process supervision needs to tell "restart me" from "I was told to stop". Mirrors SequencerServer's
-     * EXIT_TAP_FATAL.
-     */
+    /** Exit status of a node whose replay duty cycle died on an uncaught exception; restart it. */
     private static final int EXIT_DUTY_CYCLE_FATAL = 70;
 
     /**
-     * Exit status of a node whose duty-cycle thread was still running when shutdown gave up waiting for
-     * it (see {@link #main}). Distinct from {@link #EXIT_DUTY_CYCLE_FATAL} because the cause is
-     * different — the thread is wedged, not dead — and from 0 because the archive/Aeron client were
-     * deliberately left unclosed, so this is not an orderly stop.
+     * Exit status when shutdown gave up waiting for a wedged duty-cycle thread, leaving the archive and
+     * Aeron client unclosed: not an orderly stop, and not a dead thread either.
      */
     private static final int EXIT_SHUTDOWN_TIMEOUT = 71;
 
     /**
-     * How long shutdown waits for the duty-cycle thread to finish its current iteration. An iteration
-     * is one request poll plus at most one archive control call — the startup self-check reads a single
-     * fragment per cycle rather than waiting for one (see {@code ReplayerService.pollSelfCheck}), so
-     * nothing here waits on a timeout of its own. Generous against that, and only ever reached if the
-     * thread is genuinely stuck. Kept under Agrona's own 10s shutdown-hook budget, which this join plus
-     * the archive/Aeron close that follows it have to fit inside.
+     * How long shutdown waits for the duty cycle's current iteration, which never blocks on a timeout of
+     * its own; within Agrona's 10s shutdown-hook budget.
      */
     private static final long SHUTDOWN_JOIN_TIMEOUT_MS = 5_000;
 
@@ -105,7 +72,7 @@ public final class ReplayerServer {
             .controlResponseStreamId(ARCHIVE_CONTROL_RESPONSE_STREAM_ID)
             .lock(NoOpLock.INSTANCE));
 
-        final IdleStrategy idleStrategy = resolveIdleStrategy();
+        final IdleStrategy idleStrategy = IdleStrategies.fromProperty(PROP_IDLE_STRATEGY).get();
         final AtomicBoolean running = new AtomicBoolean(true);
         final AtomicBoolean dutyCycleFatal = new AtomicBoolean();
         final ShutdownSignalBarrier barrier = new ShutdownSignalBarrier();
@@ -145,22 +112,5 @@ public final class ReplayerServer {
         if (!stopped) {
             System.exit(EXIT_SHUTDOWN_TIMEOUT);
         }
-    }
-
-    /**
-     * Resolves the duty-cycle idle strategy from replayer.idleStrategy (case-insensitive); see the
-     * class Javadoc for why the default is backoff rather than busy-spin.
-     * @return idle strategy
-     */
-    private static IdleStrategy resolveIdleStrategy() {
-        final String name = System.getProperty(PROP_IDLE_STRATEGY, "backoff");
-        return switch (name.toLowerCase(Locale.ROOT)) {
-            case "busyspin" -> new BusySpinIdleStrategy();
-            case "yielding" -> new YieldingIdleStrategy();
-            case "backoff" -> new BackoffIdleStrategy();
-            default ->
-                throw new IllegalArgumentException("Unknown " + PROP_IDLE_STRATEGY + "=" + name +
-                                                   " (expected 'backoff', 'yielding', or 'busyspin')");
-        };
     }
 }

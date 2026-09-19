@@ -155,13 +155,8 @@ public final class MetricsExporter {
     }
 
     /**
-     * Renders every seqeron counter this node's CnC file holds as one Prometheus exposition body.
-     *
-     * <p>Core's own counters render under the curated names above. A counter in the app range that core
-     * has no metadata for belongs to a <b>consumer</b> (see {@code doc/registries.md} §3) and renders
-     * under a name taken from its own label: core cannot hold a table of names for processes it does not
-     * know about, and dropping such a counter silently leaves an operator reading an empty graph rather
-     * than a wrong one.
+     * Renders every seqeron counter this node's CnC file holds as one Prometheus exposition body. A counter
+     * in the app range core has no name for is a consumer's (doc/registries.md §3), named from its label.
      */
     String renderMetrics() {
         final Map<MetricMeta, StringBuilder> samplesByMetric = new LinkedHashMap<>();
@@ -195,10 +190,8 @@ public final class MetricsExporter {
     }
 
     /**
-     * The metric a consumer's counter is exported as: its label's first token, sanitised to a Prometheus
-     * name. That is the contract {@code doc/registries.md} §3 states — a consumer names its counter in
-     * the label, core does not name it for the consumer. Equal for every counter of one type id, so the
-     * replicas publishing it still group under one HELP/TYPE header.
+     * A consumer counter's metric name: its label's first token, sanitised (doc/registries.md §3). The same
+     * for every counter of one type id, so the replicas publishing it share one HELP/TYPE header.
      */
     private static MetricMeta appMetricMeta(final int typeId, final String label) {
         final String sanitised = label.split(" ", 2)[0].replaceAll("[^a-zA-Z0-9_:]", "_");

@@ -16,45 +16,19 @@ import org.limitless.seqeron.sbe.frame.UnsequencedEncoder;
 import org.limitless.seqeron.sbe.frame.UnsequencedSystemEncoder;
 
 /**
- * The ingress side of the frame layer: wraps an already-encoded body in the envelope of its family.
- * The Java twin of {@code publishSystem}/{@code publishPayload} in {@code sequencer/IngressPublisher.hpp}.
+ * The ingress side of the frame layer: wraps an already-encoded body in its family's envelope and returns
+ * the length; the offer is the caller's. The Java twin of {@code publishSystem}/{@code publishPayload} in
+ * {@code sequencer/IngressPublisher.hpp}. A system body carries no {@code MessageHeader}: it is
+ * {@code wrap}ped, and decoded with its codec's compiled constants (§7, <b>V-3</b>).
  *
- * <p>Encoding only — every producer owns its own buffer and its own way of offering, so this returns a
- * length and leaves the offer to the caller.
- *
- * <p><b>The encoders are flyweights owned once, not allocated per call</b> — the same reason {@link
- * IngressPublisher} holds its buffer rather than taking one: the C++ twin encodes into a stack array, and
- * Java's equivalent of that is an instance reused across calls. The {@code systemEventType} table below
- * stays static, since it is the protocol's and not any producer's.
- *
- * <p>Not thread-safe: one instance per producing thread, like the buffer it writes into.
- *
- * <p><b>Two families, and the choice is the caller's</b> (doc/seqeron-protocol-spec.md §4). A system
- * frame carries seqeron's own vocabulary, named by {@code header.systemEventType} and decoded by the
- * cluster tier; an application frame carries one opaque payload named by {@code header.payloadId},
- * which seqeron never opens. The two headers are byte-for-byte identical apart from that field's name.
- *
- * <p><b>A system body carries no {@code MessageHeader}.</b> {@code systemEventType} is what names the
- * event, so an encoder {@code wrap}s rather than {@code wrapAndApplyHeader}s and a decoder supplies
- * {@code BLOCK_LENGTH} and {@code SCHEMA_VERSION} from its own compiled constants (§7, <b>V-3</b>).
+ * <p>Not thread-safe: one instance per producing thread, reusing its encoders.
  */
 public final class SystemFrame {
     /**
-     * {@link #wrap} and {@link #wrapPayload} return this instead of a length when the body is above
-     * {@link FrameLayer#MAX_PAYLOAD_LENGTH}. Enforcing it here rather than leaving §9.2 condition 1 to
-     * catch it on the far side of a transport is <b>T-3</b>; the constant itself is the protocol's
-     * ({@link FrameLayer}), not this class's.
-     *
-     * <p><b>T-3.</b> The refusal is local and permanent, and is not back-pressure: nothing was encoded and
-     * nothing may be offered, and a caller that retries is retrying something that can never succeed. What
-     * it does instead is its own business (<b>P-0</b>) -- chunk, drop, or fail the session -- but it must
-     * not be to try again. Distinguishable from every length a successful encode can return, which is why
-     * this is a sentinel rather than a zero.
-     *
-     * <p>The same refusal covers what else in §9.2 a producer can check without the sequencer's state —
-     * conditions 6 to 9 — so a frame the sequencer would drop (S-7) is never sent to be dropped, which is
-     * what would latch {@code PendingSends}' fault. Condition 10 (<b>S-6</b>) needs the sequencer's
-     * session binding and stays its alone.
+     * Returned instead of a length when the body is above {@link FrameLayer#MAX_PAYLOAD_LENGTH}, or the frame
+     * breaks §9.2 conditions 6 to 9 — the checks a producer can make without the sequencer's state, so a
+     * frame the sequencer would drop is never sent (<b>T-3</b>). Local and permanent: nothing was encoded,
+     * and retrying cannot succeed.
      */
     public static final int REFUSED = -1;
 
@@ -68,10 +42,8 @@ public final class SystemFrame {
     private static final int RETIRED_CORE_PAYLOAD_ID = 1;
 
     /**
-     * The {@code systemEventType} table (§7). The nine submitted events are their own body codec's
-     * template id — the numbers they have always held, so a recording made by an older build can never
-     * read as one of these. The three the sequencer synthesizes have no body codec: a top-level template
-     * names each of them, and these are the values they nonetheless stamp at offset 16 so that field
+     * The {@code systemEventType} table (§7). A submitted event's value is its body codec's template id; the
+     * three synthesized events have templates of their own and stamp these at offset 16 so that field
      * discriminates every frame on the tap.
      */
     public static final int CONNECTION_OPENED = ConnectionOpenedEncoder.TEMPLATE_ID;
@@ -102,12 +74,8 @@ public final class SystemFrame {
     public static final int APPLICATION_REGISTERED = ApplicationRegisteredEncoder.TEMPLATE_ID;
 
     /**
-     * The compiled {@code BLOCK_LENGTH} of the event {@code systemEventType} names, or
-     * {@link #NOT_INGRESS_LEGAL} if that value is unallocated or has no ingress form — §9.2 conditions 8
-     * and 9 in one lookup, since the second's floor is only defined once the first has passed.
-     *
-     * <p>The three synthesis-only events are absent here rather than listed and refused: they have no
-     * ingress form to be short of, and the templates that carry them are already refused by condition 3.
+     * The compiled {@code BLOCK_LENGTH} of the event {@code systemEventType} names, or {@link
+     * #NOT_INGRESS_LEGAL} if it is unallocated or synthesis-only: §9.2 conditions 8 and 9 in one lookup.
      */
     public static int ingressBlockLength(final int systemEventType) {
         return switch (systemEventType) {
@@ -124,7 +92,6 @@ public final class SystemFrame {
         };
     }
 
-    // Reused across calls; see the class Javadoc for why they are fields rather than locals.
     private final MessageHeaderEncoder headerEncoder = new MessageHeaderEncoder();
     private final UnsequencedSystemEncoder systemEncoder = new UnsequencedSystemEncoder();
     private final UnsequencedEncoder payloadEncoder = new UnsequencedEncoder();

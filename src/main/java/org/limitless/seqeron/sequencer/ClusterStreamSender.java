@@ -15,27 +15,12 @@ import org.limitless.seqeron.util.Logger;
 
 /**
  * The cluster session a producer submits on — the Java twin of {@code sequencer/ClusterStreamSender.hpp},
- * with the same method names and the same semantics.
+ * with the same method names and semantics. Far smaller, because {@code AeronCluster} already is the
+ * cluster protocol the C++ class implements by hand; this adds only {@link #connectColocated}, a
+ * {@link #send} that spins through back-pressure and elections, and a self-throttling {@link #keepAlive}.
  *
- * <p><b>The two halves are not the same size, and that is the point.</b> The C++ class implements the
- * cluster wire protocol itself (SessionConnectRequest, SessionEvent, redirect, NewLeaderEvent, the
- * ingress publication) because Aeron's C++ client has no cluster client. Java's {@code AeronCluster} is
- * that protocol, so this class is only what {@code AeronCluster} does not do:
- *
- * <ul>
- *   <li>{@link #connectColocated} — ingress over the co-located member's own {@code aeron:ipc}, falling
- *       back to the UDP endpoint set when that member is not the leader;</li>
- *   <li>{@link #send} — an offer that spins through back-pressure and an election rather than dropping
- *       the frame;</li>
- *   <li>{@link #keepAlive} — self-throttling, so a duty cycle calls it every iteration.</li>
- * </ul>
- *
- * <p><b>One behavioural divergence from the C++ twin</b>, forced by {@code AeronCluster} owning its own
- * ingress publication: when leadership moves off the co-located member, C++ swaps the publication inside
- * the live session, while this class reconnects — the cluster session id changes at that moment. It
- * matters to a producer whose session identity is bound to something (a gateway's {@code GatewayStarted}
- * binding, spec §5 S-6); it does not to a co-located application, whose {@code sessionId} on the wire is
- * advisory and overwritten by the sequencer anyway.
+ * <p>One divergence: when leadership moves off the co-located member this reconnects (a new cluster session
+ * id) where C++ swaps the publication, because {@code AeronCluster} owns its publication.
  *
  * <p>Not thread-safe: every method belongs to the caller's one duty-cycle thread.
  */
@@ -55,10 +40,8 @@ public final class ClusterStreamSender implements IngressSender, AutoCloseable {
     private static final long CONNECT_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(10);
 
     /**
-     * How long the client waits for a {@code NewLeader} event before closing itself. Set explicitly
-     * because the default is 2x the cluster's {@code leaderHeartbeatTimeoutNs}, which
-     * {@link SequencerServer} tunes to 200ms — leaving a client 400ms of patience for an election that
-     * takes closer to a second.
+     * How long the client waits for a {@code NewLeader} before closing itself. The default, 2x the cluster's
+     * 200ms {@code leaderHeartbeatTimeoutNs}, is shorter than an election.
      */
     private static final long NEW_LEADER_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(5);
 
@@ -94,11 +77,10 @@ public final class ClusterStreamSender implements IngressSender, AutoCloseable {
     private long lastKeepAliveNs;
 
     /**
-     * Connects a client that is not co-located with any member: UDP ingress against the whole endpoint
-     * set, which is where the cluster's own redirect and leader-chasing take it from.
+     * Connects a client co-located with no member: UDP ingress against the whole endpoint set.
      *
      * @param egressChannel this client's own egress endpoint; two media drivers on one host cannot both
-     *     bind a port, so every client needs one of its own (doc/registries.md §2)
+     *     bind a port (doc/registries.md §2)
      */
     public void connect(final Aeron aeron, final String egressChannel) {
         connect(aeron, egressChannel, null);
@@ -113,15 +95,9 @@ public final class ClusterStreamSender implements IngressSender, AutoCloseable {
     }
 
     /**
-     * Connects a client deployed co-located with one cluster member, sharing that member's Aeron
-     * directory. Ingress goes over that member's own {@code aeron:ipc} first, on the theory that it
-     * usually is (or shortly becomes) the leader — a follower opens no IPC ingress subscription at all,
-     * so the connect request there simply goes unanswered, which is why the short
-     * {@code ipcConnectTimeoutMs} comes before the UDP endpoint set and its full budget.
-     *
-     * <p>Leadership moving away afterwards is handled too: {@link #pollEgress} sees the new leader is not
-     * this member and reconnects over UDP. Moving back is not chased, unlike the C++ twin — a reconnect
-     * costs a session where its publication swap does not.
+     * Connects a client sharing a cluster member's Aeron directory: that member's {@code aeron:ipc} first,
+     * within the short {@code ipcConnectTimeoutMs} since a follower never answers there, then UDP. If
+     * leadership later moves away, {@link #pollEgress} reconnects over UDP; moving back is not chased.
      */
     public void connectColocated(final Aeron aeron, final int memberId, final long ipcConnectTimeoutMs,
                                  final String egressChannel) {
@@ -147,12 +123,8 @@ public final class ClusterStreamSender implements IngressSender, AutoCloseable {
     }
 
     /**
-     * Names the UDP endpoint set explicitly, instead of the {@link #DEFAULT_NODE_COUNT}-member one this
-     * class derives from the port formula. For a deployment that is not the default — an operator tool
-     * pointed at another cluster. Must be set before connecting.
-     *
-     * <p>The C++ twin has no equivalent: it resolves one endpoint and lets the cluster's REDIRECT carry it
-     * to the leader, where {@code AeronCluster} takes the whole set and chases the leader itself.
+     * Names the UDP endpoint set, instead of the {@link #DEFAULT_NODE_COUNT}-member one derived from the
+     * port formula. Must be set before connecting.
      */
     public void setIngressEndpoints(final String ingressEndpoints) {
         this.ingressEndpoints = ingressEndpoints;
@@ -164,20 +136,11 @@ public final class ClusterStreamSender implements IngressSender, AutoCloseable {
     }
 
     /**
-     * Offers one pre-encoded frame to cluster ingress, spinning until it lands.
-     *
-     * <p><b>{@code CLOSED} is not terminal here.</b> A leader that dies closes the client's egress image,
-     * and {@code AeronCluster} responds by closing the ingress publication and waiting for a
-     * {@code NewLeader} event — so every offer returns {@code CLOSED} for the length of the election, on a
-     * session the cluster still holds. The publication that replaces it is installed by {@code pollEgress},
-     * which is why the spin polls.
-     *
-     * <p>Bounded, and the bound is not a detail: the spin's other two exits both need a leader — one to
-     * accept the frame, the other to tell us the session is gone. Lose quorum and neither comes, and an
-     * unbounded spin would stop the caller's whole duty cycle with it.
-     *
-     * <p>No keep-alive is pumped from in here, deliberately, as in the C++ twin: it would offer on the same
-     * publication, and one that will not take this frame will not take a keep-alive either.
+     * Offers one pre-encoded frame to cluster ingress, spinning until it lands. {@code CLOSED} is not
+     * terminal: during an election {@code AeronCluster} closes the ingress publication and waits for a
+     * {@code NewLeader}, which {@code pollEgress} installs — hence the spin polls. Bounded, since losing
+     * quorum would otherwise stop the caller's duty cycle. No keep-alive from in here: it would offer on the
+     * same stuck publication.
      *
      * @return false when there is no session left to take it, or when a {@code NewLeader} arrived mid-spin
      *     while the {@link IngressHold} holds: nothing was placed, and the frame goes again once it releases
@@ -225,10 +188,7 @@ public final class ClusterStreamSender implements IngressSender, AutoCloseable {
         return true;
     }
 
-    /**
-     * Sends a keep-alive if the interval has elapsed. Self-throttling, like the C++ twin's: a duty cycle
-     * calls it every iteration and this decides when one is due.
-     */
+    /** Sends a keep-alive if the interval has elapsed; call it every duty-cycle iteration. */
     public void keepAlive() {
         if (cluster == null || cluster.isClosed()) {
             return;
@@ -245,8 +205,7 @@ public final class ClusterStreamSender implements IngressSender, AutoCloseable {
     }
 
     /**
-     * Drains cluster egress, then acts on what it held. The reconnect is applied out here rather than from
-     * inside the poll, for the reason the C++ twin never builds a publication inside one.
+     * Drains cluster egress, then applies any reconnect it called for, outside the poll.
      *
      * @return fragments read
      */
@@ -266,10 +225,7 @@ public final class ClusterStreamSender implements IngressSender, AutoCloseable {
         return cluster != null && !cluster.isClosed();
     }
 
-    /**
-     * True once the cluster has closed this client's session — as opposed to never having connected one.
-     * Latched: there is no re-handshake, so a caller whose work is only valid with a session stops here.
-     */
+    /** True once the cluster has closed this session, as opposed to never having opened one. Latched. */
     public boolean isSessionLost() {
         return sessionLost;
     }
@@ -292,11 +248,7 @@ public final class ClusterStreamSender implements IngressSender, AutoCloseable {
         cluster = null;
     }
 
-    /**
-     * The ingress endpoint set for a {@code nodeCount}-member cluster, in {@code AeronCluster}'s
-     * {@code id=host:port} form, off {@link SequencerServer}'s port formula rather than a restatement of
-     * the numbers.
-     */
+    /** The ingress endpoint set for a {@code nodeCount}-member cluster, in {@code AeronCluster}'s {@code id=host:port} form. */
     public static String ingressEndpoints(final int nodeCount) {
         final StringBuilder endpoints = new StringBuilder();
         for (int id = 0; id < nodeCount; id++) {
@@ -328,9 +280,8 @@ public final class ClusterStreamSender implements IngressSender, AutoCloseable {
     }
 
     /**
-     * Leadership left the co-located member, and IPC ingress reaches nobody else: with no endpoints to
-     * chase, {@code AeronCluster} would re-add the publication on the same {@code aeron:ipc} and wait
-     * there. So the session is replaced by one over UDP, where the cluster's own leader chasing works.
+     * Replaces an IPC session whose leader moved away: with no endpoints, {@code AeronCluster} would wait on
+     * the same {@code aeron:ipc} forever. UDP lets the cluster client chase the leader itself.
      */
     private void reconnectOverUdp() {
         Logger.info(Logger.CoreComponent.Cluster, member(),

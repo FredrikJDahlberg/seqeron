@@ -39,32 +39,17 @@ import uk.co.real_logic.sbe.otf.OtfHeaderDecoder;
 import uk.co.real_logic.sbe.otf.OtfMessageDecoder;
 
 /**
- * Offline dump of SBE messages recorded by Aeron Archive into an archive
- * directory (archive.catalog + segment files), printed as JSON using an
- * SBE IR (.sbeir) schema file.
+ * Offline dump of the SBE messages in an Aeron Archive directory, as JSON, decoded with SBE IR schemas.
  *
- * <p>Schemas ship inside a jar as resources under {@code META-INF/seqeron/sbeir/} (see each module's
- * {@code collectSbeIr} Gradle task) and are <em>discovered</em> on the classpath rather than listed in
- * this class. That directory is deliberately outside any package: a consumer contributing its own
- * protocol's IR would otherwise be writing into seqeron's own package namespace. The cluster
- * tier contributes the three schemas it owns — {@code frame} (the envelope), {@code replay} (the
- * node-local control plane) and {@code cluster} (the Raft consensus log); an application's schema comes
- * from the module that owns that protocol, so running this tool over the cluster tier alone names no
- * payload it has no business knowing, and running it over a whole deployment names all of them.
- * All discovered schemas are loaded by default and each frame is decoded against the schema its own
- * header names — which is also how a payload inside an envelope is decoded, so a schema is bundled
- * whether or not the Java side has codecs for it. Naming one narrows the dump to it; an IR file outside
- * the jar can be given instead.
+ * <p>Schemas are discovered on the classpath under {@code META-INF/seqeron/sbeir/} rather than named here,
+ * so a product jar alongside contributes its own payload schemas and this jar alone names none. Each frame
+ * is decoded against the schema its header names; naming one narrows the dump, or an IR file can be given.
  *
- * <p>By default, every valid recording in the catalog is dumped. A node restart mints a <em>new</em>
- * tap recording rather than extending the old one, so the default output repeats history. Pass a
- * stream id to select instead; see {@link #scanAndDumpLog()}.
+ * <p>Every valid recording is dumped by default, and a node restart mints a new tap recording, so the
+ * output repeats history; pass a stream id to select. See {@link #scanAndDumpLog()}.
  */
 public class SbeLogPrinter {
-    /**
-     * The resource directory every module stages its {@code .sbeir} files into — a neutral, package-less
-     * extension point, because the modules that contribute one are not seqeron's to name.
-     */
+    /** Where every module stages its {@code .sbeir} files: package-less, since contributors are not seqeron's. */
     private static final String IR_RESOURCE_DIR = "META-INF/seqeron/sbeir";
 
     private static final String IR_PREFIX = "sbe-";
@@ -87,12 +72,7 @@ public class SbeLogPrinter {
     private static final int PAYLOAD_PREFIX_LENGTH =
         org.limitless.seqeron.sbe.frame.SequencedDecoder.payloadHeaderLength();
 
-    /**
-     * The offset of the 2-byte discriminator within every frame header — a {@code payloadId} on the
-     * application family, a {@code systemEventType} on the system one. One offset serves all five shapes:
-     * each unsequenced composite byte-prefixes its sequenced counterpart and the two pairs are identical
-     * apart from that field's name (F-3).
-     */
+    /** Offset of the 2-byte discriminator in every frame header, common to all five shapes (F-3). */
     private static final int DISCRIMINATOR_OFFSET =
         org.limitless.seqeron.sbe.frame.SequencedHeaderDecoder.payloadIdEncodingOffset();
 
@@ -170,12 +150,7 @@ public class SbeLogPrinter {
         this.dataHeader = new DataHeaderFlyweight();
     }
 
-    /**
-     * Every {@code sbe-<name>.sbeir} staged under {@link #IR_RESOURCE_DIR} anywhere on the classpath. Listed
-     * rather than hardcoded because this tool is the cluster tier's and the payload schemas are the
-     * applications': a module contributes its own protocol by putting its IR on the classpath, and this class
-     * names none of them.
-     */
+    /** Every {@code sbe-<name>.sbeir} staged under {@link #IR_RESOURCE_DIR} anywhere on the classpath. */
     private static List<String> discoverBundledSchemas() {
         final Set<String> names = new TreeSet<>();
         try {
@@ -248,9 +223,7 @@ public class SbeLogPrinter {
     }
 
     /**
-     * Message name for a template id, for labelling the dump — a header-only message such as {@code ClusterHeartbeat}
-     * is otherwise indistinguishable from any other in the JSON, which carries field values only. The first
-     * token of a message is its BEGIN_MESSAGE token, whose name is the message name.
+     * Message name for a template id, for labelling the dump: the JSON carries field values only.
      * @param ir internal representation
      * @param templateId template identity
      * @return message name
@@ -272,12 +245,10 @@ public class SbeLogPrinter {
     }
 
     /**
-     * A cluster-log {@code SessionMessageHeader} is not a standalone entry: {@code LogPublisher} appends
-     * the raw client ingress payload — a self-describing SBE message in a different schema — immediately
-     * after it in the same Aeron frame (this is what {@code ClusterStreamSender::send} builds). Without
-     * this, the dump shows only the envelope and silently drops the message it wrapped.
+     * Prints what a frame wrapped: a cluster-log {@code SessionMessageHeader} is followed in the same Aeron
+     * frame by the client's ingress message, and a seqeron envelope carries one length-prefixed body.
      * @param schema protocol schema
-     * @param templateId message templateIdn
+     * @param templateId message templateId
      * @param buffer message buffer
      * @param payloadOffset payload offset
      * @param frameEndOffset frame end offset
@@ -301,10 +272,8 @@ public class SbeLogPrinter {
             return;
         }
         if (FRAME_SCHEMA_ID == ir.id()) {
-            // A seqeron envelope: the message is one length-prefixed body past the frame's block, and the
-            // frame line alone would say only that a frame went by, never what it carried. The three
-            // synthesized templates fall through both branches — their fields are inline, so the line the
-            // caller already printed is the whole message.
+            // A seqeron envelope. The synthesized templates fall through both branches: their fields are
+            // inline, so the frame line already printed the whole message.
             if (UNSEQUENCED_TEMPLATE_ID == templateId || SEQUENCED_TEMPLATE_ID == templateId) {
                 nestedPayloadId = framePayloadId(buffer, payloadOffset);
                 appendNested(buffer, payloadOffset(buffer, payloadOffset), frameEndOffset);
@@ -315,10 +284,8 @@ public class SbeLogPrinter {
     }
 
     /**
-     * Prints a system frame's body beside the frame that carried it. The body carries no
-     * {@code MessageHeader} of its own — {@code header.systemEventType} is what names it — so the message
-     * tokens, the block length and the version all come from this build's own schema (§7, <b>V-3</b>),
-     * which is the whole reason those eight bytes are not on the wire.
+     * Prints a system frame's body beside its frame. It has no {@code MessageHeader}, so its tokens, block
+     * length and version come from this build's schema (§7, <b>V-3</b>).
      * @param schema the frame layer's own, which is also the body's
      * @param buffer segment buffer
      * @param frameOffset offset of the frame's own SBE header
@@ -346,10 +313,9 @@ public class SbeLogPrinter {
     }
 
     /**
-     * The {@code payloadId} of the frame at {@code frameOffset}, or {@link #NO_PAYLOAD_ID} if that is not
-     * an application envelope. The template has to be checked and not just the schema: a system frame
-     * carries a {@code systemEventType} at the very same offset, and reading one as the other is exactly
-     * the confusion the two families exist to prevent.
+     * The {@code payloadId} of the frame at {@code frameOffset}, or {@link #NO_PAYLOAD_ID} if it is not an
+     * application envelope. The template is checked too: a system frame has a {@code systemEventType} at
+     * the same offset.
      * @param buffer segment buffer
      * @param frameOffset offset of the frame's own SBE header
      * @return the payloadId, or NO_PAYLOAD_ID
@@ -364,10 +330,8 @@ public class SbeLogPrinter {
     }
 
     /**
-     * The {@code systemEventType} of the frame at {@code frameOffset}, or {@link #NO_SYSTEM_EVENT_TYPE} if
-     * that is not a submitted-system envelope. The three synthesized templates are deliberately not
-     * matched here: their fields are inline, so the frame line already prints them whole and there is no
-     * body to nest.
+     * The {@code systemEventType} of the frame at {@code frameOffset}, or {@link #NO_SYSTEM_EVENT_TYPE} if it
+     * is not a submitted-system envelope. Synthesized templates have no body to nest, so are not matched.
      * @param buffer segment buffer
      * @param frameOffset offset of the frame's own SBE header
      * @return the systemEventType, or NO_SYSTEM_EVENT_TYPE
@@ -393,9 +357,8 @@ public class SbeLogPrinter {
     }
 
     /**
-     * Harvests a {@code PayloadIdRegistered} row into the label table (§6.3). An operator asserts the
-     * rows once at start-up, so a forward scan holds them long before the payloads they name; they are
-     * de-duplicated on {@code payloadId}, a later row superseding an earlier one (<b>C-3</b>).
+     * Harvests a {@code PayloadIdRegistered} row into the label table (§6.3); a later row for the same
+     * {@code payloadId} supersedes an earlier one (<b>C-3</b>).
      * @param buffer segment buffer
      * @param frameOffset offset of the frame's own SBE header
      * @param frameEndOffset frame end offset
@@ -408,8 +371,7 @@ public class SbeLogPrinter {
         if (offset + PayloadIdRegisteredDecoder.BLOCK_LENGTH > frameEndOffset) {
             return;
         }
-        // The body carries no MessageHeader — systemEventType named it — so its block length and version
-        // come from this build's own constants (§7, V-3).
+        // No MessageHeader: block length and version come from this build's constants (§7, V-3).
         registrationDecoder.wrap(buffer, offset, PayloadIdRegisteredDecoder.BLOCK_LENGTH,
                                  org.limitless.seqeron.sbe.frame.MessageHeaderDecoder.SCHEMA_VERSION);
         protocolNames.put(registrationDecoder.payloadId(),
@@ -417,10 +379,8 @@ public class SbeLogPrinter {
     }
 
     /**
-     * Writes a selected payload to stdout, verbatim and back to back with the rest (§13.1). The stream
-     * carries no framing of its own: the decoder on the other end of the pipe owns that payload's schema,
-     * and that is what delimits it. Everything the run has to say goes to stderr meanwhile, so nothing
-     * else touches these bytes.
+     * Writes a selected payload to stdout verbatim, back to back with the rest (§13.1); the decoder on the
+     * other end of the pipe delimits it. Everything else goes to stderr meanwhile.
      * @param buffer segment buffer
      * @param frameOffset offset of the frame's own SBE header
      * @param frameEndOffset frame end offset
@@ -444,13 +404,9 @@ public class SbeLogPrinter {
     }
 
     /**
-     * Prints the message at {@code nestedOffset} beside the frame that carried it, on the same line.
-     *
-     * <p>A payload seqeron does not own prints as its schema and template ids rather than being decoded —
-     * the printer holds no descriptor for it, and guessing one would read a foreign schema's numbering as
-     * a known schema's (doc/seqeron-protocol-spec.md §13.1). It is still <em>labelled</em>, from the
-     * {@code PayloadIdRegistered} rows in the recording this run is already reading; an unregistered
-     * payload prints under its number.
+     * Prints the message at {@code nestedOffset} beside the frame that carried it. A payload in a schema
+     * this run has not loaded prints as its schema and template ids (spec §13.1), labelled from the
+     * recording's {@code PayloadIdRegistered} rows where one names it.
      */
     private void appendNested(final UnsafeBuffer buffer, final int nestedOffset, final int frameEndOffset) {
         if (nestedOffset >= frameEndOffset) {

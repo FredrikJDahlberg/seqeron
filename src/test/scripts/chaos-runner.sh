@@ -235,7 +235,7 @@ for m in 0 1 2; do
        org.limitless.seqeron.replayer.server.ReplayerServer > "$LOG_DIR/replayer-$m.log" 2>&1 &
   REPLAYER_PIDS[$m]=$!
 done
-for m in 0 1 2; do W=0; until grep -q "serving replay" "$LOG_DIR/replayer-$m.log" 2>/dev/null; do sleep 0.5; W=$((W+1)); ((W > APP_CATCHUP_TIMEOUT_SECS * 2)) && break; done; done
+for m in 0 1 2; do wait_for_log "$LOG_DIR/replayer-$m.log" "serving replay" "$APP_CATCHUP_TIMEOUT_SECS" || true; done
 
 # Consumer on member 0: fault-injection ON (SIGUSR1 tap-drop) + latency stats (flushed on exit, not read here).
 # Extracted into start_consumer (below) so restart_colocated_apps can relaunch it in place when member 0
@@ -248,7 +248,7 @@ start_consumer() {
   CONSUMER_PID=$!
 }
 start_consumer
-W=0; until grep -q "following live" "$CONSUMER_LOG" 2>/dev/null; do sleep 0.5; W=$((W+1)); ((W > APP_CATCHUP_TIMEOUT_SECS * 2)) && { echo "consumer never caught up"; exit 1; }; done
+wait_for_log "$CONSUMER_LOG" "following live" "$APP_CATCHUP_TIMEOUT_SECS" || { echo "consumer never caught up"; exit 1; }
 
 # A consumer replica on members 1 and 2 too: every node's tap must have a reader, so a fault on any member
 # has something co-located to take down with it and something to bring back. Latency stats stay unique to
@@ -263,7 +263,9 @@ start_replica() {  # start_replica <memberId>  (members 1/2; member 0's replica 
   EXTRA_CONSUMER_PIDS[$m]=$!
 }
 for m in 1 2; do start_replica "$m"; done
-for m in 1 2; do W=0; until grep -q "following live" "$LOG_DIR/consumer-$m.log" 2>/dev/null; do sleep 0.5; W=$((W+1)); ((W > APP_CATCHUP_TIMEOUT_SECS * 2)) && { log "  WARN consumer-$m never caught up"; break; }; done; done
+for m in 1 2; do
+  wait_for_log "$LOG_DIR/consumer-$m.log" "following live" "$APP_CATCHUP_TIMEOUT_SECS" || log "  WARN consumer-$m never caught up"
+done
 
 # The gateway list is not reference data: `clusterctl load-topology` puts it in the ordered log, and the
 # sequencer synthesizes the bootstrap GatewayActive behind its last row. Both instances go up right after,
@@ -287,9 +289,8 @@ start_gateway() {  # start_gateway <memberId>
 }
 for m in "$GW_A_MEMBER" "$GW_B_MEMBER"; do start_gateway "$m"; done
 for m in "$GW_A_MEMBER" "$GW_B_MEMBER"; do
-  W=0; until grep -q "Caught up" "$(gateway_log "$m")" 2>/dev/null; do
-    sleep 0.5; W=$((W+1)); ((W > APP_CATCHUP_TIMEOUT_SECS * 2)) && { echo "gateway on member $m never caught up"; exit 1; }
-  done
+  wait_for_log "$(gateway_log "$m")" "Caught up" "$APP_CATCHUP_TIMEOUT_SECS" ||
+    { echo "gateway on member $m never caught up"; exit 1; }
 done
 
 # Which instance the log says is serving, and where. The activation lines are a state assignment, so the
@@ -455,7 +456,7 @@ check_driver_loss_failfast() {  # <memberId whose driver just died>
 # NewOrderSingle with an ExecutionReport (leader-only emission), so a later round's FIX round-trip probe
 # hangs waiting for one that will never come.
 restart_colocated_apps() {
-  local m="$1" W=0
+  local m="$1"
   check_driver_loss_failfast "$m"
   kill "${REPLAYER_PIDS[$m]:-0}" 2>/dev/null
   if [[ "$m" == "$CN" ]]; then
@@ -466,19 +467,16 @@ restart_colocated_apps() {
   java "${JAVA_OPTS[@]}" -Dreplayer.memberId="$m" -cp "$JAR" \
        org.limitless.seqeron.replayer.server.ReplayerServer > "$LOG_DIR/replayer-$m.log" 2>&1 &
   REPLAYER_PIDS[$m]=$!
-  until grep -q "serving replay" "$LOG_DIR/replayer-$m.log" 2>/dev/null; do
-    sleep 0.5; W=$((W+1)); ((W > APP_CATCHUP_TIMEOUT_SECS * 2)) && { log "  WARN replayer-$m not serving after restart"; break; }
-  done
+  wait_for_log "$LOG_DIR/replayer-$m.log" "serving replay" "$APP_CATCHUP_TIMEOUT_SECS" ||
+    log "  WARN replayer-$m not serving after restart"
   if [[ "$m" == "$CN" ]]; then
     start_consumer
-    W=0; until grep -q "following live" "$CONSUMER_LOG" 2>/dev/null; do
-      sleep 0.5; W=$((W+1)); ((W > APP_CATCHUP_TIMEOUT_SECS * 2)) && { log "  WARN consumer not caught up after restart"; break; }
-    done
+    wait_for_log "$CONSUMER_LOG" "following live" "$APP_CATCHUP_TIMEOUT_SECS" ||
+      log "  WARN consumer not caught up after restart"
   else
     start_replica "$m"
-    W=0; until grep -q "following live" "$LOG_DIR/consumer-$m.log" 2>/dev/null; do
-      sleep 0.5; W=$((W+1)); ((W > APP_CATCHUP_TIMEOUT_SECS * 2)) && { log "  WARN consumer-$m not caught up after restart"; break; }
-    done
+    wait_for_log "$LOG_DIR/consumer-$m.log" "following live" "$APP_CATCHUP_TIMEOUT_SECS" ||
+      log "  WARN consumer-$m not caught up after restart"
   fi
   # The gateway comes back as whatever the cluster now says it is: its peer was promoted the moment this
   # instance's cluster session closed, so a restarted one normally rejoins as the STANDBY. That asymmetry
@@ -486,9 +484,8 @@ restart_colocated_apps() {
   if hosts_gateway "$m"; then
     kill "${GW_PIDS[$m]:-0}" 2>/dev/null
     start_gateway "$m"
-    W=0; until grep -q "Caught up" "$(gateway_log "$m")" 2>/dev/null; do
-      sleep 0.5; W=$((W+1)); ((W > APP_CATCHUP_TIMEOUT_SECS * 2)) && { log "  WARN $(gateway_name "$m") not caught up after restart"; break; }
-    done
+    wait_for_log "$(gateway_log "$m")" "Caught up" "$APP_CATCHUP_TIMEOUT_SECS" ||
+      log "  WARN $(gateway_name "$m") not caught up after restart"
   fi
 }
 

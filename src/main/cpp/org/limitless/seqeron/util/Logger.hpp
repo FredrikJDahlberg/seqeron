@@ -1,11 +1,7 @@
 #pragma once
 
-// Call sites report a fixed-size, allocation-free LoggerEvent through the installed
-// LoggerSink. The only sink today, StderrLoggerSink, formats and writes it to stderr —
-// reproducing exactly what used to be a bare fprintf at each call site (routine stdout status
-// lines are reproduced identically too, just tagged Severity::Info). The event shape already
-// matches what a future SBE ErrorNotification encoder would need field-for-field, so swapping in a
-// queued/sequenced sink later changes this file, not the call sites.
+// Structured logging: call sites report a fixed-size, allocation-free LoggerEvent to the installed
+// LoggerSink. The default sink writes it to stderr.
 
 #include <array>
 #include <cstdarg>
@@ -14,11 +10,8 @@
 
 namespace org::limitless::seqeron::util {
 
-// A component and an anomaly class are OPEN values: core declares its own below, and a consumer
-// declares its own alongside them rather than growing core's set — the cluster tier names none of the
-// processes that log through it. Each is a pointer to a string literal rather than an enumerator, so a
-// future SBE ErrorNotification encoder writes the name; the rest of the event keeps its fixed width.
-// The Java twin is Logger.Component / Logger.EventCode, open the same way.
+// Components and anomaly classes are open: core declares its own below, and a consumer declares its own
+// alongside rather than growing core's. The Java twin is Logger.Component / Logger.EventCode.
 struct Component
 {
     const char* name;
@@ -64,7 +57,7 @@ enum class Severity : std::uint8_t
     Fault
 };
 
-// Fixed-size, no heap allocation — the shape a future SBE encoding would take.
+// Fixed-size, no heap allocation.
 struct LoggerEvent
 {
     Component component;
@@ -81,7 +74,7 @@ class LoggerSink
     virtual void record(const LoggerEvent& event) = 0;
 };
 
-// Default sink: reproduces today's "[Component] message" stderr line.
+// Default sink: the "[Component] message" stderr line.
 class StderrLoggerSink final : public LoggerSink
 {
   public:

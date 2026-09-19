@@ -3,23 +3,12 @@ package org.limitless.seqeron.replayer.client;
 import org.agrona.DirectBuffer;
 
 /**
- * One frame delivered in order off the sequenced stream, live or replayed. The Java twin of the C++
- * {@code SequencedEvent} struct in {@code sequencer/SequencedFrame.hpp}.
+ * One application frame delivered in order off the sequenced stream, live or replayed — the Java twin of
+ * the C++ {@code SequencedEvent} in {@code sequencer/SequencedFrame.hpp}. The envelope is stripped: a
+ * consumer dispatches on {@code (payloadId, templateId)}. System frames arrive through the stream client's
+ * own callbacks, so {@link #isSystem()} is false on every event a handler sees.
  *
- * <p><b>A flyweight, reused per dispatch.</b> {@link #buffer()} points into the subscription's term
- * buffer (or, for a frame drained from the retained-ahead FIFO, into that FIFO's storage), so both the
- * buffer contents and this object's fields are valid only for the duration of the handler call. A
- * consumer that needs a frame afterwards must copy it.
- *
- * <p><b>The envelope is already stripped.</b> {@link #templateId()} and {@link #offset()} describe the
- * message, not the frame that carried it, and {@link #payloadId()} says which protocol that templateId
- * belongs to — so a consumer dispatches on the pair without knowing which shape arrived off the wire.
- *
- * <p><b>Only application frames reach a consumer this way.</b> The system family (§7) is delivered
- * through the stream client's own callbacks, so {@link #isSystem()} is false on every event a
- * {@code SequencedEvent} handler sees; the flag exists because the field at offset 16 means one thing or
- * the other and a delivery type that hid the distinction would invite reading a systemEventType as a
- * payloadId.
+ * <p>A flyweight: the buffer and every field are valid only during the handler call; copy to keep.
  */
 public final class SequencedEvent {
     private long globalSeqNo;
@@ -69,11 +58,7 @@ public final class SequencedEvent {
         return receiveTimeNs;
     }
 
-    /**
-     * Which protocol {@link #templateId()} belongs to. Template ids are unique only within a protocol, so
-     * a consumer that matches one without checking this is reading some other protocol's numbering as its
-     * own. 0 on a system frame.
-     */
+    /** Which protocol {@link #templateId()} belongs to; template ids are unique only within one. 0 on a system frame. */
     public int payloadId() {
         return payloadId;
     }

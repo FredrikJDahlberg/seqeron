@@ -19,67 +19,27 @@ import org.agrona.DirectBuffer;
 import org.agrona.concurrent.NoOpLock;
 import org.agrona.concurrent.status.CountersReader;
 import org.limitless.seqeron.metrics.SeqeronCounters;
-import org.limitless.seqeron.replayer.server.ReplayerService;
 import org.limitless.seqeron.util.Logger;
 
 /**
- * Aeron Cluster service that imposes a total order on messages arriving from multiple clients.
+ * The Aeron adapter over {@link Sequencer}: it decides when to call the state machine and publishes what
+ * comes back on this node's tap, which the co-located archive records. It holds no replicated state.
  *
- * <p>For every committed {@link #onSessionMessage} the service assigns timestamp and <b>globalSeqNo</b> a cluster-wide
- * monotone counter shared across all sources and lifecycle events (connect / disconnect / leadership change).
+ * <p>Every node publishes and records its own tap; the tap publication and its recording are created once
+ * in {@link #onStart} and span every leader tenure.
  *
- * <p><b>This class is the Aeron adapter, not the state machine.</b> All sequencing state and every
- * frame encode — including the {@code Unsequenced} → {@code Sequenced} copy-through
- * ({@code sbe-frame.xml}, schema 210) that lets the sequencer re-stamp any payload without
- * knowing about it — live in {@link Sequencer}, which has no Aeron dependency and is unit-tested
- * directly. What remains here is the cluster-facing half: the tap publication and its recording,
- * timer scheduling, and the reliable-offer discipline in {@link #emit}.
- *
- * <p>The decorated message is published on the node-local <em>tap</em>
- * ({@link #FrameLayer.FEEDER_CHANNEL} / {@link #FrameLayer.FEEDER_STREAM_ID}), an {@code aeron:ipc} stream that this node's
- * co-located Aeron Archive records. Co-located app replicas follow it live directly, and the
- * co-located {@link ReplayerService} serves history/gap replay of this
- * recording to those apps on startup.
- *
- * <p><b>Every node records its own tap (no leader/follower asymmetry on the stream path):</b> all
- * cluster nodes maintain identical sequencing state (updated on every callback) and each one
- * publishes and records its own tap. Because every node processes the same committed log in the
- * same order, the taps are byte-identical across nodes, so every node's local archive independently
- * holds a complete copy of the sequenced history — no cross-node replication is needed, and any node
- * a client is co-located with can serve full history/gap replay. The tap {@link
- * ExclusivePublication} and its recording are created once in {@link #onStart} and live for the whole
- * process, continuous across leadership changes (an {@code aeron:ipc} publication has no fixed port to
- * collide on across a failover, unlike the retired UDP global stream), so a given node's recording is a
- * single continuous run spanning every leader tenure rather than one recording per tenure.
- *
- * <p><b>No snapshots (the cluster supports non-java clients).</b> Recovery here is always full-log replay
- * from {@code globalSeqNo} 1, and that is what makes a node's tap recording a complete copy of history rather
- * than one beginning wherever a snapshot left off. A snapshot would also have to carry all of {@link
- * Sequencer}'s replicated state — the gateway topology, the standby-promotion session map, the
- * bootstrap-activation latch — and one that silently dropped any of it would diverge the restored
- * node from its peers, breaking the byte-identical-taps invariant above. So {@link #onTakeSnapshot}
- * throws rather than persisting a partial state, and {@link #onStart} refuses a snapshot image
- * rather than restoring from one. Nothing in normal operation reaches either: {@code clusterctl
- * shutdown} uses {@code ABORT}, which takes no snapshot.
+ * <p>Snapshots are refused ({@link #onTakeSnapshot} throws, {@link #onStart} rejects a snapshot image):
+ * recovery is always full-log replay, which is what keeps each node's recording complete.
  */
 public final class SequencerService implements ClusteredService {
     /**
-     * Control-response stream for this service's own archive client (startRecording/stopRecording).
-     * Must not be 101: that's Aeron Cluster's default {@code ingressStreamId}, and
-     * isIpcIngressAllowed(true) makes the leader subscribe to ingress on aeron:ipc/101 too — sharing
-     * it here means every archive reply misdecodes as an ingress frame (and vice versa). Also distinct
-     * from ReplayerServer's ARCHIVE_CONTROL_RESPONSE_STREAM_ID (120), which shares this member's
-     * aeron:ipc driver. Matches SequencerServer's own ARCHIVE_CONTROL_RESPONSE_STREAM_ID (121) — sharing
-     * a value is fine, since the archive protocol demuxes concurrent clients on one response stream by
-     * controlSessionId/correlationId.
+     * Control-response stream of this service's archive client. Must not be 101, the cluster's IPC ingress
+     * stream, or archive replies misdecode as ingress; nor ReplayerServer's 120 on the same driver. Sharing
+     * SequencerServer's 121 is fine: the archive demuxes clients by controlSessionId.
      */
     private static final int ARCHIVE_CONTROL_RESPONSE_STREAM_ID = 121;
 
-    /**
-     * How long {@link #awaitTapRecordingActive} waits for the co-located archive's recording of the tap
-     * to become active before failing start-up. Bounded so a wedged/absent local archive fails fast at
-     * onStart rather than hanging the node.
-     */
+    /** How long {@link #onStart} waits for the archive to start recording the tap before refusing to start. */
     private static final long TAP_RECORDING_START_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(5);
 
     /** Set at launch to enable the test-only fault below; unset in production. */
@@ -88,24 +48,12 @@ public final class SequencerService implements ClusteredService {
     /** Touch this file in the cluster directory to arm the fault. See {@link #injectTapRecordingFault}. */
     private static final String TAP_FAULT_TRIGGER_FILE = "tap-stall-fault";
 
-    /**
-     * Correlation id of the single repeating heartbeat timer. There is only one service timer, so a fixed
-     * constant is safe; rescheduling with the same id simply moves the one timer's deadline.
-     */
+    /** Correlation id of the one repeating heartbeat timer; rescheduling it moves its deadline. */
     private static final long HEARTBEAT_TIMER_CORRELATION_ID = 0x7100_0000_0000_0001L;
 
-    /**
-     * The replicated state machine: owns {@code globalSeqNo} and every frame encode. This class is
-     * only its Aeron adapter — it decides <em>when</em> to call the sequencer and publishes what
-     * comes back, and holds no replicated state of its own.
-     */
     private final Sequencer sequencer;
 
-    /**
-     * Everything this service does that can back-pressure — the tap offer and the cluster-clock re-arm —
-     * and the decision to terminate this node rather than keep waiting on either. Pure; see
-     * {@link TapPublisher}.
-     */
+    /** Everything here that can back-pressure, and the decision to terminate rather than wait. */
     private final TapPublisher tap = new TapPublisher(new TapActions());
 
     /** Brings the whole node down; wired by {@link SequencerServer}. See {@link TapPublisher}. */
@@ -138,10 +86,8 @@ public final class SequencerService implements ClusteredService {
     private Counter messagesSequencedCounter;
 
     /**
-     * Gateway topology is derived from the sequenced Gateway rows (see {@link Sequencer}), not configured.
      * @param fatalHandler run once, from a cluster callback, when this node can no longer record its own
-     *                     tap — see {@link TapPublisher}. Must not block: it is expected to signal a
-     *                     shutdown and return, not to perform one.
+     *                     tap. Must not block: it signals a shutdown and returns.
      */
     public SequencerService(final Runnable fatalHandler) {
         this.sequencer = new Sequencer();
@@ -155,9 +101,7 @@ public final class SequencerService implements ClusteredService {
      */
     @Override
     public void onStart(final Cluster cluster, final Image snapshotImage) {
-        // Snapshots are not supported, and the refusal comes before anything is acquired: refusing after
-        // the archive connect, the tap publication and startRecording left all three behind, plus a
-        // stillborn recording in this node's catalog.
+        // Refused before anything is acquired, so nothing is left behind.
         if (snapshotImage != null) {
             throw refuseStart("[SequencerService] Refusing to start from a snapshot: recovery is full-log replay from "
                               + "globalSeqNo 1 (see the class javadoc). Remove the snapshot from the cluster directory "
@@ -192,9 +136,8 @@ public final class SequencerService implements ClusteredService {
     }
 
     /**
-     * Blocks until the co-located archive's recording subscription has attached to the tap publication, and
-     * keeps its counter so {@link TapPublisher#checkRecordingAlive} can tell later whether it is still there.
-     * Bounded by TAP_RECORDING_START_TIMEOUT_NS so an absent local archive fails start-up fast rather than hanging.
+     * Blocks until the archive's recording has attached to the tap publication, and keeps its counter for
+     * {@link TapPublisher#checkRecordingAlive}.
      * @return whether the recording attached before the deadline; the caller refuses the start if not
      */
 
@@ -215,10 +158,8 @@ public final class SequencerService implements ClusteredService {
     }
 
     /**
-     * Refuses to bring this node up. Throwing alone would only kill the service agent thread — {@code
-     * AgentRunner} reports an {@code onStart} failure and stops, but nothing exits the JVM — leaving a
-     * headless node whose media driver and consensus module keep running without a service behind them.
-     * So the fatal handler brings the process down and the caller's throw stops the agent from proceeding.
+     * Refuses to bring this node up. A throw alone only stops the service agent and leaves a headless node
+     * running, so the fatal handler brings the process down too.
      * @param message why start-up was refused
      * @return the exception for the caller to throw
      */
@@ -228,12 +169,8 @@ public final class SequencerService implements ClusteredService {
     }
 
     /**
-     * Lazily creates this node's operator counters (see {@link SeqeronCounters}) on the first
-     * callback that needs one, labelled with the memberId so {@code aeron-stat}/{@code clusterctl
-     * counters} disambiguate nodes sharing one host. Not created eagerly in {@link #onStart}: {@code
-     * cluster.memberId()} is still {@code NULL_VALUE} there — Aeron assigns it only once this service
-     * has joined the active log, which happens after {@code onStart} returns but before any of the
-     * callbacks below can fire.
+     * Creates this node's operator counters on the first callback that needs one, labelled with the
+     * memberId — which is still {@code NULL_VALUE} during {@link #onStart}.
      */
     private void ensureCounters() {
         if (globalSeqNoCounter != null) {
@@ -268,8 +205,7 @@ public final class SequencerService implements ClusteredService {
     }
 
     /**
-     * One operator counter, labelled {@code seqeron.sequencer.<name> member=<memberId>} so {@code
-     * aeron-stat}/{@code clusterctl counters} disambiguate nodes sharing one host.
+     * One operator counter, labelled {@code seqeron.sequencer.<name> member=<memberId>}.
      * @param typeId   which counter, from {@link SeqeronCounters}
      * @param name     its name within the {@code seqeron.sequencer} namespace
      * @param memberId this node
@@ -378,12 +314,9 @@ public final class SequencerService implements ClusteredService {
     }
 
     /**
-     * Test-only fault injection (cluster/src/test/scripts/chaos-runner.sh), inert unless {@link
-     * #FAULT_INJECTION_ENV} was set at launch: touching {@code <clusterDir>/tap-stall-fault} makes this node
-     * stop recording its own tap, which is the only way to provoke {@link TapPublisher#checkRecordingAlive} from
-     * outside the process — the archive runs inside this JVM, so its recorder cannot be paused or killed on
-     * its own. A file trigger rather than a signal: no unsupported JDK signal API, and none of the
-     * coalescing caveats the C++ side's SIGUSR1 injector carries. One-shot per process.
+     * Test-only fault injection for chaos-runner.sh, inert unless {@link #FAULT_INJECTION_ENV} is set:
+     * touching {@code <clusterDir>/tap-stall-fault} stops this node's tap recording, the one way to provoke
+     * {@link TapPublisher#checkRecordingAlive} from outside the JVM. One-shot per process.
      */
     private void injectTapRecordingFault() {
         if (tapFaultTrigger == null || !Files.exists(tapFaultTrigger)) {
@@ -395,17 +328,13 @@ public final class SequencerService implements ClusteredService {
         aeronArchive.stopRecording(FrameLayer.FEEDER_CHANNEL, FrameLayer.FEEDER_STREAM_ID);
     }
 
-    /**
-     * Re-arms the cluster clock, {@link FrameLayer#CLUSTER_HEARTBEAT_INTERVAL_NS} ahead of current cluster
-     * time. Bounded and fatal if the consensus module will not take it — see
-     * {@link TapPublisher#scheduleHeartbeat}.
-     */
+    /** Re-arms the cluster clock one heartbeat ahead; see {@link TapPublisher#scheduleHeartbeat}. */
     private void scheduleHeartbeat() {
         tap.scheduleHeartbeat(cluster.time() + FrameLayer.CLUSTER_HEARTBEAT_INTERVAL_NS);
     }
 
     /**
-     * Snapshot handler Unsupported by design (see the class javadoc).
+     * Unsupported by design (see the class javadoc).
      * @param snapshotPublication to which the state should be recorded.
      */
     @Override
@@ -473,10 +402,7 @@ public final class SequencerService implements ClusteredService {
         closeCounters();
     }
 
-    /**
-     * Closes this node's operator counters, freeing their slots in the CnC counters file. Quietly and
-     * null-tolerantly: a node that never reached its first callback created none of them.
-     */
+    /** Closes the operator counters; a node that never reached its first callback created none. */
     private void closeCounters() {
         CloseHelper.quietCloseAll(globalSeqNoCounter, tapBackPressureAlertCounter, tapStalledCounter,
                                   rejectedIngressCounter, leadershipChangeCounter, currentLeaderMemberIdCounter,
@@ -486,9 +412,7 @@ public final class SequencerService implements ClusteredService {
     }
 
     /**
-     * Publishes the frame in the sequencer's buffer onto the node-local tap and republishes the gauges that
-     * move with it. Reliable rather than lossy, and bounded by this node terminating rather than waiting
-     * forever — see {@link TapPublisher#emit}, which is where all of that lives.
+     * Publishes the frame in the sequencer's buffer onto the tap; see {@link TapPublisher#emit}.
      * @param length of the encoded frame at offset 0 of the sequencer's buffer
      */
     private void emit(final int length) {
@@ -497,11 +421,7 @@ public final class SequencerService implements ClusteredService {
         connectedClientsCounter.set(sequencer.connectedClientCount());
     }
 
-    /**
-     * The Aeron half of {@link TapPublisher}: the tap publication, the consensus-module timer, the
-     * archive's {@code RecordingPos} counter, and the two gauges that discipline owns. Every method here is
-     * a call through to the runtime — no decisions, which is the point of the split.
-     */
+    /** The Aeron half of {@link TapPublisher}: calls through to the runtime, no decisions. */
     private final class TapActions implements TapPublisher.Actions {
         @Override
         public long offerFrame(final int length) {

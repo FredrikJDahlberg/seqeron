@@ -11,21 +11,13 @@ import org.limitless.seqeron.sbe.frame.SequencedSystemDecoder;
 import org.limitless.seqeron.sbe.frame.SequencedSystemHeaderDecoder;
 
 /**
- * One frame off the tap, unwrapped: everything a consumer dispatches on, with the envelope already
- * stripped. The Java twin of the C++ {@code FrameView} in {@code sequencer/SequencedFrame.hpp}; keep the
- * two in step.
+ * One frame off the tap with the envelope stripped — the Java twin of {@code FrameView} in
+ * {@code sequencer/SequencedFrame.hpp}; keep the two in step. {@link #isSystem()} says which family: an
+ * application frame dispatches on {@code (payloadId, templateId)}, never templateId alone, and a system
+ * frame on {@link #systemEventType()}.
  *
- * <p>Every fragment on the tap is one of five shapes (doc/seqeron-protocol-spec.md §4), and the
- * discriminator is the same 2-byte field at offset 16 of every one of them. A {@code Sequenced} frame
- * carries one opaque application payload named by {@link #payloadId()}; the four system shapes carry
- * seqeron's own vocabulary, named by {@link #systemEventType()}. {@link #isSystem()} says which.
- *
- * <p>Stripping the envelope <b>here, once</b>, is the point: every consumer then dispatches on
- * {@code (payloadId, templateId)} for an application frame — never templateId alone, which is unique per
- * schema only — and on {@code systemEventType} for a system one.
- *
- * <p>A flyweight, reused per frame: {@link #buffer()} points into the caller's storage and every field is
- * valid only until the next {@link #wrap}.
+ * <p>A flyweight: {@link #buffer()} points into the caller's storage and every field is valid only until
+ * the next {@link #wrap}.
  */
 public final class SequencedFrameDecoder {
     private final MessageHeaderDecoder messageHeader = new MessageHeaderDecoder();
@@ -49,11 +41,8 @@ public final class SequencedFrameDecoder {
     private int payloadLength;
 
     /**
-     * Reads one fragment, stripping the envelope.
-     *
-     * <p>Bounds are checked because a short fragment would otherwise be read past its end. It should not
-     * happen — the sequencer validates every frame on ingress and the recording is what it wrote — so
-     * {@code false} here means the recording itself is damaged, and the caller drops the frame.
+     * Reads one fragment, stripping the envelope. {@code false} means the fragment is too short to be a
+     * frame — a damaged recording — and the caller drops it.
      *
      * @return whether the fragment was readable as a frame
      */
@@ -101,11 +90,8 @@ public final class SequencedFrameDecoder {
         if (payloadOffset + payloadLength > offset + length) {
             return false; // a truncated payload: the recording itself is damaged
         }
-        // A payload too short to carry a MessageHeader is still a frame. §5 admits an empty payload and
-        // §13.2 admits a payload that is not SBE at all, so there is not always an inner header to read --
-        // and P-3 requires the frame to reach the consumer regardless, or a globalSeqNo goes missing from
-        // the continuity read. Leaving the three at 0, as the system branch does, is what says "no inner
-        // declaration": no (payloadId, templateId) dispatch can match one, which is P-1 doing its job.
+        // A payload too short for a MessageHeader is still a frame (§5, §13.2) and must reach the consumer
+        // (P-3); the three stay 0, which no (payloadId, templateId) dispatch matches.
         if (payloadLength < MessageHeaderDecoder.ENCODED_LENGTH) {
             templateId = 0;
             blockLength = 0;
@@ -119,11 +105,7 @@ public final class SequencedFrameDecoder {
         return true;
     }
 
-    /**
-     * A submitted system event: the body is its own SBE block with no framing of its own, so there is no
-     * inner header to read and a consumer supplies {@code BLOCK_LENGTH} and {@code SCHEMA_VERSION} from
-     * its own compiled constants (<b>V-3</b>).
-     */
+    /** A submitted system event: its body has no header, so a consumer decodes with compiled constants (<b>V-3</b>). */
     private boolean wrapSystemBody(final DirectBuffer source, final int offset, final int length,
                                    final int blockOffset) {
         final int prefixOffset = blockOffset + SequencedSystemHeaderDecoder.ENCODED_LENGTH;
@@ -136,11 +118,7 @@ public final class SequencedFrameDecoder {
         return payloadOffset + payloadLength <= offset + length;
     }
 
-    /**
-     * One of the three the sequencer synthesizes: no body at all, its fields inline in the frame's own
-     * block. {@link #payloadOffset()} is that block, so a consumer wraps the frame's own decoder over it
-     * with {@link #blockLength()} and {@link #version()}.
-     */
+    /** One of the three synthesized events: no body, its fields inline in the frame's own block. */
     private boolean wrapSynthesized(final DirectBuffer source, final int offset, final int length,
                                     final int blockOffset) {
         if (blockOffset + SequencedSystemHeaderDecoder.ENCODED_LENGTH > offset + length) {
@@ -216,9 +194,8 @@ public final class SequencedFrameDecoder {
     }
 
     /**
-     * What to wrap a decoder over {@link #payloadOffset()} with: the payload's own on an application
-     * frame, the frame's own on one of the synthesized three, and 0 on a submitted system frame — whose
-     * body carries no declaration, so its decoder's compiled constants are the only ones there are.
+     * What to wrap a decoder over {@link #payloadOffset()} with: the payload's own on an application frame,
+     * the frame's own on a synthesized one, and 0 on a submitted system frame (use compiled constants).
      */
     public int blockLength() {
         return blockLength;

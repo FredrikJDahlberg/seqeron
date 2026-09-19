@@ -1,12 +1,7 @@
 #pragma once
 
-// ReplayerStreamReceiver — app-replica side of the per-node Replayer.
-//
-// ReplayerStreamReceiver reads the co-located SequencerService IPC tap LIVE and asks the Replayer to replay
-// when it detects a gap.
-//
-// This is the Aeron adapter only: subscriptions, the request publication, the replay image and the
-// clocks. Every decision it makes about them lives in ReplayerRecovery, which holds none of them.
+// ReplayerStreamReceiver — app-replica side of the per-node Replayer. Reads the co-located tap live and
+// asks the Replayer for history and gaps. The Aeron adapter only: every decision lives in ReplayerRecovery.
 //
 #include <array>
 #include <atomic>
@@ -74,8 +69,7 @@ class ReplayerStreamReceiver final : private ReplayerRecoveryActions
       m_clientId(clientId),
       m_recovery(clientId, *this, std::move(onSequenced), std::move(onConnected), std::move(onDisconnected),
                  std::move(onLeadershipChanged), std::move(onCaughtUp)),
-      // Constructed from temporaries: FragmentAssembler copies the delegate into its own member, so
-      // keeping our own copy alive would just be a second std::function per stream, never called again.
+      // Temporaries: FragmentAssembler copies the delegate into its own member.
       m_tapAssembler(
           std::make_unique<aeron::FragmentAssembler>([this](auto& buffer, auto offset, auto length, auto& header) {
               onTapFragment(buffer, offset, length, header);
@@ -91,9 +85,8 @@ class ReplayerStreamReceiver final : private ReplayerRecoveryActions
       m_controlPoll(m_controlAssembler->handler())
     {}
 
-    // Subscribes the tap/replay/control streams, opens the request publication and the convergence
-    // counter, and requests the cold-start replay from position 0. memberId is this app's node — needed
-    // only to label that counter, since a node's metrics are merged with every other node's.
+    // Subscribes the tap and control streams, opens the request publication and the convergence counter,
+    // and requests the cold-start replay. memberId is this app's node, to label the counter.
     void start(std::shared_ptr<aeron::Aeron> aeron, const std::int32_t memberId)
     {
         m_aeron = std::move(aeron);
@@ -102,16 +95,14 @@ class ReplayerStreamReceiver final : private ReplayerRecoveryActions
             "seqeron.app.recoveryStalled member=" + std::to_string(memberId) + " client=" + std::to_string(m_clientId),
             memberId, m_clientId);
         m_tapSubRegId = m_aeron->addSubscription(FEEDER_CHANNEL, FEEDER_STREAM_ID);
-        // No standing replay subscription — see openReplay: one is opened per replay episode, filtered to
-        // that replay's own session id, and closed when the episode ends.
+        // No standing replay subscription: openReplay opens one per episode, filtered to its session id.
         m_controlSubRegId = m_aeron->addSubscription(REPLAYER_CONTROL_CHANNEL, REPLAYER_CONTROL_STREAM_ID);
         m_requestPubRegId = m_aeron->addPublication(REPLAYER_IPC_CHANNEL, REPLAYER_REQUEST_STREAM_ID);
         m_recovery.start();
     }
 
-    // Test-only (see OrderExecServer's SEQERON_FAULT_INJECTION hook): enable dropping live tap frames on
-    // demand, to synthesize a consumer-side globalSeqNo gap so a test can drive the re-walk gap recovery
-    // deterministically (cluster/src/test/scripts/gap-recovery-test.sh). A no-op in production (never enabled).
+    // Test-only: lets injectTapDrop drop live tap frames, to drive gap recovery deterministically
+    // (gap-recovery-test.sh). Never enabled in production.
     void enableFaultInjection()
     {
         m_faultInjection = true;
@@ -127,10 +118,9 @@ class ReplayerStreamReceiver final : private ReplayerRecoveryActions
         }
     }
 
-    // One duty-cycle iteration; returns fragments consumed. Poll ordering: always drain control (to
-    // learn Replaying/ReplayPending), ride an attached replay image, and always drain AND dispatch the
-    // tap — the contiguity check in ReplayerRecovery, not the poll routing, decides what a tap frame is
-    // worth mid-walk, which is what lets the tap itself close the replay->live seam.
+    // One duty-cycle iteration; returns fragments consumed. Drains control, rides an attached replay image,
+    // and always drains and dispatches the tap: ReplayerRecovery's contiguity check decides what a tap frame
+    // is worth mid-walk.
     int poll()
     {
         resolveResources();
@@ -141,9 +131,7 @@ class ReplayerStreamReceiver final : private ReplayerRecoveryActions
             work += m_controlSub->poll(m_controlPoll, FRAGMENT_LIMIT);
         }
 
-        // The request publication connecting is a short race (addPublication is async), so the resend
-        // retries every poll while it is still pending rather than eating a full resend interval of pure
-        // cold-start latency for it.
+        // The request publication's connect is a short race, so retry every poll while it is pending.
         const bool requestPubPending = m_requestPubRegId >= 0 && (!m_requestPub || !m_requestPub->isConnected());
         m_recovery.doTimers(requestPubPending);
 
@@ -176,11 +164,8 @@ class ReplayerStreamReceiver final : private ReplayerRecoveryActions
             // through to the tap drain below rather than holding the whole duty cycle on it.
         }
 
-        // Always drain the tap, even mid-walk (cold start or gap re-walk) or while merely awaiting the
-        // Replayer's answer: it is untethered (FEEDER_CHANNEL's ?tether=false), so an Aeron subscription
-        // that goes unpolled falls behind the publisher's log buffer. Always dispatch through the same
-        // handler too — frames ahead of an in-flight replay are retained or dropped on the contiguity
-        // check anyway, and the one at the seam must not be thrown away.
+        // Always drain the tap: it is untethered, so an unpolled subscription falls behind. Frames ahead of
+        // an in-flight replay are retained or dropped by the contiguity check; the one at the seam is needed.
         if (m_tapSub)
         {
             work += m_tapSub->poll(m_tapPoll, FRAGMENT_LIMIT);
@@ -195,16 +180,14 @@ class ReplayerStreamReceiver final : private ReplayerRecoveryActions
         return m_recovery.isCaughtUp();
     }
 
-    // Highest globalSeqNo dispatched in order, 0 before the first. The frontier a consumer measures its
-    // own recovery progress by — recovery that never advances it is not converging (see
-    // RecoveryProgressPolicy, which applies the same predicate internally).
+    // Highest globalSeqNo dispatched in order, 0 before the first: the frontier recovery progress is
+    // measured by.
     std::int64_t lastGlobalSeqNo() const
     {
         return m_recovery.lastGlobalSeqNo();
     }
 
-    // memberId of the current leader per the last LeadershipChanged processed, or -1 until one is
-    // seen. A replica emits iff its own node is this leader (design §3).
+    // memberId of the current leader per the last LeadershipChanged, or -1 until one is seen.
     std::int32_t currentLeaderMemberId() const
     {
         return m_recovery.currentLeaderMemberId();
@@ -260,19 +243,9 @@ class ReplayerStreamReceiver final : private ReplayerRecoveryActions
         return m_requestPub->offer(ab, 0, len) >= 0;
     }
 
-    // Subscribes to exactly one replay — this one — for as long as we ride it, and to nothing on the
-    // replay stream the rest of the time.
-    //
-    // Load-bearing, not tidiness. The Replayer answers every app on one shared aeron:ipc stream, and an
-    // Aeron publication is flow-controlled by its slowest TETHERED subscriber. A standing subscription
-    // on that stream (which is what this was until 2026-08-07) made every idle app a subscriber of every
-    // other app's replay — one that never polls, because poll() only ever reads the image of its OWN
-    // session, so its position stays at 0 forever. The archive's replay then wedges one publication
-    // window past the slowest of them — measured: pub-lmt pinned at exactly 33 554 432 (32 MiB, half a
-    // 64 MB term) with two peer sub-pos at 0 — and never moves again. Any cold start with more than
-    // ~32 MiB of history therefore hung permanently, which is what a restarted replica does after a
-    // few hundred thousand messages. Filtered to the session id, a replay publication has exactly one
-    // subscriber, and no app can hold back another's replay.
+    // Subscribes to exactly one replay, this one, and to nothing on the replay stream otherwise. A standing
+    // subscription would make every idle app a tethered, never-polled subscriber of every other app's
+    // replay on the shared stream, and wedge the archive's replay one window in.
     void openReplay(const std::int64_t replaySessionId) override
     {
         closeReplay();
@@ -300,9 +273,7 @@ class ReplayerStreamReceiver final : private ReplayerRecoveryActions
         m_replaySubRegId = -1;
     }
 
-    // The gauge is the same fact ReplayerRecovery's fault line carries, in the form an alert can be
-    // written against; null until the async add resolves (resolveResources), which no reporting path
-    // may depend on.
+    // The gauge mirrors ReplayerRecovery's stall report; null until the async add resolves.
     void recoveryStalled(const bool stalled) override
     {
         if (m_recoveryStalledCounter)
@@ -338,9 +309,7 @@ class ReplayerStreamReceiver final : private ReplayerRecoveryActions
     void onTapFragment(const aeron::concurrent::AtomicBuffer& buffer, const aeron::util::index_t offset,
                        const aeron::util::index_t length, const aeron::Header& header)
     {
-        // Test-only fault injection (see enableFaultInjection): drop this live tap frame to synthesize a
-        // consumer-side globalSeqNo gap, so the re-walk gap recovery can be driven deterministically.
-        // Dropped before the receiver sees it, so the NEXT frame reads as a gap.
+        // Test-only fault injection: dropped before the receiver sees it, so the next frame reads as a gap.
         if (m_faultInjection && m_faultDropPending.load(std::memory_order_relaxed) > 0)
         {
             m_faultDropPending.fetch_sub(1, std::memory_order_relaxed);
@@ -390,10 +359,7 @@ class ReplayerStreamReceiver final : private ReplayerRecoveryActions
     std::shared_ptr<aeron::Image> m_replayImage;
     std::shared_ptr<aeron::Counter> m_recoveryStalledCounter;
 
-    // Test-only fault injection (gated by enableFaultInjection): drop the next N live tap frames to
-    // synthesize a consumer-side globalSeqNo gap (cluster/src/test/scripts/gap-recovery-test.sh). Armed on the
-    // poll thread (deferred from OrderExecServer's SIGUSR1 handler) and consumed on the poll thread; the
-    // atomic mirrors the Java side and stays safe if a caller ever arms it from another thread.
+    // Test-only: live tap frames still to drop (see enableFaultInjection). Atomic, as on the Java side.
     bool m_faultInjection = false;
     std::atomic<int> m_faultDropPending{ 0 };
 

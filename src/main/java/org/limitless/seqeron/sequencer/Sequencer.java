@@ -22,50 +22,22 @@ import org.limitless.seqeron.sbe.frame.UnsequencedSystemHeaderDecoder;
 import org.limitless.seqeron.util.Logger;
 
 /**
- * The sequencer's replicated state machine, free of every Aeron type.
+ * The sequencer's replicated state machine, free of every Aeron type: {@code globalSeqNo}, the gateway
+ * list and election, and every frame encode. Each {@code sequence*}/event method encodes one frame into
+ * {@link #buffer()} from offset 0 and returns its length, or {@link #NO_FRAME}; {@link SequencerService}
+ * publishes it and decides nothing.
  *
- * <p>Owns the entire replicated state ({@code globalSeqNo}, plus the gateway list and election) and all
- * frame encoding. Each {@code sequence*}/event method
- * assigns the next {@code globalSeqNo}, encodes one {@code Sequenced} frame ({@code sbe-frame.xml},
- * schema 210) into {@link #buffer()} starting at offset 0, and returns its length — or {@code 0} when
- * the event produces no frame. The caller publishes {@code buffer()[0, length)} and does nothing else:
- * every decision that must be identical on every node lives here.
- *
- * <p>That split is what makes the state machine testable without a cluster, a media driver, or any
- * Aeron mock — {@link SequencerService} is the thin adapter that owns the tap publication, the
- * archive, and timer scheduling, and it is the only part that needs a live cluster to exercise.
- *
- * <p><b>The copy-through.</b> Every ingress message is one of two shapes: an {@code Unsequenced} frame
- * whose body is one opaque length-prefixed payload named by {@code header.payloadId} and owned by
- * whoever that number names, or an {@code UnsequencedSystem} frame whose body is one of seqeron's own
- * events, named by {@code header.systemEventType} (§7). Sequencing is the same for both — a copy of the
- * 18-byte header with the 16-byte stamp appended ({@code globalSeqNo} and the consensus
- * {@code timestamp}), and the body copied through byte-identical, never re-encoded (<b>E-1</b>) — which
- * is what the two composites being byte-for-byte identical apart from that one field's name buys.
- * {@link #sequenceMessage} therefore needs to know nothing about any application's message types: it
- * decodes <b>no {@code payloadId} at all</b>, and opens only the system bodies it derives state from
+ * <p>Sequencing copies the 18-byte ingress header, appends the 16-byte stamp and copies the body through
+ * unopened (<b>E-1</b>); no {@code payloadId} is decoded, only the system bodies state derives from
  * (<b>S-2</b>).
  *
- * <p><b>Determinism.</b> Every method is a pure function of its arguments and the current state —
- * no clock reads, no randomness, no I/O — so replaying the same call sequence on any node produces
- * byte-identical frames and the same final state. The consensus {@code timestamp} is always passed
- * in by the caller, never read here.
- *
- * <p>Single-threaded by contract: driven only from the cluster's conductor thread, so the shared
- * encoders and buffer need no synchronisation.
+ * <p>Deterministic: no clock reads, randomness or I/O — the consensus timestamp is always passed in — so
+ * every node encodes byte-identical frames. Single-threaded: driven only from the cluster's service thread.
  */
 public final class Sequencer {
     /**
-     * header.sourceId/connectionId for events synthesized by the sequencer itself (ClusterHeartbeat,
-     * LeadershipChanged, GatewayActive): a clock heartbeat or an election has no gateway-process or
-     * TCP-level connection id to carry, unlike the ingress messages it forwards.
-     *
-     * <p>ConnectionOpened/ConnectionClosed are deliberately not in that list. They denote a FIX
-     * client's TCP session opening and closing — external events the gateway observes and publishes
-     * on ingress like any other message, carrying the real sourceId/connectionId of the connection
-     * they describe. The sequencer used to synthesize them for Aeron <em>cluster</em> sessions
-     * instead, which named a different thing entirely and left the actual TCP lifecycle absent from
-     * the log; nothing consumed the cluster-session form, so it was removed rather than renamed.
+     * {@code header.sourceId}/{@code connectionId}/{@code sessionId} of the frames the sequencer synthesizes
+     * (<b>F-4</b>); a heartbeat or an election has no producer. Refused on ingress.
      */
     public static final int NO_SOURCE_ID = -1;
 
@@ -73,86 +45,50 @@ public final class Sequencer {
     public static final int NO_FRAME = 0;
 
     /**
-     * {@link #sessionClosed} returns this instead of {@link #NO_FRAME} when the closing session <em>was</em>
-     * an active gateway's, but {@link #promotionTarget} found no standby to hand over to (fail closed
-     * rather than name a nonexistent instance). Distinct from {@code NO_FRAME} so the caller can tell "this
-     * session was never a gateway's" from "a gateway just went away and nothing replaced it" — the latter
-     * leaves the cluster with no active instance of that logical gateway and is worth alerting on.
+     * {@link #sessionClosed}'s answer when an active gateway's session closed and no standby exists, so the
+     * caller can tell a gateway tier left with no active instance from a session that was never a gateway's.
      */
     public static final int NO_PROMOTION_TARGET = -1;
 
-    /**
-     * No gateway instance: {@link #promotionTarget} found no sibling, {@link #rowFor} no row for an
-     * instance, {@link #takeOverdueActivation} nothing overdue.
-     */
+    /** No gateway instance. */
     private static final int NO_GATEWAY_ID = -1;
 
     /**
-     * How long a designated instance has, in cluster time, to answer a {@code GatewayActive} with a
-     * {@code GatewayStarted} before {@link #pendingGatewayActivationTimeout} hands the role to a sibling.
-     *
-     * <p>Five heartbeats, matching the order of the cluster's own {@code sessionTimeoutNs} — this is a failover
-     * deadline, and a gateway tier with no active instance is down. What it bounds is small: observe a
-     * frame on the co-located tap and publish one back. A caught-up instance does that in a duty cycle.
-     *
-     * <p>It deliberately does <em>not</em> clear a cold start, which has no useful bound (there are no
-     * snapshots, so a late-in-the-day start replays the whole log). A pair that is still replaying
-     * therefore trades the role every five heartbeats until one of them catches up, and that is cheap: a
-     * superseded instance keeps replaying ({@code ExchangeGateway.standDown} is a no-op before the socket
-     * exists), whoever finishes first answers the next activation naming it, and the churn is one frame
-     * per period against a log already taking 60 heartbeats a minute. An instance that <em>has</em> answered is
-     * never swapped out — {@link #takeOverdueActivation} drops its deadline instead — so steady state
-     * costs nothing at all.
-     *
-     * <p>Package-private so {@code SequencerTest} drives exactly this deadline rather than hardcoding it
-     * a second time.
+     * How long, in cluster time, a designated instance has to answer {@code GatewayActive} with {@code
+     * GatewayStarted} before {@link #pendingGatewayActivationTimeout} hands the role to a sibling. It is a
+     * failover deadline, so it does not cover a cold start's replay: a pair still replaying trades the role
+     * every period, one frame each, until one catches up. An instance that has answered is never swapped out.
      */
     static final long GATEWAY_ACTIVATION_TIMEOUT_MS = 5 * FrameLayer.CLUSTER_HEARTBEAT_INTERVAL_MS;
 
     /** {@link #GATEWAY_ACTIVATION_TIMEOUT_MS} in consensus time, which is epoch nanoseconds. */
     static final long GATEWAY_ACTIVATION_TIMEOUT_NS = 5 * FrameLayer.CLUSTER_HEARTBEAT_INTERVAL_NS;
 
-    /**
-     * Core's retired {@code payloadId} (doc/seqeron-protocol-spec.md §15 step 10). Core is not an
-     * application and no longer rides a payload, so 1 is refused on ingress rather than reserved and
-     * decoded — a producer still on the old build fails loudly instead of having core bytes copied
-     * through as an application payload.
-     */
+    /** Core's retired {@code payloadId} (spec §15 step 10), refused on ingress so a stale producer fails loudly. */
     private static final int RETIRED_CORE_ID = 1;
 
-    /**
-     * {@code varDataEncoding}'s {@code nullValue}. A prefix of 65535 is "absent", not a 65535-byte payload,
-     * and admitting it would read the frame a length short of what it claims.
-     */
+    /** {@code varDataEncoding}'s {@code nullValue}: "absent", not a 65535-byte payload. */
     private static final int NULL_PAYLOAD_LENGTH = 65535;
 
-    /**
-     * Offset of the body's length prefix in every forwarded frame this class encodes — the same in both
-     * families, because both sequenced header composites are 34 bytes (<b>F-3</b>).
-     */
+    /** Offset of the body's length prefix in a forwarded frame; the same in both families (<b>F-3</b>). */
     private static final int TAP_BODY_PREFIX_OFFSET =
         MessageHeaderEncoder.ENCODED_LENGTH + SequencedHeaderEncoder.ENCODED_LENGTH;
 
     /** Offset of the body itself, one length prefix past that. */
     private static final int TAP_BODY_OFFSET = TAP_BODY_PREFIX_OFFSET + UnsequencedDecoder.payloadHeaderLength();
 
-    // Frame decode (schema 210, sbe-frame.xml). The two ingress header composites are byte-identical
-    // apart from the name of the uint16 at offset 16, so the first covers every frame-layer field of
-    // both families and the second is wrapped only to read that one field under its own name.
+    // The two ingress header composites differ only in the name of the uint16 at offset 16.
     private final MessageHeaderDecoder msgHeaderDecoder = new MessageHeaderDecoder();
     private final UnsequencedHeaderDecoder frameHeaderDecoder = new UnsequencedHeaderDecoder();
     private final UnsequencedSystemHeaderDecoder systemHeaderDecoder = new UnsequencedSystemHeaderDecoder();
 
-    // System body decode. Fields are read from exactly three of them — GatewayRegistered, GatewayStarted
-    // and GatewayActivationRequested, whose scalars feed the derived topology below; the rest are matched
-    // on systemEventType alone, off identity the frame header already carries.
+    // Only these three system bodies are opened; the rest are matched on systemEventType alone.
     private final GatewayRegisteredDecoder gatewayRegisteredDecoder = new GatewayRegisteredDecoder();
     private final GatewayStartedDecoder gatewayStartedDecoder = new GatewayStartedDecoder();
     private final GatewayActivationRequestedDecoder activationRequestedDecoder =
         new GatewayActivationRequestedDecoder();
 
-    // Frame encode (schema 210). headerEncoder writes the outer framing header; tapHeaderEncoder writes
-    // the three stamp fields, whose offsets are common to both sequenced header composites.
+    // tapHeaderEncoder writes the three stamp fields, at offsets common to both sequenced composites.
     private final MessageHeaderEncoder headerEncoder = new MessageHeaderEncoder();
     private final SequencedHeaderEncoder tapHeaderEncoder = new SequencedHeaderEncoder();
     private final LeadershipChangedEncoder leadershipChangedEncoder = new LeadershipChangedEncoder();
@@ -161,108 +97,62 @@ public final class Sequencer {
 
     private final MutableDirectBuffer encodeBuffer = new ExpandableDirectByteBuffer(4096);
 
-    // Topology
     /** One Gateway row: an instance ({@code gatewayId}) of a logical gateway ({@code gatewaySourceId}). */
     private record GatewayRow(int gatewayId, int gatewaySourceId, short preferenceRank) { }
 
     /**
      * Every list row seen, in log order, de-duplicated on {@code gatewayId} so a re-published list
-     * (an operator re-running {@code load-topology}) re-asserts rather than duplicates. Read only by {@link #promotionTarget},
-     * and only ever by index, so the iteration order is the log's and every node agrees.
+     * re-asserts rather than duplicates. Only ever read by index, so every node iterates in log order.
      */
     private final java.util.List<GatewayRow> gatewayRows = new java.util.ArrayList<>();
 
     /**
-     * The {@code gatewayId}s still to be designated: the rank-0 row of each {@code gatewaySourceId} behind
-     * the first complete list, and whatever a {@code GatewayActivationRequested} has since named.
-     * Filled by {@link #applySystem} and drained one frame per call by {@link #pendingGatewayActivation}.
-     *
-     * <p>One bootstrap entry per <em>logical</em> gateway, because the deployment has more than one: the
-     * client-facing pair and the exchange-facing pair elect independently and neither may activate the
-     * other's instances. A single designated primary here (which is what this was) let whichever rank-0
-     * row loaded last silently take the other pair's bootstrap. Empty when no row designated a primary —
-     * nothing is activated, which is the fail-closed answer.
+     * The {@code gatewayId}s still to be designated: the rank-0 row of each logical gateway behind the first
+     * complete list, and whatever {@code GatewayActivationRequested} has since named. One bootstrap entry per
+     * logical gateway, since pairs elect independently; empty when no row is rank 0 (fail closed).
      */
     private final java.util.ArrayDeque<QueuedActivation> activationQueue = new java.util.ArrayDeque<>();
 
-    /**
-     * A designation waiting for its {@code globalSeqNo}, and which of the two paths queued it. The
-     * provenance is carried because the operator's path and the cold-start path are indistinguishable
-     * once drained, and {@link #bootstrapActivationEmitted} must not answer yes to the wrong one.
-     */
+    /** A queued designation, and whether it is the bootstrap's — see {@link #bootstrapActivationEmitted}. */
     private record QueuedActivation(int gatewayId, boolean bootstrap) { }
 
-    // Replicated state (advanced identically on every node; not snapshotted)
+    // Replicated state: advanced identically on every node.
 
     /** Cluster-wide monotone counter; advanced for messages and lifecycle events alike. */
     private long globalSeqNo = 0;
 
     /**
-     * Ingress frames refused by §9.2, since this node started (<b>S-7</b>). Node-local and <em>not</em>
-     * replicated state — nothing reads it, so it cannot reach a frame — but every node rejects the same
-     * frames (<b>S-3</b>), so nodes that have applied the same log prefix must agree on it: a divergence is
-     * a forked tap. {@code SequencerService} mirrors it onto the operator counter of the same name; here it
-     * is what lets the conformance suite assert a rejection cost exactly one, with no Aeron in the test.
+     * Ingress frames refused by §9.2 since this node started (<b>S-7</b>). Reaches no frame, but nodes that
+     * applied the same log prefix must agree on it; mirrored onto the operator counter of the same name.
      */
     private long rejectedFrameCount = 0;
 
     /**
-     * The cluster session each <em>active</em> FIX gateway instance is attached on, mapped to that
-     * instance's {@code gatewayId}, so {@link #sessionClosed} knows which instance it just lost and can
-     * promote a sibling. Added in {@link #sequenceMessage} on a {@code GatewayStarted}, removed in
-     * {@link #sessionClosed}. Replicated state: built identically on every node, so every node promotes
-     * at the same close.
-     *
-     * <p><b>{@code GatewayStarted} is the only thing that puts a session in here, and that is load-bearing.</b>
-     * This used to key off {@code header.sourceId} landing in the set of known gateway sourceIds, which
-     * is not an assertion the publisher makes about itself: that field is the <em>routing</em> id of the
-     * gateway a message is travelling to or from, and other clients legitimately echo it — the
-     * OrderExecServer stamps the originating gateway's sourceId onto every ExecutionReport and
-     * PortfolioQueryReply it submits. Its cluster session was therefore recorded as a gateway's, and an
-     * ordinary OrderExecServer restart promoted the standby out from under a perfectly healthy primary.
-     * {@code GatewayStarted} is published by a gateway about itself, on activation and nowhere else, so
-     * it is the one frame that means what this map needs it to mean.
+     * The cluster session each active gateway instance declared itself on, to its {@code gatewayId}, so
+     * {@link #sessionClosed} knows which instance it lost. Only {@code GatewayStarted} binds a session:
+     * {@code header.sourceId} is a routing id other clients legitimately echo, so it proves nothing.
      */
     private final java.util.Map<Long, Integer> activeGatewaySession = new java.util.HashMap<>();
 
     /**
-     * The connections currently open at each gateway: {@code header.sourceId} to the set of {@code
-     * header.connectionId}s that have had a {@code ConnectionOpened} and no {@code ConnectionClosed}
-     * yet, maintained from those frames as they pass through {@link #sequenceMessage} — the same
-     * pattern as {@link #gatewayRows}. Replicated state: every node sees the same frames in the same
-     * order and holds the same set. Only ever {@code add}/{@code remove}/{@code size}-d, never
-     * iterated, so its hash order cannot reach a frame.
+     * Open connections per gateway: {@code sourceId} to the {@code connectionId}s with a {@code
+     * ConnectionOpened} and no {@code ConnectionClosed} yet. Never iterated, so hash order reaches no frame.
      */
     private final java.util.Map<Integer, java.util.Set<Integer>> openConnections = new java.util.HashMap<>();
 
     /**
-     * Count of TCP clients currently connected across every gateway: {@link #openConnections}'s total
-     * size, maintained incrementally rather than summed.
-     *
-     * <p>A live gauge, not a running tally. It moves only when a connection actually enters or leaves
-     * that map, so an unmatched {@code ConnectionClosed} cannot take it negative and a repeated
-     * {@code ConnectionOpened} cannot double-count — and a gateway that dies without disconnecting its
-     * clients has its still-open connections released by the {@code GatewayStarted} its successor
-     * publishes (see {@link #releaseStaleConnections}), which is what keeps this from drifting upward
-     * over a day of gateway restarts.
+     * {@link #openConnections}'s total size. Moves only when a connection enters or leaves that map, so an
+     * unmatched close or a repeated open cannot skew it; see {@link #releaseStaleConnections}.
      */
     private int connectedClientCount = 0;
 
-    /** True once the first complete list has queued its bootstrap run, so a re-published list re-asserts
-     * the rows without re-designating anybody. */
+    /** True once the first complete list queued its bootstrap run; a re-published list designates nobody. */
     private boolean bootstrapActivationQueued = false;
 
     /**
-     * True once a <em>bootstrap</em> {@code GatewayActive} has actually left {@link
-     * #pendingGatewayActivation} — the trading day is open. Replicated state in the same sense as {@link
-     * #rejectedFrameCount}: derived identically on every node and on replay, and read by nothing that can
-     * reach a frame. {@code SequencerService} mirrors it onto the operator gauge of the same name.
-     *
-     * <p>Separate from {@link #bootstrapActivationQueued} on both edges. A list whose rank-0 rows are all
-     * missing queues nothing, so the day never opened even though the list completed; and an operator's
-     * {@code GatewayActivationRequested} drains through the same queue, so counting drains alone let a
-     * manual activation report a bootstrap that never happened — on a truncated list, which is exactly
-     * when an operator reaches for the manual path and exactly when the gauge must still read 0.
+     * True once a <em>bootstrap</em> {@code GatewayActive} has left {@link #pendingGatewayActivation}: the day
+     * is open. Separate from {@link #bootstrapActivationQueued} because a list with no rank-0 row queues
+     * nothing, and a manual activation drains through the same queue without opening the day.
      */
     private boolean bootstrapActivationEmitted = false;
 
@@ -270,28 +160,17 @@ public final class Sequencer {
     private record PendingActivation(int gatewaySourceId, int gatewayId, long deadline) { }
 
     /**
-     * Every {@code GatewayActive} synthesized but not yet answered by a {@code GatewayStarted}, at most
-     * one per logical gateway — armed by {@link #gatewayActive}, resolved by {@link
-     * #pendingGatewayActivationTimeout} (see there for why an activation needs a deadline at all).
-     *
-     * <p>Keyed on {@code gatewaySourceId} rather than held as a single outstanding activation, because
-     * the two logical gateways bootstrap back to back: the second activation used to overwrite the
-     * first's deadline, so a designated instance that never arrived was never handed over. A list in
-     * arm order, replaced in place, so the iteration {@link #pendingGatewayActivationTimeout} walks is
-     * the log's on every node — the same reason {@link #gatewayRows} is not a map.
+     * Every {@code GatewayActive} not yet answered by {@code GatewayStarted}, at most one per logical
+     * gateway. A list replaced in place rather than a map, so every node walks it in arm order.
      */
     private final java.util.List<PendingActivation> pendingActivations = new java.util.ArrayList<>();
 
     /**
-     * This node's cluster memberId, for the diagnostic slot in {@link #reject}'s log line. Node-local
-     * and <em>not</em> replicated state — no state transition reads it, so it cannot reach a frame —
-     * which is also why it is set rather than constructed: {@code cluster.memberId()} is still
-     * {@code NULL_VALUE} while this class is being built (see {@code SequencerService.ensureCounters}).
-     * Null until then, which the logger renders as no member context rather than a wrong one.
+     * This node's memberId, for the rejection log line only. Set rather than constructed because {@code
+     * cluster.memberId()} is not known yet when this is built; null renders as no member context.
      */
     private Integer memberId;
 
-    /** Topology is derived from the sequenced Gateway rows (see {@link #gatewayRows}), not configured. */
     public Sequencer() {
     }
 
@@ -324,9 +203,7 @@ public final class Sequencer {
     }
 
     /**
-     * Re-stamps one ingress frame as its sequenced counterpart — {@code Unsequenced} as {@code Sequenced},
-     * {@code UnsequencedSystem} as {@code SequencedSystem} — copying its body through verbatim; see the
-     * class Javadoc.
+     * Re-stamps one ingress frame as its sequenced counterpart, copying its body through verbatim.
      *
      * @param buffer    holding the ingress message
      * @param offset    of the ingress message's outer {@code MessageHeader}
@@ -350,11 +227,8 @@ public final class Sequencer {
     }
 
     /**
-     * Sequences one ingress frame of either family: the envelope's copy-18/append-16, plus the state the
-     * sequencer derives when the frame is a system one.
-     *
-     * <p>The body is copied verbatim, its length prefix included, and is never re-encoded (<b>E-1</b>).
-     * The conditions are §9.2's, in §9.2's order — each establishes what the next may read.
+     * Validates one ingress frame of either family against §9.2, in §9.2's order — each condition
+     * establishes what the next may read — then re-stamps it.
      */
     private int sequenceFrame(final DirectBuffer buffer, final int offset, final int length, final long sessionId,
                               final long timestamp) {
@@ -440,13 +314,9 @@ public final class Sequencer {
     }
 
     /**
-     * The state the sequencer derives from a system body, and the only place it decodes one. Returns
-     * whether the frame is admitted.
-     *
-     * <p>The body carries no {@code MessageHeader} of its own — {@code header.systemEventType} is what
-     * names it — so every decode here supplies {@code BLOCK_LENGTH} and {@code SCHEMA_VERSION} from the
-     * decoder's own compiled constants (<b>V-3</b>). Condition 9 has already established that the body
-     * is long enough for the block each read below sits in.
+     * Derives state from a system body; the only place one is decoded. Returns whether the frame is
+     * admitted. A system body has no {@code MessageHeader}, so each decode supplies its own compiled
+     * {@code BLOCK_LENGTH} and {@code SCHEMA_VERSION} (<b>V-3</b>); condition 9 has checked the length.
      */
     private boolean applySystem(final DirectBuffer buffer, final int bodyOffset, final int systemEventType,
                                 final int sourceId, final int connectionId, final long sessionId) {
@@ -516,19 +386,13 @@ public final class Sequencer {
         return true;
     }
 
-    /**
-     * Skips a malformed ingress message
-     * @param reason rejection description
-     */
+    /** Refuses a system frame; see {@link #reject}. */
     private boolean rejectSystem(final String reason) {
         reject(reason);
         return false;
     }
 
-    /**
-     * Skips a malformed ingress message
-     * @param reason rejection description
-     */
+    /** Refuses an ingress frame (<b>S-7</b>): logged and counted, and {@code globalSeqNo} is not advanced. */
     private int reject(final String reason) {
         rejectedFrameCount++;
         Logger.error(Logger.CoreComponent.Sequencer, Logger.CoreEventCode.MalformedIngressMessage, memberId,
@@ -537,8 +401,7 @@ public final class Sequencer {
     }
 
     /**
-     * Encodes one internal clock frame carrying the consensus timestamp. Consumers (the FIX gateway)
-     * read {@code header.timestamp} off it to keep their session clock moving while a counterparty is silent.
+     * Encodes the 1 Hz cluster clock frame; consumers read its consensus timestamp while producers are silent.
      * @param timestamp now
      */
     public int clusterHeartbeat(final long timestamp) {
@@ -565,22 +428,16 @@ public final class Sequencer {
     }
 
     /**
-     * The activations owed to the frame just sequenced: the bootstrap run behind the list's last row —
-     * the cluster designating the primary of each logical gateway by naming its {@code gatewayId} in a
-     * {@code GatewayActive}, so exactly one instance of each pair opens its accept gate at cold start and
-     * its standby waits — and the one a {@code GatewayActivationRequested} asks for.
+     * The next queued activation, as a {@code GatewayActive} naming one {@code gatewayId}: the bootstrap run
+     * behind the list's last row, or one a {@code GatewayActivationRequested} asked for.
      *
-     * <p><b>One frame per call.</b> Each activation takes its own {@code globalSeqNo}, so the adapter
-     * calls this in a loop until {@link #NO_FRAME} — emitting what comes back before asking again, since
-     * every call re-encodes into the same {@link #buffer()}. The loop runs right after the
-     * {@link #sequenceMessage} that queued them, so the frames take the next {@code globalSeqNo}s in
-     * {@link #gatewayRows} order — identically on every node and on replay.
+     * <p>One frame per call, each with its own {@code globalSeqNo}: the adapter loops until {@link #NO_FRAME},
+     * publishing each before asking again, since every call re-encodes into the same {@link #buffer()}.
      * @param timestamp now
-     * @return a {@code GatewayActive} frame length, or {@link #NO_FRAME} when none is left pending
+     * @return a {@code GatewayActive} frame length, or {@link #NO_FRAME} when none is pending
      */
     public int pendingGatewayActivation(final long timestamp) {
         final QueuedActivation queued = activationQueue.poll();
-        // Empty when no list row designated a primary — nothing to activate (fail closed).
         if (queued == null) {
             return NO_FRAME;
         }
@@ -588,19 +445,13 @@ public final class Sequencer {
         return gatewayActive(queued.gatewayId(), timestamp);
     }
 
-    /**
-     * Whether the cold-start designation has been made — the gauge {@code SequencerService} publishes as
-     * {@code seqeron_sequencer_bootstrap_activated}.
-     * @return true once a bootstrap {@code GatewayActive} has been handed back by {@link
-     *     #pendingGatewayActivation}
-     */
+    /** Whether a bootstrap {@code GatewayActive} has been emitted; the {@code bootstrap_activated} gauge. */
     public boolean bootstrapActivationEmitted() {
         return bootstrapActivationEmitted;
     }
 
     /**
-     * A cluster session closed. If it was the session an active FIX gateway declared itself on (via
-     * {@code GatewayStarted}), promote a standby of the same logical gateway; otherwise no frame.
+     * A cluster session closed. If an active gateway instance was bound to it, promote its standby.
      * @param sessionId session identity
      * @param timestamp now
      * @return a {@code GatewayActive} frame length, {@link #NO_FRAME} if this wasn't a gateway session, or
@@ -623,23 +474,10 @@ public final class Sequencer {
     }
 
     /**
-     * The other way a logical gateway loses its active instance: the one just designated never declares
-     * itself started. Every activation — bootstrap and promotion alike — is answered by a {@code
-     * GatewayStarted} the instance publishes when it opens its accept gate, and that is the only frame
-     * that registers it in {@link #activeGatewaySession}. An instance that dies, or wedges, before ever
-     * getting there was therefore never a registered instance, so nothing about its session closing (or
-     * never closing) can promote a sibling — the cluster simply has no gateway, and no path back.
-     *
-     * <p>This is that path: {@link #GATEWAY_ACTIVATION_TIMEOUT_MS} after a {@code GatewayActive}, an
-     * instance that has not declared itself started hands the role to its next-ranked sibling, exactly as
-     * {@link #sessionClosed} does. The promotion arms the same deadline on the instance it names, so a
-     * whole gateway tier that is down converges the moment any instance comes up rather than depending on
-     * which one the cluster happened to designate first.
-     *
-     * <p>Deterministic off the cluster clock: driven from the 1 Hz {@code ClusterHeartbeat}'s consensus timestamp, so
-     * every node evaluates the same deadline against the same time and synthesizes the same frame — like
-     * {@link #pendingGatewayActivation}, the caller invokes it right after the {@link #clusterHeartbeat} it
-     * belongs to and simply publishes what comes back.
+     * Hands the role on from a designated instance that never answered with {@code GatewayStarted} — one
+     * that died before binding a session, so {@link #sessionClosed} can never promote past it. Evaluated
+     * off the heartbeat's consensus timestamp, so every node decides identically; the promotion arms the
+     * same deadline on the instance it names.
      * @param timestamp now
      * @return a {@code GatewayActive} frame length, {@link #NO_FRAME} if nothing was overdue, or {@link
      *     #NO_PROMOTION_TARGET} if an activation went unanswered and there was no sibling to hand it to
@@ -666,13 +504,9 @@ public final class Sequencer {
     }
 
     /**
-     * Removes and returns the first activation whose deadline has passed and that no {@code
-     * GatewayStarted} answered, or {@link #NO_GATEWAY_ID} if none is overdue. An overdue activation the
-     * instance did answer is dropped too — it is simply resolved, and leaving it would have it looked at
-     * on every heartbeat from here on.
-     *
-     * <p>The pending entry is taken before the caller decides anything, so the {@code gatewayActive} that
-     * a hand-over ends in cannot re-enter {@link #pendingActivations} mid-iteration.
+     * Removes and returns the first overdue, unanswered activation, or {@link #NO_GATEWAY_ID}. Overdue ones
+     * that were answered are dropped as resolved. Removed before the caller acts, so the resulting
+     * {@code gatewayActive} cannot re-enter {@link #pendingActivations} mid-iteration.
      * @param timestamp now
      */
     private int takeOverdueActivation(final long timestamp) {
@@ -690,16 +524,10 @@ public final class Sequencer {
     }
 
     /**
-     * The {@code gatewayId} to hand over to when instance {@code closedGatewayId} goes away: the
-     * lowest-{@code preferenceRank} other instance of the same logical gateway, ties broken by log
-     * order, or {@link #NO_GATEWAY_ID} if that instance has no known row or no sibling.
-     *
-     * <p>A <b>{@code gatewayId}</b>, never the {@code gatewaySourceId} this used to promote with. Those
-     * are separate id spaces, and every instance of a pair shares the sourceId, so a {@code
-     * GatewayActive} carrying one designated <em>both</em> instances at once — which the consumer could
-     * only survive by latching the first match it ever saw, and that in turn made a restarting instance
-     * re-activate itself off a superseded frame during cold-start replay.
-     * @param closedGatewayId the instance whose session just closed
+     * The instance to hand over to when {@code closedGatewayId} goes away: the lowest-rank other instance
+     * of the same logical gateway, ties broken by log order, or {@link #NO_GATEWAY_ID}. A {@code gatewayId},
+     * never a {@code gatewaySourceId}, which both instances of a pair share.
+     * @param closedGatewayId the instance that went away
      */
     private int promotionTarget(final int closedGatewayId) {
         final GatewayRow closed = rowFor(closedGatewayId);
@@ -717,16 +545,10 @@ public final class Sequencer {
     }
 
     /**
-     * Drops every connection still open under {@code gatewaySourceId}. A {@code GatewayStarted} is a new
-     * instance declaring it has taken that logical gateway over, so anything still open under it belongs
-     * to the instance that went away, whose sockets died with it — a crash cannot publish the {@code
-     * ConnectionClosed}s that would have closed them out, which is the whole reason that frame exists
-     * (it carries the {@code firstConnectionId} the new instance resumes allocating from for the same
-     * reason). Without this, every gateway crash leaves its clients counted forever.
-     *
-     * <p>It cannot drop a live connection: a gateway publishes {@code GatewayStarted} before it opens its
-     * accept gate ({@code FixGateway.cpp}), so none of its own {@code ConnectionOpened}s can precede it.
-     * @param gatewaySourceId the logical gateway whose epoch just rolled
+     * Drops every connection still open under {@code gatewaySourceId}: a {@code GatewayStarted} means the
+     * previous instance is gone, and a crash cannot publish its {@code ConnectionClosed}s. It cannot drop a
+     * live connection, because a gateway publishes {@code GatewayStarted} before it opens its accept gate.
+     * @param gatewaySourceId the logical gateway whose instance just changed
      */
     private void releaseStaleConnections(final int gatewaySourceId) {
         final java.util.Set<Integer> stale = openConnections.remove(gatewaySourceId);
@@ -748,10 +570,8 @@ public final class Sequencer {
     }
 
     /**
-     * Encodes one {@code GatewayActive} naming {@code gatewayId}; advances {@code globalSeqNo}. Arms the
-     * activation deadline on the instance it names — every activation is a claim the instance still has
-     * to answer (see {@link #pendingGatewayActivationTimeout}), so arming here is what keeps bootstrap
-     * and promotion from needing to remember to.
+     * Encodes one {@code GatewayActive} naming {@code gatewayId}, and arms that instance's activation
+     * deadline (see {@link #pendingGatewayActivationTimeout}).
      * @param gatewayId gateway identity
      * @param timestamp now
      */
@@ -765,15 +585,9 @@ public final class Sequencer {
     }
 
     /**
-     * Stamps the header of a frame the cluster synthesized on its own initiative. Each of the three has a
-     * template of its own and carries its fields inline, so there is no body, no length prefix and no
-     * scratch buffer — the whole frame is one flat encode.
-     *
-     * <p>These are the frames with no producer, so <b>F-4</b>'s {@code -1} stands in for the identity an
-     * ingress frame carries, and <b>E-1</b>'s exception applies: every node encodes its own copy rather
-     * than copying one through, which is why the encode must be a pure function of its arguments.
-     * {@code systemEventType} is redundant against the template id and written anyway, so that offset 16
-     * discriminates every frame on the tap.
+     * Stamps a synthesized frame's header: <b>F-4</b>'s {@code -1} identity, encoded on every node rather
+     * than copied through (<b>E-1</b>'s exception). {@code systemEventType} is redundant with the template
+     * id and written anyway, so offset 16 discriminates every frame on the tap.
      */
     private static void stampSynthesized(final SequencedSystemHeaderEncoder header, final int systemEventType,
                                          final long globalSeq, final long timestamp) {
@@ -786,11 +600,8 @@ public final class Sequencer {
     }
 
     /**
-     * Puts {@code gatewayId} on the clock as its logical gateway's outstanding activation, replacing any
-     * earlier one for that {@code gatewaySourceId} in place — a fresh activation supersedes the claim the
-     * previous one made, exactly as it does for the consumers. An instance with no Gateway row is not
-     * armed: nothing could be promoted in its place anyway, since {@link #promotionTarget} finds siblings
-     * through that row.
+     * Puts {@code gatewayId} on the clock as its logical gateway's outstanding activation, superseding any
+     * earlier one. An instance with no row is not armed: nothing could be promoted in its place.
      * @param gatewayId the instance just designated
      * @param timestamp now
      */

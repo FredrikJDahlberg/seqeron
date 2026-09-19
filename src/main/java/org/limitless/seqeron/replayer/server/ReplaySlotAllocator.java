@@ -4,16 +4,9 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Pure admission control and pending-queue bookkeeping behind {@link ReplayerService}'s {@code
- * MAX_CONCURRENT_REPLAYS} cap — split out from every archive/Aeron call so it is unit-testable without
- * either, mirroring how {@link org.limitless.seqeron.sequencer.Sequencer} is split from {@code
- * SequencerService}. It never interprets the {@code token} it is handed ({@code replaySessionId} in
- * production) — it only counts, orders, and ages slots by client id.
- *
- * <p>The pending queue holds <b>at most one request per client</b> ({@link #enqueue} replaces, {@link
- * #cancelPending} drops), which is what bounds it: a queued client resends every ~500ms, so appending
- * blindly grew the queue for as long as a node's cold start left more clients than slots — the exact
- * steady state of a three-app node against a cap of two.
+ * Admission control and pending-queue bookkeeping behind {@link ReplayerService}'s {@code
+ * MAX_CONCURRENT_REPLAYS} cap, free of archive and Aeron calls. The {@code token} it is handed is opaque.
+ * The pending queue holds at most one request per client, since a waiting client resends every ~500ms.
  */
 public final class ReplaySlotAllocator {
     /** {@link #supersede} uses this value for "no active slot for that client". */
@@ -62,12 +55,8 @@ public final class ReplaySlotAllocator {
     }
 
     /**
-     * Queues a request that found no free slot, replacing any the client already has queued — one entry
-     * per client, so a client resending every ~500ms while it waits does not accrete entries.
-     *
-     * <p>The replacement keeps the client's place in line rather than moving it to the back: a resend
-     * carries no new intent, and re-queueing it behind everyone else would let a client that resends on
-     * a timer starve itself for as long as it keeps asking.
+     * Queues a request that found no free slot, replacing any the client already has queued in place, so a
+     * resend neither accretes entries nor loses the client its turn.
      * @param clientId client identity
      * @param requestId the request to answer when it is finally served
      * @param segmentIndex segment index
@@ -85,10 +74,8 @@ public final class ReplaySlotAllocator {
     }
 
     /**
-     * Drops the client's queued request, if any. Called as a client's current request is about to be
-     * answered from the archive: whatever it had queued is stale by then, and left behind it is drained
-     * later into a replay the client has already moved past — taking a slot it never asked for, answered
-     * by a reply it discards on the requestId check, and freed only by the idle TTL.
+     * Drops the client's queued request, if any, as its current one is answered: left behind, the stale
+     * one would later take a slot the client never uses.
      * @param clientId client identity
      */
     public void cancelPending(final int clientId) {
@@ -101,11 +88,8 @@ public final class ReplaySlotAllocator {
     }
 
     /**
-     * Refreshes a client's slot so it ages from its last sign of life rather than from activation —
-     * what makes {@link #reclaimIdle} an idle timeout instead of a max lifetime. Callers touch on the
-     * client's {@code ReplayHeartbeat}: a replay is unbounded in time (full-log replay over a log that
-     * grows all trading day), so a slot aged from activation is reclaimed out from under a perfectly
-     * healthy replay, whereas a client that died stops heart-beating and still ages out.
+     * Refreshes a client's slot on its {@code ReplayHeartbeat}, so {@link #reclaimIdle} is an idle timeout
+     * rather than a max lifetime: a full-log replay can legitimately run long.
      * @param clientId client identity
      * @param nowMs current time
      */
@@ -120,9 +104,8 @@ public final class ReplaySlotAllocator {
     }
 
     /**
-     * Pops the next pending request to retry, or null if the queue is empty or every slot is taken.
-     * Callers bound retries to {@link #pendingCount()} at the start of a drain pass, so a request that
-     * re-queues itself (no recording yet, etc.) is retried at most once per pass rather than spinning.
+     * Pops the next pending request, or null if the queue is empty or every slot is taken. Callers bound a
+     * drain pass to {@link #pendingCount()}, so a request that re-queues itself is retried once per pass.
      * @return the longest-waiting client's current request, or null
      */
     public PendingRequest pollPending() {

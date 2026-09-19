@@ -34,18 +34,24 @@ SEQERON_JAVA_OPTS=(
 )
 
 # Call from a script that launches Java; the ones that only signal or delete files do not.
-# The jar is globbed rather than named: its version is the VERSION file's, and hand-copying it into
-# each launcher is how the scripts came to carry the same literal.
+# A checkout names its jar by the VERSION file, since build/libs keeps every version ever built; a
+# distribution has no VERSION file and exactly one jar in lib/, so a second match there is an error.
 seqeron_require_jar() {
     if [[ -z "${SEQERON_JAR:-}" ]]; then
-        local candidate
-        for candidate in "${SEQERON_HOME}"/lib/seqeron-*-uber.jar \
-                         "${SEQERON_HOME}"/build/libs/seqeron-*-uber.jar; do
-            if [[ -f "${candidate}" ]]; then
-                SEQERON_JAR="${candidate}"
-                break
-            fi
+        local version="*" dir jars=()
+        if [[ -f "${SEQERON_HOME}/VERSION" ]]; then
+            version="$(tr -d '[:space:]' < "${SEQERON_HOME}/VERSION")"
+        fi
+        for dir in lib build/libs; do
+            jars=("${SEQERON_HOME}/${dir}"/seqeron-${version}-uber.jar)
+            [[ -f "${jars[0]}" ]] && break
         done
+        if (( ${#jars[@]} > 1 )); then
+            echo "ERROR: more than one seqeron uber jar under ${SEQERON_HOME}/${dir}: ${jars[*]}" >&2
+            echo "       — set SEQERON_JAR to the one to run" >&2
+            exit 1
+        fi
+        SEQERON_JAR="${jars[0]}"
     fi
 
     if [[ -z "${SEQERON_JAR:-}" || ! -f "${SEQERON_JAR}" ]]; then
@@ -54,4 +60,14 @@ seqeron_require_jar() {
         exit 1
     fi
     export SEQERON_JAR
+}
+
+# wait_for_log <log> <pattern> <seconds> — polls until <pattern> appears in <log>; returns 1 on timeout,
+# so the caller decides whether that is fatal.
+wait_for_log() {
+    local log="$1" pattern="$2" deadline=$(( SECONDS + $3 ))
+    until grep -q "${pattern}" "${log}" 2>/dev/null; do
+        (( SECONDS < deadline )) || return 1
+        sleep 0.5
+    done
 }

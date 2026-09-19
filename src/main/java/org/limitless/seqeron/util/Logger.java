@@ -1,22 +1,14 @@
 package org.limitless.seqeron.util;
 
 /**
- * <p>Call sites report a {@link LoggerEvent} through the installed {@link LoggerSink}. The
- * only sink today, the default one, reproduces exactly the {@code [Component/memberId] message} (or
- * {@code [Component] message} where there is no member context) line a bare {@code System.out}/
- * {@code System.err} print used to write. Component/severity/code are structured fields for a future
- * sink (e.g. one publishing a sequenced {@code ErrorNotification} instead of printing) to filter on;
- * swapping one in later changes this file, not the call sites.
+ * Structured logging: call sites report a {@link LoggerEvent} to the installed {@link LoggerSink}. The
+ * default sink prints {@code [Component/memberId] message} to stderr.
  */
 public final class Logger {
     private Logger() {
     }
 
-    /**
-     * A component name. Core's own are {@link CoreComponent}; a consumer declares its own enum
-     * implementing this interface rather than being added to that one — the cluster tier names none of
-     * the processes that log through it.
-     */
+    /** A component name. Core's own are {@link CoreComponent}; a consumer declares its own enum. */
     public interface Component {
         String name();
     }
@@ -69,7 +61,7 @@ public final class Logger {
         void record(LoggerEvent event);
     }
 
-    // Default sink: reproduces today's "[Component/memberId] message" (or "[Component] message") stderr line.
+    // Default sink: "[Component/memberId] message", or "[Component] message" with no member context.
     private static final class StderrLoggerSink implements LoggerSink {
         @Override
         public void record(final LoggerEvent event) {

@@ -3,21 +3,12 @@ package org.limitless.seqeron.sequencer;
 import io.aeron.Publication;
 
 /**
- * Pure decision logic behind {@link ClusterStreamSender#send}'s spin: given what the offer returned and
- * how long it has been failing, it decides whether to keep spinning, alert, give the session up, or fail
- * outright. Split off because {@link ClusterStreamSender} cannot be driven without an Aeron runtime, and
- * the classification below is the part that is easy to get wrong and impossible to observe once it is
- * inside a loop.
+ * Decides what {@link ClusterStreamSender#send}'s spin does about a failed offer: keep spinning, alert, give
+ * the session up, or fail. Split off so it is unit-testable; the sender cannot run without Aeron.
  *
- * <p><b>{@code CLOSED} is a retry, and that is the whole point of testing this.</b> A leader that dies
- * closes the client's egress image, and {@code AeronCluster} responds by closing the ingress publication
- * and awaiting a {@code NewLeader} event — so every offer returns {@code CLOSED} for the length of an
- * election, on a session the cluster still holds. Reading that as terminal fails every submit made during
- * a leadership change, which is what {@code ClusterCtl} did before it came through here.
- *
- * <p>The Aeron import is for {@code Publication}'s result constants alone: naming which values are
- * terminal is this class's subject, so it must not be the caller restating them. Nothing here starts,
- * touches or needs an Aeron runtime.
+ * <p><b>{@code CLOSED} is a retry.</b> During an election {@code AeronCluster} closes the ingress publication
+ * and waits for a {@code NewLeader}, on a session the cluster still holds; reading it as terminal fails
+ * every submit made during a leadership change. The Aeron import is for the result constants only.
  */
 public final class IngressStallPolicy {
     /** What the sender should do about the offer that just failed. */

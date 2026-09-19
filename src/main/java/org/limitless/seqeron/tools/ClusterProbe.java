@@ -9,7 +9,6 @@ import io.aeron.cluster.client.EgressListener;
 import io.aeron.logbuffer.FragmentHandler;
 import io.aeron.logbuffer.Header;
 import java.util.Arrays;
-import java.util.Locale;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -18,7 +17,6 @@ import org.agrona.DirectBuffer;
 import org.agrona.ExpandableArrayBuffer;
 import org.agrona.collections.LongArrayList;
 import org.agrona.collections.LongHashSet;
-import org.agrona.concurrent.BackoffIdleStrategy;
 import org.agrona.concurrent.IdleStrategy;
 import org.agrona.concurrent.ShutdownSignalBarrier;
 import org.agrona.concurrent.YieldingIdleStrategy;
@@ -34,33 +32,21 @@ import org.limitless.seqeron.sbe.probe.ProbeMarkerDecoder;
 import org.limitless.seqeron.sbe.probe.ProbeMarkerEncoder;
 import org.limitless.seqeron.sequencer.SequencerService;
 import org.limitless.seqeron.sequencer.SystemFrame;
+import org.limitless.seqeron.util.IdleStrategies;
 import org.limitless.seqeron.util.Logger;
 
 /**
- * The edge-neutral probe — the cluster tier's own load generator and
- * tap consumer, so its end-to-end scripts can drive a cluster with no product binary built.
- *
- * <p>Before this, all five harnesses in {@code cluster/src/test/scripts} generated load with the C++
- * {@code fix_test_server} and consumed the tap with {@code OrderExecServer}. Nothing they assert is
- * about FIX: they grep for a caught-up announcement, the {@link ReplayerStreamReceiver}'s gap and
- * re-walk lines, the Replayer's own segment/recording decisions, and a delivered-frame count. That made
- * this module's e2e suite depend on the C++ edge — a product → cluster edge no build could see, and the
- * thing that would leave seqeron with no runnable e2e at all once it is extracted.
- *
- * <p>Four modes, one message ({@code sbe-probe.xml}, {@code payloadId} 5):
+ * The cluster tier's own load generator and tap consumer, so its end-to-end scripts need no product
+ * binary. Four modes, one message ({@code sbe-probe.xml}, {@code payloadId} 5):
  * <ul>
- *   <li><b>submit</b> — flood {@code probe.count} {@code ProbeMarker}s at cluster ingress. Builds an
- *       archive, or gives a cold-start walk work to do. Opens no tap subscription: a tethered one left
- *       unpolled behind a 400k-frame flood would back-pressure the sequencer's own tap.</li>
- *   <li><b>ping</b> — submit exactly one and wait for its sequenced echo off the co-located tap. The
- *       liveness check: it proves ingress, consensus, and the tap in one round trip, which is what the
- *       FIX round-trip probe it replaces was actually testing.</li>
- *   <li><b>follow</b> — replay history through the co-located Replayer, then follow the tap live,
- *       announcing the transition. The {@code OrderExecServer} replacement.</li>
+ *   <li><b>submit</b> — flood {@code probe.count} {@code ProbeMarker}s at ingress. Opens no tap
+ *       subscription, which an unpolled flood would back-pressure.</li>
+ *   <li><b>ping</b> — submit one and wait for its sequenced echo off the co-located tap: ingress,
+ *       consensus and tap in one round trip.</li>
+ *   <li><b>follow</b> — replay history through the co-located Replayer, then follow the tap live.</li>
  *   <li><b>confirm</b> — send {@code probe.count} through {@link ClusterStreamSender} and a
- *       {@link PendingSends} while following its own tap, and exit 0 only if the tap shows seqNo 1..count
- *       exactly once, in order. Run across a leader kill, it is the end-to-end proof of failover loss
- *       recovery; {@code -Dprobe.pendingSends=false} is the control that shows what the kill loses.</li>
+ *       {@link PendingSends} while following its own tap; exit 0 only if the tap shows seqNo 1..count
+ *       exactly once, in order. {@code -Dprobe.pendingSends=false} is the control.</li>
  * </ul>
  *
  * <p>System properties (mirroring {@code ReplayerServer}'s, which every script already sets this way):
@@ -69,10 +55,8 @@ import org.limitless.seqeron.util.Logger;
  *   probe.aeronDir          — that member's Aeron directory; default {tmpdir}/seqeron-seq-aeron-{memberId}
  *   probe.ingressEndpoints  — cluster ingress endpoints; default the three-node localhost set on
  *                             {@code SEQERON_PORT_BASE}'s ports
- *   probe.egressHost        — hostname this client advertises for the cluster's egress back to it;
- *                             default localhost. The leader sends session responses there, so when
- *                             the leader is on another host — a container topology, say — localhost
- *                             is the leader's own loopback and the session never establishes.
+ *   probe.egressHost        — hostname the leader sends this client's egress to; default localhost,
+ *                             which fails when the leader is on another host
  *   probe.clientId          — follow, confirm: this replica's Replayer client id; default 9
  *   probe.count             — submit, confirm: frames to send; default 1000
  *   probe.fillerBytes       — submit: bytes of filler per frame; default 0
@@ -81,22 +65,14 @@ import org.limitless.seqeron.util.Logger;
  *   probe.latencyStats      — follow: record and report post-catch-up delivery latency; default false
  *   probe.faultInjection    — follow: install the SIGUSR1 tap-drop handler; default false
  *   probe.faultDropCount    — follow: frames dropped per SIGUSR1; default 1
- *   probe.idleStrategy      — follow: backoff (default) or yielding
+ *   probe.idleStrategy      — follow: backoff (default), yielding or busyspin
  * </pre>
  */
 public final class ClusterProbe {
-    /**
-     * The probe protocol's {@code payloadId}. Private in the §6.1 sense — one publisher and one consumer,
-     * both this class — so it needs no {@code PayloadIdRegistered} row and no {@code <protocols>} entry.
-     * 2, 3 and 4 are the deployment's product protocols.
-     */
+    /** The probe's {@code payloadId}; private (§6.1), so it needs no {@code PayloadIdRegistered} row. */
     public static final int PROBE_PAYLOAD_ID = 5;
 
-    /**
-     * The probe's {@code sourceId} in §5's one id space. Claimed by no topology row, like
-     * {@code clusterctl}'s 2, so S-6 case 3 leaves its frames unchecked — which is what an application
-     * frame gets anyway.
-     */
+    /** The probe's {@code sourceId} (§5), claimed by no topology row, so S-6 leaves its frames unchecked. */
     public static final int PROBE_SOURCE_ID = 8;
 
     /** No connection and no advisory session: the probe is a producer, not a gateway with sockets. */
@@ -106,6 +82,9 @@ public final class ClusterProbe {
     static final byte[] NO_FILLER = new byte[0];
 
     private static final int MEMBER_ID = Integer.getInteger("probe.memberId", 0);
+
+    /** The duty-cycle idle strategy {@code follow} and {@code TestGateway} poll with. */
+    static final String IDLE_STRATEGY_PROPERTY = "probe.idleStrategy";
 
     /** Which cluster member every {@code probe.*} process co-locates with; {@code TestGateway} shares it. */
     static int memberId() {
@@ -144,10 +123,8 @@ public final class ClusterProbe {
     private static final long KEEP_ALIVE_INTERVAL_NS = TimeUnit.MILLISECONDS.toNanos(200);
 
     /**
-     * How long the client waits for a {@code NewLeader} event before closing itself. Set explicitly
-     * because the default is 2x the cluster's {@code leaderHeartbeatTimeoutNs}, which
-     * {@code SequencerServer} tunes to 200ms — leaving a client 400ms of patience for an election that
-     * takes closer to a second. A client that runs out kills a session the cluster never closed.
+     * How long the client waits for a {@code NewLeader} before closing itself. The default, 2x the cluster's
+     * 200ms {@code leaderHeartbeatTimeoutNs}, is shorter than an election.
      */
     private static final long NEW_LEADER_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(5);
     private static final long ECHO_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(10);
@@ -254,12 +231,8 @@ public final class ClusterProbe {
     }
 
     /**
-     * Everything one producing thread needs to encode {@code ProbeMarker} frames: the two buffers, the
-     * payload's own encoders, and the frame envelope. Held rather than allocated per call, like every
-     * other flyweight here — {@code submit} encodes in a tight loop and {@code TestGateway} encodes per
-     * line off a socket, so neither wants a per-frame allocation.
-     *
-     * <p>Not thread-safe: one per producing thread, like the buffers it holds.
+     * Everything one producing thread needs to encode {@code ProbeMarker} frames, held rather than
+     * allocated per frame. Not thread-safe.
      */
     static final class MarkerEncoder {
         private final SystemFrame envelope = new SystemFrame();
@@ -485,9 +458,7 @@ public final class ClusterProbe {
         final AtomicReference<ReplayerStreamReceiver> self = new AtomicReference<>();
         final AtomicBoolean announcedLive = new AtomicBoolean();
         final ReplayerStreamReceiver receiver = new ReplayerStreamReceiver(clientId, stats::onSequenced, null, () -> {
-            // Fires on every transition to caught-up, not only the first: after a gap the consumer
-            // re-converges, and which frames were delivered live rather than by the healing replay is
-            // exactly what these tests measure.
+            // Fires on every transition to caught-up, including re-convergence after a gap.
             if (announcedLive.compareAndSet(false, true)) {
                 Logger.info(Logger.CoreComponent.ClusterProbe, MEMBER_ID, "Caught up — following live");
             } else {
@@ -512,7 +483,7 @@ public final class ClusterProbe {
         final AtomicBoolean fatal = new AtomicBoolean();
         final ShutdownSignalBarrier barrier = new ShutdownSignalBarrier();
         final Thread dutyThread = new Thread(() -> {
-            final IdleStrategy idle = resolveIdleStrategy();
+            final IdleStrategy idle = IdleStrategies.fromProperty(IDLE_STRATEGY_PROPERTY).get();
             try {
                 while (running.get()) {
                     if (faultInjection && faultDropArmed.get() > 0) {
@@ -525,9 +496,8 @@ public final class ClusterProbe {
                     idle.idle(receiver.poll());
                 }
             } catch (final RuntimeException ex) {
-                // The media driver going away closes the Aeron client under us, and every poll past that
-                // throws. Failing fast is the invariant replayer-restart-test.sh phase 2 asserts: a
-                // co-located process must die with its node rather than spin against a dead driver.
+                // The driver going away closes the Aeron client and every poll throws: a co-located
+                // process must die with its node (replayer-restart-test.sh phase 2).
                 Logger.error(Logger.CoreComponent.ClusterProbe, Logger.CoreEventCode.ReplayDutyCycleFailure, MEMBER_ID,
                              "duty cycle failed — media driver gone? %s", ex);
                 fatal.set(true);
@@ -565,9 +535,8 @@ public final class ClusterProbe {
         private long delivered;
 
         /**
-         * Set once, straight after construction — the receiver cannot be a constructor argument because
-         * it takes this object's handler. Read at dispatch time rather than once per duty cycle: a poll
-         * dispatches up to a fragment limit of frames, and a replay-to-live seam can fall inside one.
+         * Set once after construction, since the receiver takes this object's handler. Read per dispatch:
+         * a replay-to-live seam can fall inside one poll.
          */
         private ReplayerStreamReceiver receiver;
 
@@ -624,10 +593,7 @@ public final class ClusterProbe {
             .newLeaderTimeoutNs(NEW_LEADER_TIMEOUT_NS));
     }
 
-    /**
-     * Subscribes this node's co-located tap and waits for it to connect. Untethered, like every consumer
-     * addresses it: a probe that falls behind must be dropped rather than back-pressure the sequencer.
-     */
+    /** Subscribes this node's tap, untethered, and waits for it to connect. */
     private static Subscription awaitTap(final AeronCluster cluster) {
         final Subscription tap = cluster.context().aeron()
             .addSubscription(ReplayerStreamReceiver.FEEDER_CONSUMER_CHANNEL, FrameLayer.FEEDER_STREAM_ID);
@@ -647,19 +613,10 @@ public final class ClusterProbe {
     }
 
     /**
-     * Offers to cluster ingress, spinning through back-pressure and a leadership change.
-     *
-     * <p><b>{@code CLOSED} is not terminal here.</b> A leader that dies closes the client's egress
-     * image, and {@code AeronCluster} responds by closing the ingress publication and waiting for a
-     * {@code NewLeader} event — so every offer returns {@code CLOSED} for the length of the election,
-     * on a session the cluster still holds. The publication that replaces it is installed by
-     * {@code pollEgress}, which is why the spin polls, and the client closing itself
-     * ({@link AeronCluster#isClosed()}) is the only end of that road that is really fatal.
-     *
-     * <p>The spin also sends this session's keep-alives, since a caller offers from its duty cycle and
-     * this loop is that duty cycle while it runs. They cannot reach a cluster with no leader — Aeron
-     * says as much on {@code sendKeepAlive} — so this covers the other case: a long spin against a
-     * leader that is live but back-pressuring, which would otherwise let the session time out.
+     * Offers to cluster ingress, spinning through back-pressure and a leadership change. {@code CLOSED} is
+     * not terminal: during an election the ingress publication is closed until {@code pollEgress} installs
+     * the new leader's, so only the client closing itself ends the spin. It sends keep-alives too, so a
+     * long spin against a back-pressuring leader does not time the session out.
      */
     static void offer(final AeronCluster cluster, final DirectBuffer buffer, final int length) {
         final IdleStrategy idle = new YieldingIdleStrategy();
@@ -693,15 +650,6 @@ public final class ClusterProbe {
         while (System.nanoTime() < deadline) {
             Thread.onSpinWait();
         }
-    }
-
-    static IdleStrategy resolveIdleStrategy() {
-        final String name = System.getProperty("probe.idleStrategy", "backoff");
-        return switch (name.toLowerCase(Locale.ROOT)) {
-            case "yielding" -> new YieldingIdleStrategy();
-            case "backoff" -> new BackoffIdleStrategy();
-            default -> throw new IllegalArgumentException("Unknown probe.idleStrategy=" + name);
-        };
     }
 
     private static void usage() {

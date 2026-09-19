@@ -1,8 +1,7 @@
 #pragma once
 
-// Process-startup configuration read from the environment — the handful of lookups every seqeron
-// binary's main() does before it can connect to anything. Each of these was written out once per
-// binary; the aeron-directory one had additionally diverged (see resolveAeronDir).
+// Process-startup configuration read from the environment: the lookups every seqeron binary's main()
+// does before it can connect to anything.
 
 #include <cstdint>
 #include <cstdlib>
@@ -41,15 +40,9 @@ inline std::string joinPath(const std::string& dir, const std::string& name)
     return dir.back() == '/' ? dir + name : dir + '/' + name;
 }
 
-// The co-located SequencerServer member's Aeron directory, which an app shares so it can reach that
-// node's tap, its Replayer and (while that member leads) cluster ingress over aeron:ipc. `envName` is
-// the per-binary override (SEQERON_ORDER_EXEC_AERON_DIR, SEQERON_BASICDATA_AERON_DIR, …).
-//
-// The default is the directory of the member `memberId` names, matching SequencerServer.java's own
-// default. It was previously spelled out once per binary and two of the three hardcoded member 0, so an
-// unset override on member 1 or 2 attached the app to a different node's media driver than
-// SEQERON_NODE_MEMBER_ID named. Every launcher under src/*/scripts sets the override explicitly, so
-// that only ever mattered for a hand-started process — but it is a trap, and unifying removes it.
+// The co-located cluster member's Aeron directory, which an app shares to reach that node's tap, Replayer
+// and (while it leads) IPC ingress. `envName` is the per-binary override; the default is member
+// `memberId`'s directory, matching SequencerServer.java's.
 inline std::string resolveAeronDir(const char* envName, const std::int32_t memberId)
 {
     const char* value = std::getenv(envName);
@@ -70,9 +63,8 @@ inline std::string resolveEgressEndpoint(const char* envName, const std::uint16_
     return envString(envName, "localhost:" + std::to_string(defaultPort));
 }
 
-// Per-message logging on the poll thread blocks on stdout under load, so it is opt-in
-// via SEQERON_VERBOSE_LOG rather than unconditional: a normal run's poll thread never stalls on a
-// write() nobody is watching. Cached — this is checked once per message.
+// Per-message logging blocks the poll thread on stdout under load, so it is opt-in via SEQERON_VERBOSE_LOG.
+// Cached: checked once per message.
 inline bool verboseLoggingEnabled()
 {
     static const bool enabled = envFlag("SEQERON_VERBOSE_LOG");

@@ -7,19 +7,10 @@
 
 #include "Aeron.h"
 
-// C++ half of org.limitless.seqeron.metrics.SeqeronCounters — the operator counters seqeron's own
-// processes publish into their node's media-driver counters file, where MetricsExporter reads them.
-//
-// The type ids and the key layout below MUST match the Java class, exactly as FEEDER_STREAM_ID is
-// matched across the two sides: the exporter maps a counter to a metric name BY TYPE ID and reads
-// memberId/clientId straight out of the key, so a mismatch here silently publishes a counter nothing
-// scrapes, or scrapes one under the wrong name.
-//
-// App counters carry TWO ints, not one. A node runs several co-located replicas and each publishes
-// the same type id, so memberId alone would give
-// them identical Prometheus label sets — one series per node, silently overwritten. The replayer
-// clientId disambiguates them, and it is already the per-node-unique id ReplayClientIdCollisions
-// polices.
+// C++ half of org.limitless.seqeron.metrics.SeqeronCounters. The type ids and key layout MUST match the
+// Java class: the exporter names a counter by type id and reads memberId/clientId out of the key, so a
+// mismatch publishes a counter nothing scrapes. App counters are keyed on {memberId, clientId}, since a
+// node's several replicas publish the same type id.
 namespace org::limitless::seqeron::util {
 
 // ── Co-located C++ application replicas (5200-5299) ──────────────────────────────────────────
@@ -32,9 +23,8 @@ inline constexpr std::size_t KEY_MEMBER_ID_OFFSET = 0;
 inline constexpr std::size_t KEY_CLIENT_ID_OFFSET = 4;
 inline constexpr std::size_t APP_KEY_LENGTH = 8;
 
-// Allocates an app counter keyed on {memberId, clientId}. Returns the registration id to resolve with
-// Aeron::findCounter — the add is async, so the counter is not usable on the calling line (callers
-// resolve it on a later duty cycle, exactly as they do publications and subscriptions).
+// Allocates an app counter keyed on {memberId, clientId}. Returns the registration id for
+// Aeron::findCounter: the add is async, so callers resolve it on a later duty cycle.
 inline std::int64_t addAppCounter(const std::shared_ptr<aeron::Aeron>& aeron, const std::int32_t typeId,
                                   const std::string& label, const std::int32_t memberId, const std::int32_t clientId)
 {

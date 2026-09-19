@@ -9,10 +9,9 @@ documents describe — cross-check against source before trusting specifics ther
 
 Every recovery path in this document reduces to the same primitive: **replay the sequenced log from
 `globalSeqNo` 1**. `SequencerService.onTakeSnapshot` throws and `onStart` refuses a snapshot image
-(`cluster/src/main/java/org/limitless/seqeron/sequencer/SequencerService.java:295-300,544-550`); `clusterctl
-shutdown` uses Aeron's `ABORT` action, which takes no snapshot, never `SHUTDOWN`
-(`cluster/src/main/java/org/limitless/seqeron/tools/ClusterCtl.java:151-185` — `SHUTDOWN` snapshots first,
-which would silently break the invariant below).
+(`SequencerService`); `clusterctl shutdown` uses Aeron's `ABORT` action, which takes no snapshot, never
+`SHUTDOWN` (`ClusterCtl.shutdown` — `SHUTDOWN` snapshots first, which would silently break the invariant
+below).
 
 This is deliberate, not an oversight: **every node publishes and records its own copy of the
 sequenced stream** (the "tap", `aeron:ipc` stream 205 — see §2), and a node restored from a snapshot
@@ -32,8 +31,7 @@ structurally similar: kill something, let it replay, done.
 ### 1.1 Every node holds a complete, byte-identical copy of history
 
 `SequencerService` runs on every cluster node — leader and follower alike — and each one re-publishes
-every sequenced frame onto its own node-local `aeron:ipc` tap (`FEEDER_CHANNEL`/`FEEDER_STREAM_ID`,
-`SequencerService.java:101-102`), which that node's co-located Aeron Archive records. Because every
+every sequenced frame onto its own node-local `aeron:ipc` tap (`FrameLayer.FEEDER_CHANNEL`/`FEEDER_STREAM_ID`), which that node's co-located Aeron Archive records. Because every
 node processes the same Raft-committed log in the same order, the taps are byte-identical across
 nodes — there is no cross-node replication of the recording itself, no leader-only archive, and no
 asymmetry between a follower's copy of history and the leader's. The tap publication and its recording
@@ -81,28 +79,26 @@ every frame on the tap exactly once, in order; the other, untracked, reports wha
 
 ### 1.3 A node that cannot record itself terminates (self-fencing)
 
-`SequencerService.emit` is *reliable*: it spins on the tap-publication offer until it lands, because
-the recording is the authoritative copy of history and a dropped frame would be an unrecoverable gap
-(`SequencerService.java:640-688`). This can only block on genuine local-archive back-pressure — the
+`TapPublisher.emit` is *reliable*: it spins on the tap-publication offer until it lands, because
+the recording is the authoritative copy of history and a dropped frame would be an unrecoverable gap. This can only block on genuine local-archive back-pressure — the
 tap's only tethered subscriber is the recording itself, app replicas are untethered — but reliable is
 not the same as unbounded. `TapPublisher` (pure, Aeron-free, unit-tested in isolation —
 `TapPublisher.java`) distinguishes an archive that is merely slow (back-pressured but its recording
-position keeps advancing, so it keeps waiting) from one that has stopped draining (fatal after
-30s of zero progress) or gone away entirely (fatal at once). The same 1 Hz heartbeat that drives
-the cluster clock also runs `checkTapRecordingAlive` (`SequencerService.java:480-486`), because a
+position keeps advancing, so it keeps waiting) from one that has stopped draining (the stall gauge
+after 200ms of zero progress, fatal after 1s) or gone away entirely (fatal at once). The same 1 Hz heartbeat that drives
+the cluster clock also runs `TapPublisher.checkRecordingAlive`, because a
 *stopped* recording doesn't back-pressure anything at all — the tap's untethered app subscribers keep
 it looking connected — so liveness has to be polled, not just inferred from back-pressure.
 
 Either path calls `fatalTapFailure` → `fatalFailure`, which logs `FATAL: … terminating this node` and
 runs the fatal handler wired by `SequencerServer`, exiting the process with code **70**
-(`SequencerService.java:728-767`; documented operator-facing in `doc/ops.md` "A node that terminates
+(`TapPublisher.fatalFailure`; documented operator-facing in `doc/ops.md` "A node that terminates
 itself"). No cluster callback may signal failure by throwing instead: `Image.boundedControlledPoll`
 has already advanced the log position past the message before a thrown exception is caught, and
 `AgentRunner` keeps the agent alive — a throw here would silently drop the frame and leave the node
 running with a hole in its own recording, exactly the failure this whole mechanism exists to prevent
-(class Javadoc, `SequencerService.java:66-74`). The same reasoning bounds `scheduleHeartbeat`
-(`SequencerService.java:517-538`): a consensus module that refuses the cluster-clock timer for 30s
-continuous back-pressure is wedged, not busy, and gets the same fatal treatment — otherwise every
+(`TapPublisher`'s class Javadoc). The same reasoning bounds `TapPublisher.scheduleHeartbeat`: a
+consensus module that refuses the cluster-clock timer for 1s of continuous back-pressure is wedged, not busy, and gets the same fatal treatment — otherwise every
 consumer's session clock silently stops advancing with no operator-visible signal.
 
 Consequence for the cluster: the remaining members hold identical, complete recordings and keep
@@ -110,13 +106,13 @@ quorum without the dead node (an election moves leadership if it held it); **two
 quorum loss**, not a repeat of the same event. Restarting the node is ordinary full-log replay from
 `globalSeqNo` 1 (§0), rebuilding its tap recording from scratch; if it exits 70 again immediately, the
 underlying storage is still broken (start-up itself is bounded — the recording must go live within 5s,
-`TAP_RECORDING_START_TIMEOUT_NS`, `SequencerService.java:121`).
+`SequencerService.TAP_RECORDING_START_TIMEOUT_NS`).
 
 ### 1.4 Cluster shutdown / restart
 
 `clusterctl shutdown` is leader-gated: on the leader it publishes an unsequenced `ClusterStopped`
 marker, best-effort awaits its sequenced echo (so the log's last event before a planned stop is always
-that marker), then calls Aeron's `ClusterTool.abort` (`ClusterCtl.java:151-185`). `ABORT` — not
+that marker), then calls Aeron's `ClusterTool.abort` (`ClusterCtl.shutdown`). `ABORT` — not
 `SHUTDOWN` — is the only lifecycle action that terminates without taking a snapshot, and `SequencerServer`
 wires `ConsensusModule.Context.terminationHook` to a barrier so every node still unwinds cleanly
 (closing its Archive and draining the tap recording to disk) rather than being killed abruptly
@@ -179,17 +175,16 @@ Two ways a `GatewayActive` is produced:
 - **Automatic, on session close.** `Sequencer.sessionClosed` fires whenever a cluster session closes
   (crash, network loss, graceful shutdown — Aeron Cluster reports all of these as `onSessionClose`) and
   checks whether the closed session was one an *active* gateway had declared itself on via
-  `GatewayStarted` (`Sequencer.java:174,435-445` — deliberately keyed off `GatewayStarted`, not the
+  `GatewayStarted` (`Sequencer.activeGatewaySession` — deliberately keyed off `GatewayStarted`, not the
   routing `sourceId` on every message, because other clients legitimately echo a gateway's `sourceId`
   and an earlier version of this logic let an unrelated `OrderExecServer` restart promote a standby out
   from under a perfectly healthy primary). If so, `promotionTarget` picks the lowest-`preferenceRank`
   sibling sharing the same `gatewaySourceId` and emits `GatewayActive` naming it — or emits nothing,
   fail-closed, if there is no sibling to hand over to rather than naming a nonexistent instance
-  (`Sequencer.java:447-478`).
-- **Manual, via `clusterctl activate <gatewayId>`.** Publishes an unsequenced `GatewayActive` that
-  flows through `Sequencer.sequenceMessage` like any other ingress message — the same code path, no
-  special-casing — and waits for its sequenced echo, matched by `gatewayId`
-  (`ClusterCtl.java:194-291`). This is the operator's lever for a planned failover.
+  (`Sequencer.promotionTarget`).
+- **Manual, via `clusterctl activate <gatewayId>`.** Publishes an unsequenced `GatewayActivationRequested`
+  that flows through `Sequencer.sequenceMessage` like any other ingress message, and waits for the
+  `GatewayActive` the sequencer synthesizes behind it, matched by `gatewayId` (`ClusterCtl.activate`). This is the operator's lever for a planned failover.
 
 On the gateway side, `app/GatewayLifecycle` (Java and C++, in the client tier) is what acts on that frame:
 it tracks the last `GatewayActive` for its pair rather than latching one, publishes `GatewayStarted` before
@@ -197,8 +192,9 @@ opening its gate, and stands down without publishing when a sibling is named.
 
 A **bootstrap** activation also runs once per cluster lifetime: the first complete list — the
 `GatewayRegistered` row carrying `remaining == 0`, published by `clusterctl load-topology` — triggers
-`Sequencer.pendingGatewayBootstrapActivation`, which names the rank-0 (`preferenceRank == 0`) list row — so exactly one instance opens its accept gate at
-cold start and every sibling waits as a hot standby (`Sequencer.java:409-427`). A bootstrap with no
+`Sequencer.pendingGatewayActivation`, which names the rank-0 (`preferenceRank == 0`) row of each logical
+gateway — so exactly one instance of each pair opens its accept gate at cold start and every sibling waits
+as a hot standby. A bootstrap with no
 rank-0 row produces no frame — fail closed rather than guess.
 
 ### 2.3 Recovering FIX session state after a restart

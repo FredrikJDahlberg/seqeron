@@ -102,7 +102,7 @@ trap cleanup EXIT INT TERM
 # ── 1. Members 1 & 2 first -> leader is one of them; then member 0 (follower) ──
 start_seq 1; start_seq 2
 for m in 1 2; do
-  W=0; until grep -q "Running" "$LOG_DIR/seq-$m.log" 2>/dev/null; do sleep 0.5; W=$((W+1)); ((W>60)) && { echo "seq $m not up"; exit 1; }; done
+  wait_for_log "$LOG_DIR/seq-$m.log" "Running" 30 || { echo "seq $m not up"; exit 1; }
 done
 W=0; LEADER=""
 until [[ -n "$LEADER" ]]; do
@@ -112,7 +112,7 @@ until [[ -n "$LEADER" ]]; do
 done
 OTHER=$([[ "$LEADER" == "1" ]] && echo 2 || echo 1)   # the surviving non-0 member
 start_seq 0
-W=0; until grep -q "Running" "$LOG_DIR/seq-0.log" 2>/dev/null; do sleep 0.5; W=$((W+1)); ((W>60)) && { echo "seq 0 not up"; exit 1; }; done
+wait_for_log "$LOG_DIR/seq-0.log" "Running" 30 || { echo "seq 0 not up"; exit 1; }
 echo "cluster up; tenure-1 leader = member $LEADER ; consumer co-located with member $CN"
 
 for m in 0 1 2; do
@@ -121,7 +121,7 @@ for m in 0 1 2; do
   REPLAYER_PIDS[$m]=$!
 done
 for m in 0 1 2; do
-  W=0; until grep -q "serving replay" "$LOG_DIR/replayer-$m.log" 2>/dev/null; do sleep 0.5; W=$((W+1)); ((W>60)) && break; done
+  wait_for_log "$LOG_DIR/replayer-$m.log" "serving replay" 30 || true
 done
 echo "replayers serving"
 sleep 2
@@ -134,7 +134,7 @@ java "${JAVA_OPTS[@]}" -Dprobe.memberId="$CN" -Dprobe.clientId=9 \
      -Dprobe.latencyStats=true -Dprobe.faultInjection=true -Dprobe.faultDropCount="$GAP_SIZE" \
      -cp "$JAR" org.limitless.seqeron.tools.ClusterProbe follow > "$CONSUMER_LOG" 2>&1 &
 CONSUMER_PID=$!
-W=0; until grep -q "following live" "$CONSUMER_LOG" 2>/dev/null; do sleep 0.5; W=$((W+1)); ((W>60)) && { echo "consumer never caught up"; exit 1; }; done
+wait_for_log "$CONSUMER_LOG" "following live" 30 || { echo "consumer never caught up"; exit 1; }
 echo "consumer caught up (following live) on tenure 1"
 
 # ── 3. Force the failover -> recording 2 becomes the active recording ─────────

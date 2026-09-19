@@ -7,11 +7,8 @@ import org.agrona.BitUtil;
 import org.agrona.concurrent.UnsafeBuffer;
 
 /**
- * Registry of custom Aeron counter type ids used by seqeron's own processes, mirroring {@link
- * io.aeron.AeronCounters}'s registry pattern. Aeron reserves typeId 0-999 for itself (client/driver
- * 0-99, archive 100-199, cluster 200-299); custom counters must use 1000 or higher. One block per
- * process family so a range scan (see {@code clusterctl counters}) can find them all without listing
- * individual ids.
+ * Registry of seqeron's custom Aeron counter type ids (Aeron reserves 0-999). One block per process family,
+ * so a range scan ({@code clusterctl counters}) finds them all.
  */
 public final class SeqeronCounters {
     // SequencerService (the Aeron Cluster service)
@@ -42,11 +39,7 @@ public final class SeqeronCounters {
     /** 1 once the bootstrap {@code GatewayActive} has been emitted for the trading day, else 0. */
     public static final int SEQUENCER_BOOTSTRAP_ACTIVATED_TYPE_ID = 5007;
 
-    /**
-     * 1 while tap-emit back-pressure has been sustained past {@code SequencerService}'s stall
-     * threshold — distinguishes a genuine local-archive stall from the ordinary, self-clearing
-     * back-pressure {@link #SEQUENCER_TAP_BACKPRESSURE_ALERTS_TYPE_ID} already alerts on — else 0.
-     */
+    /** 1 while tap back-pressure has lasted past the stall threshold with no recording progress, else 0. */
     public static final int SEQUENCER_TAP_STALLED_TYPE_ID = 5008;
 
     /** Current count of TCP clients connected across every gateway, derived from the sequenced log. */
@@ -55,12 +48,7 @@ public final class SeqeronCounters {
     /** Count of ingress messages successfully sequenced; {@code rate()} over this is ingress throughput. */
     public static final int SEQUENCER_INGRESS_MESSAGES_TYPE_ID = 5010;
 
-    /**
-     * Count of gateway session closes that found no standby to promote ({@code
-     * Sequencer.NO_PROMOTION_TARGET}): the cluster is left with no active instance of that logical
-     * gateway until one starts. Distinct from a session close that was never a gateway's at all, which
-     * this counter does not see.
-     */
+    /** Count of gateway session closes that found no standby to promote, leaving that gateway with none active. */
     public static final int SEQUENCER_GATEWAY_PROMOTION_FAILED_COUNT_TYPE_ID = 5011;
 
     // ReplayerService (per-node replay server)
@@ -86,41 +74,30 @@ public final class SeqeronCounters {
     public static final int REPLAYER_IDLE_TTL_RECLAIMED_COUNT_TYPE_ID = 5105;
 
     /**
-     * 1 once this node's oldest tap recording has failed the startup integrity check (its first frame
-     * is not globalSeqNo 1 — the recording doesn't reach the start of the log), else 0. Latched: once
-     * set, {@code ready} never becomes 1 for this process's lifetime.
+     * 1 once a tap recording has failed the startup integrity check (its first frame is not globalSeqNo 1),
+     * else 0. Latched: {@code ready} never becomes 1 again for this process.
      */
     public static final int REPLAYER_INTEGRITY_FAILURE_TYPE_ID = 5106;
 
     /**
-     * Count of control replies dropped rather than spun on because an app stopped draining the control
-     * stream. Each costs that app one resend interval and nothing else; a rising rate means a wedged
-     * replica, and is the only trace of it — the Replayer no longer stalls in sympathy.
+     * Count of control replies dropped because an app stopped draining the control stream; each costs that
+     * app one resend interval. A rising rate means a wedged replica.
      */
     public static final int REPLAYER_CONTROL_REPLIES_DROPPED_COUNT_TYPE_ID = 5107;
 
     /**
-     * 1 once two co-located apps have been seen sharing one {@code SEQERON_REPLAYER_CLIENT_ID} (see
-     * {@code ReplayClientIdCollisions}), else 0. A configuration fault, not a runtime one: the two
-     * stop each other's replays on every request and neither ever catches up, so a node showing this
-     * has replicas that will not recover until it is corrected.
+     * 1 once two co-located apps have been seen sharing one {@code SEQERON_REPLAYER_CLIENT_ID}, else 0. Their
+     * replicas stop each other's replays and will not recover until the configuration is corrected.
      */
     public static final int REPLAYER_CLIENT_ID_COLLISION_TYPE_ID = 5108;
 
     // ── Co-located application replicas (5200-5299) ────────────────────────────────────────────
-    // Core reserves 5200 and nothing else in the range; a consumer allocates its own inside it
-    // (doc/registries.md §3), which is also why MetricsExporter names an unrecognised app counter from
-    // its label rather than from a table here.
-    // Published by the apps themselves, not by any Java process — see the C++ half in
-    // {@code util/SeqeronCounters.hpp}, which must be kept in step with the ids and key layout here.
+    // Core reserves 5200; a consumer allocates its own in the range (doc/registries.md §3). Published by
+    // the apps, not by any Java process: util/SeqeronCounters.hpp must match these ids and key layout.
     public static final int APP_TYPE_ID_MIN = 5200;
     public static final int APP_TYPE_ID_MAX = 5299;
 
-    /**
-     * 1 while a co-located replica's recovery has been reported unconvergent — nothing dispatched for
-     * {@code RECOVERY_PROGRESS_TIMEOUT_MS} while not caught up (see {@code RecoveryProgressPolicy}) —
-     * else 0. The replica is holding, which is correct and safe; what it is not is serving.
-     */
+    /** 1 while a co-located replica's recovery has dispatched nothing while not caught up, else 0. */
     public static final int APP_RECOVERY_STALLED_TYPE_ID = 5200;
 
     /** Whole range this class owns, for a typeId-range scan (see {@code clusterctl counters}). */
@@ -131,12 +108,8 @@ public final class SeqeronCounters {
     public static final int KEY_MEMBER_ID_OFFSET = 0;
 
     /**
-     * Offset of the replayer clientId int in an <b>app</b> counter's key. Node-scoped counters carry the
-     * memberId alone, but a node runs several co-located replicas publishing the same type id, so
-     * without this they would all render as one Prometheus series per node — the same label set,
-     * silently overwritten. Only counters in the {@link #APP_TYPE_ID_MIN}..{@link #APP_TYPE_ID_MAX}
-     * range carry it; on the others this offset reads 0 out of Aeron's zero-filled key area, which is
-     * why the exporter keys off the range rather than probing the value.
+     * Offset of the replayer clientId in an <b>app</b> counter's key, so a node's several replicas render as
+     * separate series. Only the app range carries it, which is why the exporter keys off the range.
      */
     public static final int KEY_CLIENT_ID_OFFSET = BitUtil.SIZE_OF_INT;
 
@@ -146,12 +119,7 @@ public final class SeqeronCounters {
     /** Length of the key buffer written by {@link #addAppCounter}: memberId then clientId. */
     public static final int APP_KEY_LENGTH = 2 * BitUtil.SIZE_OF_INT;
 
-    /**
-     * Allocates a seqeron operator counter with {@code memberId} encoded as a 4-byte int key
-     * (offset {@link #KEY_MEMBER_ID_OFFSET}) alongside its human-readable label, so a remote reader
-     * (e.g. a Prometheus exporter reading {@code CountersReader.forEach(MetaData)}) can recover the
-     * member as structured data instead of parsing it back out of the label text.
-     */
+    /** Allocates an operator counter keyed on {@code memberId}, so a reader recovers the member without parsing the label. */
     public static Counter addCounter(final Aeron aeron, final int typeId, final String label, final int memberId) {
         final UnsafeBuffer keyBuffer = new UnsafeBuffer(new byte[KEY_LENGTH]);
         keyBuffer.putInt(KEY_MEMBER_ID_OFFSET, memberId);
@@ -161,9 +129,7 @@ public final class SeqeronCounters {
     }
 
     /**
-     * Allocates an <b>app</b> counter, keyed on {@code {memberId, clientId}} rather than the memberId alone
-     * (see {@link #KEY_CLIENT_ID_OFFSET}): a node runs several co-located replicas publishing the same type
-     * id, and without the clientId they all render as one series per node. The C++ twin is
+     * Allocates an <b>app</b> counter keyed on {@code {memberId, clientId}}. The C++ twin is
      * {@code util/SeqeronCounters.hpp}'s {@code addAppCounter}; the key layout must match.
      */
     public static Counter addAppCounter(final Aeron aeron, final int typeId, final String label, final int memberId,

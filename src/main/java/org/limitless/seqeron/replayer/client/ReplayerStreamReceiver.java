@@ -21,25 +21,16 @@ import org.limitless.seqeron.sbe.replay.ReplayRequestEncoder;
 import org.limitless.seqeron.sequencer.FrameLayer;
 
 /**
- * App-replica side of the per-node {@code ReplayerService} — the Java twin of the C++
- * {@code replayer/client/ReplayerStreamReceiver.hpp}.
+ * App-replica side of the per-node {@code ReplayerService} — the Java twin of
+ * {@code replayer/client/ReplayerStreamReceiver.hpp}. Reads the co-located tap live and asks the Replayer
+ * for history and gaps. The Aeron adapter only: every decision lives in {@link ReplayerRecovery}.
  *
- * <p>It reads the co-located {@code SequencerService} IPC tap ({@link SequencerService#FEEDER_STREAM_ID})
- * LIVE and only touches the archive indirectly — by asking the node-local Replayer to replay when it
- * detects a gap. That is the whole point of the Replayer: one process per node reads the archive, every
- * replica reads the cheap local tap for live and asks the Replayer for history and gaps.
- *
- * <p>This is the Aeron adapter only: subscriptions, the request publication, the replay image and the
- * clocks. Every decision it makes about them lives in {@link ReplayerRecovery}, which holds none of them.
- *
- * <p><b>Single-threaded.</b> Every method must be called from the one duty-cycle thread.
+ * <p>Single-threaded: every method runs on the one duty-cycle thread.
  */
 public final class ReplayerStreamReceiver implements AutoCloseable, ReplayerRecoveryActions {
     /**
-     * The replay protocol's addresses — node-local IPC between an app and its co-located
-     * {@code ReplayerService}, and the wire contract between the two. They are the client's rather than the
-     * server's because the client tier is the one a consumer depends on: the server reads them from here,
-     * which is also how the C++ side has it ({@code replayer/client/ReplayerStreamReceiver.hpp}).
+     * The replay protocol's addresses, held by the client tier every consumer depends on; the server reads
+     * them from here, as in C++.
      */
     public static final String IPC_CHANNEL = "aeron:ipc";
 
@@ -55,16 +46,12 @@ public final class ReplayerStreamReceiver implements AutoCloseable, ReplayerReco
     /** Answer to a resume request the Replayer refuses, or one that needs no replay at all. */
     public static final long NO_REPLAY_NEEDED = NULL_VALUE;
 
-    /**
-     * The tap as a consumer addresses it: untethered, so a slow app is dropped and heals via replay rather
-     * than back-pressuring the sequencer.
-     */
+    /** The tap as a consumer addresses it: untethered, so a slow app is dropped and heals via replay. */
     public static final String FEEDER_CONSUMER_CHANNEL = FrameLayer.FEEDER_CHANNEL + "?tether=false";
 
     /**
-     * Untethered like the tap, and for the same reason: the Replayer answers every app from one duty-cycle
-     * thread, so an app that stops polling must not be able to back-pressure the stream the others are
-     * answered on. A dropped reply costs one resend interval, which the resend timer already covers.
+     * Untethered like the tap: the Replayer answers every app from one thread, so an app that stops polling
+     * must not back-pressure the others' replies. A dropped reply costs one resend interval.
      */
     public static final String CONTROL_CHANNEL = IPC_CHANNEL + "?tether=false";
 
@@ -123,8 +110,7 @@ public final class ReplayerStreamReceiver implements AutoCloseable, ReplayerReco
      * Subscribes the tap and control streams, opens the request publication and the convergence counter,
      * and requests the cold-start replay from segment 0.
      * @param aeron    client sharing the co-located node's media driver
-     * @param memberId this app's node — needed only to label the counter, since a node's metrics are
-     *                 merged with every other node's
+     * @param memberId this app's node, to label the counter
      */
     public void start(final Aeron aeron, final int memberId) {
         this.aeron = aeron;
@@ -139,11 +125,8 @@ public final class ReplayerStreamReceiver implements AutoCloseable, ReplayerReco
     }
 
     /**
-     * Test-only (see {@code ClusterProbe}'s {@code SEQERON_PROBE_FAULT_INJECTION} hook): enable dropping
-     * live tap frames on demand, to synthesize a consumer-side globalSeqNo gap so a test can drive gap
-     * recovery deterministically ({@code cluster/src/test/scripts/gap-recovery-test.sh}). A no-op in
-     * production (never enabled). The C++ twin is {@code enableFaultInjection} in
-     * {@code replayer/client/ReplayerStreamReceiver.hpp}.
+     * Test-only: lets {@link #injectTapDrop} drop live tap frames, to drive gap recovery deterministically
+     * (gap-recovery-test.sh). Never enabled in production.
      */
     public void enableFaultInjection() {
         faultInjection = true;
@@ -161,10 +144,9 @@ public final class ReplayerStreamReceiver implements AutoCloseable, ReplayerReco
     }
 
     /**
-     * One duty-cycle iteration. Poll ordering: always drain control (to learn Replaying/ReplayPending),
-     * ride an attached replay image, and always drain AND dispatch the tap — the contiguity check in
-     * {@link ReplayerRecovery}, not the poll routing, decides what a tap frame is worth mid-walk, which is
-     * what lets the tap itself close the replay-to-live seam.
+     * One duty-cycle iteration: drain control, ride an attached replay image, and always drain and dispatch
+     * the tap — {@link ReplayerRecovery}'s contiguity check, not the poll routing, decides what a tap frame is
+     * worth mid-walk.
      * @return fragments consumed
      */
     public int poll() {
@@ -277,16 +259,9 @@ public final class ReplayerStreamReceiver implements AutoCloseable, ReplayerReco
     }
 
     /**
-     * Subscribes to exactly one replay — this one — for as long as we ride it, and to nothing on the replay
-     * stream the rest of the time.
-     *
-     * <p>Load-bearing, not tidiness. The Replayer answers every app on one shared {@code aeron:ipc} stream,
-     * and an Aeron publication is flow-controlled by its slowest TETHERED subscriber. A standing
-     * subscription on that stream makes every idle app a subscriber of every other app's replay — one that
-     * never polls, because poll() only ever reads the image of its OWN session, so its position stays at 0
-     * forever, and the archive's replay then wedges one publication window past the slowest of them. Any
-     * cold start with more than a term's worth of history hangs permanently. Filtered to the session id, a
-     * replay publication has exactly one subscriber.
+     * Subscribes to exactly one replay, this one, and to nothing on the replay stream otherwise. A standing
+     * subscription would make every idle app a tethered, never-polled subscriber of every other app's
+     * replay on the shared stream, and wedge the archive's replay one window in.
      */
     @Override
     public void openReplay(final long replaySessionId) {
@@ -326,12 +301,9 @@ public final class ReplayerStreamReceiver implements AutoCloseable, ReplayerReco
     }
 
     /**
-     * Stream position of the first byte of the frame {@code header} describes. Deliberately not
-     * {@code header.position() - frameLength}: {@code position()} is the NEXT frame's position (this
-     * frame's end rounded up to the 32-byte frame alignment), so subtracting an unaligned SBE length lands
-     * short of the true start and is itself unaligned — and a replay position must sit on a frame boundary.
-     * Under a FragmentAssembler it is further off. Term offsets are always frame-aligned, so this form is
-     * exact in both cases.
+     * Stream position of the first byte of the frame {@code header} describes. Not {@code header.position()
+     * - frameLength}: {@code position()} is the next frame's, aligned to 32 bytes, and a replay position must
+     * sit on a frame boundary.
      */
     private void onTapFragment(final org.agrona.DirectBuffer buffer, final int offset, final int length,
                                final io.aeron.logbuffer.Header header) {
@@ -348,10 +320,8 @@ public final class ReplayerStreamReceiver implements AutoCloseable, ReplayerReco
     }
 
     /**
-     * The wall-clock stamp every frame is delivered with, on the same epoch as the cluster consensus
-     * timestamp a consumer measures it against. {@code currentTimeMillis() * 1_000_000} quantised every
-     * sample to a whole millisecond — coarser than the latency it is there to measure — so this is
-     * {@code Instant.now()} in nanoseconds, the C++ twin's {@code system_clock::now()}.
+     * The wall-clock stamp every frame is delivered with, in epoch nanoseconds like the consensus timestamp
+     * it is measured against; millisecond resolution would be coarser than the latency measured.
      */
     static long nowNs() {
         return SystemEpochNanoClock.INSTANCE.nanoTime();

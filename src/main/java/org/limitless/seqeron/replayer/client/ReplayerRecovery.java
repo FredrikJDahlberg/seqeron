@@ -15,29 +15,17 @@ import org.limitless.seqeron.sbe.replay.ReplayingDecoder;
 import org.limitless.seqeron.util.Logger;
 
 /**
- * The state machine of {@link ReplayerStreamReceiver}.
+ * The state machine of {@link ReplayerStreamReceiver}. Catch-up is detected by position
+ * ({@code Replaying.catchUpPosition}); a gap by globalSeqNo, repaired by resuming the active recording at
+ * the last dispatched frame.
  *
- * <p>Catch-up is detected by position ({@code Replaying.catchUpPosition}).
+ * <p>The replay-to-live seam is closed by the tap itself: the untethered tap is polled every duty cycle, so
+ * frames beyond the current hole are retained and drained once contiguous. While {@link #isRecovering()} a
+ * non-contiguous tap frame is expected rather than a new gap, and it may not set the globalSeqNo baseline
+ * before the walk has — a cold start would otherwise adopt a mid-stream baseline.
  *
- * <p>Gap recovery is detected by globalSeqNo. On a tap gap the client asks the Replayer to RESUME
- * the active recording at the position of the frame it last dispatched, so repairing a dropped frame
- * costs a replay of the hole.
- * *
- * <p>The replay-to-live seam is closed by the tap itself, not by a round trip. Tap frames are dispatched
- * while a walk is in flight, and frames beyond the current hole are RETAINED in globalSeqNo order, because
- * the tap must be polled every duty cycle (it is untethered).
- *
- * <p>Two consequences of dispatching the tap mid-walk. A non-contiguous tap frame is then EXPECTED, not a
- * new gap: re-walk is triggered only when not {@link #isRecovering()}, so an in-flight walk runs to
- * completion instead of being superseded by the very frames it is racing. And such a frame may not
- * establish the globalSeqNo baseline before the walk has — otherwise a cold start would adopt whatever the
- * live tap happened to be carrying, which is exactly the mid-stream baseline the first-frame-must-be-1
- * abort exists to prevent.
- *
- * <p>{@link #isCaughtUp()}  is cleared the moment a live-tap gap is detected and re-established when the stream
- * goes contiguous again, because consumers gate real decisions on it.
- *
- * <p><b>Single-threaded.</b> Every method must be called from the one duty-cycle thread.
+ * <p>{@link #isCaughtUp()} is cleared on a live-tap gap and re-established once contiguous: consumers gate
+ * real decisions on it. Single-threaded: every method runs on the one duty-cycle thread.
  */
 public final class ReplayerRecovery {
     /** Receives every in-order frame that is not intercepted as a leadership change. */
@@ -61,34 +49,24 @@ public final class ReplayerRecovery {
     private static final long RESEND_INTERVAL_MS = 500;
 
     /**
-     * How long an established replay may deliver nothing before it is re-requested. Deliberately far above
-     * any legitimate pause: the archive reads local disk, so a replay with anything left to serve is never
-     * quiet for seconds. Kept well clear of {@link #RESEND_INTERVAL_MS} too, since a spurious fire costs a
-     * whole segment re-replayed.
+     * How long an established replay may deliver nothing before it is re-requested. The archive reads local
+     * disk, so a replay with anything left is never quiet this long; a spurious fire re-replays a segment.
      */
     private static final long REPLAY_STALL_TIMEOUT_MS = 5_000;
 
     /**
-     * How long recovery may run without dispatching a single frame before it is reported as unconvergent. A
-     * different question from {@link #REPLAY_STALL_TIMEOUT_MS}, which asks whether one replay IMAGE is
-     * advancing: the re-walk loop this catches keeps starting and finishing healthy replays and dispatches
-     * nothing out of any of them.
+     * How long recovery may dispatch nothing before it is reported unconvergent: a re-walk loop that keeps
+     * finishing healthy replays yet dispatches nothing, which {@link #REPLAY_STALL_TIMEOUT_MS} cannot see.
      */
     private static final long RECOVERY_PROGRESS_TIMEOUT_MS = 30_000;
 
-    /**
-     * {@code ReplayRequest.segmentIndex} meaning "resume the active recording at fromPosition" rather than
-     * "replay the segmentIndex-th recording of the chain" — see {@code ReplayerService.serveReplay}.
-     */
+    /** {@code ReplayRequest.segmentIndex} meaning "resume the active recording at fromPosition". */
     private static final int RESUME_SEGMENT_INDEX = -1;
 
     /** {@code LeadershipChanged}, synthesized onto the sequenced stream; intercepted, never dispatched. */
     private static final int LEADERSHIP_CHANGED = SystemFrame.LEADERSHIP_CHANGED;
 
-    /**
-     * Caps on frames retained ahead of a hole — enough to cover a walk over a normal recording, not a whole
-     * trading day; past either bound recovery falls back to re-walking.
-     */
+    /** Caps on frames retained ahead of a hole; past either, recovery falls back to re-walking. */
     private static final int MAX_RETAINED_FRAMES = 65536;
 
     private static final long MAX_RETAINED_BYTES = 16L * 1024 * 1024;
@@ -133,22 +111,15 @@ public final class ReplayerRecovery {
     private long lastHeartbeatMs;
 
     /**
-     * A {@code ReplayComplete} that did not land. A healthy publication still returns
-     * BACK_PRESSURED/ADMIN_ACTION transiently, and a discarded result made "attempted" indistinguishable
-     * from "sent". Only the release needs this — see {@link #requestReplay} for why the request must NOT be
-     * retried the same way.
+     * A {@code ReplayComplete} that did not land (transient back-pressure), retried from {@link #doTimers}.
+     * Nothing supersedes a release, unlike a request.
      */
     private boolean completePending;
 
     private long lastReplayPosition = -1;
     private long lastReplayProgressMs;
 
-    /**
-     * The Replayer is refusing to serve us (its integrity check failed). State, not just a log latch: the
-     * refusal is resent on every request, so report it once per episode, and
-     * {@link #checkRecoveryProgress} prints it as the fact that tells a refusal apart from a Replayer that
-     * never answered.
-     */
+    /** The Replayer is refusing to serve us: reported once per episode, and named in the stall report. */
     private boolean replayerUnavailable;
 
     private long lastGlobalSeqNo;
@@ -174,9 +145,8 @@ public final class ReplayerRecovery {
     private long retainBytes;
 
     /**
-     * Frames were dropped ahead of the hole because the FIFO was full: the frontier this client holds is
-     * short of the real one, so it must re-walk rather than declare itself caught up. Cleared only where
-     * that re-walk is requested ({@link #endOverflowEpisode}).
+     * Frames were dropped ahead of the hole because the FIFO was full, so this client's frontier is short:
+     * it must re-walk rather than declare itself caught up. Cleared by {@link #endOverflowEpisode}.
      */
     private boolean retainOverflowed;
 
@@ -332,14 +302,9 @@ public final class ReplayerRecovery {
     }
 
     /**
-     * Decides what a closed replay image means, from the position it closed at.
-     *
-     * <p>A stopped historical segment's bounded replay closes on its own exactly at its stopPosition — which
-     * is the bound we were handed, so that IS completion. Every other close is not: the Replayer stopped
-     * this replay (superseded by a resend, or its slot reclaimed by the idle TTL), the archive faulted, or
-     * the Replayer shut down — and the image then closes SHORT of the bound. Treating those as completion
-     * advances the walk over a segment that was never fully replayed, silently leaving a hole in history
-     * that only the next tap gap would ever expose.
+     * Decides what a closed replay image means. A stopped segment's bounded replay closes exactly at its
+     * bound, which is completion; any close short of it (superseded, TTL-reclaimed, faulted) is not, and
+     * advancing the walk over it would leave a silent hole.
      */
     public void onReplayImageClosed(final long finalPosition) {
         if (finalPosition >= catchUpPosition) {
@@ -477,13 +442,9 @@ public final class ReplayerRecovery {
     }
 
     /**
-     * Sends {@code ReplayRequest(clientId, requestId, segmentIndex, fromPosition)} and marks us awaiting
-     * the reply. Idempotent on the Replayer side (it supersedes any in-flight replay for this clientId), so
-     * the resend timer re-sending the same request is safe.
-     *
-     * <p>{@code requestId} advances on EVERY send, resends included — that is the point. A resend makes the
-     * Replayer stop the in-flight session and start a new one, leaving the stale reply queued ahead of the
-     * live one on the shared control stream; only a per-send id lets {@link #onControl} tell them apart.
+     * Sends {@code ReplayRequest} and marks us awaiting the reply. The Replayer supersedes any in-flight
+     * replay for this clientId, so a resend is safe. {@code requestId} advances on every send, resends
+     * included: only a per-send id tells a stale reply from the live one on the shared control stream.
      */
     private void requestReplay(final int segmentIndex, final long fromPosition) {
         if (segmentIndex >= 0) {
@@ -504,27 +465,16 @@ public final class ReplayerRecovery {
     }
 
     /**
-     * Steady-state gap recovery: ask for the active recording resumed at the frame we last dispatched,
-     * rather than re-walking the whole chain from segment 0. Repairing a one-frame drop then costs a
-     * one-frame replay instead of a replay of the entire trading day — during which nothing is dispatched
-     * at all, a replay slot is held, and {@link #isCaughtUp()} stays false.
-     *
-     * <p>A bare position only means anything against the recording it was observed in, and the active
-     * recording can rotate under us. Rather than trying to prove that has not happened, the resumed replay
-     * is checked where it lands: its first frame must be the very frame the position was anchored on, and
-     * if it is not we fall back to the walk, which needs no position to be sound.
+     * Steady-state gap recovery: resume the active recording at the last dispatched frame instead of
+     * re-walking the chain, so a one-frame drop costs a one-frame replay. The recording may have rotated,
+     * so the resumed replay's first frame is checked against the anchor, falling back to a walk.
      */
     private void requestResume() {
         requestReplay(RESUME_SEGMENT_INDEX, lastFramePosition);
         resumeAnchorGlobalSeqNo = lastGlobalSeqNo;
     }
 
-    /**
-     * Re-asks for whatever is in flight. A resume must go back through {@link #requestResume()} rather than
-     * re-send the stale {@link #requestFromPosition} verbatim, which would carry no anchor for
-     * {@link #onFrame} to validate against — the original anchor was already consumed by this episode's
-     * first replayed frame.
-     */
+    /** Re-asks for whatever is in flight; a resume goes back through {@link #requestResume()} for a fresh anchor. */
     private void reRequestCurrent() {
         if (walkSegmentIndex < 0) {
             requestResume();
@@ -581,11 +531,8 @@ public final class ReplayerRecovery {
     }
 
     /**
-     * The node's Replayer failed its startup integrity check: its archive does not reach globalSeqNo 1, so
-     * it has no valid history for anyone and says so instead of serving a mid-stream replay we would abort
-     * on. Deliberately NOT fatal here — that is the containment: an operator repairs the archive and
-     * restarts the Replayer, and the resend timer picks up where it left off with no app restart. We simply
-     * never go caught up, so every consumer gate stays shut.
+     * The Replayer's archive failed its globalSeqNo-1 integrity check. Not fatal here: an operator repairs
+     * the archive and restarts the Replayer, and the resend timer resumes; until then we never catch up.
      */
     private void onReplayUnavailable() {
         if (!replayerUnavailable) {
@@ -600,22 +547,16 @@ public final class ReplayerRecovery {
     }
 
     /**
-     * Releases our replay slot: we have reached the tip the Replayer bounded us to and are back on the live
-     * tap. Only the resume path needs this — every step of a cold-start walk supersedes its own slot with
-     * the next segment's request, and the walk's last request frees it via NO_REPLAY_NEEDED, whereas a
-     * resume has no follow-up request at all. Unlike a request this has no timer behind it and no follow-up
-     * that would supersede it, so a single dropped offer would be the whole release — hence
-     * {@link #completePending}, retried from {@link #doTimers} until it lands.
+     * Releases our replay slot at the end of a resume (a walk's last request frees it via NO_REPLAY_NEEDED).
+     * Retried via {@link #completePending} until it lands.
      */
     private void sendReplayComplete() {
         completePending = !actions.sendReplayComplete();
     }
 
     /**
-     * Refreshes this client's replay slot while it rides an attached image, so the Replayer's idle TTL
-     * measures "client stopped using the slot" rather than "the replay took a while" — a replay of a full
-     * trading day legitimately outlives any fixed TTL. Best-effort: a lost heartbeat only risks the slot
-     * being reclaimed, which the truncated-close path recovers from by re-requesting.
+     * Refreshes the replay slot while riding an image, so the Replayer's idle TTL measures an abandoned slot
+     * rather than a long replay. A lost heartbeat is recovered by the truncated-close path.
      */
     private void sendHeartbeat() {
         if (actions.sendReplayHeartbeat()) {
@@ -647,11 +588,7 @@ public final class ReplayerRecovery {
         requestReplay(walkSegmentIndex + 1, 0); // advance the walk to the next segment
     }
 
-    /**
-     * Everything past the contiguity check: advance the baseline, then decode and hand the frame to the
-     * caller. Split out so a frame drained from the retained FIFO (which lives in its own storage, not the
-     * subscription's) runs the identical path.
-     */
+    /** Everything past the contiguity check; also the path a drained retained frame takes. */
     private void dispatchFrame(final DirectBuffer buffer, final int offset, final int length,
                                final long globalSeqNo, final long framePosition, final long receiveNs,
                                final boolean fromReplay) {
@@ -685,16 +622,9 @@ public final class ReplayerRecovery {
     }
 
     /**
-     * Keeps a live tap frame that sits beyond the current hole. This is what actually closes the
-     * replay-to-live seam: the tap must be drained every duty cycle (it is untethered, so an unpolled
-     * subscription falls behind), which means a frame not kept here is GONE — and every frame published
-     * while a walk replays history is such a frame.
-     *
-     * <p>Bounded, and deliberately lossy past the bound: a re-walk over a full trading day cannot buffer a
-     * day of traffic, so on overflow this falls back to drop-and-re-walk rather than growing without limit.
-     * Retained as a FIFO of pooled blocks, not sorted by globalSeqNo: a single Aeron image delivers strictly
-     * increasing globalSeqNo with no reordering, so arrival order already is globalSeqNo order — only an
-     * exact-duplicate redelivery needs an explicit check, not general sorting.
+     * Keeps a live tap frame from beyond the current hole; one not kept is gone. Bounded and lossy past the
+     * bound (overflow falls back to a re-walk). A plain FIFO: one image delivers globalSeqNo in order, so
+     * only an exact redelivery needs checking.
      */
     private void retainFrame(final long globalSeqNo, final DirectBuffer buffer, final int offset, final int length,
                              final long framePosition, final long receiveNs) {
@@ -731,12 +661,7 @@ public final class ReplayerRecovery {
         retainTailGlobalSeqNo = globalSeqNo;
     }
 
-    /**
-     * Hands over every retained frame that has become contiguous, discarding any the replay has since
-     * covered. Called after each dispatch, so the seam closes the instant the replay reaches it. A block is
-     * returned to the pool the moment it is fully consumed, so the next recovery episode reuses
-     * already-resident memory instead of paying a fresh allocation.
-     */
+    /** Dispatches every retained frame now contiguous, dropping any the replay covered, and recycles blocks. */
     private void drainRetained() {
         // Exits when the FIFO runs dry, or on a hole below the oldest retained frame.
         RetainBlock front = frontRetained();
@@ -769,16 +694,10 @@ public final class ReplayerRecovery {
     }
 
     /**
-     * The replay side says we are at the tip — the chain is exhausted, or a resume reached its bound.
-     * Whether we actually are is what the retained-ahead FIFO knows, not what the replay covered: a frame
-     * retained during the episode may itself sit behind a hole the replay never reached
-     * ({@link #drainRetained} stops there), and an overflow ({@link #retainFrame}) silently dropped tap
-     * frames outright, past the bound the replay was even asked to cover. Either leaves us short of the real
-     * frontier, and declaring caught up over it opens a consumer's gates on a hole.
-     *
-     * @return true only once nothing is left waiting and no overflow is latched. Otherwise it re-walks HERE
-     *         rather than waiting for some future tap frame to rediscover the hole, which is unbounded under
-     *         the same sustained load that caused the overflow.
+     * The replay side says we are at the tip. Whether we are is the retained FIFO's call: a retained frame
+     * may sit behind a hole the replay never reached, or an overflow dropped frames. Either way this re-walks
+     * now rather than waiting for a later tap frame to rediscover the hole.
+     * @return true only once nothing is left waiting and no overflow is latched
      */
     private boolean reachedTip() {
         drainRetained();
@@ -791,10 +710,8 @@ public final class ReplayerRecovery {
     }
 
     /**
-     * The re-walk about to be requested is what covers the frames {@link #retainFrame} dropped, so the
-     * overflow ends HERE, where it is acted on — not in {@link #drainRetained}, where clearing it would
-     * forget the drop at exactly the wrong moment: the frame whose dispatch cleared it would then declare us
-     * caught up at the seam, over a frontier the drops had already invalidated.
+     * Ends an overflow episode where the covering re-walk is requested, not in {@link #drainRetained}, where
+     * the dispatch that cleared it would declare us caught up over dropped frames.
      */
     private void endOverflowEpisode() {
         retainOverflowed = false;
@@ -824,11 +741,7 @@ public final class ReplayerRecovery {
         retainPool.add(block);
     }
 
-    /**
-     * Fixed-size block backing the retained-ahead FIFO. Records are appended length-prefixed and never split
-     * across a block boundary — every message here is well under 512 bytes, so the wasted tail per boundary
-     * is bounded and negligible against {@link #SIZE}.
-     */
+    /** Fixed-size block of the retained FIFO; a record never spans two blocks. */
     private static final class RetainBlock {
         static final int SIZE = 4096;
 

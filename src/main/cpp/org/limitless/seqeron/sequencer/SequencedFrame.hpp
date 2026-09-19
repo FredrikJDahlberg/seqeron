@@ -25,34 +25,21 @@
 #include "org_limitless_seqeron_sbe_frame/SequencedSystem.h"
 #include "org_limitless_seqeron_sbe_frame/SequencedSystemHeader.h"
 
-// The sequenced stream's wire contract: what a frame on it is, how to decode one, and where it
-// sits. Everything here is shared by both stream clients — ClusterStreamClient (archive replay,
-// ClusterStreamClient.hpp) and ReplayerStreamReceiver (the live tap) — and by every consumer of
-// either. Kept apart from ClusterStreamClient.hpp so reading a frame does not drag in the archive
-// client: most consumers follow the tap and never replay an archive themselves.
+// The sequenced stream's wire contract: what a frame on it is, how to decode one, and where it sits.
+// Shared by both stream clients and every consumer; kept apart from ClusterStreamClient.hpp so reading a
+// frame does not drag in the archive client.
 
 namespace org::limitless::seqeron::sequencer {
 
 // ── Constants matching SequencerService / SequencerServer ──────────────────────
 
-// Stream id of the recorded sequenced stream. Every node records its node-local aeron:ipc tap
-// (SequencerService.FEEDER_CHANNEL / FEEDER_STREAM_ID) into its own archive; that recording is the
-// authoritative history clients replay here, matched by stream id alone in the archive catalog
-// (listRecordingsForUri). The old UDP multi-destination-cast global stream (stream 1) is retired,
-// so there is no live network subscription — clients follow the active recording's growth via an
-// open-ended archive replay instead (see start()/poll()).
+// Stream id of the tap every node records into its own archive; the recording is found by stream id alone.
 inline constexpr std::int32_t FEEDER_STREAM_ID = 205;
 
 // ── Limits ────────────────────────────────────────────────────────────────────
 //
-// These belong to the seqeron protocol, not to this file or to any participant in it: they are defined
-// by doc/seqeron-protocol-spec.md §12, and what follows is this language's compiled-in mirror of that
-// table. The Java mirror is FrameLayer. A change starts in the spec and lands in both, and is a wire
-// change (V-3) whichever way round it is made.
-//
-// Compiled in, and never read from a transport per frame: S-3 forbids checking against a node's own MTU,
-// which would let a node provisioned smaller than its peers fork globalSeqNo. Whether this node's MTUs
-// can carry the constant is a start-up question (T-2), not a per-frame one.
+// This language's compiled-in mirror of spec §12 (the Java one is FrameLayer); a change is a wire change
+// (V-3) and lands in both. Never read from a transport per frame: S-3 forbids checking a node's own MTU.
 
 // The pinned 1408-byte MTU less the 92-byte ingress header stack.
 inline constexpr std::uint16_t MAX_PAYLOAD_LENGTH = 1316;
@@ -66,10 +53,8 @@ inline constexpr std::uint16_t MAX_INGRESS_LENGTH = MIN_INGRESS_LENGTH + MAX_PAY
 
 // ── The systemEventType table (doc/seqeron-protocol-spec.md §7) ────────────────
 //
-// The eight submitted events are their own body codec's template id — the numbers they have always
-// held, so a recording made by an older build can never read as one of these. The three the
-// sequencer synthesizes have no body codec: a top-level template names each of them, and these are
-// the values they nonetheless stamp at offset 16 so that field discriminates every frame on the tap.
+// A submitted event's value is its body codec's template id. The three synthesized events have templates
+// of their own and stamp these values at offset 16 so that field discriminates every frame on the tap.
 // The Java twin is SystemFrame; keep the two in step.
 inline constexpr std::uint16_t CONNECTION_OPENED = sbe::frame::ConnectionOpened::sbeTemplateId();
 inline constexpr std::uint16_t CONNECTION_CLOSED = sbe::frame::ConnectionClosed::sbeTemplateId();
@@ -87,9 +72,8 @@ inline constexpr std::uint16_t APPLICATION_REGISTERED = sbe::frame::ApplicationR
 // ingressBlockLength's answer for a systemEventType that may not be submitted.
 inline constexpr std::int32_t NOT_INGRESS_LEGAL = -1;
 
-// The compiled block length of the event systemEventType names, or NOT_INGRESS_LEGAL if that value is
-// unallocated or has no ingress form: §9.2 conditions 8 and 9 in one lookup. The Java twin is
-// SystemFrame.ingressBlockLength.
+// The compiled block length of the event systemEventType names, or NOT_INGRESS_LEGAL: §9.2 conditions 8
+// and 9 in one lookup. The Java twin is SystemFrame.ingressBlockLength.
 constexpr std::int32_t ingressBlockLength(const std::uint16_t systemEventType)
 {
     switch (systemEventType)
@@ -240,11 +224,8 @@ inline FrameView unwrapFrame(const char* const frame, const std::uint64_t length
         view.payload = payload;
         view.payloadLength = payloadLength;
         view.valid = true;
-        // A payload too short to carry a messageHeader is still a frame. §5 admits an empty payload and
-        // §13.2 admits a payload that is not SBE at all, so there is not always an inner header to read --
-        // and P-3 requires the frame to reach the consumer regardless, or a globalSeqNo goes missing from
-        // the continuity read. Leaving templateId/blockLength/version at 0, as the system branches do, is
-        // what says "no inner declaration": no (payloadId, templateId) dispatch can match one (P-1).
+        // A payload too short for a messageHeader is still a frame (§5, §13.2) and must reach the consumer
+        // (P-3); templateId/blockLength/version stay 0, which no (payloadId, templateId) dispatch matches.
         if (payloadLength < sbe::frame::MessageHeader::encodedLength())
         {
             return view;
@@ -286,8 +267,8 @@ inline FrameView unwrapFrame(const char* const frame, const std::uint64_t length
         sbe::frame::SequencedSystemHeader header;
         header.wrap(bytes, blockOffset, hdr.version(), length);
         readSystemHeader(view, header);
-        // No body: the fields are inline in the frame's own block, so that block is what a consumer
-        // wraps its decoder over — with its own compiled constants, exactly as for a submitted body.
+        // No body: the fields are inline in the frame's own block, which a consumer wraps with its own
+        // compiled constants.
         view.payload = frame + blockOffset;
         view.payloadLength = length - blockOffset;
         view.valid = true;
@@ -295,9 +276,7 @@ inline FrameView unwrapFrame(const char* const frame, const std::uint64_t length
     return view;
 }
 
-// The same decode for a frame held as loose bytes rather than a live event — the gateway buffers
-// gateway-produced admin frames behind an in-flight resend and replays them once it drains, and its
-// outbound resend path re-decodes bytes it cached.
+// The same decode for a frame held as loose bytes rather than a live event.
 template<typename Decoder>
 Decoder decodeSequenced(const char* payload, const std::uint64_t payloadLength, const std::uint16_t blockLength,
                         const std::uint16_t version)
@@ -308,10 +287,8 @@ Decoder decodeSequenced(const char* payload, const std::uint64_t payloadLength, 
     return decoder;
 }
 
-// The same for a system frame's message, which carries no framing of its own: header.systemEventType
-// named it, so the block length and version come from this build's own decoder rather than from the
-// wire (§7, V-3). One helper for both system shapes — a submitted body and a synthesized template's
-// inline block are alike in carrying no declaration, and `payload` addresses each of them.
+// The same for a system frame's message, which carries no framing: block length and version come from
+// this build's decoder (§7, V-3). Serves both a submitted body and a synthesized template's inline block.
 template<typename Decoder>
 Decoder decodeSystem(const char* message, const std::uint64_t messageLength)
 {
@@ -327,22 +304,15 @@ Decoder decodeSystem(const SequencedEvent& event)
     return decodeSystem<Decoder>(event.payload, event.payloadLength);
 }
 
-// Wraps an event's payload in the decoder the caller has already matched its (payloadId, templateId)
-// against. Every consumer otherwise repeats this same wrapForDecode preamble once per message type,
-// const_cast included — the generated codecs decode through a mutable char*, while the event carries a
-// const pointer into the fragment buffer. Decoding does not write to it.
-//
-// The returned decoder points into that fragment buffer, so it is valid only for the duration of the
-// callback, exactly as SequencedEvent::payload is.
+// Wraps an event's payload in the decoder the caller matched its (payloadId, templateId) against. The
+// const_cast is safe: decoding does not write. Valid only for the callback, like SequencedEvent::payload.
 template<typename Decoder>
 Decoder decodeSequenced(const SequencedEvent& event)
 {
     return decodeSequenced<Decoder>(event.payload, event.payloadLength, event.blockLength, event.version);
 }
 
-// Stream position of the first byte of the frame `header` describes — what SequencedEvent::position
-// carries, for both clients that populate one, and what the resend path hands to
-// ReplayParams::position().
+// Stream position of the first byte of the frame `header` describes; what SequencedEvent::position carries.
 inline std::int64_t frameStartPosition(const aeron::Header& header)
 {
     return aeron::concurrent::logbuffer::LogBufferDescriptor::computePosition(
@@ -369,8 +339,7 @@ struct LifecycleEvent
     std::int64_t receiveTimeNs;      ///< wall-clock ns at receipt by this client
 };
 
-// The wall-clock stamp SequencedEvent/LifecycleEvent carry as receiveTimeNs. Free rather than a
-// member of either stream client, so both stamp their events off the same clock.
+// The wall-clock stamp events carry as receiveTimeNs, shared so both stream clients use one clock.
 inline std::int64_t nowNs()
 {
     using namespace std::chrono;

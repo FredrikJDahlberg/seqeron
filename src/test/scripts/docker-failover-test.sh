@@ -211,11 +211,7 @@ docker exec "node-${LEADER}" java "${JAVA_OPTS[@]}" \
 COLD_PID=$!
 echo "started cold probe follower (client ${COLD_CLIENT_ID}) inside node-${LEADER}"
 
-waited=0
-until grep -q "following live" "${COLD_LOG}" 2>/dev/null; do
-    sleep 0.5; waited=$((waited + 1)); (( waited > $(deadline 180) * 2 )) && break
-done
-CAUGHT=0; grep -q "following live" "${COLD_LOG}" && CAUGHT=1
+CAUGHT=0; wait_for_log "${COLD_LOG}" "following live" "$(deadline 180)" && CAUGHT=1
 
 # ── collect: SIGTERM every probe so its ShutdownSignalBarrier releases and report() prints ─────────
 for m in $(running_nodes); do docker exec "node-${m}" pkill -TERM -f ClusterProbe > /dev/null 2>&1; done

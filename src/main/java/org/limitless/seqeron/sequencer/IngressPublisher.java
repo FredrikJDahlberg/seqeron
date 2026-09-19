@@ -4,32 +4,20 @@ import org.agrona.DirectBuffer;
 import org.agrona.ExpandableArrayBuffer;
 
 /**
- * Encode-and-offer for cluster ingress: the one preamble every producer writes before its own fields.
- * The Java twin of {@code sequencer/IngressPublisher.hpp} — same two operations, same three-valued
- * outcome.
+ * Encode-and-offer for cluster ingress — the Java twin of {@code sequencer/IngressPublisher.hpp}. An
+ * instance owning its buffer rather than free functions over a stack array, and the body arrives
+ * pre-encoded rather than through a {@code Fill}, since Java's SBE codecs share no interface.
  *
- * <p>Two differences from the C++ file, both forced by the language. It is an instance rather than a pair
- * of free functions, because the C++ ones encode into a stack array and Java's equivalent of that is a
- * buffer owned once rather than allocated per call. And the body arrives already encoded rather than
- * through a {@code Fill} callback over an encoder, because {@code sbe.java.generate.interfaces} is off:
- * Java's generated codecs share no type to be generic over.
+ * <p>Given an {@link IngressTracker} (spec §16 A-4, A-5), each published frame is tracked under the sender's
+ * session and term, and nothing is sent while the tracker holds or is full.
  *
- * <p>Given an {@link IngressTracker}, it confirms what it places (spec §16 A-4, A-5): a published frame is
- * tracked under the sender's session and term, and while the tracker holds or is full nothing is sent and
- * the publish is {@code Declined}. A {@code Refused} body is refused first either way.
- *
- * <p>Not thread-safe: one publisher per producing thread, like the buffer it holds.
+ * <p>Not thread-safe: one publisher per producing thread.
  */
 public final class IngressPublisher {
     /**
-     * What a publish did.
-     *
-     * <p>Three-valued rather than a boolean for the reason the C++ twin gives: {@code Refused} is local
-     * and permanent — the body is above {@link FrameLayer#MAX_PAYLOAD_LENGTH}, or the frame breaks one of
-     * §9.2's conditions 6 to 9 ({@link SystemFrame#REFUSED}), nothing was offered, and a caller that
-     * retries is retrying something that can never succeed.
-     * {@code Declined} is the transport's answer — back-pressure past the send's own spin, or a session
-     * that is gone — or the tracker's, while it holds or is full, and is the one a caller may retry.
+     * What a publish did. {@code Refused} is local and permanent — the body is too long, or the frame breaks
+     * §9.2 conditions 6 to 9 — so retrying it cannot succeed. {@code Declined} (transport back-pressure, a
+     * lost session, or the tracker holding or full) is the one a caller may retry.
      */
     public enum Publish {
         Published, Refused, Declined

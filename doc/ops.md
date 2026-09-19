@@ -108,7 +108,7 @@ metrics are not limited to the names seqeron happens to know.
 | `seqeron_sequencer_last_tick_timestamp_ms` | gauge | Consensus timestamp of the last 1Hz ClusterHeartbeat emitted, in ms (the frame carries ns) |
 | `seqeron_sequencer_gateway_promotion_total` | counter | Count of standby-promotion GatewayActive frames emitted — on a gateway session close, or on a designated instance failing to publish `GatewayStarted` within 60s of being named |
 | `seqeron_sequencer_bootstrap_activated` | gauge | 1 once the bootstrap GatewayActive has been emitted for the trading day, else 0 |
-| `seqeron_sequencer_tap_stalled` | gauge | 1 while the tap recording has made no progress for longer than the stall threshold (2s) under back-pressure, else 0. Latches at 1 when the node terminates for an unrecordable tap — see below |
+| `seqeron_sequencer_tap_stalled` | gauge | 1 while the tap recording has made no progress for longer than the stall threshold (200ms) under back-pressure, else 0. Latches at 1 when the node terminates for an unrecordable tap — see below |
 | `seqeron_replayer_stalled` | gauge | 1 while the local archive is refusing to serve a replay, else 0. Set from every path that asks the archive for one — the startup self-check included — and cleared by a bounded probe replay the node runs itself once a second while stalled, so it reads 0 again even on a Replayer no app is asking for history |
 | `seqeron_replayer_ready` | gauge | 1 once the co-located tap recording is visible and replay requests are being served |
 | `seqeron_replayer_active_slots` | gauge | Current count of in-flight replays |
@@ -123,7 +123,7 @@ metrics are not limited to the names seqeron happens to know.
 ## A node that terminates itself
 
 `SequencerServer` exits **70** when its local archive stops recording the node's tap (stalled with no
-progress for 30s under back-pressure, or the recording gone outright). This is deliberate, not a crash:
+progress for 1s under back-pressure, or the recording gone outright). This is deliberate, not a crash:
 that node's archive is its copy of the sequenced history, so one that cannot record can only accumulate
 silent holes in it. What to expect and what to do:
 

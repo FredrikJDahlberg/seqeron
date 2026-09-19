@@ -36,6 +36,7 @@ import org.limitless.seqeron.sbe.frame.GatewayStartedEncoder;
 import org.limitless.seqeron.sbe.frame.MessageHeaderDecoder;
 import org.limitless.seqeron.sbe.probe.ProbeMarkerDecoder;
 import org.limitless.seqeron.sequencer.SystemFrame;
+import org.limitless.seqeron.util.IdleStrategies;
 import org.limitless.seqeron.util.Logger;
 
 /**
@@ -213,7 +214,7 @@ public final class TestGateway {
         final AtomicBoolean fenced = new AtomicBoolean();
         final ShutdownSignalBarrier barrier = new ShutdownSignalBarrier();
         final Thread duty = new Thread(() -> {
-            final IdleStrategy idle = ClusterProbe.resolveIdleStrategy();
+            final IdleStrategy idle = IdleStrategies.fromProperty(ClusterProbe.IDLE_STRATEGY_PROPERTY).get();
             try {
                 while (running.get()) {
                     idle.idle(dutyCycle());

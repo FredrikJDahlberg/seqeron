@@ -40,42 +40,26 @@ import org.xml.sax.SAXException;
 import org.xml.sax.SAXParseException;
 
 /**
- * clusterctl — the operator cluster life-cycle tool (see clusterctl.md). Node-local: run co-located
- * on a {@code SequencerServer} host, sharing that node's Aeron directory (to reach the co-located tap
- * over {@code aeron:ipc}) and {@code clusterDir} (for {@link ClusterTool}).
- *
- * <p>Named to mirror the {@code clusterctl.sh} launcher and to avoid shadowing Aeron's own
- * {@code io.aeron.cluster.ClusterControl} toggle class that {@link #shutdown()} drives via
- * {@link ClusterTool}.
+ * clusterctl — the operator cluster life-cycle tool (doc/clusterctl.md). Node-local: it shares a {@code
+ * SequencerServer} host's Aeron directory (to read the tap) and {@code clusterDir} (for {@link ClusterTool}).
+ * Named so as not to shadow Aeron's {@code io.aeron.cluster.ClusterControl}.
  *
  * <p>Commands:
  * <ul>
- *   <li><b>start</b> — publishes an unsequenced {@code ClusterStarted} marker (with a correlationId)
- *       to cluster ingress and waits for its own sequenced echo on the tap; exits non-zero if the
- *       cluster has no elected leader (the ingress connect times out) or the echo never arrives. It
- *       records that the system is up — it does not start any process.</li>
+ *   <li><b>start</b> — publishes a {@code ClusterStarted} marker and waits for its echo on the tap;
+ *       non-zero if there is no leader or no echo. It records that the system is up; it starts nothing.</li>
  *   <li><b>shutdown</b> — safe to execute on every node.
- *   <li><b>activate &lt;gatewayId&gt;</b> — manual standby promotion: publishes an unsequenced
- *       {@code GatewayActivationRequested(gatewayId)} to cluster ingress and waits for the
- *       {@code GatewayActive} the sequencer synthesizes behind it. The operator's act is what is
- *       recorded and the designation stays the cluster's, through the same path bootstrap and both
- *       promotions take — which is also what gets the manual path the list validation it would
- *       otherwise lack, since a {@code gatewayId} no list row names is rejected on ingress. Every
- *       gateway instance reacts to the resulting {@code GatewayActive} identically however it was
- *       triggered: the instance whose {@code gatewayId} matches opens its accept gate, the others stay
- *       standby.</li>
- *   <li><b>load-topology &lt;file&gt;</b> — publishes the deployment's topology document validated XML.
- *   <li><b>counters</b> — lists this node's seqeron operator counters ({@link
- *       org.limitless.seqeron.metrics.SeqeronCounters}), read directly off the co-located Aeron
- *       directory's CnC file. No cluster connection, so it works with no elected leader and is
- *       safe on every node.</li>
+ *   <li><b>activate &lt;gatewayId&gt;</b> — manual standby promotion: publishes
+ *       {@code GatewayActivationRequested} and waits for the {@code GatewayActive} the sequencer synthesizes
+ *       behind it, so the designation stays the cluster's and an unlisted {@code gatewayId} is refused.</li>
+ *   <li><b>load-topology &lt;file&gt;</b> — publishes the deployment's validated topology document.
+ *   <li><b>counters</b> — lists this node's operator counters off the CnC file; needs no leader.</li>
  *   <li><b>help</b> — usage.</li>
  *   <li><i>anything else</i> — passed through to {@link ClusterTool} against this node's
  *       {@code clusterDir} (describe, errors, list-members, recording-log, …).</li>
  * </ul>
  *
- * <p>Configuration mirrors {@code SequencerServer}'s defaults so co-location with the default
- * single-node cluster works with no arguments (see {@link #usage()} / {@code clusterctl.sh}).
+ * <p>Defaults mirror {@code SequencerServer}'s, so the default single-node cluster needs no arguments.
  */
 public final class ClusterCtl {
     // ── Configuration (mirrors SequencerServer's property defaults for co-location) ──
@@ -105,10 +89,8 @@ public final class ClusterCtl {
     private static final int NO_ID = -1;
 
     /**
-     * §5's other reserved sourceId — clusterctl's own, stamped on every marker it submits; -1 the XSD
-     * refuses on its own. It cannot be {@link #NO_ID}: that value is the cluster's (<b>F-4</b>) and the
-     * sequencer refuses it on ingress (§9.2, condition 6). Read from {@link TopologyDocument}, which
-     * refuses a document claiming it — the two must name the same number.
+     * clusterctl's own reserved sourceId (§5), stamped on every marker. Not {@link #NO_ID}, which is the
+     * cluster's own (<b>F-4</b>) and refused on ingress; {@link TopologyDocument} refuses a document claiming it.
      */
     private static final int RESERVED_SOURCE_ID = TopologyDocument.RESERVED_SOURCE_ID;
 
@@ -198,10 +180,8 @@ public final class ClusterCtl {
     }
 
     /**
-     * Manual standby promotion: publishes {@code GatewayActivationRequested(gatewayId)} to cluster
-     * ingress and waits for the {@code GatewayActive} synthesized behind it, mirroring {@link #start()}'s
-     * connect/publish/await-echo shape.
-     * No leader gate — routing to the leader is cluster ingress's job, same as {@code start}.
+     * Manual standby promotion: publishes {@code GatewayActivationRequested(gatewayId)} and waits for the
+     * {@code GatewayActive} synthesized behind it.
      */
     private static int activate(final String[] args) {
         if (args.length < 2) {
@@ -234,12 +214,9 @@ public final class ClusterCtl {
     }
 
     /**
-     * Publishes the topology document read from {@code args[1]}: one {@code GatewayRegistered} per
-     * list row, {@code remaining} counting down to 0, then one {@code PayloadIdRegistered} per
-     * protocol row, then waits for the last list row's sequenced echo.
-     *
-     * <p>The whole document is validated before a byte is published — a file that fails half-way
-     * leaves a list the log has already closed. All of that is {@link TopologyDocument}'s.
+     * Publishes the topology document read from {@code args[1]} — one {@code GatewayRegistered} per list row,
+     * {@code remaining} counting down to 0, then the application and protocol rows — and waits for the last
+     * list row's echo. {@link TopologyDocument} validates the whole document before a byte is published.
      */
     private static int loadTopology(final String[] args) {
         if (args.length < 2) {
@@ -341,11 +318,8 @@ public final class ClusterCtl {
     }
 
     /**
-     * Publishes an unsequenced {@code GatewayActivationRequested(gatewayId)}, then reads this node's
-     * co-located tap for the {@code GatewayActive} the sequencer synthesizes behind it. Returns that
-     * frame's globalSeqNo, or -1 on timeout (tap unavailable, no list row names the instance, or no
-     * echo within {@link #ECHO_TIMEOUT_NS}). Structured like {@link #publishMarkerAndAwaitEcho} but kept
-     * separate: neither message has a correlationId to match on, so it matches by {@code gatewayId}.
+     * Publishes {@code GatewayActivationRequested(gatewayId)} and reads the tap for the {@code GatewayActive}
+     * behind it, matched by {@code gatewayId}. Returns its globalSeqNo, or -1 on timeout.
      */
     private static long publishGatewayActiveAndAwaitEcho(final Session session, final int gatewayId) {
         final Subscription tap = awaitTap(session);
@@ -381,11 +355,8 @@ public final class ClusterCtl {
     }
 
     /**
-     * Lists this node's seqeron operator counters (see {@link SeqeronCounters}) — the
-     * {@code SequencerService}/{@code ReplayerService} gauges and event counts, plus whatever the
-     * co-located C++ replicas publish — read directly off the co-located Aeron directory's CnC file. No cluster
-     * connection needed, so this works whether or not this node holds an elected leader, and is safe to run on every
-     * node.
+     * Lists this node's operator counters (see {@link SeqeronCounters}), including any the co-located
+     * replicas publish, off the Aeron directory's CnC file. Needs no cluster connection.
      */
     private static int counters() {
         try (Aeron aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(AERON_DIR))) {
@@ -418,10 +389,7 @@ public final class ClusterCtl {
         ClusterTool.main(toolArgs);
     }
 
-    /**
-     * This tool's cluster session, and the media driver it borrows to reach both the cluster and the tap.
-     * Co-located by construction: {@code clusterctl} runs on a node, against that node's {@code clusterDir}.
-     */
+    /** This tool's cluster session, and the co-located media driver it reaches the cluster and the tap through. */
     private static final class Session implements AutoCloseable {
         private final Aeron aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(AERON_DIR));
         private final ClusterStreamSender sender = new ClusterStreamSender();
@@ -444,11 +412,7 @@ public final class ClusterCtl {
         }
     }
 
-    /**
-     * Publishes one system event on this session, or fails the command. {@code Declined} is the sender
-     * having spun through back-pressure and an election and found no session left at the end of it — a
-     * marker half-published is not something a caller here can carry on from.
-     */
+    /** Publishes one system event on this session, or fails the command: a {@code Declined} marker cannot be resumed. */
     private static void publish(final Session session, final int systemEventType,
                                 final ExpandableArrayBuffer body, final int bodyLength) {
         final IngressPublisher.Publish outcome =
@@ -460,9 +424,8 @@ public final class ClusterCtl {
     }
 
     /**
-     * Publishes the unsequenced marker for {@code systemEventType} with {@code correlationId} to cluster
-     * ingress, then reads this node's co-located tap for the matching sequenced echo. Returns the
-     * assigned globalSeqNo, or -1 on timeout (tap unavailable, or no echo within {@link #ECHO_TIMEOUT_NS}).
+     * Publishes the marker for {@code systemEventType} with {@code correlationId}, then reads the tap for its
+     * echo. Returns the assigned globalSeqNo, or -1 on timeout.
      */
     private static long publishMarkerAndAwaitEcho(final Session session, final int systemEventType,
                                                   final long correlationId) {
@@ -476,11 +439,7 @@ public final class ClusterCtl {
         return awaitEcho(session, tap, new MarkerEchoHandler(systemEventType, correlationId));
     }
 
-    /**
-     * Encodes and publishes the ClusterStarted/ClusterStopped marker for {@code systemEventType}. One
-     * encoder for both: they are byte-identical past the header, which is the same fact {@link
-     * MarkerEchoHandler} decodes both with one decoder on.
-     */
+    /** Encodes and publishes the ClusterStarted/ClusterStopped marker; the two are byte-identical past the header. */
     private static void publishMarker(final Session session, final int systemEventType, final long correlationId) {
         final ExpandableArrayBuffer payload = new ExpandableArrayBuffer(64);
         final ClusterStartedEncoder encoder = new ClusterStartedEncoder();
@@ -490,9 +449,8 @@ public final class ClusterCtl {
     }
 
     /**
-     * Reads the tap until {@code handler} sees the echo it is waiting for, or {@link #ECHO_TIMEOUT_NS}
-     * passes. Egress is polled alongside it: the session that published the marker has to stay alive for
-     * the echo to arrive at all.
+     * Reads the tap until {@code handler} sees its echo, or {@link #ECHO_TIMEOUT_NS} passes, polling egress
+     * alongside so the publishing session stays alive.
      * @return the echoed frame's globalSeqNo, or -1 on timeout
      */
     private static long awaitEcho(final Session session, final Subscription tap, final EchoHandler handler) {
@@ -506,11 +464,7 @@ public final class ClusterCtl {
         return handler.found ? handler.globalSeqNo : -1;
     }
 
-    /**
-     * Waits for one sequenced echo of a marker this tool published. Subclasses supply only what makes a
-     * frame theirs; the family check is common because the same 2-byte field is an application payloadId
-     * on the other family and the tap carries both.
-     */
+    /** Waits for one sequenced echo of a marker this tool published; subclasses say which frame is theirs. */
     private abstract static class EchoHandler implements FragmentHandler {
         final SequencedFrameDecoder view = new SequencedFrameDecoder();
         private final int systemEventType;
@@ -538,10 +492,7 @@ public final class ClusterCtl {
         }
     }
 
-    /**
-     * Subscribes to this node's co-located tap and waits for it to connect, which is where every
-     * await-my-own-echo path starts. Returns null (having said why) if it never does.
-     */
+    /** Subscribes to this node's tap and waits for it to connect; null (having said why) if it never does. */
     private static Subscription awaitTap(final Session session) {
         final Subscription tap = session.aeron.addSubscription(FrameLayer.FEEDER_CHANNEL,
                                                                FrameLayer.FEEDER_STREAM_ID);
@@ -558,11 +509,7 @@ public final class ClusterCtl {
         return tap;
     }
 
-    /**
-     * Matches the sequenced echo of our own marker by correlationId. Decodes with {@link
-     * ClusterStartedDecoder} for either marker — ClusterStarted/ClusterStopped are byte-identical past the
-     * header, so correlationId and header.globalSeqNo are at the same offsets for both.
-     */
+    /** Matches our marker's echo by correlationId; one decoder serves both byte-identical markers. */
     private static final class MarkerEchoHandler extends EchoHandler {
         private final long correlationId;
         private final ClusterStartedDecoder marker = new ClusterStartedDecoder();

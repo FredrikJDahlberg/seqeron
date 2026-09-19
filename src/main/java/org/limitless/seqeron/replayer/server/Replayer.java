@@ -38,7 +38,7 @@ public interface Replayer {
      * @param recordingId archive recording id
      * @param position where to start replaying from
      * @param length how much to replay
-     * @param streamId {@link ReplayerService#REPLAY_STREAM_ID} or {@code SELF_CHECK_STREAM_ID}
+     * @param streamId {@code REPLAY_STREAM_ID} or {@code SELF_CHECK_STREAM_ID}
      * @return the archive's replay session id
      */
     long startReplay(long recordingId, long position, long length, int streamId);
@@ -68,11 +68,8 @@ public interface Replayer {
     long offerControl(DirectBuffer buffer, int offset, int length);
 
     /**
-     * Opens a fresh subscription to the internal self-check stream, filtered to one replay session.
-     * Called after {@link #startReplay} so the session id is known: a fresh subscription alone does not
-     * isolate a check, because an earlier check's replay publication lingers on the same stream and a new
-     * subscription joins its image mid-replay — delivering that replay's second frame as if it were the
-     * next span's first.
+     * Opens a subscription to the self-check stream, filtered to one replay session: an earlier check's
+     * replay may linger on the same stream and would otherwise read as the next span's first frame.
      * @param replaySessionId the session returned by {@link #startReplay}
      * @return the stream, to be {@link SelfCheckStream#close}d when the check ends
      */

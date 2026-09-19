@@ -69,16 +69,11 @@ SEQ_PID=$!
 
 # Give the cluster time to elect a leader and open its archive before clients connect.
 echo "[cluster.sh] Waiting for cluster to become ready…"
-WAIT=0
-until grep -q "Running" "${SEQ_LOG}" 2>/dev/null; do
-    sleep 0.5
-    WAIT=$(( WAIT + 1 ))
-    if (( WAIT > 40 )); then
-        echo "ERROR: SequencerServer did not reach Running state after 20 s" >&2
-        kill "${SEQ_PID}" 2>/dev/null
-        exit 1
-    fi
-done
+wait_for_log "${SEQ_LOG}" "Running" 20 || {
+    echo "ERROR: SequencerServer did not reach Running state after 20 s" >&2
+    kill "${SEQ_PID}" 2>/dev/null
+    exit 1
+}
 echo "[cluster.sh] SequencerServer is running"
 
 echo "[cluster.sh] Starting ReplayerServer (co-located with SequencerServer member 0) → ${REPLAYER_LOG}"
@@ -90,15 +85,8 @@ java "${JAVA_OPTS[@]}" \
 REPLAYER_PID=$!
 
 echo "[cluster.sh] Waiting for ReplayerServer to start serving replay…"
-WAIT=0
-until grep -q "serving replay" "${REPLAYER_LOG}" 2>/dev/null; do
-    sleep 0.5
-    WAIT=$(( WAIT + 1 ))
-    if (( WAIT > 40 )); then
-        echo "[cluster.sh] WARN: ReplayerServer not serving after 20s — starting the consumer anyway" >&2
-        break
-    fi
-done
+wait_for_log "${REPLAYER_LOG}" "serving replay" 20 ||
+    echo "[cluster.sh] WARN: ReplayerServer not serving after 20s — starting the consumer anyway" >&2
 
 APP_PID=""
 APP_LOG="${LOG_DIR}/ClusterProbe.log"

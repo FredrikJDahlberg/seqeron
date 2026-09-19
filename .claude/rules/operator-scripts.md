@@ -10,8 +10,9 @@ by `PortLayout`, both languages), `paths.sh` and `seqeron-home.sh` are sourced b
 
 **They do not resolve paths relative to the repository root.** `seqeron-home.sh` sets `SEQERON_HOME` by
 recognising which layout it is in — a distribution, where `bin/` sits beside `lib/`, or this checkout, where
-the scripts sit at `src/main/scripts` — and `seqeron_require_jar` then globs the uber jar out of `lib/` or
-`build/libs`. Both are overridable (`SEQERON_HOME`, `SEQERON_JAR`). That replaced a
+the scripts sit at `src/main/scripts` — and `seqeron_require_jar` then finds the uber jar in `lib/` or
+`build/libs`: the checkout's `VERSION` names it, since `build/libs` keeps every version built, and a
+distribution (no `VERSION`) must hold exactly one. Both are overridable (`SEQERON_HOME`, `SEQERON_JAR`). That replaced a
 `REPO_ROOT="${SCRIPT_DIR}/../../.."` in four scripts, which was wrong silently rather than loudly (`cd`
 up three succeeds in any tree deep enough) and carried the version literal `0.1.0` in each of them.
 `./gradlew operatorDist` lays the distribution out under `build/install/seqeron`, `operatorDistZip`

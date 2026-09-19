@@ -28,22 +28,13 @@ import org.limitless.seqeron.sequencer.SequencerService;
 import org.limitless.seqeron.util.Logger;
 
 /**
- * Per-node archive <b>replay server</b> for co-located application replicas.
- * It is deliberately <em>not</em> on the live delivery path: every
- * app reads the co-located {@code SequencerService}'s node-local IPC tap ({@link
- * SequencerService#FEEDER_CHANNEL} / {@link SequencerService#FEEDER_STREAM_ID}) <b>directly</b> for the
- * live feed, so the sequencer has no live network data subscribers (the UDP multi-destination-cast
- * global stream is retired) and the coupling of sequencer liveness to its slowest consumer
- * dissolves structurally. The apps' tap subscriptions are untethered, so a slow app is dropped (and
- * heals via the replay protocol below) rather than back-pressuring the sequencer.
+ * Per-node archive <b>replay server</b> for co-located app replicas. Not on the live path: apps read the
+ * tap directly, untethered, and heal a gap through the replay protocol this serves.
  */
 public final class ReplayerService {
     /**
-     * Internal-only IPC stream the startup self-check replays onto to read back each tap recording's
-     * first frame (see {@link #checkReady}). Never used by any app-facing
-     * protocol — distinct from {@link #ReplayerStreamReceiver.REPLAY_STREAM_ID} purely so this one-shot self-check can never
-     * cross-talk with a real client replay. Package-private rather than private: {@link
-     * AeronReplayer} subscribes to it on this class's behalf.
+     * Internal IPC stream the startup self-check replays onto, distinct from the app-facing replay stream so
+     * the two can never cross-talk. Package-private: {@link AeronReplayer} subscribes to it.
      */
     static final int SELF_CHECK_STREAM_ID = 204;
 
@@ -213,12 +204,8 @@ public final class ReplayerService {
     }
 
     /**
-     * The duty-cycle loop must never die silently: an uncaught exception here (e.g. {@link
-     * #offerControl}'s CLOSED/MAX_POSITION_EXCEEDED) would otherwise unwind this thread while the process
-     * keeps running with {@code ready} still latched at 1 — every co-located app would keep resending
-     * into a ReplayerService that has stopped polling its requests, with nothing to tell it apart from a
-     * merely slow one. Strictly stateless (class Javadoc): dying loudly and letting process supervision
-     * restart costs nothing a fast reconnect and full-log replay does not already pay for.
+     * The duty cycle must never die silently: the process would keep running with {@code ready} latched at 1
+     * while nothing polls requests. It dies loudly and supervision restarts it; this server holds no state.
      * @param ex what killed the duty cycle
      */
     private void fatalDutyCycleFailure(final RuntimeException ex) {
@@ -246,18 +233,10 @@ public final class ReplayerService {
     }
 
     /**
-     * Waits for the tap recording to be visible, then verifies its history actually reaches back to
-     * the start of the log before ever declaring readiness — every recording in the chain, one per
-     * duty cycle (see the class Javadoc for why the newest counts as much as the oldest). Under correct
-     * operation this always holds
-     * (SequencerService arms and confirms the recording before it can emit a single frame — see its
-     * onStart/awaitTapRecordingActive — and this node's own static, fixed cluster membership never
-     * joins mid-history), so a failure here means a tap recording has been deleted,
-     * corrupted, or partially restored out from under it: a broken node, not a transient condition.
-     * That is a permanent state (retrying reads the same on-disk bytes), so once {@link
-     * #integrityFailed} latches, {@code ready} must never become true for this process's lifetime —
-     * every consumer that would otherwise ask this node for history and independently hit the same
-     * wall is better served by this one node-level refusal than by each of them failing on their own.
+     * Waits for the tap recording to be visible, then proves every recording in the chain starts at
+     * globalSeqNo 1 before declaring readiness. A failure means a recording was deleted, corrupted or
+     * partially restored — permanent, since a retry reads the same bytes — so {@link #integrityFailed}
+     * latches and {@code ready} never becomes true for this process.
      *
      * <p>One step per duty cycle: open the check, or read at most one fragment of it. It never waits.
      * @return work count, so the idle strategy does not park a cycle that is actively reading
@@ -274,15 +253,9 @@ public final class ReplayerService {
     }
 
     /**
-     * Opens the self-check replay for the span the sweep is on: its first frame, on the internal {@link
-     * #SELF_CHECK_STREAM_ID}. Replay is the only way to read recorded content back, so there is no
-     * cheaper way to see that frame.
-     *
-     * <p>Bounded to {@link #SELF_CHECK_REPLAY_LENGTH}, not to the whole recording: only the first
-     * fragment is ever read, and asking the archive to replay a trading day's worth of log to look at
-     * eight bytes is work it would do until {@link #closeSelfCheck} stopped it. Every early return here
-     * is transient — nothing recorded yet, or the archive not answering — and simply retries on the
-     * next cycle.
+     * Opens the self-check replay of the current span's first frame, bounded to {@link
+     * #SELF_CHECK_REPLAY_LENGTH} since only one fragment is read. Every early return is transient and
+     * retries next cycle.
      */
     private void startSelfCheck() {
         try {
@@ -327,13 +300,9 @@ public final class ReplayerService {
     }
 
     /**
-     * Reads at most one fragment off an in-flight self-check and acts on it. Returns a work count.
-     *
-     * <p>A first frame at {@code globalSeqNo} 1 proves that span; the node is ready once every span in
-     * the chain has been proved. Anything else latches {@link #integrityFailed} permanently — retrying
-     * reads the same on-disk bytes, so there is nothing to wait for. Delivering nothing before the
-     * deadline is neither: that is transient, so the check is torn down and the same span started fresh
-     * on a later cycle.
+     * Reads at most one fragment off an in-flight self-check. A first frame at globalSeqNo 1 proves that
+     * span; anything else latches {@link #integrityFailed}. Nothing before the deadline is transient: the
+     * check is torn down and restarted on a later cycle.
      */
     private int pollSelfCheck() {
         final int work = selfCheckSub.poll(selfCheckHandler, 1);
@@ -510,15 +479,9 @@ public final class ReplayerService {
     }
 
     /**
-     * Re-probes the local archive while STALLED, sharing {@link #STALL_RETRY_INTERVAL_MS} with the
-     * request-driven probe so the two together still make at most one attempt a second at a dead archive.
-     *
-     * <p>The state used to clear only on a client's replay succeeding, which made it a fault report
-     * nothing could retract: a Replayer whose apps have all caught up is asked for nothing, so {@code
-     * seqeron.replayer.stalled} stayed at 1 for the rest of the process however healthy the archive had
-     * since become. Probes with a bounded replay rather than a listing, because serving a replay is what
-     * the state claims the archive cannot do — one that lists recordings and still refuses to replay them
-     * is stalled exactly as this describes.
+     * Re-probes the local archive while STALLED, so the state clears even when no app is asking for a
+     * replay. Probes with a bounded replay, since serving one is what STALLED says the archive cannot do,
+     * and shares {@link #STALL_RETRY_INTERVAL_MS} with the request path: at most one attempt a second.
      */
     private void probeArchive() {
         final long now = replayer.epochMillis();
@@ -539,9 +502,8 @@ public final class ReplayerService {
     }
 
     /**
-     * Refuses a resume request: answers ReplayerStreamReceiver.NO_REPLAY_NEEDED, which an app that resumed only
-     * because it has an open hole reads as "that position is no good here" and falls back to walking the
-     * recording chain — the path that needs no position to be sound.
+     * Refuses a resume request with NO_REPLAY_NEEDED, which the app reads as "that position is no good
+     * here" and falls back to walking the chain.
      * @param clientId client identity
      * @param requestId the request being refused
      * @param reason what was wrong with the position, for the log
@@ -554,10 +516,9 @@ public final class ReplayerService {
     }
 
     /**
-     * Serves one replay to a client. segmentIndex < 0 resumes the current active recording at
-     * fromPosition (steady-state gap recovery); segmentIndex >= 0 is one step of a cold-start walk over
-     * the per-leader-tenure recording chain — serving the segmentIndex-th recording from position 0, or
-     * ReplayerStreamReceiver.NO_REPLAY_NEEDED once the walk runs past the last tenure (which is what marks the app caught up).
+     * Serves one replay. {@code segmentIndex < 0} resumes the active recording at {@code fromPosition};
+     * otherwise it is one step of a cold-start walk over the recording chain, answered NO_REPLAY_NEEDED
+     * once the walk runs past the last recording.
      * @param clientId client identity
      * @param requestId the request being answered, echoed in every reply
      * @param segmentIndex segment index
@@ -715,9 +676,8 @@ public final class ReplayerService {
     }
 
     /**
-     * Refuses a replay request outright: this node failed its integrity check and has no valid history
-     * to serve. Not logged per refusal — checkReady already reported the fault once, and the apps resend
-     * on a 500ms timer.
+     * Refuses a replay request: this node failed its integrity check. Not logged per refusal — checkReady
+     * reported it once, and apps resend every 500ms.
      * @param clientId client identity
      * @param requestId the request being refused
      */
@@ -729,10 +689,8 @@ public final class ReplayerService {
     }
 
     /**
-     * Offers one control reply, dropping it rather than spinning without bound (see {@link
-     * #MAX_CONTROL_OFFER_SPINS}). Dropping is safe here in a way it is not on the tap: a reply answers
-     * a request the app resends on a timer, so the cost is one resend interval, whereas an unsent
-     * sequenced frame is a hole nothing can fill.
+     * Offers one control reply, dropping it at {@link #MAX_CONTROL_OFFER_SPINS} rather than spinning without
+     * bound. Safe, unlike on the tap: the app resends on a timer, so a drop costs one resend interval.
      * @param length encoded length
      */
     private void offerControl(final int length) {
@@ -753,10 +711,8 @@ public final class ReplayerService {
     }
 
     /**
-     * Two co-located apps are using one client id (see {@link ReplayClientIdCollisions}). Reported, not
-     * refused: both are already livelocked — each request stops the other's replay — so refusing changes
-     * nothing they experience, while a false positive would stop a healthy replica from ever recovering.
-     * What was missing is the diagnosis, and the fix is a launch-configuration change.
+     * Two co-located apps share one client id (see {@link ReplayClientIdCollisions}). Reported, not refused:
+     * they already livelock each other, and a false positive must not stop a healthy replica.
      * @param clientId the id being used twice
      */
     private void onClientIdCollision(final int clientId) {
@@ -824,8 +780,7 @@ public final class ReplayerService {
         return found;
     }
 
-    // Ordered oldest→newest list of recordings on the local archive. With every node recording its own continuous
-    // tap this is normally a single recording spanning every leader tenure, so there is usually nothing to stitch.
+    // Oldest-to-newest tap recordings on the local archive; normally one, spanning every leader tenure.
     private List<ReplayRecordings.RecordingSpan> resolveSegments() {
         final List<ReplayRecordings.RecordingSpan> spans = replayer.listTapRecordings();
         final long activeCount = spans.stream().filter(ReplayRecordings.RecordingSpan::active).count();

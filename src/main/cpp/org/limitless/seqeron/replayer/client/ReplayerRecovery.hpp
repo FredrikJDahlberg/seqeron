@@ -51,9 +51,7 @@ class ReplayerRecoveryActions
     ~ReplayerRecoveryActions() = default;
 };
 
-// Fixed-size block backing the retained-ahead FIFO (see retainMessages/drainRetained). Records are
-// appended length-prefixed and never split across a block boundary — every message here is well
-// under 512 bytes, so the wasted tail per boundary is bounded and negligible against SIZE.
+// Fixed-size block of the retained FIFO; a record never spans two blocks.
 struct MessagesBlock
 {
     static constexpr std::size_t SIZE = 4096;
@@ -362,10 +360,7 @@ class ReplayerRecovery
         {
             sendReplayComplete();
         }
-        // >= 0, the same "a replay is attached" test isRecovering() and the receiver's poll() make: 0 is
-        // an ordinary archive replaySessionId, and -1 is the only value that means none. Reading it as
-        // >= 1 left a replay on session 0 with no heartbeat — so the Replayer's idle TTL reclaimed its
-        // slot mid-replay — and no stall watchdog to notice.
+        // >= 0: 0 is an ordinary replaySessionId, and -1 alone means none.
         if (m_replaySessionId >= 0)
         {
             if ((nowMs - m_lastHeartbeatMs) > RESEND_INTERVAL_MS)

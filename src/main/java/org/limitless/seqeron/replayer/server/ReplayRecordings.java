@@ -5,19 +5,13 @@ import java.util.Comparator;
 import java.util.List;
 
 /**
- * Pure recording-chain stitching for {@link ReplayerService}: orders a node's tap
- * recordings oldest→newest and keeps at most one "active" (still-recording) entry — the newest — rather
- * than mistaking a stale one for a bounded historical segment. Free of every Aeron/Archive type so it is
- * unit-testable without one — see {@code ReplayerService.resolveSegments}'s Javadoc for why the chain is
- * normally length 1 and when a member restart can transiently leave more than one entry.
+ * Recording-chain stitching for {@link ReplayerService}: orders a node's tap recordings oldest to newest
+ * and keeps only the newest active one, so a stale active entry is never read as a stopped segment.
  */
 public final class ReplayRecordings {
     /**
-     * One tap recording as read off an archive listing, before ordering/stitching.
-     * <p>{@code startPosition} is carried rather than assumed to be 0: it is where the archive began
-     * recording the tap publication, and every replay of this recording must start at or after it.
-     * Today it is always 0 (SequencerService arms recording on a brand-new publication before emitting
-     * anything), but a replay requested below it fails at the archive rather than degrading.
+     * One tap recording as read off an archive listing. {@code startPosition} is carried because a replay
+     * must start at or after it, though it is always 0 today.
      */
     public record RecordingSpan(long recordingId, long startPosition, boolean active) { }
 
@@ -25,10 +19,7 @@ public final class ReplayRecordings {
     }
 
     /**
-     * Orders {@code spans} oldest→newest by {@code recordingId} and keeps every stopped span plus the
-     * newest active one.
-     * <p>The key is {@code recordingId} — monotone by construction as the archive creates recordings.
-     * <p>The active span kept is the newest.
+     * Orders {@code spans} by {@code recordingId} and keeps every stopped span plus the newest active one.
      * @param spans unordered recording spans from one archive listing
      * @return the spans to replay, oldest first
      */

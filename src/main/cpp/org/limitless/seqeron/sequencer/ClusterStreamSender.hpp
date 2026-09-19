@@ -3,26 +3,11 @@
 // ClusterStreamSender — Aeron Cluster client session state machine
 // (SessionConnectRequest → SessionEvent(OK) → send/keep-alive → SessionCloseRequest).
 //
-// The session logic below never touches Aeron types directly: it talks to the
-// cluster purely through IngressTransport::offer(bytes) and
-// EgressTransport::poll(handler). AeronIngressTransport/AeronEgressTransport
-// are the only place Aeron Publication/Subscription appear, so a test can
-// satisfy the same two interfaces with an in-memory fake and exercise
-// connect/send/keepAlive/close synchronously — no media driver, no threads,
-// no polling loops. See connect(std::unique_ptr<IngressTransport>, ...) below,
-// which is the transport-agnostic entry point used by tests; connect(aeron)
-// is the real entry point and only does Aeron resource acquisition before
-// delegating to it.
-//
-// Leader failover: a follower answers SessionConnectRequest with
-// SessionEvent(REDIRECT), and an established session gets a NewLeaderEvent when
-// the cluster elects a new leader — both carry a "memberId=host:port,..." CSV of
-// ingress endpoints (io.aeron.cluster.client.AeronCluster's own wire format).
-// ClusterStreamSender resolves its own new endpoint out of that CSV and swaps
-// its ingress Publication to it; the cluster session id is unaffected, only the
-// leadershipTermId and the publication endpoint change. Reconnection only runs
-// when connect(aeron) supplied a real Aeron client (m_aeron); the transport-
-// agnostic connect() overload used by unit tests leaves it disabled.
+// The session logic talks to the cluster only through IngressTransport/EgressTransport, so a test drives
+// it with in-memory fakes; connect(aeron) acquires the Aeron resources and delegates to the
+// transport-agnostic connect(). On REDIRECT or NewLeaderEvent it resolves the leader's endpoint from the
+// wire's "memberId=host:port,..." CSV and swaps its ingress publication; the session id is unchanged.
+// Reconnection needs a real Aeron client, so the test seam leaves it disabled.
 
 #include <array>
 #include <charconv>
@@ -59,15 +44,9 @@ namespace org::limitless::seqeron::sequencer {
 namespace cluster_sbe = org::limitless::seqeron::cluster::sbe;
 namespace diag = org::limitless::seqeron::util;
 
-// ── Constants — Aeron Cluster ingress/egress channels, stream ids and client
-//    protocol semver, per io.aeron.cluster.codecs / AeronCluster.Configuration
-//    defaults. Ports are derived from PortLayout.hpp's shared formula rather than
-//    restated as literals — must match SequencerServer's cluster listener configuration. ────
-// CLUSTER_INGRESS_CHANNEL must stay "aeron:udp?endpoint=" + CLUSTER_INGRESS_ENDPOINT — the
-// endpoint alone is also this client's initial value for the reconnect-on-failover tracking
-// in ClusterStreamSender (m_ingressEndpoint). Member 0's ingress port is only the *initial*
-// guess for a non-colocated client: handleRedirect/onFragment resolve the real leader's
-// endpoint from the wire CSV afterward.
+// ── Constants — cluster channels, stream ids and client protocol semver, per io.aeron.cluster.codecs
+//    and AeronCluster.Configuration. Ports come from PortLayout.hpp. Member 0's ingress endpoint is only
+//    a non-colocated client's first guess; the wire CSV names the real leader afterwards. ────
 inline const std::string CLUSTER_INGRESS_ENDPOINT = "localhost:" + std::to_string(clusterIngressPort(0));
 inline const std::string CLUSTER_INGRESS_CHANNEL = "aeron:udp?endpoint=" + CLUSTER_INGRESS_ENDPOINT;
 inline constexpr const char* CLUSTER_INGRESS_CHANNEL_IPC = "aeron:ipc";
@@ -83,12 +62,8 @@ inline std::int64_t nowMs()
         .count();
 }
 
-// The ingress endpoint of a given cluster member, from the same PortLayout formula
-// CLUSTER_INGRESS_ENDPOINT is built from — including its single-host "localhost" assumption. Used
-// where only a member id is available: SessionEvent(OK) names the leader but carries no endpoint CSV
-// (io.aeron.cluster.ClusterSession sends OK with an empty detail), unlike REDIRECT and
-// NewLeaderEvent, which findIngressEndpoint below resolves from the wire. A multi-host deployment
-// would resolve this from configuration instead.
+// A member's ingress endpoint by id, for SessionEvent(OK), which names the leader but carries no CSV.
+// Assumes a single host, as PortLayout does.
 inline std::string memberIngressEndpoint(const std::int32_t memberId)
 {
     return "localhost:" + std::to_string(clusterIngressPort(memberId));
@@ -130,9 +105,7 @@ inline bool findIngressEndpoint(std::string_view endpoints, std::int32_t memberI
 
 // ── Transport interfaces ──────────────────────────────────────────────────────
 
-// Outbound half: offers raw bytes to the cluster ingress. Implementations
-// retry/back-pressure as they see fit; ClusterStreamSender treats a `false`
-// return as "not yet accepted" and spins.
+// Outbound half: offers raw bytes to the cluster ingress; `false` means not yet accepted.
 class IngressTransport
 {
   public:
@@ -140,9 +113,7 @@ class IngressTransport
     virtual bool offer(std::span<const std::uint8_t> bytes) = 0;
 };
 
-// Inbound half: polls for whole (already reassembled) messages from the
-// cluster egress, invoking the handler once per message. Returns the number
-// of fragments processed (0 means nothing was available).
+// Inbound half: polls whole (reassembled) egress messages; returns fragments processed.
 class EgressTransport
 {
   public:
@@ -201,32 +172,22 @@ class AeronEgressTransport : public EgressTransport
         }
     } };
 
-    // Composed once rather than per poll(): FragmentAssembler::handler() returns a fresh
-    // std::function by value, and this is polled every duty-cycle iteration. Subscription::poll
-    // takes its handler by forwarding reference, so passing the member costs nothing to begin with.
-    // Declared after m_fa — it is built from it.
+    // Composed once rather than per poll(): FragmentAssembler::handler() returns a fresh std::function.
+    // Declared after m_fa, which it is built from.
     aeron::fragment_handler_t m_poll{ m_fa.handler() };
 };
 
 // ── ClusterStreamSender ──────────────────────────────────────────────────────
 
-// Manages the Aeron Cluster session (SessionConnectRequest → SessionEvent(OK))
-// and sends pre-encoded Unsequenced frames (sbe-frame.xml) to the cluster ingress.
-// Every frame carries its own header composite (sourceId,
-// connectionId, sessionId), so unlike the old AppMessage scheme, send() needs
-// no connection id of its own — the caller bakes it into the message before
-// calling send(). sourceId (this process's fixed identity) is held here
-// instead, since it's the same for every message this sender ever submits.
+// Manages the Aeron Cluster session and sends pre-encoded frames to the cluster ingress. Each frame
+// carries its own header composite; sourceId, the same for every frame, is held here for the caller.
 class ClusterStreamSender
 {
   public:
     static constexpr std::size_t MAX_PAYLOAD_LEN = 8192;
 
-    // Real entry point: acquires the ingress publication + egress subscription
-    // from Aeron (inherently async — driver IPC via addPublication/addSubscription
-    // and find*), then hands off to the transport-agnostic handshake below.
-    // Storing `aeron` (used by createIngressPublication) is what enables automatic
-    // ingress reconnection on SessionEvent(REDIRECT)/NewLeaderEvent below.
+    // Acquires the ingress publication and egress subscription, then runs the handshake below. Storing
+    // `aeron` is what enables reconnection on REDIRECT/NewLeaderEvent.
     void connect(std::shared_ptr<aeron::Aeron> aeron, const std::string& egressChannel)
     {
         m_aeron = std::move(aeron);
@@ -239,36 +200,18 @@ class ClusterStreamSender
             std::move(egress), m_egressChannel);
     }
 
-    // Real entry point for a client deployed co-located with one cluster member — sharing
-    // that member's own Aeron directory (see OrderExecServer's SEQERON_ORDER_EXEC_AERON_DIR).
-    // Egress uses the given UDP egressChannel — a per-node replica passes a member-specific
-    // endpoint so co-located replicas on one host don't collide (see the parameter note below).
-    // It is unaffected by which member is leader: the
-    // leader publishes to whatever responseChannel the client requests, over UDP loopback here
-    // regardless of which host/process is currently leader. Ingress tries
-    // CLUSTER_INGRESS_CHANNEL_IPC first, on the theory that the co-located member usually is
-    // (or will shortly become) leader; a co-located member that is a follower never opens the
-    // IPC ingress subscription at all (see SequencerServer's isIpcIngressAllowed — leader-only),
-    // so an IPC SessionConnectRequest to a follower simply goes unanswered rather than being
-    // rejected — hence the short ipcConnectTimeoutMs before falling back to the normal UDP
-    // ingress endpoint, where a follower answers with a proper REDIRECT to the real leader.
-    //
-    // Once connected (by either path), everything else is unchanged: NewLeaderEvent/REDIRECT
-    // handling already resolves UDP endpoints from the wire CSV and swaps m_ingress, so
-    // leadership later moving away from the co-located member degrades to UDP ingress
-    // automatically. Leadership later moving *back* to it is handled too (see onFragment's
-    // NewLeaderEvent branch): `memberId` is this client's own co-located cluster member id, so a
-    // NewLeaderEvent naming it can be recognised and re-chased back onto IPC.
+    // For a client sharing a cluster member's Aeron directory. Ingress tries that member's IPC first: a
+    // follower never opens IPC ingress, so the request goes unanswered, hence the short
+    // ipcConnectTimeoutMs before falling back to UDP, where a follower redirects to the leader. Leadership
+    // later moving away degrades to UDP; moving back to `memberId` is re-chased onto IPC (see onFragment).
     void connectColocated(std::shared_ptr<aeron::Aeron> aeron, std::int32_t memberId, std::int64_t ipcConnectTimeoutMs,
                           const std::string& egressChannel)
     {
         m_aeron = std::move(aeron);
         m_coLocatedMemberId = memberId;
         m_ipcConnectTimeoutMs = ipcConnectTimeoutMs;
-        // egressChannel must be a distinct UDP endpoint per co-located client: when a replica runs
-        // on every cluster node, each one attaches to its own member's media driver, and two driver
-        // processes on one host cannot both bind the same egress UDP port. Callers pass
-        // localhost:(9330 + memberId) or similar, from their own AppPorts.hpp base.
+        // Must be a distinct UDP endpoint per co-located client: two drivers on one host cannot both
+        // bind one egress port.
         m_egressChannel = egressChannel;
 
         auto egress = std::make_unique<AeronEgressTransport>(awaitEgressSubscription());
@@ -297,22 +240,10 @@ class ClusterStreamSender
             std::move(egress), ipcConnectTimeoutMs, primaryFailureReason.c_str(), memberId);
     }
 
-    // Test seam for connectColocated: exercises the same "try the primary ingress transport
-    // with a short timeout, fall back to a freshly-built one with the normal timeout on
-    // failure" logic against fake transports, without a real Aeron client. `primaryIngress`
-    // may be null to skip straight to the fallback (mirrors createIpcIngressPublication()
-    // itself throwing before a transport ever exists). `buildFallbackIngress` is only invoked
-    // if the primary attempt fails; `egress` is shared by both attempts (reused via
-    // ClusterStreamSender::connect's `m_egress` after a failed first attempt). `memberId`
-    // (default -1, i.e. "no co-located member") lets a test set m_coLocatedMemberId without a
-    // real Aeron client, to exercise onFragment's NewLeaderEvent guard — the guard also requires
-    // m_aeron, so it stays a no-op here regardless; there is nothing to reconnect to without a
-    // real Aeron client, same reasoning as the plain endpoint-reconnect path above it.
-    //
-    // The production connectColocated(aeron, memberId, …) above passes its own member id straight
-    // through. It used to let this default to -1, silently un-setting the m_coLocatedMemberId it had
-    // just stored — which disabled onFragment's "leadership came back to my member, re-chase IPC"
-    // branch for exactly the clients that had fallen back to UDP and most needed it.
+    // Test seam for connectColocated: try `primaryIngress` with the short timeout, fall back to
+    // `buildFallbackIngress` with the full one. `primaryIngress` may be null to go straight to the
+    // fallback; `egress` is shared by both attempts. Without m_aeron the NewLeaderEvent re-chase stays a
+    // no-op, so `memberId` only sets the state a test inspects.
     void connectColocated(std::unique_ptr<IngressTransport> primaryIngress,
                           std::function<std::unique_ptr<IngressTransport>()> buildFallbackIngress,
                           std::unique_ptr<EgressTransport> egress, std::int64_t primaryConnectTimeoutMs,
@@ -345,15 +276,9 @@ class ClusterStreamSender
         connect(buildFallbackIngress(), std::move(egress), m_egressChannel);
     }
 
-    // Test seam: drives the SessionConnectRequest → SessionEvent(OK) handshake
-    // against any IngressTransport/EgressTransport pair, synchronously and
-    // without Aeron. A fake whose poll() answers immediately with a
-    // SessionEvent(OK) makes this deterministic in a unit test. Redirect/reconnect
-    // is skipped in this path since it has no Aeron client to build a new
-    // Publication with (see the m_aeron guard in handleRedirect/onFragment).
-    // `egressChannel` is the responseChannel this client asks the cluster to publish egress on;
-    // it is the application's own UDP endpoint (AppPorts.hpp), so the Aeron-facing entry points
-    // above pass what their caller gave them and a bare test seam declares none.
+    // Test seam: drives the handshake against any transport pair, synchronously and without Aeron.
+    // Redirect/reconnect is skipped here (no Aeron client to build a publication with). `egressChannel`
+    // is the responseChannel the cluster publishes egress on.
     void connect(std::unique_ptr<IngressTransport> ingress, std::unique_ptr<EgressTransport> egress,
                  const std::string& egressChannel = "")
     {
@@ -419,15 +344,13 @@ class ClusterStreamSender
         }
     }
 
-    // Overrides the connect handshake timeout (default 10s). Exposed so tests
-    // exercising the "cluster never answers" path don't have to wait 10s.
+    // Overrides the connect handshake timeout (default 10s), for tests.
     void setConnectTimeoutMs(std::int64_t ms)
     {
         m_connectTimeoutMs = ms;
     }
 
-    // Overrides send()'s give-up bound (default INGRESS_STALL_FATAL_TIMEOUT_MS). Exposed for the same
-    // reason as setConnectTimeoutMs: a test of the "no leader ever accepts ingress" path cannot wait 10s.
+    // Overrides send()'s give-up bound (default INGRESS_STALL_FATAL_TIMEOUT_MS), for tests.
     void setIngressStallTimeoutMs(std::int64_t ms)
     {
         m_ingressStallFatalTimeoutMs = ms;
@@ -444,9 +367,7 @@ class ClusterStreamSender
         return m_clusterSessionId >= 0;
     }
 
-    // Aeron Cluster client session id of this connection, or -1 if not yet
-    // connected. Callers embed this into a message's header.sessionId field
-    // before encoding it for send().
+    // This connection's cluster session id, or -1 if not connected. Stamped into a frame's header.sessionId.
     std::int64_t clusterSessionId() const
     {
         return m_clusterSessionId;
@@ -459,16 +380,14 @@ class ClusterStreamSender
         return m_leadershipTermId;
     }
 
-    // True once the cluster has closed this client's session (see onFragment) — as opposed to never
-    // having connected one, which leaves clusterSessionId() at -1 just the same. Latched: there is no
-    // re-handshake, so a caller whose work is only valid with a session checks this and stops.
+    // True once the cluster has closed this session, as opposed to never having opened one. Latched:
+    // there is no re-handshake.
     [[nodiscard]] bool isSessionLost() const noexcept
     {
         return m_sessionLost;
     }
 
-    // Send a keep-alive to the cluster ingress if the interval has elapsed.
-    // Must be called regularly (e.g. every duty-cycle iteration) to prevent session timeout.
+    // Sends a keep-alive if the interval has elapsed; call it every duty-cycle iteration.
     void keepAlive()
     {
         if (!m_ingress || m_clusterSessionId < 0)
@@ -527,38 +446,21 @@ class ClusterStreamSender
         applyPendingIngressSwitch(); // a NewLeaderEvent/REDIRECT in that batch; never build inside poll()
     }
 
-    // Wraps a pre-encoded Unsequenced frame in a SessionMessageHeader
-    // (the Aeron Cluster ingress envelope) and offers it to the cluster, spinning
-    // until the offer lands.
+    // Wraps a pre-encoded frame in a SessionMessageHeader and offers it, spinning until it lands. The spin
+    // pumps egress itself: a leader change leaves the publication not-connected until a
+    // NewLeaderEvent/REDIRECT swaps it, and that swap runs on this thread. The term and timestamp are
+    // re-stamped before each retry, as AeronCluster.offer() does, since the new leader drops a stale term.
     //
-    // Returns false in the one case the spin cannot resolve: there is no session (not yet
-    // connected, or closed). And, with a session still open, when a NewLeaderEvent arrived mid-spin
-    // while the IngressHold holds: nothing was placed, and the frame goes again once it releases.
-    //
-    // Two reasons an offer is rejected, both handled by the spin:
-    //   • transient back-pressure — the ingress subscriber is briefly behind;
-    //     re-offering succeeds once it drains. This is the common case even in steady
-    //     state and was the frame-dropping bug before this became a spin.
-    //   • the ingress publication went not-connected because the leader changed — the
-    //     retry must first let a NewLeaderEvent/REDIRECT swap m_ingress to the new
-    //     leader. That swap is driven by egress polling, which runs on *this* thread
-    //     (the single duty cycle), so the spin pumps egress itself (pumpEgressControl).
-    //     A plain while(!offer) idle() would DEADLOCK here: it would spin forever on the
-    //     dead leader's publication while the very poll that revives it never runs.
-    // After a swap the leadership term has moved on, so leadershipTermId (and the
-    // cluster-overwritten timestamp) are re-stamped before each retry — the new leader
-    // rejects a frame still carrying the previous term. This mirrors what Aeron's own
-    // AeronCluster.offer() does internally.
+    // Returns false with no session, or when a NewLeaderEvent arrived mid-spin while the IngressHold
+    // holds: nothing was placed, and the frame goes again once it releases.
     [[nodiscard]] bool send(const std::uint8_t* bytes, std::uint16_t len)
     {
         if (!m_ingress || m_clusterSessionId < 0 || len == 0)
         {
             return false;
         }
-        // buf is sized from MAX_PAYLOAD_LEN, as every caller's encode buffer is, so this cannot fire
-        // without a code change that broke that pairing. Throwing rather than truncating or dropping:
-        // a frame too large to place is a programming error no runtime handling can repair, and
-        // silently dropping it would tear the outbound MsgSeqNum hole this function exists to prevent.
+        // buf is sized from MAX_PAYLOAD_LEN like every caller's encode buffer, so this is a programming
+        // error; dropping the frame silently would open a hole.
         if (len > MAX_PAYLOAD_LEN)
         {
             throw std::runtime_error("[ClusterStreamSender] ingress payload " + std::to_string(len) +
@@ -575,15 +477,9 @@ class ClusterStreamSender
         std::memcpy(buf.data() + hdrLen, bytes, len);
         const std::size_t frameLen = static_cast<std::size_t>(hdrLen) + len;
 
-        // Bounded, and alerted on. The spin's other two exits — the offer landing, and the cluster telling
-        // us the session is gone — both need a leader: one to accept ingress, the other to send the close.
-        // Lose quorum and neither ever comes, so an unbounded spin here stops the whole duty cycle with it
-        // (no tap poll, no keep-alive, no tap-stall fence, and not one line in the log) for as long as the
-        // outage lasts. Past the bound the session is called what it has become, and the caller's
-        // isSessionLost() fence takes it from there — the same path a cluster-sent close would have taken.
-        //
-        // Pumping keepAlive() from in here would not help, and its absence is deliberate: it offers on this
-        // same m_ingress, so a publication that will not take this frame will not take a keep-alive either.
+        // Bounded: both other exits need a leader, so losing quorum would otherwise stop the caller's whole
+        // duty cycle silently. Past the bound the session is called lost and the caller's isSessionLost()
+        // fence takes over. No keep-alive from in here: it would offer on the same stuck publication.
         std::chrono::steady_clock::time_point blockedSince{};
         std::chrono::steady_clock::time_point nextAlert{};
         m_newLeaderDuringSend = false;
@@ -630,33 +526,23 @@ class ClusterStreamSender
     }
 
   private:
-    // Paired with ConsensusModule's sessionTimeoutNs (1s, SequencerServer.java) at a 5x margin — the two
-    // were lowered together and only make sense as a pair. Raising this without raising that reaps
-    // healthy sessions; there is no in-process re-handshake, so that is process death, not a hiccup.
+    // Paired with the cluster's sessionTimeoutNs (1s) at a 5x margin; raising this alone reaps healthy
+    // sessions.
     static constexpr std::int64_t KEEP_ALIVE_INTERVAL_MS = 200;
 
-    // How long send() tolerates an ingress offer being refused continuously before it declares the session
-    // dead. Sized against the longest legitimate refusal, which is an election: the publication is
-    // not-connected until a NewLeaderEvent swaps it, and SequencerServer runs electionTimeoutNs and
-    // leaderHeartbeatTimeoutNs at 200ms with a 5s startupCanvassTimeoutNs — so this is 2x the slowest of
-    // those and 50x a routine election, while still bounding an outage that no election will end.
+    // How long send() tolerates continuous refusal before calling the session lost: 2x the slowest election
+    // timeout SequencerServer configures, while still bounding an outage no election will end.
     static constexpr std::int64_t INGRESS_STALL_FATAL_TIMEOUT_MS = 10'000;
 
-    // How often a continuously refused offer is alerted on, so an operator sees the stall while it lasts
-    // rather than only its outcome.
+    // How often a continuously refused offer is alerted on.
     static constexpr auto INGRESS_BACKPRESSURE_ALERT_INTERVAL = std::chrono::milliseconds(1'000);
 
     // send()'s framing buffer: the largest payload plus the SessionMessageHeader envelope it goes in.
     static constexpr std::size_t INGRESS_FRAME_LEN =
         MAX_PAYLOAD_LEN + cluster_sbe::SessionMessageHeader::sbeBlockAndHeaderLength();
 
-    // Drives the egress subscription for cluster session-control frames only —
-    // SessionEvent / NewLeaderEvent / REDIRECT, all handled inside onFragment (e.g.
-    // swapping m_ingress to a new leader) — discarding any application payload. Used
-    // by send()'s reliable-offer spin so a leader failover can complete mid-send.
-    // Discarding the payload is safe because every ClusterStreamSender caller already
-    // polls egress with a no-op application handler: in this system the data round-trip
-    // is the node-local tap, and cluster egress carries only session-control frames.
+    // Polls egress for session-control frames only (SessionEvent, NewLeaderEvent, REDIRECT), discarding
+    // application payloads, so a failover completes mid-send. Safe: cluster egress carries nothing else here.
     void pumpEgressControl()
     {
         if (m_egress)
@@ -664,8 +550,7 @@ class ClusterStreamSender
             m_egress->poll([this](std::span<const std::uint8_t> bytes) {
                 onFragment(bytes, [](const std::uint8_t*, std::int32_t) {});
             });
-            // The whole point of this pump: let send()'s spin pick up the new leader. The swap itself
-            // must happen here, after poll() returns, not in the handler.
+            // Let send()'s spin pick up the new leader; the swap must happen after poll() returns.
             applyPendingIngressSwitch();
         }
     }
@@ -758,9 +643,7 @@ class ClusterStreamSender
         onAppMessage(bytes.data() + appOff, static_cast<std::int32_t>(bytes.size() - appOff));
     }
 
-    // Encodes and offers a SessionConnectRequest on the current m_ingress. Used both for the
-    // initial handshake and to re-announce the session after a REDIRECT swaps m_ingress to the
-    // new leader's endpoint.
+    // Encodes and offers a SessionConnectRequest: the initial handshake, and the re-announce after a REDIRECT.
     void sendConnectRequest()
     {
         alignas(16) std::array<std::uint8_t, 512> connBuf{};
@@ -782,8 +665,7 @@ class ClusterStreamSender
     // ingress Publication to the leader's endpoint and re-announce.
     void ensureIngressTargetsLeader(const std::int32_t leaderMemberId)
     {
-        // m_aeron is null in the transport-agnostic test seam — nothing to build a publication with,
-        // same guard handleRedirect and the NewLeaderEvent branch apply.
+        // m_aeron is null in the test seam: nothing to build a publication with.
         if (!m_aeron || leaderMemberId < 0)
         {
             return;
@@ -916,11 +798,8 @@ class ClusterStreamSender
                                        timeoutMs);
     }
 
-    // Same, but over CLUSTER_INGRESS_CHANNEL_IPC — only ever reachable by an ingress subscription
-    // the co-located member opens while it is leader (see SequencerServer's isIpcIngressAllowed), so
-    // isConnected() may simply never become true when it isn't; the timeoutMs deadline is
-    // what bounds that, same as the UDP case, and connectColocated relies on it to trigger the UDP
-    // fallback.
+    // Same over IPC, which only a leading co-located member listens on, so it may never connect; the
+    // deadline is what triggers connectColocated's UDP fallback.
     std::shared_ptr<aeron::Publication> createIpcIngressPublication(std::int64_t timeoutMs)
     {
         return awaitIngressPublication(CLUSTER_INGRESS_CHANNEL_IPC, "IPC ingress publication", timeoutMs);
@@ -960,12 +839,8 @@ class ClusterStreamSender
     std::int32_t m_sourceId = 0;
 
   public:
-    // Fixed constant identifying this gateway *process* to the cluster (header.sourceId),
-    // as opposed to header.connectionId which identifies one TCP connection within it.
-    // Set once at startup (see SEQERON_*_SOURCE_ID env vars in each binary's main()) so
-    // it stays stable across restarts and unique across every gateway instance sharing
-    // this cluster — unlike a per-connection counter, which starts back at 1 on every
-    // process and would otherwise collide with another gateway's connection ids.
+    // This process's fixed identity (header.sourceId), stable across restarts and unique across gateway
+    // instances; set once at startup.
     void setSourceId(std::int32_t sourceId)
     {
         m_sourceId = sourceId;

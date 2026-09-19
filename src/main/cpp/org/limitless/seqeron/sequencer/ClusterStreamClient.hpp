@@ -19,29 +19,16 @@
 #include "org/limitless/seqeron/util/Env.hpp"
 #include "org/limitless/seqeron/util/Logger.hpp"
 
-// Reading the sequenced stream back out of an Aeron Archive: finding the recordings, connecting to
-// the archive that holds them, and walking them in order. The frames it delivers, and the stream it
-// reads, are defined in SequencedFrame.hpp — include that alone if all you do is decode frames
-// someone else delivered.
-//
-// This is not the live path. Production consumers follow the node-local tap through
-// ReplayerStreamReceiver; what is left here serves FixConnection's bounded resend scan and
-// fix_test_server.
+// Reading the sequenced stream back out of an Aeron Archive: finding the recordings, connecting to the
+// archive that holds them, and walking them in order. Not the live path — consumers follow the tap
+// through ReplayerStreamReceiver; this serves bounded scans. Frame decoding alone is SequencedFrame.hpp.
 
 namespace org::limitless::seqeron::sequencer {
 
 namespace diag = org::limitless::seqeron::util;
 
-// Each UDP-replaying binary uses a distinct port.
-// fix_test_server   → 9400 (env SEQERON_RISK_TEST_REPLAY_PORT; kept outside core's reserved
-//                     block — isClusterPort, doc/registries.md §2 — since 9312 used to alias
-//                     member 1's cluster ingress port)
-// FixGateway's resend-recovery replay → 9401 (env SEQERON_RESEND_REPLAY_PORT; also outside
-//                     the block for the same reason — 9313, the previous default, aliased
-//                     member 1's Raft consensus port and failed to bind whenever member 1 was up)
-// OrderExecServer, deployed co-located with one SequencerServer member (see
-// connectLocalArchive/ClusterStreamSender::connectColocated), replays over
-// REPLAY_CHANNEL_IPC below instead — no port needed.
+// A UDP-replaying binary uses a port of its own, outside core's reserved block (doc/registries.md §2);
+// a client co-located with the archive replays over REPLAY_CHANNEL_IPC and needs none.
 inline constexpr std::int32_t REPLAY_STREAM_ID = 110;
 
 // Replay channel for a client co-located with the archive it's replaying from.
@@ -57,12 +44,8 @@ inline std::string resolveReplayChannel(const char* envVar, std::uint16_t defaul
     return "aeron:udp?endpoint=localhost:" + std::to_string(diag::envInt(envVar, defaultPort));
 }
 
-// Default 3-node cluster archive control endpoints, one per member, generated from
-// PortLayout.hpp's clusterArchivePort formula (the C++ mirror of SequencerServer.PORT_BASE +
-// memberId*10 + 1 — see three-node-cluster.sh's CLUSTER_MEMBERS): member 0 → 9301, member 1 →
-// 9311, member 2 → 9321. Every member's co-located archive holds an identical recording of the
-// cluster stream, so any reachable one works equally well — there's no leader-affinity
-// requirement here, unlike cluster ingress.
+// Default 3-node cluster archive control endpoints, from PortLayout.hpp. Every member's archive holds an
+// identical recording, so any reachable one will do.
 inline const std::string DEFAULT_ARCHIVE_ENDPOINTS = archiveEndpointsCsv(3);
 
 /**
@@ -340,11 +323,8 @@ class ClusterStreamClient
     using OnConnected = std::function<void(const LifecycleEvent&)>;
     using OnDisconnected = std::function<void(const LifecycleEvent&)>;
     using OnCaughtUp = std::function<void()>;
-    // Fired (single-image mode only, see the bounded-scan start() overload) if the replay
-    // image closes before reaching catchUpPosition — e.g. the requested range was invalid, or
-    // the recording was truncated. A real Aeron-reported fact, not a guess: lets a caller like
-    // FixConnection's archive-recovery scan conclude immediately instead of waiting out a
-    // stall timeout for data that is provably never coming.
+    // Fired (single-image mode only) if the replay image closes before catchUpPosition — an invalid range
+    // or a truncated recording — so a caller need not wait out a stall timeout.
     using OnReplayEnded = std::function<void()>;
 
     explicit ClusterStreamClient(OnSequenced onSequenced, OnConnected onConnected = {},

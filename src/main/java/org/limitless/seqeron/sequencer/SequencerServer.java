@@ -9,31 +9,22 @@ import io.aeron.cluster.service.ClusteredServiceContainer;
 import io.aeron.driver.MediaDriver;
 import io.aeron.driver.ThreadingMode;
 import java.io.File;
-import java.util.Locale;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Supplier;
-import org.agrona.concurrent.BackoffIdleStrategy;
-import org.agrona.concurrent.BusySpinIdleStrategy;
 import org.agrona.concurrent.IdleStrategy;
 import org.agrona.concurrent.NoOpLock;
 import org.agrona.concurrent.ShutdownSignalBarrier;
-import org.agrona.concurrent.YieldingIdleStrategy;
+import org.limitless.seqeron.util.IdleStrategies;
 import org.limitless.seqeron.util.Logger;
 
 /**
- * Launches a single Sequencer cluster node.
+ * Launches one Sequencer cluster node: an Aeron Cluster with an embedded media driver, archive and
+ * consensus module, running {@link SequencerService}.
  *
- * <p>The Sequencer runs as an Aeron Cluster with an embedded MediaDriver, Archive, and
- * ConsensusModule.  Clients connect via the Aeron Cluster ingress protocol to send
- * {@code AppMessage}s.  Every node stamps each message with a global sequence number and
- * a per-source application sequence number, then publishes the result on its node-local
- * {@code aeron:ipc} tap ({@link SequencerService#FEEDER_CHANNEL}) which is simultaneously
- * recorded by the co-located Archive for client replay on startup.
- *
- * <p><b>Port layout</b> (member 0 on the base; members 1 and 2 use base+10, base+20). The base is
- * 9300 unless {@code SEQERON_PORT_BASE} overrides it deployment-wide — see
- * {@link PortLayout#ENV_PORT_BASE} — so the numbers below are the default's:
+ * <p><b>Port layout</b> (member 0 on the base; members 1 and 2 use base+10, base+20). The base is 9300
+ * unless {@code SEQERON_PORT_BASE} overrides it (see {@link PortLayout}); the reserved block is wider than
+ * what three members bind (doc/registries.md §2):
  * <pre>
  *   +1  archive control   (9301, 9311, 9321)
  *   +2  cluster ingress   (9302, 9312, 9322)
@@ -42,10 +33,6 @@ import org.limitless.seqeron.util.Logger;
  *   +5  file transfer     (9305, 9315, 9325)
  * </pre>
  *
- * <p>The block core <i>reserves</i> is wider than what three members bind — see
- * {@link PortLayout#CLUSTER_PORT_BLOCK_FIRST} and {@code doc/registries.md} §2, which is where a product
- * takes a block of its own.
- *
  * <p><b>System properties</b>:
  * <pre>
  *   sequencer.memberId        — this node's Raft member ID (0, 1, or 2); default 0
@@ -53,30 +40,17 @@ import org.limitless.seqeron.util.Logger;
  *                               property is not set explicitly; default 1
  *   sequencer.clusterMembers  — full clusterMembers string (Aeron format); overrides
  *                               nodeCount-based generation when set
- *   sequencer.host            — hostname the archive control, ingress and replication channels
- *                               bind to and advertise; default localhost. One member per host —
- *                               a container topology, say — needs this member's own resolvable
- *                               name here, since localhost is that host's loopback alone. The
- *                               consensus/log/transfer endpoints come from clusterMembers instead.
+ *   sequencer.host            — hostname the archive control, ingress and replication channels bind to
+ *                               and advertise; default localhost. With one member per host it must be
+ *                               this member's resolvable name.
  *   sequencer.baseDir         — data directory root; default /tmp/seqeron-seq
  *   sequencer.aeronDir        — Aeron media driver directory
- *   sequencer.idleStrategy    — duty-cycle idle strategy for the driver/archive/consensus/service
- *                               agents: {@code backoff} (default), {@code yielding}, or {@code busyspin}.
- *                               Busy-spin only pays off when each agent owns an isolated core; on an
- *                               oversubscribed host (e.g. this cluster's 3 members plus their co-located
- *                               replayer/consumer/gateway processes sharing one dev machine) it starves
- *                               everything else instead. Backoff spins briefly, then yields, then sleeps
- *                               with escalating backoff — cheap when idle, still prompt when busy.
- *   sequencer.sessionTimeoutMs — how long the cluster keeps a client session whose keep-alives have
- *                               stopped arriving; default 1000. A client that misses the window is
- *                               closed and, for a gateway, its standby is promoted — so on an
- *                               oversubscribed host, where a duty cycle can stall for longer than a
- *                               second under a failover, this needs raising rather than the client
- *                               needing fixing. See src/test/scripts/chaos-runner.sh.
+ *   sequencer.idleStrategy    — idle strategy of every agent: {@code backoff} (default), {@code yielding}
+ *                               or {@code busyspin}. Busy-spin pays only when each agent owns a core.
+ *   sequencer.sessionTimeoutMs — how long the cluster keeps a client session with no keep-alives; default
+ *                               1000. A gateway that misses it is replaced by its standby, so raise it on
+ *                               an oversubscribed host.
  * </pre>
- *
- * <p>Gateway topology (which sourceIds are gateways, and which gatewayId is the designated
- * primary) is no longer configured here — the sequencer derives it from the list rows in the log
  *
  * <p>Single-node launch example:
  * <pre>
@@ -99,21 +73,12 @@ public final class SequencerServer {
     private static final long DEFAULT_SESSION_TIMEOUT_MS = 1000;
 
     /**
-     * Control-response stream for this member's own archive clients (ConsensusModule +
-     * ClusteredServiceContainer). Must not be 101: that's Aeron Cluster's default
-     * {@code ingressStreamId}, and isIpcIngressAllowed(true) makes the leader subscribe to
-     * ingress on aeron:ipc/101 too — sharing it with the archive response stream means every
-     * archive reply misdecodes as an ingress frame (and vice versa). Also distinct from
-     * ReplayerServer's ARCHIVE_CONTROL_RESPONSE_STREAM_ID (120), which shares this member's
-     * aeron:ipc driver.
+     * Control-response stream of this member's own archive clients. Must not be 101, the cluster's IPC
+     * ingress stream, or archive replies misdecode as ingress; nor ReplayerServer's 120 on the same driver.
      */
     private static final int ARCHIVE_CONTROL_RESPONSE_STREAM_ID = 121;
 
-    /**
-     * Exit status of a node that stopped because it could no longer record its tap (see {@code
-     * SequencerService.fatalTapFailure}), as opposed to the 0 of an orderly shutdown — the signal process
-     * supervision needs to tell "restart me" from "I was told to stop".
-     */
+    /** Exit status of a node that stopped because it could no longer record its tap; restart it. */
     static final int EXIT_TAP_FATAL = 70;
 
     public static void main(final String[] args) {
@@ -132,7 +97,7 @@ public final class SequencerServer {
         final File archiveDir = new File(baseDir + "/archive-" + memberId);
         final File clusterDir = new File(baseDir + "/cluster-" + memberId);
 
-        final Supplier<IdleStrategy> idleStrategySupplier = resolveIdleStrategySupplier();
+        final Supplier<IdleStrategy> idleStrategySupplier = IdleStrategies.fromProperty(PROP_IDLE_STRATEGY);
         final MediaDriver.Context driverCtx = new MediaDriver.Context()
                                                   .aeronDirectoryName(aeronDir)
                                                   .threadingMode(ThreadingMode.DEDICATED)
@@ -224,33 +189,11 @@ public final class SequencerServer {
         }
     }
 
-    /**
-     * Resolves the driver/archive/consensus/service idle strategy from sequencer.idleStrategy
-     * (case-insensitive); see the class Javadoc for why the default is backoff.
-     * @return idle strategy supplier — one instance is created per agent thread, never shared
-     */
-    private static Supplier<IdleStrategy> resolveIdleStrategySupplier() {
-        final String name = System.getProperty(PROP_IDLE_STRATEGY, "backoff");
-        return switch (name.toLowerCase(Locale.ROOT)) {
-            case "busyspin" -> BusySpinIdleStrategy::new;
-            case "yielding" -> YieldingIdleStrategy::new;
-            case "backoff" -> BackoffIdleStrategy::new;
-            default ->
-                throw new IllegalArgumentException("Unknown " + PROP_IDLE_STRATEGY + "=" + name +
-                                                   " (expected 'backoff', 'yielding', or 'busyspin')");
-        };
-    }
-
     private static String udp(final String host, final int port) {
         return "aeron:udp?endpoint=" + host + ":" + port;
     }
 
-    /**
-     * Generates the Aeron {@code clusterMembers} string for a {@code nodeCount}-member cluster,
-     * all on {@link PortLayout#DEFAULT_HOST}, using {@link PortLayout}'s formula. This is the single
-     * source of truth other launchers (shell scripts) should defer to rather than restating the port
-     * numbers themselves.
-     */
+    /** The {@code clusterMembers} string for a {@code nodeCount}-member cluster on {@link PortLayout#DEFAULT_HOST}. */
     static String buildClusterMembers(final int nodeCount) {
         final StringBuilder members = new StringBuilder();
         for (int id = 0; id < nodeCount; id++) {

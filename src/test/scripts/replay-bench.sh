@@ -60,12 +60,7 @@ trap cleanup EXIT
 # the cold replica, so the number this prints would be measuring the wrong history.
 ./src/main/scripts/purgelog.sh --force >/dev/null 2>&1
 ./src/test/scripts/start-three-node-cluster.sh > "$START_LOG" 2>&1 &
-W=0
-until grep -q "READY" "$START_LOG" 2>/dev/null; do
-    sleep 2
-    W=$((W + 1))
-    ((W > 90)) && { echo "cluster did not come up — see $START_LOG"; exit 1; }
-done
+wait_for_log "$START_LOG" "READY" 180 || { echo "cluster did not come up — see $START_LOG"; exit 1; }
 
 # Build the archive.
 JAVA_OPTS=("${SEQERON_JAVA_OPTS[@]}")
