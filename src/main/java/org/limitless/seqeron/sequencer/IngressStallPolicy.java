@@ -10,7 +10,7 @@ import io.aeron.Publication;
  * and waits for a {@code NewLeader}, on a session the cluster still holds; reading it as terminal fails
  * every submit made during a leadership change. The Aeron import is for the result constants only.
  */
-public final class IngressStallPolicy {
+final class IngressStallPolicy {
     /** What the sender should do about the offer that just failed. */
     public enum Action {
         /** Keep spinning: transient back-pressure, a publication not yet connected, or an election. */

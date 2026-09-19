@@ -1349,7 +1349,7 @@ these — they are behaviour past the tap — so they are rules for the applicat
   `NewLeader` or the tap's `LeadershipChanged`, whichever comes first — until every older pending frame has
   been seen or resent, the producer MUST NOT place a new frame. That includes a send already retrying
   through the election: the sender learns of the new leader inside that retry, so it gives the send up
-  and reports it not placed, with the session still open (`IngressHold`, in both `ClusterStreamSender`s).
+  and reports it not placed, with the session still open (`setIngressHold`, in both `ClusterStreamSender`s).
   Lost frames MUST be resent oldest first, once the sender stamps a term the tap has reached. A frame
   the log holds is never pending past its tap appearance, so a resend adds no duplicate. (`PendingSends`)
 

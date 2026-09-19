@@ -72,6 +72,7 @@ class ReplayerRecoveryTest {
         long clockMs = CLOCK_MS;
         int requestsSent;
         int heartbeatsSent;
+        final List<Boolean> stalledGauge = new ArrayList<>();
 
         @Override
         public void sendReplayRequest(final long requestId, final int segmentIndex, final long fromPosition) {
@@ -101,6 +102,7 @@ class ReplayerRecoveryTest {
 
         @Override
         public void recoveryStalled(final boolean stalled) {
+            stalledGauge.add(stalled);
         }
 
         @Override
@@ -1126,9 +1128,9 @@ class ReplayerRecoveryTest {
     }
 
     // ── the convergence alarm ─────────────────────────────────────────────────────────────────────
-    // RecoveryProgressPolicyTest covers the verdict itself; what is locked here is the wiring around it —
-    // that an in-order dispatch counts as progress, that catching up without dispatching does too, and
-    // that the report carries the state telling the causes apart.
+    // Measured by progress, not elapsed time: a cold start has no time bound. Locked here: an in-order
+    // dispatch counts as progress, catching up without dispatching does too, the report carries the state
+    // telling the causes apart, and each episode reports and clears exactly once.
 
     @Test
     @DisplayName("recovery delivering nothing is reported once per episode")
@@ -1229,6 +1231,35 @@ class ReplayerRecoveryTest {
         // The field is state, not "was ever refused": a stale 1 points the operator at a Replayer that is
         // answering fine, and away from the attached replay that is actually not delivering.
         assertTrue(logged.get(0).message().contains("replayerUnavailable=false"), logged.get(0).message());
+    }
+
+    @Test
+    @DisplayName("the stall gauge clears once, on the dispatch that ends a reported episode")
+    void theStallGaugeClearsOnceOnTheDispatchThatEndsAReportedEpisode() {
+        captureLogs();
+        deliverReplay(1);
+        assertTrue(actions.stalledGauge.isEmpty(), "progress with nothing reported has no edge to fall from");
+
+        assertFalse(checkProgressAt(CLOCK_MS));
+        assertTrue(checkProgressAt(PAST_DEADLINE_MS));
+        deliverReplay(2); // the reported episode ends here
+        deliverReplay(3); // ... and only here
+
+        assertEquals(List.of(true, false), actions.stalledGauge);
+    }
+
+    @Test
+    @DisplayName("a later episode is reported again rather than swallowed by the first")
+    void aLaterEpisodeIsReportedAgain() {
+        captureLogs();
+        assertFalse(checkProgressAt(CLOCK_MS));
+        assertTrue(checkProgressAt(PAST_DEADLINE_MS));
+        deliverReplay(1); // one frame got through: the walk is slow, not stuck
+
+        assertFalse(checkProgressAt(PAST_DEADLINE_MS + 1_000), "anchors a fresh episode");
+        assertFalse(checkProgressAt(PAST_DEADLINE_MS + 30_000), "rather than inheriting the old clock");
+        assertTrue(checkProgressAt(PAST_DEADLINE_MS + 31_000), "a second, distinct episode reports too");
+        assertEquals(2, logged.size());
     }
 
     // ── helpers ───────────────────────────────────────────────────────────────────────────────────

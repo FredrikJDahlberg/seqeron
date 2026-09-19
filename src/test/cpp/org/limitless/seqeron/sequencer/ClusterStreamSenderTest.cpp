@@ -582,12 +582,20 @@ TEST(ClusterStreamSenderReliableSend, SendReStampsLeadershipTermAfterMidSpinFail
     EXPECT_EQ(999, sender.leadershipTermId());
 }
 
-// An IngressHold that answers whatever the test set, and records the NewLeaders it heard.
-class FakeHold : public IngressHold
+// A hold that answers whatever the test set, and records the NewLeaders it heard. The sender never tracks.
+class FakeHold : public IngressTracker
 {
   public:
     bool m_holding = false;
     std::vector<std::int64_t> m_newLeaders;
+
+    [[nodiscard]] bool isFull() const override
+    {
+        return false;
+    }
+
+    void track(const std::uint8_t*, std::uint16_t, std::int64_t, std::int64_t) override
+    {}
 
     void onNewLeader(const std::int64_t leadershipTermId) override
     {

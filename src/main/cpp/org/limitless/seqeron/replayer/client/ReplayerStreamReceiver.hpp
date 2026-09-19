@@ -4,7 +4,6 @@
 // asks the Replayer for history and gaps. The Aeron adapter only: every decision lives in ReplayerRecovery.
 //
 #include <array>
-#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <memory>
@@ -15,6 +14,7 @@
 #include "concurrent/AtomicBuffer.h"
 
 #include "org/limitless/seqeron/replayer/client/ReplayerRecovery.hpp"
+#include "org/limitless/seqeron/replayer/client/TapFaultInjector.hpp"
 #include "org/limitless/seqeron/util/SeqeronCounters.hpp"
 
 // Request codecs (sbe-replay.xml); the replies are decoded in ReplayerRecovery.
@@ -63,10 +63,12 @@ class ReplayerStreamReceiver final : private ReplayerRecoveryActions
     using OnLeadershipChanged = ReplayerRecovery::OnLeadershipChanged;
     using OnCaughtUp = ReplayerRecovery::OnCaughtUp;
 
+    // tapFaults, when given, drops live tap frames on demand: test harnesses only. The caller keeps it alive.
     ReplayerStreamReceiver(std::int32_t clientId, OnSequenced onSequenced, OnConnected onConnected = {},
                            OnDisconnected onDisconnected = {}, OnLeadershipChanged onLeadershipChanged = {},
-                           OnCaughtUp onCaughtUp = {}) :
+                           OnCaughtUp onCaughtUp = {}, TapFaultInjector* tapFaults = nullptr) :
       m_clientId(clientId),
+      m_tapFaults(tapFaults),
       m_recovery(clientId, *this, std::move(onSequenced), std::move(onConnected), std::move(onDisconnected),
                  std::move(onLeadershipChanged), std::move(onCaughtUp)),
       // Temporaries: FragmentAssembler copies the delegate into its own member.
@@ -99,23 +101,6 @@ class ReplayerStreamReceiver final : private ReplayerRecoveryActions
         m_controlSubRegId = m_aeron->addSubscription(REPLAYER_CONTROL_CHANNEL, REPLAYER_CONTROL_STREAM_ID);
         m_requestPubRegId = m_aeron->addPublication(REPLAYER_IPC_CHANNEL, REPLAYER_REQUEST_STREAM_ID);
         m_recovery.start();
-    }
-
-    // Test-only: lets injectTapDrop drop live tap frames, to drive gap recovery deterministically
-    // (gap-recovery-test.sh). Never enabled in production.
-    void enableFaultInjection()
-    {
-        m_faultInjection = true;
-    }
-
-    // Arm a drop of the next n live tap frames. Called on the poll thread (deferred from a signal
-    // handler); a no-op unless fault injection was enabled.
-    void injectTapDrop(const int n)
-    {
-        if (m_faultInjection)
-        {
-            m_faultDropPending.fetch_add(n, std::memory_order_relaxed);
-        }
     }
 
     // One duty-cycle iteration; returns fragments consumed. Drains control, rides an attached replay image,
@@ -309,10 +294,8 @@ class ReplayerStreamReceiver final : private ReplayerRecoveryActions
     void onTapFragment(const aeron::concurrent::AtomicBuffer& buffer, const aeron::util::index_t offset,
                        const aeron::util::index_t length, const aeron::Header& header)
     {
-        // Test-only fault injection: dropped before the receiver sees it, so the next frame reads as a gap.
-        if (m_faultInjection && m_faultDropPending.load(std::memory_order_relaxed) > 0)
+        if (m_tapFaults && m_tapFaults->dropNext())
         {
-            m_faultDropPending.fetch_sub(1, std::memory_order_relaxed);
             return;
         }
         m_recovery.onFrame(frameAt(buffer, offset), static_cast<std::uint64_t>(length), frameStartPosition(header),
@@ -344,6 +327,7 @@ class ReplayerStreamReceiver final : private ReplayerRecoveryActions
     }
 
     const std::int32_t m_clientId;
+    TapFaultInjector* const m_tapFaults;
     ReplayerRecovery m_recovery;
 
     std::shared_ptr<aeron::Aeron> m_aeron;
@@ -358,10 +342,6 @@ class ReplayerStreamReceiver final : private ReplayerRecoveryActions
     std::shared_ptr<aeron::Publication> m_requestPub;
     std::shared_ptr<aeron::Image> m_replayImage;
     std::shared_ptr<aeron::Counter> m_recoveryStalledCounter;
-
-    // Test-only: live tap frames still to drop (see enableFaultInjection). Atomic, as on the Java side.
-    bool m_faultInjection = false;
-    std::atomic<int> m_faultDropPending{ 0 };
 
     std::unique_ptr<aeron::FragmentAssembler> m_tapAssembler;
     std::unique_ptr<aeron::FragmentAssembler> m_replayAssembler;

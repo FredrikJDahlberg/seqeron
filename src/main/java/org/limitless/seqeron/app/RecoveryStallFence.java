@@ -11,9 +11,8 @@ package org.limitless.seqeron.app;
  * path a recovery takes. It never arms before the first catch-up: a cold start replays the whole log (no
  * snapshots) and has no useful time bound.
  *
- * <p>A fence, where {@link org.limitless.seqeron.replayer.client.RecoveryProgressPolicy} is the alarm on the
- * same predicate; set this deadline longer. The C++ twin is {@code app/RecoveryStallFence.hpp}; keep the two
- * in step.
+ * <p>A fence, where {@code ReplayerRecovery.checkRecoveryProgress} is the alarm on the same predicate; set this
+ * deadline longer. The C++ twin is {@code app/RecoveryStallFence.hpp}; keep the two in step.
  */
 public final class RecoveryStallFence {
     private final long deadlineMs;

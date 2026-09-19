@@ -280,7 +280,6 @@ if(SEQERON_BUILD_TESTS)
         src/test/cpp/org/limitless/seqeron/sequencer/PortLayoutTest.cpp
         src/test/cpp/org/limitless/seqeron/replayer/client/ReplayerRecoveryTest.cpp
         src/test/cpp/org/limitless/seqeron/replayer/client/ReplayerRecoveryPropertyTest.cpp
-        src/test/cpp/org/limitless/seqeron/replayer/client/RecoveryProgressPolicyTest.cpp
         src/main/cpp/org/limitless/seqeron/sequencer/ClusterStreamSender.hpp
         src/main/cpp/org/limitless/seqeron/util/Logger.hpp
     )

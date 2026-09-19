@@ -4,7 +4,7 @@ package org.limitless.seqeron.replayer.client;
  * Everything {@link ReplayerRecovery} cannot do itself: the sends, the replay subscription, and the gauge.
  * {@link ReplayerStreamReceiver} implements it against Aeron; the unit suite substitutes a recorder.
  */
-public interface ReplayerRecoveryActions {
+interface ReplayerRecoveryActions {
     /**
      * Offers a {@code ReplayRequest}. Best-effort by design — see {@code ReplayerRecovery.requestReplay} on
      * why it must not be retried any faster than the resend timer does.

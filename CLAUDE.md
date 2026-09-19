@@ -105,7 +105,7 @@ addresses in `ReplayerStreamReceiver`.
 **The producer side is a language-port pair too.** Java's `ClusterStreamSender`/`IngressPublisher` carry
 the C++ files' names and semantics — `connectColocated` (IPC ingress on the co-located member, UDP
 endpoints when it is not leading), a `send` that spins through back-pressure and an election rather than
-dropping the frame — unless a new leader arrives mid-spin while its `IngressHold` holds, when it places
+dropping the frame — unless a new leader arrives mid-spin while its `IngressTracker` holds, when it places
 nothing and returns false — a self-throttling `keepAlive`, and the three-valued `Publish`. They are far smaller
 than their twins because `AeronCluster` already is the cluster protocol that `ClusterStreamSender.hpp`
 implements by hand; what the Java side adds is only what that client does not do. Two divergences are
@@ -123,7 +123,7 @@ away — is a single comparison, so its low line coverage is the same statement 
 failover silently loses whatever the old leader had not committed — the session survives it.
 `app/PendingSends` is the confirm-on-tap tracker (spec §16 A-4, A-5): a producer gives it to
 `IngressPublisher` as its `IngressTracker` (which tracks what it places and declines while it holds or is
-full) and to the sender as its `IngressHold`, feeds it its own tap and each `LeadershipChanged`'s term, and
+full) and to the sender with `setIngressHold`, feeds it its own tap and each `LeadershipChanged`'s term, and
 resends what a term change lost. Both languages,
 case for case, with a property test asserting exactly-once, in-order delivery across random failovers;
 `failover-test.sh` proves the same across a real leader kill.
@@ -274,7 +274,7 @@ record only from wherever it resumed. The cost is that recovery time and archive
 **`replayer.server`** is Java only: `ReplayerServer`/`ReplayerService` and their pure seams `Replayer`,
 `ReplaySlotAllocator`, `ReplayRecordings`, `ReplayClientIdCollisions`, with `AeronReplayer` the only
 part that touches Aeron. **`replayer.client`** is `ReplayerStreamReceiver` and its pure seam
-`ReplayerRecovery`, plus `RecoveryProgressPolicy`, `SequencedEvent`, `SequencedFrameDecoder` — Java, and
+`ReplayerRecovery`, plus `SequencedEvent`, `SequencedFrameDecoder` — Java, and
 C++ in `org::limitless::seqeron::replayer::client`. The only edge across is server→client, and it is the
 protocol's addresses: `ReplayerStreamReceiver` holds `IPC_CHANNEL`, `REPLAY_STREAM_ID` 201,
 `REQUEST_STREAM_ID` 202 and `CONTROL_STREAM_ID` 203, and the server reads them from there — the wire

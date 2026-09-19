@@ -121,8 +121,10 @@ struct Client final : ReplayerRecoveryActions
     void closeReplay() override
     {}
 
-    void recoveryStalled(bool) override
-    {}
+    void recoveryStalled(const bool stalled) override
+    {
+        stalledGauge.push_back(stalled);
+    }
 
     std::int64_t nowMs() override
     {
@@ -132,6 +134,7 @@ struct Client final : ReplayerRecoveryActions
     std::int64_t clockMs = CLOCK_MS;
     int requestsSent = 0;
     int heartbeatsSent = 0;
+    std::vector<bool> stalledGauge;
 
     ReplayerRecovery recovery;
 };
@@ -1393,9 +1396,9 @@ TEST(ReplayerRecoveryGapRecovery, WalkSegmentRetryOnADifferentRecordingAbandonsT
 }
 
 // ── Convergence alarm ─────────────────────────────────────────────────────────────────────────────────────
-// RecoveryProgressPolicyTest covers the verdict itself; what is locked here is the wiring around it —
-// that an in-order dispatch counts as progress, that catching up without dispatching does too, and that
-// the report carries the state telling the causes apart.
+// Measured by progress, not elapsed time: a cold start has no time bound. Locked here: an in-order dispatch
+// counts as progress, catching up without dispatching does too, the report carries the state telling the
+// causes apart, and each episode reports and clears exactly once.
 
 constexpr std::int64_t PAST_DEADLINE_MS = CLOCK_MS + 30'000; // RECOVERY_PROGRESS_TIMEOUT_MS
 
@@ -1501,6 +1504,35 @@ TEST(ReplayerRecoveryConvergence, TheReportStopsNamingARefusalOnceTheReplayerSer
     // The field is state, not "was ever refused": a stale 1 points the operator at a Replayer that is
     // answering fine, and away from the attached replay that is actually not delivering.
     EXPECT_NE(std::string::npos, text.find("replayerUnavailable=0")) << text;
+}
+
+TEST(ReplayerRecoveryConvergence, TheStallGaugeClearsOnceOnTheDispatchThatEndsAReportedEpisode)
+{
+    ScopedLoggerSink sink;
+    Client client{ [](const SequencedEvent&) {} };
+    deliverReplay(client, 1);
+    EXPECT_TRUE(client.stalledGauge.empty()) << "progress with nothing reported has no edge to fall from";
+
+    ASSERT_FALSE(checkProgressAt(client, CLOCK_MS));
+    ASSERT_TRUE(checkProgressAt(client, PAST_DEADLINE_MS));
+    deliverReplay(client, 2); // the reported episode ends here
+    deliverReplay(client, 3); // ... and only here
+
+    EXPECT_EQ((std::vector<bool>{ true, false }), client.stalledGauge);
+}
+
+TEST(ReplayerRecoveryConvergence, ALaterEpisodeIsReportedAgainRatherThanSwallowedByTheFirst)
+{
+    ScopedLoggerSink sink;
+    Client client{ [](const SequencedEvent&) {} };
+    ASSERT_FALSE(checkProgressAt(client, CLOCK_MS));
+    ASSERT_TRUE(checkProgressAt(client, PAST_DEADLINE_MS));
+    deliverReplay(client, 1); // one frame got through: the walk is slow, not stuck
+
+    EXPECT_FALSE(checkProgressAt(client, PAST_DEADLINE_MS + 1'000)) << "anchors a fresh episode";
+    EXPECT_FALSE(checkProgressAt(client, PAST_DEADLINE_MS + 30'000)) << "rather than inheriting the old clock";
+    EXPECT_TRUE(checkProgressAt(client, PAST_DEADLINE_MS + 31'000)) << "a second, distinct episode reports too";
+    EXPECT_EQ(2u, sink.events.size());
 }
 
 } // namespace

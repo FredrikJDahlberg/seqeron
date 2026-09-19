@@ -10,7 +10,6 @@ import io.aeron.Publication;
 import io.aeron.Subscription;
 import io.aeron.logbuffer.FragmentHandler;
 import io.aeron.logbuffer.LogBufferDescriptor;
-import java.util.concurrent.atomic.AtomicInteger;
 import org.agrona.concurrent.SystemEpochNanoClock;
 import org.agrona.concurrent.UnsafeBuffer;
 import org.limitless.seqeron.metrics.SeqeronCounters;
@@ -27,7 +26,25 @@ import org.limitless.seqeron.sequencer.FrameLayer;
  *
  * <p>Single-threaded: every method runs on the one duty-cycle thread.
  */
-public final class ReplayerStreamReceiver implements AutoCloseable, ReplayerRecoveryActions {
+public final class ReplayerStreamReceiver implements AutoCloseable {
+    /** Receives every in-order frame that is not intercepted as a leadership change. */
+    @FunctionalInterface
+    public interface SequencedHandler {
+        void onSequenced(SequencedEvent event);
+    }
+
+    /** Receives each {@code LeadershipChanged} as it is dispatched, in log order. */
+    @FunctionalInterface
+    public interface LeadershipHandler {
+        void onLeadershipChanged(int newLeaderMemberId, long leadershipTermId, long globalSeqNo);
+    }
+
+    /** Fires on every transition to caught-up, including re-convergence after a gap. */
+    @FunctionalInterface
+    public interface CaughtUpHandler {
+        void onCaughtUp();
+    }
+
     /**
      * The replay protocol's addresses, held by the client tier every consumer depends on; the server reads
      * them from here, as in C++.
@@ -61,7 +78,9 @@ public final class ReplayerStreamReceiver implements AutoCloseable, ReplayerReco
     private static final int REQUEST_BUFFER_LENGTH = 64;
 
     private final int clientId;
+    private final Actions actions = new Actions();
     private final ReplayerRecovery recovery;
+    private final TapFaultInjector tapFaults;
 
     private final MessageHeaderEncoder requestHeader = new MessageHeaderEncoder();
     private final ReplayRequestEncoder replayRequest = new ReplayRequestEncoder();
@@ -72,9 +91,6 @@ public final class ReplayerStreamReceiver implements AutoCloseable, ReplayerReco
     private final FragmentHandler tapHandler;
     private final FragmentHandler replayHandler;
     private final FragmentHandler controlFragmentHandler;
-
-    private final AtomicInteger faultDropPending = new AtomicInteger();
-    private boolean faultInjection;
 
     private Aeron aeron;
     private Integer memberId;
@@ -93,11 +109,21 @@ public final class ReplayerStreamReceiver implements AutoCloseable, ReplayerReco
      * @param onLeadershipChanged receives each leadership change, or null
      * @param onCaughtUp          fires on every transition to caught-up, or null
      */
-    public ReplayerStreamReceiver(final int clientId, final ReplayerRecovery.SequencedHandler onSequenced,
-                                  final ReplayerRecovery.LeadershipHandler onLeadershipChanged,
-                                  final ReplayerRecovery.CaughtUpHandler onCaughtUp) {
+    public ReplayerStreamReceiver(final int clientId, final SequencedHandler onSequenced,
+                                  final LeadershipHandler onLeadershipChanged, final CaughtUpHandler onCaughtUp) {
+        this(clientId, onSequenced, onLeadershipChanged, onCaughtUp, null);
+    }
+
+    /**
+     * As above, dropping live tap frames when {@code tapFaults} is armed. Test harnesses only.
+     * @param tapFaults drops live tap frames on demand, or null
+     */
+    public ReplayerStreamReceiver(final int clientId, final SequencedHandler onSequenced,
+                                  final LeadershipHandler onLeadershipChanged, final CaughtUpHandler onCaughtUp,
+                                  final TapFaultInjector tapFaults) {
         this.clientId = clientId;
-        this.recovery = new ReplayerRecovery(clientId, this, onSequenced, onLeadershipChanged, onCaughtUp);
+        this.tapFaults = tapFaults;
+        this.recovery = new ReplayerRecovery(clientId, actions, onSequenced, onLeadershipChanged, onCaughtUp);
         this.tapHandler = new FragmentAssembler(this::onTapFragment);
         this.replayHandler = new FragmentAssembler(
             (buffer, offset, length, hdr) ->
@@ -122,25 +148,6 @@ public final class ReplayerStreamReceiver implements AutoCloseable, ReplayerReco
         controlSubscription = aeron.addSubscription(CONTROL_CHANNEL, CONTROL_STREAM_ID);
         requestPublication = aeron.addPublication(IPC_CHANNEL, REQUEST_STREAM_ID);
         recovery.start();
-    }
-
-    /**
-     * Test-only: lets {@link #injectTapDrop} drop live tap frames, to drive gap recovery deterministically
-     * (gap-recovery-test.sh). Never enabled in production.
-     */
-    public void enableFaultInjection() {
-        faultInjection = true;
-    }
-
-    /**
-     * Arms a drop of the next {@code n} live tap frames. Called on the poll thread (deferred from a signal
-     * handler); a no-op unless fault injection was enabled.
-     * @param n frames to drop
-     */
-    public void injectTapDrop(final int n) {
-        if (faultInjection) {
-            faultDropPending.addAndGet(n);
-        }
     }
 
     /**
@@ -205,7 +212,7 @@ public final class ReplayerStreamReceiver implements AutoCloseable, ReplayerReco
 
     @Override
     public void close() {
-        closeReplay();
+        actions.closeReplay();
         if (tapSubscription != null) {
             tapSubscription.close();
             tapSubscription = null;
@@ -224,82 +231,6 @@ public final class ReplayerStreamReceiver implements AutoCloseable, ReplayerReco
         }
     }
 
-    @Override
-    public void sendReplayRequest(final long requestId, final int segmentIndex, final long fromPosition) {
-        if (requestPublication == null || !requestPublication.isConnected()) {
-            return; // Replayer not up yet; the resend timer retries
-        }
-        replayRequest.wrapAndApplyHeader(requestBuffer, 0, requestHeader)
-                     .clientId(clientId)
-                     .requestId(requestId)
-                     .fromPosition(fromPosition)
-                     .segmentIndex(segmentIndex);
-        requestPublication.offer(requestBuffer, 0,
-                                 MessageHeaderEncoder.ENCODED_LENGTH + replayRequest.encodedLength());
-    }
-
-    @Override
-    public boolean sendReplayComplete() {
-        if (requestPublication == null || !requestPublication.isConnected()) {
-            return false;
-        }
-        replayComplete.wrapAndApplyHeader(requestBuffer, 0, requestHeader).clientId(clientId);
-        return requestPublication.offer(requestBuffer, 0,
-                                        MessageHeaderEncoder.ENCODED_LENGTH + replayComplete.encodedLength()) >= 0;
-    }
-
-    @Override
-    public boolean sendReplayHeartbeat() {
-        if (requestPublication == null || !requestPublication.isConnected()) {
-            return false;
-        }
-        replayHeartbeat.wrapAndApplyHeader(requestBuffer, 0, requestHeader).clientId(clientId);
-        return requestPublication.offer(requestBuffer, 0,
-                                        MessageHeaderEncoder.ENCODED_LENGTH + replayHeartbeat.encodedLength()) >= 0;
-    }
-
-    /**
-     * Subscribes to exactly one replay, this one, and to nothing on the replay stream otherwise. A standing
-     * subscription would make every idle app a tethered, never-polled subscriber of every other app's
-     * replay on the shared stream, and wedge the archive's replay one window in.
-     */
-    @Override
-    public void openReplay(final long replaySessionId) {
-        closeReplay();
-        if (aeron == null) {
-            return;
-        }
-
-        final String channel = IPC_CHANNEL + "?session-id=" + (int)replaySessionId;
-        replaySubscription = aeron.addSubscription(channel, REPLAY_STREAM_ID);
-    }
-
-    @Override
-    public void closeReplay() {
-        replayImage = null;
-        if (replaySubscription != null) {
-            replaySubscription.close();
-            replaySubscription = null;
-        }
-    }
-
-    @Override
-    public void recoveryStalled(final boolean stalled) {
-        if (recoveryStalledCounter != null) {
-            recoveryStalledCounter.set(stalled ? 1 : 0);
-        }
-    }
-
-    @Override
-    public Integer memberId() {
-        return memberId;
-    }
-
-    @Override
-    public long nowMs() {
-        return System.currentTimeMillis();
-    }
-
     /**
      * Stream position of the first byte of the frame {@code header} describes. Not {@code header.position()
      * - frameLength}: {@code position()} is the next frame's, aligned to 32 bytes, and a replay position must
@@ -307,8 +238,7 @@ public final class ReplayerStreamReceiver implements AutoCloseable, ReplayerReco
      */
     private void onTapFragment(final org.agrona.DirectBuffer buffer, final int offset, final int length,
                                final io.aeron.logbuffer.Header header) {
-        if (faultInjection && faultDropPending.get() > 0) {
-            faultDropPending.decrementAndGet();
+        if (tapFaults != null && tapFaults.dropNext()) {
             return;
         }
         recovery.onFrame(buffer, offset, length, frameStartPosition(header), nowNs(), false);
@@ -325,5 +255,84 @@ public final class ReplayerStreamReceiver implements AutoCloseable, ReplayerReco
      */
     static long nowNs() {
         return SystemEpochNanoClock.INSTANCE.nanoTime();
+    }
+
+    /** The recovery state machine's transport. Private, so a consumer cannot drive the replay protocol. */
+    private final class Actions implements ReplayerRecoveryActions {
+        @Override
+        public void sendReplayRequest(final long requestId, final int segmentIndex, final long fromPosition) {
+            if (requestPublication == null || !requestPublication.isConnected()) {
+                return; // Replayer not up yet; the resend timer retries
+            }
+            replayRequest.wrapAndApplyHeader(requestBuffer, 0, requestHeader)
+                         .clientId(clientId)
+                         .requestId(requestId)
+                         .fromPosition(fromPosition)
+                         .segmentIndex(segmentIndex);
+            requestPublication.offer(requestBuffer, 0,
+                                     MessageHeaderEncoder.ENCODED_LENGTH + replayRequest.encodedLength());
+        }
+
+        @Override
+        public boolean sendReplayComplete() {
+            if (requestPublication == null || !requestPublication.isConnected()) {
+                return false;
+            }
+            replayComplete.wrapAndApplyHeader(requestBuffer, 0, requestHeader).clientId(clientId);
+            return requestPublication.offer(requestBuffer, 0,
+                                            MessageHeaderEncoder.ENCODED_LENGTH + replayComplete.encodedLength()) >= 0;
+        }
+
+        @Override
+        public boolean sendReplayHeartbeat() {
+            if (requestPublication == null || !requestPublication.isConnected()) {
+                return false;
+            }
+            replayHeartbeat.wrapAndApplyHeader(requestBuffer, 0, requestHeader).clientId(clientId);
+            return requestPublication.offer(requestBuffer, 0,
+                                            MessageHeaderEncoder.ENCODED_LENGTH + replayHeartbeat.encodedLength()) >= 0;
+        }
+
+        /**
+         * Subscribes to exactly one replay, this one, and to nothing on the replay stream otherwise. A standing
+         * subscription would make every idle app a tethered, never-polled subscriber of every other app's
+         * replay on the shared stream, and wedge the archive's replay one window in.
+         */
+        @Override
+        public void openReplay(final long replaySessionId) {
+            closeReplay();
+            if (aeron == null) {
+                return;
+            }
+
+            final String channel = IPC_CHANNEL + "?session-id=" + (int)replaySessionId;
+            replaySubscription = aeron.addSubscription(channel, REPLAY_STREAM_ID);
+        }
+
+        @Override
+        public void closeReplay() {
+            replayImage = null;
+            if (replaySubscription != null) {
+                replaySubscription.close();
+                replaySubscription = null;
+            }
+        }
+
+        @Override
+        public void recoveryStalled(final boolean stalled) {
+            if (recoveryStalledCounter != null) {
+                recoveryStalledCounter.set(stalled ? 1 : 0);
+            }
+        }
+
+        @Override
+        public Integer memberId() {
+            return memberId;
+        }
+
+        @Override
+        public long nowMs() {
+            return System.currentTimeMillis();
+        }
     }
 }

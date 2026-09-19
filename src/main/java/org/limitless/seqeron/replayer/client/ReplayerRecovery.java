@@ -6,6 +6,9 @@ import java.util.Deque;
 import java.util.List;
 import org.agrona.DirectBuffer;
 import org.agrona.concurrent.UnsafeBuffer;
+import org.limitless.seqeron.replayer.client.ReplayerStreamReceiver.CaughtUpHandler;
+import org.limitless.seqeron.replayer.client.ReplayerStreamReceiver.LeadershipHandler;
+import org.limitless.seqeron.replayer.client.ReplayerStreamReceiver.SequencedHandler;
 import org.limitless.seqeron.sbe.frame.LeadershipChangedDecoder;
 import org.limitless.seqeron.sequencer.SystemFrame;
 import org.limitless.seqeron.sbe.frame.MessageHeaderDecoder;
@@ -27,25 +30,7 @@ import org.limitless.seqeron.util.Logger;
  * <p>{@link #isCaughtUp()} is cleared on a live-tap gap and re-established once contiguous: consumers gate
  * real decisions on it. Single-threaded: every method runs on the one duty-cycle thread.
  */
-public final class ReplayerRecovery {
-    /** Receives every in-order frame that is not intercepted as a leadership change. */
-    @FunctionalInterface
-    public interface SequencedHandler {
-        void onSequenced(SequencedEvent event);
-    }
-
-    /** Receives each {@code LeadershipChanged} as it is dispatched, in log order. */
-    @FunctionalInterface
-    public interface LeadershipHandler {
-        void onLeadershipChanged(int newLeaderMemberId, long leadershipTermId, long globalSeqNo);
-    }
-
-    /** Fires on every transition to caught-up, including re-convergence after a gap. */
-    @FunctionalInterface
-    public interface CaughtUpHandler {
-        void onCaughtUp();
-    }
-
+final class ReplayerRecovery {
     private static final long RESEND_INTERVAL_MS = 500;
 
     /**
@@ -86,7 +71,10 @@ public final class ReplayerRecovery {
     private final ReplayUnavailableDecoder replayUnavailable = new ReplayUnavailableDecoder();
 
     private final SequencedEvent event = new SequencedEvent();
-    private final RecoveryProgressPolicy recoveryProgress = new RecoveryProgressPolicy(RECOVERY_PROGRESS_TIMEOUT_MS);
+
+    /** When the current no-progress episode started; 0 = none timed. */
+    private long noProgressSinceMs;
+    private boolean recoveryStallReported;
 
     private boolean awaitingReplay;
     private long replaySessionId = -1;
@@ -352,9 +340,18 @@ public final class ReplayerRecovery {
      * @return whether it reported
      */
     public boolean checkRecoveryProgress() {
-        if (caughtUp || !recoveryProgress.onNoProgress(actions.nowMs())) {
+        if (caughtUp) {
             return false;
         }
+        final long nowMs = actions.nowMs();
+        if (noProgressSinceMs == 0) {
+            noProgressSinceMs = nowMs; // the first observation only anchors the clock
+            return false;
+        }
+        if (recoveryStallReported || nowMs - noProgressSinceMs < RECOVERY_PROGRESS_TIMEOUT_MS) {
+            return false;
+        }
+        recoveryStallReported = true;
         Logger.fault(Logger.CoreComponent.ReplayerStreamReceiver, Logger.CoreEventCode.RecoveryStalled,
                      actions.memberId(),
                      "recovery has dispatched nothing for >%dms: lastGlobalSeqNo=%d segment=%d awaitingReplay=%b "
@@ -592,7 +589,9 @@ public final class ReplayerRecovery {
     private void dispatchFrame(final DirectBuffer buffer, final int offset, final int length,
                                final long globalSeqNo, final long framePosition, final long receiveNs,
                                final boolean fromReplay) {
-        if (recoveryProgress.onProgress()) {
+        noProgressSinceMs = 0;
+        if (recoveryStallReported) {
+            recoveryStallReported = false;
             actions.recoveryStalled(false);
         }
         view.wrap(buffer, offset, length);

@@ -72,7 +72,7 @@ public final class ClusterStreamSender implements IngressSender, AutoCloseable {
     private boolean overIpc;
     /** IPC ingress lost its leader and reaches nobody else, so the session must be replaced. */
     private boolean reconnectDue;
-    private IngressHold hold;
+    private IngressTracker hold;
     private boolean newLeaderDuringSend;
     private long lastKeepAliveNs;
 
@@ -131,7 +131,7 @@ public final class ClusterStreamSender implements IngressSender, AutoCloseable {
     }
 
     /** Hears every {@code NewLeader}, and gives up a send that met one while it holds. */
-    public void setIngressHold(final IngressHold hold) {
+    public void setIngressHold(final IngressTracker hold) {
         this.hold = hold;
     }
 
@@ -143,7 +143,7 @@ public final class ClusterStreamSender implements IngressSender, AutoCloseable {
      * same stuck publication.
      *
      * @return false when there is no session left to take it, or when a {@code NewLeader} arrived mid-spin
-     *     while the {@link IngressHold} holds: nothing was placed, and the frame goes again once it releases
+     *     while the {@link IngressTracker} holds: nothing was placed, and the frame goes again once it releases
      */
     @Override
     public boolean send(final DirectBuffer frame, final int length) {

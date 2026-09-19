@@ -28,7 +28,7 @@
 #include "FragmentAssembler.h"
 #include "concurrent/AtomicBuffer.h"
 #include "concurrent/YieldingIdleStrategy.h"
-#include "org/limitless/seqeron/sequencer/IngressHold.hpp"
+#include "org/limitless/seqeron/sequencer/IngressTracker.hpp"
 #include "org/limitless/seqeron/sequencer/PortLayout.hpp"
 #include "org/limitless/seqeron/util/Logger.hpp"
 #include "org_limitless_seqeron_cluster_sbe/MessageHeader.h"
@@ -357,7 +357,7 @@ class ClusterStreamSender
     }
 
     // Hears every NewLeaderEvent, and gives up a send that met one while it holds. Not owned.
-    void setIngressHold(IngressHold* hold)
+    void setIngressHold(IngressTracker* hold)
     {
         m_hold = hold;
     }
@@ -451,7 +451,7 @@ class ClusterStreamSender
     // NewLeaderEvent/REDIRECT swaps it, and that swap runs on this thread. The term and timestamp are
     // re-stamped before each retry, as AeronCluster.offer() does, since the new leader drops a stale term.
     //
-    // Returns false with no session, or when a NewLeaderEvent arrived mid-spin while the IngressHold
+    // Returns false with no session, or when a NewLeaderEvent arrived mid-spin while the IngressTracker
     // holds: nothing was placed, and the frame goes again once it releases.
     [[nodiscard]] bool send(const std::uint8_t* bytes, std::uint16_t len)
     {
@@ -831,7 +831,7 @@ class ClusterStreamSender
     bool m_sessionLost = false;
     std::int64_t m_ingressStallFatalTimeoutMs = INGRESS_STALL_FATAL_TIMEOUT_MS;
     std::int64_t m_leadershipTermId = -1;
-    IngressHold* m_hold = nullptr;
+    IngressTracker* m_hold = nullptr;
     bool m_newLeaderDuringSend = false;
     std::int64_t m_lastKeepAliveMs = 0;
     std::int64_t m_connectTimeoutMs = CLUSTER_CONNECT_TIMEOUT_MS;

@@ -26,6 +26,7 @@ import org.limitless.seqeron.sequencer.FrameLayer;
 import org.limitless.seqeron.replayer.client.ReplayerStreamReceiver;
 import org.limitless.seqeron.replayer.client.SequencedEvent;
 import org.limitless.seqeron.replayer.client.SequencedFrameDecoder;
+import org.limitless.seqeron.replayer.client.TapFaultInjector;
 import org.limitless.seqeron.sbe.probe.MessageHeaderDecoder;
 import org.limitless.seqeron.sbe.probe.MessageHeaderEncoder;
 import org.limitless.seqeron.sbe.probe.ProbeMarkerDecoder;
@@ -457,6 +458,7 @@ public final class ClusterProbe {
         // The receiver is its own callbacks' subject, so it cannot be a constructor argument to them.
         final AtomicReference<ReplayerStreamReceiver> self = new AtomicReference<>();
         final AtomicBoolean announcedLive = new AtomicBoolean();
+        final TapFaultInjector tapFaults = faultInjection ? new TapFaultInjector() : null;
         final ReplayerStreamReceiver receiver = new ReplayerStreamReceiver(clientId, stats::onSequenced, null, () -> {
             // Fires on every transition to caught-up, including re-convergence after a gap.
             if (announcedLive.compareAndSet(false, true)) {
@@ -465,7 +467,7 @@ public final class ClusterProbe {
                 Logger.info(Logger.CoreComponent.ClusterProbe, MEMBER_ID, "re-converged at globalSeqNo %d",
                             self.get().lastGlobalSeqNo());
             }
-        });
+        }, tapFaults);
         self.set(receiver);
         stats.receiver = receiver;
         receiver.start(aeron, MEMBER_ID);
@@ -473,7 +475,6 @@ public final class ClusterProbe {
                     "Following the node tap — replaying history via the Replayer, then live");
 
         if (faultInjection) {
-            receiver.enableFaultInjection();
             sun.misc.Signal.handle(new sun.misc.Signal("USR1"), signal -> faultDropArmed.addAndGet(dropPerSignal));
             Logger.info(Logger.CoreComponent.ClusterProbe, MEMBER_ID,
                         "fault injection ENABLED — SIGUSR1 drops %d live tap frame(s)", dropPerSignal);
@@ -488,7 +489,7 @@ public final class ClusterProbe {
                 while (running.get()) {
                     if (faultInjection && faultDropArmed.get() > 0) {
                         final int armed = faultDropArmed.getAndSet(0);
-                        receiver.injectTapDrop(armed);
+                        tapFaults.arm(armed);
                         Logger.info(Logger.CoreComponent.ClusterProbe, MEMBER_ID,
                                     "fault injection: armed %d tap drop(s)",
                                     armed);

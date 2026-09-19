@@ -10,7 +10,6 @@
 #include <functional>
 #include <vector>
 
-#include "org/limitless/seqeron/replayer/client/RecoveryProgressPolicy.hpp"
 #include "org/limitless/seqeron/sequencer/SequencedFrame.hpp"
 #include "org/limitless/seqeron/util/Logger.hpp"
 
@@ -158,7 +157,8 @@ class ReplayerRecovery
     bool m_replayGapLogged = false;                // report a hole in replayed history once per episode, not per frame
     bool m_caughtUp = false;                       // following live; revoked on a tap gap, re-established at the seam
 
-    RecoveryProgressPolicy m_recoveryProgress{ RECOVERY_PROGRESS_TIMEOUT_MS };
+    std::int64_t m_noProgressSinceMs = 0; // when the current no-progress episode started; 0 = none timed
+    bool m_recoveryStallReported = false;
 
     // Live tap frames from beyond the current hole, retained in arrival order (see retainMessages).
     MessagesBlockPool m_messagesBlockPool;
@@ -376,10 +376,21 @@ class ReplayerRecovery
 
     bool checkRecoveryProgress()
     {
-        if (m_caughtUp || !m_recoveryProgress.onNoProgress(m_actions.nowMs()))
+        if (m_caughtUp)
         {
             return false;
         }
+        const std::int64_t nowMs = m_actions.nowMs();
+        if (m_noProgressSinceMs == 0)
+        {
+            m_noProgressSinceMs = nowMs; // the first observation only anchors the clock
+            return false;
+        }
+        if (m_recoveryStallReported || nowMs - m_noProgressSinceMs < RECOVERY_PROGRESS_TIMEOUT_MS)
+        {
+            return false;
+        }
+        m_recoveryStallReported = true;
         diag::Logger::fault(diag::component::ReplayerStreamReceiver, diag::eventCode::RecoveryStalled,
                             "recovery has dispatched nothing for >%lldms: lastGlobalSeqNo=%lld segment=%d "
                             "awaitingReplay=%d replaySession=%lld replayerUnavailable=%d — holding; check "
@@ -605,8 +616,10 @@ class ReplayerRecovery
     void dispatchFrame(char* const frame, const std::uint64_t length, const std::int64_t sequenceNumber,
                        const std::int64_t framePosition, const std::int64_t receiveNs, const bool fromReplay)
     {
-        if (m_recoveryProgress.onProgress())
+        m_noProgressSinceMs = 0;
+        if (m_recoveryStallReported)
         {
+            m_recoveryStallReported = false;
             m_actions.recoveryStalled(false);
         }
         // onFrame unwrapped and validated this frame already, and the retained FIFO holds only frames that

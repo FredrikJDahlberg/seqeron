@@ -16,7 +16,7 @@ namespace org::limitless::seqeron::util {
 // ── Co-located C++ application replicas (5200-5299) ──────────────────────────────────────────
 inline constexpr std::int32_t APP_TYPE_ID_MIN = 5200;
 
-// 1 while this replica's recovery has been reported unconvergent (see RecoveryProgressPolicy), else 0.
+// 1 while this replica's recovery has been reported unconvergent (see ReplayerRecovery::checkRecoveryProgress), else 0.
 inline constexpr std::int32_t APP_RECOVERY_STALLED_TYPE_ID = 5200;
 
 inline constexpr std::size_t KEY_MEMBER_ID_OFFSET = 0;
