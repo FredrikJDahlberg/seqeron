@@ -469,6 +469,13 @@ class ClusterStreamSender
         return m_clusterSessionId;
     }
 
+    // The leadership term ingress is stamped with, or -1 if not yet connected. Read straight after a
+    // send() that returned true, it is the term that frame carried: send() re-stamps on every retry.
+    std::int64_t leadershipTermId() const
+    {
+        return m_leadershipTermId;
+    }
+
     // True once the cluster has closed this client's session (see onFragment) — as opposed to never
     // having connected one, which leaves clusterSessionId() at -1 just the same. Latched: there is no
     // re-handshake, so a caller whose work is only valid with a session checks this and stops.

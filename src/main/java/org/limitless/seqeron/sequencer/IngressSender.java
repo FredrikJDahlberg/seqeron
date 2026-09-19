@@ -22,4 +22,11 @@ public interface IngressSender {
 
     /** This process's cluster session id, or -1 with no session. Stamped into a frame's advisory field. */
     long clusterSessionId();
+
+    /**
+     * The leadership term ingress is stamped with, or -1 with no session. Read straight after a
+     * {@link #send} that returned true, it is the term that frame carried: the cluster drops a frame
+     * stamped with any term but its own.
+     */
+    long leadershipTermId();
 }

@@ -292,6 +292,7 @@ TEST_F(ConnectedClusterStreamSender, SendWrapsBytesWithSessionMessageHeader)
     ASSERT_EQ(1u, ingress_->m_offered.size());
     auto hdr = decodeOffered<cluster_sbe::SessionMessageHeader>(ingress_->m_offered[0]);
     EXPECT_EQ(TERM_ID, hdr.leadershipTermId());
+    EXPECT_EQ(TERM_ID, sender_.leadershipTermId());
     EXPECT_EQ(SESSION_ID, hdr.clusterSessionId());
 
     // Bytes after the SessionMessageHeader are exactly the caller-supplied
@@ -578,6 +579,7 @@ TEST(ClusterStreamSenderReliableSend, SendReStampsLeadershipTermAfterMidSpinFail
     ASSERT_FALSE(ingressPtr->m_accepted.empty());
     auto hdr = decodeOffered<cluster_sbe::SessionMessageHeader>(ingressPtr->m_accepted);
     EXPECT_EQ(999, hdr.leadershipTermId()); // re-stamped to the new leader's term
+    EXPECT_EQ(999, sender.leadershipTermId());
 }
 
 // The cluster closes this session while send()'s spin is already running — the CLOSED event is

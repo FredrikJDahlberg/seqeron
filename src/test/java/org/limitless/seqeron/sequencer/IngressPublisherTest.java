@@ -48,6 +48,11 @@ class IngressPublisherTest {
         public long clusterSessionId() {
             return SESSION_ID;
         }
+
+        @Override
+        public long leadershipTermId() {
+            return 1;
+        }
     }
 
     private final FakeSender sender = new FakeSender();

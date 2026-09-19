@@ -269,6 +269,12 @@ public final class ClusterStreamSender implements IngressSender, AutoCloseable {
         return cluster == null ? Aeron.NULL_VALUE : cluster.clusterSessionId();
     }
 
+    /** {@code AeronCluster} moves its stamp only inside {@link #pollEgress}, which send polls between failed offers. */
+    @Override
+    public long leadershipTermId() {
+        return cluster == null ? Aeron.NULL_VALUE : cluster.leadershipTermId();
+    }
+
     /** This process's fixed identity in spec §5's one id space; the caller stamps it into each frame. */
     public int sourceId() {
         return sourceId;
