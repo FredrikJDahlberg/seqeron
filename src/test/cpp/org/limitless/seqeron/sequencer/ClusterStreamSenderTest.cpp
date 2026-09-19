@@ -582,6 +582,94 @@ TEST(ClusterStreamSenderReliableSend, SendReStampsLeadershipTermAfterMidSpinFail
     EXPECT_EQ(999, sender.leadershipTermId());
 }
 
+// An IngressHold that answers whatever the test set, and records the NewLeaders it heard.
+class FakeHold : public IngressHold
+{
+  public:
+    bool m_holding = false;
+    std::vector<std::int64_t> m_newLeaders;
+
+    void onNewLeader(const std::int64_t leadershipTermId) override
+    {
+        m_newLeaders.push_back(leadershipTermId);
+    }
+
+    [[nodiscard]] bool isHolding() const override
+    {
+        return m_holding;
+    }
+};
+
+// Connects a sender whose first offer is refused while a NewLeaderEvent (term 999) waits on egress: the
+// mid-spin failover of SendReStampsLeadershipTermAfterMidSpinFailover, with a hold attached.
+struct MidSpinFailover
+{
+    explicit MidSpinFailover(FakeHold& hold, const bool newLeaderWaiting = true)
+    {
+        auto egress = std::make_unique<FakeEgressTransport>();
+        egress->m_queued.push_back(encodeSessionEvent(55, 11, cluster_sbe::EventCode::Value::OK));
+        auto* egressPtr = egress.get();
+        auto flaky = std::make_unique<FlakyIngressTransport>();
+        ingress = flaky.get();
+        sender.connect(std::move(flaky), std::move(egress));
+        sender.setIngressHold(&hold);
+        if (newLeaderWaiting)
+        {
+            egressPtr->m_queued.push_back(encodeNewLeaderEvent(999));
+        }
+        ingress->m_offerCalls = 0;
+        ingress->m_accepted.clear(); // the connect request
+        ingress->m_rejectCount = 1;
+    }
+
+    ClusterStreamSender sender;
+    FlakyIngressTransport* ingress = nullptr;
+};
+
+// A send spinning through an election must not land in the new term ahead of the older frames that
+// election lost, so while the hold is on it is given up with nothing placed, and the session stays.
+TEST(ClusterStreamSenderHold, SendGivesUpAMidSpinFailoverWhileTheHoldIsOn)
+{
+    FakeHold hold;
+    hold.m_holding = true;
+    MidSpinFailover failover(hold);
+
+    const std::array<std::uint8_t, 1> body{ '8' };
+    EXPECT_FALSE(failover.sender.send(body.data(), 1));
+
+    EXPECT_EQ(1, failover.ingress->m_offerCalls);
+    EXPECT_TRUE(failover.ingress->m_accepted.empty());
+    EXPECT_EQ(std::vector<std::int64_t>{ 999 }, hold.m_newLeaders);
+    EXPECT_TRUE(failover.sender.isConnected());
+    EXPECT_FALSE(failover.sender.isSessionLost());
+}
+
+TEST(ClusterStreamSenderHold, SendRidesThroughAMidSpinFailoverWhenNothingIsHeld)
+{
+    FakeHold hold;
+    MidSpinFailover failover(hold);
+
+    const std::array<std::uint8_t, 1> body{ '8' };
+    EXPECT_TRUE(failover.sender.send(body.data(), 1));
+
+    EXPECT_EQ(2, failover.ingress->m_offerCalls);
+    EXPECT_EQ(999, decodeOffered<cluster_sbe::SessionMessageHeader>(failover.ingress->m_accepted).leadershipTermId());
+}
+
+// The resend itself goes out while the hold is on, so back-pressure alone must not give a send up.
+TEST(ClusterStreamSenderHold, SendRidesThroughBackPressureWhileTheHoldIsOn)
+{
+    FakeHold hold;
+    hold.m_holding = true;
+    MidSpinFailover failover(hold, false);
+
+    const std::array<std::uint8_t, 1> body{ '8' };
+    EXPECT_TRUE(failover.sender.send(body.data(), 1));
+
+    EXPECT_EQ(2, failover.ingress->m_offerCalls);
+    EXPECT_TRUE(hold.m_newLeaders.empty());
+}
+
 // The cluster closes this session while send()'s spin is already running — the CLOSED event is
 // waiting on egress and only the spin's own pump will see it. An offer on a closed session is
 // rejected forever, so the spin MUST re-check the session it framed against and give up, not just

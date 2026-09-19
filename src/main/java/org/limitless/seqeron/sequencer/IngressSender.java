@@ -16,7 +16,8 @@ public interface IngressSender {
      * Offers one pre-encoded frame to cluster ingress.
      * @param frame  the frame, from offset 0
      * @param length its length in bytes
-     * @return whether it was placed
+     * @return whether it was placed; false with a session still open means a new leader arrived while an
+     *     {@link IngressHold} held, and the frame goes again once it releases
      */
     boolean send(DirectBuffer frame, int length);
 

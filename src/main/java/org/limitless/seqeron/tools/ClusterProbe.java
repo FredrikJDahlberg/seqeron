@@ -16,10 +16,14 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.agrona.DirectBuffer;
 import org.agrona.ExpandableArrayBuffer;
+import org.agrona.collections.LongArrayList;
+import org.agrona.collections.LongHashSet;
 import org.agrona.concurrent.BackoffIdleStrategy;
 import org.agrona.concurrent.IdleStrategy;
 import org.agrona.concurrent.ShutdownSignalBarrier;
 import org.agrona.concurrent.YieldingIdleStrategy;
+import org.limitless.seqeron.app.PendingSends;
+import org.limitless.seqeron.sequencer.ClusterStreamSender;
 import org.limitless.seqeron.sequencer.FrameLayer;
 import org.limitless.seqeron.replayer.client.ReplayerStreamReceiver;
 import org.limitless.seqeron.replayer.client.SequencedEvent;
@@ -43,7 +47,7 @@ import org.limitless.seqeron.util.Logger;
  * this module's e2e suite depend on the C++ edge — a product → cluster edge no build could see, and the
  * thing that would leave seqeron with no runnable e2e at all once it is extracted.
  *
- * <p>Three modes, one message ({@code sbe-probe.xml}, {@code payloadId} 5):
+ * <p>Four modes, one message ({@code sbe-probe.xml}, {@code payloadId} 5):
  * <ul>
  *   <li><b>submit</b> — flood {@code probe.count} {@code ProbeMarker}s at cluster ingress. Builds an
  *       archive, or gives a cold-start walk work to do. Opens no tap subscription: a tethered one left
@@ -53,6 +57,10 @@ import org.limitless.seqeron.util.Logger;
  *       FIX round-trip probe it replaces was actually testing.</li>
  *   <li><b>follow</b> — replay history through the co-located Replayer, then follow the tap live,
  *       announcing the transition. The {@code OrderExecServer} replacement.</li>
+ *   <li><b>confirm</b> — send {@code probe.count} through {@link ClusterStreamSender} and a
+ *       {@link PendingSends} while following its own tap, and exit 0 only if the tap shows seqNo 1..count
+ *       exactly once, in order. Run across a leader kill, it is the end-to-end proof of failover loss
+ *       recovery; {@code -Dprobe.pendingSends=false} is the control that shows what the kill loses.</li>
  * </ul>
  *
  * <p>System properties (mirroring {@code ReplayerServer}'s, which every script already sets this way):
@@ -64,10 +72,11 @@ import org.limitless.seqeron.util.Logger;
  *                             default localhost. The leader sends session responses there, so when
  *                             the leader is on another host — a container topology, say — localhost
  *                             is the leader's own loopback and the session never establishes.
- *   probe.clientId          — follow: this replica's Replayer client id; default 9
- *   probe.count             — submit: frames to send; default 1000
+ *   probe.clientId          — follow, confirm: this replica's Replayer client id; default 9
+ *   probe.count             — submit, confirm: frames to send; default 1000
  *   probe.fillerBytes       — submit: bytes of filler per frame; default 0
- *   probe.pacingMicros      — submit: pause between frames; default 0 (as fast as ingress accepts)
+ *   probe.pacingMicros      — submit, confirm: pause between frames; default 0 (as fast as ingress accepts)
+ *   probe.pendingSends      — confirm: hold and resend across a leader change; default true
  *   probe.latencyStats      — follow: record and report post-catch-up delivery latency; default false
  *   probe.faultInjection    — follow: install the SIGUSR1 tap-drop handler; default false
  *   probe.faultDropCount    — follow: frames dropped per SIGUSR1; default 1
@@ -110,6 +119,20 @@ public final class ClusterProbe {
 
     private static final String EGRESS_HOST = System.getProperty("probe.egressHost", "localhost");
 
+    /** The co-located member's Aeron directory; {@code TestGateway} connects through it too. */
+    static String aeronDir() {
+        return AERON_DIR;
+    }
+
+    static String ingressEndpoints() {
+        return INGRESS_ENDPOINTS;
+    }
+
+    /** This client's own egress endpoint, on an ephemeral port. */
+    static String egressChannel() {
+        return "aeron:udp?endpoint=" + EGRESS_HOST + ":0";
+    }
+
     private static final long CONNECT_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(5);
     private static final long OFFER_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(5);
 
@@ -128,6 +151,12 @@ public final class ClusterProbe {
     private static final long NEW_LEADER_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(5);
     private static final long ECHO_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(10);
 
+    /** confirm: frames in flight between send and the tap; far above what one round trip holds. */
+    private static final int PENDING_CAPACITY = 4096;
+
+    /** confirm: how long the run may go without sending, resending or seeing an own frame before it is judged. */
+    private static final long DRAIN_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(15);
+
     /** Exit status of a follower whose duty cycle died — its media driver went away. Mirrors ReplayerServer's. */
     private static final int EXIT_DUTY_CYCLE_FATAL = 70;
 
@@ -145,6 +174,7 @@ public final class ClusterProbe {
             case "submit" -> System.exit(submit(Integer.getInteger("probe.count", 1000)));
             case "ping" -> System.exit(ping());
             case "follow" -> follow();
+            case "confirm" -> System.exit(confirm(Integer.getInteger("probe.count", 1000)));
             default -> {
                 usage();
                 System.exit(mode.equals("help") ? 0 : 1);
@@ -242,19 +272,28 @@ public final class ClusterProbe {
             return frame;
         }
 
+        /** The payload the last {@link #encodePayload} wrote, its own {@code MessageHeader} included. */
+        ExpandableArrayBuffer payload() {
+            return payload;
+        }
+
+        /** Encodes one {@code ProbeMarker} payload alone, for a caller whose publisher adds the envelope. */
+        int encodePayload(final long seqNo, final byte[] filler) {
+            marker.wrapAndApplyHeader(payload, 0, payloadHeader);
+            marker.seqNo(seqNo);
+            marker.putFiller(filler, 0, filler.length);
+            return MessageHeaderEncoder.ENCODED_LENGTH + marker.encodedLength();
+        }
+
         /**
          * Encodes one {@code ProbeMarker} into the payload buffer, then wraps it as an {@code Unsequenced}
          * frame. The payload carries its own {@code MessageHeader}, as every payload does.
          * @param connectionId the connection this frame belongs to, or -1 for a producer-scoped one
-         * @param sourceId     the producer stamping it: this class's own, or a {@code TestGateway}'s
-         *                     resolved {@code gatewaySourceId}
+         * @param sourceId     the producer stamping it
          * @return the frame's length in bytes
          */
         int encode(final long seqNo, final int connectionId, final int sourceId, final byte[] filler) {
-            marker.wrapAndApplyHeader(payload, 0, payloadHeader);
-            marker.seqNo(seqNo);
-            marker.putFiller(filler, 0, filler.length);
-            final int payloadLength = MessageHeaderEncoder.ENCODED_LENGTH + marker.encodedLength();
+            final int payloadLength = encodePayload(seqNo, filler);
             final int length = envelope.wrapPayload(frame, sourceId, connectionId, NO_ID, PROBE_PAYLOAD_ID,
                                                     payload, payloadLength);
             if (length == SystemFrame.REFUSED) {
@@ -291,6 +330,136 @@ public final class ClusterProbe {
                 found = true;
                 globalSeqNo = view.globalSeqNo();
             }
+        }
+    }
+
+    // ── confirm ───────────────────────────────────────────────────────────────────
+
+    /**
+     * Sends seqNo 1..count while following this node's tap, then judges what the tap showed from this
+     * process's own sessions. The frames go out as fast as the pacing allows, so a leader killed meanwhile
+     * has some in flight.
+     * @return 0 if the tap showed every frame exactly once, in order
+     */
+    private static int confirm(final int count) {
+        final boolean tracked = Boolean.parseBoolean(System.getProperty("probe.pendingSends", "true"));
+        final int clientId = Integer.getInteger("probe.clientId", 9);
+        final long pacingNs = Long.getLong("probe.pacingMicros", 0L) * 1_000L;
+        final PendingSends pending = new PendingSends(PENDING_CAPACITY);
+        final OwnFrames own = new OwnFrames();
+        final AtomicBoolean caughtUp = new AtomicBoolean();
+        try (Aeron aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(AERON_DIR));
+             ClusterStreamSender sender = new ClusterStreamSender()) {
+            final ReplayerStreamReceiver receiver = new ReplayerStreamReceiver(clientId, event -> {
+                if (tracked) {
+                    pending.onSequenced(event);
+                }
+                own.onSequenced(event);
+            }, (leaderMemberId, leadershipTermId, globalSeqNo) -> pending.onLeadershipChanged(leadershipTermId),
+                () -> caughtUp.set(true));
+            receiver.start(aeron, MEMBER_ID);
+            final IdleStrategy idle = new YieldingIdleStrategy();
+            while (!caughtUp.get()) {
+                idle.idle(receiver.poll());
+            }
+            sender.setIngressEndpoints(INGRESS_ENDPOINTS);
+            if (tracked) {
+                sender.setIngressHold(pending);
+            }
+            sender.connect(aeron, egressChannel());
+            Logger.info(Logger.CoreComponent.ClusterProbe, MEMBER_ID, "confirm: sending %d frame(s)%s", count,
+                        tracked ? " through PendingSends" : " untracked (control)");
+
+            final MarkerEncoder marker = new MarkerEncoder();
+            long next = 1;
+            long nextSendNs = 0;
+            long lastProgressNs = System.nanoTime();
+            int resent = 0;
+            while (true) {
+                final long now = System.nanoTime();
+                final int seen = own.seqNos.size();
+                final int work = receiver.poll() + sender.pollEgress();
+                sender.keepAlive();
+                if (sender.isSessionLost() || pending.isFaulted()) {
+                    Logger.error(Logger.CoreComponent.ClusterProbe, Logger.CoreEventCode.ClusterSessionError,
+                                 MEMBER_ID, "confirm: %s", pending.isFaulted() ? "PendingSends faulted"
+                                                                              : "cluster session lost");
+                    return 1;
+                }
+                final int resentNow = tracked ? pending.resendMissing(sender) : 0;
+                if (resentNow > 0) {
+                    resent += resentNow;
+                    own.sessions.add(sender.clusterSessionId());
+                }
+                final boolean gated = tracked && (pending.isHolding() || pending.isFull());
+                if (next <= count && !gated && now >= nextSendNs) {
+                    final int length = marker.encode(next, NO_ID, PROBE_SOURCE_ID, NO_FILLER);
+                    if (sender.send(marker.frame(), length)) {
+                        own.sessions.add(sender.clusterSessionId());
+                        if (tracked) {
+                            pending.track(marker.frame(), length, sender.clusterSessionId(),
+                                          sender.leadershipTermId());
+                        }
+                        next++;
+                        nextSendNs = now + pacingNs;
+                        lastProgressNs = now;
+                    }
+                }
+                if (resentNow > 0 || own.seqNos.size() > seen) {
+                    lastProgressNs = now;
+                }
+                final boolean drained = next > count && (tracked ? pending.size() == 0 : own.last() == count);
+                if (drained || now - lastProgressNs > DRAIN_TIMEOUT_NS) {
+                    break;
+                }
+                idle.idle(work + resentNow);
+            }
+            receiver.close();
+            return own.judge(count, resent);
+        } catch (final RuntimeException ex) {
+            Logger.error(Logger.CoreComponent.ClusterProbe, Logger.CoreEventCode.ClusterSessionError, MEMBER_ID,
+                         "confirm failed: %s", ex);
+            return 1;
+        }
+    }
+
+    /** The seqNos this process's own sessions put on the tap, in tap order. */
+    private static final class OwnFrames {
+        private final LongHashSet sessions = new LongHashSet();
+        private final LongArrayList seqNos = new LongArrayList();
+        private final ProbeMarkerDecoder decoder = new ProbeMarkerDecoder();
+
+        private void onSequenced(final SequencedEvent event) {
+            if (event.isSystem() || event.payloadId() != PROBE_PAYLOAD_ID ||
+                event.templateId() != ProbeMarkerDecoder.TEMPLATE_ID || !sessions.contains(event.sourceSessionId())) {
+                return;
+            }
+            decoder.wrap(event.buffer(), event.offset() + MessageHeaderDecoder.ENCODED_LENGTH, event.blockLength(),
+                         event.version());
+            seqNos.addLong(decoder.seqNo());
+        }
+
+        private long last() {
+            return seqNos.isEmpty() ? 0 : seqNos.getLong(seqNos.size() - 1);
+        }
+
+        /** 0 if the tap showed 1..count exactly once, in order; logs the tally either way. */
+        private int judge(final int count, final int resent) {
+            final LongHashSet distinct = new LongHashSet();
+            int outOfOrder = 0;
+            for (int i = 0; i < seqNos.size(); i++) {
+                distinct.add(seqNos.getLong(i));
+                if (i > 0 && seqNos.getLong(i) <= seqNos.getLong(i - 1)) {
+                    outOfOrder++;
+                }
+            }
+            final int missing = count - distinct.size();
+            final int duplicated = seqNos.size() - distinct.size();
+            final boolean exact = missing == 0 && duplicated == 0 && outOfOrder == 0;
+            Logger.info(Logger.CoreComponent.ClusterProbe, MEMBER_ID,
+                        "confirm: %s — tap showed %d of %d: missing %d, duplicated %d, out of order %d; resent %d",
+                        exact ? "EXACT" : "NOT EXACT", seqNos.size(), count, missing, duplicated, outOfOrder, resent);
+            return exact ? 0 : 1;
         }
     }
 
@@ -444,17 +613,12 @@ public final class ClusterProbe {
     // ── plumbing ──────────────────────────────────────────────────────────────────
 
     static AeronCluster connectCluster() {
-        return connectCluster(NULL_EGRESS);
-    }
-
-    /** The same, for a caller that must see session events — {@code TestGateway}'s cluster-session fence. */
-    static AeronCluster connectCluster(final EgressListener egressListener) {
         return AeronCluster.connect(new AeronCluster.Context()
             .aeronDirectoryName(AERON_DIR)
             .ingressChannel("aeron:udp")
             .ingressEndpoints(INGRESS_ENDPOINTS)
-            .egressChannel("aeron:udp?endpoint=" + EGRESS_HOST + ":0")
-            .egressListener(egressListener)
+            .egressChannel(egressChannel())
+            .egressListener(NULL_EGRESS)
             .messageTimeoutNs(CONNECT_TIMEOUT_NS)
             .newLeaderTimeoutNs(NEW_LEADER_TIMEOUT_NS));
     }
@@ -541,11 +705,12 @@ public final class ClusterProbe {
 
     private static void usage() {
         System.err.println("""
-            Usage: ClusterProbe <submit|ping|follow>
+            Usage: ClusterProbe <submit|ping|follow|confirm>
 
               submit  flood -Dprobe.count frames at cluster ingress (default 1000)
               ping    submit one frame and wait for its sequenced echo on the tap
               follow  replay history via the co-located Replayer, then follow the tap live
+              confirm send -Dprobe.count frames and check the tap shows each once, in order
 
             See the class javadoc for the -Dprobe.* properties.""");
     }

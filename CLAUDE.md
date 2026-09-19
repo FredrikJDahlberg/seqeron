@@ -105,19 +105,29 @@ addresses in `ReplayerStreamReceiver`.
 **The producer side is a language-port pair too.** Java's `ClusterStreamSender`/`IngressPublisher` carry
 the C++ files' names and semantics — `connectColocated` (IPC ingress on the co-located member, UDP
 endpoints when it is not leading), a `send` that spins through back-pressure and an election rather than
-dropping the frame, a self-throttling `keepAlive`, and the three-valued `Publish`. They are far smaller
+dropping the frame — unless a new leader arrives mid-spin while its `IngressHold` holds, when it places
+nothing and returns false — a self-throttling `keepAlive`, and the three-valued `Publish`. They are far smaller
 than their twins because `AeronCluster` already is the cluster protocol that `ClusterStreamSender.hpp`
 implements by hand; what the Java side adds is only what that client does not do. Two divergences are
 deliberate and documented in the class: the body arrives pre-encoded rather than through a `Fill` over an
 encoder (Java's SBE codecs share no interface), and leadership moving off the co-located member costs a
 session rather than a publication swap (`AeronCluster` owns its publication). `IngressSender` exists so
 `IngressPublisher` has a seam the Java suite can drive without an Aeron runtime — the C++ transport seam
-has no Java equivalent, so the state machine those 778 C++ test lines cover is Aeron's here, not ours.
+has no Java equivalent, so the state machine those 868 C++ test lines cover is Aeron's here, not ours.
 What is left of ours is split off and unit-tested the way `TapStallPolicy` is: **`IngressStallPolicy`**
 (which offer results are terminal — `CLOSED` is not, it is an election in progress) and
 **`IngressLeaderPolicy`** (whether IPC ingress has lost its leader and the session must be replaced).
 `ClusterStreamSender` itself is then the Aeron adapter and holds no decision of its own, so its low line
 coverage is the same statement `SequencerService`'s is.
+
+**A send that succeeds is not a frame sequenced.** Nothing confirms ingress on egress, and a leader
+failover silently loses whatever the old leader had not committed — the session survives it.
+`app/PendingSends` is the confirm-on-tap tracker (spec §16 A-4, A-5): a producer gives it to
+`IngressPublisher` as its `IngressTracker` (which tracks what it places and declines while it holds or is
+full) and to the sender as its `IngressHold`, feeds it its own tap and each `LeadershipChanged`'s term, and
+resends what a term change lost. Both languages,
+case for case, with a property test asserting exactly-once, in-order delivery across random failovers;
+`failover-test.sh` proves the same across a real leader kill.
 
 **The C++ half is a client library, not a program.** `seqeron_core` is a header-only INTERFACE
 target and the only binary the build produces is `core_tests`. There is **no C++ replay server** —
@@ -190,15 +200,18 @@ generated SBE codecs.
 
 **All five harnesses are Java-only.** They drive the cluster through `tools/ClusterProbe`, which
 submits `ProbeMarker` payloads at ingress (`submit`), round-trips one through consensus and back off
-the tap (`ping`), or replays history through the co-located Replayer and then follows the tap live
-(`follow`). The probe attaches to a member's own embedded driver, so three of the five need no
+the tap (`ping`), replays history through the co-located Replayer and then follows the tap live
+(`follow`), or streams through `ClusterStreamSender` and `app/PendingSends` and checks its own tap shows
+every frame exactly once, in order (`confirm`, which `failover-test.sh` runs across the leader kill). The probe attaches to a member's own embedded driver, so three of the five need no
 standalone `aeronmd` at all. `chaos-runner` needs a sixth thing the probe cannot supply — a **gateway
 pair under the faults** — and `TestGateway` is it: an elected active/standby producer (`GW-T-A`/`GW-T-B`,
 `gatewaySourceId` 9, listening on 9200/9201) that speaks no application protocol and holds no session
 state, but holds the same four fences a real gateway does — including the client tier's recovery-stall
 fence (`app/RecoveryStallFence`), which is why `chaos-runner.sh` can drive a
 non-converging recovery to a handover rather than a hang. Its activation and stand-down are
-`app/GatewayLifecycle`, the client tier's class for a gateway's election. It is in **`src/test/java`** and therefore in no jar: `chaos-runner.sh` puts
+`app/GatewayLifecycle`, the client tier's class for a gateway's election. It is also the reference user of
+confirmed ingress: everything it publishes goes through `IngressPublisher` tracking into `app/PendingSends`,
+which its `ClusterStreamSender` holds, and a `PendingSends` fault is a fifth fence. It is in **`src/test/java`** and therefore in no jar: `chaos-runner.sh` puts
 `build/classes/java/test` on the classpath beside the uber jar and refuses to start without it. Its
 list is `src/test/resources/topology-test-gateway.xml`, the only topology document in this repo.
 

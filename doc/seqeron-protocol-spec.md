@@ -691,6 +691,10 @@ How to implement the sharp ones:
 - **Condition 1 is a backstop** (**T-3**): a conforming producer's encode method refuses an oversized
   payload on the caller's own stack. What condition 1 catches is a producer not running a conforming
   implementation.
+- **Conditions 6 to 9 are refused by the producer too**, the same way: they need nothing but the frame, so
+  the encode methods (`SystemFrame`, `publishPayload`/`publishSystem`) refuse them and the sequencer never
+  drops (S-7) a frame a conforming producer sent. Condition 10 needs the sequencer's session binding, so it
+  alone can still reject one — which §16 A-4 treats as a fault.
 - **Conditions 9 and 10 each carry their own floor, and 9 is what establishes 10's.** Fitting the frame
   exactly says nothing about being long enough for what the next condition reads. Condition 8 needs no
   floor — it reads a header field, not a body one.
@@ -1319,7 +1323,7 @@ every consumer dispatches on `(payloadId, templateId)`, and condition 2 holds as
 
 What an application must do for §9.1's order to reach its own consumers intact. seqeron cannot enforce
 these — they are behaviour past the tap — so they are rules for the application, and
-`org.limitless.seqeron.app` (Java and C++) implements each.
+`org.limitless.seqeron.app` (Java and C++) implements each; A-5's sender half is in `sequencer`.
 
 - **A-1 Leader-only work is gated.** A co-located replica MUST emit a leader-only side effect only while
   it is caught up and its own member is the leader, and MUST treat every applied `LeadershipChanged` as
@@ -1332,3 +1336,24 @@ these — they are behaviour past the tap — so they are rules for the applicat
 - **A-3 A re-emission is identical.** A-2 emits at least once. The reply MUST be a pure function of the
   sequenced request and SHOULD be keyed on the request's `globalSeqNo`, so a duplicate is byte-identical;
   consumers MUST drop duplicates by that key.
+- **A-4 Ingress is confirmed on the tap, not at send.** A successful send means the frame reached the
+  leader's ingress, not the log; nothing confirms it on egress. A producer that must not lose a frame MUST
+  hold it as pending until its own tap shows it, matched by cluster session id — never by `sourceId`,
+  which a gateway pair shares. A frame stamped term T that has not appeared before the first
+  `LeadershipChanged` whose `leadershipTermId` is above T is lost. The count is exact because a leader drops
+  ingress stamped with any term but its own and every election discards the ingress it had not read, so
+  the lost frames are always the newest stamped T. An own frame that differs from the oldest pending one
+  means the per-session order this rests on no longer holds — most often the sequencer refused a frame
+  (S-7) — and MUST fence the producer. (`PendingSends`)
+- **A-5 Lost frames are resent before anything new.** From the first sign of a newer term — egress
+  `NewLeader` or the tap's `LeadershipChanged`, whichever comes first — until every older pending frame has
+  been seen or resent, the producer MUST NOT place a new frame. That includes a send already retrying
+  through the election: the sender learns of the new leader inside that retry, so it gives the send up
+  and reports it not placed, with the session still open (`IngressHold`, in both `ClusterStreamSender`s).
+  Lost frames MUST be resent oldest first, once the sender stamps a term the tap has reached. A frame
+  the log holds is never pending past its tap appearance, so a resend adds no duplicate. (`PendingSends`)
+
+A-4 and A-5 hold only within one producer process. A restarted producer, or a standby promoted in its
+place, starts with nothing pending; a lost cluster session stays terminal; and a frame lost with no
+leader change — an ingress image that drops and rejoins inside the session timeout — has no boundary to be
+counted against.

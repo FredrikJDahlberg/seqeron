@@ -3,6 +3,9 @@ package org.limitless.seqeron.sequencer;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.util.ArrayList;
+import java.util.List;
+
 import org.agrona.DirectBuffer;
 import org.agrona.ExpandableArrayBuffer;
 import org.agrona.MutableDirectBuffer;
@@ -55,7 +58,36 @@ class IngressPublisherTest {
         }
     }
 
+    /** Answers whatever the test told it to, and records each frame it is asked to track. */
+    private static final class FakeTracker implements IngressTracker {
+        private final List<long[]> tracked = new ArrayList<>(); // {length, clusterSessionId, leadershipTermId}
+        private boolean holding;
+        private boolean full;
+
+        @Override
+        public void onNewLeader(final long leadershipTermId) {
+        }
+
+        @Override
+        public boolean isHolding() {
+            return holding;
+        }
+
+        @Override
+        public boolean isFull() {
+            return full;
+        }
+
+        @Override
+        public void track(final DirectBuffer frame, final int length, final long clusterSessionId,
+                          final long leadershipTermId) {
+            tracked.add(new long[] { length, clusterSessionId, leadershipTermId });
+        }
+    }
+
     private final FakeSender sender = new FakeSender();
+    private final FakeTracker tracker = new FakeTracker();
+    private final IngressPublisher tracked = new IngressPublisher(tracker);
     private final IngressPublisher publisher = new IngressPublisher();
     private final MessageHeaderDecoder messageHeader = new MessageHeaderDecoder();
     private final UnsequencedDecoder unsequenced = new UnsequencedDecoder();
@@ -149,5 +181,61 @@ class IngressPublisherTest {
         assertEquals(Publish.Published,
                      publisher.publishPayload(sender, SOURCE_ID, CONNECTION_ID, PAYLOAD_ID, payload(8), 8));
         assertTrue(sender.length < longFrame, "the second frame is shorter than the first");
+    }
+
+    @Test
+    @DisplayName("a tracked publish records the frame it placed under the sender's session and term")
+    void trackedPublishRecordsThePlacedFrame() {
+        assertEquals(Publish.Published,
+                     tracked.publishPayload(sender, SOURCE_ID, CONNECTION_ID, PAYLOAD_ID, payload(8), 8));
+        assertEquals(1, tracker.tracked.size());
+        assertEquals(sender.length, tracker.tracked.get(0)[0]);
+        assertEquals(SESSION_ID, tracker.tracked.get(0)[1]);
+        assertEquals(1, tracker.tracked.get(0)[2]);
+    }
+
+    @Test
+    @DisplayName("while the tracker holds or is full, nothing is sent and the publish is Declined")
+    void holdingOrFullTrackerDeclinesWithoutSending() {
+        tracker.holding = true;
+        assertEquals(Publish.Declined,
+                     tracked.publishPayload(sender, SOURCE_ID, CONNECTION_ID, PAYLOAD_ID, payload(8), 8));
+        tracker.holding = false;
+        tracker.full = true;
+        assertEquals(Publish.Declined, tracked.publishSystem(sender, SOURCE_ID, CONNECTION_ID,
+                                                             SystemFrame.GATEWAY_STARTED, payload(8), 8));
+        assertEquals(0, sender.calls);
+        assertEquals(0, tracker.tracked.size());
+    }
+
+    @Test
+    @DisplayName("a frame the transport declines is not tracked")
+    void transportDeclineIsNotTracked() {
+        sender.accept = false;
+        assertEquals(Publish.Declined,
+                     tracked.publishPayload(sender, SOURCE_ID, CONNECTION_ID, PAYLOAD_ID, payload(8), 8));
+        assertEquals(0, tracker.tracked.size());
+    }
+
+    @Test
+    @DisplayName("an oversize body is Refused even while the tracker holds")
+    void refusalComesBeforeTheHold() {
+        tracker.holding = true;
+        final int tooLong = FrameLayer.MAX_PAYLOAD_LENGTH + 1;
+        assertEquals(Publish.Refused, tracked.publishPayload(sender, SOURCE_ID, CONNECTION_ID, PAYLOAD_ID,
+                                                             payload(tooLong), tooLong));
+    }
+
+    @Test
+    @DisplayName("a frame the sequencer would reject (§9.2 conditions 6-9) is Refused locally, nothing offered")
+    void framesTheSequencerWouldRejectAreRefused() {
+        assertEquals(Publish.Refused, publisher.publishPayload(sender, -1, CONNECTION_ID, PAYLOAD_ID, payload(8), 8));
+        assertEquals(Publish.Refused, publisher.publishPayload(sender, SOURCE_ID, CONNECTION_ID, 0, payload(8), 8));
+        assertEquals(Publish.Refused, publisher.publishPayload(sender, SOURCE_ID, CONNECTION_ID, 1, payload(8), 8));
+        assertEquals(Publish.Refused, publisher.publishSystem(sender, SOURCE_ID, CONNECTION_ID,
+                                                              SystemFrame.LEADERSHIP_CHANGED, payload(8), 8));
+        assertEquals(Publish.Refused, publisher.publishSystem(sender, SOURCE_ID, CONNECTION_ID,
+                                                              SystemFrame.GATEWAY_STARTED, payload(4), 4));
+        assertEquals(0, sender.calls);
     }
 }

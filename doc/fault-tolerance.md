@@ -60,16 +60,24 @@ On the C++ client side, `ClusterStreamSender` (the Aeron Cluster ingress session
 session**: a `NewLeaderEvent` swaps only the ingress `Publication` to the new leader's endpoint,
 re-resolved out of the event's member CSV — the cluster session id and leadership term id are updated
 in place, never re-created
-(`cluster/src/main/cpp/org/limitless/seqeron/sequencer/ClusterStreamSender.hpp:632-689`). `send()`'s retry
-loop pumps the egress control stream between offer attempts specifically so an in-flight
-`NewLeaderEvent` can land and swap the publication mid-spin — a naive `while(!offer) idle()` would
-deadlock, spinning on the dead leader's publication while the poll that would revive it never runs
-(`ClusterStreamSender.hpp:509-537`). A co-located client that originally reached the leader over cheap
-IPC and failed over onto UDP re-chases IPC if leadership later returns to its own member
-(`ClusterStreamSender.hpp:642-672`).
+(`sequencer/ClusterStreamSender.hpp`, `onFragment` and `applyPendingIngressSwitch`). `send()`'s retry
+loop pumps the egress control stream between offer attempts (`pumpEgressControl`) specifically so an
+in-flight `NewLeaderEvent` can land and swap the publication mid-spin — a naive `while(!offer) idle()`
+would deadlock, spinning on the dead leader's publication while the poll that would revive it never
+runs. A co-located client that originally reached the leader over cheap IPC and failed over onto UDP
+re-chases IPC if leadership later returns to its own member. The Java `ClusterStreamSender` gets the same
+from `AeronCluster`, except that a co-located one whose leader moves away reconnects over UDP, on a new
+session.
 
-A leader failover is explicitly **not** session loss — the fencing logic in §3 treats it as a
-transparent event, not a fault.
+A leader failover is **not** session loss, and nothing fences on it. It is not transparent either:
+**it can lose ingress, and nothing reports the loss.** A send returns once the frame is on the leader's
+ingress publication, and the cluster confirms nothing on egress. Frames the old leader had not committed
+are gone, and so is everything offered to its publication after it died, until the client notices — in
+`failover-test.sh`, about 5,500 frames at 100 µs pacing. The session survives, so neither the sender nor
+the cluster sees a fault. A producer that must not lose a frame confirms each one on its own tap and
+resends what a leader change lost, ahead of anything new (spec §16 A-4 and A-5, `app/PendingSends`).
+`failover-test.sh` streams two producers across its leader kill and asserts that the one using it sees
+every frame on the tap exactly once, in order; the other, untracked, reports what was lost.
 
 ### 1.3 A node that cannot record itself terminates (self-fencing)
 
@@ -530,6 +538,11 @@ section after a failover.
 - **`aeronmd` itself and network partition/latency faults** are not exercised by `chaos-runner.sh` —
   noted there as unwired seams (killing the media driver is destructive to co-located C++ clients;
   `tc netem`/`dnctl` isn't wired up on the macOS dev host).
+- **Ingress lost outside one producer process's view.** `PendingSends` counts losses against a
+  leadership change and keeps its copies in memory: a frame lost with no leader change (an ingress image
+  that drops and rejoins inside the session timeout) has no boundary to be counted against, and a producer
+  that restarts, or a standby promoted in its place, starts with nothing pending. Covering either needs a
+  durable outbox, or a per-producer sequence number the sequencer de-duplicates on; neither exists.
 - **Single-node dev launches** have no failover to exercise at all — the mechanisms above only engage
   with 2+ cluster members.
 - **A venue whose sequence state has diverged from the log is retried against, never reconciled with**

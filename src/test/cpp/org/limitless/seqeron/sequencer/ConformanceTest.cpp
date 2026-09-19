@@ -411,6 +411,107 @@ TEST_F(ConnectedSender, PublishSystemRefusesABodyOverTheCeiling)
     EXPECT_TRUE(m_ingress->m_offered.empty());
 }
 
+// Answers whatever the test told it to, and records each frame it is asked to track.
+class FakeTracker : public IngressTracker
+{
+  public:
+    struct Tracked
+    {
+        std::uint16_t length;
+        std::int64_t clusterSessionId;
+        std::int64_t leadershipTermId;
+    };
+
+    void onNewLeader(std::int64_t) override
+    {}
+
+    [[nodiscard]] bool isHolding() const override
+    {
+        return m_holding;
+    }
+
+    [[nodiscard]] bool isFull() const override
+    {
+        return m_full;
+    }
+
+    void track(const std::uint8_t*, const std::uint16_t length, const std::int64_t clusterSessionId,
+               const std::int64_t leadershipTermId) override
+    {
+        m_tracked.push_back({ length, clusterSessionId, leadershipTermId });
+    }
+
+    bool m_holding = false;
+    bool m_full = false;
+    std::vector<Tracked> m_tracked;
+};
+
+auto correlationOne = [](frm::ClusterStarted& encoder) { encoder.correlationId(1); };
+
+TEST_F(ConnectedSender, TrackedPublishRecordsThePlacedFrame)
+{
+    FakeTracker tracker;
+    EXPECT_EQ(Publish::Published,
+              publishPayload<frm::ClusterStarted>(m_sender, &tracker, SOURCE_ID, CONNECTION_ID, 2, correlationOne));
+    ASSERT_EQ(1U, tracker.m_tracked.size());
+    ASSERT_EQ(1U, m_ingress->m_offered.size());
+    EXPECT_EQ(m_ingress->m_offered[0].size() - cluster_sbe::MessageHeader::encodedLength() -
+                  cluster_sbe::SessionMessageHeader::sbeBlockLength(),
+              tracker.m_tracked[0].length);
+    EXPECT_EQ(SESSION_ID, tracker.m_tracked[0].clusterSessionId);
+    EXPECT_EQ(11, tracker.m_tracked[0].leadershipTermId);
+}
+
+TEST_F(ConnectedSender, HoldingOrFullTrackerDeclinesWithoutSending)
+{
+    FakeTracker tracker;
+    tracker.m_holding = true;
+    EXPECT_EQ(Publish::Declined,
+              publishPayload<frm::ClusterStarted>(m_sender, &tracker, SOURCE_ID, CONNECTION_ID, 2, correlationOne));
+    tracker.m_holding = false;
+    tracker.m_full = true;
+    EXPECT_EQ(Publish::Declined, publishSystem<frm::ClusterStarted>(m_sender, &tracker, SOURCE_ID, CONNECTION_ID,
+                                                                    CLUSTER_STARTED, correlationOne));
+    EXPECT_TRUE(m_ingress->m_offered.empty());
+    EXPECT_TRUE(tracker.m_tracked.empty());
+}
+
+TEST_F(ConnectedSender, TransportDeclineIsNotTracked)
+{
+    FakeTracker tracker;
+    m_sender.close(); // no session: send() refuses
+    EXPECT_EQ(Publish::Declined,
+              publishPayload<frm::ClusterStarted>(m_sender, &tracker, SOURCE_ID, CONNECTION_ID, 2, correlationOne));
+    EXPECT_TRUE(tracker.m_tracked.empty());
+}
+
+TEST_F(ConnectedSender, RefusalComesBeforeTheHold)
+{
+    FakeTracker tracker;
+    tracker.m_holding = true;
+    const std::vector<char> overCeiling(MAX_PAYLOAD_LENGTH, 'x');
+    EXPECT_EQ(Publish::Refused,
+              publishPayload<frm::ConnectionOpened>(
+                  m_sender, &tracker, SOURCE_ID, CONNECTION_ID, 2, [&](frm::ConnectionOpened& encoder) {
+                      encoder.putConnectionData(overCeiling.data(), static_cast<std::uint16_t>(overCeiling.size()));
+                  }));
+}
+
+TEST_F(ConnectedSender, FramesTheSequencerWouldRejectAreRefused)
+{
+    // §9.2 conditions 6 to 9: what a producer can check without the sequencer's state.
+    EXPECT_EQ(Publish::Refused, publishPayload<frm::ClusterStarted>(m_sender, -1, CONNECTION_ID, 2, correlationOne));
+    EXPECT_EQ(Publish::Refused,
+              publishPayload<frm::ClusterStarted>(m_sender, SOURCE_ID, CONNECTION_ID, 0, correlationOne));
+    EXPECT_EQ(Publish::Refused,
+              publishPayload<frm::ClusterStarted>(m_sender, SOURCE_ID, CONNECTION_ID, 1, correlationOne));
+    EXPECT_EQ(Publish::Refused, publishSystem<frm::ClusterStarted>(m_sender, SOURCE_ID, CONNECTION_ID,
+                                                                   LEADERSHIP_CHANGED, correlationOne));
+    EXPECT_EQ(Publish::Refused, publishSystem<frm::ConnectionClosed>(m_sender, SOURCE_ID, CONNECTION_ID,
+                                                                     GATEWAY_STARTED, [](frm::ConnectionClosed&) {}));
+    EXPECT_TRUE(m_ingress->m_offered.empty());
+}
+
 // ── Row 6. The boundary payload sizes (§12) ───────────────────────────────────
 
 TEST(Conformance, TheBoundaryPayloadSizesCrossIntact)

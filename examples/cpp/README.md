@@ -32,7 +32,7 @@ repo costs. GoogleTest is not fetched — that is seqeron's test dependency, not
 Output is one line per frame:
 
     # following member 0 via /var/folders/…/seqeron-seq-aeron-0
-    1 leader=member 0
+    1 leader=member 0 term 0
     2 system eventType=16
     …
     # caught up — following the tap live

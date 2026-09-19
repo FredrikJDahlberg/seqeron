@@ -186,7 +186,7 @@ from the repository root, with `./gradlew uberJar` done first.
 | Script | Purpose |
 |--------|---------|
 | `start-three-node-cluster.sh` | Start a local 3-node Raft cluster with a per-node `ReplayerServer` and `ClusterProbe` replica; blocks until Ctrl-C. `SEQERON_NO_CONSUMERS=1` leaves out the replicas, for a caller that runs its own |
-| `failover-test.sh` | Force a failover, then cold-start a fresh `ClusterProbe` follower on the new leader and verify it catches up on full history — each node's tap recording is one continuous run spanning both tenures |
+| `failover-test.sh` | Force a failover, then cold-start a fresh `ClusterProbe` follower on the new leader and verify it catches up on full history — each node's tap recording is one continuous run spanning both tenures. Two `confirm` producers stream across the kill: the one using `PendingSends` must see every frame exactly once, in order, and an untracked control reports what the kill lost |
 | `gap-recovery-test.sh` | Drop a live tap frame on a caught-up consumer (SIGUSR1 fault injection) and verify it re-walks its recording and heals rather than wedging |
 | `replayer-restart-test.sh` | Kill and restart a node's `ReplayerServer` while a client is riding a replay from it, then kill and restart the client's own node and verify its cold-start walk crosses a real multi-recording chain |
 | `chaos-runner.sh` | Randomized fault injection against a live 3-node cluster, with the `TestGateway` pair (`GW-T-A`/`GW-T-B`, ports 9200/9201) taking load through its accept gate; every run prints its `SEED` to replay the exact fault sequence. Needs `./gradlew uberJar compileTestJava` |

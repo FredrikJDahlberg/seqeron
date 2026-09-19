@@ -3,12 +3,7 @@ package org.limitless.seqeron.sequencer;
 import org.agrona.DirectBuffer;
 import org.agrona.ExpandableDirectByteBuffer;
 import org.agrona.MutableDirectBuffer;
-import org.limitless.seqeron.sbe.frame.ApplicationRegisteredDecoder;
 import org.limitless.seqeron.sbe.frame.ClusterHeartbeatEncoder;
-import org.limitless.seqeron.sbe.frame.ClusterStartedDecoder;
-import org.limitless.seqeron.sbe.frame.ClusterStoppedDecoder;
-import org.limitless.seqeron.sbe.frame.ConnectionClosedDecoder;
-import org.limitless.seqeron.sbe.frame.ConnectionOpenedDecoder;
 import org.limitless.seqeron.sbe.frame.GatewayActivationRequestedDecoder;
 import org.limitless.seqeron.sbe.frame.GatewayActiveEncoder;
 import org.limitless.seqeron.sbe.frame.GatewayRegisteredDecoder;
@@ -16,7 +11,6 @@ import org.limitless.seqeron.sbe.frame.GatewayStartedDecoder;
 import org.limitless.seqeron.sbe.frame.LeadershipChangedEncoder;
 import org.limitless.seqeron.sbe.frame.MessageHeaderDecoder;
 import org.limitless.seqeron.sbe.frame.MessageHeaderEncoder;
-import org.limitless.seqeron.sbe.frame.PayloadIdRegisteredDecoder;
 import org.limitless.seqeron.sbe.frame.SequencedEncoder;
 import org.limitless.seqeron.sbe.frame.SequencedHeaderEncoder;
 import org.limitless.seqeron.sbe.frame.SequencedSystemEncoder;
@@ -131,9 +125,6 @@ public final class Sequencer {
      * and admitting it would read the frame a length short of what it claims.
      */
     private static final int NULL_PAYLOAD_LENGTH = 65535;
-
-    /** {@link #ingressBlockLength}'s answer for a {@code systemEventType} that may not be submitted. */
-    private static final int NOT_INGRESS_LEGAL = -1;
 
     /**
      * Offset of the body's length prefix in every forwarded frame this class encodes — the same in both
@@ -408,8 +399,8 @@ public final class Sequencer {
         if (system) {
             systemHeaderDecoder.wrap(buffer, headerOffset);
             final int systemEventType = systemHeaderDecoder.systemEventType();
-            final int blockLength = ingressBlockLength(systemEventType);
-            if (blockLength == NOT_INGRESS_LEGAL) {
+            final int blockLength = SystemFrame.ingressBlockLength(systemEventType);
+            if (blockLength == SystemFrame.NOT_INGRESS_LEGAL) {
                 return reject("systemEventType " + systemEventType + " is not an allocated, ingress-legal event");
             }
             if (bodyLength < blockLength) {
@@ -446,29 +437,6 @@ public final class Sequencer {
         encodeBuffer.putBytes(TAP_BODY_PREFIX_OFFSET, buffer, prefixOffset,
                               UnsequencedDecoder.payloadHeaderLength() + bodyLength);
         return TAP_BODY_OFFSET + bodyLength;
-    }
-
-    /**
-     * The compiled {@code BLOCK_LENGTH} of the event {@code systemEventType} names, or
-     * {@link #NOT_INGRESS_LEGAL} if that value is unallocated or has no ingress form — §9.2 conditions 8
-     * and 9 in one lookup, since the second's floor is only defined once the first has passed.
-     *
-     * <p>The three synthesis-only events are absent here rather than listed and refused: they have no
-     * ingress form to be short of, and the templates that carry them are already refused by condition 3.
-     */
-    private static int ingressBlockLength(final int systemEventType) {
-        return switch (systemEventType) {
-            case SystemFrame.CONNECTION_OPENED -> ConnectionOpenedDecoder.BLOCK_LENGTH;
-            case SystemFrame.CONNECTION_CLOSED -> ConnectionClosedDecoder.BLOCK_LENGTH;
-            case SystemFrame.CLUSTER_STARTED -> ClusterStartedDecoder.BLOCK_LENGTH;
-            case SystemFrame.CLUSTER_STOPPED -> ClusterStoppedDecoder.BLOCK_LENGTH;
-            case SystemFrame.GATEWAY_REGISTERED -> GatewayRegisteredDecoder.BLOCK_LENGTH;
-            case SystemFrame.GATEWAY_STARTED -> GatewayStartedDecoder.BLOCK_LENGTH;
-            case SystemFrame.PAYLOAD_ID_REGISTERED -> PayloadIdRegisteredDecoder.BLOCK_LENGTH;
-            case SystemFrame.GATEWAY_ACTIVATION_REQUESTED -> GatewayActivationRequestedDecoder.BLOCK_LENGTH;
-            case SystemFrame.APPLICATION_REGISTERED -> ApplicationRegisteredDecoder.BLOCK_LENGTH;
-            default -> NOT_INGRESS_LEGAL;
-        };
     }
 
     /**

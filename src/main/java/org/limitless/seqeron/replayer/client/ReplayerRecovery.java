@@ -49,7 +49,7 @@ public final class ReplayerRecovery {
     /** Receives each {@code LeadershipChanged} as it is dispatched, in log order. */
     @FunctionalInterface
     public interface LeadershipHandler {
-        void onLeadershipChanged(int newLeaderMemberId, long globalSeqNo);
+        void onLeadershipChanged(int newLeaderMemberId, long leadershipTermId, long globalSeqNo);
     }
 
     /** Fires on every transition to caught-up, including re-convergence after a gap. */
@@ -670,7 +670,8 @@ public final class ReplayerRecovery {
             leadershipChanged.wrap(buffer, view.payloadOffset(), view.blockLength(), view.version());
             currentLeaderMemberId = leadershipChanged.newLeaderMemberId();
             if (onLeadershipChanged != null) {
-                onLeadershipChanged.onLeadershipChanged(currentLeaderMemberId, globalSeqNo);
+                onLeadershipChanged.onLeadershipChanged(currentLeaderMemberId, leadershipChanged.leadershipTermId(),
+                                                        globalSeqNo);
             }
             return;
         }

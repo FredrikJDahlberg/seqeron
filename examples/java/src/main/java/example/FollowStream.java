@@ -147,11 +147,12 @@ public final class FollowStream {
     }
 
     /** The one frame family that reaches a consumer here instead of through onSequenced. */
-    private static void onLeadershipChanged(final int newLeaderMemberId, final long globalSeqNo) {
+    private static void onLeadershipChanged(final int newLeaderMemberId, final long leadershipTermId,
+                                            final long globalSeqNo) {
         if (!inOrder(globalSeqNo)) {
             return;
         }
-        System.out.printf("%d leader=member %d%n", globalSeqNo, newLeaderMemberId);
+        System.out.printf("%d leader=member %d term %d%n", globalSeqNo, newLeaderMemberId, leadershipTermId);
     }
 
     /**

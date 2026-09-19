@@ -43,6 +43,7 @@
 #include "FragmentAssembler.h"
 #include "concurrent/AtomicBuffer.h"
 #include "concurrent/YieldingIdleStrategy.h"
+#include "org/limitless/seqeron/sequencer/IngressHold.hpp"
 #include "org/limitless/seqeron/sequencer/PortLayout.hpp"
 #include "org/limitless/seqeron/util/Logger.hpp"
 #include "org_limitless_seqeron_cluster_sbe/MessageHeader.h"
@@ -456,6 +457,12 @@ class ClusterStreamSender
         m_ingressStallFatalTimeoutMs = ms;
     }
 
+    // Hears every NewLeaderEvent, and gives up a send that met one while it holds. Not owned.
+    void setIngressHold(IngressHold* hold)
+    {
+        m_hold = hold;
+    }
+
     bool isConnected() const
     {
         return m_clusterSessionId >= 0;
@@ -549,7 +556,8 @@ class ClusterStreamSender
     // until the offer lands.
     //
     // Returns false in the one case the spin cannot resolve: there is no session (not yet
-    // connected, or closed.
+    // connected, or closed). And, with a session still open, when a NewLeaderEvent arrived mid-spin
+    // while the IngressHold holds: nothing was placed, and the frame goes again once it releases.
     //
     // Two reasons an offer is rejected, both handled by the spin:
     //   • transient back-pressure — the ingress subscriber is briefly behind;
@@ -602,10 +610,15 @@ class ClusterStreamSender
         // same m_ingress, so a publication that will not take this frame will not take a keep-alive either.
         std::chrono::steady_clock::time_point blockedSince{};
         std::chrono::steady_clock::time_point nextAlert{};
+        m_newLeaderDuringSend = false;
         while (!m_ingress->offer(std::span<const std::uint8_t>(buf.data(), frameLen)))
         {
             pumpEgressControl();
             if (m_clusterSessionId < 0)
+            {
+                return false;
+            }
+            if (m_newLeaderDuringSend && m_hold && m_hold->isHolding())
             {
                 return false;
             }
@@ -718,6 +731,11 @@ class ClusterStreamSender
                               cluster_sbe::MessageHeader::encodedLength(), hdr.blockLength(), hdr.version(),
                               bytes.size());
             m_leadershipTermId = evt.leadershipTermId();
+            m_newLeaderDuringSend = true;
+            if (m_hold)
+            {
+                m_hold->onNewLeader(m_leadershipTermId);
+            }
             const std::int32_t leaderMemberId = evt.leaderMemberId();
             const std::string ingressEndpoints = evt.getIngressEndpointsAsString();
 
@@ -948,6 +966,8 @@ class ClusterStreamSender
     bool m_sessionLost = false;
     std::int64_t m_ingressStallFatalTimeoutMs = INGRESS_STALL_FATAL_TIMEOUT_MS;
     std::int64_t m_leadershipTermId = -1;
+    IngressHold* m_hold = nullptr;
+    bool m_newLeaderDuringSend = false;
     std::int64_t m_lastKeepAliveMs = 0;
     std::int64_t m_connectTimeoutMs = CLUSTER_CONNECT_TIMEOUT_MS;
     const std::int64_t m_correlationId = 1;

@@ -14,6 +14,10 @@ import org.agrona.ExpandableArrayBuffer;
  * through a {@code Fill} callback over an encoder, because {@code sbe.java.generate.interfaces} is off:
  * Java's generated codecs share no type to be generic over.
  *
+ * <p>Given an {@link IngressTracker}, it confirms what it places (spec §16 A-4, A-5): a published frame is
+ * tracked under the sender's session and term, and while the tracker holds or is full nothing is sent and
+ * the publish is {@code Declined}. A {@code Refused} body is refused first either way.
+ *
  * <p>Not thread-safe: one publisher per producing thread, like the buffer it holds.
  */
 public final class IngressPublisher {
@@ -21,10 +25,11 @@ public final class IngressPublisher {
      * What a publish did.
      *
      * <p>Three-valued rather than a boolean for the reason the C++ twin gives: {@code Refused} is local
-     * and permanent — the body is above {@link FrameLayer#MAX_PAYLOAD_LENGTH}, nothing was encoded and
-     * nothing was offered, and a caller that retries is retrying something that can never succeed.
+     * and permanent — the body is above {@link FrameLayer#MAX_PAYLOAD_LENGTH}, or the frame breaks one of
+     * §9.2's conditions 6 to 9 ({@link SystemFrame#REFUSED}), nothing was offered, and a caller that
+     * retries is retrying something that can never succeed.
      * {@code Declined} is the transport's answer — back-pressure past the send's own spin, or a session
-     * that is gone — and is the one a caller may retry.
+     * that is gone — or the tracker's, while it holds or is full, and is the one a caller may retry.
      */
     public enum Publish {
         Published, Refused, Declined
@@ -32,6 +37,17 @@ public final class IngressPublisher {
 
     private final ExpandableArrayBuffer frame = new ExpandableArrayBuffer(FrameLayer.MAX_INGRESS_LENGTH);
     private final SystemFrame envelope = new SystemFrame();
+    private final IngressTracker tracker;
+
+    /** A publisher that tracks nothing. */
+    public IngressPublisher() {
+        this(null);
+    }
+
+    /** A publisher that tracks every frame it places with {@code tracker}, and sends nothing while it holds. */
+    public IngressPublisher(final IngressTracker tracker) {
+        this.tracker = tracker;
+    }
 
     /**
      * Wraps one application payload in an {@code Unsequenced} frame and offers it.
@@ -67,6 +83,15 @@ public final class IngressPublisher {
         if (length == SystemFrame.REFUSED) {
             return Publish.Refused;
         }
-        return sender.send(frame, length) ? Publish.Published : Publish.Declined;
+        if (tracker != null && (tracker.isHolding() || tracker.isFull())) {
+            return Publish.Declined;
+        }
+        if (!sender.send(frame, length)) {
+            return Publish.Declined;
+        }
+        if (tracker != null) {
+            tracker.track(frame, length, sender.clusterSessionId(), sender.leadershipTermId());
+        }
+        return Publish.Published;
     }
 }

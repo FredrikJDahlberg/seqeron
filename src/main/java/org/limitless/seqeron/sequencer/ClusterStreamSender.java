@@ -86,6 +86,8 @@ public final class ClusterStreamSender implements IngressSender, AutoCloseable {
     private int colocatedMemberId = NO_MEMBER;
     private boolean sessionLost;
     private int newLeaderMemberId = NO_MEMBER;
+    private IngressHold hold;
+    private boolean newLeaderDuringSend;
     private int sourceId;
     private long lastKeepAliveNs;
 
@@ -158,6 +160,11 @@ public final class ClusterStreamSender implements IngressSender, AutoCloseable {
         this.ingressEndpoints = ingressEndpoints;
     }
 
+    /** Hears every {@code NewLeader}, and gives up a send that met one while it holds. */
+    public void setIngressHold(final IngressHold hold) {
+        this.hold = hold;
+    }
+
     /**
      * Offers one pre-encoded frame to cluster ingress, spinning until it lands.
      *
@@ -174,7 +181,8 @@ public final class ClusterStreamSender implements IngressSender, AutoCloseable {
      * <p>No keep-alive is pumped from in here, deliberately, as in the C++ twin: it would offer on the same
      * publication, and one that will not take this frame will not take a keep-alive either.
      *
-     * @return false when there is no session left to take it
+     * @return false when there is no session left to take it, or when a {@code NewLeader} arrived mid-spin
+     *     while the {@link IngressHold} holds: nothing was placed, and the frame goes again once it releases
      */
     @Override
     public boolean send(final DirectBuffer frame, final int length) {
@@ -186,6 +194,7 @@ public final class ClusterStreamSender implements IngressSender, AutoCloseable {
                                                + FrameLayer.MAX_INGRESS_LENGTH);
         }
         long result;
+        newLeaderDuringSend = false;
         while ((result = cluster.offer(frame, 0, length)) < 0) {
             final long now = System.nanoTime();
             switch (stallPolicy.onOfferFailed(now, result, sessionLost, cluster.isClosed())) {
@@ -209,6 +218,9 @@ public final class ClusterStreamSender implements IngressSender, AutoCloseable {
                 break;
             }
             pollEgress();
+            if (newLeaderDuringSend && hold != null && hold.isHolding()) {
+                return false;
+            }
             idle.idle();
         }
         stallPolicy.onOffered();
@@ -367,6 +379,10 @@ public final class ClusterStreamSender implements IngressSender, AutoCloseable {
         public void onNewLeader(final long clusterSessionId, final long leadershipTermId,
                                final int leaderMemberId, final String ingressEndpoints) {
             newLeaderMemberId = leaderMemberId;
+            newLeaderDuringSend = true;
+            if (hold != null) {
+                hold.onNewLeader(leadershipTermId);
+            }
             leaderPolicy.onNewLeader(leaderMemberId);
             if (appListener != null) {
                 appListener.onNewLeader(clusterSessionId, leadershipTermId, leaderMemberId, ingressEndpoints);

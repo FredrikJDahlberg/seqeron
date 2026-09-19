@@ -84,6 +84,39 @@ inline constexpr std::uint16_t PAYLOAD_ID_REGISTERED = sbe::frame::PayloadIdRegi
 inline constexpr std::uint16_t GATEWAY_ACTIVATION_REQUESTED = sbe::frame::GatewayActivationRequested::sbeTemplateId();
 inline constexpr std::uint16_t APPLICATION_REGISTERED = sbe::frame::ApplicationRegistered::sbeTemplateId();
 
+// ingressBlockLength's answer for a systemEventType that may not be submitted.
+inline constexpr std::int32_t NOT_INGRESS_LEGAL = -1;
+
+// The compiled block length of the event systemEventType names, or NOT_INGRESS_LEGAL if that value is
+// unallocated or has no ingress form: §9.2 conditions 8 and 9 in one lookup. The Java twin is
+// SystemFrame.ingressBlockLength.
+constexpr std::int32_t ingressBlockLength(const std::uint16_t systemEventType)
+{
+    switch (systemEventType)
+    {
+        case CONNECTION_OPENED:
+            return sbe::frame::ConnectionOpened::sbeBlockLength();
+        case CONNECTION_CLOSED:
+            return sbe::frame::ConnectionClosed::sbeBlockLength();
+        case CLUSTER_STARTED:
+            return sbe::frame::ClusterStarted::sbeBlockLength();
+        case CLUSTER_STOPPED:
+            return sbe::frame::ClusterStopped::sbeBlockLength();
+        case GATEWAY_REGISTERED:
+            return sbe::frame::GatewayRegistered::sbeBlockLength();
+        case GATEWAY_STARTED:
+            return sbe::frame::GatewayStarted::sbeBlockLength();
+        case PAYLOAD_ID_REGISTERED:
+            return sbe::frame::PayloadIdRegistered::sbeBlockLength();
+        case GATEWAY_ACTIVATION_REQUESTED:
+            return sbe::frame::GatewayActivationRequested::sbeBlockLength();
+        case APPLICATION_REGISTERED:
+            return sbe::frame::ApplicationRegistered::sbeBlockLength();
+        default:
+            return NOT_INGRESS_LEGAL;
+    }
+}
+
 /**
  * Carries one message from the cluster stream.
  *

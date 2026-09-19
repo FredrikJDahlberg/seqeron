@@ -418,8 +418,8 @@ public final class SequencerService implements ClusteredService {
 
     /**
      * New leadership term received
-     * @param logPosition identity for the new leadership term.
-     * @param leadershipTermId position the log has reached as the result of this message.
+     * @param leadershipTermId identity for the new leadership term.
+     * @param logPosition position the log has reached as the result of this message.
      * @param timestamp for the new leadership term.
      * @param termBaseLogPosition position at the beginning of the leadership term.
      * @param leaderMemberId who won the election.
@@ -428,7 +428,7 @@ public final class SequencerService implements ClusteredService {
      * @param appVersion for the application configured in the consensus module.
      */
     @Override
-    public void onNewLeadershipTermEvent(final long logPosition, final long leadershipTermId, final long timestamp,
+    public void onNewLeadershipTermEvent(final long leadershipTermId, final long logPosition, final long timestamp,
                                          final long termBaseLogPosition, final int leaderMemberId,
                                          final int logSessionId, final TimeUnit timeUnit, final int appVersion) {
         applyLeadership(leadershipTermId, leaderMemberId, timestamp);

@@ -113,7 +113,8 @@ class ReplayerRecovery
     using OnSequenced = std::function<void(const SequencedEvent&)>;
     using OnConnected = std::function<void(const LifecycleEvent&)>;
     using OnDisconnected = std::function<void(const LifecycleEvent&)>;
-    using OnLeadershipChanged = std::function<void(std::int32_t newLeaderMemberId, std::int64_t globalSeqNo)>;
+    using OnLeadershipChanged =
+        std::function<void(std::int32_t newLeaderMemberId, std::int64_t leadershipTermId, std::int64_t globalSeqNo)>;
     using OnCaughtUp = std::function<void()>;
 
   private:
@@ -652,14 +653,14 @@ class ReplayerRecovery
         }
         if (isSystem && eventType == sequencer::LEADERSHIP_CHANGED)
         {
-            // Synthesized, so its newLeaderMemberId is inline in the frame's own block, which is what
+            // Synthesized, so its fields are inline in the frame's own block, which is what
             // view.payload addresses for these three.
             auto leadershipChanged =
                 sequencer::decodeSystem<sbe::frame::LeadershipChanged>(view.payload, view.payloadLength);
             m_currentLeaderMemberId = leadershipChanged.newLeaderMemberId();
             if (m_onLeadershipChanged)
             {
-                m_onLeadershipChanged(m_currentLeaderMemberId, sequenceNumber);
+                m_onLeadershipChanged(m_currentLeaderMemberId, leadershipChanged.leadershipTermId(), sequenceNumber);
             }
             return;
         }

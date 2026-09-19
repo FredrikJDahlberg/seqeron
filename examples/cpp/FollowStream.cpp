@@ -146,13 +146,15 @@ void onSequenced(const SequencedEvent& event)
 }
 
 // The one frame family that reaches a consumer here instead of through onSequenced.
-void onLeadershipChanged(const std::int32_t newLeaderMemberId, const std::int64_t globalSeqNo)
+void onLeadershipChanged(const std::int32_t newLeaderMemberId, const std::int64_t leadershipTermId,
+                         const std::int64_t globalSeqNo)
 {
     if (!inOrder(globalSeqNo))
     {
         return;
     }
-    std::printf("%lld leader=member %d\n", static_cast<long long>(globalSeqNo), newLeaderMemberId);
+    std::printf("%lld leader=member %d term %lld\n", static_cast<long long>(globalSeqNo), newLeaderMemberId,
+                static_cast<long long>(leadershipTermId));
 }
 
 } // namespace

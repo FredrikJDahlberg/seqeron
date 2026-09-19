@@ -1,7 +1,6 @@
 package org.limitless.seqeron.tools;
 
 import io.aeron.Aeron;
-import io.aeron.cluster.client.AeronCluster;
 import io.aeron.cluster.client.EgressListener;
 import io.aeron.cluster.codecs.EventCode;
 import java.io.IOException;
@@ -21,8 +20,12 @@ import org.agrona.ExpandableArrayBuffer;
 import org.agrona.concurrent.IdleStrategy;
 import org.agrona.concurrent.ShutdownSignalBarrier;
 import org.limitless.seqeron.app.GatewayLifecycle;
+import org.limitless.seqeron.app.PendingSends;
 import org.limitless.seqeron.app.RecoveryStallFence;
+import org.limitless.seqeron.sequencer.ClusterStreamSender;
 import org.limitless.seqeron.sequencer.FrameLayer;
+import org.limitless.seqeron.sequencer.IngressPublisher;
+import org.limitless.seqeron.sequencer.IngressPublisher.Publish;
 import org.limitless.seqeron.replayer.client.ReplayerStreamReceiver;
 import org.limitless.seqeron.replayer.client.SequencedEvent;
 import org.limitless.seqeron.sbe.frame.ConnectionClosedEncoder;
@@ -32,7 +35,6 @@ import org.limitless.seqeron.sbe.frame.GatewayRegisteredDecoder;
 import org.limitless.seqeron.sbe.frame.GatewayStartedEncoder;
 import org.limitless.seqeron.sbe.frame.MessageHeaderDecoder;
 import org.limitless.seqeron.sbe.probe.ProbeMarkerDecoder;
-import org.limitless.seqeron.sequencer.Sequencer;
 import org.limitless.seqeron.sequencer.SystemFrame;
 import org.limitless.seqeron.util.Logger;
 
@@ -53,6 +55,11 @@ import org.limitless.seqeron.util.Logger;
  * binding a cluster session to a {@code gatewayId}, the sequencer synthesizing {@code GatewayActive} on all
  * four paths, a standby opening its gate on promotion, and the four fences closing it — and none of it
  * needs a FIX codec or a product binary. This is that, and nothing else.
+ *
+ * <p><b>Its ingress is confirmed on the tap</b> (spec §16 A-4, A-5): every frame goes through an
+ * {@link IngressPublisher} tracking into a {@link PendingSends}, which the sender also holds, so a leader
+ * change loses nothing and reorders nothing. A publish the hold declines is retried on a later cycle, and
+ * a {@code PendingSends} fault is a fifth fence. It is the reference user of that wiring.
  *
  * <p><b>The invariant it exists to hold</b> is the one both real gateways hold: nothing reaches the socket
  * that has not round-tripped consensus. A client line in becomes a {@code ProbeMarker} stamped with that
@@ -101,20 +108,15 @@ public final class TestGateway {
 
     private static final long RECOVERY_STALL_TIMEOUT_MS = 3 * TAP_STALL_TIMEOUT_MS;
 
-    /**
-     * The product gateways' interval, and it has to be this short: {@code SequencerServer} runs the consensus
-     * module at {@code sessionTimeoutNs} of one second, so a keep-alive per second is a coin flip against
-     * scheduler jitter — the session is closed with {@code TIMEOUT} and the instance fenced, on a cluster
-     * that is perfectly healthy.
-     */
-    private static final long KEEP_ALIVE_INTERVAL_MS = 200;
-
     /** Exit status of a fenced instance, and of one whose media driver went away. Mirrors ClusterProbe's. */
     private static final int EXIT_FENCED = 70;
 
     private static final int READ_BUFFER_BYTES = 1024;
 
     private static final long CLIENT_REPLY_TIMEOUT_MS = TimeUnit.SECONDS.toMillis(15);
+
+    /** Frames in flight between a publish and the tap; far above what one round trip holds. */
+    private static final int PENDING_CAPACITY = 1024;
 
     /**
      * The empty variable-length field, used twice: a probe connection has no identity but its id, so
@@ -127,8 +129,9 @@ public final class TestGateway {
     private final int listenPort;
     private final int clientId;
 
-    private final SystemFrame envelope = new SystemFrame();
-    private final ExpandableArrayBuffer frame = new ExpandableArrayBuffer(1024);
+    private final PendingSends pending = new PendingSends(PENDING_CAPACITY);
+    private final IngressPublisher publisher = new IngressPublisher(pending);
+    private final ClusterStreamSender sender = new ClusterStreamSender();
     private final ExpandableArrayBuffer body = new ExpandableArrayBuffer(256);
     private final ClusterProbe.MarkerEncoder marker = new ClusterProbe.MarkerEncoder();
     private final GatewayStartedEncoder gatewayStarted = new GatewayStartedEncoder();
@@ -143,7 +146,7 @@ public final class TestGateway {
 
     private final Map<Integer, Connection> connections = new HashMap<>();
 
-    private AeronCluster cluster;
+    private Aeron aeron;
     private ReplayerStreamReceiver tap;
     private ServerSocketChannel acceptor;
 
@@ -155,7 +158,6 @@ public final class TestGateway {
     private long markerSeqNo;
 
     private long lastTapProgressMs = System.currentTimeMillis();
-    private long lastKeepAliveMs;
 
     /**
      * The cluster's own account of why this session ended, kept for the fence's message. Recorded on the
@@ -196,9 +198,13 @@ public final class TestGateway {
     // ── serve ─────────────────────────────────────────────────────────────────────
 
     private int serve() {
-        cluster = ClusterProbe.connectCluster(new SessionEventListener());
-        final Aeron aeron = cluster.context().aeron();
-        tap = new ReplayerStreamReceiver(clientId, this::onSequenced, null, null);
+        aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(ClusterProbe.aeronDir()));
+        sender.setIngressEndpoints(ClusterProbe.ingressEndpoints());
+        sender.setIngressHold(pending);
+        sender.connect(aeron, ClusterProbe.egressChannel(), new SessionEventListener());
+        tap = new ReplayerStreamReceiver(clientId, this::onSequenced,
+                                         (leaderMemberId, leadershipTermId, globalSeqNo) ->
+                                             pending.onLeadershipChanged(leadershipTermId), null);
         tap.start(aeron, ClusterProbe.memberId());
         log("standby — following the tap as %s, gate shut until a GatewayActive names this instance",
             gatewayName);
@@ -237,7 +243,8 @@ public final class TestGateway {
         closeGate();
         if (!fenced.get()) {
             tap.close();
-            cluster.close();
+            sender.close();
+            aeron.close();
         }
         barrier.close();
         return fenced.get() ? EXIT_FENCED : 0;
@@ -247,8 +254,9 @@ public final class TestGateway {
     private int dutyCycle() throws IOException {
         int work = tap.poll();
         checkFences();
-        work += cluster.pollEgress();
-        work += keepAlive();
+        work += sender.pollEgress();
+        sender.keepAlive();
+        work += pending.resendMissing(sender);
         work += announceCaughtUp();
         work += advanceGate();
         work += pollSockets();
@@ -257,15 +265,21 @@ public final class TestGateway {
 
     /**
      * The two fences that are a clock. The third — the cluster closing this session, with an event or
-     * silently on a leader that never arrives — is read the same way the product gateways read it.
+     * silently on a leader that never arrives — is read the same way the product gateways read it. The
+     * fifth is ingress confirmation that can no longer be trusted.
      */
     private void checkFences() {
-        if (sessionFault != null || cluster.isClosed()) {
-            // isClosed() as well as the recorded fault: AeronCluster also closes itself, with no event at
+        if (sessionFault != null || sender.isSessionLost() || !sender.isConnected()) {
+            // isConnected() as well as the recorded fault: AeronCluster also closes itself, with no event at
             // all, when a new leader does not arrive before its timeout — and an ERROR event, unlike a
             // CLOSED one, leaves the client open.
             throw new IllegalStateException("cluster session lost (" + (sessionFault != null ? sessionFault : "closed")
                                                 + ") — this instance can never be promoted again");
+        }
+        if (pending.isFaulted()) {
+            throw new IllegalStateException(
+                "an own frame came back differing from the oldest pending one, so what reached the log can no "
+                    + "longer be counted — releasing the cluster session so a standby can take over");
         }
         if (!tap.isCaughtUp()) {
             if (recoveryStall.onNotCaughtUp(System.currentTimeMillis(), tap.lastGlobalSeqNo())) {
@@ -281,16 +295,6 @@ public final class TestGateway {
                     + (TAP_STALL_TIMEOUT_MS / FrameLayer.CLUSTER_HEARTBEAT_INTERVAL_MS)
                     + " heartbeat periods) — releasing the cluster session so a standby can take over");
         }
-    }
-
-    private int keepAlive() {
-        final long now = System.currentTimeMillis();
-        if ((now - lastKeepAliveMs) < KEEP_ALIVE_INTERVAL_MS) {
-            return 0;
-        }
-        lastKeepAliveMs = now;
-        cluster.sendKeepAlive();
-        return 1;
     }
 
     /** Opens the gate once this instance is designated <em>and</em> caught up, never before. */
@@ -318,26 +322,40 @@ public final class TestGateway {
         }
         int work = 0;
         SocketChannel accepted;
-        while ((accepted = acceptor.accept()) != null) {
+        // Nothing is accepted while the hold is on: its ConnectionOpened could not be published.
+        while (!pending.isHolding() && (accepted = acceptor.accept()) != null) {
             accepted.configureBlocking(false);
             accepted.setOption(StandardSocketOptions.TCP_NODELAY, true);
             final int connectionId = nextConnectionId++;
             connections.put(connectionId, new Connection(connectionId, accepted));
-            publishConnection(SystemFrame.CONNECTION_OPENED, connectionId);
             work++;
         }
+        // A publish the hold declines is retried next cycle: a connection's lifecycle frames wait on flags,
+        // and an unsent line stays in its buffer.
         for (final Iterator<Connection> it = connections.values().iterator(); it.hasNext(); ) {
             final Connection connection = it.next();
-            final int read = connection.channel.read(connection.in);
-            if (read < 0) {
-                close(connection.channel);
-                it.remove();
-                publishConnection(SystemFrame.CONNECTION_CLOSED, connection.id);
+            if (!connection.opened) {
+                if (!publishConnection(SystemFrame.CONNECTION_OPENED, connection.id)) {
+                    continue;
+                }
+                connection.opened = true;
                 work++;
-                continue;
             }
-            if (read > 0) {
-                work += submitLines(connection);
+            if (!connection.closing) {
+                final int read = connection.channel.read(connection.in);
+                if (read < 0) {
+                    close(connection.channel);
+                    connection.closing = true;
+                } else if (read > 0 || connection.in.position() > 0) {
+                    work += submitLines(connection);
+                }
+            }
+            if (connection.closing) {
+                if (!publishConnection(SystemFrame.CONNECTION_CLOSED, connection.id)) {
+                    continue;
+                }
+                it.remove();
+                work++;
             }
         }
         return work;
@@ -355,9 +373,12 @@ public final class TestGateway {
             if (connection.in.get(i) != '\n') {
                 continue;
             }
-            ClusterProbe.offer(
-                cluster, marker.frame(),
-                marker.encode(++markerSeqNo, connection.id, lifecycle.gatewaySourceId(), ClusterProbe.NO_FILLER));
+            final int length = marker.encodePayload(markerSeqNo + 1, ClusterProbe.NO_FILLER);
+            if (!published(publisher.publishPayload(sender, lifecycle.gatewaySourceId(), connection.id,
+                                                    ClusterProbe.PROBE_PAYLOAD_ID, marker.payload(), length))) {
+                break;
+            }
+            markerSeqNo++;
             consumed = i + 1;
             work++;
         }
@@ -374,6 +395,7 @@ public final class TestGateway {
      * own {@code sourceId} is a request that has been through consensus and may now be answered.
      */
     private void onSequenced(final SequencedEvent event) {
+        pending.onSequenced(event);
         observeConnectionId(event);
         if (event.isSystem()) {
             switch (event.systemEventType()) {
@@ -471,8 +493,7 @@ public final class TestGateway {
             nextConnectionId = highestConnectionId + 1;
             gatewayStarted.wrap(body, 0);
             gatewayStarted.gatewayId(gatewayId).firstConnectionId(nextConnectionId);
-            offerSystem(SystemFrame.GATEWAY_STARTED, NO_CONNECTION, gatewayStarted.encodedLength());
-            return true; // offer spins until it lands
+            return publishSystem(SystemFrame.GATEWAY_STARTED, NO_CONNECTION, gatewayStarted.encodedLength());
         }
 
         @Override
@@ -496,7 +517,8 @@ public final class TestGateway {
         }
     }
 
-    private void publishConnection(final int systemEventType, final int connectionId) {
+    /** @return whether it was published; false is the hold or back-pressure, to retry next cycle */
+    private boolean publishConnection(final int systemEventType, final int connectionId) {
         final int length;
         if (systemEventType == SystemFrame.CONNECTION_OPENED) {
             connectionOpened.wrap(body, 0);
@@ -506,16 +528,20 @@ public final class TestGateway {
             connectionClosed.wrap(body, 0);
             length = connectionClosed.encodedLength();
         }
-        offerSystem(systemEventType, connectionId, length);
+        return publishSystem(systemEventType, connectionId, length);
     }
 
-    private void offerSystem(final int systemEventType, final int connectionId, final int bodyLength) {
-        final int length = envelope.wrap(frame, lifecycle.gatewaySourceId(), connectionId, cluster.clusterSessionId(),
-                                         systemEventType, body, bodyLength);
-        if (length == SystemFrame.REFUSED) {
-            throw new IllegalStateException("system body too large for a frame: systemEventType " + systemEventType);
+    private boolean publishSystem(final int systemEventType, final int connectionId, final int bodyLength) {
+        return published(publisher.publishSystem(sender, lifecycle.gatewaySourceId(), connectionId, systemEventType,
+                                                 body, bodyLength));
+    }
+
+    /** A refusal is this harness's own bug, never a condition to wait out. */
+    private static boolean published(final Publish result) {
+        if (result == Publish.Refused) {
+            throw new IllegalStateException("a frame the sequencer would reject (doc/seqeron-protocol-spec.md §9.2)");
         }
-        ClusterProbe.offer(cluster, frame, length);
+        return result == Publish.Published;
     }
 
     // ── client ────────────────────────────────────────────────────────────────────
@@ -597,6 +623,8 @@ public final class TestGateway {
         private final int id;
         private final SocketChannel channel;
         private final ByteBuffer in = ByteBuffer.allocate(READ_BUFFER_BYTES);
+        private boolean opened;
+        private boolean closing;
 
         private Connection(final int id, final SocketChannel channel) {
             this.id = id;
