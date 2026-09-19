@@ -19,9 +19,9 @@
 #include <string_view>
 #include <vector>
 
-#include "org/limitless/seqeron/sequencer/ClusterStreamSender.hpp"
+#include "org/limitless/seqeron/sequencer/client/ClusterStreamSender.hpp"
 
-namespace org::limitless::seqeron::sequencer {
+namespace org::limitless::seqeron::sequencer::client {
 namespace {
 
 // ── Fake transports ───────────────────────────────────────────────────────────
@@ -197,7 +197,7 @@ TEST(ClusterStreamSender, MemberIngressEndpointMatchesTheInitialEndpointFormula)
     // …and every other member resolves to its own distinct endpoint.
     EXPECT_NE(memberIngressEndpoint(0), memberIngressEndpoint(1));
     EXPECT_NE(memberIngressEndpoint(1), memberIngressEndpoint(2));
-    EXPECT_EQ("localhost:" + std::to_string(clusterIngressPort(2)), memberIngressEndpoint(2));
+    EXPECT_EQ("localhost:" + std::to_string(protocol::clusterIngressPort(2)), memberIngressEndpoint(2));
 }
 
 // The transport-agnostic connect() overload has no Aeron client to build a replacement publication
@@ -873,4 +873,4 @@ TEST(FindIngressEndpoint, ReturnsFalseOnEmptyCsv)
 }
 
 } // namespace
-} // namespace org::limitless::seqeron::sequencer
+} // namespace org::limitless::seqeron::sequencer::client

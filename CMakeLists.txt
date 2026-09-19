@@ -273,14 +273,14 @@ if(SEQERON_BUILD_TESTS)
         src/test/cpp/org/limitless/seqeron/app/PendingSendsPropertyTest.cpp
         src/test/cpp/org/limitless/seqeron/app/RecoveryStallFenceTest.cpp
         src/test/cpp/org/limitless/seqeron/app/TapLagMonitorTest.cpp
-        src/test/cpp/org/limitless/seqeron/sequencer/ClusterCodecTest.cpp
+        src/test/cpp/org/limitless/seqeron/sequencer/client/ClusterCodecTest.cpp
         src/test/cpp/org/limitless/seqeron/sequencer/ConformanceTest.cpp
-        src/test/cpp/org/limitless/seqeron/sequencer/ClusterStreamSenderTest.cpp
-        src/test/cpp/org/limitless/seqeron/sequencer/FrameStartPositionTest.cpp
-        src/test/cpp/org/limitless/seqeron/sequencer/PortLayoutTest.cpp
+        src/test/cpp/org/limitless/seqeron/sequencer/client/ClusterStreamSenderTest.cpp
+        src/test/cpp/org/limitless/seqeron/protocol/FrameStartPositionTest.cpp
+        src/test/cpp/org/limitless/seqeron/protocol/PortLayoutTest.cpp
         src/test/cpp/org/limitless/seqeron/replayer/client/ReplayerRecoveryTest.cpp
         src/test/cpp/org/limitless/seqeron/replayer/client/ReplayerRecoveryPropertyTest.cpp
-        src/main/cpp/org/limitless/seqeron/sequencer/ClusterStreamSender.hpp
+        src/main/cpp/org/limitless/seqeron/sequencer/client/ClusterStreamSender.hpp
         src/main/cpp/org/limitless/seqeron/util/Logger.hpp
     )
     target_link_libraries(core_tests PRIVATE

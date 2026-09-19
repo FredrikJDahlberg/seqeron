@@ -119,7 +119,7 @@ core's reservation by calling core's own predicate — which is the whole point 
 
 Aeron reserves 0–999 for itself (client/driver 0–99, archive 100–199, cluster 200–299); everything
 above is a deployment's own. The blocks below are typed in two files, `SeqeronCounters.java` and its
-C++ half `util/SeqeronCounters.hpp`, and read by one — `MetricsExporter` maps a counter to a metric
+C++ half `protocol/SeqeronCounters.hpp`, and read by one — `MetricsExporter` maps a counter to a metric
 **by type id**.
 
 | block | owner | what is in it |

@@ -15,11 +15,11 @@
 #include <gtest/gtest.h>
 
 #include "aeron_image.h" // aeron_header_t / aeron_data_header_t layout, to build a header by hand
-#include "org/limitless/seqeron/sequencer/SequencedFrame.hpp"
+#include "org/limitless/seqeron/protocol/SequencedFrame.hpp"
 
 namespace {
 
-using org::limitless::seqeron::sequencer::frameStartPosition;
+using org::limitless::seqeron::protocol::frameStartPosition;
 
 constexpr std::int32_t DATA_HEADER_LENGTH = 32; // AERON_DATA_HEADER_LENGTH
 constexpr std::int32_t TERM_ID = 7;

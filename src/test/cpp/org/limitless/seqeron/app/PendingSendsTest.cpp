@@ -35,7 +35,7 @@ struct FakeSender
         }
         --acceptsLeft;
         std::int32_t n = 0;
-        std::memcpy(&n, bytes + sequencer::MIN_INGRESS_LENGTH, sizeof(n));
+        std::memcpy(&n, bytes + protocol::MIN_INGRESS_LENGTH, sizeof(n));
         sent.push_back(n);
         return true;
     }
@@ -87,7 +87,7 @@ class PendingSendsTest : public testing::Test
 
     void tap(const std::int64_t session, const bool system, const std::uint16_t id, const std::int32_t n)
     {
-        sequencer::SequencedEvent event{};
+        protocol::SequencedEvent event{};
         event.sourceSessionId = session;
         event.system = system;
         event.payloadId = system ? 0 : id;
@@ -110,7 +110,7 @@ class PendingSendsTest : public testing::Test
         return static_cast<std::uint16_t>(frm::MessageHeader::encodedLength() + encodedLength);
     }
 
-    std::array<std::uint8_t, sequencer::MAX_INGRESS_LENGTH> m_frame{};
+    std::array<std::uint8_t, protocol::MAX_INGRESS_LENGTH> m_frame{};
 };
 
 TEST_F(PendingSendsTest, EveryFrameSeenLeavesNothingPending)
@@ -198,16 +198,16 @@ TEST_F(PendingSendsTest, OwnFrameDifferingFromOldestCopyLatchesFault)
 
 TEST_F(PendingSendsTest, OwnSystemFrameComesBack)
 {
-    sendSystem(OWN, 1, sequencer::CONNECTION_CLOSED, 1);
-    tap(OWN, true, sequencer::CONNECTION_CLOSED, 1);
+    sendSystem(OWN, 1, protocol::CONNECTION_CLOSED, 1);
+    tap(OWN, true, protocol::CONNECTION_CLOSED, 1);
     EXPECT_EQ(0u, m_pending.size());
     EXPECT_FALSE(m_pending.isFaulted());
 }
 
 TEST_F(PendingSendsTest, ApplicationFrameNeverMatchesSystemOne)
 {
-    sendSystem(OWN, 1, sequencer::CONNECTION_CLOSED, 1);
-    tap(OWN, false, sequencer::CONNECTION_CLOSED, 1);
+    sendSystem(OWN, 1, protocol::CONNECTION_CLOSED, 1);
+    tap(OWN, false, protocol::CONNECTION_CLOSED, 1);
     EXPECT_TRUE(m_pending.isFaulted());
 }
 

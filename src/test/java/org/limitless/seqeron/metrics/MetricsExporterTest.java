@@ -8,6 +8,7 @@ import org.agrona.concurrent.UnsafeBuffer;
 import org.agrona.concurrent.status.CountersManager;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.limitless.seqeron.protocol.SeqeronCounters;
 
 /**
  * Unit tests for the exporter's Prometheus rendering. No Aeron runtime: {@code CountersManager} is

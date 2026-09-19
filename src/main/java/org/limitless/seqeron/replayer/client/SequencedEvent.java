@@ -3,10 +3,10 @@ package org.limitless.seqeron.replayer.client;
 import org.agrona.DirectBuffer;
 
 /**
- * One application frame delivered in order off the sequenced stream, live or replayed — the Java twin of
- * the C++ {@code SequencedEvent} in {@code sequencer/SequencedFrame.hpp}. The envelope is stripped: a
- * consumer dispatches on {@code (payloadId, templateId)}. System frames arrive through the stream client's
- * own callbacks, so {@link #isSystem()} is false on every event a handler sees.
+ * One frame delivered in order off the sequenced stream, live or replayed — the Java twin of the C++
+ * {@code SequencedEvent} in {@code protocol/SequencedFrame.hpp}. The envelope is stripped: split on
+ * {@link #isSystem()}, then dispatch on {@code (payloadId, templateId)} or {@link #systemEventType()}. Every
+ * system frame but {@code LeadershipChanged}, which has its own callback, arrives here.
  *
  * <p>A flyweight: the buffer and every field are valid only during the handler call; copy to keep.
  */

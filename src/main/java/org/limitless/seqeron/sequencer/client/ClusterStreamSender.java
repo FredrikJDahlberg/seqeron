@@ -1,4 +1,4 @@
-package org.limitless.seqeron.sequencer;
+package org.limitless.seqeron.sequencer.client;
 
 import io.aeron.Aeron;
 import io.aeron.cluster.client.AeronCluster;
@@ -11,10 +11,12 @@ import org.agrona.CloseHelper;
 import org.agrona.DirectBuffer;
 import org.agrona.concurrent.IdleStrategy;
 import org.agrona.concurrent.YieldingIdleStrategy;
+import org.limitless.seqeron.protocol.FrameLayer;
+import org.limitless.seqeron.protocol.PortLayout;
 import org.limitless.seqeron.util.Logger;
 
 /**
- * The cluster session a producer submits on — the Java twin of {@code sequencer/ClusterStreamSender.hpp},
+ * The cluster session a producer submits on — the Java twin of {@code sequencer/client/ClusterStreamSender.hpp},
  * with the same method names and semantics. Far smaller, because {@code AeronCluster} already is the
  * cluster protocol the C++ class implements by hand; this adds only {@link #connectColocated}, a
  * {@link #send} that spins through back-pressure and elections, and a self-throttling {@link #keepAlive}.

@@ -1,4 +1,4 @@
-package org.limitless.seqeron.sequencer;
+package org.limitless.seqeron.protocol;
 
 import java.util.concurrent.TimeUnit;
 import org.limitless.seqeron.sbe.frame.MessageHeaderDecoder;

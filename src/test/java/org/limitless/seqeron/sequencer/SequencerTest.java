@@ -11,6 +11,8 @@ import org.agrona.ExpandableArrayBuffer;
 import org.agrona.MutableDirectBuffer;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.limitless.seqeron.protocol.FrameLayer;
+import org.limitless.seqeron.protocol.SystemFrame;
 import org.limitless.seqeron.sbe.frame.ClusterHeartbeatDecoder;
 import org.limitless.seqeron.sbe.frame.ConnectionClosedDecoder;
 import org.limitless.seqeron.sbe.frame.ConnectionOpenedDecoder;

@@ -14,10 +14,10 @@ import org.agrona.ExpandableArrayBuffer;
 import org.agrona.concurrent.UnsafeBuffer;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.limitless.seqeron.protocol.FrameLayer;
+import org.limitless.seqeron.protocol.SystemFrame;
 import org.limitless.seqeron.replayer.client.SequencedEvents;
-import org.limitless.seqeron.sequencer.FrameLayer;
-import org.limitless.seqeron.sequencer.IngressSender;
-import org.limitless.seqeron.sequencer.SystemFrame;
+import org.limitless.seqeron.sequencer.client.IngressSender;
 
 /**
  * {@link PendingSends} driving a producer against a model cluster: a leader that appends ingress stamped with

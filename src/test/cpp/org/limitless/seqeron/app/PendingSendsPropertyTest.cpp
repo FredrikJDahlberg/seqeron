@@ -62,7 +62,7 @@ struct Model
             if (model.senderTerm == model.clusterTerm)
             {
                 std::int64_t value = 0;
-                std::memcpy(&value, bytes + sequencer::MIN_INGRESS_LENGTH, sizeof(value));
+                std::memcpy(&value, bytes + protocol::MIN_INGRESS_LENGTH, sizeof(value));
                 model.uncommitted.push_back({ model.session, value });
             }
             return true;
@@ -138,7 +138,7 @@ struct Model
                 pending.onLeadershipChanged(entry.value);
                 continue;
             }
-            sequencer::SequencedEvent event{};
+            protocol::SequencedEvent event{};
             event.sourceSessionId = entry.session;
             event.payloadId = PAYLOAD_ID;
             event.payload = reinterpret_cast<const char*>(&entry.value);
@@ -150,7 +150,7 @@ struct Model
     std::mt19937_64 rng;
     PendingSends pending{ CAPACITY };
     Sender sender{ *this };
-    std::array<std::uint8_t, sequencer::MAX_INGRESS_LENGTH> frame{};
+    std::array<std::uint8_t, protocol::MAX_INGRESS_LENGTH> frame{};
     std::deque<Entry> uncommitted; // accepted by the current leader, not yet committed
     std::deque<Entry> tap;         // committed, not yet delivered to the producer's tap
     std::vector<std::int64_t> log; // the producer's frames in log order

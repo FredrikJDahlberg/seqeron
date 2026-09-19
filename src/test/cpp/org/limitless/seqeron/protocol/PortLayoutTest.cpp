@@ -5,11 +5,11 @@
 
 #include <gtest/gtest.h>
 
-#include "org/limitless/seqeron/sequencer/PortLayout.hpp"
+#include "org/limitless/seqeron/protocol/PortLayout.hpp"
 
 namespace {
 
-using namespace org::limitless::seqeron::sequencer;
+using namespace org::limitless::seqeron::protocol;
 
 TEST(PortLayout, ClusterMemberPortsMatchDocumentedLayout)
 {

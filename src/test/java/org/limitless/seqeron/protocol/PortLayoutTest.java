@@ -1,4 +1,4 @@
-package org.limitless.seqeron.sequencer;
+package org.limitless.seqeron.protocol;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;

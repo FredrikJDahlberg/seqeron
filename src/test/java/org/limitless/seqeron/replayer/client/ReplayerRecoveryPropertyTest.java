@@ -11,13 +11,14 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.limitless.seqeron.protocol.ReplayProtocol;
+import org.limitless.seqeron.protocol.SystemFrame;
 import org.limitless.seqeron.replayer.server.ReplayerService;
 import org.limitless.seqeron.sbe.frame.ClusterHeartbeatEncoder;
 import org.limitless.seqeron.sbe.frame.MessageHeaderEncoder;
 import org.limitless.seqeron.sbe.replay.ReplayPendingEncoder;
 import org.limitless.seqeron.sbe.replay.ReplayUnavailableEncoder;
 import org.limitless.seqeron.sbe.replay.ReplayingEncoder;
-import org.limitless.seqeron.sequencer.SystemFrame;
 import org.limitless.seqeron.util.Logger;
 
 /**
@@ -244,20 +245,20 @@ class ReplayerRecoveryPropertyTest {
                 final long anchor = fromPosition / STRIDE + 1;
                 if (anchor < active.first || anchor > active.last) {
                     // The position no longer sits in the active recording — it rotated under the client.
-                    control(replaying(requestId, ReplayerStreamReceiver.NO_REPLAY_NEEDED, 0, CHAIN_EXHAUSTED), REPLAYING_LENGTH);
+                    control(replaying(requestId, ReplayProtocol.NO_REPLAY_NEEDED, 0, CHAIN_EXHAUSTED), REPLAYING_LENGTH);
                     return;
                 }
                 serveReplay(requestId, anchor, active.last, active.recordingId);
                 return;
             }
             if (segmentIndex >= segments.size()) {
-                control(replaying(requestId, ReplayerStreamReceiver.NO_REPLAY_NEEDED, 0, CHAIN_EXHAUSTED), REPLAYING_LENGTH);
+                control(replaying(requestId, ReplayProtocol.NO_REPLAY_NEEDED, 0, CHAIN_EXHAUSTED), REPLAYING_LENGTH);
                 return;
             }
             final Segment segment = segments.get(segmentIndex);
             if (segment.last < segment.first) {
                 // Empty, not exhausted: the recording is named, which is what tells the two apart.
-                control(replaying(requestId, ReplayerStreamReceiver.NO_REPLAY_NEEDED, 0, segment.recordingId), REPLAYING_LENGTH);
+                control(replaying(requestId, ReplayProtocol.NO_REPLAY_NEEDED, 0, segment.recordingId), REPLAYING_LENGTH);
                 return;
             }
             serveReplay(requestId, segment.first, segment.last, segment.recordingId);

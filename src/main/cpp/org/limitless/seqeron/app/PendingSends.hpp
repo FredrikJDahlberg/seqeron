@@ -6,8 +6,8 @@
 #include <cstring>
 #include <vector>
 
-#include "org/limitless/seqeron/sequencer/IngressTracker.hpp"
-#include "org/limitless/seqeron/sequencer/SequencedFrame.hpp"
+#include "org/limitless/seqeron/protocol/SequencedFrame.hpp"
+#include "org/limitless/seqeron/sequencer/client/IngressTracker.hpp"
 
 #include "org_limitless_seqeron_sbe_frame/MessageHeader.h"
 #include "org_limitless_seqeron_sbe_frame/UnsequencedHeader.h"
@@ -20,7 +20,7 @@ namespace org::limitless::seqeron::app {
 // new: while isHolding(), send nothing new, and give this to the sender with setIngressHold. Own frames are
 // matched by session, and one that differs from the oldest pending copy latches isFaulted(). The Java twin is
 // app/PendingSends.java, which carries the rationale and the limits; keep the two in step.
-class PendingSends : public sequencer::IngressTracker
+class PendingSends : public sequencer::client::IngressTracker
 {
   public:
     // capacity: frames that may be pending at once; each holds one MAX_INGRESS_LENGTH copy.
@@ -91,7 +91,7 @@ class PendingSends : public sequencer::IngressTracker
     }
 
     // Every frame off the tap, in order. Only this producer's own frames change anything.
-    void onSequenced(const sequencer::SequencedEvent& event)
+    void onSequenced(const protocol::SequencedEvent& event)
     {
         const std::size_t index = missing();
         if (index == m_size)
@@ -135,7 +135,7 @@ class PendingSends : public sequencer::IngressTracker
     }
 
   private:
-    static constexpr std::size_t SLOT_LENGTH = sequencer::MAX_INGRESS_LENGTH;
+    static constexpr std::size_t SLOT_LENGTH = protocol::MAX_INGRESS_LENGTH;
 
     struct Entry
     {
@@ -150,7 +150,7 @@ class PendingSends : public sequencer::IngressTracker
     }
 
     // The two families' headers share their layout (F-3), so one codec reads either one's id at offset 16.
-    [[nodiscard]] bool matches(const std::size_t slot, const sequencer::SequencedEvent& event)
+    [[nodiscard]] bool matches(const std::size_t slot, const protocol::SequencedEvent& event)
     {
         namespace frm = sbe::frame;
         char* base = reinterpret_cast<char*>(m_frames.data() + slot * SLOT_LENGTH);
@@ -159,11 +159,11 @@ class PendingSends : public sequencer::IngressTracker
         const bool system = messageHeader.templateId() == frm::UnsequencedSystem::sbeTemplateId();
         frm::UnsequencedHeader frameHeader(base, frm::MessageHeader::encodedLength(), length,
                                            frm::MessageHeader::sbeSchemaVersion());
-        const std::size_t bodyLength = length - sequencer::MIN_INGRESS_LENGTH;
+        const std::size_t bodyLength = length - protocol::MIN_INGRESS_LENGTH;
         return event.system == system &&
                (system ? event.systemEventType : event.payloadId) == frameHeader.payloadId() &&
                event.payloadLength == bodyLength &&
-               std::memcmp(base + sequencer::MIN_INGRESS_LENGTH, event.payload, bodyLength) == 0;
+               std::memcmp(base + protocol::MIN_INGRESS_LENGTH, event.payload, bodyLength) == 0;
     }
 
     void moveHeadToTail(const std::int64_t clusterSessionId, const std::int64_t leadershipTermId)

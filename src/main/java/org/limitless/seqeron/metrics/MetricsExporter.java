@@ -10,6 +10,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import org.agrona.concurrent.status.CountersReader;
+import org.limitless.seqeron.protocol.SeqeronCounters;
 
 /**
  * Node-local Prometheus exporter (see {@code doc/ops.md}): converts seqeron counters into Prometheus text format

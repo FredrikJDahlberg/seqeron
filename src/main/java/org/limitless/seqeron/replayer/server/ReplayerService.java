@@ -14,8 +14,8 @@ import org.agrona.ExpandableArrayBuffer;
 import org.agrona.MutableDirectBuffer;
 import org.agrona.concurrent.IdleStrategy;
 import org.agrona.concurrent.status.AtomicCounter;
-import org.limitless.seqeron.replayer.client.ReplayerStreamReceiver;
-import org.limitless.seqeron.metrics.SeqeronCounters;
+import org.limitless.seqeron.protocol.ReplayProtocol;
+import org.limitless.seqeron.protocol.SeqeronCounters;
 import org.limitless.seqeron.sbe.replay.MessageHeaderDecoder;
 import org.limitless.seqeron.sbe.replay.MessageHeaderEncoder;
 import org.limitless.seqeron.sbe.replay.ReplayCompleteDecoder;
@@ -121,8 +121,8 @@ public final class ReplayerService {
     private final ReplayUnavailableEncoder unavailableEncoder = new ReplayUnavailableEncoder();
     private final MutableDirectBuffer controlBuffer = new ExpandableArrayBuffer(64);
 
-    private final org.limitless.seqeron.replayer.client.SequencedFrameDecoder selfCheckView =
-        new org.limitless.seqeron.replayer.client.SequencedFrameDecoder();
+    private final org.limitless.seqeron.protocol.SequencedFrameDecoder selfCheckView =
+        new org.limitless.seqeron.protocol.SequencedFrameDecoder();
 
     private final FragmentHandler requestHandler =
         (buffer, offset, length, header) -> onRequest(buffer, offset, length);
@@ -510,9 +510,9 @@ public final class ReplayerService {
      */
     private void rejectResume(final int clientId, final long requestId, final String reason) {
         Logger.info(Logger.CoreComponent.ReplayerService, memberId,
-                    "client %d's resume refused (%s) — answering ReplayerStreamReceiver.NO_REPLAY_NEEDED so it re-walks the chain", clientId,
+                    "client %d's resume refused (%s) — answering ReplayProtocol.NO_REPLAY_NEEDED so it re-walks the chain", clientId,
                     reason);
-        sendReplaying(clientId, requestId, ReplayerStreamReceiver.NO_REPLAY_NEEDED, 0, NULL_VALUE);
+        sendReplaying(clientId, requestId, ReplayProtocol.NO_REPLAY_NEEDED, 0, NULL_VALUE);
     }
 
     /**
@@ -553,7 +553,7 @@ public final class ReplayerService {
                 return;
             }
             if (segmentIndex >= segments.size()) {
-                sendReplaying(clientId, requestId, ReplayerStreamReceiver.NO_REPLAY_NEEDED, 0, NULL_VALUE);
+                sendReplaying(clientId, requestId, ReplayProtocol.NO_REPLAY_NEEDED, 0, NULL_VALUE);
                 return;
             }
 
@@ -573,11 +573,11 @@ public final class ReplayerService {
         }
         final long boundedLength = tip - replayFrom;
         if (boundedLength <= 0) {
-            sendReplaying(clientId, requestId, ReplayerStreamReceiver.NO_REPLAY_NEEDED, tip, recordingId);
+            sendReplaying(clientId, requestId, ReplayProtocol.NO_REPLAY_NEEDED, tip, recordingId);
             return;
         }
 
-        final long replaySessionId = replayer.startReplay(recordingId, replayFrom, boundedLength, ReplayerStreamReceiver.REPLAY_STREAM_ID);
+        final long replaySessionId = replayer.startReplay(recordingId, replayFrom, boundedLength, ReplayProtocol.REPLAY_STREAM_ID);
         replaysServedCounter.increment();
         replaySlots.activate(clientId, replaySessionId, replayer.epochMillis());
         Logger.info(Logger.CoreComponent.ReplayerService, memberId,
@@ -738,7 +738,7 @@ public final class ReplayerService {
                          "dropped a control reply (offer=%d): an app subscribed to stream %d and stopped "
                              + "reading it. Its replays are delayed by a resend; every other app is "
                              + "unaffected — see seqeron.replayer.controlRepliesDroppedCount",
-                         result, ReplayerStreamReceiver.CONTROL_STREAM_ID);
+                         result, ReplayProtocol.CONTROL_STREAM_ID);
         }
     }
 

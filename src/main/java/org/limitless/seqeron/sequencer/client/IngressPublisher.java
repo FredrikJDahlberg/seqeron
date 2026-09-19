@@ -1,10 +1,12 @@
-package org.limitless.seqeron.sequencer;
+package org.limitless.seqeron.sequencer.client;
 
 import org.agrona.DirectBuffer;
 import org.agrona.ExpandableArrayBuffer;
+import org.limitless.seqeron.protocol.FrameLayer;
+import org.limitless.seqeron.protocol.SystemFrame;
 
 /**
- * Encode-and-offer for cluster ingress — the Java twin of {@code sequencer/IngressPublisher.hpp}. An
+ * Encode-and-offer for cluster ingress — the Java twin of {@code sequencer/client/IngressPublisher.hpp}. An
  * instance owning its buffer rather than free functions over a stack array, and the body arrives
  * pre-encoded rather than through a {@code Fill}, since Java's SBE codecs share no interface.
  *

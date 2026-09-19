@@ -370,21 +370,16 @@ tasks.named('installDist') { enabled = false }
 // the media driver on its classpath to encode a frame. (aeron-cluster stays a client dependency: the
 // cluster client and the consensus module ship in one upstream artifact, so it is not ours to split.)
 //
-// The tiers are packages, not source sets, because the line runs through `sequencer` — FrameLayer,
-// SystemFrame, PortLayout and the Ingress* classes are the client's, Sequencer and SequencerServer the
-// node's — and splitting a package across two source roots costs more than the check below.
+// The tiers are packages, laid out as Aeron's are: a component's server at its root and its client in
+// `.client` beside it, with the wire contract both share in `protocol`. No package is in both jars.
 ext.clientTierPatterns = [
+    'org/limitless/seqeron/protocol/**',
+    'org/limitless/seqeron/sequencer/client/**',
+    'org/limitless/seqeron/replayer/client/**',
     'org/limitless/seqeron/app/**',
+    'org/limitless/seqeron/util/**',
     'org/limitless/seqeron/sbe/frame/**',
     'org/limitless/seqeron/sbe/replay/**',
-    'org/limitless/seqeron/replayer/client/**',
-    'org/limitless/seqeron/util/**',
-    'org/limitless/seqeron/metrics/SeqeronCounters*',
-    'org/limitless/seqeron/sequencer/FrameLayer*',
-    'org/limitless/seqeron/sequencer/SystemFrame*',
-    'org/limitless/seqeron/sequencer/PortLayout*',
-    'org/limitless/seqeron/sequencer/Ingress*',
-    'org/limitless/seqeron/sequencer/ClusterStreamSender*',
 ]
 
 // What every published jar carries besides its classes: the license and NOTICE, for the same Apache 2.0
@@ -396,8 +391,7 @@ def publishedJar = { Jar jar, String artifactId ->
     jar.manifest.attributes('Implementation-Title': artifactId, 'Implementation-Version': project.version)
 }
 
-// Only the client names a module. The node cannot be one beside it: `sequencer` and `metrics` are split
-// across the two jars, and the module path refuses a package in two modules.
+// Automatic modules both, which the module path allows because no package is split across them.
 tasks.register('clientJar', Jar) {
     description = 'The client tier alone — what a producer or consumer needs to talk to a cluster'
     group       = 'build'
@@ -413,6 +407,7 @@ tasks.register('nodeJar', Jar) {
     archiveAppendix = 'node'
     from(sourceSets.main.output) { exclude clientTierPatterns }
     publishedJar(it, 'seqeron-node')
+    manifest.attributes('Automatic-Module-Name': 'org.limitless.seqeron.node')
 }
 
 // allJava includes the generated SBE codecs, which are part of the published classes. The tier patterns
@@ -439,8 +434,8 @@ tasks.register('nodeSourcesJar', Jar) {
 
 // The client tier must stay a tier: a client class that reaches for the node compiles here (one source
 // set) and then fails at runtime in a consumer that took `seqeron` alone, which is the worst place to
-// find out. Checked on the compiled classes rather than on imports, so a same-package reference —
-// sequencer/ holds both tiers — cannot slip through unimported.
+// find out. Checked on the compiled classes rather than on imports, so nothing the compiler resolved
+// without an import can slip through.
 tasks.register('checkTierSeparation') {
     description = 'Fails if the client tier references the node tier, or Aeron beyond the client'
     group       = 'verification'

@@ -14,8 +14,8 @@
 #include "FragmentAssembler.h"
 #include "client/archive/AeronArchive.h"
 
-#include "org/limitless/seqeron/sequencer/PortLayout.hpp"
-#include "org/limitless/seqeron/sequencer/SequencedFrame.hpp"
+#include "org/limitless/seqeron/protocol/PortLayout.hpp"
+#include "org/limitless/seqeron/protocol/SequencedFrame.hpp"
 #include "org/limitless/seqeron/util/Env.hpp"
 #include "org/limitless/seqeron/util/Logger.hpp"
 
@@ -23,7 +23,7 @@
 // archive that holds them, and walking them in order. Not the live path — consumers follow the tap
 // through ReplayerStreamReceiver; this serves bounded scans. Frame decoding alone is SequencedFrame.hpp.
 
-namespace org::limitless::seqeron::sequencer {
+namespace org::limitless::seqeron::sequencer::client {
 
 namespace diag = org::limitless::seqeron::util;
 
@@ -46,7 +46,7 @@ inline std::string resolveReplayChannel(const char* envVar, std::uint16_t defaul
 
 // Default 3-node cluster archive control endpoints, from PortLayout.hpp. Every member's archive holds an
 // identical recording, so any reachable one will do.
-inline const std::string DEFAULT_ARCHIVE_ENDPOINTS = archiveEndpointsCsv(3);
+inline const std::string DEFAULT_ARCHIVE_ENDPOINTS = protocol::archiveEndpointsCsv(3);
 
 /**
  * Splits a comma-separated "host:port,host:port,..." list from the given
@@ -92,7 +92,7 @@ inline bool findClusterStreamRecording(const std::shared_ptr<aeron::archive::cli
     std::int64_t activeId = -1;
     std::int64_t stoppedId = -1;
     std::int64_t stoppedPosition = std::numeric_limits<std::int64_t>::min();
-    archive->listRecordingsForUri(0, std::numeric_limits<std::int32_t>::max(), "", FEEDER_STREAM_ID,
+    archive->listRecordingsForUri(0, std::numeric_limits<std::int32_t>::max(), "", protocol::FEEDER_STREAM_ID,
                                   [&](aeron::archive::client::RecordingDescriptor& recording) {
                                       if (recording.m_stopPosition == aeron::archive::client::NULL_POSITION)
                                       {
@@ -262,7 +262,7 @@ inline std::vector<RecordingSegment> resolveClusterStreamSegments(
         std::int64_t stopPosition;
     };
     std::vector<Entry> entries;
-    archive->listRecordingsForUri(0, std::numeric_limits<std::int32_t>::max(), "", FEEDER_STREAM_ID,
+    archive->listRecordingsForUri(0, std::numeric_limits<std::int32_t>::max(), "", protocol::FEEDER_STREAM_ID,
                                   [&](aeron::archive::client::RecordingDescriptor& recording) {
                                       entries.push_back({ recording.m_recordingId, recording.m_stopPosition });
                                   });
@@ -319,9 +319,9 @@ inline std::vector<RecordingSegment> resolveClusterStreamSegments(
 class ClusterStreamClient
 {
   public:
-    using OnSequenced = std::function<void(const SequencedEvent&)>;
-    using OnConnected = std::function<void(const LifecycleEvent&)>;
-    using OnDisconnected = std::function<void(const LifecycleEvent&)>;
+    using OnSequenced = std::function<void(const protocol::SequencedEvent&)>;
+    using OnConnected = std::function<void(const protocol::LifecycleEvent&)>;
+    using OnDisconnected = std::function<void(const protocol::LifecycleEvent&)>;
     using OnCaughtUp = std::function<void()>;
     // Fired (single-image mode only) if the replay image closes before catchUpPosition — an invalid range
     // or a truncated recording — so a caller need not wait out a stall timeout.
@@ -502,13 +502,13 @@ class ClusterStreamClient
     void onFragment(const aeron::concurrent::AtomicBuffer& buffer, const aeron::util::index_t offset,
                     const aeron::util::index_t length, const aeron::Header& header)
     {
-        const std::int64_t receiveNs = nowNs();
-        const std::int64_t framePosition = frameStartPosition(header);
+        const std::int64_t receiveNs = protocol::nowNs();
+        const std::int64_t framePosition = protocol::frameStartPosition(header);
         char* const raw = reinterpret_cast<char*>(buffer.buffer());
         const std::uint64_t cap = static_cast<std::uint64_t>(buffer.capacity());
         const std::uint64_t off = static_cast<std::uint64_t>(offset);
         const std::uint64_t len = static_cast<std::uint64_t>(length);
-        const FrameView view = unwrapFrame(raw + off, len);
+        const protocol::FrameView view = protocol::unwrapFrame(raw + off, len);
         if (!view.valid)
         {
             diag::Logger::error(diag::component::ClusterStreamClient, diag::eventCode::FragmentTooShort,
@@ -531,49 +531,49 @@ class ClusterStreamClient
             m_lastGlobalSeqNo = gseq;
         }
         const bool isSystem = view.system;
-        if (isSystem && view.systemEventType == CONNECTION_OPENED)
+        if (isSystem && view.systemEventType == protocol::CONNECTION_OPENED)
         {
             if (m_onConnected)
             {
-                m_onConnected(LifecycleEvent{ .globalSeqNo = gseq,
-                                              .sourceId = srcId,
-                                              .connectionId = connId,
-                                              .sourceSessionId = sessId,
-                                              .clusterTimestampNs = ts,
-                                              .receiveTimeNs = receiveNs });
+                m_onConnected(protocol::LifecycleEvent{ .globalSeqNo = gseq,
+                                                        .sourceId = srcId,
+                                                        .connectionId = connId,
+                                                        .sourceSessionId = sessId,
+                                                        .clusterTimestampNs = ts,
+                                                        .receiveTimeNs = receiveNs });
             }
             return;
         }
-        if (isSystem && view.systemEventType == CONNECTION_CLOSED)
+        if (isSystem && view.systemEventType == protocol::CONNECTION_CLOSED)
         {
             if (m_onDisconnected)
             {
-                m_onDisconnected(LifecycleEvent{ .globalSeqNo = gseq,
-                                                 .sourceId = srcId,
-                                                 .connectionId = connId,
-                                                 .sourceSessionId = sessId,
-                                                 .clusterTimestampNs = ts,
-                                                 .receiveTimeNs = receiveNs });
+                m_onDisconnected(protocol::LifecycleEvent{ .globalSeqNo = gseq,
+                                                           .sourceId = srcId,
+                                                           .connectionId = connId,
+                                                           .sourceSessionId = sessId,
+                                                           .clusterTimestampNs = ts,
+                                                           .receiveTimeNs = receiveNs });
             }
             return;
         }
         if (m_onSequenced)
         {
-            m_onSequenced(SequencedEvent{ .globalSeqNo = gseq,
-                                          .sourceId = srcId,
-                                          .connectionId = connId,
-                                          .sourceSessionId = sessId,
-                                          .clusterTimestampNs = ts,
-                                          .receiveTimeNs = receiveNs,
-                                          .system = isSystem,
-                                          .payloadId = view.payloadId,
-                                          .systemEventType = view.systemEventType,
-                                          .templateId = templateId,
-                                          .blockLength = view.blockLength,
-                                          .version = view.version,
-                                          .payload = view.payload,
-                                          .payloadLength = view.payloadLength,
-                                          .position = framePosition });
+            m_onSequenced(protocol::SequencedEvent{ .globalSeqNo = gseq,
+                                                    .sourceId = srcId,
+                                                    .connectionId = connId,
+                                                    .sourceSessionId = sessId,
+                                                    .clusterTimestampNs = ts,
+                                                    .receiveTimeNs = receiveNs,
+                                                    .system = isSystem,
+                                                    .payloadId = view.payloadId,
+                                                    .systemEventType = view.systemEventType,
+                                                    .templateId = templateId,
+                                                    .blockLength = view.blockLength,
+                                                    .version = view.version,
+                                                    .payload = view.payload,
+                                                    .payloadLength = view.payloadLength,
+                                                    .position = framePosition });
         }
     }
 
@@ -618,4 +618,4 @@ class ClusterStreamClient
     aeron::fragment_handler_t m_poll;
 };
 
-} // namespace org::limitless::seqeron::sequencer
+} // namespace org::limitless::seqeron::sequencer::client

@@ -1,7 +1,7 @@
 # Ops — Prometheus/Grafana monitoring stack
 
 Node-local metrics exporter, scraped by Prometheus and feeding Grafana. Covers
-`org.limitless.seqeron.SeqeronCounters` — every `SequencerService`/`ReplayerService` operator
+`org.limitless.seqeron.protocol.SeqeronCounters` — every `SequencerService`/`ReplayerService` operator
 counter — end to end from a running node to a dashboard panel.
 
 ## Shape
@@ -89,7 +89,7 @@ buffer — see `SeqeronCounters.addCounter`/`KEY_MEMBER_ID_OFFSET`).
 App-range metrics carry a second label, `client="M"` — the replayer clientId. They are published by
 the co-located replicas rather than by a cluster-tier process, and several of them run per node
 publishing the same counter, so `member` alone would collapse them into one repeated series. The C++
-half of the registry is `org/limitless/seqeron/util/SeqeronCounters.hpp`, which must be kept in step
+half of the registry is `org/limitless/seqeron/protocol/SeqeronCounters.hpp`, which must be kept in step
 with the Java one.
 
 The table below is what **core** publishes. A consumer's own counter (type id 5201–5299,

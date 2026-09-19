@@ -7,11 +7,11 @@
 
 #include "Aeron.h"
 
-// C++ half of org.limitless.seqeron.metrics.SeqeronCounters. The type ids and key layout MUST match the
+// C++ half of org.limitless.seqeron.protocol.SeqeronCounters. The type ids and key layout MUST match the
 // Java class: the exporter names a counter by type id and reads memberId/clientId out of the key, so a
 // mismatch publishes a counter nothing scrapes. App counters are keyed on {memberId, clientId}, since a
 // node's several replicas publish the same type id.
-namespace org::limitless::seqeron::util {
+namespace org::limitless::seqeron::protocol {
 
 // ── Co-located C++ application replicas (5200-5299) ──────────────────────────────────────────
 inline constexpr std::int32_t APP_TYPE_ID_MIN = 5200;
@@ -34,4 +34,4 @@ inline std::int64_t addAppCounter(const std::shared_ptr<aeron::Aeron>& aeron, co
     return aeron->addCounter(typeId, key, APP_KEY_LENGTH, label);
 }
 
-} // namespace org::limitless::seqeron::util
+} // namespace org::limitless::seqeron::protocol

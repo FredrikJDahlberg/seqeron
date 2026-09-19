@@ -18,7 +18,8 @@ import org.agrona.CloseHelper;
 import org.agrona.DirectBuffer;
 import org.agrona.concurrent.NoOpLock;
 import org.agrona.concurrent.status.CountersReader;
-import org.limitless.seqeron.metrics.SeqeronCounters;
+import org.limitless.seqeron.protocol.FrameLayer;
+import org.limitless.seqeron.protocol.SeqeronCounters;
 import org.limitless.seqeron.util.Logger;
 
 /**

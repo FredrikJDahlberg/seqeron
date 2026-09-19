@@ -10,8 +10,8 @@ import org.agrona.concurrent.IdleStrategy;
 import org.agrona.concurrent.UnsafeBuffer;
 import org.limitless.seqeron.replayer.client.ReplayerStreamReceiver;
 import org.limitless.seqeron.replayer.client.SequencedEvent;
-import org.limitless.seqeron.sequencer.ClusterStreamSender;
-import org.limitless.seqeron.sequencer.IngressPublisher;
+import org.limitless.seqeron.sequencer.client.ClusterStreamSender;
+import org.limitless.seqeron.sequencer.client.IngressPublisher;
 
 /**
  * Follows one node's ordered stream end to end: history replayed through that node's co-located

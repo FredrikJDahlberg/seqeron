@@ -94,7 +94,7 @@ std::vector<std::uint8_t> encodeHeartbeat(const std::int64_t globalSeqNo)
         .sourceId(1)
         .connectionId(0)
         .sessionId(0)
-        .systemEventType(sequencer::CLUSTER_HEARTBEAT)
+        .systemEventType(protocol::CLUSTER_HEARTBEAT)
         .globalSeqNo(globalSeqNo)
         .timestamp(globalSeqNo * 1000);
     buf.resize(frm::MessageHeader::encodedLength() + frame.encodedLength());

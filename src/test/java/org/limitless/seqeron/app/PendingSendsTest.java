@@ -11,10 +11,10 @@ import org.agrona.ExpandableArrayBuffer;
 import org.agrona.concurrent.UnsafeBuffer;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.limitless.seqeron.protocol.FrameLayer;
+import org.limitless.seqeron.protocol.SystemFrame;
 import org.limitless.seqeron.replayer.client.SequencedEvents;
-import org.limitless.seqeron.sequencer.FrameLayer;
-import org.limitless.seqeron.sequencer.IngressSender;
-import org.limitless.seqeron.sequencer.SystemFrame;
+import org.limitless.seqeron.sequencer.client.IngressSender;
 
 /**
  * Unit tests for counting a producer's own frames back off its tap. Frames are real ingress frames; each

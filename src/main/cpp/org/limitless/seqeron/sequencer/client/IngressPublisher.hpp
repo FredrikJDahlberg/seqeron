@@ -8,17 +8,17 @@
 #include <cstdint>
 #include <utility>
 
-#include "org/limitless/seqeron/sequencer/ClusterStreamSender.hpp"
-#include "org/limitless/seqeron/sequencer/IngressTracker.hpp"
-#include "org/limitless/seqeron/sequencer/SequencedFrame.hpp"
+#include "org/limitless/seqeron/protocol/SequencedFrame.hpp"
+#include "org/limitless/seqeron/sequencer/client/ClusterStreamSender.hpp"
+#include "org/limitless/seqeron/sequencer/client/IngressTracker.hpp"
 #include "org_limitless_seqeron_sbe_frame/MessageHeader.h"
 #include "org_limitless_seqeron_sbe_frame/Unsequenced.h"
 #include "org_limitless_seqeron_sbe_frame/UnsequencedSystem.h"
 
-namespace org::limitless::seqeron::sequencer {
+namespace org::limitless::seqeron::sequencer::client {
 
 // Encode buffer for one ingress message: the largest frame the protocol admits (§12).
-inline constexpr std::size_t INGRESS_ENCODE_BUFFER_LEN = MAX_INGRESS_LENGTH;
+inline constexpr std::size_t INGRESS_ENCODE_BUFFER_LEN = protocol::MAX_INGRESS_LENGTH;
 
 // What a publish did. `Refused` is local and permanent (T-3): the body is above MAX_PAYLOAD_LENGTH, or the
 // frame breaks §9.2 conditions 6 to 9, and nothing was offered, so retrying cannot succeed. `Declined` —
@@ -70,7 +70,7 @@ template<typename Encoder, typename Fill>
     std::forward<Fill>(fill)(encoder);
     const auto payloadLength =
         static_cast<std::uint16_t>(sbe::frame::MessageHeader::encodedLength() + encoder.encodedLength());
-    if (payloadLength > MAX_PAYLOAD_LENGTH)
+    if (payloadLength > protocol::MAX_PAYLOAD_LENGTH)
     {
         return Publish::Refused;
     }
@@ -102,8 +102,8 @@ template<typename Encoder, typename Fill>
                                     const std::int32_t connectionId, const std::uint16_t systemEventType, Fill&& fill)
 {
     // §9.2 conditions 6, 8 and 9.
-    const std::int32_t blockLength = ingressBlockLength(systemEventType);
-    if (sourceId == -1 || blockLength == NOT_INGRESS_LEGAL)
+    const std::int32_t blockLength = protocol::ingressBlockLength(systemEventType);
+    if (sourceId == -1 || blockLength == protocol::NOT_INGRESS_LEGAL)
     {
         return Publish::Refused;
     }
@@ -112,7 +112,7 @@ template<typename Encoder, typename Fill>
     encoder.wrapForEncode(reinterpret_cast<char*>(body.data()), 0, body.size());
     std::forward<Fill>(fill)(encoder);
     const auto bodyLength = static_cast<std::uint16_t>(encoder.encodedLength());
-    if (bodyLength > MAX_PAYLOAD_LENGTH || bodyLength < blockLength)
+    if (bodyLength > protocol::MAX_PAYLOAD_LENGTH || bodyLength < blockLength)
     {
         return Publish::Refused;
     }
@@ -137,4 +137,4 @@ template<typename Encoder, typename Fill>
     return publishSystem<Encoder>(sender, nullptr, sourceId, connectionId, systemEventType, std::forward<Fill>(fill));
 }
 
-} // namespace org::limitless::seqeron::sequencer
+} // namespace org::limitless::seqeron::sequencer::client

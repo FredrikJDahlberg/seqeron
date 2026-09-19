@@ -1,4 +1,4 @@
-package org.limitless.seqeron.sequencer;
+package org.limitless.seqeron.sequencer.client;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
@@ -6,7 +6,7 @@ import io.aeron.Publication;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
-import org.limitless.seqeron.sequencer.IngressStallPolicy.Action;
+import org.limitless.seqeron.sequencer.client.IngressStallPolicy.Action;
 
 /**
  * Unit tests for the verdict inside {@code ClusterStreamSender.send}'s spin. No Aeron runtime: the offer

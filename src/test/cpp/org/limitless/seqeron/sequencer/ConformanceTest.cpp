@@ -20,12 +20,12 @@
 #include <string>
 #include <vector>
 
-#include "org/limitless/seqeron/sequencer/ClusterStreamSender.hpp"
-#include "org/limitless/seqeron/sequencer/IngressPublisher.hpp"
-#include "org/limitless/seqeron/sequencer/SequencedFrame.hpp"
-#include "org_limitless_seqeron_sbe_frame/ConnectionOpened.h"
-#include "org_limitless_seqeron_sbe_frame/ClusterStarted.h"
+#include "org/limitless/seqeron/protocol/SequencedFrame.hpp"
+#include "org/limitless/seqeron/sequencer/client/ClusterStreamSender.hpp"
+#include "org/limitless/seqeron/sequencer/client/IngressPublisher.hpp"
 #include "org_limitless_seqeron_sbe_frame/ClusterHeartbeat.h"
+#include "org_limitless_seqeron_sbe_frame/ClusterStarted.h"
+#include "org_limitless_seqeron_sbe_frame/ConnectionOpened.h"
 #include "org_limitless_seqeron_sbe_frame/GatewayActive.h"
 #include "org_limitless_seqeron_sbe_frame/GatewayRegistered.h"
 #include "org_limitless_seqeron_sbe_frame/GatewayStarted.h"
@@ -120,9 +120,9 @@ std::vector<std::uint8_t> payloadFrame(std::int64_t globalSeqNo, std::uint16_t p
     return out;
 }
 
-FrameView viewOf(const std::vector<std::uint8_t>& frame)
+protocol::FrameView viewOf(const std::vector<std::uint8_t>& frame)
 {
-    return unwrapFrame(reinterpret_cast<const char*>(frame.data()), frame.size());
+    return protocol::unwrapFrame(reinterpret_cast<const char*>(frame.data()), frame.size());
 }
 
 // ── Row 2. The prefix property (F-3) ──────────────────────────────────────────
@@ -210,25 +210,25 @@ TEST(Conformance, FrameSizesAreSection42sTable)
     EXPECT_EQ(2U, frm::SequencedSystem::bodyHeaderLength());
 
     // Fixed overhead: MessageHeader + the header composite + the length prefix.
-    EXPECT_EQ(28U, MIN_INGRESS_LENGTH) << "ingress, both families";
+    EXPECT_EQ(28U, protocol::MIN_INGRESS_LENGTH) << "ingress, both families";
     EXPECT_EQ(44U,
               frm::MessageHeader::encodedLength() + frm::SequencedHeader::encodedLength() +
                   frm::Sequenced::payloadHeaderLength())
         << "sequenced, both families";
 
     // A ClusterHeartbeat is a template of its own: no length prefix and no body at all.
-    EXPECT_EQ(42U, synthesizedFrame<frm::ClusterHeartbeat>(1, CLUSTER_HEARTBEAT, [](auto&) {}).size())
+    EXPECT_EQ(42U, synthesizedFrame<frm::ClusterHeartbeat>(1, protocol::CLUSTER_HEARTBEAT, [](auto&) {}).size())
         << "8 + 34, the cheapest frame in the system";
 
     // §12's ceiling, as a frame on the wire.
-    EXPECT_EQ(44U + MAX_PAYLOAD_LENGTH, payloadFrame(1, 2, MAX_PAYLOAD_LENGTH).size());
+    EXPECT_EQ(44U + protocol::MAX_PAYLOAD_LENGTH, payloadFrame(1, 2, protocol::MAX_PAYLOAD_LENGTH).size());
 }
 
 // ── Row 3. Every system shape decodes to what it was built with (§7) ──────────
 
 TEST(Conformance, EverySystemShapeNamesItsEventAndDecodesItsBody)
 {
-    const auto connected = systemFrame(1, CONNECTION_OPENED, [](char* body, std::size_t cap) {
+    const auto connected = systemFrame(1, protocol::CONNECTION_OPENED, [](char* body, std::size_t cap) {
         frm::ConnectionOpened encoder;
         encoder.wrapForEncode(body, 0, cap);
         encoder.putConnectionData("GW-A/42", 7);
@@ -237,10 +237,10 @@ TEST(Conformance, EverySystemShapeNamesItsEventAndDecodesItsBody)
     auto view = viewOf(connected);
     ASSERT_TRUE(view.valid);
     EXPECT_TRUE(view.system);
-    EXPECT_EQ(CONNECTION_OPENED, view.systemEventType);
+    EXPECT_EQ(protocol::CONNECTION_OPENED, view.systemEventType);
     EXPECT_EQ(0U, view.blockLength) << "a system body carries no declaration of its own (V-3)";
 
-    const auto startedMarker = systemFrame(2, CLUSTER_STARTED, [](char* body, std::size_t cap) {
+    const auto startedMarker = systemFrame(2, protocol::CLUSTER_STARTED, [](char* body, std::size_t cap) {
         frm::ClusterStarted encoder;
         encoder.wrapForEncode(body, 0, cap);
         encoder.correlationId(0x0102030405060708LL);
@@ -249,9 +249,9 @@ TEST(Conformance, EverySystemShapeNamesItsEventAndDecodesItsBody)
     view = viewOf(startedMarker);
     ASSERT_TRUE(view.valid);
     EXPECT_EQ(0x0102030405060708LL,
-              decodeSystem<frm::ClusterStarted>(view.payload, view.payloadLength).correlationId());
+              protocol::decodeSystem<frm::ClusterStarted>(view.payload, view.payloadLength).correlationId());
 
-    const auto registered = systemFrame(3, GATEWAY_REGISTERED, [](char* body, std::size_t cap) {
+    const auto registered = systemFrame(3, protocol::GATEWAY_REGISTERED, [](char* body, std::size_t cap) {
         frm::GatewayRegistered encoder;
         encoder.wrapForEncode(body, 0, cap);
         encoder.remaining(0).gatewayId(3).gatewaySourceId(5).preferenceRank(0);
@@ -260,13 +260,13 @@ TEST(Conformance, EverySystemShapeNamesItsEventAndDecodesItsBody)
     });
     view = viewOf(registered);
     ASSERT_TRUE(view.valid);
-    EXPECT_EQ(GATEWAY_REGISTERED, view.systemEventType);
-    auto row = decodeSystem<frm::GatewayRegistered>(view.payload, view.payloadLength);
+    EXPECT_EQ(protocol::GATEWAY_REGISTERED, view.systemEventType);
+    auto row = protocol::decodeSystem<frm::GatewayRegistered>(view.payload, view.payloadLength);
     EXPECT_EQ(0, row.remaining());
     EXPECT_EQ(3, row.gatewayId());
     EXPECT_EQ(5, row.gatewaySourceId());
 
-    const auto started = systemFrame(4, GATEWAY_STARTED, [](char* body, std::size_t cap) {
+    const auto started = systemFrame(4, protocol::GATEWAY_STARTED, [](char* body, std::size_t cap) {
         frm::GatewayStarted encoder;
         encoder.wrapForEncode(body, 0, cap);
         encoder.gatewayId(3).firstConnectionId(1000);
@@ -274,42 +274,42 @@ TEST(Conformance, EverySystemShapeNamesItsEventAndDecodesItsBody)
     });
     view = viewOf(started);
     ASSERT_TRUE(view.valid);
-    auto start = decodeSystem<frm::GatewayStarted>(view.payload, view.payloadLength);
+    auto start = protocol::decodeSystem<frm::GatewayStarted>(view.payload, view.payloadLength);
     EXPECT_EQ(3, start.gatewayId());
     EXPECT_EQ(1000, start.firstConnectionId());
 
     // The three synthesized ones: fields inline in the frame's own block, and -1 marking the class (F-4).
-    view = viewOf(synthesizedFrame<frm::ClusterHeartbeat>(5, CLUSTER_HEARTBEAT, [](auto&) {}));
+    view = viewOf(synthesizedFrame<frm::ClusterHeartbeat>(5, protocol::CLUSTER_HEARTBEAT, [](auto&) {}));
     ASSERT_TRUE(view.valid);
-    EXPECT_EQ(CLUSTER_HEARTBEAT, view.systemEventType);
+    EXPECT_EQ(protocol::CLUSTER_HEARTBEAT, view.systemEventType);
     EXPECT_EQ(-1, view.sourceId);
     EXPECT_EQ(-1, view.connectionId);
     EXPECT_EQ(-1, view.sessionId);
 
     const auto leadership =
-        synthesizedFrame<frm::LeadershipChanged>(6, LEADERSHIP_CHANGED, [](frm::LeadershipChanged& f) {
+        synthesizedFrame<frm::LeadershipChanged>(6, protocol::LEADERSHIP_CHANGED, [](frm::LeadershipChanged& f) {
             f.newLeaderMemberId(2);
             f.leadershipTermId(7);
         });
     view = viewOf(leadership);
     ASSERT_TRUE(view.valid);
-    EXPECT_EQ(LEADERSHIP_CHANGED, view.systemEventType);
-    const auto decoded = decodeSystem<frm::LeadershipChanged>(view.payload, view.payloadLength);
+    EXPECT_EQ(protocol::LEADERSHIP_CHANGED, view.systemEventType);
+    const auto decoded = protocol::decodeSystem<frm::LeadershipChanged>(view.payload, view.payloadLength);
     EXPECT_EQ(2, decoded.newLeaderMemberId());
     EXPECT_EQ(7, decoded.leadershipTermId());
 
-    const auto active =
-        synthesizedFrame<frm::GatewayActive>(7, GATEWAY_ACTIVE, [](frm::GatewayActive& f) { f.gatewayId(3); });
+    const auto active = synthesizedFrame<frm::GatewayActive>(7, protocol::GATEWAY_ACTIVE,
+                                                             [](frm::GatewayActive& f) { f.gatewayId(3); });
     view = viewOf(active);
     ASSERT_TRUE(view.valid);
-    EXPECT_EQ(GATEWAY_ACTIVE, view.systemEventType);
-    EXPECT_EQ(3, decodeSystem<frm::GatewayActive>(view.payload, view.payloadLength).gatewayId());
+    EXPECT_EQ(protocol::GATEWAY_ACTIVE, view.systemEventType);
+    EXPECT_EQ(3, protocol::decodeSystem<frm::GatewayActive>(view.payload, view.payloadLength).gatewayId());
 }
 
 // ── Row 4b. The producer refuses before the wire (T-3, §12) ───────────────────
 
 // Captures every frame offered, so the test can see that a refusal offered nothing at all.
-class RecordingIngress : public IngressTransport
+class RecordingIngress : public client::IngressTransport
 {
   public:
     std::vector<std::vector<std::uint8_t>> m_offered;
@@ -335,7 +335,7 @@ class ConnectedSender : public ::testing::Test
     }
 
     // Answers connect() with a single SessionEvent(OK), which is all this fixture needs.
-    class FakeEgress : public EgressTransport
+    class FakeEgress : public client::EgressTransport
     {
       public:
         int poll(const FragmentHandler& handler) override
@@ -346,14 +346,14 @@ class ConnectedSender : public ::testing::Test
             }
             m_delivered = true;
             std::vector<std::uint8_t> buf(256, 0);
-            cluster_sbe::SessionEvent enc;
+            client::cluster_sbe::SessionEvent enc;
             enc.wrapAndApplyHeader(reinterpret_cast<char*>(buf.data()), 0, buf.size());
             enc.clusterSessionId(SESSION_ID)
                 .correlationId(1)
                 .leadershipTermId(11)
                 .leaderMemberId(0)
-                .code(cluster_sbe::EventCode::Value::OK)
-                .version(CLUSTER_PROTOCOL_VERSION)
+                .code(client::cluster_sbe::EventCode::Value::OK)
+                .version(client::CLUSTER_PROTOCOL_VERSION)
                 .leaderHeartbeatTimeoutNs(0);
             enc.putDetail(nullptr, 0);
             buf.resize(enc.sbePosition());
@@ -365,7 +365,7 @@ class ConnectedSender : public ::testing::Test
         bool m_delivered = false;
     };
 
-    ClusterStreamSender m_sender;
+    client::ClusterStreamSender m_sender;
     RecordingIngress* m_ingress{ nullptr };
 };
 
@@ -373,46 +373,46 @@ TEST_F(ConnectedSender, PublishPayloadAdmitsTheCeilingAndRefusesOneMore)
 {
     // ConnectionOpened is var-data only, so the payload is its 8-byte header plus the 2-byte prefix plus
     // the data: 1306 bytes of data is exactly MAX_PAYLOAD_LENGTH.
-    const std::vector<char> atCeiling(MAX_PAYLOAD_LENGTH - frm::MessageHeader::encodedLength() -
+    const std::vector<char> atCeiling(protocol::MAX_PAYLOAD_LENGTH - frm::MessageHeader::encodedLength() -
                                           frm::ConnectionOpened::connectionDataHeaderLength(),
                                       'x');
-    EXPECT_EQ(
-        Publish::Published,
-        publishPayload<frm::ConnectionOpened>(m_sender, SOURCE_ID, CONNECTION_ID, 2, [&](frm::ConnectionOpened& encoder) {
-            encoder.putConnectionData(atCeiling.data(), static_cast<std::uint16_t>(atCeiling.size()));
-        }));
+    EXPECT_EQ(client::Publish::Published,
+              client::publishPayload<frm::ConnectionOpened>(
+                  m_sender, SOURCE_ID, CONNECTION_ID, 2, [&](frm::ConnectionOpened& encoder) {
+                      encoder.putConnectionData(atCeiling.data(), static_cast<std::uint16_t>(atCeiling.size()));
+                  }));
     ASSERT_EQ(1U, m_ingress->m_offered.size());
 
     const std::vector<char> overCeiling(atCeiling.size() + 1, 'x');
-    EXPECT_EQ(
-        Publish::Refused,
-        publishPayload<frm::ConnectionOpened>(m_sender, SOURCE_ID, CONNECTION_ID, 2, [&](frm::ConnectionOpened& encoder) {
-            encoder.putConnectionData(overCeiling.data(), static_cast<std::uint16_t>(overCeiling.size()));
-        }));
+    EXPECT_EQ(client::Publish::Refused,
+              client::publishPayload<frm::ConnectionOpened>(
+                  m_sender, SOURCE_ID, CONNECTION_ID, 2, [&](frm::ConnectionOpened& encoder) {
+                      encoder.putConnectionData(overCeiling.data(), static_cast<std::uint16_t>(overCeiling.size()));
+                  }));
     EXPECT_EQ(1U, m_ingress->m_offered.size()) << "nothing was offered to any transport";
 
     // Local and permanent, and the producer survives it: the very next well-formed publish succeeds.
-    EXPECT_EQ(Publish::Published,
-              publishPayload<frm::ClusterStarted>(m_sender, SOURCE_ID, CONNECTION_ID, 2,
-                                                  [](frm::ClusterStarted& encoder) { encoder.correlationId(1); }));
+    EXPECT_EQ(client::Publish::Published, client::publishPayload<frm::ClusterStarted>(
+                                              m_sender, SOURCE_ID, CONNECTION_ID, 2,
+                                              [](frm::ClusterStarted& encoder) { encoder.correlationId(1); }));
     EXPECT_EQ(2U, m_ingress->m_offered.size());
 }
 
 TEST_F(ConnectedSender, PublishSystemRefusesABodyOverTheCeiling)
 {
     // A system body carries no header of its own, so the ceiling is the prefix plus the data.
-    const std::vector<char> overCeiling(MAX_PAYLOAD_LENGTH - frm::ConnectionOpened::connectionDataHeaderLength() + 1,
-                                        'x');
-    EXPECT_EQ(Publish::Refused,
-              publishSystem<frm::ConnectionOpened>(
-                  m_sender, SOURCE_ID, CONNECTION_ID, CONNECTION_OPENED, [&](frm::ConnectionOpened& encoder) {
+    const std::vector<char> overCeiling(
+        protocol::MAX_PAYLOAD_LENGTH - frm::ConnectionOpened::connectionDataHeaderLength() + 1, 'x');
+    EXPECT_EQ(client::Publish::Refused,
+              client::publishSystem<frm::ConnectionOpened>(
+                  m_sender, SOURCE_ID, CONNECTION_ID, protocol::CONNECTION_OPENED, [&](frm::ConnectionOpened& encoder) {
                       encoder.putConnectionData(overCeiling.data(), static_cast<std::uint16_t>(overCeiling.size()));
                   }));
     EXPECT_TRUE(m_ingress->m_offered.empty());
 }
 
 // Answers whatever the test told it to, and records each frame it is asked to track.
-class FakeTracker : public IngressTracker
+class FakeTracker : public client::IngressTracker
 {
   public:
     struct Tracked
@@ -451,12 +451,12 @@ auto correlationOne = [](frm::ClusterStarted& encoder) { encoder.correlationId(1
 TEST_F(ConnectedSender, TrackedPublishRecordsThePlacedFrame)
 {
     FakeTracker tracker;
-    EXPECT_EQ(Publish::Published,
-              publishPayload<frm::ClusterStarted>(m_sender, &tracker, SOURCE_ID, CONNECTION_ID, 2, correlationOne));
+    EXPECT_EQ(client::Publish::Published, client::publishPayload<frm::ClusterStarted>(
+                                              m_sender, &tracker, SOURCE_ID, CONNECTION_ID, 2, correlationOne));
     ASSERT_EQ(1U, tracker.m_tracked.size());
     ASSERT_EQ(1U, m_ingress->m_offered.size());
-    EXPECT_EQ(m_ingress->m_offered[0].size() - cluster_sbe::MessageHeader::encodedLength() -
-                  cluster_sbe::SessionMessageHeader::sbeBlockLength(),
+    EXPECT_EQ(m_ingress->m_offered[0].size() - client::cluster_sbe::MessageHeader::encodedLength() -
+                  client::cluster_sbe::SessionMessageHeader::sbeBlockLength(),
               tracker.m_tracked[0].length);
     EXPECT_EQ(SESSION_ID, tracker.m_tracked[0].clusterSessionId);
     EXPECT_EQ(11, tracker.m_tracked[0].leadershipTermId);
@@ -466,12 +466,13 @@ TEST_F(ConnectedSender, HoldingOrFullTrackerDeclinesWithoutSending)
 {
     FakeTracker tracker;
     tracker.m_holding = true;
-    EXPECT_EQ(Publish::Declined,
-              publishPayload<frm::ClusterStarted>(m_sender, &tracker, SOURCE_ID, CONNECTION_ID, 2, correlationOne));
+    EXPECT_EQ(client::Publish::Declined, client::publishPayload<frm::ClusterStarted>(m_sender, &tracker, SOURCE_ID,
+                                                                                     CONNECTION_ID, 2, correlationOne));
     tracker.m_holding = false;
     tracker.m_full = true;
-    EXPECT_EQ(Publish::Declined, publishSystem<frm::ClusterStarted>(m_sender, &tracker, SOURCE_ID, CONNECTION_ID,
-                                                                    CLUSTER_STARTED, correlationOne));
+    EXPECT_EQ(client::Publish::Declined,
+              client::publishSystem<frm::ClusterStarted>(m_sender, &tracker, SOURCE_ID, CONNECTION_ID,
+                                                         protocol::CLUSTER_STARTED, correlationOne));
     EXPECT_TRUE(m_ingress->m_offered.empty());
     EXPECT_TRUE(tracker.m_tracked.empty());
 }
@@ -480,8 +481,8 @@ TEST_F(ConnectedSender, TransportDeclineIsNotTracked)
 {
     FakeTracker tracker;
     m_sender.close(); // no session: send() refuses
-    EXPECT_EQ(Publish::Declined,
-              publishPayload<frm::ClusterStarted>(m_sender, &tracker, SOURCE_ID, CONNECTION_ID, 2, correlationOne));
+    EXPECT_EQ(client::Publish::Declined, client::publishPayload<frm::ClusterStarted>(m_sender, &tracker, SOURCE_ID,
+                                                                                     CONNECTION_ID, 2, correlationOne));
     EXPECT_TRUE(tracker.m_tracked.empty());
 }
 
@@ -489,9 +490,9 @@ TEST_F(ConnectedSender, RefusalComesBeforeTheHold)
 {
     FakeTracker tracker;
     tracker.m_holding = true;
-    const std::vector<char> overCeiling(MAX_PAYLOAD_LENGTH, 'x');
-    EXPECT_EQ(Publish::Refused,
-              publishPayload<frm::ConnectionOpened>(
+    const std::vector<char> overCeiling(protocol::MAX_PAYLOAD_LENGTH, 'x');
+    EXPECT_EQ(client::Publish::Refused,
+              client::publishPayload<frm::ConnectionOpened>(
                   m_sender, &tracker, SOURCE_ID, CONNECTION_ID, 2, [&](frm::ConnectionOpened& encoder) {
                       encoder.putConnectionData(overCeiling.data(), static_cast<std::uint16_t>(overCeiling.size()));
                   }));
@@ -500,15 +501,18 @@ TEST_F(ConnectedSender, RefusalComesBeforeTheHold)
 TEST_F(ConnectedSender, FramesTheSequencerWouldRejectAreRefused)
 {
     // §9.2 conditions 6 to 9: what a producer can check without the sequencer's state.
-    EXPECT_EQ(Publish::Refused, publishPayload<frm::ClusterStarted>(m_sender, -1, CONNECTION_ID, 2, correlationOne));
-    EXPECT_EQ(Publish::Refused,
-              publishPayload<frm::ClusterStarted>(m_sender, SOURCE_ID, CONNECTION_ID, 0, correlationOne));
-    EXPECT_EQ(Publish::Refused,
-              publishPayload<frm::ClusterStarted>(m_sender, SOURCE_ID, CONNECTION_ID, 1, correlationOne));
-    EXPECT_EQ(Publish::Refused, publishSystem<frm::ClusterStarted>(m_sender, SOURCE_ID, CONNECTION_ID,
-                                                                   LEADERSHIP_CHANGED, correlationOne));
-    EXPECT_EQ(Publish::Refused, publishSystem<frm::ConnectionClosed>(m_sender, SOURCE_ID, CONNECTION_ID,
-                                                                     GATEWAY_STARTED, [](frm::ConnectionClosed&) {}));
+    EXPECT_EQ(client::Publish::Refused,
+              client::publishPayload<frm::ClusterStarted>(m_sender, -1, CONNECTION_ID, 2, correlationOne));
+    EXPECT_EQ(client::Publish::Refused,
+              client::publishPayload<frm::ClusterStarted>(m_sender, SOURCE_ID, CONNECTION_ID, 0, correlationOne));
+    EXPECT_EQ(client::Publish::Refused,
+              client::publishPayload<frm::ClusterStarted>(m_sender, SOURCE_ID, CONNECTION_ID, 1, correlationOne));
+    EXPECT_EQ(client::Publish::Refused,
+              client::publishSystem<frm::ClusterStarted>(m_sender, SOURCE_ID, CONNECTION_ID,
+                                                         protocol::LEADERSHIP_CHANGED, correlationOne));
+    EXPECT_EQ(client::Publish::Refused,
+              client::publishSystem<frm::ConnectionClosed>(m_sender, SOURCE_ID, CONNECTION_ID,
+                                                           protocol::GATEWAY_STARTED, [](frm::ConnectionClosed&) {}));
     EXPECT_TRUE(m_ingress->m_offered.empty());
 }
 
@@ -519,8 +523,8 @@ TEST(Conformance, TheBoundaryPayloadSizesCrossIntact)
     // Empty, one byte, and the ceiling. The first is the case that found the short-payload defect: a
     // frame carrying no payload is legal (§5) and must still reach the consumer, or P-3's continuity
     // read sees a gap that is not there.
-    for (const std::uint64_t payloadLength : { std::uint64_t{ 0 }, std::uint64_t{ 1 },
-                                               std::uint64_t{ MAX_PAYLOAD_LENGTH } })
+    for (const std::uint64_t payloadLength :
+         { std::uint64_t{ 0 }, std::uint64_t{ 1 }, std::uint64_t{ protocol::MAX_PAYLOAD_LENGTH } })
     {
         const auto frame = payloadFrame(11, 2, payloadLength);
         const auto view = viewOf(frame);
@@ -541,18 +545,18 @@ TEST(Conformance, UnknownPayloadsAndEventsAreReadableSoContinuityHolds)
     // dropped here is a globalSeqNo missing from that read, which reads as a gap that is not there.
     std::vector<std::vector<std::uint8_t>> tap;
     tap.push_back(payloadFrame(1, 4095, 8));
-    tap.push_back(systemFrame(2, PAYLOAD_ID_REGISTERED, [](char* body, std::size_t cap) {
+    tap.push_back(systemFrame(2, protocol::PAYLOAD_ID_REGISTERED, [](char* body, std::size_t cap) {
         frm::PayloadIdRegistered encoder;
         encoder.wrapForEncode(body, 0, cap);
         encoder.payloadId(4).protocolVersion(1);
         encoder.putProtocolName("basicdata");
         return static_cast<std::uint16_t>(encoder.encodedLength());
     }));
-    tap.push_back(synthesizedFrame<frm::ClusterHeartbeat>(3, CLUSTER_HEARTBEAT, [](auto&) {}));
-    tap.push_back(synthesizedFrame<frm::LeadershipChanged>(
-        4, LEADERSHIP_CHANGED, [](frm::LeadershipChanged& f) { f.newLeaderMemberId(2); }));
-    tap.push_back(
-        synthesizedFrame<frm::GatewayActive>(5, GATEWAY_ACTIVE, [](frm::GatewayActive& f) { f.gatewayId(3); }));
+    tap.push_back(synthesizedFrame<frm::ClusterHeartbeat>(3, protocol::CLUSTER_HEARTBEAT, [](auto&) {}));
+    tap.push_back(synthesizedFrame<frm::LeadershipChanged>(4, protocol::LEADERSHIP_CHANGED,
+                                                           [](frm::LeadershipChanged& f) { f.newLeaderMemberId(2); }));
+    tap.push_back(synthesizedFrame<frm::GatewayActive>(5, protocol::GATEWAY_ACTIVE,
+                                                       [](frm::GatewayActive& f) { f.gatewayId(3); }));
 
     std::int64_t expected = 1;
     for (const auto& frame : tap)
@@ -577,7 +581,7 @@ TEST(Conformance, UnknownPayloadsAndEventsAreReadableSoContinuityHolds)
     frame.putPayload(nullptr, 0);
     const auto length = frm::MessageHeader::encodedLength() + frame.encodedLength();
 
-    const auto view = unwrapFrame(reinterpret_cast<const char*>(buffer.data()), length);
+    const auto view = protocol::unwrapFrame(reinterpret_cast<const char*>(buffer.data()), length);
     ASSERT_TRUE(view.valid) << "an empty payload under an unallocated payloadId is still a frame";
     EXPECT_EQ(4095, view.payloadId);
     EXPECT_EQ(77, view.globalSeqNo);

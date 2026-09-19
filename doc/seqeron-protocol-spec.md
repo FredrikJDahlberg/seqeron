@@ -919,7 +919,7 @@ respectively.
 participant in it — the producer's encode methods enforce `MAX_PAYLOAD_LENGTH` (**T-3**), the sequencer's
 §9.2 condition 1 is the backstop behind it, and a consumer sizes its buffers from the same numbers — so
 each implementation compiles in a **mirror** of this table and none of them owns it. Today those mirrors
-are `sequencer/FrameLayer.java` and the `Limits` block in `sequencer/SequencedFrame.hpp`. A change starts
+are `protocol/FrameLayer.java` and the `Limits` block in `protocol/SequencedFrame.hpp`. A change starts
 here and lands in both, and is a wire change (**V-3**) whichever way round it is made.
 
 > **T-2. The message is pinned at one Aeron MTU of 1408: headers plus `MAX_PAYLOAD_LENGTH` = 1316.**
@@ -1163,7 +1163,7 @@ these step numbers — so a landed step keeps its place and records what actuall
      all and a package-private Java one on `Sequencer`, and the two framing bounds were `Sequencer`'s
      `MIN_FRAME_LENGTH`/`MAX_FRAME_LENGTH` — the replicated state machine holding the numbers a producer
      and a consumer both answer to. §12 is the definition and each language now compiles in a mirror of
-     it: `sequencer/FrameLayer.java` and `SequencedFrame.hpp`'s `Limits` block, under §12's own names.
+     it: `protocol/FrameLayer.java` and `SequencedFrame.hpp`'s `Limits` block, under §12's own names.
      The encode methods enforce the ceiling; they do not own it.
    - **What it found: both consumers dropped a frame whose payload was shorter than 8 bytes.**
      `SequencedFrameDecoder` and `unwrapFrame` each refused one as "an empty or truncated payload names

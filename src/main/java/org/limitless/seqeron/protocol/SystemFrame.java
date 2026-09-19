@@ -1,4 +1,4 @@
-package org.limitless.seqeron.sequencer;
+package org.limitless.seqeron.protocol;
 
 import org.agrona.DirectBuffer;
 import org.agrona.MutableDirectBuffer;
@@ -18,7 +18,7 @@ import org.limitless.seqeron.sbe.frame.UnsequencedSystemEncoder;
 /**
  * The ingress side of the frame layer: wraps an already-encoded body in its family's envelope and returns
  * the length; the offer is the caller's. The Java twin of {@code publishSystem}/{@code publishPayload} in
- * {@code sequencer/IngressPublisher.hpp}. A system body carries no {@code MessageHeader}: it is
+ * {@code sequencer/client/IngressPublisher.hpp}. A system body carries no {@code MessageHeader}: it is
  * {@code wrap}ped, and decoded with its codec's compiled constants (§7, <b>V-3</b>).
  *
  * <p>Not thread-safe: one instance per producing thread, reusing its encoders.

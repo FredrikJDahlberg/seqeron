@@ -240,8 +240,8 @@ java \
 ### Port layout
 
 Each member's ports are `base + memberId × 10 + offset`, where the base is **9300** unless
-`SEQERON_PORT_BASE` says otherwise — the formula lives in `sequencer/PortLayout.hpp`,
-`sequencer/PortLayout.java` and `scripts/ports.sh`, and nowhere else:
+`SEQERON_PORT_BASE` says otherwise — the formula lives in `protocol/PortLayout.hpp`,
+`protocol/PortLayout.java` and `scripts/ports.sh`, and nowhere else:
 
 | Offset | Purpose          | Member 0 | Member 1 | Member 2 |
 |--------|------------------|----------|----------|----------|
@@ -496,13 +496,14 @@ To cut one:
 | Document | What it is |
 |----------|------------|
 | `doc/seqeron-protocol-spec.md` | The normative protocol specification — frames, families, the system vocabulary, the topology document |
+| `doc/client-api.md` | What a client programs against, in both languages, and what in the client tier is not API |
 | `doc/fault-tolerance.md` | Node loss, leader failover, a stuck archive, a lost frame: what survives each and how it recovers |
 | `doc/registries.md` | The two shared namespaces — the producer `sourceId` space and the UDP port blocks |
 | `doc/clusterctl.md` | The operator tool's runbook |
 | `doc/ops.md` | The Prometheus/Grafana metrics stack |
 | `doc/package.md` | The packaging review list |
 
-Those six are the whole doc set, and every document reference in this tree resolves inside it.
+Those seven are the whole doc set, and every document reference in this tree resolves inside it.
 
 ## License
 

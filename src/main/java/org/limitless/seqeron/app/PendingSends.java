@@ -2,13 +2,13 @@ package org.limitless.seqeron.app;
 
 import org.agrona.DirectBuffer;
 import org.agrona.concurrent.UnsafeBuffer;
+import org.limitless.seqeron.protocol.FrameLayer;
 import org.limitless.seqeron.replayer.client.SequencedEvent;
 import org.limitless.seqeron.sbe.frame.MessageHeaderDecoder;
 import org.limitless.seqeron.sbe.frame.UnsequencedHeaderDecoder;
 import org.limitless.seqeron.sbe.frame.UnsequencedSystemDecoder;
-import org.limitless.seqeron.sequencer.FrameLayer;
-import org.limitless.seqeron.sequencer.IngressSender;
-import org.limitless.seqeron.sequencer.IngressTracker;
+import org.limitless.seqeron.sequencer.client.IngressSender;
+import org.limitless.seqeron.sequencer.client.IngressTracker;
 
 /**
  * A producer's ingress frames that its own tap has not yet shown, which of them a leader change lost, and

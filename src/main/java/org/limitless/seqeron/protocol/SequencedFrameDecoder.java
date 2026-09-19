@@ -1,4 +1,4 @@
-package org.limitless.seqeron.replayer.client;
+package org.limitless.seqeron.protocol;
 
 import org.agrona.DirectBuffer;
 import org.limitless.seqeron.sbe.frame.ClusterHeartbeatDecoder;
@@ -12,7 +12,7 @@ import org.limitless.seqeron.sbe.frame.SequencedSystemHeaderDecoder;
 
 /**
  * One frame off the tap with the envelope stripped — the Java twin of {@code FrameView} in
- * {@code sequencer/SequencedFrame.hpp}; keep the two in step. {@link #isSystem()} says which family: an
+ * {@code protocol/SequencedFrame.hpp}; keep the two in step. {@link #isSystem()} says which family: an
  * application frame dispatches on {@code (payloadId, templateId)}, never templateId alone, and a system
  * frame on {@link #systemEventType()}.
  *

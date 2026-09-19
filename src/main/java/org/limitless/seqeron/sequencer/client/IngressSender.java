@@ -1,4 +1,4 @@
-package org.limitless.seqeron.sequencer;
+package org.limitless.seqeron.sequencer.client;
 
 import org.agrona.DirectBuffer;
 

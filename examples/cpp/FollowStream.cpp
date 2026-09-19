@@ -23,7 +23,7 @@
 #include "Aeron.h"
 
 #include "org/limitless/seqeron/replayer/client/ReplayerStreamReceiver.hpp"
-#include "org/limitless/seqeron/sequencer/ClusterStreamSender.hpp"
+#include "org/limitless/seqeron/sequencer/client/ClusterStreamSender.hpp"
 #include "org/limitless/seqeron/util/Env.hpp"
 #include "org/limitless/seqeron/util/IdleStrategy.hpp"
 #include "org_limitless_seqeron_sbe_frame/Unsequenced.h"
@@ -32,7 +32,7 @@ namespace {
 
 namespace frame_sbe = org::limitless::seqeron::sbe::frame;
 
-using org::limitless::seqeron::sequencer::SequencedEvent;
+using org::limitless::seqeron::protocol::SequencedEvent;
 
 // The examples' own payloadId and sourceId, allocated in the spec's §6.1 and §5 tables.
 constexpr std::uint16_t PING_PAYLOAD_ID = 6;
@@ -77,7 +77,7 @@ bool isOwnPing(const SequencedEvent& event)
 //
 // Nothing waits here for the echo: the consumer this process already is picks it up off the tap like every
 // other frame.
-void ping(org::limitless::seqeron::sequencer::ClusterStreamSender& sender)
+void ping(org::limitless::seqeron::sequencer::client::ClusterStreamSender& sender)
 {
     alignas(16) std::array<std::uint8_t, 64> buffer{};
     frame_sbe::Unsequenced frame;
@@ -177,7 +177,7 @@ int main()
 
     const std::string egressChannel =
         "aeron:udp?endpoint=localhost:" + std::to_string(util::envInt("SEQERON_EXAMPLE_EGRESS_PORT", 9202 + memberId));
-    org::limitless::seqeron::sequencer::ClusterStreamSender sender;
+    org::limitless::seqeron::sequencer::client::ClusterStreamSender sender;
     sender.connectColocated(aeron, memberId, IPC_CONNECT_TIMEOUT_MS, egressChannel);
 
     client::ReplayerStreamReceiver receiver(clientId, onSequenced, {}, {}, onLeadershipChanged,

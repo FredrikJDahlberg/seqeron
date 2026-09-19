@@ -29,7 +29,7 @@
 // Shared by both stream clients and every consumer; kept apart from ClusterStreamClient.hpp so reading a
 // frame does not drag in the archive client.
 
-namespace org::limitless::seqeron::sequencer {
+namespace org::limitless::seqeron::protocol {
 
 // ── Constants matching SequencerService / SequencerServer ──────────────────────
 
@@ -346,4 +346,4 @@ inline std::int64_t nowNs()
     return duration_cast<nanoseconds>(system_clock::now().time_since_epoch()).count();
 }
 
-} // namespace org::limitless::seqeron::sequencer
+} // namespace org::limitless::seqeron::protocol

@@ -185,7 +185,7 @@ a file rather than a constant.
 ### counters
 
 Lists this node's seqeron operator counters — the `SequencerService`/`ReplayerService` gauges and
-event counts (`org.limitless.seqeron.SeqeronCounters`) — read directly off the co-located Aeron
+event counts (`org.limitless.seqeron.protocol.SeqeronCounters`) — read directly off the co-located Aeron
 directory's CnC file via `CountersReader`. No cluster connection (unlike `start`/`shutdown`), so it
 works with no elected leader and is safe to run on every node.
 

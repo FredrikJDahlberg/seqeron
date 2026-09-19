@@ -58,7 +58,7 @@ On the C++ client side, `ClusterStreamSender` (the Aeron Cluster ingress session
 session**: a `NewLeaderEvent` swaps only the ingress `Publication` to the new leader's endpoint,
 re-resolved out of the event's member CSV — the cluster session id and leadership term id are updated
 in place, never re-created
-(`sequencer/ClusterStreamSender.hpp`, `onFragment` and `applyPendingIngressSwitch`). `send()`'s retry
+(`sequencer/client/ClusterStreamSender.hpp`, `onFragment` and `applyPendingIngressSwitch`). `send()`'s retry
 loop pumps the egress control stream between offer attempts (`pumpEgressControl`) specifically so an
 in-flight `NewLeaderEvent` can land and swap the publication mid-spin — a naive `while(!offer) idle()`
 would deadlock, spinning on the dead leader's publication while the poll that would revive it never

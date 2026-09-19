@@ -1,7 +1,5 @@
 package org.limitless.seqeron.replayer.client;
 
-import static io.aeron.Aeron.NULL_VALUE;
-
 import io.aeron.Aeron;
 import io.aeron.Counter;
 import io.aeron.FragmentAssembler;
@@ -12,12 +10,13 @@ import io.aeron.logbuffer.FragmentHandler;
 import io.aeron.logbuffer.LogBufferDescriptor;
 import org.agrona.concurrent.SystemEpochNanoClock;
 import org.agrona.concurrent.UnsafeBuffer;
-import org.limitless.seqeron.metrics.SeqeronCounters;
+import org.limitless.seqeron.protocol.FrameLayer;
+import org.limitless.seqeron.protocol.ReplayProtocol;
+import org.limitless.seqeron.protocol.SeqeronCounters;
 import org.limitless.seqeron.sbe.replay.MessageHeaderEncoder;
 import org.limitless.seqeron.sbe.replay.ReplayCompleteEncoder;
 import org.limitless.seqeron.sbe.replay.ReplayHeartbeatEncoder;
 import org.limitless.seqeron.sbe.replay.ReplayRequestEncoder;
-import org.limitless.seqeron.sequencer.FrameLayer;
 
 /**
  * App-replica side of the per-node {@code ReplayerService} — the Java twin of
@@ -45,24 +44,6 @@ public final class ReplayerStreamReceiver implements AutoCloseable {
         void onCaughtUp();
     }
 
-    /**
-     * The replay protocol's addresses, held by the client tier every consumer depends on; the server reads
-     * them from here, as in C++.
-     */
-    public static final String IPC_CHANNEL = "aeron:ipc";
-
-    /** ReplayerService → apps: on-demand archive replays (one Aeron session per in-flight replay). */
-    public static final int REPLAY_STREAM_ID = 201;
-
-    /** Apps → ReplayerService: {@code ReplayRequest}. */
-    public static final int REQUEST_STREAM_ID = 202;
-
-    /** ReplayerService → apps: {@code Replaying} / {@code ReplayPending}. */
-    public static final int CONTROL_STREAM_ID = 203;
-
-    /** Answer to a resume request the Replayer refuses, or one that needs no replay at all. */
-    public static final long NO_REPLAY_NEEDED = NULL_VALUE;
-
     /** The tap as a consumer addresses it: untethered, so a slow app is dropped and heals via replay. */
     public static final String FEEDER_CONSUMER_CHANNEL = FrameLayer.FEEDER_CHANNEL + "?tether=false";
 
@@ -70,7 +51,7 @@ public final class ReplayerStreamReceiver implements AutoCloseable {
      * Untethered like the tap: the Replayer answers every app from one thread, so an app that stops polling
      * must not back-pressure the others' replies. A dropped reply costs one resend interval.
      */
-    public static final String CONTROL_CHANNEL = IPC_CHANNEL + "?tether=false";
+    public static final String CONTROL_CHANNEL = ReplayProtocol.IPC_CHANNEL + "?tether=false";
 
     private static final int FRAGMENT_LIMIT = 16;
 
@@ -145,8 +126,8 @@ public final class ReplayerStreamReceiver implements AutoCloseable {
             aeron, SeqeronCounters.APP_RECOVERY_STALLED_TYPE_ID,
             "seqeron.app.recoveryStalled member=" + memberId + " client=" + clientId, memberId, clientId);
         tapSubscription = aeron.addSubscription(FEEDER_CONSUMER_CHANNEL, FrameLayer.FEEDER_STREAM_ID);
-        controlSubscription = aeron.addSubscription(CONTROL_CHANNEL, CONTROL_STREAM_ID);
-        requestPublication = aeron.addPublication(IPC_CHANNEL, REQUEST_STREAM_ID);
+        controlSubscription = aeron.addSubscription(CONTROL_CHANNEL, ReplayProtocol.CONTROL_STREAM_ID);
+        requestPublication = aeron.addPublication(ReplayProtocol.IPC_CHANNEL, ReplayProtocol.REQUEST_STREAM_ID);
         recovery.start();
     }
 
@@ -305,8 +286,8 @@ public final class ReplayerStreamReceiver implements AutoCloseable {
                 return;
             }
 
-            final String channel = IPC_CHANNEL + "?session-id=" + (int)replaySessionId;
-            replaySubscription = aeron.addSubscription(channel, REPLAY_STREAM_ID);
+            final String channel = ReplayProtocol.IPC_CHANNEL + "?session-id=" + (int)replaySessionId;
+            replaySubscription = aeron.addSubscription(channel, ReplayProtocol.REPLAY_STREAM_ID);
         }
 
         @Override

@@ -8,10 +8,10 @@
 #include <array>
 #include <cstdint>
 
-#include "org/limitless/seqeron/sequencer/SequencedFrame.hpp"
-#include "org_limitless_seqeron_sbe_frame/ConnectionOpened.h"
-#include "org_limitless_seqeron_sbe_frame/ConnectionClosed.h"
+#include "org/limitless/seqeron/protocol/SequencedFrame.hpp"
 #include "org_limitless_seqeron_sbe_frame/ClusterHeartbeat.h"
+#include "org_limitless_seqeron_sbe_frame/ConnectionClosed.h"
+#include "org_limitless_seqeron_sbe_frame/ConnectionOpened.h"
 #include "org_limitless_seqeron_sbe_frame/MessageHeader.h"
 #include "org_limitless_seqeron_sbe_frame/Sequenced.h"
 #include "org_limitless_seqeron_sbe_frame/SequencedSystem.h"
@@ -19,7 +19,7 @@
 #include "org_limitless_seqeron_sbe_frame/UnsequencedSystem.h"
 
 namespace frm = org::limitless::seqeron::sbe::frame;
-namespace sequencer = org::limitless::seqeron::sequencer;
+namespace protocol = org::limitless::seqeron::protocol;
 
 // ── sbe-frame.xml ─────────────────────────────────────────────────────────
 //
@@ -37,11 +37,11 @@ TEST(FrameCodec, ConnectionOpenedRoundTripsInsideAnUnsequencedSystemFrame)
     alignas(16) std::array<std::uint8_t, 128> buffer{};
     frm::UnsequencedSystem frame;
     frame.wrapAndApplyHeader(reinterpret_cast<char*>(buffer.data()), 0, buffer.size());
-    frame.header().sourceId(77).connectionId(5).sessionId(88).systemEventType(sequencer::CONNECTION_OPENED);
+    frame.header().sourceId(77).connectionId(5).sessionId(88).systemEventType(protocol::CONNECTION_OPENED);
     frame.putBody(reinterpret_cast<const char*>(body.data()), static_cast<std::uint16_t>(enc.encodedLength()));
 
-    const auto view = sequencer::unwrapFrame(reinterpret_cast<const char*>(buffer.data()),
-                                             frm::MessageHeader::encodedLength() + frame.encodedLength());
+    const auto view = protocol::unwrapFrame(reinterpret_cast<const char*>(buffer.data()),
+                                            frm::MessageHeader::encodedLength() + frame.encodedLength());
     ASSERT_FALSE(view.valid) << "an ingress frame is not a tap frame; only the sequenced shapes are";
 }
 
@@ -59,16 +59,16 @@ TEST(FrameCodec, ConnectionClosedRoundTripsInsideASequencedSystemFrame)
         .sourceId(99)
         .connectionId(7)
         .sessionId(100)
-        .systemEventType(sequencer::CONNECTION_CLOSED)
+        .systemEventType(protocol::CONNECTION_CLOSED)
         .globalSeqNo(42)
         .timestamp(1700000000000LL);
     frame.putBody(reinterpret_cast<const char*>(body.data()), bodyLength);
 
-    const auto view = sequencer::unwrapFrame(reinterpret_cast<const char*>(buffer.data()),
-                                             frm::MessageHeader::encodedLength() + frame.encodedLength());
+    const auto view = protocol::unwrapFrame(reinterpret_cast<const char*>(buffer.data()),
+                                            frm::MessageHeader::encodedLength() + frame.encodedLength());
     ASSERT_TRUE(view.valid);
     EXPECT_TRUE(view.system);
-    EXPECT_EQ(sequencer::CONNECTION_CLOSED, view.systemEventType);
+    EXPECT_EQ(protocol::CONNECTION_CLOSED, view.systemEventType);
     EXPECT_EQ(0, view.payloadId) << "payloadId means nothing on a system frame";
     EXPECT_EQ(99, view.sourceId);
     EXPECT_EQ(7, view.connectionId);
@@ -94,8 +94,8 @@ TEST(FrameCodec, ApplicationPayloadRoundTripsInsideASequencedFrame)
     frame.header().sourceId(3).connectionId(9).sessionId(11).payloadId(3).globalSeqNo(7).timestamp(1234);
     frame.putPayload(reinterpret_cast<const char*>(payload.data()), payloadLength);
 
-    const auto view = sequencer::unwrapFrame(reinterpret_cast<const char*>(buffer.data()),
-                                             frm::MessageHeader::encodedLength() + frame.encodedLength());
+    const auto view = protocol::unwrapFrame(reinterpret_cast<const char*>(buffer.data()),
+                                            frm::MessageHeader::encodedLength() + frame.encodedLength());
     ASSERT_TRUE(view.valid);
     EXPECT_FALSE(view.system);
     EXPECT_EQ(3, view.payloadId);
@@ -116,16 +116,16 @@ TEST(FrameCodec, ClusterHeartbeatCarriesItsFieldsInline)
         .sourceId(-1)
         .connectionId(-1)
         .sessionId(-1)
-        .systemEventType(sequencer::CLUSTER_HEARTBEAT)
+        .systemEventType(protocol::CLUSTER_HEARTBEAT)
         .globalSeqNo(5)
         .timestamp(1700000000001LL);
     const auto length = frm::MessageHeader::encodedLength() + frame.encodedLength();
     EXPECT_EQ(42U, length);
 
-    const auto view = sequencer::unwrapFrame(reinterpret_cast<const char*>(buffer.data()), length);
+    const auto view = protocol::unwrapFrame(reinterpret_cast<const char*>(buffer.data()), length);
     ASSERT_TRUE(view.valid);
     EXPECT_TRUE(view.system);
-    EXPECT_EQ(sequencer::CLUSTER_HEARTBEAT, view.systemEventType);
+    EXPECT_EQ(protocol::CLUSTER_HEARTBEAT, view.systemEventType);
     EXPECT_EQ(-1, view.sourceId);
     EXPECT_EQ(5, view.globalSeqNo);
     EXPECT_EQ(1700000000001LL, view.timestamp);

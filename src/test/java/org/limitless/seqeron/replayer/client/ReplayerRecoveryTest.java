@@ -13,6 +13,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.limitless.seqeron.protocol.ReplayProtocol;
 import org.limitless.seqeron.replayer.server.ReplayerService;
 import org.limitless.seqeron.sbe.frame.ClusterHeartbeatEncoder;
 import org.limitless.seqeron.sbe.replay.ReplayPendingEncoder;
@@ -32,7 +33,7 @@ import org.limitless.seqeron.util.Logger;
  */
 class ReplayerRecoveryTest {
     private static final int CLIENT_ID = 4;
-    private static final long NO_REPLAY_NEEDED = ReplayerStreamReceiver.NO_REPLAY_NEEDED;
+    private static final long NO_REPLAY_NEEDED = ReplayProtocol.NO_REPLAY_NEEDED;
 
     /** The walk terminator: nothing left to replay AND no recording named. */
     private static final long CHAIN_EXHAUSTED = -1;
@@ -1358,7 +1359,7 @@ class ReplayerRecoveryTest {
         final ClusterHeartbeatEncoder frame = new ClusterHeartbeatEncoder();
         frame.wrapAndApplyHeader(buffer, 0, new org.limitless.seqeron.sbe.frame.MessageHeaderEncoder());
         frame.header().sourceId(-1).connectionId(-1).sessionId(-1)
-            .systemEventType(org.limitless.seqeron.sequencer.SystemFrame.CLUSTER_HEARTBEAT)
+            .systemEventType(org.limitless.seqeron.protocol.SystemFrame.CLUSTER_HEARTBEAT)
             .globalSeqNo(globalSeqNo).timestamp(globalSeqNo * 1000);
         return buffer;
     }

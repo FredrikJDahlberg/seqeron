@@ -1,4 +1,4 @@
-package org.limitless.seqeron.metrics;
+package org.limitless.seqeron.protocol;
 
 import io.aeron.Aeron;
 import io.aeron.Counter;
@@ -93,7 +93,7 @@ public final class SeqeronCounters {
 
     // ── Co-located application replicas (5200-5299) ────────────────────────────────────────────
     // Core reserves 5200; a consumer allocates its own in the range (doc/registries.md §3). Published by
-    // the apps, not by any Java process: util/SeqeronCounters.hpp must match these ids and key layout.
+    // the apps, not by any Java process: protocol/SeqeronCounters.hpp must match these ids and key layout.
     public static final int APP_TYPE_ID_MIN = 5200;
     public static final int APP_TYPE_ID_MAX = 5299;
 
@@ -130,7 +130,7 @@ public final class SeqeronCounters {
 
     /**
      * Allocates an <b>app</b> counter keyed on {@code {memberId, clientId}}. The C++ twin is
-     * {@code util/SeqeronCounters.hpp}'s {@code addAppCounter}; the key layout must match.
+     * {@code protocol/SeqeronCounters.hpp}'s {@code addAppCounter}; the key layout must match.
      */
     public static Counter addAppCounter(final Aeron aeron, final int typeId, final String label, final int memberId,
                                         final int clientId) {

@@ -11,7 +11,7 @@
 #include <string>
 #include <string_view>
 
-namespace org::limitless::seqeron::sequencer {
+namespace org::limitless::seqeron::protocol {
 
 // ── Aeron Cluster member ports: archive / ingress / consensus / log / transfer ───────────────
 // The base is SEQERON_PORT_BASE, read by all three mirrors; set it identically for every seqeron process.
@@ -118,4 +118,4 @@ inline std::string archiveEndpointsCsv(int nodeCount, const char* host = "localh
     return csv;
 }
 
-} // namespace org::limitless::seqeron::sequencer
+} // namespace org::limitless::seqeron::protocol

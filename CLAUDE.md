@@ -89,18 +89,18 @@ core-library/executable target pair are gone with the product half; **the reposi
 enforces the dependency direction now**, so there is nothing to keep on the right side of a line within
 this tree.
 
-**One tree, two audiences.** The jar is split by package into `seqeron` (the **client tier**: the frame
-and replay codecs, `replayer.client`, `app`, the producer side, `util`, `SeqeronCounters`, and `sequencer`'s
-`FrameLayer`, `SystemFrame` and `PortLayout`) and `seqeron-node` (the **node tier**: everything else —
-`Sequencer`, `SequencerService`, `SequencerServer`, `TapPublisher`, `replayer/server/`,
-`tools/`, the metrics exporter, the probe codecs and the jar resources). A process that merely talks to a
-cluster takes the first alone, and `examples/java` is the proof: it resolves `org.limitless:seqeron` and
-compiles. The line runs *through* `sequencer`, so the tiers are packages rather than source sets and
-`checkTierSeparation` (wired into `check`) enforces them against the compiled classes — a same-package
-reference needs no import, so checking imports would not do. It is also why the constants a client needs
-are in client-tier classes: the tap's identity (`FEEDER_CHANNEL`/`FEEDER_STREAM_ID`) and the cluster clock
-(`CLUSTER_HEARTBEAT_INTERVAL_MS`) in `FrameLayer`, the port block in `PortLayout`, the replay protocol's
-addresses in `ReplayerStreamReceiver`.
+**One tree, two audiences, laid out as Aeron's is.** A component's server sits at its package root and its
+client in `.client` beside it (`sequencer` / `sequencer.client`, `replayer.server` / `replayer.client`),
+and the wire contract both sides share is `protocol` — `FrameLayer`, `SystemFrame`, `PortLayout`,
+`SequencedFrameDecoder`, `ReplayProtocol`, `SeqeronCounters`. The jar is split by package into `seqeron`
+(the **client tier**: `protocol`, `sequencer.client`, `replayer.client`, `app`, `util` and the frame and
+replay codecs) and `seqeron-node` (the **node tier**: `sequencer`, `replayer.server`, `tools`, `metrics`,
+the probe codecs and the jar resources). No package is in both, so both jars carry an
+`Automatic-Module-Name`. A process that merely talks to a cluster takes the first alone, and
+`examples/java` is the proof: it resolves `org.limitless:seqeron` and compiles. `checkTierSeparation`
+(wired into `check`) enforces the line against the compiled classes. Anything the node shares with a
+client — the tap's identity, the cluster clock, the port block, the replay protocol's addresses — goes in
+`protocol`, never in a node class. C++ is the client tier alone, in the same directories and namespaces.
 
 **The producer side is a language-port pair too.** Java's `ClusterStreamSender`/`IngressPublisher` carry
 the C++ files' names and semantics — `connectColocated` (IPC ingress on the co-located member, UDP
@@ -274,12 +274,10 @@ record only from wherever it resumed. The cost is that recovery time and archive
 **`replayer.server`** is Java only: `ReplayerServer`/`ReplayerService` and their pure seams `Replayer`,
 `ReplaySlotAllocator`, `ReplayRecordings`, `ReplayClientIdCollisions`, with `AeronReplayer` the only
 part that touches Aeron. **`replayer.client`** is `ReplayerStreamReceiver` and its pure seam
-`ReplayerRecovery`, plus `SequencedEvent`, `SequencedFrameDecoder` — Java, and
-C++ in `org::limitless::seqeron::replayer::client`. The only edge across is server→client, and it is the
-protocol's addresses: `ReplayerStreamReceiver` holds `IPC_CHANNEL`, `REPLAY_STREAM_ID` 201,
-`REQUEST_STREAM_ID` 202 and `CONTROL_STREAM_ID` 203, and the server reads them from there — the wire
-contract between the two belongs to the tier both ends depend on, which is the client's (the C++ side has
-it the same way round).
+`ReplayerRecovery`, plus `SequencedEvent` — Java, and C++ in
+`org::limitless::seqeron::replayer::client`. The two sides share only the protocol's addresses —
+`IPC_CHANNEL`, `REPLAY_STREAM_ID` 201, `REQUEST_STREAM_ID` 202, `CONTROL_STREAM_ID` 203 and
+`NO_REPLAY_NEEDED` — and those are `protocol/ReplayProtocol` in both languages.
 
 `ReplayerStreamReceiver` is the Aeron adapter only — subscriptions, the replay image, the clocks; every
 decision it makes about them lives in **`ReplayerRecovery`**, which holds none of them and is where the
@@ -396,7 +394,8 @@ and **the cluster is bounded at three members** by the 30-port cluster block (`d
 — but does not widen it.
 
 `doc/` holds what survived the split: `seqeron-protocol-spec.md` (normative — the frames, the families,
-the system vocabulary, the topology document), `fault-tolerance.md`, `registries.md` (the two shared
+the system vocabulary, the topology document), `client-api.md` (what a client programs against, and what in
+the client tier is not API — update it when that surface changes), `fault-tolerance.md`, `registries.md` (the two shared
 namespaces this tier owns — `sourceId`, and the port blocks each repo draws from),
 `clusterctl.md` and `ops.md` (runbooks), and `package.md` (the packaging review list). Note that `registries.md` still points at
 `src/main/resources/topology.xml`, which left with the product half — the only topology document here

@@ -28,8 +28,8 @@
 #include "FragmentAssembler.h"
 #include "concurrent/AtomicBuffer.h"
 #include "concurrent/YieldingIdleStrategy.h"
-#include "org/limitless/seqeron/sequencer/IngressTracker.hpp"
-#include "org/limitless/seqeron/sequencer/PortLayout.hpp"
+#include "org/limitless/seqeron/protocol/PortLayout.hpp"
+#include "org/limitless/seqeron/sequencer/client/IngressTracker.hpp"
 #include "org/limitless/seqeron/util/Logger.hpp"
 #include "org_limitless_seqeron_cluster_sbe/MessageHeader.h"
 #include "org_limitless_seqeron_cluster_sbe/NewLeaderEvent.h"
@@ -39,7 +39,7 @@
 #include "org_limitless_seqeron_cluster_sbe/SessionKeepAlive.h"
 #include "org_limitless_seqeron_cluster_sbe/SessionMessageHeader.h"
 
-namespace org::limitless::seqeron::sequencer {
+namespace org::limitless::seqeron::sequencer::client {
 
 namespace cluster_sbe = org::limitless::seqeron::cluster::sbe;
 namespace diag = org::limitless::seqeron::util;
@@ -47,7 +47,7 @@ namespace diag = org::limitless::seqeron::util;
 // ── Constants — cluster channels, stream ids and client protocol semver, per io.aeron.cluster.codecs
 //    and AeronCluster.Configuration. Ports come from PortLayout.hpp. Member 0's ingress endpoint is only
 //    a non-colocated client's first guess; the wire CSV names the real leader afterwards. ────
-inline const std::string CLUSTER_INGRESS_ENDPOINT = "localhost:" + std::to_string(clusterIngressPort(0));
+inline const std::string CLUSTER_INGRESS_ENDPOINT = "localhost:" + std::to_string(protocol::clusterIngressPort(0));
 inline const std::string CLUSTER_INGRESS_CHANNEL = "aeron:udp?endpoint=" + CLUSTER_INGRESS_ENDPOINT;
 inline constexpr const char* CLUSTER_INGRESS_CHANNEL_IPC = "aeron:ipc";
 inline constexpr std::int32_t CLUSTER_INGRESS_STREAM_ID = 101;
@@ -66,7 +66,7 @@ inline std::int64_t nowMs()
 // Assumes a single host, as PortLayout does.
 inline std::string memberIngressEndpoint(const std::int32_t memberId)
 {
-    return "localhost:" + std::to_string(clusterIngressPort(memberId));
+    return "localhost:" + std::to_string(protocol::clusterIngressPort(memberId));
 }
 
 // Finds `memberId`'s endpoint in a "memberId=host:port,memberId=host:port,..." CSV, the wire
@@ -851,4 +851,4 @@ class ClusterStreamSender
     }
 };
 
-} // namespace org::limitless::seqeron::sequencer
+} // namespace org::limitless::seqeron::sequencer::client

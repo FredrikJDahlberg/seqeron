@@ -1,7 +1,7 @@
-package org.limitless.seqeron.sequencer;
+package org.limitless.seqeron.protocol;
 
 /**
- * The cluster port-layout formula — the Java twin of {@code sequencer/PortLayout.hpp} and {@code
+ * The cluster port-layout formula — the Java twin of {@code protocol/PortLayout.hpp} and {@code
  * ports.sh}; {@code SequencerServerTest} and {@code PortLayoutTest} pin the same pairs. Cluster member ports
  * only: which block each product owns is doc/registries.md §2's. Client tier, so a producer derives
  * endpoints from here without depending on the node.

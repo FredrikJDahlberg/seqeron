@@ -1,9 +1,10 @@
-package org.limitless.seqeron.sequencer;
+package org.limitless.seqeron.sequencer.client;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.limitless.seqeron.protocol.PortLayout;
 
 /**
  * Unit tests for the part of the cluster session client that is a decision rather than an Aeron call.

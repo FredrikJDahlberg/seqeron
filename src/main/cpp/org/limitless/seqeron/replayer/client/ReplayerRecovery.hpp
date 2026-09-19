@@ -10,7 +10,8 @@
 #include <functional>
 #include <vector>
 
-#include "org/limitless/seqeron/sequencer/SequencedFrame.hpp"
+#include "org/limitless/seqeron/protocol/ReplayProtocol.hpp"
+#include "org/limitless/seqeron/protocol/SequencedFrame.hpp"
 #include "org/limitless/seqeron/util/Logger.hpp"
 
 // Replay-protocol control codecs (sbe-replay.xml) + LeadershipChanged (core, sbe-frame.xml)
@@ -25,11 +26,9 @@ namespace org::limitless::seqeron::replayer::client {
 namespace rpl = org::limitless::seqeron::sbe::replay;
 namespace diag = org::limitless::seqeron::util;
 
-using org::limitless::seqeron::sequencer::LifecycleEvent;
-using org::limitless::seqeron::sequencer::SequencedEvent;
-
-// Replaying.replaySessionId sentinel: "nothing to replay, you are at the tip — follow the live tap".
-inline constexpr std::int64_t REPLAYER_NO_REPLAY_NEEDED = -1;
+using org::limitless::seqeron::protocol::LifecycleEvent;
+using org::limitless::seqeron::protocol::REPLAYER_NO_REPLAY_NEEDED;
+using org::limitless::seqeron::protocol::SequencedEvent;
 
 /**
  * Everything ReplayerRecovery cannot do itself: the sends, the replay subscription, and the gauge.
@@ -203,7 +202,7 @@ class ReplayerRecovery
                  const std::int64_t receiveNs, const bool fromReplay)
     {
         // The envelope is stripped once, here: both frame shapes carry globalSeqNo, at different offsets.
-        const sequencer::FrameView entry = sequencer::unwrapFrame(frame, length);
+        const protocol::FrameView entry = protocol::unwrapFrame(frame, length);
         if (!entry.valid)
         {
             return;
@@ -624,7 +623,7 @@ class ReplayerRecovery
         }
         // onFrame unwrapped and validated this frame already, and the retained FIFO holds only frames that
         // passed there — the unwrap here re-addresses the caller's bytes, it does not re-check them.
-        const sequencer::FrameView view = sequencer::unwrapFrame(frame, length);
+        const protocol::FrameView view = protocol::unwrapFrame(frame, length);
         const std::uint16_t templateId = view.templateId;
 
         m_lastGlobalSeqNo = sequenceNumber;
@@ -644,10 +643,10 @@ class ReplayerRecovery
         // lifecycle event.
         const bool isSystem = view.system;
         const std::uint16_t eventType = view.systemEventType;
-        if (isSystem && (eventType == sequencer::CONNECTION_OPENED || eventType == sequencer::CONNECTION_CLOSED))
+        if (isSystem && (eventType == protocol::CONNECTION_OPENED || eventType == protocol::CONNECTION_CLOSED))
         {
             // Both carry the same header-only LifecycleEvent; only the callback differs.
-            const OnConnected& callback = eventType == sequencer::CONNECTION_OPENED ? m_onConnected : m_onDisconnected;
+            const OnConnected& callback = eventType == protocol::CONNECTION_OPENED ? m_onConnected : m_onDisconnected;
             if (callback)
             {
                 callback(LifecycleEvent{ .globalSeqNo = sequenceNumber,
@@ -659,12 +658,12 @@ class ReplayerRecovery
             }
             return;
         }
-        if (isSystem && eventType == sequencer::LEADERSHIP_CHANGED)
+        if (isSystem && eventType == protocol::LEADERSHIP_CHANGED)
         {
             // Synthesized, so its fields are inline in the frame's own block, which is what
             // view.payload addresses for these three.
             auto leadershipChanged =
-                sequencer::decodeSystem<sbe::frame::LeadershipChanged>(view.payload, view.payloadLength);
+                protocol::decodeSystem<sbe::frame::LeadershipChanged>(view.payload, view.payloadLength);
             m_currentLeaderMemberId = leadershipChanged.newLeaderMemberId();
             if (m_onLeadershipChanged)
             {

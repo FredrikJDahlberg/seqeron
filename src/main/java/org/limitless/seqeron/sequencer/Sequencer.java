@@ -3,6 +3,8 @@ package org.limitless.seqeron.sequencer;
 import org.agrona.DirectBuffer;
 import org.agrona.ExpandableDirectByteBuffer;
 import org.agrona.MutableDirectBuffer;
+import org.limitless.seqeron.protocol.FrameLayer;
+import org.limitless.seqeron.protocol.SystemFrame;
 import org.limitless.seqeron.sbe.frame.ClusterHeartbeatEncoder;
 import org.limitless.seqeron.sbe.frame.GatewayActivationRequestedDecoder;
 import org.limitless.seqeron.sbe.frame.GatewayActiveEncoder;

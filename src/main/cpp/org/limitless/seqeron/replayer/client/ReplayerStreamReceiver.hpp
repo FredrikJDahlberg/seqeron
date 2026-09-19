@@ -13,9 +13,9 @@
 #include "FragmentAssembler.h"
 #include "concurrent/AtomicBuffer.h"
 
+#include "org/limitless/seqeron/protocol/SeqeronCounters.hpp"
 #include "org/limitless/seqeron/replayer/client/ReplayerRecovery.hpp"
 #include "org/limitless/seqeron/replayer/client/TapFaultInjector.hpp"
-#include "org/limitless/seqeron/util/SeqeronCounters.hpp"
 
 // Request codecs (sbe-replay.xml); the replies are decoded in ReplayerRecovery.
 #include "org_limitless_seqeron_sbe_replay/MessageHeader.h"
@@ -27,18 +27,18 @@ namespace org::limitless::seqeron::replayer::client {
 
 // FEEDER_STREAM_ID is the recorded sequenced stream id, which the live tap and the Replayer's replays
 // both address; frameStartPosition derives a frame's recording position from its Aeron header.
-using org::limitless::seqeron::sequencer::FEEDER_STREAM_ID;
-using org::limitless::seqeron::sequencer::frameStartPosition;
+using org::limitless::seqeron::protocol::FEEDER_STREAM_ID;
+using org::limitless::seqeron::protocol::frameStartPosition;
 
-// ── Node-local IPC channels/streams — MUST match org.limitless.seqeron.replayer.server.ReplayerService ─────────
-inline constexpr const char* REPLAYER_IPC_CHANNEL = "aeron:ipc";
+using org::limitless::seqeron::protocol::REPLAYER_CONTROL_STREAM_ID;
+using org::limitless::seqeron::protocol::REPLAYER_IPC_CHANNEL;
+using org::limitless::seqeron::protocol::REPLAYER_REPLAY_STREAM_ID;
+using org::limitless::seqeron::protocol::REPLAYER_REQUEST_STREAM_ID;
+
 inline constexpr const char* FEEDER_CHANNEL = "aeron:ipc?tether=false";
 
 // Untethered like the tap, because the Replayer answers every app from one duty-cycle thread.
 inline constexpr const char* REPLAYER_CONTROL_CHANNEL = "aeron:ipc?tether=false";
-inline constexpr std::int32_t REPLAYER_REPLAY_STREAM_ID = 201;
-inline constexpr std::int32_t REPLAYER_REQUEST_STREAM_ID = 202;
-inline constexpr std::int32_t REPLAYER_CONTROL_STREAM_ID = 203;
 
 /**
  * Follows the co-located SequencerService IPC tap directly, decoding and dispatching sequenced
@@ -92,8 +92,8 @@ class ReplayerStreamReceiver final : private ReplayerRecoveryActions
     void start(std::shared_ptr<aeron::Aeron> aeron, const std::int32_t memberId)
     {
         m_aeron = std::move(aeron);
-        m_recoveryStalledCounterRegId = util::addAppCounter(
-            m_aeron, util::APP_RECOVERY_STALLED_TYPE_ID,
+        m_recoveryStalledCounterRegId = protocol::addAppCounter(
+            m_aeron, protocol::APP_RECOVERY_STALLED_TYPE_ID,
             "seqeron.app.recoveryStalled member=" + std::to_string(memberId) + " client=" + std::to_string(m_clientId),
             memberId, m_clientId);
         m_tapSubRegId = m_aeron->addSubscription(FEEDER_CHANNEL, FEEDER_STREAM_ID);
@@ -299,14 +299,14 @@ class ReplayerStreamReceiver final : private ReplayerRecoveryActions
             return;
         }
         m_recovery.onFrame(frameAt(buffer, offset), static_cast<std::uint64_t>(length), frameStartPosition(header),
-                           sequencer::nowNs(), /*fromReplay=*/false);
+                           protocol::nowNs(), /*fromReplay=*/false);
     }
 
     void onReplayFragment(const aeron::concurrent::AtomicBuffer& buffer, const aeron::util::index_t offset,
                           const aeron::util::index_t length, const aeron::Header& header)
     {
         m_recovery.onFrame(frameAt(buffer, offset), static_cast<std::uint64_t>(length), frameStartPosition(header),
-                           sequencer::nowNs(), /*fromReplay=*/true);
+                           protocol::nowNs(), /*fromReplay=*/true);
     }
 
     void onControlFragment(const aeron::concurrent::AtomicBuffer& buffer, const aeron::util::index_t offset,
