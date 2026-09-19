@@ -246,8 +246,8 @@ fragment handler raises to the Aeron error handler and advances the subscriber p
 why a client records the fault and raises it from its own duty cycle instead.
 
 Besides forwarded ingress, the sequencer synthesizes its own frames on the same `globalSeqNo` counter:
-`ConnectionOpened`/`ConnectionClosed` (cluster session lifecycle), `LeadershipChanged` (de-duplicated
-per leader), and a **1 Hz `ClusterHeartbeat`** (`Sequencer.CLUSTER_HEARTBEAT_INTERVAL_MS`) — the cluster
+`ConnectionOpened`/`ConnectionClosed` (cluster session lifecycle), `LeadershipChanged` (one per term,
+same leader or not), and a **1 Hz `ClusterHeartbeat`** (`Sequencer.CLUSTER_HEARTBEAT_INTERVAL_MS`) — the cluster
 clock, so consumers have a consensus-driven time source that keeps advancing while a producer is silent,
 which is exactly when a gateway's keepalive watchdog must probe.
 

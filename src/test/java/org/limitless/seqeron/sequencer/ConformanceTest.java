@@ -231,10 +231,11 @@ class ConformanceTest {
                      + "every frame on the tap");
         assertEquals(-1, wrapSequenced(heartbeat).sourceId(), "-1 marks the synthesized class (F-4)");
 
-        final int leadership = sequencer.leadershipChanged(2, TIMESTAMP);
+        final int leadership = sequencer.leadershipChanged(7, 2, TIMESTAMP);
         assertEquals(LeadershipChangedDecoder.TEMPLATE_ID, templateIdOf(leadership));
         assertEquals(SystemFrame.LEADERSHIP_CHANGED, wrapSequenced(leadership).systemEventType());
         assertEquals(2, decodeLeadershipChanged(sequencer.buffer()).newLeaderMemberId());
+        assertEquals(7, decodeLeadershipChanged(sequencer.buffer()).leadershipTermId());
 
         loadList(sequencer, 0);
         final int active = sequencer.pendingGatewayActivation(TIMESTAMP);
@@ -430,7 +431,7 @@ class ConformanceTest {
         final List<byte[]> frames = new ArrayList<>();
         long timestamp = TIMESTAMP;
 
-        collect(frames, target, target.leadershipChanged(0, timestamp));
+        collect(frames, target, target.leadershipChanged(0, 0, timestamp));
         loadList(target, 0);
         collect(frames, target, target.sequenceMessage(ingress, 0, lastIngressLength, SESSION_ID, timestamp));
         collect(frames, target, target.pendingGatewayActivation(timestamp));
@@ -441,7 +442,7 @@ class ConformanceTest {
             final int length = payloadFrame(PAYLOAD_ID, SOURCE_ID, syntheticPayload(8 + i));
             collect(frames, target, target.sequenceMessage(ingress, 0, length, SESSION_ID, timestamp));
         }
-        collect(frames, target, target.leadershipChanged(1, timestamp));
+        collect(frames, target, target.leadershipChanged(1, 1, timestamp));
         return frames;
     }
 
@@ -514,6 +515,7 @@ class ConformanceTest {
             encoder.wrapAndApplyHeader(frame, 0, new MessageHeaderEncoder());
             stampSynthesized(encoder.header(), systemEventType, globalSeqNo);
             encoder.newLeaderMemberId(1);
+            encoder.leadershipTermId(1);
             return copy(frame, 0, MessageHeaderEncoder.ENCODED_LENGTH + encoder.encodedLength());
         }
         final org.limitless.seqeron.sbe.frame.GatewayActiveEncoder encoder =

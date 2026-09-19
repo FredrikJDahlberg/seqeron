@@ -193,7 +193,7 @@ class SequencerTest {
                      globalSeqNoOf(sequencer.sequenceMessage(lifecycle, 0, connectedLength, SESSION_ID, TIMESTAMP)));
         assertEquals(2L, globalSeqNoOf(sequencer.sequenceMessage(ingress, 0, ingressLength, SESSION_ID, TIMESTAMP)));
         assertEquals(3L, globalSeqNoOf(sequencer.clusterHeartbeat(TIMESTAMP + 1000)));
-        assertEquals(4L, globalSeqNoOf(sequencer.leadershipChanged(2, TIMESTAMP + 1500)));
+        assertEquals(4L, globalSeqNoOf(sequencer.leadershipChanged(1, 2, TIMESTAMP + 1500)));
         assertEquals(5L, globalSeqNoOf(sequencer.sequenceMessage(ingress, 0, ingressLength, SESSION_ID, TIMESTAMP)));
 
         final int disconnectedLength = encodeIngressConnectionClosed(lifecycle, 0);
@@ -204,23 +204,19 @@ class SequencerTest {
     }
 
     @Test
-    @DisplayName("a suppressed leadership event consumes no sequence number")
-    void suppressedLeadershipEventConsumesNoSequenceNumber() {
-        // Every node must consume the same count for the same log, so suppression has to happen before
-        // the counter advances — not by encoding and discarding.
-        sequencer.leadershipChanged(1, TIMESTAMP);
+    @DisplayName("a term the same member wins again still gets its own leadership frame")
+    void reElectedLeaderStillGetsALeadershipFrame() {
+        // The re-election closed ingress too, so a producer needs this boundary to count what it lost.
+        sequencer.leadershipChanged(1, 1, TIMESTAMP);
         assertEquals(1L, sequencer.globalSeqNo());
 
-        assertEquals(Sequencer.NO_FRAME, sequencer.leadershipChanged(1, TIMESTAMP + 100));
-        assertEquals(1L, sequencer.globalSeqNo());
-
-        final int length = sequencer.leadershipChanged(2, TIMESTAMP + 200);
+        final int length = sequencer.leadershipChanged(2, 1, TIMESTAMP + 100);
         assertNotEquals(Sequencer.NO_FRAME, length);
         assertEquals(2L, sequencer.globalSeqNo());
         final LeadershipChangedDecoder decoded = decodeLeadershipChanged(sequencer.buffer(), length);
-        assertEquals(2, decoded.newLeaderMemberId());
-        assertEquals(TIMESTAMP + 200, frameHeaderOf(sequencer.buffer()).timestamp());
-        assertEquals(2, sequencer.currentLeaderMemberId());
+        assertEquals(1, decoded.newLeaderMemberId());
+        assertEquals(2, decoded.leadershipTermId());
+        assertEquals(TIMESTAMP + 100, frameHeaderOf(sequencer.buffer()).timestamp());
     }
 
     // ── Ingress validation ────────────────────────────────────────────────────
@@ -492,7 +488,6 @@ class SequencerTest {
             assertArrayEquals(framesA[i], framesB[i], "frame " + i + " diverged between nodes");
         }
         assertEquals(nodeA.globalSeqNo(), nodeB.globalSeqNo());
-        assertEquals(nodeA.currentLeaderMemberId(), nodeB.currentLeaderMemberId());
     }
 
     /** Drives one fixed "committed log" through a sequencer, returning every frame it emitted. */
@@ -504,13 +499,13 @@ class SequencerTest {
         final java.util.List<byte[]> frames = new java.util.ArrayList<>();
 
         collect(frames, target, target.sequenceMessage(lifecycle, 0, connectedLength, SESSION_ID, TIMESTAMP));
-        collect(frames, target, target.leadershipChanged(0, TIMESTAMP + 1));
+        collect(frames, target, target.leadershipChanged(0, 0, TIMESTAMP + 1));
         for (int i = 0; i < 5; i++) {
             collect(frames, target, target.sequenceMessage(message, 0, messageLength, SESSION_ID, TIMESTAMP + i));
             collect(frames, target, target.clusterHeartbeat(TIMESTAMP + 1000L * i));
         }
-        collect(frames, target, target.leadershipChanged(0, TIMESTAMP + 9)); // suppressed
-        collect(frames, target, target.leadershipChanged(1, TIMESTAMP + 10));
+        collect(frames, target, target.leadershipChanged(1, 0, TIMESTAMP + 9));
+        collect(frames, target, target.leadershipChanged(2, 1, TIMESTAMP + 10));
         final int disconnectedLength = encodeIngressConnectionClosed(lifecycle, 0);
         collect(frames, target, target.sequenceMessage(lifecycle, 0, disconnectedLength, SESSION_ID, TIMESTAMP + 11));
         return frames.toArray(new byte[0][]);

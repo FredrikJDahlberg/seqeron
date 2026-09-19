@@ -286,12 +286,17 @@ TEST(Conformance, EverySystemShapeNamesItsEventAndDecodesItsBody)
     EXPECT_EQ(-1, view.connectionId);
     EXPECT_EQ(-1, view.sessionId);
 
-    const auto leadership = synthesizedFrame<frm::LeadershipChanged>(
-        6, LEADERSHIP_CHANGED, [](frm::LeadershipChanged& f) { f.newLeaderMemberId(2); });
+    const auto leadership =
+        synthesizedFrame<frm::LeadershipChanged>(6, LEADERSHIP_CHANGED, [](frm::LeadershipChanged& f) {
+            f.newLeaderMemberId(2);
+            f.leadershipTermId(7);
+        });
     view = viewOf(leadership);
     ASSERT_TRUE(view.valid);
     EXPECT_EQ(LEADERSHIP_CHANGED, view.systemEventType);
-    EXPECT_EQ(2, decodeSystem<frm::LeadershipChanged>(view.payload, view.payloadLength).newLeaderMemberId());
+    const auto decoded = decodeSystem<frm::LeadershipChanged>(view.payload, view.payloadLength);
+    EXPECT_EQ(2, decoded.newLeaderMemberId());
+    EXPECT_EQ(7, decoded.leadershipTermId());
 
     const auto active =
         synthesizedFrame<frm::GatewayActive>(7, GATEWAY_ACTIVE, [](frm::GatewayActive& f) { f.gatewayId(3); });

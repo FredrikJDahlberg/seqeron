@@ -89,7 +89,7 @@ Sequenced          (schema 210, template 101) { sequencedHeader,         payload
 UnsequencedSystem  (schema 210, template 102) { unsequencedSystemHeader, body:varData }
 SequencedSystem    (schema 210, template 103) { sequencedSystemHeader,   body:varData }
 ClusterHeartbeat   (schema 210, template 104) { sequencedSystemHeader }
-LeadershipChanged  (schema 210, template 105) { sequencedSystemHeader,   newLeaderMemberId }
+LeadershipChanged  (schema 210, template 105) { sequencedSystemHeader,   newLeaderMemberId, leadershipTermId }
 GatewayActive      (schema 210, template 106) { sequencedSystemHeader,   gatewayId }
 ```
 
@@ -476,7 +476,7 @@ carries a single opaque var-data field (below). The three synthesized templates'
 | --- | --- | --- | --- | --- |
 | `ConnectionOpened` | 1 | **0** | 46 + *n* | `connectionData` varData — **opaque to the cluster tier** |
 | `ConnectionClosed` | 2 | **0** | 44 | none — `header.connectionId` is the whole message |
-| `LeadershipChanged` | 5 | 38 | **46** | `newLeaderMemberId` int32 |
+| `LeadershipChanged` | 5 | 46 | **54** | `newLeaderMemberId` int32, `leadershipTermId` int64 |
 | `ClusterStarted` | 10 | 8 | 52 | `correlationId` int64 |
 | `ClusterStopped` | 11 | 8 | 52 | `correlationId` int64 |
 | `ClusterHeartbeat` | 16 | 34 | **42** | none — the frame's `timestamp` is the whole message |
@@ -494,7 +494,10 @@ Field semantics that other rules depend on:
 
 - **`connectionData`** — see below.
 - **`newLeaderMemberId`** — the Aeron Cluster `memberId` that is leader from this `globalSeqNo` onward.
-  Synthesized once per term, de-duplicated on this value.
+- **`leadershipTermId`** — the Aeron Cluster term that begins here. **One frame per term**, including a
+  term the same member wins again: that election closed ingress too, and a producer counts what it lost
+  against the first `LeadershipChanged` with a term above the one its frames were stamped with. Term ids
+  are not contiguous — a failed ballot consumes one.
 - **`correlationId`** — assigned by `clusterctl` and echoed in the frame, so the tool can match its own
   marker coming back off the tap.
 - **`remaining`** — list rows still to come after this one; **0 marks the last row**, which is the
@@ -893,7 +896,7 @@ respectively.
 
 | limit | value | source |
 | --- | --- | --- |
-| `blockLength` | **18 / 34** on the four envelope templates, constant — an equality, not a bound (§9.2); 34 / 38 on the synthesized three, whose fields are inline | §4.2 |
+| `blockLength` | **18 / 34** on the four envelope templates, constant — an equality, not a bound (§9.2); 34 / 46 / 38 on the synthesized three, whose fields are inline | §4.2 |
 | per-message overhead | **92** on ingress (32 Aeron data header + 32 Aeron Cluster session header + 28 frame), **76** on the tap (32 + 44 frame) | §4.2 |
 | max payload (`MAX_PAYLOAD_LENGTH`) | **1316 bytes**, a pinned constant: 1408 (the pinned MTU) − 92 | **T-2** |
 | max ingress frame (`MAX_INGRESS_LENGTH`) | 28 + `MAX_PAYLOAD_LENGTH` — **1344**; reject condition 1 | **T-2**, §9.2 |

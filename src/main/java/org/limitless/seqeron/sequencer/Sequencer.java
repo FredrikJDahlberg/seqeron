@@ -30,8 +30,8 @@ import org.limitless.seqeron.util.Logger;
 /**
  * The sequencer's replicated state machine, free of every Aeron type.
  *
- * <p>Owns the entire replicated state ({@code globalSeqNo}, plus the leader id kept only to
- * de-duplicate leadership events) and all frame encoding. Each {@code sequence*}/event method
+ * <p>Owns the entire replicated state ({@code globalSeqNo}, plus the gateway list and election) and all
+ * frame encoding. Each {@code sequence*}/event method
  * assigns the next {@code globalSeqNo}, encodes one {@code Sequenced} frame ({@code sbe-frame.xml},
  * schema 210) into {@link #buffer()} starting at offset 0, and returns its length — or {@code 0} when
  * the event produces no frame. The caller publishes {@code buffer()[0, length)} and does nothing else:
@@ -75,7 +75,7 @@ public final class Sequencer {
      */
     public static final int NO_SOURCE_ID = -1;
 
-    /** {@link #leadershipChanged} and friends return this when the event produces no frame. */
+    /** {@link #pendingGatewayActivation} and friends return this when the event produces no frame. */
     public static final int NO_FRAME = 0;
 
     /**
@@ -216,13 +216,6 @@ public final class Sequencer {
     private long rejectedFrameCount = 0;
 
     /**
-     * memberId of whichever node last reported itself the leader; -1 until the first leadership
-     * event. Kept only to de-duplicate leadership changes and to stamp {@code newLeaderMemberId}
-     * onto the synthesized {@code LeadershipChanged}.
-     */
-    private int currentLeaderMemberId = -1;
-
-    /**
      * The cluster session each <em>active</em> FIX gateway instance is attached on, mapped to that
      * instance's {@code gatewayId}, so {@link #sessionClosed} knows which instance it just lost and can
      * promote a sibling. Added in {@link #sequenceMessage} on a {@code GatewayStarted}, removed in
@@ -319,11 +312,6 @@ public final class Sequencer {
     /** The last assigned sequence number; 0 before anything has been sequenced. */
     public long globalSeqNo() {
         return globalSeqNo;
-    }
-
-    /** memberId of the last observed leader; -1 until the first {@link #leadershipChanged}. */
-    public int currentLeaderMemberId() {
-        return currentLeaderMemberId;
     }
 
     /** Count of TCP clients currently connected across every gateway; 0 before any {@code ConnectionOpened}. */
@@ -593,22 +581,18 @@ public final class Sequencer {
     }
 
     /**
-     * Encodes a {@code LeadershipChanged} event, or {@link #NO_FRAME} if this leader is already the
-     * one on record. De-duplicating here (rather than at the caller) keeps the {@code globalSeqNo}
-     * advance and the suppression decision in one place, so every node consumes the same number of
-     * sequence numbers for the same log.
+     * Encodes a {@code LeadershipChanged} event, one per term. A term the same member wins again gets
+     * one too: its election closed ingress, and a producer counts its losses against this frame.
+     * @param leadershipTermId the term that begins here
      * @param leaderMemberId leader member identity
      * @param timestamp now
      */
-    public int leadershipChanged(final int leaderMemberId, final long timestamp) {
-        if (leaderMemberId == currentLeaderMemberId) {
-            return NO_FRAME;
-        }
-        currentLeaderMemberId = leaderMemberId;
+    public int leadershipChanged(final long leadershipTermId, final int leaderMemberId, final long timestamp) {
         final long globalSeq = ++globalSeqNo;
         leadershipChangedEncoder.wrapAndApplyHeader(encodeBuffer, 0, headerEncoder);
         stampSynthesized(leadershipChangedEncoder.header(), SystemFrame.LEADERSHIP_CHANGED, globalSeq, timestamp);
         leadershipChangedEncoder.newLeaderMemberId(leaderMemberId);
+        leadershipChangedEncoder.leadershipTermId(leadershipTermId);
         return MessageHeaderEncoder.ENCODED_LENGTH + leadershipChangedEncoder.encodedLength();
     }
 

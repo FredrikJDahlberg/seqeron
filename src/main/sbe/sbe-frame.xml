@@ -188,10 +188,12 @@
     </sbe:message>
 
     <sbe:message name="LeadershipChanged" id="105"
-                 description="A new Aeron Cluster leadership term began. Synthesized once per term, de-duplicated on newLeaderMemberId">
+                 description="A new Aeron Cluster leadership term began. Synthesized once per term, including a term the same member wins again">
         <field name="header"            id="20001" type="sequencedSystemHeader"/>
         <field name="newLeaderMemberId" id="20008" type="int32"
                description="Aeron Cluster memberId of the node that is leader from this globalSeqNo onward"/>
+        <field name="leadershipTermId"  id="20048" type="int64"
+               description="Aeron Cluster leadershipTermId of the term that begins here"/>
     </sbe:message>
 
     <sbe:message name="GatewayActive" id="106"

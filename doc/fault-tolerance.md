@@ -49,8 +49,8 @@ node loses no history — its peers already hold an identical complete copy.
 Raft election is Aeron Cluster's own mechanism; seqeron's contribution is what rides on top of it.
 `SequencerService.onNewLeadershipTermEvent` fires on every node on a new term and calls
 `applyLeadership`, which asks `Sequencer.leadershipChanged` to synthesize a `LeadershipChanged` frame
-— de-duplicated against the leader already on record, so a node re-observing its own term doesn't
-double-emit (`Sequencer.java:392-407`). This frame is sequenced and recorded exactly like any ingress
+carrying the new `leadershipTermId` — one per term, including a term the same member wins again, since
+that election closed ingress as well. This frame is sequenced and recorded exactly like any ingress
 message, so **every node's tap recording — not just the leader's — carries a gap-free account of every
 leadership change**, and a leader-only consumer (§3, §6) can derive "who is leader and since when"
 purely from replaying the log.

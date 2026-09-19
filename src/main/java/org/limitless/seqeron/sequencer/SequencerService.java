@@ -431,7 +431,7 @@ public final class SequencerService implements ClusteredService {
     public void onNewLeadershipTermEvent(final long logPosition, final long leadershipTermId, final long timestamp,
                                          final long termBaseLogPosition, final int leaderMemberId,
                                          final int logSessionId, final TimeUnit timeUnit, final int appVersion) {
-        applyLeadership(leaderMemberId, timestamp);
+        applyLeadership(leadershipTermId, leaderMemberId, timestamp);
         scheduleHeartbeat(); // Arm (or re-arm) the internal cluster clock here
     }
 
@@ -446,21 +446,20 @@ public final class SequencerService implements ClusteredService {
 
     /**
      * Called when a new leadership term begins.
+     * @param leadershipTermId the new term
      * @param leaderMemberId leader member identity
      * @param timestamp now
      */
-    private void applyLeadership(final int leaderMemberId, final long timestamp) {
+    private void applyLeadership(final long leadershipTermId, final int leaderMemberId, final long timestamp) {
         ensureCounters();
 
-        final int length = sequencer.leadershipChanged(leaderMemberId, timestamp);
-        if (length == Sequencer.NO_FRAME) {
-            return;
-        }
+        final int length = sequencer.leadershipChanged(leadershipTermId, leaderMemberId, timestamp);
         leadershipChangeCounter.increment();
         currentLeaderMemberIdCounter.set(leaderMemberId);
         final boolean leader = leaderMemberId == cluster.memberId();
         Logger.info(Logger.CoreComponent.SequencerService, cluster.memberId(),
-                    "leadership change: new leader is memberId=%d (isLeader=%b)", leaderMemberId, leader);
+                    "leadership change: term %d, new leader is memberId=%d (isLeader=%b)", leadershipTermId,
+                    leaderMemberId, leader);
         emit(length);
     }
 
