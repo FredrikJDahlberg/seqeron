@@ -8,9 +8,11 @@
 # Two rules. A path starting with a tracked top-level directory must resolve. A path starting with
 # `src/` or `cluster/src/` is a pre-split leftover — those trees live under seqeron-client/ and
 # seqeron-service/ now. Paths relative to a package (`protocol/PortLayout.hpp`) are shorthand for a
-# class, not a claim about the filesystem, and are left alone.
+# class, not a claim about the filesystem, and are left alone. So is a path through a build output
+# (`build/`, `cmake-build-*/`): it names where a file lands once you build, which no clean checkout has.
 #
-# Run: python3 .github/check-doc-paths.py
+# Run: python3 .github/check-doc-paths.py — .githooks/pre-commit runs it on every commit
+# (git config core.hooksPath .githooks), and CI's docs job runs it again on a bare checkout.
 
 import re
 import subprocess
@@ -27,6 +29,9 @@ FOREIGN = ("aeron-archive/", "aeron-cluster/", "aeron-client/")
 SKIP_FILES = {"doc/package.md"}
 
 PRE_SPLIT = re.compile(r"(?:cluster/)?src/(?:main|test)/")
+# Build outputs. `seqeron-service/build/classes/java/test` names where a file lands once you build,
+# not one a checkout holds, so a bare clone — CI's docs job — cannot resolve it.
+BUILD_OUTPUT = re.compile(r"(?:^|/)(?:build|cmake-build-[A-Za-z0-9_.-]+)(?:/|$)")
 # A path-shaped token: bare, or fenced in backticks/braces. Trailing punctuation and :line suffixes
 # are trimmed by strip_token.
 TOKEN = re.compile(r"[A-Za-z0-9_.][A-Za-z0-9_./-]*/[A-Za-z0-9_./-]+")
@@ -59,7 +64,11 @@ def main():
         ):
             for m in TOKEN.finditer(line):
                 tok = strip_token(m.group(0))
-                if tok.startswith(FOREIGN) or "phixeron" in tok:
+                if (
+                    tok.startswith(FOREIGN)
+                    or "phixeron" in tok
+                    or BUILD_OUTPUT.search(tok)
+                ):
                     continue
                 # `<module>/src/main/...` is a template for both modules, not a path.
                 placeholder = line[max(0, m.start() - 2) : m.start()] in (">/", "}/")

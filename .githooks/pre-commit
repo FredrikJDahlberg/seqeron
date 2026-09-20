@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Runs check-doc-paths.py before every commit, so a broken path reference is caught here rather
+# than by CI's docs job after the push.
+#
+# Enable once per clone:  git config core.hooksPath .githooks
+# Skip for one commit:    git commit --no-verify
+
+exec python3 "$(git rev-parse --show-toplevel)/.github/check-doc-paths.py"
