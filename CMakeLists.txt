@@ -186,7 +186,7 @@ endif()
 # only frame/replay/cluster, so the cluster tier decodes no FIX by construction rather than by habit.
 #
 # Consumable two ways and the target name is the same in both: add_subdirectory/FetchContent over the
-# checkout (examples/cpp), or find_package(seqeron) against an installed tree (the SEQERON_INSTALL
+# checkout (seqeron-examples), or find_package(seqeron) against an installed tree (the SEQERON_INSTALL
 # block below).
 add_library(seqeron_core INTERFACE)
 add_library(seqeron::seqeron_core ALIAS seqeron_core)

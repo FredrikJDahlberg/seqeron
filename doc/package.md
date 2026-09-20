@@ -45,7 +45,7 @@ places. Checked against the built client, node and uber jars and the generated P
    runtime, when frames don't decode.
 
    **Done in v0.2.2.** `seqeron-bom` pins seqeron, Aeron, Agrona and SBE; the README shows it as an
-   `enforcedPlatform`, and `examples/java` resolves through it.
+   `enforcedPlatform`, and `seqeron-examples` resolves through it.
 
 ## Versions
 
@@ -79,14 +79,14 @@ places. Checked against the built client, node and uber jars and the generated P
    Aeron 1.51.0 needs 3.30 or newer. A user on 3.28 gets past seqeron's check and then hits an error deep
    inside Aeron's build. Raising the minimum to 3.30 makes the failure clear and early.
 
-   **Done in v0.2.0.** `CMakeLists.txt` and `examples/cpp` require 3.30.
+   **Done in v0.2.0.** `CMakeLists.txt` and `seqeron-examples` require 3.30.
 
-10. **Test the installed package in CI.** CI builds `examples/cpp` only through `FetchContent`. Nothing
+10. **Test the installed package in CI.** CI builds `seqeron-examples` only through `FetchContent`. Nothing
     runs `cmake --install` followed by `find_package(seqeron)`, so a break in `seqeronConfig.cmake` goes
     unnoticed.
 
     **Done in v0.2.0.** CI's `installed` job installs Aeron and seqeron, checks Aeron was found rather than
-    fetched, and builds `examples/cpp` with `-DSEQERON_FIND_PACKAGE=ON`.
+    fetched, and builds `seqeron-examples` with `-DSEQERON_FIND_PACKAGE=ON`.
 
 ## Releases and Docker
 

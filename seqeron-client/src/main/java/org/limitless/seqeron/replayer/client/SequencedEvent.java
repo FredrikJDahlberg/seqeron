@@ -68,7 +68,7 @@ public final class SequencedEvent {
         return system;
     }
 
-    /** Which of §7's eleven events this frame carries; 0 on an application frame. */
+    /** Which of §7's twelve events this frame carries; 0 on an application frame. */
     public int systemEventType() {
         return systemEventType;
     }
@@ -78,12 +78,16 @@ public final class SequencedEvent {
         return templateId;
     }
 
-    /** Outer {@code messageHeader} blockLength; pass straight to a decoder's {@code wrap}. */
+    /**
+     * What to wrap a decoder over {@link #offset()} with: the payload's own on an application frame, the
+     * frame's own on a synthesized system frame, and 0 on a submitted one — whose decoder's compiled
+     * {@code BLOCK_LENGTH} and {@code SCHEMA_VERSION} are the only ones there are.
+     */
     public int blockLength() {
         return blockLength;
     }
 
-    /** Outer {@code messageHeader} version; pass straight to a decoder's {@code wrap}. */
+    /** See {@link #blockLength()}. */
     public int version() {
         return version;
     }
@@ -93,12 +97,16 @@ public final class SequencedEvent {
         return buffer;
     }
 
-    /** Offset of the message's {@code messageHeader} within {@link #buffer()}. */
+    /**
+     * Offset within {@link #buffer()} of what a consumer decodes: the payload, its own 8-byte
+     * {@code MessageHeader} included, on an application frame; the body on a submitted system frame; the
+     * frame's own block on one of the synthesized three.
+     */
     public int offset() {
         return offset;
     }
 
-    /** Total message length in bytes, its {@code messageHeader} included. */
+    /** Length in bytes of what {@link #offset()} addresses; the envelope is not in it. */
     public int length() {
         return length;
     }

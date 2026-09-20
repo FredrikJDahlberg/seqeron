@@ -163,7 +163,7 @@ public final class SequencedFrameDecoder {
         return payloadId;
     }
 
-    /** Which of §7's eleven events this frame carries; 0 on an application frame. */
+    /** Which of §7's twelve events this frame carries; 0 on an application frame. */
     public int systemEventType() {
         return systemEventType;
     }

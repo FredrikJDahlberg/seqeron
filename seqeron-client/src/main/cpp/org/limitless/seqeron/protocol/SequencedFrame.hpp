@@ -130,7 +130,7 @@ struct SequencedEvent
     std::int64_t receiveTimeNs;      ///< wall-clock ns at receipt by this client
     bool system;                     ///< true: a system frame, named by systemEventType, and payloadId means nothing
     std::uint16_t payloadId;         ///< which protocol templateId belongs to; 0 on a system frame
-    std::uint16_t systemEventType;   ///< which of §7's eleven events; 0 on an application frame
+    std::uint16_t systemEventType;   ///< which of §7's twelve events; 0 on an application frame
     std::uint16_t templateId;        ///< the message's messageHeader templateId; picks the specific decode
     std::uint16_t blockLength;       ///< payload messageHeader blockLength; 0 on a system frame (see decodeSystem)
     std::uint16_t version;           ///< payload messageHeader version; 0 on a system frame

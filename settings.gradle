@@ -7,3 +7,6 @@ rootProject.name = 'seqeron'
 //             replayer.client, app, util, and the frame/replay codecs. The whole C++ half is here.
 //   :node   — the sequencer, the Replayer's server side, the tools and the metrics exporter.
 include 'seqeron-client', 'seqeron-service'
+
+// seqeron-examples is deliberately not here: it is a separate build that resolves seqeron as a
+// published artifact, which is what proves the artifact is consumable at all.

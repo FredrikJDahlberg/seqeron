@@ -104,7 +104,7 @@ at its package root and its client in `.client` beside it (`sequencer` / `sequen
 replay codecs and the cluster mirror's IR) and `seqeron-service` (the **service tier**: `sequencer`,
 `replayer.server`, `tools`, `metrics` and the probe codecs). No package is in both, so both jars carry an
 `Automatic-Module-Name`. A process that merely talks to a cluster takes the first alone, and
-`examples/java` is the proof: it resolves `org.limitless:seqeron` and compiles. Anything the service tier
+`seqeron-examples` is the proof: it resolves `org.limitless:seqeron` and compiles. Anything the service tier
 shares with a client — the tap's identity, the cluster clock, the port block, the replay protocol's
 addresses — goes in `protocol`, never in a service-tier class. C++ is the client tier alone, in the
 same directories and namespaces.
@@ -174,7 +174,7 @@ what keeps the committed copy from drifting away from `seqeron-client/src/main/s
 needed** — the FetchContent clone that used to require one went with the product half.
 
 **Consumable two ways, under the same target name.** `add_subdirectory`/`FetchContent` over the
-checkout (`examples/cpp`), or `find_package(seqeron)` against a `cmake --install`ed prefix —
+checkout (`seqeron-examples`), or `find_package(seqeron)` against a `cmake --install`ed prefix —
 `SEQERON_INSTALL` gates the install rules and defaults to `PROJECT_IS_TOP_LEVEL`. The exported target
 names no Aeron target, because FetchContent leaves Aeron's in no export set and an `install(EXPORT)`
 naming one fails at generate time; they are `$<BUILD_INTERFACE:>`-wrapped and

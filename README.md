@@ -429,28 +429,31 @@ only: the sequencer never decodes those rows and they gate no frame.
 
 ## Example consumer
 
-`examples/java` and `examples/cpp` are the smallest consumers there are, one per language and the same
-flow in both: replay a node's history through that node's co-located Replayer, switch to the live tap on
-catching up, and print every frame in `globalSeqNo` order. Each is a **separate build** — the Java one
-resolves `org.limitless:seqeron` — the client tier alone, no sequencer and no archive — the C++ one pulls `seqeron_core` in with
-`FetchContent` — so what the artifacts fail to expose fails there rather than passing on a source
-dependency. The C++ half also installs: `cmake --install` writes a CMake package, and a consumer takes
-`seqeron::seqeron_core` off `find_package(seqeron)` instead, supplying its own installed Aeron.
+`seqeron-examples` holds the smallest clients there are, one per language in `src/java` and `src/cpp` and
+the same flow in both: replay a node's history through that node's co-located Replayer, switch to the live
+tap on catching up, and print every frame in `globalSeqNo` order. Each produces as well as consumes — a
+`ConnectionOpened` announcing itself, then one ping payload a second whose echo it reads back off its own
+tap — so both families are covered in both directions. Each is a **separate build**, sharing that one
+source tree: the Java one resolves `org.limitless:seqeron` — the client tier alone, no sequencer and no
+archive — and the C++ one pulls `seqeron_core` in with `FetchContent`, so what the artifacts fail to expose
+fails there rather than passing on a source dependency. The C++ half also installs: `cmake --install`
+writes a CMake package, and a consumer takes `seqeron::seqeron_core` off `find_package(seqeron)` instead,
+supplying its own installed Aeron.
 
 ```bash
 ./seqeron-service/src/main/scripts/start-cluster.sh                              # in another shell
 
-./gradlew publishToMavenLocal && ./gradlew -p examples/java run  # Java
+./gradlew publishToMavenLocal && ./gradlew -p seqeron-examples run  # Java
 
-cmake -S examples/cpp -B examples/cpp/cmake-build-release \
-      -DCMAKE_BUILD_TYPE=Release                                 # C++
-cmake --build examples/cpp/cmake-build-release --target follow_stream
-./examples/cpp/cmake-build-release/follow_stream
+cmake -S seqeron-examples -B seqeron-examples/cmake-build-release \
+      -DCMAKE_BUILD_TYPE=Release                                    # C++
+cmake --build seqeron-examples/cmake-build-release --target follow_stream
+./seqeron-examples/cmake-build-release/follow_stream
 ```
 
 `ClusterProbe follow` does the same thing with three modes, latency stats and fault injection on top;
 the examples are that one flow with nothing else in them. See
-[examples/java/README.md](examples/java/README.md) and [examples/cpp/README.md](examples/cpp/README.md).
+[seqeron-examples/README.md](seqeron-examples/README.md).
 
 Outside this checkout the Java artifacts come from JitPack, built from a release tag. `seqeron-bom`
 pins Aeron, Agrona and SBE at the versions seqeron was built against. Without it Gradle takes the higher
@@ -483,16 +486,18 @@ It publishes:
 To cut one:
 
 1. Start from `main` with CI green.
-2. Set `VERSION` to the new number and commit it. Both builds read the number from there, so it is the
-   only place to change it.
-3. Tag that commit and push the branch and the tag:
+2. Run `.github/tag-release.sh <major.minor.patch>`, which is the whole tagging step:
    ```bash
-   git tag v<version>
-   git push origin main v<version>
+   .github/tag-release.sh 0.6.3
    ```
-4. Watch the `release` workflow. It fails when the tag does not match `VERSION`, and when JitPack has not
+   It writes the number to `VERSION` — the only place to change it, since both builds read it from
+   there — commits that as `Release <version>`, pushes `main`, then tags the commit `v<version>` and
+   pushes the tag. Pushing the commit and the tag together is what keeps the two equal, the one thing
+   `release.yml` refuses to proceed without. The argument must be three dot-separated numbers;
+   anything else is rejected before the script writes anything.
+3. Watch the `release` workflow. It fails when the tag does not match `VERSION`, and when JitPack has not
    built the tag within about ten minutes (it prints the tail of JitPack's build log).
-5. Check the GitHub Release lists the zip and the three jars. It is created last, so it exists only
+4. Check the GitHub Release lists the zip and the three jars. It is created last, so it exists only
    when the JitPack build and the image push have succeeded.
 
 ## Documentation

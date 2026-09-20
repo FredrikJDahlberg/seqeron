@@ -1,10 +1,11 @@
 # Shared registries
 
-Three namespaces are shared by every process in the deployment and owned by neither product: the
-producer `sourceId` space, the UDP port space, and the Aeron counter type-id space. Inside one
-repository all three are held by convention. Now that seqeron is extracted, convention has become a
+Four namespaces are shared by every process in the deployment and owned by neither product: the
+producer `sourceId` space, the UDP port space, the Aeron counter type-id space, and the Replayer
+client-id space each node's replicas draw from. Inside one
+repository all four are held by convention. Now that seqeron is extracted, convention has become a
 cross-repo race — nothing stops two repositories claiming the same number, and the collision shows
-up as a start-up failure at best and a mis-routed election at worst. So all three are written down
+up as a start-up failure at best and a mis-routed election at worst. So all four are written down
 here, and **core owns the registries**: an allocation is taken by editing this file.
 
 Both have drifted once already, and the two drifts are the shape to expect.
@@ -54,7 +55,7 @@ owns which of the other blocks is this table's alone.
 
 | block | owner | what is in it |
 | --- | --- | --- |
-| 9200–9209 | core | the cluster tier's own harness listeners: `TestGateway` TCP listen `9200 + instance` (9200 GW-T-A, 9201 GW-T-B), `seqeron-service/src/main/scripts/ports.sh`, and `examples/cpp`'s cluster egress `9202 + memberId` (UDP, `SEQERON_EXAMPLE_EGRESS_PORT`). Deliberately **not** inside 9300–9329 — that block is three members of stride 10 with nothing spare, and `isClusterPort()` names cluster member ports, which these are not |
+| 9200–9209 | core | the cluster tier's own harness listeners: `TestGateway` TCP listen `9200 + instance` (9200 GW-T-A, 9201 GW-T-B), `seqeron-service/src/main/scripts/ports.sh`, and `seqeron-examples`' cluster egress `9202 + memberId` (UDP, `SEQERON_EXAMPLE_EGRESS_PORT`). Deliberately **not** inside 9300–9329 — that block is three members of stride 10 with nothing spare, and `isClusterPort()` names cluster member ports, which these are not |
 | 9300–9329 | core | cluster member ports, `base + memberId*10 + {1..5}` — three members, one decade each. The base defaults to 9300 and moves with `SEQERON_PORT_BASE` (see below); this row registers the default |
 | 9330–9359 | simdfixgw | `OrderExecServer` egress `9330+m`, `FixGateway` egress `9340+m`, `BasicDataServer` egress `9350+m`. 9348 and 9349 were the cluster-tier harnesses' own test-consumer egress and are now free: those harnesses run `ClusterProbe follow`, which opens no cluster session (§11 step 5) |
 | 9360–9399 | phixeron | `ExchangeGateway` egress `9360+m` and its archive control `9370+m`, `OrderGateway` egress `9380+m` and its archive control `9390+m` |
@@ -155,3 +156,29 @@ reserved is another library's.
 What a wrong allocation costs: two consumers on one type id render as one metric with two meanings,
 and the exporter has no way to tell them apart — the label they are named from is the only thing that
 differs, and the first one scraped names the series.
+
+## 4. Replayer client ids
+
+The `clientId` a co-located replica hands `ReplayerStreamReceiver` (`SEQERON_REPLAYER_CLIENT_ID`,
+`-Dprobe.clientId` in this repo's tools). It is what the `ReplayerService` keys a replay on, so the
+space is **per node**, not deployment-wide: two replicas on one node sharing a value supersede each
+other's replays and neither ever catches up.
+
+The failure is silent on the client — a replica that simply never catches up — and is diagnosed on the
+node instead: the `ReplayerService` logs the collision once and publishes
+`seqeron_replayer_client_id_collision` (type id 5108, §3). It suspects rather than proves, on
+`requestId` stepping backwards three times inside one window, which is what two live clients do and a
+restart does not.
+
+| id | who |
+| --- | --- |
+| 1 | core — `start-three-node-cluster.sh`'s per-member probe, and `docker-failover-test.sh`'s observer |
+| 7 | core — `replay-bench.sh`'s probe, and `seqeron-examples`' Java half |
+| 8 | core — `seqeron-examples`' C++ half |
+| 9 | core — `ClusterProbe follow`/`confirm`'s default: `start-cluster.sh`, `gap-recovery-test.sh`, `chaos-runner.sh`, the cold replica of `docker-failover-test.sh` |
+| 10 | core — `TestGateway serve`'s default, and `chaos-runner.sh`'s second consumer |
+| 11, 12 | core — `failover-test.sh`'s two producers |
+| 13… | consumers — a deployment's own replicas |
+
+Core's own are ≤ 12 and a consumer's start at 13. A deployment running several replicas per node keeps
+that table where it keeps the counter sub-blocks: in the repository that owns the deployment.

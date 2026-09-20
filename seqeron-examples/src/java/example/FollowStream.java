@@ -2,14 +2,21 @@ package example;
 
 import io.aeron.Aeron;
 import java.nio.ByteOrder;
+import java.nio.charset.StandardCharsets;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.agrona.MutableDirectBuffer;
 import org.agrona.concurrent.BackoffIdleStrategy;
 import org.agrona.concurrent.IdleStrategy;
 import org.agrona.concurrent.UnsafeBuffer;
+import org.limitless.seqeron.protocol.SystemFrame;
 import org.limitless.seqeron.replayer.client.ReplayerStreamReceiver;
 import org.limitless.seqeron.replayer.client.SequencedEvent;
+import org.limitless.seqeron.sbe.frame.ClusterHeartbeatDecoder;
+import org.limitless.seqeron.sbe.frame.ConnectionClosedEncoder;
+import org.limitless.seqeron.sbe.frame.ConnectionOpenedDecoder;
+import org.limitless.seqeron.sbe.frame.ConnectionOpenedEncoder;
+import org.limitless.seqeron.sbe.frame.GatewayActiveDecoder;
 import org.limitless.seqeron.sequencer.client.ClusterStreamSender;
 import org.limitless.seqeron.sequencer.client.IngressPublisher;
 
@@ -19,28 +26,41 @@ import org.limitless.seqeron.sequencer.client.IngressPublisher;
  * up it also produces — one ping a second at cluster ingress, whose echo comes back through
  * {@link #onSequenced} with everything else.
  *
+ * <p>Both families are exercised in both directions: the ping is an application payload, and the
+ * connection this example announces is a system event, submitted with {@code publishSystem} and decoded
+ * off the tap in {@link #printSystem}.
+ *
  * <p>Start a node first ({@code seqeron-service/src/main/scripts/start-cluster.sh} in the seqeron repo), then
- * {@code ./gradlew run}. Properties: {@code -Dfollow.member} (default 0), {@code -Dfollow.clientId}
- * (default 7), {@code -Dfollow.aeronDir}.
+ * {@code ./gradlew -p seqeron-examples run}. Properties: {@code -Dfollow.member} (default 0),
+ * {@code -Dfollow.clientId} (default 7), {@code -Dfollow.aeronDir}.
  */
 public final class FollowStream {
-    /** The examples' own payloadId and sourceId, allocated in the spec's §6.1 and §5 tables. */
+    /** The examples' own payloadId and sourceId. */
     private static final int PING_PAYLOAD_ID = 6;
     private static final int PING_SOURCE_ID = 10;
 
-    /** The ping belongs to no connection and no session of its own; the sequencer overwrites the latter. */
-    private static final int NO_ID = -1;
+    /** The one connection this example models: announced at start-up, and what every ping rides. */
+    private static final int CONNECTION_ID = 1;
+
+    /** Whatever identity a producer's connections have; opaque to the cluster tier, and MAY be empty. */
+    private static final byte[] CONNECTION_LABEL = "follow-example".getBytes(StandardCharsets.US_ASCII);
 
     private static final long PING_INTERVAL_NS = TimeUnit.SECONDS.toNanos(1);
 
     /** Ingress is tried on this member's own aeron:ipc first; a follower answers there on neither. */
     private static final long IPC_CONNECT_TIMEOUT_MS = 500;
 
-    /** Ephemeral: this example runs one session and needs no port of its own (doc/registries.md §2). */
+    /** Ephemeral: one session, and no port of its own to allocate. */
     private static final String EGRESS_CHANNEL = "aeron:udp?endpoint=localhost:0";
 
     private static final IngressPublisher PUBLISHER = new IngressPublisher();
     private static final MutableDirectBuffer PING_BODY = new UnsafeBuffer(new byte[Long.BYTES]);
+    private static final MutableDirectBuffer SYSTEM_BODY = new UnsafeBuffer(new byte[64]);
+    private static final ConnectionOpenedEncoder CONNECTION_OPENED = new ConnectionOpenedEncoder();
+    private static final ConnectionClosedEncoder CONNECTION_CLOSED = new ConnectionClosedEncoder();
+    private static final ConnectionOpenedDecoder OPENED_DECODER = new ConnectionOpenedDecoder();
+    private static final ClusterHeartbeatDecoder HEARTBEAT_DECODER = new ClusterHeartbeatDecoder();
+    private static final GatewayActiveDecoder GATEWAY_ACTIVE_DECODER = new GatewayActiveDecoder();
 
     private static long lastGlobalSeqNo;
     private static String fault;
@@ -78,20 +98,27 @@ public final class FollowStream {
 
             // The one duty cycle. Every receiver and sender method belongs to this thread.
             final IdleStrategy idle = new BackoffIdleStrategy();
+            boolean announced = false;
             long nextPingNs = 0;
             while (running.get() && fault == null) {
                 final int work = receiver.poll() + sender.pollEgress();
                 // Self-throttling: the sender decides when a keep-alive is due, so this just says when it
                 // had the chance to send one.
                 sender.keepAlive();
+                if (!announced) {
+                    announced = announceConnection(sender);
+                }
                 // Only once caught up: a ping submitted during the replay walk would be echoed behind the
                 // history still being read, and the round trip would measure the walk rather than the path.
                 final long now = System.nanoTime();
-                if (receiver.isCaughtUp() && now >= nextPingNs) {
+                if (announced && receiver.isCaughtUp() && now >= nextPingNs) {
                     ping(sender);
                     nextPingNs = now + PING_INTERVAL_NS;
                 }
                 idle.idle(work);
+            }
+            if (announced) {
+                closeConnection(sender);
             }
         }
         // System.out is buffered when it is not a console, and nothing flushes it on exit.
@@ -100,6 +127,30 @@ public final class FollowStream {
             System.err.println("# " + fault);
             System.exit(1);
         }
+    }
+
+    /**
+     * This example's one connection, as a {@code ConnectionOpened} system event: a system body goes through
+     * {@code publishSystem}, and carries no {@code MessageHeader} because {@code systemEventType} names it.
+     *
+     * @return whether it was placed; a {@code Declined} is retried on the next duty cycle
+     */
+    private static boolean announceConnection(final ClusterStreamSender sender) {
+        CONNECTION_OPENED.wrap(SYSTEM_BODY, 0).putConnectionData(CONNECTION_LABEL, 0, CONNECTION_LABEL.length);
+        return PUBLISHER.publishSystem(sender, PING_SOURCE_ID, CONNECTION_ID, SystemFrame.CONNECTION_OPENED,
+                                       SYSTEM_BODY, CONNECTION_OPENED.encodedLength())
+            == IngressPublisher.Publish.Published;
+    }
+
+    /**
+     * The matching {@code ConnectionClosed}, which has no fields: {@code header.connectionId} names a connection
+     * every consumer already saw open. Best effort — with no session left to take it, the connection stays open
+     * in the sequencer's set, exactly as it would had this process crashed.
+     */
+    private static void closeConnection(final ClusterStreamSender sender) {
+        CONNECTION_CLOSED.wrap(SYSTEM_BODY, 0);
+        PUBLISHER.publishSystem(sender, PING_SOURCE_ID, CONNECTION_ID, SystemFrame.CONNECTION_CLOSED, SYSTEM_BODY,
+                                CONNECTION_CLOSED.encodedLength());
     }
 
     /**
@@ -113,7 +164,7 @@ public final class FollowStream {
     private static void ping(final ClusterStreamSender sender) {
         pingSentNs = System.nanoTime();
         PING_BODY.putLong(0, pingSentNs, ByteOrder.LITTLE_ENDIAN);
-        if (PUBLISHER.publishPayload(sender, PING_SOURCE_ID, NO_ID, PING_PAYLOAD_ID, PING_BODY, Long.BYTES)
+        if (PUBLISHER.publishPayload(sender, PING_SOURCE_ID, CONNECTION_ID, PING_PAYLOAD_ID, PING_BODY, Long.BYTES)
             != IngressPublisher.Publish.Published) {
             // Declined: the sender spun through back-pressure and an election and found no session at the
             // end of it. Next second's ping is the retry.
@@ -130,13 +181,46 @@ public final class FollowStream {
             return;
         }
         if (event.isSystem()) {
-            System.out.printf("%d system eventType=%d%n", event.globalSeqNo(), event.systemEventType());
+            printSystem(event);
         } else if (isOwnPing(event)) {
             System.out.printf("%d ping echoed, round trip %dus%n",
                               event.globalSeqNo(), (System.nanoTime() - pingSentNs) / 1_000L);
         } else {
             System.out.printf("%d payloadId=%d template=%d length=%d%n",
                               event.globalSeqNo(), event.payloadId(), event.templateId(), event.length());
+        }
+    }
+
+    /**
+     * A system body decoded, one case per wrap rule. The body carries no {@code MessageHeader}, so the decoder
+     * supplies what one would have said: the nine submitted events take their decoder's own
+     * {@code BLOCK_LENGTH} and {@code SCHEMA_VERSION}, since {@link SequencedEvent#blockLength()} is 0 for
+     * them, and the three synthesized ones take the event's own.
+     *
+     * <p>Every allocated event arrives whether a consumer handles it or not, so the default arm is where a
+     * consumer of one protocol spends its time.
+     */
+    private static void printSystem(final SequencedEvent event) {
+        switch (event.systemEventType()) {
+            case SystemFrame.CONNECTION_OPENED -> {
+                OPENED_DECODER.wrap(event.buffer(), event.offset(), ConnectionOpenedDecoder.BLOCK_LENGTH,
+                                    ConnectionOpenedDecoder.SCHEMA_VERSION);
+                System.out.printf("%d ConnectionOpened connection=%d label=%d bytes%n", event.globalSeqNo(),
+                                  event.connectionId(), OPENED_DECODER.connectionDataLength());
+            }
+            case SystemFrame.CLUSTER_HEARTBEAT -> {
+                HEARTBEAT_DECODER.wrap(event.buffer(), event.offset(), event.blockLength(), event.version());
+                System.out.printf("%d ClusterHeartbeat cluster clock %dns%n", event.globalSeqNo(),
+                                  HEARTBEAT_DECODER.header().timestamp());
+            }
+            case SystemFrame.GATEWAY_ACTIVE -> {
+                // Only after clusterctl load-topology: this frame is the cluster designating one gateway
+                // instance, and its gatewayId is in the body and nowhere else.
+                GATEWAY_ACTIVE_DECODER.wrap(event.buffer(), event.offset(), event.blockLength(), event.version());
+                System.out.printf("%d GatewayActive gatewayId=%d%n", event.globalSeqNo(),
+                                  GATEWAY_ACTIVE_DECODER.gatewayId());
+            }
+            default -> System.out.printf("%d system eventType=%d%n", event.globalSeqNo(), event.systemEventType());
         }
     }
 

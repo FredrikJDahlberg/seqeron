@@ -46,7 +46,9 @@ public final class IngressPublisher {
      * sender's. What varies is {@code sourceId} — for a reply, the requester's rather than this process's
      * own — {@code connectionId}, {@code payloadId}, and the payload.
      *
-     * @param payload the payload, its own 8-byte {@code MessageHeader} included
+     * @param payload the payload's bytes, whatever encoding they carry: the tier copies them through
+     *     unopened, so an SBE payload includes its own 8-byte {@code MessageHeader} and a raw one no framing
+     *     at all
      */
     public Publish publishPayload(final IngressSender sender, final int sourceId, final int connectionId,
                                   final int payloadId, final DirectBuffer payload, final int payloadLength) {

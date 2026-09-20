@@ -12,6 +12,9 @@ java {
     }
 }
 
+// src/java beside src/cpp, one tree for both examples, rather than Gradle's src/main/java.
+sourceSets.main.java.srcDirs = ['src/java']
+
 repositories {
     // ./gradlew publishToMavenLocal in the repo root puts seqeron here; Aeron and Agrona come from
     // Central, as the transitive dependencies its POM declares.
@@ -25,7 +28,7 @@ repositories {
 // The version is read from the checkout this example ships in, so a bump does not break it. An outside
 // consumer writes the number instead.
 dependencies {
-    implementation enforcedPlatform("org.limitless:seqeron-bom:${file('../../VERSION').text.trim()}")
+    implementation enforcedPlatform("org.limitless:seqeron-bom:${file('../VERSION').text.trim()}")
     implementation 'org.limitless:seqeron'
 }
 
