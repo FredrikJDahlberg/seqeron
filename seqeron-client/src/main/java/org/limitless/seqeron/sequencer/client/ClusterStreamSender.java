@@ -28,6 +28,10 @@ import org.limitless.seqeron.util.Logger;
  * <p>Not thread-safe: every method belongs to the caller's one duty-cycle thread.
  */
 public final class ClusterStreamSender implements IngressSender, AutoCloseable {
+    /** A sender with no session; {@link #connectColocated} or {@link #connect} opens one. */
+    public ClusterStreamSender() {
+    }
+
     /** Ingress channel of a client sharing its member's media driver. Only the leader subscribes to it. */
     public static final String INGRESS_CHANNEL_IPC = "aeron:ipc";
 

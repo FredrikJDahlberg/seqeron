@@ -20,7 +20,8 @@ places. Checked against the built client, node and uber jars and the generated P
    - no sources jar, so IDEs show users decompiled classes.
 
    **Done in v0.2.0.** Both jars carry `LICENSE`, `NOTICE` and `Implementation-Title`/`-Version`, the client
-   jar an `Automatic-Module-Name`, and both are published with a sources jar.
+   jar an `Automatic-Module-Name`, and both are published with a sources jar. A javadoc jar followed, from
+   the same `java {}` block, so an IDE shows the prose rather than signatures.
 
 3. **The POMs are written by hand and get scopes wrong.** `pom.withXml` marks every dependency `compile`.
    For `seqeron-service` that puts `sbe-tool` and `aeron-driver` on users' compile classpath, even though

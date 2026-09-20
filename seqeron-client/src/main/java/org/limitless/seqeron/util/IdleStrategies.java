@@ -13,6 +13,8 @@ public final class IdleStrategies {
     }
 
     /**
+     * Resolves the strategy a system property names.
+     *
      * @param property names {@code backoff} (the default), {@code yielding} or {@code busyspin}, case-insensitive
      * @return a factory for that strategy: one instance per agent thread, never shared
      */

@@ -27,10 +27,17 @@ import java.util.Set;
  * @param <W> the work a dispatch needs
  */
 public final class OutstandingWork<K, W> {
+    /** A tracker holding no work. */
+    public OutstandingWork() {
+    }
+
     /** Takes one request; must not call back into the tracker. */
     @FunctionalInterface
     public interface Dispatcher<K, W> {
         /**
+         * Takes one request.
+         * @param key  the request's key
+         * @param work what dispatching it needs
          * @return true if taken, false to stop the sweep (no capacity); the rest wait for the next call
          */
         boolean dispatch(K key, W work);
@@ -80,10 +87,12 @@ public final class OutstandingWork<K, W> {
         return count;
     }
 
+    /** Requests held, dispatched or not. */
     public int size() {
         return outstanding.size();
     }
 
+    /** Whether this request has been dispatched and not yet completed. */
     public boolean isDispatched(final K key) {
         return dispatched.contains(key);
     }

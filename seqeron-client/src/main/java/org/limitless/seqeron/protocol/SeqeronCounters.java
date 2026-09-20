@@ -12,7 +12,9 @@ import org.agrona.concurrent.UnsafeBuffer;
  */
 public final class SeqeronCounters {
     // SequencerService (the Aeron Cluster service)
+    /** First type id of the sequencer's block. */
     public static final int SEQUENCER_TYPE_ID_MIN = 5000;
+    /** Last type id of the sequencer's block. */
     public static final int SEQUENCER_TYPE_ID_MAX = 5099;
 
     /** Mirrors {@code Sequencer.globalSeqNo()} — the last globalSeqNo emitted on this node's tap. */
@@ -52,7 +54,9 @@ public final class SeqeronCounters {
     public static final int SEQUENCER_GATEWAY_PROMOTION_FAILED_COUNT_TYPE_ID = 5011;
 
     // ReplayerService (per-node replay server)
+    /** First type id of the Replayer's block. */
     public static final int REPLAYER_TYPE_ID_MIN = 5100;
+    /** Last type id of the Replayer's block. */
     public static final int REPLAYER_TYPE_ID_MAX = 5199;
 
     /** 1 while the local archive is unreachable for replay (live delivery is unaffected), else 0. */
@@ -89,19 +93,23 @@ public final class SeqeronCounters {
      * 1 once two co-located apps have been seen sharing one {@code SEQERON_REPLAYER_CLIENT_ID}, else 0. Their
      * replicas stop each other's replays and will not recover until the configuration is corrected.
      */
+    /** 1 once two co-located replicas were seen sharing one client id, else 0. */
     public static final int REPLAYER_CLIENT_ID_COLLISION_TYPE_ID = 5108;
 
     // ── Co-located application replicas (5200-5299) ────────────────────────────────────────────
     // Core reserves 5200; a consumer allocates its own in the range (doc/registries.md §3). Published by
     // the apps, not by any Java process: protocol/SeqeronCounters.hpp must match these ids and key layout.
+    /** First type id of the app range: core reserves {@link #APP_RECOVERY_STALLED_TYPE_ID} and no more. */
     public static final int APP_TYPE_ID_MIN = 5200;
+    /** Last type id of the app range; which replica holds which sub-block is the deployment's to record. */
     public static final int APP_TYPE_ID_MAX = 5299;
 
     /** 1 while a co-located replica's recovery has dispatched nothing while not caught up, else 0. */
     public static final int APP_RECOVERY_STALLED_TYPE_ID = 5200;
 
-    /** Whole range this class owns, for a typeId-range scan (see {@code clusterctl counters}). */
+    /** First type id this class owns, for a typeId-range scan (see {@code clusterctl counters}). */
     public static final int MIN_TYPE_ID = SEQUENCER_TYPE_ID_MIN;
+    /** Last type id it owns; nothing outside {@link #MIN_TYPE_ID}..here is seqeron's. */
     public static final int MAX_TYPE_ID = APP_TYPE_ID_MAX;
 
     /** Offset of the memberId int within a counter's key buffer (see {@link #addCounter}). */

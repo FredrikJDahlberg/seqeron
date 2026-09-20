@@ -29,18 +29,29 @@ public final class ReplayerStreamReceiver implements AutoCloseable {
     /** Receives every in-order frame that is not intercepted as a leadership change. */
     @FunctionalInterface
     public interface SequencedHandler {
+        /**
+         * Called once per frame, in {@code globalSeqNo} order.
+         * @param event a flyweight, valid only for this call; copy anything that must outlive it
+         */
         void onSequenced(SequencedEvent event);
     }
 
     /** Receives each {@code LeadershipChanged} as it is dispatched, in log order. */
     @FunctionalInterface
     public interface LeadershipHandler {
+        /**
+         * Called once per term, whether or not the leader changed with it.
+         * @param newLeaderMemberId  the member leading from this frame onward
+         * @param leadershipTermId   the term that begins here
+         * @param globalSeqNo        this frame's own sequence number, which counts toward continuity
+         */
         void onLeadershipChanged(int newLeaderMemberId, long leadershipTermId, long globalSeqNo);
     }
 
     /** Fires on every transition to caught-up, including re-convergence after a gap. */
     @FunctionalInterface
     public interface CaughtUpHandler {
+        /** Called when the receiver reaches the live tap, and again after each gap it heals. */
         void onCaughtUp();
     }
 
@@ -83,6 +94,8 @@ public final class ReplayerStreamReceiver implements AutoCloseable {
     private Counter recoveryStalledCounter;
 
     /**
+     * A receiver that injects no tap faults.
+     *
      * @param clientId            this replica's stable id, unique among the Replayer's co-located apps
      *                            ({@code SEQERON_REPLAYER_CLIENT_ID}); two apps sharing one supersede
      *                            each other's replays and neither ever catches up

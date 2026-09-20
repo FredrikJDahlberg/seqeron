@@ -57,7 +57,11 @@ public final class PendingSends implements IngressTracker {
     private long newLeaderTermId = NO_TERM;
     private boolean faulted;
 
-    /** @param capacity frames that may be pending at once; each holds one {@code MAX_INGRESS_LENGTH} copy */
+    /**
+     * A tracker holding nothing, for one producer's own sends.
+     *
+     * @param capacity frames that may be pending at once; each holds one {@code MAX_INGRESS_LENGTH} copy
+     */
     public PendingSends(final int capacity) {
         this.capacity = capacity;
         frames = new UnsafeBuffer(new byte[capacity * SLOT_LENGTH]);

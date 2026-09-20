@@ -22,7 +22,12 @@ public final class IngressPublisher {
      * lost session, or the tracker holding or full) is the one a caller may retry.
      */
     public enum Publish {
-        Published, Refused, Declined
+        /** The frame was offered, and tracked if a tracker was given. */
+        Published,
+        /** Nothing was offered and retrying cannot help. */
+        Refused,
+        /** Nothing was offered; the same frame may be offered again. */
+        Declined
     }
 
     private final ExpandableArrayBuffer frame = new ExpandableArrayBuffer(FrameLayer.MAX_INGRESS_LENGTH);

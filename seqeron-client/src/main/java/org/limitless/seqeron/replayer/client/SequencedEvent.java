@@ -11,6 +11,9 @@ import org.agrona.DirectBuffer;
  * <p>A flyweight: the buffer and every field are valid only during the handler call; copy to keep.
  */
 public final class SequencedEvent {
+    SequencedEvent() {
+    }
+
     private long globalSeqNo;
     private int sourceId;
     private int connectionId;

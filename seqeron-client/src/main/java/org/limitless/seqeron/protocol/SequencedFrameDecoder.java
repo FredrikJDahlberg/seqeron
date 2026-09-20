@@ -20,6 +20,10 @@ import org.limitless.seqeron.sbe.frame.SequencedSystemHeaderDecoder;
  * the next {@link #wrap}.
  */
 public final class SequencedFrameDecoder {
+    /** A decoder holding no frame; {@link #wrap} points it at one. */
+    public SequencedFrameDecoder() {
+    }
+
     private final MessageHeaderDecoder messageHeader = new MessageHeaderDecoder();
     private final MessageHeaderDecoder payloadHeader = new MessageHeaderDecoder();
     private final SequencedHeaderDecoder frameHeader = new SequencedHeaderDecoder();
@@ -168,22 +172,27 @@ public final class SequencedFrameDecoder {
         return systemEventType;
     }
 
+    /** Publishing producer process ({@code header.sourceId}); −1 on a frame the cluster synthesized. */
     public int sourceId() {
         return sourceId;
     }
 
+    /** Connection at that producer ({@code header.connectionId}); routes the reply. */
     public int connectionId() {
         return connectionId;
     }
 
+    /** Cluster session the frame was submitted on, as the sequencer stamped it. */
     public long sessionId() {
         return sessionId;
     }
 
+    /** Cluster-wide monotone sequence number; increments by exactly one per frame. */
     public long globalSeqNo() {
         return globalSeqNo;
     }
 
+    /** Cluster consensus time (epoch ns) at which the frame was committed. */
     public long timestamp() {
         return timestamp;
     }
@@ -202,10 +211,12 @@ public final class SequencedFrameDecoder {
     }
 
     /** See {@link #blockLength()}. */
+    /** See {@link #blockLength()}. */
     public int version() {
         return version;
     }
 
+    /** Buffer the frame sits in; valid only while the frame it was wrapped over is. */
     public DirectBuffer buffer() {
         return buffer;
     }
@@ -219,6 +230,7 @@ public final class SequencedFrameDecoder {
         return payloadOffset;
     }
 
+    /** Length in bytes of what {@link #payloadOffset()} addresses; the envelope is not in it. */
     public int payloadLength() {
         return payloadLength;
     }

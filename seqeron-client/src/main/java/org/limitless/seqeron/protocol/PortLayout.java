@@ -16,9 +16,10 @@ public final class PortLayout {
      */
     public static final String ENV_PORT_BASE = "SEQERON_PORT_BASE";
 
-    /** The base when {@link #ENV_PORT_BASE} is unset — core's registered block, doc/registries.md §2. */
+    /** The base when {@link #ENV_PORT_BASE} is unset: core's registered block. */
     public static final int DEFAULT_CLUSTER_PORT_BASE = 9300;
 
+    /** Ports one member takes, so member {@code m}'s block starts at {@code base + m * stride}. */
     public static final int CLUSTER_PORT_STRIDE = 10;
 
     /** Three members, one stride each. See {@link #CLUSTER_PORT_BLOCK_FIRST}. */
@@ -27,6 +28,7 @@ public final class PortLayout {
     private static final int MIN_PORT_BASE = 1024;
     private static final int MAX_PORT = 65535;
 
+    /** The base this process runs on, {@link #ENV_PORT_BASE}'s value or {@link #DEFAULT_CLUSTER_PORT_BASE}. */
     public static final int CLUSTER_PORT_BASE = resolveClusterPortBase(System.getenv(ENV_PORT_BASE));
 
     /**
@@ -77,26 +79,32 @@ public final class PortLayout {
         return port >= CLUSTER_PORT_BLOCK_FIRST && port <= CLUSTER_PORT_BLOCK_LAST;
     }
 
+    /** First port of one member's stride; the five below sit at fixed offsets from it. */
     public static int memberPortBase(final int memberId) {
         return CLUSTER_PORT_BASE + memberId * CLUSTER_PORT_STRIDE;
     }
 
+    /** That member's Aeron Archive control port. */
     public static int archivePort(final int memberId) {
         return memberPortBase(memberId) + 1;
     }
 
+    /** That member's cluster-ingress port, where a producer submits over UDP. */
     public static int ingressPort(final int memberId) {
         return memberPortBase(memberId) + 2;
     }
 
+    /** That member's consensus port, which the cluster's members use among themselves. */
     public static int consensusPort(final int memberId) {
         return memberPortBase(memberId) + 3;
     }
 
+    /** That member's log port, where it replicates the Raft log. */
     public static int logPort(final int memberId) {
         return memberPortBase(memberId) + 4;
     }
 
+    /** That member's log-transfer port, used to catch a member up. */
     public static int transferPort(final int memberId) {
         return memberPortBase(memberId) + 5;
     }

@@ -39,6 +39,8 @@ public final class TapLagMonitor {
     private boolean skewReported;
 
     /**
+     * A monitor that has seen no sample yet.
+     *
      * @param thresholdNs the lag at which the tap is called stale. No tighter than the caller's tap-silence
      *                    timeout: the first heartbeat after a tolerated silence is that late.
      */
@@ -82,6 +84,7 @@ public final class TapLagMonitor {
         return TapLag.NONE;
     }
 
+    /** Lag of the most recent sample. */
     public long lastLagNs() {
         return lastLagNs;
     }
@@ -94,10 +97,12 @@ public final class TapLagMonitor {
         return peakLagNs;
     }
 
+    /** Samples taken since start; 0 means {@link #peakLagNs()} says nothing. */
     public long sampleCount() {
         return sampleCount;
     }
 
+    /** Whether the last sample was beyond the threshold. */
     public boolean isStale() {
         return stale;
     }

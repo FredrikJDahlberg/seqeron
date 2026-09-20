@@ -26,6 +26,8 @@ public final class RecoveryStallFence {
     private long lastGlobalSeqNo;
 
     /**
+     * A fence with no episode timed yet.
+     *
      * @param deadlineMs how long recovery may dispatch nothing, once caught up before, before it is declared
      *                   unconvergent; generous against a normal re-walk's seconds
      */

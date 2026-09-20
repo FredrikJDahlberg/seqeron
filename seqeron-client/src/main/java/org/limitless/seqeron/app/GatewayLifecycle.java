@@ -24,6 +24,7 @@ public final class GatewayLifecycle {
     /** No {@code GatewayRegistered} row has named this instance yet. */
     public static final int UNRESOLVED = -1;
 
+    /** Where this instance stands. */
     public enum State {
         /** Following the tap through history; the gate stays shut whatever the activation says. */
         REPLAYING,
@@ -38,10 +39,16 @@ public final class GatewayLifecycle {
         /** A {@code GatewayRegistered} row named this instance. */
         void identityResolved(int gatewayId, int gatewaySourceId, int preferenceRank);
 
-        /** @return whether it landed; false is back-pressure, retried on {@link #advance()} */
+        /**
+         * Publishes this instance's {@code GatewayStarted}.
+         * @return whether it landed; false is back-pressure, retried on {@link #advance()}
+         */
         boolean publishGatewayStarted(int gatewayId);
 
-        /** @return whether the gate opened; false is retried on {@link #advance()} */
+        /**
+         * Opens the gate: the instance begins accepting connections.
+         * @return whether the gate opened; false is retried on {@link #advance()}
+         */
         boolean openGate();
 
         /** Closes the gate and drops every session it let in. Publishes nothing. */
@@ -61,7 +68,10 @@ public final class GatewayLifecycle {
     private boolean registered;
 
     /**
+     * An instance that starts out replaying, with no identity until the list names it.
+     *
      * @param gatewayName the {@code GatewayRegistered} row name this instance joins on
+     * @param actions     what this class cannot do itself
      */
     public GatewayLifecycle(final String gatewayName, final Actions actions) {
         this.gatewayName = gatewayName;
@@ -153,10 +163,12 @@ public final class GatewayLifecycle {
         return 1;
     }
 
+    /** Where this instance stands right now. */
     public State state() {
         return state;
     }
 
+    /** Whether the gate is open — the one question a producer asks before submitting. */
     public boolean isServing() {
         return state == State.SERVING;
     }
@@ -166,10 +178,12 @@ public final class GatewayLifecycle {
         return activated;
     }
 
+    /** This instance's list row, or {@link #UNRESOLVED} until a row names it. */
     public int gatewayId() {
         return gatewayId;
     }
 
+    /** The logical gateway this instance belongs to, shared with its standby; {@link #UNRESOLVED} until then. */
     public int gatewaySourceId() {
         return gatewaySourceId;
     }

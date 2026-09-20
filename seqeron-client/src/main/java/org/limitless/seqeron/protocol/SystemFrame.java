@@ -48,29 +48,37 @@ public final class SystemFrame {
      */
     public static final int CONNECTION_OPENED = ConnectionOpenedEncoder.TEMPLATE_ID;
 
+    /** A connection closed at a producer; {@code header.connectionId} names it. */
     public static final int CONNECTION_CLOSED = ConnectionClosedEncoder.TEMPLATE_ID;
 
     /** Synthesis-only; {@code LeadershipChangedEncoder.TEMPLATE_ID} is the frame's, not this. */
     public static final int LEADERSHIP_CHANGED = 5;
 
+    /** Operator marker: the cluster is up and open for the day. */
     public static final int CLUSTER_STARTED = ClusterStartedEncoder.TEMPLATE_ID;
 
+    /** Operator marker: an orderly shutdown, the last business event in the log. */
     public static final int CLUSTER_STOPPED = ClusterStoppedEncoder.TEMPLATE_ID;
 
     /** Synthesis-only. */
     public static final int CLUSTER_HEARTBEAT = 16;
 
+    /** One row of the topology list, and its {@code remaining} is the completeness edge. */
     public static final int GATEWAY_REGISTERED = GatewayRegisteredEncoder.TEMPLATE_ID;
 
     /** Synthesis-only. An operator asks for one with {@link #GATEWAY_ACTIVATION_REQUESTED}. */
     public static final int GATEWAY_ACTIVE = 18;
 
+    /** A gateway instance announcing itself, which binds its session to its {@code gatewayId}. */
     public static final int GATEWAY_STARTED = GatewayStartedEncoder.TEMPLATE_ID;
 
+    /** One {@code payloadId}'s name in this deployment; labelling only. */
     public static final int PAYLOAD_ID_REGISTERED = PayloadIdRegisteredEncoder.TEMPLATE_ID;
 
+    /** An operator asking for one instance to be made active. */
     public static final int GATEWAY_ACTIVATION_REQUESTED = GatewayActivationRequestedEncoder.TEMPLATE_ID;
 
+    /** One co-located application's row; labelling only, and no election behind it. */
     public static final int APPLICATION_REGISTERED = ApplicationRegisteredEncoder.TEMPLATE_ID;
 
     /**

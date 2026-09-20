@@ -38,6 +38,11 @@ both sides share in `protocol`. C++ uses the same directories and namespaces
 artifact and `src/cpp` against the CMake target. They are
 the smallest complete client in each language.
 
+`./gradlew :seqeron-client:javadoc` renders this surface from the sources, at
+`seqeron-client/build/docs/javadoc/`, and the same pages ship as the artifact's javadoc jar, so an IDE
+resolving `org.limitless:seqeron` shows them. Both leave out the generated SBE codecs, which carry no
+comment of their own — the schema is what documents them.
+
 ## Consuming the ordered stream
 
 **`ReplayerStreamReceiver`** (`replayer.client`, both languages) is the only entry point. It replays

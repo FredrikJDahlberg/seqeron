@@ -7,6 +7,10 @@ import java.util.concurrent.atomic.AtomicInteger;
  * as a gap (gap-recovery-test.sh). The caller owns it and hands it to the receiver's constructor.
  */
 public final class TapFaultInjector {
+    /** An injector that drops nothing until {@link #arm} is called. */
+    public TapFaultInjector() {
+    }
+
     private final AtomicInteger pending = new AtomicInteger();
 
     /** Drops the next {@code n} live tap frames. Callable from any thread. */

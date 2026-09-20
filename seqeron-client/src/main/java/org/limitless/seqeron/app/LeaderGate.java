@@ -14,7 +14,14 @@ package org.limitless.seqeron.app;
  */
 public final class LeaderGate {
     /** An edge crossed by one {@link #update}. */
-    public enum Transition { NONE, OPENED, CLOSED }
+    public enum Transition {
+        /** The gate stands where it stood. */
+        NONE,
+        /** This replica may now do leader-only work. */
+        OPENED,
+        /** It may not: re-dispatch on the next open rather than assume anything completed. */
+        CLOSED
+    }
 
     private final int memberId;
 
@@ -22,6 +29,8 @@ public final class LeaderGate {
     private boolean leadershipChanged;
 
     /**
+     * A gate that starts shut.
+     *
      * @param memberId this node's cluster member id
      */
     public LeaderGate(final int memberId) {
@@ -50,6 +59,7 @@ public final class LeaderGate {
         return open ? Transition.OPENED : Transition.CLOSED;
     }
 
+    /** Whether leader-only work may run, without waiting for the next {@link #update}. */
     public boolean isOpen() {
         return open;
     }

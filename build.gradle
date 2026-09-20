@@ -44,6 +44,9 @@ subprojects {
             languageVersion = JavaLanguageVersion.of(21)
         }
         withSourcesJar()
+        // Both jars ride in `from components.java`, so every publication carries them: an IDE resolving
+        // org.limitless:seqeron shows the prose on each class rather than decompiled signatures.
+        withJavadocJar()
     }
 
     configurations {
@@ -78,6 +81,25 @@ subprojects {
                 fileTree(dir: it, exclude: 'org/limitless/seqeron/sbe/**')
             })
         )
+    }
+
+    tasks.named('javadoc') {
+        title = "${project.name} ${project.version}"
+        // Same exclusion the coverage report makes, for the same reason: the generated codecs are the SBE
+        // tool's output and carry no comment at all, so rendering them buries the hand-written API and
+        // every one of them reports as undocumented. Their contract is the schema they come from.
+        exclude 'org/limitless/seqeron/sbe/**'
+        options {
+            encoding = 'UTF-8'      // the sources are full of §, — and ≥
+            docEncoding = 'UTF-8'
+            charSet = 'UTF-8'
+            windowTitle = "${project.name} ${project.version}"
+            // Real doc errors — a broken {@link}, malformed HTML — still fail the check. The `missing`
+            // group is off because the style here is a prose comment per member rather than a tag per
+            // parameter: every accessor in SequencedEvent says what it returns, and an @return repeating
+            // it would be the noise, not the fix.
+            addStringOption('Xdoclint:all,-missing', '-quiet')
+        }
     }
 }
 
