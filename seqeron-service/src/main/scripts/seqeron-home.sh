@@ -3,9 +3,10 @@
 #
 # Two layouts hold these scripts, and they are told apart by what sits next to them rather than by
 # counting `..`: a distribution, where bin/ sits beside lib/, and this source checkout, where the
-# scripts sit at src/main/scripts beside build/. Counting was the old way and it failed silently —
-# `cd ../../..` succeeds in any tree deep enough, so a script run from anywhere else resolved some
-# unrelated directory as the root and then reported the jar missing from it.
+# scripts sit at seqeron-service/src/main/scripts and build/ is at the repo root above them.
+# Counting was the old way and it failed silently — `cd ../../..` succeeds in any tree deep enough,
+# so a script run from anywhere else resolved some unrelated directory as the root and then reported
+# the jar missing from it.
 #
 #   SEQERON_HOME   installation root; set it to override the layout guess
 #   SEQERON_JAR    the uber jar; set it to override SEQERON_HOME's lib/ or build/libs/

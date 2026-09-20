@@ -69,6 +69,18 @@ jobs:
       - name: Test
         run: cmake --build build --target run_tests
 
+  # Prose is the one thing no compiler reads, and the module split proved it: every documented source
+  # path moved and the docs kept the old ones, so the quickstart named a script that did not exist.
+  docs:
+    name: doc paths
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check every repo path named in docs and comments resolves
+        run: python3 .github/check-doc-paths.py
+
   java:
     name: java
     runs-on: ubuntu-24.04

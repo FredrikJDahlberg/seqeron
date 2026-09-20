@@ -1060,7 +1060,7 @@ these step numbers — so a landed step keeps its place and records what actuall
    change, give the FIX session families in the running pair their own direction field. → both codegen
    paths green, the `unsequencedHeader`/`sequencedHeader` rename landed across the pair and every
    consumer of it, both edges reading direction from the payload, copy-through unchanged. The file is
-   `cluster/src/main/sbe/sbe-frame.xml` and said `phixeron` throughout: the `seqeron` rename followed the
+   `seqeron-client/src/main/sbe/sbe-frame.xml` and said `phixeron` throughout: the `seqeron` rename followed the
    repo split, not a protocol step, each of which is already a
    wire change on its own. **Step 6 landed in the same change** — see there for why it could not wait.
 2. **Landed, out of order — after steps 3–7 rather than before them.** Land §13.1's payload pipe,
@@ -1076,7 +1076,7 @@ these step numbers — so a landed step keeps its place and records what actuall
 3. **Landed.** Move `NewOrderSingle`/`ExecutionReport` onto a payload first. Blast radius: the C++ edge
    (`FixIngressHandler`, `FixConnection`, `Conversions`) plus `OrderExecServer`. → C++ suites and C++
    e2e green; that family has **one** codec set instead of a 200/202 pair. It is
-   `src/main/resources/sbe-order.xml`, **schema 220**, **`payloadId` 2** — the first the deployment
+   phixeron's `sbe-order.xml`, **schema 220**, **`payloadId` 2** — the first the deployment
    allocates, since 0 and 1 are this document's and §6.4's example holds 4 for the shared-protocol
    family. C++ only: no Java consumer exists, so the pair's Java codecs for it are simply gone, and
    `SequencerTest`'s copy-through exemplar is a `Heartbeat` now. The six order-only enums (`Side`,
@@ -1104,7 +1104,7 @@ these step numbers — so a landed step keeps its place and records what actuall
    step 1: the deletion is not a separate change, it is what the move *is*.
 5. **Landed.** Extract the replay set into its own schema. Namespace change only — the six messages,
    their fields and their template ids are untouched. → both `ReplayerRecoveryTest`s green, both e2e
-   paths green. The file is `cluster/src/main/sbe/sbe-replay.xml`, not `seqeron-replay.xml`, for step
+   paths green. The file is `seqeron-client/src/main/sbe/sbe-replay.xml`, not `seqeron-replay.xml`, for step
    1's reason: the `seqeron` rename goes with the repo split. The schema id **did** move, 200 → §8's
    **212**, because 200 was the old ingress pair's and dies with it — free here and nowhere else,
    since nothing records these six and a node's Replayer and its co-located apps are built and

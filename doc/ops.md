@@ -13,7 +13,7 @@ Pull, not push, and a **static target list**, not service discovery:
   `/metrics` in Prometheus text exposition format, read live off the CnC file via
   `CountersReader.forEach`.
 - Prometheus scrapes every node's exporter directly, one target per member
-  (`src/main/ops/prometheus/prometheus.yml`). Its own `up{job="seqeron",member="N"}` is the per-node
+  (`seqeron-service/src/main/ops/prometheus/prometheus.yml`). Its own `up{job="seqeron",member="N"}` is the per-node
   reachability gauge: a node that's down reads 0.
 - The exporter doesn't touch cluster ingress or authenticate callers — same trust model as
   `clusterctl`: reachability is the access control. Put it behind the same network boundary as the
@@ -43,10 +43,10 @@ them.
 The paths below are this checkout's. In an installed distribution (`./gradlew operatorDist`) the same
 tree is `ops/`, beside `bin/` and `lib/`.
 
-`src/main/ops/prometheus/prometheus.yml` — one job, one target per member's exporter:
+`seqeron-service/src/main/ops/prometheus/prometheus.yml` — one job, one target per member's exporter:
 
 ```
-prometheus --config.file=src/main/ops/prometheus/prometheus.yml
+prometheus --config.file=seqeron-service/src/main/ops/prometheus/prometheus.yml
 ```
 
 The targets are the 3-node dev cluster's (`localhost:9400`/`9401`/`9402`, from
@@ -56,7 +56,7 @@ on every sample.
 
 ### Grafana
 
-`src/main/ops/grafana/provisioning/` — a `Prometheus` datasource (`http://localhost:9090`) and one dashboard
+`seqeron-service/src/main/ops/grafana/provisioning/` — a `Prometheus` datasource (`http://localhost:9090`) and one dashboard
 (`seqeron.json`, uid `seqeron`), both provisioned by file. The dashboard has one panel per exported
 metric family — see the reference below. One panel plots a derived value rather than the counter
 itself: **Node apply lag (ms)** is `time() * 1000 - seqeron_sequencer_last_tick_timestamp_ms`, since
@@ -65,11 +65,11 @@ far behind the cluster that node's `SequencerService` is — the one place a nod
 contiguous but *stale* tap becomes visible (neither the tap-stall silence watchdog nor the
 recovery-stall watchdog can see that state).
 
-Deploy by mounting the whole `src/main/ops/grafana/provisioning` tree at Grafana's own provisioning root.
+Deploy by mounting the whole `seqeron-service/src/main/ops/grafana/provisioning` tree at Grafana's own provisioning root.
 Under the standard Grafana Docker image that's already `/etc/grafana/provisioning` by default:
 
 ```
-docker run -p 3000:3000 -v "$(pwd)/src/main/ops/grafana/provisioning:/etc/grafana/provisioning" grafana/grafana
+docker run -p 3000:3000 -v "$(pwd)/seqeron-service/src/main/ops/grafana/provisioning:/etc/grafana/provisioning" grafana/grafana
 ```
 
 Running Grafana natively instead (no container), point `GF_PATHS_PROVISIONING` at the directory
@@ -78,7 +78,7 @@ yourself — the dashboard file provider resolves its `path` from that same env 
 than a hardcoded container path, so both cases resolve correctly:
 
 ```
-GF_PATHS_PROVISIONING="$(pwd)/src/main/ops/grafana/provisioning" grafana server ...
+GF_PATHS_PROVISIONING="$(pwd)/seqeron-service/src/main/ops/grafana/provisioning" grafana server ...
 ```
 
 ## Metrics reference

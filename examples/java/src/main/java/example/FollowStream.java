@@ -19,7 +19,7 @@ import org.limitless.seqeron.sequencer.client.IngressPublisher;
  * up it also produces — one ping a second at cluster ingress, whose echo comes back through
  * {@link #onSequenced} with everything else.
  *
- * <p>Start a node first ({@code src/main/scripts/start-cluster.sh} in the seqeron repo), then
+ * <p>Start a node first ({@code seqeron-service/src/main/scripts/start-cluster.sh} in the seqeron repo), then
  * {@code ./gradlew run}. Properties: {@code -Dfollow.member} (default 0), {@code -Dfollow.clientId}
  * (default 7), {@code -Dfollow.aeronDir}.
  */

@@ -202,16 +202,17 @@ build declares no simdfix. Single suites:
 
 The Java suite covers the deterministic decision-making — `Sequencer`, and `ReplayerService` through
 its `Replayer` seam — and deliberately touches no Aeron runtime: no media driver, no cluster, no Aeron
-mocks. Everything Aeron-shaped is covered by `core_tests` and by the five end-to-end scripts under
+mocks. Everything Aeron-shaped is covered by `core_tests` and by the six end-to-end scripts under
 `seqeron-service/src/test/scripts`. Coverage is a JaCoCo report per module, at
 `<module>/build/reports/jacoco/test/`, excluding the generated SBE codecs.
 
-**All five harnesses are Java-only.** They drive the cluster through `tools/ClusterProbe`, which
+**Five of the six harnesses are Java-only.** They drive the cluster through `tools/ClusterProbe`, which
 submits `ProbeMarker` payloads at ingress (`submit`), round-trips one through consensus and back off
 the tap (`ping`), replays history through the co-located Replayer and then follows the tap live
 (`follow`), or streams through `ClusterStreamSender` and `app/PendingSends` and checks its own tap shows
 every frame exactly once, in order (`confirm`, which `failover-test.sh` runs across the leader kill). The probe attaches to a member's own embedded driver, so three of the five need no
-standalone `aeronmd` at all. `chaos-runner` needs a sixth thing the probe cannot supply — a **gateway
+standalone `aeronmd` at all. The sixth, `docker-failover-test.sh`, is the containerized multi-round
+failover soak (`docker/compose.yml`, `./gradlew operatorDist`, CI's `failover.yml`). `chaos-runner` needs one more thing the probe cannot supply — a **gateway
 pair under the faults** — and `TestGateway` is it: an elected active/standby producer (`GW-T-A`/`GW-T-B`,
 `gatewaySourceId` 9, listening on 9200/9201) that speaks no application protocol and holds no session
 state, but holds the same four fences a real gateway does — including the client tier's recovery-stall
@@ -412,9 +413,9 @@ and **the cluster is bounded at three members** by the 30-port cluster block (`d
 the system vocabulary, the topology document), `client-api.md` (what a client programs against, and what in
 the client tier is not API — update it when that surface changes), `fault-tolerance.md`, `registries.md` (the two shared
 namespaces this tier owns — `sourceId`, and the port blocks each repo draws from),
-`clusterctl.md` and `ops.md` (runbooks), and `package.md` (the packaging review list). Note that `registries.md` still points at
-`src/main/resources/topology.xml`, which left with the product half — the only topology document here
-is `seqeron-service/src/test/resources/topology-test-gateway.xml`.
+`clusterctl.md` and `ops.md` (runbooks), and `package.md` (the packaging review list). The only topology
+document here is `seqeron-service/src/test/resources/topology-test-gateway.xml`; the product half's
+`topology.xml` left with it, and no doc points at it any more.
 
 ## Code Formatting Mandate
 - Explicitly respect all style, brace, and indentation configurations found in the local `.clang-format` file.

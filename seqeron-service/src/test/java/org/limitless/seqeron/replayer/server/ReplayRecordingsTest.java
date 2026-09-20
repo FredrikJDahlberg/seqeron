@@ -89,7 +89,7 @@ class ReplayRecordingsTest {
     void startPositionSurvivesTheStitch() {
         // The chain is what ReplayerService replays each segment from, so a span that lost its
         // startPosition on the way through would be replayed from a hardcoded 0 — the assumption
-        // doc/review A10 is about.
+        // review A10 is about.
         final List<RecordingSpan> spans = List.of(new RecordingSpan(2, 8192, true), new RecordingSpan(1, 4096, false));
 
         final List<RecordingSpan> chain = ReplayRecordings.stitch(spans);

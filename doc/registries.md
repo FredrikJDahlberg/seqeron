@@ -30,9 +30,10 @@ other value is allocated in that table.
 The registry is held by the **log**, not by code. No product compiles an id in: a gateway resolves
 its own `{gatewayId, gatewaySourceId}` from the `GatewayRegistered` row keyed on its launch-time
 name (`SEQERON_*_GATEWAY_NAME`), and fails closed when the list names none. The allocation reaches
-a running deployment through the `sourceId` attributes of the topology file
-(`src/main/resources/topology.xml`, spec §6.4) — the registry's one machine-readable form, and the
-only place a number is typed.
+a running deployment through the `sourceId` attributes of the topology file (spec §6.4) — the
+registry's one machine-readable form, and the only place a number is typed. This repo carries one
+such document, `seqeron-service/src/test/resources/topology-test-gateway.xml`; a deployment writes
+its own.
 
 What a wrong allocation costs: two logical gateways sharing a `gatewaySourceId` share one election.
 `GatewayActive` designates both, and `releaseStaleConnections` drops the other pair's connections.
@@ -53,7 +54,7 @@ owns which of the other blocks is this table's alone.
 
 | block | owner | what is in it |
 | --- | --- | --- |
-| 9200–9209 | core | the cluster tier's own harness listeners: `TestGateway` TCP listen `9200 + instance` (9200 GW-T-A, 9201 GW-T-B), `cluster/src/main/scripts/ports.sh`, and `examples/cpp`'s cluster egress `9202 + memberId` (UDP, `SEQERON_EXAMPLE_EGRESS_PORT`). Deliberately **not** inside 9300–9329 — that block is three members of stride 10 with nothing spare, and `isClusterPort()` names cluster member ports, which these are not |
+| 9200–9209 | core | the cluster tier's own harness listeners: `TestGateway` TCP listen `9200 + instance` (9200 GW-T-A, 9201 GW-T-B), `seqeron-service/src/main/scripts/ports.sh`, and `examples/cpp`'s cluster egress `9202 + memberId` (UDP, `SEQERON_EXAMPLE_EGRESS_PORT`). Deliberately **not** inside 9300–9329 — that block is three members of stride 10 with nothing spare, and `isClusterPort()` names cluster member ports, which these are not |
 | 9300–9329 | core | cluster member ports, `base + memberId*10 + {1..5}` — three members, one decade each. The base defaults to 9300 and moves with `SEQERON_PORT_BASE` (see below); this row registers the default |
 | 9330–9359 | simdfixgw | `OrderExecServer` egress `9330+m`, `FixGateway` egress `9340+m`, `BasicDataServer` egress `9350+m`. 9348 and 9349 were the cluster-tier harnesses' own test-consumer egress and are now free: those harnesses run `ClusterProbe follow`, which opens no cluster session (§11 step 5) |
 | 9360–9399 | phixeron | `ExchangeGateway` egress `9360+m` and its archive control `9370+m`, `OrderGateway` egress `9380+m` and its archive control `9390+m` |
@@ -94,7 +95,7 @@ moves that collision rather than removing it.
 
 ### The formula is a three-way mirror
 
-`PortLayout.hpp` (C++), `PortLayout.java` (Java) and `src/main/scripts/ports.sh` (bash) each carry it,
+`PortLayout.hpp` (C++), `PortLayout.java` (Java) and `seqeron-service/src/main/scripts/ports.sh` (bash) each carry it,
 pinned against the same `(memberId → port)` pairs by `PortLayoutTest` and `SequencerServerTest` so a
 change to one side without the others fails a build. All three, and both tests, are core's and go
 with it.

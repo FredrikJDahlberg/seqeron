@@ -5,7 +5,7 @@
 // Once caught up it also produces — one ping a second at cluster ingress, whose echo comes back through
 // onSequenced with everything else.
 //
-// Start a node first (src/main/scripts/start-cluster.sh in the seqeron repo), then run this.
+// Start a node first (seqeron-service/src/main/scripts/start-cluster.sh in the seqeron repo), then run this.
 // Environment: SEQERON_NODE_MEMBER_ID (default 0), SEQERON_REPLAYER_CLIENT_ID (default 8),
 // SEQERON_AERON_DIR, SEQERON_IDLE_STRATEGY, SEQERON_EXAMPLE_EGRESS_PORT.
 

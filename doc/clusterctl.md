@@ -31,7 +31,7 @@ so the ingress-connect/echo handshake is new Java code modelled on the C++ `Clus
 tap-follow path, not shared with it.
 
 The tool is one Java class, `org.limitless.seqeron.tools.ClusterCtl` (alongside `SbeLogPrinter`),
-launched by `cluster/src/main/scripts/clusterctl.sh` — a thin wrapper matching the other scripts that sets
+launched by `seqeron-service/src/main/scripts/clusterctl.sh` — a thin wrapper matching the other scripts that sets
 the classpath / `--add-opens` JVM options and forwards the subcommand and its arguments:
 
 ```
@@ -133,7 +133,7 @@ matches opens its accept gate, the others stay standby (or close, if previously 
 
 ### load-topology
 
-Publishes the **topology document** — `src/main/resources/topology.xml`, the XML of
+Publishes the **topology document** — the XML of
 `doc/seqeron-protocol-spec.md` §6.4, validated against the packaged `topology.xsd`. Its `<gateways>`
 section becomes one unsequenced `GatewayRegistered` per row, `remaining` counting down to 0 on the
 last; its optional `<applications>` and `<protocols>` sections become one `ApplicationRegistered` and
@@ -178,9 +178,9 @@ nobody. Re-running is safe: the sequencer de-dups rows on `gatewayId` and latche
 **List only what the deployment runs.** A listed pair that no process starts is designated, times
 out after `GATEWAY_ACTIVATION_TIMEOUT_MS`, hands the role to its standby, and times out again — one
 `GatewayActive` frame every 5s for as long as the cluster is up, in a log recovery replays in full.
-`topology.xml` is the full three-pair deployment; the harnesses load the pair each one actually starts
-(`src/test/resources/topology-{gw,egw,ogw}.xml`), which is why a `load-topology` argument is
-a file rather than a constant.
+A deployment's own document lists every pair it runs; a harness loads only the pair it actually starts
+(here, `seqeron-service/src/test/resources/topology-test-gateway.xml` — the one topology document in this
+repo), which is why a `load-topology` argument is a file rather than a constant.
 
 ### counters
 
@@ -376,7 +376,7 @@ already edits. `gatewayId` can be learned because nothing is published before ac
 
 ### The XSD
 
-`cluster/src/main/resources/topology.xsd`, ~70 lines, sketched:
+`seqeron-service/src/main/resources/topology.xsd`, ~70 lines, sketched:
 
 ```xml
 <xs:element name="gateway">

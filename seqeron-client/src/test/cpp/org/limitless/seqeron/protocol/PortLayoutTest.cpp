@@ -1,7 +1,7 @@
 // Pins PortLayout.hpp's cluster port-layout formula against the same (memberId -> port) pairs
 // SequencerServerTest (Java) checks, so a change to one side without the other fails a build
-// instead of drifting silently. The applications' own bases are AppPortsTest's, over
-// src/main/cpp/.../AppPorts.hpp.
+// instead of drifting silently. The applications' own bases live with the product repo, and are
+// covered there.
 
 #include <gtest/gtest.h>
 

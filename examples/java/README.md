@@ -14,7 +14,7 @@ fails to expose fails here rather than passing on a source dependency.
 In the seqeron repo root, publish the artifact and start a node:
 
     ./gradlew publishToMavenLocal
-    ./src/main/scripts/start-cluster.sh
+    ./seqeron-service/src/main/scripts/start-cluster.sh
 
 Then, here:
 

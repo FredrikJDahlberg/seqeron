@@ -18,7 +18,7 @@ installed Aeron beside it. `-DSEQERON_FIND_PACKAGE=ON` builds the example that w
 
 In the seqeron repo root, start a node:
 
-    ./src/main/scripts/start-cluster.sh
+    ./seqeron-service/src/main/scripts/start-cluster.sh
 
 Then, here:
 

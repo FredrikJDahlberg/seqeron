@@ -47,7 +47,7 @@ back-pressuring the cluster.
   binary built.
 - **`MetricsExporter`** (Java) — the ops plane, orthogonal to the data flow: a node-local exporter
   serves `/metrics` off the Aeron CnC counters, and Prometheus scrapes each node's (`doc/ops.md`).
-- **`TestGateway`** (Java, `src/test/java`) — an elected active/standby producer used only by
+- **`TestGateway`** (Java, `seqeron-service/src/test/java`) — an elected active/standby producer used only by
   `chaos-runner.sh`. It speaks no application protocol and holds no session state, but it holds the
   same four fences a real gateway does, so the recovery-stall policy gets exercised inside this repo.
   It is in the test source set and therefore in no jar.
@@ -92,13 +92,14 @@ covers what survives node loss, failover, a stuck archive and a lost frame.
 Requires **JDK 21** for the Java half and a **C++23** compiler for the C++ one, and fetches Aeron
 1.51.0 and GoogleTest from source — Aeron only when `find_package` finds no installed one at that
 version or newer (built with `-DAERON_INSTALL_TARGETS=ON`, on `CMAKE_PREFIX_PATH`). The C++ half needs no JDK of seqeron's own making: the codecs for
-the three schemas this repo owns are generated and committed under `src/main/generated/sbe/core`, so
+the three schemas this repo owns are generated and committed under `seqeron-client/src/main/generated/sbe/core`, so
 a consumer compiles them rather than running the SBE tool. Java is still needed
 to *change* them — `RegenerateSbeCodecs`, then commit — and Aeron's own build requires a JDK 17+
 regardless (`aeron-archive/src/main/c` does `find_package(Java 17 REQUIRED)` and Aeron's CMake shells
 out to its Gradle build), so a from-source Aeron keeps one on the machine either way.
-Both halves generate independently from the same schemas under `src/main/sbe`, so their Aeron and SBE
-versions are pinned once, in `versions.properties`, which both builds read.
+Both halves generate independently from the same schemas — `seqeron-client/src/main/sbe` and
+`seqeron-service/src/main/sbe` — so their Aeron and SBE versions are pinned once, in
+`versions.properties`, which both builds read.
 
 ### Java
 
@@ -110,7 +111,7 @@ versions are pinned once, in `versions.properties`, which both builds read.
 
 Every script needs that jar, so `uberJar` is the prerequisite for all of them. The operator scripts
 find it themselves — `build/libs/` in this checkout, `lib/` in an installed distribution — while the
-harnesses under `src/test/scripts` still name `build/libs/` and run from the repository root.
+harnesses under `seqeron-service/src/test/scripts` still name `build/libs/` and run from the repository root.
 `SEQERON_JAR` overrides the path either way, and `SEQERON_HOME` the root it is resolved from.
 
 The codegen tasks run as part of `compileJava` and can be invoked on their own:
@@ -158,7 +159,7 @@ Coverage is a JaCoCo report at `build/reports/jacoco/test/`, written by `./gradl
 
 ## Scripts
 
-Operator and cluster-lifecycle scripts live under `src/main/scripts/`; they start and stop things or
+Operator and cluster-lifecycle scripts live under `seqeron-service/src/main/scripts/`; they start and stop things or
 are standalone tools, and run no tests. `ports.sh`, `paths.sh` and `seqeron-home.sh` are sourced by
 every other script.
 
@@ -177,10 +178,12 @@ writes the distribution to `build/install/seqeron` — `bin/` (these scripts), `
 | `metrics-exporter.sh` | The Prometheus ops plane (`doc/ops.md`) |
 | `purgelog.sh [--force]` | Delete archive/cluster directories under `$TMPDIR/seqeron-seq` and the `logs/` directory; the cluster must be stopped first |
 
-The end-to-end harnesses live under `src/test/scripts/`. **All five are Java-only** — they drive the
-cluster through `ClusterProbe`, which attaches to a member's own embedded media driver, so three of
-them need no standalone `aeronmd` at all. Each brings a cluster up and tears it down again; run them
-from the repository root, with `./gradlew uberJar` done first.
+The end-to-end harnesses live under `seqeron-service/src/test/scripts/`. **Five of the six are
+Java-only** — they drive the cluster through `ClusterProbe`, which attaches to a member's own embedded
+media driver, so three of them need no standalone `aeronmd` at all. Each brings a cluster up and tears
+it down again; run them from the repository root, with `./gradlew uberJar` done first. The sixth,
+`docker-failover-test.sh`, is the containerized one and wants `./gradlew operatorDist` and Docker
+instead.
 
 | Script | Purpose |
 |--------|---------|
@@ -189,6 +192,7 @@ from the repository root, with `./gradlew uberJar` done first.
 | `gap-recovery-test.sh` | Drop a live tap frame on a caught-up consumer (SIGUSR1 fault injection) and verify it re-walks its recording and heals rather than wedging |
 | `replayer-restart-test.sh` | Kill and restart a node's `ReplayerServer` while a client is riding a replay from it, then kill and restart the client's own node and verify its cold-start walk crosses a real multi-recording chain |
 | `chaos-runner.sh` | Randomized fault injection against a live 3-node cluster, with the `TestGateway` pair (`GW-T-A`/`GW-T-B`, ports 9200/9201) taking load through its accept gate; every run prints its `SEED` to replay the exact fault sequence. Needs `./gradlew uberJar compileTestJava` |
+| `docker-failover-test.sh` | Multi-round containerized failover soak — the `docker/compose.yml` port of `failover-test.sh`. `ROUNDS` (15) kills under continuous `ProbeMarker` load, restoring the killed member between them, so each rejoin replays a Raft log that grew under the previous rounds. Asserts every round is a genuine leadership change, that a long-lived observer on each surviving node keeps delivering in order across all of them, and that a cold-start probe replays the whole multi-tenure history at the end. Needs Docker and `./gradlew operatorDist`; `ROUNDS=3` for a quick local run. CI runs it as `failover.yml` |
 | `replay-bench.sh <preload> [load-during]` | How fast a cold replica replays recorded history to caught-up; prints archive size, elapsed seconds and MB/s |
 
 ## Sequencer
@@ -211,11 +215,11 @@ launch still passes them (`seqeron-home.sh`'s `SEQERON_JAVA_OPTS`). The node emb
 and Archive — no separate `aeronmd` needed. Data is written to
 `$TMPDIR/seqeron-seq/archive-0` and `$TMPDIR/seqeron-seq/cluster-0`.
 
-`src/main/scripts/start-cluster.sh` does the same thing plus a co-located `ReplayerServer` and a
+`seqeron-service/src/main/scripts/start-cluster.sh` does the same thing plus a co-located `ReplayerServer` and a
 consumer replica, which is usually what you want:
 
 ```bash
-./src/main/scripts/start-cluster.sh
+./seqeron-service/src/main/scripts/start-cluster.sh
 # [cluster.sh] SequencerServer is running
 # [ReplayerService/0] ready — tap recording 0 live, 1-recording chain verified from globalSeqNo 1; serving replay
 # [ClusterProbe/0] Caught up — following live
@@ -234,7 +238,7 @@ java \
   -jar seqeron-*-uber.jar
 ```
 
-`src/test/scripts/start-three-node-cluster.sh` builds that string with `ports.sh`'s
+`seqeron-service/src/test/scripts/start-three-node-cluster.sh` builds that string with `ports.sh`'s
 `cluster_members_string` and brings all three up on localhost.
 
 ### Port layout
@@ -298,11 +302,11 @@ is one continuous run spanning every leader tenure.
 `clusterctl` is node-local — run it co-located with a `SequencerServer`, on any member:
 
 ```bash
-./src/main/scripts/clusterctl.sh counters        # this node's operator counters; needs no cluster connection
-./src/main/scripts/clusterctl.sh start           # record a "system started" marker (requires an elected leader)
-./src/main/scripts/clusterctl.sh shutdown        # orderly stop; safe on every node, a no-op on followers
-./src/main/scripts/clusterctl.sh activate <gatewayId>
-./src/main/scripts/clusterctl.sh load-topology <file.xml>
+./seqeron-service/src/main/scripts/clusterctl.sh counters        # this node's operator counters; needs no cluster connection
+./seqeron-service/src/main/scripts/clusterctl.sh start           # record a "system started" marker (requires an elected leader)
+./seqeron-service/src/main/scripts/clusterctl.sh shutdown        # orderly stop; safe on every node, a no-op on followers
+./seqeron-service/src/main/scripts/clusterctl.sh activate <gatewayId>
+./seqeron-service/src/main/scripts/clusterctl.sh load-topology <file.xml>
 ```
 
 `load-topology` publishes the deployment document — the gateway list, the co-located applications,
@@ -327,7 +331,7 @@ as JSON, decoded against the generated SBE IR. It works on a still-running clust
 recording is printed up to whatever has been written so far.
 
 ```bash
-./src/main/scripts/sbe-log-printer.sh "${TMPDIR:-/tmp}/seqeron-seq/archive-0" --stream 205 --oneline
+./seqeron-service/src/main/scripts/sbe-log-printer.sh "${TMPDIR:-/tmp}/seqeron-seq/archive-0" --stream 205 --oneline
 ```
 
 Or through Gradle, which takes the same options as `-P` properties:
@@ -395,7 +399,7 @@ that owns their schema (`doc/seqeron-protocol-spec.md` §13.1). This tier decode
 payload at all, so this is how one gets out to something that does:
 
 ```bash
-./src/main/scripts/sbe-log-printer.sh "${TMPDIR:-/tmp}/seqeron-seq/archive-0" --stream 205 \
+./seqeron-service/src/main/scripts/sbe-log-printer.sh "${TMPDIR:-/tmp}/seqeron-seq/archive-0" --stream 205 \
     -o 2 2>frames.log | order-decode
 ```
 
@@ -434,7 +438,7 @@ dependency. The C++ half also installs: `cmake --install` writes a CMake package
 `seqeron::seqeron_core` off `find_package(seqeron)` instead, supplying its own installed Aeron.
 
 ```bash
-./src/main/scripts/start-cluster.sh                              # in another shell
+./seqeron-service/src/main/scripts/start-cluster.sh                              # in another shell
 
 ./gradlew publishToMavenLocal && ./gradlew -p examples/java run  # Java
 

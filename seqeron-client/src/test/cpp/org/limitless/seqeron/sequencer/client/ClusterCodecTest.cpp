@@ -1,7 +1,6 @@
 //
 // Round-trip tests for the codec the cluster tier itself carries: the sbe-frame.xml envelopes, both ways
-// round. The application families have schemas of their own — see src/test/cpp/.../order/OrderCodecTest.cpp
-// and src/test/cpp/.../fix/SessionCodecTest.cpp.
+// round. The application families have schemas of their own, and are covered in the product repo.
 //
 #include <gtest/gtest.h>
 

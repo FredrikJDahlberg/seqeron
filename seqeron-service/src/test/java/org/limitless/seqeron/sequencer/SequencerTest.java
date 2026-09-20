@@ -28,7 +28,7 @@ import org.limitless.seqeron.sbe.frame.MessageHeaderDecoder;
  * and decoding the frames it writes, which is what makes these tests fast and stable enough to run
  * on every build. Everything Aeron-shaped ({@link SequencerService}'s tap publication, archive
  * recording, timer scheduling) stays covered by the end-to-end scripts under
- * {@code src/test/scripts}.
+ * {@code seqeron-service/src/test/scripts}.
  *
  * <p>The invariants under test are the ones a replicated state machine cannot be allowed to break:
  * the same log produces byte-identical output on every node, {@code globalSeqNo} is gap-free across
