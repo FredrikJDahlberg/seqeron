@@ -29,7 +29,7 @@
 #   dedicated ONLY_FAULT=fault_kill_leader run (every round is a genuine failover, since every member is a
 #   legal kill target).
 #
-# The gateway list loaded is src/test/resources/topology-test-gateway.xml, and it names exactly the two
+# The gateway list loaded is seqeron-service/src/test/resources/topology-test-gateway.xml, and it names exactly the two
 #   instances this script starts: a listed pair no process starts is designated, times out after
 #   GATEWAY_ACTIVATION_TIMEOUT_MS, hands over to its standby and times out again, forever. Both gateways go
 #   up immediately behind load-topology for that reason.
@@ -113,7 +113,7 @@ GW_A_ID=10
 GW_B_ID=11
 GW_A_PORT="$(test_gateway_port 0)"
 GW_B_PORT="$(test_gateway_port 1)"
-TOPOLOGY="src/test/resources/topology-test-gateway.xml"
+TOPOLOGY="seqeron-service/src/test/resources/topology-test-gateway.xml"
 
 rm -rf "$LOG_DIR"; mkdir -p "$LOG_DIR"
 declare -a SEQ_PIDS REPLAYER_PIDS EXTRA_CONSUMER_PIDS GW_PIDS

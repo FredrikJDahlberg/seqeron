@@ -10,8 +10,10 @@
 #   clusterctl.sh activate <id>     # manual standby promotion (requires an elected leader)
 #   clusterctl.sh load-topology <file>
 #                                   # publish the topology document — the gateway list and the
-#                                   # protocol registry (src/main/resources/topology.xml); run once
-#                                   # per cluster lifetime, BEFORE the reference-data load
+#                                   # protocol registry. <file> is the deployment's own, validated
+#                                   # against the topology.xsd the jar carries; this repo ships only
+#                                   # the test one. Run once per cluster lifetime, BEFORE the
+#                                   # reference-data load
 #   clusterctl.sh help
 #   clusterctl.sh describe …        # anything else → ClusterTool passthrough
 #

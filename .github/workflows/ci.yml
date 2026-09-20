@@ -87,7 +87,7 @@ jobs:
           path: |
             ~/.gradle/caches
             ~/.gradle/wrapper
-          key: gradle-java-${{ hashFiles('*.gradle', 'versions.properties', 'gradle/wrapper/gradle-wrapper.properties') }}
+          key: gradle-java-${{ hashFiles('**/*.gradle', 'versions.properties', 'gradle/wrapper/gradle-wrapper.properties') }}
           restore-keys: gradle-java-
 
       # JUnit 5 suite for the Java state machines; no Aeron runtime, no C++ build.
@@ -102,11 +102,17 @@ jobs:
           import xml.etree.ElementTree as ET
           print('| metric | covered | total | % |')
           print('|---|---|---|---|')
-          r = ET.parse('build/reports/jacoco/test/jacocoTestReport.xml').getroot()
-          for c in r.findall('counter'):
-              m, cv = int(c.get('missed')), int(c.get('covered'))
+          # One report per module since the :seqeron-client/:seqeron-service split; summed, so the
+          # table still measures the whole Java tree the way the single-source-set build's did.
+          from pathlib import Path
+          totals = {}
+          for f in sorted(Path('.').glob('*/build/reports/jacoco/test/jacocoTestReport.xml')):
+              for c in ET.parse(f).getroot().findall('counter'):
+                  m, cv = totals.get(c.get('type'), (0, 0))
+                  totals[c.get('type')] = (m + int(c.get('missed')), cv + int(c.get('covered')))
+          for kind, (m, cv) in totals.items():
               t = m + cv
-              print(f"| {c.get('type').title()} | {cv} | {t} | {100*cv/t if t else 0:.1f}% |")
+              print(f"| {kind.title()} | {cv} | {t} | {100*cv/t if t else 0:.1f}% |")
           EOF
 
       - name: Upload coverage report
@@ -114,7 +120,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: jacoco-report
-          path: build/reports/jacoco/test/
+          path: '*/build/reports/jacoco/test/'
 
   # The consumable surface from source; the `installed` job below takes the find_package path. Both
   # examples resolve seqeron the way an outside consumer does — a published coordinate, and FetchContent over the checkout — so a
@@ -154,7 +160,7 @@ jobs:
           path: |
             ~/.gradle/caches
             ~/.gradle/wrapper
-          key: gradle-examples-${{ hashFiles('CMakeLists.txt', '*.gradle', 'versions.properties') }}
+          key: gradle-examples-${{ hashFiles('CMakeLists.txt', '**/*.gradle', 'versions.properties') }}
           restore-keys: gradle-examples-
 
       # The example resolves org.limitless:seqeron from ~/.m2, so it builds against this checkout's
