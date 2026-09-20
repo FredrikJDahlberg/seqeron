@@ -461,7 +461,7 @@ repositories {
 }
 dependencies {
     implementation enforcedPlatform('com.github.FredrikJDahlberg.seqeron:seqeron-bom:<tag>')
-    implementation 'com.github.FredrikJDahlberg.seqeron:seqeron'   // or seqeron-node
+    implementation 'com.github.FredrikJDahlberg.seqeron:seqeron'   // or seqeron-service
 }
 ```
 
@@ -470,8 +470,8 @@ dependencies {
 A tag `v<version>` runs `.github/workflows/release.yml`, which fails unless the tag matches `VERSION`.
 It publishes:
 
-- the Java artifacts on JitPack (`seqeron`, `seqeron-node`, `seqeron-bom`);
-- the node image, `ghcr.io/fredrikjdahlberg/seqeron-node:<version>` — the image `docker/compose.yml`
+- the Java artifacts on JitPack (`seqeron`, `seqeron-service`, `seqeron-bom`);
+- the node image, `ghcr.io/fredrikjdahlberg/seqeron-service:<version>` — the image `docker/compose.yml`
   builds locally as `seqeron/node:local`;
 - a GitHub Release with the operator distribution, `seqeron-<version>.zip` (`bin/`, `lib/`, `ops/`),
   and the uber, client and node jars.

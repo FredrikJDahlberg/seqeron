@@ -26,7 +26,7 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../../../.." && pwd)"
 source "${SCRIPT_DIR}/../../main/scripts/ports.sh"
 source "${SCRIPT_DIR}/../../main/scripts/seqeron-home.sh"
 COMPOSE=(docker compose -f "${REPO_ROOT}/docker/compose.yml")

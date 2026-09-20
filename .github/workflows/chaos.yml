@@ -1,6 +1,6 @@
 name: chaos
 
-# Randomized fault injection against a live three-node cluster (src/test/scripts/chaos-runner.sh).
+# Randomized fault injection against a live three-node cluster (seqeron-service/src/test/scripts/chaos-runner.sh).
 # Deliberately NOT containerized: every fault here is process-level — SIGTERM, SIGKILL, SIGSTOP,
 # SIGUSR1, an in-process archive stall — and three containers on one runner share the same kernel and
 # CPU pool as three processes do, so the container adds a failure domain the faults never cross.
@@ -76,7 +76,7 @@ jobs:
       # gone. 5s covers the stall this runner produces; it does not paper over a real session loss,
       # which closes the session outright rather than letting it age out.
       - name: Chaos run
-        run: ./src/test/scripts/chaos-runner.sh
+        run: ./seqeron-service/src/test/scripts/chaos-runner.sh
         env:
           SEED: ${{ github.event.inputs.seed }}
           ROUNDS: ${{ github.event.inputs.rounds || '20' }}
@@ -123,7 +123,7 @@ jobs:
         run: ./gradlew uberJar
 
       - name: Failover run
-        run: ./src/test/scripts/failover-test.sh
+        run: ./seqeron-service/src/test/scripts/failover-test.sh
 
       - name: Upload failover logs
         if: always()

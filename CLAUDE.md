@@ -83,24 +83,31 @@ identifiers stay that way; where a doc here cites one of its files or protocol n
 
 ## Module layout
 
-One Gradle project, one CMake project, one source tree — `src/main/{java,cpp,sbe,resources,scripts,ops}`
-and `src/test/{java,cpp,resources,scripts}`. The `:cluster`/`:gateways` split and the
-core-library/executable target pair are gone with the product half; **the repository boundary is what
-enforces the dependency direction now**, so there is nothing to keep on the right side of a line within
-this tree.
+**Two Gradle modules, Aeron's shape**: `:seqeron-client` and `:seqeron-service`, the latter depending on
+the former. Each owns a source tree — `<module>/src/main/{java,...}` and `<module>/src/test/{java,...}`
+— and one CMake project sits above them, since C++ is the client tier alone
+(`seqeron-client/src/main/cpp`). The service module holds `resources`, `scripts` and `ops`; the client
+module holds `cpp` and `generated`. Both hold `sbe`.
 
-**One tree, two audiences, laid out as Aeron's is.** A component's server sits at its package root and its
-client in `.client` beside it (`sequencer` / `sequencer.client`, `replayer.server` / `replayer.client`),
-and the wire contract both sides share is `protocol` — `FrameLayer`, `SystemFrame`, `PortLayout`,
-`SequencedFrameDecoder`, `ReplayProtocol`, `SeqeronCounters`. The jar is split by package into `seqeron`
-(the **client tier**: `protocol`, `sequencer.client`, `replayer.client`, `app`, `util` and the frame and
-replay codecs) and `seqeron-node` (the **node tier**: `sequencer`, `replayer.server`, `tools`, `metrics`,
-the probe codecs and the jar resources). No package is in both, so both jars carry an
+**The direction is the compiler's to enforce.** A client class that reaches for `Sequencer` does not
+compile, because the service module is not on the client's classpath. The single-source-set build that
+preceded this caught the same thing afterwards, by scanning the compiled client classes' constant pool
+(`checkTierSeparation`, now gone) — which never saw test code, and never saw an import that javac had
+already discarded.
+
+**Two audiences, and inside each module the packages Aeron's layout implies.** A component's server sits
+at its package root and its client in `.client` beside it (`sequencer` / `sequencer.client`,
+`replayer.server` / `replayer.client`), and the wire contract both sides share is `protocol` —
+`FrameLayer`, `SystemFrame`, `PortLayout`,
+`SequencedFrameDecoder`, `ReplayProtocol`, `SeqeronCounters`. Each module publishes one jar: `seqeron`
+(the **client tier**: `protocol`, `sequencer.client`, `replayer.client`, `app`, `util`, the frame and
+replay codecs and the cluster mirror's IR) and `seqeron-service` (the **service tier**: `sequencer`,
+`replayer.server`, `tools`, `metrics` and the probe codecs). No package is in both, so both jars carry an
 `Automatic-Module-Name`. A process that merely talks to a cluster takes the first alone, and
-`examples/java` is the proof: it resolves `org.limitless:seqeron` and compiles. `checkTierSeparation`
-(wired into `check`) enforces the line against the compiled classes. Anything the node shares with a
-client — the tap's identity, the cluster clock, the port block, the replay protocol's addresses — goes in
-`protocol`, never in a node class. C++ is the client tier alone, in the same directories and namespaces.
+`examples/java` is the proof: it resolves `org.limitless:seqeron` and compiles. Anything the service tier
+shares with a client — the tap's identity, the cluster clock, the port block, the replay protocol's
+addresses — goes in `protocol`, never in a service-tier class. C++ is the client tier alone, in the
+same directories and namespaces.
 
 **The producer side is a language-port pair too.** Java's `ClusterStreamSender`/`IngressPublisher` carry
 the C++ files' names and semantics — `connectColocated` (IPC ingress on the co-located member, UDP
@@ -132,7 +139,7 @@ case for case, with a property test asserting exactly-once, in-order delivery ac
 target and the only binary the build produces is `core_tests`. There is **no C++ replay server** —
 the server side of the replay protocol is Java only.
 
-`src/main/ops/` holds the Prometheus and Grafana provisioning the metrics scripts feed
+`seqeron-service/src/main/ops/` holds the Prometheus and Grafana provisioning the metrics scripts feed
 (`doc/ops.md`); it is deployment configuration, not code.
 
 ## Build
@@ -143,8 +150,8 @@ the server side of the replay protocol is Java only.
 ./gradlew uberJar     # build/libs/seqeron-<version>-uber.jar — every script's prerequisite
 ./gradlew test        # JUnit 5, ~1s
 ./gradlew generateFrameSbe generateReplaySbe generateProbeSbe generateClusterSbeIr
-./gradlew compileTestJava   # TestGateway, which chaos-runner.sh needs and no jar carries
-./gradlew clientJar nodeJar # the two published artifacts; checkTierSeparation guards the line
+./gradlew :seqeron-service:compileTestJava   # TestGateway, which chaos-runner.sh needs and no jar carries
+./gradlew :seqeron-client:jar :seqeron-service:jar  # the two published artifacts
 ```
 JDK 21. `SEQERON_JAR` overrides the jar path for every script that resolves it.
 
@@ -154,13 +161,15 @@ cmake -B cmake-build-debug -DCMAKE_BUILD_TYPE=Debug      # AddressSanitizer
 cmake --build cmake-build-debug
 ```
 C++23, and fetches Aeron 1.51.0 (unless an installed one is found) and GoogleTest from source. **The core SBE codecs are generated and
-committed**, under `src/main/generated/sbe/core` — the git tag is the C++ artifact, so shipping them
+committed**, under `seqeron-client/src/main/generated/sbe/core` — the git tag is the C++ artifact, so
+shipping them
 with it is what lets a consumer build with no SBE tool and no JDK of seqeron's asking (Aeron's own
 build still wants a JDK 17+). `find_package(Java)` is therefore `QUIET`, not `REQUIRED`, and is used
 only by `RegenerateSbeCodecs` (rewrites the committed tree — run it when a schema changes, then commit
 what it produced) and `CheckSbeCodecsCurrent`, which regenerates into the build tree and compares.
 SBE's C++ output is deterministic, so that comparison is exact; `run_tests` depends on it, which is
-what keeps the committed copy from drifting away from `src/main/sbe`. GoogleTest and `core_tests` are gated on `SEQERON_BUILD_TESTS`, which defaults to
+what keeps the committed copy from drifting away from `seqeron-client/src/main/sbe`. GoogleTest and
+`core_tests` are gated on `SEQERON_BUILD_TESTS`, which defaults to
 `PROJECT_IS_TOP_LEVEL` — a build that adds this one gets neither unless it asks. `-DSEQERON_COVERAGE=ON` adds instrumentation. No simdfix, and therefore **no SSH remote is
 needed** — the FetchContent clone that used to require one went with the product half.
 
@@ -194,8 +203,8 @@ build declares no simdfix. Single suites:
 The Java suite covers the deterministic decision-making — `Sequencer`, and `ReplayerService` through
 its `Replayer` seam — and deliberately touches no Aeron runtime: no media driver, no cluster, no Aeron
 mocks. Everything Aeron-shaped is covered by `core_tests` and by the five end-to-end scripts under
-`src/test/scripts`. Coverage is one JaCoCo report at `build/reports/jacoco/test/`, excluding the
-generated SBE codecs.
+`seqeron-service/src/test/scripts`. Coverage is a JaCoCo report per module, at
+`<module>/build/reports/jacoco/test/`, excluding the generated SBE codecs.
 
 **All five harnesses are Java-only.** They drive the cluster through `tools/ClusterProbe`, which
 submits `ProbeMarker` payloads at ingress (`submit`), round-trips one through consensus and back off
@@ -210,9 +219,11 @@ fence (`app/RecoveryStallFence`), which is why `chaos-runner.sh` can drive a
 non-converging recovery to a handover rather than a hang. Its activation and stand-down are
 `app/GatewayLifecycle`, the client tier's class for a gateway's election. It is also the reference user of
 confirmed ingress: everything it publishes goes through `IngressPublisher` tracking into `app/PendingSends`,
-which its `ClusterStreamSender` holds, and a `PendingSends` fault is a fifth fence. It is in **`src/test/java`** and therefore in no jar: `chaos-runner.sh` puts
-`build/classes/java/test` on the classpath beside the uber jar and refuses to start without it. Its
-list is `src/test/resources/topology-test-gateway.xml`, the only topology document in this repo.
+which its `ClusterStreamSender` holds, and a `PendingSends` fault is a fifth fence. It is in
+**`seqeron-service/src/test/java`** and therefore in no jar: `chaos-runner.sh` puts
+`seqeron-service/build/classes/java/test` on the classpath beside the uber jar and refuses to start
+without it. Its
+list is `seqeron-service/src/test/resources/topology-test-gateway.xml`, the only topology document in this repo.
 
 `start-cluster.sh` and `start-three-node-cluster.sh` launch the cluster tier and nothing else — core
 starts no process it does not own. A consumer that wants its own replicas or gateways alongside runs
@@ -341,7 +352,9 @@ gateway behind it. The application and protocol rows follow it, carry no countdo
 `SbeLogPrinter`: decoded by nothing, gating nothing.
 
 ### SBE code generation
-Four schemas, all under `src/main/sbe`, each generating into a distinct namespace so one include path
+Four schemas, split by who speaks them — `sbe-frame`, `sbe-replay` and `sbe-cluster` under
+`seqeron-client/src/main/sbe`, `sbe-probe` under `seqeron-service/src/main/sbe` — each generating into
+a distinct namespace so one include path
 covers all of them:
 
 - `sbe-frame.xml` (schema 210) — the seven top-level templates, their four header composites, and the
@@ -365,8 +378,9 @@ covers all of them:
   side is **IR-only** (`generateClusterSbeIr`, no codecs), since the Java side speaks the cluster protocol
   through `io.aeron.cluster.codecs` and the stubs would be dead classes.
 
-`src/main/sbe` is a codegen-input directory, not a resource one, so no jar ships an XML. The one file a
-jar does need is `src/main/resources/topology.xsd`.
+A module's `sbe` directory is a codegen input, not a resource one, so no jar ships an XML. The one
+file a
+jar does need is `seqeron-service/src/main/resources/topology.xsd`.
 
 Both sides regenerate independently from the same XML — keep them in sync when editing a schema. SBE
 never deletes generated files for messages you removed, so **each schema owns a disjoint output directory
@@ -382,7 +396,8 @@ seqeron's own package namespace; `collectSbeIr` wipes its destination first, lik
 
 ## Scripts
 
-`.claude/rules/operator-scripts.md` and `src/test/scripts/CLAUDE.md` cover the scripts. `ports.sh` is
+`.claude/rules/operator-scripts.md` and `seqeron-service/src/test/scripts/CLAUDE.md` cover the
+scripts. `ports.sh` is
 mirrored by `PortLayout` in both languages; change all three together.
 
 ## Known gaps
@@ -399,7 +414,7 @@ the client tier is not API — update it when that surface changes), `fault-tole
 namespaces this tier owns — `sourceId`, and the port blocks each repo draws from),
 `clusterctl.md` and `ops.md` (runbooks), and `package.md` (the packaging review list). Note that `registries.md` still points at
 `src/main/resources/topology.xml`, which left with the product half — the only topology document here
-is `src/test/resources/topology-test-gateway.xml`.
+is `seqeron-service/src/test/resources/topology-test-gateway.xml`.
 
 ## Code Formatting Mandate
 - Explicitly respect all style, brace, and indentation configurations found in the local `.clang-format` file.

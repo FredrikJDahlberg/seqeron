@@ -11,7 +11,7 @@ places. Checked against the built client, node and uber jars and the generated P
    depends on it: JitPack changes it to `com.github.<owner>:seqeron`, while GitHub Packages keeps
    `org.limitless` but makes every user set up a token just to download.
 
-   **Done in v0.2.0.** JitPack, via `jitpack.yml`: `com.github.FredrikJDahlberg.seqeron:{seqeron,seqeron-node}:<tag>`.
+   **Done in v0.2.0.** JitPack, via `jitpack.yml`: `com.github.FredrikJDahlberg.seqeron:{seqeron,seqeron-service}:<tag>`.
 
 2. **The published jars are bare.** `seqeron-client-0.1.0.jar` and `seqeron-node-0.1.0.jar` have:
    - no `LICENSE` or `NOTICE`, although the uber jar carries both for the Apache licence's sake;
@@ -23,7 +23,7 @@ places. Checked against the built client, node and uber jars and the generated P
    jar an `Automatic-Module-Name`, and both are published with a sources jar.
 
 3. **The POMs are written by hand and get scopes wrong.** `pom.withXml` marks every dependency `compile`.
-   For `seqeron-node` that puts `sbe-tool` and `aeron-driver` on users' compile classpath, even though
+   For `seqeron-service` that puts `sbe-tool` and `aeron-driver` on users' compile classpath, even though
    `build.gradle` makes them `implementation`. Gradle's normal `from components.java` publishing would get
    scopes right and add Gradle module metadata.
 
@@ -103,7 +103,7 @@ places. Checked against the built client, node and uber jars and the generated P
     from `operatorDist` so `bin/` comes along, and push to GHCR on each tag.
 
     **Done in v0.2.2.** The image is built from `operatorDist` and pushed as
-    `ghcr.io/fredrikjdahlberg/seqeron-node:<version>`. `clusterctl` is on the `PATH` in each container,
+    `ghcr.io/fredrikjdahlberg/seqeron-service:<version>`. `clusterctl` is on the `PATH` in each container,
     set to that container's member, and `clusterctl.egressHost` lets it run on a follower.
 
 ## Docs that mislead users

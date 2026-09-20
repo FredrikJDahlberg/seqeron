@@ -1,0 +1,171 @@
+// The node tier: the sequencer, the Replayer's server side, the tools and the metrics exporter. Depends
+// on :client; the reverse is impossible, which is the point of the split.
+
+plugins {
+    id 'application'
+}
+
+// api for what appears in this module's own public signatures — AeronArchive (ReplayerService) and
+// ClusteredService (SequencerService). aeron-driver stays implementation: SequencerServer embeds a
+// MediaDriver but exposes none. So does sbe-tool: SbeLogPrinter's List<Ir> constructor is the one leak,
+// and the printer is a CLI, not a library entry point.
+dependencies {
+    api project(':seqeron-client')
+    api "io.aeron:aeron-archive:${rootProject.ext.aeronVersion}"
+    implementation "io.aeron:aeron-driver:${rootProject.ext.aeronVersion}"
+    implementation "uk.co.real-logic:sbe-tool:${rootProject.ext.sbeVersion}"
+
+    testImplementation "io.aeron:aeron-driver:${rootProject.ext.aeronVersion}"
+}
+
+// ── SBE code generation ────────────────────────────────────────────────────────
+// The two schemas the node owns. sbe-probe.xml (payloadId 5) is the protocol ClusterProbe speaks so this
+// repo's e2e scripts can drive a cluster with no product binary built; it is private to tools/ClusterProbe,
+// which is also what keeps the C++ client's generated root free of any application codec.
+def sbeGeneratedSrcDir = layout.buildDirectory.dir('generated/sources/sbe/main/java').get().asFile
+def sbeSchemaDir       = file('src/main/sbe')
+
+sourceSets.main.java.srcDir sbeGeneratedSrcDir
+
+tasks.register('generateProbeSbe', JavaExec) {
+    description = 'Generate Java SBE codecs from sbe-probe.xml (the ClusterProbe load/liveness payload)'
+    classpath   = configurations.sbeCodegen
+    mainClass   = 'uk.co.real_logic.sbe.SbeTool'
+
+    jvmArgs '--add-opens=java.base/jdk.internal.misc=ALL-UNNAMED'
+
+    systemProperty 'sbe.output.dir',               sbeGeneratedSrcDir.absolutePath
+    systemProperty 'sbe.target.language',          'Java'
+    systemProperty 'sbe.java.generate.interfaces', 'false'
+    systemProperty 'sbe.xinclude.aware',           'true'
+    systemProperty 'sbe.generate.ir',              'true'
+
+    args new File(sbeSchemaDir, 'sbe-probe.xml')
+
+    inputs.file  new File(sbeSchemaDir, 'sbe-probe.xml')
+    outputs.dir  new File(sbeGeneratedSrcDir, 'org/limitless/seqeron/sbe/probe')
+    outputs.file new File(sbeGeneratedSrcDir, 'sbe-probe.sbeir')
+
+    doFirst {
+        new File(sbeGeneratedSrcDir, 'org/limitless/seqeron/sbe/probe').deleteDir()
+        sbeGeneratedSrcDir.mkdirs()
+    }
+}
+
+tasks.named('compileJava') {
+    dependsOn 'generateProbeSbe'
+}
+
+def sbeIrResourceDir = layout.buildDirectory.dir('generated/resources/sbeir')
+
+tasks.register('collectSbeIr', Copy) {
+    description = 'Stage this module\'s SBE IR files as jar resources for SbeLogPrinter'
+    dependsOn 'generateProbeSbe'
+    doFirst { delete sbeIrResourceDir }
+    from(sbeGeneratedSrcDir) {
+        include '*.sbeir'
+        into 'META-INF/seqeron/sbeir'
+    }
+    into sbeIrResourceDir
+}
+
+sourceSets.main.resources.srcDir(tasks.named('collectSbeIr'))
+
+application {
+    mainClass = 'org.limitless.seqeron.sequencer.SequencerServer'
+}
+
+tasks.named('run') {
+    // Pass JVM flags required for Aeron's off-heap memory access
+    jvmArgs '--add-opens=java.base/sun.nio.ch=ALL-UNNAMED',
+            '--add-opens=java.base/java.lang=ALL-UNNAMED',
+            '--add-opens=java.base/java.lang.reflect=ALL-UNNAMED',
+            '--add-opens=java.base/jdk.internal.misc=ALL-UNNAMED'
+    workingDir rootProject.projectDir
+    standardInput = System.in
+}
+
+// ── Uber jar ───────────────────────────────────────────────────────────────────
+// Every script resolves build/libs/seqeron-<version>-uber.jar. They run it two ways — `java -jar` for
+// the sequencer (Main-Class below) and `java -cp` for ReplayerServer, ClusterProbe, ClusterCtl and the
+// rest — so it carries every runtime dependency, :client included, plus the staged .sbeir resources.
+tasks.register('uberJar', Jar) {
+    description = 'Fat jar carrying every runtime dependency: build/libs/seqeron-<version>-uber.jar'
+    group       = 'build'
+
+    archiveBaseName   = 'seqeron'
+    archiveClassifier = 'uber'
+    destinationDirectory = rootProject.layout.buildDirectory.dir('libs')
+
+    manifest {
+        attributes 'Main-Class': application.mainClass.get(),
+                   'Add-Opens': 'java.base/sun.nio.ch java.base/java.lang java.base/java.lang.reflect ' +
+                                'java.base/jdk.internal.misc'
+    }
+
+    from(rootProject.file('LICENSE')) { into 'META-INF' }
+    from(rootProject.file('NOTICE')) { into 'META-INF' }
+
+    from sourceSets.main.output
+    // The closure below resolves :seqeron-client's jar lazily, which Gradle cannot read a task
+    // dependency out of — without this, a clean build packs before that jar exists.
+    dependsOn configurations.runtimeClasspath
+    from {
+        configurations.runtimeClasspath.collect { it.isDirectory() ? it : zipTree(it) }
+    }
+    exclude 'META-INF/*.SF', 'META-INF/*.DSA', 'META-INF/*.RSA', 'META-INF/versions/**/module-info.class',
+            'module-info.class'
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+}
+
+// ── Operator distribution ──────────────────────────────────────────────────────
+tasks.register('operatorDist', Sync) {
+    description = 'Lays out the operator distribution: build/install/seqeron/{bin,lib,ops}'
+    group       = 'distribution'
+
+    into rootProject.layout.buildDirectory.dir('install/seqeron')
+
+    into('bin') {
+        from 'src/main/scripts'
+        filePermissions { unix('0755') }
+    }
+    into('lib') { from tasks.named('uberJar') }
+    into('ops') { from 'src/main/ops' }
+    from rootProject.file('LICENSE')
+    from rootProject.file('NOTICE')
+}
+
+tasks.register('operatorDistZip', Zip) {
+    description = 'Archives the operator distribution: build/distributions/seqeron-<version>.zip'
+    group       = 'distribution'
+
+    from tasks.named('operatorDist')
+    into "seqeron-${project.version}"
+    archiveFileName      = "seqeron-${project.version}.zip"
+    destinationDirectory = rootProject.layout.buildDirectory.dir('distributions')
+}
+
+// The application plugin brings its own distZip/distTar/installDist, which ship Gradle's generated
+// start scripts over a lib/ of loose jars — a second, different "distribution" that nothing here wants.
+// The plugin stays for mainClass, which `run` and the uber jar's manifest both read.
+tasks.named('distZip')     { enabled = false }
+tasks.named('distTar')     { enabled = false }
+tasks.named('installDist') { enabled = false }
+
+tasks.named('jar') {
+    archiveBaseName = 'seqeron-service'
+    from(rootProject.file('LICENSE')) { into 'META-INF' }
+    from(rootProject.file('NOTICE')) { into 'META-INF' }
+    manifest.attributes('Implementation-Title': 'seqeron-service',
+                        'Implementation-Version': project.version,
+                        'Automatic-Module-Name': 'org.limitless.seqeron.service')
+}
+
+publishing {
+    publications {
+        node(MavenPublication) {
+            artifactId = 'seqeron-service'
+            from components.java
+        }
+    }
+}

@@ -14,7 +14,6 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.limitless.seqeron.protocol.ReplayProtocol;
-import org.limitless.seqeron.replayer.server.ReplayerService;
 import org.limitless.seqeron.sbe.frame.ClusterHeartbeatEncoder;
 import org.limitless.seqeron.sbe.replay.ReplayPendingEncoder;
 import org.limitless.seqeron.sbe.replay.ReplayUnavailableEncoder;

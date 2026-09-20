@@ -60,7 +60,7 @@ jobs:
       # media drivers plus their co-located replayers is an oversubscribed host, and Aeron's
       # liveness timeouts measure wall clock.
       - name: Failover soak
-        run: ./src/test/scripts/docker-failover-test.sh
+        run: ./seqeron-service/src/test/scripts/docker-failover-test.sh
         env:
           COMPOSE_BUILD: '0'
           TIMEOUT_SCALE: '3'

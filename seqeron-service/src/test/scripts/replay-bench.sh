@@ -8,7 +8,7 @@
 # ReplayerStreamReceiver::openReplaySubscription now documents — and stays as the regression measurement
 # for it: a run that reports NEVER CAUGHT UP is that class of bug, not a slow machine.
 #
-#   ./src/test/scripts/replay-bench.sh <preload> [load-during]
+#   ./seqeron-service/src/test/scripts/replay-bench.sh <preload> [load-during]
 #     preload       frames flooded to cluster ingress to build the archive before the cold start
 #     load-during   1 = keep flooding while the replica catches up (moving-target case), default 0
 #
@@ -18,17 +18,17 @@
 # number meaningful: a bare ProbeMarker is tiny, so it is padded to the size of the NewOrderSingle
 # this flood replaced. Numbers from before that change are still not comparable frame-for-frame.
 #
-#   ./src/test/scripts/replay-bench.sh 20000        # small archive, quiet
-#   ./src/test/scripts/replay-bench.sh 400000       # ~70 MB of history — the case that used to hang
+#   ./seqeron-service/src/test/scripts/replay-bench.sh 20000        # small archive, quiet
+#   ./seqeron-service/src/test/scripts/replay-bench.sh 400000       # ~70 MB of history — the case that used to hang
 #
 # Prints one result line: archive size, elapsed seconds, MB/s, and whether it caught up at all.
 # Elapsed includes the cold client's own start-up, which is now a JVM's rather than a C++ binary's —
 # a fixed cost that dominates at the small preloads and is noise at the 400k this was written for.
 set -uo pipefail
 cd "$(dirname "$0")/../../.." || exit 1
-source src/main/scripts/ports.sh
-source src/main/scripts/paths.sh
-source src/main/scripts/seqeron-home.sh
+source seqeron-service/src/main/scripts/ports.sh
+source seqeron-service/src/main/scripts/paths.sh
+source seqeron-service/src/main/scripts/seqeron-home.sh
 seqeron_require_jar
 
 PRELOAD="${1:-20000}"
@@ -50,7 +50,7 @@ cleanup() {
     [[ -n "${COLD_PID:-}" ]] && kill "$COLD_PID" 2>/dev/null
     [[ -n "${LOAD_PID:-}" ]] && kill "$LOAD_PID" 2>/dev/null
     pkill -f ClusterProbe 2>/dev/null
-    ./src/main/scripts/stop-cluster.sh >/dev/null 2>&1
+    ./seqeron-service/src/main/scripts/stop-cluster.sh >/dev/null 2>&1
     pkill -9 -f "uber.jar" 2>/dev/null
     pkill -9 -f aeronmd 2>/dev/null
 }
@@ -58,8 +58,8 @@ trap cleanup EXIT
 
 # Stale recordings are not merely noise here — they are counted in the archive size and replayed by
 # the cold replica, so the number this prints would be measuring the wrong history.
-./src/main/scripts/purgelog.sh --force >/dev/null 2>&1
-./src/test/scripts/start-three-node-cluster.sh > "$START_LOG" 2>&1 &
+./seqeron-service/src/main/scripts/purgelog.sh --force >/dev/null 2>&1
+./seqeron-service/src/test/scripts/start-three-node-cluster.sh > "$START_LOG" 2>&1 &
 wait_for_log "$START_LOG" "READY" 180 || { echo "cluster did not come up — see $START_LOG"; exit 1; }
 
 # Build the archive.

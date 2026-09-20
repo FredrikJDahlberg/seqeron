@@ -2,7 +2,7 @@
 
 What a process that talks to a seqeron cluster programs against. It lives in the **client tier**: the
 `org.limitless:seqeron` artifact in Java and the `seqeron::seqeron_core` CMake target in C++. Everything
-in `seqeron-node` (the sequencer, the Replayer server, the tools, the metrics exporter) runs the
+in `seqeron-service` (the sequencer, the Replayer server, the tools, the metrics exporter) runs the
 cluster and is not for clients.
 
 The classes named on this page are the API. Other classes in the client tier are public only because a
@@ -142,5 +142,5 @@ These are public or in public headers for mechanical reasons. Don't build on the
 - C++ `ReplayerRecovery`, `ReplayerRecoveryActions`, and `IngressTransport`/`EgressTransport` with their
   Aeron implementations: the seams the unit suites drive. Header-only C++ has no package-private. In Java
   the same seams are package-private.
-- Everything in `seqeron-node`: `Sequencer`, `SequencerService`, `SequencerServer`, `TapPublisher`,
+- Everything in `seqeron-service`: `Sequencer`, `SequencerService`, `SequencerServer`, `TapPublisher`,
   `replayer.server`, `tools`, `MetricsExporter`.

@@ -1,6 +1,7 @@
 # JitPack builds a tag on first request and serves what this writes to ~/.m2. JDK 21 because the Gradle
-# toolchain asks for it and JitPack's default is Java 8. `check` runs the tests and checkTierSeparation,
-# so a tag whose client tier reaches into the node is not served.
+# toolchain asks for it and JitPack's default is Java 8. `check` runs both modules' tests, and the module
+# boundary is what now stops a tag whose client tier reaches into the service tier: it does not compile,
+# so it never reaches a test.
 jdk:
   - openjdk21
 install:

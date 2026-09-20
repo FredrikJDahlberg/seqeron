@@ -6,8 +6,8 @@ description: How a seqeron release is tagged, built by JitPack and published (Ma
 # Releasing seqeron
 
 **JitPack is the Java release channel.** `jitpack.yml` builds a tag with `check publishToMavenLocal`,
-and it is served as `com.github.FredrikJDahlberg.seqeron:{seqeron,seqeron-node}:<tag>`. Under
-`JITPACK=true`, `build.gradle` publishes with that group and the tag as version, so `seqeron-node`'s
+and it is served as `com.github.FredrikJDahlberg.seqeron:{seqeron,seqeron-service}:<tag>`. Under
+`JITPACK=true`, `build.gradle` publishes with that group and the tag as version, so `seqeron-service`'s
 POM dependency on `seqeron` resolves there; everywhere else the group stays `org.limitless` and the
 version `VERSION`'s. A third publication, the pom-only `seqeron-bom`, pins
 Aeron, Agrona and SBE at `versions.properties`. A `v*` tag runs `release.yml`: it fails unless the tag

@@ -1,0 +1,128 @@
+// The client tier: what a process that only talks to a cluster needs. Nothing here may reference the
+// sequencer or the Replayer's server side — not by convention now but because they are not on this
+// module's compile classpath at all.
+//
+// The whole C++ half lives under this module too (client/src/main/cpp), for the same reason: C++ is the
+// client tier alone.
+
+// api, not implementation, for the three that appear in this module's own public signatures: anything
+// consuming these classes compiles against DirectBuffer (SequencedFrameDecoder, SystemFrame), Aeron and
+// Image (ReplayerStreamReceiver) and AeronCluster (ClusterStreamSender).
+dependencies {
+    api "io.aeron:aeron-cluster:${rootProject.ext.aeronVersion}"
+    api "io.aeron:aeron-client:${rootProject.ext.aeronVersion}"
+    api "org.agrona:agrona:${rootProject.ext.agronaVersion}"
+}
+
+// ── SBE code generation ────────────────────────────────────────────────────────
+// src/main/sbe, not src/main/resources: these are codegen inputs and belong in no jar. The two schemas
+// the client tier speaks are here; the probe payload and the cluster mirror are the node's.
+//
+// One root, but each schema owns a disjoint slice of it: its own package dir plus its own .sbeir.
+// Each task declares and wipes exactly that slice.
+def sbeGeneratedSrcDir = layout.buildDirectory.dir('generated/sources/sbe/main/java').get().asFile
+def sbeSchemaDir       = file('src/main/sbe')
+
+sourceSets.main.java.srcDir sbeGeneratedSrcDir
+
+[
+    generateReplaySbe: ['replay', 'sbe-replay.xml (the node-local replay control protocol)'],
+    generateFrameSbe : ['frame',  'sbe-frame.xml (the Unsequenced/Sequenced envelope pair)'],
+].each { taskName, spec ->
+    def (schema, about) = spec
+    def schemaFile = new File(sbeSchemaDir, "sbe-${schema}.xml")
+    def packageDir = new File(sbeGeneratedSrcDir, "org/limitless/seqeron/sbe/${schema}")
+
+    tasks.register(taskName, JavaExec) {
+        description = "Generate Java SBE codecs from ${about}"
+        classpath   = configurations.sbeCodegen
+        mainClass   = 'uk.co.real_logic.sbe.SbeTool'
+
+        jvmArgs '--add-opens=java.base/jdk.internal.misc=ALL-UNNAMED'
+
+        systemProperty 'sbe.output.dir',               sbeGeneratedSrcDir.absolutePath
+        systemProperty 'sbe.target.language',          'Java'
+        systemProperty 'sbe.java.generate.interfaces', 'false'
+        systemProperty 'sbe.xinclude.aware',           'true'
+        systemProperty 'sbe.generate.ir',              'true'
+
+        args schemaFile
+
+        inputs.file  schemaFile
+        outputs.dir  packageDir
+        outputs.file new File(sbeGeneratedSrcDir, "sbe-${schema}.sbeir")
+
+        doFirst {
+            packageDir.deleteDir()
+            sbeGeneratedSrcDir.mkdirs()
+        }
+    }
+}
+
+tasks.named('compileJava') {
+    dependsOn 'generateReplaySbe', 'generateFrameSbe'
+}
+
+// IR only, no stubs: the Java side speaks the cluster protocol through io.aeron.cluster.codecs, so the
+// mirror schema's codecs would be dead classes in the jar. The IR alone is what SbeLogPrinter needs to
+// decode the Raft consensus-log recording (schema 111) that sits in every archive dir.
+tasks.register('generateClusterSbeIr', JavaExec) {
+    description = 'Generate the SBE IR (no codecs) from sbe-cluster.xml for SbeLogPrinter'
+    classpath   = configurations.sbeCodegen
+    mainClass   = 'uk.co.real_logic.sbe.SbeTool'
+
+    jvmArgs '--add-opens=java.base/jdk.internal.misc=ALL-UNNAMED'
+
+    systemProperty 'sbe.output.dir',      sbeGeneratedSrcDir.absolutePath
+    systemProperty 'sbe.xinclude.aware',  'true'
+    systemProperty 'sbe.generate.stubs',  'false'
+    systemProperty 'sbe.generate.ir',     'true'
+
+    args new File(sbeSchemaDir, 'sbe-cluster.xml')
+
+    inputs.file  new File(sbeSchemaDir, 'sbe-cluster.xml')
+    outputs.file new File(sbeGeneratedSrcDir, 'sbe-cluster.sbeir')
+
+    doFirst { sbeGeneratedSrcDir.mkdirs() }
+}
+
+
+// The SBE tasks emit a .sbeir alongside the generated Java. Staged into the jar so SbeLogPrinter, which
+// lists this directory on the classpath rather than naming schemas, sees these two schemas whenever the
+// client jar is present — and the node's own two whenever that jar is. META-INF rather than a package
+// dir, because a consumer staging its own protocol's IR must not write into seqeron's namespace.
+def sbeIrResourceDir = layout.buildDirectory.dir('generated/resources/sbeir')
+
+tasks.register('collectSbeIr', Copy) {
+    description = 'Stage this module\'s SBE IR files as jar resources for SbeLogPrinter'
+    dependsOn 'generateReplaySbe', 'generateFrameSbe', 'generateClusterSbeIr'
+    doFirst { delete sbeIrResourceDir }
+    from(sbeGeneratedSrcDir) {
+        include '*.sbeir'
+        into 'META-INF/seqeron/sbeir'
+    }
+    into sbeIrResourceDir
+}
+
+sourceSets.main.resources.srcDir(tasks.named('collectSbeIr'))
+
+// ── Publishing ─────────────────────────────────────────────────────────────────
+// `seqeron`: a consumer that only talks to a cluster declares this and gets aeron-client, aeron-cluster
+// and Agrona with it — not the archive, not the media driver, and none of the sequencer.
+tasks.named('jar') {
+    archiveBaseName = 'seqeron'
+    from(rootProject.file('LICENSE')) { into 'META-INF' }
+    from(rootProject.file('NOTICE')) { into 'META-INF' }
+    manifest.attributes('Implementation-Title': 'seqeron',
+                        'Implementation-Version': project.version,
+                        'Automatic-Module-Name': 'org.limitless.seqeron')
+}
+
+publishing {
+    publications {
+        client(MavenPublication) {
+            artifactId = 'seqeron'
+            from components.java
+        }
+    }
+}

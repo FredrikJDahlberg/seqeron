@@ -97,7 +97,7 @@ endif()
 
 # ── SBE C++ codecs ─────────────────────────────────────────────────────────────
 # The codecs for the three schemas this repo owns are GENERATED AND COMMITTED, under
-# src/main/generated/sbe/core. The git tag is the C++ artifact, so shipping
+# seqeron-client/src/main/generated/sbe/core. The git tag is the C++ artifact, so shipping
 # them with it is what lets a consumer build against seqeron with no JDK and no SBE tool — a C++23
 # compiler is the whole prerequisite list. The schema is core's; there is nothing for a consumer to
 # regenerate.
@@ -110,12 +110,12 @@ endif()
 # tier owns (frame, replay, cluster) and nothing else. A deployment that builds an application's codecs
 # alongside these gives them their own root, so a cluster-tier file that reached for an application
 # codec fails to compile rather than merely being asked not to.
-set(SBE_CORE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src/main/generated/sbe/core")
+set(SBE_CORE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/seqeron-client/src/main/generated/sbe/core")
 
 set(SBE_SCHEMAS
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/main/sbe/sbe-cluster.xml"
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/main/sbe/sbe-replay.xml"
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/main/sbe/sbe-frame.xml"
+    "${CMAKE_CURRENT_SOURCE_DIR}/seqeron-client/src/main/sbe/sbe-cluster.xml"
+    "${CMAKE_CURRENT_SOURCE_DIR}/seqeron-client/src/main/sbe/sbe-replay.xml"
+    "${CMAKE_CURRENT_SOURCE_DIR}/seqeron-client/src/main/sbe/sbe-frame.xml"
 )
 
 # QUIET, not REQUIRED: a consumer compiles the committed codecs and never runs the tool. Java is
@@ -174,14 +174,14 @@ if(Java_JAVA_EXECUTABLE)
                     -DCOMMITTED=${SBE_CORE_DIR}
                     -DFRESH=${SBE_CHECK_DIR}
                     -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/CheckSbeCodecs.cmake
-        COMMENT "Checking the committed SBE C++ codecs against src/main/sbe"
+        COMMENT "Checking the committed SBE C++ codecs against seqeron-client/src/main/sbe"
         VERBATIM
     )
     add_dependencies(CheckSbeCodecsCurrent SbeCodecsForCheck)
 endif()
 
 # seqeron_core — header-only interface library for the cluster tier. Its include root is
-# src/main/cpp, so nothing linking only this can reach a product header,
+# seqeron-client/src/main/cpp, so nothing linking only this can reach a product header,
 # and it carries no simdfix and no generated FIX codecs: its SBE root is SBE_CORE_DIR, which holds
 # only frame/replay/cluster, so the cluster tier decodes no FIX by construction rather than by habit.
 #
@@ -191,7 +191,7 @@ endif()
 add_library(seqeron_core INTERFACE)
 add_library(seqeron::seqeron_core ALIAS seqeron_core)
 target_include_directories(seqeron_core INTERFACE
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/main/cpp>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/seqeron-client/src/main/cpp>
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
 )
 # SYSTEM: SBE-tool output. Regenerating from the schema is the only way to change these, so their
@@ -228,7 +228,7 @@ option(SEQERON_INSTALL "Generate seqeron's install and export rules" ${PROJECT_I
 if(SEQERON_INSTALL)
     include(CMakePackageConfigHelpers)
 
-    install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/src/main/cpp/"
+    install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/seqeron-client/src/main/cpp/"
         DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
         FILES_MATCHING PATTERN "*.hpp")
     install(DIRECTORY "${SBE_CORE_DIR}/"
@@ -265,26 +265,26 @@ if(SEQERON_BUILD_TESTS)
     enable_testing()
 
     add_executable(core_tests
-        src/test/cpp/org/limitless/seqeron/app/GatewayLifecycleTest.cpp
-        src/test/cpp/org/limitless/seqeron/app/LeaderGateTest.cpp
-        src/test/cpp/org/limitless/seqeron/app/OutstandingWorkTest.cpp
-        src/test/cpp/org/limitless/seqeron/app/OutstandingWorkPropertyTest.cpp
-        src/test/cpp/org/limitless/seqeron/app/PendingSendsTest.cpp
-        src/test/cpp/org/limitless/seqeron/app/PendingSendsPropertyTest.cpp
-        src/test/cpp/org/limitless/seqeron/app/RecoveryStallFenceTest.cpp
-        src/test/cpp/org/limitless/seqeron/app/TapLagMonitorTest.cpp
-        src/test/cpp/org/limitless/seqeron/sequencer/client/ClusterCodecTest.cpp
-        src/test/cpp/org/limitless/seqeron/sequencer/ConformanceTest.cpp
-        src/test/cpp/org/limitless/seqeron/sequencer/client/ClusterStreamSenderTest.cpp
-        src/test/cpp/org/limitless/seqeron/protocol/FrameStartPositionTest.cpp
-        src/test/cpp/org/limitless/seqeron/protocol/PortLayoutTest.cpp
-        src/test/cpp/org/limitless/seqeron/protocol/SequencedFrameTest.cpp
-        src/test/cpp/org/limitless/seqeron/replayer/client/ReplayerRecoveryTest.cpp
-        src/test/cpp/org/limitless/seqeron/replayer/client/ReplayerRecoveryPropertyTest.cpp
-        src/test/cpp/org/limitless/seqeron/helpers/SplitMix64Test.cpp
-        src/test/cpp/org/limitless/seqeron/util/EnvTest.cpp
-        src/main/cpp/org/limitless/seqeron/sequencer/client/ClusterStreamSender.hpp
-        src/main/cpp/org/limitless/seqeron/util/Logger.hpp
+        seqeron-client/src/test/cpp/org/limitless/seqeron/app/GatewayLifecycleTest.cpp
+        seqeron-client/src/test/cpp/org/limitless/seqeron/app/LeaderGateTest.cpp
+        seqeron-client/src/test/cpp/org/limitless/seqeron/app/OutstandingWorkTest.cpp
+        seqeron-client/src/test/cpp/org/limitless/seqeron/app/OutstandingWorkPropertyTest.cpp
+        seqeron-client/src/test/cpp/org/limitless/seqeron/app/PendingSendsTest.cpp
+        seqeron-client/src/test/cpp/org/limitless/seqeron/app/PendingSendsPropertyTest.cpp
+        seqeron-client/src/test/cpp/org/limitless/seqeron/app/RecoveryStallFenceTest.cpp
+        seqeron-client/src/test/cpp/org/limitless/seqeron/app/TapLagMonitorTest.cpp
+        seqeron-client/src/test/cpp/org/limitless/seqeron/sequencer/client/ClusterCodecTest.cpp
+        seqeron-client/src/test/cpp/org/limitless/seqeron/sequencer/ConformanceTest.cpp
+        seqeron-client/src/test/cpp/org/limitless/seqeron/sequencer/client/ClusterStreamSenderTest.cpp
+        seqeron-client/src/test/cpp/org/limitless/seqeron/protocol/FrameStartPositionTest.cpp
+        seqeron-client/src/test/cpp/org/limitless/seqeron/protocol/PortLayoutTest.cpp
+        seqeron-client/src/test/cpp/org/limitless/seqeron/protocol/SequencedFrameTest.cpp
+        seqeron-client/src/test/cpp/org/limitless/seqeron/replayer/client/ReplayerRecoveryTest.cpp
+        seqeron-client/src/test/cpp/org/limitless/seqeron/replayer/client/ReplayerRecoveryPropertyTest.cpp
+        seqeron-client/src/test/cpp/org/limitless/seqeron/helpers/SplitMix64Test.cpp
+        seqeron-client/src/test/cpp/org/limitless/seqeron/util/EnvTest.cpp
+        seqeron-client/src/main/cpp/org/limitless/seqeron/sequencer/client/ClusterStreamSender.hpp
+        seqeron-client/src/main/cpp/org/limitless/seqeron/util/Logger.hpp
     )
     target_link_libraries(core_tests PRIVATE
         seqeron_core
@@ -296,7 +296,7 @@ if(SEQERON_BUILD_TESTS)
     )
 
     # helpers/ — what the suites share, such as the generator both languages' property tests draw from.
-    target_include_directories(core_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/test/cpp)
+    target_include_directories(core_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/seqeron-client/src/test/cpp)
 
     check_cxx_compiler_flag("-Wcharacter-conversion" SEQERON_HAS_WCHARACTER_CONVERSION)
     if(SEQERON_HAS_WCHARACTER_CONVERSION)

@@ -12,7 +12,6 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.limitless.seqeron.protocol.ReplayProtocol;
 import org.limitless.seqeron.protocol.SystemFrame;
-import org.limitless.seqeron.replayer.server.ReplayerService;
 import org.limitless.seqeron.sbe.frame.ClusterHeartbeatEncoder;
 import org.limitless.seqeron.sbe.frame.MessageHeaderEncoder;
 import org.limitless.seqeron.sbe.replay.ReplayPendingEncoder;

@@ -1,17 +1,7 @@
-// seqeron's Java half — the sequencer, the replayer (both sides), the tools, and the code generation
-// for the schemas the cluster tier itself speaks. Nothing here touches an APPLICATION payload: not its
-// codecs and not its IR. The product protocols (sbe-session.xml, sbe-basicdata.xml, sbe-order.xml) are
-// their own repo's, generated and staged there, and this build compiles against none of them.
-//
-// The one application-family schema generated here is core's own: sbe-probe.xml (payloadId 5), the
-// protocol ClusterProbe speaks so this repo's e2e scripts can drive a cluster with no product binary
-// built. It is private to tools/ClusterProbe — sequencer/ and replayer/ import it nowhere, and the
-// sequencer still decodes no payloadId at all.
+// seqeron's Java half, in two modules by audience (settings.gradle). This file holds only what both
+// share plus the BOM, which names neither module's classes.
 
 plugins {
-    id 'application'
-    id 'java-library'
-    id 'jacoco'
     id 'maven-publish'
 }
 
@@ -20,20 +10,10 @@ group   = 'org.limitless'
 version = file('VERSION').text.trim()
 
 // On JitPack, publish under the coordinates it serves — com.github.<user>.<repo>:<artifactId>:<tag> —
-// so seqeron-node's POM dependency on seqeron names an artifact that exists there.
+// so seqeron-service's POM dependency on seqeron names an artifact that exists there.
 if (System.getenv('JITPACK')) {
     group   = "${System.getenv('GROUP')}.${System.getenv('ARTIFACT')}"
     version = System.getenv('VERSION')
-}
-
-repositories {
-    mavenCentral()
-}
-
-java {
-    toolchain {
-        languageVersion = JavaLanguageVersion.of(21)
-    }
 }
 
 // Aeron, Agrona and SBE come from versions.properties, which CMakeLists.txt reads too.
@@ -47,449 +27,65 @@ ext {
     junitVersion  = '5.10.2'
 }
 
-configurations {
-    sbeCodegen
-}
+subprojects {
+    apply plugin: 'java-library'
+    apply plugin: 'jacoco'
+    apply plugin: 'maven-publish'
 
-// api, not implementation, for the four that appear in this repo's own public signatures: anything
-// consuming these classes compiles against DirectBuffer (SequencedFrameDecoder, SystemFrame), Aeron and
-// Image (ReplayerStreamReceiver), AeronArchive (ReplayerService) and ClusteredService
-// (SequencerService), so they belong on a consumer's compile classpath rather than being redeclared
-// there. aeron-driver stays implementation — SequencerServer embeds a MediaDriver but exposes none. So
-// does sbe-tool: SbeLogPrinter's List<Ir> constructor is the one leak, and the printer is a CLI, not a
-// library entry point.
-dependencies {
-    api "io.aeron:aeron-cluster:${aeronVersion}"
-    api "io.aeron:aeron-archive:${aeronVersion}"
-    api "io.aeron:aeron-client:${aeronVersion}"
-    api "org.agrona:agrona:${agronaVersion}"
-    implementation "io.aeron:aeron-driver:${aeronVersion}"
-    implementation "uk.co.real-logic:sbe-tool:${sbeVersion}"
+    group   = rootProject.group
+    version = rootProject.version
 
-    testImplementation "io.aeron:aeron-cluster:${aeronVersion}"
-    testImplementation "io.aeron:aeron-archive:${aeronVersion}"
-    testImplementation "io.aeron:aeron-driver:${aeronVersion}"
-    testImplementation "io.aeron:aeron-client:${aeronVersion}"
-    testImplementation "org.agrona:agrona:${agronaVersion}"
-    testImplementation "org.junit.jupiter:junit-jupiter-api:${junitVersion}"
-    testImplementation "org.junit.jupiter:junit-jupiter-params:${junitVersion}"
-    testRuntimeOnly    "org.junit.jupiter:junit-jupiter-engine:${junitVersion}"
+    repositories {
+        mavenCentral()
+    }
 
-    sbeCodegen "uk.co.real-logic:sbe-all:${sbeVersion}"
-}
+    java {
+        toolchain {
+            languageVersion = JavaLanguageVersion.of(21)
+        }
+        withSourcesJar()
+    }
 
-// ── SBE code generation ────────────────────────────────────────────────────────
-// src/main/sbe, not src/main/resources: these are codegen inputs and belong in no jar. The one file
-// here a jar does need is topology.xsd, and it sits in resources for exactly that reason — ClusterCtl
-// validates the topology document against it off its own classpath. The C++ build generates from three
-// of these four by path — sbe-probe.xml is Java-only, because the probe is, which is also what keeps
-// the C++ core's generated/sbe/core root free of any application codec.
+    configurations {
+        sbeCodegen
+    }
 
-// One root, but each schema owns a disjoint slice of it: its own package dir plus its own .sbeir.
-// Each task declares and wipes exactly that slice. Declaring the shared root instead made the codec
-// tasks overlap, and Gradle cannot clean an output it cannot attribute to one task — which is what let
-// a message deleted from a schema leave its codec on disk to be compiled against.
-def sbeGeneratedSrcDir = layout.buildDirectory.dir('generated/sources/sbe/main/java').get().asFile
-def sbeSchemaDir       = file('src/main/sbe')
+    dependencies {
+        sbeCodegen "uk.co.real-logic:sbe-all:${rootProject.ext.sbeVersion}"
 
-sourceSets.main.java.srcDir sbeGeneratedSrcDir
+        testImplementation "org.junit.jupiter:junit-jupiter-api:${rootProject.ext.junitVersion}"
+        testImplementation "org.junit.jupiter:junit-jupiter-params:${rootProject.ext.junitVersion}"
+        testRuntimeOnly    "org.junit.jupiter:junit-jupiter-engine:${rootProject.ext.junitVersion}"
+    }
 
-[
-    generateReplaySbe: ['replay', 'sbe-replay.xml (the node-local replay control protocol)'],
-    generateFrameSbe : ['frame',  'sbe-frame.xml (the Unsequenced/Sequenced envelope pair)'],
-    generateProbeSbe : ['probe',  'sbe-probe.xml (the ClusterProbe load/liveness payload)'],
-].each { taskName, spec ->
-    def (schema, about) = spec
-    def schemaFile = new File(sbeSchemaDir, "sbe-${schema}.xml")
-    def packageDir = new File(sbeGeneratedSrcDir, "org/limitless/seqeron/sbe/${schema}")
-
-    tasks.register(taskName, JavaExec) {
-        description = "Generate Java SBE codecs from ${about}"
-        classpath   = configurations.sbeCodegen
-        mainClass   = 'uk.co.real_logic.sbe.SbeTool'
-
+    tasks.named('test') {
+        useJUnitPlatform()
         // Agrona's UnsafeBuffer needs this to access jdk.internal.misc.Unsafe on JDK 21+.
         jvmArgs '--add-opens=java.base/jdk.internal.misc=ALL-UNNAMED'
-
-        systemProperty 'sbe.output.dir',               sbeGeneratedSrcDir.absolutePath
-        systemProperty 'sbe.target.language',          'Java'
-        systemProperty 'sbe.java.generate.interfaces', 'false'
-        systemProperty 'sbe.xinclude.aware',           'true'
-        systemProperty 'sbe.generate.ir',              'true'
-
-        args schemaFile
-
-        inputs.file  schemaFile
-        outputs.dir  packageDir
-        outputs.file new File(sbeGeneratedSrcDir, "sbe-${schema}.sbeir")
-
-        doFirst {
-            packageDir.deleteDir()
-            sbeGeneratedSrcDir.mkdirs()
-        }
-    }
-}
-
-// The two schemas the cluster tier speaks, plus its own probe payload. The PRODUCT payloads' codecs
-// belong to the product repo, generated there — this build compiles against none of them, and shipping
-// them here was what let the "payload-agnostic" claim be true of the code and false of the artifact.
-tasks.named('compileJava') {
-    dependsOn 'generateReplaySbe', 'generateFrameSbe', 'generateProbeSbe'
-}
-
-// ── IR-only schemas ────────────────────────────────────────────────────────────
-
-// IR only, no stubs: the Java side speaks the cluster protocol through io.aeron.cluster.codecs, so the
-// mirror schema's codecs would be dead classes in the jar. The IR alone is what SbeLogPrinter needs to
-// decode the Raft consensus-log recording (schema 111) that sits in every archive dir.
-tasks.register('generateClusterSbeIr', JavaExec) {
-    description = 'Generate the SBE IR (no codecs) from sbe-cluster.xml for SbeLogPrinter'
-    classpath   = configurations.sbeCodegen
-    mainClass   = 'uk.co.real_logic.sbe.SbeTool'
-
-    jvmArgs '--add-opens=java.base/jdk.internal.misc=ALL-UNNAMED'
-
-    systemProperty 'sbe.output.dir',      sbeGeneratedSrcDir.absolutePath
-    systemProperty 'sbe.xinclude.aware',  'true'
-    systemProperty 'sbe.generate.stubs',  'false'
-    systemProperty 'sbe.generate.ir',     'true'
-
-    args new File(sbeSchemaDir, 'sbe-cluster.xml')
-
-    inputs.file  new File(sbeSchemaDir, 'sbe-cluster.xml')
-    outputs.file new File(sbeGeneratedSrcDir, 'sbe-cluster.sbeir')
-
-    doFirst { sbeGeneratedSrcDir.mkdirs() }
-}
-
-// The SBE tasks above emit a .sbeir IR file alongside the generated Java (sbe.generate.ir). Copy those
-// into a resource dir so they ship inside the jar and SbeLogPrinter can decode a recording without a
-// path into build/. Copied rather than adding sbeGeneratedSrcDir to `resources` directly: that dir is
-// full of generated .java, and the only filter available is set-wide, which would drop topology.xsd
-// from the jar.
-//
-// Only the four schemas this repo owns. SbeLogPrinter lists this directory on the classpath rather
-// than naming schemas, so a product jar stages its own into the same path and a run over both sees all
-// of them — while a run over this jar alone names no PRODUCT protocol, which is the point. sbe-probe is
-// here so a probe-driven recording reads as ProbeMarker rather than as an undecodable payload.
-def sbeIrResourceDir = layout.buildDirectory.dir('generated/resources/sbeir')
-
-tasks.register('collectSbeIr', Copy) {
-    description = 'Stage the generated SBE IR files as jar resources for SbeLogPrinter'
-    dependsOn 'generateReplaySbe', 'generateFrameSbe', 'generateProbeSbe', 'generateClusterSbeIr'
-    // Wiped first, like every codegen step here: a Copy leaves whatever an earlier run put in the
-    // destination, so a moved staging path would otherwise ship in the jar twice.
-    doFirst { delete sbeIrResourceDir }
-    from(sbeGeneratedSrcDir) {
-        include '*.sbeir'
-        into 'META-INF/seqeron/sbeir'
-    }
-    into sbeIrResourceDir
-}
-
-// The Copy's destination is the resource ROOT, so the path above is what lands in the jar. It is
-// META-INF rather than a package dir: a consumer stages its own protocol's IR into the same
-// directory, and that must not mean writing into seqeron's package namespace (registries.md's rule).
-sourceSets.main.resources.srcDir(tasks.named('collectSbeIr'))
-
-// ── SBE log printer ────────────────────────────────────────────────────────────
-// Offline dump of an Aeron Archive recording as JSON. The tool is the cluster tier's, and so is this
-// task's classpath: this repo's runtime, which carries the four schemas it owns and no application
-// IR at all. A core frame therefore prints in full and an application payload prints under its
-// payloadId, labelled from the recording's own PayloadIdRegistered rows and not decoded. To name
-// payloads inline instead, put a deployment's IR in front of the tool: sbe-log-printer.sh, and point
-// SEQERON_JAR at a jar that holds it.
-//
-// No -o here on purpose. §13.1's pipe writes raw payload bytes to stdout, and Gradle re-encodes a
-// child process's stdout as text — every non-ASCII byte comes out as U+FFFD. The pipe is the shell
-// wrapper's, which execs the JVM directly.
-
-tasks.register('sbeLogPrinter', JavaExec) {
-    description = 'Print an SBE archive recording as JSON: -PlogDir=<archive dir> [-Pschema=<name>] ' +
-                  '[-Pspec=<sbeir file>] [-Pstream=<id>] [-Poneline]'
-    group       = 'application'
-
-    classpath  = sourceSets.main.runtimeClasspath
-    mainClass  = 'org.limitless.seqeron.tools.SbeLogPrinter'
-    jvmArgs    '--add-opens=java.base/jdk.internal.misc=ALL-UNNAMED'
-    // Relative paths on the command line are the caller's, and every caller runs from the repo root.
-    workingDir rootProject.projectDir
-
-    doFirst {
-        final String logDir = project.findProperty('logDir')
-        if (!logDir) {
-            throw new GradleException('Usage: ./gradlew sbeLogPrinter -PlogDir=<archive dir> [-Pschema=<name>] ' +
-                                      '[-Pspec=<sbeir file>] [-Pstream=<id>] [-Poneline]')
-        }
-        // No schema given: the printer decodes each frame against whichever bundled schema its header names.
-        if (project.hasProperty('schema')) {
-            args '--schema', project.property('schema')
-        }
-        if (project.hasProperty('spec')) {
-            args '--spec', project.property('spec')
-        }
-        args logDir
-        // Opt-in: dump only the newest recording on this stream (205 = the sequenced tap).
-        if (project.hasProperty('stream')) {
-            args '--stream', project.property('stream')
-        }
-        if (project.hasProperty('oneline')) {
-            args '--oneline'
-        }
-    }
-}
-
-application {
-    mainClass = 'org.limitless.seqeron.sequencer.SequencerServer'
-}
-
-tasks.named('run') {
-    // Pass JVM flags required for Aeron's off-heap memory access
-    jvmArgs '--add-opens=java.base/sun.nio.ch=ALL-UNNAMED',
-            '--add-opens=java.base/java.lang=ALL-UNNAMED',
-            '--add-opens=java.base/java.lang.reflect=ALL-UNNAMED',
-            '--add-opens=java.base/jdk.internal.misc=ALL-UNNAMED'
-    workingDir rootProject.projectDir
-    standardInput = System.in
-}
-
-// ── Tests ──────────────────────────────────────────────────────────────────────
-// The suite covers the deterministic decision-making — Sequencer, and ReplayerService through its
-// Replayer seam — and deliberately touches no Aeron runtime: no media driver, no cluster, no Aeron
-// mocks, so it runs in about a second. Everything Aeron-shaped is covered by core_tests (C++) and the
-// end-to-end scripts under src/test/scripts.
-
-tasks.named('test') {
-    useJUnitPlatform()
-    // Agrona's UnsafeBuffer needs this to access jdk.internal.misc.Unsafe on JDK 21+.
-    jvmArgs '--add-opens=java.base/jdk.internal.misc=ALL-UNNAMED'
-    finalizedBy 'jacocoTestReport'
-}
-
-tasks.named('jacocoTestReport') {
-    dependsOn 'test'
-    reports {
-        xml.required  = true
-        html.required = true
-    }
-    // Generated SBE codecs are the tool's output, not this repo's code; counting them buries the
-    // hand-written classes the report exists to measure.
-    classDirectories.setFrom(
-        files(classDirectories.files.collect {
-            fileTree(dir: it, exclude: 'org/limitless/seqeron/sbe/**')
-        })
-    )
-}
-
-// ── Uber jar ───────────────────────────────────────────────────────────────────
-// Every script resolves build/libs/seqeron-<version>-uber.jar: clusterctl.sh, sbe-log-printer.sh, the
-// metrics scripts, and each harness under src/test/scripts. They run it two ways — `java -jar` for the
-// sequencer (Main-Class below) and `java -cp` for ReplayerServer, ClusterProbe, ClusterCtl and the rest
-// — so the jar carries every runtime dependency plus the staged .sbeir resources SbeLogPrinter reads
-// off its own classpath.
-
-tasks.register('uberJar', Jar) {
-    description = 'Fat jar carrying every runtime dependency: build/libs/seqeron-<version>-uber.jar'
-    group       = 'build'
-
-    archiveClassifier = 'uber'
-    // Add-Opens is honoured only by `java -jar`, so it covers SequencerServer; the `-cp` launches still
-    // pass seqeron-home.sh's SEQERON_JAVA_OPTS.
-    manifest {
-        attributes 'Main-Class': application.mainClass.get(),
-                   'Add-Opens': 'java.base/sun.nio.ch java.base/java.lang java.base/java.lang.reflect ' +
-                                'java.base/jdk.internal.misc'
+        finalizedBy 'jacocoTestReport'
     }
 
-    // The jar redistributes Aeron, Agrona and sbe-tool, so it must carry a copy of the license they
-    // and this repo share (Apache 2.0 §4a) and this repo's NOTICE (§4d). First, so
-    // DuplicatesStrategy.EXCLUDE keeps these.
-    from('LICENSE') { into 'META-INF' }
-    from('NOTICE') { into 'META-INF' }
-
-    from sourceSets.main.output
-    from {
-        configurations.runtimeClasspath.collect { it.isDirectory() ? it : zipTree(it) }
-    }
-    // Dependency jars collide on module-info and on their signatures; a signed entry in a repacked jar
-    // fails verification at load rather than at build time.
-    exclude 'META-INF/*.SF', 'META-INF/*.DSA', 'META-INF/*.RSA', 'META-INF/versions/**/module-info.class',
-            'module-info.class'
-    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
-}
-
-// ── Operator distribution ──────────────────────────────────────────────────────
-// What an operator installs: the launchers, the jar they run, and the ops-plane provisioning they point
-// Prometheus and Grafana at. Until this existed the scripts ran only from a source checkout — they
-// resolved the jar by walking `../../..` up to a repo root and naming build/libs, so getting a launcher
-// meant cloning and building. seqeron-home.sh reads either layout and SEQERON_HOME overrides both.
-//
-// bin/ carries the sourced files (paths.sh, ports.sh, seqeron-home.sh) beside the executable ones:
-// every `source` in them is "$(dirname "${BASH_SOURCE[0]}")/<name>", so adjacency is the contract and
-// separating them is the one thing that would break it.
-
-tasks.register('operatorDist', Sync) {
-    description = 'Lays out the operator distribution: build/install/seqeron/{bin,lib,ops}'
-    group       = 'distribution'
-
-    into layout.buildDirectory.dir('install/seqeron')
-
-    into('bin') {
-        from 'src/main/scripts'
-        filePermissions { unix('0755') }
-    }
-    into('lib') { from tasks.named('uberJar') }
-    into('ops') { from 'src/main/ops' }
-    from 'LICENSE'
-    from 'NOTICE'
-}
-
-tasks.register('operatorDistZip', Zip) {
-    description = 'Archives the operator distribution: build/distributions/seqeron-<version>.zip'
-    group       = 'distribution'
-
-    from tasks.named('operatorDist')
-    into "seqeron-${project.version}"
-    archiveFileName      = "seqeron-${project.version}.zip"
-    destinationDirectory = layout.buildDirectory.dir('distributions')
-}
-
-// The application plugin brings its own distZip/distTar/installDist, which ship Gradle's generated
-// start scripts over a lib/ of loose jars — a second, different "distribution" that nothing here wants
-// and that would be the wrong answer to "how do I install seqeron". The plugin stays for mainClass,
-// which `run` and the uber jar's manifest both read.
-tasks.named('distZip')     { enabled = false }
-tasks.named('distTar')     { enabled = false }
-tasks.named('installDist') { enabled = false }
-
-// ── Split by audience ──────────────────────────────────────────────────────────
-// Two published artifacts out of one source tree: `seqeron` is the CLIENT tier —
-// what a process that merely talks to a cluster needs: the envelope, the ingress client, the replay
-// client, the port block, the logger and the counters — and `seqeron-node` is the cluster itself: the
-// sequencer, the Replayer, the tools and the metrics exporter. A producer should not put the archive and
-// the media driver on its classpath to encode a frame. (aeron-cluster stays a client dependency: the
-// cluster client and the consensus module ship in one upstream artifact, so it is not ours to split.)
-//
-// The tiers are packages, laid out as Aeron's are: a component's server at its root and its client in
-// `.client` beside it, with the wire contract both share in `protocol`. No package is in both jars.
-ext.clientTierPatterns = [
-    'org/limitless/seqeron/protocol/**',
-    'org/limitless/seqeron/sequencer/client/**',
-    'org/limitless/seqeron/replayer/client/**',
-    'org/limitless/seqeron/app/**',
-    'org/limitless/seqeron/util/**',
-    'org/limitless/seqeron/sbe/frame/**',
-    'org/limitless/seqeron/sbe/replay/**',
-]
-
-// What every published jar carries besides its classes: the license and NOTICE, for the same Apache 2.0
-// §4a/§4d reason the uber jar does, and the artifact it belongs to. The tier filters go on each jar's
-// `from`, not on the task, because a task-level filter would also drop these META-INF entries.
-def publishedJar = { Jar jar, String artifactId ->
-    jar.from('LICENSE') { into 'META-INF' }
-    jar.from('NOTICE') { into 'META-INF' }
-    jar.manifest.attributes('Implementation-Title': artifactId, 'Implementation-Version': project.version)
-}
-
-// Automatic modules both, which the module path allows because no package is split across them.
-tasks.register('clientJar', Jar) {
-    description = 'The client tier alone — what a producer or consumer needs to talk to a cluster'
-    group       = 'build'
-    archiveAppendix = 'client'
-    from(sourceSets.main.output) { include clientTierPatterns }
-    publishedJar(it, 'seqeron')
-    manifest.attributes('Automatic-Module-Name': 'org.limitless.seqeron')
-}
-
-tasks.register('nodeJar', Jar) {
-    description = 'The node tier: the sequencer, the Replayer, the tools and the metrics exporter'
-    group       = 'build'
-    archiveAppendix = 'node'
-    from(sourceSets.main.output) { exclude clientTierPatterns }
-    publishedJar(it, 'seqeron-node')
-    manifest.attributes('Automatic-Module-Name': 'org.limitless.seqeron.node')
-}
-
-// allJava includes the generated SBE codecs, which are part of the published classes. The tier patterns
-// match .java names as well as .class ones.
-tasks.register('clientSourcesJar', Jar) {
-    description = 'Sources for the client tier'
-    group       = 'build'
-    archiveAppendix   = 'client'
-    archiveClassifier = 'sources'
-    dependsOn 'generateReplaySbe', 'generateFrameSbe', 'generateProbeSbe'
-    from(sourceSets.main.allJava) { include clientTierPatterns }
-    publishedJar(it, 'seqeron')
-}
-
-tasks.register('nodeSourcesJar', Jar) {
-    description = 'Sources for the node tier'
-    group       = 'build'
-    archiveAppendix   = 'node'
-    archiveClassifier = 'sources'
-    dependsOn 'generateReplaySbe', 'generateFrameSbe', 'generateProbeSbe'
-    from(sourceSets.main.allJava) { exclude clientTierPatterns }
-    publishedJar(it, 'seqeron-node')
-}
-
-// The client tier must stay a tier: a client class that reaches for the node compiles here (one source
-// set) and then fails at runtime in a consumer that took `seqeron` alone, which is the worst place to
-// find out. Checked on the compiled classes rather than on imports, so nothing the compiler resolved
-// without an import can slip through.
-tasks.register('checkTierSeparation') {
-    description = 'Fails if the client tier references the node tier, or Aeron beyond the client'
-    group       = 'verification'
-    dependsOn tasks.named('classes')
-
-    final FileCollection clientClasses =
-        fileTree(sourceSets.main.output.classesDirs.singleFile).matching { include clientTierPatterns }
-    inputs.files clientClasses
-
-    doLast {
-        final List<String> forbidden = [
-            'org/limitless/seqeron/sequencer/Sequencer',
-            'org/limitless/seqeron/sequencer/TapPublisher',
-            'org/limitless/seqeron/replayer/server/',
-            'org/limitless/seqeron/tools/',
-            'org/limitless/seqeron/metrics/Metrics',
-            'io/aeron/archive/',
-            'io/aeron/driver/',
-        ]
-        final List<String> leaks = []
-        clientClasses.each { File f ->
-            final String pool = new String(f.bytes, 'ISO-8859-1')
-            forbidden.each { String ref ->
-                if (pool.contains(ref)) {
-                    leaks << "${f.name} -> ${ref}"
-                }
-            }
+    tasks.named('jacocoTestReport') {
+        dependsOn 'test'
+        reports {
+            xml.required  = true
+            html.required = true
         }
-        if (!leaks.isEmpty()) {
-            throw new GradleException(
-                "client tier references the node tier:\n  " + leaks.join('\n  ') +
-                "\nEither the class belongs in the node tier, or the constant it reached for belongs in " +
-                "the client tier (FrameLayer, PortLayout, ReplayerStreamReceiver).")
-        }
+        // Generated SBE codecs are the tool's output, not this repo's code; counting them buries the
+        // hand-written classes the report exists to measure.
+        classDirectories.setFrom(
+            files(classDirectories.files.collect {
+                fileTree(dir: it, exclude: 'org/limitless/seqeron/sbe/**')
+            })
+        )
     }
 }
-
-tasks.named('check') { dependsOn 'checkTierSeparation' }
 
 // ── Publishing ─────────────────────────────────────────────────────────────────
-// Two artifacts, by audience (see "Split by audience" above): `seqeron` is the client tier and
-// `seqeron-node` the cluster, the latter depending on the former. A consumer that only talks to a
-// cluster declares `seqeron` and gets aeron-client, aeron-cluster and Agrona with it — not the archive,
-// not the media driver, and none of the sequencer. JitPack builds a tag with publishToMavenLocal
-// (jitpack.yml) and serves the result, so no remote repository is declared here.
-//
-// The uber jar is deliberately NOT published. It is the runnable artifact every script resolves out of
-// build/libs, and it repacks Aeron and Agrona — publishing it would put a shaded copy of them on a
-// consumer's classpath beside the real ones.
-
-// The POMs are written by hand because the tiers are packages, not components, so neither publication
-// can take `from components.java`. The scopes mirror the dependencies block: `api` is compile, and
-// `implementation` is runtime, which keeps aeron-driver and sbe-tool off a consumer's compile classpath.
-// Rows are [groupId, artifactId, version, scope]; a null scope writes none.
+// Each module publishes itself (client/build.gradle, node/build.gradle). The BOM lives here because it
+// names both and belongs to neither: Aeron, Agrona and SBE at the versions seqeron was built against.
+// Gradle otherwise resolves a consumer's own Aeron pin against ours by taking the higher, and a version
+// that differs from the cluster's fails as frames that do not decode, not at build time.
 def appendDependencies = { Node parent, List rows ->
     final Node deps = parent.appendNode('dependencies')
     rows.each { g, a, v, s ->
@@ -505,39 +101,13 @@ def appendDependencies = { Node parent, List rows ->
 
 publishing {
     publications {
-        client(MavenPublication) {
-            artifactId = 'seqeron'
-            artifact tasks.named('clientJar')
-            artifact tasks.named('clientSourcesJar')
-            pom.withXml {
-                appendDependencies(asNode(), [
-                    ['io.aeron', 'aeron-client', aeronVersion, 'compile'],
-                    ['io.aeron', 'aeron-cluster', aeronVersion, 'compile'],
-                    ['org.agrona', 'agrona', agronaVersion, 'compile']])
-            }
-        }
-        node(MavenPublication) {
-            artifactId = 'seqeron-node'
-            artifact tasks.named('nodeJar')
-            artifact tasks.named('nodeSourcesJar')
-            pom.withXml {
-                appendDependencies(asNode(), [
-                    [project.group, 'seqeron', project.version, 'compile'],
-                    ['io.aeron', 'aeron-archive', aeronVersion, 'compile'],
-                    ['io.aeron', 'aeron-driver', aeronVersion, 'runtime'],
-                    ['uk.co.real-logic', 'sbe-tool', sbeVersion, 'runtime']])
-            }
-        }
-        // Aeron, Agrona and SBE at the versions seqeron was built against. Gradle otherwise resolves a
-        // consumer's own Aeron pin against ours by taking the higher, and a version that differs from
-        // the cluster's fails as frames that do not decode, not at build time.
         bom(MavenPublication) {
             artifactId = 'seqeron-bom'
             pom.packaging = 'pom'
             pom.withXml {
                 appendDependencies(asNode().appendNode('dependencyManagement'), [
                     [project.group, 'seqeron', project.version, null],
-                    [project.group, 'seqeron-node', project.version, null],
+                    [project.group, 'seqeron-service', project.version, null],
                     ['io.aeron', 'aeron-client', aeronVersion, null],
                     ['io.aeron', 'aeron-cluster', aeronVersion, null],
                     ['io.aeron', 'aeron-archive', aeronVersion, null],

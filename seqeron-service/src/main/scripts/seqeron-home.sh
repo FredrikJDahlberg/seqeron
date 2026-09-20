@@ -15,11 +15,13 @@ _seqeron_script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [[ -z "${SEQERON_HOME:-}" ]]; then
     if [[ -d "${_seqeron_script_dir}/../lib" ]]; then
         SEQERON_HOME="$(cd "${_seqeron_script_dir}/.." && pwd)"
-    elif [[ "${_seqeron_script_dir}" == */src/main/scripts ]]; then
-        SEQERON_HOME="$(cd "${_seqeron_script_dir}/../../.." && pwd)"
+    elif [[ "${_seqeron_script_dir}" == */seqeron-service/src/main/scripts ]]; then
+        # A checkout: the scripts are the node module's, and the uber jar every one of them resolves is
+        # the root project's, so this climbs past the module to the repo root.
+        SEQERON_HOME="$(cd "${_seqeron_script_dir}/../../../.." && pwd)"
     else
         echo "ERROR: cannot tell where seqeron is installed from ${_seqeron_script_dir}" >&2
-        echo "       (expected a distribution's bin/ or a checkout's src/main/scripts) — set SEQERON_HOME" >&2
+        echo "       (expected a distribution's bin/ or a checkout's seqeron-service/src/main/scripts) — set SEQERON_HOME" >&2
         exit 1
     fi
 fi

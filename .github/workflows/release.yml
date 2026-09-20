@@ -29,7 +29,7 @@ jobs:
               exit 1
           fi
           echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
-          echo "image=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/seqeron-node" >> "${GITHUB_OUTPUT}"
+          echo "image=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/seqeron-service" >> "${GITHUB_OUTPUT}"
 
       - uses: actions/setup-java@v4
         with:
@@ -37,13 +37,13 @@ jobs:
           java-version: '21'
 
       - name: Build
-        run: ./gradlew check operatorDistZip clientJar nodeJar
+        run: ./gradlew check operatorDistZip :seqeron-client:jar :seqeron-service:jar
 
       # JitPack builds a tag on its first request and serves nothing until it has. Asking here means no
       # consumer waits on that build, and a tag JitPack cannot build fails the release.
       - name: JitPack build
         run: |
-          POM="https://jitpack.io/com/github/${GITHUB_REPOSITORY}/seqeron-node/${GITHUB_REF_NAME}/seqeron-node-${GITHUB_REF_NAME}.pom"
+          POM="https://jitpack.io/com/github/${GITHUB_REPOSITORY}/seqeron-service/${GITHUB_REF_NAME}/seqeron-service-${GITHUB_REF_NAME}.pom"
           for _ in $(seq 1 20); do
               curl -sf -o /dev/null --max-time 60 "${POM}" && exit 0
               sleep 30
@@ -75,5 +75,5 @@ jobs:
           gh release create "${GITHUB_REF_NAME}" --generate-notes \
             "build/distributions/seqeron-${VERSION}.zip" \
             "build/libs/seqeron-${VERSION}-uber.jar" \
-            "build/libs/seqeron-client-${VERSION}.jar" \
-            "build/libs/seqeron-node-${VERSION}.jar"
+            "seqeron-client/build/libs/seqeron-${VERSION}.jar" \
+            "seqeron-service/build/libs/seqeron-service-${VERSION}.jar"
