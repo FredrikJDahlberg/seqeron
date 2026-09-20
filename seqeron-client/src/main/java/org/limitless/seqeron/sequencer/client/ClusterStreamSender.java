@@ -6,6 +6,7 @@ import io.aeron.cluster.client.EgressListener;
 import io.aeron.cluster.codecs.EventCode;
 import io.aeron.exceptions.AeronException;
 import io.aeron.logbuffer.Header;
+import java.util.Objects;
 import java.util.concurrent.TimeUnit;
 import org.agrona.CloseHelper;
 import org.agrona.DirectBuffer;
@@ -37,9 +38,6 @@ public final class ClusterStreamSender implements IngressSender, AutoCloseable {
 
     /** Ingress channel of a client reaching members over the network; endpoints name the members. */
     public static final String INGRESS_CHANNEL_UDP = "aeron:udp";
-
-    /** Members the UDP endpoint set names by default — the cluster is bounded at three (registries §2). */
-    public static final int DEFAULT_NODE_COUNT = 3;
 
     /** No co-located member: this sender reaches the cluster over the network. */
     private static final int NO_MEMBER = -1;
@@ -88,17 +86,20 @@ public final class ClusterStreamSender implements IngressSender, AutoCloseable {
      *
      * @param egressChannel this client's own egress endpoint; two media drivers on one host cannot both
      *     bind a port (doc/registries.md §2)
+     * @param ingressEndpoints the members to reach, {@link PortLayout#ingressEndpoints()} for the default set
      */
-    public void connect(final Aeron aeron, final String egressChannel) {
-        connect(aeron, egressChannel, null);
+    public void connect(final Aeron aeron, final String egressChannel, final String ingressEndpoints) {
+        connect(aeron, egressChannel, ingressEndpoints, null);
     }
 
     /** The same, for a caller that must see session events — a gateway's cluster-session fence. */
-    public void connect(final Aeron aeron, final String egressChannel, final EgressListener appListener) {
+    public void connect(final Aeron aeron, final String egressChannel, final String ingressEndpoints,
+                        final EgressListener appListener) {
         this.aeron = aeron;
         this.egressChannel = egressChannel;
+        this.ingressEndpoints = requireEndpoints(ingressEndpoints);
         this.appListener = appListener;
-        cluster = openSession(INGRESS_CHANNEL_UDP, udpEndpoints(), CONNECT_TIMEOUT_NS);
+        cluster = openSession(INGRESS_CHANNEL_UDP, ingressEndpoints, CONNECT_TIMEOUT_NS);
     }
 
     /**
@@ -107,16 +108,18 @@ public final class ClusterStreamSender implements IngressSender, AutoCloseable {
      * leadership later moves away, {@link #pollEgress} reconnects over UDP; moving back is not chased.
      */
     public void connectColocated(final Aeron aeron, final int memberId, final long ipcConnectTimeoutMs,
-                                 final String egressChannel) {
-        connectColocated(aeron, memberId, ipcConnectTimeoutMs, egressChannel, null);
+                                 final String egressChannel, final String ingressEndpoints) {
+        connectColocated(aeron, memberId, ipcConnectTimeoutMs, egressChannel, ingressEndpoints, null);
     }
 
     /** The same, for a caller that must see session events. */
     public void connectColocated(final Aeron aeron, final int memberId, final long ipcConnectTimeoutMs,
-                                 final String egressChannel, final EgressListener appListener) {
+                                 final String egressChannel, final String ingressEndpoints,
+                                 final EgressListener appListener) {
         this.aeron = aeron;
         this.colocatedMemberId = memberId;
         this.egressChannel = egressChannel;
+        this.ingressEndpoints = requireEndpoints(ingressEndpoints);
         this.appListener = appListener;
         try {
             // No endpoints with IPC ingress: AeronCluster refuses the pair, and there is nothing to name.
@@ -125,16 +128,13 @@ public final class ClusterStreamSender implements IngressSender, AutoCloseable {
             Logger.error(Logger.CoreComponent.Cluster, Logger.CoreEventCode.ClusterIpcFallback, memberId,
                          "member %d did not answer ingress on %s (%s) — falling back to UDP", memberId,
                          INGRESS_CHANNEL_IPC, ex.getMessage());
-            cluster = openSession(INGRESS_CHANNEL_UDP, udpEndpoints(), CONNECT_TIMEOUT_NS);
+            cluster = openSession(INGRESS_CHANNEL_UDP, ingressEndpoints, CONNECT_TIMEOUT_NS);
         }
     }
 
-    /**
-     * Names the UDP endpoint set, instead of the {@link #DEFAULT_NODE_COUNT}-member one derived from the
-     * port formula. Must be set before connecting.
-     */
-    public void setIngressEndpoints(final String ingressEndpoints) {
-        this.ingressEndpoints = ingressEndpoints;
+    /** The UDP fallback and the reconnect both need them, so a connect without them could never recover. */
+    private static String requireEndpoints(final String ingressEndpoints) {
+        return Objects.requireNonNull(ingressEndpoints, "ingressEndpoints");
     }
 
     /** Hears every {@code NewLeader}, and gives up a send that met one while it holds. */
@@ -255,22 +255,6 @@ public final class ClusterStreamSender implements IngressSender, AutoCloseable {
         cluster = null;
     }
 
-    /** The ingress endpoint set for a {@code nodeCount}-member cluster, in {@code AeronCluster}'s {@code id=host:port} form. */
-    public static String ingressEndpoints(final int nodeCount) {
-        final StringBuilder endpoints = new StringBuilder();
-        for (int id = 0; id < nodeCount; id++) {
-            if (id > 0) {
-                endpoints.append(',');
-            }
-            endpoints.append(id).append('=').append(PortLayout.ingressEndpoint(id));
-        }
-        return endpoints.toString();
-    }
-
-    private String udpEndpoints() {
-        return ingressEndpoints != null ? ingressEndpoints : ingressEndpoints(DEFAULT_NODE_COUNT);
-    }
-
     private AeronCluster openSession(final String ingressChannel, final String ingressEndpoints,
                                      final long timeoutNs) {
         final AeronCluster session = AeronCluster.connect(new AeronCluster.Context()
@@ -294,7 +278,7 @@ public final class ClusterStreamSender implements IngressSender, AutoCloseable {
         Logger.info(Logger.CoreComponent.Cluster, member(),
                     "leadership moved to member %d — reconnecting ingress over UDP", newLeaderMemberId);
         CloseHelper.quietClose(cluster);
-        cluster = openSession(INGRESS_CHANNEL_UDP, udpEndpoints(), CONNECT_TIMEOUT_NS);
+        cluster = openSession(INGRESS_CHANNEL_UDP, ingressEndpoints, CONNECT_TIMEOUT_NS);
     }
 
     private Integer member() {

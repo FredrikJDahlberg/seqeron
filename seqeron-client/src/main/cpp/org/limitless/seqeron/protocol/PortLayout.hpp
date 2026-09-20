@@ -18,7 +18,8 @@ namespace org::limitless::seqeron::protocol {
 // Functions rather than constexpr constants, since the base is configurable.
 inline constexpr int CLUSTER_PORT_STRIDE = 10;
 inline constexpr int DEFAULT_CLUSTER_PORT_BASE = 9300;
-inline constexpr int CLUSTER_PORT_BLOCK_WIDTH = 3 * CLUSTER_PORT_STRIDE;
+inline constexpr int CLUSTER_MEMBER_COUNT = 3; // a cluster is bounded at the block's width in strides
+inline constexpr int CLUSTER_PORT_BLOCK_WIDTH = CLUSTER_MEMBER_COUNT * CLUSTER_PORT_STRIDE;
 inline constexpr const char* ENV_PORT_BASE = "SEQERON_PORT_BASE";
 
 // Pure seam over the environment read, so the rules are testable. A bad value throws here rather than

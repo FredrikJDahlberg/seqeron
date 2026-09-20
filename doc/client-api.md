@@ -115,7 +115,7 @@ out of an Aeron Archive for bounded scans. It is not the live path.
 
 | Class | Role |
 |---|---|
-| `ClusterStreamSender` | The cluster session. `connectColocated(aeron, memberId, …)` uses IPC ingress on the co-located member and falls back to UDP when that member is not leading; `connect(…)` uses UDP. `send` spins through back-pressure and elections. Call `keepAlive()` and `pollEgress()` every duty cycle. |
+| `ClusterStreamSender` | The cluster session. `connectColocated(aeron, memberId, …)` uses IPC ingress on the co-located member and falls back to UDP when that member is not leading; `connect(…)` uses UDP. Both take the UDP endpoint set — `PortLayout.ingressEndpoints()` is the default one — because the fallback and the reconnect both need it. `send` spins through back-pressure and elections. Call `keepAlive()` and `pollEgress()` every duty cycle. |
 | `IngressPublisher` | Encode and offer. Returns `Publish`: `Published`; `Refused` (above `MAX_PAYLOAD_LENGTH`, nothing offered, permanent); `Declined` (the transport's answer, worth retrying). Java: `publishPayload`/`publishSystem` on an instance, with the body pre-encoded. C++: free functions templated on the encoder, filled through a `Fill`. |
 | `offerFrame` (C++) | Offers a frame the caller has already encoded, and is where both `publish*` functions end. Java's `publishPayload` takes payload bytes, so it carries any encoding; the C++ one is templated on an SBE encoder, and a payload with no schema at all (§13.2) is framed by the caller and offered here. It takes the same `IngressTracker`, so a hand-framed payload is confirmed like any other. |
 | `SystemFrame` (Java) | Wraps an encoded body in its envelope and returns the length; the offer is yours. `IngressPublisher` uses it; call it directly only to place frames yourself. |
@@ -144,7 +144,7 @@ Java and a C++ twin and does no I/O.
 |---|---|
 | `FrameLayer` (Java), `SequencedFrame.hpp` (C++) | The tap's identity (`FEEDER_STREAM_ID` 205) and the size limits of spec §12; in Java also the heartbeat interval |
 | `SystemFrame` (Java), `SequencedFrame.hpp` (C++) | The `systemEventType` values |
-| `PortLayout` | The cluster's port block, and each member's ingress endpoint; honours `SEQERON_PORT_BASE` |
+| `PortLayout` | The cluster's port block, each member's ingress endpoint, and the endpoint set a producer connects with (`ingressEndpoints()`); honours `SEQERON_PORT_BASE` |
 | `ReplayProtocol` | The replay protocol's channel and stream ids, and `NO_REPLAY_NEEDED` |
 
 ## Wire codecs

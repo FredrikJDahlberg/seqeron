@@ -22,8 +22,11 @@ public final class PortLayout {
     /** Ports one member takes, so member {@code m}'s block starts at {@code base + m * stride}. */
     public static final int CLUSTER_PORT_STRIDE = 10;
 
-    /** Three members, one stride each. See {@link #CLUSTER_PORT_BLOCK_FIRST}. */
-    private static final int CLUSTER_PORT_BLOCK_WIDTH = 3 * CLUSTER_PORT_STRIDE;
+    /** Members a cluster is bounded at, since the reserved block is this many strides wide. */
+    public static final int CLUSTER_MEMBER_COUNT = 3;
+
+    /** One stride per member. See {@link #CLUSTER_PORT_BLOCK_FIRST}. */
+    private static final int CLUSTER_PORT_BLOCK_WIDTH = CLUSTER_MEMBER_COUNT * CLUSTER_PORT_STRIDE;
 
     private static final int MIN_PORT_BASE = 1024;
     private static final int MAX_PORT = 65535;
@@ -112,5 +115,26 @@ public final class PortLayout {
     /** A member's cluster-ingress endpoint ("host:port"). */
     public static String ingressEndpoint(final int memberId) {
         return DEFAULT_HOST + ":" + ingressPort(memberId);
+    }
+
+    /**
+     * The ingress endpoint set of a {@code nodeCount}-member cluster, {@code "0=host:9302,1=host:9312,…"} —
+     * the form {@code AeronCluster} and {@code clusterctl} take, and the Java mirror of {@code ports.sh}'s
+     * {@code ingress_endpoints_string}.
+     */
+    public static String ingressEndpoints(final int nodeCount) {
+        final StringBuilder endpoints = new StringBuilder();
+        for (int id = 0; id < nodeCount; id++) {
+            if (id > 0) {
+                endpoints.append(',');
+            }
+            endpoints.append(id).append('=').append(ingressEndpoint(id));
+        }
+        return endpoints.toString();
+    }
+
+    /** The set naming every member of a full {@link #CLUSTER_MEMBER_COUNT}-member cluster. */
+    public static String ingressEndpoints() {
+        return ingressEndpoints(CLUSTER_MEMBER_COUNT);
     }
 }

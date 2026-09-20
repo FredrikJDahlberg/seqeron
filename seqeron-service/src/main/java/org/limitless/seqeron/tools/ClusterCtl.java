@@ -396,9 +396,9 @@ public final class ClusterCtl {
         private final IngressPublisher publisher = new IngressPublisher();
 
         private Session() {
-            sender.setIngressEndpoints(INGRESS_ENDPOINTS);
             try {
-                sender.connectColocated(aeron, MEMBER_ID, IPC_CONNECT_TIMEOUT_MS, EGRESS_CHANNEL);
+                sender.connectColocated(aeron, MEMBER_ID, IPC_CONNECT_TIMEOUT_MS, EGRESS_CHANNEL,
+                                        INGRESS_ENDPOINTS);
             } catch (final RuntimeException ex) {
                 aeron.close();
                 throw ex;

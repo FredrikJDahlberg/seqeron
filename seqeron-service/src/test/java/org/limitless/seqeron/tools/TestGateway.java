@@ -200,9 +200,9 @@ public final class TestGateway {
 
     private int serve() {
         aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(ClusterProbe.aeronDir()));
-        sender.setIngressEndpoints(ClusterProbe.ingressEndpoints());
         sender.setIngressHold(pending);
-        sender.connect(aeron, ClusterProbe.egressChannel(), new SessionEventListener());
+        sender.connect(aeron, ClusterProbe.egressChannel(), ClusterProbe.ingressEndpoints(),
+                       new SessionEventListener());
         tap = new ReplayerStreamReceiver(clientId, this::onSequenced,
                                          (leaderMemberId, leadershipTermId, globalSeqNo) ->
                                              pending.onLeadershipChanged(leadershipTermId), null);

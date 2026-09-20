@@ -12,11 +12,14 @@
 # completes rather than an error naming the cause.
 CLUSTER_PORT_BASE="${SEQERON_PORT_BASE:-9300}"
 CLUSTER_PORT_STRIDE=10
+# Members a cluster is bounded at, one stride each; PortLayout's CLUSTER_MEMBER_COUNT in both languages.
+CLUSTER_MEMBER_COUNT=3
 
 # Sourced, so this exits the caller — which is the point: a bad base is better caught here than as a
 # bind error on a port nobody chose.
 if ! [[ "${CLUSTER_PORT_BASE}" =~ ^[0-9]+$ ]] ||
-   (( CLUSTER_PORT_BASE < 1024 || CLUSTER_PORT_BASE + 3 * CLUSTER_PORT_STRIDE - 1 > 65535 )); then
+   (( CLUSTER_PORT_BASE < 1024 ||
+      CLUSTER_PORT_BASE + CLUSTER_MEMBER_COUNT * CLUSTER_PORT_STRIDE - 1 > 65535 )); then
     echo "ERROR: SEQERON_PORT_BASE='${CLUSTER_PORT_BASE}' must be an integer in 1024..65506" >&2
     exit 1
 fi

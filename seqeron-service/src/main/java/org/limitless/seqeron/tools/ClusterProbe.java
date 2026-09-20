@@ -22,6 +22,7 @@ import org.agrona.concurrent.ShutdownSignalBarrier;
 import org.agrona.concurrent.YieldingIdleStrategy;
 import org.limitless.seqeron.app.PendingSends;
 import org.limitless.seqeron.protocol.FrameLayer;
+import org.limitless.seqeron.protocol.PortLayout;
 import org.limitless.seqeron.protocol.SequencedFrameDecoder;
 import org.limitless.seqeron.protocol.SystemFrame;
 import org.limitless.seqeron.replayer.client.ReplayerStreamReceiver;
@@ -96,7 +97,7 @@ public final class ClusterProbe {
         "probe.aeronDir", System.getProperty("java.io.tmpdir") + "/seqeron-seq-aeron-" + MEMBER_ID);
 
     private static final String INGRESS_ENDPOINTS = System.getProperty(
-        "probe.ingressEndpoints", ClusterStreamSender.ingressEndpoints(ClusterStreamSender.DEFAULT_NODE_COUNT));
+        "probe.ingressEndpoints", PortLayout.ingressEndpoints());
 
     private static final String EGRESS_HOST = System.getProperty("probe.egressHost", "localhost");
 
@@ -337,11 +338,10 @@ public final class ClusterProbe {
             while (!caughtUp.get()) {
                 idle.idle(receiver.poll());
             }
-            sender.setIngressEndpoints(INGRESS_ENDPOINTS);
             if (tracked) {
                 sender.setIngressHold(pending);
             }
-            sender.connect(aeron, egressChannel());
+            sender.connect(aeron, egressChannel(), INGRESS_ENDPOINTS);
             Logger.info(Logger.CoreComponent.ClusterProbe, MEMBER_ID, "confirm: sending %d frame(s)%s", count,
                         tracked ? " through PendingSends" : " untracked (control)");
 

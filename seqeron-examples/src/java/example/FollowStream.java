@@ -9,6 +9,7 @@ import org.agrona.MutableDirectBuffer;
 import org.agrona.concurrent.BackoffIdleStrategy;
 import org.agrona.concurrent.IdleStrategy;
 import org.agrona.concurrent.UnsafeBuffer;
+import org.limitless.seqeron.protocol.PortLayout;
 import org.limitless.seqeron.protocol.SystemFrame;
 import org.limitless.seqeron.replayer.client.ReplayerStreamReceiver;
 import org.limitless.seqeron.replayer.client.SequencedEvent;
@@ -92,7 +93,8 @@ public final class FollowStream {
                  clientId, FollowStream::onSequenced, FollowStream::onLeadershipChanged,
                  () -> System.out.println("# caught up — following the tap live"))) {
 
-            sender.connectColocated(aeron, memberId, IPC_CONNECT_TIMEOUT_MS, EGRESS_CHANNEL);
+            sender.connectColocated(aeron, memberId, IPC_CONNECT_TIMEOUT_MS, EGRESS_CHANNEL,
+                                    PortLayout.ingressEndpoints());
             receiver.start(aeron, memberId);
             System.out.printf("# following member %d via %s%n", memberId, aeronDir);
 
