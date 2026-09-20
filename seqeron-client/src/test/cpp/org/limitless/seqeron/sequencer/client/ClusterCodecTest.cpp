@@ -71,9 +71,9 @@ TEST(FrameCodec, ConnectionClosedRoundTripsInsideASequencedSystemFrame)
     EXPECT_EQ(0, view.payloadId) << "payloadId means nothing on a system frame";
     EXPECT_EQ(99, view.sourceId);
     EXPECT_EQ(7, view.connectionId);
-    EXPECT_EQ(100, view.sessionId);
+    EXPECT_EQ(100, view.sourceSessionId);
     EXPECT_EQ(42, view.globalSeqNo);
-    EXPECT_EQ(1700000000000LL, view.timestamp);
+    EXPECT_EQ(1700000000000LL, view.clusterTimestampNs);
     EXPECT_EQ(bodyLength, view.payloadLength);
 }
 
@@ -127,5 +127,5 @@ TEST(FrameCodec, ClusterHeartbeatCarriesItsFieldsInline)
     EXPECT_EQ(protocol::CLUSTER_HEARTBEAT, view.systemEventType);
     EXPECT_EQ(-1, view.sourceId);
     EXPECT_EQ(5, view.globalSeqNo);
-    EXPECT_EQ(1700000000001LL, view.timestamp);
+    EXPECT_EQ(1700000000001LL, view.clusterTimestampNs);
 }

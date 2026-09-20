@@ -636,8 +636,8 @@ class ReplayerRecovery
 
         const auto srcId = view.sourceId;
         const auto connId = view.connectionId;
-        const auto sessId = view.sessionId;
-        const auto ts = view.timestamp;
+        const auto sessId = view.sourceSessionId;
+        const auto ts = view.clusterTimestampNs;
         // A systemEventType is only a systemEventType on a system frame: an application payload's own 1
         // and 2 sit at the same offset, so both halves have to match before a frame is read as a
         // lifecycle event.

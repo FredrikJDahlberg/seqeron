@@ -9,9 +9,6 @@ import org.agrona.concurrent.UnsafeBuffer;
 import org.limitless.seqeron.protocol.ReplayProtocol;
 import org.limitless.seqeron.protocol.SequencedFrameDecoder;
 import org.limitless.seqeron.protocol.SystemFrame;
-import org.limitless.seqeron.replayer.client.ReplayerStreamReceiver.CaughtUpHandler;
-import org.limitless.seqeron.replayer.client.ReplayerStreamReceiver.LeadershipHandler;
-import org.limitless.seqeron.replayer.client.ReplayerStreamReceiver.SequencedHandler;
 import org.limitless.seqeron.sbe.frame.LeadershipChangedDecoder;
 import org.limitless.seqeron.sbe.frame.MessageHeaderDecoder;
 import org.limitless.seqeron.sbe.replay.ReplayPendingDecoder;
@@ -72,7 +69,7 @@ final class ReplayerRecovery {
     private final ReplayPendingDecoder replayPending = new ReplayPendingDecoder();
     private final ReplayUnavailableDecoder replayUnavailable = new ReplayUnavailableDecoder();
 
-    private final SequencedEvent event = new SequencedEvent();
+    private final SequencedEvent event = new SequencedEvent(view);
 
     /** When the current no-progress episode started; 0 = none timed. */
     private long noProgressSinceMs;
@@ -614,10 +611,7 @@ final class ReplayerRecovery {
             return;
         }
         if (onSequenced != null) {
-            event.set(globalSeqNo, view.sourceId(), view.connectionId(), view.sessionId(), view.timestamp(),
-                      receiveNs, view.isSystem(), view.payloadId(), view.systemEventType(), view.templateId(),
-                      view.blockLength(), view.version(), buffer, view.payloadOffset(), view.payloadLength(),
-                      framePosition);
+            event.set(receiveNs, framePosition);
             onSequenced.onSequenced(event);
         }
     }

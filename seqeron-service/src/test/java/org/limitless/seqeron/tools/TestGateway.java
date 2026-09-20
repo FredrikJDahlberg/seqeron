@@ -411,7 +411,7 @@ public final class TestGateway {
             event.templateId() != ProbeMarkerDecoder.TEMPLATE_ID || event.sourceId() != lifecycle.gatewaySourceId()) {
             return;
         }
-        probeMarker.wrap(event.buffer(), event.offset() + MessageHeaderDecoder.ENCODED_LENGTH,
+        probeMarker.wrap(event.buffer(), event.payloadOffset() + MessageHeaderDecoder.ENCODED_LENGTH,
                          event.blockLength(), event.version());
         reply(event.connectionId(), probeMarker.seqNo());
     }
@@ -446,14 +446,14 @@ public final class TestGateway {
     private void onGatewayRow(final SequencedEvent event) {
         // A submitted system body carries no MessageHeader, so its block length and version come from this
         // build's own constants (doc/seqeron-protocol-spec.md §7, V-3).
-        gatewayRow.wrap(event.buffer(), event.offset(), GatewayRegisteredDecoder.BLOCK_LENGTH,
+        gatewayRow.wrap(event.buffer(), event.payloadOffset(), GatewayRegisteredDecoder.BLOCK_LENGTH,
                                 MessageHeaderDecoder.SCHEMA_VERSION);
         lifecycle.onGatewayRegistered(gatewayRow.gatewayId(), gatewayRow.gatewaySourceId(), gatewayRow.gatewayName(),
                                       gatewayRow.preferenceRank());
     }
 
     private void onGatewayActive(final SequencedEvent event) {
-        gatewayActive.wrap(event.buffer(), event.offset(), event.blockLength(), event.version());
+        gatewayActive.wrap(event.buffer(), event.payloadOffset(), event.blockLength(), event.version());
         final int target = gatewayActive.gatewayId();
         final boolean wasActivated = lifecycle.isActivated();
         lifecycle.onGatewayActive(target);

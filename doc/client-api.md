@@ -21,7 +21,7 @@ both sides share in `protocol`. C++ uses the same directories and namespaces
 |---|---|---|
 | `protocol` | client | The wire contract in code: `FrameLayer`, `SystemFrame`, `SequencedFrameDecoder`, `PortLayout`, `ReplayProtocol`, `SeqeronCounters` (C++: `SequencedFrame.hpp`, `PortLayout.hpp`, `ReplayProtocol.hpp`, `SeqeronCounters.hpp`) |
 | `sequencer.client` | client | Producing: `ClusterStreamSender`, `IngressPublisher`, `IngressTracker` (C++ also `ClusterStreamClient`) |
-| `replayer.client` | client | Consuming: `ReplayerStreamReceiver`, and `SequencedEvent` in Java. The C++ `SequencedEvent` is in `protocol` (`SequencedFrame.hpp`) instead, beside the `unwrapFrame` that fills it and the `decodeSystem`/`decodeSequenced` that read it |
+| `replayer.client` | client | Consuming: `ReplayerStreamReceiver`, its three callback interfaces (`SequencedHandler`, `LeadershipHandler`, `CaughtUpHandler`), and `SequencedEvent` in Java. The C++ `SequencedEvent` is in `protocol` (`SequencedFrame.hpp`) instead, beside the `unwrapFrame` that fills it and the `decodeSystem`/`decodeSequenced` that read it |
 | `app` | client | The building blocks below |
 | `util` | client | Support code |
 | `sbe.frame`, `sbe.replay` | client | Generated codecs |
@@ -84,7 +84,13 @@ A frame whose callback is null (Java) or empty (C++) is dropped. A consumer that
 leadership callback therefore sees a hole in `globalSeqNo` at every leadership change, `globalSeqNo` 1
 included.
 
-**`SequencedEvent`** is what `onSequenced` receives — `replayer.client` in Java, `protocol/SequencedFrame.hpp` in C++: a flyweight, valid only during the call. Split by
+**`SequencedEvent`** is what `onSequenced` receives — `replayer.client` in Java,
+`protocol/SequencedFrame.hpp` in C++: a flyweight, valid only during the call. In Java it is a view over the
+`SequencedFrameDecoder` below and names every field as that decoder does, plus `receiveTimeNs()` and
+`position()`, which belong to the delivery rather than to the frame. All four types — both events and both
+views — carry one name per concept, so a field reads the same in either language and on either side of the
+envelope; `sourceSessionId` and `clusterTimestampNs` say which session and which clock, and each names the
+wire field it reads (`header.sessionId`, `header.timestamp`) in its own doc comment. Split by
 family first (`isSystem()`), then dispatch on `(payloadId, templateId)` for an application frame or on
 `systemEventType` for a system one, never on `templateId` alone. To decode a system body:
 

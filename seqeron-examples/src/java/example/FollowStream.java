@@ -187,7 +187,7 @@ public final class FollowStream {
                               event.globalSeqNo(), (System.nanoTime() - pingSentNs) / 1_000L);
         } else {
             System.out.printf("%d payloadId=%d template=%d length=%d%n",
-                              event.globalSeqNo(), event.payloadId(), event.templateId(), event.length());
+                              event.globalSeqNo(), event.payloadId(), event.templateId(), event.payloadLength());
         }
     }
 
@@ -203,20 +203,20 @@ public final class FollowStream {
     private static void printSystem(final SequencedEvent event) {
         switch (event.systemEventType()) {
             case SystemFrame.CONNECTION_OPENED -> {
-                OPENED_DECODER.wrap(event.buffer(), event.offset(), ConnectionOpenedDecoder.BLOCK_LENGTH,
+                OPENED_DECODER.wrap(event.buffer(), event.payloadOffset(), ConnectionOpenedDecoder.BLOCK_LENGTH,
                                     ConnectionOpenedDecoder.SCHEMA_VERSION);
                 System.out.printf("%d ConnectionOpened connection=%d label=%d bytes%n", event.globalSeqNo(),
                                   event.connectionId(), OPENED_DECODER.connectionDataLength());
             }
             case SystemFrame.CLUSTER_HEARTBEAT -> {
-                HEARTBEAT_DECODER.wrap(event.buffer(), event.offset(), event.blockLength(), event.version());
+                HEARTBEAT_DECODER.wrap(event.buffer(), event.payloadOffset(), event.blockLength(), event.version());
                 System.out.printf("%d ClusterHeartbeat cluster clock %dns%n", event.globalSeqNo(),
                                   HEARTBEAT_DECODER.header().timestamp());
             }
             case SystemFrame.GATEWAY_ACTIVE -> {
                 // Only after clusterctl load-topology: this frame is the cluster designating one gateway
                 // instance, and its gatewayId is in the body and nowhere else.
-                GATEWAY_ACTIVE_DECODER.wrap(event.buffer(), event.offset(), event.blockLength(), event.version());
+                GATEWAY_ACTIVE_DECODER.wrap(event.buffer(), event.payloadOffset(), event.blockLength(), event.version());
                 System.out.printf("%d GatewayActive gatewayId=%d%n", event.globalSeqNo(),
                                   GATEWAY_ACTIVE_DECODER.gatewayId());
             }
@@ -226,8 +226,8 @@ public final class FollowStream {
 
     /** This process's own ping, told from any other producer's by the timestamp it carries. */
     private static boolean isOwnPing(final SequencedEvent event) {
-        return pingSentNs != 0 && event.payloadId() == PING_PAYLOAD_ID && event.length() == Long.BYTES
-            && event.buffer().getLong(event.offset(), ByteOrder.LITTLE_ENDIAN) == pingSentNs;
+        return pingSentNs != 0 && event.payloadId() == PING_PAYLOAD_ID && event.payloadLength() == Long.BYTES
+            && event.buffer().getLong(event.payloadOffset(), ByteOrder.LITTLE_ENDIAN) == pingSentNs;
     }
 
     /** The one frame family that reaches a consumer here instead of through onSequenced. */

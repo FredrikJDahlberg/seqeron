@@ -34,9 +34,9 @@ public final class SequencedFrameDecoder {
     private int systemEventType;
     private int sourceId;
     private int connectionId;
-    private long sessionId;
+    private long sourceSessionId;
     private long globalSeqNo;
-    private long timestamp;
+    private long clusterTimestampNs;
     private int templateId;
     private int blockLength;
     private int version;
@@ -152,9 +152,9 @@ public final class SequencedFrameDecoder {
                               final long frameGlobalSeqNo, final long frameTimestamp) {
         sourceId = frameSourceId;
         connectionId = frameConnectionId;
-        sessionId = frameSessionId;
+        sourceSessionId = frameSessionId;
         globalSeqNo = frameGlobalSeqNo;
-        timestamp = frameTimestamp;
+        clusterTimestampNs = frameTimestamp;
     }
 
     /** Whether this frame is one of the four system shapes; if so {@link #payloadId()} means nothing. */
@@ -182,9 +182,9 @@ public final class SequencedFrameDecoder {
         return connectionId;
     }
 
-    /** Cluster session the frame was submitted on, as the sequencer stamped it. */
-    public long sessionId() {
-        return sessionId;
+    /** Cluster session the frame was submitted on ({@code header.sessionId}), as the sequencer stamped it. */
+    public long sourceSessionId() {
+        return sourceSessionId;
     }
 
     /** Cluster-wide monotone sequence number; increments by exactly one per frame. */
@@ -192,9 +192,9 @@ public final class SequencedFrameDecoder {
         return globalSeqNo;
     }
 
-    /** Cluster consensus time (epoch ns) at which the frame was committed. */
-    public long timestamp() {
-        return timestamp;
+    /** Cluster consensus time (epoch ns) at which the frame was committed ({@code header.timestamp}). */
+    public long clusterTimestampNs() {
+        return clusterTimestampNs;
     }
 
     /** The payload's own templateId, never the envelope's; 0 on a system frame. */
@@ -210,7 +210,6 @@ public final class SequencedFrameDecoder {
         return blockLength;
     }
 
-    /** See {@link #blockLength()}. */
     /** See {@link #blockLength()}. */
     public int version() {
         return version;

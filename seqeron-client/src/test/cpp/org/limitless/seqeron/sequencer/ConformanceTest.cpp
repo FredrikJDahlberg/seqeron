@@ -284,7 +284,7 @@ TEST(Conformance, EverySystemShapeNamesItsEventAndDecodesItsBody)
     EXPECT_EQ(protocol::CLUSTER_HEARTBEAT, view.systemEventType);
     EXPECT_EQ(-1, view.sourceId);
     EXPECT_EQ(-1, view.connectionId);
-    EXPECT_EQ(-1, view.sessionId);
+    EXPECT_EQ(-1, view.sourceSessionId);
 
     const auto leadership =
         synthesizedFrame<frm::LeadershipChanged>(6, protocol::LEADERSHIP_CHANGED, [](frm::LeadershipChanged& f) {

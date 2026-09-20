@@ -520,8 +520,8 @@ class ClusterStreamClient
         const auto gseq = view.globalSeqNo;
         const auto srcId = view.sourceId;
         const auto connId = view.connectionId;
-        const auto sessId = view.sessionId;
-        const auto ts = view.timestamp;
+        const auto sessId = view.sourceSessionId;
+        const auto ts = view.clusterTimestampNs;
         if (!m_singleImageMode)
         {
             if (m_lastGlobalSeqNo != 0 && gseq <= m_lastGlobalSeqNo)

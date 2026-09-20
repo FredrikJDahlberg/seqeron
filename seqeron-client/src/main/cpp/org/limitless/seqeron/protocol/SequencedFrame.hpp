@@ -156,10 +156,10 @@ struct FrameView
     std::uint16_t systemEventType;
     std::int32_t sourceId;
     std::int32_t connectionId;
-    std::int64_t sessionId;
+    std::int64_t sourceSessionId; ///< Aeron Cluster client session id (header.sessionId)
     std::int64_t globalSeqNo;
-    std::int64_t timestamp;
-    std::uint16_t templateId; ///< application family: the payload's own, never the envelope's
+    std::int64_t clusterTimestampNs; ///< cluster consensus time (epoch ns) when committed (header.timestamp)
+    std::uint16_t templateId;        ///< application family: the payload's own, never the envelope's
     /// The payload's own, to wrap its decoder with; both 0 on any system frame, whose message carries
     /// no declaration at all — its decoder's compiled constants are the only ones there are (V-3).
     std::uint16_t blockLength;
@@ -178,9 +178,9 @@ inline void readSystemHeader(FrameView& view, sbe::frame::SequencedSystemHeader&
     view.systemEventType = header.systemEventType();
     view.sourceId = header.sourceId();
     view.connectionId = header.connectionId();
-    view.sessionId = header.sessionId();
+    view.sourceSessionId = header.sessionId();
     view.globalSeqNo = header.globalSeqNo();
-    view.timestamp = header.timestamp();
+    view.clusterTimestampNs = header.timestamp();
 }
 
 /**
@@ -220,9 +220,9 @@ inline FrameView unwrapFrame(const char* const frame, const std::uint64_t length
         view.payloadId = header.payloadId();
         view.sourceId = header.sourceId();
         view.connectionId = header.connectionId();
-        view.sessionId = header.sessionId();
+        view.sourceSessionId = header.sessionId();
         view.globalSeqNo = header.globalSeqNo();
-        view.timestamp = header.timestamp();
+        view.clusterTimestampNs = header.timestamp();
 
         const std::uint64_t payloadLength = sequenced.payloadLength();
         // A prefix is a claim about the fragment, not a fact. Rejecting an overrun here is what keeps

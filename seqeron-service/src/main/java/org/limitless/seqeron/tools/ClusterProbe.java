@@ -409,7 +409,7 @@ public final class ClusterProbe {
                 event.templateId() != ProbeMarkerDecoder.TEMPLATE_ID || !sessions.contains(event.sourceSessionId())) {
                 return;
             }
-            decoder.wrap(event.buffer(), event.offset() + MessageHeaderDecoder.ENCODED_LENGTH, event.blockLength(),
+            decoder.wrap(event.buffer(), event.payloadOffset() + MessageHeaderDecoder.ENCODED_LENGTH, event.blockLength(),
                          event.version());
             seqNos.addLong(decoder.seqNo());
         }

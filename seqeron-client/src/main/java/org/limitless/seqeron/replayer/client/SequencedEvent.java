@@ -1,6 +1,7 @@
 package org.limitless.seqeron.replayer.client;
 
 import org.agrona.DirectBuffer;
+import org.limitless.seqeron.protocol.SequencedFrameDecoder;
 
 /**
  * One frame delivered in order off the sequenced stream, live or replayed — the Java twin of the C++
@@ -8,52 +9,45 @@ import org.agrona.DirectBuffer;
  * {@link #isSystem()}, then dispatch on {@code (payloadId, templateId)} or {@link #systemEventType()}. Every
  * system frame but {@code LeadershipChanged}, which has its own callback, arrives here.
  *
+ * <p>A view over the {@link SequencedFrameDecoder} the receiver wraps over each frame, plus the two stamps
+ * that belong to the delivery rather than to the frame — {@link #receiveTimeNs()} and {@link #position()}.
+ *
  * <p>A flyweight: the buffer and every field are valid only during the handler call; copy to keep.
  */
 public final class SequencedEvent {
-    SequencedEvent() {
-    }
+    private final SequencedFrameDecoder frame;
 
-    private long globalSeqNo;
-    private int sourceId;
-    private int connectionId;
-    private long sourceSessionId;
-    private long clusterTimestampNs;
     private long receiveTimeNs;
-    private boolean system;
-    private int payloadId;
-    private int systemEventType;
-    private int templateId;
-    private int blockLength;
-    private int version;
-    private DirectBuffer buffer;
-    private int offset;
-    private int length;
     private long position;
+
+    /** Reads whichever frame {@code frame} is wrapped over; {@link #set} stamps the delivery. */
+    SequencedEvent(final SequencedFrameDecoder frame) {
+        this.frame = frame;
+    }
 
     /** Cluster-wide monotone sequence number; increments by exactly one per frame. */
     public long globalSeqNo() {
-        return globalSeqNo;
+        return frame.globalSeqNo();
     }
 
     /** Publishing gateway process ({@code header.sourceId}). */
     public int sourceId() {
-        return sourceId;
+        return frame.sourceId();
     }
 
     /** Connection at that gateway ({@code header.connectionId}); routes the reply. */
     public int connectionId() {
-        return connectionId;
+        return frame.connectionId();
     }
 
     /** Aeron Cluster client session the frame was submitted on ({@code header.sessionId}). */
     public long sourceSessionId() {
-        return sourceSessionId;
+        return frame.sourceSessionId();
     }
 
     /** Cluster consensus time (epoch ns) at which the frame was committed. */
     public long clusterTimestampNs() {
-        return clusterTimestampNs;
+        return frame.clusterTimestampNs();
     }
 
     /** Wall-clock ns at receipt by this client. */
@@ -63,41 +57,41 @@ public final class SequencedEvent {
 
     /** Which protocol {@link #templateId()} belongs to; template ids are unique only within one. 0 on a system frame. */
     public int payloadId() {
-        return payloadId;
+        return frame.payloadId();
     }
 
     /** True if this frame is one of §7's system shapes rather than an application payload. */
     public boolean isSystem() {
-        return system;
+        return frame.isSystem();
     }
 
     /** Which of §7's twelve events this frame carries; 0 on an application frame. */
     public int systemEventType() {
-        return systemEventType;
+        return frame.systemEventType();
     }
 
     /** The message's {@code messageHeader} templateId; picks the specific decode. */
     public int templateId() {
-        return templateId;
+        return frame.templateId();
     }
 
     /**
-     * What to wrap a decoder over {@link #offset()} with: the payload's own on an application frame, the
+     * What to wrap a decoder over {@link #payloadOffset()} with: the payload's own on an application frame, the
      * frame's own on a synthesized system frame, and 0 on a submitted one — whose decoder's compiled
      * {@code BLOCK_LENGTH} and {@code SCHEMA_VERSION} are the only ones there are.
      */
     public int blockLength() {
-        return blockLength;
+        return frame.blockLength();
     }
 
     /** See {@link #blockLength()}. */
     public int version() {
-        return version;
+        return frame.version();
     }
 
     /** Buffer holding the message; valid only during the handler call. */
     public DirectBuffer buffer() {
-        return buffer;
+        return frame.buffer();
     }
 
     /**
@@ -105,13 +99,13 @@ public final class SequencedEvent {
      * {@code MessageHeader} included, on an application frame; the body on a submitted system frame; the
      * frame's own block on one of the synthesized three.
      */
-    public int offset() {
-        return offset;
+    public int payloadOffset() {
+        return frame.payloadOffset();
     }
 
-    /** Length in bytes of what {@link #offset()} addresses; the envelope is not in it. */
-    public int length() {
-        return length;
+    /** Length in bytes of what {@link #payloadOffset()} addresses; the envelope is not in it. */
+    public int payloadLength() {
+        return frame.payloadLength();
     }
 
     /** Recording/stream position of this frame's first byte — what a resumed replay is anchored on. */
@@ -119,25 +113,8 @@ public final class SequencedEvent {
         return position;
     }
 
-    void set(final long globalSeqNo, final int sourceId, final int connectionId, final long sourceSessionId,
-             final long clusterTimestampNs, final long receiveTimeNs, final boolean system, final int payloadId,
-             final int systemEventType, final int templateId, final int blockLength, final int version,
-             final DirectBuffer buffer, final int offset, final int length, final long position) {
-        this.globalSeqNo = globalSeqNo;
-        this.sourceId = sourceId;
-        this.connectionId = connectionId;
-        this.sourceSessionId = sourceSessionId;
-        this.clusterTimestampNs = clusterTimestampNs;
+    void set(final long receiveTimeNs, final long position) {
         this.receiveTimeNs = receiveTimeNs;
-        this.system = system;
-        this.payloadId = payloadId;
-        this.systemEventType = systemEventType;
-        this.templateId = templateId;
-        this.blockLength = blockLength;
-        this.version = version;
-        this.buffer = buffer;
-        this.offset = offset;
-        this.length = length;
         this.position = position;
     }
 }

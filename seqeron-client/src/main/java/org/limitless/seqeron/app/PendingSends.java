@@ -181,13 +181,13 @@ public final class PendingSends implements IngressTracker {
         final int id = frameHeader.wrap(frames, base + MessageHeaderDecoder.ENCODED_LENGTH).payloadId();
         final int bodyLength = lengths[slot] - FrameLayer.MIN_INGRESS_LENGTH;
         if (event.isSystem() != system || (system ? event.systemEventType() : event.payloadId()) != id ||
-            event.length() != bodyLength) {
+            event.payloadLength() != bodyLength) {
             return false;
         }
         final DirectBuffer body = event.buffer();
         final int bodyBase = base + FrameLayer.MIN_INGRESS_LENGTH;
         for (int i = 0; i < bodyLength; i++) {
-            if (frames.getByte(bodyBase + i) != body.getByte(event.offset() + i)) {
+            if (frames.getByte(bodyBase + i) != body.getByte(event.payloadOffset() + i)) {
                 return false;
             }
         }
