@@ -8,6 +8,7 @@ import io.aeron.Publication;
 import io.aeron.Subscription;
 import io.aeron.logbuffer.FragmentHandler;
 import io.aeron.logbuffer.LogBufferDescriptor;
+import java.util.function.BooleanSupplier;
 import org.agrona.concurrent.SystemEpochNanoClock;
 import org.agrona.concurrent.UnsafeBuffer;
 import org.limitless.seqeron.protocol.FrameLayer;
@@ -43,7 +44,7 @@ public final class ReplayerStreamReceiver implements AutoCloseable {
     private final int clientId;
     private final Actions actions = new Actions();
     private final ReplayerRecovery recovery;
-    private final TapFaultInjector tapFaults;
+    private final BooleanSupplier tapFaults;
 
     private final MessageHeaderEncoder requestHeader = new MessageHeaderEncoder();
     private final ReplayRequestEncoder replayRequest = new ReplayRequestEncoder();
@@ -80,12 +81,12 @@ public final class ReplayerStreamReceiver implements AutoCloseable {
     }
 
     /**
-     * As above, dropping live tap frames when {@code tapFaults} is armed. Test harnesses only.
-     * @param tapFaults drops live tap frames on demand, or null
+     * As above, dropping a live tap frame whenever {@code tapFaults} answers true. Test harnesses only.
+     * @param tapFaults polled once per live tap frame, on the poll thread; null drops nothing
      */
     public ReplayerStreamReceiver(final int clientId, final SequencedHandler onSequenced,
                                   final LeadershipHandler onLeadershipChanged, final CaughtUpHandler onCaughtUp,
-                                  final TapFaultInjector tapFaults) {
+                                  final BooleanSupplier tapFaults) {
         this.clientId = clientId;
         this.tapFaults = tapFaults;
         this.recovery = new ReplayerRecovery(clientId, actions, onSequenced, onLeadershipChanged, onCaughtUp);
@@ -203,7 +204,7 @@ public final class ReplayerStreamReceiver implements AutoCloseable {
      */
     private void onTapFragment(final org.agrona.DirectBuffer buffer, final int offset, final int length,
                                final io.aeron.logbuffer.Header header) {
-        if (tapFaults != null && tapFaults.dropNext()) {
+        if (tapFaults != null && tapFaults.getAsBoolean()) {
             return;
         }
         recovery.onFrame(buffer, offset, length, frameStartPosition(header), nowNs(), false);

@@ -166,7 +166,8 @@ since `nowMs()` is a free function in the one header that needs it.
 
 These are public or in public headers for mechanical reasons. Don't build on them:
 
-- `TapFaultInjector`: test harnesses only, to drop live tap frames and exercise gap recovery.
+- C++ `TapFaultInjector`: test harnesses only, to drop live tap frames and exercise gap recovery. Java
+  takes a `BooleanSupplier` on the same constructor instead, so it publishes no such type.
 - C++ `ReplayerRecovery`, `ReplayerRecoveryActions`, and `IngressTransport`/`EgressTransport` with their
   Aeron implementations: the seams the unit suites drive. Header-only C++ has no package-private. In Java
   the same seams are package-private.

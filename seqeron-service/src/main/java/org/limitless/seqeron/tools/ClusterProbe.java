@@ -13,6 +13,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BooleanSupplier;
 import org.agrona.DirectBuffer;
 import org.agrona.ExpandableArrayBuffer;
 import org.agrona.collections.LongArrayList;
@@ -27,7 +28,6 @@ import org.limitless.seqeron.protocol.SequencedFrameDecoder;
 import org.limitless.seqeron.protocol.SystemFrame;
 import org.limitless.seqeron.replayer.client.ReplayerStreamReceiver;
 import org.limitless.seqeron.replayer.client.SequencedEvent;
-import org.limitless.seqeron.replayer.client.TapFaultInjector;
 import org.limitless.seqeron.sbe.probe.MessageHeaderDecoder;
 import org.limitless.seqeron.sbe.probe.MessageHeaderEncoder;
 import org.limitless.seqeron.sbe.probe.ProbeMarkerDecoder;
@@ -458,7 +458,11 @@ public final class ClusterProbe {
         // The receiver is its own callbacks' subject, so it cannot be a constructor argument to them.
         final AtomicReference<ReplayerStreamReceiver> self = new AtomicReference<>();
         final AtomicBoolean announcedLive = new AtomicBoolean();
-        final TapFaultInjector tapFaults = faultInjection ? new TapFaultInjector() : null;
+        // Two hand-offs, as the fault has to cross two threads: SIGUSR1 accumulates into faultDropArmed,
+        // the duty cycle moves it here, and the poll thread is the only decrementer.
+        final AtomicInteger tapDropsPending = new AtomicInteger();
+        final BooleanSupplier tapFaults =
+            faultInjection ? () -> tapDropsPending.getAndUpdate(n -> n > 0 ? n - 1 : 0) > 0 : null;
         final ReplayerStreamReceiver receiver = new ReplayerStreamReceiver(clientId, stats::onSequenced, null, () -> {
             // Fires on every transition to caught-up, including re-convergence after a gap.
             if (announcedLive.compareAndSet(false, true)) {
@@ -489,7 +493,7 @@ public final class ClusterProbe {
                 while (running.get()) {
                     if (faultInjection && faultDropArmed.get() > 0) {
                         final int armed = faultDropArmed.getAndSet(0);
-                        tapFaults.arm(armed);
+                        tapDropsPending.addAndGet(armed);
                         Logger.info(Logger.CoreComponent.ClusterProbe, MEMBER_ID,
                                     "fault injection: armed %d tap drop(s)",
                                     armed);
