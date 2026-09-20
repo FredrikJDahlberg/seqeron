@@ -29,7 +29,7 @@ namespace diag = org::limitless::seqeron::util;
 
 // A UDP-replaying binary uses a port of its own, outside core's reserved block (doc/registries.md §2);
 // a client co-located with the archive replays over REPLAY_CHANNEL_IPC and needs none.
-inline constexpr std::int32_t REPLAY_STREAM_ID = 110;
+inline constexpr std::int32_t ARCHIVE_REPLAY_STREAM_ID = 110;
 
 // Replay channel for a client co-located with the archive it's replaying from.
 inline constexpr const char* REPLAY_CHANNEL_IPC = "aeron:ipc";
@@ -41,12 +41,12 @@ inline constexpr const char* REPLAY_CHANNEL_IPC = "aeron:ipc";
  */
 inline std::string resolveReplayChannel(const char* envVar, std::uint16_t defaultPort)
 {
-    return "aeron:udp?endpoint=localhost:" + std::to_string(diag::envInt(envVar, defaultPort));
+    return protocol::udpChannel("localhost:" + std::to_string(diag::envInt(envVar, defaultPort)));
 }
 
 // Default 3-node cluster archive control endpoints, from PortLayout.hpp. Every member's archive holds an
 // identical recording, so any reachable one will do.
-inline const std::string DEFAULT_ARCHIVE_ENDPOINTS = protocol::archiveEndpointsCsv(3);
+inline const std::string DEFAULT_ARCHIVE_ENDPOINTS = protocol::archiveEndpointsCsv(protocol::CLUSTER_MEMBER_COUNT);
 
 /**
  * Splits a comma-separated "host:port,host:port,..." list from the given
@@ -155,7 +155,7 @@ inline std::shared_ptr<aeron::archive::client::AeronArchive> connectToArchiveWit
         {
             aeron::archive::client::Context archiveCtx;
             archiveCtx.aeron(aeron)
-                .controlRequestChannel("aeron:udp?endpoint=" + endpoint)
+                .controlRequestChannel(protocol::udpChannel(endpoint))
                 .controlRequestStreamId(controlStreamId)
                 .controlResponseChannel(controlResponseChannel);
             archive = aeron::archive::client::AeronArchive::connect(archiveCtx);
@@ -211,9 +211,9 @@ inline std::shared_ptr<aeron::archive::client::AeronArchive> connectLocalArchive
 {
     aeron::archive::client::Context archiveCtx;
     archiveCtx.aeron(aeron)
-        .controlRequestChannel("aeron:ipc")
+        .controlRequestChannel(protocol::ARCHIVE_CONTROL_CHANNEL)
         .controlRequestStreamId(controlStreamId)
-        .controlResponseChannel("aeron:ipc");
+        .controlResponseChannel(protocol::ARCHIVE_CONTROL_CHANNEL);
     auto archive = aeron::archive::client::AeronArchive::connect(archiveCtx);
 
     if (!findClusterStreamRecording(archive, recordingId, catchUpPosition))
@@ -385,7 +385,7 @@ class ClusterStreamClient
             m_catchUpPosition = last.stopPosition;
         }
 
-        m_replaySubRegId = m_aeron->addSubscription(m_replayChannel, REPLAY_STREAM_ID);
+        m_replaySubRegId = m_aeron->addSubscription(m_replayChannel, ARCHIVE_REPLAY_STREAM_ID);
         startSegmentReplay(0);
     }
 
@@ -413,7 +413,7 @@ class ClusterStreamClient
 
         if (replaySessionId >= 0 && replayChannel != nullptr)
         {
-            m_replaySubRegId = m_aeron->addSubscription(replayChannel, REPLAY_STREAM_ID);
+            m_replaySubRegId = m_aeron->addSubscription(replayChannel, ARCHIVE_REPLAY_STREAM_ID);
         }
 
         if (replaySessionId < 0)
@@ -496,7 +496,7 @@ class ClusterStreamClient
         aeron::archive::client::ReplayParams replayParams;
         replayParams.position(0).length(isLast ? aeron::archive::client::NULL_LENGTH : segment.stopPosition);
         m_replaySessionId =
-            m_archive->startReplay(segment.recordingId, m_replayChannel, REPLAY_STREAM_ID, replayParams);
+            m_archive->startReplay(segment.recordingId, m_replayChannel, ARCHIVE_REPLAY_STREAM_ID, replayParams);
     }
 
     void onFragment(const aeron::concurrent::AtomicBuffer& buffer, const aeron::util::index_t offset,

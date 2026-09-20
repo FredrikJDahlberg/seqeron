@@ -48,7 +48,7 @@ namespace diag = org::limitless::seqeron::util;
 //    and AeronCluster.Configuration. Ports come from PortLayout.hpp. Member 0's ingress endpoint is only
 //    a non-colocated client's first guess; the wire CSV names the real leader afterwards. ────
 inline const std::string CLUSTER_INGRESS_ENDPOINT = "localhost:" + std::to_string(protocol::clusterIngressPort(0));
-inline const std::string CLUSTER_INGRESS_CHANNEL = "aeron:udp?endpoint=" + CLUSTER_INGRESS_ENDPOINT;
+inline const std::string CLUSTER_INGRESS_CHANNEL = protocol::udpChannel(CLUSTER_INGRESS_ENDPOINT);
 inline constexpr const char* CLUSTER_INGRESS_CHANNEL_IPC = "aeron:ipc";
 inline constexpr std::int32_t CLUSTER_INGRESS_STREAM_ID = 101;
 inline constexpr std::int32_t CLUSTER_EGRESS_STREAM_ID = 102;
@@ -794,8 +794,7 @@ class ClusterStreamSender
     // The cluster ingress at `endpoint` ("host:port").
     std::shared_ptr<aeron::Publication> createIngressPublication(const std::string& endpoint, std::int64_t timeoutMs)
     {
-        return awaitIngressPublication("aeron:udp?endpoint=" + endpoint, "ingress publication to " + endpoint,
-                                       timeoutMs);
+        return awaitIngressPublication(protocol::udpChannel(endpoint), "ingress publication to " + endpoint, timeoutMs);
     }
 
     // Same over IPC, which only a leading co-located member listens on, so it may never connect; the

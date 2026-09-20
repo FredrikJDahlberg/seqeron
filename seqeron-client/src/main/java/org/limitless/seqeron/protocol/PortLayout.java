@@ -43,6 +43,15 @@ public final class PortLayout {
     /** Last port of core's reserved block. See {@link #CLUSTER_PORT_BLOCK_FIRST}. */
     public static final int CLUSTER_PORT_BLOCK_LAST = CLUSTER_PORT_BASE + CLUSTER_PORT_BLOCK_WIDTH - 1;
 
+    /** How a process reaches the archive in its own Aeron directory: no endpoint, so no port to allocate. */
+    public static final String ARCHIVE_CONTROL_CHANNEL = "aeron:ipc";
+
+    /**
+     * Control stream of that link. The archive's own local control, every Java archive client and the C++
+     * one must name the same id, so it is stated here once rather than per process.
+     */
+    public static final int ARCHIVE_CONTROL_STREAM_ID = 100;
+
     private PortLayout() {
     }
 

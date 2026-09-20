@@ -109,9 +109,9 @@ public final class SequencerServer {
 
         final AeronArchive.Context localArchiveCtx = new AeronArchive.Context()
                                                          .lock(NoOpLock.INSTANCE)
-                                                         .controlRequestChannel("aeron:ipc")
-                                                         .controlRequestStreamId(100)
-                                                         .controlResponseChannel("aeron:ipc")
+                                                         .controlRequestChannel(PortLayout.ARCHIVE_CONTROL_CHANNEL)
+                                                         .controlRequestStreamId(PortLayout.ARCHIVE_CONTROL_STREAM_ID)
+                                                         .controlResponseChannel(PortLayout.ARCHIVE_CONTROL_CHANNEL)
                                                          .controlResponseStreamId(ARCHIVE_CONTROL_RESPONSE_STREAM_ID)
                                                          .aeronDirectoryName(aeronDir);
 
@@ -120,9 +120,9 @@ public final class SequencerServer {
                 .aeronDirectoryName(aeronDir)
                 .archiveDir(archiveDir)
                 .controlChannel(udp(host, archivePort)) // UDP: remote clients reach the archive here
-                .controlStreamId(100) // must match C++ clients
-                .localControlChannel("aeron:ipc")
-                .localControlStreamId(100)
+                .controlStreamId(PortLayout.ARCHIVE_CONTROL_STREAM_ID)
+                .localControlChannel(PortLayout.ARCHIVE_CONTROL_CHANNEL)
+                .localControlStreamId(PortLayout.ARCHIVE_CONTROL_STREAM_ID)
                 .replicationChannel(udp(host, 0))
                 .recordingEventsEnabled(false)
                 .deleteArchiveOnStart(false)

@@ -6,6 +6,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import org.agrona.concurrent.IdleStrategy;
 import org.agrona.concurrent.NoOpLock;
 import org.agrona.concurrent.ShutdownSignalBarrier;
+import org.limitless.seqeron.protocol.PortLayout;
 import org.limitless.seqeron.util.IdleStrategies;
 import org.limitless.seqeron.util.Logger;
 
@@ -36,9 +37,6 @@ public final class ReplayerServer {
     private static final String PROP_AERON_DIR = "replayer.aeronDir";
     private static final String PROP_IDLE_STRATEGY = "replayer.idleStrategy";
 
-    /** Must match SequencerServer's Archive.localControlStreamId(100). */
-    private static final int ARCHIVE_CONTROL_STREAM_ID = 100;
-
     /** Control-response stream of this service's archive session, distinct from SequencerService's 121. */
     private static final int ARCHIVE_CONTROL_RESPONSE_STREAM_ID = 120;
 
@@ -66,9 +64,9 @@ public final class ReplayerServer {
         final AeronArchive archive = AeronArchive.connect(new AeronArchive.Context()
             .aeron(aeron)
             .ownsAeronClient(false)
-            .controlRequestChannel("aeron:ipc")
-            .controlRequestStreamId(ARCHIVE_CONTROL_STREAM_ID)
-            .controlResponseChannel("aeron:ipc")
+            .controlRequestChannel(PortLayout.ARCHIVE_CONTROL_CHANNEL)
+            .controlRequestStreamId(PortLayout.ARCHIVE_CONTROL_STREAM_ID)
+            .controlResponseChannel(PortLayout.ARCHIVE_CONTROL_CHANNEL)
             .controlResponseStreamId(ARCHIVE_CONTROL_RESPONSE_STREAM_ID)
             .lock(NoOpLock.INSTANCE));
 

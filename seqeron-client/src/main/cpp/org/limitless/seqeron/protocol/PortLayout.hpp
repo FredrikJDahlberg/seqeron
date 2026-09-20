@@ -22,6 +22,11 @@ inline constexpr int CLUSTER_MEMBER_COUNT = 3; // a cluster is bounded at the bl
 inline constexpr int CLUSTER_PORT_BLOCK_WIDTH = CLUSTER_MEMBER_COUNT * CLUSTER_PORT_STRIDE;
 inline constexpr const char* ENV_PORT_BASE = "SEQERON_PORT_BASE";
 
+// How a process reaches the archive in its own Aeron directory, and that link's control stream. The Java
+// twin is PortLayout's ARCHIVE_CONTROL_CHANNEL/ARCHIVE_CONTROL_STREAM_ID; both sides must name one id.
+inline constexpr const char* ARCHIVE_CONTROL_CHANNEL = "aeron:ipc";
+inline constexpr std::int32_t ARCHIVE_CONTROL_STREAM_ID = 100;
+
 // Pure seam over the environment read, so the rules are testable. A bad value throws here rather than
 // surfacing later as a bind error.
 inline int parseClusterPortBase(const char* raw)
@@ -117,6 +122,12 @@ inline std::string archiveEndpointsCsv(int nodeCount, const char* host = "localh
         csv += std::to_string(clusterArchivePort(id));
     }
     return csv;
+}
+
+// A UDP channel to `endpoint` ("host:port"). The Java twin is SequencerServer's own udp(host, port).
+inline std::string udpChannel(const std::string& endpoint)
+{
+    return "aeron:udp?endpoint=" + endpoint;
 }
 
 } // namespace org::limitless::seqeron::protocol

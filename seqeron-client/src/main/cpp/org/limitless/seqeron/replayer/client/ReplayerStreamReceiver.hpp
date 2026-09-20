@@ -27,6 +27,7 @@ namespace org::limitless::seqeron::replayer::client {
 
 // FEEDER_STREAM_ID is the recorded sequenced stream id, which the live tap and the Replayer's replays
 // both address; frameStartPosition derives a frame's recording position from its Aeron header.
+using org::limitless::seqeron::protocol::FEEDER_CHANNEL;
 using org::limitless::seqeron::protocol::FEEDER_STREAM_ID;
 using org::limitless::seqeron::protocol::frameStartPosition;
 
@@ -36,11 +37,11 @@ using org::limitless::seqeron::protocol::REPLAYER_REPLAY_STREAM_ID;
 using org::limitless::seqeron::protocol::REPLAYER_REQUEST_STREAM_ID;
 
 // The tap as a consumer subscribes to it: untethered, so a slow app is dropped and heals by replay
-// rather than back-pressuring the sequencer. The tap itself is "aeron:ipc" -- FrameLayer.FEEDER_CHANNEL.
-inline constexpr const char* FEEDER_CONSUMER_CHANNEL = "aeron:ipc?tether=false";
+// rather than back-pressuring the sequencer.
+inline const std::string FEEDER_CONSUMER_CHANNEL = std::string(FEEDER_CHANNEL) + "?tether=false";
 
 // Untethered like the tap, because the Replayer answers every app from one duty-cycle thread.
-inline constexpr const char* REPLAYER_CONTROL_CHANNEL = "aeron:ipc?tether=false";
+inline const std::string REPLAYER_CONTROL_CHANNEL = std::string(REPLAYER_IPC_CHANNEL) + "?tether=false";
 
 /**
  * Follows the co-located SequencerService IPC tap directly, decoding and dispatching sequenced

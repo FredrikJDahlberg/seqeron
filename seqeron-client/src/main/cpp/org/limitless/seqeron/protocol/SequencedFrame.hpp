@@ -35,7 +35,9 @@ namespace org::limitless::seqeron::protocol {
 
 // ── Constants matching SequencerService / SequencerServer ──────────────────────
 
-// Stream id of the tap every node records into its own archive; the recording is found by stream id alone.
+// The tap: the node-local IPC stream every node republishes each sequenced frame on and records. A
+// consumer subscribes untethered (see ReplayerStreamReceiver), the recording is found by stream id alone.
+inline constexpr const char* FEEDER_CHANNEL = "aeron:ipc";
 inline constexpr std::int32_t FEEDER_STREAM_ID = 205;
 
 // ── Limits ────────────────────────────────────────────────────────────────────

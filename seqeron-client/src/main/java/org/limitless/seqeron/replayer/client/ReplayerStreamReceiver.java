@@ -33,7 +33,7 @@ public final class ReplayerStreamReceiver implements AutoCloseable {
      * Untethered like the tap: the Replayer answers every app from one thread, so an app that stops polling
      * must not back-pressure the others' replies. A dropped reply costs one resend interval.
      */
-    public static final String CONTROL_CHANNEL = ReplayProtocol.IPC_CHANNEL + "?tether=false";
+    private static final String CONTROL_CHANNEL = ReplayProtocol.IPC_CHANNEL + "?tether=false";
 
     private static final int FRAGMENT_LIMIT = 16;
 

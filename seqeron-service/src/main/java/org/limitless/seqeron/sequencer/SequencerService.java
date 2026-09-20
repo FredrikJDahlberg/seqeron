@@ -19,6 +19,7 @@ import org.agrona.DirectBuffer;
 import org.agrona.concurrent.NoOpLock;
 import org.agrona.concurrent.status.CountersReader;
 import org.limitless.seqeron.protocol.FrameLayer;
+import org.limitless.seqeron.protocol.PortLayout;
 import org.limitless.seqeron.protocol.SeqeronCounters;
 import org.limitless.seqeron.util.Clocks;
 import org.limitless.seqeron.util.Logger;
@@ -119,9 +120,9 @@ public final class SequencerService implements ClusteredService {
         try {
             aeronArchive = AeronArchive.connect(new AeronArchive.Context()
                                                     .aeron(cluster.context().aeron())
-                                                    .controlRequestChannel("aeron:ipc")
-                                                    .controlRequestStreamId(100)
-                                                    .controlResponseChannel("aeron:ipc")
+                                                    .controlRequestChannel(PortLayout.ARCHIVE_CONTROL_CHANNEL)
+                                                    .controlRequestStreamId(PortLayout.ARCHIVE_CONTROL_STREAM_ID)
+                                                    .controlResponseChannel(PortLayout.ARCHIVE_CONTROL_CHANNEL)
                                                     .controlResponseStreamId(ARCHIVE_CONTROL_RESPONSE_STREAM_ID)
                                                     .lock(NoOpLock.INSTANCE));
             tapPub = cluster.context().aeron().addExclusivePublication(FrameLayer.FEEDER_CHANNEL, FrameLayer.FEEDER_STREAM_ID);

@@ -144,7 +144,7 @@ Java and a C++ twin and does no I/O.
 |---|---|
 | `FrameLayer` (Java), `SequencedFrame.hpp` (C++) | The tap's identity (`FEEDER_STREAM_ID` 205) and the size limits of spec §12; in Java also the heartbeat interval |
 | `SystemFrame` (Java), `SequencedFrame.hpp` (C++) | The `systemEventType` values |
-| `PortLayout` | The cluster's port block, each member's ingress endpoint, and the endpoint set a producer connects with (`ingressEndpoints()`); honours `SEQERON_PORT_BASE` |
+| `PortLayout` | The cluster's port block, each member's ingress endpoint, the endpoint set a producer connects with (`ingressEndpoints()`), and the co-located archive's control link; honours `SEQERON_PORT_BASE` |
 | `ReplayProtocol` | The replay protocol's channel and stream ids, and `NO_REPLAY_NEEDED` |
 
 ## Wire codecs
