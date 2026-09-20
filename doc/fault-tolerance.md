@@ -449,8 +449,7 @@ every applied `LeadershipChanged` for that reason. `OrderExecServer`'s per-cycle
 finds that case within its fixed seeds.
 
 Dispatch runs in **insertion order**, which — fed from the sequenced stream — is `globalSeqNo` order.
-That is load-bearing rather than tidiness: these side effects are externally visible in the order they
-are emitted (an `ExecutionReport` takes its outbound FIX `MsgSeqNum` when the gateway frames it), so
+This is required, side effects are externally visible in the order they are emitted (an `ExecutionReport` takes its outbound FIX `MsgSeqNum` when the gateway frames it), so
 iterating the underlying `unordered_map` directly, as this did until 2026-08-07, handed a counterparty a
 burst of acks shuffled — and shuffled *differently* per replica, since a rebuilt hash map's iteration
 order is not a function of the log. Determinism across replicas (§0) has to hold for emission order, not

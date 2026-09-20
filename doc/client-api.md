@@ -128,9 +128,11 @@ how. The `sbe-replay.xml` codecs also ship, but only `ReplayerStreamReceiver` sp
 
 ## Support code
 
-`util` (`Logger`, `IdleStrategies`/`IdleStrategy.hpp`, and `Env.hpp` in C++) and `protocol`'s
-`SeqeronCounters` ship in the client tier because the classes above use them. You may use them, but they are
-infrastructure rather than what seqeron offers, and they carry no promise of stability.
+`util` (`Logger`, `IdleStrategies`/`IdleStrategy.hpp`, `Clocks`, and `Env.hpp` in C++) and `protocol`'s
+`SeqeronCounters` ship in the client tier because the classes above use them. You may use them, but they
+are infrastructure rather than what seqeron offers, and they carry no promise of stability.
+`Clocks.monotonicMs()` is what every duty-cycle deadline here is measured against; C++ has no twin,
+since `nowMs()` is a free function in the one header that needs it.
 
 ## Not API
 

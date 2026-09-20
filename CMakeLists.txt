@@ -278,8 +278,11 @@ if(SEQERON_BUILD_TESTS)
         src/test/cpp/org/limitless/seqeron/sequencer/client/ClusterStreamSenderTest.cpp
         src/test/cpp/org/limitless/seqeron/protocol/FrameStartPositionTest.cpp
         src/test/cpp/org/limitless/seqeron/protocol/PortLayoutTest.cpp
+        src/test/cpp/org/limitless/seqeron/protocol/SequencedFrameTest.cpp
         src/test/cpp/org/limitless/seqeron/replayer/client/ReplayerRecoveryTest.cpp
         src/test/cpp/org/limitless/seqeron/replayer/client/ReplayerRecoveryPropertyTest.cpp
+        src/test/cpp/org/limitless/seqeron/helpers/SplitMix64Test.cpp
+        src/test/cpp/org/limitless/seqeron/util/EnvTest.cpp
         src/main/cpp/org/limitless/seqeron/sequencer/client/ClusterStreamSender.hpp
         src/main/cpp/org/limitless/seqeron/util/Logger.hpp
     )
@@ -291,6 +294,9 @@ if(SEQERON_BUILD_TESTS)
         aeron::aeron
         GTest::gtest_main
     )
+
+    # helpers/ — what the suites share, such as the generator both languages' property tests draw from.
+    target_include_directories(core_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/test/cpp)
 
     check_cxx_compiler_flag("-Wcharacter-conversion" SEQERON_HAS_WCHARACTER_CONVERSION)
     if(SEQERON_HAS_WCHARACTER_CONVERSION)
