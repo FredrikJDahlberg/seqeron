@@ -40,6 +40,12 @@ namespace org::limitless::seqeron::protocol {
 inline constexpr const char* FEEDER_CHANNEL = "aeron:ipc";
 inline constexpr std::int32_t FEEDER_STREAM_ID = 205;
 
+// Period of the cluster clock: every node emits a ClusterHeartbeat carrying the consensus timestamp, so a
+// consumer has a clock that advances while producers are silent, and a tap watchdog has whole periods to
+// span. The Java twin is FrameLayer.CLUSTER_HEARTBEAT_INTERVAL_MS; keep the two in step.
+inline constexpr std::int64_t CLUSTER_HEARTBEAT_INTERVAL_MS = 1000;
+inline constexpr std::int64_t CLUSTER_HEARTBEAT_INTERVAL_NS = CLUSTER_HEARTBEAT_INTERVAL_MS * 1'000'000;
+
 // ── Limits ────────────────────────────────────────────────────────────────────
 //
 // This language's compiled-in mirror of spec §12 (the Java one is FrameLayer); a change is a wire change

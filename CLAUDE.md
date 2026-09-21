@@ -215,12 +215,14 @@ standalone `aeronmd` at all. The sixth, `docker-failover-test.sh`, is the contai
 failover soak (`docker/compose.yml`, `./gradlew operatorDist`, CI's `failover.yml`). `chaos-runner` needs one more thing the probe cannot supply — a **gateway
 pair under the faults** — and `TestGateway` is it: an elected active/standby producer (`GW-T-A`/`GW-T-B`,
 `gatewaySourceId` 9, listening on 9200/9201) that speaks no application protocol and holds no session
-state, but holds the same four fences a real gateway does — including the client tier's recovery-stall
-fence (`app/RecoveryStallFence`), which is why `chaos-runner.sh` can drive a
-non-converging recovery to a handover rather than a hang. Its activation and stand-down are
-`app/GatewayLifecycle`, the client tier's class for a gateway's election. It is also the reference user of
-confirmed ingress: everything it publishes goes through `IngressPublisher` tracking into `app/PendingSends`,
-which its `ClusterStreamSender` holds, and a `PendingSends` fault is a fifth fence. It is in
+state, but holds the same fences a real gateway does — including the client tier's recovery-stall
+fence, which is why `chaos-runner.sh` can drive a
+non-converging recovery to a handover rather than a hang. **It is the reference consumer of `app/Gateway`**,
+the client tier's façade for one instance of an elected pair: the election (`app/GatewayLifecycle`), the
+connection id space it resumes from its predecessor, the connection lifecycle frames, confirmed ingress
+(`app/PendingSends` under an `IngressPublisher`, held by its `ClusterStreamSender`) and the four `app/Fence`
+values are all behind it, so what is left in the harness is a socket and a line protocol. A media driver that
+goes away raises from `doWork()` rather than as a fence. It is in
 **`seqeron-service/src/test/java`** and therefore in no jar: `chaos-runner.sh` puts
 `seqeron-service/build/classes/java/test` on the classpath beside the uber jar and refuses to start
 without it. Its

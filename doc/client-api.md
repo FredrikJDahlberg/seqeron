@@ -22,7 +22,7 @@ both sides share in `protocol`. C++ uses the same directories and namespaces
 | `protocol` | client | The wire contract in code: `FrameLayer`, `SystemFrame`, `SequencedFrameDecoder`, `PortLayout`, `ReplayProtocol`, `SeqeronCounters` (C++: `SequencedFrame.hpp`, `PortLayout.hpp`, `ReplayProtocol.hpp`, `SeqeronCounters.hpp`) |
 | `sequencer.client` | client | Producing: `ClusterStreamSender`, `IngressPublisher`, `IngressTracker` (C++ also `ClusterStreamClient`) |
 | `replayer.client` | client | Consuming: `ReplayerStreamReceiver`, its three callback interfaces (`SequencedHandler`, `LeadershipHandler`, `CaughtUpHandler`), and `SequencedEvent` in Java. The C++ `SequencedEvent` is in `protocol` (`SequencedFrame.hpp`) instead, beside the `unwrapFrame` that fills it and the `decodeSystem`/`decodeSequenced` that read it |
-| `app` | client | The building blocks below |
+| `app` | client | What a client application is built from: the façades below, and the blocks under them |
 | `util` | client | Support code |
 | `sbe.frame`, `sbe.replay` | client | Generated codecs |
 | `sequencer`, `replayer.server`, `tools`, `metrics`, `sbe.probe` | node | The cluster itself; not for clients |
@@ -45,9 +45,10 @@ comment of their own — the schema is what documents them.
 
 ## Consuming the ordered stream
 
-**`ReplayerStreamReceiver`** (`replayer.client`, both languages) is the only entry point. It replays
+**`ReplayerStreamReceiver`** (`replayer.client`, both languages) is the entry point. It replays
 this node's history through the co-located Replayer, switches to the live tap once caught up, heals gaps
-by itself, and delivers every frame once, in `globalSeqNo` order.
+by itself, and delivers every frame once, in `globalSeqNo` order. A Java producer that takes a
+[façade](#the-front-door-app) does not construct one: the façade owns it and hands out `Payload`s.
 
 | Call | Java | C++ |
 |---|---|---|
@@ -113,6 +114,10 @@ out of an Aeron Archive for bounded scans. It is not the live path.
 
 ## Producing
 
+A Java producer takes a [façade](#the-front-door-app) instead of the classes below and never sees them;
+this is what one is assembled from, and what a C++ producer or a consumer writing its own duty cycle
+uses directly.
+
 | Class | Role |
 |---|---|
 | `ClusterStreamSender` | The cluster session. `connectColocated(aeron, memberId, …)` uses IPC ingress on the co-located member and falls back to UDP when that member is not leading; `connect(…)` uses UDP. Both take the UDP endpoint set — `PortLayout.ingressEndpoints()` is the default one — because the fallback and the reconnect both need it. `send` spins through back-pressure and elections. Call `keepAlive()` and `pollEgress()` every duty cycle. |
@@ -124,17 +129,95 @@ out of an Aeron Archive for bounded scans. It is not the live path.
 `IngressTracker` is the interface `PendingSends` implements, and `IngressSender` the one
 `ClusterStreamSender` implements. Implement them only to replace those classes.
 
-## Building blocks (`app`)
+## The front door (`app`)
 
-Pure state machines for the decisions a gateway or co-located application has to get right. Each has a
-Java and a C++ twin and does no I/O.
+The assembled duty cycle, one façade per kind of producer, over the pieces above. A consumer that
+takes one of these writes its edge and its payloads, and nothing of the frame layer or of seqeron's
+system vocabulary appears in its code. Both languages: the C++ twins are class templates over the
+listener, `app/Gateway.hpp` and `app/ColocatedApplication.hpp`, and take a `Config` aggregate where Java
+takes a builder. Two differences follow from the tiers below them — a C++ publish is templated on an SBE
+encoder and a `Fill` rather than taking pre-encoded bytes, and there is no `ingressEndpoints` to pass,
+since `ClusterStreamSender` compiles the member set in.
+
+**`Payload`** is what `onSequenced` receives: the envelope is off, and `bodyOffset()`/`bodyLength()` take
+the payload's own `MessageHeader` off too, which is where an SBE decoder wraps. A payload that carries no
+header at all (§13.2, what C++'s `offerFrame` exists for) is addressed by `payloadOffset()`/`payloadLength()`
+instead, and its `templateId`, `blockLength` and `version` mean nothing. It carries `globalSeqNo`, `sourceId`,
+`connectionId`, `sourceSessionId`, `clusterTimestampNs`, `receiveTimeNs`, and `(payloadId, templateId)`
+to dispatch on. No system frame ever arrives as one.
+
+### `Gateway`
+
+One instance of an elected active/standby pair.
+
+```java
+try (Gateway gateway = Gateway.builder()
+        .gatewayName("GW-A").clientId(10).memberId(memberId)
+        .egressChannel(egressChannel).ingressEndpoints(PortLayout.ingressEndpoints())
+        .listener(listener)
+        .build()) {
+    gateway.start(aeron);
+    while (running) { idle.idle(gateway.doWork()); }
+}
+```
+
+| Call | What it does |
+|---|---|
+| `doWork()` | one duty-cycle iteration: the cluster session, the tap, confirmed ingress, the fences, the connection lifecycle and the election, in the order they require |
+| `canAccept()` | whether a connection may be taken right now — serving, and ingress is not held behind a failover's resend |
+| `openConnection()` / `openConnection(data, length)` | allocates the id and places its `ConnectionOpened`, retried by `doWork()` |
+| `closeConnection(id)` | the same for a connection that has gone; one the cluster never heard of is dropped rather than announced |
+| `publish(connectionId, payloadId, payload, length)` | submits one payload, stamped with this gateway's `sourceId`; `Declined` is worth retrying |
+| `isActivated()`, `isServing()`, `sourceId()`, `gatewayId()`, `isCaughtUp()`, `lastGlobalSeqNo()` | what the instance may say about itself |
+
+`Listener` is the edge: `onActivated(firstConnectionId)` opens it and `onStandby()` closes it,
+`onSequenced(Payload)` delivers application payloads in order, `onCaughtUp(globalSeqNo)` fires on every
+transition, and `onFenced(Fence, detail)` fires once — release the cluster session, usually by exiting, so
+a standby takes over. The four `Fence` values are the cluster session lost, ingress confirmation faulted,
+recovery stalled, and the tap stalled; a media driver that goes away raises from `doWork()` instead.
+
+`seqeron-service/src/test/java/org/limitless/seqeron/tools/TestGateway.java` is the reference consumer.
+
+### `ColocatedApplication`
+
+One replica of the producer kind nothing elects: one per node, named in the topology's `<applications>`
+section, publishing only while its own node leads. Same builder shape as `Gateway`, taking the
+`sourceId` its row declares instead of a gateway name, and connecting over its own member's `aeron:ipc`
+while that member leads (`DEFAULT_IPC_CONNECT_TIMEOUT_MS`).
+
+| Call | What it does |
+|---|---|
+| `doWork()` | one duty-cycle iteration: the cluster session, the tap, confirmed ingress, the fences, then the leader gate |
+| `canPublish()` | whether leader-only work may reach ingress right now — the gate is open, and ingress is not held |
+| `isLeading()` | whether the gate is open at all |
+| `publish(payloadId, payload, length)` | submits one payload of this application's own, on its `sourceId` and no connection |
+| `reply(requesterSourceId, connectionId, payloadId, payload, length)` | the same on behalf of the producer that asked: the **requester's** `sourceId` and `connectionId`, which is how the gateway that took the request routes the answer back out |
+| `sourceId()`, `isCaughtUp()`, `lastGlobalSeqNo()` | what the replica may say about itself |
+
+`Listener` adds `onLeadershipChanged(boolean leading)` where `Gateway` has `onActivated`/`onStandby`, and
+carries the same `onSequenced`/`onCaughtUp`/`onFenced`. **Every leadership change closes an open gate**,
+so `false` is where `OutstandingWork.onNotLeader()` belongs: a reply submitted during the election may
+have gone with it, and the next opening dispatches it again. Keep a request's `sourceId` and
+`connectionId` rather than its `Payload` — the flyweight is valid only during its callback, and a reply
+is usually dispatched later.
+
+Both façades take `DEFAULT_TAP_STALL_TIMEOUT_MS` (20 heartbeat periods) and
+`DEFAULT_RECOVERY_STALL_TIMEOUT_MS` (three times that) — the deployment policy every producer had been
+copying; each builder takes overrides.
+
+## Underneath (`app`)
+
+The decisions the façades are assembled from — pure state machines, each with a Java and a C++ twin, each
+doing no I/O. Take them directly only to assemble your own duty cycle; `OutstandingWork` is the exception,
+being about the application's own work rather than seqeron's plumbing.
 
 | Class | For |
 |---|---|
-| `GatewayLifecycle` | A gateway instance's election: when to open its gate, when to stand down (`GatewayRegistered`/`GatewayActive`/`GatewayStarted`) |
-| `LeaderGate` | Whether a co-located replica may do leader-only work: caught up, and its node leads |
 | `OutstandingWork` | Leader-only request/reply work, re-dispatched after a failover |
-| `RecoveryStallFence` | Fences a gateway whose recovery stops making progress |
+| `GatewayLifecycle` | A gateway instance's election: when to open its gate, when to stand down (`GatewayRegistered`/`GatewayActive`/`GatewayStarted`) |
+| `LeaderGate` | Whether a co-located replica may do leader-only work: caught up, and its node leads. `ColocatedApplication` owns one |
+| `RecoveryStallFence` | Fences a producer whose recovery stops making progress |
+| `TapStallFence` | Fences a producer that has stopped seeing its node's tap |
 | `TapLagMonitor` | Observes how far a contiguous tap runs behind the leader; raises no fence |
 | `PendingSends` | See [Producing](#producing) |
 
@@ -171,5 +254,8 @@ These are public or in public headers for mechanical reasons. Don't build on the
 - C++ `ReplayerRecovery`, `ReplayerRecoveryActions`, and `IngressTransport`/`EgressTransport` with their
   Aeron implementations: the seams the unit suites drive. Header-only C++ has no package-private. In Java
   the same seams are package-private.
+- Java `app.Session`: the core both façades are assembled from — the cluster session, the tap, confirmed
+  ingress and the fences in one duty cycle. Package-private, and named here only because their javadoc
+  points at it.
 - Everything in `seqeron-service`: `Sequencer`, `SequencerService`, `SequencerServer`, `TapPublisher`,
   `replayer.server`, `tools`, `MetricsExporter`.
