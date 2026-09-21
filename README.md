@@ -138,8 +138,8 @@ Apple clang; CI builds it on Ubuntu with both clang and gcc-14.
 ## Tests
 
 ```bash
-cmake --build cmake-build-debug --target run_tests   # C++: 130 cases
-./gradlew test                                       # Java: 317 cases
+cmake --build cmake-build-debug --target run_tests   # C++: 259 cases
+./gradlew test                                       # Java: 408 cases
 ```
 
 `run_tests` is `ctest --output-on-failure` with the build dependency wired up; plain `ctest` works

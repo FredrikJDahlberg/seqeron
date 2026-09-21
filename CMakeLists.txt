@@ -278,6 +278,7 @@ if(SEQERON_BUILD_TESTS)
         seqeron-client/src/test/cpp/org/limitless/seqeron/sequencer/client/ClusterStreamSenderTest.cpp
         seqeron-client/src/test/cpp/org/limitless/seqeron/protocol/FrameStartPositionTest.cpp
         seqeron-client/src/test/cpp/org/limitless/seqeron/protocol/PortLayoutTest.cpp
+        seqeron-client/src/test/cpp/org/limitless/seqeron/protocol/SequencedEventTest.cpp
         seqeron-client/src/test/cpp/org/limitless/seqeron/protocol/SequencedFrameTest.cpp
         seqeron-client/src/test/cpp/org/limitless/seqeron/replayer/client/ReplayerRecoveryTest.cpp
         seqeron-client/src/test/cpp/org/limitless/seqeron/replayer/client/ReplayerRecoveryPropertyTest.cpp

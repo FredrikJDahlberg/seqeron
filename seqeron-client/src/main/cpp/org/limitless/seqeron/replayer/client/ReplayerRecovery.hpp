@@ -624,7 +624,6 @@ class ReplayerRecovery
         // onFrame unwrapped and validated this frame already, and the retained FIFO holds only frames that
         // passed there — the unwrap here re-addresses the caller's bytes, it does not re-check them.
         const protocol::FrameView view = protocol::unwrapFrame(frame, length);
-        const std::uint16_t templateId = view.templateId;
 
         m_lastGlobalSeqNo = sequenceNumber;
         m_replayGapLogged = false;
@@ -634,10 +633,6 @@ class ReplayerRecovery
             notifyCaughtUp();
         }
 
-        const auto srcId = view.sourceId;
-        const auto connId = view.connectionId;
-        const auto sessId = view.sourceSessionId;
-        const auto ts = view.clusterTimestampNs;
         // A systemEventType is only a systemEventType on a system frame: an application payload's own 1
         // and 2 sit at the same offset, so both halves have to match before a frame is read as a
         // lifecycle event.
@@ -649,12 +644,7 @@ class ReplayerRecovery
             const OnConnected& callback = eventType == protocol::CONNECTION_OPENED ? m_onConnected : m_onDisconnected;
             if (callback)
             {
-                callback(LifecycleEvent{ .globalSeqNo = sequenceNumber,
-                                         .sourceId = srcId,
-                                         .connectionId = connId,
-                                         .sourceSessionId = sessId,
-                                         .clusterTimestampNs = ts,
-                                         .receiveTimeNs = receiveNs });
+                callback(protocol::lifecycleEventOf(view, receiveNs));
             }
             return;
         }
@@ -673,21 +663,7 @@ class ReplayerRecovery
         }
         if (m_onSequenced)
         {
-            m_onSequenced(SequencedEvent{ .globalSeqNo = sequenceNumber,
-                                          .sourceId = srcId,
-                                          .connectionId = connId,
-                                          .sourceSessionId = sessId,
-                                          .clusterTimestampNs = ts,
-                                          .receiveTimeNs = receiveNs,
-                                          .system = isSystem,
-                                          .payloadId = view.payloadId,
-                                          .systemEventType = eventType,
-                                          .templateId = templateId,
-                                          .blockLength = view.blockLength,
-                                          .version = view.version,
-                                          .payload = view.payload,
-                                          .payloadLength = view.payloadLength,
-                                          .position = framePosition });
+            m_onSequenced(protocol::sequencedEventOf(view, receiveNs, framePosition));
         }
     }
 

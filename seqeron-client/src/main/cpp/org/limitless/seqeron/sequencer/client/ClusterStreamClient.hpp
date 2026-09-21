@@ -516,12 +516,7 @@ class ClusterStreamClient
             return;
         }
 
-        const std::uint16_t templateId = view.templateId;
         const auto gseq = view.globalSeqNo;
-        const auto srcId = view.sourceId;
-        const auto connId = view.connectionId;
-        const auto sessId = view.sourceSessionId;
-        const auto ts = view.clusterTimestampNs;
         if (!m_singleImageMode)
         {
             if (m_lastGlobalSeqNo != 0 && gseq <= m_lastGlobalSeqNo)
@@ -535,12 +530,7 @@ class ClusterStreamClient
         {
             if (m_onConnected)
             {
-                m_onConnected(protocol::LifecycleEvent{ .globalSeqNo = gseq,
-                                                        .sourceId = srcId,
-                                                        .connectionId = connId,
-                                                        .sourceSessionId = sessId,
-                                                        .clusterTimestampNs = ts,
-                                                        .receiveTimeNs = receiveNs });
+                m_onConnected(protocol::lifecycleEventOf(view, receiveNs));
             }
             return;
         }
@@ -548,32 +538,13 @@ class ClusterStreamClient
         {
             if (m_onDisconnected)
             {
-                m_onDisconnected(protocol::LifecycleEvent{ .globalSeqNo = gseq,
-                                                           .sourceId = srcId,
-                                                           .connectionId = connId,
-                                                           .sourceSessionId = sessId,
-                                                           .clusterTimestampNs = ts,
-                                                           .receiveTimeNs = receiveNs });
+                m_onDisconnected(protocol::lifecycleEventOf(view, receiveNs));
             }
             return;
         }
         if (m_onSequenced)
         {
-            m_onSequenced(protocol::SequencedEvent{ .globalSeqNo = gseq,
-                                                    .sourceId = srcId,
-                                                    .connectionId = connId,
-                                                    .sourceSessionId = sessId,
-                                                    .clusterTimestampNs = ts,
-                                                    .receiveTimeNs = receiveNs,
-                                                    .system = isSystem,
-                                                    .payloadId = view.payloadId,
-                                                    .systemEventType = view.systemEventType,
-                                                    .templateId = templateId,
-                                                    .blockLength = view.blockLength,
-                                                    .version = view.version,
-                                                    .payload = view.payload,
-                                                    .payloadLength = view.payloadLength,
-                                                    .position = framePosition });
+            m_onSequenced(protocol::sequencedEventOf(view, receiveNs, framePosition));
         }
     }
 

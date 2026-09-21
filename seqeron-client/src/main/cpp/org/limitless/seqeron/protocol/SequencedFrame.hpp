@@ -362,6 +362,42 @@ struct LifecycleEvent
     std::int64_t receiveTimeNs;      ///< wall-clock ns at receipt by this client
 };
 
+/**
+ * Fills a SequencedEvent from an unwrapped frame, plus the two stamps that belong to the delivery rather
+ * than to the frame. Both stream clients deliver the same event built from the same view, so the mapping
+ * is here rather than once per client.
+ */
+inline SequencedEvent sequencedEventOf(const FrameView& view, const std::int64_t receiveTimeNs,
+                                       const std::int64_t position)
+{
+    return SequencedEvent{ .globalSeqNo = view.globalSeqNo,
+                           .sourceId = view.sourceId,
+                           .connectionId = view.connectionId,
+                           .sourceSessionId = view.sourceSessionId,
+                           .clusterTimestampNs = view.clusterTimestampNs,
+                           .receiveTimeNs = receiveTimeNs,
+                           .system = view.system,
+                           .payloadId = view.payloadId,
+                           .systemEventType = view.systemEventType,
+                           .templateId = view.templateId,
+                           .blockLength = view.blockLength,
+                           .version = view.version,
+                           .payload = view.payload,
+                           .payloadLength = view.payloadLength,
+                           .position = position };
+}
+
+/// The same for the header-only ConnectionOpened/ConnectionClosed pair, which carries no body to address.
+inline LifecycleEvent lifecycleEventOf(const FrameView& view, const std::int64_t receiveTimeNs)
+{
+    return LifecycleEvent{ .globalSeqNo = view.globalSeqNo,
+                           .sourceId = view.sourceId,
+                           .connectionId = view.connectionId,
+                           .sourceSessionId = view.sourceSessionId,
+                           .clusterTimestampNs = view.clusterTimestampNs,
+                           .receiveTimeNs = receiveTimeNs };
+}
+
 // The wall-clock stamp events carry as receiveTimeNs, shared so both stream clients use one clock.
 inline std::int64_t nowNs()
 {
