@@ -104,7 +104,7 @@ public final class Gateway implements AutoCloseable {
         void onClusterHeartbeat(long clusterTimeNs, long receiveTimeNs);
 
         /** Once, latched: release the cluster session — exiting is the usual way — so a standby takes over. */
-        void onFenced(Fence fence, String detail);
+        void onFenced(ClusterError fence, String detail);
     }
 
     private final Session session;
@@ -457,7 +457,7 @@ public final class Gateway implements AutoCloseable {
         }
 
         @Override
-        public void onFenced(final Fence fence, final String detail) {
+        public void onFenced(final ClusterError fence, final String detail) {
             listener.onFenced(fence, detail);
         }
     }

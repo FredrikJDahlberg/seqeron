@@ -197,7 +197,8 @@ either way.
 cmake --build cmake-build-debug --target run_tests   # GoogleTest
 ./gradlew test                                       # JUnit
 ```
-`run_tests` is `ctest --output-on-failure` with the build dependency wired. **Plain `ctest` is fine
+`run_tests` is `ctest --output-on-failure` with the build dependency wired, and also builds
+`core_headers`, which compiles each public header alone under `-Werror`. **Plain `ctest` is fine
 here** — the `..._NOT_BUILT` noise that had to be filtered was simdfix's own registered suite, and this
 build declares no simdfix. Single suites:
 `./cmake-build-debug/core_tests --gtest_filter='ReplayerRecovery*'` and
@@ -223,7 +224,7 @@ fence, which is why `chaos-runner.sh` can drive a
 non-converging recovery to a handover rather than a hang. **It is the reference consumer of `app/Gateway`**,
 the client tier's façade for one instance of an elected pair: the election (`app/GatewayLifecycle`), the
 connection id space it resumes from its predecessor, the connection lifecycle frames, confirmed ingress
-(`sequencer/client/PendingSends` under an `IngressPublisher`, held by its `ClusterStreamSender`) and the four `app/Fence`
+(`sequencer/client/PendingSends` under an `IngressPublisher`, held by its `ClusterStreamSender`) and the four `app/ClusterError`
 values are all behind it, so what is left in the harness is a socket and a line protocol. A media driver that
 goes away raises from `doWork()` rather than as a fence. It is in
 **`seqeron-service/src/test/java`** and therefore in no jar: `chaos-runner.sh` puts

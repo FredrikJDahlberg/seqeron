@@ -15,11 +15,13 @@
 
 #include <cstdint>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 #include <gtest/gtest.h>
 
 #include "org/limitless/seqeron/replayer/client/ReplayerRecovery.hpp"
+#include "org/limitless/seqeron/replayer/client/ReplayerStreamReceiver.hpp"
 #include "org/limitless/seqeron/util/Logger.hpp"
 #include "org_limitless_seqeron_sbe_frame/ClusterHeartbeat.h"
 #include "org_limitless_seqeron_sbe_frame/MessageHeader.h"
@@ -33,6 +35,15 @@ namespace {
 
 namespace frm = org::limitless::seqeron::sbe::frame;
 namespace diag = org::limitless::seqeron::util;
+namespace rpl = org::limitless::seqeron::sbe::replay;
+using protocol::REPLAYER_NO_REPLAY_NEEDED;
+using protocol::SequencedEvent;
+
+// Each owns raw retained blocks or hands its own address out, so a copy or a move would double-free or dangle.
+static_assert(!std::is_copy_constructible_v<RetainBlockPool> && !std::is_move_constructible_v<RetainBlockPool>);
+static_assert(!std::is_copy_constructible_v<ReplayerRecovery> && !std::is_move_constructible_v<ReplayerRecovery>);
+static_assert(!std::is_copy_constructible_v<ReplayerStreamReceiver> &&
+              !std::is_move_constructible_v<ReplayerStreamReceiver>);
 
 // Captures every LoggerEvent reported while in scope, in place of the installed default
 // (StderrLoggerSink) — see Logger.hpp. RAII so a test that ASSERTs out early still restores

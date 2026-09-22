@@ -6,8 +6,8 @@ namespace org::limitless::seqeron::app {
 
 // Why a producer may no longer act. Each is terminal and latched: the process releases its cluster session
 // so a standby can take over, rather than carrying on behind a view of the log it cannot trust. The Java
-// twin is app/Fence.java; keep the two in step.
-enum class Fence : std::uint8_t
+// twin is app/ClusterError.java; keep the two in step.
+enum class ClusterError : std::uint8_t
 {
     // The cluster closed this session, or a new leader never arrived. This instance can never be promoted again.
     ClusterSessionLost,
@@ -19,18 +19,18 @@ enum class Fence : std::uint8_t
     TapStalled,
 };
 
-// The fence's name, for a log line.
-inline const char* fenceName(const Fence fence)
+// The error's name, for a log line.
+inline const char* clusterErrorName(const ClusterError error)
 {
-    switch (fence)
+    switch (error)
     {
-        case Fence::ClusterSessionLost:
+        case ClusterError::ClusterSessionLost:
             return "CLUSTER_SESSION_LOST";
-        case Fence::IngressConfirmFaulted:
+        case ClusterError::IngressConfirmFaulted:
             return "INGRESS_CONFIRM_FAULTED";
-        case Fence::RecoveryStalled:
+        case ClusterError::RecoveryStalled:
             return "RECOVERY_STALLED";
-        case Fence::TapStalled:
+        case ClusterError::TapStalled:
             return "TAP_STALLED";
     }
     return "UNKNOWN";

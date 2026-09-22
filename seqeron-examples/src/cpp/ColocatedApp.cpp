@@ -109,9 +109,9 @@ struct PingListener
     {}
 
     // Latched, once: this replica may no longer act, and exiting lets its restart re-walk the log.
-    void onFenced(const app::Fence fence, const std::string& detail) const
+    void onFenced(const app::ClusterError fence, const std::string& detail) const
     {
-        fault = std::string(app::fenceName(fence)) + ": " + detail;
+        fault = std::string(app::clusterErrorName(fence)) + ": " + detail;
     }
 };
 

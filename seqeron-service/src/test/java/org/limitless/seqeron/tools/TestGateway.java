@@ -17,7 +17,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import org.agrona.DirectBuffer;
 import org.agrona.concurrent.IdleStrategy;
 import org.agrona.concurrent.ShutdownSignalBarrier;
-import org.limitless.seqeron.app.Fence;
+import org.limitless.seqeron.app.ClusterError;
 import org.limitless.seqeron.app.Gateway;
 import org.limitless.seqeron.app.Payload;
 import org.limitless.seqeron.protocol.Publish;
@@ -377,7 +377,7 @@ public final class TestGateway {
         }
 
         @Override
-        public void onFenced(final Fence reason, final String detail) {
+        public void onFenced(final ClusterError reason, final String detail) {
             fence("FENCED: " + reason + " — " + detail
                       + " — releasing the cluster session so a standby can take over");
         }

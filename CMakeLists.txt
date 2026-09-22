@@ -190,6 +190,8 @@ endif()
 # block below).
 add_library(seqeron_core INTERFACE)
 add_library(seqeron::seqeron_core ALIAS seqeron_core)
+# The standard is part of the interface: CMAKE_CXX_STANDARD above reaches this directory only.
+target_compile_features(seqeron_core INTERFACE cxx_std_23)
 target_include_directories(seqeron_core INTERFACE
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/seqeron-client/src/main/cpp>
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
@@ -309,13 +311,28 @@ if(SEQERON_BUILD_TESTS)
     include(GoogleTest)
     gtest_discover_tests(core_tests)
 
+    # core_headers — every public header compiled on its own under -Werror, as a consumer's build would.
+    # A header no test includes is otherwise never compiled here at all.
+    set(SEQERON_HEADER_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/seqeron-client/src/main/cpp")
+    file(GLOB_RECURSE SEQERON_HEADERS CONFIGURE_DEPENDS RELATIVE "${SEQERON_HEADER_ROOT}" "${SEQERON_HEADER_ROOT}/*.hpp")
+    set(SEQERON_HEADER_TUS "")
+    foreach(header IN LISTS SEQERON_HEADERS)
+        string(MAKE_C_IDENTIFIER "${header}" tu)
+        set(tu "${CMAKE_CURRENT_BINARY_DIR}/core_headers/${tu}.cpp")
+        file(CONFIGURE OUTPUT "${tu}" CONTENT "#include \"${header}\"\n")
+        list(APPEND SEQERON_HEADER_TUS "${tu}")
+    endforeach()
+    add_library(core_headers OBJECT ${SEQERON_HEADER_TUS})
+    target_link_libraries(core_headers PRIVATE seqeron_core seqeron_flags)
+    target_compile_options(core_headers PRIVATE -Werror)
+
     # run_tests — build the suite and run it. One binary now that the product half is its own repo, so
     # this is `ctest` with the output turned on; the target keeps its name because the CI workflow, the
     # docs and habit all name it. Plain ctest is clean here too: simdfix's own suite was what used to be
     # registered alongside and report spurious ..._NOT_BUILT failures, and this build declares no simdfix.
     add_custom_target(run_tests
         COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure
-        DEPENDS core_tests
+        DEPENDS core_tests core_headers
         WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
         COMMENT "Running core_tests"
         USES_TERMINAL

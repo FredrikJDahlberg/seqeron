@@ -66,7 +66,7 @@ public final class ColocatedApplication implements AutoCloseable {
         void onClusterHeartbeat(long clusterTimeNs, long receiveTimeNs);
 
         /** Once, latched: this replica may no longer act. Exiting is the usual way — its restart re-walks. */
-        void onFenced(Fence fence, String detail);
+        void onFenced(ClusterError fence, String detail);
     }
 
     private final Session session;
@@ -212,7 +212,7 @@ public final class ColocatedApplication implements AutoCloseable {
         }
 
         @Override
-        public void onFenced(final Fence fence, final String detail) {
+        public void onFenced(final ClusterError fence, final String detail) {
             listener.onFenced(fence, detail);
         }
     }

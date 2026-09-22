@@ -25,9 +25,6 @@ namespace org::limitless::seqeron::app {
 class Payload
 {
   public:
-    explicit Payload(const protocol::SequencedEvent& event) : m_event{ event }
-    {}
-
     // Cluster-wide monotone sequence number; increments by exactly one per frame.
     [[nodiscard]] std::int64_t globalSeqNo() const noexcept
     {
@@ -128,6 +125,12 @@ class Payload
     }
 
   private:
+    template<typename Dispatch>
+    friend class Session;
+
+    explicit Payload(const protocol::SequencedEvent& event) : m_event{ event }
+    {}
+
     const protocol::SequencedEvent& m_event;
 };
 

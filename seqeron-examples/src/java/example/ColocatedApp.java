@@ -8,8 +8,8 @@ import org.agrona.MutableDirectBuffer;
 import org.agrona.concurrent.BackoffIdleStrategy;
 import org.agrona.concurrent.IdleStrategy;
 import org.agrona.concurrent.UnsafeBuffer;
+import org.limitless.seqeron.app.ClusterError;
 import org.limitless.seqeron.app.ColocatedApplication;
-import org.limitless.seqeron.app.Fence;
 import org.limitless.seqeron.app.Payload;
 import org.limitless.seqeron.protocol.Publish;
 
@@ -170,7 +170,7 @@ public final class ColocatedApp implements ColocatedApplication.Listener {
      * consumer's on its behalf.
      */
     @Override
-    public void onFenced(final Fence fence, final String detail) {
+    public void onFenced(final ClusterError fence, final String detail) {
         this.fence = fence + ": " + detail;
     }
 }

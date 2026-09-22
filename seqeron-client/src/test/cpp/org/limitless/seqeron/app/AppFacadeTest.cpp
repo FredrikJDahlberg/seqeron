@@ -3,6 +3,8 @@
 // before any node has led or designated it. Everything past start() needs an Aeron runtime and belongs to
 // the end-to-end scripts. The Java twins' reference consumer is tools/TestGateway; this side has none.
 
+#include <type_traits>
+
 #include <gtest/gtest.h>
 
 #include "org/limitless/seqeron/app/ColocatedApplication.hpp"
@@ -10,6 +12,9 @@
 
 namespace org::limitless::seqeron::app {
 namespace {
+
+// A Payload is handed out, never built: its constructor would put protocol::SequencedEvent in the surface.
+static_assert(!std::is_constructible_v<Payload, const protocol::SequencedEvent&>);
 
 // Records what the façade asked of its consumer; none of it fires before start().
 struct StubListener
@@ -42,7 +47,7 @@ struct StubListener
     void onClusterHeartbeat(std::int64_t, std::int64_t)
     {}
 
-    void onFenced(Fence, const std::string&)
+    void onFenced(ClusterError, const std::string&)
     {}
 
     bool leadingSeen = false;

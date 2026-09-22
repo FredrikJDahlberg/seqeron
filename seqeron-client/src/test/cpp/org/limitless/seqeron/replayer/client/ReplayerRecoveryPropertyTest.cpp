@@ -42,6 +42,9 @@ namespace {
 
 namespace frm = org::limitless::seqeron::sbe::frame;
 namespace diag = org::limitless::seqeron::util;
+namespace rpl = org::limitless::seqeron::sbe::replay;
+using protocol::REPLAYER_NO_REPLAY_NEEDED;
+using protocol::SequencedEvent;
 
 constexpr std::int32_t CLIENT_ID = 4;
 

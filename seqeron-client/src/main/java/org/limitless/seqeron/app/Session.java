@@ -56,7 +56,7 @@ final class Session implements AutoCloseable {
         void onClusterHeartbeat(long clusterTimeNs, long receiveTimeNs);
 
         /** Once, latched: this producer may no longer act. */
-        void onFenced(Fence fence, String detail);
+        void onFenced(ClusterError fence, String detail);
     }
 
     private final Dispatch dispatch;
@@ -200,11 +200,11 @@ final class Session implements AutoCloseable {
         // isConnected() as well as the recorded fault: AeronCluster also closes itself, with no event at all,
         // when a new leader does not arrive before its timeout.
         if (sessionFault != null || sender.isSessionLost() || !sender.isConnected()) {
-            fence(Fence.CLUSTER_SESSION_LOST, sessionFault != null ? sessionFault : "closed");
+            fence(ClusterError.CLUSTER_SESSION_LOST, sessionFault != null ? sessionFault : "closed");
             return;
         }
         if (pending.isFaulted()) {
-            fence(Fence.INGRESS_CONFIRM_FAULTED,
+            fence(ClusterError.INGRESS_CONFIRM_FAULTED,
                   "an own frame came back differing from the oldest pending one, so what reached the log can no "
                       + "longer be counted");
             return;
@@ -212,17 +212,17 @@ final class Session implements AutoCloseable {
         final long nowMs = Clocks.monotonicMs();
         if (!receiver.isCaughtUp()) {
             if (recoveryStall.onNotCaughtUp(nowMs, receiver.lastGlobalSeqNo())) {
-                fence(Fence.RECOVERY_STALLED, "recovery has dispatched nothing for >" + recoveryStallTimeoutMs
+                fence(ClusterError.RECOVERY_STALLED, "recovery has dispatched nothing for >" + recoveryStallTimeoutMs
                                                   + "ms (globalSeqNo stuck at " + receiver.lastGlobalSeqNo() + ")");
             }
             return;
         }
         if (tapStall.isStalled(nowMs)) {
-            fence(Fence.TAP_STALLED, "no ClusterHeartbeat for >" + tapStallTimeoutMs + "ms");
+            fence(ClusterError.TAP_STALLED, "no ClusterHeartbeat for >" + tapStallTimeoutMs + "ms");
         }
     }
 
-    private void fence(final Fence reason, final String detail) {
+    private void fence(final ClusterError reason, final String detail) {
         fenced = true;
         dispatch.onFenced(reason, detail);
     }

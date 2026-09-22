@@ -22,6 +22,9 @@
 #include "org/limitless/seqeron/sequencer/client/ClusterStreamSender.hpp"
 
 namespace org::limitless::seqeron::sequencer::client {
+
+namespace cluster_sbe = org::limitless::seqeron::cluster::sbe;
+
 namespace {
 
 // ── Fake transports ───────────────────────────────────────────────────────────

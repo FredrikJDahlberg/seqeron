@@ -6,7 +6,8 @@
 #include <string>
 #include <utility>
 
-#include "org/limitless/seqeron/app/Fence.hpp"
+#include "org/limitless/seqeron/app/ClusterError.hpp"
+#include "org/limitless/seqeron/app/Defaults.hpp"
 #include "org/limitless/seqeron/app/Payload.hpp"
 #include "org/limitless/seqeron/app/RecoveryStallFence.hpp"
 #include "org/limitless/seqeron/app/TapLagMonitor.hpp"
@@ -19,22 +20,6 @@
 #include "org/limitless/seqeron/sequencer/client/PendingSends.hpp"
 
 namespace org::limitless::seqeron::app {
-
-// The deployment policy every producer had been copying: the tap may be silent for 20 heartbeat periods.
-inline constexpr std::int64_t DEFAULT_TAP_STALL_TIMEOUT_MS = 20 * protocol::CLUSTER_HEARTBEAT_INTERVAL_MS;
-
-// Longer than the tap's, since a re-walk is slower than the live stream it is catching up to.
-inline constexpr std::int64_t DEFAULT_RECOVERY_STALL_TIMEOUT_MS = 3 * DEFAULT_TAP_STALL_TIMEOUT_MS;
-
-// Frames in flight between a publish and the tap; far above what one round trip holds.
-inline constexpr std::size_t DEFAULT_PENDING_CAPACITY = 1024;
-
-// How long ingress is tried on this member's own aeron:ipc: short, as a follower never answers.
-inline constexpr std::int64_t DEFAULT_IPC_CONNECT_TIMEOUT_MS = 500;
-
-// The lag at which the tap is called stale. The same span as the tap-silence timeout: a tap that is a
-// whole stall window behind is as good as silent to anything reading it.
-inline constexpr std::int64_t DEFAULT_TAP_LAG_THRESHOLD_MS = DEFAULT_TAP_STALL_TIMEOUT_MS;
 
 /**
  * What every seqeron client does the same way: the cluster session it submits on, the co-located tap it
@@ -50,7 +35,7 @@ inline constexpr std::int64_t DEFAULT_TAP_LAG_THRESHOLD_MS = DEFAULT_TAP_STALL_T
  *   void onPayload(const Payload& payload)
  *   void onCaughtUp(std::int64_t globalSeqNo)            // every transition to caught-up, the first included
  *   void onClusterHeartbeat(std::int64_t clusterTimeNs, std::int64_t receiveTimeNs) // the cluster clock's tick
- *   void onFenced(Fence fence, const std::string& detail) // once, latched
+ *   void onFenced(ClusterError fence, const std::string& detail) // once, latched
  */
 template<typename Dispatch>
 class Session
@@ -231,12 +216,12 @@ class Session
         // all, when a new leader does not arrive before its timeout.
         if (m_sender.isSessionLost() || !m_sender.isConnected())
         {
-            fence(Fence::ClusterSessionLost, m_sender.isSessionLost() ? "session lost" : "closed");
+            fence(ClusterError::ClusterSessionLost, m_sender.isSessionLost() ? "session lost" : "closed");
             return;
         }
         if (m_pending.isFaulted())
         {
-            fence(Fence::IngressConfirmFaulted,
+            fence(ClusterError::IngressConfirmFaulted,
                   "an own frame came back differing from the oldest pending one, so what reached the log can no "
                   "longer be counted");
             return;
@@ -246,7 +231,7 @@ class Session
         {
             if (m_recoveryStall.onNotCaughtUp(nowMs, m_receiver.lastGlobalSeqNo()))
             {
-                fence(Fence::RecoveryStalled,
+                fence(ClusterError::RecoveryStalled,
                       "recovery has dispatched nothing for >" + std::to_string(m_recoveryStallTimeoutMs) +
                           "ms (globalSeqNo stuck at " + std::to_string(m_receiver.lastGlobalSeqNo()) + ")");
             }
@@ -254,11 +239,11 @@ class Session
         }
         if (m_tapStall.isStalled(nowMs))
         {
-            fence(Fence::TapStalled, "no ClusterHeartbeat for >" + std::to_string(m_tapStallTimeoutMs) + "ms");
+            fence(ClusterError::TapStalled, "no ClusterHeartbeat for >" + std::to_string(m_tapStallTimeoutMs) + "ms");
         }
     }
 
-    void fence(const Fence reason, const std::string& detail)
+    void fence(const ClusterError reason, const std::string& detail)
     {
         m_fenced = true;
         m_dispatch.onFenced(reason, detail);

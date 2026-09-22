@@ -31,7 +31,7 @@ import org.limitless.seqeron.protocol.Publish;
 class FacadeSurfaceTest {
     /** The front door: these types and their public nested types are what a consumer sees. */
     private static final Class<?>[] FACADES = {
-        Gateway.class, ColocatedApplication.class, Payload.class, Fence.class, TapLagMonitor.class
+        Gateway.class, ColocatedApplication.class, Payload.class, ClusterError.class, TapLagMonitor.class
     };
 
     @Test

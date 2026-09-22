@@ -10,7 +10,8 @@
 #include <utility>
 #include <vector>
 
-#include "org/limitless/seqeron/app/Fence.hpp"
+#include "org/limitless/seqeron/app/ClusterError.hpp"
+#include "org/limitless/seqeron/app/Defaults.hpp"
 #include "org/limitless/seqeron/app/GatewayLifecycle.hpp"
 #include "org/limitless/seqeron/app/Payload.hpp"
 #include "org/limitless/seqeron/app/Session.hpp"
@@ -47,7 +48,7 @@ namespace org::limitless::seqeron::app {
  *   void onConnectionClosed(std::int32_t connectionId)
  *   void onCaughtUp(std::int64_t globalSeqNo)
  *   void onClusterHeartbeat(std::int64_t clusterTimeNs, std::int64_t receiveTimeNs)
- *   void onFenced(Fence fence, const std::string& detail)
+ *   void onFenced(ClusterError fence, const std::string& detail)
  */
 template<typename Listener>
 class Gateway
@@ -433,7 +434,7 @@ class Gateway
             m_gateway.m_listener.onClusterHeartbeat(clusterTimeNs, receiveTimeNs);
         }
 
-        void onFenced(const Fence fence, const std::string& detail)
+        void onFenced(const ClusterError fence, const std::string& detail)
         {
             m_gateway.m_listener.onFenced(fence, detail);
         }

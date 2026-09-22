@@ -152,7 +152,7 @@ A façade's whole surface is `app` plus `protocol.Publish`, which `publish` and 
 (`protocol::Publish` in C++). It sits in `protocol` rather than on `IngressPublisher` so that taking a
 façade does not mean importing from `sequencer.client`; the builders' `ingressEndpoints` defaults to
 `PortLayout.ingressEndpoints()`, so a deployment on the default port block names nothing outside `app` at
-all. Everything else a listener sees — `Payload`, `Fence` — is `app`'s own, and `FacadeSurfaceTest` is what
+all. Everything else a listener sees — `Payload`, `ClusterError` — is `app`'s own, and `FacadeSurfaceTest` is what
 fails the build when that stops holding.
 
 **`Payload`** is what `onSequenced` receives: the envelope is off, and `bodyOffset()`/`bodyLength()` take
@@ -196,8 +196,8 @@ try (Gateway gateway = Gateway.builder()
 report this logical gateway's connection lifecycle off the log — whichever instance issued it, which is how
 an instance that keeps per-connection state rebuilds it while it replays, and the only notice of a client
 that drops its socket without logging out — `onCaughtUp(globalSeqNo)` fires on every
-transition, and `onFenced(Fence, detail)` fires once — release the cluster session, usually by exiting, so
-a standby takes over. The four `Fence` values are the cluster session lost, ingress confirmation faulted,
+transition, and `onFenced(ClusterError, detail)` fires once — release the cluster session, usually by exiting, so
+a standby takes over. The four `ClusterError` values are the cluster session lost, ingress confirmation faulted,
 recovery stalled, and the tap stalled; a media driver that goes away raises from `doWork()` instead.
 
 Tap lag is deliberately **not** a callback. Both façades feed a `TapLagMonitor` from the live

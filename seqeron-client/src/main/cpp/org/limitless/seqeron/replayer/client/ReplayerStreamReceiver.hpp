@@ -25,23 +25,12 @@
 
 namespace org::limitless::seqeron::replayer::client {
 
-// FEEDER_STREAM_ID is the recorded sequenced stream id, which the live tap and the Replayer's replays
-// both address; frameStartPosition derives a frame's recording position from its Aeron header.
-using org::limitless::seqeron::protocol::FEEDER_CHANNEL;
-using org::limitless::seqeron::protocol::FEEDER_STREAM_ID;
-using org::limitless::seqeron::protocol::frameStartPosition;
-
-using org::limitless::seqeron::protocol::REPLAYER_CONTROL_STREAM_ID;
-using org::limitless::seqeron::protocol::REPLAYER_IPC_CHANNEL;
-using org::limitless::seqeron::protocol::REPLAYER_REPLAY_STREAM_ID;
-using org::limitless::seqeron::protocol::REPLAYER_REQUEST_STREAM_ID;
-
 // The tap as a consumer subscribes to it: untethered, so a slow app is dropped and heals by replay
 // rather than back-pressuring the sequencer.
-inline const std::string FEEDER_CONSUMER_CHANNEL = std::string(FEEDER_CHANNEL) + "?tether=false";
+inline const std::string FEEDER_CONSUMER_CHANNEL = std::string(protocol::FEEDER_CHANNEL) + "?tether=false";
 
 // Untethered like the tap, because the Replayer answers every app from one duty-cycle thread.
-inline const std::string REPLAYER_CONTROL_CHANNEL = std::string(REPLAYER_IPC_CHANNEL) + "?tether=false";
+inline const std::string REPLAYER_CONTROL_CHANNEL = std::string(protocol::REPLAYER_IPC_CHANNEL) + "?tether=false";
 
 /**
  * Follows the co-located SequencerService IPC tap directly, decoding and dispatching sequenced
@@ -90,6 +79,10 @@ class ReplayerStreamReceiver final : private ReplayerRecoveryActions
       m_controlPoll(m_controlAssembler->handler())
     {}
 
+    // Its fragment handlers and its ReplayerRecovery hold this object's address.
+    ReplayerStreamReceiver(const ReplayerStreamReceiver&) = delete;
+    ReplayerStreamReceiver& operator=(const ReplayerStreamReceiver&) = delete;
+
     // Subscribes the tap and control streams, opens the request publication and the convergence counter,
     // and requests the cold-start replay. memberId is this app's node, to label the counter.
     void start(std::shared_ptr<aeron::Aeron> aeron, const std::int32_t memberId)
@@ -99,10 +92,11 @@ class ReplayerStreamReceiver final : private ReplayerRecoveryActions
             m_aeron, protocol::APP_RECOVERY_STALLED_TYPE_ID,
             "seqeron.app.recoveryStalled member=" + std::to_string(memberId) + " client=" + std::to_string(m_clientId),
             memberId, m_clientId);
-        m_tapSubRegId = m_aeron->addSubscription(FEEDER_CONSUMER_CHANNEL, FEEDER_STREAM_ID);
+        m_tapSubRegId = m_aeron->addSubscription(FEEDER_CONSUMER_CHANNEL, protocol::FEEDER_STREAM_ID);
         // No standing replay subscription: openReplay opens one per episode, filtered to its session id.
-        m_controlSubRegId = m_aeron->addSubscription(REPLAYER_CONTROL_CHANNEL, REPLAYER_CONTROL_STREAM_ID);
-        m_requestPubRegId = m_aeron->addPublication(REPLAYER_IPC_CHANNEL, REPLAYER_REQUEST_STREAM_ID);
+        m_controlSubRegId = m_aeron->addSubscription(REPLAYER_CONTROL_CHANNEL, protocol::REPLAYER_CONTROL_STREAM_ID);
+        m_requestPubRegId =
+            m_aeron->addPublication(protocol::REPLAYER_IPC_CHANNEL, protocol::REPLAYER_REQUEST_STREAM_ID);
         m_recovery.start();
     }
 
@@ -193,10 +187,11 @@ class ReplayerStreamReceiver final : private ReplayerRecoveryActions
             return; // Replayer not up yet; the resend timer retries
         }
         alignas(16) std::array<std::uint8_t, REQUEST_BUFFER_LENGTH> buf{};
-        rpl::ReplayRequest enc;
+        sbe::replay::ReplayRequest enc;
         enc.wrapAndApplyHeader(reinterpret_cast<char*>(buf.data()), 0, buf.size());
         enc.clientId(m_clientId).requestId(requestId).fromPosition(fromPosition).segmentIndex(segmentIndex);
-        const auto len = static_cast<aeron::util::index_t>(rpl::MessageHeader::encodedLength() + enc.encodedLength());
+        const auto len =
+            static_cast<aeron::util::index_t>(sbe::replay::MessageHeader::encodedLength() + enc.encodedLength());
         aeron::concurrent::AtomicBuffer ab(buf.data(), buf.size());
         m_requestPub->offer(ab, 0, len); // result deliberately discarded — see ReplayerRecovery::requestReplay
     }
@@ -208,10 +203,11 @@ class ReplayerStreamReceiver final : private ReplayerRecoveryActions
             return false;
         }
         alignas(16) std::array<std::uint8_t, REQUEST_BUFFER_LENGTH> buf{};
-        rpl::ReplayComplete enc;
+        sbe::replay::ReplayComplete enc;
         enc.wrapAndApplyHeader(reinterpret_cast<char*>(buf.data()), 0, buf.size());
         enc.clientId(m_clientId);
-        const auto len = static_cast<aeron::util::index_t>(rpl::MessageHeader::encodedLength() + enc.encodedLength());
+        const auto len =
+            static_cast<aeron::util::index_t>(sbe::replay::MessageHeader::encodedLength() + enc.encodedLength());
         aeron::concurrent::AtomicBuffer ab(buf.data(), buf.size());
         return m_requestPub->offer(ab, 0, len) >= 0;
     }
@@ -223,10 +219,11 @@ class ReplayerStreamReceiver final : private ReplayerRecoveryActions
             return false;
         }
         alignas(16) std::array<std::uint8_t, REQUEST_BUFFER_LENGTH> buf{};
-        rpl::ReplayHeartbeat enc;
+        sbe::replay::ReplayHeartbeat enc;
         enc.wrapAndApplyHeader(reinterpret_cast<char*>(buf.data()), 0, buf.size());
         enc.clientId(m_clientId);
-        const auto len = static_cast<aeron::util::index_t>(rpl::MessageHeader::encodedLength() + enc.encodedLength());
+        const auto len =
+            static_cast<aeron::util::index_t>(sbe::replay::MessageHeader::encodedLength() + enc.encodedLength());
         aeron::concurrent::AtomicBuffer ab(buf.data(), buf.size());
         return m_requestPub->offer(ab, 0, len) >= 0;
     }
@@ -243,9 +240,9 @@ class ReplayerStreamReceiver final : private ReplayerRecoveryActions
         }
         // The archive's replaySessionId carries the Aeron image session id in its low 32 bits — the
         // same narrowing poll() uses to hand imageBySessionId.
-        const std::string channel = std::string(REPLAYER_IPC_CHANNEL) +
+        const std::string channel = std::string(protocol::REPLAYER_IPC_CHANNEL) +
                                     "?session-id=" + std::to_string(static_cast<std::int32_t>(replaySessionId));
-        m_replaySubRegId = m_aeron->addSubscription(channel, REPLAYER_REPLAY_STREAM_ID);
+        m_replaySubRegId = m_aeron->addSubscription(channel, protocol::REPLAYER_REPLAY_STREAM_ID);
     }
 
     void closeReplay() override
@@ -301,15 +298,15 @@ class ReplayerStreamReceiver final : private ReplayerRecoveryActions
         {
             return;
         }
-        m_recovery.onFrame(frameAt(buffer, offset), static_cast<std::uint64_t>(length), frameStartPosition(header),
-                           protocol::nowNs(), /*fromReplay=*/false);
+        m_recovery.onFrame(frameAt(buffer, offset), static_cast<std::uint64_t>(length),
+                           protocol::frameStartPosition(header), protocol::nowNs(), /*fromReplay=*/false);
     }
 
     void onReplayFragment(const aeron::concurrent::AtomicBuffer& buffer, const aeron::util::index_t offset,
                           const aeron::util::index_t length, const aeron::Header& header)
     {
-        m_recovery.onFrame(frameAt(buffer, offset), static_cast<std::uint64_t>(length), frameStartPosition(header),
-                           protocol::nowNs(), /*fromReplay=*/true);
+        m_recovery.onFrame(frameAt(buffer, offset), static_cast<std::uint64_t>(length),
+                           protocol::frameStartPosition(header), protocol::nowNs(), /*fromReplay=*/true);
     }
 
     void onControlFragment(const aeron::concurrent::AtomicBuffer& buffer, const aeron::util::index_t offset,

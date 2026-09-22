@@ -25,8 +25,6 @@
 
 namespace org::limitless::seqeron::sequencer::client {
 
-namespace diag = org::limitless::seqeron::util;
-
 // A UDP-replaying binary uses a port of its own, outside core's reserved block (doc/registries.md §2);
 // a client co-located with the archive replays over REPLAY_CHANNEL_IPC and needs none.
 inline constexpr std::int32_t ARCHIVE_REPLAY_STREAM_ID = 110;
@@ -41,7 +39,7 @@ inline constexpr const char* REPLAY_CHANNEL_IPC = "aeron:ipc";
  */
 inline std::string resolveReplayChannel(const char* envVar, std::uint16_t defaultPort)
 {
-    return protocol::udpChannel("localhost:" + std::to_string(diag::envInt(envVar, defaultPort)));
+    return protocol::udpChannel("localhost:" + std::to_string(util::envInt(envVar, defaultPort)));
 }
 
 // Default 3-node cluster archive control endpoints, from PortLayout.hpp. Every member's archive holds an
@@ -55,7 +53,7 @@ inline const std::string DEFAULT_ARCHIVE_ENDPOINTS = protocol::archiveEndpointsC
  */
 inline std::vector<std::string> resolveArchiveEndpoints(const char* envVar, const std::string& defaultCsv)
 {
-    const std::string csv = diag::envString(envVar, defaultCsv);
+    const std::string csv = util::envString(envVar, defaultCsv);
 
     std::vector<std::string> endpoints;
     std::size_t start = 0;
@@ -162,7 +160,7 @@ inline std::shared_ptr<aeron::archive::client::AeronArchive> connectToArchiveWit
         }
         catch (const std::exception& ex)
         {
-            diag::Logger::warn(diag::component::ClusterStreamClient, diag::eventCode::ArchiveConnectFailed,
+            util::Logger::warn(util::component::ClusterStreamClient, util::eventCode::ArchiveConnectFailed,
                                "%s Archive connect to %s failed: %s", logPrefix, endpoint.c_str(), ex.what());
             lastError = ex.what();
             continue;
@@ -170,7 +168,7 @@ inline std::shared_ptr<aeron::archive::client::AeronArchive> connectToArchiveWit
 
         if (!findClusterStreamRecording(archive, recordingId, catchUpPosition))
         {
-            diag::Logger::info(diag::component::ClusterStreamClient,
+            util::Logger::info(util::component::ClusterStreamClient,
                                "%s Connected to %s but it has no cluster stream recording"
                                " (not currently/recently leader) — trying next endpoint",
                                logPrefix, endpoint.c_str());
@@ -178,7 +176,7 @@ inline std::shared_ptr<aeron::archive::client::AeronArchive> connectToArchiveWit
             continue;
         }
 
-        diag::Logger::info(diag::component::ClusterStreamClient,
+        util::Logger::info(util::component::ClusterStreamClient,
                            "%s Connected to Aeron Archive at %s (holds the cluster stream recording)", logPrefix,
                            endpoint.c_str());
         return archive;
@@ -221,7 +219,7 @@ inline std::shared_ptr<aeron::archive::client::AeronArchive> connectLocalArchive
         throw std::runtime_error(std::string(logPrefix) + " Co-located archive has no cluster stream recording");
     }
 
-    diag::Logger::info(diag::component::ClusterStreamClient,
+    util::Logger::info(util::component::ClusterStreamClient,
                        "%s Connected to co-located Aeron Archive via IPC (holds the cluster stream recording)",
                        logPrefix);
     return archive;
@@ -505,13 +503,12 @@ class ClusterStreamClient
         const std::int64_t receiveNs = protocol::nowNs();
         const std::int64_t framePosition = protocol::frameStartPosition(header);
         char* const raw = reinterpret_cast<char*>(buffer.buffer());
-        const std::uint64_t cap = static_cast<std::uint64_t>(buffer.capacity());
         const std::uint64_t off = static_cast<std::uint64_t>(offset);
         const std::uint64_t len = static_cast<std::uint64_t>(length);
         const protocol::FrameView view = protocol::unwrapFrame(raw + off, len);
         if (!view.valid)
         {
-            diag::Logger::error(diag::component::ClusterStreamClient, diag::eventCode::FragmentTooShort,
+            util::Logger::error(util::component::ClusterStreamClient, util::eventCode::FragmentTooShort,
                                 "unreadable frame of %" PRIu64 " bytes; ignored", len);
             return;
         }

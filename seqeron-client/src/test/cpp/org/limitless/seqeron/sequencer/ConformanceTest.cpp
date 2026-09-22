@@ -346,13 +346,13 @@ class ConnectedSender : public ::testing::Test
             }
             m_delivered = true;
             std::vector<std::uint8_t> buf(256, 0);
-            client::cluster_sbe::SessionEvent enc;
+            cluster::sbe::SessionEvent enc;
             enc.wrapAndApplyHeader(reinterpret_cast<char*>(buf.data()), 0, buf.size());
             enc.clusterSessionId(SESSION_ID)
                 .correlationId(1)
                 .leadershipTermId(11)
                 .leaderMemberId(0)
-                .code(client::cluster_sbe::EventCode::Value::OK)
+                .code(cluster::sbe::EventCode::Value::OK)
                 .version(client::CLUSTER_PROTOCOL_VERSION)
                 .leaderHeartbeatTimeoutNs(0);
             enc.putDetail(nullptr, 0);
@@ -455,8 +455,8 @@ TEST_F(ConnectedSender, TrackedPublishRecordsThePlacedFrame)
                                                 m_sender, &tracker, SOURCE_ID, CONNECTION_ID, 2, correlationOne));
     ASSERT_EQ(1U, tracker.m_tracked.size());
     ASSERT_EQ(1U, m_ingress->m_offered.size());
-    EXPECT_EQ(m_ingress->m_offered[0].size() - client::cluster_sbe::MessageHeader::encodedLength() -
-                  client::cluster_sbe::SessionMessageHeader::sbeBlockLength(),
+    EXPECT_EQ(m_ingress->m_offered[0].size() - cluster::sbe::MessageHeader::encodedLength() -
+                  cluster::sbe::SessionMessageHeader::sbeBlockLength(),
               tracker.m_tracked[0].length);
     EXPECT_EQ(SESSION_ID, tracker.m_tracked[0].clusterSessionId);
     EXPECT_EQ(11, tracker.m_tracked[0].leadershipTermId);
