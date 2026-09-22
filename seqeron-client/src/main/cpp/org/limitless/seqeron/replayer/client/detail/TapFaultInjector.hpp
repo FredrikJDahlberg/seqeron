@@ -3,6 +3,10 @@
 #include <atomic>
 
 namespace org::limitless::seqeron::replayer::client {
+class ReplayerStreamReceiver;
+} // namespace org::limitless::seqeron::replayer::client
+
+namespace org::limitless::seqeron::replayer::client::detail {
 
 // Test-only: drops live tap frames before a ReplayerStreamReceiver sees them, so the next frame reads as a
 // gap (gap-recovery-test.sh). The caller owns it and hands it to the receiver's constructor.
@@ -16,7 +20,7 @@ class TapFaultInjector
     }
 
   private:
-    friend class ReplayerStreamReceiver;
+    friend class client::ReplayerStreamReceiver;
 
     // Poll thread only, the one decrementer.
     bool dropNext()
@@ -33,4 +37,4 @@ class TapFaultInjector
     std::atomic<int> m_pending{ 0 };
 };
 
-} // namespace org::limitless::seqeron::replayer::client
+} // namespace org::limitless::seqeron::replayer::client::detail

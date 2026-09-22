@@ -14,8 +14,8 @@
 #include "concurrent/AtomicBuffer.h"
 
 #include "org/limitless/seqeron/protocol/SeqeronCounters.hpp"
-#include "org/limitless/seqeron/replayer/client/ReplayerRecovery.hpp"
-#include "org/limitless/seqeron/replayer/client/TapFaultInjector.hpp"
+#include "org/limitless/seqeron/replayer/client/detail/ReplayerRecovery.hpp"
+#include "org/limitless/seqeron/replayer/client/detail/TapFaultInjector.hpp"
 
 // Request codecs (sbe-replay.xml); the replies are decoded in ReplayerRecovery.
 #include "org_limitless_seqeron_sbe_replay/MessageHeader.h"
@@ -36,7 +36,7 @@ inline const std::string REPLAYER_CONTROL_CHANNEL = std::string(protocol::REPLAY
  * Follows the co-located SequencerService IPC tap directly, decoding and dispatching sequenced
  * messages to the caller exactly like ClusterStreamClient — same SequencedEvent/LifecycleEvent callbacks
  * — plus an OnLeadershipChanged callback and currentLeaderMemberId()/isCaughtUp() accessors that the
- * caller uses to gate leader-only emission (design §3).
+ * caller uses to gate leader-only emission: every node runs a replica, and only the leader's submits.
  *
  * Startup: cold replicas walk the node's per-tenure recording chain by segment index (0,1,2,…) via the
  * Replayer, riding each segment's replay image and de-duping by globalSeqNo, until the Replayer answers
@@ -46,19 +46,19 @@ inline const std::string REPLAYER_CONTROL_CHANNEL = std::string(protocol::REPLAY
  * same chain walk if that resume does not land where it was anchored. No archive connection is opened
  * here.
  */
-class ReplayerStreamReceiver final : private ReplayerRecoveryActions
+class ReplayerStreamReceiver final : private detail::ReplayerRecoveryActions
 {
   public:
-    using OnSequenced = ReplayerRecovery::OnSequenced;
-    using OnConnected = ReplayerRecovery::OnConnected;
-    using OnDisconnected = ReplayerRecovery::OnDisconnected;
-    using OnLeadershipChanged = ReplayerRecovery::OnLeadershipChanged;
-    using OnCaughtUp = ReplayerRecovery::OnCaughtUp;
+    using OnSequenced = detail::ReplayerRecovery::OnSequenced;
+    using OnConnected = detail::ReplayerRecovery::OnConnected;
+    using OnDisconnected = detail::ReplayerRecovery::OnDisconnected;
+    using OnLeadershipChanged = detail::ReplayerRecovery::OnLeadershipChanged;
+    using OnCaughtUp = detail::ReplayerRecovery::OnCaughtUp;
 
     // tapFaults, when given, drops live tap frames on demand: test harnesses only. The caller keeps it alive.
     ReplayerStreamReceiver(std::int32_t clientId, OnSequenced onSequenced, OnConnected onConnected = {},
                            OnDisconnected onDisconnected = {}, OnLeadershipChanged onLeadershipChanged = {},
-                           OnCaughtUp onCaughtUp = {}, TapFaultInjector* tapFaults = nullptr) :
+                           OnCaughtUp onCaughtUp = {}, detail::TapFaultInjector* tapFaults = nullptr) :
       m_clientId(clientId),
       m_tapFaults(tapFaults),
       m_recovery(clientId, *this, std::move(onSequenced), std::move(onConnected), std::move(onDisconnected),
@@ -327,8 +327,8 @@ class ReplayerStreamReceiver final : private ReplayerRecoveryActions
     }
 
     const std::int32_t m_clientId;
-    TapFaultInjector* const m_tapFaults;
-    ReplayerRecovery m_recovery;
+    detail::TapFaultInjector* const m_tapFaults;
+    detail::ReplayerRecovery m_recovery;
 
     std::shared_ptr<aeron::Aeron> m_aeron;
     std::int64_t m_tapSubRegId = -1;

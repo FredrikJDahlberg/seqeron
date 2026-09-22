@@ -2,7 +2,7 @@
 
 #include <cstdint>
 
-namespace org::limitless::seqeron::app {
+namespace org::limitless::seqeron::app::detail {
 
 // Whether this replica may do leader-only work: caught up, and its node is the leader. Gives edges, and
 // every leadership change closes an open gate for one duty cycle. The Java twin is app/LeaderGate.java,
@@ -51,4 +51,4 @@ class LeaderGate
     bool m_leadershipChanged = false;
 };
 
-} // namespace org::limitless::seqeron::app
+} // namespace org::limitless::seqeron::app::detail

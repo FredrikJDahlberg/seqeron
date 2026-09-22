@@ -21,8 +21,8 @@
 
 #include <gtest/gtest.h>
 
-#include "org/limitless/seqeron/app/LeaderGate.hpp"
 #include "org/limitless/seqeron/app/OutstandingWork.hpp"
+#include "org/limitless/seqeron/app/detail/LeaderGate.hpp"
 #include "org/limitless/seqeron/helpers/SplitMix64.hpp"
 
 namespace org::limitless::seqeron::app {
@@ -65,7 +65,7 @@ struct Replica
 
     Simulation& simulation;
     std::int32_t memberId;
-    LeaderGate gate;
+    detail::LeaderGate gate;
     OutstandingWork<std::int64_t> work;
     std::deque<std::int64_t> pendingReplies; // dispatched, reply not yet offered
     std::unordered_set<std::int64_t> tenure; // the model of what this gate opening has dispatched
@@ -235,7 +235,7 @@ void Replica::applyAll()
 
 void Replica::dutyCycle()
 {
-    if (gate.update(!recovering, viewLeader) == LeaderGate::Transition::Closed)
+    if (gate.update(!recovering, viewLeader) == detail::LeaderGate::Transition::Closed)
     {
         work.onNotLeader();
         tenure.clear();

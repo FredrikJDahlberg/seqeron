@@ -309,7 +309,7 @@ TEST(Conformance, EverySystemShapeNamesItsEventAndDecodesItsBody)
 // ── Row 4b. The producer refuses before the wire (T-3, §12) ───────────────────
 
 // Captures every frame offered, so the test can see that a refusal offered nothing at all.
-class RecordingIngress : public client::IngressTransport
+class RecordingIngress : public client::detail::IngressTransport
 {
   public:
     std::vector<std::vector<std::uint8_t>> m_offered;
@@ -335,7 +335,7 @@ class ConnectedSender : public ::testing::Test
     }
 
     // Answers connect() with a single SessionEvent(OK), which is all this fixture needs.
-    class FakeEgress : public client::EgressTransport
+    class FakeEgress : public client::detail::EgressTransport
     {
       public:
         int poll(const FragmentHandler& handler) override

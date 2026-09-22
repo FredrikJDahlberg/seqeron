@@ -2,7 +2,7 @@
 
 #include <cstdint>
 
-namespace org::limitless::seqeron::app {
+namespace org::limitless::seqeron::app::detail {
 
 // A producer's tap-liveness fence: no ClusterHeartbeat for a deadline, on an instance that has caught up.
 // The heartbeat is the one frame that keeps arriving while every producer is silent, so its absence — and
@@ -43,4 +43,4 @@ class TapStallFence
     std::int64_t m_lastProgressMs = 0;
 };
 
-} // namespace org::limitless::seqeron::app
+} // namespace org::limitless::seqeron::app::detail

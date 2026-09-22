@@ -20,8 +20,8 @@
 
 #include <gtest/gtest.h>
 
-#include "org/limitless/seqeron/replayer/client/ReplayerRecovery.hpp"
 #include "org/limitless/seqeron/replayer/client/ReplayerStreamReceiver.hpp"
+#include "org/limitless/seqeron/replayer/client/detail/ReplayerRecovery.hpp"
 #include "org/limitless/seqeron/util/Logger.hpp"
 #include "org_limitless_seqeron_sbe_frame/ClusterHeartbeat.h"
 #include "org_limitless_seqeron_sbe_frame/MessageHeader.h"
@@ -30,7 +30,7 @@
 #include "org_limitless_seqeron_sbe_replay/ReplayUnavailable.h"
 #include "org_limitless_seqeron_sbe_replay/Replaying.h"
 
-namespace org::limitless::seqeron::replayer::client {
+namespace org::limitless::seqeron::replayer::client::detail {
 namespace {
 
 namespace frm = org::limitless::seqeron::sbe::frame;
@@ -1572,4 +1572,4 @@ TEST(ReplayerRecoveryLifecycle, AConnectionFrameReachesOnSequencedWhenNoLifecycl
 }
 
 } // namespace
-} // namespace org::limitless::seqeron::replayer::client
+} // namespace org::limitless::seqeron::replayer::client::detail

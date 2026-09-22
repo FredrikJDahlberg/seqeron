@@ -25,22 +25,28 @@ endif()
 
 add_executable(follow_stream src/cpp/FollowStream.cpp)
 add_executable(colocated_app src/cpp/ColocatedApp.cpp)
+add_executable(gateway_app src/cpp/GatewayApp.cpp)
 
 # seqeron_core is header-only and carries its own include roots and every Aeron target its headers
 # reach for — the C++ client wrapper, the C client behind it, and the archive pair — so this is the
 # whole link line. seqeron::seqeron_core is the name both paths define.
 target_link_libraries(follow_stream PRIVATE seqeron::seqeron_core)
 target_link_libraries(colocated_app PRIVATE seqeron::seqeron_core)
+target_link_libraries(gateway_app PRIVATE seqeron::seqeron_core)
 
-# What ColocatedApp is for: the front door is sufficient on its own. Compiling it proves nothing on its
-# own — an include of sequencer/client would compile too — so the includes are the assertion, checked here
+# What ColocatedApp and GatewayApp are for: the front door is sufficient on its own. Compiling them proves
+# nothing — an include of sequencer/client would compile too — so the includes are the assertion, checked here
 # the way the Java half's checkFacadeOnly checks its imports. util is on the list because it is support
 # code beside the façade rather than a tier under it (doc/client-api.md, "Support code"): it is what the
 # Java twin gets from its own standard library, and nothing else here needs it.
-file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/ColocatedApp.cpp" _colocated_seqeron_includes
-     REGEX "^#include \"org/limitless/seqeron/")
-foreach(_include IN LISTS _colocated_seqeron_includes)
-    if(NOT _include MATCHES "org/limitless/seqeron/(app|util)/|org/limitless/seqeron/protocol/Publish\\.hpp")
-        message(FATAL_ERROR "ColocatedApp.cpp must include only app, util and protocol/Publish.hpp: ${_include}")
-    endif()
+foreach(_facade_example IN ITEMS ColocatedApp GatewayApp)
+    file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/${_facade_example}.cpp" _facade_seqeron_includes
+         REGEX "^#include \"org/limitless/seqeron/")
+    foreach(_include IN LISTS _facade_seqeron_includes)
+        if(NOT _include MATCHES "org/limitless/seqeron/(app|util)/|org/limitless/seqeron/protocol/Publish\\.hpp"
+           OR _include MATCHES "/detail/")
+            message(FATAL_ERROR
+                    "${_facade_example}.cpp must include only app, util and protocol/Publish.hpp: ${_include}")
+        endif()
+    endforeach()
 endforeach()

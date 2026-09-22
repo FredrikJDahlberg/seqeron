@@ -189,7 +189,7 @@ jobs:
         run: cmake -S seqeron-examples -B seqeron-examples/cmake-build-release -DCMAKE_BUILD_TYPE=Release
 
       - name: Build the C++ example
-        run: cmake --build seqeron-examples/cmake-build-release --target follow_stream colocated_app -j $(nproc)
+        run: cmake --build seqeron-examples/cmake-build-release --target follow_stream colocated_app gateway_app -j $(nproc)
 
   # find_package(seqeron) against an installed tree, with an installed Aeron beside it.
   # The config file, the export set and the found-Aeron branch of
@@ -257,4 +257,4 @@ jobs:
         run: |
           cmake -S seqeron-examples -B seqeron-examples/cmake-build-installed -DCMAKE_BUILD_TYPE=Release \
             -DSEQERON_FIND_PACKAGE=ON -DCMAKE_PREFIX_PATH="${PREFIX}"
-          cmake --build seqeron-examples/cmake-build-installed --target follow_stream colocated_app -j "$(nproc)"
+          cmake --build seqeron-examples/cmake-build-installed --target follow_stream colocated_app gateway_app -j "$(nproc)"

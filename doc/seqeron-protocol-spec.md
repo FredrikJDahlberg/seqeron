@@ -199,7 +199,7 @@ exclusively, which is why `ConnectionOpened`/`ConnectionClosed` name no producer
 | --- | --- | --- |
 | **−1** | the cluster itself — the synthesized class, and nothing else (**F-4**) | never; **illegal on ingress** |
 | **2** | `clusterctl`, on every marker it submits | never |
-| 0, 3, 5, 6, 7, 8, 9 … | every other producer, elected or not _(today: the C++ gateway pair 0, the reference-data application 3, the venue leg 5, the order-entry leg 6, the order-exec application 7, seqeron's own e2e probe 8, its e2e gateway pair 9, the `seqeron-examples` ping 10 and its two façade examples 11 and 12)_ | gateways by `GatewayRegistered.gatewaySourceId`, applications by `ApplicationRegistered.applicationSourceId`; **S-6** checks only the first |
+| 0, 3, 5, 6, 7, 8, 9 … | every other producer, elected or not _(today: the C++ gateway pair 0, the reference-data application 3, the venue leg 5, the order-entry leg 6, the order-exec application 7, seqeron's own e2e probe 8, its e2e gateway pair 9, the `seqeron-examples` ping 10, its two façade examples 11 and 12, and its C++ gateway pair 13)_ | gateways by `GatewayRegistered.gatewaySourceId`, applications by `ApplicationRegistered.applicationSourceId`; **S-6** checks only the first |
 
 This table is the registry: a new producer takes its id here, and `doc/registries.md` §1 records
 that ownership rather than keeping a second copy of the allocation.

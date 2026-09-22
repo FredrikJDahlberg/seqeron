@@ -1,7 +1,8 @@
 // The façades are class templates, so nothing checks them until a translation unit instantiates one. This
 // is that unit: it builds both over stub listeners and asserts the pre-start surface — what each answers
 // before any node has led or designated it. Everything past start() needs an Aeron runtime and belongs to
-// the end-to-end scripts. The Java twins' reference consumer is tools/TestGateway; this side has none.
+// the end-to-end scripts. The Java twins' reference consumer is tools/TestGateway; this side's are
+// seqeron-examples' ColocatedApp.cpp and GatewayApp.cpp.
 
 #include <type_traits>
 
@@ -52,6 +53,21 @@ struct StubListener
 
     bool leadingSeen = false;
 };
+
+static_assert(GatewayListener<StubListener> && ColocatedApplicationListener<StubListener>);
+
+// Everything a co-located application needs, and none of a gateway's election or connection callbacks.
+struct ColocatedOnlyListener
+{
+    void onLeadershipChanged(bool);
+    void onSequenced(const Payload&);
+    void onCaughtUp(std::int64_t);
+    void onClusterHeartbeat(std::int64_t, std::int64_t);
+    void onFenced(ClusterError, const std::string&);
+};
+
+static_assert(ColocatedApplicationListener<ColocatedOnlyListener>);
+static_assert(!GatewayListener<ColocatedOnlyListener>);
 
 TEST(ColocatedApplicationFacade, ShutGateDeclinesAndLeadsNothing)
 {

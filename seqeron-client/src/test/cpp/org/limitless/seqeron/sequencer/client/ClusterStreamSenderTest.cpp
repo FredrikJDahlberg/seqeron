@@ -30,7 +30,7 @@ namespace {
 // ── Fake transports ───────────────────────────────────────────────────────────
 
 // Captures every frame offered to the cluster ingress for inspection by tests.
-class FakeIngressTransport : public IngressTransport
+class FakeIngressTransport : public detail::IngressTransport
 {
   public:
     std::vector<std::vector<std::uint8_t>> m_offered;
@@ -45,7 +45,7 @@ class FakeIngressTransport : public IngressTransport
 // Rejects the first m_rejectCount offers (as a back-pressured or, during a leader
 // failover, not-connected ingress publication would), then accepts — capturing the
 // frame that finally lands. Drives ClusterStreamSender::send()'s reliable-offer spin.
-class FlakyIngressTransport : public IngressTransport
+class FlakyIngressTransport : public detail::IngressTransport
 {
   public:
     int m_rejectCount = 0; // reject this many offers before accepting the next
@@ -67,7 +67,7 @@ class FlakyIngressTransport : public IngressTransport
 
 // Delivers pre-queued frames on poll(), one per call, mimicking a cluster
 // egress subscription that already has messages buffered.
-class FakeEgressTransport : public EgressTransport
+class FakeEgressTransport : public detail::EgressTransport
 {
   public:
     std::deque<std::vector<std::uint8_t>> m_queued;
@@ -729,7 +729,7 @@ TEST(ClusterStreamSenderColocated, PollEgressIgnoresIpcRechaseWithoutAeronClient
 
     ClusterStreamSender sender;
     sender.connectColocated(
-        std::move(primary), [&]() -> std::unique_ptr<IngressTransport> { return nullptr; }, std::move(egress),
+        std::move(primary), [&]() -> std::unique_ptr<detail::IngressTransport> { return nullptr; }, std::move(egress),
         /*primaryConnectTimeoutMs=*/1500, /*primaryFailureReason=*/nullptr, /*memberId=*/3);
     ASSERT_TRUE(sender.isConnected());
 
@@ -769,7 +769,7 @@ TEST(ClusterStreamSenderColocated, FallsBackToSecondaryWhenPrimaryNeverAnswers)
     ClusterStreamSender sender;
     sender.connectColocated(
         std::move(primary),
-        [&]() -> std::unique_ptr<IngressTransport> {
+        [&]() -> std::unique_ptr<detail::IngressTransport> {
             fallbackBuilt = true;
             // primaryPtr is still valid here (the sender hasn't reassigned its ingress
             // transport to the fallback yet), but becomes dangling as soon as this lambda
@@ -804,7 +804,7 @@ TEST(ClusterStreamSenderColocated, NullPrimarySkipsStraightToFallback)
 
     ClusterStreamSender sender;
     sender.connectColocated(
-        nullptr, [&]() -> std::unique_ptr<IngressTransport> { return std::move(fallback); }, std::move(egress),
+        nullptr, [&]() -> std::unique_ptr<detail::IngressTransport> { return std::move(fallback); }, std::move(egress),
         /*primaryConnectTimeoutMs=*/20,
         /*primaryFailureReason=*/"IPC publication never connected");
 
@@ -826,7 +826,7 @@ TEST(ClusterStreamSenderColocated, PrimarySuccessNeverBuildsFallback)
     ClusterStreamSender sender;
     sender.connectColocated(
         std::move(primary),
-        [&]() -> std::unique_ptr<IngressTransport> {
+        [&]() -> std::unique_ptr<detail::IngressTransport> {
             fallbackBuilt = true;
             return std::make_unique<FakeIngressTransport>();
         },

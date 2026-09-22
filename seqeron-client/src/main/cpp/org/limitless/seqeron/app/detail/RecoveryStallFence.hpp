@@ -2,7 +2,7 @@
 
 #include <cstdint>
 
-namespace org::limitless::seqeron::app {
+namespace org::limitless::seqeron::app::detail {
 
 // A gateway's recovery-stall fence: recovery dispatching nothing for a deadline, once this instance has been
 // caught up at least once. Progress, not elapsed recovery — a converging re-walk always advances the
@@ -47,4 +47,4 @@ class RecoveryStallFence
     std::int64_t m_lastGlobalSeqNo = 0; // frontier at the last observation; only meaningful while timing
 };
 
-} // namespace org::limitless::seqeron::app
+} // namespace org::limitless::seqeron::app::detail

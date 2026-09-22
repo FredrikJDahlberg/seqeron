@@ -28,16 +28,16 @@
 
 #include <gtest/gtest.h>
 
-#include "org/limitless/seqeron/replayer/client/ReplayerRecovery.hpp"
-#include "org/limitless/seqeron/util/Logger.hpp"
 #include "org/limitless/seqeron/helpers/SplitMix64.hpp"
+#include "org/limitless/seqeron/replayer/client/detail/ReplayerRecovery.hpp"
+#include "org/limitless/seqeron/util/Logger.hpp"
 #include "org_limitless_seqeron_sbe_frame/ClusterHeartbeat.h"
 #include "org_limitless_seqeron_sbe_frame/MessageHeader.h"
 #include "org_limitless_seqeron_sbe_replay/ReplayPending.h"
 #include "org_limitless_seqeron_sbe_replay/ReplayUnavailable.h"
 #include "org_limitless_seqeron_sbe_replay/Replaying.h"
 
-namespace org::limitless::seqeron::replayer::client {
+namespace org::limitless::seqeron::replayer::client::detail {
 namespace {
 
 namespace frm = org::limitless::seqeron::sbe::frame;
@@ -493,4 +493,4 @@ INSTANTIATE_TEST_SUITE_P(Seeds, ReplayerRecoveryProperty,
                                          233ULL, 377ULL, 610ULL, 987ULL, 1597ULL));
 
 } // namespace
-} // namespace org::limitless::seqeron::replayer::client
+} // namespace org::limitless::seqeron::replayer::client::detail

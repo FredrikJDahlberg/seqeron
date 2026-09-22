@@ -179,8 +179,8 @@ nobody. Re-running is safe: the sequencer de-dups rows on `gatewayId` and latche
 out after `GATEWAY_ACTIVATION_TIMEOUT_MS`, hands the role to its standby, and times out again — one
 `GatewayActive` frame every 5s for as long as the cluster is up, in a log recovery replays in full.
 A deployment's own document lists every pair it runs; a harness loads only the pair it actually starts
-(here, `seqeron-service/src/test/resources/topology-test-gateway.xml` — the one topology document in this
-repo), which is why a `load-topology` argument is a file rather than a constant.
+(here, `seqeron-service/src/test/resources/topology-test-gateway.xml` for the harnesses, and
+`seqeron-examples/topology.xml` for the C++ gateway example), which is why a `load-topology` argument is a file rather than a constant.
 
 ### counters
 

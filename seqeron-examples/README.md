@@ -12,6 +12,7 @@ through the same consumer — so the round trip is measured over the real path.
 | `src/cpp/FollowStream.cpp` | built by `CMakeLists.txt`, which pulls in `seqeron_core` |
 | `src/java/example/ColocatedApp.java` | the same flow against the front door — see below |
 | `src/cpp/ColocatedApp.cpp` | its C++ twin |
+| `src/cpp/GatewayApp.cpp` | the other façade, an elected gateway pair — see below |
 
 ## The same flow, against the front door
 
@@ -30,7 +31,20 @@ fails on one (`checkFacadeOnly`), and so does the C++ configure step, the way se
 It is a **co-located application** — the producer kind nothing elects, one replica per node, publishing
 only while its own node leads — which is why it needs no topology document and no `clusterctl` step:
 `LeadershipChanged` already picks the replica that submits. `FollowStream` stays as it is, deliberately:
-it is what a consumer writing its own duty cycle, or a C++ producer, programs against.
+it is what a consumer writing its own duty cycle programs against, in either language.
+
+## An elected gateway, in C++
+
+`GatewayApp` is the other producer kind: a **gateway**, one instance of an active/standby pair that the
+cluster elects. It is written against `app::Gateway` alone, under the same include check as
+`ColocatedApp`. Where a real gateway would open a socket, it takes one simulated client connection when
+designated and pings the cluster on that connection once a second.
+
+A gateway needs what a co-located application does not: a topology row naming it. `topology.xml` is that
+list, the pair `GW-EX-A`/`GW-EX-B` on `sourceId` 13. Load it once, into a cluster that has not loaded
+another list. The cluster designates only the first list it sees; into one that has, designate an
+instance with `clusterctl.sh activate 12` instead. The Java counterpart is the harness gateway
+`tools/TestGateway` in `seqeron-service`.
 
 **Both are separate builds, not subprojects of the repo they sit in.** The Java one resolves
 `org.limitless:seqeron` as a published artifact and the C++ one pulls `seqeron_core` in with
@@ -60,9 +74,15 @@ Java, the low-level one and then the façade one — either may run alone, and b
 C++:
 
     cmake -S seqeron-examples -B seqeron-examples/cmake-build-release -DCMAKE_BUILD_TYPE=Release
-    cmake --build seqeron-examples/cmake-build-release --target follow_stream colocated_app
+    cmake --build seqeron-examples/cmake-build-release --target follow_stream colocated_app gateway_app
     ./seqeron-examples/cmake-build-release/follow_stream
     ./seqeron-examples/cmake-build-release/colocated_app
+
+The gateway pair, after loading its list — stop the first and the second takes over:
+
+    ./seqeron-service/src/main/scripts/clusterctl.sh load-topology seqeron-examples/topology.xml
+    SEQERON_EXAMPLE_GATEWAY_NAME=GW-EX-A ./seqeron-examples/cmake-build-release/gateway_app
+    SEQERON_EXAMPLE_GATEWAY_NAME=GW-EX-B ./seqeron-examples/cmake-build-release/gateway_app
 
 The first CMake configure fetches and builds Aeron from source, which is what `add_subdirectory` of the
 whole repo costs. GoogleTest is not fetched — that is seqeron's test dependency, not part of what it

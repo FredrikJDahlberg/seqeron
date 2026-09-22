@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    The gateway pair src/cpp/GatewayApp.cpp runs. Load it once, into a cluster that has not bootstrapped
+    another list (the bootstrap GatewayActive latches once per cluster lifetime):
+
+      seqeron-service/src/main/scripts/clusterctl.sh load-topology seqeron-examples/topology.xml
+
+    Into one that has, designate an instance by hand instead: clusterctl.sh activate 12.
+
+    Schema: seqeron-service/src/main/resources/topology.xsd (doc/seqeron-protocol-spec.md §6.4).
+-->
+<topology xmlns="http://limitless.org/seqeron/topology/1">
+
+    <!-- sourceId 13, allocated in doc/seqeron-protocol-spec.md §5. gatewayIds 12 and 13, after
+         TestGateway's 10 and 11, so the two pairs can share one cluster. -->
+    <gateways>
+        <gateway name="GW-EX-A" id="12" sourceId="13" rank="0"
+                 description="seqeron-examples gateway_app"/>
+        <gateway name="GW-EX-B" id="13" sourceId="13" rank="1"
+                 description="seqeron-examples gateway_app standby"/>
+    </gateways>
+
+</topology>

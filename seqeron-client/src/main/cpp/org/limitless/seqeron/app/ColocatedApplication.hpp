@@ -7,17 +7,31 @@
 
 #include "org/limitless/seqeron/app/ClusterError.hpp"
 #include "org/limitless/seqeron/app/Defaults.hpp"
-#include "org/limitless/seqeron/app/LeaderGate.hpp"
 #include "org/limitless/seqeron/app/Payload.hpp"
-#include "org/limitless/seqeron/app/Session.hpp"
+#include "org/limitless/seqeron/app/detail/LeaderGate.hpp"
+#include "org/limitless/seqeron/app/detail/Session.hpp"
 #include "org/limitless/seqeron/protocol/Publish.hpp"
 #include "org/limitless/seqeron/sequencer/client/IngressPublisher.hpp"
 
 namespace org::limitless::seqeron::app {
 
+/** What a ColocatedApplication's Listener provides. */
+template<typename L>
+concept ColocatedApplicationListener =
+    requires(L& listener, const Payload& payload, bool leading, std::int64_t globalSeqNo, std::int64_t clusterTimeNs,
+             std::int64_t receiveTimeNs, ClusterError fence, const std::string& detail) {
+        // The gate crossed an edge. False is where OutstandingWork::onNotLeader() belongs: every leadership
+        // change shuts an open gate, and the work may have gone with the election.
+        listener.onLeadershipChanged(leading);
+        listener.onSequenced(payload);
+        listener.onCaughtUp(globalSeqNo);
+        listener.onClusterHeartbeat(clusterTimeNs, receiveTimeNs);
+        listener.onFenced(fence, detail);
+    };
+
 /**
  * One replica of a co-located application — the kind of producer nothing elects. One runs per node, the
- * topology's <applications> section names it, and LeadershipChanged already picks the replica that submits:
+ * topology's `<applications>` section names it, and LeadershipChanged already picks the replica that submits:
  * this one publishes only while its own node leads. What that takes is behind it — the cluster session over
  * the node's own aeron:ipc, the tap it follows, the leader gate, confirmed ingress across a failover, and
  * the fences that say it may no longer act.
@@ -28,19 +42,11 @@ namespace org::limitless::seqeron::app {
  *
  * Single-threaded: every method belongs to the caller's one duty-cycle thread, which calls doWork() each
  * iteration. The Java twin is app/ColocatedApplication.java; keep the two in step. Where Java's builder
- * takes an ingressEndpoints string, this side has none: ClusterStreamSender compiles the member set in;
- * publish and reply each take an SBE encoder and a Fill, or already-encoded bytes as the Java twin does.
- *
- * Listener provides:
- *   void onLeadershipChanged(bool leading) // the gate crossed an edge; false is where OutstandingWork
- *                                          // ::onNotLeader() belongs, as every leadership change shuts an
- *                                          // open gate and the work may have gone with the election
- *   void onSequenced(const Payload& payload)
- *   void onCaughtUp(std::int64_t globalSeqNo)
- *   void onClusterHeartbeat(std::int64_t clusterTimeNs, std::int64_t receiveTimeNs)
- *   void onFenced(ClusterError fence, const std::string& detail)
+ * takes an ingressEndpoints string, this side has none: ClusterStreamSender dials member 0 on localhost and
+ * follows the cluster's redirect; publish and reply each take an SBE encoder and a Fill, or already-encoded
+ * bytes as the Java twin does. ColocatedApplicationListener above is what the Listener provides.
  */
-template<typename Listener>
+template<ColocatedApplicationListener Listener>
 class ColocatedApplication
 {
   public:
@@ -91,13 +97,13 @@ class ColocatedApplication
     int doWork()
     {
         const int work = m_session.doWork();
-        const LeaderGate::Transition transition =
+        const detail::LeaderGate::Transition transition =
             m_gate.update(m_session.isCaughtUp(), m_session.currentLeaderMemberId());
-        if (transition == LeaderGate::Transition::None)
+        if (transition == detail::LeaderGate::Transition::None)
         {
             return work;
         }
-        m_listener.onLeadershipChanged(transition == LeaderGate::Transition::Opened);
+        m_listener.onLeadershipChanged(transition == detail::LeaderGate::Transition::Opened);
         return work + 1;
     }
 
@@ -251,9 +257,9 @@ class ColocatedApplication
 
     Config m_config;
     Listener& m_listener;
-    LeaderGate m_gate;
+    detail::LeaderGate m_gate;
     SessionDispatch m_dispatch;
-    Session<SessionDispatch> m_session;
+    detail::Session<SessionDispatch> m_session;
 };
 
 } // namespace org::limitless::seqeron::app

@@ -261,6 +261,28 @@ if(SEQERON_INSTALL)
         DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/seqeron")
 endif()
 
+# docs — the client tier's API reference, the C++ counterpart of `./gradlew :seqeron-client:javadoc`. The
+# same surface: detail/ is not API and the generated codecs are documented by their schema. Optional, since
+# nothing else needs Doxygen.
+if(PROJECT_IS_TOP_LEVEL)
+    find_package(Doxygen QUIET)
+    if(DOXYGEN_FOUND)
+        set(SEQERON_DOCS_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/seqeron-client/src/main/cpp")
+        set(DOXYGEN_PROJECT_NAME seqeron)
+        set(DOXYGEN_PROJECT_NUMBER ${PROJECT_VERSION})
+        set(DOXYGEN_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/docs")
+        set(DOXYGEN_FILE_PATTERNS *.hpp)
+        set(DOXYGEN_EXCLUDE_PATTERNS */detail/*)
+        set(DOXYGEN_EXCLUDE_SYMBOLS *::detail *::detail::*)
+        set(DOXYGEN_STRIP_FROM_PATH "${SEQERON_DOCS_ROOT}")
+        set(DOXYGEN_STRIP_FROM_INC_PATH "${SEQERON_DOCS_ROOT}")
+        set(DOXYGEN_EXTRACT_ALL YES)
+        set(DOXYGEN_JAVADOC_AUTOBRIEF YES)
+        set(DOXYGEN_WARN_IF_UNDOCUMENTED NO)
+        doxygen_add_docs(docs "${SEQERON_DOCS_ROOT}" COMMENT "Rendering the C++ API reference into docs/html")
+    endif()
+endif()
+
 if(SEQERON_BUILD_TESTS)
     # core_tests — the cluster tier's own suite. Links seqeron_core only, so a core file that reached for
     # a product header fails to build.

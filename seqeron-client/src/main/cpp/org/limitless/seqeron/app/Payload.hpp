@@ -7,6 +7,11 @@
 
 namespace org::limitless::seqeron::app {
 
+namespace detail {
+template<typename Dispatch>
+class Session;
+} // namespace detail
+
 /**
  * One application payload delivered in order, with the frame layer off it: the envelope is stripped, and
  * body() strips the payload's own messageHeader too, which is where an SBE decoder wraps. A payload that
@@ -126,7 +131,7 @@ class Payload
 
   private:
     template<typename Dispatch>
-    friend class Session;
+    friend class detail::Session;
 
     explicit Payload(const protocol::SequencedEvent& event) : m_event{ event }
     {}

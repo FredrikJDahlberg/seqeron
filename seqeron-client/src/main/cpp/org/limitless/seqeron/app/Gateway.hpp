@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <concepts>
 #include <cstdint>
 #include <deque>
 #include <memory>
@@ -12,9 +13,9 @@
 
 #include "org/limitless/seqeron/app/ClusterError.hpp"
 #include "org/limitless/seqeron/app/Defaults.hpp"
-#include "org/limitless/seqeron/app/GatewayLifecycle.hpp"
 #include "org/limitless/seqeron/app/Payload.hpp"
-#include "org/limitless/seqeron/app/Session.hpp"
+#include "org/limitless/seqeron/app/detail/GatewayLifecycle.hpp"
+#include "org/limitless/seqeron/app/detail/Session.hpp"
 #include "org/limitless/seqeron/protocol/Publish.hpp"
 #include "org/limitless/seqeron/protocol/SequencedFrame.hpp"
 #include "org/limitless/seqeron/sequencer/client/IngressPublisher.hpp"
@@ -25,6 +26,23 @@
 #include "org_limitless_seqeron_sbe_frame/GatewayStarted.h"
 
 namespace org::limitless::seqeron::app {
+
+/** What a Gateway's Listener provides: the edge. */
+template<typename L>
+concept GatewayListener = requires(L& listener, const Payload& payload, std::int32_t connectionId, const char* data,
+                                   std::size_t length, std::int64_t globalSeqNo, std::int64_t clusterTimeNs,
+                                   std::int64_t receiveTimeNs, ClusterError fence, const std::string& detail) {
+    // Open the edge; false is retried on the next doWork().
+    { listener.onActivated(connectionId) } -> std::convertible_to<bool>;
+    // Close it and drop every connection it let in.
+    listener.onStandby();
+    listener.onSequenced(payload);
+    listener.onConnectionOpened(connectionId, data, length);
+    listener.onConnectionClosed(connectionId);
+    listener.onCaughtUp(globalSeqNo);
+    listener.onClusterHeartbeat(clusterTimeNs, receiveTimeNs);
+    listener.onFenced(fence, detail);
+};
 
 /**
  * One instance of an elected active/standby producer pair. Everything this tier defines about being a
@@ -38,19 +56,10 @@ namespace org::limitless::seqeron::app {
  *
  * Single-threaded: every method belongs to the caller's one duty-cycle thread, which calls doWork() each
  * iteration. The Java twin is app/Gateway.java; keep the two in step. Where Java's builder takes an
- * ingressEndpoints string, this side has none: ClusterStreamSender compiles the member set in.
- *
- * Listener provides:
- *   bool onActivated(std::int32_t firstConnectionId) // open the edge; false is retried on the next doWork()
- *   void onStandby()                                 // close it and drop every connection it let in
- *   void onSequenced(const Payload& payload)
- *   void onConnectionOpened(std::int32_t connectionId, const char* data, std::size_t length)
- *   void onConnectionClosed(std::int32_t connectionId)
- *   void onCaughtUp(std::int64_t globalSeqNo)
- *   void onClusterHeartbeat(std::int64_t clusterTimeNs, std::int64_t receiveTimeNs)
- *   void onFenced(ClusterError fence, const std::string& detail)
+ * ingressEndpoints string, this side has none: ClusterStreamSender dials member 0 on localhost and follows
+ * the cluster's redirect. The Listener is the edge; GatewayListener above is what it provides.
  */
-template<typename Listener>
+template<GatewayListener Listener>
 class Gateway
 {
   public:
@@ -306,7 +315,7 @@ class Gateway
     // issued it.
     void observeConnectionId(const std::int32_t sourceId, const std::int32_t connectionId)
     {
-        if (m_lifecycle.gatewaySourceId() != GatewayLifecycle<LifecycleActions>::UNRESOLVED &&
+        if (m_lifecycle.gatewaySourceId() != detail::GatewayLifecycle<LifecycleActions>::UNRESOLVED &&
             sourceId == m_lifecycle.gatewaySourceId() && connectionId > m_highestConnectionId)
         {
             m_highestConnectionId = connectionId;
@@ -446,9 +455,9 @@ class Gateway
     Config m_config;
     Listener& m_listener;
     LifecycleActions m_actions;
-    GatewayLifecycle<LifecycleActions> m_lifecycle;
+    detail::GatewayLifecycle<LifecycleActions> m_lifecycle;
     SessionDispatch m_dispatch;
-    Session<SessionDispatch> m_session;
+    detail::Session<SessionDispatch> m_session;
 
     // Connection lifecycle frames still to be placed, in the order they were asked for.
     std::deque<Lifecycle> m_lifecycleQueue;
@@ -460,7 +469,7 @@ class Gateway
     std::int32_t m_highestConnectionId = NO_CONNECTION;
     std::int32_t m_nextConnectionId = 0;
 
-    static_assert(UNRESOLVED == GatewayLifecycle<LifecycleActions>::UNRESOLVED);
+    static_assert(UNRESOLVED == detail::GatewayLifecycle<LifecycleActions>::UNRESOLVED);
 };
 
 } // namespace org::limitless::seqeron::app

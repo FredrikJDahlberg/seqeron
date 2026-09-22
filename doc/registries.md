@@ -32,9 +32,9 @@ The registry is held by the **log**, not by code. No product compiles an id in: 
 its own `{gatewayId, gatewaySourceId}` from the `GatewayRegistered` row keyed on its launch-time
 name (`SEQERON_*_GATEWAY_NAME`), and fails closed when the list names none. The allocation reaches
 a running deployment through the `sourceId` attributes of the topology file (spec §6.4) — the
-registry's one machine-readable form, and the only place a number is typed. This repo carries one
-such document, `seqeron-service/src/test/resources/topology-test-gateway.xml`; a deployment writes
-its own.
+registry's one machine-readable form, and the only place a number is typed. This repo carries two
+such documents, `seqeron-service/src/test/resources/topology-test-gateway.xml` and
+`seqeron-examples/topology.xml`; a deployment writes its own.
 
 What a wrong allocation costs: two logical gateways sharing a `gatewaySourceId` share one election.
 `GatewayActive` designates both, and `releaseStaleConnections` drops the other pair's connections.
@@ -55,7 +55,7 @@ owns which of the other blocks is this table's alone.
 
 | block | owner | what is in it |
 | --- | --- | --- |
-| 9200–9209 | core | the cluster tier's own harness listeners: `TestGateway` TCP listen `9200 + instance` (9200 GW-T-A, 9201 GW-T-B), `seqeron-service/src/main/scripts/ports.sh`, and `seqeron-examples`' cluster egress `9202 + memberId` (UDP, `SEQERON_EXAMPLE_EGRESS_PORT`). Deliberately **not** inside 9300–9329 — that block is three members of stride 10 with nothing spare, and `isClusterPort()` names cluster member ports, which these are not |
+| 9200–9209 | core | the cluster tier's own harness listeners: `TestGateway` TCP listen `9200 + instance` (9200 GW-T-A, 9201 GW-T-B), `seqeron-service/src/main/scripts/ports.sh`, `seqeron-examples`' cluster egress `9202 + memberId` (UDP, `SEQERON_EXAMPLE_EGRESS_PORT`), and its C++ gateway pair's `9205 + instance` (9205 GW-EX-A, 9206 GW-EX-B). Deliberately **not** inside 9300–9329 — that block is three members of stride 10 with nothing spare, and `isClusterPort()` names cluster member ports, which these are not |
 | 9300–9329 | core | cluster member ports, `base + memberId*10 + {1..5}` — three members, one decade each. The base defaults to 9300 and moves with `SEQERON_PORT_BASE` (see below); this row registers the default |
 | 9330–9359 | simdfixgw | `OrderExecServer` egress `9330+m`, `FixGateway` egress `9340+m`, `BasicDataServer` egress `9350+m`. 9348 and 9349 were the cluster-tier harnesses' own test-consumer egress and are now free: those harnesses run `ClusterProbe follow`, which opens no cluster session (§11 step 5) |
 | 9360–9399 | phixeron | `ExchangeGateway` egress `9360+m` and its archive control `9370+m`, `OrderGateway` egress `9380+m` and its archive control `9390+m` |
@@ -179,7 +179,8 @@ restart does not.
 | 10 | core — `TestGateway serve`'s default, and `chaos-runner.sh`'s second consumer |
 | 11, 12 | core — `failover-test.sh`'s two producers |
 | 13, 14 | core — `seqeron-examples`' façade example (`ColocatedApp`), Java then C++ |
-| 15… | consumers — a deployment's own replicas |
+| 15, 16 | core — `seqeron-examples`' C++ gateway pair (`GatewayApp`), GW-EX-A then GW-EX-B |
+| 17… | consumers — a deployment's own replicas |
 
-Core's own are ≤ 14 and a consumer's start at 15. A deployment running several replicas per node keeps
+Core's own are ≤ 16 and a consumer's start at 17. A deployment running several replicas per node keeps
 that table where it keeps the counter sub-blocks: in the repository that owns the deployment.

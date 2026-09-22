@@ -4,9 +4,9 @@
 
 #include <gtest/gtest.h>
 
-#include "org/limitless/seqeron/app/TapStallFence.hpp"
+#include "org/limitless/seqeron/app/detail/TapStallFence.hpp"
 
-namespace org::limitless::seqeron::app {
+namespace org::limitless::seqeron::app::detail {
 namespace {
 
 constexpr std::int64_t DEADLINE_MS = 20 * 1000;
@@ -62,4 +62,4 @@ TEST(TapStallFence, CatchUpReAnchors)
 }
 
 } // namespace
-} // namespace org::limitless::seqeron::app
+} // namespace org::limitless::seqeron::app::detail

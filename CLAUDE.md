@@ -110,7 +110,9 @@ fails its build if it names anything outside `app` beyond `protocol.Publish`, th
 `FacadeSurfaceTest` checks the same from inside the client tier. Anything the service tier
 shares with a client — the tap's identity, the cluster clock, the port block, the replay protocol's
 addresses — goes in `protocol`, never in a service-tier class. C++ is the client tier alone, in the
-same directories and namespaces.
+same directories and namespaces — plus a `detail/` directory and namespace beneath a package for what Java
+makes package-private (the façade blocks, the recovery and transport seams), since header-only C++ has no
+such thing.
 
 **The producer side is a language-port pair too.** Java's `ClusterStreamSender`/`IngressPublisher` carry
 the C++ files' names and semantics — `connectColocated` (IPC ingress on the co-located member, UDP
@@ -173,7 +175,9 @@ what it produced) and `CheckSbeCodecsCurrent`, which regenerates into the build 
 SBE's C++ output is deterministic, so that comparison is exact; `run_tests` depends on it, which is
 what keeps the committed copy from drifting away from `seqeron-client/src/main/sbe`. GoogleTest and
 `core_tests` are gated on `SEQERON_BUILD_TESTS`, which defaults to
-`PROJECT_IS_TOP_LEVEL` — a build that adds this one gets neither unless it asks. `-DSEQERON_COVERAGE=ON` adds instrumentation. No simdfix, and therefore **no SSH remote is
+`PROJECT_IS_TOP_LEVEL` — a build that adds this one gets neither unless it asks. `-DSEQERON_COVERAGE=ON` adds instrumentation. `--target docs` renders the C++ API reference
+(`<build>/docs/html`, `detail/` and the codecs left out, as the javadoc leaves them out), and exists only
+when `find_package(Doxygen)` finds one. No simdfix, and therefore **no SSH remote is
 needed** — the FetchContent clone that used to require one went with the product half.
 
 **Consumable two ways, under the same target name.** `add_subdirectory`/`FetchContent` over the
@@ -230,7 +234,8 @@ goes away raises from `doWork()` rather than as a fence. It is in
 **`seqeron-service/src/test/java`** and therefore in no jar: `chaos-runner.sh` puts
 `seqeron-service/build/classes/java/test` on the classpath beside the uber jar and refuses to start
 without it. Its
-list is `seqeron-service/src/test/resources/topology-test-gateway.xml`, the only topology document in this repo.
+list is `seqeron-service/src/test/resources/topology-test-gateway.xml`. The one other topology document here is
+`seqeron-examples/topology.xml`, the pair the C++ `GatewayApp` example runs.
 
 `start-cluster.sh` and `start-three-node-cluster.sh` launch the cluster tier and nothing else — core
 starts no process it does not own. A consumer that wants its own replicas or gateways alongside runs
@@ -419,9 +424,10 @@ and **the cluster is bounded at three members** by the 30-port cluster block (`d
 the system vocabulary, the topology document), `client-api.md` (what a client programs against, and what in
 the client tier is not API — update it when that surface changes), `fault-tolerance.md`, `registries.md` (the two shared
 namespaces this tier owns — `sourceId`, and the port blocks each repo draws from),
-`clusterctl.md` and `ops.md` (runbooks), and `package.md` (the packaging review list). The only topology
-document here is `seqeron-service/src/test/resources/topology-test-gateway.xml`; the product half's
-`topology.xml` left with it, and no doc points at it any more.
+`clusterctl.md` and `ops.md` (runbooks), and `package.md` (the packaging review list). The topology
+documents here are `seqeron-service/src/test/resources/topology-test-gateway.xml` and
+`seqeron-examples/topology.xml`; the product half's `topology.xml` left with it, and no doc points at it
+any more.
 
 ## Code Formatting Mandate
 - Explicitly respect all style, brace, and indentation configurations found in the local `.clang-format` file.

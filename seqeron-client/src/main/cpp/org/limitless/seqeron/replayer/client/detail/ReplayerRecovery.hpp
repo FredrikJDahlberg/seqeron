@@ -21,7 +21,7 @@
 #include "org_limitless_seqeron_sbe_replay/ReplayUnavailable.h"
 #include "org_limitless_seqeron_sbe_replay/Replaying.h"
 
-namespace org::limitless::seqeron::replayer::client {
+namespace org::limitless::seqeron::replayer::client::detail {
 
 /**
  * Everything ReplayerRecovery cannot do itself: the sends, the replay subscription, and the gauge.
@@ -774,4 +774,4 @@ class ReplayerRecovery
     }
 };
 
-} // namespace org::limitless::seqeron::replayer::client
+} // namespace org::limitless::seqeron::replayer::client::detail

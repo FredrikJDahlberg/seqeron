@@ -4,9 +4,9 @@
 
 #include <gtest/gtest.h>
 
-#include "org/limitless/seqeron/app/RecoveryStallFence.hpp"
+#include "org/limitless/seqeron/app/detail/RecoveryStallFence.hpp"
 
-namespace org::limitless::seqeron::app {
+namespace org::limitless::seqeron::app::detail {
 namespace {
 
 constexpr std::int64_t DEADLINE_MS = 60'000;
@@ -98,4 +98,4 @@ TEST(RecoveryStallFence, ProgressRestartsTheDeadline)
 }
 
 } // namespace
-} // namespace org::limitless::seqeron::app
+} // namespace org::limitless::seqeron::app::detail

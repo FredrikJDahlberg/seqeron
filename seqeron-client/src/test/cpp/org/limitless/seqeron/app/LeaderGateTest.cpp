@@ -3,9 +3,9 @@
 
 #include <gtest/gtest.h>
 
-#include "org/limitless/seqeron/app/LeaderGate.hpp"
+#include "org/limitless/seqeron/app/detail/LeaderGate.hpp"
 
-namespace org::limitless::seqeron::app {
+namespace org::limitless::seqeron::app::detail {
 namespace {
 
 constexpr std::int32_t SELF = 1;
@@ -82,4 +82,4 @@ TEST(LeaderGate, LeadershipChangeWhileClosed)
 }
 
 } // namespace
-} // namespace org::limitless::seqeron::app
+} // namespace org::limitless::seqeron::app::detail

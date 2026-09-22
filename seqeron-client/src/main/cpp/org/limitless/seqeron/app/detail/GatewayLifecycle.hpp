@@ -6,7 +6,7 @@
 #include <unordered_map>
 #include <utility>
 
-namespace org::limitless::seqeron::app {
+namespace org::limitless::seqeron::app::detail {
 
 // The election lifecycle of one gateway instance: which instance of a logical gateway opens its gate, and
 // when it stops. The Java twin is app/GatewayLifecycle.java, which carries the rationale; keep the two in step.
@@ -161,4 +161,4 @@ class GatewayLifecycle
     bool m_registered = false;
 };
 
-} // namespace org::limitless::seqeron::app
+} // namespace org::limitless::seqeron::app::detail

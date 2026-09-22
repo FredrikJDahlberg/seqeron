@@ -3,10 +3,11 @@
 // ClusterStreamSender — Aeron Cluster client session state machine
 // (SessionConnectRequest → SessionEvent(OK) → send/keep-alive → SessionCloseRequest).
 //
-// The session logic talks to the cluster only through IngressTransport/EgressTransport, so a test drives
-// it with in-memory fakes; connect(aeron) acquires the Aeron resources and delegates to the
-// transport-agnostic connect(). On REDIRECT or NewLeaderEvent it resolves the leader's endpoint from the
-// wire's "memberId=host:port,..." CSV and swaps its ingress publication; the session id is unchanged.
+// The session logic talks to the cluster only through IngressTransport/EgressTransport
+// (detail/Transport.hpp), so a test drives it with in-memory fakes; connect(aeron) acquires the Aeron
+// resources and delegates to the transport-agnostic connect(). On REDIRECT or NewLeaderEvent it resolves
+// the leader's endpoint from the wire's "memberId=host:port,..." CSV and swaps its ingress publication;
+// the session id is unchanged.
 // Reconnection needs a real Aeron client, so the test seam leaves it disabled.
 
 #include <array>
@@ -30,6 +31,7 @@
 #include "concurrent/YieldingIdleStrategy.h"
 #include "org/limitless/seqeron/protocol/PortLayout.hpp"
 #include "org/limitless/seqeron/sequencer/client/IngressTracker.hpp"
+#include "org/limitless/seqeron/sequencer/client/detail/Transport.hpp"
 #include "org/limitless/seqeron/util/Logger.hpp"
 #include "org_limitless_seqeron_cluster_sbe/MessageHeader.h"
 #include "org_limitless_seqeron_cluster_sbe/NewLeaderEvent.h"
@@ -100,80 +102,6 @@ inline bool findIngressEndpoint(std::string_view endpoints, std::int32_t memberI
     return false;
 }
 
-// ── Transport interfaces ──────────────────────────────────────────────────────
-
-// Outbound half: offers raw bytes to the cluster ingress; `false` means not yet accepted.
-class IngressTransport
-{
-  public:
-    virtual ~IngressTransport() = default;
-    virtual bool offer(std::span<const std::uint8_t> bytes) = 0;
-};
-
-// Inbound half: polls whole (reassembled) egress messages; returns fragments processed.
-class EgressTransport
-{
-  public:
-    using FragmentHandler = std::function<void(std::span<const std::uint8_t>)>;
-
-    virtual ~EgressTransport() = default;
-    virtual int poll(const FragmentHandler& handler) = 0;
-};
-
-// ── Real Aeron-backed transports ──────────────────────────────────────────────
-
-class AeronIngressTransport : public IngressTransport
-{
-  public:
-    explicit AeronIngressTransport(std::shared_ptr<aeron::Publication> pub) : m_pub(std::move(pub))
-    {}
-
-    bool offer(std::span<const std::uint8_t> bytes) override
-    {
-        const aeron::concurrent::AtomicBuffer buffer(const_cast<std::uint8_t*>(bytes.data()),
-                                                     static_cast<aeron::util::index_t>(bytes.size()));
-        return m_pub->offer(buffer, 0, static_cast<aeron::util::index_t>(bytes.size())) >= 0;
-    }
-
-  private:
-    std::shared_ptr<aeron::Publication> m_pub;
-};
-
-class AeronEgressTransport : public EgressTransport
-{
-  public:
-    explicit AeronEgressTransport(std::shared_ptr<aeron::Subscription> sub) : m_sub(std::move(sub))
-    {}
-
-    int poll(const FragmentHandler& handler) override
-    {
-        m_handler = &handler;
-        const int n = m_sub->poll(m_poll, 10);
-        m_handler = nullptr;
-        return n;
-    }
-
-  private:
-    std::shared_ptr<aeron::Subscription> m_sub;
-
-    // Per-call callback set in poll(); null outside of that call.
-    const FragmentHandler* m_handler{ nullptr };
-
-    // Persistent across poll() calls so multi-fragment messages reassemble correctly.
-    aeron::FragmentAssembler m_fa{ [this](aeron::concurrent::AtomicBuffer& buf, aeron::util::index_t off,
-                                          aeron::util::index_t len, aeron::Header&) {
-        if (m_handler)
-        {
-            (*m_handler)(std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t*>(buf.buffer()) + off,
-                                                       static_cast<std::size_t>(len)));
-        }
-    } };
-
-    // Composed once rather than per poll(): FragmentAssembler::handler() returns a fresh std::function.
-    // Declared after m_fa, which it is built from.
-    aeron::fragment_handler_t m_poll{ m_fa.handler() };
-};
-
 // ── ClusterStreamSender ──────────────────────────────────────────────────────
 
 // Manages the Aeron Cluster session and sends pre-encoded frames to the cluster ingress. Each frame
@@ -191,10 +119,10 @@ class ClusterStreamSender
         m_ingressEndpoint = CLUSTER_INGRESS_ENDPOINT;
         m_egressChannel = egressChannel;
 
-        auto egress = std::make_unique<AeronEgressTransport>(awaitEgressSubscription());
-        connect(
-            std::make_unique<AeronIngressTransport>(createIngressPublication(m_ingressEndpoint, m_connectTimeoutMs)),
-            std::move(egress), m_egressChannel);
+        auto egress = std::make_unique<detail::AeronEgressTransport>(awaitEgressSubscription());
+        connect(std::make_unique<detail::AeronIngressTransport>(
+                    createIngressPublication(m_ingressEndpoint, m_connectTimeoutMs)),
+                std::move(egress), m_egressChannel);
     }
 
     // For a client sharing a cluster member's Aeron directory. Ingress tries that member's IPC first: a
@@ -211,16 +139,16 @@ class ClusterStreamSender
         // bind one egress port.
         m_egressChannel = egressChannel;
 
-        auto egress = std::make_unique<AeronEgressTransport>(awaitEgressSubscription());
+        auto egress = std::make_unique<detail::AeronEgressTransport>(awaitEgressSubscription());
 
         // A follower never connects the IPC publication, so building it is bounded by the short
         // ipcConnectTimeoutMs; a timeout there is treated like a failed handshake on it.
         m_ingressEndpoint = "ipc";
-        std::unique_ptr<IngressTransport> primary;
+        std::unique_ptr<detail::IngressTransport> primary;
         std::string primaryFailureReason;
         try
         {
-            primary = std::make_unique<AeronIngressTransport>(createIpcIngressPublication(ipcConnectTimeoutMs));
+            primary = std::make_unique<detail::AeronIngressTransport>(createIpcIngressPublication(ipcConnectTimeoutMs));
         }
         catch (const std::exception& ex)
         {
@@ -231,7 +159,7 @@ class ClusterStreamSender
             std::move(primary),
             [this] {
                 m_ingressEndpoint = CLUSTER_INGRESS_ENDPOINT;
-                return std::make_unique<AeronIngressTransport>(
+                return std::make_unique<detail::AeronIngressTransport>(
                     createIngressPublication(m_ingressEndpoint, m_connectTimeoutMs));
             },
             std::move(egress), ipcConnectTimeoutMs, primaryFailureReason.c_str(), memberId);
@@ -241,9 +169,9 @@ class ClusterStreamSender
     // `buildFallbackIngress` with the full one. `primaryIngress` may be null to go straight to the
     // fallback; `egress` is shared by both attempts. Without m_aeron the NewLeaderEvent re-chase stays a
     // no-op, so `memberId` only sets the state a test inspects.
-    void connectColocated(std::unique_ptr<IngressTransport> primaryIngress,
-                          std::function<std::unique_ptr<IngressTransport>()> buildFallbackIngress,
-                          std::unique_ptr<EgressTransport> egress, std::int64_t primaryConnectTimeoutMs,
+    void connectColocated(std::unique_ptr<detail::IngressTransport> primaryIngress,
+                          std::function<std::unique_ptr<detail::IngressTransport>()> buildFallbackIngress,
+                          std::unique_ptr<detail::EgressTransport> egress, std::int64_t primaryConnectTimeoutMs,
                           const char* primaryFailureReason, std::int32_t memberId = -1)
     {
         m_coLocatedMemberId = memberId;
@@ -276,7 +204,7 @@ class ClusterStreamSender
     // Test seam: drives the handshake against any transport pair, synchronously and without Aeron.
     // Redirect/reconnect is skipped here (no Aeron client to build a publication with). `egressChannel`
     // is the responseChannel the cluster publishes egress on.
-    void connect(std::unique_ptr<IngressTransport> ingress, std::unique_ptr<EgressTransport> egress,
+    void connect(std::unique_ptr<detail::IngressTransport> ingress, std::unique_ptr<detail::EgressTransport> egress,
                  const std::string& egressChannel = "")
     {
         m_ingress = std::move(ingress);
@@ -723,7 +651,7 @@ class ClusterStreamSender
         {
             auto pub = req.endpoint == "ipc" ? createIpcIngressPublication(req.timeoutMs)
                                              : createIngressPublication(req.endpoint, req.timeoutMs);
-            m_ingress = std::make_unique<AeronIngressTransport>(std::move(pub));
+            m_ingress = std::make_unique<detail::AeronIngressTransport>(std::move(pub));
             m_ingressEndpoint = req.endpoint;
             util::Logger::info(util::component::Cluster, "Ingress switched to %s", req.endpoint.c_str());
             if (req.resendConnectRequest || m_clusterSessionId < 0)
@@ -806,8 +734,8 @@ class ClusterStreamSender
     std::int32_t m_coLocatedMemberId = -1;
     std::int64_t m_ipcConnectTimeoutMs = 1500;
     std::string m_egressChannel;
-    std::unique_ptr<IngressTransport> m_ingress;
-    std::unique_ptr<EgressTransport> m_egress;
+    std::unique_ptr<detail::IngressTransport> m_ingress;
+    std::unique_ptr<detail::EgressTransport> m_egress;
     aeron::concurrent::YieldingIdleStrategy m_idleStrategy;
 
     // An ingress-publication swap requested from inside an egress fragment handler, performed later

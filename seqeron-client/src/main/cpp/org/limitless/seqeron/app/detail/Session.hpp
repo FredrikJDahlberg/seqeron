@@ -9,9 +9,9 @@
 #include "org/limitless/seqeron/app/ClusterError.hpp"
 #include "org/limitless/seqeron/app/Defaults.hpp"
 #include "org/limitless/seqeron/app/Payload.hpp"
-#include "org/limitless/seqeron/app/RecoveryStallFence.hpp"
 #include "org/limitless/seqeron/app/TapLagMonitor.hpp"
-#include "org/limitless/seqeron/app/TapStallFence.hpp"
+#include "org/limitless/seqeron/app/detail/RecoveryStallFence.hpp"
+#include "org/limitless/seqeron/app/detail/TapStallFence.hpp"
 #include "org/limitless/seqeron/protocol/Publish.hpp"
 #include "org/limitless/seqeron/protocol/SequencedFrame.hpp"
 #include "org/limitless/seqeron/replayer/client/ReplayerStreamReceiver.hpp"
@@ -19,7 +19,7 @@
 #include "org/limitless/seqeron/sequencer/client/IngressPublisher.hpp"
 #include "org/limitless/seqeron/sequencer/client/PendingSends.hpp"
 
-namespace org::limitless::seqeron::app {
+namespace org::limitless::seqeron::app::detail {
 
 /**
  * What every seqeron client does the same way: the cluster session it submits on, the co-located tap it
@@ -292,4 +292,4 @@ class Session
     bool m_fenced = false;
 };
 
-} // namespace org::limitless::seqeron::app
+} // namespace org::limitless::seqeron::app::detail

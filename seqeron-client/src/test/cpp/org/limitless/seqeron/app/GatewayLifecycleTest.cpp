@@ -8,9 +8,9 @@
 
 #include <gtest/gtest.h>
 
-#include "org/limitless/seqeron/app/GatewayLifecycle.hpp"
+#include "org/limitless/seqeron/app/detail/GatewayLifecycle.hpp"
 
-namespace org::limitless::seqeron::app {
+namespace org::limitless::seqeron::app::detail {
 namespace {
 
 constexpr const char* ME = "GW-A";
@@ -231,4 +231,4 @@ TEST_F(GatewayLifecycleTest, RefusesASessionAcquiredWhileTheGateIsShut)
 }
 
 } // namespace
-} // namespace org::limitless::seqeron::app
+} // namespace org::limitless::seqeron::app::detail
