@@ -9,12 +9,12 @@
 
 #include <gtest/gtest.h>
 
-#include "org/limitless/seqeron/app/PendingSends.hpp"
+#include "org/limitless/seqeron/sequencer/client/PendingSends.hpp"
 
 #include "org_limitless_seqeron_sbe_frame/Unsequenced.h"
 #include "org_limitless_seqeron_sbe_frame/UnsequencedSystem.h"
 
-namespace org::limitless::seqeron::app {
+namespace org::limitless::seqeron::sequencer::client {
 namespace {
 
 namespace frm = sbe::frame;
@@ -343,4 +343,4 @@ TEST_F(PendingSendsTest, FullRingResendsInPlace)
 }
 
 } // namespace
-} // namespace org::limitless::seqeron::app
+} // namespace org::limitless::seqeron::sequencer::client

@@ -8,9 +8,11 @@
 
 #include "org/limitless/seqeron/app/Fence.hpp"
 #include "org/limitless/seqeron/app/Payload.hpp"
-#include "org/limitless/seqeron/app/PendingSends.hpp"
+#include "org/limitless/seqeron/sequencer/client/PendingSends.hpp"
 #include "org/limitless/seqeron/app/RecoveryStallFence.hpp"
+#include "org/limitless/seqeron/app/TapLagMonitor.hpp"
 #include "org/limitless/seqeron/app/TapStallFence.hpp"
+#include "org/limitless/seqeron/protocol/Publish.hpp"
 #include "org/limitless/seqeron/protocol/SequencedFrame.hpp"
 #include "org/limitless/seqeron/replayer/client/ReplayerStreamReceiver.hpp"
 #include "org/limitless/seqeron/sequencer/client/ClusterStreamSender.hpp"
@@ -30,6 +32,10 @@ inline constexpr std::size_t DEFAULT_PENDING_CAPACITY = 1024;
 // How long ingress is tried on this member's own aeron:ipc: short, as a follower never answers.
 inline constexpr std::int64_t DEFAULT_IPC_CONNECT_TIMEOUT_MS = 500;
 
+// The lag at which the tap is called stale. The same span as the tap-silence timeout: a tap that is a
+// whole stall window behind is as good as silent to anything reading it.
+inline constexpr std::int64_t DEFAULT_TAP_LAG_THRESHOLD_MS = DEFAULT_TAP_STALL_TIMEOUT_MS;
+
 /**
  * What every seqeron client does the same way: the cluster session it submits on, the co-located tap it
  * follows, confirmed ingress across a failover, and the fences that say when it may no longer act — wired
@@ -43,6 +49,7 @@ inline constexpr std::int64_t DEFAULT_IPC_CONNECT_TIMEOUT_MS = 500;
  *   void onLeadershipChanged()                           // confirmed ingress has already taken the new term
  *   void onPayload(const Payload& payload)
  *   void onCaughtUp(std::int64_t globalSeqNo)            // every transition to caught-up, the first included
+ *   void onClusterHeartbeat(std::int64_t clusterTimeNs, std::int64_t receiveTimeNs) // the cluster clock's tick
  *   void onFenced(Fence fence, const std::string& detail) // once, latched
  */
 template<typename Dispatch>
@@ -50,11 +57,12 @@ class Session
 {
   public:
     Session(const std::int32_t clientId, const std::size_t pendingCapacity, const std::int64_t tapStallTimeoutMs,
-            const std::int64_t recoveryStallTimeoutMs, Dispatch& dispatch) :
+            const std::int64_t recoveryStallTimeoutMs, const std::int64_t tapLagThresholdMs, Dispatch& dispatch) :
       m_dispatch{ dispatch },
       m_pending{ pendingCapacity },
       m_recoveryStall{ recoveryStallTimeoutMs },
       m_tapStall{ tapStallTimeoutMs },
+      m_tapLag{ tapLagThresholdMs * 1'000'000 },
       m_recoveryStallTimeoutMs{ recoveryStallTimeoutMs },
       m_tapStallTimeoutMs{ tapStallTimeoutMs },
       m_receiver{ clientId,
@@ -110,26 +118,38 @@ class Session
         return work;
     }
 
-    template<typename Encoder, typename Fill>
-    [[nodiscard]] sequencer::client::Publish publishPayload(const std::int32_t sourceId,
-                                                            const std::int32_t connectionId,
-                                                            const std::uint16_t payloadId, Fill&& fill)
+    // The same for a payload a caller encoded into a buffer of its own; the Java twin's only publish.
+    [[nodiscard]] protocol::Publish publishPayload(const std::int32_t sourceId, const std::int32_t connectionId,
+                                                   const std::uint16_t payloadId, const std::uint8_t* payload,
+                                                   const std::uint16_t payloadLength)
     {
         if (m_fenced)
         {
-            return sequencer::client::Publish::Declined;
+            return protocol::Publish::Declined;
+        }
+        return sequencer::client::publishPayload(m_sender, &m_pending, sourceId, connectionId, payloadId, payload,
+                                                 payloadLength);
+    }
+
+    template<typename Encoder, typename Fill>
+    [[nodiscard]] protocol::Publish publishPayload(const std::int32_t sourceId, const std::int32_t connectionId,
+                                                   const std::uint16_t payloadId, Fill&& fill)
+    {
+        if (m_fenced)
+        {
+            return protocol::Publish::Declined;
         }
         return sequencer::client::publishPayload<Encoder>(m_sender, &m_pending, sourceId, connectionId, payloadId,
                                                           std::forward<Fill>(fill));
     }
 
     template<typename Encoder, typename Fill>
-    [[nodiscard]] sequencer::client::Publish publishSystem(const std::int32_t sourceId, const std::int32_t connectionId,
-                                                           const std::uint16_t systemEventType, Fill&& fill)
+    [[nodiscard]] protocol::Publish publishSystem(const std::int32_t sourceId, const std::int32_t connectionId,
+                                                  const std::uint16_t systemEventType, Fill&& fill)
     {
         if (m_fenced)
         {
-            return sequencer::client::Publish::Declined;
+            return protocol::Publish::Declined;
         }
         return sequencer::client::publishSystem<Encoder>(m_sender, &m_pending, sourceId, connectionId, systemEventType,
                                                          std::forward<Fill>(fill));
@@ -144,6 +164,12 @@ class Session
     [[nodiscard]] bool isCaughtUp() const
     {
         return m_receiver.isCaughtUp();
+    }
+
+    // Observation only, for a consumer that reports lag itself; nothing here raises a fence.
+    [[nodiscard]] const TapLagMonitor& tapLag() const noexcept
+    {
+        return m_tapLag;
     }
 
     [[nodiscard]] std::int64_t lastGlobalSeqNo() const
@@ -243,6 +269,13 @@ class Session
             if (event.systemEventType == protocol::CLUSTER_HEARTBEAT)
             {
                 m_tapStall.onClusterHeartbeat(monotonicMs());
+                // Lag is judged on the live stream only: a replayed heartbeat is arbitrarily late by
+                // construction and says nothing about how far behind the leader this node is now.
+                if (m_receiver.isCaughtUp())
+                {
+                    (void)m_tapLag.onClusterHeartbeat(event.clusterTimestampNs, event.receiveTimeNs);
+                }
+                m_dispatch.onClusterHeartbeat(event.clusterTimestampNs, event.receiveTimeNs);
             }
             m_dispatch.onSystem(event);
             return;
@@ -251,10 +284,11 @@ class Session
     }
 
     Dispatch& m_dispatch;
-    PendingSends m_pending;
+    sequencer::client::PendingSends m_pending;
     sequencer::client::ClusterStreamSender m_sender;
     RecoveryStallFence m_recoveryStall;
     TapStallFence m_tapStall;
+    TapLagMonitor m_tapLag;
     std::int64_t m_recoveryStallTimeoutMs;
     std::int64_t m_tapStallTimeoutMs;
     replayer::client::ReplayerStreamReceiver m_receiver;

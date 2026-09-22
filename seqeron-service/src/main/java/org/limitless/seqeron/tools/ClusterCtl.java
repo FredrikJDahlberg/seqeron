@@ -18,6 +18,7 @@ import org.agrona.concurrent.YieldingIdleStrategy;
 import org.agrona.concurrent.status.CountersReader;
 import org.limitless.seqeron.protocol.FrameLayer;
 import org.limitless.seqeron.protocol.PortLayout;
+import org.limitless.seqeron.protocol.Publish;
 import org.limitless.seqeron.protocol.SeqeronCounters;
 import org.limitless.seqeron.protocol.SequencedFrameDecoder;
 import org.limitless.seqeron.protocol.SystemFrame;
@@ -415,10 +416,10 @@ public final class ClusterCtl {
     /** Publishes one system event on this session, or fails the command: a {@code Declined} marker cannot be resumed. */
     private static void publish(final Session session, final int systemEventType,
                                 final ExpandableArrayBuffer body, final int bodyLength) {
-        final IngressPublisher.Publish outcome =
+        final Publish outcome =
             session.publisher.publishSystem(session.sender, RESERVED_SOURCE_ID, NO_ID, systemEventType, body,
                                             bodyLength);
-        if (outcome != IngressPublisher.Publish.Published) {
+        if (outcome != Publish.Published) {
             throw new IllegalStateException("cluster ingress " + outcome + " a " + systemEventType + " marker");
         }
     }

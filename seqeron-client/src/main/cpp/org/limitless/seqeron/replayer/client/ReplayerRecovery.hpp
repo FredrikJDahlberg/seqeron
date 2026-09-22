@@ -645,8 +645,12 @@ class ReplayerRecovery
             if (callback)
             {
                 callback(protocol::lifecycleEventOf(view, receiveNs));
+                return;
             }
-            return;
+            // No lifecycle callback: the frame goes to onSequenced like any other rather than being
+            // dropped. A LifecycleEvent carries no body, so a consumer that needs ConnectionOpened's
+            // connectionData — or that confirms its own ingress, which must see every frame it placed —
+            // takes them there instead.
         }
         if (isSystem && eventType == protocol::LEADERSHIP_CHANGED)
         {

@@ -73,7 +73,7 @@ ingress publication, and the cluster confirms nothing on egress. Frames the old 
 are gone, and so is everything offered to its publication after it died, until the client notices — in
 `failover-test.sh`, about 5,500 frames at 100 µs pacing. The session survives, so neither the sender nor
 the cluster sees a fault. A producer that must not lose a frame confirms each one on its own tap and
-resends what a leader change lost, ahead of anything new (spec §16 A-4 and A-5, `app/PendingSends`).
+resends what a leader change lost, ahead of anything new (spec §16 A-4 and A-5, `sequencer/client/PendingSends`).
 `failover-test.sh` streams two producers across its leader kill and asserts that the one using it sees
 every frame on the tap exactly once, in order; the other, untracked, reports what was lost.
 

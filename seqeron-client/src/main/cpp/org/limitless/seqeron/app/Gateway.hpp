@@ -14,6 +14,7 @@
 #include "org/limitless/seqeron/app/GatewayLifecycle.hpp"
 #include "org/limitless/seqeron/app/Payload.hpp"
 #include "org/limitless/seqeron/app/Session.hpp"
+#include "org/limitless/seqeron/protocol/Publish.hpp"
 #include "org/limitless/seqeron/protocol/SequencedFrame.hpp"
 #include "org/limitless/seqeron/sequencer/client/IngressPublisher.hpp"
 #include "org_limitless_seqeron_sbe_frame/ConnectionClosed.h"
@@ -42,7 +43,10 @@ namespace org::limitless::seqeron::app {
  *   bool onActivated(std::int32_t firstConnectionId) // open the edge; false is retried on the next doWork()
  *   void onStandby()                                 // close it and drop every connection it let in
  *   void onSequenced(const Payload& payload)
+ *   void onConnectionOpened(std::int32_t connectionId, const char* data, std::size_t length)
+ *   void onConnectionClosed(std::int32_t connectionId)
  *   void onCaughtUp(std::int64_t globalSeqNo)
+ *   void onClusterHeartbeat(std::int64_t clusterTimeNs, std::int64_t receiveTimeNs)
  *   void onFenced(Fence fence, const std::string& detail)
  */
 template<typename Listener>
@@ -52,6 +56,11 @@ class Gateway
     // A frame that belongs to the gateway rather than to one of its connections, and what openConnection
     // answers when there is none to give.
     static constexpr std::int32_t NO_CONNECTION = -1;
+
+    // What sourceId() and gatewayId() answer until a GatewayRegistered row names this instance. Spelled
+    // out rather than aliased: LifecycleActions is not declared yet here. The static_assert below keeps it
+    // in step with GatewayLifecycle's own.
+    static constexpr std::int32_t UNRESOLVED = -1;
 
     // Everything one instance needs to join its pair; the twin of the Java builder.
     struct Config
@@ -67,6 +76,7 @@ class Gateway
         std::size_t pendingCapacity = DEFAULT_PENDING_CAPACITY;
         std::int64_t tapStallTimeoutMs = DEFAULT_TAP_STALL_TIMEOUT_MS;
         std::int64_t recoveryStallTimeoutMs = DEFAULT_RECOVERY_STALL_TIMEOUT_MS;
+        std::int64_t tapLagThresholdMs = DEFAULT_TAP_LAG_THRESHOLD_MS;
     };
 
     Gateway(Config config, Listener& listener) :
@@ -75,8 +85,9 @@ class Gateway
       m_actions{ *this },
       m_lifecycle{ m_config.gatewayName, m_actions },
       m_dispatch{ *this },
-      m_session{ m_config.clientId, m_config.pendingCapacity, m_config.tapStallTimeoutMs,
-                 m_config.recoveryStallTimeoutMs, m_dispatch }
+      m_session{ m_config.clientId,          m_config.pendingCapacity,
+                 m_config.tapStallTimeoutMs, m_config.recoveryStallTimeoutMs,
+                 m_config.tapLagThresholdMs, m_dispatch }
     {}
 
     Gateway(const Gateway&) = delete;
@@ -150,15 +161,26 @@ class Gateway
     // ingress is held, back-pressured, or the connection's ConnectionOpened has not landed yet — retry it;
     // Refused is permanent.
     template<typename Encoder, typename Fill>
-    [[nodiscard]] sequencer::client::Publish publish(const std::int32_t connectionId, const std::uint16_t payloadId,
-                                                     Fill&& fill)
+    [[nodiscard]] protocol::Publish publish(const std::int32_t connectionId, const std::uint16_t payloadId, Fill&& fill)
     {
         if (m_unopened.contains(connectionId))
         {
-            return sequencer::client::Publish::Declined;
+            return protocol::Publish::Declined;
         }
         return m_session.template publishPayload<Encoder>(m_lifecycle.gatewaySourceId(), connectionId, payloadId,
                                                           std::forward<Fill>(fill));
+    }
+
+    // The same for a payload the caller encoded itself, its own messageHeader included. The Java twin
+    // takes only this form — Java's SBE codecs share no interface — so a port keeps the two in step here.
+    [[nodiscard]] protocol::Publish publish(const std::int32_t connectionId, const std::uint16_t payloadId,
+                                            const std::uint8_t* payload, const std::uint16_t payloadLength)
+    {
+        if (m_unopened.contains(connectionId))
+        {
+            return protocol::Publish::Declined;
+        }
+        return m_session.publishPayload(m_lifecycle.gatewaySourceId(), connectionId, payloadId, payload, payloadLength);
     }
 
     // Whether the last GatewayActive for this pair named this instance.
@@ -193,6 +215,13 @@ class Gateway
     [[nodiscard]] std::int64_t lastGlobalSeqNo() const
     {
         return m_session.lastGlobalSeqNo();
+    }
+
+    // How far behind the leader this node's tap is running. Observation only — nothing here raises a
+    // fence; a consumer that wants to report staleness, or log its edges, polls it.
+    [[nodiscard]] const TapLagMonitor& tapLag() const noexcept
+    {
+        return m_session.tapLag();
     }
 
     // Closes the cluster session and the tap. The Aeron client is the caller's and is left open.
@@ -239,6 +268,23 @@ class Gateway
         return work;
     }
 
+    // A ConnectionOpened's opaque tail, or nothing. §7.1 lets connectionData be absent, and a producer
+    // that takes the option encodes no var-data header at all — so a body too short to hold one is that
+    // case, not a short read.
+    void dispatchConnectionOpened(const protocol::SequencedEvent& event)
+    {
+        if (event.payloadLength < sbe::frame::ConnectionOpened::connectionDataHeaderLength())
+        {
+            m_listener.onConnectionOpened(event.connectionId, nullptr, 0);
+            return;
+        }
+        auto opened = protocol::decodeSystem<sbe::frame::ConnectionOpened>(event);
+        // Length first: connectionData() advances sbePosition past the var-data, and reading the length
+        // after that reads off the end of the body.
+        const std::uint16_t length = opened.connectionDataLength();
+        m_listener.onConnectionOpened(event.connectionId, opened.connectionData(), length);
+    }
+
     // The resume point, read off every frame this logical gateway's history holds, whichever instance
     // issued it.
     void observeConnectionId(const std::int32_t sourceId, const std::int32_t connectionId)
@@ -251,13 +297,13 @@ class Gateway
     }
 
     // A refused frame is this class's own bug, never a condition to wait out.
-    static bool published(const sequencer::client::Publish result)
+    static bool published(const protocol::Publish result)
     {
-        if (result == sequencer::client::Publish::Refused)
+        if (result == protocol::Publish::Refused)
         {
             throw std::logic_error("a frame the sequencer would reject (doc/seqeron-protocol-spec.md §9.2)");
         }
-        return result == sequencer::client::Publish::Published;
+        return result == protocol::Publish::Published;
     }
 
     // The election's side effects.
@@ -312,6 +358,21 @@ class Gateway
             m_gateway.observeConnectionId(event.sourceId, event.connectionId);
             switch (event.systemEventType)
             {
+                // This logical gateway's connection lifecycle, whichever instance issued it. A consumer that
+                // keeps per-connection state rebuilds it from these while it replays, and releases it on the
+                // close — a client that drops its socket without logging out produces no payload at all.
+                case protocol::CONNECTION_OPENED:
+                    if (event.sourceId == m_gateway.m_lifecycle.gatewaySourceId())
+                    {
+                        m_gateway.dispatchConnectionOpened(event);
+                    }
+                    break;
+                case protocol::CONNECTION_CLOSED:
+                    if (event.sourceId == m_gateway.m_lifecycle.gatewaySourceId())
+                    {
+                        m_gateway.m_listener.onConnectionClosed(event.connectionId);
+                    }
+                    break;
                 case protocol::GATEWAY_REGISTERED: {
                     // A submitted system body carries no messageHeader, so its block length and version come
                     // from this build's own constants (doc/seqeron-protocol-spec.md §7, V-3) — which is what
@@ -348,6 +409,14 @@ class Gateway
             m_gateway.m_listener.onCaughtUp(globalSeqNo);
         }
 
+        // The cluster clock's tick (spec §7), once a second. It is the one time source that keeps
+        // advancing while every producer is silent, which is exactly when a watchdog must still fire, and
+        // it is identical on every node — so a timer driven by it decides the same thing everywhere.
+        void onClusterHeartbeat(const std::int64_t clusterTimeNs, const std::int64_t receiveTimeNs)
+        {
+            m_gateway.m_listener.onClusterHeartbeat(clusterTimeNs, receiveTimeNs);
+        }
+
         void onFenced(const Fence fence, const std::string& detail)
         {
             m_gateway.m_listener.onFenced(fence, detail);
@@ -373,6 +442,8 @@ class Gateway
     // The highest connectionId this logical gateway's history holds; the resume point for §7's row.
     std::int32_t m_highestConnectionId = NO_CONNECTION;
     std::int32_t m_nextConnectionId = 0;
+
+    static_assert(UNRESOLVED == GatewayLifecycle<LifecycleActions>::UNRESOLVED);
 };
 
 } // namespace org::limitless::seqeron::app

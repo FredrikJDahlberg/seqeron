@@ -3,6 +3,7 @@ package org.limitless.seqeron.sequencer.client;
 import org.agrona.DirectBuffer;
 import org.agrona.ExpandableArrayBuffer;
 import org.limitless.seqeron.protocol.FrameLayer;
+import org.limitless.seqeron.protocol.Publish;
 import org.limitless.seqeron.protocol.SystemFrame;
 
 /**
@@ -16,20 +17,6 @@ import org.limitless.seqeron.protocol.SystemFrame;
  * <p>Not thread-safe: one publisher per producing thread.
  */
 public final class IngressPublisher {
-    /**
-     * What a publish did. {@code Refused} is local and permanent — the body is too long, or the frame breaks
-     * §9.2 conditions 6 to 9 — so retrying it cannot succeed. {@code Declined} (transport back-pressure, a
-     * lost session, or the tracker holding or full) is the one a caller may retry.
-     */
-    public enum Publish {
-        /** The frame was offered, and tracked if a tracker was given. */
-        Published,
-        /** Nothing was offered and retrying cannot help. */
-        Refused,
-        /** Nothing was offered; the same frame may be offered again. */
-        Declined
-    }
-
     private final ExpandableArrayBuffer frame = new ExpandableArrayBuffer(FrameLayer.MAX_INGRESS_LENGTH);
     private final SystemFrame envelope = new SystemFrame();
     private final IngressTracker tracker;

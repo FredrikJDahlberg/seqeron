@@ -99,12 +99,15 @@ already discarded.
 at its package root and its client in `.client` beside it (`sequencer` / `sequencer.client`,
 `replayer.server` / `replayer.client`), and the wire contract both sides share is `protocol` —
 `FrameLayer`, `SystemFrame`, `PortLayout`,
-`SequencedFrameDecoder`, `ReplayProtocol`, `SeqeronCounters`. Each module publishes one jar: `seqeron`
+`SequencedFrameDecoder`, `ReplayProtocol`, `SeqeronCounters`, `Publish`. Each module publishes one jar: `seqeron`
 (the **client tier**: `protocol`, `sequencer.client`, `replayer.client`, `app`, `util`, the frame and
 replay codecs and the cluster mirror's IR) and `seqeron-service` (the **service tier**: `sequencer`,
 `replayer.server`, `tools`, `metrics` and the probe codecs). No package is in both, so both jars carry an
 `Automatic-Module-Name`. A process that merely talks to a cluster takes the first alone, and
-`seqeron-examples` is the proof: it resolves `org.limitless:seqeron` and compiles. Anything the service tier
+`seqeron-examples` is the proof: it resolves `org.limitless:seqeron` and compiles. Its
+`ColocatedApp.java` proves the narrower claim that `app` is sufficient on its own — `checkFacadeOnly`
+fails its build if it names anything outside `app` beyond `protocol.Publish`, the way
+`FacadeSurfaceTest` checks the same from inside the client tier. Anything the service tier
 shares with a client — the tap's identity, the cluster clock, the port block, the replay protocol's
 addresses — goes in `protocol`, never in a service-tier class. C++ is the client tier alone, in the
 same directories and namespaces.
@@ -128,7 +131,7 @@ away — is a single comparison, so its low line coverage is the same statement 
 
 **A send that succeeds is not a frame sequenced.** Nothing confirms ingress on egress, and a leader
 failover silently loses whatever the old leader had not committed — the session survives it.
-`app/PendingSends` is the confirm-on-tap tracker (spec §16 A-4, A-5): a producer gives it to
+`sequencer/client/PendingSends` is the confirm-on-tap tracker (spec §16 A-4, A-5): a producer gives it to
 `IngressPublisher` as its `IngressTracker` (which tracks what it places and declines while it holds or is
 full) and to the sender with `setIngressHold`, feeds it its own tap and each `LeadershipChanged`'s term, and
 resends what a term change lost. Both languages,
@@ -209,7 +212,7 @@ mocks. Everything Aeron-shaped is covered by `core_tests` and by the six end-to-
 **Five of the six harnesses are Java-only.** They drive the cluster through `tools/ClusterProbe`, which
 submits `ProbeMarker` payloads at ingress (`submit`), round-trips one through consensus and back off
 the tap (`ping`), replays history through the co-located Replayer and then follows the tap live
-(`follow`), or streams through `ClusterStreamSender` and `app/PendingSends` and checks its own tap shows
+(`follow`), or streams through `ClusterStreamSender` and `sequencer/client/PendingSends` and checks its own tap shows
 every frame exactly once, in order (`confirm`, which `failover-test.sh` runs across the leader kill). The probe attaches to a member's own embedded driver, so three of the five need no
 standalone `aeronmd` at all. The sixth, `docker-failover-test.sh`, is the containerized multi-round
 failover soak (`docker/compose.yml`, `./gradlew operatorDist`, CI's `failover.yml`). `chaos-runner` needs one more thing the probe cannot supply — a **gateway
@@ -220,7 +223,7 @@ fence, which is why `chaos-runner.sh` can drive a
 non-converging recovery to a handover rather than a hang. **It is the reference consumer of `app/Gateway`**,
 the client tier's façade for one instance of an elected pair: the election (`app/GatewayLifecycle`), the
 connection id space it resumes from its predecessor, the connection lifecycle frames, confirmed ingress
-(`app/PendingSends` under an `IngressPublisher`, held by its `ClusterStreamSender`) and the four `app/Fence`
+(`sequencer/client/PendingSends` under an `IngressPublisher`, held by its `ClusterStreamSender`) and the four `app/Fence`
 values are all behind it, so what is left in the harness is a socket and a line protocol. A media driver that
 goes away raises from `doWork()` rather than as a fence. It is in
 **`seqeron-service/src/test/java`** and therefore in no jar: `chaos-runner.sh` puts

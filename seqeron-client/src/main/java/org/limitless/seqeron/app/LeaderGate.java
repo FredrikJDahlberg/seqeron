@@ -12,7 +12,7 @@ package org.limitless.seqeron.app;
  *
  * <p>The C++ twin is {@code app/LeaderGate.hpp}; keep the two in step.
  */
-public final class LeaderGate {
+final class LeaderGate {
     /** An edge crossed by one {@link #update}. */
     public enum Transition {
         /** The gate stands where it stood. */

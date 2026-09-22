@@ -14,13 +14,14 @@ import java.util.Iterator;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import org.agrona.DirectBuffer;
 import org.agrona.concurrent.IdleStrategy;
 import org.agrona.concurrent.ShutdownSignalBarrier;
 import org.limitless.seqeron.app.Fence;
 import org.limitless.seqeron.app.Gateway;
 import org.limitless.seqeron.app.Payload;
+import org.limitless.seqeron.protocol.Publish;
 import org.limitless.seqeron.sbe.probe.ProbeMarkerDecoder;
-import org.limitless.seqeron.sequencer.client.IngressPublisher.Publish;
 import org.limitless.seqeron.util.IdleStrategies;
 import org.limitless.seqeron.util.Logger;
 
@@ -337,6 +338,22 @@ public final class TestGateway {
         @Override
         public void onStandby() {
             closeGate();
+        }
+
+        @Override
+        public void onConnectionOpened(final int connectionId, final DirectBuffer connectionData, final int offset,
+                                       final int length) {
+            // This harness keeps no session state, so a predecessor's connections are nothing to rebuild.
+        }
+
+        @Override
+        public void onConnectionClosed(final int connectionId) {
+            // As above.
+        }
+
+        @Override
+        public void onClusterHeartbeat(final long clusterTimeNs, final long receiveTimeNs) {
+            // This harness holds no session state, so it has no timer to drive off the cluster clock.
         }
 
         /**

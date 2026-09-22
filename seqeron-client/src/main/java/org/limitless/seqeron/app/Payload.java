@@ -59,6 +59,14 @@ public final class Payload {
         return event.receiveTimeNs();
     }
 
+    /**
+     * Where this frame's first byte sits in the node's recording — a delivery stamp too, and what a
+     * consumer that replays that recording itself (a FIX gateway serving its own resend) anchors on.
+     */
+    public long position() {
+        return event.position();
+    }
+
     /** Which protocol the body speaks (spec §13). */
     public int payloadId() {
         return event.payloadId();

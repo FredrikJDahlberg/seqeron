@@ -14,7 +14,7 @@ package org.limitless.seqeron.app;
  * <p>A fence, where {@code ReplayerRecovery.checkRecoveryProgress} is the alarm on the same predicate; set this
  * deadline longer. The C++ twin is {@code app/RecoveryStallFence.hpp}; keep the two in step.
  */
-public final class RecoveryStallFence {
+final class RecoveryStallFence {
     private final long deadlineMs;
 
     private boolean everCaughtUp;

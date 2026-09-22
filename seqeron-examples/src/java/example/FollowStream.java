@@ -10,6 +10,7 @@ import org.agrona.concurrent.BackoffIdleStrategy;
 import org.agrona.concurrent.IdleStrategy;
 import org.agrona.concurrent.UnsafeBuffer;
 import org.limitless.seqeron.protocol.PortLayout;
+import org.limitless.seqeron.protocol.Publish;
 import org.limitless.seqeron.protocol.SystemFrame;
 import org.limitless.seqeron.replayer.client.ReplayerStreamReceiver;
 import org.limitless.seqeron.replayer.client.SequencedEvent;
@@ -141,7 +142,7 @@ public final class FollowStream {
         CONNECTION_OPENED.wrap(SYSTEM_BODY, 0).putConnectionData(CONNECTION_LABEL, 0, CONNECTION_LABEL.length);
         return PUBLISHER.publishSystem(sender, PING_SOURCE_ID, CONNECTION_ID, SystemFrame.CONNECTION_OPENED,
                                        SYSTEM_BODY, CONNECTION_OPENED.encodedLength())
-            == IngressPublisher.Publish.Published;
+            == Publish.Published;
     }
 
     /**
@@ -167,7 +168,7 @@ public final class FollowStream {
         pingSentNs = System.nanoTime();
         PING_BODY.putLong(0, pingSentNs, ByteOrder.LITTLE_ENDIAN);
         if (PUBLISHER.publishPayload(sender, PING_SOURCE_ID, CONNECTION_ID, PING_PAYLOAD_ID, PING_BODY, Long.BYTES)
-            != IngressPublisher.Publish.Published) {
+            != Publish.Published) {
             // Declined: the sender spun through back-pressure and an election and found no session at the
             // end of it. Next second's ping is the retry.
             pingSentNs = 0;

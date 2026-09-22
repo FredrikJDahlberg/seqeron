@@ -137,7 +137,7 @@ jobs:
   # The consumable surface from source; the `installed` job below takes the find_package path. Both halves
   # of seqeron-examples resolve seqeron the way an outside consumer does — a published coordinate, and FetchContent over the checkout — so a
   # dependency re-scoped back to `implementation` or an include root that stops resolving
-  # out-of-tree fails here rather than in someone else's build. Neither is run: following a tap
+  # out-of-tree fails here rather than in someone else's build. None of them is run: following a tap
   # needs a live cluster, which is what the harnesses under seqeron-service/src/test/scripts are for.
   examples:
     name: examples
@@ -189,7 +189,7 @@ jobs:
         run: cmake -S seqeron-examples -B seqeron-examples/cmake-build-release -DCMAKE_BUILD_TYPE=Release
 
       - name: Build the C++ example
-        run: cmake --build seqeron-examples/cmake-build-release --target follow_stream -j $(nproc)
+        run: cmake --build seqeron-examples/cmake-build-release --target follow_stream colocated_app -j $(nproc)
 
   # find_package(seqeron) against an installed tree, with an installed Aeron beside it.
   # The config file, the export set and the found-Aeron branch of
@@ -257,4 +257,4 @@ jobs:
         run: |
           cmake -S seqeron-examples -B seqeron-examples/cmake-build-installed -DCMAKE_BUILD_TYPE=Release \
             -DSEQERON_FIND_PACKAGE=ON -DCMAKE_PREFIX_PATH="${PREFIX}"
-          cmake --build seqeron-examples/cmake-build-installed --target follow_stream -j "$(nproc)"
+          cmake --build seqeron-examples/cmake-build-installed --target follow_stream colocated_app -j "$(nproc)"

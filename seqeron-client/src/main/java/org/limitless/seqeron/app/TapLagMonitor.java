@@ -106,4 +106,12 @@ public final class TapLagMonitor {
     public boolean isStale() {
         return stale;
     }
+
+    /**
+     * Latched once a heartbeat arrives a threshold or more before its own timestamp: this host's clock
+     * trails the leader's, so {@link #isStale()} cannot be trusted until the clocks are synchronised.
+     */
+    public boolean isSkewSuspected() {
+        return skewReported;
+    }
 }

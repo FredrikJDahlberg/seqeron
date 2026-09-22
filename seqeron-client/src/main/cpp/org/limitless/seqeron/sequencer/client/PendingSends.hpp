@@ -13,14 +13,14 @@
 #include "org_limitless_seqeron_sbe_frame/UnsequencedHeader.h"
 #include "org_limitless_seqeron_sbe_frame/UnsequencedSystem.h"
 
-namespace org::limitless::seqeron::app {
+namespace org::limitless::seqeron::sequencer::client {
 
 // A producer's ingress frames that its own tap has not yet shown, which of them a leader change lost (every
 // frame still pending with a term below the latest LeadershipChanged's), and their resend ahead of anything
 // new: while isHolding(), send nothing new, and give this to the sender with setIngressHold. Own frames are
 // matched by session, and one that differs from the oldest pending copy latches isFaulted(). The Java twin is
-// app/PendingSends.java, which carries the rationale and the limits; keep the two in step.
-class PendingSends : public sequencer::client::IngressTracker
+// sequencer/client/PendingSends.java, which carries the rationale and the limits; keep the two in step.
+class PendingSends : public IngressTracker
 {
   public:
     // capacity: frames that may be pending at once; each holds one MAX_INGRESS_LENGTH copy.
@@ -203,4 +203,4 @@ class PendingSends : public sequencer::client::IngressTracker
     bool m_faulted = false;
 };
 
-} // namespace org::limitless::seqeron::app
+} // namespace org::limitless::seqeron::sequencer::client

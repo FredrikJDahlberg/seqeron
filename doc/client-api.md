@@ -19,8 +19,8 @@ both sides share in `protocol`. C++ uses the same directories and namespaces
 
 | Package | Tier | Holds |
 |---|---|---|
-| `protocol` | client | The wire contract in code: `FrameLayer`, `SystemFrame`, `SequencedFrameDecoder`, `PortLayout`, `ReplayProtocol`, `SeqeronCounters` (C++: `SequencedFrame.hpp`, `PortLayout.hpp`, `ReplayProtocol.hpp`, `SeqeronCounters.hpp`) |
-| `sequencer.client` | client | Producing: `ClusterStreamSender`, `IngressPublisher`, `IngressTracker` (C++ also `ClusterStreamClient`) |
+| `protocol` | client | The wire contract in code: `FrameLayer`, `SystemFrame`, `SequencedFrameDecoder`, `PortLayout`, `ReplayProtocol`, `SeqeronCounters`, and `Publish` (C++: `SequencedFrame.hpp`, `PortLayout.hpp`, `ReplayProtocol.hpp`, `SeqeronCounters.hpp`, `Publish.hpp`) |
+| `sequencer.client` | client | Producing: `ClusterStreamSender`, `IngressPublisher`, `PendingSends`, `IngressTracker` (C++ also `ClusterStreamClient`) |
 | `replayer.client` | client | Consuming: `ReplayerStreamReceiver`, its three callback interfaces (`SequencedHandler`, `LeadershipHandler`, `CaughtUpHandler`), and `SequencedEvent` in Java. The C++ `SequencedEvent` is in `protocol` (`SequencedFrame.hpp`) instead, beside the `unwrapFrame` that fills it and the `decodeSystem`/`decodeSequenced` that read it |
 | `app` | client | What a client application is built from: the façades below, and the blocks under them |
 | `util` | client | Support code |
@@ -35,13 +35,21 @@ both sides share in `protocol`. C++ uses the same directories and namespaces
 | C++ | `seqeron::seqeron_core`, header-only, from `FetchContent` over the checkout or `find_package(seqeron)` on an installed prefix |
 
 `seqeron-examples` builds against these, outside this repository's own build — `src/java` against the
-artifact and `src/cpp` against the CMake target. They are
-the smallest complete client in each language.
+artifact and `src/cpp` against the CMake target. `FollowStream` is
+the smallest complete client in each language; `ColocatedApp` is the same flow written against the
+[front door](#the-front-door-app) alone, in both languages, and its build fails if it names anything
+outside `app` beyond `protocol.Publish` (and, in C++, `util`, which Java takes from its own standard
+library).
 
 `./gradlew :seqeron-client:javadoc` renders this surface from the sources, at
 `seqeron-client/build/docs/javadoc/`, and the same pages ship as the artifact's javadoc jar, so an IDE
 resolving `org.limitless:seqeron` shows them. Both leave out the generated SBE codecs, which carry no
 comment of their own — the schema is what documents them.
+
+Each package states its own role in a `package-info.java`, so the table above is what the javadoc index
+and an IDE's package completion show without this page open — `app` says it is the front door, and
+`sequencer.client`, `replayer.client` and `util` say what they are for and when to reach past a façade for
+them. Keep the two in step: a package whose role changes here changes there.
 
 ## Consuming the ordered stream
 
@@ -121,10 +129,10 @@ uses directly.
 | Class | Role |
 |---|---|
 | `ClusterStreamSender` | The cluster session. `connectColocated(aeron, memberId, …)` uses IPC ingress on the co-located member and falls back to UDP when that member is not leading; `connect(…)` uses UDP. Both take the UDP endpoint set — `PortLayout.ingressEndpoints()` is the default one — because the fallback and the reconnect both need it. `send` spins through back-pressure and elections. Call `keepAlive()` and `pollEgress()` every duty cycle. |
-| `IngressPublisher` | Encode and offer. Returns `Publish`: `Published`; `Refused` (above `MAX_PAYLOAD_LENGTH`, nothing offered, permanent); `Declined` (the transport's answer, worth retrying). Java: `publishPayload`/`publishSystem` on an instance, with the body pre-encoded. C++: free functions templated on the encoder, filled through a `Fill`. |
+| `IngressPublisher` | Encode and offer. Returns `protocol.Publish`: `Published`; `Refused` (above `MAX_PAYLOAD_LENGTH`, nothing offered, permanent); `Declined` (the transport's answer, worth retrying). Java: `publishPayload`/`publishSystem` on an instance, with the body pre-encoded. C++: free functions templated on the encoder, filled through a `Fill`. |
 | `offerFrame` (C++) | Offers a frame the caller has already encoded, and is where both `publish*` functions end. Java's `publishPayload` takes payload bytes, so it carries any encoding; the C++ one is templated on an SBE encoder, and a payload with no schema at all (§13.2) is framed by the caller and offered here. It takes the same `IngressTracker`, so a hand-framed payload is confirmed like any other. |
 | `SystemFrame` (Java) | Wraps an encoded body in its envelope and returns the length; the offer is yours. `IngressPublisher` uses it; call it directly only to place frames yourself. |
-| `PendingSends` (`app`) | Confirmed ingress. A send that succeeds is not a frame sequenced, and a failover silently loses what the old leader had not committed. Give it to `IngressPublisher` as its tracker and to the sender with `setIngressHold`, feed it your own tap and each leadership term, and call `resendMissing`. Spec §16 A-4, A-5. |
+| `PendingSends` | Confirmed ingress. A send that succeeds is not a frame sequenced, and a failover silently loses what the old leader had not committed. Give it to `IngressPublisher` as its tracker and to the sender with `setIngressHold`, feed it your own tap and each leadership term, and call `resendMissing`. Spec §16 A-4, A-5. |
 
 `IngressTracker` is the interface `PendingSends` implements, and `IngressSender` the one
 `ClusterStreamSender` implements. Implement them only to replace those classes.
@@ -135,16 +143,27 @@ The assembled duty cycle, one façade per kind of producer, over the pieces abov
 takes one of these writes its edge and its payloads, and nothing of the frame layer or of seqeron's
 system vocabulary appears in its code. Both languages: the C++ twins are class templates over the
 listener, `app/Gateway.hpp` and `app/ColocatedApplication.hpp`, and take a `Config` aggregate where Java
-takes a builder. Two differences follow from the tiers below them — a C++ publish is templated on an SBE
-encoder and a `Fill` rather than taking pre-encoded bytes, and there is no `ingressEndpoints` to pass,
-since `ClusterStreamSender` compiles the member set in.
+takes a builder. One difference follows from the tiers below them: there is no `ingressEndpoints` to
+pass, since `ClusterStreamSender` compiles the member set in. A C++ `publish`/`reply` takes either an SBE
+encoder and a `Fill` or already-encoded bytes, the second being the form Java has — Java's SBE codecs
+share no interface — and the one a payload with no schema at all (§13.2) needs.
+
+A façade's whole surface is `app` plus `protocol.Publish`, which `publish` and `reply` return
+(`protocol::Publish` in C++). It sits in `protocol` rather than on `IngressPublisher` so that taking a
+façade does not mean importing from `sequencer.client`; the builders' `ingressEndpoints` defaults to
+`PortLayout.ingressEndpoints()`, so a deployment on the default port block names nothing outside `app` at
+all. Everything else a listener sees — `Payload`, `Fence` — is `app`'s own, and `FacadeSurfaceTest` is what
+fails the build when that stops holding.
 
 **`Payload`** is what `onSequenced` receives: the envelope is off, and `bodyOffset()`/`bodyLength()` take
 the payload's own `MessageHeader` off too, which is where an SBE decoder wraps. A payload that carries no
 header at all (§13.2, what C++'s `offerFrame` exists for) is addressed by `payloadOffset()`/`payloadLength()`
 instead, and its `templateId`, `blockLength` and `version` mean nothing. It carries `globalSeqNo`, `sourceId`,
-`connectionId`, `sourceSessionId`, `clusterTimestampNs`, `receiveTimeNs`, and `(payloadId, templateId)`
-to dispatch on. No system frame ever arrives as one.
+`connectionId`, `sourceSessionId`, `clusterTimestampNs`, `receiveTimeNs`, `position()`, and
+`(payloadId, templateId)` to dispatch on. No system frame ever arrives as one. `position()` is the frame's
+first byte in this node's recording — a delivery stamp like `receiveTimeNs()`, and what a consumer that
+replays that recording itself anchors on: a FIX gateway serving its own resend indexes it per outbound
+message.
 
 ### `Gateway`
 
@@ -153,8 +172,7 @@ One instance of an elected active/standby pair.
 ```java
 try (Gateway gateway = Gateway.builder()
         .gatewayName("GW-A").clientId(10).memberId(memberId)
-        .egressChannel(egressChannel).ingressEndpoints(PortLayout.ingressEndpoints())
-        .listener(listener)
+        .egressChannel(egressChannel).listener(listener)
         .build()) {
     gateway.start(aeron);
     while (running) { idle.idle(gateway.doWork()); }
@@ -168,13 +186,29 @@ try (Gateway gateway = Gateway.builder()
 | `openConnection()` / `openConnection(data, length)` | allocates the id and places its `ConnectionOpened`, retried by `doWork()` |
 | `closeConnection(id)` | the same for a connection that has gone; one the cluster never heard of is dropped rather than announced |
 | `publish(connectionId, payloadId, payload, length)` | submits one payload, stamped with this gateway's `sourceId`; `Declined` is worth retrying |
-| `isActivated()`, `isServing()`, `sourceId()`, `gatewayId()`, `isCaughtUp()`, `lastGlobalSeqNo()` | what the instance may say about itself |
+| `isActivated()`, `isServing()`, `sourceId()`, `gatewayId()`, `isCaughtUp()`, `lastGlobalSeqNo()` | what the instance may say about itself; `sourceId()` and `gatewayId()` read `UNRESOLVED` until a `GatewayRegistered` row names it |
+| `tapLag()` | the `TapLagMonitor` both façades keep, for a consumer that reports staleness itself |
 
 `Listener` is the edge: `onActivated(firstConnectionId)` opens it and `onStandby()` closes it,
-`onSequenced(Payload)` delivers application payloads in order, `onCaughtUp(globalSeqNo)` fires on every
+`onSequenced(Payload)` delivers application payloads in order, `onConnectionOpened`/`onConnectionClosed`
+report this logical gateway's connection lifecycle off the log — whichever instance issued it, which is how
+an instance that keeps per-connection state rebuilds it while it replays, and the only notice of a client
+that drops its socket without logging out — `onCaughtUp(globalSeqNo)` fires on every
 transition, and `onFenced(Fence, detail)` fires once — release the cluster session, usually by exiting, so
 a standby takes over. The four `Fence` values are the cluster session lost, ingress confirmation faulted,
 recovery stalled, and the tap stalled; a media driver that goes away raises from `doWork()` instead.
+
+Tap lag is deliberately **not** a callback. Both façades feed a `TapLagMonitor` from the live
+`ClusterHeartbeat` and expose it through `tapLag()`; nothing about it is actionable — it raises no fence
+and changes no behaviour — so a consumer that wants to log staleness polls `isStale()`,
+`isSkewSuspected()` and `peakLagNs()`, and one that does not carries no extra method. Only live
+heartbeats are sampled: a replayed one is arbitrarily late by construction.
+
+`onClusterHeartbeat(clusterTimeNs, receiveTimeNs)` is the other thing the heartbeat exists for, and both
+façades deliver it. It is the cluster clock's tick: the one time source that keeps advancing while every
+producer is silent — exactly when a watchdog must still fire — and identical on every node, so a timer
+driven by it decides the same thing everywhere. A producer with a deadline runs it off this rather than
+off a local clock. Between ticks, every payload carries its own `clusterTimestampNs()`.
 
 `seqeron-service/src/test/java/org/limitless/seqeron/tools/TestGateway.java` is the reference consumer.
 
@@ -193,33 +227,38 @@ while that member leads (`DEFAULT_IPC_CONNECT_TIMEOUT_MS`).
 | `publish(payloadId, payload, length)` | submits one payload of this application's own, on its `sourceId` and no connection |
 | `reply(requesterSourceId, connectionId, payloadId, payload, length)` | the same on behalf of the producer that asked: the **requester's** `sourceId` and `connectionId`, which is how the gateway that took the request routes the answer back out |
 | `sourceId()`, `isCaughtUp()`, `lastGlobalSeqNo()` | what the replica may say about itself |
+| `tapLag()` | as on `Gateway` |
+
+`seqeron-examples/src/java/example/ColocatedApp.java` and its C++ twin `ColocatedApp.cpp` are the
+reference consumers, and the only clients in the repository whose builds refuse anything outside `app`
+(`checkFacadeOnly`, and the same check in `seqeron-examples/CMakeLists.txt`).
 
 `Listener` adds `onLeadershipChanged(boolean leading)` where `Gateway` has `onActivated`/`onStandby`, and
-carries the same `onSequenced`/`onCaughtUp`/`onFenced`. **Every leadership change closes an open gate**,
+carries the same `onSequenced`/`onCaughtUp`/`onClusterHeartbeat`/`onFenced`. It has no connection
+lifecycle: an application nothing elects owns no connections. **Every leadership change closes an open gate**,
 so `false` is where `OutstandingWork.onNotLeader()` belongs: a reply submitted during the election may
 have gone with it, and the next opening dispatches it again. Keep a request's `sourceId` and
 `connectionId` rather than its `Payload` — the flyweight is valid only during its callback, and a reply
 is usually dispatched later.
 
-Both façades take `DEFAULT_TAP_STALL_TIMEOUT_MS` (20 heartbeat periods) and
-`DEFAULT_RECOVERY_STALL_TIMEOUT_MS` (three times that) — the deployment policy every producer had been
-copying; each builder takes overrides.
+Both façades take `DEFAULT_TAP_STALL_TIMEOUT_MS` (20 heartbeat periods),
+`DEFAULT_RECOVERY_STALL_TIMEOUT_MS` (three times that) and `DEFAULT_TAP_LAG_THRESHOLD_MS` (the same span
+as the tap-silence timeout) — the deployment policy every producer had been copying; each builder takes
+overrides.
 
 ## Underneath (`app`)
 
 The decisions the façades are assembled from — pure state machines, each with a Java and a C++ twin, each
-doing no I/O. Take them directly only to assemble your own duty cycle; `OutstandingWork` is the exception,
-being about the application's own work rather than seqeron's plumbing.
+doing no I/O. Only the two below are offered. The election, the leader gate and the two stall fences are
+package-private in Java, the façades being the only thing that assembles them; their C++ twins are public
+headers, which header-only C++ has no way to avoid, and are [not API](#not-api) there for the same reason
+`ReplayerRecovery` is. Confirmed ingress, the one block a duty cycle of your own does need, sits in
+[`sequencer.client`](#producing) beside the `IngressTracker` it implements.
 
 | Class | For |
 |---|---|
-| `OutstandingWork` | Leader-only request/reply work, re-dispatched after a failover |
-| `GatewayLifecycle` | A gateway instance's election: when to open its gate, when to stand down (`GatewayRegistered`/`GatewayActive`/`GatewayStarted`) |
-| `LeaderGate` | Whether a co-located replica may do leader-only work: caught up, and its node leads. `ColocatedApplication` owns one |
-| `RecoveryStallFence` | Fences a producer whose recovery stops making progress |
-| `TapStallFence` | Fences a producer that has stopped seeing its node's tap |
-| `TapLagMonitor` | Observes how far a contiguous tap runs behind the leader; raises no fence |
-| `PendingSends` | See [Producing](#producing) |
+| `OutstandingWork` | Leader-only request/reply work, re-dispatched after a failover. The exception here, being about the application's own work rather than seqeron's plumbing |
+| `TapLagMonitor` | Observes how far a contiguous tap runs behind the leader; raises no fence. Both façades own one, reached through `tapLag()` |
 
 ## Constants
 
@@ -229,6 +268,7 @@ being about the application's own work rather than seqeron's plumbing.
 | `SystemFrame` (Java), `SequencedFrame.hpp` (C++) | The `systemEventType` values |
 | `PortLayout` | The cluster's port block, each member's ingress endpoint, the endpoint set a producer connects with (`ingressEndpoints()`), and the co-located archive's control link; honours `SEQERON_PORT_BASE` |
 | `ReplayProtocol` | The replay protocol's channel and stream ids, and `NO_REPLAY_NEEDED` |
+| `Publish` | What a publish did — `Published`, `Refused` (permanent), `Declined` (retryable); returned by `IngressPublisher` and by both façades' `publish` |
 
 ## Wire codecs
 
@@ -254,8 +294,9 @@ These are public or in public headers for mechanical reasons. Don't build on the
 - C++ `ReplayerRecovery`, `ReplayerRecoveryActions`, and `IngressTransport`/`EgressTransport` with their
   Aeron implementations: the seams the unit suites drive. Header-only C++ has no package-private. In Java
   the same seams are package-private.
-- Java `app.Session`: the core both façades are assembled from — the cluster session, the tap, confirmed
-  ingress and the fences in one duty cycle. Package-private, and named here only because their javadoc
-  points at it.
+- The blocks a façade assembles: `Session` (the cluster session, the tap, confirmed ingress and the fences
+  in one duty cycle), `GatewayLifecycle`, `LeaderGate`, `RecoveryStallFence` and `TapStallFence`.
+  Package-private in Java, where `FacadeSurfaceTest` fails the build if a public signature names one;
+  public headers in C++, which has no such thing.
 - Everything in `seqeron-service`: `Sequencer`, `SequencerService`, `SequencerServer`, `TapPublisher`,
   `replayer.server`, `tools`, `MetricsExporter`.

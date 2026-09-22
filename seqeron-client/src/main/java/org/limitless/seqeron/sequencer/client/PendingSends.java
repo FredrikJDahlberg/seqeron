@@ -1,4 +1,4 @@
-package org.limitless.seqeron.app;
+package org.limitless.seqeron.sequencer.client;
 
 import org.agrona.DirectBuffer;
 import org.agrona.concurrent.UnsafeBuffer;
@@ -7,8 +7,6 @@ import org.limitless.seqeron.replayer.client.SequencedEvent;
 import org.limitless.seqeron.sbe.frame.MessageHeaderDecoder;
 import org.limitless.seqeron.sbe.frame.UnsequencedHeaderDecoder;
 import org.limitless.seqeron.sbe.frame.UnsequencedSystemDecoder;
-import org.limitless.seqeron.sequencer.client.IngressSender;
-import org.limitless.seqeron.sequencer.client.IngressTracker;
 
 /**
  * A producer's ingress frames that its own tap has not yet shown, which of them a leader change lost, and
@@ -36,7 +34,7 @@ import org.limitless.seqeron.sequencer.client.IngressTracker;
  *
  * <p>Limits: it lasts only as long as the process, so a promoted standby starts with nothing pending; it
  * needs the producer to follow its own tap; a lost session ({@code isSessionLost()}) stays terminal; loss
- * with no leader change has no boundary and is not detected. The C++ twin is {@code app/PendingSends.hpp}; keep
+ * with no leader change has no boundary and is not detected. The C++ twin is {@code sequencer/client/PendingSends.hpp}; keep
  * the two in step.
  */
 public final class PendingSends implements IngressTracker {

@@ -19,12 +19,12 @@
 
 #include <gtest/gtest.h>
 
-#include "org/limitless/seqeron/app/PendingSends.hpp"
+#include "org/limitless/seqeron/sequencer/client/PendingSends.hpp"
 #include "org/limitless/seqeron/helpers/SplitMix64.hpp"
 
 #include "org_limitless_seqeron_sbe_frame/Unsequenced.h"
 
-namespace org::limitless::seqeron::app {
+namespace org::limitless::seqeron::sequencer::client {
 namespace {
 
 namespace frm = sbe::frame;
@@ -226,4 +226,4 @@ INSTANTIATE_TEST_SUITE_P(Seeds, PendingSendsProperty,
                          testing::Values(1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144, 233, 377, 610, 987, 1597));
 
 } // namespace
-} // namespace org::limitless::seqeron::app
+} // namespace org::limitless::seqeron::sequencer::client

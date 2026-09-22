@@ -1535,5 +1535,30 @@ TEST(ReplayerRecoveryConvergence, ALaterEpisodeIsReportedAgainRatherThanSwallowe
     EXPECT_EQ(2u, sink.events.size());
 }
 
+// A lifecycle frame reaches onSequenced when no lifecycle callback was given. This side alone has the
+// onConnected/onDisconnected seam — the Java twin's receiver has no such callbacks and always delivers
+// these on onSequenced — so this case has no Java counterpart by construction rather than by omission.
+// app/Session takes them here: a LifecycleEvent carries no body, and confirmed ingress must see every
+// frame the producer placed, its own ConnectionOpened included.
+TEST(ReplayerRecoveryLifecycle, AConnectionFrameReachesOnSequencedWhenNoLifecycleCallbackIsGiven)
+{
+    std::vector<std::int64_t> dispatched;
+    Client client{ [&dispatched](const protocol::SequencedEvent& event) { dispatched.push_back(event.globalSeqNo); } };
+
+    auto buf = encodeHeartbeat(/*globalSeqNo=*/1);
+    // The systemEventType is what diverts a frame, not its template, so overriding it on the heartbeat
+    // frame the other cases use is the whole difference.
+    frm::MessageHeader header(reinterpret_cast<char*>(buf.data()), 0, buf.size(),
+                              frm::MessageHeader::sbeSchemaVersion());
+    frm::SequencedSystemHeader systemHeader(reinterpret_cast<char*>(buf.data()), frm::MessageHeader::encodedLength(),
+                                            buf.size(), frm::MessageHeader::sbeSchemaVersion());
+    systemHeader.systemEventType(protocol::CONNECTION_OPENED);
+    client.recovery.onFrame(reinterpret_cast<char*>(buf.data()), buf.size(), /*framePosition=*/0, /*receiveNs=*/0,
+                            /*fromReplay=*/false);
+
+    ASSERT_EQ(1u, dispatched.size()) << "dropped rather than delivered";
+    EXPECT_EQ(1, dispatched.front());
+}
+
 } // namespace
 } // namespace org::limitless::seqeron::replayer::client

@@ -21,7 +21,6 @@ import org.agrona.collections.LongHashSet;
 import org.agrona.concurrent.IdleStrategy;
 import org.agrona.concurrent.ShutdownSignalBarrier;
 import org.agrona.concurrent.YieldingIdleStrategy;
-import org.limitless.seqeron.app.PendingSends;
 import org.limitless.seqeron.protocol.FrameLayer;
 import org.limitless.seqeron.protocol.PortLayout;
 import org.limitless.seqeron.protocol.SequencedFrameDecoder;
@@ -34,6 +33,7 @@ import org.limitless.seqeron.sbe.probe.ProbeMarkerDecoder;
 import org.limitless.seqeron.sbe.probe.ProbeMarkerEncoder;
 import org.limitless.seqeron.sequencer.SequencerService;
 import org.limitless.seqeron.sequencer.client.ClusterStreamSender;
+import org.limitless.seqeron.sequencer.client.PendingSends;
 import org.limitless.seqeron.util.IdleStrategies;
 import org.limitless.seqeron.util.Logger;
 

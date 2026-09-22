@@ -3,8 +3,9 @@ package org.limitless.seqeron.app;
 import io.aeron.Aeron;
 import java.util.Objects;
 import org.agrona.DirectBuffer;
+import org.limitless.seqeron.protocol.PortLayout;
+import org.limitless.seqeron.protocol.Publish;
 import org.limitless.seqeron.replayer.client.SequencedEvent;
-import org.limitless.seqeron.sequencer.client.IngressPublisher.Publish;
 
 /**
  * One replica of a co-located application — the kind of producer nothing elects. One runs per node, the
@@ -28,6 +29,9 @@ public final class ColocatedApplication implements AutoCloseable {
 
     /** How long recovery may dispatch nothing, once caught up before; longer, as a re-walk is slower. */
     public static final long DEFAULT_RECOVERY_STALL_TIMEOUT_MS = Session.DEFAULT_RECOVERY_STALL_TIMEOUT_MS;
+
+    /** The lag at which this node's tap is called stale — the same span as the tap-silence timeout. */
+    public static final long DEFAULT_TAP_LAG_THRESHOLD_MS = Session.DEFAULT_TAP_LAG_THRESHOLD_MS;
 
     /** Frames in flight between a publish and the tap; far above what one round trip holds. */
     public static final int DEFAULT_PENDING_CAPACITY = Session.DEFAULT_PENDING_CAPACITY;
@@ -54,6 +58,13 @@ public final class ColocatedApplication implements AutoCloseable {
         /** Every transition to caught-up, the first included. */
         void onCaughtUp(long globalSeqNo);
 
+        /**
+         * The cluster clock's tick (spec §7), once a second. It is the one time source that keeps advancing
+         * while every producer is silent, which is exactly when a watchdog must still fire, and it is
+         * identical on every node — so a timer driven by it decides the same thing everywhere.
+         */
+        void onClusterHeartbeat(long clusterTimeNs, long receiveTimeNs);
+
         /** Once, latched: this replica may no longer act. Exiting is the usual way — its restart re-walks. */
         void onFenced(Fence fence, String detail);
     }
@@ -76,7 +87,8 @@ public final class ColocatedApplication implements AutoCloseable {
         this.ingressEndpoints = builder.ingressEndpoints;
         this.gate = new LeaderGate(builder.memberId);
         this.session = new Session(builder.clientId, builder.pendingCapacity, builder.tapStallTimeoutMs,
-                                   builder.recoveryStallTimeoutMs, new SessionDispatch());
+                                   builder.recoveryStallTimeoutMs, builder.tapLagThresholdMs,
+                                   new SessionDispatch());
     }
 
     public static Builder builder() {
@@ -148,6 +160,14 @@ public final class ColocatedApplication implements AutoCloseable {
         return session.lastGlobalSeqNo();
     }
 
+    /**
+     * How far behind the leader this node's tap is running. Observation only — nothing here raises a
+     * fence; a consumer that wants to report staleness polls it.
+     */
+    public TapLagMonitor tapLag() {
+        return session.tapLag();
+    }
+
     /** Closes the cluster session and the tap. The Aeron client is the caller's and is left open. */
     @Override
     public void close() {
@@ -187,6 +207,11 @@ public final class ColocatedApplication implements AutoCloseable {
         }
 
         @Override
+        public void onClusterHeartbeat(final long clusterTimeNs, final long receiveTimeNs) {
+            listener.onClusterHeartbeat(clusterTimeNs, receiveTimeNs);
+        }
+
+        @Override
         public void onFenced(final Fence fence, final String detail) {
             listener.onFenced(fence, detail);
         }
@@ -198,11 +223,12 @@ public final class ColocatedApplication implements AutoCloseable {
         private int clientId;
         private int memberId;
         private String egressChannel;
-        private String ingressEndpoints;
+        private String ingressEndpoints = PortLayout.ingressEndpoints();
         private Listener listener;
         private int pendingCapacity = DEFAULT_PENDING_CAPACITY;
         private long tapStallTimeoutMs = DEFAULT_TAP_STALL_TIMEOUT_MS;
         private long recoveryStallTimeoutMs = DEFAULT_RECOVERY_STALL_TIMEOUT_MS;
+        private long tapLagThresholdMs = DEFAULT_TAP_LAG_THRESHOLD_MS;
         private long ipcConnectTimeoutMs = DEFAULT_IPC_CONNECT_TIMEOUT_MS;
 
         /**
@@ -255,6 +281,11 @@ public final class ColocatedApplication implements AutoCloseable {
 
         public Builder recoveryStallTimeoutMs(final long recoveryStallTimeoutMs) {
             this.recoveryStallTimeoutMs = recoveryStallTimeoutMs;
+            return this;
+        }
+
+        public Builder tapLagThresholdMs(final long tapLagThresholdMs) {
+            this.tapLagThresholdMs = tapLagThresholdMs;
             return this;
         }
 

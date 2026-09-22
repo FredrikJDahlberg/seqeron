@@ -7,15 +7,17 @@ import java.util.Objects;
 import java.util.Set;
 import org.agrona.DirectBuffer;
 import org.agrona.ExpandableArrayBuffer;
+import org.limitless.seqeron.protocol.PortLayout;
+import org.limitless.seqeron.protocol.Publish;
 import org.limitless.seqeron.protocol.SystemFrame;
 import org.limitless.seqeron.replayer.client.SequencedEvent;
 import org.limitless.seqeron.sbe.frame.ConnectionClosedEncoder;
+import org.limitless.seqeron.sbe.frame.ConnectionOpenedDecoder;
 import org.limitless.seqeron.sbe.frame.ConnectionOpenedEncoder;
 import org.limitless.seqeron.sbe.frame.GatewayActiveDecoder;
 import org.limitless.seqeron.sbe.frame.GatewayRegisteredDecoder;
 import org.limitless.seqeron.sbe.frame.GatewayStartedEncoder;
 import org.limitless.seqeron.sbe.frame.MessageHeaderDecoder;
-import org.limitless.seqeron.sequencer.client.IngressPublisher.Publish;
 
 /**
  * One instance of an elected active/standby producer pair. Everything this tier defines about being a
@@ -39,6 +41,9 @@ public final class Gateway implements AutoCloseable {
 
     /** How long recovery may dispatch nothing, once caught up before; longer than the tap's, as a re-walk is slower. */
     public static final long DEFAULT_RECOVERY_STALL_TIMEOUT_MS = Session.DEFAULT_RECOVERY_STALL_TIMEOUT_MS;
+
+    /** The lag at which this node's tap is called stale — the same span as the tap-silence timeout. */
+    public static final long DEFAULT_TAP_LAG_THRESHOLD_MS = Session.DEFAULT_TAP_LAG_THRESHOLD_MS;
 
     /** Frames in flight between a publish and the tap; far above what one round trip holds. */
     public static final int DEFAULT_PENDING_CAPACITY = Session.DEFAULT_PENDING_CAPACITY;
@@ -68,8 +73,28 @@ public final class Gateway implements AutoCloseable {
         /** One application payload off this node's tap, in {@code globalSeqNo} order. */
         void onSequenced(Payload payload);
 
+        /**
+         * This logical gateway took a connection, whichever instance issued it. A consumer that keeps
+         * per-connection state rebuilds it from these while it replays. The buffer is valid only during
+         * the call.
+         */
+        void onConnectionOpened(int connectionId, DirectBuffer connectionData, int offset, int length);
+
+        /**
+         * That connection has gone. A client that drops its socket without logging out produces no payload
+         * at all, so this is the only notice of it.
+         */
+        void onConnectionClosed(int connectionId);
+
         /** Every transition to caught-up, the first included. */
         void onCaughtUp(long globalSeqNo);
+
+        /**
+         * The cluster clock's tick (spec §7), once a second. It is the one time source that keeps advancing
+         * while every producer is silent, which is exactly when a watchdog must still fire, and it is
+         * identical on every node — so a timer driven by it decides the same thing everywhere.
+         */
+        void onClusterHeartbeat(long clusterTimeNs, long receiveTimeNs);
 
         /** Once, latched: release the cluster session — exiting is the usual way — so a standby takes over. */
         void onFenced(Fence fence, String detail);
@@ -86,6 +111,7 @@ public final class Gateway implements AutoCloseable {
     private final GatewayStartedEncoder gatewayStarted = new GatewayStartedEncoder();
     private final ConnectionOpenedEncoder connectionOpened = new ConnectionOpenedEncoder();
     private final ConnectionClosedEncoder connectionClosed = new ConnectionClosedEncoder();
+    private final ConnectionOpenedDecoder connectionOpenedIn = new ConnectionOpenedDecoder();
     private final GatewayRegisteredDecoder gatewayRow = new GatewayRegisteredDecoder();
     private final GatewayActiveDecoder gatewayActive = new GatewayActiveDecoder();
 
@@ -106,7 +132,8 @@ public final class Gateway implements AutoCloseable {
         this.ingressEndpoints = builder.ingressEndpoints;
         this.lifecycle = new GatewayLifecycle(builder.gatewayName, new LifecycleActions());
         this.session = new Session(builder.clientId, builder.pendingCapacity, builder.tapStallTimeoutMs,
-                                   builder.recoveryStallTimeoutMs, new SessionDispatch());
+                                   builder.recoveryStallTimeoutMs, builder.tapLagThresholdMs,
+                                   new SessionDispatch());
     }
 
     public static Builder builder() {
@@ -225,6 +252,14 @@ public final class Gateway implements AutoCloseable {
         return session.lastGlobalSeqNo();
     }
 
+    /**
+     * How far behind the leader this node's tap is running. Observation only — nothing here raises a
+     * fence; a consumer that wants to report staleness polls it.
+     */
+    public TapLagMonitor tapLag() {
+        return session.tapLag();
+    }
+
     /** Closes the cluster session and the tap. The Aeron client is the caller's and is left open. */
     @Override
     public void close() {
@@ -258,6 +293,24 @@ public final class Gateway implements AutoCloseable {
     }
 
     /** The resume point, read off every frame this logical gateway's history holds, whichever instance issued it. */
+    /**
+     * A {@code ConnectionOpened}'s opaque tail, or nothing. §7.1 lets {@code connectionData} be absent, and a
+     * producer that takes the option encodes no var-data header at all — so a body too short to hold one is
+     * that case, not a short read.
+     */
+    private void dispatchConnectionOpened(final SequencedEvent event) {
+        if (event.payloadLength() < ConnectionOpenedDecoder.connectionDataHeaderLength()) {
+            listener.onConnectionOpened(event.connectionId(), event.buffer(), event.payloadOffset(), 0);
+            return;
+        }
+        connectionOpenedIn.wrap(event.buffer(), event.payloadOffset(), ConnectionOpenedDecoder.BLOCK_LENGTH,
+                                MessageHeaderDecoder.SCHEMA_VERSION);
+        final int length = connectionOpenedIn.connectionDataLength();
+        listener.onConnectionOpened(event.connectionId(), event.buffer(),
+                                    connectionOpenedIn.limit() + ConnectionOpenedDecoder.connectionDataHeaderLength(),
+                                    length);
+    }
+
     private void observeConnectionId(final int sourceId, final int connectionId) {
         if (lifecycle.gatewaySourceId() != GatewayLifecycle.UNRESOLVED && sourceId == lifecycle.gatewaySourceId()
             && connectionId > highestConnectionId) {
@@ -331,6 +384,16 @@ public final class Gateway implements AutoCloseable {
                 lifecycle.onGatewayRegistered(gatewayRow.gatewayId(), gatewayRow.gatewaySourceId(),
                                               gatewayRow.gatewayName(), gatewayRow.preferenceRank());
                 break;
+            case SystemFrame.CONNECTION_OPENED:
+                if (event.sourceId() == lifecycle.gatewaySourceId()) {
+                    dispatchConnectionOpened(event);
+                }
+                break;
+            case SystemFrame.CONNECTION_CLOSED:
+                if (event.sourceId() == lifecycle.gatewaySourceId()) {
+                    listener.onConnectionClosed(event.connectionId());
+                }
+                break;
             case SystemFrame.GATEWAY_ACTIVE:
                 // Synthesized, so the frame's own block length and version are the body's.
                 gatewayActive.wrap(event.buffer(), event.payloadOffset(), event.blockLength(), event.version());
@@ -359,6 +422,11 @@ public final class Gateway implements AutoCloseable {
         }
 
         @Override
+        public void onClusterHeartbeat(final long clusterTimeNs, final long receiveTimeNs) {
+            listener.onClusterHeartbeat(clusterTimeNs, receiveTimeNs);
+        }
+
+        @Override
         public void onFenced(final Fence fence, final String detail) {
             listener.onFenced(fence, detail);
         }
@@ -370,11 +438,12 @@ public final class Gateway implements AutoCloseable {
         private int clientId;
         private int memberId;
         private String egressChannel;
-        private String ingressEndpoints;
+        private String ingressEndpoints = PortLayout.ingressEndpoints();
         private Listener listener;
         private int pendingCapacity = DEFAULT_PENDING_CAPACITY;
         private long tapStallTimeoutMs = DEFAULT_TAP_STALL_TIMEOUT_MS;
         private long recoveryStallTimeoutMs = DEFAULT_RECOVERY_STALL_TIMEOUT_MS;
+        private long tapLagThresholdMs = DEFAULT_TAP_LAG_THRESHOLD_MS;
 
         /** The {@code GatewayRegistered} row name this instance joins on. */
         public Builder gatewayName(final String gatewayName) {
@@ -400,7 +469,7 @@ public final class Gateway implements AutoCloseable {
             return this;
         }
 
-        /** The members to reach, {@code PortLayout.ingressEndpoints()} for the default set. */
+        /** The members to reach, {@code PortLayout.ingressEndpoints()} by default. */
         public Builder ingressEndpoints(final String ingressEndpoints) {
             this.ingressEndpoints = ingressEndpoints;
             return this;
@@ -423,6 +492,11 @@ public final class Gateway implements AutoCloseable {
 
         public Builder recoveryStallTimeoutMs(final long recoveryStallTimeoutMs) {
             this.recoveryStallTimeoutMs = recoveryStallTimeoutMs;
+            return this;
+        }
+
+        public Builder tapLagThresholdMs(final long tapLagThresholdMs) {
+            this.tapLagThresholdMs = tapLagThresholdMs;
             return this;
         }
 

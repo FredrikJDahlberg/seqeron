@@ -13,7 +13,7 @@ package org.limitless.seqeron.app;
  * <p>Single-threaded, like every block here. The C++ twin is {@code app/TapStallFence.hpp}; keep the two in
  * step.
  */
-public final class TapStallFence {
+final class TapStallFence {
     private final long deadlineMs;
 
     private boolean armed;

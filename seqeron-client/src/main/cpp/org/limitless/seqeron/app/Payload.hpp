@@ -64,6 +64,13 @@ class Payload
         return m_event.receiveTimeNs;
     }
 
+    // Where this frame's first byte sits in the node's recording — a delivery stamp too, and what a
+    // consumer that replays that recording itself (a FIX gateway serving its own resend) anchors on.
+    [[nodiscard]] std::int64_t position() const noexcept
+    {
+        return m_event.position;
+    }
+
     // Which protocol the body speaks (spec §13).
     [[nodiscard]] std::uint16_t payloadId() const noexcept
     {

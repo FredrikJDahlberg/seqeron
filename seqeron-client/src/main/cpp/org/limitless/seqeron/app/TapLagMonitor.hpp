@@ -79,6 +79,13 @@ class TapLagMonitor
         return m_stale;
     }
 
+    // Latched once a heartbeat arrives a threshold or more before its own timestamp: this host's clock
+    // trails the leader's, so isStale() cannot be trusted until the clocks are synchronised.
+    bool isSkewSuspected() const
+    {
+        return m_skewReported;
+    }
+
   private:
     std::int64_t m_thresholdNs;
     std::int64_t m_lastLagNs = 0;

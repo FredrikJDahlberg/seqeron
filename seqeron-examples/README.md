@@ -10,6 +10,27 @@ through the same consumer — so the round trip is measured over the real path.
 | --- | --- |
 | `src/java/example/FollowStream.java` | built by `build.gradle`, which resolves `org.limitless:seqeron` |
 | `src/cpp/FollowStream.cpp` | built by `CMakeLists.txt`, which pulls in `seqeron_core` |
+| `src/java/example/ColocatedApp.java` | the same flow against the front door — see below |
+| `src/cpp/ColocatedApp.cpp` | its C++ twin |
+
+## The same flow, against the front door
+
+`ColocatedApp` does what `FollowStream` does and names none of the tiers under it. Its whole import list
+from seqeron is `app` plus `protocol.Publish`: no receiver, no sender, no envelope, no `systemEventType`.
+`ColocatedApplication` assembles the cluster session, the tap, confirmed ingress across a failover, the
+fences and the leader gate, and hands it `Payload`s. The C++ twin adds `util/Env.hpp` and
+`util/IdleStrategy.hpp`, which are support code beside the façade rather than a tier under it, and which
+the Java half takes from its own standard library instead.
+
+That is the claim these files exist to make, so compiling them is not enough — an import of
+`sequencer.client` would compile too. **The imports are checked**: `./gradlew -p seqeron-examples check`
+fails on one (`checkFacadeOnly`), and so does the C++ configure step, the way seqeron's own
+`FacadeSurfaceTest` makes the same check from the inside.
+
+It is a **co-located application** — the producer kind nothing elects, one replica per node, publishing
+only while its own node leads — which is why it needs no topology document and no `clusterctl` step:
+`LeadershipChanged` already picks the replica that submits. `FollowStream` stays as it is, deliberately:
+it is what a consumer writing its own duty cycle, or a C++ producer, programs against.
 
 **Both are separate builds, not subprojects of the repo they sit in.** The Java one resolves
 `org.limitless:seqeron` as a published artifact and the C++ one pulls `seqeron_core` in with
@@ -30,16 +51,18 @@ Start a node first, in another shell:
 
     ./seqeron-service/src/main/scripts/start-cluster.sh
 
-Java:
+Java, the low-level one and then the façade one — either may run alone, and both may run at once:
 
     ./gradlew publishToMavenLocal
     ./gradlew -p seqeron-examples run
+    ./gradlew -p seqeron-examples runColocated
 
 C++:
 
     cmake -S seqeron-examples -B seqeron-examples/cmake-build-release -DCMAKE_BUILD_TYPE=Release
-    cmake --build seqeron-examples/cmake-build-release --target follow_stream
+    cmake --build seqeron-examples/cmake-build-release --target follow_stream colocated_app
     ./seqeron-examples/cmake-build-release/follow_stream
+    ./seqeron-examples/cmake-build-release/colocated_app
 
 The first CMake configure fetches and builds Aeron from source, which is what `add_subdirectory` of the
 whole repo costs. GoogleTest is not fetched — that is seqeron's test dependency, not part of what it
@@ -130,7 +153,7 @@ processes already do. The two client ids differ on purpose, so both examples can
 - **A send that succeeds is not a frame sequenced.** Nothing confirms ingress on egress, and a leader
   failover silently loses whatever the old leader had not committed. The ping lives with that — the next
   second's is its retry — which is what makes it a ping. A producer that cannot lose a frame passes an
-  `app/PendingSends` as the `IngressTracker` every `publish*` and `offerFrame` takes, hands the same one to
+  `sequencer/client/PendingSends` as the `IngressTracker` every `publish*` and `offerFrame` takes, hands the same one to
   the sender with `setIngressHold`, and resends what a term change lost; `ClusterProbe confirm` is that
   version of this example.
 

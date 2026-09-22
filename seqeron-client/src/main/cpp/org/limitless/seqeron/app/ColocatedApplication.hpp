@@ -9,6 +9,7 @@
 #include "org/limitless/seqeron/app/LeaderGate.hpp"
 #include "org/limitless/seqeron/app/Payload.hpp"
 #include "org/limitless/seqeron/app/Session.hpp"
+#include "org/limitless/seqeron/protocol/Publish.hpp"
 #include "org/limitless/seqeron/sequencer/client/IngressPublisher.hpp"
 
 namespace org::limitless::seqeron::app {
@@ -26,7 +27,8 @@ namespace org::limitless::seqeron::app {
  *
  * Single-threaded: every method belongs to the caller's one duty-cycle thread, which calls doWork() each
  * iteration. The Java twin is app/ColocatedApplication.java; keep the two in step. Where Java's builder
- * takes an ingressEndpoints string, this side has none: ClusterStreamSender compiles the member set in.
+ * takes an ingressEndpoints string, this side has none: ClusterStreamSender compiles the member set in;
+ * publish and reply each take an SBE encoder and a Fill, or already-encoded bytes as the Java twin does.
  *
  * Listener provides:
  *   void onLeadershipChanged(bool leading) // the gate crossed an edge; false is where OutstandingWork
@@ -34,6 +36,7 @@ namespace org::limitless::seqeron::app {
  *                                          // open gate and the work may have gone with the election
  *   void onSequenced(const Payload& payload)
  *   void onCaughtUp(std::int64_t globalSeqNo)
+ *   void onClusterHeartbeat(std::int64_t clusterTimeNs, std::int64_t receiveTimeNs)
  *   void onFenced(Fence fence, const std::string& detail)
  */
 template<typename Listener>
@@ -58,6 +61,7 @@ class ColocatedApplication
         std::size_t pendingCapacity = DEFAULT_PENDING_CAPACITY;
         std::int64_t tapStallTimeoutMs = DEFAULT_TAP_STALL_TIMEOUT_MS;
         std::int64_t recoveryStallTimeoutMs = DEFAULT_RECOVERY_STALL_TIMEOUT_MS;
+        std::int64_t tapLagThresholdMs = DEFAULT_TAP_LAG_THRESHOLD_MS;
         std::int64_t ipcConnectTimeoutMs = DEFAULT_IPC_CONNECT_TIMEOUT_MS;
     };
 
@@ -66,8 +70,9 @@ class ColocatedApplication
       m_listener{ listener },
       m_gate{ m_config.memberId },
       m_dispatch{ *this },
-      m_session{ m_config.clientId, m_config.pendingCapacity, m_config.tapStallTimeoutMs,
-                 m_config.recoveryStallTimeoutMs, m_dispatch }
+      m_session{ m_config.clientId,          m_config.pendingCapacity,
+                 m_config.tapStallTimeoutMs, m_config.recoveryStallTimeoutMs,
+                 m_config.tapLagThresholdMs, m_dispatch }
     {}
 
     ColocatedApplication(const ColocatedApplication&) = delete;
@@ -111,9 +116,18 @@ class ColocatedApplication
     // connection. Declined while the gate is shut, ingress is held or the transport is back-pressured —
     // retry it; Refused is permanent.
     template<typename Encoder, typename Fill>
-    [[nodiscard]] sequencer::client::Publish publish(const std::uint16_t payloadId, Fill&& fill)
+    [[nodiscard]] protocol::Publish publish(const std::uint16_t payloadId, Fill&& fill)
     {
         return submit<Encoder>(m_config.sourceId, NO_CONNECTION, payloadId, std::forward<Fill>(fill));
+    }
+
+    // The same for a payload the caller encoded itself, its own messageHeader included — a payload with no
+    // schema at all (§13.2) included. The Java twin takes only this form, Java's SBE codecs sharing no
+    // interface, so a port keeps the two in step here as Gateway does.
+    [[nodiscard]] protocol::Publish publish(const std::uint16_t payloadId, const std::uint8_t* payload,
+                                            const std::uint16_t payloadLength)
+    {
+        return submit(m_config.sourceId, NO_CONNECTION, payloadId, payload, payloadLength);
     }
 
     // The same on behalf of the producer that asked for it: a reply carries the requester's sourceId and
@@ -121,11 +135,18 @@ class ColocatedApplication
     // those two off the request rather than the request itself — a Payload is valid only during its
     // callback, and a reply is usually dispatched later.
     template<typename Encoder, typename Fill>
-    [[nodiscard]] sequencer::client::Publish reply(const std::int32_t requesterSourceId,
-                                                   const std::int32_t connectionId, const std::uint16_t payloadId,
-                                                   Fill&& fill)
+    [[nodiscard]] protocol::Publish reply(const std::int32_t requesterSourceId, const std::int32_t connectionId,
+                                          const std::uint16_t payloadId, Fill&& fill)
     {
         return submit<Encoder>(requesterSourceId, connectionId, payloadId, std::forward<Fill>(fill));
+    }
+
+    // The same for a reply the caller encoded itself.
+    [[nodiscard]] protocol::Publish reply(const std::int32_t requesterSourceId, const std::int32_t connectionId,
+                                          const std::uint16_t payloadId, const std::uint8_t* payload,
+                                          const std::uint16_t payloadLength)
+    {
+        return submit(requesterSourceId, connectionId, payloadId, payload, payloadLength);
     }
 
     // This replica's own sourceId, the one its topology row gives it.
@@ -144,6 +165,13 @@ class ColocatedApplication
         return m_session.lastGlobalSeqNo();
     }
 
+    // How far behind the leader this node's tap is running. Observation only — nothing here raises a
+    // fence; a consumer that wants to report staleness, or log its edges, polls it.
+    [[nodiscard]] const TapLagMonitor& tapLag() const noexcept
+    {
+        return m_session.tapLag();
+    }
+
     // Closes the cluster session and the tap. The Aeron client is the caller's and is left open.
     void close()
     {
@@ -153,15 +181,26 @@ class ColocatedApplication
   private:
     // A shut gate declines rather than submits: only the leading replica's copy of the work is the one sent.
     template<typename Encoder, typename Fill>
-    [[nodiscard]] sequencer::client::Publish submit(const std::int32_t frameSourceId, const std::int32_t connectionId,
-                                                    const std::uint16_t payloadId, Fill&& fill)
+    [[nodiscard]] protocol::Publish submit(const std::int32_t frameSourceId, const std::int32_t connectionId,
+                                           const std::uint16_t payloadId, Fill&& fill)
     {
         if (!m_gate.isOpen())
         {
-            return sequencer::client::Publish::Declined;
+            return protocol::Publish::Declined;
         }
         return m_session.template publishPayload<Encoder>(frameSourceId, connectionId, payloadId,
                                                           std::forward<Fill>(fill));
+    }
+
+    [[nodiscard]] protocol::Publish submit(const std::int32_t frameSourceId, const std::int32_t connectionId,
+                                           const std::uint16_t payloadId, const std::uint8_t* payload,
+                                           const std::uint16_t payloadLength)
+    {
+        if (!m_gate.isOpen())
+        {
+            return protocol::Publish::Declined;
+        }
+        return m_session.publishPayload(frameSourceId, connectionId, payloadId, payload, payloadLength);
     }
 
     // What comes off the tap, and the one frame the gate is driven by.
@@ -190,6 +229,14 @@ class ColocatedApplication
         void onCaughtUp(const std::int64_t globalSeqNo)
         {
             m_app.m_listener.onCaughtUp(globalSeqNo);
+        }
+
+        // The cluster clock's tick (spec §7), once a second. It is the one time source that keeps
+        // advancing while every producer is silent, which is exactly when a watchdog must still fire, and
+        // it is identical on every node — so a timer driven by it decides the same thing everywhere.
+        void onClusterHeartbeat(const std::int64_t clusterTimeNs, const std::int64_t receiveTimeNs)
+        {
+            m_app.m_listener.onClusterHeartbeat(clusterTimeNs, receiveTimeNs);
         }
 
         void onFenced(const Fence fence, const std::string& detail)

@@ -30,7 +30,16 @@ struct StubListener
     void onSequenced(const Payload&)
     {}
 
+    void onConnectionOpened(std::int32_t, const char*, std::size_t)
+    {}
+
+    void onConnectionClosed(std::int32_t)
+    {}
+
     void onCaughtUp(std::int64_t)
+    {}
+
+    void onClusterHeartbeat(std::int64_t, std::int64_t)
     {}
 
     void onFenced(Fence, const std::string&)
@@ -60,8 +69,7 @@ TEST(GatewayFacade, UndesignatedInstanceServesNothing)
     EXPECT_FALSE(gateway.canAccept());
     EXPECT_EQ(Gateway<StubListener>::NO_CONNECTION, gateway.openConnection())
         << "a connection taken while standing down is refused rather than queued";
-    // GatewayLifecycle::UNRESOLVED, which is not nameable here without instantiating the template.
-    EXPECT_EQ(-1, gateway.sourceId()) << "no GatewayRegistered row names it yet";
+    EXPECT_EQ(Gateway<StubListener>::UNRESOLVED, gateway.sourceId()) << "no GatewayRegistered row names it yet";
 }
 
 } // namespace

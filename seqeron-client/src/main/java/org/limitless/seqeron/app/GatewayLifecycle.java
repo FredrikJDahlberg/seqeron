@@ -20,7 +20,7 @@ import java.util.Map;
  *
  * <p>Single-threaded. The C++ twin is {@code app/GatewayLifecycle.hpp}; keep the two in step.
  */
-public final class GatewayLifecycle {
+final class GatewayLifecycle {
     /** No {@code GatewayRegistered} row has named this instance yet. */
     public static final int UNRESOLVED = -1;
 

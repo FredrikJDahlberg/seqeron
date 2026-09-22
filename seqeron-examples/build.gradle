@@ -44,3 +44,37 @@ application {
 tasks.named('run') {
     systemProperties System.getProperties().findAll { k, v -> k.toString().startsWith('follow.') }
 }
+
+// The same flow against the front door: app, protocol.Publish and nothing else. A second JavaExec rather
+// than a second `application` block, since Gradle's plugin models one main class.
+// What ColocatedApp is for: the front door is sufficient on its own. Compiling it proves nothing on its
+// own — an import of sequencer.client would compile too — so the imports are the assertion. seqeron's own
+// FacadeSurfaceTest checks the same claim from the inside; this checks it from a consumer's build.
+def facadeOnlyPackages = ['org.limitless.seqeron.app.', 'org.limitless.seqeron.protocol.Publish']
+
+tasks.register('checkFacadeOnly') {
+    description = 'Fail if the façade example reaches past app for anything but protocol.Publish'
+    group       = 'verification'
+    def source  = file('src/java/example/ColocatedApp.java')
+    inputs.file source
+    doLast {
+        def leaks = source.readLines()
+            .findAll { it.startsWith('import org.limitless.seqeron.') }
+            .collect { it.replaceAll(/^import |;$/, '') }
+            .findAll { imported -> !facadeOnlyPackages.any { imported.startsWith(it) } }
+        if (!leaks.isEmpty()) {
+            throw new GradleException("ColocatedApp must name only ${facadeOnlyPackages}, but imports ${leaks}")
+        }
+    }
+}
+
+tasks.named('check') { dependsOn 'checkFacadeOnly' }
+
+tasks.register('runColocated', JavaExec) {
+    description = 'Run the façade example (app.ColocatedApplication) against a running node'
+    group       = 'application'
+    classpath   = sourceSets.main.runtimeClasspath
+    mainClass   = 'example.ColocatedApp'
+    jvmArgs     = application.applicationDefaultJvmArgs
+    systemProperties System.getProperties().findAll { k, v -> k.toString().startsWith('colocated.') }
+}

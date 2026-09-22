@@ -178,7 +178,8 @@ restart does not.
 | 9 | core — `ClusterProbe follow`/`confirm`'s default: `start-cluster.sh`, `gap-recovery-test.sh`, `chaos-runner.sh`, the cold replica of `docker-failover-test.sh` |
 | 10 | core — `TestGateway serve`'s default, and `chaos-runner.sh`'s second consumer |
 | 11, 12 | core — `failover-test.sh`'s two producers |
-| 13… | consumers — a deployment's own replicas |
+| 13, 14 | core — `seqeron-examples`' façade example (`ColocatedApp`), Java then C++ |
+| 15… | consumers — a deployment's own replicas |
 
-Core's own are ≤ 12 and a consumer's start at 13. A deployment running several replicas per node keeps
+Core's own are ≤ 14 and a consumer's start at 15. A deployment running several replicas per node keeps
 that table where it keeps the counter sub-blocks: in the repository that owns the deployment.

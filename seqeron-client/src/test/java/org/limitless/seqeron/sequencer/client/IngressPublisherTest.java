@@ -13,11 +13,11 @@ import org.agrona.concurrent.UnsafeBuffer;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.limitless.seqeron.protocol.FrameLayer;
+import org.limitless.seqeron.protocol.Publish;
 import org.limitless.seqeron.protocol.SystemFrame;
 import org.limitless.seqeron.sbe.frame.MessageHeaderDecoder;
 import org.limitless.seqeron.sbe.frame.UnsequencedDecoder;
 import org.limitless.seqeron.sbe.frame.UnsequencedSystemDecoder;
-import org.limitless.seqeron.sequencer.client.IngressPublisher.Publish;
 
 /**
  * Unit tests for the encode-and-offer preamble every producer writes. No Aeron runtime: what the sender

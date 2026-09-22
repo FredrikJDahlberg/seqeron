@@ -93,7 +93,7 @@ bool announceConnection(client::ClusterStreamSender& sender)
                                                               protocol::CONNECTION_OPENED,
                                                               [](frame_sbe::ConnectionOpened& encoder) {
                                                                   encoder.putConnectionData(CONNECTION_LABEL);
-                                                              }) == client::Publish::Published;
+                                                              }) == protocol::Publish::Published;
 }
 
 // The matching ConnectionClosed, which has no fields: header.connectionId names a connection every consumer
@@ -129,7 +129,7 @@ void ping(client::ClusterStreamSender& sender)
     // Little-endian on the wire, as every SBE field is, so the Java example reads the same eight bytes.
     frame.putPayload(reinterpret_cast<const char*>(&pingSentNs), sizeof pingSentNs);
     const auto length = static_cast<std::uint16_t>(frame_sbe::MessageHeader::encodedLength() + frame.encodedLength());
-    if (client::offerFrame(sender, nullptr, buffer.data(), length) != client::Publish::Published)
+    if (client::offerFrame(sender, nullptr, buffer.data(), length) != protocol::Publish::Published)
     {
         // No session to take it — an election, or one that closed. Next second's ping is the retry.
         pingSentNs = 0;
