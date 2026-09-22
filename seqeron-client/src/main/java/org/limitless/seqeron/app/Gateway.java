@@ -54,6 +54,13 @@ public final class Gateway implements AutoCloseable {
      */
     public static final int NO_CONNECTION = -1;
 
+    /**
+     * What {@link #sourceId()} and {@link #gatewayId()} read until a {@code GatewayRegistered} row names this
+     * instance. Nothing may be published under an unresolved identity, so a consumer that stamps its own
+     * records with {@link #sourceId()} checks for this first.
+     */
+    public static final int UNRESOLVED = GatewayLifecycle.UNRESOLVED;
+
     private static final byte[] NO_CONNECTION_DATA = new byte[0];
 
     /** What a gateway does that this class cannot do for it. */
@@ -158,6 +165,29 @@ public final class Gateway implements AutoCloseable {
     }
 
     /**
+     * The edge closed without being asked to — a dial that failed, a counterparty that hung up. The
+     * designation stands, so {@link #doWork()} opens it again through {@link Listener#onActivated}, and
+     * without a second {@code GatewayStarted}: this instance is still the one the cluster designated.
+     *
+     * <p>An acceptor whose listen socket stays bound never calls this. An initiator does: its edge is one
+     * dial, and a dial that fails or a session that drops is the gate closing under it.
+     */
+    public void gateClosed() {
+        lifecycle.onGateClosed();
+    }
+
+    /**
+     * Tells the cluster this instance is alive. {@link #doWork()} already does it once a cycle; call this as
+     * well from inside a {@link Listener} callback that spins — writing to an edge that is back-pressured,
+     * say — since {@code doWork()} cannot run again until that callback returns, and the cluster drops a
+     * session that goes quiet for {@code sequencer.sessionTimeoutMs}. Self-throttling, so a call per spin
+     * costs nothing.
+     */
+    public void keepAlive() {
+        session.keepAlive();
+    }
+
+    /**
      * Whether a connection may be taken right now: this instance is serving, and ingress is not held behind a
      * failover's resend. Check it before accepting or dialling — a connection taken while ingress is held
      * could not have its {@code ConnectionOpened} placed.
@@ -232,14 +262,14 @@ public final class Gateway implements AutoCloseable {
     }
 
     /**
-     * This logical gateway's {@code sourceId}, shared with its standby;
-     * {@link GatewayLifecycle#UNRESOLVED} until a row names it.
+     * This logical gateway's {@code sourceId}, shared with its standby; {@link #UNRESOLVED} until a
+     * {@code GatewayRegistered} row names it.
      */
     public int sourceId() {
         return lifecycle.gatewaySourceId();
     }
 
-    /** This instance's list row, or {@link GatewayLifecycle#UNRESOLVED} until a row names it. */
+    /** This instance's list row, or {@link #UNRESOLVED} until a row names it. */
     public int gatewayId() {
         return lifecycle.gatewayId();
     }

@@ -109,6 +109,22 @@ class Gateway
         return work;
     }
 
+    // The edge closed without being asked to — a dial that failed, a counterparty that hung up. The
+    // designation stands, so doWork() opens it again through onActivated, and without a second
+    // GatewayStarted. An acceptor whose listen socket stays bound never calls this; an initiator does.
+    void gateClosed()
+    {
+        m_lifecycle.onGateClosed();
+    }
+
+    // Tells the cluster this instance is alive. doWork() already does it once a cycle; call this as well from
+    // inside a Dispatch callback that spins, since doWork() cannot run again until that callback returns and
+    // the cluster drops a session that goes quiet for sessionTimeoutMs. Self-throttling.
+    void keepAlive()
+    {
+        m_session.keepAlive();
+    }
+
     // Whether a connection may be taken right now: this instance is serving, and ingress is not held behind
     // a failover's resend. Check it before accepting or dialling — a connection taken while ingress is held
     // could not have its ConnectionOpened placed.

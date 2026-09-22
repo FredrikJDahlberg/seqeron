@@ -142,6 +142,16 @@ final class Session implements AutoCloseable {
                       : publisher.publishSystem(sender, sourceId, connectionId, systemEventType, body, bodyLength);
     }
 
+    /**
+     * Tells the cluster this client is alive, for a façade whose consumer spins inside a callback and would
+     * otherwise starve the one in {@link #doWork()}. Self-throttling, so calling it per spin costs nothing.
+     */
+    void keepAlive() {
+        if (!fenced) {
+            sender.keepAlive();
+        }
+    }
+
     /** Send nothing new while this holds: an older term's frames are still unseen or unresent. */
     boolean isHolding() {
         return pending.isHolding();

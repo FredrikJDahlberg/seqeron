@@ -8,7 +8,6 @@
 
 #include "org/limitless/seqeron/app/Fence.hpp"
 #include "org/limitless/seqeron/app/Payload.hpp"
-#include "org/limitless/seqeron/sequencer/client/PendingSends.hpp"
 #include "org/limitless/seqeron/app/RecoveryStallFence.hpp"
 #include "org/limitless/seqeron/app/TapLagMonitor.hpp"
 #include "org/limitless/seqeron/app/TapStallFence.hpp"
@@ -17,6 +16,7 @@
 #include "org/limitless/seqeron/replayer/client/ReplayerStreamReceiver.hpp"
 #include "org/limitless/seqeron/sequencer/client/ClusterStreamSender.hpp"
 #include "org/limitless/seqeron/sequencer/client/IngressPublisher.hpp"
+#include "org/limitless/seqeron/sequencer/client/PendingSends.hpp"
 
 namespace org::limitless::seqeron::app {
 
@@ -153,6 +153,16 @@ class Session
         }
         return sequencer::client::publishSystem<Encoder>(m_sender, &m_pending, sourceId, connectionId, systemEventType,
                                                          std::forward<Fill>(fill));
+    }
+
+    // Tells the cluster this client is alive, for a facade whose consumer spins inside a callback and would
+    // otherwise starve the one in doWork(). Self-throttling, so calling it per spin costs nothing.
+    void keepAlive()
+    {
+        if (!m_fenced)
+        {
+            m_sender.keepAlive();
+        }
     }
 
     // Send nothing new while this holds: an older term's frames are still unseen or unresent.

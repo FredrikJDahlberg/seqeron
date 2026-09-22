@@ -182,6 +182,8 @@ try (Gateway gateway = Gateway.builder()
 | Call | What it does |
 |---|---|
 | `doWork()` | one duty-cycle iteration: the cluster session, the tap, confirmed ingress, the fences, the connection lifecycle and the election, in the order they require |
+| `gateClosed()` | the edge closed by itself — a dial that failed, a counterparty that hung up; the designation stands, so `doWork()` reopens it through `onActivated` without a second `GatewayStarted`. An acceptor never calls it; an initiator, whose edge is one dial, does |
+| `keepAlive()` | tells the cluster this instance is alive; `doWork()` already does it once a cycle, so this is only for a `Listener` callback that spins — `doWork()` cannot run again until it returns, and a session quiet for `sequencer.sessionTimeoutMs` is dropped |
 | `canAccept()` | whether a connection may be taken right now — serving, and ingress is not held behind a failover's resend |
 | `openConnection()` / `openConnection(data, length)` | allocates the id and places its `ConnectionOpened`, retried by `doWork()` |
 | `closeConnection(id)` | the same for a connection that has gone; one the cluster never heard of is dropped rather than announced |
