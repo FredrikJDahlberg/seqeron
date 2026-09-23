@@ -57,6 +57,10 @@ For multi-step tasks, state a brief plan:
 3. [Step] → verify: [check]
    Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
 
+5. Commits
+
+Never commit code without permission.
+
 
 ## What this is
 
@@ -165,7 +169,7 @@ JDK 21. `SEQERON_JAR` overrides the jar path for every script that resolves it.
 cmake -B cmake-build-debug -DCMAKE_BUILD_TYPE=Debug      # AddressSanitizer
 cmake --build cmake-build-debug
 ```
-C++23, and fetches Aeron 1.51.0 (unless an installed one is found) and GoogleTest from source. **The core SBE codecs are generated and
+C++23, and fetches Aeron 1.53.2 (unless an installed one is found) and GoogleTest from source. **The core SBE codecs are generated and
 committed**, under `seqeron-client/src/main/generated/sbe/core` — the git tag is the C++ artifact, so
 shipping them
 with it is what lets a consumer build with no SBE tool and no JDK of seqeron's asking (Aeron's own

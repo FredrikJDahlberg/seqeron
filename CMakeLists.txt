@@ -2,7 +2,7 @@
 # client, the pure policy classes, and the codecs for the three schemas the cluster tier speaks. It
 # declares no simdfix and generates no application codecs, and there is no C++ replay server: the
 # server side of the replay protocol is Java only.
-# 3.30: Aeron 1.51.0's own CMakeLists requires it, so an older CMake should stop here, not inside Aeron.
+# 3.30: Aeron 1.53.2's own CMakeLists requires it, so an older CMake should stop here, not inside Aeron.
 cmake_minimum_required(VERSION 3.30)
 # VERSION is the one place the number is written; build.gradle reads the same file.
 file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/VERSION" SEQERON_VERSION LIMIT_COUNT 1)

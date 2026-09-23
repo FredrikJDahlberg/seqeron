@@ -15,7 +15,7 @@
 # ninja re-runs the whole --no-daemon Gradle codec generation on EVERY build (~4 s), which also puts
 # a Gradle invocation in the path of every incremental build.
 #
-# Still wrong on 1.51.0, 1.52.0 and master as of 2026-08, so a version bump does not fix it.
+# Still wrong on 1.51.0, 1.52.0, 1.53.2 and master as of 2026-09, so a version bump does not fix it.
 
 set(CODEC_CMAKE "aeron-archive/src/main/c/CMakeLists.txt")
 

@@ -77,7 +77,7 @@ places. Checked against the built client, node and uber jars and the generated P
    its `aeron::` names.
 
 9. **The CMake minimum version is wrong.** `CMakeLists.txt` asks for CMake 3.28, but the CI file notes
-   Aeron 1.51.0 needs 3.30 or newer. A user on 3.28 gets past seqeron's check and then hits an error deep
+   Aeron 1.53.2 needs 3.30 or newer. A user on 3.28 gets past seqeron's check and then hits an error deep
    inside Aeron's build. Raising the minimum to 3.30 makes the failure clear and early.
 
    **Done in v0.2.0.** `CMakeLists.txt` and `seqeron-examples` require 3.30.

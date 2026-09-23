@@ -26,7 +26,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Aeron 1.51.0's own CMakeLists requires CMake >= 3.30; noble ships 3.28.3.
+      # Aeron 1.53.2's own CMakeLists requires CMake >= 3.30; noble ships 3.28.3.
       - name: Add Kitware's CMake repository
         run: |
           wget -qO - https://apt.kitware.com/keys/kitware-archive-latest.asc \
@@ -146,7 +146,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Same two prerequisites as the build job: Aeron 1.51.0 needs CMake >= 3.30 (noble ships
+      # Same two prerequisites as the build job: Aeron 1.53.2 needs CMake >= 3.30 (noble ships
       # 3.28.3) and warns its way past a missing libuuid.
       - name: Add Kitware's CMake repository
         run: |

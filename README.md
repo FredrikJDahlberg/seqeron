@@ -90,7 +90,7 @@ covers what survives node loss, failover, a stuck archive and a lost frame.
 ## Build
 
 Requires **JDK 21** for the Java half and a **C++23** compiler for the C++ one, and fetches Aeron
-1.51.0 and GoogleTest from source — Aeron only when `find_package` finds no installed one at that
+1.53.2 and GoogleTest from source — Aeron only when `find_package` finds no installed one at that
 version or newer (built with `-DAERON_INSTALL_TARGETS=ON`, on `CMAKE_PREFIX_PATH`). The C++ half needs no JDK of seqeron's own making: the codecs for
 the three schemas this repo owns are generated and committed under `seqeron-client/src/main/generated/sbe/core`, so
 a consumer compiles them rather than running the SBE tool. Java is still needed
