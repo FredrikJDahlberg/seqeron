@@ -42,9 +42,6 @@ public final class Gateway implements AutoCloseable {
     /** How long recovery may dispatch nothing, once caught up before; longer than the tap's, as a re-walk is slower. */
     public static final long DEFAULT_RECOVERY_STALL_TIMEOUT_MS = Session.DEFAULT_RECOVERY_STALL_TIMEOUT_MS;
 
-    /** The lag at which this node's tap is called stale — the same span as the tap-silence timeout. */
-    public static final long DEFAULT_TAP_LAG_THRESHOLD_MS = Session.DEFAULT_TAP_LAG_THRESHOLD_MS;
-
     /** Frames in flight between a publish and the tap; far above what one round trip holds. */
     public static final int DEFAULT_PENDING_CAPACITY = Session.DEFAULT_PENDING_CAPACITY;
 
@@ -139,8 +136,7 @@ public final class Gateway implements AutoCloseable {
         this.ingressEndpoints = builder.ingressEndpoints;
         this.lifecycle = new GatewayLifecycle(builder.gatewayName, new LifecycleActions());
         this.session = new Session(builder.clientId, builder.pendingCapacity, builder.tapStallTimeoutMs,
-                                   builder.recoveryStallTimeoutMs, builder.tapLagThresholdMs,
-                                   new SessionDispatch());
+                                   builder.recoveryStallTimeoutMs, new SessionDispatch());
     }
 
     public static Builder builder() {
@@ -280,14 +276,6 @@ public final class Gateway implements AutoCloseable {
 
     public long lastGlobalSeqNo() {
         return session.lastGlobalSeqNo();
-    }
-
-    /**
-     * How far behind the leader this node's tap is running. Observation only — nothing here raises a
-     * fence; a consumer that wants to report staleness polls it.
-     */
-    public TapLagMonitor tapLag() {
-        return session.tapLag();
     }
 
     /** Closes the cluster session and the tap. The Aeron client is the caller's and is left open. */
@@ -473,7 +461,6 @@ public final class Gateway implements AutoCloseable {
         private int pendingCapacity = DEFAULT_PENDING_CAPACITY;
         private long tapStallTimeoutMs = DEFAULT_TAP_STALL_TIMEOUT_MS;
         private long recoveryStallTimeoutMs = DEFAULT_RECOVERY_STALL_TIMEOUT_MS;
-        private long tapLagThresholdMs = DEFAULT_TAP_LAG_THRESHOLD_MS;
 
         /** The {@code GatewayRegistered} row name this instance joins on. */
         public Builder gatewayName(final String gatewayName) {
@@ -522,11 +509,6 @@ public final class Gateway implements AutoCloseable {
 
         public Builder recoveryStallTimeoutMs(final long recoveryStallTimeoutMs) {
             this.recoveryStallTimeoutMs = recoveryStallTimeoutMs;
-            return this;
-        }
-
-        public Builder tapLagThresholdMs(final long tapLagThresholdMs) {
-            this.tapLagThresholdMs = tapLagThresholdMs;
             return this;
         }
 

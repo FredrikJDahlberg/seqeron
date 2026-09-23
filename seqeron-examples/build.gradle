@@ -71,7 +71,7 @@ tasks.register('checkFacadeOnly') {
 tasks.named('check') { dependsOn 'checkFacadeOnly' }
 
 tasks.register('runColocated', JavaExec) {
-    description = 'Run the façade example (app.ColocatedApplication) against a running node'
+    description = 'Run the façade example (app.Application) against a running node'
     group       = 'application'
     classpath   = sourceSets.main.runtimeClasspath
     mainClass   = 'example.ColocatedApp'

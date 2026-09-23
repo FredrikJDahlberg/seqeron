@@ -33,12 +33,6 @@ final class Session implements AutoCloseable {
     /** Frames in flight between a publish and the tap; far above what one round trip holds. */
     static final int DEFAULT_PENDING_CAPACITY = 1024;
 
-    /**
-     * The lag at which the tap is called stale. The same span as the tap-silence timeout: a tap a whole
-     * stall window behind is as good as silent to anything reading it.
-     */
-    static final long DEFAULT_TAP_LAG_THRESHOLD_MS = DEFAULT_TAP_STALL_TIMEOUT_MS;
-
     /** What the façade above does with what comes off the tap, and with a fence. */
     interface Dispatch {
         /** A system frame this core does not consume itself. {@code LeadershipChanged} never arrives here. */
@@ -66,7 +60,6 @@ final class Session implements AutoCloseable {
     private final ReplayerStreamReceiver receiver;
     private final RecoveryStallFence recoveryStall;
     private final TapStallFence tapStall;
-    private final TapLagMonitor tapLag;
     private final Payload payload = new Payload();
 
     private final long recoveryStallTimeoutMs;
@@ -79,7 +72,7 @@ final class Session implements AutoCloseable {
     private boolean fenced;
 
     Session(final int clientId, final int pendingCapacity, final long tapStallTimeoutMs,
-            final long recoveryStallTimeoutMs, final long tapLagThresholdMs, final Dispatch dispatch) {
+            final long recoveryStallTimeoutMs, final Dispatch dispatch) {
         this.dispatch = dispatch;
         this.tapStallTimeoutMs = tapStallTimeoutMs;
         this.recoveryStallTimeoutMs = recoveryStallTimeoutMs;
@@ -87,7 +80,6 @@ final class Session implements AutoCloseable {
         this.publisher = new IngressPublisher(pending);
         this.recoveryStall = new RecoveryStallFence(recoveryStallTimeoutMs);
         this.tapStall = new TapStallFence(tapStallTimeoutMs);
-        this.tapLag = new TapLagMonitor(tapLagThresholdMs * 1_000_000L);
         this.receiver = new ReplayerStreamReceiver(clientId, this::onSequenced, this::onLeadershipChanged, null);
         sender.setIngressHold(pending);
     }
@@ -165,11 +157,6 @@ final class Session implements AutoCloseable {
         return receiver.lastGlobalSeqNo();
     }
 
-    /** Observation only, for a consumer that reports lag itself; nothing here raises a fence. */
-    TapLagMonitor tapLag() {
-        return tapLag;
-    }
-
     int currentLeaderMemberId() {
         return receiver.currentLeaderMemberId();
     }
@@ -239,11 +226,6 @@ final class Session implements AutoCloseable {
         if (event.isSystem()) {
             if (event.systemEventType() == SystemFrame.CLUSTER_HEARTBEAT) {
                 tapStall.onClusterHeartbeat(Clocks.monotonicMs());
-                // Lag is judged on the live stream only: a replayed heartbeat is arbitrarily late by
-                // construction and says nothing about how far behind the leader this node is now.
-                if (receiver.isCaughtUp()) {
-                    tapLag.onClusterHeartbeat(event.clusterTimestampNs(), event.receiveTimeNs());
-                }
                 dispatch.onClusterHeartbeat(event.clusterTimestampNs(), event.receiveTimeNs());
             }
             dispatch.onSystem(event);

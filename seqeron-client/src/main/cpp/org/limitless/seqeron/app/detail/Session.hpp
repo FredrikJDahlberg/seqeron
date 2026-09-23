@@ -9,7 +9,6 @@
 #include "org/limitless/seqeron/app/ClusterError.hpp"
 #include "org/limitless/seqeron/app/Defaults.hpp"
 #include "org/limitless/seqeron/app/Payload.hpp"
-#include "org/limitless/seqeron/app/TapLagMonitor.hpp"
 #include "org/limitless/seqeron/app/detail/RecoveryStallFence.hpp"
 #include "org/limitless/seqeron/app/detail/TapStallFence.hpp"
 #include "org/limitless/seqeron/protocol/Publish.hpp"
@@ -26,7 +25,7 @@ namespace org::limitless::seqeron::app::detail {
  * follows, confirmed ingress across a failover, and the fences that say when it may no longer act — wired
  * together into one doWork() whose ordering is not the caller's to get right.
  *
- * Not API. Gateway and ColocatedApplication are the façades over it; it holds no election and no leader
+ * Not API. Gateway and Application are the façades over it; it holds no election and no leader
  * gate of its own, so both sit on the same core. The Java twin is app/Session.java; keep the two in step.
  *
  * Dispatch provides:
@@ -42,12 +41,11 @@ class Session
 {
   public:
     Session(const std::int32_t clientId, const std::size_t pendingCapacity, const std::int64_t tapStallTimeoutMs,
-            const std::int64_t recoveryStallTimeoutMs, const std::int64_t tapLagThresholdMs, Dispatch& dispatch) :
+            const std::int64_t recoveryStallTimeoutMs, Dispatch& dispatch) :
       m_dispatch{ dispatch },
       m_pending{ pendingCapacity },
       m_recoveryStall{ recoveryStallTimeoutMs },
       m_tapStall{ tapStallTimeoutMs },
-      m_tapLag{ tapLagThresholdMs * 1'000'000 },
       m_recoveryStallTimeoutMs{ recoveryStallTimeoutMs },
       m_tapStallTimeoutMs{ tapStallTimeoutMs },
       m_receiver{ clientId,
@@ -161,12 +159,6 @@ class Session
         return m_receiver.isCaughtUp();
     }
 
-    // Observation only, for a consumer that reports lag itself; nothing here raises a fence.
-    [[nodiscard]] const TapLagMonitor& tapLag() const noexcept
-    {
-        return m_tapLag;
-    }
-
     [[nodiscard]] std::int64_t lastGlobalSeqNo() const
     {
         return m_receiver.lastGlobalSeqNo();
@@ -264,12 +256,6 @@ class Session
             if (event.systemEventType == protocol::CLUSTER_HEARTBEAT)
             {
                 m_tapStall.onClusterHeartbeat(monotonicMs());
-                // Lag is judged on the live stream only: a replayed heartbeat is arbitrarily late by
-                // construction and says nothing about how far behind the leader this node is now.
-                if (m_receiver.isCaughtUp())
-                {
-                    (void)m_tapLag.onClusterHeartbeat(event.clusterTimestampNs, event.receiveTimeNs);
-                }
                 m_dispatch.onClusterHeartbeat(event.clusterTimestampNs, event.receiveTimeNs);
             }
             m_dispatch.onSystem(event);
@@ -283,7 +269,6 @@ class Session
     sequencer::client::ClusterStreamSender m_sender;
     RecoveryStallFence m_recoveryStall;
     TapStallFence m_tapStall;
-    TapLagMonitor m_tapLag;
     std::int64_t m_recoveryStallTimeoutMs;
     std::int64_t m_tapStallTimeoutMs;
     replayer::client::ReplayerStreamReceiver m_receiver;

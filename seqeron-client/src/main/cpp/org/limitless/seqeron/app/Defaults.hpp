@@ -6,7 +6,7 @@
 #include "org/limitless/seqeron/protocol/SequencedFrame.hpp"
 
 // The defaults both façades' Config takes; the Java twins are the DEFAULT_* constants on Gateway and
-// ColocatedApplication.
+// Application.
 
 namespace org::limitless::seqeron::app {
 
@@ -21,9 +21,5 @@ inline constexpr std::size_t DEFAULT_PENDING_CAPACITY = 1024;
 
 // How long ingress is tried on this member's own aeron:ipc: short, as a follower never answers.
 inline constexpr std::int64_t DEFAULT_IPC_CONNECT_TIMEOUT_MS = 500;
-
-// The lag at which the tap is called stale. The same span as the tap-silence timeout: a tap that is a
-// whole stall window behind is as good as silent to anything reading it.
-inline constexpr std::int64_t DEFAULT_TAP_LAG_THRESHOLD_MS = DEFAULT_TAP_STALL_TIMEOUT_MS;
 
 } // namespace org::limitless::seqeron::app

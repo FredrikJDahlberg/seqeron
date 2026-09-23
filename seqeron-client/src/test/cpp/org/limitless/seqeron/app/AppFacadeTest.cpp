@@ -8,7 +8,7 @@
 
 #include <gtest/gtest.h>
 
-#include "org/limitless/seqeron/app/ColocatedApplication.hpp"
+#include "org/limitless/seqeron/app/Application.hpp"
 #include "org/limitless/seqeron/app/Gateway.hpp"
 
 namespace org::limitless::seqeron::app {
@@ -54,7 +54,7 @@ struct StubListener
     bool leadingSeen = false;
 };
 
-static_assert(GatewayListener<StubListener> && ColocatedApplicationListener<StubListener>);
+static_assert(GatewayListener<StubListener> && ApplicationListener<StubListener>);
 
 // Everything a co-located application needs, and none of a gateway's election or connection callbacks.
 struct ColocatedOnlyListener
@@ -66,13 +66,13 @@ struct ColocatedOnlyListener
     void onFenced(ClusterError, const std::string&);
 };
 
-static_assert(ColocatedApplicationListener<ColocatedOnlyListener>);
+static_assert(ApplicationListener<ColocatedOnlyListener>);
 static_assert(!GatewayListener<ColocatedOnlyListener>);
 
-TEST(ColocatedApplicationFacade, ShutGateDeclinesAndLeadsNothing)
+TEST(ApplicationFacade, ShutGateDeclinesAndLeadsNothing)
 {
     StubListener listener;
-    ColocatedApplication<StubListener> app{ { .sourceId = 3, .clientId = 21, .memberId = 1 }, listener };
+    Application<StubListener> app{ { .sourceId = 3, .clientId = 21, .memberId = 1 }, listener };
 
     EXPECT_FALSE(app.isLeading()) << "no LeadershipChanged has named this member yet";
     EXPECT_FALSE(app.canPublish()) << "a shut gate publishes nothing whatever ingress is doing";

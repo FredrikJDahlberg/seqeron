@@ -18,7 +18,7 @@ through the same consumer — so the round trip is measured over the real path.
 
 `ColocatedApp` does what `FollowStream` does and names none of the tiers under it. Its whole import list
 from seqeron is `app` plus `protocol.Publish`: no receiver, no sender, no envelope, no `systemEventType`.
-`ColocatedApplication` assembles the cluster session, the tap, confirmed ingress across a failover, the
+`Application` assembles the cluster session, the tap, confirmed ingress across a failover, the
 fences and the leader gate, and hands it `Payload`s. The C++ twin adds `util/Env.hpp` and
 `util/IdleStrategy.hpp`, which are support code beside the façade rather than a tier under it, and which
 the Java half takes from its own standard library instead.

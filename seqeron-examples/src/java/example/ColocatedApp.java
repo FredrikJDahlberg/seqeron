@@ -9,7 +9,7 @@ import org.agrona.concurrent.BackoffIdleStrategy;
 import org.agrona.concurrent.IdleStrategy;
 import org.agrona.concurrent.UnsafeBuffer;
 import org.limitless.seqeron.app.ClusterError;
-import org.limitless.seqeron.app.ColocatedApplication;
+import org.limitless.seqeron.app.Application;
 import org.limitless.seqeron.app.Payload;
 import org.limitless.seqeron.protocol.Publish;
 
@@ -28,7 +28,7 @@ import org.limitless.seqeron.protocol.Publish;
  * then {@code ./gradlew -p seqeron-examples runColocated}. Properties: {@code -Dcolocated.member}
  * (default 0), {@code -Dcolocated.clientId} (default 13), {@code -Dcolocated.aeronDir}.
  */
-public final class ColocatedApp implements ColocatedApplication.Listener {
+public final class ColocatedApp implements Application.Listener {
     /** The examples' `payloadId` — eight raw bytes, no schema, which spec §13.2 admits. */
     private static final int PING_PAYLOAD_ID = 6;
 
@@ -42,7 +42,7 @@ public final class ColocatedApp implements ColocatedApplication.Listener {
 
     private final MutableDirectBuffer pingBody = new UnsafeBuffer(new byte[Long.BYTES]);
 
-    private ColocatedApplication app;
+    private Application app;
     private long pingSentNs;
     private String fence;
 
@@ -67,7 +67,7 @@ public final class ColocatedApp implements ColocatedApplication.Listener {
         // ingressEndpoints is not passed: it defaults to the cluster's own port block, which is what a
         // co-located replica falls back to on the duty cycles where its node is not the one leading.
         try (Aeron aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(aeronDir));
-             ColocatedApplication app = ColocatedApplication.builder()
+             Application app = Application.builder()
                  .sourceId(SOURCE_ID).clientId(clientId).memberId(memberId)
                  .egressChannel(EGRESS_CHANNEL).listener(application)
                  .build()) {

@@ -145,13 +145,13 @@ directly.
 The assembled duty cycle, one façade per kind of producer, over the pieces above. A consumer that
 takes one of these writes its edge and its payloads, and nothing of the frame layer or of seqeron's
 system vocabulary appears in its code. Both languages have both façades, `app/Gateway.hpp` and
-`app/ColocatedApplication.hpp` in C++, with the same calls under the same names. The tables below use
+`app/Application.hpp` in C++, with the same calls under the same names. The tables below use
 Java's shapes; C++ differs only here:
 
 | | Java | C++ |
 |---|---|---|
 | construct | `Gateway.builder()…build()` | `Gateway<Listener>{ config, listener }`, where `Config` is an aggregate with one field per builder setter |
-| listener | implements `Gateway.Listener` | any type satisfying the `GatewayListener` / `ColocatedApplicationListener` concept |
+| listener | implements `Gateway.Listener` | any type satisfying the `GatewayListener` / `ApplicationListener` concept |
 | ingress | `ingressEndpoints(…)`, defaulting to `PortLayout.ingressEndpoints()` | none: member 0 on `localhost`, following the cluster's redirect (see [`ClusterStreamSender`](#producing)) |
 | `publish` / `reply` | payload bytes, its own `messageHeader` included | the same bytes, or `publish<Encoder>(…, fill)`, where `fill(Encoder&)` stamps an encoder already wrapped with its header |
 | payload body | `buffer()` at `bodyOffset()`/`bodyLength()` | `body()`/`bodyLength()`, or `decode<Decoder>()` |
@@ -213,7 +213,6 @@ gateway.close();
 | `closeConnection(id)` | the same for a connection that has gone; one the cluster never heard of is dropped rather than announced |
 | `publish(connectionId, payloadId, payload, length)` | submits one payload, stamped with this gateway's `sourceId`; `Declined` is worth retrying. C++ also has `publish<Encoder>(connectionId, payloadId, fill)` |
 | `isActivated()`, `isServing()`, `sourceId()`, `gatewayId()`, `isCaughtUp()`, `lastGlobalSeqNo()` | what the instance may say about itself; `sourceId()` and `gatewayId()` read `UNRESOLVED` until a `GatewayRegistered` row names it |
-| `tapLag()` | the `TapLagMonitor` both façades keep, for a consumer that reports staleness itself |
 
 `Listener` is the edge: `onActivated(firstConnectionId)` opens it and `onStandby()` closes it,
 `onSequenced(Payload)` delivers application payloads in order, `onConnectionOpened`/`onConnectionClosed`
@@ -224,13 +223,11 @@ transition, and `onFenced(ClusterError, detail)` fires once — release the clus
 a standby takes over. The four `ClusterError` values are the cluster session lost, ingress confirmation faulted,
 recovery stalled, and the tap stalled; a media driver that goes away raises from `doWork()` instead.
 
-Tap lag is deliberately **not** a callback. Both façades feed a `TapLagMonitor` from the live
-`ClusterHeartbeat` and expose it through `tapLag()`; nothing about it is actionable — it raises no fence
-and changes no behaviour — so a consumer that wants to log staleness polls `isStale()`,
-`isSkewSuspected()` and `peakLagNs()`, and one that does not carries no extra method. Only live
-heartbeats are sampled: a replayed one is arbitrarily late by construction.
+Tap lag is deliberately **not** the client tier's business: it raises no fence and changes no
+behaviour. How far a node runs behind the cluster is a property of the node, and `doc/ops.md` graphs it
+per member (**Node apply lag**).
 
-`onClusterHeartbeat(clusterTimeNs, receiveTimeNs)` is the other thing the heartbeat exists for, and both
+`onClusterHeartbeat(clusterTimeNs, receiveTimeNs)` is what the heartbeat exists for, and both
 façades deliver it. It is the cluster clock's tick: the one time source that keeps advancing while every
 producer is silent — exactly when a watchdog must still fire — and identical on every node, so a timer
 driven by it decides the same thing everywhere. A producer with a deadline runs it off this rather than
@@ -240,7 +237,7 @@ off a local clock. Between ticks, every payload carries its own `clusterTimestam
 twin is `seqeron-examples/src/cpp/GatewayApp.cpp`, a pair with one simulated connection, loaded from
 `seqeron-examples/topology.xml`.
 
-### `ColocatedApplication`
+### `Application`
 
 One replica of the producer kind nothing elects: one per node, named in the topology's `<applications>`
 section, publishing only while its own node leads. Same builder shape as `Gateway`, taking the
@@ -255,7 +252,6 @@ while that member leads (`DEFAULT_IPC_CONNECT_TIMEOUT_MS`).
 | `publish(payloadId, payload, length)` | submits one payload of this application's own, on its `sourceId` and no connection. C++ also has `publish<Encoder>(payloadId, fill)` |
 | `reply(requesterSourceId, connectionId, payloadId, payload, length)` | the same on behalf of the producer that asked: the **requester's** `sourceId` and `connectionId`, which is how the gateway that took the request routes the answer back out. C++ also has `reply<Encoder>(requesterSourceId, connectionId, payloadId, fill)` |
 | `sourceId()`, `isCaughtUp()`, `lastGlobalSeqNo()` | what the replica may say about itself |
-| `tapLag()` | as on `Gateway` |
 
 `seqeron-examples/src/java/example/ColocatedApp.java` and its C++ twin `ColocatedApp.cpp` are the
 reference consumers, and the only clients in the repository whose builds refuse anything outside `app`
@@ -269,15 +265,14 @@ have gone with it, and the next opening dispatches it again. Keep a request's `s
 `connectionId` rather than its `Payload` — the flyweight is valid only during its callback, and a reply
 is usually dispatched later.
 
-Both façades take `DEFAULT_TAP_STALL_TIMEOUT_MS` (20 heartbeat periods),
-`DEFAULT_RECOVERY_STALL_TIMEOUT_MS` (three times that) and `DEFAULT_TAP_LAG_THRESHOLD_MS` (the same span
-as the tap-silence timeout) — the deployment policy every producer had been copying; each builder takes
-overrides.
+Both façades take `DEFAULT_TAP_STALL_TIMEOUT_MS` (20 heartbeat periods) and
+`DEFAULT_RECOVERY_STALL_TIMEOUT_MS` (three times that) — the deployment policy every producer had been
+copying; each builder takes overrides.
 
 ## Underneath (`app`)
 
 The decisions the façades are assembled from — pure state machines, each with a Java and a C++ twin, each
-doing no I/O. Only the two below are offered. The election, the leader gate and the two stall fences are
+doing no I/O. Only the one below is offered. The election, the leader gate and the two stall fences are
 package-private in Java, the façades being the only thing that assembles them; their C++ twins are in
 `app::detail`, which is how C++ spells the same thing (see [Not API](#not-api)). Confirmed ingress, the one block a duty cycle of your own does need, sits in
 [`sequencer.client`](#producing) beside the `IngressTracker` it implements.
@@ -285,7 +280,6 @@ package-private in Java, the façades being the only thing that assembles them; 
 | Class | For |
 |---|---|
 | `OutstandingWork` | Leader-only request/reply work, re-dispatched after a failover. The exception here, being about the application's own work rather than seqeron's plumbing |
-| `TapLagMonitor` | Observes how far a contiguous tap runs behind the leader; raises no fence. Both façades own one, reached through `tapLag()` |
 
 ## Constants
 

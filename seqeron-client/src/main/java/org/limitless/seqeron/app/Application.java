@@ -20,18 +20,15 @@ import org.limitless.seqeron.replayer.client.SequencedEvent;
  * under it.
  *
  * <p>Single-threaded: every method belongs to the caller's one duty-cycle thread, which calls
- * {@link #doWork()} each iteration. The C++ twin is {@code app/ColocatedApplication.hpp}; keep the two in
+ * {@link #doWork()} each iteration. The C++ twin is {@code app/Application.hpp}; keep the two in
  * step.
  */
-public final class ColocatedApplication implements AutoCloseable {
+public final class Application implements AutoCloseable {
     /** How long the tap may be silent before this replica is fenced — 20 heartbeat periods. */
     public static final long DEFAULT_TAP_STALL_TIMEOUT_MS = Session.DEFAULT_TAP_STALL_TIMEOUT_MS;
 
     /** How long recovery may dispatch nothing, once caught up before; longer, as a re-walk is slower. */
     public static final long DEFAULT_RECOVERY_STALL_TIMEOUT_MS = Session.DEFAULT_RECOVERY_STALL_TIMEOUT_MS;
-
-    /** The lag at which this node's tap is called stale — the same span as the tap-silence timeout. */
-    public static final long DEFAULT_TAP_LAG_THRESHOLD_MS = Session.DEFAULT_TAP_LAG_THRESHOLD_MS;
 
     /** Frames in flight between a publish and the tap; far above what one round trip holds. */
     public static final int DEFAULT_PENDING_CAPACITY = Session.DEFAULT_PENDING_CAPACITY;
@@ -78,7 +75,7 @@ public final class ColocatedApplication implements AutoCloseable {
     private final String egressChannel;
     private final String ingressEndpoints;
 
-    private ColocatedApplication(final Builder builder) {
+    private Application(final Builder builder) {
         this.listener = builder.listener;
         this.sourceId = builder.sourceId;
         this.memberId = builder.memberId;
@@ -87,8 +84,7 @@ public final class ColocatedApplication implements AutoCloseable {
         this.ingressEndpoints = builder.ingressEndpoints;
         this.gate = new LeaderGate(builder.memberId);
         this.session = new Session(builder.clientId, builder.pendingCapacity, builder.tapStallTimeoutMs,
-                                   builder.recoveryStallTimeoutMs, builder.tapLagThresholdMs,
-                                   new SessionDispatch());
+                                   builder.recoveryStallTimeoutMs, new SessionDispatch());
     }
 
     public static Builder builder() {
@@ -160,14 +156,6 @@ public final class ColocatedApplication implements AutoCloseable {
         return session.lastGlobalSeqNo();
     }
 
-    /**
-     * How far behind the leader this node's tap is running. Observation only — nothing here raises a
-     * fence; a consumer that wants to report staleness polls it.
-     */
-    public TapLagMonitor tapLag() {
-        return session.tapLag();
-    }
-
     /** Closes the cluster session and the tap. The Aeron client is the caller's and is left open. */
     @Override
     public void close() {
@@ -228,7 +216,6 @@ public final class ColocatedApplication implements AutoCloseable {
         private int pendingCapacity = DEFAULT_PENDING_CAPACITY;
         private long tapStallTimeoutMs = DEFAULT_TAP_STALL_TIMEOUT_MS;
         private long recoveryStallTimeoutMs = DEFAULT_RECOVERY_STALL_TIMEOUT_MS;
-        private long tapLagThresholdMs = DEFAULT_TAP_LAG_THRESHOLD_MS;
         private long ipcConnectTimeoutMs = DEFAULT_IPC_CONNECT_TIMEOUT_MS;
 
         /**
@@ -284,21 +271,16 @@ public final class ColocatedApplication implements AutoCloseable {
             return this;
         }
 
-        public Builder tapLagThresholdMs(final long tapLagThresholdMs) {
-            this.tapLagThresholdMs = tapLagThresholdMs;
-            return this;
-        }
-
         public Builder ipcConnectTimeoutMs(final long ipcConnectTimeoutMs) {
             this.ipcConnectTimeoutMs = ipcConnectTimeoutMs;
             return this;
         }
 
-        public ColocatedApplication build() {
+        public Application build() {
             Objects.requireNonNull(egressChannel, "egressChannel");
             Objects.requireNonNull(ingressEndpoints, "ingressEndpoints");
             Objects.requireNonNull(listener, "listener");
-            return new ColocatedApplication(this);
+            return new Application(this);
         }
     }
 }

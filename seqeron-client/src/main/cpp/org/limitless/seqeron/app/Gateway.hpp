@@ -86,7 +86,6 @@ class Gateway
         std::size_t pendingCapacity = DEFAULT_PENDING_CAPACITY;
         std::int64_t tapStallTimeoutMs = DEFAULT_TAP_STALL_TIMEOUT_MS;
         std::int64_t recoveryStallTimeoutMs = DEFAULT_RECOVERY_STALL_TIMEOUT_MS;
-        std::int64_t tapLagThresholdMs = DEFAULT_TAP_LAG_THRESHOLD_MS;
     };
 
     /**
@@ -101,9 +100,8 @@ class Gateway
       m_actions{ *this },
       m_lifecycle{ m_config.gatewayName, m_actions },
       m_dispatch{ *this },
-      m_session{ m_config.clientId,          m_config.pendingCapacity,
-                 m_config.tapStallTimeoutMs, m_config.recoveryStallTimeoutMs,
-                 m_config.tapLagThresholdMs, m_dispatch }
+      m_session{ m_config.clientId, m_config.pendingCapacity, m_config.tapStallTimeoutMs,
+                 m_config.recoveryStallTimeoutMs, m_dispatch }
     {}
 
     Gateway(const Gateway&) = delete;
@@ -281,13 +279,6 @@ class Gateway
     [[nodiscard]] std::int64_t lastGlobalSeqNo() const
     {
         return m_session.lastGlobalSeqNo();
-    }
-
-    // How far behind the leader this node's tap is running. Observation only — nothing here raises a
-    // fence; a consumer that wants to report staleness, or log its edges, polls it.
-    [[nodiscard]] const TapLagMonitor& tapLag() const noexcept
-    {
-        return m_session.tapLag();
     }
 
     // Closes the cluster session and the tap. The Aeron client is the caller's and is left open.

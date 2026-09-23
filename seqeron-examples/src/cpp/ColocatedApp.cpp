@@ -1,7 +1,7 @@
 // The same flow as FollowStream.cpp, written against the front door instead of the tiers under it, and the
 // C++ twin of src/java's ColocatedApp. Look at the includes: app, protocol/Publish, and util for the two
 // things Java gets from its own standard library. No receiver, no sender, no envelope, no systemEventType —
-// app::ColocatedApplication assembles the cluster session, the tap, confirmed ingress across a failover, the
+// app::Application assembles the cluster session, the tap, confirmed ingress across a failover, the
 // fences and the leader gate, and hands this file Payloads.
 //
 // A co-located application is the producer kind nothing elects: one replica per node, publishing only while
@@ -23,7 +23,7 @@
 
 #include "Aeron.h"
 
-#include "org/limitless/seqeron/app/ColocatedApplication.hpp"
+#include "org/limitless/seqeron/app/Application.hpp"
 #include "org/limitless/seqeron/protocol/Publish.hpp"
 #include "org/limitless/seqeron/util/Env.hpp"
 #include "org/limitless/seqeron/util/IdleStrategy.hpp"
@@ -133,7 +133,7 @@ int main()
     const std::shared_ptr<aeron::Aeron> aeron = aeron::Aeron::connect(context);
 
     PingListener listener;
-    app::ColocatedApplication<PingListener> application{
+    app::Application<PingListener> application{
         { .sourceId = SOURCE_ID,
           .clientId = clientId,
           .memberId = memberId,

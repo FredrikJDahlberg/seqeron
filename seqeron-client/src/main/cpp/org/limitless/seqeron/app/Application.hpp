@@ -15,9 +15,9 @@
 
 namespace org::limitless::seqeron::app {
 
-/** What a ColocatedApplication's Listener provides. */
+/** What an Application's Listener provides. */
 template<typename L>
-concept ColocatedApplicationListener =
+concept ApplicationListener =
     requires(L& listener, const Payload& payload, bool leading, std::int64_t globalSeqNo, std::int64_t clusterTimeNs,
              std::int64_t receiveTimeNs, ClusterError fence, const std::string& detail) {
         // The gate crossed an edge. False is where OutstandingWork::onNotLeader() belongs: every leadership
@@ -41,13 +41,13 @@ concept ColocatedApplicationListener =
  * OutstandingWork — fed that same stream — the way work survives the gate closing under it.
  *
  * Single-threaded: every method belongs to the caller's one duty-cycle thread, which calls doWork() each
- * iteration. The Java twin is app/ColocatedApplication.java; keep the two in step. Where Java's builder
+ * iteration. The Java twin is app/Application.java; keep the two in step. Where Java's builder
  * takes an ingressEndpoints string, this side has none: ClusterStreamSender dials member 0 on localhost and
  * follows the cluster's redirect; publish and reply each take an SBE encoder and a Fill, or already-encoded
- * bytes as the Java twin does. ColocatedApplicationListener above is what the Listener provides.
+ * bytes as the Java twin does. ApplicationListener above is what the Listener provides.
  */
-template<ColocatedApplicationListener Listener>
-class ColocatedApplication
+template<ApplicationListener Listener>
+class Application
 {
   public:
     // A payload of this application's own belongs to no connection.
@@ -68,7 +68,6 @@ class ColocatedApplication
         std::size_t pendingCapacity = DEFAULT_PENDING_CAPACITY;
         std::int64_t tapStallTimeoutMs = DEFAULT_TAP_STALL_TIMEOUT_MS;
         std::int64_t recoveryStallTimeoutMs = DEFAULT_RECOVERY_STALL_TIMEOUT_MS;
-        std::int64_t tapLagThresholdMs = DEFAULT_TAP_LAG_THRESHOLD_MS;
         std::int64_t ipcConnectTimeoutMs = DEFAULT_IPC_CONNECT_TIMEOUT_MS;
     };
 
@@ -78,18 +77,17 @@ class ColocatedApplication
      * @param config   the replica's identity and deployment policy
      * @param listener the application; must outlive the replica
      */
-    ColocatedApplication(Config config, Listener& listener) :
+    Application(Config config, Listener& listener) :
       m_config{ std::move(config) },
       m_listener{ listener },
       m_gate{ m_config.memberId },
       m_dispatch{ *this },
-      m_session{ m_config.clientId,          m_config.pendingCapacity,
-                 m_config.tapStallTimeoutMs, m_config.recoveryStallTimeoutMs,
-                 m_config.tapLagThresholdMs, m_dispatch }
+      m_session{ m_config.clientId, m_config.pendingCapacity, m_config.tapStallTimeoutMs,
+                 m_config.recoveryStallTimeoutMs, m_dispatch }
     {}
 
-    ColocatedApplication(const ColocatedApplication&) = delete;
-    ColocatedApplication& operator=(const ColocatedApplication&) = delete;
+    Application(const Application&) = delete;
+    Application& operator=(const Application&) = delete;
 
     /**
      * Opens the cluster session on this node and starts following its tap; the gate stays shut until caught
@@ -218,13 +216,6 @@ class ColocatedApplication
         return m_session.lastGlobalSeqNo();
     }
 
-    // How far behind the leader this node's tap is running. Observation only — nothing here raises a
-    // fence; a consumer that wants to report staleness, or log its edges, polls it.
-    [[nodiscard]] const TapLagMonitor& tapLag() const noexcept
-    {
-        return m_session.tapLag();
-    }
-
     // Closes the cluster session and the tap. The Aeron client is the caller's and is left open.
     void close()
     {
@@ -260,7 +251,7 @@ class ColocatedApplication
     class SessionDispatch
     {
       public:
-        explicit SessionDispatch(ColocatedApplication& app) : m_app{ app }
+        explicit SessionDispatch(Application& app) : m_app{ app }
         {}
 
         void onSystem(const protocol::SequencedEvent&)
@@ -298,7 +289,7 @@ class ColocatedApplication
         }
 
       private:
-        ColocatedApplication& m_app;
+        Application& m_app;
     };
 
     Config m_config;

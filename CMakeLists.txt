@@ -295,7 +295,6 @@ if(SEQERON_BUILD_TESTS)
         seqeron-client/src/test/cpp/org/limitless/seqeron/app/OutstandingWorkTest.cpp
         seqeron-client/src/test/cpp/org/limitless/seqeron/app/OutstandingWorkPropertyTest.cpp
         seqeron-client/src/test/cpp/org/limitless/seqeron/app/RecoveryStallFenceTest.cpp
-        seqeron-client/src/test/cpp/org/limitless/seqeron/app/TapLagMonitorTest.cpp
         seqeron-client/src/test/cpp/org/limitless/seqeron/app/TapStallFenceTest.cpp
         seqeron-client/src/test/cpp/org/limitless/seqeron/sequencer/client/ClusterCodecTest.cpp
         seqeron-client/src/test/cpp/org/limitless/seqeron/sequencer/client/PendingSendsTest.cpp
