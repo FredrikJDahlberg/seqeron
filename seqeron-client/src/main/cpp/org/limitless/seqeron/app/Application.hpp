@@ -46,7 +46,7 @@ concept ApplicationListener =
  * follows the cluster's redirect; publish and reply each take an SBE encoder and a Fill, or already-encoded
  * bytes as the Java twin does. ApplicationListener above is what the Listener provides.
  */
-template<ApplicationListener Listener>
+template<typename Listener>
 class Application
 {
   public:
@@ -84,7 +84,10 @@ class Application
       m_dispatch{ *this },
       m_session{ m_config.clientId, m_config.pendingCapacity, m_config.tapStallTimeoutMs,
                  m_config.recoveryStallTimeoutMs, m_dispatch }
-    {}
+    {
+        // Here rather than on the template parameter, where a listener that owns its Application is incomplete.
+        static_assert(ApplicationListener<Listener>);
+    }
 
     Application(const Application&) = delete;
     Application& operator=(const Application&) = delete;

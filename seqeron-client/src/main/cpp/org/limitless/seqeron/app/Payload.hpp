@@ -7,9 +7,13 @@
 
 namespace org::limitless::seqeron::app {
 
+class Payload;
+
 namespace detail {
 template<typename Dispatch>
 class Session;
+
+Payload makePayload(const protocol::SequencedEvent& event);
 } // namespace detail
 
 /**
@@ -132,11 +136,27 @@ class Payload
   private:
     template<typename Dispatch>
     friend class detail::Session;
+    friend Payload detail::makePayload(const protocol::SequencedEvent& event);
 
     explicit Payload(const protocol::SequencedEvent& event) : m_event{ event }
     {}
 
     const protocol::SequencedEvent& m_event;
 };
+
+namespace detail {
+
+/**
+ * Builds the Payload a façade would hand its listener, for a consumer's unit tests of its own handlers.
+ *
+ * @param event the frame to view; must outlive the Payload
+ * @return a view of event
+ */
+inline Payload makePayload(const protocol::SequencedEvent& event)
+{
+    return Payload{ event };
+}
+
+} // namespace detail
 
 } // namespace org::limitless::seqeron::app

@@ -59,7 +59,7 @@ concept GatewayListener = requires(L& listener, const Payload& payload, std::int
  * ingressEndpoints string, this side has none: ClusterStreamSender dials member 0 on localhost and follows
  * the cluster's redirect. The Listener is the edge; GatewayListener above is what it provides.
  */
-template<GatewayListener Listener>
+template<typename Listener>
 class Gateway
 {
   public:
@@ -102,7 +102,10 @@ class Gateway
       m_dispatch{ *this },
       m_session{ m_config.clientId, m_config.pendingCapacity, m_config.tapStallTimeoutMs,
                  m_config.recoveryStallTimeoutMs, m_dispatch }
-    {}
+    {
+        // Here rather than on the template parameter, where a listener that owns its Gateway is incomplete.
+        static_assert(GatewayListener<Listener>);
+    }
 
     Gateway(const Gateway&) = delete;
     Gateway& operator=(const Gateway&) = delete;

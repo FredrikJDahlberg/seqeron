@@ -15,6 +15,7 @@ namespace org::limitless::seqeron::app {
 namespace {
 
 // A Payload is handed out, never built: its constructor would put protocol::SequencedEvent in the surface.
+// A consumer testing its own handlers builds one through detail::makePayload.
 static_assert(!std::is_constructible_v<Payload, const protocol::SequencedEvent&>);
 
 // Records what the façade asked of its consumer; none of it fires before start().
@@ -69,6 +70,13 @@ struct ColocatedOnlyListener
 static_assert(ApplicationListener<ColocatedOnlyListener>);
 static_assert(!GatewayListener<ColocatedOnlyListener>);
 
+// A listener may own its façade as a member, where the listener is still incomplete.
+struct OwningListener : StubListener
+{
+    Gateway<OwningListener> gateway{ { .gatewayName = "GW-T-A", .clientId = 11, .memberId = 0 }, *this };
+    Application<OwningListener> app{ { .sourceId = 3, .clientId = 21, .memberId = 1 }, *this };
+};
+
 TEST(ApplicationFacade, ShutGateDeclinesAndLeadsNothing)
 {
     StubListener listener;
@@ -91,6 +99,28 @@ TEST(GatewayFacade, UndesignatedInstanceServesNothing)
     EXPECT_EQ(Gateway<StubListener>::NO_CONNECTION, gateway.openConnection())
         << "a connection taken while standing down is refused rather than queued";
     EXPECT_EQ(Gateway<StubListener>::UNRESOLVED, gateway.sourceId()) << "no GatewayRegistered row names it yet";
+}
+
+TEST(Facade, ListenerMayOwnItsFacade)
+{
+    OwningListener owner;
+
+    EXPECT_FALSE(owner.gateway.isActivated());
+    EXPECT_FALSE(owner.app.isLeading());
+}
+
+TEST(Facade, MakePayloadViewsTheEvent)
+{
+    const protocol::SequencedEvent event{
+        .globalSeqNo = 7, .sourceId = 12, .connectionId = 4, .payloadId = 6, .templateId = 2
+    };
+    const Payload payload = detail::makePayload(event);
+
+    EXPECT_EQ(7, payload.globalSeqNo());
+    EXPECT_EQ(12, payload.sourceId());
+    EXPECT_EQ(4, payload.connectionId());
+    EXPECT_EQ(6, payload.payloadId());
+    EXPECT_EQ(2, payload.templateId());
 }
 
 } // namespace

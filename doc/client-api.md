@@ -320,6 +320,7 @@ signature that names one is a test seam. Don't build on them:
 - `app/detail`: the blocks a façade assembles — `Session` (the cluster session, the tap, confirmed ingress
   and the fences in one duty cycle), `GatewayLifecycle`, `LeaderGate`, `RecoveryStallFence` and
   `TapStallFence`. In Java these are package-private, and `FacadeSurfaceTest` fails the build if a public
-  signature names one.
+  signature names one. Beside them, `makePayload`: it builds the `Payload` a façade would hand a listener,
+  so a consumer can unit-test its own handlers.
 - Everything in `seqeron-service`: `Sequencer`, `SequencerService`, `SequencerServer`, `TapPublisher`,
   `replayer.server`, `tools`, `MetricsExporter`.
