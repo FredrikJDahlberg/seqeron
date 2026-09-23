@@ -21,8 +21,16 @@ namespace org::limitless::seqeron::sequencer::client {
 // Encode buffer for one ingress message: the largest frame the protocol admits (§12).
 inline constexpr std::size_t INGRESS_ENCODE_BUFFER_LEN = protocol::MAX_INGRESS_LENGTH;
 
-// Offers one encoded frame. Given a tracker (spec §16 A-4, A-5), nothing is sent while it holds or is full,
-// and a placed frame is tracked under the sender's session and term.
+/**
+ * Offers one encoded frame to cluster ingress.
+ *
+ * @param sender  the cluster session to offer on
+ * @param tracker confirms what is placed (spec §16 A-4, A-5): nothing is sent while it holds or is full,
+ *                and a placed frame is tracked under the sender's session and term; nullptr tracks nothing
+ * @param frame   the frame's first byte, its messageHeader included
+ * @param length  the frame's length
+ * @return Published, or Declined if the tracker held or the transport did not take it
+ */
 [[nodiscard]] inline protocol::Publish offerFrame(ClusterStreamSender& sender, IngressTracker* tracker,
                                                   const std::uint8_t* frame, const std::uint16_t length)
 {
@@ -41,13 +49,20 @@ inline constexpr std::size_t INGRESS_ENCODE_BUFFER_LEN = protocol::MAX_INGRESS_L
     return protocol::Publish::Published;
 }
 
-// Encodes one payload inside an Unsequenced frame and offers it to cluster ingress. The session and the
-// template are not parameters; sourceId is (for a reply, the requester's). `fill` stamps an encoder of any
-// schema whose own messageHeader is applied; the payload is encoded into its own buffer and copied in.
-// The overload taking a tracker confirms what it places through it (nullptr tracks nothing).
-// Wraps one already-encoded payload — its own messageHeader included — in an Unsequenced frame and offers
-// it. The Java twin is the only publish there is on that side, since Java's SBE codecs share no interface;
-// here it is what a caller that encodes into a buffer of its own reaches for.
+/**
+ * Wraps one already-encoded payload in an Unsequenced frame and offers it to cluster ingress. The Java twin
+ * is the only publish there is on that side, since Java's SBE codecs share no interface; here it is what a
+ * caller that encodes into a buffer of its own reaches for.
+ *
+ * @param sender        the cluster session to offer on
+ * @param tracker       confirms what is placed, as offerFrame's does; nullptr tracks nothing
+ * @param sourceId      the producer's sourceId; for a reply, the requester's
+ * @param connectionId  the connection the payload belongs to, or -1 for none
+ * @param payloadId     the payload's protocol; neither 0 nor the retired 1
+ * @param payload       the payload's first byte, its own messageHeader included
+ * @param payloadLength the payload's length, at most MAX_PAYLOAD_LENGTH
+ * @return Published; Refused, permanently, for an illegal sourceId, payloadId or length; Declined otherwise
+ */
 [[nodiscard]] inline protocol::Publish publishPayload(ClusterStreamSender& sender, IngressTracker* tracker,
                                                       const std::int32_t sourceId, const std::int32_t connectionId,
                                                       const std::uint16_t payloadId, const std::uint8_t* payload,
@@ -71,6 +86,19 @@ inline constexpr std::size_t INGRESS_ENCODE_BUFFER_LEN = protocol::MAX_INGRESS_L
     return offerFrame(sender, tracker, buffer.data(), length);
 }
 
+/**
+ * Encodes one payload inside an Unsequenced frame and offers it to cluster ingress. The payload is encoded
+ * into its own buffer and copied in.
+ *
+ * @tparam Encoder     the payload's SBE encoder, of any schema
+ * @param sender       the cluster session to offer on
+ * @param tracker      confirms what is placed, as offerFrame's does; nullptr tracks nothing
+ * @param sourceId     the producer's sourceId; for a reply, the requester's
+ * @param connectionId the connection the payload belongs to, or -1 for none
+ * @param payloadId    the payload's protocol; neither 0 nor the retired 1
+ * @param fill         called with the encoder, its own messageHeader already applied, to stamp the fields
+ * @return Published; Refused, permanently, for an illegal sourceId or payloadId; Declined otherwise
+ */
 template<typename Encoder, typename Fill>
 [[nodiscard]] protocol::Publish publishPayload(ClusterStreamSender& sender, IngressTracker* tracker,
                                                const std::int32_t sourceId, const std::int32_t connectionId,
@@ -91,6 +119,17 @@ template<typename Encoder, typename Fill>
     return publishPayload(sender, tracker, sourceId, connectionId, payloadId, payload.data(), payloadLength);
 }
 
+/**
+ * Encodes one payload inside an Unsequenced frame and offers it to cluster ingress, untracked.
+ *
+ * @tparam Encoder     the payload's SBE encoder, of any schema
+ * @param sender       the cluster session to offer on
+ * @param sourceId     the producer's sourceId; for a reply, the requester's
+ * @param connectionId the connection the payload belongs to, or -1 for none
+ * @param payloadId    the payload's protocol; neither 0 nor the retired 1
+ * @param fill         called with the encoder, its own messageHeader already applied, to stamp the fields
+ * @return Published; Refused, permanently, for an illegal sourceId or payloadId; Declined otherwise
+ */
 template<typename Encoder, typename Fill>
 [[nodiscard]] protocol::Publish publishPayload(ClusterStreamSender& sender, const std::int32_t sourceId,
                                                const std::int32_t connectionId, const std::uint16_t payloadId,
@@ -99,8 +138,21 @@ template<typename Encoder, typename Fill>
     return publishPayload<Encoder>(sender, nullptr, sourceId, connectionId, payloadId, std::forward<Fill>(fill));
 }
 
-// One of seqeron's own events (spec §7), in an UnsequencedSystem frame. The body has no messageHeader, so
-// `fill` sees an encoder that was `wrap`ped (V-3). Tracked as publishPayload is.
+/**
+ * Encodes one of seqeron's own events (spec §7) in an UnsequencedSystem frame and offers it to cluster
+ * ingress.
+ *
+ * @tparam Encoder        the event's encoder from sbe-frame.xml
+ * @param sender          the cluster session to offer on
+ * @param tracker         confirms what is placed, as offerFrame's does; nullptr tracks nothing
+ * @param sourceId        the producer's sourceId
+ * @param connectionId    the connection the event concerns, or -1 for none
+ * @param systemEventType the event, one a producer may submit
+ * @param fill            called with the encoder to stamp the fields; the body has no messageHeader, so the
+ *                        encoder was `wrap`ped rather than having one applied (V-3)
+ * @return Published; Refused, permanently, for an illegal sourceId or event or a body of the wrong size;
+ *         Declined otherwise
+ */
 template<typename Encoder, typename Fill>
 [[nodiscard]] protocol::Publish publishSystem(ClusterStreamSender& sender, IngressTracker* tracker,
                                               const std::int32_t sourceId, const std::int32_t connectionId,
@@ -135,6 +187,18 @@ template<typename Encoder, typename Fill>
     return offerFrame(sender, tracker, buffer.data(), length);
 }
 
+/**
+ * Encodes one of seqeron's own events (spec §7) in an UnsequencedSystem frame and offers it, untracked.
+ *
+ * @tparam Encoder        the event's encoder from sbe-frame.xml
+ * @param sender          the cluster session to offer on
+ * @param sourceId        the producer's sourceId
+ * @param connectionId    the connection the event concerns, or -1 for none
+ * @param systemEventType the event, one a producer may submit
+ * @param fill            called with the `wrap`ped encoder to stamp the fields
+ * @return Published; Refused, permanently, for an illegal sourceId or event or a body of the wrong size;
+ *         Declined otherwise
+ */
 template<typename Encoder, typename Fill>
 [[nodiscard]] protocol::Publish publishSystem(ClusterStreamSender& sender, const std::int32_t sourceId,
                                               const std::int32_t connectionId, const std::uint16_t systemEventType,

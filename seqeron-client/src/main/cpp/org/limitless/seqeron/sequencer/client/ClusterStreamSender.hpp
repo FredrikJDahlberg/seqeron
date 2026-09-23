@@ -61,16 +61,27 @@ inline std::int64_t nowMs()
         .count();
 }
 
-// A member's ingress endpoint by id, for SessionEvent(OK), which names the leader but carries no CSV.
-// Assumes a single host, as PortLayout does.
+/**
+ * Builds a member's ingress endpoint, for SessionEvent(OK), which names the leader but carries no CSV.
+ * Assumes a single host, as PortLayout does.
+ *
+ * @param memberId the member
+ * @return its endpoint, "localhost:port"
+ */
 inline std::string memberIngressEndpoint(const std::int32_t memberId)
 {
     return "localhost:" + std::to_string(protocol::clusterIngressPort(memberId));
 }
 
-// Finds `memberId`'s endpoint in a "memberId=host:port,memberId=host:port,..." CSV, the wire
-// format both SessionEvent.detail (on REDIRECT) and NewLeaderEvent.ingressEndpoints use.
-// Returns false (leaving `out` untouched) if the CSV has no entry for that member.
+/**
+ * Finds a member's endpoint in an ingress-endpoint CSV.
+ *
+ * @param endpoints "memberId=host:port,memberId=host:port,...", the wire format both SessionEvent.detail
+ *                  (on REDIRECT) and NewLeaderEvent.ingressEndpoints use
+ * @param memberId  the member to find
+ * @param[out] out  its "host:port"; untouched if not found
+ * @return false if the CSV has no entry for that member
+ */
 inline bool findIngressEndpoint(std::string_view endpoints, std::int32_t memberId, std::string& out)
 {
     std::size_t start = 0;
@@ -111,8 +122,15 @@ class ClusterStreamSender
   public:
     static constexpr std::size_t MAX_PAYLOAD_LEN = 8192;
 
-    // Acquires the ingress publication and egress subscription, then runs the handshake below. Storing
-    // `aeron` is what enables reconnection on REDIRECT/NewLeaderEvent.
+    /**
+     * Opens a cluster session over UDP ingress: acquires the ingress publication and egress subscription,
+     * then runs the handshake. Blocks until the session opens.
+     *
+     * @param aeron         the client to build publications on; storing it is what enables reconnection on
+     *                      REDIRECT/NewLeaderEvent
+     * @param egressChannel this client's own egress channel, the responseChannel the cluster answers on
+     * @throws std::runtime_error if no session opens within the connect timeout
+     */
     void connect(std::shared_ptr<aeron::Aeron> aeron, const std::string& egressChannel)
     {
         m_aeron = std::move(aeron);
@@ -125,10 +143,19 @@ class ClusterStreamSender
                 std::move(egress), m_egressChannel);
     }
 
-    // For a client sharing a cluster member's Aeron directory. Ingress tries that member's IPC first: a
-    // follower never opens IPC ingress, so the request goes unanswered, hence the short
-    // ipcConnectTimeoutMs before falling back to UDP, where a follower redirects to the leader. Leadership
-    // later moving away degrades to UDP; moving back to `memberId` is re-chased onto IPC (see onFragment).
+    /**
+     * Opens a cluster session for a client sharing a cluster member's Aeron directory. Ingress tries that
+     * member's IPC first: a follower never opens IPC ingress, so the request goes unanswered, hence a short
+     * timeout before falling back to UDP, where a follower redirects to the leader. Leadership later moving
+     * away degrades to UDP; moving back to the member is re-chased onto IPC (see onFragment).
+     *
+     * @param aeron               the client to build publications on, sharing the member's directory
+     * @param memberId            the co-located member
+     * @param ipcConnectTimeoutMs how long to wait for IPC ingress before falling back to UDP
+     * @param egressChannel       this client's own egress channel; a distinct UDP endpoint per co-located
+     *                            client, since two drivers on one host cannot both bind one port
+     * @throws std::runtime_error if no session opens over either ingress
+     */
     void connectColocated(std::shared_ptr<aeron::Aeron> aeron, std::int32_t memberId, std::int64_t ipcConnectTimeoutMs,
                           const std::string& egressChannel)
     {
@@ -165,10 +192,17 @@ class ClusterStreamSender
             std::move(egress), ipcConnectTimeoutMs, primaryFailureReason.c_str(), memberId);
     }
 
-    // Test seam for connectColocated: try `primaryIngress` with the short timeout, fall back to
-    // `buildFallbackIngress` with the full one. `primaryIngress` may be null to go straight to the
-    // fallback; `egress` is shared by both attempts. Without m_aeron the NewLeaderEvent re-chase stays a
-    // no-op, so `memberId` only sets the state a test inspects.
+    /**
+     * Test seam for connectColocated: tries the primary ingress with the short timeout, then falls back.
+     * Without m_aeron the NewLeaderEvent re-chase stays a no-op.
+     *
+     * @param primaryIngress         tried first; null goes straight to the fallback
+     * @param buildFallbackIngress   builds the fallback, tried with the full timeout
+     * @param egress                 shared by both attempts
+     * @param primaryConnectTimeoutMs the primary attempt's timeout
+     * @param primaryFailureReason   why building the primary failed, when it is null; logged
+     * @param memberId               the co-located member; only sets the state a test inspects
+     */
     void connectColocated(std::unique_ptr<detail::IngressTransport> primaryIngress,
                           std::function<std::unique_ptr<detail::IngressTransport>()> buildFallbackIngress,
                           std::unique_ptr<detail::EgressTransport> egress, std::int64_t primaryConnectTimeoutMs,
@@ -201,9 +235,15 @@ class ClusterStreamSender
         connect(buildFallbackIngress(), std::move(egress), m_egressChannel);
     }
 
-    // Test seam: drives the handshake against any transport pair, synchronously and without Aeron.
-    // Redirect/reconnect is skipped here (no Aeron client to build a publication with). `egressChannel`
-    // is the responseChannel the cluster publishes egress on.
+    /**
+     * Test seam: drives the handshake against any transport pair, synchronously and without Aeron.
+     * Redirect/reconnect is skipped here (no Aeron client to build a publication with).
+     *
+     * @param ingress       the transport the handshake and frames go out on
+     * @param egress        the transport the cluster's answers come in on
+     * @param egressChannel the responseChannel the cluster publishes egress on
+     * @throws std::runtime_error if no session opens within the connect timeout
+     */
     void connect(std::unique_ptr<detail::IngressTransport> ingress, std::unique_ptr<detail::EgressTransport> egress,
                  const std::string& egressChannel = "")
     {
@@ -269,19 +309,31 @@ class ClusterStreamSender
         }
     }
 
-    // Overrides the connect handshake timeout (default 10s), for tests.
+    /**
+     * Overrides the connect handshake timeout, for tests.
+     *
+     * @param ms the timeout; the default is 10s
+     */
     void setConnectTimeoutMs(std::int64_t ms)
     {
         m_connectTimeoutMs = ms;
     }
 
-    // Overrides send()'s give-up bound (default INGRESS_STALL_FATAL_TIMEOUT_MS), for tests.
+    /**
+     * Overrides send()'s give-up bound, for tests.
+     *
+     * @param ms the bound; the default is INGRESS_STALL_FATAL_TIMEOUT_MS
+     */
     void setIngressStallTimeoutMs(std::int64_t ms)
     {
         m_ingressStallFatalTimeoutMs = ms;
     }
 
-    // Hears every NewLeaderEvent, and gives up a send that met one while it holds. Not owned.
+    /**
+     * Sets the tracker that hears every NewLeaderEvent and gives up a send that met one while it holds.
+     *
+     * @param hold the tracker, normally the producer's PendingSends; not owned, nullptr for none
+     */
     void setIngressHold(IngressTracker* hold)
     {
         m_hold = hold;
@@ -360,7 +412,11 @@ class ClusterStreamSender
         m_clusterSessionId = -1;
     }
 
-    // Drain cluster egress; calls onAppMessage for each application-layer response.
+    /**
+     * Drains cluster egress. Call it every duty cycle.
+     *
+     * @param onAppMessage called with the bytes and length of each application-layer response
+     */
     void pollEgress(const std::function<void(const std::uint8_t*, std::int32_t)>& onAppMessage)
     {
         if (!m_egress)
@@ -371,13 +427,19 @@ class ClusterStreamSender
         applyPendingIngressSwitch(); // a NewLeaderEvent/REDIRECT in that batch; never build inside poll()
     }
 
-    // Wraps a pre-encoded frame in a SessionMessageHeader and offers it, spinning until it lands. The spin
-    // pumps egress itself: a leader change leaves the publication not-connected until a
-    // NewLeaderEvent/REDIRECT swaps it, and that swap runs on this thread. The term and timestamp are
-    // re-stamped before each retry, as AeronCluster.offer() does, since the new leader drops a stale term.
-    //
-    // Returns false with no session, or when a NewLeaderEvent arrived mid-spin while the IngressTracker
-    // holds: nothing was placed, and the frame goes again once it releases.
+    /**
+     * Wraps a pre-encoded frame in a SessionMessageHeader and offers it, spinning until it lands. The spin
+     * pumps egress itself: a leader change leaves the publication not-connected until a
+     * NewLeaderEvent/REDIRECT swaps it, and that swap runs on this thread. The term and timestamp are
+     * re-stamped before each retry, as AeronCluster.offer() does, since the new leader drops a stale term.
+     *
+     * @param bytes the frame's first byte, its messageHeader included
+     * @param len   the frame's length, at most MAX_PAYLOAD_LEN
+     * @return true once the frame is placed; false with no session, when the spin outlasts the stall bound
+     *         (the session is then lost), or when a NewLeaderEvent arrived mid-spin while the IngressTracker
+     *         holds — nothing was placed, and the frame goes again once it releases
+     * @throws std::runtime_error if len exceeds MAX_PAYLOAD_LEN
+     */
     [[nodiscard]] bool send(const std::uint8_t* bytes, std::uint16_t len)
     {
         if (!m_ingress || m_clusterSessionId < 0 || len == 0)

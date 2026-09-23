@@ -9,28 +9,48 @@
 
 namespace org::limitless::seqeron::util {
 
-// Reads a base-10 int from the environment, falling back when unset/empty.
+/**
+ * Reads a base-10 int from the environment.
+ *
+ * @param name     the variable to read
+ * @param fallback what an unset or empty variable reads as
+ */
 inline std::int32_t envInt(const char* name, const std::int32_t fallback)
 {
     const char* value = std::getenv(name);
     return (value != nullptr && *value != '\0') ? static_cast<std::int32_t>(std::strtol(value, nullptr, 10)) : fallback;
 }
 
+/**
+ * Reads a string from the environment.
+ *
+ * @param name     the variable to read
+ * @param fallback what an unset or empty variable reads as
+ */
 inline std::string envString(const char* name, const std::string& fallback)
 {
     const char* value = std::getenv(name);
     return (value != nullptr && *value != '\0') ? std::string{ value } : fallback;
 }
 
-// Set and non-empty — the shape every SEQERON_* opt-in switch uses.
+/**
+ * Whether a variable is set and non-empty — the shape every SEQERON_* opt-in switch uses.
+ *
+ * @param name the variable to read
+ */
 inline bool envFlag(const char* name)
 {
     const char* value = std::getenv(name);
     return value != nullptr && *value != '\0';
 }
 
-// Joins a directory and a name with exactly one separator. macOS's $TMPDIR ends in a slash and Linux's
-// /tmp does not, so concatenating a name onto either gets one of the two platforms wrong.
+/**
+ * Joins a directory and a name with exactly one separator. macOS's $TMPDIR ends in a slash and Linux's
+ * /tmp does not, so concatenating a name onto either gets one of the two platforms wrong.
+ *
+ * @param dir  the directory, with or without a trailing slash; empty yields name alone
+ * @param name the name to join onto it
+ */
 inline std::string joinPath(const std::string& dir, const std::string& name)
 {
     if (dir.empty())
@@ -40,9 +60,13 @@ inline std::string joinPath(const std::string& dir, const std::string& name)
     return dir.back() == '/' ? dir + name : dir + '/' + name;
 }
 
-// The co-located cluster member's Aeron directory, which an app shares to reach that node's tap, Replayer
-// and (while it leads) IPC ingress. `envName` is the per-binary override; the default is member
-// `memberId`'s directory, matching SequencerServer.java's.
+/**
+ * Resolves the co-located cluster member's Aeron directory, which an app shares to reach that node's tap,
+ * Replayer and (while it leads) IPC ingress.
+ *
+ * @param envName  the per-binary override variable
+ * @param memberId the member whose directory is the default, matching SequencerServer.java's
+ */
 inline std::string resolveAeronDir(const char* envName, const std::int32_t memberId)
 {
     const char* value = std::getenv(envName);
@@ -55,9 +79,13 @@ inline std::string resolveAeronDir(const char* envName, const std::int32_t membe
                     "seqeron-seq-aeron-" + std::to_string(memberId));
 }
 
-// A "host:port" cluster-egress endpoint: the per-binary override, else localhost on the port this app
-// owns. Every client co-located on one node shares that node's media driver, so each needs a distinct
-// port — the default is the caller's, from its own application port table.
+/**
+ * Resolves a "host:port" cluster-egress endpoint. Every client co-located on one node shares that node's
+ * media driver, so each needs a distinct port.
+ *
+ * @param envName     the per-binary override variable
+ * @param defaultPort the port this app owns on localhost, from its own application port table
+ */
 inline std::string resolveEgressEndpoint(const char* envName, const std::uint16_t defaultPort)
 {
     return envString(envName, "localhost:" + std::to_string(defaultPort));

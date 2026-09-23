@@ -89,6 +89,12 @@ class Gateway
         std::int64_t tapLagThresholdMs = DEFAULT_TAP_LAG_THRESHOLD_MS;
     };
 
+    /**
+     * Creates an instance that has not started.
+     *
+     * @param config   the instance's identity and deployment policy
+     * @param listener the edge; must outlive the gateway
+     */
     Gateway(Config config, Listener& listener) :
       m_config{ std::move(config) },
       m_listener{ listener },
@@ -103,7 +109,11 @@ class Gateway
     Gateway(const Gateway&) = delete;
     Gateway& operator=(const Gateway&) = delete;
 
-    // Opens the cluster session and starts following this node's tap; the gate stays shut until designated.
+    /**
+     * Opens the cluster session and starts following this node's tap; the gate stays shut until designated.
+     *
+     * @param aeron the client, on the co-located member's Aeron directory
+     */
     void start(std::shared_ptr<aeron::Aeron> aeron)
     {
         m_session.start(std::move(aeron), m_config.memberId, m_config.egressChannel);
@@ -143,9 +153,15 @@ class Gateway
         return m_lifecycle.isServing() && !m_session.isHolding();
     }
 
-    // Takes one connection into the cluster's view of this gateway: allocates its id from the resume point
-    // and queues its ConnectionOpened, which doWork() places and retries. Returns NO_CONNECTION if this
-    // instance is not serving.
+    /**
+     * Takes one connection into the cluster's view of this gateway: allocates its id from the resume point
+     * and queues its ConnectionOpened, which doWork() places and retries.
+     *
+     * @param connectionData the ConnectionOpened's connectionData, copied; what a standby rebuilds the
+     *                       connection's state from
+     * @param length         its length
+     * @return the connection's id, or NO_CONNECTION if this instance is not serving
+     */
     std::int32_t openConnection(const char* connectionData, const std::size_t length)
     {
         if (!m_lifecycle.onSessionAcquired())
@@ -159,14 +175,22 @@ class Gateway
         return connectionId;
     }
 
-    // The same for a connection whose only identity is its id.
+    /**
+     * Takes one connection whose only identity is its id; see openConnection(const char*, std::size_t).
+     *
+     * @return the connection's id, or NO_CONNECTION if this instance is not serving
+     */
     std::int32_t openConnection()
     {
         return openConnection(nullptr, 0);
     }
 
-    // The same for a connection that has gone. One the cluster never heard of is dropped rather than
-    // announced.
+    /**
+     * Releases a connection that has gone, queueing its ConnectionClosed, which doWork() places and retries.
+     * One the cluster never heard of is dropped rather than announced.
+     *
+     * @param connectionId the id openConnection returned
+     */
     void closeConnection(const std::int32_t connectionId)
     {
         if (!m_lifecycle.isServing())
@@ -183,9 +207,16 @@ class Gateway
         m_lifecycleQueue.push_back({ connectionId, protocol::CONNECTION_CLOSED, {} });
     }
 
-    // Submits one application payload on a connection, stamped with this gateway's sourceId. Declined while
-    // ingress is held, back-pressured, or the connection's ConnectionOpened has not landed yet — retry it;
-    // Refused is permanent.
+    /**
+     * Encodes and submits one application payload on a connection, stamped with this gateway's sourceId.
+     *
+     * @tparam Encoder     the payload's SBE encoder
+     * @param connectionId the connection it belongs to, or NO_CONNECTION for the gateway itself
+     * @param payloadId    the payload's protocol
+     * @param fill         called with the encoder, its messageHeader already applied, to stamp the fields
+     * @return Published; Declined while ingress is held or back-pressured or the connection's
+     *         ConnectionOpened has not landed yet — retry it; Refused, permanently
+     */
     template<typename Encoder, typename Fill>
     [[nodiscard]] protocol::Publish publish(const std::int32_t connectionId, const std::uint16_t payloadId, Fill&& fill)
     {
@@ -197,8 +228,17 @@ class Gateway
                                                           std::forward<Fill>(fill));
     }
 
-    // The same for a payload the caller encoded itself, its own messageHeader included. The Java twin
-    // takes only this form — Java's SBE codecs share no interface — so a port keeps the two in step here.
+    /**
+     * Submits one payload the caller encoded itself, stamped with this gateway's sourceId. The Java twin
+     * takes only this form — Java's SBE codecs share no interface — so a port keeps the two in step here.
+     *
+     * @param connectionId  the connection it belongs to, or NO_CONNECTION for the gateway itself
+     * @param payloadId     the payload's protocol
+     * @param payload       the payload's first byte, its own messageHeader included if it has one
+     * @param payloadLength the payload's length
+     * @return Published; Declined while ingress is held or back-pressured or the connection's
+     *         ConnectionOpened has not landed yet — retry it; Refused, permanently
+     */
     [[nodiscard]] protocol::Publish publish(const std::int32_t connectionId, const std::uint16_t payloadId,
                                             const std::uint8_t* payload, const std::uint16_t payloadLength)
     {

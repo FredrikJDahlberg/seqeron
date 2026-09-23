@@ -23,8 +23,17 @@ inline constexpr std::size_t KEY_MEMBER_ID_OFFSET = 0;
 inline constexpr std::size_t KEY_CLIENT_ID_OFFSET = 4;
 inline constexpr std::size_t APP_KEY_LENGTH = 8;
 
-// Allocates an app counter keyed on {memberId, clientId}. Returns the registration id for
-// Aeron::findCounter: the add is async, so callers resolve it on a later duty cycle.
+/**
+ * Allocates an app counter keyed on {memberId, clientId}.
+ *
+ * @param aeron    the client to allocate it on
+ * @param typeId   the counter's type id (doc/registries.md §3)
+ * @param label    the counter's label
+ * @param memberId the node the app runs on, the key's first half
+ * @param clientId the app's Replayer client id, the key's second half
+ * @return the registration id for Aeron::findCounter: the add is async, so callers resolve it on a later
+ *         duty cycle
+ */
 inline std::int64_t addAppCounter(const std::shared_ptr<aeron::Aeron>& aeron, const std::int32_t typeId,
                                   const std::string& label, const std::int32_t memberId, const std::int32_t clientId)
 {

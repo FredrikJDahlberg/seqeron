@@ -18,11 +18,22 @@ enum class TapLag : std::uint8_t
 class TapLagMonitor
 {
   public:
-    // thresholdNs: the lag at which the tap is called stale; no tighter than the caller's tap-silence timeout.
+    /**
+     * Creates a monitor with nothing sampled.
+     *
+     * @param thresholdNs the lag at which the tap is called stale; no tighter than the caller's tap-silence
+     *                    timeout
+     */
     explicit TapLagMonitor(std::int64_t thresholdNs) : m_thresholdNs{ thresholdNs }
     {}
 
-    // Evaluates one live ClusterHeartbeat; the caller gates on isCaughtUp(). Returns only edges.
+    /**
+     * Evaluates one live ClusterHeartbeat; the caller gates on isCaughtUp().
+     *
+     * @param clusterTimestampNs the heartbeat's consensus timestamp
+     * @param receiveTimeNs      when this process read it
+     * @return the edge this heartbeat crossed, or TapLag::None
+     */
     TapLag onClusterHeartbeat(const std::int64_t clusterTimestampNs, const std::int64_t receiveTimeNs)
     {
         m_lastLagNs = receiveTimeNs - clusterTimestampNs;

@@ -85,8 +85,13 @@ inline constexpr std::uint16_t APPLICATION_REGISTERED = sbe::frame::ApplicationR
 // ingressBlockLength's answer for a systemEventType that may not be submitted.
 inline constexpr std::int32_t NOT_INGRESS_LEGAL = -1;
 
-// The compiled block length of the event systemEventType names, or NOT_INGRESS_LEGAL: §9.2 conditions 8
-// and 9 in one lookup. The Java twin is SystemFrame.ingressBlockLength.
+/**
+ * Looks up the compiled block length of a submittable system event: §9.2 conditions 8 and 9 in one lookup.
+ * The Java twin is SystemFrame.ingressBlockLength.
+ *
+ * @param systemEventType the event to look up
+ * @return its block length, or NOT_INGRESS_LEGAL if a producer may not submit it
+ */
 constexpr std::int32_t ingressBlockLength(const std::uint16_t systemEventType)
 {
     switch (systemEventType)
@@ -179,7 +184,12 @@ struct FrameView
     std::uint64_t payloadLength;
 };
 
-/// Copies the identity every system shape carries; the two composites are the same 34 bytes.
+/**
+ * Copies the identity every system shape carries; the two composites are the same 34 bytes.
+ *
+ * @param[out] view   the view to fill, marked as a system frame
+ * @param header      the frame's system header, already wrapped
+ */
 inline void readSystemHeader(FrameView& view, sbe::frame::SequencedSystemHeader& header)
 {
     view.system = true;
@@ -197,6 +207,10 @@ inline void readSystemHeader(FrameView& view, sbe::frame::SequencedSystemHeader&
  * Bounds are checked because a short fragment would otherwise be read past its end. It should not
  * happen — the sequencer validates every frame on ingress and the recording is what it wrote — so
  * `valid == false` here means the recording itself is damaged, and the caller logs and drops.
+ *
+ * @param frame  the fragment's first byte
+ * @param length the fragment's length
+ * @return the frame's view; `valid` is false if the fragment is short or not a sequenced frame
  */
 inline FrameView unwrapFrame(const char* const frame, const std::uint64_t length)
 {
@@ -305,7 +319,15 @@ inline FrameView unwrapFrame(const char* const frame, const std::uint64_t length
     return view;
 }
 
-// The same decode for a frame held as loose bytes rather than a live event.
+/**
+ * Wraps an application payload held as loose bytes in its decoder, past its own messageHeader.
+ *
+ * @tparam Decoder      the payload's decoder, matched on (payloadId, templateId)
+ * @param payload       the payload's first byte, its messageHeader included
+ * @param payloadLength the payload's length
+ * @param blockLength   the block length the payload's messageHeader declares
+ * @param version       the schema version the payload's messageHeader declares
+ */
 template<typename Decoder>
 Decoder decodeSequenced(const char* payload, const std::uint64_t payloadLength, const std::uint16_t blockLength,
                         const std::uint16_t version)
@@ -316,8 +338,15 @@ Decoder decodeSequenced(const char* payload, const std::uint64_t payloadLength, 
     return decoder;
 }
 
-// The same for a system frame's message, which carries no framing: block length and version come from
-// this build's decoder (§7, V-3). Serves both a submitted body and a synthesized template's inline block.
+/**
+ * Wraps a system frame's message in its decoder. The message carries no framing, so block length and
+ * version come from this build's decoder (§7, V-3). Serves both a submitted body and a synthesized
+ * template's inline block.
+ *
+ * @tparam Decoder      the decoder systemEventType names
+ * @param message       the message's first byte
+ * @param messageLength the message's length
+ */
 template<typename Decoder>
 Decoder decodeSystem(const char* message, const std::uint64_t messageLength)
 {
@@ -327,21 +356,36 @@ Decoder decodeSystem(const char* message, const std::uint64_t messageLength)
     return decoder;
 }
 
+/**
+ * Wraps a system event's message in its decoder; see decodeSystem(const char*, std::uint64_t).
+ *
+ * @tparam Decoder the decoder the event's systemEventType names
+ * @param event    the event, valid only during its callback
+ */
 template<typename Decoder>
 Decoder decodeSystem(const SequencedEvent& event)
 {
     return decodeSystem<Decoder>(event.payload, event.payloadLength);
 }
 
-// Wraps an event's payload in the decoder the caller matched its (payloadId, templateId) against. The
-// const_cast is safe: decoding does not write. Valid only for the callback, like SequencedEvent::payload.
+/**
+ * Wraps an application event's payload in its decoder. The decoder is valid only for the callback, like
+ * SequencedEvent::payload.
+ *
+ * @tparam Decoder the decoder the caller matched the event's (payloadId, templateId) against
+ * @param event    the event, valid only during its callback
+ */
 template<typename Decoder>
 Decoder decodeSequenced(const SequencedEvent& event)
 {
     return decodeSequenced<Decoder>(event.payload, event.payloadLength, event.blockLength, event.version);
 }
 
-// Stream position of the first byte of the frame `header` describes; what SequencedEvent::position carries.
+/**
+ * Computes the stream position of a frame's first byte; what SequencedEvent::position carries.
+ *
+ * @param header the Aeron header of the frame's fragment
+ */
 inline std::int64_t frameStartPosition(const aeron::Header& header)
 {
     return aeron::concurrent::logbuffer::LogBufferDescriptor::computePosition(
@@ -372,6 +416,10 @@ struct LifecycleEvent
  * Fills a SequencedEvent from an unwrapped frame, plus the two stamps that belong to the delivery rather
  * than to the frame. Both stream clients deliver the same event built from the same view, so the mapping
  * is here rather than once per client.
+ *
+ * @param view          the unwrapped frame
+ * @param receiveTimeNs when this process read it
+ * @param position      the stream position of its first byte
  */
 inline SequencedEvent sequencedEventOf(const FrameView& view, const std::int64_t receiveTimeNs,
                                        const std::int64_t position)
@@ -393,7 +441,13 @@ inline SequencedEvent sequencedEventOf(const FrameView& view, const std::int64_t
                            .position = position };
 }
 
-/// The same for the header-only ConnectionOpened/ConnectionClosed pair, which carries no body to address.
+/**
+ * Fills a LifecycleEvent from an unwrapped ConnectionOpened/ConnectionClosed, which carries no body to
+ * address.
+ *
+ * @param view          the unwrapped frame
+ * @param receiveTimeNs when this process read it
+ */
 inline LifecycleEvent lifecycleEventOf(const FrameView& view, const std::int64_t receiveTimeNs)
 {
     return LifecycleEvent{ .globalSeqNo = view.globalSeqNo,

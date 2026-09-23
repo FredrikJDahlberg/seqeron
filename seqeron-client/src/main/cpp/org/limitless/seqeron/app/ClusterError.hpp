@@ -19,7 +19,12 @@ enum class ClusterError : std::uint8_t
     TapStalled,
 };
 
-// The error's name, for a log line.
+/**
+ * The error's name, for a log line.
+ *
+ * @param error the error to name
+ * @return its name in upper snake case, e.g. "TAP_STALLED"
+ */
 inline const char* clusterErrorName(const ClusterError error)
 {
     switch (error)

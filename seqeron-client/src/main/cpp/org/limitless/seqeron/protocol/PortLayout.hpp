@@ -27,8 +27,14 @@ inline constexpr const char* ENV_PORT_BASE = "SEQERON_PORT_BASE";
 inline constexpr const char* ARCHIVE_CONTROL_CHANNEL = "aeron:ipc";
 inline constexpr std::int32_t ARCHIVE_CONTROL_STREAM_ID = 100;
 
-// Pure seam over the environment read, so the rules are testable. A bad value throws here rather than
-// surfacing later as a bind error.
+/**
+ * Parses and validates a cluster port base. The pure seam over the environment read, so the rules are
+ * testable; a bad value throws here rather than surfacing later as a bind error.
+ *
+ * @param raw the SEQERON_PORT_BASE value, or nullptr when unset
+ * @return the base, DEFAULT_CLUSTER_PORT_BASE when raw is unset or empty
+ * @throws std::invalid_argument if raw is not a number, is below 1024, or leaves no room for the block
+ */
 inline int parseClusterPortBase(const char* raw)
 {
     if (raw == nullptr || *raw == '\0')
@@ -75,7 +81,11 @@ inline int clusterPortBlockLast()
     return clusterPortBase() + CLUSTER_PORT_BLOCK_WIDTH - 1;
 }
 
-// For a product checking that its own bases sit outside core's block.
+/**
+ * Whether a port is inside core's reserved block; for a product checking that its own bases sit outside it.
+ *
+ * @param port the port to check
+ */
 inline bool isClusterPort(int port)
 {
     return port >= clusterPortBlockFirst() && port <= clusterPortBlockLast();
@@ -106,8 +116,13 @@ inline std::uint16_t clusterTransferPort(int memberId)
     return static_cast<std::uint16_t>(clusterMemberPortBase(memberId) + 5);
 }
 
-// The "host:port,..." archive-endpoint CSV for a nodeCount-member cluster on one host. Every member's
-// archive holds a complete recording, so any reachable one will do.
+/**
+ * Builds the "host:port,..." archive-endpoint CSV for a cluster on one host. Every member's archive holds a
+ * complete recording, so any reachable one will do.
+ *
+ * @param nodeCount the cluster's member count
+ * @param host      the host every member runs on
+ */
 inline std::string archiveEndpointsCsv(int nodeCount, const char* host = "localhost")
 {
     std::string csv;
@@ -124,7 +139,11 @@ inline std::string archiveEndpointsCsv(int nodeCount, const char* host = "localh
     return csv;
 }
 
-// A UDP channel to `endpoint` ("host:port"). The Java twin is SequencerServer's own udp(host, port).
+/**
+ * Builds a UDP channel URI. The Java twin is SequencerServer's own udp(host, port).
+ *
+ * @param endpoint the channel's endpoint, "host:port"
+ */
 inline std::string udpChannel(const std::string& endpoint)
 {
     return "aeron:udp?endpoint=" + endpoint;

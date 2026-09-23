@@ -33,9 +33,12 @@ inline constexpr std::int32_t ARCHIVE_REPLAY_STREAM_ID = 110;
 inline constexpr const char* REPLAY_CHANNEL_IPC = "aeron:ipc";
 
 /**
- * Resolves a replay channel's port from the environment (so two instances of the same
- * binary can run on one host without a port clash the given default.
- * Returns a full "aeron:udp?endpoint=localhost:<port>" channel string.
+ * Resolves a UDP replay channel on localhost, its port from the environment so two instances of the same
+ * binary can run on one host without a port clash.
+ *
+ * @param envVar      the variable holding the port
+ * @param defaultPort the port when envVar is unset or empty
+ * @return the channel, "aeron:udp?endpoint=localhost:<port>"
  */
 inline std::string resolveReplayChannel(const char* envVar, std::uint16_t defaultPort)
 {
@@ -47,9 +50,11 @@ inline std::string resolveReplayChannel(const char* envVar, std::uint16_t defaul
 inline const std::string DEFAULT_ARCHIVE_ENDPOINTS = protocol::archiveEndpointsCsv(protocol::CLUSTER_MEMBER_COUNT);
 
 /**
- * Splits a comma-separated "host:port,host:port,..." list from the given
- * environment variable, falling back to defaultCsv (same format) when unset
- * or empty.
+ * Resolves the archive control endpoints to try, from the environment.
+ *
+ * @param envVar     the variable holding a comma-separated "host:port,host:port,..." list
+ * @param defaultCsv the list, in the same format, when envVar is unset or empty
+ * @return the endpoints, in list order
  */
 inline std::vector<std::string> resolveArchiveEndpoints(const char* envVar, const std::string& defaultCsv)
 {
@@ -79,6 +84,7 @@ inline std::vector<std::string> resolveArchiveEndpoints(const char* envVar, cons
  * active (live) recording over any stopped one; among stopped recordings prefers the
  * largest stop position (holds the most committed data).
  *
+ * @param archive              a connected archive client to search
  * @param[out] recordingId    recording id of the cluster stream found on the archive
  * @param[out] catchUpPosition recording position to replay/catch up to
  * @return false if the archive holds no FEEDER_STREAM_ID recording at all (leaving both
@@ -135,6 +141,11 @@ inline bool findClusterStreamRecording(const std::shared_ptr<aeron::archive::cli
  * control and replays over a UDP replay channel — the recording's aeron:ipc
  * source is irrelevant to replay.
  *
+ * @param aeron                the client the archive connection is made on
+ * @param controlEndpoints     candidate archive control endpoints, "host:port", tried in order
+ * @param controlStreamId      the archives' control request stream id
+ * @param controlResponseChannel this client's own channel for the archive's control responses
+ * @param logPrefix            prepended to every log line and to the exception message
  * @param[out] recordingId    recording id of the sequenced stream found on the
  *                            connected archive
  * @param[out] catchUpPosition recording position to replay/catch up to
@@ -196,6 +207,9 @@ inline std::shared_ptr<aeron::archive::client::AeronArchive> connectToArchiveWit
  * member's archive holds a full copy of the sequenced stream regardless of current leadership,
  * so a missing recording here is a real error, not just "wrong member to ask".
  *
+ * @param aeron                the client the archive connection is made on
+ * @param controlStreamId      the local archive's control request stream id
+ * @param logPrefix            prepended to the log line and to the exception message
  * @param[out] recordingId    recording id of the cluster stream found on the local archive
  * @param[out] catchUpPosition recording position to replay/catch up to
  * @throws std::runtime_error if the local archive can't be reached, or holds no cluster
@@ -250,6 +264,9 @@ struct RecordingSegment
  * leave two segments both reporting stopPosition == NULL_POSITION (active);
  * since the newer holds the older's content, only the most recent is kept and
  * any earlier "active" duplicate is dropped rather than replayed twice.
+ *
+ * @param archive a connected archive client to list
+ * @return the segments, oldest first; empty if the archive holds none
  */
 inline std::vector<RecordingSegment> resolveClusterStreamSegments(
     const std::shared_ptr<aeron::archive::client::AeronArchive>& archive)
@@ -325,6 +342,15 @@ class ClusterStreamClient
     // or a truncated recording — so a caller need not wait out a stall timeout.
     using OnReplayEnded = std::function<void()>;
 
+    /**
+     * Creates a client that has not started.
+     *
+     * @param onSequenced    every frame but the connection lifecycle pair, in globalSeqNo order
+     * @param onConnected    each ConnectionOpened; empty drops them, leaving a hole in globalSeqNo
+     * @param onDisconnected each ConnectionClosed; empty drops them, leaving a hole in globalSeqNo
+     * @param onCaughtUp     once the replay reaches its catch-up position
+     * @param onReplayEnded  single-image mode only: the replay image closed before its catch-up position
+     */
     explicit ClusterStreamClient(OnSequenced onSequenced, OnConnected onConnected = {},
                                  OnDisconnected onDisconnected = {}, OnCaughtUp onCaughtUp = {},
                                  OnReplayEnded onReplayEnded = {}) :

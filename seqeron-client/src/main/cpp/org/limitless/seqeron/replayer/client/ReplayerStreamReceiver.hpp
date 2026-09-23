@@ -55,7 +55,19 @@ class ReplayerStreamReceiver final : private detail::ReplayerRecoveryActions
     using OnLeadershipChanged = detail::ReplayerRecovery::OnLeadershipChanged;
     using OnCaughtUp = detail::ReplayerRecovery::OnCaughtUp;
 
-    // tapFaults, when given, drops live tap frames on demand: test harnesses only. The caller keeps it alive.
+    /**
+     * Creates a receiver that has not started. A frame whose callback is empty is dropped, which leaves a
+     * hole in globalSeqNo.
+     *
+     * @param clientId            unique among the replicas on this node; two sharing one never catch up
+     * @param onSequenced         every other frame, application and system, in globalSeqNo order
+     * @param onConnected         each ConnectionOpened
+     * @param onDisconnected      each ConnectionClosed
+     * @param onLeadershipChanged each LeadershipChanged
+     * @param onCaughtUp          every transition to caught up, the first included
+     * @param tapFaults           drops live tap frames on demand, for test harnesses only; the caller keeps it
+     *                            alive
+     */
     ReplayerStreamReceiver(std::int32_t clientId, OnSequenced onSequenced, OnConnected onConnected = {},
                            OnDisconnected onDisconnected = {}, OnLeadershipChanged onLeadershipChanged = {},
                            OnCaughtUp onCaughtUp = {}, detail::TapFaultInjector* tapFaults = nullptr) :
@@ -83,8 +95,13 @@ class ReplayerStreamReceiver final : private detail::ReplayerRecoveryActions
     ReplayerStreamReceiver(const ReplayerStreamReceiver&) = delete;
     ReplayerStreamReceiver& operator=(const ReplayerStreamReceiver&) = delete;
 
-    // Subscribes the tap and control streams, opens the request publication and the convergence counter,
-    // and requests the cold-start replay. memberId is this app's node, to label the counter.
+    /**
+     * Subscribes the tap and control streams, opens the request publication and the convergence counter,
+     * and requests the cold-start replay.
+     *
+     * @param aeron    the client, on the co-located member's Aeron directory
+     * @param memberId this app's node, to label the counter
+     */
     void start(std::shared_ptr<aeron::Aeron> aeron, const std::int32_t memberId)
     {
         m_aeron = std::move(aeron);

@@ -15,7 +15,13 @@ template<typename Work, typename Key = std::int64_t>
 class OutstandingWork
 {
   public:
-    // A request seen on the sequenced stream, on every replica. Idempotent on the key, keeping its position.
+    /**
+     * Records a request seen on the sequenced stream, on every replica. Idempotent on the key, keeping its
+     * position.
+     *
+     * @param key  the request's key, normally its globalSeqNo
+     * @param work what dispatching it takes
+     */
     void onRequest(const Key& key, Work work)
     {
         if (m_outstanding.insert_or_assign(key, std::move(work)).second)
@@ -24,7 +30,11 @@ class OutstandingWork
         }
     }
 
-    // Its sequenced reply, on every replica: the request is answered.
+    /**
+     * Records a request's sequenced reply, on every replica: the request is answered.
+     *
+     * @param key the answered request's key
+     */
     void onReply(const Key& key)
     {
         m_outstanding.erase(key);
@@ -37,15 +47,23 @@ class OutstandingWork
         m_dispatched.clear();
     }
 
-    // The reply offer failed, so no sequenced reply will come. The request stays outstanding.
+    /**
+     * Records that a reply offer failed, so no sequenced reply will come. The request stays outstanding.
+     *
+     * @param key the request whose reply was not emitted
+     */
     void onReplyNotEmitted(const Key& key)
     {
         m_dispatched.erase(key);
     }
 
-    // Leader only, while the gate is open. Offers each undispatched outstanding request in request order to
-    // dispatch(key, work), which returns false to stop the sweep and must not call back into the tracker.
-    // Returns how many were dispatched by this call.
+    /**
+     * Offers each undispatched outstanding request, in request order. Leader only, while the gate is open.
+     *
+     * @param dispatch called as dispatch(key, work); returns false to stop the sweep, and must not call back
+     *                 into the tracker
+     * @return how many were dispatched by this call
+     */
     template<typename DispatchFn>
     int dispatchUndispatched(DispatchFn&& dispatch)
     {

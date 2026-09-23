@@ -72,6 +72,12 @@ class ColocatedApplication
         std::int64_t ipcConnectTimeoutMs = DEFAULT_IPC_CONNECT_TIMEOUT_MS;
     };
 
+    /**
+     * Creates a replica that has not started.
+     *
+     * @param config   the replica's identity and deployment policy
+     * @param listener the application; must outlive the replica
+     */
     ColocatedApplication(Config config, Listener& listener) :
       m_config{ std::move(config) },
       m_listener{ listener },
@@ -85,7 +91,12 @@ class ColocatedApplication
     ColocatedApplication(const ColocatedApplication&) = delete;
     ColocatedApplication& operator=(const ColocatedApplication&) = delete;
 
-    // Opens the cluster session on this node and starts following its tap; the gate stays shut until caught up.
+    /**
+     * Opens the cluster session on this node and starts following its tap; the gate stays shut until caught
+     * up.
+     *
+     * @param aeron the client, on this member's Aeron directory
+     */
     void start(std::shared_ptr<aeron::Aeron> aeron)
     {
         m_session.startColocated(std::move(aeron), m_config.memberId, m_config.ipcConnectTimeoutMs,
@@ -119,28 +130,53 @@ class ColocatedApplication
         return m_gate.isOpen();
     }
 
-    // Submits one payload of this application's own, stamped with its sourceId and belonging to no
-    // connection. Declined while the gate is shut, ingress is held or the transport is back-pressured —
-    // retry it; Refused is permanent.
+    /**
+     * Encodes and submits one payload of this application's own, stamped with its sourceId and belonging to
+     * no connection.
+     *
+     * @tparam Encoder  the payload's SBE encoder
+     * @param payloadId the payload's protocol
+     * @param fill      called with the encoder, its messageHeader already applied, to stamp the fields
+     * @return Published; Declined while the gate is shut, ingress is held or the transport is back-pressured
+     *         — retry it; Refused, permanently
+     */
     template<typename Encoder, typename Fill>
     [[nodiscard]] protocol::Publish publish(const std::uint16_t payloadId, Fill&& fill)
     {
         return submit<Encoder>(m_config.sourceId, NO_CONNECTION, payloadId, std::forward<Fill>(fill));
     }
 
-    // The same for a payload the caller encoded itself, its own messageHeader included — a payload with no
-    // schema at all (§13.2) included. The Java twin takes only this form, Java's SBE codecs sharing no
-    // interface, so a port keeps the two in step here as Gateway does.
+    /**
+     * Submits one payload of this application's own that the caller encoded itself, a payload with no schema
+     * at all (§13.2) included. The Java twin takes only this form, Java's SBE codecs sharing no interface,
+     * so a port keeps the two in step here as Gateway does.
+     *
+     * @param payloadId     the payload's protocol
+     * @param payload       the payload's first byte, its own messageHeader included if it has one
+     * @param payloadLength the payload's length
+     * @return Published; Declined while the gate is shut, ingress is held or the transport is back-pressured
+     *         — retry it; Refused, permanently
+     */
     [[nodiscard]] protocol::Publish publish(const std::uint16_t payloadId, const std::uint8_t* payload,
                                             const std::uint16_t payloadLength)
     {
         return submit(m_config.sourceId, NO_CONNECTION, payloadId, payload, payloadLength);
     }
 
-    // The same on behalf of the producer that asked for it: a reply carries the requester's sourceId and
-    // connectionId, which is how the gateway that took the request routes the answer back out of it. Keep
-    // those two off the request rather than the request itself — a Payload is valid only during its
-    // callback, and a reply is usually dispatched later.
+    /**
+     * Encodes and submits a reply on behalf of the producer that asked for it. It carries the requester's
+     * sourceId and connectionId, which is how the gateway that took the request routes the answer back out.
+     * Keep those two off the request rather than the request itself — a Payload is valid only during its
+     * callback, and a reply is usually dispatched later.
+     *
+     * @tparam Encoder          the reply's SBE encoder
+     * @param requesterSourceId the request's sourceId
+     * @param connectionId      the request's connectionId
+     * @param payloadId         the reply's protocol
+     * @param fill              called with the encoder, its messageHeader already applied, to stamp the fields
+     * @return Published; Declined while the gate is shut, ingress is held or the transport is back-pressured
+     *         — retry it; Refused, permanently
+     */
     template<typename Encoder, typename Fill>
     [[nodiscard]] protocol::Publish reply(const std::int32_t requesterSourceId, const std::int32_t connectionId,
                                           const std::uint16_t payloadId, Fill&& fill)
@@ -148,7 +184,17 @@ class ColocatedApplication
         return submit<Encoder>(requesterSourceId, connectionId, payloadId, std::forward<Fill>(fill));
     }
 
-    // The same for a reply the caller encoded itself.
+    /**
+     * Submits a reply the caller encoded itself, on behalf of the producer that asked for it.
+     *
+     * @param requesterSourceId the request's sourceId
+     * @param connectionId      the request's connectionId
+     * @param payloadId         the reply's protocol
+     * @param payload           the reply's first byte, its own messageHeader included if it has one
+     * @param payloadLength     the reply's length
+     * @return Published; Declined while the gate is shut, ingress is held or the transport is back-pressured
+     *         — retry it; Refused, permanently
+     */
     [[nodiscard]] protocol::Publish reply(const std::int32_t requesterSourceId, const std::int32_t connectionId,
                                           const std::uint16_t payloadId, const std::uint8_t* payload,
                                           const std::uint16_t payloadLength)

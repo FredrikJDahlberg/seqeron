@@ -23,7 +23,11 @@ namespace org::limitless::seqeron::sequencer::client {
 class PendingSends : public IngressTracker
 {
   public:
-    // capacity: frames that may be pending at once; each holds one MAX_INGRESS_LENGTH copy.
+    /**
+     * Creates an empty tracker.
+     *
+     * @param capacity frames that may be pending at once; each holds one MAX_INGRESS_LENGTH copy
+     */
     explicit PendingSends(const std::size_t capacity) : m_frames(capacity * SLOT_LENGTH), m_entries(capacity)
     {}
 
@@ -33,8 +37,15 @@ class PendingSends : public IngressTracker
         return m_size == m_entries.size();
     }
 
-    // A frame the sender placed, read straight after its send() returned true, with the sender's
-    // clusterSessionId() and leadershipTermId(). Tracking into a full ring latches the fault.
+    /**
+     * Records a frame the sender placed, read straight after its send() returned true. Tracking into a full
+     * ring latches the fault.
+     *
+     * @param frame            the frame's first byte; copied
+     * @param length           the frame's length
+     * @param clusterSessionId the sender's clusterSessionId()
+     * @param leadershipTermId the sender's leadershipTermId()
+     */
     void track(const std::uint8_t* frame, const std::uint16_t length, const std::int64_t clusterSessionId,
                const std::int64_t leadershipTermId) override
     {
@@ -49,13 +60,21 @@ class PendingSends : public IngressTracker
         ++m_size;
     }
 
-    // From the stream client's leadership callback: closes the count on every earlier term.
+    /**
+     * Closes the count on every earlier term. Called from the stream client's leadership callback.
+     *
+     * @param leadershipTermId the LeadershipChanged frame's term
+     */
     void onLeadershipChanged(const std::int64_t leadershipTermId)
     {
         m_closedTermId = std::max(m_closedTermId, leadershipTermId);
     }
 
-    // From the sender, which calls it on every NewLeaderEvent.
+    /**
+     * Records that egress named a new leader. Called by the sender on every NewLeaderEvent.
+     *
+     * @param leadershipTermId the new leader's term
+     */
     void onNewLeader(const std::int64_t leadershipTermId) override
     {
         m_newLeaderTermId = std::max(m_newLeaderTermId, leadershipTermId);
@@ -67,9 +86,13 @@ class PendingSends : public IngressTracker
         return m_size > 0 && m_entries[m_head].termId < std::max(m_newLeaderTermId, m_closedTermId);
     }
 
-    // Resends the missing frames oldest first through sender (send(bytes, length), clusterSessionId(),
-    // leadershipTermId()), each going back to the end of the ring as pending under the term it now carries.
-    // Stops at the first send that fails, so a later call picks up where this left off. Returns how many.
+    /**
+     * Resends the missing frames oldest first, each going back to the end of the ring as pending under the
+     * term it now carries. Stops at the first send that fails, so a later call picks up where this left off.
+     *
+     * @param sender anything with send(bytes, length), clusterSessionId() and leadershipTermId()
+     * @return how many frames were resent
+     */
     template<typename Sender>
     std::size_t resendMissing(Sender& sender)
     {
@@ -90,7 +113,11 @@ class PendingSends : public IngressTracker
         return resent;
     }
 
-    // Every frame off the tap, in order. Only this producer's own frames change anything.
+    /**
+     * Matches a frame off the tap against the pending ones. Only this producer's own frames change anything.
+     *
+     * @param event every frame off the tap, in order
+     */
     void onSequenced(const protocol::SequencedEvent& event)
     {
         const std::size_t index = missing();

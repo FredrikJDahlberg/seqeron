@@ -98,8 +98,12 @@ inline LoggerSink*& installedSink()
     return sink;
 }
 
-// Installs the sink every subsequent log() call forwards to. Caller owns the sink's lifetime (e.g.
-// a test's stack-local RecordingDiagnosticSink) — reset() before it goes out of scope.
+/**
+ * Installs the sink every subsequent log() call forwards to.
+ *
+ * @param sink the sink; the caller owns its lifetime (e.g. a test's stack-local RecordingDiagnosticSink)
+ *             and calls reset() before it goes out of scope
+ */
 inline void install(LoggerSink& sink)
 {
     installedSink() = &sink;
