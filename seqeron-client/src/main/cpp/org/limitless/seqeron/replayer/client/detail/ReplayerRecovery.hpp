@@ -121,7 +121,7 @@ class ReplayerRecovery
     static constexpr std::int32_t RESUME_SEGMENT_INDEX = -1;
 
     // Caps on frames retained ahead of a hole (see retainFrame) — enough to cover a walk over a normal
-    // recording, not a whole trading day; past either bound recovery falls back to re-walking.
+    // recording, not a whole log; past either bound recovery falls back to re-walking.
     static constexpr std::size_t MAX_RETAINED_FRAMES = 65536;
     static constexpr std::size_t MAX_RETAINED_BYTES = 16UL * 1024 * 1024;
 

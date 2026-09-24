@@ -1,9 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-    The cluster tier's OWN topology document — the gateway pair chaos-runner.sh runs, and the only one
-    core owns. src/test/resources/topology-{gw,egw,ogw}.xml are the products' and name product binaries,
-    which is why Java-only mode could load no list at all before this file existed and so exercised
-    neither the election path nor the bootstrap GatewayActive.
+    The cluster tier's own topology document: the gateway pair chaos-runner.sh runs, so that the
+    harnesses exercise the election path and the bootstrap GatewayActive.
 
       clusterctl.sh load-topology cluster/src/test/resources/topology-test-gateway.xml
 

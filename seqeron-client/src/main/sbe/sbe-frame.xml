@@ -1,42 +1,18 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <!--
-    The frame layer — doc/seqeron-protocol-spec.md §4, schema 210.
+    The frame layer: schema 210, specified in doc/seqeron-protocol-spec.md §4 and §7.
 
-    Two families, seven top-level templates. The application family (Unsequenced 100 /
-    Sequenced 101) carries one opaque length-prefixed payload named by header.payloadId
-    and owned by whoever that number names (§6); the cluster tier never opens it. The
-    system family (UnsequencedSystem 102 / SequencedSystem 103, plus the three the
-    sequencer synthesizes: ClusterHeartbeat 104, LeadershipChanged 105, GatewayActive
-    106) carries seqeron's own vocabulary, named by header.systemEventType (§7).
+    Two families. The application family (Unsequenced 100, Sequenced 101) carries one opaque,
+    length-prefixed payload named by header.payloadId (§6); the cluster tier never decodes it. The
+    system family carries seqeron's own messages, named by header.systemEventType: nine submitted
+    events in UnsequencedSystem 102 / SequencedSystem 103, and three that the sequencer synthesizes as
+    templates of their own (ClusterHeartbeat 104, LeadershipChanged 105, GatewayActive 106).
 
-    Core is not an application, so it no longer rides a payloadId: §15 step 10 gave it
-    its own shapes and retired payloadId 1, which is now refused on ingress rather than
-    reserved-and-decoded. Three payloadIds are allocated — 2 the order family
-    (sbe-order.xml), 3 the FIX session family (sbe-session.xml), 4 reference data
-    (sbe-basicdata.xml).
-
-    F-3: each unsequenced header is a byte-prefix of its sequenced counterpart — same
-    fields, same offsets, same types, for the first 18 bytes. That is what makes
-    sequencing a copy-18/append-16. The two pairs are byte-for-byte identical apart from
-    the name of the uint16 at offset 16, so globalSeqNo sits at 18 on all five sequenced
-    shapes and the continuity read in both ReplayerRecovery's is branch-free over every
-    frame on the tap.
-
-    No pad. The uint16 at offset 16 is 2-byte aligned and globalSeqNo sits unaligned at
-    offset 18; both generators read fixed-width fields through memcpy (SBE C++) and
-    UnsafeBuffer (Agrona), which compile to single unaligned loads on x86-64 and ARM64.
-    Plain accessors only — getLongVolatile/getAndAddLong and C++ atomics on an unaligned
-    address are undefined.
-
-    The composites are named for their templates rather than all being `header`, which
-    they cannot be once they share one file.
-
-    Naming: `seqeron` throughout, not `seqeron`. The spec names the target file
-    seqeron-frame.xml; that rename lands with the actual repo split
-    not with the protocol steps, each of which is
-    already a wire change on its own.
--->
-<sbe:messageSchema xmlns:sbe="http://fixprotocol.io/2016/sbe"
+    Each unsequenced header composite is a byte prefix of its sequenced counterpart, and the two
+    families' composites differ only in the name of the uint16 at offset 16 (F-3), so globalSeqNo is
+    at offset 18 in every sequenced frame. There is no padding and globalSeqNo is unaligned: use plain
+    accessors only; volatile or atomic access at an unaligned address is undefined.
+--><sbe:messageSchema xmlns:sbe="http://fixprotocol.io/2016/sbe"
                    package="org.limitless.seqeron.sbe.frame"
                    id="210"
                    version="0"
@@ -53,82 +29,80 @@
             <type name="version"     primitiveType="uint16"/>
         </composite>
 
-        <!-- 18 bytes. Every field is producer-set; sourceId MUST NOT be -1 (reserved for the
-             cluster's own synthesized frames, F-4) and payloadId MUST be neither 0 nor 1. -->
+        <!-- 18 bytes, all set by the producer (§5). -->
         <composite name="unsequencedHeader"
-                   description="Application frame header on cluster ingress: who produced this frame, over which connection and cluster session, and what its payload is">
+                   description="Application frame header on cluster ingress: the producer, its connection and cluster session, and the payload's protocol">
             <type name="sourceId"     primitiveType="int32"
-                  description="Identifies the producer. Listed producers use their gatewaySourceId; -1 is reserved for the cluster itself and is illegal here"/>
+                  description="The producer (§5). A gateway uses its gatewaySourceId. -1 is reserved for the cluster and illegal here (F-4)"/>
             <type name="connectionId" primitiveType="int32"
-                  description="The producer's own connection id; unique within one producer process, never across processes"/>
+                  description="The producer's connection id; unique within one producer, not across producers"/>
             <type name="sessionId"    primitiveType="int64"
-                  description="Aeron Cluster session id. Advisory on ingress — the sequencer overwrites it with the session the frame actually arrived on"/>
+                  description="Aeron Cluster session id; advisory. The sequencer overwrites it with the session the frame arrived on"/>
             <type name="payloadId"    primitiveType="uint16"
-                  description="Names the payload's decoder namespace and encoding; 0 and 1 are invalid on the wire"/>
+                  description="The payload's schema or encoding (§6). 0 is invalid and 1 is retired; both are rejected"/>
         </composite>
 
-        <!-- 34 bytes: unsequencedHeader's 18 verbatim, then the stamp. -->
+        <!-- 34 bytes: unsequencedHeader's 18, then globalSeqNo and timestamp. -->
         <composite name="sequencedHeader"
-                   description="Application frame header on the tap: the ingress header verbatim, plus the sequencer's stamp">
+                   description="Application frame header on the tap: the ingress header, plus globalSeqNo and timestamp">
             <type name="sourceId"     primitiveType="int32"
-                  description="Copied verbatim from ingress"/>
+                  description="Copied from ingress"/>
             <type name="connectionId" primitiveType="int32"
-                  description="Copied verbatim from ingress"/>
+                  description="Copied from ingress"/>
             <type name="sessionId"    primitiveType="int64"
-                  description="The true Aeron Cluster session id the frame arrived on"/>
+                  description="The Aeron Cluster session id the frame arrived on"/>
             <type name="payloadId"    primitiveType="uint16"
-                  description="Copied verbatim from ingress"/>
+                  description="Copied from ingress"/>
             <type name="globalSeqNo"  primitiveType="int64"
-                  description="Cluster-wide monotone sequence number, starting at 1, one per emitted frame, never reused and never gapped (S-4)"/>
+                  description="Cluster-wide sequence number: 1 for the first frame, then +1 per emitted frame, with no gaps and no reuse (S-4)"/>
             <type name="timestamp"    primitiveType="int64"
-                  description="Raft consensus time (ms since epoch) at commit — never a node's local clock (S-3)"/>
+                  description="Raft consensus time at commit, in nanoseconds since the epoch; never a node's local clock (S-3)"/>
         </composite>
 
-        <!-- unsequencedHeader byte-for-byte, with systemEventType where payloadId sits. -->
+        <!-- Identical to unsequencedHeader, with systemEventType at offset 16. -->
         <composite name="unsequencedSystemHeader"
-                   description="System frame header on cluster ingress: the same 18 bytes, naming a system event instead of a payload">
+                   description="System frame header on cluster ingress: the same 18 bytes, naming a system event instead of a payload protocol">
             <type name="sourceId"        primitiveType="int32"
-                  description="Identifies the producer; -1 is reserved for the cluster itself and is illegal here"/>
+                  description="The producer (§5). -1 is reserved for the cluster and illegal here (F-4)"/>
             <type name="connectionId"    primitiveType="int32"
-                  description="The producer's own connection id, or -1 for a producer-scoped event"/>
+                  description="The producer's connection id, or -1 for an event that concerns no connection"/>
             <type name="sessionId"       primitiveType="int64"
-                  description="Aeron Cluster session id. Advisory on ingress — the sequencer overwrites it"/>
+                  description="Aeron Cluster session id; advisory. The sequencer overwrites it with the session the frame arrived on"/>
             <type name="systemEventType" primitiveType="uint16"
-                  description="Names the event the body carries; MUST be an allocated, ingress-legal value (§7)"/>
+                  description="The event in the body; MUST be an allocated, ingress-legal value (§7)"/>
         </composite>
 
-        <!-- 34 bytes: unsequencedSystemHeader's 18 verbatim, then the same stamp. -->
+        <!-- 34 bytes: unsequencedSystemHeader's 18, then globalSeqNo and timestamp. -->
         <composite name="sequencedSystemHeader"
-                   description="System frame header on the tap: the ingress header verbatim, plus the sequencer's stamp. Also the header of the three synthesized templates, which have no ingress form">
+                   description="System frame header on the tap: the ingress header, plus globalSeqNo and timestamp. Also the header of the three synthesized templates">
             <type name="sourceId"        primitiveType="int32"
-                  description="Copied verbatim from ingress; -1 marks a frame the cluster synthesized (F-4)"/>
+                  description="Copied from ingress; -1 on a synthesized frame (F-4)"/>
             <type name="connectionId"    primitiveType="int32"
-                  description="Copied verbatim from ingress; -1 on a synthesized frame"/>
+                  description="Copied from ingress; -1 on a synthesized frame"/>
             <type name="sessionId"       primitiveType="int64"
-                  description="The true Aeron Cluster session id the frame arrived on; -1 on a synthesized frame"/>
+                  description="The Aeron Cluster session id the frame arrived on; -1 on a synthesized frame"/>
             <type name="systemEventType" primitiveType="uint16"
-                  description="Copied verbatim from ingress; on a synthesized frame, the value naming that frame's template (§7)"/>
+                  description="Copied from ingress; on a synthesized frame, the value for that frame's template (§7)"/>
             <type name="globalSeqNo"     primitiveType="int64"
-                  description="Cluster-wide monotone sequence number, starting at 1, one per emitted frame, never reused and never gapped (S-4)"/>
+                  description="Cluster-wide sequence number: 1 for the first frame, then +1 per emitted frame, with no gaps and no reuse (S-4)"/>
             <type name="timestamp"       primitiveType="int64"
-                  description="Raft consensus time (ms since epoch) at commit — never a node's local clock (S-3)"/>
+                  description="Raft consensus time at commit, in nanoseconds since the epoch; never a node's local clock (S-3)"/>
         </composite>
 
         <type name="correlationId" primitiveType="int64"
-              description="clusterctl-assigned id, echoed in the frame so the tool matches its own marker"/>
+              description="Set by clusterctl so it can recognise its own frame on the tap"/>
 
         <type name="gatewayName" primitiveType="char" length="32" characterEncoding="US-ASCII"
-              description="Launch-time producer identity, the list's join key (a deployment launch variable, e.g. SEQERON_*_GATEWAY_NAME); byte[0]==0x00 signals absent"/>
+              description="Name an instance is launched with (e.g. SEQERON_*_GATEWAY_NAME), by which it finds its list row; byte 0 = 0x00 means absent"/>
 
         <type name="protocolName" primitiveType="char" length="32" characterEncoding="US-ASCII"
-              description="Label SbeLogPrinter prints for a payload it cannot decode; byte[0]==0x00 signals absent"/>
+              description="Label SbeLogPrinter prints for a payload it cannot decode; byte 0 = 0x00 means absent"/>
 
         <type name="applicationName" primitiveType="char" length="32" characterEncoding="US-ASCII"
-              description="The deployment's name for a co-located application; byte[0]==0x00 signals absent"/>
+              description="The deployment's name for a co-located application; byte 0 = 0x00 means absent"/>
 
-        <!-- The payload's (or system body's) length prefix. characterEncoding is inherited from the
-             generators' defaults and is not a claim about the bytes: a payload is arbitrary binary, and
-             SbeLogPrinter never renders it through this encoding — -o pipes it out raw (§13.1). -->
+        <!-- Length prefix of a payload or system body. The bytes are arbitrary binary; no character
+             encoding applies (SbeLogPrinter -o writes them out raw, §13.1). -->
         <composite name="varDataEncoding">
             <type name="length"  primitiveType="uint16" nullValue="65535" presence="optional"/>
             <type name="varData" primitiveType="uint8"  length="0"/>
@@ -138,153 +112,131 @@
     <!-- ── The application family ────────────────────────────────────────────────────────────────── -->
 
     <sbe:message name="Unsequenced" id="100"
-                 description="One application frame on cluster ingress, awaiting a globalSeqNo. The sequencer admits it under §9.2 and republishes it as Sequenced, or rejects it and emits nothing at all">
+                 description="An application frame on cluster ingress. The sequencer either republishes it as Sequenced or rejects it and emits nothing (§9.2)">
         <field name="header"  id="20001" type="unsequencedHeader"/>
         <data  name="payload" id="20040" type="varDataEncoding"
-               description="The payload named by header.payloadId, opaque here and copied byte-identical onto the tap. Bounded by MAX_PAYLOAD_LENGTH (§12); MAY be empty"/>
+               description="The payload, opaque to the cluster and copied unchanged to the tap. At most MAX_PAYLOAD_LENGTH bytes (§12); MAY be empty"/>
     </sbe:message>
 
     <sbe:message name="Sequenced" id="101"
-                 description="One application frame on the node tap: an admitted ingress frame, its payload byte-identical to what arrived">
+                 description="An application frame on the tap: a sequenced ingress frame, payload unchanged">
         <field name="header"  id="20001" type="sequencedHeader"/>
         <data  name="payload" id="20040" type="varDataEncoding"
-               description="The payload named by header.payloadId, byte-identical to the ingress frame's"/>
+               description="The payload, byte-identical to the ingress frame's"/>
     </sbe:message>
 
     <!-- ── The system family ─────────────────────────────────────────────────────────────────────────
-         seqeron's own vocabulary, and the only thing the cluster tier decodes. The body is the named
-         event's SBE block with **no framing of its own** — header.systemEventType replaces the inner
-         MessageHeader, and a decoder supplies BLOCK_LENGTH and SCHEMA_VERSION from its own compiled
-         constants. V-3 licenses that: no seqeron decoder ever meets bytes another build encoded.
-
-         Twelve events. Nine are submitted and share this pair; three have no ingress form and take
-         top-level templates of their own, because a sequenced shape asserts a transformation and a frame
-         with no ingress form must not claim one.
+         A body is the event's SBE block with no MessageHeader: header.systemEventType names it, and a
+         decoder takes BLOCK_LENGTH and SCHEMA_VERSION from its compiled constants (§7, sound under V-3).
     -->
 
     <sbe:message name="UnsequencedSystem" id="102"
-                 description="One system frame on cluster ingress, awaiting a globalSeqNo. Only the nine submitted systemEventTypes are legal here">
+                 description="A system frame on cluster ingress. Only the nine submitted events are legal here">
         <field name="header" id="20001" type="unsequencedSystemHeader"/>
         <data  name="body"   id="20045" type="varDataEncoding"
-               description="The event named by header.systemEventType, encoded as its own SBE block with no MessageHeader. MAY be empty where that event's block is"/>
+               description="The event named by header.systemEventType, as its SBE block with no MessageHeader. Empty when the event has no fields"/>
     </sbe:message>
 
     <sbe:message name="SequencedSystem" id="103"
-                 description="One submitted system frame on the node tap: the ingress frame stamped, its body byte-identical to what arrived">
+                 description="A submitted system frame on the tap: a sequenced ingress frame, body unchanged">
         <field name="header" id="20001" type="sequencedSystemHeader"/>
         <data  name="body"   id="20045" type="varDataEncoding"
-               description="The event named by header.systemEventType, byte-identical to the ingress frame's"/>
+               description="The event, byte-identical to the ingress frame's body"/>
     </sbe:message>
 
-    <!-- The three the sequencer synthesizes, each with the fields its event needs inline. E-1's
-         exception applies: they have no producer, so every node encodes its own copy, which is why
-         each encode must be a pure function of its arguments (S-3). systemEventType is populated on
-         all three — redundant against the template id — so that offset 16 discriminates every frame
-         on the tap and a consumer's delivery type carries one field whichever family it came from. -->
+    <!-- Synthesized by the sequencer, fields inline. Every node encodes its own copy (E-1), so each
+         encode must depend only on the log (S-3). systemEventType is set, redundantly with the template
+         id, so that offset 16 identifies every frame on the tap. -->
 
     <sbe:message name="ClusterHeartbeat" id="104"
-                 description="The cluster clock, synthesized at 1 Hz off a cluster timer. No body at all: the frame's consensus timestamp and globalSeqNo are the whole message, which makes this the cheapest frame in the system at 42 bytes">
+                 description="The cluster clock, synthesized once a second from a cluster timer. No body: the frame's timestamp and globalSeqNo are the message (42 bytes)">
         <field name="header" id="20001" type="sequencedSystemHeader"/>
     </sbe:message>
 
     <sbe:message name="LeadershipChanged" id="105"
-                 description="A new Aeron Cluster leadership term began. Synthesized once per term, including a term the same member wins again">
+                 description="A new leadership term began. One per term, including a term the same member wins again">
         <field name="header"            id="20001" type="sequencedSystemHeader"/>
         <field name="newLeaderMemberId" id="20008" type="int32"
-               description="Aeron Cluster memberId of the node that is leader from this globalSeqNo onward"/>
+               description="Aeron Cluster member that leads from this globalSeqNo on"/>
         <field name="leadershipTermId"  id="20048" type="int64"
-               description="Aeron Cluster leadershipTermId of the term that begins here"/>
+               description="Aeron Cluster leadershipTermId of the term that starts here"/>
     </sbe:message>
 
     <sbe:message name="GatewayActive" id="106"
-                 description="Designates one producer instance as its logical producer's active one. Synthesized on all four paths — bootstrap, session close, activation timeout, and an operator's GatewayActivationRequested">
+                 description="Designates one gateway instance as active. Synthesized on bootstrap, session close, activation timeout and GatewayActivationRequested (§7.2)">
         <field name="header"    id="20001" type="sequencedSystemHeader"/>
         <field name="gatewayId" id="20029" type="int32"/>
     </sbe:message>
 
     <!-- ── The nine submitted system events ─────────────────────────────────────────────────────────
-         Bodies only: each is the block that rides inside UnsequencedSystem/SequencedSystem, and none
-         carries a header field of its own. Their template ids are never written to the wire — they are
-         the systemEventType values, and are the ones these messages have always held, deliberately: a
-         recording made by an older build must never read as one of these.
+         Bodies carried in UnsequencedSystem/SequencedSystem; none has a header field. A template id here
+         is never written to the wire: it is the event's systemEventType, and ids are never reused.
     -->
 
     <sbe:message name="ConnectionOpened" id="1"
-                 description="A connection opened at a producer. connectionData carries whatever identity that
-                              producer's connections have — opaque to the cluster tier, encoded by the producer
-                              named by header.sourceId, and MAY be empty">
+                 description="A producer opened a connection. connectionData is the connection's identity in the
+                              producer's own encoding, opaque to the cluster tier; MAY be empty (§7.1)">
         <data name="connectionData" id="20041" type="varDataEncoding"/>
     </sbe:message>
 
     <sbe:message name="ConnectionClosed" id="2"
-                 description="A connection closed at a producer. No fields: header.connectionId names a connection
-                              every consumer already saw connect, so there is nothing to add"/>
+                 description="A producer's connection closed. No fields: header.connectionId identifies it"/>
 
     <sbe:message name="ClusterStarted" id="10"
-                 description="Operator marker recording that the cluster is up and open for the day; published by
-                              clusterctl once an elected leader exists">
+                 description="Operator marker: the cluster is up. Published by clusterctl once a leader is elected">
         <field name="correlationId" id="20002" type="correlationId"/>
     </sbe:message>
 
     <sbe:message name="ClusterStopped" id="11"
-                 description="Operator marker recording an orderly shutdown; the last business event in the log">
+                 description="Operator marker: an orderly shutdown has begun. Published by clusterctl shutdown">
         <field name="correlationId" id="20002" type="correlationId"/>
     </sbe:message>
 
     <sbe:message name="GatewayRegistered" id="17"
-                 description="One list row, published by clusterctl load-topology. remaining=0 marks the last row
-                              and is the completeness edge the bootstrap GatewayActives are synthesized behind">
+                 description="One gateway list row, published by clusterctl load-topology. After the row with
+                              remaining = 0 the sequencer synthesizes the bootstrap GatewayActive frames">
         <field name="remaining"       id="20038" type="uint16"
-               description="List rows still to come after this one; 0 = last"/>
+               description="Gateway rows still to come after this one; 0 on the last"/>
         <field name="gatewayId"       id="20029" type="int32"
-               description="The row's own identity, unique across the list; what a GatewayActive names"/>
+               description="The row's identity, unique in the list; what GatewayActive names"/>
         <field name="gatewaySourceId" id="20030" type="int32"
-               description="The logical producer this row belongs to, shared by every instance of it; the value
-                            header.sourceId is matched against"/>
+               description="The logical gateway this row belongs to, shared by all its instances; compared with
+                            header.sourceId (S-6)"/>
         <field name="gatewayName"     id="20031" type="gatewayName"/>
         <field name="preferenceRank"  id="20032" type="uint8"
-               description="0 = designated primary (exactly one per gatewaySourceId); 1,2… = standbys"/>
+               description="0 = designated primary (exactly one per gatewaySourceId); 1, 2, … = standbys"/>
     </sbe:message>
 
     <sbe:message name="GatewayStarted" id="19"
-                 description="A producer instance activated. Binds its cluster session to this gatewayId, and
-                              releases every connection still open under its gatewaySourceId">
+                 description="A gateway instance started. Binds its cluster session to gatewayId and releases every
+                              connection still open under its gatewaySourceId">
         <field name="gatewayId"         id="20029" type="int32"/>
         <field name="firstConnectionId" id="20034" type="int32"
-               description="Where this instance resumes allocating connectionIds, chosen past the highest its own
-                            replay held"/>
+               description="First connectionId this instance allocates, above the highest it saw during replay"/>
     </sbe:message>
 
     <sbe:message name="PayloadIdRegistered" id="23"
-                 description="One row of the topology file's protocols section: what a shared payloadId is called
-                              in this deployment. Labeling only — the sequencer never decodes it and registration
-                              gates nothing">
+                 description="One protocols row from the topology file: the name of a shared payloadId. Labelling
+                              only; the sequencer does not decode it and it admits nothing (C-2)">
         <field name="payloadId"       id="20042" type="uint16"/>
         <field name="protocolVersion" id="20043" type="uint16"
-               description="Which revision the deployment runs; printed beside the name and checked by nothing"/>
+               description="Revision the deployment runs; printed, never checked"/>
         <field name="protocolName"    id="20044" type="protocolName"/>
     </sbe:message>
 
     <sbe:message name="GatewayActivationRequested" id="24"
-                 description="An operator asked for a producer instance to be made active (clusterctl activate).
-                              The sequencer answers it by synthesizing GatewayActive through the same path
-                              bootstrap and both promotions take — so the operator's act is what is recorded, and
-                              the designation is the cluster's. Id 24 is fresh, not GatewayActive's vacated 18, so
-                              no mixed-vintage recording can read one as the other">
+                 description="An operator asked for a gateway instance to be made active (clusterctl activate). The
+                              sequencer validates it against the list and answers with a synthesized
+                              GatewayActive (§7.2)">
         <field name="gatewayId" id="20029" type="int32"/>
     </sbe:message>
 
     <sbe:message name="ApplicationRegistered" id="25"
-                 description="One co-located application, published by clusterctl load-topology. The other kind of
-                              producer (§5): one replica per cluster node, elected by nothing — LeadershipChanged
-                              already names the one that submits — so this row carries no instance id, no rank and
-                              no countdown. Labelling only, like PayloadIdRegistered: the sequencer never decodes
-                              it and registration gates nothing. What it buys is a log that describes the whole
-                              deployment, not only the half that is elected">
+                 description="One co-located application from the topology file (§5). Applications are not elected,
+                              so the row has no instance id, rank or countdown. Labelling only; the sequencer
+                              does not decode it">
         <field name="applicationSourceId" id="20046" type="int32"
-               description="The application's own id in §5's one id space. Declared here even where the process does
-                            not yet stamp it: the id is spoken for either way, and an application that submits only
-                            under a requesting gateway's id is a gap in that process, not in the deployment"/>
+               description="The application's sourceId (§5)"/>
         <field name="applicationName"     id="20047" type="applicationName"/>
     </sbe:message>
 

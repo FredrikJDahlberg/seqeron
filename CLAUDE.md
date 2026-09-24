@@ -69,21 +69,13 @@ Cluster (Raft) replicated state machine that assigns a global, gap-free total or
 external producers, plus the replayer that serves history off each node's recording and the client-side
 plumbing that follows the ordered stream.
 
-This repository is that tier **alone**. It was carved out of **phixeron**, which keeps the product
-edges — the C++/simdfix FIX gateway, `OrderExecServer`, `BasicDataServer`, and the two Java FIX legs
-(`ExchangeGateway`, `OrderGateway`). Those are gone from here, and so are the docs that described them
-(`design.md`, `todo.md`, `future-arch.md`, `architecture-primer.md`, `basicdata-design.md`,
-`gap.md`, `audit.md`, `router-design.md`, `seqeron-protocol.md`,
-`0-overview.md`, `6-detailed-architecture.md`, and the `review-*.md` notes). **The citations of them
-that comments across the tree used to carry have been removed**, so every `doc/<name>.md` reference in
-this tree resolves inside it. Do not add a citation of a document that is not here — state the reason
-inline instead.
+This repository is that tier **alone**: it contains no application edges and no application schemas.
+Every `doc/<name>.md` reference in this tree resolves inside it. Do not cite a document that is not
+here — state the reason inline instead.
 
 **Every artifact says `seqeron`** — package `org.limitless.seqeron`, Gradle project `seqeron`, the fat
 jar `seqeron-<version>-uber.jar`, CMake targets `seqeron_core`/`seqeron_flags`, environment variables
-`SEQERON_*`, Prometheus metrics `seqeron_*`. The product repo is still `phixeron` and its own
-identifiers stay that way; where a doc here cites one of its files or protocol names, that name is
-`phixeron` on purpose.
+`SEQERON_*`, Prometheus metrics `seqeron_*`.
 
 ## Module layout
 
@@ -181,8 +173,7 @@ what keeps the committed copy from drifting away from `seqeron-client/src/main/s
 `core_tests` are gated on `SEQERON_BUILD_TESTS`, which defaults to
 `PROJECT_IS_TOP_LEVEL` — a build that adds this one gets neither unless it asks. `-DSEQERON_COVERAGE=ON` adds instrumentation. `--target docs` renders the C++ API reference
 (`<build>/docs/html`, `detail/` and the codecs left out, as the javadoc leaves them out), and exists only
-when `find_package(Doxygen)` finds one. No simdfix, and therefore **no SSH remote is
-needed** — the FetchContent clone that used to require one went with the product half.
+when `find_package(Doxygen)` finds one. No SSH remote is needed.
 
 **Consumable two ways, under the same target name.** `add_subdirectory`/`FetchContent` over the
 checkout (`seqeron-examples`), or `find_package(seqeron)` against a `cmake --install`ed prefix —
@@ -206,9 +197,8 @@ cmake --build cmake-build-debug --target run_tests   # GoogleTest
 ./gradlew test                                       # JUnit
 ```
 `run_tests` is `ctest --output-on-failure` with the build dependency wired, and also builds
-`core_headers`, which compiles each public header alone under `-Werror`. **Plain `ctest` is fine
-here** — the `..._NOT_BUILT` noise that had to be filtered was simdfix's own registered suite, and this
-build declares no simdfix. Single suites:
+`core_headers`, which compiles each public header alone under `-Werror`. Plain `ctest` works too.
+Single suites:
 `./cmake-build-debug/core_tests --gtest_filter='ReplayerRecovery*'` and
 `./gradlew test --tests '*SequencerTest'`.
 
@@ -328,8 +318,8 @@ validates every frame against `doc/seqeron-protocol-spec.md` §9.2.
 
 **The cluster tier decodes no `payloadId` at all** — every application payload is copied through
 unopened. `payloadId` 1 is retired and refused on ingress: core was a `payloadId` until the system family
-replaced it. The product repo's ids are 2 (`sbe-order.xml`), 3 (`sbe-session.xml`) and 4
-(`sbe-basicdata.xml`), and this repo owns 5 — `ProbeMarker`, private to `ClusterProbe`.
+replaced it. 2–4 are reserved for an external deployment (spec §6.1), and this repo owns 5 —
+`ProbeMarker`, private to `ClusterProbe`.
 
 **A consumer splits by family first, then dispatches on `(payloadId, templateId)` — never `templateId`
 alone**: template ids are unique per schema, so two applications' templates can collide, and the uint16
@@ -418,20 +408,15 @@ mirrored by `PortLayout` in both languages; change all three together.
 
 ## Known gaps
 
-The gap list went with the product half, so there is none in this repo. The two structural costs
-recorded above are the standing ones: **no snapshots** (recovery time and archive size grow with uptime),
-and **the cluster is bounded at three members** by the 30-port cluster block (`doc/registries.md` §2).
+The two structural costs recorded above are the standing ones: **no snapshots** (recovery time and archive size grow with uptime),
+and **the cluster is bounded at three members** by the 30-port cluster block (`doc/ops.md`, "Ports").
 `SEQERON_PORT_BASE` moves that block off its 9300 default — deployment-wide, read by all three mirrors
 — but does not widen it.
 
-`doc/` holds what survived the split: `seqeron-protocol-spec.md` (normative — the frames, the families,
+`doc/` holds `seqeron-protocol-spec.md` (normative — the frames, the families,
 the system vocabulary, the topology document), `client-api.md` (what a client programs against, and what in
-the client tier is not API — update it when that surface changes), `fault-tolerance.md`, `registries.md` (the two shared
-namespaces this tier owns — `sourceId`, and the port blocks each repo draws from),
-`clusterctl.md` and `ops.md` (runbooks), and `package.md` (the packaging review list). The topology
-documents here are `seqeron-service/src/test/resources/topology-test-gateway.xml` and
-`seqeron-examples/topology.xml`; the product half's `topology.xml` left with it, and no doc points at it
-any more.
+the client tier is not API — update it when that surface changes), `fault-tolerance.md`, `clusterctl.md` and `ops.md` (runbooks, ports, counters). The topology documents here are
+`seqeron-service/src/test/resources/topology-test-gateway.xml` and `seqeron-examples/topology.xml`.
 
 ## Code Formatting Mandate
 - Explicitly respect all style, brace, and indentation configurations found in the local `.clang-format` file.

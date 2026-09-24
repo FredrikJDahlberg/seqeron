@@ -1,6 +1,6 @@
 # seqeron's C++ half — the cluster tier's client side: the cluster stream sender/client, the replayer
 # client, the pure policy classes, and the codecs for the three schemas the cluster tier speaks. It
-# declares no simdfix and generates no application codecs, and there is no C++ replay server: the
+# generates no application codecs, and there is no C++ replay server: the
 # server side of the replay protocol is Java only.
 # 3.30: Aeron 1.53.2's own CMakeLists requires it, so an older CMake should stop here, not inside Aeron.
 cmake_minimum_required(VERSION 3.30)
@@ -182,8 +182,8 @@ endif()
 
 # seqeron_core — header-only interface library for the cluster tier. Its include root is
 # seqeron-client/src/main/cpp, so nothing linking only this can reach a product header,
-# and it carries no simdfix and no generated FIX codecs: its SBE root is SBE_CORE_DIR, which holds
-# only frame/replay/cluster, so the cluster tier decodes no FIX by construction rather than by habit.
+# and it carries no application codecs: its SBE root is SBE_CORE_DIR, which holds only
+# frame/replay/cluster, so the cluster tier decodes no application payload by construction.
 #
 # Consumable two ways and the target name is the same in both: add_subdirectory/FetchContent over the
 # checkout (seqeron-examples), or find_package(seqeron) against an installed tree (the SEQERON_INSTALL
@@ -351,10 +351,8 @@ if(SEQERON_BUILD_TESTS)
     target_link_libraries(core_headers PRIVATE seqeron_core seqeron_flags)
     target_compile_options(core_headers PRIVATE -Werror)
 
-    # run_tests — build the suite and run it. One binary now that the product half is its own repo, so
-    # this is `ctest` with the output turned on; the target keeps its name because the CI workflow, the
-    # docs and habit all name it. Plain ctest is clean here too: simdfix's own suite was what used to be
-    # registered alongside and report spurious ..._NOT_BUILT failures, and this build declares no simdfix.
+    # run_tests — build the suite and run it: `ctest` with the output turned on. The target keeps its
+    # name because the CI workflow and the docs name it.
     add_custom_target(run_tests
         COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure
         DEPENDS core_tests core_headers

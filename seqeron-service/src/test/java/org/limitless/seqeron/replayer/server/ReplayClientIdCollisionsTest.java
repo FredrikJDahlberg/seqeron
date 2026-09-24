@@ -6,7 +6,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 /**
- * Unit tests for the duplicate-{@code SEQERON_REPLAYER_CLIENT_ID} detector (review-3 finding 4). The
+ * Unit tests for the duplicate-{@code SEQERON_REPLAYER_CLIENT_ID} detector. The
  * whole point is the two cases it must not confuse: a client that <em>restarted</em> (one backwards
  * {@code requestId} step, then monotone) versus two live clients sharing an id (their two counters
  * interleave, so backwards steps keep coming). No Aeron runtime — time is a parameter.

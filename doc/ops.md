@@ -86,16 +86,29 @@ GF_PATHS_PROVISIONING="$(pwd)/seqeron-service/src/main/ops/grafana/provisioning"
 Every metric carries a `member="N"` label (the memberId, read from the counter's structured key
 buffer — see `SeqeronCounters.addCounter`/`KEY_MEMBER_ID_OFFSET`).
 
-App-range metrics carry a second label, `client="M"` — the replayer clientId. They are published by
-the co-located replicas rather than by a cluster-tier process, and several of them run per node
-publishing the same counter, so `member` alone would collapse them into one repeated series. The C++
-half of the registry is `org/limitless/seqeron/protocol/SeqeronCounters.hpp`, which must be kept in step
-with the Java one.
+### Counter type ids
 
-The table below is what **core** publishes. A consumer's own counter (type id 5201–5299,
-`registries.md` §3) is exported too, under the first token of its own label — `simdfixgw.fix.sessionsUp
-member=0 client=3` scrapes as `simdfixgw_fix_sessionsUp{member="0",client="3"}` — so a deployment's
-metrics are not limited to the names seqeron happens to know.
+The exporter maps a counter to a metric by its Aeron type id. Aeron reserves 0–999 for itself.
+
+| type ids | published by |
+|---|---|
+| 5000–5099 | `SequencerService` |
+| 5100–5199 | `ReplayerService` |
+| 5200 | `ReplayerStreamReceiver`, inside every client: `seqeron_app_recovery_stalled` |
+| 5201–5299 | an application's own counters, allocated by the deployment |
+
+The ids are defined in `SeqeronCounters.java` and its C++ twin `protocol/SeqeronCounters.hpp`, which must
+stay in step. Counters outside these ranges are not exported.
+
+The app range (5200–5299) is published by client replicas, several per node, so its counters carry a
+second label, `client="M"` (the replayer client id); `member` alone would merge them into one series.
+The exporter knows names only for seqeron's own counters. An application counter is exported under the
+first token of its own label, so an application labels its counters `<app>.<area>.<metric> member=…
+client=…`: `myapp.fix.sessionsUp member=0 client=3` scrapes as
+`myapp_fix_sessionsUp{member="0",client="3"}`. Two applications that use the same type id appear as one
+metric, named by whichever was scraped first.
+
+The table below lists seqeron's own metrics.
 
 | Metric | Type | Meaning |
 |---|---|---|
@@ -106,8 +119,8 @@ metrics are not limited to the names seqeron happens to know.
 | `seqeron_sequencer_leadership_change_total` | counter | Count of leadership changes this node has observed and sequenced |
 | `seqeron_sequencer_current_leader_member_id` | gauge | memberId of the leader last recorded by this node's Sequencer |
 | `seqeron_sequencer_last_tick_timestamp_ms` | gauge | Consensus timestamp of the last 1Hz ClusterHeartbeat emitted, in ms (the frame carries ns) |
-| `seqeron_sequencer_gateway_promotion_total` | counter | Count of standby-promotion GatewayActive frames emitted — on a gateway session close, or on a designated instance failing to publish `GatewayStarted` within 60s of being named |
-| `seqeron_sequencer_bootstrap_activated` | gauge | 1 once the bootstrap GatewayActive has been emitted for the trading day, else 0 |
+| `seqeron_sequencer_gateway_promotion_total` | counter | Count of standby-promotion GatewayActive frames emitted — on a gateway session close, or on a designated instance failing to publish `GatewayStarted` within 5 s of being named (`GATEWAY_ACTIVATION_TIMEOUT_MS`) |
+| `seqeron_sequencer_bootstrap_activated` | gauge | 1 once the bootstrap GatewayActive has been emitted in this cluster's log, else 0 |
 | `seqeron_sequencer_tap_stalled` | gauge | 1 while the tap recording has made no progress for longer than the stall threshold (200ms) under back-pressure, else 0. Latches at 1 when the node terminates for an unrecordable tap — see below |
 | `seqeron_replayer_stalled` | gauge | 1 while the local archive is refusing to serve a replay, else 0. Set from every path that asks the archive for one — the startup self-check included — and cleared by a bounded probe replay the node runs itself once a second while stalled, so it reads 0 again even on a Replayer no app is asking for history |
 | `seqeron_replayer_ready` | gauge | 1 once the co-located tap recording is visible and replay requests are being served |
@@ -119,6 +132,37 @@ metrics are not limited to the names seqeron happens to know.
 | `seqeron_replayer_control_replies_dropped_total` | counter | Count of control replies dropped rather than spun on because an app stopped draining the control stream. Each costs that app one resend interval, so the **rate** identifies a wedged replica — the absolute value does not |
 | `seqeron_replayer_client_id_collision` | gauge | 1 once two co-located apps were seen sharing one `SEQERON_REPLAYER_CLIENT_ID`, else 0. They stop each other's replays and neither catches up until the launch configuration is corrected |
 | `seqeron_app_recovery_stalled` | gauge | 1 while this replica's recovery has dispatched nothing for 30s while not caught up, else 0. Also labelled `client`. It is holding, which is correct and safe — but it is not serving, and nothing else says so: the causes are a `ReplayUnavailable` refusal, a Replayer that never answers, and a hole this node's recording chain cannot cover. The replica's own fault line names which |
+
+## Ports
+
+seqeron's processes bind these ports; an application's own ports must stay outside them.
+
+| port | used by |
+|---|---|
+| `base + memberId*10 + 1` | the member's archive |
+| `base + memberId*10 + 2` | cluster ingress |
+| `base + memberId*10 + 3` | consensus between members |
+| `base + memberId*10 + 4` | the Raft log |
+| `base + memberId*10 + 5` | catch-up transfer |
+| `9400 + memberId` | `metrics-exporter.sh` `/metrics` (TCP) |
+| 9200, 9201 | `TestGateway` TCP listeners (test harnesses only) |
+| `9202 + memberId` | `seqeron-examples` cluster egress (UDP) |
+| 9205, 9206 | `seqeron-examples` C++ gateway pair cluster egress (UDP) |
+
+`base` is 9300 unless `SEQERON_PORT_BASE` is set. The cluster block, `base` to `base + 29`, is three
+members wide, so **a cluster has at most three members**; a fourth would need the block widened. Set
+`SEQERON_PORT_BASE` identically for every seqeron process on every host: a node and a client that
+disagree bind and dial different ports, and the symptom is a connection that never completes. It must
+be between 1024 and 65506; a process with an invalid value fails at start-up. Moving the base does not
+move the other ports in the table.
+
+The formula has three copies, `protocol/PortLayout.java`, `protocol/PortLayout.hpp` and
+`seqeron-service/src/main/scripts/ports.sh`, pinned to the same values by `PortLayoutTest` and
+`SequencerServerTest`; change all three together. An application can check its own ports against the
+cluster block with `PortLayout.isClusterPort()`.
+
+Two Aeron media drivers on one host cannot bind the same UDP port, so every co-located process needs
+ports of its own. `clusterctl` binds none: its egress uses an ephemeral port.
 
 ## A node that terminates itself
 
@@ -139,71 +183,32 @@ silent holes in it. What to expect and what to do:
 - **If it exits 70 immediately on restart**, the archive is still broken (the same check bounds
   start-up: the recording must go live within 5s). Fix the storage before restarting again.
 
-## A gateway that terminates itself
+## A gateway that fences itself
 
-`ExchangeGateway` exits **70** on the same principle and for the same reason — see
-`doc/fault-tolerance.md` §2.5 for the four fences. It is not a cluster member, so nothing here is a
-quorum question, but it *is* the venue leg: while it is down, nothing reaches the exchange.
+A gateway built on the client tier's `app/Gateway` stops itself when it can no longer trust its view of
+the log (`doc/fault-tolerance.md` §2.1). The façade reports the reason once, through
+`Listener.onFenced(ClusterError, detail)`, and the application releases its cluster session, normally
+by exiting. `TestGateway` exits **70**; a production gateway chooses its own code, and 70 is the
+convention here for "fenced, restart me". It is not a cluster member, so this is not a quorum question.
 
-- **In the log:** a `[ExchangeGateway/N] FATAL: …` line naming the fence that fired — a lost cluster
-  session, a tap that stopped delivering `ClusterHeartbeat`s, a recovery that stopped converging, or
-  one outbound frame back-pressured past 20 s.
-- **The passive instance takes over on its own** if one is running: the fences deliberately make this
-  look to the cluster like the process dying, which is what the sequencer promotes a standby on. The
-  handover is a fresh dial to the venue, not a live session moving, so expect a new logon.
-- **Restart it** under supervision: exit 70 is the "restart me" signal, and recovery is the usual
-  full-log replay. A restarted instance comes back as a standby and is promoted only when named.
-- **A tap stall usually means the co-located node is the problem, not the gateway** — check whether
-  that member's `SequencerServer` self-terminated first (above); they share the tap.
-- **No metrics yet.** The gateway publishes no `SeqeronCounters`, so it is absent from `/metrics`
-  entirely — the log is the only signal. See below.
+| `ClusterError` | usual cause |
+|---|---|
+| `CLUSTER_SESSION_LOST` | the cluster closed the session, or no new leader arrived after a failover |
+| `TAP_STALLED` | no `ClusterHeartbeat` on the co-located tap for 20 s, usually because that node's `SequencerServer` terminated (above); they share the tap |
+| `RECOVERY_STALLED` | recovery delivered nothing for 60 s after the instance had been caught up; see `seqeron_app_recovery_stalled` |
+| `INGRESS_CONFIRM_FAULTED` | an own frame on the tap did not match the oldest pending one, most often because the sequencer rejected one (`seqeron_sequencer_rejected_ingress_total`) |
 
-## A venue that will not accept the logon
-
-`ExchangeGateway` keeps running for this one — the gateway is healthy, the venue is the problem — so
-there is no exit code and no failover to wait for. The signal is a single log line:
-
-```
-[ExchangeGateway/N] the venue has refused this session's logon 3 times running (LOGOUT) — this gateway
-will go on retrying every 300000ms, …
-```
-
-structured as `VenueLogonRefused` at `Error`, and emitted **once per run of refusals** (the retries
-themselves log at `Warn`). It means the socket came up and the logon never completed, three times in a
-row — long enough that the one cause which clears by itself, a venue still holding the previous
-instance's socket after a promotion, has been ruled out.
-
-- **What it does not tell you is why**, and that is not a gap in the logging: bad credentials, a comp-id
-  the venue does not know, a `MsgSeqNum` the venue disagrees with and a venue that is simply closed are
-  the same hang-up on the wire. The bracketed `DisconnectReason` narrows it a little — `LOGOUT` means the
-  venue answered before hanging up, anything else means it just dropped the socket.
-- **Check the closed case first**, since it is the only one that needs nothing done: the gateway retries
-  every 5 minutes indefinitely and will come up on its own when the venue opens. The notification is not
-  repeated, so a session that recovers leaves one `Error` line behind and nothing else.
-- **Otherwise it needs a human, and not a restart** — the state that is being refused is in the
-  replicated log, so a restarted gateway replays straight back into the same refusal. Compare what the
-  venue expects against what the log holds (`SbeLogPrinter`). A venue that disagrees with the log is
-  never reconciled with automatically.
-- **`seqeron_exchange_gateway_*`: nothing.** As above, the gateway publishes no counters, so this
-  cannot be alerted on from Prometheus today — it is a log-scrape signal.
-
-## A gateway that never dials at all
-
-Distinct from the above, and quieter, because there is no venue in it: an instance that caught up and
-then sat there. The line to look for is
-
-```
-[ExchangeGateway/N] the whole log holds no BasicDataSession row owned by gatewaySourceId=5 …
-```
-
-also `VenueSessionError` at `Error`, and emitted once, at catch-up. The gateway's comp-ids are reference
-data — the one session row its `gatewaySourceId` owns — so an instance without that row has nothing to log
-on as and fails closed rather than guessing. It looks exactly like an ordinary standby otherwise: caught
-up, holding its cluster session, answering the keep-alive, and it will accept a `GatewayActive` and still
-not dial. Fix it in reference data (`BasicDataConstants.hpp`), reload, and no restart is needed — the row
-resolves off the tap like any other frame. The sibling line, `a second venue session … is owned by
-gatewaySourceId=N`, is the opposite mistake and is not fatal: the gateway stays on the first row and
-refuses the second, because one venue session is all this build serves.
+- **The standby takes over by itself** if one is running: a fenced instance looks to the cluster like a
+  process that died, and the sequencer promotes the standby when its session closes
+  (`seqeron_sequencer_gateway_promotion_total`). The handover opens new external connections; nothing
+  moves live.
+- **Restart it** under supervision. Recovery is the usual full-log replay, and a restarted instance
+  comes back as a standby, active only when named.
+- **Check the co-located node first** for `TAP_STALLED` and `RECOVERY_STALLED`: a stopped
+  `SequencerServer` or an unavailable replayer (`seqeron_replayer_ready`, `seqeron_replayer_integrity_failure`)
+  explains both.
+- **Metrics:** a gateway publishes `seqeron_app_recovery_stalled` (every client does) and nothing else of
+  seqeron's; its fences appear only in its log.
 
 ## The consensus clock
 
@@ -232,8 +237,7 @@ nothing to discipline them.
 - No Prometheus alerting rules or Grafana alert provisioning — dashboard only.
 - `prometheus.yml`'s target list is fixed and hand-maintained — no service discovery. For a cluster
   whose membership changes, keep it in sync with `clusterMembers`.
-- **Neither FIX gateway is instrumented.** `SeqeronCounters` covers `SequencerService`/
-  `ReplayerService` only, so `FixGateway` and `ExchangeGateway` contribute nothing to `/metrics`:
-  no session state, no fence counters, nothing per-connection. The nearest signal is second-hand and
-  sequencer-side — `seqeron_sequencer_gateway_promotion_total` says that a promotion happened, not how
-  either gateway is doing. Monitoring the edges themselves means reading their logs.
+- **Gateways publish no fence counters.** Beyond `seqeron_app_recovery_stalled`, a gateway exports
+  nothing of seqeron's: no fence counts, no connection state. `seqeron_sequencer_gateway_promotion_total`
+  shows that a promotion happened, not why; the gateway's log does. An application can export its own
+  counters in the app range (see "Counter type ids" above).

@@ -12,7 +12,7 @@ import org.limitless.seqeron.app.GatewayLifecycle.State;
 
 /**
  * Drives {@link GatewayLifecycle} directly; the races it covers are too narrow for an end-to-end script.
- * Merged from phixeron's acceptor and initiator tests. Topology: {@code GW-A} (id 5) and {@code GW-B} (id 6)
+ * Topology: {@code GW-A} (id 5) and {@code GW-B} (id 6)
  * under {@code gatewaySourceId} 6, beside another pair (ids 1 and 2) under 0.
  *
  * <p>Case for case with {@code GatewayLifecycleTest.cpp}.

@@ -25,7 +25,7 @@
 
 namespace org::limitless::seqeron::sequencer::client {
 
-// A UDP-replaying binary uses a port of its own, outside core's reserved block (doc/registries.md §2);
+// A UDP-replaying binary uses a port of its own, outside core's reserved block (doc/ops.md, "Ports");
 // a client co-located with the archive replays over REPLAY_CHANNEL_IPC and needs none.
 inline constexpr std::int32_t ARCHIVE_REPLAY_STREAM_ID = 110;
 
@@ -200,7 +200,7 @@ inline std::shared_ptr<aeron::archive::client::AeronArchive> connectToArchiveWit
 
 /**
  * Connects to the archive co-located with this process over "aeron:ipc" — used by clients
- * (e.g. OrderExecServer) deliberately deployed sharing a single SequencerServer member's own
+ * deliberately deployed sharing a single SequencerServer member's own
  * Aeron directory (see ClusterStreamSender::connectColocated's doc comment for the ingress
  * half of that deployment). Unlike connectToArchiveWithClusterStream, there is exactly one
  * candidate archive here, and — because every member records its own node-local tap — every

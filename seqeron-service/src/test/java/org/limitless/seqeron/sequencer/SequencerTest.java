@@ -39,15 +39,14 @@ class SequencerTest {
     private static final int SOURCE_ID = 7;
 
     /** The second logical gateway, for the multi-pair cases: a distinct gatewaySourceId. */
-    private static final int EXCHANGE_SOURCE_ID = 8;
+    private static final int SECOND_SOURCE_ID = 8;
     private static final int CONNECTION_ID = 42;
     private static final long SESSION_ID = 0x5EE51_0000L;
     private static final long TIMESTAMP = 1_700_000_000_000_000_000L; // consensus time is epoch ns
 
     /**
-     * An allocated payloadId the sequencer does not own — 3 is the FIX session family's — standing in
-     * for any application protocol. Nothing here decodes one: the sequencer opens no payload, so this
-     * suite may not either, and a test that reached for {@code sbe-session.xml}'s codecs would put an
+     * An allocated payloadId the sequencer does not own, standing in for any application protocol. Nothing here decodes one: the sequencer opens no payload, so this
+     * suite may not either, and a test that reached for an application schema's codecs would put an
      * application's dictionary on the cluster tier's compile classpath to assert it is never used.
      */
     private static final int SESSION_PAYLOAD_ID = 3;
@@ -293,7 +292,7 @@ class SequencerTest {
     @Test
     @DisplayName("core's retired payloadId 1 is refused on ingress rather than copied through")
     void retiredCorePayloadIdIsRefusedOnIngress() {
-        // Core is not an application and no longer rides a payload (§15 step 10). Refusing 1 rather than
+        // Core is not an application and no longer rides a payload (§6.1). Refusing 1 rather than
         // reserving it is what makes a producer still on the old build fail loudly instead of having core
         // bytes copied onto the tap as an application payload nothing will ever decode.
         final int length = encodeIngressPayloadFrame(ingress, 0, SOURCE_ID, CONNECTION_ID, 1,
@@ -443,7 +442,7 @@ class SequencerTest {
         // Case 1's second half: the row's gatewaySourceId must be the one the frame carries.
         assertEquals(Sequencer.NO_FRAME,
                      sequencer.sequenceMessage(ingress, 0, encodeIngressGatewayStarted(ingress, 0, 5,
-                                                                                       EXCHANGE_SOURCE_ID),
+                                                                                       SECOND_SOURCE_ID),
                                                rogue, TIMESTAMP));
         // Case 2: no binding, so this session may not speak for that logical gateway.
         assertEquals(Sequencer.NO_FRAME,
@@ -723,7 +722,7 @@ class SequencerTest {
     }
 
     @Test
-    @DisplayName("only the cold-start designation opens the trading day, not an operator's activation")
+    @DisplayName("only the cold-start designation marks bootstrap activated, not an operator's activation")
     void bootstrapActivationEmittedAnswersForTheBootstrapRunAlone() {
         // The gauge behind this is the "did the day open?" alarm, and the deployment it is read on is the
         // one whose list arrived truncated — which is also the deployment where an operator reaches for
@@ -753,7 +752,7 @@ class SequencerTest {
     }
 
     @Test
-    @DisplayName("a complete list that designates nobody does not open the trading day either")
+    @DisplayName("a complete list that designates nobody does not mark bootstrap activated either")
     void bootstrapActivationEmittedStaysFalseWhenNothingIsDesignated() {
         // Fail closed: no rank-0 row, so the bootstrap run queues nothing and no instance is ever
         // designated. The list did complete, which is why the gauge cannot be driven off that edge.
@@ -869,10 +868,10 @@ class SequencerTest {
     @Test
     @DisplayName("a session that merely echoes a gateway sourceId is not a gateway session")
     void echoingAGatewaySourceIdDoesNotMakeASessionAGateway() {
-        // header.sourceId is a *routing* id, not a claim of identity: the OrderExecServer stamps the
-        // originating gateway's sourceId onto every ExecutionReport and PortfolioQueryReply it submits.
-        // Inferring "this session is a gateway" from it made an ordinary OrderExecServer restart promote
-        // the standby out from under a healthy primary. Only GatewayStarted may claim a session.
+        // header.sourceId is a *routing* id, not a claim of identity: an application may stamp the
+        // originating gateway's sourceId on a reply so that gateway can route it. Inferring "this session
+        // is a gateway" from it would let that application's restart promote the standby out from under
+        // a healthy primary. Only GatewayStarted may claim a session.
         final Sequencer seq = new Sequencer();
         final MutableDirectBuffer buf = new ExpandableArrayBuffer(512);
         seq.sequenceMessage(buf, 0, encodeIngressGatewayRegistered(buf, 0, 5, SOURCE_ID, "GW-A", 0, 1), SESSION_ID,
@@ -1048,10 +1047,9 @@ class SequencerTest {
     }
 
     // ── Two logical gateways ──────────────────────────────────────────────────
-    // The deployment runs more than one pair: the client-facing gateway (C++ FixGateway) and the
-    // exchange-facing one (Java ExchangeGateway), each an active/standby pair under its own
+    // A deployment may run more than one pair, each an active/standby pair under its own
     // gatewaySourceId. Everything below is a case where the sequencer used to hold one of something it
-    // needs one of per pair. SOURCE_ID is the first pair; EXCHANGE_SOURCE_ID the second.
+    // needs one of per pair. SOURCE_ID is the first pair; SECOND_SOURCE_ID the second.
 
     @Test
     @DisplayName("the bootstrap activates the rank-0 primary of every logical gateway, not just one")
@@ -1069,10 +1067,10 @@ class SequencerTest {
         assertEquals(5L, frameHeaderOf(seq.buffer()).globalSeqNo());
 
         final int second = seq.pendingGatewayActivation(TIMESTAMP + 1);
-        final GatewayActiveDecoder exchangePair = decodeGatewayActive(seq.buffer(), second);
+        final GatewayActiveDecoder secondPair = decodeGatewayActive(seq.buffer(), second);
         // Not the client pair's standby: a second rank-0 row used to overwrite the first designation, so
         // whichever logical gateway loaded last took the only bootstrap and the other never got one.
-        assertEquals(8, exchangePair.gatewayId());
+        assertEquals(8, secondPair.gatewayId());
         assertEquals(6L, frameHeaderOf(seq.buffer()).globalSeqNo());
 
         assertEquals(Sequencer.NO_FRAME, seq.pendingGatewayActivation(TIMESTAMP + 1),
@@ -1087,14 +1085,14 @@ class SequencerTest {
         loadTwoPairs(seq, buf);
 
         final long clientSession = 0xA11CEL;
-        final long exchangeSession = 0xB0B0L;
+        final long secondSession = 0xB0B0L;
         seq.sequenceMessage(buf, 0, encodeIngressGatewayStarted(buf, 0, 5), clientSession, TIMESTAMP);
-        seq.sequenceMessage(buf, 0, encodeIngressGatewayStarted(buf, 0, 8, EXCHANGE_SOURCE_ID), exchangeSession,
+        seq.sequenceMessage(buf, 0, encodeIngressGatewayStarted(buf, 0, 8, SECOND_SOURCE_ID), secondSession,
                             TIMESTAMP);
 
-        final int promotion = seq.sessionClosed(exchangeSession, TIMESTAMP + 1);
+        final int promotion = seq.sessionClosed(secondSession, TIMESTAMP + 1);
         assertEquals(9, decodeGatewayActive(seq.buffer(), promotion).gatewayId(),
-                     "the exchange pair's standby — promotionTarget filters on the closed instance's own "
+                     "the second pair's standby — promotionTarget filters on the closed instance's own "
                          + "gatewaySourceId");
 
         // The client pair is untouched: its active instance never lost anything.
@@ -1138,13 +1136,13 @@ class SequencerTest {
 
         final long deadline = TIMESTAMP + Sequencer.GATEWAY_ACTIVATION_TIMEOUT_NS;
         assertEquals(9, decodeGatewayActive(seq.buffer(), seq.pendingGatewayActivationTimeout(deadline)).gatewayId(),
-                     "the exchange pair is still overdue, and is walked past the answered entry to reach it");
+                     "the second pair is still overdue, and is walked past the answered entry to reach it");
         assertEquals(Sequencer.NO_FRAME, seq.pendingGatewayActivationTimeout(deadline),
                      "the healthy pair is disarmed, not merely quiet");
     }
 
     /**
-     * Two active/standby pairs: 5/6 under SOURCE_ID, 8/9 under EXCHANGE_SOURCE_ID, in list order.
+     * Two active/standby pairs: 5/6 under SOURCE_ID, 8/9 under SECOND_SOURCE_ID, in list order.
      * One complete list run — remaining counts down to 0 on the last row. Returns that row's frame
      * length, since it is the frame the bootstrap is synthesized behind.
      */
@@ -1153,9 +1151,9 @@ class SequencerTest {
                             TIMESTAMP);
         seq.sequenceMessage(buf, 0, encodeIngressGatewayRegistered(buf, 0, 6, SOURCE_ID, "GW-B", 1, 2), SESSION_ID,
                             TIMESTAMP);
-        seq.sequenceMessage(buf, 0, encodeIngressGatewayRegistered(buf, 0, 8, EXCHANGE_SOURCE_ID, "EGW-A", 0, 1),
+        seq.sequenceMessage(buf, 0, encodeIngressGatewayRegistered(buf, 0, 8, SECOND_SOURCE_ID, "GW2-A", 0, 1),
                             SESSION_ID, TIMESTAMP);
-        return seq.sequenceMessage(buf, 0, encodeIngressGatewayRegistered(buf, 0, 9, EXCHANGE_SOURCE_ID, "EGW-B", 1, 0),
+        return seq.sequenceMessage(buf, 0, encodeIngressGatewayRegistered(buf, 0, 9, SECOND_SOURCE_ID, "GW2-B", 1, 0),
                                    SESSION_ID, TIMESTAMP);
     }
 

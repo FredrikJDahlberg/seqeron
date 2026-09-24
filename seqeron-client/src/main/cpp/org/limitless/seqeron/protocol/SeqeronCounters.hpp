@@ -27,7 +27,7 @@ inline constexpr std::size_t APP_KEY_LENGTH = 8;
  * Allocates an app counter keyed on {memberId, clientId}.
  *
  * @param aeron    the client to allocate it on
- * @param typeId   the counter's type id (doc/registries.md §3)
+ * @param typeId   the counter's type id (doc/ops.md, "Counter type ids")
  * @param label    the counter's label
  * @param memberId the node the app runs on, the key's first half
  * @param clientId the app's Replayer client id, the key's second half

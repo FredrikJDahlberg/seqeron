@@ -4,7 +4,7 @@
 # WHAT THIS IS (and is NOT):
 #   This script CONDUCTS and CHECKS INVARIANTS. Each round it perturbs the running system with one
 #   randomly-chosen fault, lets it heal, then asserts steady-state invariants (a leader exists, the
-#   FIX path still round-trips, the consumer is still delivering in order). It is deliberately NOT a
+#   active TestGateway still round-trips, the consumer is still delivering in order). It is deliberately NOT a
 #   latency/throughput measurement tool — that belongs in a purpose-built driver (SEQERON_LATENCY_STATS
 #   already records post-consensus delivery latency; a load harness generates the arrival process). A
 #   shell loop cannot make defensible tail-latency claims, so it does not try to. It kills, pauses,

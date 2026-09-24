@@ -85,7 +85,7 @@ public final class ClusterStreamSender implements IngressSender, AutoCloseable {
      * Connects a client co-located with no member: UDP ingress against the whole endpoint set.
      *
      * @param egressChannel this client's own egress endpoint; two media drivers on one host cannot both
-     *     bind a port (doc/registries.md §2)
+     *     bind a port (doc/ops.md, "Ports")
      * @param ingressEndpoints the members to reach, {@link PortLayout#ingressEndpoints()} for the default set
      */
     public void connect(final Aeron aeron, final String egressChannel, final String ingressEndpoints) {

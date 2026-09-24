@@ -38,7 +38,7 @@ public final class SeqeronCounters {
     /** Count of standby-promotion {@code GatewayActive} frames emitted on a gateway session close. */
     public static final int SEQUENCER_GATEWAY_PROMOTION_COUNT_TYPE_ID = 5006;
 
-    /** 1 once the bootstrap {@code GatewayActive} has been emitted for the trading day, else 0. */
+    /** 1 once the bootstrap {@code GatewayActive} has been emitted in this cluster's log, else 0. */
     public static final int SEQUENCER_BOOTSTRAP_ACTIVATED_TYPE_ID = 5007;
 
     /** 1 while tap back-pressure has lasted past the stall threshold with no recording progress, else 0. */
@@ -97,7 +97,7 @@ public final class SeqeronCounters {
     public static final int REPLAYER_CLIENT_ID_COLLISION_TYPE_ID = 5108;
 
     // ── Co-located application replicas (5200-5299) ────────────────────────────────────────────
-    // Core reserves 5200; a consumer allocates its own in the range (doc/registries.md §3). Published by
+    // Core reserves 5200; a consumer allocates its own in the range (doc/ops.md, "Counter type ids"). Published by
     // the apps, not by any Java process: protocol/SeqeronCounters.hpp must match these ids and key layout.
     /** First type id of the app range: core reserves {@link #APP_RECOVERY_STALLED_TYPE_ID} and no more. */
     public static final int APP_TYPE_ID_MIN = 5200;

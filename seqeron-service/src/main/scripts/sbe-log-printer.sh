@@ -6,9 +6,9 @@
 # and prints every recorded SBE message as JSON.
 #
 # Every IR file packaged in the jar is loaded by default — frame (the
-# envelope and core, on the tap, stream 205), order/session/basicdata (the
-# payloads inside it), replay (the node-local control plane) and cluster (the Raft
-# consensus log, stream 100) — and each frame is decoded against the schema its
+# envelopes and system messages, on the tap, stream 205), probe (ClusterProbe's
+# payload), replay (the node-local control plane) and cluster (the Raft
+# consensus log, stream 100), plus any application IR on the classpath — and each frame is decoded against the schema its
 # own header names. The set is whatever is on the classpath, not a list in the
 # printer: each module stages its own schemas' IR, so it is the deployment that
 # decides which payloads can be named. --list-schemas prints what a run has. So one run reads an archive dir end to end, whichever mix of

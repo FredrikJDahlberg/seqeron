@@ -3,7 +3,7 @@
 // Aeron's C++ idle strategies (BusySpinIdleStrategy, YieldingIdleStrategy, BackoffIdleStrategy) are
 // duck-typed with no common base — normally selected as a compile-time template parameter. That's
 // wrong for this project: busy-spin/yielding only pay off when the calling thread owns an isolated
-// core, but every seqeron C++ process (FixGateway, OrderExecServer, BasicDataServer) shares a
+// core, but a C++ client of seqeron typically shares a
 // handful of cores with the co-located SequencerServer/ReplayerServer and each other — on a dev box or
 // the chaos/e2e harness that's a dozen-plus processes on a handful of cores. DynamicIdleStrategy
 // wraps the choice in a std::variant so it becomes a SEQERON_IDLE_STRATEGY env var instead, matching

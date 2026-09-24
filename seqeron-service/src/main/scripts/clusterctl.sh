@@ -12,8 +12,8 @@
 #                                   # publish the topology document — the gateway list and the
 #                                   # protocol registry. <file> is the deployment's own, validated
 #                                   # against the topology.xsd the jar carries; this repo ships only
-#                                   # the test one. Run once per cluster lifetime, BEFORE the
-#                                   # reference-data load
+#                                   # the test one. Run once per cluster lifetime, after start and
+#                                   # before any gateway starts
 #   clusterctl.sh help
 #   clusterctl.sh describe …        # anything else → ClusterTool passthrough
 #

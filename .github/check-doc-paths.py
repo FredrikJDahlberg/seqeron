@@ -22,11 +22,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 SCAN_SUFFIXES = {".md", ".java", ".hpp", ".cpp", ".sh"}
 
-# Cited on purpose: they name the product repo's files, which are not in this tree.
+# Cited on purpose: they name Aeron's source files, which are not in this tree.
 FOREIGN = ("aeron-archive/", "aeron-cluster/", "aeron-client/")
-
-# A review log of resolved items: it names files by the version that removed them, on purpose.
-SKIP_FILES = {"doc/package.md"}
 
 PRE_SPLIT = re.compile(r"(?:cluster/)?src/(?:main|test)/")
 # Build outputs. `seqeron-service/build/classes/java/test` names where a file lands once you build,
@@ -57,7 +54,7 @@ def main():
     failures = []
 
     for rel in files:
-        if Path(rel).suffix not in SCAN_SUFFIXES or rel in SKIP_FILES:
+        if Path(rel).suffix not in SCAN_SUFFIXES:
             continue
         for lineno, line in enumerate(
             (ROOT / rel).read_text(encoding="utf-8").splitlines(), 1
@@ -66,7 +63,6 @@ def main():
                 tok = strip_token(m.group(0))
                 if (
                     tok.startswith(FOREIGN)
-                    or "phixeron" in tok
                     or BUILD_OUTPUT.search(tok)
                 ):
                     continue

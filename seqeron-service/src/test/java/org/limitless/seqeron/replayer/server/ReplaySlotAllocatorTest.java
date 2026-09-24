@@ -211,7 +211,7 @@ class ReplaySlotAllocatorTest {
         allocator.activate(1, 100, 0);
 
         // Without the touch this slot is reclaimed at 60_001ms — mid-flight, under a healthy client:
-        // a replay has no upper time bound (full-log replay over a log that grows all trading day), so
+        // a replay has no upper time bound (full-log replay over a log that grows with uptime), so
         // ageing from activation makes the TTL a max lifetime rather than the idle timeout it claims.
         allocator.touch(1, 100_000);
 

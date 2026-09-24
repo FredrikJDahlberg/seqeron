@@ -1,6 +1,6 @@
 //
 // Round-trip tests for the codec the cluster tier itself carries: the sbe-frame.xml envelopes, both ways
-// round. The application families have schemas of their own, and are covered in the product repo.
+// round. Application schemas are their owners' to test.
 //
 #include <gtest/gtest.h>
 

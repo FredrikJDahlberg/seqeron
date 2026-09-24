@@ -146,7 +146,7 @@ cmake --build cmake-build-debug --target run_tests   # C++: 259 cases
 ```
 
 `run_tests` is `ctest --output-on-failure` with the build dependency wired up; plain `ctest` works
-too, and the `..._NOT_BUILT` noise the old tree had to filter is gone with simdfix.
+too.
 
 Run a single C++ suite by filter, or a single Java test class:
 
@@ -269,7 +269,7 @@ This tier reserves **9300–9329** by default (three members of stride 10, wider
 nodes actually bind), **9200–9209** for its own harness listeners, and `9400 + memberId` for
 the metrics plane. Every other block — an application's TCP listen port, each co-located client's
 cluster egress port, the replay ports — belongs to the process that binds it, so this repo names none
-of them. `doc/registries.md` §2 is the block table across all of them.
+of them. `doc/ops.md`, "Ports", lists the ones seqeron binds.
 
 The sequenced stream itself has **no port**: it is a node-local `aeron:ipc` tap (stream 205) recorded
 into each member's own archive.
@@ -314,7 +314,7 @@ is one continuous run spanning every leader tenure.
 
 `load-topology` publishes the deployment document — the gateway list, the co-located applications,
 then the protocol registry — validated against the packaged `topology.xsd`. Run it once per cluster
-lifetime, before any reference-data load. Only the gateway list is acted on: the sequencer synthesizes
+lifetime, after `clusterctl start` and before any gateway starts. Only the gateway list is acted on: the sequencer synthesizes
 the bootstrap `GatewayActive` per logical gateway behind the row whose `remaining` counts down to 0.
 The application and protocol rows are labelling for `SbeLogPrinter`, decoded by nothing and gating
 nothing.
@@ -510,10 +510,8 @@ To cut one:
 | `doc/seqeron-protocol-spec.md` | The normative protocol specification — frames, families, the system vocabulary, the topology document |
 | `doc/client-api.md` | What a client programs against, in both languages, and what in the client tier is not API |
 | `doc/fault-tolerance.md` | Node loss, leader failover, a stuck archive, a lost frame: what survives each and how it recovers |
-| `doc/registries.md` | The two shared namespaces — the producer `sourceId` space and the UDP port blocks |
 | `doc/clusterctl.md` | The operator tool's runbook |
 | `doc/ops.md` | The Prometheus/Grafana metrics stack |
-| `doc/package.md` | The packaging review list |
 
 Those seven are the whole doc set, and every document reference in this tree resolves inside it.
 

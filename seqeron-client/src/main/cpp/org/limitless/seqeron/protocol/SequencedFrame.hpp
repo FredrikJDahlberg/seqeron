@@ -400,7 +400,7 @@ inline std::int64_t frameStartPosition(const aeron::Header& header)
  *
  * sourceId/connectionId name the connection the event refers to, and both are needed:
  * connectionId is unique only within the publishing producer process, so a consumer serving
- * one producer must match sourceId before acting on a connectionId (see FixGateway).
+ * one producer must match sourceId before acting on a connectionId.
  */
 struct LifecycleEvent
 {

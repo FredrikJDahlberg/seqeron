@@ -1,565 +1,315 @@
-# Fault tolerance and recovery — seqeron
+# Fault tolerance and recovery
 
-How this system survives node loss, leader failover, a stuck local archive, a crashed gateway, and a
-lost network frame — and how each surviving/restarted part gets back to a correct state. This is a
-description of what the code does today, not the aspirational superset the older architecture
-documents describe — cross-check against source before trusting specifics there.
+How the sequencing tier survives node loss, leader failover, a failing local archive and a lost frame,
+and how each part returns to a correct state. It covers the cluster nodes, the replayer and the client
+tier. Applications built on seqeron document their own recovery. Section references of the form
+"spec §n" are to `doc/seqeron-protocol-spec.md`.
 
-## 0. The one governing invariant: no snapshots, full-log replay
+## 0. Recovery is full-log replay
 
-Every recovery path in this document reduces to the same primitive: **replay the sequenced log from
-`globalSeqNo` 1**. `SequencerService.onTakeSnapshot` throws and `onStart` refuses a snapshot image
-(`SequencerService`); `clusterctl shutdown` uses Aeron's `ABORT` action, which takes no snapshot, never
-`SHUTDOWN` (`ClusterCtl.shutdown` — `SHUTDOWN` snapshots first, which would silently break the invariant
-below).
+Every recovery path here reduces to one operation: replay the sequenced log from `globalSeqNo` 1.
+The cluster takes no snapshots. `SequencerService.onTakeSnapshot` throws and `onStart` refuses a
+snapshot image. `clusterctl shutdown` uses Aeron's `ABORT` action, which takes no snapshot, rather than
+`SHUTDOWN`, which does.
 
-This is deliberate, not an oversight: **every node publishes and records its own copy of the
-sequenced stream** (the "tap", `aeron:ipc` stream 205 — see §2), and a node restored from a snapshot
-would hold a recording that starts wherever the snapshot did, not at the beginning of the trading day.
-Full-log replay is what keeps every node's tap recording a *complete* copy of history, which is what
-lets any node serve a cold-start or gap replay to its co-located apps without depending on a peer. The
-cost is that recovery time and archive size grow with uptime — bounded in practice because the log is
-scoped to one trading day (daily rollover), not unbounded.
+Every node records its own copy of the sequenced stream (§1.1). A node restored from a snapshot would
+hold a recording that starts where the snapshot did; full-log replay is what keeps every node's
+recording complete, so any node can serve history to its co-located clients without a peer. The cost is
+that recovery time and archive size grow with uptime; the 1 Hz heartbeat alone adds about 86,400 frames
+a day.
 
-Everything downstream of the log — `globalSeqNo`, the gateway topology, FIX session sequence numbers,
-positions, reference data — is a **pure function of replaying that log**, so nothing needs its own
-persistence or its own recovery procedure. That single property is why the mechanisms below look
-structurally similar: kill something, let it replay, done.
+All state downstream of the log (`globalSeqNo`, the gateway list, which instance is active, the open
+connections) is a function of the log. None of it has separate persistence or a separate recovery
+procedure: a failed component restarts and replays.
 
-## 1. Cluster / node-level fault tolerance (Java, Aeron Cluster + Raft)
+## 1. Cluster nodes
 
-### 1.1 Every node holds a complete, byte-identical copy of history
+### 1.1 Every node records a complete copy
 
-`SequencerService` runs on every cluster node — leader and follower alike — and each one re-publishes
-every sequenced frame onto its own node-local `aeron:ipc` tap (`FrameLayer.FEEDER_CHANNEL`/`FEEDER_STREAM_ID`), which that node's co-located Aeron Archive records. Because every
-node processes the same Raft-committed log in the same order, the taps are byte-identical across
-nodes — there is no cross-node replication of the recording itself, no leader-only archive, and no
-asymmetry between a follower's copy of history and the leader's. The tap publication and its recording
-are created once in `onStart` and live for the whole process, continuous across leadership changes
-(`aeron:ipc` has no port to collide on, unlike the retired UDP global stream this replaced), so a
-node's recording is one continuous run spanning every leader tenure it lived through.
+`SequencerService` runs on every node, leader and follower alike, and republishes every sequenced frame
+on the node-local tap (`aeron:ipc`, stream 205), which the node's Aeron Archive records. Every node
+applies the same committed log in the same order, so the taps are byte-identical (spec **F-2**). There
+is no cross-node replication of recordings and no leader-only archive.
 
-Consequence: **any node a client is co-located with can serve full history/gap replay**, and losing a
-node loses no history — its peers already hold an identical complete copy.
+The tap publication and its recording are created once, in `onStart`, and survive leadership changes
+(`aeron:ipc` has no port to conflict on). A node's recording is therefore one continuous run across
+every leader tenure it has seen.
+
+Consequence: any node can serve full history or gap replay to its co-located clients, and losing a node
+loses no history.
 
 ### 1.2 Leader failover
 
-Raft election is Aeron Cluster's own mechanism; seqeron's contribution is what rides on top of it.
-`SequencerService.onNewLeadershipTermEvent` fires on every node on a new term and calls
-`applyLeadership`, which asks `Sequencer.leadershipChanged` to synthesize a `LeadershipChanged` frame
-carrying the new `leadershipTermId` — one per term, including a term the same member wins again, since
-that election closed ingress as well. This frame is sequenced and recorded exactly like any ingress
-message, so **every node's tap recording — not just the leader's — carries a gap-free account of every
-leadership change**, and a leader-only consumer (§3, §6) can derive "who is leader and since when"
-purely from replaying the log.
+Aeron Cluster runs the election. On every new term, each node's `SequencerService` has `Sequencer`
+synthesize a `LeadershipChanged` frame carrying the new `leadershipTermId`, one per term, including a
+term the same member wins again. The frame is sequenced and recorded like any other, so every node's
+recording holds a complete history of leadership, and a replica can determine the current leader from
+the log alone.
 
-On the C++ client side, `ClusterStreamSender` (the Aeron Cluster ingress session state machine used by
-`FixGateway` and every other cluster client) survives a leader failover **without losing its cluster
-session**: a `NewLeaderEvent` swaps only the ingress `Publication` to the new leader's endpoint,
-re-resolved out of the event's member CSV — the cluster session id and leadership term id are updated
-in place, never re-created
-(`sequencer/client/ClusterStreamSender.hpp`, `onFragment` and `applyPendingIngressSwitch`). `send()`'s retry
-loop pumps the egress control stream between offer attempts (`pumpEgressControl`) specifically so an
-in-flight `NewLeaderEvent` can land and swap the publication mid-spin — a naive `while(!offer) idle()`
-would deadlock, spinning on the dead leader's publication while the poll that would revive it never
-runs. A co-located client that originally reached the leader over cheap IPC and failed over onto UDP
-re-chases IPC if leadership later returns to its own member. The Java `ClusterStreamSender` gets the same
-from `AeronCluster`, except that a co-located one whose leader moves away reconnects over UDP, on a new
-session.
+**Producer sessions survive a failover.** The C++ `ClusterStreamSender` handles a `NewLeaderEvent` by
+switching only its ingress publication to the new leader's endpoint; the cluster session id and term
+are updated in place. `send()` polls the egress stream between offer attempts, so a `NewLeaderEvent` can
+arrive and switch the publication while a send is retrying; an offer loop that did not poll would spin
+on the dead leader's publication indefinitely. A co-located sender that fell back from IPC to UDP
+returns to IPC if leadership returns to its own member. The Java `ClusterStreamSender` gets the same
+behaviour from `AeronCluster`, except that a co-located sender whose leader moves away reconnects over
+UDP on a new session.
 
-A leader failover is **not** session loss, and nothing fences on it. It is not transparent either:
-**it can lose ingress, and nothing reports the loss.** A send returns once the frame is on the leader's
-ingress publication, and the cluster confirms nothing on egress. Frames the old leader had not committed
-are gone, and so is everything offered to its publication after it died, until the client notices — in
-`failover-test.sh`, about 5,500 frames at 100 µs pacing. The session survives, so neither the sender nor
-the cluster sees a fault. A producer that must not lose a frame confirms each one on its own tap and
-resends what a leader change lost, ahead of anything new (spec §16 A-4 and A-5, `sequencer/client/PendingSends`).
-`failover-test.sh` streams two producers across its leader kill and asserts that the one using it sees
-every frame on the tap exactly once, in order; the other, untracked, reports what was lost.
+**A failover can lose ingress without any error.** A send returns once the frame is on the leader's
+ingress publication; the cluster confirms nothing on egress. Frames the old leader had not committed are
+lost, as is everything offered to its publication until the producer learns of the new leader (in
+`failover-test.sh`, about 5,500 frames at 100 µs pacing). The session survives, so neither side sees a
+fault. §5 describes how a producer detects and resends these frames.
 
-### 1.3 A node that cannot record itself terminates (self-fencing)
+### 1.3 A node that cannot record terminates itself
 
-`TapPublisher.emit` is *reliable*: it spins on the tap-publication offer until it lands, because
-the recording is the authoritative copy of history and a dropped frame would be an unrecoverable gap. This can only block on genuine local-archive back-pressure — the
-tap's only tethered subscriber is the recording itself, app replicas are untethered — but reliable is
-not the same as unbounded. `TapPublisher` (pure, Aeron-free, unit-tested in isolation —
-`TapPublisher.java`) distinguishes an archive that is merely slow (back-pressured but its recording
-position keeps advancing, so it keeps waiting) from one that has stopped draining (the stall gauge
-after 200ms of zero progress, fatal after 1s) or gone away entirely (fatal at once). The same 1 Hz heartbeat that drives
-the cluster clock also runs `TapPublisher.checkRecordingAlive`, because a
-*stopped* recording doesn't back-pressure anything at all — the tap's untethered app subscribers keep
-it looking connected — so liveness has to be polled, not just inferred from back-pressure.
+`TapPublisher.emit` retries the tap offer until it succeeds, because a dropped frame would leave a
+permanent gap in the node's recording. The offer can only be back-pressured by the local archive: the
+recording is the tap's only tethered subscriber, and client subscriptions are untethered.
 
-Either path calls `fatalTapFailure` → `fatalFailure`, which logs `FATAL: … terminating this node` and
-runs the fatal handler wired by `SequencerServer`, exiting the process with code **70**
-(`TapPublisher.fatalFailure`; documented operator-facing in `doc/ops.md` "A node that terminates
-itself"). No cluster callback may signal failure by throwing instead: `Image.boundedControlledPoll`
-has already advanced the log position past the message before a thrown exception is caught, and
-`AgentRunner` keeps the agent alive — a throw here would silently drop the frame and leave the node
-running with a hole in its own recording, exactly the failure this whole mechanism exists to prevent
-(`TapPublisher`'s class Javadoc). The same reasoning bounds `TapPublisher.scheduleHeartbeat`: a
-consensus module that refuses the cluster-clock timer for 1s of continuous back-pressure is wedged, not busy, and gets the same fatal treatment — otherwise every
-consumer's session clock silently stops advancing with no operator-visible signal.
+Retrying is bounded. `TapPublisher` distinguishes three cases by watching the archive's recording
+position:
 
-Consequence for the cluster: the remaining members hold identical, complete recordings and keep
-quorum without the dead node (an election moves leadership if it held it); **two nodes down is a
-quorum loss**, not a repeat of the same event. Restarting the node is ordinary full-log replay from
-`globalSeqNo` 1 (§0), rebuilding its tap recording from scratch; if it exits 70 again immediately, the
-underlying storage is still broken (start-up itself is bounded — the recording must go live within 5s,
-`SequencerService.TAP_RECORDING_START_TIMEOUT_NS`).
+| archive state | response |
+| --- | --- |
+| slow: back-pressured, recording position advancing | keep retrying; raise the back-pressure alert after 200 ms |
+| stalled: no progress for 1 s | fatal |
+| recording gone | fatal immediately |
 
-### 1.4 Cluster shutdown / restart
+A stopped recording back-pressures nothing (the untethered client subscriptions keep the publication
+connected), so the 1 Hz heartbeat also calls `TapPublisher.checkRecordingAlive`. If the consensus module
+refuses the heartbeat timer for 1 s continuously, that is fatal too: otherwise the cluster clock would
+stop with no visible signal.
 
-`clusterctl shutdown` is leader-gated: on the leader it publishes an unsequenced `ClusterStopped`
-marker, best-effort awaits its sequenced echo (so the log's last event before a planned stop is always
-that marker), then calls Aeron's `ClusterTool.abort` (`ClusterCtl.shutdown`). `ABORT` — not
-`SHUTDOWN` — is the only lifecycle action that terminates without taking a snapshot, and `SequencerServer`
-wires `ConsensusModule.Context.terminationHook` to a barrier so every node still unwinds cleanly
-(closing its Archive and draining the tap recording to disk) rather than being killed abruptly
-(`doc/clusterctl.md`). `clusterctl start` is the read-side complement: it publishes `ClusterStarted`
-and waits for its sequenced echo, so an operator/script can confirm the cluster is actually up (elected
-leader, ingress accepted) rather than merely that processes launched.
+A fatal condition logs `FATAL: … terminating this node`, sets `seqeron_sequencer_tap_stalled`, and exits
+with code 70 (`EXIT_TAP_FATAL`); `doc/ops.md` has the operator procedure. It does not throw: a cluster
+callback that throws has already had its log position advanced, and `AgentRunner` keeps the agent
+running, so the frame would be silently dropped (spec §9.4).
 
-## 2. FIX gateway fault tolerance
+The remaining members hold identical recordings and keep quorum; an election moves leadership if the
+failed node led. In a three-member cluster a second failure loses quorum. A restarted node replays the
+full log and rebuilds its recording. Start-up has the same bound: the recording must be live within 5 s
+(`TAP_RECORDING_START_TIMEOUT_MS`), so a node that exits 70 again immediately still has broken storage.
 
-There are two FIX edges — `FixGateway` (C++, client-facing, §2.1–§2.4) and `ExchangeGateway`
-(Java, venue-facing, §2.5) — and they hold the same position by the same two mechanisms:
-fencing (stop serving before you're wrong) and standby promotion (someone else takes over).
+### 1.4 Shutdown and restart
 
-`FixGateway` is a deliberately stateless proxy: authoritative FIX session state (sequence numbers,
-session status) lives in the cluster (§0), not in the gateway process, specifically so the gateway can
-crash and restart without losing anything durable.
+`clusterctl shutdown` runs on the leader. It publishes a `ClusterStopped` marker, waits (best effort)
+for it on the tap, then calls `ClusterTool.abort`. `SequencerServer` connects
+`ConsensusModule.Context.terminationHook` to a shutdown barrier, so each node closes its archive and
+flushes the recording before exiting. `clusterctl start` publishes `ClusterStarted` and waits for it on
+the tap, confirming that a leader is elected and ingress is accepted. `doc/clusterctl.md` has both
+procedures.
 
-### 2.1 Fencing: `closeSessions`
+## 2. Gateways
 
-`FixGateway::closeSessions(reason)` (`src/main/cpp/org/limitless/phixeron/fix/FixGateway.cpp:668-696`)
-is the single choke point that stops this instance serving TCP clients: it snapshots every active FIX
-session's recoverable sequence state into `m_recoveredSessions`, releases every connectionId from the
-CompID registry, hard-closes every client socket (`::close(fd)` — no graceful Logout is sent; the
-fence deliberately looks to the cluster exactly like this process dying), and sets `m_gateOpen = false`
-— which also closes the accept gate, since `processSockets` only calls `acceptNewConnection()` while
-`m_gateOpen` is true. It is idempotent (no-ops if the gate is already shut).
+A gateway is an active/standby pair (spec §5). The client tier's `app/Gateway` (Java and C++)
+implements everything seqeron defines for one instance: the list row, designation, `GatewayStarted`,
+connection ids, connection lifecycle frames, confirmed ingress and the fences. The application supplies
+its external connection handling. `TestGateway` is the reference consumer, and `chaos-runner.sh`
+runs a pair of them under fault injection (§6).
 
-Four independent signals trigger it (`FixGateway.cpp:296-325, 353-382, 557-577`), and they are not
-equivalent — one of them is not a fault at all:
+### 2.1 Fences
 
-| Signal | Where | What happens after |
-|---|---|---|
-| A `GatewayActive` names a **sibling** instance while this one was active | `sequencedEvent`, `FixGateway.cpp:557-577` | Fences, `m_activated = false`, but **keeps running** — drops to standby, keeps following the tap, and can be re-promoted later. The cluster session is untouched. |
-| The cluster closes this gateway's ingress session (`ClusterStreamSender::isSessionLost()`) | `doWork`, `FixGateway.cpp:315-319` | Fences and **exits the process** (`running = false`) — a lost session cannot be re-established in-process (§2.3), so an instance in this state could never be promoted again; fail closed by exiting rather than idling with no session. |
-| No `ClusterHeartbeat` from the co-located tap for `TAP_STALL_TIMEOUT_MS` (20s = 20× the 1 Hz heartbeat period), while caught up | `checkTapStall`, `FixGateway.cpp:352-369` | Closes its own cluster session first, then fences and **exits**. Voluntary: rather than sit "connected" behind a dead tap, it forces the same session-loss path as the row above, which drives standby promotion on the cluster side. |
-| Continuous `!isCaughtUp()` for `RECOVERY_STALL_TIMEOUT_MS` (60s = 3× `TAP_STALL_TIMEOUT_MS`), once this instance has been caught up before | `checkTapStall`'s recovery-deadline fence | Same as the row above — closes its own cluster session, then fences and **exits**. The symmetric case (2026-08-10 fix): a recovery that never converges (Replayer down, `onReplayUnavailable`, or a gap in replayed history this node's chain doesn't cover) used to leave the tap-stall watchdog fully gated with no bound, so an already-active gateway kept the gate open and the cluster session alive behind a view of the log frozen behind a hole it could never close. A cold start (never yet caught up) is exempt — its gate legitimately stays closed however long the initial walk takes. |
+A fence stops an instance that can no longer trust its view of the log. Each is reported once through
+`Listener.onFenced(ClusterError, detail)`; the application then releases the cluster session, usually
+by exiting, which lets the sequencer promote the standby (§2.2).
 
-The tap-stall watchdog is gated on `m_replayer.isCaughtUp()` so an in-progress cold-start/gap replay
-never reads as a stall, and it measures **monotonic wall-clock time**, not cluster-consensus time —
-deliberately, since consensus time is itself delivered by the very `ClusterHeartbeat` frames being watched for, so
-it would freeze along with a stalled tap and never trip (`FixGateway.cpp:241-244`). Its `!isCaughtUp()`
-branch is not simply skipped, though: a pure, Aeron-free recovery-deadline predicate provides the row
-above — the deadline is armed only once `onCaughtUp()` has fired at least once, so it can never fire
-during a legitimate cold start. seqeron ships that predicate as `app/RecoveryStallFence` (Java and C++,
-in the client tier); its own test gateway holds it, which is what the chaos harness drives.
+| `ClusterError` | condition |
+| --- | --- |
+| `CLUSTER_SESSION_LOST` | the cluster closed the session, or no new leader arrived within the sender's timeout. A lost session cannot be re-established in process |
+| `TAP_STALLED` | no `ClusterHeartbeat` on the co-located tap for 20 s (20 heartbeat intervals) while caught up |
+| `RECOVERY_STALLED` | recovery has delivered nothing for 60 s (3 × the tap-stall timeout) on an instance that has been caught up before |
+| `INGRESS_CONFIRM_FAULTED` | an own frame on the tap differs from the oldest pending one (spec §16 A-4) |
 
-A `GatewayActive` naming *this* instance while it was standby is the mirror case: `m_activated` flips
-true and the accept gate can open once every other gate condition is met (§2.4) — no fence involved.
+- The tap-stall timer measures local monotonic time. Consensus time arrives in the `ClusterHeartbeat`
+  frames being watched for, so it would stop together with the tap.
+- The tap-stall check is suspended while the instance is not caught up, so a replay in progress is not
+  reported as a stall. The recovery-stall fence (`RecoveryStallFence`) covers that period instead; it is
+  armed only after the first catch-up, because a cold start replays the whole log and has no useful
+  bound.
+- The recovery-stall timeout (60 s) exceeds the replayer's maximum pending wait of 20 s (spec §10.1), so
+  a correctly behaving replayer cannot trip it.
 
-### 2.2 Standby promotion
+Being superseded is not a fence. When a `GatewayActive` names a sibling, the instance calls
+`Listener.onStandby`, closes its external connections, keeps its cluster session and continues following
+the tap, so it can be designated again. It publishes nothing on the way out; to the cluster this looks
+the same as the process dying.
 
-Every logical gateway can have multiple instances (a `Gateway` row per instance, ranked by
-`preferenceRank`, loaded via BasicData — §5). The **cluster**, not the gateway, decides which instance
-is active, by naming a `gatewayId` in a sequenced `GatewayActive` frame — every instance (and every
-node's Replayer-fed app) observes the same frame in the same order, so there is never a window where
-two instances both believe they're active off inconsistent information.
+### 2.2 Promotion
 
-Two ways a `GatewayActive` is produced:
+The sequencer decides which instance is active by synthesizing `GatewayActive` naming one `gatewayId`.
+Every instance and every replica sees the same frame at the same `globalSeqNo`, so two instances never
+act as active on inconsistent information. The triggers (spec §7.2):
 
-- **Automatic, on session close.** `Sequencer.sessionClosed` fires whenever a cluster session closes
-  (crash, network loss, graceful shutdown — Aeron Cluster reports all of these as `onSessionClose`) and
-  checks whether the closed session was one an *active* gateway had declared itself on via
-  `GatewayStarted` (`Sequencer.activeGatewaySession` — deliberately keyed off `GatewayStarted`, not the
-  routing `sourceId` on every message, because other clients legitimately echo a gateway's `sourceId`
-  and an earlier version of this logic let an unrelated `OrderExecServer` restart promote a standby out
-  from under a perfectly healthy primary). If so, `promotionTarget` picks the lowest-`preferenceRank`
-  sibling sharing the same `gatewaySourceId` and emits `GatewayActive` naming it — or emits nothing,
-  fail-closed, if there is no sibling to hand over to rather than naming a nonexistent instance
-  (`Sequencer.promotionTarget`).
-- **Manual, via `clusterctl activate <gatewayId>`.** Publishes an unsequenced `GatewayActivationRequested`
-  that flows through `Sequencer.sequenceMessage` like any other ingress message, and waits for the
-  `GatewayActive` the sequencer synthesizes behind it, matched by `gatewayId` (`ClusterCtl.activate`). This is the operator's lever for a planned failover.
+- **Bootstrap:** after the last `GatewayRegistered` row, the rank-0 instance of each gateway.
+- **Session close:** when the session bound by an active instance's `GatewayStarted` closes (crash,
+  network loss or shutdown; Aeron Cluster reports all as a session close). The binding is keyed on
+  `GatewayStarted`, not on `sourceId`, because other producers may legitimately carry a gateway's
+  `sourceId`.
+- **Activation timeout:** a designated instance that publishes no `GatewayStarted` within 5 s is passed
+  over.
+- **Operator request:** `clusterctl activate <gatewayId>` publishes `GatewayActivationRequested` and
+  waits for the resulting `GatewayActive`.
 
-On the gateway side, `app/GatewayLifecycle` (Java and C++, in the client tier) is what acts on that frame:
-it tracks the last `GatewayActive` for its pair rather than latching one, publishes `GatewayStarted` before
-opening its gate, and stands down without publishing when a sibling is named.
+If there is no eligible sibling, the sequencer synthesizes nothing and the gateway has no active
+instance until one starts.
 
-A **bootstrap** activation also runs once per cluster lifetime: the first complete list — the
-`GatewayRegistered` row carrying `remaining == 0`, published by `clusterctl load-topology` — triggers
-`Sequencer.pendingGatewayActivation`, which names the rank-0 (`preferenceRank == 0`) row of each logical
-gateway — so exactly one instance of each pair opens its accept gate at cold start and every sibling waits
-as a hot standby. A bootstrap with no
-rank-0 row produces no frame — fail closed rather than guess.
+On the instance, `app/GatewayLifecycle` tracks the most recent `GatewayActive` for its gateway rather
+than latching the first, publishes `GatewayStarted` before calling `onActivated`, and stands down
+without publishing when a sibling is named.
 
-### 2.3 Recovering FIX session state after a restart
+### 2.3 Connections across a handover
 
-Because `FixGateway` holds no durable state of its own, a restarting instance rebuilds what it needs
-from two things: an in-memory snapshot taken on the way *out* (`closeSessions`, §2.1, and the analogous
-`finalizeRecovery`), and lifecycle frames replayed off the cluster stream on the way back *in*.
+A promoted instance rebuilds connection state from the log. `onConnectionOpened` and
+`onConnectionClosed` are delivered for every connection the logical gateway opened, whichever instance
+opened it, including during replay. `connectionData` carries whatever identity the application needs to
+map a new connection to an existing session (spec §7.1).
 
-- **On fencing/shutdown**, every active FIX session's `RecoveredSession` state — next outgoing/expected
-  sequence numbers plus the three-field inbound-gap state (`m_inboundGapHighSeqNum`,
-  `m_inboundGapRequestedThrough`, `m_inboundGapRunStart`, the fields the gap-1 fix added specifically
-  so a mid-gap restart doesn't resume with the gap silently reopened) — is captured into
-  `m_recoveredSessions`, keyed by client CompID.
-- **On restart**, before the accept gate opens, the gateway replays `ConnectionOpened`/
-  `ConnectionClosed` lifecycle frames off the cluster stream to reconstruct placeholder "recovering"
-  connections (`FixConnection` built with `fd = -1`), then `finalizeRecovery` turns each surviving
-  placeholder into a `RecoveredSession` entry (a crash never got to publish the matching
-  `ConnectionClosed`, so the placeholder represents a session whose socket died with the old process)
-  and bumps the next-connectionId counter past whatever was still pending recovery, so a freshly
-  accepted TCP connection can never collide with one still being recovered
-  (`FixGateway.cpp:634-664,698-734`).
-- **When a new TCP connection Logons** with a CompID matching an entry in `m_recoveredSessions`,
-  `FixConnection::adoptRecoveredSession` restores the saved sequence/gap state onto the fresh
-  connection and consumes (erases) the entry — one-shot adoption, so the client resumes exactly where
-  it left off rather than renegotiating from sequence 1.
+`GatewayStarted` carries `firstConnectionId`, chosen above the highest id seen in replay, so connection
+ids do not repeat across a handover. On `GatewayStarted` the sequencer releases every connection still
+open under that `gatewaySourceId`, because a crashed instance never publishes their `ConnectionClosed`
+frames.
 
-### 2.4 The accept gate and connect-once semantics
+## 3. Stream recovery
 
-`processSockets` only opens the accept gate when **all** of the following hold simultaneously:
-not already open, `m_activated` (named by a `GatewayActive`), `m_replayer.isCaughtUp()`,
-`m_basicDataLoaded`, and `m_ingressSender.isConnected()` (`FixGateway.cpp:384-391`) — so a gateway
-structurally cannot admit a FIX logon before its cluster session is live, its reference data is
-loaded, and it has caught up on history. `ClusterStreamSender::connect`/`connectColocated` runs exactly
-once, from the constructor (`FixGateway.cpp:281-282`) — there is **no in-process reconnect loop**. Once
-a session is lost (§2.1, row 2), the gateway exits rather than retrying; recovering service is an
-external supervisor's job (or a sibling instance already running as a promoted standby), not something
-this process attempts on its own. This is a deliberate simplification: a session-loss retry loop would
-have to re-derive whether it's still safe to be active, which the promotion mechanism already decides
-externally and unambiguously.
+A consumer reads the co-located tap directly for live data, untethered, so a slow consumer is dropped
+instead of back-pressuring the sequencer (§1.3). It asks the co-located replayer for history on cold
+start and after a gap.
 
-### 2.5 The venue-facing gateway (`ExchangeGateway`, Java)
+### 3.1 `ReplayerService` (one per node)
 
-Same position, reached differently. `FixGateway` is stateless because it never decides anything;
-`ExchangeGateway` embeds a FIX engine that decides constantly, and is stateless anyway because every
-decision is published to the cluster before it is acted on and is emitted only when it comes back on
-the tap. A crash therefore loses nothing either: the log holds the session,
-and the instance that next holds it rebuilds from the log.
+The replayer is not on the live delivery path; clients use it only to catch up.
 
-**Five fences, four of them fatal.** Being superseded is the exception: a `GatewayActive` naming the
-sibling makes `GatewayLifecycle` drop the venue socket and fall back to `PASSIVE`, keeping the cluster
-session so this instance can be activated again later — and publishing nothing on the way out, so to
-the cluster it looks exactly like the process dying, which is the state the recovery path is built
-for. The other four end the process:
+- **Integrity check.** Before reporting ready, it replays the first frame of its oldest tap recording
+  and checks that `globalSeqNo` is 1. If not, the node's recording is missing or corrupt: `ready` stays
+  false for the process lifetime and every request is answered with `ReplayUnavailable`, so clients do
+  not each discover the fault separately.
+- **Archive errors.** An archive call that throws during a replay moves the service to a stalled state.
+  It retries every second and answers `ReplayPending` meanwhile, without affecting live delivery.
+- **Slots.** At most `MAX_CONCURRENT_REPLAYS` = 4 replays run at once; a freed slot goes to a waiting
+  client immediately. A slot idle for 5 s (`REPLAY_SLOT_TTL_MS`) is reclaimed, covering a client that
+  died mid-replay. Many concurrent replays occur mainly when a node restarts and all its clients cold
+  start together.
+- **Control replies** are offered with a bounded retry and then dropped, never blocked on. The client
+  resends on a timer, so a client that is not reading cannot hold up replies to the others.
+- **Duty-cycle failure.** An exception escaping the duty cycle clears the ready counter and exits the
+  process with code 70 (`EXIT_DUTY_CYCLE_FATAL`) after closing the archive client, so a supervisor
+  restarts it rather than leaving a process that looks ready but serves nothing.
 
-| Fence | Trigger | Where |
-|---|---|---|
-| Cluster session lost | an `ERROR`/`CLOSED` egress event, **or** `!isConnected()` with no event at all — `AeronCluster` closes itself when a new leader does not arrive before its timeout, and an `ERROR` event, unlike `CLOSED`, leaves the client open | `checkClusterSession`, from `doWork` |
-| Tap stall | no `ClusterHeartbeat` from the co-located tap for 20 heartbeat periods while caught up | `checkTapStall`, from `doWork` |
-| Recovery stall | recovery dispatching nothing for 3× that | the gateway's own recovery-deadline predicate |
-| Emit wedge | one outbound frame continuously back-pressured on the `SessionWriter` for the same 20 heartbeat periods | `emit` → `haltWedged` |
+### 3.2 Client-side recovery (`ReplayerStreamReceiver`)
 
-The two stall fences are fatal for the reason session loss is: everything this gateway decides reaches
-the venue only by coming back off the tap, so a frozen view is a held session nothing is being written
-to — and worse, the keep-alive would go on holding the *cluster* session open, so the sequencer would
-never promote the standby. Neither arms until the first catch-up, because a cold start replays the
-whole log (§0) and has no useful time bound.
+`ReplayerStreamReceiver` (Java and C++) is the Aeron adapter; the decisions are in `ReplayerRecovery`,
+which is unit-tested directly.
 
-**Nothing may signal failure by throwing from an Aeron callback**, on the client side as much as inside
-the cluster (§1.3): `Image.poll` hands any exception its fragment handler raises to the error handler
-and advances the subscriber position anyway, so a throw from `EgressListener.onSessionEvent` is
-swallowed and the process carries on. The gateway therefore *records* the fault and raises it from
-`doWork`, between polling the cluster and acting on what was polled. The throw unwinds through
-`close()`, which drops the venue socket **before** releasing the cluster session, so the standby is
-promoted against a venue that is already free.
+- **Cold start** walks the recording chain from segment 0, one recording per leader tenure, until the
+  replayer reports the chain exhausted (spec **R-2**).
+- **Gap.** A live frame whose `globalSeqNo` is ahead of the next expected value clears `isCaughtUp()`
+  and requests a resume at the position of the last delivered frame, repairing only the gap. If the
+  resumed replay's first frame is not the expected `globalSeqNo` (the node restarted and its recording
+  changed), the client falls back to a full walk.
+- **Retained frames.** While a walk or resume is in progress, live frames beyond the gap are kept in a
+  bounded FIFO (65,536 frames or 16 MiB) and delivered when the replay reaches them, so recovery ends
+  without a second gap. Past the bound, the client drops them and walks again.
+- **`isCaughtUp()` can clear again** on a later gap; it is not latched. The gateway fences (§2.1) and the
+  leader gate (§4) depend on this.
+- **First frame.** The first frame a client ever delivers must have `globalSeqNo` 1, or the process
+  aborts: this node's recording must reach the start of the log.
+- **Per-replay subscription.** The replay stream (201) is shared by all clients on the node, and an
+  Aeron publication is limited by its slowest tethered subscriber. A client therefore subscribes to it
+  only for the duration of a replay, filtered to that replay's session id. A subscription held open
+  between replays would never be polled for other clients' sessions and would stop their replays about
+  32 MiB in, half of a 64 MiB term.
+- **Stall detection.** A bounded replay of a recording still being written does not close its image at
+  the bound, so an open, attached, stalled image would otherwise go unnoticed. A replay that makes no
+  progress for 5 s (`REPLAY_STALL_TIMEOUT_MS`), or whose image never attaches, is requested again. A
+  resume is retried by re-anchoring through `requestResume()`, so the anchor check above still applies.
+- **Chain changes.** The replayer resolves the recording chain on every request and may drop a stale
+  span, so a segment index can refer to a different recording on retry. `Replaying` carries the
+  `recordingId`; if it differs from the one the client saw for that index, the client restarts the walk
+  from segment 0 (spec **R-3**).
 
-The emit wedge is the one that cannot unwind — `emit` must not return without having written, and
-cannot throw from inside the tap's fragment handler for the reason just given — so it `halt`s (70)
-instead. That costs nothing the ordered teardown was buying: dying drops the venue socket with the
-process, and the cluster session outlives it by at most `sessionTimeoutNs`. The frame is in the
-replicated log, so the promoted instance's own FIX engine log holds it and the venue's `ResendRequest`
-closes the gap.
+`ClusterStreamClient` reads an archive's recorded segments directly where no replayer is available: each
+historical segment in full, then the last, possibly still-recording, segment without a bound, so one
+image delivers history followed by live data.
 
-**Promotion is a dial-out rather than a hand-over.** The passive instance follows the tap and fills its
-local FIX engine log through a `NO_CONNECTION_ID` follower writer, so it is already at the right
-`MsgSeqNum` when a `GatewayActive` names it; it then opens a fresh socket. Retry after a failed dial is
-backed off, because each attempt writes frames into a log that takes no snapshots, and at which rate
-depends on the only thing the gateway can honestly tell apart — whether a socket ever came up:
+## 4. Leader-only work
 
-| what happened | rate | why |
-|---|---|---|
-| the venue could not be connected to at all | 1 s doubling to 30 s | it is down, not refusing *this session*; it clears by itself the moment it is back, and the gateway should be on it |
-| the socket came up and the logon never completed | 1 s, 2 s, then every 5 min | the causes are indistinguishable on the wire, and they differ |
+Some side effects must be performed by exactly one replica, the one on the leader, and must survive a
+failover. The client tier provides `app/LeaderGate` and `app/OutstandingWork` (Java and C++; spec §16
+A-1 to A-3).
 
-The second row is the interesting one. Bad credentials, a comp-id the venue does not know, a `MsgSeqNum`
-it disagrees with and a venue that is simply closed all arrive as the same hang-up — and a FIX session
-outlives the connection carrying it, so a closed venue may equally just drop the socket rather than say
-anything. So the gateway neither gives up nor keeps dialling at the unreachable-venue rate. The first two
-retries stay quick, because one cause *does* clear in seconds (a venue that has not yet reaped the
-previous instance's socket refuses in exactly this way, which is the ordinary case right after a
-promotion). Past that it settles at 5 minutes — cheap enough to leave running indefinitely, so a venue
-that was only closed still comes back on its own — and raises `VenueLogonRefused` at `Error` **once per
-run of refusals**, because the causes that are not self-clearing need a human and no restart of the
-gateway will fix them. `doc/ops.md`, "A venue that will not accept the logon".
+- **Whether work is outstanding is replicated.** A request is outstanding from its sequenced request
+  until its sequenced reply, so every replica holds the same set.
+- **Dispatch is local.** It records that this node is handling a request. It is cleared when the gate
+  closes, and when a reply offer fails (the request stays outstanding, since the log decides).
+- A newly promoted leader dispatches every outstanding request not yet dispatched. A request is
+  discharged only by a sequenced reply, so it is never answered twice by design and never lost; if a
+  reply does not reach the log, the request remains outstanding for the next leader.
+- **Every `LeadershipChanged` closes the gate**, including one naming the same member. A replica
+  applies several frames per duty cycle and can apply a change away and back within one; a reply sent
+  during that election may have been lost with the old leader's uncommitted log. `OutstandingWorkPropertyTest`
+  covers this case.
+- **Dispatch is in insertion order**, which is `globalSeqNo` order. Side effects are externally visible in
+  emission order, and a hash map's iteration order differs between replicas.
 
-`GatewayStarted` goes out once per activation, not once per dial: it is this instance declaring the epoch
-rolled, which is what makes the sequencer release the connections its predecessor left dangling, and a
-retry inside one activation rolls nothing. A retry costs the log its `ConnectionOpened`, its `Logon` and
-its `ConnectionClosed`, and nothing else.
+Delivery is at least once across a failover. A reply that is a pure function of the sequenced request,
+keyed on its `globalSeqNo`, makes a re-emission byte-identical, so consumers can drop duplicates by key.
 
-**Not covered:** a venue whose `MsgSeqNum` state has diverged from the log is retried against, never
-reconciled with (§7) — the notification above is what surfaces it, not a resolution.
+## 5. Ingress across a failover
 
-## 3. Stream recovery — cold start, gaps, and the live/history split
+A producer that must not lose a frame confirms each one on its own tap (spec §16 A-4, A-5).
+`sequencer/client/PendingSends` holds every placed frame until the producer's own tap shows it, matched
+by cluster session id. After a `LeadershipChanged` with a newer term, any frame stamped with an older
+term that has not appeared is lost, and the lost frames are exactly the newest ones stamped with that
+term. From the first sign of a new term until those frames are resent, `IngressPublisher` places nothing
+new, and the sender abandons a send already retrying through the election (`setIngressHold`). Lost
+frames are resent oldest first.
 
-Every app that consumes the sequenced stream (the FIX gateway, `OrderExecServer`, `BasicDataServer`,
-`fix_test_server`) uses the same split: read the co-located `SequencerService`'s tap **directly and
-live** (untethered `aeron:ipc?tether=false`, so a slow consumer is dropped rather than back-pressuring
-the sequencer — see §1.3), and ask the co-located `ReplayerService` to fill in
-history on cold start or a detected gap.
-
-### 3.1 `ReplayerService` (Java, one per node)
-
-Off the live-delivery path entirely — no app depends on it for steady-state throughput, only for
-catching up. Before ever declaring itself `ready`, it replays the first frame of its own oldest tap
-recording and checks `globalSeqNo == 1`; if that fails, `ready` latches false for the process's
-lifetime (`integrityFailed`) — a deliberate refusal, because a first frame that isn't 1 means this
-node's own recording is missing or corrupted, and centralizing the check here means every app on the
-node is told `ReplayUnavailable` instead of independently discovering the same broken archive
-(`seqeron-service/src/main/java/org/limitless/seqeron/replayer/server/ReplayerService.java`, `checkReady`/
-`peekFirstGlobalSeqNo`). An archive call that throws mid-replay flips the service into a `stalled`
-state — retried at 1s intervals, answering requests `ReplayPending` in the meantime — without
-crashing the process or touching live delivery, since live reads never go through this service.
-`MAX_CONCURRENT_REPLAYS = 4` bounds archive-IO parallelism (the only event that needs many concurrent
-replays is node start/restart, when every co-located app cold-starts at once); a slot freed by one
-client is handed to a waiting one immediately, with a 60s idle-TTL as a backstop against a client that
-died mid-replay. Its own control-plane replies are offered with a bounded spin and **dropped** rather
-than blocked past that — cheap, since the requester just resends on a timer — so one stuck app cannot
-couple every other app's replay to it, the same untethered-drop philosophy as the tap itself, applied
-to the control plane.
-
-An uncaught exception escaping the duty-cycle loop (e.g. `offerControl`'s `CLOSED`/
-`MAX_POSITION_EXCEEDED`) used to unwind the thread silently, leaving `seqeron.replayer.ready` latched
-at 1 while nothing polled requests any more — a healthy-looking, dead process, with every co-located
-app resending into the void (fixed 2026-08-10). `ReplayerService.run()` now catches it,
-clears `ready`/`readyCounter` back to 0, and calls an injected `fatalHandler`; `ReplayerServer` wires that
-to its `ShutdownSignalBarrier` (mirroring `SequencerServer`'s `tapFatal` pattern — §1.3), so the process
-still tears down its archive/Aeron client cleanly before exiting with a distinct code
-(`EXIT_DUTY_CYCLE_FATAL = 70`) for process supervision to restart it on.
-
-### 3.2 Client-side replay (`ReplayerStreamReceiver`, C++)
-
-Used by `FixGateway` and the other node-local app replicas. On `start()`, it immediately requests a
-full walk from segment 0 (cold start). In steady state, a live-tap frame whose `globalSeqNo` jumps
-ahead of the next expected value clears `isCaughtUp()` and requests a **resume** at the last dispatched
-position — repairing just the hole rather than re-walking the whole day's log. If the resumed replay's
-first frame doesn't match the anchored `globalSeqNo` (meaning the active recording rotated under the
-client — the node it's reading from restarted), it falls back to a full re-walk.
-
-The one subtlety worth calling out for anyone touching this code: **live-tap frames are retained, not
-dropped, while a walk/resume is in flight.** A frame beyond the current hole is held in a bounded pooled
-FIFO (`MAX_MESSAGES_FRAMES = 65536` / `MAX_MESSAGES_BYTES = 16MB`, falling back to drop-and-rewalk past
-that bound) and handed over the instant the in-flight replay reaches the hole — no residual gap at the
-seam. The commit history is explicit about the cost of getting this wrong: dropping retained frames
-(as this code did until 2026-08-05) meant every walk finished one guaranteed hole short of live, and a
-single injected frame drop under a 300-message flood cost 6 full re-walks instead of 1 with retention.
-`isCaughtUp()` is a state that can re-clear on a later gap, not a one-time latch — both
-`FixGateway`'s tap-stall watchdog (§2.1) and leader-only emission gates (§6) depend on that, since an
-earlier latch-forever bug meant a mid-recovery re-walk read as a stalled sequencer and the gateway
-fenced itself out of a recovery it didn't need. The very first frame a client ever dispatches must
-carry `globalSeqNo == 1` or the process aborts — a hard invariant that this node's recording reaches
-the start of the log.
-
-The replay stream is subscribed **per episode and filtered to that replay's own Aeron session id**
-(`openReplaySubscription`), never held open between replays. That is a flow-control requirement, not
-housekeeping. The `ReplayerService` answers every app on one shared `aeron:ipc` stream (201), and an
-Aeron publication is throttled by its slowest *tethered* subscriber — so a standing subscription there
-(as this code had until 2026-08-07) made every idle app a subscriber of every other app's replay, one
-that never polls, since `poll()` only ever reads the image of its own session. Its position sat at 0
-forever, and the archive's replay wedged one publication window in and never moved again: measured on a
-stalled cold start, `pub-lmt` pinned at exactly 33,554,432 — 32 MiB, half a 64 MB term — with two peer
-`sub-pos` at 0 and the replay frozen just past it at 34.6 MB, tens of MB short of its bound. Any cold
-start needing more than ~32 MiB of history therefore hung **permanently**, which with no snapshots (§0)
-is what a restarted replica faces after a few hundred thousand messages. Filtered by session id, a
-replay publication has exactly one subscriber and no app can hold back another's, while the stream stays
-tethered so a replay fragment is still never silently dropped. This is the data-plane twin of the
-control-plane coupling §3.1 avoids by dropping replies rather than blocking on them; the live tap is the
-third case, and resolves it the other way, by being untethered (§3 above, §1.3).
-
-Nothing detected that hang either, which was the second half of the bug. The resend timer only covers
-"no `Replaying` yet" (`m_awaitingReplay`), and a bounded replay of a *still-recording* segment never
-closes its image on reaching its bound — completion there is detected by position, not by the image
-closing — so an image that is attached, open, and simply frozen had no watchdog at all. A replay that
-makes no progress for `REPLAY_STALL_TIMEOUT_MS` (5s) now re-requests the same segment verbatim: the same
-recovery already used when an image closes *short* of its bound (meaning the replay was stopped under
-the client — superseded, slot reclaimed, archive fault), extended to cover a silent one, and a
-`Replaying` whose image never attaches at all. For a *resume* retry (as opposed to a cold-start walk
-step) "verbatim" specifically means re-anchoring via `requestResume()`, not resending the bare
-`fromPosition` — a bug fixed 2026-08-10: resending the bare position bypassed the anchor check
-described above entirely (the first anchor had already been consumed by the retried episode's earlier
-frames), so a mis-landed retry onto a rotated recording could ride an unvalidated position rather than
-falling back to the chain walk.
-5s is far above any legitimate pause: the archive sustains tens of MB/s into a local IPC replay, so a
-replay with anything left to serve is never quiet for seconds, and a spurious fire only costs one
-segment re-replayed.
-
-For a **cold-start walk** step, the same "same segment, verbatim" retry has a different failure mode
-(fixed 2026-08-10): `serveReplay` re-runs `resolveSegments()` on every request, and
-`ReplayRecordings.stitch` drops a stale still-recording span once a newer one supersedes it — so the
-recording a given `segmentIndex` denotes can shift between the client's original request for a segment
-and a later retry of that same index (image closed short, stalled, or resent). `Replaying` now echoes
-the `recordingId` it served; `ReplayerStreamReceiver` remembers the recordingId it saw for the segment
-currently in flight and, if a retry lands on a different one, abandons the walk and restarts from
-segment 0 rather than risk replaying the wrong span or duplicating one. `globalSeqNo` contiguity already
-made this self-healing in practice — the walk's replayFrom is always a whole recording from its own
-`startPosition`, so a shifted segment is either the exact same data or a strict superset (a fresh
-full-log replay), never a hole — but the mismatch is now caught at the point it happens instead of
-relying on a later tap frame to notice a `isCaughtUp()==true` state that under-covered history.
-
-`ClusterStreamClient` is the archive-direct sibling used where there's no
-co-located Replayer (`fix_test_server`, and `FixConnection`'s bounded resend-recovery scan): it walks
-an archive's recorded segments for a stream directly, replaying each historical segment fully and the
-last (possibly still-recording) one open-ended, so the same image delivers both historical and live
-messages without a subscription switch.
-
-## 4. Exactly-once query replies across a failover — `OutstandingQueries`
-
-`PortfolioQueryRequest` handling (phixeron's `OrderExecServer`) needs a leader-only responder, but the
-leader can change mid-flight. seqeron ships the pattern as `app/OutstandingWork` and `app/LeaderGate`
-(Java and C++, spec §16); phixeron's `OutstandingQueries.hpp` is where it came from. It keeps two
-separate notions of state:
-
-- **Outstanding-ness is replicated** — a request is outstanding from the moment it's sequenced until a
-  matching *sequenced* reply discharges it (`onRequest`/`onReply`), so every replica derives the same
-  set of unanswered requests purely from the ordered log.
-- **Dispatch is local and advisory** — "a worker on this node is handling this one" — and gets cleared
-  by `onNotLeader()` (a leadership change: the new leader must re-consider every still-outstanding
-  request, including ones sequenced before it ever led) or `onReplyNotEmitted()` (a reply that was
-  attempted but never reached the cluster, e.g. a failed offer — the request stays outstanding since
-  the log is the source of truth).
-
-A freshly promoted leader simply calls `dispatchUndispatched()` against state every replica already
-holds identically — no special-cased failover recovery logic, no risk of answering a query twice
-(discharge only ever happens via a sequenced reply) or losing one (a reply that doesn't land leaves the
-request outstanding for the next leader to pick up).
-
-**Every leadership change closes the gate**, not only one that names another member. A replica applies a
-batch of frames per duty cycle, so it can apply a flip away and back and read itself as leader both
-before and after; a reply it sent during that election may have been truncated with the old leader's
-uncommitted log, and without a close it stays dispatched and is never sent again. `LeaderGate` closes on
-every applied `LeadershipChanged` for that reason. `OrderExecServer`'s per-cycle
-`isCaughtUp() && currentLeaderMemberId() == memberId` test does not, and `OutstandingWorkPropertyTest`
-finds that case within its fixed seeds.
-
-Dispatch runs in **insertion order**, which — fed from the sequenced stream — is `globalSeqNo` order.
-This is required, side effects are externally visible in the order they are emitted (an `ExecutionReport` takes its outbound FIX `MsgSeqNum` when the gateway frames it), so
-iterating the underlying `unordered_map` directly, as this did until 2026-08-07, handed a counterparty a
-burst of acks shuffled — and shuffled *differently* per replica, since a rebuilt hash map's iteration
-order is not a function of the log. Determinism across replicas (§0) has to hold for emission order, not
-only for state.
-
-Two more things ride the same machinery for the same reason. **Venue acks**: every `NewOrderSingle` is
-outstanding from the moment it is sequenced until its `ExecutionReport` is in the log, keyed on the
-order's `globalSeqNo` — which is also what its `ExecID` names (`VenueExecId.hpp`). That replaced a bare
-"am I caught up and leader?" test taken at the instant the order was decoded, with no record kept, so an
-order arriving before this node had processed its own promotion — or delivered by a gap-repair replay,
-during which `isCaughtUp()` is false throughout (§3.2) — was stepped past and acknowledged by nobody.
-Because the ack is a pure function of the sequenced order (cluster timestamp included), a re-emission
-after a failover is byte-identical to the one that may have been lost, so the at-least-once seam yields
-exact duplicates that dedupe on `ExecID` rather than two conflicting acks. **Rejected queries** get a
-second, parallel `OutstandingQueries<RejectedQuery>` instance, so the canned "queue full" reply is
-retried and handed off across a failover exactly like a real one instead of being fire-and-forget.
-
-## 5. Reference data (BasicData) recovery
-
-`BasicDataServer`/`Gateways` treat reference data with the same fault-tolerance shape as everything
-else: every node builds an identical in-memory view by following its co-located tap, so losing a node
-loses no reference data — a neighbour already holds it. The producer role (reading the source-of-truth and publishing `BasicData*` rows) is
-strictly leader-only and gated the same way as query dispatch (§4) — `isCaughtUp` plus
-"is this node's memberId the current leader" — so a failover doesn't produce two competing loads; the
-new leader's replica simply opens its own upstream connection and resumes.
-
-Recovery deliberately has **no separate progress record**: a newly promoted leader scans what's already
-in the log — `EndBasicData` seen → nothing to do; all sections complete but no `EndBasicData` → emit
-it; otherwise resume the first incomplete section from row 0. One rule
-covers every failure mode (DB error mid-section, plain crash, a failover mid-load) uniformly, because
-it's derived from the log rather than tracked separately from it — the same principle as §0. Consumers
-correspondingly commit a section only when its `remainingItems` counter reaches 0, discarding any
-partial scratch buffer on a restart, since this recovery rule can legitimately resend an in-flight
-section after a failover.
+`failover-test.sh` runs two producers across a leader kill: the one using `PendingSends` must see every
+frame on the tap exactly once and in order; the other reports what it lost.
 
 ## 6. Operational tooling and verification
 
-- **`clusterctl`** (`doc/clusterctl.md`) — `start`/`shutdown` bracket a run with sequenced markers so
-  the log itself records "the cluster was up between these two points"; `activate` is the manual
-  standby-promotion lever (§2.2); `snapshot` is explicitly refused. See §1.4.
-- **Metrics** (`doc/ops.md`) — `seqeron_sequencer_tap_stalled` (latches at 1 when a node is about to
-  terminate itself, §1.3), `seqeron_sequencer_gateway_promotion_total` (§2.2), the `seqeron_replayer_*`
-  family (§3.1), and Prometheus's own per-node `up` (reachability, independent of what else that
-  node reports) give an operator the same signals this document
-  describes, on a dashboard.
-- **`seqeron-service/src/test/scripts/chaos-runner.sh`** — randomized fault injection against a live 3-node cluster with
-  a hot-standby gateway pair, replayable by seed. Injects: `fault_kill_leader`/`fault_kill_follower`
-  (kill + restart a node, verifying quorum/leadership behave as above), `fault_pause_node` (`SIGSTOP` to
-  simulate a GC pause), `fault_tap_drop` (one synthetic dropped live-tap frame, exercising §3.2's
-  retained-message recovery), and `fault_tap_stall` (arms the same fault §1.3 self-terminates on,
-  asserting the node actually exits rather than limping on with a dead recording). Between rounds it
-  checks exactly one leader, a full FIX round trip against whichever gateway currently holds the accept
-  gate, and that the live-tap consumer is still attached; at the end it freezes every member
-  simultaneously and asserts every node's tap recording is gap-free, strictly monotone in `globalSeqNo`,
-  and converged to the same high-water mark across all three nodes — the strongest available proof that
-  §1.1's "byte-identical taps" invariant actually held for the run.
-- **`seqeron-service/src/test/scripts/replay-bench.sh`** — times a cold replica from launch to "Caught up" against a
-  preloaded archive, optionally while load keeps arriving. It adds a fresh `OrderExecServer` beside a
-  running cluster rather than restarting one (the launch script tears the cluster down when a child
-  exits), so it walks the whole recording chain exactly as a restarted replica does. Written to chase
-  §3.2's replay wedge and kept as the regression measurement for it: `replay-bench.sh 400000` builds
-  ~70 MB of history — the case that used to hang forever and now converges in well under a second — and
-  a run reporting `NEVER CAUGHT UP` is that class of bug rather than a slow machine. This is also the
-  measurement that matters for `fault_kill_leader` above, since a restarted replica has to catch up
-  inside the harness's probe window; the replay wedge is what made those rounds fail.
-- **`seqeron-service/src/test/scripts/replayer-restart-test.sh`** (added 2026-08-10) — the directed, deterministic
-  counterpart to `chaos-runner.sh`'s randomized coverage of the same territory: kills and restarts
-  member 0's `ReplayerServer` alone (leaving its `SequencerServer` and client untouched) the instant it
-  starts serving a cold-starting client's first segment, then separately kills member 0's `SequencerServer`
-  outright and asserts its co-located `ReplayerServer`/client fail fast and, once restarted, a fresh
-  cold-start walk crosses a real two-recording chain (two distinct `recordingId`s) before converging —
-  §3.2's resume-retry and recordingId-mismatch hardening exercised against real Aeron/Archive processes,
-  not fabricated `Replaying` replies.
-- **`seqeron-service/src/test/scripts/docker-failover-test.sh`** — the containerized multi-round soak, and
-  the broadest evidence for §2.1 that this repo carries. `failover-test.sh` proves the replay path
-  reconnects across one kill; this runs `ROUNDS` (15 by default) of it against `docker/compose.yml`, each
-  round under continuous `ProbeMarker` load and each killed member restored before the next, so the log a
-  rejoining member replays has grown under every round before it. It asserts three things in order: every
-  round is a genuine leadership change with the killed member rejoining; a long-lived observer on each
-  surviving node keeps delivering in `globalSeqNo` order across all of them, healing by re-walk rather than
-  wedging; and a cold-start probe, launched only at the end, replays the *whole* multi-tenure history off
-  the final leader's single continuous recording and reaches "following live". Because load ran throughout,
-  that history is application payload rather than the 1 Hz heartbeat alone — which is what a single kill
-  against an idle cluster never shows. Needs Docker and `./gradlew operatorDist`; CI runs it as
-  `failover.yml`, and `ROUNDS=3` is the quick local run.
+- **`clusterctl`** (`doc/clusterctl.md`): `start` and `shutdown` bracket a run with sequenced markers;
+  `activate` is the manual promotion (§2.2); `snapshot` is refused.
+- **Metrics** (`doc/ops.md`): `seqeron_sequencer_tap_stalled` (set when a node is about to terminate,
+  §1.3), `seqeron_sequencer_gateway_promotion_total` (§2.2), the `seqeron_replayer_*` family (§3.1), and
+  Prometheus's per-node `up`.
+- **`chaos-runner.sh`**: randomized fault injection against a three-node cluster with a `TestGateway`
+  pair, reproducible from its printed seed. Faults: kill and restart the leader or a follower, `SIGKILL`
+  a follower, `SIGSTOP`/`SIGCONT` a node, drop one live tap frame (§3.2), and stop a node's tap recording
+  (§1.3, asserting the node exits). After each round it checks that there is one leader, the gateway
+  pair still serves, and consumers still deliver in order. At the end it stops every member and checks
+  that every node's recording is gap-free, strictly increasing in `globalSeqNo`, and at the same high
+  mark on all three nodes (§1.1).
+- **`gap-recovery-test.sh`**: a caught-up consumer drops one live frame after a leader failover and must
+  resume and keep delivering (§3.2).
+- **`replay-bench.sh`**: times a cold `ClusterProbe follow` from launch to caught up against a preloaded
+  archive, optionally under load. `replay-bench.sh 400000` builds about 70 MB of history; it must converge
+  in well under a second, and `NEVER CAUGHT UP` indicates a replay stall (§3.2), not a slow machine.
+- **`replayer-restart-test.sh`**: kills member 0's `ReplayerServer` as it starts serving a cold start,
+  then kills member 0's `SequencerServer` and checks that its replayer and client fail fast and that a
+  fresh cold start walks a real two-recording chain (§3.2).
+- **`failover-test.sh`**: a leader kill with a replay consumer and the confirmed-ingress check of §5.
+- **`docker-failover-test.sh`**: `ROUNDS` (default 15) leader kills against `docker/compose.yml` under
+  continuous `ProbeMarker` load, restoring each killed member before the next round. It checks that
+  every round changes leadership and the killed member rejoins; that an observer on each surviving node
+  delivers in `globalSeqNo` order throughout; and that a cold start at the end replays the whole
+  multi-tenure history from one recording and reaches live. Needs Docker and `./gradlew operatorDist`;
+  CI runs it as `failover.yml`. `ROUNDS=3` is a quick local run.
 
-## 7. What this does not cover
+All scripts are under `seqeron-service/src/test/scripts`.
 
-- **No pre-trade risk gating and no matching engine** — a failover-safe query responder (§4) is not the
-  same as a durable *order acceptance* decision.
-- **No edge authentication** — CompID validation only. Orthogonal to recovery,
-  but relevant if a "fault" is ever adversarial rather than accidental.
-- **`aeronmd` itself and network partition/latency faults** are not exercised by `chaos-runner.sh` —
-  noted there as unwired seams (killing the media driver is destructive to co-located C++ clients;
-  `tc netem`/`dnctl` isn't wired up on the macOS dev host).
-- **Ingress lost outside one producer process's view.** `PendingSends` counts losses against a
-  leadership change and keeps its copies in memory: a frame lost with no leader change (an ingress image
-  that drops and rejoins inside the session timeout) has no boundary to be counted against, and a producer
-  that restarts, or a standby promoted in its place, starts with nothing pending. Covering either needs a
-  durable outbox, or a per-producer sequence number the sequencer de-duplicates on; neither exists.
-- **Single-node dev launches** have no failover to exercise at all — the mechanisms above only engage
-  with 2+ cluster members.
-- **A venue whose sequence state has diverged from the log is retried against, never reconciled with**
-  (§2.5). The refusal names the number the venue expected, so a `SequenceReset` published through the
-  cluster could adopt it; nothing does. The retry is bounded in cost and now raises an operator
-  notification, which is not the same as resolving it.
-- **Three of the venue leg's four fatal fences are unexercised by any script.**
-  `exchange-gateway-test.sh` drives the session-loss one for real — it starves the standby's keepalive
-  until the cluster closes its session, and asserts the exit was that fence rather than an incidental
-  crash. The tap-stall, recovery-stall and emit-wedge paths have only been verified by shrinking their
-  timeouts; nothing drives the states they exist for, and the Java gateway has no equivalent of the C++
-  `SEQERON_FAULT_INJECTION` hook. That script also co-locates both instances on one cluster member, so
-  the pair on separate members — the production topology — is untested.
+## 7. Not covered
+
+- **Media driver and network faults.** Killing `aeronmd`, partitions and added latency are not
+  exercised: killing the driver also kills co-located C++ clients, and `tc netem`/`dnctl` is not set up
+  on the development host.
+- **Ingress lost outside one producer process.** `PendingSends` keeps its state in memory and counts
+  losses against a leadership change. A frame lost without a leader change (an ingress image that drops
+  and rejoins within the session timeout) has no term boundary to be counted against, and a restarted
+  producer, or a standby promoted in its place, starts with nothing pending. Covering either needs a
+  durable outbox or a per-producer sequence number that the sequencer de-duplicates on.
+- **Producer authentication.** The cluster checks well-formedness, not identity (spec §7).
+  Authentication belongs at the system's external edges.
+- **Single-node clusters** have no failover; the mechanisms above need at least two members.

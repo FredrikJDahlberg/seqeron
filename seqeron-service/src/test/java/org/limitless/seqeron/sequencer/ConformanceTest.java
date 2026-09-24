@@ -44,8 +44,7 @@ import org.limitless.seqeron.sbe.frame.UnsequencedSystemHeaderDecoder;
  *
  * <p>No Aeron, no media driver, sub-second, and the fixture is a <b>synthetic payload seqeron owns</b>:
  * the application vectors carry arbitrary bytes under a {@code payloadId} the cluster tier never opens,
- * so nothing here compiles against an application schema. That is what {@code SequencerTest} cannot say
- * (its copy-through exemplar is a session-schema {@code Heartbeat}) and what the repo split needs.
+ * so nothing here compiles against an application schema.
  *
  * <p>Rows 2 and 6 are schema-level and are mirrored in {@code core_tests}' {@code ConformanceTest.cpp};
  * the rest exercise {@link Sequencer}, which has no C++ implementation to mirror.
@@ -177,7 +176,7 @@ class ConformanceTest {
     // ── Row 3. System frames round-trip unchanged (§7) ───────────────────────────────────────────
 
     @Test
-    @DisplayName("row 3: each of the eight submitted events crosses with its body byte-identical")
+    @DisplayName("row 3: each of the nine submitted events crosses with its body byte-identical")
     void submittedSystemEventsRoundTrip() {
         for (final Map.Entry<Integer, byte[]> event : submittedEvents().entrySet()) {
             final Sequencer target = new Sequencer();
@@ -227,7 +226,7 @@ class ConformanceTest {
     void synthesizedFramesCarryTheirOwnTemplates() {
         final int heartbeat = sequencer.clusterHeartbeat(TIMESTAMP);
         assertEquals(ClusterHeartbeatDecoder.TEMPLATE_ID, templateIdOf(heartbeat));
-        assertEquals(42, heartbeat, "no body at all — the cheapest frame in the system (§15 step 10)");
+        assertEquals(42, heartbeat, "no body at all — the cheapest frame in the system (§4.2)");
         assertEquals(SystemFrame.CLUSTER_HEARTBEAT, wrapSequenced(heartbeat).systemEventType(),
                      "systemEventType is populated on a synthesized frame too, so offset 16 discriminates "
                      + "every frame on the tap");
@@ -795,7 +794,7 @@ class ConformanceTest {
     private static byte[] applicationRegisteredBody(final int applicationSourceId) {
         final MutableDirectBuffer body = new ExpandableArrayBuffer(64);
         final ApplicationRegisteredEncoder encoder = new ApplicationRegisteredEncoder();
-        encoder.wrap(body, 0).applicationSourceId(applicationSourceId).applicationName("BasicDataServer");
+        encoder.wrap(body, 0).applicationSourceId(applicationSourceId).applicationName("RefDataServer");
         return copy(body, 0, encoder.encodedLength());
     }
 

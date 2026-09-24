@@ -25,7 +25,7 @@ import org.limitless.seqeron.util.Logger;
  *
  * <p><b>Port layout</b> (member 0 on the base; members 1 and 2 use base+10, base+20). The base is 9300
  * unless {@code SEQERON_PORT_BASE} overrides it (see {@link PortLayout}); the reserved block is wider than
- * what three members bind (doc/registries.md §2):
+ * what three members bind (doc/ops.md, "Ports"):
  * <pre>
  *   +1  archive control   (9301, 9311, 9321)
  *   +2  cluster ingress   (9302, 9312, 9322)

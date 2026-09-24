@@ -5,7 +5,7 @@
 # RHEL login shell, so the "${TMPDIR}seqeron-seq" idiom this replaces was both an unbound-variable
 # abort under `set -u` and, in its "${TMPDIR:-/tmp}" form, a silent wrong path (/tmpseqeron-seq)
 # that the cluster never writes to. Join, never concatenate:
-# the shell mirror of OrderGatewayConfig's new File(tmpdir, ...) and Env.hpp's joinPath.
+# the shell mirror of Java's new File(tmpdir, ...) and Env.hpp's joinPath.
 
 TMP_DIR="${TMPDIR:-/tmp}"
 TMP_DIR="${TMP_DIR%/}"

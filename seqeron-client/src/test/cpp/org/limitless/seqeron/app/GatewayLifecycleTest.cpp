@@ -1,4 +1,4 @@
-// Unit tests for the gateway election lifecycle, merged from phixeron's acceptor and initiator tests.
+// Unit tests for the gateway election lifecycle.
 // Topology: GW-A (id 5) and GW-B (id 6) under gatewaySourceId 6, beside another pair (ids 1 and 2) under 0.
 // Case for case with GatewayLifecycleTest.java.
 

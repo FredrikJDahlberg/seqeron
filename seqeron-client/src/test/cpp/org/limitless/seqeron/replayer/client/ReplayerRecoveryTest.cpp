@@ -395,7 +395,7 @@ TEST(ReplayerRecoveryGapRecovery, TapFrameAheadOfAnInFlightWalkDoesNotSupersedeI
     EXPECT_EQ(1u, sink.events.size()) << "and it is not reported as a second gap";
 }
 
-// The replay->live seam (review A2): the tap is dispatched throughout a walk, so the frame at
+// The replay->live seam: the tap is dispatched throughout a walk, so the frame at
 // gseq == last+1 lands the instant the replay reaches it. Before the fix poll() routed tap frames to a
 // discard handler while recovering, consuming exactly these frames — so every walk ended one guaranteed
 // gap short of live and re-walked the whole chain, converging only if nothing was published during the
@@ -420,8 +420,8 @@ TEST(ReplayerRecoveryGapRecovery, LiveTapFrameAtTheSeamIsDispatchedWhileTheWalkI
     EXPECT_TRUE(client.recovery.isCaughtUp()) << "a contiguous frame off the live tap means we are following live";
 }
 
-// A steady-state gap resumes the recording at the frame last dispatched (review A9), so repairing a
-// dropped frame costs a replay of the hole rather than of the whole trading day. The stale walk index is
+// A steady-state gap resumes the recording at the frame last dispatched, so repairing a
+// dropped frame costs a replay of the hole rather than of the whole log. The stale walk index is
 // the thing it must never carry into that request: that is a cold-start cursor into the recording chain,
 // not a position, and resuming a walk from wherever the last one had got to is unsound.
 TEST(ReplayerRecoveryGapRecovery, SteadyStateGapResumesAtTheLastDispatchedFrameNotTheStaleWalkIndex)
@@ -520,7 +520,7 @@ TEST(ReplayerRecoveryGapRecovery, SegmentCompleteAdvancesTheWalkAndReRequestsThe
     EXPECT_EQ(-1, client.recovery.replaySessionId()) << "no session until the Replayer answers the new request";
 }
 
-// ── Request/reply correlation (review A3) ────────────────────────────────────────────────────
+// ── Request/reply correlation ────────────────────────────────────────────────────────────────
 // clientId alone cannot identify WHICH request a reply answers. A resend makes the Replayer stop the
 // in-flight session and start a new one, so both replies sit in order on the one shared control
 // publication and the stale one is always processed first. Acting on it attached the client to a
@@ -575,7 +575,7 @@ TEST(ReplayerRecoveryGapRecovery, ReplayPendingForASupersededRequestIsIgnored)
                                                  "push out the current request's resend deadline";
 }
 
-// ── Closed image vs. completed segment (review A4) ───────────────────────────────────────────
+// ── Closed image vs. completed segment ───────────────────────────────────────────────────────
 // A bounded replay of a STOPPED recording closes its image on its own, exactly at the stopPosition it
 // was bounded to — the one close that means "segment done".
 TEST(ReplayerRecoveryGapRecovery, ReplayImageClosingAtTheBoundCompletesTheSegment)
@@ -840,9 +840,9 @@ TEST(ReplayerRecoveryGapRecovery, RecoveringFlagTracksWalkAndAwaitingReplayState
     EXPECT_FALSE(client.recovery.isRecovering()) << "chain exhausted -> back to steady state";
 }
 
-// isCaughtUp() is a state, not a latch (review A1). Consumers gate real decisions on it —
-// OrderExecServer/BasicDataServer leader-only emission, and FixGateway's tap-stall watchdog, which
-// measures silence in DISPATCHED frames and self-terminates the gateway after 20s. A re-walk dispatches
+// isCaughtUp() is a state, not a latch. Consumers gate real decisions on it — LeaderGate's
+// leader-only emission, and a gateway's tap-stall watchdog, which measures silence in DISPATCHED
+// frames and fences the gateway after 20s. A re-walk dispatches
 // nothing until the replay passes the hole, so leaving it latched made the gateway diagnose its own
 // recovery as a stalled sequencer and force a standby promotion it did not need.
 TEST(ReplayerRecoveryGapRecovery, TapGapRevokesCaughtUpUntilTheStreamGoesContiguousAgain)
@@ -870,7 +870,7 @@ TEST(ReplayerRecoveryGapRecovery, TapGapRevokesCaughtUpUntilTheStreamGoesContigu
                                            "on first catch-up";
 }
 
-// The retention half of the seam fix (review A2), stated on its own: a frame from beyond the hole is
+// The retention half of the seam fix, stated on its own: a frame from beyond the hole is
 // held and delivered exactly once when the hole closes — never dropped, never duplicated, always in
 // globalSeqNo order. Dropping these is what made every walk end one hole short of live and re-walk.
 TEST(ReplayerRecoveryGapRecovery, FramesBeyondTheHoleAreRetainedAndDeliveredOnceItCloses)
@@ -895,8 +895,8 @@ TEST(ReplayerRecoveryGapRecovery, FramesBeyondTheHoleAreRetainedAndDeliveredOnce
     EXPECT_TRUE(client.recovery.isCaughtUp());
 }
 
-// A hole in REPLAYED history was the one invariant violation that produced no log and no counter
-// (review A10): the frame is dropped, the walk rides on, and recovery quietly never converges.
+// A hole in REPLAYED history was the one invariant violation that produced no log and no counter:
+// the frame is dropped, the walk rides on, and recovery quietly never converges.
 // Nothing unsafe follows — contiguity still holds — so this reports rather than aborts, once per
 // episode, since the walk retries against the same chain every 500ms.
 TEST(ReplayerRecoveryGapRecovery, GapInReplayedHistoryIsReportedOncePerEpisode)
@@ -925,7 +925,7 @@ TEST(ReplayerRecoveryGapRecovery, GapInReplayedHistoryIsReportedOncePerEpisode)
     EXPECT_EQ(2u, sink.events.size()) << "the latch clears once history goes contiguous again";
 }
 
-// The resume's safety check (review A9). A position denotes a frame only within the recording it was
+// The resume's safety check. A position denotes a frame only within the recording it was
 // observed in, and a member restart can leave the app holding one from a recording that is no longer the
 // active one. Rather than trying to prove that has not happened, the resumed replay is checked where it
 // lands: its first frame must be the frame the position was anchored on. Riding it regardless would walk
@@ -954,7 +954,7 @@ TEST(ReplayerRecoveryGapRecovery, ResumeOpeningOnTheWrongFrameFallsBackToTheChai
     EXPECT_EQ(diag::eventCode::TapGap, sink.events[1].code);
 }
 
-// The resume anchor is consumed by the first frame of ONE replay episode (review A9) — a retry of
+// The resume anchor is consumed by the first frame of ONE replay episode — a retry of
 // that same logical resume (image closed short of its bound, or stalled) starts a NEW episode and must
 // re-arm the check via requestResume(), not resend the bare fromPosition via requestReplay() directly.
 // Without it, the retried replay's first frame rides with no anchor to validate against: if the active
@@ -1237,7 +1237,7 @@ TEST(ReplayerRecoveryGapRecovery, RetainedFramesAlreadyCoveredByTheReplayAreNotR
     EXPECT_EQ((std::vector<std::int64_t>{ 1, 2, 3, 4 }), delivered) << "each globalSeqNo dispatched exactly once";
 }
 
-// ── The walk's terminating NO_REPLAY_NEEDED (review-3 findings 1 and 2) ──────────────────────
+// ── The walk's terminating NO_REPLAY_NEEDED ──────────────────────────────────────────────────
 // serveReplay sends NO_REPLAY_NEEDED for two different things and tells them apart by recordingId: a
 // walk that ran past the last recording (names none, -1) versus a segment that is merely EMPTY (names
 // the recording it found nothing in). Only the first ends the walk. And ending it is not by itself
@@ -1437,7 +1437,7 @@ TEST(ReplayerRecoveryConvergence, AWalkThatIsStillDeliveringIsNeverReportedHowev
     ScopedLoggerSink sink;
     Client client{ [](const SequencedEvent&) {} };
 
-    // A cold start replaying a whole trading day: slow, but converging one frame at a time. Measuring
+    // A cold start replaying a long log: slow, but converging one frame at a time. Measuring
     // elapsed time instead of progress is exactly what would fence this.
     for (std::int64_t gseq = 1; gseq <= 20; ++gseq)
     {
@@ -1471,7 +1471,7 @@ TEST(ReplayerRecoveryConvergence, ACaughtUpClientThatSimplyGoesQuietIsNotReporte
     deliverLive(client, 1);
     ASSERT_TRUE(client.recovery.isCaughtUp());
 
-    // A tap that goes silent is checkTapStall's business (FixGateway), and it is not a convergence
+    // A tap that goes silent is the tap-stall fence's business, and it is not a convergence
     // failure at all — diagnosing it as one would put a second, wrong explanation on the same event.
     EXPECT_FALSE(checkProgressAt(client, CLOCK_MS));
     EXPECT_FALSE(checkProgressAt(client, PAST_DEADLINE_MS));

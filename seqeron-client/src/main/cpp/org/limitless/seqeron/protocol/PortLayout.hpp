@@ -1,8 +1,7 @@
 #pragma once
 
 // The cluster port-layout formula — the C++ mirror of PortLayout.java and ports.sh; SequencerServerTest
-// and PortLayoutTest pin the same (memberId -> port) pairs. Cluster member ports only: which block each
-// product owns is doc/registries.md §2's.
+// and PortLayoutTest pin the same (memberId -> port) pairs. Cluster member ports only (doc/ops.md, "Ports").
 
 #include <charconv>
 #include <cstdint>
@@ -70,7 +69,7 @@ inline int clusterPortBase()
     return base;
 }
 
-// Core's reserved block (doc/registries.md §2): three members wide, one stride each — wider than the
+// Core's reserved block (doc/ops.md, "Ports"): three members wide, one stride each — wider than the
 // base+1..base+25 three members bind.
 inline int clusterPortBlockFirst()
 {

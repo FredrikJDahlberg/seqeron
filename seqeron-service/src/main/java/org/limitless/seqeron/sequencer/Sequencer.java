@@ -66,7 +66,7 @@ public final class Sequencer {
     /** {@link #GATEWAY_ACTIVATION_TIMEOUT_MS} in consensus time, which is epoch nanoseconds. */
     static final long GATEWAY_ACTIVATION_TIMEOUT_NS = 5 * FrameLayer.CLUSTER_HEARTBEAT_INTERVAL_NS;
 
-    /** Core's retired {@code payloadId} (spec §15 step 10), refused on ingress so a stale producer fails loudly. */
+    /** Core's retired {@code payloadId} (spec §6.1), refused on ingress so a stale producer fails loudly. */
     private static final int RETIRED_CORE_ID = 1;
 
     /** {@code varDataEncoding}'s {@code nullValue}: "absent", not a 65535-byte payload. */

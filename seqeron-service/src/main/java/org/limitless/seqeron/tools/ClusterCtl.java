@@ -80,7 +80,7 @@ public final class ClusterCtl {
     private static final long IPC_CONNECT_TIMEOUT_MS = 500;
 
     /**
-     * Ephemeral: this tool runs for one command and needs no port of its own (doc/registries.md §2). The host
+     * Ephemeral: this tool runs for one command and needs no port of its own (doc/ops.md, "Ports"). The host
      * is what the leader replies to, so on a follower of a multi-host cluster it must be this node's own name.
      */
     private static final String EGRESS_CHANNEL =
@@ -543,7 +543,7 @@ public final class ClusterCtl {
                            publish the topology document (XML, validated against the
                            packaged topology.xsd): the gateway list, then the
                            co-located applications, then the protocol registry; run
-                           once per cluster lifetime, BEFORE the reference-data load
+                           once per cluster lifetime, before any gateway starts
               counters     list this node's seqeron operator counters (SequencerService/
                            ReplayerService); no cluster connection needed, safe on every node
               snapshot     this operation is not supported

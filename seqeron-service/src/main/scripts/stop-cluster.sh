@@ -11,7 +11,7 @@
 # they are swept first, with the replicas. The format is one "label|pgrep-pattern" per entry,
 # semicolon-separated:
 #
-#   SEQERON_EXTRA_PROCESSES="FixGateway|FixGateway;OrderExecServer|OrderExecServer" ./stop-cluster.sh
+#   SEQERON_EXTRA_PROCESSES="MyGateway|MyGateway;MyApp|MyApp" ./stop-cluster.sh
 #
 # Usage:
 #   ./stop-cluster.sh

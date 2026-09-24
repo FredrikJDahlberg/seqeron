@@ -3,8 +3,8 @@
 # SequencerServer.java's class Javadoc, PortLayout.hpp on the C++ side, and the
 # "Port layout" section — the source of truth all three cite). Meant to be sourced, not
 # executed: every script that built a CLUSTER_MEMBERS string used to hand-type the same
-# three-line block, which is how BasicDataServer's and FixGateway's egress-port defaults
-# once drifted onto the same value (9340+memberId) without anyone noticing.
+# three-line block, which is how two processes' egress-port defaults once drifted onto the
+# same value (9340+memberId) without anyone noticing.
 
 # The stride is fixed; the base is a deployment knob read by all three mirrors (this file,
 # PortLayout.java, PortLayout.hpp). Set it identically for every seqeron process on every host, or a
@@ -58,13 +58,9 @@ ingress_endpoints_string() {
     echo "${out}"
 }
 
-# ── Core's own satellite port block. A consumer's bases are the consumer's own, in the consumer's
-#    own file (the C++ mirror of that split is AppPorts.hpp beside PortLayout.hpp); which block each
-#    repo draws from is doc/registries.md §2's table, and core states only its own here. ──────────
+# ── Core's own satellite port block (doc/ops.md, "Ports"). An application's ports are its own. ──────────────────
 TEST_GATEWAY_PORT_BASE=9200          # TestGateway TCP listen (9200 GW-T-A, 9201 GW-T-B) — the cluster
-                                     # tier's OWN harness block, 9200-9209 (doc/registries.md §2). Not in
+                                     # tier's OWN harness block, 9200-9209. Not in
                                      # the 9300 block: that is three members of stride 10 with nothing spare.
-# 9348 and 9349 were the cluster-tier harnesses' own test-consumer egress ports, and are now free:
-# those harnesses run ClusterProbe follow, which opens no cluster session at all. Left unallocated rather than reused, since doc/registries.md §2 records the block.
 
 test_gateway_port()       { echo $(( TEST_GATEWAY_PORT_BASE + ${1:-0} )); }

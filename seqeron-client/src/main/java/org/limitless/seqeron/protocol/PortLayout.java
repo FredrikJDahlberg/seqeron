@@ -3,7 +3,7 @@ package org.limitless.seqeron.protocol;
 /**
  * The cluster port-layout formula — the Java twin of {@code protocol/PortLayout.hpp} and {@code
  * ports.sh}; {@code SequencerServerTest} and {@code PortLayoutTest} pin the same pairs. Cluster member ports
- * only: which block each product owns is doc/registries.md §2's. Client tier, so a producer derives
+ * only (doc/ops.md, "Ports"). Client tier, so a producer derives
  * endpoints from here without depending on the node.
  */
 public final class PortLayout {
@@ -35,7 +35,7 @@ public final class PortLayout {
     public static final int CLUSTER_PORT_BASE = resolveClusterPortBase(System.getenv(ENV_PORT_BASE));
 
     /**
-     * Core's reserved block (doc/registries.md §2): three members wide, one stride each — wider than the
+     * Core's reserved block (doc/ops.md, "Ports"): three members wide, one stride each — wider than the
      * base+1..base+25 three members bind.
      */
     public static final int CLUSTER_PORT_BLOCK_FIRST = CLUSTER_PORT_BASE;

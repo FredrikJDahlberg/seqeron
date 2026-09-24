@@ -1,7 +1,6 @@
 // Pins PortLayout.hpp's cluster port-layout formula against the same (memberId -> port) pairs
 // SequencerServerTest (Java) checks, so a change to one side without the other fails a build
-// instead of drifting silently. The applications' own bases live with the product repo, and are
-// covered there.
+// instead of drifting silently. Applications' own bases are their own to test.
 
 #include <gtest/gtest.h>
 
@@ -26,8 +25,8 @@ TEST(PortLayout, ClusterMemberPortsMatchDocumentedLayout)
     EXPECT_EQ(9322, clusterIngressPort(2));
 }
 
-// The reservation is wider than what three members bind, and products check themselves against it
-// (doc/registries.md §2). Pinned here so it cannot quietly narrow back to 9325.
+// The reservation is wider than what three members bind, and applications check themselves against it
+// (doc/ops.md, "Ports"). Pinned here so it cannot quietly narrow back to 9325.
 TEST(PortLayout, ReservedBlockCoversThreeMemberStrides)
 {
     EXPECT_EQ(9300, clusterPortBlockFirst());

@@ -1156,7 +1156,7 @@ class ReplayerRecoveryTest {
     void aWalkThatIsStillDeliveringIsNeverReported() {
         captureLogs();
 
-        // A cold start replaying a whole trading day: slow, but converging one frame at a time. Measuring
+        // A cold start replaying a long log: slow, but converging one frame at a time. Measuring
         // elapsed time instead of progress is exactly what would fence this.
         for (long globalSeqNo = 1; globalSeqNo <= 20; globalSeqNo++) {
             deliverReplay(globalSeqNo);

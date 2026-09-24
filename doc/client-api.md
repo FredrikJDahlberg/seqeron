@@ -73,8 +73,20 @@ by itself, and delivers every frame once, in `globalSeqNo` order. A producer tha
 other's replays, and neither ever catches up. **Nothing on the client side reports it** — the co-located
 `ReplayerService` is what notices the collision, and it says so once in its own log and in the
 `seqeron_replayer_client_id_collision` counter (type id 5108), so that node's Replayer is where a replica
-that never catches up is diagnosed. `doc/registries.md` §4 records the ids this repo's own processes take.
-All calls belong to one thread.
+that never catches up is diagnosed. All calls belong to one thread.
+
+This repository's own processes use ids 1–16, so an application's replicas should start at 17:
+
+| `clientId` | used by |
+|---|---|
+| 1 | `start-three-node-cluster.sh`'s per-member probe; `docker-failover-test.sh`'s observer |
+| 7 | `replay-bench.sh`'s probe; `seqeron-examples` (Java) |
+| 8 | `seqeron-examples` (C++) |
+| 9 | `ClusterProbe follow`/`confirm` default |
+| 10 | `TestGateway serve` default; `chaos-runner.sh`'s second consumer |
+| 11, 12 | `failover-test.sh`'s two producers |
+| 13, 14 | `seqeron-examples` `ColocatedApp`, Java then C++ |
+| 15, 16 | `seqeron-examples` `GatewayApp`, GW-EX-A then GW-EX-B |
 
 **Where each frame arrives:**
 

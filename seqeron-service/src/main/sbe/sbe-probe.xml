@@ -2,11 +2,8 @@
 <!--
     The probe protocol — payloadId 5.
 
-    One message, and it exists so that the cluster tier's end-to-end scripts can drive a cluster
-    without a product binary. Before this, all five of them generated load with the C++ fix_test_server
-    and consumed the tap with OrderExecServer, which made :cluster's own e2e suite depend on the C++
-    edge — the one dependency still running product -> cluster the wrong way, and invisible to a build
-    that only checks Java and C++.
+    One message, so that the cluster tier's end-to-end scripts can drive a cluster with no
+    application binary: ClusterProbe submits it at ingress and reads it back off the tap.
 
     An application schema, deliberately: the sequencer decodes no payloadId at all (spec §6, S-2), so a
     probe frame exercises the same copy-through path a product payload does, and needs no change to

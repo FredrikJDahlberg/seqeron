@@ -52,7 +52,7 @@ public final class MetricsExporter {
                            "counter")),
         Map.entry(SeqeronCounters.SEQUENCER_BOOTSTRAP_ACTIVATED_TYPE_ID,
                   new MetricMeta("seqeron_sequencer_bootstrap_activated",
-                                 "1 once the bootstrap GatewayActive has been emitted for the trading day, else 0.",
+                                 "1 once the bootstrap GatewayActive has been emitted in this cluster's log, else 0.",
                                  "gauge")),
         Map.entry(
             SeqeronCounters.SEQUENCER_TAP_STALLED_TYPE_ID,
@@ -157,7 +157,7 @@ public final class MetricsExporter {
 
     /**
      * Renders every seqeron counter this node's CnC file holds as one Prometheus exposition body. A counter
-     * in the app range core has no name for is a consumer's (doc/registries.md §3), named from its label.
+     * in the app range core has no name for is a consumer's (doc/ops.md, "Counter type ids"), named from its label.
      */
     String renderMetrics() {
         final Map<MetricMeta, StringBuilder> samplesByMetric = new LinkedHashMap<>();
@@ -191,7 +191,7 @@ public final class MetricsExporter {
     }
 
     /**
-     * A consumer counter's metric name: its label's first token, sanitised (doc/registries.md §3). The same
+     * A consumer counter's metric name: its label's first token, sanitised (doc/ops.md, "Counter type ids"). The same
      * for every counter of one type id, so the replicas publishing it share one HELP/TYPE header.
      */
     private static MetricMeta appMetricMeta(final int typeId, final String label) {
