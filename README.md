@@ -518,7 +518,7 @@ To cut one:
 | [`doc/clusterctl.md`](doc/clusterctl.md) | The operator tool's runbook |
 | [`doc/ops.md`](doc/ops.md) | The Prometheus/Grafana metrics stack |
 
-Those seven are the whole doc set, and every document reference in this tree resolves inside it.
+Those five are the whole doc set, and every document reference in this tree resolves inside it.
 
 ## License
 
