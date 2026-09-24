@@ -3,6 +3,8 @@
   <img src="doc/branding/seqeron-wordmark.svg" alt="seqeron" width="248" height="60">
 </picture>
 
+[![JitPack](https://jitpack.io/v/FredrikJDahlberg/seqeron.svg)](https://jitpack.io/#FredrikJDahlberg/seqeron)
+
 ## Overview
 
 **seqeron** assigns a single global, gap-free, replicated total order to messages arriving from
