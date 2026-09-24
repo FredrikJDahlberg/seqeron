@@ -81,6 +81,34 @@ jobs:
       - name: Check every repo path named in docs and comments resolves
         run: python3 .github/check-doc-paths.py
 
+  # The C++ counterpart of the java job's Javadoc step: a broken @ref or \p fails here, not on the Pages site.
+  # Configure only fetches Aeron, it builds none of it, so neither a compiler toolchain nor a JDK is needed.
+  api-reference:
+    name: C++ API reference
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      # Aeron 1.53.2's own CMakeLists requires CMake >= 3.30; noble ships 3.28.3.
+      - name: Add Kitware's CMake repository
+        run: |
+          wget -qO - https://apt.kitware.com/keys/kitware-archive-latest.asc \
+            | gpg --dearmor - | sudo tee /usr/share/keyrings/kitware-archive-keyring.gpg > /dev/null
+          echo 'deb [signed-by=/usr/share/keyrings/kitware-archive-keyring.gpg] https://apt.kitware.com/ubuntu/ noble main' \
+            | sudo tee /etc/apt/sources.list.d/kitware.list > /dev/null
+
+      - name: Install dependencies
+        run: |
+          grep -rl 'dl\.google\.com' /etc/apt/sources.list.d/ | sudo xargs -r rm -f || true
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y cmake doxygen
+
+      - name: Render
+        run: |
+          cmake -B cmake-build-docs -DSEQERON_BUILD_TESTS=OFF -DDOXYGEN_WARN_AS_ERROR=FAIL_ON_WARNINGS
+          cmake --build cmake-build-docs --target docs
+
   java:
     name: java
     runs-on: ubuntu-24.04
@@ -106,6 +134,10 @@ jobs:
       # `test` is finalizedBy jacocoTestReport, so this also writes the coverage report.
       - name: Test
         run: ./gradlew test
+
+      # Otherwise only JitPack's publishToMavenLocal builds the javadoc jar, so a broken {@link} failed the tag.
+      - name: Javadoc
+        run: ./gradlew javadoc
 
       - name: Coverage summary
         if: always()

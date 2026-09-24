@@ -133,7 +133,8 @@ cmake --build cmake-build-release
 ```
 
 `cmake --build cmake-build-debug --target docs` renders the C++ API reference into
-`cmake-build-debug/docs/html` when Doxygen is installed; the target does not exist otherwise.
+`cmake-build-debug/docs/html` when Doxygen is installed; the target does not exist otherwise. Both API
+references, C++ and Java, are published for the latest release at https://fredrikjdahlberg.github.io/seqeron/.
 `-DSEQERON_COVERAGE=ON` adds coverage instrumentation. The tree is developed on macOS/arm64 with
 Apple clang; CI builds it on Ubuntu with both clang and gcc-14.
 
