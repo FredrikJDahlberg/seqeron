@@ -64,32 +64,24 @@ jobs:
           cmake -B cmake-build-docs -DSEQERON_BUILD_TESTS=OFF
           cmake --build cmake-build-docs --target docs
 
+      # The page around the references comes from this workflow's own commit rather than the tag, so a tag cut
+      # before doc/site existed still gets it. @TAG@ pins its snippets and links to the release it serves.
+      - uses: actions/checkout@v4
+        with:
+          path: site-src
+          sparse-checkout: |
+            doc/site
+            doc/branding
+
       - name: Assemble the site
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
         run: |
-          VERSION="$(cat VERSION)"
           mkdir site
           cp -R seqeron-client/build/docs/javadoc site/java
           cp -R cmake-build-docs/docs/html site/cpp
-          cat > site/index.html <<EOF
-          <!DOCTYPE html>
-          <html lang="en">
-          <head>
-          <meta charset="utf-8">
-          <meta name="viewport" content="width=device-width, initial-scale=1">
-          <meta name="color-scheme" content="light dark">
-          <title>seqeron ${VERSION} API</title>
-          </head>
-          <body style="font-family: system-ui, sans-serif; max-width: 40rem; margin: 3rem auto; padding: 0 1rem">
-          <h1>seqeron ${VERSION}</h1>
-          <p>The client tier's API reference.</p>
-          <ul>
-          <li><a href="java/">Java</a> — <code>org.limitless:seqeron</code></li>
-          <li><a href="cpp/">C++</a> — <code>seqeron_core</code></li>
-          </ul>
-          <p><a href="https://github.com/${GITHUB_REPOSITORY}">Source, protocol spec and runbooks</a></p>
-          </body>
-          </html>
-          EOF
+          cp site-src/doc/branding/seqeron-wordmark.svg site-src/doc/branding/seqeron-wordmark-dark.svg site/
+          sed -e "s/@VERSION@/$(cat VERSION)/g" -e "s/@TAG@/${TAG}/g" site-src/doc/site/index.html > site/index.html
 
       - uses: actions/upload-pages-artifact@v5
         with:

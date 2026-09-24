@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="description" content="API reference for seqeron @VERSION@, the Aeron Cluster sequencing tier, in Java and C++.">
+<title>seqeron @VERSION@ API</title>
+<style>
+  :root {
+    --bg: #FFFFFF;
+    --surface: #F5F7F9;
+    --border: #DDE3E8;
+    --ink: #0E1317;
+    --muted: #55606A;
+    --accent: #D9481C;
+    --code-bg: #EEF1F4;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0E1317;
+      --surface: #161D23;
+      --border: #28323B;
+      --ink: #E9EDF1;
+      --muted: #9AA6B1;
+      --accent: #FF6A3D;
+      --code-bg: #1C252D;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font: 16px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  main { max-width: 56rem; margin: 0 auto; padding: 3rem 1rem 2rem; }
+  a { color: var(--accent); }
+  /* The wordmark's viewBox has a left inset; pull it back onto the text column. */
+  header img { display: block; width: 248px; max-width: 100%; height: auto; margin-left: -17px; }
+  .version {
+    display: inline-block;
+    margin-top: 1rem;
+    padding: 0.1rem 0.6rem;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    color: var(--muted);
+    font-size: 0.85rem;
+  }
+  .lede { font-size: 1.1rem; max-width: 44rem; }
+  .cards { display: grid; grid-template-columns: minmax(0, 1fr); gap: 1rem; margin: 2rem 0; }
+  .card {
+    display: flex;
+    flex-direction: column;
+    padding: 1.25rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    min-width: 0;
+  }
+  .card h2 { margin: 0 0 0.25rem; font-size: 1.25rem; }
+  .card p { margin: 0 0 1rem; color: var(--muted); }
+  pre {
+    margin: 0 0 1rem;
+    padding: 0.75rem;
+    overflow-x: auto;
+    background: var(--code-bg);
+    border-radius: 6px;
+    font-size: 0.8rem;
+    line-height: 1.5;
+  }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  .button {
+    margin-top: auto;
+    align-self: flex-start;
+    padding: 0.5rem 1rem;
+    background: var(--accent);
+    color: #FFFFFF;
+    border-radius: 6px;
+    font-weight: 600;
+    text-decoration: none;
+  }
+  .button:hover { filter: brightness(1.1); }
+  h2.section { font-size: 1.25rem; margin: 2.5rem 0 0.5rem; }
+  ul.reading { padding-left: 1.25rem; }
+  ul.reading li { margin: 0.35rem 0; }
+  ul.reading span { color: var(--muted); }
+  footer {
+    margin-top: 3rem;
+    padding-top: 1rem;
+    border-top: 1px solid var(--border);
+    color: var(--muted);
+    font-size: 0.85rem;
+  }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="seqeron-wordmark-dark.svg">
+      <img src="seqeron-wordmark.svg" alt="seqeron" width="248" height="60">
+    </picture>
+    <span class="version">@VERSION@</span>
+  </header>
+
+  <p class="lede">
+    seqeron assigns one global, gap-free, replicated total order to messages from external producers, using an
+    Aeron Cluster (Raft) replicated state machine as the sequencer. Every node records the ordered stream, so a
+    client reads it live off its own node and replays history from the same place.
+  </p>
+  <p>This is the API reference for the client tier: what a producer or a consumer of the ordered stream programs against.</p>
+
+  <div class="cards">
+    <section class="card">
+      <h2>Java</h2>
+      <p>The <code>seqeron</code> artifact on JitPack, with a BOM that pins Aeron, Agrona and SBE.</p>
+<pre><code>repositories { maven { url 'https://jitpack.io' } }
+dependencies {
+    implementation enforcedPlatform(
+        'com.github.FredrikJDahlberg.seqeron:seqeron-bom:@TAG@')
+    implementation 'com.github.FredrikJDahlberg.seqeron:seqeron'
+}</code></pre>
+      <a class="button" href="java/">Java API reference</a>
+    </section>
+
+    <section class="card">
+      <h2>C++</h2>
+      <p>Header-only <code>seqeron::seqeron_core</code>, from <code>FetchContent</code> or an installed <code>find_package(seqeron)</code>.</p>
+<pre><code>FetchContent_Declare(seqeron
+    GIT_REPOSITORY https://github.com/FredrikJDahlberg/seqeron.git
+    GIT_TAG        @TAG@)
+FetchContent_MakeAvailable(seqeron)
+target_link_libraries(my_app PRIVATE seqeron::seqeron_core)</code></pre>
+      <a class="button" href="cpp/">C++ API reference</a>
+    </section>
+  </div>
+
+  <h2 class="section">Read next</h2>
+  <ul class="reading">
+    <li><a href="https://github.com/FredrikJDahlberg/seqeron/blob/@TAG@/doc/client-api.md">Client API</a><span>: where to start in both languages, and what in the client tier is not API</span></li>
+    <li><a href="https://github.com/FredrikJDahlberg/seqeron/tree/@TAG@/seqeron-examples">Examples</a><span>: the smallest complete clients, one per language</span></li>
+    <li><a href="https://github.com/FredrikJDahlberg/seqeron/blob/@TAG@/doc/seqeron-protocol-spec.md">Protocol specification</a><span>: the frames, the two families and the system vocabulary</span></li>
+    <li><a href="https://github.com/FredrikJDahlberg/seqeron/blob/@TAG@/doc/fault-tolerance.md">Fault tolerance</a><span>: node loss, leader failover, and how each part gets back to a correct state</span></li>
+    <li><a href="https://github.com/FredrikJDahlberg/seqeron/blob/@TAG@/doc/ops.md">Operations</a><span>: the Prometheus and Grafana monitoring stack, and runbooks for a node that stops</span></li>
+  </ul>
+
+  <footer>
+    seqeron @VERSION@ ·
+    <a href="https://github.com/FredrikJDahlberg/seqeron">Source on GitHub</a> ·
+    <a href="https://github.com/FredrikJDahlberg/seqeron/releases/tag/@TAG@">Release notes</a> ·
+    Apache License 2.0
+  </footer>
+</main>
+</body>
+</html>

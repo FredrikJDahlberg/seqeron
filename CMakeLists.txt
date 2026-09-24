@@ -279,7 +279,11 @@ if(PROJECT_IS_TOP_LEVEL)
         set(DOXYGEN_EXTRACT_ALL YES)
         set(DOXYGEN_JAVADOC_AUTOBRIEF YES)
         set(DOXYGEN_WARN_IF_UNDOCUMENTED NO)
-        doxygen_add_docs(docs "${SEQERON_DOCS_ROOT}" COMMENT "Rendering the C++ API reference into docs/html")
+        set(DOXYGEN_GENERATE_TREEVIEW YES)
+        set(SEQERON_DOCS_MAINPAGE "${CMAKE_CURRENT_SOURCE_DIR}/doc/site/cpp-mainpage.md")
+        set(DOXYGEN_USE_MDFILE_AS_MAINPAGE "${SEQERON_DOCS_MAINPAGE}")
+        doxygen_add_docs(docs "${SEQERON_DOCS_ROOT}" "${SEQERON_DOCS_MAINPAGE}"
+            COMMENT "Rendering the C++ API reference into docs/html")
     endif()
 endif()
 
