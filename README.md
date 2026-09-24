@@ -3,7 +3,10 @@
   <img src="doc/branding/seqeron-wordmark.svg" alt="seqeron" width="248" height="60">
 </picture>
 
+[![CI](https://github.com/FredrikJDahlberg/seqeron/actions/workflows/ci.yml/badge.svg)](https://github.com/FredrikJDahlberg/seqeron/actions/workflows/ci.yml)
 [![JitPack](https://jitpack.io/v/FredrikJDahlberg/seqeron.svg)](https://jitpack.io/#FredrikJDahlberg/seqeron)
+[![API reference](https://img.shields.io/badge/docs-API%20reference-blue)](https://fredrikjdahlberg.github.io/seqeron/)
+[![License](https://img.shields.io/github/license/FredrikJDahlberg/seqeron)](LICENSE)
 
 ## Overview
 
@@ -48,7 +51,7 @@ back-pressuring the cluster.
   the co-located Replayer, then follow the tap live). It exists so core's e2e suite needs no product
   binary built.
 - **`MetricsExporter`** (Java) — the ops plane, orthogonal to the data flow: a node-local exporter
-  serves `/metrics` off the Aeron CnC counters, and Prometheus scrapes each node's (`doc/ops.md`).
+  serves `/metrics` off the Aeron CnC counters, and Prometheus scrapes each node's ([`doc/ops.md`](doc/ops.md)).
 - **`TestGateway`** (Java, `seqeron-service/src/test/java`) — an elected active/standby producer used only by
   `chaos-runner.sh`. It speaks no application protocol and holds no session state, but it holds the
   same four fences a real gateway does, so the recovery-stall policy gets exercised inside this repo.
@@ -86,7 +89,7 @@ server**; the server side of the replay protocol is Java only.
   rather than sequence history it cannot keep. Peers keep quorum, and the restart rebuilds its
   recording over the full-log replay it does anyway.
 
-`doc/seqeron-protocol-spec.md` is the normative protocol specification; `doc/fault-tolerance.md`
+[`doc/seqeron-protocol-spec.md`](doc/seqeron-protocol-spec.md) is the normative protocol specification; [`doc/fault-tolerance.md`](doc/fault-tolerance.md)
 covers what survives node loss, failover, a stuck archive and a lost frame.
 
 ## Build
@@ -180,7 +183,7 @@ writes the distribution to `build/install/seqeron` — `bin/` (these scripts), `
 | `stop-cluster.sh` | Stop everything either start script launched, plus any `SEQERON_EXTRA_PROCESSES="label\|pattern;…"` a caller adds |
 | `clusterctl.sh <command>` | Cluster life cycle: `start`, `shutdown`, `activate`, `load-topology`, `counters` — see [Operator tooling](#operator-tooling) |
 | `sbe-log-printer.sh <archive-dir>` | Dump an Aeron Archive recording as JSON — see [Log printer](#log-printer) |
-| `metrics-exporter.sh` | The Prometheus ops plane (`doc/ops.md`) |
+| `metrics-exporter.sh` | The Prometheus ops plane ([`doc/ops.md`](doc/ops.md)) |
 | `purgelog.sh [--force]` | Delete archive/cluster directories under `$TMPDIR/seqeron-seq` and the `logs/` directory; the cluster must be stopped first |
 
 The end-to-end harnesses live under `seqeron-service/src/test/scripts/`. **Five of the six are
@@ -271,7 +274,7 @@ This tier reserves **9300–9329** by default (three members of stride 10, wider
 nodes actually bind), **9200–9209** for its own harness listeners, and `9400 + memberId` for
 the metrics plane. Every other block — an application's TCP listen port, each co-located client's
 cluster egress port, the replay ports — belongs to the process that binds it, so this repo names none
-of them. `doc/ops.md`, "Ports", lists the ones seqeron binds.
+of them. [`doc/ops.md`](doc/ops.md), "Ports", lists the ones seqeron binds.
 
 The sequenced stream itself has **no port**: it is a node-local `aeron:ipc` tap (stream 205) recorded
 into each member's own archive.
@@ -324,7 +327,7 @@ nothing.
 Anything `clusterctl` does not recognize is passed through to `io.aeron.cluster.ClusterTool` against
 this node's cluster dir (`describe`, `errors`, `list-members`, `recording-log`, …). `snapshot` is
 refused. `CLUSTERCTL_*` environment variables map onto the `clusterctl.*` system properties; the full
-runbook is `doc/clusterctl.md`.
+runbook is [`doc/clusterctl.md`](doc/clusterctl.md).
 
 In a node container the image has `clusterctl` on the `PATH`, already set to that container's member:
 `docker exec node-0 clusterctl describe`.
@@ -400,7 +403,7 @@ between the objects — but with `--oneline` each individual message line parses
 ### Piping payloads to another decoder
 
 `-o <payloadId>` writes that protocol's payloads to **stdout**, raw and back to back, for a decoder
-that owns their schema (`doc/seqeron-protocol-spec.md` §13.1). This tier decodes no application
+that owns their schema ([`doc/seqeron-protocol-spec.md`](doc/seqeron-protocol-spec.md) §13.1). This tier decodes no application
 payload at all, so this is how one gets out to something that does:
 
 ```bash
@@ -422,7 +425,7 @@ which corrupts the payload bytes. Use the script or the jar directly.
 
 A payload whose schema is not loaded prints as its ids rather than being decoded — but it is
 **labelled**, from the `PayloadIdRegistered` rows `clusterctl load-topology` put in the same recording
-(`doc/seqeron-protocol-spec.md` §6.3):
+([`doc/seqeron-protocol-spec.md`](doc/seqeron-protocol-spec.md) §6.3):
 
 ```
 <undecodable payload 2 (order v1): schema 220, templateId 1>
@@ -509,11 +512,11 @@ To cut one:
 
 | Document | What it is |
 |----------|------------|
-| `doc/seqeron-protocol-spec.md` | The normative protocol specification — frames, families, the system vocabulary, the topology document |
-| `doc/client-api.md` | What a client programs against, in both languages, and what in the client tier is not API |
-| `doc/fault-tolerance.md` | Node loss, leader failover, a stuck archive, a lost frame: what survives each and how it recovers |
-| `doc/clusterctl.md` | The operator tool's runbook |
-| `doc/ops.md` | The Prometheus/Grafana metrics stack |
+| [`doc/seqeron-protocol-spec.md`](doc/seqeron-protocol-spec.md) | The normative protocol specification — frames, families, the system vocabulary, the topology document |
+| [`doc/client-api.md`](doc/client-api.md) | What a client programs against, in both languages, and what in the client tier is not API |
+| [`doc/fault-tolerance.md`](doc/fault-tolerance.md) | Node loss, leader failover, a stuck archive, a lost frame: what survives each and how it recovers |
+| [`doc/clusterctl.md`](doc/clusterctl.md) | The operator tool's runbook |
+| [`doc/ops.md`](doc/ops.md) | The Prometheus/Grafana metrics stack |
 
 Those seven are the whole doc set, and every document reference in this tree resolves inside it.
 
