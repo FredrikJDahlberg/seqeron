@@ -28,7 +28,7 @@ public final class SplitMix64 {
     }
 
     /**
-     * Unsigned modulo: the low bias is the same shape on both sides, which matters here and the bias itself
+     * Unsigned modulo: the low bias is identical on both sides, which matters here and the bias itself
      * does not. Signed {@code %} would go negative on half the draws.
      */
     public int roll(final int bound) {

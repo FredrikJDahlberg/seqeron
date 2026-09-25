@@ -4,7 +4,7 @@ Node-local metrics exporter, scraped by Prometheus and feeding Grafana. Covers
 `org.limitless.seqeron.protocol.SeqeronCounters` — every `SequencerService`/`ReplayerService` operator
 counter — end to end from a running node to a dashboard panel.
 
-## Shape
+## Architecture
 
 Pull, not push, and a **static target list**, not service discovery:
 
@@ -232,7 +232,7 @@ nothing to discipline them.
 - No clock-offset metric. The `/metrics` endpoint doesn't report a member's offset from UTC or from its
   peers; that comes from the host's time daemon.
 
-- No authentication on the `/metrics` endpoint — see "Shape" above; it is meant to sit behind the
+- No authentication on the `/metrics` endpoint — see "Architecture" above; it is meant to sit behind the
   same network boundary as the nodes.
 - No Prometheus alerting rules or Grafana alert provisioning — dashboard only.
 - `prometheus.yml`'s target list is fixed and hand-maintained — no service discovery. For a cluster

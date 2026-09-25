@@ -13,14 +13,14 @@ import org.limitless.seqeron.sbe.frame.UnsequencedHeaderDecoder;
  */
 public final class FrameLayer {
     /**
-     * Largest body or payload any frame may carry (<b>T-2</b>): the pinned 1408-byte MTU less the
+     * Largest payload any frame may carry (<b>T-2</b>): the pinned 1408-byte MTU less the
      * 92-byte ingress header stack.
      */
     public static final int MAX_PAYLOAD_LENGTH = 1316;
 
     /**
      * Smallest ingress frame of either family, 28 bytes: framing header, 18-byte header composite and the
-     * body's 2-byte length prefix. An empty body is legal.
+     * payload's 2-byte length prefix. An empty payload is legal.
      */
     public static final int MIN_INGRESS_LENGTH = MessageHeaderDecoder.ENCODED_LENGTH +
                                                  UnsequencedHeaderDecoder.ENCODED_LENGTH +

@@ -26,7 +26,7 @@ import org.limitless.seqeron.sbe.frame.MessageHeaderDecoder;
  * <p>These deliberately touch no Aeron runtime — no media driver, no cluster, no Aeron mocks. {@link
  * Sequencer} is a pure function of its inputs, so the whole state machine is exercised by calling it
  * and decoding the frames it writes, which is what makes these tests fast and stable enough to run
- * on every build. Everything Aeron-shaped ({@link SequencerService}'s tap publication, archive
+ * on every build. Everything Aeron-dependent ({@link SequencerService}'s tap publication, archive
  * recording, timer scheduling) stays covered by the end-to-end scripts under
  * {@code seqeron-service/src/test/scripts}.
  *
@@ -52,7 +52,7 @@ class SequencerTest {
     private static final int SESSION_PAYLOAD_ID = 3;
 
     /**
-     * The exemplar payload: opaque bytes with no SBE shape at all, which is exactly what the sequencer
+     * The exemplar payload: opaque bytes with no SBE structure at all, which is exactly what the sequencer
      * sees. Every byte value in 0..255 appears, so a copy that dropped, sign-extended or reordered one
      * shows up as an array mismatch rather than a field that happens to still decode.
      */
@@ -254,7 +254,7 @@ class SequencerTest {
 
     // -- Frame validation ------------------------------------------------------
     // Each of these reads a field out of a frame the sequencer did not encode, and each check
-    // establishes what the next may read. Admitting any of them decodes bytes whose shape nothing has
+    // establishes what the next may read. Admitting any of them decodes bytes whose layout nothing has
     // established -- and writes the result into authoritative, unreplayable history.
 
     @Test
@@ -337,9 +337,9 @@ class SequencerTest {
     }
 
     @Test
-    @DisplayName("a system body too short for the field the sequencer reads is skipped")
+    @DisplayName("a system payload too short for the field the sequencer reads is skipped")
     void systemBodyTooShortForItsBlockIsSkipped() {
-        // Fitting the frame exactly says nothing about being long enough for a body field, and the floor
+        // Fitting the frame exactly says nothing about being long enough for a payload field, and the floor
         // is the decoder's compiled block length -- never the wire's, which an SBE decoder ignores when it
         // reads a fixed-width field at its fixed offset.
         encodeIngressGatewayStarted(ingress, 0, 5);
@@ -549,15 +549,15 @@ class SequencerTest {
         final int connectedLength =
             sequencer.sequenceMessage(lifecycle, 0, encodeIngressConnectionOpened(lifecycle, 0), SESSION_ID, TIMESTAMP);
         assertEquals(SystemFrame.CONNECTION_OPENED, systemEventTypeOf(sequencer.buffer(), connectedLength));
-        // The identity is the frame's, not the message's: a system body carries no header of its own.
+        // The identity is the frame's, not the message's: a system payload carries no header of its own.
         org.limitless.seqeron.sbe.frame.SequencedSystemHeaderDecoder header = systemHeaderOf(sequencer.buffer());
         assertEquals(SOURCE_ID, header.sourceId());
         assertEquals(CONNECTION_ID, header.connectionId());
         assertEquals(SESSION_ID, header.sessionId());
         assertEquals(1L, header.globalSeqNo());
         assertEquals(TIMESTAMP, header.timestamp());
-        // An empty body copies zero bytes through — the degenerate end of the copy-through path every
-        // other message exercises with a body.
+        // An empty payload copies zero bytes through — the degenerate end of the copy-through path every
+        // other message exercises with a payload.
         assertEquals(FRAME_OVERHEAD + ConnectionOpenedDecoder.BLOCK_LENGTH +
                      ConnectionOpenedDecoder.connectionDataHeaderLength(), connectedLength);
 
@@ -586,7 +586,7 @@ class SequencerTest {
         assertEquals(heartbeatTime, header.timestamp());
         assertEquals(Sequencer.NO_SOURCE_ID, header.sessionId());
         assertEquals(1L, header.globalSeqNo());
-        // The cheapest frame in the system: a framing header and the stamp, with no body at all.
+        // The cheapest frame in the system: a framing header and the stamp, with no payload at all.
         assertEquals(MessageHeaderDecoder.ENCODED_LENGTH + ClusterHeartbeatDecoder.BLOCK_LENGTH, length);
         assertEquals(42, length);
     }
@@ -789,7 +789,7 @@ class SequencerTest {
     void listWithNoPrimaryFailsClosed() {
         // The empty list this replaces stopped being expressible when the completeness edge became a
         // countdown: with no rows there is no remaining==0 to fire on, so the latch stays unset and a
-        // later list still elects. clusterctl refuses to publish either shape; the sequencer's own
+        // later list still elects. clusterctl refuses to publish either list; the sequencer's own
         // answer to a rank-0-less list that reached it anyway is still to activate nobody.
         final Sequencer seq = new Sequencer();
         final MutableDirectBuffer buf = new ExpandableArrayBuffer(128);
@@ -1163,7 +1163,7 @@ class SequencerTest {
      * Encodes a frame carrying {@link #OPAQUE_PAYLOAD} under a payloadId the sequencer does not own —
      * the standing exemplar of ordinary application traffic. Deliberately not a real message in a real
      * application schema: the sequencer reads nothing past the payloadId, so a payload with a decodable
-     * shape would only invite a test to assert something the production path cannot see.
+     * layout would only invite a test to assert something the production path cannot see.
      */
     private static int encodeIngressPayload(final MutableDirectBuffer buffer, final int offset) {
         return encodeIngressPayload(buffer, offset, OPAQUE_PAYLOAD);
@@ -1310,7 +1310,7 @@ class SequencerTest {
 
     /**
      * Decodes one of the three the sequencer synthesizes. Each has a template of its own and carries its
-     * fields inline, so there is no body and no length prefix: the frame is its framing header plus its
+     * fields inline, so there is no payload and no length prefix: the frame is its framing header plus its
      * block, and the decoder is wrapped over that block with its own compiled constants (<b>V-3</b>).
      */
     private static <T> T decodeSynthesized(final MutableDirectBuffer buffer, final int length, final int templateId,
@@ -1359,8 +1359,8 @@ class SequencerTest {
     }
 
     /**
-     * Wraps an already-encoded system body in an {@code UnsequencedSystem} frame, as every system producer
-     * does. The body carries no {@code MessageHeader} of its own — {@code header.systemEventType} names it.
+     * Wraps an already-encoded system payload in an {@code UnsequencedSystem} frame, as every system producer
+     * does. The payload carries no {@code MessageHeader} of its own — {@code header.systemEventType} names it.
      * {@code sessionId} is advisory on ingress — the sequencer overwrites it — so it goes out as -1.
      */
     private static int encodeIngressSystemFrame(final MutableDirectBuffer buffer, final int offset,
@@ -1399,7 +1399,7 @@ class SequencerTest {
     }
 
     /**
-     * Offset of the body inside a {@code SequencedSystem} frame, checking the frame's shape on the way —
+     * Offset of the payload inside a {@code SequencedSystem} frame, checking the frame's structure on the way —
      * that it is one, and that the length it declares accounts for every byte the sequencer returned.
      */
     private static int systemBodyOffset(final MutableDirectBuffer buffer, final int length) {

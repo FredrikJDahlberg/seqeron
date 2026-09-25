@@ -72,18 +72,18 @@ public class SbeLogPrinter {
     private static final int PAYLOAD_PREFIX_LENGTH =
         org.limitless.seqeron.sbe.frame.SequencedDecoder.payloadHeaderLength();
 
-    /** Offset of the 2-byte discriminator in every frame header, common to all five shapes (F-3). */
+    /** Offset of the 2-byte discriminator in every frame header, common to all five messages (F-3). */
     private static final int DISCRIMINATOR_OFFSET =
         org.limitless.seqeron.sbe.frame.SequencedHeaderDecoder.payloadIdEncodingOffset();
 
-    /** The two application envelope templates, whose body is one opaque payload (§4). */
+    /** The two application envelope templates, which carry one opaque payload (§4). */
     private static final int UNSEQUENCED_TEMPLATE_ID =
         org.limitless.seqeron.sbe.frame.UnsequencedDecoder.TEMPLATE_ID;
 
     private static final int SEQUENCED_TEMPLATE_ID =
         org.limitless.seqeron.sbe.frame.SequencedDecoder.TEMPLATE_ID;
 
-    /** The two submitted-system envelope templates, whose body carries no {@code MessageHeader} (§7). */
+    /** The two submitted-system envelope templates, whose payload carries no {@code MessageHeader} (§7). */
     private static final int UNSEQUENCED_SYSTEM_TEMPLATE_ID =
         org.limitless.seqeron.sbe.frame.UnsequencedSystemDecoder.TEMPLATE_ID;
 
@@ -246,7 +246,7 @@ public class SbeLogPrinter {
 
     /**
      * Prints what a frame wrapped: a cluster-log {@code SessionMessageHeader} is followed in the same Aeron
-     * frame by the client's ingress message, and a seqeron envelope carries one length-prefixed body.
+     * frame by the client's ingress message, and a seqeron envelope carries one length-prefixed payload.
      * @param schema protocol schema
      * @param templateId message templateId
      * @param buffer message buffer
@@ -284,9 +284,9 @@ public class SbeLogPrinter {
     }
 
     /**
-     * Prints a system frame's body beside its frame. It has no {@code MessageHeader}, so its tokens, block
+     * Prints a system frame's payload beside its frame. It has no {@code MessageHeader}, so its tokens, block
      * length and version come from this build's schema (§7, <b>V-3</b>).
-     * @param schema the frame layer's own, which is also the body's
+     * @param schema the frame layer's own, which is also the payload's
      * @param buffer segment buffer
      * @param frameOffset offset of the frame's own SBE header
      * @param frameEndOffset frame end offset
@@ -303,7 +303,7 @@ public class SbeLogPrinter {
         final Token message = tokens.getFirst();
         final int bodyOffset = payloadOffset(buffer, frameOffset);
         if (bodyOffset + message.encodedLength() > frameEndOffset) {
-            builder.append("<truncated ").append(message.name()).append(" body>");
+            builder.append("<truncated ").append(message.name()).append(" payload>");
             return;
         }
         builder.append(message.name()).append('=');
@@ -331,7 +331,7 @@ public class SbeLogPrinter {
 
     /**
      * The {@code systemEventType} of the frame at {@code frameOffset}, or {@link #NO_SYSTEM_EVENT_TYPE} if it
-     * is not a submitted-system envelope. Synthesized templates have no body to nest, so are not matched.
+     * is not a submitted-system envelope. Synthesized templates have no payload to nest, so are not matched.
      * @param buffer segment buffer
      * @param frameOffset offset of the frame's own SBE header
      * @return the systemEventType, or NO_SYSTEM_EVENT_TYPE
@@ -350,7 +350,7 @@ public class SbeLogPrinter {
                                ByteOrder.LITTLE_ENDIAN) & 0xFFFF;
     }
 
-    /** Offset of the frame's body, past its block and the body's length prefix. */
+    /** Offset of the frame's payload, past its block and the payload's length prefix. */
     private int payloadOffset(final UnsafeBuffer buffer, final int frameOffset) {
         return frameOffset + sbeHeaderDecoder.encodedLength() +
                sbeHeaderDecoder.getBlockLength(buffer, frameOffset) + PAYLOAD_PREFIX_LENGTH;

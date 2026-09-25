@@ -29,8 +29,8 @@ import org.limitless.seqeron.util.Logger;
  * {@link #buffer()} from offset 0 and returns its length, or {@link #NO_FRAME}; {@link SequencerService}
  * publishes it and decides nothing.
  *
- * <p>Sequencing copies the 18-byte ingress header, appends the 16-byte stamp and copies the body through
- * unopened (<b>E-1</b>); no {@code payloadId} is decoded, only the system bodies state derives from
+ * <p>Sequencing copies the 18-byte ingress header, appends the 16-byte stamp and copies the payload through
+ * unopened (<b>E-1</b>); no {@code payloadId} is decoded, only the system payloads state derives from
  * (<b>S-2</b>).
  *
  * <p>Deterministic: no clock reads, randomness or I/O — the consensus timestamp is always passed in — so
@@ -72,11 +72,11 @@ public final class Sequencer {
     /** {@code varDataEncoding}'s {@code nullValue}: "absent", not a 65535-byte payload. */
     private static final int NULL_PAYLOAD_LENGTH = 65535;
 
-    /** Offset of the body's length prefix in a forwarded frame; the same in both families (<b>F-3</b>). */
+    /** Offset of the payload's length prefix in a forwarded frame; the same in both families (<b>F-3</b>). */
     private static final int TAP_BODY_PREFIX_OFFSET =
         MessageHeaderEncoder.ENCODED_LENGTH + SequencedHeaderEncoder.ENCODED_LENGTH;
 
-    /** Offset of the body itself, one length prefix past that. */
+    /** Offset of the payload itself, one length prefix past that. */
     private static final int TAP_BODY_OFFSET = TAP_BODY_PREFIX_OFFSET + UnsequencedDecoder.payloadHeaderLength();
 
     // The two ingress header composites differ only in the name of the uint16 at offset 16.
@@ -84,7 +84,7 @@ public final class Sequencer {
     private final UnsequencedHeaderDecoder frameHeaderDecoder = new UnsequencedHeaderDecoder();
     private final UnsequencedSystemHeaderDecoder systemHeaderDecoder = new UnsequencedSystemHeaderDecoder();
 
-    // Only these three system bodies are opened; the rest are matched on systemEventType alone.
+    // Only these three system payloads are opened; the rest are matched on systemEventType alone.
     private final GatewayRegisteredDecoder gatewayRegisteredDecoder = new GatewayRegisteredDecoder();
     private final GatewayStartedDecoder gatewayStartedDecoder = new GatewayStartedDecoder();
     private final GatewayActivationRequestedDecoder activationRequestedDecoder =
@@ -205,7 +205,7 @@ public final class Sequencer {
     }
 
     /**
-     * Re-stamps one ingress frame as its sequenced counterpart, copying its body through verbatim.
+     * Re-stamps one ingress frame as its sequenced counterpart, copying its payload through verbatim.
      *
      * @param buffer    holding the ingress message
      * @param offset    of the ingress message's outer {@code MessageHeader}
@@ -262,7 +262,7 @@ public final class Sequencer {
         final int prefixOffset = headerOffset + UnsequencedHeaderDecoder.ENCODED_LENGTH;
         final int bodyLength = buffer.getShort(prefixOffset, java.nio.ByteOrder.LITTLE_ENDIAN) & 0xFFFF;
         if (bodyLength == NULL_PAYLOAD_LENGTH || FrameLayer.MIN_INGRESS_LENGTH + bodyLength != length) {
-            return reject("body length " + bodyLength + " does not fit a " + length + "-byte frame");
+            return reject("payload length " + bodyLength + " does not fit a " + length + "-byte frame");
         }
 
         frameHeaderDecoder.wrap(buffer, headerOffset);
@@ -280,7 +280,7 @@ public final class Sequencer {
                 return reject("systemEventType " + systemEventType + " is not an allocated, ingress-legal event");
             }
             if (bodyLength < blockLength) {
-                return reject("systemEventType " + systemEventType + " body of " + bodyLength +
+                return reject("systemEventType " + systemEventType + " payload of " + bodyLength +
                               " bytes is short of " + blockLength);
             }
             if (!applySystem(buffer, prefixOffset + UnsequencedDecoder.payloadHeaderLength(), systemEventType,
@@ -316,8 +316,8 @@ public final class Sequencer {
     }
 
     /**
-     * Derives state from a system body; the only place one is decoded. Returns whether the frame is
-     * admitted. A system body has no {@code MessageHeader}, so each decode supplies its own compiled
+     * Derives state from a system payload; the only place one is decoded. Returns whether the frame is
+     * admitted. A system payload has no {@code MessageHeader}, so each decode supplies its own compiled
      * {@code BLOCK_LENGTH} and {@code SCHEMA_VERSION} (<b>V-3</b>); condition 9 has checked the length.
      */
     private boolean applySystem(final DirectBuffer buffer, final int bodyOffset, final int systemEventType,

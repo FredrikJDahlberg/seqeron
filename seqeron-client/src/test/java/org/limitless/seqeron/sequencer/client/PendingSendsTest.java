@@ -18,7 +18,7 @@ import org.limitless.seqeron.sequencer.client.IngressSender;
 
 /**
  * Unit tests for counting a producer's own frames back off its tap. Frames are real ingress frames; each
- * body is one int, so a test names a frame by its number. Case for case with {@code PendingSendsTest.cpp}.
+ * payload is one int, so a test names a frame by its number. Case for case with {@code PendingSendsTest.cpp}.
  */
 class PendingSendsTest {
     private static final int CAPACITY = 4;

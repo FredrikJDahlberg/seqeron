@@ -815,7 +815,7 @@ TEST(ReplayerRecoveryGapRecovery, RecoveringFlagTracksWalkAndAwaitingReplayState
     completeSegment(client);
     EXPECT_FALSE(client.recovery.isRecovering()) << "a resume ends at its bound — there is no next segment to ask for";
 
-    // The walk shape of the same transitions, entered the way production enters it: a resume whose replay
+    // The result of the same transitions, entered the way production enters it: a resume whose replay
     // opens on a frame other than the one it anchored on falls back to the chain walk.
     deliverLive(client, 9); // another gap -> another resume
     deliverControl(client, encodeReplaying(/*clientId=*/1, client.recovery.requestId(), /*replaySessionId=*/8,
@@ -1549,7 +1549,7 @@ TEST(ReplayerRecoveryConvergence, ALaterEpisodeIsReportedAgainRatherThanSwallowe
 // A lifecycle frame reaches onSequenced when no lifecycle callback was given. This side alone has the
 // onConnected/onDisconnected seam — the Java twin's receiver has no such callbacks and always delivers
 // these on onSequenced — so this case has no Java counterpart by construction rather than by omission.
-// app/Session takes them here: a LifecycleEvent carries no body, and confirmed ingress must see every
+// app/Session takes them here: a LifecycleEvent carries no payload, and confirmed ingress must see every
 // frame the producer placed, its own ConnectionOpened included.
 TEST(ReplayerRecoveryLifecycle, AConnectionFrameReachesOnSequencedWhenNoLifecycleCallbackIsGiven)
 {

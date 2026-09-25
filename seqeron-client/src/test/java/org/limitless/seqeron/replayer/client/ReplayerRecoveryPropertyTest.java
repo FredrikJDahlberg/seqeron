@@ -36,7 +36,7 @@ import org.limitless.seqeron.util.Logger;
  * without this one the suite would pass on a client that gave up.
  *
  * <p>The e2e harnesses reach these paths too, but a chaos run produces single-digit gap episodes in
- * minutes, all of one shape — one dropped frame on a live tap. A run here is a few hundred, mixing drops
+ * minutes, all of one kind — one dropped frame on a live tap. A run here is a few hundred, mixing drops
  * with lost requests, refusals, truncated images, stalled replays and recording rotations, in under a
  * second.
  *

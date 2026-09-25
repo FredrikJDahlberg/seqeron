@@ -29,7 +29,7 @@ PRE_SPLIT = re.compile(r"(?:cluster/)?src/(?:main|test)/")
 # Build outputs. `seqeron-service/build/classes/java/test` names where a file lands once you build,
 # not one a checkout holds, so a bare clone — CI's docs job — cannot resolve it.
 BUILD_OUTPUT = re.compile(r"(?:^|/)(?:build|cmake-build-[A-Za-z0-9_.-]+)(?:/|$)")
-# A path-shaped token: bare, or fenced in backticks/braces. Trailing punctuation and :line suffixes
+# A path token: bare, or fenced in backticks/braces. Trailing punctuation and :line suffixes
 # are trimmed by strip_token.
 TOKEN = re.compile(r"[A-Za-z0-9_.][A-Za-z0-9_./-]*/[A-Za-z0-9_./-]+")
 

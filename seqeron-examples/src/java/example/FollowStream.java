@@ -133,7 +133,7 @@ public final class FollowStream {
     }
 
     /**
-     * This example's one connection, as a {@code ConnectionOpened} system event: a system body goes through
+     * This example's one connection, as a {@code ConnectionOpened} system event: a system payload goes through
      * {@code publishSystem}, and carries no {@code MessageHeader} because {@code systemEventType} names it.
      *
      * @return whether it was placed; a {@code Declined} is retried on the next duty cycle
@@ -157,7 +157,7 @@ public final class FollowStream {
     }
 
     /**
-     * One ping at cluster ingress: the examples' own {@code payloadId}, and a body of eight raw bytes
+     * One ping at cluster ingress: the examples' own {@code payloadId}, and a payload of eight raw bytes
      * holding the {@code nanoTime} it left on. Not SBE, and it need not be — the cluster tier decodes no
      * {@code payloadId} at all, so a payload is copied through unopened whatever it holds.
      *
@@ -195,7 +195,7 @@ public final class FollowStream {
     }
 
     /**
-     * A system body decoded, one case per wrap rule. The body carries no {@code MessageHeader}, so the decoder
+     * A system payload decoded, one case per wrap rule. The payload carries no {@code MessageHeader}, so the decoder
      * supplies what one would have said: the nine submitted events take their decoder's own
      * {@code BLOCK_LENGTH} and {@code SCHEMA_VERSION}, since {@link SequencedEvent#blockLength()} is 0 for
      * them, and the three synthesized ones take the event's own.
@@ -218,7 +218,7 @@ public final class FollowStream {
             }
             case SystemFrame.GATEWAY_ACTIVE -> {
                 // Only after clusterctl load-topology: this frame is the cluster designating one gateway
-                // instance, and its gatewayId is in the body and nowhere else.
+                // instance, and its gatewayId is in the payload and nowhere else.
                 GATEWAY_ACTIVE_DECODER.wrap(event.buffer(), event.payloadOffset(), event.blockLength(), event.version());
                 System.out.printf("%d GatewayActive gatewayId=%d%n", event.globalSeqNo(),
                                   GATEWAY_ACTIVE_DECODER.gatewayId());

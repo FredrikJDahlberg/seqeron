@@ -329,7 +329,7 @@ class Gateway
     }
 
     // A ConnectionOpened's opaque tail, or nothing. §7.1 lets connectionData be absent, and a producer
-    // that takes the option encodes no var-data header at all — so a body too short to hold one is that
+    // that takes the option encodes no var-data header at all — so a payload too short to hold one is that
     // case, not a short read.
     void dispatchConnectionOpened(const protocol::SequencedEvent& event)
     {
@@ -340,7 +340,7 @@ class Gateway
         }
         auto opened = protocol::decodeSystem<sbe::frame::ConnectionOpened>(event);
         // Length first: connectionData() advances sbePosition past the var-data, and reading the length
-        // after that reads off the end of the body.
+        // after that reads off the end of the payload.
         const std::uint16_t length = opened.connectionDataLength();
         m_listener.onConnectionOpened(event.connectionId, opened.connectionData(), length);
     }
@@ -434,7 +434,7 @@ class Gateway
                     }
                     break;
                 case protocol::GATEWAY_REGISTERED: {
-                    // A submitted system body carries no messageHeader, so its block length and version come
+                    // A submitted system payload carries no messageHeader, so its block length and version come
                     // from this build's own constants (doc/seqeron-protocol-spec.md §7, V-3) — which is what
                     // decodeSystem supplies, for a synthesized frame as much as a submitted one.
                     auto row = protocol::decodeSystem<sbe::frame::GatewayRegistered>(event);

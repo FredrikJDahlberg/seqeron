@@ -75,7 +75,7 @@ public final class SequencedFrameDecoder {
         return false;
     }
 
-    /** The application family: the body is one opaque payload carrying its own {@code MessageHeader}. */
+    /** The application family: one opaque payload carrying its own {@code MessageHeader}. */
     private boolean wrapPayload(final DirectBuffer source, final int offset, final int length,
                                 final int blockOffset) {
         final int prefixOffset = blockOffset + SequencedHeaderDecoder.ENCODED_LENGTH;
@@ -109,7 +109,10 @@ public final class SequencedFrameDecoder {
         return true;
     }
 
-    /** A submitted system event: its body has no header, so a consumer decodes with compiled constants (<b>V-3</b>). */
+    /**
+     * A submitted system event: its payload has no header, so a consumer decodes with compiled constants
+     * (<b>V-3</b>).
+     */
     private boolean wrapSystemBody(final DirectBuffer source, final int offset, final int length,
                                    final int blockOffset) {
         final int prefixOffset = blockOffset + SequencedSystemHeaderDecoder.ENCODED_LENGTH;
@@ -122,7 +125,7 @@ public final class SequencedFrameDecoder {
         return payloadOffset + payloadLength <= offset + length;
     }
 
-    /** One of the three synthesized events: no body, its fields inline in the frame's own block. */
+    /** One of the three synthesized events: no payload, its fields inline in the frame's own block. */
     private boolean wrapSynthesized(final DirectBuffer source, final int offset, final int length,
                                     final int blockOffset) {
         if (blockOffset + SequencedSystemHeaderDecoder.ENCODED_LENGTH > offset + length) {
@@ -157,7 +160,7 @@ public final class SequencedFrameDecoder {
         clusterTimestampNs = frameTimestamp;
     }
 
-    /** Whether this frame is one of the four system shapes; if so {@link #payloadId()} means nothing. */
+    /** Whether this frame is one of the four system messages; if so {@link #payloadId()} means nothing. */
     public boolean isSystem() {
         return system;
     }
@@ -222,7 +225,7 @@ public final class SequencedFrameDecoder {
 
     /**
      * Offset within {@link #buffer()} of what a consumer decodes: the payload, its own 8-byte
-     * {@code MessageHeader} included, on an application frame; the body on a submitted system frame; the
+     * {@code MessageHeader} included, on an application frame; the payload on a submitted system frame; the
      * frame's own block on one of the synthesized three.
      */
     public int payloadOffset() {

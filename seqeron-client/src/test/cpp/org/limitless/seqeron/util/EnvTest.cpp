@@ -61,7 +61,7 @@ TEST(Env, IntFallsBackWhenUnsetOrEmpty)
     EXPECT_EQ(7, envInt(VAR, 7));
 
     const EnvVar empty{ VAR, "" };
-    EXPECT_EQ(7, envInt(VAR, 7)) << "empty is the shape an unset variable takes in a shell script";
+    EXPECT_EQ(7, envInt(VAR, 7)) << "empty is the form an unset variable takes in a shell script";
 }
 
 TEST(Env, IntReadsBaseTen)

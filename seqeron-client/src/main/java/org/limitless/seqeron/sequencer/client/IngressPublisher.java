@@ -8,7 +8,7 @@ import org.limitless.seqeron.protocol.SystemFrame;
 
 /**
  * Encode-and-offer for cluster ingress — the Java twin of {@code sequencer/client/IngressPublisher.hpp}. An
- * instance owning its buffer rather than free functions over a stack array, and the body arrives
+ * instance owning its buffer rather than free functions over a stack array, and the payload arrives
  * pre-encoded rather than through a {@code Fill}, since Java's SBE codecs share no interface.
  *
  * <p>Given an {@link IngressTracker} (spec §16 A-4, A-5), each published frame is tracked under the sender's

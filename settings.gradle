@@ -1,6 +1,6 @@
 rootProject.name = 'seqeron'
 
-// Aeron's shape: the client API is its own module, and the node depends on it. The direction is the
+// Aeron's layout: the client API is its own module, and the node depends on it. The direction is the
 // compiler's to enforce now — a client class that reaches for Sequencer does not compile, where the
 // single-source-set build caught it afterwards by scanning the constant pool (checkTierSeparation).
 //   :client — what a process that only talks to a cluster needs: protocol, sequencer.client,

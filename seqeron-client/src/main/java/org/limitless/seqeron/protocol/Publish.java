@@ -1,7 +1,7 @@
 package org.limitless.seqeron.protocol;
 
 /**
- * What a publish did. {@code Refused} is local and permanent — the body is too long, or the frame breaks
+ * What a publish did. {@code Refused} is local and permanent — the payload is too long, or the frame breaks
  * §9.2 conditions 6 to 9 — so retrying it cannot succeed. {@code Declined} (transport back-pressure, a
  * lost session, or the tracker holding or full) is the one a caller may retry.
  *

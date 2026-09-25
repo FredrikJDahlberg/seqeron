@@ -41,7 +41,7 @@ TEST(FrameCodec, ConnectionOpenedRoundTripsInsideAnUnsequencedSystemFrame)
 
     const auto view = protocol::unwrapFrame(reinterpret_cast<const char*>(buffer.data()),
                                             frm::MessageHeader::encodedLength() + frame.encodedLength());
-    ASSERT_FALSE(view.valid) << "an ingress frame is not a tap frame; only the sequenced shapes are";
+    ASSERT_FALSE(view.valid) << "an ingress frame is not a tap frame; only the sequenced messages are";
 }
 
 TEST(FrameCodec, ConnectionClosedRoundTripsInsideASequencedSystemFrame)
@@ -106,7 +106,7 @@ TEST(FrameCodec, ApplicationPayloadRoundTripsInsideASequencedFrame)
 
 TEST(FrameCodec, ClusterHeartbeatCarriesItsFieldsInline)
 {
-    // One of the three the sequencer synthesizes: a template of its own, no body at all, and 42 bytes —
+    // One of the three the sequencer synthesizes: a template of its own, no payload at all, and 42 bytes —
     // the cheapest frame in the system.
     alignas(16) std::array<std::uint8_t, 128> buffer{};
     frm::ClusterHeartbeat frame;

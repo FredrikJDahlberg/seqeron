@@ -14,7 +14,7 @@
 //            without this one the suite would pass on a client that gave up.
 //
 // The e2e harnesses reach these paths too, but a chaos run produces single-digit gap episodes in minutes,
-// all of one shape — one dropped frame on a live tap. A run here is a few hundred, mixing drops with lost
+// all of one kind — one dropped frame on a live tap. A run here is a few hundred, mixing drops with lost
 // requests, refusals, truncated images, stalled replays, recording rotations and tap redeliveries, in under
 // a second.
 //

@@ -105,7 +105,7 @@ Output is one line per frame — `globalSeqNo`, then the decoded system event, o
 `globalSeqNo` 1 is always a `LeadershipChanged`, and it reaches the leadership callback rather than
 `onSequenced`. The heartbeat is the cluster clock at 1 Hz, so the lines between the pings are it. The C++
 half prints its connection line from a `LifecycleEvent` — `ConnectionOpened connection=1 sourceId=10`,
-identity without the body (see the callback bullet below).
+identity without the payload (see the callback bullet below).
 
 `start-cluster.sh` already runs a `ClusterProbe follow` replica of its own; these attach beside it with
 client ids of their own, since two replicas sharing a Replayer client id supersede each other's replays
@@ -131,7 +131,7 @@ processes already do. The two client ids differ on purpose, so both examples can
   order, which is why the gap check can be an assertion rather than a recovery path.
 - **A consumer splits by family first.** `isSystem()` / `event.system`, then either a `systemEventType` or
   a `payloadId` — never a bare template id, which is unique only within one schema.
-- **A payload is opaque to the tier.** The ping's body is eight raw bytes — no SBE at all — under the
+- **A payload is opaque to the tier.** The ping's payload is eight raw bytes — no SBE at all — under the
   examples' own `payloadId` 6, because the cluster decodes no `payloadId` and copies every payload through
   unopened. Java hands those bytes to `IngressPublisher.publishPayload`; C++'s `publishPayload` is
   templated on an SBE encoder, so a payload with no schema is framed there with the `Unsequenced` codec and
@@ -145,7 +145,7 @@ processes already do. The two client ids differ on purpose, so both examples can
 - **One session, kept alive.** The session is opened once and pinged every second, so the duty cycle calls
   `keepAlive()` every iteration — the cluster's `sessionTimeoutMs` is 1s, which one ping a second does not
   meet on its own, and the sender holds the 200ms interval and decides when one is actually due.
-- **One publish, three answers.** `Publish` is `Published`, `Refused` (the body is above
+- **One publish, three answers.** `Publish` is `Published`, `Refused` (the payload is above
   `MAX_PAYLOAD_LENGTH` — local, permanent, nothing was offered) or `Declined` (the transport's answer, and
   the one worth retrying). The ping retries a `Declined` by simply sending the next second's.
 - **The producer does not wait for its own frame.** `ping` submits and returns; the echo arrives in
@@ -154,15 +154,15 @@ processes already do. The two client ids differ on purpose, so both examples can
 - **A fragment handler must not throw.** `Image::poll` advances the subscriber position regardless of what
   a handler raises, so the gap is recorded and the duty cycle raises it.
 - **Both families, both directions.** The ping is an application payload; the connection each example
-  announces is a system event, so it goes through `publishSystem` with an SBE body and no `MessageHeader`
-  of its own. Reading a system body back is the same split in reverse — and it is where the two languages
+  announces is a system event, so it goes through `publishSystem` with an SBE payload and no `MessageHeader`
+  of its own. Reading a system payload back is the same split in reverse — and it is where the two languages
   differ most. Java's `printSystem` holds both wrap rules: a submitted `ConnectionOpened` takes its
   decoder's compiled `BLOCK_LENGTH` and `SCHEMA_VERSION`, since the event's `blockLength()` is 0 for the
   nine submitted events, and a synthesized `ClusterHeartbeat` takes the event's own. C++ has one rule,
-  because `decodeSystem` supplies the decoder's compiled constants for every system shape.
+  because `decodeSystem` supplies the decoder's compiled constants for every system payload.
 - **Three callbacks, not one — in C++.** `ConnectionOpened` and `ConnectionClosed` reach a C++ consumer
   through `onConnected`/`onDisconnected` and never through `onSequenced`, as a `LifecycleEvent`: the
-  frame's identity with no body, so the `connectionData` the Java half prints off its own announcement is
+  frame's identity with no payload, so the `connectionData` the Java half prints off its own announcement is
   not reachable through that receiver. Java delivers both events to `onSequenced` like any other system
   frame. Passing `{}` for either one is a hole in `globalSeqNo` wherever a connection opens or closes,
   which is why the C++ example supplies all three and its `inOrder` check holds across the connections it

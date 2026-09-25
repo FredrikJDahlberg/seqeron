@@ -3,7 +3,7 @@
  *
  * <p>{@link org.limitless.seqeron.sequencer.client.ClusterStreamSender} is the session — IPC ingress on the
  * co-located member, UDP when that member is not leading, spinning through back-pressure and elections
- * rather than dropping a frame. {@link org.limitless.seqeron.sequencer.client.IngressPublisher} wraps a body
+ * rather than dropping a frame. {@link org.limitless.seqeron.sequencer.client.IngressPublisher} wraps a payload
  * in its envelope and offers it, returning {@link org.limitless.seqeron.protocol.Publish}.
  * {@link org.limitless.seqeron.sequencer.client.PendingSends} is what makes a send a frame sequenced.
  *

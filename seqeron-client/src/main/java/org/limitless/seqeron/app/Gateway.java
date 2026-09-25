@@ -313,7 +313,7 @@ public final class Gateway implements AutoCloseable {
     /** The resume point, read off every frame this logical gateway's history holds, whichever instance issued it. */
     /**
      * A {@code ConnectionOpened}'s opaque tail, or nothing. §7.1 lets {@code connectionData} be absent, and a
-     * producer that takes the option encodes no var-data header at all — so a body too short to hold one is
+     * producer that takes the option encodes no var-data header at all — so a payload too short to hold one is
      * that case, not a short read.
      */
     private void dispatchConnectionOpened(final SequencedEvent event) {
@@ -395,7 +395,7 @@ public final class Gateway implements AutoCloseable {
             observeConnectionId(event.sourceId(), event.connectionId());
             switch (event.systemEventType()) {
             case SystemFrame.GATEWAY_REGISTERED:
-                // A submitted system body carries no MessageHeader, so its block length and version come from
+                // A submitted system payload carries no MessageHeader, so its block length and version come from
                 // this build's own constants (doc/seqeron-protocol-spec.md §7, V-3).
                 gatewayRow.wrap(event.buffer(), event.payloadOffset(), GatewayRegisteredDecoder.BLOCK_LENGTH,
                                 MessageHeaderDecoder.SCHEMA_VERSION);
@@ -413,7 +413,7 @@ public final class Gateway implements AutoCloseable {
                 }
                 break;
             case SystemFrame.GATEWAY_ACTIVE:
-                // Synthesized, so the frame's own block length and version are the body's.
+                // Synthesized, so the frame's own block length and version are the payload's.
                 gatewayActive.wrap(event.buffer(), event.payloadOffset(), event.blockLength(), event.version());
                 lifecycle.onGatewayActive(gatewayActive.gatewayId());
                 break;

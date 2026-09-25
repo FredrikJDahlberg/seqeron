@@ -69,7 +69,7 @@
             <type name="sessionId"       primitiveType="int64"
                   description="Aeron Cluster session id; advisory. The sequencer overwrites it with the session the frame arrived on"/>
             <type name="systemEventType" primitiveType="uint16"
-                  description="The event in the body; MUST be an allocated, ingress-legal value (§7)"/>
+                  description="The event in the payload; MUST be an allocated, ingress-legal value (§7)"/>
         </composite>
 
         <!-- 34 bytes: unsequencedSystemHeader's 18, then globalSeqNo and timestamp. -->
@@ -101,7 +101,7 @@
         <type name="applicationName" primitiveType="char" length="32" characterEncoding="US-ASCII"
               description="The deployment's name for a co-located application; byte 0 = 0x00 means absent"/>
 
-        <!-- Length prefix of a payload or system body. The bytes are arbitrary binary; no character
+        <!-- Length prefix of an application or system payload. The bytes are arbitrary binary; no character
              encoding applies (SbeLogPrinter -o writes them out raw, §13.1). -->
         <composite name="varDataEncoding">
             <type name="length"  primitiveType="uint16" nullValue="65535" presence="optional"/>
@@ -126,7 +126,7 @@
     </sbe:message>
 
     <!-- ── The system family ─────────────────────────────────────────────────────────────────────────
-         A body is the event's SBE block with no MessageHeader: header.systemEventType names it, and a
+         A system payload is the event's SBE block with no MessageHeader: header.systemEventType names it, and a
          decoder takes BLOCK_LENGTH and SCHEMA_VERSION from its compiled constants (§7, sound under V-3).
     -->
 
@@ -138,10 +138,10 @@
     </sbe:message>
 
     <sbe:message name="SequencedSystem" id="103"
-                 description="A submitted system frame on the tap: a sequenced ingress frame, body unchanged">
+                 description="A submitted system frame on the tap: a sequenced ingress frame, payload unchanged">
         <field name="header" id="20001" type="sequencedSystemHeader"/>
         <data  name="body"   id="20045" type="varDataEncoding"
-               description="The event, byte-identical to the ingress frame's body"/>
+               description="The event, byte-identical to the ingress frame's payload"/>
     </sbe:message>
 
     <!-- Synthesized by the sequencer, fields inline. Every node encodes its own copy (E-1), so each
@@ -149,7 +149,7 @@
          id, so that offset 16 identifies every frame on the tap. -->
 
     <sbe:message name="ClusterHeartbeat" id="104"
-                 description="The cluster clock, synthesized once a second from a cluster timer. No body: the frame's timestamp and globalSeqNo are the message (42 bytes)">
+                 description="The cluster clock, synthesized once a second from a cluster timer. No payload: the frame's timestamp and globalSeqNo are the message (42 bytes)">
         <field name="header" id="20001" type="sequencedSystemHeader"/>
     </sbe:message>
 
@@ -169,7 +169,7 @@
     </sbe:message>
 
     <!-- ── The nine submitted system events ─────────────────────────────────────────────────────────
-         Bodies carried in UnsequencedSystem/SequencedSystem; none has a header field. A template id here
+         Payloads carried in UnsequencedSystem/SequencedSystem; none has a header field. A template id here
          is never written to the wire: it is the event's systemEventType, and ids are never reused.
     -->
 

@@ -129,7 +129,7 @@ class IngressPublisherTest {
     }
 
     @Test
-    @DisplayName("a body above MAX_PAYLOAD_LENGTH is refused locally — nothing is encoded, nothing offered")
+    @DisplayName("a payload above MAX_PAYLOAD_LENGTH is refused locally — nothing is encoded, nothing offered")
     void oversizeBodyIsRefusedWithoutTouchingTheSender() {
         final int tooLong = FrameLayer.MAX_PAYLOAD_LENGTH + 1;
         assertEquals(Publish.Refused,
@@ -139,7 +139,7 @@ class IngressPublisherTest {
     }
 
     @Test
-    @DisplayName("a body at exactly MAX_PAYLOAD_LENGTH is admitted")
+    @DisplayName("a payload at exactly MAX_PAYLOAD_LENGTH is admitted")
     void maximumBodyIsAdmitted() {
         final int atLimit = FrameLayer.MAX_PAYLOAD_LENGTH;
         assertEquals(Publish.Published,
@@ -220,7 +220,7 @@ class IngressPublisherTest {
     }
 
     @Test
-    @DisplayName("an oversize body is Refused even while the tracker holds")
+    @DisplayName("an oversize payload is Refused even while the tracker holds")
     void refusalComesBeforeTheHold() {
         tracker.holding = true;
         final int tooLong = FrameLayer.MAX_PAYLOAD_LENGTH + 1;

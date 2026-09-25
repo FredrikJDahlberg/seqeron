@@ -67,9 +67,9 @@ server**; the server side of the replay protocol is Java only.
 ### Load-bearing properties
 
 - **The cluster parses no application payload.** Every ingress message is an `Unsequenced` frame
-  (`sbe-frame.xml`, schema 210) whose body is one opaque payload named by `header.payloadId`;
+  (`sbe-frame.xml`, schema 210) carrying one opaque payload named by `header.payloadId`;
   `Sequencer` decodes the frame header, stamps it, and copies the payload through byte-identical.
-  Sequencing is copy-18/append-16, the body is never re-encoded, and `payloadId` 1 is retired and
+  Sequencing is copy-18/append-16, the payload is never re-encoded, and `payloadId` 1 is retired and
   refused on ingress — what used to travel under it is now the **system family**, seqeron's own
   vocabulary, named by `header.systemEventType` at the same offset.
 - **A consumer splits by family first, then dispatches on `(payloadId, templateId)` — never
@@ -162,7 +162,7 @@ Run a single C++ suite by filter, or a single Java test class:
 
 The Java suite covers the deterministic decision-making — `Sequencer`, and `ReplayerService` through
 its `Replayer` seam — and deliberately touches no Aeron runtime: no media driver, no cluster, no Aeron
-mocks. Everything Aeron-shaped is covered by `core_tests` and by the end-to-end scripts below.
+mocks. Everything that needs an Aeron runtime is covered by `core_tests` and by the end-to-end scripts below.
 Coverage is a JaCoCo report at `build/reports/jacoco/test/`, written by `./gradlew test`.
 
 ## Scripts

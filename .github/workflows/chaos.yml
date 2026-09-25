@@ -20,6 +20,9 @@ on:
         required: false
         default: '20'
 
+permissions:
+  contents: read
+
 concurrency:
   group: chaos-${{ github.ref }}
   cancel-in-progress: true

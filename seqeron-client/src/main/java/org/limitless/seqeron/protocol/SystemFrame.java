@@ -16,16 +16,16 @@ import org.limitless.seqeron.sbe.frame.UnsequencedEncoder;
 import org.limitless.seqeron.sbe.frame.UnsequencedSystemEncoder;
 
 /**
- * The ingress side of the frame layer: wraps an already-encoded body in its family's envelope and returns
+ * The ingress side of the frame layer: wraps an already-encoded payload in its family's envelope and returns
  * the length; the offer is the caller's. The Java twin of {@code publishSystem}/{@code publishPayload} in
- * {@code sequencer/client/IngressPublisher.hpp}. A system body carries no {@code MessageHeader}: it is
+ * {@code sequencer/client/IngressPublisher.hpp}. A system payload carries no {@code MessageHeader}: it is
  * {@code wrap}ped, and decoded with its codec's compiled constants (§7, <b>V-3</b>).
  *
  * <p>Not thread-safe: one instance per producing thread, reusing its encoders.
  */
 public final class SystemFrame {
     /**
-     * Returned instead of a length when the body is above {@link FrameLayer#MAX_PAYLOAD_LENGTH}, or the frame
+     * Returned instead of a length when the payload is above {@link FrameLayer#MAX_PAYLOAD_LENGTH}, or the frame
      * breaks §9.2 conditions 6 to 9 — the checks a producer can make without the sequencer's state, so a
      * frame the sequencer would drop is never sent (<b>T-3</b>). Local and permanent: nothing was encoded,
      * and retrying cannot succeed.
@@ -42,7 +42,7 @@ public final class SystemFrame {
     private static final int RETIRED_CORE_PAYLOAD_ID = 1;
 
     /**
-     * The {@code systemEventType} table (§7). A submitted event's value is its body codec's template id; the
+     * The {@code systemEventType} table (§7). A submitted event's value is its payload codec's template id; the
      * three synthesized events have templates of their own and stamp these at offset 16 so that field
      * discriminates every frame on the tap.
      */
@@ -138,7 +138,7 @@ public final class SystemFrame {
     }
 
     /**
-     * The same, for an application's own payload rather than a system event's body.
+     * The same, for an application's own payload rather than a system event's.
      *
      * @param frame         where the frame is written, from offset 0
      * @param sourceId      the producing process's {@code gatewaySourceId}; -1 is reserved for the cluster

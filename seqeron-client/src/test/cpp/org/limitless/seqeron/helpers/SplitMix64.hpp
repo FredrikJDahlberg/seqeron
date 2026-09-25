@@ -29,7 +29,7 @@ class SplitMix64
         return z ^ (z >> 31);
     }
 
-    // Unsigned modulo: the low bias is the same shape on both sides, which matters here and the bias
+    // Unsigned modulo: the low bias is identical on both sides, which matters here and the bias
     // itself does not.
     int roll(const int bound)
     {

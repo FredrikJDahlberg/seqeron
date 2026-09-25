@@ -648,7 +648,7 @@ class ReplayerRecoveryTest {
         completeSegment();
         assertFalse(receiver.isRecovering(), "a resume ends at its bound — there is no next segment to ask for");
 
-        // The walk shape of the same transitions, entered the way production enters it: a resume whose
+        // The result of the same transitions, entered the way production enters it: a resume whose
         // replay opens on a frame other than the one it anchored on falls back to the chain walk.
         deliverTap(9); // another gap -> another resume
         answerReplaying(8, 500);

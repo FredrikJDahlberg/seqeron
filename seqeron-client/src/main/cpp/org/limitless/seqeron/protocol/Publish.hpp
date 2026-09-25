@@ -1,6 +1,6 @@
 #pragma once
 
-// What a publish did. `Refused` is local and permanent (T-3): the body is above MAX_PAYLOAD_LENGTH, or the
+// What a publish did. `Refused` is local and permanent (T-3): the payload is above MAX_PAYLOAD_LENGTH, or the
 // frame breaks §9.2 conditions 6 to 9, and nothing was offered, so retrying cannot succeed. `Declined` —
 // transport back-pressure, a lost session, or the tracker holding or full — is the one a caller may retry.
 //

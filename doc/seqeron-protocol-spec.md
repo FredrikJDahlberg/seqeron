@@ -82,8 +82,8 @@ GatewayActive      (schema 210, template 106) { sequencedSystemHeader,   gateway
 ```
 
 The members of each pair differ only in the fields sequencing adds. An application frame carries one
-length-prefixed payload; a system frame carries one length-prefixed system message. The three
-synthesized templates carry their fields inline and have no body.
+length-prefixed payload; a system frame carries one length-prefixed system payload. The three
+synthesized templates carry their fields inline and have no payload.
 
 ### 4.1 Header layout
 
@@ -124,7 +124,7 @@ is undefined.
 | fixed overhead | **28** | **44** |
 
 `MIN_INGRESS_LENGTH` is 28 for both ingress templates. A `ClusterHeartbeat` is 8 + 34 = 42 bytes: it
-has no length prefix and no body.
+has no length prefix and no payload.
 
 ### 4.3 Provenance
 
@@ -335,27 +335,27 @@ their own.
 
 | event | `systemEventType` | carried in | ingress-legal | the sequencer decodes it |
 | --- | --- | --- | --- | --- |
-| `ConnectionOpened` | 1 | body | yes (producer) | yes: open-connection set |
-| `ConnectionClosed` | 2 | body | yes (producer) | yes: open-connection set |
+| `ConnectionOpened` | 1 | payload | yes (producer) | yes: open-connection set |
+| `ConnectionClosed` | 2 | payload | yes (producer) | yes: open-connection set |
 | `LeadershipChanged` | 5 | template 105 | no | no (encodes only) |
-| `ClusterStarted` | 10 | body | yes (`clusterctl`) | no |
-| `ClusterStopped` | 11 | body | yes (`clusterctl`) | no |
+| `ClusterStarted` | 10 | payload | yes (`clusterctl`) | no |
+| `ClusterStopped` | 11 | payload | yes (`clusterctl`) | no |
 | `ClusterHeartbeat` | 16 | template 104 | no | no (encodes only) |
-| `GatewayRegistered` | 17 | body | yes (`clusterctl load-topology`) | yes: gateway list; bootstrap on `remaining == 0` |
+| `GatewayRegistered` | 17 | payload | yes (`clusterctl load-topology`) | yes: gateway list; bootstrap on `remaining == 0` |
 | `GatewayActive` | 18 | template 106 | no | no (encodes only) |
-| `GatewayStarted` | 19 | body | yes (gateway) | yes: binds session to `gatewayId`; releases stale connections |
-| `PayloadIdRegistered` | 23 | body | yes (`clusterctl load-topology`) | no (§6.3) |
-| `GatewayActivationRequested` | 24 | body | yes (`clusterctl activate`) | yes: validates `gatewayId`, then synthesizes `GatewayActive` |
-| `ApplicationRegistered` | 25 | body | yes (`clusterctl load-topology`) | no |
+| `GatewayStarted` | 19 | payload | yes (gateway) | yes: binds session to `gatewayId`; releases stale connections |
+| `PayloadIdRegistered` | 23 | payload | yes (`clusterctl load-topology`) | no (§6.3) |
+| `GatewayActivationRequested` | 24 | payload | yes (`clusterctl activate`) | yes: validates `gatewayId`, then synthesizes `GatewayActive` |
+| `ApplicationRegistered` | 25 | payload | yes (`clusterctl load-topology`) | no |
 
-A submitted event's `systemEventType` equals its body's SBE template id. The three synthesized frames
+A submitted event's `systemEventType` equals its payload's SBE template id. The three synthesized frames
 also carry their `systemEventType` (5, 16, 18), redundantly with the template id, so that offset 16
 identifies every frame on the tap. Numbers are never reused: `GatewayActivationRequested` took 24
 rather than a vacated number so that no recording can be misread. `ClusterHeartbeat` is unrelated to
 `ReplayHeartbeat` (§10).
 
-**A system body has no `MessageHeader`.** `header.systemEventType` identifies it. An encoder `wrap`s
-the body rather than calling `wrapAndApplyHeader`, and a decoder takes `BLOCK_LENGTH` and
+**A system payload has no `MessageHeader`.** `header.systemEventType` identifies it. An encoder `wrap`s
+the payload rather than calling `wrapAndApplyHeader`, and a decoder takes `BLOCK_LENGTH` and
 `SCHEMA_VERSION` from its compiled constants. This is sound because of **V-3**: no seqeron decoder
 reads bytes encoded by a different build.
 
@@ -374,7 +374,7 @@ Header of a synthesized frame (§5 covers ingress only):
 | `globalSeqNo` | the next value from the counter ingress also uses (§9.1) |
 | `timestamp` | Raft consensus time, never a local clock (**S-3**) |
 
-> **S-2.** The sequencer decodes exactly the five bodies marked "yes" above, after reading
+> **S-2.** The sequencer decodes exactly the five payloads marked "yes" above, after reading
 > `header.systemEventType` on every system-family ingress frame. It decodes no application payload.
 
 An event that is not ingress-legal is rejected two ways: condition 3 rejects its template, and
@@ -433,7 +433,7 @@ connection still open under that `gatewaySourceId`, because a crashed instance n
 (**S-3**), and the release emits no frame. A consumer that tracks connections derives its view from the
 same frames.
 
-`ConnectionClosed` has no body: `header.connectionId` identifies a connection every consumer has
+`ConnectionClosed` has no payload: `header.connectionId` identifies a connection every consumer has
 already seen open. `ConnectionOpened` carries `connectionData`, because a producer allocates a new
 `connectionId` for every connection, so a counterparty that reconnects and resumes the same session
 arrives under a new id. A standby needs the mapping from id to application session before that
@@ -499,7 +499,7 @@ frame at the same `globalSeqNo`.
 
 | file | schema id | contains | change policy (§11) |
 | --- | --- | --- | --- |
-| `sbe-frame.xml` | 210 | the seven top-level templates, the four header composites, `messageHeader`, `varDataEncoding`, and the nine submitted system bodies | envelopes frozen; system events changeable under **V-3** |
+| `sbe-frame.xml` | 210 | the seven top-level templates, the four header composites, `messageHeader`, `varDataEncoding`, and the nine submitted system payloads | envelopes frozen; system events changeable under **V-3** |
 | `sbe-replay.xml` | 212 | the six replay control messages (§10) | changed in place, no version bump |
 
 The envelopes and system messages are one schema because they have one owner, ship in one artifact and
@@ -545,7 +545,7 @@ order (each establishes what the next may read). It MUST NOT throw (§9.4).
 | 6 | `sourceId == -1` (**F-4**) |
 | 7 | `Unsequenced` and `payloadId` is 0 or 1 |
 | 8 | `UnsequencedSystem` and `systemEventType` is not an allocated, ingress-legal value |
-| 9 | `UnsequencedSystem` and the body is shorter than that event's compiled `BLOCK_LENGTH` |
+| 9 | `UnsequencedSystem` and the payload is shorter than that event's compiled `BLOCK_LENGTH` |
 | 10 | `UnsequencedSystem` and the frame fails **S-6** |
 
 A rejection is logged and counted (§9.6). Nothing is emitted and `globalSeqNo` does not move.
@@ -556,7 +556,7 @@ Implementation notes:
 - Conditions 4 and 5 are equalities, not bounds. A short `blockLength` would place the length prefix
   inside the header; a long one, or a length prefix short of the frame end, would silently drop bytes on
   every node. Compare condition 4 against the composite's generated `ENCODED_LENGTH`.
-- Condition 3 rejects the three synthesized templates before any body is read. Condition 8 rejects
+- Condition 3 rejects the three synthesized templates before any payload is read. Condition 8 rejects
   the same events named inside an `UnsequencedSystem`.
 - The size limits are compiled-in protocol constants (§12), never read from a node's transport
   configuration per frame: a node configured differently from its peers would diverge (**S-3**). MTU
@@ -568,7 +568,7 @@ Implementation notes:
   conforming producer, and §16 A-4 treats that as a fault.
 - Condition 9's minimum length is the decoder's compiled `BLOCK_LENGTH`, never the `blockLength` on the
   wire: an SBE decoder reads fixed fields at fixed offsets whatever block length it was given, so a
-  sender-supplied length bounds nothing. It applies to every system event whose body a later condition
+  sender-supplied length bounds nothing. It applies to every system event whose payload a later condition
   reads. Condition 8 needs no minimum; it reads only the header.
 
 ### 9.3 Determinism
@@ -600,11 +600,11 @@ it from its own duty cycle.
 Sequencing an ingress frame: decode the `MessageHeader` and the 18-byte header; encode a new
 `MessageHeader` (`Sequenced` or `SequencedSystem` to match the ingress template, `blockLength` 34,
 schema 210, version 0, all constants); copy the 18-byte header prefix, offset 16 included; overwrite
-`sessionId`; append `globalSeqNo` and `timestamp`; copy the length-prefixed body. The same code serves
+`sessionId`; append `globalSeqNo` and `timestamp`; copy the length-prefixed payload. The same code serves
 both families, because it never interprets offset 16 and the fields it writes are at the same offsets
 in both sequenced composites.
 
-A synthesized frame is one fixed-size encode: its own template, fields inline, no body.
+A synthesized frame is one fixed-size encode: its own template, fields inline, no payload.
 
 ### 9.6 What a rejection leaves behind
 
@@ -783,7 +783,7 @@ split needs its own completeness rule; a `remaining` countdown, as in `GatewayRe
 
 ### 13.1 `SbeLogPrinter`
 
-`SbeLogPrinter` (`sbe-log-printer.sh`) decodes schema 210 in full: every system message, each body
+`SbeLogPrinter` (`sbe-log-printer.sh`) decodes schema 210 in full: every system message, each payload
 decoded through its `systemEventType`. It does not decode application payloads. It labels each payload
 with the `protocolName` from any `PayloadIdRegistered` frames in the recording (§6.3), and otherwise
 with its number.
@@ -801,7 +801,7 @@ order and serves for correlation.
 
 ### 13.2 Payload encodings
 
-> **E-1.** A payload or system body that arrived through ingress is encoded once, by its producer, and
+> **E-1.** An application or system payload that arrived through ingress is encoded once, by its producer, and
 > is never re-encoded after sequencing. The exception is the three synthesized frames, which have no
 > producer: every node encodes its own copy.
 
@@ -829,13 +829,13 @@ Aeron runtime or media driver and runs in under a second. The payload fixture is
 | --- | --- | --- |
 | 1 | **Copy fidelity.** A sequenced `Unsequenced` carries a byte-identical payload and an unchanged `payloadId`, for payloads of 0 bytes, 1 byte and `MAX_PAYLOAD_LENGTH` | §5 |
 | 2 | **Prefix property.** Bytes 0–17 of each unsequenced composite equal those of its sequenced counterpart for the same values, offset 16 included; the two families' composites are byte-identical; encoded lengths are 18 and 34 | **F-3** |
-| 3 | **System frames round-trip.** Each of the nine submitted events, wrapped as `UnsequencedSystem` and sequenced, keeps a byte-identical body and its `systemEventType`; `ConnectionOpened` with empty, short and maximum-length `connectionData`. Each synthesized template, encoded by the sequencer, has the right template id, inline fields and `systemEventType` | §7 |
-| 4 | **Rejection table.** One case per §9.2 condition; each asserts the frame was not sequenced, nothing was emitted, `globalSeqNo` did not move and the rejection counter rose by exactly 1. Cases: over `MAX_INGRESS_LENGTH` and under 28 (1); wrong `schemaId`, non-zero `version` (2); a non-ingress template, including each synthesized one (3); `blockLength` below and above 18 on both ingress templates (4); length prefix past the frame end, short of it, and 65535 (5); `sourceId` −1 (6); `payloadId` 0 and 1 (7); an unallocated `systemEventType` and each synthesized one (8); a `GatewayStarted` body shorter than 8 bytes (9); **S-6**'s cases (10) | **S-4**, **S-5**, **S-7** |
+| 3 | **System frames round-trip.** Each of the nine submitted events, wrapped as `UnsequencedSystem` and sequenced, keeps a byte-identical payload and its `systemEventType`; `ConnectionOpened` with empty, short and maximum-length `connectionData`. Each synthesized template, encoded by the sequencer, has the right template id, inline fields and `systemEventType` | §7 |
+| 4 | **Rejection table.** One case per §9.2 condition; each asserts the frame was not sequenced, nothing was emitted, `globalSeqNo` did not move and the rejection counter rose by exactly 1. Cases: over `MAX_INGRESS_LENGTH` and under 28 (1); wrong `schemaId`, non-zero `version` (2); a non-ingress template, including each synthesized one (3); `blockLength` below and above 18 on both ingress templates (4); length prefix past the frame end, short of it, and 65535 (5); `sourceId` −1 (6); `payloadId` 0 and 1 (7); an unallocated `systemEventType` and each synthesized one (8); a `GatewayStarted` payload shorter than 8 bytes (9); **S-6**'s cases (10) | **S-4**, **S-5**, **S-7** |
 | 4a | **Rejection denies nothing and repeats identically.** Two rejections under one `payloadId` each increment the counter and emit nothing; a well-formed frame with that `payloadId` afterwards is accepted unchanged | **S-7**, **C-2** |
 | 4b | **The producer refuses before sending.** A payload of exactly `MAX_PAYLOAD_LENGTH` is published; one byte longer is refused with nothing offered to the transport, distinguishably from back-pressure, and the next well-formed publish succeeds. Uses an in-memory transport seam | **T-3**, §12 |
 | 5 | **Synthesis is deterministic.** Two independent `Sequencer`s fed the same input emit byte-identical frames, heartbeats included | **S-3**, **F-2** |
 | 6 | **Layout matches §4.** Every header field is at the §4.1 offset in all four composites; sizes match §4.2 (`MessageHeader` 8, composites 18 and 34, length prefix 2, overhead 28 and 44, `ClusterHeartbeat` 42, maximum payload frame 1360); payloads of 0 bytes, 1 byte and `MAX_PAYLOAD_LENGTH` round-trip | **F-2**, **F-3**, §12 |
-| 7 | **Selective consumption.** A consumer given an unallocated `payloadId` and an unhandled `systemEventType` skips both without error, and its continuity tracking advances across them, for all five sequenced shapes | **P-1**–**P-3** |
+| 7 | **Selective consumption.** A consumer given an unallocated `payloadId` and an unhandled `systemEventType` skips both without error, and its continuity tracking advances across them, for all five sequenced messages | **P-1**–**P-3** |
 | 8 | **S-6.** A `GatewayStarted` matching its list row binds and is accepted. Rejected: the same frame with a different `gatewaySourceId`; an unlisted `gatewayId` claiming a listed `sourceId`; a `GatewayActivationRequested` for an unlisted `gatewayId`; another system frame with a listed `sourceId` on an unbound session. Accepted: an application payload with a listed `sourceId`, and a `clusterctl` marker (`sourceId` 2, `connectionId` −1) | **S-6** |
 | 9 | **Promotion.** With ranks 0, 1, 2 under one `gatewaySourceId`: bootstrap activates rank 0 only; a `GatewayActivationRequested` is sequenced and answered at the next `globalSeqNo`; closing rank 0's session promotes rank 1; closing rank 1's promotes rank 0; an instance that publishes no `GatewayStarted` is replaced after exactly `GATEWAY_ACTIVATION_TIMEOUT_MS` of consensus time and not before; one that does arms nothing further; a `gatewaySourceId` with one row synthesizes nothing on close and `globalSeqNo` does not move. Two gateways bootstrapped together keep separate deadlines | §7.2, **S-3** |
 

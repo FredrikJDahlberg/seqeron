@@ -79,7 +79,7 @@ jar `seqeron-<version>-uber.jar`, CMake targets `seqeron_core`/`seqeron_flags`, 
 
 ## Module layout
 
-**Two Gradle modules, Aeron's shape**: `:seqeron-client` and `:seqeron-service`, the latter depending on
+**Two Gradle modules, Aeron's layout**: `:seqeron-client` and `:seqeron-service`, the latter depending on
 the former. Each owns a source tree — `<module>/src/main/{java,...}` and `<module>/src/test/{java,...}`
 — and one CMake project sits above them, since C++ is the client tier alone
 (`seqeron-client/src/main/cpp`). The service module holds `resources`, `scripts` and `ops`; the client
@@ -117,7 +117,7 @@ dropping the frame — unless a new leader arrives mid-spin while its `IngressTr
 nothing and returns false — a self-throttling `keepAlive`, and the three-valued `Publish`. They are far smaller
 than their twins because `AeronCluster` already is the cluster protocol that `ClusterStreamSender.hpp`
 implements by hand; what the Java side adds is only what that client does not do. Two divergences are
-deliberate and documented in the class: the body arrives pre-encoded rather than through a `Fill` over an
+deliberate and documented in the class: the payload arrives pre-encoded rather than through a `Fill` over an
 encoder (Java's SBE codecs share no interface), and leadership moving off the co-located member costs a
 session rather than a publication swap (`AeronCluster` owns its publication). `IngressSender` exists so
 `IngressPublisher` has a seam the Java suite can drive without an Aeron runtime — the C++ transport seam
@@ -204,7 +204,7 @@ Single suites:
 
 The Java suite covers the deterministic decision-making — `Sequencer`, and `ReplayerService` through
 its `Replayer` seam — and deliberately touches no Aeron runtime: no media driver, no cluster, no Aeron
-mocks. Everything Aeron-shaped is covered by `core_tests` and by the six end-to-end scripts under
+mocks. Everything that needs an Aeron runtime is covered by `core_tests` and by the six end-to-end scripts under
 `seqeron-service/src/test/scripts`. Coverage is a JaCoCo report per module, at
 `<module>/build/reports/jacoco/test/`, excluding the generated SBE codecs.
 
@@ -313,7 +313,7 @@ length-prefixed payload named by `header.payloadId`. The **system** family is se
 (spec §7), named by `header.systemEventType` at the same offset: `UnsequencedSystem` (102) →
 `SequencedSystem` (103) for the nine events a producer submits, plus three templates of their own for the
 three the sequencer synthesizes — `ClusterHeartbeat` (104), `LeadershipChanged` (105), `GatewayActive`
-(106). Sequencing is copy-18/append-16 for both, the body is never re-encoded, and `sequenceFrame`
+(106). Sequencing is copy-18/append-16 for both, the payload is never re-encoded, and `sequenceFrame`
 validates every frame against `doc/seqeron-protocol-spec.md` §9.2.
 
 **The cluster tier decodes no `payloadId` at all** — every application payload is copied through
@@ -328,7 +328,7 @@ at offset 16 is a `payloadId` on one family and a `systemEventType` on the other
 them a consumer sees `isSystem()` plus either a `payloadId` and the message's own template, or a
 `systemEventType`.
 
-**A system body carries no `MessageHeader`** — `systemEventType` names it, so an encoder `wrap`s rather
+**A system payload carries no `MessageHeader`** — `systemEventType` names it, so an encoder `wrap`s rather
 than `wrapAndApplyHeader`s and a decoder supplies `BLOCK_LENGTH`/`SCHEMA_VERSION` from its own compiled
 constants. `SystemFrame` (Java) and `publishSystem`/`decodeSystem` (C++) are that contract's one place
 per language; the `systemEventType` table lives in `SystemFrame.java` and `SequencedFrame.hpp` and the
@@ -364,7 +364,7 @@ a distinct namespace so one include path
 covers all of them:
 
 - `sbe-frame.xml` (schema 210) — the seven top-level templates, their four header composites, and the
-  nine submitted **system** bodies (the connection lifecycle events, the cluster markers, the gateway
+  nine submitted **system** payloads (the connection lifecycle events, the cluster markers, the gateway
   list/election frames, `GatewayActivationRequested`, `ApplicationRegistered`). No system message carries
   a `header` field — the frame's is the only one. Seqeron's own, and the only thing this tier decodes.
 - `sbe-replay.xml` (schema 212) — the six **replay control** messages, node-local between a

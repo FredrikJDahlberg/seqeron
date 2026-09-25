@@ -44,7 +44,7 @@ class SequencedFrameDecoderTest {
     private static final int TEMPLATE_ID_OFFSET = 2;
     private static final int SCHEMA_ID_OFFSET = 4;
 
-    /** Offset of the body's length prefix: past the framing header and the 34-byte composite. */
+    /** Offset of the payload's length prefix: past the framing header and the 34-byte composite. */
     private static final int PREFIX_OFFSET =
         MessageHeaderEncoder.ENCODED_LENGTH + SequencedHeaderDecoder.ENCODED_LENGTH;
 
@@ -74,7 +74,7 @@ class SequencedFrameDecoderTest {
         final byte[] frame = payloadFrame(1, 8);
         final MutableDirectBuffer damaged = new UnsafeBuffer(frame);
         damaged.putShort(TEMPLATE_ID_OFFSET, (short)999, ByteOrder.LITTLE_ENDIAN);
-        assertFalse(wrap(frame), "only the five sequenced shapes decode");
+        assertFalse(wrap(frame), "only the five sequenced messages decode");
     }
 
     @Test
@@ -99,18 +99,19 @@ class SequencedFrameDecoderTest {
     }
 
     @Test
-    @DisplayName("a submitted system frame cut before its body prefix is rejected")
+    @DisplayName("a submitted system frame cut before its payload prefix is rejected")
     void systemFrameCutBeforeItsPrefix() {
         final byte[] frame = systemFrame(1, SystemFrame.CONNECTION_CLOSED, 0);
         final int prefixEnd = PREFIX_OFFSET + SequencedSystemDecoder.bodyHeaderLength();
         for (int length = MessageHeaderEncoder.ENCODED_LENGTH; length < prefixEnd; length++) {
-            assertFalse(wrap(Arrays.copyOf(frame, length)), "the body's length is unreadable at " + length + " bytes");
+            assertFalse(wrap(Arrays.copyOf(frame, length)),
+                        "the payload's length is unreadable at " + length + " bytes");
         }
-        assertTrue(wrap(frame), "an empty body is a whole frame (§5)");
+        assertTrue(wrap(frame), "an empty payload is a whole frame (§5)");
     }
 
     @Test
-    @DisplayName("a system body declaring more bytes than the fragment holds is rejected")
+    @DisplayName("a system payload declaring more bytes than the fragment holds is rejected")
     void systemBodyRunsPastTheFragment() {
         final byte[] frame = systemFrame(1, SystemFrame.CLUSTER_STARTED, 8);
         final MutableDirectBuffer damaged = new UnsafeBuffer(frame);
@@ -131,19 +132,19 @@ class SequencedFrameDecoderTest {
     }
 
     /**
-     * The property behind the cases above, swept over every shape and every cut. The fragment handed to
+     * The property behind the cases above, swept over every case and every cut. The fragment handed to
      * {@link SequencedFrameDecoder#wrap} is a copy of exactly that length, so Agrona's own bounds checks
      * fire on any read past its end.
      */
     @Test
-    @DisplayName("every truncation of every shape is rejected or stays inside the fragment")
+    @DisplayName("every truncation of every case is rejected or stays inside the fragment")
     void everyTruncationIsRejectedOrStaysInsideTheFragment() {
-        for (final Map.Entry<String, byte[]> shape : everyShape().entrySet()) {
-            final byte[] whole = shape.getValue();
-            assertTrue(wrap(whole), shape.getKey() + " does not decode whole");
+        for (final Map.Entry<String, byte[]> frameCase : everyCase().entrySet()) {
+            final byte[] whole = frameCase.getValue();
+            assertTrue(wrap(whole), frameCase.getKey() + " does not decode whole");
             for (int length = 0; length < whole.length; length++) {
                 final byte[] cut = Arrays.copyOf(whole, length);
-                final String where = shape.getKey() + " cut to " + length + " of " + whole.length + " bytes";
+                final String where = frameCase.getKey() + " cut to " + length + " of " + whole.length + " bytes";
                 if (wrap(cut)) {
                     assertTrue(view.payloadOffset() + view.payloadLength() <= length,
                                where + " decodes with a payload running past the fragment");
@@ -170,15 +171,15 @@ class SequencedFrameDecoderTest {
         return view.wrap(new UnsafeBuffer(fragment), 0, fragment.length);
     }
 
-    private static Map<String, byte[]> everyShape() {
-        final Map<String, byte[]> shapes = new LinkedHashMap<>();
-        shapes.put("an empty payload", payloadFrame(1, 0));
-        shapes.put("a payload shorter than a MessageHeader", payloadFrame(2, 3));
-        shapes.put("a payload naming its own message", payloadFrame(3, 24));
-        shapes.put("a system event with no body", systemFrame(4, SystemFrame.CONNECTION_CLOSED, 0));
-        shapes.put("a system event with a body", systemFrame(5, SystemFrame.CLUSTER_STARTED, 8));
-        shapes.put("a synthesized ClusterHeartbeat", clusterHeartbeatFrame(6));
-        return shapes;
+    private static Map<String, byte[]> everyCase() {
+        final Map<String, byte[]> cases = new LinkedHashMap<>();
+        cases.put("an empty payload", payloadFrame(1, 0));
+        cases.put("a payload shorter than a MessageHeader", payloadFrame(2, 3));
+        cases.put("a payload naming its own message", payloadFrame(3, 24));
+        cases.put("a system event with no payload", systemFrame(4, SystemFrame.CONNECTION_CLOSED, 0));
+        cases.put("a system event with a payload", systemFrame(5, SystemFrame.CLUSTER_STARTED, 8));
+        cases.put("a synthesized ClusterHeartbeat", clusterHeartbeatFrame(6));
+        return cases;
     }
 
     private static byte[] payloadFrame(final long globalSeqNo, final int payloadLength) {

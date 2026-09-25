@@ -76,7 +76,7 @@ class TapPublisherTest {
         int alerts;
         int halts;
         int fatals;
-        /** Every write to the stall gauge, in order — an episode's shape, not just its last value. */
+        /** Every write to the stall gauge, in order — an episode's history, not just its last value. */
         final List<Boolean> stalledGauge = new ArrayList<>();
 
         @Override

@@ -10,6 +10,9 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 # A failover run costs minutes; superseded PR pushes should not keep paying for them.
 concurrency:
   group: failover-${{ github.ref }}

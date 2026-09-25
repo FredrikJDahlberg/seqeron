@@ -349,7 +349,7 @@ public final class ClusterCtl {
 
         @Override
         boolean matches(final DirectBuffer buffer) {
-            // Synthesized, so its gatewayId is inline in the frame's own block rather than in a body.
+            // Synthesized, so its gatewayId is inline in the frame's own block rather than in a payload.
             decoder.wrap(buffer, view.payloadOffset(), view.blockLength(), view.version());
             return decoder.gatewayId() == gatewayId;
         }

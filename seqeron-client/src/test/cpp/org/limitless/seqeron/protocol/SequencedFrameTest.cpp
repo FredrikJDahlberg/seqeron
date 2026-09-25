@@ -39,7 +39,7 @@ constexpr std::uint16_t PAYLOAD_ID = 2;
 constexpr std::uint64_t TEMPLATE_ID_OFFSET = 2;
 constexpr std::uint64_t SCHEMA_ID_OFFSET = 4;
 
-// Offset of the body's length prefix: past the framing header and the 34-byte composite.
+// Offset of the payload's length prefix: past the framing header and the 34-byte composite.
 constexpr std::uint64_t PREFIX_OFFSET = frm::MessageHeader::encodedLength() + frm::SequencedHeader::encodedLength();
 
 std::vector<char> filler(std::size_t length)
@@ -138,7 +138,7 @@ TEST(SequencedFrame, UnknownTemplateId)
 {
     std::vector<char> frame = payloadFrame(1, 8);
     putPrefix(frame, TEMPLATE_ID_OFFSET, 999);
-    EXPECT_FALSE(unwrapFrame(frame.data(), frame.size()).valid) << "only the five sequenced shapes decode";
+    EXPECT_FALSE(unwrapFrame(frame.data(), frame.size()).valid) << "only the five sequenced messages decode";
 }
 
 TEST(SequencedFrame, ApplicationFrameCutBeforeItsPrefix)
@@ -170,9 +170,9 @@ TEST(SequencedFrame, SystemFrameCutBeforeItsPrefix)
     {
         const std::vector<char> fragment = cut(frame, length);
         EXPECT_FALSE(unwrapFrame(fragment.data(), length).valid)
-            << "the body's length is unreadable at " << length << " bytes";
+            << "the payload's length is unreadable at " << length << " bytes";
     }
-    EXPECT_TRUE(unwrapFrame(frame.data(), frame.size()).valid) << "an empty body is a whole frame (§5)";
+    EXPECT_TRUE(unwrapFrame(frame.data(), frame.size()).valid) << "an empty payload is a whole frame (§5)";
 }
 
 TEST(SequencedFrame, SystemBodyRunsPastTheFragment)
@@ -195,19 +195,19 @@ TEST(SequencedFrame, SynthesizedFrameCutInsideItsHeader)
     EXPECT_TRUE(unwrapFrame(frame.data(), frame.size()).valid);
 }
 
-// The property behind the cases above, swept over every shape and every cut.
+// The property behind the cases above, swept over every case and every cut.
 TEST(SequencedFrame, EveryTruncationIsRejectedOrStaysInsideTheFragment)
 {
-    const std::vector<std::pair<std::string, std::vector<char>>> shapes{
+    const std::vector<std::pair<std::string, std::vector<char>>> cases{
         { "an empty payload", payloadFrame(1, 0) },
         { "a payload shorter than a MessageHeader", payloadFrame(2, 3) },
         { "a payload naming its own message", payloadFrame(3, 24) },
-        { "a system event with no body", systemFrame(4, CONNECTION_CLOSED, 0) },
-        { "a system event with a body", systemFrame(5, CLUSTER_STARTED, 8) },
+        { "a system event with no payload", systemFrame(4, CONNECTION_CLOSED, 0) },
+        { "a system event with a payload", systemFrame(5, CLUSTER_STARTED, 8) },
         { "a synthesized ClusterHeartbeat", clusterHeartbeatFrame(6) },
     };
 
-    for (const auto& [name, whole] : shapes)
+    for (const auto& [name, whole] : cases)
     {
         ASSERT_TRUE(unwrapFrame(whole.data(), whole.size()).valid) << name << " does not decode whole";
         for (std::size_t length = 0; length < whole.size(); ++length)

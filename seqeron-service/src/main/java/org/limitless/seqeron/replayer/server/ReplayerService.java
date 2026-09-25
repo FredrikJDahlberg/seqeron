@@ -354,7 +354,7 @@ public final class ReplayerService {
      * @param length fragment length
      */
     private void onSelfCheckFragment(final DirectBuffer buffer, final int offset, final int length) {
-        // Any of the five sequenced shapes will do: the check only asks what globalSeqNo the recording
+        // Any of the five sequenced messages will do: the check only asks what globalSeqNo the recording
         // starts at, and every one of them carries it at the same offset (F-3).
         if (selfCheckView.wrap(buffer, offset, length)) {
             selfCheckGlobalSeqNo = selfCheckView.globalSeqNo();

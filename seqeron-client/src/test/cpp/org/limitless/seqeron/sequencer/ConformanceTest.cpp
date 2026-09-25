@@ -4,11 +4,11 @@
 // §14 asks for the suite in both languages, but only the rows with a C++ implementation behind them can
 // be mirrored: there is no C++ sequencer, so rows 1, 4, 4a, 5, 8 and 9 (which drive Sequencer's
 // validation, synthesis and promotion) live in the Java suite alone. What is here is what C++ actually
-// implements — the schema itself (row 2), the consumer's decode of every system shape (row 3), the
+// implements — the schema itself (row 2), the consumer's decode of every system message (row 3), the
 // producer's T-3 refusal (row 4b), the boundary payload sizes (row 6) and selective consumption (row 7).
 //
 // Every frame is built here, a few lines above the assertion that reads it, and every expectation is a
-// rule §4 states: the offsets of §4.1, the sizes of §4.2, the bodies of §7. The wire format's assumptions
+// rule §4 states: the offsets of §4.1, the sizes of §4.2, the payloads of §7. The wire format's assumptions
 // live in the spec, so a test names the rule it is checking and fails saying which one broke.
 //
 #include <gtest/gtest.h>
@@ -49,13 +49,13 @@ constexpr std::int32_t CONNECTION_ID = 42;
 constexpr std::int64_t SESSION_ID = 0x5EE51000LL;
 constexpr std::int64_t TIMESTAMP = 1700000000000LL;
 
-// ── Fixture: the frame shapes, built here ─────────────────────────────────────
+// ── Fixture: the frame messages, built here ───────────────────────────────────
 //
 // Every frame these tests read is encoded a few lines above the assertion that reads it. The rules they
-// check are §4.1's offsets, §4.2's sizes and §7's bodies — the spec states each one, so a test asserts
+// check are §4.1's offsets, §4.2's sizes and §7's payloads — the spec states each one, so a test asserts
 // it directly rather than against a stored copy of some earlier build's output.
 
-// One SequencedSystem frame. `fill` writes the body and returns its length.
+// One SequencedSystem frame. `fill` writes the payload and returns its length.
 template<typename Fill>
 std::vector<std::uint8_t> systemFrame(std::int64_t globalSeqNo, std::uint16_t systemEventType, Fill&& fill)
 {
@@ -216,7 +216,7 @@ TEST(Conformance, FrameSizesAreSection42sTable)
                   frm::Sequenced::payloadHeaderLength())
         << "sequenced, both families";
 
-    // A ClusterHeartbeat is a template of its own: no length prefix and no body at all.
+    // A ClusterHeartbeat is a template of its own: no length prefix and no payload at all.
     EXPECT_EQ(42U, synthesizedFrame<frm::ClusterHeartbeat>(1, protocol::CLUSTER_HEARTBEAT, [](auto&) {}).size())
         << "8 + 34, the cheapest frame in the system";
 
@@ -224,9 +224,9 @@ TEST(Conformance, FrameSizesAreSection42sTable)
     EXPECT_EQ(44U + protocol::MAX_PAYLOAD_LENGTH, payloadFrame(1, 2, protocol::MAX_PAYLOAD_LENGTH).size());
 }
 
-// ── Row 3. Every system shape decodes to what it was built with (§7) ──────────
+// ── Row 3. Every system message decodes to what it was built with (§7) ────────
 
-TEST(Conformance, EverySystemShapeNamesItsEventAndDecodesItsBody)
+TEST(Conformance, EverySystemMessageNamesItsEventAndDecodesItsBody)
 {
     const auto connected = systemFrame(1, protocol::CONNECTION_OPENED, [](char* body, std::size_t cap) {
         frm::ConnectionOpened encoder;
@@ -238,7 +238,7 @@ TEST(Conformance, EverySystemShapeNamesItsEventAndDecodesItsBody)
     ASSERT_TRUE(view.valid);
     EXPECT_TRUE(view.system);
     EXPECT_EQ(protocol::CONNECTION_OPENED, view.systemEventType);
-    EXPECT_EQ(0U, view.blockLength) << "a system body carries no declaration of its own (V-3)";
+    EXPECT_EQ(0U, view.blockLength) << "a system payload carries no declaration of its own (V-3)";
 
     const auto startedMarker = systemFrame(2, protocol::CLUSTER_STARTED, [](char* body, std::size_t cap) {
         frm::ClusterStarted encoder;
@@ -400,7 +400,7 @@ TEST_F(ConnectedSender, PublishPayloadAdmitsTheCeilingAndRefusesOneMore)
 
 TEST_F(ConnectedSender, PublishSystemRefusesABodyOverTheCeiling)
 {
-    // A system body carries no header of its own, so the ceiling is the prefix plus the data.
+    // A system payload carries no header of its own, so the ceiling is the prefix plus the data.
     const std::vector<char> overCeiling(
         protocol::MAX_PAYLOAD_LENGTH - frm::ConnectionOpened::connectionDataHeaderLength() + 1, 'x');
     EXPECT_EQ(protocol::Publish::Refused,
@@ -540,7 +540,7 @@ TEST(Conformance, TheBoundaryPayloadSizesCrossIntact)
 
 TEST(Conformance, UnknownPayloadsAndEventsAreReadableSoContinuityHolds)
 {
-    // globalSeqNo sits at 18 on all five sequenced shapes (F-3), so the continuity read is branch-free
+    // globalSeqNo sits at 18 on all five sequenced messages (F-3), so the continuity read is branch-free
     // over frames the consumer comprehends none of. Every one of these must come back valid: a frame
     // dropped here is a globalSeqNo missing from that read, which reads as a gap that is not there.
     std::vector<std::vector<std::uint8_t>> tap;

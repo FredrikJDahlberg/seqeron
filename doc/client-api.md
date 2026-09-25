@@ -100,7 +100,7 @@ This repository's own processes use ids 1–16, so an application's replicas sho
 C++ has the two extra callbacks because its receiver keeps the callback set `ClusterStreamClient` already
 had, so a consumer can swap one stream source for the other; the Java receiver is the only source there is
 and delivers both events through `onSequenced` like any other system frame. They carry a `LifecycleEvent` —
-the frame's identity and no body — so **`ConnectionOpened`'s `connectionData` is reachable in Java and not
+the frame's identity and no payload — so **`ConnectionOpened`'s `connectionData` is reachable in Java and not
 through the C++ receiver**. Leaving either one empty is a hole in `globalSeqNo` wherever a connection opens
 or closes, the same cost as leaving the leadership callback out.
 
@@ -116,11 +116,11 @@ views — carry one name per concept, so a field reads the same in either langua
 envelope; `sourceSessionId` and `clusterTimestampNs` say which session and which clock, and each names the
 wire field it reads (`header.sessionId`, `header.timestamp`) in its own doc comment. Split by
 family first (`isSystem()`), then dispatch on `(payloadId, templateId)` for an application frame or on
-`systemEventType` for a system one, never on `templateId` alone. To decode a system body:
+`systemEventType` for a system one, never on `templateId` alone. To decode a system payload:
 
 - C++: `decodeSystem<Decoder>(event)`, and `decodeSequenced<Decoder>(event)` for an application
   payload (`protocol/SequencedFrame.hpp`). `decodeSystem` takes the block length and version from the
-  decoder's own compiled constants for **every** system shape, so C++ has one rule where Java has two.
+  decoder's own compiled constants for **every** system payload, so C++ has one rule where Java has two.
 - Java: the nine system events a producer submits wrap with their decoder's own `BLOCK_LENGTH` and
   `SCHEMA_VERSION`, since the event's `blockLength()` is 0 for them. The three the sequencer synthesizes
   (`LeadershipChanged`, `ClusterHeartbeat`, `GatewayActive`) wrap with the event's `blockLength()` and
@@ -144,9 +144,9 @@ directly.
 | Class | Role |
 |---|---|
 | `ClusterStreamSender` | The cluster session. `connectColocated(aeron, memberId, …)` uses IPC ingress on the co-located member and falls back to UDP when that member is not leading; `connect(…)` uses UDP. Java: both take the UDP endpoint set — `PortLayout.ingressEndpoints()` is the default one — because the fallback and the reconnect both need it. C++: neither takes one; UDP dials member 0's ingress port on `localhost` (under `SEQERON_PORT_BASE`) and follows the cluster's redirect to the leader, so a C++ producer reaches only a cluster on its own host. `send` spins through back-pressure and elections. Call `keepAlive()` and `pollEgress()` every duty cycle. |
-| `IngressPublisher` | Encode and offer. Returns `protocol.Publish`: `Published`; `Refused` (above `MAX_PAYLOAD_LENGTH`, nothing offered, permanent); `Declined` (the transport's answer, worth retrying). Java: `publishPayload`/`publishSystem` on an instance, with the body pre-encoded. C++: free functions templated on the encoder, filled through a `Fill`. |
+| `IngressPublisher` | Encode and offer. Returns `protocol.Publish`: `Published`; `Refused` (above `MAX_PAYLOAD_LENGTH`, nothing offered, permanent); `Declined` (the transport's answer, worth retrying). Java: `publishPayload`/`publishSystem` on an instance, with the payload pre-encoded. C++: free functions templated on the encoder, filled through a `Fill`. |
 | `offerFrame` (C++) | Offers a frame the caller has already encoded, and is where both `publish*` functions end. Java's `publishPayload` takes payload bytes, so it carries any encoding; the C++ one is templated on an SBE encoder, and a payload with no schema at all (§13.2) is framed by the caller and offered here. It takes the same `IngressTracker`, so a hand-framed payload is confirmed like any other. |
-| `SystemFrame` (Java) | Wraps an encoded body in its envelope and returns the length; the offer is yours. `IngressPublisher` uses it; call it directly only to place frames yourself. |
+| `SystemFrame` (Java) | Wraps an encoded payload in its envelope and returns the length; the offer is yours. `IngressPublisher` uses it; call it directly only to place frames yourself. |
 | `PendingSends` | Confirmed ingress. A send that succeeds is not a frame sequenced, and a failover silently loses what the old leader had not committed. Give it to `IngressPublisher` as its tracker and to the sender with `setIngressHold`, feed it your own tap and each leadership term, and call `resendMissing`. Spec §16 A-4, A-5. |
 
 `IngressTracker` is the interface `PendingSends` implements, and `IngressSender` the one
@@ -158,7 +158,7 @@ The assembled duty cycle, one façade per kind of producer, over the pieces abov
 takes one of these writes its edge and its payloads, and nothing of the frame layer or of seqeron's
 system vocabulary appears in its code. Both languages have both façades, `app/Gateway.hpp` and
 `app/Application.hpp` in C++, with the same calls under the same names. The tables below use
-Java's shapes; C++ differs only here:
+Java's signatures; C++ differs only here:
 
 | | Java | C++ |
 |---|---|---|
@@ -252,7 +252,7 @@ twin is `seqeron-examples/src/cpp/GatewayApp.cpp`, a pair with one simulated con
 ### `Application`
 
 One replica of the producer kind nothing elects: one per node, named in the topology's `<applications>`
-section, publishing only while its own node leads. Same builder shape as `Gateway`, taking the
+section, publishing only while its own node leads. Same builder API as `Gateway`, taking the
 `sourceId` its row declares instead of a gateway name, and connecting over its own member's `aeron:ipc`
 while that member leads (`DEFAULT_IPC_CONNECT_TIMEOUT_MS`).
 
@@ -306,7 +306,7 @@ package-private in Java, the façades being the only thing that assembles them; 
 ## Wire codecs
 
 The generated SBE codecs for `sbe-frame.xml` (`org.limitless.seqeron.sbe.frame` in Java,
-`org_limitless_seqeron_sbe_frame` in C++) are API because the schema is. A producer encodes system bodies
+`org_limitless_seqeron_sbe_frame` in C++) are API because the schema is. A producer encodes system payloads
 with them and a consumer decodes them. They change only when the protocol does, and spec **V-3** governs
 how. The `sbe-replay.xml` codecs also ship, but only `ReplayerStreamReceiver` speaks that protocol.
 

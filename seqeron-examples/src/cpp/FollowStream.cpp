@@ -84,7 +84,7 @@ bool isOwnPing(const SequencedEvent& event)
     return sentNs == pingSentNs;
 }
 
-// This example's one connection, as a ConnectionOpened system event: a system body goes through
+// This example's one connection, as a ConnectionOpened system event: a system payload goes through
 // publishSystem, which `wrap`s the encoder rather than applying a header, because systemEventType names it.
 // Returns whether it was placed; a Declined is retried on the next duty cycle.
 bool announceConnection(client::ClusterStreamSender& sender)
@@ -105,7 +105,7 @@ void closeConnection(client::ClusterStreamSender& sender)
         sender, PING_SOURCE_ID, CONNECTION_ID, protocol::CONNECTION_CLOSED, [](frame_sbe::ConnectionClosed&) {});
 }
 
-// One ping at cluster ingress: the examples' own payloadId, and a body of eight raw bytes holding the
+// One ping at cluster ingress: the examples' own payloadId, and a payload of eight raw bytes holding the
 // clock reading it left on. Not SBE, and it need not be — the cluster tier decodes no payloadId at all, so
 // a payload is copied through unopened whatever it holds.
 //
@@ -159,8 +159,8 @@ bool inOrder(const std::int64_t globalSeqNo)
     return true;
 }
 
-// A system body decoded. The body carries no messageHeader, so the decoder supplies what one would have
-// said — and decodeSystem takes it from the decoder's own compiled constants for every system shape, where
+// A system payload decoded. The payload carries no messageHeader, so the decoder supplies what one would have
+// said — and decodeSystem takes it from the decoder's own compiled constants for every system payload, where
 // the Java twin has to tell the nine submitted events from the three synthesized ones. The two connection
 // events are not here: they have their own callbacks in this language.
 //
@@ -178,7 +178,7 @@ void printSystem(const SequencedEvent& event)
         }
         case protocol::GATEWAY_ACTIVE: {
             // Only after clusterctl load-topology: this frame is the cluster designating one gateway
-            // instance, and its gatewayId is in the body and nowhere else.
+            // instance, and its gatewayId is in the payload and nowhere else.
             auto decoder = protocol::decodeSystem<frame_sbe::GatewayActive>(event);
             std::printf("%lld GatewayActive gatewayId=%d\n", static_cast<long long>(event.globalSeqNo),
                         decoder.gatewayId());
@@ -215,7 +215,7 @@ void onSequenced(const SequencedEvent& event)
 }
 
 // The two connection events reach a C++ consumer here rather than through onSequenced, already decoded into
-// a LifecycleEvent — which carries the frame's identity and not its body, so the connectionData the Java twin
+// a LifecycleEvent — which carries the frame's identity and not its payload, so the connectionData the Java twin
 // prints off ConnectionOpened is not reachable through this receiver. A consumer that passes {} for these sees
 // a hole in globalSeqNo wherever a connection opens or closes.
 void onConnected(const protocol::LifecycleEvent& event)

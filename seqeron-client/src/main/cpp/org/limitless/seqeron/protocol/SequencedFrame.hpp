@@ -54,7 +54,7 @@ inline constexpr std::int64_t CLUSTER_HEARTBEAT_INTERVAL_NS = CLUSTER_HEARTBEAT_
 // The pinned 1408-byte MTU less the 92-byte ingress header stack.
 inline constexpr std::uint16_t MAX_PAYLOAD_LENGTH = 1316;
 
-// Smallest ingress frame of either family: the framing header, the header composite and the body's own
+// Smallest ingress frame of either family: the framing header, the header composite and the payload's own
 // 2-byte length prefix. Read off the codecs rather than written out, as the Java twin is, so a schema
 // change to the ingress framing moves both languages instead of stranding this one at the old number.
 inline constexpr std::uint16_t MIN_INGRESS_LENGTH = static_cast<std::uint16_t>(
@@ -66,7 +66,7 @@ inline constexpr std::uint16_t MAX_INGRESS_LENGTH = MIN_INGRESS_LENGTH + MAX_PAY
 
 // ── The systemEventType table (doc/seqeron-protocol-spec.md §7) ────────────────
 //
-// A submitted event's value is its body codec's template id. The three synthesized events have templates
+// A submitted event's value is its payload codec's template id. The three synthesized events have templates
 // of their own and stamp these values at offset 16 so that field discriminates every frame on the tap.
 // The Java twin is SystemFrame; keep the two in step.
 inline constexpr std::uint16_t CONNECTION_OPENED = sbe::frame::ConnectionOpened::sbeTemplateId();
@@ -122,9 +122,9 @@ constexpr std::int32_t ingressBlockLength(const std::uint16_t systemEventType)
 /**
  * Carries one message from the cluster stream.
  *
- * Every fragment on the tap is one of five shapes (doc/seqeron-protocol-spec.md §4), and the same
+ * Every fragment on the tap is one of five messages (doc/seqeron-protocol-spec.md §4), and the same
  * 2-byte field at offset 16 discriminates all of them: a `Sequenced` frame carries one opaque
- * application payload named by payloadId, the four system shapes carry seqeron's own vocabulary named
+ * application payload named by payloadId, the four system messages carry seqeron's own vocabulary named
  * by systemEventType. `system` says which. A consumer of an application frame dispatches on
  * (payloadId, templateId) — never templateId alone, which is unique per schema only.
  *
@@ -164,7 +164,7 @@ struct SequencedEvent
 struct FrameView
 {
     bool valid;  ///< false for a fragment that is not a frame, or too short to read
-    bool system; ///< true: one of the four system shapes; payloadId/templateId mean nothing
+    bool system; ///< true: one of the four system messages; payloadId/templateId mean nothing
     std::uint16_t payloadId;
     std::uint16_t systemEventType;
     std::int32_t sourceId;
@@ -178,14 +178,14 @@ struct FrameView
     std::uint16_t blockLength;
     std::uint16_t version;
     /// What a consumer decodes: the payload, its 8-byte messageHeader included, on an application
-    /// frame; the body on a submitted system frame; the frame's own block on one of the synthesized
+    /// frame; the payload on a submitted system frame; the frame's own block on one of the synthesized
     /// three.
     const char* payload;
     std::uint64_t payloadLength;
 };
 
 /**
- * Copies the identity every system shape carries; the two composites are the same 34 bytes.
+ * Copies the identity every system message carries; the two composites are the same 34 bytes.
  *
  * @param[out] view   the view to fill, marked as a system frame
  * @param header      the frame's system header, already wrapped
@@ -284,7 +284,7 @@ inline FrameView unwrapFrame(const char* const frame, const std::uint64_t length
         sbe::frame::SequencedSystem sequenced;
         sequenced.wrapForDecode(bytes, blockOffset, hdr.blockLength(), hdr.version(), length);
         readSystemHeader(view, sequenced.header());
-        // The body carries no messageHeader — systemEventType named it — so blockLength and version
+        // The payload carries no messageHeader — systemEventType named it — so blockLength and version
         // stay 0 and a consumer supplies its own decoder's compiled constants (§7, V-3).
         const std::uint64_t bodyLength = sequenced.bodyLength();
         if (sbe::frame::SequencedSystem::sbeBlockAndHeaderLength() + sbe::frame::SequencedSystem::bodyHeaderLength() +
@@ -310,7 +310,7 @@ inline FrameView unwrapFrame(const char* const frame, const std::uint64_t length
         sbe::frame::SequencedSystemHeader header;
         header.wrap(bytes, blockOffset, hdr.version(), length);
         readSystemHeader(view, header);
-        // No body: the fields are inline in the frame's own block, which a consumer wraps with its own
+        // No payload: the fields are inline in the frame's own block, which a consumer wraps with its own
         // compiled constants.
         view.payload = frame + blockOffset;
         view.payloadLength = length - blockOffset;
@@ -340,7 +340,7 @@ Decoder decodeSequenced(const char* payload, const std::uint64_t payloadLength, 
 
 /**
  * Wraps a system frame's message in its decoder. The message carries no framing, so block length and
- * version come from this build's decoder (§7, V-3). Serves both a submitted body and a synthesized
+ * version come from this build's decoder (§7, V-3). Serves both a submitted payload and a synthesized
  * template's inline block.
  *
  * @tparam Decoder      the decoder systemEventType names
@@ -442,7 +442,7 @@ inline SequencedEvent sequencedEventOf(const FrameView& view, const std::int64_t
 }
 
 /**
- * Fills a LifecycleEvent from an unwrapped ConnectionOpened/ConnectionClosed, which carries no body to
+ * Fills a LifecycleEvent from an unwrapped ConnectionOpened/ConnectionClosed, which carries no payload to
  * address.
  *
  * @param view          the unwrapped frame

@@ -34,7 +34,7 @@ inline std::string envString(const char* name, const std::string& fallback)
 }
 
 /**
- * Whether a variable is set and non-empty — the shape every SEQERON_* opt-in switch uses.
+ * Whether a variable is set and non-empty — the convention every SEQERON_* opt-in switch uses.
  *
  * @param name the variable to read
  */

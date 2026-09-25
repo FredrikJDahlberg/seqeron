@@ -27,7 +27,7 @@
     <types>
 
         <!-- SBE framing header required by all SBE codecs. A payload carries its own, unlike a system
-             body, whose systemEventType names it instead (spec §7). -->
+             payload, whose systemEventType names it instead (spec §7). -->
         <composite name="messageHeader">
             <type name="blockLength" primitiveType="uint16"/>
             <type name="templateId"  primitiveType="uint16"/>
@@ -49,7 +49,7 @@
                               matches its own submission on. filler sizes the frame, so a load run can
                               build an archive of a chosen byte size rather than of a chosen frame
                               count — replay-bench.sh reports MB/s and would otherwise measure a
-                              different shape of history than the order flood it replaced">
+                              different history than the order flood it replaced">
         <field name="seqNo"  id="1" type="uint64"
                description="Monotone per-submitter counter, from 1"/>
         <data  name="filler" id="2" type="varDataEncoding"

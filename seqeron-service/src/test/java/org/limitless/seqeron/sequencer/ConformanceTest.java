@@ -64,7 +64,7 @@ class ConformanceTest {
     /** A {@code gatewaySourceId} the list rows below claim. */
     private static final int LISTED_SOURCE_ID = 5;
 
-    /** Offset of the body's length prefix in an ingress frame: past the outer header and the composite. */
+    /** Offset of the payload's length prefix in an ingress frame: past the outer header and the composite. */
     private static final int PREFIX_OFFSET =
         MessageHeaderEncoder.ENCODED_LENGTH + UnsequencedHeaderDecoder.ENCODED_LENGTH;
     /** Offsets inside the outer {@code MessageHeader}. */
@@ -163,7 +163,7 @@ class ConformanceTest {
         assertEquals(44, MessageHeaderDecoder.ENCODED_LENGTH + SequencedHeaderDecoder.ENCODED_LENGTH +
                          SequencedDecoder.payloadHeaderLength(), "sequenced fixed overhead, both families");
 
-        // A ClusterHeartbeat is a template of its own: no length prefix and no body at all.
+        // A ClusterHeartbeat is a template of its own: no length prefix and no payload at all.
         assertEquals(42, tapSynthesized(1, ClusterHeartbeatDecoder.TEMPLATE_ID,
                                         SystemFrame.CLUSTER_HEARTBEAT).length,
                      "8 + 34, the cheapest frame in the system");
@@ -176,7 +176,7 @@ class ConformanceTest {
     // ── Row 3. System frames round-trip unchanged (§7) ───────────────────────────────────────────
 
     @Test
-    @DisplayName("row 3: each of the nine submitted events crosses with its body byte-identical")
+    @DisplayName("row 3: each of the nine submitted events crosses with its payload byte-identical")
     void submittedSystemEventsRoundTrip() {
         for (final Map.Entry<Integer, byte[]> event : submittedEvents().entrySet()) {
             final Sequencer target = new Sequencer();
@@ -200,7 +200,7 @@ class ConformanceTest {
             assertTrue(view.isSystem());
             assertEquals(systemEventType, view.systemEventType(), "systemEventType is copied verbatim");
             assertArrayEquals(body, copy(view.buffer(), view.payloadOffset(), view.payloadLength()),
-                              "the body crosses byte-identical");
+                              "the payload crosses byte-identical");
         }
     }
 
@@ -208,7 +208,7 @@ class ConformanceTest {
     @ValueSource(ints = {0, 7, 1314})
     @DisplayName("row 3: ConnectionOpened's connectionData crosses unchanged at every size §7.1 allows")
     void connectionOpenedCarriesAnyConnectionData(final int dataLength) {
-        // The body is the var-data prefix plus the data, so 1314 bytes of it fills MAX_PAYLOAD_LENGTH.
+        // The payload is the var-data prefix plus the data, so 1314 bytes of it fills MAX_PAYLOAD_LENGTH.
         final byte[] data = syntheticPayload(dataLength);
         final byte[] body = connectionOpenedBody(data);
         assertTrue(body.length <= FrameLayer.MAX_PAYLOAD_LENGTH);
@@ -226,7 +226,7 @@ class ConformanceTest {
     void synthesizedFramesCarryTheirOwnTemplates() {
         final int heartbeat = sequencer.clusterHeartbeat(TIMESTAMP);
         assertEquals(ClusterHeartbeatDecoder.TEMPLATE_ID, templateIdOf(heartbeat));
-        assertEquals(42, heartbeat, "no body at all — the cheapest frame in the system (§4.2)");
+        assertEquals(42, heartbeat, "no payload at all — the cheapest frame in the system (§4.2)");
         assertEquals(SystemFrame.CLUSTER_HEARTBEAT, wrapSequenced(heartbeat).systemEventType(),
                      "systemEventType is populated on a synthesized frame too, so offset 16 discriminates "
                      + "every frame on the tap");
@@ -343,7 +343,7 @@ class ConformanceTest {
     }
 
     @Test
-    @DisplayName("row 4 condition 9: a GatewayStarted body short of its compiled block length is refused")
+    @DisplayName("row 4 condition 9: a GatewayStarted payload short of its compiled block length is refused")
     void conditionNineBodyTooShort() {
         assertEquals(8, GatewayStartedEncoder.BLOCK_LENGTH);
         final int length = systemFrame(SystemFrame.GATEWAY_STARTED, SOURCE_ID, syntheticPayload(7));
@@ -412,7 +412,7 @@ class ConformanceTest {
         transport.offer(frame, again);
         assertEquals(2, transport.offers.size());
 
-        // The same holds for the system family, whose body is bounded by the same constant.
+        // The same holds for the system family, whose payload is bounded by the same constant.
         assertEquals(SystemFrame.REFUSED,
                      envelope.wrap(frame, SOURCE_ID, CONNECTION_ID, SESSION_ID, SystemFrame.CONNECTION_OPENED,
                                    payload, FrameLayer.MAX_PAYLOAD_LENGTH + 1));
@@ -472,7 +472,7 @@ class ConformanceTest {
     @Test
     @DisplayName("row 7: an unallocated payloadId and an unhandled systemEventType are skipped, in sequence")
     void selectiveConsumption() {
-        // A contiguous run over all five sequenced shapes: an application payload under a payloadId
+        // A contiguous run over all five sequenced messages: an application payload under a payloadId
         // nothing allocates, a submitted system event no consumer here handles, and the three synthesized.
         final List<byte[]> tap = new ArrayList<>();
         tap.add(tapPayloadFrame(1, 4095, syntheticPayload(8)));
@@ -482,7 +482,7 @@ class ConformanceTest {
         tap.add(tapSynthesized(5, GatewayActiveDecoder.TEMPLATE_ID, SystemFrame.GATEWAY_ACTIVE));
 
         // A consumer that recognises none of them still reads every one, and tracks continuity across all
-        // five: the read is branch-free because globalSeqNo sits at 18 on every sequenced shape (F-3).
+        // five: the read is branch-free because globalSeqNo sits at 18 on every sequenced message (F-3).
         long expected = 1;
         for (final byte[] frame : tap) {
             final SequencedFrameDecoder view = new SequencedFrameDecoder();
@@ -500,7 +500,7 @@ class ConformanceTest {
         assertEquals(0, view.templateId(), "no inner declaration, so nothing can dispatch on it (P-1)");
     }
 
-    /** One synthesized shape, built directly so its globalSeqNo is the fixture's rather than a sequencer's. */
+    /** One synthesized message, built directly so its globalSeqNo is the fixture's rather than a sequencer's. */
     private static byte[] tapSynthesized(final long globalSeqNo, final int templateId, final int systemEventType) {
         final MutableDirectBuffer frame = new ExpandableArrayBuffer(64);
         if (templateId == ClusterHeartbeatDecoder.TEMPLATE_ID) {
@@ -737,7 +737,7 @@ class ConformanceTest {
         return copy(frame, 0, MessageHeaderEncoder.ENCODED_LENGTH + encoder.encodedLength());
     }
 
-    /** The nine submitted events of §7, each with a well-formed body. */
+    /** The nine submitted events of §7, each with a well-formed payload. */
     private static Map<Integer, byte[]> submittedEvents() {
         final java.util.LinkedHashMap<Integer, byte[]> events = new java.util.LinkedHashMap<>();
         events.put(SystemFrame.CONNECTION_OPENED, connectionOpenedBody(new byte[0]));

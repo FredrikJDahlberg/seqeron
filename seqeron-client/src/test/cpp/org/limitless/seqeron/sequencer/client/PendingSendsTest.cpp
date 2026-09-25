@@ -1,4 +1,4 @@
-// Unit tests for counting a producer's own frames back off its tap. Frames are real ingress frames; each body
+// Unit tests for counting a producer's own frames back off its tap. Frames are real ingress frames; each payload
 // is one int, so a test names a frame by its number. Case for case with PendingSendsTest.java.
 
 #include <array>

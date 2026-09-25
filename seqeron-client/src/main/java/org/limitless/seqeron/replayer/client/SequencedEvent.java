@@ -60,7 +60,7 @@ public final class SequencedEvent {
         return frame.payloadId();
     }
 
-    /** True if this frame is one of §7's system shapes rather than an application payload. */
+    /** True if this frame is one of §7's system messages rather than an application payload. */
     public boolean isSystem() {
         return frame.isSystem();
     }
@@ -96,7 +96,7 @@ public final class SequencedEvent {
 
     /**
      * Offset within {@link #buffer()} of what a consumer decodes: the payload, its own 8-byte
-     * {@code MessageHeader} included, on an application frame; the body on a submitted system frame; the
+     * {@code MessageHeader} included, on an application frame; the payload on a submitted system frame; the
      * frame's own block on one of the synthesized three.
      */
     public int payloadOffset() {

@@ -202,7 +202,7 @@ class ReplayerRecovery
     void onFrame(char* const frame, const std::uint64_t length, const std::int64_t framePosition,
                  const std::int64_t receiveNs, const bool fromReplay)
     {
-        // The envelope is stripped once, here: both frame shapes carry globalSeqNo, at different offsets.
+        // The envelope is stripped once, here: both frame families carry globalSeqNo, at different offsets.
         const protocol::FrameView entry = protocol::unwrapFrame(frame, length);
         if (!entry.valid)
         {
@@ -649,7 +649,7 @@ class ReplayerRecovery
                 return;
             }
             // No lifecycle callback: the frame goes to onSequenced like any other rather than being
-            // dropped. A LifecycleEvent carries no body, so a consumer that needs ConnectionOpened's
+            // dropped. A LifecycleEvent carries no payload, so a consumer that needs ConnectionOpened's
             // connectionData — or that confirms its own ingress, which must see every frame it placed —
             // takes them there instead.
         }

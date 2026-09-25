@@ -148,9 +148,9 @@ template<typename Encoder, typename Fill>
  * @param sourceId        the producer's sourceId
  * @param connectionId    the connection the event concerns, or -1 for none
  * @param systemEventType the event, one a producer may submit
- * @param fill            called with the encoder to stamp the fields; the body has no messageHeader, so the
+ * @param fill            called with the encoder to stamp the fields; the payload has no messageHeader, so the
  *                        encoder was `wrap`ped rather than having one applied (V-3)
- * @return Published; Refused, permanently, for an illegal sourceId or event or a body of the wrong size;
+ * @return Published; Refused, permanently, for an illegal sourceId or event or a payload of the wrong size;
  *         Declined otherwise
  */
 template<typename Encoder, typename Fill>
@@ -196,7 +196,7 @@ template<typename Encoder, typename Fill>
  * @param connectionId    the connection the event concerns, or -1 for none
  * @param systemEventType the event, one a producer may submit
  * @param fill            called with the `wrap`ped encoder to stamp the fields
- * @return Published; Refused, permanently, for an illegal sourceId or event or a body of the wrong size;
+ * @return Published; Refused, permanently, for an illegal sourceId or event or a payload of the wrong size;
  *         Declined otherwise
  */
 template<typename Encoder, typename Fill>
