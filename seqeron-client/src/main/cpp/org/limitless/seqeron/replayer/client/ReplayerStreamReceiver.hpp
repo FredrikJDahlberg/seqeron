@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cstdint>
 #include <memory>
+#include <stdexcept>
 #include <string>
 
 #include "Aeron.h"
@@ -56,17 +57,18 @@ class ReplayerStreamReceiver final : private detail::ReplayerRecoveryActions
     using OnCaughtUp = detail::ReplayerRecovery::OnCaughtUp;
 
     /**
-     * Creates a receiver that has not started. A frame whose callback is empty is dropped, which leaves a
-     * hole in globalSeqNo.
+     * Creates a receiver that has not started. A frame whose own callback is empty reaches onSequenced
+     * instead.
      *
      * @param clientId            unique among the replicas on this node; two sharing one never catch up
-     * @param onSequenced         every other frame, application and system, in globalSeqNo order
+     * @param onSequenced         every other frame, application and system, in globalSeqNo order; required
      * @param onConnected         each ConnectionOpened
      * @param onDisconnected      each ConnectionClosed
      * @param onLeadershipChanged each LeadershipChanged
      * @param onCaughtUp          every transition to caught up, the first included
      * @param tapFaults           drops live tap frames on demand, for test harnesses only; the caller keeps it
      *                            alive
+     * @throws std::invalid_argument if onSequenced is empty
      */
     ReplayerStreamReceiver(std::int32_t clientId, OnSequenced onSequenced, OnConnected onConnected = {},
                            OnDisconnected onDisconnected = {}, OnLeadershipChanged onLeadershipChanged = {},
@@ -119,7 +121,8 @@ class ReplayerStreamReceiver final : private detail::ReplayerRecoveryActions
 
     // One duty-cycle iteration; returns fragments consumed. Drains control, rides an attached replay image,
     // and always drains and dispatches the tap: ReplayerRecovery's contiguity check decides what a tap frame
-    // is worth mid-walk.
+    // is worth mid-walk. Throws std::runtime_error once this node's Replayer reports another process using
+    // this clientId.
     int poll()
     {
         resolveResources();
@@ -128,6 +131,11 @@ class ReplayerStreamReceiver final : private detail::ReplayerRecoveryActions
         if (m_controlSub)
         {
             work += m_controlSub->poll(m_controlPoll, FRAGMENT_LIMIT);
+        }
+        if (m_recovery.isClientIdInUse())
+        {
+            throw std::runtime_error("[ReplayerStreamReceiver] clientId " + std::to_string(m_clientId) +
+                                     " is in use by another process on this node");
         }
 
         // The request publication's connect is a short race, so retry every poll while it is pending.

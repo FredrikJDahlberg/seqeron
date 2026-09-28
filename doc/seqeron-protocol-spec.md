@@ -500,7 +500,7 @@ frame at the same `globalSeqNo`.
 | file | schema id | contains | change policy (§11) |
 | --- | --- | --- | --- |
 | `sbe-frame.xml` | 210 | the seven top-level templates, the four header composites, `messageHeader`, `varDataEncoding`, and the nine submitted system payloads | envelopes frozen; system events changeable under **V-3** |
-| `sbe-replay.xml` | 212 | the six replay control messages (§10) | changed in place, no version bump |
+| `sbe-replay.xml` | 212 | the seven replay control messages (§10) | changed in place, no version bump |
 
 The envelopes and system messages are one schema because they have one owner, ship in one artifact and
 follow the same change rule. `version` stays 0 for the life of schema 210, including system message
@@ -629,7 +629,7 @@ counts frames from non-conforming producers.
 
 ## 10. Replay control protocol
 
-Six messages between a node's replayer and its co-located clients, on streams 202 and 203. They carry
+Seven messages between a node's replayer and its co-located clients, on streams 202 and 203. They carry
 no header composite and are never sequenced or recorded.
 
 | message (id) | direction | meaning |
@@ -640,6 +640,7 @@ no header composite and are never sequenced or recorded.
 | `ReplayComplete` (9) | client → replayer | caught up; free the slot now instead of at the idle timeout |
 | `ReplayHeartbeat` (20) | client → replayer | still replaying; sent about every 500 ms to keep the slot |
 | `ReplayUnavailable` (21) | replayer → client | this node cannot serve history for the replayer's lifetime (unlike `ReplayPending`, not transient) |
+| `ReplayClientIdInUse` (22) | replayer → client | two processes on this node are requesting under this `clientId` |
 
 - **R-1.** `requestId` identifies the current request. The client increments it on every send,
   including an unchanged resend, and the replayer echoes it. A client MUST ignore a reply whose
@@ -650,6 +651,11 @@ no header composite and are never sequenced or recorded.
   every request and may drop a stale span. A client MUST remember the `recordingId` it last received for
   its current index and, on a mismatch, restart the walk from segment 0.
 - **R-4.** The slot timeout is an idle timeout, reset by `ReplayHeartbeat`. A replay has no time limit.
+- **R-5.** `clientId` is unique among a replayer's clients. Two processes sharing one supersede each
+  other's replays, and neither catches up. The replayer detects this from `requestId` stepping backwards
+  (at least three steps within 10 s; a restart is one) and sends `ReplayClientIdInUse` to the id, at most
+  once per 10 s window. It cannot tell the two apart, so both receive it, and a client that receives it for
+  its own `clientId` MUST stop rather than hold.
 
 The client detects completion by reaching `catchUpPosition`, not by the replay image closing: a
 bounded replay of an active recording does not close its image at the bound.
@@ -670,11 +676,13 @@ encoded length is 8 + block. None has var-data or repeating groups.
 | `ReplayComplete` | 9 | 4 | `clientId` int32 |
 | `ReplayHeartbeat` | 20 | 4 | `clientId` int32 |
 | `ReplayUnavailable` | 21 | 12 | `clientId` int32, `requestId` int64 |
+| `ReplayClientIdInUse` | 22 | 4 | `clientId` int32 |
 
 - `clientId`: identifies the client on the shared control stream. It does not match a reply to a
   request; `requestId` does (**R-1**).
 - `requestId`: echoed in `Replaying`, `ReplayPending` and `ReplayUnavailable`. `ReplayComplete` and
-  `ReplayHeartbeat` have none, because nothing answers them.
+  `ReplayHeartbeat` have none, because nothing answers them, and `ReplayClientIdInUse` has none because
+  it concerns the id, not a request.
 - `segmentIndex`, `fromPosition`: as in `ReplayRequest` above; `fromPosition` is read only when
   `segmentIndex < 0`.
 - `replaySessionId`: the Aeron replay session to attach to on stream 201, or `NO_REPLAY_NEEDED` = −1

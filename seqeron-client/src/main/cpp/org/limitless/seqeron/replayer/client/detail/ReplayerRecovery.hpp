@@ -8,6 +8,7 @@
 #include <cstring>
 #include <deque>
 #include <functional>
+#include <stdexcept>
 #include <vector>
 
 #include "org/limitless/seqeron/protocol/ReplayProtocol.hpp"
@@ -17,6 +18,7 @@
 // Replay-protocol control codecs (sbe-replay.xml) + LeadershipChanged (core, sbe-frame.xml)
 #include "org_limitless_seqeron_sbe_frame/LeadershipChanged.h"
 #include "org_limitless_seqeron_sbe_replay/MessageHeader.h"
+#include "org_limitless_seqeron_sbe_replay/ReplayClientIdInUse.h"
 #include "org_limitless_seqeron_sbe_replay/ReplayPending.h"
 #include "org_limitless_seqeron_sbe_replay/ReplayUnavailable.h"
 #include "org_limitless_seqeron_sbe_replay/Replaying.h"
@@ -146,6 +148,7 @@ class ReplayerRecovery
     std::int64_t m_lastReplayPosition = -1;  // last replay-image position seen; -1 = not attached yet
     std::int64_t m_lastReplayProgressMs = 0; // when it last changed — the stall watchdog's clock
     bool m_replayerUnavailable = false;
+    bool m_clientIdInUse = false;
 
     std::int64_t m_lastGlobalSeqNo = 0;            // highest globalSeqNo delivered; 0 = none yet
     std::int64_t m_lastFramePosition = 0;          // where that frame starts in the recording; requestResume's anchor
@@ -179,7 +182,12 @@ class ReplayerRecovery
       m_onDisconnected(std::move(onDisconnected)),
       m_onLeadershipChanged(std::move(onLeadershipChanged)),
       m_onCaughtUp(std::move(onCaughtUp))
-    {}
+    {
+        if (!m_onSequenced)
+        {
+            throw std::invalid_argument("[ReplayerRecovery] onSequenced is required");
+        }
+    }
 
     // Owns its retained blocks, and is referenced by the actions it calls back into.
     ReplayerRecovery(const ReplayerRecovery&) = delete;
@@ -276,7 +284,8 @@ class ReplayerRecovery
         drainRetained();
     }
 
-    // One message off the Replayer's control stream (Replaying / ReplayPending / ReplayUnavailable).
+    // One message off the Replayer's control stream (Replaying / ReplayPending / ReplayUnavailable /
+    // ReplayClientIdInUse).
     void onControl(char* const message, const std::uint64_t length)
     {
         if (length < sbe::replay::MessageHeader::encodedLength())
@@ -317,6 +326,22 @@ class ReplayerRecovery
                 onReplayUnavailable();
             }
         }
+        else if (mh.templateId() == sbe::replay::ReplayClientIdInUse::sbeTemplateId())
+        {
+            sbe::replay::ReplayClientIdInUse replayClientIdInUse;
+            replayClientIdInUse.wrapForDecode(message, bodyOff, mh.blockLength(), mh.version(), length);
+            if (replayClientIdInUse.clientId() == m_clientId)
+            {
+                onClientIdInUse();
+            }
+        }
+    }
+
+    // Whether this node's Replayer has seen another process requesting under this client's id. Latched: the
+    // receiver raises it from its duty cycle, since a throw from inside a fragment handler is swallowed.
+    bool isClientIdInUse() const
+    {
+        return m_clientIdInUse;
     }
 
     void onReplayPosition(const std::int64_t position)
@@ -569,6 +594,18 @@ class ReplayerRecovery
         }
     }
 
+    void onClientIdInUse()
+    {
+        if (!m_clientIdInUse)
+        {
+            m_clientIdInUse = true;
+            util::Logger::fault(util::component::ReplayerStreamReceiver, util::eventCode::ReplayClientIdCollision,
+                                "this node's Replayer reports another process requesting under clientId=%d — "
+                                "neither can catch up; give each replica on the node its own id",
+                                m_clientId);
+        }
+    }
+
     void onReplayUnavailable()
     {
         if (!m_replayerUnavailable)
@@ -663,13 +700,10 @@ class ReplayerRecovery
             if (m_onLeadershipChanged)
             {
                 m_onLeadershipChanged(m_currentLeaderMemberId, leadershipChanged.leadershipTermId(), sequenceNumber);
+                return;
             }
-            return;
         }
-        if (m_onSequenced)
-        {
-            m_onSequenced(protocol::sequencedEventOf(view, receiveNs, framePosition));
-        }
+        m_onSequenced(protocol::sequencedEventOf(view, receiveNs, framePosition));
     }
 
     void retainFrame(const std::int64_t sequenceNumber, const char* const frame, const std::uint64_t len,

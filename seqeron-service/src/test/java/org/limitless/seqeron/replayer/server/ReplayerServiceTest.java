@@ -22,6 +22,7 @@ import org.limitless.seqeron.protocol.ReplayProtocol;
 import org.limitless.seqeron.protocol.SeqeronCounters;
 import org.limitless.seqeron.sbe.replay.MessageHeaderDecoder;
 import org.limitless.seqeron.sbe.replay.MessageHeaderEncoder;
+import org.limitless.seqeron.sbe.replay.ReplayClientIdInUseDecoder;
 import org.limitless.seqeron.sbe.replay.ReplayCompleteEncoder;
 import org.limitless.seqeron.sbe.replay.ReplayHeartbeatEncoder;
 import org.limitless.seqeron.sbe.replay.ReplayPendingDecoder;
@@ -44,6 +45,7 @@ import org.limitless.seqeron.util.Logger;
 class ReplayerServiceTest {
     private static final int MEMBER_ID = 0;
     private static final int CLIENT = 7;
+    private static final int OTHER_CLIENT = 8;
     private static final int RESUME = -1; // ReplayRequest.segmentIndex < 0 — resume, not a walk step
 
     /** One decoded control reply. {@code recordingId}/{@code catchUpPosition} are unset on non-Replaying replies. */
@@ -629,6 +631,21 @@ class ReplayerServiceTest {
         assertTrue(loggedOnce(Logger.CoreEventCode.ReplayClientIdCollision));
     }
 
+    @Test
+    void bothAppsSharingAClientIdAreToldOnce() {
+        fakeReplayer.addRecording(6, 0, true, 4096);
+        makeReady();
+
+        request(OTHER_CLIENT, 1, 0, 0);
+        request(CLIENT, 9, 0, 0);
+        request(CLIENT, 8, 0, 0);
+        request(CLIENT, 7, 0, 0);
+        request(CLIENT, 6, 0, 0);
+        request(CLIENT, 5, 0, 0);
+
+        assertEquals(List.of(CLIENT), clientIdInUseNotices(), "one notice, to the shared id alone");
+    }
+
     // ── Fixtures and helpers ────────────────────────────────────────────────────
 
     /**
@@ -687,6 +704,22 @@ class ReplayerServiceTest {
         final ReplayUnavailableDecoder decoder = new ReplayUnavailableDecoder();
         decoder.wrap(buffer, offset, header.blockLength(), header.version());
         return new Reply(header.templateId(), decoder.clientId(), decoder.requestId(), 0, 0, 0);
+    }
+
+    /** The clientId of every {@code ReplayClientIdInUse} sent, in order. */
+    private List<Integer> clientIdInUseNotices() {
+        final List<Integer> clientIds = new ArrayList<>();
+        final MessageHeaderDecoder header = new MessageHeaderDecoder();
+        final ReplayClientIdInUseDecoder decoder = new ReplayClientIdInUseDecoder();
+        for (final byte[] reply : fakeReplayer.controlReplies()) {
+            final UnsafeBuffer buffer = new UnsafeBuffer(reply);
+            header.wrap(buffer, 0);
+            if (header.templateId() == ReplayClientIdInUseDecoder.TEMPLATE_ID) {
+                decoder.wrap(buffer, MessageHeaderDecoder.ENCODED_LENGTH, header.blockLength(), header.version());
+                clientIds.add(decoder.clientId());
+            }
+        }
+        return clientIds;
     }
 
     /** The most recent replay served to an app, ignoring the startup self-check's own. */

@@ -14,6 +14,7 @@
 // seqeron-service/src/test/scripts/gap-recovery-test.sh.
 
 #include <cstdint>
+#include <stdexcept>
 #include <string>
 #include <type_traits>
 #include <vector>
@@ -24,8 +25,10 @@
 #include "org/limitless/seqeron/replayer/client/detail/ReplayerRecovery.hpp"
 #include "org/limitless/seqeron/util/Logger.hpp"
 #include "org_limitless_seqeron_sbe_frame/ClusterHeartbeat.h"
+#include "org_limitless_seqeron_sbe_frame/LeadershipChanged.h"
 #include "org_limitless_seqeron_sbe_frame/MessageHeader.h"
 #include "org_limitless_seqeron_sbe_frame/Sequenced.h"
+#include "org_limitless_seqeron_sbe_replay/ReplayClientIdInUse.h"
 #include "org_limitless_seqeron_sbe_replay/ReplayPending.h"
 #include "org_limitless_seqeron_sbe_replay/ReplayUnavailable.h"
 #include "org_limitless_seqeron_sbe_replay/Replaying.h"
@@ -1544,6 +1547,121 @@ TEST(ReplayerRecoveryConvergence, ALaterEpisodeIsReportedAgainRatherThanSwallowe
     EXPECT_FALSE(checkProgressAt(client, PAST_DEADLINE_MS + 30'000)) << "rather than inheriting the old clock";
     EXPECT_TRUE(checkProgressAt(client, PAST_DEADLINE_MS + 31'000)) << "a second, distinct episode reports too";
     EXPECT_EQ(2u, sink.events.size());
+}
+
+// ── Delivery ─────────────────────────────────────────────────────────────────────────────────────
+
+std::vector<std::uint8_t> encodeLeadershipChanged(const std::int64_t globalSeqNo)
+{
+    std::vector<std::uint8_t> buf(256, 0);
+    frm::LeadershipChanged frame;
+    frame.wrapAndApplyHeader(reinterpret_cast<char*>(buf.data()), 0, buf.size());
+    frame.header()
+        .sourceId(-1)
+        .connectionId(-1)
+        .sessionId(-1)
+        .systemEventType(protocol::LEADERSHIP_CHANGED)
+        .globalSeqNo(globalSeqNo)
+        .timestamp(globalSeqNo * 1000);
+    frame.newLeaderMemberId(2).leadershipTermId(3);
+    buf.resize(frm::MessageHeader::encodedLength() + frame.encodedLength());
+    return buf;
+}
+
+void deliverLeadershipChanged(ReplayerRecovery& recovery, const std::int64_t globalSeqNo)
+{
+    auto buf = encodeLeadershipChanged(globalSeqNo);
+    recovery.onFrame(reinterpret_cast<char*>(buf.data()), buf.size(), globalSeqNo * 1024, /*receiveNs=*/0,
+                     /*fromReplay=*/false);
+}
+
+TEST(ReplayerRecoveryDelivery, ALeadershipChangeReachesOnSequencedWhenNoLeadershipCallbackIsGiven)
+{
+    std::vector<std::int64_t> dispatched;
+    Client client{ [&dispatched](const SequencedEvent& event) { dispatched.push_back(event.globalSeqNo); } };
+    deliverLeadershipChanged(client.recovery, 1);
+
+    EXPECT_EQ((std::vector<std::int64_t>{ 1 }), dispatched) << "dropped rather than delivered";
+}
+
+// A bare ReplayerRecoveryActions: this case needs the leadership callback the Client fixture leaves empty.
+struct NoActions final : ReplayerRecoveryActions
+{
+    void sendReplayRequest(std::int64_t, std::int32_t, std::int64_t) override
+    {}
+    bool sendReplayComplete() override
+    {
+        return false;
+    }
+    bool sendReplayHeartbeat() override
+    {
+        return false;
+    }
+    void openReplay(std::int64_t) override
+    {}
+    void closeReplay() override
+    {}
+    void recoveryStalled(bool) override
+    {}
+    std::int64_t nowMs() override
+    {
+        return CLOCK_MS;
+    }
+};
+
+TEST(ReplayerRecoveryDelivery, ALeadershipChangeWithACallbackGoesToItAlone)
+{
+    std::vector<std::int64_t> dispatched;
+    std::vector<std::int64_t> changes;
+    NoActions actions;
+    ReplayerRecovery recovery{ CLIENT_ID,
+                               actions,
+                               [&dispatched](const SequencedEvent& event) { dispatched.push_back(event.globalSeqNo); },
+                               {},
+                               {},
+                               [&changes](std::int32_t, std::int64_t, std::int64_t globalSeqNo) {
+                                   changes.push_back(globalSeqNo); } };
+    deliverLeadershipChanged(recovery, 1);
+
+    EXPECT_EQ((std::vector<std::int64_t>{ 1 }), changes);
+    EXPECT_TRUE(dispatched.empty()) << "delivered twice";
+}
+
+TEST(ReplayerRecoveryDelivery, OnSequencedIsRequired)
+{
+    NoActions actions;
+    EXPECT_THROW(ReplayerRecovery(CLIENT_ID, actions, {}), std::invalid_argument);
+}
+
+// ── Client id in use ─────────────────────────────────────────────────────────────────────────────
+
+void deliverClientIdInUse(Client& client, const std::int32_t clientId)
+{
+    std::vector<std::uint8_t> buf(64, 0);
+    rpl::ReplayClientIdInUse notice;
+    notice.wrapAndApplyHeader(reinterpret_cast<char*>(buf.data()), 0, buf.size()).clientId(clientId);
+    client.recovery.onControl(reinterpret_cast<char*>(buf.data()),
+                              rpl::MessageHeader::encodedLength() + notice.encodedLength());
+}
+
+TEST(ReplayerRecoveryClientIdInUse, ANoticeForThisClientLatchesAndIsReportedOnce)
+{
+    ScopedLoggerSink sink;
+    Client client{ [](const SequencedEvent&) {} };
+    deliverClientIdInUse(client, CLIENT_ID);
+    deliverClientIdInUse(client, CLIENT_ID);
+
+    EXPECT_TRUE(client.recovery.isClientIdInUse());
+    ASSERT_EQ(1u, sink.events.size());
+    EXPECT_EQ(diag::eventCode::ReplayClientIdCollision, sink.events[0].code);
+}
+
+TEST(ReplayerRecoveryClientIdInUse, ANoticeForAnotherClientIsIgnored)
+{
+    Client client{ [](const SequencedEvent&) {} };
+    deliverClientIdInUse(client, CLIENT_ID + 1);
+
+    EXPECT_FALSE(client.recovery.isClientIdInUse());
 }
 
 // A lifecycle frame reaches onSequenced when no lifecycle callback was given. This side alone has the

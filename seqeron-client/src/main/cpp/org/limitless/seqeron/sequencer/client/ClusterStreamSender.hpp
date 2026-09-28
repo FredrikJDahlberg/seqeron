@@ -7,7 +7,8 @@
 // (detail/Transport.hpp), so a test drives it with in-memory fakes; connect(aeron) acquires the Aeron
 // resources and delegates to the transport-agnostic connect(). On REDIRECT or NewLeaderEvent it resolves
 // the leader's endpoint from the wire's "memberId=host:port,..." CSV and swaps its ingress publication;
-// the session id is unchanged.
+// the session id is unchanged. The first dial goes to every member of the configured set at once, and the
+// first to answer takes the handshake: a follower redirects to the leader.
 // Reconnection needs a real Aeron client, so the test seam leaves it disabled.
 
 #include <array>
@@ -24,6 +25,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <vector>
 
 #include "Aeron.h"
 #include "FragmentAssembler.h"
@@ -44,10 +46,7 @@
 namespace org::limitless::seqeron::sequencer::client {
 
 // ── Constants — cluster channels, stream ids and client protocol semver, per io.aeron.cluster.codecs
-//    and AeronCluster.Configuration. Ports come from PortLayout.hpp. Member 0's ingress endpoint is only
-//    a non-colocated client's first guess; the wire CSV names the real leader afterwards. ────
-inline const std::string CLUSTER_INGRESS_ENDPOINT = "localhost:" + std::to_string(protocol::clusterIngressPort(0));
-inline const std::string CLUSTER_INGRESS_CHANNEL = protocol::udpChannel(CLUSTER_INGRESS_ENDPOINT);
+//    and AeronCluster.Configuration. ────
 inline constexpr const char* CLUSTER_INGRESS_CHANNEL_IPC = "aeron:ipc";
 inline constexpr std::int32_t CLUSTER_INGRESS_STREAM_ID = 101;
 inline constexpr std::int32_t CLUSTER_EGRESS_STREAM_ID = 102;
@@ -59,18 +58,6 @@ inline std::int64_t nowMs()
 {
     return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
         .count();
-}
-
-/**
- * Builds a member's ingress endpoint, for SessionEvent(OK), which names the leader but carries no CSV.
- * Assumes a single host, as PortLayout does.
- *
- * @param memberId the member
- * @return its endpoint, "localhost:port"
- */
-inline std::string memberIngressEndpoint(const std::int32_t memberId)
-{
-    return "localhost:" + std::to_string(protocol::clusterIngressPort(memberId));
 }
 
 /**
@@ -113,6 +100,42 @@ inline bool findIngressEndpoint(std::string_view endpoints, std::int32_t memberI
     return false;
 }
 
+/**
+ * Lists the endpoints of an ingress-endpoint CSV, in order.
+ *
+ * @param endpoints "memberId=host:port,memberId=host:port,..."
+ * @return each entry's "host:port"
+ * @throws std::invalid_argument if an entry has no memberId, or there are none
+ */
+inline std::vector<std::string> ingressEndpointList(std::string_view endpoints)
+{
+    std::vector<std::string> list;
+    std::size_t start = 0;
+    while (start < endpoints.size())
+    {
+        const std::size_t comma = endpoints.find(',', start);
+        const std::string_view entry =
+            endpoints.substr(start, comma == std::string_view::npos ? std::string_view::npos : comma - start);
+        const std::size_t eq = entry.find('=');
+        if (eq == std::string_view::npos || eq == 0 || eq + 1 == entry.size())
+        {
+            throw std::invalid_argument("[ClusterStreamSender] ingress endpoint '" + std::string{ entry } +
+                                        "' is not memberId=host:port");
+        }
+        list.emplace_back(entry.substr(eq + 1));
+        if (comma == std::string_view::npos)
+        {
+            break;
+        }
+        start = comma + 1;
+    }
+    if (list.empty())
+    {
+        throw std::invalid_argument("[ClusterStreamSender] no ingress endpoints");
+    }
+    return list;
+}
+
 // ── ClusterStreamSender ──────────────────────────────────────────────────────
 
 // Manages the Aeron Cluster session and sends pre-encoded frames to the cluster ingress. Each frame
@@ -126,21 +149,22 @@ class ClusterStreamSender
      * Opens a cluster session over UDP ingress: acquires the ingress publication and egress subscription,
      * then runs the handshake. Blocks until the session opens.
      *
-     * @param aeron         the client to build publications on; storing it is what enables reconnection on
-     *                      REDIRECT/NewLeaderEvent
-     * @param egressChannel this client's own egress channel, the responseChannel the cluster answers on
+     * @param aeron            the client to build publications on; storing it is what enables reconnection
+     *                         on REDIRECT/NewLeaderEvent
+     * @param egressChannel    this client's own egress channel, the responseChannel the cluster answers on
+     * @param ingressEndpoints the members to reach, "memberId=host:port,..."
      * @throws std::runtime_error if no session opens within the connect timeout
+     * @throws std::invalid_argument if ingressEndpoints is malformed
      */
-    void connect(std::shared_ptr<aeron::Aeron> aeron, const std::string& egressChannel)
+    void connect(std::shared_ptr<aeron::Aeron> aeron, const std::string& egressChannel,
+                 const std::string& ingressEndpoints = protocol::ingressEndpointsCsv())
     {
         m_aeron = std::move(aeron);
-        m_ingressEndpoint = CLUSTER_INGRESS_ENDPOINT;
+        m_ingressEndpoints = ingressEndpoints;
         m_egressChannel = egressChannel;
 
         auto egress = std::make_unique<detail::AeronEgressTransport>(awaitEgressSubscription());
-        connect(std::make_unique<detail::AeronIngressTransport>(
-                    createIngressPublication(m_ingressEndpoint, m_connectTimeoutMs)),
-                std::move(egress), m_egressChannel);
+        connect(dialIngress(), std::move(egress), m_egressChannel);
     }
 
     /**
@@ -154,12 +178,17 @@ class ClusterStreamSender
      * @param ipcConnectTimeoutMs how long to wait for IPC ingress before falling back to UDP
      * @param egressChannel       this client's own egress channel; a distinct UDP endpoint per co-located
      *                            client, since two drivers on one host cannot both bind one port
+     * @param ingressEndpoints    the members to reach over UDP, "memberId=host:port,..."
      * @throws std::runtime_error if no session opens over either ingress
+     * @throws std::invalid_argument if ingressEndpoints is malformed
      */
     void connectColocated(std::shared_ptr<aeron::Aeron> aeron, std::int32_t memberId, std::int64_t ipcConnectTimeoutMs,
-                          const std::string& egressChannel)
+                          const std::string& egressChannel,
+                          const std::string& ingressEndpoints = protocol::ingressEndpointsCsv())
     {
+        ingressEndpointList(ingressEndpoints); // refuse a malformed set before the IPC attempt, not after it
         m_aeron = std::move(aeron);
+        m_ingressEndpoints = ingressEndpoints;
         m_coLocatedMemberId = memberId;
         m_ipcConnectTimeoutMs = ipcConnectTimeoutMs;
         // Must be a distinct UDP endpoint per co-located client: two drivers on one host cannot both
@@ -183,13 +212,8 @@ class ClusterStreamSender
         }
 
         connectColocated(
-            std::move(primary),
-            [this] {
-                m_ingressEndpoint = CLUSTER_INGRESS_ENDPOINT;
-                return std::make_unique<detail::AeronIngressTransport>(
-                    createIngressPublication(m_ingressEndpoint, m_connectTimeoutMs));
-            },
-            std::move(egress), ipcConnectTimeoutMs, primaryFailureReason.c_str(), memberId);
+            std::move(primary), [this] { return dialIngress(); }, std::move(egress), ipcConnectTimeoutMs,
+            primaryFailureReason.c_str(), memberId);
     }
 
     /**
@@ -663,7 +687,15 @@ class ClusterStreamSender
         {
             return;
         }
-        const std::string endpoint = memberIngressEndpoint(leaderMemberId);
+        // An OK carries no endpoint CSV, so the leader is looked up in the set this client was given.
+        std::string endpoint;
+        if (!findIngressEndpoint(m_ingressEndpoints, leaderMemberId, endpoint))
+        {
+            util::Logger::error(util::component::Cluster, util::eventCode::ClusterRedirectUnresolved,
+                                "Session opened through non-leader ingress %s — leader member=%d is not in \"%s\"",
+                                m_ingressEndpoint.c_str(), leaderMemberId, m_ingressEndpoints.c_str());
+            return;
+        }
         if (endpoint == m_ingressEndpoint)
         {
             return;
@@ -778,6 +810,76 @@ class ClusterStreamSender
         return pub;
     }
 
+    // A UDP ingress publication to every member of m_ingressEndpoints at once, keeping the first to connect:
+    // any member answers a SessionConnectRequest, a follower with a REDIRECT, so the first live one will do.
+    std::unique_ptr<detail::IngressTransport> dialIngress()
+    {
+        struct Dial
+        {
+            std::string endpoint;
+            std::int64_t registrationId;
+            std::shared_ptr<aeron::Publication> publication;
+            bool resolved = false;
+        };
+        std::vector<Dial> dials;
+        for (std::string& endpoint : ingressEndpointList(m_ingressEndpoints))
+        {
+            const std::int64_t registrationId =
+                m_aeron->addPublication(protocol::udpChannel(endpoint), CLUSTER_INGRESS_STREAM_ID);
+            dials.push_back(Dial{ .endpoint = std::move(endpoint), .registrationId = registrationId });
+        }
+        // A driver error (an unresolvable host, say) leaves that one member out rather than failing the dial.
+        const auto resolve = [this](Dial& dial) {
+            try
+            {
+                dial.publication = m_aeron->findPublication(dial.registrationId);
+                dial.resolved = dial.publication != nullptr;
+            }
+            catch (const std::exception& ex)
+            {
+                dial.resolved = true;
+                util::Logger::error(util::component::Cluster, util::eventCode::ClusterRedirectUnresolved,
+                                    "Could not build ingress publication to %s (%s)", dial.endpoint.c_str(), ex.what());
+            }
+        };
+
+        std::shared_ptr<aeron::Publication> chosen;
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(m_connectTimeoutMs);
+        while (!chosen && std::chrono::steady_clock::now() < deadline)
+        {
+            for (Dial& dial : dials)
+            {
+                if (!dial.resolved)
+                {
+                    resolve(dial);
+                }
+                if (dial.publication && dial.publication->isConnected())
+                {
+                    chosen = std::move(dial.publication);
+                    m_ingressEndpoint = dial.endpoint;
+                    break;
+                }
+            }
+            m_idleStrategy.idle();
+        }
+        // A registration never found stays with the driver, so every one is resolved; the unchosen close as
+        // dials goes out of scope.
+        for (Dial& dial : dials)
+        {
+            while (!dial.resolved)
+            {
+                resolve(dial);
+                m_idleStrategy.idle();
+            }
+        }
+        if (!chosen)
+        {
+            throw std::runtime_error("[ClusterStreamSender] Timed out connecting ingress publication to any of " +
+                                     m_ingressEndpoints);
+        }
+        return std::make_unique<detail::AeronIngressTransport>(std::move(chosen));
+    }
+
     // The cluster ingress at `endpoint` ("host:port").
     std::shared_ptr<aeron::Publication> createIngressPublication(const std::string& endpoint, std::int64_t timeoutMs)
     {
@@ -792,6 +894,7 @@ class ClusterStreamSender
     }
 
     std::shared_ptr<aeron::Aeron> m_aeron;
+    std::string m_ingressEndpoints; // "memberId=host:port,...", as given to connect/connectColocated
     std::string m_ingressEndpoint;
     std::int32_t m_coLocatedMemberId = -1;
     std::int64_t m_ipcConnectTimeoutMs = 1500;

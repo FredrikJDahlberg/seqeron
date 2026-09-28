@@ -367,7 +367,7 @@ covers all of them:
   nine submitted **system** payloads (the connection lifecycle events, the cluster markers, the gateway
   list/election frames, `GatewayActivationRequested`, `ApplicationRegistered`). No system message carries
   a `header` field — the frame's is the only one. Seqeron's own, and the only thing this tier decodes.
-- `sbe-replay.xml` (schema 212) — the six **replay control** messages, node-local between a
+- `sbe-replay.xml` (schema 212) — the seven **replay control** messages, node-local between a
   `ReplayerService` and its co-located app replicas, never sequenced and never recorded.
 - `sbe-probe.xml` (schema 214) — core's own application payload (`payloadId` 5): one message,
   `ProbeMarker`, carrying a submitter-side `seqNo` and variable-length filler. What `tools/ClusterProbe`

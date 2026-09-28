@@ -46,6 +46,7 @@ inline constexpr EventCode ClusterRedirectUnresolved{ "ClusterRedirectUnresolved
 inline constexpr EventCode FragmentTooShort{ "FragmentTooShort" };
 inline constexpr EventCode ArchiveConnectFailed{ "ArchiveConnectFailed" };
 inline constexpr EventCode ReplayUnavailable{ "ReplayUnavailable" };
+inline constexpr EventCode ReplayClientIdCollision{ "ReplayClientIdCollision" };
 inline constexpr EventCode RecoveryStalled{ "RecoveryStalled" };
 } // namespace eventCode
 

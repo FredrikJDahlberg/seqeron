@@ -70,10 +70,11 @@ by itself, and delivers every frame once, in `globalSeqNo` order. A producer tha
 | release | `close()` | destructor |
 
 `clientId` must be unique among the replicas on one node. Two replicas that share one supersede each
-other's replays, and neither ever catches up. **Nothing on the client side reports it** — the co-located
-`ReplayerService` is what notices the collision, and it says so once in its own log and in the
-`seqeron_replayer_client_id_collision` counter (type id 5108), so that node's Replayer is where a replica
-that never catches up is diagnosed. All calls belong to one thread.
+other's replays, and neither ever catches up. The co-located `ReplayerService` notices within a couple of
+seconds: it logs the collision, sets the `seqeron_replayer_client_id_collision` counter (type id 5108) and
+tells both replicas (spec **R-5**), whose next `poll()` then throws — `IllegalStateException` in Java,
+`std::runtime_error` in C++ — as does a façade's `doWork()`. It cannot tell which replica was there
+first, so both stop. All calls belong to one thread.
 
 This repository's own processes use ids 1–16, so an application's replicas should start at 17:
 
@@ -101,12 +102,11 @@ C++ has the two extra callbacks because its receiver keeps the callback set `Clu
 had, so a consumer can swap one stream source for the other; the Java receiver is the only source there is
 and delivers both events through `onSequenced` like any other system frame. They carry a `LifecycleEvent` —
 the frame's identity and no payload — so **`ConnectionOpened`'s `connectionData` is reachable in Java and not
-through the C++ receiver**. Leaving either one empty is a hole in `globalSeqNo` wherever a connection opens
-or closes, the same cost as leaving the leadership callback out.
+through the C++ receiver**, except to a consumer that leaves both empty.
 
-A frame whose callback is null (Java) or empty (C++) is dropped. A consumer that passes no
-leadership callback therefore sees a hole in `globalSeqNo` at every leadership change, `globalSeqNo` 1
-included.
+A frame whose own callback is null (Java) or empty (C++) arrives in `onSequenced` instead, as a system
+frame, so no frame is ever dropped and `globalSeqNo` has no holes. `onSequenced` itself is required: the
+constructor throws without it.
 
 **`SequencedEvent`** is what `onSequenced` receives — `replayer.client` in Java,
 `protocol/SequencedFrame.hpp` in C++: a flyweight, valid only during the call. In Java it is a view over the
@@ -143,7 +143,7 @@ directly.
 
 | Class | Role |
 |---|---|
-| `ClusterStreamSender` | The cluster session. `connectColocated(aeron, memberId, …)` uses IPC ingress on the co-located member and falls back to UDP when that member is not leading; `connect(…)` uses UDP. Java: both take the UDP endpoint set — `PortLayout.ingressEndpoints()` is the default one — because the fallback and the reconnect both need it. C++: neither takes one; UDP dials member 0's ingress port on `localhost` (under `SEQERON_PORT_BASE`) and follows the cluster's redirect to the leader, so a C++ producer reaches only a cluster on its own host. `send` spins through back-pressure and elections. Call `keepAlive()` and `pollEgress()` every duty cycle. |
+| `ClusterStreamSender` | The cluster session. `connectColocated(aeron, memberId, …)` uses IPC ingress on the co-located member and falls back to UDP when that member is not leading; `connect(…)` uses UDP. Both take the UDP endpoint set, `"0=host:port,1=host:port,…"`, because the fallback and the reconnect both need it. The default is every member on `localhost` (`PortLayout.ingressEndpoints()` in Java, `protocol::ingressEndpointsCsv()` in C++, both under `SEQERON_PORT_BASE`); name the real hosts for a cluster on others. C++ dials every member in the set at once and takes the first to answer, following a follower's redirect to the leader. `send` spins through back-pressure and elections. Call `keepAlive()` and `pollEgress()` every duty cycle. |
 | `IngressPublisher` | Encode and offer. Returns `protocol.Publish`: `Published`; `Refused` (above `MAX_PAYLOAD_LENGTH`, nothing offered, permanent); `Declined` (the transport's answer, worth retrying). Java: `publishPayload`/`publishSystem` on an instance, with the payload pre-encoded. C++: free functions templated on the encoder, filled through a `Fill`. |
 | `offerFrame` (C++) | Offers a frame the caller has already encoded, and is where both `publish*` functions end. Java's `publishPayload` takes payload bytes, so it carries any encoding; the C++ one is templated on an SBE encoder, and a payload with no schema at all (§13.2) is framed by the caller and offered here. It takes the same `IngressTracker`, so a hand-framed payload is confirmed like any other. |
 | `SystemFrame` (Java) | Wraps an encoded payload in its envelope and returns the length; the offer is yours. `IngressPublisher` uses it; call it directly only to place frames yourself. |
@@ -164,7 +164,7 @@ Java's signatures; C++ differs only here:
 |---|---|---|
 | construct | `Gateway.builder()…build()` | `Gateway<Listener>{ config, listener }`, where `Config` is an aggregate with one field per builder setter |
 | listener | implements `Gateway.Listener` | any type satisfying the `GatewayListener` / `ApplicationListener` concept |
-| ingress | `ingressEndpoints(…)`, defaulting to `PortLayout.ingressEndpoints()` | none: member 0 on `localhost`, following the cluster's redirect (see [`ClusterStreamSender`](#producing)) |
+| ingress | `ingressEndpoints(…)`, defaulting to `PortLayout.ingressEndpoints()` | `Config::ingressEndpoints`, defaulting to `protocol::ingressEndpointsCsv()` |
 | `publish` / `reply` | payload bytes, its own `messageHeader` included | the same bytes, or `publish<Encoder>(…, fill)`, where `fill(Encoder&)` stamps an encoder already wrapped with its header |
 | payload body | `buffer()` at `bodyOffset()`/`bodyLength()` | `body()`/`bodyLength()`, or `decode<Decoder>()` |
 | headerless payload (§13.2) | `buffer()` at `payloadOffset()`/`payloadLength()` | `payload()`/`payloadLength()` |

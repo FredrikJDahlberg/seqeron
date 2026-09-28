@@ -139,6 +139,31 @@ inline std::string archiveEndpointsCsv(int nodeCount, const char* host = "localh
 }
 
 /**
+ * Builds the ingress endpoint set of a cluster on one host, "0=host:port,1=host:port,...": the form
+ * ClusterStreamSender takes. The mirror of PortLayout.ingressEndpoints and ports.sh's ingress_endpoints_string.
+ *
+ * @param nodeCount the cluster's member count
+ * @param host      the host every member runs on
+ */
+inline std::string ingressEndpointsCsv(int nodeCount = CLUSTER_MEMBER_COUNT, const char* host = "localhost")
+{
+    std::string csv;
+    for (int id = 0; id < nodeCount; ++id)
+    {
+        if (id > 0)
+        {
+            csv += ',';
+        }
+        csv += std::to_string(id);
+        csv += '=';
+        csv += host;
+        csv += ':';
+        csv += std::to_string(clusterIngressPort(id));
+    }
+    return csv;
+}
+
+/**
  * Builds a UDP channel URI. The Java twin is SequencerServer's own udp(host, port).
  *
  * @param endpoint the channel's endpoint, "host:port"

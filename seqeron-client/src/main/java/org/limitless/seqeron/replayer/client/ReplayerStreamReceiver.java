@@ -72,8 +72,9 @@ public final class ReplayerStreamReceiver implements AutoCloseable {
      *                            ({@code SEQERON_REPLAYER_CLIENT_ID}); two apps sharing one supersede
      *                            each other's replays and neither ever catches up
      * @param onSequenced         receives every in-order frame
-     * @param onLeadershipChanged receives each leadership change, or null
+     * @param onLeadershipChanged receives each leadership change, or null to have it reach onSequenced
      * @param onCaughtUp          fires on every transition to caught-up, or null
+     * @throws NullPointerException if onSequenced is null
      */
     public ReplayerStreamReceiver(final int clientId, final SequencedHandler onSequenced,
                                   final LeadershipHandler onLeadershipChanged, final CaughtUpHandler onCaughtUp) {
@@ -121,11 +122,17 @@ public final class ReplayerStreamReceiver implements AutoCloseable {
      * the tap — {@link ReplayerRecovery}'s contiguity check, not the poll routing, decides what a tap frame is
      * worth mid-walk.
      * @return fragments consumed
+     * @throws IllegalStateException once this node's Replayer reports another process using this clientId
      */
     public int poll() {
         int work = 0;
         if (controlSubscription != null) {
             work += controlSubscription.poll(controlFragmentHandler, FRAGMENT_LIMIT);
+        }
+
+        if (recovery.isClientIdInUse()) {
+            throw new IllegalStateException("[ReplayerStreamReceiver] clientId " + clientId
+                                            + " is in use by another process on this node");
         }
 
         final boolean requestPubPending = requestPublication != null && !requestPublication.isConnected();

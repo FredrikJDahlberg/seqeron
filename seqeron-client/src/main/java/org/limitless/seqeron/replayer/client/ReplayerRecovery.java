@@ -4,6 +4,7 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
 import java.util.List;
+import java.util.Objects;
 import org.agrona.DirectBuffer;
 import org.agrona.concurrent.UnsafeBuffer;
 import org.limitless.seqeron.protocol.ReplayProtocol;
@@ -11,6 +12,7 @@ import org.limitless.seqeron.protocol.SequencedFrameDecoder;
 import org.limitless.seqeron.protocol.SystemFrame;
 import org.limitless.seqeron.sbe.frame.LeadershipChangedDecoder;
 import org.limitless.seqeron.sbe.frame.MessageHeaderDecoder;
+import org.limitless.seqeron.sbe.replay.ReplayClientIdInUseDecoder;
 import org.limitless.seqeron.sbe.replay.ReplayPendingDecoder;
 import org.limitless.seqeron.sbe.replay.ReplayUnavailableDecoder;
 import org.limitless.seqeron.sbe.replay.ReplayingDecoder;
@@ -47,7 +49,7 @@ final class ReplayerRecovery {
     /** {@code ReplayRequest.segmentIndex} meaning "resume the active recording at fromPosition". */
     private static final int RESUME_SEGMENT_INDEX = -1;
 
-    /** {@code LeadershipChanged}, synthesized onto the sequenced stream; intercepted, never dispatched. */
+    /** {@code LeadershipChanged}, synthesized onto the sequenced stream; intercepted when it has a handler. */
     private static final int LEADERSHIP_CHANGED = SystemFrame.LEADERSHIP_CHANGED;
 
     /** Caps on frames retained ahead of a hole; past either, recovery falls back to re-walking. */
@@ -68,6 +70,7 @@ final class ReplayerRecovery {
     private final ReplayingDecoder replaying = new ReplayingDecoder();
     private final ReplayPendingDecoder replayPending = new ReplayPendingDecoder();
     private final ReplayUnavailableDecoder replayUnavailable = new ReplayUnavailableDecoder();
+    private final ReplayClientIdInUseDecoder replayClientIdInUse = new ReplayClientIdInUseDecoder();
 
     private final SequencedEvent event = new SequencedEvent(view);
 
@@ -108,6 +111,7 @@ final class ReplayerRecovery {
 
     /** The Replayer is refusing to serve us: reported once per episode, and named in the stall report. */
     private boolean replayerUnavailable;
+    private boolean clientIdInUse;
 
     private long lastGlobalSeqNo;
 
@@ -146,15 +150,16 @@ final class ReplayerRecovery {
      * @param actions             performs the sends and the replay subscription this class decides on, and
      *                            supplies the clock
      * @param onSequenced         receives every in-order frame
-     * @param onLeadershipChanged receives each leadership change, or null
+     * @param onLeadershipChanged receives each leadership change, or null to have it reach onSequenced
      * @param onCaughtUp          fires on every transition to caught-up, or null
+     * @throws NullPointerException if onSequenced is null
      */
     public ReplayerRecovery(final int clientId, final ReplayerRecoveryActions actions,
                             final SequencedHandler onSequenced, final LeadershipHandler onLeadershipChanged,
                             final CaughtUpHandler onCaughtUp) {
         this.clientId = clientId;
         this.actions = actions;
-        this.onSequenced = onSequenced;
+        this.onSequenced = Objects.requireNonNull(onSequenced, "onSequenced");
         this.onLeadershipChanged = onLeadershipChanged;
         this.onCaughtUp = onCaughtUp;
     }
@@ -240,7 +245,10 @@ final class ReplayerRecovery {
         drainRetained();
     }
 
-    /** Decodes one Replayer control reply ({@code Replaying}/{@code ReplayPending}/{@code ReplayUnavailable}). */
+    /**
+     * Decodes one Replayer control message ({@code Replaying}/{@code ReplayPending}/{@code ReplayUnavailable}/
+     * {@code ReplayClientIdInUse}).
+     */
     public void onControl(final DirectBuffer buffer, final int offset, final int length) {
         if (length < org.limitless.seqeron.sbe.replay.MessageHeaderDecoder.ENCODED_LENGTH) {
             return;
@@ -270,7 +278,20 @@ final class ReplayerRecovery {
             if (replayUnavailable.clientId() == clientId && replayUnavailable.requestId() == requestId) {
                 onReplayUnavailable();
             }
+        } else if (controlHeader.templateId() == ReplayClientIdInUseDecoder.TEMPLATE_ID) {
+            replayClientIdInUse.wrap(buffer, bodyOffset, blockLength, version);
+            if (replayClientIdInUse.clientId() == clientId) {
+                onClientIdInUse();
+            }
         }
+    }
+
+    /**
+     * Whether this node's Replayer has seen another process requesting under this client's id. Latched: the
+     * receiver raises it from its duty cycle, since a throw from inside a fragment handler is swallowed.
+     */
+    public boolean isClientIdInUse() {
+        return clientIdInUse;
     }
 
     /**
@@ -526,6 +547,17 @@ final class ReplayerRecovery {
         lastReplayProgressMs = actions.nowMs();
     }
 
+    private void onClientIdInUse() {
+        if (!clientIdInUse) {
+            clientIdInUse = true;
+            Logger.fault(Logger.CoreComponent.ReplayerStreamReceiver, Logger.CoreEventCode.ReplayClientIdCollision,
+                         actions.memberId(),
+                         "this node's Replayer reports another process requesting under clientId=%d — neither "
+                             + "can catch up; give each replica on the node its own id",
+                         clientId);
+        }
+    }
+
     /**
      * The Replayer's archive failed its globalSeqNo-1 integrity check. Not fatal here: an operator repairs
      * the archive and restarts the Replayer, and the resend timer resumes; until then we never catch up.
@@ -607,13 +639,11 @@ final class ReplayerRecovery {
             if (onLeadershipChanged != null) {
                 onLeadershipChanged.onLeadershipChanged(currentLeaderMemberId, leadershipChanged.leadershipTermId(),
                                                         globalSeqNo);
+                return;
             }
-            return;
         }
-        if (onSequenced != null) {
-            event.set(receiveNs, framePosition);
-            onSequenced.onSequenced(event);
-        }
+        event.set(receiveNs, framePosition);
+        onSequenced.onSequenced(event);
     }
 
     /**

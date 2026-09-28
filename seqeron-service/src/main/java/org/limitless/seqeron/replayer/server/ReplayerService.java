@@ -18,6 +18,7 @@ import org.limitless.seqeron.protocol.ReplayProtocol;
 import org.limitless.seqeron.protocol.SeqeronCounters;
 import org.limitless.seqeron.sbe.replay.MessageHeaderDecoder;
 import org.limitless.seqeron.sbe.replay.MessageHeaderEncoder;
+import org.limitless.seqeron.sbe.replay.ReplayClientIdInUseEncoder;
 import org.limitless.seqeron.sbe.replay.ReplayCompleteDecoder;
 import org.limitless.seqeron.sbe.replay.ReplayHeartbeatDecoder;
 import org.limitless.seqeron.sbe.replay.ReplayPendingEncoder;
@@ -119,6 +120,7 @@ public final class ReplayerService {
     private final ReplayingEncoder replayingEncoder = new ReplayingEncoder();
     private final ReplayPendingEncoder pendingEncoder = new ReplayPendingEncoder();
     private final ReplayUnavailableEncoder unavailableEncoder = new ReplayUnavailableEncoder();
+    private final ReplayClientIdInUseEncoder clientIdInUseEncoder = new ReplayClientIdInUseEncoder();
     private final MutableDirectBuffer controlBuffer = new ExpandableArrayBuffer(64);
 
     private final org.limitless.seqeron.protocol.SequencedFrameDecoder selfCheckView =
@@ -711,16 +713,19 @@ public final class ReplayerService {
     }
 
     /**
-     * Two co-located apps share one client id (see {@link ReplayClientIdCollisions}). Reported, not refused:
-     * they already livelock each other, and a false positive must not stop a healthy replica.
+     * Two co-located apps share one client id (see {@link ReplayClientIdCollisions}). Their requests are still
+     * served — they already livelock each other — but both are told, and a client that is told fails its duty
+     * cycle.
      * @param clientId the id being used twice
      */
     private void onClientIdCollision(final int clientId) {
+        clientIdInUseEncoder.wrapAndApplyHeader(controlBuffer, 0, outHeaderEncoder).clientId(clientId);
+        offerControl(MessageHeaderEncoder.ENCODED_LENGTH + clientIdInUseEncoder.encodedLength());
         clientIdCollisionCounter.set(1);
         Logger.error(Logger.CoreComponent.ReplayerService, Logger.CoreEventCode.ReplayClientIdCollision, memberId,
                      "two co-located apps are both using SEQERON_REPLAYER_CLIENT_ID=%d — their requestId "
                          + "sequences interleave, so each request stops the other's replay and NEITHER will "
-                         + "ever catch up; give them distinct ids and restart them",
+                         + "ever catch up; both are told, and fail — give them distinct ids",
                      clientId);
     }
 

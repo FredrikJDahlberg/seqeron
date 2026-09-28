@@ -16,6 +16,8 @@
 #include <cstdint>
 #include <deque>
 #include <limits>
+#include <stdexcept>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -188,19 +190,19 @@ TEST(ClusterStreamSender, ConnectSendsSessionConnectRequestAndAdoptsSessionOnOk)
 // and the leader answers OK — but a follower then silently drops every session message and keep-alive
 // (ConsensusModuleAgent.onIngressMessage requires `Cluster.Role.LEADER == role` and falls through with
 // no reply). The OK names the leader, and that is the only signal available: unlike REDIRECT and
-// NewLeaderEvent it carries no endpoint CSV, so the endpoint is derived from the member id. Without
-// this the client looked connected, had nothing it published sequenced, and died of a genuine session
-// timeout ~10s later.
-TEST(ClusterStreamSender, MemberIngressEndpointMatchesTheInitialEndpointFormula)
+// NewLeaderEvent it carries no endpoint CSV, so the endpoint is looked up in the configured set, and must
+// read exactly as the dial recorded it or "am I already on the leader?" compares unequal strings.
+TEST(ClusterStreamSender, TheConfiguredSetResolvesEveryMemberToTheEndpointItDials)
 {
-    // Member 0's derived endpoint must be exactly the constant connectColocated's UDP fallback aims
-    // at, or "am I already on the leader?" would compare unequal strings for the same member.
-    EXPECT_EQ(CLUSTER_INGRESS_ENDPOINT, memberIngressEndpoint(0));
-
-    // …and every other member resolves to its own distinct endpoint.
-    EXPECT_NE(memberIngressEndpoint(0), memberIngressEndpoint(1));
-    EXPECT_NE(memberIngressEndpoint(1), memberIngressEndpoint(2));
-    EXPECT_EQ("localhost:" + std::to_string(protocol::clusterIngressPort(2)), memberIngressEndpoint(2));
+    const std::string endpoints = protocol::ingressEndpointsCsv();
+    const std::vector<std::string> dialled = ingressEndpointList(endpoints);
+    ASSERT_EQ(static_cast<std::size_t>(protocol::CLUSTER_MEMBER_COUNT), dialled.size());
+    for (std::int32_t memberId = 0; memberId < protocol::CLUSTER_MEMBER_COUNT; ++memberId)
+    {
+        std::string resolved;
+        ASSERT_TRUE(findIngressEndpoint(endpoints, memberId, resolved));
+        EXPECT_EQ(dialled[static_cast<std::size_t>(memberId)], resolved);
+    }
 }
 
 // The transport-agnostic connect() overload has no Aeron client to build a replacement publication
@@ -861,6 +863,25 @@ TEST(FindIngressEndpoint, FindsSoleEntry)
     std::string out;
     EXPECT_TRUE(findIngressEndpoint("0=localhost:9302", 0, out));
     EXPECT_EQ("localhost:9302", out);
+}
+
+TEST(IngressEndpointList, ListsEveryEndpointInOrder)
+{
+    EXPECT_EQ((std::vector<std::string>{ "host0:9302", "host1:9312", "host2:9322" }),
+              ingressEndpointList("0=host0:9302,1=host1:9312,2=host2:9322"));
+    EXPECT_EQ((std::vector<std::string>{ "host0:9302" }), ingressEndpointList("0=host0:9302"));
+}
+
+TEST(IngressEndpointList, RefusesAnEntryWithoutAMemberId)
+{
+    EXPECT_THROW(ingressEndpointList("host0:9302"), std::invalid_argument);
+    EXPECT_THROW(ingressEndpointList("0=host0:9302,=host1:9312"), std::invalid_argument);
+    EXPECT_THROW(ingressEndpointList("0="), std::invalid_argument);
+}
+
+TEST(IngressEndpointList, RefusesAnEmptySet)
+{
+    EXPECT_THROW(ingressEndpointList(""), std::invalid_argument);
 }
 
 TEST(FindIngressEndpoint, ReturnsFalseWhenMemberIdAbsent)

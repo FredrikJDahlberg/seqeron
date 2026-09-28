@@ -16,6 +16,7 @@
 #include "org/limitless/seqeron/app/Payload.hpp"
 #include "org/limitless/seqeron/app/detail/GatewayLifecycle.hpp"
 #include "org/limitless/seqeron/app/detail/Session.hpp"
+#include "org/limitless/seqeron/protocol/PortLayout.hpp"
 #include "org/limitless/seqeron/protocol/Publish.hpp"
 #include "org/limitless/seqeron/protocol/SequencedFrame.hpp"
 #include "org/limitless/seqeron/sequencer/client/IngressPublisher.hpp"
@@ -55,9 +56,8 @@ concept GatewayListener = requires(L& listener, const Payload& payload, std::int
  * seqeron's system vocabulary appears in its code.
  *
  * Single-threaded: every method belongs to the caller's one duty-cycle thread, which calls doWork() each
- * iteration. The Java twin is app/Gateway.java; keep the two in step. Where Java's builder takes an
- * ingressEndpoints string, this side has none: ClusterStreamSender dials member 0 on localhost and follows
- * the cluster's redirect. The Listener is the edge; GatewayListener above is what it provides.
+ * iteration. The Java twin is app/Gateway.java; keep the two in step. The Listener is the edge;
+ * GatewayListener above is what it provides.
  */
 template<typename Listener>
 class Gateway
@@ -83,6 +83,8 @@ class Gateway
         std::int32_t memberId = 0;
         // This client's own egress endpoint; two media drivers on one host cannot both bind a port.
         std::string egressChannel;
+        // The members to reach, "memberId=host:port,...".
+        std::string ingressEndpoints = protocol::ingressEndpointsCsv();
         std::size_t pendingCapacity = DEFAULT_PENDING_CAPACITY;
         std::int64_t tapStallTimeoutMs = DEFAULT_TAP_STALL_TIMEOUT_MS;
         std::int64_t recoveryStallTimeoutMs = DEFAULT_RECOVERY_STALL_TIMEOUT_MS;
@@ -117,7 +119,7 @@ class Gateway
      */
     void start(std::shared_ptr<aeron::Aeron> aeron)
     {
-        m_session.start(std::move(aeron), m_config.memberId, m_config.egressChannel);
+        m_session.start(std::move(aeron), m_config.memberId, m_config.egressChannel, m_config.ingressEndpoints);
     }
 
     // One duty-cycle iteration: the cluster session and the tap, then whatever the connection lifecycle and

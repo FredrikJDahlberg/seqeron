@@ -163,9 +163,9 @@
 <text x="900" y="3001" text-anchor="middle" font-size="10.3" font-style="italic" fill="#333333">with one SEQERON_REPLAYER_CLIENT_ID supersede each other's replay</text>
 <text x="900" y="3017" text-anchor="middle" font-size="10.3" font-style="italic" fill="#333333">on every request and neither ever catches up. 3 backwards requestId</text>
 <text x="900" y="3033" text-anchor="middle" font-size="10.3" font-style="italic" fill="#333333">steps within 10s separate that from a restart (exactly one) -&gt;</text>
-<text x="900" y="3049" text-anchor="middle" font-size="10.3" font-style="italic" fill="#333333">seqeron.replayer.clientIdCollision=1. Reported, not refused: both</text>
-<text x="900" y="3065" text-anchor="middle" font-size="10.3" font-style="italic" fill="#333333">are already livelocked, and a false positive would stop a healthy</text>
-<text x="900" y="3081" text-anchor="middle" font-size="10.3" font-style="italic" fill="#333333">replica from ever recovering.</text>
+<text x="900" y="3049" text-anchor="middle" font-size="10.3" font-style="italic" fill="#333333">seqeron.replayer.clientIdCollision=1, and ReplayClientIdInUse to the</text>
+<text x="900" y="3065" text-anchor="middle" font-size="10.3" font-style="italic" fill="#333333">id: both clients fail their duty cycle rather than stay livelocked,</text>
+<text x="900" y="3081" text-anchor="middle" font-size="10.3" font-style="italic" fill="#333333">since neither can tell which of the two was there first.</text>
 <rect x="55" y="66" width="190" height="66" rx="7" fill="#f2f2f2" stroke="#444444" stroke-width="1.4"/>
 <text x="150" y="88" text-anchor="middle" font-size="13" font-weight="bold" fill="#333333">Live Tap</text>
 <text x="150" y="104" text-anchor="middle" font-size="10" fill="#666666">stream 205, untethered</text>

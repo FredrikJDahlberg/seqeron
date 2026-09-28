@@ -46,6 +46,15 @@ TEST(PortLayout, ArchiveEndpointsCsvMatchesThreeNodeLayout)
     EXPECT_EQ("localhost:9301", archiveEndpointsCsv(1));
 }
 
+// The same string PortLayout.ingressEndpoints builds, so one deployment's set reads the same in both languages.
+TEST(PortLayout, IngressEndpointsCsvMatchesThreeNodeLayout)
+{
+    EXPECT_EQ("0=localhost:9302,1=localhost:9312,2=localhost:9322", ingressEndpointsCsv(3));
+    EXPECT_EQ("0=localhost:9302", ingressEndpointsCsv(1));
+    EXPECT_EQ(ingressEndpointsCsv(CLUSTER_MEMBER_COUNT), ingressEndpointsCsv());
+    EXPECT_EQ("0=host0:9302,1=host0:9312", ingressEndpointsCsv(2, "host0"));
+}
+
 // The base is a deployment knob (SEQERON_PORT_BASE), and these pin the rules that decide it. Driven
 // through the pure seam rather than the environment, which clusterPortBase() reads once into a local
 // static. The Java twin is PortLayoutTest.java — same rules, same boundaries.

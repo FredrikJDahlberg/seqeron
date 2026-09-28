@@ -98,6 +98,22 @@ class ReplayClientIdCollisionsTest {
     }
 
     @Test
+    @DisplayName("a collision that outlasts the window is reported again")
+    void aCollisionThatOutlastsTheWindowIsReportedAgain() {
+        final ReplayClientIdCollisions collisions = new ReplayClientIdCollisions(WINDOW_MS);
+        long nowMs = 0;
+        int reports = 0;
+        for (long step = 1; step <= 50; step++) {
+            collisions.onRequest(CLIENT, 500 + step, nowMs += 250);
+            if (collisions.onRequest(CLIENT, step, nowMs += 250)) {
+                reports++;
+            }
+        }
+
+        assertEquals(3, reports, "25s of interleaving is three windows, each reported once");
+    }
+
+    @Test
     @DisplayName("the report lands quickly, not after a long soak")
     void reportLandsWithinTheWindow() {
         final ReplayClientIdCollisions collisions = new ReplayClientIdCollisions(WINDOW_MS);

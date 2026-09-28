@@ -15,6 +15,8 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.limitless.seqeron.protocol.ReplayProtocol;
 import org.limitless.seqeron.sbe.frame.ClusterHeartbeatEncoder;
+import org.limitless.seqeron.sbe.frame.LeadershipChangedEncoder;
+import org.limitless.seqeron.sbe.replay.ReplayClientIdInUseEncoder;
 import org.limitless.seqeron.sbe.replay.ReplayPendingEncoder;
 import org.limitless.seqeron.sbe.replay.ReplayUnavailableEncoder;
 import org.limitless.seqeron.sbe.replay.ReplayingEncoder;
@@ -1262,6 +1264,57 @@ class ReplayerRecoveryTest {
         assertEquals(2, logged.size());
     }
 
+    // ── Delivery ───────────────────────────────────────────────────────────────────────────────────
+
+    @Test
+    @DisplayName("a leadership change reaches onSequenced when no leadership handler is given")
+    void aLeadershipChangeReachesOnSequencedWithoutAHandler() {
+        deliverLeadershipChanged(1);
+
+        assertEquals(List.of(1L), dispatched, "dropped rather than delivered");
+    }
+
+    @Test
+    @DisplayName("a leadership change with a handler goes to it alone")
+    void aLeadershipChangeWithAHandlerGoesToItAlone() {
+        final List<Long> changes = new ArrayList<>();
+        receiver = new ReplayerRecovery(CLIENT_ID, actions, event -> dispatched.add(event.globalSeqNo()),
+                                        (leaderMemberId, leadershipTermId, globalSeqNo) -> changes.add(globalSeqNo),
+                                        null);
+        deliverLeadershipChanged(1);
+
+        assertEquals(List.of(1L), changes);
+        assertTrue(dispatched.isEmpty(), "delivered twice");
+    }
+
+    @Test
+    @DisplayName("onSequenced is required")
+    void onSequencedIsRequired() {
+        assertThrows(NullPointerException.class, () -> new ReplayerRecovery(CLIENT_ID, actions, null, null, null));
+    }
+
+    // ── Client id in use ───────────────────────────────────────────────────────────────────────────
+
+    @Test
+    @DisplayName("a notice that this client's id is in use latches, and is reported once")
+    void aClientIdInUseNoticeLatchesAndIsReportedOnce() {
+        captureLogs();
+        deliverClientIdInUse(CLIENT_ID);
+        deliverClientIdInUse(CLIENT_ID);
+
+        assertTrue(receiver.isClientIdInUse());
+        assertEquals(1, logged.size());
+        assertEquals(Logger.CoreEventCode.ReplayClientIdCollision, logged.get(0).code());
+    }
+
+    @Test
+    @DisplayName("a notice for another client's id is ignored")
+    void aClientIdInUseNoticeForAnotherClientIsIgnored() {
+        deliverClientIdInUse(CLIENT_ID + 1);
+
+        assertFalse(receiver.isClientIdInUse());
+    }
+
     // ── helpers ───────────────────────────────────────────────────────────────────────────────────
 
     /**
@@ -1307,6 +1360,27 @@ class ReplayerRecoveryTest {
 
     private void deliverUnavailable(final long requestId) {
         receiver.onControl(replayUnavailableBuffer(requestId), 0, replayUnavailableLength());
+    }
+
+    private void deliverClientIdInUse(final int clientId) {
+        final UnsafeBuffer buffer = new UnsafeBuffer(new byte[64]);
+        new ReplayClientIdInUseEncoder()
+            .wrapAndApplyHeader(buffer, 0, new org.limitless.seqeron.sbe.replay.MessageHeaderEncoder())
+            .clientId(clientId);
+        receiver.onControl(buffer, 0, org.limitless.seqeron.sbe.replay.MessageHeaderEncoder.ENCODED_LENGTH
+            + ReplayClientIdInUseEncoder.BLOCK_LENGTH);
+    }
+
+    private void deliverLeadershipChanged(final long globalSeqNo) {
+        final UnsafeBuffer buffer = new UnsafeBuffer(new byte[256]);
+        final LeadershipChangedEncoder frame = new LeadershipChangedEncoder();
+        frame.wrapAndApplyHeader(buffer, 0, new org.limitless.seqeron.sbe.frame.MessageHeaderEncoder());
+        frame.header().sourceId(-1).connectionId(-1).sessionId(-1)
+            .systemEventType(org.limitless.seqeron.protocol.SystemFrame.LEADERSHIP_CHANGED)
+            .globalSeqNo(globalSeqNo).timestamp(globalSeqNo * 1000);
+        frame.newLeaderMemberId(2).leadershipTermId(3);
+        receiver.onFrame(buffer, 0, org.limitless.seqeron.sbe.frame.MessageHeaderEncoder.ENCODED_LENGTH
+            + LeadershipChangedEncoder.BLOCK_LENGTH, globalSeqNo * 1024, RECEIVE_NS, false);
     }
 
     /** The replay image reaching the bound the Replayer gave it — how a segment completes. */

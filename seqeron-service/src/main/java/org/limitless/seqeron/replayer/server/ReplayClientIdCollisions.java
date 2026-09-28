@@ -30,8 +30,8 @@ public final class ReplayClientIdCollisions {
 
     /**
      * Records one {@code ReplayRequest} and says whether it is the one that first makes a collision
-     * suspect — true at most once per client id, so the caller logs a fault once rather than at the
-     * clients' combined resend rate.
+     * suspect — true at most once per client id per window, so the caller reports a fault once rather than
+     * at the clients' combined resend rate, and again if the collision outlasts the window.
      * @param clientId the requesting client
      * @param requestId that request's id (strictly increasing for a single live client)
      * @param nowMs current time
@@ -56,6 +56,7 @@ public final class ReplayClientIdCollisions {
         if ((nowMs - sequence.windowStartMs) > windowMs) {
             sequence.windowStartMs = nowMs;
             sequence.backwardsSteps = 0;
+            sequence.reported = false;
         }
         ++sequence.backwardsSteps;
         if (sequence.backwardsSteps < SUSPECT_THRESHOLD || sequence.reported) {

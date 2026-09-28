@@ -63,18 +63,20 @@ class Session
     Session& operator=(const Session&) = delete;
 
     // Opens the cluster session over UDP and starts following this node's tap.
-    void start(std::shared_ptr<aeron::Aeron> aeron, const std::int32_t memberId, const std::string& egressChannel)
+    void start(std::shared_ptr<aeron::Aeron> aeron, const std::int32_t memberId, const std::string& egressChannel,
+               const std::string& ingressEndpoints)
     {
-        m_sender.connect(aeron, egressChannel);
+        m_sender.connect(aeron, egressChannel, ingressEndpoints);
         m_receiver.start(std::move(aeron), memberId);
     }
 
     // The same for a client sharing this member's media driver: ingress over its own aeron:ipc while that
     // member leads, the UDP endpoint set when it does not.
     void startColocated(std::shared_ptr<aeron::Aeron> aeron, const std::int32_t memberId,
-                        const std::int64_t ipcConnectTimeoutMs, const std::string& egressChannel)
+                        const std::int64_t ipcConnectTimeoutMs, const std::string& egressChannel,
+                        const std::string& ingressEndpoints)
     {
-        m_sender.connectColocated(aeron, memberId, ipcConnectTimeoutMs, egressChannel);
+        m_sender.connectColocated(aeron, memberId, ipcConnectTimeoutMs, egressChannel, ingressEndpoints);
         m_receiver.start(std::move(aeron), memberId);
     }
 

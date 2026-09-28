@@ -2,7 +2,7 @@
 <!--
     The replay control protocol: schema 212, specified in doc/seqeron-protocol-spec.md §10.
 
-    Six messages between a node's ReplayerService and its co-located clients, on the request (202)
+    Seven messages between a node's ReplayerService and its co-located clients, on the request (202)
     and control (203) streams over aeron:ipc. They are never sequenced or recorded, so they carry no
     header composite. The schema changes in place without a version bump: a node's replayer and its
     clients are built and restarted together, and no recording holds these messages (§11).
@@ -105,6 +105,15 @@
         <field name="clientId"  id="20010" type="int32"/>
         <field name="requestId" id="20015" type="int64"
                description="The requestId of the refused request (R-1)"/>
+    </sbe:message>
+
+    <!-- ReplayerService -> App: "another process on this node is using your clientId." -->
+    <sbe:message name="ReplayClientIdInUse" id="22"
+                 description="Two processes on this node are requesting under one clientId: their requestId sequences
+                              interleave, so each supersedes the other's replay and neither catches up. Sent to the
+                              id, so both receive it and neither can tell which was there first; a client that does
+                              fails its duty cycle">
+        <field name="clientId" id="20010" type="int32"/>
     </sbe:message>
 
 </sbe:messageSchema>
