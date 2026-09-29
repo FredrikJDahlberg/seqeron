@@ -413,7 +413,8 @@ and **the cluster is bounded at three members** by the 30-port cluster block (`d
 `SEQERON_PORT_BASE` moves that block off its 9300 default — deployment-wide, read by all three mirrors
 — but does not widen it.
 
-`doc/` holds `seqeron-protocol-spec.md` (normative — the frames, the families,
+`doc/` holds `getting-started.md` (a release node plus a consumer and a producer; its snippets pin a
+release, so bump them when one changes the API they use), `seqeron-protocol-spec.md` (normative — the frames, the families,
 the system vocabulary, the topology document), `client-api.md` (what a client programs against, and what in
 the client tier is not API — update it when that surface changes), `fault-tolerance.md`, `clusterctl.md` and `ops.md` (runbooks, ports, counters). The topology documents here are
 `seqeron-service/src/test/resources/topology-test-gateway.xml` and `seqeron-examples/topology.xml`.

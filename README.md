@@ -8,6 +8,8 @@
 [![API reference](https://img.shields.io/badge/docs-API%20reference-blue)](https://fredrikjdahlberg.github.io/seqeron/)
 [![License](https://img.shields.io/github/license/FredrikJDahlberg/seqeron)](LICENSE)
 
+To run it, start with [`doc/getting-started.md`](doc/getting-started.md).
+
 ## Overview
 
 **seqeron** assigns a single global, gap-free, replicated total order to messages arriving from
@@ -512,13 +514,14 @@ To cut one:
 
 | Document | What it is |
 |----------|------------|
+| [`doc/getting-started.md`](doc/getting-started.md) | A node from a release, then a consumer and a producer against it, in Java |
 | [`doc/seqeron-protocol-spec.md`](doc/seqeron-protocol-spec.md) | The normative protocol specification — frames, families, the system vocabulary, the topology document |
 | [`doc/client-api.md`](doc/client-api.md) | What a client programs against, in both languages, and what in the client tier is not API |
 | [`doc/fault-tolerance.md`](doc/fault-tolerance.md) | Node loss, leader failover, a stuck archive, a lost frame: what survives each and how it recovers |
 | [`doc/clusterctl.md`](doc/clusterctl.md) | The operator tool's runbook |
 | [`doc/ops.md`](doc/ops.md) | The Prometheus/Grafana metrics stack |
 
-Those five are the whole doc set, and every document reference in this tree resolves inside it.
+Those six are the whole doc set, and every document reference in this tree resolves inside it.
 
 ## License
 
