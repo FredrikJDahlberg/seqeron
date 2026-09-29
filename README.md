@@ -244,24 +244,26 @@ usually what you want:
 
 ### Three-node cluster
 
-Run this on each host, member 0 on `host0` and so on — only `-Dsequencer.memberId` differs between
-them:
+Set `SEQERON_HOSTS` on every host, then run this on each member, member 0 on `host0` and so on — only
+`-Dsequencer.memberId` differs between them:
 
 ```bash
+export SEQERON_HOSTS=host0,host1,host2
 java \
   -Dsequencer.memberId=0 \
-  -Dsequencer.hosts=host0,host1,host2 \
   -Dsequencer.baseDir=/var/lib/seqeron \
   -jar seqeron-*-uber.jar
 ```
 
-`sequencer.hosts` lists every member's host in member-id order. The node builds Aeron's
-`clusterMembers` string from it, and binds and advertises its own entry. Set `sequencer.baseDir` to
-persistent storage: it holds the Raft log and the archive, and the default is under `$TMPDIR`.
+`SEQERON_HOSTS` lists every member's host in member-id order. The node builds Aeron's `clusterMembers`
+string from it, and binds and advertises its own entry; `-Dsequencer.hosts` sets the same list for one
+node. `sequencer.baseDir` is required once the list names more than one member: it holds the Raft log and
+the archive, and the default is under `$TMPDIR`.
 
-Clients take the same list: `clusterctl` as `CLUSTERCTL_HOSTS`, `ClusterProbe` as `probe.hosts`, and
-an application through `PortLayout.ingressEndpoints(PortLayout.parseHosts("host0,host1,host2"))` (C++:
-`protocol::ingressEndpointsCsv(protocol::parseHosts(...))`).
+Every other seqeron process reads the same variable, in both languages. An application's default ingress
+endpoints (`PortLayout.ingressEndpoints()`, C++ `protocol::ingressEndpointsCsv()`) name those members,
+`clusterctl` and `ClusterProbe` connect through them and reply to this member's host, and a gateway host's
+`ReplayerServer` relays from their archives. Like `SEQERON_PORT_BASE`, set it identically everywhere.
 
 For testing on one machine, `seqeron-service/src/test/scripts/start-three-node-cluster.sh` brings all
 three up on localhost.
@@ -301,9 +303,9 @@ into each member's own archive.
 | Property                    | Default                          | Description                        |
 |-----------------------------|----------------------------------|------------------------------------|
 | `sequencer.memberId`        | `0`                              | Raft member ID for this node       |
-| `sequencer.hosts`           | unset                            | Every member's host, in id order; replaces `clusterMembers` and `nodeCount` |
+| `sequencer.hosts`           | `SEQERON_HOSTS`                  | Every member's host, in id order; replaces `clusterMembers` and `nodeCount` |
 | `sequencer.host`            | this member's entry in `hosts`, else `localhost` | Host this node binds and advertises |
-| `sequencer.baseDir`         | `$TMPDIR/seqeron-seq`           | Root for archive and cluster dirs  |
+| `sequencer.baseDir`         | `$TMPDIR/seqeron-seq`; required with more than one host | Root for archive and cluster dirs  |
 | `sequencer.aeronDir`        | `$TMPDIR/seqeron-seq-aeron-<id>`| Aeron media driver directory       |
 | `sequencer.nodeCount`       | `1`                              | Cluster size, all on localhost     |
 | `sequencer.clusterMembers`  | single-node localhost            | Full Aeron clusterMembers string   |

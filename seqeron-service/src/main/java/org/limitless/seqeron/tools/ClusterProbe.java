@@ -9,7 +9,6 @@ import io.aeron.cluster.client.EgressListener;
 import io.aeron.logbuffer.FragmentHandler;
 import io.aeron.logbuffer.Header;
 import java.util.Arrays;
-import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -56,12 +55,11 @@ import org.limitless.seqeron.util.Logger;
  * <pre>
  *   probe.memberId          — which cluster member this probe co-locates with (0/1/2); default 0
  *   probe.aeronDir          — that member's Aeron directory; default {tmpdir}/seqeron-seq-aeron-{memberId}
- *   probe.hosts             — every member's host name, comma-separated in member-id order
- *   probe.ingressEndpoints  — cluster ingress endpoints; default from probe.hosts, else the three-node
- *                             localhost set, on {@code SEQERON_PORT_BASE}'s ports
+ *   probe.ingressEndpoints  — cluster ingress endpoints; default {@link PortLayout#ingressEndpoints()}: the
+ *                             members {@code SEQERON_HOSTS} names, else the three-node localhost set
  *   probe.egressHost        — hostname the leader sends this client's egress to; default this member's
- *                             entry in probe.hosts, else localhost, which fails when the leader is on
- *                             another host
+ *                             entry in {@code SEQERON_HOSTS}, else localhost, which fails when the leader
+ *                             is on another host
  *   probe.clientId          — follow, confirm: this replica's Replayer client id; default 9
  *   probe.count             — submit, confirm: frames to send; default 1000
  *   probe.fillerBytes       — submit: bytes of filler per frame; default 0
@@ -99,15 +97,12 @@ public final class ClusterProbe {
     private static final String AERON_DIR = System.getProperty(
         "probe.aeronDir", System.getProperty("java.io.tmpdir") + "/seqeron-seq-aeron-" + MEMBER_ID);
 
-    private static final String HOSTS = System.getProperty("probe.hosts");
-    private static final List<String> HOST_LIST = HOSTS == null ? List.of() : PortLayout.parseHosts(HOSTS);
-
     private static final String INGRESS_ENDPOINTS = System.getProperty(
-        "probe.ingressEndpoints",
-        HOSTS == null ? PortLayout.ingressEndpoints() : PortLayout.ingressEndpoints(HOST_LIST));
+        "probe.ingressEndpoints", PortLayout.ingressEndpoints());
 
     private static final String EGRESS_HOST = System.getProperty(
-        "probe.egressHost", MEMBER_ID < HOST_LIST.size() ? HOST_LIST.get(MEMBER_ID) : PortLayout.DEFAULT_HOST);
+        "probe.egressHost",
+        MEMBER_ID < PortLayout.HOSTS.size() ? PortLayout.HOSTS.get(MEMBER_ID) : PortLayout.DEFAULT_HOST);
 
     /** The co-located member's Aeron directory; {@code TestGateway} connects through it too. */
     static String aeronDir() {

@@ -33,8 +33,9 @@ import org.limitless.seqeron.util.Logger;
  *
  * <p>System properties of {@link #main}:
  * <pre>
- *   replayer.archiveEndpoints  — required: the members' archive control endpoints, host:port,
- *                                comma-separated, tried in order
+ *   replayer.archiveEndpoints  — the members' archive control endpoints, host:port, comma-separated,
+ *                                tried in order; default each member's in SEQERON_HOSTS, and one of the
+ *                                two is required
  *   replayer.memberId          — this host's node id (3 or above), which names its directories and labels
  *                                its counters; default 0
  *   replayer.aeronDir          — the Aeron directory; default {tmpdir}/seqeron-seq-aeron-{memberId}
@@ -46,8 +47,8 @@ import org.limitless.seqeron.util.Logger;
  *
  * <p>Launch example (gateway host 3, members on m0/m1/m2):
  * <pre>
+ *   SEQERON_HOSTS=m0,m1,m2 \
  *   java -Dreplayer.memberId=3 -Dreplayer.host=gw0 \
- *        -Dreplayer.archiveEndpoints=m0:9301,m1:9311,m2:9321 \
  *        --add-opens=java.base/sun.nio.ch=ALL-UNNAMED \
  *        --add-opens=java.base/jdk.internal.misc=ALL-UNNAMED \
  *        -cp seqeron-uber.jar \
@@ -93,10 +94,11 @@ public final class ReplayerServer {
         final int memberId = Integer.getInteger(PROP_MEMBER_ID, 0);
         final String aeronDir = System.getProperty(
             PROP_AERON_DIR, System.getProperty("java.io.tmpdir") + "/seqeron-seq-aeron-" + memberId);
-        final String archiveEndpoints = System.getProperty(PROP_ARCHIVE_ENDPOINTS);
+        final String archiveEndpoints = System.getProperty(PROP_ARCHIVE_ENDPOINTS, archiveEndpoints(PortLayout.HOSTS));
         if (archiveEndpoints == null) {
             throw new IllegalArgumentException(
-                PROP_ARCHIVE_ENDPOINTS + " is required: on a cluster member the Replayer runs inside SequencerServer");
+                PROP_ARCHIVE_ENDPOINTS + " or " + PortLayout.ENV_HOSTS
+                    + " is required: on a cluster member the Replayer runs inside SequencerServer");
         }
         final String host = System.getProperty(PROP_HOST, PortLayout.DEFAULT_HOST);
         final Supplier<IdleStrategy> idleStrategies = IdleStrategies.fromProperty(PROP_IDLE_STRATEGY);
@@ -220,6 +222,21 @@ public final class ReplayerServer {
                                                .deleteArchiveOnStart(false)
                                                .idleStrategySupplier(idleStrategies);
         return ArchivingMediaDriver.launch(driverCtx, archiveCtx);
+    }
+
+    /** Each member's archive control endpoint, {@code host:port,…} in member-id order, or {@code null} for none. */
+    static String archiveEndpoints(final List<String> hosts) {
+        if (hosts.isEmpty()) {
+            return null;
+        }
+        final StringBuilder endpoints = new StringBuilder();
+        for (int id = 0; id < hosts.size(); id++) {
+            if (id > 0) {
+                endpoints.append(',');
+            }
+            endpoints.append(hosts.get(id)).append(':').append(PortLayout.archivePort(id));
+        }
+        return endpoints.toString();
     }
 
     /** {@code host:port,host:port,…}, blanks ignored. */

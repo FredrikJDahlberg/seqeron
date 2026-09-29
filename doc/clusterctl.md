@@ -20,9 +20,8 @@ The defaults match `SequencerServer`'s, so a default single-node cluster needs n
 | `CLUSTERCTL_MEMBER_ID` | the co-located member's id | 0 |
 | `CLUSTERCTL_BASE_DIR` | root of the cluster data directories | `$TMPDIR/seqeron-seq` |
 | `CLUSTERCTL_AERON_DIR` | the co-located member's Aeron directory | `$TMPDIR/seqeron-seq-aeron-<id>` |
-| `CLUSTERCTL_HOSTS` | every member's host, in member-id order, as the node's `sequencer.hosts` | unset |
-| `CLUSTERCTL_INGRESS_ENDPOINTS` | member ingress endpoints | from `CLUSTERCTL_HOSTS`, else `0=localhost:9302` |
-| `CLUSTERCTL_EGRESS_HOST` | host the leader replies to; on a follower of a multi-host cluster, this node's own name | this member's entry in `CLUSTERCTL_HOSTS`, else `localhost` |
+| `CLUSTERCTL_INGRESS_ENDPOINTS` | member ingress endpoints | from `SEQERON_HOSTS`, else `0=localhost:9302` |
+| `CLUSTERCTL_EGRESS_HOST` | host the leader replies to; on a follower of a multi-host cluster, this node's own name | this member's entry in `SEQERON_HOSTS`, else `localhost` |
 | `SEQERON_JAR` | the uber jar | `build/libs/seqeron-<version>-uber.jar` |
 
 Prerequisite: `./gradlew uberJar`.

@@ -20,6 +20,12 @@ public final class PortLayout {
      */
     public static final String ENV_PORT_BASE = "SEQERON_PORT_BASE";
 
+    /**
+     * Deployment-wide host list, {@code "h0,h1,h2"}: member {@code i} runs on entry {@code i}. Read by every seqeron
+     * process in both languages, it names the members wherever a default would otherwise say {@link #DEFAULT_HOST}.
+     */
+    public static final String ENV_HOSTS = "SEQERON_HOSTS";
+
     /** The base when {@link #ENV_PORT_BASE} is unset: core's registered block. */
     public static final int DEFAULT_CLUSTER_PORT_BASE = 9300;
 
@@ -37,6 +43,9 @@ public final class PortLayout {
 
     /** The base this process runs on, {@link #ENV_PORT_BASE}'s value or {@link #DEFAULT_CLUSTER_PORT_BASE}. */
     public static final int CLUSTER_PORT_BASE = resolveClusterPortBase(System.getenv(ENV_PORT_BASE));
+
+    /** The members' hosts from {@link #ENV_HOSTS}, empty when it is unset. */
+    public static final List<String> HOSTS = resolveHosts(System.getenv(ENV_HOSTS));
 
     /**
      * Core's reserved block (doc/ops.md, "Ports"): three members wide, one stride each — wider than the
@@ -88,6 +97,16 @@ public final class PortLayout {
                     + "-port cluster block below " + MAX_PORT);
         }
         return base;
+    }
+
+    /**
+     * Parses {@link #ENV_HOSTS}; a pure function so it is testable without the environment.
+     *
+     * @param raw the raw environment value, or {@code null} when unset
+     * @return the host list, empty when {@code raw} is unset or blank
+     */
+    static List<String> resolveHosts(final String raw) {
+        return null == raw || raw.isBlank() ? List.of() : parseHosts(raw);
     }
 
     /** Whether a port falls inside core's reservation, for a product checking its own bases. */
@@ -176,8 +195,11 @@ public final class PortLayout {
         return endpoints.toString();
     }
 
-    /** The set naming every member of a full {@link #CLUSTER_MEMBER_COUNT}-member cluster. */
+    /**
+     * The default endpoint set: the members {@link #HOSTS} names, else a full {@link #CLUSTER_MEMBER_COUNT}-member
+     * cluster on {@link #DEFAULT_HOST}.
+     */
     public static String ingressEndpoints() {
-        return ingressEndpoints(CLUSTER_MEMBER_COUNT);
+        return HOSTS.isEmpty() ? ingressEndpoints(CLUSTER_MEMBER_COUNT) : ingressEndpoints(HOSTS);
     }
 }

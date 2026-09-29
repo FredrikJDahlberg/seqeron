@@ -70,11 +70,9 @@ public final class ClusterCtl {
     private static final String AERON_DIR = System.getProperty(
         "clusterctl.aeronDir", System.getProperty("java.io.tmpdir") + "/seqeron-seq-aeron-" + MEMBER_ID);
     private static final File CLUSTER_DIR = new File(BASE_DIR + "/cluster-" + MEMBER_ID);
-    private static final String HOSTS = System.getProperty("clusterctl.hosts");
-    private static final List<String> HOST_LIST = HOSTS == null ? List.of() : PortLayout.parseHosts(HOSTS);
     private static final String INGRESS_ENDPOINTS = System.getProperty(
         "clusterctl.ingressEndpoints",
-        HOSTS == null ? "0=" + PortLayout.ingressEndpoint(0) : PortLayout.ingressEndpoints(HOST_LIST));
+        PortLayout.HOSTS.isEmpty() ? "0=" + PortLayout.ingressEndpoint(0) : PortLayout.ingressEndpoints());
 
     private static final long CONNECT_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(5);
     private static final long ECHO_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(5);
@@ -88,7 +86,8 @@ public final class ClusterCtl {
      */
     private static final String EGRESS_CHANNEL = "aeron:udp?endpoint="
         + System.getProperty("clusterctl.egressHost",
-                             MEMBER_ID < HOST_LIST.size() ? HOST_LIST.get(MEMBER_ID) : PortLayout.DEFAULT_HOST)
+                             MEMBER_ID < PortLayout.HOSTS.size() ? PortLayout.HOSTS.get(MEMBER_ID)
+                                                                 : PortLayout.DEFAULT_HOST)
         + ":0";
 
     /** header.connectionId/sessionId for markers this tool submits: no gateway process/TCP connection. */
@@ -561,8 +560,9 @@ public final class ClusterCtl {
               clusterctl.memberId          co-located member id             (default 0)
               clusterctl.baseDir           cluster data dir root            (default $TMPDIR/seqeron-seq)
               clusterctl.aeronDir          co-located member's Aeron dir     (default $TMPDIR/seqeron-seq-aeron-<id>)
-              clusterctl.hosts             every member's host, in id order  (e.g. h0,h1,h2)
-              clusterctl.ingressEndpoints  member ingress endpoints          (default from hosts, else 0=localhost:9302)
-              clusterctl.egressHost        host the leader replies to        (default this member's host, else localhost)""");
+              clusterctl.ingressEndpoints  member ingress endpoints          (default from SEQERON_HOSTS,
+                                                                              else 0=localhost:9302)
+              clusterctl.egressHost        host the leader replies to        (default this member's host in
+                                                                              SEQERON_HOSTS, else localhost)""");
     }
 }

@@ -21,9 +21,8 @@
 #   CLUSTERCTL_MEMBER_ID          co-located member id             (default 0)
 #   CLUSTERCTL_BASE_DIR           cluster data dir root            (default $TMPDIR/seqeron-seq)
 #   CLUSTERCTL_AERON_DIR          co-located member's Aeron dir     (default $TMPDIR/seqeron-seq-aeron-<id>)
-#   CLUSTERCTL_HOSTS              every member's host, in id order  (e.g. h0,h1,h2)
-#   CLUSTERCTL_INGRESS_ENDPOINTS  member ingress endpoints          (default from CLUSTERCTL_HOSTS, else 0=localhost:9302)
-#   CLUSTERCTL_EGRESS_HOST        host the leader replies to        (default this member's host, else localhost)
+#   CLUSTERCTL_INGRESS_ENDPOINTS  member ingress endpoints          (default from SEQERON_HOSTS, else 0=localhost:9302)
+#   CLUSTERCTL_EGRESS_HOST        host the leader replies to        (default this member's in SEQERON_HOSTS, else localhost)
 #   SEQERON_JAR                  path to the uber jar             (default build/libs/seqeron-<v>-uber.jar)
 #
 # Prerequisite: ./gradlew uberJar
@@ -41,7 +40,6 @@ JAVA_OPTS=("${SEQERON_JAVA_OPTS[@]}")
 DPROPS=( "-Dclusterctl.memberId=${CLUSTERCTL_MEMBER_ID:-0}" )
 [[ -n "${CLUSTERCTL_BASE_DIR:-}" ]]          && DPROPS+=( "-Dclusterctl.baseDir=${CLUSTERCTL_BASE_DIR}" )
 [[ -n "${CLUSTERCTL_AERON_DIR:-}" ]]         && DPROPS+=( "-Dclusterctl.aeronDir=${CLUSTERCTL_AERON_DIR}" )
-[[ -n "${CLUSTERCTL_HOSTS:-}" ]]             && DPROPS+=( "-Dclusterctl.hosts=${CLUSTERCTL_HOSTS}" )
 [[ -n "${CLUSTERCTL_INGRESS_ENDPOINTS:-}" ]] && DPROPS+=( "-Dclusterctl.ingressEndpoints=${CLUSTERCTL_INGRESS_ENDPOINTS}" )
 [[ -n "${CLUSTERCTL_EGRESS_HOST:-}" ]]       && DPROPS+=( "-Dclusterctl.egressHost=${CLUSTERCTL_EGRESS_HOST}" )
 

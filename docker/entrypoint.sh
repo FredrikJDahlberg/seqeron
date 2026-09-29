@@ -25,7 +25,6 @@ JAVA_OPTS=("${SEQERON_JAVA_OPTS[@]}")
 
 exec java "${JAVA_OPTS[@]}" \
     -Dsequencer.memberId="${MEMBER_ID}" \
-    -Dsequencer.hosts="${HOSTS}" \
     -Dsequencer.baseDir="${BASE_DIR}" \
     -Dsequencer.aeronDir="${AERON_DIR}" \
     -Dsequencer.idleStrategy="${IDLE_STRATEGY:-backoff}" \

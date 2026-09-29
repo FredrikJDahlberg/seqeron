@@ -69,8 +69,9 @@ class PortLayoutTest {
     }
 
     @Test
-    @DisplayName("the default set names every member the cluster is bounded at")
+    @DisplayName("with SEQERON_HOSTS unset, the default set names every member the cluster is bounded at")
     void theDefaultSetIsTheWholeCluster() {
+        assertEquals(List.of(), PortLayout.HOSTS);
         assertEquals(PortLayout.ingressEndpoints(PortLayout.CLUSTER_MEMBER_COUNT), PortLayout.ingressEndpoints());
     }
 
@@ -90,6 +91,15 @@ class PortLayoutTest {
                          + PortLayout.ingressPort(2),
                      PortLayout.ingressEndpoints(PortLayout.parseHosts("h0, h1 ,h2")));
         assertEquals(PortLayout.ingressEndpoints(1), PortLayout.ingressEndpoints(List.of(PortLayout.DEFAULT_HOST)));
+    }
+
+    @Test
+    @DisplayName("SEQERON_HOSTS unset or blank names no host; set, it is parsed like any host list")
+    void hostsFromTheEnvironment() {
+        assertEquals(List.of(), PortLayout.resolveHosts(null));
+        assertEquals(List.of(), PortLayout.resolveHosts("  "));
+        assertEquals(List.of("h0", "h1"), PortLayout.resolveHosts("h0,h1"));
+        assertThrows(IllegalArgumentException.class, () -> PortLayout.resolveHosts("h0,,h1"));
     }
 
     @Test

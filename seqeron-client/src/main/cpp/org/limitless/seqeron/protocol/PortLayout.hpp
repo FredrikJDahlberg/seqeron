@@ -21,6 +21,8 @@ inline constexpr int DEFAULT_CLUSTER_PORT_BASE = 9300;
 inline constexpr int CLUSTER_MEMBER_COUNT = 3; // a cluster is bounded at the block's width in strides
 inline constexpr int CLUSTER_PORT_BLOCK_WIDTH = CLUSTER_MEMBER_COUNT * CLUSTER_PORT_STRIDE;
 inline constexpr const char* ENV_PORT_BASE = "SEQERON_PORT_BASE";
+// Deployment-wide host list, "h0,h1,h2": member i runs on entry i. The Java twin is PortLayout.ENV_HOSTS.
+inline constexpr const char* ENV_HOSTS = "SEQERON_HOSTS";
 
 // How a process reaches the archive in its own Aeron directory, and that link's control stream. The Java
 // twin is PortLayout's ARCHIVE_CONTROL_CHANNEL/ARCHIVE_CONTROL_STREAM_ID; both sides must name one id.
@@ -206,9 +208,42 @@ inline std::string ingressEndpointsCsv(const std::vector<std::string>& hosts)
  * @param nodeCount the cluster's member count
  * @param host      the host every member runs on
  */
-inline std::string ingressEndpointsCsv(int nodeCount = CLUSTER_MEMBER_COUNT, const char* host = "localhost")
+inline std::string ingressEndpointsCsv(int nodeCount, const char* host = "localhost")
 {
     return ingressEndpointsCsv(std::vector<std::string>(nodeCount, host));
+}
+
+/**
+ * Parses a SEQERON_HOSTS value. The pure seam over the environment read, so the rules are testable. The
+ * mirror of PortLayout.resolveHosts.
+ *
+ * @param raw the SEQERON_HOSTS value, or nullptr when unset
+ * @return the host list, empty when raw is unset or blank
+ * @throws std::invalid_argument if raw is set and parseHosts refuses it
+ */
+inline std::vector<std::string> parseClusterHosts(const char* raw)
+{
+    if (raw == nullptr || std::string_view{ raw }.find_first_not_of(" \t") == std::string_view::npos)
+    {
+        return {};
+    }
+    return parseHosts(raw);
+}
+
+// Read once: the environment cannot change under a running process.
+inline const std::vector<std::string>& clusterHosts()
+{
+    static const std::vector<std::string> hosts = parseClusterHosts(std::getenv(ENV_HOSTS));
+    return hosts;
+}
+
+/**
+ * Builds the default ingress endpoint set: the members SEQERON_HOSTS names, else a full CLUSTER_MEMBER_COUNT-member
+ * cluster on localhost. The mirror of PortLayout.ingressEndpoints().
+ */
+inline std::string ingressEndpointsCsv()
+{
+    return clusterHosts().empty() ? ingressEndpointsCsv(CLUSTER_MEMBER_COUNT) : ingressEndpointsCsv(clusterHosts());
 }
 
 /**

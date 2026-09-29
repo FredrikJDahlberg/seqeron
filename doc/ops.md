@@ -156,6 +156,10 @@ disagree bind and dial different ports, and the symptom is a connection that nev
 be between 1024 and 65506; a process with an invalid value fails at start-up. Moving the base does not
 move the other ports in the table.
 
+`SEQERON_HOSTS` (`h0,h1,h2`, member `i` on entry `i`) names the hosts the same way, and is set the same
+way: identically for every seqeron process. A member builds its `clusterMembers` from it, and a client's
+default ingress endpoints, `clusterctl`'s egress host and a gateway host's member archives follow from it.
+
 The formula has three copies, `protocol/PortLayout.java`, `protocol/PortLayout.hpp` and
 `seqeron-service/src/main/scripts/ports.sh`, pinned to the same values by `PortLayoutTest` and
 `SequencerServerTest`; change all three together. An application can check its own ports against the
@@ -243,7 +247,7 @@ nothing to discipline them.
   same network boundary as the nodes.
 - No Prometheus alerting rules or Grafana alert provisioning — dashboard only.
 - `prometheus.yml`'s target list is fixed and hand-maintained — no service discovery. For a cluster
-  whose membership changes, keep it in sync with `sequencer.hosts`.
+  whose membership changes, keep it in sync with `SEQERON_HOSTS`.
 - **Gateways publish no fence counters.** Beyond `seqeron_app_recovery_stalled`, a gateway exports
   nothing of seqeron's: no fence counts, no connection state. `seqeron_sequencer_gateway_promotion_total`
   shows that a promotion happened, not why; the gateway's log does. An application can export its own

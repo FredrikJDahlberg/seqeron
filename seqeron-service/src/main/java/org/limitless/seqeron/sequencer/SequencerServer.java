@@ -42,6 +42,8 @@ import org.limitless.seqeron.util.Logger;
  *   sequencer.memberId        — this node's Raft member ID (0, 1, or 2); default 0
  *   sequencer.hosts           — every member's host name, comma-separated in member-id order; generates
  *                               clusterMembers. Replaces nodeCount and clusterMembers, which it refuses.
+ *                               Default SEQERON_HOSTS when neither of those is set. With more than one
+ *                               member, sequencer.baseDir is required.
  *   sequencer.nodeCount       — cluster size, all on localhost; used to generate clusterMembers when that
  *                               property is not set explicitly; default 1
  *   sequencer.clusterMembers  — full clusterMembers string (Aeron format); overrides
@@ -96,13 +98,10 @@ public final class SequencerServer {
     public static void main(final String[] args) {
         final int memberId = Integer.getInteger(PROP_MEMBER_ID, 0);
         final int nodeCount = Integer.getInteger(PROP_NODE_COUNT, 1);
-        final String hostsCsv = System.getProperty(PROP_HOSTS);
-        final List<String> hosts = hostsCsv == null ? null : memberHosts(hostsCsv, memberId);
-        if (hosts != null &&
-            (System.getProperty(PROP_CLUSTER_MEMBERS) != null || System.getProperty(PROP_NODE_COUNT) != null)) {
-            throw new IllegalArgumentException(
-                PROP_HOSTS + " replaces " + PROP_CLUSTER_MEMBERS + " and " + PROP_NODE_COUNT + "; set only one");
-        }
+        final List<String> hosts = resolveHosts(
+            System.getProperty(PROP_HOSTS),
+            System.getProperty(PROP_CLUSTER_MEMBERS) != null || System.getProperty(PROP_NODE_COUNT) != null,
+            System.getProperty(PROP_BASE_DIR) != null, PortLayout.HOSTS, memberId);
         final String host = System.getProperty(PROP_HOST, hosts == null ? PortLayout.DEFAULT_HOST : hosts.get(memberId));
         final String baseDir =
             System.getProperty(PROP_BASE_DIR, System.getProperty("java.io.tmpdir") + "/seqeron-seq");
@@ -218,13 +217,38 @@ public final class SequencerServer {
         }
     }
 
-    /** {@code sequencer.hosts}, parsed, refusing a list that does not name {@code memberId}. */
-    static List<String> memberHosts(final String hostsCsv, final int memberId) {
-        final List<String> hosts = PortLayout.parseHosts(hostsCsv);
+    /**
+     * This node's member hosts, or {@code null} when its layout comes from {@code clusterMembers}/{@code nodeCount}.
+     * {@code sequencer.hosts} wins; {@code SEQERON_HOSTS} applies only when no layout property is set.
+     *
+     * @param hostsProperty     {@code sequencer.hosts}, or {@code null}
+     * @param layoutPropertySet whether {@code clusterMembers} or {@code nodeCount} is set
+     * @param baseDirSet        whether {@code sequencer.baseDir} is set
+     * @param envHosts          {@link PortLayout#HOSTS}
+     * @param memberId          this node's member id
+     * @throws IllegalArgumentException if {@code sequencer.hosts} is set beside a layout property, the list has no
+     *                                  entry for {@code memberId}, or it names several members and no baseDir is set
+     */
+    static List<String> resolveHosts(final String hostsProperty, final boolean layoutPropertySet,
+                                     final boolean baseDirSet, final List<String> envHosts, final int memberId) {
+        if (hostsProperty != null && layoutPropertySet) {
+            throw new IllegalArgumentException(
+                PROP_HOSTS + " replaces " + PROP_CLUSTER_MEMBERS + " and " + PROP_NODE_COUNT + "; set only one");
+        }
+        final List<String> hosts = hostsProperty != null
+            ? PortLayout.parseHosts(hostsProperty)
+            : layoutPropertySet || envHosts.isEmpty() ? null : envHosts;
+        if (hosts == null) {
+            return null;
+        }
         if (memberId < 0 || memberId >= hosts.size()) {
             throw new IllegalArgumentException(
-                PROP_HOSTS + " names " + hosts.size() + " member(s), so it has no member " + memberId + ": '"
-                    + hostsCsv + "'");
+                "the host list " + hosts + " names " + hosts.size() + " member(s), so it has no member " + memberId);
+        }
+        if (hosts.size() > 1 && !baseDirSet) {
+            throw new IllegalArgumentException(
+                PROP_BASE_DIR + " is required for a multi-member cluster: its default is under java.io.tmpdir, "
+                    + "which is not persistent storage for the Raft log and archive");
         }
         return hosts;
     }

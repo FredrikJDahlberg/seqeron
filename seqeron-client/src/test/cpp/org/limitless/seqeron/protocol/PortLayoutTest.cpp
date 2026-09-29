@@ -62,6 +62,15 @@ TEST(PortLayout, HostListEndpointSet)
     EXPECT_EQ(ingressEndpointsCsv(1), ingressEndpointsCsv(std::vector<std::string>{ "localhost" }));
 }
 
+// SEQERON_HOSTS unset or blank names no host; set, it is parsed like any host list.
+TEST(PortLayout, ParseClusterHostsFromTheEnvironment)
+{
+    EXPECT_TRUE(parseClusterHosts(nullptr).empty());
+    EXPECT_TRUE(parseClusterHosts("  ").empty());
+    EXPECT_EQ((std::vector<std::string>{ "h0", "h1" }), parseClusterHosts("h0,h1"));
+    EXPECT_THROW(parseClusterHosts("h0,,h1"), std::invalid_argument);
+}
+
 TEST(PortLayout, HostListRules)
 {
     EXPECT_EQ(std::vector<std::string>{ "h0" }, parseHosts("h0"));

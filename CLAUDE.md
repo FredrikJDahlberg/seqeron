@@ -428,7 +428,8 @@ mirrored by `PortLayout` in both languages; change all three together.
 The two structural costs recorded above are the standing ones: **no snapshots** (recovery time and archive size grow with uptime),
 and **the cluster is bounded at three members** by the 30-port cluster block (`doc/ops.md`, "Ports").
 `SEQERON_PORT_BASE` moves that block off its 9300 default — deployment-wide, read by all three mirrors
-— but does not widen it.
+— but does not widen it. `SEQERON_HOSTS` names the members' hosts, deployment-wide too, and is read by
+both `PortLayout`s only: the scripts' `ports.sh` lays out localhost clusters.
 
 `doc/` holds `getting-started.md` (a release node plus a consumer and a producer; its snippets pin a
 release, so bump them when one changes the API they use), `seqeron-protocol-spec.md` (normative — the frames, the families,
