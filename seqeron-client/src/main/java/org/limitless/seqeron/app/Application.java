@@ -14,6 +14,10 @@ import org.limitless.seqeron.replayer.client.SequencedEvent;
  * the cluster session over the node's own {@code aeron:ipc}, the tap it follows, the leader gate,
  * confirmed ingress across a failover, and the fences that say it may no longer act.
  *
+ * <p><b>Off the cluster</b> ({@link Builder#offCluster}), on a gateway host, it is the one instance rather
+ * than one of three: its gate opens once caught up, whoever leads, and it submits over UDP. Nothing stops a
+ * second instance publishing too; an application that needs a standby off the cluster is a {@link Gateway}.
+ *
  * <p><b>What is left to the consumer is its own work</b>: the payloads it reads, the state it keeps, the
  * payloads it submits. Every replica reads the same ordered stream and so holds the same state, which is
  * what makes {@link OutstandingWork} — fed that same stream — the way work survives the gate closing
@@ -43,9 +47,10 @@ public final class Application implements AutoCloseable {
     public interface Listener {
         /**
          * The leader gate crossed an edge: true when this replica may do leader-only work — caught up, and
-         * its own node leads — false when it may not. <b>Every leadership change closes an open gate</b>,
-         * so false is where {@link OutstandingWork#onNotLeader()} belongs: a reply this node submitted
-         * during the election may have gone with it, and the next opening dispatches it again.
+         * its own node leads, or off the cluster caught up alone — false when it may not. <b>Every
+         * leadership change closes an open gate</b>, so false is where {@link OutstandingWork#onNotLeader()}
+         * belongs: a reply this node submitted during the election may have gone with it, and the next
+         * opening dispatches it again.
          */
         void onLeadershipChanged(boolean leading);
 
@@ -71,6 +76,7 @@ public final class Application implements AutoCloseable {
     private final Listener listener;
     private final int sourceId;
     private final int memberId;
+    private final boolean offCluster;
     private final long ipcConnectTimeoutMs;
     private final String egressChannel;
     private final String ingressEndpoints;
@@ -79,10 +85,11 @@ public final class Application implements AutoCloseable {
         this.listener = builder.listener;
         this.sourceId = builder.sourceId;
         this.memberId = builder.memberId;
+        this.offCluster = builder.offCluster;
         this.ipcConnectTimeoutMs = builder.ipcConnectTimeoutMs;
         this.egressChannel = builder.egressChannel;
         this.ingressEndpoints = builder.ingressEndpoints;
-        this.gate = new LeaderGate(builder.memberId);
+        this.gate = new LeaderGate(builder.memberId, builder.offCluster);
         this.session = new Session(builder.clientId, builder.pendingCapacity, builder.tapStallTimeoutMs,
                                    builder.recoveryStallTimeoutMs, new SessionDispatch());
     }
@@ -93,7 +100,11 @@ public final class Application implements AutoCloseable {
 
     /** Opens the cluster session on this node and starts following its tap; the gate stays shut until caught up. */
     public void start(final Aeron aeron) {
-        session.startColocated(aeron, memberId, ipcConnectTimeoutMs, egressChannel, ingressEndpoints);
+        if (offCluster) {
+            session.start(aeron, memberId, egressChannel, ingressEndpoints);
+        } else {
+            session.startColocated(aeron, memberId, ipcConnectTimeoutMs, egressChannel, ingressEndpoints);
+        }
     }
 
     /**
@@ -210,6 +221,7 @@ public final class Application implements AutoCloseable {
         private int sourceId;
         private int clientId;
         private int memberId;
+        private boolean offCluster;
         private String egressChannel;
         private String ingressEndpoints = PortLayout.ingressEndpoints();
         private Listener listener;
@@ -236,6 +248,15 @@ public final class Application implements AutoCloseable {
         /** The node this replica runs on: whose tap it follows, and whose leadership opens its gate. */
         public Builder memberId(final int memberId) {
             this.memberId = memberId;
+            return this;
+        }
+
+        /**
+         * Whether this node is a gateway host, running no member, rather than a member: the gate then opens
+         * whoever leads, and ingress is UDP alone. Run one instance, as nothing elects between two.
+         */
+        public Builder offCluster(final boolean offCluster) {
+            this.offCluster = offCluster;
             return this;
         }
 

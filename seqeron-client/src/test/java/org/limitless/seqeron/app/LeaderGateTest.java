@@ -83,4 +83,28 @@ class LeaderGateTest {
 
         assertEquals(Transition.OPENED, gate.update(true, SELF), "nothing was dispatched, so no cycle is lost");
     }
+
+    @Test
+    @DisplayName("off the cluster, opens when caught up whoever leads, and only then")
+    void offClusterOpensWhoeverLeads() {
+        final LeaderGate offCluster = new LeaderGate(SELF, true);
+
+        assertEquals(Transition.NONE, offCluster.update(false, OTHER), "still recovering");
+        assertEquals(Transition.OPENED, offCluster.update(true, OTHER));
+        assertEquals(Transition.NONE, offCluster.update(true, NO_LEADER));
+        assertEquals(Transition.CLOSED, offCluster.update(false, OTHER));
+    }
+
+    @Test
+    @DisplayName("off the cluster, a leadership change still closes the gate for one cycle")
+    void offClusterLeadershipChangeClosesForOneCycle() {
+        final LeaderGate offCluster = new LeaderGate(SELF, true);
+        offCluster.update(true, OTHER);
+
+        offCluster.onLeadershipChanged(); // a new term
+
+        assertEquals(Transition.CLOSED, offCluster.update(true, OTHER),
+                     "a reply sent during that election may be lost");
+        assertEquals(Transition.OPENED, offCluster.update(true, OTHER));
+    }
 }

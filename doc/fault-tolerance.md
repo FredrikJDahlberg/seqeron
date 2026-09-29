@@ -276,6 +276,9 @@ A-1 to A-3).
   applies several frames per duty cycle and can apply a change away and back within one; a reply sent
   during that election may have been lost with the old leader's uncommitted log. `OutstandingWorkPropertyTest`
   covers this case.
+- **Off the cluster** (`Application`'s `offCluster`, §3.3), one instance is the only dispatcher: its
+  gate opens once caught up, whoever leads, and closes on every `LeadershipChanged` as above. Exactly one
+  must run, since nothing elects between two.
 - **Dispatch is in insertion order**, which is `globalSeqNo` order. Side effects are externally visible in
   emission order, and a hash map's iteration order differs between replicas.
 

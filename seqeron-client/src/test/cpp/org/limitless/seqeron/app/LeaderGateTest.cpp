@@ -81,5 +81,26 @@ TEST(LeaderGate, LeadershipChangeWhileClosed)
     EXPECT_EQ(Transition::Opened, gate.update(true, SELF)) << "nothing was dispatched, so no cycle is lost";
 }
 
+TEST(LeaderGate, OffClusterOpensWhoeverLeads)
+{
+    LeaderGate gate{ SELF, true };
+
+    EXPECT_EQ(Transition::None, gate.update(false, OTHER)) << "still recovering";
+    EXPECT_EQ(Transition::Opened, gate.update(true, OTHER));
+    EXPECT_EQ(Transition::None, gate.update(true, NO_LEADER));
+    EXPECT_EQ(Transition::Closed, gate.update(false, OTHER));
+}
+
+TEST(LeaderGate, OffClusterLeadershipChangeClosesForOneCycle)
+{
+    LeaderGate gate{ SELF, true };
+    gate.update(true, OTHER);
+
+    gate.onLeadershipChanged(); // a new term
+
+    EXPECT_EQ(Transition::Closed, gate.update(true, OTHER)) << "a reply sent during that election may be lost";
+    EXPECT_EQ(Transition::Opened, gate.update(true, OTHER));
+}
+
 } // namespace
 } // namespace org::limitless::seqeron::app::detail

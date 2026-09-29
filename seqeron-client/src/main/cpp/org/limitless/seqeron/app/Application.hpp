@@ -37,6 +37,10 @@ concept ApplicationListener =
  * the node's own aeron:ipc, the tap it follows, the leader gate, confirmed ingress across a failover, and
  * the fences that say it may no longer act.
  *
+ * Off the cluster (Config::offCluster), on a gateway host, it is the one instance rather than one of three:
+ * its gate opens once caught up, whoever leads, and it submits over UDP. Nothing stops a second instance
+ * publishing too; an application that needs a standby off the cluster is a Gateway.
+ *
  * What is left to the consumer is its own work: the payloads it reads, the state it keeps, the payloads it
  * submits. Every replica reads the same ordered stream and so holds the same state, which is what makes
  * OutstandingWork — fed that same stream — the way work survives the gate closing under it.
@@ -63,6 +67,9 @@ class Application
         std::int32_t clientId = 0;
         // The node this replica runs on: whose tap it follows, and whose leadership opens its gate.
         std::int32_t memberId = 0;
+        // Whether this node is a gateway host, running no member, rather than a member: the gate then opens
+        // whoever leads, and ingress is UDP alone. Run one instance, as nothing elects between two.
+        bool offCluster = false;
         // This client's own egress endpoint; two media drivers on one host cannot both bind a port.
         std::string egressChannel;
         // The members to reach when this node is not leading, "memberId=host:port,...".
@@ -82,7 +89,7 @@ class Application
     Application(Config config, Listener& listener) :
       m_config{ std::move(config) },
       m_listener{ listener },
-      m_gate{ m_config.memberId },
+      m_gate{ m_config.memberId, m_config.offCluster },
       m_dispatch{ *this },
       m_session{ m_config.clientId, m_config.pendingCapacity, m_config.tapStallTimeoutMs,
                  m_config.recoveryStallTimeoutMs, m_dispatch }
@@ -98,12 +105,19 @@ class Application
      * Opens the cluster session on this node and starts following its tap; the gate stays shut until caught
      * up.
      *
-     * @param aeron the client, on this member's Aeron directory
+     * @param aeron the client, on this node's Aeron directory
      */
     void start(std::shared_ptr<aeron::Aeron> aeron)
     {
-        m_session.startColocated(std::move(aeron), m_config.memberId, m_config.ipcConnectTimeoutMs,
-                                 m_config.egressChannel, m_config.ingressEndpoints);
+        if (m_config.offCluster)
+        {
+            m_session.start(std::move(aeron), m_config.memberId, m_config.egressChannel, m_config.ingressEndpoints);
+        }
+        else
+        {
+            m_session.startColocated(std::move(aeron), m_config.memberId, m_config.ipcConnectTimeoutMs,
+                                     m_config.egressChannel, m_config.ingressEndpoints);
+        }
     }
 
     // One duty-cycle iteration: the cluster session and the tap, then the gate over what they left. Returns

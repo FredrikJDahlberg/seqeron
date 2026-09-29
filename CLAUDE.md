@@ -308,7 +308,8 @@ positions follow from the frames — falling back to that recording's start if t
 next one. Each start relays from `globalSeqNo` 1 into a new local recording, as a member's restart does, so
 the host's chain passes the same integrity check. Clients there are unchanged: they attach to the host's
 Aeron directory with the host's node id (3 or above) where they take a member id, and submit over UDP
-ingress. The member pays one archive replay per gateway host and its sequencer nothing.
+ingress — an `Application` with `offCluster` set, since no leadership there is its own, which makes it the
+one instance whose gate opens once caught up. The member pays one archive replay per gateway host and its sequencer nothing.
 
 `ReplayerStreamReceiver` is the Aeron adapter only — subscriptions, the replay image, the clocks; every
 decision it makes about them lives in **`ReplayerRecovery`**, which holds none of them and is where the

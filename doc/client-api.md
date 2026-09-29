@@ -65,8 +65,8 @@ by itself, and delivers every frame once, in `globalSeqNo` order. A producer tha
 `start-gateway-host.sh`, whose Replayer relays a member's tap onto the host's own
 ([`fault-tolerance.md`](fault-tolerance.md#33-gateway-host)). A client there takes the host's node id
 (3 or above) where it takes a `memberId`, attaches to the host's Aeron directory, and is otherwise
-unchanged. `Gateway` works there as it does on a member; `Application` does not, since it publishes
-only while its own node leads, and a gateway host never does.
+unchanged. `Gateway` works there as it does on a member; `Application` needs
+[`offCluster`](#application), since no leadership there is its own.
 
 | Call | Java | C++ |
 |---|---|---|
@@ -269,6 +269,12 @@ while that member leads (`DEFAULT_IPC_CONNECT_TIMEOUT_MS`).
 | `publish(payloadId, payload, length)` | submits one payload of this application's own, on its `sourceId` and no connection. C++ also has `publish<Encoder>(payloadId, fill)` |
 | `reply(requesterSourceId, connectionId, payloadId, payload, length)` | the same on behalf of the producer that asked: the **requester's** `sourceId` and `connectionId`, which is how the gateway that took the request routes the answer back out. C++ also has `reply<Encoder>(requesterSourceId, connectionId, payloadId, fill)` |
 | `sourceId()`, `isCaughtUp()`, `lastGlobalSeqNo()` | what the replica may say about itself |
+
+**Off the cluster**, on a gateway host, the builder's `offCluster(true)` (C++ `Config::offCluster`) makes
+it the one instance rather than one of three. Its gate opens once caught up, whoever leads, and still
+closes for one cycle on every leadership change; ingress is UDP alone. Nothing elects between two such
+instances, and the sequencer does not refuse a second one's payloads, so run exactly one. An application
+that needs a standby off the cluster is a `Gateway`.
 
 `seqeron-examples/src/java/example/ColocatedApp.java` and its C++ twin `ColocatedApp.cpp` are the
 reference consumers, and the only clients in the repository whose builds refuse anything outside `app`

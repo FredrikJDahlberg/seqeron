@@ -1,8 +1,9 @@
 package org.limitless.seqeron.app;
 
 /**
- * Whether this replica may do leader-only work: caught up, and its node is the leader. Gives edges rather
- * than a boolean, because {@link OutstandingWork#onNotLeader()} belongs on the closing edge.
+ * Whether this replica may do leader-only work: caught up, and its node is the leader — or, off the
+ * cluster, caught up alone. Gives edges rather than a boolean, because {@link OutstandingWork#onNotLeader()}
+ * belongs on the closing edge.
  *
  * <p><b>Every leadership change closes an open gate</b>, not only one that ends with another leader.
  * {@code update} runs once per duty cycle, so a flip away and back applied within one cycle reads the same
@@ -24,6 +25,7 @@ final class LeaderGate {
     }
 
     private final int memberId;
+    private final boolean offCluster;
 
     private boolean open;
     private boolean leadershipChanged;
@@ -34,7 +36,19 @@ final class LeaderGate {
      * @param memberId this node's cluster member id
      */
     public LeaderGate(final int memberId) {
+        this(memberId, false);
+    }
+
+    /**
+     * A gate that starts shut.
+     *
+     * @param memberId   this node's cluster member id
+     * @param offCluster whether this node runs no member, so that no leadership is its own and the gate opens
+     *                   whoever leads
+     */
+    public LeaderGate(final int memberId, final boolean offCluster) {
         this.memberId = memberId;
+        this.offCluster = offCluster;
     }
 
     /** A {@code LeadershipChanged} frame was applied; an open gate closes on the next {@link #update}. */
@@ -52,7 +66,7 @@ final class LeaderGate {
         final boolean wasOpen = open;
         final boolean restart = leadershipChanged;
         leadershipChanged = false;
-        open = !(wasOpen && restart) && caughtUp && currentLeaderMemberId == memberId;
+        open = !(wasOpen && restart) && caughtUp && (offCluster || currentLeaderMemberId == memberId);
         if (open == wasOpen) {
             return Transition.NONE;
         }
