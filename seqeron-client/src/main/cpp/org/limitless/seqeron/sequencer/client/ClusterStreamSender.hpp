@@ -818,7 +818,7 @@ class ClusterStreamSender
         {
             std::string endpoint;
             std::int64_t registrationId;
-            std::shared_ptr<aeron::Publication> publication;
+            std::shared_ptr<aeron::Publication> publication = nullptr;
             bool resolved = false;
         };
         std::vector<Dial> dials;
