@@ -193,8 +193,8 @@ The replayer is not on the live delivery path; clients use it only to catch up.
 - **Control replies** are offered with a bounded retry and then dropped, never blocked on. The client
   resends on a timer, so a client that is not reading cannot hold up replies to the others.
 - **Duty-cycle failure.** An exception escaping the duty cycle clears the ready counter and exits the
-  process with code 70 (`EXIT_DUTY_CYCLE_FATAL`) after closing the archive client, so a supervisor
-  restarts it rather than leaving a process that looks ready but serves nothing.
+  process with code 70 — the member's, since the Replayer runs in its JVM — after closing the archive
+  client, so a supervisor restarts it rather than leaving a node that looks ready but serves nothing.
 
 ### 3.2 Client-side recovery (`ReplayerStreamReceiver`)
 
@@ -317,9 +317,8 @@ frame on the tap exactly once and in order; the other reports what it lost.
 - **`replay-bench.sh`**: times a cold `ClusterProbe follow` from launch to caught up against a preloaded
   archive, optionally under load. `replay-bench.sh 400000` builds about 70 MB of history; it must converge
   in well under a second, and `NEVER CAUGHT UP` indicates a replay stall (§3.2), not a slow machine.
-- **`replayer-restart-test.sh`**: kills member 0's `ReplayerServer` as it starts serving a cold start,
-  then kills member 0's `SequencerServer` and checks that its replayer and client fail fast and that a
-  fresh cold start walks a real two-recording chain (§3.2).
+- **`replayer-restart-test.sh`**: kills member 0's `SequencerServer` under a caught-up client and checks
+  that the client fails fast and that a fresh cold start walks a real two-recording chain (§3.2).
 - **`failover-test.sh`**: a leader kill with a replay consumer and the confirmed-ingress check of §5.
 - **`gateway-host-test.sh`**: a gateway host whose relay reads the leader, which is then killed. A
   `confirm` producer on the host must see every frame exactly once, in order, and the relay must move to

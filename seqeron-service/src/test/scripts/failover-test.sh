@@ -51,14 +51,8 @@ for m in 0 1 2; do
 done
 echo "cluster up"
 
-declare -a REPLAYER_PIDS
 for m in 0 1 2; do
-  java "${JAVA_OPTS[@]}" -Dreplayer.memberId="$m" -cp "$JAR" \
-       org.limitless.seqeron.replayer.server.ReplayerServer > "$LOG_DIR/replayer-$m.log" 2>&1 &
-  REPLAYER_PIDS[$m]=$!
-done
-for m in 0 1 2; do
-  wait_for_log "$LOG_DIR/replayer-$m.log" "serving replay" 30 || true
+  wait_for_log "$LOG_DIR/seq-$m.log" "serving replay" 30 || true
 done
 echo "replayers serving"
 
@@ -111,15 +105,15 @@ wait "$CONTROL_PID"; CONTROL_RC=$?
 echo ""
 echo "=== RESULT ==="
 echo "--- Replayer (member $NEWLEADER) replay decisions for fresh client 9 ---"
-grep "replay for client 9" "$LOG_DIR/replayer-$NEWLEADER.log" || echo "(none)"
-SEGMENTS=$(grep -c "replay for client 9" "$LOG_DIR/replayer-$NEWLEADER.log")
+grep "replay for client 9" "$LOG_DIR/seq-$NEWLEADER.log" || echo "(none)"
+SEGMENTS=$(grep -c "replay for client 9" "$LOG_DIR/seq-$NEWLEADER.log")
 echo "segments served to client 9 : $SEGMENTS"
 echo "fresh client caught up      : $CAUGHT"
 echo "PendingSends producer       : $(grep -h 'confirm:' "$LOG_DIR/confirm.log" | tail -1)"
 echo "untracked control           : $(grep -h 'confirm:' "$LOG_DIR/control.log" | tail -1)"
 ((CONTROL_RC != 0)) || echo "  (the control lost nothing: the kill had no frame in flight, so this run proved no recovery)"
 
-kill "$FRESH_PID" "${REPLAYER_PIDS[@]}" "${SEQ_PIDS[@]}" 2>/dev/null; wait 2>/dev/null
+kill "$FRESH_PID" "${SEQ_PIDS[@]}" 2>/dev/null; wait 2>/dev/null
 if [[ "$CAUGHT" == "1" && "$SEGMENTS" -ge 1 && "$CONFIRM_RC" == "0" ]]; then
   echo "CROSS-FAILOVER TEST: PASS"; exit 0
 else

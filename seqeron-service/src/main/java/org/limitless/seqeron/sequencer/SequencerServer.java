@@ -16,12 +16,13 @@ import org.agrona.concurrent.IdleStrategy;
 import org.agrona.concurrent.NoOpLock;
 import org.agrona.concurrent.ShutdownSignalBarrier;
 import org.limitless.seqeron.protocol.PortLayout;
+import org.limitless.seqeron.replayer.server.ReplayerServer;
 import org.limitless.seqeron.util.IdleStrategies;
 import org.limitless.seqeron.util.Logger;
 
 /**
  * Launches one Sequencer cluster node: an Aeron Cluster with an embedded media driver, archive and
- * consensus module, running {@link SequencerService}.
+ * consensus module, running {@link SequencerService}, and the node's {@link ReplayerServer} on the same driver.
  *
  * <p><b>Port layout</b> (member 0 on the base; members 1 and 2 use base+10, base+20). The base is 9300
  * unless {@code SEQERON_PORT_BASE} overrides it (see {@link PortLayout}); the reserved block is wider than
@@ -46,8 +47,9 @@ import org.limitless.seqeron.util.Logger;
  *                               this member's resolvable name.
  *   sequencer.baseDir         — data directory root; default /tmp/seqeron-seq
  *   sequencer.aeronDir        — Aeron media driver directory
- *   sequencer.idleStrategy    — idle strategy of every agent: {@code backoff} (default), {@code yielding}
- *                               or {@code busyspin}. Busy-spin pays only when each agent owns a core.
+ *   sequencer.idleStrategy    — idle strategy of every agent, the Replayer's included: {@code backoff}
+ *                               (default), {@code yielding} or {@code busyspin}. Busy-spin pays only when
+ *                               each agent owns a core.
  *   sequencer.sessionTimeoutMs — how long the cluster keeps a client session with no keep-alives; default
  *                               1000. A gateway that misses it is replaced by its standby, so raise it on
  *                               an oversubscribed host.
@@ -79,8 +81,14 @@ public final class SequencerServer {
      */
     private static final int ARCHIVE_CONTROL_RESPONSE_STREAM_ID = 121;
 
-    /** Exit status of a node that stopped because it could no longer record its tap; restart it. */
+    /**
+     * Exit status of a node that stopped because it could no longer record its tap, or its Replayer's duty
+     * cycle died; restart it.
+     */
     static final int EXIT_TAP_FATAL = 70;
+
+    /** Exit status when shutdown gave up waiting for the Replayer's wedged duty-cycle thread. */
+    static final int EXIT_SHUTDOWN_TIMEOUT = 71;
 
     public static void main(final String[] args) {
         final int memberId = Integer.getInteger(PROP_MEMBER_ID, 0);
@@ -155,11 +163,12 @@ public final class SequencerServer {
                                               Logger.CoreEventCode.ConsensusModuleError,
                                               memberId, "%s", t.getMessage()));
 
-        final AtomicBoolean tapFatal = new AtomicBoolean();
-        final SequencerService service = new SequencerService(() -> {
-            tapFatal.set(true);
+        final AtomicBoolean fatal = new AtomicBoolean();
+        final Runnable fatalHandler = () -> {
+            fatal.set(true);
             barrier.signalAll();
-        });
+        };
+        final SequencerService service = new SequencerService(fatalHandler);
 
         final ClusteredServiceContainer.Context serviceCtx =
             new ClusteredServiceContainer.Context()
@@ -178,15 +187,22 @@ public final class SequencerServer {
                     udp(host, ingressPort), udp(host, archivePort), baseDir,
                     System.getProperty(PROP_IDLE_STRATEGY, "backoff"));
 
+        final boolean replayerStopped;
         try (barrier; ClusteredMediaDriver cmd = ClusteredMediaDriver.launch(driverCtx, archiveCtx, consensusCtx);
              ClusteredServiceContainer container = ClusteredServiceContainer.launch(serviceCtx)) {
+            final ReplayerServer replayer =
+                ReplayerServer.launch(memberId, aeronDir, idleStrategySupplier, fatalHandler);
             Logger.info(Logger.CoreComponent.SequencerServer, memberId, "Running — Ctrl-C to stop");
             barrier.await();
+            replayerStopped = replayer.stop();
         } finally {
             Logger.info(Logger.CoreComponent.SequencerServer, memberId, "Shutdown complete");
         }
-        if (tapFatal.get()) {
+        if (fatal.get()) {
             System.exit(EXIT_TAP_FATAL);
+        }
+        if (!replayerStopped) {
+            System.exit(EXIT_SHUTDOWN_TIMEOUT);
         }
     }
 

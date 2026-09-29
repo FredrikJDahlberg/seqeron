@@ -27,8 +27,7 @@
 # path it replaced was paced by TCP and codec work rather than deliberately.
 #
 # Sequence:
-#   1. Start members 1 and 2 -> one becomes the tenure-1 leader. Then start member 0 (follower) and a
-#      ReplayerServer per member.
+#   1. Start members 1 and 2 -> one becomes the tenure-1 leader. Then start member 0 (follower).
 #   2. Consumer (ClusterProbe follow, -Dprobe.faultInjection=true) on member 0 catches up (following the
 #      live tap).
 #   3. Kill the tenure-1 leader -> a survivor becomes the tenure-2 leader. Member 0's own tap recording
@@ -92,9 +91,9 @@ rm -rf "$BASE_DIR" "${TMP_DIR}/seqeron-seq-aeron-0" "${TMP_DIR}/seqeron-seq-aero
        "${TMP_DIR}/seqeron-seq-aeron-2" 2>/dev/null
 
 CONSUMER_PID=""
-declare -a SEQ_PIDS REPLAYER_PIDS
+declare -a SEQ_PIDS
 cleanup() {
-  kill "$CONSUMER_PID" "${REPLAYER_PIDS[@]:-}" "${SEQ_PIDS[@]:-}" 2>/dev/null
+  kill "$CONSUMER_PID" "${SEQ_PIDS[@]:-}" 2>/dev/null
   wait 2>/dev/null
 }
 trap cleanup EXIT INT TERM
@@ -116,12 +115,7 @@ wait_for_log "$LOG_DIR/seq-0.log" "Running" 30 || { echo "seq 0 not up"; exit 1;
 echo "cluster up; tenure-1 leader = member $LEADER ; consumer co-located with member $CN"
 
 for m in 0 1 2; do
-  java "${JAVA_OPTS[@]}" -Dreplayer.memberId="$m" -cp "$JAR" \
-       org.limitless.seqeron.replayer.server.ReplayerServer > "$LOG_DIR/replayer-$m.log" 2>&1 &
-  REPLAYER_PIDS[$m]=$!
-done
-for m in 0 1 2; do
-  wait_for_log "$LOG_DIR/replayer-$m.log" "serving replay" 30 || true
+  wait_for_log "$LOG_DIR/seq-$m.log" "serving replay" 30 || true
 done
 echo "replayers serving"
 sleep 2

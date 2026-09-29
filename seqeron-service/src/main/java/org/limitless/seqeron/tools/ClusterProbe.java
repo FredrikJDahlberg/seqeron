@@ -51,7 +51,7 @@ import org.limitless.seqeron.util.Logger;
  *       exactly once, in order. {@code -Dprobe.pendingSends=false} is the control.</li>
  * </ul>
  *
- * <p>System properties (mirroring {@code ReplayerServer}'s, which every script already sets this way):
+ * <p>System properties:
  * <pre>
  *   probe.memberId          — which cluster member this probe co-locates with (0/1/2); default 0
  *   probe.aeronDir          — that member's Aeron directory; default {tmpdir}/seqeron-seq-aeron-{memberId}

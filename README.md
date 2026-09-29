@@ -39,8 +39,9 @@ back-pressuring the cluster.
   ingress message with a monotone `globalSeqNo` plus the Raft consensus timestamp and synthesizes the
   frames the cluster itself owns (`ClusterHeartbeat`, `LeadershipChanged`, `GatewayActive`).
   `SequencerService` is its Aeron adapter and holds no replicated state of its own.
-- **`ReplayerServer` / `ReplayerService`** (Java, `replayer/server`) — one per member, co-located in
-  that member's Aeron directory. The only process that reads the archive: it serves an on-demand
+- **`ReplayerServer` / `ReplayerService`** (Java, `replayer/server`) — one per member, running inside
+  that member's `SequencerServer` JVM on its embedded media driver. The only component that reads the
+  archive: it serves an on-demand
   replay protocol to the co-located replicas, and sits off the live delivery path entirely. Its
   decisions live in pure seams — `Replayer`, `ReplaySlotAllocator`, `ReplayRecordings`,
   `ReplayClientIdCollisions` — with `AeronReplayer` the only part that touches Aeron. On a **gateway
@@ -185,7 +186,7 @@ writes the distribution to `build/install/seqeron` — `bin/` (these scripts), `
 
 | Script | Purpose |
 |--------|---------|
-| `start-cluster.sh` | Start the single-node cluster — `SequencerServer`, `ReplayerServer` and a `ClusterProbe follow` replica — in the background; Ctrl-C stops all of them. `SEQERON_NO_CONSUMERS=1` leaves out the replica, for a caller that runs its own |
+| `start-cluster.sh` | Start the single-node cluster — `SequencerServer` (its Replayer included) and a `ClusterProbe follow` replica — in the background; Ctrl-C stops all of them. `SEQERON_NO_CONSUMERS=1` leaves out the replica, for a caller that runs its own |
 | `start-gateway-host.sh` | Make a host that runs no member one that clients can run on: `ReplayerServer` in gateway-host mode, relaying a member's tap onto the host's own. `SEQERON_NODE_ID` (3), `SEQERON_ARCHIVE_ENDPOINTS` (the three localhost members), `SEQERON_HOST` (`localhost`) |
 | `stop-cluster.sh` | Stop everything the start scripts launched, plus any `SEQERON_EXTRA_PROCESSES="label\|pattern;…"` a caller adds |
 | `clusterctl.sh <command>` | Cluster life cycle: `start`, `shutdown`, `activate`, `load-topology`, `counters` — see [Operator tooling](#operator-tooling) |
@@ -202,10 +203,10 @@ instead.
 
 | Script | Purpose |
 |--------|---------|
-| `start-three-node-cluster.sh` | Start a local 3-node Raft cluster with a per-node `ReplayerServer` and `ClusterProbe` replica; blocks until Ctrl-C. `SEQERON_NO_CONSUMERS=1` leaves out the replicas, for a caller that runs its own |
+| `start-three-node-cluster.sh` | Start a local 3-node Raft cluster with a per-node `ClusterProbe` replica; blocks until Ctrl-C. `SEQERON_NO_CONSUMERS=1` leaves out the replicas, for a caller that runs its own |
 | `failover-test.sh` | Force a failover, then cold-start a fresh `ClusterProbe` follower on the new leader and verify it catches up on full history — each node's tap recording is one continuous run spanning both tenures. Two `confirm` producers stream across the kill: the one using `PendingSends` must see every frame exactly once, in order, and an untracked control reports what the kill lost |
 | `gap-recovery-test.sh` | Drop a live tap frame on a caught-up consumer (SIGUSR1 fault injection) and verify it re-walks its recording and heals rather than wedging |
-| `replayer-restart-test.sh` | Kill and restart a node's `ReplayerServer` while a client is riding a replay from it, then kill and restart the client's own node and verify its cold-start walk crosses a real multi-recording chain |
+| `replayer-restart-test.sh` | Kill and restart a client's own node and verify the client fails fast and a fresh cold-start walk crosses a real multi-recording chain |
 | `gateway-host-test.sh` | A `confirm` producer on a gateway host (node 3) streams while the member its relay reads, the leader, is killed: every frame must come back exactly once, in order, and the relay must move to another member. The host is then restarted, and a fresh `ClusterProbe` follower there must catch up across its two-recording chain |
 | `chaos-runner.sh` | Randomized fault injection against a live 3-node cluster, with the `TestGateway` pair (`GW-T-A`/`GW-T-B`, ports 9200/9201) taking load through its accept gate; every run prints its `SEED` to replay the exact fault sequence. Needs `./gradlew uberJar compileTestJava` |
 | `docker-failover-test.sh` | Multi-round containerized failover soak — the `docker/compose.yml` port of `failover-test.sh`. `ROUNDS` (15) kills under continuous `ProbeMarker` load, restoring the killed member between them, so each rejoin replays a Raft log that grew under the previous rounds. Asserts every round is a genuine leadership change, that a long-lived observer on each surviving node keeps delivering in order across all of them, and that a cold-start probe replays the whole multi-tenure history at the end. Needs Docker and `./gradlew operatorDist`; `ROUNDS=3` for a quick local run. CI runs it as `failover.yml` |
@@ -231,8 +232,8 @@ launch still passes them (`seqeron-home.sh`'s `SEQERON_JAVA_OPTS`). The node emb
 and Archive — no separate `aeronmd` needed. Data is written to
 `$TMPDIR/seqeron-seq/archive-0` and `$TMPDIR/seqeron-seq/cluster-0`.
 
-`seqeron-service/src/main/scripts/start-cluster.sh` does the same thing plus a co-located `ReplayerServer` and a
-consumer replica, which is usually what you want:
+`seqeron-service/src/main/scripts/start-cluster.sh` does the same thing plus a consumer replica, which is
+usually what you want:
 
 ```bash
 ./seqeron-service/src/main/scripts/start-cluster.sh
@@ -297,8 +298,7 @@ into each member's own archive.
 | `sequencer.clusterMembers`  | single-node localhost            | Full Aeron clusterMembers string   |
 | `sequencer.idleStrategy`    | `backoff`                        | `backoff` or `yielding`            |
 
-`ReplayerServer` takes `replayer.memberId` and `replayer.aeronDir` on the same defaults, so a
-co-located pair needs only a matching `memberId`.
+The node runs its Replayer in the same JVM, on the same media driver; there is nothing to configure.
 
 ### Restart and failover
 

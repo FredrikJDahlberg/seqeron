@@ -8,8 +8,8 @@ counter — end to end from a running node to a dashboard panel.
 
 Pull, not push, and a **static target list**, not service discovery:
 
-- Each node runs `metrics-exporter.sh` (`MetricsExporter`), co-located with a `SequencerServer`/
-  `ReplayerServer` the same way `clusterctl` is — sharing that node's Aeron directory — and serves
+- Each node runs `metrics-exporter.sh` (`MetricsExporter`), co-located with a `SequencerServer`
+  the same way `clusterctl` is — sharing that node's Aeron directory — and serves
   `/metrics` in Prometheus text exposition format, read live off the CnC file via
   `CountersReader.forEach`.
 - Prometheus scrapes every node's exporter directly, one target per member
@@ -33,7 +33,7 @@ metrics-exporter.sh          # serve /metrics on port 9400 + memberId
 | `METRICS_EXPORTER_AERON_DIR` | `metricsExporter.aeronDir` | `$TMPDIR/seqeron-seq-aeron-<memberId>` |
 | `METRICS_EXPORTER_PORT` | `metricsExporter.port` | `9400 + memberId` |
 
-Run one per node, co-located with that node's `SequencerServer`/`ReplayerServer` (mirrors
+Run one per node, co-located with that node's `SequencerServer` (mirrors
 `clusterctl.sh`'s co-location — same Aeron directory, no cluster connection needed). Needs the same
 `--add-opens` JVM flags as every other seqeron Java process that touches Agrona; the script sets
 them.
@@ -186,6 +186,9 @@ silent holes in it. What to expect and what to do:
   — exit 70 vs the 0 of an orderly `clusterctl shutdown` is exactly the "restart me" signal.
 - **If it exits 70 immediately on restart**, the archive is still broken (the same check bounds
   start-up: the recording must go live within 5s). Fix the storage before restarting again.
+
+A node also exits 70 when its Replayer's duty cycle dies (a `[ReplayerService/N]` error names it), and
+71 when shutdown gave up waiting for that duty cycle. Both mean restart it.
 
 ## A gateway that fences itself
 

@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# start-three-node-cluster.sh — bring up a local 3-node Aeron Cluster with a per-node ReplayerServer
-# and a per-node consumer replica, then keep it running until interrupted.
+# start-three-node-cluster.sh — bring up a local 3-node Aeron Cluster with a per-node consumer replica,
+# then keep it running until interrupted.
 #
 # The cluster tier alone, in every mode. This script is core's, and it launches core's processes only:
 #
-#   1. SequencerServer  x3  (Java, Raft members 0/1/2, all on localhost)
-#   2. ReplayerServer   x3  (Java, one co-located with each member: serves archive replay to co-located
-#                            apps over aeron:ipc; apps read the tap directly for live)
-#   3. ClusterProbe follow x3 (Java, one per-node consumer replica — the edge-neutral probe, so READY
+#   1. SequencerServer  x3  (Java, Raft members 0/1/2, all on localhost, each with its Replayer: serves
+#                            archive replay to co-located apps over aeron:ipc; apps read the tap directly
+#                            for live)
+#   2. ClusterProbe follow x3 (Java, one per-node consumer replica — the edge-neutral probe, so READY
 #                            still means "every node is following the live tail")
 #
 # then blocks, monitoring the launched processes; Ctrl-C (or kill) stops all of them cleanly. This
@@ -98,24 +98,18 @@ for SEQ_LOG in "${SEQ_LOGS[@]}"; do
 done
 echo "[start-three-node-cluster.sh] All 3 cluster members are running"
 
-# A ReplayerServer and a consumer replica on every node. Each attaches to its own member's media driver
-# (seqeron-seq-aeron-<m>): the ReplayerServer serves replay of that node's tap recording over aeron:ipc,
-# and the replica reads the tap directly for live, so whichever member is elected leader has one already
+# A consumer replica on every node. Each attaches to its own member's media driver (seqeron-seq-aeron-<m>):
+# the member's Replayer serves replay of that node's tap recording over aeron:ipc, and the replica reads
+# the tap directly for live, so whichever member is elected leader has one already
 # following the live tail. Member 0's replica also records post-consensus delivery latency and prints
 # p50/p99/p99.9 on shutdown. Waiting for "serving replay" avoids a needless extra cold-start replay.
-REPLAYER_PIDS=()
 APP_PIDS=()
 APP_LOGS=()
 for m in 0 1 2; do
     suffix="-${m}" latency=()
     if [[ "${m}" == 0 ]]; then suffix="" latency=(-Dprobe.latencyStats=true); fi
-    RLOG="${LOG_DIR}/ReplayerServer${suffix}.log"
-    echo "[start-three-node-cluster.sh] Starting ReplayerServer (member ${m}) → ${RLOG}"
-    java "${JAVA_OPTS[@]}" -Dreplayer.memberId="${m}" -cp "${JAR}" \
-        org.limitless.seqeron.replayer.server.ReplayerServer > "${RLOG}" 2>&1 &
-    REPLAYER_PIDS+=("$!")
-    wait_for_log "${RLOG}" "serving replay" 30 ||
-        echo "[start-three-node-cluster.sh] WARN: ${RLOG} not serving after 30s — starting the consumer anyway" >&2
+    wait_for_log "${SEQ_LOGS[$m]}" "serving replay" 30 ||
+        echo "[start-three-node-cluster.sh] WARN: member ${m}'s Replayer not serving after 30s — starting the consumer anyway" >&2
     if [[ "${NO_CONSUMERS}" != "1" ]]; then
         ALOG="${LOG_DIR}/ClusterProbe${suffix}.log"
         echo "[start-three-node-cluster.sh] Starting ClusterProbe follower (replica on member ${m}) → ${ALOG}"
@@ -126,7 +120,7 @@ for m in 0 1 2; do
     fi
 done
 
-ALL_PIDS=("${REPLAYER_PIDS[@]}" "${SEQ_PIDS[@]}" "${APP_PIDS[@]+"${APP_PIDS[@]}"}")
+ALL_PIDS=("${SEQ_PIDS[@]}" "${APP_PIDS[@]+"${APP_PIDS[@]}"}")
 
 # ── Shutdown handling ─────────────────────────────────────────────────────────
 
@@ -154,7 +148,6 @@ fi
 
 echo "[start-three-node-cluster.sh] READY — the cluster tier is up"
 echo "  SequencerServer     pids=${SEQ_PIDS[*]}"
-echo "  ReplayerServer      pids=${REPLAYER_PIDS[*]}"
 if [[ "${NO_CONSUMERS}" == "1" ]]; then
     echo "  ClusterProbe      (none — SEQERON_NO_CONSUMERS=1, the caller supplies its own consumers)"
 else

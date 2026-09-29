@@ -116,7 +116,7 @@ GW_B_PORT="$(test_gateway_port 1)"
 TOPOLOGY="seqeron-service/src/test/resources/topology-test-gateway.xml"
 
 rm -rf "$LOG_DIR"; mkdir -p "$LOG_DIR"
-declare -a SEQ_PIDS REPLAYER_PIDS EXTRA_CONSUMER_PIDS GW_PIDS
+declare -a SEQ_PIDS EXTRA_CONSUMER_PIDS GW_PIDS
 CONSUMER_PID=""; LOAD_PID=""
 declare -a FAULT_HISTORY=()
 DRIVER_LOSS_FAIL=0   # set by check_driver_loss_failfast, folded into the round result by check_invariants
@@ -200,8 +200,7 @@ cleanup() {
   pkill -f ClusterProbe 2>/dev/null
   pkill -f TestGateway 2>/dev/null   # the background-load loop's in-flight client outlives its subshell
   # ${arr[@]+"${arr[@]}"} — the bash 3.2 / set -u safe way to expand a possibly-empty array to nothing.
-  for p in "${SEQ_PIDS[@]+"${SEQ_PIDS[@]}"}" "${REPLAYER_PIDS[@]+"${REPLAYER_PIDS[@]}"}" \
-           "${EXTRA_CONSUMER_PIDS[@]+"${EXTRA_CONSUMER_PIDS[@]}"}" "${GW_PIDS[@]+"${GW_PIDS[@]}"}"; do
+  for p in "${SEQ_PIDS[@]+"${SEQ_PIDS[@]}"}" "${EXTRA_CONSUMER_PIDS[@]+"${EXTRA_CONSUMER_PIDS[@]}"}" "${GW_PIDS[@]+"${GW_PIDS[@]}"}"; do
     kill "$p" 2>/dev/null
   done
   wait 2>/dev/null
@@ -215,8 +214,8 @@ trap cleanup EXIT INT TERM
 # Idempotent pre-clean so back-to-back runs don't collide: SIGKILL any survivors, then WAIT for the
 # member archive-control ports (Aeron binds these as UDP) to actually release.
 # NB: SequencerServer launches via `java -jar "$JAR"`, so its command line contains NO "SequencerServer"
-# substring — pkilling by class name misses it. Match the jar path (in both SequencerServer's `-jar` and
-# ReplayerServer's `-cp` lines) and the -Dsequencer marker instead.
+# substring — pkilling by class name misses it. Match the jar path (in SequencerServer's `-jar` and every
+# `-cp` line) and the -Dsequencer marker instead.
 pkill -9 -f "$JAR" 2>/dev/null; pkill -9 -f "sequencer.memberId" 2>/dev/null
 pkill -9 -f "probe.gatewayName" 2>/dev/null
 rm -rf "$BASE_DIR" "${TMP_DIR}/seqeron-seq-aeron-0" "${TMP_DIR}/seqeron-seq-aeron-1" \
@@ -230,12 +229,7 @@ wait_running 1 && wait_running 2 || { echo "members 1/2 not up"; exit 1; }
 wait_for_leader >/dev/null || { echo "no initial leader among 1/2"; exit 1; }
 start_seq 0; wait_running 0 || { echo "member 0 not up"; exit 1; }
 
-for m in 0 1 2; do
-  java "${JAVA_OPTS[@]}" -Dreplayer.memberId="$m" -cp "$JAR" \
-       org.limitless.seqeron.replayer.server.ReplayerServer > "$LOG_DIR/replayer-$m.log" 2>&1 &
-  REPLAYER_PIDS[$m]=$!
-done
-for m in 0 1 2; do wait_for_log "$LOG_DIR/replayer-$m.log" "serving replay" "$APP_CATCHUP_TIMEOUT_SECS" || true; done
+for m in 0 1 2; do wait_for_log "$LOG_DIR/seq-$m.log" "serving replay" "$APP_CATCHUP_TIMEOUT_SECS" || true; done
 
 # Consumer on member 0: fault-injection ON (SIGUSR1 tap-drop) + latency stats (flushed on exit, not read here).
 # Extracted into start_consumer (below) so restart_colocated_apps can relaunch it in place when member 0
@@ -434,7 +428,6 @@ report_gateway_socket() {  # <port> <label> <pid>
 
 check_driver_loss_failfast() {  # <memberId whose driver just died>
   local m="$1"
-  assert_died_on_driver_loss "replayer-$m" "${REPLAYER_PIDS[$m]:-}"
   if [[ "$m" == "$CN" ]]; then
     assert_died_on_driver_loss "consumer" "${CONSUMER_PID:-}"
   else
@@ -447,8 +440,8 @@ check_driver_loss_failfast() {  # <memberId whose driver just died>
   return 0
 }
 
-# A killed member's co-located ReplayerServer and consumer replica (member CN's being the observation
-# consumer) share its embedded media driver (same aeron dir) and don't survive the member's
+# A killed member's co-located consumer replica (member CN's being the observation consumer) and gateway
+# share its embedded media driver (same aeron dir) and don't survive the member's
 # restart: the driver dies with the SequencerServer process, and none of these clients reconnect to the
 # fresh driver the restart creates at the same path — they just fault (DriverTimeoutException /
 # "MediaDriver has been shutdown") and sit dead for the rest of the run. That leaves a permanent hole:
@@ -458,17 +451,11 @@ check_driver_loss_failfast() {  # <memberId whose driver just died>
 restart_colocated_apps() {
   local m="$1"
   check_driver_loss_failfast "$m"
-  kill "${REPLAYER_PIDS[$m]:-0}" 2>/dev/null
   if [[ "$m" == "$CN" ]]; then
     kill "${CONSUMER_PID:-0}" 2>/dev/null
   else
     kill "${EXTRA_CONSUMER_PIDS[$m]:-0}" 2>/dev/null
   fi
-  java "${JAVA_OPTS[@]}" -Dreplayer.memberId="$m" -cp "$JAR" \
-       org.limitless.seqeron.replayer.server.ReplayerServer > "$LOG_DIR/replayer-$m.log" 2>&1 &
-  REPLAYER_PIDS[$m]=$!
-  wait_for_log "$LOG_DIR/replayer-$m.log" "serving replay" "$APP_CATCHUP_TIMEOUT_SECS" ||
-    log "  WARN replayer-$m not serving after restart"
   if [[ "$m" == "$CN" ]]; then
     start_consumer
     wait_for_log "$CONSUMER_LOG" "following live" "$APP_CATCHUP_TIMEOUT_SECS" ||
@@ -639,8 +626,8 @@ FAULTS=(fault_kill_leader fault_kill_follower fault_sigkill_node fault_pause_nod
 
 # NOTE — on killing the media driver: there is deliberately no fault_kill_aeronmd, and there is no
 #   standalone aeronmd left to kill. Every process here is on a per-member driver embedded in its
-#   SequencerServer (ClusteredMediaDriver at ${TMP_DIR}/seqeron-seq-aeron-<m>): ReplayerServer
-#   (ReplayerServer.java:67) and every ClusterProbe attach there, and the probe's submit/ping runs attach
+#   SequencerServer (ClusteredMediaDriver at ${TMP_DIR}/seqeron-seq-aeron-<m>): every ClusterProbe attaches
+#   there, and the probe's submit/ping runs attach
 #   to member $CN's. So the real "driver dies and restarts at the same path" fault is ALREADY injected by
 #   every kill fault above — asserted by check_driver_loss_failfast.
 #

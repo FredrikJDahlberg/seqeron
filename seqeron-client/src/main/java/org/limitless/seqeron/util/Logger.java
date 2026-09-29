@@ -24,7 +24,7 @@ public final class Logger {
         SequencerService,
         /** Aeron's own consensus module, whose errors reach this log through the service. */
         ConsensusModule,
-        /** The co-located replay server process. */
+        /** The replay server: inside a member's SequencerServer, or a gateway host's own process. */
         ReplayerServer,
         /** That server's duty cycle. */
         ReplayerService,

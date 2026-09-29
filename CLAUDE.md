@@ -294,7 +294,9 @@ record only from wherever it resumed. The cost is that recovery time and archive
 `ReplaySlotAllocator`, `ReplayRecordings`, `ReplayClientIdCollisions` and the gateway host's `TapRelay`, with
 `AeronReplayer` and `AeronTapRelay` the only parts that touch Aeron. **`replayer.client`** is `ReplayerStreamReceiver` and its pure seam
 `ReplayerRecovery`, plus `SequencedEvent` — Java, and C++ in
-`org::limitless::seqeron::replayer::client`. The two sides share only the protocol's addresses —
+`org::limitless::seqeron::replayer::client`. On a member `ReplayerServer` runs inside `SequencerServer`'s
+JVM, on its embedded driver, so a fatal in either exits the node with 70; its own `main` is the gateway
+host's alone. The two sides share only the protocol's addresses —
 `IPC_CHANNEL`, `REPLAY_STREAM_ID` 201, `REQUEST_STREAM_ID` 202, `CONTROL_STREAM_ID` 203 and
 `NO_REPLAY_NEEDED` — and those are `protocol/ReplayProtocol` in both languages.
 

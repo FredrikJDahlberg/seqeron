@@ -47,13 +47,6 @@ for m in 0 1 2; do
 done
 echo "cluster up"
 
-declare -a REPLAYER_PIDS
-for m in 0 1 2; do
-  java "${JAVA_OPTS[@]}" -Dreplayer.memberId="$m" -cp "$JAR" \
-       org.limitless.seqeron.replayer.server.ReplayerServer > "$LOG_DIR/replayer-$m.log" 2>&1 &
-  REPLAYER_PIDS[$m]=$!
-done
-
 sleep 2  # let tenure-1 LeadershipChanged replicate to followers
 L1=$(grep -h "isLeader=true" "$LOG_DIR"/seq-*.log | grep -oE 'SequencerService/[0-9]+' | head -1 | cut -d/ -f2)
 echo "leader = member $L1"
@@ -70,7 +63,7 @@ java "${JAVA_OPTS[@]}" -Dreplayer.memberId="$NODE" -Dreplayer.baseDir="$BASE_DIR
 HOST_PID=$!
 wait_for_log "$HOST_LOG" "ready —" 30 || {
   echo "gateway host not serving"; cat "$HOST_LOG"
-  kill "$HOST_PID" "${REPLAYER_PIDS[@]}" "${SEQ_PIDS[@]}" 2>/dev/null; exit 1
+  kill "$HOST_PID" "${SEQ_PIDS[@]}" 2>/dev/null; exit 1
 }
 echo "gateway host (node $NODE) serving, member archives $ENDPOINTS"
 
@@ -115,7 +108,7 @@ echo "relay moved to another member : $SWITCHED"
 echo "restarted host's chain        : $(grep -o '[0-9]*-recording chain' "$RESTART_LOG")"
 echo "fresh follower caught up      : $CAUGHT"
 
-kill "$FRESH_PID" "$HOST_PID" "${REPLAYER_PIDS[@]}" "${SEQ_PIDS[@]}" 2>/dev/null; wait 2>/dev/null
+kill "$FRESH_PID" "$HOST_PID" "${SEQ_PIDS[@]}" 2>/dev/null; wait 2>/dev/null
 if [[ "$CONFIRM_RC" == "0" && "$SWITCHED" == "1" && "$CAUGHT" == "1" ]]; then
   echo "GATEWAY-HOST TEST: PASS"; exit 0
 else

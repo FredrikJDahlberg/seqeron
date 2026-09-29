@@ -20,9 +20,9 @@ x-node: &node
   # Aeron's directory is memory-mapped; the default 64m /dev/shm is far too small for it.
   shm_size: 1gb
   healthcheck:
-    # Both node processes are up. Container liveness only — a member that is Running has not
+    # The node is up, its Replayer included. Container liveness only — a member that is Running has not
     # necessarily won or joined an election yet, which is the harness's assertion to make.
-    test: ["CMD-SHELL", "grep -q 'SequencerServer/.\\] Running' /var/log/seqeron/node.log && grep -q 'ReplayerServer/.\\] Running' /var/log/seqeron/node.log"]
+    test: ["CMD-SHELL", "grep -q 'SequencerServer/.\\] Running' /var/log/seqeron/node.log"]
     interval: 2s
     timeout: 2s
     retries: 45

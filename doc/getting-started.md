@@ -12,9 +12,9 @@ unzip seqeron-$V.zip && cd seqeron-$V
 bin/start-cluster.sh
 ```
 
-This starts a single-node cluster: `SequencerServer` as member 0, with its own media driver and
-archive; the `ReplayerServer` beside it; and a probe consumer. Logs go to `./logs`, state to
-`$TMPDIR/seqeron-seq`. `bin/stop-cluster.sh` stops all three, and `bin/purgelog.sh` then deletes the
+This starts a single-node cluster: `SequencerServer` as member 0, with its own media driver, archive
+and Replayer; and a probe consumer. Logs go to `./logs`, state to
+`$TMPDIR/seqeron-seq`. `bin/stop-cluster.sh` stops both, and `bin/purgelog.sh` then deletes the
 state for a clean start.
 
 **A consumer runs on a cluster node.** The sequenced stream and the replay protocol are `aeron:ipc` on

@@ -4,10 +4,9 @@
 # The cluster tier alone, each process to its own log file — this repo builds no product binary and
 # names none (the same split start-three-node-cluster.sh makes):
 #
-#   1. SequencerServer  (Java, single-node Aeron Cluster, member 0)
-#   2. ReplayerServer   (Java, co-located with member 0: serves archive replay to co-located apps
-#                        over aeron:ipc; apps read the tap directly for live)
-#   3. ClusterProbe follow (Java, the edge-neutral consumer replica)
+#   1. SequencerServer  (Java, single-node Aeron Cluster, member 0, and its Replayer: serves archive
+#                        replay to co-located apps over aeron:ipc; apps read the tap directly for live)
+#   2. ClusterProbe follow (Java, the edge-neutral consumer replica)
 #
 # SEQERON_NO_CONSUMERS=1 leaves out the probe replica, for a caller that supplies its own consumer —
 # it launches, waits for and stops that itself, and stop-cluster.sh sweeps it through
@@ -48,7 +47,6 @@ NO_CONSUMERS="${SEQERON_NO_CONSUMERS:-0}"
 
 LOG_DIR="logs"
 SEQ_LOG="${LOG_DIR}/sequencer.log"
-REPLAYER_LOG="${LOG_DIR}/ReplayerServer.log"
 
 # SequencerServer (member 0)'s own embedded media driver directory — matches its default when
 # -Dsequencer.aeronDir isn't overridden. A consumer co-located with this member shares the directory,
@@ -76,17 +74,9 @@ wait_for_log "${SEQ_LOG}" "Running" 20 || {
 }
 echo "[cluster.sh] SequencerServer is running"
 
-echo "[cluster.sh] Starting ReplayerServer (co-located with SequencerServer member 0) → ${REPLAYER_LOG}"
-java "${JAVA_OPTS[@]}" \
-    -Dreplayer.memberId=0 \
-    -cp "${JAR}" \
-    org.limitless.seqeron.replayer.server.ReplayerServer \
-    > "${REPLAYER_LOG}" 2>&1 &
-REPLAYER_PID=$!
-
-echo "[cluster.sh] Waiting for ReplayerServer to start serving replay…"
-wait_for_log "${REPLAYER_LOG}" "serving replay" 20 ||
-    echo "[cluster.sh] WARN: ReplayerServer not serving after 20s — starting the consumer anyway" >&2
+echo "[cluster.sh] Waiting for the Replayer to start serving replay…"
+wait_for_log "${SEQ_LOG}" "serving replay" 20 ||
+    echo "[cluster.sh] WARN: Replayer not serving after 20s — starting the consumer anyway" >&2
 
 APP_PID=""
 APP_LOG="${LOG_DIR}/ClusterProbe.log"
@@ -97,12 +87,11 @@ if [[ "${NO_CONSUMERS}" != "1" ]]; then
     APP_PID=$!
 fi
 
-ALL_PIDS=("${SEQ_PID}" "${REPLAYER_PID}")
+ALL_PIDS=("${SEQ_PID}")
 [[ -n "${APP_PID}" ]] && ALL_PIDS+=("${APP_PID}")
 
 echo "[cluster.sh] All processes started"
 echo "  SequencerServer   pid=${SEQ_PID}  log=${SEQ_LOG}"
-echo "  ReplayerServer    pid=${REPLAYER_PID}  log=${REPLAYER_LOG}"
 if [[ -n "${APP_PID}" ]]; then
     echo "  ClusterProbe      pid=${APP_PID}  log=${APP_LOG}"
 else
