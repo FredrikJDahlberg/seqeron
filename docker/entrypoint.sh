@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
 # Launches this container's node: the cluster member, whose JVM also runs its Replayer.
 #
-# The member comes from node-env.sh; every endpoint is derived from the distribution's ports.sh, so
-# the port formula keeps its single home.
+# The member and its peers' host names come from node-env.sh; SequencerServer derives every endpoint
+# from them.
 set -euo pipefail
 
-source /opt/seqeron/bin/ports.sh
 source /opt/seqeron/bin/seqeron-home.sh
 source /opt/seqeron/docker/node-env.sh
 seqeron_require_jar
@@ -24,13 +23,9 @@ exec > >(tee "${LOG_FILE}") 2>&1
 
 JAVA_OPTS=("${SEQERON_JAVA_OPTS[@]}")
 
-# sequencer.host is what the archive control, ingress and replication channels bind to and
-# advertise; localhost would be this container's loopback alone and no peer could reach it. The
-# consensus/log/transfer endpoints come from clusterMembers, hence the same template twice.
 exec java "${JAVA_OPTS[@]}" \
     -Dsequencer.memberId="${MEMBER_ID}" \
-    -Dsequencer.host="${HOST}" \
-    -Dsequencer.clusterMembers="$(cluster_members_string "${NODE_COUNT}" "${HOST_TEMPLATE}")" \
+    -Dsequencer.hosts="${HOSTS}" \
     -Dsequencer.baseDir="${BASE_DIR}" \
     -Dsequencer.aeronDir="${AERON_DIR}" \
     -Dsequencer.idleStrategy="${IDLE_STRATEGY:-backoff}" \

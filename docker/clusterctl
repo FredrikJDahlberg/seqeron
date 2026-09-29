@@ -4,13 +4,11 @@
 # in; a CLUSTERCTL_* already set still wins.
 set -euo pipefail
 
-source /opt/seqeron/bin/ports.sh
 source /opt/seqeron/docker/node-env.sh
 
 export CLUSTERCTL_MEMBER_ID="${CLUSTERCTL_MEMBER_ID:-${MEMBER_ID}}"
 export CLUSTERCTL_BASE_DIR="${CLUSTERCTL_BASE_DIR:-${BASE_DIR}}"
 export CLUSTERCTL_AERON_DIR="${CLUSTERCTL_AERON_DIR:-${AERON_DIR}}"
-export CLUSTERCTL_INGRESS_ENDPOINTS="${CLUSTERCTL_INGRESS_ENDPOINTS:-$(ingress_endpoints_string "${NODE_COUNT}" "${HOST_TEMPLATE}")}"
-export CLUSTERCTL_EGRESS_HOST="${CLUSTERCTL_EGRESS_HOST:-${HOST}}"
+export CLUSTERCTL_HOSTS="${CLUSTERCTL_HOSTS:-${HOSTS}}"
 
 exec /opt/seqeron/bin/clusterctl.sh "$@"

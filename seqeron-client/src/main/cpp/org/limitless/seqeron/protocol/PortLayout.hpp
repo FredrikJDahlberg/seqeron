@@ -9,6 +9,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace org::limitless::seqeron::protocol {
 
@@ -139,16 +140,51 @@ inline std::string archiveEndpointsCsv(int nodeCount, const char* host = "localh
 }
 
 /**
- * Builds the ingress endpoint set of a cluster on one host, "0=host:port,1=host:port,...": the form
- * ClusterStreamSender takes. The mirror of PortLayout.ingressEndpoints and ports.sh's ingress_endpoints_string.
+ * Parses a cluster's host list, "h0,h1,h2": member i runs on entry i. The mirror of PortLayout.parseHosts.
  *
- * @param nodeCount the cluster's member count
- * @param host      the host every member runs on
+ * @param csv the members' host names, comma-separated
+ * @return the host names, trimmed
+ * @throws std::invalid_argument if an entry is blank, or the list names more than CLUSTER_MEMBER_COUNT members
  */
-inline std::string ingressEndpointsCsv(int nodeCount = CLUSTER_MEMBER_COUNT, const char* host = "localhost")
+inline std::vector<std::string> parseHosts(std::string_view csv)
+{
+    std::vector<std::string> hosts;
+    std::size_t start = 0;
+    while (true)
+    {
+        const std::size_t comma = csv.find(',', start);
+        std::string_view entry = csv.substr(start, comma == std::string_view::npos ? comma : comma - start);
+        const std::size_t first = entry.find_first_not_of(" \t");
+        if (first == std::string_view::npos)
+        {
+            throw std::invalid_argument("host list has a blank entry: '" + std::string{ csv } + "'");
+        }
+        hosts.emplace_back(entry.substr(first, entry.find_last_not_of(" \t") - first + 1));
+        if (comma == std::string_view::npos)
+        {
+            break;
+        }
+        start = comma + 1;
+    }
+    if (hosts.size() > CLUSTER_MEMBER_COUNT)
+    {
+        throw std::invalid_argument("host list names " + std::to_string(hosts.size()) + " members, more than the " +
+                                    std::to_string(CLUSTER_MEMBER_COUNT) + " the port block holds: '" +
+                                    std::string{ csv } + "'");
+    }
+    return hosts;
+}
+
+/**
+ * Builds the ingress endpoint set of a cluster whose member i runs on hosts[i], "0=h0:port,1=h1:port,...": the
+ * form ClusterStreamSender takes. The mirror of PortLayout.ingressEndpoints(List).
+ *
+ * @param hosts the members' host names, as parseHosts returns them
+ */
+inline std::string ingressEndpointsCsv(const std::vector<std::string>& hosts)
 {
     std::string csv;
-    for (int id = 0; id < nodeCount; ++id)
+    for (std::size_t id = 0; id < hosts.size(); ++id)
     {
         if (id > 0)
         {
@@ -156,11 +192,23 @@ inline std::string ingressEndpointsCsv(int nodeCount = CLUSTER_MEMBER_COUNT, con
         }
         csv += std::to_string(id);
         csv += '=';
-        csv += host;
+        csv += hosts[id];
         csv += ':';
-        csv += std::to_string(clusterIngressPort(id));
+        csv += std::to_string(clusterIngressPort(static_cast<int>(id)));
     }
     return csv;
+}
+
+/**
+ * Builds the ingress endpoint set of a cluster on one host, "0=host:port,1=host:port,...". The mirror of
+ * PortLayout.ingressEndpoints(int) and ports.sh's ingress_endpoints_string.
+ *
+ * @param nodeCount the cluster's member count
+ * @param host      the host every member runs on
+ */
+inline std::string ingressEndpointsCsv(int nodeCount = CLUSTER_MEMBER_COUNT, const char* host = "localhost")
+{
+    return ingressEndpointsCsv(std::vector<std::string>(nodeCount, host));
 }
 
 /**

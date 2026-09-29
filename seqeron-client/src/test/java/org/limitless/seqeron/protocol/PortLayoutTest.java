@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.util.List;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -80,5 +81,24 @@ class PortLayoutTest {
             final int port = Integer.parseInt(entry.substring(entry.lastIndexOf(':') + 1));
             assertTrue(PortLayout.isClusterPort(port), entry);
         }
+    }
+
+    @Test
+    @DisplayName("member i of a host list runs on entry i")
+    void hostListEndpointSet() {
+        assertEquals("0=h0:" + PortLayout.ingressPort(0) + ",1=h1:" + PortLayout.ingressPort(1) + ",2=h2:"
+                         + PortLayout.ingressPort(2),
+                     PortLayout.ingressEndpoints(PortLayout.parseHosts("h0, h1 ,h2")));
+        assertEquals(PortLayout.ingressEndpoints(1), PortLayout.ingressEndpoints(List.of(PortLayout.DEFAULT_HOST)));
+    }
+
+    @Test
+    @DisplayName("a host list with a blank entry, or more members than the block holds, is refused")
+    void hostListRules() {
+        assertEquals(List.of("h0"), PortLayout.parseHosts("h0"));
+        assertThrows(IllegalArgumentException.class, () -> PortLayout.parseHosts(""));
+        assertThrows(IllegalArgumentException.class, () -> PortLayout.parseHosts("h0,,h2"));
+        assertThrows(IllegalArgumentException.class, () -> PortLayout.parseHosts("h0,h1,"));
+        assertThrows(IllegalArgumentException.class, () -> PortLayout.parseHosts("h0,h1,h2,h3"));
     }
 }

@@ -9,6 +9,8 @@ import io.aeron.cluster.service.ClusteredServiceContainer;
 import io.aeron.driver.MediaDriver;
 import io.aeron.driver.ThreadingMode;
 import java.io.File;
+import java.util.Collections;
+import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Supplier;
@@ -38,13 +40,15 @@ import org.limitless.seqeron.util.Logger;
  * <p><b>System properties</b>:
  * <pre>
  *   sequencer.memberId        — this node's Raft member ID (0, 1, or 2); default 0
- *   sequencer.nodeCount       — cluster size; used to generate clusterMembers when that
+ *   sequencer.hosts           — every member's host name, comma-separated in member-id order; generates
+ *                               clusterMembers. Replaces nodeCount and clusterMembers, which it refuses.
+ *   sequencer.nodeCount       — cluster size, all on localhost; used to generate clusterMembers when that
  *                               property is not set explicitly; default 1
  *   sequencer.clusterMembers  — full clusterMembers string (Aeron format); overrides
  *                               nodeCount-based generation when set
  *   sequencer.host            — hostname the archive control, ingress and replication channels bind to
- *                               and advertise; default localhost. With one member per host it must be
- *                               this member's resolvable name.
+ *                               and advertise; default this member's entry in sequencer.hosts, else
+ *                               localhost
  *   sequencer.baseDir         — data directory root; default /tmp/seqeron-seq
  *   sequencer.aeronDir        — Aeron media driver directory
  *   sequencer.idleStrategy    — idle strategy of every agent, the Replayer's included: {@code backoff}
@@ -55,16 +59,15 @@ import org.limitless.seqeron.util.Logger;
  *                               an oversubscribed host.
  * </pre>
  *
- * <p>Single-node launch example:
+ * <p>Launch example, member 0 of three:
  * <pre>
- *   java -Dsequencer.memberId=0 \
- *        --add-opens=java.base/sun.nio.ch=ALL-UNNAMED \
- *        -cp seqeron-uber.jar \
- *        org.limitless.seqeron.sequencer.SequencerServer
+ *   java -Dsequencer.memberId=0 -Dsequencer.hosts=h0,h1,h2 -Dsequencer.baseDir=/var/lib/seqeron \
+ *        -jar seqeron-uber.jar
  * </pre>
  */
 public final class SequencerServer {
     private static final String PROP_MEMBER_ID = "sequencer.memberId";
+    private static final String PROP_HOSTS = "sequencer.hosts";
     private static final String PROP_NODE_COUNT = "sequencer.nodeCount";
     private static final String PROP_CLUSTER_MEMBERS = "sequencer.clusterMembers";
     private static final String PROP_HOST = "sequencer.host";
@@ -93,7 +96,14 @@ public final class SequencerServer {
     public static void main(final String[] args) {
         final int memberId = Integer.getInteger(PROP_MEMBER_ID, 0);
         final int nodeCount = Integer.getInteger(PROP_NODE_COUNT, 1);
-        final String host = System.getProperty(PROP_HOST, PortLayout.DEFAULT_HOST);
+        final String hostsCsv = System.getProperty(PROP_HOSTS);
+        final List<String> hosts = hostsCsv == null ? null : memberHosts(hostsCsv, memberId);
+        if (hosts != null &&
+            (System.getProperty(PROP_CLUSTER_MEMBERS) != null || System.getProperty(PROP_NODE_COUNT) != null)) {
+            throw new IllegalArgumentException(
+                PROP_HOSTS + " replaces " + PROP_CLUSTER_MEMBERS + " and " + PROP_NODE_COUNT + "; set only one");
+        }
+        final String host = System.getProperty(PROP_HOST, hosts == null ? PortLayout.DEFAULT_HOST : hosts.get(memberId));
         final String baseDir =
             System.getProperty(PROP_BASE_DIR, System.getProperty("java.io.tmpdir") + "/seqeron-seq");
         final String aeronDir = System.getProperty(
@@ -101,7 +111,9 @@ public final class SequencerServer {
         final int archivePort = PortLayout.archivePort(memberId);
         final int ingressPort = PortLayout.ingressPort(memberId);
 
-        final String clusterMembers = System.getProperty(PROP_CLUSTER_MEMBERS, buildClusterMembers(nodeCount));
+        final String clusterMembers = hosts != null
+            ? buildClusterMembers(hosts)
+            : System.getProperty(PROP_CLUSTER_MEMBERS, buildClusterMembers(nodeCount));
 
         final File archiveDir = new File(baseDir + "/archive-" + memberId);
         final File clusterDir = new File(baseDir + "/cluster-" + memberId);
@@ -206,15 +218,31 @@ public final class SequencerServer {
         }
     }
 
+    /** {@code sequencer.hosts}, parsed, refusing a list that does not name {@code memberId}. */
+    static List<String> memberHosts(final String hostsCsv, final int memberId) {
+        final List<String> hosts = PortLayout.parseHosts(hostsCsv);
+        if (memberId < 0 || memberId >= hosts.size()) {
+            throw new IllegalArgumentException(
+                PROP_HOSTS + " names " + hosts.size() + " member(s), so it has no member " + memberId + ": '"
+                    + hostsCsv + "'");
+        }
+        return hosts;
+    }
+
     private static String udp(final String host, final int port) {
         return "aeron:udp?endpoint=" + host + ":" + port;
     }
 
     /** The {@code clusterMembers} string for a {@code nodeCount}-member cluster on {@link PortLayout#DEFAULT_HOST}. */
     static String buildClusterMembers(final int nodeCount) {
+        return buildClusterMembers(Collections.nCopies(nodeCount, PortLayout.DEFAULT_HOST));
+    }
+
+    /** The {@code clusterMembers} string for a cluster whose member {@code i} runs on {@code hosts.get(i)}. */
+    static String buildClusterMembers(final List<String> hosts) {
         final StringBuilder members = new StringBuilder();
-        for (int id = 0; id < nodeCount; id++) {
-            final String host = PortLayout.DEFAULT_HOST;
+        for (int id = 0; id < hosts.size(); id++) {
+            final String host = hosts.get(id);
             members.append(id)
                 .append(',').append(host).append(':').append(PortLayout.ingressPort(id))
                 .append(',').append(host).append(':').append(PortLayout.consensusPort(id))

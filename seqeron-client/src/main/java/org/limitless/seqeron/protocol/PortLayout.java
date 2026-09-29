@@ -1,5 +1,9 @@
 package org.limitless.seqeron.protocol;
 
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.List;
+
 /**
  * The cluster port-layout formula — the Java twin of {@code protocol/PortLayout.hpp} and {@code
  * ports.sh}; {@code SequencerServerTest} and {@code PortLayoutTest} pin the same pairs. Cluster member ports
@@ -127,17 +131,47 @@ public final class PortLayout {
     }
 
     /**
-     * The ingress endpoint set of a {@code nodeCount}-member cluster, {@code "0=host:9302,1=host:9312,…"} —
-     * the form {@code AeronCluster} and {@code clusterctl} take, and the Java mirror of {@code ports.sh}'s
-     * {@code ingress_endpoints_string}.
+     * Parses a cluster's host list, {@code "h0,h1,h2"}: member {@code i} runs on entry {@code i}.
+     *
+     * @param csv the members' host names, comma-separated
+     * @return the host names, trimmed
+     * @throws IllegalArgumentException if an entry is blank, or the list names no member or more than
+     *                                  {@link #CLUSTER_MEMBER_COUNT}
+     */
+    public static List<String> parseHosts(final String csv) {
+        final List<String> hosts = Arrays.stream(csv.split(",", -1)).map(String::trim).toList();
+        if (hosts.contains("")) {
+            throw new IllegalArgumentException("host list has a blank entry: '" + csv + "'");
+        }
+        if (hosts.size() > CLUSTER_MEMBER_COUNT) {
+            throw new IllegalArgumentException(
+                "host list names " + hosts.size() + " members, more than the " + CLUSTER_MEMBER_COUNT
+                    + " the port block holds: '" + csv + "'");
+        }
+        return hosts;
+    }
+
+    /**
+     * The ingress endpoint set of a {@code nodeCount}-member cluster on {@link #DEFAULT_HOST}, {@code
+     * "0=host:9302,1=host:9312,…"} — the form {@code AeronCluster} and {@code clusterctl} take, and the Java
+     * mirror of {@code ports.sh}'s {@code ingress_endpoints_string}.
      */
     public static String ingressEndpoints(final int nodeCount) {
+        return ingressEndpoints(Collections.nCopies(nodeCount, DEFAULT_HOST));
+    }
+
+    /**
+     * The ingress endpoint set of a cluster whose member {@code i} runs on {@code hosts.get(i)}.
+     *
+     * @param hosts the members' host names, as {@link #parseHosts} returns them
+     */
+    public static String ingressEndpoints(final List<String> hosts) {
         final StringBuilder endpoints = new StringBuilder();
-        for (int id = 0; id < nodeCount; id++) {
+        for (int id = 0; id < hosts.size(); id++) {
             if (id > 0) {
                 endpoints.append(',');
             }
-            endpoints.append(id).append('=').append(ingressEndpoint(id));
+            endpoints.append(id).append('=').append(hosts.get(id)).append(':').append(ingressPort(id));
         }
         return endpoints.toString();
     }

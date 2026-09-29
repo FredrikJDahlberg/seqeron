@@ -6,6 +6,7 @@
 MEMBER_ID="${MEMBER_ID:?MEMBER_ID must be set}"
 NODE_COUNT="${NODE_COUNT:-3}"
 HOST_TEMPLATE="${HOST_TEMPLATE:-node-{id}}"       # {id} -> member id; the compose service names
-HOST="${HOST_TEMPLATE//\{id\}/${MEMBER_ID}}"
+HOSTS=""                                          # every member's host in id order: sequencer.hosts
+for (( id = 0; id < NODE_COUNT; id++ )); do HOSTS+="${HOSTS:+,}${HOST_TEMPLATE//\{id\}/${id}}"; done
 BASE_DIR=/var/lib/seqeron
 AERON_DIR="/dev/shm/aeron-${MEMBER_ID}"

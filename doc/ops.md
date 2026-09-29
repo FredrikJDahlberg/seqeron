@@ -243,7 +243,7 @@ nothing to discipline them.
   same network boundary as the nodes.
 - No Prometheus alerting rules or Grafana alert provisioning — dashboard only.
 - `prometheus.yml`'s target list is fixed and hand-maintained — no service discovery. For a cluster
-  whose membership changes, keep it in sync with `clusterMembers`.
+  whose membership changes, keep it in sync with `sequencer.hosts`.
 - **Gateways publish no fence counters.** Beyond `seqeron_app_recovery_stalled`, a gateway exports
   nothing of seqeron's: no fence counts, no connection state. `seqeron_sequencer_gateway_promotion_total`
   shows that a promotion happened, not why; the gateway's log does. An application can export its own

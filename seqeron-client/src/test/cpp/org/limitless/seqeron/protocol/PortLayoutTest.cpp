@@ -55,6 +55,22 @@ TEST(PortLayout, IngressEndpointsCsvMatchesThreeNodeLayout)
     EXPECT_EQ("0=host0:9302,1=host0:9312", ingressEndpointsCsv(2, "host0"));
 }
 
+// Member i of a host list runs on entry i; the Java twin is PortLayoutTest.java's hostList* cases.
+TEST(PortLayout, HostListEndpointSet)
+{
+    EXPECT_EQ("0=h0:9302,1=h1:9312,2=h2:9322", ingressEndpointsCsv(parseHosts("h0, h1 ,h2")));
+    EXPECT_EQ(ingressEndpointsCsv(1), ingressEndpointsCsv(std::vector<std::string>{ "localhost" }));
+}
+
+TEST(PortLayout, HostListRules)
+{
+    EXPECT_EQ(std::vector<std::string>{ "h0" }, parseHosts("h0"));
+    EXPECT_THROW(parseHosts(""), std::invalid_argument);
+    EXPECT_THROW(parseHosts("h0,,h2"), std::invalid_argument);
+    EXPECT_THROW(parseHosts("h0,h1,"), std::invalid_argument);
+    EXPECT_THROW(parseHosts("h0,h1,h2,h3"), std::invalid_argument);
+}
+
 // The base is a deployment knob (SEQERON_PORT_BASE), and these pin the rules that decide it. Driven
 // through the pure seam rather than the environment, which clusterPortBase() reads once into a local
 // static. The Java twin is PortLayoutTest.java — same rules, same boundaries.

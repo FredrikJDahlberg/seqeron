@@ -244,19 +244,27 @@ usually what you want:
 
 ### Three-node cluster
 
-Run each command on its respective host (or in separate terminals on localhost for testing) — only
-`-Dsequencer.memberId` differs between them:
+Run this on each host, member 0 on `host0` and so on — only `-Dsequencer.memberId` differs between
+them:
 
 ```bash
 java \
   -Dsequencer.memberId=0 \
-  -Dsequencer.baseDir=/var/seqeron-seq \
-  "-Dsequencer.clusterMembers=0,host0:9302,host0:9303,host0:9304,host0:9305,host0:9301|1,host1:9312,host1:9313,host1:9314,host1:9315,host1:9311|2,host2:9322,host2:9323,host2:9324,host2:9325,host2:9321" \
+  -Dsequencer.hosts=host0,host1,host2 \
+  -Dsequencer.baseDir=/var/lib/seqeron \
   -jar seqeron-*-uber.jar
 ```
 
-`seqeron-service/src/test/scripts/start-three-node-cluster.sh` builds that string with `ports.sh`'s
-`cluster_members_string` and brings all three up on localhost.
+`sequencer.hosts` lists every member's host in member-id order. The node builds Aeron's
+`clusterMembers` string from it, and binds and advertises its own entry. Set `sequencer.baseDir` to
+persistent storage: it holds the Raft log and the archive, and the default is under `$TMPDIR`.
+
+Clients take the same list: `clusterctl` as `CLUSTERCTL_HOSTS`, `ClusterProbe` as `probe.hosts`, and
+an application through `PortLayout.ingressEndpoints(PortLayout.parseHosts("host0,host1,host2"))` (C++:
+`protocol::ingressEndpointsCsv(protocol::parseHosts(...))`).
+
+For testing on one machine, `seqeron-service/src/test/scripts/start-three-node-cluster.sh` brings all
+three up on localhost.
 
 ### Port layout
 
@@ -293,8 +301,11 @@ into each member's own archive.
 | Property                    | Default                          | Description                        |
 |-----------------------------|----------------------------------|------------------------------------|
 | `sequencer.memberId`        | `0`                              | Raft member ID for this node       |
+| `sequencer.hosts`           | unset                            | Every member's host, in id order; replaces `clusterMembers` and `nodeCount` |
+| `sequencer.host`            | this member's entry in `hosts`, else `localhost` | Host this node binds and advertises |
 | `sequencer.baseDir`         | `$TMPDIR/seqeron-seq`           | Root for archive and cluster dirs  |
 | `sequencer.aeronDir`        | `$TMPDIR/seqeron-seq-aeron-<id>`| Aeron media driver directory       |
+| `sequencer.nodeCount`       | `1`                              | Cluster size, all on localhost     |
 | `sequencer.clusterMembers`  | single-node localhost            | Full Aeron clusterMembers string   |
 | `sequencer.idleStrategy`    | `backoff`                        | `backoff` or `yielding`            |
 
