@@ -1667,8 +1667,8 @@ TEST(ReplayerRecoveryClientIdInUse, ANoticeForAnotherClientIsIgnored)
 // A lifecycle frame reaches onSequenced when no lifecycle callback was given. This side alone has the
 // onConnected/onDisconnected seam — the Java twin's receiver has no such callbacks and always delivers
 // these on onSequenced — so this case has no Java counterpart by construction rather than by omission.
-// app/Session takes them here: a LifecycleEvent carries no payload, and confirmed ingress must see every
-// frame the producer placed, its own ConnectionOpened included.
+// app/Session takes them here: confirmed ingress must see every frame the producer placed, its own
+// ConnectionOpened included.
 TEST(ReplayerRecoveryLifecycle, AConnectionFrameReachesOnSequencedWhenNoLifecycleCallbackIsGiven)
 {
     std::vector<std::int64_t> dispatched;

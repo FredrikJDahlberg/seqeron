@@ -13,9 +13,12 @@
 
 #include <cstdint>
 #include <cstring>
+#include <string>
+#include <string_view>
 #include <vector>
 
 #include "org/limitless/seqeron/protocol/SequencedFrame.hpp"
+#include "org_limitless_seqeron_sbe_frame/ConnectionOpened.h"
 #include "org_limitless_seqeron_sbe_frame/MessageHeader.h"
 #include "org_limitless_seqeron_sbe_frame/Sequenced.h"
 #include "org_limitless_seqeron_sbe_frame/SequencedSystem.h"
@@ -68,9 +71,9 @@ std::vector<char> payloadFrame()
     return out;
 }
 
-std::vector<char> systemFrame(std::uint16_t systemEventType, std::uint16_t bodyLength)
+std::vector<char> systemFrame(std::uint16_t systemEventType, const std::vector<char>& body)
 {
-    const std::vector<char> body(bodyLength, 0x5A);
+    const auto bodyLength = static_cast<std::uint16_t>(body.size());
     std::vector<char> out(bodyLength + 64, 0);
     frm::SequencedSystem frame;
     frame.wrapAndApplyHeader(out.data(), 0, out.size());
@@ -84,6 +87,11 @@ std::vector<char> systemFrame(std::uint16_t systemEventType, std::uint16_t bodyL
     frame.putBody(body.data(), bodyLength);
     out.resize(frm::MessageHeader::encodedLength() + frame.encodedLength());
     return out;
+}
+
+std::vector<char> systemFrame(std::uint16_t systemEventType, std::uint16_t bodyLength)
+{
+    return systemFrame(systemEventType, std::vector<char>(bodyLength, 0x5A));
 }
 
 TEST(SequencedEventFactory, ApplicationFrameFieldByField)
@@ -133,7 +141,7 @@ TEST(SequencedEventFactory, SystemFrameNamesItsEventAndNoPayloadId)
     EXPECT_EQ(8u, event.payloadLength);
 }
 
-TEST(SequencedEventFactory, LifecycleEventCarriesTheIdentityAndNoBody)
+TEST(SequencedEventFactory, LifecycleEventCarriesTheIdentityAndThePayload)
 {
     std::vector<char> frame = systemFrame(CONNECTION_OPENED, 8);
     const FrameView view = unwrapFrame(frame.data(), frame.size());
@@ -147,6 +155,25 @@ TEST(SequencedEventFactory, LifecycleEventCarriesTheIdentityAndNoBody)
     EXPECT_EQ(SESSION_ID, event.sourceSessionId);
     EXPECT_EQ(TIMESTAMP, event.clusterTimestampNs);
     EXPECT_EQ(RECEIVE_TIME_NS, event.receiveTimeNs);
+
+    // What decodeSystem wraps ConnectionOpened's connectionData from, addressed in place.
+    EXPECT_EQ(view.payload, event.payload);
+    EXPECT_EQ(8u, event.payloadLength);
+}
+
+TEST(SequencedEventFactory, ConnectionDataDecodesThroughTheLifecycleEvent)
+{
+    std::vector<char> body(64, 0);
+    frm::ConnectionOpened opened;
+    opened.wrapForEncode(body.data(), 0, body.size()).putConnectionData(std::string_view{ "label" });
+    body.resize(opened.encodedLength());
+    std::vector<char> frame = systemFrame(CONNECTION_OPENED, body);
+    const FrameView view = unwrapFrame(frame.data(), frame.size());
+    ASSERT_TRUE(view.valid);
+
+    const LifecycleEvent event = lifecycleEventOf(view, RECEIVE_TIME_NS);
+
+    EXPECT_EQ("label", decodeSystem<frm::ConnectionOpened>(event).getConnectionDataAsString());
 }
 
 } // namespace

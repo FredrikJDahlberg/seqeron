@@ -410,7 +410,22 @@ struct LifecycleEvent
     std::int64_t sourceSessionId;    ///< Aeron Cluster session the event was submitted on
     std::int64_t clusterTimestampNs; ///< cluster consensus time (epoch ns) when committed
     std::int64_t receiveTimeNs;      ///< wall-clock ns at receipt by this client
+    const char* payload;             ///< the event's message, for decodeSystem; valid only during the callback
+    std::uint64_t payloadLength;     ///< total byte count
 };
+
+/**
+ * Wraps a lifecycle event's message in its decoder: ConnectionOpened or ConnectionClosed. See
+ * decodeSystem(const char*, std::uint64_t).
+ *
+ * @tparam Decoder the decoder the event's callback names
+ * @param event    the event, valid only during its callback
+ */
+template<typename Decoder>
+Decoder decodeSystem(const LifecycleEvent& event)
+{
+    return decodeSystem<Decoder>(event.payload, event.payloadLength);
+}
 
 /**
  * Fills a SequencedEvent from an unwrapped frame, plus the two stamps that belong to the delivery rather
@@ -442,8 +457,7 @@ inline SequencedEvent sequencedEventOf(const FrameView& view, const std::int64_t
 }
 
 /**
- * Fills a LifecycleEvent from an unwrapped ConnectionOpened/ConnectionClosed, which carries no payload to
- * address.
+ * Fills a LifecycleEvent from an unwrapped ConnectionOpened/ConnectionClosed.
  *
  * @param view          the unwrapped frame
  * @param receiveTimeNs when this process read it
@@ -455,7 +469,9 @@ inline LifecycleEvent lifecycleEventOf(const FrameView& view, const std::int64_t
                            .connectionId = view.connectionId,
                            .sourceSessionId = view.sourceSessionId,
                            .clusterTimestampNs = view.clusterTimestampNs,
-                           .receiveTimeNs = receiveTimeNs };
+                           .receiveTimeNs = receiveTimeNs,
+                           .payload = view.payload,
+                           .payloadLength = view.payloadLength };
 }
 
 // The wall-clock stamp events carry as receiveTimeNs, shared so both stream clients use one clock.

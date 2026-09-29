@@ -132,8 +132,6 @@ public final class SequencedFrameDecoder {
             return false;
         }
         readSystemHeader(source, blockOffset);
-        blockLength = messageHeader.blockLength();
-        version = messageHeader.version();
         payloadOffset = blockOffset;
         payloadLength = length - MessageHeaderDecoder.ENCODED_LENGTH;
         return true;
@@ -206,8 +204,8 @@ public final class SequencedFrameDecoder {
     }
 
     /**
-     * What to wrap a decoder over {@link #payloadOffset()} with: the payload's own on an application frame,
-     * the frame's own on a synthesized one, and 0 on a submitted system frame (use compiled constants).
+     * What to wrap a decoder over {@link #payloadOffset()} with on an application frame: the payload's own.
+     * 0 on every system frame, whose decoder's compiled constants are the only ones there are (<b>V-3</b>).
      */
     public int blockLength() {
         return blockLength;

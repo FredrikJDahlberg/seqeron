@@ -76,9 +76,9 @@ public final class SequencedEvent {
     }
 
     /**
-     * What to wrap a decoder over {@link #payloadOffset()} with: the payload's own on an application frame, the
-     * frame's own on a synthesized system frame, and 0 on a submitted one — whose decoder's compiled
-     * {@code BLOCK_LENGTH} and {@code SCHEMA_VERSION} are the only ones there are.
+     * What to wrap a decoder over {@link #payloadOffset()} with on an application frame: the payload's own. 0
+     * on every system frame, whose decoder's compiled {@code BLOCK_LENGTH} and {@code SCHEMA_VERSION} are the
+     * only ones there are.
      */
     public int blockLength() {
         return frame.blockLength();

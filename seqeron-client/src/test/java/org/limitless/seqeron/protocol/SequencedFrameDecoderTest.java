@@ -1,5 +1,6 @@
 package org.limitless.seqeron.protocol;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -150,6 +151,21 @@ class SequencedFrameDecoderTest {
                                where + " decodes with a payload running past the fragment");
                 }
             }
+        }
+    }
+
+    /**
+     * A whole frame this time. A system payload is decoded with its decoder's compiled constants (<b>V-3</b>),
+     * so the view declares none, synthesized or submitted.
+     */
+    @Test
+    @DisplayName("a system frame declares no block length or version")
+    void aSystemFrameDeclaresNoBlockLengthOrVersion() {
+        for (final byte[] frame : new byte[][] {systemFrame(1, SystemFrame.CLUSTER_STARTED, 8),
+                                                clusterHeartbeatFrame(2)}) {
+            assertTrue(wrap(frame));
+            assertEquals(0, view.blockLength());
+            assertEquals(0, view.version());
         }
     }
 

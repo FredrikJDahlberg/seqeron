@@ -155,21 +155,16 @@ processes already do. The two client ids differ on purpose, so both examples can
   a handler raises, so the gap is recorded and the duty cycle raises it.
 - **Both families, both directions.** The ping is an application payload; the connection each example
   announces is a system event, so it goes through `publishSystem` with an SBE payload and no `MessageHeader`
-  of its own. Reading a system payload back is the same split in reverse — and it is where the two languages
-  differ most. Java's `printSystem` holds both wrap rules: a submitted `ConnectionOpened` takes its
-  decoder's compiled `BLOCK_LENGTH` and `SCHEMA_VERSION`, since the event's `blockLength()` is 0 for the
-  nine submitted events, and a synthesized `ClusterHeartbeat` takes the event's own. C++ has one rule,
-  because `decodeSystem` supplies the decoder's compiled constants for every system payload.
+  of its own. Reading a system payload back is the same split in reverse: the decoder takes its own compiled
+  `BLOCK_LENGTH` and `SCHEMA_VERSION`, submitted `ConnectionOpened` and synthesized `ClusterHeartbeat` alike.
+  C++'s `decodeSystem` does that wrap in one call.
 - **Three callbacks, not one — in C++.** `ConnectionOpened` and `ConnectionClosed` reach a C++ consumer
-  through `onConnected`/`onDisconnected` and never through `onSequenced`, as a `LifecycleEvent`: the
-  frame's identity with no payload, so the `connectionData` the Java half prints off its own announcement is
-  not reachable through that receiver. Java delivers both events to `onSequenced` like any other system
-  frame. Passing `{}` for either one is a hole in `globalSeqNo` wherever a connection opens or closes,
-  which is why the C++ example supplies all three and its `inOrder` check holds across the connections it
-  announces itself.
-- **`LeadershipChanged` has its own callback.** It reaches a consumer there and nowhere else, so a
-  consumer that passes `null` (Java) or `{}` (C++) for it sees a hole in `globalSeqNo` at every leadership
-  change — including `globalSeqNo` 1, which always is one.
+  through `onConnected`/`onDisconnected` rather than `onSequenced`, as a `LifecycleEvent`: the frame's
+  identity and its payload, which `decodeSystem` reads `connectionData` from as it does in `onSequenced`.
+  Java delivers both events to `onSequenced` like any other system frame, and so does C++ for a callback
+  passed as `{}`.
+- **`LeadershipChanged` has its own callback,** and `globalSeqNo` 1 is always one. With that callback
+  `null` (Java) or `{}` (C++), it reaches `onSequenced` instead.
 - **A send that succeeds is not a frame sequenced.** Nothing confirms ingress on egress, and a leader
   failover silently loses whatever the old leader had not committed. The ping lives with that — the next
   second's is its retry — which is what makes it a ping. A producer that cannot lose a frame passes an

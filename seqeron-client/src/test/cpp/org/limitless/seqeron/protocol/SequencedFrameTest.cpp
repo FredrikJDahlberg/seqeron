@@ -227,5 +227,18 @@ TEST(SequencedFrame, EveryTruncationIsRejectedOrStaysInsideTheFragment)
     }
 }
 
+// A whole frame this time. A system payload is decoded with its decoder's compiled constants (V-3), so the
+// view declares none, synthesized or submitted.
+TEST(SequencedFrame, ASystemFrameDeclaresNoBlockLengthOrVersion)
+{
+    for (const std::vector<char>& frame : { systemFrame(1, CLUSTER_STARTED, 8), clusterHeartbeatFrame(2) })
+    {
+        const FrameView view = unwrapFrame(frame.data(), frame.size());
+        ASSERT_TRUE(view.valid);
+        EXPECT_EQ(0, view.blockLength);
+        EXPECT_EQ(0, view.version);
+    }
+}
+
 } // namespace
 } // namespace org::limitless::seqeron::protocol

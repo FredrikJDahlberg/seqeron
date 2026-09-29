@@ -195,10 +195,8 @@ public final class FollowStream {
     }
 
     /**
-     * A system payload decoded, one case per wrap rule. The payload carries no {@code MessageHeader}, so the decoder
-     * supplies what one would have said: the nine submitted events take their decoder's own
-     * {@code BLOCK_LENGTH} and {@code SCHEMA_VERSION}, since {@link SequencedEvent#blockLength()} is 0 for
-     * them, and the three synthesized ones take the event's own.
+     * A system payload decoded. The payload carries no {@code MessageHeader}, so the decoder supplies what one
+     * would have said: its own {@code BLOCK_LENGTH} and {@code SCHEMA_VERSION}, for every system payload.
      *
      * <p>Every allocated event arrives whether a consumer handles it or not, so the default arm is where a
      * consumer of one protocol spends its time.
@@ -212,14 +210,16 @@ public final class FollowStream {
                                   event.connectionId(), OPENED_DECODER.connectionDataLength());
             }
             case SystemFrame.CLUSTER_HEARTBEAT -> {
-                HEARTBEAT_DECODER.wrap(event.buffer(), event.payloadOffset(), event.blockLength(), event.version());
+                HEARTBEAT_DECODER.wrap(event.buffer(), event.payloadOffset(), ClusterHeartbeatDecoder.BLOCK_LENGTH,
+                                       ClusterHeartbeatDecoder.SCHEMA_VERSION);
                 System.out.printf("%d ClusterHeartbeat cluster clock %dns%n", event.globalSeqNo(),
                                   HEARTBEAT_DECODER.header().timestamp());
             }
             case SystemFrame.GATEWAY_ACTIVE -> {
                 // Only after clusterctl load-topology: this frame is the cluster designating one gateway
                 // instance, and its gatewayId is in the payload and nowhere else.
-                GATEWAY_ACTIVE_DECODER.wrap(event.buffer(), event.payloadOffset(), event.blockLength(), event.version());
+                GATEWAY_ACTIVE_DECODER.wrap(event.buffer(), event.payloadOffset(), GatewayActiveDecoder.BLOCK_LENGTH,
+                                            GatewayActiveDecoder.SCHEMA_VERSION);
                 System.out.printf("%d GatewayActive gatewayId=%d%n", event.globalSeqNo(),
                                   GATEWAY_ACTIVE_DECODER.gatewayId());
             }

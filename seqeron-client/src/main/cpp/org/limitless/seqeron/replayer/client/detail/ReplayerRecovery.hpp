@@ -678,7 +678,7 @@ class ReplayerRecovery
         const std::uint16_t eventType = view.systemEventType;
         if (isSystem && (eventType == protocol::CONNECTION_OPENED || eventType == protocol::CONNECTION_CLOSED))
         {
-            // Both carry the same header-only LifecycleEvent; only the callback differs.
+            // Both carry the same LifecycleEvent; only the callback differs.
             const OnConnected& callback = eventType == protocol::CONNECTION_OPENED ? m_onConnected : m_onDisconnected;
             if (callback)
             {
@@ -686,9 +686,8 @@ class ReplayerRecovery
                 return;
             }
             // No lifecycle callback: the frame goes to onSequenced like any other rather than being
-            // dropped. A LifecycleEvent carries no payload, so a consumer that needs ConnectionOpened's
-            // connectionData — or that confirms its own ingress, which must see every frame it placed —
-            // takes them there instead.
+            // dropped. A consumer that confirms its own ingress, which must see every frame it placed,
+            // takes them there.
         }
         if (isSystem && eventType == protocol::LEADERSHIP_CHANGED)
         {

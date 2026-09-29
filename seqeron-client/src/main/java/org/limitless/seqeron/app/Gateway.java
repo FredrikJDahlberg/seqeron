@@ -413,8 +413,8 @@ public final class Gateway implements AutoCloseable {
                 }
                 break;
             case SystemFrame.GATEWAY_ACTIVE:
-                // Synthesized, so the frame's own block length and version are the payload's.
-                gatewayActive.wrap(event.buffer(), event.payloadOffset(), event.blockLength(), event.version());
+                gatewayActive.wrap(event.buffer(), event.payloadOffset(), GatewayActiveDecoder.BLOCK_LENGTH,
+                                   GatewayActiveDecoder.SCHEMA_VERSION);
                 lifecycle.onGatewayActive(gatewayActive.gatewayId());
                 break;
             default:

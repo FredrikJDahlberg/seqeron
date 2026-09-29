@@ -634,7 +634,8 @@ final class ReplayerRecovery {
             notifyCaughtUp();
         }
         if (view.isSystem() && view.systemEventType() == LEADERSHIP_CHANGED) {
-            leadershipChanged.wrap(buffer, view.payloadOffset(), view.blockLength(), view.version());
+            leadershipChanged.wrap(buffer, view.payloadOffset(), LeadershipChangedDecoder.BLOCK_LENGTH,
+                                   LeadershipChangedDecoder.SCHEMA_VERSION);
             currentLeaderMemberId = leadershipChanged.newLeaderMemberId();
             if (onLeadershipChanged != null) {
                 onLeadershipChanged.onLeadershipChanged(currentLeaderMemberId, leadershipChanged.leadershipTermId(),

@@ -160,9 +160,8 @@ bool inOrder(const std::int64_t globalSeqNo)
 }
 
 // A system payload decoded. The payload carries no messageHeader, so the decoder supplies what one would have
-// said — and decodeSystem takes it from the decoder's own compiled constants for every system payload, where
-// the Java twin has to tell the nine submitted events from the three synthesized ones. The two connection
-// events are not here: they have their own callbacks in this language.
+// said: decodeSystem takes it from the decoder's own compiled constants, for every system payload. The two
+// connection events are not here: they have their own callbacks in this language.
 //
 // Every allocated event arrives whether a consumer handles it or not, so the default arm is where a consumer
 // of one protocol spends its time.
@@ -214,18 +213,20 @@ void onSequenced(const SequencedEvent& event)
     }
 }
 
-// The two connection events reach a C++ consumer here rather than through onSequenced, already decoded into
-// a LifecycleEvent — which carries the frame's identity and not its payload, so the connectionData the Java twin
-// prints off ConnectionOpened is not reachable through this receiver. A consumer that passes {} for these sees
-// a hole in globalSeqNo wherever a connection opens or closes.
+// The two connection events reach a C++ consumer here rather than through onSequenced, as a LifecycleEvent. A
+// consumer that passes {} for these gets them in onSequenced instead.
 void onConnected(const protocol::LifecycleEvent& event)
 {
     if (!inOrder(event.globalSeqNo))
     {
         return;
     }
-    std::printf("%lld ConnectionOpened connection=%d sourceId=%d\n", static_cast<long long>(event.globalSeqNo),
-                event.connectionId, event.sourceId);
+    // §7.1 lets connectionData be absent, and SBE would throw reading a length that is not there.
+    const std::uint16_t label = event.payloadLength < frame_sbe::ConnectionOpened::connectionDataHeaderLength()
+                                    ? 0
+                                    : protocol::decodeSystem<frame_sbe::ConnectionOpened>(event).connectionDataLength();
+    std::printf("%lld ConnectionOpened connection=%d sourceId=%d label=%u bytes\n",
+                static_cast<long long>(event.globalSeqNo), event.connectionId, event.sourceId, label);
 }
 
 void onDisconnected(const protocol::LifecycleEvent& event)

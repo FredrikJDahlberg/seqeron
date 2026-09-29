@@ -100,9 +100,9 @@ This repository's own processes use ids 1–16, so an application's replicas sho
 
 C++ has the two extra callbacks because its receiver keeps the callback set `ClusterStreamClient` already
 had, so a consumer can swap one stream source for the other; the Java receiver is the only source there is
-and delivers both events through `onSequenced` like any other system frame. They carry a `LifecycleEvent` —
-the frame's identity and no payload — so **`ConnectionOpened`'s `connectionData` is reachable in Java and not
-through the C++ receiver**, except to a consumer that leaves both empty.
+and delivers both events through `onSequenced` like any other system frame. They carry a `LifecycleEvent`:
+the frame's identity and its payload, which `decodeSystem<ConnectionOpened>(event)` reads `connectionData`
+from.
 
 A frame whose own callback is null (Java) or empty (C++) arrives in `onSequenced` instead, as a system
 frame, so no frame is ever dropped and `globalSeqNo` has no holes. `onSequenced` itself is required: the
@@ -119,15 +119,13 @@ family first (`isSystem()`), then dispatch on `(payloadId, templateId)` for an a
 `systemEventType` for a system one, never on `templateId` alone. To decode a system payload:
 
 - C++: `decodeSystem<Decoder>(event)`, and `decodeSequenced<Decoder>(event)` for an application
-  payload (`protocol/SequencedFrame.hpp`). `decodeSystem` takes the block length and version from the
-  decoder's own compiled constants for **every** system payload, so C++ has one rule where Java has two.
-- Java: the nine system events a producer submits wrap with their decoder's own `BLOCK_LENGTH` and
-  `SCHEMA_VERSION`, since the event's `blockLength()` is 0 for them. The three the sequencer synthesizes
-  (`LeadershipChanged`, `ClusterHeartbeat`, `GatewayActive`) wrap with the event's `blockLength()` and
-  `version()`.
+  payload (`protocol/SequencedFrame.hpp`).
+- Java: `decoder.wrap(event.buffer(), event.payloadOffset(), Decoder.BLOCK_LENGTH, Decoder.SCHEMA_VERSION)`.
 
-`seqeron-examples` decodes one of each in both languages — a submitted `ConnectionOpened` and a synthesized
-`ClusterHeartbeat` — which is the shortest place to read the two rules off working code.
+Both take the block length and version from the decoder's own compiled constants, for every system
+payload, submitted or synthesized: the payload carries no `MessageHeader`, and the event's `blockLength`
+and `version` are 0 on a system frame. `seqeron-examples` decodes a submitted `ConnectionOpened` and a
+synthesized `ClusterHeartbeat` in both languages.
 
 **`SequencedFrameDecoder`** (Java) and **`unwrapFrame`/`FrameView`** (C++) strip the envelope off a raw
 tap frame. Use them to read frames without a receiver, for example from a recording.
