@@ -204,16 +204,18 @@ Single suites:
 
 The Java suite covers the deterministic decision-making — `Sequencer`, and `ReplayerService` through
 its `Replayer` seam — and deliberately touches no Aeron runtime: no media driver, no cluster, no Aeron
-mocks. Everything that needs an Aeron runtime is covered by `core_tests` and by the six end-to-end scripts under
+mocks. Everything that needs an Aeron runtime is covered by `core_tests` and by the seven end-to-end scripts under
 `seqeron-service/src/test/scripts`. Coverage is a JaCoCo report per module, at
 `<module>/build/reports/jacoco/test/`, excluding the generated SBE codecs.
 
-**Five of the six harnesses are Java-only.** They drive the cluster through `tools/ClusterProbe`, which
+**Six of the seven harnesses are Java-only.** They drive the cluster through `tools/ClusterProbe`, which
 submits `ProbeMarker` payloads at ingress (`submit`), round-trips one through consensus and back off
 the tap (`ping`), replays history through the co-located Replayer and then follows the tap live
 (`follow`), or streams through `ClusterStreamSender` and `sequencer/client/PendingSends` and checks its own tap shows
-every frame exactly once, in order (`confirm`, which `failover-test.sh` runs across the leader kill). The probe attaches to a member's own embedded driver, so three of the five need no
-standalone `aeronmd` at all. The sixth, `docker-failover-test.sh`, is the containerized multi-round
+every frame exactly once, in order (`confirm`, which `failover-test.sh` runs across the leader kill, and
+`gateway-host-test.sh` runs on a gateway host across the loss of the relay's member). The probe attaches to a
+member's own embedded driver, or a gateway host's, so four of the six need no
+standalone `aeronmd` at all. The seventh, `docker-failover-test.sh`, is the containerized multi-round
 failover soak (`docker/compose.yml`, `./gradlew operatorDist`, CI's `failover.yml`). `chaos-runner` needs one more thing the probe cannot supply — a **gateway
 pair under the faults** — and `TestGateway` is it: an elected active/standby producer (`GW-T-A`/`GW-T-B`,
 `gatewaySourceId` 9, listening on 9200/9201) that speaks no application protocol and holds no session
@@ -289,12 +291,24 @@ record only from wherever it resumed. The cost is that recovery time and archive
 
 ### The replay protocol — two sides, two namespaces
 **`replayer.server`** is Java only: `ReplayerServer`/`ReplayerService` and their pure seams `Replayer`,
-`ReplaySlotAllocator`, `ReplayRecordings`, `ReplayClientIdCollisions`, with `AeronReplayer` the only
-part that touches Aeron. **`replayer.client`** is `ReplayerStreamReceiver` and its pure seam
+`ReplaySlotAllocator`, `ReplayRecordings`, `ReplayClientIdCollisions` and the gateway host's `TapRelay`, with
+`AeronReplayer` and `AeronTapRelay` the only parts that touch Aeron. **`replayer.client`** is `ReplayerStreamReceiver` and its pure seam
 `ReplayerRecovery`, plus `SequencedEvent` — Java, and C++ in
 `org::limitless::seqeron::replayer::client`. The two sides share only the protocol's addresses —
 `IPC_CHANNEL`, `REPLAY_STREAM_ID` 201, `REQUEST_STREAM_ID` 202, `CONTROL_STREAM_ID` 203 and
 `NO_REPLAY_NEEDED` — and those are `protocol/ReplayProtocol` in both languages.
+
+**A gateway host runs clients with no member on it.** `ReplayerServer` with `replayer.archiveEndpoints`
+runs its own media driver and archive, and `AeronTapRelay` copies a member's tap onto the host's own: one
+archive replay, over UDP, that follows the member's active recording live. Its decisions are the pure
+**`TapRelay`**, unit-tested the way `TapPublisher` is. It republishes only the frame after the last one it
+published, so the host's tap is the log frame for frame, and on losing its member it resumes on the next
+at the same recording position — every member's active recording starts at `globalSeqNo` 1 and its
+positions follow from the frames — falling back to that recording's start if the frame there is not the
+next one. Each start relays from `globalSeqNo` 1 into a new local recording, as a member's restart does, so
+the host's chain passes the same integrity check. Clients there are unchanged: they attach to the host's
+Aeron directory with the host's node id (3 or above) where they take a member id, and submit over UDP
+ingress. The member pays one archive replay per gateway host and its sequencer nothing.
 
 `ReplayerStreamReceiver` is the Aeron adapter only — subscriptions, the replay image, the clocks; every
 decision it makes about them lives in **`ReplayerRecovery`**, which holds none of them and is where the

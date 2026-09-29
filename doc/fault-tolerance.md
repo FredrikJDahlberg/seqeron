@@ -232,6 +232,33 @@ which is unit-tested directly.
 historical segment in full, then the last, possibly still-recording, segment without a bound, so one
 image delivers history followed by live data.
 
+### 3.3 Gateway host
+
+A gateway host runs clients but no member (`start-gateway-host.sh`). Its `ReplayerServer` runs its own
+media driver and archive, and a relay copies a member's tap onto the host's own: one archive replay of
+the member's active recording, over UDP, that follows it live. Clients on the host then recover exactly
+as §3.1 and §3.2 describe, against the host's archive. The relay's decisions are in `TapRelay`, which is
+unit-tested directly.
+
+- **Next frame only.** The relay republishes a frame only if its `globalSeqNo` is one past the last it
+  published, and drops anything at or below it, so the host's tap holds each frame once, in order,
+  whichever member it came from.
+- **Member lost.** Nothing received for 3 s (`SOURCE_TIMEOUT_MS`, three cluster heartbeats), an ended
+  replay, or an archive request unanswered for 1 s moves the relay to the next member in
+  `SEQERON_ARCHIVE_ENDPOINTS`. It resumes there at the recording position its last frame ended at: every
+  member's active recording starts at `globalSeqNo` 1 and its positions follow from the frames. If the
+  frame at that position is not the next one, it replays that member's recording from its start and skips
+  what it already has; a member that has recorded less than the relay has published is passed over.
+  After every member has failed in a row it waits 500 ms before trying again.
+- **Restart.** A restarted relay starts a new local recording and relays the log from `globalSeqNo` 1, as
+  a member's full-log replay does, so the host's chain passes the §3.1 integrity check. The cost is the
+  whole history over the network per restart.
+- **Local recording.** A local tap that refuses a frame is not spun on: the frame is offered again next
+  cycle, and the member's replay waits under Aeron flow control. A local recording that stops, or makes no
+  progress for 1 s while the tap is back-pressured, exits the process with code 70.
+- **No member reachable.** The host's tap goes silent, and its clients' tap-stall fences (§2.1) fire as
+  they would on a member whose cluster lost quorum.
+
 ## 4. Leader-only work
 
 Some side effects must be performed by exactly one replica, the one on the leader, and must survive a
@@ -291,6 +318,10 @@ frame on the tap exactly once and in order; the other reports what it lost.
   then kills member 0's `SequencerServer` and checks that its replayer and client fail fast and that a
   fresh cold start walks a real two-recording chain (§3.2).
 - **`failover-test.sh`**: a leader kill with a replay consumer and the confirmed-ingress check of §5.
+- **`gateway-host-test.sh`**: a gateway host whose relay reads the leader, which is then killed. A
+  `confirm` producer on the host must see every frame exactly once, in order, and the relay must move to
+  another member; the host is then restarted, and a cold start there must walk its two-recording chain
+  (§3.3).
 - **`docker-failover-test.sh`**: `ROUNDS` (default 15) leader kills against `docker/compose.yml` under
   continuous `ProbeMarker` load, restoring each killed member before the next round. It checks that
   every round changes leadership and the killed member rejoins; that an observer on each surviving node

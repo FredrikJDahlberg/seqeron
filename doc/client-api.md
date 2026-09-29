@@ -61,6 +61,13 @@ this node's history through the co-located Replayer, switches to the live tap on
 by itself, and delivers every frame once, in `globalSeqNo` order. A producer that takes a
 [façade](#the-front-door-app) does not construct one: the façade owns it and hands out `Payload`s.
 
+"This node" is a cluster member, or a **gateway host**: a host that runs no member but runs
+`start-gateway-host.sh`, whose Replayer relays a member's tap onto the host's own
+([`fault-tolerance.md`](fault-tolerance.md#33-gateway-host)). A client there takes the host's node id
+(3 or above) where it takes a `memberId`, attaches to the host's Aeron directory, and is otherwise
+unchanged. `Gateway` works there as it does on a member; `Application` does not, since it publishes
+only while its own node leads, and a gateway host never does.
+
 | Call | Java | C++ |
 |---|---|---|
 | construct | `(clientId, onSequenced, onLeadershipChanged, onCaughtUp)` | `(clientId, onSequenced, onConnected, onDisconnected, onLeadershipChanged, onCaughtUp)` |

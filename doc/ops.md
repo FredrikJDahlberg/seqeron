@@ -164,6 +164,10 @@ cluster block with `PortLayout.isClusterPort()`.
 Two Aeron media drivers on one host cannot bind the same UDP port, so every co-located process needs
 ports of its own. `clusterctl` binds none: its egress uses an ephemeral port.
 
+A gateway host (`start-gateway-host.sh`) binds no fixed port either. Its relay reaches each member's
+archive port, and the member replies and replays to ephemeral UDP ports on the gateway host, at the
+name `SEQERON_HOST` gives, so a firewall between them must let the members reach those.
+
 ## A node that terminates itself
 
 `SequencerServer` exits **70** when its local archive stops recording the node's tap (stalled with no

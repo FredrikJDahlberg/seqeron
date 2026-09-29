@@ -28,6 +28,8 @@ public final class Logger {
         ReplayerServer,
         /** That server's duty cycle. */
         ReplayerService,
+        /** On a gateway host, the relay that copies a member's tap onto the local one. */
+        TapRelay,
         /** The client-side receiver, reporting from inside a consumer's replica. */
         ReplayerStreamReceiver,
         /** The cluster session client, {@code ClusterStreamSender}. */
@@ -88,6 +90,8 @@ public final class Logger {
         ReplayClientIdCollision,
         /** A duty-cycle thread outlived the deadline for stopping, and is being left behind. */
         ShutdownTimeout,
+        /** A gateway host's relay stopped reading one member's archive and moved to the next. */
+        RelaySourceLost,
         /** The live tap skipped a {@code globalSeqNo}; recovery replays the hole. */
         TapGap,
         /** This node's Replayer has no valid history to serve. */

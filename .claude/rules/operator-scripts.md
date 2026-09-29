@@ -23,6 +23,7 @@ one answer to how seqeron is installed.
 jar); `-o <payloadId>` — the spec §13.1 pipe — is the wrapper's only, because Gradle re-encodes a child's
 stdout and would corrupt the payload bytes.
 
-`stop-cluster.sh` stops everything either start script launched, plus whatever
+`stop-cluster.sh` stops everything the start scripts launched, `start-gateway-host.sh`'s `ReplayerServer`
+included, plus whatever
 `SEQERON_EXTRA_PROCESSES` names (`"label|pgrep-pattern"` entries, semicolon-separated), so a consumer's
 harness can clean up its own processes through the same sweep without core naming them.

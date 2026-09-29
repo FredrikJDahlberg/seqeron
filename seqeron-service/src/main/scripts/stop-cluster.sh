@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# stop-cluster.sh — stop all cluster processes started by start-cluster.sh or
-# start-three-node-cluster.sh.
+# stop-cluster.sh — stop all cluster processes started by start-cluster.sh,
+# start-three-node-cluster.sh or start-gateway-host.sh.
 #
 # Sends SIGTERM to the consumer replicas (ClusterProbe, TestGateway), then to the cluster itself
 # (SequencerServer, ReplayerServer, aeronmd), then waits up to 10 s for each to exit before sending
