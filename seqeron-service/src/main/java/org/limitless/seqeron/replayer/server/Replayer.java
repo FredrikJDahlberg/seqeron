@@ -76,6 +76,24 @@ public interface Replayer {
     SelfCheckStream openSelfCheckStream(long replaySessionId);
 
     /**
+     * Opens a replay of a recording that follows it live, onto an internal stream only the snapshot index
+     * reads.
+     * @param recordingId the active tap recording
+     * @param position    where to start, its start position
+     * @return the stream, to be {@link IndexStream#close}d when the index stops
+     */
+    IndexStream openIndexStream(long recordingId, long position);
+
+    /**
+     * Allocates one operator counter for one source, keyed on {@code {memberId, sourceId}}.
+     * @param typeId   seqeron counter type id
+     * @param label    human-readable label
+     * @param sourceId the source it counts
+     * @return the counter
+     */
+    AtomicCounter newSourceCounter(int typeId, String label, int sourceId);
+
+    /**
      * Allocates one operator counter (see {@code SeqeronCounters}); the member id is the
      * implementation's.
      * @param typeId seqeron counter type id
@@ -93,6 +111,34 @@ public interface Replayer {
      * @return monotonic milliseconds, for the self-check deadline
      */
     long nowMs();
+
+    /** The snapshot index's replay of the active recording. */
+    interface IndexStream {
+        /**
+         * @param handler receives each frame with its recording positions
+         * @param fragmentLimit maximum fragments to read
+         * @return fragments read
+         */
+        int poll(IndexFrameHandler handler, int fragmentLimit);
+
+        /** Whether the replay has ended: the recording stopped, or the archive dropped the replay. */
+        boolean isEnded();
+
+        void close();
+    }
+
+    /** One frame of the index's replay. */
+    @FunctionalInterface
+    interface IndexFrameHandler {
+        /**
+         * @param buffer        holding the frame
+         * @param offset        of its first byte
+         * @param length        its length
+         * @param startPosition the recording position of its first byte
+         * @param endPosition   the recording position just past it
+         */
+        void onFrame(DirectBuffer buffer, int offset, int length, long startPosition, long endPosition);
+    }
 
     /** The internal stream a startup self-check replay is read back over. */
     interface SelfCheckStream {

@@ -5,8 +5,11 @@ import io.aeron.ExclusivePublication;
 import io.aeron.Subscription;
 import io.aeron.archive.client.AeronArchive;
 import io.aeron.logbuffer.FragmentHandler;
+import io.aeron.logbuffer.FrameDescriptor;
+import io.aeron.protocol.DataHeaderFlyweight;
 import java.util.ArrayList;
 import java.util.List;
+import org.agrona.BitUtil;
 import org.agrona.DirectBuffer;
 import org.agrona.concurrent.status.AtomicCounter;
 import org.limitless.seqeron.protocol.FrameLayer;
@@ -97,6 +100,53 @@ public final class AeronReplayer implements Replayer {
                 subscription.close();
             }
         };
+    }
+
+    @Override
+    public IndexStream openIndexStream(final long recordingId, final long position) {
+        final long replaySessionId = archive.startReplay(recordingId, position, AeronArchive.REPLAY_ALL_AND_FOLLOW,
+                                                         ReplayProtocol.IPC_CHANNEL, ReplayerService.INDEX_STREAM_ID);
+        final String channel = ReplayProtocol.IPC_CHANNEL + "?session-id=" + (int)replaySessionId;
+        final Subscription subscription = aeron.addSubscription(channel, ReplayerService.INDEX_STREAM_ID);
+        return new IndexStream() {
+            private boolean connected;
+            private IndexFrameHandler handler;
+            private final FragmentHandler fragments = (buffer, offset, length, header) -> {
+                // Frames are never fragmented (spec T-2), so one fragment is one whole frame.
+                final long end = header.position();
+                handler.onFrame(buffer, offset, length,
+                                end - BitUtil.align(length + DataHeaderFlyweight.HEADER_LENGTH,
+                                                    FrameDescriptor.FRAME_ALIGNMENT),
+                                end);
+            };
+
+            @Override
+            public int poll(final IndexFrameHandler frameHandler, final int fragmentLimit) {
+                handler = frameHandler;
+                connected |= subscription.imageCount() > 0;
+                return subscription.poll(fragments, fragmentLimit);
+            }
+
+            @Override
+            public boolean isEnded() {
+                return connected && subscription.imageCount() == 0;
+            }
+
+            @Override
+            public void close() {
+                try {
+                    archive.stopReplay(replaySessionId);
+                } catch (final RuntimeException ex) {
+                    // Already gone with its recording or the archive; nothing left to stop.
+                }
+                subscription.close();
+            }
+        };
+    }
+
+    @Override
+    public AtomicCounter newSourceCounter(final int typeId, final String label, final int sourceId) {
+        return SeqeronCounters.addSourceCounter(aeron, typeId, label, memberId, sourceId);
     }
 
     @Override

@@ -224,7 +224,7 @@ fence, which is why `chaos-runner.sh` can drive a
 non-converging recovery to a handover rather than a hang. **It is the reference consumer of `app/Gateway`**,
 the client tier's façade for one instance of an elected pair: the election (`app/GatewayLifecycle`), the
 connection id space it resumes from its predecessor, the connection lifecycle frames, confirmed ingress
-(`sequencer/client/PendingSends` under an `IngressPublisher`, held by its `ClusterStreamSender`) and the four `app/ClusterError`
+(`sequencer/client/PendingSends` under an `IngressPublisher`, held by its `ClusterStreamSender`) and the `app/ClusterError`
 values are all behind it, so what is left in the harness is a socket and a line protocol. A media driver that
 goes away raises from `doWork()` rather than as a fence. It is in
 **`seqeron-service/src/test/java`** and therefore in no jar: `chaos-runner.sh` puts
@@ -291,7 +291,7 @@ record only from wherever it resumed. The cost is that recovery time and archive
 
 ### The replay protocol — two sides, two namespaces
 **`replayer.server`** is Java only: `ReplayerServer`/`ReplayerService` and their pure seams `Replayer`,
-`ReplaySlotAllocator`, `ReplayRecordings`, `ReplayClientIdCollisions` and the gateway host's `TapRelay`, with
+`ReplaySlotAllocator`, `ReplayRecordings`, `ReplayClientIdCollisions`, `SnapshotIndex` and the gateway host's `TapRelay`, with
 `AeronReplayer` and `AeronTapRelay` the only parts that touch Aeron. **`replayer.client`** is `ReplayerStreamReceiver` and its pure seam
 `ReplayerRecovery`, plus `SequencedEvent` — Java, and C++ in
 `org::limitless::seqeron::replayer::client`. On a member `ReplayerServer` runs inside `SequencerServer`'s
@@ -328,9 +328,9 @@ runtime decode failure on a live tap.
 is `Unsequenced` (100) on ingress, republished as `Sequenced` (101) on the tap, carrying one opaque
 length-prefixed payload named by `header.payloadId`. The **system** family is seqeron's own vocabulary
 (spec §7), named by `header.systemEventType` at the same offset: `UnsequencedSystem` (102) →
-`SequencedSystem` (103) for the nine events a producer submits, plus three templates of their own for the
-three the sequencer synthesizes — `ClusterHeartbeat` (104), `LeadershipChanged` (105), `GatewayActive`
-(106). Sequencing is copy-18/append-16 for both, the payload is never re-encoded, and `sequenceFrame`
+`SequencedSystem` (103) for the thirteen events a producer submits, plus four templates of their own for
+the four the sequencer synthesizes — `ClusterHeartbeat` (104), `LeadershipChanged` (105), `GatewayActive`
+(106), `SnapshotStarted` (107). Sequencing is copy-18/append-16 for both, the payload is never re-encoded, and `sequenceFrame`
 validates every frame against `doc/seqeron-protocol-spec.md` §9.2.
 
 **The cluster tier decodes no `payloadId` at all** — every application payload is copied through
@@ -372,7 +372,9 @@ sections are the complete producer view of a deployment: `<gateways>` (the elect
 first is acted on**: `GatewayRegistered.remaining` counts down to 0 on the gateway section's last row, and
 that row is the sequencer's completeness edge — it synthesizes the bootstrap `GatewayActive` per logical
 gateway behind it. The application and protocol rows follow it, carry no countdown, and are labelling for
-`SbeLogPrinter`: decoded by nothing, gating nothing.
+`SbeLogPrinter`: decoded by nothing, gating nothing. An optional `<snapshots>` element comes last, as one
+`SnapshotPolicyRegistered` the sequencer does act on: it turns application snapshot rounds on (spec §7.3,
+`doc/snapshot.md`).
 
 ### SBE code generation
 Four schemas, split by who speaks them — `sbe-frame`, `sbe-replay` and `sbe-cluster` under
@@ -380,11 +382,11 @@ Four schemas, split by who speaks them — `sbe-frame`, `sbe-replay` and `sbe-cl
 a distinct namespace so one include path
 covers all of them:
 
-- `sbe-frame.xml` (schema 210) — the seven top-level templates, their four header composites, and the
-  nine submitted **system** payloads (the connection lifecycle events, the cluster markers, the gateway
-  list/election frames, `GatewayActivationRequested`, `ApplicationRegistered`). No system message carries
+- `sbe-frame.xml` (schema 210) — the eight top-level templates, their four header composites, and the
+  thirteen submitted **system** payloads (the connection lifecycle events, the cluster markers, the gateway
+  list/election frames, `GatewayActivationRequested`, `ApplicationRegistered`, the snapshot frames). No system message carries
   a `header` field — the frame's is the only one. Seqeron's own, and the only thing this tier decodes.
-- `sbe-replay.xml` (schema 212) — the seven **replay control** messages, node-local between a
+- `sbe-replay.xml` (schema 212) — the nine **replay control** messages, node-local between a
   `ReplayerService` and its co-located app replicas, never sequenced and never recorded.
 - `sbe-probe.xml` (schema 214) — core's own application payload (`payloadId` 5): one message,
   `ProbeMarker`, carrying a submitter-side `seqNo` and variable-length filler. What `tools/ClusterProbe`
@@ -434,7 +436,8 @@ both `PortLayout`s only: the scripts' `ports.sh` lays out localhost clusters.
 `doc/` holds `getting-started.md` (a release node plus a consumer and a producer; its snippets pin a
 release, so bump them when one changes the API they use), `seqeron-protocol-spec.md` (normative — the frames, the families,
 the system vocabulary, the topology document), `client-api.md` (what a client programs against, and what in
-the client tier is not API — update it when that surface changes), `fault-tolerance.md`, `clusterctl.md` and `ops.md` (runbooks, ports, counters). The topology documents here are
+the client tier is not API — update it when that surface changes), `fault-tolerance.md`, `clusterctl.md` and `ops.md` (runbooks, ports, counters), and `snapshot.md` (a
+proposal, not implemented: application snapshots through the log). The topology documents here are
 `seqeron-service/src/test/resources/topology-test-gateway.xml` and `seqeron-examples/topology.xml`.
 
 ## Code Formatting Mandate

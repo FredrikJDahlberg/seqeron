@@ -2,7 +2,7 @@
 <!--
     The replay control protocol: schema 212, specified in doc/seqeron-protocol-spec.md §10.
 
-    Seven messages between a node's ReplayerService and its co-located clients, on the request (202)
+    Nine messages between a node's ReplayerService and its co-located clients, on the request (202)
     and control (203) streams over aeron:ipc. They are never sequenced or recorded, so they carry no
     header composite. The schema changes in place without a version bump: a node's replayer and its
     clients are built and restarted together, and no recording holds these messages (§11).
@@ -114,6 +114,32 @@
                               id, so both receive it and neither can tell which was there first; a client that does
                               fails its duty cycle">
         <field name="clientId" id="20010" type="int32"/>
+    </sbe:message>
+
+    <!-- App -> ReplayerService: "where is this source's latest snapshot?" -->
+    <sbe:message name="SnapshotQuery" id="23"
+                 description="Asks for the latest valid snapshot of one source (doc/snapshot.md §5)">
+        <field name="clientId"  id="20010" type="int32"/>
+        <field name="requestId" id="20015" type="int64"
+               description="Echoed in the answer (R-1)"/>
+        <field name="sourceId"  id="20017" type="int32"/>
+    </sbe:message>
+
+    <!-- ReplayerService -> App: "here it is", or round -1 for none. -->
+    <sbe:message name="SnapshotLocation" id="24"
+                 description="The latest valid snapshot of the queried source in this node's active recording, or
+                              round -1 if it has none indexed">
+        <field name="clientId"        id="20010" type="int32"/>
+        <field name="requestId"       id="20015" type="int64"
+               description="The requestId of the query this answers (R-1)"/>
+        <field name="round"           id="20018" type="int64"/>
+        <field name="asOfGlobalSeqNo" id="20019" type="int64"
+               description="R, the globalSeqNo of the round's SnapshotStarted"/>
+        <field name="asOfPosition"    id="20020" type="int64"
+               description="Position of that SnapshotStarted in the active recording"/>
+        <field name="endPosition"     id="20021" type="int64"
+               description="Position just past the source's SnapshotEnd for the round"/>
+        <field name="formatVersion"   id="20022" type="uint32"/>
     </sbe:message>
 
 </sbe:messageSchema>

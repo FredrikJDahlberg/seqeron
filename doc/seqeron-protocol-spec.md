@@ -17,9 +17,9 @@ are stable too, which is why §15 is unassigned. All SBE schemas here are little
 | layer | contents | schema | owner |
 | --- | --- | --- | --- |
 | L0 transport | Aeron channels and stream ids; the Aeron Cluster ingress/egress session protocol | `sbe-cluster.xml` (111), a mirror of `io.aeron.cluster.codecs` | Aeron |
-| L1 frame | two envelope pairs, `Unsequenced`/`Sequenced` (application) and `UnsequencedSystem`/`SequencedSystem` (system), plus three synthesized templates | `sbe-frame.xml` (210) | seqeron |
+| L1 frame | two envelope pairs, `Unsequenced`/`Sequenced` (application) and `UnsequencedSystem`/`SequencedSystem` (system), plus four synthesized templates | `sbe-frame.xml` (210) | seqeron |
 | L2 payload | one opaque, length-prefixed byte range per application frame, named by `payloadId` | the application's | the owner of that `payloadId` |
-| system messages | seqeron's twelve events, named by `systemEventType` | `sbe-frame.xml` (210) | seqeron |
+| system messages | seqeron's seventeen events, named by `systemEventType` | `sbe-frame.xml` (210) | seqeron |
 | replay control | replayer ↔ client messages; node-local, never sequenced, never recorded | `sbe-replay.xml` (212) | seqeron |
 
 The cluster tier never decodes an application payload.
@@ -43,8 +43,8 @@ it.
 
 Sequenced and synthesized frames draw `globalSeqNo` from one counter (§9.1).
 
-The template identifies a synthesized frame: `ClusterHeartbeat`, `LeadershipChanged` and
-`GatewayActive` have templates of their own and no ingress form. Their header also carries
+The template identifies a synthesized frame: `ClusterHeartbeat`, `LeadershipChanged`,
+`GatewayActive` and `SnapshotStarted` have templates of their own and no ingress form. Their header also carries
 `sourceId`, `connectionId` and `sessionId` = −1, since there is no external producer, connection or
 session to name. A consumer that needs to test provenance MUST test `sourceId` (**F-4**) and MUST NOT
 depend on the other two fields.
@@ -59,7 +59,7 @@ header composite.
 | stream | channel / stream id | carries | recorded |
 | --- | --- | --- | --- |
 | cluster ingress | Aeron Cluster ingress, inside the L0 session envelope | `Unsequenced` (100) or `UnsequencedSystem` (102), schema 210 | in the Raft log |
-| tap | `aeron:ipc`, stream 205 | `Sequenced` (101), `SequencedSystem` (103), or a synthesized template (104–106), schema 210 | yes, by the co-located archive on every node |
+| tap | `aeron:ipc`, stream 205 | `Sequenced` (101), `SequencedSystem` (103), or a synthesized template (104–107), schema 210 | yes, by the co-located archive on every node |
 | replay | stream 201 | archive bytes, identical to the tap | no |
 | replay request | stream 202 | schema 212, client → replayer | no |
 | replay control | stream 203 | schema 212, replayer → client | no |
@@ -79,10 +79,11 @@ SequencedSystem    (schema 210, template 103) { sequencedSystemHeader,   body:va
 ClusterHeartbeat   (schema 210, template 104) { sequencedSystemHeader }
 LeadershipChanged  (schema 210, template 105) { sequencedSystemHeader,   newLeaderMemberId, leadershipTermId }
 GatewayActive      (schema 210, template 106) { sequencedSystemHeader,   gatewayId }
+SnapshotStarted    (schema 210, template 107) { sequencedSystemHeader,   round }
 ```
 
 The members of each pair differ only in the fields sequencing adds. An application frame carries one
-length-prefixed payload; a system frame carries one length-prefixed system payload. The three
+length-prefixed payload; a system frame carries one length-prefixed system payload. The four
 synthesized templates carry their fields inline and have no payload.
 
 ### 4.1 Header layout
@@ -102,7 +103,7 @@ synthesized templates carry their fields inline and have no payload.
 
 Consequences:
 
-- Every header field is at the same offset in all seven templates. `globalSeqNo` is at 18 in every
+- Every header field is at the same offset in all eight templates. `globalSeqNo` is at 18 in every
   sequenced frame, so a consumer can track continuity without branching on the template (**P-3**).
 - Sequencing copies the first 18 bytes and appends 16, for both families.
 - `blockLength` on an ingress frame is always 18 (§9.2 condition 4).
@@ -276,13 +277,15 @@ peers accepted would diverge (**S-3**). Any future admission rule MUST be derive
 ### 6.4 The topology file
 
 `clusterctl load-topology <file>` publishes one operator file as system frames. Its three sections
-together describe every producer in the deployment:
+together describe every producer in the deployment, and an optional fourth element enables snapshot
+rounds:
 
 | section | publishes | describes |
 | --- | --- | --- |
 | `<gateways>` | one `GatewayRegistered` per row | the gateway list (§7) |
 | `<applications>` | one `ApplicationRegistered` per row | co-located applications |
 | `<protocols>` | one `PayloadIdRegistered` per row | shared protocols (§6.3) |
+| `<snapshots>` | one `SnapshotPolicyRegistered` | the snapshot round interval (§7.3) |
 
 ```xml
 <topology>
@@ -302,8 +305,9 @@ together describe every producer in the deployment:
 Attribute to field: a gateway's `name`/`id`/`sourceId`/`rank` are
 `gatewayName`/`gatewayId`/`gatewaySourceId`/`preferenceRank`; an application's `name`/`sourceId` are
 `applicationName`/`applicationSourceId`; a protocol's `payloadId`/`version`/`name` are
-`payloadId`/`protocolVersion`/`protocolName`. `remaining` is computed by the loader from the row
-count. An application row has no `id` or `rank` because applications are not elected.
+`payloadId`/`protocolVersion`/`protocolName`. A gateway's or application's optional `snapshot`
+(default `false`) is `snapshot`, and `<snapshots interval>` is `intervalSeconds`. `remaining` is computed
+by the loader from the row count. An application row has no `id` or `rank` because applications are not elected.
 
 | constraint | enforced by |
 | --- | --- |
@@ -317,6 +321,8 @@ count. An application row has no `id` or `rank` because applications are not ele
 | exactly one `rank="0"` per gateway `sourceId` | loader |
 | no `sourceId` is a reserved id (§5) | loader |
 | no application `sourceId` equals a gateway `sourceId` | loader |
+| every row of one gateway `sourceId` has the same `snapshot` | loader |
+| `<snapshots>` has a row with `snapshot="true"` | loader |
 
 The loader MUST validate against the schema in its own artifact and MUST ignore any schema location
 the document names. Otherwise a document could name a weaker schema and bypass **C-1**.
@@ -325,13 +331,14 @@ the document names. Otherwise a document could name a weaker schema and bypass *
 publishes the gateway rows as one contiguous run in file order, with `remaining` counting down to 0 on
 the last row; no other frame may come between them, because the sequencer synthesizes the bootstrap
 `GatewayActive` frames after that last row (§7.2). Application rows and then protocol rows follow.
-They carry no countdown, since the sequencer does not act on them.
+They carry no countdown, since the sequencer does not act on them. `SnapshotPolicyRegistered` comes
+last, so every participating row precedes the first round.
 
 ## 7. System messages
 
-Twelve events, defined in schema 210 beside the envelopes. Nine are submitted by producers and travel
-in `UnsequencedSystem`/`SequencedSystem`. Three are synthesized by the sequencer and have templates of
-their own.
+Seventeen events, defined in schema 210 beside the envelopes. Thirteen are submitted by producers and
+travel in `UnsequencedSystem`/`SequencedSystem`. Four are synthesized by the sequencer and have templates
+of their own.
 
 | event | `systemEventType` | carried in | ingress-legal | the sequencer decodes it |
 | --- | --- | --- | --- | --- |
@@ -347,9 +354,14 @@ their own.
 | `PayloadIdRegistered` | 23 | payload | yes (`clusterctl load-topology`) | no (§6.3) |
 | `GatewayActivationRequested` | 24 | payload | yes (`clusterctl activate`) | yes: validates `gatewayId`, then synthesizes `GatewayActive` |
 | `ApplicationRegistered` | 25 | payload | yes (`clusterctl load-topology`) | no |
+| `SnapshotRequested` | 26 | payload | yes (`clusterctl request-snapshot`) | no: answered with `SnapshotStarted` (§7.3) |
+| `SnapshotChunk` | 27 | payload | yes (participating source) | no |
+| `SnapshotEnd` | 28 | payload | yes (participating source) | no |
+| `SnapshotPolicyRegistered` | 29 | payload | yes (`clusterctl load-topology`) | yes: the round interval (§7.3) |
+| `SnapshotStarted` | 30 | template 107 | no | no (encodes only) |
 
-A submitted event's `systemEventType` equals its payload's SBE template id. The three synthesized frames
-also carry their `systemEventType` (5, 16, 18), redundantly with the template id, so that offset 16
+A submitted event's `systemEventType` equals its payload's SBE template id. The four synthesized frames
+also carry their `systemEventType` (5, 16, 18, 30), redundantly with the template id, so that offset 16
 identifies every frame on the tap. Numbers are never reused: `GatewayActivationRequested` took 24
 rather than a vacated number so that no recording can be misread. `ClusterHeartbeat` is unrelated to
 `ReplayHeartbeat` (§10).
@@ -374,7 +386,7 @@ Header of a synthesized frame (§5 covers ingress only):
 | `globalSeqNo` | the next value from the counter ingress also uses (§9.1) |
 | `timestamp` | Raft consensus time, never a local clock (**S-3**) |
 
-> **S-2.** The sequencer decodes exactly the five payloads marked "yes" above, after reading
+> **S-2.** The sequencer decodes exactly the six payloads marked "yes" above, after reading
 > `header.systemEventType` on every system-family ingress frame. It decodes no application payload.
 
 An event that is not ingress-legal is rejected two ways: condition 3 rejects its template, and
@@ -388,7 +400,7 @@ the system's external edges and is outside this protocol.
 ### 7.1 Message fields
 
 No system message has a `header` field; the frame's header composite (§4.1) serves. Every system
-message except `ConnectionOpened` is fixed-length, with no var-data or repeating groups. The
+message except `ConnectionOpened` and `SnapshotChunk` is fixed-length, with no var-data or repeating groups. The
 synthesized templates' blocks include the 34-byte header composite.
 
 | event | `systemEventType` | block | frame bytes | fields |
@@ -399,12 +411,17 @@ synthesized templates' blocks include the 34-byte header composite.
 | `ClusterStarted` | 10 | 8 | 52 | `correlationId` int64 |
 | `ClusterStopped` | 11 | 8 | 52 | `correlationId` int64 |
 | `ClusterHeartbeat` | 16 | 34 | 42 | none |
-| `GatewayRegistered` | 17 | 43 | 87 | `remaining` uint16, `gatewayId` int32, `gatewaySourceId` int32, `gatewayName` char[32], `preferenceRank` uint8 |
+| `GatewayRegistered` | 17 | 44 | 88 | `remaining` uint16, `gatewayId` int32, `gatewaySourceId` int32, `gatewayName` char[32], `preferenceRank` uint8, `snapshot` uint8 |
 | `GatewayActive` | 18 | 38 | 46 | `gatewayId` int32 |
 | `GatewayStarted` | 19 | 8 | 52 | `gatewayId` int32, `firstConnectionId` int32 |
 | `PayloadIdRegistered` | 23 | 36 | 80 | `payloadId` uint16, `protocolVersion` uint16, `protocolName` char[32] |
 | `GatewayActivationRequested` | 24 | 4 | 48 | `gatewayId` int32 |
-| `ApplicationRegistered` | 25 | 36 | 80 | `applicationSourceId` int32, `applicationName` char[32] |
+| `ApplicationRegistered` | 25 | 37 | 81 | `applicationSourceId` int32, `applicationName` char[32], `snapshot` uint8 |
+| `SnapshotRequested` | 26 | 8 | 52 | `correlationId` int64 |
+| `SnapshotChunk` | 27 | 12 | 58 + *n* | `round` int64, `chunkIndex` int32, `data` varData |
+| `SnapshotEnd` | 28 | 28 | 72 | `round` int64, `chunkCount` int32, `length` int64, `crc32c` uint32, `formatVersion` uint32 |
+| `SnapshotPolicyRegistered` | 29 | 4 | 48 | `intervalSeconds` uint32 |
+| `SnapshotStarted` | 30 | 42 | 50 | `round` int64 |
 
 Frame bytes are for the sequenced form: 44 + block for a submitted event, 8 + block for a synthesized
 template.
@@ -425,6 +442,17 @@ Field semantics:
 - `firstConnectionId`: the first `connectionId` this instance will allocate, chosen above the highest
   it saw during replay, so ids do not repeat across a restart.
 - `protocolVersion`, `protocolName`: §6.3. `protocolName` is US-ASCII, padded with `0x00`.
+- `snapshot`: 1 if the source takes part in snapshot rounds, else 0; the same on every row of one
+  `gatewaySourceId`.
+- `round`: a snapshot round's number, from 1; its cut is the `globalSeqNo` of its `SnapshotStarted`.
+- `chunkIndex`, `chunkCount`: a source's chunks for one round are numbered from 0; `SnapshotEnd`
+  follows the last. `data` is one whole record of the snapshot, at most 1302 bytes, which fills
+  `MAX_PAYLOAD_LENGTH`.
+- `length`, `crc32c`: the snapshot's bytes across all chunks, and their CRC-32C.
+- `formatVersion`: the application's, opaque to seqeron.
+- `intervalSeconds`: seconds of consensus time between rounds; 0 means operator requests only.
+
+The snapshot protocol these events carry is `doc/snapshot.md`.
 
 **Connections.** The sequencer keeps a set of open connections keyed on `(header.sourceId,
 header.connectionId)`. When a logical gateway publishes `GatewayStarted`, the sequencer releases every
@@ -493,14 +521,33 @@ Every input to promotion comes from the log: the list from `GatewayRegistered`, 
 `GatewayStarted`, the time from the consensus timestamp. Every node therefore synthesizes the same
 frame at the same `globalSeqNo`.
 
+### 7.3 Snapshot rounds
+
+A round is a cut in the log: a synthesized `SnapshotStarted` whose `globalSeqNo` is the point every
+participating source serializes its state at. The sequencer tracks nothing about a round once it has
+started; what the sources submit for it is `doc/snapshot.md`. Its state is the latest
+`SnapshotPolicyRegistered`'s interval, the last round number, and the timestamp the interval counts
+from.
+
+**Triggers.** Neither fires before a `SnapshotPolicyRegistered` has been sequenced.
+
+1. Operator request: a sequenced `SnapshotRequested` is answered by `SnapshotStarted` at the next
+   `globalSeqNo`. Without a policy, nothing follows it.
+2. Interval: on each `ClusterHeartbeat`, immediately after promotion, when `intervalSeconds` > 0 and
+   the heartbeat's timestamp is at least `intervalSeconds` past the last `SnapshotStarted`, or past the
+   latest policy row before any round.
+
+Rounds are numbered from 1, and each `SnapshotStarted` supersedes the one before it. A policy row
+sequenced after the first round changes the interval but not the point it counts from.
+
 ---
 
 ## 8. Schemas
 
 | file | schema id | contains | change policy (§11) |
 | --- | --- | --- | --- |
-| `sbe-frame.xml` | 210 | the seven top-level templates, the four header composites, `messageHeader`, `varDataEncoding`, and the nine submitted system payloads | envelopes frozen; system events changeable under **V-3** |
-| `sbe-replay.xml` | 212 | the seven replay control messages (§10) | changed in place, no version bump |
+| `sbe-frame.xml` | 210 | the eight top-level templates, the four header composites, `messageHeader`, `varDataEncoding`, and the thirteen submitted system payloads | envelopes frozen; system events changeable under **V-3** |
+| `sbe-replay.xml` | 212 | the nine replay control messages (§10) | changed in place, no version bump |
 
 The envelopes and system messages are one schema because they have one owner, ship in one artifact and
 follow the same change rule. `version` stays 0 for the life of schema 210, including system message
@@ -556,7 +603,7 @@ Implementation notes:
 - Conditions 4 and 5 are equalities, not bounds. A short `blockLength` would place the length prefix
   inside the header; a long one, or a length prefix short of the frame end, would silently drop bytes on
   every node. Compare condition 4 against the composite's generated `ENCODED_LENGTH`.
-- Condition 3 rejects the three synthesized templates before any payload is read. Condition 8 rejects
+- Condition 3 rejects the four synthesized templates before any payload is read. Condition 8 rejects
   the same events named inside an `UnsequencedSystem`.
 - The size limits are compiled-in protocol constants (§12), never read from a node's transport
   configuration per frame: a node configured differently from its peers would diverge (**S-3**). MTU
@@ -629,7 +676,7 @@ counts frames from non-conforming producers.
 
 ## 10. Replay control protocol
 
-Seven messages between a node's replayer and its co-located clients, on streams 202 and 203. They carry
+Nine messages between a node's replayer and its co-located clients, on streams 202 and 203. They carry
 no header composite and are never sequenced or recorded.
 
 | message (id) | direction | meaning |
@@ -641,6 +688,8 @@ no header composite and are never sequenced or recorded.
 | `ReplayHeartbeat` (20) | client → replayer | still replaying; sent about every 500 ms to keep the slot |
 | `ReplayUnavailable` (21) | replayer → client | this node cannot serve history for the replayer's lifetime (unlike `ReplayPending`, not transient) |
 | `ReplayClientIdInUse` (22) | replayer → client | two processes on this node are requesting under this `clientId` |
+| `SnapshotQuery` (23) | client → replayer | where is this source's latest valid snapshot (`doc/snapshot.md` §5) |
+| `SnapshotLocation` (24) | replayer → client | that snapshot's round and positions, or `round` −1 for none |
 
 - **R-1.** `requestId` identifies the current request. The client increments it on every send,
   including an unchanged resend, and the replayer echoes it. A client MUST ignore a reply whose
@@ -677,12 +726,14 @@ encoded length is 8 + block. None has var-data or repeating groups.
 | `ReplayHeartbeat` | 20 | 4 | `clientId` int32 |
 | `ReplayUnavailable` | 21 | 12 | `clientId` int32, `requestId` int64 |
 | `ReplayClientIdInUse` | 22 | 4 | `clientId` int32 |
+| `SnapshotQuery` | 23 | 16 | `clientId` int32, `requestId` int64, `sourceId` int32 |
+| `SnapshotLocation` | 24 | 48 | `clientId` int32, `requestId` int64, `round` int64, `asOfGlobalSeqNo` int64, `asOfPosition` int64, `endPosition` int64, `formatVersion` uint32 |
 
 - `clientId`: identifies the client on the shared control stream. It does not match a reply to a
   request; `requestId` does (**R-1**).
-- `requestId`: echoed in `Replaying`, `ReplayPending` and `ReplayUnavailable`. `ReplayComplete` and
-  `ReplayHeartbeat` have none, because nothing answers them, and `ReplayClientIdInUse` has none because
-  it concerns the id, not a request.
+- `requestId`: echoed in `Replaying`, `ReplayPending`, `ReplayUnavailable` and `SnapshotLocation`.
+  `ReplayComplete` and `ReplayHeartbeat` have none, because nothing answers them, and
+  `ReplayClientIdInUse` has none because it concerns the id, not a request.
 - `segmentIndex`, `fromPosition`: as in `ReplayRequest` above; `fromPosition` is read only when
   `segmentIndex < 0`.
 - `replaySessionId`: the Aeron replay session to attach to on stream 201, or `NO_REPLAY_NEEDED` = −1
@@ -690,6 +741,10 @@ encoded length is 8 + block. None has var-data or repeating groups.
 - `catchUpPosition`: where the client stops following the replay and switches to the live tap,
   de-duplicating on `globalSeqNo`.
 - `recordingId`: the recording the requested segment resolved to, or −1 when the chain is exhausted.
+- `sourceId`, `round`, `formatVersion`: the queried source; its latest valid snapshot's round, or −1 for
+  none; and that snapshot's `SnapshotEnd.formatVersion`.
+- `asOfGlobalSeqNo`, `asOfPosition`: the round's cut and the position of its `SnapshotStarted` in the
+  active recording. `endPosition`: the position just past the source's `SnapshotEnd` for the round.
 
 The two sentinels are independent. `replaySessionId == NO_REPLAY_NEEDED` with `recordingId >= 0`
 means that segment is empty: request the next. With `recordingId == -1` it means the chain is
@@ -741,7 +796,7 @@ so there is nothing to stay compatible with.
 
 | limit | value | reference |
 | --- | --- | --- |
-| `blockLength` | 18 on ingress templates, 34 on `Sequenced`/`SequencedSystem` (exact, §9.2); 34, 46 and 38 on templates 104, 105 and 106 | §4.2, §7.1 |
+| `blockLength` | 18 on ingress templates, 34 on `Sequenced`/`SequencedSystem` (exact, §9.2); 34, 46, 38 and 42 on templates 104, 105, 106 and 107 | §4.2, §7.1 |
 | per-message overhead | 92 bytes on ingress (32 Aeron data header + 32 Aeron Cluster session header + 28 frame); 76 on the tap (32 + 44) | §4.2 |
 | `MAX_PAYLOAD_LENGTH` | 1316 bytes = 1408 (MTU) − 92 | **T-2** |
 | `MAX_INGRESS_LENGTH` | 28 + 1316 = 1344 bytes (condition 1) | §9.2 |
@@ -810,7 +865,7 @@ order and serves for correlation.
 ### 13.2 Payload encodings
 
 > **E-1.** An application or system payload that arrived through ingress is encoded once, by its producer, and
-> is never re-encoded after sequencing. The exception is the three synthesized frames, which have no
+> is never re-encoded after sequencing. The exception is the four synthesized frames, which have no
 > producer: every node encodes its own copy.
 
 An application payload may use any encoding: SBE, protobuf, raw FIX, a proprietary binary. Every
@@ -837,13 +892,13 @@ Aeron runtime or media driver and runs in under a second. The payload fixture is
 | --- | --- | --- |
 | 1 | **Copy fidelity.** A sequenced `Unsequenced` carries a byte-identical payload and an unchanged `payloadId`, for payloads of 0 bytes, 1 byte and `MAX_PAYLOAD_LENGTH` | §5 |
 | 2 | **Prefix property.** Bytes 0–17 of each unsequenced composite equal those of its sequenced counterpart for the same values, offset 16 included; the two families' composites are byte-identical; encoded lengths are 18 and 34 | **F-3** |
-| 3 | **System frames round-trip.** Each of the nine submitted events, wrapped as `UnsequencedSystem` and sequenced, keeps a byte-identical payload and its `systemEventType`; `ConnectionOpened` with empty, short and maximum-length `connectionData`. Each synthesized template, encoded by the sequencer, has the right template id, inline fields and `systemEventType` | §7 |
-| 4 | **Rejection table.** One case per §9.2 condition; each asserts the frame was not sequenced, nothing was emitted, `globalSeqNo` did not move and the rejection counter rose by exactly 1. Cases: over `MAX_INGRESS_LENGTH` and under 28 (1); wrong `schemaId`, non-zero `version` (2); a non-ingress template, including each synthesized one (3); `blockLength` below and above 18 on both ingress templates (4); length prefix past the frame end, short of it, and 65535 (5); `sourceId` −1 (6); `payloadId` 0 and 1 (7); an unallocated `systemEventType` and each synthesized one (8); a `GatewayStarted` payload shorter than 8 bytes (9); **S-6**'s cases (10) | **S-4**, **S-5**, **S-7** |
+| 3 | **System frames round-trip.** Each of the thirteen submitted events, wrapped as `UnsequencedSystem` and sequenced, keeps a byte-identical payload and its `systemEventType`; `ConnectionOpened` with empty, short and maximum-length `connectionData`; `SnapshotChunk` with maximum-length `data`. Each synthesized template, encoded by the sequencer, has the right template id, inline fields and `systemEventType` | §7 |
+| 4 | **Rejection table.** One case per §9.2 condition; each asserts the frame was not sequenced, nothing was emitted, `globalSeqNo` did not move and the rejection counter rose by exactly 1. Cases: over `MAX_INGRESS_LENGTH` and under 28 (1); wrong `schemaId`, non-zero `version` (2); a non-ingress template, including each synthesized one (3); `blockLength` below and above 18 on both ingress templates (4); length prefix past the frame end, short of it, and 65535 (5); `sourceId` −1 (6); `payloadId` 0 and 1 (7); an unallocated `systemEventType` and each synthesized one (8); a `GatewayStarted`, `SnapshotChunk` or `SnapshotEnd` payload one byte short of its block (9); **S-6**'s cases (10) | **S-4**, **S-5**, **S-7** |
 | 4a | **Rejection denies nothing and repeats identically.** Two rejections under one `payloadId` each increment the counter and emit nothing; a well-formed frame with that `payloadId` afterwards is accepted unchanged | **S-7**, **C-2** |
 | 4b | **The producer refuses before sending.** A payload of exactly `MAX_PAYLOAD_LENGTH` is published; one byte longer is refused with nothing offered to the transport, distinguishably from back-pressure, and the next well-formed publish succeeds. Uses an in-memory transport seam | **T-3**, §12 |
-| 5 | **Synthesis is deterministic.** Two independent `Sequencer`s fed the same input emit byte-identical frames, heartbeats included | **S-3**, **F-2** |
+| 5 | **Synthesis is deterministic.** Two independent `Sequencer`s fed the same input emit byte-identical frames, heartbeats and snapshot rounds included | **S-3**, **F-2** |
 | 6 | **Layout matches §4.** Every header field is at the §4.1 offset in all four composites; sizes match §4.2 (`MessageHeader` 8, composites 18 and 34, length prefix 2, overhead 28 and 44, `ClusterHeartbeat` 42, maximum payload frame 1360); payloads of 0 bytes, 1 byte and `MAX_PAYLOAD_LENGTH` round-trip | **F-2**, **F-3**, §12 |
-| 7 | **Selective consumption.** A consumer given an unallocated `payloadId` and an unhandled `systemEventType` skips both without error, and its continuity tracking advances across them, for all five sequenced messages | **P-1**–**P-3** |
+| 7 | **Selective consumption.** A consumer given an unallocated `payloadId` and an unhandled `systemEventType` skips both without error, and its continuity tracking advances across them, for all six sequenced messages | **P-1**–**P-3** |
 | 8 | **S-6.** A `GatewayStarted` matching its list row binds and is accepted. Rejected: the same frame with a different `gatewaySourceId`; an unlisted `gatewayId` claiming a listed `sourceId`; a `GatewayActivationRequested` for an unlisted `gatewayId`; another system frame with a listed `sourceId` on an unbound session. Accepted: an application payload with a listed `sourceId`, and a `clusterctl` marker (`sourceId` 2, `connectionId` −1) | **S-6** |
 | 9 | **Promotion.** With ranks 0, 1, 2 under one `gatewaySourceId`: bootstrap activates rank 0 only; a `GatewayActivationRequested` is sequenced and answered at the next `globalSeqNo`; closing rank 0's session promotes rank 1; closing rank 1's promotes rank 0; an instance that publishes no `GatewayStarted` is replaced after exactly `GATEWAY_ACTIVATION_TIMEOUT_MS` of consensus time and not before; one that does arms nothing further; a `gatewaySourceId` with one row synthesizes nothing on close and `globalSeqNo` does not move. Two gateways bootstrapped together keep separate deadlines | §7.2, **S-3** |
 

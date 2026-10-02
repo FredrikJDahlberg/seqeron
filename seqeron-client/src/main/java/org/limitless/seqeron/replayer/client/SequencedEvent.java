@@ -65,7 +65,7 @@ public final class SequencedEvent {
         return frame.isSystem();
     }
 
-    /** Which of §7's twelve events this frame carries; 0 on an application frame. */
+    /** Which of §7's seventeen events this frame carries; 0 on an application frame. */
     public int systemEventType() {
         return frame.systemEventType();
     }

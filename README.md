@@ -339,11 +339,11 @@ is one continuous run spanning every leader tenure.
 ```
 
 `load-topology` publishes the deployment document — the gateway list, the co-located applications,
-then the protocol registry — validated against the packaged `topology.xsd`. Run it once per cluster
+the protocol registry, then an optional snapshot policy — validated against the packaged `topology.xsd`. Run it once per cluster
 lifetime, after `clusterctl start` and before any gateway starts. Only the gateway list is acted on: the sequencer synthesizes
 the bootstrap `GatewayActive` per logical gateway behind the row whose `remaining` counts down to 0.
 The application and protocol rows are labelling for `SbeLogPrinter`, decoded by nothing and gating
-nothing.
+nothing. The snapshot policy turns application snapshot rounds on (`doc/snapshot.md`).
 
 Anything `clusterctl` does not recognize is passed through to `io.aeron.cluster.ClusterTool` against
 this node's cluster dir (`describe`, `errors`, `list-members`, `recording-log`, …). `snapshot` is
@@ -541,8 +541,9 @@ To cut one:
 | [`doc/fault-tolerance.md`](doc/fault-tolerance.md) | Node loss, leader failover, a stuck archive, a lost frame: what survives each and how it recovers |
 | [`doc/clusterctl.md`](doc/clusterctl.md) | The operator tool's runbook |
 | [`doc/ops.md`](doc/ops.md) | The Prometheus/Grafana metrics stack |
+| [`doc/snapshot.md`](doc/snapshot.md) | Proposed: application snapshots through the log, and what they would take for cluster snapshots |
 
-Those six are the whole doc set, and every document reference in this tree resolves inside it.
+Those seven are the whole doc set, and every document reference in this tree resolves inside it.
 
 ## License
 

@@ -22,7 +22,7 @@ both sides share in `protocol`. C++ uses the same directories and namespaces
 |---|---|---|
 | `protocol` | client | The wire contract in code: `FrameLayer`, `SystemFrame`, `SequencedFrameDecoder`, `PortLayout`, `ReplayProtocol`, `SeqeronCounters`, and `Publish` (C++: `SequencedFrame.hpp`, `PortLayout.hpp`, `ReplayProtocol.hpp`, `SeqeronCounters.hpp`, `Publish.hpp`) |
 | `sequencer.client` | client | Producing: `ClusterStreamSender`, `IngressPublisher`, `PendingSends`, `IngressTracker` (C++ also `ClusterStreamClient`) |
-| `replayer.client` | client | Consuming: `ReplayerStreamReceiver`, its three callback interfaces (`SequencedHandler`, `LeadershipHandler`, `CaughtUpHandler`), and `SequencedEvent` in Java. The C++ `SequencedEvent` is in `protocol` (`SequencedFrame.hpp`) instead, beside the `unwrapFrame` that fills it and the `decodeSystem`/`decodeSequenced` that read it |
+| `replayer.client` | client | Consuming: `ReplayerStreamReceiver`, its three callback interfaces (`SequencedHandler`, `LeadershipHandler`, `CaughtUpHandler`), `SnapshotRestoreHandler`, and `SequencedEvent` in Java. The C++ `SequencedEvent` is in `protocol` (`SequencedFrame.hpp`) instead, beside the `unwrapFrame` that fills it and the `decodeSystem`/`decodeSequenced` that read it |
 | `app` | client | What a client application is built from: the façades below, and the blocks under them |
 | `util` | client | Support code |
 | `sbe.frame`, `sbe.replay` | client | Generated codecs |
@@ -71,10 +71,17 @@ unchanged. `Gateway` works there as it does on a member; `Application` needs
 | Call | Java | C++ |
 |---|---|---|
 | construct | `(clientId, onSequenced, onLeadershipChanged, onCaughtUp)` | `(clientId, onSequenced, onConnected, onDisconnected, onLeadershipChanged, onCaughtUp)` |
+| restore a snapshot first | `restoreFrom(sourceId, SnapshotRestoreHandler)`, before `start` | — |
 | attach | `start(aeron, memberId)` | `start(aeron, memberId)` |
 | each duty cycle | `poll()` | `poll()` |
-| state | `isCaughtUp()`, `lastGlobalSeqNo()`, `currentLeaderMemberId()` | the same |
+| state | `isCaughtUp()`, `lastGlobalSeqNo()`, `currentLeaderMemberId()`, `restoreFailure()` | the same, less `restoreFailure()` |
 | release | `close()` | destructor |
+
+With `restoreFrom`, the cold start asks the Replayer for the source's latest snapshot and, if there is one,
+hands its header and records to the handler before it dispatches anything, then dispatches from the frame
+after the cut (`doc/snapshot.md` §7). A replay lost under the restore starts it over at the header. A
+snapshot it cannot restore — a format or header version the handler does not read, or records that fail
+their check — stops recovery for good, and `restoreFailure()` says why.
 
 `clientId` must be unique among the replicas on one node. Two replicas that share one supersede each
 other's replays, and neither ever catches up. The co-located `ReplayerService` notices within a couple of
@@ -237,8 +244,9 @@ report this logical gateway's connection lifecycle off the log — whichever ins
 an instance that keeps per-connection state rebuilds it while it replays, and the only notice of a client
 that drops its socket without logging out — `onCaughtUp(globalSeqNo)` fires on every
 transition, and `onFenced(ClusterError, detail)` fires once — release the cluster session, usually by exiting, so
-a standby takes over. The four `ClusterError` values are the cluster session lost, ingress confirmation faulted,
-recovery stalled, and the tap stalled; a media driver that goes away raises from `doWork()` instead.
+a standby takes over. The `ClusterError` values are the cluster session lost, ingress confirmation faulted,
+recovery stalled, the tap stalled, and a snapshot diverged or unrestorable (below, Java only so far); a media
+driver that goes away raises from `doWork()` instead.
 
 Tap lag is deliberately **not** the client tier's business: it raises no fence and changes no
 behaviour. How far a node runs behind the cluster is a property of the node, and `doc/ops.md` graphs it
@@ -279,6 +287,22 @@ that needs a standby off the cluster is a `Gateway`.
 `seqeron-examples/src/java/example/ColocatedApp.java` and its C++ twin `ColocatedApp.cpp` are the
 reference consumers, and the only clients in the repository whose builds refuse anything outside `app`
 (`checkFacadeOnly`, and the same check in `seqeron-examples/CMakeLists.txt`).
+
+**Snapshots** (`doc/snapshot.md`; Java only so far). The builder's `snapshotListener(SnapshotListener)` makes
+the application take part in snapshot rounds, if its topology row also says `snapshot="true"`; without one it
+takes part in none. At each round's cut, before dispatching the next frame, every replica's façade calls
+`onSnapshot(MutableDirectBuffer buffer, int recordIndex)` from index 0 until it returns 0: each call encodes
+the next record of the state into `buffer`, at most its 1302-byte capacity, and returns its length.
+`recordIndex` 0 is where an iteration over the state starts over. A length outside 0–1302 drops the round.
+`formatVersion()` names the record format. Every replica must produce the same records for the same state:
+no hash-map iteration order, no local time, no node identity. The replica whose gate is open at the cut submits them, a few per
+`doWork()`; the others compare the sequenced end with their own and are fenced with `SNAPSHOT_DIVERGED` if it
+differs. On start, a replica with a listener restores its source's latest snapshot before it dispatches
+anything: the façade calls `onRestore(DirectBuffer buffer, int length, int recordIndex)` once per record, in
+the order `onSnapshot` encoded them, and then dispatches from the frame after the cut. `recordIndex` 0 is
+where the state is cleared, since a restore whose replay is lost starts over. A snapshot whose
+`formatVersion` differs from the listener's, or that cannot be read, fences the replica with
+`SNAPSHOT_UNRESTORABLE`.
 
 `Listener` adds `onLeadershipChanged(boolean leading)` where `Gateway` has `onActivated`/`onStandby`, and
 carries the same `onSequenced`/`onCaughtUp`/`onClusterHeartbeat`/`onFenced`. It has no connection

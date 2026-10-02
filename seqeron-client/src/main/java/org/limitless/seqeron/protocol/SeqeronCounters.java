@@ -96,6 +96,12 @@ public final class SeqeronCounters {
     /** 1 once two co-located replicas were seen sharing one client id, else 0. */
     public static final int REPLAYER_CLIENT_ID_COLLISION_TYPE_ID = 5108;
 
+    /**
+     * The round of one source's latest snapshot this node's Replayer has indexed (doc/snapshot.md §5), one
+     * counter per source, keyed {@code {memberId, sourceId}}. A source whose round lags the others' misses rounds.
+     */
+    public static final int REPLAYER_SNAPSHOT_ROUND_TYPE_ID = 5109;
+
     // ── Co-located application replicas (5200-5299) ────────────────────────────────────────────
     // Core reserves 5200; a consumer allocates its own in the range (doc/ops.md, "Counter type ids"). Published by
     // the apps, not by any Java process: protocol/SeqeronCounters.hpp must match these ids and key layout.
@@ -121,6 +127,9 @@ public final class SeqeronCounters {
      */
     public static final int KEY_CLIENT_ID_OFFSET = BitUtil.SIZE_OF_INT;
 
+    /** Offset of the {@code sourceId} in a per-source counter's key (see {@link #addSourceCounter}). */
+    public static final int KEY_SOURCE_ID_OFFSET = BitUtil.SIZE_OF_INT;
+
     /** Length of the key buffer written by {@link #addCounter}: one int, the memberId. */
     public static final int KEY_LENGTH = BitUtil.SIZE_OF_INT;
 
@@ -145,6 +154,17 @@ public final class SeqeronCounters {
         final UnsafeBuffer keyBuffer = new UnsafeBuffer(new byte[APP_KEY_LENGTH]);
         keyBuffer.putInt(KEY_MEMBER_ID_OFFSET, memberId);
         keyBuffer.putInt(KEY_CLIENT_ID_OFFSET, clientId);
+        final byte[] labelBytes = label.getBytes(StandardCharsets.US_ASCII);
+        final UnsafeBuffer labelBuffer = new UnsafeBuffer(labelBytes);
+        return aeron.addCounter(typeId, keyBuffer, 0, APP_KEY_LENGTH, labelBuffer, 0, labelBytes.length);
+    }
+
+    /** Allocates a per-source counter keyed on {@code {memberId, sourceId}}, the app counters' layout. */
+    public static Counter addSourceCounter(final Aeron aeron, final int typeId, final String label,
+                                           final int memberId, final int sourceId) {
+        final UnsafeBuffer keyBuffer = new UnsafeBuffer(new byte[APP_KEY_LENGTH]);
+        keyBuffer.putInt(KEY_MEMBER_ID_OFFSET, memberId);
+        keyBuffer.putInt(KEY_SOURCE_ID_OFFSET, sourceId);
         final byte[] labelBytes = label.getBytes(StandardCharsets.US_ASCII);
         final UnsafeBuffer labelBuffer = new UnsafeBuffer(labelBytes);
         return aeron.addCounter(typeId, keyBuffer, 0, APP_KEY_LENGTH, labelBuffer, 0, labelBytes.length);

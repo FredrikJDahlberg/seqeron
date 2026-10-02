@@ -36,6 +36,11 @@ import org.limitless.seqeron.sbe.frame.SequencedDecoder;
 import org.limitless.seqeron.sbe.frame.SequencedHeaderDecoder;
 import org.limitless.seqeron.sbe.frame.SequencedSystemDecoder;
 import org.limitless.seqeron.sbe.frame.SequencedSystemHeaderDecoder;
+import org.limitless.seqeron.sbe.frame.SnapshotChunkEncoder;
+import org.limitless.seqeron.sbe.frame.SnapshotEndEncoder;
+import org.limitless.seqeron.sbe.frame.SnapshotPolicyRegisteredEncoder;
+import org.limitless.seqeron.sbe.frame.SnapshotRequestedEncoder;
+import org.limitless.seqeron.sbe.frame.SnapshotStartedDecoder;
 import org.limitless.seqeron.sbe.frame.UnsequencedHeaderDecoder;
 import org.limitless.seqeron.sbe.frame.UnsequencedSystemHeaderDecoder;
 
@@ -167,6 +172,8 @@ class ConformanceTest {
         assertEquals(42, tapSynthesized(1, ClusterHeartbeatDecoder.TEMPLATE_ID,
                                         SystemFrame.CLUSTER_HEARTBEAT).length,
                      "8 + 34, the cheapest frame in the system");
+        assertEquals(50, tapSynthesized(1, SnapshotStartedDecoder.TEMPLATE_ID, SystemFrame.SNAPSHOT_STARTED).length,
+                     "8 + 34 + the round");
 
         assertEquals(44 + FrameLayer.MAX_PAYLOAD_LENGTH,
                      tapPayloadFrame(1, PAYLOAD_ID, syntheticPayload(FrameLayer.MAX_PAYLOAD_LENGTH)).length,
@@ -176,7 +183,7 @@ class ConformanceTest {
     // ── Row 3. System frames round-trip unchanged (§7) ───────────────────────────────────────────
 
     @Test
-    @DisplayName("row 3: each of the nine submitted events crosses with its payload byte-identical")
+    @DisplayName("row 3: each of the thirteen submitted events crosses with its payload byte-identical")
     void submittedSystemEventsRoundTrip() {
         for (final Map.Entry<Integer, byte[]> event : submittedEvents().entrySet()) {
             final Sequencer target = new Sequencer();
@@ -222,7 +229,21 @@ class ConformanceTest {
     }
 
     @Test
-    @DisplayName("row 3: the three synthesized frames carry their template, their fields and a redundant type")
+    @DisplayName("row 3: a SnapshotChunk of the largest data §7.1 allows fills MAX_PAYLOAD_LENGTH and crosses unchanged")
+    void snapshotChunkCarriesMaximumData() {
+        final byte[] body = snapshotChunkBody(syntheticPayload(1302));
+        assertEquals(FrameLayer.MAX_PAYLOAD_LENGTH, body.length);
+
+        final int length = systemFrame(SystemFrame.SNAPSHOT_CHUNK, SOURCE_ID, body);
+        final int sequenced = sequencer.sequenceMessage(ingress, 0, length, SESSION_ID, TIMESTAMP);
+        assertNotEquals(Sequencer.NO_FRAME, sequenced);
+
+        final SequencedFrameDecoder view = wrapSequenced(sequenced);
+        assertArrayEquals(body, copy(view.buffer(), view.payloadOffset(), view.payloadLength()));
+    }
+
+    @Test
+    @DisplayName("row 3: the four synthesized frames carry their template, their fields and a redundant type")
     void synthesizedFramesCarryTheirOwnTemplates() {
         final int heartbeat = sequencer.clusterHeartbeat(TIMESTAMP);
         assertEquals(ClusterHeartbeatDecoder.TEMPLATE_ID, templateIdOf(heartbeat));
@@ -243,6 +264,20 @@ class ConformanceTest {
         assertEquals(GatewayActiveDecoder.TEMPLATE_ID, templateIdOf(active));
         assertEquals(SystemFrame.GATEWAY_ACTIVE, wrapSequenced(active).systemEventType());
         assertEquals(11, decodeGatewayActive(sequencer.buffer()).gatewayId());
+
+        final int policy = systemFrame(SystemFrame.SNAPSHOT_POLICY_REGISTERED, CLUSTERCTL_SOURCE_ID,
+                                       snapshotPolicyRegisteredBody());
+        sequencer.sequenceMessage(ingress, 0, policy, SESSION_ID, TIMESTAMP);
+        final int request = systemFrame(SystemFrame.SNAPSHOT_REQUESTED, CLUSTERCTL_SOURCE_ID, snapshotRequestedBody());
+        sequencer.sequenceMessage(ingress, 0, request, SESSION_ID, TIMESTAMP);
+        final int started = sequencer.pendingSnapshotStart(TIMESTAMP);
+        assertEquals(SnapshotStartedDecoder.TEMPLATE_ID, templateIdOf(started));
+        assertEquals(50, started);
+        assertEquals(SystemFrame.SNAPSHOT_STARTED, wrapSequenced(started).systemEventType());
+        final SnapshotStartedDecoder round = new SnapshotStartedDecoder();
+        round.wrap(sequencer.buffer(), MessageHeaderDecoder.ENCODED_LENGTH, SnapshotStartedDecoder.BLOCK_LENGTH,
+                   SnapshotStartedDecoder.SCHEMA_VERSION);
+        assertEquals(1, round.round());
     }
 
     // ── Row 4. The rejection table (§9.2, S-4/S-5/S-7) ───────────────────────────────────────────
@@ -274,12 +309,13 @@ class ConformanceTest {
     }
 
     @Test
-    @DisplayName("row 4 condition 3: a non-ingress templateId, the synthesized three included, is refused")
+    @DisplayName("row 4 condition 3: a non-ingress templateId, the synthesized four included, is refused")
     void conditionThreeTemplateId() {
         for (final int templateId : new int[] {SequencedDecoder.TEMPLATE_ID, SequencedSystemDecoder.TEMPLATE_ID,
                                                ClusterHeartbeatDecoder.TEMPLATE_ID,
                                                LeadershipChangedDecoder.TEMPLATE_ID,
-                                               GatewayActiveDecoder.TEMPLATE_ID}) {
+                                               GatewayActiveDecoder.TEMPLATE_ID,
+                                               SnapshotStartedDecoder.TEMPLATE_ID}) {
             final int length = payloadFrame(PAYLOAD_ID, SOURCE_ID, syntheticPayload(4));
             ingress.putShort(TEMPLATE_ID_OFFSET, (short)templateId, ByteOrder.LITTLE_ENDIAN);
             assertRejected(() -> sequencer.sequenceMessage(ingress, 0, length, SESSION_ID, TIMESTAMP),
@@ -335,7 +371,8 @@ class ConformanceTest {
     @DisplayName("row 4 condition 8: an unallocated or synthesis-only systemEventType is refused")
     void conditionEightSystemEventType() {
         for (final int systemEventType : new int[] {99, SystemFrame.LEADERSHIP_CHANGED,
-                                                    SystemFrame.CLUSTER_HEARTBEAT, SystemFrame.GATEWAY_ACTIVE}) {
+                                                    SystemFrame.CLUSTER_HEARTBEAT, SystemFrame.GATEWAY_ACTIVE,
+                                                    SystemFrame.SNAPSHOT_STARTED}) {
             final int length = systemFrame(systemEventType, SOURCE_ID, syntheticPayload(8));
             assertRejected(() -> sequencer.sequenceMessage(ingress, 0, length, SESSION_ID, TIMESTAMP),
                            "systemEventType " + systemEventType);
@@ -343,11 +380,17 @@ class ConformanceTest {
     }
 
     @Test
-    @DisplayName("row 4 condition 9: a GatewayStarted payload short of its compiled block length is refused")
+    @DisplayName("row 4 condition 9: a payload short of its event's compiled block length is refused")
     void conditionNineBodyTooShort() {
         assertEquals(8, GatewayStartedEncoder.BLOCK_LENGTH);
-        final int length = systemFrame(SystemFrame.GATEWAY_STARTED, SOURCE_ID, syntheticPayload(7));
-        assertRejected(() -> sequencer.sequenceMessage(ingress, 0, length, SESSION_ID, TIMESTAMP));
+        assertEquals(12, SnapshotChunkEncoder.BLOCK_LENGTH);
+        assertEquals(28, SnapshotEndEncoder.BLOCK_LENGTH);
+        for (final int[] event : new int[][] {{SystemFrame.GATEWAY_STARTED, 7}, {SystemFrame.SNAPSHOT_CHUNK, 11},
+                                              {SystemFrame.SNAPSHOT_END, 27}}) {
+            final int length = systemFrame(event[0], SOURCE_ID, syntheticPayload(event[1]));
+            assertRejected(() -> sequencer.sequenceMessage(ingress, 0, length, SESSION_ID, TIMESTAMP),
+                           "systemEventType " + event[0]);
+        }
     }
 
     @Test
@@ -436,10 +479,17 @@ class ConformanceTest {
         loadList(target, 0);
         collect(frames, target, target.sequenceMessage(ingress, 0, lastIngressLength, SESSION_ID, timestamp));
         collect(frames, target, target.pendingGatewayActivation(timestamp));
+        final int policy = systemFrame(SystemFrame.SNAPSHOT_POLICY_REGISTERED, CLUSTERCTL_SOURCE_ID,
+                                       snapshotPolicyRegisteredBody());
+        collect(frames, target, target.sequenceMessage(ingress, 0, policy, SESSION_ID, timestamp));
+        final int request = systemFrame(SystemFrame.SNAPSHOT_REQUESTED, CLUSTERCTL_SOURCE_ID, snapshotRequestedBody());
+        collect(frames, target, target.sequenceMessage(ingress, 0, request, SESSION_ID, timestamp));
+        collect(frames, target, target.pendingSnapshotStart(timestamp));
 
         for (int i = 0; i < 3; i++) {
             timestamp += FrameLayer.CLUSTER_HEARTBEAT_INTERVAL_NS;
             collect(frames, target, target.clusterHeartbeat(timestamp));
+            collect(frames, target, target.snapshotIntervalElapsed(timestamp));
             final int length = payloadFrame(PAYLOAD_ID, SOURCE_ID, syntheticPayload(8 + i));
             collect(frames, target, target.sequenceMessage(ingress, 0, length, SESSION_ID, timestamp));
         }
@@ -472,17 +522,18 @@ class ConformanceTest {
     @Test
     @DisplayName("row 7: an unallocated payloadId and an unhandled systemEventType are skipped, in sequence")
     void selectiveConsumption() {
-        // A contiguous run over all five sequenced messages: an application payload under a payloadId
-        // nothing allocates, a submitted system event no consumer here handles, and the three synthesized.
+        // A contiguous run over all six sequenced messages: an application payload under a payloadId
+        // nothing allocates, a submitted system event no consumer here handles, and the four synthesized.
         final List<byte[]> tap = new ArrayList<>();
         tap.add(tapPayloadFrame(1, 4095, syntheticPayload(8)));
         tap.add(tapSystemFrame(2, SystemFrame.PAYLOAD_ID_REGISTERED, payloadIdRegisteredBody()));
         tap.add(tapSynthesized(3, ClusterHeartbeatDecoder.TEMPLATE_ID, SystemFrame.CLUSTER_HEARTBEAT));
         tap.add(tapSynthesized(4, LeadershipChangedDecoder.TEMPLATE_ID, SystemFrame.LEADERSHIP_CHANGED));
         tap.add(tapSynthesized(5, GatewayActiveDecoder.TEMPLATE_ID, SystemFrame.GATEWAY_ACTIVE));
+        tap.add(tapSynthesized(6, SnapshotStartedDecoder.TEMPLATE_ID, SystemFrame.SNAPSHOT_STARTED));
 
         // A consumer that recognises none of them still reads every one, and tracks continuity across all
-        // five: the read is branch-free because globalSeqNo sits at 18 on every sequenced message (F-3).
+        // six: the read is branch-free because globalSeqNo sits at 18 on every sequenced message (F-3).
         long expected = 1;
         for (final byte[] frame : tap) {
             final SequencedFrameDecoder view = new SequencedFrameDecoder();
@@ -493,10 +544,10 @@ class ConformanceTest {
         }
 
         // And an empty payload is a frame like any other: it names no message, but it holds a globalSeqNo.
-        final byte[] empty = tapPayloadFrame(6, 4095, new byte[0]);
+        final byte[] empty = tapPayloadFrame(7, 4095, new byte[0]);
         final SequencedFrameDecoder view = new SequencedFrameDecoder();
         assertTrue(view.wrap(new org.agrona.concurrent.UnsafeBuffer(empty), 0, empty.length));
-        assertEquals(6, view.globalSeqNo());
+        assertEquals(7, view.globalSeqNo());
         assertEquals(0, view.templateId(), "no inner declaration, so nothing can dispatch on it (P-1)");
     }
 
@@ -517,6 +568,14 @@ class ConformanceTest {
             stampSynthesized(encoder.header(), systemEventType, globalSeqNo);
             encoder.newLeaderMemberId(1);
             encoder.leadershipTermId(1);
+            return copy(frame, 0, MessageHeaderEncoder.ENCODED_LENGTH + encoder.encodedLength());
+        }
+        if (templateId == SnapshotStartedDecoder.TEMPLATE_ID) {
+            final org.limitless.seqeron.sbe.frame.SnapshotStartedEncoder encoder =
+                new org.limitless.seqeron.sbe.frame.SnapshotStartedEncoder();
+            encoder.wrapAndApplyHeader(frame, 0, new MessageHeaderEncoder());
+            stampSynthesized(encoder.header(), systemEventType, globalSeqNo);
+            encoder.round(1);
             return copy(frame, 0, MessageHeaderEncoder.ENCODED_LENGTH + encoder.encodedLength());
         }
         final org.limitless.seqeron.sbe.frame.GatewayActiveEncoder encoder =
@@ -737,7 +796,7 @@ class ConformanceTest {
         return copy(frame, 0, MessageHeaderEncoder.ENCODED_LENGTH + encoder.encodedLength());
     }
 
-    /** The nine submitted events of §7, each with a well-formed payload. */
+    /** The thirteen submitted events of §7, each with a well-formed payload. */
     private static Map<Integer, byte[]> submittedEvents() {
         final java.util.LinkedHashMap<Integer, byte[]> events = new java.util.LinkedHashMap<>();
         events.put(SystemFrame.CONNECTION_OPENED, connectionOpenedBody(new byte[0]));
@@ -749,7 +808,40 @@ class ConformanceTest {
         events.put(SystemFrame.PAYLOAD_ID_REGISTERED, payloadIdRegisteredBody());
         events.put(SystemFrame.GATEWAY_ACTIVATION_REQUESTED, activationRequestedBody(11));
         events.put(SystemFrame.APPLICATION_REGISTERED, applicationRegisteredBody(3));
+        events.put(SystemFrame.SNAPSHOT_REQUESTED, snapshotRequestedBody());
+        events.put(SystemFrame.SNAPSHOT_CHUNK, snapshotChunkBody(syntheticPayload(5)));
+        events.put(SystemFrame.SNAPSHOT_END, snapshotEndBody());
+        events.put(SystemFrame.SNAPSHOT_POLICY_REGISTERED, snapshotPolicyRegisteredBody());
         return events;
+    }
+
+    private static byte[] snapshotRequestedBody() {
+        final MutableDirectBuffer body = new ExpandableArrayBuffer(16);
+        final SnapshotRequestedEncoder encoder = new SnapshotRequestedEncoder();
+        encoder.wrap(body, 0).correlationId(0x0102_0304_0506_0708L);
+        return copy(body, 0, encoder.encodedLength());
+    }
+
+    private static byte[] snapshotChunkBody(final byte[] data) {
+        final MutableDirectBuffer body = new ExpandableArrayBuffer(data.length + 16);
+        final SnapshotChunkEncoder encoder = new SnapshotChunkEncoder();
+        encoder.wrap(body, 0).round(3).chunkIndex(4);
+        encoder.putData(data, 0, data.length);
+        return copy(body, 0, encoder.encodedLength());
+    }
+
+    private static byte[] snapshotEndBody() {
+        final MutableDirectBuffer body = new ExpandableArrayBuffer(32);
+        final SnapshotEndEncoder encoder = new SnapshotEndEncoder();
+        encoder.wrap(body, 0).round(3).chunkCount(5).length(6000).crc32c(0xDEADBEEFL).formatVersion(2);
+        return copy(body, 0, encoder.encodedLength());
+    }
+
+    private static byte[] snapshotPolicyRegisteredBody() {
+        final MutableDirectBuffer body = new ExpandableArrayBuffer(16);
+        final SnapshotPolicyRegisteredEncoder encoder = new SnapshotPolicyRegisteredEncoder();
+        encoder.wrap(body, 0).intervalSeconds(3600);
+        return copy(body, 0, encoder.encodedLength());
     }
 
     private static byte[] connectionOpenedBody(final byte[] connectionData) {

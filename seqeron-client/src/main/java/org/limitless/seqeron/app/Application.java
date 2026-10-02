@@ -3,9 +3,19 @@ package org.limitless.seqeron.app;
 import io.aeron.Aeron;
 import java.util.Objects;
 import org.agrona.DirectBuffer;
+import org.agrona.ExpandableArrayBuffer;
+import org.limitless.seqeron.protocol.FrameLayer;
 import org.limitless.seqeron.protocol.PortLayout;
 import org.limitless.seqeron.protocol.Publish;
+import org.limitless.seqeron.protocol.SnapshotHeader;
+import org.limitless.seqeron.protocol.SystemFrame;
 import org.limitless.seqeron.replayer.client.SequencedEvent;
+import org.limitless.seqeron.sbe.frame.ApplicationRegisteredDecoder;
+import org.limitless.seqeron.sbe.frame.MessageHeaderDecoder;
+import org.limitless.seqeron.sbe.frame.SnapshotChunkEncoder;
+import org.limitless.seqeron.sbe.frame.SnapshotEndDecoder;
+import org.limitless.seqeron.sbe.frame.SnapshotEndEncoder;
+import org.limitless.seqeron.sbe.frame.SnapshotStartedDecoder;
 
 /**
  * One replica of a co-located application — the kind of producer nothing elects. One runs per node, the
@@ -22,6 +32,12 @@ import org.limitless.seqeron.replayer.client.SequencedEvent;
  * payloads it submits. Every replica reads the same ordered stream and so holds the same state, which is
  * what makes {@link OutstandingWork} — fed that same stream — the way work survives the gate closing
  * under it.
+ *
+ * <p><b>Snapshots</b> (doc/snapshot.md §4): given a {@link SnapshotListener} and a topology row with {@code
+ * snapshot="true"}, every replica serializes its state at each round's cut, and the one whose gate is open
+ * then submits it. A replica whose snapshot differs from the one sequenced is fenced with {@link
+ * ClusterError#SNAPSHOT_DIVERGED}. On start, a replica given a listener restores its source's latest snapshot
+ * and resumes after its cut; one it cannot restore is fenced with {@link ClusterError#SNAPSHOT_UNRESTORABLE}.
  *
  * <p>Single-threaded: every method belongs to the caller's one duty-cycle thread, which calls
  * {@link #doWork()} each iteration. The C++ twin is {@code app/Application.hpp}; keep the two in
@@ -74,6 +90,8 @@ public final class Application implements AutoCloseable {
     private final Session session;
     private final LeaderGate gate;
     private final Listener listener;
+    private final SnapshotTaker snapshots;
+    private final SnapshotFrames snapshotFrames = new SnapshotFrames();
     private final int sourceId;
     private final int memberId;
     private final boolean offCluster;
@@ -90,8 +108,12 @@ public final class Application implements AutoCloseable {
         this.egressChannel = builder.egressChannel;
         this.ingressEndpoints = builder.ingressEndpoints;
         this.gate = new LeaderGate(builder.memberId, builder.offCluster);
+        this.snapshots = new SnapshotTaker(builder.snapshotListener);
         this.session = new Session(builder.clientId, builder.pendingCapacity, builder.tapStallTimeoutMs,
                                    builder.recoveryStallTimeoutMs, new SessionDispatch());
+        if (builder.snapshotListener != null) {
+            session.restoreFrom(sourceId, snapshots);
+        }
     }
 
     public static Builder builder() {
@@ -112,13 +134,16 @@ public final class Application implements AutoCloseable {
      * @return units of work done, for the caller's idle strategy
      */
     public int doWork() {
-        final int work = session.doWork();
+        int work = session.doWork();
         final LeaderGate.Transition transition = gate.update(session.isCaughtUp(), session.currentLeaderMemberId());
-        if (transition == LeaderGate.Transition.NONE) {
-            return work;
+        if (transition != LeaderGate.Transition.NONE) {
+            listener.onLeadershipChanged(transition == LeaderGate.Transition.OPENED);
+            work++;
         }
-        listener.onLeadershipChanged(transition == LeaderGate.Transition.OPENED);
-        return work + 1;
+        if (gate.isOpen()) {
+            work += snapshots.submit(snapshotFrames);
+        }
+        return work;
     }
 
     /** Whether leader-only work may reach ingress right now: the gate is open, and ingress is not held. */
@@ -184,15 +209,57 @@ public final class Application implements AutoCloseable {
 
     /** What comes off the tap, and the one frame the gate is driven by. */
     private final class SessionDispatch implements Session.Dispatch {
+        private final ApplicationRegisteredDecoder row = new ApplicationRegisteredDecoder();
+        private final SnapshotStartedDecoder started = new SnapshotStartedDecoder();
+        private final SnapshotEndDecoder end = new SnapshotEndDecoder();
+
+        /**
+         * Of seqeron's own vocabulary, this replica reads its topology row and the snapshot rounds; the
+         * leadership the gate turns on arrives below rather than here. A submitted payload carries no
+         * MessageHeader, so each decode takes this build's constants (spec §7, V-3).
+         */
         @Override
         public void onSystem(final SequencedEvent event) {
-            // Seqeron's own vocabulary says nothing to a producer nothing elects; the leadership the gate
-            // turns on arrives below rather than here.
+            switch (event.systemEventType()) {
+            case SystemFrame.APPLICATION_REGISTERED -> {
+                row.wrap(event.buffer(), event.payloadOffset(), ApplicationRegisteredDecoder.BLOCK_LENGTH,
+                         MessageHeaderDecoder.SCHEMA_VERSION);
+                if (row.applicationSourceId() == sourceId) {
+                    snapshots.participating(row.snapshot() == 1);
+                }
+            }
+            case SystemFrame.SNAPSHOT_STARTED -> {
+                started.wrap(event.buffer(), event.payloadOffset(), SnapshotStartedDecoder.BLOCK_LENGTH,
+                             SnapshotStartedDecoder.SCHEMA_VERSION);
+                snapshots.onSnapshotStarted(started.round(),
+                                            new SnapshotHeader(session.leadershipTermId(),
+                                                               session.currentLeaderMemberId(), null),
+                                            gate.isOpen());
+            }
+            case SystemFrame.SNAPSHOT_END -> {
+                if (event.sourceId() != sourceId) {
+                    return;
+                }
+                end.wrap(event.buffer(), event.payloadOffset(), SnapshotEndDecoder.BLOCK_LENGTH,
+                         MessageHeaderDecoder.SCHEMA_VERSION);
+                if (!snapshots.onSnapshotEnd(end.round(), end.chunkCount(), end.length(), end.crc32c())) {
+                    session.fence(ClusterError.SNAPSHOT_DIVERGED, "round " + end.round() + "'s sequenced "
+                        + "snapshot at globalSeqNo " + event.globalSeqNo() + " differs from this replica's");
+                }
+            }
+            default -> {
+                // Nothing else says anything to a producer nothing elects.
+            }
+            }
         }
 
+        /** A term won by another member ends this replica's part in the round it is publishing. */
         @Override
         public void onLeadershipChanged() {
             gate.onLeadershipChanged();
+            if (!offCluster && session.currentLeaderMemberId() != memberId) {
+                snapshots.stopPublishing();
+            }
         }
 
         @Override
@@ -216,6 +283,39 @@ public final class Application implements AutoCloseable {
         }
     }
 
+    /** The round's frames, under this application's {@code sourceId} and belonging to no connection. */
+    private final class SnapshotFrames implements SnapshotTaker.Actions {
+        private final ExpandableArrayBuffer body = new ExpandableArrayBuffer(FrameLayer.MAX_PAYLOAD_LENGTH);
+        private final SnapshotChunkEncoder chunk = new SnapshotChunkEncoder();
+        private final SnapshotEndEncoder end = new SnapshotEndEncoder();
+
+        @Override
+        public Publish publishChunk(final long round, final int chunkIndex, final DirectBuffer record,
+                                    final int offset, final int length) {
+            chunk.wrap(body, 0).round(round).chunkIndex(chunkIndex).putData(record, offset, length);
+            return placed(session.publishSystem(sourceId, NO_CONNECTION, SystemFrame.SNAPSHOT_CHUNK, body,
+                                                chunk.encodedLength()));
+        }
+
+        @Override
+        public Publish publishEnd(final long round, final int chunkCount, final long length, final long crc32c,
+                                  final int formatVersion) {
+            end.wrap(body, 0).round(round).chunkCount(chunkCount).length(length).crc32c(crc32c)
+                .formatVersion(formatVersion & 0xFFFF_FFFFL);
+            return placed(session.publishSystem(sourceId, NO_CONNECTION, SystemFrame.SNAPSHOT_END, body,
+                                                end.encodedLength()));
+        }
+
+        /** A refused frame is this class's own bug, never a condition to wait out. */
+        private Publish placed(final Publish outcome) {
+            if (outcome == Publish.Refused) {
+                throw new IllegalStateException("a snapshot frame the sequencer would reject "
+                                                + "(doc/seqeron-protocol-spec.md §9.2)");
+            }
+            return outcome;
+        }
+    }
+
     /** Everything one replica needs to join its deployment. */
     public static final class Builder {
         private int sourceId;
@@ -225,6 +325,7 @@ public final class Application implements AutoCloseable {
         private String egressChannel;
         private String ingressEndpoints = PortLayout.ingressEndpoints();
         private Listener listener;
+        private SnapshotListener snapshotListener;
         private int pendingCapacity = DEFAULT_PENDING_CAPACITY;
         private long tapStallTimeoutMs = DEFAULT_TAP_STALL_TIMEOUT_MS;
         private long recoveryStallTimeoutMs = DEFAULT_RECOVERY_STALL_TIMEOUT_MS;
@@ -274,6 +375,15 @@ public final class Application implements AutoCloseable {
 
         public Builder listener(final Listener listener) {
             this.listener = listener;
+            return this;
+        }
+
+        /**
+         * What serializes this application's state for snapshot rounds and restores it on start; without one it
+         * takes part in none, whatever its topology row says, and recovers from {@code globalSeqNo} 1.
+         */
+        public Builder snapshotListener(final SnapshotListener snapshotListener) {
+            this.snapshotListener = snapshotListener;
             return this;
         }
 

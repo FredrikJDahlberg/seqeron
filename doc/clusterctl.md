@@ -33,10 +33,11 @@ Prerequisite: `./gradlew uberJar`.
 | `start` | yes | record `ClusterStarted` |
 | `shutdown` | runs on the leader; a no-op elsewhere | record `ClusterStopped`, then abort the cluster |
 | `activate <gatewayId>` | yes | request that a gateway instance be made active |
+| `request-snapshot` | yes | start an application snapshot round |
 | `load-topology <file>` | yes | publish the deployment's topology document |
 | `counters` | no | list this node's operator counters |
 | `help` | no | print usage |
-| `snapshot` | — | refused; the cluster takes no snapshots |
+| `snapshot` | — | refused; the cluster takes no Aeron snapshots (`request-snapshot` is the application kind) |
 | anything else | no | passed to `ClusterTool` (`describe`, `errors`, `list-members`, `recording-log`, …) |
 
 Commands that publish connect to the cluster first over the co-located member's `aeron:ipc` ingress
@@ -95,17 +96,26 @@ the request against the gateway list; for an unlisted `gatewayId` it synthesizes
 exits 1 after the timeout. The instance named opens its external connections; its siblings stand by or
 step down (spec §7.2).
 
+### request-snapshot
+
+Publishes `SnapshotRequested` and waits for the `SnapshotStarted` the sequencer synthesizes at the next
+`globalSeqNo`, then prints the round and that `globalSeqNo`, the round's cut. A round still open is
+superseded. If the loaded topology has no `<snapshots>` element, nothing follows the request and the
+command exits 1 after the timeout. What the participating sources do with the round is
+`doc/snapshot.md` §4.
+
 ### load-topology
 
 Publishes the topology document (spec §6.4), an XML file validated against the `topology.xsd` packaged in
 the jar. The `<gateways>` section becomes one `GatewayRegistered` per row, with `remaining` counting
 down to 0 on the last; the optional `<applications>` and `<protocols>` sections follow as one
-`ApplicationRegistered` and one `PayloadIdRegistered` per row. The command waits for the last gateway
-row on the tap.
+`ApplicationRegistered` and one `PayloadIdRegistered` per row, and an optional `<snapshots>` element
+last, as one `SnapshotPolicyRegistered`. The command waits for the last gateway row on the tap.
 
-Only the gateway rows affect the cluster: the sequencer builds the gateway list from them and, after
-the row with `remaining` = 0, designates the rank-0 instance of each gateway. Application and protocol
-rows are labels, read only by `SbeLogPrinter` (spec §6.3).
+The gateway rows and the snapshot policy affect the cluster: the sequencer builds the gateway list from
+the rows and, after the row with `remaining` = 0, designates the rank-0 instance of each gateway; the
+policy turns snapshot rounds on (spec §7.3). Application and protocol rows are read by the sequencer for
+nothing; their `snapshot` attributes are the façades' (`doc/snapshot.md` §1).
 
 **Validation.** The whole file is validated before anything is published, because the list cannot be
 retracted once published.
@@ -114,8 +124,9 @@ retracted once published.
   `payloadId` ≥ 2, the required attributes, and uniqueness of gateway `id` and `name`, application `name`
   and `sourceId`, and `payloadId`.
 - The loader (`TopologyDocument`) checks what one row cannot express: exactly one `rank="0"` per gateway
-  `sourceId`, no reserved `sourceId` (§5 of the spec), and no application `sourceId` that a gateway also
-  uses.
+  `sourceId`, no reserved `sourceId` (§5 of the spec), no application `sourceId` that a gateway also
+  uses, the same `snapshot` value on every row of one gateway `sourceId`, and at least one row with
+  `snapshot="true"` when `<snapshots>` is present.
 - Each row may carry a `description` attribute, for readers of the file; it is not published.
 
 **Parsing.** The schema is loaded from the jar; a `schemaLocation` in the document is ignored, since a

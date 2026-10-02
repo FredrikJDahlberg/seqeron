@@ -24,6 +24,11 @@
 #include "org_limitless_seqeron_sbe_frame/SequencedHeader.h"
 #include "org_limitless_seqeron_sbe_frame/SequencedSystem.h"
 #include "org_limitless_seqeron_sbe_frame/SequencedSystemHeader.h"
+#include "org_limitless_seqeron_sbe_frame/SnapshotChunk.h"
+#include "org_limitless_seqeron_sbe_frame/SnapshotEnd.h"
+#include "org_limitless_seqeron_sbe_frame/SnapshotPolicyRegistered.h"
+#include "org_limitless_seqeron_sbe_frame/SnapshotRequested.h"
+#include "org_limitless_seqeron_sbe_frame/SnapshotStarted.h"
 #include "org_limitless_seqeron_sbe_frame/Unsequenced.h"
 #include "org_limitless_seqeron_sbe_frame/UnsequencedHeader.h"
 
@@ -66,7 +71,7 @@ inline constexpr std::uint16_t MAX_INGRESS_LENGTH = MIN_INGRESS_LENGTH + MAX_PAY
 
 // ── The systemEventType table (doc/seqeron-protocol-spec.md §7) ────────────────
 //
-// A submitted event's value is its payload codec's template id. The three synthesized events have templates
+// A submitted event's value is its payload codec's template id. The four synthesized events have templates
 // of their own and stamp these values at offset 16 so that field discriminates every frame on the tap.
 // The Java twin is SystemFrame; keep the two in step.
 inline constexpr std::uint16_t CONNECTION_OPENED = sbe::frame::ConnectionOpened::sbeTemplateId();
@@ -81,6 +86,11 @@ inline constexpr std::uint16_t GATEWAY_STARTED = sbe::frame::GatewayStarted::sbe
 inline constexpr std::uint16_t PAYLOAD_ID_REGISTERED = sbe::frame::PayloadIdRegistered::sbeTemplateId();
 inline constexpr std::uint16_t GATEWAY_ACTIVATION_REQUESTED = sbe::frame::GatewayActivationRequested::sbeTemplateId();
 inline constexpr std::uint16_t APPLICATION_REGISTERED = sbe::frame::ApplicationRegistered::sbeTemplateId();
+inline constexpr std::uint16_t SNAPSHOT_REQUESTED = sbe::frame::SnapshotRequested::sbeTemplateId();
+inline constexpr std::uint16_t SNAPSHOT_CHUNK = sbe::frame::SnapshotChunk::sbeTemplateId();
+inline constexpr std::uint16_t SNAPSHOT_END = sbe::frame::SnapshotEnd::sbeTemplateId();
+inline constexpr std::uint16_t SNAPSHOT_POLICY_REGISTERED = sbe::frame::SnapshotPolicyRegistered::sbeTemplateId();
+inline constexpr std::uint16_t SNAPSHOT_STARTED = 30; // synthesis-only
 
 // ingressBlockLength's answer for a systemEventType that may not be submitted.
 inline constexpr std::int32_t NOT_INGRESS_LEGAL = -1;
@@ -114,6 +124,14 @@ constexpr std::int32_t ingressBlockLength(const std::uint16_t systemEventType)
             return sbe::frame::GatewayActivationRequested::sbeBlockLength();
         case APPLICATION_REGISTERED:
             return sbe::frame::ApplicationRegistered::sbeBlockLength();
+        case SNAPSHOT_REQUESTED:
+            return sbe::frame::SnapshotRequested::sbeBlockLength();
+        case SNAPSHOT_CHUNK:
+            return sbe::frame::SnapshotChunk::sbeBlockLength();
+        case SNAPSHOT_END:
+            return sbe::frame::SnapshotEnd::sbeBlockLength();
+        case SNAPSHOT_POLICY_REGISTERED:
+            return sbe::frame::SnapshotPolicyRegistered::sbeBlockLength();
         default:
             return NOT_INGRESS_LEGAL;
     }
@@ -122,9 +140,9 @@ constexpr std::int32_t ingressBlockLength(const std::uint16_t systemEventType)
 /**
  * Carries one message from the cluster stream.
  *
- * Every fragment on the tap is one of five messages (doc/seqeron-protocol-spec.md §4), and the same
+ * Every fragment on the tap is one of six messages (doc/seqeron-protocol-spec.md §4), and the same
  * 2-byte field at offset 16 discriminates all of them: a `Sequenced` frame carries one opaque
- * application payload named by payloadId, the four system messages carry seqeron's own vocabulary named
+ * application payload named by payloadId, the five system messages carry seqeron's own vocabulary named
  * by systemEventType. `system` says which. A consumer of an application frame dispatches on
  * (payloadId, templateId) — never templateId alone, which is unique per schema only.
  *
@@ -143,7 +161,7 @@ struct SequencedEvent
     std::int64_t receiveTimeNs;      ///< wall-clock ns at receipt by this client
     bool system;                     ///< true: a system frame, named by systemEventType, and payloadId means nothing
     std::uint16_t payloadId;         ///< which protocol templateId belongs to; 0 on a system frame
-    std::uint16_t systemEventType;   ///< which of §7's twelve events; 0 on an application frame
+    std::uint16_t systemEventType;   ///< which of §7's seventeen events; 0 on an application frame
     std::uint16_t templateId;        ///< the message's messageHeader templateId; picks the specific decode
     std::uint16_t blockLength;       ///< payload messageHeader blockLength; 0 on a system frame (see decodeSystem)
     std::uint16_t version;           ///< payload messageHeader version; 0 on a system frame
@@ -164,7 +182,7 @@ struct SequencedEvent
 struct FrameView
 {
     bool valid;  ///< false for a fragment that is not a frame, or too short to read
-    bool system; ///< true: one of the four system messages; payloadId/templateId mean nothing
+    bool system; ///< true: one of the five system messages; payloadId/templateId mean nothing
     std::uint16_t payloadId;
     std::uint16_t systemEventType;
     std::int32_t sourceId;
@@ -179,7 +197,7 @@ struct FrameView
     std::uint16_t version;
     /// What a consumer decodes: the payload, its 8-byte messageHeader included, on an application
     /// frame; the payload on a submitted system frame; the frame's own block on one of the synthesized
-    /// three.
+    /// four.
     const char* payload;
     std::uint64_t payloadLength;
 };
@@ -301,7 +319,8 @@ inline FrameView unwrapFrame(const char* const frame, const std::uint64_t length
 
     if (frameTemplateId == sbe::frame::ClusterHeartbeat::sbeTemplateId() ||
         frameTemplateId == sbe::frame::LeadershipChanged::sbeTemplateId() ||
-        frameTemplateId == sbe::frame::GatewayActive::sbeTemplateId())
+        frameTemplateId == sbe::frame::GatewayActive::sbeTemplateId() ||
+        frameTemplateId == sbe::frame::SnapshotStarted::sbeTemplateId())
     {
         if (length < blockOffset + sbe::frame::SequencedSystemHeader::encodedLength())
         {

@@ -6,7 +6,9 @@ import io.aeron.Aeron;
 import io.aeron.ExclusivePublication;
 import io.aeron.archive.client.AeronArchive;
 import io.aeron.logbuffer.FragmentHandler;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.agrona.DirectBuffer;
@@ -25,6 +27,8 @@ import org.limitless.seqeron.sbe.replay.ReplayPendingEncoder;
 import org.limitless.seqeron.sbe.replay.ReplayRequestDecoder;
 import org.limitless.seqeron.sbe.replay.ReplayUnavailableEncoder;
 import org.limitless.seqeron.sbe.replay.ReplayingEncoder;
+import org.limitless.seqeron.sbe.replay.SnapshotLocationEncoder;
+import org.limitless.seqeron.sbe.replay.SnapshotQueryDecoder;
 import org.limitless.seqeron.sequencer.SequencerService;
 import org.limitless.seqeron.util.Logger;
 
@@ -38,6 +42,15 @@ public final class ReplayerService {
      * the two can never cross-talk. Package-private: {@link AeronReplayer} subscribes to it.
      */
     static final int SELF_CHECK_STREAM_ID = 204;
+
+    /**
+     * Internal IPC stream the snapshot index's replay of the active recording arrives on. 206 is {@code
+     * AeronTapRelay}'s, which shares a gateway host's driver with this service.
+     */
+    static final int INDEX_STREAM_ID = 207;
+
+    // Frames the index reads per duty cycle: enough to keep up with the tap, and to rebuild after a restart.
+    private static final int INDEX_FRAGMENT_LIMIT = 256;
 
     // How long a self-check replay may go unanswered before it is abandoned and started over.
     private static final long SELF_CHECK_TIMEOUT_MS = TimeUnit.SECONDS.toMillis(2);
@@ -92,6 +105,12 @@ public final class ReplayerService {
     private long selfCheckDeadlineMs = 0;
 
 
+    // Each source's latest valid snapshot (doc/snapshot.md §5), fed by a replay of the active recording that
+    // follows it live; a tap subscription would be untethered and could miss one.
+    private final SnapshotIndex snapshotIndex = new SnapshotIndex(this::onSnapshotIndexed);
+    private final Map<Integer, AtomicCounter> snapshotRoundCounters = new HashMap<>();
+    private Replayer.IndexStream indexStream;
+
     // When the last dropped control reply was (see onControlReplyDropped), 0 = none this process.
     private long lastControlDropMs = 0;
 
@@ -121,6 +140,8 @@ public final class ReplayerService {
     private final ReplayPendingEncoder pendingEncoder = new ReplayPendingEncoder();
     private final ReplayUnavailableEncoder unavailableEncoder = new ReplayUnavailableEncoder();
     private final ReplayClientIdInUseEncoder clientIdInUseEncoder = new ReplayClientIdInUseEncoder();
+    private final SnapshotQueryDecoder snapshotQueryDecoder = new SnapshotQueryDecoder();
+    private final SnapshotLocationEncoder snapshotLocationEncoder = new SnapshotLocationEncoder();
     private final MutableDirectBuffer controlBuffer = new ExpandableArrayBuffer(64);
 
     private final org.limitless.seqeron.protocol.SequencedFrameDecoder selfCheckView =
@@ -131,6 +152,8 @@ public final class ReplayerService {
 
     private final FragmentHandler selfCheckHandler =
         (buffer, offset, length, header) -> onSelfCheckFragment(buffer, offset, length);
+
+    private final Replayer.IndexFrameHandler indexHandler = snapshotIndex::onFrame;
 
     /**
      * Production constructor: serves member {@code memberId}'s own Aeron client and archive.
@@ -203,6 +226,7 @@ public final class ReplayerService {
         Logger.info(Logger.CoreComponent.ReplayerService, memberId, "shutting down");
         stopAllReplays();
         closeSelfCheck(); // a check still in flight owns an archive replay and a subscription
+        closeIndex();
     }
 
     /**
@@ -227,6 +251,8 @@ public final class ReplayerService {
             work += checkReady();
         } else if (stalled) {
             probeArchive();
+        } else {
+            work += pollIndex();
         }
         reclaimIdleSlots();
         activeReplaySlotsCounter.set(replaySlots.activeCount());
@@ -376,6 +402,74 @@ public final class ReplayerService {
         selfCheckGlobalSeqNo = NULL_VALUE;
     }
 
+    // Snapshot index
+
+    /**
+     * Reads the next frames of the active recording into the index, opening its replay from the recording's
+     * start first. A replay that ends — the archive dropped it — is opened again and the index rebuilt.
+     * @return fragments read
+     */
+    private int pollIndex() {
+        if (indexStream == null) {
+            try {
+                final ReplayRecordings.RecordingSpan active = findActiveRecording();
+                if (active == null) {
+                    return 0;
+                }
+                snapshotIndex.reset();
+                indexStream = replayer.openIndexStream(active.recordingId(), active.startPosition());
+                onArchiveRecovered();
+            } catch (final RuntimeException ex) {
+                onArchiveStalled("starting the snapshot index's replay", ex);
+                return 0;
+            }
+        }
+        final int work = indexStream.poll(indexHandler, INDEX_FRAGMENT_LIMIT);
+        if (indexStream.isEnded()) {
+            closeIndex();
+        }
+        return work;
+    }
+
+    private void closeIndex() {
+        if (indexStream != null) {
+            indexStream.close();
+            indexStream = null;
+        }
+    }
+
+    /** One source's latest valid snapshot changed: its round counter follows. */
+    private void onSnapshotIndexed(final int sourceId, final SnapshotIndex.Entry entry) {
+        snapshotRoundCounters.computeIfAbsent(sourceId, source -> replayer.newSourceCounter(
+            SeqeronCounters.REPLAYER_SNAPSHOT_ROUND_TYPE_ID,
+            "seqeron.replayer.snapshotRound source=" + source + " member=" + memberId, source)).set(entry.round());
+    }
+
+    /**
+     * Answers a {@code SnapshotQuery} from the index as it stands. A node still rebuilding it after a restart
+     * answers with an older snapshot or none, which is correct; holding the query would be an unbounded wait.
+     */
+    private void onSnapshotQuery(final int clientId, final long requestId, final int sourceId) {
+        if (integrityFailed) {
+            sendUnavailable(clientId, requestId);
+            return;
+        }
+        if (!ready) {
+            sendPending(clientId, requestId);
+            return;
+        }
+        final SnapshotIndex.Entry entry = snapshotIndex.lookup(sourceId);
+        snapshotLocationEncoder.wrapAndApplyHeader(controlBuffer, 0, outHeaderEncoder)
+            .clientId(clientId)
+            .requestId(requestId)
+            .round(entry == null ? NULL_VALUE : entry.round())
+            .asOfGlobalSeqNo(entry == null ? NULL_VALUE : entry.asOfGlobalSeqNo())
+            .asOfPosition(entry == null ? NULL_VALUE : entry.asOfPosition())
+            .endPosition(entry == null ? NULL_VALUE : entry.endPosition())
+            .formatVersion(entry == null ? 0 : entry.formatVersion());
+        offerControl(MessageHeaderEncoder.ENCODED_LENGTH + snapshotLocationEncoder.encodedLength());
+    }
+
     // Replay protocol
     /**
      * Request handler
@@ -400,6 +494,13 @@ public final class ReplayerService {
             replayHeartbeatDecoder.wrap(buffer, offset + MessageHeaderDecoder.ENCODED_LENGTH,
                                         inHeaderDecoder.blockLength(), inHeaderDecoder.version());
             replaySlots.touch(replayHeartbeatDecoder.clientId(), replayer.epochMillis());
+            return;
+        }
+        if (inHeaderDecoder.templateId() == SnapshotQueryDecoder.TEMPLATE_ID) {
+            snapshotQueryDecoder.wrap(buffer, offset + MessageHeaderDecoder.ENCODED_LENGTH,
+                                      inHeaderDecoder.blockLength(), inHeaderDecoder.version());
+            onSnapshotQuery(snapshotQueryDecoder.clientId(), snapshotQueryDecoder.requestId(),
+                            snapshotQueryDecoder.sourceId());
             return;
         }
         if (inHeaderDecoder.templateId() != ReplayRequestDecoder.TEMPLATE_ID) {

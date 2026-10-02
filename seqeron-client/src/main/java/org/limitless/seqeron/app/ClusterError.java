@@ -12,5 +12,14 @@ public enum ClusterError {
     /** Recovery has dispatched nothing for the deadline, on an instance that had caught up before. */
     RECOVERY_STALLED,
     /** No {@code ClusterHeartbeat} for the deadline: this process has stopped seeing its node's tap. */
-    TAP_STALLED
+    TAP_STALLED,
+    /**
+     * This instance's snapshot of a round differs from its source's sequenced one: its state is not the log's (A-7).
+     */
+    SNAPSHOT_DIVERGED,
+    /**
+     * This instance's source has a snapshot it cannot restore: a format or header version this build does not read,
+     * or records that fail the check the Replayer indexed them by.
+     */
+    SNAPSHOT_UNRESTORABLE
 }

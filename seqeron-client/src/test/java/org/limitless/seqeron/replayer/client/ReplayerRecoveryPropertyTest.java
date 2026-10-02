@@ -4,13 +4,17 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import org.agrona.DirectBuffer;
 import org.agrona.concurrent.UnsafeBuffer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.limitless.seqeron.protocol.ReplayProtocol;
+import org.limitless.seqeron.protocol.SnapshotHeader;
 import org.limitless.seqeron.protocol.SystemFrame;
 import org.limitless.seqeron.sbe.frame.ClusterHeartbeatEncoder;
 import org.limitless.seqeron.sbe.frame.MessageHeaderEncoder;
@@ -39,6 +43,12 @@ import org.limitless.seqeron.util.Logger;
  * minutes, all of one kind — one dropped frame on a live tap. A run here is a few hundred, mixing drops
  * with lost requests, refusals, truncated images, stalled replays and recording rotations, in under a
  * second.
+ *
+ * <p><b>Restore</b> — a client restoring its source's snapshot (doc/snapshot.md §7) holds both properties from
+ * the cut on, under the same faults, and its restored state plus the frames after the cut equals the state a full
+ * replay builds. The log holds a superseded round, a late chunk of it, and another source's chunks among the
+ * snapshot's; which snapshot the Replayer names is {@code SnapshotIndexTest}'s, and serializing it is {@code
+ * SnapshotTakerTest}'s.
  *
  * <p>Seeds are fixed and listed, not drawn from the clock: a failing run must be re-runnable, and a suite
  * that fails on a different case each time is not a regression signal. Add seeds to widen the search; the
@@ -75,10 +85,23 @@ class ReplayerRecoveryPropertyTest {
         Logger.reset();
     }
 
+    /** The restored source, and the snapshot's frames: round 2, superseding round 1, cut at {@code CUT}. */
+    private static final int SOURCE = 3;
+    private static final int OTHER_SOURCE = 5;
+    private static final long CUT = 9;
+    private static final long SNAPSHOT_END = 17;
+    private static final int FORMAT_VERSION = 1;
+
     @ParameterizedTest(name = "seed {0}")
     @ValueSource(longs = {1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144, 233, 377, 610, 987, 1597})
     void staysGapFreeAndConvergesUnderRandomFaults(final long seed) {
-        new Run(seed).execute();
+        new Run(seed, false).execute();
+    }
+
+    @ParameterizedTest(name = "seed {0}")
+    @ValueSource(longs = {1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144, 233, 377, 610, 987, 1597})
+    void restoresAndConvergesToTheFullReplayStateUnderRandomFaults(final long seed) {
+        new Run(seed, true).execute();
     }
 
     /**
@@ -87,9 +110,18 @@ class ReplayerRecoveryPropertyTest {
      * <p>Implements {@link ReplayerRecoveryActions} itself — the client's every outbound act is a request
      * arriving at this Replayer, so recording them and serving them are the same object.
      */
-    private static final class Run implements ReplayerRecoveryActions {
+    private static final class Run implements ReplayerRecoveryActions, SnapshotRestoreHandler {
         private final SplitMix64 rng;
         private final String tag;
+        private final boolean restoring;
+
+        /** Every frame that is not a heartbeat, by globalSeqNo: the snapshot rounds. */
+        private final Map<Long, RestoreFrames.Frame> frames = new HashMap<>();
+
+        /** The state: how many heartbeats, and the sum of their globalSeqNos — restored, then folded. */
+        private long heartbeats;
+        private long heartbeatSum;
+        private int nextRecordIndex;
 
         // ── the node's archive: the recording chain, complete by construction ──────────────────────────
         private final List<Segment> segments = new ArrayList<>();
@@ -98,6 +130,7 @@ class ReplayerRecoveryPropertyTest {
 
         // ── the Replayer's view of this one client ─────────────────────────────────────────────────────
         private long pendingRequestId = -1;
+        private boolean pendingIsQuery;
         private int pendingSegmentIndex;
         private long pendingFromPosition;
         private long nextSessionId = 1;
@@ -117,9 +150,10 @@ class ReplayerRecoveryPropertyTest {
 
         private ReplayerRecovery client;
 
-        Run(final long seed) {
+        Run(final long seed, final boolean restoring) {
             this.rng = new SplitMix64(seed);
-            this.tag = "seed=" + seed;
+            this.tag = "seed=" + seed + (restoring ? " restoring" : "");
+            this.restoring = restoring;
         }
 
         void execute() {
@@ -127,11 +161,18 @@ class ReplayerRecoveryPropertyTest {
             // first tap frame is the one designed abort — the first frame observed must be globalSeqNo 1 —
             // and not a recovery failure, so the model does not construct it.
             segments.add(new Segment(nextRecordingId++, 1));
+            if (restoring) {
+                publishSnapshotRounds();
+            }
             for (int i = 0; i < 3; ++i) {
                 publish();
             }
 
             client = new ReplayerRecovery(CLIENT_ID, this, this::onSequenced, null, null);
+            if (restoring) {
+                client.restoreFrom(SOURCE, this);
+                expectedNext = CUT + 1;
+            }
             client.start();
 
             for (int step = 0; step < CHAOS_STEPS; ++step) {
@@ -157,6 +198,48 @@ class ReplayerRecoveryPropertyTest {
             assertTrue(client.isCaughtUp(), tag + ": never re-converged after the faults stopped");
             assertEquals(tip, client.lastGlobalSeqNo(), tag + ": converged short of the tip");
             assertEquals(tip + 1, expectedNext, tag + ": caught up without having dispatched every frame");
+            if (restoring) {
+                long count = 0;
+                long sum = 0;
+                for (long globalSeqNo = 1; globalSeqNo <= tip; ++globalSeqNo) {
+                    if (!frames.containsKey(globalSeqNo)) {
+                        ++count;
+                        sum += globalSeqNo;
+                    }
+                }
+                assertEquals(count, heartbeats, tag + ": restored state plus the tail is not the full replay's");
+                assertEquals(sum, heartbeatSum, tag + ": restored state plus the tail is not the full replay's");
+            }
+        }
+
+        /**
+         * Round 1 starts and is superseded by round 2 at {@link #CUT} before its source finishes it; round 2's
+         * chunks then interleave with heartbeats, round 1's late chunk and another source's chunk, up to its end.
+         * Its records hold the state at the cut: the heartbeats before it.
+         */
+        private void publishSnapshotRounds() {
+            for (int i = 0; i < 5; ++i) {
+                publish(); // heartbeats 1-5
+            }
+            final byte[] header = RestoreFrames.header(4, 2);
+            publishFrame(RestoreFrames.started(6, 1));
+            publishFrame(RestoreFrames.chunk(7, SOURCE, 1, 0, header));
+            publish(); // heartbeat 8
+            publishFrame(RestoreFrames.started(CUT, 2));
+            final byte[] count = RestoreFrames.record(6);
+            final byte[] sum = RestoreFrames.record(1 + 2 + 3 + 4 + 5 + 8);
+            publishFrame(RestoreFrames.chunk(10, SOURCE, 1, 1, RestoreFrames.record(99)));
+            publishFrame(RestoreFrames.chunk(11, SOURCE, 2, 0, header));
+            publishFrame(RestoreFrames.chunk(12, OTHER_SOURCE, 2, 0, header));
+            publish(); // heartbeat 13
+            publishFrame(RestoreFrames.chunk(14, SOURCE, 2, 1, count));
+            publishFrame(RestoreFrames.chunk(15, SOURCE, 2, 2, sum));
+            publish(); // heartbeat 16
+            publishFrame(RestoreFrames.end(SNAPSHOT_END, SOURCE, 2, FORMAT_VERSION, header, count, sum));
+        }
+
+        private void publishFrame(final RestoreFrames.Frame frame) {
+            frames.put(publish(), frame);
         }
 
         private boolean converged() {
@@ -195,12 +278,23 @@ class ReplayerRecoveryPropertyTest {
                     // The same tap frame offered twice. Both de-dupes have to hold: the contiguity one when
                     // it sits at or below the baseline, and the retained FIFO's when it is ahead of a hole.
                     if (lastTapped > 0) {
-                        client.onFrame(frame(lastTapped), 0, FRAME_LENGTH, positionOf(lastTapped), RECEIVE_NS,
-                                       false);
+                        deliver(lastTapped, false);
                     }
                 }
-                default -> segments.add(new Segment(nextRecordingId++, tip + 1));
+                default -> rotate();
             }
+        }
+
+        /**
+         * A new active recording. A restoring run's starts at globalSeqNo 1 and already holds the log, as a
+         * restarted node's does once it has replayed it; a walk's only chain is the older model's.
+         */
+        private void rotate() {
+            final Segment segment = new Segment(nextRecordingId++, restoring ? 1 : tip + 1);
+            if (restoring) {
+                segment.last = tip;
+            }
+            segments.add(segment);
         }
 
         // ── the tap ────────────────────────────────────────────────────────────────────────────────────
@@ -213,7 +307,16 @@ class ReplayerRecoveryPropertyTest {
 
         private void deliverTap(final long globalSeqNo) {
             lastTapped = globalSeqNo;
-            client.onFrame(frame(globalSeqNo), 0, FRAME_LENGTH, positionOf(globalSeqNo), RECEIVE_NS, false);
+            deliver(globalSeqNo, false);
+        }
+
+        private void deliver(final long globalSeqNo, final boolean fromReplay) {
+            final RestoreFrames.Frame special = frames.get(globalSeqNo);
+            if (special != null) {
+                client.onFrame(special.buffer(), 0, special.length(), positionOf(globalSeqNo), RECEIVE_NS, fromReplay);
+            } else {
+                client.onFrame(frame(globalSeqNo), 0, FRAME_LENGTH, positionOf(globalSeqNo), RECEIVE_NS, fromReplay);
+            }
         }
 
         // ── the Replayer ───────────────────────────────────────────────────────────────────────────────
@@ -223,6 +326,7 @@ class ReplayerRecoveryPropertyTest {
                 return;
             }
             final long requestId = pendingRequestId;
+            final boolean query = pendingIsQuery;
             final int segmentIndex = pendingSegmentIndex;
             final long fromPosition = pendingFromPosition;
             pendingRequestId = -1;
@@ -236,6 +340,12 @@ class ReplayerRecoveryPropertyTest {
             }
             if (chaos && chance(5)) {
                 control(replayUnavailable(requestId), REPLAY_UNAVAILABLE_LENGTH);
+                return;
+            }
+            if (query) {
+                final RestoreFrames.Frame location = RestoreFrames.location(
+                    CLIENT_ID, requestId, 2, CUT, positionOf(CUT), positionOf(SNAPSHOT_END + 1), FORMAT_VERSION);
+                client.onControl(location.buffer(), 0, location.length());
                 return;
             }
 
@@ -279,8 +389,7 @@ class ReplayerRecoveryPropertyTest {
          */
         private void deliverReplayFrames(final int count) {
             for (int i = 0; i < count && replayEndSeqNo >= 0 && replayCursor <= replayEndSeqNo; ++i) {
-                final long globalSeqNo = replayCursor++;
-                client.onFrame(frame(globalSeqNo), 0, FRAME_LENGTH, positionOf(globalSeqNo), RECEIVE_NS, true);
+                deliver(replayCursor++, true);
             }
             if (replayEndSeqNo >= 0) {
                 client.onReplayPosition(positionOf(replayCursor));
@@ -305,8 +414,19 @@ class ReplayerRecoveryPropertyTest {
                 return; // the offer did not land; only the resend timer recovers this
             }
             pendingRequestId = requestId;
+            pendingIsQuery = false;
             pendingSegmentIndex = segmentIndex;
             pendingFromPosition = fromPosition;
+        }
+
+        @Override
+        public void sendSnapshotQuery(final long requestId, final int sourceId) {
+            assertEquals(SOURCE, sourceId, tag);
+            if (chaos && chance(15)) {
+                return;
+            }
+            pendingRequestId = requestId;
+            pendingIsQuery = true;
         }
 
         @Override
@@ -348,6 +468,35 @@ class ReplayerRecoveryPropertyTest {
             assertEquals(expectedNext, event.globalSeqNo(), tag + ": dispatched out of order");
             assertTrue(event.globalSeqNo() <= tip, tag + ": dispatched a frame that was never published");
             ++expectedNext;
+            if (!frames.containsKey(event.globalSeqNo())) {
+                ++heartbeats;
+                heartbeatSum += event.globalSeqNo();
+            }
+        }
+
+        // ── SnapshotRestoreHandler: the restored state ─────────────────────────────────────────────────
+
+        @Override
+        public boolean supportsFormatVersion(final long formatVersion) {
+            return formatVersion == FORMAT_VERSION;
+        }
+
+        @Override
+        public void onSnapshotHeader(final SnapshotHeader header) {
+            assertTrue(expectedNext == CUT + 1, tag + ": a restore after a frame was dispatched");
+            heartbeats = 0;
+            heartbeatSum = 0;
+            nextRecordIndex = 0;
+        }
+
+        @Override
+        public void onSnapshotRecord(final DirectBuffer record, final int length, final int recordIndex) {
+            assertEquals(nextRecordIndex++, recordIndex, tag + ": records out of order");
+            if (recordIndex == 0) {
+                heartbeats = record.getLong(0);
+            } else {
+                heartbeatSum = record.getLong(0);
+            }
         }
 
         private boolean chance(final int percent) {
