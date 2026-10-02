@@ -71,10 +71,10 @@ unchanged. `Gateway` works there as it does on a member; `Application` needs
 | Call | Java | C++ |
 |---|---|---|
 | construct | `(clientId, onSequenced, onLeadershipChanged, onCaughtUp)` | `(clientId, onSequenced, onConnected, onDisconnected, onLeadershipChanged, onCaughtUp)` |
-| restore a snapshot first | `restoreFrom(sourceId, SnapshotRestoreHandler)`, before `start` | — |
+| restore a snapshot first | `restoreFrom(sourceId, SnapshotRestoreHandler)`, before `start` | `restoreFrom(sourceId, SnapshotRestoreHandler&)`, before `start` |
 | attach | `start(aeron, memberId)` | `start(aeron, memberId)` |
 | each duty cycle | `poll()` | `poll()` |
-| state | `isCaughtUp()`, `lastGlobalSeqNo()`, `currentLeaderMemberId()`, `restoreFailure()` | the same, less `restoreFailure()` |
+| state | `isCaughtUp()`, `lastGlobalSeqNo()`, `currentLeaderMemberId()`, `restoreFailure()` | the same; `restoreFailure()` is a `std::optional<std::string>` |
 | release | `close()` | destructor |
 
 With `restoreFrom`, the cold start asks the Replayer for the source's latest snapshot and, if there is one,
@@ -245,7 +245,7 @@ an instance that keeps per-connection state rebuilds it while it replays, and th
 that drops its socket without logging out — `onCaughtUp(globalSeqNo)` fires on every
 transition, and `onFenced(ClusterError, detail)` fires once — release the cluster session, usually by exiting, so
 a standby takes over. The `ClusterError` values are the cluster session lost, ingress confirmation faulted,
-recovery stalled, the tap stalled, and a snapshot diverged or unrestorable (below, Java only so far); a media
+recovery stalled, the tap stalled, and a snapshot diverged or unrestorable (below, `Application` only); a media
 driver that goes away raises from `doWork()` instead.
 
 Tap lag is deliberately **not** the client tier's business: it raises no fence and changes no
@@ -288,21 +288,24 @@ that needs a standby off the cluster is a `Gateway`.
 reference consumers, and the only clients in the repository whose builds refuse anything outside `app`
 (`checkFacadeOnly`, and the same check in `seqeron-examples/CMakeLists.txt`).
 
-**Snapshots** (`doc/snapshot.md`; Java only so far). The builder's `snapshotListener(SnapshotListener)` makes
-the application take part in snapshot rounds, if its topology row also says `snapshot="true"`; without one it
+**Snapshots** (`doc/snapshot.md`). The builder's `snapshotListener(SnapshotListener)` (C++
+`Config::snapshotListener`, a `SnapshotListener*` that must outlive the replica) makes the application take part in snapshot rounds, if its topology row also says `snapshot="true"`; without one it
 takes part in none. At each round's cut, before dispatching the next frame, every replica's façade calls
-`onSnapshot(MutableDirectBuffer buffer, int recordIndex)` from index 0 until it returns 0: each call encodes
+`onSnapshot(MutableDirectBuffer buffer, int recordIndex)` (C++ `onSnapshot(std::span<std::uint8_t> buffer,
+std::int32_t recordIndex)`) from index 0 until it returns 0: each call encodes
 the next record of the state into `buffer`, at most its 1302-byte capacity, and returns its length.
 `recordIndex` 0 is where an iteration over the state starts over. A length outside 0–1302 drops the round.
 `formatVersion()` names the record format. Every replica must produce the same records for the same state:
 no hash-map iteration order, no local time, no node identity. The replica whose gate is open at the cut submits them, a few per
 `doWork()`; the others compare the sequenced end with their own and are fenced with `SNAPSHOT_DIVERGED` if it
 differs. On start, a replica with a listener restores its source's latest snapshot before it dispatches
-anything: the façade calls `onRestore(DirectBuffer buffer, int length, int recordIndex)` once per record, in
+anything: the façade calls `onRestore(DirectBuffer buffer, int length, int recordIndex)` (C++
+`onRestore(std::span<const std::uint8_t> record, std::int32_t recordIndex)`) once per record, in
 the order `onSnapshot` encoded them, and then dispatches from the frame after the cut. `recordIndex` 0 is
 where the state is cleared, since a restore whose replay is lost starts over. A snapshot whose
 `formatVersion` differs from the listener's, or that cannot be read, fences the replica with
-`SNAPSHOT_UNRESTORABLE`.
+`SNAPSHOT_UNRESTORABLE` (C++ `ClusterError::SnapshotUnrestorable`; the divergence fence is
+`ClusterError::SnapshotDiverged`).
 
 `Listener` adds `onLeadershipChanged(boolean leading)` where `Gateway` has `onActivated`/`onStandby`, and
 carries the same `onSequenced`/`onCaughtUp`/`onClusterHeartbeat`/`onFenced`. It has no connection

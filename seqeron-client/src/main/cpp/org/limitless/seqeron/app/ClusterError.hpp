@@ -17,6 +17,11 @@ enum class ClusterError : std::uint8_t
     RecoveryStalled,
     // No ClusterHeartbeat for the deadline: this process has stopped seeing its node's tap.
     TapStalled,
+    // This instance's snapshot of a round differs from its source's sequenced one: its state is not the log's (A-7).
+    SnapshotDiverged,
+    // This instance's source has a snapshot it cannot restore: a format or header version this build does not
+    // read, or records that fail the check the Replayer indexed them by.
+    SnapshotUnrestorable,
 };
 
 /**
@@ -37,6 +42,10 @@ inline const char* clusterErrorName(const ClusterError error)
             return "RECOVERY_STALLED";
         case ClusterError::TapStalled:
             return "TAP_STALLED";
+        case ClusterError::SnapshotDiverged:
+            return "SNAPSHOT_DIVERGED";
+        case ClusterError::SnapshotUnrestorable:
+            return "SNAPSHOT_UNRESTORABLE";
     }
     return "UNKNOWN";
 }

@@ -18,17 +18,26 @@
 // requests, refusals, truncated images, stalled replays, recording rotations and tap redeliveries, in under
 // a second.
 //
+// Restore   — a client restoring its source's snapshot (doc/snapshot.md §7) holds both properties from the
+//            cut on, under the same faults, and its restored state plus the frames after the cut equals the
+//            state a full replay builds. The log holds a superseded round, a late chunk of it, and another
+//            source's chunks among the snapshot's; which snapshot the Replayer names is SnapshotIndexTest's
+//            (Java), and serializing it is SnapshotTakerTest's.
+//
 // Seeds are fixed and listed, not drawn from the clock: a failing run must be re-runnable, and a suite that
 // fails on a different case each time is not a regression signal. Add seeds to widen the search; the
 // failing one is in the test name.
 
 #include <cstdint>
+#include <map>
+#include <span>
 #include <string>
 #include <vector>
 
 #include <gtest/gtest.h>
 
 #include "org/limitless/seqeron/helpers/SplitMix64.hpp"
+#include "org/limitless/seqeron/replayer/client/RestoreFrames.hpp"
 #include "org/limitless/seqeron/replayer/client/detail/ReplayerRecovery.hpp"
 #include "org/limitless/seqeron/util/Logger.hpp"
 #include "org_limitless_seqeron_sbe_frame/ClusterHeartbeat.h"
@@ -61,6 +70,15 @@ constexpr int QUIESCE_STEPS = 20'000;
 
 // The walk terminator: nothing left to replay AND no recording named.
 constexpr std::int64_t CHAIN_EXHAUSTED = -1;
+
+// The restored source, and the snapshot's frames: round 2, superseding round 1, cut at CUT.
+constexpr std::int32_t SOURCE = 3;
+constexpr std::int32_t OTHER_SOURCE = 5;
+constexpr std::int64_t CUT = 9;
+constexpr std::int64_t SNAPSHOT_END = 17;
+constexpr std::uint32_t FORMAT_VERSION = 1;
+
+namespace rf = restore_frames;
 
 // Every gap logs, and a run makes hundreds — kept out of the test output rather than counted. RAII so a run
 // that fails out early still restores the default sink.
@@ -151,11 +169,14 @@ struct Segment
 //
 // Implements ReplayerRecoveryActions itself — the client's every outbound act is a request arriving at this
 // Replayer, so recording them and serving them are the same object.
-struct Simulation final : ReplayerRecoveryActions
+struct Simulation final
+  : ReplayerRecoveryActions
+  , SnapshotRestoreHandler
 {
-    explicit Simulation(const std::uint64_t seed) :
+    Simulation(const std::uint64_t seed, const bool restoring) :
       rng(seed),
-      tag("seed=" + std::to_string(seed)),
+      tag("seed=" + std::to_string(seed) + (restoring ? " restoring" : "")),
+      restoring(restoring),
       recovery(CLIENT_ID, *this, [this](const SequencedEvent& event) { onSequenced(event); })
     {}
 
@@ -165,11 +186,20 @@ struct Simulation final : ReplayerRecoveryActions
         // first tap frame is the one designed abort — the first frame observed must be globalSeqNo 1 — and
         // not a recovery failure, so the model does not construct it.
         segments.push_back({ nextRecordingId++, 1, 0 });
+        if (restoring)
+        {
+            publishSnapshotRounds();
+        }
         for (int i = 0; i < 3; ++i)
         {
             publish();
         }
 
+        if (restoring)
+        {
+            recovery.restoreFrom(SOURCE, *this);
+            expectedNext = CUT + 1;
+        }
         recovery.start();
 
         for (int step = 0; step < CHAOS_STEPS && !broken; ++step)
@@ -203,9 +233,70 @@ struct Simulation final : ReplayerRecoveryActions
         EXPECT_TRUE(recovery.isCaughtUp()) << tag << ": never re-converged after the faults stopped";
         EXPECT_EQ(tip, recovery.lastGlobalSeqNo()) << tag << ": converged short of the tip";
         EXPECT_EQ(tip + 1, expectedNext) << tag << ": caught up without having dispatched every frame";
+        if (restoring)
+        {
+            std::int64_t count = 0;
+            std::int64_t sum = 0;
+            for (std::int64_t globalSeqNo = 1; globalSeqNo <= tip; ++globalSeqNo)
+            {
+                if (!frames.contains(globalSeqNo))
+                {
+                    ++count;
+                    sum += globalSeqNo;
+                }
+            }
+            EXPECT_EQ(count, heartbeats) << tag << ": restored state plus the tail is not the full replay's";
+            EXPECT_EQ(sum, heartbeatSum) << tag << ": restored state plus the tail is not the full replay's";
+        }
     }
 
   private:
+    // Round 1 starts and is superseded by round 2 at CUT before its source finishes it; round 2's chunks then
+    // interleave with heartbeats, round 1's late chunk and another source's chunk, up to its end. Its records
+    // hold the state at the cut: the heartbeats before it.
+    void publishSnapshotRounds()
+    {
+        for (int i = 0; i < 5; ++i)
+        {
+            publish(); // heartbeats 1-5
+        }
+        const rf::Bytes header = rf::header(4, 2);
+        publishFrame(rf::started(6, 1));
+        publishFrame(rf::chunk(7, SOURCE, 1, 0, header));
+        publish(); // heartbeat 8
+        publishFrame(rf::started(CUT, 2));
+        const rf::Bytes count = rf::record(6);
+        const rf::Bytes sum = rf::record(1 + 2 + 3 + 4 + 5 + 8);
+        publishFrame(rf::chunk(10, SOURCE, 1, 1, rf::record(99)));
+        publishFrame(rf::chunk(11, SOURCE, 2, 0, header));
+        publishFrame(rf::chunk(12, OTHER_SOURCE, 2, 0, header));
+        publish(); // heartbeat 13
+        publishFrame(rf::chunk(14, SOURCE, 2, 1, count));
+        publishFrame(rf::chunk(15, SOURCE, 2, 2, sum));
+        publish(); // heartbeat 16
+        publishFrame(rf::end(SNAPSHOT_END, SOURCE, 2, FORMAT_VERSION, { header, count, sum }));
+    }
+
+    void publishFrame(rf::Bytes frame)
+    {
+        frames.emplace(publish(), std::move(frame));
+    }
+
+    // A new active recording. A restoring run's starts at globalSeqNo 1 and already holds the log, as a
+    // restarted node's does once it has replayed it; a walk's only chain is the older model's.
+    void rotate()
+    {
+        segments.push_back({ nextRecordingId++, restoring ? 1 : tip + 1, tip });
+    }
+
+    void deliver(const std::int64_t globalSeqNo, const bool fromReplay)
+    {
+        const auto special = frames.find(globalSeqNo);
+        rf::Bytes buf = special != frames.end() ? special->second : encodeHeartbeat(globalSeqNo);
+        recovery.onFrame(reinterpret_cast<char*>(buf.data()), buf.size(), positionOf(globalSeqNo), /*receiveNs=*/0,
+                         fromReplay);
+    }
+
     bool converged() const
     {
         return recovery.isCaughtUp() && recovery.lastGlobalSeqNo() == tip;
@@ -264,13 +355,11 @@ struct Simulation final : ReplayerRecoveryActions
                 // sits at or below the baseline, and the retained FIFO's when it is ahead of a hole.
                 if (lastTapped > 0)
                 {
-                    auto buf = encodeHeartbeat(lastTapped);
-                    recovery.onFrame(reinterpret_cast<char*>(buf.data()), buf.size(), positionOf(lastTapped),
-                                     /*receiveNs=*/0, /*fromReplay=*/false);
+                    deliver(lastTapped, /*fromReplay=*/false);
                 }
                 break;
             default:
-                segments.push_back({ nextRecordingId++, tip + 1, tip });
+                rotate();
                 break;
         }
     }
@@ -286,9 +375,7 @@ struct Simulation final : ReplayerRecoveryActions
     void deliverTap(const std::int64_t globalSeqNo)
     {
         lastTapped = globalSeqNo;
-        auto buf = encodeHeartbeat(globalSeqNo);
-        recovery.onFrame(reinterpret_cast<char*>(buf.data()), buf.size(), positionOf(globalSeqNo),
-                         /*receiveNs=*/0, /*fromReplay=*/false);
+        deliver(globalSeqNo, /*fromReplay=*/false);
     }
 
     // ── the Replayer ──────────────────────────────────────────────────────────────────────────────────
@@ -300,6 +387,7 @@ struct Simulation final : ReplayerRecoveryActions
             return;
         }
         const std::int64_t requestId = pendingRequestId;
+        const bool query = pendingIsQuery;
         const std::int32_t segmentIndex = pendingSegmentIndex;
         const std::int64_t fromPosition = pendingFromPosition;
         pendingRequestId = -1;
@@ -316,6 +404,12 @@ struct Simulation final : ReplayerRecoveryActions
         if (chaos && chance(5))
         {
             deliverControl(encodeReplayUnavailable(requestId));
+            return;
+        }
+        if (query)
+        {
+            deliverControl(rf::location(CLIENT_ID, requestId, 2, CUT, positionOf(CUT), positionOf(SNAPSHOT_END + 1),
+                                        FORMAT_VERSION));
             return;
         }
 
@@ -364,10 +458,7 @@ struct Simulation final : ReplayerRecoveryActions
     {
         for (int i = 0; i < count && replayEndSeqNo >= 0 && replayCursor <= replayEndSeqNo; ++i)
         {
-            const std::int64_t globalSeqNo = replayCursor++;
-            auto buf = encodeHeartbeat(globalSeqNo);
-            recovery.onFrame(reinterpret_cast<char*>(buf.data()), buf.size(), positionOf(globalSeqNo),
-                             /*receiveNs=*/0, /*fromReplay=*/true);
+            deliver(replayCursor++, /*fromReplay=*/true);
         }
         if (replayEndSeqNo >= 0)
         {
@@ -397,8 +488,20 @@ struct Simulation final : ReplayerRecoveryActions
             return; // the offer did not land; only the resend timer recovers this
         }
         pendingRequestId = requestId;
+        pendingIsQuery = false;
         pendingSegmentIndex = segmentIndex;
         pendingFromPosition = fromPosition;
+    }
+
+    void sendSnapshotQuery(const std::int64_t requestId, const std::int32_t sourceId) override
+    {
+        EXPECT_EQ(SOURCE, sourceId) << tag;
+        if (chaos && chance(15))
+        {
+            return;
+        }
+        pendingRequestId = requestId;
+        pendingIsQuery = true;
     }
 
     bool sendReplayComplete() override
@@ -438,6 +541,39 @@ struct Simulation final : ReplayerRecoveryActions
                           << " (tip " << tip << ")";
         }
         expectedNext = event.globalSeqNo + 1;
+        if (!frames.contains(event.globalSeqNo))
+        {
+            ++heartbeats;
+            heartbeatSum += event.globalSeqNo;
+        }
+    }
+
+    // ── SnapshotRestoreHandler: the restored state ───────────────────────────────────────────────────
+
+    bool supportsFormatVersion(const std::uint32_t formatVersion) override
+    {
+        return formatVersion == FORMAT_VERSION;
+    }
+
+    void onSnapshotHeader(const protocol::SnapshotHeader&) override
+    {
+        EXPECT_EQ(CUT + 1, expectedNext) << tag << ": a restore after a frame was dispatched";
+        heartbeats = 0;
+        heartbeatSum = 0;
+        nextRecordIndex = 0;
+    }
+
+    void onSnapshotRecord(const std::span<const std::uint8_t> record, const std::int32_t recordIndex) override
+    {
+        EXPECT_EQ(nextRecordIndex++, recordIndex) << tag << ": records out of order";
+        if (recordIndex == 0)
+        {
+            heartbeats = rf::valueOf(record.data());
+        }
+        else
+        {
+            heartbeatSum = rf::valueOf(record.data());
+        }
     }
 
     int roll(const int bound)
@@ -452,6 +588,15 @@ struct Simulation final : ReplayerRecoveryActions
 
     helpers::SplitMix64 rng;
     const std::string tag;
+    const bool restoring;
+
+    // every frame that is not a heartbeat, by globalSeqNo: the snapshot rounds
+    std::map<std::int64_t, rf::Bytes> frames;
+
+    // the state: how many heartbeats, and the sum of their globalSeqNos — restored, then folded
+    std::int64_t heartbeats = 0;
+    std::int64_t heartbeatSum = 0;
+    std::int32_t nextRecordIndex = 0;
 
     // the node's archive: the recording chain, complete by construction
     std::vector<Segment> segments;
@@ -460,6 +605,7 @@ struct Simulation final : ReplayerRecoveryActions
 
     // the Replayer's view of this one client
     std::int64_t pendingRequestId = -1;
+    bool pendingIsQuery = false;
     std::int32_t pendingSegmentIndex = 0;
     std::int64_t pendingFromPosition = 0;
     std::int64_t nextSessionId = 1;
@@ -484,7 +630,14 @@ class ReplayerRecoveryProperty : public testing::TestWithParam<std::uint64_t>
 TEST_P(ReplayerRecoveryProperty, StaysGapFreeAndConvergesUnderRandomFaults)
 {
     const SilentLoggerSink silence;
-    Simulation simulation(GetParam());
+    Simulation simulation(GetParam(), false);
+    simulation.execute();
+}
+
+TEST_P(ReplayerRecoveryProperty, RestoresAndConvergesToTheFullReplayStateUnderRandomFaults)
+{
+    const SilentLoggerSink silence;
+    Simulation simulation(GetParam(), true);
     simulation.execute();
 }
 
