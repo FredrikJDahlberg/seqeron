@@ -6,7 +6,7 @@ from this repository's source.
 ## 1. Start a node
 
 ```bash
-V=0.8.3   # the latest release: https://github.com/FredrikJDahlberg/seqeron/releases
+V=0.9.0   # the latest release: https://github.com/FredrikJDahlberg/seqeron/releases
 curl -LO https://github.com/FredrikJDahlberg/seqeron/releases/download/v$V/seqeron-$V.zip
 unzip seqeron-$V.zip && cd seqeron-$V
 bin/start-cluster.sh
@@ -40,7 +40,7 @@ repositories {
 }
 
 dependencies {
-    implementation enforcedPlatform('com.github.FredrikJDahlberg.seqeron:seqeron-bom:v0.8.3')
+    implementation enforcedPlatform('com.github.FredrikJDahlberg.seqeron:seqeron-bom:v0.9.0')
     implementation 'com.github.FredrikJDahlberg.seqeron:seqeron'
 }
 
@@ -204,7 +204,7 @@ holds both registries, §5 and §6.1.
   include(FetchContent)
   FetchContent_Declare(seqeron
       GIT_REPOSITORY https://github.com/FredrikJDahlberg/seqeron.git
-      GIT_TAG        v0.8.3)
+      GIT_TAG        v0.9.0)
   FetchContent_MakeAvailable(seqeron)
   target_link_libraries(my_app PRIVATE seqeron::seqeron_core)
   ```

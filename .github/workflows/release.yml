@@ -72,7 +72,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.version.outputs.version }}
         run: |
-          gh release create "${GITHUB_REF_NAME}" --generate-notes \
+          # The tag's notes, when it has some; --generate-notes appends the changelog link.
+          NOTES=".github/release-notes/${GITHUB_REF_NAME}.md"
+          NOTES_ARGS=()
+          [[ -f "${NOTES}" ]] && NOTES_ARGS=(--notes-file "${NOTES}")
+          gh release create "${GITHUB_REF_NAME}" --generate-notes "${NOTES_ARGS[@]}" \
             "build/distributions/seqeron-${VERSION}.zip" \
             "build/libs/seqeron-${VERSION}-uber.jar" \
             "seqeron-client/build/libs/seqeron-${VERSION}.jar" \

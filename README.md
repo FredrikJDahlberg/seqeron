@@ -514,7 +514,9 @@ It publishes:
 
 To cut one:
 
-1. Start from `main` with CI green.
+1. Start from `main` with CI green, and commit the release's notes to `.github/release-notes/`, named
+   after the tag (`v0.6.3.md`). The GitHub Release uses them, followed by the changelog link; without
+   them it has the link alone.
 2. Run `.github/tag-release.sh <major.minor.patch>`, which is the whole tagging step:
    ```bash
    .github/tag-release.sh 0.6.3

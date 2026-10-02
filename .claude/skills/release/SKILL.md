@@ -12,7 +12,8 @@ POM dependency on `seqeron` resolves there; everywhere else the group stays `org
 version `VERSION`'s. A third publication, the pom-only `seqeron-bom`, pins
 Aeron, Agrona and SBE at `versions.properties`. A `v*` tag runs `release.yml`: it fails unless the tag
 is `v` + `VERSION`, waits for JitPack's build, pushes the node image to GHCR, and creates a GitHub Release
-with the operator distribution. The image is built from `operatorDist`, so a node container has
+with the operator distribution, its body `.github/release-notes/<tag>.md` when that exists plus the
+generated changelog link. The image is built from `operatorDist`, so a node container has
 `bin/` and a `clusterctl` on the `PATH` set to its own member (`docker/clusterctl`).
 
 **`.github/tag-release.sh <major.minor.patch>` cuts the tag**: it writes `VERSION`, commits it, and
