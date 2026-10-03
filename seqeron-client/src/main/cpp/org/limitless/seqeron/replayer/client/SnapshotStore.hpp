@@ -18,8 +18,8 @@ namespace org::limitless::seqeron::replayer::client {
 
 /**
  * This instance's own snapshots, one file per round in a directory no other instance writes (doc/snapshot.md §4).
- * <round>.snapshot holds the records, each a little-endian uint16 length and its bytes, record 0 the façade's
- * header, then a trailer whose layout is in the Java twin, ending in MAGIC. A file is written as <round>.tmp and
+ * `<round>.snapshot` holds the records, each a little-endian uint16 length and its bytes, record 0 the façade's
+ * header, then a trailer whose layout is in the Java twin, ending in MAGIC. A file is written as `<round>.tmp` and
  * renamed once complete, without an fsync: one an OS crash tore fails its trailer or its records, and a restore
  * checks both. A write that fails leaves no file and is logged. Not thread-safe. The Java twin is
  * replayer/client/SnapshotStore.java; keep the two in step.
