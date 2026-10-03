@@ -55,8 +55,9 @@ inline constexpr std::int64_t CLUSTER_HEARTBEAT_INTERVAL_NS = CLUSTER_HEARTBEAT_
 // This language's compiled-in mirror of spec §12 (the Java one is FrameLayer); a change is a wire change
 // (V-3) and lands in both. Never read from a transport per frame: S-3 forbids checking a node's own MTU.
 
-// The pinned 1408-byte MTU less the 92-byte ingress header stack.
-inline constexpr std::uint16_t MAX_PAYLOAD_LENGTH = 1316;
+// An 8960-byte IPC MTU, one jumbo frame, less the 76 bytes of Aeron data header and sequenced envelope, so a
+// tap whose MTU is that large never fragments.
+inline constexpr std::uint16_t MAX_PAYLOAD_LENGTH = 8884;
 
 // Smallest ingress frame of either family: the framing header, the header composite and the payload's own
 // 2-byte length prefix. Read off the codecs rather than written out, as the Java twin is, so a schema
@@ -65,7 +66,7 @@ inline constexpr std::uint16_t MIN_INGRESS_LENGTH = static_cast<std::uint16_t>(
     sbe::frame::MessageHeader::encodedLength() + sbe::frame::UnsequencedHeader::encodedLength() +
     sbe::frame::Unsequenced::payloadHeaderLength());
 
-// Largest ingress frame: a full payload behind that framing -- 1344 bytes. §9.2 condition 1's ceiling.
+// Largest ingress frame: a full payload behind that framing -- 8912 bytes. §9.2 condition 1's ceiling.
 inline constexpr std::uint16_t MAX_INGRESS_LENGTH = MIN_INGRESS_LENGTH + MAX_PAYLOAD_LENGTH;
 
 // ── The systemEventType table (doc/seqeron-protocol-spec.md §7) ────────────────

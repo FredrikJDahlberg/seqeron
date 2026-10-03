@@ -112,7 +112,11 @@ public final class AeronReplayer implements Replayer {
             private boolean connected;
             private IndexFrameHandler handler;
             private final FragmentHandler fragments = (buffer, offset, length, header) -> {
-                // Frames are never fragmented (spec T-2), so one fragment is one whole frame.
+                // Only snapshot frames are indexed, and they are small enough never to be fragmented; a
+                // fragment of a larger frame is skipped rather than read as a frame.
+                if ((header.flags() & FrameDescriptor.UNFRAGMENTED) != FrameDescriptor.UNFRAGMENTED) {
+                    return;
+                }
                 handler.onFrame(buffer, offset, length,
                                 header.position() - BitUtil.align(length + DataHeaderFlyweight.HEADER_LENGTH,
                                                                   FrameDescriptor.FRAME_ALIGNMENT));

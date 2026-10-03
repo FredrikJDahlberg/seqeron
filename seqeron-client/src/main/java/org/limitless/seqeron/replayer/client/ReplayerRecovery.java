@@ -1008,9 +1008,9 @@ final class ReplayerRecovery {
         retainPool.add(block);
     }
 
-    /** Fixed-size block of the retained FIFO; a record never spans two blocks. */
+    /** Fixed-size block of the retained FIFO; a record never spans two blocks, and the largest frame fits one. */
     private static final class RetainBlock {
-        static final int SIZE = 4096;
+        static final int SIZE = 16 * 1024;
 
         /** globalSeqNo, position, receiveNs, length — the per-record framing within a block. */
         static final int RECORD_HEADER_LENGTH = 3 * Long.BYTES + Integer.BYTES;

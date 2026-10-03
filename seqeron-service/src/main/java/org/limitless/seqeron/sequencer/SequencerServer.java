@@ -26,9 +26,9 @@ import org.limitless.seqeron.util.Logger;
  * Launches one Sequencer cluster node: an Aeron Cluster with an embedded media driver, archive and
  * consensus module, running {@link SequencerService}, and the node's {@link ReplayerServer} on the same driver.
  *
- * <p><b>Port layout</b> (member 0 on the base; members 1 and 2 use base+10, base+20). The base is 9300
+ * <p><b>Port layout</b> (member m on base + 10m, for up to seven members; three shown). The base is 9300
  * unless {@code SEQERON_PORT_BASE} overrides it (see {@link PortLayout}); the reserved block is wider than
- * what three members bind (doc/ops.md, "Ports"):
+ * what seven members bind (doc/ops.md, "Ports"):
  * <pre>
  *   +1  archive control   (9301, 9311, 9321)
  *   +2  cluster ingress   (9302, 9312, 9322)
@@ -59,6 +59,7 @@ import org.limitless.seqeron.util.Logger;
  *   sequencer.sessionTimeoutMs — how long the cluster keeps a client session with no keep-alives; default
  *                               1000. A gateway that misses it is replaced by its standby, so raise it on
  *                               an oversubscribed host.
+ *   aeron.ipc.term.buffer.length — the embedded driver's IPC term length; default 16m (doc/ops.md, "Term lengths")
  * </pre>
  *
  * <p>Launch example, member 0 of three:
@@ -124,6 +125,7 @@ public final class SequencerServer {
                                                   .conductorIdleStrategy(idleStrategySupplier.get())
                                                   .senderIdleStrategy(idleStrategySupplier.get())
                                                   .receiverIdleStrategy(idleStrategySupplier.get())
+                                                  .ipcTermBufferLength(ReplayerServer.ipcTermBufferLength())
                                                   .dirDeleteOnStart(true);
 
         final AeronArchive.Context localArchiveCtx = new AeronArchive.Context()

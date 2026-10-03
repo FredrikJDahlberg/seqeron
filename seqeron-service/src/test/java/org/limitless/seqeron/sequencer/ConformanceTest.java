@@ -86,7 +86,7 @@ class ConformanceTest {
     // ── Row 1. Copy fidelity (§5) ────────────────────────────────────────────────────────────────
 
     @ParameterizedTest(name = "payload of {0} bytes")
-    @ValueSource(ints = {0, 1, 1316})
+    @ValueSource(ints = {0, 1, FrameLayer.MAX_PAYLOAD_LENGTH})
     @DisplayName("row 1: a sequenced payload is byte-identical to the ingress one, and payloadId is unchanged")
     void copyFidelity(final int payloadLength) {
         final byte[] payload = syntheticPayload(payloadLength);
@@ -214,10 +214,10 @@ class ConformanceTest {
     }
 
     @ParameterizedTest(name = "connectionData of {0} bytes")
-    @ValueSource(ints = {0, 7, 1314})
+    @ValueSource(ints = {0, 7, FrameLayer.MAX_PAYLOAD_LENGTH - 2})
     @DisplayName("row 3: ConnectionOpened's connectionData crosses unchanged at every size §7.1 allows")
     void connectionOpenedCarriesAnyConnectionData(final int dataLength) {
-        // The payload is the var-data prefix plus the data, so 1314 bytes of it fills MAX_PAYLOAD_LENGTH.
+        // The payload is the var-data prefix plus the data, so MAX_PAYLOAD_LENGTH - 2 bytes of it fills it.
         final byte[] data = syntheticPayload(dataLength);
         final byte[] body = connectionOpenedBody(data);
         assertTrue(body.length <= FrameLayer.MAX_PAYLOAD_LENGTH);

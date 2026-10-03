@@ -323,7 +323,7 @@ at the same recording position — every member's active recording starts at `gl
 positions follow from the frames — falling back to that recording's start if the frame there is not the
 next one. Each start relays from `globalSeqNo` 1 into a new local recording, as a member's restart does, so
 the host's chain passes the same integrity check. Clients there are unchanged: they attach to the host's
-Aeron directory with the host's node id (3 or above) where they take a member id, and submit over UDP
+Aeron directory with the host's node id (one no member uses) where they take a member id, and submit over UDP
 ingress — an `Application` with `offCluster` set, since no leadership there is its own, which makes it the
 one instance whose gate opens once caught up. The member pays one archive replay per gateway host and its sequencer nothing.
 
@@ -443,7 +443,7 @@ mirrored by `PortLayout` in both languages; change all three together.
 
 The two structural costs recorded above are the standing ones: **no cluster snapshots** (a node's recovery time and
 archive size grow with uptime; application snapshots shorten only a client's restart),
-and **the cluster is bounded at three members** by the 30-port cluster block (`doc/ops.md`, "Ports").
+and **the cluster is bounded at seven members** by the 70-port cluster block (`doc/ops.md`, "Ports").
 `SEQERON_PORT_BASE` moves that block off its 9300 default — deployment-wide, read by all three mirrors
 — but does not widen it. `SEQERON_HOSTS` names the members' hosts, deployment-wide too, and is read by
 both `PortLayout`s only: the scripts' `ports.sh` lays out localhost clusters.

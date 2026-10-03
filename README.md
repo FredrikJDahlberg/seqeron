@@ -288,12 +288,12 @@ Each member's ports are `base + memberId × 10 + offset`, where the base is **93
 `SEQERON_PORT_BASE` moves the whole block when 9300 is already taken where seqeron has to run. It is
 **deployment-wide**: all three mirrors read it, so every seqeron process on every host must see the
 same value, or a node and a client bind and dial different ports and the symptom is a connection that
-never completes. A base below 1024 or too high to fit the 30-port block is refused at startup rather
+never completes. A base below 1024 or too high to fit the 70-port block is refused at startup rather
 than half-applied. The satellite blocks below do **not** move with it — keeping them clear of the new
 base is the operator's job.
 
-This tier reserves **9300–9329** by default (three members of stride 10, wider than the 9301–9325 three
-nodes actually bind), **9200–9209** for its own harness listeners, and `9400 + memberId` for
+This tier reserves **9300–9369** by default (seven members of stride 10, wider than the 9301–9365 seven
+nodes bind), **9200–9209** for its own harness listeners, and `9400 + memberId` for
 the metrics plane. Every other block — an application's TCP listen port, each co-located client's
 cluster egress port, the replay ports — belongs to the process that binds it, so this repo names none
 of them. [`doc/ops.md`](doc/ops.md), "Ports", lists the ones seqeron binds.

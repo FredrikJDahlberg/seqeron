@@ -25,7 +25,7 @@
 # Elapsed includes the cold client's own start-up, which is now a JVM's rather than a C++ binary's —
 # a fixed cost that dominates at the small preloads and is noise at the 400k this was written for.
 set -uo pipefail
-cd "$(dirname "$0")/../../.." || exit 1
+cd "$(dirname "$0")/../../../.." || exit 1
 source seqeron-service/src/main/scripts/ports.sh
 source seqeron-service/src/main/scripts/paths.sh
 source seqeron-service/src/main/scripts/seqeron-home.sh

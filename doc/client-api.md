@@ -64,7 +64,7 @@ by itself, and delivers every frame once, in `globalSeqNo` order. A producer tha
 "This node" is a cluster member, or a **gateway host**: a host that runs no member but runs
 `start-gateway-host.sh`, whose Replayer relays a member's tap onto the host's own
 ([`fault-tolerance.md`](fault-tolerance.md#33-gateway-host)). A client there takes the host's node id
-(3 or above) where it takes a `memberId`, attaches to the host's Aeron directory, and is otherwise
+(one no member uses) where it takes a `memberId`, attaches to the host's Aeron directory, and is otherwise
 unchanged. `Gateway` works there as it does on a member; `Application` needs
 [`offCluster`](#application), since no leadership there is its own.
 

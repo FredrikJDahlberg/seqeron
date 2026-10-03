@@ -53,10 +53,10 @@ class ReplayerRecoveryActions
     ~ReplayerRecoveryActions() = default;
 };
 
-// Fixed-size block of the retained FIFO; a record never spans two blocks.
+// Fixed-size block of the retained FIFO; a record never spans two blocks, and the largest frame fits one.
 struct RetainBlock
 {
-    static constexpr std::size_t SIZE = 4096;
+    static constexpr std::size_t SIZE = 16 * 1024;
     std::array<std::uint8_t, SIZE> bytes;
     std::size_t used = 0;
 };

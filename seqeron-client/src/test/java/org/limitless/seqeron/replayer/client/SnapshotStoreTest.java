@@ -19,6 +19,7 @@ import org.agrona.concurrent.UnsafeBuffer;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.limitless.seqeron.protocol.SnapshotFormat;
 import org.limitless.seqeron.protocol.SnapshotHeader;
 
 /**
@@ -104,7 +105,7 @@ class SnapshotStoreTest {
         assertEquals(List.of(18, 1000, 1302, 698, SnapshotStore.Reader.DAMAGED), readAll(store.open(2)));
 
         final byte[] oversized = intact.clone();
-        oversized[2 + SnapshotHeader.APPLICATION_LENGTH + 1] = (byte)0xFF; // record 1's length, past the records the trailer bounds
+        oversized[2 + SnapshotHeader.APPLICATION_LENGTH + 1] = (byte)0xFF; // record 1's length, past the file's records
         Files.write(file, oversized);
         assertEquals(List.of(18, SnapshotStore.Reader.DAMAGED), readAll(store.open(2)));
 
@@ -131,6 +132,22 @@ class SnapshotStoreTest {
             assertEquals(List.of("2.snapshot", "3.snapshot"),
                          files.map(path -> path.getFileName().toString()).sorted().toList());
         }
+    }
+
+    @Test
+    @DisplayName("a record of the most bytes its length prefix can say reads back whole")
+    void largestRecordReadsBack() {
+        final SnapshotStore store = new SnapshotStore(directory);
+        final byte[] largest = new byte[SnapshotFormat.MAX_RECORD_LENGTH];
+        Arrays.fill(largest, (byte)7);
+        write(store, 1, List.of(largest));
+
+        final SnapshotStore.Reader reader = store.open(1);
+        final UnsafeBuffer view = new UnsafeBuffer(0, 0);
+        assertEquals(SnapshotFormat.MAX_RECORD_LENGTH, reader.next(view));
+        assertEquals(7, view.getByte(SnapshotFormat.MAX_RECORD_LENGTH - 1));
+        assertEquals(SnapshotStore.Reader.END, reader.next(view));
+        reader.close();
     }
 
     /** The application header, then the 3000-byte body as records of 1000, 1302 and 698 bytes. */

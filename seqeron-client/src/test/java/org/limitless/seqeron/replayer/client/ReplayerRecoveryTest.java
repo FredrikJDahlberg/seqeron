@@ -20,6 +20,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.limitless.seqeron.protocol.FrameLayer;
 import org.limitless.seqeron.protocol.ReplayProtocol;
 import org.limitless.seqeron.protocol.SnapshotHeader;
 import org.limitless.seqeron.sbe.frame.ClusterHeartbeatEncoder;
@@ -69,7 +70,10 @@ class ReplayerRecoveryTest {
     private static final long PAST_DEADLINE_MS = CLOCK_MS + 30_000;
 
     /** Bigger than one {@code RetainBlock}, which is what makes {@code retainFrame} refuse outright. */
-    private static final int OVERSIZED_FRAME_LENGTH = 8192;
+    private static final int OVERSIZED_FRAME_LENGTH = 32 * 1024;
+
+    /** The largest frame the tap carries (§12): a full payload behind the 44-byte sequenced envelope. */
+    private static final int LARGEST_FRAME_LENGTH = 44 + FrameLayer.MAX_PAYLOAD_LENGTH;
 
     /** The source restored, its snapshot's cut, and where frame n starts: n * 1024, as everywhere here. */
     private static final int SOURCE = 3;
@@ -763,6 +767,20 @@ class ReplayerRecoveryTest {
 
         assertEquals(List.of(1L, 2L, 3L, 4L, 5L, 6L), dispatched, "retained frames drain in order, exactly once");
         assertTrue(receiver.isCaughtUp());
+    }
+
+    @Test
+    @DisplayName("a frame of the largest payload ahead of the hole is retained, not an overflow")
+    void largestFrameAheadOfTheHoleIsRetained() {
+        deliverTap(1);
+        deliverTapPadded(3, LARGEST_FRAME_LENGTH); // gap -> retained
+        assertEquals(1, receiver.retainedFrameCount());
+
+        deliverReplay(1); // a resume opens on the frame it anchored at — already delivered, deduped
+        deliverReplay(2); // closes the hole -> 3 drains behind it
+
+        assertEquals(List.of(1L, 2L, 3L), dispatched);
+        assertTrue(receiver.isCaughtUp(), "an overflow would have forced a re-walk");
     }
 
     // The ranges legitimately overlap, since a re-walk restarts from segment 0 while the tap keeps
@@ -1727,10 +1745,14 @@ class ReplayerRecoveryTest {
      * drive — the other two need 65536 frames or 16 MiB.
      */
     private void deliverTapTooBigToRetain(final long globalSeqNo) {
-        // Decoded from the front, so the padding only has to make the record oversized.
-        final UnsafeBuffer buffer = new UnsafeBuffer(new byte[OVERSIZED_FRAME_LENGTH]);
+        deliverTapPadded(globalSeqNo, OVERSIZED_FRAME_LENGTH);
+    }
+
+    /** A live tap frame of {@code length} bytes: a heartbeat, decoded from the front, zero-padded to it. */
+    private void deliverTapPadded(final long globalSeqNo, final int length) {
+        final UnsafeBuffer buffer = new UnsafeBuffer(new byte[length]);
         buffer.putBytes(0, heartbeatFrame(globalSeqNo), 0, heartbeatLength());
-        receiver.onFrame(buffer, 0, OVERSIZED_FRAME_LENGTH, globalSeqNo * 1024, RECEIVE_NS, false);
+        receiver.onFrame(buffer, 0, length, globalSeqNo * 1024, RECEIVE_NS, false);
     }
 
     /** One synthesized ClusterHeartbeat — the cheapest well-formed frame there is, at 42 bytes. */

@@ -150,11 +150,11 @@ seqeron's processes bind these ports; an application's own ports must stay outsi
 | `9202 + memberId` | `seqeron-examples` cluster egress (UDP) |
 | 9205, 9206 | `seqeron-examples` C++ gateway pair cluster egress (UDP) |
 
-`base` is 9300 unless `SEQERON_PORT_BASE` is set. The cluster block, `base` to `base + 29`, is three
-members wide, so **a cluster has at most three members**; a fourth would need the block widened. Set
+`base` is 9300 unless `SEQERON_PORT_BASE` is set. The cluster block, `base` to `base + 69`, is seven
+members wide, so **a cluster has at most seven members**: Raft's 3, 5 or 7. Set
 `SEQERON_PORT_BASE` identically for every seqeron process on every host: a node and a client that
 disagree bind and dial different ports, and the symptom is a connection that never completes. It must
-be between 1024 and 65506; a process with an invalid value fails at start-up. Moving the base does not
+be between 1024 and 65466; a process with an invalid value fails at start-up. Moving the base does not
 move the other ports in the table.
 
 `SEQERON_HOSTS` (`h0,h1,h2`, member `i` on entry `i`) names the hosts the same way, and is set the same
@@ -172,6 +172,65 @@ ports of its own. `clusterctl` binds none: its egress uses an ephemeral port.
 A gateway host (`start-gateway-host.sh`) binds no fixed port either. Its relay reaches each member's
 archive port, and the member replies and replays to ephemeral UDP ports on the gateway host, at the
 name `SEQERON_HOST` gives, so a firewall between them must let the members reach those.
+
+## Term lengths
+
+Every Aeron stream is a log buffer of three terms. A stream's term length sets its largest message
+(term / 8), its publication window, which is how far a publisher may run ahead of the consumer it waits
+for before `offer` back-pressures (term / 2), and its memory: 3 × term, mapped sparse but resident once
+the stream has cycled through all three terms. A UDP stream costs another 3 × term per receiving image.
+
+| stream | channel | term length | set by |
+|---|---|---|---|
+| the tap (stream 205), every co-located producer's ingress, replay control | `aeron:ipc` | 16 MiB | `aeron.ipc.term.buffer.length` on the member's or gateway host's driver |
+| ingress from a producer not on the leader, egress, consensus between members | `aeron:udp` | 16 MiB | `aeron.term.buffer.length` on the sending driver |
+| the Raft log | `aeron:udp` | 64 MiB | `aeron.cluster.log.channel`, default `aeron:udp?term-length=64m` |
+| a replay: recovery, the snapshot index, a gateway host's relay | IPC or UDP | the recording's | the stream the recording was made from |
+
+16 MiB is seqeron's IPC default; Aeron's own is 64 MiB. The other rows are Aeron's defaults. A client
+attached to a member's driver gets that driver's IPC term length; it sets none of its own.
+
+**Choosing one.** A term length is a power of two from 64 KiB to 1 GiB, and must be at least:
+
+- 8 × the largest frame, so a frame fits Aeron's message limit: 128 KiB, for an 8944-byte message on the
+  Raft log;
+- 2 × peak bytes per second × the longest stall to absorb. The window is what a stalled consumer leaves
+  room for: the archive recording is the tap's one tethered consumer, so a recorder stall longer than
+  window / rate back-pressures the sequencer, and an untethered tap subscriber that falls a window behind
+  is dropped and heals through replay. At 16 MiB the tap's window is 8 MiB, 0.4 s at 20 MB/s.
+
+Above that, a larger term costs memory and cache. At 16 MiB, a member maps 48 MiB for the tap, 48 MiB per
+co-located producer's IPC ingress and 48 MiB per replay in progress, besides the log's 192 MiB.
+
+**Setting one.** Pass `-Daeron.ipc.term.buffer.length=32m` (or `aeron.term.buffer.length` for UDP) to the
+`java` command that runs `SequencerServer` or `ReplayerServer`; the scripts and the Docker image take it
+from `JAVA_TOOL_OPTIONS`. Set the IPC term length identically on every member and gateway host: a
+recording's positions depend on it, since a term ends in padding, and a gateway host's relay resumes on the
+next member at the same position only when both recordings agree. With different term lengths the relay
+falls back to that member's recording start.
+
+A recording keeps the term length it was made with, and so do its replays. A member's tap is recorded
+afresh at every start, so a new IPC term length takes effect at its next start. The Raft log's cannot
+change on a cluster with history: the cluster extends one log recording, and the archive refuses to extend
+it with a different term length.
+
+## MTU
+
+A frame longer than its stream's MTU less 32 bytes is fragmented, and every seqeron consumer reassembles
+it, so the MTU decides packets, not correctness. Aeron's default of 1408 keeps payloads up to 1316 bytes
+whole everywhere, and suits a deployment whose payloads stay below that.
+
+Larger payloads, up to `MAX_PAYLOAD_LENGTH` (8884), stay whole on the tap with
+`-Daeron.ipc.mtu.length=8960`, passed the way the term length is. A replay carries its recording's MTU,
+so every UDP replay of the tap — a gateway host's relay, a `ClusterStreamClient` following a member on
+another host — then sends datagrams of up to 8960 bytes, small frames batched into them too. The network
+between them needs a 9000-byte MTU; otherwise the kernel fragments each datagram, and a lost piece loses
+all of it.
+
+Set the IPC MTU identically on every member and gateway host. Once frames fragment, a recording's
+positions depend on it, and a gateway host's relay resumes at the same position on the next member only
+when both recordings agree; otherwise it falls back to that member's recording start, as it does for a
+term length that differs.
 
 ## A node that terminates itself
 

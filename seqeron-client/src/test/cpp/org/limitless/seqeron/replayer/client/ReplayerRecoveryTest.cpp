@@ -206,7 +206,19 @@ void deliverLive(Client& client, const std::int64_t globalSeqNo, const std::int6
 void deliverLiveTooBigToRetain(Client& client, const std::int64_t globalSeqNo)
 {
     auto buf = encodeHeartbeat(globalSeqNo);
-    buf.resize(8192, 0); // decoded from the front; the padding only has to make the record oversized
+    buf.resize(RetainBlock::SIZE, 0); // decoded from the front; the padding only has to make the record oversized
+    client.recovery.onFrame(reinterpret_cast<char*>(buf.data()), buf.size(), /*framePosition=*/0, /*receiveNs=*/0,
+                            /*fromReplay=*/false);
+}
+
+// The largest frame the tap carries (§12): a full payload behind the 44-byte sequenced envelope.
+constexpr std::size_t LARGEST_FRAME_LENGTH = 44 + protocol::MAX_PAYLOAD_LENGTH;
+
+// A live tap frame of `length` bytes: a Heartbeat, decoded from the front, zero-padded to it.
+void deliverLivePadded(Client& client, const std::int64_t globalSeqNo, const std::size_t length)
+{
+    auto buf = encodeHeartbeat(globalSeqNo);
+    buf.resize(length, 0);
     client.recovery.onFrame(reinterpret_cast<char*>(buf.data()), buf.size(), /*framePosition=*/0, /*receiveNs=*/0,
                             /*fromReplay=*/false);
 }
@@ -912,6 +924,23 @@ TEST(ReplayerRecoveryGapRecovery, FramesBeyondTheHoleAreRetainedAndDeliveredOnce
     EXPECT_EQ((std::vector<std::int64_t>{ 1, 2, 3, 4, 5, 6 }), delivered)
         << "retained frames must drain in order, exactly once, with no re-walk needed";
     EXPECT_TRUE(client.recovery.isCaughtUp());
+}
+
+TEST(ReplayerRecoveryGapRecovery, LargestFrameAheadOfTheHoleIsRetained)
+{
+    ScopedLoggerSink sink;
+    std::vector<std::int64_t> delivered;
+    Client client{ [&](const SequencedEvent& event) { delivered.push_back(event.globalSeqNo); } };
+
+    deliverLive(client, 1);
+    deliverLivePadded(client, 3, LARGEST_FRAME_LENGTH); // gap -> retained
+    ASSERT_EQ(0U, overflowReports(sink));
+
+    deliverReplay(client, 1); // a resume opens on the frame it anchored at — already delivered, deduped
+    deliverReplay(client, 2); // closes the hole -> 3 drains behind it
+
+    EXPECT_EQ((std::vector<std::int64_t>{ 1, 2, 3 }), delivered);
+    EXPECT_TRUE(client.recovery.isCaughtUp()) << "an overflow would have forced a re-walk";
 }
 
 // A hole in REPLAYED history was the one invariant violation that produced no log and no counter:

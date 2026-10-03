@@ -608,8 +608,8 @@ Implementation notes:
 - Condition 3 rejects the four synthesized templates before any payload is read. Condition 8 rejects
   the same events named inside an `UnsequencedSystem`.
 - The size limits are compiled-in protocol constants (§12), never read from a node's transport
-  configuration per frame: a node configured differently from its peers would diverge (**S-3**). MTU
-  is checked once at start-up (**T-2**).
+  configuration per frame: a node configured differently from its peers would diverge (**S-3**). The
+  MTU bounds no frame (**T-2**).
 - Condition 1 is a backstop. A conforming producer's encode method refuses an oversized payload before
   sending (**T-3**).
 - Conditions 6–9 depend only on the frame, so conforming encode methods (`SystemFrame`,
@@ -802,11 +802,11 @@ so there is nothing to stay compatible with.
 | --- | --- | --- |
 | `blockLength` | 18 on ingress templates, 34 on `Sequenced`/`SequencedSystem` (exact, §9.2); 34, 46, 38 and 42 on templates 104, 105, 106 and 107 | §4.2, §7.1 |
 | per-message overhead | 92 bytes on ingress (32 Aeron data header + 32 Aeron Cluster session header + 28 frame); 76 on the tap (32 + 44) | §4.2 |
-| `MAX_PAYLOAD_LENGTH` | 1316 bytes = 1408 (MTU) − 92 | **T-2** |
-| `MAX_INGRESS_LENGTH` | 28 + 1316 = 1344 bytes (condition 1) | §9.2 |
+| `MAX_PAYLOAD_LENGTH` | 8884 bytes = 8960 (IPC MTU) − 76 | **T-2** |
+| `MAX_INGRESS_LENGTH` | 28 + 8884 = 8912 bytes (condition 1) | §9.2 |
 | `MIN_INGRESS_LENGTH` | 28 bytes (condition 1) | §4.2 |
-| maximum sequenced frame | 44 + 1316 = 1360 bytes | §4.2 |
-| consensus log | MUST carry a 32 + 1344 = 1376-byte message in one packet; MTU 1408 gives `maxPayloadLength` 1376 | cluster configuration |
+| maximum sequenced frame | 44 + 8884 = 8928 bytes | §4.2 |
+| consensus log | MUST carry a 32 + 8912 = 8944-byte message: a term length of at least 128 KiB | cluster configuration |
 | `globalSeqNo` | int64, starting at 1 | §9.1 |
 | `timestamp` | int64, epoch nanoseconds (Aeron `NanosecondClusterClock`); a log recorded in another unit is refused | §9.3 |
 | `CLUSTER_HEARTBEAT_INTERVAL_MS` | 1000 | §7, §9.3 |
@@ -819,10 +819,11 @@ These constants belong to the protocol, not to any one component. Each language 
 `protocol/FrameLayer.java` and the `Limits` block of `protocol/SequencedFrame.hpp`. A change starts
 here, is made in both, and is a wire change (**V-3**).
 
-> **T-2.** A message fits in one Aeron MTU of 1408 bytes: headers plus `MAX_PAYLOAD_LENGTH` (1316).
-> On the consensus log a message is 32 + 32 + 1344 = 1408 bytes; on the tap, 32 + 1360 = 1392. The
-> constant is compiled in and is not configurable. At start-up a node MUST check that its ingress and
-> tap MTUs are each at least 1408, and MUST refuse to start otherwise.
+> **T-2.** A tap frame of `MAX_PAYLOAD_LENGTH` (8884) is 32 + 8928 = 8960 bytes with its Aeron data
+> header: one fragment at an IPC MTU of 8960, the largest a 9000-byte jumbo frame carries. The constant
+> is compiled in and is not configurable. The MTU is not part of the protocol: a frame longer than the
+> MTU less 32 is fragmented. Every stream that carries frames MUST have a term length of at least
+> 128 KiB, so the largest message, 8944 bytes on the consensus log, fits Aeron's term / 8 limit.
 
 > **T-3.** The protocol's encode methods MUST refuse a payload longer than `MAX_PAYLOAD_LENGTH`;
 > condition 1 is the backstop. The refusal is local and permanent: it is not back-pressure and MUST
@@ -833,15 +834,17 @@ The encode methods are `SystemFrame.wrap`/`wrapPayload` (Java) and `publishPaylo
 (C++). They report refusal as a return value, not an exception, because several callers run inside
 Aeron poll callbacks, where an exception is swallowed (§9.4).
 
-**No frame is ever fragmented.** **T-3** keeps oversized frames from reaching a transport and **T-2**
-keeps the maximum within one MTU, so neither the recording nor a replay ever holds part of a frame. A
-consumer MUST NOT rely on fragment reassembly on ingress, the tap or a replay.
+**A frame may be fragmented.** On the tap, its recording and a replay, a frame longer than the IPC MTU
+(`aeron.ipc.mtu.length`) less 32 spans several fragments; on ingress and the consensus log the same holds
+at the UDP MTU (`aeron.mtu.length`), where Aeron Cluster reassembles it. A consumer of the tap or a replay
+MUST reassemble, as Aeron's `FragmentAssembler` does. Once frames fragment, a recording's positions
+depend on its MTU, so every member and gateway host SHOULD use the same IPC MTU.
 
-Rationale for using the MTU rather than the term length: Aeron caps a publication's `maxPayloadLength`
-at MTU − 32, while the term length caps a message at `min(termLength / 8, 16 MB)`. Only the MTU
-guarantees one packet per message. The two MTUs are `aeron.mtu.length` (ingress over UDP) and
-`aeron.ipc.mtu.length` (the tap); both MUST be at least 1408, Aeron's default. Raising the limit is a
-protocol change (§11), not a deployment setting.
+The MTU is a deployment's trade. At Aeron's default of 1408, payloads up to 1316 bytes never fragment
+anywhere. An IPC MTU of 8960 keeps every frame whole on the tap, but an archive replay carries its
+recording's MTU, so each UDP replay — a gateway host's relay, a follower on another host — then needs
+jumbo frames on its path, small frames included, since Aeron batches them into datagrams up to the MTU.
+Raising `MAX_PAYLOAD_LENGTH` is a protocol change (§11), not a deployment setting.
 
 A payload larger than `MAX_PAYLOAD_LENGTH` must be split across frames or sent by another channel. A
 split needs its own completeness rule; a `remaining` countdown, as in `GatewayRegistered`, is one.
@@ -901,7 +904,7 @@ Aeron runtime or media driver and runs in under a second. The payload fixture is
 | 4a | **Rejection denies nothing and repeats identically.** Two rejections under one `payloadId` each increment the counter and emit nothing; a well-formed frame with that `payloadId` afterwards is accepted unchanged | **S-7**, **C-2** |
 | 4b | **The producer refuses before sending.** A payload of exactly `MAX_PAYLOAD_LENGTH` is published; one byte longer is refused with nothing offered to the transport, distinguishably from back-pressure, and the next well-formed publish succeeds. Uses an in-memory transport seam | **T-3**, §12 |
 | 5 | **Synthesis is deterministic.** Two independent `Sequencer`s fed the same input emit byte-identical frames, heartbeats and snapshot rounds included | **S-3**, **F-2** |
-| 6 | **Layout matches §4.** Every header field is at the §4.1 offset in all four composites; sizes match §4.2 (`MessageHeader` 8, composites 18 and 34, length prefix 2, overhead 28 and 44, `ClusterHeartbeat` 42, maximum payload frame 1360); payloads of 0 bytes, 1 byte and `MAX_PAYLOAD_LENGTH` round-trip | **F-2**, **F-3**, §12 |
+| 6 | **Layout matches §4.** Every header field is at the §4.1 offset in all four composites; sizes match §4.2 (`MessageHeader` 8, composites 18 and 34, length prefix 2, overhead 28 and 44, `ClusterHeartbeat` 42, maximum payload frame 8928); payloads of 0 bytes, 1 byte and `MAX_PAYLOAD_LENGTH` round-trip | **F-2**, **F-3**, §12 |
 | 7 | **Selective consumption.** A consumer given an unallocated `payloadId` and an unhandled `systemEventType` skips both without error, and its continuity tracking advances across them, for all six sequenced messages | **P-1**–**P-3** |
 | 8 | **S-6.** A `GatewayStarted` matching its list row binds and is accepted. Rejected: the same frame with a different `gatewaySourceId`; an unlisted `gatewayId` claiming a listed `sourceId`; a `GatewayActivationRequested` for an unlisted `gatewayId`; another system frame with a listed `sourceId` on an unbound session. Accepted: an application payload with a listed `sourceId`, and a `clusterctl` marker (`sourceId` 2, `connectionId` −1) | **S-6** |
 | 9 | **Promotion.** With ranks 0, 1, 2 under one `gatewaySourceId`: bootstrap activates rank 0 only; a `GatewayActivationRequested` is sequenced and answered at the next `globalSeqNo`; closing rank 0's session promotes rank 1; closing rank 1's promotes rank 0; an instance that publishes no `GatewayStarted` is replaced after exactly `GATEWAY_ACTIVATION_TIMEOUT_MS` of consensus time and not before; one that does arms nothing further; a `gatewaySourceId` with one row synthesizes nothing on close and `globalSeqNo` does not move. Two gateways bootstrapped together keep separate deadlines | §7.2, **S-3** |

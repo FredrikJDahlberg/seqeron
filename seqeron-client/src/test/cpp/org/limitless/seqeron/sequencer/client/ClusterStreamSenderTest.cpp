@@ -196,8 +196,8 @@ TEST(ClusterStreamSender, TheConfiguredSetResolvesEveryMemberToTheEndpointItDial
 {
     const std::string endpoints = protocol::ingressEndpointsCsv();
     const std::vector<std::string> dialled = ingressEndpointList(endpoints);
-    ASSERT_EQ(static_cast<std::size_t>(protocol::CLUSTER_MEMBER_COUNT), dialled.size());
-    for (std::int32_t memberId = 0; memberId < protocol::CLUSTER_MEMBER_COUNT; ++memberId)
+    ASSERT_EQ(static_cast<std::size_t>(protocol::DEFAULT_MEMBER_COUNT), dialled.size());
+    for (std::int32_t memberId = 0; memberId < protocol::DEFAULT_MEMBER_COUNT; ++memberId)
     {
         std::string resolved;
         ASSERT_TRUE(findIngressEndpoint(endpoints, memberId, resolved));

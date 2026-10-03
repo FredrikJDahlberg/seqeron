@@ -163,7 +163,7 @@ TEST(SnapshotStore, AFileCutShortOrOfAnotherRoundDoesNotOpenRecordsThatFailItsTr
     EXPECT_EQ((std::vector<std::int32_t>{ 18, 1000, 1302, 698, DAMAGED }), readAll(store.open(2)));
 
     Bytes oversized = intact;
-    oversized[record1 + 1] = 0xFF; // record 1's length, past the records the trailer bounds
+    oversized[record1 + 1] = 0xFF; // record 1's length, past the file's records
     writeFile(file, oversized);
     EXPECT_EQ((std::vector<std::int32_t>{ 18, DAMAGED }), readAll(store.open(2)));
 
@@ -193,6 +193,20 @@ TEST(SnapshotStore, DeletingBeforeARoundKeepsItAndEveryNewerOneAndClearsAWriteAC
     }
     std::sort(names.begin(), names.end());
     EXPECT_EQ((std::vector<std::string>{ "2.snapshot", "3.snapshot" }), names);
+}
+
+TEST(SnapshotStore, ARecordOfTheMostBytesItsLengthPrefixCanSayReadsBackWhole)
+{
+    helpers::TempDirectory directory;
+    SnapshotStore store(directory.path());
+    write(store, 1, { Bytes(protocol::MAX_SNAPSHOT_RECORD_LENGTH, 7) });
+
+    std::optional<SnapshotStore::Reader> reader = store.open(1);
+    ASSERT_TRUE(reader.has_value());
+    std::span<const std::uint8_t> record;
+    EXPECT_EQ(protocol::MAX_SNAPSHOT_RECORD_LENGTH, reader->next(record));
+    EXPECT_EQ(7, record.back());
+    EXPECT_EQ(SnapshotStore::Reader::END, reader->next(record));
 }
 
 } // namespace

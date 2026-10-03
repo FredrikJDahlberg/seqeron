@@ -213,9 +213,8 @@ TEST(Conformance, FrameSizesAreSection42sTable)
 
     // Fixed overhead: MessageHeader + the header composite + the length prefix.
     EXPECT_EQ(28U, protocol::MIN_INGRESS_LENGTH) << "ingress, both families";
-    EXPECT_EQ(44U,
-              frm::MessageHeader::encodedLength() + frm::SequencedHeader::encodedLength() +
-                  frm::Sequenced::payloadHeaderLength())
+    EXPECT_EQ(44U, frm::MessageHeader::encodedLength() + frm::SequencedHeader::encodedLength() +
+                       frm::Sequenced::payloadHeaderLength())
         << "sequenced, both families";
 
     // A ClusterHeartbeat is a template of its own: no length prefix and no payload at all.
@@ -397,7 +396,7 @@ class ConnectedSender : public ::testing::Test
 TEST_F(ConnectedSender, PublishPayloadAdmitsTheCeilingAndRefusesOneMore)
 {
     // ConnectionOpened is var-data only, so the payload is its 8-byte header plus the 2-byte prefix plus
-    // the data: 1306 bytes of data is exactly MAX_PAYLOAD_LENGTH.
+    // the data: MAX_PAYLOAD_LENGTH less those 10 bytes of data is exactly MAX_PAYLOAD_LENGTH.
     const std::vector<char> atCeiling(protocol::MAX_PAYLOAD_LENGTH - frm::MessageHeader::encodedLength() -
                                           frm::ConnectionOpened::connectionDataHeaderLength(),
                                       'x');
