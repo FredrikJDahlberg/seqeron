@@ -232,6 +232,11 @@ positions depend on it, and a gateway host's relay resumes at the same position 
 when both recordings agree; otherwise it falls back to that member's recording start, as it does for a
 term length that differs.
 
+A recording keeps the MTU it was made with, like its term length. A member's tap is recorded afresh at
+every start, so a new IPC MTU takes effect at its next start. The Raft log's UDP MTU, `aeron.mtu.length`
+unless the log channel names one, cannot change on a cluster with history: the archive refuses to extend
+the log recording with a different MTU.
+
 ## A node that terminates itself
 
 `SequencerServer` exits **70** when its local archive stops recording the node's tap (stalled with no
