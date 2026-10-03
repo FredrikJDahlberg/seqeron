@@ -45,13 +45,13 @@ class SnapshotFormatTest {
     }
 
     @Test
-    @DisplayName("CRC-32C is the Castagnoli check value and the shared golden one, and a record is at most 1302 bytes")
+    @DisplayName("CRC-32C is the Castagnoli check value and the shared golden one, and a record is at most 65535 bytes")
     void crcAndRecordSize() {
         final byte[] check = "123456789".getBytes(StandardCharsets.US_ASCII);
         assertEquals(0xE3069283L, SnapshotFormat.crc32c(new UnsafeBuffer(check), 0, check.length));
         final byte[] snapshot = snapshot();
         assertEquals(APPLICATION_SNAPSHOT_CRC, SnapshotFormat.crc32c(new UnsafeBuffer(snapshot), 0, snapshot.length));
-        assertEquals(1302, SnapshotFormat.MAX_RECORD_LENGTH);
+        assertEquals(65535, SnapshotFormat.MAX_RECORD_LENGTH);
     }
 
     @Test

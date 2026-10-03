@@ -82,17 +82,19 @@ class SnapshotTakerTest {
     private final State state = new State();
     private final Frames frames = new Frames();
     private int instances;
+    private int keepAlives;
+    private final Runnable keepAlive = () -> keepAlives++;
 
     /** A participating instance with a directory of its own. */
     private SnapshotTaker participating() {
-        final SnapshotTaker taker = new SnapshotTaker(state, store(), false);
+        final SnapshotTaker taker = new SnapshotTaker(state, store(), false, keepAlive);
         taker.participating(true);
         return taker;
     }
 
     /** A passive instance with a directory of its own. */
     private SnapshotTaker passive() {
-        return new SnapshotTaker(state, store(), true);
+        return new SnapshotTaker(state, store(), true, keepAlive);
     }
 
     private SnapshotStore store() {
@@ -107,11 +109,11 @@ class SnapshotTakerTest {
     @Test
     @DisplayName("without a listener, or with the row off, a replica serializes, writes and submits nothing")
     void notParticipating() {
-        final SnapshotTaker noListener = new SnapshotTaker(null, null, false);
+        final SnapshotTaker noListener = new SnapshotTaker(null, null, false, keepAlive);
         noListener.participating(true);
         assertFalse(noListener.isParticipating());
 
-        final SnapshotTaker rowOff = new SnapshotTaker(state, store(), false);
+        final SnapshotTaker rowOff = new SnapshotTaker(state, store(), false, keepAlive);
         rowOff.participating(false);
         rowOff.onSnapshotStarted(1, HEADER, true);
         assertEquals(0, state.serialized);
@@ -221,7 +223,7 @@ class SnapshotTakerTest {
     @Test
     @DisplayName("a listener answering a length no record can have drops the round, with no file and no end")
     void badLengthDropsTheRound() {
-        for (final int length : new int[] {-1, 1303}) {
+        for (final int length : new int[] {-1, 65536}) {
             state.badLength = length;
             final SnapshotTaker taker = participating();
             taker.onSnapshotStarted(3, HEADER, true);
@@ -261,10 +263,10 @@ class SnapshotTakerTest {
     @DisplayName("a header longer than a record drops the round")
     void oversizedHeaderDropsTheRound() {
         final SnapshotHeader.GatewayState state35 = new SnapshotHeader.GatewayState(
-            9, 10, 42, Collections.nCopies(35, new SnapshotHeader.GatewayRow(10, 0, "GW")));
+            9, 10, 42, Collections.nCopies(1771, new SnapshotHeader.GatewayRow(10, 0, "GW")));
         final SnapshotTaker taker = participating();
         taker.onSnapshotStarted(3, new SnapshotHeader(7, 2, state35), true);
-        assertEquals(0, state.serialized, "35 rows outgrow a record");
+        assertEquals(0, state.serialized, "1771 rows outgrow a record");
         assertFalse(taker.isPublishing());
         assertNull(storeOf(1).open(3));
     }
@@ -272,7 +274,7 @@ class SnapshotTakerTest {
     @Test
     @DisplayName("a restore reads only this build's format, makes the source take part, and hands its records on")
     void restoreHandsRecordsToTheListener() {
-        final SnapshotTaker taker = new SnapshotTaker(state, store(), false);
+        final SnapshotTaker taker = new SnapshotTaker(state, store(), false, keepAlive);
         assertTrue(taker.supportsFormatVersion(5));
         assertFalse(taker.supportsFormatVersion(6));
 
@@ -337,6 +339,15 @@ class SnapshotTakerTest {
         final SnapshotTaker taker = participating();
         assertTrue(taker.holdsState());
         assertFalse(taker.activate(true, true));
+    }
+
+    @Test
+    @DisplayName("serializing a round keeps the cluster session alive after every record")
+    void serializationKeepsTheSessionAlive() {
+        state.records = 3;
+        final SnapshotTaker taker = participating();
+        taker.onSnapshotStarted(1, HEADER, true);
+        assertEquals(4, keepAlives, "the header and three records");
     }
 
     private static byte[] filled(final int value) {

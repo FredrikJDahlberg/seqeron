@@ -104,7 +104,7 @@ class SnapshotStoreTest {
         assertEquals(List.of(18, 1000, 1302, 698, SnapshotStore.Reader.DAMAGED), readAll(store.open(2)));
 
         final byte[] oversized = intact.clone();
-        oversized[2 + SnapshotHeader.APPLICATION_LENGTH + 1] = (byte)0xFF; // record 1's length, past 1302
+        oversized[2 + SnapshotHeader.APPLICATION_LENGTH + 1] = (byte)0xFF; // record 1's length, past the records the trailer bounds
         Files.write(file, oversized);
         assertEquals(List.of(18, SnapshotStore.Reader.DAMAGED), readAll(store.open(2)));
 

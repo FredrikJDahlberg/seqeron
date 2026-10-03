@@ -163,7 +163,7 @@ TEST(SnapshotStore, AFileCutShortOrOfAnotherRoundDoesNotOpenRecordsThatFailItsTr
     EXPECT_EQ((std::vector<std::int32_t>{ 18, 1000, 1302, 698, DAMAGED }), readAll(store.open(2)));
 
     Bytes oversized = intact;
-    oversized[record1 + 1] = 0xFF; // record 1's length, past 1302
+    oversized[record1 + 1] = 0xFF; // record 1's length, past the records the trailer bounds
     writeFile(file, oversized);
     EXPECT_EQ((std::vector<std::int32_t>{ 18, DAMAGED }), readAll(store.open(2)));
 

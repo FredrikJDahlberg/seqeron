@@ -92,7 +92,7 @@ snapshots starts from a purged archive (spec V-3).
 
 - `recordCount`, `length` and `crc32c` describe the snapshot's records, the header included. The records stay
   with the instances that serialized them (§4.1).
-- A record is at most 1302 bytes, the room in the buffer the listener encodes it into. A snapshot holds any
+- A record is at most 65535 bytes, what its length prefix in the file (§4.1) can say. A snapshot holds any
   number of them, so the application's state may be any size; it is bounded by the instance's disk.
 - `formatVersion` is the application's, opaque to seqeron.
 - A snapshot belongs to the frame header's `sourceId`: one per application or logical gateway per round.
@@ -128,11 +128,12 @@ Every instance holding a participating source's state — each replica of an app
 and hot-standby instances of a gateway pair — handles `SnapshotStarted` the same way:
 
 1. On dispatching `SnapshotStarted`, live or replayed, the façade writes its header (§6) as record 0, then
-   pulls the listener's records: it calls `onSnapshot(buffer, recordIndex)` with one 1302-byte buffer, from
+   pulls the listener's records: it calls `onSnapshot(buffer, recordIndex)` with one 65535-byte buffer, from
    index 0, until it returns 0, and the listener encodes the next record of its state into the buffer
    each time. Each record goes straight into the round's file (§4.1), and the façade keeps only their count,
    length and running CRC. The state is that after every frame up to `R`; every record is pulled before
-   `R + 1` is dispatched, so the listener needs no frozen view of it.
+   `R + 1` is dispatched, so the listener needs no frozen view of it. The façade keeps its cluster session
+   alive after each record, so the session timeout does not bound how long this takes.
 2. The instance that may publish at `R` — an `Application` whose gate is open, or the active `Gateway` once it
    has placed its `GatewayStarted`, which binds its session to the source — submits the round's
    `SnapshotEnd` through `PendingSends`, like any frame it places. No other instance submits for that round.
@@ -248,7 +249,7 @@ A `Gateway` header continues:
 The rows are every instance of the gateway, in list order. Every instance writes the same header, so none
 is marked as its own; an instance finds its row by name, as it does in the list. An application's header
 is 18 bytes and a gateway's is 32 + 37 × `rowCount`; `headerLength` tells them apart. The header is one
-record, so a gateway snapshots with at most 34 instances.
+record, so a gateway snapshots with at most 1770 instances.
 
 The header is part of the snapshot's bytes, so `crc32c` covers it and A-6 applies to it. The application's
 records hold everything else, including its `OutstandingWork` set and the keys it drops duplicates by (spec
@@ -324,7 +325,9 @@ before it is specified.
 - The log carries two frames per participating source per round, a `SnapshotStarted` and a `SnapshotEnd`,
   whatever the state's size.
 - Dispatch stops for as long as serialization takes (§4 step 1): the listener's encoding, the CRC and the
-  write into the page cache. A host that cannot hold the file's dirty pages writes it at disk speed.
+  write into the page cache. A host that cannot hold the file's dirty pages writes it at disk speed. The
+  cluster session stays alive meanwhile; the tap does not wait, so a pause long enough to drop the
+  subscriber heals through replay.
 - Every serializing instance keeps up to two files: its newest confirmed round and any newer one.
 - A source whose publisher changes before its end is placed has no end for that round, and its instances
   keep their previous confirmed file, as does one whose cut falls after a leadership change but before the

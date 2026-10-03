@@ -117,7 +117,7 @@ class Application
       m_listener{ listener },
       m_gate{ m_config.memberId, m_config.offCluster },
       m_store{ snapshotStore(m_config) },
-      m_snapshots{ m_config.snapshotListener, m_store.get(), false },
+      m_snapshots{ m_config.snapshotListener, m_store.get(), false, [this] { m_session.keepAlive(); } },
       m_dispatch{ *this },
       m_session{ m_config.clientId, m_config.pendingCapacity, m_config.tapStallTimeoutMs,
                  m_config.recoveryStallTimeoutMs, m_dispatch },

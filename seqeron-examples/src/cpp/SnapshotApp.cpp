@@ -126,7 +126,7 @@ struct Ledger final : app::SnapshotListener
 
     // Record 0 holds the counters, applied and rejected int64; records 1 to 8 one balance each, int64 in account
     // order. A ledger of many accounts is why a snapshot is a sequence of records rather than one: each record is
-    // at most 1302 bytes, and the number of them is unbounded.
+    // at most 65535 bytes, and the number of them is unbounded.
     std::int32_t onSnapshot(const std::span<std::uint8_t> buffer, const std::int32_t recordIndex) override
     {
         if (recordIndex == 0)

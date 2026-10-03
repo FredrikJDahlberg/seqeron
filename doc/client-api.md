@@ -313,8 +313,8 @@ takes part in none. It requires `snapshotDirectory(Path)` (C++ `Config::snapshot
 (`doc/snapshot.md` §4.1). At each round's cut, before dispatching the next frame, every replica's façade calls
 `onSnapshot(MutableDirectBuffer buffer, int recordIndex)` (C++ `onSnapshot(std::span<std::uint8_t> buffer,
 std::int32_t recordIndex)`) from index 0 until it returns 0: each call encodes
-the next record of the state into `buffer`, at most its 1302-byte capacity, and returns its length.
-`recordIndex` 0 is where an iteration over the state starts over. A length outside 0–1302 drops the round.
+the next record of the state into `buffer`, at most its 65535-byte capacity, and returns its length.
+`recordIndex` 0 is where an iteration over the state starts over. A length outside 0–65535 drops the round.
 `formatVersion()` names the record format. Every replica must produce the same records for the same state:
 no hash-map iteration order, no local time, no node identity. Every replica writes the records into its own
 file; the one whose gate is open at the cut submits their `SnapshotEnd`, and every replica compares the

@@ -69,7 +69,7 @@ TEST(SnapshotFormat, CrcAndRecordSize)
     EXPECT_EQ(0xE3069283U, crc32c(reinterpret_cast<const std::uint8_t*>(check.data()), check.size()));
     const std::vector<std::uint8_t> bytes = snapshot();
     EXPECT_EQ(APPLICATION_SNAPSHOT_CRC, crc32c(bytes.data(), bytes.size()));
-    EXPECT_EQ(1302, MAX_SNAPSHOT_RECORD_LENGTH);
+    EXPECT_EQ(65535, MAX_SNAPSHOT_RECORD_LENGTH);
 }
 
 TEST(SnapshotFormat, TheCrcInstructionIsUsedOnX86AndArm)

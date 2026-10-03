@@ -137,7 +137,7 @@ class Gateway
       m_actions{ *this },
       m_lifecycle{ m_config.gatewayName, m_actions },
       m_store{ snapshotStore(m_config) },
-      m_snapshots{ m_config.snapshotListener, m_store.get(), m_config.passive },
+      m_snapshots{ m_config.snapshotListener, m_store.get(), m_config.passive, [this] { m_session.keepAlive(); } },
       m_restore{ *this },
       m_dispatch{ *this },
       m_session{ m_config.clientId, m_config.pendingCapacity, m_config.tapStallTimeoutMs,

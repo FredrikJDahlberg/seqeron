@@ -109,7 +109,7 @@ public final class Application implements AutoCloseable {
         this.gate = new LeaderGate(builder.memberId, builder.offCluster);
         final SnapshotStore store =
             builder.snapshotListener == null ? null : new SnapshotStore(builder.snapshotDirectory);
-        this.snapshots = new SnapshotTaker(builder.snapshotListener, store, false);
+        this.snapshots = new SnapshotTaker(builder.snapshotListener, store, false, this::keepAlive);
         this.session = new Session(builder.clientId, builder.pendingCapacity, builder.tapStallTimeoutMs,
                                    builder.recoveryStallTimeoutMs, new SessionDispatch());
         this.snapshotFrames = new SnapshotFrames(session, () -> sourceId);
@@ -198,6 +198,11 @@ public final class Application implements AutoCloseable {
     @Override
     public void close() {
         session.close();
+    }
+
+    /** The session's keep-alive, for a round serialized inside a dispatch. */
+    private void keepAlive() {
+        session.keepAlive();
     }
 
     /** A shut gate declines rather than submits: only the leading replica's copy of the work is the one sent. */

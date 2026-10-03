@@ -25,8 +25,8 @@
 
 namespace org::limitless::seqeron::protocol {
 
-// The most bytes one record holds: the room in the buffer a listener encodes it into.
-inline constexpr std::uint16_t MAX_SNAPSHOT_RECORD_LENGTH = 1302;
+// The most bytes one record holds: what its uint16 length prefix in the file can say.
+inline constexpr std::uint16_t MAX_SNAPSHOT_RECORD_LENGTH = 65535;
 
 namespace detail {
 

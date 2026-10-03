@@ -156,7 +156,7 @@ public final class Gateway implements AutoCloseable {
         this.lifecycle = new GatewayLifecycle(builder.gatewayName, new LifecycleActions());
         final SnapshotStore store =
             builder.snapshotListener == null ? null : new SnapshotStore(builder.snapshotDirectory);
-        this.snapshots = new SnapshotTaker(builder.snapshotListener, store, builder.passive);
+        this.snapshots = new SnapshotTaker(builder.snapshotListener, store, builder.passive, this::keepAlive);
         this.session = new Session(builder.clientId, builder.pendingCapacity, builder.tapStallTimeoutMs,
                                    builder.recoveryStallTimeoutMs, new SessionDispatch());
         this.snapshotFrames = new SnapshotFrames(session, lifecycle::gatewaySourceId);

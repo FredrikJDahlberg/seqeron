@@ -1,8 +1,10 @@
 #pragma once
 
-#include <array>
 #include <cstdint>
+#include <functional>
 #include <span>
+#include <utility>
+#include <vector>
 
 #include "org/limitless/seqeron/app/SnapshotListener.hpp"
 #include "org/limitless/seqeron/protocol/Publish.hpp"
@@ -37,15 +39,18 @@ class SnapshotTaker final : public replayer::client::SnapshotRestoreHandler
     /**
      * Creates a taker in no round.
      *
-     * @param listener what serializes the state, or nullptr if this build takes part in no round; must outlive
-     *                 this object
-     * @param store    where this instance keeps its snapshots; nullptr exactly when listener is, and must outlive
-     *                 this object
-     * @param passive  whether this instance holds no state until it is activated
+     * @param listener  what serializes the state, or nullptr if this build takes part in no round; must outlive
+     *                  this object
+     * @param store     where this instance keeps its snapshots; nullptr exactly when listener is, and must outlive
+     *                  this object
+     * @param passive   whether this instance holds no state until it is activated
+     * @param keepAlive keeps the cluster session alive while a round is serialized; self-throttling
      */
-    SnapshotTaker(SnapshotListener* const listener, replayer::client::SnapshotStore* const store, const bool passive) :
+    SnapshotTaker(SnapshotListener* const listener, replayer::client::SnapshotStore* const store, const bool passive,
+                  std::function<void()> keepAlive) :
       m_listener{ listener },
       m_store{ store },
+      m_keepAlive{ std::move(keepAlive) },
       m_passive{ passive }
     {}
 
@@ -92,9 +97,10 @@ class SnapshotTaker final : public replayer::client::SnapshotRestoreHandler
 
     /**
      * Takes a dispatched SnapshotStarted: supersedes any round still open and serializes this one into its file,
-     * pulling records from the listener until it returns 0. A length outside 0 … 1302 is the listener's bug; the
+     * pulling records from the listener until it returns 0. A length outside 0 … 65535 is the listener's bug; the
      * round is dropped, as it is on every instance of the same build, and so is one whose header outgrows a
-     * record. One that no longer takes part still abandons the round it held.
+     * record. One that no longer takes part still abandons the round it held. The cluster session is kept alive
+     * after each record, so the round may take as long as its state needs.
      *
      * @param round      its round
      * @param header     the façade's header as of the cut
@@ -217,11 +223,13 @@ class SnapshotTaker final : public replayer::client::SnapshotRestoreHandler
         ++m_recordCount;
         m_length += length;
         m_store->append(std::span<const std::uint8_t>(m_encoding.data(), length));
+        m_keepAlive();
     }
 
     SnapshotListener* const m_listener;
     replayer::client::SnapshotStore* const m_store;
-    std::array<std::uint8_t, protocol::MAX_SNAPSHOT_RECORD_LENGTH> m_encoding{};
+    std::function<void()> m_keepAlive;
+    std::vector<std::uint8_t> m_encoding = std::vector<std::uint8_t>(protocol::MAX_SNAPSHOT_RECORD_LENGTH);
     bool m_participating = false;
     bool m_passive;
     std::int64_t m_round = -1;

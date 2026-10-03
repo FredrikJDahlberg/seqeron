@@ -21,7 +21,8 @@ import org.limitless.seqeron.replayer.client.SnapshotStore;
  * <p>It is also what a restore hands the snapshot's records to (§7), passing the source's own to the listener.
  *
  * <p>A passive instance holds no state until it is activated (§4): it takes part in no round, a restore hands its
- * listener nothing, and the façade dispatches it no payload while {@link #holdsState} is false. The C++ twin is {@code app/detail/SnapshotTaker.hpp}; keep the two in step.
+ * listener nothing, and the façade dispatches it no payload while {@link #holdsState} is false. The C++ twin is
+ * {@code app/detail/SnapshotTaker.hpp}; keep the two in step.
  */
 final class SnapshotTaker implements SnapshotRestoreHandler {
     /** How an instance places the end of a round it publishes. */
@@ -31,6 +32,7 @@ final class SnapshotTaker implements SnapshotRestoreHandler {
 
     private final SnapshotListener listener;
     private final SnapshotStore store;
+    private final Runnable keepAlive;
     private final UnsafeBuffer encoding = new UnsafeBuffer(new byte[SnapshotFormat.MAX_RECORD_LENGTH]);
     private final CRC32C crc = new CRC32C();
     private boolean participating;
@@ -42,14 +44,17 @@ final class SnapshotTaker implements SnapshotRestoreHandler {
     private long length;
 
     /**
-     * @param listener what serializes the state, or null if this build takes part in no round
-     * @param store    where this instance keeps its snapshots; null exactly when {@code listener} is
-     * @param passive  whether this instance holds no state until it is activated
+     * @param listener  what serializes the state, or null if this build takes part in no round
+     * @param store     where this instance keeps its snapshots; null exactly when {@code listener} is
+     * @param passive   whether this instance holds no state until it is activated
+     * @param keepAlive  keeps the cluster session alive while a round is serialized; self-throttling
      */
-    SnapshotTaker(final SnapshotListener listener, final SnapshotStore store, final boolean passive) {
+    SnapshotTaker(final SnapshotListener listener, final SnapshotStore store, final boolean passive,
+                  final Runnable keepAlive) {
         this.listener = listener;
         this.store = store;
         this.passive = passive;
+        this.keepAlive = keepAlive;
     }
 
     /** Whether this instance holds the source's state: false while it is passive. */
@@ -83,9 +88,10 @@ final class SnapshotTaker implements SnapshotRestoreHandler {
 
     /**
      * A {@code SnapshotStarted} was dispatched: supersede any round still open and serialize this one into its
-     * file, pulling records from the listener until it returns 0. A length outside {@code 0 … 1302} is the
+     * file, pulling records from the listener until it returns 0. A length outside {@code 0 … 65535} is the
      * listener's bug; the round is dropped, as it is on every instance of the same build, and so is one whose
-     * header outgrows a record. One that no longer takes part still abandons the round it held.
+     * header outgrows a record. One that no longer takes part still abandons the round it held. The cluster
+     * session is kept alive after each record, so the round may take as long as its state needs.
      * @param startedRound its {@code round}
      * @param header       the façade's header as of the cut
      * @param mayPublish   whether this instance is the one that publishes at the cut
@@ -186,5 +192,6 @@ final class SnapshotTaker implements SnapshotRestoreHandler {
         recordCount++;
         length += recordLength;
         store.append(encoding, 0, recordLength);
+        keepAlive.run();
     }
 }

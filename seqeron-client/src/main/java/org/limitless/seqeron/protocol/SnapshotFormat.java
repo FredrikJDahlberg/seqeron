@@ -9,8 +9,8 @@ import org.agrona.DirectBuffer;
  * protocol/Snapshot.hpp}; keep the two in step.
  */
 public final class SnapshotFormat {
-    /** The most bytes one record holds: the room in the buffer a listener encodes it into. */
-    public static final int MAX_RECORD_LENGTH = 1302;
+    /** The most bytes one record holds: what its uint16 length prefix in the file can say. */
+    public static final int MAX_RECORD_LENGTH = 65535;
 
     private SnapshotFormat() {
     }

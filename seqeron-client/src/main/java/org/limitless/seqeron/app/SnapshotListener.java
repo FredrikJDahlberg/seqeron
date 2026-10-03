@@ -23,7 +23,7 @@ public interface SnapshotListener {
      * must produce the same records for the same state (A-6): no hash-map iteration order, no local time, no
      * node identity. Must not throw.
      *
-     * @param buffer      where to encode the record, from offset 0, at most its capacity (1302 bytes); valid
+     * @param buffer      where to encode the record, from offset 0, at most its capacity (65535 bytes); valid
      *                    only during this call
      * @param recordIndex 0 on a round's first call, which is where an iteration over the state starts over
      * @return the record's length, or 0 when the snapshot is complete

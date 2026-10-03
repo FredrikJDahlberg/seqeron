@@ -64,7 +64,7 @@ against `app` alone and its imports and includes are checked the same way.
    on `clusterctl.sh request-snapshot`. Its `globalSeqNo`, `R`, is the round's cut.
 2. Every replica dispatching that frame, live or replayed, serializes its state as of `R` before it
    dispatches `R + 1`. The façade writes its own header as record 0, then calls the listener's `onSnapshot`
-   with a 1302-byte buffer and an increasing `recordIndex` until it returns 0. Each record goes straight into
+   with a 65535-byte buffer and an increasing `recordIndex` until it returns 0. Each record goes straight into
    `<round>.snapshot` in the replica's own snapshot directory; the façade keeps only the count, the length
    and a CRC32C of the records.
 3. The replica whose gate is open — the one on the leader — submits the round's `SnapshotEnd`: that count,
@@ -87,7 +87,7 @@ support, fences it with `SNAPSHOT_UNRESTORABLE`.
 - **State from the log alone.** The leader's random numbers are in the transfer payload, never in the state;
   every replica sees the same payloads and so computes the same balances.
 - **Records that fit.** Record 0 is the counters (applied and rejected transfers), then one record per
-  account. A record is at most 1302 bytes, but there may be any number of them, so the state is bounded by
+  account. A record is at most 65535 bytes, but there may be any number of them, so the state is bounded by
   the disk rather than by a buffer.
 - **A `formatVersion`.** It is carried in `SnapshotEnd`, and a restore stops on a file of a version the build
   does not know. Raise it when the record layout changes.

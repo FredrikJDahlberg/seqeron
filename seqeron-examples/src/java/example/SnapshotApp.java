@@ -158,7 +158,7 @@ public final class SnapshotApp implements Application.Listener, SnapshotListener
     /**
      * Record 0 holds the counters, {@code applied} and {@code rejected} int64; records 1 to 8 one balance each,
      * int64 in account order. A ledger of many accounts is why a snapshot is a sequence of records rather than
-     * one: each record is at most 1302 bytes, and the number of them is unbounded.
+     * one: each record is at most 65535 bytes, and the number of them is unbounded.
      */
     @Override
     public int onSnapshot(final MutableDirectBuffer buffer, final int recordIndex) {

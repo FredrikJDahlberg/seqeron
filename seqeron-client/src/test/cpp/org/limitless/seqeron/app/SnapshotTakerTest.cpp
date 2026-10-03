@@ -100,7 +100,8 @@ struct Instances
     {
         stores.push_back(
             std::make_unique<replayer::client::SnapshotStore>(directory.path() / std::to_string(stores.size())));
-        takers.push_back(std::make_unique<SnapshotTaker>(&state, stores.back().get(), passive));
+        takers.push_back(
+            std::make_unique<SnapshotTaker>(&state, stores.back().get(), passive, [this] { ++keepAlives; }));
         return *takers.back();
     }
 
@@ -114,6 +115,7 @@ struct Instances
     Frames frames;
     std::vector<std::unique_ptr<replayer::client::SnapshotStore>> stores;
     std::vector<std::unique_ptr<SnapshotTaker>> takers;
+    int keepAlives = 0;
 };
 
 std::vector<std::uint8_t> filled(const int value)
@@ -137,7 +139,7 @@ std::vector<std::vector<std::uint8_t>> readAll(replayer::client::SnapshotStore::
 TEST(SnapshotTaker, WithoutAListenerOrWithTheRowOffAReplicaSerializesWritesAndSubmitsNothing)
 {
     Instances t;
-    SnapshotTaker noListener{ nullptr, nullptr, false };
+    SnapshotTaker noListener{ nullptr, nullptr, false, [] {} };
     noListener.participating(true);
     EXPECT_FALSE(noListener.isParticipating());
 
@@ -254,7 +256,7 @@ TEST(SnapshotTaker, APublisherThatLosesTheRoleStopsForGoodWithNoEnd)
 
 TEST(SnapshotTaker, AListenerAnsweringALengthNoRecordCanHaveDropsTheRoundWithNoFileAndNoEnd)
 {
-    for (const std::int32_t length : { -1, 1303 })
+    for (const std::int32_t length : { -1, 65536 })
     {
         Instances t;
         t.state.badLength = length;
@@ -296,10 +298,10 @@ TEST(SnapshotTaker, AHeaderLongerThanARecordDropsTheRound)
 {
     Instances t;
     protocol::SnapshotGatewayState rows{ 9, 10, 42, {} };
-    rows.rows.assign(35, protocol::SnapshotGatewayRow{ 10, 0, "GW" });
+    rows.rows.assign(1771, protocol::SnapshotGatewayRow{ 10, 0, "GW" });
     SnapshotTaker& taker = t.participating();
     taker.onSnapshotStarted(3, protocol::SnapshotHeader{ 7, 2, rows }, true);
-    EXPECT_EQ(0, t.state.serialized) << "35 rows outgrow a record";
+    EXPECT_EQ(0, t.state.serialized) << "1771 rows outgrow a record";
     EXPECT_FALSE(taker.isPublishing());
     EXPECT_FALSE(t.lastStore().open(3).has_value());
 }
@@ -375,6 +377,15 @@ TEST(SnapshotTaker, AnInstanceThatIsNotPassiveHoldsStateFromTheStartAndHasNothin
     SnapshotTaker& taker = t.instance();
     EXPECT_TRUE(taker.holdsState());
     EXPECT_FALSE(taker.activate(true, true));
+}
+
+TEST(SnapshotTaker, SerializingARoundKeepsTheClusterSessionAliveAfterEveryRecord)
+{
+    Instances t;
+    t.state.records = 3;
+    SnapshotTaker& taker = t.participating();
+    taker.onSnapshotStarted(1, HEADER, true);
+    EXPECT_EQ(4, t.keepAlives) << "the header and three records";
 }
 
 } // namespace

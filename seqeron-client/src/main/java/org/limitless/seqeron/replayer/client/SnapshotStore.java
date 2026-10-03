@@ -48,6 +48,7 @@ public final class SnapshotStore {
     private static final String SUFFIX = ".snapshot";
     private static final String TEMPORARY_SUFFIX = ".tmp";
     private static final int RECORD_PREFIX_LENGTH = Short.BYTES;
+    /** Each file stream's buffer: a multiple of every SSD page size, and few system calls per file. */
     private static final int IO_BUFFER_LENGTH = 64 * 1024;
     private static final ByteOrder LE = ByteOrder.LITTLE_ENDIAN;
 

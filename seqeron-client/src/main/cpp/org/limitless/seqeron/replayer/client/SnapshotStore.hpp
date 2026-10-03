@@ -5,11 +5,13 @@
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
 #include <system_error>
 #include <utility>
+#include <vector>
 
 #include "org/limitless/seqeron/protocol/Snapshot.hpp"
 #include "org/limitless/seqeron/util/Logger.hpp"
@@ -26,6 +28,9 @@ namespace org::limitless::seqeron::replayer::client {
  */
 class SnapshotStore
 {
+    // Each file stream's buffer: a multiple of every SSD page size, and few system calls per file.
+    static constexpr std::size_t IO_BUFFER_LENGTH = 64 * 1024;
+
   public:
     // Bytes after the records.
     static constexpr std::size_t TRAILER_LENGTH = 32;
@@ -92,23 +97,32 @@ class SnapshotStore
             const auto recordLength = static_cast<std::size_t>(protocol::detail::getLe(prefix.data(), 2));
             if (recordLength > protocol::MAX_SNAPSHOT_RECORD_LENGTH ||
                 m_consumed + RECORD_PREFIX_LENGTH + recordLength > m_recordsLength ||
-                !read(m_record.data(), recordLength))
+                !read(m_file->record.data(), recordLength))
             {
                 return damage();
             }
-            m_crc = protocol::crc32c(m_record.data(), recordLength, m_crc);
+            m_crc = protocol::crc32c(m_file->record.data(), recordLength, m_crc);
             m_consumed += RECORD_PREFIX_LENGTH + recordLength;
             m_bytes += recordLength;
             ++m_count;
-            record = std::span<const std::uint8_t>(m_record.data(), recordLength);
+            record = std::span<const std::uint8_t>(m_file->record.data(), recordLength);
             return static_cast<std::int32_t>(recordLength);
         }
 
       private:
         friend class SnapshotStore;
 
-        Reader(std::ifstream in, const std::uint64_t recordsLength, const std::uint8_t* trailer) :
-          m_in(std::move(in)),
+        // The open file, its read buffer and the record buffer, on the heap and moved as one: the stream reads
+        // through the buffer, which is declared first so that it outlives it.
+        struct File
+        {
+            std::array<char, IO_BUFFER_LENGTH> buffer;
+            std::ifstream in;
+            std::array<std::uint8_t, protocol::MAX_SNAPSHOT_RECORD_LENGTH> record;
+        };
+
+        Reader(std::unique_ptr<File> file, const std::uint64_t recordsLength, const std::uint8_t* trailer) :
+          m_file(std::move(file)),
           m_recordsLength(recordsLength),
           m_recordCount(static_cast<std::int32_t>(protocol::detail::getLe(trailer + 16, 4))),
           m_length(protocol::detail::getLe(trailer + 8, 8)),
@@ -118,7 +132,8 @@ class SnapshotStore
 
         bool read(std::uint8_t* out, const std::size_t count)
         {
-            return static_cast<bool>(m_in.read(reinterpret_cast<char*>(out), static_cast<std::streamsize>(count)));
+            return static_cast<bool>(
+                m_file->in.read(reinterpret_cast<char*>(out), static_cast<std::streamsize>(count)));
         }
 
         std::int32_t damage()
@@ -127,13 +142,12 @@ class SnapshotStore
             return DAMAGED;
         }
 
-        std::ifstream m_in;
+        std::unique_ptr<File> m_file;
         std::uint64_t m_recordsLength;
         std::int32_t m_recordCount;
         std::uint64_t m_length;
         std::uint32_t m_crc32c;
         std::uint32_t m_formatVersion;
-        std::array<std::uint8_t, protocol::MAX_SNAPSHOT_RECORD_LENGTH> m_record{};
         std::uint64_t m_consumed = 0;
         std::uint64_t m_bytes = 0;
         std::int32_t m_count = 0;
@@ -164,6 +178,7 @@ class SnapshotStore
     {
         abandon();
         m_writingRound = round;
+        m_out.rdbuf()->pubsetbuf(m_outBuffer.data(), static_cast<std::streamsize>(m_outBuffer.size()));
         m_out.open(temporaryFile(round), std::ios::binary | std::ios::trunc);
         m_writing = true;
         if (!m_out)
@@ -306,7 +321,10 @@ class SnapshotStore
      */
     [[nodiscard]] std::optional<Reader> open(const std::int64_t round) const
     {
-        std::ifstream in(file(round), std::ios::binary | std::ios::ate);
+        auto opened = std::make_unique<Reader::File>();
+        std::ifstream& in = opened->in;
+        in.rdbuf()->pubsetbuf(opened->buffer.data(), static_cast<std::streamsize>(opened->buffer.size()));
+        in.open(file(round), std::ios::binary | std::ios::ate);
         if (!in)
         {
             return std::nullopt;
@@ -320,7 +338,7 @@ class SnapshotStore
         {
             return std::nullopt;
         }
-        return Reader(std::move(in), size - TRAILER_LENGTH, trailer.data());
+        return Reader(std::move(opened), size - TRAILER_LENGTH, trailer.data());
     }
 
   private:
@@ -369,6 +387,8 @@ class SnapshotStore
     }
 
     std::filesystem::path m_directory;
+    // m_out writes through it, so it is declared first and outlives it.
+    std::vector<char> m_outBuffer = std::vector<char>(IO_BUFFER_LENGTH);
     std::ofstream m_out;
     std::int64_t m_writingRound = 0;
     bool m_writing = false; // m_out holds the round's .tmp file
