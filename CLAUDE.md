@@ -204,18 +204,18 @@ Single suites:
 
 The Java suite covers the deterministic decision-making — `Sequencer`, and `ReplayerService` through
 its `Replayer` seam — and deliberately touches no Aeron runtime: no media driver, no cluster, no Aeron
-mocks. Everything that needs an Aeron runtime is covered by `core_tests` and by the eight end-to-end scripts under
+mocks. Everything that needs an Aeron runtime is covered by `core_tests` and by the nine end-to-end scripts under
 `seqeron-service/src/test/scripts`. Coverage is a JaCoCo report per module, at
 `<module>/build/reports/jacoco/test/`, excluding the generated SBE codecs.
 
-**Seven of the eight harnesses are Java-only.** They drive the cluster through `tools/ClusterProbe`, which
+**Eight of the nine harnesses are Java-only.** They drive the cluster through `tools/ClusterProbe`, which
 submits `ProbeMarker` payloads at ingress (`submit`), round-trips one through consensus and back off
 the tap (`ping`), replays history through the co-located Replayer and then follows the tap live
 (`follow`), or streams through `ClusterStreamSender` and `sequencer/client/PendingSends` and checks its own tap shows
 every frame exactly once, in order (`confirm`, which `failover-test.sh` runs across the leader kill, and
 `gateway-host-test.sh` runs on a gateway host across the loss of the relay's member). The probe attaches to a
-member's own embedded driver, or a gateway host's, so five of the seven need no
-standalone `aeronmd` at all. The eighth, `docker-failover-test.sh`, is the containerized multi-round
+member's own embedded driver, or a gateway host's, so six of the eight need no
+standalone `aeronmd` at all. The ninth, `docker-failover-test.sh`, is the containerized multi-round
 failover soak (`docker/compose.yml`, `./gradlew operatorDist`, CI's `failover.yml`). `chaos-runner` needs one more thing the probe cannot supply — a **gateway
 pair under the faults** — and `TestGateway` is it: an elected active/standby producer (`GW-T-A`/`GW-T-B`,
 `gatewaySourceId` 9, listening on 9200/9201) that speaks no application protocol and holds no session

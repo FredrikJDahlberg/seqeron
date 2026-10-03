@@ -66,8 +66,10 @@ fault. §5 describes how a producer detects and resends these frames.
 ### 1.3 A node that cannot record terminates itself
 
 `TapPublisher.emit` retries the tap offer until it succeeds, because a dropped frame would leave a
-permanent gap in the node's recording. The offer can only be back-pressured by the local archive: the
-recording is the tap's only tethered subscriber, and client subscriptions are untethered.
+permanent gap in the node's recording. The offer can only be back-pressured for long by the local
+archive: the recording is the tap's only tethered subscriber, and client subscriptions are untethered. A
+client that stops polling holds the window only until its driver evicts it, within about 0.2 s
+(`doc/ops.md`, "Untethered subscribers"), well inside the 1 s below.
 
 Retrying is bounded. `TapPublisher` distinguishes three cases by watching the archive's recording
 position:
@@ -355,6 +357,9 @@ frame on the tap exactly once and in order; the other reports what it lost.
   mark on all three nodes (§1.1).
 - **`gap-recovery-test.sh`**: a caught-up consumer drops one live frame after a leader failover and must
   resume and keep delivering (§3.2).
+- **`paused-subscriber-test.sh`**: a caught-up consumer is `SIGSTOP`ped while more than two tap windows
+  go by. Its member must stay up, with no tap-stall fatal (§1.3), and once resumed the consumer must heal
+  the hole its eviction left (§3.2).
 - **`replay-bench.sh`**: times a cold `ClusterProbe follow` from launch to caught up against a preloaded
   archive, optionally under load. `replay-bench.sh 400000` builds about 70 MB of history; it must converge
   in well under a second, and `NEVER CAUGHT UP` indicates a replay stall (§3.2), not a slow machine.
