@@ -60,6 +60,8 @@ import org.limitless.seqeron.util.Logger;
  *                               1000. A gateway that misses it is replaced by its standby, so raise it on
  *                               an oversubscribed host.
  *   aeron.ipc.term.buffer.length — the embedded driver's IPC term length; default 16m (doc/ops.md, "Term lengths")
+ *   aeron.timer.interval, aeron.untethered.window.limit.timeout, aeron.untethered.linger.timeout — default
+ *                               10ms, 100ms, 100ms (doc/ops.md, "Untethered subscribers")
  * </pre>
  *
  * <p>Launch example, member 0 of three:
@@ -127,6 +129,7 @@ public final class SequencerServer {
                                                   .receiverIdleStrategy(idleStrategySupplier.get())
                                                   .ipcTermBufferLength(ReplayerServer.ipcTermBufferLength())
                                                   .dirDeleteOnStart(true);
+        ReplayerServer.untetheredTimeouts(driverCtx);
 
         final AeronArchive.Context localArchiveCtx = new AeronArchive.Context()
                                                          .lock(NoOpLock.INSTANCE)

@@ -238,6 +238,19 @@ every start, so a new IPC MTU takes effect at its next start. The Raft log's UDP
 unless the log channel names one, cannot change on a cluster with history: the archive refuses to extend
 the log recording with a different MTU.
 
+## Untethered subscribers
+
+Every application subscribes to the tap untethered, so one that stops polling (a GC pause or a
+long snapshot take) is dropped and heals through replay rather than holding the sequencer back. Aeron drops
+it on its driver's timer: once it has been three quarters of a window behind for
+`aeron.untethered.window.limit.timeout`, and has then lingered for `aeron.untethered.linger.timeout`, each
+checked every `aeron.timer.interval`. Until then it still holds the window, and a full window behind it
+back-pressures the tap. The sequencer and a gateway host's relay terminate after 1 s of back-pressure with
+no recording progress, so seqeron's drivers default to 10 ms, 100 ms and 100 ms. At Aeron's 1 s, 5 s and
+5 s, a subscriber that stops for a window's worth of traffic takes its member down. Overriding them, keep
+both timeouts plus two timer intervals well inside that second. A dropped subscriber rejoins at the live
+position after `aeron.untethered.resting.timeout`, 10 s.
+
 ## A node that terminates itself
 
 `SequencerServer` exits **70** when its local archive stops recording the node's tap (stalled with no
