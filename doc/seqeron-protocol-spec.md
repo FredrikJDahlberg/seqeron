@@ -188,6 +188,7 @@ producer takes its id by adding a row.
 | 11, 12 | `seqeron-examples` `ColocatedApp` (Java, C++) | application |
 | 13 | `seqeron-examples` C++ gateway pair | gateway |
 | 14, 15 | `seqeron-examples` `SnapshotApp` (Java, C++) | application |
+| 16 | `TestApplication` replicas (end-to-end tests) | application |
 
 Gateways are listed by `GatewayRegistered.gatewaySourceId`, applications by
 `ApplicationRegistered.applicationSourceId`. **S-6** checks gateways only. No list row may claim

@@ -109,7 +109,7 @@ public final class Application implements AutoCloseable {
         this.gate = new LeaderGate(builder.memberId, builder.offCluster);
         final SnapshotStore store =
             builder.snapshotListener == null ? null : new SnapshotStore(builder.snapshotDirectory);
-        this.snapshots = new SnapshotTaker(builder.snapshotListener, store);
+        this.snapshots = new SnapshotTaker(builder.snapshotListener, store, false);
         this.session = new Session(builder.clientId, builder.pendingCapacity, builder.tapStallTimeoutMs,
                                    builder.recoveryStallTimeoutMs, new SessionDispatch());
         this.snapshotFrames = new SnapshotFrames(session, () -> sourceId);

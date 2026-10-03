@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-    The TestGateway pair of topology-test-gateway.xml, taking part in snapshot rounds every 2 s:
-    what snapshot-test.sh loads (doc/snapshot.md).
+    The TestGateway pair of topology-test-gateway.xml and the TestApplication replicas, taking part in
+    snapshot rounds every 2 s: what snapshot-test.sh loads (doc/snapshot.md).
 
       clusterctl.sh load-topology seqeron-service/src/test/resources/topology-test-snapshot.xml
 -->
@@ -13,6 +13,11 @@
         <gateway name="GW-T-B" id="11" sourceId="9" rank="1" snapshot="true"
                  description="TestGateway standby"/>
     </gateways>
+
+    <applications>
+        <application name="TestApplication" sourceId="16" snapshot="true"
+                     description="TestApplication, one replica per member"/>
+    </applications>
 
     <snapshots interval="2"/>
 

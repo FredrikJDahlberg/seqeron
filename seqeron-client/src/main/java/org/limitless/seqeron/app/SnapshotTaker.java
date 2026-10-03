@@ -19,7 +19,9 @@ import org.limitless.seqeron.replayer.client.SnapshotStore;
  * publisher that loses the role stops for good.
  *
  * <p>It is also what a restore hands the snapshot's records to (§7), passing the source's own to the listener.
- * The C++ twin is {@code app/detail/SnapshotTaker.hpp}; keep the two in step.
+ *
+ * <p>A passive instance holds no state until it is activated (§4): it takes part in no round, a restore hands its
+ * listener nothing, and the façade dispatches it no payload while {@link #holdsState} is false. The C++ twin is {@code app/detail/SnapshotTaker.hpp}; keep the two in step.
  */
 final class SnapshotTaker implements SnapshotRestoreHandler {
     /** How an instance places the end of a round it publishes. */
@@ -32,6 +34,7 @@ final class SnapshotTaker implements SnapshotRestoreHandler {
     private final UnsafeBuffer encoding = new UnsafeBuffer(new byte[SnapshotFormat.MAX_RECORD_LENGTH]);
     private final CRC32C crc = new CRC32C();
     private boolean participating;
+    private boolean passive;
     private long round = -1;
     private boolean serialized;
     private boolean publishing;
@@ -41,10 +44,29 @@ final class SnapshotTaker implements SnapshotRestoreHandler {
     /**
      * @param listener what serializes the state, or null if this build takes part in no round
      * @param store    where this instance keeps its snapshots; null exactly when {@code listener} is
+     * @param passive  whether this instance holds no state until it is activated
      */
-    SnapshotTaker(final SnapshotListener listener, final SnapshotStore store) {
+    SnapshotTaker(final SnapshotListener listener, final SnapshotStore store, final boolean passive) {
         this.listener = listener;
         this.store = store;
+        this.passive = passive;
+    }
+
+    /** Whether this instance holds the source's state: false while it is passive. */
+    boolean holdsState() {
+        return !passive;
+    }
+
+    /**
+     * Ends passivity once this instance is activated and caught up on the election.
+     * @return true exactly then: the façade restarts its recovery, which restores the state this instance now holds
+     */
+    boolean activate(final boolean activated, final boolean caughtUp) {
+        if (!passive || !activated || !caughtUp) {
+            return false;
+        }
+        passive = false;
+        return true;
     }
 
     /**
@@ -71,7 +93,7 @@ final class SnapshotTaker implements SnapshotRestoreHandler {
     void onSnapshotStarted(final long startedRound, final SnapshotHeader header, final boolean mayPublish) {
         publishing = false;
         serialized = false;
-        if (!participating || header.encodedLength() > SnapshotFormat.MAX_RECORD_LENGTH) {
+        if (passive || !participating || header.encodedLength() > SnapshotFormat.MAX_RECORD_LENGTH) {
             return;
         }
         round = startedRound;
@@ -133,12 +155,16 @@ final class SnapshotTaker implements SnapshotRestoreHandler {
     /** The source took part at the cut, and its topology row lies before it, never to be dispatched here. */
     @Override
     public void onSnapshotHeader(final SnapshotHeader header) {
-        participating(true);
+        if (!passive) {
+            participating(true);
+        }
     }
 
     @Override
     public void onSnapshotRecord(final DirectBuffer record, final int length, final int recordIndex) {
-        listener.onRestore(record, length, recordIndex);
+        if (!passive) {
+            listener.onRestore(record, length, recordIndex);
+        }
     }
 
     /**

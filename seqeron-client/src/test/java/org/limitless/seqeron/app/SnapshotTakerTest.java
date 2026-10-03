@@ -85,9 +85,14 @@ class SnapshotTakerTest {
 
     /** A participating instance with a directory of its own. */
     private SnapshotTaker participating() {
-        final SnapshotTaker taker = new SnapshotTaker(state, store());
+        final SnapshotTaker taker = new SnapshotTaker(state, store(), false);
         taker.participating(true);
         return taker;
+    }
+
+    /** A passive instance with a directory of its own. */
+    private SnapshotTaker passive() {
+        return new SnapshotTaker(state, store(), true);
     }
 
     private SnapshotStore store() {
@@ -102,11 +107,11 @@ class SnapshotTakerTest {
     @Test
     @DisplayName("without a listener, or with the row off, a replica serializes, writes and submits nothing")
     void notParticipating() {
-        final SnapshotTaker noListener = new SnapshotTaker(null, null);
+        final SnapshotTaker noListener = new SnapshotTaker(null, null, false);
         noListener.participating(true);
         assertFalse(noListener.isParticipating());
 
-        final SnapshotTaker rowOff = new SnapshotTaker(state, store());
+        final SnapshotTaker rowOff = new SnapshotTaker(state, store(), false);
         rowOff.participating(false);
         rowOff.onSnapshotStarted(1, HEADER, true);
         assertEquals(0, state.serialized);
@@ -267,7 +272,7 @@ class SnapshotTakerTest {
     @Test
     @DisplayName("a restore reads only this build's format, makes the source take part, and hands its records on")
     void restoreHandsRecordsToTheListener() {
-        final SnapshotTaker taker = new SnapshotTaker(state, store());
+        final SnapshotTaker taker = new SnapshotTaker(state, store(), false);
         assertTrue(taker.supportsFormatVersion(5));
         assertFalse(taker.supportsFormatVersion(6));
 
@@ -275,6 +280,63 @@ class SnapshotTakerTest {
         assertTrue(taker.isParticipating(), "its topology row lies before the cut");
         taker.onSnapshotRecord(new UnsafeBuffer(filled(1)), 1000, 0);
         assertEquals(List.of("0:1000:1"), state.restored);
+    }
+
+    @Test
+    @DisplayName("a passive instance serializes no round, though its row takes part")
+    void passiveSerializesNoRound() {
+        final SnapshotTaker taker = passive();
+        taker.participating(true);
+        assertFalse(taker.holdsState());
+        taker.onSnapshotStarted(1, HEADER, true);
+        assertEquals(0, state.serialized);
+        assertEquals(-1, storeOf(1).latestRound(Long.MAX_VALUE));
+        assertFalse(taker.isPublishing());
+        assertEquals(0, taker.submit(frames));
+    }
+
+    @Test
+    @DisplayName("a passive instance's restore hands its listener nothing")
+    void passiveRestoresNothing() {
+        final SnapshotTaker taker = passive();
+        taker.onSnapshotHeader(HEADER);
+        assertFalse(taker.isParticipating());
+        taker.onSnapshotRecord(new UnsafeBuffer(filled(1)), 1000, 0);
+        assertTrue(state.restored.isEmpty());
+    }
+
+    @Test
+    @DisplayName("activation waits for the designation and the catch-up, and happens once")
+    void activationWaitsAndHappensOnce() {
+        final SnapshotTaker taker = passive();
+        assertFalse(taker.activate(false, true));
+        assertFalse(taker.activate(true, false));
+        assertFalse(taker.holdsState());
+        assertTrue(taker.activate(true, true));
+        assertTrue(taker.holdsState());
+        assertFalse(taker.activate(true, true), "the recovery restarts once");
+    }
+
+    @Test
+    @DisplayName("once activated, it restores and takes part in the next round")
+    void activatedRestoresAndTakesPart() {
+        final SnapshotTaker taker = passive();
+        taker.participating(true);
+        assertTrue(taker.activate(true, true));
+        taker.onSnapshotHeader(HEADER);
+        taker.onSnapshotRecord(new UnsafeBuffer(filled(1)), 1000, 0);
+        assertEquals(List.of("0:1000:1"), state.restored);
+        taker.onSnapshotStarted(2, HEADER, true);
+        assertEquals(1, state.serialized);
+        assertTrue(taker.isPublishing());
+    }
+
+    @Test
+    @DisplayName("an instance that is not passive holds state from the start and has nothing to activate")
+    void notPassiveHoldsStateFromTheStart() {
+        final SnapshotTaker taker = participating();
+        assertTrue(taker.holdsState());
+        assertFalse(taker.activate(true, true));
     }
 
     private static byte[] filled(final int value) {

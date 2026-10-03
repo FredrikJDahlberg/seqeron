@@ -137,13 +137,12 @@ class Gateway
       m_actions{ *this },
       m_lifecycle{ m_config.gatewayName, m_actions },
       m_store{ snapshotStore(m_config) },
-      m_snapshots{ m_config.snapshotListener, m_store.get() },
+      m_snapshots{ m_config.snapshotListener, m_store.get(), m_config.passive },
       m_restore{ *this },
       m_dispatch{ *this },
       m_session{ m_config.clientId, m_config.pendingCapacity, m_config.tapStallTimeoutMs,
                  m_config.recoveryStallTimeoutMs, m_dispatch },
-      m_snapshotFrames{ m_session, [this] { return m_lifecycle.gatewaySourceId(); } },
-      m_passive{ m_config.passive }
+      m_snapshotFrames{ m_session, [this] { return m_lifecycle.gatewaySourceId(); } }
     {
         // Here rather than on the template parameter, where a listener that owns its Gateway is incomplete.
         static_assert(GatewayListener<Listener>);
@@ -172,9 +171,8 @@ class Gateway
     int doWork()
     {
         int work = m_session.doWork();
-        if (m_passive && m_lifecycle.isActivated() && m_session.isCaughtUp())
+        if (m_snapshots.activate(m_lifecycle.isActivated(), m_session.isCaughtUp()))
         {
-            m_passive = false;
             m_session.restart();
             return work + 1;
         }
@@ -319,7 +317,7 @@ class Gateway
     // Whether this instance still holds no state: passive and not yet activated.
     [[nodiscard]] bool isPassive() const noexcept
     {
-        return m_passive;
+        return !m_snapshots.holdsState();
     }
 
     // This logical gateway's sourceId, shared with its standby; UNRESOLVED until a row names it.
@@ -494,18 +492,12 @@ class Gateway
                 m_gateway.m_lifecycle.onSnapshotHeader(*header.gateway);
                 m_gateway.m_highestConnectionId = header.gateway->highestConnectionId;
             }
-            if (!m_gateway.m_passive)
-            {
-                m_gateway.m_snapshots.onSnapshotHeader(header);
-            }
+            m_gateway.m_snapshots.onSnapshotHeader(header);
         }
 
         void onSnapshotRecord(const std::span<const std::uint8_t> record, const std::int32_t recordIndex) override
         {
-            if (!m_gateway.m_passive)
-            {
-                m_gateway.m_snapshots.onSnapshotRecord(record, recordIndex);
-            }
+            m_gateway.m_snapshots.onSnapshotRecord(record, recordIndex);
         }
 
       private:
@@ -531,13 +523,13 @@ class Gateway
                 // keeps per-connection state rebuilds it from these while it replays, and releases it on the
                 // close — a client that drops its socket without logging out produces no payload at all.
                 case protocol::CONNECTION_OPENED:
-                    if (!m_gateway.m_passive && event.sourceId == m_gateway.m_lifecycle.gatewaySourceId())
+                    if (m_gateway.m_snapshots.holdsState() && event.sourceId == m_gateway.m_lifecycle.gatewaySourceId())
                     {
                         m_gateway.dispatchConnectionOpened(event);
                     }
                     break;
                 case protocol::CONNECTION_CLOSED:
-                    if (!m_gateway.m_passive && event.sourceId == m_gateway.m_lifecycle.gatewaySourceId())
+                    if (m_gateway.m_snapshots.holdsState() && event.sourceId == m_gateway.m_lifecycle.gatewaySourceId())
                     {
                         m_gateway.m_listener.onConnectionClosed(event.connectionId);
                     }
@@ -561,14 +553,12 @@ class Gateway
                     }
                     break;
                 }
-                case protocol::SNAPSHOT_STARTED:
-                    if (!m_gateway.m_passive && m_gateway.m_snapshots.isParticipating())
-                    {
-                        auto started = protocol::decodeSystem<sbe::frame::SnapshotStarted>(event);
-                        m_gateway.m_snapshots.onSnapshotStarted(started.round(), m_gateway.snapshotHeader(),
-                                                                m_gateway.m_lifecycle.isAnnounced());
-                    }
+                case protocol::SNAPSHOT_STARTED: {
+                    auto started = protocol::decodeSystem<sbe::frame::SnapshotStarted>(event);
+                    m_gateway.m_snapshots.onSnapshotStarted(started.round(), m_gateway.snapshotHeader(),
+                                                            m_gateway.m_lifecycle.isAnnounced());
                     break;
+                }
                 case protocol::SNAPSHOT_END: {
                     if (event.sourceId != m_gateway.m_lifecycle.gatewaySourceId())
                     {
@@ -598,7 +588,7 @@ class Gateway
         void onPayload(const Payload& payload)
         {
             m_gateway.observeConnectionId(payload.sourceId(), payload.connectionId());
-            if (!m_gateway.m_passive)
+            if (m_gateway.m_snapshots.holdsState())
             {
                 m_gateway.m_listener.onSequenced(payload);
             }
@@ -655,9 +645,6 @@ class Gateway
     SessionDispatch m_dispatch;
     detail::Session<SessionDispatch> m_session;
     detail::SnapshotFrames<detail::Session<SessionDispatch>> m_snapshotFrames;
-
-    // Holding no state: until activated, this instance follows the tap for the election alone.
-    bool m_passive;
 
     // Connection lifecycle frames still to be placed, in the order they were asked for.
     std::deque<Lifecycle> m_lifecycleQueue;

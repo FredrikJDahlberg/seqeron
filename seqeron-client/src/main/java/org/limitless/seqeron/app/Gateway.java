@@ -148,19 +148,15 @@ public final class Gateway implements AutoCloseable {
     private int highestConnectionId = NO_CONNECTION;
     private int nextConnectionId;
 
-    /** Holding no state: until activated, this instance follows the tap for the election alone. */
-    private boolean passive;
-
     private Gateway(final Builder builder) {
         this.listener = builder.listener;
         this.memberId = builder.memberId;
         this.egressChannel = builder.egressChannel;
         this.ingressEndpoints = builder.ingressEndpoints;
-        this.passive = builder.passive;
         this.lifecycle = new GatewayLifecycle(builder.gatewayName, new LifecycleActions());
         final SnapshotStore store =
             builder.snapshotListener == null ? null : new SnapshotStore(builder.snapshotDirectory);
-        this.snapshots = new SnapshotTaker(builder.snapshotListener, store);
+        this.snapshots = new SnapshotTaker(builder.snapshotListener, store, builder.passive);
         this.session = new Session(builder.clientId, builder.pendingCapacity, builder.tapStallTimeoutMs,
                                    builder.recoveryStallTimeoutMs, new SessionDispatch());
         this.snapshotFrames = new SnapshotFrames(session, lifecycle::gatewaySourceId);
@@ -185,8 +181,7 @@ public final class Gateway implements AutoCloseable {
      */
     public int doWork() {
         int work = session.doWork();
-        if (passive && lifecycle.isActivated() && session.isCaughtUp()) {
-            passive = false;
+        if (snapshots.activate(lifecycle.isActivated(), session.isCaughtUp())) {
             session.restart();
             return work + 1;
         }
@@ -295,7 +290,7 @@ public final class Gateway implements AutoCloseable {
 
     /** Whether this instance still holds no state: passive and not yet activated. */
     public boolean isPassive() {
-        return passive;
+        return !snapshots.holdsState();
     }
 
     /**
@@ -453,16 +448,12 @@ public final class Gateway implements AutoCloseable {
                 lifecycle.onSnapshotHeader(header.gateway());
                 highestConnectionId = header.gateway().highestConnectionId();
             }
-            if (!passive) {
-                snapshots.onSnapshotHeader(header);
-            }
+            snapshots.onSnapshotHeader(header);
         }
 
         @Override
         public void onSnapshotRecord(final DirectBuffer record, final int length, final int recordIndex) {
-            if (!passive) {
-                snapshots.onSnapshotRecord(record, length, recordIndex);
-            }
+            snapshots.onSnapshotRecord(record, length, recordIndex);
         }
     }
 
@@ -486,12 +477,12 @@ public final class Gateway implements AutoCloseable {
                 }
                 break;
             case SystemFrame.CONNECTION_OPENED:
-                if (!passive && event.sourceId() == lifecycle.gatewaySourceId()) {
+                if (snapshots.holdsState() && event.sourceId() == lifecycle.gatewaySourceId()) {
                     dispatchConnectionOpened(event);
                 }
                 break;
             case SystemFrame.CONNECTION_CLOSED:
-                if (!passive && event.sourceId() == lifecycle.gatewaySourceId()) {
+                if (snapshots.holdsState() && event.sourceId() == lifecycle.gatewaySourceId()) {
                     listener.onConnectionClosed(event.connectionId());
                 }
                 break;
@@ -504,11 +495,9 @@ public final class Gateway implements AutoCloseable {
                 }
                 break;
             case SystemFrame.SNAPSHOT_STARTED:
-                if (!passive && snapshots.isParticipating()) {
-                    snapshotStarted.wrap(event.buffer(), event.payloadOffset(), SnapshotStartedDecoder.BLOCK_LENGTH,
-                                         SnapshotStartedDecoder.SCHEMA_VERSION);
-                    snapshots.onSnapshotStarted(snapshotStarted.round(), snapshotHeader(), lifecycle.isAnnounced());
-                }
+                snapshotStarted.wrap(event.buffer(), event.payloadOffset(), SnapshotStartedDecoder.BLOCK_LENGTH,
+                                     SnapshotStartedDecoder.SCHEMA_VERSION);
+                snapshots.onSnapshotStarted(snapshotStarted.round(), snapshotHeader(), lifecycle.isAnnounced());
                 break;
             case SystemFrame.SNAPSHOT_END:
                 if (event.sourceId() != lifecycle.gatewaySourceId()) {
@@ -535,7 +524,7 @@ public final class Gateway implements AutoCloseable {
         @Override
         public void onPayload(final Payload payload) {
             observeConnectionId(payload.sourceId(), payload.connectionId());
-            if (!passive) {
+            if (snapshots.holdsState()) {
                 listener.onSequenced(payload);
             }
         }

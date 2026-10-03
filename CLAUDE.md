@@ -230,9 +230,11 @@ goes away raises from `doWork()` rather than as a fence. It is in
 **`seqeron-service/src/test/java`** and therefore in no jar: `chaos-runner.sh` and `snapshot-test.sh` put
 `seqeron-service/build/classes/java/test` on the classpath beside the uber jar and refuse to start
 without it. Its
-list is `seqeron-service/src/test/resources/topology-test-gateway.xml`, and `topology-test-snapshot.xml` beside it
-when it takes part in snapshot rounds (`-Dprobe.snapshot`, `-Dprobe.passive`, `-Dprobe.snapshotDir`), which `snapshot-test.sh`
-drives through restores, a failover onto a restored instance and a passive activation. The one other topology document here is
+list is `seqeron-service/src/test/resources/topology-test-gateway.xml`, whose pair takes part in snapshot rounds
+(`-Dprobe.snapshot`, `-Dprobe.snapshotDir`) so they run under the faults too. `topology-test-snapshot.xml` beside it adds
+**`TestApplication`** (`sourceId` 16, one replica per member), the reference consumer of `app/Application` with a
+`SnapshotListener`; `snapshot-test.sh` loads it and drives both through restores, a failover onto a restored instance, a
+passive activation (`-Dprobe.passive`), an operator-requested round and a cluster leader kill. The one other topology document here is
 `seqeron-examples/topology.xml`, the pair the C++ `GatewayApp` example runs.
 
 `start-cluster.sh` and `start-three-node-cluster.sh` launch the cluster tier and nothing else — core

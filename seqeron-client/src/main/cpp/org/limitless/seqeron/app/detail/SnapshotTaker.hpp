@@ -21,8 +21,11 @@ namespace org::limitless::seqeron::app::detail {
  * No takeover: an instance that is not the publisher at the cut submits nothing for that round, and a publisher
  * that loses the role stops for good.
  *
- * It is also what a restore hands the snapshot's records to (§7), passing the source's own to the listener. The
- * Java twin is app/SnapshotTaker.java; keep the two in step.
+ * It is also what a restore hands the snapshot's records to (§7), passing the source's own to the listener.
+ *
+ * A passive instance holds no state until it is activated (§4): it takes part in no round, a restore hands its
+ * listener nothing, and the façade dispatches it no payload while holdsState() is false. The Java twin is
+ * app/SnapshotTaker.java; keep the two in step.
  *
  * Actions, how an instance places the end of a round it publishes, provides:
  *   protocol::Publish publishEnd(std::int64_t round, std::int32_t recordCount, std::uint64_t length,
@@ -38,10 +41,12 @@ class SnapshotTaker final : public replayer::client::SnapshotRestoreHandler
      *                 this object
      * @param store    where this instance keeps its snapshots; nullptr exactly when listener is, and must outlive
      *                 this object
+     * @param passive  whether this instance holds no state until it is activated
      */
-    SnapshotTaker(SnapshotListener* const listener, replayer::client::SnapshotStore* const store) :
+    SnapshotTaker(SnapshotListener* const listener, replayer::client::SnapshotStore* const store, const bool passive) :
       m_listener{ listener },
-      m_store{ store }
+      m_store{ store },
+      m_passive{ passive }
     {}
 
     SnapshotTaker(const SnapshotTaker&) = delete;
@@ -62,6 +67,29 @@ class SnapshotTaker final : public replayer::client::SnapshotRestoreHandler
         return m_participating;
     }
 
+    // Whether this instance holds the source's state: false while it is passive.
+    [[nodiscard]] bool holdsState() const
+    {
+        return !m_passive;
+    }
+
+    /**
+     * Ends passivity once this instance is activated and caught up on the election.
+     *
+     * @param activated whether the pair's designation names this instance
+     * @param caughtUp  whether this instance has caught up on the tap
+     * @return true exactly then: the façade restarts its recovery, which restores the state this instance now holds
+     */
+    bool activate(const bool activated, const bool caughtUp)
+    {
+        if (!m_passive || !activated || !caughtUp)
+        {
+            return false;
+        }
+        m_passive = false;
+        return true;
+    }
+
     /**
      * Takes a dispatched SnapshotStarted: supersedes any round still open and serializes this one into its file,
      * pulling records from the listener until it returns 0. A length outside 0 … 1302 is the listener's bug; the
@@ -76,7 +104,7 @@ class SnapshotTaker final : public replayer::client::SnapshotRestoreHandler
     {
         m_publishing = false;
         m_serialized = false;
-        if (!m_participating || header.encodedLength() > protocol::MAX_SNAPSHOT_RECORD_LENGTH)
+        if (m_passive || !m_participating || header.encodedLength() > protocol::MAX_SNAPSHOT_RECORD_LENGTH)
         {
             return;
         }
@@ -149,12 +177,18 @@ class SnapshotTaker final : public replayer::client::SnapshotRestoreHandler
     // The source took part at the cut, and its topology row lies before it, never to be dispatched here.
     void onSnapshotHeader(const protocol::SnapshotHeader&) override
     {
-        participating(true);
+        if (!m_passive)
+        {
+            participating(true);
+        }
     }
 
     void onSnapshotRecord(const std::span<const std::uint8_t> record, const std::int32_t recordIndex) override
     {
-        m_listener->onRestore(record, recordIndex);
+        if (!m_passive)
+        {
+            m_listener->onRestore(record, recordIndex);
+        }
     }
 
     /**
@@ -189,6 +223,7 @@ class SnapshotTaker final : public replayer::client::SnapshotRestoreHandler
     replayer::client::SnapshotStore* const m_store;
     std::array<std::uint8_t, protocol::MAX_SNAPSHOT_RECORD_LENGTH> m_encoding{};
     bool m_participating = false;
+    bool m_passive;
     std::int64_t m_round = -1;
     bool m_serialized = false;
     bool m_publishing = false;

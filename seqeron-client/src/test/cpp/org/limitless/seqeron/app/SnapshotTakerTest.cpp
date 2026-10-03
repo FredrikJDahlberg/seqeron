@@ -96,11 +96,11 @@ struct Instances
         return taker;
     }
 
-    SnapshotTaker& instance()
+    SnapshotTaker& instance(const bool passive = false)
     {
         stores.push_back(
             std::make_unique<replayer::client::SnapshotStore>(directory.path() / std::to_string(stores.size())));
-        takers.push_back(std::make_unique<SnapshotTaker>(&state, stores.back().get()));
+        takers.push_back(std::make_unique<SnapshotTaker>(&state, stores.back().get(), passive));
         return *takers.back();
     }
 
@@ -137,7 +137,7 @@ std::vector<std::vector<std::uint8_t>> readAll(replayer::client::SnapshotStore::
 TEST(SnapshotTaker, WithoutAListenerOrWithTheRowOffAReplicaSerializesWritesAndSubmitsNothing)
 {
     Instances t;
-    SnapshotTaker noListener{ nullptr, nullptr };
+    SnapshotTaker noListener{ nullptr, nullptr, false };
     noListener.participating(true);
     EXPECT_FALSE(noListener.isParticipating());
 
@@ -316,6 +316,65 @@ TEST(SnapshotTaker, ARestoreReadsOnlyThisBuildsFormatMakesTheSourceTakePartAndHa
     const std::vector<std::uint8_t> record = filled(1);
     taker.onSnapshotRecord(record, 0);
     EXPECT_EQ((std::vector<std::string>{ "0:1000:1" }), t.state.restored);
+}
+
+TEST(SnapshotTaker, APassiveInstanceSerializesNoRoundThoughItsRowTakesPart)
+{
+    Instances t;
+    SnapshotTaker& taker = t.instance(true);
+    taker.participating(true);
+    EXPECT_FALSE(taker.holdsState());
+    taker.onSnapshotStarted(1, HEADER, true);
+    EXPECT_EQ(0, t.state.serialized);
+    EXPECT_EQ(-1, t.lastStore().latestRound());
+    EXPECT_FALSE(taker.isPublishing());
+    EXPECT_EQ(0, taker.submit(t.frames));
+}
+
+TEST(SnapshotTaker, APassiveInstancesRestoreHandsItsListenerNothing)
+{
+    Instances t;
+    SnapshotTaker& taker = t.instance(true);
+    taker.onSnapshotHeader(HEADER);
+    EXPECT_FALSE(taker.isParticipating());
+    const std::vector<std::uint8_t> record = filled(1);
+    taker.onSnapshotRecord(record, 0);
+    EXPECT_TRUE(t.state.restored.empty());
+}
+
+TEST(SnapshotTaker, ActivationWaitsForTheDesignationAndTheCatchUpAndHappensOnce)
+{
+    Instances t;
+    SnapshotTaker& taker = t.instance(true);
+    EXPECT_FALSE(taker.activate(false, true));
+    EXPECT_FALSE(taker.activate(true, false));
+    EXPECT_FALSE(taker.holdsState());
+    EXPECT_TRUE(taker.activate(true, true));
+    EXPECT_TRUE(taker.holdsState());
+    EXPECT_FALSE(taker.activate(true, true)) << "the recovery restarts once";
+}
+
+TEST(SnapshotTaker, OnceActivatedItRestoresAndTakesPartInTheNextRound)
+{
+    Instances t;
+    SnapshotTaker& taker = t.instance(true);
+    taker.participating(true);
+    ASSERT_TRUE(taker.activate(true, true));
+    taker.onSnapshotHeader(HEADER);
+    const std::vector<std::uint8_t> record = filled(1);
+    taker.onSnapshotRecord(record, 0);
+    EXPECT_EQ((std::vector<std::string>{ "0:1000:1" }), t.state.restored);
+    taker.onSnapshotStarted(2, HEADER, true);
+    EXPECT_EQ(1, t.state.serialized);
+    EXPECT_TRUE(taker.isPublishing());
+}
+
+TEST(SnapshotTaker, AnInstanceThatIsNotPassiveHoldsStateFromTheStartAndHasNothingToActivate)
+{
+    Instances t;
+    SnapshotTaker& taker = t.instance();
+    EXPECT_TRUE(taker.holdsState());
+    EXPECT_FALSE(taker.activate(true, true));
 }
 
 } // namespace

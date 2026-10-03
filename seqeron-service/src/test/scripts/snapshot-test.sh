@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # snapshot-test.sh — application snapshots end to end (doc/snapshot.md), on a three-node cluster with the
 # TestGateway pair taking part in rounds every 2 s: GW-T-A on member 0, GW-T-B on member 1, each restoring
-# from its own node's Replayer.
+# from its own node's Replayer. A TestApplication replica on every member (sourceId 16) takes part too: the
+# one on the leader submits markers and publishes its rounds.
 #
 # TestGateway's state is the cluster's view of its connections and a count of the markers sequenced under
 # its sourceId, and its caught-up line reports both. Every line the client sends is one marker and every
@@ -16,6 +17,10 @@
 #   4. The killed one returns passive: it holds nothing until the active one is killed, then restores from
 #      the files it kept while active, catches up and serves.
 #   5. The other returns as a hot standby, restoring from rounds the passive-turned-active one published.
+#   6. clusterctl request-snapshot starts a round, and both sources end it.
+#   7. A follower's application replica restarts and restores.
+#   8. The cluster leader is killed: the new leader's replica publishes rounds, and the killed member's
+#      clients restore when it returns.
 #
 # PASS iff every step's restore and state check holds, every round trip is answered, the round counter
 # advances on both nodes, and no instance is fenced. Each instance keeps its snapshots in its own directory
@@ -34,6 +39,7 @@ GW_CP="$JAR:$TEST_CLASSES"
 TOPOLOGY="seqeron-service/src/test/resources/topology-test-snapshot.xml"
 LOG_DIR="logs/snapshot"
 SOURCE_ID=9
+APP_SOURCE_ID=16
 NODE_START_TIMEOUT_SECS="${NODE_START_TIMEOUT_SECS:-30}"
 APP_CATCHUP_TIMEOUT_SECS="${APP_CATCHUP_TIMEOUT_SECS:-30}"
 ROUND_TIMEOUT_SECS="${ROUND_TIMEOUT_SECS:-30}"
@@ -52,6 +58,8 @@ CLUSTER_MEMBERS="$(cluster_members_string 3)"
 declare -a SEQ_PIDS
 GW_PIDS=("" "")          # by member: GW-T-A on 0, GW-T-B on 1
 GW_RUNS=(0 0)            # each member's gateway log is numbered per launch
+APP_PIDS=("" "" "")      # TestApplication, by member
+APP_RUNS=(0 0 0)
 FAILURES=0
 
 log() { echo "[$(date +%H:%M:%S)] $*"; }
@@ -101,6 +109,36 @@ wait_active() {  # wait_active <memberId>
   return 0
 }
 
+app_log() { echo "$LOG_DIR/app-$1-${APP_RUNS[$1]}.log"; }
+
+start_app() {  # start_app <memberId>
+  local m="$1"
+  APP_RUNS[$m]=$(( ${APP_RUNS[$m]} + 1 ))
+  java "${JAVA_OPTS[@]}" -Dprobe.memberId="$m" -Dprobe.sourceId="$APP_SOURCE_ID" \
+       -Dprobe.snapshotDir="$SNAPSHOT_DIR/app-$m" -cp "$GW_CP" org.limitless.seqeron.tools.TestApplication \
+       > "$(app_log "$m")" 2>&1 &
+  APP_PIDS[$m]=$!
+  wait_for_log "$(app_log "$m")" "Caught up" "$APP_CATCHUP_TIMEOUT_SECS" \
+    || { log "member $m's TestApplication never caught up (see $(app_log "$m"))"; exit 1; }
+}
+
+stop_app() {  # stop_app <memberId>
+  local m="$1" W=0
+  kill "${APP_PIDS[$m]}" 2>/dev/null
+  while kill -0 "${APP_PIDS[$m]}" 2>/dev/null; do sleep 0.5; W=$((W+1)); ((W>20)) && break; done
+  APP_PIDS[$m]=""
+}
+
+# The member whose latest leadership line says it leads, "" for none.
+leader() {
+  local m
+  for m in 0 1 2; do
+    kill -0 "${SEQ_PIDS[$m]}" 2>/dev/null || continue
+    [[ "$(grep 'isLeader=' "$LOG_DIR/seq-$m.log" 2>/dev/null | tail -1)" == *"isLeader=true"* ]] && { echo "$m"; return; }
+  done
+  echo ""
+}
+
 active_member() { for m in 0 1; do [[ -n "${GW_PIDS[$m]}" ]] && is_active "$m" && { echo "$m"; return; }; done; echo ""; }
 
 roundtrip() {  # roundtrip <memberId> <lines>
@@ -108,18 +146,27 @@ roundtrip() {  # roundtrip <memberId> <lines>
        -cp "$GW_CP" org.limitless.seqeron.tools.TestGateway client >> "$LOG_DIR/client.log" 2>&1
 }
 
-# The newest round of source 9 whose SnapshotEnd member <m>'s Replayer has indexed, 0 for none.
-round_of() {
+# The newest round of a source (default the gateway pair's) whose SnapshotEnd member <m>'s Replayer has
+# indexed, 0 for none.
+round_of() {  # round_of <memberId> [sourceId]
   local value
   value=$(CLUSTERCTL_MEMBER_ID="$1" seqeron-service/src/main/scripts/clusterctl.sh counters 2>/dev/null \
-            | grep "snapshotRound source=$SOURCE_ID " | grep -oE "[0-9]+ *$" | tr -d ' ')
+            | grep "snapshotRound source=${2:-$SOURCE_ID} " | grep -oE "[0-9]+ *$" | tr -d ' ')
   echo "${value:-0}"
 }
 
 # Waits until member <m>'s index is <n> rounds past where it is now: a round cut after the last load.
-wait_rounds() {  # wait_rounds <memberId> <n>
-  local target=$(( $(round_of "$1") + $2 )) W=0
-  until (( $(round_of "$1") >= target )); do
+wait_rounds() {  # wait_rounds <memberId> <n> [sourceId]
+  local target=$(( $(round_of "$1" "${3:-}") + $2 )) W=0
+  until (( $(round_of "$1" "${3:-}") >= target )); do
+    sleep 0.5; W=$((W+1)); ((W > ROUND_TIMEOUT_SECS * 2)) && return 1
+  done
+  return 0
+}
+
+wait_round_indexed() {  # wait_round_indexed <memberId> <round> <sourceId>: that round's end is sequenced
+  local W=0
+  until (( $(round_of "$1" "$3") >= $2 )); do
     sleep 0.5; W=$((W+1)); ((W > ROUND_TIMEOUT_SECS * 2)) && return 1
   done
   return 0
@@ -129,16 +176,25 @@ caught_up_with() {  # caught_up_with <memberId> <markers>: the last caught-up li
   grep "Caught up" "$(gateway_log "$1")" | tail -1 | grep -q "0 connection(s) open, $2 marker(s) sequenced"
 }
 restores() { grep -c "restoring source $SOURCE_ID from round" "$(gateway_log "$1")"; }
-no_fence() { ! grep -q "FENCED" "$LOG_DIR"/gateway-*.log; }
+# The gate edges are a state assignment too.
+app_leading() { [[ "$(grep -o "now leading\|not leading" "$(app_log "$1")" 2>/dev/null | tail -1)" == "now leading" ]]; }
+wait_app_leading() {  # wait_app_leading <memberId>
+  local W=0
+  until app_leading "$1"; do sleep 0.5; W=$((W+1)); ((W > TAKEOVER_TIMEOUT_SECS * 2)) && return 1; done
+  return 0
+}
+app_restored() { grep -q "restoring source $APP_SOURCE_ID from round" "$(app_log "$1")"; }
+no_fence() { ! grep -q "FENCED" "$LOG_DIR"/gateway-*.log "$LOG_DIR"/app-*.log; }
 
 cleanup() {
   pkill -f "TestGateway client" 2>/dev/null
-  for p in "${GW_PIDS[@]}" "${SEQ_PIDS[@]+"${SEQ_PIDS[@]}"}"; do [[ -n "$p" ]] && kill "$p" 2>/dev/null; done
+  for p in "${APP_PIDS[@]}" "${GW_PIDS[@]}" "${SEQ_PIDS[@]+"${SEQ_PIDS[@]}"}"; do [[ -n "$p" ]] && kill "$p" 2>/dev/null; done
   wait 2>/dev/null
 }
 trap cleanup EXIT INT TERM
 
 pkill -9 -f "sequencer.memberId" 2>/dev/null; pkill -9 -f "probe.gatewayName" 2>/dev/null
+pkill -9 -f "tools.TestApplication" 2>/dev/null
 sleep 1
 rm -rf "$BASE_DIR" "$SNAPSHOT_DIR" "${TMP_DIR}/seqeron-seq-aeron-0" "${TMP_DIR}/seqeron-seq-aeron-1" \
        "${TMP_DIR}/seqeron-seq-aeron-2" 2>/dev/null
@@ -151,6 +207,8 @@ done
 seqeron-service/src/main/scripts/clusterctl.sh load-topology "$TOPOLOGY" > "$LOG_DIR/load-topology.log" 2>&1 \
   || { log "load-topology failed (see $LOG_DIR/load-topology.log)"; exit 1; }
 log "cluster up, topology loaded: GW-T-A on member 0, GW-T-B on member 1, rounds every 2 s"
+for m in 0 1 2; do start_app "$m"; done
+log "TestApplication up on every member"
 
 # ── 1. Both instances with snapshots; load; rounds ────────────────────────────────
 start_gateway 0 false; start_gateway 1 false
@@ -162,6 +220,7 @@ log "1. $(gateway_name "$ACTIVE") active, $(gateway_name "$STANDBY") standby"
 check "40 lines round-trip through the active instance" roundtrip "$ACTIVE" 40; MARKERS=$((MARKERS+40))
 check "40 more" roundtrip "$ACTIVE" 40; MARKERS=$((MARKERS+40))
 check "rounds complete after the load (member $STANDBY's index)" wait_rounds "$STANDBY" 2
+check "the application's rounds complete (member $STANDBY's index)" wait_rounds "$STANDBY" 2 "$APP_SOURCE_ID"
 check "no instance fenced" no_fence
 
 # ── 2. The standby restarts and restores ──────────────────────────────────────────
@@ -203,11 +262,56 @@ check "it caught up holding $MARKERS markers and no connection" caught_up_with "
 check "rounds complete, the restored instance comparing them" wait_rounds "$STANDBY" 2
 check "no instance fenced" no_fence
 
+# ── 6. An operator-requested round ────────────────────────────────────────────────
+log "6. clusterctl request-snapshot"
+REQUESTED=$(seqeron-service/src/main/scripts/clusterctl.sh request-snapshot 2>&1 | tee "$LOG_DIR/request-snapshot.log" \
+              | grep -oE "round [0-9]+ started" | grep -oE "[0-9]+")
+check "it started a round" test -n "$REQUESTED"
+check "the gateway pair ends round ${REQUESTED:-?}" wait_round_indexed "$ACTIVE" "${REQUESTED:-0}" "$SOURCE_ID"
+check "the application ends round ${REQUESTED:-?}" wait_round_indexed "$ACTIVE" "${REQUESTED:-0}" "$APP_SOURCE_ID"
+
+# ── 7. A follower's application replica restarts and restores ───────────────────
+LEADER=$(leader)
+[[ -n "$LEADER" ]] || { log "no member reports leading"; exit 1; }
+FOLLOWER=$(( (LEADER + 1) % 3 ))
+log "7. restarting member $FOLLOWER's TestApplication (member $LEADER leads)"
+stop_app "$FOLLOWER"; start_app "$FOLLOWER"
+check "it restored a snapshot" app_restored "$FOLLOWER"
+check "rounds complete, the restored replica comparing them" wait_rounds "$FOLLOWER" 2 "$APP_SOURCE_ID"
+check "no instance fenced" no_fence
+
+# ── 8. The cluster leader is killed ───────────────────────────────────────────────
+KILLED=$(leader)
+[[ -n "$KILLED" ]] || { log "no member reports leading"; exit 1; }
+log "8. killing the cluster leader, member $KILLED, and its clients"
+stop_app "$KILLED"
+(( KILLED < 2 )) && [[ -n "${GW_PIDS[$KILLED]}" ]] && stop_gateway "$KILLED"
+kill "${SEQ_PIDS[$KILLED]}"; wait "${SEQ_PIDS[$KILLED]}" 2>/dev/null
+W=0; until NEW_LEADER=$(leader); [[ -n "$NEW_LEADER" && "$NEW_LEADER" != "$KILLED" ]]; do
+  sleep 0.5; W=$((W+1)); ((W > TAKEOVER_TIMEOUT_SECS * 2)) && break
+done
+check "another member leads" test -n "$NEW_LEADER" -a "$NEW_LEADER" != "$KILLED"
+check "its replica opens its gate" wait_app_leading "$NEW_LEADER"
+check "it publishes the application's rounds" wait_rounds "$NEW_LEADER" 2 "$APP_SOURCE_ID"
+check "the gateway pair's rounds continue" wait_rounds "$NEW_LEADER" 2
+log "   member $KILLED returns"
+start_seq "$KILLED"
+wait_for_log "$LOG_DIR/seq-$KILLED.log" "serving replay" "$NODE_START_TIMEOUT_SECS" \
+  || { log "member $KILLED not back"; exit 1; }
+start_app "$KILLED"
+check "its replica restored a snapshot" app_restored "$KILLED"
+if (( KILLED < 2 )); then
+  start_gateway "$KILLED" false
+  check "its gateway restored a snapshot" test "$(restores "$KILLED")" -eq 1
+fi
+check "rounds complete, the restored replica comparing them" wait_rounds "$KILLED" 2 "$APP_SOURCE_ID"
+check "no instance fenced" no_fence
+
 echo ""
 echo "=== RESULT ==="
 echo "  markers sequenced          : $MARKERS"
 echo "  latest round, member 0 / 1 : $(round_of 0) / $(round_of 1)"
-grep -h "restoring source" "$LOG_DIR"/gateway-*.log | sed 's/^/    /'
+grep -h "restoring source" "$LOG_DIR"/gateway-*.log "$LOG_DIR"/app-*.log | sed 's/^/    /'
 if (( FAILURES == 0 )); then
   echo "SNAPSHOT TEST: PASS — every restore reached the expected state and no instance diverged"
   exit 0
