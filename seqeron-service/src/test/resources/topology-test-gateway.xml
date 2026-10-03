@@ -1,7 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
     The cluster tier's own topology document: the gateway pair chaos-runner.sh runs, so that the
-    harnesses exercise the election path and the bootstrap GatewayActive.
+    harnesses exercise the election path and the bootstrap GatewayActive, taking part in snapshot rounds
+    every 2 s so that rounds run under the faults too.
 
       clusterctl.sh load-topology cluster/src/test/resources/topology-test-gateway.xml
 
@@ -17,13 +18,15 @@
          producer. gatewayIds 10 and 11 rather than the next free pair, so a log line or a dump can never
          be confused with the C++ pair's 1/2. -->
     <gateways>
-        <gateway name="GW-T-A" id="10" sourceId="9" rank="0"
+        <gateway name="GW-T-A" id="10" sourceId="9" rank="0" snapshot="true"
                  description="TestGateway, the edge-neutral test gateway (tools/TestGateway serve)"/>
-        <gateway name="GW-T-B" id="11" sourceId="9" rank="1"
+        <gateway name="GW-T-B" id="11" sourceId="9" rank="1" snapshot="true"
                  description="TestGateway standby"/>
     </gateways>
 
     <!-- No <applications>: ClusterProbe follow is a tap consumer, not a producer. No <protocols>: the
          probe's payloadId 5 is private in the §6.1 sense — one publisher, one consumer, both the probe. -->
+
+    <snapshots interval="2"/>
 
 </topology>

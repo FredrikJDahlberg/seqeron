@@ -1,5 +1,6 @@
 package org.limitless.seqeron.sequencer;
 
+import java.util.concurrent.TimeUnit;
 import org.agrona.DirectBuffer;
 import org.agrona.ExpandableDirectByteBuffer;
 import org.agrona.MutableDirectBuffer;
@@ -17,6 +18,8 @@ import org.limitless.seqeron.sbe.frame.SequencedEncoder;
 import org.limitless.seqeron.sbe.frame.SequencedHeaderEncoder;
 import org.limitless.seqeron.sbe.frame.SequencedSystemEncoder;
 import org.limitless.seqeron.sbe.frame.SequencedSystemHeaderEncoder;
+import org.limitless.seqeron.sbe.frame.SnapshotPolicyRegisteredDecoder;
+import org.limitless.seqeron.sbe.frame.SnapshotStartedEncoder;
 import org.limitless.seqeron.sbe.frame.UnsequencedDecoder;
 import org.limitless.seqeron.sbe.frame.UnsequencedHeaderDecoder;
 import org.limitless.seqeron.sbe.frame.UnsequencedSystemDecoder;
@@ -25,7 +28,7 @@ import org.limitless.seqeron.util.Logger;
 
 /**
  * The sequencer's replicated state machine, free of every Aeron type: {@code globalSeqNo}, the gateway
- * list and election, and every frame encode. Each {@code sequence*}/event method encodes one frame into
+ * list and election, the snapshot rounds, and every frame encode. Each {@code sequence*}/event method encodes one frame into
  * {@link #buffer()} from offset 0 and returns its length, or {@link #NO_FRAME}; {@link SequencerService}
  * publishes it and decides nothing.
  *
@@ -69,6 +72,9 @@ public final class Sequencer {
     /** Core's retired {@code payloadId} (spec §6.1), refused on ingress so a stale producer fails loudly. */
     private static final int RETIRED_CORE_ID = 1;
 
+    /** {@link #snapshotIntervalNs} before any {@code SnapshotPolicyRegistered}: rounds are off. */
+    private static final long NO_SNAPSHOT_POLICY = -1;
+
     /** {@code varDataEncoding}'s {@code nullValue}: "absent", not a 65535-byte payload. */
     private static final int NULL_PAYLOAD_LENGTH = 65535;
 
@@ -84,11 +90,12 @@ public final class Sequencer {
     private final UnsequencedHeaderDecoder frameHeaderDecoder = new UnsequencedHeaderDecoder();
     private final UnsequencedSystemHeaderDecoder systemHeaderDecoder = new UnsequencedSystemHeaderDecoder();
 
-    // Only these three system payloads are opened; the rest are matched on systemEventType alone.
+    // Only these four system payloads are opened; the rest are matched on systemEventType alone.
     private final GatewayRegisteredDecoder gatewayRegisteredDecoder = new GatewayRegisteredDecoder();
     private final GatewayStartedDecoder gatewayStartedDecoder = new GatewayStartedDecoder();
     private final GatewayActivationRequestedDecoder activationRequestedDecoder =
         new GatewayActivationRequestedDecoder();
+    private final SnapshotPolicyRegisteredDecoder snapshotPolicyDecoder = new SnapshotPolicyRegisteredDecoder();
 
     // tapHeaderEncoder writes the three stamp fields, at offsets common to both sequenced composites.
     private final MessageHeaderEncoder headerEncoder = new MessageHeaderEncoder();
@@ -96,6 +103,7 @@ public final class Sequencer {
     private final LeadershipChangedEncoder leadershipChangedEncoder = new LeadershipChangedEncoder();
     private final ClusterHeartbeatEncoder clusterHeartbeatEncoder = new ClusterHeartbeatEncoder();
     private final GatewayActiveEncoder gatewayActiveEncoder = new GatewayActiveEncoder();
+    private final SnapshotStartedEncoder snapshotStartedEncoder = new SnapshotStartedEncoder();
 
     private final MutableDirectBuffer encodeBuffer = new ExpandableDirectByteBuffer(4096);
 
@@ -166,6 +174,22 @@ public final class Sequencer {
      * gateway. A list replaced in place rather than a map, so every node walks it in arm order.
      */
     private final java.util.List<PendingActivation> pendingActivations = new java.util.ArrayList<>();
+
+    /**
+     * The latest {@code SnapshotPolicyRegistered}'s interval in consensus time, 0 for operator requests only,
+     * or {@link #NO_SNAPSHOT_POLICY}. Rounds are cuts the sequencer tracks nothing about once started
+     * (doc/snapshot.md §3), so this, {@link #snapshotRound} and {@link #lastSnapshotStart} are all of it.
+     */
+    private long snapshotIntervalNs = NO_SNAPSHOT_POLICY;
+
+    /** The last round started; 0 before the first. */
+    private long snapshotRound = 0;
+
+    /** When the interval counts from: the last {@code SnapshotStarted}, or the policy row before any round. */
+    private long lastSnapshotStart = 0;
+
+    /** A sequenced {@code SnapshotRequested} not yet answered; {@link #pendingSnapshotStart} answers it. */
+    private boolean snapshotRequested = false;
 
     /**
      * This node's memberId, for the rejection log line only. Set rather than constructed because {@code
@@ -284,7 +308,7 @@ public final class Sequencer {
                               " bytes is short of " + blockLength);
             }
             if (!applySystem(buffer, prefixOffset + UnsequencedDecoder.payloadHeaderLength(), systemEventType,
-                             sourceId, connectionId, sessionId)) {
+                             sourceId, connectionId, sessionId, timestamp)) {
                 return NO_FRAME;
             }
         } else {
@@ -321,7 +345,8 @@ public final class Sequencer {
      * {@code BLOCK_LENGTH} and {@code SCHEMA_VERSION} (<b>V-3</b>); condition 9 has checked the length.
      */
     private boolean applySystem(final DirectBuffer buffer, final int bodyOffset, final int systemEventType,
-                                final int sourceId, final int connectionId, final long sessionId) {
+                                final int sourceId, final int connectionId, final long sessionId,
+                                final long timestamp) {
         if (systemEventType != SystemFrame.GATEWAY_STARTED && listClaims(sourceId) &&
             !boundToGateway(sessionId, sourceId)) {
             return rejectSystem("systemEventType " + systemEventType + " claims listed sourceId " + sourceId +
@@ -381,6 +406,15 @@ public final class Sequencer {
                     connectedClientCount--;
                 }
             }
+            case SystemFrame.SNAPSHOT_POLICY_REGISTERED -> {
+                snapshotPolicyDecoder.wrap(buffer, bodyOffset, SnapshotPolicyRegisteredDecoder.BLOCK_LENGTH,
+                                           version);
+                snapshotIntervalNs = TimeUnit.SECONDS.toNanos(snapshotPolicyDecoder.intervalSeconds());
+                if (snapshotRound == 0) {
+                    lastSnapshotStart = timestamp;
+                }
+            }
+            case SystemFrame.SNAPSHOT_REQUESTED -> snapshotRequested = true;
             default -> {
                 // Allocated, ingress-legal and derived from by nothing: forwarded and not opened (S-2).
             }
@@ -445,6 +479,48 @@ public final class Sequencer {
         }
         bootstrapActivationEmitted |= queued.bootstrap();
         return gatewayActive(queued.gatewayId(), timestamp);
+    }
+
+    /**
+     * The {@code SnapshotStarted} answering a {@code SnapshotRequested} just sequenced, at the next {@code
+     * globalSeqNo}; nothing if no policy is registered. A round still being submitted is superseded.
+     * @param timestamp now
+     * @return a {@code SnapshotStarted} frame length, or {@link #NO_FRAME}
+     */
+    public int pendingSnapshotStart(final long timestamp) {
+        if (!snapshotRequested) {
+            return NO_FRAME;
+        }
+        snapshotRequested = false;
+        return snapshotIntervalNs == NO_SNAPSHOT_POLICY ? NO_FRAME : snapshotStarted(timestamp);
+    }
+
+    /**
+     * The interval trigger, evaluated off the heartbeat's consensus timestamp after promotion: a round once
+     * {@code interval} has passed since the last one started, or since the policy row before any round.
+     * @param timestamp now
+     * @return a {@code SnapshotStarted} frame length, or {@link #NO_FRAME}
+     */
+    public int snapshotIntervalElapsed(final long timestamp) {
+        if (snapshotIntervalNs <= 0 || timestamp - lastSnapshotStart < snapshotIntervalNs) {
+            return NO_FRAME;
+        }
+        return snapshotStarted(timestamp);
+    }
+
+    /** The last round started; 0 before the first. */
+    public long snapshotRound() {
+        return snapshotRound;
+    }
+
+    /** Encodes the next round's {@code SnapshotStarted}; its {@code globalSeqNo} is the round's cut. */
+    private int snapshotStarted(final long timestamp) {
+        lastSnapshotStart = timestamp;
+        final long globalSeq = ++globalSeqNo;
+        snapshotStartedEncoder.wrapAndApplyHeader(encodeBuffer, 0, headerEncoder);
+        stampSynthesized(snapshotStartedEncoder.header(), SystemFrame.SNAPSHOT_STARTED, globalSeq, timestamp);
+        snapshotStartedEncoder.round(++snapshotRound);
+        return MessageHeaderEncoder.ENCODED_LENGTH + snapshotStartedEncoder.encodedLength();
     }
 
     /** Whether a bootstrap {@code GatewayActive} has been emitted; the {@code bootstrap_activated} gauge. */

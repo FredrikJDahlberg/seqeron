@@ -1,10 +1,13 @@
 #pragma once
 
+#include <algorithm>
 #include <cstdint>
 #include <string>
 #include <string_view>
-#include <unordered_map>
 #include <utility>
+#include <vector>
+
+#include "org/limitless/seqeron/protocol/Snapshot.hpp"
 
 namespace org::limitless::seqeron::app::detail {
 
@@ -49,7 +52,15 @@ class GatewayLifecycle
     void onGatewayRegistered(const std::int32_t rowGatewayId, const std::int32_t rowGatewaySourceId,
                              const std::string_view rowName, const std::int32_t preferenceRank)
     {
-        m_gatewaySourceIds.insert_or_assign(rowGatewayId, rowGatewaySourceId);
+        Row row{ rowGatewayId, rowGatewaySourceId, preferenceRank, std::string(rowName) };
+        if (const auto existing = findRow(rowGatewayId); existing != m_rows.end())
+        {
+            *existing = std::move(row);
+        }
+        else
+        {
+            m_rows.push_back(std::move(row));
+        }
         if (rowName != m_gatewayName)
         {
             return;
@@ -66,11 +77,12 @@ class GatewayLifecycle
         {
             return;
         }
-        const auto target = m_gatewaySourceIds.find(targetGatewayId);
-        if (target == m_gatewaySourceIds.end() || target->second != m_gatewaySourceId)
+        const auto target = findRow(targetGatewayId);
+        if (target == m_rows.end() || target->gatewaySourceId != m_gatewaySourceId)
         {
             return;
         }
+        m_activeGatewayId = targetGatewayId;
         const bool wasActivated = m_activated;
         m_activated = targetGatewayId == m_gatewayId;
         if (m_activated || !wasActivated)
@@ -83,6 +95,20 @@ class GatewayLifecycle
             m_state = State::Passive;
             m_actions.closeGate();
         }
+    }
+
+    // Takes the election state a snapshot header holds in place of the frames before its cut (doc/snapshot.md §6):
+    // the pair's rows, which resolve this instance's identity by name, and the instance its GatewayActive names.
+    // Before the gate has opened, so nothing is published or closed.
+    void onSnapshotHeader(const protocol::SnapshotGatewayState& state)
+    {
+        m_rows.clear();
+        for (const protocol::SnapshotGatewayRow& row : state.rows)
+        {
+            onGatewayRegistered(row.gatewayId, state.gatewaySourceId, row.gatewayName, row.preferenceRank);
+        }
+        m_activeGatewayId = state.activeGatewayId;
+        m_activated = m_gatewayId != UNRESOLVED && m_activeGatewayId == m_gatewayId;
     }
 
     // The gate closed without being asked to. The activation stands, so advance() reopens it without a
@@ -140,6 +166,32 @@ class GatewayLifecycle
         return m_activated;
     }
 
+    // Whether this activation's GatewayStarted has been placed, binding the session to the pair's frames.
+    [[nodiscard]] bool isAnnounced() const noexcept
+    {
+        return m_activated && m_registered;
+    }
+
+    // The instance of this pair the last GatewayActive named, or SnapshotHeader::NO_GATEWAY.
+    [[nodiscard]] std::int32_t activeGatewayId() const noexcept
+    {
+        return m_activeGatewayId;
+    }
+
+    // Every row of this instance's pair, in list order: what a snapshot header carries.
+    [[nodiscard]] std::vector<protocol::SnapshotGatewayRow> pairRows() const
+    {
+        std::vector<protocol::SnapshotGatewayRow> pair;
+        for (const Row& row : m_rows)
+        {
+            if (row.gatewaySourceId == m_gatewaySourceId)
+            {
+                pair.push_back({ row.gatewayId, static_cast<std::uint8_t>(row.preferenceRank), row.gatewayName });
+            }
+        }
+        return pair;
+    }
+
     [[nodiscard]] std::int32_t gatewayId() const noexcept
     {
         return m_gatewayId;
@@ -151,14 +203,30 @@ class GatewayLifecycle
     }
 
   private:
+    struct Row
+    {
+        std::int32_t gatewayId;
+        std::int32_t gatewaySourceId;
+        std::int32_t preferenceRank;
+        std::string gatewayName;
+    };
+
+    typename std::vector<Row>::iterator findRow(const std::int32_t gatewayId)
+    {
+        return std::ranges::find(m_rows, gatewayId, &Row::gatewayId);
+    }
+
     std::string m_gatewayName;
     Actions& m_actions;
-    std::unordered_map<std::int32_t, std::int32_t> m_gatewaySourceIds; // a GatewayActive carries only the id
+    // Every row, in list order, a re-published row replacing its earlier one in place as the sequencer's list does: a
+    // GatewayActive carries only the id, and a snapshot header every row of the pair.
+    std::vector<Row> m_rows;
     State m_state = State::Replaying;
     std::int32_t m_gatewayId = UNRESOLVED;
     std::int32_t m_gatewaySourceId = UNRESOLVED;
     bool m_activated = false;
     bool m_registered = false;
+    std::int32_t m_activeGatewayId = protocol::SnapshotHeader::NO_GATEWAY;
 };
 
 } // namespace org::limitless::seqeron::app::detail

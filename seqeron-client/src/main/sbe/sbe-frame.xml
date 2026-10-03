@@ -4,9 +4,10 @@
 
     Two families. The application family (Unsequenced 100, Sequenced 101) carries one opaque,
     length-prefixed payload named by header.payloadId (§6); the cluster tier never decodes it. The
-    system family carries seqeron's own messages, named by header.systemEventType: nine submitted
-    events in UnsequencedSystem 102 / SequencedSystem 103, and three that the sequencer synthesizes as
-    templates of their own (ClusterHeartbeat 104, LeadershipChanged 105, GatewayActive 106).
+    system family carries seqeron's own messages, named by header.systemEventType: twelve submitted
+    events in UnsequencedSystem 102 / SequencedSystem 103, and four that the sequencer synthesizes as
+    templates of their own (ClusterHeartbeat 104, LeadershipChanged 105, GatewayActive 106,
+    SnapshotStarted 107).
 
     Each unsequenced header composite is a byte prefix of its sequenced counterpart, and the two
     families' composites differ only in the name of the uint16 at offset 16 (F-3), so globalSeqNo is
@@ -131,7 +132,7 @@
     -->
 
     <sbe:message name="UnsequencedSystem" id="102"
-                 description="A system frame on cluster ingress. Only the nine submitted events are legal here">
+                 description="A system frame on cluster ingress. Only the twelve submitted events are legal here">
         <field name="header" id="20001" type="unsequencedSystemHeader"/>
         <data  name="body"   id="20045" type="varDataEncoding"
                description="The event named by header.systemEventType, as its SBE block with no MessageHeader. Empty when the event has no fields"/>
@@ -168,7 +169,15 @@
         <field name="gatewayId" id="20029" type="int32"/>
     </sbe:message>
 
-    <!-- ── The nine submitted system events ─────────────────────────────────────────────────────────
+    <sbe:message name="SnapshotStarted" id="107"
+                 description="Starts a snapshot round: every participating source serializes its state as of this
+                              frame's globalSeqNo, the round's cut (doc/snapshot.md §3)">
+        <field name="header" id="20001" type="sequencedSystemHeader"/>
+        <field name="round"  id="20049" type="int64"
+               description="The round's number, from 1"/>
+    </sbe:message>
+
+    <!-- ── The twelve submitted system events ───────────────────────────────────────────────────────────
          Payloads carried in UnsequencedSystem/SequencedSystem; none has a header field. A template id here
          is never written to the wire: it is the event's systemEventType, and ids are never reused.
     -->
@@ -205,6 +214,9 @@
         <field name="gatewayName"     id="20031" type="gatewayName"/>
         <field name="preferenceRank"  id="20032" type="uint8"
                description="0 = designated primary (exactly one per gatewaySourceId); 1, 2, … = standbys"/>
+        <field name="snapshot"        id="20057" type="uint8"
+               description="1 if this logical gateway takes part in snapshot rounds, else 0; the same on every row
+                            of one gatewaySourceId"/>
     </sbe:message>
 
     <sbe:message name="GatewayStarted" id="19"
@@ -238,6 +250,36 @@
         <field name="applicationSourceId" id="20046" type="int32"
                description="The application's sourceId (§5)"/>
         <field name="applicationName"     id="20047" type="applicationName"/>
+        <field name="snapshot"            id="20057" type="uint8"
+               description="1 if this application takes part in snapshot rounds, else 0"/>
+    </sbe:message>
+
+    <sbe:message name="SnapshotRequested" id="26"
+                 description="An operator asked for a snapshot round (clusterctl request-snapshot). The sequencer
+                              answers with SnapshotStarted at the next globalSeqNo">
+        <field name="correlationId" id="20002" type="correlationId"/>
+    </sbe:message>
+
+    <sbe:message name="SnapshotEnd" id="28"
+                 description="A source's snapshot of one round as its publisher serialized it. The bytes stay with
+                              each instance that serialized them; every one compares its own with this, and a
+                              restore checks its local copy against it (doc/snapshot.md §2)">
+        <field name="round"         id="20049" type="int64"/>
+        <field name="recordCount"   id="20052" type="int32"
+               description="Records, the header included"/>
+        <field name="length"        id="20053" type="int64"
+               description="The records' bytes, header and body"/>
+        <field name="crc32c"        id="20054" type="uint32"
+               description="CRC-32C over those bytes"/>
+        <field name="formatVersion" id="20055" type="uint32"
+               description="The application's body format; opaque to seqeron"/>
+    </sbe:message>
+
+    <sbe:message name="SnapshotPolicyRegistered" id="29"
+                 description="The topology file's snapshots element, published by clusterctl load-topology after every
+                              other row">
+        <field name="intervalSeconds" id="20056" type="uint32"
+               description="Seconds between rounds on the cluster clock; 0 = operator requests only"/>
     </sbe:message>
 
 </sbe:messageSchema>

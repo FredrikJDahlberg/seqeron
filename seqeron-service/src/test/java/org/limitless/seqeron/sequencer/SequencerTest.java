@@ -19,6 +19,7 @@ import org.limitless.seqeron.sbe.frame.ConnectionOpenedDecoder;
 import org.limitless.seqeron.sbe.frame.GatewayActiveDecoder;
 import org.limitless.seqeron.sbe.frame.LeadershipChangedDecoder;
 import org.limitless.seqeron.sbe.frame.MessageHeaderDecoder;
+import org.limitless.seqeron.sbe.frame.SnapshotStartedDecoder;
 
 /**
  * Unit tests for the sequencer's replicated state machine.
@@ -501,10 +502,18 @@ class SequencerTest {
 
         collect(frames, target, target.sequenceMessage(lifecycle, 0, connectedLength, SESSION_ID, TIMESTAMP));
         collect(frames, target, target.leadershipChanged(0, 0, TIMESTAMP + 1));
+        final MutableDirectBuffer marker = new ExpandableArrayBuffer(64);
+        collect(frames, target, target.sequenceMessage(marker, 0, encodeIngressSnapshotPolicy(marker, 0, 2),
+                                                       SESSION_ID, TIMESTAMP + 2));
         for (int i = 0; i < 5; i++) {
             collect(frames, target, target.sequenceMessage(message, 0, messageLength, SESSION_ID, TIMESTAMP + i));
-            collect(frames, target, target.clusterHeartbeat(TIMESTAMP + 1000L * i));
+            final long heartbeat = TIMESTAMP + 1_000_000_000L * i;
+            collect(frames, target, target.clusterHeartbeat(heartbeat));
+            collect(frames, target, target.snapshotIntervalElapsed(heartbeat));
         }
+        collect(frames, target, target.sequenceMessage(marker, 0, encodeIngressSnapshotRequested(marker, 0, 7),
+                                                       SESSION_ID, TIMESTAMP + 8));
+        collect(frames, target, target.pendingSnapshotStart(TIMESTAMP + 8));
         collect(frames, target, target.leadershipChanged(1, 0, TIMESTAMP + 9));
         collect(frames, target, target.leadershipChanged(2, 1, TIMESTAMP + 10));
         final int disconnectedLength = encodeIngressConnectionClosed(lifecycle, 0);
@@ -532,6 +541,64 @@ class SequencerTest {
         // bootstrap GatewayActive and stopped producing frames identical to its peers'
         // Recovery is full-log replay, which rebuilds all of it.
         assertThrows(UnsupportedOperationException.class, () -> new SequencerService(() -> { }).onTakeSnapshot(null));
+    }
+
+    // ── Snapshot rounds (doc/snapshot.md §3) ──────────────────────────────────
+
+    @Test
+    @DisplayName("with no policy registered, a SnapshotRequested is sequenced and nothing follows it")
+    void snapshotRequestWithoutAPolicyStartsNoRound() {
+        final int request = sequencer.sequenceMessage(ingress, 0, encodeIngressSnapshotRequested(ingress, 0, 7),
+                                                      SESSION_ID, TIMESTAMP);
+        assertEquals(SystemFrame.SNAPSHOT_REQUESTED, systemEventTypeOf(sequencer.buffer(), request));
+        assertEquals(Sequencer.NO_FRAME, sequencer.pendingSnapshotStart(TIMESTAMP));
+        assertEquals(Sequencer.NO_FRAME, sequencer.snapshotIntervalElapsed(TIMESTAMP + 1_000_000_000_000L));
+        assertEquals(1L, sequencer.globalSeqNo());
+        assertEquals(0L, sequencer.snapshotRound());
+    }
+
+    @Test
+    @DisplayName("an operator request is answered by SnapshotStarted at the next globalSeqNo, and each starts a round")
+    void snapshotRequestIsAnsweredAtTheNextGlobalSeqNo() {
+        sequencer.sequenceMessage(ingress, 0, encodeIngressSnapshotPolicy(ingress, 0, 0), SESSION_ID, TIMESTAMP);
+        for (long round = 1; round <= 2; round++) {
+            final long timestamp = TIMESTAMP + round;
+            sequencer.sequenceMessage(ingress, 0, encodeIngressSnapshotRequested(ingress, 0, round), SESSION_ID,
+                                      timestamp);
+            final long requestSeqNo = sequencer.globalSeqNo();
+            final int started = sequencer.pendingSnapshotStart(timestamp);
+            final SnapshotStartedDecoder decoder = decodeSnapshotStarted(sequencer.buffer(), started);
+            assertEquals(round, decoder.round(), "a new request supersedes the open round");
+            assertEquals(requestSeqNo + 1, systemHeaderOf(sequencer.buffer()).globalSeqNo(), "R follows the request");
+            assertEquals(Sequencer.NO_SOURCE_ID, systemHeaderOf(sequencer.buffer()).sourceId());
+            assertEquals(timestamp, systemHeaderOf(sequencer.buffer()).timestamp());
+            assertEquals(Sequencer.NO_FRAME, sequencer.pendingSnapshotStart(timestamp), "one request, one round");
+        }
+        assertEquals(Sequencer.NO_FRAME, sequencer.snapshotIntervalElapsed(TIMESTAMP + 1_000_000_000_000L),
+                     "interval 0: rounds start only on request");
+    }
+
+    @Test
+    @DisplayName("the interval counts from the policy row, then from each round's start, operator rounds included")
+    void snapshotIntervalCountsFromTheLastStart() {
+        final long interval = 10_000_000_000L;
+        sequencer.sequenceMessage(ingress, 0, encodeIngressSnapshotPolicy(ingress, 0, 10), SESSION_ID, TIMESTAMP);
+        assertEquals(Sequencer.NO_FRAME, sequencer.snapshotIntervalElapsed(TIMESTAMP + interval - 1));
+
+        final int first = sequencer.snapshotIntervalElapsed(TIMESTAMP + interval);
+        assertEquals(1L, decodeSnapshotStarted(sequencer.buffer(), first).round());
+
+        final long requestedAt = TIMESTAMP + interval + interval / 2;
+        sequencer.sequenceMessage(ingress, 0, encodeIngressSnapshotRequested(ingress, 0, 9), SESSION_ID, requestedAt);
+        assertEquals(2L, decodeSnapshotStarted(sequencer.buffer(), sequencer.pendingSnapshotStart(requestedAt)).round());
+
+        // A policy re-published after a round moves nothing: the interval still counts from round 2.
+        sequencer.sequenceMessage(ingress, 0, encodeIngressSnapshotPolicy(ingress, 0, 10), SESSION_ID,
+                                  requestedAt + 1);
+        assertEquals(Sequencer.NO_FRAME, sequencer.snapshotIntervalElapsed(TIMESTAMP + 2 * interval));
+        final int third = sequencer.snapshotIntervalElapsed(requestedAt + interval);
+        assertEquals(3L, decodeSnapshotStarted(sequencer.buffer(), third).round());
+        assertEquals(Sequencer.NO_FRAME, sequencer.snapshotIntervalElapsed(requestedAt + interval));
     }
 
     // ── Lifecycle and clock frames ────────────────────────────────────────────
@@ -1273,6 +1340,33 @@ class SequencerTest {
                                         encoder.encodedLength());
     }
 
+    /** Encodes a SnapshotPolicyRegistered, as {@code clusterctl load-topology} submits it. */
+    private static int encodeIngressSnapshotPolicy(final MutableDirectBuffer buffer, final int offset,
+                                                   final int intervalSeconds) {
+        final MutableDirectBuffer body = new ExpandableArrayBuffer(16);
+        final org.limitless.seqeron.sbe.frame.SnapshotPolicyRegisteredEncoder encoder =
+            new org.limitless.seqeron.sbe.frame.SnapshotPolicyRegisteredEncoder();
+        encoder.wrap(body, 0).intervalSeconds(intervalSeconds);
+        return encodeIngressSystemFrame(buffer, offset, 99, -1, SystemFrame.SNAPSHOT_POLICY_REGISTERED, body,
+                                        encoder.encodedLength());
+    }
+
+    /** Encodes a SnapshotRequested, as {@code clusterctl request-snapshot} submits it. */
+    private static int encodeIngressSnapshotRequested(final MutableDirectBuffer buffer, final int offset,
+                                                      final long correlationId) {
+        final MutableDirectBuffer body = new ExpandableArrayBuffer(16);
+        final org.limitless.seqeron.sbe.frame.SnapshotRequestedEncoder encoder =
+            new org.limitless.seqeron.sbe.frame.SnapshotRequestedEncoder();
+        encoder.wrap(body, 0).correlationId(correlationId);
+        return encodeIngressSystemFrame(buffer, offset, 99, -1, SystemFrame.SNAPSHOT_REQUESTED, body,
+                                        encoder.encodedLength());
+    }
+
+    private static SnapshotStartedDecoder decodeSnapshotStarted(final MutableDirectBuffer buffer, final int length) {
+        return decodeSynthesized(buffer, length, SnapshotStartedDecoder.TEMPLATE_ID, SystemFrame.SNAPSHOT_STARTED,
+                                 SnapshotStartedDecoder.BLOCK_LENGTH, new SnapshotStartedDecoder());
+    }
+
     private static GatewayActiveDecoder decodeGatewayActive(final MutableDirectBuffer buffer, final int length) {
         return decodeSynthesized(buffer, length, GatewayActiveDecoder.TEMPLATE_ID, SystemFrame.GATEWAY_ACTIVE,
                                  GatewayActiveDecoder.BLOCK_LENGTH, new GatewayActiveDecoder());
@@ -1309,7 +1403,7 @@ class SequencerTest {
     }
 
     /**
-     * Decodes one of the three the sequencer synthesizes. Each has a template of its own and carries its
+     * Decodes one of the four the sequencer synthesizes. Each has a template of its own and carries its
      * fields inline, so there is no payload and no length prefix: the frame is its framing header plus its
      * block, and the decoder is wrapped over that block with its own compiled constants (<b>V-3</b>).
      */
@@ -1325,6 +1419,8 @@ class SequencerTest {
                      "offset 16 discriminates every frame on the tap, synthesized ones included");
         final int block = org.limitless.seqeron.sbe.frame.MessageHeaderDecoder.ENCODED_LENGTH;
         if (decoder instanceof GatewayActiveDecoder d) {
+            d.wrap(buffer, block, blockLength, header.version());
+        } else if (decoder instanceof SnapshotStartedDecoder d) {
             d.wrap(buffer, block, blockLength, header.version());
         } else {
             ((LeadershipChangedDecoder)decoder).wrap(buffer, block, blockLength, header.version());

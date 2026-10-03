@@ -47,7 +47,7 @@ inline std::string resolveReplayChannel(const char* envVar, std::uint16_t defaul
 
 // Default 3-node cluster archive control endpoints, from PortLayout.hpp. Every member's archive holds an
 // identical recording, so any reachable one will do.
-inline const std::string DEFAULT_ARCHIVE_ENDPOINTS = protocol::archiveEndpointsCsv(protocol::CLUSTER_MEMBER_COUNT);
+inline const std::string DEFAULT_ARCHIVE_ENDPOINTS = protocol::archiveEndpointsCsv(protocol::DEFAULT_MEMBER_COUNT);
 
 /**
  * Resolves the archive control endpoints to try, from the environment.

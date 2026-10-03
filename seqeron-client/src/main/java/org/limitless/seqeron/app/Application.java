@@ -1,11 +1,19 @@
 package org.limitless.seqeron.app;
 
 import io.aeron.Aeron;
+import java.nio.file.Path;
 import java.util.Objects;
 import org.agrona.DirectBuffer;
 import org.limitless.seqeron.protocol.PortLayout;
 import org.limitless.seqeron.protocol.Publish;
+import org.limitless.seqeron.protocol.SnapshotHeader;
+import org.limitless.seqeron.protocol.SystemFrame;
 import org.limitless.seqeron.replayer.client.SequencedEvent;
+import org.limitless.seqeron.replayer.client.SnapshotStore;
+import org.limitless.seqeron.sbe.frame.ApplicationRegisteredDecoder;
+import org.limitless.seqeron.sbe.frame.MessageHeaderDecoder;
+import org.limitless.seqeron.sbe.frame.SnapshotEndDecoder;
+import org.limitless.seqeron.sbe.frame.SnapshotStartedDecoder;
 
 /**
  * One replica of a co-located application — the kind of producer nothing elects. One runs per node, the
@@ -22,6 +30,13 @@ import org.limitless.seqeron.replayer.client.SequencedEvent;
  * payloads it submits. Every replica reads the same ordered stream and so holds the same state, which is
  * what makes {@link OutstandingWork} — fed that same stream — the way work survives the gate closing
  * under it.
+ *
+ * <p><b>Snapshots</b> (doc/snapshot.md §4): given a {@link SnapshotListener} and a topology row with {@code
+ * snapshot="true"}, every replica serializes its state at each round's cut into its own directory, and the one
+ * whose gate is open then submits the round's {@code SnapshotEnd}. A replica whose snapshot differs from the one
+ * sequenced is fenced with {@link ClusterError#SNAPSHOT_DIVERGED}. On start, a replica given a listener restores
+ * the newest snapshot of its own that the log confirms and resumes after its cut, or replays from {@code
+ * globalSeqNo} 1 without one; one it cannot restore is fenced with {@link ClusterError#SNAPSHOT_UNRESTORABLE}.
  *
  * <p>Single-threaded: every method belongs to the caller's one duty-cycle thread, which calls
  * {@link #doWork()} each iteration. The C++ twin is {@code app/Application.hpp}; keep the two in
@@ -74,6 +89,8 @@ public final class Application implements AutoCloseable {
     private final Session session;
     private final LeaderGate gate;
     private final Listener listener;
+    private final SnapshotTaker snapshots;
+    private final SnapshotFrames snapshotFrames;
     private final int sourceId;
     private final int memberId;
     private final boolean offCluster;
@@ -90,8 +107,15 @@ public final class Application implements AutoCloseable {
         this.egressChannel = builder.egressChannel;
         this.ingressEndpoints = builder.ingressEndpoints;
         this.gate = new LeaderGate(builder.memberId, builder.offCluster);
+        final SnapshotStore store =
+            builder.snapshotListener == null ? null : new SnapshotStore(builder.snapshotDirectory);
+        this.snapshots = new SnapshotTaker(builder.snapshotListener, store, false, this::keepAlive);
         this.session = new Session(builder.clientId, builder.pendingCapacity, builder.tapStallTimeoutMs,
                                    builder.recoveryStallTimeoutMs, new SessionDispatch());
+        this.snapshotFrames = new SnapshotFrames(session, () -> sourceId);
+        if (store != null) {
+            session.restoreFrom(sourceId, store, snapshots);
+        }
     }
 
     public static Builder builder() {
@@ -112,13 +136,16 @@ public final class Application implements AutoCloseable {
      * @return units of work done, for the caller's idle strategy
      */
     public int doWork() {
-        final int work = session.doWork();
+        int work = session.doWork();
         final LeaderGate.Transition transition = gate.update(session.isCaughtUp(), session.currentLeaderMemberId());
-        if (transition == LeaderGate.Transition.NONE) {
-            return work;
+        if (transition != LeaderGate.Transition.NONE) {
+            listener.onLeadershipChanged(transition == LeaderGate.Transition.OPENED);
+            work++;
         }
-        listener.onLeadershipChanged(transition == LeaderGate.Transition.OPENED);
-        return work + 1;
+        if (gate.isOpen()) {
+            work += snapshots.submit(snapshotFrames);
+        }
+        return work;
     }
 
     /** Whether leader-only work may reach ingress right now: the gate is open, and ingress is not held. */
@@ -173,6 +200,11 @@ public final class Application implements AutoCloseable {
         session.close();
     }
 
+    /** The session's keep-alive, for a round serialized inside a dispatch. */
+    private void keepAlive() {
+        session.keepAlive();
+    }
+
     /** A shut gate declines rather than submits: only the leading replica's copy of the work is the one sent. */
     private Publish submit(final int frameSourceId, final int connectionId, final int payloadId,
                            final DirectBuffer payload, final int length) {
@@ -184,15 +216,57 @@ public final class Application implements AutoCloseable {
 
     /** What comes off the tap, and the one frame the gate is driven by. */
     private final class SessionDispatch implements Session.Dispatch {
+        private final ApplicationRegisteredDecoder row = new ApplicationRegisteredDecoder();
+        private final SnapshotStartedDecoder started = new SnapshotStartedDecoder();
+        private final SnapshotEndDecoder end = new SnapshotEndDecoder();
+
+        /**
+         * Of seqeron's own vocabulary, this replica reads its topology row and the snapshot rounds; the
+         * leadership the gate turns on arrives below rather than here. A submitted payload carries no
+         * MessageHeader, so each decode takes this build's constants (spec §7, V-3).
+         */
         @Override
         public void onSystem(final SequencedEvent event) {
-            // Seqeron's own vocabulary says nothing to a producer nothing elects; the leadership the gate
-            // turns on arrives below rather than here.
+            switch (event.systemEventType()) {
+            case SystemFrame.APPLICATION_REGISTERED -> {
+                row.wrap(event.buffer(), event.payloadOffset(), ApplicationRegisteredDecoder.BLOCK_LENGTH,
+                         MessageHeaderDecoder.SCHEMA_VERSION);
+                if (row.applicationSourceId() == sourceId) {
+                    snapshots.participating(row.snapshot() == 1);
+                }
+            }
+            case SystemFrame.SNAPSHOT_STARTED -> {
+                started.wrap(event.buffer(), event.payloadOffset(), SnapshotStartedDecoder.BLOCK_LENGTH,
+                             SnapshotStartedDecoder.SCHEMA_VERSION);
+                snapshots.onSnapshotStarted(started.round(),
+                                            new SnapshotHeader(session.leadershipTermId(),
+                                                               session.currentLeaderMemberId(), null),
+                                            gate.isOpen());
+            }
+            case SystemFrame.SNAPSHOT_END -> {
+                if (event.sourceId() != sourceId) {
+                    return;
+                }
+                end.wrap(event.buffer(), event.payloadOffset(), SnapshotEndDecoder.BLOCK_LENGTH,
+                         MessageHeaderDecoder.SCHEMA_VERSION);
+                if (!snapshots.onSnapshotEnd(end.round(), end.recordCount(), end.length(), end.crc32c())) {
+                    session.fence(ClusterError.SNAPSHOT_DIVERGED, "round " + end.round() + "'s sequenced "
+                        + "snapshot at globalSeqNo " + event.globalSeqNo() + " differs from this replica's");
+                }
+            }
+            default -> {
+                // Nothing else says anything to a producer nothing elects.
+            }
+            }
         }
 
+        /** A term won by another member ends this replica's part in the round it is publishing. */
         @Override
         public void onLeadershipChanged() {
             gate.onLeadershipChanged();
+            if (!offCluster && session.currentLeaderMemberId() != memberId) {
+                snapshots.stopPublishing();
+            }
         }
 
         @Override
@@ -225,6 +299,8 @@ public final class Application implements AutoCloseable {
         private String egressChannel;
         private String ingressEndpoints = PortLayout.ingressEndpoints();
         private Listener listener;
+        private SnapshotListener snapshotListener;
+        private Path snapshotDirectory;
         private int pendingCapacity = DEFAULT_PENDING_CAPACITY;
         private long tapStallTimeoutMs = DEFAULT_TAP_STALL_TIMEOUT_MS;
         private long recoveryStallTimeoutMs = DEFAULT_RECOVERY_STALL_TIMEOUT_MS;
@@ -277,6 +353,25 @@ public final class Application implements AutoCloseable {
             return this;
         }
 
+        /**
+         * What serializes this application's state for snapshot rounds and restores it on start; without one it
+         * takes part in none, whatever its topology row says, and recovers from {@code globalSeqNo} 1.
+         */
+        public Builder snapshotListener(final SnapshotListener snapshotListener) {
+            this.snapshotListener = snapshotListener;
+            return this;
+        }
+
+        /**
+         * Where this replica keeps its snapshots, one file per round; required with a {@link #snapshotListener}.
+         * Its own: no other instance may write it. A restart restores from what it holds, so it must outlive the
+         * process.
+         */
+        public Builder snapshotDirectory(final Path snapshotDirectory) {
+            this.snapshotDirectory = snapshotDirectory;
+            return this;
+        }
+
         public Builder pendingCapacity(final int pendingCapacity) {
             this.pendingCapacity = pendingCapacity;
             return this;
@@ -301,6 +396,9 @@ public final class Application implements AutoCloseable {
             Objects.requireNonNull(egressChannel, "egressChannel");
             Objects.requireNonNull(ingressEndpoints, "ingressEndpoints");
             Objects.requireNonNull(listener, "listener");
+            if (snapshotListener != null && snapshotDirectory == null) {
+                throw new IllegalStateException("snapshotDirectory is required with a snapshotListener");
+            }
             return new Application(this);
         }
     }

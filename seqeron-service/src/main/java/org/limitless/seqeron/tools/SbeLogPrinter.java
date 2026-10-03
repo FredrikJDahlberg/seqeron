@@ -27,6 +27,7 @@ import java.util.TreeSet;
 import java.util.jar.JarEntry;
 import java.util.jar.JarFile;
 import org.agrona.BitUtil;
+import org.agrona.ExpandableArrayBuffer;
 import org.agrona.concurrent.UnsafeBuffer;
 import org.limitless.seqeron.protocol.SystemFrame;
 import org.limitless.seqeron.sbe.frame.PayloadIdRegisteredDecoder;
@@ -129,6 +130,12 @@ public class SbeLogPrinter {
     /** Where every text line goes. Stdout belongs to the payload stream while -o is on. */
     private final PrintStream text;
     private final StringBuilder builder = new StringBuilder();
+    /** A message larger than the recording's MTU, gathered fragment by fragment until its last. */
+    private final ExpandableArrayBuffer fragments = new ExpandableArrayBuffer();
+    private final UnsafeBuffer assembled = new UnsafeBuffer(0, 0);
+    private int fragmentsLength;
+    /** Where the message being gathered starts, or {@code NULL_POSITION} when none is. */
+    private long fragmentsPosition = AeronArchive.NULL_POSITION;
 
     public SbeLogPrinter(final List<Ir> irs, final String archiveDirPath, final int streamIdFilter,
                          final boolean oneLine, final int payloadIdFilter) {
@@ -548,6 +555,7 @@ public class SbeLogPrinter {
                                       final int segmentLength) {
         // An in-progress recording has no stop position yet; rely on frame/segment EOF to end the scan.
         final long endPosition = stopPos == AeronArchive.NULL_POSITION ? Long.MAX_VALUE : stopPos;
+        fragmentsPosition = AeronArchive.NULL_POSITION;
         for (long position = startPos; position < endPosition; ) {
             // The segment grid is anchored on the recording's start term, not on position 0.
             final long segmentBasePosition = AeronArchive.segmentFileBasePosition(startPos, position, termLength,
@@ -565,10 +573,13 @@ public class SbeLogPrinter {
                 int fileOffset = (int)(position - segmentBasePosition);
                 while (fileOffset + DataHeaderFlyweight.HEADER_LENGTH <= fileLength && position < endPosition) {
                     dataHeader.wrap(buffer, fileOffset, (int)fileLength - fileOffset);
-                    final int frameLength = printMessage(fileOffset, position, buffer);
+                    final int frameLength = dataHeader.frameLength();
                     if (frameLength <= 0) {
                         // Zero-filled tail: the end of a still-growing recording.
                         return;
+                    }
+                    if (dataHeader.headerType() == DataHeaderFlyweight.HDR_TYPE_DATA) {
+                        onFragment(buffer, fileOffset, frameLength, position);
                     }
                     final int paddedLength = BitUtil.align(frameLength, FrameDescriptor.FRAME_ALIGNMENT);
                     fileOffset += paddedLength;
@@ -581,37 +592,58 @@ public class SbeLogPrinter {
         }
     }
 
-    private int printMessage(final int fileOffset, final long currentPosition, final UnsafeBuffer buffer) {
-        final int frameLength = dataHeader.frameLength();
-        if (frameLength >= 1 && dataHeader.headerType() == DataHeaderFlyweight.HDR_TYPE_DATA) {
-            final int sbePayloadOffset = fileOffset + DataHeaderFlyweight.HEADER_LENGTH;
-            emitPayload(buffer, sbePayloadOffset, fileOffset + frameLength);
-            registerProtocol(buffer, sbePayloadOffset, fileOffset + frameLength);
-            final int templateId = sbeHeaderDecoder.getTemplateId(buffer, sbePayloadOffset);
-            final int schemaId = sbeHeaderDecoder.getSchemaId(buffer, sbePayloadOffset);
-            final Schema schema = schemasBySchemaId.get(schemaId);
-            if (null == schema) {
-                text.format("Position: %d, Error: Schema %d not loaded, templateId = %d\n",
-                            currentPosition, schemaId, templateId);
+    /** Prints the message a data fragment completes: itself when unfragmented, else the gathered whole. */
+    private void onFragment(final UnsafeBuffer buffer, final int fileOffset, final int frameLength,
+                            final long position) {
+        final int offset = fileOffset + DataHeaderFlyweight.HEADER_LENGTH;
+        final int length = frameLength - DataHeaderFlyweight.HEADER_LENGTH;
+        final byte flags = (byte)dataHeader.flags();
+        if ((flags & FrameDescriptor.UNFRAGMENTED) == FrameDescriptor.UNFRAGMENTED) {
+            printMessage(buffer, offset, offset + length, position);
+            return;
+        }
+        if ((flags & FrameDescriptor.BEGIN_FRAG_FLAG) != 0) {
+            fragmentsLength = 0;
+            fragmentsPosition = position;
+        } else if (fragmentsPosition == AeronArchive.NULL_POSITION) {
+            return; // the recording starts inside a message
+        }
+        fragments.putBytes(fragmentsLength, buffer, offset, length);
+        fragmentsLength += length;
+        if ((flags & FrameDescriptor.END_FRAG_FLAG) != 0) {
+            assembled.wrap(fragments.byteArray(), 0, fragmentsLength);
+            printMessage(assembled, 0, fragmentsLength, fragmentsPosition);
+            fragmentsPosition = AeronArchive.NULL_POSITION;
+        }
+    }
+
+    private void printMessage(final UnsafeBuffer buffer, final int sbePayloadOffset, final int messageEndOffset,
+                              final long currentPosition) {
+        emitPayload(buffer, sbePayloadOffset, messageEndOffset);
+        registerProtocol(buffer, sbePayloadOffset, messageEndOffset);
+        final int templateId = sbeHeaderDecoder.getTemplateId(buffer, sbePayloadOffset);
+        final int schemaId = sbeHeaderDecoder.getSchemaId(buffer, sbePayloadOffset);
+        final Schema schema = schemasBySchemaId.get(schemaId);
+        if (null == schema) {
+            text.format("Position: %d, Error: Schema %d not loaded, templateId = %d\n",
+                        currentPosition, schemaId, templateId);
+        } else {
+            final Ir ir = schema.ir();
+            if (null == ir.getMessage(templateId)) {
+                text.format("Position: %d, Error: templateId = %d not in schema\n",
+                            currentPosition, templateId);
             } else {
-                final Ir ir = schema.ir();
-                if (null == ir.getMessage(templateId)) {
-                    text.format("Position: %d, Error: templateId = %d not in schema\n",
-                                currentPosition, templateId);
-                } else {
-                    builder.setLength(0);
-                    builder.append(messageName(ir, templateId)).append(" = ");
-                    schema.printer().print(builder, buffer, sbePayloadOffset);
-                    appendNestedIngressMessage(schema, templateId, buffer, sbePayloadOffset,
-                        fileOffset + frameLength);
-                    if (oneLine) {
-                        collapse(builder);
-                    }
-                    text.println(builder);
+                builder.setLength(0);
+                builder.append(messageName(ir, templateId)).append(" = ");
+                schema.printer().print(builder, buffer, sbePayloadOffset);
+                appendNestedIngressMessage(schema, templateId, buffer, sbePayloadOffset,
+                    messageEndOffset);
+                if (oneLine) {
+                    collapse(builder);
                 }
+                text.println(builder);
             }
         }
-        return frameLength;
     }
 
     private static void usage() {

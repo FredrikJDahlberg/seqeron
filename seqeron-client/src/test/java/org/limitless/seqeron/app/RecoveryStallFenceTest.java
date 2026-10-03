@@ -98,4 +98,20 @@ class RecoveryStallFenceTest {
         assertFalse(policy.onNotCaughtUp(seconds(118), 1001));
         assertTrue(policy.onNotCaughtUp(seconds(119), 1001), "60s with the frontier frozen at the new value");
     }
+
+    @Test
+    @DisplayName("a restart disarms the fence until the instance catches up again")
+    void restartDisarmsUntilCaughtUp() {
+        policy.onCaughtUp();
+        policy.onNotCaughtUp(seconds(0), STUCK);
+
+        policy.onRestart(); // a passive instance's activation: its restore pass dispatches nothing
+
+        for (long s = 1; s < 3600; s += 30) {
+            assertFalse(policy.onNotCaughtUp(seconds(s), 0), "second " + s + ": a restart is a cold start");
+        }
+        policy.onCaughtUp();
+        assertFalse(policy.onNotCaughtUp(seconds(3600), STUCK));
+        assertTrue(policy.onNotCaughtUp(seconds(3660), STUCK), "armed again once caught up");
+    }
 }

@@ -100,6 +100,10 @@ public final class Logger {
         RecoveryStalled,
         /** The first frame observed was not {@code globalSeqNo} 1, so history is incomplete. */
         FirstFrameNotOne,
+        /** A source's latest snapshot cannot be restored, so its instance cannot recover. */
+        SnapshotRestoreFailed,
+        /** This instance could not write or read a snapshot file of its own; it has no copy of that round. */
+        SnapshotStoreFailed,
         /** The cluster session reported an error on submit. */
         ClusterSessionError,
         /** Cluster ingress took no frame for long enough to call the session lost. */

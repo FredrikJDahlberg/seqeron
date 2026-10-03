@@ -9,6 +9,7 @@ import org.limitless.seqeron.sbe.frame.SequencedDecoder;
 import org.limitless.seqeron.sbe.frame.SequencedHeaderDecoder;
 import org.limitless.seqeron.sbe.frame.SequencedSystemDecoder;
 import org.limitless.seqeron.sbe.frame.SequencedSystemHeaderDecoder;
+import org.limitless.seqeron.sbe.frame.SnapshotStartedDecoder;
 
 /**
  * One frame off the tap with the envelope stripped — the Java twin of {@code FrameView} in
@@ -69,7 +70,8 @@ public final class SequencedFrameDecoder {
         }
         if (frameTemplateId == ClusterHeartbeatDecoder.TEMPLATE_ID ||
             frameTemplateId == LeadershipChangedDecoder.TEMPLATE_ID ||
-            frameTemplateId == GatewayActiveDecoder.TEMPLATE_ID) {
+            frameTemplateId == GatewayActiveDecoder.TEMPLATE_ID ||
+            frameTemplateId == SnapshotStartedDecoder.TEMPLATE_ID) {
             return wrapSynthesized(source, offset, length, blockOffset);
         }
         return false;
@@ -125,7 +127,7 @@ public final class SequencedFrameDecoder {
         return payloadOffset + payloadLength <= offset + length;
     }
 
-    /** One of the three synthesized events: no payload, its fields inline in the frame's own block. */
+    /** One of the four synthesized events: no payload, its fields inline in the frame's own block. */
     private boolean wrapSynthesized(final DirectBuffer source, final int offset, final int length,
                                     final int blockOffset) {
         if (blockOffset + SequencedSystemHeaderDecoder.ENCODED_LENGTH > offset + length) {
@@ -158,7 +160,7 @@ public final class SequencedFrameDecoder {
         clusterTimestampNs = frameTimestamp;
     }
 
-    /** Whether this frame is one of the four system messages; if so {@link #payloadId()} means nothing. */
+    /** Whether this frame is one of the five system messages; if so {@link #payloadId()} means nothing. */
     public boolean isSystem() {
         return system;
     }
@@ -168,7 +170,7 @@ public final class SequencedFrameDecoder {
         return payloadId;
     }
 
-    /** Which of §7's twelve events this frame carries; 0 on an application frame. */
+    /** Which of §7's sixteen events this frame carries; 0 on an application frame. */
     public int systemEventType() {
         return systemEventType;
     }
@@ -224,7 +226,7 @@ public final class SequencedFrameDecoder {
     /**
      * Offset within {@link #buffer()} of what a consumer decodes: the payload, its own 8-byte
      * {@code MessageHeader} included, on an application frame; the payload on a submitted system frame; the
-     * frame's own block on one of the synthesized three.
+     * frame's own block on one of the synthesized four.
      */
     public int payloadOffset() {
         return payloadOffset;

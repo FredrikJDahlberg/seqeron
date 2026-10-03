@@ -25,19 +25,19 @@ TEST(PortLayout, ClusterMemberPortsMatchDocumentedLayout)
     EXPECT_EQ(9322, clusterIngressPort(2));
 }
 
-// The reservation is wider than what three members bind, and applications check themselves against it
-// (doc/ops.md, "Ports"). Pinned here so it cannot quietly narrow back to 9325.
-TEST(PortLayout, ReservedBlockCoversThreeMemberStrides)
+// The reservation is wider than what seven members bind, and applications check themselves against it
+// (doc/ops.md, "Ports"). Pinned here so it cannot quietly narrow back to 9365.
+TEST(PortLayout, ReservedBlockCoversSevenMemberStrides)
 {
     EXPECT_EQ(9300, clusterPortBlockFirst());
-    EXPECT_EQ(9329, clusterPortBlockLast());
+    EXPECT_EQ(9369, clusterPortBlockLast());
 
     EXPECT_TRUE(isClusterPort(9300));
-    EXPECT_TRUE(isClusterPort(clusterTransferPort(2)));
-    EXPECT_TRUE(isClusterPort(9320)); // member 2's base — reserved though no member binds it
-    EXPECT_TRUE(isClusterPort(9329));
+    EXPECT_TRUE(isClusterPort(clusterTransferPort(6)));
+    EXPECT_TRUE(isClusterPort(9360)); // member 6's base — reserved though no member binds it
+    EXPECT_TRUE(isClusterPort(9369));
     EXPECT_FALSE(isClusterPort(9299));
-    EXPECT_FALSE(isClusterPort(9330));
+    EXPECT_FALSE(isClusterPort(9370));
 }
 
 TEST(PortLayout, ArchiveEndpointsCsvMatchesThreeNodeLayout)
@@ -51,7 +51,7 @@ TEST(PortLayout, IngressEndpointsCsvMatchesThreeNodeLayout)
 {
     EXPECT_EQ("0=localhost:9302,1=localhost:9312,2=localhost:9322", ingressEndpointsCsv(3));
     EXPECT_EQ("0=localhost:9302", ingressEndpointsCsv(1));
-    EXPECT_EQ(ingressEndpointsCsv(CLUSTER_MEMBER_COUNT), ingressEndpointsCsv());
+    EXPECT_EQ(ingressEndpointsCsv(DEFAULT_MEMBER_COUNT), ingressEndpointsCsv());
     EXPECT_EQ("0=host0:9302,1=host0:9312", ingressEndpointsCsv(2, "host0"));
 }
 
@@ -77,7 +77,8 @@ TEST(PortLayout, HostListRules)
     EXPECT_THROW(parseHosts(""), std::invalid_argument);
     EXPECT_THROW(parseHosts("h0,,h2"), std::invalid_argument);
     EXPECT_THROW(parseHosts("h0,h1,"), std::invalid_argument);
-    EXPECT_THROW(parseHosts("h0,h1,h2,h3"), std::invalid_argument);
+    EXPECT_EQ(7U, parseHosts("h0,h1,h2,h3,h4,h5,h6").size());
+    EXPECT_THROW(parseHosts("h0,h1,h2,h3,h4,h5,h6,h7"), std::invalid_argument);
 }
 
 // The base is a deployment knob (SEQERON_PORT_BASE), and these pin the rules that decide it. Driven
@@ -100,14 +101,14 @@ TEST(PortLayout, ParseClusterPortBaseRejectsNonNumeric)
     EXPECT_THROW(parseClusterPortBase("nine"), std::invalid_argument);
 }
 
-// 1024 is the first unprivileged port and the block is 30 wide, so 65506 is the last base that fits.
+// 1024 is the first unprivileged port and the block is 70 wide, so 65466 is the last base that fits.
 TEST(PortLayout, ParseClusterPortBaseRequiresRoomForTheWholeBlock)
 {
     EXPECT_THROW(parseClusterPortBase("1023"), std::invalid_argument);
     EXPECT_EQ(1024, parseClusterPortBase("1024"));
 
-    EXPECT_EQ(65506, parseClusterPortBase("65506"));
-    EXPECT_THROW(parseClusterPortBase("65507"), std::invalid_argument);
+    EXPECT_EQ(65466, parseClusterPortBase("65466"));
+    EXPECT_THROW(parseClusterPortBase("65467"), std::invalid_argument);
 }
 
 } // namespace

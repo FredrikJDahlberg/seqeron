@@ -68,8 +68,8 @@ wait_for_log "$HOST_LOG" "ready —" 30 || {
 echo "gateway host (node $NODE) serving, member archives $ENDPOINTS"
 
 java "${JAVA_OPTS[@]}" -Dprobe.memberId="$NODE" -Dprobe.clientId=11 -Dprobe.count="${CONFIRM_COUNT:-20000}" \
-     -Dprobe.pacingMicros="${CONFIRM_PACING_MICROS:-100}" -cp "$JAR" \
-     org.limitless.seqeron.tools.ClusterProbe confirm > "$LOG_DIR/confirm.log" 2>&1 &
+     -Dprobe.pacingMicros="${CONFIRM_PACING_MICROS:-100}" -Dprobe.fillerBytes="${CONFIRM_FILLER_BYTES:-0}" \
+     -cp "$JAR" org.limitless.seqeron.tools.ClusterProbe confirm > "$LOG_DIR/confirm.log" 2>&1 &
 CONFIRM_PID=$!
 wait_for_log "$LOG_DIR/confirm.log" "confirm: sending" 30 || echo "producer never started"
 echo "confirm producer streaming on node $NODE"

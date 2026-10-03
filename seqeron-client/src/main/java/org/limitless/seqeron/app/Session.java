@@ -10,6 +10,8 @@ import org.limitless.seqeron.protocol.Publish;
 import org.limitless.seqeron.protocol.SystemFrame;
 import org.limitless.seqeron.replayer.client.ReplayerStreamReceiver;
 import org.limitless.seqeron.replayer.client.SequencedEvent;
+import org.limitless.seqeron.replayer.client.SnapshotRestoreHandler;
+import org.limitless.seqeron.replayer.client.SnapshotStore;
 import org.limitless.seqeron.sequencer.client.ClusterStreamSender;
 import org.limitless.seqeron.sequencer.client.IngressPublisher;
 import org.limitless.seqeron.sequencer.client.PendingSends;
@@ -71,6 +73,9 @@ final class Session implements AutoCloseable {
     private boolean caughtUp;
     private boolean fenced;
 
+    /** The term of the last {@code LeadershipChanged} applied; -1 before the first. */
+    private long leadershipTermId = -1;
+
     Session(final int clientId, final int pendingCapacity, final long tapStallTimeoutMs,
             final long recoveryStallTimeoutMs, final Dispatch dispatch) {
         this.dispatch = dispatch;
@@ -82,6 +87,17 @@ final class Session implements AutoCloseable {
         this.tapStall = new TapStallFence(tapStallTimeoutMs);
         this.receiver = new ReplayerStreamReceiver(clientId, this::onSequenced, this::onLeadershipChanged, null);
         sender.setIngressHold(pending);
+    }
+
+    /** Restores {@code sourceId}'s newest confirmed snapshot in {@code store} first; call before starting. */
+    void restoreFrom(final int sourceId, final SnapshotStore store, final SnapshotRestoreHandler handler) {
+        receiver.restoreFrom(sourceId, store, handler);
+    }
+
+    /** Follows the tap from its start again, restoring the snapshot given to {@link #restoreFrom} first. */
+    void restart() {
+        recoveryStall.onRestart(); // the restore pass dispatches nothing, and is no stall
+        receiver.restart();
     }
 
     /** Opens the cluster session over UDP and starts following this node's tap. */
@@ -161,6 +177,10 @@ final class Session implements AutoCloseable {
         return receiver.currentLeaderMemberId();
     }
 
+    long leadershipTermId() {
+        return leadershipTermId;
+    }
+
     @Override
     public void close() {
         receiver.close();
@@ -196,6 +216,10 @@ final class Session implements AutoCloseable {
                       + "longer be counted");
             return;
         }
+        if (receiver.restoreFailure() != null) {
+            fence(ClusterError.SNAPSHOT_UNRESTORABLE, receiver.restoreFailure());
+            return;
+        }
         final long nowMs = Clocks.monotonicMs();
         if (!receiver.isCaughtUp()) {
             if (recoveryStall.onNotCaughtUp(nowMs, receiver.lastGlobalSeqNo())) {
@@ -209,7 +233,11 @@ final class Session implements AutoCloseable {
         }
     }
 
-    private void fence(final ClusterError reason, final String detail) {
+    /** Latches the first fence; a façade raises its own, such as a diverged snapshot, through this too. */
+    void fence(final ClusterError reason, final String detail) {
+        if (fenced) {
+            return;
+        }
         fenced = true;
         dispatch.onFenced(reason, detail);
     }
@@ -218,6 +246,7 @@ final class Session implements AutoCloseable {
     private void onLeadershipChanged(final int leaderMemberId, final long leadershipTermId,
                                      final long globalSeqNo) {
         pending.onLeadershipChanged(leadershipTermId);
+        this.leadershipTermId = leadershipTermId;
         dispatch.onLeadershipChanged();
     }
 

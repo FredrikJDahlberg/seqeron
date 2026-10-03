@@ -230,5 +230,67 @@ TEST_F(GatewayLifecycleTest, RefusesASessionAcquiredWhileTheGateIsShut)
     EXPECT_FALSE(lifecycle.onSessionAcquired());
 }
 
+TEST_F(GatewayLifecycleTest, IsAnnouncedOnceThisActivationsGatewayStartedIsPlaced)
+{
+    loadTopology();
+    lifecycle.onGatewayActive(MY_ID);
+    EXPECT_FALSE(lifecycle.isAnnounced()) << "activated while replaying";
+
+    lifecycle.onCaughtUp();
+    actions.gateOpens = false;
+    lifecycle.advance();
+    EXPECT_TRUE(lifecycle.isAnnounced()) << "placed, though the gate did not open";
+
+    lifecycle.onGatewayActive(SIBLING_ID);
+    EXPECT_FALSE(lifecycle.isAnnounced());
+}
+
+TEST_F(GatewayLifecycleTest, ReportsItsPairsRowsInListOrderAndTheInstanceLastActivated)
+{
+    loadTopology();
+    EXPECT_EQ(protocol::SnapshotHeader::NO_GATEWAY, lifecycle.activeGatewayId());
+
+    lifecycle.onGatewayRegistered(MY_ID, MY_SOURCE_ID, ME, 2); // re-published: replaced in place
+    lifecycle.onGatewayActive(SIBLING_ID);
+    lifecycle.onGatewayActive(OTHER_PAIR_ID);
+
+    EXPECT_EQ(SIBLING_ID, lifecycle.activeGatewayId());
+    EXPECT_EQ((std::vector<protocol::SnapshotGatewayRow>{ { MY_ID, 2, ME }, { SIBLING_ID, 1, "GW-B" } }),
+              lifecycle.pairRows());
+}
+
+TEST_F(GatewayLifecycleTest, RestoresItsIdentityAndActivationFromASnapshotHeader)
+{
+    const std::vector<protocol::SnapshotGatewayRow> rows{ { MY_ID, 0, ME }, { SIBLING_ID, 1, "GW-B" } };
+    lifecycle.onSnapshotHeader({ MY_SOURCE_ID, MY_ID, 41, rows });
+
+    EXPECT_EQ(MY_ID, lifecycle.gatewayId());
+    EXPECT_EQ(MY_SOURCE_ID, lifecycle.gatewaySourceId());
+    EXPECT_TRUE(lifecycle.isActivated());
+    EXPECT_EQ(MY_ID, lifecycle.activeGatewayId());
+    EXPECT_EQ(rows, lifecycle.pairRows());
+    EXPECT_EQ(State::Replaying, lifecycle.state());
+
+    lifecycle.onCaughtUp();
+    EXPECT_EQ(1, lifecycle.advance());
+    EXPECT_EQ((std::vector<std::string>{ "identity(5,6)", MY_STARTED, "open" }), actions.calls);
+}
+
+TEST_F(GatewayLifecycleTest, ASnapshotHeaderReplacesTheRowsAndTheActivationItFinds)
+{
+    loadTopology();
+    lifecycle.onGatewayActive(MY_ID);
+    const std::vector<protocol::SnapshotGatewayRow> rows{ { SIBLING_ID, 0, "GW-B" }, { MY_ID, 1, ME } };
+
+    lifecycle.onSnapshotHeader({ MY_SOURCE_ID, SIBLING_ID, -1, rows });
+
+    EXPECT_FALSE(lifecycle.isActivated());
+    EXPECT_EQ(SIBLING_ID, lifecycle.activeGatewayId());
+    EXPECT_EQ(rows, lifecycle.pairRows());
+    lifecycle.onCaughtUp();
+    EXPECT_EQ(0, lifecycle.advance());
+    EXPECT_EQ(0, actions.count("close"));
+}
+
 } // namespace
 } // namespace org::limitless::seqeron::app::detail

@@ -6,9 +6,9 @@
     ignores any schemaLocation a document names. A file that may name its own schema may name a lax
     one, and C-1 (payloadId 1 is never registrable) would then be advisory.
 
-    Everything expressible per row lives here; what is left for the loader is the two checks a row
-    cannot make about itself — exactly one rank-0 per sourceId, and a sourceId that is none of §5's
-    reserved ids.
+    Everything expressible per row lives here; what is left for the loader is the checks a row cannot
+    make about itself — exactly one rank-0 per sourceId, a sourceId that is none of §5's reserved ids,
+    one snapshot setting per logical gateway, and a participating source behind a snapshots element.
 
     XSD 1.0 throughout: the JDK ships Xerces at 1.0, so xs:assert is unavailable.
 -->
@@ -44,8 +44,10 @@
         <xs:complexType>
             <!-- Document order is publish order: the gateway list first, its last row the completeness
                  edge the bootstrap GatewayActives are synthesized behind, then the applications and the
-                 protocol rows, neither of which the sequencer waits on. The three together are the
-                 deployment: every producer, elected or not, and what the shared payloadIds are called. -->
+                 protocol rows, neither of which the sequencer waits on, then the snapshot policy, which
+                 comes last so every participating row precedes the first round. The first three together
+                 are the deployment: every producer, elected or not, and what the shared payloadIds are
+                 called. -->
             <xs:sequence>
                 <xs:element name="gateways">
                     <xs:complexType>
@@ -57,6 +59,7 @@
                                     <xs:attribute name="id"          type="xs:int"          use="required"/>
                                     <xs:attribute name="sourceId"    type="t:SourceId"      use="required"/>
                                     <xs:attribute name="rank"        type="xs:unsignedByte" use="required"/>
+                                    <xs:attribute name="snapshot"    type="xs:boolean"      default="false"/>
                                     <xs:attribute name="description" type="xs:string"/>
                                 </xs:complexType>
                             </xs:element>
@@ -74,6 +77,7 @@
                                 <xs:complexType>
                                     <xs:attribute name="name"        type="t:Name"     use="required"/>
                                     <xs:attribute name="sourceId"    type="t:SourceId"     use="required"/>
+                                    <xs:attribute name="snapshot"    type="xs:boolean"     default="false"/>
                                     <xs:attribute name="description" type="xs:string"/>
                                 </xs:complexType>
                             </xs:element>
@@ -95,6 +99,14 @@
                                 </xs:complexType>
                             </xs:element>
                         </xs:sequence>
+                    </xs:complexType>
+                </xs:element>
+
+                <!-- Enables snapshot rounds (doc/snapshot.md §1). interval is in seconds of consensus
+                     time; 0 means rounds start only on clusterctl request-snapshot. -->
+                <xs:element name="snapshots" minOccurs="0">
+                    <xs:complexType>
+                        <xs:attribute name="interval" type="xs:unsignedInt" use="required"/>
                     </xs:complexType>
                 </xs:element>
             </xs:sequence>

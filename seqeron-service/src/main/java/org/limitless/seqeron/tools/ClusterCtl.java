@@ -31,6 +31,8 @@ import org.limitless.seqeron.sbe.frame.GatewayActivationRequestedEncoder;
 import org.limitless.seqeron.sbe.frame.GatewayRegisteredEncoder;
 import org.limitless.seqeron.sbe.frame.MessageHeaderDecoder;
 import org.limitless.seqeron.sbe.frame.PayloadIdRegisteredEncoder;
+import org.limitless.seqeron.sbe.frame.SnapshotPolicyRegisteredEncoder;
+import org.limitless.seqeron.sbe.frame.SnapshotStartedDecoder;
 import org.limitless.seqeron.sequencer.SequencerService;
 import org.limitless.seqeron.sequencer.client.ClusterStreamSender;
 import org.limitless.seqeron.sequencer.client.IngressPublisher;
@@ -53,6 +55,8 @@ import org.xml.sax.SAXParseException;
  *   <li><b>activate &lt;gatewayId&gt;</b> — manual standby promotion: publishes
  *       {@code GatewayActivationRequested} and waits for the {@code GatewayActive} the sequencer synthesizes
  *       behind it, so the designation stays the cluster's and an unlisted {@code gatewayId} is refused.</li>
+ *   <li><b>request-snapshot</b> — publishes {@code SnapshotRequested} and waits for the
+ *       {@code SnapshotStarted} the sequencer synthesizes behind it (doc/snapshot.md §3).</li>
  *   <li><b>load-topology &lt;file&gt;</b> — publishes the deployment's validated topology document.
  *   <li><b>counters</b> — lists this node's operator counters off the CnC file; needs no leader.</li>
  *   <li><b>help</b> — usage.</li>
@@ -126,6 +130,9 @@ public final class ClusterCtl {
             break;
         case "activate":
             System.exit(activate(args));
+            break;
+        case "request-snapshot":
+            System.exit(requestSnapshot());
             break;
         case "load-topology":
             System.exit(loadTopology(args));
@@ -219,9 +226,81 @@ public final class ClusterCtl {
     }
 
     /**
+     * Publishes {@code SnapshotRequested} and waits for the {@code SnapshotStarted} the sequencer synthesizes at
+     * the next {@code globalSeqNo}; none follows when the loaded topology has no {@code <snapshots>}.
+     */
+    private static int requestSnapshot() {
+        final long correlationId = System.nanoTime();
+        try (Session session = new Session()) {
+            final Subscription tap = awaitTap(session);
+            if (tap == null) {
+                return 1;
+            }
+            publishMarker(session, SystemFrame.SNAPSHOT_REQUESTED, correlationId);
+            final SnapshotStartedEchoHandler started = new SnapshotStartedEchoHandler(correlationId);
+            final long cut = awaitEcho(session, tap, started);
+            if (cut < 0) {
+                System.err.println(started.requestSeqNo < 0
+                    ? "[clusterctl] request-snapshot: no sequenced SnapshotRequested echo within timeout"
+                    : "[clusterctl] request-snapshot: no SnapshotStarted followed — does the loaded topology have a "
+                      + "<snapshots> element?");
+                return 1;
+            }
+            System.out.printf("[clusterctl] request-snapshot: round %d started at globalSeqNo=%d%n", started.round,
+                              cut);
+            return 0;
+        } catch (final Exception ex) {
+            System.err.println("[clusterctl] request-snapshot: no elected leader / cluster unreachable (" +
+                               ex.getMessage() + ")");
+            return 1;
+        }
+    }
+
+    /**
+     * Matches our {@code SnapshotRequested} by correlationId, then the {@code SnapshotStarted} at the {@code
+     * globalSeqNo} just behind it. One handler for both, since one poll can deliver the two together.
+     */
+    private static final class SnapshotStartedEchoHandler extends EchoHandler {
+        private final ClusterStartedDecoder marker = new ClusterStartedDecoder();
+        private final SnapshotStartedDecoder decoder = new SnapshotStartedDecoder();
+        private final long correlationId;
+        private long requestSeqNo = -1;
+        private long round;
+
+        SnapshotStartedEchoHandler(final long correlationId) {
+            super(SystemFrame.SNAPSHOT_STARTED);
+            this.correlationId = correlationId;
+        }
+
+        @Override
+        boolean accepts() {
+            return super.accepts() || view.isSystem() && view.systemEventType() == SystemFrame.SNAPSHOT_REQUESTED;
+        }
+
+        @Override
+        boolean matches(final DirectBuffer buffer) {
+            if (view.systemEventType() == SystemFrame.SNAPSHOT_REQUESTED) {
+                marker.wrap(buffer, view.payloadOffset(), ClusterStartedDecoder.BLOCK_LENGTH,
+                            MessageHeaderDecoder.SCHEMA_VERSION);
+                if (marker.correlationId() == correlationId) {
+                    requestSeqNo = view.globalSeqNo();
+                }
+                return false;
+            }
+            if (requestSeqNo < 0 || view.globalSeqNo() != requestSeqNo + 1) {
+                return false;
+            }
+            decoder.wrap(buffer, view.payloadOffset(), SnapshotStartedDecoder.BLOCK_LENGTH,
+                         SnapshotStartedDecoder.SCHEMA_VERSION);
+            round = decoder.round();
+            return true;
+        }
+    }
+
+    /**
      * Publishes the topology document read from {@code args[1]} — one {@code GatewayRegistered} per list row,
-     * {@code remaining} counting down to 0, then the application and protocol rows — and waits for the last
-     * list row's echo. {@link TopologyDocument} validates the whole document before a byte is published.
+     * {@code remaining} counting down to 0, then the application and protocol rows and the snapshot policy —
+     * and waits for the last list row's echo. {@link TopologyDocument} validates the whole document before a byte is published.
      */
     private static int loadTopology(final String[] args) {
         if (args.length < 2) {
@@ -248,9 +327,11 @@ public final class ClusterCtl {
                 return 1;
             }
             System.out.printf("[clusterctl] load-topology: %d gateway row(s) recorded, list complete at "
-                              + "globalSeqNo=%d; %d application row(s) and %d protocol row(s) registered%n",
+                              + "globalSeqNo=%d; %d application row(s) and %d protocol row(s) registered%s%n",
                               topology.gateways().size(), globalSeqNo, topology.applications().size(),
-                              topology.protocols().size());
+                              topology.protocols().size(),
+                              topology.snapshots() == null ? ""
+                                  : "; snapshot interval " + topology.snapshots().intervalSeconds() + " s");
             return 0;
         } catch (final Exception ex) {
             System.err.println("[clusterctl] load-topology: no elected leader / cluster unreachable (" +
@@ -280,7 +361,8 @@ public final class ClusterCtl {
                    .gatewayId(row.gatewayId())
                    .gatewaySourceId(row.gatewaySourceId())
                    .gatewayName(row.gatewayName())
-                   .preferenceRank((short)row.preferenceRank());
+                   .preferenceRank((short)row.preferenceRank())
+                   .snapshot((short)(row.snapshot() ? 1 : 0));
             publish(session, SystemFrame.GATEWAY_REGISTERED, payload, encoder.encodedLength());
         }
 
@@ -288,7 +370,8 @@ public final class ClusterCtl {
         for (final ApplicationRow row : topology.applications()) {
             applicationEncoder.wrap(payload, 0);
             applicationEncoder.applicationSourceId(row.sourceId())
-                              .applicationName(row.applicationName());
+                              .applicationName(row.applicationName())
+                              .snapshot((short)(row.snapshot() ? 1 : 0));
             publish(session, SystemFrame.APPLICATION_REGISTERED, payload, applicationEncoder.encodedLength());
         }
 
@@ -299,6 +382,12 @@ public final class ClusterCtl {
                            .protocolVersion(row.protocolVersion())
                            .protocolName(row.protocolName());
             publish(session, SystemFrame.PAYLOAD_ID_REGISTERED, payload, protocolEncoder.encodedLength());
+        }
+
+        if (topology.snapshots() != null) {
+            final SnapshotPolicyRegisteredEncoder policyEncoder = new SnapshotPolicyRegisteredEncoder();
+            policyEncoder.wrap(payload, 0).intervalSeconds(topology.snapshots().intervalSeconds());
+            publish(session, SystemFrame.SNAPSHOT_POLICY_REGISTERED, payload, policyEncoder.encodedLength());
         }
 
         return awaitEcho(session, tap, new ListEchoHandler(rows.get(rows.size() - 1).gatewayId()));
@@ -445,7 +534,10 @@ public final class ClusterCtl {
         return awaitEcho(session, tap, new MarkerEchoHandler(systemEventType, correlationId));
     }
 
-    /** Encodes and publishes the ClusterStarted/ClusterStopped marker; the two are byte-identical past the header. */
+    /**
+     * Encodes and publishes a ClusterStarted, ClusterStopped or SnapshotRequested marker; the three are
+     * byte-identical past the header.
+     */
     private static void publishMarker(final Session session, final int systemEventType, final long correlationId) {
         final ExpandableArrayBuffer payload = new ExpandableArrayBuffer(64);
         final ClusterStartedEncoder encoder = new ClusterStartedEncoder();
@@ -484,11 +576,15 @@ public final class ClusterCtl {
         /** Whether this frame — already unwrapped into {@link #view} — is the echo being waited for. */
         abstract boolean matches(DirectBuffer buffer);
 
+        /** Whether {@link #matches} should see this frame at all; by default, this handler's event type alone. */
+        boolean accepts() {
+            return view.isSystem() && view.systemEventType() == systemEventType;
+        }
+
         @Override
         public final void onFragment(final DirectBuffer buffer, final int offset, final int length,
                                      final Header header) {
-            if (found || !view.wrap(buffer, offset, length) || !view.isSystem() ||
-                view.systemEventType() != systemEventType) {
+            if (found || !view.wrap(buffer, offset, length) || !accepts()) {
                 return;
             }
             if (matches(buffer)) {
@@ -515,7 +611,7 @@ public final class ClusterCtl {
         return tap;
     }
 
-    /** Matches our marker's echo by correlationId; one decoder serves both byte-identical markers. */
+    /** Matches our marker's echo by correlationId; one decoder serves the three byte-identical markers. */
     private static final class MarkerEchoHandler extends EchoHandler {
         private final long correlationId;
         private final ClusterStartedDecoder marker = new ClusterStartedDecoder();
@@ -544,14 +640,19 @@ public final class ClusterCtl {
               activate <gatewayId>
                            manual standby promotion; publishes GatewayActive(gatewayId) and
                            waits for its sequenced echo (requires an elected leader)
+              request-snapshot
+                           start an application snapshot round now; waits for the
+                           SnapshotStarted behind the request (requires an elected leader
+                           and a topology with a <snapshots> element)
               load-topology <file>
                            publish the topology document (XML, validated against the
                            packaged topology.xsd): the gateway list, then the
-                           co-located applications, then the protocol registry; run
+                           co-located applications, the protocol registry and the
+                           snapshot policy; run
                            once per cluster lifetime, before any gateway starts
               counters     list this node's seqeron operator counters (SequencerService/
                            ReplayerService); no cluster connection needed, safe on every node
-              snapshot     this operation is not supported
+              snapshot     Aeron's cluster snapshot; not supported (see request-snapshot)
               help         show this help
               <other>      passed through to io.aeron.cluster.ClusterTool (describe, errors,
                            list-members, recording-log, …) against this node's cluster dir

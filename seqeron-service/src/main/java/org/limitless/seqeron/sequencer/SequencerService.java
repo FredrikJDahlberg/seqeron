@@ -292,6 +292,7 @@ public final class SequencerService implements ClusteredService {
                 bootstrapActivatedCounter.set(1);
             }
         }
+        emitIfAny(sequencer.pendingSnapshotStart(timestamp));
     }
 
     /**
@@ -309,6 +310,7 @@ public final class SequencerService implements ClusteredService {
             while ((overdue = sequencer.pendingGatewayActivationTimeout(timestamp)) != Sequencer.NO_FRAME) {
                 publishPromotion(overdue, "a designated gateway instance never declared itself started");
             }
+            emitIfAny(sequencer.snapshotIntervalElapsed(timestamp));
             lastHeartbeatTimestampCounter.set(TimeUnit.NANOSECONDS.toMillis(timestamp)); // exported as ms
             injectTapRecordingFault();
             tap.checkRecordingAlive();
@@ -412,6 +414,13 @@ public final class SequencerService implements ClusteredService {
                                   lastHeartbeatTimestampCounter, gatewayPromotionCounter,
                                   gatewayPromotionFailedCounter, bootstrapActivatedCounter, connectedClientsCounter,
                                   messagesSequencedCounter);
+    }
+
+    /** {@link #emit}, unless the sequencer had nothing to emit. */
+    private void emitIfAny(final int length) {
+        if (length != Sequencer.NO_FRAME) {
+            emit(length);
+        }
     }
 
     /**

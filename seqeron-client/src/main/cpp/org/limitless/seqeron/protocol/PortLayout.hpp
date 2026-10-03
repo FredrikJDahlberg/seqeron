@@ -18,7 +18,10 @@ namespace org::limitless::seqeron::protocol {
 // Functions rather than constexpr constants, since the base is configurable.
 inline constexpr int CLUSTER_PORT_STRIDE = 10;
 inline constexpr int DEFAULT_CLUSTER_PORT_BASE = 9300;
-inline constexpr int CLUSTER_MEMBER_COUNT = 3; // a cluster is bounded at the block's width in strides
+// A cluster is bounded at the block's width in strides: Raft's 3, 5 or 7.
+inline constexpr int CLUSTER_MEMBER_COUNT = 7;
+// Members of the default cluster on localhost, what the default endpoint sets name.
+inline constexpr int DEFAULT_MEMBER_COUNT = 3;
 inline constexpr int CLUSTER_PORT_BLOCK_WIDTH = CLUSTER_MEMBER_COUNT * CLUSTER_PORT_STRIDE;
 inline constexpr const char* ENV_PORT_BASE = "SEQERON_PORT_BASE";
 // Deployment-wide host list, "h0,h1,h2": member i runs on entry i. The Java twin is PortLayout.ENV_HOSTS.
@@ -72,8 +75,8 @@ inline int clusterPortBase()
     return base;
 }
 
-// Core's reserved block (doc/ops.md, "Ports"): three members wide, one stride each — wider than the
-// base+1..base+25 three members bind.
+// Core's reserved block (doc/ops.md, "Ports"): seven members wide, one stride each — wider than the
+// base+1..base+65 seven members bind.
 inline int clusterPortBlockFirst()
 {
     return clusterPortBase();
@@ -238,12 +241,12 @@ inline const std::vector<std::string>& clusterHosts()
 }
 
 /**
- * Builds the default ingress endpoint set: the members SEQERON_HOSTS names, else a full CLUSTER_MEMBER_COUNT-member
+ * Builds the default ingress endpoint set: the members SEQERON_HOSTS names, else a DEFAULT_MEMBER_COUNT-member
  * cluster on localhost. The mirror of PortLayout.ingressEndpoints().
  */
 inline std::string ingressEndpointsCsv()
 {
-    return clusterHosts().empty() ? ingressEndpointsCsv(CLUSTER_MEMBER_COUNT) : ingressEndpointsCsv(clusterHosts());
+    return clusterHosts().empty() ? ingressEndpointsCsv(DEFAULT_MEMBER_COUNT) : ingressEndpointsCsv(clusterHosts());
 }
 
 /**

@@ -36,6 +36,8 @@
 #include "org_limitless_seqeron_sbe_frame/SequencedHeader.h"
 #include "org_limitless_seqeron_sbe_frame/SequencedSystem.h"
 #include "org_limitless_seqeron_sbe_frame/SequencedSystemHeader.h"
+#include "org_limitless_seqeron_sbe_frame/SnapshotEnd.h"
+#include "org_limitless_seqeron_sbe_frame/SnapshotStarted.h"
 #include "org_limitless_seqeron_sbe_frame/UnsequencedHeader.h"
 #include "org_limitless_seqeron_sbe_frame/UnsequencedSystemHeader.h"
 
@@ -77,7 +79,7 @@ std::vector<std::uint8_t> systemFrame(std::int64_t globalSeqNo, std::uint16_t sy
     return out;
 }
 
-// One of the three the sequencer synthesizes: its own template, fields inline, -1 identity (F-4).
+// One of the four the sequencer synthesizes: its own template, fields inline, -1 identity (F-4).
 template<typename Encoder, typename Fill>
 std::vector<std::uint8_t> synthesizedFrame(std::int64_t globalSeqNo, std::uint16_t systemEventType, Fill&& fill)
 {
@@ -211,14 +213,15 @@ TEST(Conformance, FrameSizesAreSection42sTable)
 
     // Fixed overhead: MessageHeader + the header composite + the length prefix.
     EXPECT_EQ(28U, protocol::MIN_INGRESS_LENGTH) << "ingress, both families";
-    EXPECT_EQ(44U,
-              frm::MessageHeader::encodedLength() + frm::SequencedHeader::encodedLength() +
-                  frm::Sequenced::payloadHeaderLength())
+    EXPECT_EQ(44U, frm::MessageHeader::encodedLength() + frm::SequencedHeader::encodedLength() +
+                       frm::Sequenced::payloadHeaderLength())
         << "sequenced, both families";
 
     // A ClusterHeartbeat is a template of its own: no length prefix and no payload at all.
     EXPECT_EQ(42U, synthesizedFrame<frm::ClusterHeartbeat>(1, protocol::CLUSTER_HEARTBEAT, [](auto&) {}).size())
         << "8 + 34, the cheapest frame in the system";
+    EXPECT_EQ(50U, synthesizedFrame<frm::SnapshotStarted>(1, protocol::SNAPSHOT_STARTED, [](auto&) {}).size())
+        << "8 + 34 + the round";
 
     // §12's ceiling, as a frame on the wire.
     EXPECT_EQ(44U + protocol::MAX_PAYLOAD_LENGTH, payloadFrame(1, 2, protocol::MAX_PAYLOAD_LENGTH).size());
@@ -278,7 +281,21 @@ TEST(Conformance, EverySystemMessageNamesItsEventAndDecodesItsBody)
     EXPECT_EQ(3, start.gatewayId());
     EXPECT_EQ(1000, start.firstConnectionId());
 
-    // The three synthesized ones: fields inline in the frame's own block, and -1 marking the class (F-4).
+    const auto end = systemFrame(9, protocol::SNAPSHOT_END, [](char* body, std::size_t cap) {
+        frm::SnapshotEnd encoder;
+        encoder.wrapForEncode(body, 0, cap);
+        encoder.round(3).recordCount(5).length(6000).crc32c(0xDEADBEEFU).formatVersion(2);
+        return static_cast<std::uint16_t>(encoder.encodedLength());
+    });
+    view = viewOf(end);
+    ASSERT_TRUE(view.valid);
+    auto endIn = protocol::decodeSystem<frm::SnapshotEnd>(view.payload, view.payloadLength);
+    EXPECT_EQ(5, endIn.recordCount());
+    EXPECT_EQ(6000, endIn.length());
+    EXPECT_EQ(0xDEADBEEFU, endIn.crc32c());
+    EXPECT_EQ(2U, endIn.formatVersion());
+
+    // The four synthesized ones: fields inline in the frame's own block, and -1 marking the class (F-4).
     view = viewOf(synthesizedFrame<frm::ClusterHeartbeat>(5, protocol::CLUSTER_HEARTBEAT, [](auto&) {}));
     ASSERT_TRUE(view.valid);
     EXPECT_EQ(protocol::CLUSTER_HEARTBEAT, view.systemEventType);
@@ -304,6 +321,13 @@ TEST(Conformance, EverySystemMessageNamesItsEventAndDecodesItsBody)
     ASSERT_TRUE(view.valid);
     EXPECT_EQ(protocol::GATEWAY_ACTIVE, view.systemEventType);
     EXPECT_EQ(3, protocol::decodeSystem<frm::GatewayActive>(view.payload, view.payloadLength).gatewayId());
+
+    const auto snapshotStarted = synthesizedFrame<frm::SnapshotStarted>(10, protocol::SNAPSHOT_STARTED,
+                                                                        [](frm::SnapshotStarted& f) { f.round(4); });
+    view = viewOf(snapshotStarted);
+    ASSERT_TRUE(view.valid);
+    EXPECT_EQ(protocol::SNAPSHOT_STARTED, view.systemEventType);
+    EXPECT_EQ(4, protocol::decodeSystem<frm::SnapshotStarted>(view.payload, view.payloadLength).round());
 }
 
 // ── Row 4b. The producer refuses before the wire (T-3, §12) ───────────────────
@@ -372,7 +396,7 @@ class ConnectedSender : public ::testing::Test
 TEST_F(ConnectedSender, PublishPayloadAdmitsTheCeilingAndRefusesOneMore)
 {
     // ConnectionOpened is var-data only, so the payload is its 8-byte header plus the 2-byte prefix plus
-    // the data: 1306 bytes of data is exactly MAX_PAYLOAD_LENGTH.
+    // the data: MAX_PAYLOAD_LENGTH less those 10 bytes of data is exactly MAX_PAYLOAD_LENGTH.
     const std::vector<char> atCeiling(protocol::MAX_PAYLOAD_LENGTH - frm::MessageHeader::encodedLength() -
                                           frm::ConnectionOpened::connectionDataHeaderLength(),
                                       'x');
@@ -511,6 +535,9 @@ TEST_F(ConnectedSender, FramesTheSequencerWouldRejectAreRefused)
               client::publishSystem<frm::ClusterStarted>(m_sender, SOURCE_ID, CONNECTION_ID,
                                                          protocol::LEADERSHIP_CHANGED, correlationOne));
     EXPECT_EQ(protocol::Publish::Refused,
+              client::publishSystem<frm::ClusterStarted>(m_sender, SOURCE_ID, CONNECTION_ID, protocol::SNAPSHOT_STARTED,
+                                                         correlationOne));
+    EXPECT_EQ(protocol::Publish::Refused,
               client::publishSystem<frm::ConnectionClosed>(m_sender, SOURCE_ID, CONNECTION_ID,
                                                            protocol::GATEWAY_STARTED, [](frm::ConnectionClosed&) {}));
     EXPECT_TRUE(m_ingress->m_offered.empty());
@@ -540,7 +567,7 @@ TEST(Conformance, TheBoundaryPayloadSizesCrossIntact)
 
 TEST(Conformance, UnknownPayloadsAndEventsAreReadableSoContinuityHolds)
 {
-    // globalSeqNo sits at 18 on all five sequenced messages (F-3), so the continuity read is branch-free
+    // globalSeqNo sits at 18 on all six sequenced messages (F-3), so the continuity read is branch-free
     // over frames the consumer comprehends none of. Every one of these must come back valid: a frame
     // dropped here is a globalSeqNo missing from that read, which reads as a gap that is not there.
     std::vector<std::vector<std::uint8_t>> tap;
@@ -557,6 +584,8 @@ TEST(Conformance, UnknownPayloadsAndEventsAreReadableSoContinuityHolds)
                                                            [](frm::LeadershipChanged& f) { f.newLeaderMemberId(2); }));
     tap.push_back(synthesizedFrame<frm::GatewayActive>(5, protocol::GATEWAY_ACTIVE,
                                                        [](frm::GatewayActive& f) { f.gatewayId(3); }));
+    tap.push_back(synthesizedFrame<frm::SnapshotStarted>(6, protocol::SNAPSHOT_STARTED,
+                                                         [](frm::SnapshotStarted& f) { f.round(1); }));
 
     std::int64_t expected = 1;
     for (const auto& frame : tap)

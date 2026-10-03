@@ -4,11 +4,13 @@ import io.aeron.Aeron;
 import io.aeron.archive.Archive;
 import io.aeron.archive.ArchivingMediaDriver;
 import io.aeron.archive.client.AeronArchive;
+import io.aeron.driver.Configuration;
 import io.aeron.driver.MediaDriver;
 import io.aeron.driver.ThreadingMode;
 import java.io.File;
 import java.util.Arrays;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Supplier;
 import org.agrona.CloseHelper;
@@ -36,13 +38,16 @@ import org.limitless.seqeron.util.Logger;
  *   replayer.archiveEndpoints  — the members' archive control endpoints, host:port, comma-separated,
  *                                tried in order; default each member's in SEQERON_HOSTS, and one of the
  *                                two is required
- *   replayer.memberId          — this host's node id (3 or above), which names its directories and labels
+ *   replayer.memberId          — this host's node id, one no member uses, which names its directories and labels
  *                                its counters; default 0
  *   replayer.aeronDir          — the Aeron directory; default {tmpdir}/seqeron-seq-aeron-{memberId}
  *   replayer.idleStrategy      — duty-cycle idle strategy: {@code backoff} (default), {@code yielding}, or
  *                                {@code busyspin}; busy-spin pays only on an isolated core
  *   replayer.host              — this host's name as the members reach it; default localhost
  *   replayer.baseDir           — data directory root; default {tmpdir}/seqeron-seq
+ *   aeron.ipc.term.buffer.length — the driver's IPC term length; default 16m (doc/ops.md, "Term lengths")
+ *   aeron.timer.interval, aeron.untethered.window.limit.timeout, aeron.untethered.linger.timeout — default
+ *                                10ms, 100ms, 100ms (doc/ops.md, "Untethered subscribers")
  * </pre>
  *
  * <p>Launch example (gateway host 3, members on m0/m1/m2):
@@ -80,6 +85,19 @@ public final class ReplayerServer {
      * its own; within Agrona's 10s shutdown-hook budget.
      */
     private static final long SHUTDOWN_JOIN_TIMEOUT_MS = 5_000;
+
+    /** IPC term length when {@code aeron.ipc.term.buffer.length} is not set, rather than Aeron's 64 MiB. */
+    private static final int DEFAULT_IPC_TERM_BUFFER_LENGTH = 16 * 1024 * 1024;
+
+    /** Driver timer interval when {@code aeron.timer.interval} is not set; Aeron checks untethered timeouts on it. */
+    static final long DEFAULT_TIMER_INTERVAL_NS = TimeUnit.MILLISECONDS.toNanos(10);
+
+    /**
+     * Untethered window-limit and linger timeouts when their Aeron properties are not set, rather than Aeron's 5s
+     * each. Until evicted, a stalled subscriber holds the tap's window, and the sequencer and a gateway host's
+     * relay each terminate after 1s of back-pressure with no recording progress.
+     */
+    static final long DEFAULT_UNTETHERED_TIMEOUT_NS = TimeUnit.MILLISECONDS.toNanos(100);
 
     private final int memberId;
     private final Aeron aeron;
@@ -196,6 +214,33 @@ public final class ReplayerServer {
     }
 
     /**
+     * The IPC term length of a seqeron media driver, a member's or a gateway host's: {@code
+     * aeron.ipc.term.buffer.length} when set, else 16 MiB (doc/ops.md, "Term lengths").
+     */
+    public static int ipcTermBufferLength() {
+        return System.getProperty(Configuration.IPC_TERM_BUFFER_LENGTH_PROP_NAME) == null
+            ? DEFAULT_IPC_TERM_BUFFER_LENGTH : Configuration.ipcTermBufferLength();
+    }
+
+    /**
+     * Sets a seqeron media driver's untethered-subscriber timing, a member's or a gateway host's, where its Aeron
+     * property is not set (doc/ops.md, "Untethered subscribers").
+     *
+     * @param ctx the driver's context
+     */
+    public static void untetheredTimeouts(final MediaDriver.Context ctx) {
+        if (System.getProperty(Configuration.TIMER_INTERVAL_PROP_NAME) == null) {
+            ctx.timerIntervalNs(DEFAULT_TIMER_INTERVAL_NS);
+        }
+        if (System.getProperty(Configuration.UNTETHERED_WINDOW_LIMIT_TIMEOUT_PROP_NAME) == null) {
+            ctx.untetheredWindowLimitTimeoutNs(DEFAULT_UNTETHERED_TIMEOUT_NS);
+        }
+        if (System.getProperty(Configuration.UNTETHERED_LINGER_TIMEOUT_PROP_NAME) == null) {
+            ctx.untetheredLingerTimeoutNs(DEFAULT_UNTETHERED_TIMEOUT_NS);
+        }
+    }
+
+    /**
      * A gateway host's own media driver and archive. The archive takes local clients only: this host's
      * Replayer and relay, over {@code aeron:ipc}.
      */
@@ -208,7 +253,9 @@ public final class ReplayerServer {
                                                   .conductorIdleStrategy(idleStrategies.get())
                                                   .senderIdleStrategy(idleStrategies.get())
                                                   .receiverIdleStrategy(idleStrategies.get())
+                                                  .ipcTermBufferLength(ipcTermBufferLength())
                                                   .dirDeleteOnStart(true);
+        untetheredTimeouts(driverCtx);
         final Archive.Context archiveCtx = new Archive.Context()
                                                .aeronDirectoryName(aeronDir)
                                                .archiveDir(new File(baseDir + "/archive-" + nodeId))

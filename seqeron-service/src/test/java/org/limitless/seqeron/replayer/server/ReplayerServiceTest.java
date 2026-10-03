@@ -29,6 +29,8 @@ import org.limitless.seqeron.sbe.replay.ReplayPendingDecoder;
 import org.limitless.seqeron.sbe.replay.ReplayRequestEncoder;
 import org.limitless.seqeron.sbe.replay.ReplayUnavailableDecoder;
 import org.limitless.seqeron.sbe.replay.ReplayingDecoder;
+import org.limitless.seqeron.sbe.replay.SnapshotLocationDecoder;
+import org.limitless.seqeron.sbe.replay.SnapshotQueryEncoder;
 import org.limitless.seqeron.util.Logger;
 
 /**
@@ -646,6 +648,72 @@ class ReplayerServiceTest {
         assertEquals(List.of(CLIENT), clientIdInUseNotices(), "one notice, to the shared id alone");
     }
 
+    // ── Snapshot index and SnapshotQuery (doc/snapshot.md §5) ────────────────────
+
+    @Test
+    void aQueryIsAnsweredFromTheIndexOfTheActiveRecording() {
+        fakeReplayer.addRecording(6, 0, true, 4096);
+        makeReady();
+        replayerService.poll();
+        assertEquals(1, fakeReplayer.indexStreamsOpened().size(), "the index replays the active recording");
+        assertEquals(6, fakeReplayer.indexStreamsOpened().getFirst()[0]);
+        assertEquals(0, fakeReplayer.indexStreamsOpened().getFirst()[1], "from its start");
+
+        final SnapshotFrames frames = new SnapshotFrames();
+        fakeReplayer.enqueueIndexFrame(frames.started(1));
+        fakeReplayer.enqueueIndexFrame(frames.end(3, 1, 2, 500, 0xC0FFEEL));
+        replayerService.poll();
+        assertEquals(1, fakeReplayer.sourceCounter(SeqeronCounters.REPLAYER_SNAPSHOT_ROUND_TYPE_ID, 3));
+
+        final SnapshotLocationDecoder location = snapshotQuery(CLIENT, 11, 3, 1);
+        assertEquals(CLIENT, location.clientId());
+        assertEquals(11, location.requestId());
+        assertEquals(1, location.round());
+        assertEquals(1, location.asOfGlobalSeqNo());
+        assertEquals(0, location.asOfPosition());
+        assertEquals(3, location.formatVersion());
+        assertEquals(2, location.recordCount());
+        assertEquals(500, location.length());
+        assertEquals(0xC0FFEEL, location.crc32c());
+
+        assertEquals(-1, snapshotQuery(CLIENT, 12, 3, 2).round(), "a round with no end indexed");
+        assertEquals(-1, snapshotQuery(CLIENT, 13, 9, 1).round(), "a source with none indexed");
+    }
+
+    @Test
+    void aQueryWaitsForReadinessAndIsRefusedOnAFailedNode() {
+        fakeReplayer.addRecording(6, 0, true, 4096);
+        fakeReplayer.enqueueRequest(snapshotQueryMessage(CLIENT, 1, 3, 1));
+        replayerService.poll();
+        assertEquals(ReplayPendingDecoder.TEMPLATE_ID, lastReply().templateId());
+
+        fakeReplayer.enqueueSelfCheckFrame(sequencedFrame(7));
+        replayerService.poll();
+        replayerService.poll();
+        fakeReplayer.enqueueRequest(snapshotQueryMessage(CLIENT, 2, 3, 1));
+        replayerService.poll();
+        assertEquals(ReplayUnavailableDecoder.TEMPLATE_ID, lastReply().templateId());
+        assertTrue(fakeReplayer.indexStreamsOpened().isEmpty(), "a node that failed its check indexes nothing");
+    }
+
+    @Test
+    void anIndexReplayThatEndsIsReopenedAndTheIndexRebuilt() {
+        fakeReplayer.addRecording(6, 0, true, 4096);
+        makeReady();
+        replayerService.poll();
+        final SnapshotFrames frames = new SnapshotFrames();
+        fakeReplayer.enqueueIndexFrame(frames.started(1));
+        fakeReplayer.enqueueIndexFrame(frames.end(3, 1, 1, 10, 1));
+        replayerService.poll();
+        assertEquals(1, snapshotQuery(CLIENT, 1, 3, 1).round());
+
+        fakeReplayer.endIndexStream();
+        replayerService.poll();
+        replayerService.poll();
+        assertEquals(2, fakeReplayer.indexStreamsOpened().size());
+        assertEquals(-1, snapshotQuery(CLIENT, 2, 3, 1).round(), "rebuilt from the start, nothing re-read yet");
+    }
+
     // ── Fixtures and helpers ────────────────────────────────────────────────────
 
     /**
@@ -751,7 +819,27 @@ class ReplayerServiceTest {
         return events.stream().filter(event -> event.code() == code).count();
     }
 
+    /** Delivers one SnapshotQuery and decodes the SnapshotLocation it drew. */
+    private SnapshotLocationDecoder snapshotQuery(final int clientId, final long requestId, final int sourceId,
+                                                  final long round) {
+        fakeReplayer.enqueueRequest(snapshotQueryMessage(clientId, requestId, sourceId, round));
+        replayerService.poll();
+        final UnsafeBuffer buffer = new UnsafeBuffer(fakeReplayer.controlReplies().getLast());
+        final MessageHeaderDecoder header = new MessageHeaderDecoder().wrap(buffer, 0);
+        assertEquals(SnapshotLocationDecoder.TEMPLATE_ID, header.templateId());
+        return new SnapshotLocationDecoder().wrap(buffer, MessageHeaderDecoder.ENCODED_LENGTH, header.blockLength(),
+                                                  header.version());
+    }
+
     // ── Encoders ────────────────────────────────────────────────────────────────
+
+    private byte[] snapshotQueryMessage(final int clientId, final long requestId, final int sourceId,
+                                        final long round) {
+        final SnapshotQueryEncoder encoder = new SnapshotQueryEncoder();
+        encoder.wrapAndApplyHeader(encodeBuffer, 0, headerEncoder).clientId(clientId).requestId(requestId)
+            .sourceId(sourceId).round(round);
+        return encoded(encoder.encodedLength());
+    }
 
     private byte[] replayRequest(final int clientId, final long requestId, final int segmentIndex,
                                  final long fromPosition) {

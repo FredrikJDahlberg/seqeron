@@ -124,4 +124,9 @@ TEST(Facade, MakePayloadViewsTheEvent)
 }
 
 } // namespace
+
+// Every member of both façades, the snapshot frames' encoders included, which no pre-start case reaches.
+template class Application<StubListener>;
+template class Gateway<StubListener>;
+
 } // namespace org::limitless::seqeron::app

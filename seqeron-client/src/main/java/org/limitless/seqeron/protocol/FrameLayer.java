@@ -13,10 +13,10 @@ import org.limitless.seqeron.sbe.frame.UnsequencedHeaderDecoder;
  */
 public final class FrameLayer {
     /**
-     * Largest payload any frame may carry (<b>T-2</b>): the pinned 1408-byte MTU less the
-     * 92-byte ingress header stack.
+     * Largest payload any frame may carry (<b>T-2</b>): an 8960-byte IPC MTU, one jumbo frame, less the 76
+     * bytes of Aeron data header and sequenced envelope, so a tap whose MTU is that large never fragments.
      */
-    public static final int MAX_PAYLOAD_LENGTH = 1316;
+    public static final int MAX_PAYLOAD_LENGTH = 8884;
 
     /**
      * Smallest ingress frame of either family, 28 bytes: framing header, 18-byte header composite and the
@@ -26,7 +26,7 @@ public final class FrameLayer {
                                                  UnsequencedHeaderDecoder.ENCODED_LENGTH +
                                                  UnsequencedDecoder.payloadHeaderLength();
 
-    /** Largest ingress frame: a full payload behind that framing — 1344 bytes. §9.2 condition 1's ceiling. */
+    /** Largest ingress frame: a full payload behind that framing — 8912 bytes. §9.2 condition 1's ceiling. */
     public static final int MAX_INGRESS_LENGTH = MIN_INGRESS_LENGTH + MAX_PAYLOAD_LENGTH;
 
     /**

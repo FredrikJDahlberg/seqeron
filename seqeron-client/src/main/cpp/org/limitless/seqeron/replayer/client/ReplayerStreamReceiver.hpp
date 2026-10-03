@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 
@@ -15,6 +16,8 @@
 #include "concurrent/AtomicBuffer.h"
 
 #include "org/limitless/seqeron/protocol/SeqeronCounters.hpp"
+#include "org/limitless/seqeron/replayer/client/SnapshotRestoreHandler.hpp"
+#include "org/limitless/seqeron/replayer/client/SnapshotStore.hpp"
 #include "org/limitless/seqeron/replayer/client/detail/ReplayerRecovery.hpp"
 #include "org/limitless/seqeron/replayer/client/detail/TapFaultInjector.hpp"
 
@@ -23,6 +26,7 @@
 #include "org_limitless_seqeron_sbe_replay/ReplayComplete.h"
 #include "org_limitless_seqeron_sbe_replay/ReplayHeartbeat.h"
 #include "org_limitless_seqeron_sbe_replay/ReplayRequest.h"
+#include "org_limitless_seqeron_sbe_replay/SnapshotQuery.h"
 
 namespace org::limitless::seqeron::replayer::client {
 
@@ -98,8 +102,22 @@ class ReplayerStreamReceiver final : private detail::ReplayerRecoveryActions
     ReplayerStreamReceiver& operator=(const ReplayerStreamReceiver&) = delete;
 
     /**
+     * Restores a source's newest snapshot in a store that the log confirms on start, before anything is
+     * dispatched (doc/snapshot.md §7). Call before start; restoreFailure() reports a snapshot that cannot be
+     * restored.
+     *
+     * @param sourceId the source whose snapshot to restore
+     * @param store    this instance's own snapshots; must outlive this receiver
+     * @param handler  takes the snapshot's records; must outlive this receiver
+     */
+    void restoreFrom(const std::int32_t sourceId, SnapshotStore& store, SnapshotRestoreHandler& handler)
+    {
+        m_recovery.restoreFrom(sourceId, store, handler);
+    }
+
+    /**
      * Subscribes the tap and control streams, opens the request publication and the convergence counter,
-     * and requests the cold-start replay.
+     * and requests the cold-start replay, or the snapshot to restore first.
      *
      * @param aeron    the client, on the co-located member's Aeron directory
      * @param memberId this app's node, to label the counter
@@ -200,6 +218,19 @@ class ReplayerStreamReceiver final : private detail::ReplayerRecoveryActions
         return m_recovery.currentLeaderMemberId();
     }
 
+    // Starts recovery over as a cold start, restoring the snapshot given to restoreFrom again: a passive gateway
+    // instance's activation. Every frame after the restored cut is dispatched once more.
+    void restart()
+    {
+        m_recovery.restart();
+    }
+
+    // Why the snapshot given to restoreFrom cannot be restored, or empty. Latched: recovery has stopped.
+    const std::optional<std::string>& restoreFailure() const
+    {
+        return m_recovery.restoreFailure();
+    }
+
   private:
     static constexpr int FRAGMENT_LIMIT = 16;
     static constexpr std::size_t REQUEST_BUFFER_LENGTH = 64;
@@ -219,6 +250,22 @@ class ReplayerStreamReceiver final : private detail::ReplayerRecoveryActions
             static_cast<aeron::util::index_t>(sbe::replay::MessageHeader::encodedLength() + enc.encodedLength());
         aeron::concurrent::AtomicBuffer ab(buf.data(), buf.size());
         m_requestPub->offer(ab, 0, len); // result deliberately discarded — see ReplayerRecovery::requestReplay
+    }
+
+    void sendSnapshotQuery(const std::int64_t requestId, const std::int32_t sourceId, const std::int64_t round) override
+    {
+        if (!m_requestPub || !m_requestPub->isConnected())
+        {
+            return;
+        }
+        alignas(16) std::array<std::uint8_t, REQUEST_BUFFER_LENGTH> buf{};
+        sbe::replay::SnapshotQuery enc;
+        enc.wrapAndApplyHeader(reinterpret_cast<char*>(buf.data()), 0, buf.size());
+        enc.clientId(m_clientId).requestId(requestId).sourceId(sourceId).round(round);
+        const auto len =
+            static_cast<aeron::util::index_t>(sbe::replay::MessageHeader::encodedLength() + enc.encodedLength());
+        aeron::concurrent::AtomicBuffer ab(buf.data(), buf.size());
+        m_requestPub->offer(ab, 0, len);
     }
 
     bool sendReplayComplete() override
@@ -327,9 +374,14 @@ class ReplayerStreamReceiver final : private detail::ReplayerRecoveryActions
                            protocol::frameStartPosition(header), protocol::nowNs(), /*fromReplay=*/false);
     }
 
+    // Drops the rest of a poll's batch once a frame in it has superseded the replay, which drops m_replayImage.
     void onReplayFragment(const aeron::concurrent::AtomicBuffer& buffer, const aeron::util::index_t offset,
                           const aeron::util::index_t length, const aeron::Header& header)
     {
+        if (!m_replayImage)
+        {
+            return;
+        }
         m_recovery.onFrame(frameAt(buffer, offset), static_cast<std::uint64_t>(length),
                            protocol::frameStartPosition(header), protocol::nowNs(), /*fromReplay=*/true);
     }

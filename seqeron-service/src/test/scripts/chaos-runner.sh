@@ -32,7 +32,8 @@
 # The gateway list loaded is seqeron-service/src/test/resources/topology-test-gateway.xml, and it names exactly the two
 #   instances this script starts: a listed pair no process starts is designated, times out after
 #   GATEWAY_ACTIVATION_TIMEOUT_MS, hands over to its standby and times out again, forever. Both gateways go
-#   up immediately behind load-topology for that reason.
+#   up immediately behind load-topology for that reason. The pair takes part in snapshot rounds every 2 s,
+#   each instance keeping its files under $SNAPSHOT_DIR across its restarts, so a restarted one restores.
 #
 # PASS/FAIL: the loop runs ROUNDS rounds; a round FAILS if any steady-state invariant is violated after
 #   the heal window. On first failure it stops and prints the fault history + SEED to reproduce.
@@ -77,6 +78,8 @@ RANDOM="$SEED"
 # fail-fast violation. Must exceed Aeron's DEFAULT_MEDIA_DRIVER_TIMEOUT_MS (10s, Context.h) — a
 # client CANNOT detect driver death sooner than that, so anything less produces spurious failures.
 DRIVER_LOSS_GRACE_SECS="${DRIVER_LOSS_GRACE_SECS:-15}"
+# How long a check waits for a snapshot round newer than the last check saw.
+SNAPSHOT_ROUND_TIMEOUT_SECS="${SNAPSHOT_ROUND_TIMEOUT_SECS:-30}"
 # 1 = a fail-fast violation fails the round; 0 = report it and carry on (for triaging a run whose
 # clients are known not to exit yet, without going red every kill round).
 DRIVER_LOSS_STRICT="${DRIVER_LOSS_STRICT:-1}"
@@ -102,6 +105,7 @@ PAUSE_SECS=0.5
 
 JAVA_OPTS=("${SEQERON_JAVA_OPTS[@]}")
 BASE_DIR="${TMP_DIR}/seqeron-seqfo"
+SNAPSHOT_DIR="${TMP_DIR}/seqeron-chaos-snapshots"   # each gateway instance's own files, kept across its restarts
 CLUSTER_MEMBERS="$(cluster_members_string 3)"
 CN=0            # observation / tap-drop-target consumer host — a fault target like any other member
 # The gateway pair, one instance per member so a kill of either host is a genuine promotion. Rank 0 is
@@ -130,6 +134,7 @@ TAP_DROP_TARGET=""; TAP_DROP_LOG=""; TAP_DROP_RESUMES=0; TAP_DROP_REWALKS=0
 # Per-replica RecoveryStalled alarms already accounted for, so check_invariants (c) fails a round on a
 # NEW one rather than re-reporting an episode some earlier round already owned.
 declare -a RECOVERY_STALL_BASELINE=(0 0 0)
+LAST_SNAPSHOT_ROUND=0   # the pair's newest indexed round at the last check, for invariant (i)
 
 # ── Helpers ─────────────────────────────────────────────────────────────────────
 start_seq() {  # start_seq <memberId> — append so leadership history survives restarts (last isLeader= wins)
@@ -218,7 +223,7 @@ trap cleanup EXIT INT TERM
 # `-cp` line) and the -Dsequencer marker instead.
 pkill -9 -f "$JAR" 2>/dev/null; pkill -9 -f "sequencer.memberId" 2>/dev/null
 pkill -9 -f "probe.gatewayName" 2>/dev/null
-rm -rf "$BASE_DIR" "${TMP_DIR}/seqeron-seq-aeron-0" "${TMP_DIR}/seqeron-seq-aeron-1" \
+rm -rf "$BASE_DIR" "$SNAPSHOT_DIR" "${TMP_DIR}/seqeron-seq-aeron-0" "${TMP_DIR}/seqeron-seq-aeron-1" \
        "${TMP_DIR}/seqeron-seq-aeron-2" 2>/dev/null
 W=0; while lsof -nP -iUDP:"$(archive_port 0)" -iUDP:"$(archive_port 1)" -iUDP:"$(archive_port 2)" 2>/dev/null \
   | grep -q java; do sleep 0.5; W=$((W+1)); ((W>20)) && { echo "UDP archive ports still held after 10s — stale cluster?"; exit 1; }; done
@@ -278,6 +283,7 @@ start_gateway() {  # start_gateway <memberId>
   local m="$1"
   java "${JAVA_OPTS[@]}" -Dprobe.memberId="$m" -Dprobe.clientId=10 \
        -Dprobe.gatewayName="$(gateway_name "$m")" -Dprobe.listenPort="$(gateway_port "$m")" \
+       -Dprobe.snapshot=true -Dprobe.snapshotDir="$SNAPSHOT_DIR/$(gateway_name "$m")" \
        -cp "$GW_CP" org.limitless.seqeron.tools.TestGateway serve > "$(gateway_log "$m")" 2>&1 &
   GW_PIDS[$m]=$!
 }
@@ -638,6 +644,14 @@ FAULTS=(fault_kill_leader fault_kill_follower fault_sigkill_node fault_pause_nod
 #     embedded drivers onto a shared aeronmd — driver dies, cluster node survives, which the embedded
 #     topology cannot produce. Wire it then.
 
+# The newest round of the pair's sourceId whose SnapshotEnd member <m>'s Replayer has indexed, 0 for none.
+snapshot_round() {  # snapshot_round <memberId>
+  local value
+  value=$(CLUSTERCTL_MEMBER_ID="$1" seqeron-service/src/main/scripts/clusterctl.sh counters 2>/dev/null \
+            | grep "snapshotRound source=9 " | grep -oE "[0-9]+ *$" | tr -d ' ')
+  echo "${value:-0}"
+}
+
 # ── Steady-state oracle ──────────────────────────────────────────────────────────
 # Liveness + a safety PROXY via log grep. The RIGOROUS safety oracle (gap-free, monotone globalSeqNo across
 # the ordered stream, and replica convergence) should be a decode of the cluster log, not grep — pipe the
@@ -754,6 +768,20 @@ check_invariants() {
   # (g) a kill-leader round produced a GENUINE failover, as observed by fault_kill_leader.
   [[ "$FAILOVER_FAIL" == "1" ]] && fail=1
   FAILOVER_FAIL=0
+  # (i) snapshot rounds still complete under the faults: the pair's newest round indexed on the leader has
+  #     moved past the last check's. A diverged or unrestorable instance fences and exits, which (b2) catches.
+  if [[ -n "$L" ]]; then
+    local r W=0
+    until r="$(snapshot_round "$L")"; (( r > LAST_SNAPSHOT_ROUND )); do
+      sleep 0.5; W=$((W+1)); ((W > SNAPSHOT_ROUND_TIMEOUT_SECS * 2)) && break
+    done
+    if (( r > LAST_SNAPSHOT_ROUND )); then
+      log "  ok: snapshot rounds advancing (round $LAST_SNAPSHOT_ROUND -> $r on member $L)"
+      LAST_SNAPSHOT_ROUND="$r"
+    else
+      log "  INVARIANT FAIL: no snapshot round past $LAST_SNAPSHOT_ROUND within ${SNAPSHOT_ROUND_TIMEOUT_SECS}s"; fail=1
+    fi
+  fi
   # (h) The rigorous safety property (gap-free, monotone globalSeqNo) is asserted ONCE at end of run by
   #     verify_sequence below — decoding it every round would re-dump the whole recording each time.
   return $fail

@@ -23,18 +23,18 @@ class SequencerServerTest {
         assertEquals("localhost:9312", PortLayout.ingressEndpoint(1));
     }
 
-    // The reservation is wider than what three members bind, and applications check themselves against it
-    // (doc/ops.md, "Ports"). Pinned here, and in PortLayoutTest, so it cannot quietly narrow to 9325.
+    // The reservation is wider than what seven members bind, and applications check themselves against it
+    // (doc/ops.md, "Ports"). Pinned here, and in PortLayoutTest, so it cannot quietly narrow to 9365.
     @Test
-    void reservedBlockCoversThreeMemberStrides() {
+    void reservedBlockCoversSevenMemberStrides() {
         assertEquals(9300, PortLayout.CLUSTER_PORT_BLOCK_FIRST);
-        assertEquals(9329, PortLayout.CLUSTER_PORT_BLOCK_LAST);
+        assertEquals(9369, PortLayout.CLUSTER_PORT_BLOCK_LAST);
 
         assertTrue(PortLayout.isClusterPort(9300));
-        assertTrue(PortLayout.isClusterPort(9320)); // member 2's base — reserved though unbound
-        assertTrue(PortLayout.isClusterPort(9329));
+        assertTrue(PortLayout.isClusterPort(9360)); // member 6's base — reserved though unbound
+        assertTrue(PortLayout.isClusterPort(9369));
         assertFalse(PortLayout.isClusterPort(9299));
-        assertFalse(PortLayout.isClusterPort(9330));
+        assertFalse(PortLayout.isClusterPort(9370));
     }
 
     @Test

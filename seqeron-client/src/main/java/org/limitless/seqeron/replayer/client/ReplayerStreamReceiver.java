@@ -18,6 +18,7 @@ import org.limitless.seqeron.sbe.replay.MessageHeaderEncoder;
 import org.limitless.seqeron.sbe.replay.ReplayCompleteEncoder;
 import org.limitless.seqeron.sbe.replay.ReplayHeartbeatEncoder;
 import org.limitless.seqeron.sbe.replay.ReplayRequestEncoder;
+import org.limitless.seqeron.sbe.replay.SnapshotQueryEncoder;
 
 /**
  * App-replica side of the per-node {@code ReplayerService} — the Java twin of
@@ -38,7 +39,7 @@ public final class ReplayerStreamReceiver implements AutoCloseable {
 
     private static final int FRAGMENT_LIMIT = 16;
 
-    /** Scratch for the three control messages this client sends; each is well under 64 bytes. */
+    /** Scratch for the four control messages this client sends; each is well under 64 bytes. */
     private static final int REQUEST_BUFFER_LENGTH = 64;
 
     private final int clientId;
@@ -50,6 +51,7 @@ public final class ReplayerStreamReceiver implements AutoCloseable {
     private final ReplayRequestEncoder replayRequest = new ReplayRequestEncoder();
     private final ReplayCompleteEncoder replayComplete = new ReplayCompleteEncoder();
     private final ReplayHeartbeatEncoder replayHeartbeat = new ReplayHeartbeatEncoder();
+    private final SnapshotQueryEncoder snapshotQuery = new SnapshotQueryEncoder();
     private final UnsafeBuffer requestBuffer = new UnsafeBuffer(new byte[REQUEST_BUFFER_LENGTH]);
 
     private final FragmentHandler tapHandler;
@@ -92,16 +94,23 @@ public final class ReplayerStreamReceiver implements AutoCloseable {
         this.tapFaults = tapFaults;
         this.recovery = new ReplayerRecovery(clientId, actions, onSequenced, onLeadershipChanged, onCaughtUp);
         this.tapHandler = new FragmentAssembler(this::onTapFragment);
-        this.replayHandler = new FragmentAssembler(
-            (buffer, offset, length, hdr) ->
-                recovery.onFrame(buffer, offset, length, frameStartPosition(hdr), nowNs(), true));
+        this.replayHandler = new FragmentAssembler(this::onReplayFragment);
         this.controlFragmentHandler =
             new FragmentAssembler((buffer, offset, length, hdr) -> recovery.onControl(buffer, offset, length));
     }
 
     /**
+     * Restores {@code sourceId}'s newest snapshot in {@code store} that the log confirms on {@link #start}, before
+     * anything is dispatched (doc/snapshot.md §7). Call before {@link #start}; {@link #restoreFailure()} reports a
+     * snapshot that cannot be restored.
+     */
+    public void restoreFrom(final int sourceId, final SnapshotStore store, final SnapshotRestoreHandler handler) {
+        recovery.restoreFrom(sourceId, store, handler);
+    }
+
+    /**
      * Subscribes the tap and control streams, opens the request publication and the convergence counter,
-     * and requests the cold-start replay from segment 0.
+     * and requests the cold-start replay from segment 0, or the snapshot to restore first.
      * @param aeron    client sharing the co-located node's media driver
      * @param memberId this app's node, to label the counter
      */
@@ -183,6 +192,19 @@ public final class ReplayerStreamReceiver implements AutoCloseable {
         return recovery.currentLeaderMemberId();
     }
 
+    /**
+     * Starts recovery over as a cold start, restoring the snapshot given to {@link #restoreFrom} again: a passive
+     * gateway instance's activation. Every frame after the restored cut is dispatched once more.
+     */
+    public void restart() {
+        recovery.restart();
+    }
+
+    /** Why the snapshot given to {@link #restoreFrom} cannot be restored, or null. Latched: recovery has stopped. */
+    public String restoreFailure() {
+        return recovery.restoreFailure();
+    }
+
     @Override
     public void close() {
         actions.closeReplay();
@@ -217,6 +239,14 @@ public final class ReplayerStreamReceiver implements AutoCloseable {
         recovery.onFrame(buffer, offset, length, frameStartPosition(header), nowNs(), false);
     }
 
+    /** Drops the rest of a poll's batch once a frame in it has superseded the replay, which closes the image. */
+    private void onReplayFragment(final org.agrona.DirectBuffer buffer, final int offset, final int length,
+                                  final io.aeron.logbuffer.Header header) {
+        if (replayImage != null) {
+            recovery.onFrame(buffer, offset, length, frameStartPosition(header), nowNs(), true);
+        }
+    }
+
     private static long frameStartPosition(final io.aeron.logbuffer.Header header) {
         return LogBufferDescriptor.computePosition(header.termId(), header.termOffset(),
                                                    header.positionBitsToShift(), header.initialTermId());
@@ -244,6 +274,20 @@ public final class ReplayerStreamReceiver implements AutoCloseable {
                          .segmentIndex(segmentIndex);
             requestPublication.offer(requestBuffer, 0,
                                      MessageHeaderEncoder.ENCODED_LENGTH + replayRequest.encodedLength());
+        }
+
+        @Override
+        public void sendSnapshotQuery(final long requestId, final int sourceId, final long round) {
+            if (requestPublication == null || !requestPublication.isConnected()) {
+                return;
+            }
+            snapshotQuery.wrapAndApplyHeader(requestBuffer, 0, requestHeader)
+                         .clientId(clientId)
+                         .requestId(requestId)
+                         .sourceId(sourceId)
+                         .round(round);
+            requestPublication.offer(requestBuffer, 0,
+                                     MessageHeaderEncoder.ENCODED_LENGTH + snapshotQuery.encodedLength());
         }
 
         @Override

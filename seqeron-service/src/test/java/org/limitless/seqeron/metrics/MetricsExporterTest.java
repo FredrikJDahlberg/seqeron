@@ -69,6 +69,21 @@ class MetricsExporterTest {
     }
 
     @Test
+    @DisplayName("the per-source snapshot round carries a source label")
+    void snapshotRoundIsLabelledBySource() {
+        counters.newCounter("seqeron.replayer.snapshotRound source=3 member=1",
+                            SeqeronCounters.REPLAYER_SNAPSHOT_ROUND_TYPE_ID,
+                            keyBuffer -> {
+                                keyBuffer.putInt(SeqeronCounters.KEY_MEMBER_ID_OFFSET, MEMBER);
+                                keyBuffer.putInt(SeqeronCounters.KEY_SOURCE_ID_OFFSET, 3);
+                            })
+            .set(12);
+
+        assertTrue(new MetricsExporter(counters).renderMetrics()
+                       .contains("seqeron_replayer_snapshot_round{member=\"1\",source=\"3\"} 12"));
+    }
+
+    @Test
     @DisplayName("a counter seqeron does not own is skipped")
     void unknownTypeIdIsSkipped() {
         counters.newCounter("something.else", 999, keyBuffer -> keyBuffer.putInt(0, MEMBER));

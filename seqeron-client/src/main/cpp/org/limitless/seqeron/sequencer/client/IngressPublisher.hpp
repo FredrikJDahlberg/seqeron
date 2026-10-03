@@ -20,6 +20,25 @@ namespace org::limitless::seqeron::sequencer::client {
 
 // Encode buffer for one ingress message: the largest frame the protocol admits (§12).
 inline constexpr std::size_t INGRESS_ENCODE_BUFFER_LEN = protocol::MAX_INGRESS_LENGTH;
+static_assert(INGRESS_ENCODE_BUFFER_LEN <= ClusterStreamSender::MAX_PAYLOAD_LEN);
+
+namespace detail {
+
+// This thread's encode buffers, in static storage: a frame-sized stack array, zeroed per call, costs every
+// send. Two, because a payload or system body is encoded before the frame that carries it.
+inline std::uint8_t* frameBuffer() noexcept
+{
+    alignas(16) static thread_local std::array<std::uint8_t, INGRESS_ENCODE_BUFFER_LEN> buffer;
+    return buffer.data();
+}
+
+inline std::uint8_t* bodyBuffer() noexcept
+{
+    alignas(16) static thread_local std::array<std::uint8_t, INGRESS_ENCODE_BUFFER_LEN> buffer;
+    return buffer.data();
+}
+
+} // namespace detail
 
 /**
  * Offers one encoded frame to cluster ingress.
@@ -73,9 +92,9 @@ inline constexpr std::size_t INGRESS_ENCODE_BUFFER_LEN = protocol::MAX_INGRESS_L
     {
         return protocol::Publish::Refused;
     }
-    alignas(16) std::array<std::uint8_t, INGRESS_ENCODE_BUFFER_LEN> buffer{};
+    std::uint8_t* const buffer = detail::frameBuffer();
     sbe::frame::Unsequenced frame;
-    frame.wrapAndApplyHeader(reinterpret_cast<char*>(buffer.data()), 0, buffer.size());
+    frame.wrapAndApplyHeader(reinterpret_cast<char*>(buffer), 0, INGRESS_ENCODE_BUFFER_LEN);
     frame.header()
         .sourceId(sourceId)
         .connectionId(connectionId)
@@ -83,7 +102,7 @@ inline constexpr std::size_t INGRESS_ENCODE_BUFFER_LEN = protocol::MAX_INGRESS_L
         .payloadId(payloadId);
     frame.putPayload(reinterpret_cast<const char*>(payload), payloadLength);
     const auto length = static_cast<std::uint16_t>(sbe::frame::MessageHeader::encodedLength() + frame.encodedLength());
-    return offerFrame(sender, tracker, buffer.data(), length);
+    return offerFrame(sender, tracker, buffer, length);
 }
 
 /**
@@ -110,13 +129,13 @@ template<typename Encoder, typename Fill>
     {
         return protocol::Publish::Refused;
     }
-    alignas(16) std::array<std::uint8_t, INGRESS_ENCODE_BUFFER_LEN> payload{};
+    std::uint8_t* const payload = detail::bodyBuffer();
     Encoder encoder;
-    encoder.wrapAndApplyHeader(reinterpret_cast<char*>(payload.data()), 0, payload.size());
+    encoder.wrapAndApplyHeader(reinterpret_cast<char*>(payload), 0, INGRESS_ENCODE_BUFFER_LEN);
     std::forward<Fill>(fill)(encoder);
     const auto payloadLength =
         static_cast<std::uint16_t>(sbe::frame::MessageHeader::encodedLength() + encoder.encodedLength());
-    return publishPayload(sender, tracker, sourceId, connectionId, payloadId, payload.data(), payloadLength);
+    return publishPayload(sender, tracker, sourceId, connectionId, payloadId, payload, payloadLength);
 }
 
 /**
@@ -164,9 +183,9 @@ template<typename Encoder, typename Fill>
     {
         return protocol::Publish::Refused;
     }
-    alignas(16) std::array<std::uint8_t, INGRESS_ENCODE_BUFFER_LEN> body{};
+    std::uint8_t* const body = detail::bodyBuffer();
     Encoder encoder;
-    encoder.wrapForEncode(reinterpret_cast<char*>(body.data()), 0, body.size());
+    encoder.wrapForEncode(reinterpret_cast<char*>(body), 0, INGRESS_ENCODE_BUFFER_LEN);
     std::forward<Fill>(fill)(encoder);
     const auto bodyLength = static_cast<std::uint16_t>(encoder.encodedLength());
     if (bodyLength > protocol::MAX_PAYLOAD_LENGTH || bodyLength < blockLength)
@@ -174,17 +193,17 @@ template<typename Encoder, typename Fill>
         return protocol::Publish::Refused;
     }
 
-    alignas(16) std::array<std::uint8_t, INGRESS_ENCODE_BUFFER_LEN> buffer{};
+    std::uint8_t* const buffer = detail::frameBuffer();
     sbe::frame::UnsequencedSystem frame;
-    frame.wrapAndApplyHeader(reinterpret_cast<char*>(buffer.data()), 0, buffer.size());
+    frame.wrapAndApplyHeader(reinterpret_cast<char*>(buffer), 0, INGRESS_ENCODE_BUFFER_LEN);
     frame.header()
         .sourceId(sourceId)
         .connectionId(connectionId)
         .sessionId(sender.clusterSessionId())
         .systemEventType(systemEventType);
-    frame.putBody(reinterpret_cast<const char*>(body.data()), bodyLength);
+    frame.putBody(reinterpret_cast<const char*>(body), bodyLength);
     const auto length = static_cast<std::uint16_t>(sbe::frame::MessageHeader::encodedLength() + frame.encodedLength());
-    return offerFrame(sender, tracker, buffer.data(), length);
+    return offerFrame(sender, tracker, buffer, length);
 }
 
 /**

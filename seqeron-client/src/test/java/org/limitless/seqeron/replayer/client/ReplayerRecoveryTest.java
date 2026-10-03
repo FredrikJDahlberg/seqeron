@@ -3,17 +3,26 @@ package org.limitless.seqeron.replayer.client;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
+import org.agrona.DirectBuffer;
 import org.agrona.concurrent.UnsafeBuffer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+import org.limitless.seqeron.protocol.FrameLayer;
 import org.limitless.seqeron.protocol.ReplayProtocol;
+import org.limitless.seqeron.protocol.SnapshotHeader;
 import org.limitless.seqeron.sbe.frame.ClusterHeartbeatEncoder;
 import org.limitless.seqeron.sbe.frame.LeadershipChangedEncoder;
 import org.limitless.seqeron.sbe.replay.ReplayClientIdInUseEncoder;
@@ -61,9 +70,26 @@ class ReplayerRecoveryTest {
     private static final long PAST_DEADLINE_MS = CLOCK_MS + 30_000;
 
     /** Bigger than one {@code RetainBlock}, which is what makes {@code retainFrame} refuse outright. */
-    private static final int OVERSIZED_FRAME_LENGTH = 8192;
+    private static final int OVERSIZED_FRAME_LENGTH = 32 * 1024;
+
+    /** The largest frame the tap carries (§12): a full payload behind the 44-byte sequenced envelope. */
+    private static final int LARGEST_FRAME_LENGTH = 44 + FrameLayer.MAX_PAYLOAD_LENGTH;
+
+    /** The source restored, its snapshot's cut, and where frame n starts: n * 1024, as everywhere here. */
+    private static final int SOURCE = 3;
+    private static final long CUT = 10;
+
+    /** The snapshot every round here holds: the header, term 4 and leader 2, then one record. */
+    private static final byte[] SNAPSHOT_HEADER = RestoreFrames.header(4, 2);
+    private static final byte[] SNAPSHOT_RECORD = RestoreFrames.record(7);
+
+    @TempDir
+    Path directory;
+    private int stores;
+    private SnapshotStore store;
 
     private final List<Long> dispatched = new ArrayList<>();
+    private final List<String> restored = new ArrayList<>();
     private final List<Long> caughtUpAt = new ArrayList<>();
     private final List<Logger.LoggerEvent> logged = new ArrayList<>();
     private RecordingActions actions;
@@ -73,12 +99,22 @@ class ReplayerRecoveryTest {
     private static final class RecordingActions implements ReplayerRecoveryActions {
         long clockMs = CLOCK_MS;
         int requestsSent;
+        int queriesSent;
+        int querySourceId = -1;
+        long queryRound = -1;
         int heartbeatsSent;
         final List<Boolean> stalledGauge = new ArrayList<>();
 
         @Override
         public void sendReplayRequest(final long requestId, final int segmentIndex, final long fromPosition) {
             ++requestsSent;
+        }
+
+        @Override
+        public void sendSnapshotQuery(final long requestId, final int sourceId, final long round) {
+            ++queriesSent;
+            querySourceId = sourceId;
+            queryRound = round;
         }
 
         // False like a receiver with no publication: every send here is one that never went out, which is
@@ -126,9 +162,11 @@ class ReplayerRecoveryTest {
     @BeforeEach
     void setUp() {
         dispatched.clear();
+        restored.clear();
         caughtUpAt.clear();
         logged.clear();
         actions = new RecordingActions();
+        store = new SnapshotStore(directory.resolve("instance-" + stores++));
         receiver = new ReplayerRecovery(CLIENT_ID, actions, event -> dispatched.add(event.globalSeqNo()), null,
                                         () -> caughtUpAt.add((long)dispatched.size()));
     }
@@ -731,6 +769,20 @@ class ReplayerRecoveryTest {
         assertTrue(receiver.isCaughtUp());
     }
 
+    @Test
+    @DisplayName("a frame of the largest payload ahead of the hole is retained, not an overflow")
+    void largestFrameAheadOfTheHoleIsRetained() {
+        deliverTap(1);
+        deliverTapPadded(3, LARGEST_FRAME_LENGTH); // gap -> retained
+        assertEquals(1, receiver.retainedFrameCount());
+
+        deliverReplay(1); // a resume opens on the frame it anchored at — already delivered, deduped
+        deliverReplay(2); // closes the hole -> 3 drains behind it
+
+        assertEquals(List.of(1L, 2L, 3L), dispatched);
+        assertTrue(receiver.isCaughtUp(), "an overflow would have forced a re-walk");
+    }
+
     // The ranges legitimately overlap, since a re-walk restarts from segment 0 while the tap keeps
     // arriving.
     @Test
@@ -1317,6 +1369,279 @@ class ReplayerRecoveryTest {
 
     // ── helpers ───────────────────────────────────────────────────────────────────────────────────
 
+    // ── restoring a snapshot ──────────────────────────────────────────────────────────────────────
+
+    @Test
+    @DisplayName("a restoring cold start asks the Replayer about its newest local snapshot, holding the live tap")
+    void restoringColdStartQueriesItsSnapshotFirst() {
+        writeSnapshot(1);
+        writeSnapshot(2);
+        startRestoring();
+
+        assertEquals(1, actions.queriesSent);
+        assertEquals(SOURCE, actions.querySourceId);
+        assertEquals(2, actions.queryRound, "the newest round it holds");
+        assertFalse(receiver.isAwaitingReplay(), "no replay before the answer");
+        assertTrue(receiver.isRecovering());
+
+        deliverTap(40); // mid-stream, and no baseline: held, not fatal
+        assertTrue(dispatched.isEmpty());
+    }
+
+    @Test
+    @DisplayName("an unanswered snapshot query is resent; a pending answer holds it")
+    void unansweredSnapshotQueryIsResent() {
+        writeSnapshot(2);
+        startRestoring();
+        advancePastTimers();
+        assertEquals(2, actions.queriesSent);
+
+        deliverPending(receiver.requestId());
+        actions.clockMs += 100;
+        receiver.doTimers(false);
+        assertEquals(2, actions.queriesSent);
+    }
+
+    @Test
+    @DisplayName("with no local snapshot, the cold start asks nothing and walks the chain from segment 0")
+    void noSnapshotWalksFromSegmentZero() {
+        startRestoring();
+
+        assertEquals(0, actions.queriesSent);
+        assertFalse(receiver.isRestoring());
+        assertTrue(receiver.isAwaitingReplay());
+        assertEquals(0, receiver.walkSegmentIndex());
+        assertEquals(0, receiver.requestFromPosition());
+    }
+
+    @Test
+    @DisplayName("a snapshot is restored from its file, dispatching nothing, then resumes anchored at its cut")
+    void snapshotIsRestoredThenResumesAtItsCut() {
+        writeSnapshot(2);
+        startRestoring();
+        answerLocation(2, 1);
+        assertTrue(receiver.isRestoring());
+        assertFalse(receiver.isAwaitingReplay(), "the records come from the file, not a replay");
+
+        receiver.doTimers(false);
+
+        assertEquals(List.of("header 4 2", "0 7"), restored);
+        assertTrue(dispatched.isEmpty());
+        assertFalse(receiver.isRestoring());
+        assertEquals(CUT, receiver.lastGlobalSeqNo());
+        assertEquals(2, receiver.currentLeaderMemberId(), "the header's leader");
+        assertTrue(receiver.isAwaitingReplay());
+        assertEquals(-1, receiver.walkSegmentIndex());
+        assertEquals(CUT * 1024, receiver.requestFromPosition());
+
+        attachReplay(22, 64 * 1024);
+        deliverReplayFrame(RestoreFrames.started(CUT, 2), CUT); // the anchor, already dispatched
+        deliverReplay(11);
+        deliverReplay(12);
+        assertEquals(List.of(11L, 12L), dispatched);
+    }
+
+    @Test
+    @DisplayName("a restore reads a bounded number of records per duty cycle, holding the tap until its last")
+    void restoreIsPacedAcrossDutyCycles() {
+        final byte[][] records = new byte[ReplayerRecovery.MAX_RESTORE_RECORDS_PER_CYCLE + 1][];
+        records[0] = SNAPSHOT_HEADER;
+        for (int i = 1; i < records.length; i++) {
+            records[i] = RestoreFrames.record(i);
+        }
+        RestoreFrames.write(store, 2, 1, records);
+        startRestoring();
+        answerLocation(2, 1, RestoreFrames.Digest.of(records));
+
+        receiver.doTimers(false);
+        assertTrue(receiver.isRestoring());
+        assertEquals(ReplayerRecovery.MAX_RESTORE_RECORDS_PER_CYCLE, restored.size());
+        deliverTap(40);
+        assertTrue(dispatched.isEmpty());
+
+        receiver.doTimers(false);
+        assertFalse(receiver.isRestoring());
+        assertEquals(records.length, restored.size());
+        assertTrue(receiver.isAwaitingReplay());
+    }
+
+    @Test
+    @DisplayName("a local snapshot the log does not confirm gives way to the next older one, and the last to a walk")
+    void unconfirmedSnapshotGivesWayToAnOlderOne() throws IOException {
+        for (long round = 1; round <= 4; round++) {
+            writeSnapshot(round);
+        }
+        final Path cut = directory.resolve("instance-" + (stores - 1)).resolve("3.snapshot");
+        Files.write(cut, Arrays.copyOf(Files.readAllBytes(cut), 40));
+        startRestoring();
+
+        assertEquals(4, actions.queryRound);
+        answerLocation(-1, 1); // no sequenced end for round 4 in the index
+        assertEquals(3, actions.queryRound);
+        answerLocation(3, 1); // its file is cut short
+        assertEquals(2, actions.queryRound);
+        answerLocation(2, 1, new RestoreFrames.Digest(2, 26, 0xBAD)); // its file is not the one sequenced
+        assertEquals(1, actions.queryRound);
+        answerLocation(1, 1);
+        receiver.doTimers(false);
+        assertEquals(List.of("header 4 2", "0 7"), restored);
+        assertEquals(CUT, receiver.lastGlobalSeqNo());
+
+        setUp();
+        writeSnapshot(2);
+        startRestoring();
+        answerLocation(-1, 1);
+        assertEquals(1, actions.queriesSent, "nothing older to ask about");
+        assertFalse(receiver.isRestoring());
+        assertTrue(receiver.isAwaitingReplay());
+        assertEquals(0, receiver.walkSegmentIndex());
+    }
+
+    @Test
+    @DisplayName("after a restore, a fall-back to the walk resumes at the snapshot instead")
+    void afterARestoreTheWalkFallbackResumesAtTheSnapshot() {
+        writeSnapshot(2);
+        startRestoring();
+        answerLocation(2, 1);
+        receiver.doTimers(false);
+        attachReplay(22, 64 * 1024);
+
+        deliverReplay(12); // not the anchor
+
+        assertEquals(-1, receiver.walkSegmentIndex(), "segment 0 holds nothing this instance may replay");
+        assertEquals(CUT * 1024, receiver.requestFromPosition());
+        attachReplay(23, 64 * 1024);
+        deliverReplayFrame(RestoreFrames.started(CUT, 2), CUT);
+        deliverReplay(11);
+        assertEquals(List.of(11L), dispatched);
+    }
+
+    @Test
+    @DisplayName("a snapshot that cannot be restored stops recovery: its format, its header, or its records")
+    void unrestorableSnapshotStopsRecovery() throws IOException {
+        writeSnapshot(2);
+        startRestoring();
+        answerLocation(2, 9);
+        assertTrue(receiver.restoreFailure().contains("formatVersion 9"));
+        assertFalse(receiver.isRecovering());
+        deliverTap(40); // no baseline, and no longer an error either
+        assertTrue(dispatched.isEmpty());
+
+        setUp();
+        final byte[] header = SNAPSHOT_HEADER.clone();
+        header[0] = 9;
+        RestoreFrames.write(store, 2, 1, header, SNAPSHOT_RECORD);
+        startRestoring();
+        answerLocation(2, 1, RestoreFrames.Digest.of(header, SNAPSHOT_RECORD));
+        receiver.doTimers(false);
+        assertTrue(receiver.restoreFailure().contains("header of version 9"));
+
+        setUp();
+        writeSnapshot(2);
+        final Path file = directory.resolve("instance-" + (stores - 1)).resolve("2.snapshot");
+        final byte[] damaged = Files.readAllBytes(file);
+        damaged[2 + SNAPSHOT_HEADER.length + 2] ^= 1; // the record's first byte; the trailer still matches the end
+        Files.write(file, damaged);
+        startRestoring();
+        answerLocation(2, 1);
+        receiver.doTimers(false);
+        assertTrue(receiver.restoreFailure().contains("damaged"));
+        assertFalse(receiver.isRecovering());
+        assertNull(new ReplayerRecovery(CLIENT_ID, actions, event -> { }, null, null).restoreFailure());
+    }
+
+    @Test
+    @DisplayName("a restart restores the snapshot again, holding the tap, and dispatches everything after its cut")
+    void restartRestoresAgainAndRedispatchesAfterTheCut() {
+        writeSnapshot(2);
+        startRestoring();
+        answerLocation(2, 1);
+        receiver.doTimers(false);
+        attachReplay(22, 64 * 1024);
+        deliverReplayFrame(RestoreFrames.started(CUT, 2), CUT);
+        deliverReplay(11);
+        deliverTap(12);
+        assertTrue(receiver.isCaughtUp());
+        dispatched.clear();
+        restored.clear();
+
+        receiver.restart();
+
+        assertFalse(receiver.isCaughtUp());
+        assertEquals(-1, receiver.replaySessionId(), "the replay in flight is dropped");
+        assertEquals(2, actions.queriesSent);
+        deliverTap(13);
+        assertTrue(dispatched.isEmpty());
+        answerLocation(2, 1);
+        receiver.doTimers(false);
+        assertEquals(List.of("header 4 2", "0 7"), restored);
+        assertEquals(CUT, receiver.lastGlobalSeqNo());
+        attachReplay(23, 64 * 1024);
+        deliverReplayFrame(RestoreFrames.started(CUT, 2), CUT);
+        deliverReplay(11);
+        deliverReplay(12);
+        assertEquals(List.of(11L, 12L, 13L), dispatched, "13 from the tap, held until contiguous");
+    }
+
+    @Test
+    @DisplayName("a restart with no snapshot to restore walks the chain from segment 0 again")
+    void restartWithoutASnapshotWalksFromSegmentZero() {
+        deliverTap(1);
+        deliverTap(2);
+
+        receiver.restart();
+
+        assertFalse(receiver.isCaughtUp());
+        assertEquals(0, receiver.lastGlobalSeqNo());
+        assertTrue(receiver.isAwaitingReplay());
+        assertEquals(0, receiver.walkSegmentIndex());
+        assertEquals(0, receiver.requestFromPosition());
+        attachReplay(21, 64 * 1024);
+        deliverReplay(1);
+        deliverReplay(2);
+        assertEquals(List.of(1L, 2L, 1L, 2L), dispatched);
+    }
+
+    private void startRestoring() {
+        receiver.restoreFrom(SOURCE, store, new SnapshotRestoreHandler() {
+            @Override
+            public boolean supportsFormatVersion(final long formatVersion) {
+                return formatVersion == 1;
+            }
+
+            @Override
+            public void onSnapshotHeader(final SnapshotHeader header) {
+                restored.add("header " + header.leadershipTermId() + " " + header.leaderMemberId());
+            }
+
+            @Override
+            public void onSnapshotRecord(final DirectBuffer record, final int length, final int recordIndex) {
+                restored.add(recordIndex + " " + record.getLong(0));
+            }
+        });
+        receiver.start();
+    }
+
+    /** This instance's file of {@code round}: the header and one record. */
+    private void writeSnapshot(final long round) {
+        RestoreFrames.write(store, round, 1, SNAPSHOT_HEADER, SNAPSHOT_RECORD);
+    }
+
+    /** The Replayer's answer: round {@code round} cut at {@link #CUT} and ending as the files here do, or none. */
+    private void answerLocation(final long round, final long formatVersion) {
+        answerLocation(round, formatVersion, RestoreFrames.Digest.of(SNAPSHOT_HEADER, SNAPSHOT_RECORD));
+    }
+
+    private void answerLocation(final long round, final long formatVersion, final RestoreFrames.Digest end) {
+        final RestoreFrames.Frame location = RestoreFrames.location(CLIENT_ID, receiver.requestId(), round, CUT,
+                                                                    CUT * 1024, formatVersion, end);
+        receiver.onControl(location.buffer(), 0, location.length());
+    }
+
+    private void deliverReplayFrame(final RestoreFrames.Frame frame, final long globalSeqNo) {
+        receiver.onFrame(frame.buffer(), 0, frame.length(), globalSeqNo * 1024, RECEIVE_NS, true);
+    }
+
     /**
      * Starts capturing log events here rather than in {@code setUp}: several cases must see only what
      * follows their own setup, and the C++ twin installs its sink at the same points for the same reason.
@@ -1420,10 +1745,14 @@ class ReplayerRecoveryTest {
      * drive — the other two need 65536 frames or 16 MiB.
      */
     private void deliverTapTooBigToRetain(final long globalSeqNo) {
-        // Decoded from the front, so the padding only has to make the record oversized.
-        final UnsafeBuffer buffer = new UnsafeBuffer(new byte[OVERSIZED_FRAME_LENGTH]);
+        deliverTapPadded(globalSeqNo, OVERSIZED_FRAME_LENGTH);
+    }
+
+    /** A live tap frame of {@code length} bytes: a heartbeat, decoded from the front, zero-padded to it. */
+    private void deliverTapPadded(final long globalSeqNo, final int length) {
+        final UnsafeBuffer buffer = new UnsafeBuffer(new byte[length]);
         buffer.putBytes(0, heartbeatFrame(globalSeqNo), 0, heartbeatLength());
-        receiver.onFrame(buffer, 0, OVERSIZED_FRAME_LENGTH, globalSeqNo * 1024, RECEIVE_NS, false);
+        receiver.onFrame(buffer, 0, length, globalSeqNo * 1024, RECEIVE_NS, false);
     }
 
     /** One synthesized ClusterHeartbeat — the cheapest well-formed frame there is, at 42 bytes. */
