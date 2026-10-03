@@ -1,11 +1,11 @@
 # Application snapshots
 
-**Status: proposed, not implemented.** Today every recovery is full-log replay from `globalSeqNo` 1
-(`doc/fault-tolerance.md` §0). Section and rule references of the form "spec §n" or "spec A-n" are to
-`doc/seqeron-protocol-spec.md`.
+**Status: implemented** in both languages, for `Application` and `Gateway`. Cluster snapshots (§10) are
+not; a node still recovers by full-log replay (`doc/fault-tolerance.md` §0). Section and rule references of
+the form "spec §n" or "spec A-n" are to `doc/seqeron-protocol-spec.md`.
 
 The state worth snapshotting lives in the clients, in Java and C++, where a `ClusteredService` snapshot
-cannot reach it. In this design the sequencer marks a point in the log, every instance of every
+cannot reach it. The sequencer marks a point in the log, every instance of every
 participating application serializes its state as of that point, and the one instance that may publish
 submits the bytes through the log. They are sequenced, replicated and recorded on every node's tap like any
 other frame. seqeron stores and serves them; it never interprets the application's part.
@@ -160,7 +160,7 @@ its façade that the log never sees.
 A passive instance starts by reading the header of its source's latest snapshot (§6) for its list row and
 the current `GatewayActive`, then follows the tap from that snapshot's `asOfPosition` for the election
 alone. With no snapshot, it follows from `globalSeqNo` 1. A gateway whose source does not participate
-has no snapshot, and its passive instance recovers from `globalSeqNo` 1, as every instance does today.
+has no snapshot, and its passive instance recovers from `globalSeqNo` 1.
 
 A failover to a passive instance costs a restore, and it races the activation deadline:
 `GatewayStarted` follows only once the instance is caught up, and the sequencer promotes the next row
@@ -235,7 +235,7 @@ A-2, A-3), and a gateway's open connections and what it derived from their `conn
 A cold start with a `sourceId`, or a passive gateway instance's activation, in `ReplayerRecovery` in both
 languages:
 
-1. Send `SnapshotQuery`, resent until answered. With none, recover from `globalSeqNo` 1 as today.
+1. Send `SnapshotQuery`, resent until answered. With none, recover from `globalSeqNo` 1.
 2. If `formatVersion` is one this build does not support, stop.
 3. Replay the active recording from `asOfPosition`, with `R` as the anchor, dispatching nothing, and hand
    each of this source's chunks of that round on as it arrives, up to its `SnapshotEnd` (at
@@ -253,23 +253,23 @@ languages:
    `SnapshotEnd` change nothing.
 5. Switch to the live tap as a resume does.
 
-An instance that stops is fenced with `SNAPSHOT_UNRESTORABLE`. After a restore, each fallback that today
-walks the recording chain from segment 0 instead resumes at the restored snapshot's `asOfPosition`, where
-the first frame is `R`, and drops every frame up to the last one dispatched. A completed restore is never
-repeated.
+An instance that stops is fenced with `SNAPSHOT_UNRESTORABLE`. After a restore, each fallback that would
+walk the recording chain from segment 0 instead resumes at the restored snapshot's `asOfPosition`, where
+the first frame is `R`, and drops every frame up to the last one dispatched. A completed restore is repeated
+only by a passive gateway instance's activation, which starts over at step 1.
 
 A consumer that publishes nothing has no snapshot of its own. It may restore from source *X*'s snapshot
 only if it runs *X*'s state machine.
 
 ## 8. Obligations
 
-Two producer and replica obligations join spec §16:
+Two of spec §16's producer and replica obligations are snapshots':
 
 - **A-6. Snapshot records are deterministic.** Every instance of a source serializes the same state at `R`
-  to the same records, byte for byte: no hash-map iteration order, no local time, no node identity.
+  to the same records, byte for byte.
 - **A-7. A divergent instance stops.** An instance whose own `chunkCount`, `length` or `crc32c` for a round
-  differs from its source's sequenced `SnapshotEnd` no longer holds the state the log implies, and stops. The sequenced snapshot is
-  the reference: a publisher that diverged has broken A-6, and nothing recovers from that.
+  differs from its source's sequenced `SnapshotEnd` stops, fenced with `SNAPSHOT_DIVERGED`. The sequenced
+  snapshot is the reference: a publisher that diverged has broken A-6, and nothing recovers from that.
 
 ## 9. Versioning
 
@@ -306,23 +306,22 @@ a prototype before it is specified.
 - A replica catching up through old rounds serializes at each `SnapshotStarted` it passes.
 - The Replayer index is rebuilt by reading the whole recording on restart.
 
-## 12. Work items
+## 12. Tests
 
-- Schemas: the five events of §2, the `snapshot` fields, `SnapshotQuery` and `SnapshotLocation`; the
-  `systemEventType` tables in `SystemFrame.java` and `SequencedFrame.hpp`.
-- `Sequencer`: the policy, the round number and the two triggers; decoding `SnapshotPolicyRegistered`
-  (spec S-2); `ConformanceTest` rows.
-- `TopologyDocument` and `topology.xsd`: `<snapshots>`, the `snapshot` attribute, and the loader's rules
-  and publish order (§1).
-- `clusterctl request-snapshot`.
-- The façades: participation from their own row, serialization at `R`, publishing and abandoning a
-  round, the CRC comparison, the snapshot header, and a passive gateway instance's header read and restore
-  on activation; both languages.
-- `ReplayerService`: the index over the recording, `SnapshotQuery`, and the per-source round counter.
-- `ReplayerRecovery`: the restore, its fallbacks, with the two `ReplayerRecoveryTest`s kept case for case.
-- A property test: state restored from a snapshot plus the tail equals the state from full replay, across
-  random failovers, publisher changes mid-round, superseded rounds and missed rounds.
-- An end-to-end script: complete a round, restart an application, verify it restores and converges; then
-  kill the publishing member mid-round and verify the round is missed and the next completes.
-- Spec §2, §6.4, §7, §9, §10, §16; `doc/client-api.md`, `doc/clusterctl.md`, `doc/fault-tolerance.md`,
-  `doc/ops.md`.
+Unit tests, in both languages where the code is:
+
+| what | tests |
+| --- | --- |
+| frames, the header, the validator | `SnapshotFormatTest` |
+| rounds and their triggers | `SequencerTest`, `ConformanceTest` |
+| the topology document's rules and publish order | `TopologyDocumentTest` |
+| the index and `SnapshotQuery` | `SnapshotIndexTest`, `ReplayerServiceTest` |
+| serialization, publishing, abandoning, the comparison | `SnapshotRecordsTest`, `SnapshotTakerTest` |
+| a gateway's election state in the header | `GatewayLifecycleTest` |
+| the restore, its fallbacks and a restart | `ReplayerRecoveryTest`, case for case across the languages |
+| restored state plus the tail equals full replay, under random replay faults | `ReplayerRecoveryPropertyTest` |
+
+`snapshot-test.sh` runs the `TestGateway` pair through restores, a failover onto a restored instance and a
+passive activation on a three-node cluster, checking each restored state against the client traffic and
+every later round against it (A-7). Not covered: member failures, and failovers or publisher changes
+mid-round in the property test.

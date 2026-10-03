@@ -9,6 +9,9 @@ import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.limitless.seqeron.app.GatewayLifecycle.State;
+import org.limitless.seqeron.protocol.SnapshotHeader;
+import org.limitless.seqeron.protocol.SnapshotHeader.GatewayRow;
+import org.limitless.seqeron.protocol.SnapshotHeader.GatewayState;
 
 /**
  * Drives {@link GatewayLifecycle} directly; the races it covers are too narrow for an end-to-end script.
@@ -226,5 +229,68 @@ class GatewayLifecycleTest {
 
         lifecycle.onGatewayActive(SIBLING_ID); // the gate closed mid-logon
         assertFalse(lifecycle.onSessionAcquired());
+    }
+
+    @Test
+    void isAnnouncedOnceThisActivationsGatewayStartedIsPlaced() {
+        loadTopology();
+        lifecycle.onGatewayActive(MY_ID);
+        assertFalse(lifecycle.isAnnounced(), "activated while replaying");
+
+        lifecycle.onCaughtUp();
+        actions.gateOpens = false;
+        lifecycle.advance();
+        assertTrue(lifecycle.isAnnounced(), "placed, though the gate did not open");
+
+        lifecycle.onGatewayActive(SIBLING_ID);
+        assertFalse(lifecycle.isAnnounced());
+    }
+
+    @Test
+    void reportsItsPairsRowsInListOrderAndTheInstanceLastActivated() {
+        loadTopology();
+        assertEquals(SnapshotHeader.NO_GATEWAY, lifecycle.activeGatewayId());
+
+        lifecycle.onGatewayRegistered(MY_ID, MY_SOURCE_ID, ME, 2); // re-published: replaced in place
+        lifecycle.onGatewayActive(SIBLING_ID);
+        lifecycle.onGatewayActive(OTHER_PAIR_ID);
+
+        assertEquals(SIBLING_ID, lifecycle.activeGatewayId());
+        assertEquals(List.of(new GatewayRow(MY_ID, 2, ME), new GatewayRow(SIBLING_ID, 1, "GW-B")),
+                     lifecycle.pairRows());
+    }
+
+    @Test
+    void restoresItsIdentityAndActivationFromASnapshotHeader() {
+        final List<GatewayRow> rows = List.of(new GatewayRow(MY_ID, 0, ME), new GatewayRow(SIBLING_ID, 1, "GW-B"));
+        lifecycle.onSnapshotHeader(new GatewayState(MY_SOURCE_ID, MY_ID, 41, rows));
+
+        assertEquals(MY_ID, lifecycle.gatewayId());
+        assertEquals(MY_SOURCE_ID, lifecycle.gatewaySourceId());
+        assertTrue(lifecycle.isActivated());
+        assertEquals(MY_ID, lifecycle.activeGatewayId());
+        assertEquals(rows, lifecycle.pairRows());
+        assertEquals(State.REPLAYING, lifecycle.state());
+
+        lifecycle.onCaughtUp();
+        assertEquals(1, lifecycle.advance());
+        assertEquals(List.of("identity(" + MY_ID + "," + MY_SOURCE_ID + ")", "GatewayStarted(" + MY_ID + ")", "open"),
+                     actions.calls);
+    }
+
+    @Test
+    void aSnapshotHeaderReplacesTheRowsAndTheActivationItFinds() {
+        loadTopology();
+        lifecycle.onGatewayActive(MY_ID);
+        final List<GatewayRow> rows = List.of(new GatewayRow(SIBLING_ID, 0, "GW-B"), new GatewayRow(MY_ID, 1, ME));
+
+        lifecycle.onSnapshotHeader(new GatewayState(MY_SOURCE_ID, SIBLING_ID, -1, rows));
+
+        assertFalse(lifecycle.isActivated());
+        assertEquals(SIBLING_ID, lifecycle.activeGatewayId());
+        assertEquals(rows, lifecycle.pairRows());
+        lifecycle.onCaughtUp();
+        assertEquals(0, lifecycle.advance());
+        assertEquals(0, actions.count("close"));
     }
 }

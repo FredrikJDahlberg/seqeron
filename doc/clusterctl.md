@@ -142,8 +142,9 @@ and designates bootstrap instances only once.
 **List only what the deployment runs.** A listed pair that no process starts is designated, times out
 after `GATEWAY_ACTIVATION_TIMEOUT_MS` (5 s), passes the role to its standby, and times out again,
 adding one `GatewayActive` frame every 5 s for the life of the cluster to a log that recovery replays in
-full. The test harnesses load `seqeron-service/src/test/resources/topology-test-gateway.xml`, and the
-C++ gateway example loads `seqeron-examples/topology.xml`, each listing only the pair it starts.
+full. The test harnesses load `seqeron-service/src/test/resources/topology-test-gateway.xml`
+(`snapshot-test.sh` its snapshot twin, `topology-test-snapshot.xml`), and the C++ gateway example loads
+`seqeron-examples/topology.xml`, each listing only the pair it starts.
 
 ### counters
 

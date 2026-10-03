@@ -220,6 +220,23 @@ final class ReplayerRecovery {
     }
 
     /**
+     * Starts over as a cold start on a client that has dispatched frames already: a passive gateway instance's
+     * activation (doc/snapshot.md §4). It restores the source's latest snapshot again, or walks from segment 0
+     * without one, and dispatches every frame after that once more, and nothing before.
+     */
+    public void restart() {
+        actions.closeReplay();
+        replaySessionId = -1;
+        awaitingReplay = false;
+        resumeAnchorGlobalSeqNo = 0;
+        caughtUp = false;
+        lastGlobalSeqNo = 0;
+        lastFramePosition = 0;
+        snapshotGlobalSeqNo = 0;
+        start();
+    }
+
+    /**
      * Decodes one sequenced frame and applies the contiguity rules.
      * @param framePosition where this frame starts in the recording — the tap, a replay image and the
      *                      recording itself all count positions in the same space

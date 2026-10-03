@@ -87,10 +87,12 @@ server**; the server side of the replay protocol is Java only.
 - **The log holds the authoritative state, and every decision consumers must agree on is emitted
   rather than inferred.** Connects, disconnects, promotions and the clock all round-trip through the
   sequencer, so a restarted or standby replica rebuilds by replaying rather than by asking anyone.
-- **No snapshots — recovery is always full-log replay from `globalSeqNo` 1.** `SequencerService`
-  refuses to take or restore one. That is what keeps every node's tap recording complete: a node
-  restored from a snapshot would record only from wherever it resumed. The cost is recovery time and
-  archive size growing with uptime — the 1 Hz heartbeat alone is ~86.4k frames/day.
+- **No cluster snapshots — a node's recovery is always full-log replay from `globalSeqNo` 1.**
+  `SequencerService` refuses to take or restore one. That is what keeps every node's tap recording
+  complete: a node restored from a snapshot would record only from wherever it resumed. The cost is
+  recovery time and archive size growing with uptime — the 1 Hz heartbeat alone is ~86.4k frames/day.
+  Clients can snapshot their own state through the log instead, and restart from it
+  ([`doc/snapshot.md`](doc/snapshot.md)).
 - **A node that cannot record terminates itself.** `TapPublisher` watches the archive's
   `RecordingPos` counter, and a node whose recording has stopped or stopped advancing exits (70)
   rather than sequence history it cannot keep. Peers keep quorum, and the restart rebuilds its
@@ -194,10 +196,10 @@ writes the distribution to `build/install/seqeron` — `bin/` (these scripts), `
 | `metrics-exporter.sh` | The Prometheus ops plane ([`doc/ops.md`](doc/ops.md)) |
 | `purgelog.sh [--force]` | Delete archive/cluster directories under `$TMPDIR/seqeron-seq` and the `logs/` directory; the cluster must be stopped first |
 
-The end-to-end harnesses live under `seqeron-service/src/test/scripts/`. **Six of the seven are
-Java-only** — they drive the cluster through `ClusterProbe`, which attaches to a member's own embedded
-media driver or a gateway host's, so four of them need no standalone `aeronmd` at all. Each brings a cluster up and tears
-it down again; run them from the repository root, with `./gradlew uberJar` done first. The seventh,
+The end-to-end harnesses live under `seqeron-service/src/test/scripts/`. **Seven of the eight are
+Java-only** — they drive the cluster through `ClusterProbe` or `TestGateway`, which attach to a member's own embedded
+media driver or a gateway host's, so five of them need no standalone `aeronmd` at all. Each brings a cluster up and tears
+it down again; run them from the repository root, with `./gradlew uberJar` done first. The eighth,
 `docker-failover-test.sh`, is the containerized one and wants `./gradlew operatorDist` and Docker
 instead.
 
@@ -209,6 +211,7 @@ instead.
 | `replayer-restart-test.sh` | Kill and restart a client's own node and verify the client fails fast and a fresh cold-start walk crosses a real multi-recording chain |
 | `gateway-host-test.sh` | A `confirm` producer on a gateway host (node 3) streams while the member its relay reads, the leader, is killed: every frame must come back exactly once, in order, and the relay must move to another member. The host is then restarted, and a fresh `ClusterProbe` follower there must catch up across its two-recording chain |
 | `chaos-runner.sh` | Randomized fault injection against a live 3-node cluster, with the `TestGateway` pair (`GW-T-A`/`GW-T-B`, ports 9200/9201) taking load through its accept gate; every run prints its `SEED` to replay the exact fault sequence. Needs `./gradlew uberJar compileTestJava` |
+| `snapshot-test.sh` | Application snapshots against a live 3-node cluster: the `TestGateway` pair takes part in rounds every 2 s, and the script restarts the standby, fails over onto the restored instance, brings the other back passive and activates it. Every restore must reach the state the log implies and no instance may diverge from a sequenced round. Needs `./gradlew uberJar compileTestJava` |
 | `docker-failover-test.sh` | Multi-round containerized failover soak — the `docker/compose.yml` port of `failover-test.sh`. `ROUNDS` (15) kills under continuous `ProbeMarker` load, restoring the killed member between them, so each rejoin replays a Raft log that grew under the previous rounds. Asserts every round is a genuine leadership change, that a long-lived observer on each surviving node keeps delivering in order across all of them, and that a cold-start probe replays the whole multi-tenure history at the end. Needs Docker and `./gradlew operatorDist`; `ROUNDS=3` for a quick local run. CI runs it as `failover.yml` |
 | `replay-bench.sh <preload> [load-during]` | How fast a cold replica replays recorded history to caught-up; prints archive size, elapsed seconds and MB/s |
 
@@ -316,7 +319,7 @@ The node runs its Replayer in the same JVM, on the same media driver; there is n
 ### Restart and failover
 
 Archive and cluster directories are preserved on restart (`deleteArchiveOnStart=false`,
-`deleteDirOnStart=false`). A node rejoins and replays the log in full — there are no snapshots, so
+`deleteDirOnStart=false`). A node rejoins and replays the log in full — there are no cluster snapshots, so
 recovery always starts from `globalSeqNo` 1, which is what keeps every node's tap recording a
 complete copy of history. `clusterctl shutdown` uses `ABORT` for the same reason. To wipe state for a
 clean start, delete the `archive-<id>` and `cluster-<id>` subdirectories under `baseDir` — or run
@@ -541,7 +544,7 @@ To cut one:
 | [`doc/fault-tolerance.md`](doc/fault-tolerance.md) | Node loss, leader failover, a stuck archive, a lost frame: what survives each and how it recovers |
 | [`doc/clusterctl.md`](doc/clusterctl.md) | The operator tool's runbook |
 | [`doc/ops.md`](doc/ops.md) | The Prometheus/Grafana metrics stack |
-| [`doc/snapshot.md`](doc/snapshot.md) | Proposed: application snapshots through the log, and what they would take for cluster snapshots |
+| [`doc/snapshot.md`](doc/snapshot.md) | Application snapshots through the log, and what cluster snapshots would take |
 
 Those seven are the whole doc set, and every document reference in this tree resolves inside it.
 

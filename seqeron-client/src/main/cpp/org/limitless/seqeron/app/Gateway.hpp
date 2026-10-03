@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <deque>
 #include <memory>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <unordered_set>
@@ -14,17 +15,24 @@
 #include "org/limitless/seqeron/app/ClusterError.hpp"
 #include "org/limitless/seqeron/app/Defaults.hpp"
 #include "org/limitless/seqeron/app/Payload.hpp"
+#include "org/limitless/seqeron/app/SnapshotListener.hpp"
 #include "org/limitless/seqeron/app/detail/GatewayLifecycle.hpp"
 #include "org/limitless/seqeron/app/detail/Session.hpp"
+#include "org/limitless/seqeron/app/detail/SnapshotTaker.hpp"
 #include "org/limitless/seqeron/protocol/PortLayout.hpp"
 #include "org/limitless/seqeron/protocol/Publish.hpp"
 #include "org/limitless/seqeron/protocol/SequencedFrame.hpp"
+#include "org/limitless/seqeron/protocol/Snapshot.hpp"
+#include "org/limitless/seqeron/replayer/client/SnapshotRestoreHandler.hpp"
 #include "org/limitless/seqeron/sequencer/client/IngressPublisher.hpp"
 #include "org_limitless_seqeron_sbe_frame/ConnectionClosed.h"
 #include "org_limitless_seqeron_sbe_frame/ConnectionOpened.h"
 #include "org_limitless_seqeron_sbe_frame/GatewayActive.h"
 #include "org_limitless_seqeron_sbe_frame/GatewayRegistered.h"
 #include "org_limitless_seqeron_sbe_frame/GatewayStarted.h"
+#include "org_limitless_seqeron_sbe_frame/SnapshotChunk.h"
+#include "org_limitless_seqeron_sbe_frame/SnapshotEnd.h"
+#include "org_limitless_seqeron_sbe_frame/SnapshotStarted.h"
 
 namespace org::limitless::seqeron::app {
 
@@ -54,6 +62,14 @@ concept GatewayListener = requires(L& listener, const Payload& payload, std::int
  * What is left to the consumer is its edge — a socket, a dialler, a codec. It opens that edge in
  * onActivated, closes it in onStandby, and otherwise exchanges payloads: nothing of the frame layer or of
  * seqeron's system vocabulary appears in its code.
+ *
+ * Snapshots (doc/snapshot.md §4): given a SnapshotListener and topology rows with snapshot="true", every instance
+ * serializes its state at each round's cut, and the active one then submits it, under a header carrying the pair's
+ * election state. An instance whose snapshot differs from the one sequenced is fenced with
+ * ClusterError::SnapshotDiverged. On start, an instance given a listener restores its source's latest snapshot and
+ * resumes after its cut; one it cannot restore is fenced with ClusterError::SnapshotUnrestorable. A passive instance
+ * (Config::passive) holds no state until it is activated: it follows the tap for the election alone, then restores
+ * and catches up before it serves.
  *
  * Single-threaded: every method belongs to the caller's one duty-cycle thread, which calls doWork() each
  * iteration. The Java twin is app/Gateway.java; keep the two in step. The Listener is the edge;
@@ -88,6 +104,17 @@ class Gateway
         std::size_t pendingCapacity = DEFAULT_PENDING_CAPACITY;
         std::int64_t tapStallTimeoutMs = DEFAULT_TAP_STALL_TIMEOUT_MS;
         std::int64_t recoveryStallTimeoutMs = DEFAULT_RECOVERY_STALL_TIMEOUT_MS;
+        // The logical gateway's sourceId, the one its rows declare. Required with a snapshotListener, as the restore
+        // asks for the source's snapshot before any row is dispatched.
+        std::int32_t sourceId = UNRESOLVED;
+        // What serializes this instance's state for snapshot rounds and restores it on start; without one it takes
+        // part in none, whatever its rows say, and recovers from globalSeqNo 1. Must outlive the gateway.
+        SnapshotListener* snapshotListener = nullptr;
+        // Whether this instance holds no state until it is activated (doc/snapshot.md §4). Until then the listener
+        // sees no payload and no connection, and takes part in no round; on activation the instance restores its
+        // source's latest snapshot, or replays from globalSeqNo 1 without one, before it serves. A failover to it
+        // races the activation deadline, so it suits state that restores well inside 5 s.
+        bool passive = false;
     };
 
     /**
@@ -95,18 +122,31 @@ class Gateway
      *
      * @param config   the instance's identity and deployment policy
      * @param listener the edge; must outlive the gateway
+     * @throws std::invalid_argument if config has a snapshotListener and no sourceId
      */
     Gateway(Config config, Listener& listener) :
       m_config{ std::move(config) },
       m_listener{ listener },
       m_actions{ *this },
       m_lifecycle{ m_config.gatewayName, m_actions },
+      m_snapshots{ m_config.snapshotListener },
+      m_restore{ *this },
       m_dispatch{ *this },
       m_session{ m_config.clientId, m_config.pendingCapacity, m_config.tapStallTimeoutMs,
-                 m_config.recoveryStallTimeoutMs, m_dispatch }
+                 m_config.recoveryStallTimeoutMs, m_dispatch },
+      m_snapshotFrames{ *this },
+      m_passive{ m_config.passive }
     {
         // Here rather than on the template parameter, where a listener that owns its Gateway is incomplete.
         static_assert(GatewayListener<Listener>);
+        if (m_config.snapshotListener != nullptr)
+        {
+            if (m_config.sourceId == UNRESOLVED)
+            {
+                throw std::invalid_argument("sourceId is required with a snapshotListener");
+            }
+            m_session.restoreFrom(m_config.sourceId, m_restore);
+        }
     }
 
     Gateway(const Gateway&) = delete;
@@ -122,13 +162,21 @@ class Gateway
         m_session.start(std::move(aeron), m_config.memberId, m_config.egressChannel, m_config.ingressEndpoints);
     }
 
-    // One duty-cycle iteration: the cluster session and the tap, then whatever the connection lifecycle and
-    // the election still owe. Returns units of work done, for the caller's idle strategy.
+    // One duty-cycle iteration: the cluster session and the tap, then whatever the connection lifecycle, the
+    // election and a snapshot round still owe. A passive instance that has been activated starts over here. Returns
+    // units of work done, for the caller's idle strategy.
     int doWork()
     {
         int work = m_session.doWork();
+        if (m_passive && m_lifecycle.isActivated() && m_session.isCaughtUp())
+        {
+            m_passive = false;
+            m_session.restart();
+            return work + 1;
+        }
         work += drainLifecycle();
         work += m_session.isCaughtUp() ? m_lifecycle.advance() : 0;
+        work += m_snapshots.submit(m_snapshotFrames);
         return work;
     }
 
@@ -264,6 +312,12 @@ class Gateway
         return m_lifecycle.isServing();
     }
 
+    // Whether this instance still holds no state: passive and not yet activated.
+    [[nodiscard]] bool isPassive() const noexcept
+    {
+        return m_passive;
+    }
+
     // This logical gateway's sourceId, shared with its standby; UNRESOLVED until a row names it.
     [[nodiscard]] std::int32_t sourceId() const noexcept
     {
@@ -358,6 +412,14 @@ class Gateway
         }
     }
 
+    // What this instance derives from the frames before a cut, for the round it starts (§6).
+    protocol::SnapshotHeader snapshotHeader() const
+    {
+        return { m_session.leadershipTermId(), m_session.currentLeaderMemberId(),
+                 protocol::SnapshotGatewayState{ m_lifecycle.gatewaySourceId(), m_lifecycle.activeGatewayId(),
+                                                 m_highestConnectionId, m_lifecycle.pairRows() } };
+    }
+
     // A refused frame is this class's own bug, never a condition to wait out.
     static bool published(const protocol::Publish result)
     {
@@ -408,6 +470,44 @@ class Gateway
         Gateway& m_gateway;
     };
 
+    // What a restore hands over in place of the frames before the cut: the header's election state and connection
+    // id resume point, then, unless passive, the application's records.
+    class Restore final : public replayer::client::SnapshotRestoreHandler
+    {
+      public:
+        explicit Restore(Gateway& gateway) : m_gateway{ gateway }
+        {}
+
+        bool supportsFormatVersion(const std::uint32_t formatVersion) override
+        {
+            return m_gateway.m_snapshots.supportsFormatVersion(formatVersion);
+        }
+
+        void onSnapshotHeader(const protocol::SnapshotHeader& header) override
+        {
+            if (header.gateway)
+            {
+                m_gateway.m_lifecycle.onSnapshotHeader(*header.gateway);
+                m_gateway.m_highestConnectionId = header.gateway->highestConnectionId;
+            }
+            if (!m_gateway.m_passive)
+            {
+                m_gateway.m_snapshots.onSnapshotHeader(header);
+            }
+        }
+
+        void onSnapshotRecord(const std::span<const std::uint8_t> record, const std::int32_t recordIndex) override
+        {
+            if (!m_gateway.m_passive)
+            {
+                m_gateway.m_snapshots.onSnapshotRecord(record, recordIndex);
+            }
+        }
+
+      private:
+        Gateway& m_gateway;
+    };
+
     // What comes off the tap, split into what the election reads and what the consumer does.
     class SessionDispatch
     {
@@ -415,6 +515,9 @@ class Gateway
         explicit SessionDispatch(Gateway& gateway) : m_gateway{ gateway }
         {}
 
+        // A submitted system payload carries no messageHeader, so its block length and version come from this
+        // build's own constants (doc/seqeron-protocol-spec.md §7, V-3) — which is what decodeSystem supplies, for a
+        // synthesized frame as much as a submitted one. A passive instance reads the election alone.
         void onSystem(const protocol::SequencedEvent& event)
         {
             m_gateway.observeConnectionId(event.sourceId, event.connectionId);
@@ -424,29 +527,57 @@ class Gateway
                 // keeps per-connection state rebuilds it from these while it replays, and releases it on the
                 // close — a client that drops its socket without logging out produces no payload at all.
                 case protocol::CONNECTION_OPENED:
-                    if (event.sourceId == m_gateway.m_lifecycle.gatewaySourceId())
+                    if (!m_gateway.m_passive && event.sourceId == m_gateway.m_lifecycle.gatewaySourceId())
                     {
                         m_gateway.dispatchConnectionOpened(event);
                     }
                     break;
                 case protocol::CONNECTION_CLOSED:
-                    if (event.sourceId == m_gateway.m_lifecycle.gatewaySourceId())
+                    if (!m_gateway.m_passive && event.sourceId == m_gateway.m_lifecycle.gatewaySourceId())
                     {
                         m_gateway.m_listener.onConnectionClosed(event.connectionId);
                     }
                     break;
                 case protocol::GATEWAY_REGISTERED: {
-                    // A submitted system payload carries no messageHeader, so its block length and version come
-                    // from this build's own constants (doc/seqeron-protocol-spec.md §7, V-3) — which is what
-                    // decodeSystem supplies, for a synthesized frame as much as a submitted one.
                     auto row = protocol::decodeSystem<sbe::frame::GatewayRegistered>(event);
                     m_gateway.m_lifecycle.onGatewayRegistered(row.gatewayId(), row.gatewaySourceId(),
                                                               row.getGatewayNameAsString(), row.preferenceRank());
+                    if (row.gatewayId() == m_gateway.m_lifecycle.gatewayId())
+                    {
+                        m_gateway.m_snapshots.participating(row.snapshot() == 1);
+                    }
                     break;
                 }
                 case protocol::GATEWAY_ACTIVE: {
                     auto active = protocol::decodeSystem<sbe::frame::GatewayActive>(event);
                     m_gateway.m_lifecycle.onGatewayActive(active.gatewayId());
+                    if (!m_gateway.m_lifecycle.isActivated())
+                    {
+                        m_gateway.m_snapshots.stopPublishing();
+                    }
+                    break;
+                }
+                case protocol::SNAPSHOT_STARTED:
+                    if (!m_gateway.m_passive && m_gateway.m_snapshots.isParticipating())
+                    {
+                        auto started = protocol::decodeSystem<sbe::frame::SnapshotStarted>(event);
+                        m_gateway.m_snapshots.onSnapshotStarted(started.round(), m_gateway.snapshotHeader(),
+                                                                m_gateway.m_lifecycle.isAnnounced());
+                    }
+                    break;
+                case protocol::SNAPSHOT_END: {
+                    if (event.sourceId != m_gateway.m_lifecycle.gatewaySourceId())
+                    {
+                        break;
+                    }
+                    auto end = protocol::decodeSystem<sbe::frame::SnapshotEnd>(event);
+                    if (!m_gateway.m_snapshots.onSnapshotEnd(end.round(), end.chunkCount(), end.length(), end.crc32c()))
+                    {
+                        m_gateway.m_session.fence(
+                            ClusterError::SnapshotDiverged,
+                            "round " + std::to_string(end.round()) + "'s sequenced snapshot at globalSeqNo " +
+                                std::to_string(event.globalSeqNo) + " differs from this instance's");
+                    }
                     break;
                 }
                 default:
@@ -462,7 +593,10 @@ class Gateway
         void onPayload(const Payload& payload)
         {
             m_gateway.observeConnectionId(payload.sourceId(), payload.connectionId());
-            m_gateway.m_listener.onSequenced(payload);
+            if (!m_gateway.m_passive)
+            {
+                m_gateway.m_listener.onSequenced(payload);
+            }
         }
 
         void onCaughtUp(const std::int64_t globalSeqNo)
@@ -488,12 +622,63 @@ class Gateway
         Gateway& m_gateway;
     };
 
+    // The round's frames, under this gateway's sourceId and belonging to no connection.
+    class SnapshotFrames
+    {
+      public:
+        explicit SnapshotFrames(Gateway& gateway) : m_gateway{ gateway }
+        {}
+
+        protocol::Publish publishChunk(const std::int64_t round, const std::int32_t chunkIndex,
+                                       const std::span<const std::uint8_t> record)
+        {
+            return placed(m_gateway.m_session.template publishSystem<sbe::frame::SnapshotChunk>(
+                m_gateway.m_lifecycle.gatewaySourceId(), NO_CONNECTION, protocol::SNAPSHOT_CHUNK,
+                [&](sbe::frame::SnapshotChunk& chunk) {
+                    chunk.round(round)
+                        .chunkIndex(chunkIndex)
+                        .putData(reinterpret_cast<const char*>(record.data()),
+                                 static_cast<std::uint16_t>(record.size()));
+                }));
+        }
+
+        protocol::Publish publishEnd(const std::int64_t round, const std::int32_t chunkCount,
+                                     const std::uint64_t length, const std::uint32_t crc32c,
+                                     const std::uint32_t formatVersion)
+        {
+            return placed(m_gateway.m_session.template publishSystem<sbe::frame::SnapshotEnd>(
+                m_gateway.m_lifecycle.gatewaySourceId(), NO_CONNECTION, protocol::SNAPSHOT_END,
+                [&](sbe::frame::SnapshotEnd& end) {
+                    end.round(round)
+                        .chunkCount(chunkCount)
+                        .length(static_cast<std::int64_t>(length))
+                        .crc32c(crc32c)
+                        .formatVersion(formatVersion);
+                }));
+        }
+
+      private:
+        static protocol::Publish placed(const protocol::Publish outcome)
+        {
+            published(outcome);
+            return outcome;
+        }
+
+        Gateway& m_gateway;
+    };
+
     Config m_config;
     Listener& m_listener;
     LifecycleActions m_actions;
     detail::GatewayLifecycle<LifecycleActions> m_lifecycle;
+    detail::SnapshotTaker m_snapshots;
+    Restore m_restore;
     SessionDispatch m_dispatch;
     detail::Session<SessionDispatch> m_session;
+    SnapshotFrames m_snapshotFrames;
+
+    // Holding no state: until activated, this instance follows the tap for the election alone.
+    bool m_passive;
 
     // Connection lifecycle frames still to be placed, in the order they were asked for.
     std::deque<Lifecycle> m_lifecycleQueue;

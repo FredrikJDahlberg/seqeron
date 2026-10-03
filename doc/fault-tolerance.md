@@ -7,10 +7,11 @@ tier. Applications built on seqeron document their own recovery. Section referen
 
 ## 0. Recovery is full-log replay
 
-Every recovery path here reduces to one operation: replay the sequenced log from `globalSeqNo` 1.
-The cluster takes no snapshots. `SequencerService.onTakeSnapshot` throws and `onStart` refuses a
-snapshot image. `clusterctl shutdown` uses Aeron's `ABORT` action, which takes no snapshot, rather than
-`SHUTDOWN`, which does.
+Every recovery path here reduces to one operation: replay the sequenced log from `globalSeqNo` 1. A
+client whose source takes part in application snapshots starts that replay later instead, at its source's
+latest snapshot (§3.4); the snapshot is frames in the same log. The cluster takes no snapshots.
+`SequencerService.onTakeSnapshot` throws and `onStart` refuses a snapshot image. `clusterctl shutdown`
+uses Aeron's `ABORT` action, which takes no snapshot, rather than `SHUTDOWN`, which does.
 
 Every node records its own copy of the sequenced stream (§1.1). A node restored from a snapshot would
 hold a recording that starts where the snapshot did; full-log replay is what keeps every node's
@@ -120,6 +121,8 @@ by exiting, which lets the sequencer promote the standby (§2.2).
 | `TAP_STALLED` | no `ClusterHeartbeat` on the co-located tap for 20 s (20 heartbeat intervals) while caught up |
 | `RECOVERY_STALLED` | recovery has delivered nothing for 60 s (3 × the tap-stall timeout) on an instance that has been caught up before |
 | `INGRESS_CONFIRM_FAULTED` | an own frame on the tap differs from the oldest pending one (spec §16 A-4) |
+| `SNAPSHOT_DIVERGED` | the instance's snapshot of a round differs from the one its source sequenced (spec §16 A-7, §3.4) |
+| `SNAPSHOT_UNRESTORABLE` | the instance cannot restore its source's latest snapshot (§3.4) |
 
 - The tap-stall timer measures local monotonic time. Consensus time arrives in the `ClusterHeartbeat`
   frames being watched for, so it would stop together with the tap.
@@ -170,6 +173,15 @@ ids do not repeat across a handover. On `GatewayStarted` the sequencer releases 
 open under that `gatewaySourceId`, because a crashed instance never publishes their `ConnectionClosed`
 frames.
 
+### 2.4 Passive instances
+
+An instance configured passive (`doc/snapshot.md` §4) holds no application state until it is activated:
+it follows the tap from its source's latest snapshot for the election alone. When a `GatewayActive` names
+it, it restores (§3.4) and catches up before it publishes `GatewayStarted`, so the handover takes as long
+as the restore. If that exceeds the 5 s activation timeout (§2.2), the sequencer passes the role on, and a
+pair whose other instance is down alternates until a restore finishes in time. A hot standby has no such
+delay.
+
 ## 3. Stream recovery
 
 A consumer reads the co-located tap directly for live data, untethered, so a slow consumer is dropped
@@ -202,7 +214,7 @@ The replayer is not on the live delivery path; clients use it only to catch up.
 which is unit-tested directly.
 
 - **Cold start** walks the recording chain from segment 0, one recording per leader tenure, until the
-  replayer reports the chain exhausted (spec **R-2**).
+  replayer reports the chain exhausted (spec **R-2**), unless it restores a snapshot first (§3.4).
 - **Gap.** A live frame whose `globalSeqNo` is ahead of the next expected value clears `isCaughtUp()`
   and requests a resume at the position of the last delivered frame, repairing only the gap. If the
   resumed replay's first frame is not the expected `globalSeqNo` (the node restarted and its recording
@@ -259,6 +271,27 @@ unit-tested directly.
 - **No member reachable.** The host's tap goes silent, and its clients' tap-stall fences (§2.1) fire as
   they would on a member whose cluster lost quorum.
 
+### 3.4 Snapshot restore
+
+A client whose façade has a `SnapshotListener` restores before it dispatches anything (`doc/snapshot.md`
+§7). It asks its node's Replayer for its source's latest valid snapshot, replays that snapshot's records
+from the active recording, and resumes after the snapshot's cut as it would after a gap. With no snapshot
+indexed, it walks from segment 0 as §3.2 describes.
+
+- **Lost replay.** A restore holds nothing between frames, so a replay lost before the snapshot's end
+  starts it over at the header; the listener's `onRestore` begins again at record 0.
+- **After the restore.** Every fallback that would walk from segment 0 resumes at the snapshot instead:
+  the history before its cut is no longer this client's to replay.
+- **Damage.** The Replayer indexes a snapshot only once its recorded chunks pass their check. A restore
+  that finds otherwise, or a `formatVersion` or header version its build does not read, fences the client
+  with `SNAPSHOT_UNRESTORABLE`; a restart repeats it until the build or the recording is fixed.
+- **Divergence.** At every later round each instance compares its own serialization with the sequenced
+  one. One that differs is fenced with `SNAPSHOT_DIVERGED` (spec §16 A-7); its restart restores the
+  sequenced snapshot, which is the reference.
+- **Index after a node restart.** The Replayer rebuilds its index by reading the recording. A client that
+  starts before it reaches the latest round restores an older snapshot, or walks from `globalSeqNo` 1;
+  either converges.
+
 ## 4. Leader-only work
 
 Some side effects must be performed by exactly one replica, the one on the leader, and must survive a
@@ -301,7 +334,8 @@ frame on the tap exactly once and in order; the other reports what it lost.
 ## 6. Operational tooling and verification
 
 - **`clusterctl`** (`doc/clusterctl.md`): `start` and `shutdown` bracket a run with sequenced markers;
-  `activate` is the manual promotion (§2.2); `snapshot` is refused.
+  `activate` is the manual promotion (§2.2); `request-snapshot` starts an application snapshot round
+  (§3.4); `snapshot` is refused.
 - **Metrics** (`doc/ops.md`): `seqeron_sequencer_tap_stalled` (set when a node is about to terminate,
   §1.3), `seqeron_sequencer_gateway_promotion_total` (§2.2), the `seqeron_replayer_*` family (§3.1), and
   Prometheus's per-node `up`.
@@ -324,6 +358,11 @@ frame on the tap exactly once and in order; the other reports what it lost.
   `confirm` producer on the host must see every frame exactly once, in order, and the relay must move to
   another member; the host is then restarted, and a cold start there must walk its two-recording chain
   (§3.3).
+- **`snapshot-test.sh`**: the `TestGateway` pair on a three-node cluster with snapshot rounds every 2 s.
+  The standby restarts and restores, the active instance is killed and the restored one takes over, the
+  killed one returns passive and is activated, and the other returns as a hot standby restoring the rounds
+  it published. Each restore must report the state the client traffic implies, and no instance may be
+  fenced, so every round has also been compared against the restored state (§3.4).
 - **`docker-failover-test.sh`**: `ROUNDS` (default 15) leader kills against `docker/compose.yml` under
   continuous `ProbeMarker` load, restoring each killed member before the next round. It checks that
   every round changes leadership and the killed member rejoins; that an observer on each surviving node
@@ -345,4 +384,8 @@ All scripts are under `seqeron-service/src/test/scripts`.
   durable outbox or a per-producer sequence number that the sequencer de-duplicates on.
 - **Producer authentication.** The cluster checks well-formedness, not identity (spec §7).
   Authentication belongs at the system's external edges.
+- **Snapshots under cluster faults.** `snapshot-test.sh` kills gateway instances, never members, and the
+  property test injects replay faults but no failover or publisher change mid-round. A round missed
+  because its publisher died mid-round, and a restore against an index still rebuilding after a node
+  restart, are covered by unit tests only.
 - **Single-node clusters** have no failover; the mechanisms above need at least two members.

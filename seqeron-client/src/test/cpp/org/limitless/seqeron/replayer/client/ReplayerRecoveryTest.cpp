@@ -1883,6 +1883,57 @@ TEST(ReplayerRecoveryRestore, ASnapshotThatCannotBeRestoredStopsRecoveryItsForma
     EXPECT_FALSE(client.recovery.restoreFailure());
 }
 
+TEST(ReplayerRecoveryRestore, ARestartRestoresTheSnapshotAgainHoldingTheTapAndDispatchesEverythingAfterItsCut)
+{
+    Restoring r;
+    answerLocation(r.client, 2, 1);
+    replaySnapshot(r.client);
+    attachRestoreReplay(r.client, 22);
+    deliverReplayFrame(r.client, rf::started(CUT, 2), CUT);
+    deliverReplayFrame(r.client, encodeHeartbeat(11), 11);
+    deliverLive(r.client, 12);
+    ASSERT_TRUE(r.client.recovery.isCaughtUp());
+    r.dispatched.clear();
+    r.handler.restored.clear();
+
+    r.client.recovery.restart();
+
+    EXPECT_FALSE(r.client.recovery.isCaughtUp());
+    EXPECT_EQ(-1, r.client.recovery.replaySessionId()) << "the replay in flight is dropped";
+    EXPECT_EQ(2, r.client.queriesSent);
+    deliverLive(r.client, 13);
+    EXPECT_TRUE(r.dispatched.empty());
+    answerLocation(r.client, 2, 1);
+    replaySnapshot(r.client);
+    EXPECT_EQ((std::vector<std::string>{ "header 4 2", "0 7" }), r.handler.restored);
+    EXPECT_EQ(CUT, r.client.recovery.lastGlobalSeqNo());
+    attachRestoreReplay(r.client, 23);
+    deliverReplayFrame(r.client, rf::started(CUT, 2), CUT);
+    deliverReplayFrame(r.client, encodeHeartbeat(11), 11);
+    deliverReplayFrame(r.client, encodeHeartbeat(12), 12);
+    EXPECT_EQ((std::vector<std::int64_t>{ 11, 12, 13 }), r.dispatched) << "13 from the tap, held until contiguous";
+}
+
+TEST(ReplayerRecoveryRestore, ARestartWithNoSnapshotToRestoreWalksTheChainFromSegmentZeroAgain)
+{
+    std::vector<std::int64_t> dispatched;
+    Client client{ [&dispatched](const SequencedEvent& event) { dispatched.push_back(event.globalSeqNo); } };
+    deliverLive(client, 1);
+    deliverLive(client, 2);
+
+    client.recovery.restart();
+
+    EXPECT_FALSE(client.recovery.isCaughtUp());
+    EXPECT_EQ(0, client.recovery.lastGlobalSeqNo());
+    EXPECT_TRUE(client.recovery.isAwaitingReplay());
+    EXPECT_EQ(0, client.recovery.walkSegmentIndex());
+    EXPECT_EQ(0, client.recovery.requestFromPosition());
+    attachRestoreReplay(client, 21);
+    deliverReplay(client, 1);
+    deliverReplay(client, 2);
+    EXPECT_EQ((std::vector<std::int64_t>{ 1, 2, 1, 2 }), dispatched);
+}
+
 // A lifecycle frame reaches onSequenced when no lifecycle callback was given. This side alone has the
 // onConnected/onDisconnected seam — the Java twin's receiver has no such callbacks and always delivers
 // these on onSequenced — so this case has no Java counterpart by construction rather than by omission.

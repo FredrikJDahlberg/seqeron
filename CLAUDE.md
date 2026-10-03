@@ -204,18 +204,18 @@ Single suites:
 
 The Java suite covers the deterministic decision-making — `Sequencer`, and `ReplayerService` through
 its `Replayer` seam — and deliberately touches no Aeron runtime: no media driver, no cluster, no Aeron
-mocks. Everything that needs an Aeron runtime is covered by `core_tests` and by the seven end-to-end scripts under
+mocks. Everything that needs an Aeron runtime is covered by `core_tests` and by the eight end-to-end scripts under
 `seqeron-service/src/test/scripts`. Coverage is a JaCoCo report per module, at
 `<module>/build/reports/jacoco/test/`, excluding the generated SBE codecs.
 
-**Six of the seven harnesses are Java-only.** They drive the cluster through `tools/ClusterProbe`, which
+**Seven of the eight harnesses are Java-only.** They drive the cluster through `tools/ClusterProbe`, which
 submits `ProbeMarker` payloads at ingress (`submit`), round-trips one through consensus and back off
 the tap (`ping`), replays history through the co-located Replayer and then follows the tap live
 (`follow`), or streams through `ClusterStreamSender` and `sequencer/client/PendingSends` and checks its own tap shows
 every frame exactly once, in order (`confirm`, which `failover-test.sh` runs across the leader kill, and
 `gateway-host-test.sh` runs on a gateway host across the loss of the relay's member). The probe attaches to a
-member's own embedded driver, or a gateway host's, so four of the six need no
-standalone `aeronmd` at all. The seventh, `docker-failover-test.sh`, is the containerized multi-round
+member's own embedded driver, or a gateway host's, so five of the seven need no
+standalone `aeronmd` at all. The eighth, `docker-failover-test.sh`, is the containerized multi-round
 failover soak (`docker/compose.yml`, `./gradlew operatorDist`, CI's `failover.yml`). `chaos-runner` needs one more thing the probe cannot supply — a **gateway
 pair under the faults** — and `TestGateway` is it: an elected active/standby producer (`GW-T-A`/`GW-T-B`,
 `gatewaySourceId` 9, listening on 9200/9201) that speaks no application protocol and holds no session
@@ -227,10 +227,12 @@ connection id space it resumes from its predecessor, the connection lifecycle fr
 (`sequencer/client/PendingSends` under an `IngressPublisher`, held by its `ClusterStreamSender`) and the `app/ClusterError`
 values are all behind it, so what is left in the harness is a socket and a line protocol. A media driver that
 goes away raises from `doWork()` rather than as a fence. It is in
-**`seqeron-service/src/test/java`** and therefore in no jar: `chaos-runner.sh` puts
-`seqeron-service/build/classes/java/test` on the classpath beside the uber jar and refuses to start
+**`seqeron-service/src/test/java`** and therefore in no jar: `chaos-runner.sh` and `snapshot-test.sh` put
+`seqeron-service/build/classes/java/test` on the classpath beside the uber jar and refuse to start
 without it. Its
-list is `seqeron-service/src/test/resources/topology-test-gateway.xml`. The one other topology document here is
+list is `seqeron-service/src/test/resources/topology-test-gateway.xml`, and `topology-test-snapshot.xml` beside it
+when it takes part in snapshot rounds (`-Dprobe.snapshot`, `-Dprobe.passive`), which `snapshot-test.sh`
+drives through restores, a failover onto a restored instance and a passive activation. The one other topology document here is
 `seqeron-examples/topology.xml`, the pair the C++ `GatewayApp` example runs.
 
 `start-cluster.sh` and `start-three-node-cluster.sh` launch the cluster tier and nothing else — core
@@ -282,12 +284,20 @@ same leader or not), and a **1 Hz `ClusterHeartbeat`** (`Sequencer.CLUSTER_HEART
 clock, so consumers have a consensus-driven time source that keeps advancing while a producer is silent,
 which is exactly when a gateway's keepalive watchdog must probe.
 
-**Snapshots are not supported**, and both `ClusteredService` hooks refuse: `onTakeSnapshot` throws, and
+**Cluster snapshots are not supported**, and both `ClusteredService` hooks refuse: `onTakeSnapshot` throws, and
 `onStart` refuses a snapshot image rather than restoring from one. `clusterctl shutdown` uses `ABORT`,
-and recovery is always full-log replay from `globalSeqNo` 1. That is deliberate: replaying the whole log
+and a node's recovery is always full-log replay from `globalSeqNo` 1. That is deliberate: replaying the whole log
 is what keeps each node's tap recording complete and gap-free — a node restored from a snapshot would
 record only from wherever it resumed. The cost is that recovery time and archive size grow with uptime
 (the 1 Hz heartbeat alone is ~86.4k frames/day).
+
+**Application snapshots go through the log instead** (`doc/snapshot.md`). The sequencer synthesizes
+`SnapshotStarted` as a round's cut; every instance of a participating source serializes its state there
+through its façade's `SnapshotListener`, and the one that may publish submits it as `SnapshotChunk`s and a
+`SnapshotEnd`, sequenced and recorded like any other frame. Each `ReplayerService` indexes every source's
+latest valid snapshot (`SnapshotIndex`) and answers `SnapshotQuery`, and a starting client restores from it in
+`ReplayerRecovery` and resumes after the cut. Every other instance compares its own serialization with the
+sequenced end and fences on a difference (spec §16 A-6, A-7). This shortens a client's restart, not a node's.
 
 ### The replay protocol — two sides, two namespaces
 **`replayer.server`** is Java only: `ReplayerServer`/`ReplayerService` and their pure seams `Replayer`,
@@ -427,7 +437,8 @@ mirrored by `PortLayout` in both languages; change all three together.
 
 ## Known gaps
 
-The two structural costs recorded above are the standing ones: **no snapshots** (recovery time and archive size grow with uptime),
+The two structural costs recorded above are the standing ones: **no cluster snapshots** (a node's recovery time and
+archive size grow with uptime; application snapshots shorten only a client's restart),
 and **the cluster is bounded at three members** by the 30-port cluster block (`doc/ops.md`, "Ports").
 `SEQERON_PORT_BASE` moves that block off its 9300 default — deployment-wide, read by all three mirrors
 — but does not widen it. `SEQERON_HOSTS` names the members' hosts, deployment-wide too, and is read by
@@ -436,9 +447,10 @@ both `PortLayout`s only: the scripts' `ports.sh` lays out localhost clusters.
 `doc/` holds `getting-started.md` (a release node plus a consumer and a producer; its snippets pin a
 release, so bump them when one changes the API they use), `seqeron-protocol-spec.md` (normative — the frames, the families,
 the system vocabulary, the topology document), `client-api.md` (what a client programs against, and what in
-the client tier is not API — update it when that surface changes), `fault-tolerance.md`, `clusterctl.md` and `ops.md` (runbooks, ports, counters), and `snapshot.md` (a
-proposal, not implemented: application snapshots through the log). The topology documents here are
-`seqeron-service/src/test/resources/topology-test-gateway.xml` and `seqeron-examples/topology.xml`.
+the client tier is not API — update it when that surface changes), `fault-tolerance.md`, `clusterctl.md` and `ops.md` (runbooks, ports, counters), and `snapshot.md`
+(application snapshots through the log). The topology documents here are
+`seqeron-service/src/test/resources/topology-test-gateway.xml`, `topology-test-snapshot.xml` beside it, and
+`seqeron-examples/topology.xml`.
 
 ## Code Formatting Mandate
 - Explicitly respect all style, brace, and indentation configurations found in the local `.clang-format` file.

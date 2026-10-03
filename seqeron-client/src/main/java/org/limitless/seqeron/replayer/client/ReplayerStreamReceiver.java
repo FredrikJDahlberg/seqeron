@@ -192,6 +192,14 @@ public final class ReplayerStreamReceiver implements AutoCloseable {
         return recovery.currentLeaderMemberId();
     }
 
+    /**
+     * Starts recovery over as a cold start, restoring the snapshot given to {@link #restoreFrom} again: a passive
+     * gateway instance's activation. Every frame after the restored cut is dispatched once more.
+     */
+    public void restart() {
+        recovery.restart();
+    }
+
     /** Why the snapshot given to {@link #restoreFrom} cannot be restored, or null. Latched: recovery has stopped. */
     public String restoreFailure() {
         return recovery.restoreFailure();

@@ -93,6 +93,11 @@ final class Session implements AutoCloseable {
         receiver.restoreFrom(sourceId, handler);
     }
 
+    /** Follows the tap from its start again, restoring the snapshot given to {@link #restoreFrom} first. */
+    void restart() {
+        receiver.restart();
+    }
+
     /** Opens the cluster session over UDP and starts following this node's tap. */
     void start(final Aeron aeron, final int memberId, final String egressChannel, final String ingressEndpoints) {
         sender.connect(aeron, egressChannel, ingressEndpoints, new SessionListener());

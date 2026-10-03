@@ -208,8 +208,8 @@ convention here for "fenced, restart me". It is not a cluster member, so this is
 | `CLUSTER_SESSION_LOST` | the cluster closed the session, or no new leader arrived after a failover |
 | `TAP_STALLED` | no `ClusterHeartbeat` on the co-located tap for 20 s, usually because that node's `SequencerServer` terminated (above); they share the tap |
 | `RECOVERY_STALLED` | recovery delivered nothing for 60 s after the instance had been caught up; see `seqeron_app_recovery_stalled` |
-| `SNAPSHOT_DIVERGED` | an `Application` replica's snapshot of a round differs from the one its source sequenced: its state is not the log's (`doc/snapshot.md` §8, A-7). Its restart rebuilds the state; a replica that diverges again has broken determinism (A-6) |
-| `SNAPSHOT_UNRESTORABLE` | an `Application` replica cannot restore its source's latest snapshot: a `formatVersion` or header version its build does not read, or records that fail their check, which means a damaged recording (`doc/snapshot.md` §7). The log line `SnapshotRestoreFailed` names which; a restart repeats it until the build or the recording is fixed |
+| `SNAPSHOT_DIVERGED` | an instance's snapshot of a round differs from the one its source sequenced: its state is not the log's (spec §16 A-7). Its restart rebuilds the state; an instance that diverges again has broken determinism (A-6) |
+| `SNAPSHOT_UNRESTORABLE` | an instance cannot restore its source's latest snapshot: a `formatVersion` or header version its build does not read, or records that fail their check, which means a damaged recording (`doc/snapshot.md` §7). The log line `SnapshotRestoreFailed` names which; a restart repeats it until the build or the recording is fixed |
 | `INGRESS_CONFIRM_FAULTED` | an own frame on the tap did not match the oldest pending one, most often because the sequencer rejected one (`seqeron_sequencer_rejected_ingress_total`) |
 
 - **The standby takes over by itself** if one is running: a fenced instance looks to the cluster like a

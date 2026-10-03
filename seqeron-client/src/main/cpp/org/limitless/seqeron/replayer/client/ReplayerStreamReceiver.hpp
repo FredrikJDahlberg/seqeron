@@ -215,6 +215,13 @@ class ReplayerStreamReceiver final : private detail::ReplayerRecoveryActions
         return m_recovery.currentLeaderMemberId();
     }
 
+    // Starts recovery over as a cold start, restoring the snapshot given to restoreFrom again: a passive gateway
+    // instance's activation. Every frame after the restored cut is dispatched once more.
+    void restart()
+    {
+        m_recovery.restart();
+    }
+
     // Why the snapshot given to restoreFrom cannot be restored, or empty. Latched: recovery has stopped.
     const std::optional<std::string>& restoreFailure() const
     {

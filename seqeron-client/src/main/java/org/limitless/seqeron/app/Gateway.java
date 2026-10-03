@@ -7,10 +7,13 @@ import java.util.Objects;
 import java.util.Set;
 import org.agrona.DirectBuffer;
 import org.agrona.ExpandableArrayBuffer;
+import org.limitless.seqeron.protocol.FrameLayer;
 import org.limitless.seqeron.protocol.PortLayout;
 import org.limitless.seqeron.protocol.Publish;
+import org.limitless.seqeron.protocol.SnapshotHeader;
 import org.limitless.seqeron.protocol.SystemFrame;
 import org.limitless.seqeron.replayer.client.SequencedEvent;
+import org.limitless.seqeron.replayer.client.SnapshotRestoreHandler;
 import org.limitless.seqeron.sbe.frame.ConnectionClosedEncoder;
 import org.limitless.seqeron.sbe.frame.ConnectionOpenedDecoder;
 import org.limitless.seqeron.sbe.frame.ConnectionOpenedEncoder;
@@ -18,6 +21,10 @@ import org.limitless.seqeron.sbe.frame.GatewayActiveDecoder;
 import org.limitless.seqeron.sbe.frame.GatewayRegisteredDecoder;
 import org.limitless.seqeron.sbe.frame.GatewayStartedEncoder;
 import org.limitless.seqeron.sbe.frame.MessageHeaderDecoder;
+import org.limitless.seqeron.sbe.frame.SnapshotChunkEncoder;
+import org.limitless.seqeron.sbe.frame.SnapshotEndDecoder;
+import org.limitless.seqeron.sbe.frame.SnapshotEndEncoder;
+import org.limitless.seqeron.sbe.frame.SnapshotStartedDecoder;
 
 /**
  * One instance of an elected active/standby producer pair. Everything this tier defines about being a
@@ -28,6 +35,14 @@ import org.limitless.seqeron.sbe.frame.MessageHeaderDecoder;
  * <p><b>What is left to the consumer is its edge</b> — a socket, a dialler, a codec. It opens that edge in
  * {@link Listener#onActivated}, closes it in {@link Listener#onStandby}, and otherwise exchanges payloads:
  * nothing of the frame layer or of seqeron's system vocabulary appears in its code.
+ *
+ * <p><b>Snapshots</b> (doc/snapshot.md §4): given a {@link SnapshotListener} and topology rows with {@code
+ * snapshot="true"}, every instance serializes its state at each round's cut, and the active one then submits it,
+ * under a header carrying the pair's election state. An instance whose snapshot differs from the one sequenced is
+ * fenced with {@link ClusterError#SNAPSHOT_DIVERGED}. On start, an instance given a listener restores its source's
+ * latest snapshot and resumes after its cut; one it cannot restore is fenced with {@link
+ * ClusterError#SNAPSHOT_UNRESTORABLE}. A {@linkplain Builder#passive passive} instance holds no state until it is
+ * activated: it follows the tap for the election alone, then restores and catches up before it serves.
  *
  * <p>Single-threaded: every method belongs to the caller's one duty-cycle thread, which calls
  * {@link #doWork()} each iteration. The C++ twin is {@code app/Gateway.hpp}; keep the two in step.
@@ -107,6 +122,8 @@ public final class Gateway implements AutoCloseable {
     private final Session session;
     private final GatewayLifecycle lifecycle;
     private final Listener listener;
+    private final SnapshotTaker snapshots;
+    private final SnapshotFrames snapshotFrames = new SnapshotFrames();
     private final int memberId;
     private final String egressChannel;
     private final String ingressEndpoints;
@@ -118,6 +135,8 @@ public final class Gateway implements AutoCloseable {
     private final ConnectionOpenedDecoder connectionOpenedIn = new ConnectionOpenedDecoder();
     private final GatewayRegisteredDecoder gatewayRow = new GatewayRegisteredDecoder();
     private final GatewayActiveDecoder gatewayActive = new GatewayActiveDecoder();
+    private final SnapshotStartedDecoder snapshotStarted = new SnapshotStartedDecoder();
+    private final SnapshotEndDecoder snapshotEnd = new SnapshotEndDecoder();
 
     /** Connection lifecycle frames still to be placed, in the order they were asked for. */
     private final ArrayDeque<Lifecycle> lifecycleQueue = new ArrayDeque<>();
@@ -129,14 +148,22 @@ public final class Gateway implements AutoCloseable {
     private int highestConnectionId = NO_CONNECTION;
     private int nextConnectionId;
 
+    /** Holding no state: until activated, this instance follows the tap for the election alone. */
+    private boolean passive;
+
     private Gateway(final Builder builder) {
         this.listener = builder.listener;
         this.memberId = builder.memberId;
         this.egressChannel = builder.egressChannel;
         this.ingressEndpoints = builder.ingressEndpoints;
+        this.passive = builder.passive;
         this.lifecycle = new GatewayLifecycle(builder.gatewayName, new LifecycleActions());
+        this.snapshots = new SnapshotTaker(builder.snapshotListener);
         this.session = new Session(builder.clientId, builder.pendingCapacity, builder.tapStallTimeoutMs,
                                    builder.recoveryStallTimeoutMs, new SessionDispatch());
+        if (builder.snapshotListener != null) {
+            session.restoreFrom(builder.sourceId, new Restore());
+        }
     }
 
     public static Builder builder() {
@@ -149,14 +176,20 @@ public final class Gateway implements AutoCloseable {
     }
 
     /**
-     * One duty-cycle iteration: the cluster session and the tap, then whatever the connection lifecycle and
-     * the election still owe.
+     * One duty-cycle iteration: the cluster session and the tap, then whatever the connection lifecycle, the
+     * election and a snapshot round still owe. A passive instance that has been activated starts over here.
      * @return units of work done, for the caller's idle strategy
      */
     public int doWork() {
         int work = session.doWork();
+        if (passive && lifecycle.isActivated() && session.isCaughtUp()) {
+            passive = false;
+            session.restart();
+            return work + 1;
+        }
         work += drainLifecycle();
         work += session.isCaughtUp() ? lifecycle.advance() : 0;
+        work += snapshots.submit(snapshotFrames);
         return work;
     }
 
@@ -257,6 +290,11 @@ public final class Gateway implements AutoCloseable {
         return lifecycle.isServing();
     }
 
+    /** Whether this instance still holds no state: passive and not yet activated. */
+    public boolean isPassive() {
+        return passive;
+    }
+
     /**
      * This logical gateway's {@code sourceId}, shared with its standby; {@link #UNRESOLVED} until a
      * {@code GatewayRegistered} row names it.
@@ -344,6 +382,14 @@ public final class Gateway implements AutoCloseable {
         return result == Publish.Published;
     }
 
+    /** What this instance derives from the frames before a cut, for the round it starts (§6). */
+    private SnapshotHeader snapshotHeader() {
+        return new SnapshotHeader(session.leadershipTermId(), session.currentLeaderMemberId(),
+                                  new SnapshotHeader.GatewayState(lifecycle.gatewaySourceId(),
+                                                                  lifecycle.activeGatewayId(), highestConnectionId,
+                                                                  lifecycle.pairRows()));
+    }
+
     /** One connection lifecycle frame waiting to be placed. */
     private static final class Lifecycle {
         private final int connectionId;
@@ -388,27 +434,61 @@ public final class Gateway implements AutoCloseable {
         }
     }
 
+    /**
+     * What a restore hands over in place of the frames before the cut: the header's election state and connection id
+     * resume point, then, unless passive, the application's records.
+     */
+    private final class Restore implements SnapshotRestoreHandler {
+        @Override
+        public boolean supportsFormatVersion(final long formatVersion) {
+            return snapshots.supportsFormatVersion(formatVersion);
+        }
+
+        @Override
+        public void onSnapshotHeader(final SnapshotHeader header) {
+            if (header.gateway() != null) {
+                lifecycle.onSnapshotHeader(header.gateway());
+                highestConnectionId = header.gateway().highestConnectionId();
+            }
+            if (!passive) {
+                snapshots.onSnapshotHeader(header);
+            }
+        }
+
+        @Override
+        public void onSnapshotRecord(final DirectBuffer record, final int length, final int recordIndex) {
+            if (!passive) {
+                snapshots.onSnapshotRecord(record, length, recordIndex);
+            }
+        }
+    }
+
     /** What comes off the tap, split into what the election reads and what the consumer does. */
     private final class SessionDispatch implements Session.Dispatch {
+        /**
+         * A submitted system payload carries no MessageHeader, so each decode takes this build's own block length and
+         * version (doc/seqeron-protocol-spec.md §7, V-3). A passive instance reads the election alone.
+         */
         @Override
         public void onSystem(final SequencedEvent event) {
             observeConnectionId(event.sourceId(), event.connectionId());
             switch (event.systemEventType()) {
             case SystemFrame.GATEWAY_REGISTERED:
-                // A submitted system payload carries no MessageHeader, so its block length and version come from
-                // this build's own constants (doc/seqeron-protocol-spec.md §7, V-3).
                 gatewayRow.wrap(event.buffer(), event.payloadOffset(), GatewayRegisteredDecoder.BLOCK_LENGTH,
                                 MessageHeaderDecoder.SCHEMA_VERSION);
                 lifecycle.onGatewayRegistered(gatewayRow.gatewayId(), gatewayRow.gatewaySourceId(),
                                               gatewayRow.gatewayName(), gatewayRow.preferenceRank());
+                if (gatewayRow.gatewayId() == lifecycle.gatewayId()) {
+                    snapshots.participating(gatewayRow.snapshot() == 1);
+                }
                 break;
             case SystemFrame.CONNECTION_OPENED:
-                if (event.sourceId() == lifecycle.gatewaySourceId()) {
+                if (!passive && event.sourceId() == lifecycle.gatewaySourceId()) {
                     dispatchConnectionOpened(event);
                 }
                 break;
             case SystemFrame.CONNECTION_CLOSED:
-                if (event.sourceId() == lifecycle.gatewaySourceId()) {
+                if (!passive && event.sourceId() == lifecycle.gatewaySourceId()) {
                     listener.onConnectionClosed(event.connectionId());
                 }
                 break;
@@ -416,6 +496,28 @@ public final class Gateway implements AutoCloseable {
                 gatewayActive.wrap(event.buffer(), event.payloadOffset(), GatewayActiveDecoder.BLOCK_LENGTH,
                                    GatewayActiveDecoder.SCHEMA_VERSION);
                 lifecycle.onGatewayActive(gatewayActive.gatewayId());
+                if (!lifecycle.isActivated()) {
+                    snapshots.stopPublishing();
+                }
+                break;
+            case SystemFrame.SNAPSHOT_STARTED:
+                if (!passive && snapshots.isParticipating()) {
+                    snapshotStarted.wrap(event.buffer(), event.payloadOffset(), SnapshotStartedDecoder.BLOCK_LENGTH,
+                                         SnapshotStartedDecoder.SCHEMA_VERSION);
+                    snapshots.onSnapshotStarted(snapshotStarted.round(), snapshotHeader(), lifecycle.isAnnounced());
+                }
+                break;
+            case SystemFrame.SNAPSHOT_END:
+                if (event.sourceId() != lifecycle.gatewaySourceId()) {
+                    break;
+                }
+                snapshotEnd.wrap(event.buffer(), event.payloadOffset(), SnapshotEndDecoder.BLOCK_LENGTH,
+                                 MessageHeaderDecoder.SCHEMA_VERSION);
+                if (!snapshots.onSnapshotEnd(snapshotEnd.round(), snapshotEnd.chunkCount(), snapshotEnd.length(),
+                                             snapshotEnd.crc32c())) {
+                    session.fence(ClusterError.SNAPSHOT_DIVERGED, "round " + snapshotEnd.round() + "'s sequenced "
+                        + "snapshot at globalSeqNo " + event.globalSeqNo() + " differs from this instance's");
+                }
                 break;
             default:
                 break;
@@ -430,7 +532,9 @@ public final class Gateway implements AutoCloseable {
         @Override
         public void onPayload(final Payload payload) {
             observeConnectionId(payload.sourceId(), payload.connectionId());
-            listener.onSequenced(payload);
+            if (!passive) {
+                listener.onSequenced(payload);
+            }
         }
 
         @Override
@@ -450,9 +554,41 @@ public final class Gateway implements AutoCloseable {
         }
     }
 
+    /** The round's frames, under this gateway's {@code sourceId} and belonging to no connection. */
+    private final class SnapshotFrames implements SnapshotTaker.Actions {
+        private final ExpandableArrayBuffer body = new ExpandableArrayBuffer(FrameLayer.MAX_PAYLOAD_LENGTH);
+        private final SnapshotChunkEncoder chunk = new SnapshotChunkEncoder();
+        private final SnapshotEndEncoder end = new SnapshotEndEncoder();
+
+        @Override
+        public Publish publishChunk(final long round, final int chunkIndex, final DirectBuffer record,
+                                    final int offset, final int length) {
+            chunk.wrap(body, 0).round(round).chunkIndex(chunkIndex).putData(record, offset, length);
+            return placed(session.publishSystem(lifecycle.gatewaySourceId(), NO_CONNECTION,
+                                                SystemFrame.SNAPSHOT_CHUNK, body, chunk.encodedLength()));
+        }
+
+        @Override
+        public Publish publishEnd(final long round, final int chunkCount, final long length, final long crc32c,
+                                  final int formatVersion) {
+            end.wrap(body, 0).round(round).chunkCount(chunkCount).length(length).crc32c(crc32c)
+                .formatVersion(formatVersion & 0xFFFF_FFFFL);
+            return placed(session.publishSystem(lifecycle.gatewaySourceId(), NO_CONNECTION, SystemFrame.SNAPSHOT_END,
+                                                body, end.encodedLength()));
+        }
+
+        private Publish placed(final Publish outcome) {
+            published(outcome);
+            return outcome;
+        }
+    }
+
     /** Everything one instance needs to join its pair. */
     public static final class Builder {
         private String gatewayName;
+        private int sourceId = UNRESOLVED;
+        private SnapshotListener snapshotListener;
+        private boolean passive;
         private int clientId;
         private int memberId;
         private String egressChannel;
@@ -465,6 +601,35 @@ public final class Gateway implements AutoCloseable {
         /** The {@code GatewayRegistered} row name this instance joins on. */
         public Builder gatewayName(final String gatewayName) {
             this.gatewayName = gatewayName;
+            return this;
+        }
+
+        /**
+         * The logical gateway's {@code sourceId}, the one its rows declare. Required with a {@link
+         * #snapshotListener}, as the restore asks for the source's snapshot before any row is dispatched.
+         */
+        public Builder sourceId(final int sourceId) {
+            this.sourceId = sourceId;
+            return this;
+        }
+
+        /**
+         * What serializes this instance's state for snapshot rounds and restores it on start; without one it takes
+         * part in none, whatever its rows say, and recovers from {@code globalSeqNo} 1.
+         */
+        public Builder snapshotListener(final SnapshotListener snapshotListener) {
+            this.snapshotListener = snapshotListener;
+            return this;
+        }
+
+        /**
+         * Whether this instance holds no state until it is activated (doc/snapshot.md §4). Until then the listener
+         * sees no payload and no connection, and takes part in no round; on activation the instance restores its
+         * source's latest snapshot, or replays from {@code globalSeqNo} 1 without one, before it serves. A failover
+         * to it races the activation deadline, so it suits state that restores well inside 5 s.
+         */
+        public Builder passive(final boolean passive) {
+            this.passive = passive;
             return this;
         }
 
@@ -517,6 +682,9 @@ public final class Gateway implements AutoCloseable {
             Objects.requireNonNull(egressChannel, "egressChannel");
             Objects.requireNonNull(ingressEndpoints, "ingressEndpoints");
             Objects.requireNonNull(listener, "listener");
+            if (snapshotListener != null && sourceId == UNRESOLVED) {
+                throw new IllegalStateException("sourceId is required with a snapshotListener");
+            }
             return new Gateway(this);
         }
     }

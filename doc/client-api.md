@@ -74,6 +74,7 @@ unchanged. `Gateway` works there as it does on a member; `Application` needs
 | restore a snapshot first | `restoreFrom(sourceId, SnapshotRestoreHandler)`, before `start` | `restoreFrom(sourceId, SnapshotRestoreHandler&)`, before `start` |
 | attach | `start(aeron, memberId)` | `start(aeron, memberId)` |
 | each duty cycle | `poll()` | `poll()` |
+| start over | `restart()` | `restart()` |
 | state | `isCaughtUp()`, `lastGlobalSeqNo()`, `currentLeaderMemberId()`, `restoreFailure()` | the same; `restoreFailure()` is a `std::optional<std::string>` |
 | release | `close()` | destructor |
 
@@ -81,7 +82,9 @@ With `restoreFrom`, the cold start asks the Replayer for the source's latest sna
 hands its header and records to the handler before it dispatches anything, then dispatches from the frame
 after the cut (`doc/snapshot.md` §7). A replay lost under the restore starts it over at the header. A
 snapshot it cannot restore — a format or header version the handler does not read, or records that fail
-their check — stops recovery for good, and `restoreFailure()` says why.
+their check — stops recovery for good, and `restoreFailure()` says why. `restart()` starts over as a cold
+start on a receiver that has dispatched frames already, restoring again, and dispatches every frame after the
+restored cut once more; a passive gateway instance's activation is what it is for.
 
 `clientId` must be unique among the replicas on one node. Two replicas that share one supersede each
 other's replays, and neither ever catches up. The co-located `ReplayerService` notices within a couple of
@@ -236,7 +239,7 @@ gateway.close();
 | `openConnection()` / `openConnection(data, length)` | allocates the id and places its `ConnectionOpened`, retried by `doWork()` |
 | `closeConnection(id)` | the same for a connection that has gone; one the cluster never heard of is dropped rather than announced |
 | `publish(connectionId, payloadId, payload, length)` | submits one payload, stamped with this gateway's `sourceId`; `Declined` is worth retrying. C++ also has `publish<Encoder>(connectionId, payloadId, fill)` |
-| `isActivated()`, `isServing()`, `sourceId()`, `gatewayId()`, `isCaughtUp()`, `lastGlobalSeqNo()` | what the instance may say about itself; `sourceId()` and `gatewayId()` read `UNRESOLVED` until a `GatewayRegistered` row names it |
+| `isActivated()`, `isServing()`, `isPassive()`, `sourceId()`, `gatewayId()`, `isCaughtUp()`, `lastGlobalSeqNo()` | what the instance may say about itself; `sourceId()` and `gatewayId()` read `UNRESOLVED` until a `GatewayRegistered` row names it |
 
 `Listener` is the edge: `onActivated(firstConnectionId)` opens it and `onStandby()` closes it,
 `onSequenced(Payload)` delivers application payloads in order, `onConnectionOpened`/`onConnectionClosed`
@@ -245,8 +248,19 @@ an instance that keeps per-connection state rebuilds it while it replays, and th
 that drops its socket without logging out — `onCaughtUp(globalSeqNo)` fires on every
 transition, and `onFenced(ClusterError, detail)` fires once — release the cluster session, usually by exiting, so
 a standby takes over. The `ClusterError` values are the cluster session lost, ingress confirmation faulted,
-recovery stalled, the tap stalled, and a snapshot diverged or unrestorable (below, `Application` only); a media
-driver that goes away raises from `doWork()` instead.
+recovery stalled, the tap stalled, and a snapshot diverged or unrestorable (below); a media driver that goes
+away raises from `doWork()` instead.
+
+**Snapshots** take the same `SnapshotListener` as [`Application`'s](#application), through the builder's
+`snapshotListener` (C++ `Config::snapshotListener`), and then require `sourceId` (C++ `Config::sourceId`), the
+pair's: the restore asks for that source's snapshot before any row is dispatched. Every instance serializes at
+the cut, and the one whose `GatewayStarted` for its current activation has been placed submits; the façade's
+header carries the pair's rows, the active instance and the highest connection id, which a restore puts in
+place of the frames before the cut. The fences are the same. With `passive(true)` (C++ `Config::passive`) an
+instance holds no state until it is activated: it follows the tap for the election alone, its listener sees no
+payload and no connection, and it takes part in no round. On activation it restores the latest snapshot, or
+replays from `globalSeqNo` 1 without one, and serves once caught up. The failover then races the 5 s
+activation deadline (`doc/snapshot.md` §4), so a passive instance suits state that restores well inside it.
 
 Tap lag is deliberately **not** the client tier's business: it raises no fence and changes no
 behaviour. How far a node runs behind the cluster is a property of the node, and `doc/ops.md` graphs it

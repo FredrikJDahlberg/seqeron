@@ -73,6 +73,12 @@ class Session
         m_receiver.restoreFrom(sourceId, handler);
     }
 
+    // Follows the tap from its start again, restoring the snapshot given to restoreFrom first.
+    void restart()
+    {
+        m_receiver.restart();
+    }
+
     // Opens the cluster session over UDP and starts following this node's tap.
     void start(std::shared_ptr<aeron::Aeron> aeron, const std::int32_t memberId, const std::string& egressChannel,
                const std::string& ingressEndpoints)

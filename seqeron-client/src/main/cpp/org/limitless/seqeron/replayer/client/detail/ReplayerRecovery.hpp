@@ -251,6 +251,22 @@ class ReplayerRecovery
         }
     }
 
+    // Starts over as a cold start on a client that has dispatched frames already: a passive gateway instance's
+    // activation (doc/snapshot.md §4). It restores the source's latest snapshot again, or walks from segment 0
+    // without one, and dispatches every frame after that once more, and nothing before.
+    void restart()
+    {
+        m_actions.closeReplay();
+        m_replaySessionId = -1;
+        m_awaitingReplay = false;
+        m_resumeAnchorSequenceNumber = 0;
+        m_caughtUp = false;
+        m_lastGlobalSeqNo = 0;
+        m_lastFramePosition = 0;
+        m_snapshotGlobalSeqNo = 0;
+        start();
+    }
+
     void onFrame(char* const frame, const std::uint64_t length, const std::int64_t framePosition,
                  const std::int64_t receiveNs, const bool fromReplay)
     {

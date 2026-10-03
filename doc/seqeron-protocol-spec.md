@@ -65,7 +65,8 @@ header composite.
 | replay control | stream 203 | schema 212, replayer → client | no |
 
 - **F-1. The tap is the record.** The cluster takes no snapshots and always recovers by replaying the
-  full log from `globalSeqNo` 1, so the tap's bytes are the only durable copy of a frame.
+  full log from `globalSeqNo` 1, so the tap's bytes are the only durable copy of a frame. An application
+  snapshot (§7.3) is frames on the tap like any other.
 - **F-2. Every node's tap is byte-identical.** A replay from any node's archive can stand in for any
   other's. §9.3 keeps this true.
 
@@ -917,7 +918,8 @@ The suite checks framing and copy fidelity only; it never decodes an application
 
 What an application must do so that the order of §9.1 reaches its own consumers intact. seqeron cannot
 enforce these rules, since they concern behaviour after the tap. The client tier implements them in
-`org.limitless.seqeron.app` (Java and C++); the sender half of A-5 is in `sequencer.client`.
+`org.limitless.seqeron.app` (Java and C++); the sender half of A-5 is in `sequencer.client`. A-6 and A-7
+concern sources that take part in snapshot rounds (§7.3, `doc/snapshot.md`).
 
 - **A-1. Leader-only work is gated.** A co-located replica MUST perform a leader-only side effect only
   while it is caught up and its own member is leader. Every applied `LeadershipChanged` closes the gate,
@@ -947,6 +949,14 @@ enforce these rules, since they concern behaviour after the tap. The client tier
   `ClusterStreamSender`s). Lost frames MUST be resent oldest first, once the sender stamps a term the
   tap has reached. A frame already in the log is never pending after it appears on the tap, so a resend
   creates no duplicate. (`PendingSends`)
+- **A-6. Snapshot records are deterministic.** Every instance of a source MUST serialize the same state at
+  a round's cut to the same records, byte for byte: no hash-map iteration order, no local time, no node
+  identity. The header the façade writes is part of the records, and is identical on every instance by
+  construction. (`SnapshotListener`)
+- **A-7. A divergent instance stops.** An instance whose own `chunkCount`, `length` or `crc32c` for a round
+  differs from its source's sequenced `SnapshotEnd` no longer holds the state the log implies, and MUST
+  stop. The sequenced snapshot is the reference: a publisher that diverged has broken A-6. The façades
+  fence with `SNAPSHOT_DIVERGED`. (`SnapshotTaker`)
 
 A-4 and A-5 apply within one producer process. A restarted producer, or a standby promoted in its
 place, starts with nothing pending; a lost cluster session stays lost; and a frame lost without a

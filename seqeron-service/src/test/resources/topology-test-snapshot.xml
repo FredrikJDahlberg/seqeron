@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    The TestGateway pair of topology-test-gateway.xml, taking part in snapshot rounds every 2 s:
+    what snapshot-test.sh loads (doc/snapshot.md).
+
+      clusterctl.sh load-topology seqeron-service/src/test/resources/topology-test-snapshot.xml
+-->
+<topology xmlns="http://limitless.org/seqeron/topology/1">
+
+    <gateways>
+        <gateway name="GW-T-A" id="10" sourceId="9" rank="0" snapshot="true"
+                 description="TestGateway -Dprobe.snapshot=true"/>
+        <gateway name="GW-T-B" id="11" sourceId="9" rank="1" snapshot="true"
+                 description="TestGateway standby"/>
+    </gateways>
+
+    <snapshots interval="2"/>
+
+</topology>

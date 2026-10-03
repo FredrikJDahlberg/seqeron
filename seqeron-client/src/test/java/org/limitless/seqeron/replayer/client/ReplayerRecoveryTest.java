@@ -1468,6 +1468,57 @@ class ReplayerRecoveryTest {
         assertNull(new ReplayerRecovery(CLIENT_ID, actions, event -> { }, null, null).restoreFailure());
     }
 
+    @Test
+    @DisplayName("a restart restores the snapshot again, holding the tap, and dispatches everything after its cut")
+    void restartRestoresAgainAndRedispatchesAfterTheCut() {
+        startRestoring();
+        answerLocation(2, 1);
+        replaySnapshot();
+        attachReplay(22, 64 * 1024);
+        deliverReplayFrame(RestoreFrames.started(CUT, 2), CUT);
+        deliverReplay(11);
+        deliverTap(12);
+        assertTrue(receiver.isCaughtUp());
+        dispatched.clear();
+        restored.clear();
+
+        receiver.restart();
+
+        assertFalse(receiver.isCaughtUp());
+        assertEquals(-1, receiver.replaySessionId(), "the replay in flight is dropped");
+        assertEquals(2, actions.queriesSent);
+        deliverTap(13);
+        assertTrue(dispatched.isEmpty());
+        answerLocation(2, 1);
+        replaySnapshot();
+        assertEquals(List.of("header 4 2", "0 7"), restored);
+        assertEquals(CUT, receiver.lastGlobalSeqNo());
+        attachReplay(23, 64 * 1024);
+        deliverReplayFrame(RestoreFrames.started(CUT, 2), CUT);
+        deliverReplay(11);
+        deliverReplay(12);
+        assertEquals(List.of(11L, 12L, 13L), dispatched, "13 from the tap, held until contiguous");
+    }
+
+    @Test
+    @DisplayName("a restart with no snapshot to restore walks the chain from segment 0 again")
+    void restartWithoutASnapshotWalksFromSegmentZero() {
+        deliverTap(1);
+        deliverTap(2);
+
+        receiver.restart();
+
+        assertFalse(receiver.isCaughtUp());
+        assertEquals(0, receiver.lastGlobalSeqNo());
+        assertTrue(receiver.isAwaitingReplay());
+        assertEquals(0, receiver.walkSegmentIndex());
+        assertEquals(0, receiver.requestFromPosition());
+        attachReplay(21, 64 * 1024);
+        deliverReplay(1);
+        deliverReplay(2);
+        assertEquals(List.of(1L, 2L, 1L, 2L), dispatched);
+    }
+
     private void startRestoring() {
         receiver.restoreFrom(SOURCE, new SnapshotRestoreHandler() {
             @Override
