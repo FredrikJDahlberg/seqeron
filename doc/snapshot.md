@@ -118,7 +118,7 @@ A new round supersedes the previous one: a publisher that has not yet placed the
 abandons it (§4).
 
 The sequencer decodes `SnapshotPolicyRegistered` alone; it recognises `SnapshotRequested` by its
-`systemEventType`. It validates a `SnapshotEnd` only for shape (spec §9.2 conditions 8 and 9) and never
+`systemEventType`. It validates a `SnapshotEnd` only for format (spec §9.2 conditions 8 and 9) and never
 rejects one for its round: a rejected frame makes its producer fence (spec A-4), and a late or superseded
 end is harmless.
 

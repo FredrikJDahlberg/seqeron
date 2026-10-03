@@ -71,7 +71,7 @@ consumer side of everything above — `ClusterStreamSender` (the cluster client 
 `SequencedFrame` (the envelope), `PortLayout`, and the pure policy classes. There is **no C++ replay
 server**; the server side of the replay protocol is Java only.
 
-### Load-bearing properties
+### Fundamental properties
 
 - **The cluster parses no application payload.** Every ingress message is an `Unsequenced` frame
   (`sbe-frame.xml`, schema 210) carrying one opaque payload named by `header.payloadId`;
