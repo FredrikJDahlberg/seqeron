@@ -20,4 +20,15 @@
                  description="seqeron-examples gateway_app standby"/>
     </gateways>
 
+    <!-- SnapshotApp, Java and C++: sourceIds 14 and 15 (spec §5), taking part in snapshot rounds. -->
+    <applications>
+        <application name="SNAP-EX-J" sourceId="14" snapshot="true"
+                     description="seqeron-examples SnapshotApp.java"/>
+        <application name="SNAP-EX-C" sourceId="15" snapshot="true"
+                     description="seqeron-examples snapshot_app"/>
+    </applications>
+
+    <!-- A round every 10 s of cluster time; clusterctl.sh request-snapshot starts one at once. -->
+    <snapshots interval="10"/>
+
 </topology>

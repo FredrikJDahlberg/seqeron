@@ -41,6 +41,12 @@ final class RecoveryStallFence {
         recoveryStartMs = 0;
     }
 
+    /** Recovery starts over as a cold start, a passive gateway instance's activation: disarmed until caught up. */
+    public void onRestart() {
+        everCaughtUp = false;
+        recoveryStartMs = 0;
+    }
+
     /**
      * Evaluates one not-caught-up observation. The first of an episode, and every one that finds the frontier
      * advanced, only re-anchors the clock — the deadline is always measured from the last sign of progress.

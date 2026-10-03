@@ -24,12 +24,16 @@ import org.xml.sax.SAXParseException;
  * gateway list the log has already closed.
  */
 public record TopologyDocument(List<TopologyRow> gateways, List<ApplicationRow> applications,
-                               List<ProtocolRow> protocols) {
+                               List<ProtocolRow> protocols, SnapshotPolicy snapshots) {
     /** One list row: an elected gateway pair's instance. */
-    public record TopologyRow(String gatewayName, int gatewayId, int gatewaySourceId, int preferenceRank) { }
+    public record TopologyRow(String gatewayName, int gatewayId, int gatewaySourceId, int preferenceRank,
+                              boolean snapshot) { }
 
     /** One co-located application: the producer kind that is not elected (§5). */
-    public record ApplicationRow(String applicationName, int sourceId) { }
+    public record ApplicationRow(String applicationName, int sourceId, boolean snapshot) { }
+
+    /** The {@code <snapshots>} element; {@code null} in a document without one, which starts no round. */
+    public record SnapshotPolicy(long intervalSeconds) { }
 
     /** One protocol-registry row: what a shared payloadId is called in this deployment (§6.3). */
     public record ProtocolRow(int payloadId, int protocolVersion, String protocolName) { }
@@ -53,12 +57,14 @@ public record TopologyDocument(List<TopologyRow> gateways, List<ApplicationRow> 
             gateways.add(new TopologyRow(row.getAttribute("name"),
                                          Integer.parseInt(row.getAttribute("id")),
                                          Integer.parseInt(row.getAttribute("sourceId")),
-                                         Integer.parseInt(row.getAttribute("rank"))));
+                                         Integer.parseInt(row.getAttribute("rank")),
+                                         snapshot(row)));
         }
         final List<ApplicationRow> applications = new ArrayList<>();
         for (final Element row : childElements(root, "applications", "application")) {
             applications.add(new ApplicationRow(row.getAttribute("name"),
-                                                Integer.parseInt(row.getAttribute("sourceId"))));
+                                                Integer.parseInt(row.getAttribute("sourceId")),
+                                                snapshot(row)));
         }
         final List<ProtocolRow> protocols = new ArrayList<>();
         for (final Element row : childElements(root, "protocols", "protocol")) {
@@ -66,8 +72,17 @@ public record TopologyDocument(List<TopologyRow> gateways, List<ApplicationRow> 
                                           Integer.parseInt(row.getAttribute("version")),
                                           row.getAttribute("name")));
         }
-        validate(gateways, applications);
-        return new TopologyDocument(gateways, applications, protocols);
+        final NodeList policies = root.getElementsByTagNameNS(TOPOLOGY_NS, "snapshots");
+        final SnapshotPolicy snapshots = policies.getLength() == 0 ? null
+            : new SnapshotPolicy(Long.parseLong(((Element)policies.item(0)).getAttribute("interval")));
+        validate(gateways, applications, snapshots);
+        return new TopologyDocument(gateways, applications, protocols, snapshots);
+    }
+
+    /** A row's {@code snapshot} attribute; {@code xs:boolean} spells true two ways, and absent is false. */
+    private static boolean snapshot(final Element row) {
+        final String value = row.getAttribute("snapshot");
+        return "true".equals(value) || "1".equals(value);
     }
 
     /**
@@ -127,10 +142,13 @@ public record TopologyDocument(List<TopologyRow> gateways, List<ApplicationRow> 
 
     /**
      * The checks the XSD cannot make about rows' relations: exactly one rank-0 per gateway {@code sourceId},
-     * no §5-reserved {@code sourceId}, and no application {@code sourceId} a gateway row claims — which
-     * <b>S-6</b> would otherwise silently refuse frame by frame at run time.
+     * no §5-reserved {@code sourceId}, no application {@code sourceId} a gateway row claims — which
+     * <b>S-6</b> would otherwise silently refuse frame by frame at run time — one {@code snapshot} value per
+     * gateway {@code sourceId}, and a participating row behind {@code <snapshots>}.
      */
-    private static void validate(final List<TopologyRow> rows, final List<ApplicationRow> applications) {
+    private static void validate(final List<TopologyRow> rows, final List<ApplicationRow> applications,
+                                 final SnapshotPolicy snapshots) {
+        boolean participating = false;
         for (final TopologyRow row : rows) {
             if (RESERVED_SOURCE_ID == row.gatewaySourceId()) {
                 throw new IllegalArgumentException(row.gatewayName() + ": sourceId " + RESERVED_SOURCE_ID +
@@ -146,6 +164,14 @@ public record TopologyDocument(List<TopologyRow> gateways, List<ApplicationRow> 
                 throw new IllegalArgumentException("sourceId " + row.gatewaySourceId() + " has " + primaries +
                                                    " rank-0 row(s), needs exactly 1");
             }
+            for (final TopologyRow other : rows) {
+                if (other.gatewaySourceId() == row.gatewaySourceId() && other.snapshot() != row.snapshot()) {
+                    throw new IllegalArgumentException("sourceId " + row.gatewaySourceId() + ": " +
+                                                       row.gatewayName() + " and " + other.gatewayName() +
+                                                       " disagree on snapshot");
+                }
+            }
+            participating |= row.snapshot();
         }
         for (final ApplicationRow application : applications) {
             if (RESERVED_SOURCE_ID == application.sourceId()) {
@@ -159,6 +185,11 @@ public record TopologyDocument(List<TopologyRow> gateways, List<ApplicationRow> 
                                                        row.gatewayName() + "'s");
                 }
             }
+            participating |= application.snapshot();
+        }
+        if (snapshots != null && !participating) {
+            throw new IllegalArgumentException("<snapshots> with no row marked snapshot=\"true\" starts rounds "
+                                               + "no source takes part in");
         }
     }
 }

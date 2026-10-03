@@ -143,7 +143,7 @@ inline std::vector<std::string> ingressEndpointList(std::string_view endpoints)
 class ClusterStreamSender
 {
   public:
-    static constexpr std::size_t MAX_PAYLOAD_LEN = 8192;
+    static constexpr std::size_t MAX_PAYLOAD_LEN = 16384;
 
     /**
      * Opens a cluster session over UDP ingress: acquires the ingress publication and egress subscription,
@@ -470,7 +470,7 @@ class ClusterStreamSender
         {
             return false;
         }
-        // buf is sized from MAX_PAYLOAD_LEN like every caller's encode buffer, so this is a programming
+        // m_sendBuffer is sized from MAX_PAYLOAD_LEN like every caller's encode buffer, so this is a programming
         // error; dropping the frame silently would open a hole.
         if (len > MAX_PAYLOAD_LEN)
         {
@@ -478,14 +478,14 @@ class ClusterStreamSender
                                      " exceeds MAX_PAYLOAD_LEN " + std::to_string(MAX_PAYLOAD_LEN));
         }
 
-        alignas(16) std::array<std::uint8_t, INGRESS_FRAME_LEN> buf{};
+        std::uint8_t* const buf = m_sendBuffer.data();
         cluster::sbe::SessionMessageHeader hdr;
-        hdr.wrapAndApplyHeader(reinterpret_cast<char*>(buf.data()), 0, buf.size())
+        hdr.wrapAndApplyHeader(reinterpret_cast<char*>(buf), 0, m_sendBuffer.size())
             .leadershipTermId(m_leadershipTermId)
             .clusterSessionId(m_clusterSessionId)
             .timestamp(nowMs());
         const std::int32_t hdrLen = static_cast<std::int32_t>(hdr.sbePosition());
-        std::memcpy(buf.data() + hdrLen, bytes, len);
+        std::memcpy(buf + hdrLen, bytes, len);
         const std::size_t frameLen = static_cast<std::size_t>(hdrLen) + len;
 
         // Bounded: both other exits need a leader, so losing quorum would otherwise stop the caller's whole
@@ -494,7 +494,7 @@ class ClusterStreamSender
         std::chrono::steady_clock::time_point blockedSince{};
         std::chrono::steady_clock::time_point nextAlert{};
         m_newLeaderDuringSend = false;
-        while (!m_ingress->offer(std::span<const std::uint8_t>(buf.data(), frameLen)))
+        while (!m_ingress->offer(std::span<const std::uint8_t>(buf, frameLen)))
         {
             pumpEgressControl();
             if (m_clusterSessionId < 0)
@@ -901,6 +901,8 @@ class ClusterStreamSender
     std::string m_egressChannel;
     std::unique_ptr<detail::IngressTransport> m_ingress;
     std::unique_ptr<detail::EgressTransport> m_egress;
+    // send()'s framing buffer, allocated once: a frame-sized stack array, zeroed per call, costs every send.
+    std::vector<std::uint8_t> m_sendBuffer = std::vector<std::uint8_t>(INGRESS_FRAME_LEN);
     aeron::concurrent::YieldingIdleStrategy m_idleStrategy;
 
     // An ingress-publication swap requested from inside an egress fragment handler, performed later

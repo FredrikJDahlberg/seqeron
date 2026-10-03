@@ -17,21 +17,22 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import org.agrona.DirectBuffer;
+import org.agrona.MutableDirectBuffer;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.limitless.seqeron.protocol.Publish;
 
 /**
  * The façades' surface is closed: a consumer that takes one names {@code app}, {@code protocol.Publish},
- * {@code Aeron} and {@code DirectBuffer}, and nothing else. {@code package-info.java} and
- * {@code doc/client-api.md} both say so in prose; this is what makes it fail the build. A public signature
+ * {@code Aeron}, {@code DirectBuffer} and {@code MutableDirectBuffer}, and nothing else. {@code
+ * package-info.java} and {@code doc/client-api.md} both say so in prose; this is what makes it fail the build. A public signature
  * that reaches into {@code sequencer.client}, {@code replayer.client}, the generated codecs or one of this
  * package's own package-private blocks is the leak it catches.
  */
 class FacadeSurfaceTest {
     /** The front door: these types and their public nested types are what a consumer sees. */
     private static final Class<?>[] FACADES = {
-        Gateway.class, Application.class, Payload.class, ClusterError.class
+        Gateway.class, Application.class, Payload.class, ClusterError.class, SnapshotListener.class
     };
 
     @Test
@@ -41,7 +42,7 @@ class FacadeSurfaceTest {
         for (final Class<?> facade : FACADES) {
             check(facade, leaks);
         }
-        assertEquals(List.of(), leaks, "the façade surface must stay app + Publish + Aeron + DirectBuffer");
+        assertEquals(List.of(), leaks, "the façade surface must stay app + Publish + Aeron + the Agrona buffers");
     }
 
     /** Walks one type's own visible surface, then the public types nested in it. */
@@ -139,7 +140,8 @@ class FacadeSurfaceTest {
         if (type.isPrimitive() || type.getName().startsWith("java.")) {
             return true;
         }
-        if (type == DirectBuffer.class || type == Aeron.class || type == Publish.class) {
+        if (type == DirectBuffer.class || type == MutableDirectBuffer.class || type == Aeron.class ||
+            type == Publish.class) {
             return true;
         }
         // An app type counts only if a consumer can see it: a package-private block named by a public

@@ -14,6 +14,9 @@ public final class PortLayout {
     /** Every default endpoint below is on one host; a real deployment overrides them wholesale. */
     public static final String DEFAULT_HOST = "localhost";
 
+    /** Members of the default cluster on {@link #DEFAULT_HOST}, what the default endpoint sets name. */
+    public static final int DEFAULT_MEMBER_COUNT = 3;
+
     /**
      * Deployment-wide port-base override, read by all three mirrors. Set it identically for every seqeron
      * process: a disagreement shows as a connection that never completes, not as an error.
@@ -32,8 +35,8 @@ public final class PortLayout {
     /** Ports one member takes, so member {@code m}'s block starts at {@code base + m * stride}. */
     public static final int CLUSTER_PORT_STRIDE = 10;
 
-    /** Members a cluster is bounded at, since the reserved block is this many strides wide. */
-    public static final int CLUSTER_MEMBER_COUNT = 3;
+    /** Members a cluster is bounded at, since the reserved block is this many strides wide: Raft's 3, 5 or 7. */
+    public static final int CLUSTER_MEMBER_COUNT = 7;
 
     /** One stride per member. See {@link #CLUSTER_PORT_BLOCK_FIRST}. */
     private static final int CLUSTER_PORT_BLOCK_WIDTH = CLUSTER_MEMBER_COUNT * CLUSTER_PORT_STRIDE;
@@ -48,8 +51,8 @@ public final class PortLayout {
     public static final List<String> HOSTS = resolveHosts(System.getenv(ENV_HOSTS));
 
     /**
-     * Core's reserved block (doc/ops.md, "Ports"): three members wide, one stride each — wider than the
-     * base+1..base+25 three members bind.
+     * Core's reserved block (doc/ops.md, "Ports"): seven members wide, one stride each — wider than the
+     * base+1..base+65 seven members bind.
      */
     public static final int CLUSTER_PORT_BLOCK_FIRST = CLUSTER_PORT_BASE;
 
@@ -196,10 +199,10 @@ public final class PortLayout {
     }
 
     /**
-     * The default endpoint set: the members {@link #HOSTS} names, else a full {@link #CLUSTER_MEMBER_COUNT}-member
+     * The default endpoint set: the members {@link #HOSTS} names, else a {@link #DEFAULT_MEMBER_COUNT}-member
      * cluster on {@link #DEFAULT_HOST}.
      */
     public static String ingressEndpoints() {
-        return HOSTS.isEmpty() ? ingressEndpoints(CLUSTER_MEMBER_COUNT) : ingressEndpoints(HOSTS);
+        return HOSTS.isEmpty() ? ingressEndpoints(DEFAULT_MEMBER_COUNT) : ingressEndpoints(HOSTS);
     }
 }

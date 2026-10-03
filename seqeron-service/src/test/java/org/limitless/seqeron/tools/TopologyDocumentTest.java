@@ -1,6 +1,8 @@
 package org.limitless.seqeron.tools;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -57,6 +59,25 @@ class TopologyDocumentTest {
         assertEquals(2, topology.gateways().size());
         assertTrue(topology.applications().isEmpty());
         assertTrue(topology.protocols().isEmpty());
+    }
+
+    @Test
+    @DisplayName("snapshot participation and the snapshot policy are read; both default to off")
+    void readsSnapshotSettings() throws Exception {
+        final TopologyDocument off = read(document(GATEWAY_PAIR, """
+                <application name="probe" sourceId="8"/>""", null));
+        assertFalse(off.gateways().get(0).snapshot());
+        assertFalse(off.applications().get(0).snapshot());
+        assertNull(off.snapshots(), "no <snapshots>, no rounds");
+
+        final TopologyDocument on = read(document("""
+                <gateway name="GW-A" id="1" sourceId="9" rank="0" snapshot="true"/>
+                <gateway name="GW-B" id="2" sourceId="9" rank="1" snapshot="1"/>""", """
+                <application name="probe" sourceId="8" snapshot="true"/>""", null,
+                                                  "<snapshots interval=\"3600\"/>"));
+        assertTrue(on.gateways().get(1).snapshot(), "xs:boolean spells true as 1 too");
+        assertTrue(on.applications().get(0).snapshot());
+        assertEquals(3600, on.snapshots().intervalSeconds());
     }
 
     @Test
@@ -193,6 +214,13 @@ class TopologyDocumentTest {
                 """.formatted(GATEWAY_PAIR));
     }
 
+    @Test
+    @DisplayName("<snapshots> needs an interval, and a non-negative one")
+    void snapshotsWithoutAValidIntervalAreRefused() {
+        refusedBySchema(document(GATEWAY_PAIR, null, null, "<snapshots/>"));
+        refusedBySchema(document(GATEWAY_PAIR, null, null, "<snapshots interval=\"-1\"/>"));
+    }
+
     // ── refused by the loader: the checks a row cannot make about itself ──────────────────────────────
 
     @Test
@@ -237,10 +265,32 @@ class TopologyDocumentTest {
                       "is gateway GW-A's");
     }
 
+    @Test
+    @DisplayName("the instances of one logical gateway either all take part in snapshots or none does")
+    void gatewayPairDisagreeingOnSnapshotIsRefused() {
+        assertRefused(document("""
+                <gateway name="GW-A" id="1" sourceId="9" rank="0" snapshot="true"/>
+                <gateway name="GW-B" id="2" sourceId="9" rank="1"/>""", null, null),
+                      "disagree on snapshot");
+    }
+
+    @Test
+    @DisplayName("<snapshots> with no participating row would start rounds nobody takes part in")
+    void snapshotsWithNoParticipantIsRefused() {
+        assertRefused(document(GATEWAY_PAIR, null, null, "<snapshots interval=\"60\"/>"),
+                      "no row marked snapshot");
+    }
+
     // ── helpers ───────────────────────────────────────────────────────────────────────────────────────
 
     /** A document with the given section bodies; a null section is omitted entirely, as the schema allows. */
     private static String document(final String gateways, final String applications, final String protocols) {
+        return document(gateways, applications, protocols, null);
+    }
+
+    /** The same, followed by {@code snapshots}, the whole element, when it is not null. */
+    private static String document(final String gateways, final String applications, final String protocols,
+                                   final String snapshots) {
         final StringBuilder xml = new StringBuilder("""
                 <?xml version="1.0" encoding="UTF-8"?>
                 <topology xmlns="http://limitless.org/seqeron/topology/1">
@@ -251,6 +301,9 @@ class TopologyDocumentTest {
         }
         if (protocols != null) {
             xml.append("  <protocols>").append(protocols).append("</protocols>\n");
+        }
+        if (snapshots != null) {
+            xml.append("  ").append(snapshots).append('\n');
         }
         return xml.append("</topology>\n").toString();
     }

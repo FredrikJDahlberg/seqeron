@@ -15,6 +15,10 @@
  * are package-private, being decisions the façades make and nothing else does; confirmed ingress, which a
  * duty cycle of your own does need, is {@code sequencer.client.PendingSends}.
  *
+ * <p>A source that takes part in snapshot rounds gives its façade a
+ * {@link org.limitless.seqeron.app.SnapshotListener}, which the façade pulls the records of its state from, and
+ * hands them back to on a restore.
+ *
  * <p>{@code doc/client-api.md} is this surface in full.
  */
 package org.limitless.seqeron.app;

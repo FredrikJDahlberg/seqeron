@@ -23,6 +23,13 @@ class RecoveryStallFence
         m_recoveryStartMs = 0;
     }
 
+    // Recovery starts over as a cold start, a passive gateway instance's activation: disarmed until caught up.
+    void onRestart()
+    {
+        m_everCaughtUp = false;
+        m_recoveryStartMs = 0;
+    }
+
     // Evaluates one !isCaughtUp() observation, given the highest globalSeqNo dispatched so far. Returns true
     // once recovery has dispatched nothing for >= deadlineMs on an instance that has been caught up before.
     bool onNotCaughtUp(const std::int64_t nowMs, const std::int64_t globalSeqNo)

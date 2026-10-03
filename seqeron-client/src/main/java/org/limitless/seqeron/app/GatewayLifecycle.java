@@ -1,7 +1,10 @@
 package org.limitless.seqeron.app;
 
-import java.util.HashMap;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
+import org.limitless.seqeron.protocol.SnapshotHeader;
 
 /**
  * The election lifecycle of one gateway instance: which instance of a logical gateway opens its gate, and
@@ -58,14 +61,23 @@ final class GatewayLifecycle {
     private final String gatewayName;
     private final Actions actions;
 
-    /** Every row's {@code gatewayId -> gatewaySourceId}: a {@code GatewayActive} carries only the former. */
-    private final Map<Integer, Integer> gatewaySourceIds = new HashMap<>();
+    /**
+     * Every row by {@code gatewayId}, in list order, a re-published row replacing its earlier one in place as the
+     * sequencer's list does: a {@code GatewayActive} carries only the id, and a snapshot header every row of the pair.
+     */
+    private final Map<Integer, Row> rows = new LinkedHashMap<>();
 
     private State state = State.REPLAYING;
     private int gatewayId = UNRESOLVED;
     private int gatewaySourceId = UNRESOLVED;
     private boolean activated;
     private boolean registered;
+
+    /** The instance of this pair the last {@code GatewayActive} named, or {@link SnapshotHeader#NO_GATEWAY}. */
+    private int activeGatewayId = SnapshotHeader.NO_GATEWAY;
+
+    /** One list row. */
+    private record Row(int gatewaySourceId, int preferenceRank, String gatewayName) { }
 
     /**
      * An instance that starts out replaying, with no identity until the list names it.
@@ -93,7 +105,7 @@ final class GatewayLifecycle {
     /** A {@code GatewayRegistered} row. Only the one carrying this instance's name resolves its identity. */
     public void onGatewayRegistered(final int rowGatewayId, final int rowGatewaySourceId, final String rowName,
                                     final int preferenceRank) {
-        gatewaySourceIds.put(rowGatewayId, rowGatewaySourceId);
+        rows.put(rowGatewayId, new Row(rowGatewaySourceId, preferenceRank, rowName));
         if (!gatewayName.equals(rowName)) {
             return;
         }
@@ -107,10 +119,11 @@ final class GatewayLifecycle {
         if (gatewayId == UNRESOLVED) {
             return;
         }
-        final Integer targetSourceId = gatewaySourceIds.get(targetGatewayId);
-        if (targetSourceId == null || targetSourceId != gatewaySourceId) {
+        final Row target = rows.get(targetGatewayId);
+        if (target == null || target.gatewaySourceId() != gatewaySourceId) {
             return;
         }
+        activeGatewayId = targetGatewayId;
         final boolean wasActivated = activated;
         activated = targetGatewayId == gatewayId;
         if (activated || !wasActivated) {
@@ -121,6 +134,20 @@ final class GatewayLifecycle {
             state = State.PASSIVE;
             actions.closeGate();
         }
+    }
+
+    /**
+     * Takes the election state a snapshot header holds in place of the frames before its cut (doc/snapshot.md §6):
+     * the pair's rows, which resolve this instance's identity by name, and the instance its {@code GatewayActive}
+     * names. Before the gate has opened, so nothing is published or closed.
+     */
+    public void onSnapshotHeader(final SnapshotHeader.GatewayState state) {
+        rows.clear();
+        for (final SnapshotHeader.GatewayRow row : state.rows()) {
+            onGatewayRegistered(row.gatewayId(), state.gatewaySourceId(), row.gatewayName(), row.preferenceRank());
+        }
+        activeGatewayId = state.activeGatewayId();
+        activated = gatewayId != UNRESOLVED && activeGatewayId == gatewayId;
     }
 
     /**
@@ -176,6 +203,27 @@ final class GatewayLifecycle {
     /** Whether the last {@code GatewayActive} for this pair named this instance. */
     public boolean isActivated() {
         return activated;
+    }
+
+    /** Whether this activation's {@code GatewayStarted} has been placed, binding the session to the pair's frames. */
+    public boolean isAnnounced() {
+        return activated && registered;
+    }
+
+    /** The instance of this pair the last {@code GatewayActive} named, or {@link SnapshotHeader#NO_GATEWAY}. */
+    public int activeGatewayId() {
+        return activeGatewayId;
+    }
+
+    /** Every row of this instance's pair, in list order: what a snapshot header carries. */
+    public List<SnapshotHeader.GatewayRow> pairRows() {
+        final List<SnapshotHeader.GatewayRow> pair = new ArrayList<>();
+        rows.forEach((rowGatewayId, row) -> {
+            if (row.gatewaySourceId() == gatewaySourceId) {
+                pair.add(new SnapshotHeader.GatewayRow(rowGatewayId, row.preferenceRank(), row.gatewayName()));
+            }
+        });
+        return pair;
     }
 
     /** This instance's list row, or {@link #UNRESOLVED} until a row names it. */

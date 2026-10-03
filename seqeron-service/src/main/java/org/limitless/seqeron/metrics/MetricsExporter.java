@@ -102,6 +102,11 @@ public final class MetricsExporter {
                            "1 once two co-located apps were seen sharing one SEQERON_REPLAYER_CLIENT_ID, else 0. "
                                + "They stop each other's replays and neither catches up until it is corrected.",
                            "gauge")),
+        Map.entry(SeqeronCounters.REPLAYER_SNAPSHOT_ROUND_TYPE_ID,
+                  new MetricMeta("seqeron_replayer_snapshot_round",
+                                 "Round of the latest valid snapshot this node has indexed, per source. A source "
+                                     + "whose round lags the others' is missing rounds.",
+                                 "gauge")),
         Map.entry(SeqeronCounters.APP_RECOVERY_STALLED_TYPE_ID,
                   new MetricMeta(
                       "seqeron_app_recovery_stalled",
@@ -176,6 +181,8 @@ public final class MetricsExporter {
                 .append('"');
             if (typeId >= SeqeronCounters.APP_TYPE_ID_MIN && typeId <= SeqeronCounters.APP_TYPE_ID_MAX) {
                 samples.append(",client=\"").append(keyBuffer.getInt(SeqeronCounters.KEY_CLIENT_ID_OFFSET)).append('"');
+            } else if (typeId == SeqeronCounters.REPLAYER_SNAPSHOT_ROUND_TYPE_ID) {
+                samples.append(",source=\"").append(keyBuffer.getInt(SeqeronCounters.KEY_SOURCE_ID_OFFSET)).append('"');
             }
             samples.append("} ").append(reader.getCounterValue(counterId)).append('\n');
         });

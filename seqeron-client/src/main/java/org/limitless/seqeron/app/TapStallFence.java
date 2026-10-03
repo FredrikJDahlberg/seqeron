@@ -5,9 +5,9 @@ package org.limitless.seqeron.app;
  * caught up. The heartbeat is the one frame that keeps arriving while every producer is silent, so its
  * absence — and nothing else — separates a quiet deployment from a tap this process has stopped seeing.
  *
- * <p><b>Armed by catching up, and re-armed by each re-convergence.</b> A cold start replays the whole log
- * (no snapshots) and a re-walk dispatches history rather than live frames; neither has a heartbeat cadence
- * to measure, so timing either would fence the very path recovery takes.
+ * <p><b>Armed by catching up, and re-armed by each re-convergence.</b> A cold start replays history, from
+ * {@code globalSeqNo} 1 or a snapshot's cut, and a re-walk dispatches history rather than live frames; neither
+ * has a heartbeat cadence to measure, so timing either would fence the very path recovery takes.
  * {@link RecoveryStallFence} is the fence covering that side.
  *
  * <p>Single-threaded, like every block here. The C++ twin is {@code app/TapStallFence.hpp}; keep the two in

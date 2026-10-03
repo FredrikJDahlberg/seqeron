@@ -204,18 +204,18 @@ Single suites:
 
 The Java suite covers the deterministic decision-making — `Sequencer`, and `ReplayerService` through
 its `Replayer` seam — and deliberately touches no Aeron runtime: no media driver, no cluster, no Aeron
-mocks. Everything that needs an Aeron runtime is covered by `core_tests` and by the seven end-to-end scripts under
+mocks. Everything that needs an Aeron runtime is covered by `core_tests` and by the nine end-to-end scripts under
 `seqeron-service/src/test/scripts`. Coverage is a JaCoCo report per module, at
 `<module>/build/reports/jacoco/test/`, excluding the generated SBE codecs.
 
-**Six of the seven harnesses are Java-only.** They drive the cluster through `tools/ClusterProbe`, which
+**Eight of the nine harnesses are Java-only.** They drive the cluster through `tools/ClusterProbe`, which
 submits `ProbeMarker` payloads at ingress (`submit`), round-trips one through consensus and back off
 the tap (`ping`), replays history through the co-located Replayer and then follows the tap live
 (`follow`), or streams through `ClusterStreamSender` and `sequencer/client/PendingSends` and checks its own tap shows
 every frame exactly once, in order (`confirm`, which `failover-test.sh` runs across the leader kill, and
 `gateway-host-test.sh` runs on a gateway host across the loss of the relay's member). The probe attaches to a
-member's own embedded driver, or a gateway host's, so four of the six need no
-standalone `aeronmd` at all. The seventh, `docker-failover-test.sh`, is the containerized multi-round
+member's own embedded driver, or a gateway host's, so six of the eight need no
+standalone `aeronmd` at all. The ninth, `docker-failover-test.sh`, is the containerized multi-round
 failover soak (`docker/compose.yml`, `./gradlew operatorDist`, CI's `failover.yml`). `chaos-runner` needs one more thing the probe cannot supply — a **gateway
 pair under the faults** — and `TestGateway` is it: an elected active/standby producer (`GW-T-A`/`GW-T-B`,
 `gatewaySourceId` 9, listening on 9200/9201) that speaks no application protocol and holds no session
@@ -224,13 +224,17 @@ fence, which is why `chaos-runner.sh` can drive a
 non-converging recovery to a handover rather than a hang. **It is the reference consumer of `app/Gateway`**,
 the client tier's façade for one instance of an elected pair: the election (`app/GatewayLifecycle`), the
 connection id space it resumes from its predecessor, the connection lifecycle frames, confirmed ingress
-(`sequencer/client/PendingSends` under an `IngressPublisher`, held by its `ClusterStreamSender`) and the four `app/ClusterError`
+(`sequencer/client/PendingSends` under an `IngressPublisher`, held by its `ClusterStreamSender`) and the `app/ClusterError`
 values are all behind it, so what is left in the harness is a socket and a line protocol. A media driver that
 goes away raises from `doWork()` rather than as a fence. It is in
-**`seqeron-service/src/test/java`** and therefore in no jar: `chaos-runner.sh` puts
-`seqeron-service/build/classes/java/test` on the classpath beside the uber jar and refuses to start
+**`seqeron-service/src/test/java`** and therefore in no jar: `chaos-runner.sh` and `snapshot-test.sh` put
+`seqeron-service/build/classes/java/test` on the classpath beside the uber jar and refuse to start
 without it. Its
-list is `seqeron-service/src/test/resources/topology-test-gateway.xml`. The one other topology document here is
+list is `seqeron-service/src/test/resources/topology-test-gateway.xml`, whose pair takes part in snapshot rounds
+(`-Dprobe.snapshot`, `-Dprobe.snapshotDir`) so they run under the faults too. `topology-test-snapshot.xml` beside it adds
+**`TestApplication`** (`sourceId` 16, one replica per member), the reference consumer of `app/Application` with a
+`SnapshotListener`; `snapshot-test.sh` loads it and drives both through restores, a failover onto a restored instance, a
+passive activation (`-Dprobe.passive`), an operator-requested round and a cluster leader kill. The one other topology document here is
 `seqeron-examples/topology.xml`, the pair the C++ `GatewayApp` example runs.
 
 `start-cluster.sh` and `start-three-node-cluster.sh` launch the cluster tier and nothing else — core
@@ -252,7 +256,8 @@ the sequencer is the stream's only publisher.
 
 **Every node publishes and records its own tap** — leader and follower alike. All nodes process the
 same committed log in the same order and keep identical sequencing state (so a new leader resumes
-exactly where the last one left off), which makes the taps byte-identical across nodes: each archive
+exactly where the last one left off), which makes the taps byte-identical across nodes, frame for frame
+(recording positions match only at equal IPC MTU and term length): each archive
 independently holds complete history, with no cross-node replication. The tap publication is created
 once in `onStart` and never re-created on a leadership change (`aeron:ipc` has no port to collide on),
 so a node's recording is one continuous run spanning every leader tenure.
@@ -282,18 +287,28 @@ same leader or not), and a **1 Hz `ClusterHeartbeat`** (`Sequencer.CLUSTER_HEART
 clock, so consumers have a consensus-driven time source that keeps advancing while a producer is silent,
 which is exactly when a gateway's keepalive watchdog must probe.
 
-**Snapshots are not supported**, and both `ClusteredService` hooks refuse: `onTakeSnapshot` throws, and
+**Cluster snapshots are not supported**, and both `ClusteredService` hooks refuse: `onTakeSnapshot` throws, and
 `onStart` refuses a snapshot image rather than restoring from one. `clusterctl shutdown` uses `ABORT`,
-and recovery is always full-log replay from `globalSeqNo` 1. That is deliberate: replaying the whole log
+and a node's recovery is always full-log replay from `globalSeqNo` 1. That is deliberate: replaying the whole log
 is what keeps each node's tap recording complete and gap-free — a node restored from a snapshot would
 record only from wherever it resumed. The cost is that recovery time and archive size grow with uptime
 (the 1 Hz heartbeat alone is ~86.4k frames/day).
 
+**Application snapshots are local files the log confirms instead** (`doc/snapshot.md`). The sequencer
+synthesizes `SnapshotStarted` as a round's cut; every instance of a participating source serializes its state
+there through its façade's `SnapshotListener` into a file in its own directory (`replayer.client.SnapshotStore`),
+and the one that may publish submits the round's `SnapshotEnd` — record count, length, CRC — the only snapshot
+frame a producer sends. Every instance compares its own serialization with the sequenced end and fences on a
+difference (spec §16 A-6, A-7). Each `ReplayerService` indexes every source's ends by round (`SnapshotIndex`)
+and answers `SnapshotQuery`, and a starting client restores in `ReplayerRecovery` from its newest file whose
+round the log ends and whose trailer matches that end, then resumes after the cut; an instance with no such
+file replays from `globalSeqNo` 1. This shortens a client's restart, not a node's.
+
 ### The replay protocol — two sides, two namespaces
 **`replayer.server`** is Java only: `ReplayerServer`/`ReplayerService` and their pure seams `Replayer`,
-`ReplaySlotAllocator`, `ReplayRecordings`, `ReplayClientIdCollisions` and the gateway host's `TapRelay`, with
+`ReplaySlotAllocator`, `ReplayRecordings`, `ReplayClientIdCollisions`, `SnapshotIndex` and the gateway host's `TapRelay`, with
 `AeronReplayer` and `AeronTapRelay` the only parts that touch Aeron. **`replayer.client`** is `ReplayerStreamReceiver` and its pure seam
-`ReplayerRecovery`, plus `SequencedEvent` — Java, and C++ in
+`ReplayerRecovery`, plus `SequencedEvent` and an instance's snapshot files, `SnapshotStore` — Java, and C++ in
 `org::limitless::seqeron::replayer::client`. On a member `ReplayerServer` runs inside `SequencerServer`'s
 JVM, on its embedded driver, so a fatal in either exits the node with 70; its own `main` is the gateway
 host's alone. The two sides share only the protocol's addresses —
@@ -309,7 +324,7 @@ at the same recording position — every member's active recording starts at `gl
 positions follow from the frames — falling back to that recording's start if the frame there is not the
 next one. Each start relays from `globalSeqNo` 1 into a new local recording, as a member's restart does, so
 the host's chain passes the same integrity check. Clients there are unchanged: they attach to the host's
-Aeron directory with the host's node id (3 or above) where they take a member id, and submit over UDP
+Aeron directory with the host's node id (one no member uses) where they take a member id, and submit over UDP
 ingress — an `Application` with `offCluster` set, since no leadership there is its own, which makes it the
 one instance whose gate opens once caught up. The member pays one archive replay per gateway host and its sequencer nothing.
 
@@ -328,9 +343,9 @@ runtime decode failure on a live tap.
 is `Unsequenced` (100) on ingress, republished as `Sequenced` (101) on the tap, carrying one opaque
 length-prefixed payload named by `header.payloadId`. The **system** family is seqeron's own vocabulary
 (spec §7), named by `header.systemEventType` at the same offset: `UnsequencedSystem` (102) →
-`SequencedSystem` (103) for the nine events a producer submits, plus three templates of their own for the
-three the sequencer synthesizes — `ClusterHeartbeat` (104), `LeadershipChanged` (105), `GatewayActive`
-(106). Sequencing is copy-18/append-16 for both, the payload is never re-encoded, and `sequenceFrame`
+`SequencedSystem` (103) for the twelve events a producer submits, plus four templates of their own for
+the four the sequencer synthesizes — `ClusterHeartbeat` (104), `LeadershipChanged` (105), `GatewayActive`
+(106), `SnapshotStarted` (107). Sequencing is copy-18/append-16 for both, the payload is never re-encoded, and `sequenceFrame`
 validates every frame against `doc/seqeron-protocol-spec.md` §9.2.
 
 **The cluster tier decodes no `payloadId` at all** — every application payload is copied through
@@ -372,7 +387,9 @@ sections are the complete producer view of a deployment: `<gateways>` (the elect
 first is acted on**: `GatewayRegistered.remaining` counts down to 0 on the gateway section's last row, and
 that row is the sequencer's completeness edge — it synthesizes the bootstrap `GatewayActive` per logical
 gateway behind it. The application and protocol rows follow it, carry no countdown, and are labelling for
-`SbeLogPrinter`: decoded by nothing, gating nothing.
+`SbeLogPrinter`: decoded by nothing, gating nothing. An optional `<snapshots>` element comes last, as one
+`SnapshotPolicyRegistered` the sequencer does act on: it turns application snapshot rounds on (spec §7.3,
+`doc/snapshot.md`).
 
 ### SBE code generation
 Four schemas, split by who speaks them — `sbe-frame`, `sbe-replay` and `sbe-cluster` under
@@ -380,11 +397,11 @@ Four schemas, split by who speaks them — `sbe-frame`, `sbe-replay` and `sbe-cl
 a distinct namespace so one include path
 covers all of them:
 
-- `sbe-frame.xml` (schema 210) — the seven top-level templates, their four header composites, and the
-  nine submitted **system** payloads (the connection lifecycle events, the cluster markers, the gateway
-  list/election frames, `GatewayActivationRequested`, `ApplicationRegistered`). No system message carries
+- `sbe-frame.xml` (schema 210) — the eight top-level templates, their four header composites, and the
+  twelve submitted **system** payloads (the connection lifecycle events, the cluster markers, the gateway
+  list/election frames, `GatewayActivationRequested`, `ApplicationRegistered`, the snapshot frames). No system message carries
   a `header` field — the frame's is the only one. Seqeron's own, and the only thing this tier decodes.
-- `sbe-replay.xml` (schema 212) — the seven **replay control** messages, node-local between a
+- `sbe-replay.xml` (schema 212) — the nine **replay control** messages, node-local between a
   `ReplayerService` and its co-located app replicas, never sequenced and never recorded.
 - `sbe-probe.xml` (schema 214) — core's own application payload (`payloadId` 5): one message,
   `ProbeMarker`, carrying a submitter-side `seqNo` and variable-length filler. What `tools/ClusterProbe`
@@ -425,8 +442,9 @@ mirrored by `PortLayout` in both languages; change all three together.
 
 ## Known gaps
 
-The two structural costs recorded above are the standing ones: **no snapshots** (recovery time and archive size grow with uptime),
-and **the cluster is bounded at three members** by the 30-port cluster block (`doc/ops.md`, "Ports").
+The two structural costs recorded above are the standing ones: **no cluster snapshots** (a node's recovery time and
+archive size grow with uptime; application snapshots shorten only a client's restart),
+and **the cluster is bounded at seven members** by the 70-port cluster block (`doc/ops.md`, "Ports").
 `SEQERON_PORT_BASE` moves that block off its 9300 default — deployment-wide, read by all three mirrors
 — but does not widen it. `SEQERON_HOSTS` names the members' hosts, deployment-wide too, and is read by
 both `PortLayout`s only: the scripts' `ports.sh` lays out localhost clusters.
@@ -434,8 +452,10 @@ both `PortLayout`s only: the scripts' `ports.sh` lays out localhost clusters.
 `doc/` holds `getting-started.md` (a release node plus a consumer and a producer; its snippets pin a
 release, so bump them when one changes the API they use), `seqeron-protocol-spec.md` (normative — the frames, the families,
 the system vocabulary, the topology document), `client-api.md` (what a client programs against, and what in
-the client tier is not API — update it when that surface changes), `fault-tolerance.md`, `clusterctl.md` and `ops.md` (runbooks, ports, counters). The topology documents here are
-`seqeron-service/src/test/resources/topology-test-gateway.xml` and `seqeron-examples/topology.xml`.
+the client tier is not API — update it when that surface changes), `fault-tolerance.md`, `clusterctl.md` and `ops.md` (runbooks, ports, counters), and `snapshot.md`
+(application snapshots: local files the log confirms). The topology documents here are
+`seqeron-service/src/test/resources/topology-test-gateway.xml`, `topology-test-snapshot.xml` beside it, and
+`seqeron-examples/topology.xml`.
 
 ## Code Formatting Mandate
 - Explicitly respect all style, brace, and indentation configurations found in the local `.clang-format` file.

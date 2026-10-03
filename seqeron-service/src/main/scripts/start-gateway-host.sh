@@ -7,7 +7,7 @@
 # member, and submit over UDP ingress.
 #
 # Config:
-#   SEQERON_NODE_ID            this host's node id: 3 or above, since 0-2 are the members; names its
+#   SEQERON_NODE_ID            this host's node id, one no member uses (3 suits a three-member cluster); names its
 #                              Aeron directory, $TMPDIR/seqeron-seq-aeron-<id>, and archive  (default 3)
 #   SEQERON_HOSTS              every member's host, in member-id order; ReplayerServer and every client on
 #                              this host read it

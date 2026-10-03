@@ -62,6 +62,27 @@ class Session
     Session(const Session&) = delete;
     Session& operator=(const Session&) = delete;
 
+    /**
+     * Restores a source's newest snapshot in a store that the log confirms before following the tap; call before
+     * starting.
+     *
+     * @param sourceId the source whose snapshot to restore
+     * @param store    this instance's own snapshots; must outlive this object
+     * @param handler  takes the snapshot's records; must outlive this object
+     */
+    void restoreFrom(const std::int32_t sourceId, replayer::client::SnapshotStore& store,
+                     replayer::client::SnapshotRestoreHandler& handler)
+    {
+        m_receiver.restoreFrom(sourceId, store, handler);
+    }
+
+    // Follows the tap from its start again, restoring the snapshot given to restoreFrom first.
+    void restart()
+    {
+        m_recoveryStall.onRestart(); // the restore pass dispatches nothing, and is no stall
+        m_receiver.restart();
+    }
+
     // Opens the cluster session over UDP and starts following this node's tap.
     void start(std::shared_ptr<aeron::Aeron> aeron, const std::int32_t memberId, const std::string& egressChannel,
                const std::string& ingressEndpoints)
@@ -171,6 +192,28 @@ class Session
         return m_receiver.currentLeaderMemberId();
     }
 
+    // The term of the last LeadershipChanged applied; -1 before the first.
+    [[nodiscard]] std::int64_t leadershipTermId() const
+    {
+        return m_leadershipTermId;
+    }
+
+    /**
+     * Latches the first fence; a façade raises its own, such as a diverged snapshot, through this too.
+     *
+     * @param reason why this producer may no longer act
+     * @param detail what the log line says
+     */
+    void fence(const ClusterError reason, const std::string& detail)
+    {
+        if (m_fenced)
+        {
+            return;
+        }
+        m_fenced = true;
+        m_dispatch.onFenced(reason, detail);
+    }
+
     // Closes the cluster session. The receiver releases its streams when this object goes.
     void close()
     {
@@ -220,6 +263,11 @@ class Session
                   "longer be counted");
             return;
         }
+        if (m_receiver.restoreFailure())
+        {
+            fence(ClusterError::SnapshotUnrestorable, *m_receiver.restoreFailure());
+            return;
+        }
         const std::int64_t nowMs = monotonicMs();
         if (!m_receiver.isCaughtUp())
         {
@@ -237,16 +285,11 @@ class Session
         }
     }
 
-    void fence(const ClusterError reason, const std::string& detail)
-    {
-        m_fenced = true;
-        m_dispatch.onFenced(reason, detail);
-    }
-
     // Confirmed ingress takes the term first: nothing new may go out before the hold it may place is on.
     void onLeadershipChanged(const std::int64_t leadershipTermId)
     {
         m_pending.onLeadershipChanged(leadershipTermId);
+        m_leadershipTermId = leadershipTermId;
         m_dispatch.onLeadershipChanged();
     }
 
@@ -277,6 +320,7 @@ class Session
 
     bool m_caughtUp = false;
     bool m_fenced = false;
+    std::int64_t m_leadershipTermId = -1;
 };
 
 } // namespace org::limitless::seqeron::app::detail

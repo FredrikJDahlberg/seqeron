@@ -38,15 +38,15 @@ class PortLayoutTest {
         assertThrows(IllegalArgumentException.class, () -> PortLayout.resolveClusterPortBase("nine"));
     }
 
-    // 1024 is the first unprivileged port, and the block is 30 wide, so 65506 is the last base that
+    // 1024 is the first unprivileged port, and the block is 70 wide, so 65466 is the last base that
     // fits. Both boundaries are pinned from either side.
     @Test
     void theBaseMustLeaveRoomForTheWholeBlockAndAvoidPrivilegedPorts() {
         assertThrows(IllegalArgumentException.class, () -> PortLayout.resolveClusterPortBase("1023"));
         assertEquals(1024, PortLayout.resolveClusterPortBase("1024"));
 
-        assertEquals(65506, PortLayout.resolveClusterPortBase("65506"));
-        assertThrows(IllegalArgumentException.class, () -> PortLayout.resolveClusterPortBase("65507"));
+        assertEquals(65466, PortLayout.resolveClusterPortBase("65466"));
+        assertThrows(IllegalArgumentException.class, () -> PortLayout.resolveClusterPortBase("65467"));
     }
 
     @Test
@@ -69,10 +69,10 @@ class PortLayoutTest {
     }
 
     @Test
-    @DisplayName("with SEQERON_HOSTS unset, the default set names every member the cluster is bounded at")
-    void theDefaultSetIsTheWholeCluster() {
+    @DisplayName("with SEQERON_HOSTS unset, the default set names the default cluster's members")
+    void theDefaultSetIsTheDefaultCluster() {
         assertEquals(List.of(), PortLayout.HOSTS);
-        assertEquals(PortLayout.ingressEndpoints(PortLayout.CLUSTER_MEMBER_COUNT), PortLayout.ingressEndpoints());
+        assertEquals(PortLayout.ingressEndpoints(PortLayout.DEFAULT_MEMBER_COUNT), PortLayout.ingressEndpoints());
     }
 
     @Test
@@ -109,6 +109,7 @@ class PortLayoutTest {
         assertThrows(IllegalArgumentException.class, () -> PortLayout.parseHosts(""));
         assertThrows(IllegalArgumentException.class, () -> PortLayout.parseHosts("h0,,h2"));
         assertThrows(IllegalArgumentException.class, () -> PortLayout.parseHosts("h0,h1,"));
-        assertThrows(IllegalArgumentException.class, () -> PortLayout.parseHosts("h0,h1,h2,h3"));
+        assertEquals(7, PortLayout.parseHosts("h0,h1,h2,h3,h4,h5,h6").size());
+        assertThrows(IllegalArgumentException.class, () -> PortLayout.parseHosts("h0,h1,h2,h3,h4,h5,h6,h7"));
     }
 }

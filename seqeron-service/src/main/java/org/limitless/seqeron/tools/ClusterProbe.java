@@ -62,7 +62,7 @@ import org.limitless.seqeron.util.Logger;
  *                             is on another host
  *   probe.clientId          — follow, confirm: this replica's Replayer client id; default 9
  *   probe.count             — submit, confirm: frames to send; default 1000
- *   probe.fillerBytes       — submit: bytes of filler per frame; default 0
+ *   probe.fillerBytes       — submit, confirm: bytes of filler per frame; default 0
  *   probe.pacingMicros      — submit, confirm: pause between frames; default 0 (as fast as ingress accepts)
  *   probe.pendingSends      — confirm: hold and resend across a leader change; default true
  *   probe.latencyStats      — follow: record and report post-catch-up delivery latency; default false
@@ -81,7 +81,7 @@ public final class ClusterProbe {
     /** No connection and no advisory session: the probe is a producer, not a gateway with sockets. */
     private static final int NO_ID = -1;
 
-    /** {@code ping} and {@code TestGateway} carry no filler; only {@code submit} pads a frame. */
+    /** {@code ping} and {@code TestGateway} carry no filler; only {@code submit} and {@code confirm} pad a frame. */
     static final byte[] NO_FILLER = new byte[0];
 
     private static final int MEMBER_ID = Integer.getInteger("probe.memberId", 0);
@@ -324,6 +324,8 @@ public final class ClusterProbe {
         final boolean tracked = Boolean.parseBoolean(System.getProperty("probe.pendingSends", "true"));
         final int clientId = Integer.getInteger("probe.clientId", 9);
         final long pacingNs = Long.getLong("probe.pacingMicros", 0L) * 1_000L;
+        final byte[] filler = new byte[Integer.getInteger("probe.fillerBytes", 0)];
+        Arrays.fill(filler, (byte)'x');
         final PendingSends pending = new PendingSends(PENDING_CAPACITY);
         final OwnFrames own = new OwnFrames();
         final AtomicBoolean caughtUp = new AtomicBoolean();
@@ -345,8 +347,8 @@ public final class ClusterProbe {
                 sender.setIngressHold(pending);
             }
             sender.connect(aeron, egressChannel(), INGRESS_ENDPOINTS);
-            Logger.info(Logger.CoreComponent.ClusterProbe, MEMBER_ID, "confirm: sending %d frame(s)%s", count,
-                        tracked ? " through PendingSends" : " untracked (control)");
+            Logger.info(Logger.CoreComponent.ClusterProbe, MEMBER_ID, "confirm: sending %d frame(s)%s, filler %d bytes",
+                        count, tracked ? " through PendingSends" : " untracked (control)", filler.length);
 
             final MarkerEncoder marker = new MarkerEncoder();
             long next = 1;
@@ -371,7 +373,7 @@ public final class ClusterProbe {
                 }
                 final boolean gated = tracked && (pending.isHolding() || pending.isFull());
                 if (next <= count && !gated && now >= nextSendNs) {
-                    final int length = marker.encode(next, NO_ID, PROBE_SOURCE_ID, NO_FILLER);
+                    final int length = marker.encode(next, NO_ID, PROBE_SOURCE_ID, filler);
                     if (sender.send(marker.frame(), length)) {
                         own.sessions.add(sender.clusterSessionId());
                         if (tracked) {

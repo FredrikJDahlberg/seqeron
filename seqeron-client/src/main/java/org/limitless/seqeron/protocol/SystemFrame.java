@@ -12,6 +12,9 @@ import org.limitless.seqeron.sbe.frame.GatewayRegisteredEncoder;
 import org.limitless.seqeron.sbe.frame.GatewayStartedEncoder;
 import org.limitless.seqeron.sbe.frame.MessageHeaderEncoder;
 import org.limitless.seqeron.sbe.frame.PayloadIdRegisteredEncoder;
+import org.limitless.seqeron.sbe.frame.SnapshotEndEncoder;
+import org.limitless.seqeron.sbe.frame.SnapshotPolicyRegisteredEncoder;
+import org.limitless.seqeron.sbe.frame.SnapshotRequestedEncoder;
 import org.limitless.seqeron.sbe.frame.UnsequencedEncoder;
 import org.limitless.seqeron.sbe.frame.UnsequencedSystemEncoder;
 
@@ -43,7 +46,7 @@ public final class SystemFrame {
 
     /**
      * The {@code systemEventType} table (§7). A submitted event's value is its payload codec's template id; the
-     * three synthesized events have templates of their own and stamp these at offset 16 so that field
+     * four synthesized events have templates of their own and stamp these at offset 16 so that field
      * discriminates every frame on the tap.
      */
     public static final int CONNECTION_OPENED = ConnectionOpenedEncoder.TEMPLATE_ID;
@@ -81,6 +84,18 @@ public final class SystemFrame {
     /** One co-located application's row; labelling only, and no election behind it. */
     public static final int APPLICATION_REGISTERED = ApplicationRegisteredEncoder.TEMPLATE_ID;
 
+    /** An operator asking for a snapshot round. */
+    public static final int SNAPSHOT_REQUESTED = SnapshotRequestedEncoder.TEMPLATE_ID;
+
+    /** A source's snapshot of one round: its digest, the bytes staying with each instance. */
+    public static final int SNAPSHOT_END = SnapshotEndEncoder.TEMPLATE_ID;
+
+    /** The topology file's snapshot policy. */
+    public static final int SNAPSHOT_POLICY_REGISTERED = SnapshotPolicyRegisteredEncoder.TEMPLATE_ID;
+
+    /** Synthesis-only; {@code SnapshotStartedEncoder.TEMPLATE_ID} is the frame's, not this. */
+    public static final int SNAPSHOT_STARTED = 30;
+
     /**
      * The compiled {@code BLOCK_LENGTH} of the event {@code systemEventType} names, or {@link
      * #NOT_INGRESS_LEGAL} if it is unallocated or synthesis-only: §9.2 conditions 8 and 9 in one lookup.
@@ -96,6 +111,9 @@ public final class SystemFrame {
             case SystemFrame.PAYLOAD_ID_REGISTERED -> PayloadIdRegisteredEncoder.BLOCK_LENGTH;
             case SystemFrame.GATEWAY_ACTIVATION_REQUESTED -> GatewayActivationRequestedEncoder.BLOCK_LENGTH;
             case SystemFrame.APPLICATION_REGISTERED -> ApplicationRegisteredEncoder.BLOCK_LENGTH;
+            case SystemFrame.SNAPSHOT_REQUESTED -> SnapshotRequestedEncoder.BLOCK_LENGTH;
+            case SystemFrame.SNAPSHOT_END -> SnapshotEndEncoder.BLOCK_LENGTH;
+            case SystemFrame.SNAPSHOT_POLICY_REGISTERED -> SnapshotPolicyRegisteredEncoder.BLOCK_LENGTH;
             default -> NOT_INGRESS_LEGAL;
         };
     }

@@ -13,14 +13,14 @@
 CLUSTER_PORT_BASE="${SEQERON_PORT_BASE:-9300}"
 CLUSTER_PORT_STRIDE=10
 # Members a cluster is bounded at, one stride each; PortLayout's CLUSTER_MEMBER_COUNT in both languages.
-CLUSTER_MEMBER_COUNT=3
+CLUSTER_MEMBER_COUNT=7
 
 # Sourced, so this exits the caller — which is the point: a bad base is better caught here than as a
 # bind error on a port nobody chose.
 if ! [[ "${CLUSTER_PORT_BASE}" =~ ^[0-9]+$ ]] ||
    (( CLUSTER_PORT_BASE < 1024 ||
       CLUSTER_PORT_BASE + CLUSTER_MEMBER_COUNT * CLUSTER_PORT_STRIDE - 1 > 65535 )); then
-    echo "ERROR: SEQERON_PORT_BASE='${CLUSTER_PORT_BASE}' must be an integer in 1024..65506" >&2
+    echo "ERROR: SEQERON_PORT_BASE='${CLUSTER_PORT_BASE}' must be an integer in 1024..65466" >&2
     exit 1
 fi
 
@@ -61,6 +61,6 @@ ingress_endpoints_string() {
 # ── Core's own satellite port block (doc/ops.md, "Ports"). An application's ports are its own. ──────────────────
 TEST_GATEWAY_PORT_BASE=9200          # TestGateway TCP listen (9200 GW-T-A, 9201 GW-T-B) — the cluster
                                      # tier's OWN harness block, 9200-9209. Not in
-                                     # the 9300 block: that is three members of stride 10 with nothing spare.
+                                     # the 9300 block: that is seven members of stride 10 with nothing spare.
 
 test_gateway_port()       { echo $(( TEST_GATEWAY_PORT_BASE + ${1:-0} )); }

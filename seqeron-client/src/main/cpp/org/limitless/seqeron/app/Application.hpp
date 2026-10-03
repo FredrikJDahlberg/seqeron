@@ -1,18 +1,29 @@
 #pragma once
 
 #include <cstdint>
+#include <filesystem>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <utility>
 
 #include "org/limitless/seqeron/app/ClusterError.hpp"
 #include "org/limitless/seqeron/app/Defaults.hpp"
 #include "org/limitless/seqeron/app/Payload.hpp"
+#include "org/limitless/seqeron/app/SnapshotListener.hpp"
 #include "org/limitless/seqeron/app/detail/LeaderGate.hpp"
 #include "org/limitless/seqeron/app/detail/Session.hpp"
+#include "org/limitless/seqeron/app/detail/SnapshotFrames.hpp"
+#include "org/limitless/seqeron/app/detail/SnapshotTaker.hpp"
 #include "org/limitless/seqeron/protocol/PortLayout.hpp"
 #include "org/limitless/seqeron/protocol/Publish.hpp"
+#include "org/limitless/seqeron/protocol/Snapshot.hpp"
+#include "org/limitless/seqeron/replayer/client/SnapshotStore.hpp"
 #include "org/limitless/seqeron/sequencer/client/IngressPublisher.hpp"
+
+#include "org_limitless_seqeron_sbe_frame/ApplicationRegistered.h"
+#include "org_limitless_seqeron_sbe_frame/SnapshotEnd.h"
+#include "org_limitless_seqeron_sbe_frame/SnapshotStarted.h"
 
 namespace org::limitless::seqeron::app {
 
@@ -44,6 +55,13 @@ concept ApplicationListener =
  * What is left to the consumer is its own work: the payloads it reads, the state it keeps, the payloads it
  * submits. Every replica reads the same ordered stream and so holds the same state, which is what makes
  * OutstandingWork — fed that same stream — the way work survives the gate closing under it.
+ *
+ * Snapshots (doc/snapshot.md §4): given a SnapshotListener and a topology row with snapshot="true", every replica
+ * serializes its state at each round's cut into its own directory, and the one whose gate is open then submits the
+ * round's SnapshotEnd. A replica whose snapshot differs from the one sequenced is fenced with
+ * ClusterError::SnapshotDiverged. On start, a replica given a listener restores the newest snapshot of its own that
+ * the log confirms and resumes after its cut, or replays from globalSeqNo 1 without one; one it cannot restore is
+ * fenced with ClusterError::SnapshotUnrestorable.
  *
  * Single-threaded: every method belongs to the caller's one duty-cycle thread, which calls doWork() each
  * iteration. The Java twin is app/Application.java; keep the two in step. Publish and reply each take an
@@ -78,6 +96,13 @@ class Application
         std::int64_t tapStallTimeoutMs = DEFAULT_TAP_STALL_TIMEOUT_MS;
         std::int64_t recoveryStallTimeoutMs = DEFAULT_RECOVERY_STALL_TIMEOUT_MS;
         std::int64_t ipcConnectTimeoutMs = DEFAULT_IPC_CONNECT_TIMEOUT_MS;
+        // What serializes this application's state for snapshot rounds and restores it on start; without one it
+        // takes part in none, whatever its topology row says, and recovers from globalSeqNo 1. Must outlive the
+        // replica.
+        SnapshotListener* snapshotListener = nullptr;
+        // Where this replica keeps its snapshots, one file per round; required with a snapshotListener. Its own: no
+        // other instance may write it. A restart restores from what it holds, so it must outlive the process.
+        std::filesystem::path snapshotDirectory;
     };
 
     /**
@@ -85,17 +110,25 @@ class Application
      *
      * @param config   the replica's identity and deployment policy
      * @param listener the application; must outlive the replica
+     * @throws std::invalid_argument if config has a snapshotListener and no snapshotDirectory
      */
     Application(Config config, Listener& listener) :
       m_config{ std::move(config) },
       m_listener{ listener },
       m_gate{ m_config.memberId, m_config.offCluster },
+      m_store{ snapshotStore(m_config) },
+      m_snapshots{ m_config.snapshotListener, m_store.get(), false, [this] { m_session.keepAlive(); } },
       m_dispatch{ *this },
       m_session{ m_config.clientId, m_config.pendingCapacity, m_config.tapStallTimeoutMs,
-                 m_config.recoveryStallTimeoutMs, m_dispatch }
+                 m_config.recoveryStallTimeoutMs, m_dispatch },
+      m_snapshotFrames{ m_session, [this] { return m_config.sourceId; } }
     {
         // Here rather than on the template parameter, where a listener that owns its Application is incomplete.
         static_assert(ApplicationListener<Listener>);
+        if (m_store)
+        {
+            m_session.restoreFrom(m_config.sourceId, *m_store, m_snapshots);
+        }
     }
 
     Application(const Application&) = delete;
@@ -124,15 +157,19 @@ class Application
     // units of work done, for the caller's idle strategy.
     int doWork()
     {
-        const int work = m_session.doWork();
+        int work = m_session.doWork();
         const detail::LeaderGate::Transition transition =
             m_gate.update(m_session.isCaughtUp(), m_session.currentLeaderMemberId());
-        if (transition == detail::LeaderGate::Transition::None)
+        if (transition != detail::LeaderGate::Transition::None)
         {
-            return work;
+            m_listener.onLeadershipChanged(transition == detail::LeaderGate::Transition::Opened);
+            ++work;
         }
-        m_listener.onLeadershipChanged(transition == detail::LeaderGate::Transition::Opened);
-        return work + 1;
+        if (m_gate.isOpen())
+        {
+            work += m_snapshots.submit(m_snapshotFrames);
+        }
+        return work;
     }
 
     // Whether leader-only work may reach ingress right now: the gate is open, and ingress is not held.
@@ -273,15 +310,57 @@ class Application
         explicit SessionDispatch(Application& app) : m_app{ app }
         {}
 
-        void onSystem(const protocol::SequencedEvent&)
+        // Of seqeron's own vocabulary, this replica reads its topology row and the snapshot rounds; the
+        // leadership the gate turns on arrives below rather than here.
+        void onSystem(const protocol::SequencedEvent& event)
         {
-            // Seqeron's own vocabulary says nothing to a producer nothing elects; the leadership the gate
-            // turns on arrives below rather than here.
+            switch (event.systemEventType)
+            {
+                case protocol::APPLICATION_REGISTERED: {
+                    auto row = protocol::decodeSystem<sbe::frame::ApplicationRegistered>(event);
+                    if (row.applicationSourceId() == m_app.m_config.sourceId)
+                    {
+                        m_app.m_snapshots.participating(row.snapshot() == 1);
+                    }
+                    break;
+                }
+                case protocol::SNAPSHOT_STARTED: {
+                    auto started = protocol::decodeSystem<sbe::frame::SnapshotStarted>(event);
+                    m_app.m_snapshots.onSnapshotStarted(
+                        started.round(),
+                        protocol::SnapshotHeader{ m_app.m_session.leadershipTermId(),
+                                                  m_app.m_session.currentLeaderMemberId(), std::nullopt },
+                        m_app.m_gate.isOpen());
+                    break;
+                }
+                case protocol::SNAPSHOT_END: {
+                    if (event.sourceId != m_app.m_config.sourceId)
+                    {
+                        break;
+                    }
+                    auto end = protocol::decodeSystem<sbe::frame::SnapshotEnd>(event);
+                    if (!m_app.m_snapshots.onSnapshotEnd(end.round(), end.recordCount(), end.length(), end.crc32c()))
+                    {
+                        m_app.m_session.fence(ClusterError::SnapshotDiverged,
+                                              "round " + std::to_string(end.round()) +
+                                                  "'s sequenced snapshot at globalSeqNo " +
+                                                  std::to_string(event.globalSeqNo) + " differs from this replica's");
+                    }
+                    break;
+                }
+                default:
+                    break; // nothing else says anything to a producer nothing elects
+            }
         }
 
+        // A term won by another member ends this replica's part in the round it is publishing.
         void onLeadershipChanged()
         {
             m_app.m_gate.onLeadershipChanged();
+            if (!m_app.m_config.offCluster && m_app.m_session.currentLeaderMemberId() != m_app.m_config.memberId)
+            {
+                m_app.m_snapshots.stopPublishing();
+            }
         }
 
         void onPayload(const Payload& payload)
@@ -311,11 +390,28 @@ class Application
         Application& m_app;
     };
 
+    // The store of a replica given a listener, which requires its directory.
+    static std::unique_ptr<replayer::client::SnapshotStore> snapshotStore(const Config& config)
+    {
+        if (config.snapshotListener == nullptr)
+        {
+            return nullptr;
+        }
+        if (config.snapshotDirectory.empty())
+        {
+            throw std::invalid_argument("snapshotDirectory is required with a snapshotListener");
+        }
+        return std::make_unique<replayer::client::SnapshotStore>(config.snapshotDirectory);
+    }
+
     Config m_config;
     Listener& m_listener;
     detail::LeaderGate m_gate;
+    std::unique_ptr<replayer::client::SnapshotStore> m_store;
+    detail::SnapshotTaker m_snapshots;
     SessionDispatch m_dispatch;
     detail::Session<SessionDispatch> m_session;
+    detail::SnapshotFrames<detail::Session<SessionDispatch>> m_snapshotFrames;
 };
 
 } // namespace org::limitless::seqeron::app

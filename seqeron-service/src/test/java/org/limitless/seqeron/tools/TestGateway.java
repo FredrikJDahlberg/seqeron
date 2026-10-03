@@ -9,17 +9,21 @@ import java.nio.ByteBuffer;
 import java.nio.channels.ServerSocketChannel;
 import java.nio.channels.SocketChannel;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
+import java.util.TreeSet;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.agrona.DirectBuffer;
+import org.agrona.MutableDirectBuffer;
 import org.agrona.concurrent.IdleStrategy;
 import org.agrona.concurrent.ShutdownSignalBarrier;
 import org.limitless.seqeron.app.ClusterError;
 import org.limitless.seqeron.app.Gateway;
 import org.limitless.seqeron.app.Payload;
+import org.limitless.seqeron.app.SnapshotListener;
 import org.limitless.seqeron.protocol.Publish;
 import org.limitless.seqeron.sbe.probe.ProbeMarkerDecoder;
 import org.limitless.seqeron.util.IdleStrategies;
@@ -67,12 +71,22 @@ import org.limitless.seqeron.util.Logger;
  * <p>What it deliberately is not: no FIX, no session layer, no sequence numbers, no resend cache, no
  * reference data. A client connection is a socket and an int.
  *
+ * <p>Its one piece of state is the cluster's view of its connections and a count of the markers sequenced under its
+ * {@code sourceId}, which every instance derives from the tap alike. With {@code probe.snapshot} it snapshots and
+ * restores that state (doc/snapshot.md), and its caught-up line reports it, so a harness can compare an instance
+ * that restored with one that replayed.
+ *
  * <p>System properties, on top of {@link ClusterProbe}'s {@code probe.memberId} / {@code probe.aeronDir} /
  * {@code probe.ingressEndpoints}:
  * <pre>
  *   probe.gatewayName  — serve: the Gateway row's name this instance joins on; required
  *   probe.listenPort   — the TCP port: the gateway's to bind, the client's to connect to; default 9200
  *   probe.clientId     — serve: this replica's Replayer client id; default 10 (ClusterProbe follow's is 9)
+ *   probe.snapshot     — serve: take part in snapshot rounds and restore on start; default false
+ *   probe.snapshotDir  — serve: this instance's own snapshot directory; default
+ *                        {tmpdir}/seqeron-snapshots-{probe.gatewayName}
+ *   probe.passive      — serve: hold no state until activated (doc/snapshot.md §4); default false
+ *   probe.sourceId     — serve: the pair's sourceId, which a restore queries; default 9
  *   probe.count        — client: lines to send; default 1
  *   probe.host         — client: host to connect to; default localhost
  * </pre>
@@ -90,9 +104,19 @@ public final class TestGateway {
 
     private static final long CLIENT_REPLY_TIMEOUT_MS = TimeUnit.SECONDS.toMillis(15);
 
+    /** Connection ids one snapshot record holds. */
+    private static final int IDS_PER_RECORD = 256;
+
     private final String gatewayName;
     private final int listenPort;
     private final int clientId;
+    private final boolean snapshot = Boolean.getBoolean("probe.snapshot");
+    private final boolean passive = Boolean.getBoolean("probe.passive");
+    private final int sourceId = Integer.getInteger("probe.sourceId", 9);
+
+    /** The cluster's view of this gateway's connections, ordered so every instance serializes it alike. */
+    private final TreeSet<Integer> openConnections = new TreeSet<>();
+    private long sequencedMarkers;
 
     private final ClusterProbe.MarkerEncoder marker = new ClusterProbe.MarkerEncoder();
     private final ProbeMarkerDecoder probeMarker = new ProbeMarkerDecoder();
@@ -148,10 +172,16 @@ public final class TestGateway {
             .egressChannel(ClusterProbe.egressChannel())
             .ingressEndpoints(ClusterProbe.ingressEndpoints())
             .listener(new GateListener())
+            .sourceId(sourceId)
+            .snapshotListener(snapshot ? new Snapshots() : null)
+            .snapshotDirectory(Path.of(System.getProperty(
+                "probe.snapshotDir",
+                Path.of(System.getProperty("java.io.tmpdir"), "seqeron-snapshots-" + gatewayName).toString())))
+            .passive(passive)
             .build();
         gateway.start(aeron);
-        log("standby — following the tap as %s, gate shut until a GatewayActive names this instance",
-            gatewayName);
+        log("%s — following the tap as %s, gate shut until a GatewayActive names this instance",
+            passive ? "passive" : "standby", gatewayName);
 
         final AtomicBoolean running = new AtomicBoolean(true);
         final Thread duty = new Thread(() -> {
@@ -343,12 +373,12 @@ public final class TestGateway {
         @Override
         public void onConnectionOpened(final int connectionId, final DirectBuffer connectionData, final int offset,
                                        final int length) {
-            // This harness keeps no session state, so a predecessor's connections are nothing to rebuild.
+            openConnections.add(connectionId);
         }
 
         @Override
         public void onConnectionClosed(final int connectionId) {
-            // As above.
+            openConnections.remove(connectionId);
         }
 
         @Override
@@ -367,19 +397,57 @@ public final class TestGateway {
                 return;
             }
             probeMarker.wrap(payload.buffer(), payload.bodyOffset(), payload.blockLength(), payload.version());
+            sequencedMarkers++;
             reply(payload.connectionId(), probeMarker.seqNo());
         }
 
         /** The one line the harnesses wait on before they may drive this instance. */
         @Override
         public void onCaughtUp(final long globalSeqNo) {
-            log("Caught up — following live at globalSeqNo %d", globalSeqNo);
+            log("Caught up — following live at globalSeqNo %d, %d connection(s) open, %d marker(s) sequenced",
+                globalSeqNo, openConnections.size(), sequencedMarkers);
         }
 
         @Override
         public void onFenced(final ClusterError reason, final String detail) {
             fence("FENCED: " + reason + " — " + detail
                       + " — releasing the cluster session so a standby can take over");
+        }
+    }
+
+    /** The state above as records: the marker count, then the open connection ids in order. */
+    private final class Snapshots implements SnapshotListener {
+        private Iterator<Integer> cursor;
+
+        @Override
+        public int formatVersion() {
+            return 1;
+        }
+
+        @Override
+        public int onSnapshot(final MutableDirectBuffer buffer, final int recordIndex) {
+            if (recordIndex == 0) {
+                cursor = openConnections.iterator();
+                buffer.putLong(0, sequencedMarkers);
+                return Long.BYTES;
+            }
+            int ids = 0;
+            while (ids < IDS_PER_RECORD && cursor.hasNext()) {
+                buffer.putInt(Integer.BYTES * ids++, cursor.next());
+            }
+            return Integer.BYTES * ids;
+        }
+
+        @Override
+        public void onRestore(final DirectBuffer buffer, final int length, final int recordIndex) {
+            if (recordIndex == 0) {
+                openConnections.clear();
+                sequencedMarkers = buffer.getLong(0);
+                return;
+            }
+            for (int offset = 0; offset < length; offset += Integer.BYTES) {
+                openConnections.add(buffer.getInt(offset));
+            }
         }
     }
 
