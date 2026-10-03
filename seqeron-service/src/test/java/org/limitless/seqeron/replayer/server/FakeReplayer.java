@@ -285,7 +285,7 @@ final class FakeReplayer implements Replayer {
                     final byte[] frame = indexFrames.poll();
                     final long start = indexPosition;
                     indexPosition += frame.length;
-                    handler.onFrame(new UnsafeBuffer(frame), 0, frame.length, start, indexPosition);
+                    handler.onFrame(new UnsafeBuffer(frame), 0, frame.length, start);
                     ++read;
                 }
                 return read;

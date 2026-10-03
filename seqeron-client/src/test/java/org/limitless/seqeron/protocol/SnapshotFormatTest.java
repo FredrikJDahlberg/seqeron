@@ -11,12 +11,11 @@ import org.agrona.ExpandableArrayBuffer;
 import org.agrona.concurrent.UnsafeBuffer;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
-import org.limitless.seqeron.protocol.SnapshotValidator.State;
 import org.limitless.seqeron.protocol.SnapshotHeader.GatewayRow;
 import org.limitless.seqeron.protocol.SnapshotHeader.GatewayState;
 
 /**
- * The snapshot byte format (doc/snapshot.md §2, §5, §6). The golden vectors are shared with the C++
+ * The snapshot byte format (doc/snapshot.md §2, §6). The golden vectors are shared with the C++
  * {@code SnapshotFormatTest} and were computed by a third implementation, so the two languages agree with
  * each other and not merely with themselves.
  */
@@ -46,10 +45,12 @@ class SnapshotFormatTest {
     }
 
     @Test
-    @DisplayName("CRC-32C is the Castagnoli check value, and a record is at most 1302 bytes")
+    @DisplayName("CRC-32C is the Castagnoli check value and the shared golden one, and a record is at most 1302 bytes")
     void crcAndRecordSize() {
         final byte[] check = "123456789".getBytes(StandardCharsets.US_ASCII);
         assertEquals(0xE3069283L, SnapshotFormat.crc32c(new UnsafeBuffer(check), 0, check.length));
+        final byte[] snapshot = snapshot();
+        assertEquals(APPLICATION_SNAPSHOT_CRC, SnapshotFormat.crc32c(new UnsafeBuffer(snapshot), 0, snapshot.length));
         assertEquals(1302, SnapshotFormat.MAX_RECORD_LENGTH);
     }
 
@@ -82,51 +83,6 @@ class SnapshotFormatTest {
         assertNull(SnapshotHeader.decode(new UnsafeBuffer(rows), 0, rows.length), "rowCount disagrees with length");
     }
 
-    @Test
-    @DisplayName("a snapshot's chunks, in order and then its end, are valid")
-    void chunksInOrderAreValid() {
-        final byte[] snapshot = snapshot();
-        assertEquals(APPLICATION_SNAPSHOT_CRC, SnapshotFormat.crc32c(new UnsafeBuffer(snapshot), 0, snapshot.length));
-
-        final SnapshotValidator validator = new SnapshotValidator();
-        assertEquals(State.COMPLETE, feed(validator, snapshot, 4, new int[] {0, 1, 2}));
-        assertEquals(snapshot.length, validator.length());
-    }
-
-    @Test
-    @DisplayName("a chunk out of order, repeated, missing or oversized makes the snapshot invalid, and it stays so")
-    void misorderedChunksInvalidate() {
-        final byte[] snapshot = snapshot();
-        assertEquals(State.INVALID, feed(new SnapshotValidator(), snapshot, 4, new int[] {0, 2, 1}));
-        assertEquals(State.INVALID, feed(new SnapshotValidator(), snapshot, 4, new int[] {0, 1, 1, 2}));
-        assertEquals(State.INVALID, feed(new SnapshotValidator(), snapshot, 4, new int[] {0, 1}));
-
-        final SnapshotValidator oversized = new SnapshotValidator();
-        oversized.reset(4);
-        assertEquals(State.INVALID, oversized.onChunk(4, 0, new UnsafeBuffer(snapshot), 0, 1303));
-
-        final SnapshotValidator validator = new SnapshotValidator();
-        feed(validator, snapshot, 4, new int[] {1});
-        assertEquals(State.INVALID, validator.onChunk(4, 0, new UnsafeBuffer(snapshot), 0, 1302));
-    }
-
-    @Test
-    @DisplayName("a SnapshotEnd disagreeing on count, length or CRC invalidates; another round's frames are ignored")
-    void endMustAgreeWithTheChunks() {
-        final byte[] snapshot = snapshot();
-        final long crc = SnapshotFormat.crc32c(new UnsafeBuffer(snapshot), 0, snapshot.length);
-        assertEquals(State.INVALID, chunksThenEnd(snapshot, 4, snapshot.length, crc));
-        assertEquals(State.INVALID, chunksThenEnd(snapshot, 3, snapshot.length + 1, crc));
-        assertEquals(State.INVALID, chunksThenEnd(snapshot, 3, snapshot.length, crc ^ 1));
-        assertEquals(State.COMPLETE, chunksThenEnd(snapshot, 3, snapshot.length, crc));
-
-        final SnapshotValidator validator = new SnapshotValidator();
-        validator.reset(4);
-        assertEquals(State.COLLECTING, validator.onChunk(3, 5, new UnsafeBuffer(snapshot), 0, 10), "a late chunk");
-        assertEquals(State.COLLECTING, validator.onEnd(5, 0, 0, 0), "a later round's end");
-        assertEquals(0, validator.length());
-    }
-
     private static byte[] snapshot() {
         final ExpandableArrayBuffer buffer = new ExpandableArrayBuffer();
         final int headerLength = new SnapshotHeader(7, 2, null).encode(buffer, 0);
@@ -141,31 +97,5 @@ class SnapshotFormatTest {
         final byte[] bytes = new byte[header.encode(buffer, 0)];
         buffer.getBytes(0, bytes);
         return bytes;
-    }
-
-    /** Feeds the 1302-byte records named by {@code order}, the last one short, then the matching end. */
-    private static State feed(final SnapshotValidator validator, final byte[] snapshot, final long round,
-                              final int[] order) {
-        validator.reset(round);
-        final UnsafeBuffer bytes = new UnsafeBuffer(snapshot);
-        for (final int index : order) {
-            final int offset = index * SnapshotFormat.MAX_RECORD_LENGTH;
-            validator.onChunk(round, index, bytes, offset,
-                              Math.min(SnapshotFormat.MAX_RECORD_LENGTH, snapshot.length - offset));
-        }
-        return validator.onEnd(round, 3, snapshot.length, SnapshotFormat.crc32c(bytes, 0, snapshot.length));
-    }
-
-    private static State chunksThenEnd(final byte[] snapshot, final int chunkCount, final long length,
-                                       final long crc) {
-        final SnapshotValidator validator = new SnapshotValidator();
-        validator.reset(4);
-        final UnsafeBuffer bytes = new UnsafeBuffer(snapshot);
-        for (int index = 0; index < 3; index++) {
-            final int offset = index * SnapshotFormat.MAX_RECORD_LENGTH;
-            validator.onChunk(4, index, bytes, offset,
-                              Math.min(SnapshotFormat.MAX_RECORD_LENGTH, snapshot.length - offset));
-        }
-        return validator.onEnd(4, chunkCount, length, crc);
     }
 }

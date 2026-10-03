@@ -8,8 +8,9 @@ tier. Applications built on seqeron document their own recovery. Section referen
 ## 0. Recovery is full-log replay
 
 Every recovery path here reduces to one operation: replay the sequenced log from `globalSeqNo` 1. A
-client whose source takes part in application snapshots starts that replay later instead, at its source's
-latest snapshot (§3.4); the snapshot is frames in the same log. The cluster takes no snapshots.
+client whose source takes part in application snapshots starts that replay later instead, at the cut of
+its newest snapshot that the log confirms (§3.4); the snapshot is a file of its own, the log holds its
+digest. The cluster takes no snapshots.
 `SequencerService.onTakeSnapshot` throws and `onStart` refuses a snapshot image. `clusterctl shutdown`
 uses Aeron's `ABORT` action, which takes no snapshot, rather than `SHUTDOWN`, which does.
 
@@ -122,7 +123,7 @@ by exiting, which lets the sequencer promote the standby (§2.2).
 | `RECOVERY_STALLED` | recovery has delivered nothing for 60 s (3 × the tap-stall timeout) on an instance that has been caught up before |
 | `INGRESS_CONFIRM_FAULTED` | an own frame on the tap differs from the oldest pending one (spec §16 A-4) |
 | `SNAPSHOT_DIVERGED` | the instance's snapshot of a round differs from the one its source sequenced (spec §16 A-7, §3.4) |
-| `SNAPSHOT_UNRESTORABLE` | the instance cannot restore its source's latest snapshot (§3.4) |
+| `SNAPSHOT_UNRESTORABLE` | the instance cannot restore its newest confirmed snapshot (§3.4) |
 
 - The tap-stall timer measures local monotonic time. Consensus time arrives in the `ClusterHeartbeat`
   frames being watched for, so it would stop together with the tap.
@@ -176,9 +177,9 @@ frames.
 ### 2.4 Passive instances
 
 An instance configured passive (`doc/snapshot.md` §4) holds no application state until it is activated:
-it follows the tap from its source's latest snapshot for the election alone. When a `GatewayActive` names
-it, it restores (§3.4) and catches up before it publishes `GatewayStarted`, so the handover takes as long
-as the restore. If that exceeds the 5 s activation timeout (§2.2), the sequencer passes the role on, and a
+it follows the tap for the election alone, from the cut of the newest confirmed snapshot its directory holds,
+or from `globalSeqNo` 1. When a `GatewayActive` names it, it restores (§3.4) and catches up before it
+publishes `GatewayStarted`, so the handover takes as long as the restore and catch-up. If that exceeds the 5 s activation timeout (§2.2), the sequencer passes the role on, and a
 pair whose other instance is down alternates until a restore finishes in time. A hot standby has no such
 delay.
 
@@ -274,23 +275,29 @@ unit-tested directly.
 ### 3.4 Snapshot restore
 
 A client whose façade has a `SnapshotListener` restores before it dispatches anything (`doc/snapshot.md`
-§7). It asks its node's Replayer for its source's latest valid snapshot, replays that snapshot's records
-from the active recording, and resumes after the snapshot's cut as it would after a gap. With no snapshot
-indexed, it walks from segment 0 as §3.2 describes.
+§7). It takes the newest file in its snapshot directory, asks its node's Replayer for that round's sequenced
+`SnapshotEnd`, reads the file's records if they match it, and resumes after the round's cut as it would after
+a gap. A file the log does not confirm gives way to the next older one; with none left, it walks from
+segment 0 as §3.2 describes.
 
-- **Lost replay.** A restore holds nothing between frames, so a replay lost before the snapshot's end
-  starts it over at the header; the listener's `onRestore` begins again at record 0.
+- **Lost replay.** The records come from the local file, so no replay is in flight during a restore; the
+  resume after it is an ordinary one.
 - **After the restore.** Every fallback that would walk from segment 0 resumes at the snapshot instead:
   the history before its cut is no longer this client's to replay.
-- **Damage.** The Replayer indexes a snapshot only once its recorded chunks pass their check. A restore
-  that finds otherwise, or a `formatVersion` or header version its build does not read, fences the client
-  with `SNAPSHOT_UNRESTORABLE`; a restart repeats it until the build or the recording is fixed.
+- **Torn file.** Files are written without an fsync. One an OS crash tore has no trailer, or one that does
+  not match the end, and gives way to an older file.
+- **Damage.** A file whose trailer matches the end but whose records do not, or a `formatVersion` or header
+  version its build does not read, fences the client with `SNAPSHOT_UNRESTORABLE`; a restart repeats it
+  until the build is fixed or the file is removed.
+- **No file.** A new host, a lost disk or a passive instance that never served has nothing to restore, and
+  walks from `globalSeqNo` 1. Every instance of a source writes the same bytes, so a peer's file copied into
+  its directory restores it instead.
 - **Divergence.** At every later round each instance compares its own serialization with the sequenced
-  one. One that differs is fenced with `SNAPSHOT_DIVERGED` (spec §16 A-7); its restart restores the
-  sequenced snapshot, which is the reference.
+  end. One that differs is fenced with `SNAPSHOT_DIVERGED` (spec §16 A-7); its file of that round does not
+  match the end, so its restart restores an older file, or walks, and rebuilds the state from the log.
 - **Index after a node restart.** The Replayer rebuilds its index by reading the recording. A client that
-  starts before it reaches the latest round restores an older snapshot, or walks from `globalSeqNo` 1;
-  either converges.
+  starts before it reaches the client's newest round finds no end for it and restores an older file, or
+  walks from `globalSeqNo` 1; either converges.
 
 ## 4. Leader-only work
 

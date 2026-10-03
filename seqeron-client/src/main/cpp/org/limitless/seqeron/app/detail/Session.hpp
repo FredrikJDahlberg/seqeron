@@ -63,19 +63,23 @@ class Session
     Session& operator=(const Session&) = delete;
 
     /**
-     * Restores a source's latest snapshot before following the tap; call before starting.
+     * Restores a source's newest snapshot in a store that the log confirms before following the tap; call before
+     * starting.
      *
      * @param sourceId the source whose snapshot to restore
+     * @param store    this instance's own snapshots; must outlive this object
      * @param handler  takes the snapshot's records; must outlive this object
      */
-    void restoreFrom(const std::int32_t sourceId, replayer::client::SnapshotRestoreHandler& handler)
+    void restoreFrom(const std::int32_t sourceId, replayer::client::SnapshotStore& store,
+                     replayer::client::SnapshotRestoreHandler& handler)
     {
-        m_receiver.restoreFrom(sourceId, handler);
+        m_receiver.restoreFrom(sourceId, store, handler);
     }
 
     // Follows the tap from its start again, restoring the snapshot given to restoreFrom first.
     void restart()
     {
+        m_recoveryStall.onRestart(); // the restore pass dispatches nothing, and is no stall
         m_receiver.restart();
     }
 

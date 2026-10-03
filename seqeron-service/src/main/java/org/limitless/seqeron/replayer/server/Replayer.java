@@ -134,10 +134,9 @@ public interface Replayer {
          * @param buffer        holding the frame
          * @param offset        of its first byte
          * @param length        its length
-         * @param startPosition the recording position of its first byte
-         * @param endPosition   the recording position just past it
+         * @param position the recording position of its first byte
          */
-        void onFrame(DirectBuffer buffer, int offset, int length, long startPosition, long endPosition);
+        void onFrame(DirectBuffer buffer, int offset, int length, long position);
     }
 
     /** The internal stream a startup self-check replay is read back over. */

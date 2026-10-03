@@ -24,7 +24,6 @@
 #include "org_limitless_seqeron_sbe_frame/SequencedHeader.h"
 #include "org_limitless_seqeron_sbe_frame/SequencedSystem.h"
 #include "org_limitless_seqeron_sbe_frame/SequencedSystemHeader.h"
-#include "org_limitless_seqeron_sbe_frame/SnapshotChunk.h"
 #include "org_limitless_seqeron_sbe_frame/SnapshotEnd.h"
 #include "org_limitless_seqeron_sbe_frame/SnapshotPolicyRegistered.h"
 #include "org_limitless_seqeron_sbe_frame/SnapshotRequested.h"
@@ -87,7 +86,6 @@ inline constexpr std::uint16_t PAYLOAD_ID_REGISTERED = sbe::frame::PayloadIdRegi
 inline constexpr std::uint16_t GATEWAY_ACTIVATION_REQUESTED = sbe::frame::GatewayActivationRequested::sbeTemplateId();
 inline constexpr std::uint16_t APPLICATION_REGISTERED = sbe::frame::ApplicationRegistered::sbeTemplateId();
 inline constexpr std::uint16_t SNAPSHOT_REQUESTED = sbe::frame::SnapshotRequested::sbeTemplateId();
-inline constexpr std::uint16_t SNAPSHOT_CHUNK = sbe::frame::SnapshotChunk::sbeTemplateId();
 inline constexpr std::uint16_t SNAPSHOT_END = sbe::frame::SnapshotEnd::sbeTemplateId();
 inline constexpr std::uint16_t SNAPSHOT_POLICY_REGISTERED = sbe::frame::SnapshotPolicyRegistered::sbeTemplateId();
 inline constexpr std::uint16_t SNAPSHOT_STARTED = 30; // synthesis-only
@@ -126,8 +124,6 @@ constexpr std::int32_t ingressBlockLength(const std::uint16_t systemEventType)
             return sbe::frame::ApplicationRegistered::sbeBlockLength();
         case SNAPSHOT_REQUESTED:
             return sbe::frame::SnapshotRequested::sbeBlockLength();
-        case SNAPSHOT_CHUNK:
-            return sbe::frame::SnapshotChunk::sbeBlockLength();
         case SNAPSHOT_END:
             return sbe::frame::SnapshotEnd::sbeBlockLength();
         case SNAPSHOT_POLICY_REGISTERED:
@@ -161,7 +157,7 @@ struct SequencedEvent
     std::int64_t receiveTimeNs;      ///< wall-clock ns at receipt by this client
     bool system;                     ///< true: a system frame, named by systemEventType, and payloadId means nothing
     std::uint16_t payloadId;         ///< which protocol templateId belongs to; 0 on a system frame
-    std::uint16_t systemEventType;   ///< which of §7's seventeen events; 0 on an application frame
+    std::uint16_t systemEventType;   ///< which of §7's sixteen events; 0 on an application frame
     std::uint16_t templateId;        ///< the message's messageHeader templateId; picks the specific decode
     std::uint16_t blockLength;       ///< payload messageHeader blockLength; 0 on a system frame (see decodeSystem)
     std::uint16_t version;           ///< payload messageHeader version; 0 on a system frame

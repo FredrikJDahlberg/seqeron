@@ -2,18 +2,19 @@ package org.limitless.seqeron.app;
 
 import io.aeron.Aeron;
 import java.util.ArrayDeque;
+import java.nio.file.Path;
 import java.util.HashSet;
 import java.util.Objects;
 import java.util.Set;
 import org.agrona.DirectBuffer;
 import org.agrona.ExpandableArrayBuffer;
-import org.limitless.seqeron.protocol.FrameLayer;
 import org.limitless.seqeron.protocol.PortLayout;
 import org.limitless.seqeron.protocol.Publish;
 import org.limitless.seqeron.protocol.SnapshotHeader;
 import org.limitless.seqeron.protocol.SystemFrame;
 import org.limitless.seqeron.replayer.client.SequencedEvent;
 import org.limitless.seqeron.replayer.client.SnapshotRestoreHandler;
+import org.limitless.seqeron.replayer.client.SnapshotStore;
 import org.limitless.seqeron.sbe.frame.ConnectionClosedEncoder;
 import org.limitless.seqeron.sbe.frame.ConnectionOpenedDecoder;
 import org.limitless.seqeron.sbe.frame.ConnectionOpenedEncoder;
@@ -21,9 +22,7 @@ import org.limitless.seqeron.sbe.frame.GatewayActiveDecoder;
 import org.limitless.seqeron.sbe.frame.GatewayRegisteredDecoder;
 import org.limitless.seqeron.sbe.frame.GatewayStartedEncoder;
 import org.limitless.seqeron.sbe.frame.MessageHeaderDecoder;
-import org.limitless.seqeron.sbe.frame.SnapshotChunkEncoder;
 import org.limitless.seqeron.sbe.frame.SnapshotEndDecoder;
-import org.limitless.seqeron.sbe.frame.SnapshotEndEncoder;
 import org.limitless.seqeron.sbe.frame.SnapshotStartedDecoder;
 
 /**
@@ -37,10 +36,11 @@ import org.limitless.seqeron.sbe.frame.SnapshotStartedDecoder;
  * nothing of the frame layer or of seqeron's system vocabulary appears in its code.
  *
  * <p><b>Snapshots</b> (doc/snapshot.md §4): given a {@link SnapshotListener} and topology rows with {@code
- * snapshot="true"}, every instance serializes its state at each round's cut, and the active one then submits it,
- * under a header carrying the pair's election state. An instance whose snapshot differs from the one sequenced is
- * fenced with {@link ClusterError#SNAPSHOT_DIVERGED}. On start, an instance given a listener restores its source's
- * latest snapshot and resumes after its cut; one it cannot restore is fenced with {@link
+ * snapshot="true"}, every instance serializes its state at each round's cut into its own directory, under a header
+ * carrying the pair's election state, and the active one then submits the round's {@code SnapshotEnd}. An instance
+ * whose snapshot differs from the one sequenced is fenced with {@link ClusterError#SNAPSHOT_DIVERGED}. On start, an
+ * instance given a listener restores the newest snapshot of its own that the log confirms and resumes after its
+ * cut, or replays from {@code globalSeqNo} 1 without one; one it cannot restore is fenced with {@link
  * ClusterError#SNAPSHOT_UNRESTORABLE}. A {@linkplain Builder#passive passive} instance holds no state until it is
  * activated: it follows the tap for the election alone, then restores and catches up before it serves.
  *
@@ -123,7 +123,7 @@ public final class Gateway implements AutoCloseable {
     private final GatewayLifecycle lifecycle;
     private final Listener listener;
     private final SnapshotTaker snapshots;
-    private final SnapshotFrames snapshotFrames = new SnapshotFrames();
+    private final SnapshotFrames snapshotFrames;
     private final int memberId;
     private final String egressChannel;
     private final String ingressEndpoints;
@@ -158,11 +158,14 @@ public final class Gateway implements AutoCloseable {
         this.ingressEndpoints = builder.ingressEndpoints;
         this.passive = builder.passive;
         this.lifecycle = new GatewayLifecycle(builder.gatewayName, new LifecycleActions());
-        this.snapshots = new SnapshotTaker(builder.snapshotListener);
+        final SnapshotStore store =
+            builder.snapshotListener == null ? null : new SnapshotStore(builder.snapshotDirectory);
+        this.snapshots = new SnapshotTaker(builder.snapshotListener, store);
         this.session = new Session(builder.clientId, builder.pendingCapacity, builder.tapStallTimeoutMs,
                                    builder.recoveryStallTimeoutMs, new SessionDispatch());
-        if (builder.snapshotListener != null) {
-            session.restoreFrom(builder.sourceId, new Restore());
+        this.snapshotFrames = new SnapshotFrames(session, lifecycle::gatewaySourceId);
+        if (store != null) {
+            session.restoreFrom(builder.sourceId, store, new Restore());
         }
     }
 
@@ -513,7 +516,7 @@ public final class Gateway implements AutoCloseable {
                 }
                 snapshotEnd.wrap(event.buffer(), event.payloadOffset(), SnapshotEndDecoder.BLOCK_LENGTH,
                                  MessageHeaderDecoder.SCHEMA_VERSION);
-                if (!snapshots.onSnapshotEnd(snapshotEnd.round(), snapshotEnd.chunkCount(), snapshotEnd.length(),
+                if (!snapshots.onSnapshotEnd(snapshotEnd.round(), snapshotEnd.recordCount(), snapshotEnd.length(),
                                              snapshotEnd.crc32c())) {
                     session.fence(ClusterError.SNAPSHOT_DIVERGED, "round " + snapshotEnd.round() + "'s sequenced "
                         + "snapshot at globalSeqNo " + event.globalSeqNo() + " differs from this instance's");
@@ -554,40 +557,12 @@ public final class Gateway implements AutoCloseable {
         }
     }
 
-    /** The round's frames, under this gateway's {@code sourceId} and belonging to no connection. */
-    private final class SnapshotFrames implements SnapshotTaker.Actions {
-        private final ExpandableArrayBuffer body = new ExpandableArrayBuffer(FrameLayer.MAX_PAYLOAD_LENGTH);
-        private final SnapshotChunkEncoder chunk = new SnapshotChunkEncoder();
-        private final SnapshotEndEncoder end = new SnapshotEndEncoder();
-
-        @Override
-        public Publish publishChunk(final long round, final int chunkIndex, final DirectBuffer record,
-                                    final int offset, final int length) {
-            chunk.wrap(body, 0).round(round).chunkIndex(chunkIndex).putData(record, offset, length);
-            return placed(session.publishSystem(lifecycle.gatewaySourceId(), NO_CONNECTION,
-                                                SystemFrame.SNAPSHOT_CHUNK, body, chunk.encodedLength()));
-        }
-
-        @Override
-        public Publish publishEnd(final long round, final int chunkCount, final long length, final long crc32c,
-                                  final int formatVersion) {
-            end.wrap(body, 0).round(round).chunkCount(chunkCount).length(length).crc32c(crc32c)
-                .formatVersion(formatVersion & 0xFFFF_FFFFL);
-            return placed(session.publishSystem(lifecycle.gatewaySourceId(), NO_CONNECTION, SystemFrame.SNAPSHOT_END,
-                                                body, end.encodedLength()));
-        }
-
-        private Publish placed(final Publish outcome) {
-            published(outcome);
-            return outcome;
-        }
-    }
-
     /** Everything one instance needs to join its pair. */
     public static final class Builder {
         private String gatewayName;
         private int sourceId = UNRESOLVED;
         private SnapshotListener snapshotListener;
+        private Path snapshotDirectory;
         private boolean passive;
         private int clientId;
         private int memberId;
@@ -623,10 +598,21 @@ public final class Gateway implements AutoCloseable {
         }
 
         /**
+         * Where this instance keeps its snapshots, one file per round; required with a {@link #snapshotListener}.
+         * Its own: no other instance, its pair's included, may write it. A restart restores from what it holds, so
+         * it must outlive the process.
+         */
+        public Builder snapshotDirectory(final Path snapshotDirectory) {
+            this.snapshotDirectory = snapshotDirectory;
+            return this;
+        }
+
+        /**
          * Whether this instance holds no state until it is activated (doc/snapshot.md §4). Until then the listener
-         * sees no payload and no connection, and takes part in no round; on activation the instance restores its
-         * source's latest snapshot, or replays from {@code globalSeqNo} 1 without one, before it serves. A failover
-         * to it races the activation deadline, so it suits state that restores well inside 5 s.
+         * sees no payload and no connection, and takes part in no round, so it writes no snapshot; on activation the
+         * instance restores the newest one its directory holds, or replays from {@code globalSeqNo} 1 without one,
+         * before it serves. A failover to it races the activation deadline, so it suits state that replays well
+         * inside 5 s.
          */
         public Builder passive(final boolean passive) {
             this.passive = passive;
@@ -684,6 +670,9 @@ public final class Gateway implements AutoCloseable {
             Objects.requireNonNull(listener, "listener");
             if (snapshotListener != null && sourceId == UNRESOLVED) {
                 throw new IllegalStateException("sourceId is required with a snapshotListener");
+            }
+            if (snapshotListener != null && snapshotDirectory == null) {
+                throw new IllegalStateException("snapshotDirectory is required with a snapshotListener");
             }
             return new Gateway(this);
         }

@@ -40,6 +40,7 @@ inline constexpr EventCode Info{ "Info" };
 inline constexpr EventCode TapGap{ "TapGap" };
 inline constexpr EventCode FirstFrameNotOne{ "FirstFrameNotOne" };
 inline constexpr EventCode SnapshotRestoreFailed{ "SnapshotRestoreFailed" };
+inline constexpr EventCode SnapshotStoreFailed{ "SnapshotStoreFailed" };
 inline constexpr EventCode ClusterSessionError{ "ClusterSessionError" };
 inline constexpr EventCode ClusterOfferFailed{ "ClusterOfferFailed" };
 inline constexpr EventCode ClusterIpcFallback{ "ClusterIpcFallback" };

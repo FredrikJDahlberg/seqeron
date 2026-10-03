@@ -17,6 +17,7 @@
 
 #include "org/limitless/seqeron/protocol/SeqeronCounters.hpp"
 #include "org/limitless/seqeron/replayer/client/SnapshotRestoreHandler.hpp"
+#include "org/limitless/seqeron/replayer/client/SnapshotStore.hpp"
 #include "org/limitless/seqeron/replayer/client/detail/ReplayerRecovery.hpp"
 #include "org/limitless/seqeron/replayer/client/detail/TapFaultInjector.hpp"
 
@@ -101,15 +102,17 @@ class ReplayerStreamReceiver final : private detail::ReplayerRecoveryActions
     ReplayerStreamReceiver& operator=(const ReplayerStreamReceiver&) = delete;
 
     /**
-     * Restores a source's latest snapshot on start, before anything is dispatched (doc/snapshot.md §7). Call
-     * before start; restoreFailure() reports a snapshot that cannot be restored.
+     * Restores a source's newest snapshot in a store that the log confirms on start, before anything is
+     * dispatched (doc/snapshot.md §7). Call before start; restoreFailure() reports a snapshot that cannot be
+     * restored.
      *
      * @param sourceId the source whose snapshot to restore
+     * @param store    this instance's own snapshots; must outlive this receiver
      * @param handler  takes the snapshot's records; must outlive this receiver
      */
-    void restoreFrom(const std::int32_t sourceId, SnapshotRestoreHandler& handler)
+    void restoreFrom(const std::int32_t sourceId, SnapshotStore& store, SnapshotRestoreHandler& handler)
     {
-        m_recovery.restoreFrom(sourceId, handler);
+        m_recovery.restoreFrom(sourceId, store, handler);
     }
 
     /**
@@ -249,7 +252,7 @@ class ReplayerStreamReceiver final : private detail::ReplayerRecoveryActions
         m_requestPub->offer(ab, 0, len); // result deliberately discarded — see ReplayerRecovery::requestReplay
     }
 
-    void sendSnapshotQuery(const std::int64_t requestId, const std::int32_t sourceId) override
+    void sendSnapshotQuery(const std::int64_t requestId, const std::int32_t sourceId, const std::int64_t round) override
     {
         if (!m_requestPub || !m_requestPub->isConnected())
         {
@@ -258,7 +261,7 @@ class ReplayerStreamReceiver final : private detail::ReplayerRecoveryActions
         alignas(16) std::array<std::uint8_t, REQUEST_BUFFER_LENGTH> buf{};
         sbe::replay::SnapshotQuery enc;
         enc.wrapAndApplyHeader(reinterpret_cast<char*>(buf.data()), 0, buf.size());
-        enc.clientId(m_clientId).requestId(requestId).sourceId(sourceId);
+        enc.clientId(m_clientId).requestId(requestId).sourceId(sourceId).round(round);
         const auto len =
             static_cast<aeron::util::index_t>(sbe::replay::MessageHeader::encodedLength() + enc.encodedLength());
         aeron::concurrent::AtomicBuffer ab(buf.data(), buf.size());

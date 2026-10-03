@@ -12,7 +12,6 @@ import org.limitless.seqeron.sbe.frame.GatewayRegisteredEncoder;
 import org.limitless.seqeron.sbe.frame.GatewayStartedEncoder;
 import org.limitless.seqeron.sbe.frame.MessageHeaderEncoder;
 import org.limitless.seqeron.sbe.frame.PayloadIdRegisteredEncoder;
-import org.limitless.seqeron.sbe.frame.SnapshotChunkEncoder;
 import org.limitless.seqeron.sbe.frame.SnapshotEndEncoder;
 import org.limitless.seqeron.sbe.frame.SnapshotPolicyRegisteredEncoder;
 import org.limitless.seqeron.sbe.frame.SnapshotRequestedEncoder;
@@ -88,10 +87,7 @@ public final class SystemFrame {
     /** An operator asking for a snapshot round. */
     public static final int SNAPSHOT_REQUESTED = SnapshotRequestedEncoder.TEMPLATE_ID;
 
-    /** One chunk of a source's snapshot. */
-    public static final int SNAPSHOT_CHUNK = SnapshotChunkEncoder.TEMPLATE_ID;
-
-    /** Closes a source's snapshot for one round. */
+    /** A source's snapshot of one round: its digest, the bytes staying with each instance. */
     public static final int SNAPSHOT_END = SnapshotEndEncoder.TEMPLATE_ID;
 
     /** The topology file's snapshot policy. */
@@ -116,7 +112,6 @@ public final class SystemFrame {
             case SystemFrame.GATEWAY_ACTIVATION_REQUESTED -> GatewayActivationRequestedEncoder.BLOCK_LENGTH;
             case SystemFrame.APPLICATION_REGISTERED -> ApplicationRegisteredEncoder.BLOCK_LENGTH;
             case SystemFrame.SNAPSHOT_REQUESTED -> SnapshotRequestedEncoder.BLOCK_LENGTH;
-            case SystemFrame.SNAPSHOT_CHUNK -> SnapshotChunkEncoder.BLOCK_LENGTH;
             case SystemFrame.SNAPSHOT_END -> SnapshotEndEncoder.BLOCK_LENGTH;
             case SystemFrame.SNAPSHOT_POLICY_REGISTERED -> SnapshotPolicyRegisteredEncoder.BLOCK_LENGTH;
             default -> NOT_INGRESS_LEGAL;

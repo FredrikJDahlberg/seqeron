@@ -97,5 +97,22 @@ TEST(RecoveryStallFence, ProgressRestartsTheDeadline)
     EXPECT_TRUE(policy.onNotCaughtUp(seconds(119), 1001)) << "60s with the frontier frozen at the new value";
 }
 
+TEST(RecoveryStallFence, RestartDisarmsUntilCaughtUp)
+{
+    RecoveryStallFence policy{ DEADLINE_MS };
+    policy.onCaughtUp();
+    policy.onNotCaughtUp(seconds(0), STUCK);
+
+    policy.onRestart(); // a passive instance's activation: its restore pass dispatches nothing
+
+    for (std::int64_t s = 1; s < 3600; s += 30)
+    {
+        EXPECT_FALSE(policy.onNotCaughtUp(seconds(s), 0)) << "second " << s << ": a restart is a cold start";
+    }
+    policy.onCaughtUp();
+    EXPECT_FALSE(policy.onNotCaughtUp(seconds(3600), STUCK));
+    EXPECT_TRUE(policy.onNotCaughtUp(seconds(3660), STUCK)) << "armed again once caught up";
+}
+
 } // namespace
 } // namespace org::limitless::seqeron::app::detail

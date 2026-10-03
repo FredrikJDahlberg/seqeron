@@ -1,20 +1,18 @@
 package org.limitless.seqeron.app;
 
 import io.aeron.Aeron;
+import java.nio.file.Path;
 import java.util.Objects;
 import org.agrona.DirectBuffer;
-import org.agrona.ExpandableArrayBuffer;
-import org.limitless.seqeron.protocol.FrameLayer;
 import org.limitless.seqeron.protocol.PortLayout;
 import org.limitless.seqeron.protocol.Publish;
 import org.limitless.seqeron.protocol.SnapshotHeader;
 import org.limitless.seqeron.protocol.SystemFrame;
 import org.limitless.seqeron.replayer.client.SequencedEvent;
+import org.limitless.seqeron.replayer.client.SnapshotStore;
 import org.limitless.seqeron.sbe.frame.ApplicationRegisteredDecoder;
 import org.limitless.seqeron.sbe.frame.MessageHeaderDecoder;
-import org.limitless.seqeron.sbe.frame.SnapshotChunkEncoder;
 import org.limitless.seqeron.sbe.frame.SnapshotEndDecoder;
-import org.limitless.seqeron.sbe.frame.SnapshotEndEncoder;
 import org.limitless.seqeron.sbe.frame.SnapshotStartedDecoder;
 
 /**
@@ -34,10 +32,11 @@ import org.limitless.seqeron.sbe.frame.SnapshotStartedDecoder;
  * under it.
  *
  * <p><b>Snapshots</b> (doc/snapshot.md §4): given a {@link SnapshotListener} and a topology row with {@code
- * snapshot="true"}, every replica serializes its state at each round's cut, and the one whose gate is open
- * then submits it. A replica whose snapshot differs from the one sequenced is fenced with {@link
- * ClusterError#SNAPSHOT_DIVERGED}. On start, a replica given a listener restores its source's latest snapshot
- * and resumes after its cut; one it cannot restore is fenced with {@link ClusterError#SNAPSHOT_UNRESTORABLE}.
+ * snapshot="true"}, every replica serializes its state at each round's cut into its own directory, and the one
+ * whose gate is open then submits the round's {@code SnapshotEnd}. A replica whose snapshot differs from the one
+ * sequenced is fenced with {@link ClusterError#SNAPSHOT_DIVERGED}. On start, a replica given a listener restores
+ * the newest snapshot of its own that the log confirms and resumes after its cut, or replays from {@code
+ * globalSeqNo} 1 without one; one it cannot restore is fenced with {@link ClusterError#SNAPSHOT_UNRESTORABLE}.
  *
  * <p>Single-threaded: every method belongs to the caller's one duty-cycle thread, which calls
  * {@link #doWork()} each iteration. The C++ twin is {@code app/Application.hpp}; keep the two in
@@ -91,7 +90,7 @@ public final class Application implements AutoCloseable {
     private final LeaderGate gate;
     private final Listener listener;
     private final SnapshotTaker snapshots;
-    private final SnapshotFrames snapshotFrames = new SnapshotFrames();
+    private final SnapshotFrames snapshotFrames;
     private final int sourceId;
     private final int memberId;
     private final boolean offCluster;
@@ -108,11 +107,14 @@ public final class Application implements AutoCloseable {
         this.egressChannel = builder.egressChannel;
         this.ingressEndpoints = builder.ingressEndpoints;
         this.gate = new LeaderGate(builder.memberId, builder.offCluster);
-        this.snapshots = new SnapshotTaker(builder.snapshotListener);
+        final SnapshotStore store =
+            builder.snapshotListener == null ? null : new SnapshotStore(builder.snapshotDirectory);
+        this.snapshots = new SnapshotTaker(builder.snapshotListener, store);
         this.session = new Session(builder.clientId, builder.pendingCapacity, builder.tapStallTimeoutMs,
                                    builder.recoveryStallTimeoutMs, new SessionDispatch());
-        if (builder.snapshotListener != null) {
-            session.restoreFrom(sourceId, snapshots);
+        this.snapshotFrames = new SnapshotFrames(session, () -> sourceId);
+        if (store != null) {
+            session.restoreFrom(sourceId, store, snapshots);
         }
     }
 
@@ -242,7 +244,7 @@ public final class Application implements AutoCloseable {
                 }
                 end.wrap(event.buffer(), event.payloadOffset(), SnapshotEndDecoder.BLOCK_LENGTH,
                          MessageHeaderDecoder.SCHEMA_VERSION);
-                if (!snapshots.onSnapshotEnd(end.round(), end.chunkCount(), end.length(), end.crc32c())) {
+                if (!snapshots.onSnapshotEnd(end.round(), end.recordCount(), end.length(), end.crc32c())) {
                     session.fence(ClusterError.SNAPSHOT_DIVERGED, "round " + end.round() + "'s sequenced "
                         + "snapshot at globalSeqNo " + event.globalSeqNo() + " differs from this replica's");
                 }
@@ -283,39 +285,6 @@ public final class Application implements AutoCloseable {
         }
     }
 
-    /** The round's frames, under this application's {@code sourceId} and belonging to no connection. */
-    private final class SnapshotFrames implements SnapshotTaker.Actions {
-        private final ExpandableArrayBuffer body = new ExpandableArrayBuffer(FrameLayer.MAX_PAYLOAD_LENGTH);
-        private final SnapshotChunkEncoder chunk = new SnapshotChunkEncoder();
-        private final SnapshotEndEncoder end = new SnapshotEndEncoder();
-
-        @Override
-        public Publish publishChunk(final long round, final int chunkIndex, final DirectBuffer record,
-                                    final int offset, final int length) {
-            chunk.wrap(body, 0).round(round).chunkIndex(chunkIndex).putData(record, offset, length);
-            return placed(session.publishSystem(sourceId, NO_CONNECTION, SystemFrame.SNAPSHOT_CHUNK, body,
-                                                chunk.encodedLength()));
-        }
-
-        @Override
-        public Publish publishEnd(final long round, final int chunkCount, final long length, final long crc32c,
-                                  final int formatVersion) {
-            end.wrap(body, 0).round(round).chunkCount(chunkCount).length(length).crc32c(crc32c)
-                .formatVersion(formatVersion & 0xFFFF_FFFFL);
-            return placed(session.publishSystem(sourceId, NO_CONNECTION, SystemFrame.SNAPSHOT_END, body,
-                                                end.encodedLength()));
-        }
-
-        /** A refused frame is this class's own bug, never a condition to wait out. */
-        private Publish placed(final Publish outcome) {
-            if (outcome == Publish.Refused) {
-                throw new IllegalStateException("a snapshot frame the sequencer would reject "
-                                                + "(doc/seqeron-protocol-spec.md §9.2)");
-            }
-            return outcome;
-        }
-    }
-
     /** Everything one replica needs to join its deployment. */
     public static final class Builder {
         private int sourceId;
@@ -326,6 +295,7 @@ public final class Application implements AutoCloseable {
         private String ingressEndpoints = PortLayout.ingressEndpoints();
         private Listener listener;
         private SnapshotListener snapshotListener;
+        private Path snapshotDirectory;
         private int pendingCapacity = DEFAULT_PENDING_CAPACITY;
         private long tapStallTimeoutMs = DEFAULT_TAP_STALL_TIMEOUT_MS;
         private long recoveryStallTimeoutMs = DEFAULT_RECOVERY_STALL_TIMEOUT_MS;
@@ -387,6 +357,16 @@ public final class Application implements AutoCloseable {
             return this;
         }
 
+        /**
+         * Where this replica keeps its snapshots, one file per round; required with a {@link #snapshotListener}.
+         * Its own: no other instance may write it. A restart restores from what it holds, so it must outlive the
+         * process.
+         */
+        public Builder snapshotDirectory(final Path snapshotDirectory) {
+            this.snapshotDirectory = snapshotDirectory;
+            return this;
+        }
+
         public Builder pendingCapacity(final int pendingCapacity) {
             this.pendingCapacity = pendingCapacity;
             return this;
@@ -411,6 +391,9 @@ public final class Application implements AutoCloseable {
             Objects.requireNonNull(egressChannel, "egressChannel");
             Objects.requireNonNull(ingressEndpoints, "ingressEndpoints");
             Objects.requireNonNull(listener, "listener");
+            if (snapshotListener != null && snapshotDirectory == null) {
+                throw new IllegalStateException("snapshotDirectory is required with a snapshotListener");
+            }
             return new Application(this);
         }
     }

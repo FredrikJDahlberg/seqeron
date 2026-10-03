@@ -8,9 +8,9 @@
 namespace org::limitless::seqeron::replayer::client {
 
 /**
- * Takes a source's latest snapshot as it is replayed, before any frame after its cut is dispatched
- * (doc/snapshot.md §7). A restore that starts over, after a replay lost under it, begins again with
- * onSnapshotHeader. The Java twin is replayer/client/SnapshotRestoreHandler.java.
+ * Takes a source's snapshot as a restore reads it from this instance's own file, before any frame after its cut is
+ * dispatched (doc/snapshot.md §7). Each restore, a restart's included, begins with onSnapshotHeader. The Java twin
+ * is replayer/client/SnapshotRestoreHandler.java.
  */
 class SnapshotRestoreHandler
 {
@@ -18,13 +18,13 @@ class SnapshotRestoreHandler
     /**
      * Whether this build reads records of a format; a snapshot it does not read stops the restore.
      *
-     * @param formatVersion the snapshot's SnapshotEnd::formatVersion
+     * @param formatVersion the round's SnapshotEnd::formatVersion
      * @return true if this build reads it
      */
     virtual bool supportsFormatVersion(std::uint32_t formatVersion) = 0;
 
     /**
-     * Takes record 0, the façade's: the first call of a restore, and of each time it starts over.
+     * Takes record 0, the façade's: the first call of each restore.
      *
      * @param header the decoded header
      */

@@ -1,48 +1,50 @@
 package org.limitless.seqeron.app;
 
+import java.util.zip.CRC32C;
 import org.agrona.DirectBuffer;
 import org.agrona.concurrent.UnsafeBuffer;
 import org.limitless.seqeron.protocol.Publish;
 import org.limitless.seqeron.protocol.SnapshotFormat;
 import org.limitless.seqeron.protocol.SnapshotHeader;
 import org.limitless.seqeron.replayer.client.SnapshotRestoreHandler;
+import org.limitless.seqeron.replayer.client.SnapshotStore;
 
 /**
- * A façade's side of snapshot rounds, with no Aeron in it (doc/snapshot.md §4): serialize at the cut,
- * submit the records as chunks if this instance may publish, then the end, and compare the source's
- * sequenced {@code SnapshotEnd} with what this instance serialized (A-7). The façade feeds it the frames and
- * drives {@link #submit} from its duty cycle; every outcome is the façade's to act on.
+ * A façade's side of snapshot rounds, with no Aeron in it (doc/snapshot.md §4): serialize at the cut into this
+ * instance's own file, submit the round's {@code SnapshotEnd} if this instance may publish, and compare the
+ * source's sequenced {@code SnapshotEnd} with what this instance serialized (A-7). The façade feeds it the frames
+ * and drives {@link #submit} from its duty cycle; every outcome is the façade's to act on.
  *
  * <p>No takeover: an instance that is not the publisher at the cut submits nothing for that round, and a
  * publisher that loses the role stops for good.
  *
  * <p>It is also what a restore hands the snapshot's records to (§7), passing the source's own to the listener.
+ * The C++ twin is {@code app/detail/SnapshotTaker.hpp}; keep the two in step.
  */
 final class SnapshotTaker implements SnapshotRestoreHandler {
-    /** Chunks one duty cycle submits at most, so a large snapshot does not starve the tap. */
-    static final int MAX_CHUNKS_PER_CYCLE = 16;
-
-    /** How an instance places the frames of a round it publishes. */
+    /** How an instance places the end of a round it publishes. */
     interface Actions {
-        Publish publishChunk(long round, int chunkIndex, DirectBuffer record, int offset, int length);
-
-        Publish publishEnd(long round, int chunkCount, long length, long crc32c, int formatVersion);
+        Publish publishEnd(long round, int recordCount, long length, long crc32c, int formatVersion);
     }
 
     private final SnapshotListener listener;
-    private final SnapshotRecords records = new SnapshotRecords();
+    private final SnapshotStore store;
     private final UnsafeBuffer encoding = new UnsafeBuffer(new byte[SnapshotFormat.MAX_RECORD_LENGTH]);
-    private final UnsafeBuffer record = new UnsafeBuffer(0, 0);
+    private final CRC32C crc = new CRC32C();
     private boolean participating;
     private long round = -1;
     private boolean serialized;
     private boolean publishing;
-    private int nextChunkIndex;
-    private int recordLength = -1;
+    private int recordCount;
+    private long length;
 
-    /** @param listener what serializes the state, or null if this build takes part in no round */
-    SnapshotTaker(final SnapshotListener listener) {
+    /**
+     * @param listener what serializes the state, or null if this build takes part in no round
+     * @param store    where this instance keeps its snapshots; null exactly when {@code listener} is
+     */
+    SnapshotTaker(final SnapshotListener listener, final SnapshotStore store) {
         this.listener = listener;
+        this.store = store;
     }
 
     /**
@@ -58,61 +60,64 @@ final class SnapshotTaker implements SnapshotRestoreHandler {
     }
 
     /**
-     * A {@code SnapshotStarted} was dispatched: supersede any round still open and serialize this one, pulling
-     * records from the listener until it returns 0. A length outside {@code 0 … 1302} is the listener's bug;
-     * the round is dropped, as it is on every instance of the same build.
+     * A {@code SnapshotStarted} was dispatched: supersede any round still open and serialize this one into its
+     * file, pulling records from the listener until it returns 0. A length outside {@code 0 … 1302} is the
+     * listener's bug; the round is dropped, as it is on every instance of the same build, and so is one whose
+     * header outgrows a record. One that no longer takes part still abandons the round it held.
      * @param startedRound its {@code round}
      * @param header       the façade's header as of the cut
      * @param mayPublish   whether this instance is the one that publishes at the cut
      */
     void onSnapshotStarted(final long startedRound, final SnapshotHeader header, final boolean mayPublish) {
-        if (!participating) {
+        publishing = false;
+        serialized = false;
+        if (!participating || header.encodedLength() > SnapshotFormat.MAX_RECORD_LENGTH) {
             return;
         }
         round = startedRound;
-        publishing = false;
-        serialized = records.reset(header, mayPublish);
-        for (int recordIndex = 0; serialized; recordIndex++) {
-            final int length = listener.onSnapshot(encoding, recordIndex);
-            if (length == 0) {
+        crc.reset();
+        recordCount = 0;
+        length = 0;
+        store.begin(round);
+        append(header.encode(encoding, 0));
+        for (int recordIndex = 0;; recordIndex++) {
+            final int recordLength = listener.onSnapshot(encoding, recordIndex);
+            if (recordLength == 0) {
                 break;
             }
-            if (length < 0 || length > SnapshotFormat.MAX_RECORD_LENGTH) {
-                serialized = false;
-                records.release();
-            } else {
-                records.append(encoding, 0, length);
+            if (recordLength < 0 || recordLength > SnapshotFormat.MAX_RECORD_LENGTH) {
+                store.abandon();
+                return;
             }
+            append(recordLength);
         }
-        if (!serialized) {
-            return;
-        }
+        store.commit(recordCount, length, crc.getValue(), listener.formatVersion());
+        serialized = true;
         publishing = mayPublish;
-        nextChunkIndex = 0;
-        recordLength = -1;
     }
 
     /**
-     * The source's own {@code SnapshotEnd} was dispatched.
+     * The source's own {@code SnapshotEnd} was dispatched. One that matches makes this round's file the oldest
+     * this instance keeps.
      * @return false if it is for the round this instance serialized and disagrees with it: this instance has
      *     diverged from the log (A-7)
      */
-    boolean onSnapshotEnd(final long endRound, final int chunkCount, final long length, final long crc32c) {
+    boolean onSnapshotEnd(final long endRound, final int endRecordCount, final long endLength, final long crc32c) {
         if (!serialized || endRound != round) {
             return true;
         }
         serialized = false;
         publishing = false;
-        records.release();
-        return chunkCount == records.chunkCount() && length == records.length() && crc32c == records.crc32c();
+        if (endRecordCount != recordCount || endLength != length || crc32c != crc.getValue()) {
+            return false;
+        }
+        store.deleteBefore(round);
+        return true;
     }
 
     /** This instance may no longer publish this round: another took the role. It does not resume. */
     void stopPublishing() {
-        if (publishing) {
-            publishing = false;
-            records.release();
-        }
+        publishing = false;
     }
 
     boolean isPublishing() {
@@ -137,32 +142,23 @@ final class SnapshotTaker implements SnapshotRestoreHandler {
     }
 
     /**
-     * Places what it can of the round being published: chunks in order, then the end, at most {@link
-     * #MAX_CHUNKS_PER_CYCLE} a call. A declined frame is placed again on the next call.
+     * Places the end of the round being published. A declined end is placed again on the next call.
      * @return frames placed
      */
     int submit(final Actions actions) {
-        int placed = 0;
-        while (publishing && placed < MAX_CHUNKS_PER_CYCLE) {
-            if (recordLength < 0) {
-                recordLength = records.nextRecord(record);
-            }
-            final Publish outcome = recordLength < 0
-                ? actions.publishEnd(round, records.chunkCount(), records.length(), records.crc32c(),
-                                     listener.formatVersion())
-                : actions.publishChunk(round, nextChunkIndex, record, 0, recordLength);
-            if (outcome != Publish.Published) {
-                return placed;
-            }
-            placed++;
-            if (recordLength < 0) {
-                publishing = false;
-                records.release();
-            } else {
-                nextChunkIndex++;
-                recordLength = -1;
-            }
+        if (!publishing || actions.publishEnd(round, recordCount, length, crc.getValue(), listener.formatVersion())
+            != Publish.Published) {
+            return 0;
         }
-        return placed;
+        publishing = false;
+        return 1;
+    }
+
+    /** Takes the record {@link #encoding} holds. */
+    private void append(final int recordLength) {
+        crc.update(encoding.byteArray(), 0, recordLength);
+        recordCount++;
+        length += recordLength;
+        store.append(encoding, 0, recordLength);
     }
 }

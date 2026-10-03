@@ -100,12 +100,12 @@ public final class ReplayerStreamReceiver implements AutoCloseable {
     }
 
     /**
-     * Restores {@code sourceId}'s latest snapshot on {@link #start}, before anything is dispatched
-     * (doc/snapshot.md §7). Call before {@link #start}; {@link #restoreFailure()} reports a snapshot that
-     * cannot be restored.
+     * Restores {@code sourceId}'s newest snapshot in {@code store} that the log confirms on {@link #start}, before
+     * anything is dispatched (doc/snapshot.md §7). Call before {@link #start}; {@link #restoreFailure()} reports a
+     * snapshot that cannot be restored.
      */
-    public void restoreFrom(final int sourceId, final SnapshotRestoreHandler handler) {
-        recovery.restoreFrom(sourceId, handler);
+    public void restoreFrom(final int sourceId, final SnapshotStore store, final SnapshotRestoreHandler handler) {
+        recovery.restoreFrom(sourceId, store, handler);
     }
 
     /**
@@ -277,14 +277,15 @@ public final class ReplayerStreamReceiver implements AutoCloseable {
         }
 
         @Override
-        public void sendSnapshotQuery(final long requestId, final int sourceId) {
+        public void sendSnapshotQuery(final long requestId, final int sourceId, final long round) {
             if (requestPublication == null || !requestPublication.isConnected()) {
                 return;
             }
             snapshotQuery.wrapAndApplyHeader(requestBuffer, 0, requestHeader)
                          .clientId(clientId)
                          .requestId(requestId)
-                         .sourceId(sourceId);
+                         .sourceId(sourceId)
+                         .round(round);
             requestPublication.offer(requestBuffer, 0,
                                      MessageHeaderEncoder.ENCODED_LENGTH + snapshotQuery.encodedLength());
         }

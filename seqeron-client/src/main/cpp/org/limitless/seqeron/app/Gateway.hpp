@@ -4,6 +4,7 @@
 #include <concepts>
 #include <cstdint>
 #include <deque>
+#include <filesystem>
 #include <memory>
 #include <span>
 #include <stdexcept>
@@ -18,19 +19,20 @@
 #include "org/limitless/seqeron/app/SnapshotListener.hpp"
 #include "org/limitless/seqeron/app/detail/GatewayLifecycle.hpp"
 #include "org/limitless/seqeron/app/detail/Session.hpp"
+#include "org/limitless/seqeron/app/detail/SnapshotFrames.hpp"
 #include "org/limitless/seqeron/app/detail/SnapshotTaker.hpp"
 #include "org/limitless/seqeron/protocol/PortLayout.hpp"
 #include "org/limitless/seqeron/protocol/Publish.hpp"
 #include "org/limitless/seqeron/protocol/SequencedFrame.hpp"
 #include "org/limitless/seqeron/protocol/Snapshot.hpp"
 #include "org/limitless/seqeron/replayer/client/SnapshotRestoreHandler.hpp"
+#include "org/limitless/seqeron/replayer/client/SnapshotStore.hpp"
 #include "org/limitless/seqeron/sequencer/client/IngressPublisher.hpp"
 #include "org_limitless_seqeron_sbe_frame/ConnectionClosed.h"
 #include "org_limitless_seqeron_sbe_frame/ConnectionOpened.h"
 #include "org_limitless_seqeron_sbe_frame/GatewayActive.h"
 #include "org_limitless_seqeron_sbe_frame/GatewayRegistered.h"
 #include "org_limitless_seqeron_sbe_frame/GatewayStarted.h"
-#include "org_limitless_seqeron_sbe_frame/SnapshotChunk.h"
 #include "org_limitless_seqeron_sbe_frame/SnapshotEnd.h"
 #include "org_limitless_seqeron_sbe_frame/SnapshotStarted.h"
 
@@ -64,10 +66,11 @@ concept GatewayListener = requires(L& listener, const Payload& payload, std::int
  * seqeron's system vocabulary appears in its code.
  *
  * Snapshots (doc/snapshot.md §4): given a SnapshotListener and topology rows with snapshot="true", every instance
- * serializes its state at each round's cut, and the active one then submits it, under a header carrying the pair's
- * election state. An instance whose snapshot differs from the one sequenced is fenced with
- * ClusterError::SnapshotDiverged. On start, an instance given a listener restores its source's latest snapshot and
- * resumes after its cut; one it cannot restore is fenced with ClusterError::SnapshotUnrestorable. A passive instance
+ * serializes its state at each round's cut into its own directory, under a header carrying the pair's election
+ * state, and the active one then submits the round's SnapshotEnd. An instance whose snapshot differs from the one
+ * sequenced is fenced with ClusterError::SnapshotDiverged. On start, an instance given a listener restores the
+ * newest snapshot of its own that the log confirms and resumes after its cut, or replays from globalSeqNo 1 without
+ * one; one it cannot restore is fenced with ClusterError::SnapshotUnrestorable. A passive instance
  * (Config::passive) holds no state until it is activated: it follows the tap for the election alone, then restores
  * and catches up before it serves.
  *
@@ -110,10 +113,14 @@ class Gateway
         // What serializes this instance's state for snapshot rounds and restores it on start; without one it takes
         // part in none, whatever its rows say, and recovers from globalSeqNo 1. Must outlive the gateway.
         SnapshotListener* snapshotListener = nullptr;
+        // Where this instance keeps its snapshots, one file per round; required with a snapshotListener. Its own: no
+        // other instance, its pair's included, may write it. A restart restores from what it holds, so it must
+        // outlive the process.
+        std::filesystem::path snapshotDirectory;
         // Whether this instance holds no state until it is activated (doc/snapshot.md §4). Until then the listener
-        // sees no payload and no connection, and takes part in no round; on activation the instance restores its
-        // source's latest snapshot, or replays from globalSeqNo 1 without one, before it serves. A failover to it
-        // races the activation deadline, so it suits state that restores well inside 5 s.
+        // sees no payload and no connection, and takes part in no round, so it writes no snapshot; on activation the
+        // instance restores the newest one its directory holds, or replays from globalSeqNo 1 without one, before it
+        // serves. A failover to it races the activation deadline, so it suits state that replays well inside 5 s.
         bool passive = false;
     };
 
@@ -122,30 +129,27 @@ class Gateway
      *
      * @param config   the instance's identity and deployment policy
      * @param listener the edge; must outlive the gateway
-     * @throws std::invalid_argument if config has a snapshotListener and no sourceId
+     * @throws std::invalid_argument if config has a snapshotListener and no sourceId or snapshotDirectory
      */
     Gateway(Config config, Listener& listener) :
       m_config{ std::move(config) },
       m_listener{ listener },
       m_actions{ *this },
       m_lifecycle{ m_config.gatewayName, m_actions },
-      m_snapshots{ m_config.snapshotListener },
+      m_store{ snapshotStore(m_config) },
+      m_snapshots{ m_config.snapshotListener, m_store.get() },
       m_restore{ *this },
       m_dispatch{ *this },
       m_session{ m_config.clientId, m_config.pendingCapacity, m_config.tapStallTimeoutMs,
                  m_config.recoveryStallTimeoutMs, m_dispatch },
-      m_snapshotFrames{ *this },
+      m_snapshotFrames{ m_session, [this] { return m_lifecycle.gatewaySourceId(); } },
       m_passive{ m_config.passive }
     {
         // Here rather than on the template parameter, where a listener that owns its Gateway is incomplete.
         static_assert(GatewayListener<Listener>);
-        if (m_config.snapshotListener != nullptr)
+        if (m_store)
         {
-            if (m_config.sourceId == UNRESOLVED)
-            {
-                throw std::invalid_argument("sourceId is required with a snapshotListener");
-            }
-            m_session.restoreFrom(m_config.sourceId, m_restore);
+            m_session.restoreFrom(m_config.sourceId, *m_store, m_restore);
         }
     }
 
@@ -571,7 +575,8 @@ class Gateway
                         break;
                     }
                     auto end = protocol::decodeSystem<sbe::frame::SnapshotEnd>(event);
-                    if (!m_gateway.m_snapshots.onSnapshotEnd(end.round(), end.chunkCount(), end.length(), end.crc32c()))
+                    if (!m_gateway.m_snapshots.onSnapshotEnd(end.round(), end.recordCount(), end.length(),
+                                                             end.crc32c()))
                     {
                         m_gateway.m_session.fence(
                             ClusterError::SnapshotDiverged,
@@ -622,60 +627,34 @@ class Gateway
         Gateway& m_gateway;
     };
 
-    // The round's frames, under this gateway's sourceId and belonging to no connection.
-    class SnapshotFrames
+    // The store of an instance given a listener, which requires its sourceId and directory.
+    static std::unique_ptr<replayer::client::SnapshotStore> snapshotStore(const Config& config)
     {
-      public:
-        explicit SnapshotFrames(Gateway& gateway) : m_gateway{ gateway }
-        {}
-
-        protocol::Publish publishChunk(const std::int64_t round, const std::int32_t chunkIndex,
-                                       const std::span<const std::uint8_t> record)
+        if (config.snapshotListener == nullptr)
         {
-            return placed(m_gateway.m_session.template publishSystem<sbe::frame::SnapshotChunk>(
-                m_gateway.m_lifecycle.gatewaySourceId(), NO_CONNECTION, protocol::SNAPSHOT_CHUNK,
-                [&](sbe::frame::SnapshotChunk& chunk) {
-                    chunk.round(round)
-                        .chunkIndex(chunkIndex)
-                        .putData(reinterpret_cast<const char*>(record.data()),
-                                 static_cast<std::uint16_t>(record.size()));
-                }));
+            return nullptr;
         }
-
-        protocol::Publish publishEnd(const std::int64_t round, const std::int32_t chunkCount,
-                                     const std::uint64_t length, const std::uint32_t crc32c,
-                                     const std::uint32_t formatVersion)
+        if (config.sourceId == UNRESOLVED)
         {
-            return placed(m_gateway.m_session.template publishSystem<sbe::frame::SnapshotEnd>(
-                m_gateway.m_lifecycle.gatewaySourceId(), NO_CONNECTION, protocol::SNAPSHOT_END,
-                [&](sbe::frame::SnapshotEnd& end) {
-                    end.round(round)
-                        .chunkCount(chunkCount)
-                        .length(static_cast<std::int64_t>(length))
-                        .crc32c(crc32c)
-                        .formatVersion(formatVersion);
-                }));
+            throw std::invalid_argument("sourceId is required with a snapshotListener");
         }
-
-      private:
-        static protocol::Publish placed(const protocol::Publish outcome)
+        if (config.snapshotDirectory.empty())
         {
-            published(outcome);
-            return outcome;
+            throw std::invalid_argument("snapshotDirectory is required with a snapshotListener");
         }
-
-        Gateway& m_gateway;
-    };
+        return std::make_unique<replayer::client::SnapshotStore>(config.snapshotDirectory);
+    }
 
     Config m_config;
     Listener& m_listener;
     LifecycleActions m_actions;
     detail::GatewayLifecycle<LifecycleActions> m_lifecycle;
+    std::unique_ptr<replayer::client::SnapshotStore> m_store;
     detail::SnapshotTaker m_snapshots;
     Restore m_restore;
     SessionDispatch m_dispatch;
     detail::Session<SessionDispatch> m_session;
-    SnapshotFrames m_snapshotFrames;
+    detail::SnapshotFrames<detail::Session<SessionDispatch>> m_snapshotFrames;
 
     // Holding no state: until activated, this instance follows the tap for the election alone.
     bool m_passive;

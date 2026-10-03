@@ -36,7 +36,6 @@
 #include "org_limitless_seqeron_sbe_frame/SequencedHeader.h"
 #include "org_limitless_seqeron_sbe_frame/SequencedSystem.h"
 #include "org_limitless_seqeron_sbe_frame/SequencedSystemHeader.h"
-#include "org_limitless_seqeron_sbe_frame/SnapshotChunk.h"
 #include "org_limitless_seqeron_sbe_frame/SnapshotEnd.h"
 #include "org_limitless_seqeron_sbe_frame/SnapshotStarted.h"
 #include "org_limitless_seqeron_sbe_frame/UnsequencedHeader.h"
@@ -283,31 +282,16 @@ TEST(Conformance, EverySystemMessageNamesItsEventAndDecodesItsBody)
     EXPECT_EQ(3, start.gatewayId());
     EXPECT_EQ(1000, start.firstConnectionId());
 
-    const auto chunk = systemFrame(8, protocol::SNAPSHOT_CHUNK, [](char* body, std::size_t cap) {
-        frm::SnapshotChunk encoder;
-        encoder.wrapForEncode(body, 0, cap);
-        encoder.round(3).chunkIndex(4);
-        encoder.putData("state", 5);
-        return static_cast<std::uint16_t>(encoder.encodedLength());
-    });
-    view = viewOf(chunk);
-    ASSERT_TRUE(view.valid);
-    EXPECT_EQ(protocol::SNAPSHOT_CHUNK, view.systemEventType);
-    auto chunkIn = protocol::decodeSystem<frm::SnapshotChunk>(view.payload, view.payloadLength);
-    EXPECT_EQ(3, chunkIn.round());
-    EXPECT_EQ(4, chunkIn.chunkIndex());
-    EXPECT_EQ("state", chunkIn.getDataAsString());
-
     const auto end = systemFrame(9, protocol::SNAPSHOT_END, [](char* body, std::size_t cap) {
         frm::SnapshotEnd encoder;
         encoder.wrapForEncode(body, 0, cap);
-        encoder.round(3).chunkCount(5).length(6000).crc32c(0xDEADBEEFU).formatVersion(2);
+        encoder.round(3).recordCount(5).length(6000).crc32c(0xDEADBEEFU).formatVersion(2);
         return static_cast<std::uint16_t>(encoder.encodedLength());
     });
     view = viewOf(end);
     ASSERT_TRUE(view.valid);
     auto endIn = protocol::decodeSystem<frm::SnapshotEnd>(view.payload, view.payloadLength);
-    EXPECT_EQ(5, endIn.chunkCount());
+    EXPECT_EQ(5, endIn.recordCount());
     EXPECT_EQ(6000, endIn.length());
     EXPECT_EQ(0xDEADBEEFU, endIn.crc32c());
     EXPECT_EQ(2U, endIn.formatVersion());

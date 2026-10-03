@@ -231,7 +231,7 @@ goes away raises from `doWork()` rather than as a fence. It is in
 `seqeron-service/build/classes/java/test` on the classpath beside the uber jar and refuse to start
 without it. Its
 list is `seqeron-service/src/test/resources/topology-test-gateway.xml`, and `topology-test-snapshot.xml` beside it
-when it takes part in snapshot rounds (`-Dprobe.snapshot`, `-Dprobe.passive`), which `snapshot-test.sh`
+when it takes part in snapshot rounds (`-Dprobe.snapshot`, `-Dprobe.passive`, `-Dprobe.snapshotDir`), which `snapshot-test.sh`
 drives through restores, a failover onto a restored instance and a passive activation. The one other topology document here is
 `seqeron-examples/topology.xml`, the pair the C++ `GatewayApp` example runs.
 
@@ -291,19 +291,21 @@ is what keeps each node's tap recording complete and gap-free — a node restore
 record only from wherever it resumed. The cost is that recovery time and archive size grow with uptime
 (the 1 Hz heartbeat alone is ~86.4k frames/day).
 
-**Application snapshots go through the log instead** (`doc/snapshot.md`). The sequencer synthesizes
-`SnapshotStarted` as a round's cut; every instance of a participating source serializes its state there
-through its façade's `SnapshotListener`, and the one that may publish submits it as `SnapshotChunk`s and a
-`SnapshotEnd`, sequenced and recorded like any other frame. Each `ReplayerService` indexes every source's
-latest valid snapshot (`SnapshotIndex`) and answers `SnapshotQuery`, and a starting client restores from it in
-`ReplayerRecovery` and resumes after the cut. Every other instance compares its own serialization with the
-sequenced end and fences on a difference (spec §16 A-6, A-7). This shortens a client's restart, not a node's.
+**Application snapshots are local files the log confirms instead** (`doc/snapshot.md`). The sequencer
+synthesizes `SnapshotStarted` as a round's cut; every instance of a participating source serializes its state
+there through its façade's `SnapshotListener` into a file in its own directory (`replayer.client.SnapshotStore`),
+and the one that may publish submits the round's `SnapshotEnd` — record count, length, CRC — the only snapshot
+frame a producer sends. Every instance compares its own serialization with the sequenced end and fences on a
+difference (spec §16 A-6, A-7). Each `ReplayerService` indexes every source's ends by round (`SnapshotIndex`)
+and answers `SnapshotQuery`, and a starting client restores in `ReplayerRecovery` from its newest file whose
+round the log ends and whose trailer matches that end, then resumes after the cut; an instance with no such
+file replays from `globalSeqNo` 1. This shortens a client's restart, not a node's.
 
 ### The replay protocol — two sides, two namespaces
 **`replayer.server`** is Java only: `ReplayerServer`/`ReplayerService` and their pure seams `Replayer`,
 `ReplaySlotAllocator`, `ReplayRecordings`, `ReplayClientIdCollisions`, `SnapshotIndex` and the gateway host's `TapRelay`, with
 `AeronReplayer` and `AeronTapRelay` the only parts that touch Aeron. **`replayer.client`** is `ReplayerStreamReceiver` and its pure seam
-`ReplayerRecovery`, plus `SequencedEvent` — Java, and C++ in
+`ReplayerRecovery`, plus `SequencedEvent` and an instance's snapshot files, `SnapshotStore` — Java, and C++ in
 `org::limitless::seqeron::replayer::client`. On a member `ReplayerServer` runs inside `SequencerServer`'s
 JVM, on its embedded driver, so a fatal in either exits the node with 70; its own `main` is the gateway
 host's alone. The two sides share only the protocol's addresses —
@@ -338,7 +340,7 @@ runtime decode failure on a live tap.
 is `Unsequenced` (100) on ingress, republished as `Sequenced` (101) on the tap, carrying one opaque
 length-prefixed payload named by `header.payloadId`. The **system** family is seqeron's own vocabulary
 (spec §7), named by `header.systemEventType` at the same offset: `UnsequencedSystem` (102) →
-`SequencedSystem` (103) for the thirteen events a producer submits, plus four templates of their own for
+`SequencedSystem` (103) for the twelve events a producer submits, plus four templates of their own for
 the four the sequencer synthesizes — `ClusterHeartbeat` (104), `LeadershipChanged` (105), `GatewayActive`
 (106), `SnapshotStarted` (107). Sequencing is copy-18/append-16 for both, the payload is never re-encoded, and `sequenceFrame`
 validates every frame against `doc/seqeron-protocol-spec.md` §9.2.
@@ -393,7 +395,7 @@ a distinct namespace so one include path
 covers all of them:
 
 - `sbe-frame.xml` (schema 210) — the eight top-level templates, their four header composites, and the
-  thirteen submitted **system** payloads (the connection lifecycle events, the cluster markers, the gateway
+  twelve submitted **system** payloads (the connection lifecycle events, the cluster markers, the gateway
   list/election frames, `GatewayActivationRequested`, `ApplicationRegistered`, the snapshot frames). No system message carries
   a `header` field — the frame's is the only one. Seqeron's own, and the only thing this tier decodes.
 - `sbe-replay.xml` (schema 212) — the nine **replay control** messages, node-local between a
@@ -448,7 +450,7 @@ both `PortLayout`s only: the scripts' `ports.sh` lays out localhost clusters.
 release, so bump them when one changes the API they use), `seqeron-protocol-spec.md` (normative — the frames, the families,
 the system vocabulary, the topology document), `client-api.md` (what a client programs against, and what in
 the client tier is not API — update it when that surface changes), `fault-tolerance.md`, `clusterctl.md` and `ops.md` (runbooks, ports, counters), and `snapshot.md`
-(application snapshots through the log). The topology documents here are
+(application snapshots: local files the log confirms). The topology documents here are
 `seqeron-service/src/test/resources/topology-test-gateway.xml`, `topology-test-snapshot.xml` beside it, and
 `seqeron-examples/topology.xml`.
 

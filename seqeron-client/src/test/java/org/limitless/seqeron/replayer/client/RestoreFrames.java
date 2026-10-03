@@ -1,22 +1,37 @@
 package org.limitless.seqeron.replayer.client;
 
+import java.util.zip.CRC32C;
 import org.agrona.ExpandableArrayBuffer;
 import org.agrona.MutableDirectBuffer;
 import org.agrona.concurrent.UnsafeBuffer;
-import org.limitless.seqeron.protocol.SnapshotFormat;
 import org.limitless.seqeron.protocol.SnapshotHeader;
 import org.limitless.seqeron.protocol.SystemFrame;
 import org.limitless.seqeron.sbe.frame.MessageHeaderEncoder;
 import org.limitless.seqeron.sbe.frame.SequencedSystemEncoder;
-import org.limitless.seqeron.sbe.frame.SnapshotChunkEncoder;
 import org.limitless.seqeron.sbe.frame.SnapshotEndEncoder;
 import org.limitless.seqeron.sbe.frame.SnapshotStartedEncoder;
 import org.limitless.seqeron.sbe.replay.SnapshotLocationEncoder;
 
-/** A snapshot's frames as a restore replays them, and the Replayer's answer locating it (doc/snapshot.md §5, §7). */
+/**
+ * A snapshot as a restore meets it (doc/snapshot.md §5, §7): the instance's own file, the round's frames, and the
+ * Replayer's answer confirming it.
+ */
 final class RestoreFrames {
     /** One encoded frame or control message. */
     record Frame(UnsafeBuffer buffer, int length) { }
+
+    /** What a {@code SnapshotEnd} says of a snapshot's records. */
+    record Digest(int recordCount, long length, long crc32c) {
+        static Digest of(final byte[]... records) {
+            long length = 0;
+            final CRC32C crc = new CRC32C();
+            for (final byte[] record : records) {
+                length += record.length;
+                crc.update(record);
+            }
+            return new Digest(records.length, length, crc.getValue());
+        }
+    }
 
     private RestoreFrames() {
     }
@@ -31,33 +46,25 @@ final class RestoreFrames {
         return new Frame(buffer, MessageHeaderEncoder.ENCODED_LENGTH + encoder.encodedLength());
     }
 
-    static Frame chunk(final long globalSeqNo, final int sourceId, final long round, final int chunkIndex,
-                       final byte[] record) {
-        final MutableDirectBuffer body = new ExpandableArrayBuffer(2048);
-        final SnapshotChunkEncoder encoder = new SnapshotChunkEncoder();
-        encoder.wrap(body, 0).round(round).chunkIndex(chunkIndex).putData(record, 0, record.length);
-        return system(globalSeqNo, sourceId, SystemFrame.SNAPSHOT_CHUNK, body, encoder.encodedLength());
-    }
-
-    /** The end the records {@code records} validate against. */
+    /** The end the records {@code records} match. */
     static Frame end(final long globalSeqNo, final int sourceId, final long round, final int formatVersion,
                      final byte[]... records) {
-        long length = 0;
-        final java.util.zip.CRC32C crc = new java.util.zip.CRC32C();
-        for (final byte[] record : records) {
-            length += record.length;
-            crc.update(record);
-        }
-        return end(globalSeqNo, sourceId, round, records.length, length, crc.getValue(), formatVersion);
-    }
-
-    static Frame end(final long globalSeqNo, final int sourceId, final long round, final int chunkCount,
-                     final long length, final long crc32c, final int formatVersion) {
+        final Digest digest = Digest.of(records);
         final MutableDirectBuffer body = new ExpandableArrayBuffer(64);
         final SnapshotEndEncoder encoder = new SnapshotEndEncoder();
-        encoder.wrap(body, 0).round(round).chunkCount(chunkCount).length(length).crc32c(crc32c)
-            .formatVersion(formatVersion);
+        encoder.wrap(body, 0).round(round).recordCount(digest.recordCount()).length(digest.length())
+            .crc32c(digest.crc32c()).formatVersion(formatVersion);
         return system(globalSeqNo, sourceId, SystemFrame.SNAPSHOT_END, body, encoder.encodedLength());
+    }
+
+    /** Writes {@code records} as round {@code round}'s file, as the instance did when it serialized them. */
+    static void write(final SnapshotStore store, final long round, final int formatVersion, final byte[]... records) {
+        final Digest digest = Digest.of(records);
+        store.begin(round);
+        for (final byte[] record : records) {
+            store.append(new UnsafeBuffer(record), 0, record.length);
+        }
+        store.commit(digest.recordCount(), digest.length(), digest.crc32c(), formatVersion);
     }
 
     /** An application's header record. */
@@ -75,9 +82,9 @@ final class RestoreFrames {
         return buffer.byteArray();
     }
 
-    /** The Replayer's answer; {@code round} −1 for none. */
+    /** The Replayer's answer: round {@code round}'s cut and sequenced end, or none for {@code round} −1. */
     static Frame location(final int clientId, final long requestId, final long round, final long asOfGlobalSeqNo,
-                          final long asOfPosition, final long endPosition, final long formatVersion) {
+                          final long asOfPosition, final long formatVersion, final Digest end) {
         final UnsafeBuffer buffer = new UnsafeBuffer(new byte[128]);
         final SnapshotLocationEncoder encoder = new SnapshotLocationEncoder();
         encoder.wrapAndApplyHeader(buffer, 0, new org.limitless.seqeron.sbe.replay.MessageHeaderEncoder())
@@ -86,15 +93,17 @@ final class RestoreFrames {
             .round(round)
             .asOfGlobalSeqNo(asOfGlobalSeqNo)
             .asOfPosition(asOfPosition)
-            .endPosition(endPosition)
-            .formatVersion(formatVersion);
+            .formatVersion(formatVersion)
+            .recordCount(end.recordCount())
+            .length(end.length())
+            .crc32c(end.crc32c());
         final int headerLength = org.limitless.seqeron.sbe.replay.MessageHeaderEncoder.ENCODED_LENGTH;
         return new Frame(buffer, headerLength + encoder.encodedLength());
     }
 
     private static Frame system(final long globalSeqNo, final int sourceId, final int systemEventType,
                                 final MutableDirectBuffer body, final int bodyLength) {
-        final UnsafeBuffer buffer = new UnsafeBuffer(new byte[SnapshotFormat.MAX_RECORD_LENGTH + 128]);
+        final UnsafeBuffer buffer = new UnsafeBuffer(new byte[256]);
         final SequencedSystemEncoder encoder = new SequencedSystemEncoder();
         encoder.wrapAndApplyHeader(buffer, 0, new MessageHeaderEncoder());
         encoder.header().sourceId(sourceId).connectionId(-1).sessionId(5).systemEventType(systemEventType)

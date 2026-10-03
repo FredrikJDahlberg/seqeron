@@ -91,8 +91,8 @@ server**; the server side of the replay protocol is Java only.
   `SequencerService` refuses to take or restore one. That is what keeps every node's tap recording
   complete: a node restored from a snapshot would record only from wherever it resumed. The cost is
   recovery time and archive size growing with uptime — the 1 Hz heartbeat alone is ~86.4k frames/day.
-  Clients can snapshot their own state through the log instead, and restart from it
-  ([`doc/snapshot.md`](doc/snapshot.md)).
+  Clients can snapshot their own state instead, each instance into local files the log confirms, and
+  restart from it ([`doc/snapshot.md`](doc/snapshot.md)).
 - **A node that cannot record terminates itself.** `TapPublisher` watches the archive's
   `RecordingPos` counter, and a node whose recording has stopped or stopped advancing exits (70)
   rather than sequence history it cannot keep. Peers keep quorum, and the restart rebuilds its
@@ -544,7 +544,7 @@ To cut one:
 | [`doc/fault-tolerance.md`](doc/fault-tolerance.md) | Node loss, leader failover, a stuck archive, a lost frame: what survives each and how it recovers |
 | [`doc/clusterctl.md`](doc/clusterctl.md) | The operator tool's runbook |
 | [`doc/ops.md`](doc/ops.md) | The Prometheus/Grafana metrics stack |
-| [`doc/snapshot.md`](doc/snapshot.md) | Application snapshots through the log, and what cluster snapshots would take |
+| [`doc/snapshot.md`](doc/snapshot.md) | Application snapshots, local files the log confirms, and what cluster snapshots would take |
 
 Those seven are the whole doc set, and every document reference in this tree resolves inside it.
 

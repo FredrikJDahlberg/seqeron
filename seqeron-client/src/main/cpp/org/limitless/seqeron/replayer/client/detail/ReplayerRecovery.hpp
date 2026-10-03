@@ -8,6 +8,7 @@
 #include <cstring>
 #include <deque>
 #include <functional>
+#include <limits>
 #include <optional>
 #include <span>
 #include <stdexcept>
@@ -18,12 +19,11 @@
 #include "org/limitless/seqeron/protocol/SequencedFrame.hpp"
 #include "org/limitless/seqeron/protocol/Snapshot.hpp"
 #include "org/limitless/seqeron/replayer/client/SnapshotRestoreHandler.hpp"
+#include "org/limitless/seqeron/replayer/client/SnapshotStore.hpp"
 #include "org/limitless/seqeron/util/Logger.hpp"
 
-// Replay-protocol control codecs (sbe-replay.xml) + LeadershipChanged and the snapshot frames (sbe-frame.xml)
+// Replay-protocol control codecs (sbe-replay.xml) + LeadershipChanged (sbe-frame.xml)
 #include "org_limitless_seqeron_sbe_frame/LeadershipChanged.h"
-#include "org_limitless_seqeron_sbe_frame/SnapshotChunk.h"
-#include "org_limitless_seqeron_sbe_frame/SnapshotEnd.h"
 #include "org_limitless_seqeron_sbe_replay/MessageHeader.h"
 #include "org_limitless_seqeron_sbe_replay/ReplayClientIdInUse.h"
 #include "org_limitless_seqeron_sbe_replay/ReplayPending.h"
@@ -41,7 +41,7 @@ class ReplayerRecoveryActions
 {
   public:
     virtual void sendReplayRequest(std::int64_t requestId, std::int32_t segmentIndex, std::int64_t fromPosition) = 0;
-    virtual void sendSnapshotQuery(std::int64_t requestId, std::int32_t sourceId) = 0;
+    virtual void sendSnapshotQuery(std::int64_t requestId, std::int32_t sourceId, std::int64_t round) = 0;
     virtual bool sendReplayComplete() = 0;
     virtual bool sendReplayHeartbeat() = 0;
     virtual void openReplay(std::int64_t replaySessionId) = 0;
@@ -111,10 +111,11 @@ class RetainBlockPool
     std::vector<RetainBlock*> m_freeList;
 };
 
-// Given a source to restore (restoreFrom), a cold start first asks for that source's latest snapshot
-// (doc/snapshot.md §7). With one, it replays the snapshot's records from its SnapshotStarted to its SnapshotEnd,
-// dispatching nothing, then resumes there with the cut as the anchor; every later fall-back to a walk from
-// segment 0 resumes there instead.
+// Given a source to restore (restoreFrom), a cold start first restores the newest snapshot of its own that the log
+// confirms (doc/snapshot.md §7): it asks the Replayer for that round's sequenced SnapshotEnd, reads the file's
+// records into the handler if they match it, dispatching nothing, then resumes at the round's SnapshotStarted with
+// the cut as the anchor; every later fall-back to a walk from segment 0 resumes there instead. A file the log does
+// not confirm gives way to the next older one, and the last to a walk.
 class ReplayerRecovery
 {
   public:
@@ -140,6 +141,11 @@ class ReplayerRecovery
     static constexpr std::size_t MAX_RETAINED_FRAMES = 65536;
     static constexpr std::size_t MAX_RETAINED_BYTES = 16UL * 1024 * 1024;
 
+  public:
+    // Records one duty cycle restores at most, so a large snapshot does not stall the session.
+    static constexpr int MAX_RESTORE_RECORDS_PER_CYCLE = 1024;
+
+  private:
     const std::int32_t m_clientId;
     ReplayerRecoveryActions& m_actions;
     OnSequenced m_onSequenced;
@@ -186,14 +192,17 @@ class ReplayerRecovery
 
     std::int32_t m_restoreSourceId = -1; // the source restored from its snapshot, or -1 for none
     SnapshotRestoreHandler* m_restoreHandler = nullptr;
-    bool m_querying = false;  // a SnapshotQuery is out and unanswered
-    bool m_restoring = false; // replaying the chosen snapshot's records; nothing is dispatched until its end
+    SnapshotStore* m_store = nullptr;
+    bool m_querying = false;          // a SnapshotQuery is out and unanswered
+    std::int64_t m_queriedRound = -1; // the round of the local file the query is about
+    bool m_restoring = false;         // reading the chosen file's records; nothing is dispatched until its last
+    std::optional<SnapshotStore::Reader> m_reader;
+    std::int32_t m_restoreRecordIndex = 0;
     // The chosen snapshot: its round, its cut, and where its SnapshotStarted starts. 0 cut = none.
     std::int64_t m_snapshotRound = 0;
     std::int64_t m_snapshotGlobalSeqNo = 0;
     std::int64_t m_snapshotPosition = 0;
-    protocol::SnapshotValidator m_restoreValidator;
-    std::optional<protocol::SnapshotHeader> m_restoredHeader; // of the restore in progress, empty before chunk 0
+    std::optional<protocol::SnapshotHeader> m_restoredHeader; // of the restore in progress, empty before record 0
     std::optional<std::string> m_restoreFailure;              // why the restore cannot proceed; latched
 
   public:
@@ -227,23 +236,26 @@ class ReplayerRecovery
     }
 
     /**
-     * Restores a source's latest snapshot on start(), before anything is dispatched. Call before start().
+     * Restores a source's newest snapshot in a store that the log confirms on start(), before anything is
+     * dispatched. Call before start().
      *
      * @param sourceId the source whose snapshot to restore
+     * @param store    this instance's own snapshots; must outlive this object
      * @param handler  takes the snapshot's records; must outlive this object
      */
-    void restoreFrom(const std::int32_t sourceId, SnapshotRestoreHandler& handler)
+    void restoreFrom(const std::int32_t sourceId, SnapshotStore& store, SnapshotRestoreHandler& handler)
     {
         m_restoreSourceId = sourceId;
+        m_store = &store;
         m_restoreHandler = &handler;
     }
 
-    // Cold start: query the source's snapshot if restoring one, else walk the recording chain from segment 0.
+    // Cold start: restore the newest local snapshot if restoring one, else walk the recording chain from segment 0.
     void start()
     {
         if (m_restoreSourceId >= 0)
         {
-            sendSnapshotQuery();
+            queryBelow(std::numeric_limits<std::int64_t>::max());
         }
         else
         {
@@ -253,7 +265,8 @@ class ReplayerRecovery
 
     // Starts over as a cold start on a client that has dispatched frames already: a passive gateway instance's
     // activation (doc/snapshot.md §4). It restores the source's latest snapshot again, or walks from segment 0
-    // without one, and dispatches every frame after that once more, and nothing before.
+    // without one, and dispatches every frame after that once more, and nothing before. Call only once caught up:
+    // no query, restore or retained frame is in flight then, so the state reset here is all there is.
     void restart()
     {
         m_actions.closeReplay();
@@ -285,16 +298,12 @@ class ReplayerRecovery
             {
                 util::Logger::warn(util::component::ReplayerStreamReceiver, util::eventCode::TapGap,
                                    "resume replay opened at globalSeqNo=%lld, expected %lld — the active "
-                                   "recording rotated under us; re-walking the recording chain from segment 0",
+                                   "recording rotated under us; replaying history from its start (segment 0, or "
+                                   "the restored snapshot)",
                                    static_cast<long long>(sequenceNumber), static_cast<long long>(anchor));
                 rewalk();
                 return;
             }
-        }
-        if (m_restoring && fromReplay)
-        {
-            restore(entry);
-            return;
         }
         if (m_lastGlobalSeqNo != 0)
         {
@@ -450,6 +459,10 @@ class ReplayerRecovery
 
     void doTimers(const bool requestPublicationPending)
     {
+        if (m_restoring)
+        {
+            restoreRecords();
+        }
         const std::int64_t nowMs = m_actions.nowMs();
         if (m_querying && (requestPublicationPending || (nowMs - m_lastRequestMs) > RESEND_INTERVAL_MS))
         {
@@ -528,10 +541,10 @@ class ReplayerRecovery
 
     bool isRecovering() const
     {
-        return m_replaySessionId >= 0 || m_awaitingReplay || m_querying;
+        return m_replaySessionId >= 0 || m_awaitingReplay || m_querying || m_restoring;
     }
 
-    // Replaying a snapshot's records, before anything after its cut is dispatched.
+    // Reading a snapshot's records, before anything after its cut is dispatched.
     bool isRestoring() const
     {
         return m_restoring;
@@ -602,17 +615,12 @@ class ReplayerRecovery
 
     void requestResume()
     {
-        if (m_restoring)
-        {
-            rewalk(); // nothing is dispatched yet: the restore starts over
-            return;
-        }
         requestReplay(RESUME_SEGMENT_INDEX, m_lastFramePosition);
         m_resumeAnchorSequenceNumber = m_lastGlobalSeqNo;
     }
 
-    // Replays history from its start again: segment 0 of the chain, or, once a snapshot is chosen, the active
-    // recording at its SnapshotStarted, with the cut as the anchor. A restore in progress starts over.
+    // Replays history from its start again: segment 0 of the chain, or, once a snapshot is restored, the active
+    // recording at its SnapshotStarted, with the cut as the anchor.
     void rewalk()
     {
         if (m_snapshotGlobalSeqNo == 0)
@@ -620,84 +628,104 @@ class ReplayerRecovery
             requestReplay(0, 0);
             return;
         }
-        if (m_restoring)
-        {
-            m_restoreValidator.reset(m_snapshotRound);
-            m_restoredHeader.reset();
-        }
         requestReplay(RESUME_SEGMENT_INDEX, m_snapshotPosition);
         m_resumeAnchorSequenceNumber = m_snapshotGlobalSeqNo;
     }
 
-    // Asks this node's Replayer where the source's latest snapshot is; resent until answered.
+    // Asks about the newest local snapshot below a round, or walks from segment 0 when there is none.
+    void queryBelow(const std::int64_t belowRound)
+    {
+        m_queriedRound = m_store->latestRound(belowRound);
+        if (m_queriedRound < 0)
+        {
+            requestReplay(0, 0);
+            return;
+        }
+        sendSnapshotQuery();
+    }
+
+    // Asks this node's Replayer for the sequenced end of the queried round; resent until answered.
     void sendSnapshotQuery()
     {
         m_querying = true;
         m_lastRequestMs = m_actions.nowMs();
         ++m_requestId;
-        m_actions.sendSnapshotQuery(m_requestId, m_restoreSourceId);
+        m_actions.sendSnapshotQuery(m_requestId, m_restoreSourceId, m_queriedRound);
     }
 
-    // With no snapshot, walks from segment 0; with one this build reads, restores it.
+    // Restores the queried round's file if the log confirms it; otherwise moves on to the next older one. A format
+    // this build does not read stops recovery.
     void onSnapshotLocation(sbe::replay::SnapshotLocation& location)
     {
         m_querying = false;
         m_replayerUnavailable = false;
-        if (location.round() < 0)
+        if (location.round() != m_queriedRound)
         {
-            requestReplay(0, 0);
+            util::Logger::info(util::component::ReplayerStreamReceiver,
+                               "round %lld of source %d has no sequenced SnapshotEnd in this node's index; trying an "
+                               "older snapshot",
+                               static_cast<long long>(m_queriedRound), static_cast<int>(m_restoreSourceId));
+            queryBelow(m_queriedRound);
             return;
         }
         if (!m_restoreHandler->supportsFormatVersion(location.formatVersion()))
         {
-            failRestore("round " + std::to_string(location.round()) + " has formatVersion " +
+            failRestore("round " + std::to_string(m_queriedRound) + " has formatVersion " +
                         std::to_string(location.formatVersion()) + ", which this build does not read");
             return;
         }
-        m_snapshotRound = location.round();
+        m_reader = m_store->open(m_queriedRound);
+        if (!m_reader || m_reader->recordCount() != location.recordCount() ||
+            m_reader->length() != static_cast<std::uint64_t>(location.length()) ||
+            m_reader->crc32c() != location.crc32c())
+        {
+            util::Logger::warn(util::component::ReplayerStreamReceiver, util::eventCode::SnapshotStoreFailed,
+                               "round %lld's snapshot file is %s; trying an older snapshot",
+                               static_cast<long long>(m_queriedRound),
+                               m_reader ? "not the one sequenced" : "missing or cut short");
+            m_reader.reset();
+            queryBelow(m_queriedRound);
+            return;
+        }
+        m_snapshotRound = m_queriedRound;
         m_snapshotGlobalSeqNo = location.asOfGlobalSeqNo();
         m_snapshotPosition = location.asOfPosition();
         m_restoring = true;
+        m_restoreRecordIndex = 0;
+        m_restoredHeader.reset();
         util::Logger::info(util::component::ReplayerStreamReceiver,
                            "restoring source %d from round %lld, cut at globalSeqNo=%lld position=%lld",
                            static_cast<int>(m_restoreSourceId), static_cast<long long>(m_snapshotRound),
                            static_cast<long long>(m_snapshotGlobalSeqNo), static_cast<long long>(m_snapshotPosition));
-        rewalk();
     }
 
-    // One frame of the restore pass. Only the source's own chunks and end of the chosen round count; they pass
-    // the check the Replayer indexed them by, so one that fails here is a damaged recording.
-    void restore(const protocol::FrameView& view)
+    // The next records of the restore, at most MAX_RESTORE_RECORDS_PER_CYCLE. They match the end the log holds by
+    // the file's trailer, so records that fail it are a damaged file.
+    void restoreRecords()
     {
         m_noProgressSinceMs = 0;
-        if (!view.system || view.sourceId != m_restoreSourceId)
+        std::span<const std::uint8_t> record;
+        for (int i = 0; i < MAX_RESTORE_RECORDS_PER_CYCLE; ++i)
         {
-            return;
-        }
-        if (view.systemEventType == protocol::SNAPSHOT_CHUNK)
-        {
-            auto chunk = protocol::decodeSystem<sbe::frame::SnapshotChunk>(view.payload, view.payloadLength);
-            if (chunk.round() != m_snapshotRound)
+            const std::int32_t length = m_reader->next(record);
+            if (length == SnapshotStore::Reader::END)
             {
+                completeRestore();
                 return;
             }
-            const std::int32_t chunkIndex = chunk.chunkIndex();
-            const std::uint16_t dataLength = chunk.dataLength();
-            const auto* data = reinterpret_cast<const std::uint8_t*>(chunk.data());
-            if (m_restoreValidator.onChunk(m_snapshotRound, chunkIndex, data, dataLength) ==
-                protocol::SnapshotValidator::State::Invalid)
+            if (length == SnapshotStore::Reader::DAMAGED)
             {
-                failRestore("round " + std::to_string(m_snapshotRound) + "'s chunk " + std::to_string(chunkIndex) +
-                            " is out of order");
+                failRestore("round " + std::to_string(m_snapshotRound) +
+                            "'s snapshot file is damaged: its records do not match the SnapshotEnd sequenced for it");
                 return;
             }
-            if (chunkIndex == 0)
+            if (m_restoreRecordIndex == 0)
             {
-                m_restoredHeader = protocol::SnapshotHeader::decode(data, dataLength);
+                m_restoredHeader = protocol::SnapshotHeader::decode(record.data(), record.size());
                 if (!m_restoredHeader)
                 {
                     failRestore("round " + std::to_string(m_snapshotRound) + " has a header of version " +
-                                std::to_string(protocol::SnapshotHeader::version(data, dataLength)) +
+                                std::to_string(protocol::SnapshotHeader::version(record.data(), record.size())) +
                                 ", which this build does not read");
                     return;
                 }
@@ -705,23 +733,9 @@ class ReplayerRecovery
             }
             else
             {
-                m_restoreHandler->onSnapshotRecord(std::span<const std::uint8_t>(data, dataLength), chunkIndex - 1);
+                m_restoreHandler->onSnapshotRecord(record, m_restoreRecordIndex - 1);
             }
-        }
-        else if (view.systemEventType == protocol::SNAPSHOT_END)
-        {
-            auto end = protocol::decodeSystem<sbe::frame::SnapshotEnd>(view.payload, view.payloadLength);
-            if (end.round() != m_snapshotRound)
-            {
-                return;
-            }
-            if (m_restoreValidator.onEnd(m_snapshotRound, end.chunkCount(), end.length(), end.crc32c()) !=
-                protocol::SnapshotValidator::State::Complete)
-            {
-                failRestore("round " + std::to_string(m_snapshotRound) + "'s records do not match its SnapshotEnd");
-                return;
-            }
-            completeRestore();
+            ++m_restoreRecordIndex;
         }
     }
 
@@ -730,6 +744,7 @@ class ReplayerRecovery
     void completeRestore()
     {
         m_restoring = false;
+        m_reader.reset();
         m_lastGlobalSeqNo = m_snapshotGlobalSeqNo;
         m_lastFramePosition = m_snapshotPosition;
         m_currentLeaderMemberId = m_restoredHeader->leaderMemberId;
@@ -749,6 +764,7 @@ class ReplayerRecovery
     {
         m_querying = false;
         m_restoring = false;
+        m_reader.reset();
         m_awaitingReplay = false;
         m_replaySessionId = -1;
         m_actions.closeReplay();
@@ -780,8 +796,8 @@ class ReplayerRecovery
             {
                 util::Logger::warn(util::component::ReplayerStreamReceiver, util::eventCode::TapGap,
                                    "resume at position %lld answered 'nothing to replay' while a hole is open "
-                                   "above globalSeqNo=%lld — the active recording rotated under us; re-walking "
-                                   "the recording chain from segment 0",
+                                   "above globalSeqNo=%lld — the active recording rotated under us; replaying "
+                                   "history from its start (segment 0, or the restored snapshot)",
                                    static_cast<long long>(m_reqFromPosition),
                                    static_cast<long long>(m_lastGlobalSeqNo));
                 rewalk();
@@ -877,11 +893,6 @@ class ReplayerRecovery
     {
         m_actions.closeReplay();
         m_replaySessionId = -1;
-        if (m_restoring)
-        {
-            rewalk(); // the bound came before the snapshot's end, which the Replayer indexed: start over
-            return;
-        }
         if (m_walkSegmentIndex < 0)
         {
             if (reachedTip())

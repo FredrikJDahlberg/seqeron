@@ -6,11 +6,13 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <memory>
 #include <span>
 #include <string>
 #include <vector>
 
 #include "org/limitless/seqeron/app/detail/SnapshotTaker.hpp"
+#include "org/limitless/seqeron/helpers/TempDirectory.hpp"
 
 namespace org::limitless::seqeron::app::detail {
 namespace {
@@ -55,24 +57,10 @@ struct State final : SnapshotListener
     std::vector<std::string> restored;
 };
 
-// Records what was placed; declines once `budget` frames have gone.
+// Records the ends placed; declines once `budget` have gone.
 struct Frames
 {
-    protocol::Publish publishChunk(const std::int64_t round, const std::int32_t chunkIndex,
-                                   const std::span<const std::uint8_t> record)
-    {
-        if (budget == 0)
-        {
-            return protocol::Publish::Declined;
-        }
-        --budget;
-        EXPECT_EQ(static_cast<std::int32_t>(chunks.size()), chunkIndex) << "chunks go out in order, each once";
-        chunks.emplace_back(record.begin(), record.end());
-        chunkRounds.push_back(round);
-        return protocol::Publish::Published;
-    }
-
-    protocol::Publish publishEnd(const std::int64_t round, const std::int32_t chunkCount, const std::uint64_t length,
+    protocol::Publish publishEnd(const std::int64_t round, const std::int32_t recordCount, const std::uint64_t length,
                                  const std::uint32_t crc32c, const std::uint32_t formatVersion)
     {
         if (budget == 0)
@@ -80,184 +68,246 @@ struct Frames
             return protocol::Publish::Declined;
         }
         --budget;
-        ends.push_back({ round, chunkCount, static_cast<std::int64_t>(length), crc32c, formatVersion });
+        ends.push_back({ round, recordCount, static_cast<std::int64_t>(length), crc32c, formatVersion });
         return protocol::Publish::Published;
     }
 
     struct End
     {
         std::int64_t round;
-        std::int32_t chunkCount;
+        std::int32_t recordCount;
         std::int64_t length;
         std::uint32_t crc32c;
         std::uint32_t formatVersion;
     };
 
-    std::vector<std::vector<std::uint8_t>> chunks;
-    std::vector<std::int64_t> chunkRounds;
     std::vector<End> ends;
     int budget = 1 << 30;
 };
 
-std::vector<std::uint8_t> filled(const std::uint8_t value)
+// Instances, each with a directory of its own under one test directory.
+struct Instances
 {
-    return std::vector<std::uint8_t>(1000, value);
-}
+    // A participating instance; its store is the one stores.back() holds.
+    SnapshotTaker& participating()
+    {
+        SnapshotTaker& taker = instance();
+        taker.participating(true);
+        return taker;
+    }
 
-TEST(SnapshotTaker, WithoutAListenerOrWithTheRowOffAReplicaSerializesAndSubmitsNothing)
-{
+    SnapshotTaker& instance()
+    {
+        stores.push_back(
+            std::make_unique<replayer::client::SnapshotStore>(directory.path() / std::to_string(stores.size())));
+        takers.push_back(std::make_unique<SnapshotTaker>(&state, stores.back().get()));
+        return *takers.back();
+    }
+
+    replayer::client::SnapshotStore& lastStore()
+    {
+        return *stores.back();
+    }
+
+    helpers::TempDirectory directory;
     State state;
     Frames frames;
-    SnapshotTaker noListener{ nullptr };
+    std::vector<std::unique_ptr<replayer::client::SnapshotStore>> stores;
+    std::vector<std::unique_ptr<SnapshotTaker>> takers;
+};
+
+std::vector<std::uint8_t> filled(const int value)
+{
+    return std::vector<std::uint8_t>(1000, static_cast<std::uint8_t>(value));
+}
+
+std::vector<std::vector<std::uint8_t>> readAll(replayer::client::SnapshotStore::Reader& reader)
+{
+    std::vector<std::vector<std::uint8_t>> records;
+    std::span<const std::uint8_t> record;
+    std::int32_t length;
+    while ((length = reader.next(record)) >= 0)
+    {
+        records.emplace_back(record.begin(), record.end());
+    }
+    EXPECT_EQ(replayer::client::SnapshotStore::Reader::END, length);
+    return records;
+}
+
+TEST(SnapshotTaker, WithoutAListenerOrWithTheRowOffAReplicaSerializesWritesAndSubmitsNothing)
+{
+    Instances t;
+    SnapshotTaker noListener{ nullptr, nullptr };
     noListener.participating(true);
     EXPECT_FALSE(noListener.isParticipating());
 
-    SnapshotTaker rowOff{ &state };
+    SnapshotTaker& rowOff = t.instance();
     rowOff.participating(false);
     rowOff.onSnapshotStarted(1, HEADER, true);
-    EXPECT_EQ(0, state.serialized);
-    EXPECT_EQ(0, rowOff.submit(frames));
+    EXPECT_EQ(0, t.state.serialized);
+    EXPECT_EQ(-1, t.lastStore().latestRound());
+    EXPECT_EQ(0, rowOff.submit(t.frames));
     EXPECT_TRUE(rowOff.onSnapshotEnd(1, 3, 2018, 0)) << "nothing serialized, nothing to disagree with";
 }
 
-TEST(SnapshotTaker, ThePublisherSubmitsTheHeaderItsRecordsInOrderThenAnEndItsOwnFramesValidate)
+TEST(SnapshotTaker, TheRoundsFileHoldsTheHeaderAndTheRecordsThePublisherSubmitsTheEndItMatches)
 {
-    State state;
-    Frames frames;
-    SnapshotTaker taker{ &state };
-    taker.participating(true);
+    Instances t;
+    SnapshotTaker& taker = t.participating();
     taker.onSnapshotStarted(7, HEADER, true);
-    EXPECT_EQ(1, state.serialized);
-    EXPECT_EQ(4, taker.submit(frames)) << "two records, the header and the end";
+    EXPECT_EQ(1, t.state.serialized);
+    EXPECT_TRUE(taker.isPublishing());
+    EXPECT_EQ(1, taker.submit(t.frames)) << "the end, once";
     EXPECT_FALSE(taker.isPublishing());
+    EXPECT_EQ(0, taker.submit(t.frames));
 
-    ASSERT_EQ(3u, frames.chunks.size());
-    EXPECT_EQ(HEADER, protocol::SnapshotHeader::decode(frames.chunks[0].data(), frames.chunks[0].size()));
-    EXPECT_EQ(filled(1), frames.chunks[2]);
-    ASSERT_EQ(1u, frames.ends.size());
-    const Frames::End& end = frames.ends[0];
+    ASSERT_EQ(1u, t.frames.ends.size());
+    const Frames::End end = t.frames.ends[0];
     EXPECT_EQ(7, end.round);
-    EXPECT_EQ(3, end.chunkCount);
+    EXPECT_EQ(3, end.recordCount);
     EXPECT_EQ(2018, end.length);
-    EXPECT_EQ(5u, end.formatVersion) << "the listener's formatVersion";
+    EXPECT_EQ(5U, end.formatVersion) << "the listener's formatVersion";
 
-    protocol::SnapshotValidator validator;
-    validator.reset(7);
-    for (std::size_t i = 0; i < frames.chunks.size(); ++i)
-    {
-        validator.onChunk(7, static_cast<std::int32_t>(i), frames.chunks[i].data(), frames.chunks[i].size());
-    }
-    EXPECT_EQ(protocol::SnapshotValidator::State::Complete, validator.onEnd(7, end.chunkCount, end.length, end.crc32c));
-    EXPECT_TRUE(taker.onSnapshotEnd(7, end.chunkCount, end.length, end.crc32c)) << "its own end agrees with it";
+    std::optional<replayer::client::SnapshotStore::Reader> reader = t.lastStore().open(7);
+    ASSERT_TRUE(reader.has_value());
+    EXPECT_EQ(3, reader->recordCount());
+    EXPECT_EQ(static_cast<std::uint64_t>(end.length), reader->length());
+    EXPECT_EQ(end.crc32c, reader->crc32c());
+    const auto records = readAll(*reader);
+    ASSERT_EQ(3u, records.size());
+    EXPECT_EQ(HEADER, protocol::SnapshotHeader::decode(records[0].data(), records[0].size()));
+    EXPECT_EQ(filled(0), records[1]);
+    EXPECT_EQ(filled(1), records[2]);
+    EXPECT_TRUE(taker.onSnapshotEnd(7, end.recordCount, end.length, end.crc32c)) << "its own end agrees with it";
 }
 
-TEST(SnapshotTaker, ADeclinedFrameIsPlacedAgainNextCycleAndNoCyclePlacesMoreThanItsBudget)
+TEST(SnapshotTaker, ADeclinedEndIsPlacedAgainOnTheNextCycle)
 {
-    State state;
-    state.records = 40;
-    Frames frames;
-    SnapshotTaker taker{ &state };
-    taker.participating(true);
+    Instances t;
+    SnapshotTaker& taker = t.participating();
     taker.onSnapshotStarted(2, HEADER, true);
-    frames.budget = 5;
-    EXPECT_EQ(5, taker.submit(frames));
-    frames.budget = 1 << 30;
-    EXPECT_EQ(SnapshotTaker::MAX_CHUNKS_PER_CYCLE, taker.submit(frames));
-    while (taker.isPublishing())
-    {
-        taker.submit(frames);
-    }
-    EXPECT_EQ(41u, frames.chunks.size()) << "the header and forty records, none lost or repeated";
-    EXPECT_EQ(1u, frames.ends.size());
+    t.frames.budget = 0;
+    EXPECT_EQ(0, taker.submit(t.frames));
+    EXPECT_TRUE(taker.isPublishing());
+    t.frames.budget = 1 << 30;
+    EXPECT_EQ(1, taker.submit(t.frames));
+    EXPECT_EQ(1u, t.frames.ends.size());
 }
 
-TEST(SnapshotTaker, AReplicaThatDoesNotPublishSubmitsNothingAndComparesTheSourcesEndWithItsOwn)
+TEST(SnapshotTaker, AReplicaThatDoesNotPublishWritesItsFileSubmitsNothingAndComparesTheSourcesEnd)
 {
-    State state;
-    Frames frames;
-    SnapshotTaker publisher{ &state };
-    publisher.participating(true);
+    Instances t;
+    SnapshotTaker& publisher = t.participating();
     publisher.onSnapshotStarted(4, HEADER, true);
-    publisher.submit(frames);
-    const Frames::End end = frames.ends[0];
+    publisher.submit(t.frames);
+    const Frames::End end = t.frames.ends[0];
 
-    SnapshotTaker follower{ &state };
-    follower.participating(true);
+    SnapshotTaker& follower = t.participating();
     follower.onSnapshotStarted(4, HEADER, false);
+    EXPECT_EQ(4, t.lastStore().latestRound());
     Frames none;
     EXPECT_EQ(0, follower.submit(none));
-    EXPECT_TRUE(follower.onSnapshotEnd(4, end.chunkCount, end.length, end.crc32c));
+    EXPECT_TRUE(follower.onSnapshotEnd(4, end.recordCount, end.length, end.crc32c));
 
-    SnapshotTaker diverged{ &state };
-    diverged.participating(true);
-    state.records = 3;
+    SnapshotTaker& diverged = t.participating();
+    t.state.records = 3;
     diverged.onSnapshotStarted(4, HEADER, false);
-    EXPECT_FALSE(diverged.onSnapshotEnd(4, end.chunkCount, end.length, end.crc32c))
+    EXPECT_FALSE(diverged.onSnapshotEnd(4, end.recordCount, end.length, end.crc32c))
         << "different state, different records";
 
-    SnapshotTaker otherRound{ &state };
-    otherRound.participating(true);
+    SnapshotTaker& otherRound = t.participating();
     otherRound.onSnapshotStarted(5, HEADER, false);
     EXPECT_TRUE(otherRound.onSnapshotEnd(4, 99, 0, 0)) << "a late end of an earlier round is no evidence";
 }
 
-TEST(SnapshotTaker, APublisherThatLosesTheRoleStopsForGoodWithNoEnd)
+TEST(SnapshotTaker, AnEndThatMatchesMakesItsRoundTheOldestFileKeptOneThatDoesNotDeletesNothing)
 {
-    State state;
-    state.records = 40;
-    Frames frames;
-    SnapshotTaker taker{ &state };
-    taker.participating(true);
-    taker.onSnapshotStarted(6, HEADER, true);
-    taker.submit(frames);
-    taker.stopPublishing();
-    EXPECT_EQ(0, taker.submit(frames));
-    EXPECT_EQ(static_cast<std::size_t>(SnapshotTaker::MAX_CHUNKS_PER_CYCLE), frames.chunks.size());
-    EXPECT_TRUE(frames.ends.empty());
+    Instances t;
+    SnapshotTaker& taker = t.participating();
+    taker.onSnapshotStarted(1, HEADER, false);
+    taker.onSnapshotStarted(2, HEADER, true);
+    taker.submit(t.frames);
+    taker.onSnapshotStarted(3, HEADER, false);
+    replayer::client::SnapshotStore& store = t.lastStore();
+    EXPECT_EQ(3, store.latestRound());
+
+    EXPECT_FALSE(taker.onSnapshotEnd(3, 99, 0, 0));
+    EXPECT_EQ(1, store.latestRound(2)) << "a diverged instance keeps what it had";
+
+    taker.onSnapshotStarted(4, HEADER, false);
+    const Frames::End end = t.frames.ends[0];
+    EXPECT_TRUE(taker.onSnapshotEnd(4, end.recordCount, end.length, end.crc32c));
+    EXPECT_EQ(4, store.latestRound());
+    EXPECT_EQ(-1, store.latestRound(4)) << "rounds 1 to 3 are gone";
 }
 
-TEST(SnapshotTaker, AListenerAnsweringALengthNoRecordCanHaveDropsTheRoundWithNothingSubmitted)
+TEST(SnapshotTaker, APublisherThatLosesTheRoleStopsForGoodWithNoEnd)
+{
+    Instances t;
+    SnapshotTaker& taker = t.participating();
+    taker.onSnapshotStarted(6, HEADER, true);
+    taker.stopPublishing();
+    EXPECT_EQ(0, taker.submit(t.frames));
+    EXPECT_TRUE(t.frames.ends.empty());
+    EXPECT_EQ(6, t.lastStore().latestRound()) << "its file stays";
+}
+
+TEST(SnapshotTaker, AListenerAnsweringALengthNoRecordCanHaveDropsTheRoundWithNoFileAndNoEnd)
 {
     for (const std::int32_t length : { -1, 1303 })
     {
-        State state;
-        state.badLength = length;
-        Frames frames;
-        SnapshotTaker taker{ &state };
-        taker.participating(true);
+        Instances t;
+        t.state.badLength = length;
+        SnapshotTaker& taker = t.participating();
         taker.onSnapshotStarted(3, HEADER, true);
         EXPECT_FALSE(taker.isPublishing());
-        EXPECT_EQ(0, taker.submit(frames));
+        EXPECT_EQ(0, taker.submit(t.frames));
+        EXPECT_EQ(-1, t.lastStore().latestRound());
         EXPECT_TRUE(taker.onSnapshotEnd(3, 3, 2018, 0)) << "nothing serialized, nothing to disagree with";
     }
 }
 
-TEST(SnapshotTaker, ANewRoundSupersedesOneStillBeingSubmittedTheOldGetsNoEndTheNewStartsAtZero)
+TEST(SnapshotTaker, ANewRoundSupersedesOneWhoseEndIsNotYetPlacedOnlyTheNewOneEnds)
 {
-    State state;
-    state.records = 40;
-    Frames frames;
-    SnapshotTaker taker{ &state };
-    taker.participating(true);
+    Instances t;
+    SnapshotTaker& taker = t.participating();
     taker.onSnapshotStarted(8, HEADER, true);
-    taker.submit(frames);
-    state.records = 1;
     taker.onSnapshotStarted(9, HEADER, true);
-    Frames next;
-    while (taker.isPublishing())
-    {
-        taker.submit(next);
-    }
-    EXPECT_EQ((std::vector<std::int64_t>{ 9, 9 }), next.chunkRounds);
-    ASSERT_EQ(1u, next.ends.size());
-    EXPECT_EQ(9, next.ends[0].round);
-    EXPECT_TRUE(frames.ends.empty()) << "round 8 never ended";
+    EXPECT_EQ(1, taker.submit(t.frames));
+    ASSERT_EQ(1u, t.frames.ends.size());
+    EXPECT_EQ(9, t.frames.ends[0].round);
+    EXPECT_TRUE(taker.onSnapshotEnd(8, 99, 0, 0)) << "nothing held for round 8 any more";
+}
+
+TEST(SnapshotTaker, ARoundStartedAfterTheRowTurnedOffStillEndsTheOneBeingSubmitted)
+{
+    Instances t;
+    SnapshotTaker& taker = t.participating();
+    taker.onSnapshotStarted(8, HEADER, true);
+    taker.participating(false);
+    taker.onSnapshotStarted(9, HEADER, true);
+    EXPECT_FALSE(taker.isPublishing());
+    EXPECT_EQ(0, taker.submit(t.frames));
+    EXPECT_TRUE(t.frames.ends.empty()) << "round 8 never ended";
+    EXPECT_TRUE(taker.onSnapshotEnd(8, 99, 0, 0)) << "nothing held for round 8 any more";
+}
+
+TEST(SnapshotTaker, AHeaderLongerThanARecordDropsTheRound)
+{
+    Instances t;
+    protocol::SnapshotGatewayState rows{ 9, 10, 42, {} };
+    rows.rows.assign(35, protocol::SnapshotGatewayRow{ 10, 0, "GW" });
+    SnapshotTaker& taker = t.participating();
+    taker.onSnapshotStarted(3, protocol::SnapshotHeader{ 7, 2, rows }, true);
+    EXPECT_EQ(0, t.state.serialized) << "35 rows outgrow a record";
+    EXPECT_FALSE(taker.isPublishing());
+    EXPECT_FALSE(t.lastStore().open(3).has_value());
 }
 
 TEST(SnapshotTaker, ARestoreReadsOnlyThisBuildsFormatMakesTheSourceTakePartAndHandsItsRecordsOn)
 {
-    State state;
-    SnapshotTaker taker{ &state };
+    Instances t;
+    SnapshotTaker& taker = t.instance();
     EXPECT_TRUE(taker.supportsFormatVersion(5));
     EXPECT_FALSE(taker.supportsFormatVersion(6));
 
@@ -265,7 +315,7 @@ TEST(SnapshotTaker, ARestoreReadsOnlyThisBuildsFormatMakesTheSourceTakePartAndHa
     EXPECT_TRUE(taker.isParticipating()) << "its topology row lies before the cut";
     const std::vector<std::uint8_t> record = filled(1);
     taker.onSnapshotRecord(record, 0);
-    EXPECT_EQ((std::vector<std::string>{ "0:1000:1" }), state.restored);
+    EXPECT_EQ((std::vector<std::string>{ "0:1000:1" }), t.state.restored);
 }
 
 } // namespace

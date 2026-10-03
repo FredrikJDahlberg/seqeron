@@ -11,6 +11,7 @@ import org.limitless.seqeron.protocol.SystemFrame;
 import org.limitless.seqeron.replayer.client.ReplayerStreamReceiver;
 import org.limitless.seqeron.replayer.client.SequencedEvent;
 import org.limitless.seqeron.replayer.client.SnapshotRestoreHandler;
+import org.limitless.seqeron.replayer.client.SnapshotStore;
 import org.limitless.seqeron.sequencer.client.ClusterStreamSender;
 import org.limitless.seqeron.sequencer.client.IngressPublisher;
 import org.limitless.seqeron.sequencer.client.PendingSends;
@@ -88,13 +89,14 @@ final class Session implements AutoCloseable {
         sender.setIngressHold(pending);
     }
 
-    /** Restores {@code sourceId}'s latest snapshot before following the tap; call before starting. */
-    void restoreFrom(final int sourceId, final SnapshotRestoreHandler handler) {
-        receiver.restoreFrom(sourceId, handler);
+    /** Restores {@code sourceId}'s newest confirmed snapshot in {@code store} first; call before starting. */
+    void restoreFrom(final int sourceId, final SnapshotStore store, final SnapshotRestoreHandler handler) {
+        receiver.restoreFrom(sourceId, store, handler);
     }
 
     /** Follows the tap from its start again, restoring the snapshot given to {@link #restoreFrom} first. */
     void restart() {
+        recoveryStall.onRestart(); // the restore pass dispatches nothing, and is no stall
         receiver.restart();
     }
 

@@ -18,8 +18,8 @@ public enum ClusterError {
      */
     SNAPSHOT_DIVERGED,
     /**
-     * This instance's source has a snapshot it cannot restore: a format or header version this build does not read,
-     * or records that fail the check the Replayer indexed them by.
+     * This instance has a snapshot it cannot restore: a format or header version this build does not read, or a file
+     * whose records fail the {@code SnapshotEnd} the log holds for them.
      */
     SNAPSHOT_UNRESTORABLE
 }

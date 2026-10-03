@@ -4,23 +4,29 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <optional>
 #include <string>
 #include <vector>
 
-#include "org/limitless/seqeron/protocol/SequencedFrame.hpp"
-#include "org_limitless_seqeron_sbe_frame/SnapshotChunk.h"
+#if defined(__x86_64__)
+#include <nmmintrin.h>
+#elif defined(__aarch64__)
+#include <arm_acle.h>
+#if defined(__linux__)
+#include <asm/hwcap.h>
+#include <sys/auxv.h>
+#endif
+#endif
 
-// The snapshot format (doc/snapshot.md §2, §5, §6): a sequence of records, each carried whole by one
-// SnapshotChunk, the façade's header first; the CRC-32C over their bytes in order; and the check a snapshot's
-// frames must pass. The Java twins are protocol/SnapshotFormat, SnapshotHeader and SnapshotValidator; keep
-// them in step.
+// The snapshot format (doc/snapshot.md §2, §6): a sequence of records, the façade's header first, and the
+// CRC-32C over their bytes in order. The Java twins are protocol/SnapshotFormat and SnapshotHeader; keep them in
+// step.
 
 namespace org::limitless::seqeron::protocol {
 
-// The most bytes one record carries: the payload ceiling less the chunk's block and length prefix.
-inline constexpr std::uint16_t MAX_SNAPSHOT_RECORD_LENGTH = static_cast<std::uint16_t>(
-    MAX_PAYLOAD_LENGTH - sbe::frame::SnapshotChunk::sbeBlockLength() - sbe::frame::SnapshotChunk::dataHeaderLength());
+// The most bytes one record holds: the room in the buffer a listener encodes it into.
+inline constexpr std::uint16_t MAX_SNAPSHOT_RECORD_LENGTH = 1302;
 
 namespace detail {
 
@@ -57,10 +63,117 @@ inline std::uint64_t getLe(const std::uint8_t* in, const std::size_t bytes)
     return value;
 }
 
+/**
+ * Computes the CRC-32C a byte at a time through CRC32C_TABLE: what crc32c falls back to on a CPU without the
+ * instruction, and the reference the hardware path is tested against.
+ *
+ * @param data   the bytes
+ * @param length how many
+ * @param crc    the CRC of the bytes before these, or 0 to start
+ * @return the CRC of everything so far
+ */
+inline std::uint32_t crc32cTable(const std::uint8_t* data, const std::size_t length, const std::uint32_t crc)
+{
+    std::uint32_t c = ~crc;
+    for (std::size_t i = 0; i < length; ++i)
+    {
+        c = CRC32C_TABLE[(c ^ data[i]) & 0xFFU] ^ (c >> 8);
+    }
+    return ~c;
+}
+
+// The CRC-32C instruction, compiled for its own function by a target attribute so a consumer needs no compiler
+// flag, and called only once hasCrc32cInstruction() has said the CPU has it.
+#if defined(__x86_64__)
+
+inline bool hasCrc32cInstruction()
+{
+    return __builtin_cpu_supports("sse4.2");
+}
+
+/**
+ * Computes the CRC-32C with SSE4.2's crc32 instruction, eight bytes at a time.
+ *
+ * @param data   the bytes
+ * @param length how many
+ * @param crc    the CRC of the bytes before these, or 0 to start
+ * @return the CRC of everything so far
+ */
+__attribute__((target("sse4.2"))) inline std::uint32_t crc32cHardware(const std::uint8_t* data, std::size_t length,
+                                                                      const std::uint32_t crc)
+{
+    std::uint64_t c = ~crc;
+    for (; length >= sizeof(std::uint64_t); length -= sizeof(std::uint64_t), data += sizeof(std::uint64_t))
+    {
+        std::uint64_t word;
+        std::memcpy(&word, data, sizeof(word));
+        c = _mm_crc32_u64(c, word);
+    }
+    auto c32 = static_cast<std::uint32_t>(c);
+    for (; length > 0; --length, ++data)
+    {
+        c32 = _mm_crc32_u8(c32, *data);
+    }
+    return ~c32;
+}
+
+#elif defined(__aarch64__)
+
+inline bool hasCrc32cInstruction()
+{
+#if defined(__ARM_FEATURE_CRC32) || defined(__APPLE__)
+    return true;
+#elif defined(__linux__)
+    return (getauxval(AT_HWCAP) & HWCAP_CRC32) != 0;
+#else
+    return false;
+#endif
+}
+
+/**
+ * Computes the CRC-32C with ARMv8's crc32c instructions, eight bytes at a time.
+ *
+ * @param data   the bytes
+ * @param length how many
+ * @param crc    the CRC of the bytes before these, or 0 to start
+ * @return the CRC of everything so far
+ */
+__attribute__((target("+crc"))) inline std::uint32_t crc32cHardware(const std::uint8_t* data, std::size_t length,
+                                                                    const std::uint32_t crc)
+{
+    std::uint32_t c = ~crc;
+    for (; length >= sizeof(std::uint64_t); length -= sizeof(std::uint64_t), data += sizeof(std::uint64_t))
+    {
+        std::uint64_t word;
+        std::memcpy(&word, data, sizeof(word));
+        c = __crc32cd(c, word);
+    }
+    for (; length > 0; --length, ++data)
+    {
+        c = __crc32cb(c, *data);
+    }
+    return ~c;
+}
+
+#else
+
+inline bool hasCrc32cInstruction()
+{
+    return false;
+}
+
+inline std::uint32_t crc32cHardware(const std::uint8_t* data, const std::size_t length, const std::uint32_t crc)
+{
+    return crc32cTable(data, length, crc);
+}
+
+#endif
+
 } // namespace detail
 
 /**
- * Computes the CRC-32C of a span of bytes, as SnapshotEnd::crc32c carries it, or continues one.
+ * Computes the CRC-32C of a span of bytes, as SnapshotEnd::crc32c carries it, or continues one: with the CPU's
+ * CRC-32C instruction where it has one, through a table where it does not.
  *
  * @param data   the bytes
  * @param length how many
@@ -69,12 +182,8 @@ inline std::uint64_t getLe(const std::uint8_t* in, const std::size_t bytes)
  */
 inline std::uint32_t crc32c(const std::uint8_t* data, const std::size_t length, const std::uint32_t crc = 0)
 {
-    std::uint32_t c = ~crc;
-    for (std::size_t i = 0; i < length; ++i)
-    {
-        c = detail::CRC32C_TABLE[(c ^ data[i]) & 0xFFU] ^ (c >> 8);
-    }
-    return ~c;
+    static const bool hardware = detail::hasCrc32cInstruction();
+    return hardware ? detail::crc32cHardware(data, length, crc) : detail::crc32cTable(data, length, crc);
 }
 
 // One instance's list row, in a gateway's snapshot header.
@@ -215,110 +324,6 @@ struct SnapshotHeader
         header.gateway = std::move(state);
         return header;
     }
-};
-
-/**
- * Checks one source's snapshot for one round as its frames come off the tap or a replay, keeping none of its
- * bytes. Valid means chunks 0 … chunkCount − 1, each once and in order, then the SnapshotEnd, whose length
- * and crc32c the chunks match. The caller passes only the source's frames; another round's are ignored. A
- * snapshot once invalid stays so until reset. The Java twin is protocol/SnapshotValidator.
- */
-class SnapshotValidator
-{
-  public:
-    enum class State
-    {
-        Collecting, ///< chunks so far are in order; no SnapshotEnd yet
-        Complete,   ///< the SnapshotEnd arrived and every check passed
-        Invalid     ///< a chunk was out of order, repeated or oversized, or the SnapshotEnd disagreed
-    };
-
-    /**
-     * Starts checking a round, forgetting anything seen before.
-     *
-     * @param round the round whose frames to take
-     */
-    void reset(const std::int64_t round)
-    {
-        m_round = round;
-        m_nextChunkIndex = 0;
-        m_length = 0;
-        m_crc = 0;
-        m_state = State::Collecting;
-    }
-
-    /**
-     * Takes one SnapshotChunk of the source. A restore hands the record on only while this answers
-     * Collecting.
-     *
-     * @param round      the chunk's round
-     * @param chunkIndex the chunk's chunkIndex
-     * @param data       the chunk's data, one record
-     * @param dataLength its length
-     * @return where the snapshot stands after it
-     */
-    State onChunk(const std::int64_t round, const std::int32_t chunkIndex, const std::uint8_t* data,
-                  const std::size_t dataLength)
-    {
-        if (m_state != State::Collecting || round != m_round)
-        {
-            return m_state;
-        }
-        if (chunkIndex != m_nextChunkIndex || dataLength > MAX_SNAPSHOT_RECORD_LENGTH)
-        {
-            m_state = State::Invalid;
-            return m_state;
-        }
-        m_crc = crc32c(data, dataLength, m_crc);
-        m_length += dataLength;
-        ++m_nextChunkIndex;
-        return m_state;
-    }
-
-    /**
-     * Takes the source's SnapshotEnd.
-     *
-     * @param round      its round
-     * @param chunkCount its chunkCount
-     * @param length     its length
-     * @param crc        its crc32c
-     * @return where the snapshot stands after it
-     */
-    State onEnd(const std::int64_t round, const std::int32_t chunkCount, const std::int64_t length,
-                const std::uint32_t crc)
-    {
-        if (m_state != State::Collecting || round != m_round)
-        {
-            return m_state;
-        }
-        m_state = chunkCount == m_nextChunkIndex && length == static_cast<std::int64_t>(m_length) && crc == m_crc
-                      ? State::Complete
-                      : State::Invalid;
-        return m_state;
-    }
-
-    State state() const
-    {
-        return m_state;
-    }
-
-    std::int64_t round() const
-    {
-        return m_round;
-    }
-
-    // How many bytes the chunks so far carried.
-    std::uint64_t length() const
-    {
-        return m_length;
-    }
-
-  private:
-    std::int64_t m_round = 0;
-    std::int32_t m_nextChunkIndex = 0;
-    std::uint64_t m_length = 0;
-    std::uint32_t m_crc = 0;
-    State m_state = State::Invalid;
 };
 
 } // namespace org::limitless::seqeron::protocol

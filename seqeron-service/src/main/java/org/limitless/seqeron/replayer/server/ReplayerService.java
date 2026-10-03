@@ -105,7 +105,7 @@ public final class ReplayerService {
     private long selfCheckDeadlineMs = 0;
 
 
-    // Each source's latest valid snapshot (doc/snapshot.md §5), fed by a replay of the active recording that
+    // Each source's sequenced snapshot ends (doc/snapshot.md §5), fed by a replay of the active recording that
     // follows it live; a tap subscription would be untethered and could miss one.
     private final SnapshotIndex snapshotIndex = new SnapshotIndex(this::onSnapshotIndexed);
     private final Map<Integer, AtomicCounter> snapshotRoundCounters = new HashMap<>();
@@ -438,7 +438,7 @@ public final class ReplayerService {
         }
     }
 
-    /** One source's latest valid snapshot changed: its round counter follows. */
+    /** One source's newest snapshot end changed: its round counter follows. */
     private void onSnapshotIndexed(final int sourceId, final SnapshotIndex.Entry entry) {
         snapshotRoundCounters.computeIfAbsent(sourceId, source -> replayer.newSourceCounter(
             SeqeronCounters.REPLAYER_SNAPSHOT_ROUND_TYPE_ID,
@@ -447,9 +447,10 @@ public final class ReplayerService {
 
     /**
      * Answers a {@code SnapshotQuery} from the index as it stands. A node still rebuilding it after a restart
-     * answers with an older snapshot or none, which is correct; holding the query would be an unbounded wait.
+     * answers with none for a round it has not reached, and the client tries an older one; holding the query would
+     * be an unbounded wait.
      */
-    private void onSnapshotQuery(final int clientId, final long requestId, final int sourceId) {
+    private void onSnapshotQuery(final int clientId, final long requestId, final int sourceId, final long round) {
         if (integrityFailed) {
             sendUnavailable(clientId, requestId);
             return;
@@ -458,15 +459,17 @@ public final class ReplayerService {
             sendPending(clientId, requestId);
             return;
         }
-        final SnapshotIndex.Entry entry = snapshotIndex.lookup(sourceId);
+        final SnapshotIndex.Entry entry = snapshotIndex.lookup(sourceId, round);
         snapshotLocationEncoder.wrapAndApplyHeader(controlBuffer, 0, outHeaderEncoder)
             .clientId(clientId)
             .requestId(requestId)
             .round(entry == null ? NULL_VALUE : entry.round())
             .asOfGlobalSeqNo(entry == null ? NULL_VALUE : entry.asOfGlobalSeqNo())
             .asOfPosition(entry == null ? NULL_VALUE : entry.asOfPosition())
-            .endPosition(entry == null ? NULL_VALUE : entry.endPosition())
-            .formatVersion(entry == null ? 0 : entry.formatVersion());
+            .formatVersion(entry == null ? 0 : entry.formatVersion())
+            .recordCount(entry == null ? 0 : entry.recordCount())
+            .length(entry == null ? 0 : entry.length())
+            .crc32c(entry == null ? 0 : entry.crc32c());
         offerControl(MessageHeaderEncoder.ENCODED_LENGTH + snapshotLocationEncoder.encodedLength());
     }
 
@@ -500,7 +503,7 @@ public final class ReplayerService {
             snapshotQueryDecoder.wrap(buffer, offset + MessageHeaderDecoder.ENCODED_LENGTH,
                                       inHeaderDecoder.blockLength(), inHeaderDecoder.version());
             onSnapshotQuery(snapshotQueryDecoder.clientId(), snapshotQueryDecoder.requestId(),
-                            snapshotQueryDecoder.sourceId());
+                            snapshotQueryDecoder.sourceId(), snapshotQueryDecoder.round());
             return;
         }
         if (inHeaderDecoder.templateId() != ReplayRequestDecoder.TEMPLATE_ID) {

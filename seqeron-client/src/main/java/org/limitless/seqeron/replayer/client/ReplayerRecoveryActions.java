@@ -12,7 +12,7 @@ interface ReplayerRecoveryActions {
     void sendReplayRequest(long requestId, int segmentIndex, long fromPosition);
 
     /** Offers a {@code SnapshotQuery}; best-effort, like the request. */
-    void sendSnapshotQuery(long requestId, int sourceId);
+    void sendSnapshotQuery(long requestId, int sourceId, long round);
 
     /** @return whether the {@code ReplayComplete} reached the wire */
     boolean sendReplayComplete();

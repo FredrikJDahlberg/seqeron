@@ -4,7 +4,7 @@
 
     Two families. The application family (Unsequenced 100, Sequenced 101) carries one opaque,
     length-prefixed payload named by header.payloadId (§6); the cluster tier never decodes it. The
-    system family carries seqeron's own messages, named by header.systemEventType: thirteen submitted
+    system family carries seqeron's own messages, named by header.systemEventType: twelve submitted
     events in UnsequencedSystem 102 / SequencedSystem 103, and four that the sequencer synthesizes as
     templates of their own (ClusterHeartbeat 104, LeadershipChanged 105, GatewayActive 106,
     SnapshotStarted 107).
@@ -132,7 +132,7 @@
     -->
 
     <sbe:message name="UnsequencedSystem" id="102"
-                 description="A system frame on cluster ingress. Only the thirteen submitted events are legal here">
+                 description="A system frame on cluster ingress. Only the twelve submitted events are legal here">
         <field name="header" id="20001" type="unsequencedSystemHeader"/>
         <data  name="body"   id="20045" type="varDataEncoding"
                description="The event named by header.systemEventType, as its SBE block with no MessageHeader. Empty when the event has no fields"/>
@@ -177,7 +177,7 @@
                description="The round's number, from 1"/>
     </sbe:message>
 
-    <!-- ── The thirteen submitted system events ─────────────────────────────────────────────────────────
+    <!-- ── The twelve submitted system events ───────────────────────────────────────────────────────────
          Payloads carried in UnsequencedSystem/SequencedSystem; none has a header field. A template id here
          is never written to the wire: it is the event's systemEventType, and ids are never reused.
     -->
@@ -260,23 +260,15 @@
         <field name="correlationId" id="20002" type="correlationId"/>
     </sbe:message>
 
-    <sbe:message name="SnapshotChunk" id="27"
-                 description="One record of a source's snapshot, submitted by the instance that may publish at the
-                              round's cut. Opaque to the cluster tier">
-        <field name="round"      id="20049" type="int64"/>
-        <field name="chunkIndex" id="20050" type="int32"
-               description="0 for the first chunk; consecutive within one source's round"/>
-        <data  name="data"       id="20051" type="varDataEncoding"
-               description="One whole record; at most MAX_PAYLOAD_LENGTH less this block and the length prefix,
-                            1302 bytes"/>
-    </sbe:message>
-
     <sbe:message name="SnapshotEnd" id="28"
-                 description="Closes a source's snapshot for one round; follows its last SnapshotChunk">
+                 description="A source's snapshot of one round as its publisher serialized it. The bytes stay with
+                              each instance that serialized them; every one compares its own with this, and a
+                              restore checks its local copy against it (doc/snapshot.md §2)">
         <field name="round"         id="20049" type="int64"/>
-        <field name="chunkCount"    id="20052" type="int32"/>
+        <field name="recordCount"   id="20052" type="int32"
+               description="Records, the header included"/>
         <field name="length"        id="20053" type="int64"
-               description="The snapshot's bytes, header and body, across all chunks"/>
+               description="The records' bytes, header and body"/>
         <field name="crc32c"        id="20054" type="uint32"
                description="CRC-32C over those bytes"/>
         <field name="formatVersion" id="20055" type="uint32"

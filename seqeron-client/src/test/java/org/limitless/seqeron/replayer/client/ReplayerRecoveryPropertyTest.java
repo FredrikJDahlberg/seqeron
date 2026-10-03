@@ -3,6 +3,7 @@ package org.limitless.seqeron.replayer.client;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -11,6 +12,7 @@ import org.agrona.DirectBuffer;
 import org.agrona.concurrent.UnsafeBuffer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.limitless.seqeron.protocol.ReplayProtocol;
@@ -44,11 +46,11 @@ import org.limitless.seqeron.util.Logger;
  * with lost requests, refusals, truncated images, stalled replays and recording rotations, in under a
  * second.
  *
- * <p><b>Restore</b> — a client restoring its source's snapshot (doc/snapshot.md §7) holds both properties from
- * the cut on, under the same faults, and its restored state plus the frames after the cut equals the state a full
- * replay builds. The log holds a superseded round, a late chunk of it, and another source's chunks among the
- * snapshot's; which snapshot the Replayer names is {@code SnapshotIndexTest}'s, and serializing it is {@code
- * SnapshotTakerTest}'s.
+ * <p><b>Restore</b> — a client restoring its own snapshot (doc/snapshot.md §7) holds both properties from the cut
+ * on, under the same faults, and its restored state plus the frames after the cut equals the state a full replay
+ * builds. It holds files of three rounds, of which the log ends only the middle one: the newest gives way to it.
+ * The log holds a superseded round and another source's end among the snapshot's; which end the Replayer finds is
+ * {@code SnapshotIndexTest}'s, and serializing it is {@code SnapshotTakerTest}'s.
  *
  * <p>Seeds are fixed and listed, not drawn from the clock: a failing run must be re-runnable, and a suite
  * that fails on a different case each time is not a regression signal. Add seeds to widen the search; the
@@ -85,23 +87,26 @@ class ReplayerRecoveryPropertyTest {
         Logger.reset();
     }
 
-    /** The restored source, and the snapshot's frames: round 2, superseding round 1, cut at {@code CUT}. */
+    /** The restored source, and its snapshot: round 2, superseding round 1, cut at {@code CUT}. */
     private static final int SOURCE = 3;
     private static final int OTHER_SOURCE = 5;
     private static final long CUT = 9;
-    private static final long SNAPSHOT_END = 17;
+    private static final long SNAPSHOT_END = 12;
     private static final int FORMAT_VERSION = 1;
+
+    @TempDir
+    Path directory;
 
     @ParameterizedTest(name = "seed {0}")
     @ValueSource(longs = {1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144, 233, 377, 610, 987, 1597})
     void staysGapFreeAndConvergesUnderRandomFaults(final long seed) {
-        new Run(seed, false).execute();
+        new Run(seed, null).execute();
     }
 
     @ParameterizedTest(name = "seed {0}")
     @ValueSource(longs = {1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144, 233, 377, 610, 987, 1597})
     void restoresAndConvergesToTheFullReplayStateUnderRandomFaults(final long seed) {
-        new Run(seed, true).execute();
+        new Run(seed, new SnapshotStore(directory)).execute();
     }
 
     /**
@@ -114,6 +119,12 @@ class ReplayerRecoveryPropertyTest {
         private final SplitMix64 rng;
         private final String tag;
         private final boolean restoring;
+
+        /** The client's own files, null for a run that restores nothing. */
+        private final SnapshotStore store;
+
+        /** The digest of the one round the log ends for {@link #SOURCE}. */
+        private RestoreFrames.Digest snapshotDigest;
 
         /** Every frame that is not a heartbeat, by globalSeqNo: the snapshot rounds. */
         private final Map<Long, RestoreFrames.Frame> frames = new HashMap<>();
@@ -131,6 +142,7 @@ class ReplayerRecoveryPropertyTest {
         // ── the Replayer's view of this one client ─────────────────────────────────────────────────────
         private long pendingRequestId = -1;
         private boolean pendingIsQuery;
+        private long pendingQueryRound;
         private int pendingSegmentIndex;
         private long pendingFromPosition;
         private long nextSessionId = 1;
@@ -150,10 +162,11 @@ class ReplayerRecoveryPropertyTest {
 
         private ReplayerRecovery client;
 
-        Run(final long seed, final boolean restoring) {
+        Run(final long seed, final SnapshotStore store) {
             this.rng = new SplitMix64(seed);
+            this.restoring = store != null;
             this.tag = "seed=" + seed + (restoring ? " restoring" : "");
-            this.restoring = restoring;
+            this.store = store;
         }
 
         void execute() {
@@ -170,7 +183,7 @@ class ReplayerRecoveryPropertyTest {
 
             client = new ReplayerRecovery(CLIENT_ID, this, this::onSequenced, null, null);
             if (restoring) {
-                client.restoreFrom(SOURCE, this);
+                client.restoreFrom(SOURCE, store, this);
                 expectedNext = CUT + 1;
             }
             client.start();
@@ -213,9 +226,9 @@ class ReplayerRecoveryPropertyTest {
         }
 
         /**
-         * Round 1 starts and is superseded by round 2 at {@link #CUT} before its source finishes it; round 2's
-         * chunks then interleave with heartbeats, round 1's late chunk and another source's chunk, up to its end.
-         * Its records hold the state at the cut: the heartbeats before it.
+         * Round 1 starts and is superseded by round 2 at {@link #CUT} before its source ends it; round 2 ends among
+         * heartbeats and another source's end, and round 3 starts and never ends. The client holds a file of each:
+         * round 2's records hold the state at the cut, the heartbeats before it.
          */
         private void publishSnapshotRounds() {
             for (int i = 0; i < 5; ++i) {
@@ -223,19 +236,21 @@ class ReplayerRecoveryPropertyTest {
             }
             final byte[] header = RestoreFrames.header(4, 2);
             publishFrame(RestoreFrames.started(6, 1));
-            publishFrame(RestoreFrames.chunk(7, SOURCE, 1, 0, header));
+            publish(); // heartbeat 7
             publish(); // heartbeat 8
             publishFrame(RestoreFrames.started(CUT, 2));
-            final byte[] count = RestoreFrames.record(6);
-            final byte[] sum = RestoreFrames.record(1 + 2 + 3 + 4 + 5 + 8);
-            publishFrame(RestoreFrames.chunk(10, SOURCE, 1, 1, RestoreFrames.record(99)));
-            publishFrame(RestoreFrames.chunk(11, SOURCE, 2, 0, header));
-            publishFrame(RestoreFrames.chunk(12, OTHER_SOURCE, 2, 0, header));
-            publish(); // heartbeat 13
-            publishFrame(RestoreFrames.chunk(14, SOURCE, 2, 1, count));
-            publishFrame(RestoreFrames.chunk(15, SOURCE, 2, 2, sum));
-            publish(); // heartbeat 16
+            final byte[] count = RestoreFrames.record(7);
+            final byte[] sum = RestoreFrames.record(1 + 2 + 3 + 4 + 5 + 7 + 8);
+            publishFrame(RestoreFrames.end(10, OTHER_SOURCE, 2, FORMAT_VERSION, header));
+            publish(); // heartbeat 11
             publishFrame(RestoreFrames.end(SNAPSHOT_END, SOURCE, 2, FORMAT_VERSION, header, count, sum));
+            publishFrame(RestoreFrames.started(13, 3));
+            publish(); // heartbeat 14
+
+            snapshotDigest = RestoreFrames.Digest.of(header, count, sum);
+            RestoreFrames.write(store, 1, FORMAT_VERSION, header, RestoreFrames.record(99));
+            RestoreFrames.write(store, 2, FORMAT_VERSION, header, count, sum);
+            RestoreFrames.write(store, 3, FORMAT_VERSION, header, RestoreFrames.record(98));
         }
 
         private void publishFrame(final RestoreFrames.Frame frame) {
@@ -327,6 +342,7 @@ class ReplayerRecoveryPropertyTest {
             }
             final long requestId = pendingRequestId;
             final boolean query = pendingIsQuery;
+            final long queryRound = pendingQueryRound;
             final int segmentIndex = pendingSegmentIndex;
             final long fromPosition = pendingFromPosition;
             pendingRequestId = -1;
@@ -343,8 +359,10 @@ class ReplayerRecoveryPropertyTest {
                 return;
             }
             if (query) {
-                final RestoreFrames.Frame location = RestoreFrames.location(
-                    CLIENT_ID, requestId, 2, CUT, positionOf(CUT), positionOf(SNAPSHOT_END + 1), FORMAT_VERSION);
+                final RestoreFrames.Frame location = queryRound == 2
+                    ? RestoreFrames.location(CLIENT_ID, requestId, 2, CUT, positionOf(CUT), FORMAT_VERSION,
+                                             snapshotDigest)
+                    : RestoreFrames.location(CLIENT_ID, requestId, -1, -1, -1, 0, new RestoreFrames.Digest(0, 0, 0));
                 client.onControl(location.buffer(), 0, location.length());
                 return;
             }
@@ -420,13 +438,15 @@ class ReplayerRecoveryPropertyTest {
         }
 
         @Override
-        public void sendSnapshotQuery(final long requestId, final int sourceId) {
+        public void sendSnapshotQuery(final long requestId, final int sourceId, final long round) {
             assertEquals(SOURCE, sourceId, tag);
+            assertTrue(round == 3 || round == 2, tag + ": asked about round " + round);
             if (chaos && chance(15)) {
                 return;
             }
             pendingRequestId = requestId;
             pendingIsQuery = true;
+            pendingQueryRound = round;
         }
 
         @Override

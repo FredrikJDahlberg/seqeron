@@ -116,7 +116,7 @@ private:
     }
 
 public:
-    static constexpr std::uint16_t SBE_BLOCK_LENGTH = static_cast<std::uint16_t>(16);
+    static constexpr std::uint16_t SBE_BLOCK_LENGTH = static_cast<std::uint16_t>(24);
     static constexpr std::uint16_t SBE_TEMPLATE_ID = static_cast<std::uint16_t>(23);
     static constexpr std::uint16_t SBE_SCHEMA_ID = static_cast<std::uint16_t>(212);
     static constexpr std::uint16_t SBE_SCHEMA_VERSION = static_cast<std::uint16_t>(0);
@@ -174,7 +174,7 @@ public:
 
     SBE_NODISCARD static SBE_CONSTEXPR std::uint16_t sbeBlockLength() SBE_NOEXCEPT
     {
-        return static_cast<std::uint16_t>(16);
+        return static_cast<std::uint16_t>(24);
     }
 
     SBE_NODISCARD static SBE_CONSTEXPR std::uint64_t sbeBlockAndHeaderLength() SBE_NOEXCEPT
@@ -504,6 +504,69 @@ public:
         return *this;
     }
 
+    SBE_NODISCARD static const char *roundMetaAttribute(const MetaAttribute metaAttribute) SBE_NOEXCEPT
+    {
+        switch (metaAttribute)
+        {
+            case MetaAttribute::PRESENCE: return "required";
+            default: return "";
+        }
+    }
+
+    static SBE_CONSTEXPR std::uint16_t roundId() SBE_NOEXCEPT
+    {
+        return 20018;
+    }
+
+    SBE_NODISCARD static SBE_CONSTEXPR std::uint64_t roundSinceVersion() SBE_NOEXCEPT
+    {
+        return 0;
+    }
+
+    SBE_NODISCARD bool roundInActingVersion() SBE_NOEXCEPT
+    {
+        return true;
+    }
+
+    SBE_NODISCARD static SBE_CONSTEXPR std::size_t roundEncodingOffset() SBE_NOEXCEPT
+    {
+        return 16;
+    }
+
+    static SBE_CONSTEXPR std::int64_t roundNullValue() SBE_NOEXCEPT
+    {
+        return SBE_NULLVALUE_INT64;
+    }
+
+    static SBE_CONSTEXPR std::int64_t roundMinValue() SBE_NOEXCEPT
+    {
+        return INT64_C(-9223372036854775807);
+    }
+
+    static SBE_CONSTEXPR std::int64_t roundMaxValue() SBE_NOEXCEPT
+    {
+        return INT64_C(9223372036854775807);
+    }
+
+    static SBE_CONSTEXPR std::size_t roundEncodingLength() SBE_NOEXCEPT
+    {
+        return 8;
+    }
+
+    SBE_NODISCARD std::int64_t round() const SBE_NOEXCEPT
+    {
+        std::int64_t val;
+        std::memcpy(&val, m_buffer + m_offset + 16, sizeof(std::int64_t));
+        return SBE_LITTLE_ENDIAN_ENCODE_64(val);
+    }
+
+    SnapshotQuery &round(const std::int64_t value) SBE_NOEXCEPT
+    {
+        std::int64_t val = SBE_LITTLE_ENDIAN_ENCODE_64(value);
+        std::memcpy(m_buffer + m_offset + 16, &val, sizeof(std::int64_t));
+        return *this;
+    }
+
 template<typename CharT, typename Traits>
 friend std::basic_ostream<CharT, Traits> & operator << (
     std::basic_ostream<CharT, Traits> &builder, const SnapshotQuery &_writer)
@@ -531,6 +594,10 @@ friend std::basic_ostream<CharT, Traits> & operator << (
     builder << ", ";
     builder << R"("sourceId": )";
     builder << +writer.sourceId();
+
+    builder << ", ";
+    builder << R"("round": )";
+    builder << +writer.round();
 
     builder << '}';
 

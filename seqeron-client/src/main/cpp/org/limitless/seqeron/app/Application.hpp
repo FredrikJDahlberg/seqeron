@@ -1,8 +1,8 @@
 #pragma once
 
 #include <cstdint>
+#include <filesystem>
 #include <memory>
-#include <span>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -13,14 +13,15 @@
 #include "org/limitless/seqeron/app/SnapshotListener.hpp"
 #include "org/limitless/seqeron/app/detail/LeaderGate.hpp"
 #include "org/limitless/seqeron/app/detail/Session.hpp"
+#include "org/limitless/seqeron/app/detail/SnapshotFrames.hpp"
 #include "org/limitless/seqeron/app/detail/SnapshotTaker.hpp"
 #include "org/limitless/seqeron/protocol/PortLayout.hpp"
 #include "org/limitless/seqeron/protocol/Publish.hpp"
 #include "org/limitless/seqeron/protocol/Snapshot.hpp"
+#include "org/limitless/seqeron/replayer/client/SnapshotStore.hpp"
 #include "org/limitless/seqeron/sequencer/client/IngressPublisher.hpp"
 
 #include "org_limitless_seqeron_sbe_frame/ApplicationRegistered.h"
-#include "org_limitless_seqeron_sbe_frame/SnapshotChunk.h"
 #include "org_limitless_seqeron_sbe_frame/SnapshotEnd.h"
 #include "org_limitless_seqeron_sbe_frame/SnapshotStarted.h"
 
@@ -56,10 +57,11 @@ concept ApplicationListener =
  * OutstandingWork — fed that same stream — the way work survives the gate closing under it.
  *
  * Snapshots (doc/snapshot.md §4): given a SnapshotListener and a topology row with snapshot="true", every replica
- * serializes its state at each round's cut, and the one whose gate is open then submits it. A replica whose
- * snapshot differs from the one sequenced is fenced with ClusterError::SnapshotDiverged. On start, a replica given
- * a listener restores its source's latest snapshot and resumes after its cut; one it cannot restore is fenced
- * with ClusterError::SnapshotUnrestorable.
+ * serializes its state at each round's cut into its own directory, and the one whose gate is open then submits the
+ * round's SnapshotEnd. A replica whose snapshot differs from the one sequenced is fenced with
+ * ClusterError::SnapshotDiverged. On start, a replica given a listener restores the newest snapshot of its own that
+ * the log confirms and resumes after its cut, or replays from globalSeqNo 1 without one; one it cannot restore is
+ * fenced with ClusterError::SnapshotUnrestorable.
  *
  * Single-threaded: every method belongs to the caller's one duty-cycle thread, which calls doWork() each
  * iteration. The Java twin is app/Application.java; keep the two in step. Publish and reply each take an
@@ -98,6 +100,9 @@ class Application
         // takes part in none, whatever its topology row says, and recovers from globalSeqNo 1. Must outlive the
         // replica.
         SnapshotListener* snapshotListener = nullptr;
+        // Where this replica keeps its snapshots, one file per round; required with a snapshotListener. Its own: no
+        // other instance may write it. A restart restores from what it holds, so it must outlive the process.
+        std::filesystem::path snapshotDirectory;
     };
 
     /**
@@ -105,22 +110,24 @@ class Application
      *
      * @param config   the replica's identity and deployment policy
      * @param listener the application; must outlive the replica
+     * @throws std::invalid_argument if config has a snapshotListener and no snapshotDirectory
      */
     Application(Config config, Listener& listener) :
       m_config{ std::move(config) },
       m_listener{ listener },
       m_gate{ m_config.memberId, m_config.offCluster },
-      m_snapshots{ m_config.snapshotListener },
+      m_store{ snapshotStore(m_config) },
+      m_snapshots{ m_config.snapshotListener, m_store.get() },
       m_dispatch{ *this },
       m_session{ m_config.clientId, m_config.pendingCapacity, m_config.tapStallTimeoutMs,
                  m_config.recoveryStallTimeoutMs, m_dispatch },
-      m_snapshotFrames{ *this }
+      m_snapshotFrames{ m_session, [this] { return m_config.sourceId; } }
     {
         // Here rather than on the template parameter, where a listener that owns its Application is incomplete.
         static_assert(ApplicationListener<Listener>);
-        if (m_config.snapshotListener != nullptr)
+        if (m_store)
         {
-            m_session.restoreFrom(m_config.sourceId, m_snapshots);
+            m_session.restoreFrom(m_config.sourceId, *m_store, m_snapshots);
         }
     }
 
@@ -332,7 +339,7 @@ class Application
                         break;
                     }
                     auto end = protocol::decodeSystem<sbe::frame::SnapshotEnd>(event);
-                    if (!m_app.m_snapshots.onSnapshotEnd(end.round(), end.chunkCount(), end.length(), end.crc32c()))
+                    if (!m_app.m_snapshots.onSnapshotEnd(end.round(), end.recordCount(), end.length(), end.crc32c()))
                     {
                         m_app.m_session.fence(ClusterError::SnapshotDiverged,
                                               "round " + std::to_string(end.round()) +
@@ -383,62 +390,28 @@ class Application
         Application& m_app;
     };
 
-    // The round's frames, under this application's sourceId and belonging to no connection.
-    class SnapshotFrames
+    // The store of a replica given a listener, which requires its directory.
+    static std::unique_ptr<replayer::client::SnapshotStore> snapshotStore(const Config& config)
     {
-      public:
-        explicit SnapshotFrames(Application& app) : m_app{ app }
-        {}
-
-        protocol::Publish publishChunk(const std::int64_t round, const std::int32_t chunkIndex,
-                                       const std::span<const std::uint8_t> record)
+        if (config.snapshotListener == nullptr)
         {
-            return placed(m_app.m_session.template publishSystem<sbe::frame::SnapshotChunk>(
-                m_app.m_config.sourceId, NO_CONNECTION, protocol::SNAPSHOT_CHUNK,
-                [&](sbe::frame::SnapshotChunk& chunk) {
-                    chunk.round(round)
-                        .chunkIndex(chunkIndex)
-                        .putData(reinterpret_cast<const char*>(record.data()),
-                                 static_cast<std::uint16_t>(record.size()));
-                }));
+            return nullptr;
         }
-
-        protocol::Publish publishEnd(const std::int64_t round, const std::int32_t chunkCount,
-                                     const std::uint64_t length, const std::uint32_t crc32c,
-                                     const std::uint32_t formatVersion)
+        if (config.snapshotDirectory.empty())
         {
-            return placed(m_app.m_session.template publishSystem<sbe::frame::SnapshotEnd>(
-                m_app.m_config.sourceId, NO_CONNECTION, protocol::SNAPSHOT_END, [&](sbe::frame::SnapshotEnd& end) {
-                    end.round(round)
-                        .chunkCount(chunkCount)
-                        .length(static_cast<std::int64_t>(length))
-                        .crc32c(crc32c)
-                        .formatVersion(formatVersion);
-                }));
+            throw std::invalid_argument("snapshotDirectory is required with a snapshotListener");
         }
-
-      private:
-        // A refused frame is this class's own bug, never a condition to wait out.
-        static protocol::Publish placed(const protocol::Publish outcome)
-        {
-            if (outcome == protocol::Publish::Refused)
-            {
-                throw std::logic_error("a snapshot frame the sequencer would reject (doc/seqeron-protocol-spec.md "
-                                       "§9.2)");
-            }
-            return outcome;
-        }
-
-        Application& m_app;
-    };
+        return std::make_unique<replayer::client::SnapshotStore>(config.snapshotDirectory);
+    }
 
     Config m_config;
     Listener& m_listener;
     detail::LeaderGate m_gate;
+    std::unique_ptr<replayer::client::SnapshotStore> m_store;
     detail::SnapshotTaker m_snapshots;
     SessionDispatch m_dispatch;
     detail::Session<SessionDispatch> m_session;
-    SnapshotFrames m_snapshotFrames;
+    detail::SnapshotFrames<detail::Session<SessionDispatch>> m_snapshotFrames;
 };
 
 } // namespace org::limitless::seqeron::app

@@ -2,11 +2,9 @@ package org.limitless.seqeron.replayer.server;
 
 import org.agrona.ExpandableArrayBuffer;
 import org.agrona.MutableDirectBuffer;
-import org.limitless.seqeron.protocol.SnapshotFormat;
 import org.limitless.seqeron.protocol.SystemFrame;
 import org.limitless.seqeron.sbe.frame.MessageHeaderEncoder;
 import org.limitless.seqeron.sbe.frame.SequencedSystemEncoder;
-import org.limitless.seqeron.sbe.frame.SnapshotChunkEncoder;
 import org.limitless.seqeron.sbe.frame.SnapshotEndEncoder;
 import org.limitless.seqeron.sbe.frame.SnapshotStartedEncoder;
 
@@ -30,33 +28,11 @@ final class SnapshotFrames {
         return copy(MessageHeaderEncoder.ENCODED_LENGTH + encoder.encodedLength());
     }
 
-    byte[] chunk(final int sourceId, final long round, final int chunkIndex, final byte[] record) {
-        final SnapshotChunkEncoder encoder = new SnapshotChunkEncoder();
-        encoder.wrap(body, 0).round(round).chunkIndex(chunkIndex).putData(record, 0, record.length);
-        return system(sourceId, SystemFrame.SNAPSHOT_CHUNK, encoder.encodedLength());
-    }
-
-    byte[] end(final int sourceId, final long round, final byte[]... records) {
-        long length = 0;
-        final java.util.zip.CRC32C crc = new java.util.zip.CRC32C();
-        for (final byte[] record : records) {
-            length += record.length;
-            crc.update(record);
-        }
-        return end(sourceId, round, records.length, length, crc.getValue());
-    }
-
-    byte[] end(final int sourceId, final long round, final int chunkCount, final long length, final long crc32c) {
+    /** A source's end of a round, of format 3. */
+    byte[] end(final int sourceId, final long round, final int recordCount, final long length, final long crc32c) {
         final SnapshotEndEncoder encoder = new SnapshotEndEncoder();
-        encoder.wrap(body, 0).round(round).chunkCount(chunkCount).length(length).crc32c(crc32c).formatVersion(3);
+        encoder.wrap(body, 0).round(round).recordCount(recordCount).length(length).crc32c(crc32c).formatVersion(3);
         return system(sourceId, SystemFrame.SNAPSHOT_END, encoder.encodedLength());
-    }
-
-    /** One record of {@code length} bytes, each {@code fill}. */
-    static byte[] record(final int length, final int fill) {
-        final byte[] record = new byte[Math.min(length, SnapshotFormat.MAX_RECORD_LENGTH)];
-        java.util.Arrays.fill(record, (byte)fill);
-        return record;
     }
 
     private byte[] system(final int sourceId, final int systemEventType, final int bodyLength) {

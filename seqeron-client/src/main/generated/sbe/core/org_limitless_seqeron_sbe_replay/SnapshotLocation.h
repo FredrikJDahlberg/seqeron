@@ -116,7 +116,7 @@ private:
     }
 
 public:
-    static constexpr std::uint16_t SBE_BLOCK_LENGTH = static_cast<std::uint16_t>(48);
+    static constexpr std::uint16_t SBE_BLOCK_LENGTH = static_cast<std::uint16_t>(56);
     static constexpr std::uint16_t SBE_TEMPLATE_ID = static_cast<std::uint16_t>(24);
     static constexpr std::uint16_t SBE_SCHEMA_ID = static_cast<std::uint16_t>(212);
     static constexpr std::uint16_t SBE_SCHEMA_VERSION = static_cast<std::uint16_t>(0);
@@ -174,7 +174,7 @@ public:
 
     SBE_NODISCARD static SBE_CONSTEXPR std::uint16_t sbeBlockLength() SBE_NOEXCEPT
     {
-        return static_cast<std::uint16_t>(48);
+        return static_cast<std::uint16_t>(56);
     }
 
     SBE_NODISCARD static SBE_CONSTEXPR std::uint64_t sbeBlockAndHeaderLength() SBE_NOEXCEPT
@@ -630,69 +630,6 @@ public:
         return *this;
     }
 
-    SBE_NODISCARD static const char *endPositionMetaAttribute(const MetaAttribute metaAttribute) SBE_NOEXCEPT
-    {
-        switch (metaAttribute)
-        {
-            case MetaAttribute::PRESENCE: return "required";
-            default: return "";
-        }
-    }
-
-    static SBE_CONSTEXPR std::uint16_t endPositionId() SBE_NOEXCEPT
-    {
-        return 20021;
-    }
-
-    SBE_NODISCARD static SBE_CONSTEXPR std::uint64_t endPositionSinceVersion() SBE_NOEXCEPT
-    {
-        return 0;
-    }
-
-    SBE_NODISCARD bool endPositionInActingVersion() SBE_NOEXCEPT
-    {
-        return true;
-    }
-
-    SBE_NODISCARD static SBE_CONSTEXPR std::size_t endPositionEncodingOffset() SBE_NOEXCEPT
-    {
-        return 36;
-    }
-
-    static SBE_CONSTEXPR std::int64_t endPositionNullValue() SBE_NOEXCEPT
-    {
-        return SBE_NULLVALUE_INT64;
-    }
-
-    static SBE_CONSTEXPR std::int64_t endPositionMinValue() SBE_NOEXCEPT
-    {
-        return INT64_C(-9223372036854775807);
-    }
-
-    static SBE_CONSTEXPR std::int64_t endPositionMaxValue() SBE_NOEXCEPT
-    {
-        return INT64_C(9223372036854775807);
-    }
-
-    static SBE_CONSTEXPR std::size_t endPositionEncodingLength() SBE_NOEXCEPT
-    {
-        return 8;
-    }
-
-    SBE_NODISCARD std::int64_t endPosition() const SBE_NOEXCEPT
-    {
-        std::int64_t val;
-        std::memcpy(&val, m_buffer + m_offset + 36, sizeof(std::int64_t));
-        return SBE_LITTLE_ENDIAN_ENCODE_64(val);
-    }
-
-    SnapshotLocation &endPosition(const std::int64_t value) SBE_NOEXCEPT
-    {
-        std::int64_t val = SBE_LITTLE_ENDIAN_ENCODE_64(value);
-        std::memcpy(m_buffer + m_offset + 36, &val, sizeof(std::int64_t));
-        return *this;
-    }
-
     SBE_NODISCARD static const char *formatVersionMetaAttribute(const MetaAttribute metaAttribute) SBE_NOEXCEPT
     {
         switch (metaAttribute)
@@ -719,7 +656,7 @@ public:
 
     SBE_NODISCARD static SBE_CONSTEXPR std::size_t formatVersionEncodingOffset() SBE_NOEXCEPT
     {
-        return 44;
+        return 36;
     }
 
     static SBE_CONSTEXPR std::uint32_t formatVersionNullValue() SBE_NOEXCEPT
@@ -745,14 +682,203 @@ public:
     SBE_NODISCARD std::uint32_t formatVersion() const SBE_NOEXCEPT
     {
         std::uint32_t val;
-        std::memcpy(&val, m_buffer + m_offset + 44, sizeof(std::uint32_t));
+        std::memcpy(&val, m_buffer + m_offset + 36, sizeof(std::uint32_t));
         return SBE_LITTLE_ENDIAN_ENCODE_32(val);
     }
 
     SnapshotLocation &formatVersion(const std::uint32_t value) SBE_NOEXCEPT
     {
         std::uint32_t val = SBE_LITTLE_ENDIAN_ENCODE_32(value);
-        std::memcpy(m_buffer + m_offset + 44, &val, sizeof(std::uint32_t));
+        std::memcpy(m_buffer + m_offset + 36, &val, sizeof(std::uint32_t));
+        return *this;
+    }
+
+    SBE_NODISCARD static const char *recordCountMetaAttribute(const MetaAttribute metaAttribute) SBE_NOEXCEPT
+    {
+        switch (metaAttribute)
+        {
+            case MetaAttribute::PRESENCE: return "required";
+            default: return "";
+        }
+    }
+
+    static SBE_CONSTEXPR std::uint16_t recordCountId() SBE_NOEXCEPT
+    {
+        return 20023;
+    }
+
+    SBE_NODISCARD static SBE_CONSTEXPR std::uint64_t recordCountSinceVersion() SBE_NOEXCEPT
+    {
+        return 0;
+    }
+
+    SBE_NODISCARD bool recordCountInActingVersion() SBE_NOEXCEPT
+    {
+        return true;
+    }
+
+    SBE_NODISCARD static SBE_CONSTEXPR std::size_t recordCountEncodingOffset() SBE_NOEXCEPT
+    {
+        return 40;
+    }
+
+    static SBE_CONSTEXPR std::int32_t recordCountNullValue() SBE_NOEXCEPT
+    {
+        return SBE_NULLVALUE_INT32;
+    }
+
+    static SBE_CONSTEXPR std::int32_t recordCountMinValue() SBE_NOEXCEPT
+    {
+        return INT32_C(-2147483647);
+    }
+
+    static SBE_CONSTEXPR std::int32_t recordCountMaxValue() SBE_NOEXCEPT
+    {
+        return INT32_C(2147483647);
+    }
+
+    static SBE_CONSTEXPR std::size_t recordCountEncodingLength() SBE_NOEXCEPT
+    {
+        return 4;
+    }
+
+    SBE_NODISCARD std::int32_t recordCount() const SBE_NOEXCEPT
+    {
+        std::int32_t val;
+        std::memcpy(&val, m_buffer + m_offset + 40, sizeof(std::int32_t));
+        return SBE_LITTLE_ENDIAN_ENCODE_32(val);
+    }
+
+    SnapshotLocation &recordCount(const std::int32_t value) SBE_NOEXCEPT
+    {
+        std::int32_t val = SBE_LITTLE_ENDIAN_ENCODE_32(value);
+        std::memcpy(m_buffer + m_offset + 40, &val, sizeof(std::int32_t));
+        return *this;
+    }
+
+    SBE_NODISCARD static const char *lengthMetaAttribute(const MetaAttribute metaAttribute) SBE_NOEXCEPT
+    {
+        switch (metaAttribute)
+        {
+            case MetaAttribute::PRESENCE: return "required";
+            default: return "";
+        }
+    }
+
+    static SBE_CONSTEXPR std::uint16_t lengthId() SBE_NOEXCEPT
+    {
+        return 20024;
+    }
+
+    SBE_NODISCARD static SBE_CONSTEXPR std::uint64_t lengthSinceVersion() SBE_NOEXCEPT
+    {
+        return 0;
+    }
+
+    SBE_NODISCARD bool lengthInActingVersion() SBE_NOEXCEPT
+    {
+        return true;
+    }
+
+    SBE_NODISCARD static SBE_CONSTEXPR std::size_t lengthEncodingOffset() SBE_NOEXCEPT
+    {
+        return 44;
+    }
+
+    static SBE_CONSTEXPR std::int64_t lengthNullValue() SBE_NOEXCEPT
+    {
+        return SBE_NULLVALUE_INT64;
+    }
+
+    static SBE_CONSTEXPR std::int64_t lengthMinValue() SBE_NOEXCEPT
+    {
+        return INT64_C(-9223372036854775807);
+    }
+
+    static SBE_CONSTEXPR std::int64_t lengthMaxValue() SBE_NOEXCEPT
+    {
+        return INT64_C(9223372036854775807);
+    }
+
+    static SBE_CONSTEXPR std::size_t lengthEncodingLength() SBE_NOEXCEPT
+    {
+        return 8;
+    }
+
+    SBE_NODISCARD std::int64_t length() const SBE_NOEXCEPT
+    {
+        std::int64_t val;
+        std::memcpy(&val, m_buffer + m_offset + 44, sizeof(std::int64_t));
+        return SBE_LITTLE_ENDIAN_ENCODE_64(val);
+    }
+
+    SnapshotLocation &length(const std::int64_t value) SBE_NOEXCEPT
+    {
+        std::int64_t val = SBE_LITTLE_ENDIAN_ENCODE_64(value);
+        std::memcpy(m_buffer + m_offset + 44, &val, sizeof(std::int64_t));
+        return *this;
+    }
+
+    SBE_NODISCARD static const char *crc32cMetaAttribute(const MetaAttribute metaAttribute) SBE_NOEXCEPT
+    {
+        switch (metaAttribute)
+        {
+            case MetaAttribute::PRESENCE: return "required";
+            default: return "";
+        }
+    }
+
+    static SBE_CONSTEXPR std::uint16_t crc32cId() SBE_NOEXCEPT
+    {
+        return 20025;
+    }
+
+    SBE_NODISCARD static SBE_CONSTEXPR std::uint64_t crc32cSinceVersion() SBE_NOEXCEPT
+    {
+        return 0;
+    }
+
+    SBE_NODISCARD bool crc32cInActingVersion() SBE_NOEXCEPT
+    {
+        return true;
+    }
+
+    SBE_NODISCARD static SBE_CONSTEXPR std::size_t crc32cEncodingOffset() SBE_NOEXCEPT
+    {
+        return 52;
+    }
+
+    static SBE_CONSTEXPR std::uint32_t crc32cNullValue() SBE_NOEXCEPT
+    {
+        return SBE_NULLVALUE_UINT32;
+    }
+
+    static SBE_CONSTEXPR std::uint32_t crc32cMinValue() SBE_NOEXCEPT
+    {
+        return UINT32_C(0x0);
+    }
+
+    static SBE_CONSTEXPR std::uint32_t crc32cMaxValue() SBE_NOEXCEPT
+    {
+        return UINT32_C(0xfffffffe);
+    }
+
+    static SBE_CONSTEXPR std::size_t crc32cEncodingLength() SBE_NOEXCEPT
+    {
+        return 4;
+    }
+
+    SBE_NODISCARD std::uint32_t crc32c() const SBE_NOEXCEPT
+    {
+        std::uint32_t val;
+        std::memcpy(&val, m_buffer + m_offset + 52, sizeof(std::uint32_t));
+        return SBE_LITTLE_ENDIAN_ENCODE_32(val);
+    }
+
+    SnapshotLocation &crc32c(const std::uint32_t value) SBE_NOEXCEPT
+    {
+        std::uint32_t val = SBE_LITTLE_ENDIAN_ENCODE_32(value);
+        std::memcpy(m_buffer + m_offset + 52, &val, sizeof(std::uint32_t));
         return *this;
     }
 
@@ -793,12 +919,20 @@ friend std::basic_ostream<CharT, Traits> & operator << (
     builder << +writer.asOfPosition();
 
     builder << ", ";
-    builder << R"("endPosition": )";
-    builder << +writer.endPosition();
-
-    builder << ", ";
     builder << R"("formatVersion": )";
     builder << +writer.formatVersion();
+
+    builder << ", ";
+    builder << R"("recordCount": )";
+    builder << +writer.recordCount();
+
+    builder << ", ";
+    builder << R"("length": )";
+    builder << +writer.length();
+
+    builder << ", ";
+    builder << R"("crc32c": )";
+    builder << +writer.crc32c();
 
     builder << '}';
 

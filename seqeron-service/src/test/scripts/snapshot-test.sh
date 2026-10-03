@@ -13,12 +13,13 @@
 #   1. Both instances up with snapshots; load through the active one; rounds complete.
 #   2. The standby restarts: it restores, reports the expected state, and compares later rounds.
 #   3. The active one is killed: the restored instance takes over and serves.
-#   4. The killed one returns passive: it holds nothing until the active one is killed, then restores,
-#      catches up and serves.
+#   4. The killed one returns passive: it holds nothing until the active one is killed, then restores from
+#      the files it kept while active, catches up and serves.
 #   5. The other returns as a hot standby, restoring from rounds the passive-turned-active one published.
 #
 # PASS iff every step's restore and state check holds, every round trip is answered, the round counter
-# advances on both nodes, and no instance is fenced. Needs ./gradlew uberJar :seqeron-service:compileTestJava.
+# advances on both nodes, and no instance is fenced. Each instance keeps its snapshots in its own directory
+# under $SNAPSHOT_DIR, across its restarts. Needs ./gradlew uberJar :seqeron-service:compileTestJava.
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -45,6 +46,7 @@ rm -rf "$LOG_DIR"; mkdir -p "$LOG_DIR"
 
 JAVA_OPTS=("${SEQERON_JAVA_OPTS[@]}")
 BASE_DIR="${TMP_DIR}/seqeron-seqfo"
+SNAPSHOT_DIR="${TMP_DIR}/seqeron-snapshot-test"   # each instance's own files, kept across its restarts
 CLUSTER_MEMBERS="$(cluster_members_string 3)"
 
 declare -a SEQ_PIDS
@@ -73,7 +75,8 @@ start_gateway() {  # start_gateway <memberId> <passive: true|false>
   GW_RUNS[$m]=$(( ${GW_RUNS[$m]} + 1 ))
   java "${JAVA_OPTS[@]}" -Dprobe.memberId="$m" -Dprobe.clientId=10 -Dprobe.gatewayName="$(gateway_name "$m")" \
        -Dprobe.listenPort="$(test_gateway_port "$m")" -Dprobe.snapshot=true -Dprobe.passive="$2" \
-       -Dprobe.sourceId="$SOURCE_ID" -cp "$GW_CP" org.limitless.seqeron.tools.TestGateway serve \
+       -Dprobe.sourceId="$SOURCE_ID" -Dprobe.snapshotDir="$SNAPSHOT_DIR/$(gateway_name "$m")" \
+       -cp "$GW_CP" org.limitless.seqeron.tools.TestGateway serve \
        > "$(gateway_log "$m")" 2>&1 &
   GW_PIDS[$m]=$!
   wait_for_log "$(gateway_log "$m")" "Caught up" "$APP_CATCHUP_TIMEOUT_SECS" \
@@ -105,7 +108,7 @@ roundtrip() {  # roundtrip <memberId> <lines>
        -cp "$GW_CP" org.limitless.seqeron.tools.TestGateway client >> "$LOG_DIR/client.log" 2>&1
 }
 
-# The round of source 9's latest snapshot that member <m>'s Replayer has indexed, 0 for none.
+# The newest round of source 9 whose SnapshotEnd member <m>'s Replayer has indexed, 0 for none.
 round_of() {
   local value
   value=$(CLUSTERCTL_MEMBER_ID="$1" seqeron-service/src/main/scripts/clusterctl.sh counters 2>/dev/null \
@@ -137,7 +140,7 @@ trap cleanup EXIT INT TERM
 
 pkill -9 -f "sequencer.memberId" 2>/dev/null; pkill -9 -f "probe.gatewayName" 2>/dev/null
 sleep 1
-rm -rf "$BASE_DIR" "${TMP_DIR}/seqeron-seq-aeron-0" "${TMP_DIR}/seqeron-seq-aeron-1" \
+rm -rf "$BASE_DIR" "$SNAPSHOT_DIR" "${TMP_DIR}/seqeron-seq-aeron-0" "${TMP_DIR}/seqeron-seq-aeron-1" \
        "${TMP_DIR}/seqeron-seq-aeron-2" 2>/dev/null
 
 # ── 0. The cluster and the topology ───────────────────────────────────────────────

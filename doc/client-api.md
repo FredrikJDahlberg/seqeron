@@ -22,7 +22,7 @@ both sides share in `protocol`. C++ uses the same directories and namespaces
 |---|---|---|
 | `protocol` | client | The wire contract in code: `FrameLayer`, `SystemFrame`, `SequencedFrameDecoder`, `PortLayout`, `ReplayProtocol`, `SeqeronCounters`, and `Publish` (C++: `SequencedFrame.hpp`, `PortLayout.hpp`, `ReplayProtocol.hpp`, `SeqeronCounters.hpp`, `Publish.hpp`) |
 | `sequencer.client` | client | Producing: `ClusterStreamSender`, `IngressPublisher`, `PendingSends`, `IngressTracker` (C++ also `ClusterStreamClient`) |
-| `replayer.client` | client | Consuming: `ReplayerStreamReceiver`, its three callback interfaces (`SequencedHandler`, `LeadershipHandler`, `CaughtUpHandler`), `SnapshotRestoreHandler`, and `SequencedEvent` in Java. The C++ `SequencedEvent` is in `protocol` (`SequencedFrame.hpp`) instead, beside the `unwrapFrame` that fills it and the `decodeSystem`/`decodeSequenced` that read it |
+| `replayer.client` | client | Consuming: `ReplayerStreamReceiver`, its three callback interfaces (`SequencedHandler`, `LeadershipHandler`, `CaughtUpHandler`), `SnapshotRestoreHandler`, `SnapshotStore`, and `SequencedEvent` in Java. The C++ `SequencedEvent` is in `protocol` (`SequencedFrame.hpp`) instead, beside the `unwrapFrame` that fills it and the `decodeSystem`/`decodeSequenced` that read it |
 | `app` | client | What a client application is built from: the façades below, and the blocks under them |
 | `util` | client | Support code |
 | `sbe.frame`, `sbe.replay` | client | Generated codecs |
@@ -71,18 +71,20 @@ unchanged. `Gateway` works there as it does on a member; `Application` needs
 | Call | Java | C++ |
 |---|---|---|
 | construct | `(clientId, onSequenced, onLeadershipChanged, onCaughtUp)` | `(clientId, onSequenced, onConnected, onDisconnected, onLeadershipChanged, onCaughtUp)` |
-| restore a snapshot first | `restoreFrom(sourceId, SnapshotRestoreHandler)`, before `start` | `restoreFrom(sourceId, SnapshotRestoreHandler&)`, before `start` |
+| restore a snapshot first | `restoreFrom(sourceId, SnapshotStore, SnapshotRestoreHandler)`, before `start` | `restoreFrom(sourceId, SnapshotStore&, SnapshotRestoreHandler&)`, before `start` |
 | attach | `start(aeron, memberId)` | `start(aeron, memberId)` |
 | each duty cycle | `poll()` | `poll()` |
 | start over | `restart()` | `restart()` |
 | state | `isCaughtUp()`, `lastGlobalSeqNo()`, `currentLeaderMemberId()`, `restoreFailure()` | the same; `restoreFailure()` is a `std::optional<std::string>` |
 | release | `close()` | destructor |
 
-With `restoreFrom`, the cold start asks the Replayer for the source's latest snapshot and, if there is one,
-hands its header and records to the handler before it dispatches anything, then dispatches from the frame
-after the cut (`doc/snapshot.md` §7). A replay lost under the restore starts it over at the header. A
-snapshot it cannot restore — a format or header version the handler does not read, or records that fail
-their check — stops recovery for good, and `restoreFailure()` says why. `restart()` starts over as a cold
+With `restoreFrom`, the cold start takes the newest snapshot file in the store that the log confirms — the
+Replayer holds the source's sequenced `SnapshotEnd` for its round, and the file matches it — and hands its
+header and records to the handler, a bounded number per `poll()`, before it dispatches anything, then
+dispatches from the frame after the cut (`doc/snapshot.md` §7). A file the log does not confirm gives way to
+the next older one, and the last to a walk from `globalSeqNo` 1. A snapshot it cannot restore — a format or
+header version the handler does not read, or a file whose records fail its end — stops recovery for good, and
+`restoreFailure()` says why. `restart()` starts over as a cold
 start on a receiver that has dispatched frames already, restoring again, and dispatches every frame after the
 restored cut once more; a passive gateway instance's activation is what it is for.
 
@@ -253,14 +255,16 @@ away raises from `doWork()` instead.
 
 **Snapshots** take the same `SnapshotListener` as [`Application`'s](#application), through the builder's
 `snapshotListener` (C++ `Config::snapshotListener`), and then require `sourceId` (C++ `Config::sourceId`), the
-pair's: the restore asks for that source's snapshot before any row is dispatched. Every instance serializes at
-the cut, and the one whose `GatewayStarted` for its current activation has been placed submits; the façade's
-header carries the pair's rows, the active instance and the highest connection id, which a restore puts in
-place of the frames before the cut. The fences are the same. With `passive(true)` (C++ `Config::passive`) an
-instance holds no state until it is activated: it follows the tap for the election alone, its listener sees no
-payload and no connection, and it takes part in no round. On activation it restores the latest snapshot, or
+pair's, since the restore asks about that source's snapshot before any row is dispatched, and
+`snapshotDirectory`, the instance's own and not its pair's. Every instance serializes at the cut into its
+directory, and the one whose `GatewayStarted` for its current activation has been placed submits the end; the
+façade's header carries the pair's rows, the active instance and the highest connection id, which a restore
+puts in place of the frames before the cut. The fences are the same. With `passive(true)` (C++
+`Config::passive`) an instance holds no state until it is activated: it follows the tap for the election
+alone, its listener sees no payload and no connection, and it takes part in no round, so it writes no file. On
+activation it restores the newest confirmed file its directory holds, one left from when it last served, or
 replays from `globalSeqNo` 1 without one, and serves once caught up. The failover then races the 5 s
-activation deadline (`doc/snapshot.md` §4), so a passive instance suits state that restores well inside it.
+activation deadline (`doc/snapshot.md` §4), so a passive instance suits state that catches up well inside it.
 
 Tap lag is deliberately **not** the client tier's business: it raises no fence and changes no
 behaviour. How far a node runs behind the cluster is a property of the node, and `doc/ops.md` graphs it
@@ -304,20 +308,22 @@ reference consumers, and the only clients in the repository whose builds refuse 
 
 **Snapshots** (`doc/snapshot.md`). The builder's `snapshotListener(SnapshotListener)` (C++
 `Config::snapshotListener`, a `SnapshotListener*` that must outlive the replica) makes the application take part in snapshot rounds, if its topology row also says `snapshot="true"`; without one it
-takes part in none. At each round's cut, before dispatching the next frame, every replica's façade calls
+takes part in none. It requires `snapshotDirectory(Path)` (C++ `Config::snapshotDirectory`, a
+`std::filesystem::path`): the replica's own directory, one file per round, which must outlive the process
+(`doc/snapshot.md` §4.1). At each round's cut, before dispatching the next frame, every replica's façade calls
 `onSnapshot(MutableDirectBuffer buffer, int recordIndex)` (C++ `onSnapshot(std::span<std::uint8_t> buffer,
 std::int32_t recordIndex)`) from index 0 until it returns 0: each call encodes
 the next record of the state into `buffer`, at most its 1302-byte capacity, and returns its length.
 `recordIndex` 0 is where an iteration over the state starts over. A length outside 0–1302 drops the round.
 `formatVersion()` names the record format. Every replica must produce the same records for the same state:
-no hash-map iteration order, no local time, no node identity. The replica whose gate is open at the cut submits them, a few per
-`doWork()`; the others compare the sequenced end with their own and are fenced with `SNAPSHOT_DIVERGED` if it
-differs. On start, a replica with a listener restores its source's latest snapshot before it dispatches
-anything: the façade calls `onRestore(DirectBuffer buffer, int length, int recordIndex)` (C++
+no hash-map iteration order, no local time, no node identity. Every replica writes the records into its own
+file; the one whose gate is open at the cut submits their `SnapshotEnd`, and every replica compares the
+sequenced end with its own and is fenced with `SNAPSHOT_DIVERGED` if it differs. On start, a replica with a
+listener restores the newest snapshot file of its own that the log confirms before it dispatches anything: the façade calls `onRestore(DirectBuffer buffer, int length, int recordIndex)` (C++
 `onRestore(std::span<const std::uint8_t> record, std::int32_t recordIndex)`) once per record, in
 the order `onSnapshot` encoded them, and then dispatches from the frame after the cut. `recordIndex` 0 is
-where the state is cleared, since a restore whose replay is lost starts over. A snapshot whose
-`formatVersion` differs from the listener's, or that cannot be read, fences the replica with
+where the state is cleared. With no confirmed file the replica replays from `globalSeqNo` 1. A snapshot whose
+`formatVersion` differs from the listener's, or whose file is damaged, fences the replica with
 `SNAPSHOT_UNRESTORABLE` (C++ `ClusterError::SnapshotUnrestorable`; the divergence fence is
 `ClusterError::SnapshotDiverged`).
 

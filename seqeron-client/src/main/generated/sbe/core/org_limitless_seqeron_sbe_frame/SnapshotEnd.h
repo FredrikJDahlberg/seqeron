@@ -383,7 +383,7 @@ public:
         return *this;
     }
 
-    SBE_NODISCARD static const char *chunkCountMetaAttribute(const MetaAttribute metaAttribute) SBE_NOEXCEPT
+    SBE_NODISCARD static const char *recordCountMetaAttribute(const MetaAttribute metaAttribute) SBE_NOEXCEPT
     {
         switch (metaAttribute)
         {
@@ -392,54 +392,54 @@ public:
         }
     }
 
-    static SBE_CONSTEXPR std::uint16_t chunkCountId() SBE_NOEXCEPT
+    static SBE_CONSTEXPR std::uint16_t recordCountId() SBE_NOEXCEPT
     {
         return 20052;
     }
 
-    SBE_NODISCARD static SBE_CONSTEXPR std::uint64_t chunkCountSinceVersion() SBE_NOEXCEPT
+    SBE_NODISCARD static SBE_CONSTEXPR std::uint64_t recordCountSinceVersion() SBE_NOEXCEPT
     {
         return 0;
     }
 
-    SBE_NODISCARD bool chunkCountInActingVersion() SBE_NOEXCEPT
+    SBE_NODISCARD bool recordCountInActingVersion() SBE_NOEXCEPT
     {
         return true;
     }
 
-    SBE_NODISCARD static SBE_CONSTEXPR std::size_t chunkCountEncodingOffset() SBE_NOEXCEPT
+    SBE_NODISCARD static SBE_CONSTEXPR std::size_t recordCountEncodingOffset() SBE_NOEXCEPT
     {
         return 8;
     }
 
-    static SBE_CONSTEXPR std::int32_t chunkCountNullValue() SBE_NOEXCEPT
+    static SBE_CONSTEXPR std::int32_t recordCountNullValue() SBE_NOEXCEPT
     {
         return SBE_NULLVALUE_INT32;
     }
 
-    static SBE_CONSTEXPR std::int32_t chunkCountMinValue() SBE_NOEXCEPT
+    static SBE_CONSTEXPR std::int32_t recordCountMinValue() SBE_NOEXCEPT
     {
         return INT32_C(-2147483647);
     }
 
-    static SBE_CONSTEXPR std::int32_t chunkCountMaxValue() SBE_NOEXCEPT
+    static SBE_CONSTEXPR std::int32_t recordCountMaxValue() SBE_NOEXCEPT
     {
         return INT32_C(2147483647);
     }
 
-    static SBE_CONSTEXPR std::size_t chunkCountEncodingLength() SBE_NOEXCEPT
+    static SBE_CONSTEXPR std::size_t recordCountEncodingLength() SBE_NOEXCEPT
     {
         return 4;
     }
 
-    SBE_NODISCARD std::int32_t chunkCount() const SBE_NOEXCEPT
+    SBE_NODISCARD std::int32_t recordCount() const SBE_NOEXCEPT
     {
         std::int32_t val;
         std::memcpy(&val, m_buffer + m_offset + 8, sizeof(std::int32_t));
         return SBE_LITTLE_ENDIAN_ENCODE_32(val);
     }
 
-    SnapshotEnd &chunkCount(const std::int32_t value) SBE_NOEXCEPT
+    SnapshotEnd &recordCount(const std::int32_t value) SBE_NOEXCEPT
     {
         std::int32_t val = SBE_LITTLE_ENDIAN_ENCODE_32(value);
         std::memcpy(m_buffer + m_offset + 8, &val, sizeof(std::int32_t));
@@ -656,8 +656,8 @@ friend std::basic_ostream<CharT, Traits> & operator << (
     builder << +writer.round();
 
     builder << ", ";
-    builder << R"("chunkCount": )";
-    builder << +writer.chunkCount();
+    builder << R"("recordCount": )";
+    builder << +writer.recordCount();
 
     builder << ", ";
     builder << R"("length": )";

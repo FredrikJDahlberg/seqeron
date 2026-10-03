@@ -36,7 +36,6 @@ import org.limitless.seqeron.sbe.frame.SequencedDecoder;
 import org.limitless.seqeron.sbe.frame.SequencedHeaderDecoder;
 import org.limitless.seqeron.sbe.frame.SequencedSystemDecoder;
 import org.limitless.seqeron.sbe.frame.SequencedSystemHeaderDecoder;
-import org.limitless.seqeron.sbe.frame.SnapshotChunkEncoder;
 import org.limitless.seqeron.sbe.frame.SnapshotEndEncoder;
 import org.limitless.seqeron.sbe.frame.SnapshotPolicyRegisteredEncoder;
 import org.limitless.seqeron.sbe.frame.SnapshotRequestedEncoder;
@@ -68,6 +67,9 @@ class ConformanceTest {
 
     /** A {@code gatewaySourceId} the list rows below claim. */
     private static final int LISTED_SOURCE_ID = 5;
+
+    /** {@code SnapshotChunk}'s systemEventType, retired with it: ids are never reused (spec §7). */
+    private static final int RETIRED_SNAPSHOT_CHUNK = 27;
 
     /** Offset of the payload's length prefix in an ingress frame: past the outer header and the composite. */
     private static final int PREFIX_OFFSET =
@@ -183,7 +185,7 @@ class ConformanceTest {
     // ── Row 3. System frames round-trip unchanged (§7) ───────────────────────────────────────────
 
     @Test
-    @DisplayName("row 3: each of the thirteen submitted events crosses with its payload byte-identical")
+    @DisplayName("row 3: each of the twelve submitted events crosses with its payload byte-identical")
     void submittedSystemEventsRoundTrip() {
         for (final Map.Entry<Integer, byte[]> event : submittedEvents().entrySet()) {
             final Sequencer target = new Sequencer();
@@ -221,20 +223,6 @@ class ConformanceTest {
         assertTrue(body.length <= FrameLayer.MAX_PAYLOAD_LENGTH);
 
         final int length = systemFrame(SystemFrame.CONNECTION_OPENED, SOURCE_ID, body);
-        final int sequenced = sequencer.sequenceMessage(ingress, 0, length, SESSION_ID, TIMESTAMP);
-        assertNotEquals(Sequencer.NO_FRAME, sequenced);
-
-        final SequencedFrameDecoder view = wrapSequenced(sequenced);
-        assertArrayEquals(body, copy(view.buffer(), view.payloadOffset(), view.payloadLength()));
-    }
-
-    @Test
-    @DisplayName("row 3: a SnapshotChunk of the largest data §7.1 allows fills MAX_PAYLOAD_LENGTH and crosses unchanged")
-    void snapshotChunkCarriesMaximumData() {
-        final byte[] body = snapshotChunkBody(syntheticPayload(1302));
-        assertEquals(FrameLayer.MAX_PAYLOAD_LENGTH, body.length);
-
-        final int length = systemFrame(SystemFrame.SNAPSHOT_CHUNK, SOURCE_ID, body);
         final int sequenced = sequencer.sequenceMessage(ingress, 0, length, SESSION_ID, TIMESTAMP);
         assertNotEquals(Sequencer.NO_FRAME, sequenced);
 
@@ -368,9 +356,9 @@ class ConformanceTest {
     }
 
     @Test
-    @DisplayName("row 4 condition 8: an unallocated or synthesis-only systemEventType is refused")
+    @DisplayName("row 4 condition 8: an unallocated, retired or synthesis-only systemEventType is refused")
     void conditionEightSystemEventType() {
-        for (final int systemEventType : new int[] {99, SystemFrame.LEADERSHIP_CHANGED,
+        for (final int systemEventType : new int[] {99, RETIRED_SNAPSHOT_CHUNK, SystemFrame.LEADERSHIP_CHANGED,
                                                     SystemFrame.CLUSTER_HEARTBEAT, SystemFrame.GATEWAY_ACTIVE,
                                                     SystemFrame.SNAPSHOT_STARTED}) {
             final int length = systemFrame(systemEventType, SOURCE_ID, syntheticPayload(8));
@@ -383,10 +371,8 @@ class ConformanceTest {
     @DisplayName("row 4 condition 9: a payload short of its event's compiled block length is refused")
     void conditionNineBodyTooShort() {
         assertEquals(8, GatewayStartedEncoder.BLOCK_LENGTH);
-        assertEquals(12, SnapshotChunkEncoder.BLOCK_LENGTH);
         assertEquals(28, SnapshotEndEncoder.BLOCK_LENGTH);
-        for (final int[] event : new int[][] {{SystemFrame.GATEWAY_STARTED, 7}, {SystemFrame.SNAPSHOT_CHUNK, 11},
-                                              {SystemFrame.SNAPSHOT_END, 27}}) {
+        for (final int[] event : new int[][] {{SystemFrame.GATEWAY_STARTED, 7}, {SystemFrame.SNAPSHOT_END, 27}}) {
             final int length = systemFrame(event[0], SOURCE_ID, syntheticPayload(event[1]));
             assertRejected(() -> sequencer.sequenceMessage(ingress, 0, length, SESSION_ID, TIMESTAMP),
                            "systemEventType " + event[0]);
@@ -796,7 +782,7 @@ class ConformanceTest {
         return copy(frame, 0, MessageHeaderEncoder.ENCODED_LENGTH + encoder.encodedLength());
     }
 
-    /** The thirteen submitted events of §7, each with a well-formed payload. */
+    /** The twelve submitted events of §7, each with a well-formed payload. */
     private static Map<Integer, byte[]> submittedEvents() {
         final java.util.LinkedHashMap<Integer, byte[]> events = new java.util.LinkedHashMap<>();
         events.put(SystemFrame.CONNECTION_OPENED, connectionOpenedBody(new byte[0]));
@@ -809,7 +795,6 @@ class ConformanceTest {
         events.put(SystemFrame.GATEWAY_ACTIVATION_REQUESTED, activationRequestedBody(11));
         events.put(SystemFrame.APPLICATION_REGISTERED, applicationRegisteredBody(3));
         events.put(SystemFrame.SNAPSHOT_REQUESTED, snapshotRequestedBody());
-        events.put(SystemFrame.SNAPSHOT_CHUNK, snapshotChunkBody(syntheticPayload(5)));
         events.put(SystemFrame.SNAPSHOT_END, snapshotEndBody());
         events.put(SystemFrame.SNAPSHOT_POLICY_REGISTERED, snapshotPolicyRegisteredBody());
         return events;
@@ -822,18 +807,10 @@ class ConformanceTest {
         return copy(body, 0, encoder.encodedLength());
     }
 
-    private static byte[] snapshotChunkBody(final byte[] data) {
-        final MutableDirectBuffer body = new ExpandableArrayBuffer(data.length + 16);
-        final SnapshotChunkEncoder encoder = new SnapshotChunkEncoder();
-        encoder.wrap(body, 0).round(3).chunkIndex(4);
-        encoder.putData(data, 0, data.length);
-        return copy(body, 0, encoder.encodedLength());
-    }
-
     private static byte[] snapshotEndBody() {
         final MutableDirectBuffer body = new ExpandableArrayBuffer(32);
         final SnapshotEndEncoder encoder = new SnapshotEndEncoder();
-        encoder.wrap(body, 0).round(3).chunkCount(5).length(6000).crc32c(0xDEADBEEFL).formatVersion(2);
+        encoder.wrap(body, 0).round(3).recordCount(5).length(6000).crc32c(0xDEADBEEFL).formatVersion(2);
         return copy(body, 0, encoder.encodedLength());
     }
 

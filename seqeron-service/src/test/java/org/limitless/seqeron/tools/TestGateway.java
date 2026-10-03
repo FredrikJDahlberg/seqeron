@@ -9,6 +9,7 @@ import java.nio.ByteBuffer;
 import java.nio.channels.ServerSocketChannel;
 import java.nio.channels.SocketChannel;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
@@ -82,6 +83,8 @@ import org.limitless.seqeron.util.Logger;
  *   probe.listenPort   — the TCP port: the gateway's to bind, the client's to connect to; default 9200
  *   probe.clientId     — serve: this replica's Replayer client id; default 10 (ClusterProbe follow's is 9)
  *   probe.snapshot     — serve: take part in snapshot rounds and restore on start; default false
+ *   probe.snapshotDir  — serve: this instance's own snapshot directory; default
+ *                        {tmpdir}/seqeron-snapshots-{probe.gatewayName}
  *   probe.passive      — serve: hold no state until activated (doc/snapshot.md §4); default false
  *   probe.sourceId     — serve: the pair's sourceId, which a restore queries; default 9
  *   probe.count        — client: lines to send; default 1
@@ -171,6 +174,9 @@ public final class TestGateway {
             .listener(new GateListener())
             .sourceId(sourceId)
             .snapshotListener(snapshot ? new Snapshots() : null)
+            .snapshotDirectory(Path.of(System.getProperty(
+                "probe.snapshotDir",
+                Path.of(System.getProperty("java.io.tmpdir"), "seqeron-snapshots-" + gatewayName).toString())))
             .passive(passive)
             .build();
         gateway.start(aeron);

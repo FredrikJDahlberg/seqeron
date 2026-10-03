@@ -10,12 +10,8 @@ import org.agrona.concurrent.UnsafeBuffer;
 import org.limitless.seqeron.protocol.ReplayProtocol;
 import org.limitless.seqeron.protocol.SequencedFrameDecoder;
 import org.limitless.seqeron.protocol.SnapshotHeader;
-import org.limitless.seqeron.protocol.SnapshotValidator;
 import org.limitless.seqeron.protocol.SystemFrame;
 import org.limitless.seqeron.sbe.frame.LeadershipChangedDecoder;
-import org.limitless.seqeron.sbe.frame.MessageHeaderDecoder;
-import org.limitless.seqeron.sbe.frame.SnapshotChunkDecoder;
-import org.limitless.seqeron.sbe.frame.SnapshotEndDecoder;
 import org.limitless.seqeron.sbe.replay.ReplayClientIdInUseDecoder;
 import org.limitless.seqeron.sbe.replay.ReplayPendingDecoder;
 import org.limitless.seqeron.sbe.replay.ReplayUnavailableDecoder;
@@ -36,10 +32,11 @@ import org.limitless.seqeron.util.Logger;
  * <p>{@link #isCaughtUp()} is cleared on a live-tap gap and re-established once contiguous: consumers gate
  * real decisions on it. Single-threaded: every method runs on the one duty-cycle thread.
  *
- * <p>Given a source to restore ({@link #restoreFrom}), a cold start first asks for that source's latest snapshot
- * (doc/snapshot.md §7). With one, it replays the snapshot's records from its {@code SnapshotStarted} to its
- * {@code SnapshotEnd}, dispatching nothing, then resumes there with the cut as the anchor; every later fall-back
- * to a walk from segment 0 resumes there instead.
+ * <p>Given a source to restore ({@link #restoreFrom}), a cold start first restores the newest snapshot of its own
+ * that the log confirms (doc/snapshot.md §7): it asks the Replayer for that round's sequenced {@code SnapshotEnd},
+ * reads the file's records into the handler if they match it, dispatching nothing, then resumes at the round's
+ * {@code SnapshotStarted} with the cut as the anchor; every later fall-back to a walk from segment 0 resumes there
+ * instead. A file the log does not confirm gives way to the next older one, and the last to a walk.
  */
 final class ReplayerRecovery {
     private static final long RESEND_INTERVAL_MS = 500;
@@ -67,6 +64,9 @@ final class ReplayerRecovery {
 
     private static final long MAX_RETAINED_BYTES = 16L * 1024 * 1024;
 
+    /** Records one duty cycle restores at most, so a large snapshot does not stall the session. */
+    static final int MAX_RESTORE_RECORDS_PER_CYCLE = 1024;
+
     private final int clientId;
     private final ReplayerRecoveryActions actions;
     private final SequencedHandler onSequenced;
@@ -82,9 +82,6 @@ final class ReplayerRecovery {
     private final ReplayUnavailableDecoder replayUnavailable = new ReplayUnavailableDecoder();
     private final ReplayClientIdInUseDecoder replayClientIdInUse = new ReplayClientIdInUseDecoder();
     private final SnapshotLocationDecoder snapshotLocation = new SnapshotLocationDecoder();
-    private final SnapshotChunkDecoder snapshotChunk = new SnapshotChunkDecoder();
-    private final SnapshotEndDecoder snapshotEnd = new SnapshotEndDecoder();
-    private final SnapshotValidator restoreValidator = new SnapshotValidator();
     private final UnsafeBuffer restoreRecord = new UnsafeBuffer(0, 0);
 
     private final SequencedEvent event = new SequencedEvent(view);
@@ -162,19 +159,25 @@ final class ReplayerRecovery {
     private int restoreSourceId = -1;
 
     private SnapshotRestoreHandler restoreHandler;
+    private SnapshotStore store;
 
     /** A {@code SnapshotQuery} is out and unanswered. */
     private boolean querying;
 
-    /** Replaying the chosen snapshot's records; nothing is dispatched until its end. */
+    /** The round of the local file the query is about. */
+    private long queriedRound;
+
+    /** Reading the chosen file's records; nothing is dispatched until its last. */
     private boolean restoring;
+    private SnapshotStore.Reader reader;
+    private int restoreRecordIndex;
 
     /** The chosen snapshot: its round, its cut, and where its {@code SnapshotStarted} starts. 0 cut = none. */
     private long snapshotRound;
     private long snapshotGlobalSeqNo;
     private long snapshotPosition;
 
-    /** The header of the restore in progress, null before its chunk 0. */
+    /** The header of the restore in progress, null before its record 0. */
     private SnapshotHeader restoredHeader;
 
     /** Why the restore cannot proceed, or null. Latched. */
@@ -202,18 +205,19 @@ final class ReplayerRecovery {
     }
 
     /**
-     * Restores {@code sourceId}'s latest snapshot on {@link #start()}, before anything is dispatched. Call before
-     * {@link #start()}.
+     * Restores {@code sourceId}'s newest confirmed snapshot in {@code store} on {@link #start()}, before anything is
+     * dispatched. Call before {@link #start()}.
      */
-    public void restoreFrom(final int sourceId, final SnapshotRestoreHandler handler) {
+    public void restoreFrom(final int sourceId, final SnapshotStore store, final SnapshotRestoreHandler handler) {
         restoreSourceId = sourceId;
+        this.store = Objects.requireNonNull(store, "store");
         restoreHandler = Objects.requireNonNull(handler, "handler");
     }
 
-    /** Cold start: query the source's snapshot if restoring one, else walk the recording chain from segment 0. */
+    /** Cold start: restore the newest local snapshot if restoring one, else walk the recording chain from segment 0. */
     public void start() {
         if (restoreSourceId >= 0) {
-            sendSnapshotQuery();
+            queryBelow(Long.MAX_VALUE);
         } else {
             requestReplay(0, 0);
         }
@@ -222,7 +226,8 @@ final class ReplayerRecovery {
     /**
      * Starts over as a cold start on a client that has dispatched frames already: a passive gateway instance's
      * activation (doc/snapshot.md §4). It restores the source's latest snapshot again, or walks from segment 0
-     * without one, and dispatches every frame after that once more, and nothing before.
+     * without one, and dispatches every frame after that once more, and nothing before. Call only once caught
+     * up: no query, restore or retained frame is in flight then, so the state reset here is all there is.
      */
     public void restart() {
         actions.closeReplay();
@@ -260,15 +265,11 @@ final class ReplayerRecovery {
                            Logger.CoreEventCode.TapGap,
                            actions.memberId(),
                            "resume replay opened at globalSeqNo=%d, expected %d — the active recording rotated "
-                               + "under us; re-walking the recording chain from segment 0",
+                               + "under us; replaying history from its start (segment 0, or the restored snapshot)",
                            globalSeqNo, anchor);
                 rewalk();
                 return;
             }
-        }
-        if (restoring && fromReplay) {
-            restore(buffer);
-            return;
         }
         if (lastGlobalSeqNo != 0) {
             if (globalSeqNo <= lastGlobalSeqNo) {
@@ -404,13 +405,16 @@ final class ReplayerRecovery {
     }
 
     /**
-     * Timer-driven work, once per duty cycle: the request resend, an unsent {@code ReplayComplete}, the
-     * replay-slot heartbeat, and the replay stall watchdog.
+     * Timer-driven work, once per duty cycle: the next records of a restore, the request resend, an unsent {@code
+     * ReplayComplete}, the replay-slot heartbeat, and the replay stall watchdog.
      * @param requestPublicationPending the request publication has not connected yet — retried every cycle
      *                                  rather than eating a full resend interval for a race much shorter
      *                                  than that
      */
     public void doTimers(final boolean requestPublicationPending) {
+        if (restoring) {
+            restoreRecords();
+        }
         final long nowMs = actions.nowMs();
         if (querying && (requestPublicationPending || (nowMs - lastRequestMs) > RESEND_INTERVAL_MS)) {
             sendSnapshotQuery();
@@ -494,10 +498,10 @@ final class ReplayerRecovery {
      * without treating it as a new gap.
      */
     public boolean isRecovering() {
-        return replaySessionId >= 0 || awaitingReplay || querying;
+        return replaySessionId >= 0 || awaitingReplay || querying || restoring;
     }
 
-    /** Replaying a snapshot's records, before anything after its cut is dispatched. */
+    /** Reading a snapshot's records, before anything after its cut is dispatched. */
     public boolean isRestoring() {
         return restoring;
     }
@@ -576,110 +580,122 @@ final class ReplayerRecovery {
      * so the resumed replay's first frame is checked against the anchor, falling back to a walk.
      */
     private void requestResume() {
-        if (restoring) {
-            rewalk(); // nothing is dispatched yet: the restore starts over
-            return;
-        }
         requestReplay(RESUME_SEGMENT_INDEX, lastFramePosition);
         resumeAnchorGlobalSeqNo = lastGlobalSeqNo;
     }
 
     /**
-     * Replays history from its start again: segment 0 of the chain, or, once a snapshot is chosen, the active
-     * recording at its {@code SnapshotStarted}, with the cut as the anchor. A restore in progress starts over.
+     * Replays history from its start again: segment 0 of the chain, or, once a snapshot is restored, the active
+     * recording at its {@code SnapshotStarted}, with the cut as the anchor.
      */
     private void rewalk() {
         if (snapshotGlobalSeqNo == 0) {
             requestReplay(0, 0);
             return;
         }
-        if (restoring) {
-            restoreValidator.reset(snapshotRound);
-            restoredHeader = null;
-        }
         requestReplay(RESUME_SEGMENT_INDEX, snapshotPosition);
         resumeAnchorGlobalSeqNo = snapshotGlobalSeqNo;
     }
 
-    /** Asks this node's Replayer where the source's latest snapshot is; resent until answered. */
+    /**
+     * Asks about the newest local snapshot below {@code belowRound}, or walks from segment 0 when there is none.
+     * @param belowRound {@link Long#MAX_VALUE} for the newest of all
+     */
+    private void queryBelow(final long belowRound) {
+        queriedRound = store.latestRound(belowRound);
+        if (queriedRound < 0) {
+            requestReplay(0, 0);
+            return;
+        }
+        sendSnapshotQuery();
+    }
+
+    /** Asks this node's Replayer for the sequenced end of the queried round; resent until answered. */
     private void sendSnapshotQuery() {
         querying = true;
         lastRequestMs = actions.nowMs();
         ++requestId;
-        actions.sendSnapshotQuery(requestId, restoreSourceId);
-    }
-
-    /** With no snapshot, walks from segment 0; with one this build reads, restores it. */
-    private void onSnapshotLocation() {
-        querying = false;
-        replayerUnavailable = false;
-        if (snapshotLocation.round() < 0) {
-            requestReplay(0, 0);
-            return;
-        }
-        if (!restoreHandler.supportsFormatVersion(snapshotLocation.formatVersion())) {
-            failRestore("round " + snapshotLocation.round() + " has formatVersion "
-                        + snapshotLocation.formatVersion() + ", which this build does not read");
-            return;
-        }
-        snapshotRound = snapshotLocation.round();
-        snapshotGlobalSeqNo = snapshotLocation.asOfGlobalSeqNo();
-        snapshotPosition = snapshotLocation.asOfPosition();
-        restoring = true;
-        Logger.info(Logger.CoreComponent.ReplayerStreamReceiver, actions.memberId(),
-                    "restoring source %d from round %d, cut at globalSeqNo=%d position=%d", restoreSourceId,
-                    snapshotRound, snapshotGlobalSeqNo, snapshotPosition);
-        rewalk();
+        actions.sendSnapshotQuery(requestId, restoreSourceId, queriedRound);
     }
 
     /**
-     * One frame of the restore pass. Only the source's own chunks and end of the chosen round count; they
-     * pass the check the Replayer indexed them by, so one that fails here is a damaged recording.
+     * Restores the queried round's file if the log confirms it; otherwise moves on to the next older one. A
+     * format this build does not read stops recovery.
      */
-    private void restore(final DirectBuffer buffer) {
-        noProgressSinceMs = 0;
-        if (!view.isSystem() || view.sourceId() != restoreSourceId) {
+    private void onSnapshotLocation() {
+        querying = false;
+        replayerUnavailable = false;
+        if (snapshotLocation.round() != queriedRound) {
+            Logger.info(Logger.CoreComponent.ReplayerStreamReceiver, actions.memberId(),
+                        "round %d of source %d has no sequenced SnapshotEnd in this node's index; trying an older "
+                            + "snapshot", queriedRound, restoreSourceId);
+            queryBelow(queriedRound);
             return;
         }
-        if (view.systemEventType() == SystemFrame.SNAPSHOT_CHUNK) {
-            snapshotChunk.wrap(buffer, view.payloadOffset(), SnapshotChunkDecoder.BLOCK_LENGTH,
-                               MessageHeaderDecoder.SCHEMA_VERSION);
-            if (snapshotChunk.round() != snapshotRound) {
+        if (!restoreHandler.supportsFormatVersion(snapshotLocation.formatVersion())) {
+            failRestore("round " + queriedRound + " has formatVersion " + snapshotLocation.formatVersion()
+                        + ", which this build does not read");
+            return;
+        }
+        reader = store.open(queriedRound);
+        if (reader == null || reader.recordCount() != snapshotLocation.recordCount() ||
+            reader.length() != snapshotLocation.length() || reader.crc32c() != snapshotLocation.crc32c()) {
+            Logger.log(Logger.CoreComponent.ReplayerStreamReceiver, Logger.Severity.Warn,
+                       Logger.CoreEventCode.SnapshotStoreFailed, actions.memberId(),
+                       "round %d's snapshot file is %s; trying an older snapshot", queriedRound,
+                       reader == null ? "missing or cut short" : "not the one sequenced");
+            closeReader();
+            queryBelow(queriedRound);
+            return;
+        }
+        snapshotRound = queriedRound;
+        snapshotGlobalSeqNo = snapshotLocation.asOfGlobalSeqNo();
+        snapshotPosition = snapshotLocation.asOfPosition();
+        restoring = true;
+        restoreRecordIndex = 0;
+        restoredHeader = null;
+        Logger.info(Logger.CoreComponent.ReplayerStreamReceiver, actions.memberId(),
+                    "restoring source %d from round %d, cut at globalSeqNo=%d position=%d", restoreSourceId,
+                    snapshotRound, snapshotGlobalSeqNo, snapshotPosition);
+    }
+
+    /**
+     * The next records of the restore, at most {@link #MAX_RESTORE_RECORDS_PER_CYCLE}. They match the end the log
+     * holds by the file's trailer, so records that fail it are a damaged file.
+     */
+    private void restoreRecords() {
+        noProgressSinceMs = 0;
+        for (int i = 0; i < MAX_RESTORE_RECORDS_PER_CYCLE; i++) {
+            final int length = reader.next(restoreRecord);
+            if (length == SnapshotStore.Reader.END) {
+                completeRestore();
                 return;
             }
-            final int chunkIndex = snapshotChunk.chunkIndex();
-            final int dataOffset = snapshotChunk.limit() + SnapshotChunkDecoder.dataHeaderLength();
-            final int dataLength = snapshotChunk.dataLength();
-            if (restoreValidator.onChunk(snapshotRound, chunkIndex, buffer, dataOffset, dataLength) ==
-                SnapshotValidator.State.INVALID) {
-                failRestore("round " + snapshotRound + "'s chunk " + chunkIndex + " is out of order");
+            if (length == SnapshotStore.Reader.DAMAGED) {
+                failRestore("round " + snapshotRound + "'s snapshot file is damaged: its records do not match the "
+                            + "SnapshotEnd sequenced for it");
                 return;
             }
-            if (chunkIndex == 0) {
-                restoredHeader = SnapshotHeader.decode(buffer, dataOffset, dataLength);
+            if (restoreRecordIndex == 0) {
+                restoredHeader = SnapshotHeader.decode(restoreRecord, 0, length);
                 if (restoredHeader == null) {
                     failRestore("round " + snapshotRound + " has a header of version "
-                                + SnapshotHeader.version(buffer, dataOffset, dataLength) + ", which this build "
-                                + "does not read");
+                                + SnapshotHeader.version(restoreRecord, 0, length)
+                                + ", which this build does not read");
                     return;
                 }
                 restoreHandler.onSnapshotHeader(restoredHeader);
             } else {
-                restoreRecord.wrap(buffer, dataOffset, dataLength);
-                restoreHandler.onSnapshotRecord(restoreRecord, dataLength, chunkIndex - 1);
+                restoreHandler.onSnapshotRecord(restoreRecord, length, restoreRecordIndex - 1);
             }
-        } else if (view.systemEventType() == SystemFrame.SNAPSHOT_END) {
-            snapshotEnd.wrap(buffer, view.payloadOffset(), SnapshotEndDecoder.BLOCK_LENGTH,
-                             MessageHeaderDecoder.SCHEMA_VERSION);
-            if (snapshotEnd.round() != snapshotRound) {
-                return;
-            }
-            if (restoreValidator.onEnd(snapshotRound, snapshotEnd.chunkCount(), snapshotEnd.length(),
-                                       snapshotEnd.crc32c()) != SnapshotValidator.State.COMPLETE) {
-                failRestore("round " + snapshotRound + "'s records do not match its SnapshotEnd");
-                return;
-            }
-            completeRestore();
+            restoreRecordIndex++;
+        }
+    }
+
+    private void closeReader() {
+        if (reader != null) {
+            reader.close();
+            reader = null;
         }
     }
 
@@ -689,6 +705,7 @@ final class ReplayerRecovery {
      */
     private void completeRestore() {
         restoring = false;
+        closeReader();
         lastGlobalSeqNo = snapshotGlobalSeqNo;
         lastFramePosition = snapshotPosition;
         currentLeaderMemberId = restoredHeader.leaderMemberId();
@@ -707,6 +724,7 @@ final class ReplayerRecovery {
         restoreFailure = reason;
         querying = false;
         restoring = false;
+        closeReader();
         awaitingReplay = false;
         replaySessionId = -1;
         actions.closeReplay();
@@ -732,8 +750,8 @@ final class ReplayerRecovery {
                            Logger.CoreEventCode.TapGap,
                            actions.memberId(),
                            "resume at position %d answered 'nothing to replay' while a hole is open above "
-                               + "globalSeqNo=%d — the active recording rotated under us; re-walking the "
-                               + "recording chain from segment 0",
+                               + "globalSeqNo=%d — the active recording rotated under us; replaying history from "
+                               + "its start (segment 0, or the restored snapshot)",
                            requestFromPosition, lastGlobalSeqNo);
                 rewalk();
                 return;
@@ -829,10 +847,6 @@ final class ReplayerRecovery {
     private void onReplaySegmentComplete() {
         actions.closeReplay();
         replaySessionId = -1;
-        if (restoring) {
-            rewalk(); // the bound came before the snapshot's end, which the Replayer indexed: start over
-            return;
-        }
         if (walkSegmentIndex < 0) {
             if (reachedTip()) {
                 sendReplayComplete();

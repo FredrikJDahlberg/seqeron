@@ -19,7 +19,7 @@ are stable too, which is why §15 is unassigned. All SBE schemas here are little
 | L0 transport | Aeron channels and stream ids; the Aeron Cluster ingress/egress session protocol | `sbe-cluster.xml` (111), a mirror of `io.aeron.cluster.codecs` | Aeron |
 | L1 frame | two envelope pairs, `Unsequenced`/`Sequenced` (application) and `UnsequencedSystem`/`SequencedSystem` (system), plus four synthesized templates | `sbe-frame.xml` (210) | seqeron |
 | L2 payload | one opaque, length-prefixed byte range per application frame, named by `payloadId` | the application's | the owner of that `payloadId` |
-| system messages | seqeron's seventeen events, named by `systemEventType` | `sbe-frame.xml` (210) | seqeron |
+| system messages | seqeron's sixteen events, named by `systemEventType` | `sbe-frame.xml` (210) | seqeron |
 | replay control | replayer ↔ client messages; node-local, never sequenced, never recorded | `sbe-replay.xml` (212) | seqeron |
 
 The cluster tier never decodes an application payload.
@@ -337,7 +337,7 @@ last, so every participating row precedes the first round.
 
 ## 7. System messages
 
-Seventeen events, defined in schema 210 beside the envelopes. Thirteen are submitted by producers and
+Sixteen events, defined in schema 210 beside the envelopes. Twelve are submitted by producers and
 travel in `UnsequencedSystem`/`SequencedSystem`. Four are synthesized by the sequencer and have templates
 of their own.
 
@@ -356,7 +356,6 @@ of their own.
 | `GatewayActivationRequested` | 24 | payload | yes (`clusterctl activate`) | yes: validates `gatewayId`, then synthesizes `GatewayActive` |
 | `ApplicationRegistered` | 25 | payload | yes (`clusterctl load-topology`) | no |
 | `SnapshotRequested` | 26 | payload | yes (`clusterctl request-snapshot`) | no: answered with `SnapshotStarted` (§7.3) |
-| `SnapshotChunk` | 27 | payload | yes (participating source) | no |
 | `SnapshotEnd` | 28 | payload | yes (participating source) | no |
 | `SnapshotPolicyRegistered` | 29 | payload | yes (`clusterctl load-topology`) | yes: the round interval (§7.3) |
 | `SnapshotStarted` | 30 | template 107 | no | no (encodes only) |
@@ -401,7 +400,7 @@ the system's external edges and is outside this protocol.
 ### 7.1 Message fields
 
 No system message has a `header` field; the frame's header composite (§4.1) serves. Every system
-message except `ConnectionOpened` and `SnapshotChunk` is fixed-length, with no var-data or repeating groups. The
+message except `ConnectionOpened` is fixed-length, with no var-data or repeating groups. The
 synthesized templates' blocks include the 34-byte header composite.
 
 | event | `systemEventType` | block | frame bytes | fields |
@@ -419,8 +418,7 @@ synthesized templates' blocks include the 34-byte header composite.
 | `GatewayActivationRequested` | 24 | 4 | 48 | `gatewayId` int32 |
 | `ApplicationRegistered` | 25 | 37 | 81 | `applicationSourceId` int32, `applicationName` char[32], `snapshot` uint8 |
 | `SnapshotRequested` | 26 | 8 | 52 | `correlationId` int64 |
-| `SnapshotChunk` | 27 | 12 | 58 + *n* | `round` int64, `chunkIndex` int32, `data` varData |
-| `SnapshotEnd` | 28 | 28 | 72 | `round` int64, `chunkCount` int32, `length` int64, `crc32c` uint32, `formatVersion` uint32 |
+| `SnapshotEnd` | 28 | 28 | 72 | `round` int64, `recordCount` int32, `length` int64, `crc32c` uint32, `formatVersion` uint32 |
 | `SnapshotPolicyRegistered` | 29 | 4 | 48 | `intervalSeconds` uint32 |
 | `SnapshotStarted` | 30 | 42 | 50 | `round` int64 |
 
@@ -446,10 +444,10 @@ Field semantics:
 - `snapshot`: 1 if the source takes part in snapshot rounds, else 0; the same on every row of one
   `gatewaySourceId`.
 - `round`: a snapshot round's number, from 1; its cut is the `globalSeqNo` of its `SnapshotStarted`.
-- `chunkIndex`, `chunkCount`: a source's chunks for one round are numbered from 0; `SnapshotEnd`
-  follows the last. `data` is one whole record of the snapshot, at most 1302 bytes, which fills
-  `MAX_PAYLOAD_LENGTH`.
-- `length`, `crc32c`: the snapshot's bytes across all chunks, and their CRC-32C.
+- `recordCount`, `length`, `crc32c`: the snapshot's records, its header included, their bytes, and the
+  CRC-32C of those bytes in order. The records themselves never enter the log; they stay with the
+  instances that serialized them.
+- `systemEventType` 27 is retired, and ids are never reused.
 - `formatVersion`: the application's, opaque to seqeron.
 - `intervalSeconds`: seconds of consensus time between rounds; 0 means operator requests only.
 
@@ -547,7 +545,7 @@ sequenced after the first round changes the interval but not the point it counts
 
 | file | schema id | contains | change policy (§11) |
 | --- | --- | --- | --- |
-| `sbe-frame.xml` | 210 | the eight top-level templates, the four header composites, `messageHeader`, `varDataEncoding`, and the thirteen submitted system payloads | envelopes frozen; system events changeable under **V-3** |
+| `sbe-frame.xml` | 210 | the eight top-level templates, the four header composites, `messageHeader`, `varDataEncoding`, and the twelve submitted system payloads | envelopes frozen; system events changeable under **V-3** |
 | `sbe-replay.xml` | 212 | the nine replay control messages (§10) | changed in place, no version bump |
 
 The envelopes and system messages are one schema because they have one owner, ship in one artifact and
@@ -689,8 +687,8 @@ no header composite and are never sequenced or recorded.
 | `ReplayHeartbeat` (20) | client → replayer | still replaying; sent about every 500 ms to keep the slot |
 | `ReplayUnavailable` (21) | replayer → client | this node cannot serve history for the replayer's lifetime (unlike `ReplayPending`, not transient) |
 | `ReplayClientIdInUse` (22) | replayer → client | two processes on this node are requesting under this `clientId` |
-| `SnapshotQuery` (23) | client → replayer | where is this source's latest valid snapshot (`doc/snapshot.md` §5) |
-| `SnapshotLocation` (24) | replayer → client | that snapshot's round and positions, or `round` −1 for none |
+| `SnapshotQuery` (23) | client → replayer | is this round of this source's snapshot in the log (`doc/snapshot.md` §5) |
+| `SnapshotLocation` (24) | replayer → client | that round's cut, position and sequenced `SnapshotEnd`, or `round` −1 for none |
 
 - **R-1.** `requestId` identifies the current request. The client increments it on every send,
   including an unchanged resend, and the replayer echoes it. A client MUST ignore a reply whose
@@ -727,8 +725,8 @@ encoded length is 8 + block. None has var-data or repeating groups.
 | `ReplayHeartbeat` | 20 | 4 | `clientId` int32 |
 | `ReplayUnavailable` | 21 | 12 | `clientId` int32, `requestId` int64 |
 | `ReplayClientIdInUse` | 22 | 4 | `clientId` int32 |
-| `SnapshotQuery` | 23 | 16 | `clientId` int32, `requestId` int64, `sourceId` int32 |
-| `SnapshotLocation` | 24 | 48 | `clientId` int32, `requestId` int64, `round` int64, `asOfGlobalSeqNo` int64, `asOfPosition` int64, `endPosition` int64, `formatVersion` uint32 |
+| `SnapshotQuery` | 23 | 24 | `clientId` int32, `requestId` int64, `sourceId` int32, `round` int64 |
+| `SnapshotLocation` | 24 | 56 | `clientId` int32, `requestId` int64, `round` int64, `asOfGlobalSeqNo` int64, `asOfPosition` int64, `formatVersion` uint32, `recordCount` int32, `length` int64, `crc32c` uint32 |
 
 - `clientId`: identifies the client on the shared control stream. It does not match a reply to a
   request; `requestId` does (**R-1**).
@@ -742,10 +740,12 @@ encoded length is 8 + block. None has var-data or repeating groups.
 - `catchUpPosition`: where the client stops following the replay and switches to the live tap,
   de-duplicating on `globalSeqNo`.
 - `recordingId`: the recording the requested segment resolved to, or −1 when the chain is exhausted.
-- `sourceId`, `round`, `formatVersion`: the queried source; its latest valid snapshot's round, or −1 for
-  none; and that snapshot's `SnapshotEnd.formatVersion`.
+- `sourceId`, `round`: the queried source and the round of the snapshot file the client holds. The answer's
+  `round` is that round when the index holds the source's `SnapshotEnd` for it, else −1.
+- `formatVersion`, `recordCount`, `length`, `crc32c`: that `SnapshotEnd`'s, which the client checks its
+  file against.
 - `asOfGlobalSeqNo`, `asOfPosition`: the round's cut and the position of its `SnapshotStarted` in the
-  active recording. `endPosition`: the position just past the source's `SnapshotEnd` for the round.
+  active recording.
 
 The two sentinels are independent. `replaySessionId == NO_REPLAY_NEEDED` with `recordingId >= 0`
 means that segment is empty: request the next. With `recordingId == -1` it means the chain is
@@ -893,8 +893,8 @@ Aeron runtime or media driver and runs in under a second. The payload fixture is
 | --- | --- | --- |
 | 1 | **Copy fidelity.** A sequenced `Unsequenced` carries a byte-identical payload and an unchanged `payloadId`, for payloads of 0 bytes, 1 byte and `MAX_PAYLOAD_LENGTH` | §5 |
 | 2 | **Prefix property.** Bytes 0–17 of each unsequenced composite equal those of its sequenced counterpart for the same values, offset 16 included; the two families' composites are byte-identical; encoded lengths are 18 and 34 | **F-3** |
-| 3 | **System frames round-trip.** Each of the thirteen submitted events, wrapped as `UnsequencedSystem` and sequenced, keeps a byte-identical payload and its `systemEventType`; `ConnectionOpened` with empty, short and maximum-length `connectionData`; `SnapshotChunk` with maximum-length `data`. Each synthesized template, encoded by the sequencer, has the right template id, inline fields and `systemEventType` | §7 |
-| 4 | **Rejection table.** One case per §9.2 condition; each asserts the frame was not sequenced, nothing was emitted, `globalSeqNo` did not move and the rejection counter rose by exactly 1. Cases: over `MAX_INGRESS_LENGTH` and under 28 (1); wrong `schemaId`, non-zero `version` (2); a non-ingress template, including each synthesized one (3); `blockLength` below and above 18 on both ingress templates (4); length prefix past the frame end, short of it, and 65535 (5); `sourceId` −1 (6); `payloadId` 0 and 1 (7); an unallocated `systemEventType` and each synthesized one (8); a `GatewayStarted`, `SnapshotChunk` or `SnapshotEnd` payload one byte short of its block (9); **S-6**'s cases (10) | **S-4**, **S-5**, **S-7** |
+| 3 | **System frames round-trip.** Each of the twelve submitted events, wrapped as `UnsequencedSystem` and sequenced, keeps a byte-identical payload and its `systemEventType`; `ConnectionOpened` with empty, short and maximum-length `connectionData`. Each synthesized template, encoded by the sequencer, has the right template id, inline fields and `systemEventType` | §7 |
+| 4 | **Rejection table.** One case per §9.2 condition; each asserts the frame was not sequenced, nothing was emitted, `globalSeqNo` did not move and the rejection counter rose by exactly 1. Cases: over `MAX_INGRESS_LENGTH` and under 28 (1); wrong `schemaId`, non-zero `version` (2); a non-ingress template, including each synthesized one (3); `blockLength` below and above 18 on both ingress templates (4); length prefix past the frame end, short of it, and 65535 (5); `sourceId` −1 (6); `payloadId` 0 and 1 (7); an unallocated `systemEventType`, the retired 27 and each synthesized one (8); a `GatewayStarted` or `SnapshotEnd` payload one byte short of its block (9); **S-6**'s cases (10) | **S-4**, **S-5**, **S-7** |
 | 4a | **Rejection denies nothing and repeats identically.** Two rejections under one `payloadId` each increment the counter and emit nothing; a well-formed frame with that `payloadId` afterwards is accepted unchanged | **S-7**, **C-2** |
 | 4b | **The producer refuses before sending.** A payload of exactly `MAX_PAYLOAD_LENGTH` is published; one byte longer is refused with nothing offered to the transport, distinguishably from back-pressure, and the next well-formed publish succeeds. Uses an in-memory transport seam | **T-3**, §12 |
 | 5 | **Synthesis is deterministic.** Two independent `Sequencer`s fed the same input emit byte-identical frames, heartbeats and snapshot rounds included | **S-3**, **F-2** |
@@ -953,9 +953,9 @@ concern sources that take part in snapshot rounds (§7.3, `doc/snapshot.md`).
   a round's cut to the same records, byte for byte: no hash-map iteration order, no local time, no node
   identity. The header the façade writes is part of the records, and is identical on every instance by
   construction. (`SnapshotListener`)
-- **A-7. A divergent instance stops.** An instance whose own `chunkCount`, `length` or `crc32c` for a round
+- **A-7. A divergent instance stops.** An instance whose own `recordCount`, `length` or `crc32c` for a round
   differs from its source's sequenced `SnapshotEnd` no longer holds the state the log implies, and MUST
-  stop. The sequenced snapshot is the reference: a publisher that diverged has broken A-6. The façades
+  stop. The sequenced end is the reference: a publisher that diverged has broken A-6. The façades
   fence with `SNAPSHOT_DIVERGED`. (`SnapshotTaker`)
 
 A-4 and A-5 apply within one producer process. A restarted producer, or a standby promoted in its

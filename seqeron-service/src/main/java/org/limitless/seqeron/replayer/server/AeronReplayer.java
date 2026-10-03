@@ -113,11 +113,9 @@ public final class AeronReplayer implements Replayer {
             private IndexFrameHandler handler;
             private final FragmentHandler fragments = (buffer, offset, length, header) -> {
                 // Frames are never fragmented (spec T-2), so one fragment is one whole frame.
-                final long end = header.position();
                 handler.onFrame(buffer, offset, length,
-                                end - BitUtil.align(length + DataHeaderFlyweight.HEADER_LENGTH,
-                                                    FrameDescriptor.FRAME_ALIGNMENT),
-                                end);
+                                header.position() - BitUtil.align(length + DataHeaderFlyweight.HEADER_LENGTH,
+                                                                  FrameDescriptor.FRAME_ALIGNMENT));
             };
 
             @Override
