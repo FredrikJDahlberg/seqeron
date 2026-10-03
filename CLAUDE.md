@@ -256,7 +256,8 @@ the sequencer is the stream's only publisher.
 
 **Every node publishes and records its own tap** — leader and follower alike. All nodes process the
 same committed log in the same order and keep identical sequencing state (so a new leader resumes
-exactly where the last one left off), which makes the taps byte-identical across nodes: each archive
+exactly where the last one left off), which makes the taps byte-identical across nodes, frame for frame
+(recording positions match only at equal IPC MTU and term length): each archive
 independently holds complete history, with no cross-node replication. The tap publication is created
 once in `onStart` and never re-created on a leadership change (`aeron:ipc` has no port to collide on),
 so a node's recording is one continuous run spanning every leader tenure.

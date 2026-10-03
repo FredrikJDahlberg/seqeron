@@ -230,7 +230,8 @@ all of it.
 Set the IPC MTU identically on every member and gateway host. Once frames fragment, a recording's
 positions depend on it, and a gateway host's relay resumes at the same position on the next member only
 when both recordings agree; otherwise it falls back to that member's recording start, as it does for a
-term length that differs.
+term length that differs. Change it on all of them in one restart window: a rolling change leaves them
+disagreeing until the last one restarts.
 
 A recording keeps the MTU it was made with, like its term length. A member's tap is recorded afresh at
 every start, so a new IPC MTU takes effect at its next start. The Raft log's UDP MTU, `aeron.mtu.length`

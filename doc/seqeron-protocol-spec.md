@@ -67,8 +67,9 @@ header composite.
 - **F-1. The tap is the record.** The cluster takes no snapshots and always recovers by replaying the
   full log from `globalSeqNo` 1, so the tap's bytes are the only durable copy of a frame. An application
   snapshot (§7.3) is frames on the tap like any other.
-- **F-2. Every node's tap is byte-identical.** A replay from any node's archive can stand in for any
-  other's. §9.3 keeps this true.
+- **F-2. Every node's tap is byte-identical, frame for frame.** A replay from any node's archive can
+  stand in for any other's. §9.3 keeps this true. Recording positions match only between nodes with the
+  same IPC MTU and term length (§12).
 
 ## 4. The frame layer
 
