@@ -26,6 +26,7 @@ endif()
 add_executable(follow_stream src/cpp/FollowStream.cpp)
 add_executable(colocated_app src/cpp/ColocatedApp.cpp)
 add_executable(gateway_app src/cpp/GatewayApp.cpp)
+add_executable(snapshot_app src/cpp/SnapshotApp.cpp)
 
 # seqeron_core is header-only and carries its own include roots and every Aeron target its headers
 # reach for — the C++ client wrapper, the C client behind it, and the archive pair — so this is the
@@ -33,13 +34,14 @@ add_executable(gateway_app src/cpp/GatewayApp.cpp)
 target_link_libraries(follow_stream PRIVATE seqeron::seqeron_core)
 target_link_libraries(colocated_app PRIVATE seqeron::seqeron_core)
 target_link_libraries(gateway_app PRIVATE seqeron::seqeron_core)
+target_link_libraries(snapshot_app PRIVATE seqeron::seqeron_core)
 
 # What ColocatedApp and GatewayApp are for: the front door is sufficient on its own. Compiling them proves
 # nothing — an include of sequencer/client would compile too — so the includes are the assertion, checked here
 # the way the Java half's checkFacadeOnly checks its imports. util is on the list because it is support
 # code beside the façade rather than a tier under it (doc/client-api.md, "Support code"): it is what the
 # Java twin gets from its own standard library, and nothing else here needs it.
-foreach(_facade_example IN ITEMS ColocatedApp GatewayApp)
+foreach(_facade_example IN ITEMS ColocatedApp GatewayApp SnapshotApp)
     file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/${_facade_example}.cpp" _facade_seqeron_includes
          REGEX "^#include \"org/limitless/seqeron/")
     foreach(_include IN LISTS _facade_seqeron_includes)

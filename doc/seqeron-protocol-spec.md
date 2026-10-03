@@ -187,6 +187,7 @@ producer takes its id by adding a row.
 | 10 | `seqeron-examples` ping | tool, never listed |
 | 11, 12 | `seqeron-examples` `ColocatedApp` (Java, C++) | application |
 | 13 | `seqeron-examples` C++ gateway pair | gateway |
+| 14, 15 | `seqeron-examples` `SnapshotApp` (Java, C++) | application |
 
 Gateways are listed by `GatewayRegistered.gatewaySourceId`, applications by
 `ApplicationRegistered.applicationSourceId`. **S-6** checks gateways only. No list row may claim
@@ -230,6 +231,7 @@ Current allocations:
 | 4 | reserved for an external deployment | yes |
 | 5 | `ClusterProbe`'s `ProbeMarker` (`sbe-probe.xml`, schema 214) | no |
 | 6 | `seqeron-examples` ping (8 raw bytes, no schema) | no |
+| 7 | `seqeron-examples` `SnapshotApp` transfer (16 raw bytes, no schema) | no |
 
 A protocol read by more than one application MUST be declared by a `PayloadIdRegistered` row (§6.3)
 and MUST have a single owning repository whose codecs every consumer links. A `payloadId` that only

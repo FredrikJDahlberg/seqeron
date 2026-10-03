@@ -13,6 +13,8 @@ through the same consumer — so the round trip is measured over the real path.
 | `src/java/example/ColocatedApp.java` | the same flow against the front door — see below |
 | `src/cpp/ColocatedApp.cpp` | its C++ twin |
 | `src/cpp/GatewayApp.cpp` | the other façade, an elected gateway pair — see below |
+| `src/java/example/SnapshotApp.java` | a façade application whose state is restored from a snapshot — see below |
+| `src/cpp/SnapshotApp.cpp` | its C++ twin |
 
 ## The same flow, against the front door
 
@@ -46,6 +48,57 @@ another list. The cluster designates only the first list it sees; into one that 
 instance with `clusterctl.sh activate 12` instead. The Java counterpart is the harness gateway
 `tools/TestGateway` in `seqeron-service`.
 
+## Application state from a snapshot
+
+`SnapshotApp` is a co-located application with state worth keeping: a ledger of eight accounts that open
+with 1000 each. The leading replica submits a random transfer once a second (`payloadId` 7: `from` int32,
+`to` int32, `amount` int64, no schema), and every replica applies each one in `globalSeqNo` order, rejecting
+a transfer that would overdraw its source account. Whether a transfer applies depends on every transfer
+before it, so a replica cannot rebuild its balances from part of the log: it needs all of it, or a snapshot
+of the state at a known point in it and the frames after that point. Like `ColocatedApp`, it is written
+against `app` alone and its imports and includes are checked the same way.
+
+**How a snapshot is taken** (`doc/snapshot.md` in the seqeron repo is the full mechanism):
+
+1. The sequencer starts a round by sequencing `SnapshotStarted`, every `interval` seconds of cluster time or
+   on `clusterctl.sh request-snapshot`. Its `globalSeqNo`, `R`, is the round's cut.
+2. Every replica dispatching that frame, live or replayed, serializes its state as of `R` before it
+   dispatches `R + 1`. The façade writes its own header as record 0, then calls the listener's `onSnapshot`
+   with a 1302-byte buffer and an increasing `recordIndex` until it returns 0. Each record goes straight into
+   `<round>.snapshot` in the replica's own snapshot directory; the façade keeps only the count, the length
+   and a CRC32C of the records.
+3. The replica whose gate is open — the one on the leader — submits the round's `SnapshotEnd`: that count,
+   length and CRC. The state itself never crosses the cluster.
+4. Every replica compares its own count, length and CRC with the sequenced `SnapshotEnd`. On a match its file
+   is confirmed and older ones are deleted. On a difference it is fenced with `SNAPSHOT_DIVERGED`: its state
+   is not the leader's.
+
+**How it is restored.** A replica given a `SnapshotListener` starts by asking its node's Replayer for the
+`SnapshotEnd` of the newest round it holds a file for, and checks the file against it. On a match it calls
+`onRestore` with each record in order, then resumes the tap at `R + 1`. A file the log does not confirm, or
+that does not match its end, is passed over for an older one; with none left, it replays from `globalSeqNo` 1
+as any other replica does. A file whose records are damaged, or whose `formatVersion` the build does not
+support, fences it with `SNAPSHOT_UNRESTORABLE`.
+
+**What the listener owes.** Step 4 holds only if every replica writes the same bytes for the same state:
+
+- **Deterministic records.** The ledger is an array in account order. A hash map's iteration order, a local
+  clock or the node's id in a record makes replicas disagree.
+- **State from the log alone.** The leader's random numbers are in the transfer payload, never in the state;
+  every replica sees the same payloads and so computes the same balances.
+- **Records that fit.** Record 0 is the counters (applied and rejected transfers), then one record per
+  account. A record is at most 1302 bytes, but there may be any number of them, so the state is bounded by
+  the disk rather than by a buffer.
+- **A `formatVersion`.** It is carried in `SnapshotEnd`, and a restore stops on a file of a version the build
+  does not know. Raise it when the record layout changes.
+- **`onRestore` at `recordIndex` 0 replaces the state.** A restore that falls back to an older file starts
+  over at 0.
+
+The application takes part in rounds only if its topology row says `snapshot="true"` and a `<snapshots>`
+element enables them, so `topology.xml` lists `SnapshotApp` under `<applications>` (`sourceId` 14 in Java,
+15 in C++) and starts a round every 10 s. Each replica's snapshot directory must survive its restarts and
+belong to it alone.
+
 **Both are separate builds, not subprojects of the repo they sit in.** The Java one resolves
 `org.limitless:seqeron` as a published artifact and the C++ one pulls `seqeron_core` in with
 `FetchContent`, which is the only way an example can show the artifacts are consumable at all — anything
@@ -70,19 +123,28 @@ Java, the low-level one and then the façade one — either may run alone, and b
     ./gradlew publishToMavenLocal
     ./gradlew -p seqeron-examples run
     ./gradlew -p seqeron-examples runColocated
+    ./gradlew -p seqeron-examples runSnapshot
 
 C++:
 
     cmake -S seqeron-examples -B seqeron-examples/cmake-build-release -DCMAKE_BUILD_TYPE=Release
-    cmake --build seqeron-examples/cmake-build-release --target follow_stream colocated_app gateway_app
+    cmake --build seqeron-examples/cmake-build-release --target follow_stream colocated_app gateway_app snapshot_app
     ./seqeron-examples/cmake-build-release/follow_stream
     ./seqeron-examples/cmake-build-release/colocated_app
+    ./seqeron-examples/cmake-build-release/snapshot_app
 
 The gateway pair, after loading its list — stop the first and the second takes over:
 
     ./seqeron-service/src/main/scripts/clusterctl.sh load-topology seqeron-examples/topology.xml
     SEQERON_EXAMPLE_GATEWAY_NAME=GW-EX-A ./seqeron-examples/cmake-build-release/gateway_app
     SEQERON_EXAMPLE_GATEWAY_NAME=GW-EX-B ./seqeron-examples/cmake-build-release/gateway_app
+
+`SnapshotApp` needs the same list loaded, for its row and the round interval; it runs without it, but
+takes no snapshots. A cluster that loaded an earlier copy of the list takes this one too: a row replaces the
+row with its id, and the bootstrap designation is not repeated. Let it run past a round, which it reports as `# snapshot after N transfers`, stop it, and
+start it again. The restart prints `# restored after N transfers` and the balances, then applies only the
+transfers after the round's cut, and its total is still 8000. `clusterctl.sh request-snapshot` starts a round
+at once instead of waiting for the interval.
 
 The first CMake configure fetches and builds Aeron from source, which is what `add_subdirectory` of the
 whole repo costs. GoogleTest is not fetched — that is seqeron's test dependency, not part of what it
@@ -123,6 +185,10 @@ processes already do. The two client ids differ on purpose, so both examples can
 | `-Dfollow.aeronDir` | `SEQERON_AERON_DIR` | that node's Aeron directory; default `{tmpdir}/seqeron-seq-aeron-{member}` |
 | — | `SEQERON_IDLE_STRATEGY` | `backoff` (default), `yielding` or `busyspin` |
 | — | `SEQERON_EXAMPLE_EGRESS_PORT` | UDP port the ping's cluster session takes egress on; default `9202 + member` |
+| `-Dsnapshot.dir` | `SEQERON_EXAMPLE_SNAPSHOT_DIR` | `SnapshotApp`'s snapshot directory; default `{tmpdir}/seqeron-example-snapshots-{sourceId}-{member}` |
+
+`SnapshotApp` takes the same settings under its own prefix (`-Dsnapshot.member`, `-Dsnapshot.clientId`,
+`-Dsnapshot.aeronDir`), with client ids 17 in Java and 18 in C++, and C++ egress on `9207 + member`.
 
 ## What they show
 
