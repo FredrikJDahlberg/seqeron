@@ -63,7 +63,7 @@ LOG_DIR="logs"
 
 BASE_DIR="${TMP_DIR}/seqeron-seq3"
 
-CLUSTER_HOSTS="localhost,localhost,localhost"
+CLUSTER_HOSTS="$(cluster_hosts_string 3)"
 
 # ── Pre-flight checks ─────────────────────────────────────────────────────────
 

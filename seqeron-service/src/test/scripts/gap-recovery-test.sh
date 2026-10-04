@@ -76,7 +76,7 @@ rm -rf "$LOG_DIR"; mkdir -p "$LOG_DIR"
 
 JAVA_OPTS=("${SEQERON_JAVA_OPTS[@]}")
 BASE_DIR="${TMP_DIR}/seqeron-seqfo"
-CLUSTER_HOSTS="localhost,localhost,localhost"
+CLUSTER_HOSTS="$(cluster_hosts_string 3)"
 
 start_seq() {  # start_seq <memberId>
   local m="$1"

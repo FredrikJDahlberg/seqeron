@@ -53,7 +53,7 @@ rm -rf "$LOG_DIR"; mkdir -p "$LOG_DIR"
 JAVA_OPTS=("${SEQERON_JAVA_OPTS[@]}")
 BASE_DIR="${TMP_DIR}/seqeron-seqfo"
 SNAPSHOT_DIR="${TMP_DIR}/seqeron-snapshot-test"   # each instance's own files, kept across its restarts
-CLUSTER_HOSTS="localhost,localhost,localhost"
+CLUSTER_HOSTS="$(cluster_hosts_string 3)"
 
 declare -a SEQ_PIDS
 GW_PIDS=("" "")          # by member: GW-T-A on 0, GW-T-B on 1

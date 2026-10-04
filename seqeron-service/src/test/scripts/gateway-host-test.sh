@@ -29,7 +29,7 @@ rm -rf "$LOG_DIR"; mkdir -p "$LOG_DIR"
 
 JAVA_OPTS=("${SEQERON_JAVA_OPTS[@]}")
 BASE_DIR="${TMP_DIR}/seqeron-seqgh"
-CLUSTER_HOSTS="localhost,localhost,localhost"
+CLUSTER_HOSTS="$(cluster_hosts_string 3)"
 NODE=3
 
 pkill -f SequencerServer 2>/dev/null; pkill -f ReplayerServer 2>/dev/null; pkill -f ClusterProbe 2>/dev/null

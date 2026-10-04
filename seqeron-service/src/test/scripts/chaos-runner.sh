@@ -106,7 +106,7 @@ PAUSE_SECS=0.5
 JAVA_OPTS=("${SEQERON_JAVA_OPTS[@]}")
 BASE_DIR="${TMP_DIR}/seqeron-seqfo"
 SNAPSHOT_DIR="${TMP_DIR}/seqeron-chaos-snapshots"   # each gateway instance's own files, kept across its restarts
-CLUSTER_HOSTS="localhost,localhost,localhost"
+CLUSTER_HOSTS="$(cluster_hosts_string 3)"
 CN=0            # observation / tap-drop-target consumer host — a fault target like any other member
 # The gateway pair, one instance per member so a kill of either host is a genuine promotion. Rank 0 is
 # GW-T-A, so a quiet run has A serving on member CN and B standing by on GW_B_MEMBER.

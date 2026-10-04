@@ -26,6 +26,17 @@ cluster_member_port_base() { echo $(( CLUSTER_PORT_BASE + $1 * CLUSTER_PORT_STRI
 archive_port()  { echo $(( $(cluster_member_port_base "$1") + 1 )); }
 ingress_port()  { echo $(( $(cluster_member_port_base "$1") + 2 )); }
 
+# Builds the sequencer.hosts list for a nodeCount-member cluster: "localhost,localhost,…". The host argument
+# may carry a literal {id}, replaced by each member's id. Usage: cluster_hosts_string 3 [host]
+cluster_hosts_string() {
+    local node_count="$1" host_template="${2:-localhost}" out="" id
+    for (( id = 0; id < node_count; id++ )); do
+        [[ -n "${out}" ]] && out+=","
+        out+="${host_template//\{id\}/${id}}"
+    done
+    echo "${out}"
+}
+
 # Builds the ingressEndpoints string clusterctl takes (CLUSTERCTL_INGRESS_ENDPOINTS) for a
 # nodeCount-member cluster: "0=host:9302,1=host:9312,…". The host argument may carry a literal {id},
 # replaced by each member's id. Usage: ingress_endpoints_string 3 [host]   e.g. 'node-{id}'
