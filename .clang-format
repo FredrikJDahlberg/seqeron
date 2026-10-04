@@ -81,6 +81,9 @@ ContinuationIndentWidth: 4
 ColumnLimit: 120
 UseTab: Never
 LineEnding: LF
+PointerAlignment: Left
+DerivePointerAlignment: false
+IndentCaseLabels: true
 
 AllowShortBlocksOnASingleLine: Never
 AllowShortFunctionsOnASingleLine: None
