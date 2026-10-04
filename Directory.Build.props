@@ -1,0 +1,17 @@
+<Project>
+  <!-- Settings every C# project in the tree shares. Versions come from versions.properties, the file
+       build.gradle and CMakeLists.txt read. -->
+  <PropertyGroup>
+    <SeqeronPins>$([System.IO.File]::ReadAllText('$(MSBuildThisFileDirectory)versions.properties'))</SeqeronPins>
+    <SeqeronVersion>$([System.IO.File]::ReadAllText('$(MSBuildThisFileDirectory)VERSION').Trim())</SeqeronVersion>
+    <AeronDotnetVersion>$([System.Text.RegularExpressions.Regex]::Match($(SeqeronPins), '(?m)^aeronDotnet=(\S+)').Groups[1].Value)</AeronDotnetVersion>
+    <SbeDotnetRuntimeVersion>$([System.Text.RegularExpressions.Regex]::Match($(SeqeronPins), '(?m)^sbeDotnetRuntime=(\S+)').Groups[1].Value)</SbeDotnetRuntimeVersion>
+
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <Version>$(SeqeronVersion)</Version>
+  </PropertyGroup>
+</Project>
