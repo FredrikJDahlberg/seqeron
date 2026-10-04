@@ -13,7 +13,7 @@ public final class ReplaySlotAllocator {
     public static final long NO_SLOT = -1;
 
     /** One pending request waiting for a free slot, in request order. */
-    public record PendingRequest(int clientId, long requestId, int segmentIndex, long fromPosition) { }
+    public record PendingRequest(int clientId, long requestId, long fromPosition) { }
 
     private record ActiveSlot(int clientId, long token, long lastTouchedMs) { }
 
@@ -59,11 +59,10 @@ public final class ReplaySlotAllocator {
      * resend neither accretes entries nor loses the client its turn.
      * @param clientId client identity
      * @param requestId the request to answer when it is finally served
-     * @param segmentIndex segment index
-     * @param fromPosition start replay position
+     * @param fromPosition start replay position, or {@code ReplayProtocol.FROM_START}
      */
-    public void enqueue(final int clientId, final long requestId, final int segmentIndex, final long fromPosition) {
-        final PendingRequest request = new PendingRequest(clientId, requestId, segmentIndex, fromPosition);
+    public void enqueue(final int clientId, final long requestId, final long fromPosition) {
+        final PendingRequest request = new PendingRequest(clientId, requestId, fromPosition);
         for (int i = 0; i < pending.size(); i++) {
             if (pending.get(i).clientId() == clientId) {
                 pending.set(i, request);

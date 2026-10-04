@@ -106,7 +106,7 @@ PAUSE_SECS=0.5
 JAVA_OPTS=("${SEQERON_JAVA_OPTS[@]}")
 BASE_DIR="${TMP_DIR}/seqeron-seqfo"
 SNAPSHOT_DIR="${TMP_DIR}/seqeron-chaos-snapshots"   # each gateway instance's own files, kept across its restarts
-CLUSTER_MEMBERS="$(cluster_members_string 3)"
+CLUSTER_HOSTS="localhost,localhost,localhost"
 CN=0            # observation / tap-drop-target consumer host — a fault target like any other member
 # The gateway pair, one instance per member so a kill of either host is a genuine promotion. Rank 0 is
 # GW-T-A, so a quiet run has A serving on member CN and B standing by on GW_B_MEMBER.
@@ -147,7 +147,7 @@ start_seq() {  # start_seq <memberId> — append so leadership history survives 
   # in-process, so it cannot be stalled from outside); inert until that file appears.
   SEQERON_FAULT_INJECTION=1 \
   java "${JAVA_OPTS[@]}" -Dsequencer.memberId="$m" -Dsequencer.baseDir="$BASE_DIR" \
-       -Dsequencer.clusterMembers="$CLUSTER_MEMBERS" -Dsequencer.sessionTimeoutMs="$SESSION_TIMEOUT_MS" \
+       -Dsequencer.hosts="$CLUSTER_HOSTS" -Dsequencer.sessionTimeoutMs="$SESSION_TIMEOUT_MS" \
        -jar "$JAR" >> "$LOG_DIR/seq-$m.log" 2>&1 &
   SEQ_PIDS[$m]=$!
 }
@@ -378,7 +378,7 @@ replica_log() { local m="$1"; [[ "$m" == "$CN" ]] && echo "$CONSUMER_LOG" || ech
 # A gap the consumer repaired by RESUMING its recording at the hole — the healthy recovery, and the proof
 # that an armed tap-drop actually landed. Distinct from the re-walk fallback counted below.
 count_tap_resumes() { grep -c 'tap gap: expected globalSeqNo' "$1" 2>/dev/null || true; }
-count_tap_rewalks() { grep -c 're-walking the recording chain' "$1" 2>/dev/null || true; }
+count_tap_rewalks() { grep -c 'replaying history from its start' "$1" 2>/dev/null || true; }
 # The client's own "I am not serving" alarm (RecoveryStalled, ReplayerStreamReceiver::checkRecoveryProgress):
 # recovery dispatched nothing for RECOVERY_PROGRESS_TIMEOUT_MS while not caught up. Unlike the one-shot
 # "following live" marker this fires per episode, so it reads CURRENT state rather than latching at boot.
@@ -741,7 +741,7 @@ check_invariants() {
       log "  INVARIANT FAIL: tap-drop on member $TAP_DROP_TARGET produced NO gap episode (resumes stuck at $resumes) — fault did not land"; fail=1
     fi
     if (( rewalks > TAP_DROP_REWALKS )); then
-      log "  INVARIANT FAIL: member $TAP_DROP_TARGET fell back to a chain re-walk ($TAP_DROP_REWALKS -> $rewalks) — expected a resume"; fail=1
+      log "  INVARIANT FAIL: member $TAP_DROP_TARGET fell back to a re-walk ($TAP_DROP_REWALKS -> $rewalks) — expected a resume"; fail=1
     fi
     TAP_DROP_TARGET=""
   fi

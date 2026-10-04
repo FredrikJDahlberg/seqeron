@@ -34,11 +34,6 @@ class GatewayLifecycleTest {
         private boolean gateOpens = true;
 
         @Override
-        public void identityResolved(final int gatewayId, final int gatewaySourceId, final int preferenceRank) {
-            calls.add("identity(" + gatewayId + "," + gatewaySourceId + ")");
-        }
-
-        @Override
         public boolean publishGatewayStarted(final int gatewayId) {
             calls.add("GatewayStarted(" + gatewayId + ")");
             return gatewayStartedLands;
@@ -88,7 +83,7 @@ class GatewayLifecycleTest {
         loadTopology();
         assertEquals(MY_ID, lifecycle.gatewayId());
         assertEquals(MY_SOURCE_ID, lifecycle.gatewaySourceId());
-        assertEquals(List.of("identity(" + MY_ID + "," + MY_SOURCE_ID + ")"), actions.calls);
+        assertEquals(List.of(), actions.calls);
     }
 
     @Test
@@ -128,7 +123,7 @@ class GatewayLifecycleTest {
     void publishesGatewayStartedBeforeOpeningTheGate() {
         becomeServing();
         assertTrue(lifecycle.isServing());
-        assertEquals(List.of("GatewayStarted(" + MY_ID + ")", "open"), actions.calls.subList(1, 3));
+        assertEquals(List.of("GatewayStarted(" + MY_ID + ")", "open"), actions.calls);
     }
 
     @Test
@@ -274,8 +269,7 @@ class GatewayLifecycleTest {
 
         lifecycle.onCaughtUp();
         assertEquals(1, lifecycle.advance());
-        assertEquals(List.of("identity(" + MY_ID + "," + MY_SOURCE_ID + ")", "GatewayStarted(" + MY_ID + ")", "open"),
-                     actions.calls);
+        assertEquals(List.of("GatewayStarted(" + MY_ID + ")", "open"), actions.calls);
     }
 
     @Test

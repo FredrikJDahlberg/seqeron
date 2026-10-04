@@ -15,7 +15,6 @@ namespace org::limitless::seqeron::app::detail {
 // when it stops. The Java twin is app/GatewayLifecycle.java, which carries the rationale; keep the two in step.
 //
 // Actions provides:
-//   void identityResolved(std::int32_t gatewayId, std::int32_t gatewaySourceId, std::int32_t preferenceRank)
 //   bool publishGatewayStarted(std::int32_t gatewayId) // false is back-pressure, retried on advance()
 //   bool openGate()                                    // accept or dial; false is retried on advance()
 //   void closeGate()                                   // drops every session it let in; publishes nothing
@@ -67,7 +66,6 @@ class GatewayLifecycle
         }
         m_gatewayId = rowGatewayId;
         m_gatewaySourceId = rowGatewaySourceId;
-        m_actions.identityResolved(m_gatewayId, m_gatewaySourceId, preferenceRank);
     }
 
     // A GatewayActive. One naming a sibling stands this instance down; another pair's is ignored.

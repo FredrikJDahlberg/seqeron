@@ -269,7 +269,7 @@ it spins until the offer lands, since a dropped frame would be an unrecoverable 
 block on local-archive write back-pressure, because the recording is the tap's one tethered subscriber.
 Reliable is not unbounded: `TapPublisher` — the reliable-offer discipline, split off the way `Sequencer` is
 and unit-tested the same way — watches the archive's `RecordingPos` counter,
-and a node whose recording has stopped or stopped advancing **terminates itself** (`EXIT_TAP_FATAL` = 70) rather
+and a node whose recording has stopped or stopped advancing **terminates itself** (`NodeDriver.EXIT_FATAL` = 70) rather
 than sequence history it cannot keep. Peers keep quorum, and the restart rebuilds its recording over the
 full-log replay it does anyway. The 1 Hz heartbeat runs the same liveness check, because a *stopped*
 recording back-pressures nothing at all (the untethered app subscribers keep the publication connected)
@@ -306,14 +306,14 @@ file replays from `globalSeqNo` 1. This shortens a client's restart, not a node'
 
 ### The replay protocol — two sides, two namespaces
 **`replayer.server`** is Java only: `ReplayerServer`/`ReplayerService` and their pure seams `Replayer`,
-`ReplaySlotAllocator`, `ReplayRecordings`, `ReplayClientIdCollisions`, `SnapshotIndex` and the gateway host's `TapRelay`, with
+`ReplaySlotAllocator`, `ReplayClientIdCollisions`, `SnapshotIndex` and the gateway host's `TapRelay`, with
 `AeronReplayer` and `AeronTapRelay` the only parts that touch Aeron. **`replayer.client`** is `ReplayerStreamReceiver` and its pure seam
 `ReplayerRecovery`, plus `SequencedEvent` and an instance's snapshot files, `SnapshotStore` — Java, and C++ in
 `org::limitless::seqeron::replayer::client`. On a member `ReplayerServer` runs inside `SequencerServer`'s
 JVM, on its embedded driver, so a fatal in either exits the node with 70; its own `main` is the gateway
 host's alone. The two sides share only the protocol's addresses —
-`IPC_CHANNEL`, `REPLAY_STREAM_ID` 201, `REQUEST_STREAM_ID` 202, `CONTROL_STREAM_ID` 203 and
-`NO_REPLAY_NEEDED` — and those are `protocol/ReplayProtocol` in both languages.
+`IPC_CHANNEL`, `REPLAY_STREAM_ID` 201, `REQUEST_STREAM_ID` 202, `CONTROL_STREAM_ID` 203,
+`FROM_START` and `NO_REPLAY_NEEDED` — and those are `protocol/ReplayProtocol` in both languages.
 
 **A gateway host runs clients with no member on it.** `ReplayerServer` with `replayer.archiveEndpoints`
 runs its own media driver and archive, and `AeronTapRelay` copies a member's tap onto the host's own: one

@@ -4,7 +4,7 @@
 // (a cold start answered NO_REPLAY_NEEDED used to adopt an arbitrary
 // mid-stream baseline; globalSeqNo only increases, so once the first frame observed isn't 1 no later one
 // ever can be, and it aborts rather than latching a flag a caller might not check), the Replayer
-// control-stream transitions, the retained-ahead FIFO, the segment-chain walk, the steady-state resume,
+// control-stream transitions, the retained-ahead FIFO, the walk, the steady-state resume,
 // and the two watchdogs.
 //
 // ReplayerRecovery holds no Aeron runtime and no clock of its own, so this suite drives it directly: its
@@ -45,6 +45,7 @@ namespace {
 namespace frm = org::limitless::seqeron::sbe::frame;
 namespace diag = org::limitless::seqeron::util;
 namespace rpl = org::limitless::seqeron::sbe::replay;
+using protocol::REPLAYER_FROM_START;
 using protocol::REPLAYER_NO_REPLAY_NEEDED;
 using protocol::SequencedEvent;
 
@@ -117,7 +118,7 @@ struct Client final : ReplayerRecoveryActions
       recovery(CLIENT_ID, *this, std::move(onSequenced), {}, {}, {}, std::move(onCaughtUp))
     {}
 
-    void sendReplayRequest(std::int64_t, std::int32_t, std::int64_t) override
+    void sendReplayRequest(std::int64_t, std::int64_t) override
     {
         ++requestsSent;
     }
@@ -233,21 +234,13 @@ void deliverReplay(Client& client, const std::int64_t globalSeqNo)
 
 // requestId must be the client's CURRENT one (recovery.requestId()) for a reply to be acted on — see
 // onControl's correlation check; pass a different value to build the stale reply a resend leaves behind.
-// recordingId defaults to -1 ("no expectation") so existing call sites that don't care about the
-// walk-recordingId mismatch check (see onControl) are unaffected — a test exercising that check passes
-// it explicitly.
 std::vector<std::uint8_t> encodeReplaying(const std::int32_t clientId, const std::int64_t requestId,
-                                          const std::int64_t replaySessionId, const std::int64_t catchUpPosition,
-                                          const std::int64_t recordingId = -1)
+                                          const std::int64_t replaySessionId, const std::int64_t catchUpPosition)
 {
     std::vector<std::uint8_t> buf(64, 0);
     rpl::Replaying enc;
     enc.wrapAndApplyHeader(reinterpret_cast<char*>(buf.data()), 0, buf.size());
-    enc.clientId(clientId)
-        .requestId(requestId)
-        .replaySessionId(replaySessionId)
-        .catchUpPosition(catchUpPosition)
-        .recordingId(recordingId);
+    enc.clientId(clientId).requestId(requestId).replaySessionId(replaySessionId).catchUpPosition(catchUpPosition);
     buf.resize(enc.sbePosition());
     return buf;
 }
@@ -279,9 +272,9 @@ void deliverControl(Client& client, std::vector<std::uint8_t> body)
     client.recovery.onControl(reinterpret_cast<char*>(body.data()), body.size());
 }
 
-// The replay image reaching the bound the Replayer gave it — how a segment completes, since a bounded
+// The replay image reaching the bound the Replayer gave it — how a replay completes, since a bounded
 // replay of an active recording never closes its image at the bound.
-void completeSegment(Client& client)
+void completeReplay(Client& client)
 {
     client.recovery.onReplayPosition(client.recovery.catchUpPosition());
 }
@@ -323,7 +316,7 @@ TEST(ReplayerRecoveryBaseline, FirstFrameNotAtGlobalSeqNoOneAbortsTheProcess)
 // Coverage for the gap-recovery/re-walk state machine (the "gap re-walk starves the tap it is
 // recovering" fault, fixed 2026-07-31): mid-stream gap detection, de-dup of already-seen replayed frames, the
 // Replayer control-stream transitions (Replaying / NO_REPLAY_NEEDED / ReplayPending), and the
-// segment-chain walk advancing on completion — the contiguity/de-dupe decision, the isRecovering()
+// walk ending at its bound — the contiguity/de-dupe decision, the isRecovering()
 // predicate that separates a real hole from the tap running ahead of an in-flight walk, and the
 // isCaughtUp() state transitions consumers gate on.
 
@@ -338,7 +331,7 @@ TEST(ReplayerRecoveryBaseline, LiveTapMayNotEstablishTheBaselineWhileTheColdStar
     int delivered = 0;
     Client client{ [&](const SequencedEvent&) { ++delivered; } };
 
-    // What start() does: request segment 0 before any frame has been seen.
+    // What start() does: request the walk before any frame has been seen.
     deliverControl(client, encodeReplaying(/*clientId=*/1, client.recovery.requestId(), /*replaySessionId=*/7,
                                            /*catchUpPosition=*/500));
     ASSERT_TRUE(client.recovery.isRecovering());
@@ -391,7 +384,7 @@ TEST(ReplayerRecoveryGapRecovery, TapGapReportsAStructuredDiagnosticEvent)
 // A tap frame that is non-contiguous only because the tap runs ahead of an in-flight replay must not be
 // mistaken for a new gap. Now that poll() dispatches the tap mid-walk instead of discarding it (the
 // 2026-08-05 seam fix), this is the common case, not a rarity: every tap frame arriving while a walk
-// replays history reads as "ahead". Superseding the walk on each one would restart it from segment 0
+// replays history reads as "ahead". Superseding the walk on each one would restart it from the start
 // forever under any sustained publish rate.
 TEST(ReplayerRecoveryGapRecovery, TapFrameAheadOfAnInFlightWalkDoesNotSupersedeIt)
 {
@@ -400,7 +393,7 @@ TEST(ReplayerRecoveryGapRecovery, TapFrameAheadOfAnInFlightWalkDoesNotSupersedeI
     Client client{ [&](const SequencedEvent&) { ++delivered; } };
 
     deliverLive(client, 1);
-    deliverLive(client, 5); // gap -> requestReplay(0, 0), awaiting
+    deliverLive(client, 5); // gap -> requestResume(), awaiting
     ASSERT_TRUE(client.recovery.isAwaitingReplay());
     ASSERT_EQ(1u, sink.events.size()) << "the genuine steady-state gap";
 
@@ -421,7 +414,8 @@ TEST(ReplayerRecoveryGapRecovery, TapFrameAheadOfAnInFlightWalkDoesNotSupersedeI
 
     EXPECT_EQ(99, client.recovery.replaySessionId()) << "the in-flight walk must run to completion, not be restarted";
     EXPECT_FALSE(client.recovery.isAwaitingReplay());
-    EXPECT_EQ(-1, client.recovery.walkSegmentIndex()) << "still the resume the gap asked for, not restarted";
+    EXPECT_NE(REPLAYER_FROM_START, client.recovery.requestFromPosition())
+        << "still the resume the gap asked for, not restarted";
     EXPECT_EQ(1, delivered) << "the out-of-order frame itself is still withheld";
     EXPECT_EQ(1u, sink.events.size()) << "and it is not reported as a second gap";
 }
@@ -429,7 +423,7 @@ TEST(ReplayerRecoveryGapRecovery, TapFrameAheadOfAnInFlightWalkDoesNotSupersedeI
 // The replay->live seam: the tap is dispatched throughout a walk, so the frame at
 // gseq == last+1 lands the instant the replay reaches it. Before the fix poll() routed tap frames to a
 // discard handler while recovering, consuming exactly these frames — so every walk ended one guaranteed
-// gap short of live and re-walked the whole chain, converging only if nothing was published during the
+// gap short of live and re-walked the whole recording, converging only if nothing was published during the
 // final round trip. NOTE: poll()'s handler *routing* needs a live tap subscription and is exercised only
 // by seqeron-service/src/test/scripts/gap-recovery-test.sh; what is locked here is the decision logic it feeds.
 TEST(ReplayerRecoveryGapRecovery, LiveTapFrameAtTheSeamIsDispatchedWhileTheWalkIsStillInFlight)
@@ -452,19 +446,10 @@ TEST(ReplayerRecoveryGapRecovery, LiveTapFrameAtTheSeamIsDispatchedWhileTheWalkI
 }
 
 // A steady-state gap resumes the recording at the frame last dispatched, so repairing a
-// dropped frame costs a replay of the hole rather than of the whole log. The stale walk index is
-// the thing it must never carry into that request: that is a cold-start cursor into the recording chain,
-// not a position, and resuming a walk from wherever the last one had got to is unsound.
-TEST(ReplayerRecoveryGapRecovery, SteadyStateGapResumesAtTheLastDispatchedFrameNotTheStaleWalkIndex)
+// dropped frame costs a replay of the hole rather than of the whole log.
+TEST(ReplayerRecoveryGapRecovery, SteadyStateGapResumesAtTheLastDispatchedFrame)
 {
     Client client{ [](const SequencedEvent&) {} };
-
-    // Move the walk index off 0 first (simulating a cold-start walk already into segment 2).
-    deliverControl(client, encodeReplaying(/*clientId=*/1, client.recovery.requestId(), /*replaySessionId=*/7,
-                                           /*catchUpPosition=*/100));
-    completeSegment(client);
-    completeSegment(client);
-    ASSERT_EQ(2, client.recovery.walkSegmentIndex());
 
     deliverControl(client, encodeReplaying(/*clientId=*/1, client.recovery.requestId(), REPLAYER_NO_REPLAY_NEEDED,
                                            /*catchUpPosition=*/0));
@@ -474,7 +459,6 @@ TEST(ReplayerRecoveryGapRecovery, SteadyStateGapResumesAtTheLastDispatchedFrameN
     deliverLive(client, 2, /*framePosition=*/1024); // the frame the resume must anchor on
     deliverLive(client, 5, /*framePosition=*/2048); // steady-state gap
 
-    EXPECT_EQ(-1, client.recovery.walkSegmentIndex()) << "a gap asks to resume, never to continue the old walk";
     EXPECT_EQ(1024, client.recovery.requestFromPosition()) << "anchored at the last frame DISPATCHED, not at the "
                                                               "out-of-order one that exposed the hole";
 }
@@ -496,21 +480,17 @@ TEST(ReplayerRecoveryGapRecovery, DuplicateAndStaleFramesFromReplayAreDropped)
     EXPECT_EQ(3, delivered);
 }
 
-TEST(ReplayerRecoveryGapRecovery, NoReplayNeededMarksCaughtUpAndClearsWalkState)
+TEST(ReplayerRecoveryGapRecovery, NothingToReplayFromTheStartMarksCaughtUp)
 {
     Client client{ [](const SequencedEvent&) {} };
 
     ASSERT_FALSE(client.recovery.isCaughtUp());
-    // recordingId -1: the walk ran past the last recording. That is the only reply that ends a walk —
-    // see NoReplayNeededNamingARecordingSkipsThatSegmentAndKeepsWalking for the other sender.
     deliverControl(client, encodeReplaying(/*clientId=*/1, client.recovery.requestId(), REPLAYER_NO_REPLAY_NEEDED,
-                                           /*catchUpPosition=*/0, /*recordingId=*/-1));
+                                           /*catchUpPosition=*/0));
 
-    EXPECT_TRUE(client.recovery.isCaughtUp())
-        << "NO_REPLAY_NEEDED means already at the tip of an empty/exhausted chain";
+    EXPECT_TRUE(client.recovery.isCaughtUp()) << "NO_REPLAY_NEEDED for a walk means the recording holds nothing yet";
     EXPECT_FALSE(client.recovery.isAwaitingReplay());
     EXPECT_EQ(-1, client.recovery.replaySessionId());
-    EXPECT_EQ(-1, client.recovery.walkSegmentIndex()) << "chain exhausted -> steady/resume mode, not mid-walk";
 }
 
 TEST(ReplayerRecoveryGapRecovery, ReplayingWithSessionArmsReplayWithoutMarkingCaughtUp)
@@ -537,18 +517,19 @@ TEST(ReplayerRecoveryGapRecovery, ReplayingForAnotherClientIdIsIgnored)
     EXPECT_FALSE(client.recovery.isCaughtUp());
 }
 
-TEST(ReplayerRecoveryGapRecovery, SegmentCompleteAdvancesTheWalkAndReRequestsTheNextSegment)
+TEST(ReplayerRecoveryGapRecovery, AWalkReachingItsBoundCatchesUpAndHandsItsSlotBack)
 {
     Client client{ [](const SequencedEvent&) {} };
     deliverControl(client, encodeReplaying(/*clientId=*/1, client.recovery.requestId(), /*replaySessionId=*/7,
                                            /*catchUpPosition=*/500));
     ASSERT_EQ(7, client.recovery.replaySessionId());
 
-    completeSegment(client);
+    completeReplay(client);
 
-    EXPECT_EQ(1, client.recovery.walkSegmentIndex()) << "segment 0 done -> walk advances to segment 1";
-    EXPECT_TRUE(client.recovery.isAwaitingReplay()) << "advancing re-requests the next segment";
-    EXPECT_EQ(-1, client.recovery.replaySessionId()) << "no session until the Replayer answers the new request";
+    EXPECT_TRUE(client.recovery.isCaughtUp()) << "the recording held the whole log when the request was served";
+    EXPECT_FALSE(client.recovery.isAwaitingReplay()) << "there is nothing further to ask for";
+    EXPECT_EQ(-1, client.recovery.replaySessionId());
+    EXPECT_TRUE(client.recovery.completePending()) << "the slot is released, not left to the idle TTL";
 }
 
 // ── Request/reply correlation ────────────────────────────────────────────────────────────────
@@ -562,7 +543,7 @@ TEST(ReplayerRecoveryGapRecovery, ReplyForASupersededRequestIsIgnored)
     Client client{ [](const SequencedEvent&) {} };
     const std::int64_t stale = client.recovery.requestId();
 
-    completeSegment(client); // advances the walk -> new request, new requestId
+    client.recovery.start(); // a request, and with it a new requestId
     ASSERT_NE(stale, client.recovery.requestId());
     ASSERT_TRUE(client.recovery.isAwaitingReplay());
 
@@ -578,7 +559,7 @@ TEST(ReplayerRecoveryGapRecovery, CurrentReplyIsStillAcceptedAfterAStaleOne)
 {
     Client client{ [](const SequencedEvent&) {} };
     const std::int64_t stale = client.recovery.requestId();
-    completeSegment(client);
+    client.recovery.start();
 
     deliverControl(client, encodeReplaying(/*clientId=*/1, stale, /*replaySessionId=*/42, /*catchUpPosition=*/900));
     deliverControl(client, encodeReplaying(/*clientId=*/1, client.recovery.requestId(), /*replaySessionId=*/43,
@@ -594,7 +575,7 @@ TEST(ReplayerRecoveryGapRecovery, ReplayPendingForASupersededRequestIsIgnored)
 {
     Client client{ [](const SequencedEvent&) {} };
     const std::int64_t stale = client.recovery.requestId();
-    completeSegment(client); // advances the walk -> a new request, whose resend deadline is what matters
+    client.recovery.start(); // a new request, whose resend deadline is what matters
     const int sends = client.requestsSent;
 
     client.clockMs += 300; // still inside the current request's resend interval
@@ -606,26 +587,25 @@ TEST(ReplayerRecoveryGapRecovery, ReplayPendingForASupersededRequestIsIgnored)
                                                  "push out the current request's resend deadline";
 }
 
-// ── Closed image vs. completed segment ───────────────────────────────────────────────────────
-// A bounded replay of a STOPPED recording closes its image on its own, exactly at the stopPosition it
-// was bounded to — the one close that means "segment done".
-TEST(ReplayerRecoveryGapRecovery, ReplayImageClosingAtTheBoundCompletesTheSegment)
+// ── Closed image vs. completed replay ────────────────────────────────────────────────────────
+// A replay whose recording stopped closes its image on its own, exactly at the position it was bounded
+// to — the one close that means "replay done".
+TEST(ReplayerRecoveryGapRecovery, ReplayImageClosingAtTheBoundCompletesTheReplay)
 {
     Client client{ [](const SequencedEvent&) {} };
     deliverControl(client, encodeReplaying(/*clientId=*/1, client.recovery.requestId(), /*replaySessionId=*/7,
                                            /*catchUpPosition=*/500));
-    ASSERT_EQ(0, client.recovery.walkSegmentIndex());
 
     client.recovery.onReplayImageClosed(/*finalPosition=*/500);
 
-    EXPECT_EQ(1, client.recovery.walkSegmentIndex()) << "closing AT the bound is completion -> advance the walk";
-    EXPECT_TRUE(client.recovery.isAwaitingReplay());
+    EXPECT_TRUE(client.recovery.isCaughtUp()) << "closing AT the bound is completion";
+    EXPECT_FALSE(client.recovery.isAwaitingReplay());
 }
 
 // Any other close (supersede, idle-TTL reclaim, archive fault, Replayer shutdown) leaves the image short
-// of the bound. Advancing there skips history that was never replayed — a silent hole, since the walk
-// rides on and only a later tap gap could ever expose it.
-TEST(ReplayerRecoveryGapRecovery, ReplayImageClosingShortOfTheBoundReRequestsTheSameSegment)
+// of the bound. Completing there skips history that was never replayed — a silent hole, since only a
+// later tap gap could ever expose it.
+TEST(ReplayerRecoveryGapRecovery, ReplayImageClosingShortOfTheBoundReRequestsIt)
 {
     ScopedLoggerSink sink;
     Client client{ [](const SequencedEvent&) {} };
@@ -633,11 +613,10 @@ TEST(ReplayerRecoveryGapRecovery, ReplayImageClosingShortOfTheBoundReRequestsThe
                                            /*catchUpPosition=*/500));
     const std::int64_t requestId = client.recovery.requestId();
 
-    client.recovery.onReplayImageClosed(/*finalPosition=*/312); // stopped under us, mid-segment
+    client.recovery.onReplayImageClosed(/*finalPosition=*/312); // stopped under us, mid-replay
 
-    EXPECT_EQ(0, client.recovery.walkSegmentIndex()) << "the walk must NOT advance over a segment it only "
-                                                        "partially replayed";
-    EXPECT_TRUE(client.recovery.isAwaitingReplay()) << "the same segment is re-requested instead";
+    EXPECT_EQ(REPLAYER_FROM_START, client.recovery.requestFromPosition()) << "the walk is asked for again";
+    EXPECT_TRUE(client.recovery.isAwaitingReplay()) << "a partial replay is not taken for a complete one";
     EXPECT_EQ(-1, client.recovery.replaySessionId());
     EXPECT_NE(requestId, client.recovery.requestId()) << "re-requesting is a new request, so the reply to the "
                                                          "stopped one is recognisably stale";
@@ -649,7 +628,7 @@ TEST(ReplayerRecoveryGapRecovery, ReplayImageClosingShortOfTheBoundReRequestsThe
 // active recording never closes its image, so an image that simply stops — the archive faulted, the
 // publication wedged — left the client waiting on it forever. Measured before the fix: a cold start past
 // ~32 MiB of history hung permanently with the image attached, open, and frozen.
-TEST(ReplayerRecoveryGapRecovery, ReplayThatStopsAdvancingReRequestsTheSameSegment)
+TEST(ReplayerRecoveryGapRecovery, ReplayThatStopsAdvancingReRequestsIt)
 {
     ScopedLoggerSink sink;
     Client client{ [](const SequencedEvent&) {} };
@@ -660,9 +639,8 @@ TEST(ReplayerRecoveryGapRecovery, ReplayThatStopsAdvancingReRequestsTheSameSegme
 
     advancePastTimers(client);
 
-    EXPECT_EQ(0, client.recovery.walkSegmentIndex()) << "the walk must NOT advance over a segment that stalled "
-                                                        "part-way through";
-    EXPECT_TRUE(client.recovery.isAwaitingReplay()) << "the same segment is re-requested instead";
+    EXPECT_EQ(REPLAYER_FROM_START, client.recovery.requestFromPosition()) << "the walk is asked for again";
+    EXPECT_TRUE(client.recovery.isAwaitingReplay()) << "a stalled replay is not taken for a complete one";
     EXPECT_EQ(-1, client.recovery.replaySessionId());
     EXPECT_NE(requestId, client.recovery.requestId()) << "re-requesting is a new request, so the reply to the "
                                                          "stalled one is recognisably stale";
@@ -816,7 +794,8 @@ TEST(ReplayerRecoveryGapRecovery, StuckAwaitingReplayResendsAfterTheIntervalElap
         << "the Replayer never answered -> the duty cycle must re-send the same request rather than give up";
     EXPECT_TRUE(client.recovery.isAwaitingReplay()) << "still stuck at the gap — a resend, not a new state";
     EXPECT_EQ(-1, client.recovery.replaySessionId());
-    EXPECT_EQ(-1, client.recovery.walkSegmentIndex()) << "resend repeats the same request verbatim, still the resume";
+    EXPECT_NE(REPLAYER_FROM_START, client.recovery.requestFromPosition())
+        << "resend repeats the same request verbatim, still the resume";
 }
 
 // isRecovering() is what separates "the tap is ahead of my replay" from "there is a hole" — narrowing it
@@ -843,32 +822,29 @@ TEST(ReplayerRecoveryGapRecovery, RecoveringFlagTracksWalkAndAwaitingReplayState
     deliverReplay(client, 2); // closes the hole the resume was asked to cover, draining retained frame 5
     deliverReplay(client, 3);
     deliverReplay(client, 4);
-    completeSegment(client);
-    EXPECT_FALSE(client.recovery.isRecovering()) << "a resume ends at its bound — there is no next segment to ask for";
+    completeReplay(client);
+    EXPECT_FALSE(client.recovery.isRecovering()) << "a resume ends at its bound";
 
     // The result of the same transitions, entered the way production enters it: a resume whose replay
-    // opens on a frame other than the one it anchored on falls back to the chain walk.
+    // opens on a frame other than the one it anchored on falls back to a walk.
     deliverLive(client, 9); // another gap -> another resume
     deliverControl(client, encodeReplaying(/*clientId=*/1, client.recovery.requestId(), /*replaySessionId=*/8,
                                            /*catchUpPosition=*/500));
     deliverReplay(client, 42);
-    ASSERT_EQ(0, client.recovery.walkSegmentIndex());
-    EXPECT_TRUE(client.recovery.isRecovering()) << "awaiting the walk's first segment";
+    ASSERT_EQ(REPLAYER_FROM_START, client.recovery.requestFromPosition());
+    EXPECT_TRUE(client.recovery.isRecovering()) << "awaiting the walk";
 
     deliverControl(client, encodeReplaying(/*clientId=*/1, client.recovery.requestId(), /*replaySessionId=*/9,
                                            /*catchUpPosition=*/500));
     // The walk has to actually close the hole it re-walked for: 9 is retained behind the missing 6..8,
-    // and the terminator below refuses to end recovery while anything is still stranded there
-    // (WalkTerminatorWithARetainedHoleStillOpenReWalksInstead).
+    // and the bound refuses to end recovery while anything is still stranded there
+    // (AWalkReachingItsBoundWithARetainedHoleStillOpenReWalksInstead).
     deliverReplay(client, 6);
     deliverReplay(client, 7);
     deliverReplay(client, 8); // dispatching 8 drains the retained 9 straight over
-    completeSegment(client);
-    EXPECT_TRUE(client.recovery.isRecovering()) << "advancing to the next segment stays mid-walk";
-
-    deliverControl(client, encodeReplaying(/*clientId=*/1, client.recovery.requestId(), REPLAYER_NO_REPLAY_NEEDED,
-                                           /*catchUpPosition=*/0, /*recordingId=*/-1));
-    EXPECT_FALSE(client.recovery.isRecovering()) << "chain exhausted -> back to steady state";
+    EXPECT_TRUE(client.recovery.isRecovering()) << "mid-walk until the bound";
+    completeReplay(client);
+    EXPECT_FALSE(client.recovery.isRecovering()) << "a walk ends at its bound too";
 }
 
 // isCaughtUp() is a state, not a latch. Consumers gate real decisions on it — LeaderGate's
@@ -946,7 +922,7 @@ TEST(ReplayerRecoveryGapRecovery, LargestFrameAheadOfTheHoleIsRetained)
 // A hole in REPLAYED history was the one invariant violation that produced no log and no counter:
 // the frame is dropped, the walk rides on, and recovery quietly never converges.
 // Nothing unsafe follows — contiguity still holds — so this reports rather than aborts, once per
-// episode, since the walk retries against the same chain every 500ms.
+// episode, since the walk retries against the same recording every 500ms.
 TEST(ReplayerRecoveryGapRecovery, GapInReplayedHistoryIsReportedOncePerEpisode)
 {
     int delivered = 0;
@@ -955,7 +931,7 @@ TEST(ReplayerRecoveryGapRecovery, GapInReplayedHistoryIsReportedOncePerEpisode)
     ASSERT_EQ(1, delivered);
 
     ScopedLoggerSink sink;    // installed after the baseline, so it captures only the hole below
-    deliverReplay(client, 7); // the recording chain does not cover 2..6
+    deliverReplay(client, 7); // the recording does not cover 2..6
 
     EXPECT_EQ(1, delivered) << "the frame past the hole must not be dispatched";
     ASSERT_EQ(1u, sink.events.size());
@@ -963,7 +939,7 @@ TEST(ReplayerRecoveryGapRecovery, GapInReplayedHistoryIsReportedOncePerEpisode)
     EXPECT_EQ(diag::eventCode::TapGap, sink.events[0].code);
 
     deliverReplay(client, 8);
-    EXPECT_EQ(1u, sink.events.size()) << "the walk retries against the same chain — report the episode, not "
+    EXPECT_EQ(1u, sink.events.size()) << "the walk retries against the same recording — report the episode, not "
                                          "every frame";
 
     // A later, distinct episode must be reported again rather than swallowed by the latch.
@@ -978,7 +954,7 @@ TEST(ReplayerRecoveryGapRecovery, GapInReplayedHistoryIsReportedOncePerEpisode)
 // active one. Rather than trying to prove that has not happened, the resumed replay is checked where it
 // lands: its first frame must be the frame the position was anchored on. Riding it regardless would walk
 // an arbitrary mid-stream point, and a replay-path gap is otherwise swallowed silently.
-TEST(ReplayerRecoveryGapRecovery, ResumeOpeningOnTheWrongFrameFallsBackToTheChainWalk)
+TEST(ReplayerRecoveryGapRecovery, ResumeOpeningOnTheWrongFrameFallsBackToAWalk)
 {
     ScopedLoggerSink sink;
     int delivered = 0;
@@ -986,14 +962,15 @@ TEST(ReplayerRecoveryGapRecovery, ResumeOpeningOnTheWrongFrameFallsBackToTheChai
 
     deliverLive(client, 1);
     deliverLive(client, 5); // gap -> resume anchored on frame 1
-    ASSERT_EQ(-1, client.recovery.walkSegmentIndex());
+    ASSERT_NE(REPLAYER_FROM_START, client.recovery.requestFromPosition());
     deliverControl(client, encodeReplaying(/*clientId=*/1, client.recovery.requestId(), /*replaySessionId=*/7,
                                            /*catchUpPosition=*/500));
     ASSERT_EQ(7, client.recovery.replaySessionId());
 
     deliverReplay(client, 77); // the recording rotated: that position is some other frame entirely
 
-    EXPECT_EQ(0, client.recovery.walkSegmentIndex()) << "fall back to the walk, which needs no position to be sound";
+    EXPECT_EQ(REPLAYER_FROM_START, client.recovery.requestFromPosition())
+        << "fall back to the walk, which needs no position to be sound";
     EXPECT_TRUE(client.recovery.isAwaitingReplay());
     EXPECT_EQ(-1, client.recovery.replaySessionId()) << "and let go of the replay it was riding";
     EXPECT_EQ(1, delivered) << "the frame it opened on must not be dispatched";
@@ -1008,7 +985,7 @@ TEST(ReplayerRecoveryGapRecovery, ResumeOpeningOnTheWrongFrameFallsBackToTheChai
 // Without it, the retried replay's first frame rides with no anchor to validate against: if the active
 // recording rotated under the anchored position and the frame that now lands there happens to look
 // contiguous (globalSeqNo == last + 1), it is silently dispatched as if it were the frame the resume
-// asked for, instead of being caught as a mismatch and falling back to the chain walk.
+// asked for, instead of being caught as a mismatch and falling back to a walk.
 TEST(ReplayerRecoveryGapRecovery, ReplayImageClosingShortOfTheBoundOnAResumeReArmsTheAnchorCheck)
 {
     int delivered = 0;
@@ -1022,7 +999,7 @@ TEST(ReplayerRecoveryGapRecovery, ReplayImageClosingShortOfTheBoundOnAResumeReAr
     ASSERT_EQ(1, delivered);
 
     client.recovery.onReplayImageClosed(/*finalPosition=*/300); // stopped under us before frame 2 arrived
-    ASSERT_EQ(-1, client.recovery.walkSegmentIndex()) << "still a resume retry, not a walk step";
+    ASSERT_NE(REPLAYER_FROM_START, client.recovery.requestFromPosition()) << "still a resume retry, not a walk step";
 
     deliverControl(client, encodeReplaying(/*clientId=*/1, client.recovery.requestId(), /*replaySessionId=*/8,
                                            /*catchUpPosition=*/500));
@@ -1031,7 +1008,7 @@ TEST(ReplayerRecoveryGapRecovery, ReplayImageClosingShortOfTheBoundOnAResumeReAr
     deliverReplay(client, 2);
 
     EXPECT_EQ(1, delivered) << "must not silently accept an unanchored frame merely because it looks contiguous";
-    EXPECT_EQ(0, client.recovery.walkSegmentIndex()) << "the mismatch must fall back to the chain walk";
+    EXPECT_EQ(REPLAYER_FROM_START, client.recovery.requestFromPosition()) << "the mismatch must fall back to a walk";
     EXPECT_TRUE(client.recovery.isAwaitingReplay());
     EXPECT_EQ(-1, client.recovery.replaySessionId());
     EXPECT_FALSE(client.recovery.isCaughtUp());
@@ -1052,14 +1029,14 @@ TEST(ReplayerRecoveryGapRecovery, ReplayStallOnAResumeReArmsTheAnchorCheck)
     ASSERT_EQ(1, delivered);
 
     advancePastTimers(client); // stopped advancing before frame 2 arrived
-    ASSERT_EQ(-1, client.recovery.walkSegmentIndex()) << "still a resume retry, not a walk step";
+    ASSERT_NE(REPLAYER_FROM_START, client.recovery.requestFromPosition()) << "still a resume retry, not a walk step";
 
     deliverControl(client, encodeReplaying(/*clientId=*/1, client.recovery.requestId(), /*replaySessionId=*/8,
                                            /*catchUpPosition=*/500));
     deliverReplay(client, 2); // rotated recording, looks contiguous but is not the anchored frame
 
     EXPECT_EQ(1, delivered) << "must not silently accept an unanchored frame merely because it looks contiguous";
-    EXPECT_EQ(0, client.recovery.walkSegmentIndex()) << "the mismatch must fall back to the chain walk";
+    EXPECT_EQ(REPLAYER_FROM_START, client.recovery.requestFromPosition()) << "the mismatch must fall back to a walk";
     EXPECT_TRUE(client.recovery.isAwaitingReplay());
     EXPECT_EQ(-1, client.recovery.replaySessionId());
     EXPECT_FALSE(client.recovery.isCaughtUp());
@@ -1069,7 +1046,7 @@ TEST(ReplayerRecoveryGapRecovery, ReplayStallOnAResumeReArmsTheAnchorCheck)
 // is already at its recording's tip. For a walk that means caught up; for a resume it cannot, because we
 // only resumed on account of a hole we know is open — taking it at face value would close that hole by
 // fiat and leave the client silently short of history.
-TEST(ReplayerRecoveryGapRecovery, NoReplayNeededOverAnOpenHoleFallsBackToTheChainWalk)
+TEST(ReplayerRecoveryGapRecovery, NoReplayNeededOverAnOpenHoleFallsBackToAWalk)
 {
     Client client{ [](const SequencedEvent&) {} };
 
@@ -1077,20 +1054,20 @@ TEST(ReplayerRecoveryGapRecovery, NoReplayNeededOverAnOpenHoleFallsBackToTheChai
     deliverLive(client, 2);
     ASSERT_TRUE(client.recovery.isCaughtUp());
     deliverLive(client, 6); // gap -> resume
-    ASSERT_EQ(-1, client.recovery.walkSegmentIndex());
+    ASSERT_NE(REPLAYER_FROM_START, client.recovery.requestFromPosition());
 
     deliverControl(client, encodeReplaying(/*clientId=*/1, client.recovery.requestId(), REPLAYER_NO_REPLAY_NEEDED,
                                            /*catchUpPosition=*/0));
 
-    EXPECT_EQ(0, client.recovery.walkSegmentIndex()) << "re-walk instead of believing it";
+    EXPECT_EQ(REPLAYER_FROM_START, client.recovery.requestFromPosition()) << "re-walk instead of believing it";
     EXPECT_TRUE(client.recovery.isAwaitingReplay());
     EXPECT_FALSE(client.recovery.isCaughtUp()) << "the hole above globalSeqNo=2 is still open";
 }
 
-// A resume ends at the bound it was given and has no next segment to request — so unlike a walk step it
+// A resume ends at the bound it was given — so it
 // must declare itself caught up and hand the slot back (ReplayComplete), or the slot sits until the 60s
 // idle TTL reclaims it: one of MAX_CONCURRENT_REPLAYS slots, held by nobody.
-TEST(ReplayerRecoveryGapRecovery, ResumeReachingItsBoundCatchesUpWithoutRequestingAnotherSegment)
+TEST(ReplayerRecoveryGapRecovery, ResumeReachingItsBoundCatchesUpAndRequestsNothingMore)
 {
     int caughtUpNotifications = 0;
     Client client{ [](const SequencedEvent&) {}, [&] { ++caughtUpNotifications; } };
@@ -1106,9 +1083,9 @@ TEST(ReplayerRecoveryGapRecovery, ResumeReachingItsBoundCatchesUpWithoutRequesti
     deliverReplay(client, 2); // closes the hole the resume was asked to cover, draining retained frame 5
     deliverReplay(client, 3);
     deliverReplay(client, 4);
-    completeSegment(client);
+    completeReplay(client);
 
-    EXPECT_FALSE(client.recovery.isAwaitingReplay()) << "no follow-up request — a resume has no next segment";
+    EXPECT_FALSE(client.recovery.isAwaitingReplay()) << "no follow-up request";
     EXPECT_EQ(-1, client.recovery.replaySessionId());
     EXPECT_TRUE(client.recovery.isCaughtUp()) << "we hold everything the recording had when the request was served";
     EXPECT_EQ(2, caughtUpNotifications) << "re-fired, so consumers re-arm on re-convergence";
@@ -1131,7 +1108,7 @@ TEST(ReplayerRecoveryGapRecovery, AReplayCompleteThatNeverWentOutStaysPending)
     deliverReplay(client, 4);
     ASSERT_FALSE(client.recovery.completePending()) << "nothing to release until the resume reaches its bound";
 
-    completeSegment(client);
+    completeReplay(client);
 
     ASSERT_TRUE(client.recovery.isCaughtUp());
     EXPECT_TRUE(client.recovery.completePending()) << "it never reached the wire — remember it";
@@ -1176,7 +1153,7 @@ TEST(ReplayerRecoveryGapRecovery, ANewRequestDropsAReplayCompleteThatNeverWentOu
     deliverReplay(client, 2);
     deliverReplay(client, 3);
     deliverReplay(client, 4);
-    completeSegment(client);
+    completeReplay(client);
     ASSERT_TRUE(client.recovery.completePending());
 
     deliverLive(client, 9); // a second gap -> new request, taking a fresh slot
@@ -1204,12 +1181,13 @@ TEST(ReplayerRecoveryGapRecovery, ResumeReachingItsBoundWithARetainedHoleStillOp
     deliverReplay(client, 1); // opens on the anchored frame -> anchor consumed, frame deduped
     deliverReplay(client, 2); // the replay's bound is reached having covered only up to 2 — 3, 4 unfilled
 
-    completeSegment(client); // reached the bound it was given, but the hole above 2 is still open
+    completeReplay(client); // reached the bound it was given, but the hole above 2 is still open
 
     EXPECT_FALSE(client.recovery.isCaughtUp())
         << "must not declare caught up with a retained frame still behind a hole";
     EXPECT_EQ(1, caughtUpNotifications) << "no false re-convergence notification";
-    EXPECT_EQ(0, client.recovery.walkSegmentIndex()) << "falls back to the chain walk instead of trusting the bound";
+    EXPECT_EQ(REPLAYER_FROM_START, client.recovery.requestFromPosition())
+        << "falls back to a walk instead of trusting the bound";
     EXPECT_TRUE(client.recovery.isAwaitingReplay());
     EXPECT_EQ(-1, client.recovery.replaySessionId());
 }
@@ -1234,11 +1212,12 @@ TEST(ReplayerRecoveryGapRecovery, ResumeReachingItsBoundAfterDroppedTapFramesReW
     deliverReplay(client, 1); // opens on the anchored frame -> anchor consumed, frame deduped
     deliverReplay(client, 2); // closes the hole the resume was asked to cover, draining retained frame 3
 
-    completeSegment(client);
+    completeReplay(client);
 
     EXPECT_FALSE(client.recovery.isCaughtUp()) << "frame 4 was dropped — the drained frontier is not the real one";
     EXPECT_EQ(1, caughtUpNotifications) << "no false re-convergence notification";
-    EXPECT_EQ(0, client.recovery.walkSegmentIndex()) << "re-walks now rather than leaving the hole for a later tap gap";
+    EXPECT_EQ(REPLAYER_FROM_START, client.recovery.requestFromPosition())
+        << "re-walks now rather than leaving the hole for a later tap gap";
     EXPECT_TRUE(client.recovery.isAwaitingReplay());
 }
 
@@ -1258,8 +1237,8 @@ TEST(ReplayerRecoveryGapRecovery, DroppedTapFramesAreReportedOncePerEpisode)
                                            /*catchUpPosition=*/500));
     deliverReplay(client, 1);
     deliverReplay(client, 2);
-    completeSegment(client);
-    ASSERT_EQ(0, client.recovery.walkSegmentIndex());
+    completeReplay(client);
+    ASSERT_EQ(REPLAYER_FROM_START, client.recovery.requestFromPosition());
 
     deliverLiveTooBigToRetain(client, 9);
 
@@ -1267,7 +1246,7 @@ TEST(ReplayerRecoveryGapRecovery, DroppedTapFramesAreReportedOncePerEpisode)
 }
 
 // Retained frames the replay has meanwhile covered are discarded on drain rather than double-delivered —
-// the ranges legitimately overlap, since a re-walk restarts from segment 0 while the tap keeps arriving.
+// the ranges legitimately overlap, since a re-walk restarts from the start while the tap keeps arriving.
 TEST(ReplayerRecoveryGapRecovery, RetainedFramesAlreadyCoveredByTheReplayAreNotRedelivered)
 {
     std::vector<std::int64_t> delivered;
@@ -1285,173 +1264,77 @@ TEST(ReplayerRecoveryGapRecovery, RetainedFramesAlreadyCoveredByTheReplayAreNotR
     EXPECT_EQ((std::vector<std::int64_t>{ 1, 2, 3, 4 }), delivered) << "each globalSeqNo dispatched exactly once";
 }
 
-// ── The walk's terminating NO_REPLAY_NEEDED ──────────────────────────────────────────────────
-// serveReplay sends NO_REPLAY_NEEDED for two different things and tells them apart by recordingId: a
-// walk that ran past the last recording (names none, -1) versus a segment that is merely EMPTY (names
-// the recording it found nothing in). Only the first ends the walk. And ending it is not by itself
-// permission to declare caught up: the frontier is what the retained-ahead FIFO knows, not what the
-// chain covered.
+// ── The end of a walk ───────────────────────────────────────────────────────────────────────
+// A walk ends at its bound, and reaching it is not by itself permission to declare caught up: the frontier
+// is what the retained-ahead FIFO knows, not what the replay covered.
 
-TEST(ReplayerRecoveryGapRecovery, WalkTerminatorWithARetainedHoleStillOpenReWalksInstead)
+TEST(ReplayerRecoveryGapRecovery, AWalkReachingItsBoundWithARetainedHoleStillOpenReWalksInstead)
 {
     int caughtUpNotifications = 0;
     Client client{ [](const SequencedEvent&) {}, [&] { ++caughtUpNotifications; } };
 
-    // Cold-start walk over segment 0, which covers only globalSeqNo 1..2 — while the tap runs ahead and
-    // frame 5 is retained behind the hole at 3,4.
+    // A walk bounded at globalSeqNo 2 — while the tap runs ahead and frame 5 is retained behind the hole at 3,4.
     deliverControl(client, encodeReplaying(/*clientId=*/1, client.recovery.requestId(), /*replaySessionId=*/7,
-                                           /*catchUpPosition=*/500, /*recordingId=*/5));
+                                           /*catchUpPosition=*/500));
     deliverReplay(client, 1);
     deliverReplay(client, 2);
     deliverLive(client, 5); // ahead of the hole -> retained, not dropped
-    completeSegment(client);
-    ASSERT_EQ(1, client.recovery.walkSegmentIndex()) << "segment 0 done -> the walk advances";
 
-    // The chain really is exhausted (the terminator names no recording) — but 3 and 4 were never
-    // replayed, so the retained frame 5 still sits behind a hole.
-    deliverControl(client, encodeReplaying(/*clientId=*/1, client.recovery.requestId(), REPLAYER_NO_REPLAY_NEEDED,
-                                           /*catchUpPosition=*/0, /*recordingId=*/-1));
+    completeReplay(client);
 
     EXPECT_FALSE(client.recovery.isCaughtUp()) << "must not declare caught up with a retained frame behind a hole";
     EXPECT_EQ(0, caughtUpNotifications) << "no false convergence notification — this opens the accept gate";
-    EXPECT_EQ(0, client.recovery.walkSegmentIndex()) << "re-walks the chain rather than trusting the terminator";
+    EXPECT_EQ(REPLAYER_FROM_START, client.recovery.requestFromPosition()) << "re-walks rather than trusting the bound";
     EXPECT_TRUE(client.recovery.isAwaitingReplay());
 }
 
 // The negative control for the guard above: a walk whose retained frames all drained must still finish.
-TEST(ReplayerRecoveryGapRecovery, WalkTerminatorWithEveryRetainedFrameDrainedStillCatchesUp)
+TEST(ReplayerRecoveryGapRecovery, AWalkReachingItsBoundWithEveryRetainedFrameDrainedCatchesUp)
 {
     Client client{ [](const SequencedEvent&) {} };
 
     deliverControl(client, encodeReplaying(/*clientId=*/1, client.recovery.requestId(), /*replaySessionId=*/7,
-                                           /*catchUpPosition=*/500, /*recordingId=*/5));
+                                           /*catchUpPosition=*/500));
     deliverReplay(client, 1);
     deliverLive(client, 3);   // ahead of the hole at 2 -> retained
     deliverReplay(client, 2); // closes it, so 3 drains straight over
-    completeSegment(client);
 
-    deliverControl(client, encodeReplaying(/*clientId=*/1, client.recovery.requestId(), REPLAYER_NO_REPLAY_NEEDED,
-                                           /*catchUpPosition=*/0, /*recordingId=*/-1));
+    completeReplay(client);
 
     EXPECT_TRUE(client.recovery.isCaughtUp()) << "nothing is outstanding — the guard must not fire here";
-    EXPECT_EQ(-1, client.recovery.walkSegmentIndex()) << "steady/resume mode, not a spurious re-walk";
-    EXPECT_FALSE(client.recovery.isAwaitingReplay());
+    EXPECT_FALSE(client.recovery.isAwaitingReplay()) << "not a spurious re-walk";
 }
 
-// The same guard at the terminator, driven through to convergence: the re-walk must both happen AND be
-// able to finish. The overflow is cleared where that re-walk is requested, which is the only clear point
-// that does both — clearing it on drain forgets the drop and catches up over the hole, never clearing it
-// leaves a client that can never declare itself caught up again.
-TEST(ReplayerRecoveryGapRecovery, WalkTerminatorAfterDroppedTapFramesReWalksThenCatchesUp)
+// The same guard at the bound, driven through to convergence: the re-walk must both happen AND be able to
+// finish. The overflow is cleared where that re-walk is requested, which is the only clear point that does
+// both — clearing it on drain forgets the drop and catches up over the hole, never clearing it leaves a
+// client that can never declare itself caught up again.
+TEST(ReplayerRecoveryGapRecovery, AWalkReachingItsBoundAfterDroppedTapFramesReWalksThenCatchesUp)
 {
     int caughtUpNotifications = 0;
     Client client{ [](const SequencedEvent&) {}, [&] { ++caughtUpNotifications; } };
 
     deliverControl(client, encodeReplaying(/*clientId=*/1, client.recovery.requestId(), /*replaySessionId=*/7,
-                                           /*catchUpPosition=*/500, /*recordingId=*/5));
+                                           /*catchUpPosition=*/500));
     deliverReplay(client, 1);
     deliverReplay(client, 2);
     deliverLiveTooBigToRetain(client, 4); // the tap runs ahead of the walk, and this one is dropped
-    completeSegment(client);
 
-    deliverControl(client, encodeReplaying(/*clientId=*/1, client.recovery.requestId(), REPLAYER_NO_REPLAY_NEEDED,
-                                           /*catchUpPosition=*/0, /*recordingId=*/-1));
+    completeReplay(client);
 
-    EXPECT_FALSE(client.recovery.isCaughtUp()) << "the chain was exhausted, but a tap frame above it was dropped";
+    EXPECT_FALSE(client.recovery.isCaughtUp()) << "the walk reached its bound, but a tap frame above it was dropped";
     EXPECT_EQ(0, caughtUpNotifications) << "no false convergence notification — this opens the accept gate";
-    ASSERT_EQ(0, client.recovery.walkSegmentIndex()) << "re-walks the chain rather than trusting the terminator";
+    ASSERT_EQ(REPLAYER_FROM_START, client.recovery.requestFromPosition()) << "re-walks rather than trusting the bound";
 
     // The re-walk replays what the drop lost, and this time nothing is dropped.
     deliverControl(client, encodeReplaying(/*clientId=*/1, client.recovery.requestId(), /*replaySessionId=*/8,
-                                           /*catchUpPosition=*/900, /*recordingId=*/5));
+                                           /*catchUpPosition=*/900));
     deliverReplay(client, 3);
     deliverReplay(client, 4);
-    completeSegment(client);
-    deliverControl(client, encodeReplaying(/*clientId=*/1, client.recovery.requestId(), REPLAYER_NO_REPLAY_NEEDED,
-                                           /*catchUpPosition=*/0, /*recordingId=*/-1));
+    completeReplay(client);
 
     EXPECT_TRUE(client.recovery.isCaughtUp()) << "a re-walk that dropped nothing must be able to finish";
     EXPECT_EQ(1, caughtUpNotifications);
-}
-
-// An unclean restart can leave a recording created before anything was published to it. Taking the
-// NO_REPLAY_NEEDED that answers it as the walk terminator drops every later segment on the floor — and
-// because the re-walk a later tap gap triggers lands on that same empty segment, it never converges.
-TEST(ReplayerRecoveryGapRecovery, NoReplayNeededNamingARecordingSkipsThatSegmentAndKeepsWalking)
-{
-    Client client{ [](const SequencedEvent&) {} };
-
-    deliverControl(client, encodeReplaying(/*clientId=*/1, client.recovery.requestId(), REPLAYER_NO_REPLAY_NEEDED,
-                                           /*catchUpPosition=*/0, /*recordingId=*/5));
-
-    EXPECT_FALSE(client.recovery.isCaughtUp()) << "an empty segment says nothing about the rest of the chain";
-    EXPECT_EQ(1, client.recovery.walkSegmentIndex()) << "skip the empty segment, keep walking";
-    EXPECT_TRUE(client.recovery.isAwaitingReplay());
-    EXPECT_EQ(-1, client.recovery.replaySessionId());
-
-    // Segment 1 holds the history, and the walk proceeds through it normally.
-    deliverControl(client, encodeReplaying(/*clientId=*/1, client.recovery.requestId(), /*replaySessionId=*/9,
-                                           /*catchUpPosition=*/900, /*recordingId=*/8));
-
-    EXPECT_EQ(9, client.recovery.replaySessionId());
-    EXPECT_EQ(8, client.recovery.walkRecordingId());
-    deliverReplay(client, 1);
-    EXPECT_EQ(1, client.recovery.walkSegmentIndex()) << "still walking segment 1";
-}
-
-// ── Walk-segment recordingId mismatch (review #4) ────────────────────────────────────────────
-// serveReplay re-resolves the recording chain on every request; ReplayRecordings.stitch drops a stale
-// still-recording span once a newer one supersedes it, which shifts what a given segmentIndex denotes.
-// A retry of the SAME segment (image closed short of its bound, stalled, or simply resent) must land on
-// the SAME recording it did originally — the Replayer echoes the recordingId it served precisely so this
-// can be checked without relying on globalSeqNo contiguity to notice it later.
-TEST(ReplayerRecoveryGapRecovery, WalkSegmentRetryOnTheSameRecordingContinuesNormally)
-{
-    Client client{ [](const SequencedEvent&) {} };
-    deliverControl(client, encodeReplaying(/*clientId=*/1, client.recovery.requestId(), /*replaySessionId=*/7,
-                                           /*catchUpPosition=*/500, /*recordingId=*/5));
-    ASSERT_EQ(5, client.recovery.walkRecordingId());
-    const std::int64_t requestId = client.recovery.requestId();
-
-    client.recovery.onReplayImageClosed(/*finalPosition=*/312); // stopped under us, mid-segment -> retried
-    ASSERT_EQ(0, client.recovery.walkSegmentIndex());
-    ASSERT_NE(requestId, client.recovery.requestId());
-
-    deliverControl(client, encodeReplaying(/*clientId=*/1, client.recovery.requestId(), /*replaySessionId=*/8,
-                                           /*catchUpPosition=*/700, /*recordingId=*/5));
-
-    EXPECT_EQ(0, client.recovery.walkSegmentIndex()) << "same recording -> the retry is trusted, not abandoned";
-    EXPECT_EQ(5, client.recovery.walkRecordingId());
-    EXPECT_EQ(8, client.recovery.replaySessionId());
-}
-
-TEST(ReplayerRecoveryGapRecovery, WalkSegmentRetryOnADifferentRecordingAbandonsTheWalkAndRestartsAtSegmentZero)
-{
-    Client client{ [](const SequencedEvent&) {} };
-
-    // Segment 0 -> recording 5, then advance to segment 1 -> recording 8 (a legitimate chain of two).
-    deliverControl(client, encodeReplaying(/*clientId=*/1, client.recovery.requestId(), /*replaySessionId=*/7,
-                                           /*catchUpPosition=*/500, /*recordingId=*/5));
-    completeSegment(client);
-    ASSERT_EQ(1, client.recovery.walkSegmentIndex());
-    ASSERT_EQ(-1, client.recovery.walkRecordingId()) << "no expectation yet for the new segment";
-    deliverControl(client, encodeReplaying(/*clientId=*/1, client.recovery.requestId(), /*replaySessionId=*/9,
-                                           /*catchUpPosition=*/900, /*recordingId=*/8));
-    ASSERT_EQ(8, client.recovery.walkRecordingId());
-
-    client.recovery.onReplayImageClosed(/*finalPosition=*/650); // stopped under us, mid-segment -> retried
-    ASSERT_EQ(1, client.recovery.walkSegmentIndex()) << "still segment 1 — re-requested, not advanced";
-
-    // The retry for segment 1 now resolves to a different recording — the chain shifted under us.
-    ScopedLoggerSink sink;
-    deliverControl(client, encodeReplaying(/*clientId=*/1, client.recovery.requestId(), /*replaySessionId=*/55,
-                                           /*catchUpPosition=*/1'200, /*recordingId=*/42));
-
-    EXPECT_EQ(0, client.recovery.walkSegmentIndex()) << "abandon the walk and restart from segment 0";
-    EXPECT_EQ(-1, client.recovery.walkRecordingId());
-    EXPECT_TRUE(client.recovery.isAwaitingReplay()) << "restarting the walk is itself a new request";
-    EXPECT_EQ(-1, client.recovery.replaySessionId()) << "must not attach to the mismatched reply's session";
-    EXPECT_EQ(1u, sink.events.size()) << "the shift is reported, not silently absorbed";
 }
 
 // ── Convergence alarm ─────────────────────────────────────────────────────────────────────────────────────
@@ -1539,7 +1422,7 @@ TEST(ReplayerRecoveryConvergence, TheReportNamesTheStateThatTellsTheCausesApart)
 
     ASSERT_EQ(1u, sink.events.size());
     const std::string text(sink.events[0].text.data(), sink.events[0].textLen);
-    // Without these an operator cannot tell a refused node from one whose chain cannot cover the hole.
+    // Without these an operator cannot tell a refused node from one whose recording cannot cover the hole.
     EXPECT_NE(std::string::npos, text.find("lastGlobalSeqNo=1")) << text;
     EXPECT_NE(std::string::npos, text.find("awaitingReplay=1")) << text;
     EXPECT_NE(std::string::npos, text.find("replayerUnavailable=1")) << text;
@@ -1632,7 +1515,7 @@ TEST(ReplayerRecoveryDelivery, ALeadershipChangeReachesOnSequencedWhenNoLeadersh
 // A bare ReplayerRecoveryActions: this case needs the leadership callback the Client fixture leaves empty.
 struct NoActions final : ReplayerRecoveryActions
 {
-    void sendReplayRequest(std::int64_t, std::int32_t, std::int64_t) override
+    void sendReplayRequest(std::int64_t, std::int64_t) override
     {}
     void sendSnapshotQuery(std::int64_t, std::int32_t, std::int64_t) override
     {}
@@ -1833,7 +1716,7 @@ TEST(ReplayerRecoveryRestore, AnUnansweredSnapshotQueryIsResentAndAPendingAnswer
     EXPECT_EQ(2, r.client.queriesSent);
 }
 
-TEST(ReplayerRecoveryRestore, WithNoLocalSnapshotTheColdStartAsksNothingAndWalksTheChainFromSegmentZero)
+TEST(ReplayerRecoveryRestore, WithNoLocalSnapshotTheColdStartAsksNothingAndWalksTheRecordingFromItsStart)
 {
     Restoring r;
     r.start();
@@ -1841,8 +1724,7 @@ TEST(ReplayerRecoveryRestore, WithNoLocalSnapshotTheColdStartAsksNothingAndWalks
     EXPECT_EQ(0, r.client.queriesSent);
     EXPECT_FALSE(r.client.recovery.isRestoring());
     EXPECT_TRUE(r.client.recovery.isAwaitingReplay());
-    EXPECT_EQ(0, r.client.recovery.walkSegmentIndex());
-    EXPECT_EQ(0, r.client.recovery.requestFromPosition());
+    EXPECT_EQ(REPLAYER_FROM_START, r.client.recovery.requestFromPosition());
 }
 
 TEST(ReplayerRecoveryRestore, ASnapshotIsRestoredFromItsFileDispatchingNothingThenResumesAnchoredAtItsCut)
@@ -1862,7 +1744,7 @@ TEST(ReplayerRecoveryRestore, ASnapshotIsRestoredFromItsFileDispatchingNothingTh
     EXPECT_EQ(CUT, r.client.recovery.lastGlobalSeqNo());
     EXPECT_EQ(2, r.client.recovery.currentLeaderMemberId()) << "the header's leader";
     EXPECT_TRUE(r.client.recovery.isAwaitingReplay());
-    EXPECT_EQ(-1, r.client.recovery.walkSegmentIndex());
+    EXPECT_NE(REPLAYER_FROM_START, r.client.recovery.requestFromPosition());
     EXPECT_EQ(CUT * 1024, r.client.recovery.requestFromPosition());
 
     attachRestoreReplay(r.client, 22);
@@ -1928,7 +1810,7 @@ TEST(ReplayerRecoveryRestore, ALocalSnapshotTheLogDoesNotConfirmGivesWayToTheNex
         EXPECT_EQ(1, r.client.queriesSent) << "nothing older to ask about";
         EXPECT_FALSE(r.client.recovery.isRestoring());
         EXPECT_TRUE(r.client.recovery.isAwaitingReplay());
-        EXPECT_EQ(0, r.client.recovery.walkSegmentIndex());
+        EXPECT_EQ(REPLAYER_FROM_START, r.client.recovery.requestFromPosition());
     }
 }
 
@@ -1943,7 +1825,8 @@ TEST(ReplayerRecoveryRestore, AfterARestoreAFallBackToTheWalkResumesAtTheSnapsho
 
     deliverReplayFrame(r.client, encodeHeartbeat(12), 12); // not the anchor
 
-    EXPECT_EQ(-1, r.client.recovery.walkSegmentIndex()) << "segment 0 holds nothing this instance may replay";
+    EXPECT_NE(REPLAYER_FROM_START, r.client.recovery.requestFromPosition())
+        << "the start holds nothing this instance may replay";
     EXPECT_EQ(CUT * 1024, r.client.recovery.requestFromPosition());
     attachRestoreReplay(r.client, 23);
     deliverReplayFrame(r.client, rf::started(CUT, 2), CUT);
@@ -2025,7 +1908,7 @@ TEST(ReplayerRecoveryRestore, ARestartRestoresTheSnapshotAgainHoldingTheTapAndDi
     EXPECT_EQ((std::vector<std::int64_t>{ 11, 12, 13 }), r.dispatched) << "13 from the tap, held until contiguous";
 }
 
-TEST(ReplayerRecoveryRestore, ARestartWithNoSnapshotToRestoreWalksTheChainFromSegmentZeroAgain)
+TEST(ReplayerRecoveryRestore, ARestartWithNoSnapshotToRestoreWalksTheRecordingFromItsStartAgain)
 {
     std::vector<std::int64_t> dispatched;
     Client client{ [&dispatched](const SequencedEvent& event) { dispatched.push_back(event.globalSeqNo); } };
@@ -2037,8 +1920,7 @@ TEST(ReplayerRecoveryRestore, ARestartWithNoSnapshotToRestoreWalksTheChainFromSe
     EXPECT_FALSE(client.recovery.isCaughtUp());
     EXPECT_EQ(0, client.recovery.lastGlobalSeqNo());
     EXPECT_TRUE(client.recovery.isAwaitingReplay());
-    EXPECT_EQ(0, client.recovery.walkSegmentIndex());
-    EXPECT_EQ(0, client.recovery.requestFromPosition());
+    EXPECT_EQ(REPLAYER_FROM_START, client.recovery.requestFromPosition());
     attachRestoreReplay(client, 21);
     deliverReplay(client, 1);
     deliverReplay(client, 2);

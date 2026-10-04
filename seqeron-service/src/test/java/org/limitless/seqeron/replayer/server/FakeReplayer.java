@@ -31,7 +31,7 @@ final class FakeReplayer implements Replayer {
     /** One {@code startReplay} the service asked for. */
     record StartedReplay(long recordingId, long position, long length, int streamId, long replaySessionId) { }
 
-    private final List<ReplayRecordings.RecordingSpan> recordings = new ArrayList<>();
+    private final List<Replayer.RecordingSpan> recordings = new ArrayList<>();
     private final Map<Long, Long> recordingPositions = new HashMap<>();
     private final Map<Long, Long> stopPositions = new HashMap<>();
 
@@ -69,7 +69,7 @@ final class FakeReplayer implements Replayer {
 
     /** Adds one tap recording. A negative tip means the archive cannot say where it ends. */
     void addRecording(final long recordingId, final long startPosition, final boolean active, final long tip) {
-        recordings.add(new ReplayRecordings.RecordingSpan(recordingId, startPosition, active));
+        recordings.add(new Replayer.RecordingSpan(recordingId, startPosition, active));
         if (active) {
             recordingPositions.put(recordingId, tip);
         } else {
@@ -81,7 +81,7 @@ final class FakeReplayer implements Replayer {
     void stopRecording(final long recordingId) {
         recordings.replaceAll(span
                               -> span.recordingId() == recordingId
-                                  ? new ReplayRecordings.RecordingSpan(recordingId, span.startPosition(), false)
+                                  ? new Replayer.RecordingSpan(recordingId, span.startPosition(), false)
                                   : span);
         final Long tip = recordingPositions.remove(recordingId);
         if (tip != null) {
@@ -191,7 +191,7 @@ final class FakeReplayer implements Replayer {
     // ── Replayer ─────────────────────────────────────────────────────
 
     @Override
-    public List<ReplayRecordings.RecordingSpan> listTapRecordings() {
+    public List<Replayer.RecordingSpan> listTapRecordings() {
         throwIfArchiveDown();
         return new ArrayList<>(recordings);
     }

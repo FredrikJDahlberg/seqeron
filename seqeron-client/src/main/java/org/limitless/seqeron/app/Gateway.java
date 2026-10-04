@@ -257,7 +257,7 @@ public final class Gateway implements AutoCloseable {
             return;
         }
         if (unopened.remove(connectionId)) {
-            lifecycleQueue.removeIf(queued -> queued.connectionId == connectionId);
+            lifecycleQueue.removeIf(queued -> queued.connectionId() == connectionId);
             return;
         }
         lifecycleQueue.add(new Lifecycle(connectionId, SystemFrame.CONNECTION_CLOSED, NO_CONNECTION_DATA));
@@ -325,28 +325,27 @@ public final class Gateway implements AutoCloseable {
         int work = 0;
         while (!lifecycleQueue.isEmpty()) {
             final Lifecycle next = lifecycleQueue.peek();
-            if (!published(session.publishSystem(lifecycle.gatewaySourceId(), next.connectionId,
-                                                 next.systemEventType, body, encode(next)))) {
+            if (!published(session.publishSystem(lifecycle.gatewaySourceId(), next.connectionId(),
+                                                 next.systemEventType(), body, encode(next)))) {
                 break;
             }
             lifecycleQueue.poll();
-            unopened.remove(next.connectionId);
+            unopened.remove(next.connectionId());
             work++;
         }
         return work;
     }
 
     private int encode(final Lifecycle queued) {
-        if (queued.systemEventType == SystemFrame.CONNECTION_OPENED) {
+        if (queued.systemEventType() == SystemFrame.CONNECTION_OPENED) {
             connectionOpened.wrap(body, 0);
-            connectionOpened.putConnectionData(queued.connectionData, 0, queued.connectionData.length);
+            connectionOpened.putConnectionData(queued.connectionData(), 0, queued.connectionData().length);
             return connectionOpened.encodedLength();
         }
         connectionClosed.wrap(body, 0);
         return connectionClosed.encodedLength();
     }
 
-    /** The resume point, read off every frame this logical gateway's history holds, whichever instance issued it. */
     /**
      * A {@code ConnectionOpened}'s opaque tail, or nothing. §7.1 lets {@code connectionData} be absent, and a
      * producer that takes the option encodes no var-data header at all — so a payload too short to hold one is
@@ -365,6 +364,7 @@ public final class Gateway implements AutoCloseable {
                                     length);
     }
 
+    /** The resume point, read off every frame this logical gateway's history holds, whichever instance issued it. */
     private void observeConnectionId(final int sourceId, final int connectionId) {
         if (lifecycle.gatewaySourceId() != GatewayLifecycle.UNRESOLVED && sourceId == lifecycle.gatewaySourceId()
             && connectionId > highestConnectionId) {
@@ -389,25 +389,10 @@ public final class Gateway implements AutoCloseable {
     }
 
     /** One connection lifecycle frame waiting to be placed. */
-    private static final class Lifecycle {
-        private final int connectionId;
-        private final int systemEventType;
-        private final byte[] connectionData;
-
-        private Lifecycle(final int connectionId, final int systemEventType, final byte[] connectionData) {
-            this.connectionId = connectionId;
-            this.systemEventType = systemEventType;
-            this.connectionData = connectionData;
-        }
-    }
+    private record Lifecycle(int connectionId, int systemEventType, byte[] connectionData) { }
 
     /** The election's side effects. */
     private final class LifecycleActions implements GatewayLifecycle.Actions {
-        @Override
-        public void identityResolved(final int gatewayId, final int gatewaySourceId, final int preferenceRank) {
-            // Nothing to do: the consumer reads the identity off the accessors when it opens its edge.
-        }
-
         @Override
         public boolean publishGatewayStarted(final int gatewayId) {
             nextConnectionId = highestConnectionId + 1;

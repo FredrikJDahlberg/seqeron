@@ -22,7 +22,7 @@ class ReplayerServerTest {
     @Test
     void untetheredTimeoutsEvictAStalledSubscriberBeforeTheRecordingStallIsFatal() {
         final MediaDriver.Context ctx = new MediaDriver.Context();
-        ReplayerServer.untetheredTimeouts(ctx);
+        NodeDriver.untetheredTimeouts(ctx);
         Configuration.validateUntetheredTimeouts(ctx.untetheredWindowLimitTimeoutNs(), ctx.untetheredLingerTimeoutNs(),
                                                  ctx.untetheredRestingTimeoutNs(), ctx.timerIntervalNs());
         // Each timeout is noticed up to one timer interval late.

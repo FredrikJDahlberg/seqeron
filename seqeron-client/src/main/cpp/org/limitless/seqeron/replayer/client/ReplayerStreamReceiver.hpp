@@ -19,7 +19,6 @@
 #include "org/limitless/seqeron/replayer/client/SnapshotRestoreHandler.hpp"
 #include "org/limitless/seqeron/replayer/client/SnapshotStore.hpp"
 #include "org/limitless/seqeron/replayer/client/detail/ReplayerRecovery.hpp"
-#include "org/limitless/seqeron/replayer/client/detail/TapFaultInjector.hpp"
 
 // Request codecs (sbe-replay.xml); the replies are decoded in ReplayerRecovery.
 #include "org_limitless_seqeron_sbe_replay/MessageHeader.h"
@@ -43,13 +42,11 @@ inline const std::string REPLAYER_CONTROL_CHANNEL = std::string(protocol::REPLAY
  * — plus an OnLeadershipChanged callback and currentLeaderMemberId()/isCaughtUp() accessors that the
  * caller uses to gate leader-only emission: every node runs a replica, and only the leader's submits.
  *
- * Startup: cold replicas walk the node's per-tenure recording chain by segment index (0,1,2,…) via the
- * Replayer, riding each segment's replay image and de-duping by globalSeqNo, until the Replayer answers
- * NO_REPLAY_NEEDED — so history spans every leader failover, not just the current recording. The tap is
- * dispatched throughout, so it closes the seam itself the moment the replay reaches it. A steady-state
- * tap gap clears isCaughtUp() and resumes the active recording just below the hole, falling back to the
- * same chain walk if that resume does not land where it was anchored. No archive connection is opened
- * here.
+ * Startup: cold replicas walk the node's active recording from its start via the Replayer — it holds the
+ * whole log, every leader tenure included — riding the replay image and de-duping by globalSeqNo. The tap
+ * is dispatched throughout, so it closes the seam itself the moment the replay reaches it. A steady-state
+ * tap gap clears isCaughtUp() and resumes the active recording just below the hole, falling back to a walk
+ * if that resume does not land where it was anchored. No archive connection is opened here.
  */
 class ReplayerStreamReceiver final : private detail::ReplayerRecoveryActions
 {
@@ -70,15 +67,12 @@ class ReplayerStreamReceiver final : private detail::ReplayerRecoveryActions
      * @param onDisconnected      each ConnectionClosed
      * @param onLeadershipChanged each LeadershipChanged
      * @param onCaughtUp          every transition to caught up, the first included
-     * @param tapFaults           drops live tap frames on demand, for test harnesses only; the caller keeps it
-     *                            alive
      * @throws std::invalid_argument if onSequenced is empty
      */
     ReplayerStreamReceiver(std::int32_t clientId, OnSequenced onSequenced, OnConnected onConnected = {},
                            OnDisconnected onDisconnected = {}, OnLeadershipChanged onLeadershipChanged = {},
-                           OnCaughtUp onCaughtUp = {}, detail::TapFaultInjector* tapFaults = nullptr) :
+                           OnCaughtUp onCaughtUp = {}) :
       m_clientId(clientId),
-      m_tapFaults(tapFaults),
       m_recovery(clientId, *this, std::move(onSequenced), std::move(onConnected), std::move(onDisconnected),
                  std::move(onLeadershipChanged), std::move(onCaughtUp)),
       // Temporaries: FragmentAssembler copies the delegate into its own member.
@@ -235,8 +229,7 @@ class ReplayerStreamReceiver final : private detail::ReplayerRecoveryActions
     static constexpr int FRAGMENT_LIMIT = 16;
     static constexpr std::size_t REQUEST_BUFFER_LENGTH = 64;
 
-    void sendReplayRequest(const std::int64_t requestId, const std::int32_t segmentIndex,
-                           const std::int64_t fromPosition) override
+    void sendReplayRequest(const std::int64_t requestId, const std::int64_t fromPosition) override
     {
         if (!m_requestPub || !m_requestPub->isConnected())
         {
@@ -245,7 +238,7 @@ class ReplayerStreamReceiver final : private detail::ReplayerRecoveryActions
         alignas(16) std::array<std::uint8_t, REQUEST_BUFFER_LENGTH> buf{};
         sbe::replay::ReplayRequest enc;
         enc.wrapAndApplyHeader(reinterpret_cast<char*>(buf.data()), 0, buf.size());
-        enc.clientId(m_clientId).requestId(requestId).fromPosition(fromPosition).segmentIndex(segmentIndex);
+        enc.clientId(m_clientId).requestId(requestId).fromPosition(fromPosition);
         const auto len =
             static_cast<aeron::util::index_t>(sbe::replay::MessageHeader::encodedLength() + enc.encodedLength());
         aeron::concurrent::AtomicBuffer ab(buf.data(), buf.size());
@@ -366,10 +359,6 @@ class ReplayerStreamReceiver final : private detail::ReplayerRecoveryActions
     void onTapFragment(const aeron::concurrent::AtomicBuffer& buffer, const aeron::util::index_t offset,
                        const aeron::util::index_t length, const aeron::Header& header)
     {
-        if (m_tapFaults && m_tapFaults->dropNext())
-        {
-            return;
-        }
         m_recovery.onFrame(frameAt(buffer, offset), static_cast<std::uint64_t>(length),
                            protocol::frameStartPosition(header), protocol::nowNs(), /*fromReplay=*/false);
     }
@@ -404,7 +393,6 @@ class ReplayerStreamReceiver final : private detail::ReplayerRecoveryActions
     }
 
     const std::int32_t m_clientId;
-    detail::TapFaultInjector* const m_tapFaults;
     detail::ReplayerRecovery m_recovery;
 
     std::shared_ptr<aeron::Aeron> m_aeron;

@@ -20,7 +20,7 @@ import org.limitless.seqeron.sbe.frame.SnapshotStartedDecoder;
  * <p>A flyweight: {@link #buffer()} points into the caller's storage and every field is valid only until
  * the next {@link #wrap}.
  */
-public final class SequencedFrameDecoder {
+public class SequencedFrameDecoder {
     /** A decoder holding no frame; {@link #wrap} points it at one. */
     public SequencedFrameDecoder() {
     }

@@ -439,11 +439,6 @@ class Gateway
         explicit LifecycleActions(Gateway& gateway) : m_gateway{ gateway }
         {}
 
-        void identityResolved(std::int32_t, std::int32_t, std::int32_t)
-        {
-            // Nothing to do: the consumer reads the identity off the accessors when it opens its edge.
-        }
-
         bool publishGatewayStarted(const std::int32_t gatewayId)
         {
             m_gateway.m_nextConnectionId = m_gateway.m_highestConnectionId + 1;

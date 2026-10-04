@@ -22,11 +22,6 @@ constexpr std::int32_t OTHER_PAIR_SOURCE_ID = 0;
 
 struct RecordingActions
 {
-    void identityResolved(const std::int32_t gatewayId, const std::int32_t gatewaySourceId, std::int32_t)
-    {
-        calls.push_back("identity(" + std::to_string(gatewayId) + "," + std::to_string(gatewaySourceId) + ")");
-    }
-
     bool publishGatewayStarted(const std::int32_t gatewayId)
     {
         calls.push_back("GatewayStarted(" + std::to_string(gatewayId) + ")");
@@ -87,7 +82,7 @@ TEST_F(GatewayLifecycleTest, ResolvesItsIdentityFromTheRowNamingIt)
     loadTopology();
     EXPECT_EQ(MY_ID, lifecycle.gatewayId());
     EXPECT_EQ(MY_SOURCE_ID, lifecycle.gatewaySourceId());
-    EXPECT_EQ(std::vector<std::string>{ "identity(5,6)" }, actions.calls);
+    EXPECT_TRUE(actions.calls.empty());
 }
 
 TEST_F(GatewayLifecycleTest, IgnoresAnActivationBeforeAnyRowNamesThisInstance)
@@ -127,7 +122,7 @@ TEST_F(GatewayLifecycleTest, PublishesGatewayStartedBeforeOpeningTheGate)
 {
     becomeServing();
     EXPECT_TRUE(lifecycle.isServing());
-    EXPECT_EQ((std::vector<std::string>{ "identity(5,6)", MY_STARTED, "open" }), actions.calls);
+    EXPECT_EQ((std::vector<std::string>{ MY_STARTED, "open" }), actions.calls);
 }
 
 TEST_F(GatewayLifecycleTest, DoesNotOpenTheGateWhileGatewayStartedIsBackPressured)
@@ -273,7 +268,7 @@ TEST_F(GatewayLifecycleTest, RestoresItsIdentityAndActivationFromASnapshotHeader
 
     lifecycle.onCaughtUp();
     EXPECT_EQ(1, lifecycle.advance());
-    EXPECT_EQ((std::vector<std::string>{ "identity(5,6)", MY_STARTED, "open" }), actions.calls);
+    EXPECT_EQ((std::vector<std::string>{ MY_STARTED, "open" }), actions.calls);
 }
 
 TEST_F(GatewayLifecycleTest, ASnapshotHeaderReplacesTheRowsAndTheActivationItFinds)

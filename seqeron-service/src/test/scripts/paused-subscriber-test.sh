@@ -37,7 +37,7 @@ rm -rf "$LOG_DIR"; mkdir -p "$LOG_DIR"
 
 JAVA_OPTS=("${SEQERON_JAVA_OPTS[@]}")
 BASE_DIR="${TMP_DIR}/seqeron-seqps"
-CLUSTER_MEMBERS="$(cluster_members_string 3)"
+CLUSTER_HOSTS="localhost,localhost,localhost"
 
 pkill -f SequencerServer 2>/dev/null; pkill -f ReplayerServer 2>/dev/null; pkill -f ClusterProbe 2>/dev/null
 sleep 1
@@ -54,7 +54,7 @@ trap cleanup EXIT INT TERM
 
 for m in 0 1 2; do
   java "${JAVA_OPTS[@]}" -Dsequencer.memberId="$m" -Dsequencer.baseDir="$BASE_DIR" \
-       -Dsequencer.clusterMembers="$CLUSTER_MEMBERS" -jar "$JAR" > "$LOG_DIR/seq-$m.log" 2>&1 &
+       -Dsequencer.hosts="$CLUSTER_HOSTS" -jar "$JAR" > "$LOG_DIR/seq-$m.log" 2>&1 &
   SEQ_PIDS[$m]=$!
 done
 for m in 0 1 2; do

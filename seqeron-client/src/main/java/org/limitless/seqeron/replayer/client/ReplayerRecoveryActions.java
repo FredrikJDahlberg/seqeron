@@ -8,8 +8,9 @@ interface ReplayerRecoveryActions {
     /**
      * Offers a {@code ReplayRequest}. Best-effort by design — see {@code ReplayerRecovery.requestReplay} on
      * why it must not be retried any faster than the resend timer does.
+     * @param fromPosition where to resume the active recording, or {@code ReplayProtocol.FROM_START}
      */
-    void sendReplayRequest(long requestId, int segmentIndex, long fromPosition);
+    void sendReplayRequest(long requestId, long fromPosition);
 
     /** Offers a {@code SnapshotQuery}; best-effort, like the request. */
     void sendSnapshotQuery(long requestId, int sourceId, long round);

@@ -37,19 +37,22 @@ back-pressuring the cluster.
 - **`SequencerServer` / `SequencerService` / `Sequencer`** (Java) — the cluster node. `Sequencer` is
   the replicated state machine proper (no Aeron dependency, unit-tested directly): it stamps each
   ingress message with a monotone `globalSeqNo` plus the Raft consensus timestamp and synthesizes the
-  frames the cluster itself owns (`ClusterHeartbeat`, `LeadershipChanged`, `GatewayActive`).
+  frames the cluster itself owns (`ClusterHeartbeat`, `LeadershipChanged`, `GatewayActive`,
+  `SnapshotStarted`).
   `SequencerService` is its Aeron adapter and holds no replicated state of its own.
 - **`ReplayerServer` / `ReplayerService`** (Java, `replayer/server`) — one per member, running inside
   that member's `SequencerServer` JVM on its embedded media driver. The only component that reads the
   archive: it serves an on-demand
-  replay protocol to the co-located replicas, and sits off the live delivery path entirely. Its
-  decisions live in pure seams — `Replayer`, `ReplaySlotAllocator`, `ReplayRecordings`,
-  `ReplayClientIdCollisions` — with `AeronReplayer` the only part that touches Aeron. On a **gateway
+  replay protocol to the co-located replicas, and sits off the live delivery path entirely. It also
+  indexes every source's `SnapshotEnd` by round and answers `SnapshotQuery`, which is how a restarting
+  client learns which of its snapshot files the log confirms. Its decisions live in pure seams —
+  `Replayer`, `ReplaySlotAllocator`, `ReplayClientIdCollisions`, `SnapshotIndex` —
+  with `AeronReplayer` the only part that touches Aeron. On a **gateway
   host**, one that runs no member, it runs its own media driver and archive instead, and a relay
   (`TapRelay`/`AeronTapRelay`) copies a member's tap onto the host's own over UDP, moving to the next
   member when that one is lost; gateways and consumers there run unchanged
   ([`doc/fault-tolerance.md`](doc/fault-tolerance.md#33-gateway-host)).
-- **`ClusterCtl`** (Java, `clusterctl`) — start/status/shutdown/activation tooling. Its `start` and
+- **`ClusterCtl`** (Java, `clusterctl`) — start/status/shutdown/activation/snapshot-request tooling. Its `start` and
   `shutdown` publish `ClusterStarted`/`ClusterStopped` markers *through* the log, so the boundaries of
   a run are themselves sequenced. See [Operator tooling](#operator-tooling).
 - **`ClusterProbe`** (Java) — the edge-neutral load generator and tap consumer this tier's own
@@ -60,9 +63,12 @@ back-pressuring the cluster.
 - **`MetricsExporter`** (Java) — the ops plane, orthogonal to the data flow: a node-local exporter
   serves `/metrics` off the Aeron CnC counters, and Prometheus scrapes each node's ([`doc/ops.md`](doc/ops.md)).
 - **`TestGateway`** (Java, `seqeron-service/src/test/java`) — an elected active/standby producer used only by
-  `chaos-runner.sh`. It speaks no application protocol and holds no session state, but it holds the
-  same four fences a real gateway does, so the recovery-stall policy gets exercised inside this repo.
-  It is in the test source set and therefore in no jar.
+  `chaos-runner.sh` and `snapshot-test.sh`. It speaks no application protocol and holds no session state,
+  but it holds the same six fences a real gateway does, so the recovery-stall policy and the snapshot
+  comparison get exercised inside this repo. It is in the test source set and therefore in no jar.
+- **`TestApplication`** (Java, `seqeron-service/src/test/java`) — one replica per member of a co-located
+  application taking part in snapshot rounds, used only by `snapshot-test.sh`; the reference consumer of
+  `app/Application` with a `SnapshotListener`. Also in no jar.
 
 The **C++ half is a client library, not a set of executables**: `seqeron_core` is header-only, and
 the only binary this build produces is `core_tests`. It gives an application written in C++ the
@@ -85,8 +91,9 @@ server**; the server side of the replay protocol is Java only.
   other. `unwrapFrame` (C++, `SequencedFrame.hpp`) and `SequencedFrameDecoder` (Java) are the one
   place the envelope is stripped.
 - **The log holds the authoritative state, and every decision consumers must agree on is emitted
-  rather than inferred.** Connects, disconnects, promotions and the clock all round-trip through the
-  sequencer, so a restarted or standby replica rebuilds by replaying rather than by asking anyone.
+  rather than inferred.** Connects, disconnects, promotions, the clock and snapshot rounds' cuts and
+  digests all round-trip through the sequencer, so a restarted or standby replica rebuilds by replaying —
+  or by restoring a snapshot the log confirms and replaying after it — rather than by asking anyone.
 - **No cluster snapshots — a node's recovery is always full-log replay from `globalSeqNo` 1.**
   `SequencerService` refuses to take or restore one. That is what keeps every node's tap recording
   complete: a node restored from a snapshot would record only from wherever it resumed. The cost is
@@ -209,10 +216,10 @@ instead.
 | `failover-test.sh` | Force a failover, then cold-start a fresh `ClusterProbe` follower on the new leader and verify it catches up on full history — each node's tap recording is one continuous run spanning both tenures. Two `confirm` producers stream across the kill: the one using `PendingSends` must see every frame exactly once, in order, and an untracked control reports what the kill lost |
 | `gap-recovery-test.sh` | Drop a live tap frame on a caught-up consumer (SIGUSR1 fault injection) and verify it re-walks its recording and heals rather than wedging |
 | `paused-subscriber-test.sh` | `SIGSTOP` a caught-up consumer while more than two tap windows go by, and verify its member stays up and the resumed consumer heals the hole its eviction left |
-| `replayer-restart-test.sh` | Kill and restart a client's own node and verify the client fails fast and a fresh cold-start walk crosses a real multi-recording chain |
-| `gateway-host-test.sh` | A `confirm` producer on a gateway host (node 3) streams while the member its relay reads, the leader, is killed: every frame must come back exactly once, in order, and the relay must move to another member. The host is then restarted, and a fresh `ClusterProbe` follower there must catch up across its two-recording chain |
+| `replayer-restart-test.sh` | Kill and restart a client's own node and verify the client fails fast and a fresh cold start is served from the node's new recording alone |
+| `gateway-host-test.sh` | A `confirm` producer on a gateway host (node 3) streams while the member its relay reads, the leader, is killed: every frame must come back exactly once, in order, and the relay must move to another member. The host is then restarted, and a fresh `ClusterProbe` follower there must catch up from its new recording |
 | `chaos-runner.sh` | Randomized fault injection against a live 3-node cluster, with the `TestGateway` pair (`GW-T-A`/`GW-T-B`, ports 9200/9201) taking load through its accept gate; every run prints its `SEED` to replay the exact fault sequence. Needs `./gradlew uberJar compileTestJava` |
-| `snapshot-test.sh` | Application snapshots against a live 3-node cluster: the `TestGateway` pair takes part in rounds every 2 s, and the script restarts the standby, fails over onto the restored instance, brings the other back passive and activates it. Every restore must reach the state the log implies and no instance may diverge from a sequenced round. Needs `./gradlew uberJar compileTestJava` |
+| `snapshot-test.sh` | Application snapshots against a live 3-node cluster: the `TestGateway` pair and a `TestApplication` replica per member take part in rounds every 2 s, and the script restarts the standby, fails over onto the restored instance, brings the other back passive and activates it, starts a round with `clusterctl request-snapshot`, restarts a follower's replica, and kills the cluster leader. Every restore must reach the state the log implies and no instance may diverge from a sequenced round. Needs `./gradlew uberJar compileTestJava` |
 | `docker-failover-test.sh` | Multi-round containerized failover soak — the `docker/compose.yml` port of `failover-test.sh`. `ROUNDS` (15) kills under continuous `ProbeMarker` load, restoring the killed member between them, so each rejoin replays a Raft log that grew under the previous rounds. Asserts every round is a genuine leadership change, that a long-lived observer on each surviving node keeps delivering in order across all of them, and that a cold-start probe replays the whole multi-tenure history at the end. Needs Docker and `./gradlew operatorDist`; `ROUNDS=3` for a quick local run. CI runs it as `failover.yml` |
 | `replay-bench.sh <preload> [load-during]` | How fast a cold replica replays recorded history to caught-up; prints archive size, elapsed seconds and MB/s |
 
@@ -242,7 +249,7 @@ usually what you want:
 ```bash
 ./seqeron-service/src/main/scripts/start-cluster.sh
 # [cluster.sh] SequencerServer is running
-# [ReplayerService/0] ready — tap recording 0 live, 1-recording chain verified from globalSeqNo 1; serving replay
+# [ReplayerService/0] ready — tap recording 0 live and verified from globalSeqNo 1; serving replay
 # [ClusterProbe/0] Caught up — following live
 ```
 
@@ -307,12 +314,10 @@ into each member's own archive.
 | Property                    | Default                          | Description                        |
 |-----------------------------|----------------------------------|------------------------------------|
 | `sequencer.memberId`        | `0`                              | Raft member ID for this node       |
-| `sequencer.hosts`           | `SEQERON_HOSTS`                  | Every member's host, in id order; replaces `clusterMembers` and `nodeCount` |
+| `sequencer.hosts`           | `SEQERON_HOSTS`, else `localhost` | Every member's host, in id order   |
 | `sequencer.host`            | this member's entry in `hosts`, else `localhost` | Host this node binds and advertises |
 | `sequencer.baseDir`         | `$TMPDIR/seqeron-seq`; required with more than one host | Root for archive and cluster dirs  |
 | `sequencer.aeronDir`        | `$TMPDIR/seqeron-seq-aeron-<id>`| Aeron media driver directory       |
-| `sequencer.nodeCount`       | `1`                              | Cluster size, all on localhost     |
-| `sequencer.clusterMembers`  | single-node localhost            | Full Aeron clusterMembers string   |
 | `sequencer.idleStrategy`    | `backoff`                        | `backoff` or `yielding`            |
 
 The node runs its Replayer in the same JVM, on the same media driver; there is nothing to configure.
@@ -340,6 +345,7 @@ is one continuous run spanning every leader tenure.
 ./seqeron-service/src/main/scripts/clusterctl.sh shutdown        # orderly stop; safe on every node, a no-op on followers
 ./seqeron-service/src/main/scripts/clusterctl.sh activate <gatewayId>
 ./seqeron-service/src/main/scripts/clusterctl.sh load-topology <file.xml>
+./seqeron-service/src/main/scripts/clusterctl.sh request-snapshot   # start an application snapshot round now
 ```
 
 `load-topology` publishes the deployment document — the gateway list, the co-located applications,
@@ -350,8 +356,8 @@ The application and protocol rows are labelling for `SbeLogPrinter`, decoded by 
 nothing. The snapshot policy turns application snapshot rounds on (`doc/snapshot.md`).
 
 Anything `clusterctl` does not recognize is passed through to `io.aeron.cluster.ClusterTool` against
-this node's cluster dir (`describe`, `errors`, `list-members`, `recording-log`, …). `snapshot` is
-refused. `CLUSTERCTL_*` environment variables map onto the `clusterctl.*` system properties; the full
+this node's cluster dir (`describe`, `errors`, `list-members`, `recording-log`, …). `snapshot`, Aeron's
+cluster snapshot, is refused. `CLUSTERCTL_*` environment variables map onto the `clusterctl.*` system properties; the full
 runbook is [`doc/clusterctl.md`](doc/clusterctl.md).
 
 In a node container the image has `clusterctl` on the `PATH`, already set to that container's member:

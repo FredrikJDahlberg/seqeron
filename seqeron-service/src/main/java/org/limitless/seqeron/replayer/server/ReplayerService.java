@@ -96,11 +96,8 @@ public final class ReplayerService {
 
     // Startup integrity self-check (see checkReady)
     private Replayer.SelfCheckStream selfCheckSub;
-    private List<ReplayRecordings.RecordingSpan> selfCheckSpans;
-    private int selfCheckIndex;
     private long selfCheckReplaySessionId = NULL_VALUE;
-    private long selfCheckRecordingId = NULL_VALUE; // the span being peeked
-    private long selfCheckActiveRecordingId = NULL_VALUE; // the live one, for the readiness line
+    private long selfCheckRecordingId = NULL_VALUE;
     private long selfCheckGlobalSeqNo = NULL_VALUE; // what the first fragment carried, once read
     private long selfCheckDeadlineMs = 0;
 
@@ -261,10 +258,10 @@ public final class ReplayerService {
     }
 
     /**
-     * Waits for the tap recording to be visible, then proves every recording in the chain starts at
-     * globalSeqNo 1 before declaring readiness. A failure means a recording was deleted, corrupted or
-     * partially restored — permanent, since a retry reads the same bytes — so {@link #integrityFailed}
-     * latches and {@code ready} never becomes true for this process.
+     * Waits for the tap recording to be visible, then proves it starts at globalSeqNo 1 before declaring
+     * readiness: it alone is served, so it must hold the whole log. A failure means the recording was deleted,
+     * corrupted or partially restored — permanent, since a retry reads the same bytes — so {@link
+     * #integrityFailed} latches and {@code ready} never becomes true for this process.
      *
      * <p>One step per duty cycle: open the check, or read at most one fragment of it. It never waits.
      * @return work count, so the idle strategy does not park a cycle that is actively reading
@@ -281,43 +278,25 @@ public final class ReplayerService {
     }
 
     /**
-     * Opens the self-check replay of the current span's first frame, bounded to {@link
+     * Opens the self-check replay of the active recording's first frame, bounded to {@link
      * #SELF_CHECK_REPLAY_LENGTH} since only one fragment is read. Every early return is transient and
      * retries next cycle.
      */
     private void startSelfCheck() {
         try {
-            final ReplayRecordings.RecordingSpan active = findActiveRecording();
+            final Replayer.RecordingSpan active = findActiveRecording();
             if (active == null) {
                 return; // nothing recorded yet; retry next cycle
             }
-            if (selfCheckSpans == null) {
-                final List<ReplayRecordings.RecordingSpan> segments = resolveSegments();
-                if (segments.isEmpty()) {
-                    return; // retry next cycle
-                }
-                selfCheckSpans = segments;
-                selfCheckIndex = 0;
-            }
-            selfCheckActiveRecordingId = active.recordingId();
-
-            final ReplayRecordings.RecordingSpan span = selfCheckSpans.get(selfCheckIndex);
-            long position = replayer.recordingPosition(span.recordingId());
-            if (position < 0) {
-                position = replayer.stopPosition(span.recordingId());
-            }
-            final long replayLength = Math.min(position - span.startPosition(), SELF_CHECK_REPLAY_LENGTH);
+            final long replayLength =
+                Math.min(tipOf(active.recordingId()) - active.startPosition(), SELF_CHECK_REPLAY_LENGTH);
             if (replayLength <= 0) {
-                if (span.active()) {
-                    return; // nothing written to the live recording yet; retry next cycle
-                }
-                completeSelfCheckSpan();
-                return;
+                return; // nothing written to it yet; retry next cycle
             }
-            selfCheckRecordingId = span.recordingId();
+            selfCheckRecordingId = active.recordingId();
             selfCheckGlobalSeqNo = NULL_VALUE;
             selfCheckReplaySessionId =
-                replayer.startReplay(span.recordingId(), span.startPosition(), replayLength, SELF_CHECK_STREAM_ID);
+                replayer.startReplay(active.recordingId(), active.startPosition(), replayLength, SELF_CHECK_STREAM_ID);
             selfCheckSub = replayer.openSelfCheckStream(selfCheckReplaySessionId);
             selfCheckDeadlineMs = replayer.nowMs() + SELF_CHECK_TIMEOUT_MS;
             onArchiveRecovered(); // it served a replay: whatever refused one earlier is over
@@ -328,8 +307,8 @@ public final class ReplayerService {
     }
 
     /**
-     * Reads at most one fragment off an in-flight self-check. A first frame at globalSeqNo 1 proves that
-     * span; anything else latches {@link #integrityFailed}. Nothing before the deadline is transient: the
+     * Reads at most one fragment off an in-flight self-check. A first frame at globalSeqNo 1 makes the node
+     * ready; anything else latches {@link #integrityFailed}. Nothing before the deadline is transient: the
      * check is torn down and restarted on a later cycle.
      */
     private int pollSelfCheck() {
@@ -348,31 +327,17 @@ public final class ReplayerService {
             integrityFailed = true;
             integrityFailureCounter.set(1);
             Logger.fault(Logger.CoreComponent.ReplayerService, Logger.CoreEventCode.ArchiveIntegrityFailure, memberId,
-                         "FATAL: tap recording %d (%d of %d in this node's chain) has first frame globalSeqNo=%d, "
-                             + "expected 1 — this node's recording chain does not cover the log from the start "
-                             + "(deleted, corrupted, or a partial restore?); refusing to mark ready",
-                         recordingId, selfCheckIndex + 1, selfCheckSpans.size(), firstGlobalSeqNo);
+                         "FATAL: tap recording %d has first frame globalSeqNo=%d, expected 1 — this node's recording "
+                             + "does not cover the log from the start (deleted, corrupted, or a partial restore?); "
+                             + "refusing to mark ready",
+                         recordingId, firstGlobalSeqNo);
             return work;
-        }
-        completeSelfCheckSpan();
-        return work;
-    }
-
-    /**
-     * One span is behind the sweep — proved at {@code globalSeqNo} 1, or a stopped empty one there is
-     * nothing to prove. Readiness waits for the whole chain.
-     */
-    private void completeSelfCheckSpan() {
-        ++selfCheckIndex;
-        if (selfCheckIndex < selfCheckSpans.size()) {
-            return; // the next cycle opens the next span's check
         }
         ready = true;
         readyCounter.set(1);
         Logger.info(Logger.CoreComponent.ReplayerService, memberId,
-                    "ready — tap recording %d live, %d-recording chain verified from globalSeqNo 1; serving replay",
-                    selfCheckActiveRecordingId, selfCheckSpans.size());
-        selfCheckSpans = null; // the sweep is over; a later one resolves the chain again rather than resuming this
+                    "ready — tap recording %d live and verified from globalSeqNo 1; serving replay", recordingId);
+        return work;
     }
 
     /**
@@ -412,7 +377,7 @@ public final class ReplayerService {
     private int pollIndex() {
         if (indexStream == null) {
             try {
-                final ReplayRecordings.RecordingSpan active = findActiveRecording();
+                final Replayer.RecordingSpan active = findActiveRecording();
                 if (active == null) {
                     return 0;
                 }
@@ -514,7 +479,6 @@ public final class ReplayerService {
         final int clientId = replayRequestDecoder.clientId();
         final long requestId = replayRequestDecoder.requestId();
         final long fromPosition = replayRequestDecoder.fromPosition();
-        final int segmentIndex = replayRequestDecoder.segmentIndex();
 
         if (clientIdCollisions.onRequest(clientId, requestId, replayer.epochMillis())) {
             onClientIdCollision(clientId);
@@ -531,14 +495,14 @@ public final class ReplayerService {
         stopReplayForClient(clientId);
 
         if (!replaySlots.hasCapacity()) {
-            replaySlots.enqueue(clientId, requestId, segmentIndex, fromPosition);
+            replaySlots.enqueue(clientId, requestId, fromPosition);
             sendPending(clientId, requestId);
             Logger.info(Logger.CoreComponent.ReplayerService, memberId,
                         "client %d queued: no free replay slot (active=%d/%d, pending=%d)", clientId,
                         replaySlots.activeCount(), MAX_CONCURRENT_REPLAYS, replaySlots.pendingCount());
             return;
         }
-        startReplayForClient(clientId, requestId, segmentIndex, fromPosition);
+        startReplayForClient(clientId, requestId, fromPosition);
         drainPending();
     }
 
@@ -546,11 +510,9 @@ public final class ReplayerService {
      * Serves one replay request, guarding every archive control call.
      * @param clientId client identity
      * @param requestId the request being answered, echoed in every reply
-     * @param segmentIndex segment index
-     * @param fromPosition start replay position
+     * @param fromPosition start replay position, or {@link ReplayProtocol#FROM_START}
      */
-    private void startReplayForClient(final int clientId, final long requestId, final int segmentIndex,
-                                      final long fromPosition) {
+    private void startReplayForClient(final int clientId, final long requestId, final long fromPosition) {
         if (stalled) {
             final long now = replayer.epochMillis();
             if ((now - lastStallRetryMs) < STALL_RETRY_INTERVAL_MS) {
@@ -559,16 +521,17 @@ public final class ReplayerService {
             }
             lastStallRetryMs = now; // this attempt is the paced probe
         }
+        final boolean fromStart = fromPosition == ReplayProtocol.FROM_START;
         try {
-            serveReplay(clientId, requestId, segmentIndex, fromPosition);
+            serveReplay(clientId, requestId, fromPosition);
             onArchiveRecovered();
         } catch (final RuntimeException error) {
-            if (segmentIndex < 0 && archiveAnswers()) {
+            if (!fromStart && archiveAnswers()) {
                 rejectResume(clientId, requestId, "archive refused it: " + error.getMessage());
                 return;
             }
-            onArchiveStalled("serving " + (segmentIndex < 0 ? "a resume" : "walk segment " + segmentIndex) +
-                                 " for client " + clientId,
+            onArchiveStalled("serving " + (fromStart ? "a replay from the start" : "a resume") + " for client " +
+                                 clientId,
                              error);
             sendPending(clientId, requestId);
         }
@@ -596,7 +559,7 @@ public final class ReplayerService {
         }
         lastStallRetryMs = now;
         try {
-            final ReplayRecordings.RecordingSpan active = findActiveRecording();
+            final Replayer.RecordingSpan active = findActiveRecording();
             if (active != null) {
                 stopReplay(replayer.startReplay(active.recordingId(), active.startPosition(), SELF_CHECK_REPLAY_LENGTH,
                                                 SELF_CHECK_STREAM_ID));
@@ -609,77 +572,52 @@ public final class ReplayerService {
 
     /**
      * Refuses a resume request with NO_REPLAY_NEEDED, which the app reads as "that position is no good
-     * here" and falls back to walking the chain.
+     * here" and falls back to replaying from the start.
      * @param clientId client identity
      * @param requestId the request being refused
      * @param reason what was wrong with the position, for the log
      */
     private void rejectResume(final int clientId, final long requestId, final String reason) {
         Logger.info(Logger.CoreComponent.ReplayerService, memberId,
-                    "client %d's resume refused (%s) — answering ReplayProtocol.NO_REPLAY_NEEDED so it re-walks the chain", clientId,
-                    reason);
-        sendReplaying(clientId, requestId, ReplayProtocol.NO_REPLAY_NEEDED, 0, NULL_VALUE);
+                    "client %d's resume refused (%s) — answering ReplayProtocol.NO_REPLAY_NEEDED so it replays from the start",
+                    clientId, reason);
+        sendReplaying(clientId, requestId, ReplayProtocol.NO_REPLAY_NEEDED, 0);
     }
 
     /**
-     * Serves one replay. {@code segmentIndex < 0} resumes the active recording at {@code fromPosition};
-     * otherwise it is one step of a cold-start walk over the recording chain, answered NO_REPLAY_NEEDED
-     * once the walk runs past the last recording.
+     * Serves one replay of the active recording: from its start for {@link ReplayProtocol#FROM_START}, else
+     * resumed at {@code fromPosition}. Bounded at the recording's tip now; the tap carries the rest.
      * @param clientId client identity
      * @param requestId the request being answered, echoed in every reply
-     * @param segmentIndex segment index
-     * @param fromPosition start position
+     * @param fromPosition start position, or {@link ReplayProtocol#FROM_START}
      */
-    private void serveReplay(final int clientId, final long requestId, final int segmentIndex,
-                             final long fromPosition) {
+    private void serveReplay(final int clientId, final long requestId, final long fromPosition) {
         replaySlots.cancelPending(clientId);
 
-        final long recordingId;
-        final long replayFrom;
-        if (segmentIndex < 0) {
-            final ReplayRecordings.RecordingSpan active = findActiveRecording();
-            if (active == null) {
-                replaySlots.enqueue(clientId, requestId, segmentIndex, fromPosition);
-                sendPending(clientId, requestId);
-                return;
-            }
-            if (fromPosition < active.startPosition()) {
-                rejectResume(clientId, requestId,
-                             "position " + fromPosition + " predates recording " + active.recordingId() +
-                                 "'s startPosition " + active.startPosition());
-                return;
-            }
-            recordingId = active.recordingId();
-            replayFrom = fromPosition;
-        } else {
-            final List<ReplayRecordings.RecordingSpan> segments = resolveSegments();
-            if (segments.isEmpty()) {
-                replaySlots.enqueue(clientId, requestId, segmentIndex, fromPosition);
-                sendPending(clientId, requestId);
-                return;
-            }
-            if (segmentIndex >= segments.size()) {
-                sendReplaying(clientId, requestId, ReplayProtocol.NO_REPLAY_NEEDED, 0, NULL_VALUE);
-                return;
-            }
-
-            final ReplayRecordings.RecordingSpan segment = segments.get(segmentIndex);
-            recordingId = segment.recordingId();
-            replayFrom = segment.startPosition();
+        final Replayer.RecordingSpan active = findActiveRecording();
+        if (active == null) {
+            replaySlots.enqueue(clientId, requestId, fromPosition);
+            sendPending(clientId, requestId);
+            return;
+        }
+        final long replayFrom = fromPosition == ReplayProtocol.FROM_START ? active.startPosition() : fromPosition;
+        if (replayFrom < active.startPosition()) {
+            rejectResume(clientId, requestId,
+                         "position " + fromPosition + " predates recording " + active.recordingId() +
+                             "'s startPosition " + active.startPosition());
+            return;
         }
 
-        long tip = replayer.recordingPosition(recordingId);
+        final long recordingId = active.recordingId();
+        final long tip = tipOf(recordingId);
         if (tip < 0) {
-            tip = replayer.stopPosition(recordingId);
-        }
-        if (tip < 0) {
-            replaySlots.enqueue(clientId, requestId, segmentIndex, fromPosition);
+            replaySlots.enqueue(clientId, requestId, fromPosition);
             sendPending(clientId, requestId);
             return;
         }
         final long boundedLength = tip - replayFrom;
         if (boundedLength <= 0) {
-            sendReplaying(clientId, requestId, ReplayProtocol.NO_REPLAY_NEEDED, tip, recordingId);
+            sendReplaying(clientId, requestId, ReplayProtocol.NO_REPLAY_NEEDED, tip);
             return;
         }
 
@@ -687,9 +625,9 @@ public final class ReplayerService {
         replaysServedCounter.increment();
         replaySlots.activate(clientId, replaySessionId, replayer.epochMillis());
         Logger.info(Logger.CoreComponent.ReplayerService, memberId,
-                    "replay for client %d: segment %d recording %d [%d,%d) session %d", clientId, segmentIndex,
-                    recordingId, replayFrom, tip, replaySessionId);
-        sendReplaying(clientId, requestId, replaySessionId, tip, recordingId);
+                    "replay for client %d: recording %d [%d,%d) session %d", clientId, recordingId, replayFrom, tip,
+                    replaySessionId);
+        sendReplaying(clientId, requestId, replaySessionId, tip);
     }
 
     /**
@@ -725,8 +663,7 @@ public final class ReplayerService {
         while (budget-- > 0) {
             final ReplaySlotAllocator.PendingRequest request = replaySlots.pollPending();
             if (request != null) {
-                startReplayForClient(request.clientId(), request.requestId(), request.segmentIndex(),
-                                     request.fromPosition());
+                startReplayForClient(request.clientId(), request.requestId(), request.fromPosition());
             }
         }
     }
@@ -758,16 +695,14 @@ public final class ReplayerService {
      * @param requestId the request being answered
      * @param replaySessionId replay session identity
      * @param catchUpPosition catchup positon
-     * @param recordingId archive recordingId the reply was served from, or NULL_VALUE (see Replaying.recordingId)
      */
     private void sendReplaying(final int clientId, final long requestId, final long replaySessionId,
-                               final long catchUpPosition, final long recordingId) {
+                               final long catchUpPosition) {
         replayingEncoder.wrapAndApplyHeader(controlBuffer, 0, outHeaderEncoder)
             .clientId(clientId)
             .requestId(requestId)
             .replaySessionId(replaySessionId)
-            .catchUpPosition(catchUpPosition)
-            .recordingId(recordingId);
+            .catchUpPosition(catchUpPosition);
         offerControl(MessageHeaderEncoder.ENCODED_LENGTH + replayingEncoder.encodedLength());
     }
 
@@ -878,28 +813,34 @@ public final class ReplayerService {
         }
     }
 
-    // Finds the currently-active tap recording on the local archive (stopTimestamp unset).
-    private ReplayRecordings.RecordingSpan findActiveRecording() {
-        ReplayRecordings.RecordingSpan found = null;
-        for (final ReplayRecordings.RecordingSpan span : replayer.listTapRecordings()) {
-            if (span.active() && (found == null || span.recordingId() > found.recordingId())) {
-                found = span;
+    /**
+     * The newest active tap recording on the local archive, or null. More than one active is an unclean
+     * shutdown's leftover, reported once per episode; the newest holds the older one's content.
+     */
+    private Replayer.RecordingSpan findActiveRecording() {
+        Replayer.RecordingSpan found = null;
+        int activeCount = 0;
+        for (final Replayer.RecordingSpan span : replayer.listTapRecordings()) {
+            if (span.active()) {
+                ++activeCount;
+                if (found == null || span.recordingId() > found.recordingId()) {
+                    found = span;
+                }
             }
         }
-        return found;
-    }
-
-    // Oldest-to-newest tap recordings on the local archive; normally one, spanning every leader tenure.
-    private List<ReplayRecordings.RecordingSpan> resolveSegments() {
-        final List<ReplayRecordings.RecordingSpan> spans = replayer.listTapRecordings();
-        final long activeCount = spans.stream().filter(ReplayRecordings.RecordingSpan::active).count();
         if (activeCount > 1 && !staleActiveRecordingLogged) {
             Logger.error(Logger.CoreComponent.ReplayerService, Logger.CoreEventCode.StaleActiveRecording, memberId,
                          "%d tap recordings report as still recording — an unclean shutdown left an older one "
-                             + "unstopped; serving the newest and skipping the stale one(s)",
+                             + "unstopped; serving the newest",
                          activeCount);
         }
         staleActiveRecordingLogged = activeCount > 1;
-        return ReplayRecordings.stitch(spans);
+        return found;
+    }
+
+    /** Where a recording has reached: its live position, else where it stopped; negative if neither is known. */
+    private long tipOf(final long recordingId) {
+        final long position = replayer.recordingPosition(recordingId);
+        return position >= 0 ? position : replayer.stopPosition(recordingId);
     }
 }

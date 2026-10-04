@@ -81,7 +81,7 @@ fi
 
 # ADD a cold replica rather than restarting a running one: start-three-node-cluster.sh monitors its
 # children and tears the whole cluster down the moment any of them exits. This one attaches to
-# member 1's Replayer under its own client id, so it walks the entire recording chain from scratch
+# member 1's Replayer under its own client id, so it walks the entire recording from scratch
 # exactly as a restarted replica does, while everything else keeps running.
 : > "$COLD_LOG"
 START=$(python3 -c 'import time; print(time.time())')

@@ -4,9 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.file.Path;
-import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
 import org.agrona.DirectBuffer;
 import org.agrona.concurrent.UnsafeBuffer;
@@ -67,9 +65,6 @@ class ReplayerRecoveryPropertyTest {
 
     /** Arrival stamp; carried through to SequencedEvent, asserted on by no test here. */
     private static final long RECEIVE_NS = 0;
-
-    /** The walk terminator: nothing left to replay AND no recording named. */
-    private static final long CHAIN_EXHAUSTED = -1;
 
     private static final int CHAOS_STEPS = 600;
 
@@ -134,16 +129,16 @@ class ReplayerRecoveryPropertyTest {
         private long heartbeatSum;
         private int nextRecordIndex;
 
-        // ── the node's archive: the recording chain, complete by construction ──────────────────────────
-        private final List<Segment> segments = new ArrayList<>();
-        private long nextRecordingId;
+        // ── the node's archive: the active recording, complete by construction ─────────────────────────
         private long tip;
+
+        /** Where the active recording's frame 1 starts; a rotation may move it. */
+        private long positionBase;
 
         // ── the Replayer's view of this one client ─────────────────────────────────────────────────────
         private long pendingRequestId = -1;
         private boolean pendingIsQuery;
         private long pendingQueryRound;
-        private int pendingSegmentIndex;
         private long pendingFromPosition;
         private long nextSessionId = 1;
 
@@ -173,7 +168,6 @@ class ReplayerRecoveryPropertyTest {
             // History before the client starts. A cold start over an EMPTY archive that then drops the very
             // first tap frame is the one designed abort — the first frame observed must be globalSeqNo 1 —
             // and not a recovery failure, so the model does not construct it.
-            segments.add(new Segment(nextRecordingId++, 1));
             if (restoring) {
                 publishSnapshotRounds();
             }
@@ -301,23 +295,21 @@ class ReplayerRecoveryPropertyTest {
         }
 
         /**
-         * A new active recording. A restoring run's starts at globalSeqNo 1 and already holds the log, as a
-         * restarted node's does once it has replayed it; a walk's only chain is the older model's.
+         * A new active recording, holding the log from globalSeqNo 1 as a restarted node's does once it has
+         * replayed it. A walk's may lay its frames out elsewhere — a frame or half a frame on — so a resume at an
+         * old position opens on another frame or is refused; a restoring run's keeps its positions, since a
+         * resume at the snapshot's position is its only way back.
          */
         private void rotate() {
-            final Segment segment = new Segment(nextRecordingId++, restoring ? 1 : tip + 1);
-            if (restoring) {
-                segment.last = tip;
+            if (!restoring) {
+                positionBase += rng.chance(50) ? STRIDE : STRIDE / 2;
             }
-            segments.add(segment);
         }
 
         // ── the tap ────────────────────────────────────────────────────────────────────────────────────
 
         private long publish() {
-            ++tip;
-            segments.get(segments.size() - 1).last = tip;
-            return tip;
+            return ++tip;
         }
 
         private void deliverTap(final long globalSeqNo) {
@@ -343,7 +335,6 @@ class ReplayerRecoveryPropertyTest {
             final long requestId = pendingRequestId;
             final boolean query = pendingIsQuery;
             final long queryRound = pendingQueryRound;
-            final int segmentIndex = pendingSegmentIndex;
             final long fromPosition = pendingFromPosition;
             pendingRequestId = -1;
             if (requestId != client.requestId()) {
@@ -367,37 +358,25 @@ class ReplayerRecoveryPropertyTest {
                 return;
             }
 
-            if (segmentIndex < 0) { // a resume, anchored on a position rather than a segment
-                final Segment active = segments.get(segments.size() - 1);
-                final long anchor = fromPosition / STRIDE + 1;
-                if (anchor < active.first || anchor > active.last) {
-                    // The position no longer sits in the active recording — it rotated under the client.
-                    control(replaying(requestId, ReplayProtocol.NO_REPLAY_NEEDED, 0, CHAIN_EXHAUSTED), REPLAYING_LENGTH);
-                    return;
-                }
-                serveReplay(requestId, anchor, active.last, active.recordingId);
+            if (fromPosition == ReplayProtocol.FROM_START) {
+                serveReplay(requestId, 1, tip);
                 return;
             }
-            if (segmentIndex >= segments.size()) {
-                control(replaying(requestId, ReplayProtocol.NO_REPLAY_NEEDED, 0, CHAIN_EXHAUSTED), REPLAYING_LENGTH);
+            final long offset = fromPosition - positionBase;
+            if (offset < 0 || offset % STRIDE != 0 || offset / STRIDE + 1 > tip) {
+                // Not a frame of the active recording — it rotated under the client, and the archive refuses it.
+                control(replaying(requestId, ReplayProtocol.NO_REPLAY_NEEDED, 0), REPLAYING_LENGTH);
                 return;
             }
-            final Segment segment = segments.get(segmentIndex);
-            if (segment.last < segment.first) {
-                // Empty, not exhausted: the recording is named, which is what tells the two apart.
-                control(replaying(requestId, ReplayProtocol.NO_REPLAY_NEEDED, 0, segment.recordingId), REPLAYING_LENGTH);
-                return;
-            }
-            serveReplay(requestId, segment.first, segment.last, segment.recordingId);
+            serveReplay(requestId, offset / STRIDE + 1, tip);
         }
 
         /** Bound at the tip the recording holds NOW — frames published later are the tap's problem, not this
          *  replay's, which is exactly how a bounded replay of an active recording behaves. */
-        private void serveReplay(final long requestId, final long fromSeqNo, final long toSeqNo,
-                                 final long recordingId) {
+        private void serveReplay(final long requestId, final long fromSeqNo, final long toSeqNo) {
             replayCursor = fromSeqNo;
             replayEndSeqNo = toSeqNo;
-            control(replaying(requestId, nextSessionId++, positionOf(toSeqNo + 1), recordingId), REPLAYING_LENGTH);
+            control(replaying(requestId, nextSessionId++, positionOf(toSeqNo + 1)), REPLAYING_LENGTH);
         }
 
         /**
@@ -427,13 +406,12 @@ class ReplayerRecoveryPropertyTest {
         // ── ReplayerRecoveryActions: the client's outbound side ────────────────────────────────────────
 
         @Override
-        public void sendReplayRequest(final long requestId, final int segmentIndex, final long fromPosition) {
+        public void sendReplayRequest(final long requestId, final long fromPosition) {
             if (chaos && chance(15)) {
                 return; // the offer did not land; only the resend timer recovers this
             }
             pendingRequestId = requestId;
             pendingIsQuery = false;
-            pendingSegmentIndex = segmentIndex;
             pendingFromPosition = fromPosition;
         }
 
@@ -522,24 +500,11 @@ class ReplayerRecoveryPropertyTest {
         private boolean chance(final int percent) {
             return rng.chance(percent);
         }
-    }
 
-    /** One recording in the chain. {@code last < first} while it holds nothing yet. */
-    private static final class Segment {
-        final long recordingId;
-        final long first;
-        long last;
-
-        Segment(final long recordingId, final long first) {
-            this.recordingId = recordingId;
-            this.first = first;
-            this.last = first - 1;
+        /** Where frame {@code globalSeqNo} starts in the active recording: frame 1 at its base. */
+        private long positionOf(final long globalSeqNo) {
+            return positionBase + (globalSeqNo - 1) * STRIDE;
         }
-    }
-
-    /** Where frame {@code globalSeqNo} starts. Frame 1 at 0, so the position after frame n is n*STRIDE. */
-    private static long positionOf(final long globalSeqNo) {
-        return (globalSeqNo - 1) * STRIDE;
     }
 
     // ── encoders: the same frames ReplayerRecoveryTest uses, kept identical to it ──────────────────────
@@ -565,15 +530,14 @@ class ReplayerRecoveryPropertyTest {
     }
 
     private static UnsafeBuffer replaying(final long requestId, final long replaySessionId,
-                                          final long catchUpPosition, final long recordingId) {
+                                          final long catchUpPosition) {
         final UnsafeBuffer buffer = new UnsafeBuffer(new byte[256]);
         new ReplayingEncoder()
             .wrapAndApplyHeader(buffer, 0, new org.limitless.seqeron.sbe.replay.MessageHeaderEncoder())
             .clientId(CLIENT_ID)
             .requestId(requestId)
             .replaySessionId(replaySessionId)
-            .catchUpPosition(catchUpPosition)
-            .recordingId(recordingId);
+            .catchUpPosition(catchUpPosition);
         return buffer;
     }
 

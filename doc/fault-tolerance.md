@@ -86,7 +86,7 @@ refuses the heartbeat timer for 1 s continuously, that is fatal too: otherwise t
 stop with no visible signal.
 
 A fatal condition logs `FATAL: … terminating this node`, sets `seqeron_sequencer_tap_stalled`, and exits
-with code 70 (`EXIT_TAP_FATAL`); `doc/ops.md` has the operator procedure. It does not throw: a cluster
+with code 70 (`NodeDriver.EXIT_FATAL`); `doc/ops.md` has the operator procedure. It does not throw: a cluster
 callback that throws has already had its log position advanced, and `AgentRunner` keeps the agent
 running, so the frame would be silently dropped (spec §9.4).
 
@@ -195,7 +195,10 @@ start and after a gap.
 
 The replayer is not on the live delivery path; clients use it only to catch up.
 
-- **Integrity check.** Before reporting ready, it replays the first frame of its oldest tap recording
+- **One recording.** It serves only the node's active tap recording. The cluster takes no snapshots, so
+  every start of the node replays the log from `globalSeqNo` 1 into a new recording: the active one holds
+  the whole log, and an older one is a prefix of it that nothing reads.
+- **Integrity check.** Before reporting ready, it replays the first frame of its active tap recording
   and checks that `globalSeqNo` is 1. If not, the node's recording is missing or corrupt: `ready` stays
   false for the process lifetime and every request is answered with `ReplayUnavailable`, so clients do
   not each discover the fault separately.
@@ -216,8 +219,8 @@ The replayer is not on the live delivery path; clients use it only to catch up.
 `ReplayerStreamReceiver` (Java and C++) is the Aeron adapter; the decisions are in `ReplayerRecovery`,
 which is unit-tested directly.
 
-- **Cold start** walks the recording chain from segment 0, one recording per leader tenure, until the
-  replayer reports the chain exhausted (spec **R-2**), unless it restores a snapshot first (§3.4).
+- **Cold start** walks the active recording from its start to the tip it had when the replayer answered,
+  unless it restores a snapshot first (§3.4).
 - **Gap.** A live frame whose `globalSeqNo` is ahead of the next expected value clears `isCaughtUp()`
   and requests a resume at the position of the last delivered frame, repairing only the gap. If the
   resumed replay's first frame is not the expected `globalSeqNo` (the node restarted and its recording
@@ -238,14 +241,9 @@ which is unit-tested directly.
   the bound, so an open, attached, stalled image would otherwise go unnoticed. A replay that makes no
   progress for 5 s (`REPLAY_STALL_TIMEOUT_MS`), or whose image never attaches, is requested again. A
   resume is retried by re-anchoring through `requestResume()`, so the anchor check above still applies.
-- **Chain changes.** The replayer resolves the recording chain on every request and may drop a stale
-  span, so a segment index can refer to a different recording on retry. `Replaying` carries the
-  `recordingId`; if it differs from the one the client saw for that index, the client restarts the walk
-  from segment 0 (spec **R-3**).
 
-`ClusterStreamClient` reads an archive's recorded segments directly where no replayer is available: each
-historical segment in full, then the last, possibly still-recording, segment without a bound, so one
-image delivers history followed by live data.
+`ClusterStreamClient` reads an archive's recording directly where no replayer is available: from its start
+and without a bound, so one image delivers history followed by live data.
 
 ### 3.3 Gateway host
 
@@ -266,7 +264,7 @@ unit-tested directly.
   what it already has; a member that has recorded less than the relay has published is passed over.
   After every member has failed in a row it waits 500 ms before trying again.
 - **Restart.** A restarted relay starts a new local recording and relays the log from `globalSeqNo` 1, as
-  a member's full-log replay does, so the host's chain passes the §3.1 integrity check. The cost is the
+  a member's full-log replay does, so the host's new recording passes the §3.1 integrity check. The cost is the
   whole history over the network per restart.
 - **Local recording.** A local tap that refuses a frame is not spun on: the frame is offered again next
   cycle, and the member's replay waits under Aeron flow control. A local recording that stops, or makes no
@@ -279,12 +277,12 @@ unit-tested directly.
 A client whose façade has a `SnapshotListener` restores before it dispatches anything (`doc/snapshot.md`
 §7). It takes the newest file in its snapshot directory, asks its node's Replayer for that round's sequenced
 `SnapshotEnd`, reads the file's records if they match it, and resumes after the round's cut as it would after
-a gap. A file the log does not confirm gives way to the next older one; with none left, it walks from
-segment 0 as §3.2 describes.
+a gap. A file the log does not confirm gives way to the next older one; with none left, it walks the
+recording as §3.2 describes.
 
 - **Lost replay.** The records come from the local file, so no replay is in flight during a restore; the
   resume after it is an ordinary one.
-- **After the restore.** Every fallback that would walk from segment 0 resumes at the snapshot instead:
+- **After the restore.** Every fallback that would walk the recording resumes at the snapshot instead:
   the history before its cut is no longer this client's to replay.
 - **Torn file.** Files are written without an fsync. One an OS crash tore has no trailer, or one that does
   not match the end, and gives way to an older file.
@@ -364,11 +362,11 @@ frame on the tap exactly once and in order; the other reports what it lost.
   archive, optionally under load. `replay-bench.sh 400000` builds about 70 MB of history; it must converge
   in well under a second, and `NEVER CAUGHT UP` indicates a replay stall (§3.2), not a slow machine.
 - **`replayer-restart-test.sh`**: kills member 0's `SequencerServer` under a caught-up client and checks
-  that the client fails fast and that a fresh cold start walks a real two-recording chain (§3.2).
+  that the client fails fast and that a fresh cold start is served from the node's new recording alone (§3.1).
 - **`failover-test.sh`**: a leader kill with a replay consumer and the confirmed-ingress check of §5.
 - **`gateway-host-test.sh`**: a gateway host whose relay reads the leader, which is then killed. A
   `confirm` producer on the host must see every frame exactly once, in order, and the relay must move to
-  another member; the host is then restarted, and a cold start there must walk its two-recording chain
+  another member; the host is then restarted, and a cold start there must catch up from its new recording
   (§3.3).
 - **`snapshot-test.sh`**: the `TestGateway` pair on a three-node cluster with snapshot rounds every 2 s.
   The standby restarts and restores, the active instance is killed and the restored one takes over, the

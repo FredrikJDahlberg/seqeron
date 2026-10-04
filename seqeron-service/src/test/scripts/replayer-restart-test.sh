@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# replayer-restart-test.sh — an app running through its own node's restart, and a resume/walk crossing a
-# genuine recording rotation (where findings 2, 4 and 5 live). failover-test.sh only cold-starts a FRESH
+# replayer-restart-test.sh — an app running through its own node's restart, and a cold start across a
+# genuine recording rotation. failover-test.sh only cold-starts a FRESH
 # client after a leader kill against a node whose own tap recording was never rotated; gap-recovery-test.sh
 # deliberately keeps its consumer's own member (0) alive throughout. Neither restarts the consumer's OWN
 # node. This script does, against real Aeron/Archive processes — not fabricated frames (that
@@ -16,19 +16,15 @@
 # against a dead driver — the same invariant chaos-runner.sh's assert_died_on_driver_loss checks, asserted
 # here directly rather than as one random outcome among many. Member 0 is restarted: with no snapshots,
 # recovery is a full-log replay onto a BRAND NEW tap publication/recording, leaving the pre-restart recording
-# as a real, stopped, cold-start-walk segment rather than the current active one. A fresh client (same
-# clientId) must then walk that real 2-recording chain — segment 0 the old recording, segment 1 the new one —
-# the live boundary case ReplayerService.serveReplay/ReplayRecordings.stitch and the 2026-08-10
-# recordingId-echo hardening exist for, exercised here for real rather than via hand-fabricated Replaying
-# replies.
+# stopped beside it. A fresh client (same clientId) must then catch up from the new recording alone: it
+# starts at globalSeqNo 1 and holds the whole log, so the old one is never served.
 #
 # Java only — no C++ binary is built or launched: the backlog is
 # ClusterProbe submit and the client is ClusterProbe follow, which attaches to the member's own media
 # driver, so this script needs no standalone aeronmd either.
 #
 # PASS iff the first client exits within the driver-loss grace window when its node dies, the node comes
-# back, and the fresh client's cold-start walk is served (at least) two segments naming two distinct
-# recordingIds.
+# back on a new recording, and every replay served to the fresh client is of that recording.
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -52,12 +48,12 @@ rm -rf "$LOG_DIR"; mkdir -p "$LOG_DIR"
 
 JAVA_OPTS=("${SEQERON_JAVA_OPTS[@]}")
 BASE_DIR="${TMP_DIR}/seqeron-seqfo"
-CLUSTER_MEMBERS="$(cluster_members_string 3)"
+CLUSTER_HOSTS="localhost,localhost,localhost"
 
 start_seq() {  # start_seq <memberId> <logfile>
   local m="$1" log="$2"
   java "${JAVA_OPTS[@]}" -Dsequencer.memberId="$m" -Dsequencer.baseDir="$BASE_DIR" \
-       -Dsequencer.clusterMembers="$CLUSTER_MEMBERS" -jar "$JAR" > "$log" 2>&1 &
+       -Dsequencer.hosts="$CLUSTER_HOSTS" -jar "$JAR" > "$log" 2>&1 &
   SEQ_PIDS[$m]=$!
 }
 start_client() {  # start_client <logfile>
@@ -136,17 +132,20 @@ else
     start_client "$CLIENT_LOG"
     echo "started fresh client $CLIENT_ID (cold start) after member $CN's own restart"
     if wait_for "following live" "$CLIENT_LOG" $((APP_CATCHUP_TIMEOUT_SECS * 2)) \
-         "fresh client $CLIENT_ID to catch up across the rotated chain"; then
-      SEGMENTS=$(grep -c "replay for client $CLIENT_ID: segment" "$RESTART_LOG")
-      RECORDINGS=$(grep "replay for client $CLIENT_ID: segment" "$RESTART_LOG" \
-        | grep -oE "recording [0-9]+" | sort -u | wc -l | tr -d ' ')
-      echo "  segments served to client $CLIENT_ID : $SEGMENTS"
-      echo "  distinct recordingIds among them    : $RECORDINGS"
-      if [[ "$SEGMENTS" -ge 2 && "$RECORDINGS" -ge 2 ]]; then
-        echo "fresh client $CLIENT_ID walked a genuine multi-recording chain and converged"
+         "fresh client $CLIENT_ID to catch up across the rotated recording"; then
+      OLD_RECORDING=$(grep -oE "tap recording [0-9]+ live" "$LOG_DIR/seq-$CN.log" | grep -oE "[0-9]+")
+      NEW_RECORDING=$(grep -oE "tap recording [0-9]+ live" "$RESTART_LOG" | grep -oE "[0-9]+")
+      REPLAYS=$(grep -c "replay for client $CLIENT_ID: recording" "$RESTART_LOG")
+      OTHER=$(grep "replay for client $CLIENT_ID: recording" "$RESTART_LOG" \
+        | grep -vc "recording $NEW_RECORDING ")
+      echo "  recording before / after the restart : $OLD_RECORDING / $NEW_RECORDING"
+      echo "  replays served to client $CLIENT_ID      : $REPLAYS"
+      echo "  of which not of the new recording    : $OTHER"
+      if [[ -n "$NEW_RECORDING" && "$NEW_RECORDING" != "$OLD_RECORDING" && "$REPLAYS" -ge 1 && "$OTHER" == "0" ]]; then
+        echo "fresh client $CLIENT_ID caught up from the restarted node's new recording alone"
         PASS=1
       else
-        echo "FAIL: walk did not cross a real 2-recording chain (segments=$SEGMENTS recordings=$RECORDINGS)"
+        echo "FAIL: expected every replay of the new recording $NEW_RECORDING (replays=$REPLAYS other=$OTHER)"
       fi
     else
       echo "FAIL: fresh client $CLIENT_ID never caught up"

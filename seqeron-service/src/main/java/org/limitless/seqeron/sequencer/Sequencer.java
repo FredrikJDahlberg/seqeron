@@ -67,7 +67,7 @@ public final class Sequencer {
     static final long GATEWAY_ACTIVATION_TIMEOUT_MS = 5 * FrameLayer.CLUSTER_HEARTBEAT_INTERVAL_MS;
 
     /** {@link #GATEWAY_ACTIVATION_TIMEOUT_MS} in consensus time, which is epoch nanoseconds. */
-    static final long GATEWAY_ACTIVATION_TIMEOUT_NS = 5 * FrameLayer.CLUSTER_HEARTBEAT_INTERVAL_NS;
+    static final long GATEWAY_ACTIVATION_TIMEOUT_NS = TimeUnit.MILLISECONDS.toNanos(GATEWAY_ACTIVATION_TIMEOUT_MS);
 
     /** Core's retired {@code payloadId} (spec §6.1), refused on ingress so a stale producer fails loudly. */
     private static final int RETIRED_CORE_ID = 1;
@@ -266,7 +266,7 @@ public final class Sequencer {
             return reject("length " + length + " is above the " + FrameLayer.MAX_INGRESS_LENGTH +
                           "-byte maximum framing");
         }
-           if (msgHeaderDecoder.version() != MessageHeaderDecoder.SCHEMA_VERSION) {
+        if (msgHeaderDecoder.version() != MessageHeaderDecoder.SCHEMA_VERSION) {
             return reject("version " + msgHeaderDecoder.version() + " is not " +
                           MessageHeaderDecoder.SCHEMA_VERSION);
         }

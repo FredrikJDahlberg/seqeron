@@ -225,7 +225,7 @@ delivered_of() {   # last in-order delivered count reported by node $1's observe
 
 REPLAY_DECISIONS="$("${COMPOSE[@]}" logs --no-color "node-${LEADER}" 2>/dev/null \
                     | grep "replay for client ${COLD_CLIENT_ID}:")"
-SEGMENTS=$(printf '%s' "${REPLAY_DECISIONS}" | grep -c . )
+REPLAYS=$(printf '%s' "${REPLAY_DECISIONS}" | grep -c . )
 REPLAY_BYTES=$(printf '%s' "${REPLAY_DECISIONS}" | tail -1 | grep -o '\[0,[0-9]*)' | grep -o '[0-9]*)' | tr -d ')')
 REPLAY_BYTES="${REPLAY_BYTES:-0}"
 SUBMITTED=$(grep -c "submitted .* ProbeMarker(s)" "${LOG_DIR}/load.log" 2>/dev/null)
@@ -237,13 +237,13 @@ echo "leader tenures                  : ${TENURES}"
 echo "failovers completed             : ${FAILOVERS}/${ROUNDS}"
 echo "ProbeMarkers submitted (>=)     : ${SUBMITTED}"
 echo "cold client caught up           : ${CAUGHT}"
-echo "replay segments to client ${COLD_CLIENT_ID}     : ${SEGMENTS}"
+echo "replays to client ${COLD_CLIENT_ID}             : ${REPLAYS}"
 echo "replayed history bytes          : ${REPLAY_BYTES}"
 
 PASS=1
 [[ "${FAILOVERS}" -eq "${ROUNDS}" ]] || { echo "FAIL: only ${FAILOVERS}/${ROUNDS} failovers"; PASS=0; }
 [[ "${CAUGHT}" == "1" ]] || { echo "FAIL: cold client never caught up"; PASS=0; }
-[[ "${SEGMENTS}" -ge 1 ]] || { echo "FAIL: no replay segment served to the cold client"; PASS=0; }
+[[ "${REPLAYS}" -ge 1 ]] || { echo "FAIL: no replay served to the cold client"; PASS=0; }
 [[ "${REPLAY_BYTES}" -gt 100000 ]] \
     || { echo "FAIL: replayed only ${REPLAY_BYTES} bytes — history is too thin to be evidence"; PASS=0; }
 

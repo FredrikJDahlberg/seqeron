@@ -58,7 +58,7 @@ class ReplaySlotAllocatorTest {
     void pollPendingRefusesAtCapacity() {
         final ReplaySlotAllocator allocator = new ReplaySlotAllocator(1, TTL_MS);
         allocator.activate(1, 100, 0);
-        allocator.enqueue(2, /*requestId=*/1, -1, 500);
+        allocator.enqueue(2, /*requestId=*/1, 500);
 
         assertNull(allocator.pollPending());
         assertEquals(1, allocator.pendingCount(), "a refused poll must not consume the request");
@@ -69,14 +69,13 @@ class ReplaySlotAllocatorTest {
     void pollPendingReturnsRequestsInFifoOrderOnceCapacityFrees() {
         final ReplaySlotAllocator allocator = new ReplaySlotAllocator(1, TTL_MS);
         allocator.activate(1, 100, 0);
-        allocator.enqueue(2, /*requestId=*/77, -1, 500);
-        allocator.enqueue(3, /*requestId=*/78, 0, 0);
+        allocator.enqueue(2, /*requestId=*/77, 500);
+        allocator.enqueue(3, /*requestId=*/78, 0);
 
         allocator.supersede(1); // frees the one slot
 
         final ReplaySlotAllocator.PendingRequest first = allocator.pollPending();
         assertEquals(2, first.clientId());
-        assertEquals(-1, first.segmentIndex());
         assertEquals(500, first.fromPosition());
         // The reply sent when this is finally served must name the request that was queued, not the
         // client's latest — the client discards a reply carrying any other requestId.
@@ -98,8 +97,8 @@ class ReplaySlotAllocatorTest {
     @DisplayName("pollPending does not itself consume capacity — only activate() does")
     void pollPendingDoesNotConsumeCapacityByItself() {
         final ReplaySlotAllocator allocator = new ReplaySlotAllocator(1, TTL_MS);
-        allocator.enqueue(1, /*requestId=*/1, -1, 0);
-        allocator.enqueue(2, /*requestId=*/1, -1, 0);
+        allocator.enqueue(1, /*requestId=*/1, 0);
+        allocator.enqueue(2, /*requestId=*/1, 0);
 
         final ReplaySlotAllocator.PendingRequest first = allocator.pollPending();
         assertEquals(1, first.clientId());
@@ -120,9 +119,9 @@ class ReplaySlotAllocatorTest {
         // A queued client resends every ~500ms until it is served. Appending each one grew the queue for
         // the whole of a node's cold start (three co-located apps against a cap of two, so one is always
         // pending) and left entries that start replays the client has long moved past.
-        allocator.enqueue(2, /*requestId=*/1, 0, 0);
-        allocator.enqueue(2, /*requestId=*/2, 0, 0);
-        allocator.enqueue(2, /*requestId=*/3, 0, 0);
+        allocator.enqueue(2, /*requestId=*/1, 0);
+        allocator.enqueue(2, /*requestId=*/2, 0);
+        allocator.enqueue(2, /*requestId=*/3, 0);
 
         assertEquals(1, allocator.pendingCount(), "one entry per client, however often it resends");
 
@@ -135,10 +134,10 @@ class ReplaySlotAllocatorTest {
     void reQueueingKeepsTheClientsPlaceInLine() {
         final ReplaySlotAllocator allocator = new ReplaySlotAllocator(1, TTL_MS);
         allocator.activate(1, 100, 0);
-        allocator.enqueue(2, /*requestId=*/1, 0, 0);
-        allocator.enqueue(3, /*requestId=*/1, 0, 0);
+        allocator.enqueue(2, /*requestId=*/1, 0);
+        allocator.enqueue(3, /*requestId=*/1, 0);
 
-        allocator.enqueue(2, /*requestId=*/2, 0, 0); // client 2's resend while it waits
+        allocator.enqueue(2, /*requestId=*/2, 0); // client 2's resend while it waits
 
         // Sending it to the back on every resend would starve a client that resends on a timer.
         allocator.supersede(1);
@@ -149,8 +148,8 @@ class ReplaySlotAllocatorTest {
     @DisplayName("cancelPending drops only the named client's queued request")
     void cancelPendingDropsOnlyThatClientsQueuedRequest() {
         final ReplaySlotAllocator allocator = new ReplaySlotAllocator(2, TTL_MS);
-        allocator.enqueue(2, /*requestId=*/1, 0, 0);
-        allocator.enqueue(3, /*requestId=*/1, 0, 0);
+        allocator.enqueue(2, /*requestId=*/1, 0);
+        allocator.enqueue(3, /*requestId=*/1, 0);
 
         // Client 2 re-requested, found capacity, and is being served directly — its queued entry is now
         // stale. Left behind it would be drained into a second replay for a client that never asked.
@@ -164,7 +163,7 @@ class ReplaySlotAllocatorTest {
     @DisplayName("cancelPending for a client with nothing queued is a no-op")
     void cancelPendingForUnknownClientIsNoOp() {
         final ReplaySlotAllocator allocator = new ReplaySlotAllocator(2, TTL_MS);
-        allocator.enqueue(2, /*requestId=*/1, 0, 0);
+        allocator.enqueue(2, /*requestId=*/1, 0);
 
         allocator.cancelPending(99);
 

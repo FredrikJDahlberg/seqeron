@@ -53,7 +53,7 @@ rm -rf "$LOG_DIR"; mkdir -p "$LOG_DIR"
 JAVA_OPTS=("${SEQERON_JAVA_OPTS[@]}")
 BASE_DIR="${TMP_DIR}/seqeron-seqfo"
 SNAPSHOT_DIR="${TMP_DIR}/seqeron-snapshot-test"   # each instance's own files, kept across its restarts
-CLUSTER_MEMBERS="$(cluster_members_string 3)"
+CLUSTER_HOSTS="localhost,localhost,localhost"
 
 declare -a SEQ_PIDS
 GW_PIDS=("" "")          # by member: GW-T-A on 0, GW-T-B on 1
@@ -71,7 +71,7 @@ check() {  # check <description> <command...>
 start_seq() {  # start_seq <memberId>
   local m="$1"
   java "${JAVA_OPTS[@]}" -Dsequencer.memberId="$m" -Dsequencer.baseDir="$BASE_DIR" \
-       -Dsequencer.clusterMembers="$CLUSTER_MEMBERS" -jar "$JAR" > "$LOG_DIR/seq-$m.log" 2>&1 &
+       -Dsequencer.hosts="$CLUSTER_HOSTS" -jar "$JAR" > "$LOG_DIR/seq-$m.log" 2>&1 &
   SEQ_PIDS[$m]=$!
 }
 

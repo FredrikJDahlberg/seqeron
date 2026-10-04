@@ -684,7 +684,7 @@ no header composite and are never sequenced or recorded.
 
 | message (id) | direction | meaning |
 | --- | --- | --- |
-| `ReplayRequest` (6) | client → replayer | replay history. `segmentIndex >= 0`: replay that segment of the recording chain (one recording per leader tenure) from position 0. `segmentIndex < 0`: resume the active recording at `fromPosition` |
+| `ReplayRequest` (6) | client → replayer | replay the active recording from its start (`fromPosition` = `FROM_START`), or resume it at `fromPosition` |
 | `Replaying` (7) | replayer → client | attach to `replaySessionId` on stream 201 and follow it until `catchUpPosition` |
 | `ReplayPending` (8) | replayer → client | all replay slots are busy; wait at the gap and do not advance past it |
 | `ReplayComplete` (9) | client → replayer | caught up; free the slot now instead of at the idle timeout |
@@ -697,17 +697,20 @@ no header composite and are never sequenced or recorded.
 - **R-1.** `requestId` identifies the current request. The client increments it on every send,
   including an unchanged resend, and the replayer echoes it. A client MUST ignore a reply whose
   `requestId` is not its current one.
-- **R-2.** `NO_REPLAY_NEEDED` ends a walk only when `recordingId == -1`. With any other `recordingId` it
-  means only that the segment is empty; the client requests the next one.
-- **R-3.** `recordingId` detects a change in the recording chain. The replayer resolves the chain on
-  every request and may drop a stale span. A client MUST remember the `recordingId` it last received for
-  its current index and, on a mismatch, restart the walk from segment 0.
-- **R-4.** The slot timeout is an idle timeout, reset by `ReplayHeartbeat`. A replay has no time limit.
-- **R-5.** `clientId` is unique among a replayer's clients. Two processes sharing one supersede each
+- **R-2.** `NO_REPLAY_NEEDED` means nothing is to be replayed from where the request asked. For
+  `FROM_START` the recording holds nothing yet and the client is at the tip. For a position, that position
+  is past the recording's tip, before its start, or not a frame boundary in it: the recording changed
+  under the client. A client that resumed because of a hole MUST then replay from the start.
+- **R-3.** The slot timeout is an idle timeout, reset by `ReplayHeartbeat`. A replay has no time limit.
+- **R-4.** `clientId` is unique among a replayer's clients. Two processes sharing one supersede each
   other's replays, and neither catches up. The replayer detects this from `requestId` stepping backwards
   (at least three steps within 10 s; a restart is one) and sends `ReplayClientIdInUse` to the id, at most
   once per 10 s window. It cannot tell the two apart, so both receive it, and a client that receives it for
   its own `clientId` MUST stop rather than hold.
+
+The replayer serves only its node's active tap recording. The cluster takes no snapshots, so a node's
+every start replays the log from `globalSeqNo` 1 into a new recording: the active one alone holds the
+whole log, and an older one is a prefix of it.
 
 The client detects completion by reaching `catchUpPosition`, not by the replay image closing: a
 bounded replay of an active recording does not close its image at the bound.
@@ -722,8 +725,8 @@ encoded length is 8 + block. None has var-data or repeating groups.
 
 | message | id | block | fields |
 | --- | --- | --- | --- |
-| `ReplayRequest` | 6 | 24 | `clientId` int32, `requestId` int64, `fromPosition` int64, `segmentIndex` int32 |
-| `Replaying` | 7 | 36 | `clientId` int32, `requestId` int64, `replaySessionId` int64, `catchUpPosition` int64, `recordingId` int64 |
+| `ReplayRequest` | 6 | 20 | `clientId` int32, `requestId` int64, `fromPosition` int64 |
+| `Replaying` | 7 | 28 | `clientId` int32, `requestId` int64, `replaySessionId` int64, `catchUpPosition` int64 |
 | `ReplayPending` | 8 | 12 | `clientId` int32, `requestId` int64 |
 | `ReplayComplete` | 9 | 4 | `clientId` int32 |
 | `ReplayHeartbeat` | 20 | 4 | `clientId` int32 |
@@ -737,13 +740,11 @@ encoded length is 8 + block. None has var-data or repeating groups.
 - `requestId`: echoed in `Replaying`, `ReplayPending`, `ReplayUnavailable` and `SnapshotLocation`.
   `ReplayComplete` and `ReplayHeartbeat` have none, because nothing answers them, and
   `ReplayClientIdInUse` has none because it concerns the id, not a request.
-- `segmentIndex`, `fromPosition`: as in `ReplayRequest` above; `fromPosition` is read only when
-  `segmentIndex < 0`.
+- `fromPosition`: the position to resume the active recording at, or `FROM_START` = −1 for its start.
 - `replaySessionId`: the Aeron replay session to attach to on stream 201, or `NO_REPLAY_NEEDED` = −1
   (`Aeron.NULL_VALUE`). There is no separate message for "nothing to replay".
 - `catchUpPosition`: where the client stops following the replay and switches to the live tap,
   de-duplicating on `globalSeqNo`.
-- `recordingId`: the recording the requested segment resolved to, or −1 when the chain is exhausted.
 - `sourceId`, `round`: the queried source and the round of the snapshot file the client holds. The answer's
   `round` is that round when the index holds the source's `SnapshotEnd` for it, else −1.
 - `formatVersion`, `recordCount`, `length`, `crc32c`: that `SnapshotEnd`'s, which the client checks its
@@ -751,16 +752,10 @@ encoded length is 8 + block. None has var-data or repeating groups.
 - `asOfGlobalSeqNo`, `asOfPosition`: the round's cut and the position of its `SnapshotStarted` in the
   active recording.
 
-The two sentinels are independent. `replaySessionId == NO_REPLAY_NEEDED` with `recordingId >= 0`
-means that segment is empty: request the next. With `recordingId == -1` it means the chain is
-exhausted: the walk ends and the client is caught up. A client that confuses the two stops replaying
-with history still ahead of it.
-
 **Slot limits.** A replayer serves at most `MAX_CONCURRENT_REPLAYS` = 4 replays at once and answers
 `ReplayPending` beyond that. It reclaims a slot idle for `REPLAY_SLOT_TTL_MS` = 5000 ms, ten missed
 heartbeats. A client sends `ReplayHeartbeat` about every 500 ms while its replay image is running.
-`ReplayComplete` frees a slot immediately; a cold-start walk does not send it, because each segment
-request supersedes the previous one and frees its slot.
+A client sends `ReplayComplete` once a replay reaches its bound, which frees the slot immediately.
 
 > **Maximum pending wait = `MAX_CONCURRENT_REPLAYS` × `REPLAY_SLOT_TTL_MS` = 20 000 ms**: the worst
 > case, in which every slot is held by a dead client and the slots are reclaimed one timeout apart. A

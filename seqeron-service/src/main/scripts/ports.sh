@@ -2,9 +2,7 @@
 # bash mirror of SequencerServer's PORT_BASE + memberId*10 + offset scheme (see
 # SequencerServer.java's class Javadoc, PortLayout.hpp on the C++ side, and the
 # "Port layout" section — the source of truth all three cite). Meant to be sourced, not
-# executed: every script that built a CLUSTER_MEMBERS string used to hand-type the same
-# three-line block, which is how two processes' egress-port defaults once drifted onto the
-# same value (9340+memberId) without anyone noticing.
+# executed.
 
 # The stride is fixed; the base is a deployment knob read by all three mirrors (this file,
 # PortLayout.java, PortLayout.hpp). Set it identically for every seqeron process on every host, or a
@@ -27,27 +25,10 @@ fi
 cluster_member_port_base() { echo $(( CLUSTER_PORT_BASE + $1 * CLUSTER_PORT_STRIDE )); }
 archive_port()  { echo $(( $(cluster_member_port_base "$1") + 1 )); }
 ingress_port()  { echo $(( $(cluster_member_port_base "$1") + 2 )); }
-member_port()   { echo $(( $(cluster_member_port_base "$1") + 3 )); }
-log_port()      { echo $(( $(cluster_member_port_base "$1") + 4 )); }
-transfer_port() { echo $(( $(cluster_member_port_base "$1") + 5 )); }
-
-# Builds the Aeron clusterMembers string for a nodeCount-member cluster — the bash mirror of
-# SequencerServer.buildClusterMembers. The host argument may carry a literal {id}, replaced by each
-# member's id, for a topology giving every member its own host (docker/compose.yml does).
-# Usage: cluster_members_string 3 [host]   e.g. cluster_members_string 3 'node-{id}'
-cluster_members_string() {
-    local node_count="$1" host_template="${2:-localhost}" out="" id host
-    for (( id = 0; id < node_count; id++ )); do
-        host="${host_template//\{id\}/${id}}"
-        out+="${id},${host}:$(ingress_port "${id}"),${host}:$(member_port "${id}"),"
-        out+="${host}:$(log_port "${id}"),${host}:$(transfer_port "${id}"),${host}:$(archive_port "${id}")|"
-    done
-    echo "${out}"
-}
 
 # Builds the ingressEndpoints string clusterctl takes (CLUSTERCTL_INGRESS_ENDPOINTS) for a
-# nodeCount-member cluster: "0=host:9302,1=host:9312,…". The host argument takes {id} the same way
-# cluster_members_string's does. Usage: ingress_endpoints_string 3 [host]
+# nodeCount-member cluster: "0=host:9302,1=host:9312,…". The host argument may carry a literal {id},
+# replaced by each member's id. Usage: ingress_endpoints_string 3 [host]   e.g. 'node-{id}'
 ingress_endpoints_string() {
     local node_count="$1" host_template="${2:-localhost}" out="" id host
     for (( id = 0; id < node_count; id++ )); do

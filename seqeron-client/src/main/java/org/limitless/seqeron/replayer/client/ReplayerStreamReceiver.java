@@ -110,7 +110,7 @@ public final class ReplayerStreamReceiver implements AutoCloseable {
 
     /**
      * Subscribes the tap and control streams, opens the request publication and the convergence counter,
-     * and requests the cold-start replay from segment 0, or the snapshot to restore first.
+     * and requests the cold-start replay from the recording's start, or the snapshot to restore first.
      * @param aeron    client sharing the co-located node's media driver
      * @param memberId this app's node, to label the counter
      */
@@ -263,15 +263,14 @@ public final class ReplayerStreamReceiver implements AutoCloseable {
     /** The recovery state machine's transport. Private, so a consumer cannot drive the replay protocol. */
     private final class Actions implements ReplayerRecoveryActions {
         @Override
-        public void sendReplayRequest(final long requestId, final int segmentIndex, final long fromPosition) {
+        public void sendReplayRequest(final long requestId, final long fromPosition) {
             if (requestPublication == null || !requestPublication.isConnected()) {
                 return; // Replayer not up yet; the resend timer retries
             }
             replayRequest.wrapAndApplyHeader(requestBuffer, 0, requestHeader)
                          .clientId(clientId)
                          .requestId(requestId)
-                         .fromPosition(fromPosition)
-                         .segmentIndex(segmentIndex);
+                         .fromPosition(fromPosition);
             requestPublication.offer(requestBuffer, 0,
                                      MessageHeaderEncoder.ENCODED_LENGTH + replayRequest.encodedLength());
         }

@@ -2,7 +2,6 @@ package org.limitless.seqeron.sequencer;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -14,7 +13,7 @@ class SequencerServerTest {
     @Test
     void singleNodeMembersMatchDocumentedLayout() {
         assertEquals("0,localhost:9302,localhost:9303,localhost:9304,localhost:9305,localhost:9301|",
-                     SequencerServer.buildClusterMembers(1));
+                     SequencerServer.buildClusterMembers(List.of("localhost")));
     }
 
     @Test
@@ -42,7 +41,7 @@ class SequencerServerTest {
         assertEquals("0,localhost:9302,localhost:9303,localhost:9304,localhost:9305,localhost:9301|"
                          + "1,localhost:9312,localhost:9313,localhost:9314,localhost:9315,localhost:9311|"
                          + "2,localhost:9322,localhost:9323,localhost:9324,localhost:9325,localhost:9321|",
-                     SequencerServer.buildClusterMembers(3));
+                     SequencerServer.buildClusterMembers(List.of("localhost", "localhost", "localhost")));
     }
 
     @Test
@@ -56,34 +55,29 @@ class SequencerServerTest {
     @Test
     void hostListMustNameThisMember() {
         final List<String> three = List.of("h0", "h1", "h2");
-        assertEquals(three, SequencerServer.resolveHosts("h0,h1,h2", false, true, List.of(), 2));
+        assertEquals(three, SequencerServer.resolveHosts("h0,h1,h2", true, List.of(), 2));
         assertThrows(IllegalArgumentException.class,
-                     () -> SequencerServer.resolveHosts("h0,h1", false, true, List.of(), 2));
+                     () -> SequencerServer.resolveHosts("h0,h1", true, List.of(), 2));
         assertThrows(IllegalArgumentException.class,
-                     () -> SequencerServer.resolveHosts("h0,h1", false, true, List.of(), -1));
+                     () -> SequencerServer.resolveHosts("h0,h1", true, List.of(), -1));
     }
 
     @Test
-    void hostListPropertyRefusesAnExplicitLayout() {
-        assertThrows(IllegalArgumentException.class,
-                     () -> SequencerServer.resolveHosts("h0,h1", true, true, List.of(), 0));
-    }
-
-    @Test
-    void environmentHostsApplyOnlyWithoutALayoutProperty() {
+    void propertyWinsOverEnvironmentWhichWinsOverOneLocalMember() {
         final List<String> env = List.of("e0", "e1");
-        assertEquals(env, SequencerServer.resolveHosts(null, false, true, env, 1));
-        assertEquals(List.of("h0"), SequencerServer.resolveHosts("h0", false, true, env, 0));
-        assertNull(SequencerServer.resolveHosts(null, true, false, env, 0));
-        assertNull(SequencerServer.resolveHosts(null, false, false, List.of(), 0));
+        assertEquals(List.of("h0"), SequencerServer.resolveHosts("h0", true, env, 0));
+        assertEquals(env, SequencerServer.resolveHosts(null, true, env, 1));
+        assertEquals(List.of("localhost"), SequencerServer.resolveHosts(null, false, List.of(), 0));
+        assertThrows(IllegalArgumentException.class,
+                     () -> SequencerServer.resolveHosts(null, false, List.of(), 1));
     }
 
     @Test
     void multiMemberHostListRequiresABaseDir() {
         assertThrows(IllegalArgumentException.class,
-                     () -> SequencerServer.resolveHosts("h0,h1", false, false, List.of(), 0));
+                     () -> SequencerServer.resolveHosts("h0,h1", false, List.of(), 0));
         assertThrows(IllegalArgumentException.class,
-                     () -> SequencerServer.resolveHosts(null, false, false, List.of("e0", "e1"), 0));
-        assertEquals(List.of("h0"), SequencerServer.resolveHosts("h0", false, false, List.of(), 0));
+                     () -> SequencerServer.resolveHosts(null, false, List.of("e0", "e1"), 0));
+        assertEquals(List.of("h0"), SequencerServer.resolveHosts("h0", false, List.of(), 0));
     }
 }

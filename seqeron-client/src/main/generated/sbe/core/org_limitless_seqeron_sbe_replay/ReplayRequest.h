@@ -116,7 +116,7 @@ private:
     }
 
 public:
-    static constexpr std::uint16_t SBE_BLOCK_LENGTH = static_cast<std::uint16_t>(24);
+    static constexpr std::uint16_t SBE_BLOCK_LENGTH = static_cast<std::uint16_t>(20);
     static constexpr std::uint16_t SBE_TEMPLATE_ID = static_cast<std::uint16_t>(6);
     static constexpr std::uint16_t SBE_SCHEMA_ID = static_cast<std::uint16_t>(212);
     static constexpr std::uint16_t SBE_SCHEMA_VERSION = static_cast<std::uint16_t>(0);
@@ -174,7 +174,7 @@ public:
 
     SBE_NODISCARD static SBE_CONSTEXPR std::uint16_t sbeBlockLength() SBE_NOEXCEPT
     {
-        return static_cast<std::uint16_t>(24);
+        return static_cast<std::uint16_t>(20);
     }
 
     SBE_NODISCARD static SBE_CONSTEXPR std::uint64_t sbeBlockAndHeaderLength() SBE_NOEXCEPT
@@ -504,69 +504,6 @@ public:
         return *this;
     }
 
-    SBE_NODISCARD static const char *segmentIndexMetaAttribute(const MetaAttribute metaAttribute) SBE_NOEXCEPT
-    {
-        switch (metaAttribute)
-        {
-            case MetaAttribute::PRESENCE: return "required";
-            default: return "";
-        }
-    }
-
-    static SBE_CONSTEXPR std::uint16_t segmentIndexId() SBE_NOEXCEPT
-    {
-        return 20014;
-    }
-
-    SBE_NODISCARD static SBE_CONSTEXPR std::uint64_t segmentIndexSinceVersion() SBE_NOEXCEPT
-    {
-        return 0;
-    }
-
-    SBE_NODISCARD bool segmentIndexInActingVersion() SBE_NOEXCEPT
-    {
-        return true;
-    }
-
-    SBE_NODISCARD static SBE_CONSTEXPR std::size_t segmentIndexEncodingOffset() SBE_NOEXCEPT
-    {
-        return 20;
-    }
-
-    static SBE_CONSTEXPR std::int32_t segmentIndexNullValue() SBE_NOEXCEPT
-    {
-        return SBE_NULLVALUE_INT32;
-    }
-
-    static SBE_CONSTEXPR std::int32_t segmentIndexMinValue() SBE_NOEXCEPT
-    {
-        return INT32_C(-2147483647);
-    }
-
-    static SBE_CONSTEXPR std::int32_t segmentIndexMaxValue() SBE_NOEXCEPT
-    {
-        return INT32_C(2147483647);
-    }
-
-    static SBE_CONSTEXPR std::size_t segmentIndexEncodingLength() SBE_NOEXCEPT
-    {
-        return 4;
-    }
-
-    SBE_NODISCARD std::int32_t segmentIndex() const SBE_NOEXCEPT
-    {
-        std::int32_t val;
-        std::memcpy(&val, m_buffer + m_offset + 20, sizeof(std::int32_t));
-        return SBE_LITTLE_ENDIAN_ENCODE_32(val);
-    }
-
-    ReplayRequest &segmentIndex(const std::int32_t value) SBE_NOEXCEPT
-    {
-        std::int32_t val = SBE_LITTLE_ENDIAN_ENCODE_32(value);
-        std::memcpy(m_buffer + m_offset + 20, &val, sizeof(std::int32_t));
-        return *this;
-    }
-
 template<typename CharT, typename Traits>
 friend std::basic_ostream<CharT, Traits> & operator << (
     std::basic_ostream<CharT, Traits> &builder, const ReplayRequest &_writer)
@@ -594,10 +531,6 @@ friend std::basic_ostream<CharT, Traits> & operator << (
     builder << ", ";
     builder << R"("fromPosition": )";
     builder << +writer.fromPosition();
-
-    builder << ", ";
-    builder << R"("segmentIndex": )";
-    builder << +writer.segmentIndex();
 
     builder << '}';
 

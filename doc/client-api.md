@@ -91,7 +91,7 @@ restored cut once more; a passive gateway instance's activation is what it is fo
 `clientId` must be unique among the replicas on one node. Two replicas that share one supersede each
 other's replays, and neither ever catches up. The co-located `ReplayerService` notices within a couple of
 seconds: it logs the collision, sets the `seqeron_replayer_client_id_collision` counter (type id 5108) and
-tells both replicas (spec **R-5**), whose next `poll()` then throws — `IllegalStateException` in Java,
+tells both replicas (spec **R-4**), whose next `poll()` then throws — `IllegalStateException` in Java,
 `std::runtime_error` in C++ — as does a façade's `doWork()`. It cannot tell which replica was there
 first, so both stop. All calls belong to one thread.
 
@@ -382,9 +382,8 @@ Header-only C++ has no package-private, so what Java hides that way C++ puts in 
 a `detail/` directory beside the package it serves. **Nothing under a `detail` is API**, and a public
 signature that names one is a test seam. Don't build on them:
 
-- `replayer/client/detail`: `TapFaultInjector` (test harnesses only, to drop live tap frames and exercise
-  gap recovery; Java takes a `BooleanSupplier` on the same constructor instead), `ReplayerRecovery` and
-  `ReplayerRecoveryActions` (the seam the unit suites drive).
+- `replayer/client/detail`: `ReplayerRecovery` and `ReplayerRecoveryActions` (the seam the unit suites
+  drive).
 - `sequencer/client/detail/Transport.hpp`: `IngressTransport`/`EgressTransport` and their Aeron
   implementations, the seam `ClusterStreamSender`'s `connect` overloads take in tests.
 - `app/detail`: the blocks a façade assembles — `Session` (the cluster session, the tap, confirmed ingress

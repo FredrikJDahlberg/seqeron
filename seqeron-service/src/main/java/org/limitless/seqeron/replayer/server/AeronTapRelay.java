@@ -39,9 +39,6 @@ final class AeronTapRelay implements AutoCloseable {
     /** Stream the member's archive replays to this relay on, on an ephemeral port of its own. */
     static final int REPLAY_STREAM_ID = 206;
 
-    /** Control-response stream of this relay's session with a member's archive. */
-    private static final int ARCHIVE_CONTROL_RESPONSE_STREAM_ID = 122;
-
     /** How long one request to a member's archive may go unanswered; a dead member costs this much. */
     private static final long ARCHIVE_MESSAGE_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(1);
 
@@ -238,7 +235,7 @@ final class AeronTapRelay implements AutoCloseable {
                                               .controlRequestChannel("aeron:udp?endpoint=" + endpoint)
                                               .controlRequestStreamId(PortLayout.ARCHIVE_CONTROL_STREAM_ID)
                                               .controlResponseChannel("aeron:udp?endpoint=" + host + ":0")
-                                              .controlResponseStreamId(ARCHIVE_CONTROL_RESPONSE_STREAM_ID)
+                                              .controlResponseStreamId(NodeDriver.RELAY_ARCHIVE_RESPONSE_STREAM_ID)
                                               .messageTimeoutNs(ARCHIVE_MESSAGE_TIMEOUT_NS)
                                               .lock(NoOpLock.INSTANCE));
             startReplay();

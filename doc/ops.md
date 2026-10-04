@@ -128,11 +128,11 @@ The table below lists seqeron's own metrics.
 | `seqeron_replayer_pending_requests` | gauge | Current count of replay requests waiting for a free slot |
 | `seqeron_replayer_replays_served_total` | counter | Count of replays started since this node came up |
 | `seqeron_replayer_idle_ttl_reclaimed_total` | counter | Count of replay slots reclaimed by the idle-TTL backstop |
-| `seqeron_replayer_integrity_failure` | gauge | 1 once a tap recording failed the startup gseq-1 integrity check, else 0. Every recording in the node's chain is checked, not just the oldest: one that begins above 1 resumed mid-history, which is a hole at its join. Latched: `ready` never becomes 1 again for that process |
+| `seqeron_replayer_integrity_failure` | gauge | 1 once the active tap recording failed the startup gseq-1 integrity check, else 0. It alone is served, so one that begins above 1 cannot cover the log from the start. Latched: `ready` never becomes 1 again for that process |
 | `seqeron_replayer_control_replies_dropped_total` | counter | Count of control replies dropped rather than spun on because an app stopped draining the control stream. Each costs that app one resend interval, so the **rate** identifies a wedged replica — the absolute value does not |
-| `seqeron_replayer_client_id_collision` | gauge | 1 once two co-located apps were seen sharing one `SEQERON_REPLAYER_CLIENT_ID`, else 0. They stop each other's replays, so the Replayer tells both and both fail (spec R-5) |
+| `seqeron_replayer_client_id_collision` | gauge | 1 once two co-located apps were seen sharing one `SEQERON_REPLAYER_CLIENT_ID`, else 0. They stop each other's replays, so the Replayer tells both and both fail (spec R-4) |
 | `seqeron_replayer_snapshot_round` | gauge | Newest round whose `SnapshotEnd` this node's Replayer has indexed, per source; labelled `source` as well as `member` (`doc/snapshot.md` §5). Every participating source should follow the latest round; one that lags is missing rounds. Rebuilt from the recording after a restart, so it reappears once the index has caught up |
-| `seqeron_app_recovery_stalled` | gauge | 1 while this replica's recovery has dispatched nothing for 30s while not caught up, else 0. Also labelled `client`. It is holding, which is correct and safe — but it is not serving, and nothing else says so: the causes are a `ReplayUnavailable` refusal, a Replayer that never answers, and a hole this node's recording chain cannot cover. The replica's own fault line names which |
+| `seqeron_app_recovery_stalled` | gauge | 1 while this replica's recovery has dispatched nothing for 30s while not caught up, else 0. Also labelled `client`. It is holding, which is correct and safe — but it is not serving, and nothing else says so: the causes are a `ReplayUnavailable` refusal, a Replayer that never answers, and a hole this node's recording cannot cover. The replica's own fault line names which |
 
 ## Ports
 

@@ -280,7 +280,7 @@ languages:
 7. Switch to the live tap as a resume does.
 
 An instance that stops is fenced with `SNAPSHOT_UNRESTORABLE`, and a damaged file stays for the operator to
-remove (`doc/ops.md`). After a restore, each fallback that would walk the recording chain from segment 0
+remove (`doc/ops.md`). After a restore, each fallback that would walk the recording from its start
 instead resumes at the restored snapshot's `asOfPosition`, where the first frame is `R`, and drops every
 frame up to the last one dispatched. A completed restore is repeated only by a passive gateway instance's
 activation, which starts over at step 1.
@@ -357,8 +357,11 @@ Unit tests, in both languages where the code is:
 | the restore, its fall-backs to older files and to a walk, and a restart | `ReplayerRecoveryTest`, case for case across the languages |
 | restored state plus the tail equals full replay, under random replay faults and unconfirmed files | `ReplayerRecoveryPropertyTest` |
 
-`snapshot-test.sh` runs the `TestGateway` pair, each instance with its own directory kept across its
-restarts, through restores, a failover onto a restored instance and a passive activation from the file the
-instance kept while it served, on a three-node cluster, checking each restored state against the client
-traffic and every later round against it (A-7). Not covered: member failures, publisher changes mid-round in
-the property test, and an OS crash tearing a file, whose file side `SnapshotStoreTest` covers.
+`snapshot-test.sh` runs the `TestGateway` pair and a `TestApplication` replica per member on a three-node
+cluster, each instance with its own directory kept across its restarts. It drives the pair through restores,
+a failover onto a restored instance and a passive activation from the file the instance kept while it
+served; then a round started by `clusterctl request-snapshot`, a follower's replica restarting, and a cluster
+leader kill, after which the new leader's replica publishes rounds and the killed member's clients restore.
+It checks each restored state against the client traffic and every later round against it (A-7). Not
+covered: publisher changes mid-round in the property test, and an OS crash tearing a file, whose file side
+`SnapshotStoreTest` covers.

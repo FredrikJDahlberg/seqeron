@@ -4,7 +4,6 @@ import org.agrona.DirectBuffer;
 import org.agrona.MutableDirectBuffer;
 import org.agrona.concurrent.UnsafeBuffer;
 import org.limitless.seqeron.protocol.FrameLayer;
-import org.limitless.seqeron.protocol.SequencedFrameDecoder;
 import org.limitless.seqeron.sbe.frame.MessageHeaderEncoder;
 import org.limitless.seqeron.sbe.frame.SequencedEncoder;
 import org.limitless.seqeron.sbe.frame.SequencedSystemEncoder;
@@ -27,11 +26,10 @@ public final class SequencedEvents {
         final int frameLength = system ? encodeSystem(frame, sourceSessionId, id, body, offset, length)
                                        : encodePayload(frame, sourceSessionId, id, body, offset, length);
 
-        final SequencedFrameDecoder decoder = new SequencedFrameDecoder();
-        if (!decoder.wrap(frame, 0, frameLength)) {
+        final SequencedEvent event = new SequencedEvent();
+        if (!event.wrap(frame, 0, frameLength)) {
             throw new IllegalStateException("encoded frame did not read back as one");
         }
-        final SequencedEvent event = new SequencedEvent(decoder);
         event.set(0, 0);
         return event;
     }

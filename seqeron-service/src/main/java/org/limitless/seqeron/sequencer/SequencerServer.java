@@ -7,9 +7,7 @@ import io.aeron.cluster.ConsensusModule;
 import io.aeron.cluster.NanosecondClusterClock;
 import io.aeron.cluster.service.ClusteredServiceContainer;
 import io.aeron.driver.MediaDriver;
-import io.aeron.driver.ThreadingMode;
 import java.io.File;
-import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -18,6 +16,7 @@ import org.agrona.concurrent.IdleStrategy;
 import org.agrona.concurrent.NoOpLock;
 import org.agrona.concurrent.ShutdownSignalBarrier;
 import org.limitless.seqeron.protocol.PortLayout;
+import org.limitless.seqeron.replayer.server.NodeDriver;
 import org.limitless.seqeron.replayer.server.ReplayerServer;
 import org.limitless.seqeron.util.IdleStrategies;
 import org.limitless.seqeron.util.Logger;
@@ -41,13 +40,8 @@ import org.limitless.seqeron.util.Logger;
  * <pre>
  *   sequencer.memberId        — this node's Raft member ID (0, 1, or 2); default 0
  *   sequencer.hosts           — every member's host name, comma-separated in member-id order; generates
- *                               clusterMembers. Replaces nodeCount and clusterMembers, which it refuses.
- *                               Default SEQERON_HOSTS when neither of those is set. With more than one
- *                               member, sequencer.baseDir is required.
- *   sequencer.nodeCount       — cluster size, all on localhost; used to generate clusterMembers when that
- *                               property is not set explicitly; default 1
- *   sequencer.clusterMembers  — full clusterMembers string (Aeron format); overrides
- *                               nodeCount-based generation when set
+ *                               clusterMembers. Default SEQERON_HOSTS, else one member on localhost. With
+ *                               more than one member, sequencer.baseDir is required.
  *   sequencer.host            — hostname the archive control, ingress and replication channels bind to
  *                               and advertise; default this member's entry in sequencer.hosts, else
  *                               localhost
@@ -73,8 +67,6 @@ import org.limitless.seqeron.util.Logger;
 public final class SequencerServer {
     private static final String PROP_MEMBER_ID = "sequencer.memberId";
     private static final String PROP_HOSTS = "sequencer.hosts";
-    private static final String PROP_NODE_COUNT = "sequencer.nodeCount";
-    private static final String PROP_CLUSTER_MEMBERS = "sequencer.clusterMembers";
     private static final String PROP_HOST = "sequencer.host";
     private static final String PROP_BASE_DIR = "sequencer.baseDir";
     private static final String PROP_AERON_DIR = "sequencer.aeronDir";
@@ -83,29 +75,11 @@ public final class SequencerServer {
 
     private static final long DEFAULT_SESSION_TIMEOUT_MS = 1000;
 
-    /**
-     * Control-response stream of this member's own archive clients. Must not be 101, the cluster's IPC
-     * ingress stream, or archive replies misdecode as ingress; nor ReplayerServer's 120 on the same driver.
-     */
-    private static final int ARCHIVE_CONTROL_RESPONSE_STREAM_ID = 121;
-
-    /**
-     * Exit status of a node that stopped because it could no longer record its tap, or its Replayer's duty
-     * cycle died; restart it.
-     */
-    static final int EXIT_TAP_FATAL = 70;
-
-    /** Exit status when shutdown gave up waiting for the Replayer's wedged duty-cycle thread. */
-    static final int EXIT_SHUTDOWN_TIMEOUT = 71;
-
     public static void main(final String[] args) {
         final int memberId = Integer.getInteger(PROP_MEMBER_ID, 0);
-        final int nodeCount = Integer.getInteger(PROP_NODE_COUNT, 1);
-        final List<String> hosts = resolveHosts(
-            System.getProperty(PROP_HOSTS),
-            System.getProperty(PROP_CLUSTER_MEMBERS) != null || System.getProperty(PROP_NODE_COUNT) != null,
-            System.getProperty(PROP_BASE_DIR) != null, PortLayout.HOSTS, memberId);
-        final String host = System.getProperty(PROP_HOST, hosts == null ? PortLayout.DEFAULT_HOST : hosts.get(memberId));
+        final List<String> hosts = resolveHosts(System.getProperty(PROP_HOSTS),
+                                                System.getProperty(PROP_BASE_DIR) != null, PortLayout.HOSTS, memberId);
+        final String host = System.getProperty(PROP_HOST, hosts.get(memberId));
         final String baseDir =
             System.getProperty(PROP_BASE_DIR, System.getProperty("java.io.tmpdir") + "/seqeron-seq");
         final String aeronDir = System.getProperty(
@@ -113,30 +87,20 @@ public final class SequencerServer {
         final int archivePort = PortLayout.archivePort(memberId);
         final int ingressPort = PortLayout.ingressPort(memberId);
 
-        final String clusterMembers = hosts != null
-            ? buildClusterMembers(hosts)
-            : System.getProperty(PROP_CLUSTER_MEMBERS, buildClusterMembers(nodeCount));
+        final String clusterMembers = buildClusterMembers(hosts);
 
         final File archiveDir = new File(baseDir + "/archive-" + memberId);
         final File clusterDir = new File(baseDir + "/cluster-" + memberId);
 
         final Supplier<IdleStrategy> idleStrategySupplier = IdleStrategies.fromProperty(PROP_IDLE_STRATEGY);
-        final MediaDriver.Context driverCtx = new MediaDriver.Context()
-                                                  .aeronDirectoryName(aeronDir)
-                                                  .threadingMode(ThreadingMode.DEDICATED)
-                                                  .conductorIdleStrategy(idleStrategySupplier.get())
-                                                  .senderIdleStrategy(idleStrategySupplier.get())
-                                                  .receiverIdleStrategy(idleStrategySupplier.get())
-                                                  .ipcTermBufferLength(ReplayerServer.ipcTermBufferLength())
-                                                  .dirDeleteOnStart(true);
-        ReplayerServer.untetheredTimeouts(driverCtx);
+        final MediaDriver.Context driverCtx = NodeDriver.context(aeronDir, idleStrategySupplier);
 
         final AeronArchive.Context localArchiveCtx = new AeronArchive.Context()
                                                          .lock(NoOpLock.INSTANCE)
                                                          .controlRequestChannel(PortLayout.ARCHIVE_CONTROL_CHANNEL)
                                                          .controlRequestStreamId(PortLayout.ARCHIVE_CONTROL_STREAM_ID)
                                                          .controlResponseChannel(PortLayout.ARCHIVE_CONTROL_CHANNEL)
-                                                         .controlResponseStreamId(ARCHIVE_CONTROL_RESPONSE_STREAM_ID)
+                                                         .controlResponseStreamId(NodeDriver.SEQUENCER_ARCHIVE_RESPONSE_STREAM_ID)
                                                          .aeronDirectoryName(aeronDir);
 
         final Archive.Context archiveCtx =
@@ -215,37 +179,28 @@ public final class SequencerServer {
             Logger.info(Logger.CoreComponent.SequencerServer, memberId, "Shutdown complete");
         }
         if (fatal.get()) {
-            System.exit(EXIT_TAP_FATAL);
+            System.exit(NodeDriver.EXIT_FATAL);
         }
         if (!replayerStopped) {
-            System.exit(EXIT_SHUTDOWN_TIMEOUT);
+            System.exit(NodeDriver.EXIT_SHUTDOWN_TIMEOUT);
         }
     }
 
     /**
-     * This node's member hosts, or {@code null} when its layout comes from {@code clusterMembers}/{@code nodeCount}.
-     * {@code sequencer.hosts} wins; {@code SEQERON_HOSTS} applies only when no layout property is set.
+     * This node's member hosts: {@code sequencer.hosts}, else {@code SEQERON_HOSTS}, else one member on
+     * {@link PortLayout#DEFAULT_HOST}.
      *
-     * @param hostsProperty     {@code sequencer.hosts}, or {@code null}
-     * @param layoutPropertySet whether {@code clusterMembers} or {@code nodeCount} is set
-     * @param baseDirSet        whether {@code sequencer.baseDir} is set
-     * @param envHosts          {@link PortLayout#HOSTS}
-     * @param memberId          this node's member id
-     * @throws IllegalArgumentException if {@code sequencer.hosts} is set beside a layout property, the list has no
-     *                                  entry for {@code memberId}, or it names several members and no baseDir is set
+     * @param hostsProperty {@code sequencer.hosts}, or {@code null}
+     * @param baseDirSet    whether {@code sequencer.baseDir} is set
+     * @param envHosts      {@link PortLayout#HOSTS}
+     * @param memberId      this node's member id
+     * @throws IllegalArgumentException if the list has no entry for {@code memberId}, or it names several members
+     *                                  and no baseDir is set
      */
-    static List<String> resolveHosts(final String hostsProperty, final boolean layoutPropertySet,
-                                     final boolean baseDirSet, final List<String> envHosts, final int memberId) {
-        if (hostsProperty != null && layoutPropertySet) {
-            throw new IllegalArgumentException(
-                PROP_HOSTS + " replaces " + PROP_CLUSTER_MEMBERS + " and " + PROP_NODE_COUNT + "; set only one");
-        }
-        final List<String> hosts = hostsProperty != null
-            ? PortLayout.parseHosts(hostsProperty)
-            : layoutPropertySet || envHosts.isEmpty() ? null : envHosts;
-        if (hosts == null) {
-            return null;
-        }
+    static List<String> resolveHosts(final String hostsProperty, final boolean baseDirSet,
+                                     final List<String> envHosts, final int memberId) {
+        final List<String> hosts = hostsProperty != null ? PortLayout.parseHosts(hostsProperty)
+            : envHosts.isEmpty() ? List.of(PortLayout.DEFAULT_HOST) : envHosts;
         if (memberId < 0 || memberId >= hosts.size()) {
             throw new IllegalArgumentException(
                 "the host list " + hosts + " names " + hosts.size() + " member(s), so it has no member " + memberId);
@@ -260,11 +215,6 @@ public final class SequencerServer {
 
     private static String udp(final String host, final int port) {
         return "aeron:udp?endpoint=" + host + ":" + port;
-    }
-
-    /** The {@code clusterMembers} string for a {@code nodeCount}-member cluster on {@link PortLayout#DEFAULT_HOST}. */
-    static String buildClusterMembers(final int nodeCount) {
-        return buildClusterMembers(Collections.nCopies(nodeCount, PortLayout.DEFAULT_HOST));
     }
 
     /** The {@code clusterMembers} string for a cluster whose member {@code i} runs on {@code hosts.get(i)}. */

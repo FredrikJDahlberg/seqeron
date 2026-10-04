@@ -19,6 +19,9 @@ public final class ReplayProtocol {
     /** ReplayerService → apps: {@code Replaying} / {@code ReplayPending}. */
     public static final int CONTROL_STREAM_ID = 203;
 
+    /** {@code ReplayRequest.fromPosition} asking for the active recording from its start. */
+    public static final long FROM_START = NULL_VALUE;
+
     /** Answer to a resume request the Replayer refuses, or one that needs no replay at all. */
     public static final long NO_REPLAY_NEEDED = NULL_VALUE;
 

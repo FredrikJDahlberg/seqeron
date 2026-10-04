@@ -4,13 +4,10 @@ import io.aeron.Aeron;
 import io.aeron.archive.Archive;
 import io.aeron.archive.ArchivingMediaDriver;
 import io.aeron.archive.client.AeronArchive;
-import io.aeron.driver.Configuration;
 import io.aeron.driver.MediaDriver;
-import io.aeron.driver.ThreadingMode;
 import java.io.File;
 import java.util.Arrays;
 import java.util.List;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Supplier;
 import org.agrona.CloseHelper;
@@ -68,36 +65,11 @@ public final class ReplayerServer {
     private static final String PROP_HOST = "replayer.host";
     private static final String PROP_BASE_DIR = "replayer.baseDir";
 
-    /** Control-response stream of this service's archive session, distinct from SequencerService's 121. */
-    private static final int ARCHIVE_CONTROL_RESPONSE_STREAM_ID = 120;
-
-    /** Exit status of a gateway host whose replay duty cycle died on an uncaught exception; restart it. */
-    private static final int EXIT_DUTY_CYCLE_FATAL = 70;
-
-    /**
-     * Exit status when shutdown gave up waiting for a wedged duty-cycle thread, leaving the archive and
-     * Aeron client unclosed: not an orderly stop, and not a dead thread either.
-     */
-    private static final int EXIT_SHUTDOWN_TIMEOUT = 71;
-
     /**
      * How long shutdown waits for the duty cycle's current iteration, which never blocks on a timeout of
      * its own; within Agrona's 10s shutdown-hook budget.
      */
     private static final long SHUTDOWN_JOIN_TIMEOUT_MS = 5_000;
-
-    /** IPC term length when {@code aeron.ipc.term.buffer.length} is not set, rather than Aeron's 64 MiB. */
-    private static final int DEFAULT_IPC_TERM_BUFFER_LENGTH = 16 * 1024 * 1024;
-
-    /** Driver timer interval when {@code aeron.timer.interval} is not set; Aeron checks untethered timeouts on it. */
-    static final long DEFAULT_TIMER_INTERVAL_NS = TimeUnit.MILLISECONDS.toNanos(10);
-
-    /**
-     * Untethered window-limit and linger timeouts when their Aeron properties are not set, rather than Aeron's 5s
-     * each. Until evicted, a stalled subscriber holds the tap's window, and the sequencer and a gateway host's
-     * relay each terminate after 1s of back-pressure with no recording progress.
-     */
-    static final long DEFAULT_UNTETHERED_TIMEOUT_NS = TimeUnit.MILLISECONDS.toNanos(100);
 
     private final int memberId;
     private final Aeron aeron;
@@ -139,10 +111,10 @@ public final class ReplayerServer {
         barrier.close();
 
         if (dutyCycleFatal.get()) {
-            System.exit(EXIT_DUTY_CYCLE_FATAL);
+            System.exit(NodeDriver.EXIT_FATAL);
         }
         if (!stopped) {
-            System.exit(EXIT_SHUTDOWN_TIMEOUT);
+            System.exit(NodeDriver.EXIT_SHUTDOWN_TIMEOUT);
         }
     }
 
@@ -171,7 +143,7 @@ public final class ReplayerServer {
             .controlRequestChannel(PortLayout.ARCHIVE_CONTROL_CHANNEL)
             .controlRequestStreamId(PortLayout.ARCHIVE_CONTROL_STREAM_ID)
             .controlResponseChannel(PortLayout.ARCHIVE_CONTROL_CHANNEL)
-            .controlResponseStreamId(ARCHIVE_CONTROL_RESPONSE_STREAM_ID)
+            .controlResponseStreamId(NodeDriver.REPLAYER_ARCHIVE_RESPONSE_STREAM_ID)
             .lock(NoOpLock.INSTANCE));
 
         final IdleStrategy idleStrategy = idleStrategies.get();
@@ -214,48 +186,13 @@ public final class ReplayerServer {
     }
 
     /**
-     * The IPC term length of a seqeron media driver, a member's or a gateway host's: {@code
-     * aeron.ipc.term.buffer.length} when set, else 16 MiB (doc/ops.md, "Term lengths").
-     */
-    public static int ipcTermBufferLength() {
-        return System.getProperty(Configuration.IPC_TERM_BUFFER_LENGTH_PROP_NAME) == null
-            ? DEFAULT_IPC_TERM_BUFFER_LENGTH : Configuration.ipcTermBufferLength();
-    }
-
-    /**
-     * Sets a seqeron media driver's untethered-subscriber timing, a member's or a gateway host's, where its Aeron
-     * property is not set (doc/ops.md, "Untethered subscribers").
-     *
-     * @param ctx the driver's context
-     */
-    public static void untetheredTimeouts(final MediaDriver.Context ctx) {
-        if (System.getProperty(Configuration.TIMER_INTERVAL_PROP_NAME) == null) {
-            ctx.timerIntervalNs(DEFAULT_TIMER_INTERVAL_NS);
-        }
-        if (System.getProperty(Configuration.UNTETHERED_WINDOW_LIMIT_TIMEOUT_PROP_NAME) == null) {
-            ctx.untetheredWindowLimitTimeoutNs(DEFAULT_UNTETHERED_TIMEOUT_NS);
-        }
-        if (System.getProperty(Configuration.UNTETHERED_LINGER_TIMEOUT_PROP_NAME) == null) {
-            ctx.untetheredLingerTimeoutNs(DEFAULT_UNTETHERED_TIMEOUT_NS);
-        }
-    }
-
-    /**
      * A gateway host's own media driver and archive. The archive takes local clients only: this host's
      * Replayer and relay, over {@code aeron:ipc}.
      */
     private static ArchivingMediaDriver launchDriver(final int nodeId, final String aeronDir, final String host,
                                                      final Supplier<IdleStrategy> idleStrategies) {
         final String baseDir = System.getProperty(PROP_BASE_DIR, System.getProperty("java.io.tmpdir") + "/seqeron-seq");
-        final MediaDriver.Context driverCtx = new MediaDriver.Context()
-                                                  .aeronDirectoryName(aeronDir)
-                                                  .threadingMode(ThreadingMode.DEDICATED)
-                                                  .conductorIdleStrategy(idleStrategies.get())
-                                                  .senderIdleStrategy(idleStrategies.get())
-                                                  .receiverIdleStrategy(idleStrategies.get())
-                                                  .ipcTermBufferLength(ipcTermBufferLength())
-                                                  .dirDeleteOnStart(true);
-        untetheredTimeouts(driverCtx);
+        final MediaDriver.Context driverCtx = NodeDriver.context(aeronDir, idleStrategies);
         final Archive.Context archiveCtx = new Archive.Context()
                                                .aeronDirectoryName(aeronDir)
                                                .archiveDir(new File(baseDir + "/archive-" + nodeId))

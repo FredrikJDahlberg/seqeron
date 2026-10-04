@@ -26,11 +26,11 @@
 
     </types>
 
-    <!-- App -> ReplayerService: "I have a gap; replay for me from fromPosition." -->
+    <!-- App -> ReplayerService: "replay the active recording for me, from fromPosition." -->
     <sbe:message name="ReplayRequest" id="6"
-                 description="A client asks its replayer for history: one segment of the recording chain from
-                              position 0 (cold start, segmentIndex &gt;= 0), or the active recording from
-                              fromPosition (after a gap, segmentIndex &lt; 0)">
+                 description="A client asks its replayer for history: the active recording from its start (cold
+                              start, fromPosition -1), or from fromPosition (after a gap). Every recording a
+                              node holds starts at globalSeqNo 1, so the active one alone is complete">
         <field name="clientId"     id="20010" type="int32"
                description="The client's id, unique among the replayer's co-located clients"/>
         <field name="requestId"    id="20015" type="int64"
@@ -40,12 +40,7 @@
                             queued on the control stream"/>
         <field name="fromPosition" id="20011" type="int64"
                description="Position to resume the active recording from (SequencedEvent.position of the last
-                            in-order frame); read only when segmentIndex &lt; 0"/>
-        <field name="segmentIndex" id="20014" type="int32"
-               description="&lt; 0: resume the active recording at fromPosition. &gt;= 0: replay that recording
-                            of the chain (one per leader tenure, oldest first) from position 0. A cold start
-                            walks 0, 1, 2, … de-duplicating on globalSeqNo until the chain is exhausted
-                            (R-2); globalSeqNo is contiguous across tenures"/>
+                            in-order frame), or FROM_START (-1) for the recording's start"/>
     </sbe:message>
 
     <!-- ReplayerService -> App: "Attach to replaySessionId on the replay stream." -->
@@ -57,17 +52,14 @@
         <field name="requestId"       id="20015" type="int64"
                description="The requestId of the request this answers (R-1)"/>
         <field name="replaySessionId" id="20012" type="int64"
-               description="Aeron replay session to attach to on stream 201 (Subscription.imageBySessionId), or NO_REPLAY_NEEDED (-1) when there is nothing to replay"/>
+               description="Aeron replay session to attach to on stream 201 (Subscription.imageBySessionId), or
+                            NO_REPLAY_NEEDED (-1) when there is nothing to replay from there: for FROM_START the
+                            client is at the tip; for a position, that position is no good here, and a client with
+                            a hole open replays from the start (R-2)"/>
         <field name="catchUpPosition" id="20013" type="int64"
                description="Position at which the replay ends and the client switches to the live tap. The
                             client detects completion by reaching it, not by image close: a bounded replay
                             of an active recording does not close its image at the bound"/>
-        <field name="recordingId"     id="20016" type="int64"
-               description="Recording the requested segment resolved to, or -1 when the chain is exhausted.
-                            NO_REPLAY_NEEDED with recordingId &gt;= 0 means only that this segment is empty;
-                            with -1 it ends the walk (R-2). The replayer resolves the chain on every request
-                            and may drop a stale span, so a client that gets a different recordingId for the
-                            same segmentIndex restarts the walk from segment 0 (R-3)"/>
     </sbe:message>
 
     <!-- ReplayerService -> App: "All replay slots are busy; hold at your gap and wait." -->
@@ -82,23 +74,22 @@
     <!-- App -> ReplayerService: "I have caught up and am on the live tap; free my replay slot." -->
     <sbe:message name="ReplayComplete" id="9"
                  description="The client has caught up and switched to the live tap; the replayer frees its slot
-                              now rather than at the idle timeout. Sent after a gap resume. A cold-start walk
-                              does not send it: each segment request supersedes, and frees, the previous slot">
+                              now rather than at the idle timeout">
         <field name="clientId" id="20010" type="int32"/>
     </sbe:message>
 
     <!-- App -> ReplayerService: "I am still running my replay; keep my slot." -->
     <sbe:message name="ReplayHeartbeat" id="20"
                  description="Sent about every 500 ms while the client's replay image is running; resets the slot's
-                              idle timeout (R-4). A replay has no time limit, so without this a long replay would
+                              idle timeout (R-3). A replay has no time limit, so without this a long replay would
                               lose its slot. A client that dies stops sending, and its slot is reclaimed">
         <field name="clientId" id="20010" type="int32"/>
     </sbe:message>
 
     <!-- ReplayerService -> App: "this node cannot serve history at all; hold, do not expect an answer." -->
     <sbe:message name="ReplayUnavailable" id="21"
-                 description="This node cannot serve history for the replayer's lifetime: at start-up its oldest
-                              tap recording did not reach globalSeqNo 1 (deleted, corrupted or partially
+                 description="This node cannot serve history for the replayer's lifetime: at start-up its active
+                              tap recording did not start at globalSeqNo 1 (deleted, corrupted or partially
                               restored). Unlike ReplayPending, this is permanent. Refusing keeps the fault in
                               the replayer; serving the replay would make every client fail its own check that
                               history starts at 1">

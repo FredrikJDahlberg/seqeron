@@ -19,7 +19,7 @@ import org.limitless.seqeron.util.Logger;
  * directly — its transport is recorded through {@link TapPublisher.Actions} and its clock is owned by the
  * test, which advances it only where the real one would: on an idle between attempts.
  *
- * <p>This is the {@code EXIT_TAP_FATAL} contract, and the reason it is worth pinning here rather than only
+ * <p>This is the {@code NodeDriver.EXIT_FATAL} contract, and the reason it is worth pinning here rather than only
  * in {@code chaos-runner.sh}: both halves fail silently. A node that terminates too eagerly costs the
  * cluster a member on transient back-pressure that would have cleared; one that never terminates keeps
  * sequencing history into an archive that is no longer recording it, and nothing says so until someone asks

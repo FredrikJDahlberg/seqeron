@@ -45,14 +45,7 @@ class ReplayerRecoveryTest {
     private static final int CLIENT_ID = 4;
     private static final long NO_REPLAY_NEEDED = ReplayProtocol.NO_REPLAY_NEEDED;
 
-    /** The walk terminator: nothing left to replay AND no recording named. */
-    private static final long CHAIN_EXHAUSTED = -1;
-
-    /**
-     * The same field as {@link #CHAIN_EXHAUSTED} where the reply carries a session: "this answer names no
-     * recording", so the walk-segment mismatch check has nothing to compare against.
-     */
-    private static final long NO_RECORDING = -1;
+    private static final long FROM_START = ReplayProtocol.FROM_START;
 
     /** Arrival stamp; carried through to SequencedEvent, asserted on by no test here. */
     private static final long RECEIVE_NS = 0;
@@ -106,7 +99,7 @@ class ReplayerRecoveryTest {
         final List<Boolean> stalledGauge = new ArrayList<>();
 
         @Override
-        public void sendReplayRequest(final long requestId, final int segmentIndex, final long fromPosition) {
+        public void sendReplayRequest(final long requestId, final long fromPosition) {
             ++requestsSent;
         }
 
@@ -179,13 +172,12 @@ class ReplayerRecoveryTest {
     // ── baseline ──────────────────────────────────────────────────────────────────────────────────
 
     @Test
-    @DisplayName("cold start requests the chain walk from segment 0")
-    void coldStartWalksFromSegmentZero() {
+    @DisplayName("cold start walks the recording from its start")
+    void coldStartWalksFromTheStart() {
         receiver.start();
 
         assertTrue(receiver.isAwaitingReplay());
-        assertEquals(0, receiver.walkSegmentIndex());
-        assertEquals(0, receiver.requestFromPosition());
+        assertEquals(FROM_START, receiver.requestFromPosition());
     }
 
     @Test
@@ -282,12 +274,12 @@ class ReplayerRecoveryTest {
         deliverTap(5); // 2..4 are not lost — they are frames this walk has not reached yet
 
         assertEquals(requestIdBefore, receiver.requestId(), "an in-flight walk must run to completion");
-        assertEquals(0, receiver.walkSegmentIndex(), "a mid-walk tap gap is expected, not a new gap");
+        assertEquals(FROM_START, receiver.requestFromPosition(), "a mid-walk tap gap is expected, not a new gap");
         assertEquals(1, receiver.retainedFrameCount());
     }
 
     // The same rule one state later: not merely awaiting an answer but riding an assigned session.
-    // Superseding the walk on each tap frame would restart it from segment 0 forever under any sustained
+    // Superseding the walk on each tap frame would restart it from the start forever under any sustained
     // publish rate.
     @Test
     @DisplayName("a tap frame arriving during an assigned replay session does not supersede it")
@@ -307,7 +299,7 @@ class ReplayerRecoveryTest {
 
         assertEquals(99, receiver.replaySessionId(), "the in-flight walk must run to completion");
         assertFalse(receiver.isAwaitingReplay());
-        assertEquals(-1, receiver.walkSegmentIndex(), "still the resume the gap asked for, not restarted");
+        assertNotEquals(FROM_START, receiver.requestFromPosition(), "still the resume the gap asked for, not restarted");
         assertEquals(1, dispatched.size(), "the out-of-order frame itself is still withheld");
         assertEquals(1, logged.size(), "and it is not reported as a second gap");
     }
@@ -343,7 +335,7 @@ class ReplayerRecoveryTest {
 
         assertFalse(receiver.isCaughtUp(), "consumers gate real decisions on this — it must not stay latched");
         assertTrue(receiver.isAwaitingReplay());
-        assertEquals(-1, receiver.walkSegmentIndex(), "a gap resumes; it does not re-walk from a stale index");
+        assertNotEquals(FROM_START, receiver.requestFromPosition(), "a gap resumes; it does not re-walk from a stale index");
         assertEquals(2048, receiver.requestFromPosition(), "resume at the frame last dispatched, not at 0");
         assertEquals(1, receiver.retainedFrameCount(), "the ahead-of-hole frame is kept, not dropped");
     }
@@ -380,12 +372,11 @@ class ReplayerRecoveryTest {
     // ── the Replayer's control-stream replies, and request/reply correlation ──────────────────────
 
     @Test
-    @DisplayName("the chain running out marks the client caught up")
-    void chainExhaustedMarksCaughtUp() {
-        answerReplaying(NO_REPLAY_NEEDED, 0, CHAIN_EXHAUSTED);
+    @DisplayName("nothing to replay from the start marks the client caught up")
+    void nothingToReplayFromTheStartMarksCaughtUp() {
+        answerReplaying(NO_REPLAY_NEEDED, 0);
 
         assertTrue(receiver.isCaughtUp());
-        assertEquals(-1, receiver.walkSegmentIndex(), "steady/resume mode from here");
         assertFalse(receiver.isAwaitingReplay());
     }
 
@@ -402,7 +393,7 @@ class ReplayerRecoveryTest {
     @Test
     @DisplayName("a reply addressed to another replica on the shared control stream is ignored")
     void replayingForAnotherClientIdIsIgnored() {
-        receiver.onControl(replayingBuffer(CLIENT_ID + 1, receiver.requestId(), 42, 1000, NO_RECORDING), 0,
+        receiver.onControl(replayingBuffer(CLIENT_ID + 1, receiver.requestId(), 42, 1000), 0,
                            replayingLength());
 
         assertEquals(-1, receiver.replaySessionId(), "a reply for a different replica must not be applied");
@@ -410,16 +401,17 @@ class ReplayerRecoveryTest {
     }
 
     @Test
-    @DisplayName("a completed segment advances the walk and re-requests the next one")
-    void segmentCompleteAdvancesTheWalkAndReRequestsTheNextSegment() {
+    @DisplayName("a walk reaching its bound catches up and hands its slot back")
+    void aWalkReachingItsBoundCatchesUp() {
         answerReplaying(7, 500);
         assertEquals(7, receiver.replaySessionId());
 
-        completeSegment();
+        completeReplay();
 
-        assertEquals(1, receiver.walkSegmentIndex(), "segment 0 done -> walk advances to segment 1");
-        assertTrue(receiver.isAwaitingReplay(), "advancing re-requests the next segment");
-        assertEquals(-1, receiver.replaySessionId(), "no session until the Replayer answers the new request");
+        assertTrue(receiver.isCaughtUp(), "the recording held the whole log when the request was served");
+        assertFalse(receiver.isAwaitingReplay(), "there is nothing further to ask for");
+        assertEquals(-1, receiver.replaySessionId());
+        assertTrue(receiver.completePending(), "the slot is released, not left to the idle TTL");
     }
 
     // clientId alone cannot identify WHICH request a reply answers. A resend makes the Replayer stop the
@@ -431,7 +423,7 @@ class ReplayerRecoveryTest {
         receiver.start();
         final long staleRequestId = receiver.requestId();
 
-        receiver.onControl(replayingBuffer(staleRequestId - 1, 11, 4096, 7), 0, replayingLength());
+        receiver.onControl(replayingBuffer(staleRequestId - 1, 11, 4096), 0, replayingLength());
 
         assertTrue(receiver.isAwaitingReplay(), "a stale reply must not stop the resend timer");
         assertEquals(-1, receiver.replaySessionId());
@@ -442,9 +434,9 @@ class ReplayerRecoveryTest {
     @DisplayName("the reply to the current request is still accepted after a stale one")
     void currentReplyIsStillAcceptedAfterAStaleOne() {
         final long stale = receiver.requestId();
-        completeSegment(); // advances the walk -> new request, new requestId
+        receiver.start(); // a request, and with it a new requestId
 
-        receiver.onControl(replayingBuffer(stale, 42, 900, NO_RECORDING), 0, replayingLength());
+        receiver.onControl(replayingBuffer(stale, 42, 900), 0, replayingLength());
         answerReplaying(43, 1000);
 
         assertEquals(43, receiver.replaySessionId(), "the reply to the current request must be applied");
@@ -457,7 +449,7 @@ class ReplayerRecoveryTest {
     @DisplayName("a ReplayPending for a superseded request does not push out the current resend deadline")
     void replayPendingForASupersededRequestIsIgnored() {
         final long stale = receiver.requestId();
-        completeSegment();
+        receiver.start();
         final int sends = actions.requestsSent;
 
         actions.clockMs += 300; // still inside the current request's resend interval
@@ -469,27 +461,28 @@ class ReplayerRecoveryTest {
                      "a superseded request's ReplayPending must not defer the current request's resend");
     }
 
-    // ── a closed image, a completed segment, and the stall watchdog ───────────────────────────────
+    // ── a closed image, a completed replay, and the stall watchdog ────────────────────────────────
 
     @Test
-    @DisplayName("a replay image closing at its bound completes the segment; short of it re-requests")
+    @DisplayName("a replay image closing at its bound completes the replay; short of it re-requests")
     void closedImageIsCompletionOnlyAtTheBound() {
-        answerReplaying(11, 4096, 7);
-        receiver.onReplayImageClosed(4096);
-        assertEquals(1, receiver.walkSegmentIndex(), "at the bound: the segment is done");
-
-        answerReplaying(12, 8192, 8);
+        answerReplaying(11, 4096);
         receiver.onReplayImageClosed(4000);
-        assertEquals(1, receiver.walkSegmentIndex(), "short of the bound: the same segment is re-requested");
-        assertTrue(receiver.isAwaitingReplay());
+        assertTrue(receiver.isAwaitingReplay(), "short of the bound: the replay is re-requested");
+        assertEquals(FROM_START, receiver.requestFromPosition());
+
+        answerReplaying(12, 4096);
+        receiver.onReplayImageClosed(4096);
+        assertTrue(receiver.isCaughtUp(), "at the bound: the replay is done");
+        assertFalse(receiver.isAwaitingReplay());
     }
 
     // Once Replaying arrives the resend timer is disarmed, and a bounded replay of an active recording
     // never closes its image — so an image that simply stops advancing leaves the client waiting on it
     // forever with nothing retrying.
     @Test
-    @DisplayName("a replay that stops advancing re-requests the same segment")
-    void replayThatStopsAdvancingReRequestsTheSameSegment() {
+    @DisplayName("a replay that stops advancing re-requests it")
+    void replayThatStopsAdvancingReRequestsIt() {
         captureLogs();
         answerReplaying(7, 500);
         final long requestId = receiver.requestId();
@@ -497,8 +490,8 @@ class ReplayerRecoveryTest {
 
         advancePastTimers();
 
-        assertEquals(0, receiver.walkSegmentIndex(), "the walk must not advance over a segment that stalled");
-        assertTrue(receiver.isAwaitingReplay(), "the same segment is re-requested instead");
+        assertEquals(FROM_START, receiver.requestFromPosition(), "the walk is asked for again, from the start");
+        assertTrue(receiver.isAwaitingReplay(), "a stalled replay is not taken for a complete one");
         assertEquals(-1, receiver.replaySessionId());
         assertNotEquals(requestId, receiver.requestId(),
                         "re-requesting is a new request, so the reply to the stalled one is recognisably stale");
@@ -642,7 +635,7 @@ class ReplayerRecoveryTest {
         assertEquals(sends + 1, actions.requestsSent, "the duty cycle must re-send rather than give up");
         assertTrue(receiver.isAwaitingReplay(), "still stuck at the gap — a resend, not a new state");
         assertEquals(-1, receiver.replaySessionId());
-        assertEquals(-1, receiver.walkSegmentIndex(), "a resend repeats the same request verbatim");
+        assertNotEquals(FROM_START, receiver.requestFromPosition(), "a resend repeats the same request verbatim");
     }
 
     // Every send does ++requestId and onControl acts only on a reply carrying the CURRENT id, so a
@@ -685,28 +678,26 @@ class ReplayerRecoveryTest {
         deliverReplay(2);
         deliverReplay(3);
         deliverReplay(4); // closes the hole, draining the retained frame 5
-        completeSegment();
-        assertFalse(receiver.isRecovering(), "a resume ends at its bound — there is no next segment to ask for");
+        completeReplay();
+        assertFalse(receiver.isRecovering(), "a resume ends at its bound");
 
         // The result of the same transitions, entered the way production enters it: a resume whose
-        // replay opens on a frame other than the one it anchored on falls back to the chain walk.
+        // replay opens on a frame other than the one it anchored on falls back to a walk.
         deliverTap(9); // another gap -> another resume
         answerReplaying(8, 500);
         deliverReplay(42);
-        assertEquals(0, receiver.walkSegmentIndex());
-        assertTrue(receiver.isRecovering(), "awaiting the walk's first segment");
+        assertEquals(FROM_START, receiver.requestFromPosition());
+        assertTrue(receiver.isRecovering(), "awaiting the walk");
 
         answerReplaying(9, 500);
         // The walk has to close the hole it re-walked for: 9 is retained behind the missing 6..8, and the
-        // terminator refuses to end recovery while anything is still stranded there.
+        // bound refuses to end recovery while anything is still stranded there.
         deliverReplay(6);
         deliverReplay(7);
         deliverReplay(8); // dispatching 8 drains the retained 9 straight over
-        completeSegment();
-        assertTrue(receiver.isRecovering(), "advancing to the next segment stays mid-walk");
-
-        answerReplaying(NO_REPLAY_NEEDED, 0, CHAIN_EXHAUSTED);
-        assertFalse(receiver.isRecovering(), "chain exhausted -> back to steady state");
+        assertTrue(receiver.isRecovering(), "mid-walk until the bound");
+        completeReplay();
+        assertFalse(receiver.isRecovering(), "a walk ends at its bound too");
     }
 
     // isCaughtUp() is a state, not a latch: consumers gate real decisions on it, and a gateway's tap-stall
@@ -783,7 +774,7 @@ class ReplayerRecoveryTest {
         assertTrue(receiver.isCaughtUp(), "an overflow would have forced a re-walk");
     }
 
-    // The ranges legitimately overlap, since a re-walk restarts from segment 0 while the tap keeps
+    // The ranges legitimately overlap, since a re-walk restarts from the start while the tap keeps
     // arriving.
     @Test
     @DisplayName("retained frames the replay has meanwhile covered are not redelivered")
@@ -810,7 +801,7 @@ class ReplayerRecoveryTest {
         assertEquals(1, dispatched.size());
 
         captureLogs();    // installed after the baseline, so it captures only the hole below
-        deliverReplay(7); // the recording chain does not cover 2..6
+        deliverReplay(7); // the recording does not cover 2..6
 
         assertEquals(1, dispatched.size(), "the frame past the hole must not be dispatched");
         assertEquals(1, logged.size());
@@ -818,7 +809,7 @@ class ReplayerRecoveryTest {
         assertEquals(Logger.CoreEventCode.TapGap, logged.get(0).code());
 
         deliverReplay(8);
-        assertEquals(1, logged.size(), "report the episode, not every frame of a walk retrying the same chain");
+        assertEquals(1, logged.size(), "report the episode, not every frame of a walk retrying the same recording");
 
         // A later, distinct episode must be reported again rather than swallowed by the latch.
         deliverReplay(2);
@@ -842,8 +833,8 @@ class ReplayerRecoveryTest {
         answerReplaying(7, 500);
         deliverReplay(1);
         deliverReplay(2);
-        completeSegment();
-        assertEquals(0, receiver.walkSegmentIndex());
+        completeReplay();
+        assertEquals(FROM_START, receiver.requestFromPosition());
 
         deliverTapTooBigToRetain(9);
 
@@ -853,7 +844,7 @@ class ReplayerRecoveryTest {
     // ── the resume anchor ─────────────────────────────────────────────────────────────────────────
 
     @Test
-    @DisplayName("a resume replay that opens at the wrong frame falls back to the chain walk")
+    @DisplayName("a resume replay that opens at the wrong frame falls back to a walk")
     void resumeAnchorMismatchFallsBackToWalk() {
         goLive();
         deliverTapAt(1, 1024);
@@ -863,8 +854,7 @@ class ReplayerRecoveryTest {
 
         deliverReplay(4); // not the anchor: the active recording rotated under us
 
-        assertEquals(0, receiver.walkSegmentIndex(), "must fall back to the walk, which needs no position");
-        assertEquals(0, receiver.requestFromPosition());
+        assertEquals(FROM_START, receiver.requestFromPosition(), "must fall back to the walk, which needs no position");
         assertTrue(receiver.isAwaitingReplay());
     }
 
@@ -882,7 +872,7 @@ class ReplayerRecoveryTest {
         assertEquals(1, dispatched.size());
 
         receiver.onReplayImageClosed(300); // stopped under us before frame 2 arrived
-        assertEquals(-1, receiver.walkSegmentIndex(), "still a resume retry, not a walk step");
+        assertNotEquals(FROM_START, receiver.requestFromPosition(), "still a resume retry, not a walk step");
 
         answerReplaying(8, 500);
         // The active recording rotated: the retried resume's first frame is NOT the frame it was anchored
@@ -890,7 +880,7 @@ class ReplayerRecoveryTest {
         deliverReplay(2);
 
         assertEquals(1, dispatched.size(), "must not accept an unanchored frame merely because it looks contiguous");
-        assertEquals(0, receiver.walkSegmentIndex(), "the mismatch must fall back to the chain walk");
+        assertEquals(FROM_START, receiver.requestFromPosition(), "the mismatch must fall back to a walk");
         assertTrue(receiver.isAwaitingReplay());
         assertEquals(-1, receiver.replaySessionId());
         assertFalse(receiver.isCaughtUp());
@@ -906,13 +896,13 @@ class ReplayerRecoveryTest {
         assertEquals(1, dispatched.size());
 
         advancePastTimers(); // stopped advancing before frame 2 arrived
-        assertEquals(-1, receiver.walkSegmentIndex(), "still a resume retry, not a walk step");
+        assertNotEquals(FROM_START, receiver.requestFromPosition(), "still a resume retry, not a walk step");
 
         answerReplaying(8, 500);
         deliverReplay(2); // rotated recording, looks contiguous but is not the anchored frame
 
         assertEquals(1, dispatched.size(), "must not accept an unanchored frame merely because it looks contiguous");
-        assertEquals(0, receiver.walkSegmentIndex(), "the mismatch must fall back to the chain walk");
+        assertEquals(FROM_START, receiver.requestFromPosition(), "the mismatch must fall back to a walk");
         assertTrue(receiver.isAwaitingReplay());
         assertEquals(-1, receiver.replaySessionId());
         assertFalse(receiver.isCaughtUp());
@@ -922,27 +912,26 @@ class ReplayerRecoveryTest {
     // position is already at its recording's tip. For a walk that means caught up; for a resume it cannot,
     // because we resumed only on account of a hole we know is open.
     @Test
-    @DisplayName("NO_REPLAY_NEEDED over an open hole falls back to the chain walk")
-    void noReplayNeededOverAnOpenHoleFallsBackToTheChainWalk() {
+    @DisplayName("NO_REPLAY_NEEDED over an open hole falls back to a walk")
+    void noReplayNeededOverAnOpenHoleFallsBackToAWalk() {
         deliverTap(1);
         deliverTap(2);
         assertTrue(receiver.isCaughtUp());
         deliverTap(6); // gap -> resume
-        assertEquals(-1, receiver.walkSegmentIndex());
+        assertNotEquals(FROM_START, receiver.requestFromPosition());
 
         answerReplaying(NO_REPLAY_NEEDED, 0);
 
-        assertEquals(0, receiver.walkSegmentIndex(), "re-walk instead of believing it");
+        assertEquals(FROM_START, receiver.requestFromPosition(), "re-walk instead of believing it");
         assertTrue(receiver.isAwaitingReplay());
         assertFalse(receiver.isCaughtUp(), "the hole above globalSeqNo=2 is still open");
     }
 
-    // A resume ends at the bound it was given and has no next segment to request — so unlike a walk step
-    // it must declare itself caught up and hand the slot back, or the slot sits until the idle TTL
-    // reclaims it.
+    // A resume ends at the bound it was given — so it must declare itself caught up and hand the slot back,
+    // or the slot sits until the idle TTL reclaims it.
     @Test
-    @DisplayName("a resume reaching its bound catches up without requesting another segment")
-    void resumeReachingItsBoundCatchesUpWithoutRequestingAnotherSegment() {
+    @DisplayName("a resume reaching its bound catches up and requests nothing more")
+    void resumeReachingItsBoundCatchesUpAndRequestsNothingMore() {
         deliverTap(1);
         assertEquals(1, caughtUpAt.size());
         deliverTap(5); // gap -> resume
@@ -953,9 +942,9 @@ class ReplayerRecoveryTest {
         deliverReplay(2);
         deliverReplay(3);
         deliverReplay(4); // closes the hole, draining the retained frame 5
-        completeSegment();
+        completeReplay();
 
-        assertFalse(receiver.isAwaitingReplay(), "no follow-up request — a resume has no next segment");
+        assertFalse(receiver.isAwaitingReplay(), "no follow-up request");
         assertEquals(-1, receiver.replaySessionId());
         assertTrue(receiver.isCaughtUp(), "we hold everything the recording had when the request was served");
         assertEquals(2, caughtUpAt.size(), "re-fired, so consumers re-arm on re-convergence");
@@ -975,11 +964,11 @@ class ReplayerRecoveryTest {
         deliverReplay(1); // opens on the anchored frame -> anchor consumed, frame deduped
         deliverReplay(2); // the bound is reached having covered only up to 2 — 3, 4 unfilled
 
-        completeSegment();
+        completeReplay();
 
         assertFalse(receiver.isCaughtUp(), "must not declare caught up with a retained frame behind a hole");
         assertEquals(1, caughtUpAt.size(), "no false re-convergence notification");
-        assertEquals(0, receiver.walkSegmentIndex(), "falls back to the chain walk rather than trusting the bound");
+        assertEquals(FROM_START, receiver.requestFromPosition(), "falls back to a walk rather than trusting the bound");
         assertTrue(receiver.isAwaitingReplay());
         assertEquals(-1, receiver.replaySessionId());
     }
@@ -999,11 +988,11 @@ class ReplayerRecoveryTest {
         deliverReplay(1); // opens on the anchored frame -> anchor consumed, frame deduped
         deliverReplay(2); // closes the hole the resume was asked to cover, draining retained frame 3
 
-        completeSegment();
+        completeReplay();
 
         assertFalse(receiver.isCaughtUp(), "frame 4 was dropped — the drained frontier is not the real one");
         assertEquals(1, caughtUpAt.size(), "no false re-convergence notification");
-        assertEquals(0, receiver.walkSegmentIndex(), "re-walks now rather than leaving the hole for a later tap gap");
+        assertEquals(FROM_START, receiver.requestFromPosition(), "re-walks now rather than leaving the hole for a later tap gap");
         assertTrue(receiver.isAwaitingReplay());
     }
 
@@ -1024,7 +1013,7 @@ class ReplayerRecoveryTest {
         deliverReplay(4);
         assertFalse(receiver.completePending(), "nothing to release until the resume reaches its bound");
 
-        completeSegment();
+        completeReplay();
 
         assertTrue(receiver.isCaughtUp());
         assertTrue(receiver.completePending(), "it never reached the wire — remember it");
@@ -1044,7 +1033,7 @@ class ReplayerRecoveryTest {
         deliverReplay(2);
         deliverReplay(3);
         deliverReplay(4);
-        completeSegment();
+        completeReplay();
         assertTrue(receiver.completePending());
 
         deliverTap(9); // a second gap -> new request, taking a fresh slot
@@ -1053,132 +1042,64 @@ class ReplayerRecoveryTest {
         assertFalse(receiver.completePending(), "dropped: releasing now would free the new slot");
     }
 
-    // ── the walk's terminating NO_REPLAY_NEEDED ───────────────────────────────────────────────────
-    // serveReplay sends NO_REPLAY_NEEDED for two different things and tells them apart by recordingId: a
-    // walk that ran past the last recording (names none) versus a segment that is merely EMPTY (names the
-    // recording it found nothing in). Only the first ends the walk — and ending it is not by itself
-    // permission to declare caught up.
+    // ── the end of a walk ─────────────────────────────────────────────────────────────────────────
+    // A walk ends at its bound, and reaching it is not by itself permission to declare caught up.
 
     @Test
-    @DisplayName("frames still retained when the chain is exhausted force a re-walk rather than caught-up")
+    @DisplayName("frames still retained when a walk reaches its bound force a re-walk rather than caught-up")
     void retainedResidualForcesReWalk() {
         attachReplay(11, 4096);
         deliverTap(5); // a hole below it that this walk never reached
         deliverReplay(1);
         assertEquals(1, receiver.retainedFrameCount());
 
-        answerReplaying(NO_REPLAY_NEEDED, 0, CHAIN_EXHAUSTED);
+        completeReplay();
 
         assertFalse(receiver.isCaughtUp(), "declaring caught up here would close the hole by fiat");
-        assertEquals(0, receiver.walkSegmentIndex());
+        assertEquals(FROM_START, receiver.requestFromPosition());
+        assertTrue(receiver.isAwaitingReplay());
     }
 
     /** The negative control for the guard above: a walk whose retained frames all drained must finish. */
     @Test
-    @DisplayName("the walk terminator with every retained frame drained still catches up")
-    void walkTerminatorWithEveryRetainedFrameDrainedStillCatchesUp() {
-        answerReplaying(7, 500, 5);
+    @DisplayName("a walk reaching its bound with every retained frame drained catches up")
+    void aWalkWithEveryRetainedFrameDrainedCatchesUp() {
+        answerReplaying(7, 500);
         deliverReplay(1);
         deliverTap(3);    // ahead of the hole at 2 -> retained
         deliverReplay(2); // closes it, so 3 drains straight over
-        completeSegment();
 
-        answerReplaying(NO_REPLAY_NEEDED, 0, CHAIN_EXHAUSTED);
+        completeReplay();
 
         assertTrue(receiver.isCaughtUp(), "nothing is outstanding — the guard must not fire here");
-        assertEquals(-1, receiver.walkSegmentIndex(), "steady/resume mode, not a spurious re-walk");
-        assertFalse(receiver.isAwaitingReplay());
+        assertFalse(receiver.isAwaitingReplay(), "not a spurious re-walk");
     }
 
     // The same guard driven through to convergence: the re-walk must both happen AND be able to finish.
     // Clearing the overflow on drain forgets the drop and catches up over the hole; never clearing it
     // leaves a client that can never declare itself caught up again.
     @Test
-    @DisplayName("the walk terminator after dropped tap frames re-walks, then catches up")
-    void walkTerminatorAfterDroppedTapFramesReWalksThenCatchesUp() {
-        answerReplaying(7, 500, 5);
+    @DisplayName("a walk reaching its bound after dropped tap frames re-walks, then catches up")
+    void aWalkAfterDroppedTapFramesReWalksThenCatchesUp() {
+        answerReplaying(7, 500);
         deliverReplay(1);
         deliverReplay(2);
         deliverTapTooBigToRetain(4); // the tap runs ahead of the walk, and this one is dropped
-        completeSegment();
 
-        answerReplaying(NO_REPLAY_NEEDED, 0, CHAIN_EXHAUSTED);
+        completeReplay();
 
-        assertFalse(receiver.isCaughtUp(), "the chain was exhausted, but a tap frame above it was dropped");
+        assertFalse(receiver.isCaughtUp(), "the walk reached its bound, but a tap frame above it was dropped");
         assertEquals(0, caughtUpAt.size(), "no false convergence notification — this opens the accept gate");
-        assertEquals(0, receiver.walkSegmentIndex(), "re-walks the chain rather than trusting the terminator");
+        assertEquals(FROM_START, receiver.requestFromPosition(), "re-walks rather than trusting the bound");
 
         // The re-walk replays what the drop lost, and this time nothing is dropped.
-        answerReplaying(8, 900, 5);
+        answerReplaying(8, 900);
         deliverReplay(3);
         deliverReplay(4);
-        completeSegment();
-        answerReplaying(NO_REPLAY_NEEDED, 0, CHAIN_EXHAUSTED);
+        completeReplay();
 
         assertTrue(receiver.isCaughtUp(), "a re-walk that dropped nothing must be able to finish");
         assertEquals(1, caughtUpAt.size());
-    }
-
-    // An unclean restart can leave a recording created before anything was published to it. Taking the
-    // NO_REPLAY_NEEDED that answers it as the walk terminator drops every later segment on the floor.
-    @Test
-    @DisplayName("an empty segment is skipped, not taken for the end of the chain")
-    void emptySegmentAdvancesTheWalk() {
-        answerReplaying(NO_REPLAY_NEEDED, 0, 7);
-
-        assertFalse(receiver.isCaughtUp(), "an empty segment says nothing about the rest of the chain");
-        assertEquals(1, receiver.walkSegmentIndex(), "keep walking rather than truncating the chain");
-        assertTrue(receiver.isAwaitingReplay());
-        assertTrue(caughtUpAt.isEmpty());
-
-        // Segment 1 holds the history, and the walk proceeds through it normally.
-        answerReplaying(9, 900, 8);
-
-        assertEquals(9, receiver.replaySessionId());
-        assertEquals(8, receiver.walkRecordingId());
-        deliverReplay(1);
-        assertEquals(1, receiver.walkSegmentIndex(), "still walking segment 1");
-    }
-
-    // ── the walk-segment recordingId check ────────────────────────────────────────────────────────
-    // serveReplay re-resolves the recording chain on every request, and a stale still-recording span can
-    // be dropped from it once a newer one supersedes it — shifting what a given segmentIndex denotes. A
-    // retry of the SAME segment must land on the SAME recording it did originally.
-
-    @Test
-    @DisplayName("a walk segment retried on the same recording continues normally")
-    void walkSegmentRetryOnTheSameRecordingContinuesNormally() {
-        answerReplaying(7, 500, 5);
-        assertEquals(5, receiver.walkRecordingId());
-        final long requestId = receiver.requestId();
-
-        receiver.onReplayImageClosed(312); // stopped under us, mid-segment -> retried
-        assertEquals(0, receiver.walkSegmentIndex());
-        assertNotEquals(requestId, receiver.requestId());
-
-        answerReplaying(8, 700, 5);
-
-        assertEquals(0, receiver.walkSegmentIndex(), "same recording -> the retry is trusted, not abandoned");
-        assertEquals(5, receiver.walkRecordingId());
-        assertEquals(8, receiver.replaySessionId());
-    }
-
-    @Test
-    @DisplayName("a walk segment that resolves to a different recording restarts the walk")
-    void shiftedRecordingChainRestartsTheWalk() {
-        answerReplaying(11, 4096, 7); // segment 0 → recording 7
-        assertEquals(7, receiver.walkRecordingId());
-        completeSegment(); // → segment 1, nothing to compare against yet
-        assertEquals(1, receiver.walkSegmentIndex());
-        assertEquals(-1, receiver.walkRecordingId());
-
-        answerReplaying(12, 8192, 8);         // segment 1 → recording 8
-        receiver.onReplayImageClosed(0); // stopped short → re-request the SAME segment
-        answerReplaying(13, 8192, 9);         // ... but it now resolves to recording 9
-
-        assertEquals(0, receiver.walkSegmentIndex(), "the chain moved under the walk — start it over");
-        assertEquals(-1, receiver.walkRecordingId(), "and with no stale expectation carried into it");
-        assertTrue(receiver.isAwaitingReplay());
     }
 
     // ── the convergence alarm ─────────────────────────────────────────────────────────────────────
@@ -1263,7 +1184,7 @@ class ReplayerRecoveryTest {
 
         assertEquals(1, logged.size());
         final String text = logged.get(0).message();
-        // Without these an operator cannot tell a refused node from one whose chain cannot cover the hole.
+        // Without these an operator cannot tell a refused node from one whose recording cannot cover the hole.
         assertTrue(text.contains("lastGlobalSeqNo=1"), text);
         assertTrue(text.contains("awaitingReplay=true"), text);
         assertTrue(text.contains("replayerUnavailable=true"), text);
@@ -1403,15 +1324,14 @@ class ReplayerRecoveryTest {
     }
 
     @Test
-    @DisplayName("with no local snapshot, the cold start asks nothing and walks the chain from segment 0")
-    void noSnapshotWalksFromSegmentZero() {
+    @DisplayName("with no local snapshot, the cold start asks nothing and walks the recording from its start")
+    void noSnapshotWalksFromTheStart() {
         startRestoring();
 
         assertEquals(0, actions.queriesSent);
         assertFalse(receiver.isRestoring());
         assertTrue(receiver.isAwaitingReplay());
-        assertEquals(0, receiver.walkSegmentIndex());
-        assertEquals(0, receiver.requestFromPosition());
+        assertEquals(FROM_START, receiver.requestFromPosition());
     }
 
     @Test
@@ -1431,7 +1351,7 @@ class ReplayerRecoveryTest {
         assertEquals(CUT, receiver.lastGlobalSeqNo());
         assertEquals(2, receiver.currentLeaderMemberId(), "the header's leader");
         assertTrue(receiver.isAwaitingReplay());
-        assertEquals(-1, receiver.walkSegmentIndex());
+        assertNotEquals(FROM_START, receiver.requestFromPosition());
         assertEquals(CUT * 1024, receiver.requestFromPosition());
 
         attachReplay(22, 64 * 1024);
@@ -1494,7 +1414,7 @@ class ReplayerRecoveryTest {
         assertEquals(1, actions.queriesSent, "nothing older to ask about");
         assertFalse(receiver.isRestoring());
         assertTrue(receiver.isAwaitingReplay());
-        assertEquals(0, receiver.walkSegmentIndex());
+        assertEquals(FROM_START, receiver.requestFromPosition());
     }
 
     @Test
@@ -1508,7 +1428,7 @@ class ReplayerRecoveryTest {
 
         deliverReplay(12); // not the anchor
 
-        assertEquals(-1, receiver.walkSegmentIndex(), "segment 0 holds nothing this instance may replay");
+        assertNotEquals(FROM_START, receiver.requestFromPosition(), "the start holds nothing this instance may replay");
         assertEquals(CUT * 1024, receiver.requestFromPosition());
         attachReplay(23, 64 * 1024);
         deliverReplayFrame(RestoreFrames.started(CUT, 2), CUT);
@@ -1584,8 +1504,8 @@ class ReplayerRecoveryTest {
     }
 
     @Test
-    @DisplayName("a restart with no snapshot to restore walks the chain from segment 0 again")
-    void restartWithoutASnapshotWalksFromSegmentZero() {
+    @DisplayName("a restart with no snapshot to restore walks the recording from its start again")
+    void restartWithoutASnapshotWalksFromTheStart() {
         deliverTap(1);
         deliverTap(2);
 
@@ -1594,8 +1514,7 @@ class ReplayerRecoveryTest {
         assertFalse(receiver.isCaughtUp());
         assertEquals(0, receiver.lastGlobalSeqNo());
         assertTrue(receiver.isAwaitingReplay());
-        assertEquals(0, receiver.walkSegmentIndex());
-        assertEquals(0, receiver.requestFromPosition());
+        assertEquals(FROM_START, receiver.requestFromPosition());
         attachReplay(21, 64 * 1024);
         deliverReplay(1);
         deliverReplay(2);
@@ -1663,19 +1582,15 @@ class ReplayerRecoveryTest {
 
     /** Drives the receiver to the caught-up, steady state a live consumer runs in. */
     private void goLive() {
-        answerReplaying(NO_REPLAY_NEEDED, 0, CHAIN_EXHAUSTED);
+        answerReplaying(NO_REPLAY_NEEDED, 0);
     }
 
     private void attachReplay(final long replaySessionId, final long catchUpPosition) {
-        answerReplaying(replaySessionId, catchUpPosition, 7);
+        answerReplaying(replaySessionId, catchUpPosition);
     }
 
     private void answerReplaying(final long replaySessionId, final long catchUpPosition) {
-        answerReplaying(replaySessionId, catchUpPosition, NO_RECORDING);
-    }
-
-    private void answerReplaying(final long replaySessionId, final long catchUpPosition, final long recordingId) {
-        receiver.onControl(replayingBuffer(receiver.requestId(), replaySessionId, catchUpPosition, recordingId), 0,
+        receiver.onControl(replayingBuffer(receiver.requestId(), replaySessionId, catchUpPosition), 0,
                            replayingLength());
     }
 
@@ -1708,8 +1623,8 @@ class ReplayerRecoveryTest {
             + LeadershipChangedEncoder.BLOCK_LENGTH, globalSeqNo * 1024, RECEIVE_NS, false);
     }
 
-    /** The replay image reaching the bound the Replayer gave it — how a segment completes. */
-    private void completeSegment() {
+    /** The replay image reaching the bound the Replayer gave it — how a replay completes. */
+    private void completeReplay() {
         receiver.onReplayPosition(receiver.catchUpPosition());
     }
 
@@ -1772,21 +1687,19 @@ class ReplayerRecoveryTest {
     }
 
     private static UnsafeBuffer replayingBuffer(final long requestId, final long replaySessionId,
-                                                final long catchUpPosition, final long recordingId) {
-        return replayingBuffer(CLIENT_ID, requestId, replaySessionId, catchUpPosition, recordingId);
+                                                final long catchUpPosition) {
+        return replayingBuffer(CLIENT_ID, requestId, replaySessionId, catchUpPosition);
     }
 
     private static UnsafeBuffer replayingBuffer(final int clientId, final long requestId,
-                                                final long replaySessionId, final long catchUpPosition,
-                                                final long recordingId) {
+                                                final long replaySessionId, final long catchUpPosition) {
         final UnsafeBuffer buffer = new UnsafeBuffer(new byte[256]);
         new ReplayingEncoder()
             .wrapAndApplyHeader(buffer, 0, new org.limitless.seqeron.sbe.replay.MessageHeaderEncoder())
             .clientId(clientId)
             .requestId(requestId)
             .replaySessionId(replaySessionId)
-            .catchUpPosition(catchUpPosition)
-            .recordingId(recordingId);
+            .catchUpPosition(catchUpPosition);
         return buffer;
     }
 

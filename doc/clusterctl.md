@@ -1,8 +1,8 @@
 # clusterctl
 
 `clusterctl` is the operator tool for a running cluster: it records start and stop markers in the log,
-shuts the cluster down, loads the deployment topology, promotes a gateway instance, and reads a node's
-counters. It does not launch or restart processes; `start-cluster.sh` or the deployment's own supervisor
+shuts the cluster down, loads the deployment topology, promotes a gateway instance, starts an application
+snapshot round, and reads a node's counters. It does not launch or restart processes; `start-cluster.sh` or the deployment's own supervisor
 does that.
 
 It runs on a cluster node. It uses that node's Aeron directory to reach the co-located tap over

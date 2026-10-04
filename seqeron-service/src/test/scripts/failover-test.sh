@@ -13,7 +13,7 @@
 # every frame on its tap exactly once, in order. The control sends untracked; its loss count is what the kill
 # had in flight, and is reported rather than asserted, since a kill can land between two frames.
 #
-# PASS iff the fresh client prints "following live", its ReplayerService served it >= 1 replay segment, and
+# PASS iff the fresh client prints "following live", its ReplayerService served it >= 1 replay, and
 # the PendingSends producer came out exact.
 #
 # Java only — no C++ binary is built or launched. The client is the
@@ -33,7 +33,7 @@ rm -rf "$LOG_DIR"; mkdir -p "$LOG_DIR"
 
 JAVA_OPTS=("${SEQERON_JAVA_OPTS[@]}")
 BASE_DIR="${TMP_DIR}/seqeron-seqfo"
-CLUSTER_MEMBERS="$(cluster_members_string 3)"
+CLUSTER_HOSTS="localhost,localhost,localhost"
 
 pkill -f SequencerServer 2>/dev/null; pkill -f ReplayerServer 2>/dev/null; pkill -f ClusterProbe 2>/dev/null
 sleep 1
@@ -43,7 +43,7 @@ rm -rf "$BASE_DIR" "${TMP_DIR}/seqeron-seq-aeron-0" "${TMP_DIR}/seqeron-seq-aero
 declare -a SEQ_PIDS
 for m in 0 1 2; do
   java "${JAVA_OPTS[@]}" -Dsequencer.memberId="$m" -Dsequencer.baseDir="$BASE_DIR" \
-       -Dsequencer.clusterMembers="$CLUSTER_MEMBERS" -jar "$JAR" > "$LOG_DIR/seq-$m.log" 2>&1 &
+       -Dsequencer.hosts="$CLUSTER_HOSTS" -jar "$JAR" > "$LOG_DIR/seq-$m.log" 2>&1 &
   SEQ_PIDS[$m]=$!
 done
 for m in 0 1 2; do
@@ -106,15 +106,15 @@ echo ""
 echo "=== RESULT ==="
 echo "--- Replayer (member $NEWLEADER) replay decisions for fresh client 9 ---"
 grep "replay for client 9" "$LOG_DIR/seq-$NEWLEADER.log" || echo "(none)"
-SEGMENTS=$(grep -c "replay for client 9" "$LOG_DIR/seq-$NEWLEADER.log")
-echo "segments served to client 9 : $SEGMENTS"
+REPLAYS=$(grep -c "replay for client 9" "$LOG_DIR/seq-$NEWLEADER.log")
+echo "replays served to client 9  : $REPLAYS"
 echo "fresh client caught up      : $CAUGHT"
 echo "PendingSends producer       : $(grep -h 'confirm:' "$LOG_DIR/confirm.log" | tail -1)"
 echo "untracked control           : $(grep -h 'confirm:' "$LOG_DIR/control.log" | tail -1)"
 ((CONTROL_RC != 0)) || echo "  (the control lost nothing: the kill had no frame in flight, so this run proved no recovery)"
 
 kill "$FRESH_PID" "${SEQ_PIDS[@]}" 2>/dev/null; wait 2>/dev/null
-if [[ "$CAUGHT" == "1" && "$SEGMENTS" -ge 1 && "$CONFIRM_RC" == "0" ]]; then
+if [[ "$CAUGHT" == "1" && "$REPLAYS" -ge 1 && "$CONFIRM_RC" == "0" ]]; then
   echo "CROSS-FAILOVER TEST: PASS"; exit 0
 else
   echo "CROSS-FAILOVER TEST: FAIL"; exit 1

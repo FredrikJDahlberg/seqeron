@@ -13,11 +13,17 @@ import org.agrona.concurrent.status.AtomicCounter;
  */
 public interface Replayer {
     /**
-     * Every tap recording the local archive holds, in whatever order it listed them — ordering and
-     * active-span selection are {@code ReplayerService}'s decisions ({@link ReplayRecordings#stitch}).
+     * One tap recording as read off an archive listing. {@code startPosition} is carried because a replay
+     * must start at or after it, though it is always 0 today.
+     */
+    record RecordingSpan(long recordingId, long startPosition, boolean active) { }
+
+    /**
+     * Every tap recording the local archive holds, in whatever order it listed them; which one is served is
+     * {@code ReplayerService}'s decision.
      * @return the recordings, possibly empty
      */
-    List<ReplayRecordings.RecordingSpan> listTapRecordings();
+    List<RecordingSpan> listTapRecordings();
 
     /**
      * Where a still-recording recording has reached.

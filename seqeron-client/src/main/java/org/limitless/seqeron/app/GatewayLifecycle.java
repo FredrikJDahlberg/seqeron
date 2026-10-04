@@ -39,9 +39,6 @@ final class GatewayLifecycle {
 
     /** What the lifecycle cannot do itself. */
     public interface Actions {
-        /** A {@code GatewayRegistered} row named this instance. */
-        void identityResolved(int gatewayId, int gatewaySourceId, int preferenceRank);
-
         /**
          * Publishes this instance's {@code GatewayStarted}.
          * @return whether it landed; false is back-pressure, retried on {@link #advance()}
@@ -111,7 +108,6 @@ final class GatewayLifecycle {
         }
         gatewayId = rowGatewayId;
         gatewaySourceId = rowGatewaySourceId;
-        actions.identityResolved(gatewayId, gatewaySourceId, preferenceRank);
     }
 
     /** A {@code GatewayActive}. One naming a sibling stands this instance down; another pair's is ignored. */

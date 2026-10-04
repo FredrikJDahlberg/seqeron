@@ -43,14 +43,14 @@ public final class AeronReplayer implements Replayer {
     }
 
     @Override
-    public List<ReplayRecordings.RecordingSpan> listTapRecordings() {
-        final List<ReplayRecordings.RecordingSpan> spans = new ArrayList<>();
+    public List<Replayer.RecordingSpan> listTapRecordings() {
+        final List<Replayer.RecordingSpan> spans = new ArrayList<>();
         archive.listRecordingsForUri(
             0, Integer.MAX_VALUE, "", FrameLayer.FEEDER_STREAM_ID,
             (controlSessionId, correlationId, recordingId, startTimestamp, stopTimestamp, startPosition, stopPosition,
              initialTermId, segmentFileLength, termBufferLength, mtuLength, sessionId, streamId, strippedChannel,
              originalChannel, sourceIdentity)
-                -> spans.add(new ReplayRecordings.RecordingSpan(recordingId, startPosition,
+                -> spans.add(new Replayer.RecordingSpan(recordingId, startPosition,
                                                                 stopTimestamp == AeronArchive.NULL_TIMESTAMP)));
         return spans;
     }

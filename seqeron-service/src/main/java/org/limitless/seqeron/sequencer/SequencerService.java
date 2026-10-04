@@ -21,6 +21,7 @@ import org.agrona.concurrent.status.CountersReader;
 import org.limitless.seqeron.protocol.FrameLayer;
 import org.limitless.seqeron.protocol.PortLayout;
 import org.limitless.seqeron.protocol.SeqeronCounters;
+import org.limitless.seqeron.replayer.server.NodeDriver;
 import org.limitless.seqeron.util.Clocks;
 import org.limitless.seqeron.util.Logger;
 
@@ -35,13 +36,6 @@ import org.limitless.seqeron.util.Logger;
  * recovery is always full-log replay, which is what keeps each node's recording complete.
  */
 public final class SequencerService implements ClusteredService {
-    /**
-     * Control-response stream of this service's archive client. Must not be 101, the cluster's IPC ingress
-     * stream, or archive replies misdecode as ingress; nor ReplayerServer's 120 on the same driver. Sharing
-     * SequencerServer's 121 is fine: the archive demuxes clients by controlSessionId.
-     */
-    private static final int ARCHIVE_CONTROL_RESPONSE_STREAM_ID = 121;
-
     /** How long {@link #onStart} waits for the archive to start recording the tap before refusing to start. */
     private static final long TAP_RECORDING_START_TIMEOUT_MS = 5_000;
 
@@ -123,7 +117,7 @@ public final class SequencerService implements ClusteredService {
                                                     .controlRequestChannel(PortLayout.ARCHIVE_CONTROL_CHANNEL)
                                                     .controlRequestStreamId(PortLayout.ARCHIVE_CONTROL_STREAM_ID)
                                                     .controlResponseChannel(PortLayout.ARCHIVE_CONTROL_CHANNEL)
-                                                    .controlResponseStreamId(ARCHIVE_CONTROL_RESPONSE_STREAM_ID)
+                                                    .controlResponseStreamId(NodeDriver.SEQUENCER_ARCHIVE_RESPONSE_STREAM_ID)
                                                     .lock(NoOpLock.INSTANCE));
             tapPub = cluster.context().aeron().addExclusivePublication(FrameLayer.FEEDER_CHANNEL, FrameLayer.FEEDER_STREAM_ID);
             aeronArchive.startRecording(FrameLayer.FEEDER_CHANNEL, FrameLayer.FEEDER_STREAM_ID, SourceLocation.LOCAL);
@@ -495,7 +489,7 @@ public final class SequencerService implements ClusteredService {
 
         @Override
         public void halt() {
-            Runtime.getRuntime().halt(SequencerServer.EXIT_TAP_FATAL);
+            Runtime.getRuntime().halt(NodeDriver.EXIT_FATAL);
         }
 
         @Override

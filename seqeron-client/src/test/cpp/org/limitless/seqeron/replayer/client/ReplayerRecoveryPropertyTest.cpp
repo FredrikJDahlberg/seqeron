@@ -70,9 +70,6 @@ constexpr int CHAOS_STEPS = 600;
 // Generous: convergence takes a bounded number of steps, and a run that needs them all still passes.
 constexpr int QUIESCE_STEPS = 20'000;
 
-// The walk terminator: nothing left to replay AND no recording named.
-constexpr std::int64_t CHAIN_EXHAUSTED = -1;
-
 // The restored source, and its snapshot: round 2, superseding round 1, cut at CUT.
 constexpr std::int32_t SOURCE = 3;
 constexpr std::int32_t OTHER_SOURCE = 5;
@@ -100,12 +97,6 @@ struct SilentLoggerSink final : diag::LoggerSink
     {}
 };
 
-// Where frame globalSeqNo starts. Frame 1 at 0, so the position after frame n is n*STRIDE.
-std::int64_t positionOf(const std::int64_t globalSeqNo)
-{
-    return (globalSeqNo - 1) * STRIDE;
-}
-
 // One frame carrying a ClusterHeartbeat — the cheapest well-formed frame there is, and the same one the
 // named suite uses.
 std::vector<std::uint8_t> encodeHeartbeat(const std::int64_t globalSeqNo)
@@ -125,16 +116,12 @@ std::vector<std::uint8_t> encodeHeartbeat(const std::int64_t globalSeqNo)
 }
 
 std::vector<std::uint8_t> encodeReplaying(const std::int64_t requestId, const std::int64_t replaySessionId,
-                                          const std::int64_t catchUpPosition, const std::int64_t recordingId)
+                                          const std::int64_t catchUpPosition)
 {
     std::vector<std::uint8_t> buf(64, 0);
     rpl::Replaying enc;
     enc.wrapAndApplyHeader(reinterpret_cast<char*>(buf.data()), 0, buf.size());
-    enc.clientId(CLIENT_ID)
-        .requestId(requestId)
-        .replaySessionId(replaySessionId)
-        .catchUpPosition(catchUpPosition)
-        .recordingId(recordingId);
+    enc.clientId(CLIENT_ID).requestId(requestId).replaySessionId(replaySessionId).catchUpPosition(catchUpPosition);
     buf.resize(enc.sbePosition());
     return buf;
 }
@@ -159,14 +146,6 @@ std::vector<std::uint8_t> encodeReplayUnavailable(const std::int64_t requestId)
     return buf;
 }
 
-// One recording in the chain. last < first while it holds nothing yet.
-struct Segment
-{
-    std::int64_t recordingId;
-    std::int64_t first;
-    std::int64_t last;
-};
-
 // One seeded run: the node's archive, its tap and its Replayer, driving one ReplayerRecovery.
 //
 // Implements ReplayerRecoveryActions itself — the client's every outbound act is a request arriving at this
@@ -187,7 +166,6 @@ struct Simulation final
         // History before the client starts. A cold start over an EMPTY archive that then drops the very
         // first tap frame is the one designed abort — the first frame observed must be globalSeqNo 1 — and
         // not a recovery failure, so the model does not construct it.
-        segments.push_back({ nextRecordingId++, 1, 0 });
         if (restoring)
         {
             publishSnapshotRounds();
@@ -286,11 +264,22 @@ struct Simulation final
         frames.emplace(publish(), std::move(frame));
     }
 
-    // A new active recording. A restoring run's starts at globalSeqNo 1 and already holds the log, as a
-    // restarted node's does once it has replayed it; a walk's only chain is the older model's.
+    // A new active recording, holding the log from globalSeqNo 1 as a restarted node's does once it has
+    // replayed it. A walk's may lay its frames out elsewhere — a frame or half a frame on — so a resume at an
+    // old position opens on another frame or is refused; a restoring run's keeps its positions, since a
+    // resume at the snapshot's position is its only way back.
     void rotate()
     {
-        segments.push_back({ nextRecordingId++, restoring ? 1 : tip + 1, tip });
+        if (!restoring)
+        {
+            positionBase += chance(50) ? STRIDE : STRIDE / 2;
+        }
+    }
+
+    // Where frame globalSeqNo starts in the active recording: frame 1 at its base.
+    std::int64_t positionOf(const std::int64_t globalSeqNo) const
+    {
+        return positionBase + (globalSeqNo - 1) * STRIDE;
     }
 
     void deliver(const std::int64_t globalSeqNo, const bool fromReplay)
@@ -372,8 +361,7 @@ struct Simulation final
 
     std::int64_t publish()
     {
-        segments.back().last = ++tip;
-        return tip;
+        return ++tip;
     }
 
     void deliverTap(const std::int64_t globalSeqNo)
@@ -393,7 +381,6 @@ struct Simulation final
         const std::int64_t requestId = pendingRequestId;
         const bool query = pendingIsQuery;
         const std::int64_t queryRound = pendingQueryRound;
-        const std::int32_t segmentIndex = pendingSegmentIndex;
         const std::int64_t fromPosition = pendingFromPosition;
         pendingRequestId = -1;
         if (requestId != recovery.requestId())
@@ -419,42 +406,28 @@ struct Simulation final
             return;
         }
 
-        if (segmentIndex < 0) // a resume, anchored on a position rather than a segment
+        if (fromPosition == protocol::REPLAYER_FROM_START)
         {
-            const Segment& active = segments.back();
-            const std::int64_t anchor = fromPosition / STRIDE + 1;
-            if (anchor < active.first || anchor > active.last)
-            {
-                // The position no longer sits in the active recording — it rotated under the client.
-                deliverControl(encodeReplaying(requestId, REPLAYER_NO_REPLAY_NEEDED, 0, CHAIN_EXHAUSTED));
-                return;
-            }
-            serveReplay(requestId, anchor, active.last, active.recordingId);
+            serveReplay(requestId, 1, tip);
             return;
         }
-        if (static_cast<std::size_t>(segmentIndex) >= segments.size())
+        const std::int64_t offset = fromPosition - positionBase;
+        if (offset < 0 || offset % STRIDE != 0 || offset / STRIDE + 1 > tip)
         {
-            deliverControl(encodeReplaying(requestId, REPLAYER_NO_REPLAY_NEEDED, 0, CHAIN_EXHAUSTED));
+            // Not a frame of the active recording — it rotated under the client, and the archive refuses it.
+            deliverControl(encodeReplaying(requestId, REPLAYER_NO_REPLAY_NEEDED, 0));
             return;
         }
-        const Segment& segment = segments[static_cast<std::size_t>(segmentIndex)];
-        if (segment.last < segment.first)
-        {
-            // Empty, not exhausted: the recording is named, which is what tells the two apart.
-            deliverControl(encodeReplaying(requestId, REPLAYER_NO_REPLAY_NEEDED, 0, segment.recordingId));
-            return;
-        }
-        serveReplay(requestId, segment.first, segment.last, segment.recordingId);
+        serveReplay(requestId, offset / STRIDE + 1, tip);
     }
 
     // Bound at the tip the recording holds NOW — frames published later are the tap's problem, not this
     // replay's, which is exactly how a bounded replay of an active recording behaves.
-    void serveReplay(const std::int64_t requestId, const std::int64_t fromSeqNo, const std::int64_t toSeqNo,
-                     const std::int64_t recordingId)
+    void serveReplay(const std::int64_t requestId, const std::int64_t fromSeqNo, const std::int64_t toSeqNo)
     {
         replayCursor = fromSeqNo;
         replayEndSeqNo = toSeqNo;
-        deliverControl(encodeReplaying(requestId, nextSessionId++, positionOf(toSeqNo + 1), recordingId));
+        deliverControl(encodeReplaying(requestId, nextSessionId++, positionOf(toSeqNo + 1)));
     }
 
     // Feeds up to count frames off the open replay, then reports where it has reached. Both the frames and
@@ -486,8 +459,7 @@ struct Simulation final
 
     // ── ReplayerRecoveryActions: the client's outbound side ───────────────────────────────────────────
 
-    void sendReplayRequest(const std::int64_t requestId, const std::int32_t segmentIndex,
-                           const std::int64_t fromPosition) override
+    void sendReplayRequest(const std::int64_t requestId, const std::int64_t fromPosition) override
     {
         if (chaos && chance(15))
         {
@@ -495,7 +467,6 @@ struct Simulation final
         }
         pendingRequestId = requestId;
         pendingIsQuery = false;
-        pendingSegmentIndex = segmentIndex;
         pendingFromPosition = fromPosition;
     }
 
@@ -611,16 +582,14 @@ struct Simulation final
     std::int64_t heartbeatSum = 0;
     std::int32_t nextRecordIndex = 0;
 
-    // the node's archive: the recording chain, complete by construction
-    std::vector<Segment> segments;
-    std::int64_t nextRecordingId = 0;
+    // the node's archive: the active recording, complete by construction
     std::int64_t tip = 0;
+    std::int64_t positionBase = 0; // where the active recording's frame 1 starts; a rotation may move it
 
     // the Replayer's view of this one client
     std::int64_t pendingRequestId = -1;
     bool pendingIsQuery = false;
     std::int64_t pendingQueryRound = -1;
-    std::int32_t pendingSegmentIndex = 0;
     std::int64_t pendingFromPosition = 0;
     std::int64_t nextSessionId = 1;
 
