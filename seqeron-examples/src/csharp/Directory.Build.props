@@ -1,0 +1,19 @@
+<Project>
+  <!-- The C# examples are consumers of seqeron, built outside its build: this file stops MSBuild reaching the
+       repo's own Directory.Build.props, and the one dependency is the published package, versioned from the
+       checkout this example ships in. An outside consumer writes the number instead. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <IsPackable>false</IsPackable>
+    <SeqeronVersion>$([System.IO.File]::ReadAllText('$(MSBuildThisFileDirectory)../../../VERSION').Trim())</SeqeronVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Org.Limitless.Seqeron" Version="[$(SeqeronVersion)]" />
+  </ItemGroup>
+</Project>

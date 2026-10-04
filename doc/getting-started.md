@@ -1,7 +1,7 @@
 # Getting started
 
-One node from a release, then a consumer and a producer against it, in Java. Needs JDK 21 and nothing
-from this repository's source.
+One node from a release, then a consumer and a producer against it, in Java — and the same two in C#
+(section 5). Needs JDK 21, the .NET 10 SDK for the C#, and nothing from this repository's source.
 
 ## 1. Start a node
 
@@ -69,7 +69,7 @@ public final class Follow {
         final String aeronDir = System.getProperty("java.io.tmpdir") + "/seqeron-seq-aeron-0";
         try (Aeron aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(aeronDir));
              ReplayerStreamReceiver receiver = new ReplayerStreamReceiver(
-                 17, // clientId: unique among the clients on this node
+                 23, // clientId: unique among the clients on this node
                  event -> System.out.printf("%d %s %d%n", event.globalSeqNo(),
                                             event.isSystem() ? "systemEventType" : "payloadId",
                                             event.isSystem() ? event.systemEventType() : event.payloadId()),
@@ -99,8 +99,8 @@ caught up
 
 `systemEventType` 16 is `ClusterHeartbeat`, which the cluster sequences once a second. Frames with a
 `payloadId` are application payloads, passed through unopened. `clientId` must be unique among the
-clients on one node, since two sharing one cannot both follow the stream. Ids 1–16 are this repository's
-own.
+clients on one node, since two sharing one cannot both follow the stream. Ids 1–22 and 31–36 are this
+repository's own.
 [`client-api.md`](client-api.md) covers the frame families and how to decode each.
 
 ## 4. Publish
@@ -126,7 +126,7 @@ public final class Hello implements Application.Listener {
         final Hello listener = new Hello();
         try (Aeron aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(aeronDir));
              Application app = Application.builder()
-                 .sourceId(SOURCE_ID).clientId(18).memberId(0)
+                 .sourceId(SOURCE_ID).clientId(24).memberId(0)
                  .egressChannel("aeron:udp?endpoint=localhost:0")
                  .listener(listener).build()) {
             app.start(aeron);
@@ -191,6 +191,101 @@ the log.
 Take `sourceId` and `payloadId` values no other producer uses. [The spec](seqeron-protocol-spec.md)
 holds both registries, §5 and §6.1.
 
+## 5. The same in C#
+
+```bash
+dotnet new console -o Follow && cd Follow
+dotnet add package Org.Limitless.Seqeron --version $V
+```
+
+The package is the node's release too, and it is on nuget.org from the release after 0.10.0. It names its
+Aeron.NET and SBE runtime versions exactly. Aeron.NET trails Aeron by a version, which
+[spec **V-1**](seqeron-protocol-spec.md) records as the one exception to running the same Aeron everywhere.
+`Program.cs`:
+
+```csharp
+using Adaptive.Aeron;
+using Adaptive.Agrona.Concurrent;
+using Org.Limitless.Seqeron.Replayer.Client;
+
+string aeronDir = Path.Combine(Path.GetTempPath(), "seqeron-seq-aeron-0");
+using Aeron aeron = Aeron.Connect(new Aeron.Context().AeronDirectoryName(aeronDir));
+using var receiver = new ReplayerStreamReceiver(
+    25, // clientId: unique among the clients on this node
+    e => Console.WriteLine($"{e.GlobalSeqNo} {(e.IsSystem ? "systemEventType" : "payloadId")} " +
+                           $"{(e.IsSystem ? e.SystemEventType : e.PayloadId)}"),
+    (leaderMemberId, leadershipTermId, globalSeqNo) =>
+        Console.WriteLine($"{globalSeqNo} leader is member {leaderMemberId}"),
+    () => Console.WriteLine("caught up"));
+receiver.Start(aeron, 0); // member 0
+var idle = new SleepingIdleStrategy(1); // ms
+while (true)
+{
+    idle.Idle(receiver.Poll());
+}
+```
+
+`dotnet run` prints what `Follow` does in Java. The producer is a second project, `Hello`, made the same way:
+
+```csharp
+using System.Diagnostics;
+using System.Text;
+using Adaptive.Aeron;
+using Adaptive.Agrona.Concurrent;
+using Org.Limitless.Seqeron.App;
+
+const int SourceId = 100;  // this producer, spec §5
+const int PayloadId = 100; // its payload encoding, spec §6.1
+
+string aeronDir = Path.Combine(Path.GetTempPath(), "seqeron-seq-aeron-0");
+byte[] hello = Encoding.ASCII.GetBytes("hello");
+var listener = new Hello(SourceId, PayloadId);
+using Aeron aeron = Aeron.Connect(new Aeron.Context().AeronDirectoryName(aeronDir));
+using var app = new Application(new ApplicationOptions {
+    SourceId = SourceId, ClientId = 26, MemberId = 0,
+    EgressChannel = "aeron:udp?endpoint=localhost:0", Listener = listener });
+app.Start(aeron);
+var idle = new SleepingIdleStrategy(1); // ms
+long next = 0;
+while (listener.Fence == null)
+{
+    int work = app.DoWork();
+    if (app.CanPublish && Stopwatch.GetTimestamp() >= next)
+    {
+        app.Publish(PayloadId, hello); // Declined: the next tick retries
+        next = Stopwatch.GetTimestamp() + Stopwatch.Frequency;
+    }
+    idle.Idle(work);
+}
+Console.Error.WriteLine(listener.Fence);
+
+sealed class Hello(int sourceId, int payloadId) : IApplicationListener
+{
+    public string? Fence { get; private set; }
+
+    public void OnSequenced(Payload payload)
+    {
+        if (payload.SourceId == sourceId && payload.PayloadId == payloadId)
+        {
+            string text = payload.Buffer.GetStringWithoutLengthAscii(payload.PayloadOffset, payload.PayloadLength);
+            Console.WriteLine($"{payload.GlobalSeqNo} {text}");
+        }
+    }
+
+    public void OnFenced(ClusterError fence, string detail) => Fence = fence + ": " + detail;
+
+    public void OnLeadershipChanged(bool leading) { }
+
+    public void OnCaughtUp(long globalSeqNo) { }
+
+    public void OnClusterHeartbeat(long clusterTimeNs, long receiveTimeNs) { }
+}
+```
+
+It does what `Hello` does in Java, through the same `Application`: an options object where Java has a
+builder, and `Publish` takes the bytes as they are, or a span. `clientId`s 25 and 26 are not 23 and 24, so
+both languages can follow one node at once.
+
 ## Next
 
 - **Three nodes.** The README's [Three-node cluster](../README.md#three-node-cluster) section, and
@@ -209,5 +304,5 @@ holds both registries, §5 and §6.1.
   target_link_libraries(my_app PRIVATE seqeron::seqeron_core)
   ```
 
-  [`seqeron-examples`](../seqeron-examples) has the same two programs in C++: `FollowStream.cpp` and
-  `ColocatedApp.cpp`.
+  [`seqeron-examples`](../seqeron-examples) has the same two programs in C++ and in C#: `FollowStream` and
+  `ColocatedApp`.

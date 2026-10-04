@@ -1,0 +1,14 @@
+<Project>
+  <!-- What ColocatedApp and GatewayApp are for: the front door is sufficient on its own. Compiling them proves
+       nothing on its own, since a reference to Sequencer.Client would compile too, so the source is the
+       assertion: it may name seqeron only as the App namespace and the Publish alias. seqeron's own
+       FacadeSurfaceTest checks the same claim from the inside. -->
+  <Target Name="CheckFacadeOnly" BeforeTargets="CoreCompile" Condition="'$(SeqeronFacadeOnly)' == 'true'">
+    <PropertyGroup>
+      <FacadeSource>$([System.IO.File]::ReadAllText('$(MSBuildProjectDirectory)/$(MSBuildProjectName).cs'))</FacadeSource>
+      <FacadeRest>$([System.Text.RegularExpressions.Regex]::Replace($(FacadeSource), 'Org\.Limitless\.Seqeron\.App\b|using Publish = Org\.Limitless\.Seqeron\.Protocol\.Publish;', ''))</FacadeRest>
+    </PropertyGroup>
+    <Error Condition="$(FacadeRest.Contains('Org.Limitless'))"
+           Text="$(MSBuildProjectName).cs must name only Org.Limitless.Seqeron.App and Protocol.Publish" />
+  </Target>
+</Project>

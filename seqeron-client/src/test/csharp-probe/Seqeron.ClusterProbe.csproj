@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- The C# twin of tools/ClusterProbe's confirm and follow modes, which csharp-client-test.sh drives. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <IsPackable>false</IsPackable>
+    <AssemblyName>Seqeron.ClusterProbe</AssemblyName>
+    <RootNamespace>Org.Limitless.Seqeron.Tools</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../main/csharp/Seqeron.Client.csproj" />
+  </ItemGroup>
+</Project>

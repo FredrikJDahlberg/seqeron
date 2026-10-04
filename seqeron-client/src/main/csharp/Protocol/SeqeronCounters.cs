@@ -1,3 +1,7 @@
+using System.Text;
+using Adaptive.Aeron;
+using Adaptive.Agrona.Concurrent;
+
 namespace Org.Limitless.Seqeron.Protocol;
 
 /// <summary>
@@ -131,4 +135,54 @@ public static class SeqeronCounters
 
     /// <summary>Length of an app or per-source counter's key: memberId, then clientId or sourceId.</summary>
     public const int AppKeyLength = 2 * sizeof(int);
+
+    /// <summary>Allocates an operator counter keyed on <paramref name="memberId"/>, so a reader recovers the member
+    /// without parsing the label.</summary>
+    /// <param name="aeron">the client to allocate it through</param>
+    /// <param name="typeId">its type id</param>
+    /// <param name="label">its label, US-ASCII</param>
+    /// <param name="memberId">the member it describes</param>
+    public static Counter AddCounter(Aeron aeron, int typeId, string label, int memberId)
+    {
+        using var key = new UnsafeBuffer(new byte[KeyLength]);
+        key.PutInt(KeyMemberIdOffset, memberId);
+        return Add(aeron, typeId, key, label);
+    }
+
+    /// <summary>Allocates an <b>app</b> counter keyed on <c>{memberId, clientId}</c>, the layout the Java and C++
+    /// twins write.</summary>
+    /// <param name="aeron">the client to allocate it through</param>
+    /// <param name="typeId">its type id, in the app range</param>
+    /// <param name="label">its label, US-ASCII</param>
+    /// <param name="memberId">the replica's node</param>
+    /// <param name="clientId">the replica's Replayer client id</param>
+    public static Counter AddAppCounter(Aeron aeron, int typeId, string label, int memberId, int clientId)
+    {
+        using var key = new UnsafeBuffer(new byte[AppKeyLength]);
+        key.PutInt(KeyMemberIdOffset, memberId);
+        key.PutInt(KeyClientIdOffset, clientId);
+        return Add(aeron, typeId, key, label);
+    }
+
+    /// <summary>Allocates a per-source counter keyed on <c>{memberId, sourceId}</c>, the app counters'
+    /// layout.</summary>
+    /// <param name="aeron">the client to allocate it through</param>
+    /// <param name="typeId">its type id</param>
+    /// <param name="label">its label, US-ASCII</param>
+    /// <param name="memberId">the member it describes</param>
+    /// <param name="sourceId">the source it describes</param>
+    public static Counter AddSourceCounter(Aeron aeron, int typeId, string label, int memberId, int sourceId)
+    {
+        using var key = new UnsafeBuffer(new byte[AppKeyLength]);
+        key.PutInt(KeyMemberIdOffset, memberId);
+        key.PutInt(KeySourceIdOffset, sourceId);
+        return Add(aeron, typeId, key, label);
+    }
+
+    private static Counter Add(Aeron aeron, int typeId, UnsafeBuffer key, string label)
+    {
+        byte[] labelBytes = Encoding.ASCII.GetBytes(label);
+        using var labelBuffer = new UnsafeBuffer(labelBytes);
+        return aeron.AddCounter(typeId, key, 0, key.Capacity, labelBuffer, 0, labelBytes.Length);
+    }
 }

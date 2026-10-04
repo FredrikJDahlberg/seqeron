@@ -6,9 +6,10 @@ namespace Org.Limitless.Seqeron.Util;
 
 /// <summary>
 /// Where Aeron.NET's buffers meet the SBE codecs. Agrona.NET pins every buffer it hands out, so a codec reads
-/// and writes the same bytes through the pointer, and nothing is copied.
+/// and writes the same bytes through the pointer, and nothing is copied. Public, as a consumer decoding a frame or
+/// payload with SBE codecs needs the same bridge.
 /// </summary>
-internal static unsafe class SbeBuffers
+public static unsafe class SbeBuffers
 {
     /// <summary>Points <paramref name="view"/> at <paramref name="length"/> bytes of <paramref name="source"/> from
     /// <paramref name="offset"/>.</summary>

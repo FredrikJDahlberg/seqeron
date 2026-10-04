@@ -1,7 +1,8 @@
 # Client API
 
 What a process that talks to a seqeron cluster programs against. It lives in the **client tier**: the
-`org.limitless:seqeron` artifact in Java and the `seqeron::seqeron_core` CMake target in C++. Everything
+`org.limitless:seqeron` artifact in Java, the `seqeron::seqeron_core` CMake target in C++ and the
+`Org.Limitless.Seqeron` package in C#. Everything
 in `seqeron-service` (the sequencer, the Replayer server, the tools, the metrics exporter) runs the
 cluster and is not for clients.
 
@@ -16,7 +17,9 @@ built on it.
 Laid out as Aeron's are: a component's server at its root, its client in `.client` beside it, and what
 both sides share in `protocol`. C++ uses the same directories and namespaces
 (`org::limitless::seqeron::sequencer::client`, …) for the client tier, which is all of it, plus a
-`detail` beneath a package for what Java makes package-private ([Not API](#not-api)).
+`detail` beneath a package for what Java makes package-private ([Not API](#not-api)). C# uses the same
+namespaces in PascalCase (`Org.Limitless.Seqeron.Sequencer.Client`, …) and makes `internal` what Java makes
+package-private.
 
 | Package | Tier | Holds |
 |---|---|---|
@@ -28,26 +31,33 @@ both sides share in `protocol`. C++ uses the same directories and namespaces
 | `sbe.frame`, `sbe.replay` | client | Generated codecs |
 | `sequencer`, `replayer.server`, `tools`, `metrics`, `sbe.probe` | node | The cluster itself; not for clients |
 
+C# has the Java classes under the Java names, in PascalCase, with properties where Java has getters. An
+interface takes an `I` (`IIngressTracker`, `ISnapshotRestoreHandler`, `ISnapshotListener`), and the three
+receiver callbacks are delegates. It has no `ClusterStreamClient`, and none of the node packages: like C++, it
+is the client tier alone.
+
 ## Getting it
 
 | | |
 |---|---|
 | Java | `org.limitless:seqeron`, versioned by `org.limitless:seqeron-bom`; the README's "Example consumer" has the JitPack coordinates |
 | C++ | `seqeron::seqeron_core`, header-only, from `FetchContent` over the checkout or `find_package(seqeron)` on an installed prefix |
+| C# | `Org.Limitless.Seqeron` on nuget.org, for `net10.0`, naming its Aeron.NET and SBE runtime versions exactly (spec **V-1**) |
 
 `seqeron-examples` builds against these, outside this repository's own build — `src/java` against the
-artifact and `src/cpp` against the CMake target. `FollowStream` is
+artifact, `src/cpp` against the CMake target and `src/csharp` against the package. `FollowStream` is
 the smallest complete client in each language; `ColocatedApp` is the same flow written against the
-[front door](#the-front-door-app) alone, in both languages, and its build fails if it names anything
-outside `app` beyond `protocol.Publish` (and, in C++, `util`, which Java takes from its own standard
-library).
+[front door](#the-front-door-app) alone, in all three, and its build fails if it names anything
+outside `app` beyond `protocol.Publish` (and, in C++, `util`, which Java and C# take from their own
+standard libraries and Agrona).
 
 `./gradlew :seqeron-client:javadoc` renders this surface from the sources, at
 `seqeron-client/build/docs/javadoc/`, and the same pages ship as the artifact's javadoc jar, so an IDE
 resolving `org.limitless:seqeron` shows them. Both leave out the generated SBE codecs, which carry no
 comment of their own — the schema is what documents them. The C++ counterpart is the CMake `docs` target
 (`cmake --build <build> --target docs`, into `<build>/docs/html`, Doxygen required), over the same surface:
-the headers, less `detail/` and the codecs.
+the headers, less `detail/` and the codecs. The C# package carries its XML docs beside the assembly, for an
+IDE, and a symbols package beside it.
 
 Each package states its own role in a `package-info.java`, so the table above is what the javadoc index
 and an IDE's package completion show without this page open — `app` says it is the front door, and
@@ -56,7 +66,7 @@ them. Keep the two in step: a package whose role changes here changes there.
 
 ## Consuming the ordered stream
 
-**`ReplayerStreamReceiver`** (`replayer.client`, both languages) is the entry point. It replays
+**`ReplayerStreamReceiver`** (`replayer.client`, every language) is the entry point. It replays
 this node's history through the co-located Replayer, switches to the live tap once caught up, heals gaps
 by itself, and delivers every frame once, in `globalSeqNo` order. A producer that takes a
 [façade](#the-front-door-app) does not construct one: the façade owns it and hands out `Payload`s.
@@ -68,15 +78,15 @@ by itself, and delivers every frame once, in `globalSeqNo` order. A producer tha
 unchanged. `Gateway` works there as it does on a member; `Application` needs
 [`offCluster`](#application), since no leadership there is its own.
 
-| Call | Java | C++ |
-|---|---|---|
-| construct | `(clientId, onSequenced, onLeadershipChanged, onCaughtUp)` | `(clientId, onSequenced, onConnected, onDisconnected, onLeadershipChanged, onCaughtUp)` |
-| restore a snapshot first | `restoreFrom(sourceId, SnapshotStore, SnapshotRestoreHandler)`, before `start` | `restoreFrom(sourceId, SnapshotStore&, SnapshotRestoreHandler&)`, before `start` |
-| attach | `start(aeron, memberId)` | `start(aeron, memberId)` |
-| each duty cycle | `poll()` | `poll()` |
-| start over | `restart()` | `restart()` |
-| state | `isCaughtUp()`, `lastGlobalSeqNo()`, `currentLeaderMemberId()`, `restoreFailure()` | the same; `restoreFailure()` is a `std::optional<std::string>` |
-| release | `close()` | destructor |
+| Call | Java | C++ | C# |
+|---|---|---|---|
+| construct | `(clientId, onSequenced, onLeadershipChanged, onCaughtUp)` | `(clientId, onSequenced, onConnected, onDisconnected, onLeadershipChanged, onCaughtUp)` | as Java, the callbacks delegates |
+| restore a snapshot first | `restoreFrom(sourceId, SnapshotStore, SnapshotRestoreHandler)`, before `start` | `restoreFrom(sourceId, SnapshotStore&, SnapshotRestoreHandler&)`, before `start` | `RestoreFrom(sourceId, SnapshotStore, ISnapshotRestoreHandler)`, before `Start` |
+| attach | `start(aeron, memberId)` | `start(aeron, memberId)` | `Start(aeron, memberId)` |
+| each duty cycle | `poll()` | `poll()` | `Poll()` |
+| start over | `restart()` | `restart()` | `Restart()` |
+| state | `isCaughtUp()`, `lastGlobalSeqNo()`, `currentLeaderMemberId()`, `restoreFailure()` | the same; `restoreFailure()` is a `std::optional<std::string>` | the same as properties; `RestoreFailure` is null when there is none |
+| release | `close()` | destructor | `Dispose()` |
 
 With `restoreFrom`, the cold start takes the newest snapshot file in the store that the log confirms — the
 Replayer holds the source's sequenced `SnapshotEnd` for its round, and the file matches it — and hands its
@@ -92,10 +102,11 @@ restored cut once more; a passive gateway instance's activation is what it is fo
 other's replays, and neither ever catches up. The co-located `ReplayerService` notices within a couple of
 seconds: it logs the collision, sets the `seqeron_replayer_client_id_collision` counter (type id 5108) and
 tells both replicas (spec **R-4**), whose next `poll()` then throws — `IllegalStateException` in Java,
-`std::runtime_error` in C++ — as does a façade's `doWork()`. It cannot tell which replica was there
+`std::runtime_error` in C++, `InvalidOperationException` in C# — as does a façade's `doWork()`. It cannot tell which replica was there
 first, so both stop. All calls belong to one thread.
 
-This repository's own processes use ids 1–16, so an application's replicas should start at 17:
+This repository's own processes use ids 1–22 and 31–36, so an application's replicas should start at 23 and
+skip those:
 
 | `clientId` | used by |
 |---|---|
@@ -107,10 +118,15 @@ This repository's own processes use ids 1–16, so an application's replicas sho
 | 11, 12 | `failover-test.sh`'s two producers |
 | 13, 14 | `seqeron-examples` `ColocatedApp`, Java then C++ |
 | 15, 16 | `seqeron-examples` `GatewayApp`, GW-EX-A then GW-EX-B |
+| 17, 18 | `seqeron-examples` `SnapshotApp`, Java then C++ |
+| 19 | `seqeron-examples` `FollowStream` (C#) |
+| 20 | `seqeron-examples` `ColocatedApp` (C#) |
+| 21, 22 | `seqeron-examples` `GatewayApp` (C#), GW-EX-CS-A then GW-EX-CS-B |
+| 31–36 | `csharp-client-test.sh`'s C# probes |
 
 **Where each frame arrives:**
 
-| Frame | Java | C++ |
+| Frame | Java and C# | C++ |
 |---|---|---|
 | `LeadershipChanged` | `onLeadershipChanged` only | `onLeadershipChanged` only |
 | `ConnectionOpened` / `ConnectionClosed` | `onSequenced`, `isSystem()` true | `onConnected` / `onDisconnected` (`LifecycleEvent`) only |
@@ -118,16 +134,16 @@ This repository's own processes use ids 1–16, so an application's replicas sho
 | application frame | `onSequenced` | `onSequenced` |
 
 C++ has the two extra callbacks because its receiver keeps the callback set `ClusterStreamClient` already
-had, so a consumer can swap one stream source for the other; the Java receiver is the only source there is
-and delivers both events through `onSequenced` like any other system frame. They carry a `LifecycleEvent`:
+had, so a consumer can swap one stream source for the other; the Java and C# receivers are the only source
+there is and deliver both events through `onSequenced` like any other system frame. They carry a `LifecycleEvent`:
 the frame's identity and its payload, which `decodeSystem<ConnectionOpened>(event)` reads `connectionData`
 from.
 
-A frame whose own callback is null (Java) or empty (C++) arrives in `onSequenced` instead, as a system
+A frame whose own callback is null (Java, C#) or empty (C++) arrives in `onSequenced` instead, as a system
 frame, so no frame is ever dropped and `globalSeqNo` has no holes. `onSequenced` itself is required: the
 constructor throws without it.
 
-**`SequencedEvent`** is what `onSequenced` receives — `replayer.client` in Java,
+**`SequencedEvent`** is what `onSequenced` receives — `replayer.client` in Java and C#,
 `protocol/SequencedFrame.hpp` in C++: a flyweight, valid only during the call. In Java it is a view over the
 `SequencedFrameDecoder` below and names every field as that decoder does, plus `receiveTimeNs()` and
 `position()`, which belong to the delivery rather than to the frame. All four types — both events and both
@@ -140,13 +156,16 @@ family first (`isSystem()`), then dispatch on `(payloadId, templateId)` for an a
 - C++: `decodeSystem<Decoder>(event)`, and `decodeSequenced<Decoder>(event)` for an application
   payload (`protocol/SequencedFrame.hpp`).
 - Java: `decoder.wrap(event.buffer(), event.payloadOffset(), Decoder.BLOCK_LENGTH, Decoder.SCHEMA_VERSION)`.
+- C#: `SbeBuffers.Wrap(view, event.Buffer, event.PayloadOffset, event.PayloadLength)`, then
+  `decoder.WrapForDecode(view, 0, Decoder.BlockLength, Decoder.SchemaVersion)`. The SBE runtime reads its own
+  `DirectBuffer`, not Agrona.NET's, and `util.SbeBuffers` points one at the same bytes without a copy.
 
 Both take the block length and version from the decoder's own compiled constants, for every system
 payload, submitted or synthesized: the payload carries no `MessageHeader`, and the event's `blockLength`
 and `version` are 0 on a system frame. `seqeron-examples` decodes a submitted `ConnectionOpened` and a
-synthesized `ClusterHeartbeat` in both languages.
+synthesized `ClusterHeartbeat` in all three.
 
-**`SequencedFrameDecoder`** (Java) and **`unwrapFrame`/`FrameView`** (C++) strip the envelope off a raw
+**`SequencedFrameDecoder`** (Java, C#) and **`unwrapFrame`/`FrameView`** (C++) strip the envelope off a raw
 tap frame. Use them to read frames without a receiver, for example from a recording.
 
 **`ClusterStreamClient`** (C++ only, `sequencer/client/ClusterStreamClient.hpp`) reads the sequenced stream
@@ -155,15 +174,15 @@ out of an Aeron Archive for bounded scans. It is not the live path.
 ## Producing
 
 A producer takes a [façade](#the-front-door-app) instead of the classes below and never sees them, in
-either language; this is what one is assembled from, and what a consumer writing its own duty cycle uses
+any language; this is what one is assembled from, and what a consumer writing its own duty cycle uses
 directly.
 
 | Class | Role |
 |---|---|
 | `ClusterStreamSender` | The cluster session. `connectColocated(aeron, memberId, …)` uses IPC ingress on the co-located member and falls back to UDP when that member is not leading; `connect(…)` uses UDP. Both take the UDP endpoint set, `"0=host:port,1=host:port,…"`, because the fallback and the reconnect both need it. The default (`PortLayout.ingressEndpoints()` in Java, `protocol::ingressEndpointsCsv()` in C++, both under `SEQERON_PORT_BASE`) is the members `SEQERON_HOSTS` names, else every member on `localhost`; `PortLayout.parseHosts` and `ingressEndpoints(List)` (C++ `parseHosts`, `ingressEndpointsCsv(hosts)`) build a set from any other list. C++ dials every member in the set at once and takes the first to answer, following a follower's redirect to the leader. `send` spins through back-pressure and elections. Call `keepAlive()` and `pollEgress()` every duty cycle. |
-| `IngressPublisher` | Encode and offer. Returns `protocol.Publish`: `Published`; `Refused` (above `MAX_PAYLOAD_LENGTH`, nothing offered, permanent); `Declined` (the transport's answer, worth retrying). Java: `publishPayload`/`publishSystem` on an instance, with the payload pre-encoded. C++: free functions templated on the encoder, filled through a `Fill`. |
+| `IngressPublisher` | Encode and offer. Returns `protocol.Publish`: `Published`; `Refused` (above `MAX_PAYLOAD_LENGTH`, nothing offered, permanent); `Declined` (the transport's answer, worth retrying). Java and C#: `publishPayload`/`publishSystem` on an instance, with the payload pre-encoded. C++: free functions templated on the encoder, filled through a `Fill`. |
 | `offerFrame` (C++) | Offers a frame the caller has already encoded, and is where both `publish*` functions end. Java's `publishPayload` takes payload bytes, so it carries any encoding; the C++ one is templated on an SBE encoder, and a payload with no schema at all (§13.2) is framed by the caller and offered here. It takes the same `IngressTracker`, so a hand-framed payload is confirmed like any other. |
-| `SystemFrame` (Java) | Wraps an encoded payload in its envelope and returns the length; the offer is yours. `IngressPublisher` uses it; call it directly only to place frames yourself. |
+| `SystemFrame` (Java, C#) | Wraps an encoded payload in its envelope and returns the length; the offer is yours. `IngressPublisher` uses it; call it directly only to place frames yourself. |
 | `PendingSends` | Confirmed ingress. A send that succeeds is not a frame sequenced, and a failover silently loses what the old leader had not committed. Give it to `IngressPublisher` as its tracker and to the sender with `setIngressHold`, feed it your own tap and each leadership term, and call `resendMissing`. Spec §16 A-4, A-5. |
 
 `IngressTracker` is the interface `PendingSends` implements, and `IngressSender` the one
@@ -173,19 +192,22 @@ directly.
 
 The assembled duty cycle, one façade per kind of producer, over the pieces above. A consumer that
 takes one of these writes its edge and its payloads, and nothing of the frame layer or of seqeron's
-system vocabulary appears in its code. Both languages have both façades, `app/Gateway.hpp` and
-`app/Application.hpp` in C++, with the same calls under the same names. The tables below use
-Java's signatures; C++ differs only here:
+system vocabulary appears in its code. Every language has both façades — `app/Gateway.hpp` and
+`app/Application.hpp` in C++ — with the same calls under the same names. The tables below use
+Java's signatures; C++ and C# differ only here:
 
-| | Java | C++ |
-|---|---|---|
-| construct | `Gateway.builder()…build()` | `Gateway<Listener>{ config, listener }`, where `Config` is an aggregate with one field per builder setter |
-| listener | implements `Gateway.Listener` | any type satisfying the `GatewayListener` / `ApplicationListener` concept |
-| ingress | `ingressEndpoints(…)`, defaulting to `PortLayout.ingressEndpoints()` | `Config::ingressEndpoints`, defaulting to `protocol::ingressEndpointsCsv()` |
-| `publish` / `reply` | payload bytes, its own `messageHeader` included | the same bytes, or `publish<Encoder>(…, fill)`, where `fill(Encoder&)` stamps an encoder already wrapped with its header |
-| payload body | `buffer()` at `bodyOffset()`/`bodyLength()` | `body()`/`bodyLength()`, or `decode<Decoder>()` |
-| headerless payload (§13.2) | `buffer()` at `payloadOffset()`/`payloadLength()` | `payload()`/`payloadLength()` |
-| release | `close()`, or try-with-resources | `close()` |
+| | Java | C++ | C# |
+|---|---|---|---|
+| construct | `Gateway.builder()…build()` | `Gateway<Listener>{ config, listener }`, where `Config` is an aggregate with one field per builder setter | `new Gateway(new GatewayOptions { … })`, one `init` property per builder setter; what `build()` requires is `required` |
+| listener | implements `Gateway.Listener` | any type satisfying the `GatewayListener` / `ApplicationListener` concept | implements `IGatewayListener` / `IApplicationListener` |
+| ingress | `ingressEndpoints(…)`, defaulting to `PortLayout.ingressEndpoints()` | `Config::ingressEndpoints`, defaulting to `protocol::ingressEndpointsCsv()` | `IngressEndpoints`, defaulting to `PortLayout.IngressEndpoints()` |
+| `publish` / `reply` | payload bytes, its own `messageHeader` included | the same bytes, or `publish<Encoder>(…, fill)`, where `fill(Encoder&)` stamps an encoder already wrapped with its header | the same bytes, or a `ReadOnlySpan<byte>`, copied once into a buffer the façade owns |
+| payload body | `buffer()` at `bodyOffset()`/`bodyLength()` | `body()`/`bodyLength()`, or `decode<Decoder>()` | `Buffer` at `BodyOffset`/`BodyLength` |
+| headerless payload (§13.2) | `buffer()` at `payloadOffset()`/`payloadLength()` | `payload()`/`payloadLength()` | `Buffer` at `PayloadOffset`/`PayloadLength` |
+| release | `close()`, or try-with-resources | `close()` | `Dispose()`, or `using` |
+
+The options classes and listener interfaces are top-level types in C#, where Java nests its builders and
+listeners, as .NET's design guidelines keep public types out of one another.
 
 Bytes are the only form Java has, because Java's SBE codecs share no interface; a payload with no schema at
 all needs them in either language.
@@ -195,7 +217,7 @@ A façade's whole surface is `app` plus `protocol.Publish`, which `publish` and 
 façade does not mean importing from `sequencer.client`; the builders' `ingressEndpoints` defaults to
 `PortLayout.ingressEndpoints()`, so a deployment on the default port block names nothing outside `app` at
 all. Everything else a listener sees — `Payload`, `ClusterError` — is `app`'s own, and `FacadeSurfaceTest` is what
-fails the build when that stops holding.
+fails the build when that stops holding, in Java and in C#.
 
 **`Payload`** is what `onSequenced` receives: the envelope is off, and `bodyOffset()`/`bodyLength()` take
 the payload's own `MessageHeader` off too, which is where an SBE decoder wraps (C++: `body()`, or
@@ -278,7 +300,8 @@ off a local clock. Between ticks, every payload carries its own `clusterTimestam
 
 `seqeron-service/src/test/java/org/limitless/seqeron/tools/TestGateway.java` is the reference consumer; its C++
 twin is `seqeron-examples/src/cpp/GatewayApp.cpp`, a pair with one simulated connection, loaded from
-`seqeron-examples/topology.xml`.
+`seqeron-examples/topology.xml`. The C# `seqeron-examples/src/csharp/GatewayApp` runs a pair of its own from
+`seqeron-examples/topology-csharp.xml`, and `csharp-client-test.sh` hands that pair over.
 
 ### `Application`
 
@@ -302,9 +325,10 @@ closes for one cycle on every leadership change; ingress is UDP alone. Nothing e
 instances, and the sequencer does not refuse a second one's payloads, so run exactly one. An application
 that needs a standby off the cluster is a `Gateway`.
 
-`seqeron-examples/src/java/example/ColocatedApp.java` and its C++ twin `ColocatedApp.cpp` are the
-reference consumers, and the only clients in the repository whose builds refuse anything outside `app`
-(`checkFacadeOnly`, and the same check in `seqeron-examples/CMakeLists.txt`).
+`seqeron-examples/src/java/example/ColocatedApp.java` and its twins, `ColocatedApp.cpp` and
+`src/csharp/ColocatedApp`, are the reference consumers, and with the two `GatewayApp`s the only clients in the
+repository whose builds refuse anything outside `app` (`checkFacadeOnly`, the same check in
+`seqeron-examples/CMakeLists.txt`, and `src/csharp/Directory.Build.targets`).
 
 **Snapshots** (`doc/snapshot.md`). The builder's `snapshotListener(SnapshotListener)` (C++
 `Config::snapshotListener`, a `SnapshotListener*` that must outlive the replica) makes the application take part in snapshot rounds, if its topology row also says `snapshot="true"`; without one it
@@ -324,8 +348,10 @@ listener restores the newest snapshot file of its own that the log confirms befo
 the order `onSnapshot` encoded them, and then dispatches from the frame after the cut. `recordIndex` 0 is
 where the state is cleared. With no confirmed file the replica replays from `globalSeqNo` 1. A snapshot whose
 `formatVersion` differs from the listener's, or whose file is damaged, fences the replica with
-`SNAPSHOT_UNRESTORABLE` (C++ `ClusterError::SnapshotUnrestorable`; the divergence fence is
-`ClusterError::SnapshotDiverged`).
+`SNAPSHOT_UNRESTORABLE` (C++ and C# `ClusterError::SnapshotUnrestorable`; the divergence fence is
+`ClusterError::SnapshotDiverged`). C#'s `ISnapshotListener` has `FormatVersion` as a property, and takes
+`OnSnapshot(IMutableDirectBuffer, int)` and `OnRestore(IDirectBuffer, int length, int recordIndex)` as Java
+does.
 
 `Listener` adds `onLeadershipChanged(boolean leading)` where `Gateway` has `onActivated`/`onStandby`, and
 carries the same `onSequenced`/`onCaughtUp`/`onClusterHeartbeat`/`onFenced`. It has no connection
@@ -343,8 +369,8 @@ copying; each builder takes overrides.
 
 The decisions the façades are assembled from — pure state machines, each with a Java and a C++ twin, each
 doing no I/O. Only the one below is offered. The election, the leader gate and the two stall fences are
-package-private in Java, the façades being the only thing that assembles them; their C++ twins are in
-`app::detail`, which is how C++ spells the same thing (see [Not API](#not-api)). Confirmed ingress, the one block a duty cycle of your own does need, sits in
+package-private in Java and `internal` in C#, the façades being the only thing that assembles them; their C++
+twins are in `app::detail`, which is how C++ spells the same thing (see [Not API](#not-api)). Confirmed ingress, the one block a duty cycle of your own does need, sits in
 [`sequencer.client`](#producing) beside the `IngressTracker` it implements.
 
 | Class | For |
@@ -355,8 +381,8 @@ package-private in Java, the façades being the only thing that assembles them; 
 
 | Where | What |
 |---|---|
-| `FrameLayer` (Java), `SequencedFrame.hpp` (C++) | The tap's identity (`FEEDER_STREAM_ID` 205) and the size limits of spec §12; in Java also the heartbeat interval |
-| `SystemFrame` (Java), `SequencedFrame.hpp` (C++) | The `systemEventType` values |
+| `FrameLayer` (Java, C#), `SequencedFrame.hpp` (C++) | The tap's identity (`FEEDER_STREAM_ID` 205) and the size limits of spec §12; in Java also the heartbeat interval |
+| `SystemFrame` (Java, C#), `SequencedFrame.hpp` (C++) | The `systemEventType` values |
 | `PortLayout` | The cluster's port block, each member's ingress endpoint, the endpoint set a producer connects with (`ingressEndpoints()`, or `ingressEndpoints(parseHosts("h0,h1,h2"))`; C++ `ingressEndpointsCsv`), and the co-located archive's control link; honours `SEQERON_PORT_BASE` and `SEQERON_HOSTS` |
 | `ReplayProtocol` | The replay protocol's channel and stream ids, and `NO_REPLAY_NEEDED` |
 | `Publish` | What a publish did — `Published`, `Refused` (permanent), `Declined` (retryable); returned by `IngressPublisher` and by both façades' `publish` |
@@ -364,15 +390,16 @@ package-private in Java, the façades being the only thing that assembles them; 
 ## Wire codecs
 
 The generated SBE codecs for `sbe-frame.xml` (`org.limitless.seqeron.sbe.frame` in Java,
-`org_limitless_seqeron_sbe_frame` in C++) are API because the schema is. A producer encodes system payloads
+`org_limitless_seqeron_sbe_frame` in C++, `Org.Limitless.Seqeron.Sbe.Frame` in C#) are API because the schema is. A producer encodes system payloads
 with them and a consumer decodes them. They change only when the protocol does, and spec **V-3** governs
 how. The `sbe-replay.xml` codecs also ship, but only `ReplayerStreamReceiver` speaks that protocol.
 
 ## Support code
 
-`util` (`Logger`, `IdleStrategies`/`IdleStrategy.hpp`, `Clocks`, and `Env.hpp` in C++) and `protocol`'s
-`SeqeronCounters` ship in the client tier because the classes above use them. You may use them, but they
-are infrastructure rather than what seqeron offers, and they carry no promise of stability.
+`util` (`Logger`, `IdleStrategies`/`IdleStrategy.hpp`, `Clocks`, `Env.hpp` in C++ and `SbeBuffers` in C#) and
+`protocol`'s `SeqeronCounters` ship in the client tier because the classes above use them. You may use them,
+but they are infrastructure rather than what seqeron offers, and they carry no promise of stability.
+`SbeBuffers` is the exception: a C# consumer decoding with SBE codecs needs it (above).
 `Clocks.monotonicMs()` is what every duty-cycle deadline here is measured against; C++ has no twin,
 since `nowMs()` is a free function in the one header that needs it.
 
@@ -391,5 +418,8 @@ signature that names one is a test seam. Don't build on them:
   `TapStallFence`. In Java these are package-private, and `FacadeSurfaceTest` fails the build if a public
   signature names one. Beside them, `makePayload`: it builds the `Payload` a façade would hand a listener,
   so a consumer can unit-test its own handlers.
+- In C#, everything `internal`: the same blocks as Java's package-private ones. The test assembly reaches them
+  through `InternalsVisibleTo`, and `FacadeSurfaceTest` fails the build if a public signature names a public
+  type outside `App` beyond `Publish`, `Aeron` and the two buffer interfaces.
 - Everything in `seqeron-service`: `Sequencer`, `SequencerService`, `SequencerServer`, `TapPublisher`,
   `replayer.server`, `tools`, `MetricsExporter`.

@@ -143,8 +143,9 @@ and designates bootstrap instances only once.
 after `GATEWAY_ACTIVATION_TIMEOUT_MS` (5 s), passes the role to its standby, and times out again,
 adding one `GatewayActive` frame every 5 s for the life of the cluster to a log that recovery replays in
 full. The test harnesses load `seqeron-service/src/test/resources/topology-test-gateway.xml`
-(`snapshot-test.sh` `topology-test-snapshot.xml`, which adds the `TestApplication` replicas it starts), and the
-C++ gateway example loads `seqeron-examples/topology.xml`, each listing only what it starts.
+(`snapshot-test.sh` `topology-test-snapshot.xml`, which adds the `TestApplication` replicas it starts), the
+C++ gateway example loads `seqeron-examples/topology.xml` and the C# one `seqeron-examples/topology-csharp.xml`
+(as `csharp-client-test.sh` does), each listing only what it starts.
 
 ### counters
 

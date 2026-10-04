@@ -1,0 +1,6 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- The low-level consumer: the receiver, the sender and the frame codecs, with no façade. -->
+  <PropertyGroup>
+    <RootNamespace>Example</RootNamespace>
+  </PropertyGroup>
+</Project>

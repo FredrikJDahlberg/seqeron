@@ -77,6 +77,11 @@ consumer side of everything above — `ClusterStreamSender` (the cluster client 
 `SequencedFrame` (the envelope), `PortLayout`, and the pure policy classes. There is **no C++ replay
 server**; the server side of the replay protocol is Java only.
 
+The **C# half is the same client tier again**, on Aeron.NET: the Java client classes under the Java names,
+both façades included, published as the `Org.Limitless.Seqeron` NuGet package. A C# process attaches to a
+member's media driver, or a gateway host's, as any other client does. Aeron.NET trails Aeron by a version,
+which the spec's **V-1** records as the one exception to running the same Aeron everywhere.
+
 ### Fundamental properties
 
 - **The cluster parses no application payload.** Every ingress message is an `Unsequenced` frame
@@ -110,7 +115,8 @@ covers what survives node loss, failover, a stuck archive and a lost frame.
 
 ## Build
 
-Requires **JDK 21** for the Java half and a **C++23** compiler for the C++ one, and fetches Aeron
+Requires **JDK 21** for the Java half, a **C++23** compiler for the C++ one and the **.NET 10 SDK** for the
+C# one, and fetches Aeron
 1.53.2 and GoogleTest from source — Aeron only when `find_package` finds no installed one at that
 version or newer (built with `-DAERON_INSTALL_TARGETS=ON`, on `CMAKE_PREFIX_PATH`). The C++ half needs no JDK of seqeron's own making: the codecs for
 the three schemas this repo owns are generated and committed under `seqeron-client/src/main/generated/sbe/core`, so
@@ -159,11 +165,25 @@ references, C++ and Java, are published for the latest release at https://fredri
 `-DSEQERON_COVERAGE=ON` adds coverage instrumentation. The tree is developed on macOS/arm64 with
 Apple clang; CI builds it on Ubuntu with both clang and gcc-14.
 
+### C#
+
+```bash
+dotnet build seqeron-client/src/main/csharp/Seqeron.Client.csproj
+dotnet pack -c Release -o build/nuget seqeron-client/src/main/csharp/Seqeron.Client.csproj
+```
+
+A standalone `dotnet` build, versioned from `VERSION` and pinned by `versions.properties` like the other two.
+The frame and replay codecs are committed under `seqeron-client/src/main/generated/sbe/csharp`, so it needs
+no JDK; `./gradlew :seqeron-client:generateCSharpFrameSbe :seqeron-client:generateCSharpReplaySbe` rewrites
+them after a schema change, and `checkCSharpSbeCurrent` fails CI until they are. The pack is what
+`seqeron-examples/src/csharp` builds against, and what a release pushes to nuget.org.
+
 ## Tests
 
 ```bash
 cmake --build cmake-build-debug --target run_tests   # C++: 259 cases
 ./gradlew test                                       # Java: 408 cases
+dotnet test --project seqeron-client/src/test/csharp/Seqeron.Client.Tests.csproj   # C#: 298 cases
 ```
 
 `run_tests` is `ctest --output-on-failure` with the build dependency wired up; plain `ctest` works
@@ -203,12 +223,12 @@ writes the distribution to `build/install/seqeron` — `bin/` (these scripts), `
 | `metrics-exporter.sh` | The Prometheus ops plane ([`doc/ops.md`](doc/ops.md)) |
 | `purgelog.sh [--force]` | Delete archive/cluster directories under `$TMPDIR/seqeron-seq` and the `logs/` directory; the cluster must be stopped first |
 
-The end-to-end harnesses live under `seqeron-service/src/test/scripts/`. **Eight of the nine are
+The end-to-end harnesses live under `seqeron-service/src/test/scripts/`. **Eight of the ten are
 Java-only** — they drive the cluster through `ClusterProbe` or `TestGateway`, which attach to a member's own embedded
 media driver or a gateway host's, so six of them need no standalone `aeronmd` at all. Each brings a cluster up and tears
 it down again; run them from the repository root, with `./gradlew uberJar` done first. The ninth,
 `docker-failover-test.sh`, is the containerized one and wants `./gradlew operatorDist` and Docker
-instead.
+instead, and the tenth, `csharp-client-test.sh`, drives the C# client and wants the .NET SDK beside the jar.
 
 | Script | Purpose |
 |--------|---------|
@@ -221,6 +241,7 @@ instead.
 | `chaos-runner.sh` | Randomized fault injection against a live 3-node cluster, with the `TestGateway` pair (`GW-T-A`/`GW-T-B`, ports 9200/9201) taking load through its accept gate; every run prints its `SEED` to replay the exact fault sequence. Needs `./gradlew uberJar compileTestJava` |
 | `snapshot-test.sh` | Application snapshots against a live 3-node cluster: the `TestGateway` pair and a `TestApplication` replica per member take part in rounds every 2 s, and the script restarts the standby, fails over onto the restored instance, brings the other back passive and activates it, starts a round with `clusterctl request-snapshot`, restarts a follower's replica, and kills the cluster leader. Every restore must reach the state the log implies and no instance may diverge from a sequenced round. Needs `./gradlew uberJar compileTestJava` |
 | `docker-failover-test.sh` | Multi-round containerized failover soak — the `docker/compose.yml` port of `failover-test.sh`. `ROUNDS` (15) kills under continuous `ProbeMarker` load, restoring the killed member between them, so each rejoin replays a Raft log that grew under the previous rounds. Asserts every round is a genuine leadership change, that a long-lived observer on each surviving node keeps delivering in order across all of them, and that a cold-start probe replays the whole multi-tenure history at the end. Needs Docker and `./gradlew operatorDist`; `ROUNDS=3` for a quick local run. CI runs it as `failover.yml` |
+| `csharp-client-test.sh` | The C# client tier against a live 3-node cluster: UDP and IPC ingress, the fallback to UDP on a follower, `PendingSends` exactly-once across a leader kill, a cold start replayed from `globalSeqNo` 1, then the C# examples built from the packed package — `FollowStream`, `ColocatedApp`, and a `GatewayApp` pair handed over when its active instance is killed. Rerun on every Aeron upgrade (spec V-1). Needs the .NET SDK (`DOTNET` names one off the `PATH`) |
 | `replay-bench.sh <preload> [load-during]` | How fast a cold replica replays recorded history to caught-up; prints archive size, elapsed seconds and MB/s |
 
 ## Sequencer
