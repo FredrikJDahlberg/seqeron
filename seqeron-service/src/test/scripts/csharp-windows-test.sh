@@ -63,7 +63,7 @@ wsl_run pkill -9 -f "sequencer.memberId=" 2>/dev/null
 wsl_run rm -rf /tmp/seqeron-seq /tmp/seqeron-seq-aeron-0 /tmp/seqeron-seq-aeron-1 /tmp/seqeron-seq-aeron-2
 for m in 0 1 2; do
   wsl_run java "${JAVA_OPTS[@]}" -Dsequencer.memberId="$m" -Dsequencer.baseDir=/tmp/seqeron-seq \
-    -jar "$WSL_JAR" > "$LOG_DIR/seq-$m.log" 2>&1 &
+    -Dsequencer.hosts="$(cluster_hosts_string 3)" -jar "$WSL_JAR" > "$LOG_DIR/seq-$m.log" 2>&1 &
 done
 GATEWAY_HOST_PID=""
 declare -a CLIENT_PIDS=()
