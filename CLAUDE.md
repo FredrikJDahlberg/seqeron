@@ -204,7 +204,9 @@ POSIX-only assumptions. `Directory.Build.props` at the root reads `versions.prop
 versioned with the jars. It is `Org.Limitless.Seqeron` on nuget.org, pushed by `release.yml` with its symbols
 and XML docs, and it names its dependencies exactly. The C# examples (`seqeron-examples/src/csharp`) resolve
 it from `build/nuget` rather than the source tree; NuGet serves a cached copy of a version it has seen, so
-delete `~/.nuget/packages/org.limitless.seqeron` after re-packing an unchanged one.
+delete `~/.nuget/packages/org.limitless.seqeron` after re-packing an unchanged one. The API reference is
+Doxygen over the public types, `doc/site/csharp.Doxyfile`, which `pages.yml` renders beside the Java and C++
+ones.
 
 **Aeron, Agrona and SBE versions are pinned once**, in `versions.properties` — `build.gradle` loads it,
 `CMakeLists.txt` parses it and `Directory.Build.props` reads it. The two sides generate independently from the same schemas and speak

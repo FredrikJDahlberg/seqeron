@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
-<meta name="description" content="API reference for seqeron @VERSION@, the Aeron Cluster sequencing tier, in Java and C++.">
+<meta name="description" content="API reference for the client tier of seqeron @VERSION@, the Aeron Cluster sequencing tier.">
 <title>seqeron @VERSION@ API</title>
 <style>
   :root {
@@ -134,12 +134,21 @@ FetchContent_MakeAvailable(seqeron)
 target_link_libraries(my_app PRIVATE seqeron::seqeron_core)</code></pre>
       <a class="button" href="cpp/">C++ API reference</a>
     </section>
+
+    <!-- csharp -->
+    <section class="card">
+      <h2>C#</h2>
+      <p>The <code>Org.Limitless.Seqeron</code> package on nuget.org, on Aeron.NET, with its XML docs and symbols.</p>
+<pre><code>dotnet add package Org.Limitless.Seqeron --version @VERSION@</code></pre>
+      <a class="button" href="csharp/">C# API reference</a>
+    </section>
+    <!-- /csharp -->
   </div>
 
   <h2 class="section">Read next</h2>
   <ul class="reading">
     <li><a href="https://github.com/FredrikJDahlberg/seqeron/blob/@TAG@/doc/getting-started.md">Getting started</a><span>: a node from a release, then a consumer and a producer against it</span></li>
-    <li><a href="https://github.com/FredrikJDahlberg/seqeron/blob/@TAG@/doc/client-api.md">Client API</a><span>: where to start in both languages, and what in the client tier is not API</span></li>
+    <li><a href="https://github.com/FredrikJDahlberg/seqeron/blob/@TAG@/doc/client-api.md">Client API</a><span>: where to start in each language, and what in the client tier is not API</span></li>
     <li><a href="https://github.com/FredrikJDahlberg/seqeron/tree/@TAG@/seqeron-examples">Examples</a><span>: the smallest complete clients, one per language</span></li>
     <li><a href="https://github.com/FredrikJDahlberg/seqeron/blob/@TAG@/doc/seqeron-protocol-spec.md">Protocol specification</a><span>: the frames, the two families and the system vocabulary</span></li>
     <li><a href="https://github.com/FredrikJDahlberg/seqeron/blob/@TAG@/doc/fault-tolerance.md">Fault tolerance</a><span>: node loss, leader failover, and how each part gets back to a correct state</span></li>

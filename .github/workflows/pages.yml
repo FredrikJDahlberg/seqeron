@@ -1,6 +1,7 @@
 name: pages
 
-# The client tier's API reference, Javadoc and Doxygen, at https://fredrikjdahlberg.github.io/seqeron/.
+# The client tier's API reference, Javadoc for Java and Doxygen for C++ and C#, at
+# https://fredrikjdahlberg.github.io/seqeron/.
 # Nothing is committed: each run renders one tag and replaces the whole site, so it shows that release only.
 # Its own workflow rather than a release.yml job so a tag's pages can be republished by hand — run it from
 # the Actions tab on main and name the tag. The tag supplies the sources and this file the steps, so a tag
@@ -73,6 +74,15 @@ jobs:
             doc/site
             doc/branding
 
+      # Its Doxyfile is this workflow's, like the page, and reads the tag's sources. A tag cut before the C#
+      # client has none, and its page drops the C# card.
+      - name: Render C#
+        run: |
+          if [ -d seqeron-client/src/main/csharp ]; then
+            mkdir -p build/docs
+            SEQERON_SITE=site-src/doc/site SEQERON_VERSION="$(cat VERSION)" doxygen site-src/doc/site/csharp.Doxyfile
+          fi
+
       - name: Assemble the site
         env:
           TAG: ${{ inputs.tag || github.ref_name }}
@@ -80,8 +90,15 @@ jobs:
           mkdir site
           cp -R seqeron-client/build/docs/javadoc site/java
           cp -R cmake-build-docs/docs/html site/cpp
+          drop_csharp=''
+          if [ -d build/docs/csharp/html ]; then
+            cp -R build/docs/csharp/html site/csharp
+          else
+            drop_csharp='/<!-- csharp -->/,/<!-- \/csharp -->/d'
+          fi
           cp site-src/doc/branding/seqeron-wordmark.svg site-src/doc/branding/seqeron-wordmark-dark.svg site/
-          sed -e "s/@VERSION@/$(cat VERSION)/g" -e "s/@TAG@/${TAG}/g" site-src/doc/site/index.html > site/index.html
+          sed -e "$drop_csharp" -e "s/@VERSION@/$(cat VERSION)/g" -e "s/@TAG@/${TAG}/g" \
+            site-src/doc/site/index.html > site/index.html
 
       - uses: actions/upload-pages-artifact@v5
         with:

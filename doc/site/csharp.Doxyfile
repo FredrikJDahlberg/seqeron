@@ -1,0 +1,24 @@
+# The C# client's API reference, the counterpart of the javadoc and the C++ `docs` target. Run from the
+# repository root, with SEQERON_SITE naming this directory and SEQERON_VERSION the release:
+#   mkdir -p build/docs && SEQERON_SITE=doc/site SEQERON_VERSION=$(cat VERSION) doxygen doc/site/csharp.Doxyfile
+# It renders into build/docs/csharp/html. `internal` types are left out, as are the generated codecs, which
+# live outside the source tree it reads.
+PROJECT_NAME           = seqeron
+PROJECT_NUMBER         = $(SEQERON_VERSION)
+OUTPUT_DIRECTORY       = build/docs/csharp
+INPUT                  = seqeron-client/src/main/csharp $(SEQERON_SITE)/csharp-mainpage.md
+USE_MDFILE_AS_MAINPAGE = $(SEQERON_SITE)/csharp-mainpage.md
+FILE_PATTERNS          = *.cs
+RECURSIVE              = YES
+EXCLUDE_PATTERNS       = */bin/* */obj/* */TestResults/*
+STRIP_FROM_PATH        = seqeron-client/src/main/csharp
+EXTRACT_ALL            = YES
+EXTRACT_PACKAGE        = NO
+# Doxygen reads a C# `static class` as file-local, as it would in C, and drops its page without this.
+EXTRACT_STATIC         = YES
+# Public, but nested in an internal class, which Doxygen does not propagate.
+EXCLUDE_SYMBOLS        = *GatewayLifecycle*
+WARN_IF_UNDOCUMENTED   = NO
+GENERATE_TREEVIEW      = YES
+GENERATE_LATEX         = NO
+QUIET                  = YES

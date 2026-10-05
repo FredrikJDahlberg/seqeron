@@ -56,13 +56,14 @@ Features
   on Aeron.NET), written as ports of one another, with their core state machines tested case for case in
   every language. All three exchange the same frames, encoded with Simple Binary Encoding (SBE).
 
-What it costs
--------------
+Limitations
+-----------
 
-- **No cluster snapshots.** A node's recovery is a full replay of the Raft log from `globalSeqNo` 1. That
-  is what keeps every node's recording complete, but recovery time and archive size grow with uptime; the
-  heartbeat alone is about 86,400 frames a day. Application snapshots shorten a client's restart, not a
-  node's.
+- **No cluster snapshots.** Cluster node snapshots are not yet implemented
+  ([design](doc/snapshot.md#10-cluster-snapshots)). A node's recovery is a full replay of the Raft log from
+  `globalSeqNo` 1. That is what keeps every node's recording complete, but recovery time and archive size
+  grow with uptime; the heartbeat alone is about 86,400 frames a day. Application snapshots shorten a
+  client's restart, not a node's.
 - **At most seven members.** The cluster's port block is 70 ports wide.
 - **C# trails by one Aeron version.** Aeron.NET is a release behind Aeron. Spec **V-1** records the
   exception and the evidence that the two interoperate; it is re-verified on every Aeron upgrade.

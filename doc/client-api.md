@@ -80,9 +80,10 @@ smallest complete client in each language. `ColocatedApp` is the same flow writt
 **Reference documentation.** `./gradlew :seqeron-client:javadoc` renders this surface at
 `seqeron-client/build/docs/javadoc/`, and the same pages ship as the artifact's javadoc jar, so an IDE
 shows them. The C++ counterpart is the CMake `docs` target (`cmake --build <build> --target docs`, into
-`<build>/docs/html`, Doxygen required), over the headers less `detail/`. Both leave out the generated
-codecs, which the schema documents. The C# package carries its XML docs beside the assembly, and a symbols
-package beside it. Each Java package states its role in its `package-info.java`, so the index and an IDE's
+`<build>/docs/html`, Doxygen required), over the headers less `detail/`. The C# reference is
+`doc/site/csharp.Doxyfile`, over the public types ([`building.md`](building.md) has the command). All three
+leave out the generated codecs, which the schema documents. The C# package carries its XML docs beside the
+assembly, and a symbols package beside it. Each Java package states its role in its `package-info.java`, so the index and an IDE's
 completion show the table above; keep the two in step.
 
 ## Consuming the ordered stream
