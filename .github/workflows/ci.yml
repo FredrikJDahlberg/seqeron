@@ -1,4 +1,4 @@
-name: linux
+name: ci
 
 # The tree is developed on macOS/arm64 with Apple clang and libc++; this is the only
 # place it is built against libstdc++ on x86-64.

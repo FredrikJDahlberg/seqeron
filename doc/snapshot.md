@@ -320,18 +320,61 @@ change to schema 210 (spec V-3).
 ## 10. Cluster snapshots
 
 Application snapshots shorten a client's restart. A member still replays its full Raft log and re-records
-its tap from `globalSeqNo` 1, and nothing is truncated.
+its tap from `globalSeqNo` 1, and nothing is truncated. This section is the proposed design for bounding
+both; none of it is implemented.
 
-A round's cut is the natural point for the `Sequencer`'s own snapshot: its state is Java and small
-(`globalSeqNo`, the heartbeat timer, the gateway list and election, the open connections, the snapshot policy
-and round). History before the oldest `R` among the participating sources' newest confirmed rounds would
-then be needed only by an instance with no file — a new host, a lost disk, a passive instance that never
-served — which would need a peer's file first (§4.1).
+**What the member's replay is for.** It rebuilds two things: the `Sequencer`'s state, and the member's tap
+recording, which the Replayer serves and §5 indexes. An Aeron cluster snapshot replaces the first. The second
+is history, and a snapshot cannot regenerate it.
 
-But a member restored from a cluster snapshot would start its tap after the cut, so its positions would no
-longer follow from `globalSeqNo` 1. The index (§5), `TapRelay`'s resume on another member and the Replayer's
-integrity check all depend on that: they would need a base position per recording, and the index would
-need each source's newest start and end carried over. This needs a prototype before it is specified.
+**The `Sequencer`'s snapshot.** `onTakeSnapshot` writes, and `onStart` restores, `globalSeqNo`, the gateway
+list and election (the bound sessions, the open connections, the outstanding activations and their
+deadlines), the snapshot policy, the last round and the timestamp of its start, and the cuts of the last
+four rounds (below). Aeron's own snapshot carries the sessions and the heartbeat timer. Maps are written in
+key order, so every member writes the same bytes at the same log position.
+
+**The tap starts at a round's cut, not at the cluster snapshot.** Aeron places a cluster snapshot at a log
+position `P` of its choosing, which always falls after the round it follows: `R < P`. A client restoring
+round `R` resumes at `R` (§7), and a member restored at `P` cannot regenerate the frames from `R` to `P`. So
+a restarted member's recording starts at the **floor** `F`: the cut of the oldest round a client may still
+restore.
+
+- **The floor comes from the log.** The `Sequencer` keeps the cuts of its last four rounds,
+  `REMEMBERED_ROUNDS` as in §5, and `F` is the oldest of them. Every member computes the same `F` without
+  tracking ends or participation. With no round yet, `F` is `globalSeqNo` 1.
+- **Restart.** Aeron loads the snapshot at `P`. `onStart` creates the tap publication and its recording,
+  then copies the frames from `F` to `P` into it, from the member's previous recording or, where that does
+  not reach `P`, from a peer's, as `TapRelay` does. Only then does the log replay from `P + 1`. Once the
+  Replayer has checked the new recording, the previous one is deleted, so a member holds one recording of
+  about four rounds' history.
+- **Positions are unchanged.** The tap publication starts at `F`'s original position (`init-term-id`,
+  `term-id` and `term-offset`, at the same term length), so a position still means the same on every
+  member and in every recording that reaches it: §5's `asOfPosition`, a client's resume and `TapRelay`'s
+  resume on another member keep working as they are.
+- **The Replayer's integrity check** requires the recording's first frame to be the `SnapshotStarted` at
+  `F`, or `globalSeqNo` 1 when `F` is 1. A gateway host's relay starts its own recording at `F` the same way.
+- **Cadence.** A cluster snapshot is requested just after each `SnapshotStarted`, so the copy is about four
+  rounds long. Aeron does not reclaim its log; the log below the previous cluster snapshot is purged.
+
+**What changes for clients.** History before `F` is gone, so a walk from `globalSeqNo` 1 is no longer
+always possible:
+
+- A client with no confirmed file, or one whose newest confirmed round is older than `F`, needs history the
+  member no longer has. The Replayer refuses its walk, and the client is fenced rather than started
+  mid-history: today it takes whatever frame comes first. A consumer that holds no state, a follower of
+  the live stream, may opt to start at `F` instead.
+- A `SnapshotQuery` answered while the Replayer is still indexing would send the client to a walk that is
+  now refused. The Replayer answers "not yet" until the index has reached the recording's tip, and the
+  client asks again (schema 212).
+- An instance with no file — a new host, a lost disk, a passive instance that never served — restores
+  from a peer's file (§4.1); with none, it is fenced.
+
+**Copying between members.** A new member or a lost disk takes a peer's cluster snapshot, its tap from
+`F`, and its clients' snapshot files.
+
+**No snapshot policy.** With no rounds, `F` stays at `globalSeqNo` 1 and the restart copies the whole
+recording. Cluster snapshots still bound a member's restart, since copying is not replaying the log, but
+nothing is truncated.
 
 ## 11. Costs and limits
 
