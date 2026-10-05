@@ -1,7 +1,7 @@
 name: windows
 
 # The C# client on Windows against members on Linux, on one runner (seqeron-service/src/test/scripts/
-# csharp-windows-test.sh). The members run in WSL1, which shares Windows' network stack, so Aeron's UDP meets on
+# csharp-windows-test.sh). The member runs in WSL1, which shares Windows' network stack, so Aeron's UDP meets on
 # localhost both ways; WSL2 is a VM behind NAT, and a Windows runner runs no Linux containers. Windows runs the
 # gateway host and the C# clients. What it tests is the client, not Aeron Cluster under WSL1.
 on:
@@ -41,7 +41,7 @@ jobs:
         with:
           dotnet-version: '10.0.x'
 
-      - name: Linux members' host (WSL1)
+      - name: Linux member's host (WSL1)
         uses: Vampire/setup-wsl@v7
         with:
           wsl-version: 1

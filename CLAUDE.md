@@ -249,7 +249,7 @@ failover soak (`docker/compose.yml`, `./gradlew operatorDist`, CI's `failover.ym
 `csharp-client-test.sh`, drives the C# client tier: `Seqeron.ClusterProbe` (`seqeron-client/src/test/csharp-probe`),
 the C# twin of the probe's `confirm` and `follow`, then the C# examples, its gateway pair through a handover.
 It needs the .NET SDK beside the uber jar, and CI runs it in `chaos.yml`. The eleventh,
-`csharp-windows-test.sh`, runs the same C# client on Windows, where it is deployed: the members in WSL1 and
+`csharp-windows-test.sh`, runs the same C# client on Windows, where it is deployed: one member in WSL1 (three elect without end there) and
 the C# clients beside a gateway host on Windows, on one `windows-latest` runner (CI's `windows.yml`).
 `chaos-runner` needs one more thing the probe cannot supply — a **gateway
 pair under the faults** — and `TestGateway` is it: an elected active/standby producer (`GW-T-A`/`GW-T-B`,

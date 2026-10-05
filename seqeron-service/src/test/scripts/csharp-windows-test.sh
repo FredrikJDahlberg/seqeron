@@ -2,18 +2,18 @@
 # The C# client tier on Windows, against a cluster on Linux: the deployment shape where the members are
 # Linux hosts and the C# clients run on a Windows host beside a gateway host's media driver.
 #
-# One Windows machine stands in for both. The three members run in WSL1, which shares Windows' network
-# stack, so everything meets on localhost UDP. Windows runs the gateway host (node 3: ReplayerServer
-# relaying a member's tap onto its own) and, attached to its driver through the default Aeron directory,
-# the C# probe and the C# examples. Four phases, all of them client functionality:
+# One Windows machine stands in for both. The member runs in WSL1, which shares Windows' network stack, so
+# everything meets on localhost UDP. Windows runs the gateway host (node 3: ReplayerServer relaying the
+# member's tap onto its own) and, attached to its driver through the default Aeron directory, the C# probe and
+# the C# examples. Three phases, all of them client functionality:
 #
 #   A  UDP ingress from the gateway host, through PendingSends            confirm EXACT
 #   B  a cold start on the gateway host, replayed from globalSeqNo 1        follow CONTIGUOUS
 #   C  the C# gateway pair handed over when its active instance is killed  standby resumes at connection 1
-#   D  the leader killed mid-stream: the relay's source and the producer's  confirm EXACT
-#      leader both go
 #
-# and no member logs a rejected ingress frame. Runs in Git Bash on Windows, with a WSL1 distribution that
+# and the member logs no rejected ingress frame. One member, not three: under WSL1's system-call translation
+# Raft's heartbeats do not hold, and three members elect without end. A leader kill is csharp-client-test.sh's,
+# on Linux, through the same C# code. Runs in Git Bash on Windows, with a WSL1 distribution that
 # has a JDK 21 (WSL_DISTRO, default Ubuntu-24.04), the uber jar and the .NET SDK. CI's windows.yml runs it.
 set -uo pipefail
 
@@ -27,6 +27,8 @@ JAR="${SEQERON_JAR}"
 DOTNET="${DOTNET:-dotnet}"
 WSL_DISTRO="${WSL_DISTRO:-Ubuntu-24.04}"
 NODE=3
+# One member, at localhost, for every process here: the C# clients' ingress, clusterctl, the gateway host.
+export SEQERON_HOSTS=localhost
 JAVA_OPTS=("${SEQERON_JAVA_OPTS[@]}")
 
 # Git Bash rewrites an argument that starts with / into a Windows path; inside WSL it must stay a Linux one.
@@ -57,14 +59,12 @@ for ex in FollowStream GatewayApp; do
     >> "$LOG_DIR/build.log" 2>&1 || { echo "$ex build failed: $LOG_DIR/build.log"; exit 1; }
 done
 
-# The members, in WSL. Their state stays on WSL's own filesystem; their output comes back through wsl.exe.
+# The member, in WSL. Its state stays on WSL's own filesystem; its output comes back through wsl.exe.
 WSL_JAR=$(wsl_run wslpath -a "$(cygpath -wa "$JAR")" | tr -d '\r')
 wsl_run pkill -9 -f "sequencer.memberId=" 2>/dev/null
-wsl_run rm -rf /tmp/seqeron-seq /tmp/seqeron-seq-aeron-0 /tmp/seqeron-seq-aeron-1 /tmp/seqeron-seq-aeron-2
-for m in 0 1 2; do
-  wsl_run java "${JAVA_OPTS[@]}" -Dsequencer.memberId="$m" -Dsequencer.baseDir=/tmp/seqeron-seq \
-    -Dsequencer.hosts="$(cluster_hosts_string 3)" -jar "$WSL_JAR" > "$LOG_DIR/seq-$m.log" 2>&1 &
-done
+wsl_run rm -rf /tmp/seqeron-seq /tmp/seqeron-seq-aeron-0
+wsl_run java "${JAVA_OPTS[@]}" -Dsequencer.memberId=0 -Dsequencer.baseDir=/tmp/seqeron-seq \
+  -jar "$WSL_JAR" > "$LOG_DIR/seq-0.log" 2>&1 &
 GATEWAY_HOST_PID=""
 declare -a CLIENT_PIDS=()
 cleanup() {
@@ -73,18 +73,11 @@ cleanup() {
   wait 2>/dev/null
 }
 trap cleanup EXIT
-for m in 0 1 2; do
-  wait_for_log "$LOG_DIR/seq-$m.log" "Running" 90 || { echo "member $m not up"; cat "$LOG_DIR/seq-$m.log"; exit 1; }
-done
-sleep 2  # let the first LeadershipChanged replicate to the followers
-L1=$(grep -h "isLeader=true" "$LOG_DIR"/seq-*.log | grep -oE 'SequencerService/[0-9]+' | head -1 | cut -d/ -f2)
-echo "cluster up in WSL: leader member $L1"
+wait_for_log "$LOG_DIR/seq-0.log" "serving replay" 90 || { echo "member not up"; cat "$LOG_DIR/seq-0.log"; exit 1; }
+echo "member 0 up in WSL"
 
-# The gateway host, on Windows. The leader's archive first, so phase D takes away the member the relay reads.
-ENDPOINTS="localhost:$(archive_port "$L1")"
-for m in 0 1 2; do
-  [[ "$m" == "$L1" ]] || ENDPOINTS+=",localhost:$(archive_port "$m")"
-done
+# The gateway host, on Windows.
+ENDPOINTS="localhost:$(archive_port 0)"
 GATEWAY_BASE="$(cygpath -w "${TMP_DIR}/seqeron-seq-windows")"
 rm -rf "${TMP_DIR}/seqeron-seq-windows"
 # UTF-8 output, as the log patterns expect: redirected, a Windows JVM writes the system code page.
@@ -154,26 +147,12 @@ grep -q "^# gap" "$LOG_DIR/follow-ex.log" && { echo "    FollowStream saw a gap"
 win_kill "$GW_B_PID"; win_kill "$FOLLOW_PID"
 echo "    GW-EX-CS-B: $(grep -m1 "designated" "$LOG_DIR/gw-b.log"), $(grep -c "ping echoed" "$LOG_DIR/gw-b.log") pings echoed"
 
-echo "=== D: leader $L1 killed mid-stream"
-"$PROBE_OUT/Seqeron.ClusterProbe.exe" confirm --member "$NODE" --client-id 43 --count "${COUNT}" \
-  --pacing-micros "${CONFIRM_PACING_MICROS:-200}" > "$LOG_DIR/confirm-failover.log" 2>&1 &
-D_PID=$!; CLIENT_PIDS+=("$D_PID")
-wait_for_log "$LOG_DIR/confirm-failover.log" "confirm: sending" 60 || echo "    producer never started"
-sleep 1  # mid-stream when the leader dies
-wsl_run pkill -9 -f "sequencer.memberId=$L1 " 2>/dev/null
-echo "    killed leader member $L1"
-wait "$D_PID"; D_RC=$?
-echo "    $(verdict confirm-failover)"
-D_MOVED=0
-grep -q "left member archive localhost:$(archive_port "$L1")" "$LOG_DIR/gateway-host.log" && D_MOVED=1
-echo "    relay moved to another member: $D_MOVED"
-
-REJECTED=$(cat "$LOG_DIR"/seq-*.log | grep -cE "skipping (malformed )?ingress message")
+REJECTED=$(cat "$LOG_DIR/seq-0.log" | grep -cE "skipping (malformed )?ingress message")
 echo "=== ingress frames rejected by the sequencer: $REJECTED"
 
-if ((A_RC == 0 && B_RC == 0 && C_OK == 1 && D_RC == 0 && D_MOVED == 1 && REJECTED == 0)); then
+if ((A_RC == 0 && B_RC == 0 && C_OK == 1 && REJECTED == 0)); then
   echo "C# WINDOWS TEST: PASS"; exit 0
 else
-  echo "C# WINDOWS TEST: FAIL (A=$A_RC B=$B_RC C=$C_OK D=$D_RC relay=$D_MOVED rejected=$REJECTED)"
+  echo "C# WINDOWS TEST: FAIL (A=$A_RC B=$B_RC C=$C_OK rejected=$REJECTED)"
   exit 1
 fi
