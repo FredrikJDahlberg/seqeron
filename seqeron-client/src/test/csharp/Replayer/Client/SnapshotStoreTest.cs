@@ -116,13 +116,14 @@ public class SnapshotStoreTest : IDisposable
         Write(crashed, 1, Records());
         Write(crashed, 2, Records());
         Write(crashed, 3, Records());
-        crashed.Begin(4);
+        // What a crash mid-write leaves: a temporary file no process holds open. Windows refuses to delete one a
+        // live writer still holds, as crashed.Begin(4) would.
+        File.WriteAllBytes(Path.Combine(_directory.Path, "4.tmp"), new byte[] { 1, 2, 3 });
 
         new SnapshotStore(_directory.Path).DeleteBefore(2);
 
         Assert.Equal(new List<string> { "2.snapshot", "3.snapshot" },
                      Directory.EnumerateFiles(_directory.Path).Select(Path.GetFileName).Order().ToList());
-        crashed.Abandon();
     }
 
     [Fact(DisplayName = "a record of the most bytes its length prefix can say reads back whole")]
