@@ -1,0 +1,7 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- One instance of an elected pair, against the other façade, Gateway. -->
+  <PropertyGroup>
+    <RootNamespace>Example</RootNamespace>
+    <SeqeronFacadeOnly>true</SeqeronFacadeOnly>
+  </PropertyGroup>
+</Project>

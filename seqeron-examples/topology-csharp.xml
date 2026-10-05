@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    The gateway pair src/csharp/GatewayApp runs, in a list of its own: a listed pair no process starts
+    trades the role every 5 s for the life of the cluster (doc/clusterctl.md). Load it once, into a cluster
+    that has not bootstrapped another list (the bootstrap GatewayActive latches once per cluster lifetime):
+
+      seqeron-service/src/main/scripts/clusterctl.sh load-topology seqeron-examples/topology-csharp.xml
+
+    Into one that has, designate an instance by hand instead: clusterctl.sh activate 14.
+
+    Schema: seqeron-service/src/main/resources/topology.xsd (doc/seqeron-protocol-spec.md §6.4).
+-->
+<topology xmlns="http://limitless.org/seqeron/topology/1">
+
+    <!-- sourceId 18, allocated in doc/seqeron-protocol-spec.md §5. gatewayIds 14 and 15, after the C++
+         pair's 12 and 13, so every pair can share one cluster. -->
+    <gateways>
+        <gateway name="GW-EX-CS-A" id="14" sourceId="18" rank="0"
+                 description="seqeron-examples GatewayApp (C#)"/>
+        <gateway name="GW-EX-CS-B" id="15" sourceId="18" rank="1"
+                 description="seqeron-examples GatewayApp (C#) standby"/>
+    </gateways>
+
+</topology>

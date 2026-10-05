@@ -1,8 +1,8 @@
 name: release
 
-# A v* tag publishes what that commit is: the Java artifacts on JitPack, the node image on GHCR, and a
-# GitHub Release carrying the operator distribution and the jars. The Release is created last, so it
-# exists only once everything it points at does.
+# A v* tag publishes what that commit is: the Java artifacts on JitPack, the C# package on nuget.org, the
+# node image on GHCR, and a GitHub Release carrying the operator distribution, the jars and the package. The
+# Release is created last, so it exists only once everything it points at does.
 on:
   push:
     tags: ['v*']
@@ -36,8 +36,19 @@ jobs:
           distribution: temurin
           java-version: '21'
 
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
       - name: Build
         run: ./gradlew check operatorDistZip :seqeron-client:jar :seqeron-service:jar
+
+      # Versioned from VERSION by Directory.Build.props, with its symbols beside it.
+      - name: C# package
+        run: |
+          ./gradlew :seqeron-client:checkCSharpSbeCurrent
+          dotnet test --project seqeron-client/src/test/csharp/Seqeron.Client.Tests.csproj
+          dotnet pack -c Release -o build/nuget seqeron-client/src/main/csharp/Seqeron.Client.csproj
 
       # JitPack builds a tag on its first request and serves nothing until it has. Asking here means no
       # consumer waits on that build, and a tag JitPack cannot build fails the release.
@@ -67,6 +78,16 @@ jobs:
           push: true
           tags: ${{ steps.version.outputs.image }}:${{ steps.version.outputs.version }}
 
+      # nuget.org takes a version once: a package pushed in error can be unlisted, never replaced. The push
+      # carries the .snupkg beside the .nupkg to the symbol server.
+      - name: Push C# package
+        env:
+          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          dotnet nuget push "build/nuget/Org.Limitless.Seqeron.${VERSION}.nupkg" \
+            --api-key "${NUGET_API_KEY}" --source https://api.nuget.org/v3/index.json
+
       - name: GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -80,4 +101,5 @@ jobs:
             "build/distributions/seqeron-${VERSION}.zip" \
             "build/libs/seqeron-${VERSION}-uber.jar" \
             "seqeron-client/build/libs/seqeron-${VERSION}.jar" \
-            "seqeron-service/build/libs/seqeron-service-${VERSION}.jar"
+            "seqeron-service/build/libs/seqeron-service-${VERSION}.jar" \
+            "build/nuget/Org.Limitless.Seqeron.${VERSION}.nupkg"

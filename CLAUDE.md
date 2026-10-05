@@ -64,7 +64,7 @@ Never commit code without permission.
 
 ## What this is
 
-See the [Overview](README.md#overview) in README.md. **seqeron** is the sequencing tier: an Aeron
+See [README.md](README.md). **seqeron** is the sequencing tier: an Aeron
 Cluster (Raft) replicated state machine that assigns a global, gap-free total order to messages from
 external producers, plus the replayer that serves history off each node's recording and the client-side
 plumbing that follows the ordered stream.
@@ -82,8 +82,9 @@ jar `seqeron-<version>-uber.jar`, CMake targets `seqeron_core`/`seqeron_flags`, 
 **Two Gradle modules, Aeron's layout**: `:seqeron-client` and `:seqeron-service`, the latter depending on
 the former. Each owns a source tree — `<module>/src/main/{java,...}` and `<module>/src/test/{java,...}`
 — and one CMake project sits above them, since C++ is the client tier alone
-(`seqeron-client/src/main/cpp`). The service module holds `resources`, `scripts` and `ops`; the client
-module holds `cpp` and `generated`. Both hold `sbe`.
+(`seqeron-client/src/main/cpp`). C# is the client tier alone too, a standalone `dotnet` build in
+`seqeron-client/src/main/csharp`, its tests in `seqeron-client/src/test/csharp`. The service module holds
+`resources`, `scripts` and `ops`; the client module holds `cpp`, `csharp` and `generated`. Both hold `sbe`.
 
 **The direction is the compiler's to enforce.** A client class that reaches for `Sequencer` does not
 compile, because the service module is not on the client's classpath. The single-source-set build that
@@ -108,7 +109,10 @@ shares with a client — the tap's identity, the cluster clock, the port block, 
 addresses — goes in `protocol`, never in a service-tier class. C++ is the client tier alone, in the
 same directories and namespaces — plus a `detail/` directory and namespace beneath a package for what Java
 makes package-private (the façade blocks, the recovery and transport seams), since header-only C++ has no
-such thing.
+such thing. C# is the Java classes under the Java names in PascalCase namespaces
+(`Org.Limitless.Seqeron.Sequencer.Client`), `internal` where Java is package-private, and the façades take an
+options class with `init` properties where Java takes a builder. Its `FacadeSurfaceTest` makes Java's check,
+and `seqeron-examples/src/csharp` its `checkFacadeOnly`, in `Directory.Build.targets`.
 
 **The producer side is a language-port pair too.** Java's `ClusterStreamSender`/`IngressPublisher` carry
 the C++ files' names and semantics — `connectColocated` (IPC ingress on the co-located member, UDP
@@ -126,15 +130,17 @@ What is left of ours that is easy to get wrong is split off and unit-tested: **`
 (which offer results are terminal — `CLOSED` is not, it is an election in progress). `ClusterStreamSender`
 itself is then the Aeron adapter, whose one other decision — replacing an IPC session whose leader moved
 away — is a single comparison, so its low line coverage is the same statement `SequencerService`'s is.
+C#'s are Java's on Aeron.NET's `AeronCluster`, divergences included, and set every timeout Java sets
+explicitly: Aeron.NET's defaults are Aeron's, whose new-leader timeout is shorter than an election.
 
 **A send that succeeds is not a frame sequenced.** Nothing confirms ingress on egress, and a leader
 failover silently loses whatever the old leader had not committed — the session survives it.
 `sequencer/client/PendingSends` is the confirm-on-tap tracker (spec §16 A-4, A-5): a producer gives it to
 `IngressPublisher` as its `IngressTracker` (which tracks what it places and declines while it holds or is
 full) and to the sender with `setIngressHold`, feeds it its own tap and each `LeadershipChanged`'s term, and
-resends what a term change lost. Both languages,
+resends what a term change lost. Every language,
 case for case, with a property test asserting exactly-once, in-order delivery across random failovers;
-`failover-test.sh` proves the same across a real leader kill.
+`failover-test.sh` proves the same across a real leader kill, and `csharp-client-test.sh` for C#.
 
 **The C++ half is a client library, not a program.** `seqeron_core` is a header-only INTERFACE
 target and the only binary the build produces is `core_tests`. There is **no C++ replay server** —
@@ -183,32 +189,55 @@ naming one fails at generate time; they are `$<BUILD_INTERFACE:>`-wrapped and
 `cmake/seqeronConfig.cmake.in` re-attaches them under `aeron::`, so an installed consumer brings its
 own installed Aeron. CI's `installed` job is the only thing that exercises this path.
 
-**Aeron, Agrona and SBE versions are pinned once**, in `versions.properties` — `build.gradle` loads it
-and `CMakeLists.txt` parses it. The two sides generate independently from the same schemas and speak
+### C#
+```bash
+dotnet test --project seqeron-client/src/test/csharp/Seqeron.Client.Tests.csproj
+dotnet pack -c Release -o build/nuget seqeron-client/src/main/csharp/Seqeron.Client.csproj  # what the C# examples resolve
+./gradlew :seqeron-client:generateCSharpFrameSbe :seqeron-client:generateCSharpReplaySbe     # rewrite the committed codecs
+./gradlew :seqeron-client:checkCSharpSbeCurrent
+```
+.NET 10, on Aeron.NET and the SBE C# runtime from NuGet. The frame and replay codecs are generated and committed
+under `seqeron-client/src/main/generated/sbe/csharp`, as the C++ ones are, so a C# build needs no JDK; Gradle
+owns only their generation, since the SBE jar is on its classpath, and `checkCSharpSbeCurrent` regenerates and
+compares. CI's `csharp` job runs on Linux and on Windows, where the client is deployed; keep the tests free of
+POSIX-only assumptions. `Directory.Build.props` at the root reads `versions.properties` and `VERSION`, so the package is
+versioned with the jars. It is `Org.Limitless.Seqeron` on nuget.org, pushed by `release.yml` with its symbols
+and XML docs, and it names its dependencies exactly. The C# examples (`seqeron-examples/src/csharp`) resolve
+it from `build/nuget` rather than the source tree; NuGet serves a cached copy of a version it has seen, so
+delete `~/.nuget/packages/org.limitless.seqeron` after re-packing an unchanged one.
+
+**Aeron, Agrona and SBE versions are pinned once**, in `versions.properties` — `build.gradle` loads it,
+`CMakeLists.txt` parses it and `Directory.Build.props` reads it. The two sides generate independently from the same schemas and speak
 the same wire protocol, so a version that differs across them is a runtime decode failure, not a build
 error. The C++ build uses an installed Aeron when `find_package(aeron)` finds one at or above that
 version, and fetches it otherwise; the project links Aeron only by its `aeron::` names, which work
-either way.
+either way. **C# is the one exception** (spec V-1): Aeron.NET trails Aeron, so `aeronDotnet` pins its own
+version, which agrees with Java's on everything a client touches. `csharp-client-test.sh` is the evidence, and
+`chaos.yml` runs it on every pull request, so an Aeron upgrade's pull request reruns it before tagging.
 
 ## Tests
 
 ```bash
 cmake --build cmake-build-debug --target run_tests   # GoogleTest
 ./gradlew test                                       # JUnit
+dotnet test --project seqeron-client/src/test/csharp/Seqeron.Client.Tests.csproj   # xUnit
 ```
 `run_tests` is `ctest --output-on-failure` with the build dependency wired, and also builds
 `core_headers`, which compiles each public header alone under `-Werror`. Plain `ctest` works too.
 Single suites:
 `./cmake-build-debug/core_tests --gtest_filter='ReplayerRecovery*'` and
-`./gradlew test --tests '*SequencerTest'`.
+`./gradlew test --tests '*SequencerTest'`. The C# suite is the Java client tier's tests case for case, plus the
+spec §14 conformance rows `ConformanceTest.cpp` runs, and three of its own: the committed codecs' schema ids,
+the session timeouts read back from the context it connects with, and an allocation test that holds the tap
+dispatch and the confirmed publish to zero bytes a frame.
 
 The Java suite covers the deterministic decision-making — `Sequencer`, and `ReplayerService` through
 its `Replayer` seam — and deliberately touches no Aeron runtime: no media driver, no cluster, no Aeron
-mocks. Everything that needs an Aeron runtime is covered by `core_tests` and by the nine end-to-end scripts under
+mocks. Everything that needs an Aeron runtime is covered by `core_tests` and by the eleven end-to-end scripts under
 `seqeron-service/src/test/scripts`. Coverage is a JaCoCo report per module, at
 `<module>/build/reports/jacoco/test/`, excluding the generated SBE codecs.
 
-**Eight of the nine harnesses are Java-only.** They drive the cluster through `tools/ClusterProbe`, which
+**Eight of the eleven harnesses are Java-only.** They drive the cluster through `tools/ClusterProbe`, which
 submits `ProbeMarker` payloads at ingress (`submit`), round-trips one through consensus and back off
 the tap (`ping`), replays history through the co-located Replayer and then follows the tap live
 (`follow`), or streams through `ClusterStreamSender` and `sequencer/client/PendingSends` and checks its own tap shows
@@ -216,7 +245,13 @@ every frame exactly once, in order (`confirm`, which `failover-test.sh` runs acr
 `gateway-host-test.sh` runs on a gateway host across the loss of the relay's member). The probe attaches to a
 member's own embedded driver, or a gateway host's, so six of the eight need no
 standalone `aeronmd` at all. The ninth, `docker-failover-test.sh`, is the containerized multi-round
-failover soak (`docker/compose.yml`, `./gradlew operatorDist`, CI's `failover.yml`). `chaos-runner` needs one more thing the probe cannot supply — a **gateway
+failover soak (`docker/compose.yml`, `./gradlew operatorDist`, CI's `failover.yml`). The tenth,
+`csharp-client-test.sh`, drives the C# client tier: `Seqeron.ClusterProbe` (`seqeron-client/src/test/csharp-probe`),
+the C# twin of the probe's `confirm` and `follow`, then the C# examples, its gateway pair through a handover.
+It needs the .NET SDK beside the uber jar, and CI runs it in `chaos.yml`. The eleventh,
+`csharp-windows-test.sh`, runs the same C# client on Windows, where it is deployed: one member in WSL1 (three elect without end there) and
+the C# clients beside a gateway host on Windows, on one `windows-latest` runner (CI's `windows.yml`).
+`chaos-runner` needs one more thing the probe cannot supply — a **gateway
 pair under the faults** — and `TestGateway` is it: an elected active/standby producer (`GW-T-A`/`GW-T-B`,
 `gatewaySourceId` 9, listening on 9200/9201) that speaks no application protocol and holds no session
 state, but holds the same fences a real gateway does — including the client tier's recovery-stall
@@ -234,8 +269,9 @@ list is `seqeron-service/src/test/resources/topology-test-gateway.xml`, whose pa
 (`-Dprobe.snapshot`, `-Dprobe.snapshotDir`) so they run under the faults too. `topology-test-snapshot.xml` beside it adds
 **`TestApplication`** (`sourceId` 16, one replica per member), the reference consumer of `app/Application` with a
 `SnapshotListener`; `snapshot-test.sh` loads it and drives both through restores, a failover onto a restored instance, a
-passive activation (`-Dprobe.passive`), an operator-requested round and a cluster leader kill. The one other topology document here is
-`seqeron-examples/topology.xml`, the pair the C++ `GatewayApp` example runs.
+passive activation (`-Dprobe.passive`), an operator-requested round and a cluster leader kill. The two other topology documents here are
+`seqeron-examples/topology.xml`, the pair the C++ `GatewayApp` example runs, and `topology-csharp.xml` beside it,
+the C# example's own pair, which both C# harnesses load.
 
 `start-cluster.sh` and `start-three-node-cluster.sh` launch the cluster tier and nothing else — core
 starts no process it does not own. A consumer that wants its own replicas or gateways alongside runs
@@ -308,12 +344,12 @@ file replays from `globalSeqNo` 1. This shortens a client's restart, not a node'
 **`replayer.server`** is Java only: `ReplayerServer`/`ReplayerService` and their pure seams `Replayer`,
 `ReplaySlotAllocator`, `ReplayClientIdCollisions`, `SnapshotIndex` and the gateway host's `TapRelay`, with
 `AeronReplayer` and `AeronTapRelay` the only parts that touch Aeron. **`replayer.client`** is `ReplayerStreamReceiver` and its pure seam
-`ReplayerRecovery`, plus `SequencedEvent` and an instance's snapshot files, `SnapshotStore` — Java, and C++ in
-`org::limitless::seqeron::replayer::client`. On a member `ReplayerServer` runs inside `SequencerServer`'s
+`ReplayerRecovery`, plus `SequencedEvent` and an instance's snapshot files, `SnapshotStore` — Java, C++ in
+`org::limitless::seqeron::replayer::client`, and C# in `Org.Limitless.Seqeron.Replayer.Client`. On a member `ReplayerServer` runs inside `SequencerServer`'s
 JVM, on its embedded driver, so a fatal in either exits the node with 70; its own `main` is the gateway
 host's alone. The two sides share only the protocol's addresses —
 `IPC_CHANNEL`, `REPLAY_STREAM_ID` 201, `REQUEST_STREAM_ID` 202, `CONTROL_STREAM_ID` 203,
-`FROM_START` and `NO_REPLAY_NEEDED` — and those are `protocol/ReplayProtocol` in both languages.
+`FROM_START` and `NO_REPLAY_NEEDED` — and those are `protocol/ReplayProtocol` in every language.
 
 **A gateway host runs clients with no member on it.** `ReplayerServer` with `replayer.archiveEndpoints`
 runs its own media driver and archive, and `AeronTapRelay` copies a member's tap onto the host's own: one
@@ -332,11 +368,12 @@ one instance whose gate opens once caught up. The member pays one archive replay
 decision it makes about them lives in **`ReplayerRecovery`**, which holds none of them and is where the
 unit suite drives the walk/resume/gap state machine — `ReplayerRecoveryTest` names one situation per case,
 `ReplayerRecoveryPropertyTest` drives seeded fault sequences against a model of the archive/tap/Replayer and
-asserts gap-freedom and convergence over whatever comes out; both tests exist in both languages. The Java
-and C++ classes are faithful ports of each other: same protocol, same state machine, same adapter/seam
-split. Keep all four files and all four tests in step — the two `ReplayerRecoveryTest`s are case for
+asserts gap-freedom and convergence over whatever comes out; both tests exist in every language. The Java,
+C++ and C# classes are faithful ports of each other: same protocol, same state machine, same adapter/seam
+split. Keep all six files and all six tests in step — the three `ReplayerRecoveryTest`s are case for
 case in the same order precisely so a divergence is visible as a missing case rather than as a
-runtime decode failure on a live tap.
+runtime decode failure on a live tap, and the three property tests draw from `SplitMix64` in the same order, so
+a seed makes the same fault sequence in each.
 
 ### Frames: two families, one envelope
 **Everything on the wire is `sbe-frame.xml` (schema 210), in two families.** The **application** family
@@ -362,9 +399,9 @@ them a consumer sees `isSystem()` plus either a `payloadId` and the message's ow
 
 **A system payload carries no `MessageHeader`** — `systemEventType` names it, so an encoder `wrap`s rather
 than `wrapAndApplyHeader`s and a decoder supplies `BLOCK_LENGTH`/`SCHEMA_VERSION` from its own compiled
-constants. `SystemFrame` (Java) and `publishSystem`/`decodeSystem` (C++) are that contract's one place
-per language; the `systemEventType` table lives in `SystemFrame.java` and `SequencedFrame.hpp` and the
-two must stay in step.
+constants. `SystemFrame` (Java, C#) and `publishSystem`/`decodeSystem` (C++) are that contract's one place
+per language; the `systemEventType` table lives in `SystemFrame.java`, `SequencedFrame.hpp` and
+`SystemFrame.cs`, and the three must stay in step.
 
 ### Two kinds of producer, and only one of them is elected
 A **gateway** is an edge producer deployed as an **active/hot-standby pair**: it is named in the topology
@@ -422,7 +459,9 @@ A module's `sbe` directory is a codegen input, not a resource one, so no jar shi
 file a
 jar does need is `seqeron-service/src/main/resources/topology.xsd`.
 
-Both sides regenerate independently from the same XML — keep them in sync when editing a schema. SBE
+Every language regenerates independently from the same XML — keep them in sync when editing a schema: the C++
+and C# codecs are committed, so a schema edit is `RegenerateSbeCodecs` and `generateCSharp*Sbe` too, then a
+commit of what they wrote (`CheckSbeCodecsCurrent` and `checkCSharpSbeCurrent` fail otherwise). SBE
 never deletes generated files for messages you removed, so **each schema owns a disjoint output directory
 and each codegen step wipes its own before running**; a regeneration is a replacement, and no manual purge
 of `cmake-build-*/generated/sbe` or `build/generated/sources/sbe` is needed. Keep that property when
@@ -438,7 +477,7 @@ seqeron's own package namespace; `collectSbeIr` wipes its destination first, lik
 
 `.claude/rules/operator-scripts.md` and `seqeron-service/src/test/scripts/CLAUDE.md` cover the
 scripts. `ports.sh` is
-mirrored by `PortLayout` in both languages; change all three together.
+mirrored by `PortLayout` in every language; change all four together.
 
 ## Known gaps
 
@@ -449,13 +488,18 @@ and **the cluster is bounded at seven members** by the 70-port cluster block (`d
 — but does not widen it. `SEQERON_HOSTS` names the members' hosts, deployment-wide too, and is read by
 both `PortLayout`s only: the scripts' `ports.sh` lays out localhost clusters.
 
-`doc/` holds `getting-started.md` (a release node plus a consumer and a producer; its snippets pin a
-release, so bump them when one changes the API they use), `seqeron-protocol-spec.md` (normative — the frames, the families,
+`doc/` holds `overview.md` (the design, for architects: what each part does and why, the life of a
+message, the failure model, the limits — keep it in step with the documents it summarizes),
+`getting-started.md` (a release node plus a consumer and a producer; its snippets pin a
+release, so bump them when one changes the API they use), `running-a-cluster.md` (the processes, a node's
+ports, properties and restart, the operator scripts), `building.md` (each language's build, the unit
+suites, the harnesses, the examples), `releasing.md`, `log-printer.md`, `seqeron-protocol-spec.md` (normative — the frames, the families,
 the system vocabulary, the topology document), `client-api.md` (what a client programs against, and what in
 the client tier is not API — update it when that surface changes), `fault-tolerance.md`, `clusterctl.md` and `ops.md` (runbooks, ports, counters), and `snapshot.md`
 (application snapshots: local files the log confirms). The topology documents here are
 `seqeron-service/src/test/resources/topology-test-gateway.xml`, `topology-test-snapshot.xml` beside it, and
-`seqeron-examples/topology.xml`.
+`seqeron-examples/topology.xml` and `topology-csharp.xml`. `client-api.md`'s tables have a column per language,
+and a change to the client tier's surface changes all three.
 
 ## Code Formatting Mandate
 - Explicitly respect all style, brace, and indentation configurations found in the local `.clang-format` file.

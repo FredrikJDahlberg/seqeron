@@ -1,6 +1,6 @@
 # Follow the ordered stream
 
-The smallest client of seqeron there is, once per language and the same flow in both: it replays a node's
+The smallest client of seqeron there is, once per language and the same flow in each: it replays a node's
 history through that node's co-located `ReplayerService`, switches to the live tap when it catches up, and
 prints every frame in `globalSeqNo` order. Each also produces, in both families: one `ConnectionOpened`
 system event announcing itself, then one `ping` payload a second at cluster ingress, whose echo comes back
@@ -15,6 +15,9 @@ through the same consumer — so the round trip is measured over the real path.
 | `src/cpp/GatewayApp.cpp` | the other façade, an elected gateway pair — see below |
 | `src/java/example/SnapshotApp.java` | a façade application whose state is restored from a snapshot — see below |
 | `src/cpp/SnapshotApp.cpp` | its C++ twin |
+| `src/csharp/FollowStream` | the low-level flow in C#, built against the `Org.Limitless.Seqeron` package — see below |
+| `src/csharp/ColocatedApp` | its front-door twin in C# |
+| `src/csharp/GatewayApp` | a C# gateway pair of its own |
 
 ## The same flow, against the front door
 
@@ -47,6 +50,21 @@ list, the pair `GW-EX-A`/`GW-EX-B` on `sourceId` 13. Load it once, into a cluste
 another list. The cluster designates only the first list it sees; into one that has, designate an
 instance with `clusterctl.sh activate 12` instead. The Java counterpart is the harness gateway
 `tools/TestGateway` in `seqeron-service`.
+
+## C#
+
+`src/csharp` holds `FollowStream`, `ColocatedApp` and `GatewayApp`, one project each, with the same flows as
+their twins and the C++ environment variables. They resolve `Org.Limitless.Seqeron` as a package from
+`build/nuget` in the repo root (`NuGet.config`), where `dotnet pack` puts it, and their own
+`Directory.Build.props` keeps the repo's build settings out — so anything the package fails to expose fails
+here. `ColocatedApp` and `GatewayApp` fail their build if their source names seqeron anywhere but the `App`
+namespace and the `Publish` alias (`Directory.Build.targets`); they take Agrona's backoff idle strategy rather
+than `Util`'s.
+
+`GatewayApp` runs its own pair, `GW-EX-CS-A`/`GW-EX-CS-B` on `sourceId` 18, listed in `topology-csharp.xml`
+rather than `topology.xml`: a listed pair that nothing starts trades the role every 5 s for the life of the
+cluster. `csharp-client-test.sh` in `seqeron-service/src/test/scripts` runs all three against a live
+cluster, and the pair through a handover.
 
 ## Application state from a snapshot
 
@@ -133,11 +151,24 @@ C++:
     ./seqeron-examples/cmake-build-release/colocated_app
     ./seqeron-examples/cmake-build-release/snapshot_app
 
+C# — after re-packing an unchanged version, delete `~/.nuget/packages/org.limitless.seqeron`, which NuGet
+would otherwise serve instead:
+
+    dotnet pack -c Release -o build/nuget seqeron-client/src/main/csharp/Seqeron.Client.csproj
+    dotnet run --project seqeron-examples/src/csharp/FollowStream
+    dotnet run --project seqeron-examples/src/csharp/ColocatedApp
+
 The gateway pair, after loading its list — stop the first and the second takes over:
 
     ./seqeron-service/src/main/scripts/clusterctl.sh load-topology seqeron-examples/topology.xml
     SEQERON_EXAMPLE_GATEWAY_NAME=GW-EX-A ./seqeron-examples/cmake-build-release/gateway_app
     SEQERON_EXAMPLE_GATEWAY_NAME=GW-EX-B ./seqeron-examples/cmake-build-release/gateway_app
+
+and the C# pair, from its own list:
+
+    ./seqeron-service/src/main/scripts/clusterctl.sh load-topology seqeron-examples/topology-csharp.xml
+    SEQERON_EXAMPLE_GATEWAY_NAME=GW-EX-CS-A dotnet run --project seqeron-examples/src/csharp/GatewayApp
+    SEQERON_EXAMPLE_GATEWAY_NAME=GW-EX-CS-B dotnet run --project seqeron-examples/src/csharp/GatewayApp
 
 `SnapshotApp` needs the same list loaded, for its row and the round interval; it runs without it, but
 takes no snapshots. A cluster that loaded an earlier copy of the list takes this one too: a row replaces the
@@ -190,6 +221,10 @@ processes already do. The two client ids differ on purpose, so both examples can
 `SnapshotApp` takes the same settings under its own prefix (`-Dsnapshot.member`, `-Dsnapshot.clientId`,
 `-Dsnapshot.aeronDir`), with client ids 17 in Java and 18 in C++, and C++ egress on `9207 + member`.
 
+C# reads the C++ variables bar `SEQERON_EXAMPLE_EGRESS_PORT` — its egress is ephemeral — with client ids 19
+(`FollowStream`), 20 (`ColocatedApp`) and 21, 22 (`GatewayApp`); only `FollowStream` reads
+`SEQERON_IDLE_STRATEGY`.
+
 ## What they show
 
 - **The receiver owns the history/live split.** There is no code here for requesting a replay, tracking
@@ -239,6 +274,9 @@ processes already do. The two client ids differ on purpose, so both examples can
   version of this example.
 
 ## What each build shows
+
+- **C#: one dependency.** The `Org.Limitless.Seqeron` package brings Aeron.NET and the SBE runtime with it,
+  as the dependencies it declares, at the versions seqeron was built against.
 
 - **Java: one dependency.** `org.limitless:seqeron` brings Aeron and Agrona with it — seqeron declares
   them `api`, since they are in the signatures a consumer compiles against — and `seqeron-bom` holds all

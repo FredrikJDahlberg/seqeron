@@ -1,9 +1,13 @@
 # seqeron protocol specification
 
-Normative. This document defines the frames the seqeron cluster sequences, the system messages it
-accepts and emits, the replay control protocol, and the obligations of producers and consumers.
-Class and function names (`Sequencer`, `ReplayerRecovery`, …) say where a rule is enforced; they are
-not part of the protocol.
+The normative definition of what crosses a seqeron cluster's boundary: the frames it sequences, the
+system messages it accepts and emits, the replay protocol a client recovers through, and the obligations
+of the producers and consumers on either side. Two implementations that follow it interoperate frame for
+frame. [`overview.md`](overview.md) explains the design this specifies; this document is the reference an
+implementation, a review or a test is held to.
+
+Class and function names (`Sequencer`, `ReplayerRecovery`, …) say where a rule is enforced; they are not
+part of the protocol.
 
 **Conventions.** MUST, MUST NOT, SHOULD and MAY are used as in RFC 2119. Rules carry stable
 identifiers that code and tests cite: **F** frame, **T** transport, **S** sequencer, **P** payload,
@@ -13,6 +17,9 @@ are stable too, which is why §15 is unassigned. All SBE schemas here are little
 ---
 
 ## 1. Layers
+
+The protocol is layered so that each layer has one owner. Aeron carries bytes; seqeron owns the frame
+around a payload and its own system vocabulary; the application owns the payload.
 
 | layer | contents | schema | owner |
 | --- | --- | --- | --- |
@@ -35,6 +42,8 @@ it.
 
 ## 2. Message classes
 
+A frame is one of three classes, by where it came from.
+
 | class | originates with | encoded by | appears on |
 | --- | --- | --- | --- |
 | unsequenced | an external producer (a gateway, an application, `clusterctl`) | the producer | cluster ingress only |
@@ -54,6 +63,8 @@ header composite.
 
 ## 3. Transport bindings
 
+Where each kind of message travels, and which of those streams is the durable record.
+
 > **T-1.** A consumer MUST check `MessageHeader.schemaId` on every stream it reads.
 
 | stream | channel / stream id | carries | recorded |
@@ -72,6 +83,9 @@ header composite.
   same IPC MTU and term length (§12).
 
 ## 4. The frame layer
+
+Every message the cluster sequences is one of eight SBE templates. Four are envelope pairs, ingress and
+sequenced, one pair per family; four are frames the sequencer synthesizes itself.
 
 ```
 Unsequenced        (schema 210, template 100) { unsequencedHeader,       payload:varData }
@@ -190,6 +204,8 @@ producer takes its id by adding a row.
 | 13 | `seqeron-examples` C++ gateway pair | gateway |
 | 14, 15 | `seqeron-examples` `SnapshotApp` (Java, C++) | application |
 | 16 | `TestApplication` replicas (end-to-end tests) | application |
+| 17 | `seqeron-examples` `ColocatedApp` (C#) | application |
+| 18 | `seqeron-examples` C# gateway pair | gateway |
 
 Gateways are listed by `GatewayRegistered.gatewaySourceId`, applications by
 `ApplicationRegistered.applicationSourceId`. **S-6** checks gateways only. No list row may claim
@@ -547,6 +563,8 @@ sequenced after the first round changes the interval but not the point it counts
 
 ## 8. Schemas
 
+seqeron owns two SBE schemas: the frames on the log and the replay control protocol beside it.
+
 | file | schema id | contains | change policy (§11) |
 | --- | --- | --- | --- |
 | `sbe-frame.xml` | 210 | the eight top-level templates, the four header composites, `messageHeader`, `varDataEncoding`, and the twelve submitted system payloads | envelopes frozen; system events changeable under **V-3** |
@@ -560,12 +578,15 @@ information. Schema 211 is unallocated. Schemas 111 (`sbe-cluster.xml`, Aeron's)
 
 An application includes nothing from seqeron's schemas and generates nothing from them. It defines its
 own payload encoding and reads frames through seqeron's compiled codecs (the jar in Java, the
-installed headers in C++).
+installed headers in C++, the package in C#).
 
 Both schemas' codecs ship together, one artifact per language: `ReplayerRecovery` decodes
 `LeadershipChanged` (schema 210) while handling `Replaying` (schema 212).
 
 ## 9. Sequencer rules
+
+What the sequencer does with each ingress frame: number it, validate it, decide deterministically, and
+never fail silently.
 
 ### 9.1 `globalSeqNo`
 
@@ -780,9 +801,19 @@ so there is nothing to stay compatible with.
 
 - **V-1. Library versions are part of the wire format.** Every producer, consumer and cluster node
   MUST use the Aeron, Agrona and SBE versions seqeron was built with; a mismatch corrupts frames rather
-  than failing the build. seqeron publishes these versions: `seqeron-bom` for Java, and for C++ the
-  build fetches the pinned Aeron, and the installed package requires at least that version. The
-  versions an application uses for its own payload codecs are its own choice.
+  than failing the build. seqeron publishes these versions: `seqeron-bom` for Java, for C++ the
+  build fetches the pinned Aeron, and the installed package requires at least that version, and the C#
+  package names its dependencies exactly. The versions an application uses for its own payload codecs
+  are its own choice.
+
+  **The one exception is the C# client**, on Aeron.NET, which trails Java: Aeron.NET 1.52.2 against
+  Aeron 1.53.2, and the SBE C# runtime 1.23.1.1 under codecs generated by SBE 1.40.2 (`aeronDotnet` and
+  `sbeDotnetRuntime` in `versions.properties`). The two Aeron versions agree on everything a client
+  touches: the CnC version, the driver command codes, the log-buffer layout, the frame version and the
+  cluster client protocol (0.3.0). Their cluster codecs differ only in `ServiceTerminationPosition`,
+  which passes between the consensus module and the service container and never reaches a client.
+  `csharp-client-test.sh` is the evidence, against a live cluster. It is rerun on every Aeron upgrade
+  before the release is tagged, and `aeronDotnet` names the version it passed with.
 - **V-2. Payload versioning is the application's.** A payload has exactly one encoder, its producer
   (**E-1**), so no two implementations need to agree; only an application's own old and new builds do.
   How it signals versions and what compatibility it guarantees are not specified here.
@@ -793,6 +824,8 @@ so there is nothing to stay compatible with.
   and never leaves the node.
 
 ## 12. Limits
+
+The protocol's fixed sizes and timings. They are compiled into every implementation, never configured.
 
 | limit | value | reference |
 | --- | --- | --- |
@@ -812,8 +845,8 @@ so there is nothing to stay compatible with.
 | maximum pending wait | 20 000 ms | §10.1 |
 
 These constants belong to the protocol, not to any one component. Each language compiles in a copy:
-`protocol/FrameLayer.java` and the `Limits` block of `protocol/SequencedFrame.hpp`. A change starts
-here, is made in both, and is a wire change (**V-3**).
+`protocol/FrameLayer.java`, the `Limits` block of `protocol/SequencedFrame.hpp`, and `Protocol/FrameLayer.cs`.
+A change starts here, is made in all three, and is a wire change (**V-3**).
 
 > **T-2.** A tap frame of `MAX_PAYLOAD_LENGTH` (8884) is 32 + 8928 = 8960 bytes with its Aeron data
 > header: one fragment at an IPC MTU of 8960, the largest a 9000-byte jumbo frame carries. The constant
@@ -826,8 +859,8 @@ here, is made in both, and is a wire change (**V-3**).
 > NOT be reported as retryable. What the producer does with the refused message is its own concern
 > (**P-0**).
 
-The encode methods are `SystemFrame.wrap`/`wrapPayload` (Java) and `publishPayload`/`publishSystem`
-(C++). They report refusal as a return value, not an exception, because several callers run inside
+The encode methods are `SystemFrame.wrap`/`wrapPayload` (Java), `SystemFrame.Wrap`/`WrapPayload` (C#) and
+`publishPayload`/`publishSystem` (C++). They report refusal as a return value, not an exception, because several callers run inside
 Aeron poll callbacks, where an exception is swallowed (§9.4).
 
 **A frame may be fragmented.** On the tap, its recording and a replay, a frame longer than the IPC MTU
@@ -846,6 +879,8 @@ A payload larger than `MAX_PAYLOAD_LENGTH` must be split across frames or sent b
 split needs its own completeness rule; a `remaining` countdown, as in `GatewayRegistered`, is one.
 
 ## 13. Tooling and payload encodings
+
+How a recording is read outside a client, and what an application may put in a payload.
 
 ### 13.1 `SbeLogPrinter`
 
@@ -888,8 +923,9 @@ between versions of the same protocol (**V-2**).
 
 ## 14. Conformance suite
 
-`ConformanceTest`, beside `SequencerTest` in the Java suite and in `core_tests` for C++. It uses no
-Aeron runtime or media driver and runs in under a second. The payload fixture is seqeron's own.
+The suite that holds the implementations to this document. `ConformanceTest` sits beside `SequencerTest`
+in the Java suite, in `core_tests` for C++, and in the C# suite. It uses no Aeron runtime or media driver
+and runs in under a second. The payload fixture is seqeron's own.
 
 | # | asserts | rule |
 | --- | --- | --- |
@@ -905,7 +941,7 @@ Aeron runtime or media driver and runs in under a second. The payload fixture is
 | 8 | **S-6.** A `GatewayStarted` matching its list row binds and is accepted. Rejected: the same frame with a different `gatewaySourceId`; an unlisted `gatewayId` claiming a listed `sourceId`; a `GatewayActivationRequested` for an unlisted `gatewayId`; another system frame with a listed `sourceId` on an unbound session. Accepted: an application payload with a listed `sourceId`, and a `clusterctl` marker (`sourceId` 2, `connectionId` −1) | **S-6** |
 | 9 | **Promotion.** With ranks 0, 1, 2 under one `gatewaySourceId`: bootstrap activates rank 0 only; a `GatewayActivationRequested` is sequenced and answered at the next `globalSeqNo`; closing rank 0's session promotes rank 1; closing rank 1's promotes rank 0; an instance that publishes no `GatewayStarted` is replaced after exactly `GATEWAY_ACTIVATION_TIMEOUT_MS` of consensus time and not before; one that does arms nothing further; a `gatewaySourceId` with one row synthesizes nothing on close and `globalSeqNo` does not move. Two gateways bootstrapped together keep separate deadlines | §7.2, **S-3** |
 
-Rows 2, 3, 4b, 6 and 7 run in both languages; rows 1, 4, 4a, 5, 8 and 9 are Java only, because the
+Rows 2, 3, 4b, 6 and 7 run in every language; rows 1, 4, 4a, 5, 8 and 9 are Java only, because the
 sequencer is Java only.
 
 Each row builds its frames from this document's rules; there is no stored byte corpus. A failure names
@@ -920,7 +956,7 @@ The suite checks framing and copy fidelity only; it never decodes an application
 
 What an application must do so that the order of §9.1 reaches its own consumers intact. seqeron cannot
 enforce these rules, since they concern behaviour after the tap. The client tier implements them in
-`org.limitless.seqeron.app` (Java and C++); the sender half of A-5 is in `sequencer.client`. A-6 and A-7
+`app`, in every language; the sender half of A-5 is in `sequencer.client`. A-6 and A-7
 concern sources that take part in snapshot rounds (§7.3, `doc/snapshot.md`).
 
 - **A-1. Leader-only work is gated.** A co-located replica MUST perform a leader-only side effect only

@@ -1,0 +1,7 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- The same flow as FollowStream against the front door, Application. -->
+  <PropertyGroup>
+    <RootNamespace>Example</RootNamespace>
+    <SeqeronFacadeOnly>true</SeqeronFacadeOnly>
+  </PropertyGroup>
+</Project>

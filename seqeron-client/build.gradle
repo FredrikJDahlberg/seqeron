@@ -86,6 +86,71 @@ tasks.register('generateClusterSbeIr', JavaExec) {
     doFirst { sbeGeneratedSrcDir.mkdirs() }
 }
 
+// ── SBE C# codecs ──────────────────────────────────────────────────────────────
+// Committed under src/main/generated/sbe/csharp, as the C++ codecs are, so a C# build needs no JDK.
+// generateCSharp*Sbe rewrite that tree: run them when a schema changes, then commit what they produced.
+// checkCSharpSbeCurrent regenerates into the build dir and compares exactly; SBE's C# output is
+// deterministic. Each schema owns its namespace dir and wipes only that.
+def csharpCommittedDir = file('src/main/generated/sbe/csharp')
+def csharpCheckDir     = layout.buildDirectory.dir('generated/sbe-check/csharp').get().asFile
+
+def registerCSharpSbe = { String taskName, String schema, File outputRoot ->
+    def schemaFile   = new File(sbeSchemaDir, "sbe-${schema}.xml")
+    def namespaceDir = new File(outputRoot, "org_limitless_seqeron_sbe_${schema}")
+
+    tasks.register(taskName, JavaExec) {
+        description = "Generate C# SBE codecs from sbe-${schema}.xml into ${outputRoot}"
+        classpath   = configurations.sbeCodegen
+        mainClass   = 'uk.co.real_logic.sbe.SbeTool'
+
+        jvmArgs '--add-opens=java.base/jdk.internal.misc=ALL-UNNAMED'
+
+        systemProperty 'sbe.output.dir',      outputRoot.absolutePath
+        // The generator's class name: SbeTool does not accept the short name `csharp`.
+        systemProperty 'sbe.target.language', 'uk.co.real_logic.sbe.generation.csharp.CSharp'
+        systemProperty 'sbe.xinclude.aware',  'true'
+        systemProperty 'sbe.generate.ir',     'false'
+
+        args schemaFile
+
+        inputs.file schemaFile
+        outputs.dir namespaceDir
+
+        doFirst {
+            namespaceDir.deleteDir()
+            outputRoot.mkdirs()
+        }
+    }
+}
+
+['frame', 'replay'].each { schema ->
+    registerCSharpSbe("generateCSharp${schema.capitalize()}Sbe", schema, csharpCommittedDir)
+    registerCSharpSbe("generateCSharp${schema.capitalize()}SbeForCheck", schema, csharpCheckDir)
+}
+
+tasks.register('checkCSharpSbeCurrent') {
+    description = 'Check the committed C# SBE codecs against src/main/sbe'
+    group       = 'verification'
+    dependsOn 'generateCSharpFrameSbeForCheck', 'generateCSharpReplaySbeForCheck'
+
+    doLast {
+        def listed = { File root ->
+            root.exists() ? fileTree(root).files.collect { root.toPath().relativize(it.toPath()).toString() } as Set
+                          : [] as Set
+        }
+        def committed = listed(csharpCommittedDir)
+        def fresh     = listed(csharpCheckDir)
+        def stale = (committed + fresh).findAll { path ->
+            !(path in committed) || !(path in fresh) ||
+                !Arrays.equals(new File(csharpCommittedDir, path).bytes, new File(csharpCheckDir, path).bytes)
+        }.sort()
+        if (stale) {
+            throw new GradleException("C# SBE codecs differ from src/main/sbe: ${stale.join(', ')}. Run " +
+                ':seqeron-client:generateCSharpFrameSbe :seqeron-client:generateCSharpReplaySbe and commit the result.')
+        }
+    }
+}
+
 
 // The SBE tasks emit a .sbeir alongside the generated Java. Staged into the jar so SbeLogPrinter, which
 // lists this directory on the classpath rather than naming schemas, sees these two schemas whenever the
