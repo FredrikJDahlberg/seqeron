@@ -95,12 +95,14 @@ Coverage is a JaCoCo report at `build/reports/jacoco/test/`, written by `./gradl
 
 ## End-to-end harnesses
 
-The end-to-end harnesses live under `seqeron-service/src/test/scripts/`. **Eight of the ten are Java-only**
+The end-to-end harnesses live under `seqeron-service/src/test/scripts/`. **Eight of the eleven are Java-only**
 — they drive the cluster through `ClusterProbe` or `TestGateway`, which attach to a member's own embedded
 media driver or a gateway host's, so six of them need no standalone `aeronmd` at all. Each brings a cluster
 up and tears it down again; run them from the repository root, with `./gradlew uberJar` done first. The
 ninth, `docker-failover-test.sh`, is the containerized one and wants `./gradlew operatorDist` and Docker
-instead, and the tenth, `csharp-client-test.sh`, drives the C# client and wants the .NET SDK beside the jar.
+instead. The tenth and eleventh drive the C# client and want the .NET SDK beside the jar:
+`csharp-client-test.sh` on Linux, and `csharp-windows-test.sh` on Windows, in Git Bash, with the members in a
+WSL1 distribution that has a JDK 21.
 
 | Script | Purpose |
 |--------|---------|
@@ -113,7 +115,8 @@ instead, and the tenth, `csharp-client-test.sh`, drives the C# client and wants 
 | `chaos-runner.sh` | Randomized fault injection against a live 3-node cluster, with the `TestGateway` pair (`GW-T-A`/`GW-T-B`, ports 9200/9201) taking load through its accept gate; every run prints its `SEED` to replay the exact fault sequence. Needs `./gradlew uberJar compileTestJava` |
 | `snapshot-test.sh` | Application snapshots against a live 3-node cluster: the `TestGateway` pair and a `TestApplication` replica per member take part in rounds every 2 s, and the script restarts the standby, fails over onto the restored instance, brings the other back passive and activates it, starts a round with `clusterctl request-snapshot`, restarts a follower's replica, and kills the cluster leader. Every restore must reach the state the log implies and no instance may diverge from a sequenced round. Needs `./gradlew uberJar compileTestJava` |
 | `docker-failover-test.sh` | Multi-round containerized failover soak — the `docker/compose.yml` port of `failover-test.sh`. `ROUNDS` (15) kills under continuous `ProbeMarker` load, restoring the killed member between them, so each rejoin replays a Raft log that grew under the previous rounds. Asserts every round is a genuine leadership change, that a long-lived observer on each surviving node keeps delivering in order across all of them, and that a cold-start probe replays the whole multi-tenure history at the end. Needs Docker and `./gradlew operatorDist`; `ROUNDS=3` for a quick local run. CI runs it as `failover.yml` |
-| `csharp-client-test.sh` | The C# client tier against a live 3-node cluster: UDP and IPC ingress, the fallback to UDP on a follower, `PendingSends` exactly-once across a leader kill, a cold start replayed from `globalSeqNo` 1, then the C# examples built from the packed package — `FollowStream`, `ColocatedApp`, and a `GatewayApp` pair handed over when its active instance is killed. Rerun on every Aeron upgrade (spec V-1). Needs the .NET SDK (`DOTNET` names one off the `PATH`) |
+| `csharp-client-test.sh` | The C# client tier against a live 3-node cluster: UDP and IPC ingress, the fallback to UDP on a follower, `PendingSends` exactly-once across a leader kill, a cold start replayed from `globalSeqNo` 1, then the C# examples built from the packed package — `FollowStream`, `ColocatedApp`, and a `GatewayApp` pair handed over when its active instance is killed. Rerun on every Aeron upgrade (spec V-1); CI runs it in `chaos.yml` on every pull request. Needs the .NET SDK (`DOTNET` names one off the `PATH`) |
+| `csharp-windows-test.sh` | The C# client on Windows, where it is deployed, against members on Linux, on one host: the three members in WSL1, which shares Windows' network stack, and on Windows a gateway host with the C# probe and examples beside it. UDP ingress through `PendingSends`, a cold start through the gateway host, the C# gateway pair handed over, and a leader kill that takes away both the producer's leader and the relay's source. Runs in Git Bash; CI runs it in `windows.yml` |
 | `replay-bench.sh <preload> [load-during]` | How fast a cold replica replays recorded history to caught-up; prints archive size, elapsed seconds and MB/s |
 
 ## Examples

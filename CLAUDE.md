@@ -199,7 +199,8 @@ dotnet pack -c Release -o build/nuget seqeron-client/src/main/csharp/Seqeron.Cli
 .NET 10, on Aeron.NET and the SBE C# runtime from NuGet. The frame and replay codecs are generated and committed
 under `seqeron-client/src/main/generated/sbe/csharp`, as the C++ ones are, so a C# build needs no JDK; Gradle
 owns only their generation, since the SBE jar is on its classpath, and `checkCSharpSbeCurrent` regenerates and
-compares. `Directory.Build.props` at the root reads `versions.properties` and `VERSION`, so the package is
+compares. CI's `csharp` job runs on Linux and on Windows, where the client is deployed; keep the tests free of
+POSIX-only assumptions. `Directory.Build.props` at the root reads `versions.properties` and `VERSION`, so the package is
 versioned with the jars. It is `Org.Limitless.Seqeron` on nuget.org, pushed by `release.yml` with its symbols
 and XML docs, and it names its dependencies exactly. The C# examples (`seqeron-examples/src/csharp`) resolve
 it from `build/nuget` rather than the source tree; NuGet serves a cached copy of a version it has seen, so
@@ -211,8 +212,8 @@ the same wire protocol, so a version that differs across them is a runtime decod
 error. The C++ build uses an installed Aeron when `find_package(aeron)` finds one at or above that
 version, and fetches it otherwise; the project links Aeron only by its `aeron::` names, which work
 either way. **C# is the one exception** (spec V-1): Aeron.NET trails Aeron, so `aeronDotnet` pins its own
-version, which agrees with Java's on everything a client touches. `csharp-client-test.sh` is the evidence;
-rerun it on every Aeron upgrade before tagging.
+version, which agrees with Java's on everything a client touches. `csharp-client-test.sh` is the evidence, and
+`chaos.yml` runs it on every pull request, so an Aeron upgrade's pull request reruns it before tagging.
 
 ## Tests
 
@@ -232,11 +233,11 @@ dispatch and the confirmed publish to zero bytes a frame.
 
 The Java suite covers the deterministic decision-making — `Sequencer`, and `ReplayerService` through
 its `Replayer` seam — and deliberately touches no Aeron runtime: no media driver, no cluster, no Aeron
-mocks. Everything that needs an Aeron runtime is covered by `core_tests` and by the ten end-to-end scripts under
+mocks. Everything that needs an Aeron runtime is covered by `core_tests` and by the eleven end-to-end scripts under
 `seqeron-service/src/test/scripts`. Coverage is a JaCoCo report per module, at
 `<module>/build/reports/jacoco/test/`, excluding the generated SBE codecs.
 
-**Eight of the ten harnesses are Java-only.** They drive the cluster through `tools/ClusterProbe`, which
+**Eight of the eleven harnesses are Java-only.** They drive the cluster through `tools/ClusterProbe`, which
 submits `ProbeMarker` payloads at ingress (`submit`), round-trips one through consensus and back off
 the tap (`ping`), replays history through the co-located Replayer and then follows the tap live
 (`follow`), or streams through `ClusterStreamSender` and `sequencer/client/PendingSends` and checks its own tap shows
@@ -247,7 +248,10 @@ standalone `aeronmd` at all. The ninth, `docker-failover-test.sh`, is the contai
 failover soak (`docker/compose.yml`, `./gradlew operatorDist`, CI's `failover.yml`). The tenth,
 `csharp-client-test.sh`, drives the C# client tier: `Seqeron.ClusterProbe` (`seqeron-client/src/test/csharp-probe`),
 the C# twin of the probe's `confirm` and `follow`, then the C# examples, its gateway pair through a handover.
-It needs the .NET SDK beside the uber jar. `chaos-runner` needs one more thing the probe cannot supply — a **gateway
+It needs the .NET SDK beside the uber jar, and CI runs it in `chaos.yml`. The eleventh,
+`csharp-windows-test.sh`, runs the same C# client on Windows, where it is deployed: the members in WSL1 and
+the C# clients beside a gateway host on Windows, on one `windows-latest` runner (CI's `windows.yml`).
+`chaos-runner` needs one more thing the probe cannot supply — a **gateway
 pair under the faults** — and `TestGateway` is it: an elected active/standby producer (`GW-T-A`/`GW-T-B`,
 `gatewaySourceId` 9, listening on 9200/9201) that speaks no application protocol and holds no session
 state, but holds the same fences a real gateway does — including the client tier's recovery-stall
@@ -267,7 +271,7 @@ list is `seqeron-service/src/test/resources/topology-test-gateway.xml`, whose pa
 `SnapshotListener`; `snapshot-test.sh` loads it and drives both through restores, a failover onto a restored instance, a
 passive activation (`-Dprobe.passive`), an operator-requested round and a cluster leader kill. The two other topology documents here are
 `seqeron-examples/topology.xml`, the pair the C++ `GatewayApp` example runs, and `topology-csharp.xml` beside it,
-the C# example's own pair, which `csharp-client-test.sh` loads.
+the C# example's own pair, which both C# harnesses load.
 
 `start-cluster.sh` and `start-three-node-cluster.sh` launch the cluster tier and nothing else — core
 starts no process it does not own. A consumer that wants its own replicas or gateways alongside runs

@@ -36,14 +36,14 @@ Features
 - **Determinism.** Every decision the cluster makes is a function of the log alone: the order, the clock,
   gateway promotions, connection lifecycle and snapshot rounds are all sequenced frames, byte-identical on
   every member. Any replica that applies the log reaches the same state, with nothing to ask anyone else.
-- **Replay.** A client recovers by replaying, never by state transfer. A Replayer on each host serves cold
-  starts and gaps from the local recording, while consumers read the live stream untethered, so a slow
-  consumer is dropped and heals by replay instead of holding up the cluster.
-- **Application snapshots.** A client can restart from a snapshot of its own state rather than replay from
-  `globalSeqNo` 1. The sequencer marks each round's cut in the log; every instance writes its state at that
-  cut to a local file, and the publishing instance submits a digest of it to the log. Every instance checks
-  its file against the digest and stops if it differs, and a restart restores only from a file the log
-  confirms.
+- **Replay and snapshots.** A client recovers by replaying the log, never by state transfer. A Replayer on
+  each host serves cold starts and gaps from the local recording, while consumers read the live stream
+  untethered, so a slow consumer is dropped and heals by replay instead of holding up the cluster. To restart
+  from a known point rather than `globalSeqNo` 1, a client takes snapshots of its own state: at each round's
+  cut in the log every instance writes its state to a local file, and the log carries a digest every
+  instance checks its file against. The API hides all of it: an application supplies only a listener that
+  writes and reads its records, and a directory; the façade takes, confirms and restores the snapshots, and
+  replays what follows.
 - **APIs.** Two façades cover the two kinds of producer: `Gateway`, one instance of an elected pair, and
   `Application`, one replica per member that publishes from the leader's. Each assembles the session,
   the stream, confirmed ingress and the failure fences into one duty cycle. Beneath them, the receiver,

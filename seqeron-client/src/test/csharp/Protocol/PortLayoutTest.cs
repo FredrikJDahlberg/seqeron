@@ -132,7 +132,9 @@ public class PortLayoutTest
     [InlineData("20000")]
     public void TheFormulaIsPortsSh(string portBase)
     {
-        string script = Path.Combine(RepositoryRoot(), "seqeron-service", "src", "main", "scripts", "ports.sh");
+        // Forward slashes, which Git Bash on Windows reads as well as bash elsewhere does.
+        string script =
+            Path.Combine(RepositoryRoot(), "seqeron-service", "src", "main", "scripts", "ports.sh").Replace('\\', '/');
         string[] lines = Bash($"source '{script}'; for m in 0 1 2 3 4 5 6; do " +
                                   "echo $(( $(cluster_member_port_base $m) - CLUSTER_PORT_BASE ))" +
                                   " $(( $(archive_port $m) - CLUSTER_PORT_BASE ))" +
@@ -154,7 +156,7 @@ public class PortLayoutTest
 
     private static string[] Bash(string command, string portBase)
     {
-        var start = new ProcessStartInfo("bash", new[] { "-c", command }) { RedirectStandardOutput = true };
+        var start = new ProcessStartInfo(BashPath(), new[] { "-c", command }) { RedirectStandardOutput = true };
         start.Environment.Remove(PortLayout.EnvPortBase);
         if (portBase != null)
         {
@@ -174,6 +176,24 @@ public class PortLayoutTest
         bash.WaitForExit();
         Assert.Equal(0, bash.ExitCode);
         return output.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+    }
+
+    // Windows starts System32's bash, WSL's launcher, ahead of the PATH's; take the PATH's, Git Bash on a runner.
+    private static string BashPath()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return "bash";
+        }
+        foreach (string dir in (Environment.GetEnvironmentVariable("PATH") ?? "").Split(Path.PathSeparator))
+        {
+            string candidate = Path.Combine(dir, "bash.exe");
+            if (File.Exists(candidate))
+            {
+                return candidate;
+            }
+        }
+        return "bash";
     }
 
     private static string RepositoryRoot()

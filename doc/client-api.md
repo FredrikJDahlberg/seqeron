@@ -128,7 +128,7 @@ it logs the collision, sets `seqeron_replayer_client_id_collision` (type id 5108
 C++, `InvalidOperationException` in C# — as does a façade's `doWork()`. The Replayer cannot tell which
 client was there first, so both stop.
 
-This repository's own processes use ids 1–22 and 31–36, so an application's should start at 23 and skip
+This repository's own processes use ids 1–22 and 31–43, so an application's should start at 23 and skip
 those:
 
 | `clientId` | used by |
@@ -146,6 +146,7 @@ those:
 | 20 | `seqeron-examples` `ColocatedApp` (C#) |
 | 21, 22 | `seqeron-examples` `GatewayApp` (C#), GW-EX-CS-A then GW-EX-CS-B |
 | 31–36 | `csharp-client-test.sh`'s C# probes |
+| 41–43 | `csharp-windows-test.sh`'s C# probes |
 
 **Where each frame arrives.**
 

@@ -150,7 +150,7 @@ document in this repository lists only what its user starts:
 | `seqeron-service/src/test/resources/topology-test-gateway.xml` | the test harnesses |
 | `seqeron-service/src/test/resources/topology-test-snapshot.xml` | `snapshot-test.sh`, adding the `TestApplication` replicas it starts |
 | `seqeron-examples/topology.xml` | the C++ gateway example |
-| `seqeron-examples/topology-csharp.xml` | the C# gateway example and `csharp-client-test.sh` |
+| `seqeron-examples/topology-csharp.xml` | the C# gateway example, `csharp-client-test.sh` and `csharp-windows-test.sh` |
 
 ### counters
 

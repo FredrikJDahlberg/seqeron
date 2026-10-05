@@ -18,8 +18,8 @@ To cut one:
 1. Start from `main` with CI green, and commit the release's notes to `.github/release-notes/`, named
    after the tag (`v0.6.3.md`). The GitHub Release uses them, followed by the changelog link; without
    them it has the link alone. A release that moves Aeron also needs `csharp-client-test.sh` to pass
-   against the new version first, with `aeronDotnet` in `versions.properties` naming the Aeron.NET it
-   passed with (spec **V-1**).
+   against the new version first — CI's `chaos.yml` runs it on the upgrade's pull request — with
+   `aeronDotnet` in `versions.properties` naming the Aeron.NET it passed with (spec **V-1**).
 2. Run `.github/tag-release.sh <major.minor.patch>`, which is the whole tagging step:
    ```bash
    .github/tag-release.sh 0.6.3

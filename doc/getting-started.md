@@ -105,7 +105,7 @@ caught up
 `globalSeqNo` 1 is always the first leader's election. `systemEventType` 16 is `ClusterHeartbeat`, the
 cluster's clock, sequenced once a second. A frame with a `payloadId` instead is an application payload,
 delivered exactly as its producer wrote it. The `clientId` must be unique among the clients on one member,
-since two sharing one cannot both follow the stream; ids 1–22 and 31–36 are this repository's own.
+since two sharing one cannot both follow the stream; ids 1–22 and 31–43 are this repository's own.
 [`client-api.md`](client-api.md) covers the frame families and how to decode each.
 
 ## 4. Publish
