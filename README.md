@@ -8,578 +8,104 @@
 [![API reference](https://img.shields.io/badge/docs-API%20reference-blue)](https://fredrikjdahlberg.github.io/seqeron/)
 [![License](https://img.shields.io/github/license/FredrikJDahlberg/seqeron)](LICENSE)
 
-To run it, start with [`doc/getting-started.md`](doc/getting-started.md).
-
-## Overview
-
-**seqeron** assigns a single global, gap-free, replicated total order to messages arriving from
-external producers, using an Aeron Cluster (Raft) replicated state machine as the sequencer.
-Everything downstream of that point reads from one authoritative ordered stream instead of
-coordinating directly with each other.
-
-This repository is the **sequencing tier alone** — the sequencer, the replayer (both sides), the
-client-side plumbing that follows the ordered stream, and the operator tooling. It carries **no FIX
-code, no order flow and no reference data**: the edges that speak those protocols are their own
-project, and the boundary is enforced rather than agreed. Nothing here decodes a `payloadId`, and the
-build reaches for no application schema.
-
-Each node republishes every sequenced frame onto a **node-local `aeron:ipc` tap** (stream 205) that
-its own co-located Aeron Archive records. Leader and follower alike publish and record their own tap,
-and since every node processes the same committed log in the same order the taps are byte-identical —
-each node's archive independently holds a complete copy of sequenced history, with no cross-node
-replication. Co-located applications read the tap *directly* and untethered for the live feed, and ask
-a per-node **Replayer** to serve cold-start history and gaps off the recording. The sequencer therefore
-has **zero live network subscribers**: a slow replica is dropped and heals by replay rather than
-back-pressuring the cluster.
-
-### Processes
-
-- **`SequencerServer` / `SequencerService` / `Sequencer`** (Java) — the cluster node. `Sequencer` is
-  the replicated state machine proper (no Aeron dependency, unit-tested directly): it stamps each
-  ingress message with a monotone `globalSeqNo` plus the Raft consensus timestamp and synthesizes the
-  frames the cluster itself owns (`ClusterHeartbeat`, `LeadershipChanged`, `GatewayActive`,
-  `SnapshotStarted`).
-  `SequencerService` is its Aeron adapter and holds no replicated state of its own.
-- **`ReplayerServer` / `ReplayerService`** (Java, `replayer/server`) — one per member, running inside
-  that member's `SequencerServer` JVM on its embedded media driver. The only component that reads the
-  archive: it serves an on-demand
-  replay protocol to the co-located replicas, and sits off the live delivery path entirely. It also
-  indexes every source's `SnapshotEnd` by round and answers `SnapshotQuery`, which is how a restarting
-  client learns which of its snapshot files the log confirms. Its decisions live in pure seams —
-  `Replayer`, `ReplaySlotAllocator`, `ReplayClientIdCollisions`, `SnapshotIndex` —
-  with `AeronReplayer` the only part that touches Aeron. On a **gateway
-  host**, one that runs no member, it runs its own media driver and archive instead, and a relay
-  (`TapRelay`/`AeronTapRelay`) copies a member's tap onto the host's own over UDP, moving to the next
-  member when that one is lost; gateways and consumers there run unchanged
-  ([`doc/fault-tolerance.md`](doc/fault-tolerance.md#33-gateway-host)).
-- **`ClusterCtl`** (Java, `clusterctl`) — start/status/shutdown/activation/snapshot-request tooling. Its `start` and
-  `shutdown` publish `ClusterStarted`/`ClusterStopped` markers *through* the log, so the boundaries of
-  a run are themselves sequenced. See [Operator tooling](#operator-tooling).
-- **`ClusterProbe`** (Java) — the edge-neutral load generator and tap consumer this tier's own
-  end-to-end scripts drive a cluster with. Three modes: `submit` (flood `ProbeMarker`s at ingress),
-  `ping` (round-trip one through consensus and back off the tap) and `follow` (replay history through
-  the co-located Replayer, then follow the tap live). It exists so core's e2e suite needs no product
-  binary built.
-- **`MetricsExporter`** (Java) — the ops plane, orthogonal to the data flow: a node-local exporter
-  serves `/metrics` off the Aeron CnC counters, and Prometheus scrapes each node's ([`doc/ops.md`](doc/ops.md)).
-- **`TestGateway`** (Java, `seqeron-service/src/test/java`) — an elected active/standby producer used only by
-  `chaos-runner.sh` and `snapshot-test.sh`. It speaks no application protocol and holds no session state,
-  but it holds the same six fences a real gateway does, so the recovery-stall policy and the snapshot
-  comparison get exercised inside this repo. It is in the test source set and therefore in no jar.
-- **`TestApplication`** (Java, `seqeron-service/src/test/java`) — one replica per member of a co-located
-  application taking part in snapshot rounds, used only by `snapshot-test.sh`; the reference consumer of
-  `app/Application` with a `SnapshotListener`. Also in no jar.
-
-The **C++ half is a client library, not a set of executables**: `seqeron_core` is header-only, and
-the only binary this build produces is `core_tests`. It gives an application written in C++ the
-consumer side of everything above — `ClusterStreamSender` (the cluster client session state machine),
-`ClusterStreamClient` / `ReplayerStreamReceiver` (replay history, then follow the tap live),
-`SequencedFrame` (the envelope), `PortLayout`, and the pure policy classes. There is **no C++ replay
-server**; the server side of the replay protocol is Java only.
-
-The **C# half is the same client tier again**, on Aeron.NET: the Java client classes under the Java names,
-both façades included, published as the `Org.Limitless.Seqeron` NuGet package. A C# process attaches to a
-member's media driver, or a gateway host's, as any other client does. Aeron.NET trails Aeron by a version,
-which the spec's **V-1** records as the one exception to running the same Aeron everywhere.
-
-### Fundamental properties
-
-- **The cluster parses no application payload.** Every ingress message is an `Unsequenced` frame
-  (`sbe-frame.xml`, schema 210) carrying one opaque payload named by `header.payloadId`;
-  `Sequencer` decodes the frame header, stamps it, and copies the payload through byte-identical.
-  Sequencing is copy-18/append-16, the payload is never re-encoded, and `payloadId` 1 is retired and
-  refused on ingress — what used to travel under it is now the **system family**, seqeron's own
-  vocabulary, named by `header.systemEventType` at the same offset.
-- **A consumer splits by family first, then dispatches on `(payloadId, templateId)` — never
-  `templateId` alone.** Template ids are unique per schema, so two applications' templates can
-  collide, and the uint16 at offset 16 is a `payloadId` on one family and a `systemEventType` on the
-  other. `unwrapFrame` (C++, `SequencedFrame.hpp`) and `SequencedFrameDecoder` (Java) are the one
-  place the envelope is stripped.
-- **The log holds the authoritative state, and every decision consumers must agree on is emitted
-  rather than inferred.** Connects, disconnects, promotions, the clock and snapshot rounds' cuts and
-  digests all round-trip through the sequencer, so a restarted or standby replica rebuilds by replaying —
-  or by restoring a snapshot the log confirms and replaying after it — rather than by asking anyone.
-- **No cluster snapshots — a node's recovery is always full-log replay from `globalSeqNo` 1.**
-  `SequencerService` refuses to take or restore one. That is what keeps every node's tap recording
-  complete: a node restored from a snapshot would record only from wherever it resumed. The cost is
-  recovery time and archive size growing with uptime — the 1 Hz heartbeat alone is ~86.4k frames/day.
-  Clients can snapshot their own state instead, each instance into local files the log confirms, and
-  restart from it ([`doc/snapshot.md`](doc/snapshot.md)).
-- **A node that cannot record terminates itself.** `TapPublisher` watches the archive's
-  `RecordingPos` counter, and a node whose recording has stopped or stopped advancing exits (70)
-  rather than sequence history it cannot keep. Peers keep quorum, and the restart rebuilds its
-  recording over the full-log replay it does anyway.
-
-[`doc/seqeron-protocol-spec.md`](doc/seqeron-protocol-spec.md) is the normative protocol specification; [`doc/fault-tolerance.md`](doc/fault-tolerance.md)
-covers what survives node loss, failover, a stuck archive and a lost frame.
-
-## Build
-
-Requires **JDK 21** for the Java half, a **C++23** compiler for the C++ one and the **.NET 10 SDK** for the
-C# one, and fetches Aeron
-1.53.2 and GoogleTest from source — Aeron only when `find_package` finds no installed one at that
-version or newer (built with `-DAERON_INSTALL_TARGETS=ON`, on `CMAKE_PREFIX_PATH`). The C++ half needs no JDK of seqeron's own making: the codecs for
-the three schemas this repo owns are generated and committed under `seqeron-client/src/main/generated/sbe/core`, so
-a consumer compiles them rather than running the SBE tool. Java is still needed
-to *change* them — `RegenerateSbeCodecs`, then commit — and Aeron's own build requires a JDK 17+
-regardless (`aeron-archive/src/main/c` does `find_package(Java 17 REQUIRED)` and Aeron's CMake shells
-out to its Gradle build), so a from-source Aeron keeps one on the machine either way.
-Both halves generate independently from the same schemas — `seqeron-client/src/main/sbe` and
-`seqeron-service/src/main/sbe` — so their Aeron and SBE versions are pinned once, in
-`versions.properties`, which both builds read.
-
-### Java
-
-```bash
-./gradlew compileJava
-./gradlew uberJar     # fat jar, run without Gradle: build/libs/seqeron-<version>-uber.jar
-./gradlew test        # JUnit 5, ~1s
-```
-
-Every script needs that jar, so `uberJar` is the prerequisite for all of them. The operator scripts
-find it themselves — `build/libs/` in this checkout, `lib/` in an installed distribution — while the
-harnesses under `seqeron-service/src/test/scripts` still name `build/libs/` and run from the repository root.
-`SEQERON_JAR` overrides the path either way, and `SEQERON_HOME` the root it is resolved from.
-
-The codegen tasks run as part of `compileJava` and can be invoked on their own:
-
-```bash
-./gradlew generateFrameSbe generateReplaySbe generateProbeSbe   # Java codecs + IR
-./gradlew generateClusterSbeIr                                  # IR only, no codecs
-./gradlew compileTestJava                                       # TestGateway, for chaos-runner.sh
-```
-
-### C++
-
-```bash
-cmake -B cmake-build-debug -DCMAKE_BUILD_TYPE=Debug      # AddressSanitizer
-cmake --build cmake-build-debug
-
-cmake -B cmake-build-release -DCMAKE_BUILD_TYPE=Release
-cmake --build cmake-build-release
-```
-
-`cmake --build cmake-build-debug --target docs` renders the C++ API reference into
-`cmake-build-debug/docs/html` when Doxygen is installed; the target does not exist otherwise. Both API
-references, C++ and Java, are published for the latest release at https://fredrikjdahlberg.github.io/seqeron/.
-`-DSEQERON_COVERAGE=ON` adds coverage instrumentation. The tree is developed on macOS/arm64 with
-Apple clang; CI builds it on Ubuntu with both clang and gcc-14.
-
-### C#
-
-```bash
-dotnet build seqeron-client/src/main/csharp/Seqeron.Client.csproj
-dotnet pack -c Release -o build/nuget seqeron-client/src/main/csharp/Seqeron.Client.csproj
-```
-
-A standalone `dotnet` build, versioned from `VERSION` and pinned by `versions.properties` like the other two.
-The frame and replay codecs are committed under `seqeron-client/src/main/generated/sbe/csharp`, so it needs
-no JDK; `./gradlew :seqeron-client:generateCSharpFrameSbe :seqeron-client:generateCSharpReplaySbe` rewrites
-them after a schema change, and `checkCSharpSbeCurrent` fails CI until they are. The pack is what
-`seqeron-examples/src/csharp` builds against, and what a release pushes to nuget.org.
-
-## Tests
-
-```bash
-cmake --build cmake-build-debug --target run_tests   # C++: 259 cases
-./gradlew test                                       # Java: 408 cases
-dotnet test --project seqeron-client/src/test/csharp/Seqeron.Client.Tests.csproj   # C#: 298 cases
-```
-
-`run_tests` is `ctest --output-on-failure` with the build dependency wired up; plain `ctest` works
-too.
-
-Run a single C++ suite by filter, or a single Java test class:
-
-```bash
-./cmake-build-debug/core_tests --gtest_filter='ReplayerRecovery*'
-./gradlew test --tests '*SequencerTest'
-```
-
-The Java suite covers the deterministic decision-making — `Sequencer`, and `ReplayerService` through
-its `Replayer` seam — and deliberately touches no Aeron runtime: no media driver, no cluster, no Aeron
-mocks. Everything that needs an Aeron runtime is covered by `core_tests` and by the end-to-end scripts below.
-Coverage is a JaCoCo report at `build/reports/jacoco/test/`, written by `./gradlew test`.
-
-## Scripts
-
-Operator and cluster-lifecycle scripts live under `seqeron-service/src/main/scripts/`; they start and stop things or
-are standalone tools, and run no tests. `ports.sh`, `paths.sh` and `seqeron-home.sh` are sourced by
-every other script.
-
-They run from this checkout or from an installed distribution, working out which from what sits beside
-them; `SEQERON_HOME` overrides that and `SEQERON_JAR` the jar it resolves. `./gradlew operatorDist`
-writes the distribution to `build/install/seqeron` — `bin/` (these scripts), `lib/` (the uber jar) and
-`ops/` (the Prometheus and Grafana provisioning) — and `./gradlew operatorDistZip` archives it as
-`build/distributions/seqeron-<version>.zip`.
-
-| Script | Purpose |
-|--------|---------|
-| `start-cluster.sh` | Start the single-node cluster — `SequencerServer` (its Replayer included) and a `ClusterProbe follow` replica — in the background; Ctrl-C stops all of them. `SEQERON_NO_CONSUMERS=1` leaves out the replica, for a caller that runs its own |
-| `start-gateway-host.sh` | Make a host that runs no member one that clients can run on: `ReplayerServer` in gateway-host mode, relaying a member's tap onto the host's own. `SEQERON_NODE_ID` (3), `SEQERON_ARCHIVE_ENDPOINTS` (the three localhost members), `SEQERON_HOST` (`localhost`) |
-| `stop-cluster.sh` | Stop everything the start scripts launched, plus any `SEQERON_EXTRA_PROCESSES="label\|pattern;…"` a caller adds |
-| `clusterctl.sh <command>` | Cluster life cycle: `start`, `shutdown`, `activate`, `load-topology`, `counters` — see [Operator tooling](#operator-tooling) |
-| `sbe-log-printer.sh <archive-dir>` | Dump an Aeron Archive recording as JSON — see [Log printer](#log-printer) |
-| `metrics-exporter.sh` | The Prometheus ops plane ([`doc/ops.md`](doc/ops.md)) |
-| `purgelog.sh [--force]` | Delete archive/cluster directories under `$TMPDIR/seqeron-seq` and the `logs/` directory; the cluster must be stopped first |
-
-The end-to-end harnesses live under `seqeron-service/src/test/scripts/`. **Eight of the ten are
-Java-only** — they drive the cluster through `ClusterProbe` or `TestGateway`, which attach to a member's own embedded
-media driver or a gateway host's, so six of them need no standalone `aeronmd` at all. Each brings a cluster up and tears
-it down again; run them from the repository root, with `./gradlew uberJar` done first. The ninth,
-`docker-failover-test.sh`, is the containerized one and wants `./gradlew operatorDist` and Docker
-instead, and the tenth, `csharp-client-test.sh`, drives the C# client and wants the .NET SDK beside the jar.
-
-| Script | Purpose |
-|--------|---------|
-| `start-three-node-cluster.sh` | Start a local 3-node Raft cluster with a per-node `ClusterProbe` replica; blocks until Ctrl-C. `SEQERON_NO_CONSUMERS=1` leaves out the replicas, for a caller that runs its own |
-| `failover-test.sh` | Force a failover, then cold-start a fresh `ClusterProbe` follower on the new leader and verify it catches up on full history — each node's tap recording is one continuous run spanning both tenures. Two `confirm` producers stream across the kill: the one using `PendingSends` must see every frame exactly once, in order, and an untracked control reports what the kill lost |
-| `gap-recovery-test.sh` | Drop a live tap frame on a caught-up consumer (SIGUSR1 fault injection) and verify it re-walks its recording and heals rather than wedging |
-| `paused-subscriber-test.sh` | `SIGSTOP` a caught-up consumer while more than two tap windows go by, and verify its member stays up and the resumed consumer heals the hole its eviction left |
-| `replayer-restart-test.sh` | Kill and restart a client's own node and verify the client fails fast and a fresh cold start is served from the node's new recording alone |
-| `gateway-host-test.sh` | A `confirm` producer on a gateway host (node 3) streams while the member its relay reads, the leader, is killed: every frame must come back exactly once, in order, and the relay must move to another member. The host is then restarted, and a fresh `ClusterProbe` follower there must catch up from its new recording |
-| `chaos-runner.sh` | Randomized fault injection against a live 3-node cluster, with the `TestGateway` pair (`GW-T-A`/`GW-T-B`, ports 9200/9201) taking load through its accept gate; every run prints its `SEED` to replay the exact fault sequence. Needs `./gradlew uberJar compileTestJava` |
-| `snapshot-test.sh` | Application snapshots against a live 3-node cluster: the `TestGateway` pair and a `TestApplication` replica per member take part in rounds every 2 s, and the script restarts the standby, fails over onto the restored instance, brings the other back passive and activates it, starts a round with `clusterctl request-snapshot`, restarts a follower's replica, and kills the cluster leader. Every restore must reach the state the log implies and no instance may diverge from a sequenced round. Needs `./gradlew uberJar compileTestJava` |
-| `docker-failover-test.sh` | Multi-round containerized failover soak — the `docker/compose.yml` port of `failover-test.sh`. `ROUNDS` (15) kills under continuous `ProbeMarker` load, restoring the killed member between them, so each rejoin replays a Raft log that grew under the previous rounds. Asserts every round is a genuine leadership change, that a long-lived observer on each surviving node keeps delivering in order across all of them, and that a cold-start probe replays the whole multi-tenure history at the end. Needs Docker and `./gradlew operatorDist`; `ROUNDS=3` for a quick local run. CI runs it as `failover.yml` |
-| `csharp-client-test.sh` | The C# client tier against a live 3-node cluster: UDP and IPC ingress, the fallback to UDP on a follower, `PendingSends` exactly-once across a leader kill, a cold start replayed from `globalSeqNo` 1, then the C# examples built from the packed package — `FollowStream`, `ColocatedApp`, and a `GatewayApp` pair handed over when its active instance is killed. Rerun on every Aeron upgrade (spec V-1). Needs the .NET SDK (`DOTNET` names one off the `PATH`) |
-| `replay-bench.sh <preload> [load-during]` | How fast a cold replica replays recorded history to caught-up; prints archive size, elapsed seconds and MB/s |
-
-## Sequencer
-
-The sequencer runs as a 1- or 3-node Aeron Cluster. Each node is launched with `SequencerServer` and
-configured entirely via system properties.
-
-### Single-node (development)
-
-```bash
-./gradlew uberJar
-
-java -Dsequencer.memberId=0 -jar build/libs/seqeron-*-uber.jar
-# [SequencerServer] Starting member 0 | ingress=aeron:udp?endpoint=localhost:9302 | archive=aeron:udp?endpoint=localhost:9301 | baseDir=/tmp/seqeron-seq
-# [SequencerServer/0] Running — Ctrl-C to stop
-```
-
-The `--add-opens` flags Aeron needs are in the jar's manifest, which `java -jar` honours; a `-cp`
-launch still passes them (`seqeron-home.sh`'s `SEQERON_JAVA_OPTS`). The node embeds its own MediaDriver
-and Archive — no separate `aeronmd` needed. Data is written to
-`$TMPDIR/seqeron-seq/archive-0` and `$TMPDIR/seqeron-seq/cluster-0`.
-
-`seqeron-service/src/main/scripts/start-cluster.sh` does the same thing plus a consumer replica, which is
-usually what you want:
-
-```bash
-./seqeron-service/src/main/scripts/start-cluster.sh
-# [cluster.sh] SequencerServer is running
-# [ReplayerService/0] ready — tap recording 0 live and verified from globalSeqNo 1; serving replay
-# [ClusterProbe/0] Caught up — following live
-```
-
-### Three-node cluster
-
-Set `SEQERON_HOSTS` on every host, then run this on each member, member 0 on `host0` and so on — only
-`-Dsequencer.memberId` differs between them:
-
-```bash
-export SEQERON_HOSTS=host0,host1,host2
-java \
-  -Dsequencer.memberId=0 \
-  -Dsequencer.baseDir=/var/lib/seqeron \
-  -jar seqeron-*-uber.jar
-```
-
-`SEQERON_HOSTS` lists every member's host in member-id order. The node builds Aeron's `clusterMembers`
-string from it, and binds and advertises its own entry; `-Dsequencer.hosts` sets the same list for one
-node. `sequencer.baseDir` is required once the list names more than one member: it holds the Raft log and
-the archive, and the default is under `$TMPDIR`.
-
-Every other seqeron process reads the same variable, in both languages. An application's default ingress
-endpoints (`PortLayout.ingressEndpoints()`, C++ `protocol::ingressEndpointsCsv()`) name those members,
-`clusterctl` and `ClusterProbe` connect through them and reply to this member's host, and a gateway host's
-`ReplayerServer` relays from their archives. Like `SEQERON_PORT_BASE`, set it identically everywhere.
-
-For testing on one machine, `seqeron-service/src/test/scripts/start-three-node-cluster.sh` brings all
-three up on localhost.
-
-### Port layout
-
-Each member's ports are `base + memberId × 10 + offset`, where the base is **9300** unless
-`SEQERON_PORT_BASE` says otherwise — the formula lives in `protocol/PortLayout.hpp`,
-`protocol/PortLayout.java` and `scripts/ports.sh`, and nowhere else:
-
-| Offset | Purpose          | Member 0 | Member 1 | Member 2 |
-|--------|------------------|----------|----------|----------|
-| +1     | Archive control  | 9301     | 9311     | 9321     |
-| +2     | Ingress          | 9302     | 9312     | 9322     |
-| +3     | Consensus        | 9303     | 9313     | 9323     |
-| +4     | Cluster log      | 9304     | 9314     | 9324     |
-| +5     | File transfer    | 9305     | 9315     | 9325     |
-
-`SEQERON_PORT_BASE` moves the whole block when 9300 is already taken where seqeron has to run. It is
-**deployment-wide**: all three mirrors read it, so every seqeron process on every host must see the
-same value, or a node and a client bind and dial different ports and the symptom is a connection that
-never completes. A base below 1024 or too high to fit the 70-port block is refused at startup rather
-than half-applied. The satellite blocks below do **not** move with it — keeping them clear of the new
-base is the operator's job.
-
-This tier reserves **9300–9369** by default (seven members of stride 10, wider than the 9301–9365 seven
-nodes bind), **9200–9209** for its own harness listeners, and `9400 + memberId` for
-the metrics plane. Every other block — an application's TCP listen port, each co-located client's
-cluster egress port, the replay ports — belongs to the process that binds it, so this repo names none
-of them. [`doc/ops.md`](doc/ops.md), "Ports", lists the ones seqeron binds.
-
-The sequenced stream itself has **no port**: it is a node-local `aeron:ipc` tap (stream 205) recorded
-into each member's own archive.
-
-### System properties
-
-| Property                    | Default                          | Description                        |
-|-----------------------------|----------------------------------|------------------------------------|
-| `sequencer.memberId`        | `0`                              | Raft member ID for this node       |
-| `sequencer.hosts`           | `SEQERON_HOSTS`, else `localhost` | Every member's host, in id order   |
-| `sequencer.host`            | this member's entry in `hosts`, else `localhost` | Host this node binds and advertises |
-| `sequencer.baseDir`         | `$TMPDIR/seqeron-seq`; required with more than one host | Root for archive and cluster dirs  |
-| `sequencer.aeronDir`        | `$TMPDIR/seqeron-seq-aeron-<id>`| Aeron media driver directory       |
-| `sequencer.idleStrategy`    | `backoff`                        | `backoff` or `yielding`            |
-
-The node runs its Replayer in the same JVM, on the same media driver; there is nothing to configure.
-
-### Restart and failover
-
-Archive and cluster directories are preserved on restart (`deleteArchiveOnStart=false`,
-`deleteDirOnStart=false`). A node rejoins and replays the log in full — there are no cluster snapshots, so
-recovery always starts from `globalSeqNo` 1, which is what keeps every node's tap recording a
-complete copy of history. `clusterctl shutdown` uses `ABORT` for the same reason. To wipe state for a
-clean start, delete the `archive-<id>` and `cluster-<id>` subdirectories under `baseDir` — or run
-`purgelog.sh`.
-
-A leader failover is not a break in the tap: the tap publication is created once in `onStart` and
-never re-created on a leadership change (`aeron:ipc` has no port to collide on), so a node's recording
-is one continuous run spanning every leader tenure.
-
-## Operator tooling
-
-`clusterctl` is node-local — run it co-located with a `SequencerServer`, on any member:
-
-```bash
-./seqeron-service/src/main/scripts/clusterctl.sh counters        # this node's operator counters; needs no cluster connection
-./seqeron-service/src/main/scripts/clusterctl.sh start           # record a "system started" marker (requires an elected leader)
-./seqeron-service/src/main/scripts/clusterctl.sh shutdown        # orderly stop; safe on every node, a no-op on followers
-./seqeron-service/src/main/scripts/clusterctl.sh activate <gatewayId>
-./seqeron-service/src/main/scripts/clusterctl.sh load-topology <file.xml>
-./seqeron-service/src/main/scripts/clusterctl.sh request-snapshot   # start an application snapshot round now
-```
-
-`load-topology` publishes the deployment document — the gateway list, the co-located applications,
-the protocol registry, then an optional snapshot policy — validated against the packaged `topology.xsd`. Run it once per cluster
-lifetime, after `clusterctl start` and before any gateway starts. Only the gateway list is acted on: the sequencer synthesizes
-the bootstrap `GatewayActive` per logical gateway behind the row whose `remaining` counts down to 0.
-The application and protocol rows are labelling for `SbeLogPrinter`, decoded by nothing and gating
-nothing. The snapshot policy turns application snapshot rounds on (`doc/snapshot.md`).
-
-Anything `clusterctl` does not recognize is passed through to `io.aeron.cluster.ClusterTool` against
-this node's cluster dir (`describe`, `errors`, `list-members`, `recording-log`, …). `snapshot`, Aeron's
-cluster snapshot, is refused. `CLUSTERCTL_*` environment variables map onto the `clusterctl.*` system properties; the full
-runbook is [`doc/clusterctl.md`](doc/clusterctl.md).
-
-In a node container the image has `clusterctl` on the `PATH`, already set to that container's member:
-`docker exec node-0 clusterctl describe`.
-
-## Log printer
-
-`SbeLogPrinter` dumps an Archive recording (`archive.catalog` plus segment files under `archive-<id>`)
-as JSON, decoded against the generated SBE IR. It works on a still-running cluster — an in-progress
-recording is printed up to whatever has been written so far.
-
-```bash
-./seqeron-service/src/main/scripts/sbe-log-printer.sh "${TMPDIR:-/tmp}/seqeron-seq/archive-0" --stream 205 --oneline
-```
-
-Or through Gradle, which takes the same options as `-P` properties:
-
-```bash
-./gradlew sbeLogPrinter -PlogDir="${TMPDIR:-/tmp}/seqeron-seq/archive-0" -Pstream=205 -Poneline
-```
-
-### Schemas
-
-Four IR files ship inside the jar and **all of them are loaded by default** — `frame` (schema 210, the
-envelope and the system family), `replay` (212, the node-local replay control plane), `probe` (214,
-`ClusterProbe`'s own payload) and `cluster` (111, the Raft consensus log). Each frame is decoded
-against the schema its own header names, so a single run reads an archive dir end to end whatever mix
-of recordings it holds:
-
-```
-[Catalog] Recording ID: 0 | Stream ID: 205 | ...    → frames  (schema 210)
-[Catalog] Recording ID: 1 | Stream ID: 100 | ...    → cluster (schema 111)
-```
-
-`--schema <name>` narrows the run to one; frames of the others are then labelled `<schema N not
-loaded>` and skipped. `--list-schemas` prints the bundled names. `--spec <file.sbeir>` decodes against
-an IR file outside the jar instead — the two are mutually exclusive, and it is how an application's
-own schema gets in front of the tool.
-
-`sbe-cluster.xml` is a trimmed mirror of `io.aeron.cluster.codecs`: the subset the C++ cluster client
-needs in order to speak the wire protocol, plus a decode-only section covering what
-`io.aeron.cluster.LogPublisher` appends to the Raft log — `TimerEvent`, `SessionOpenEvent`,
-`SessionCloseEvent`, `ClusterActionRequest`, `NewLeadershipTermEvent`. A frame whose template the
-schema does not define prints as `<not in schema>` with its template id rather than aborting the
-scan, which is what a future Aeron version appending something new would look like.
-
-### Selecting a recording
-
-An archive dir holds more than one recording, so by default the printer dumps **all** of them. Stream
-100 is the Raft cluster log; each recording on 205 is one generation of the sequenced tap, because a
-node restart replays its whole cluster log and re-emits every message onto a *new* tap recording — so
-a later recording starts again at `globalSeqNo` 1 and the earlier one is a strict prefix of it.
-
-`--stream 205` dumps only the **newest** recording on that stream — one complete copy of sequenced
-history, no repeats. Recording ids are not stable across restarts, which is why the selector is the
-stream rather than the id. Omit it to get everything, stale tap generations included. The printer
-exits non-zero if the requested stream matches no recording.
-
-### Output format
-
-Each message is preceded by a separator naming it — the JSON carries field values only, so a
-header-only message such as `ClusterHeartbeat` would otherwise be indistinguishable from any other.
-`--oneline` collapses each message onto a single line, which greps and diffs far better than the
-default pretty print:
-
-```
-LeadershipChanged = { "header": { "sourceId": -1, "connectionId": -1, "sessionId": -1, "systemEventType": 5, "globalSeqNo": 1, "timestamp": 1789409115713932000 }, "newLeaderMemberId": 0, "leadershipTermId": 0 }
-ClusterHeartbeat = { "header": { "sourceId": -1, "connectionId": -1, "sessionId": -1, "systemEventType": 16, "globalSeqNo": 2, "timestamp": 1789409116715140000 } }
-```
-
-The dump as a whole is not a JSON document either way — the `[Catalog]` and separator lines sit
-between the objects — but with `--oneline` each individual message line parses on its own.
-
-### Piping payloads to another decoder
-
-`-o <payloadId>` writes that protocol's payloads to **stdout**, raw and back to back, for a decoder
-that owns their schema ([`doc/seqeron-protocol-spec.md`](doc/seqeron-protocol-spec.md) §13.1). This tier decodes no application
-payload at all, so this is how one gets out to something that does:
-
-```bash
-./seqeron-service/src/main/scripts/sbe-log-printer.sh "${TMPDIR:-/tmp}/seqeron-seq/archive-0" --stream 205 \
-    -o 2 2>frames.log | order-decode
-```
-
-Stdout belongs to the payload stream for the whole run, so **every text line moves to stderr** — the
-`[Catalog]` line, the dump itself, the errors. Redirect it as above to keep the frames beside the
-payloads; the two are emitted in the same order, and the frame line is where `globalSeqNo` is. The
-stream carries no framing of its own: an SBE payload declares its own block and var-data lengths, so
-the decoder that holds the schema is what delimits it. It works on the Raft log (`--stream 100`) as
-well as the tap, reading the ingress side of the same frames.
-
-There is no `-P` property for this on the Gradle task — Gradle re-encodes a child process's stdout,
-which corrupts the payload bytes. Use the script or the jar directly.
-
-### Naming a payload it cannot decode
-
-A payload whose schema is not loaded prints as its ids rather than being decoded — but it is
-**labelled**, from the `PayloadIdRegistered` rows `clusterctl load-topology` put in the same recording
-([`doc/seqeron-protocol-spec.md`](doc/seqeron-protocol-spec.md) §6.3):
-
-```
-<undecodable payload 2 (order v1): schema 220, templateId 1>
-<undecodable payload 7: schema 900, templateId 3>
-```
-
-The second is an unregistered `payloadId`, which prints under its number. Registration is labelling
-only: the sequencer never decodes those rows and they gate no frame.
-
-## Example consumer
-
-`seqeron-examples` holds the smallest clients there are, one per language in `src/java` and `src/cpp` and
-the same flow in both: replay a node's history through that node's co-located Replayer, switch to the live
-tap on catching up, and print every frame in `globalSeqNo` order. Each produces as well as consumes — a
-`ConnectionOpened` announcing itself, then one ping payload a second whose echo it reads back off its own
-tap — so both families are covered in both directions. Each is a **separate build**, sharing that one
-source tree: the Java one resolves `org.limitless:seqeron` — the client tier alone, no sequencer and no
-archive — and the C++ one pulls `seqeron_core` in with `FetchContent`, so what the artifacts fail to expose
-fails there rather than passing on a source dependency. The C++ half also installs: `cmake --install`
-writes a CMake package, and a consumer takes `seqeron::seqeron_core` off `find_package(seqeron)` instead,
-supplying its own installed Aeron.
-
-```bash
-./seqeron-service/src/main/scripts/start-cluster.sh                              # in another shell
-
-./gradlew publishToMavenLocal && ./gradlew -p seqeron-examples run  # Java
-
-cmake -S seqeron-examples -B seqeron-examples/cmake-build-release \
-      -DCMAKE_BUILD_TYPE=Release                                    # C++
-cmake --build seqeron-examples/cmake-build-release --target follow_stream
-./seqeron-examples/cmake-build-release/follow_stream
-```
-
-`ClusterProbe follow` does the same thing with three modes, latency stats and fault injection on top;
-the examples are that one flow with nothing else in them. See
-[seqeron-examples/README.md](seqeron-examples/README.md).
-
-Outside this checkout the Java artifacts come from JitPack, built from a release tag. `seqeron-bom`
-pins Aeron, Agrona and SBE at the versions seqeron was built against. Without it Gradle takes the higher
-of your Aeron and seqeron's, and a version the cluster does not speak fails only when frames do not
-decode. An application takes it as `enforcedPlatform`; a library built on seqeron takes `platform`,
-which leaves the final choice to its own consumer:
-
-```gradle
-repositories {
-    mavenCentral()
-    maven { url 'https://jitpack.io' }
-}
-dependencies {
-    implementation enforcedPlatform('com.github.FredrikJDahlberg.seqeron:seqeron-bom:<tag>')
-    implementation 'com.github.FredrikJDahlberg.seqeron:seqeron'   // or seqeron-service
-}
-```
-
-## Releases
-
-A tag `v<version>` runs `.github/workflows/release.yml`, which fails unless the tag matches `VERSION`.
-It publishes:
-
-- the Java artifacts on JitPack (`seqeron`, `seqeron-service`, `seqeron-bom`);
-- the node image, `ghcr.io/fredrikjdahlberg/seqeron-service:<version>` — the image `docker/compose.yml`
-  builds locally as `seqeron/node:local`;
-- a GitHub Release with the operator distribution, `seqeron-<version>.zip` (`bin/`, `lib/`, `ops/`),
-  and the uber, client and node jars.
-
-To cut one:
-
-1. Start from `main` with CI green, and commit the release's notes to `.github/release-notes/`, named
-   after the tag (`v0.6.3.md`). The GitHub Release uses them, followed by the changelog link; without
-   them it has the link alone.
-2. Run `.github/tag-release.sh <major.minor.patch>`, which is the whole tagging step:
-   ```bash
-   .github/tag-release.sh 0.6.3
-   ```
-   It writes the number to `VERSION` — the only place to change it, since both builds read it from
-   there — commits that as `Release <version>`, pushes `main`, then tags the commit `v<version>` and
-   pushes the tag. Pushing the commit and the tag together is what keeps the two equal, the one thing
-   `release.yml` refuses to proceed without. The argument must be three dot-separated numbers;
-   anything else is rejected before the script writes anything.
-3. Watch the `release` workflow. It fails when the tag does not match `VERSION`, and when JitPack has not
-   built the tag within about ten minutes (it prints the tail of JitPack's build log).
-4. Check the GitHub Release lists the zip and the three jars. It is created last, so it exists only
-   when the JitPack build and the image push have succeeded.
-
-## Documentation
-
-| Document | What it is |
-|----------|------------|
-| [`doc/getting-started.md`](doc/getting-started.md) | A node from a release, then a consumer and a producer against it, in Java |
-| [`doc/seqeron-protocol-spec.md`](doc/seqeron-protocol-spec.md) | The normative protocol specification — frames, families, the system vocabulary, the topology document |
-| [`doc/client-api.md`](doc/client-api.md) | What a client programs against, in both languages, and what in the client tier is not API |
-| [`doc/fault-tolerance.md`](doc/fault-tolerance.md) | Node loss, leader failover, a stuck archive, a lost frame: what survives each and how it recovers |
-| [`doc/clusterctl.md`](doc/clusterctl.md) | The operator tool's runbook |
-| [`doc/ops.md`](doc/ops.md) | The Prometheus/Grafana metrics stack |
-| [`doc/snapshot.md`](doc/snapshot.md) | Application snapshots, local files the log confirms, and what cluster snapshots would take |
-
-Those seven are the whole doc set, and every document reference in this tree resolves inside it.
-
-## License
-
-Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) for the full text, and
-<https://www.apache.org/licenses/LICENSE-2.0> for the canonical copy. Copyright is recorded in
-[NOTICE](NOTICE); §4d obliges anyone redistributing seqeron to carry that file forward. Every
-dependency the uber jar redistributes — Aeron, Agrona, sbe-tool — is under the same license, and
+A replicated sequencer for systems built on the sequencer architecture. Every message from every producer is
+assigned one global, gap-free total order by an Aeron Cluster (Raft) state machine, stamped with the
+consensus clock, and recorded on every node. Services downstream of it become deterministic state machines
+over a single log rather than peers that coordinate with each other: a replica, a hot standby or an audit
+process that reads the same log reaches the same state, and a restart is a replay.
+
+The cluster is protocol-agnostic: it carries no FIX, no order flow and no reference data, and copies every
+application payload through unopened. Application protocols are defined by the producers and consumers that
+speak them.
+
+To run a node and a first consumer and producer, start with [Getting Started](doc/getting-started.md).
+
+Features
+--------
+
+- **Sequence numbering and timestamping.** Every frame gets a cluster-wide `globalSeqNo`, advancing by
+  exactly one per frame with no gaps or reuse, and the Raft consensus timestamp in nanoseconds. A 1 Hz
+  `ClusterHeartbeat` gives every consumer the same clock, which keeps advancing while producers are silent.
+- **Replication.** The order is decided by Raft consensus: a message is sequenced once a majority of members
+  hold it. Every member then republishes the sequenced stream onto a node-local tap that its own Aeron
+  Archive records, so each member holds a complete, identical copy of history without copying it from a peer.
+- **Fault tolerance.** The cluster survives the loss of a minority of its members, and a new leader resumes at
+  the next `globalSeqNo`. Producers confirm their messages on the stream and resend what a failover lost, so
+  each is sequenced exactly once, in order. Edge producers run as active/hot-standby pairs that the cluster
+  elects and hands over, and a member that can no longer record its history stops rather than keep a gap.
+- **Determinism.** Every decision the cluster makes is a function of the log alone: the order, the clock,
+  gateway promotions, connection lifecycle and snapshot rounds are all sequenced frames, byte-identical on
+  every member. Any replica that applies the log reaches the same state, with nothing to ask anyone else.
+- **Replay.** A client recovers by replaying, never by state transfer. A Replayer on each host serves cold
+  starts and gaps from the local recording, while consumers read the live stream untethered, so a slow
+  consumer is dropped and heals by replay instead of holding up the cluster.
+- **Application snapshots.** A client can restart from a snapshot of its own state rather than replay from
+  `globalSeqNo` 1. The sequencer marks each round's cut in the log; every instance writes its state at that
+  cut to a local file, and the publishing instance submits a digest of it to the log. Every instance checks
+  its file against the digest and stops if it differs, and a restart restores only from a file the log
+  confirms.
+- **APIs.** Two façades cover the two kinds of producer: `Gateway`, one instance of an elected pair, and
+  `Application`, one replica per member that publishes from the leader's. Each assembles the session,
+  the stream, confirmed ingress and the failure fences into one duty cycle. Beneath them, the receiver,
+  sender and confirmed-ingress classes serve a client that runs its own.
+- **Language support.** The cluster is Java. Clients are available for Java, C++ (header-only) and C# (.NET,
+  on Aeron.NET), written as ports of one another, with their core state machines tested case for case in
+  every language. All three exchange the same frames, encoded with Simple Binary Encoding (SBE).
+
+What it costs
+-------------
+
+- **No cluster snapshots.** A node's recovery is a full replay of the Raft log from `globalSeqNo` 1. That
+  is what keeps every node's recording complete, but recovery time and archive size grow with uptime; the
+  heartbeat alone is about 86,400 frames a day. Application snapshots shorten a client's restart, not a
+  node's.
+- **At most seven members.** The cluster's port block is 70 ports wide.
+- **C# trails by one Aeron version.** Aeron.NET is a release behind Aeron. Spec **V-1** records the
+  exception and the evidence that the two interoperate; it is re-verified on every Aeron upgrade.
+
+How do I use seqeron?
+---------------------
+
+1. [Getting Started](doc/getting-started.md)
+2. [Client API: Java, C++ and C#](doc/client-api.md)
+3. [Examples](seqeron-examples/README.md)
+4. [API Reference](https://fredrikjdahlberg.github.io/seqeron/)
+5. [Running a Cluster](doc/running-a-cluster.md)
+6. [Operator Tooling](doc/clusterctl.md)
+7. [Monitoring](doc/ops.md)
+8. [Log Printer](doc/log-printer.md)
+
+How does seqeron work?
+----------------------
+
+1. [Design Overview](doc/overview.md)
+2. [Protocol Specification](doc/seqeron-protocol-spec.md)
+3. [Fault Tolerance](doc/fault-tolerance.md)
+4. [Application Snapshots](doc/snapshot.md)
+
+How do I hack on seqeron?
+-------------------------
+
+1. [Building and Testing](doc/building.md)
+2. [Releasing](doc/releasing.md)
+
+License (See LICENSE file for full license)
+-------------------------------------------
+
+Copyright 2026 Fredrik Dahlberg
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+https://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+
+[NOTICE](NOTICE) records the copyright, and §4(d) of the License obliges anyone redistributing seqeron to
+carry it forward. Aeron, Agrona and SBE, which the uber jar redistributes, are under the same License, and
 both files ship inside the jar under `META-INF/`.

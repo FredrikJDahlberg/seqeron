@@ -1,7 +1,9 @@
 # Getting started
 
-One node from a release, then a consumer and a producer against it, in Java — and the same two in C#
-(section 5). Needs JDK 21, the .NET 10 SDK for the C#, and nothing from this repository's source.
+The shortest path from nothing to a working seqeron deployment: a one-member cluster from a release, a
+consumer that replays its history and follows it live, and a producer that submits to it and reads its own
+messages back in order. Java first; section 5 does the same in C#. It needs JDK 21, the .NET 10 SDK for
+the C#, and nothing from this repository's source. [`overview.md`](overview.md) explains what is running.
 
 ## 1. Start a node
 
@@ -12,14 +14,14 @@ unzip seqeron-$V.zip && cd seqeron-$V
 bin/start-cluster.sh
 ```
 
-This starts a single-node cluster: `SequencerServer` as member 0, with its own media driver, archive
-and Replayer; and a probe consumer. Logs go to `./logs`, state to
-`$TMPDIR/seqeron-seq`. `bin/stop-cluster.sh` stops both, and `bin/purgelog.sh` then deletes the
-state for a clean start.
+That is a complete cluster of one member: `SequencerServer` as member 0, with its own media driver,
+archive and Replayer, and a probe consumer beside it. Logs go to `./logs` and state to
+`$TMPDIR/seqeron-seq`. `bin/stop-cluster.sh` stops both; `bin/purgelog.sh` then deletes the state for a
+clean start.
 
-**A consumer runs on a cluster node.** The sequenced stream and the replay protocol are `aeron:ipc` on
-the node's media driver, whose directory is `$TMPDIR/seqeron-seq-aeron-<memberId>` (`java.io.tmpdir` in
-Java). Submitting alone needs no node, since cluster ingress is UDP.
+A consumer runs on the member's host, because the sequenced stream and the replay protocol are `aeron:ipc`
+on the member's media driver, whose directory is `$TMPDIR/seqeron-seq-aeron-<memberId>`
+(`java.io.tmpdir` in Java). A producer that only submits can run anywhere, since cluster ingress is UDP.
 
 ## 2. Add the dependency
 
@@ -53,11 +55,14 @@ application {
 }
 ```
 
-Use the node's release, with a `v` prefix. The BOM pins Aeron and Agrona to the versions the cluster
-was built with. A different Aeron fails at
-runtime, when frames do not decode, rather than at build time. Aeron needs the `--add-opens` flags.
+Take the client from the same release as the member, with a `v` prefix. The BOM pins Aeron and Agrona to
+the versions the cluster was built with, which matters because a different Aeron fails at runtime, when
+frames do not decode, not at build time. The `--add-opens` flags are Aeron's.
 
 ## 3. Follow the stream
+
+A consumer needs one object, `ReplayerStreamReceiver`, and one call per duty cycle. It asks the member's
+Replayer for the history, delivers it, then switches to the live stream when the two meet.
 
 ```java
 import io.aeron.Aeron;
@@ -86,8 +91,8 @@ public final class Follow {
 }
 ```
 
-`gradle run` prints every frame the cluster has sequenced, once each, in `globalSeqNo` order: first the
-node's recorded history, then the live stream. On a node started a few seconds earlier, for example:
+`gradle run` prints every frame the cluster has sequenced, once each, in `globalSeqNo` order: the
+member's recorded history first, then the live stream. Against a member started a few seconds earlier:
 
 ```
 1 leader is member 0
@@ -97,13 +102,17 @@ caught up
 4 systemEventType 16
 ```
 
-`systemEventType` 16 is `ClusterHeartbeat`, which the cluster sequences once a second. Frames with a
-`payloadId` are application payloads, passed through unopened. `clientId` must be unique among the
-clients on one node, since two sharing one cannot both follow the stream. Ids 1–22 and 31–36 are this
-repository's own.
+`globalSeqNo` 1 is always the first leader's election. `systemEventType` 16 is `ClusterHeartbeat`, the
+cluster's clock, sequenced once a second. A frame with a `payloadId` instead is an application payload,
+delivered exactly as its producer wrote it. The `clientId` must be unique among the clients on one member,
+since two sharing one cannot both follow the stream; ids 1–22 and 31–36 are this repository's own.
 [`client-api.md`](client-api.md) covers the frame families and how to decode each.
 
 ## 4. Publish
+
+A producer that is also a consumer takes a façade. `Application` is the one for a co-located application:
+it holds the cluster session, follows the stream, confirms its own messages and decides when this replica
+may publish, so the program below is only its own logic.
 
 ```java
 import io.aeron.Aeron;
@@ -173,7 +182,7 @@ public final class Hello implements Application.Listener {
 ```
 
 `gradle run -Pmain=Hello` submits `hello` once a second and prints each one as it comes back sequenced,
-here between heartbeats. With `Follow` running too, the same frames appear there as `payloadId 100`.
+between the heartbeats. With `Follow` running too, the same frames appear there as `payloadId 100`.
 
 ```
 9 hello
@@ -181,15 +190,17 @@ here between heartbeats. With `Follow` running too, the same frames appear there
 13 hello
 ```
 
-`Application` is one replica of a co-located application: one runs per node, and only the replica on
-the leading node publishes, so `canPublish()` is false on every other node. Behind `doWork()` it holds the
-cluster session, follows this node's stream, and resends what a leader failover lost. A `publish` that
-returns `Published` has been placed at ingress, not yet sequenced. The payload is confirmed when it
-arrives in `onSequenced`. `onFenced` means this replica may no longer act. Exit, and a restart re-reads
-the log.
+Three things in it are worth knowing before going further:
 
-Take `sourceId` and `payloadId` values no other producer uses. [The spec](seqeron-protocol-spec.md)
-holds both registries, §5 and §6.1.
+- **Only one replica publishes.** A co-located application runs one replica per member, and only the
+  replica beside the leader publishes, so `canPublish()` is false on every other member.
+- **`Published` means placed, not sequenced.** The message reached the leader's ingress. It is sequenced
+  when it arrives back in `onSequenced`, and if a leader failover loses it first, the façade resends it.
+- **`onFenced` means stop.** The replica can no longer trust its view of the log. Exit; a restart re-reads
+  the log.
+
+Take `sourceId` and `payloadId` values no other producer uses; [the spec](seqeron-protocol-spec.md) holds
+both registries, §5 and §6.1.
 
 ## 5. The same in C#
 
@@ -198,9 +209,9 @@ dotnet new console -o Follow && cd Follow
 dotnet add package Org.Limitless.Seqeron --version $V
 ```
 
-The package is the node's release too, and it is on nuget.org from the release after 0.10.0. It names its
-Aeron.NET and SBE runtime versions exactly. Aeron.NET trails Aeron by a version, which
-[spec **V-1**](seqeron-protocol-spec.md) records as the one exception to running the same Aeron everywhere.
+Take the package from the member's release too; it is on nuget.org from the release after 0.10.0. It
+names its Aeron.NET and SBE runtime versions exactly. Aeron.NET is one release behind Aeron, the one
+exception to running the same Aeron everywhere, which [spec **V-1**](seqeron-protocol-spec.md) records.
 `Program.cs`:
 
 ```csharp
@@ -283,15 +294,15 @@ sealed class Hello(int sourceId, int payloadId) : IApplicationListener
 ```
 
 It does what `Hello` does in Java, through the same `Application`: an options object where Java has a
-builder, and `Publish` takes the bytes as they are, or a span. `clientId`s 25 and 26 are not 23 and 24, so
-both languages can follow one node at once.
+builder, and `Publish` takes the bytes as a buffer or a span. The `clientId`s, 25 and 26, differ from the
+Java programs' 23 and 24, so both languages can follow one member at once.
 
 ## Next
 
-- **Three nodes.** The README's [Three-node cluster](../README.md#three-node-cluster) section, and
-  [`fault-tolerance.md`](fault-tolerance.md) for what survives a node or leader loss.
-- **An elected gateway.** A producer at the edge of the system, deployed as an active/standby pair,
-  uses `app.Gateway` instead of `Application` and needs a topology document. See
+- **Three members.** [`running-a-cluster.md`](running-a-cluster.md#three-nodes), and
+  [`fault-tolerance.md`](fault-tolerance.md) for what survives the loss of a member or the leader.
+- **An elected gateway.** A producer at the edge of the system, deployed as an active/standby pair, takes
+  the `Gateway` façade instead of `Application`, and needs a topology document. See
   [`client-api.md`](client-api.md#gateway) and [`clusterctl.md`](clusterctl.md).
 - **C++.** The client library is header-only:
 

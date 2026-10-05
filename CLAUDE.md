@@ -64,7 +64,7 @@ Never commit code without permission.
 
 ## What this is
 
-See the [Overview](README.md#overview) in README.md. **seqeron** is the sequencing tier: an Aeron
+See [README.md](README.md). **seqeron** is the sequencing tier: an Aeron
 Cluster (Raft) replicated state machine that assigns a global, gap-free total order to messages from
 external producers, plus the replayer that serves history off each node's recording and the client-side
 plumbing that follows the ordered stream.
@@ -484,8 +484,12 @@ and **the cluster is bounded at seven members** by the 70-port cluster block (`d
 — but does not widen it. `SEQERON_HOSTS` names the members' hosts, deployment-wide too, and is read by
 both `PortLayout`s only: the scripts' `ports.sh` lays out localhost clusters.
 
-`doc/` holds `getting-started.md` (a release node plus a consumer and a producer; its snippets pin a
-release, so bump them when one changes the API they use), `seqeron-protocol-spec.md` (normative — the frames, the families,
+`doc/` holds `overview.md` (the design, for architects: what each part does and why, the life of a
+message, the failure model, the limits — keep it in step with the documents it summarizes),
+`getting-started.md` (a release node plus a consumer and a producer; its snippets pin a
+release, so bump them when one changes the API they use), `running-a-cluster.md` (the processes, a node's
+ports, properties and restart, the operator scripts), `building.md` (each language's build, the unit
+suites, the harnesses, the examples), `releasing.md`, `log-printer.md`, `seqeron-protocol-spec.md` (normative — the frames, the families,
 the system vocabulary, the topology document), `client-api.md` (what a client programs against, and what in
 the client tier is not API — update it when that surface changes), `fault-tolerance.md`, `clusterctl.md` and `ops.md` (runbooks, ports, counters), and `snapshot.md`
 (application snapshots: local files the log confirms). The topology documents here are

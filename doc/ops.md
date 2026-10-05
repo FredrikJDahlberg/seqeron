@@ -1,90 +1,83 @@
-# Ops — Prometheus/Grafana monitoring stack
+# Operations
 
-Node-local metrics exporter, scraped by Prometheus and feeding Grafana. Covers
-`org.limitless.seqeron.protocol.SeqeronCounters` — every `SequencerService`/`ReplayerService` operator
-counter — end to end from a running node to a dashboard panel.
+What an operator watches on a running seqeron deployment, and what the platform settings beneath it mean.
+It covers the metrics stack (a per-member exporter, Prometheus and a Grafana dashboard), the ports a
+deployment binds, the Aeron term lengths, MTU and subscriber timeouts that bound the tap, what it means
+when a member or a gateway stops itself, and the clock every frame is stamped with.
+[`running-a-cluster.md`](running-a-cluster.md) covers starting and configuring the cluster itself.
 
-## Architecture
+## Monitoring
 
-Pull, not push, and a **static target list**, not service discovery:
+### Architecture
 
-- Each node runs `metrics-exporter.sh` (`MetricsExporter`), co-located with a `SequencerServer`
-  the same way `clusterctl` is — sharing that node's Aeron directory — and serves
-  `/metrics` in Prometheus text exposition format, read live off the CnC file via
-  `CountersReader.forEach`.
-- Prometheus scrapes every node's exporter directly, one target per member
-  (`seqeron-service/src/main/ops/prometheus/prometheus.yml`). Its own `up{job="seqeron",member="N"}` is the per-node
-  reachability gauge: a node that's down reads 0.
-- The exporter doesn't touch cluster ingress or authenticate callers — same trust model as
-  `clusterctl`: reachability is the access control. Put it behind the same network boundary as the
-  nodes themselves, and Prometheus inside it.
+Metrics are pulled, not pushed, from a static list of targets rather than through service discovery.
 
-## Running it
+- **One exporter per member.** `metrics-exporter.sh` (`MetricsExporter`) runs beside a `SequencerServer`,
+  as `clusterctl` does, sharing that member's Aeron directory. It reads the member's counters live from the
+  CnC file (`CountersReader.forEach`) and serves them as `/metrics` in Prometheus text format.
+- **Prometheus scrapes every exporter directly**, one target per member
+  (`seqeron-service/src/main/ops/prometheus/prometheus.yml`). Its own `up{job="seqeron",member="N"}` is the
+  member's reachability: a member that is down reads 0.
+- **The exporter trusts its network.** It does not touch cluster ingress and does not authenticate
+  callers; reachability is the access control, as for `clusterctl`. Put it, and Prometheus, inside the
+  same network boundary as the members.
 
-### Per node — metrics-exporter.sh
+### Running it
+
+**The exporter**, one per member, beside that member's `SequencerServer`. It needs no cluster session,
+and the script sets the `--add-opens` flags every seqeron process that touches Agrona needs.
 
 ```
 metrics-exporter.sh          # serve /metrics on port 9400 + memberId
 ```
 
-| Env var | Property | Default |
+| environment variable | property | default |
 |---|---|---|
 | `METRICS_EXPORTER_MEMBER_ID` | `metricsExporter.memberId` | `0` |
 | `METRICS_EXPORTER_AERON_DIR` | `metricsExporter.aeronDir` | `$TMPDIR/seqeron-seq-aeron-<memberId>` |
 | `METRICS_EXPORTER_PORT` | `metricsExporter.port` | `9400 + memberId` |
 
-Run one per node, co-located with that node's `SequencerServer` (mirrors
-`clusterctl.sh`'s co-location — same Aeron directory, no cluster connection needed). Needs the same
-`--add-opens` JVM flags as every other seqeron Java process that touches Agrona; the script sets
-them.
+The paths below are this checkout's; in an installed distribution (`./gradlew operatorDist`) the same tree
+is `ops/`, beside `bin/` and `lib/`.
 
-### Prometheus
-
-The paths below are this checkout's. In an installed distribution (`./gradlew operatorDist`) the same
-tree is `ops/`, beside `bin/` and `lib/`.
-
-`seqeron-service/src/main/ops/prometheus/prometheus.yml` — one job, one target per member's exporter:
+**Prometheus** takes `seqeron-service/src/main/ops/prometheus/prometheus.yml`: one job, one target per
+member's exporter.
 
 ```
 prometheus --config.file=seqeron-service/src/main/ops/prometheus/prometheus.yml
 ```
 
-The targets are the 3-node dev cluster's (`localhost:9400`/`9401`/`9402`, from
-`start-three-node-cluster.sh`); name the real hosts for a deployment. Each target carries a `member`
-label so `up` names the node, and `honor_labels: true` keeps the `member` label the exporter already puts
-on every sample.
+Its targets are the local three-member cluster's (`localhost:9400`, `9401` and `9402`, as
+`start-three-node-cluster.sh` runs it); a deployment names its real hosts. Each target carries a `member`
+label so `up` names the member, and `honor_labels: true` keeps the `member` label the exporter already
+puts on every sample.
 
-### Grafana
-
-`seqeron-service/src/main/ops/grafana/provisioning/` — a `Prometheus` datasource (`http://localhost:9090`) and one dashboard
-(`seqeron.json`, uid `seqeron`), both provisioned by file. The dashboard has one panel per exported
-metric family — see the reference below. One panel plots a derived value rather than the counter
-itself: **Node apply lag (ms)** is `time() * 1000 - seqeron_sequencer_last_tick_timestamp_ms`, since
-the raw consensus timestamp is an epoch value no operator can read. Per member, that difference is how
-far behind the cluster that node's `SequencerService` is — the one place a node publishing a
-contiguous but *stale* tap becomes visible (neither the tap-stall silence watchdog nor the
-recovery-stall watchdog can see that state).
-
-Deploy by mounting the whole `seqeron-service/src/main/ops/grafana/provisioning` tree at Grafana's own provisioning root.
-Under the standard Grafana Docker image that's already `/etc/grafana/provisioning` by default:
+**Grafana** takes `seqeron-service/src/main/ops/grafana/provisioning/`: a Prometheus datasource
+(`http://localhost:9090`) and one dashboard (`seqeron.json`, uid `seqeron`), both provisioned from files.
+Mount the whole tree at Grafana's provisioning root, which in the standard Docker image is
+`/etc/grafana/provisioning`:
 
 ```
 docker run -p 3000:3000 -v "$(pwd)/seqeron-service/src/main/ops/grafana/provisioning:/etc/grafana/provisioning" grafana/grafana
 ```
 
-Running Grafana natively instead (no container), point `GF_PATHS_PROVISIONING` at the directory
-yourself — the dashboard file provider resolves its `path` from that same env var
-(`$GF_PATHS_PROVISIONING/dashboards`, via Grafana's own provisioning-file env-var expansion) rather
-than a hardcoded container path, so both cases resolve correctly:
+Run natively, point `GF_PATHS_PROVISIONING` at the same directory. The dashboard provider resolves its
+path from that variable (`$GF_PATHS_PROVISIONING/dashboards`) rather than from a fixed container path, so
+both work:
 
 ```
 GF_PATHS_PROVISIONING="$(pwd)/seqeron-service/src/main/ops/grafana/provisioning" grafana server ...
 ```
 
+The dashboard has one panel per metric family below, and one derived panel. **Node apply lag (ms)** is
+`time() * 1000 - seqeron_sequencer_last_tick_timestamp_ms`: how far behind the cluster each member's
+`SequencerService` is. It is the one place a member that publishes a contiguous but stale tap shows up;
+neither the tap-stall nor the recovery-stall fence can see that state.
+
 ## Metrics reference
 
-Every metric carries a `member="N"` label (the memberId, read from the counter's structured key
-buffer — see `SeqeronCounters.addCounter`/`KEY_MEMBER_ID_OFFSET`).
+Every metric carries a `member="N"` label, read from the counter's key (`SeqeronCounters.addCounter`,
+`KEY_MEMBER_ID_OFFSET`).
 
 ### Counter type ids
 
@@ -97,46 +90,45 @@ The exporter maps a counter to a metric by its Aeron type id. Aeron reserves 0�
 | 5200 | `ReplayerStreamReceiver`, inside every client: `seqeron_app_recovery_stalled` |
 | 5201–5299 | an application's own counters, allocated by the deployment |
 
-The ids are defined in `SeqeronCounters.java` and its C++ twin `protocol/SeqeronCounters.hpp`, which must
-stay in step. Counters outside these ranges are not exported.
+The ids are defined in `SeqeronCounters` in each language, and the copies must stay in step. Counters
+outside these ranges are not exported.
 
-The app range (5200–5299) is published by client replicas, several per node, so its counters carry a
-second label, `client="M"` (the replayer client id); `member` alone would merge them into one series.
-The exporter knows names only for seqeron's own counters. An application counter is exported under the
-first token of its own label, so an application labels its counters `<app>.<area>.<metric> member=…
-client=…`: `myapp.fix.sessionsUp member=0 client=3` scrapes as
-`myapp_fix_sessionsUp{member="0",client="3"}`. Two applications that use the same type id appear as one
-metric, named by whichever was scraped first.
+The application range (5200–5299) is published by clients, several per member, so its counters carry a
+second label, `client="M"`, the client's Replayer client id; `member` alone would merge them into one
+series. The exporter names only seqeron's own counters. An application's counter is exported under the
+first token of its label, so an application labels its counters `<app>.<area>.<metric> member=…
+client=…`: `myapp.fix.sessionsUp member=0 client=3` scrapes as `myapp_fix_sessionsUp{member="0",client="3"}`.
+Two applications that use the same type id appear as one metric, named by whichever was scraped first.
 
-The table below lists seqeron's own metrics.
+### seqeron's metrics
 
-| Metric | Type | Meaning |
+| metric | type | meaning |
 |---|---|---|
-| `up` | gauge | Prometheus's own, not read from a counter: 1 if its last scrape of that member's exporter succeeded, else 0 |
-| `seqeron_sequencer_global_seq_no` | gauge | Last globalSeqNo emitted on this node's tap |
-| `seqeron_sequencer_tap_backpressure_alerts_total` | counter | Count of times the tap-emit back-pressure alert threshold has fired |
-| `seqeron_sequencer_rejected_ingress_total` | counter | Count of malformed ingress messages skipped by `Sequencer.sequenceMessage` |
-| `seqeron_sequencer_leadership_change_total` | counter | Count of leadership changes this node has observed and sequenced |
-| `seqeron_sequencer_current_leader_member_id` | gauge | memberId of the leader last recorded by this node's Sequencer |
-| `seqeron_sequencer_last_tick_timestamp_ms` | gauge | Consensus timestamp of the last 1Hz ClusterHeartbeat emitted, in ms (the frame carries ns) |
-| `seqeron_sequencer_gateway_promotion_total` | counter | Count of standby-promotion GatewayActive frames emitted — on a gateway session close, or on a designated instance failing to publish `GatewayStarted` within 5 s of being named (`GATEWAY_ACTIVATION_TIMEOUT_MS`) |
-| `seqeron_sequencer_bootstrap_activated` | gauge | 1 once the bootstrap GatewayActive has been emitted in this cluster's log, else 0 |
-| `seqeron_sequencer_tap_stalled` | gauge | 1 while the tap recording has made no progress for longer than the stall threshold (200ms) under back-pressure, else 0. Latches at 1 when the node terminates for an unrecordable tap — see below |
-| `seqeron_replayer_stalled` | gauge | 1 while the local archive is refusing to serve a replay, else 0. Set from every path that asks the archive for one — the startup self-check included — and cleared by a bounded probe replay the node runs itself once a second while stalled, so it reads 0 again even on a Replayer no app is asking for history |
-| `seqeron_replayer_ready` | gauge | 1 once the co-located tap recording is visible and replay requests are being served |
-| `seqeron_replayer_active_slots` | gauge | Current count of in-flight replays |
-| `seqeron_replayer_pending_requests` | gauge | Current count of replay requests waiting for a free slot |
-| `seqeron_replayer_replays_served_total` | counter | Count of replays started since this node came up |
-| `seqeron_replayer_idle_ttl_reclaimed_total` | counter | Count of replay slots reclaimed by the idle-TTL backstop |
-| `seqeron_replayer_integrity_failure` | gauge | 1 once the active tap recording failed the startup gseq-1 integrity check, else 0. It alone is served, so one that begins above 1 cannot cover the log from the start. Latched: `ready` never becomes 1 again for that process |
-| `seqeron_replayer_control_replies_dropped_total` | counter | Count of control replies dropped rather than spun on because an app stopped draining the control stream. Each costs that app one resend interval, so the **rate** identifies a wedged replica — the absolute value does not |
-| `seqeron_replayer_client_id_collision` | gauge | 1 once two co-located apps were seen sharing one `SEQERON_REPLAYER_CLIENT_ID`, else 0. They stop each other's replays, so the Replayer tells both and both fail (spec R-4) |
-| `seqeron_replayer_snapshot_round` | gauge | Newest round whose `SnapshotEnd` this node's Replayer has indexed, per source; labelled `source` as well as `member` (`doc/snapshot.md` §5). Every participating source should follow the latest round; one that lags is missing rounds. Rebuilt from the recording after a restart, so it reappears once the index has caught up |
-| `seqeron_app_recovery_stalled` | gauge | 1 while this replica's recovery has dispatched nothing for 30s while not caught up, else 0. Also labelled `client`. It is holding, which is correct and safe — but it is not serving, and nothing else says so: the causes are a `ReplayUnavailable` refusal, a Replayer that never answers, and a hole this node's recording cannot cover. The replica's own fault line names which |
+| `up` | gauge | Prometheus's own, not a counter: 1 if its last scrape of that member's exporter succeeded, else 0 |
+| `seqeron_sequencer_global_seq_no` | gauge | the last `globalSeqNo` on this member's tap |
+| `seqeron_sequencer_tap_backpressure_alerts_total` | counter | times the tap's back-pressure alert has fired |
+| `seqeron_sequencer_rejected_ingress_total` | counter | malformed ingress frames skipped by `Sequencer.sequenceMessage` |
+| `seqeron_sequencer_leadership_change_total` | counter | leadership changes this member has observed and sequenced |
+| `seqeron_sequencer_current_leader_member_id` | gauge | the leader this member's sequencer last recorded |
+| `seqeron_sequencer_last_tick_timestamp_ms` | gauge | the consensus timestamp of the last `ClusterHeartbeat`, in ms (the frame carries ns) |
+| `seqeron_sequencer_gateway_promotion_total` | counter | `GatewayActive` frames promoting a standby: on a gateway session closing, or on a designated instance not publishing `GatewayStarted` within 5 s (`GATEWAY_ACTIVATION_TIMEOUT_MS`) |
+| `seqeron_sequencer_bootstrap_activated` | gauge | 1 once the bootstrap `GatewayActive` is in this cluster's log, else 0 |
+| `seqeron_sequencer_tap_stalled` | gauge | 1 while the tap recording has made no progress for more than 200 ms under back-pressure, else 0; stays 1 when the member terminates for a tap it cannot record ([below](#a-node-that-terminates-itself)) |
+| `seqeron_replayer_stalled` | gauge | 1 while the local archive refuses to serve a replay, else 0. Set by every path that asks the archive for one, the startup check included, and cleared by a bounded probe replay the member runs once a second while stalled, so it returns to 0 even when no client is asking for history |
+| `seqeron_replayer_ready` | gauge | 1 once the tap recording is visible and replay requests are served |
+| `seqeron_replayer_active_slots` | gauge | replays in progress |
+| `seqeron_replayer_pending_requests` | gauge | replay requests waiting for a free slot |
+| `seqeron_replayer_replays_served_total` | counter | replays started since this member came up |
+| `seqeron_replayer_idle_ttl_reclaimed_total` | counter | replay slots reclaimed after sitting idle |
+| `seqeron_replayer_integrity_failure` | gauge | 1 once the active tap recording failed the startup check that it begins at `globalSeqNo` 1, else 0. Only that recording is served, so one that begins later cannot cover the log. Latched: `ready` never returns to 1 in that process |
+| `seqeron_replayer_control_replies_dropped_total` | counter | control replies dropped, rather than retried indefinitely, because a client stopped reading. Each costs that client one resend interval, so the rate, not the total, identifies a stuck client |
+| `seqeron_replayer_client_id_collision` | gauge | 1 once two clients on this member were seen sharing a Replayer client id, else 0. They cancel each other's replays, so the Replayer tells both and both fail (spec R-4) |
+| `seqeron_replayer_snapshot_round` | gauge | the newest round whose `SnapshotEnd` this member's Replayer has indexed, per source, labelled `source` as well as `member` ([`snapshot.md`](snapshot.md) §5). Every participating source should follow the latest round; one that lags is missing rounds. Rebuilt from the recording after a restart, so it reappears once the index has caught up |
+| `seqeron_app_recovery_stalled` | gauge | 1 while this client's recovery has dispatched nothing for 30 s while not caught up, else 0; also labelled `client`. The client is holding, which is safe, but not serving, and nothing else says so. The causes are a `ReplayUnavailable` refusal, a Replayer that never answers, and a gap this member's recording cannot cover; the client's own log line names which |
 
 ## Ports
 
-seqeron's processes bind these ports; an application's own ports must stay outside them.
+seqeron's processes bind these ports, and an application's own must stay clear of them.
 
 | port | used by |
 |---|---|
@@ -145,69 +137,65 @@ seqeron's processes bind these ports; an application's own ports must stay outsi
 | `base + memberId*10 + 3` | consensus between members |
 | `base + memberId*10 + 4` | the Raft log |
 | `base + memberId*10 + 5` | catch-up transfer |
-| `9400 + memberId` | `metrics-exporter.sh` `/metrics` (TCP) |
-| 9200, 9201 | `TestGateway` TCP listeners (test harnesses only) |
-| `9202 + memberId` | `seqeron-examples` cluster egress (UDP) |
-| 9205, 9206 | `seqeron-examples` C++ gateway pair cluster egress (UDP) |
+| `9400 + memberId` | `metrics-exporter.sh`'s `/metrics` (TCP) |
+| 9200, 9201 | `TestGateway`'s TCP listeners (test harnesses only) |
+| `9202 + memberId` | `seqeron-examples`' cluster egress (UDP) |
+| 9205, 9206 | `seqeron-examples`' C++ gateway pair's cluster egress (UDP) |
 
-`base` is 9300 unless `SEQERON_PORT_BASE` is set. The cluster block, `base` to `base + 69`, is seven
-members wide, so **a cluster has at most seven members**: Raft's 3, 5 or 7. Set
-`SEQERON_PORT_BASE` identically for every seqeron process on every host: a node and a client that
-disagree bind and dial different ports, and the symptom is a connection that never completes. It must
-be between 1024 and 65466; a process with an invalid value fails at start-up. Moving the base does not
-move the other ports in the table.
-
-`SEQERON_HOSTS` (`h0,h1,h2`, member `i` on entry `i`) names the hosts the same way, and is set the same
-way: identically for every seqeron process. A member builds its `clusterMembers` from it, and a client's
-default ingress endpoints, `clusterctl`'s egress host and a gateway host's member archives follow from it.
-
-The formula has three copies, `protocol/PortLayout.java`, `protocol/PortLayout.hpp` and
-`seqeron-service/src/main/scripts/ports.sh`, pinned to the same values by `PortLayoutTest` and
-`SequencerServerTest`; change all three together. An application can check its own ports against the
-cluster block with `PortLayout.isClusterPort()`.
-
-Two Aeron media drivers on one host cannot bind the same UDP port, so every co-located process needs
-ports of its own. `clusterctl` binds none: its egress uses an ephemeral port.
-
-A gateway host (`start-gateway-host.sh`) binds no fixed port either. Its relay reaches each member's
-archive port, and the member replies and replays to ephemeral UDP ports on the gateway host, at the
-name `SEQERON_HOST` gives, so a firewall between them must let the members reach those.
+- **`base`** is 9300 unless `SEQERON_PORT_BASE` sets it, to a value from 1024 to 65466; a process given an
+  invalid value fails at startup. Moving the base does not move the other ports in the table.
+- **The cluster block**, `base` to `base + 69`, is seven members wide, so a cluster has at most seven
+  members: Raft's 3, 5 or 7.
+- **Set it everywhere alike.** `SEQERON_PORT_BASE` must be identical for every seqeron process on every
+  host; a member and a client that disagree bind and dial different ports, and the symptom is a connection
+  that never completes. `SEQERON_HOSTS` (`h0,h1,h2`, member `i` at entry `i`) is set the same way. A member
+  builds its `clusterMembers` from it, and a client's default ingress endpoints, `clusterctl`'s egress host
+  and a gateway host's member archives follow from it.
+- **Four copies of the formula** exist: `seqeron-service/src/main/scripts/ports.sh` and `PortLayout` in Java,
+  C++ and C#, pinned to the same values by their `PortLayoutTest`s and `SequencerServerTest`. Change all
+  four together. An application checks its own ports against the cluster block with
+  `PortLayout.isClusterPort()`.
+- **Every co-located process needs its own ports**, since two media drivers on one host cannot bind the same
+  UDP port. `clusterctl` binds none: its egress uses an ephemeral port, as the C# examples' does.
+- **A gateway host binds no fixed port either.** Its relay reaches each member's archive port, and the member
+  replies and replays to ephemeral UDP ports at the name `SEQERON_HOST` gives, so a firewall between them
+  must let the members reach those.
 
 ## Term lengths
 
-Every Aeron stream is a log buffer of three terms. A stream's term length sets its largest message
-(term / 8), its publication window, which is how far a publisher may run ahead of the consumer it waits
-for before `offer` back-pressures (term / 2), and its memory: 3 × term, mapped sparse but resident once
-the stream has cycled through all three terms. A UDP stream costs another 3 × term per receiving image.
+Every Aeron stream is a log buffer of three terms, and its term length sets three things: its largest
+message (term / 8); its publication window, how far a publisher may run ahead of the consumer it waits for
+before `offer` back-pressures (term / 2); and its memory, 3 × term, mapped sparse but resident once the
+stream has cycled through all three terms. A UDP stream costs another 3 × term per receiving image.
 
 | stream | channel | term length | set by |
 |---|---|---|---|
 | the tap (stream 205), every co-located producer's ingress, replay control | `aeron:ipc` | 16 MiB | `aeron.ipc.term.buffer.length` on the member's or gateway host's driver |
-| ingress from a producer not on the leader, egress, consensus between members | `aeron:udp` | 16 MiB | `aeron.term.buffer.length` on the sending driver |
+| ingress from a producer not beside the leader, egress, consensus between members | `aeron:udp` | 16 MiB | `aeron.term.buffer.length` on the sending driver |
 | the Raft log | `aeron:udp` | 64 MiB | `aeron.cluster.log.channel`, default `aeron:udp?term-length=64m` |
 | a replay: recovery, the snapshot index, a gateway host's relay | IPC or UDP | the recording's | the stream the recording was made from |
 
 16 MiB is seqeron's IPC default; Aeron's own is 64 MiB. The other rows are Aeron's defaults. A client
-attached to a member's driver gets that driver's IPC term length; it sets none of its own.
+attached to a member's driver uses that driver's IPC term length and sets none of its own.
 
 **Choosing one.** A term length is a power of two from 64 KiB to 1 GiB, and must be at least:
 
-- 8 × the largest frame, so a frame fits Aeron's message limit: 128 KiB, for an 8944-byte message on the
+- 8 × the largest frame, so a frame fits Aeron's message limit: 128 KiB, for an 8,944-byte message on the
   Raft log;
-- 2 × peak bytes per second × the longest stall to absorb. The window is what a stalled consumer leaves
-  room for: the archive recording is the tap's one tethered consumer, so a recorder stall longer than
-  window / rate back-pressures the sequencer, and an untethered tap subscriber that falls a window behind
-  is dropped and heals through replay. At 16 MiB the tap's window is 8 MiB, 0.4 s at 20 MB/s.
+- 2 × peak bytes per second × the longest stall to absorb. The window is the room a stalled consumer has.
+  The archive is the tap's one tethered consumer, so a recorder stall longer than window / rate
+  back-pressures the sequencer; an untethered tap subscriber that falls a window behind is dropped and
+  heals through replay. At 16 MiB the tap's window is 8 MiB: 0.4 s at 20 MB/s.
 
-Above that, a larger term costs memory and cache. At 16 MiB, a member maps 48 MiB for the tap, 48 MiB per
-co-located producer's IPC ingress and 48 MiB per replay in progress, besides the log's 192 MiB.
+Beyond that, a larger term costs memory and cache. At 16 MiB a member maps 48 MiB for the tap, 48 MiB per
+co-located producer's IPC ingress and 48 MiB per replay in progress, besides the Raft log's 192 MiB.
 
 **Setting one.** Pass `-Daeron.ipc.term.buffer.length=32m` (or `aeron.term.buffer.length` for UDP) to the
-`java` command that runs `SequencerServer` or `ReplayerServer`; the scripts and the Docker image take it
-from `JAVA_TOOL_OPTIONS`. Set the IPC term length identically on every member and gateway host: a
-recording's positions depend on it, since a term ends in padding, and a gateway host's relay resumes on the
-next member at the same position only when both recordings agree. With different term lengths the relay
-falls back to that member's recording start.
+`java` command that runs `SequencerServer` or `ReplayerServer`; the scripts and the Docker image read it
+from `JAVA_TOOL_OPTIONS`. Set the IPC term length identically on every member and gateway host. A
+recording's positions depend on it, since a term ends in padding, and a gateway host's relay resumes on
+the next member at the same position only when both recordings agree; otherwise it falls back to that
+member's recording start.
 
 A recording keeps the term length it was made with, and so do its replays. A member's tap is recorded
 afresh at every start, so a new IPC term length takes effect at its next start. The Raft log's cannot
@@ -217,119 +205,117 @@ it with a different term length.
 ## MTU
 
 A frame longer than its stream's MTU less 32 bytes is fragmented, and every seqeron consumer reassembles
-it, so the MTU decides packets, not correctness. Aeron's default of 1408 keeps payloads up to 1316 bytes
-whole everywhere, and suits a deployment whose payloads stay below that.
+it, so the MTU decides packet sizes, not correctness. Aeron's default of 1408 keeps payloads up to 1,316
+bytes whole everywhere, and suits a deployment whose payloads stay below that.
 
-Larger payloads, up to `MAX_PAYLOAD_LENGTH` (8884), stay whole on the tap with
-`-Daeron.ipc.mtu.length=8960`, passed the way the term length is. A replay carries its recording's MTU,
-so every UDP replay of the tap — a gateway host's relay, a `ClusterStreamClient` following a member on
-another host — then sends datagrams of up to 8960 bytes, small frames batched into them too. The network
-between them needs a 9000-byte MTU; otherwise the kernel fragments each datagram, and a lost piece loses
-all of it.
+Larger payloads, up to `MAX_PAYLOAD_LENGTH` (8,884 bytes), stay whole on the tap with
+`-Daeron.ipc.mtu.length=8960`, passed as the term length is. A replay carries its recording's MTU, so every
+UDP replay of the tap — a gateway host's relay, a `ClusterStreamClient` following a member on another host
+— then sends datagrams of up to 8,960 bytes, with small frames batched into them. The network between them
+needs a 9000-byte MTU; otherwise the kernel fragments each datagram, and a lost piece loses all of it.
 
-Set the IPC MTU identically on every member and gateway host. Once frames fragment, a recording's
-positions depend on it, and a gateway host's relay resumes at the same position on the next member only
-when both recordings agree; otherwise it falls back to that member's recording start, as it does for a
-term length that differs. Change it on all of them in one restart window: a rolling change leaves them
-disagreeing until the last one restarts.
+Set the IPC MTU identically on every member and gateway host, for the reason the term length must be:
+once frames fragment, a recording's positions depend on it, and a relay resumes at the same position on
+the next member only when both recordings agree. Change it on all of them in one restart window; a rolling
+change leaves them disagreeing until the last one restarts.
 
-A recording keeps the MTU it was made with, like its term length. A member's tap is recorded afresh at
-every start, so a new IPC MTU takes effect at its next start. The Raft log's UDP MTU, `aeron.mtu.length`
-unless the log channel names one, cannot change on a cluster with history: the archive refuses to extend
-the log recording with a different MTU.
+A recording keeps the MTU it was made with. A member's tap is recorded afresh at every start, so a new IPC
+MTU takes effect at its next start. The Raft log's UDP MTU, `aeron.mtu.length` unless the log channel
+names one, cannot change on a cluster with history: the archive refuses to extend the log recording with a
+different MTU.
 
 ## Untethered subscribers
 
-Every application subscribes to the tap untethered, so one that stops polling (a GC pause or a
-long snapshot take) is dropped and heals through replay rather than holding the sequencer back. Aeron drops
-it on its driver's timer: once it has been three quarters of a window behind for
-`aeron.untethered.window.limit.timeout`, and has then lingered for `aeron.untethered.linger.timeout`, each
-checked every `aeron.timer.interval`. Until then it still holds the window, and a full window behind it
-back-pressures the tap. The sequencer and a gateway host's relay terminate after 1 s of back-pressure with
-no recording progress, so seqeron's drivers default to 10 ms, 100 ms and 100 ms. At Aeron's 1 s, 5 s and
-5 s, a subscriber that stops for a window's worth of traffic takes its member down. Overriding them, keep
-both timeouts plus two timer intervals well inside that second. A dropped subscriber rejoins at the live
-position after `aeron.untethered.resting.timeout`, 10 s.
+Every application subscribes to the tap untethered, so one that stops polling — a GC pause, a long
+snapshot — is dropped and heals through replay rather than holding the sequencer back. Its driver drops it
+on a timer: once it has been three quarters of a window behind for `aeron.untethered.window.limit.timeout`,
+and then lingered for `aeron.untethered.linger.timeout`, each checked every `aeron.timer.interval`. Until
+then it still holds the window, and a full window behind it back-pressures the tap.
+
+The sequencer and a gateway host's relay terminate after 1 s of back-pressure with no recording progress,
+so seqeron's drivers set those three to 10 ms, 100 ms and 100 ms. At Aeron's defaults of 1 s, 5 s and 5 s,
+a subscriber that stops for a window's worth of traffic would take its member down. When overriding them,
+keep both timeouts plus two timer intervals well inside that second. A dropped subscriber rejoins at the
+live position after `aeron.untethered.resting.timeout`, 10 s.
 
 ## A node that terminates itself
 
-`SequencerServer` exits **70** when its local archive stops recording the node's tap (stalled with no
-progress for 1s under back-pressure, or the recording gone outright). This is deliberate, not a crash:
-that node's archive is its copy of the sequenced history, so one that cannot record can only accumulate
-silent holes in it. What to expect and what to do:
+A member's archive is its copy of the sequenced history, so a member that cannot record would accumulate
+silent holes in it. Rather than do that, `SequencerServer` exits with code **70** when its archive stops
+recording the tap: no progress for 1 s under back-pressure, or the recording gone. This is deliberate, not
+a crash.
 
-- **In the log:** a `[SequencerService/N] FATAL: … terminating this node` line naming the reason, and
-  `seqeron_sequencer_tap_stalled{member="N"}` at 1 until the process (and its counters) go away.
-  `up{job="seqeron",member="N"}` then drops to 0.
-- **The cluster keeps going** on the remaining members — every node holds an identical, complete
-  recording, so nothing is lost with the node itself, and an election moves leadership if it held it.
-  **Two nodes down is a quorum loss**, so treat a second one as an emergency rather than a repeat.
-- **Restart it** once the storage is healthy: recovery is the usual full-log replay from `globalSeqNo`
-  1, which rebuilds the node's tap recording from scratch. Under process supervision this is automatic
-  — exit 70 vs the 0 of an orderly `clusterctl shutdown` is exactly the "restart me" signal.
-- **If it exits 70 immediately on restart**, the archive is still broken (the same check bounds
-  start-up: the recording must go live within 5s). Fix the storage before restarting again.
+- **What you see.** A `[SequencerService/N] FATAL: … terminating this node` line naming the reason, and
+  `seqeron_sequencer_tap_stalled{member="N"}` at 1 until the process goes; then `up{job="seqeron",member="N"}`
+  falls to 0.
+- **The cluster carries on** with the remaining members. Every member holds an identical, complete
+  recording, so nothing is lost with this one, and an election moves leadership if it led. **A second member
+  down is a loss of quorum**: treat it as an emergency, not a repeat.
+- **Restart it** once its storage is healthy. Recovery is the usual full-log replay, which rebuilds the
+  recording from scratch. Under a supervisor this is automatic: exit 70, against the 0 of an orderly
+  `clusterctl shutdown`, is the signal to restart.
+- **If it exits 70 again immediately**, the archive is still broken: start-up has the same bound, and the
+  recording must go live within 5 s. Fix the storage first.
 
-A node also exits 70 when its Replayer's duty cycle dies (a `[ReplayerService/N]` error names it), and
-71 when shutdown gave up waiting for that duty cycle. Both mean restart it.
+A member also exits 70 when its Replayer's duty cycle dies (a `[ReplayerService/N]` error names it), and 71
+when its shutdown gave up waiting for that duty cycle. Both mean restart it.
 
 ## A gateway that fences itself
 
-A gateway built on the client tier's `app/Gateway` stops itself when it can no longer trust its view of
-the log (`doc/fault-tolerance.md` §2.1). The façade reports the reason once, through
-`Listener.onFenced(ClusterError, detail)`, and the application releases its cluster session, normally
-by exiting. `TestGateway` exits **70**; a production gateway chooses its own code, and 70 is the
-convention here for "fenced, restart me". It is not a cluster member, so this is not a quorum question.
+A gateway built on the client tier's `Gateway` stops itself when it can no longer trust its view of the log
+([`fault-tolerance.md`](fault-tolerance.md) §2.1). The façade reports the reason once, through
+`onFenced(ClusterError, detail)`, and the application releases its cluster session, normally by exiting.
+`TestGateway` exits **70**; a production gateway chooses its own code, and 70 is this repository's
+convention for "fenced, restart me". A gateway is not a cluster member, so this is never a quorum question.
 
 | `ClusterError` | usual cause |
 |---|---|
 | `CLUSTER_SESSION_LOST` | the cluster closed the session, or no new leader arrived after a failover |
-| `TAP_STALLED` | no `ClusterHeartbeat` on the co-located tap for 20 s, usually because that node's `SequencerServer` terminated (above); they share the tap |
+| `TAP_STALLED` | no `ClusterHeartbeat` on the co-located tap for 20 s, usually because that member's `SequencerServer` terminated (above); they share the tap |
 | `RECOVERY_STALLED` | recovery delivered nothing for 60 s after the instance had been caught up; see `seqeron_app_recovery_stalled` |
-| `SNAPSHOT_DIVERGED` | an instance's snapshot of a round differs from the one its source sequenced: its state is not the log's (spec §16 A-7). Its restart rebuilds the state; an instance that diverges again has broken determinism (A-6) |
-| `SNAPSHOT_UNRESTORABLE` | an instance cannot restore its newest confirmed snapshot file: a `formatVersion` or header version its build does not read, or records that fail the file's trailer, which means a damaged file (`doc/snapshot.md` §7). The log line `SnapshotRestoreFailed` names the round; a restart repeats it until the build is fixed or the file, `<round>.snapshot` in the instance's snapshot directory, is removed, after which it restores an older file or replays from `globalSeqNo` 1 |
+| `SNAPSHOT_DIVERGED` | the instance's snapshot of a round differs from the one its source sequenced: its state is not the log's (spec §16 A-7). A restart rebuilds the state; an instance that diverges again has broken determinism (A-6) |
+| `SNAPSHOT_UNRESTORABLE` | the instance cannot restore its newest confirmed snapshot: a `formatVersion` or header version its build does not read, or records that fail the file's trailer, which means a damaged file ([`snapshot.md`](snapshot.md) §7). The log line `SnapshotRestoreFailed` names the round. A restart repeats it until the build is fixed or the file, `<round>.snapshot` in the instance's snapshot directory, is removed; the instance then restores an older file or replays from `globalSeqNo` 1 |
 | `INGRESS_CONFIRM_FAULTED` | an own frame on the tap did not match the oldest pending one, most often because the sequencer rejected one (`seqeron_sequencer_rejected_ingress_total`) |
 
-- **The standby takes over by itself** if one is running: a fenced instance looks to the cluster like a
+- **The standby takes over by itself**, if one is running. A fenced instance looks to the cluster like a
   process that died, and the sequencer promotes the standby when its session closes
-  (`seqeron_sequencer_gateway_promotion_total`). The handover opens new external connections; nothing
-  moves live.
-- **Restart it** under supervision. Recovery is the usual full-log replay, and a restarted instance
-  comes back as a standby, active only when named.
-- **Check the co-located node first** for `TAP_STALLED` and `RECOVERY_STALLED`: a stopped
-  `SequencerServer` or an unavailable replayer (`seqeron_replayer_ready`, `seqeron_replayer_integrity_failure`)
-  explains both.
-- **Metrics:** a gateway publishes `seqeron_app_recovery_stalled` (every client does) and nothing else of
-  seqeron's; its fences appear only in its log.
+  (`seqeron_sequencer_gateway_promotion_total`). The new instance opens new external connections; nothing
+  moves across live.
+- **Restart it** under supervision. Recovery is the usual full-log replay, and the restarted instance
+  returns as a standby, active only when named.
+- **For `TAP_STALLED` and `RECOVERY_STALLED`, check the co-located member first.** A stopped
+  `SequencerServer` or an unavailable Replayer (`seqeron_replayer_ready`,
+  `seqeron_replayer_integrity_failure`) explains both.
+- **A gateway publishes one seqeron metric**, `seqeron_app_recovery_stalled`, as every client does. Its
+  fences appear only in its log.
 
 ## The consensus clock
 
-Every frame's `timestamp` is epoch nanoseconds read from the **leader host's** clock when it appends
-the entry (spec §9.3). The unit is fixed; the precision and accuracy are the host's, and seqeron does
-nothing to discipline them.
+Every frame's `timestamp` is epoch nanoseconds read from the leader host's clock when it appends the entry
+(spec §9.3). The unit is fixed; the precision and accuracy are the host's, and seqeron does nothing to
+discipline them.
 
-- **Discipline every member, not just the current leader.** Any member can be elected, and an offset
-  between members shows up in the timestamp at the leadership change. Where UTC traceability is
-  required (MiFID II RTS 25), that is PTP or an equivalent traceable source on all three hosts,
-  with its offset monitored outside seqeron.
+- **Discipline every member, not only the leader.** Any member can be elected, and an offset between
+  members shows in the timestamp at the leadership change. Where UTC traceability is required (MiFID II
+  RTS 25), that means PTP or an equivalent traceable source on every member, with its offset monitored
+  outside seqeron.
 - **It is commit time, not event time.** It stamps when the cluster ordered a message, after ingress
-  transit and Raft replication. A regulatory event timestamp — order receipt, execution — belongs to
-  the application that saw the event, taken at its own edge and carried in its payload.
-- **Skew is the time daemon's to report.** Node apply lag reads the leader's clock against
+  transit and Raft replication. A regulatory event timestamp — an order's receipt, an execution — belongs
+  to the application that saw the event, taken at its own edge and carried in its payload.
+- **Clock skew is the time daemon's to report.** Node apply lag reads the leader's clock against
   Prometheus's, so a gross offset shows there as a lag that is implausibly large or negative; anything
   finer comes from the host's own clock monitoring.
 
-## Non-goals / open items
+## Not provided
 
-- No clock-offset metric. The `/metrics` endpoint doesn't report a member's offset from UTC or from its
-  peers; that comes from the host's time daemon.
-
-- No authentication on the `/metrics` endpoint — see "Architecture" above; it is meant to sit behind the
-  same network boundary as the nodes.
-- No Prometheus alerting rules or Grafana alert provisioning — dashboard only.
-- `prometheus.yml`'s target list is fixed and hand-maintained — no service discovery. For a cluster
-  whose membership changes, keep it in sync with `SEQERON_HOSTS`.
-- **Gateways publish no fence counters.** Beyond `seqeron_app_recovery_stalled`, a gateway exports
-  nothing of seqeron's: no fence counts, no connection state. `seqeron_sequencer_gateway_promotion_total`
-  shows that a promotion happened, not why; the gateway's log does. An application can export its own
-  counters in the app range (see "Counter type ids" above).
+- **No clock-offset metric.** `/metrics` reports no member's offset from UTC or from its peers; that comes
+  from the host's time daemon.
+- **No authentication on `/metrics`.** It is meant to sit inside the members' network boundary
+  ([Architecture](#architecture)).
+- **No alerting rules.** Neither Prometheus alerts nor Grafana alert provisioning: dashboard only.
+- **No service discovery.** `prometheus.yml`'s target list is maintained by hand; for a cluster whose
+  membership changes, keep it in step with `SEQERON_HOSTS`.
+- **No gateway fence counters.** Beyond `seqeron_app_recovery_stalled`, a gateway exports nothing of
+  seqeron's: no fence counts, no connection state. `seqeron_sequencer_gateway_promotion_total` shows that
+  a promotion happened, not why; the gateway's log does. An application can export its own counters in
+  the application range ([Counter type ids](#counter-type-ids)).
