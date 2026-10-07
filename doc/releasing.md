@@ -10,8 +10,10 @@ It publishes:
 - a GitHub Release with the operator distribution, `seqeron-<version>.zip` (`bin/`, `lib/`, `ops/`), the
   uber, client and node jars, and the C# package.
 
-The NuGet push needs the repository secret `NUGET_API_KEY`, an API key for the account that owns the
-package id. nuget.org takes a version once: a package pushed in error can be unlisted, never replaced.
+The NuGet push uses trusted publishing, so no key is stored: the account that owns the package id holds a
+nuget.org trusted publishing policy for this repository's `release.yml`, and the workflow exchanges its
+OIDC token for a key that lasts an hour. nuget.org takes a version once: a package pushed in error can be
+unlisted, never replaced.
 
 To cut one:
 
