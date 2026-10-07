@@ -8,7 +8,7 @@ the C#, and nothing from this repository's source. [`overview.md`](overview.md) 
 ## 1. Start a node
 
 ```bash
-V=0.10.0  # the latest release: https://github.com/FredrikJDahlberg/seqeron/releases
+V=0.11.0  # the latest release: https://github.com/FredrikJDahlberg/seqeron/releases
 curl -LO https://github.com/FredrikJDahlberg/seqeron/releases/download/v$V/seqeron-$V.zip
 unzip seqeron-$V.zip && cd seqeron-$V
 bin/start-cluster.sh
@@ -42,7 +42,7 @@ repositories {
 }
 
 dependencies {
-    implementation enforcedPlatform('com.github.FredrikJDahlberg.seqeron:seqeron-bom:v0.10.0')
+    implementation enforcedPlatform('com.github.FredrikJDahlberg.seqeron:seqeron-bom:v0.11.0')
     implementation 'com.github.FredrikJDahlberg.seqeron:seqeron'
 }
 
@@ -209,9 +209,9 @@ dotnet new console -o Follow && cd Follow
 dotnet add package Org.Limitless.Seqeron --version $V
 ```
 
-Take the package from the member's release too; it is on nuget.org from the release after 0.10.0. It
-names its Aeron.NET and SBE runtime versions exactly. Aeron.NET is one release behind Aeron, the one
-exception to running the same Aeron everywhere, which [spec **V-1**](seqeron-protocol-spec.md) records.
+Take the package from the member's release too; it is on nuget.org. It names its Aeron.NET and SBE
+runtime versions exactly. Aeron.NET is one release behind Aeron, the one exception to running the same
+Aeron everywhere, which [spec **V-1**](seqeron-protocol-spec.md) records.
 `Program.cs`:
 
 ```csharp
@@ -310,7 +310,7 @@ Java programs' 23 and 24, so both languages can follow one member at once.
   include(FetchContent)
   FetchContent_Declare(seqeron
       GIT_REPOSITORY https://github.com/FredrikJDahlberg/seqeron.git
-      GIT_TAG        v0.10.0)
+      GIT_TAG        v0.11.0)
   FetchContent_MakeAvailable(seqeron)
   target_link_libraries(my_app PRIVATE seqeron::seqeron_core)
   ```

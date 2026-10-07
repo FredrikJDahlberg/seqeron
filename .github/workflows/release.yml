@@ -10,6 +10,7 @@ on:
 permissions:
   contents: write
   packages: write
+  id-token: write
 
 jobs:
   release:
@@ -78,11 +79,19 @@ jobs:
           push: true
           tags: ${{ steps.version.outputs.image }}:${{ steps.version.outputs.version }}
 
+      # Trusted publishing: nuget.org exchanges this job's OIDC token for a key that lasts an hour, so it is
+      # requested here, after the JitPack wait, rather than up front.
+      - name: NuGet login
+        id: nuget
+        uses: NuGet/login@v1
+        with:
+          user: frda
+
       # nuget.org takes a version once: a package pushed in error can be unlisted, never replaced. The push
       # carries the .snupkg beside the .nupkg to the symbol server.
       - name: Push C# package
         env:
-          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+          NUGET_API_KEY: ${{ steps.nuget.outputs.NUGET_API_KEY }}
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           dotnet nuget push "build/nuget/Org.Limitless.Seqeron.${VERSION}.nupkg" \
