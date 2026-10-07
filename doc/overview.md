@@ -257,7 +257,6 @@ shortens an application's restart, not a member's. [`snapshot.md`](snapshot.md) 
 | durability | majority replication, no fsync: a power loss across a majority of hosts can lose committed messages |
 | security | none on the wire: no authentication, no encryption; the network is the access control |
 | upgrades | applications independently of the cluster, compatibility rules unspecified; a seqeron protocol change is whole-deployment and purges history |
-| sites | one: members on one low-latency network, no multi-site deployment |
 | performance | not measured on production hardware: no latency, throughput or sizing figures |
 
 ## Further reading

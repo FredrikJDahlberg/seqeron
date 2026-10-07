@@ -76,7 +76,6 @@ Limitations
 - **seqeron protocol changes are not rolling.** seqeron's own protocol — the message envelope and system
   messages — changes rarely, but a change cannot be rolled out across a running cluster: every member,
   gateway host and client moves together, and the recorded history is purged. seqeron is pre-1.0, and minor releases break the API.
-- **One site.** The members belong on one low-latency network; there is no multi-site deployment.
 - **No performance figures.** Latency, throughput and capacity have not been measured on production
   hardware, so a deployment is sized by measuring on its own.
 - **At most seven members.** The cluster's port block is 70 ports wide.

@@ -53,6 +53,10 @@ import org.limitless.seqeron.util.Logger;
  *   sequencer.sessionTimeoutMs — how long the cluster keeps a client session with no keep-alives; default
  *                               1000. A gateway that misses it is replaced by its standby, so raise it on
  *                               an oversubscribed host.
+ *   sequencer.leaderHeartbeatIntervalMs — how often the leader heartbeats its followers; default 20
+ *   sequencer.leaderHeartbeatTimeoutMs — how long a follower waits for a leader heartbeat before it starts an
+ *                               election; default 200
+ *   sequencer.electionTimeoutMs — how long an election stage waits on the other members; default 200
  *   aeron.ipc.term.buffer.length — the embedded driver's IPC term length; default 16m (doc/ops.md, "Term lengths")
  *   aeron.timer.interval, aeron.untethered.window.limit.timeout, aeron.untethered.linger.timeout — default
  *                               10ms, 100ms, 100ms (doc/ops.md, "Untethered subscribers")
@@ -72,8 +76,14 @@ public final class SequencerServer {
     private static final String PROP_AERON_DIR = "sequencer.aeronDir";
     private static final String PROP_IDLE_STRATEGY = "sequencer.idleStrategy";
     private static final String PROP_SESSION_TIMEOUT_MS = "sequencer.sessionTimeoutMs";
+    private static final String PROP_LEADER_HEARTBEAT_INTERVAL_MS = "sequencer.leaderHeartbeatIntervalMs";
+    private static final String PROP_LEADER_HEARTBEAT_TIMEOUT_MS = "sequencer.leaderHeartbeatTimeoutMs";
+    private static final String PROP_ELECTION_TIMEOUT_MS = "sequencer.electionTimeoutMs";
 
     private static final long DEFAULT_SESSION_TIMEOUT_MS = 1000;
+    private static final long DEFAULT_LEADER_HEARTBEAT_INTERVAL_MS = 20;
+    private static final long DEFAULT_LEADER_HEARTBEAT_TIMEOUT_MS = 200;
+    private static final long DEFAULT_ELECTION_TIMEOUT_MS = 200;
 
     public static void main(final String[] args) {
         final int memberId = Integer.getInteger(PROP_MEMBER_ID, 0);
@@ -130,9 +140,12 @@ public final class SequencerServer {
                 .isIpcIngressAllowed(true) // Lets a co-located client share aeron directory
                 .terminationHook(barrier::signalAll)
                 .deleteDirOnStart(false)
-                .leaderHeartbeatIntervalNs(TimeUnit.MILLISECONDS.toNanos(20))
-                .leaderHeartbeatTimeoutNs(TimeUnit.MILLISECONDS.toNanos(200))
-                .electionTimeoutNs(TimeUnit.MILLISECONDS.toNanos(200))
+                .leaderHeartbeatIntervalNs(TimeUnit.MILLISECONDS.toNanos(
+                    Long.getLong(PROP_LEADER_HEARTBEAT_INTERVAL_MS, DEFAULT_LEADER_HEARTBEAT_INTERVAL_MS)))
+                .leaderHeartbeatTimeoutNs(TimeUnit.MILLISECONDS.toNanos(
+                    Long.getLong(PROP_LEADER_HEARTBEAT_TIMEOUT_MS, DEFAULT_LEADER_HEARTBEAT_TIMEOUT_MS)))
+                .electionTimeoutNs(
+                    TimeUnit.MILLISECONDS.toNanos(Long.getLong(PROP_ELECTION_TIMEOUT_MS, DEFAULT_ELECTION_TIMEOUT_MS)))
                 .electionStatusIntervalNs(TimeUnit.MILLISECONDS.toNanos(20))
                 .startupCanvassTimeoutNs(TimeUnit.SECONDS.toNanos(5))
                 .sessionTimeoutNs(TimeUnit.MILLISECONDS.toNanos(
