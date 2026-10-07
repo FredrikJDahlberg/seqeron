@@ -12,7 +12,7 @@
 [![API reference](https://img.shields.io/badge/docs-API%20reference-blue)](https://fredrikjdahlberg.github.io/seqeron/)
 [![License](https://img.shields.io/github/license/FredrikJDahlberg/seqeron)](LICENSE)
 
-A replicated sequencer for systems built on the sequencer architecture. Every message from every producer is
+The replicated core of the sequencer architecture. Every message from every producer is
 assigned one global, gap-free total order by an Aeron Cluster (Raft) state machine, stamped with the
 consensus clock, and recorded on every node. Services downstream of it become deterministic state machines
 over a single log rather than peers that coordinate with each other: a replica, a hot standby or an audit

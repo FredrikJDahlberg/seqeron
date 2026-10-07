@@ -254,7 +254,8 @@ from `globalSeqNo` 1, and serves once caught up. This races the 5 s activation d
 ([`snapshot.md`](snapshot.md) §4); use it only for state that catches up well within that.
 
 **Reference implementations.** `TestGateway` (`seqeron-service/src/test/java/org/limitless/seqeron/tools/TestGateway.java`);
-`seqeron-examples/src/cpp/GatewayApp.cpp` (pair from `seqeron-examples/topology.xml`);
+`seqeron-examples/src/java/example/GatewayApp.java` and `src/cpp/GatewayApp.cpp` (one pair, from
+`seqeron-examples/topology.xml`);
 `seqeron-examples/src/csharp/GatewayApp` (pair from `topology-csharp.xml`, handed over by
 `csharp-client-test.sh`).
 

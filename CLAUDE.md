@@ -272,7 +272,7 @@ list is `seqeron-service/src/test/resources/topology-test-gateway.xml`, whose pa
 **`TestApplication`** (`sourceId` 16, one replica per member), the reference consumer of `app/Application` with a
 `SnapshotListener`; `snapshot-test.sh` loads it and drives both through restores, a failover onto a restored instance, a
 passive activation (`-Dprobe.passive`), an operator-requested round and a cluster leader kill. The two other topology documents here are
-`seqeron-examples/topology.xml`, the pair the C++ `GatewayApp` example runs, and `topology-csharp.xml` beside it,
+`seqeron-examples/topology.xml`, the pair the Java and C++ `GatewayApp` examples run, and `topology-csharp.xml` beside it,
 the C# example's own pair, which both C# harnesses load.
 
 `start-cluster.sh` and `start-three-node-cluster.sh` launch the cluster tier and nothing else — core

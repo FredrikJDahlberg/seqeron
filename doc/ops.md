@@ -182,7 +182,7 @@ This repository's processes use the ids below. An application's should start at 
 | 10 | `TestGateway serve` default; `chaos-runner.sh` second consumer |
 | 11, 12 | `failover-test.sh` producers |
 | 13, 14 | `seqeron-examples` `ColocatedApp`, Java, C++ |
-| 15, 16 | `seqeron-examples` `GatewayApp`, GW-EX-A, GW-EX-B |
+| 15, 16 | `seqeron-examples` `GatewayApp`, Java or C++, GW-EX-A, GW-EX-B |
 | 17, 18 | `seqeron-examples` `SnapshotApp`, Java, C++ |
 | 19 | `seqeron-examples` `FollowStream` (C#) |
 | 20 | `seqeron-examples` `ColocatedApp` (C#) |

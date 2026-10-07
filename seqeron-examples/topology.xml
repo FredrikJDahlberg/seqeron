@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-    The gateway pair src/cpp/GatewayApp.cpp runs. Load it once, into a cluster that has not bootstrapped
+    The gateway pair src/cpp/GatewayApp.cpp and src/java/example/GatewayApp.java run. Load it once, into a cluster that has not bootstrapped
     another list (the bootstrap GatewayActive latches once per cluster lifetime):
 
       seqeron-service/src/main/scripts/clusterctl.sh load-topology seqeron-examples/topology.xml

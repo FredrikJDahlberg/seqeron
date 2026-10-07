@@ -12,7 +12,8 @@ through the same consumer — so the round trip is measured over the real path.
 | `src/cpp/FollowStream.cpp` | built by `CMakeLists.txt`, which pulls in `seqeron_core` |
 | `src/java/example/ColocatedApp.java` | the same flow against the front door — see below |
 | `src/cpp/ColocatedApp.cpp` | its C++ twin |
-| `src/cpp/GatewayApp.cpp` | the other façade, an elected gateway pair — see below |
+| `src/java/example/GatewayApp.java` | the other façade, an elected gateway pair — see below |
+| `src/cpp/GatewayApp.cpp` | its C++ twin |
 | `src/java/example/SnapshotApp.java` | a façade application whose state is restored from a snapshot — see below |
 | `src/cpp/SnapshotApp.cpp` | its C++ twin |
 | `src/csharp/FollowStream` | the low-level flow in C#, built against the `Org.Limitless.Seqeron` package — see below |
@@ -38,18 +39,18 @@ only while its own node leads — which is why it needs no topology document and
 `LeadershipChanged` already picks the replica that submits. `FollowStream` stays as it is, deliberately:
 it is what a consumer writing its own duty cycle programs against, in either language.
 
-## An elected gateway, in C++
+## An elected gateway
 
 `GatewayApp` is the other producer kind: a **gateway**, one instance of an active/standby pair that the
-cluster elects. It is written against `app::Gateway` alone, under the same include check as
+cluster elects. It is written against `app.Gateway` alone, under the same import and include checks as
 `ColocatedApp`. Where a real gateway would open a socket, it takes one simulated client connection when
 designated and pings the cluster on that connection once a second.
 
 A gateway needs what a co-located application does not: a topology row naming it. `topology.xml` is that
 list, the pair `GW-EX-A`/`GW-EX-B` on `sourceId` 13. Load it once, into a cluster that has not loaded
 another list. The cluster designates only the first list it sees; into one that has, designate an
-instance with `clusterctl.sh activate 12` instead. The Java counterpart is the harness gateway
-`tools/TestGateway` in `seqeron-service`.
+instance with `clusterctl.sh activate 12` instead. The Java and C++ examples run the same pair, so either
+instance may be either language.
 
 ## C#
 
@@ -164,6 +165,11 @@ The gateway pair, after loading its list — stop the first and the second takes
     SEQERON_EXAMPLE_GATEWAY_NAME=GW-EX-A ./seqeron-examples/cmake-build-release/gateway_app
     SEQERON_EXAMPLE_GATEWAY_NAME=GW-EX-B ./seqeron-examples/cmake-build-release/gateway_app
 
+or in Java, with `-Dgateway.name` in place of the variable:
+
+    ./gradlew -p seqeron-examples runGateway -Dgateway.name=GW-EX-A
+    ./gradlew -p seqeron-examples runGateway -Dgateway.name=GW-EX-B
+
 and the C# pair, from its own list:
 
     ./seqeron-service/src/main/scripts/clusterctl.sh load-topology seqeron-examples/topology-csharp.xml
@@ -218,7 +224,9 @@ processes already do. The two client ids differ on purpose, so both examples can
 | — | `SEQERON_EXAMPLE_EGRESS_PORT` | UDP port the ping's cluster session takes egress on; default `9202 + member` |
 | `-Dsnapshot.dir` | `SEQERON_EXAMPLE_SNAPSHOT_DIR` | `SnapshotApp`'s snapshot directory; default `{tmpdir}/seqeron-example-snapshots-{sourceId}-{member}` |
 
-`SnapshotApp` takes the same settings under its own prefix (`-Dsnapshot.member`, `-Dsnapshot.clientId`,
+`GatewayApp` takes them under `gateway.` (`-Dgateway.name`, `-Dgateway.member`, `-Dgateway.clientId`,
+`-Dgateway.aeronDir`), with client ids 15 and 16 for `GW-EX-A` and `GW-EX-B` in either language, and C++ egress
+on `9205` and `9206`; the Java instance's egress is ephemeral. `SnapshotApp` takes the same settings under its own prefix (`-Dsnapshot.member`, `-Dsnapshot.clientId`,
 `-Dsnapshot.aeronDir`), with client ids 17 in Java and 18 in C++, and C++ egress on `9207 + member`.
 
 C# reads the C++ variables bar `SEQERON_EXAMPLE_EGRESS_PORT` — its egress is ephemeral — with client ids 19
