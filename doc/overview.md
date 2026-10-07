@@ -50,14 +50,14 @@ they would see on a member.
 
 ### The cluster member
 
-- **`Sequencer`** is the replicated state machine. It validates each committed ingress frame, stamps it
-  with the next `globalSeqNo` and the Raft consensus timestamp, and synthesizes the frames the cluster
+- **`Sequencer`** is the replicated state machine. It validates each committed ingress message, stamps it
+  with the next `globalSeqNo` and the Raft consensus timestamp, and synthesizes the messages the cluster
   owns. It has no Aeron dependency and no I/O; it is unit-tested directly.
 - **`SequencerService`** is the Aeron Cluster adapter. It decides when to call the sequencer and publishes
   what comes back, and holds no replicated state of its own.
-- **The tap** is a node-local `aeron:ipc` publication (stream 205) carrying every sequenced frame. Every
+- **The tap** is a node-local `aeron:ipc` publication (stream 205) carrying every sequenced message. Every
   member publishes its own, leader and follower alike, and since every member applies the same committed
-  log in the same order, every tap is byte-identical, frame for frame.
+  log in the same order, every tap is byte-identical, message for message.
 - **The archive** records the tap. Each member therefore holds a complete copy of history, written
   locally, with no cross-node replication and no leader-only recording. The tap is created once and
   survives leadership changes, so a member's recording is one continuous run across every leader it has
@@ -69,10 +69,10 @@ they would see on a member.
 ### The client tier
 
 The client tier is a library in the application's process, in Java, C++ (header-only) and C# (.NET).
-All three speak the same frames.
+All three speak the same protocol.
 
 - **`ReplayerStreamReceiver`** follows the stream. It asks the Replayer for history, switches to the live
-  tap once caught up, detects a gap on the tap and resumes over it, and delivers every frame once, in
+  tap once caught up, detects a gap on the tap and resumes over it, and delivers every message once, in
   `globalSeqNo` order.
 - **`ClusterStreamSender`** and **`IngressPublisher`** submit: a cluster session over IPC when the
   producer shares a host with the leader, over UDP otherwise.
@@ -84,27 +84,27 @@ All three speak the same frames.
 ## The life of a message
 
 1. A producer encodes its payload in whatever schema it owns. `IngressPublisher` wraps it in an
-   `Unsequenced` frame — 28 bytes of envelope — and offers it to the cluster session.
-2. The leader appends the frame to the Raft log and replicates it. The entry commits once a majority of
+   `Unsequenced` message — 28 bytes of envelope — and offers it to the cluster session.
+2. The leader appends the message to the Raft log and replicates it. The entry commits once a majority of
    members hold it.
-3. Every member applies the committed entry. `Sequencer` validates the frame against the ten ingress
+3. Every member applies the committed entry. `Sequencer` validates the message against the ten ingress
    conditions of spec §9.2, copies its 18-byte header, appends `globalSeqNo` and the consensus timestamp,
-   and republishes it as a `Sequenced` frame on the member's tap. The payload is copied, never decoded or
+   and republishes it as a `Sequenced` message on the member's tap. The payload is copied, never decoded or
    re-encoded.
-4. The tap offer is reliable: it retries until the frame is published, since a dropped frame would leave
+4. The tap offer is reliable: it retries until the message is published, since a dropped message would leave
    a permanent hole. Only the archive's recording can hold it back, as the tap's one tethered subscriber.
-5. The archive records the frame.
-6. Each client on the host reads the frame off the tap, checks that its `globalSeqNo` is the next one,
+5. The archive records the message.
+6. Each client on the host reads the message off the tap, checks that its `globalSeqNo` is the next one,
    and dispatches it. A consumer that falls behind is dropped by the media driver rather than slowing
    the tap, and heals by replay.
-7. The producer, which also follows its own tap, sees its frame arrive and stops tracking it. Only now
+7. The producer, which also follows its own tap, sees its message arrive and stops tracking it. Only now
    is the message known to be sequenced.
 
 A cold start runs steps 6 and 7 against a replay first. The client asks its member's Replayer for the
-recording from its start, delivers the replay in order, keeps any live frames that arrive meanwhile, and
+recording from its start, delivers the replay in order, keeps any live messages that arrive meanwhile, and
 switches to the tap when the two meet.
 
-## Frames
+## Messages
 
 Everything on the wire is one SBE schema (210), in two families sharing one header layout.
 
@@ -126,12 +126,12 @@ Everything on the wire is one SBE schema (210), in two families sharing one head
 | 26 | `timestamp` — Raft consensus time, epoch ns | | ✓ |
 
 Every field sits at the same offset in every template, so a consumer tracks continuity without branching
-on the frame type. A consumer splits by family first, then dispatches on `(payloadId, templateId)`.
-Payloads are at most 8,884 bytes, which keeps a frame within one 8,960-byte IPC MTU.
+on the message type. A consumer splits by family first, then dispatches on `(payloadId, templateId)`.
+Payloads are at most 8,884 bytes, which keeps a message within one 8,960-byte IPC MTU.
 
 ## Time
 
-The stream carries its own clock. Every frame holds the Raft consensus timestamp it was sequenced under, and
+The stream carries its own clock. Every message holds the Raft consensus timestamp it was sequenced under, and
 the sequencer emits a `ClusterHeartbeat` once a second whether or not anything else arrives. A timer driven
 by the heartbeat decides the same thing on every replica, and keeps advancing while every producer is
 silent, which is when a watchdog most needs it. Every deadline that decides what the sequencer emits, such
@@ -149,11 +149,11 @@ The pair is declared in a topology document that `clusterctl load-topology` puts
 sequencer designates an instance by synthesizing `GatewayActive`: the rank-0 instance at bootstrap, the
 standby when the active instance's cluster session closes, the next instance when a designated one does
 not announce itself within 5 s, and whichever instance an operator names. Because the designation is a
-frame, every instance and every replica sees the same decision at the same point in the order.
+sequenced message, every instance and every replica sees the same decision at the same point in the order.
 
 A designated instance announces itself with `GatewayStarted` before it serves. It resumes the pair's
 connection ids past the highest its predecessor issued, so no id is ever issued twice, and it learns of
-every connection its predecessor held from the `ConnectionOpened` and `ConnectionClosed` frames on the log.
+every connection its predecessor held from the `ConnectionOpened` and `ConnectionClosed` messages on the log.
 
 ### Co-located applications
 
@@ -167,16 +167,16 @@ de-duplicated by its key.
 
 ### Confirmed ingress
 
-A send that succeeds means the frame reached the leader, not the log. A leader that fails takes its
+A send that succeeds means the message reached the leader, not the log. A leader that fails takes its
 uncommitted ingress with it, and the producer's session survives, so neither side sees an error. The
-client tier closes that gap: `PendingSends` holds every frame until the producer's own tap shows it. A
-term change identifies exactly which frames were lost; the producer places nothing new until those are
-resent, oldest first. Each frame is then sequenced exactly once, in order, across any number of leader
+client tier closes that gap: `PendingSends` holds every message until the producer's own tap shows it. A
+term change identifies exactly which messages were lost; the producer places nothing new until those are
+resent, oldest first. Each message is then sequenced exactly once, in order, across any number of leader
 failovers.
 
 ## Failure handling
 
-The model is crash faults, not Byzantine ones. The cluster checks that frames are well formed, not who
+The model is crash faults, not Byzantine ones. The cluster checks that messages are well formed, not who
 sent them; authentication belongs at the system's external edges.
 
 | failure | what happens | recovery |
@@ -185,13 +185,23 @@ sent them; authentication belongs at the system's external edges.
 | member lost | the others keep quorum | the member restarts and replays the full log, rebuilding its recording |
 | a member's archive stops recording | the member terminates (exit 70) rather than sequence history it cannot keep | as for a lost member |
 | slow consumer | its media driver drops it within about 0.2 s; the tap is not held back | it resumes over the gap from the Replayer |
-| frame missed on the tap | the next frame reveals the gap | the client resumes from the last frame it delivered, holding live frames meanwhile |
+| message missed on the tap | the next message reveals the gap | the client resumes from the last message it delivered, holding live messages meanwhile |
 | gateway instance fails | its cluster session closes | the sequencer designates the standby |
 | gateway can no longer trust its view | a fence: session lost, tap or recovery stalled, ingress or snapshot mismatch | the instance exits, its session closes, and the standby takes over |
 
 The member's own recovery is always the same operation: replay the log from `globalSeqNo` 1. All state
 downstream of the log — `globalSeqNo`, the gateway list, which instance is active, the open connections — is
 a function of it, with no separate persistence and no separate recovery procedure.
+
+**Durability is replication, not fsync.** A message is committed once a majority of members have written it to
+their Raft log, and nothing is fsynced: the archive writes to the page cache. A committed message survives the
+crash of any minority of members, and of every member process; it can be lost if a majority of hosts lose
+power before their kernels write it back.
+
+**The network is the access control.** Nothing is authenticated or encrypted. Whoever reaches a member's
+ports can submit messages at ingress, the operator's events included, read and delete recordings through
+archive control, and send Raft traffic. The port block belongs inside a trusted network, or beneath an
+encrypted, authenticated layer.
 
 ## Snapshots
 
@@ -221,19 +231,34 @@ shortens an application's restart, not a member's. [`snapshot.md`](snapshot.md) 
   Prometheus ([`ops.md`](ops.md)). `SbeLogPrinter` decodes any recording, the Raft log included
   ([`log-printer.md`](log-printer.md)).
 - **Versions.** Every process uses the Aeron, Agrona and SBE versions seqeron was built with, since a
-  mismatch corrupts frames rather than failing a build. The C# client, on Aeron.NET, is one release behind
+  mismatch corrupts messages rather than failing a build. The C# client, on Aeron.NET, is one release behind
   and verified against the cluster on every Aeron upgrade (spec **V-1**).
+- **Application upgrades.** An application upgrades without touching the cluster: payloads are opaque to
+  it, and each application versions its own (spec **V-2**). Whether the application's producers and
+  consumers must move together depends on its encoding; a format with schema evolution, such as SBE's
+  `sinceVersion` or Protocol Buffers, lets old and new builds run side by side. A new build can start from a
+  snapshot and publish a new payload version from there, reading only what was recorded after the cut,
+  provided it can read the snapshot. seqeron does not yet specify these rules
+  ([`upgrades.md`](upgrades.md)).
+- **seqeron upgrades.** seqeron's own protocol — the message envelope and system messages — changes
+  rarely, and a change cannot be rolled out across a running cluster: every member, gateway host and
+  client moves together, on purged archives, so the recorded history does not survive it (spec **V-3**).
 
 ## Limits
 
 | | |
 | --- | --- |
 | members | up to seven, bounded by the 70-port cluster block |
-| payload | 8,884 bytes per frame; larger messages are split by the application |
-| node recovery | full-log replay; time and archive size grow with uptime (the heartbeat alone is about 86,400 frames a day) |
+| payload | 8,884 bytes per message; larger payloads are split by the application |
+| node recovery | full-log replay; time and archive size grow with uptime (the heartbeat alone is about 86,400 messages a day) |
 | concurrent replays | four per member; more clients queue |
 | ingress confirmation | within one producer process: a restarted producer starts with nothing pending |
 | faults | crash, not Byzantine; media driver and network faults are not exercised by the test harnesses |
+| durability | majority replication, no fsync: a power loss across a majority of hosts can lose committed messages |
+| security | none on the wire: no authentication, no encryption; the network is the access control |
+| upgrades | applications independently of the cluster, compatibility rules unspecified; a seqeron protocol change is whole-deployment and purges history |
+| sites | one: members on one low-latency network, no multi-site deployment |
+| performance | not measured on production hardware: no latency, throughput or sizing figures |
 
 ## Further reading
 
@@ -242,4 +267,5 @@ shortens an application's restart, not a member's. [`snapshot.md`](snapshot.md) 
 3. [Protocol Specification](seqeron-protocol-spec.md) — normative
 4. [Fault Tolerance](fault-tolerance.md) — each failure and its recovery
 5. [Application Snapshots](snapshot.md)
-6. [Running a Cluster](running-a-cluster.md)
+6. [Upgrades and Versioning](upgrades.md) — seqeron and application versions, and a proposed upgrade model
+7. [Running a Cluster](running-a-cluster.md)

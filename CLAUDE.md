@@ -497,8 +497,9 @@ release, so bump them when one changes the API they use), `running-a-cluster.md`
 ports, properties and restart, the operator scripts), `building.md` (each language's build, the unit
 suites, the harnesses, the examples), `releasing.md`, `log-printer.md`, `seqeron-protocol-spec.md` (normative — the frames, the families,
 the system vocabulary, the topology document), `client-api.md` (what a client programs against, and what in
-the client tier is not API — update it when that surface changes), `fault-tolerance.md`, `clusterctl.md` and `ops.md` (runbooks, ports, counters), and `snapshot.md`
-(application snapshots: local files the log confirms). The topology documents here are
+the client tier is not API — update it when that surface changes), `fault-tolerance.md`, `clusterctl.md` and `ops.md` (runbooks, ports, counters), `snapshot.md`
+(application snapshots: local files the log confirms), and `upgrades.md` (seqeron and application versions,
+and the proposed snapshot-and-upcaster upgrade model). The topology documents here are
 `seqeron-service/src/test/resources/topology-test-gateway.xml`, `topology-test-snapshot.xml` beside it, and
 `seqeron-examples/topology.xml` and `topology-csharp.xml`. `client-api.md`'s tables have a column per language,
 and a change to the client tier's surface changes all three.

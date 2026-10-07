@@ -166,7 +166,9 @@ only where that directory exists: on a member.
 
 ## Limits
 
-- **No authentication.** Access control is shell access to a member. If `shutdown` is ever made remotely
-  invocable, the cluster must first get an Aeron `Authenticator`.
+- **No authentication.** `shutdown` and the `ClusterTool` passthrough act on a member's cluster directory,
+  so shell access to a member guards them. What the other commands submit are ordinary ingress frames,
+  which any process that reaches a member's ingress port can submit too. Restricting them needs an Aeron
+  `Authenticator`.
 - **Leader-only effect.** `shutdown` and `ClusterTool`'s control actions take effect only on the leader.
 - **No resident agent.** Each invocation runs one command and exits.

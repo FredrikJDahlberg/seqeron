@@ -1,9 +1,9 @@
 # Operations
 
 What an operator watches on a running seqeron deployment, and what the platform settings beneath it mean.
-It covers the metrics stack (a per-member exporter, Prometheus and a Grafana dashboard), the ports a
-deployment binds, the Aeron term lengths, MTU and subscriber timeouts that bound the tap, what it means
-when a member or a gateway stops itself, and the clock every frame is stamped with.
+It covers the metrics stack (a per-member exporter, Prometheus and a Grafana dashboard), the ports and
+Replayer client ids a deployment allocates, the Aeron term lengths, MTU and subscriber timeouts that bound
+the tap, what it means when a member or a gateway stops itself, and the clock every frame is stamped with.
 [`running-a-cluster.md`](running-a-cluster.md) covers starting and configuring the cluster itself.
 
 ## Monitoring
@@ -160,6 +160,35 @@ seqeron's processes bind these ports, and an application's own must stay clear o
 - **A gateway host binds no fixed port either.** Its relay reaches each member's archive port, and the member
   replies and replays to ephemeral UDP ports at the name `SEQERON_HOST` gives, so a firewall between them
   must let the members reach those.
+
+## Replayer client ids
+
+Every client on a node — façade, `ReplayerStreamReceiver`, probe — takes a `clientId` that the node's
+Replayer keys its replays by, and it must be unique among the clients on that node. Two that share one
+cancel each other's replays and neither catches up. The Replayer detects the collision within a few
+seconds, logs it, sets `seqeron_replayer_client_id_collision` (type id 5108) and tells both clients (spec
+**R-4**). It cannot tell which was there first, so both stop: their next `poll()` or `doWork()` throws
+`IllegalStateException` (Java), `std::runtime_error` (C++) or `InvalidOperationException` (C#).
+
+This repository's processes use the ids below. An application's should start at 23 and skip 31–36 and
+41–43.
+
+| `clientId` | used by |
+|---|---|
+| 1 | `start-three-node-cluster.sh` per-member probe; `docker-failover-test.sh` observer |
+| 7 | `replay-bench.sh` probe; `seqeron-examples` (Java) |
+| 8 | `seqeron-examples` (C++) |
+| 9 | `ClusterProbe follow`/`confirm` default |
+| 10 | `TestGateway serve` default; `chaos-runner.sh` second consumer |
+| 11, 12 | `failover-test.sh` producers |
+| 13, 14 | `seqeron-examples` `ColocatedApp`, Java, C++ |
+| 15, 16 | `seqeron-examples` `GatewayApp`, GW-EX-A, GW-EX-B |
+| 17, 18 | `seqeron-examples` `SnapshotApp`, Java, C++ |
+| 19 | `seqeron-examples` `FollowStream` (C#) |
+| 20 | `seqeron-examples` `ColocatedApp` (C#) |
+| 21, 22 | `seqeron-examples` `GatewayApp` (C#), GW-EX-CS-A, GW-EX-CS-B |
+| 31–36 | `csharp-client-test.sh` C# probes |
+| 41–43 | `csharp-windows-test.sh` C# probes |
 
 ## Term lengths
 

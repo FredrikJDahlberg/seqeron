@@ -126,6 +126,13 @@ WSL1 distribution that has a JDK 21.
 | `csharp-windows-test.sh` | The C# client on Windows, where it is deployed, against a member on Linux, on one host: the member in WSL1, which shares Windows' network stack, and on Windows a gateway host with the C# probe and examples beside it. UDP ingress through `PendingSends`, a cold start through the gateway host, and the C# gateway pair handed over. One member, because three cannot hold Raft's heartbeats under WSL1's system-call translation; the leader kill is `csharp-client-test.sh`'s. Runs in Git Bash; CI runs it in `windows.yml` |
 | `replay-bench.sh <preload> [load-during]` | How fast a cold replica replays recorded history to caught-up; prints archive size, elapsed seconds and MB/s |
 
+`failover.yml` also runs the faults none of these scripts can produce — partitions that leave clients
+connected, one link cut and no other, lost NAKs or retransmits, delay and duplication, dropped ballots — and a
+leader starved of CPU, against the same `docker/compose.yml` cluster. They are
+[faulteron](https://github.com/FredrikJDahlberg/faulteron)'s tests, an eBPF injector in its own repository, run
+from a pinned commit. To run them locally, on Linux or in a Docker VM, check it out beside this repository and run
+its `test/seqeron-*.sh` after `./gradlew operatorDist`.
+
 ## Examples
 
 `seqeron-examples` holds the smallest clients there are, one per language in `src/java`, `src/cpp` and

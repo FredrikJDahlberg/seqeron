@@ -74,3 +74,89 @@ jobs:
         with:
           name: failover-logs
           path: logs/docker-failover/
+
+  # The faults no kill or pause produces, against the same docker/compose.yml cluster: a leader partitioned from its
+  # peers while its clients stay connected, one link cut and no other, a follower whose loss repair is gone, a slow
+  # and duplicating link, a member whose ballots are dropped, and a leader starved of CPU. faulteron
+  # (github.com/FredrikJDahlberg/faulteron) injects them with eBPF from privileged containers, which this VM's
+  # daemon runs as it is.
+  network-faults:
+    name: network faults (faulteron)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      SEQERON_DIR: ${{ github.workspace }}
+      TIMEOUT_SCALE: '3'
+    steps:
+      - uses: actions/checkout@v4
+
+      # Pinned, so a faulteron change reaches this workflow only when this line moves.
+      - uses: actions/checkout@v4
+        with:
+          repository: FredrikJDahlberg/faulteron
+          ref: ad4209117b7725fdfd8d02856e8d781dbef84365
+          path: faulteron
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-java-${{ hashFiles('*.gradle', 'versions.properties', 'gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: gradle-java-
+
+      # Each test brings the cluster up with `compose up --build`, as a local run does; the image copies this.
+      - name: Build operator distribution
+        run: ./gradlew operatorDist
+
+      # No cluster: two throwaway containers and every kind of rule. A kernel that cannot load the program fails
+      # here, once, rather than in every test below.
+      - name: faulteron rules
+        id: rules
+        run: faulteron/test/faulteron-rules.sh
+
+      # Each test below runs whatever the one before it did, so one run reports them all.
+      - name: Leader partitioned from its peers
+        if: ${{ !cancelled() && steps.rules.outcome == 'success' }}
+        run: faulteron/test/seqeron-partition-leader.sh
+
+      - name: Asymmetric partition
+        if: ${{ !cancelled() && steps.rules.outcome == 'success' }}
+        run: faulteron/test/seqeron-asymmetric-partition.sh
+
+      - name: Follower without NAKs
+        if: ${{ !cancelled() && steps.rules.outcome == 'success' }}
+        run: faulteron/test/seqeron-unrepaired-follower.sh
+        env:
+          REPAIR: nak
+
+      - name: Follower without retransmits
+        if: ${{ !cancelled() && steps.rules.outcome == 'success' }}
+        run: faulteron/test/seqeron-unrepaired-follower.sh
+        env:
+          REPAIR: retransmit
+
+      - name: Slow, duplicating leader links
+        if: ${{ !cancelled() && steps.rules.outcome == 'success' }}
+        run: faulteron/test/seqeron-jittery-leader.sh
+
+      - name: Mute voter
+        if: ${{ !cancelled() && steps.rules.outcome == 'success' }}
+        run: faulteron/test/seqeron-mute-voter.sh
+
+      - name: Leader starved of CPU
+        if: ${{ !cancelled() && steps.rules.outcome == 'success' }}
+        run: faulteron/test/seqeron-throttled-leader.sh
+
+      - name: Upload faulteron logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: network-fault-logs
+          path: faulteron/logs/
