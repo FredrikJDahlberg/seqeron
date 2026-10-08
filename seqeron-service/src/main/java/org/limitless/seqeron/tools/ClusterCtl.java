@@ -74,9 +74,8 @@ public final class ClusterCtl {
     private static final String AERON_DIR = System.getProperty(
         "clusterctl.aeronDir", System.getProperty("java.io.tmpdir") + "/seqeron-seq-aeron-" + MEMBER_ID);
     private static final File CLUSTER_DIR = new File(BASE_DIR + "/cluster-" + MEMBER_ID);
-    private static final String INGRESS_ENDPOINTS = System.getProperty(
-        "clusterctl.ingressEndpoints",
-        PortLayout.HOSTS.isEmpty() ? "0=" + PortLayout.ingressEndpoint(0) : PortLayout.ingressEndpoints());
+    private static final String INGRESS_ENDPOINTS =
+        System.getProperty("clusterctl.ingressEndpoints", PortLayout.ingressEndpoints());
 
     private static final long CONNECT_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(5);
     private static final long ECHO_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(5);
@@ -662,7 +661,7 @@ public final class ClusterCtl {
               clusterctl.baseDir           cluster data dir root            (default $TMPDIR/seqeron-seq)
               clusterctl.aeronDir          co-located member's Aeron dir     (default $TMPDIR/seqeron-seq-aeron-<id>)
               clusterctl.ingressEndpoints  member ingress endpoints          (default from SEQERON_HOSTS,
-                                                                              else 0=localhost:9302)
+                                                                              else three on localhost)
               clusterctl.egressHost        host the leader replies to        (default this member's host in
                                                                               SEQERON_HOSTS, else localhost)""");
     }

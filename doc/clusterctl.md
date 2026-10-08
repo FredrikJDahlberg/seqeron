@@ -22,7 +22,7 @@ The defaults match `SequencerServer`'s, so a default single-member cluster needs
 | `CLUSTERCTL_MEMBER_ID` | the co-located member's id | 0 |
 | `CLUSTERCTL_BASE_DIR` | root of the cluster data directories | `$TMPDIR/seqeron-seq` |
 | `CLUSTERCTL_AERON_DIR` | the co-located member's Aeron directory | `$TMPDIR/seqeron-seq-aeron-<id>` |
-| `CLUSTERCTL_INGRESS_ENDPOINTS` | the members' ingress endpoints | from `SEQERON_HOSTS`, else `0=localhost:9302` |
+| `CLUSTERCTL_INGRESS_ENDPOINTS` | the members' ingress endpoints | from `SEQERON_HOSTS`, else three members on `localhost` |
 | `CLUSTERCTL_EGRESS_HOST` | the host the leader replies to; on a follower of a multi-host cluster, this member's own name | this member's entry in `SEQERON_HOSTS`, else `localhost` |
 | `SEQERON_JAR` | the uber jar | `build/libs/seqeron-<version>-uber.jar` |
 
