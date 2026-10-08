@@ -3,10 +3,10 @@
   <img src="doc/branding/seqeron-wordmark.svg" alt="seqeron" width="248" height="60">
 </picture>
 
-[![ci](https://github.com/FredrikJDahlberg/seqeron/actions/workflows/ci.yml/badge.svg)](https://github.com/FredrikJDahlberg/seqeron/actions/workflows/ci.yml)
-[![windows](https://github.com/FredrikJDahlberg/seqeron/actions/workflows/windows.yml/badge.svg)](https://github.com/FredrikJDahlberg/seqeron/actions/workflows/windows.yml)
-[![chaos](https://github.com/FredrikJDahlberg/seqeron/actions/workflows/chaos.yml/badge.svg)](https://github.com/FredrikJDahlberg/seqeron/actions/workflows/chaos.yml)
-[![failover](https://github.com/FredrikJDahlberg/seqeron/actions/workflows/failover.yml/badge.svg)](https://github.com/FredrikJDahlberg/seqeron/actions/workflows/failover.yml)
+[![ci](https://github.com/FredrikJDahlberg/seqeron/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/FredrikJDahlberg/seqeron/actions/workflows/ci.yml)
+[![windows](https://github.com/FredrikJDahlberg/seqeron/actions/workflows/windows.yml/badge.svg?branch=main)](https://github.com/FredrikJDahlberg/seqeron/actions/workflows/windows.yml)
+[![chaos](https://github.com/FredrikJDahlberg/seqeron/actions/workflows/chaos.yml/badge.svg?branch=main)](https://github.com/FredrikJDahlberg/seqeron/actions/workflows/chaos.yml)
+[![failover](https://github.com/FredrikJDahlberg/seqeron/actions/workflows/failover.yml/badge.svg?branch=main)](https://github.com/FredrikJDahlberg/seqeron/actions/workflows/failover.yml)
 [![JitPack](https://jitpack.io/v/FredrikJDahlberg/seqeron.svg)](https://jitpack.io/#FredrikJDahlberg/seqeron)
 [![NuGet](https://img.shields.io/nuget/v/Org.Limitless.Seqeron)](https://www.nuget.org/packages/Org.Limitless.Seqeron)
 [![API reference](https://img.shields.io/badge/docs-API%20reference-blue)](https://fredrikjdahlberg.github.io/seqeron/)
