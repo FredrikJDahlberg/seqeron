@@ -68,9 +68,7 @@ Limitations
 
 - **No cluster snapshots.** Cluster node snapshots are not yet implemented
   ([design](doc/snapshot.md#10-cluster-snapshots)). A node's recovery is a full replay of the Raft log from
-  `globalSeqNo` 1. That is what keeps every node's recording complete, but recovery time and archive size
-  grow with uptime; the heartbeat alone is about 86,400 messages a day. Application snapshots shorten a
-  client's restart, not a node's.
+  `globalSeqNo` 1. 
 - **No authentication or encryption.** Anyone who reaches the cluster's ports can submit messages, operator
   events included, and read or delete recordings. Run it inside a trusted network.
 - **seqeron protocol changes are not rolling.** seqeron's own protocol — the message envelope and system
@@ -78,7 +76,7 @@ Limitations
   gateway host and client moves together, and the recorded history is purged. seqeron is pre-1.0, and minor releases break the API.
 - **No performance figures.** Latency, throughput and capacity have not been measured on production
   hardware, so a deployment is sized by measuring on its own.
-- **At most seven members.** The cluster's port block is 70 ports wide.
+- **At most seven cluster nodes.** The cluster's port block is 70 ports wide.
 - **C# trails by one Aeron version.** Aeron.NET is a release behind Aeron. Spec **V-1** records the
   exception and the evidence that the two interoperate; it is re-verified on every Aeron upgrade.
 
