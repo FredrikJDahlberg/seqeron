@@ -153,6 +153,12 @@ final class AeronTapRelay implements AutoCloseable {
             }
             return 0;
         }
+        // The member's archive pings this session once a second and closes it once those go unread.
+        final String archiveError = source.pollForErrorResponse();
+        if (archiveError != null) {
+            dropSource("its archive's control session failed: " + archiveError);
+            return 1;
+        }
 
         final int work = replay.controlledPoll(assembler, FRAGMENT_LIMIT);
         if (fatal) {

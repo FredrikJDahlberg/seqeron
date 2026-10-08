@@ -243,6 +243,11 @@ public final class ReplayerService {
 
     /** One duty-cycle iteration. Returns a work count for the idle strategy. */
     public int poll() {
+        final String archiveError = replayer.pollArchive();
+        if (archiveError != null) {
+            // The session is the archive's to close and cannot be reopened, so no replay could be served again.
+            throw new IllegalStateException("the local archive's control session failed: " + archiveError);
+        }
         int work = replayer.pollRequests(requestHandler, FRAGMENT_LIMIT);
         if (!ready) {
             work += checkReady();

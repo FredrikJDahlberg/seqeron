@@ -437,6 +437,24 @@ class ReplayerServiceTest {
         assertEquals(0, fakeReplayer.counter(SeqeronCounters.REPLAYER_STALLED_TYPE_ID));
     }
 
+    @Test
+    void everyDutyCycleReadsTheArchivesControlResponses() {
+        // The archive pings each control session and closes one whose responses go unread, so an idle
+        // node that never read them lost its session and could serve no replay again.
+        replayerService.poll();
+        replayerService.poll();
+        replayerService.poll();
+
+        assertEquals(3, fakeReplayer.archivePolls());
+    }
+
+    @Test
+    void anArchiveThatClosedTheControlSessionTakesTheDutyCycleDownLoudly() {
+        fakeReplayer.closeArchiveSession("not connected");
+
+        assertThrows(IllegalStateException.class, () -> replayerService.poll());
+    }
+
     // ── Slots ───────────────────────────────────────────────────────────────────
 
     @Test

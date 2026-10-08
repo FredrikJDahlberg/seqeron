@@ -40,6 +40,8 @@ final class FakeReplayer implements Replayer {
     private long nextReplaySessionId = 900;
     private RuntimeException replayFailure;
     private RuntimeException archiveFailure;
+    private String archiveSessionError;
+    private int archivePolls;
     private int replayAttempts;
 
     private final Deque<byte[]> requestQueue = new ArrayDeque<>();
@@ -115,6 +117,15 @@ final class FakeReplayer implements Replayer {
 
     void answerArchiveAgain() {
         archiveFailure = null;
+    }
+
+    /** Makes every subsequent {@code pollArchive} report {@code error}, as a session the archive closed does. */
+    void closeArchiveSession(final String error) {
+        archiveSessionError = error;
+    }
+
+    int archivePolls() {
+        return archivePolls;
     }
 
     /** Queues one encoded app → Replayer message for the next {@code pollRequests}. */
@@ -223,6 +234,12 @@ final class FakeReplayer implements Replayer {
     @Override
     public void stopReplay(final long replaySessionId) {
         stoppedReplays.add(replaySessionId);
+    }
+
+    @Override
+    public String pollArchive() {
+        ++archivePolls;
+        return archiveSessionError;
     }
 
     @Override

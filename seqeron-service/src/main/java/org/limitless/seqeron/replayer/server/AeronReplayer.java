@@ -76,6 +76,11 @@ public final class AeronReplayer implements Replayer {
     }
 
     @Override
+    public String pollArchive() {
+        return archive.pollForErrorResponse();
+    }
+
+    @Override
     public int pollRequests(final FragmentHandler handler, final int fragmentLimit) {
         return requestSub.poll(handler, fragmentLimit);
     }

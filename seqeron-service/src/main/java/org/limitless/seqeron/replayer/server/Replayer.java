@@ -57,6 +57,13 @@ public interface Replayer {
     void stopReplay(long replaySessionId);
 
     /**
+     * Reads one response off the local archive's control session between requests. The archive pings the
+     * session once a second and closes it once those go unread, so this is called every duty cycle.
+     * @return the archive's error, or {@code null}; once the session is closed, why
+     */
+    String pollArchive();
+
+    /**
      * Polls the apps → Replayer request stream.
      * @param handler receives each fragment
      * @param fragmentLimit maximum fragments to read

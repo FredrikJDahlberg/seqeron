@@ -131,6 +131,26 @@ inline bool findClusterStreamRecording(const std::shared_ptr<aeron::archive::cli
 }
 
 /**
+ * Reads one response off an archive control session between requests. The archive pings each session once a
+ * second and closes one whose pings go unread, so a caller that keeps a session from connectLocalArchive or
+ * connectToArchiveWithClusterStream calls this every duty cycle.
+ *
+ * @param archive the session to read
+ * @return the archive's error, empty if none; a non-empty one means the session is gone and a new one is needed
+ */
+inline std::string pollArchiveSession(const std::shared_ptr<aeron::archive::client::AeronArchive>& archive)
+{
+    try
+    {
+        return archive->pollForErrorResponse();
+    }
+    catch (const std::exception& ex)
+    {
+        return ex.what();
+    }
+}
+
+/**
  * Connects to each candidate archive endpoint in turn until one both connects
  * and holds a recording of the sequenced stream (matched by FEEDER_STREAM_ID
  * alone). Every member records its own node-local tap, so any reachable
@@ -148,6 +168,7 @@ inline bool findClusterStreamRecording(const std::shared_ptr<aeron::archive::cli
  * @param[out] recordingId    recording id of the sequenced stream found on the
  *                            connected archive
  * @param[out] catchUpPosition recording position to replay/catch up to
+ * @return the connected archive; a caller that keeps it reads it with pollArchiveSession every duty cycle
  * @throws std::runtime_error if no candidate endpoint both connects and holds
  *         a sequenced-stream recording.
  */
@@ -211,6 +232,7 @@ inline std::shared_ptr<aeron::archive::client::AeronArchive> connectToArchiveWit
  * @param logPrefix            prepended to the log line and to the exception message
  * @param[out] recordingId    recording id of the cluster stream found on the local archive
  * @param[out] catchUpPosition recording position to replay/catch up to
+ * @return the connected archive; a caller that keeps it reads it with pollArchiveSession every duty cycle
  * @throws std::runtime_error if the local archive can't be reached, or holds no cluster
  *         stream recording at all.
  */
@@ -289,7 +311,8 @@ class ClusterStreamClient
     {}
 
     /**
-     * Replays a recording from its start, then follows it as it grows.
+     * Replays a recording from its start, then follows it as it grows. poll() keeps the archive's session read
+     * until it fails; the replay outlives it.
      *
      * @param aeron           connected Aeron instance
      * @param archive         the connected archive holding the recording
@@ -303,6 +326,7 @@ class ClusterStreamClient
     {
         aeron::archive::client::ReplayParams replayParams;
         replayParams.position(0).length(aeron::archive::client::NULL_LENGTH);
+        m_archive = archive;
         start(std::move(aeron),
               archive->startReplay(recordingId, replayChannel, ARCHIVE_REPLAY_STREAM_ID, replayParams), catchUpPosition,
               replayChannel);
@@ -344,6 +368,18 @@ class ClusterStreamClient
      */
     int poll()
     {
+        if (m_archive)
+        {
+            const std::string archiveError = pollArchiveSession(m_archive);
+            if (!archiveError.empty())
+            {
+                util::Logger::info(util::component::ClusterStreamClient,
+                                   "archive control session closed (%s); the replay continues without it",
+                                   archiveError.c_str());
+                m_archive.reset();
+            }
+        }
+
         // Lazily resolve the replay subscription once it becomes available.
         if (!m_replaySub && m_replaySubRegId >= 0)
         {
@@ -445,6 +481,7 @@ class ClusterStreamClient
     OnReplayEnded m_onReplayEnded;
 
     std::shared_ptr<aeron::Aeron> m_aeron;
+    std::shared_ptr<aeron::archive::client::AeronArchive> m_archive;
     std::int64_t m_replaySubRegId = -1;
     std::shared_ptr<aeron::Subscription> m_replaySub;
     std::shared_ptr<aeron::Image> m_replayImage;

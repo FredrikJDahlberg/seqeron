@@ -204,7 +204,9 @@ correctly, to many clients at once, and to say so plainly when it cannot.
   the process's life and every request is answered `ReplayUnavailable`, so clients do not each discover the
   fault separately.
 - **Archive errors.** An archive call that throws during a replay moves the service to a stalled state. It
-  retries every second and answers `ReplayPending` meanwhile, without touching live delivery.
+  retries every second and answers `ReplayPending` meanwhile, without touching live delivery. The archive
+  control session is read every duty cycle, because the archive closes a session whose pings go unread; a
+  session it closes anyway cannot be reopened, so that ends the duty cycle.
 - **Slots.** At most `MAX_CONCURRENT_REPLAYS` = 4 replays run at once, and a freed slot goes to a waiting
   client at once. A slot idle for 5 s (`REPLAY_SLOT_TTL_MS`) is reclaimed, which covers a client that died
   mid-replay. Many concurrent replays happen mainly when a member restarts and all its clients cold-start

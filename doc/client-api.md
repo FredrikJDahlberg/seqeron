@@ -396,7 +396,9 @@ languages.
 
 **Without a receiver.** `SequencedFrameDecoder` (Java, C#) and `unwrapFrame`/`FrameView` (C++) strip the
 envelope from a raw tap message read out of a recording. `ClusterStreamClient` (C++ only,
-`sequencer/client/ClusterStreamClient.hpp`) performs bounded archive scans; it is not a live path.
+`sequencer/client/ClusterStreamClient.hpp`) performs bounded archive scans; it is not a live path. A caller
+that keeps the archive session `connectLocalArchive` or `connectToArchiveWithClusterStream` returned calls
+`pollArchiveSession` every duty cycle, because the archive closes a session whose pings go unread.
 
 ## Producing
 
