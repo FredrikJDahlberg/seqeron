@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
 import java.io.RandomAccessFile;
@@ -118,20 +119,37 @@ class SnapshotStoreTest {
     }
 
     @Test
-    @DisplayName("deleting before a round keeps it and every newer one, and clears a write a crash left behind")
+    @DisplayName("deleting before a durable round keeps it and every newer one, and clears a write a crash left behind")
     void deleteBeforeKeepsTheRoundAndNewer() throws IOException {
         final SnapshotStore crashed = new SnapshotStore(directory);
         write(crashed, 1, records());
         write(crashed, 2, records());
-        write(crashed, 3, records());
-        crashed.begin(4);
+        crashed.begin(3);
 
-        new SnapshotStore(directory).deleteBefore(2);
+        final SnapshotStore store = new SnapshotStore(directory);
+        store.deleteBefore(4);
+        store.awaitWrites();
+        assertEquals(List.of("1.snapshot", "2.snapshot", "3.tmp"), names(), "round 4 is not durable here");
 
-        try (Stream<Path> files = Files.list(directory)) {
-            assertEquals(List.of("2.snapshot", "3.snapshot"),
-                         files.map(path -> path.getFileName().toString()).sorted().toList());
-        }
+        write(store, 4, records());
+        write(store, 5, records());
+        store.deleteBefore(4);
+        store.awaitWrites();
+        assertEquals(List.of("4.snapshot", "5.snapshot"), names());
+    }
+
+    @Test
+    @DisplayName("a round whose file never became durable deletes nothing older")
+    void undurableRoundDeletesNothing() throws IOException {
+        final SnapshotStore store = new SnapshotStore(directory);
+        write(store, 1, records());
+        Files.createDirectories(directory.resolve("2.snapshot").resolve("occupied")); // the name cannot be taken
+        write(store, 2, records());
+
+        store.deleteBefore(2);
+        store.awaitWrites();
+        assertTrue(Files.isRegularFile(directory.resolve("1.snapshot")));
+        assertTrue(Files.isRegularFile(directory.resolve("2.tmp")));
     }
 
     @Test
@@ -172,6 +190,13 @@ class SnapshotStoreTest {
             crc.update(record);
         }
         store.commit(records.size(), length, crc.getValue(), 1);
+        store.awaitWrites();
+    }
+
+    private List<String> names() throws IOException {
+        try (Stream<Path> files = Files.list(directory)) {
+            return files.map(path -> path.getFileName().toString()).sorted().toList();
+        }
     }
 
     /** Each record's length in order, then what ends the read. */

@@ -147,7 +147,8 @@ hot-standby instances of a gateway pair — handles `SnapshotStarted` the same w
    `PendingSends` has resent what the election lost (spec A-5).
 4. **Compare.** On its source's `SnapshotEnd` for the round, every instance that serialized the round
    compares `recordCount`, `length` and `crc32c` with its own (§8). On a match the round's file is
-   confirmed, and the instance deletes its files of earlier rounds. On the next `SnapshotStarted`, a
+   confirmed, and the instance deletes its files of earlier rounds once it is durable (§4.1). On the next
+   `SnapshotStarted`, a
    publisher that has not yet placed the previous round's end abandons it.
 
 The snapshot frames are the façade's; the listener sees none of them. All of this depends on every instance
@@ -172,11 +173,15 @@ trailer:
 | 24 | `formatVersion` | uint32 | the listener's |
 | 28 | magic | uint32 | `0x50414E53`, "SNAP" |
 
-- **Written then renamed.** A file is written as `<round>.tmp` and renamed once its trailer is written, with
-  no fsync. A write that fails is logged as `SnapshotStoreFailed` and leaves no file; the instance still
+- **Written, then made durable off the dispatch thread.** A file is written as `<round>.tmp`; a thread of
+  its own then forces it to disk, renames it and forces the directory, so dispatch never waits for the disk.
+  The next round's write waits for the previous one to finish. Windows opens no directory to force, and .NET
+  forces none on any system; there the file system's journal commits the rename before the deletions that
+  follow it. A write that fails is logged as `SnapshotStoreFailed` and leaves no file; the instance still
   compares the round, and carries on without a copy of it.
 - **Retention.** An instance keeps its newest confirmed file and any newer one, whose end may not be in the
-  log yet. A `.tmp` a crash left behind goes when the next round is confirmed.
+  log yet. Older files are deleted only once the newest confirmed one is durable, and not at all if it never
+  becomes so. A `.tmp` a crash left behind goes when a later round is confirmed.
 - **Files are portable.** Every instance of a source writes the same bytes for a round (A-6), so a file is
   not tied to the instance that wrote it: a peer's file copied into a new host's directory spares that host
   a full replay.
@@ -379,12 +384,11 @@ nothing is truncated.
 
 ## 11. The snapshot server
 
-Each instance keeps its snapshots in a directory of its own (§4.1), written with no fsync, and an instance
-with no file replays from `globalSeqNo` 1. This section is the proposed design that replaces the directory
+Each instance keeps its snapshots in a directory of its own (§4.1), and an instance with no file replays
+from `globalSeqNo` 1. This section is the proposed design that replaces the directory
 with a snapshot server per host; none of it is implemented.
 
-What it changes: a snapshot is durable before anything older is deleted, a damaged one falls back to an
-older round rather than stopping the instance, and a host with no snapshot of a source fetches one from a
+What it changes: a damaged snapshot falls back to an older round rather than stopping the instance, and a host with no snapshot of a source fetches one from a
 peer. Storage leaves the client tier. The façades stream records to the server and read them back, in
 every language, and only the server, in Java, writes to disk.
 
@@ -532,7 +536,7 @@ own from an earlier tenure.
 | §5 | unchanged; the server is the Replayer's `SnapshotQuery` client |
 | §7 | steps 1 to 4 as §11.6 |
 | §10 | an instance with no snapshot fetches one through its server (§11.5) |
-| §12 | "No fsync" and "No file means a full replay" go; a process and an archive per host, and a UDP port per member host, are added |
+| §12 | "No file means a full replay" goes; a process and an archive per host, and a UDP port per member host, are added |
 | spec §10 | the three messages and streams 208 to 212 |
 | [`ops.md`](ops.md) | the port, the server's counters, its process in the runbooks |
 | scripts | `start-cluster.sh` and `start-three-node-cluster.sh` start a server per member after READY, `stop-cluster.sh` stops it, and `purgelog.sh` removes its archive with the log's, since a purged log's rounds start again at 1 |
@@ -555,8 +559,9 @@ own from an earlier tenure.
   each `SnapshotStarted` it passes.
 - **No file means a full replay**: a new host, a lost disk, a passive gateway instance that never served.
   A peer's file spares it that (§4.1). The server proposed in §11 fetches one.
-- **No fsync.** An OS crash can lose the newest file; the restore falls back to an older one, or to
-  `globalSeqNo` 1. The server proposed in §11 forces snapshots to disk.
+- **Durability is paid off the dispatch thread.** Forcing a file to disk takes milliseconds on local SSDs
+  and up to about a hundred on network block storage, on the store's own thread. An OS crash before the
+  newest file is durable leaves the previous confirmed one, which is deleted only after it.
 - **The Replayer's index** is rebuilt by reading the whole recording on restart, and keeps every round's end
   of every source.
 

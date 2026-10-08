@@ -73,6 +73,7 @@ internal static class RestoreFrames
             store.Append(buffer, 0, record.Length);
         }
         store.Commit(digest.RecordCount, digest.Length, digest.Crc32C, formatVersion);
+        store.AwaitWrites();
     }
 
     /// <summary>An application's header record.</summary>

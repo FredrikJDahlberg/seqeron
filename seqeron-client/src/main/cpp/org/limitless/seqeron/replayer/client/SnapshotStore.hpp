@@ -1,9 +1,13 @@
 #pragma once
 
+#include <algorithm>
 #include <array>
+#include <cerrno>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <functional>
+#include <future>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -13,6 +17,9 @@
 #include <utility>
 #include <vector>
 
+#include <fcntl.h>
+#include <unistd.h>
+
 #include "org/limitless/seqeron/protocol/Snapshot.hpp"
 #include "org/limitless/seqeron/util/Logger.hpp"
 
@@ -21,10 +28,10 @@ namespace org::limitless::seqeron::replayer::client {
 /**
  * This instance's own snapshots, one file per round in a directory no other instance writes (doc/snapshot.md §4).
  * `<round>.snapshot` holds the records, each a little-endian uint16 length and its bytes, record 0 the façade's
- * header, then a trailer whose layout is in the Java twin, ending in MAGIC. A file is written as `<round>.tmp` and
- * renamed once complete, without an fsync: one an OS crash tore fails its trailer or its records, and a restore
- * checks both. A write that fails leaves no file and is logged. Not thread-safe. The Java twin is
- * replayer/client/SnapshotStore.java; keep the two in step.
+ * header, then a trailer whose layout is in the Java twin, ending in MAGIC. A file is written as `<round>.tmp`, then
+ * forced to disk, renamed and its name forced on a thread of its own, so the caller does not wait for the disk. A
+ * write that fails leaves no file and is logged. Not thread-safe: one thread calls it, and only its file work runs on
+ * the other. The Java twin is replayer/client/SnapshotStore.java; keep the two in step.
  */
 class SnapshotStore
 {
@@ -170,12 +177,13 @@ class SnapshotStore
     SnapshotStore& operator=(const SnapshotStore&) = delete;
 
     /**
-     * Starts writing a round's file, dropping any write still open.
+     * Starts writing a round's file, dropping any write still open, once the rounds before it are durable.
      *
      * @param round its round
      */
     void begin(const std::int64_t round)
     {
+        awaitWrites();
         abandon();
         m_writingRound = round;
         m_out.rdbuf()->pubsetbuf(m_outBuffer.data(), static_cast<std::streamsize>(m_outBuffer.size()));
@@ -209,7 +217,7 @@ class SnapshotStore
     }
 
     /**
-     * Completes the file being written: its trailer, then its name.
+     * Completes the file being written: its trailer, then, off this thread, its name once it is durable.
      *
      * @param recordCount   records appended
      * @param length        their bytes
@@ -238,13 +246,7 @@ class SnapshotStore
             return;
         }
         m_writing = false;
-        std::error_code error;
-        std::filesystem::rename(temporaryFile(m_writingRound), file(m_writingRound), error);
-        if (error)
-        {
-            m_writing = true;
-            failWrite(error.message().c_str());
-        }
+        afterWrites([this, round = m_writingRound] { makeDurable(round); });
     }
 
     // Drops the write in progress, if any.
@@ -262,27 +264,22 @@ class SnapshotStore
     }
 
     /**
-     * Deletes the file of every round before a round, and any write a crash left behind.
+     * Deletes the file of every round before a round, and any write of one a crash left behind, off this thread once
+     * that round's file is durable; if it never is, nothing.
      *
-     * @param round the oldest round to keep
+     * @param round the oldest round to keep, one this store committed
      */
     void deleteBefore(const std::int64_t round)
     {
-        std::error_code error;
-        for (const auto& entry : std::filesystem::directory_iterator(m_directory, error))
+        afterWrites([this, round] { deleteFiles(round); });
+    }
+
+    // Waits until the rounds committed so far are durable, or failed, and the deletions asked for are done.
+    void awaitWrites()
+    {
+        if (m_writes.valid())
         {
-            const std::filesystem::path& path = entry.path();
-            const std::int64_t fileRound = roundOf(path);
-            if ((path.extension() == TEMPORARY_SUFFIX && !m_writing) || (fileRound >= 0 && fileRound < round))
-            {
-                std::filesystem::remove(path, error);
-            }
-        }
-        if (error)
-        {
-            util::Logger::warn(util::component::ReplayerStreamReceiver, util::eventCode::SnapshotStoreFailed,
-                               "cannot delete snapshots before round %lld in %s: %s", static_cast<long long>(round),
-                               m_directory.c_str(), error.message().c_str());
+            m_writes.wait();
         }
     }
 
@@ -299,7 +296,7 @@ class SnapshotStore
         std::error_code error;
         for (const auto& entry : std::filesystem::directory_iterator(m_directory, error))
         {
-            const std::int64_t round = roundOf(entry.path());
+            const std::int64_t round = roundOf(entry.path(), SUFFIX);
             if (round < belowRound && round > latest)
             {
                 latest = round;
@@ -354,6 +351,78 @@ class SnapshotStore
         abandon();
     }
 
+    // Runs a step on a thread of its own once the step before it is done.
+    void afterWrites(std::function<void()> step)
+    {
+        m_writes = std::async(std::launch::async, [previous = std::move(m_writes), step = std::move(step)]() mutable {
+            if (previous.valid())
+            {
+                previous.wait();
+            }
+            step();
+        });
+    }
+
+    // Forces a committed round's file to disk, then its name: only then does the round count as durable.
+    void makeDurable(const std::int64_t round)
+    {
+        std::error_code error = sync(temporaryFile(round), O_WRONLY);
+        if (!error)
+        {
+            std::filesystem::rename(temporaryFile(round), file(round), error);
+        }
+        if (!error)
+        {
+            error = sync(m_directory, O_RDONLY);
+        }
+        if (error)
+        {
+            util::Logger::warn(util::component::ReplayerStreamReceiver, util::eventCode::SnapshotStoreFailed,
+                               "cannot make round %lld's snapshot durable in %s: %s", static_cast<long long>(round),
+                               m_directory.c_str(), error.message().c_str());
+            return;
+        }
+        m_durableRound = round;
+    }
+
+    void deleteFiles(const std::int64_t round)
+    {
+        if (m_durableRound < round)
+        {
+            return;
+        }
+        std::error_code error;
+        for (const auto& entry : std::filesystem::directory_iterator(m_directory, error))
+        {
+            const std::filesystem::path& path = entry.path();
+            const std::int64_t fileRound = std::max(roundOf(path, SUFFIX), roundOf(path, TEMPORARY_SUFFIX));
+            if (fileRound >= 0 && fileRound < round)
+            {
+                std::filesystem::remove(path, error);
+            }
+        }
+        if (error)
+        {
+            util::Logger::warn(util::component::ReplayerStreamReceiver, util::eventCode::SnapshotStoreFailed,
+                               "cannot delete snapshots before round %lld in %s: %s", static_cast<long long>(round),
+                               m_directory.c_str(), error.message().c_str());
+        }
+    }
+
+    // Forces a file's data, or a directory's names, to disk.
+    static std::error_code sync(const std::filesystem::path& path, const int flags)
+    {
+        const int fd = ::open(path.c_str(), flags);
+        if (fd < 0)
+        {
+            return { errno, std::generic_category() };
+        }
+        const std::error_code error =
+            ::fsync(fd) == 0 ? std::error_code() : std::error_code(errno, std::generic_category());
+        ::close(fd);
+        return error;
+    }
+
     [[nodiscard]] std::filesystem::path file(const std::int64_t round) const
     {
         return m_directory / (std::to_string(round) + SUFFIX);
@@ -364,10 +433,10 @@ class SnapshotStore
         return m_directory / (std::to_string(round) + TEMPORARY_SUFFIX);
     }
 
-    // The round a complete file's name holds, or -1 for any other name.
-    static std::int64_t roundOf(const std::filesystem::path& path)
+    // The round a name ending in a suffix holds, or -1 for any other name.
+    static std::int64_t roundOf(const std::filesystem::path& path, const char* suffix)
     {
-        if (path.extension() != SUFFIX)
+        if (path.extension() != suffix)
         {
             return -1;
         }
@@ -392,6 +461,10 @@ class SnapshotStore
     std::ofstream m_out;
     std::int64_t m_writingRound = 0;
     bool m_writing = false; // m_out holds the round's .tmp file
+    // The newest round whose file is durable under its name. Touched by m_writes' steps alone.
+    std::int64_t m_durableRound = -1;
+    // What runs off the caller's thread, one step after another. Last, so its destructor waits before the rest go.
+    std::future<void> m_writes;
 };
 
 } // namespace org::limitless::seqeron::replayer::client

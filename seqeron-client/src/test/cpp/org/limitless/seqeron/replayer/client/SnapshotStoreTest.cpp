@@ -53,6 +53,18 @@ void write(SnapshotStore& store, const std::int64_t round, const std::vector<Byt
         crc = protocol::crc32c(record.data(), record.size(), crc);
     }
     store.commit(static_cast<std::int32_t>(records.size()), length, crc, 1);
+    store.awaitWrites();
+}
+
+std::vector<std::string> names(const std::filesystem::path& directory)
+{
+    std::vector<std::string> names;
+    for (const auto& entry : std::filesystem::directory_iterator(directory))
+    {
+        names.push_back(entry.path().filename().string());
+    }
+    std::sort(names.begin(), names.end());
+    return names;
 }
 
 Bytes readFile(const std::filesystem::path& path)
@@ -173,26 +185,41 @@ TEST(SnapshotStore, AFileCutShortOrOfAnotherRoundDoesNotOpenRecordsThatFailItsTr
     EXPECT_EQ((std::vector<std::int32_t>{ 18, 1000, 1302, 698, DAMAGED }), readAll(store.open(2)));
 }
 
-TEST(SnapshotStore, DeletingBeforeARoundKeepsItAndEveryNewerOneAndClearsAWriteACrashLeftBehind)
+TEST(SnapshotStore, DeletingBeforeADurableRoundKeepsItAndEveryNewerOneAndClearsAWriteACrashLeftBehind)
 {
     helpers::TempDirectory directory;
     {
         SnapshotStore crashed(directory.path());
         write(crashed, 1, records());
         write(crashed, 2, records());
-        write(crashed, 3, records());
-        crashed.begin(4);
+        crashed.begin(3);
     }
 
-    SnapshotStore(directory.path()).deleteBefore(2);
+    SnapshotStore store(directory.path());
+    store.deleteBefore(4);
+    store.awaitWrites();
+    EXPECT_EQ((std::vector<std::string>{ "1.snapshot", "2.snapshot", "3.tmp" }), names(directory.path()))
+        << "round 4 is not durable here";
 
-    std::vector<std::string> names;
-    for (const auto& entry : std::filesystem::directory_iterator(directory.path()))
-    {
-        names.push_back(entry.path().filename().string());
-    }
-    std::sort(names.begin(), names.end());
-    EXPECT_EQ((std::vector<std::string>{ "2.snapshot", "3.snapshot" }), names);
+    write(store, 4, records());
+    write(store, 5, records());
+    store.deleteBefore(4);
+    store.awaitWrites();
+    EXPECT_EQ((std::vector<std::string>{ "4.snapshot", "5.snapshot" }), names(directory.path()));
+}
+
+TEST(SnapshotStore, ARoundWhoseFileNeverBecameDurableDeletesNothingOlder)
+{
+    helpers::TempDirectory directory;
+    SnapshotStore store(directory.path());
+    write(store, 1, records());
+    std::filesystem::create_directories(directory.path() / "2.snapshot" / "occupied"); // the name cannot be taken
+    write(store, 2, records());
+
+    store.deleteBefore(2);
+    store.awaitWrites();
+    EXPECT_TRUE(std::filesystem::is_regular_file(directory.path() / "1.snapshot"));
+    EXPECT_TRUE(std::filesystem::is_regular_file(directory.path() / "2.tmp"));
 }
 
 TEST(SnapshotStore, ARecordOfTheMostBytesItsLengthPrefixCanSayReadsBackWhole)

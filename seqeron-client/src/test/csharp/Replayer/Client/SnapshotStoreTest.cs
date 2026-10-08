@@ -109,21 +109,41 @@ public class SnapshotStoreTest : IDisposable
         Assert.Equal(new List<int> { 18, 1000, 1302, 698, SnapshotStore.Reader.Damaged }, ReadAll(store.Open(2)));
     }
 
-    [Fact(DisplayName = "deleting before a round keeps it and every newer one, and clears a write a crash left behind")]
+    [Fact(DisplayName =
+              "deleting before a durable round keeps it and every newer one, and clears a write a crash left behind")]
     public void DeleteBeforeKeepsTheRoundAndNewer()
     {
         var crashed = new SnapshotStore(_directory.Path);
         Write(crashed, 1, Records());
         Write(crashed, 2, Records());
-        Write(crashed, 3, Records());
         // What a crash mid-write leaves: a temporary file no process holds open. Windows refuses to delete one a
-        // live writer still holds, as crashed.Begin(4) would.
-        File.WriteAllBytes(Path.Combine(_directory.Path, "4.tmp"), new byte[] { 1, 2, 3 });
+        // live writer still holds, as crashed.Begin(3) would.
+        File.WriteAllBytes(Path.Combine(_directory.Path, "3.tmp"), new byte[] { 1, 2, 3 });
 
-        new SnapshotStore(_directory.Path).DeleteBefore(2);
+        var store = new SnapshotStore(_directory.Path);
+        store.DeleteBefore(4);
+        store.AwaitWrites();
+        Assert.Equal(new List<string> { "1.snapshot", "2.snapshot", "3.tmp" }, Names()); // round 4 is not durable here
 
-        Assert.Equal(new List<string> { "2.snapshot", "3.snapshot" },
-                     Directory.EnumerateFiles(_directory.Path).Select(Path.GetFileName).Order().ToList());
+        Write(store, 4, Records());
+        Write(store, 5, Records());
+        store.DeleteBefore(4);
+        store.AwaitWrites();
+        Assert.Equal(new List<string> { "4.snapshot", "5.snapshot" }, Names());
+    }
+
+    [Fact(DisplayName = "a round whose file never became durable deletes nothing older")]
+    public void UndurableRoundDeletesNothing()
+    {
+        var store = new SnapshotStore(_directory.Path);
+        Write(store, 1, Records());
+        Directory.CreateDirectory(Path.Combine(FileOf(2), "occupied")); // the name cannot be taken
+        Write(store, 2, Records());
+
+        store.DeleteBefore(2);
+        store.AwaitWrites();
+        Assert.True(File.Exists(FileOf(1)));
+        Assert.True(File.Exists(Path.Combine(_directory.Path, "2.tmp")));
     }
 
     [Fact(DisplayName = "a record of the most bytes its length prefix can say reads back whole")]
@@ -144,6 +164,11 @@ public class SnapshotStoreTest : IDisposable
     private string FileOf(long round)
     {
         return Path.Combine(_directory.Path, round + ".snapshot");
+    }
+
+    private List<string> Names()
+    {
+        return Directory.EnumerateFiles(_directory.Path).Select(Path.GetFileName).Order().ToList();
     }
 
     // The application header, then the 3000-byte body as records of 1000, 1302 and 698 bytes.

@@ -105,8 +105,10 @@ struct Instances
         return *takers.back();
     }
 
+    // The last instance's store, once its writes are done.
     replayer::client::SnapshotStore& lastStore()
     {
+        stores.back()->awaitWrites();
         return *stores.back();
     }
 
@@ -230,17 +232,16 @@ TEST(SnapshotTaker, AnEndThatMatchesMakesItsRoundTheOldestFileKeptOneThatDoesNot
     taker.onSnapshotStarted(2, HEADER, true);
     taker.submit(t.frames);
     taker.onSnapshotStarted(3, HEADER, false);
-    replayer::client::SnapshotStore& store = t.lastStore();
-    EXPECT_EQ(3, store.latestRound());
+    EXPECT_EQ(3, t.lastStore().latestRound());
 
     EXPECT_FALSE(taker.onSnapshotEnd(3, 99, 0, 0));
-    EXPECT_EQ(1, store.latestRound(2)) << "a diverged instance keeps what it had";
+    EXPECT_EQ(1, t.lastStore().latestRound(2)) << "a diverged instance keeps what it had";
 
     taker.onSnapshotStarted(4, HEADER, false);
     const Frames::End end = t.frames.ends[0];
     EXPECT_TRUE(taker.onSnapshotEnd(4, end.recordCount, end.length, end.crc32c));
-    EXPECT_EQ(4, store.latestRound());
-    EXPECT_EQ(-1, store.latestRound(4)) << "rounds 1 to 3 are gone";
+    EXPECT_EQ(4, t.lastStore().latestRound());
+    EXPECT_EQ(-1, t.lastStore().latestRound(4)) << "rounds 1 to 3 are gone";
 }
 
 TEST(SnapshotTaker, APublisherThatLosesTheRoleStopsForGoodWithNoEnd)

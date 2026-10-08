@@ -287,8 +287,9 @@ one; with none left, it walks the recording as §3.2 describes.
   the resume after it is an ordinary one.
 - **After the restore**, every fallback that would walk the recording resumes at the snapshot instead: the
   history before its cut is no longer this client's to replay.
-- **A torn file.** Files are written without an fsync. One an OS crash tore has no trailer, or one that does
-  not match the end, and gives way to an older file.
+- **A torn file.** A file is forced to disk before it is named, and an older one is deleted only once a newer
+  one is durable, so an OS crash costs at most the round in flight. A file torn regardless has no trailer, or
+  one that does not match the end, and gives way to an older file.
 - **A damaged file.** A file whose trailer matches the end but whose records do not, or a `formatVersion` or
   header version the build does not read, fences the client with `SNAPSHOT_UNRESTORABLE`; a restart repeats
   it until the build is fixed or the file is removed.

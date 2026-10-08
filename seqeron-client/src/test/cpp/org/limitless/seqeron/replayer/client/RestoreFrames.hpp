@@ -103,6 +103,7 @@ inline void write(SnapshotStore& store, const std::int64_t round, const std::uin
         store.append(record);
     }
     store.commit(digest.recordCount, static_cast<std::uint64_t>(digest.length), digest.crc32c, formatVersion);
+    store.awaitWrites();
 }
 
 // An application's header record.

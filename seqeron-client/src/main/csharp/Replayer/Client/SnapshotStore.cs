@@ -2,6 +2,8 @@ using System;
 using System.Buffers.Binary;
 using System.Globalization;
 using System.IO;
+using System.Threading;
+using System.Threading.Tasks;
 using Adaptive.Agrona;
 using Adaptive.Agrona.Concurrent;
 using Org.Limitless.Seqeron.Protocol;
@@ -21,9 +23,11 @@ namespace Org.Limitless.Seqeron.Replayer.Client;
 /// 24  formatVersion  uint32
 /// 28  magic          uint32   Magic
 /// </code>
-/// A file is written as <c>&lt;round&gt;.tmp</c> and renamed once complete, without an fsync: one an OS crash tore
-/// fails its trailer or its records, and a restore checks both. A write that fails leaves no file and is logged.
-/// Not thread-safe. <c>SnapshotStore.java</c> and <c>SnapshotStore.hpp</c> are its twins; keep the three in step.
+/// A file is written as <c>&lt;round&gt;.tmp</c>, then forced to disk and renamed on a thread of its own, so the
+/// caller does not wait for the disk. .NET forces no directory; a journaling file system commits the rename before
+/// the deletions that follow it. A write that fails leaves no file and is logged. Not thread-safe: one thread calls
+/// it, and only its file work runs on the other. <c>SnapshotStore.java</c> and <c>SnapshotStore.hpp</c> are its
+/// twins; keep the three in step.
 /// </summary>
 public sealed class SnapshotStore
 {
@@ -44,6 +48,12 @@ public sealed class SnapshotStore
     private FileStream _out;
     private long _writingRound;
 
+    // What runs off the caller's thread, one step after another: making files durable and deleting them.
+    private Task _writes = Task.CompletedTask;
+
+    // The newest round whose file is durable under its name. Touched by _writes alone.
+    private long _durableRound = -1;
+
     /// <summary>Opens this instance's snapshot directory.</summary>
     /// <param name="directory">this instance's own; created if missing</param>
     /// <exception cref="IOException">if it cannot be</exception>
@@ -60,10 +70,12 @@ public sealed class SnapshotStore
         }
     }
 
-    /// <summary>Starts writing a round's file, dropping any write still open.</summary>
+    /// <summary>Starts writing a round's file, dropping any write still open, once the rounds before it are
+    /// durable.</summary>
     /// <param name="round">its round</param>
     public void Begin(long round)
     {
+        AwaitWrites();
         Abandon();
         _writingRound = round;
         try
@@ -100,7 +112,8 @@ public sealed class SnapshotStore
         }
     }
 
-    /// <summary>Completes the file being written: its trailer, then its name.</summary>
+    /// <summary>Completes the file being written: its trailer, then, off this thread, its name once it is
+    /// durable.</summary>
     /// <param name="recordCount">records appended</param>
     /// <param name="length">their bytes</param>
     /// <param name="crc32c">their CRC-32C</param>
@@ -123,12 +136,14 @@ public sealed class SnapshotStore
             _out.Write(trailer);
             _out.Dispose();
             _out = null;
-            File.Move(TemporaryFile(_writingRound), FileOf(_writingRound), true);
         }
         catch (Exception ex) when (IsIoFailure(ex))
         {
             FailWrite(ex);
+            return;
         }
+        long round = _writingRound;
+        AfterWrites(() => MakeDurable(round));
     }
 
     /// <summary>Drops the write in progress, if any.</summary>
@@ -157,30 +172,19 @@ public sealed class SnapshotStore
         }
     }
 
-    /// <summary>Deletes the file of every round before <paramref name="round"/>, and any write a crash left
-    /// behind.</summary>
-    /// <param name="round">the oldest round to keep</param>
+    /// <summary>Deletes the file of every round before <paramref name="round"/>, and any write of one a crash left
+    /// behind, off this thread once <paramref name="round"/>'s file is durable; if it never is, nothing.</summary>
+    /// <param name="round">the oldest round to keep, one this store committed</param>
     public void DeleteBefore(long round)
     {
-        try
-        {
-            foreach (string path in Directory.EnumerateFiles(_directory))
-            {
-                string name = Path.GetFileName(path);
-                long fileRound = RoundOf(name);
-                if ((name.EndsWith(TemporarySuffix, StringComparison.Ordinal) && _out == null) ||
-                    (fileRound >= 0 && fileRound < round))
-                {
-                    File.Delete(path);
-                }
-            }
-        }
-        catch (Exception ex) when (IsIoFailure(ex))
-        {
-            Logger.Log(Logger.CoreComponent.ReplayerStreamReceiver, Logger.Severity.Warn,
-                       Logger.CoreEventCode.SnapshotStoreFailed, null,
-                       "cannot delete snapshots before round {0} in {1}: {2}", round, _directory, ex.Message);
-        }
+        AfterWrites(() => DeleteFiles(round));
+    }
+
+    /// <summary>Waits until the rounds committed so far are durable, or failed, and the deletions asked for are
+    /// done.</summary>
+    public void AwaitWrites()
+    {
+        _writes.Wait();
     }
 
     /// <summary>The newest round below <paramref name="belowRound"/> with a complete file, or -1.</summary>
@@ -192,7 +196,7 @@ public sealed class SnapshotStore
         {
             foreach (string path in Directory.EnumerateFiles(_directory, "*" + Suffix))
             {
-                long round = RoundOf(Path.GetFileName(path));
+                long round = RoundOf(Path.GetFileName(path), Suffix);
                 if (round < belowRound && round > latest)
                 {
                     latest = round;
@@ -261,6 +265,59 @@ public sealed class SnapshotStore
         Abandon();
     }
 
+    // Runs a step on a thread of its own once the step before it is done.
+    private void AfterWrites(Action step)
+    {
+        _writes = _writes.ContinueWith(
+            _ => step(), CancellationToken.None, TaskContinuationOptions.LongRunning, TaskScheduler.Default);
+    }
+
+    // Forces a committed round's file to disk, then names it: only then does the round count as durable.
+    private void MakeDurable(long round)
+    {
+        try
+        {
+            using (var file = new FileStream(TemporaryFile(round), FileMode.Open, FileAccess.Write))
+            {
+                file.Flush(true);
+            }
+            File.Move(TemporaryFile(round), FileOf(round), true);
+            _durableRound = round;
+        }
+        catch (Exception ex) when (IsIoFailure(ex))
+        {
+            Logger.Log(Logger.CoreComponent.ReplayerStreamReceiver, Logger.Severity.Warn,
+                       Logger.CoreEventCode.SnapshotStoreFailed, null,
+                       "cannot make round {0}'s snapshot durable in {1}: {2}", round, _directory, ex.Message);
+        }
+    }
+
+    private void DeleteFiles(long round)
+    {
+        if (_durableRound < round)
+        {
+            return;
+        }
+        try
+        {
+            foreach (string path in Directory.EnumerateFiles(_directory))
+            {
+                string name = Path.GetFileName(path);
+                long fileRound = Math.Max(RoundOf(name, Suffix), RoundOf(name, TemporarySuffix));
+                if (fileRound >= 0 && fileRound < round)
+                {
+                    File.Delete(path);
+                }
+            }
+        }
+        catch (Exception ex) when (IsIoFailure(ex))
+        {
+            Logger.Log(Logger.CoreComponent.ReplayerStreamReceiver, Logger.Severity.Warn,
+                       Logger.CoreEventCode.SnapshotStoreFailed, null,
+                       "cannot delete snapshots before round {0} in {1}: {2}", round, _directory, ex.Message);
+        }
+    }
+
     private string FileOf(long round)
     {
         return Path.Combine(_directory, round.ToString(CultureInfo.InvariantCulture) + Suffix);
@@ -277,14 +334,14 @@ public sealed class SnapshotStore
         return ex is IOException || ex is UnauthorizedAccessException;
     }
 
-    /// <summary>The round a complete file's name holds, or -1 for any other name.</summary>
-    private static long RoundOf(string name)
+    /// <summary>The round a name ending in <paramref name="suffix"/> holds, or -1 for any other name.</summary>
+    private static long RoundOf(string name, string suffix)
     {
-        if (!name.EndsWith(Suffix, StringComparison.Ordinal))
+        if (!name.EndsWith(suffix, StringComparison.Ordinal))
         {
             return -1;
         }
-        return long.TryParse(name.AsSpan(0, name.Length - Suffix.Length), NumberStyles.AllowLeadingSign,
+        return long.TryParse(name.AsSpan(0, name.Length - suffix.Length), NumberStyles.AllowLeadingSign,
                              CultureInfo.InvariantCulture, out long round)
                    ? round
                    : -1;

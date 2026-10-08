@@ -15,6 +15,7 @@ import java.util.List;
 import org.agrona.DirectBuffer;
 import org.agrona.MutableDirectBuffer;
 import org.agrona.concurrent.UnsafeBuffer;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -81,7 +82,7 @@ class SnapshotTakerTest {
 
     private final State state = new State();
     private final Frames frames = new Frames();
-    private int instances;
+    private final List<SnapshotStore> stores = new ArrayList<>();
     private int keepAlives;
     private final Runnable keepAlive = () -> keepAlives++;
 
@@ -97,13 +98,25 @@ class SnapshotTakerTest {
         return new SnapshotTaker(state, store(), true, keepAlive);
     }
 
-    private SnapshotStore store() {
-        return new SnapshotStore(directory.resolve("instance-" + instances++));
+    @AfterEach
+    void awaitWrites() {
+        stores.forEach(SnapshotStore::awaitWrites);
     }
 
-    /** The store of the instance {@link #participating} created {@code back} calls ago, 1 for the last. */
+    private SnapshotStore store() {
+        final SnapshotStore store = new SnapshotStore(directory.resolve("instance-" + stores.size()));
+        stores.add(store);
+        return store;
+    }
+
+    /**
+     * The store of the instance {@link #participating} created {@code back} calls ago, 1 for the last, once its
+     * writes are done.
+     */
     private SnapshotStore storeOf(final int back) {
-        return new SnapshotStore(directory.resolve("instance-" + (instances - back)));
+        final SnapshotStore store = stores.get(stores.size() - back);
+        store.awaitWrites();
+        return store;
     }
 
     @Test
@@ -196,17 +209,16 @@ class SnapshotTakerTest {
         taker.onSnapshotStarted(2, HEADER, true);
         taker.submit(frames);
         taker.onSnapshotStarted(3, HEADER, false);
-        final SnapshotStore store = storeOf(1);
-        assertEquals(3, store.latestRound(Long.MAX_VALUE));
+        assertEquals(3, storeOf(1).latestRound(Long.MAX_VALUE));
 
         assertFalse(taker.onSnapshotEnd(3, 99, 0, 0));
-        assertEquals(1, store.latestRound(2), "a diverged instance keeps what it had");
+        assertEquals(1, storeOf(1).latestRound(2), "a diverged instance keeps what it had");
 
         taker.onSnapshotStarted(4, HEADER, false);
         final long[] end = frames.ends.get(0);
         assertTrue(taker.onSnapshotEnd(4, (int)end[1], end[2], end[3]));
-        assertEquals(4, store.latestRound(Long.MAX_VALUE));
-        assertEquals(-1, store.latestRound(4), "rounds 1 to 3 are gone");
+        assertEquals(4, storeOf(1).latestRound(Long.MAX_VALUE));
+        assertEquals(-1, storeOf(1).latestRound(4), "rounds 1 to 3 are gone");
     }
 
     @Test

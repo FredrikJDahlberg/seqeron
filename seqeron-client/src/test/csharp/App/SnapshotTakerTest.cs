@@ -76,11 +76,12 @@ public class SnapshotTakerTest : IDisposable
     private readonly TempDirectory _directory = new TempDirectory();
     private readonly State _state = new State();
     private readonly Frames _frames = new Frames();
-    private int _instances;
+    private readonly List<SnapshotStore> _stores = new List<SnapshotStore>();
     private int _keepAlives;
 
     public void Dispose()
     {
+        _stores.ForEach(store => store.AwaitWrites());
         _directory.Dispose();
     }
 
@@ -179,17 +180,16 @@ public class SnapshotTakerTest : IDisposable
         taker.OnSnapshotStarted(2, Header, true);
         taker.Submit(_frames);
         taker.OnSnapshotStarted(3, Header, false);
-        SnapshotStore store = StoreOf(1);
-        Assert.Equal(3, store.LatestRound(long.MaxValue));
+        Assert.Equal(3, StoreOf(1).LatestRound(long.MaxValue));
 
         Assert.False(taker.OnSnapshotEnd(3, 99, 0, 0));
-        Assert.Equal(1, store.LatestRound(2)); // a diverged instance keeps what it had
+        Assert.Equal(1, StoreOf(1).LatestRound(2)); // a diverged instance keeps what it had
 
         taker.OnSnapshotStarted(4, Header, false);
         End end = _frames.Ends[0];
         Assert.True(taker.OnSnapshotEnd(4, end.RecordCount, end.Length, end.Crc32C));
-        Assert.Equal(4, store.LatestRound(long.MaxValue));
-        Assert.Equal(-1, store.LatestRound(4)); // rounds 1 to 3 are gone
+        Assert.Equal(4, StoreOf(1).LatestRound(long.MaxValue));
+        Assert.Equal(-1, StoreOf(1).LatestRound(4)); // rounds 1 to 3 are gone
     }
 
     [Fact(DisplayName = "a publisher that loses the role stops for good, with no end")]
@@ -359,13 +359,17 @@ public class SnapshotTakerTest : IDisposable
 
     private SnapshotStore Store()
     {
-        return new SnapshotStore(Path.Combine(_directory.Path, "instance-" + _instances++));
+        var store = new SnapshotStore(Path.Combine(_directory.Path, "instance-" + _stores.Count));
+        _stores.Add(store);
+        return store;
     }
 
-    // The store of the instance created `back` calls ago, 1 for the last.
+    // The store of the instance created `back` calls ago, 1 for the last, once its writes are done.
     private SnapshotStore StoreOf(int back)
     {
-        return new SnapshotStore(Path.Combine(_directory.Path, "instance-" + (_instances - back)));
+        SnapshotStore store = _stores[_stores.Count - back];
+        store.AwaitWrites();
+        return store;
     }
 
     private static byte[] Filled(int value)

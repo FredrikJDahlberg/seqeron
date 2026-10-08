@@ -9,13 +9,18 @@ import java.io.UncheckedIOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.channels.FileChannel;
+import java.nio.file.DirectoryIteratorException;
 import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executor;
 import java.util.zip.CRC32C;
 import org.agrona.DirectBuffer;
+import org.agrona.SystemUtil;
 import org.agrona.concurrent.UnsafeBuffer;
 import org.limitless.seqeron.protocol.SnapshotFormat;
 import org.limitless.seqeron.util.Logger;
@@ -34,9 +39,10 @@ import org.limitless.seqeron.util.Logger;
  * 28  magic          uint32   {@link #MAGIC}
  * </pre>
  *
- * A file is written as {@code <round>.tmp} and renamed once complete, without an fsync: one an OS crash tore
- * fails its trailer or its records, and a restore checks both. A write that fails leaves no file and is logged.
- * Not thread-safe. The C++ twin is {@code replayer/client/SnapshotStore.hpp}; keep the two in step.
+ * A file is written as {@code <round>.tmp}, then forced to disk, renamed and its name forced on a thread of its
+ * own, so the caller does not wait for the disk. A write that fails leaves no file and is logged. Not thread-safe:
+ * one thread calls it, and only its file work runs on the other. The C++ twin is
+ * {@code replayer/client/SnapshotStore.hpp}; keep the two in step.
  */
 public final class SnapshotStore {
     /** Bytes after the records. */
@@ -51,12 +57,18 @@ public final class SnapshotStore {
     /** Each file stream's buffer: a multiple of every SSD page size, and few system calls per file. */
     private static final int IO_BUFFER_LENGTH = 64 * 1024;
     private static final ByteOrder LE = ByteOrder.LITTLE_ENDIAN;
+    /** A thread for each step of {@link #writes}, which runs one at a time. */
+    private static final Executor WRITER = task -> Thread.ofPlatform().daemon().name("seqeron-snapshot").start(task);
 
     private final Path directory;
     private final UnsafeBuffer scratch =
         new UnsafeBuffer(new byte[RECORD_PREFIX_LENGTH + SnapshotFormat.MAX_RECORD_LENGTH]);
     private OutputStream out;
     private long writingRound;
+    /** What runs off the caller's thread, one step after another: making files durable and deleting them. */
+    private CompletableFuture<Void> writes = CompletableFuture.completedFuture(null);
+    /** The newest round whose file is durable under its name. Touched by {@link #writes} alone. */
+    private long durableRound = -1;
 
     /**
      * @param directory this instance's own; created if missing
@@ -72,10 +84,11 @@ public final class SnapshotStore {
     }
 
     /**
-     * Starts writing a round's file, dropping any write still open.
+     * Starts writing a round's file, dropping any write still open, once the rounds before it are durable.
      * @param round its round
      */
     public void begin(final long round) {
+        awaitWrites();
         abandon();
         writingRound = round;
         try {
@@ -105,7 +118,7 @@ public final class SnapshotStore {
     }
 
     /**
-     * Completes the file being written: its trailer, then its name.
+     * Completes the file being written: its trailer, then, off this thread, its name once it is durable.
      * @param recordCount   records appended
      * @param length        their bytes
      * @param crc32c        their CRC-32C
@@ -125,11 +138,12 @@ public final class SnapshotStore {
             out.write(scratch.byteArray(), 0, TRAILER_LENGTH);
             out.close();
             out = null;
-            Files.move(temporaryFile(writingRound), file(writingRound), StandardCopyOption.ATOMIC_MOVE,
-                       StandardCopyOption.REPLACE_EXISTING);
         } catch (final IOException ex) {
             failWrite(ex);
+            return;
         }
+        final long round = writingRound;
+        writes = writes.thenRunAsync(() -> makeDurable(round), WRITER);
     }
 
     /** Drops the write in progress, if any. */
@@ -151,23 +165,17 @@ public final class SnapshotStore {
     }
 
     /**
-     * Deletes the file of every round before {@code round}, and any write a crash left behind.
-     * @param round the oldest round to keep
+     * Deletes the file of every round before {@code round}, and any write of one a crash left behind, off this
+     * thread once {@code round}'s file is durable; if it never is, nothing.
+     * @param round the oldest round to keep, one this store committed
      */
     public void deleteBefore(final long round) {
-        try (DirectoryStream<Path> files = Files.newDirectoryStream(directory)) {
-            for (final Path path : files) {
-                final String name = path.getFileName().toString();
-                final long fileRound = roundOf(name);
-                if (name.endsWith(TEMPORARY_SUFFIX) && out == null || fileRound >= 0 && fileRound < round) {
-                    Files.deleteIfExists(path);
-                }
-            }
-        } catch (final IOException ex) {
-            Logger.log(Logger.CoreComponent.ReplayerStreamReceiver, Logger.Severity.Warn,
-                       Logger.CoreEventCode.SnapshotStoreFailed, "cannot delete snapshots before round %d in %s: %s",
-                       round, directory, ex);
-        }
+        writes = writes.thenRunAsync(() -> deleteFiles(round), WRITER);
+    }
+
+    /** Waits until the rounds committed so far are durable, or failed, and the deletions asked for are done. */
+    public void awaitWrites() {
+        writes.join();
     }
 
     /**
@@ -178,7 +186,7 @@ public final class SnapshotStore {
         long latest = -1;
         try (DirectoryStream<Path> files = Files.newDirectoryStream(directory, "*" + SUFFIX)) {
             for (final Path path : files) {
-                final long round = roundOf(path.getFileName().toString());
+                final long round = roundOf(path.getFileName().toString(), SUFFIX);
                 if (round < belowRound && round > latest) {
                     latest = round;
                 }
@@ -228,6 +236,47 @@ public final class SnapshotStore {
         abandon();
     }
 
+    /** Forces a committed round's file to disk, then its name: only then does the round count as durable. */
+    private void makeDurable(final long round) {
+        try {
+            try (FileChannel channel = FileChannel.open(temporaryFile(round), StandardOpenOption.WRITE)) {
+                channel.force(true);
+            }
+            Files.move(temporaryFile(round), file(round), StandardCopyOption.ATOMIC_MOVE,
+                       StandardCopyOption.REPLACE_EXISTING);
+            // Windows opens no directory; its journal commits the rename before the deletions that follow it.
+            if (!SystemUtil.isWindows()) {
+                try (FileChannel names = FileChannel.open(directory, StandardOpenOption.READ)) {
+                    names.force(true);
+                }
+            }
+            durableRound = round;
+        } catch (final IOException ex) {
+            Logger.log(Logger.CoreComponent.ReplayerStreamReceiver, Logger.Severity.Warn,
+                       Logger.CoreEventCode.SnapshotStoreFailed, "cannot make round %d's snapshot durable in %s: %s",
+                       round, directory, ex);
+        }
+    }
+
+    private void deleteFiles(final long round) {
+        if (durableRound < round) {
+            return;
+        }
+        try (DirectoryStream<Path> files = Files.newDirectoryStream(directory)) {
+            for (final Path path : files) {
+                final String name = path.getFileName().toString();
+                final long fileRound = Math.max(roundOf(name, SUFFIX), roundOf(name, TEMPORARY_SUFFIX));
+                if (fileRound >= 0 && fileRound < round) {
+                    Files.deleteIfExists(path);
+                }
+            }
+        } catch (final IOException | DirectoryIteratorException ex) {
+            Logger.log(Logger.CoreComponent.ReplayerStreamReceiver, Logger.Severity.Warn,
+                       Logger.CoreEventCode.SnapshotStoreFailed, "cannot delete snapshots before round %d in %s: %s",
+                       round, directory, ex);
+        }
+    }
+
     private Path file(final long round) {
         return directory.resolve(round + SUFFIX);
     }
@@ -236,13 +285,13 @@ public final class SnapshotStore {
         return directory.resolve(round + TEMPORARY_SUFFIX);
     }
 
-    /** The round a complete file's name holds, or -1 for any other name. */
-    private static long roundOf(final String name) {
-        if (!name.endsWith(SUFFIX)) {
+    /** The round a name ending in {@code suffix} holds, or -1 for any other name. */
+    private static long roundOf(final String name, final String suffix) {
+        if (!name.endsWith(suffix)) {
             return -1;
         }
         try {
-            return Long.parseLong(name.substring(0, name.length() - SUFFIX.length()));
+            return Long.parseLong(name.substring(0, name.length() - suffix.length()));
         } catch (final NumberFormatException ex) {
             return -1;
         }

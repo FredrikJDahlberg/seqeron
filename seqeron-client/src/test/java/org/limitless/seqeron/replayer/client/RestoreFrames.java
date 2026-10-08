@@ -65,6 +65,7 @@ final class RestoreFrames {
             store.append(new UnsafeBuffer(record), 0, record.length);
         }
         store.commit(digest.recordCount(), digest.length(), digest.crc32c(), formatVersion);
+        store.awaitWrites();
     }
 
     /** An application's header record. */
