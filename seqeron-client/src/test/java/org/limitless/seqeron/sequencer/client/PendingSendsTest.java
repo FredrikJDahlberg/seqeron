@@ -330,4 +330,21 @@ class PendingSendsTest {
         assertEquals(0, pending.size());
         assertFalse(pending.isFaulted());
     }
+
+    @Test
+    @DisplayName("a lost session's frames are discarded, and one that committed comes back matching nothing")
+    void discardedSessionsFramesMatchNothing() {
+        send(OWN, 1, 1);
+        send(OWN, 1, 2);
+        pending.onNewLeader(2);
+        assertTrue(pending.isHolding());
+        assertEquals(2, pending.discardUnconfirmed());
+        assertEquals(0, pending.size());
+        assertFalse(pending.isHolding());
+        tap(OWN, 1);
+        send(OWN + 1, 2, 3);
+        tap(OWN + 1, 3);
+        assertEquals(0, pending.size());
+        assertFalse(pending.isFaulted());
+    }
 }

@@ -997,6 +997,7 @@ concern sources that take part in snapshot rounds (§7.3, `doc/snapshot.md`).
   fence with `SNAPSHOT_DIVERGED`. (`SnapshotTaker`)
 
 A-4 and A-5 apply within one producer process. A restarted producer, or a standby promoted in its
-place, starts with nothing pending; a lost cluster session stays lost; and a frame lost without a
+place, starts with nothing pending; a frame pending on a cluster session the cluster closed is dropped
+when that session is replaced, since the close is on no tap; and a frame lost without a
 leader change (an ingress image that drops and rejoins within the session timeout) has no term boundary
 to be counted against.

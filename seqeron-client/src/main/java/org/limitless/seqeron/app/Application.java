@@ -137,7 +137,9 @@ public final class Application implements AutoCloseable {
      */
     public int doWork() {
         int work = session.doWork();
-        final LeaderGate.Transition transition = gate.update(session.isCaughtUp(), session.currentLeaderMemberId());
+        // Shut while a lost session is replaced: a reply sent meanwhile may not land, so the next opening redispatches.
+        final LeaderGate.Transition transition =
+            gate.update(session.isCaughtUp() && session.hasSession(), session.currentLeaderMemberId());
         if (transition != LeaderGate.Transition.NONE) {
             listener.onLeadershipChanged(transition == LeaderGate.Transition.OPENED);
             work++;
@@ -287,6 +289,12 @@ public final class Application implements AutoCloseable {
         @Override
         public void onFenced(final ClusterError fence, final String detail) {
             listener.onFenced(fence, detail);
+        }
+
+        /** Nothing elects a replica, and its work stays outstanding on the log until replied to. */
+        @Override
+        public boolean mayReconnect() {
+            return true;
         }
     }
 

@@ -138,6 +138,20 @@ class PendingSends : public IngressTracker
         remove(index);
     }
 
+    /**
+     * Forgets every pending frame, for a session replaced after the cluster closed it: nothing on the tap tells
+     * which of its frames committed.
+     *
+     * @return how many were dropped
+     */
+    std::size_t discardUnconfirmed() noexcept
+    {
+        const std::size_t dropped = m_size;
+        m_head = 0;
+        m_size = 0;
+        return dropped;
+    }
+
     // Pending frames a leader change has lost, oldest first at the front.
     [[nodiscard]] std::size_t missing() const noexcept
     {

@@ -30,6 +30,9 @@ internal sealed class Session : IDisposable
     /// <summary>Frames in flight between a publish and the tap; far above what one round trip holds.</summary>
     internal const int DefaultPendingCapacity = 1024;
 
+    /// <summary>How often a lost session is replaced while the façade allows it.</summary>
+    internal const long ReconnectIntervalMs = 1_000;
+
     /// <summary>What the façade above does with what comes off the tap, and with a fence.</summary>
     internal interface IDispatch
     {
@@ -51,6 +54,10 @@ internal sealed class Session : IDisposable
 
         /// <summary>Once, latched: this producer may no longer act.</summary>
         void OnFenced(ClusterError fence, string detail);
+
+        /// <summary>Whether a session the cluster closed may be replaced rather than fenced: the instance holds
+        /// nothing the loss of that session changed. Asked on every cycle without one.</summary>
+        bool MayReconnect();
     }
 
     private readonly IDispatch _dispatch;
@@ -70,6 +77,10 @@ internal sealed class Session : IDisposable
 
     private bool _caughtUp;
     private bool _fenced;
+
+    // Monotonic ms when the session was found lost; -1 while one is open.
+    private long _sessionLostSinceMs = -1;
+    private long _nextReconnectMs;
 
     // The term of the last LeadershipChanged applied; -1 before the first.
     private long _leadershipTermId = -1;
@@ -176,6 +187,11 @@ internal sealed class Session : IDisposable
 
     internal long LeadershipTermId => _leadershipTermId;
 
+    /// <summary>Whether a cluster session is open. The recorded fault and <c>IsConnected</c> as well as the sender's
+    /// latch: <c>AeronCluster</c> also closes itself, with no event at all, when a new leader does not arrive before
+    /// its timeout.</summary>
+    internal bool HasSession => _sessionFault == null && !_sender.IsSessionLost && _sender.IsConnected;
+
     public void Dispose()
     {
         _receiver.Dispose();
@@ -203,12 +219,19 @@ internal sealed class Session : IDisposable
 
     private void CheckFences()
     {
-        // IsConnected as well as the recorded fault: AeronCluster also closes itself, with no event at all, when a
-        // new leader does not arrive before its timeout.
-        if (_sessionFault != null || _sender.IsSessionLost || !_sender.IsConnected)
+        if (!HasSession)
         {
-            Fence(ClusterError.ClusterSessionLost, _sessionFault ?? "closed");
-            return;
+            string why = _sessionFault ?? "closed";
+            if (!_dispatch.MayReconnect())
+            {
+                Fence(ClusterError.ClusterSessionLost, why);
+                return;
+            }
+            ReplaceSession(why);
+            if (_fenced)
+            {
+                return;
+            }
         }
         if (_pending.IsFaulted)
         {
@@ -235,6 +258,47 @@ internal sealed class Session : IDisposable
         if (_tapStall.IsStalled(nowMs))
         {
             Fence(ClusterError.TapStalled, "no ClusterHeartbeat for >" + _tapStallTimeoutMs + "ms");
+        }
+    }
+
+    // Opens a session in place of the lost one, once a second, until one opens or the tap could have gone silent for
+    // as long: past that the cluster is not coming back for this process, and the session's loss is a fence.
+    private void ReplaceSession(string why)
+    {
+        long nowMs = Clocks.MonotonicMs();
+        if (_sessionLostSinceMs < 0)
+        {
+            _sessionLostSinceMs = nowMs;
+            _nextReconnectMs = nowMs;
+        }
+        if (nowMs - _sessionLostSinceMs > _tapStallTimeoutMs)
+        {
+            Fence(ClusterError.ClusterSessionLost,
+                  why + "; no session replaced it within " + _tapStallTimeoutMs + "ms");
+            return;
+        }
+        if (nowMs < _nextReconnectMs)
+        {
+            return;
+        }
+        _nextReconnectMs = nowMs + ReconnectIntervalMs;
+        if (!_sender.Reconnect())
+        {
+            return;
+        }
+        _sessionFault = null;
+        _sessionLostSinceMs = -1;
+        DiscardUnconfirmed("the session they went out on was lost (" + why + ")");
+    }
+
+    /// <summary>Forgets every frame not yet seen on the tap, for a façade that knows none of them will be
+    /// sequenced.</summary>
+    internal void DiscardUnconfirmed(string why)
+    {
+        int dropped = _pending.DiscardUnconfirmed();
+        if (dropped > 0)
+        {
+            Logger.Info(Logger.CoreComponent.Cluster, null, "{0} unconfirmed frames are not resent: {1}", dropped, why);
         }
     }
 

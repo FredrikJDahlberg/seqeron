@@ -16,6 +16,7 @@ import org.limitless.seqeron.sequencer.client.ClusterStreamSender;
 import org.limitless.seqeron.sequencer.client.IngressPublisher;
 import org.limitless.seqeron.sequencer.client.PendingSends;
 import org.limitless.seqeron.util.Clocks;
+import org.limitless.seqeron.util.Logger;
 
 /**
  * What every seqeron client does the same way: the cluster session it submits on, the co-located tap it
@@ -35,6 +36,9 @@ final class Session implements AutoCloseable {
     /** Frames in flight between a publish and the tap; far above what one round trip holds. */
     static final int DEFAULT_PENDING_CAPACITY = 1024;
 
+    /** How often a lost session is replaced while the façade allows it. */
+    static final long RECONNECT_INTERVAL_MS = 1_000;
+
     /** What the façade above does with what comes off the tap, and with a fence. */
     interface Dispatch {
         /** A system frame this core does not consume itself. {@code LeadershipChanged} never arrives here. */
@@ -53,6 +57,12 @@ final class Session implements AutoCloseable {
 
         /** Once, latched: this producer may no longer act. */
         void onFenced(ClusterError fence, String detail);
+
+        /**
+         * Whether a session the cluster closed may be replaced rather than fenced: the instance holds nothing the
+         * loss of that session changed. Asked on every cycle without one.
+         */
+        boolean mayReconnect();
     }
 
     private final Dispatch dispatch;
@@ -72,6 +82,10 @@ final class Session implements AutoCloseable {
 
     private boolean caughtUp;
     private boolean fenced;
+
+    /** Monotonic ms when the session was found lost; -1 while one is open. */
+    private long sessionLostSinceMs = -1;
+    private long nextReconnectMs;
 
     /** The term of the last {@code LeadershipChanged} applied; -1 before the first. */
     private long leadershipTermId = -1;
@@ -204,11 +218,16 @@ final class Session implements AutoCloseable {
     }
 
     private void checkFences() {
-        // isConnected() as well as the recorded fault: AeronCluster also closes itself, with no event at all,
-        // when a new leader does not arrive before its timeout.
-        if (sessionFault != null || sender.isSessionLost() || !sender.isConnected()) {
-            fence(ClusterError.CLUSTER_SESSION_LOST, sessionFault != null ? sessionFault : "closed");
-            return;
+        if (!hasSession()) {
+            final String why = sessionFault != null ? sessionFault : "closed";
+            if (!dispatch.mayReconnect()) {
+                fence(ClusterError.CLUSTER_SESSION_LOST, why);
+                return;
+            }
+            replaceSession(why);
+            if (fenced) {
+                return;
+            }
         }
         if (pending.isFaulted()) {
             fence(ClusterError.INGRESS_CONFIRM_FAULTED,
@@ -230,6 +249,50 @@ final class Session implements AutoCloseable {
         }
         if (tapStall.isStalled(nowMs)) {
             fence(ClusterError.TAP_STALLED, "no ClusterHeartbeat for >" + tapStallTimeoutMs + "ms");
+        }
+    }
+
+    /**
+     * Whether a cluster session is open. The recorded fault and {@code isConnected()} as well as the sender's
+     * latch: {@code AeronCluster} also closes itself, with no event at all, when a new leader does not arrive
+     * before its timeout.
+     */
+    boolean hasSession() {
+        return sessionFault == null && !sender.isSessionLost() && sender.isConnected();
+    }
+
+    /**
+     * Opens a session in place of the lost one, once a second, until one opens or the tap could have gone silent
+     * for as long: past that the cluster is not coming back for this process, and the session's loss is a fence.
+     */
+    private void replaceSession(final String why) {
+        final long nowMs = Clocks.monotonicMs();
+        if (sessionLostSinceMs < 0) {
+            sessionLostSinceMs = nowMs;
+            nextReconnectMs = nowMs;
+        }
+        if (nowMs - sessionLostSinceMs > tapStallTimeoutMs) {
+            fence(ClusterError.CLUSTER_SESSION_LOST,
+                  why + "; no session replaced it within " + tapStallTimeoutMs + "ms");
+            return;
+        }
+        if (nowMs < nextReconnectMs) {
+            return;
+        }
+        nextReconnectMs = nowMs + RECONNECT_INTERVAL_MS;
+        if (!sender.reconnect()) {
+            return;
+        }
+        sessionFault = null;
+        sessionLostSinceMs = -1;
+        discardUnconfirmed("the session they went out on was lost (" + why + ")");
+    }
+
+    /** Forgets every frame not yet seen on the tap, for a façade that knows none of them will be sequenced. */
+    void discardUnconfirmed(final String why) {
+        final int dropped = pending.discardUnconfirmed();
+        if (dropped > 0) {
+            Logger.info(Logger.CoreComponent.Cluster, null, "%d unconfirmed frames are not resent: %s", dropped, why);
         }
     }
 

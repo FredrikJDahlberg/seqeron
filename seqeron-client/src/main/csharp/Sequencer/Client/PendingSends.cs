@@ -30,9 +30,9 @@ namespace Org.Limitless.Seqeron.Sequencer.Client;
 /// often the sequencer rejected a frame (S-7), so check §9.2 before sending. Tracking into a full ring latches it
 /// too: an untracked send breaks the count.</para>
 /// <para>Limits: it lasts only as long as the process, so a promoted standby starts with nothing pending; it needs
-/// the producer to follow its own tap; a lost session stays terminal; loss with no leader change has no boundary and
-/// is not detected. <c>PendingSends.java</c> and <c>sequencer/client/PendingSends.hpp</c> are its twins; keep the
-/// three in step.</para>
+/// the producer to follow its own tap; a lost session's frames are <see cref="DiscardUnconfirmed">discarded</see>,
+/// since nothing bounds them; loss with no leader change has no boundary and is not detected. <c>PendingSends.java</c>
+/// and <c>sequencer/client/PendingSends.hpp</c> are its twins; keep the three in step.</para>
 /// </summary>
 public sealed class PendingSends : IIngressTracker
 {
@@ -151,6 +151,18 @@ public sealed class PendingSends : IIngressTracker
             return;
         }
         Remove(index);
+    }
+
+    /// <summary>Forgets every pending frame, for a session replaced after the cluster closed it. That close is on no
+    /// tap, so nothing tells which of its frames committed: those that did still arrive and match nothing, and the rest
+    /// are lost, as they are when the producer restarts.</summary>
+    /// <returns>how many were dropped</returns>
+    public int DiscardUnconfirmed()
+    {
+        int dropped = _size;
+        _head = 0;
+        _size = 0;
+        return dropped;
     }
 
     /// <summary>Pending frames a leader change has lost, oldest first at the front.</summary>

@@ -27,12 +27,12 @@ The sections before [Façades](#façades-app) define the model and the contract;
 | [`ReplayerStreamReceiver`](#replayerstreamreceiver) | Every log message exactly once, in `globalSeqNo` order: archive replay from the local recording, then the live tap, with gap detection and resumption internal. Optional snapshot restore first. | Filtering: every consumer receives every producer's messages. |
 | [`Gateway`](#gateway) | One instance of an active/hot-standby pair; the cluster designates the active instance. A connection id space never reused across handovers, and every connection's open and close on the log, so a successor knows its predecessor's connection state. Confirmed ingress; fencing. | Edge connection continuity across a handover: the successor reopens the edge and counterparties reconnect. |
 | [`Application`](#application) | One replica per cluster member, all holding identical state; only the leader's replica publishes. Work outstanding at a failover is redispatched by the next leader's replica (`OutstandingWork`). Confirmed ingress; fencing. | Exactly-once replies: across a failover, delivery is at-least-once. |
-| [`PendingSends`](#producing) (inside both façades) | Every placed message is sequenced exactly once, in order, across any number of leader failovers. | Producer process failure: a restarted producer, or a promoted standby, starts with nothing pending. |
+| [`PendingSends`](#producing) (inside both façades) | Every placed message is sequenced exactly once, in order, across any number of leader failovers. | Producer process failure: a restarted producer, or a promoted standby, starts with nothing pending. A replaced cluster session: what was pending is dropped. |
 | [Snapshots](#snapshots) (both façades) | Restart from the newest log-confirmed snapshot, then only the messages after its cut. Fencing of any instance whose state diverges from its source's. | Member restart: a member always replays its full log. |
 
 A **fence** is `onFenced(ClusterError, detail)`, raised once, after which the instance takes no further
-action. Causes: cluster session lost, ingress confirmation fault, recovery stall, tap stall, snapshot
-divergence, unrestorable snapshot ([`fault-tolerance.md`](fault-tolerance.md) §2.1). Loss of the media driver
+action. Causes: cluster session lost (on a designated `Gateway` instance, or not replaced within 20 s),
+ingress confirmation fault, recovery stall, tap stall, snapshot divergence, unrestorable snapshot ([`fault-tolerance.md`](fault-tolerance.md) §2.1). Loss of the media driver
 is not a fence; it raises from `doWork()`.
 
 ## Execution model
@@ -47,8 +47,9 @@ is not a fence; it raises from `doWork()`.
   `sequencer.sessionTimeoutMs` (default 1 s) is closed by the cluster; for a gateway, that hands over to the
   standby. A callback that must spin calls `keepAlive()`.
 - **Back pressure blocks, bounded.** `publish`/`reply` spin through ingress back pressure and leader
-  elections until the offer lands, for at most 10 s; beyond that the session is treated as lost and the
-  instance fenced. The result is `protocol.Publish`: `Published` (offered — not yet sequenced; confirmed
+  elections until the offer lands, for at most 10 s; beyond that the session is treated as lost. A
+  designated `Gateway` instance is fenced; an `Application`, or any other `Gateway` instance, opens a new
+  session once a second, and is fenced only if none opens within the tap-stall timeout. The result is `protocol.Publish`: `Published` (offered — not yet sequenced; confirmed
   ingress tracks it to the producer's own tap), `Declined` (not placed; retryable), or `Refused` (never
   placeable).
 - **Flyweights.** `Payload` and `SequencedEvent` are views over the receive buffer, valid only for the
@@ -278,8 +279,9 @@ otherwise.
 **Leader gate.** `onLeadershipChanged(boolean leading)` replaces `onActivated`/`onStandby`; `onSequenced`,
 `onCaughtUp`, `onClusterHeartbeat` and `onFenced` are as for `Gateway`, and there is no connection
 lifecycle. **Every leadership change closes the gate**, so call `OutstandingWork.onNotLeader()` on `false`:
-a reply submitted during the election may be lost, and the next opening redispatches it. Retain a
-request's `sourceId` and `connectionId`, not its `Payload`.
+a reply submitted during the election may be lost, and the next opening redispatches it. The gate is also
+shut while a lost cluster session is replaced, for the same reason. Retain a request's `sourceId` and
+`connectionId`, not its `Payload`.
 
 **Off-cluster.** On a gateway host, `offCluster(true)` makes the replica the sole instance. Its gate opens
 once caught up regardless of leader, and closes for one cycle on every leadership change; ingress is UDP

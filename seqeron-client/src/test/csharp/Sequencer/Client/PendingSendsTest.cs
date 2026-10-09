@@ -308,6 +308,23 @@ public class PendingSendsTest
         Assert.False(_pending.IsFaulted);
     }
 
+    [Fact(DisplayName = "a lost session's frames are discarded, and one that committed comes back matching nothing")]
+    public void DiscardedSessionsFramesMatchNothing()
+    {
+        Send(Own, 1, 1);
+        Send(Own, 1, 2);
+        _pending.OnNewLeader(2);
+        Assert.True(_pending.IsHolding);
+        Assert.Equal(2, _pending.DiscardUnconfirmed());
+        Assert.Equal(0, _pending.Count);
+        Assert.False(_pending.IsHolding);
+        Tap(Own, 1);
+        Send(Own + 1, 2, 3);
+        Tap(Own + 1, 3);
+        Assert.Equal(0, _pending.Count);
+        Assert.False(_pending.IsFaulted);
+    }
+
     // Tracks application frame n as placed on session, stamped term.
     private void Send(long session, long term, int n)
     {

@@ -195,25 +195,45 @@ class ClusterStreamSender
         // bind one egress port.
         m_egressChannel = egressChannel;
 
-        auto egress = std::make_unique<detail::AeronEgressTransport>(awaitEgressSubscription());
+        openColocated(std::make_unique<detail::AeronEgressTransport>(awaitEgressSubscription()));
+    }
 
-        // A follower never connects the IPC publication, so building it is bounded by the short
-        // ipcConnectTimeoutMs; a timeout there is treated like a failed handshake on it.
-        m_ingressEndpoint = "ipc";
-        std::unique_ptr<detail::IngressTransport> primary;
-        std::string primaryFailureReason;
+    /**
+     * Replaces a lost session with a new one, opened as the first was and on the same egress subscription.
+     * What the old one had not committed is not carried over: the caller's tracker decides about it.
+     *
+     * @return whether a session opened; a failure is logged, and the caller tries again later
+     */
+    bool reconnect()
+    {
+        if (!m_aeron || !m_egress)
+        {
+            return false; // the test seam has no Aeron client to build a publication with
+        }
+        m_clusterSessionId = -1;
+        m_sessionLost = false;
+        m_pendingIngress = PendingIngressSwitch{};
         try
         {
-            primary = std::make_unique<detail::AeronIngressTransport>(createIpcIngressPublication(ipcConnectTimeoutMs));
+            if (m_coLocatedMemberId < 0)
+            {
+                auto ingress = dialIngress(); // before m_egress moves: a failed dial must leave it for the next try
+                connect(std::move(ingress), std::move(m_egress), m_egressChannel);
+            }
+            else
+            {
+                openColocated(std::move(m_egress));
+            }
         }
         catch (const std::exception& ex)
         {
-            primaryFailureReason = ex.what();
+            util::Logger::error(util::component::Cluster, util::eventCode::ClusterSessionError,
+                                "could not replace the lost cluster session (%s)", ex.what());
+            return false;
         }
-
-        connectColocated(
-            std::move(primary), [this] { return dialIngress(); }, std::move(egress), ipcConnectTimeoutMs,
-            primaryFailureReason.c_str(), memberId);
+        util::Logger::info(util::component::Cluster, "cluster session %" PRId64 " replaces the lost one",
+                           m_clusterSessionId);
+        return true;
     }
 
     /**
@@ -256,7 +276,9 @@ class ClusterStreamSender
         util::Logger::info(util::component::Cluster, "Co-located member not leader (%s) — falling back to UDP ingress",
                            primaryFailureReason != nullptr ? primaryFailureReason : "unknown");
         m_connectTimeoutMs = fullTimeoutMs;
-        connect(buildFallbackIngress(), std::move(egress), m_egressChannel);
+        m_egress = std::move(egress); // kept for a reconnect if the fallback cannot be built either
+        auto fallback = buildFallbackIngress();
+        connect(std::move(fallback), std::move(m_egress), m_egressChannel);
     }
 
     /**
@@ -381,8 +403,8 @@ class ClusterStreamSender
         return m_leadershipTermId;
     }
 
-    // True once the cluster has closed this session, as opposed to never having opened one. Latched:
-    // there is no re-handshake.
+    // True once the cluster has closed this session, as opposed to never having opened one. Latched until
+    // reconnect().
     [[nodiscard]] bool isSessionLost() const noexcept
     {
         return m_sessionLost;
@@ -767,6 +789,28 @@ class ClusterStreamSender
                                     "Could not build ingress publication to %s (%s)", req.endpoint.c_str(), ex.what());
             }
         }
+    }
+
+    // The co-located member's IPC ingress first: a follower never connects that publication, so building it is
+    // bounded by the short m_ipcConnectTimeoutMs, and a timeout there is treated like a failed handshake on it.
+    void openColocated(std::unique_ptr<detail::EgressTransport> egress)
+    {
+        m_ingressEndpoint = "ipc";
+        std::unique_ptr<detail::IngressTransport> primary;
+        std::string primaryFailureReason;
+        try
+        {
+            primary =
+                std::make_unique<detail::AeronIngressTransport>(createIpcIngressPublication(m_ipcConnectTimeoutMs));
+        }
+        catch (const std::exception& ex)
+        {
+            primaryFailureReason = ex.what();
+        }
+
+        connectColocated(
+            std::move(primary), [this] { return dialIngress(); }, std::move(egress), m_ipcConnectTimeoutMs,
+            primaryFailureReason.c_str(), m_coLocatedMemberId);
     }
 
     // Adds this client's egress subscription on m_egressChannel and blocks until it is resolved.

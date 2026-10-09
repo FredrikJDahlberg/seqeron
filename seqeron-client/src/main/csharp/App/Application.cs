@@ -121,7 +121,9 @@ public sealed class Application : IDisposable
     public int DoWork()
     {
         int work = _session.DoWork();
-        LeaderGate.Transition transition = _gate.Update(_session.IsCaughtUp, _session.CurrentLeaderMemberId);
+        // Shut while a lost session is replaced: a reply sent meanwhile may not land, so the next opening redispatches.
+        LeaderGate.Transition transition =
+            _gate.Update(_session.IsCaughtUp && _session.HasSession, _session.CurrentLeaderMemberId);
         if (transition != LeaderGate.Transition.None)
         {
             _listener.OnLeadershipChanged(transition == LeaderGate.Transition.Opened);
@@ -311,6 +313,12 @@ public sealed class Application : IDisposable
         public void OnFenced(ClusterError fence, string detail)
         {
             _app._listener.OnFenced(fence, detail);
+        }
+
+        // Nothing elects a replica, and its work stays outstanding on the log until replied to.
+        public bool MayReconnect()
+        {
+            return true;
         }
 
         private void Wrap(SequencedEvent sequencedEvent)

@@ -33,9 +33,9 @@ import org.limitless.seqeron.sbe.frame.UnsequencedSystemDecoder;
  * before sending. Tracking into a full ring latches it too: an untracked send breaks the count.
  *
  * <p>Limits: it lasts only as long as the process, so a promoted standby starts with nothing pending; it
- * needs the producer to follow its own tap; a lost session ({@code isSessionLost()}) stays terminal; loss
- * with no leader change has no boundary and is not detected. The C++ twin is {@code sequencer/client/PendingSends.hpp}; keep
- * the two in step.
+ * needs the producer to follow its own tap; a lost session's frames are {@link #discardUnconfirmed discarded},
+ * since nothing bounds them; loss with no leader change has no boundary and is not detected. The C++ twin is
+ * {@code sequencer/client/PendingSends.hpp}; keep the two in step.
  */
 public final class PendingSends implements IngressTracker {
     private static final int SLOT_LENGTH = FrameLayer.MAX_INGRESS_LENGTH;
@@ -147,6 +147,20 @@ public final class PendingSends implements IngressTracker {
             return;
         }
         remove(index);
+    }
+
+    /**
+     * Forgets every pending frame, for a session replaced after the cluster closed it. That close is on no tap,
+     * so nothing tells which of its frames committed: those that did still arrive and match nothing, and the
+     * rest are lost, as they are when the producer restarts.
+     *
+     * @return how many were dropped
+     */
+    public int discardUnconfirmed() {
+        final int dropped = size;
+        head = 0;
+        size = 0;
+        return dropped;
     }
 
     /** Pending frames a leader change has lost, oldest first at the front. */

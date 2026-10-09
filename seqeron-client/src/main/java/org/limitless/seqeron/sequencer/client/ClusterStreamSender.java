@@ -71,6 +71,7 @@ public final class ClusterStreamSender implements IngressSender, AutoCloseable {
     private String egressChannel;
     private String ingressEndpoints;
     private int colocatedMemberId = NO_MEMBER;
+    private long ipcConnectTimeoutMs;
     private boolean sessionLost;
     private int newLeaderMemberId = NO_MEMBER;
     /** Whether the open session's ingress is the co-located member's {@code aeron:ipc}. */
@@ -118,17 +119,48 @@ public final class ClusterStreamSender implements IngressSender, AutoCloseable {
                                  final EgressListener appListener) {
         this.aeron = aeron;
         this.colocatedMemberId = memberId;
+        this.ipcConnectTimeoutMs = ipcConnectTimeoutMs;
         this.egressChannel = egressChannel;
         this.ingressEndpoints = requireEndpoints(ingressEndpoints);
         this.appListener = appListener;
+        cluster = openColocated();
+    }
+
+    /**
+     * Replaces a lost session with a new one, opened as the first was. What the old one had not committed is
+     * not carried over: the caller's tracker decides what to do about it.
+     *
+     * @return whether a session opened; a failure is logged, and the caller tries again later
+     */
+    public boolean reconnect() {
+        CloseHelper.quietClose(cluster);
+        cluster = null;
+        sessionLost = false;
+        stallPolicy.onOffered(); // a new session inherits no block
+        try {
+            cluster = colocatedMemberId == NO_MEMBER
+                ? openSession(INGRESS_CHANNEL_UDP, ingressEndpoints, CONNECT_TIMEOUT_NS)
+                : openColocated();
+        } catch (final AeronException ex) {
+            Logger.error(Logger.CoreComponent.Cluster, Logger.CoreEventCode.ClusterSessionError, member(),
+                         "could not replace the lost cluster session (%s)", ex.getMessage());
+            return false;
+        }
+        Logger.info(Logger.CoreComponent.Cluster, member(), "cluster session %d replaces the lost one",
+                    cluster.clusterSessionId());
+        return true;
+    }
+
+    /** The co-located member's {@code aeron:ipc} within the short timeout, since a follower never answers, then UDP. */
+    private AeronCluster openColocated() {
         try {
             // No endpoints with IPC ingress: AeronCluster refuses the pair, and there is nothing to name.
-            cluster = openSession(INGRESS_CHANNEL_IPC, null, TimeUnit.MILLISECONDS.toNanos(ipcConnectTimeoutMs));
+            return openSession(INGRESS_CHANNEL_IPC, null, TimeUnit.MILLISECONDS.toNanos(ipcConnectTimeoutMs));
         } catch (final AeronException ex) {
-            Logger.error(Logger.CoreComponent.Cluster, Logger.CoreEventCode.ClusterIpcFallback, memberId,
-                         "member %d did not answer ingress on %s (%s) — falling back to UDP", memberId,
+            Logger.error(Logger.CoreComponent.Cluster, Logger.CoreEventCode.ClusterIpcFallback, colocatedMemberId,
+                         "member %d did not answer ingress on %s (%s) — falling back to UDP", colocatedMemberId,
                          INGRESS_CHANNEL_IPC, ex.getMessage());
-            cluster = openSession(INGRESS_CHANNEL_UDP, ingressEndpoints, CONNECT_TIMEOUT_NS);
+            return openSession(INGRESS_CHANNEL_UDP, ingressEndpoints, CONNECT_TIMEOUT_NS);
         }
     }
 
@@ -232,7 +264,10 @@ public final class ClusterStreamSender implements IngressSender, AutoCloseable {
         return cluster != null && !cluster.isClosed();
     }
 
-    /** True once the cluster has closed this session, as opposed to never having opened one. Latched. */
+    /**
+     * True once the cluster has closed this session, as opposed to never having opened one. Latched until
+     * {@link #reconnect}.
+     */
     public boolean isSessionLost() {
         return sessionLost;
     }

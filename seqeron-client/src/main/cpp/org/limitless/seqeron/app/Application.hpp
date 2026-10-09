@@ -158,8 +158,9 @@ class Application
     int doWork()
     {
         int work = m_session.doWork();
+        // Shut while a lost session is replaced: a reply sent meanwhile may not land, so the next opening redispatches.
         const detail::LeaderGate::Transition transition =
-            m_gate.update(m_session.isCaughtUp(), m_session.currentLeaderMemberId());
+            m_gate.update(m_session.isCaughtUp() && m_session.hasSession(), m_session.currentLeaderMemberId());
         if (transition != detail::LeaderGate::Transition::None)
         {
             m_listener.onLeadershipChanged(transition == detail::LeaderGate::Transition::Opened);
@@ -384,6 +385,12 @@ class Application
         void onFenced(const ClusterError fence, const std::string& detail)
         {
             m_app.m_listener.onFenced(fence, detail);
+        }
+
+        // Nothing elects a replica, and its work stays outstanding on the log until replied to.
+        [[nodiscard]] bool mayReconnect() const
+        {
+            return true;
         }
 
       private:

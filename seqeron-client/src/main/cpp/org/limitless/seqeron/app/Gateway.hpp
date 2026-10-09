@@ -608,6 +608,13 @@ class Gateway
             m_gateway.m_listener.onFenced(fence, detail);
         }
 
+        // Not while designated: closing an active instance's session promotes its sibling, and no frame on the tap
+        // says whether that promotion is still to come, so a replacement could announce itself on a stale view.
+        [[nodiscard]] bool mayReconnect() const
+        {
+            return !m_gateway.m_lifecycle.isActivated();
+        }
+
       private:
         Gateway& m_gateway;
     };

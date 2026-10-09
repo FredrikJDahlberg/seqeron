@@ -342,5 +342,21 @@ TEST_F(PendingSendsTest, FullRingResendsInPlace)
     EXPECT_FALSE(m_pending.isFaulted());
 }
 
+TEST_F(PendingSendsTest, DiscardedSessionsFramesMatchNothing)
+{
+    send(OWN, 1, 1);
+    send(OWN, 1, 2);
+    m_pending.onNewLeader(2);
+    EXPECT_TRUE(m_pending.isHolding());
+    EXPECT_EQ(2u, m_pending.discardUnconfirmed());
+    EXPECT_EQ(0u, m_pending.size());
+    EXPECT_FALSE(m_pending.isHolding());
+    tap(OWN, 1);
+    send(OWN + 1, 2, 3);
+    tap(OWN + 1, 3);
+    EXPECT_EQ(0u, m_pending.size());
+    EXPECT_FALSE(m_pending.isFaulted());
+}
+
 } // namespace
 } // namespace org::limitless::seqeron::sequencer::client

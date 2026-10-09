@@ -529,6 +529,15 @@ public final class Gateway implements AutoCloseable {
         public void onFenced(final ClusterError fence, final String detail) {
             listener.onFenced(fence, detail);
         }
+
+        /**
+         * Not while designated: closing an active instance's session promotes its sibling, and no frame on the tap
+         * says whether that promotion is still to come, so a replacement could announce itself on a stale view.
+         */
+        @Override
+        public boolean mayReconnect() {
+            return !lifecycle.isActivated();
+        }
     }
 
     /** Everything one instance needs to join its pair. */

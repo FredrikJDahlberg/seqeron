@@ -122,7 +122,7 @@ exiting, which lets the sequencer promote the standby (§2.2).
 
 | `ClusterError` | condition |
 | --- | --- |
-| `CLUSTER_SESSION_LOST` | the cluster closed the session, or no new leader arrived within the sender's timeout. A lost session cannot be re-established in process |
+| `CLUSTER_SESSION_LOST` | the cluster closed the session, or no new leader arrived within the sender's timeout, on a designated instance; or no new session replaced it within 20 s on any other |
 | `TAP_STALLED` | no `ClusterHeartbeat` on the co-located tap for 20 s (20 heartbeat intervals) while caught up |
 | `RECOVERY_STALLED` | recovery has delivered nothing for 60 s (3 × the tap-stall timeout) on an instance that has been caught up before |
 | `INGRESS_CONFIRM_FAULTED` | an own frame on the tap differs from the oldest pending one (spec §16 A-4) |
@@ -136,6 +136,12 @@ exiting, which lets the sequencer promote the standby (§2.2).
   because a cold start replays the whole log and has no useful bound.
 - **A correct Replayer cannot trip it.** The recovery-stall timeout (60 s) exceeds the Replayer's longest
   pending wait of 20 s (spec §10.1).
+- **Only a designated instance fences on a lost session.** Closing an active instance's session is what
+  promotes its sibling (§2.2), and the tap carries no frame for that close, so a replacement session could
+  announce itself before the instance has seen whether it was superseded. A standby or passive instance holds
+  nothing the close changed: it opens a new session once a second, as the first was opened, and fences with
+  `CLUSTER_SESSION_LOST` only if none opens within the tap-stall timeout. What was unconfirmed on the old
+  session is dropped, not resent (§5).
 
 Being superseded is not a fence. When a `GatewayActive` names a sibling, the instance's listener gets
 `onStandby`; it closes its external connections, keeps its cluster session and goes on following the tap,
@@ -323,6 +329,10 @@ failover: a reply, an order sent outward, a notification. The client tier provid
 - **Off the cluster** (`Application`'s `offCluster`, §3.3), one instance is the only dispatcher: its gate
   opens once caught up, whoever leads, and closes on every `LeadershipChanged` as above. Exactly one must run,
   since nothing elects between two.
+- **A lost cluster session closes the gate** until a new one opens: the replica replaces it once a second, as
+  §2.1 describes for a standby, and fences only if none opens within the tap-stall timeout. Whatever it
+  dispatched meanwhile is redispatched when the gate reopens, since nothing elects a replica and its requests
+  stay outstanding on the log.
 - **Dispatch follows insertion order**, which is `globalSeqNo` order. Side effects become visible in emission
   order, and a hash map's iteration order would differ between replicas.
 
@@ -378,7 +388,8 @@ Each failure above has a harness that produces it against a live cluster, all un
 - **Ingress lost outside one producer process.** `PendingSends` keeps its state in memory and counts losses
   against a leadership change. A frame lost without a leader change — an ingress image that drops and rejoins
   within the session timeout — has no term boundary to be counted against, and a restarted producer, or a
-  standby promoted in its place, starts with nothing pending. Covering either needs a durable outbox or a
+  standby promoted in its place, starts with nothing pending. A session the cluster closed has no boundary
+  either, so what was pending on it is dropped when it is replaced (§2.1, §4). Covering either needs a durable outbox or a
   per-producer sequence number that the sequencer de-duplicates on.
 - **Producer authentication.** The cluster checks well-formedness, not identity (spec §7). Authentication
   belongs at the system's external edges.

@@ -35,6 +35,7 @@ namespace org::limitless::seqeron::app::detail {
  *   void onCaughtUp(std::int64_t globalSeqNo)            // every transition to caught-up, the first included
  *   void onClusterHeartbeat(std::int64_t clusterTimeNs, std::int64_t receiveTimeNs) // the cluster clock's tick
  *   void onFenced(ClusterError fence, const std::string& detail) // once, latched
+ *   bool mayReconnect() const // whether a session the cluster closed may be replaced rather than fenced
  */
 template<typename Dispatch>
 class Session
@@ -214,6 +215,28 @@ class Session
         m_dispatch.onFenced(reason, detail);
     }
 
+    /**
+     * Forgets every frame not yet seen on the tap, for a façade that knows none of them will be sequenced.
+     *
+     * @param why what the log line says
+     */
+    void discardUnconfirmed(const std::string& why)
+    {
+        const std::size_t dropped = m_pending.discardUnconfirmed();
+        if (dropped > 0)
+        {
+            util::Logger::info(util::component::Cluster, "%zu unconfirmed frames are not resent: %s", dropped,
+                               why.c_str());
+        }
+    }
+
+    // Whether a cluster session is open: the sender gives its session up, with no event at all, when a new
+    // leader does not arrive before its timeout, hence isConnected() as well as the latch.
+    [[nodiscard]] bool hasSession() const
+    {
+        return !m_sender.isSessionLost() && m_sender.isConnected();
+    }
+
     // Closes the cluster session. The receiver releases its streams when this object goes.
     void close()
     {
@@ -221,6 +244,9 @@ class Session
     }
 
   private:
+    // How often a lost session is replaced while the façade allows it.
+    static constexpr std::int64_t RECONNECT_INTERVAL_MS = 1'000;
+
     // The fences are deadlines, so they are measured on a clock no wall-clock step can move.
     static std::int64_t monotonicMs()
     {
@@ -249,12 +275,19 @@ class Session
 
     void checkFences()
     {
-        // isConnected() as well as isSessionLost(): the sender also gives its session up, with no event at
-        // all, when a new leader does not arrive before its timeout.
-        if (m_sender.isSessionLost() || !m_sender.isConnected())
+        if (!hasSession())
         {
-            fence(ClusterError::ClusterSessionLost, m_sender.isSessionLost() ? "session lost" : "closed");
-            return;
+            const char* why = m_sender.isSessionLost() ? "session lost" : "closed";
+            if (!m_dispatch.mayReconnect())
+            {
+                fence(ClusterError::ClusterSessionLost, why);
+                return;
+            }
+            replaceSession(why);
+            if (m_fenced)
+            {
+                return;
+            }
         }
         if (m_pending.isFaulted())
         {
@@ -283,6 +316,35 @@ class Session
         {
             fence(ClusterError::TapStalled, "no ClusterHeartbeat for >" + std::to_string(m_tapStallTimeoutMs) + "ms");
         }
+    }
+
+    // Opens a session in place of the lost one, once a second, until one opens or the tap could have gone silent
+    // for as long: past that the cluster is not coming back for this process, and the session's loss is a fence.
+    void replaceSession(const char* why)
+    {
+        const std::int64_t nowMs = monotonicMs();
+        if (m_sessionLostSinceMs < 0)
+        {
+            m_sessionLostSinceMs = nowMs;
+            m_nextReconnectMs = nowMs;
+        }
+        if (nowMs - m_sessionLostSinceMs > m_tapStallTimeoutMs)
+        {
+            fence(ClusterError::ClusterSessionLost,
+                  std::string{ why } + "; no session replaced it within " + std::to_string(m_tapStallTimeoutMs) + "ms");
+            return;
+        }
+        if (nowMs < m_nextReconnectMs)
+        {
+            return;
+        }
+        m_nextReconnectMs = nowMs + RECONNECT_INTERVAL_MS;
+        if (!m_sender.reconnect())
+        {
+            return;
+        }
+        m_sessionLostSinceMs = -1;
+        discardUnconfirmed(std::string{ "the session they went out on was lost (" } + why + ")");
     }
 
     // Confirmed ingress takes the term first: nothing new may go out before the hold it may place is on.
@@ -321,6 +383,9 @@ class Session
     bool m_caughtUp = false;
     bool m_fenced = false;
     std::int64_t m_leadershipTermId = -1;
+    // Monotonic ms when the session was found lost; -1 while one is open.
+    std::int64_t m_sessionLostSinceMs = -1;
+    std::int64_t m_nextReconnectMs = 0;
 };
 
 } // namespace org::limitless::seqeron::app::detail

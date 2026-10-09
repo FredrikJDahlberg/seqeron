@@ -529,6 +529,13 @@ public sealed class Gateway : IDisposable
             _gateway._listener.OnFenced(fence, detail);
         }
 
+        // Not while designated: closing an active instance's session promotes its sibling, and no frame on the tap
+        // says whether that promotion is still to come, so a replacement could announce itself on a stale view.
+        public bool MayReconnect()
+        {
+            return !_gateway._lifecycle.IsActivated;
+        }
+
         // A ConnectionOpened's opaque tail, or nothing. §7.1 lets connectionData be absent, and a producer that takes
         // the option encodes no var-data header at all — so a payload too short to hold one is that case, not a short
         // read.

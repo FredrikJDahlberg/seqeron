@@ -61,6 +61,7 @@ public sealed class ClusterStreamSender : IIngressSender, IDisposable
     private string _egressChannel;
     private string _ingressEndpoints;
     private int _colocatedMemberId = NoMember;
+    private long _ipcConnectTimeoutMs;
     private bool _sessionLost;
     private int _newLeaderMemberId = NoMember;
 
@@ -111,21 +112,36 @@ public sealed class ClusterStreamSender : IIngressSender, IDisposable
     {
         _aeron = aeron;
         _colocatedMemberId = memberId;
+        _ipcConnectTimeoutMs = ipcConnectTimeoutMs;
         _egressChannel = egressChannel;
         _ingressEndpoints = RequireEndpoints(ingressEndpoints);
         _appListener = appListener;
+        _cluster = OpenColocated();
+    }
+
+    /// <summary>Replaces a lost session with a new one, opened as the first was. What the old one had not committed
+    /// is not carried over: the caller's tracker decides what to do about it.</summary>
+    /// <returns>whether a session opened; a failure is logged, and the caller tries again later</returns>
+    public bool Reconnect()
+    {
+        CloseSession();
+        _sessionLost = false;
+        _stallPolicy.OnOffered(); // a new session inherits no block
         try
         {
-            // No endpoints with IPC ingress: AeronCluster refuses the pair, and there is nothing to name.
-            _cluster = OpenSession(IngressChannelIpc, null, ipcConnectTimeoutMs * 1_000_000);
+            _cluster = _colocatedMemberId == NoMember
+                           ? OpenSession(IngressChannelUdp, _ingressEndpoints, ConnectTimeoutNs)
+                           : OpenColocated();
         }
         catch (AeronException ex)
         {
-            Logger.Error(Logger.CoreComponent.Cluster, Logger.CoreEventCode.ClusterIpcFallback, memberId,
-                         "member {0} did not answer ingress on {1} ({2}) — falling back to UDP", memberId,
-                         IngressChannelIpc, ex.Message);
-            _cluster = OpenSession(IngressChannelUdp, ingressEndpoints, ConnectTimeoutNs);
+            Logger.Error(Logger.CoreComponent.Cluster, Logger.CoreEventCode.ClusterSessionError, Member,
+                         "could not replace the lost cluster session ({0})", ex.Message);
+            return false;
         }
+        Logger.Info(Logger.CoreComponent.Cluster, Member, "cluster session {0} replaces the lost one",
+                    _cluster.ClusterSessionId);
+        return true;
     }
 
     /// <summary>Hears every <c>NewLeader</c>, and gives up a send that met one while it holds.</summary>
@@ -230,8 +246,8 @@ public sealed class ClusterStreamSender : IIngressSender, IDisposable
     /// <summary>Whether a session is open.</summary>
     public bool IsConnected => _cluster != null && !_cluster.Closed;
 
-    /// <summary>True once the cluster has closed this session, as opposed to never having opened one.
-    /// Latched.</summary>
+    /// <summary>True once the cluster has closed this session, as opposed to never having opened one. Latched until
+    /// <see cref="Reconnect"/>.</summary>
     public bool IsSessionLost => _sessionLost;
 
     /// <inheritdoc/>
@@ -245,6 +261,23 @@ public sealed class ClusterStreamSender : IIngressSender, IDisposable
     public void Dispose()
     {
         CloseSession();
+    }
+
+    // The co-located member's aeron:ipc within the short timeout, since a follower never answers, then UDP.
+    private AeronCluster OpenColocated()
+    {
+        try
+        {
+            // No endpoints with IPC ingress: AeronCluster refuses the pair, and there is nothing to name.
+            return OpenSession(IngressChannelIpc, null, _ipcConnectTimeoutMs * 1_000_000);
+        }
+        catch (AeronException ex)
+        {
+            Logger.Error(Logger.CoreComponent.Cluster, Logger.CoreEventCode.ClusterIpcFallback, _colocatedMemberId,
+                         "member {0} did not answer ingress on {1} ({2}) — falling back to UDP", _colocatedMemberId,
+                         IngressChannelIpc, ex.Message);
+            return OpenSession(IngressChannelUdp, _ingressEndpoints, ConnectTimeoutNs);
+        }
     }
 
     private static string RequireEndpoints(string ingressEndpoints)
