@@ -545,6 +545,9 @@ class Gateway
                     if (!m_gateway.m_lifecycle.isActivated())
                     {
                         m_gateway.m_snapshots.stopPublishing();
+                        // S-6 refuses whatever this instance's session sends from here on, resends included.
+                        m_gateway.m_session.discardUnconfirmed("gateway instance " +
+                                                               std::to_string(active.gatewayId()) + " is designated");
                     }
                     break;
                 }

@@ -469,6 +469,9 @@ public sealed class Gateway : IDisposable
                     if (!g._lifecycle.IsActivated)
                     {
                         g._snapshots.StopPublishing();
+                        // S-6 refuses whatever this instance's session sends from here on, resends included.
+                        g._session.DiscardUnconfirmed("gateway instance " + _gatewayActive.GatewayId +
+                                                      " is designated");
                     }
                     break;
                 case SystemFrame.SnapshotStarted:

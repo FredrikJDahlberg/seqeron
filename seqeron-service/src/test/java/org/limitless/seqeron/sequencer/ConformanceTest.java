@@ -192,9 +192,12 @@ class ConformanceTest {
             final int systemEventType = event.getKey();
             final byte[] body = event.getValue();
 
-            // The two list-checked events (S-6 case 1) need a row naming their gatewayId first.
-            if (systemEventType == SystemFrame.GATEWAY_STARTED ||
-                systemEventType == SystemFrame.GATEWAY_ACTIVATION_REQUESTED) {
+            // The two list-checked events (S-6 case 1) need a row naming their gatewayId first, and
+            // GatewayStarted needs that row designated.
+            if (systemEventType == SystemFrame.GATEWAY_STARTED) {
+                loadList(target, 0);
+                activatedGatewayId(target);
+            } else if (systemEventType == SystemFrame.GATEWAY_ACTIVATION_REQUESTED) {
                 loadList(target, 1);
             }
             // GatewayStarted must carry its row's gatewaySourceId; everything else publishes from an
@@ -578,17 +581,17 @@ class ConformanceTest {
             .globalSeqNo(globalSeqNo).timestamp(TIMESTAMP);
     }
 
-    // ── Row 8. S-6's three cases ─────────────────────────────────────────────────────────────────
+    // ── Row 8. S-6's four cases ──────────────────────────────────────────────────────────────────
 
     @Test
-    @DisplayName("row 8: a GatewayStarted agreeing with its row binds; four disagreements are refused")
+    @DisplayName("row 8: only the designated instance binds, and only its current session is admitted")
     void s6BindsAndRefuses() {
-        loadList(sequencer, 1);
-        final long afterList = sequencer.globalSeqNo();
+        register(sequencer, 11, LISTED_SOURCE_ID, (short)0, 1);
+        register(sequencer, 12, LISTED_SOURCE_ID, (short)1, 0);
+        assertEquals(11, activatedGatewayId(sequencer));
 
-        // Case 1, the positive: gatewayId 11 is a row, and its row's gatewaySourceId is what we carry.
-        int length = systemFrame(SystemFrame.GATEWAY_STARTED, LISTED_SOURCE_ID, gatewayStartedBody(11));
-        assertNotEquals(Sequencer.NO_FRAME, sequencer.sequenceMessage(ingress, 0, length, SESSION_ID, TIMESTAMP));
+        // Case 1, the positive: gatewayId 11 is a designated row, and its row's gatewaySourceId is what we carry.
+        bind(sequencer, 11, SESSION_ID);
 
         // Case 1, negative a: the same frame under a different gatewaySourceId.
         final int wrongSource = systemFrame(SystemFrame.GATEWAY_STARTED, 6, gatewayStartedBody(11));
@@ -604,22 +607,40 @@ class ConformanceTest {
                                                   activationRequestedBody(404));
         assertRejected(() -> sequencer.sequenceMessage(ingress, 0, unknownActivation, SESSION_ID + 1, TIMESTAMP));
 
+        // Case 1, negative d: a listed, agreeing gatewayId the log has not designated.
+        final int undesignated = systemFrame(SystemFrame.GATEWAY_STARTED, LISTED_SOURCE_ID, gatewayStartedBody(12));
+        assertRejected(() -> sequencer.sequenceMessage(ingress, 0, undesignated, SESSION_ID + 1, TIMESTAMP));
+
         // Case 2: another system frame claiming a listed sourceId on a session no GatewayStarted bound.
         final int unbound = systemFrame(SystemFrame.CONNECTION_OPENED, LISTED_SOURCE_ID, connectionOpenedBody(
             new byte[0]));
         assertRejected(() -> sequencer.sequenceMessage(ingress, 0, unbound, SESSION_ID + 1, TIMESTAMP));
 
-        // Case 3, both negatives: an application payload under that same sourceId, and clusterctl's marker.
+        // Case 4: an application payload under that same sourceId on an unbound session, and clusterctl's marker.
         final int application = payloadFrame(PAYLOAD_ID, LISTED_SOURCE_ID, syntheticPayload(8));
         assertNotEquals(Sequencer.NO_FRAME,
                         sequencer.sequenceMessage(ingress, 0, application, SESSION_ID + 1, TIMESTAMP),
-                        "S-6 is scoped to the system family");
+                        "a reply carries its requester's sourceId");
         final int marker = systemFrame(SystemFrame.CLUSTER_STARTED, CLUSTERCTL_SOURCE_ID, clusterStartedBody());
         assertNotEquals(Sequencer.NO_FRAME, sequencer.sequenceMessage(ingress, 0, marker, SESSION_ID + 2, TIMESTAMP),
                         "an unlisted sourceId is unchecked");
 
-        assertEquals(afterList + 3, sequencer.globalSeqNo(), "the four refusals consumed no sequence number");
-        assertEquals(4, sequencer.rejectedFrameCount());
+        // Case 3: once 12 is designated, instance 11's session is admitted nothing, of either family.
+        final int request = systemFrame(SystemFrame.GATEWAY_ACTIVATION_REQUESTED, CLUSTERCTL_SOURCE_ID,
+                                        activationRequestedBody(12));
+        assertNotEquals(Sequencer.NO_FRAME, sequencer.sequenceMessage(ingress, 0, request, SESSION_ID + 2, TIMESTAMP));
+        assertEquals(12, activatedGatewayId(sequencer));
+        assertRejected(() -> sequencer.sequenceMessage(ingress, 0, unbound, SESSION_ID, TIMESTAMP));
+        assertRejected(() -> sequencer.sequenceMessage(ingress, 0, application, SESSION_ID, TIMESTAMP));
+
+        // Case 3: a later GatewayStarted for the same instance leaves its earlier session admitted nothing.
+        bind(sequencer, 12, SESSION_ID + 3);
+        bind(sequencer, 12, SESSION_ID + 4);
+        assertRejected(() -> sequencer.sequenceMessage(ingress, 0, application, SESSION_ID + 3, TIMESTAMP));
+        assertNotEquals(Sequencer.NO_FRAME,
+                        sequencer.sequenceMessage(ingress, 0, application, SESSION_ID + 4, TIMESTAMP));
+
+        assertEquals(8, sequencer.rejectedFrameCount());
     }
 
     // ── Row 9. Promotion order (§7.2, S-3) ───────────────────────────────────────────────────────
@@ -645,15 +666,15 @@ class ConformanceTest {
         assertEquals(forwarded + 1, sequencer.globalSeqNo(), "the answer sits one behind the request");
         assertEquals(12, decodeGatewayActive(sequencer.buffer()).gatewayId());
 
-        // Rank 0 binds a session and loses it: rank 1 is promoted.
-        bind(sequencer, 11, 100L);
-        assertNotEquals(Sequencer.NO_FRAME, sequencer.sessionClosed(100L, TIMESTAMP));
-        assertEquals(12, decodeGatewayActive(sequencer.buffer()).gatewayId());
-
         // Rank 1 binds and loses it: rank 0 comes back — lowest-rank-excluding, not next-rank-up.
-        bind(sequencer, 12, 101L);
-        assertNotEquals(Sequencer.NO_FRAME, sequencer.sessionClosed(101L, TIMESTAMP));
+        bind(sequencer, 12, 100L);
+        assertNotEquals(Sequencer.NO_FRAME, sequencer.sessionClosed(100L, TIMESTAMP));
         assertEquals(11, decodeGatewayActive(sequencer.buffer()).gatewayId());
+
+        // Rank 0 binds a session and loses it: rank 1 is promoted.
+        bind(sequencer, 11, 101L);
+        assertNotEquals(Sequencer.NO_FRAME, sequencer.sessionClosed(101L, TIMESTAMP));
+        assertEquals(12, decodeGatewayActive(sequencer.buffer()).gatewayId());
     }
 
     @Test

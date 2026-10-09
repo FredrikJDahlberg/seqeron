@@ -151,7 +151,9 @@ standby when the active instance's cluster session closes, the next instance whe
 not announce itself within 5 s, and whichever instance an operator names. Because the designation is a
 sequenced message, every instance and every replica sees the same decision at the same point in the order.
 
-A designated instance announces itself with `GatewayStarted` before it serves. It resumes the pair's
+A designated instance announces itself with `GatewayStarted` before it serves, and the sequencer admits
+frames only from the session the designated instance announced itself on, so an instance that has been
+superseded but has not yet noticed cannot add to the log. It resumes the pair's
 connection ids past the highest its predecessor issued, so no id is ever issued twice, and it learns of
 every connection its predecessor held from the `ConnectionOpened` and `ConnectionClosed` messages on the log.
 

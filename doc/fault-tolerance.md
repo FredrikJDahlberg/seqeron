@@ -146,7 +146,9 @@ exiting, which lets the sequencer promote the standby (§2.2).
 Being superseded is not a fence. When a `GatewayActive` names a sibling, the instance's listener gets
 `onStandby`; it closes its external connections, keeps its cluster session and goes on following the tap,
 so it can be designated again. It publishes nothing on the way out: to the cluster this looks the same as
-the process dying.
+the process dying. The sequencer refuses whatever its session sends after that `GatewayActive` (spec
+**S-6**), including frames placed before the instance read it, so the instance drops what it still has
+unconfirmed rather than resend it.
 
 ### 2.2 Promotion
 
@@ -158,7 +160,8 @@ on inconsistent information. It does so on four triggers (spec §7.2):
 2. **Session close:** when the session an active instance's `GatewayStarted` bound closes — through a crash,
    a network loss or a shutdown, which Aeron Cluster reports alike as a session close. The binding is keyed on
    `GatewayStarted`, not on `sourceId`, because other producers may legitimately carry a gateway's
-   `sourceId`.
+   `sourceId`. An instance that has since been superseded keeps its binding until its session closes, and
+   that close promotes nothing.
 3. **Activation timeout:** a designated instance that publishes no `GatewayStarted` within 5 s is passed
    over.
 4. **Operator request:** `clusterctl activate <gatewayId>` publishes `GatewayActivationRequested` and waits

@@ -145,6 +145,15 @@ public final class Sequencer {
     private final java.util.Map<Long, Integer> activeGatewaySession = new java.util.HashMap<>();
 
     /**
+     * Sessions whose binding a later {@code GatewayStarted} for the same {@code gatewayId} replaced, until they
+     * close: whatever still speaks on one is not the instance the log now names (<b>S-6</b> case 3).
+     */
+    private final java.util.Set<Long> deposedGatewaySessions = new java.util.HashSet<>();
+
+    /** Each logical gateway's designated instance: {@code gatewaySourceId} to the last {@code GatewayActive}'s. */
+    private final java.util.Map<Integer, Integer> designatedGateway = new java.util.HashMap<>();
+
+    /**
      * Open connections per gateway: {@code sourceId} to the {@code connectionId}s with a {@code
      * ConnectionOpened} and no {@code ConnectionClosed} yet. Never iterated, so hash order reaches no frame.
      */
@@ -320,6 +329,10 @@ public final class Sequencer {
                 return reject("payloadId " + RETIRED_CORE_ID +
                               " is core's retired id and carries no application protocol");
             }
+            if (deposed(sessionId)) {
+                return reject("payloadId " + payloadId + " arrived on a session whose gateway instance is no "
+                              + "longer designated");
+            }
         }
 
         final long globalSeq = ++globalSeqNo;
@@ -347,6 +360,10 @@ public final class Sequencer {
     private boolean applySystem(final DirectBuffer buffer, final int bodyOffset, final int systemEventType,
                                 final int sourceId, final int connectionId, final long sessionId,
                                 final long timestamp) {
+        if (deposed(sessionId)) {
+            return rejectSystem("systemEventType " + systemEventType + " arrived on a session whose gateway "
+                                + "instance is no longer designated");
+        }
         if (systemEventType != SystemFrame.GATEWAY_STARTED && listClaims(sourceId) &&
             !boundToGateway(sessionId, sourceId)) {
             return rejectSystem("systemEventType " + systemEventType + " claims listed sourceId " + sourceId +
@@ -380,7 +397,18 @@ public final class Sequencer {
                     return rejectSystem("GatewayStarted for gatewayId " + gatewayId + " carries sourceId " +
                                          sourceId + ", not its row's " + row.gatewaySourceId());
                 }
-                activeGatewaySession.values().removeIf(bound -> bound == gatewayId);
+                if (!isDesignated(gatewayId)) {
+                    return rejectSystem("GatewayStarted names gatewayId " + gatewayId + ", which is not designated");
+                }
+                activeGatewaySession.entrySet().removeIf(binding -> {
+                    if (binding.getValue() != gatewayId) {
+                        return false;
+                    }
+                    if (binding.getKey() != sessionId) {
+                        deposedGatewaySessions.add(binding.getKey());
+                    }
+                    return true;
+                });
                 activeGatewaySession.put(sessionId, gatewayId);
                 releaseStaleConnections(sourceId);
             }
@@ -529,16 +557,17 @@ public final class Sequencer {
     }
 
     /**
-     * A cluster session closed. If an active gateway instance was bound to it, promote its standby.
+     * A cluster session closed. If the designated instance of a gateway was bound to it, promote its standby.
      * @param sessionId session identity
      * @param timestamp now
-     * @return a {@code GatewayActive} frame length, {@link #NO_FRAME} if this wasn't a gateway session, or
-     *     {@link #NO_PROMOTION_TARGET} if it was one but no standby could be found
+     * @return a {@code GatewayActive} frame length, {@link #NO_FRAME} if this wasn't a designated gateway
+     *     instance's session, or {@link #NO_PROMOTION_TARGET} if it was one but no standby could be found
      */
     public int sessionClosed(final long sessionId, final long timestamp) {
+        deposedGatewaySessions.remove(sessionId);
         final Integer closedGatewayId = activeGatewaySession.remove(sessionId);
-        if (closedGatewayId == null) {
-            return NO_FRAME;
+        if (closedGatewayId == null || !isDesignated(closedGatewayId)) {
+            return NO_FRAME; // a superseded instance's close takes the role from no one
         }
         final int promoted = promotionTarget(closedGatewayId);
         if (promoted == NO_GATEWAY_ID) {
@@ -655,6 +684,10 @@ public final class Sequencer {
      */
     private int gatewayActive(final int gatewayId, final long timestamp) {
         armActivationDeadline(gatewayId, timestamp);
+        final GatewayRow row = rowFor(gatewayId);
+        if (row != null) {
+            designatedGateway.put(row.gatewaySourceId(), gatewayId);
+        }
         final long globalSeq = ++globalSeqNo;
         gatewayActiveEncoder.wrapAndApplyHeader(encodeBuffer, 0, headerEncoder);
         stampSynthesized(gatewayActiveEncoder.header(), SystemFrame.GATEWAY_ACTIVE, globalSeq, timestamp);
@@ -699,7 +732,7 @@ public final class Sequencer {
         pendingActivations.add(armed);
     }
 
-    /** Whether any list row names {@code sourceId} as its logical gateway (<b>S-6</b> cases 2 and 3). */
+    /** Whether any list row names {@code sourceId} as its logical gateway (<b>S-6</b> cases 2 and 4). */
     private boolean listClaims(final int sourceId) {
         for (final GatewayRow row : gatewayRows) {
             if (row.gatewaySourceId() == sourceId) {
@@ -720,6 +753,24 @@ public final class Sequencer {
         }
         final GatewayRow row = rowFor(boundGatewayId);
         return row != null && row.gatewaySourceId() == sourceId;
+    }
+
+    /** Whether the last {@code GatewayActive} for {@code gatewayId}'s logical gateway named it. */
+    private boolean isDesignated(final int gatewayId) {
+        final GatewayRow row = rowFor(gatewayId);
+        return row != null && designatedGateway.getOrDefault(row.gatewaySourceId(), NO_GATEWAY_ID) == gatewayId;
+    }
+
+    /**
+     * Whether {@code sessionId} belongs to a gateway instance the log no longer names (<b>S-6</b> case 3): a
+     * {@code GatewayStarted} bound it, and since then a sibling was designated or the binding was replaced.
+     */
+    private boolean deposed(final long sessionId) {
+        if (deposedGatewaySessions.contains(sessionId)) {
+            return true;
+        }
+        final Integer boundGatewayId = activeGatewaySession.get(sessionId);
+        return boundGatewayId != null && !isDesignated(boundGatewayId);
     }
 
     /** The Gateway row for {@code gatewayId}, or null if no load has named that instance. */

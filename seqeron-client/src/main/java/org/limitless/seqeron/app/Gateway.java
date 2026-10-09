@@ -477,6 +477,8 @@ public final class Gateway implements AutoCloseable {
                 lifecycle.onGatewayActive(gatewayActive.gatewayId());
                 if (!lifecycle.isActivated()) {
                     snapshots.stopPublishing();
+                    // S-6 refuses whatever this instance's session sends from here on, resends included.
+                    session.discardUnconfirmed("gateway instance " + gatewayActive.gatewayId() + " is designated");
                 }
                 break;
             case SystemFrame.SNAPSHOT_STARTED:

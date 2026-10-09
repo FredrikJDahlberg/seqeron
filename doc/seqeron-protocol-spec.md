@@ -211,22 +211,32 @@ Gateways are listed by `GatewayRegistered.gatewaySourceId`, applications by
 `ApplicationRegistered.applicationSourceId`. **S-6** checks gateways only. No list row may claim
 `clusterctl`'s id.
 
-> **S-6.** For an `UnsequencedSystem` frame (§9.2 condition 10):
+> **S-6.** For an ingress frame (§9.2 condition 10):
 >
 > 1. `GatewayStarted` and `GatewayActivationRequested`: the `gatewayId` MUST name a list row. For
->    `GatewayStarted`, that row's `gatewaySourceId` MUST also equal `header.sourceId`.
+>    `GatewayStarted`, that row's `gatewaySourceId` MUST also equal `header.sourceId`, and the most
+>    recent `GatewayActive` for that `gatewaySourceId` MUST name the `gatewayId`.
 > 2. Any other system frame whose `sourceId` is a listed `gatewaySourceId`: it MUST arrive on a
 >    cluster session already bound to a `gatewayId` with that `gatewaySourceId`.
-> 3. Everything else is not checked: all application frames, and system frames with an unlisted
->    `sourceId`.
+> 3. A frame of either family on a session a `GatewayStarted` bound: the most recent `GatewayActive`
+>    for that gateway MUST name the bound `gatewayId`, and no later `GatewayStarted` for that
+>    `gatewayId` may have bound another session.
+> 4. Everything else is not checked: application frames on a session no `GatewayStarted` bound (a
+>    reply carries its requester's `sourceId`), and system frames with an unlisted `sourceId`.
 >
 > `GatewayStarted` creates the session binding; the closing of that cluster session removes it (the
-> same event promotes a standby, §7.2). There is one binding per live gateway session. Both events are
-> in the log and the list is built from the log, so the check is deterministic (**S-3**). A binding
-> MUST NOT be removed because of anything observed locally.
+> same event promotes a standby, §7.2). A later `GatewayStarted` for the same `gatewayId` moves the
+> binding to its own session, and case 3 refuses the earlier session until it closes. These events and
+> `GatewayActive` are in the log and the list is built from the log, so the check is deterministic
+> (**S-3**). A binding MUST NOT be removed because of anything observed locally.
 
 Case 1 rejects a `GatewayStarted` that arrives before `load-topology` has run, since the list is
 empty.
+
+Cases 1 and 3 make the log the judge of which instance acts. An operator request or an activation
+timeout designates a sibling while the old instance's session stays open, and that instance serves until
+it reads the `GatewayActive`; nothing it sends after that frame is sequenced. Its effects outside the
+log, such as its external connections, are still its own to stop.
 
 ## 6. `payloadId`
 
@@ -514,7 +524,8 @@ down converges on whichever instance starts first.
 1. Bootstrap: after the `GatewayRegistered` with `remaining` = 0, one `GatewayActive` per rank-0 row,
    in list order.
 2. Session close: the cluster session bound by a `GatewayStarted` (**S-6**) closes. The binding is
-   removed first; then the target rule runs for the instance it named.
+   removed first; then, if the most recent `GatewayActive` for that gateway names the instance the
+   binding named, the target rule runs for it. A superseded instance's close promotes nothing.
 3. Activation timeout: a designated instance has not published a `GatewayStarted` within
    `GATEWAY_ACTIVATION_TIMEOUT_MS`. Without this trigger an instance that failed before registering
    could never be promoted past, since no session of its own would close.
@@ -617,7 +628,7 @@ order (each establishes what the next may read). It MUST NOT throw (§9.4).
 | 7 | `Unsequenced` and `payloadId` is 0 or 1 |
 | 8 | `UnsequencedSystem` and `systemEventType` is not an allocated, ingress-legal value |
 | 9 | `UnsequencedSystem` and the payload is shorter than that event's compiled `BLOCK_LENGTH` |
-| 10 | `UnsequencedSystem` and the frame fails **S-6** |
+| 10 | the frame fails **S-6** |
 
 A rejection is logged and counted (§9.6). Nothing is emitted and `globalSeqNo` does not move.
 
@@ -649,7 +660,8 @@ Implementation notes:
 > order.
 
 Conditions 1–9 depend only on the frame's bytes. Condition 10 reads state, all of it derived from the
-log (the list from `GatewayRegistered`, the bindings from `GatewayStarted`).
+log (the list from `GatewayRegistered`, the bindings from `GatewayStarted`, the designations from
+`GatewayActive`).
 
 - `timestamp` is the Raft consensus timestamp in nanoseconds since the epoch. Its precision and
   accuracy are those of the leader's clock.
@@ -821,7 +833,8 @@ so there is nothing to stay compatible with.
   may be required to read bytes encoded by an earlier build.** Two builds that encode the same
   synthesized frame differently break **F-2**; an archive that survives an upgrade is the same fault
   later. After such a change, every node's archive is purged. Schema 212 is exempt: it is not recorded
-  and never leaves the node.
+  and never leaves the node. A change to what §9.2 rejects is the same kind of change: a log replayed
+  under another rule sequences another history.
 
 ## 12. Limits
 
@@ -938,7 +951,7 @@ and runs in under a second. The payload fixture is seqeron's own.
 | 5 | **Synthesis is deterministic.** Two independent `Sequencer`s fed the same input emit byte-identical frames, heartbeats and snapshot rounds included | **S-3**, **F-2** |
 | 6 | **Layout matches §4.** Every header field is at the §4.1 offset in all four composites; sizes match §4.2 (`MessageHeader` 8, composites 18 and 34, length prefix 2, overhead 28 and 44, `ClusterHeartbeat` 42, maximum payload frame 8928); payloads of 0 bytes, 1 byte and `MAX_PAYLOAD_LENGTH` round-trip | **F-2**, **F-3**, §12 |
 | 7 | **Selective consumption.** A consumer given an unallocated `payloadId` and an unhandled `systemEventType` skips both without error, and its continuity tracking advances across them, for all six sequenced messages | **P-1**–**P-3** |
-| 8 | **S-6.** A `GatewayStarted` matching its list row binds and is accepted. Rejected: the same frame with a different `gatewaySourceId`; an unlisted `gatewayId` claiming a listed `sourceId`; a `GatewayActivationRequested` for an unlisted `gatewayId`; another system frame with a listed `sourceId` on an unbound session. Accepted: an application payload with a listed `sourceId`, and a `clusterctl` marker (`sourceId` 2, `connectionId` −1) | **S-6** |
+| 8 | **S-6.** A `GatewayStarted` matching its list row and naming the designated instance binds and is accepted. Rejected: the same frame with a different `gatewaySourceId`; an unlisted `gatewayId` claiming a listed `sourceId`; a `GatewayActivationRequested` for an unlisted `gatewayId`; a `GatewayStarted` for a listed instance not designated; another system frame with a listed `sourceId` on an unbound session; a system frame and an application payload on the bound session once a sibling is designated; an application payload on a session a later `GatewayStarted` for the same instance replaced. Accepted: an application payload with a listed `sourceId` on an unbound session, and a `clusterctl` marker (`sourceId` 2, `connectionId` −1) | **S-6** |
 | 9 | **Promotion.** With ranks 0, 1, 2 under one `gatewaySourceId`: bootstrap activates rank 0 only; a `GatewayActivationRequested` is sequenced and answered at the next `globalSeqNo`; closing rank 0's session promotes rank 1; closing rank 1's promotes rank 0; an instance that publishes no `GatewayStarted` is replaced after exactly `GATEWAY_ACTIVATION_TIMEOUT_MS` of consensus time and not before; one that does arms nothing further; a `gatewaySourceId` with one row synthesizes nothing on close and `globalSeqNo` does not move. Two gateways bootstrapped together keep separate deadlines | §7.2, **S-3** |
 
 Rows 2, 3, 4b, 6 and 7 run in every language; rows 1, 4, 4a, 5, 8 and 9 are Java only, because the
