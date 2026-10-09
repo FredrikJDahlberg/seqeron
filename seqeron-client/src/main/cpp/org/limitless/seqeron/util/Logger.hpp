@@ -50,6 +50,7 @@ inline constexpr EventCode ArchiveConnectFailed{ "ArchiveConnectFailed" };
 inline constexpr EventCode ReplayUnavailable{ "ReplayUnavailable" };
 inline constexpr EventCode ReplayClientIdCollision{ "ReplayClientIdCollision" };
 inline constexpr EventCode RecoveryStalled{ "RecoveryStalled" };
+inline constexpr EventCode TapStalled{ "TapStalled" };
 } // namespace eventCode
 
 enum class Severity : std::uint8_t

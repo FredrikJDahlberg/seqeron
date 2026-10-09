@@ -540,6 +540,12 @@ public final class Gateway implements AutoCloseable {
         public boolean mayReconnect() {
             return !lifecycle.isActivated();
         }
+
+        /** The designated instance: a standby serves no one. */
+        @Override
+        public boolean isActing() {
+            return lifecycle.isActivated();
+        }
     }
 
     /** Everything one instance needs to join its pair. */

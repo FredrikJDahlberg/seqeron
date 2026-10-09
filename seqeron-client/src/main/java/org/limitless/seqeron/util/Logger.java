@@ -98,6 +98,8 @@ public final class Logger {
         ReplayUnavailable,
         /** Recovery has dispatched nothing for longer than its deadline. */
         RecoveryStalled,
+        /** The tap has carried no {@code ClusterHeartbeat} for longer than its deadline. */
+        TapStalled,
         /** The first frame observed was not {@code globalSeqNo} 1, so history is incomplete. */
         FirstFrameNotOne,
         /** A source's latest snapshot cannot be restored, so its instance cannot recover. */

@@ -123,6 +123,9 @@ public static class Logger
         /// <summary>Recovery has dispatched nothing for longer than its deadline.</summary>
         RecoveryStalled,
 
+        /// <summary>The tap has carried no <c>ClusterHeartbeat</c> for longer than its deadline.</summary>
+        TapStalled,
+
         /// <summary>The first frame observed was not <c>globalSeqNo</c> 1, so history is incomplete.</summary>
         FirstFrameNotOne,
 

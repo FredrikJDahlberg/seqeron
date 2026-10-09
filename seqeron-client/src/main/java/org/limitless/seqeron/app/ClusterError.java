@@ -12,9 +12,15 @@ public enum ClusterError {
     CLUSTER_SESSION_LOST,
     /** An own frame came back differing from the oldest pending one, so what reached the log cannot be counted. */
     INGRESS_CONFIRM_FAULTED,
-    /** Recovery has dispatched nothing for the deadline, on an instance that had caught up before. */
+    /**
+     * Recovery has dispatched nothing for the deadline, on an instance that had caught up before; only a designated
+     * gateway instance or the leader's replica fences, any other logs it.
+     */
     RECOVERY_STALLED,
-    /** No {@code ClusterHeartbeat} for the deadline: this process has stopped seeing its node's tap. */
+    /**
+     * No {@code ClusterHeartbeat} for the deadline: this process has stopped seeing its node's tap. Fences as
+     * {@link #RECOVERY_STALLED} does.
+     */
     TAP_STALLED,
     /**
      * This instance's snapshot of a round differs from its source's sequenced one: its state is not the log's (A-7).

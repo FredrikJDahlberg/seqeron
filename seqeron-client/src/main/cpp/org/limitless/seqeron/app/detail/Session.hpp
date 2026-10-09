@@ -3,6 +3,7 @@
 #include <chrono>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 
@@ -36,6 +37,7 @@ namespace org::limitless::seqeron::app::detail {
  *   void onClusterHeartbeat(std::int64_t clusterTimeNs, std::int64_t receiveTimeNs) // the cluster clock's tick
  *   void onFenced(ClusterError fence, const std::string& detail) // once, latched
  *   bool mayReconnect() const // whether a session the cluster closed may be replaced rather than fenced
+ *   bool isActing() const     // whether this instance acts for its producer: a stall fences only one that does
  */
 template<typename Dispatch>
 class Session
@@ -306,15 +308,38 @@ class Session
         {
             if (m_recoveryStall.onNotCaughtUp(nowMs, m_receiver.lastGlobalSeqNo()))
             {
-                fence(ClusterError::RecoveryStalled,
-                      "recovery has dispatched nothing for >" + std::to_string(m_recoveryStallTimeoutMs) +
-                          "ms (globalSeqNo stuck at " + std::to_string(m_receiver.lastGlobalSeqNo()) + ")");
+                stalled(ClusterError::RecoveryStalled, util::eventCode::RecoveryStalled,
+                        "recovery has dispatched nothing for >" + std::to_string(m_recoveryStallTimeoutMs) +
+                            "ms (globalSeqNo stuck at " + std::to_string(m_receiver.lastGlobalSeqNo()) + ")");
+                return;
             }
+        }
+        else if (m_tapStall.isStalled(nowMs))
+        {
+            stalled(ClusterError::TapStalled, util::eventCode::TapStalled,
+                    "no ClusterHeartbeat for >" + std::to_string(m_tapStallTimeoutMs) + "ms");
             return;
         }
-        if (m_tapStall.isStalled(nowMs))
+        if (m_stallAlarm)
         {
-            fence(ClusterError::TapStalled, "no ClusterHeartbeat for >" + std::to_string(m_tapStallTimeoutMs) + "ms");
+            util::Logger::info(util::component::Cluster, "%s cleared", clusterErrorName(*m_stallAlarm));
+            m_stallAlarm.reset();
+        }
+    }
+
+    // Fences an instance that acts; one that does not raises an alarm once and keeps following the tap.
+    void stalled(const ClusterError stall, const util::EventCode& code, const std::string& detail)
+    {
+        if (m_dispatch.isActing())
+        {
+            fence(stall, detail);
+            return;
+        }
+        if (m_stallAlarm != stall)
+        {
+            m_stallAlarm = stall;
+            util::Logger::error(util::component::Cluster, code, "%s, not fenced while this instance does not act: %s",
+                                clusterErrorName(stall), detail.c_str());
         }
     }
 
@@ -386,6 +411,8 @@ class Session
     // Monotonic ms when the session was found lost; -1 while one is open.
     std::int64_t m_sessionLostSinceMs = -1;
     std::int64_t m_nextReconnectMs = 0;
+    // The stall an instance that does not act has been alarmed for.
+    std::optional<ClusterError> m_stallAlarm;
 };
 
 } // namespace org::limitless::seqeron::app::detail

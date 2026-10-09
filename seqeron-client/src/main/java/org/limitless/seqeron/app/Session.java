@@ -63,6 +63,9 @@ final class Session implements AutoCloseable {
          * loss of that session changed. Asked on every cycle without one.
          */
         boolean mayReconnect();
+
+        /** Whether this instance acts for its producer right now: a stall fences only one that does. */
+        boolean isActing();
     }
 
     private final Dispatch dispatch;
@@ -76,6 +79,9 @@ final class Session implements AutoCloseable {
 
     private final long recoveryStallTimeoutMs;
     private final long tapStallTimeoutMs;
+
+    /** The stall an instance that does not act has been alarmed for, or null. */
+    private ClusterError stallAlarm;
 
     /** The cluster's own account of why this session ended, kept for the fence's detail. */
     private String sessionFault;
@@ -242,13 +248,32 @@ final class Session implements AutoCloseable {
         final long nowMs = Clocks.monotonicMs();
         if (!receiver.isCaughtUp()) {
             if (recoveryStall.onNotCaughtUp(nowMs, receiver.lastGlobalSeqNo())) {
-                fence(ClusterError.RECOVERY_STALLED, "recovery has dispatched nothing for >" + recoveryStallTimeoutMs
-                                                  + "ms (globalSeqNo stuck at " + receiver.lastGlobalSeqNo() + ")");
+                stalled(ClusterError.RECOVERY_STALLED, Logger.CoreEventCode.RecoveryStalled,
+                        "recovery has dispatched nothing for >" + recoveryStallTimeoutMs + "ms (globalSeqNo stuck at " +
+                            receiver.lastGlobalSeqNo() + ")");
+                return;
             }
+        } else if (tapStall.isStalled(nowMs)) {
+            stalled(ClusterError.TAP_STALLED, Logger.CoreEventCode.TapStalled,
+                    "no ClusterHeartbeat for >" + tapStallTimeoutMs + "ms");
             return;
         }
-        if (tapStall.isStalled(nowMs)) {
-            fence(ClusterError.TAP_STALLED, "no ClusterHeartbeat for >" + tapStallTimeoutMs + "ms");
+        if (stallAlarm != null) {
+            Logger.info(Logger.CoreComponent.Cluster, null, "%s cleared", stallAlarm);
+            stallAlarm = null;
+        }
+    }
+
+    /** Fences an instance that acts; one that does not raises an alarm once and keeps following the tap. */
+    private void stalled(final ClusterError stall, final Logger.CoreEventCode code, final String detail) {
+        if (dispatch.isActing()) {
+            fence(stall, detail);
+            return;
+        }
+        if (stallAlarm != stall) {
+            stallAlarm = stall;
+            Logger.error(Logger.CoreComponent.Cluster, code, null,
+                         "%s, not fenced while this instance does not act: %s", stall, detail);
         }
     }
 

@@ -58,6 +58,10 @@ internal sealed class Session : IDisposable
         /// <summary>Whether a session the cluster closed may be replaced rather than fenced: the instance holds
         /// nothing the loss of that session changed. Asked on every cycle without one.</summary>
         bool MayReconnect();
+
+        /// <summary>Whether this instance acts for its producer right now: a stall fences only one that
+        /// does.</summary>
+        bool IsActing();
     }
 
     private readonly IDispatch _dispatch;
@@ -74,6 +78,9 @@ internal sealed class Session : IDisposable
 
     // The cluster's own account of why this session ended, kept for the fence's detail.
     private string _sessionFault;
+
+    // The stall an instance that does not act has been alarmed for, or null.
+    private ClusterError? _stallAlarm;
 
     private bool _caughtUp;
     private bool _fenced;
@@ -249,15 +256,38 @@ internal sealed class Session : IDisposable
         {
             if (_recoveryStall.OnNotCaughtUp(nowMs, _receiver.LastGlobalSeqNo))
             {
-                Fence(ClusterError.RecoveryStalled, "recovery has dispatched nothing for >" + _recoveryStallTimeoutMs +
-                                                        "ms (globalSeqNo stuck at " + _receiver.LastGlobalSeqNo +
-                                                        ")");
+                Stalled(ClusterError.RecoveryStalled, Logger.CoreEventCode.RecoveryStalled,
+                        "recovery has dispatched nothing for >" + _recoveryStallTimeoutMs +
+                            "ms (globalSeqNo stuck at " + _receiver.LastGlobalSeqNo + ")");
+                return;
             }
+        }
+        else if (_tapStall.IsStalled(nowMs))
+        {
+            Stalled(ClusterError.TapStalled, Logger.CoreEventCode.TapStalled,
+                    "no ClusterHeartbeat for >" + _tapStallTimeoutMs + "ms");
             return;
         }
-        if (_tapStall.IsStalled(nowMs))
+        if (_stallAlarm != null)
         {
-            Fence(ClusterError.TapStalled, "no ClusterHeartbeat for >" + _tapStallTimeoutMs + "ms");
+            Logger.Info(Logger.CoreComponent.Cluster, null, "{0} cleared", _stallAlarm);
+            _stallAlarm = null;
+        }
+    }
+
+    // Fences an instance that acts; one that does not raises an alarm once and keeps following the tap.
+    private void Stalled(ClusterError stall, Logger.CoreEventCode code, string detail)
+    {
+        if (_dispatch.IsActing())
+        {
+            Fence(stall, detail);
+            return;
+        }
+        if (_stallAlarm != stall)
+        {
+            _stallAlarm = stall;
+            Logger.Error(Logger.CoreComponent.Cluster, code, null,
+                         "{0}, not fenced while this instance does not act: {1}", stall, detail);
         }
     }
 

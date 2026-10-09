@@ -393,6 +393,12 @@ class Application
             return true;
         }
 
+        // The leader's replica, caught up or not: no other holds the leader-only work.
+        [[nodiscard]] bool isActing() const
+        {
+            return m_app.m_config.offCluster || m_app.m_session.currentLeaderMemberId() == m_app.m_config.memberId;
+        }
+
       private:
         Application& m_app;
     };

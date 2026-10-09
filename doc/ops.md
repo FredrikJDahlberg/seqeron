@@ -300,8 +300,8 @@ convention for "fenced, restart me". A gateway is not a cluster member, so this 
 | `ClusterError` | usual cause |
 |---|---|
 | `CLUSTER_SESSION_LOST` | the cluster closed the session, or no new leader arrived after a failover, on a designated instance; on any other, no new session opened within 20 s |
-| `TAP_STALLED` | no `ClusterHeartbeat` on the co-located tap for 20 s, usually because that member's `SequencerServer` terminated (above); they share the tap |
-| `RECOVERY_STALLED` | recovery delivered nothing for 60 s after the instance had been caught up; see `seqeron_app_recovery_stalled` |
+| `TAP_STALLED` | no `ClusterHeartbeat` on the co-located tap for 20 s, usually because that member's `SequencerServer` terminated (above); they share the tap. A standby instance or a replica not on the leader's member logs `TapStalled` instead and keeps running |
+| `RECOVERY_STALLED` | recovery delivered nothing for 60 s after the instance had been caught up; see `seqeron_app_recovery_stalled`. A standby or non-leader replica logs `RecoveryStalled` instead and keeps running |
 | `SNAPSHOT_DIVERGED` | the instance's snapshot of a round differs from the one its source sequenced: its state is not the log's (spec §16 A-7). A restart rebuilds the state; an instance that diverges again has broken determinism (A-6) |
 | `SNAPSHOT_UNRESTORABLE` | the instance cannot restore its newest confirmed snapshot: a `formatVersion` or header version its build does not read, or records that fail the file's trailer, which means a damaged file ([`snapshot.md`](snapshot.md) §7). The log line `SnapshotRestoreFailed` names the round. A restart repeats it until the build is fixed or the file, `<round>.snapshot` in the instance's snapshot directory, is removed; the instance then restores an older file or replays from `globalSeqNo` 1 |
 | `INGRESS_CONFIRM_FAULTED` | an own frame on the tap did not match the oldest pending one, most often because the sequencer rejected one (`seqeron_sequencer_rejected_ingress_total`) |

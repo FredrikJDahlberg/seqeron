@@ -618,6 +618,12 @@ class Gateway
             return !m_gateway.m_lifecycle.isActivated();
         }
 
+        // The designated instance: a standby serves no one.
+        [[nodiscard]] bool isActing() const
+        {
+            return m_gateway.m_lifecycle.isActivated();
+        }
+
       private:
         Gateway& m_gateway;
     };

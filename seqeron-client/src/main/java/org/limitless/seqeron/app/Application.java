@@ -296,6 +296,12 @@ public final class Application implements AutoCloseable {
         public boolean mayReconnect() {
             return true;
         }
+
+        /** The leader's replica, caught up or not: no other holds the leader-only work. */
+        @Override
+        public boolean isActing() {
+            return offCluster || session.currentLeaderMemberId() == memberId;
+        }
     }
 
     /** Everything one replica needs to join its deployment. */

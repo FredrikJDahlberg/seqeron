@@ -321,6 +321,12 @@ public sealed class Application : IDisposable
             return true;
         }
 
+        // The leader's replica, caught up or not: no other holds the leader-only work.
+        public bool IsActing()
+        {
+            return _app._offCluster || _app._session.CurrentLeaderMemberId == _app._memberId;
+        }
+
         private void Wrap(SequencedEvent sequencedEvent)
         {
             SbeBuffers.Wrap(_view, sequencedEvent.Buffer, sequencedEvent.PayloadOffset, sequencedEvent.PayloadLength);

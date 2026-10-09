@@ -123,8 +123,8 @@ exiting, which lets the sequencer promote the standby (§2.2).
 | `ClusterError` | condition |
 | --- | --- |
 | `CLUSTER_SESSION_LOST` | the cluster closed the session, or no new leader arrived within the sender's timeout, on a designated instance; or no new session replaced it within 20 s on any other |
-| `TAP_STALLED` | no `ClusterHeartbeat` on the co-located tap for 20 s (20 heartbeat intervals) while caught up |
-| `RECOVERY_STALLED` | recovery has delivered nothing for 60 s (3 × the tap-stall timeout) on an instance that has been caught up before |
+| `TAP_STALLED` | no `ClusterHeartbeat` on the co-located tap for 20 s (20 heartbeat intervals) while caught up, on a designated instance or the leader's replica |
+| `RECOVERY_STALLED` | recovery has delivered nothing for 60 s (3 × the tap-stall timeout) on an instance that has been caught up before, on a designated instance or the leader's replica |
 | `INGRESS_CONFIRM_FAULTED` | an own frame on the tap differs from the oldest pending one (spec §16 A-4) |
 | `SNAPSHOT_DIVERGED` | the instance's snapshot of a round differs from the one its source sequenced (spec §16 A-7, §3.4) |
 | `SNAPSHOT_UNRESTORABLE` | the instance cannot restore its newest confirmed snapshot (§3.4) |
@@ -136,6 +136,11 @@ exiting, which lets the sequencer promote the standby (§2.2).
   because a cold start replays the whole log and has no useful bound.
 - **A correct Replayer cannot trip it.** The recovery-stall timeout (60 s) exceeds the Replayer's longest
   pending wait of 20 s (spec §10.1).
+- **Only an instance that acts fences on a stall:** the designated gateway instance, or the replica on the
+  leader's member (any replica off the cluster). Another holds nothing a stale view could act on, so it logs
+  `TapStalled` or `RecoveryStalled` once, keeps following the tap and recovering, and logs when the stall
+  clears. It cannot begin to act while stalled, since designation and leadership reach it on the tap. A
+  standby that never recovers stays up and unready, so alert on that log line.
 - **Only a designated instance fences on a lost session.** Closing an active instance's session is what
   promotes its sibling (§2.2), and the tap carries no frame for that close, so a replacement session could
   announce itself before the instance has seen whether it was superseded. A standby or passive instance holds
@@ -281,7 +286,7 @@ directly.
 - **The local recording.** A local tap that refuses a frame is not spun on: the frame is offered again next
   cycle, and the member's replay waits under Aeron flow control. A local recording that stops, or makes no
   progress for 1 s while the tap is back-pressured, exits the process with code 70.
-- **No member reachable.** The host's tap goes silent, and its clients' tap-stall fences (§2.1) fire, as
+- **No member reachable.** The host's tap goes silent, and its clients' tap-stall checks (§2.1) fire, as
   they would on a member whose cluster lost quorum.
 
 ### 3.4 Snapshot restore

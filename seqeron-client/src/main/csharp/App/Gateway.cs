@@ -539,6 +539,12 @@ public sealed class Gateway : IDisposable
             return !_gateway._lifecycle.IsActivated;
         }
 
+        // The designated instance: a standby serves no one.
+        public bool IsActing()
+        {
+            return _gateway._lifecycle.IsActivated;
+        }
+
         // A ConnectionOpened's opaque tail, or nothing. §7.1 lets connectionData be absent, and a producer that takes
         // the option encodes no var-data header at all — so a payload too short to hold one is that case, not a short
         // read.

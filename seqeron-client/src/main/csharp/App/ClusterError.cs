@@ -14,10 +14,12 @@ public enum ClusterError
     /// counted.</summary>
     IngressConfirmFaulted,
 
-    /// <summary>Recovery has dispatched nothing for the deadline, on an instance that had caught up before.</summary>
+    /// <summary>Recovery has dispatched nothing for the deadline, on an instance that had caught up before; only a
+    /// designated gateway instance or the leader's replica fences, any other logs it.</summary>
     RecoveryStalled,
 
-    /// <summary>No <c>ClusterHeartbeat</c> for the deadline: this process has stopped seeing its node's tap.</summary>
+    /// <summary>No <c>ClusterHeartbeat</c> for the deadline: this process has stopped seeing its node's tap. Fences
+    /// as <see cref="RecoveryStalled"/> does.</summary>
     TapStalled,
 
     /// <summary>This instance's snapshot of a round differs from its source's sequenced one: its state is not the

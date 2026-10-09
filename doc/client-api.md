@@ -170,8 +170,8 @@ top-level rather than nested, per .NET design guidelines.
 | `snapshotListener` | ✓ | ✓ | none | participate in snapshot rounds |
 | `snapshotDirectory` | with `snapshotListener` | with `snapshotListener` | | this instance's snapshot files |
 | `pendingCapacity` | ✓ | ✓ | 1,024 | messages tracked by confirmed ingress; beyond it `publish` returns `Declined` |
-| `tapStallTimeoutMs` | ✓ | ✓ | 20,000 | no `ClusterHeartbeat` for this long fences with `TAP_STALLED` |
-| `recoveryStallTimeoutMs` | ✓ | ✓ | 60,000 | recovery dispatching nothing for this long fences with `RECOVERY_STALLED` |
+| `tapStallTimeoutMs` | ✓ | ✓ | 20,000 | no `ClusterHeartbeat` for this long fences with `TAP_STALLED` a designated instance or the leader's replica; any other logs it |
+| `recoveryStallTimeoutMs` | ✓ | ✓ | 60,000 | recovery dispatching nothing for this long fences with `RECOVERY_STALLED`, as above |
 | `ipcConnectTimeoutMs` | | ✓ | 500 | wait for IPC ingress to the local member while it leads |
 
 The stall defaults are `DEFAULT_TAP_STALL_TIMEOUT_MS` (20 heartbeat intervals) and
