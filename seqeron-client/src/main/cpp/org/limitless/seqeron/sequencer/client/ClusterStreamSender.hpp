@@ -25,6 +25,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include "Aeron.h"
@@ -716,8 +717,7 @@ class ClusterStreamSender
         m_reconnect =
             Reconnect{ .stage = Reconnect::Stage::Ipc,
                        .deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(m_ipcConnectTimeoutMs),
-                       .ipcRegistrationId =
-                           m_aeron->addPublication(CLUSTER_INGRESS_CHANNEL_IPC, CLUSTER_INGRESS_STREAM_ID) };
+                       .ipcAdd = PendingPublication(*m_aeron, CLUSTER_INGRESS_CHANNEL_IPC, CLUSTER_INGRESS_STREAM_ID) };
     }
 
     // Any failure on IPC is a follower's silence, as in connectColocated: the dial to every member follows.
@@ -728,7 +728,7 @@ class ClusterStreamSender
         {
             if (!m_reconnect.ipc)
             {
-                m_reconnect.ipc = m_aeron->findPublication(m_reconnect.ipcRegistrationId);
+                m_reconnect.ipc = m_reconnect.ipcAdd.find();
             }
             if (m_reconnect.ipc && m_reconnect.ipc->isConnected())
             {
@@ -773,7 +773,6 @@ class ClusterStreamSender
         {
             return;
         }
-        resolveDials(m_reconnect.dials);
         if (!chosen)
         {
             throw std::runtime_error("[ClusterStreamSender] Timed out connecting ingress publication to any of " +
@@ -973,9 +972,9 @@ class ClusterStreamSender
     {
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
 
-        const auto pubId = m_aeron->addPublication(channel, CLUSTER_INGRESS_STREAM_ID);
+        PendingPublication add(*m_aeron, channel, CLUSTER_INGRESS_STREAM_ID);
         std::shared_ptr<aeron::Publication> pub;
-        while (!(pub = m_aeron->findPublication(pubId)))
+        while (!(pub = add.find()))
         {
             if (std::chrono::steady_clock::now() >= deadline)
             {
@@ -1005,7 +1004,6 @@ class ClusterStreamSender
         {
             m_idleStrategy.idle();
         }
-        resolveDials(dials);
         if (!chosen)
         {
             throw std::runtime_error("[ClusterStreamSender] Timed out connecting ingress publication to any of " +
@@ -1014,10 +1012,73 @@ class ClusterStreamSender
         return std::make_unique<detail::AeronIngressTransport>(std::move(chosen));
     }
 
+    // A publication added and not yet found. Dropping it unfound cancels the registration, so an attempt abandoned
+    // at any stage leaves nothing with the driver.
+    class PendingPublication
+    {
+      public:
+        PendingPublication() = default;
+
+        PendingPublication(aeron::Aeron& aeron, const std::string& channel, std::int32_t streamId) :
+          m_aeron(&aeron),
+          m_add(aeron.addPublicationAsync(channel, streamId))
+        {}
+
+        PendingPublication(PendingPublication&& other) noexcept :
+          m_aeron(other.m_aeron),
+          m_add(std::exchange(other.m_add, nullptr))
+        {}
+
+        PendingPublication& operator=(PendingPublication&& other) noexcept
+        {
+            if (this != &other)
+            {
+                cancel();
+                m_aeron = other.m_aeron;
+                m_add = std::exchange(other.m_add, nullptr);
+            }
+            return *this;
+        }
+
+        PendingPublication(const PendingPublication&) = delete;
+        PendingPublication& operator=(const PendingPublication&) = delete;
+
+        ~PendingPublication()
+        {
+            cancel();
+        }
+
+        // The publication once the driver has added it, else null; throws the driver's error. A result or an error
+        // ends the registration's pending state.
+        std::shared_ptr<aeron::Publication> find()
+        {
+            aeron::AsyncAddPublication* add = std::exchange(m_add, nullptr);
+            std::shared_ptr<aeron::Publication> publication = m_aeron->findPublication(add);
+            if (!publication)
+            {
+                m_add = add;
+            }
+            return publication;
+        }
+
+      private:
+        void cancel() noexcept
+        {
+            if (m_add)
+            {
+                aeron_async_add_publication_cancel(m_aeron->aeron(), m_add);
+                m_add = nullptr;
+            }
+        }
+
+        aeron::Aeron* m_aeron = nullptr;
+        aeron::AsyncAddPublication* m_add = nullptr;
+    };
+
     struct IngressDial
     {
         std::string endpoint;
-        std::int64_t registrationId;
+        PendingPublication add;
         std::shared_ptr<aeron::Publication> publication = nullptr;
         bool resolved = false;
     };
@@ -1027,9 +1088,8 @@ class ClusterStreamSender
         std::vector<IngressDial> dials;
         for (std::string& endpoint : ingressEndpointList(m_ingressEndpoints))
         {
-            const std::int64_t registrationId =
-                m_aeron->addPublication(protocol::udpChannel(endpoint), CLUSTER_INGRESS_STREAM_ID);
-            dials.push_back(IngressDial{ .endpoint = std::move(endpoint), .registrationId = registrationId });
+            PendingPublication add(*m_aeron, protocol::udpChannel(endpoint), CLUSTER_INGRESS_STREAM_ID);
+            dials.push_back(IngressDial{ .endpoint = std::move(endpoint), .add = std::move(add) });
         }
         return dials;
     }
@@ -1039,7 +1099,7 @@ class ClusterStreamSender
     {
         try
         {
-            dial.publication = m_aeron->findPublication(dial.registrationId);
+            dial.publication = dial.add.find();
             dial.resolved = dial.publication != nullptr;
         }
         catch (const std::exception& ex)
@@ -1066,20 +1126,6 @@ class ClusterStreamSender
             }
         }
         return nullptr;
-    }
-
-    // A registration never found stays with the driver, so every one is resolved; the unchosen close as dials goes
-    // out of scope.
-    void resolveDials(std::vector<IngressDial>& dials)
-    {
-        for (IngressDial& dial : dials)
-        {
-            while (!dial.resolved)
-            {
-                resolveDial(dial);
-                m_idleStrategy.idle();
-            }
-        }
     }
 
     // The cluster ingress at `endpoint` ("host:port").
@@ -1131,7 +1177,7 @@ class ClusterStreamSender
         };
         Stage stage = Stage::Idle;
         std::chrono::steady_clock::time_point deadline{};
-        std::int64_t ipcRegistrationId = -1;
+        PendingPublication ipcAdd;
         std::shared_ptr<aeron::Publication> ipc;
         std::vector<IngressDial> dials;
         bool handshakeOverIpc = false;
