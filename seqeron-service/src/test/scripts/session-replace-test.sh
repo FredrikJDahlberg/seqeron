@@ -18,10 +18,13 @@
 #   3. SIGSTOP the other two members for QUORUM_PAUSE_SECS, so the application's member has no quorum: long
 #      enough for the client's 5 s new-leader timeout to close its session, short enough for the members' own
 #      10 s service interval to survive the pause. SIGCONT them.
-#   4. Load the TestGateway pair: GW-T-A, which the bootstrap designates, on a paused member's driver, and GW-T-B,
-#      the standby, beside the application. Pause the same two members again. The cluster times out both
-#      sessions; GW-T-A had announced its activation on its own and fences, which promotes GW-T-B, whose own was
-#      lost before it was designated, so it replaces it and announces on the new one (doc/fault-tolerance.md §2.1).
+#   4. Load the TestGateway pair: GW-T-A, which the bootstrap designates, on the leader, and GW-T-B, the standby,
+#      beside the application. SIGSTOP both for GATEWAY_PAUSE_SECS. The cluster times out both sessions, and GW-T-A's
+#      closing promotes GW-T-B. GW-T-A had announced its activation on its own and fences, unless it reads GW-T-B's
+#      designation first and steps down; GW-T-B's was lost before it was designated, so it replaces it and announces
+#      on the new one (doc/fault-tolerance.md §2.1). The cluster stays up here: a new leader resets every open
+#      session's activity, so pausing the members times the sessions out only when the old leader's close commits
+#      before the election.
 #
 # PASS iff phases 1 and 2 logged a replacement, phase 1 logged no heartbeat silence of SILENCE_LIMIT_MS or more,
 # the application is still running and unfenced, GW-T-B opened its gate after the pause and is unfenced, and
@@ -44,6 +47,7 @@ LOG_DIR="logs/session-replace"
 TOPOLOGY="seqeron-service/src/test/resources/topology-test-gateway.xml"
 CLIENT_PAUSE_SECS="${CLIENT_PAUSE_SECS:-3}"
 QUORUM_PAUSE_SECS="${QUORUM_PAUSE_SECS:-7}"
+GATEWAY_PAUSE_SECS="${GATEWAY_PAUSE_SECS:-2}"   # past the 1 s session timeout, inside the 5 s activation timeout
 IPC_CONNECT_TIMEOUT_MS=8000   # well past CLIENT_PAUSE_SECS, well inside the 20 s the façade allows a replacement
 SILENCE_LIMIT_MS=6000         # between the pause's silence and the IPC timeout's
 REPLACE_TIMEOUT_SECS=40
@@ -121,7 +125,7 @@ kill -STOP "${OTHERS[@]}"; sleep "$QUORUM_PAUSE_SECS"; kill -CONT "${OTHERS[@]}"
 await_replaced "$BEFORE"; PHASE2=$(( $(replaced) - BEFORE ))
 sleep 2
 
-echo "phase 3: gateway pair; members other than $AN paused for ${QUORUM_PAUSE_SECS}s, GW-T-A's among them"
+echo "phase 3: gateway pair paused for ${GATEWAY_PAUSE_SECS}s"
 seqeron-service/src/main/scripts/clusterctl.sh load-topology "$TOPOLOGY" > "$LOG_DIR/load-topology.log" 2>&1 \
   || { echo "clusterctl load-topology failed — see $LOG_DIR/load-topology.log"; exit 1; }
 start_gateway() {  # start_gateway <memberId> <name> <port index> — echoes the pid
@@ -135,7 +139,7 @@ wait_for_log "$LOG_DIR/gateway-GW-T-A.log" "gate OPEN" 30 || { echo "GW-T-A neve
 wait_for_log "$LOG_DIR/gateway-GW-T-B.log" "Caught up" 30 || { echo "GW-T-B never caught up"; exit 1; }
 sleep 2
 GW_B_LINE=$(wc -l < "$LOG_DIR/gateway-GW-T-B.log")
-kill -STOP "${OTHERS[@]}"; sleep "$QUORUM_PAUSE_SECS"; kill -CONT "${OTHERS[@]}"
+kill -STOP "$GW_A_PID" "$GW_B_PID"; sleep "$GATEWAY_PAUSE_SECS"; kill -CONT "$GW_A_PID" "$GW_B_PID"
 W=0
 until tail -n "+$((GW_B_LINE + 1))" "$LOG_DIR/gateway-GW-T-B.log" | grep -q "gate OPEN\|FENCED"; do
   sleep 0.5; W=$((W+1)); ((W > REPLACE_TIMEOUT_SECS * 2)) && break
