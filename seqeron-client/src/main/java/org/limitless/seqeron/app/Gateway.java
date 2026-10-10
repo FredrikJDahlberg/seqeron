@@ -533,12 +533,13 @@ public final class Gateway implements AutoCloseable {
         }
 
         /**
-         * Not while designated: closing an active instance's session promotes its sibling, and no frame on the tap
-         * says whether that promotion is still to come, so a replacement could announce itself on a stale view.
+         * Not once this activation's {@code GatewayStarted} went out: closing the session it bound promotes the
+         * sibling, and no frame on the tap says whether that promotion is still to come, so a replacement could
+         * act on a stale view. One designated after its session was lost bound nothing, and announces on the new one.
          */
         @Override
         public boolean mayReconnect() {
-            return !lifecycle.isActivated();
+            return !lifecycle.isAnnounced();
         }
 
         /** The designated instance: a standby serves no one. */

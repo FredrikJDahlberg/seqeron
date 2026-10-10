@@ -208,7 +208,8 @@ jobs:
           path: logs/paused-subscriber/
 
   # A client whose cluster session is lost must open a new one without stopping its duty cycle, whether it was the
-  # client that went quiet or the cluster (doc/fault-tolerance.md §2.1).
+  # client that went quiet or the cluster, and a gateway standby must outlive an outage that fences its active
+  # instance (doc/fault-tolerance.md §2.1).
   session-replace:
     name: session replacement
     runs-on: ubuntu-24.04

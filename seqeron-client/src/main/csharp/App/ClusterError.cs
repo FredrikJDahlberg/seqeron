@@ -6,8 +6,9 @@ namespace Org.Limitless.Seqeron.App;
 /// </summary>
 public enum ClusterError
 {
-    /// <summary>The cluster closed this session, or a new leader never arrived, on a designated gateway instance; or
-    /// no new session replaced it in time on any other. This instance can never be promoted again.</summary>
+    /// <summary>The cluster closed this session, or a new leader never arrived, on a gateway instance that had
+    /// announced its activation on it; or no new session replaced it in time on any other. This instance can never be
+    /// promoted again.</summary>
     ClusterSessionLost,
 
     /// <summary>An own frame came back differing from the oldest pending one, so what reached the log cannot be

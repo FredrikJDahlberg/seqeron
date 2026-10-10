@@ -9,8 +9,9 @@ namespace org::limitless::seqeron::app {
 // twin is app/ClusterError.java; keep the two in step.
 enum class ClusterError : std::uint8_t
 {
-    // The cluster closed this session, or a new leader never arrived, on a designated gateway instance; or no new
-    // session replaced it in time on any other. This instance can never be promoted again.
+    // The cluster closed this session, or a new leader never arrived, on a gateway instance that had announced its
+    // activation on it; or no new session replaced it in time on any other. This instance can never be promoted
+    // again.
     ClusterSessionLost,
     // An own frame came back differing from the oldest pending one, so what reached the log cannot be counted.
     IngressConfirmFaulted,

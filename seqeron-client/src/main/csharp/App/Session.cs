@@ -293,7 +293,8 @@ internal sealed class Session : IDisposable
 
     // Opens a session in place of the lost one, an attempt at most once a second and each advanced a step per cycle,
     // until one opens or the tap could have gone silent for as long: past that the cluster is not coming back for
-    // this process, and the session's loss is a fence.
+    // this process, and the session's loss is a fence. An attempt under way then is let finish, since one whose
+    // request an election swallowed spends its whole timeout.
     private void ReplaceSession(string why)
     {
         long nowMs = Clocks.MonotonicMs();
@@ -302,7 +303,7 @@ internal sealed class Session : IDisposable
             _sessionLostSinceMs = nowMs;
             _nextReconnectMs = nowMs;
         }
-        if (nowMs - _sessionLostSinceMs > _tapStallTimeoutMs)
+        if (nowMs - _sessionLostSinceMs > _tapStallTimeoutMs && !_sender.IsReconnecting)
         {
             Fence(ClusterError.ClusterSessionLost,
                   why + "; no session replaced it within " + _tapStallTimeoutMs + "ms");

@@ -122,7 +122,7 @@ exiting, which lets the sequencer promote the standby (§2.2).
 
 | `ClusterError` | condition |
 | --- | --- |
-| `CLUSTER_SESSION_LOST` | the cluster closed the session, or no new leader arrived within the sender's timeout, on a designated instance; or no new session replaced it within 20 s on any other |
+| `CLUSTER_SESSION_LOST` | the cluster closed the session, or no new leader arrived within the sender's timeout, on an instance that had announced its activation on it; or, on any other, no new session replaced it within 20 s and the attempt then under way failed |
 | `TAP_STALLED` | no `ClusterHeartbeat` on the co-located tap for 20 s (20 heartbeat intervals) while caught up, on a designated instance or the leader's replica |
 | `RECOVERY_STALLED` | recovery has delivered nothing for 60 s (3 × the tap-stall timeout) on an instance that has been caught up before, on a designated instance or the leader's replica |
 | `INGRESS_CONFIRM_FAULTED` | an own frame on the tap differs from the oldest pending one (spec §16 A-4) |
@@ -141,13 +141,15 @@ exiting, which lets the sequencer promote the standby (§2.2).
   `TapStalled` or `RecoveryStalled` once, keeps following the tap and recovering, and logs when the stall
   clears. It cannot begin to act while stalled, since designation and leadership reach it on the tap. A
   standby that never recovers stays up and unready, so alert on that log line.
-- **Only a designated instance fences on a lost session.** Closing an active instance's session is what
-  promotes its sibling (§2.2), and the tap carries no frame for that close, so a replacement session could
-  announce itself before the instance has seen whether it was superseded. A standby or passive instance holds
-  nothing the close changed: it opens a new session as the first was opened, starting an attempt at most once a
-  second and advancing it a step per duty cycle, and fences with
-  `CLUSTER_SESSION_LOST` only if none opens within the tap-stall timeout. What was unconfirmed on the old
-  session is dropped, not resent (§5).
+- **Only an announced instance fences on a lost session.** Closing the session a designated instance's
+  `GatewayStarted` bound is what promotes its sibling (§2.2), and the tap carries no frame for that close, so a
+  replacement session could act before the instance has seen whether it was superseded. Any other instance
+  holds nothing the close changed — a standby, a passive one, and one designated after its session was lost,
+  which announces on the replacement instead: it opens a new session as the first was opened, starting an
+  attempt at most once a second and advancing it a step per duty cycle, and fences with `CLUSTER_SESSION_LOST`
+  only if none opens within the tap-stall timeout and the attempt then under way fails, since one whose request
+  an election swallowed spends its whole timeout. What was unconfirmed on the old session is dropped, not resent
+  (§5).
 
 Being superseded is not a fence. When a `GatewayActive` names a sibling, the instance's listener gets
 `onStandby`; it closes its external connections, keeps its cluster session and goes on following the tap,
@@ -339,7 +341,8 @@ failover: a reply, an order sent outward, a notification. The client tier provid
   opens once caught up, whoever leads, and closes on every `LeadershipChanged` as above. Exactly one must run,
   since nothing elects between two.
 - **A lost cluster session closes the gate** until a new one opens: the replica replaces it without blocking, as
-  §2.1 describes for a standby, and fences only if none opens within the tap-stall timeout. Whatever it
+  §2.1 describes for a standby, and fences only if none opens within the tap-stall timeout and the attempt then
+  under way fails. Whatever it
   dispatched meanwhile is redispatched when the gate reopens, since nothing elects a replica and its requests
   stay outstanding on the log.
 - **Dispatch follows insertion order**, which is `globalSeqNo` order. Side effects become visible in emission
@@ -381,7 +384,7 @@ Each failure above has a harness that produces it against a live cluster, all un
 | `failover-test.sh` | a leader kill with a replay consumer, and the confirmed-ingress check of §5 |
 | `gap-recovery-test.sh` | a caught-up consumer drops one live frame after a leader failover, and must resume and keep delivering (§3.2) |
 | `paused-subscriber-test.sh` | a caught-up consumer is `SIGSTOP`ped while more than two tap windows go by; its member must stay up, with no tap-stall fatal (§1.3), and once resumed the consumer must heal the gap its eviction left (§3.2) |
-| `session-replace-test.sh` | a `TestApplication` on a follower is `SIGSTOP`ped past its session timeout, then the other two members are, so its member has no quorum; each time it must open a new session rather than fence (§2.1, §4), and the cluster heartbeat must keep reaching it while an attempt is pending |
+| `session-replace-test.sh` | a `TestApplication` on a follower is `SIGSTOP`ped past its session timeout, then the other two members are, so its member has no quorum; each time it must open a new session rather than fence (§2.1, §4), and the cluster heartbeat must keep reaching it while an attempt is pending. The same outage under the `TestGateway` pair, with the active instance's member paused, must leave the standby serving (§2.1) |
 | `replayer-restart-test.sh` | member 0's `SequencerServer` is killed under a caught-up client; the client must fail fast, and a fresh cold start must be served from the member's new recording alone (§3.1) |
 | `gateway-host-test.sh` | a gateway host whose relay reads the leader, which is then killed; a `confirm` producer on the host must see every frame exactly once, in order, and the relay must move to another member. The host is then restarted, and a cold start there must catch up from its new recording (§3.3) |
 | `snapshot-test.sh` | the `TestGateway` pair on three members with snapshot rounds every 2 s. The standby restarts and restores, the active instance is killed and the restored one takes over, the killed one returns passive and is activated, and the other returns as a hot standby restoring the rounds it published. Each restore must report the state the client traffic implies, and no instance may be fenced, so every round is also compared against the restored state (§3.4) |

@@ -31,7 +31,7 @@ The sections before [Façades](#façades-app) define the model and the contract;
 | [Snapshots](#snapshots) (both façades) | Restart from the newest log-confirmed snapshot, then only the messages after its cut. Fencing of any instance whose state diverges from its source's. | Member restart: a member always replays its full log. |
 
 A **fence** is `onFenced(ClusterError, detail)`, raised once, after which the instance takes no further
-action. Causes: cluster session lost (on a designated `Gateway` instance, or not replaced within 20 s),
+action. Causes: cluster session lost (on a `Gateway` instance that announced its activation on it, or not replaced within 20 s),
 ingress confirmation fault, recovery stall, tap stall, snapshot divergence, unrestorable snapshot ([`fault-tolerance.md`](fault-tolerance.md) §2.1). Loss of the media driver
 is not a fence; it raises from `doWork()`.
 
@@ -48,8 +48,9 @@ is not a fence; it raises from `doWork()`.
   standby. A callback that must spin calls `keepAlive()`.
 - **Back pressure blocks, bounded.** `publish`/`reply` spin through ingress back pressure and leader
   elections until the offer lands, for at most 10 s; beyond that the session is treated as lost. A
-  designated `Gateway` instance is fenced; an `Application`, or any other `Gateway` instance, opens a new
-  session, starting an attempt at most once a second without blocking its duty cycle, and is fenced only if none opens within the tap-stall timeout. The result is `protocol.Publish`: `Published` (offered — not yet sequenced; confirmed
+  `Gateway` instance that announced its activation on that session is fenced; an `Application`, or any other
+  `Gateway` instance, opens a new session, starting an attempt at most once a second without blocking its duty
+  cycle, and is fenced only if none opens within the tap-stall timeout and the attempt then under way fails. The result is `protocol.Publish`: `Published` (offered — not yet sequenced; confirmed
   ingress tracks it to the producer's own tap), `Declined` (not placed; retryable), or `Refused` (never
   placeable).
 - **Flyweights.** `Payload` and `SequencedEvent` are views over the receive buffer, valid only for the

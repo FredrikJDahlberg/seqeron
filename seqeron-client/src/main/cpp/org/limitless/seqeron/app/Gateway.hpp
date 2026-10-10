@@ -611,11 +611,12 @@ class Gateway
             m_gateway.m_listener.onFenced(fence, detail);
         }
 
-        // Not while designated: closing an active instance's session promotes its sibling, and no frame on the tap
-        // says whether that promotion is still to come, so a replacement could announce itself on a stale view.
+        // Not once this activation's GatewayStarted went out: closing the session it bound promotes the sibling, and
+        // no frame on the tap says whether that promotion is still to come, so a replacement could act on a stale
+        // view. One designated after its session was lost bound nothing, and announces on the new one.
         [[nodiscard]] bool mayReconnect() const
         {
-            return !m_gateway.m_lifecycle.isActivated();
+            return !m_gateway.m_lifecycle.isAnnounced();
         }
 
         // The designated instance: a standby serves no one.

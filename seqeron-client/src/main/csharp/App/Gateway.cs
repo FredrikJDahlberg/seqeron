@@ -532,11 +532,12 @@ public sealed class Gateway : IDisposable
             _gateway._listener.OnFenced(fence, detail);
         }
 
-        // Not while designated: closing an active instance's session promotes its sibling, and no frame on the tap
-        // says whether that promotion is still to come, so a replacement could announce itself on a stale view.
+        // Not once this activation's GatewayStarted went out: closing the session it bound promotes the sibling, and
+        // no frame on the tap says whether that promotion is still to come, so a replacement could act on a stale
+        // view. One designated after its session was lost bound nothing, and announces on the new one.
         public bool MayReconnect()
         {
-            return !_gateway._lifecycle.IsActivated;
+            return !_gateway._lifecycle.IsAnnounced;
         }
 
         // The designated instance: a standby serves no one.

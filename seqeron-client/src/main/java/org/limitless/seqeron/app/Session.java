@@ -289,7 +289,8 @@ final class Session implements AutoCloseable {
     /**
      * Opens a session in place of the lost one, an attempt at most once a second and each advanced a step per cycle,
      * until one opens or the tap could have gone silent for as long: past that the cluster is not coming back for
-     * this process, and the session's loss is a fence.
+     * this process, and the session's loss is a fence. An attempt under way then is let finish, since one whose
+     * request an election swallowed spends its whole timeout.
      */
     private void replaceSession(final String why) {
         final long nowMs = Clocks.monotonicMs();
@@ -297,7 +298,7 @@ final class Session implements AutoCloseable {
             sessionLostSinceMs = nowMs;
             nextReconnectMs = nowMs;
         }
-        if (nowMs - sessionLostSinceMs > tapStallTimeoutMs) {
+        if (nowMs - sessionLostSinceMs > tapStallTimeoutMs && !sender.isReconnecting()) {
             fence(ClusterError.CLUSTER_SESSION_LOST,
                   why + "; no session replaced it within " + tapStallTimeoutMs + "ms");
             return;

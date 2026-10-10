@@ -345,7 +345,8 @@ class Session
 
     // Opens a session in place of the lost one, an attempt at most once a second and each advanced a step per
     // cycle, until one opens or the tap could have gone silent for as long: past that the cluster is not coming
-    // back for this process, and the session's loss is a fence.
+    // back for this process, and the session's loss is a fence. An attempt under way then is let finish, since one
+    // whose request an election swallowed spends its whole timeout.
     void replaceSession(const char* why)
     {
         const std::int64_t nowMs = monotonicMs();
@@ -354,7 +355,7 @@ class Session
             m_sessionLostSinceMs = nowMs;
             m_nextReconnectMs = nowMs;
         }
-        if (nowMs - m_sessionLostSinceMs > m_tapStallTimeoutMs)
+        if (nowMs - m_sessionLostSinceMs > m_tapStallTimeoutMs && !m_sender.isReconnecting())
         {
             fence(ClusterError::ClusterSessionLost,
                   std::string{ why } + "; no session replaced it within " + std::to_string(m_tapStallTimeoutMs) + "ms");

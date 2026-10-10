@@ -299,7 +299,7 @@ convention for "fenced, restart me". A gateway is not a cluster member, so this 
 
 | `ClusterError` | usual cause |
 |---|---|
-| `CLUSTER_SESSION_LOST` | the cluster closed the session, or no new leader arrived after a failover, on a designated instance; on any other, no new session opened within 20 s |
+| `CLUSTER_SESSION_LOST` | the cluster closed the session, or no new leader arrived after a failover, on an instance that had announced its activation on it; on any other, no new session opened within 20 s and the attempt then under way failed |
 | `TAP_STALLED` | no `ClusterHeartbeat` on the co-located tap for 20 s, usually because that member's `SequencerServer` terminated (above); they share the tap. A standby instance or a replica not on the leader's member logs `TapStalled` instead and keeps running |
 | `RECOVERY_STALLED` | recovery delivered nothing for 60 s after the instance had been caught up; see `seqeron_app_recovery_stalled`. A standby or non-leader replica logs `RecoveryStalled` instead and keeps running |
 | `SNAPSHOT_DIVERGED` | the instance's snapshot of a round differs from the one its source sequenced: its state is not the log's (spec §16 A-7). A restart rebuilds the state; an instance that diverges again has broken determinism (A-6) |
