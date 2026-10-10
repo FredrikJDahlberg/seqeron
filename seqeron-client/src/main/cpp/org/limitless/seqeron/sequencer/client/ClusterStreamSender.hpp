@@ -670,6 +670,10 @@ class ClusterStreamSender
     // fragments read.
     int pollHandshake()
     {
+        if (m_connectRequestDue)
+        {
+            sendConnectRequest();
+        }
         const int fragments =
             m_egress->poll([this](std::span<const std::uint8_t> bytes) { onHandshakeFragment(bytes); });
         applyPendingIngressSwitch(); // a REDIRECT in that batch; never build inside poll()
@@ -820,7 +824,8 @@ class ClusterStreamSender
         throw std::runtime_error("[ClusterStreamSender] Timed out waiting for cluster session");
     }
 
-    // Encodes and offers a SessionConnectRequest: the initial handshake, and the re-announce after a REDIRECT.
+    // Encodes and offers a SessionConnectRequest: the initial handshake, and the re-announce after a REDIRECT. One
+    // refused is offered again from pollHandshake, within the handshake's deadline.
     void sendConnectRequest()
     {
         alignas(16) std::array<std::uint8_t, 512> connBuf{};
@@ -831,11 +836,8 @@ class ClusterStreamSender
         req.putEncodedCredentials(nullptr, 0);
         req.putClientInfo(std::string_view(CLUSTER_CLIENT_INFO));
 
-        while (!m_ingress->offer(
-            std::span<const std::uint8_t>(connBuf.data(), static_cast<std::size_t>(req.sbePosition()))))
-        {
-            m_idleStrategy.idle();
-        }
+        m_connectRequestDue = !m_ingress->offer(
+            std::span<const std::uint8_t>(connBuf.data(), static_cast<std::size_t>(req.sbePosition())));
     }
 
     // A follower rejected our SessionConnectRequest, pointing us at the real leader. Swap the
@@ -1190,6 +1192,7 @@ class ClusterStreamSender
     Reconnect m_reconnect;
 
     std::int64_t m_clusterSessionId = -1;
+    bool m_connectRequestDue = false;
     // Latched once the cluster closes this client's session; see onFragment and isSessionLost().
     bool m_sessionLost = false;
     std::int64_t m_ingressStallFatalTimeoutMs = INGRESS_STALL_FATAL_TIMEOUT_MS;

@@ -230,6 +230,40 @@ TEST(ClusterStreamSender, ConnectThrowsWhenClusterNeverAnswers)
     EXPECT_FALSE(sender.isConnected());
 }
 
+// A refused SessionConnectRequest is offered again on the next handshake poll rather than spun on.
+TEST(ClusterStreamSender, ConnectOffersARefusedConnectRequestAgainOnTheNextPoll)
+{
+    auto egress = std::make_unique<FakeEgressTransport>();
+    egress->m_queued.push_back(encodeSessionEvent(-1, 0, cluster_sbe::EventCode::Value::ERROR));
+    egress->m_queued.push_back(encodeSessionEvent(-1, 0, cluster_sbe::EventCode::Value::ERROR));
+    egress->m_queued.push_back(encodeSessionEvent(9, 3, cluster_sbe::EventCode::Value::OK));
+
+    auto ingress = std::make_unique<FlakyIngressTransport>();
+    ingress->m_rejectCount = 2;
+    auto* ingressPtr = ingress.get();
+
+    ClusterStreamSender sender;
+    sender.connect(std::move(ingress), std::move(egress));
+
+    EXPECT_TRUE(sender.isConnected());
+    EXPECT_EQ(3, ingressPtr->m_offerCalls);
+    decodeOffered<cluster_sbe::SessionConnectRequest>(ingressPtr->m_accepted);
+}
+
+// An ingress that never takes the request ends in the handshake's timeout, not a spin with no deadline.
+TEST(ClusterStreamSender, ConnectThrowsWhenTheConnectRequestIsNeverAccepted)
+{
+    auto ingress = std::make_unique<FlakyIngressTransport>();
+    ingress->m_rejectCount = std::numeric_limits<int>::max();
+    auto* ingressPtr = ingress.get();
+
+    ClusterStreamSender sender;
+    sender.setConnectTimeoutMs(20);
+
+    EXPECT_THROW(sender.connect(std::move(ingress), std::make_unique<FakeEgressTransport>()), std::runtime_error);
+    EXPECT_GT(ingressPtr->m_offerCalls, 1);
+}
+
 TEST(ClusterStreamSender, ConnectIgnoresErrorEventCodesUntilOkArrives)
 {
     auto egress = std::make_unique<FakeEgressTransport>();
