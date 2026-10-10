@@ -1184,9 +1184,9 @@ class ClusterStreamSender
         };
         Stage stage = Stage::Idle;
         std::chrono::steady_clock::time_point deadline{};
-        PendingPublication ipcAdd;
-        std::shared_ptr<aeron::Publication> ipc;
-        std::vector<IngressDial> dials;
+        PendingPublication ipcAdd{};
+        std::shared_ptr<aeron::Publication> ipc{};
+        std::vector<IngressDial> dials{};
         bool handshakeOverIpc = false;
     };
     Reconnect m_reconnect;
