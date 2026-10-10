@@ -80,6 +80,9 @@ public sealed class ClusterStreamSender : IIngressSender, IDisposable
     private bool _newLeaderDuringSend;
     private long _lastKeepAliveMs;
 
+    // Keep-alives refused in a row: the first is logged, and the run when one is accepted again.
+    private int _keepAliveFailures;
+
     /// <summary>A sender with no session; <see cref="ConnectColocated"/> or <see cref="Connect"/> opens
     /// one.</summary>
     public ClusterStreamSender()
@@ -226,8 +229,8 @@ public sealed class ClusterStreamSender : IIngressSender, IDisposable
                     return false;
                 case IngressStallPolicy.Action.Alert:
                     Logger.Error(Logger.CoreComponent.Cluster, Logger.CoreEventCode.ClusterOfferFailed, Member,
-                                 "cluster ingress back-pressured (offer={0}) for {1}ms", result,
-                                 _stallPolicy.BlockedMs(now));
+                                 "cluster ingress has refused this frame ({0}) for {1}ms — still retrying",
+                                 Publication.ErrorString(result), _stallPolicy.BlockedMs(now));
                     break;
             }
             PollEgress();
@@ -256,8 +259,17 @@ public sealed class ClusterStreamSender : IIngressSender, IDisposable
         _lastKeepAliveMs = now;
         if (!_cluster.SendKeepAlive())
         {
-            Logger.Error(Logger.CoreComponent.Cluster, Logger.CoreEventCode.ClusterOfferFailed, Member,
-                         "keep-alive offer failed");
+            if (_keepAliveFailures++ == 0)
+            {
+                Logger.Error(Logger.CoreComponent.Cluster, Logger.CoreEventCode.ClusterOfferFailed, Member,
+                             "keep-alive offer failed — the rest of the run is counted, not logged");
+            }
+        }
+        else if (_keepAliveFailures > 0)
+        {
+            Logger.Info(Logger.CoreComponent.Cluster, Member, "keep-alive accepted after {0} refused",
+                        _keepAliveFailures);
+            _keepAliveFailures = 0;
         }
     }
 

@@ -1,6 +1,7 @@
 package org.limitless.seqeron.sequencer.client;
 
 import io.aeron.Aeron;
+import io.aeron.Publication;
 import io.aeron.cluster.client.AeronCluster;
 import io.aeron.cluster.client.EgressListener;
 import io.aeron.cluster.codecs.EventCode;
@@ -85,6 +86,8 @@ public final class ClusterStreamSender implements IngressSender, AutoCloseable {
     private IngressTracker hold;
     private boolean newLeaderDuringSend;
     private long lastKeepAliveMs;
+    /** Keep-alives refused in a row: the first is logged, and the run when one is accepted again. */
+    private int keepAliveFailures;
 
     /**
      * Connects a client co-located with no member: UDP ingress against the whole endpoint set.
@@ -256,8 +259,8 @@ public final class ClusterStreamSender implements IngressSender, AutoCloseable {
                 return false;
             case ALERT:
                 Logger.error(Logger.CoreComponent.Cluster, Logger.CoreEventCode.ClusterOfferFailed, member(),
-                             "cluster ingress back-pressured (offer=%d) for %dms", result,
-                             stallPolicy.blockedMs(now));
+                             "cluster ingress has refused this frame (%s) for %dms — still retrying",
+                             Publication.errorString(result), stallPolicy.blockedMs(now));
                 break;
             case RETRY:
             default:
@@ -284,8 +287,14 @@ public final class ClusterStreamSender implements IngressSender, AutoCloseable {
         }
         lastKeepAliveMs = now;
         if (!cluster.sendKeepAlive()) {
-            Logger.error(Logger.CoreComponent.Cluster, Logger.CoreEventCode.ClusterOfferFailed, member(),
-                         "keep-alive offer failed");
+            if (keepAliveFailures++ == 0) {
+                Logger.error(Logger.CoreComponent.Cluster, Logger.CoreEventCode.ClusterOfferFailed, member(),
+                             "keep-alive offer failed — the rest of the run is counted, not logged");
+            }
+        } else if (keepAliveFailures > 0) {
+            Logger.info(Logger.CoreComponent.Cluster, member(), "keep-alive accepted after %d refused",
+                        keepAliveFailures);
+            keepAliveFailures = 0;
         }
     }
 

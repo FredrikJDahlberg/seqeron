@@ -406,8 +406,16 @@ class ClusterStreamSender
             .clusterSessionId(m_clusterSessionId);
         if (!m_ingress->offer(std::span<const std::uint8_t>(kaBuf.data(), static_cast<std::size_t>(ka.sbePosition()))))
         {
-            util::Logger::error(util::component::Cluster, util::eventCode::ClusterOfferFailed,
-                                "keep-alive offer failed");
+            if (m_keepAliveFailures++ == 0)
+            {
+                util::Logger::error(util::component::Cluster, util::eventCode::ClusterOfferFailed,
+                                    "keep-alive offer failed — the rest of the run is counted, not logged");
+            }
+        }
+        else if (m_keepAliveFailures > 0)
+        {
+            util::Logger::info(util::component::Cluster, "keep-alive accepted after %d refused", m_keepAliveFailures);
+            m_keepAliveFailures = 0;
         }
     }
 
@@ -1138,6 +1146,8 @@ class ClusterStreamSender
     IngressTracker* m_hold = nullptr;
     bool m_newLeaderDuringSend = false;
     std::int64_t m_lastKeepAliveMs = 0;
+    // Keep-alives refused in a row: the first is logged, and the run when one is accepted again.
+    int m_keepAliveFailures = 0;
     std::int64_t m_connectTimeoutMs = CLUSTER_CONNECT_TIMEOUT_MS;
     const std::int64_t m_correlationId = 1;
 };
