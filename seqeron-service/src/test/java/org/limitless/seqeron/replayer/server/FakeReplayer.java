@@ -25,8 +25,11 @@ import org.agrona.concurrent.status.CountersReader;
  * delivered with a null {@code Header}, which both of the service's handlers ignore.
  */
 final class FakeReplayer implements Replayer {
-    /** Counter slots; the service allocates nine. */
+    /** Counter slots; the service allocates ten. */
     private static final int COUNTER_CAPACITY = 16;
+
+    /** Every recording's term length: the driver's default IPC term, as a member's tap has. */
+    static final int TERM_BUFFER_LENGTH = 16 * 1024 * 1024;
 
     /** One {@code startReplay} the service asked for. */
     record StartedReplay(long recordingId, long position, long length, int streamId, long replaySessionId) { }
@@ -34,6 +37,7 @@ final class FakeReplayer implements Replayer {
     private final List<Replayer.RecordingSpan> recordings = new ArrayList<>();
     private final Map<Long, Long> recordingPositions = new HashMap<>();
     private final Map<Long, Long> stopPositions = new HashMap<>();
+    private Replayer.TapBacklog tapBacklog;
 
     private final List<StartedReplay> startedReplays = new ArrayList<>();
     private final List<Long> stoppedReplays = new ArrayList<>();
@@ -71,7 +75,7 @@ final class FakeReplayer implements Replayer {
 
     /** Adds one tap recording. A negative tip means the archive cannot say where it ends. */
     void addRecording(final long recordingId, final long startPosition, final boolean active, final long tip) {
-        recordings.add(new Replayer.RecordingSpan(recordingId, startPosition, active));
+        recordings.add(new Replayer.RecordingSpan(recordingId, startPosition, active, TERM_BUFFER_LENGTH));
         if (active) {
             recordingPositions.put(recordingId, tip);
         } else {
@@ -81,10 +85,11 @@ final class FakeReplayer implements Replayer {
 
     /** Marks a recording stopped, as an operator repairing an unclean shutdown's leftover does. */
     void stopRecording(final long recordingId) {
-        recordings.replaceAll(span
-                              -> span.recordingId() == recordingId
-                                  ? new Replayer.RecordingSpan(recordingId, span.startPosition(), false)
-                                  : span);
+        recordings.replaceAll(
+            span
+            -> span.recordingId() == recordingId
+                ? new Replayer.RecordingSpan(recordingId, span.startPosition(), false, span.termBufferLength())
+                : span);
         final Long tip = recordingPositions.remove(recordingId);
         if (tip != null) {
             stopPositions.put(recordingId, tip);
@@ -95,6 +100,14 @@ final class FakeReplayer implements Replayer {
     void hideTip(final long recordingId) {
         recordingPositions.remove(recordingId);
         stopPositions.remove(recordingId);
+    }
+
+    /**
+     * What the counters say the active recording trails the tap by; {@code null}, the default, is no tap
+     * publication found.
+     */
+    void tapBacklog(final Replayer.TapBacklog backlog) {
+        tapBacklog = backlog;
     }
 
     /** Makes every subsequent {@code startReplay} throw, as an archive that will not serve a replay does. */
@@ -217,6 +230,11 @@ final class FakeReplayer implements Replayer {
     public long stopPosition(final long recordingId) {
         throwIfArchiveDown();
         return stopPositions.getOrDefault(recordingId, -1L);
+    }
+
+    @Override
+    public Replayer.TapBacklog tapBacklog(final Replayer.RecordingSpan span) {
+        return tapBacklog;
     }
 
     @Override

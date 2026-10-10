@@ -132,7 +132,7 @@ The sequenced stream itself has no port: the tap is `aeron:ipc` on each member's
 | `sequencer.hosts`           | `SEQERON_HOSTS`, else `localhost` | every member's host, in id order   |
 | `sequencer.host`            | this member's entry in `hosts`, else `localhost` | the host this member binds and advertises |
 | `sequencer.baseDir`         | `$TMPDIR/seqeron-seq`; required with more than one host | root of the archive and cluster directories |
-| `sequencer.aeronDir`        | `$TMPDIR/seqeron-seq-aeron-<id>`| the media driver's directory       |
+| `sequencer.aeronDir`        | `$TMPDIR/seqeron-seq-aeron-<id>`| the media driver's directory; on Linux, keep it on tmpfs such as `/dev/shm`, or the member warns at start ([`ops.md`](ops.md), "Term lengths") |
 | `sequencer.idleStrategy`    | `backoff`                        | `backoff` or `yielding`            |
 | `sequencer.sessionTimeoutMs` | `1000`                          | how long the cluster keeps a client session with no keep-alives; a gateway that misses it is replaced by its standby |
 | `sequencer.leaderHeartbeatIntervalMs` | `20`                   | how often the leader heartbeats its followers |

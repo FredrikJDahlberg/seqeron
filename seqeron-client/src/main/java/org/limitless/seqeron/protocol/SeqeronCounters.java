@@ -102,6 +102,12 @@ public final class SeqeronCounters {
      */
     public static final int REPLAYER_SNAPSHOT_ROUND_TYPE_ID = 5109;
 
+    /**
+     * Count of replay requests held pending only because the tap recording trailed the tap while a replay ran,
+     * resends included: a held client resends about every 500 ms.
+     */
+    public static final int REPLAYER_THROTTLED_REQUESTS_COUNT_TYPE_ID = 5110;
+
     // ── Co-located application replicas (5200-5299) ────────────────────────────────────────────
     // Core reserves 5200; a consumer allocates its own in the range (doc/ops.md, "Counter type ids"). Published by
     // the apps, not by any Java process: protocol/SeqeronCounters.hpp must match these ids and key layout.

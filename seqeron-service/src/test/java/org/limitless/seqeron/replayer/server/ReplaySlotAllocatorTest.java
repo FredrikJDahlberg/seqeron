@@ -31,6 +31,27 @@ class ReplaySlotAllocatorTest {
     }
 
     @Test
+    @DisplayName("a lowered limit admits nothing new until active slots end, and stops none of them")
+    void aLoweredLimitAdmitsNothingNewAndStopsNone() {
+        final ReplaySlotAllocator allocator = new ReplaySlotAllocator(4, TTL_MS);
+        allocator.activate(1, 100, 0);
+        allocator.activate(2, 200, 0);
+
+        allocator.limit(1);
+
+        assertFalse(allocator.hasCapacity());
+        assertEquals(2, allocator.activeCount());
+        allocator.supersede(1);
+        assertFalse(allocator.hasCapacity());
+        allocator.supersede(2);
+        assertTrue(allocator.hasCapacity());
+
+        allocator.activate(3, 300, 0);
+        allocator.limit(4);
+        assertTrue(allocator.hasCapacity());
+    }
+
+    @Test
     @DisplayName("superseding a client's active slot frees capacity and returns its token")
     void supersedeFreesCapacityAndReturnsToken() {
         final ReplaySlotAllocator allocator = new ReplaySlotAllocator(1, TTL_MS);

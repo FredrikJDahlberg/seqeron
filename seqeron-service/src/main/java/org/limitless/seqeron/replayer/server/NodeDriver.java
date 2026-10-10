@@ -3,9 +3,14 @@ package org.limitless.seqeron.replayer.server;
 import io.aeron.driver.Configuration;
 import io.aeron.driver.MediaDriver;
 import io.aeron.driver.ThreadingMode;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
+import org.agrona.SystemUtil;
 import org.agrona.concurrent.IdleStrategy;
+import org.limitless.seqeron.util.Logger;
 
 /**
  * What a seqeron media driver is, a member's or a gateway host's: the driver's settings, the control-response
@@ -71,6 +76,43 @@ public final class NodeDriver {
         }
         untetheredTimeouts(ctx);
         return ctx;
+    }
+
+    /**
+     * Warns, on Linux, when {@code aeronDir} is not on tmpfs: the driver's log buffers, the tap's among them, are
+     * memory-mapped files there, and writing back their dirty pages to a disk stalls the threads that write them.
+     * @param component who is launching the driver
+     * @param memberId  its node id
+     * @param aeronDir  the driver's directory
+     */
+    public static void warnUnlessTmpfs(final Logger.Component component, final int memberId, final String aeronDir) {
+        if (!SystemUtil.isLinux()) {
+            return;
+        }
+        try {
+            final String type = fileSystemType(Path.of(aeronDir));
+            if (!"tmpfs".equals(type)) {
+                Logger.log(component, Logger.Severity.Warn, Logger.CoreEventCode.Info, memberId,
+                           "the Aeron directory %s is on %s, not tmpfs: page writeback of its log buffers can "
+                               + "stall the tap — put it under /dev/shm",
+                           aeronDir, type);
+            }
+        } catch (final IOException ex) {
+            // The file system cannot be read; nothing to warn about.
+        }
+    }
+
+    /**
+     * The type of the file system holding {@code dir}, or its nearest existing ancestor's, since the driver
+     * creates the directory.
+     * @param dir a directory, existing or not
+     */
+    static String fileSystemType(final Path dir) throws IOException {
+        Path existing = dir.toAbsolutePath();
+        while (!Files.exists(existing)) {
+            existing = existing.getParent();
+        }
+        return Files.getFileStore(existing).type();
     }
 
     /** Sets the untethered-subscriber timing where its Aeron property is not set. */

@@ -16,7 +16,13 @@ public interface Replayer {
      * One tap recording as read off an archive listing. {@code startPosition} is carried because a replay
      * must start at or after it, though it is always 0 today.
      */
-    record RecordingSpan(long recordingId, long startPosition, boolean active) { }
+    record RecordingSpan(long recordingId, long startPosition, boolean active, int termBufferLength) { }
+
+    /**
+     * How far a recording trails the tap it records, and the window it may trail by before the tap's publisher
+     * blocks on it.
+     */
+    record TapBacklog(long bytes, long window) { }
 
     /**
      * Every tap recording the local archive holds, in whatever order it listed them; which one is served is
@@ -38,6 +44,13 @@ public interface Replayer {
      * @return the stop position, or a negative value if it has not been written yet
      */
     long stopPosition(long recordingId);
+
+    /**
+     * How far the active tap recording trails the tap, read off this node's counters.
+     * @param span the active tap recording
+     * @return its backlog, or {@code null} when the counters show no tap publication it records
+     */
+    TapBacklog tapBacklog(RecordingSpan span);
 
     /**
      * Starts a bounded replay onto a node-local IPC stream.

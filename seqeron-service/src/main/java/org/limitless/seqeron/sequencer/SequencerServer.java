@@ -104,6 +104,7 @@ public final class SequencerServer {
 
         final Supplier<IdleStrategy> idleStrategySupplier = IdleStrategies.fromProperty(PROP_IDLE_STRATEGY);
         final MediaDriver.Context driverCtx = NodeDriver.context(aeronDir, idleStrategySupplier);
+        NodeDriver.warnUnlessTmpfs(Logger.CoreComponent.SequencerServer, memberId, aeronDir);
 
         final AeronArchive.Context localArchiveCtx = new AeronArchive.Context()
                                                          .lock(NoOpLock.INSTANCE)

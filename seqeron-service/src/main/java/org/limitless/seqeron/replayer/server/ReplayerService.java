@@ -127,6 +127,7 @@ public final class ReplayerService {
     private final AtomicCounter integrityFailureCounter;
     private final AtomicCounter controlRepliesDroppedCounter;
     private final AtomicCounter clientIdCollisionCounter;
+    private final AtomicCounter throttledRequestsCounter;
 
     private final MessageHeaderDecoder inHeaderDecoder = new MessageHeaderDecoder();
     private final ReplayRequestDecoder replayRequestDecoder = new ReplayRequestDecoder();
@@ -192,6 +193,8 @@ public final class ReplayerService {
             counter(SeqeronCounters.REPLAYER_CONTROL_REPLIES_DROPPED_COUNT_TYPE_ID, "controlRepliesDroppedCount");
         this.clientIdCollisionCounter =
             counter(SeqeronCounters.REPLAYER_CLIENT_ID_COLLISION_TYPE_ID, "clientIdCollision");
+        this.throttledRequestsCounter =
+            counter(SeqeronCounters.REPLAYER_THROTTLED_REQUESTS_COUNT_TYPE_ID, "throttledRequestsCount");
     }
 
     /**
@@ -499,12 +502,19 @@ public final class ReplayerService {
         }
         stopReplayForClient(clientId);
 
+        final int limit = replayLimit();
+        replaySlots.limit(limit);
         if (!replaySlots.hasCapacity()) {
+            if (replaySlots.activeCount() < MAX_CONCURRENT_REPLAYS) {
+                throttledRequestsCounter.increment();
+            }
             replaySlots.enqueue(clientId, requestId, fromPosition);
             sendPending(clientId, requestId);
             Logger.info(Logger.CoreComponent.ReplayerService, memberId,
-                        "client %d queued: no free replay slot (active=%d/%d, pending=%d)", clientId,
-                        replaySlots.activeCount(), MAX_CONCURRENT_REPLAYS, replaySlots.pendingCount());
+                        "client %d queued: no free replay slot (active=%d/%d%s, pending=%d)", clientId,
+                        replaySlots.activeCount(), limit,
+                        limit < MAX_CONCURRENT_REPLAYS ? " while the tap recording is behind" : "",
+                        replaySlots.pendingCount());
             return;
         }
         startReplayForClient(clientId, requestId, fromPosition);
@@ -636,6 +646,24 @@ public final class ReplayerService {
     }
 
     /**
+     * How many replays may run at once: one while the active recording trails the tap by more than a quarter of
+     * the window it may trail by, since a replay competes with the recorder for the disk and the recorder holds the
+     * sequencer back.
+     */
+    private int replayLimit() {
+        if (replaySlots.activeCount() == 0) {
+            return MAX_CONCURRENT_REPLAYS; // the next replay is the only one either way
+        }
+        try {
+            final Replayer.RecordingSpan active = findActiveRecording();
+            final Replayer.TapBacklog backlog = active == null ? null : replayer.tapBacklog(active);
+            return backlog != null && backlog.bytes() > backlog.window() / 4 ? 1 : MAX_CONCURRENT_REPLAYS;
+        } catch (final RuntimeException ex) {
+            return MAX_CONCURRENT_REPLAYS; // serving the replay meets the same archive and reports it
+        }
+    }
+
+    /**
      * Stops an active replay
      * @param clientId client identity
      */
@@ -664,6 +692,10 @@ public final class ReplayerService {
      * Drain pending requests
      */
     private void drainPending() {
+        if (replaySlots.pendingCount() == 0) {
+            return;
+        }
+        replaySlots.limit(replayLimit());
         int budget = replaySlots.pendingCount();
         while (budget-- > 0) {
             final ReplaySlotAllocator.PendingRequest request = replaySlots.pollPending();

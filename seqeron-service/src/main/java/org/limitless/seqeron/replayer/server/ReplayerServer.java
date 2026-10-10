@@ -193,6 +193,7 @@ public final class ReplayerServer {
                                                      final Supplier<IdleStrategy> idleStrategies) {
         final String baseDir = System.getProperty(PROP_BASE_DIR, System.getProperty("java.io.tmpdir") + "/seqeron-seq");
         final MediaDriver.Context driverCtx = NodeDriver.context(aeronDir, idleStrategies);
+        NodeDriver.warnUnlessTmpfs(Logger.CoreComponent.ReplayerServer, nodeId, aeronDir);
         final Archive.Context archiveCtx = new Archive.Context()
                                                .aeronDirectoryName(aeronDir)
                                                .archiveDir(new File(baseDir + "/archive-" + nodeId))

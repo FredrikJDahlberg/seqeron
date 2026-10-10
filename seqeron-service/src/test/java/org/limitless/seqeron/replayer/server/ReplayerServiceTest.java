@@ -468,6 +468,7 @@ class ReplayerServiceTest {
 
         assertEquals(ReplayPendingDecoder.TEMPLATE_ID, request(lateClient, 1, FROM_START).templateId());
         assertEquals(1, fakeReplayer.counter(SeqeronCounters.REPLAYER_PENDING_REQUESTS_TYPE_ID));
+        assertEquals(0, fakeReplayer.counter(SeqeronCounters.REPLAYER_THROTTLED_REQUESTS_COUNT_TYPE_ID));
 
         fakeReplayer.enqueueRequest(replayComplete(1));
         replayerService.poll();
@@ -478,6 +479,41 @@ class ReplayerServiceTest {
         assertEquals(0, fakeReplayer.counter(SeqeronCounters.REPLAYER_PENDING_REQUESTS_TYPE_ID));
         assertEquals(ReplayerService.MAX_CONCURRENT_REPLAYS,
                      fakeReplayer.counter(SeqeronCounters.REPLAYER_ACTIVE_SLOTS_TYPE_ID));
+    }
+
+    @Test
+    void whileTheTapRecordingIsBehindASecondReplayWaitsForTheFirstToEnd() {
+        fakeReplayer.addRecording(6, 0, true, 4096);
+        makeReady();
+        final long window = FakeReplayer.TERM_BUFFER_LENGTH / 2;
+        fakeReplayer.tapBacklog(new Replayer.TapBacklog(window / 4 + 1, window));
+
+        assertEquals(ReplayingDecoder.TEMPLATE_ID, request(CLIENT, 1, FROM_START).templateId());
+        assertEquals(ReplayPendingDecoder.TEMPLATE_ID, request(OTHER_CLIENT, 1, FROM_START).templateId());
+        assertEquals(1, fakeReplayer.counter(SeqeronCounters.REPLAYER_THROTTLED_REQUESTS_COUNT_TYPE_ID));
+
+        fakeReplayer.enqueueRequest(replayComplete(CLIENT));
+        replayerService.poll();
+
+        final Reply served = lastReply();
+        assertEquals(ReplayingDecoder.TEMPLATE_ID, served.templateId());
+        assertEquals(OTHER_CLIENT, served.clientId());
+    }
+
+    @Test
+    void aTapRecordingThatCatchesUpLetsTheNextResendRunAlongside() {
+        fakeReplayer.addRecording(6, 0, true, 4096);
+        makeReady();
+        final long window = FakeReplayer.TERM_BUFFER_LENGTH / 2;
+        fakeReplayer.tapBacklog(new Replayer.TapBacklog(window / 4 + 1, window));
+        request(CLIENT, 1, FROM_START);
+        assertEquals(ReplayPendingDecoder.TEMPLATE_ID, request(OTHER_CLIENT, 1, FROM_START).templateId());
+
+        fakeReplayer.tapBacklog(new Replayer.TapBacklog(window / 4, window));
+
+        assertEquals(ReplayingDecoder.TEMPLATE_ID, request(OTHER_CLIENT, 2, FROM_START).templateId());
+        assertEquals(2, fakeReplayer.counter(SeqeronCounters.REPLAYER_ACTIVE_SLOTS_TYPE_ID));
+        assertEquals(1, fakeReplayer.counter(SeqeronCounters.REPLAYER_THROTTLED_REQUESTS_COUNT_TYPE_ID));
     }
 
     @Test

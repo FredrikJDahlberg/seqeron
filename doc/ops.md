@@ -124,6 +124,7 @@ Two applications that use the same type id appear as one metric, named by whiche
 | `seqeron_replayer_control_replies_dropped_total` | counter | control replies dropped, rather than retried indefinitely, because a client stopped reading. Each costs that client one resend interval, so the rate, not the total, identifies a stuck client |
 | `seqeron_replayer_client_id_collision` | gauge | 1 once two clients on this member were seen sharing a Replayer client id, else 0. They cancel each other's replays, so the Replayer tells both and both fail (spec R-4) |
 | `seqeron_replayer_snapshot_round` | gauge | the newest round whose `SnapshotEnd` this member's Replayer has indexed, per source, labelled `source` as well as `member` ([`snapshot.md`](snapshot.md) §5). Every participating source should follow the latest round; one that lags is missing rounds. Rebuilt from the recording after a restart, so it reappears once the index has caught up |
+| `seqeron_replayer_throttled_requests_total` | counter | replay requests answered `ReplayPending` only because the tap recording trailed the tap by more than a quarter of the window while a replay was running ([Term lengths](#term-lengths)). A held client resends about every 500 ms, so the rate is about twice the number of clients held. A sustained rate means the recorder is falling behind the tap |
 | `seqeron_app_recovery_stalled` | gauge | 1 while this client's recovery has dispatched nothing for 30 s while not caught up, else 0; also labelled `client`. The client is holding, which is safe, but not serving, and nothing else says so. The causes are a `ReplayUnavailable` refusal, a Replayer that never answers, and a gap this member's recording cannot cover; the client's own log line names which |
 
 ## Ports
@@ -215,6 +216,12 @@ attached to a member's driver uses that driver's IPC term length and sets none o
   The archive is the tap's one tethered consumer, so a recorder stall longer than window / rate
   back-pressures the sequencer; an untethered tap subscriber that falls a window behind is dropped and
   heals through replay. At 16 MiB the tap's window is 8 MiB: 0.4 s at 20 MB/s.
+
+Two things keep the recorder inside the window. Every log buffer is a memory-mapped file in the driver's
+Aeron directory, so on Linux it belongs on tmpfs, such as `/dev/shm`: on a disk, writing back its dirty pages
+stalls the threads that write them, the sequencer's included. A member or gateway host whose directory is not
+on tmpfs warns at start. And while the recording trails the tap by more than a quarter of the window, the
+Replayer starts a new replay only when none is running, since replays compete with the recorder for the disk.
 
 Beyond that, a larger term costs memory and cache. At 16 MiB a member maps 48 MiB for the tap, 48 MiB per
 co-located producer's IPC ingress and 48 MiB per replay in progress, besides the Raft log's 192 MiB.

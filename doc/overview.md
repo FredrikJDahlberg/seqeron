@@ -253,7 +253,7 @@ shortens an application's restart, not a member's. [`snapshot.md`](snapshot.md) 
 | members | up to seven, bounded by the 70-port cluster block |
 | payload | 8,884 bytes per message; larger payloads are split by the application |
 | node recovery | full-log replay; time and archive size grow with uptime (the heartbeat alone is about 86,400 messages a day) |
-| concurrent replays | four per member; more clients queue |
+| concurrent replays | four per member, one while its tap recording falls behind; more clients queue |
 | ingress confirmation | within one producer process: a restarted producer starts with nothing pending |
 | faults | crash, not Byzantine; media driver and network faults are not exercised by the test harnesses |
 | durability | majority replication, no fsync: a power loss across a majority of hosts can lose committed messages |

@@ -17,7 +17,7 @@ public final class ReplaySlotAllocator {
 
     private record ActiveSlot(int clientId, long token, long lastTouchedMs) { }
 
-    private final int maxConcurrent;
+    private int maxConcurrent;
     private final long slotTtlMs;
     private final List<ActiveSlot> active = new ArrayList<>();
     private final List<PendingRequest> pending = new ArrayList<>();
@@ -37,6 +37,15 @@ public final class ReplaySlotAllocator {
 
     public boolean hasCapacity() {
         return active.size() < maxConcurrent;
+    }
+
+    /**
+     * Sets how many replays may be active at once. Lowering it starts nothing new until enough have ended; it
+     * stops none.
+     * @param maxConcurrent the new limit
+     */
+    public void limit(final int maxConcurrent) {
+        this.maxConcurrent = maxConcurrent;
     }
 
     /** Removes clientId's active slot, if any (a re-request supersedes it); returns its token, or {@link #NO_SLOT}. */

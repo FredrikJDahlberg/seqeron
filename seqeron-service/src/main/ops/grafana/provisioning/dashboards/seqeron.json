@@ -232,6 +232,19 @@
       ],
       "fieldConfig": { "defaults": { "min": 0, "max": 1 }, "overrides": [] },
       "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single" } }
+    },
+    {
+      "id": 18,
+      "title": "Replay requests throttled/s",
+      "description": "Replay requests the Replayer held because its tap recording trailed the tap by more than a quarter of the publication window while a replay was running; it then starts one replay at a time, since replays compete with the recorder for the disk. A held client resends about every 500 ms, so the rate is about twice the number of clients held. A sustained rate means the recorder is falling behind the tap, the condition that back-pressures the sequencer.",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "x": 0, "y": 52, "w": 12, "h": 8 },
+      "targets": [
+        { "refId": "A", "expr": "rate(seqeron_replayer_throttled_requests_total[5m])", "legendFormat": "member {{member}}" }
+      ],
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single" } }
     }
   ]
 }

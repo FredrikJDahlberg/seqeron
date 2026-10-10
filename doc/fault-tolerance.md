@@ -225,9 +225,11 @@ correctly, to many clients at once, and to say so plainly when it cannot.
   control session is read every duty cycle, because the archive closes a session whose pings go unread; a
   session it closes anyway cannot be reopened, so that ends the duty cycle.
 - **Slots.** At most `MAX_CONCURRENT_REPLAYS` = 4 replays run at once, and a freed slot goes to a waiting
-  client at once. A slot idle for 5 s (`REPLAY_SLOT_TTL_MS`) is reclaimed, which covers a client that died
-  mid-replay. Many concurrent replays happen mainly when a member restarts and all its clients cold-start
-  together.
+  client at once. While the tap's recording trails the tap by more than a quarter of the publication window,
+  a new replay starts only when none is running: replays compete with the recorder for the disk, and the
+  recorder is what holds the sequencer back. A slot idle for 5 s (`REPLAY_SLOT_TTL_MS`) is reclaimed, which
+  covers a client that died mid-replay. Many concurrent replays happen mainly when a member restarts and all
+  its clients cold-start together.
 - **Control replies** are offered with a bounded retry, then dropped, never blocked on. The client resends
   on a timer, so a client that is not reading cannot hold up replies to the others.
 - **Duty-cycle failure.** An exception escaping the duty cycle clears the ready counter and exits the

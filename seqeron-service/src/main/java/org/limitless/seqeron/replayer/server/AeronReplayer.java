@@ -1,9 +1,13 @@
 package org.limitless.seqeron.replayer.server;
 
 import io.aeron.Aeron;
+import io.aeron.AeronCounters;
 import io.aeron.ExclusivePublication;
 import io.aeron.Subscription;
 import io.aeron.archive.client.AeronArchive;
+import io.aeron.archive.status.RecordingPos;
+import io.aeron.driver.Configuration;
+import io.aeron.driver.status.StreamCounter;
 import io.aeron.logbuffer.FragmentHandler;
 import io.aeron.logbuffer.FrameDescriptor;
 import io.aeron.protocol.DataHeaderFlyweight;
@@ -12,6 +16,7 @@ import java.util.List;
 import org.agrona.BitUtil;
 import org.agrona.DirectBuffer;
 import org.agrona.concurrent.status.AtomicCounter;
+import org.agrona.concurrent.status.CountersReader;
 import org.limitless.seqeron.protocol.FrameLayer;
 import org.limitless.seqeron.protocol.ReplayProtocol;
 import org.limitless.seqeron.protocol.SeqeronCounters;
@@ -50,9 +55,36 @@ public final class AeronReplayer implements Replayer {
             (controlSessionId, correlationId, recordingId, startTimestamp, stopTimestamp, startPosition, stopPosition,
              initialTermId, segmentFileLength, termBufferLength, mtuLength, sessionId, streamId, strippedChannel,
              originalChannel, sourceIdentity)
-                -> spans.add(new Replayer.RecordingSpan(recordingId, startPosition,
-                                                                stopTimestamp == AeronArchive.NULL_TIMESTAMP)));
+                -> spans.add(new Replayer.RecordingSpan(
+                    recordingId, startPosition, stopTimestamp == AeronArchive.NULL_TIMESTAMP, termBufferLength)));
         return spans;
+    }
+
+    @Override
+    public Replayer.TapBacklog tapBacklog(final Replayer.RecordingSpan span) {
+        final CountersReader counters = aeron.countersReader();
+        final DirectBuffer metaData = counters.metaDataBuffer();
+        for (int counterId = 0, maxId = counters.maxCounterId(); counterId <= maxId; counterId++) {
+            if (counters.getCounterState(counterId) != CountersReader.RECORD_ALLOCATED ||
+                counters.getCounterTypeId(counterId) != AeronCounters.DRIVER_PUBLISHER_POS_TYPE_ID) {
+                continue;
+            }
+            final int key = CountersReader.metaDataOffset(counterId) + CountersReader.KEY_OFFSET;
+            if (metaData.getInt(key + StreamCounter.STREAM_ID_OFFSET) != FrameLayer.FEEDER_STREAM_ID ||
+                !FrameLayer.FEEDER_CHANNEL.equals(metaData.getStringAscii(key + StreamCounter.CHANNEL_OFFSET))) {
+                continue;
+            }
+            final int recordingCounterId = RecordingPos.findCounterIdBySession(
+                counters, metaData.getInt(key + StreamCounter.SESSION_ID_OFFSET), archive.archiveId());
+            if (recordingCounterId != CountersReader.NULL_COUNTER_ID &&
+                RecordingPos.getRecordingId(counters, recordingCounterId) == span.recordingId()) {
+                return new Replayer.TapBacklog(
+                    counters.getCounterValue(counterId) - counters.getCounterValue(recordingCounterId),
+                    Configuration.producerWindowLength(span.termBufferLength(),
+                                                       Configuration.ipcPublicationTermWindowLength()));
+            }
+        }
+        return null;
     }
 
     @Override

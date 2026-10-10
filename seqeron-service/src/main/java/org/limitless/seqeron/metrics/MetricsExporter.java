@@ -107,6 +107,11 @@ public final class MetricsExporter {
                                  "Round of the latest valid snapshot this node has indexed, per source. A source "
                                      + "whose round lags the others' is missing rounds.",
                                  "gauge")),
+        Map.entry(SeqeronCounters.REPLAYER_THROTTLED_REQUESTS_COUNT_TYPE_ID,
+                  new MetricMeta("seqeron_replayer_throttled_requests_total",
+                                 "Count of replay requests held because the tap recording trailed the tap while a "
+                                     + "replay ran, resends included.",
+                                 "counter")),
         Map.entry(SeqeronCounters.APP_RECOVERY_STALLED_TYPE_ID,
                   new MetricMeta(
                       "seqeron_app_recovery_stalled",
