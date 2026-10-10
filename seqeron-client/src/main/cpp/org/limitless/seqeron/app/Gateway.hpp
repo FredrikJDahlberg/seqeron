@@ -166,11 +166,16 @@ class Gateway
     }
 
     // One duty-cycle iteration: the cluster session and the tap, then whatever the connection lifecycle, the
-    // election and a snapshot round still owe. A passive instance that has been activated starts over here. Returns
-    // units of work done, for the caller's idle strategy.
+    // election and a snapshot round still owe. A passive instance that has been activated starts over here. Nothing
+    // once fenced, so a designation dispatched in the cycle that fenced opens no gate. Returns units of work done,
+    // for the caller's idle strategy.
     int doWork()
     {
         int work = m_session.doWork();
+        if (m_session.isFenced())
+        {
+            return work;
+        }
         if (m_snapshots.activate(m_lifecycle.isActivated(), m_session.isCaughtUp()))
         {
             m_session.restart();

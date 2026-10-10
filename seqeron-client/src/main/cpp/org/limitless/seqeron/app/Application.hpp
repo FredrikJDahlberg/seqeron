@@ -153,11 +153,15 @@ class Application
         }
     }
 
-    // One duty-cycle iteration: the cluster session and the tap, then the gate over what they left. Returns
-    // units of work done, for the caller's idle strategy.
+    // One duty-cycle iteration: the cluster session and the tap, then the gate over what they left. Nothing once
+    // fenced. Returns units of work done, for the caller's idle strategy.
     int doWork()
     {
         int work = m_session.doWork();
+        if (m_session.isFenced())
+        {
+            return work;
+        }
         // Shut while a lost session is replaced: a reply sent meanwhile may not land, so the next opening redispatches.
         const detail::LeaderGate::Transition transition =
             m_gate.update(m_session.isCaughtUp() && m_session.hasSession(), m_session.currentLeaderMemberId());

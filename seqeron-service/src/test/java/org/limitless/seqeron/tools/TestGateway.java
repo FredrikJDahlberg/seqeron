@@ -226,11 +226,12 @@ public final class TestGateway {
 
     /**
      * The designation, logged on the edge where it changes. {@code chaos-runner.sh} reads this line to tell
-     * which instance of the pair is live, so it tracks the activation rather than the gate.
+     * which instance of the pair is live, so it tracks the activation rather than the gate, and a fenced instance
+     * logs none.
      * @return units of work done
      */
     private int logActivation() {
-        if (gateway.isActivated() == activated) {
+        if (fenced.get() || gateway.isActivated() == activated) {
             return 0;
         }
         activated = !activated;

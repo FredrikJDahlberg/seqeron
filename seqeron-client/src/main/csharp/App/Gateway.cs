@@ -131,11 +131,15 @@ public sealed class Gateway : IDisposable
 
     /// <summary>One duty-cycle iteration: the cluster session and the tap, then whatever the connection lifecycle,
     /// the election and a snapshot round still owe. A passive instance that has been activated starts over
-    /// here.</summary>
+    /// here. Nothing once fenced, so a designation dispatched in the cycle that fenced opens no gate.</summary>
     /// <returns>units of work done, for the caller's idle strategy</returns>
     public int DoWork()
     {
         int work = _session.DoWork();
+        if (_session.IsFenced)
+        {
+            return work;
+        }
         if (_snapshots.Activate(_lifecycle.IsActivated, _session.IsCaughtUp))
         {
             _session.Restart();

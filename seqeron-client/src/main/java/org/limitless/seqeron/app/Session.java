@@ -189,6 +189,10 @@ final class Session implements AutoCloseable {
         return receiver.isCaughtUp();
     }
 
+    boolean isFenced() {
+        return fenced;
+    }
+
     long lastGlobalSeqNo() {
         return receiver.lastGlobalSeqNo();
     }

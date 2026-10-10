@@ -185,6 +185,11 @@ class Session
         return m_receiver.isCaughtUp();
     }
 
+    [[nodiscard]] bool isFenced() const
+    {
+        return m_fenced;
+    }
+
     [[nodiscard]] std::int64_t lastGlobalSeqNo() const
     {
         return m_receiver.lastGlobalSeqNo();

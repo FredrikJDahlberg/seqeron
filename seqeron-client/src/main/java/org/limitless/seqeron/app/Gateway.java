@@ -177,10 +177,14 @@ public final class Gateway implements AutoCloseable {
     /**
      * One duty-cycle iteration: the cluster session and the tap, then whatever the connection lifecycle, the
      * election and a snapshot round still owe. A passive instance that has been activated starts over here.
+     * Nothing once fenced, so a designation dispatched in the cycle that fenced opens no gate.
      * @return units of work done, for the caller's idle strategy
      */
     public int doWork() {
         int work = session.doWork();
+        if (session.isFenced()) {
+            return work;
+        }
         if (snapshots.activate(lifecycle.isActivated(), session.isCaughtUp())) {
             session.restart();
             return work + 1;

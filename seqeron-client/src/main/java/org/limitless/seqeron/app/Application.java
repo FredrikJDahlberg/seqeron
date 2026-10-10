@@ -132,11 +132,15 @@ public final class Application implements AutoCloseable {
     }
 
     /**
-     * One duty-cycle iteration: the cluster session and the tap, then the gate over what they left.
+     * One duty-cycle iteration: the cluster session and the tap, then the gate over what they left. Nothing once
+     * fenced.
      * @return units of work done, for the caller's idle strategy
      */
     public int doWork() {
         int work = session.doWork();
+        if (session.isFenced()) {
+            return work;
+        }
         // Shut while a lost session is replaced: a reply sent meanwhile may not land, so the next opening redispatches.
         final LeaderGate.Transition transition =
             gate.update(session.isCaughtUp() && session.hasSession(), session.currentLeaderMemberId());

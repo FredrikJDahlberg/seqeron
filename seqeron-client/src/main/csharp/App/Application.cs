@@ -116,11 +116,15 @@ public sealed class Application : IDisposable
     }
 
     /// <summary>One duty-cycle iteration: the cluster session and the tap, then the gate over what they
-    /// left.</summary>
+    /// left. Nothing once fenced.</summary>
     /// <returns>units of work done, for the caller's idle strategy</returns>
     public int DoWork()
     {
         int work = _session.DoWork();
+        if (_session.IsFenced)
+        {
+            return work;
+        }
         // Shut while a lost session is replaced: a reply sent meanwhile may not land, so the next opening redispatches.
         LeaderGate.Transition transition =
             _gate.Update(_session.IsCaughtUp && _session.HasSession, _session.CurrentLeaderMemberId);

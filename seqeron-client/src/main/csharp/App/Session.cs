@@ -188,6 +188,8 @@ internal sealed class Session : IDisposable
 
     internal bool IsCaughtUp => _receiver.IsCaughtUp;
 
+    internal bool IsFenced => _fenced;
+
     internal long LastGlobalSeqNo => _receiver.LastGlobalSeqNo;
 
     internal int CurrentLeaderMemberId => _receiver.CurrentLeaderMemberId;
