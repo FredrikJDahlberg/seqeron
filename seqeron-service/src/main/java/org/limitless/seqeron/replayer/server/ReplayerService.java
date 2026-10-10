@@ -211,7 +211,7 @@ public final class ReplayerService {
      */
     public void run(final AtomicBoolean running) {
         Logger.info(Logger.CoreComponent.ReplayerService, memberId,
-                    "starting; serving replay from the co-located archive…");
+                    "starting on the co-located archive…");
         try {
             while (running.get()) {
                 final int work = poll();
