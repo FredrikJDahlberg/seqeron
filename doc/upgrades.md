@@ -82,7 +82,7 @@ begins with a `MessageHeader` — and the application's schema defines the messa
 bound is gone for that client. Today participation is per topology row (`snapshot="true"`) and optional, a
 read-only consumer has no snapshot of its own, and a restore that finds no usable file replays the log from
 the start ([`snapshot.md`](snapshot.md) §7). Making the bound hold needs cluster snapshots
-([`snapshot.md`](snapshot.md) §10, proposed): history before the floor `F`, the cut of the oldest round a
+([`snapshot.md`](snapshot.md) §10.6, proposed): history before the floor `F`, the cut of the oldest round a
 client may still restore, is truncated; a client with no confirmed file at or after `F` restores from a
 peer's file, which is portable ([`snapshot.md`](snapshot.md) §4.1), or is fenced; and a stateless consumer
 starts at `F`. The topology would state the requirement — for example a `required` attribute on
