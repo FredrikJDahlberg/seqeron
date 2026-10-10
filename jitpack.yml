@@ -1,8 +1,10 @@
 # JitPack builds a tag on first request and serves what this writes to ~/.m2. JDK 21 because the Gradle
-# toolchain asks for it and JitPack's default is Java 8. `check` runs both modules' tests, and the module
-# boundary is what now stops a tag whose client tier reaches into the service tier: it does not compile,
-# so it never reaches a test.
-jdk:
-  - openjdk21
+# toolchain asks for it and JitPack's default is Java 8. Installed by exact SDKMan version rather than with
+# `jdk: openjdk21`, which names a build SDKMan no longer serves; when this one goes too, pick another from
+# `sdk list java`. `check` runs both modules' tests, and the module boundary is what now stops a tag whose
+# client tier reaches into the service tier: it does not compile, so it never reaches a test.
+before_install:
+  - sdk install java 21.0.9-tem
+  - sdk use java 21.0.9-tem
 install:
   - ./gradlew check publishToMavenLocal
