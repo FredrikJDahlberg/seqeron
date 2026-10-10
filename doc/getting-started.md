@@ -8,7 +8,7 @@ the C#, and nothing from this repository's source. [`overview.md`](overview.md) 
 ## 1. Start a node
 
 ```bash
-V=0.11.1  # the latest release: https://github.com/FredrikJDahlberg/seqeron/releases
+V=0.12.0  # the latest release: https://github.com/FredrikJDahlberg/seqeron/releases
 curl -LO https://github.com/FredrikJDahlberg/seqeron/releases/download/v$V/seqeron-$V.zip
 unzip seqeron-$V.zip && cd seqeron-$V
 bin/start-cluster.sh
@@ -42,7 +42,7 @@ repositories {
 }
 
 dependencies {
-    implementation enforcedPlatform('com.github.FredrikJDahlberg.seqeron:seqeron-bom:v0.11.1')
+    implementation enforcedPlatform('com.github.FredrikJDahlberg.seqeron:seqeron-bom:v0.12.0')
     implementation 'com.github.FredrikJDahlberg.seqeron:seqeron'
 }
 
@@ -310,7 +310,7 @@ Java programs' 23 and 24, so both languages can follow one member at once.
   include(FetchContent)
   FetchContent_Declare(seqeron
       GIT_REPOSITORY https://github.com/FredrikJDahlberg/seqeron.git
-      GIT_TAG        v0.11.1)
+      GIT_TAG        v0.12.0)
   FetchContent_MakeAvailable(seqeron)
   target_link_libraries(my_app PRIVATE seqeron::seqeron_core)
   ```
