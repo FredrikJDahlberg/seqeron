@@ -420,11 +420,16 @@ class ClusterStreamSender
         }
     }
 
-    // Sends a SessionCloseRequest and locally forgets the session. Best-effort:
+    // Sends a SessionCloseRequest and locally forgets the session, or abandons an attempt to replace it. Best-effort:
     // the cluster also expires unresponsive sessions via keep-alive timeout.
     void close()
     {
-        m_reconnect = Reconnect{};
+        if (isReconnecting())
+        {
+            m_reconnect = Reconnect{};
+            m_ingress.reset(); // the attempt's own, once it reached the handshake
+            return;
+        }
         if (!m_ingress || m_clusterSessionId < 0)
         {
             return;

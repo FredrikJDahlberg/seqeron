@@ -335,6 +335,9 @@ final class Session implements AutoCloseable {
             return;
         }
         fenced = true;
+        if (sender.isReconnecting()) {
+            sender.close(); // nothing advances the attempt once fenced
+        }
         dispatch.onFenced(reason, detail);
     }
 

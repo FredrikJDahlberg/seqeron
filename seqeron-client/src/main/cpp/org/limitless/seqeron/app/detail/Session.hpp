@@ -219,6 +219,10 @@ class Session
             return;
         }
         m_fenced = true;
+        if (m_sender.isReconnecting())
+        {
+            m_sender.close(); // nothing advances the attempt once fenced
+        }
         m_dispatch.onFenced(reason, detail);
     }
 

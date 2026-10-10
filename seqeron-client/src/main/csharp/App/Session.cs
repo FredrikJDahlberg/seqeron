@@ -348,6 +348,10 @@ internal sealed class Session : IDisposable
             return;
         }
         _fenced = true;
+        if (_sender.IsReconnecting)
+        {
+            _sender.Dispose(); // nothing advances the attempt once fenced
+        }
         _dispatch.OnFenced(reason, detail);
     }
 
