@@ -255,7 +255,7 @@ shortens an application's restart, not a member's. [`snapshot.md`](snapshot.md) 
 | node recovery | full-log replay; time and archive size grow with uptime (the heartbeat alone is about 86,400 messages a day) |
 | concurrent replays | four per member, one while its tap recording falls behind; more clients queue |
 | ingress confirmation | within one producer process: a restarted producer starts with nothing pending |
-| faults | crash, not Byzantine; media driver and network faults are not exercised by the test harnesses |
+| faults | crash, not Byzantine; network faults are injected in CI, but a standalone media driver is never killed |
 | durability | majority replication, no fsync: a power loss across a majority of hosts can lose committed messages |
 | security | none on the wire: no authentication, no encryption; the network is the access control |
 | upgrades | applications independently of the cluster, compatibility rules unspecified; a seqeron protocol change is whole-deployment and purges history |

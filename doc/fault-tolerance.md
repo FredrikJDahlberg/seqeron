@@ -395,11 +395,17 @@ Each failure above has a harness that produces it against a live cluster, all un
 | `docker-failover-test.sh` | `ROUNDS` (default 15) leader kills against `docker/compose.yml` under continuous `ProbeMarker` load, restoring each killed member before the next. Every round must change leadership and the killed member must rejoin; an observer on each surviving member must deliver in `globalSeqNo` order throughout; and a cold start at the end must replay the whole multi-tenure history from one recording and reach live. Needs Docker and `./gradlew operatorDist`; CI runs it as `failover.yml`, and `ROUNDS=3` is a quick local run |
 | `replay-bench.sh` | times a cold `ClusterProbe follow` from launch to caught up against a preloaded archive, optionally under load. `replay-bench.sh 400000` builds about 70 MB of history, which must converge in well under a second; `NEVER CAUGHT UP` indicates a replay stall (§3.2), not a slow machine |
 
+`failover.yml` also runs the faults no kill or pause produces, against the same `docker/compose.yml` cluster: a
+leader partitioned from its peers while its clients stay connected, one link cut and no other, a follower without
+NAKs or without retransmits, slow and duplicating leader links, a member whose ballots are dropped, and a leader
+starved of CPU. They are [faulteron](https://github.com/FredrikJDahlberg/faulteron)'s tests, an eBPF injector run
+from a pinned commit ([`building.md`](building.md)).
+
 ## 7. Not covered
 
-- **Media driver and network faults.** Killing `aeronmd`, partitions and added latency are not exercised:
-  killing the driver also kills the C++ clients sharing it, and `tc netem`/`dnctl` is not set up on the
-  development host.
+- **Killing a standalone media driver.** A member kill also kills the embedded driver its co-located clients
+  share, and `chaos-runner.sh` asserts that the consumer and gateway instance there exit; a standalone `aeronmd`
+  is never killed.
 - **Ingress lost outside one producer process.** `PendingSends` keeps its state in memory and counts losses
   against a leadership change. A frame lost without a leader change — an ingress image that drops and rejoins
   within the session timeout — has no term boundary to be counted against, and a restarted producer, or a
