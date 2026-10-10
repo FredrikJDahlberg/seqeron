@@ -339,8 +339,9 @@ internal sealed class Session : IDisposable
         }
     }
 
-    /// <summary>Latches the first fence; a façade raises its own, such as a diverged snapshot, through this
-    /// too.</summary>
+    /// <summary>Latches the first fence and releases the cluster session, so a designated instance's sibling is
+    /// promoted now rather than when the application exits; a façade raises its own, such as a diverged snapshot,
+    /// through this too.</summary>
     internal void Fence(ClusterError reason, string detail)
     {
         if (_fenced)
@@ -348,10 +349,7 @@ internal sealed class Session : IDisposable
             return;
         }
         _fenced = true;
-        if (_sender.IsReconnecting)
-        {
-            _sender.Dispose(); // nothing advances the attempt once fenced
-        }
+        _sender.Dispose();
         _dispatch.OnFenced(reason, detail);
     }
 

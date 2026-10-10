@@ -207,7 +207,8 @@ class Session
     }
 
     /**
-     * Latches the first fence; a façade raises its own, such as a diverged snapshot, through this too.
+     * Latches the first fence and releases the cluster session, so a designated instance's sibling is promoted now
+     * rather than when the application exits; a façade raises its own, such as a diverged snapshot, through this too.
      *
      * @param reason why this producer may no longer act
      * @param detail what the log line says
@@ -219,10 +220,7 @@ class Session
             return;
         }
         m_fenced = true;
-        if (m_sender.isReconnecting())
-        {
-            m_sender.close(); // nothing advances the attempt once fenced
-        }
+        m_sender.close();
         m_dispatch.onFenced(reason, detail);
     }
 

@@ -300,7 +300,7 @@ when its shutdown gave up waiting for that duty cycle. Both mean restart it.
 
 A gateway built on the client tier's `Gateway` stops itself when it can no longer trust its view of the log
 ([`fault-tolerance.md`](fault-tolerance.md) §2.1). The façade reports the reason once, through
-`onFenced(ClusterError, detail)`, and the application releases its cluster session, normally by exiting.
+`onFenced(ClusterError, detail)`, having released its cluster session, and the application normally exits.
 `TestGateway` exits **70**; a production gateway chooses its own code, and 70 is this repository's
 convention for "fenced, restart me". A gateway is not a cluster member, so this is never a quorum question.
 

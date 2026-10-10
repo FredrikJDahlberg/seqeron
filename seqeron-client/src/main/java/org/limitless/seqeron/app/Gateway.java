@@ -115,7 +115,7 @@ public final class Gateway implements AutoCloseable {
          */
         void onClusterHeartbeat(long clusterTimeNs, long receiveTimeNs);
 
-        /** Once, latched: release the cluster session — exiting is the usual way — so a standby takes over. */
+        /** Once, latched: the cluster session is already released, so a standby takes over. Exiting is usual. */
         void onFenced(ClusterError fence, String detail);
     }
 

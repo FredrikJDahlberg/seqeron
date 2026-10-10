@@ -329,15 +329,16 @@ final class Session implements AutoCloseable {
         }
     }
 
-    /** Latches the first fence; a façade raises its own, such as a diverged snapshot, through this too. */
+    /**
+     * Latches the first fence and releases the cluster session, so a designated instance's sibling is promoted now
+     * rather than when the application exits; a façade raises its own, such as a diverged snapshot, through this too.
+     */
     void fence(final ClusterError reason, final String detail) {
         if (fenced) {
             return;
         }
         fenced = true;
-        if (sender.isReconnecting()) {
-            sender.close(); // nothing advances the attempt once fenced
-        }
+        sender.close();
         dispatch.onFenced(reason, detail);
     }
 

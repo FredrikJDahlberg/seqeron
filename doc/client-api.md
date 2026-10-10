@@ -31,7 +31,7 @@ The sections before [Façades](#façades-app) define the model and the contract;
 | [Snapshots](#snapshots) (both façades) | Restart from the newest log-confirmed snapshot, then only the messages after its cut. Fencing of any instance whose state diverges from its source's. | Member restart: a member always replays its full log. |
 
 A **fence** is `onFenced(ClusterError, detail)`, raised once, after which the instance takes no further
-action. Causes: cluster session lost (on a `Gateway` instance that announced its activation on it, or not replaced within 20 s),
+action; the façade releases its cluster session before raising it. Causes: cluster session lost (on a `Gateway` instance that announced its activation on it, or not replaced within 20 s),
 ingress confirmation fault, recovery stall, tap stall, snapshot divergence, unrestorable snapshot ([`fault-tolerance.md`](fault-tolerance.md) §2.1). Loss of the media driver
 is not a fence; it raises from `doWork()`.
 
@@ -74,7 +74,8 @@ The guarantees are conditional on these; spec §16 states them normatively (**A-
 - **Payload ownership:** schemas, versioning (spec **V-2**), `payloadId` rows in the topology document, and
   fragmentation above 8,884 bytes.
 - **Handle `Declined`** by retrying from the duty cycle, not by spinning in a callback. `Refused` is final.
-- **Exit when fenced**, releasing the cluster session so a standby or restart takes over.
+- **Exit when fenced.** The façade has already released the cluster session, so a standby takes over; a
+  restart is what brings the instance back.
 - **Unique `clientId` per node** ([Client ids](#client-ids)).
 - **Authenticate at the edge.** The cluster accepts any well-formed message.
 
@@ -241,7 +242,7 @@ gateway.close();
 | `onConnectionOpened` / `onConnectionClosed` | this logical gateway's connection lifecycle from the log, whichever instance issued it — used to rebuild per-connection state during replay, and the only signal for a client that drops without logging out |
 | `onCaughtUp(globalSeqNo)` | each transition to caught up |
 | `onClusterHeartbeat(clusterTimeNs, receiveTimeNs)` | 1 Hz cluster clock |
-| `onFenced(ClusterError, detail)` | terminal: release the session (normally exit) so the standby takes over |
+| `onFenced(ClusterError, detail)` | terminal: the session is already released, so the standby takes over; normally exit |
 
 **Snapshots.** With a `snapshotListener` the gateway also requires `sourceId` (the pair's, needed before any
 topology row is dispatched) and `snapshotDirectory` (per instance, not per pair). Every instance writes a

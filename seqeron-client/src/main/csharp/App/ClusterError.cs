@@ -1,7 +1,7 @@
 namespace Org.Limitless.Seqeron.App;
 
 /// <summary>
-/// Why a producer may no longer act. Each is terminal and latched: the process releases its cluster session so a
+/// Why a producer may no longer act. Each is terminal and latched: the façade releases its cluster session so a
 /// standby can take over, rather than carrying on behind a view of the log it cannot trust.
 /// </summary>
 public enum ClusterError

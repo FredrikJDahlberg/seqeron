@@ -117,8 +117,8 @@ under fault injection (§6).
 
 A gateway that keeps acting on a view of the log it can no longer trust may act on stale state. A fence
 stops it first. Each is reported once, through the
-listener's `onFenced(ClusterError, detail)`; the application then releases its cluster session, usually by
-exiting, which lets the sequencer promote the standby (§2.2).
+listener's `onFenced(ClusterError, detail)`. The façade releases its cluster session first, which lets the
+sequencer promote the standby (§2.2) whatever the application does next; it usually exits.
 
 | `ClusterError` | condition |
 | --- | --- |

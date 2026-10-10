@@ -412,7 +412,7 @@ public final class TestGateway {
         @Override
         public void onFenced(final ClusterError reason, final String detail) {
             fence("FENCED: " + reason + " — " + detail
-                      + " — releasing the cluster session so a standby can take over");
+                      + " — the cluster session is released, so a standby can take over");
         }
     }
 

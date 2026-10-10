@@ -36,7 +36,7 @@ public interface IGatewayListener
     /// </summary>
     void OnClusterHeartbeat(long clusterTimeNs, long receiveTimeNs);
 
-    /// <summary>Once, latched: release the cluster session — exiting is the usual way — so a standby takes
-    /// over.</summary>
+    /// <summary>Once, latched: the cluster session is already released, so a standby takes over. Exiting is
+    /// usual.</summary>
     void OnFenced(ClusterError fence, string detail);
 }

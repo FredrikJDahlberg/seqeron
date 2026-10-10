@@ -189,7 +189,7 @@ sent them; authentication belongs at the system's external edges.
 | slow consumer | its media driver drops it within about 0.2 s; the tap is not held back | it resumes over the gap from the Replayer |
 | message missed on the tap | the next message reveals the gap | the client resumes from the last message it delivered, holding live messages meanwhile |
 | gateway instance fails | its cluster session closes | the sequencer designates the standby |
-| gateway can no longer trust its view | a fence: session lost, tap or recovery stalled, ingress or snapshot mismatch | the instance exits, its session closes, and the standby takes over |
+| gateway can no longer trust its view | a fence: session lost, tap or recovery stalled, ingress or snapshot mismatch | the instance releases its session, so the standby takes over, and exits |
 
 The member's own recovery is always the same operation: replay the log from `globalSeqNo` 1. All state
 downstream of the log — `globalSeqNo`, the gateway list, which instance is active, the open connections — is
