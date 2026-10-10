@@ -78,6 +78,10 @@ public final class ClusterStreamSender implements IngressSender, AutoCloseable {
     private boolean overIpc;
     /** IPC ingress lost its leader and reaches nobody else, so the session must be replaced. */
     private boolean reconnectDue;
+    /** The session {@link #reconnect} is opening, one step per call; null while none is. */
+    private AeronCluster.AsyncConnect connecting;
+    /** Whether {@link #connecting} is over the co-located member's {@code aeron:ipc}, which falls back to UDP. */
+    private boolean connectingOverIpc;
     private IngressTracker hold;
     private boolean newLeaderDuringSend;
     private long lastKeepAliveMs;
@@ -127,27 +131,69 @@ public final class ClusterStreamSender implements IngressSender, AutoCloseable {
     }
 
     /**
-     * Replaces a lost session with a new one, opened as the first was. What the old one had not committed is
-     * not carried over: the caller's tracker decides what to do about it.
+     * Replaces a lost session with a new one, opened as the first was but one step per call, so the caller's duty
+     * cycle never waits on an unreachable cluster. What the old one had not committed is not carried over: the
+     * caller's tracker decides what to do about it.
      *
-     * @return whether a session opened; a failure is logged, and the caller tries again later
+     * @return whether a session opened; until then {@link #isReconnecting} says whether to call again, and a
+     *     failed attempt is logged and ends, for the caller to begin another later
      */
     public boolean reconnect() {
-        CloseHelper.quietClose(cluster);
-        cluster = null;
+        if (connecting == null) {
+            CloseHelper.quietClose(cluster);
+            cluster = null;
+            if (!beginConnect(colocatedMemberId != NO_MEMBER)) {
+                return false;
+            }
+        }
+        final AeronCluster opened;
+        try {
+            opened = connecting.poll();
+        } catch (final AeronException ex) {
+            CloseHelper.quietClose(connecting);
+            connecting = null;
+            if (connectingOverIpc) {
+                Logger.error(Logger.CoreComponent.Cluster, Logger.CoreEventCode.ClusterIpcFallback, colocatedMemberId,
+                             "member %d did not answer ingress on %s (%s) — falling back to UDP", colocatedMemberId,
+                             INGRESS_CHANNEL_IPC, ex.getMessage());
+                beginConnect(false);
+                return false;
+            }
+            Logger.error(Logger.CoreComponent.Cluster, Logger.CoreEventCode.ClusterSessionError, member(),
+                         "could not replace the lost cluster session (%s)", ex.getMessage());
+            return false;
+        }
+        if (opened == null) {
+            return false;
+        }
+        connecting = null;
+        cluster = opened;
+        overIpc = connectingOverIpc;
+        reconnectDue = false;
         sessionLost = false;
         stallPolicy.onOffered(); // a new session inherits no block
+        Logger.info(Logger.CoreComponent.Cluster, member(), "cluster session %d replaces the lost one",
+                    cluster.clusterSessionId());
+        return true;
+    }
+
+    /** Whether {@link #reconnect} has an attempt under way, which only further calls advance. */
+    public boolean isReconnecting() {
+        return connecting != null;
+    }
+
+    /** Starts an attempt for {@link #reconnect}: IPC within the short timeout, or UDP; false if it cannot start. */
+    private boolean beginConnect(final boolean overIpc) {
         try {
-            cluster = colocatedMemberId == NO_MEMBER
-                ? openSession(INGRESS_CHANNEL_UDP, ingressEndpoints, CONNECT_TIMEOUT_NS)
-                : openColocated();
+            connecting = AeronCluster.asyncConnect(overIpc
+                ? context(INGRESS_CHANNEL_IPC, null, TimeUnit.MILLISECONDS.toNanos(ipcConnectTimeoutMs))
+                : context(INGRESS_CHANNEL_UDP, ingressEndpoints, CONNECT_TIMEOUT_NS));
         } catch (final AeronException ex) {
             Logger.error(Logger.CoreComponent.Cluster, Logger.CoreEventCode.ClusterSessionError, member(),
                          "could not replace the lost cluster session (%s)", ex.getMessage());
             return false;
         }
-        Logger.info(Logger.CoreComponent.Cluster, member(), "cluster session %d replaces the lost one",
-                    cluster.clusterSessionId());
+        connectingOverIpc = overIpc;
         return true;
     }
 
@@ -266,7 +312,7 @@ public final class ClusterStreamSender implements IngressSender, AutoCloseable {
 
     /**
      * True once the cluster has closed this session, as opposed to never having opened one. Latched until
-     * {@link #reconnect}.
+     * {@link #reconnect} opens another.
      */
     public boolean isSessionLost() {
         return sessionLost;
@@ -283,26 +329,34 @@ public final class ClusterStreamSender implements IngressSender, AutoCloseable {
         return cluster == null ? Aeron.NULL_VALUE : cluster.leadershipTermId();
     }
 
-    /** Closes the session. The Aeron client is the caller's and is left open. */
+    /** Closes the session, and any attempt to replace it. The Aeron client is the caller's and is left open. */
     @Override
     public void close() {
+        CloseHelper.quietClose(connecting);
+        connecting = null;
         CloseHelper.quietClose(cluster);
         cluster = null;
     }
 
     private AeronCluster openSession(final String ingressChannel, final String ingressEndpoints,
                                      final long timeoutNs) {
-        final AeronCluster session = AeronCluster.connect(new AeronCluster.Context()
+        final AeronCluster session = AeronCluster.connect(context(ingressChannel, ingressEndpoints, timeoutNs));
+        overIpc = INGRESS_CHANNEL_IPC.equals(ingressChannel);
+        reconnectDue = false;
+        return session;
+    }
+
+    /** The context every session opens with, apart from where it connects. */
+    private AeronCluster.Context context(final String ingressChannel, final String ingressEndpoints,
+                                         final long timeoutNs) {
+        return new AeronCluster.Context()
             .aeron(aeron)
             .ingressChannel(ingressChannel)
             .ingressEndpoints(ingressEndpoints)
             .egressChannel(egressChannel)
             .egressListener(listener)
             .messageTimeoutNs(timeoutNs)
-            .newLeaderTimeoutNs(NEW_LEADER_TIMEOUT_NS));
-        overIpc = INGRESS_CHANNEL_IPC.equals(ingressChannel);
-        reconnectDue = false;
-        return session;
+            .newLeaderTimeoutNs(NEW_LEADER_TIMEOUT_NS);
     }
 
     /**

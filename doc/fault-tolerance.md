@@ -144,7 +144,8 @@ exiting, which lets the sequencer promote the standby (§2.2).
 - **Only a designated instance fences on a lost session.** Closing an active instance's session is what
   promotes its sibling (§2.2), and the tap carries no frame for that close, so a replacement session could
   announce itself before the instance has seen whether it was superseded. A standby or passive instance holds
-  nothing the close changed: it opens a new session once a second, as the first was opened, and fences with
+  nothing the close changed: it opens a new session as the first was opened, starting an attempt at most once a
+  second and advancing it a step per duty cycle, and fences with
   `CLUSTER_SESSION_LOST` only if none opens within the tap-stall timeout. What was unconfirmed on the old
   session is dropped, not resent (§5).
 
@@ -337,7 +338,7 @@ failover: a reply, an order sent outward, a notification. The client tier provid
 - **Off the cluster** (`Application`'s `offCluster`, §3.3), one instance is the only dispatcher: its gate
   opens once caught up, whoever leads, and closes on every `LeadershipChanged` as above. Exactly one must run,
   since nothing elects between two.
-- **A lost cluster session closes the gate** until a new one opens: the replica replaces it once a second, as
+- **A lost cluster session closes the gate** until a new one opens: the replica replaces it without blocking, as
   §2.1 describes for a standby, and fences only if none opens within the tap-stall timeout. Whatever it
   dispatched meanwhile is redispatched when the gate reopens, since nothing elects a replica and its requests
   stay outstanding on the log.
@@ -380,6 +381,7 @@ Each failure above has a harness that produces it against a live cluster, all un
 | `failover-test.sh` | a leader kill with a replay consumer, and the confirmed-ingress check of §5 |
 | `gap-recovery-test.sh` | a caught-up consumer drops one live frame after a leader failover, and must resume and keep delivering (§3.2) |
 | `paused-subscriber-test.sh` | a caught-up consumer is `SIGSTOP`ped while more than two tap windows go by; its member must stay up, with no tap-stall fatal (§1.3), and once resumed the consumer must heal the gap its eviction left (§3.2) |
+| `session-replace-test.sh` | a `TestApplication` on a follower is `SIGSTOP`ped past its session timeout, then the other two members are, so its member has no quorum; each time it must open a new session rather than fence (§2.1, §4), and the cluster heartbeat must keep reaching it while an attempt is pending |
 | `replayer-restart-test.sh` | member 0's `SequencerServer` is killed under a caught-up client; the client must fail fast, and a fresh cold start must be served from the member's new recording alone (§3.1) |
 | `gateway-host-test.sh` | a gateway host whose relay reads the leader, which is then killed; a `confirm` producer on the host must see every frame exactly once, in order, and the relay must move to another member. The host is then restarted, and a cold start there must catch up from its new recording (§3.3) |
 | `snapshot-test.sh` | the `TestGateway` pair on three members with snapshot rounds every 2 s. The standby restarts and restores, the active instance is killed and the restored one takes over, the killed one returns passive and is activated, and the other returns as a hot standby restoring the rounds it published. Each restore must report the state the client traffic implies, and no instance may be fenced, so every round is also compared against the restored state (§3.4) |

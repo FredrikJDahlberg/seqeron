@@ -70,6 +70,12 @@ public sealed class ClusterStreamSender : IIngressSender, IDisposable
 
     // IPC ingress lost its leader and reaches nobody else, so the session must be replaced.
     private bool _reconnectDue;
+
+    // The session Reconnect is opening, one step per call; null while none is.
+    private AeronCluster.AsyncConnect _connecting;
+
+    // Whether _connecting is over the co-located member's aeron:ipc, which falls back to UDP.
+    private bool _connectingOverIpc;
     private IIngressTracker _hold;
     private bool _newLeaderDuringSend;
     private long _lastKeepAliveMs;
@@ -119,30 +125,58 @@ public sealed class ClusterStreamSender : IIngressSender, IDisposable
         _cluster = OpenColocated();
     }
 
-    /// <summary>Replaces a lost session with a new one, opened as the first was. What the old one had not committed
-    /// is not carried over: the caller's tracker decides what to do about it.</summary>
-    /// <returns>whether a session opened; a failure is logged, and the caller tries again later</returns>
+    /// <summary>Replaces a lost session with a new one, opened as the first was but one step per call, so the
+    /// caller's duty cycle never waits on an unreachable cluster. What the old one had not committed is not carried
+    /// over: the caller's tracker decides what to do about it.</summary>
+    /// <returns>whether a session opened; until then <see cref="IsReconnecting"/> says whether to call again, and a
+    /// failed attempt is logged and ends, for the caller to begin another later</returns>
     public bool Reconnect()
     {
-        CloseSession();
-        _sessionLost = false;
-        _stallPolicy.OnOffered(); // a new session inherits no block
+        if (_connecting == null)
+        {
+            CloseSession();
+            if (!BeginConnect(_colocatedMemberId != NoMember))
+            {
+                return false;
+            }
+        }
+        AeronCluster opened;
         try
         {
-            _cluster = _colocatedMemberId == NoMember
-                           ? OpenSession(IngressChannelUdp, _ingressEndpoints, ConnectTimeoutNs)
-                           : OpenColocated();
+            opened = _connecting.Poll();
         }
         catch (AeronException ex)
         {
+            CloseConnecting();
+            if (_connectingOverIpc)
+            {
+                Logger.Error(Logger.CoreComponent.Cluster, Logger.CoreEventCode.ClusterIpcFallback, _colocatedMemberId,
+                             "member {0} did not answer ingress on {1} ({2}) — falling back to UDP", _colocatedMemberId,
+                             IngressChannelIpc, ex.Message);
+                BeginConnect(false);
+                return false;
+            }
             Logger.Error(Logger.CoreComponent.Cluster, Logger.CoreEventCode.ClusterSessionError, Member,
                          "could not replace the lost cluster session ({0})", ex.Message);
             return false;
         }
+        if (opened == null)
+        {
+            return false;
+        }
+        _connecting = null;
+        _cluster = opened;
+        _overIpc = _connectingOverIpc;
+        _reconnectDue = false;
+        _sessionLost = false;
+        _stallPolicy.OnOffered(); // a new session inherits no block
         Logger.Info(Logger.CoreComponent.Cluster, Member, "cluster session {0} replaces the lost one",
                     _cluster.ClusterSessionId);
         return true;
     }
+
+    /// <summary>Whether <see cref="Reconnect"/> has an attempt under way, which only further calls advance.</summary>
+    public bool IsReconnecting => _connecting != null;
 
     /// <summary>Hears every <c>NewLeader</c>, and gives up a send that met one while it holds.</summary>
     /// <param name="hold">the tracker, normally the producer's <see cref="PendingSends"/></param>
@@ -247,7 +281,7 @@ public sealed class ClusterStreamSender : IIngressSender, IDisposable
     public bool IsConnected => _cluster != null && !_cluster.Closed;
 
     /// <summary>True once the cluster has closed this session, as opposed to never having opened one. Latched until
-    /// <see cref="Reconnect"/>.</summary>
+    /// <see cref="Reconnect"/> opens another.</summary>
     public bool IsSessionLost => _sessionLost;
 
     /// <inheritdoc/>
@@ -257,9 +291,11 @@ public sealed class ClusterStreamSender : IIngressSender, IDisposable
     /// polls between failed offers.</summary>
     public long LeadershipTermId => _cluster == null ? Aeron.NULL_VALUE : _cluster.LeadershipTermId;
 
-    /// <summary>Closes the session. The Aeron client is the caller's and is left open.</summary>
+    /// <summary>Closes the session, and any attempt to replace it. The Aeron client is the caller's and is left
+    /// open.</summary>
     public void Dispose()
     {
+        CloseConnecting();
         CloseSession();
     }
 
@@ -307,6 +343,40 @@ public sealed class ClusterStreamSender : IIngressSender, IDisposable
         _overIpc = ingressChannel == IngressChannelIpc;
         _reconnectDue = false;
         return session;
+    }
+
+    // Starts an attempt for Reconnect: IPC within the short timeout, or UDP; false if it cannot start.
+    private bool BeginConnect(bool overIpc)
+    {
+        try
+        {
+            _connecting =
+                AeronCluster.ConnectAsync(overIpc ? NewContext(_aeron, IngressChannelIpc, null, _egressChannel,
+                                                               _listener, _ipcConnectTimeoutMs * 1_000_000)
+                                                  : NewContext(_aeron, IngressChannelUdp, _ingressEndpoints,
+                                                               _egressChannel, _listener, ConnectTimeoutNs));
+        }
+        catch (AeronException ex)
+        {
+            Logger.Error(Logger.CoreComponent.Cluster, Logger.CoreEventCode.ClusterSessionError, Member,
+                         "could not replace the lost cluster session ({0})", ex.Message);
+            return false;
+        }
+        _connectingOverIpc = overIpc;
+        return true;
+    }
+
+    private void CloseConnecting()
+    {
+        try
+        {
+            _connecting?.Dispose();
+        }
+        catch (Exception)
+        {
+            // An attempt that fails to close is abandoned either way.
+        }
+        _connecting = null;
     }
 
     // Replaces an IPC session whose leader moved away: with no endpoints, AeronCluster would wait on the same

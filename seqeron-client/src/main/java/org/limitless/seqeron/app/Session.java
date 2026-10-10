@@ -36,7 +36,7 @@ final class Session implements AutoCloseable {
     /** Frames in flight between a publish and the tap; far above what one round trip holds. */
     static final int DEFAULT_PENDING_CAPACITY = 1024;
 
-    /** How often a lost session is replaced while the façade allows it. */
+    /** How often an attempt to replace a lost session begins while the façade allows it. */
     static final long RECONNECT_INTERVAL_MS = 1_000;
 
     /** What the façade above does with what comes off the tap, and with a fence. */
@@ -287,8 +287,9 @@ final class Session implements AutoCloseable {
     }
 
     /**
-     * Opens a session in place of the lost one, once a second, until one opens or the tap could have gone silent
-     * for as long: past that the cluster is not coming back for this process, and the session's loss is a fence.
+     * Opens a session in place of the lost one, an attempt at most once a second and each advanced a step per cycle,
+     * until one opens or the tap could have gone silent for as long: past that the cluster is not coming back for
+     * this process, and the session's loss is a fence.
      */
     private void replaceSession(final String why) {
         final long nowMs = Clocks.monotonicMs();
@@ -301,10 +302,12 @@ final class Session implements AutoCloseable {
                   why + "; no session replaced it within " + tapStallTimeoutMs + "ms");
             return;
         }
-        if (nowMs < nextReconnectMs) {
-            return;
+        if (!sender.isReconnecting()) {
+            if (nowMs < nextReconnectMs) {
+                return;
+            }
+            nextReconnectMs = nowMs + RECONNECT_INTERVAL_MS;
         }
-        nextReconnectMs = nowMs + RECONNECT_INTERVAL_MS;
         if (!sender.reconnect()) {
             return;
         }

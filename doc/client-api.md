@@ -49,7 +49,7 @@ is not a fence; it raises from `doWork()`.
 - **Back pressure blocks, bounded.** `publish`/`reply` spin through ingress back pressure and leader
   elections until the offer lands, for at most 10 s; beyond that the session is treated as lost. A
   designated `Gateway` instance is fenced; an `Application`, or any other `Gateway` instance, opens a new
-  session once a second, and is fenced only if none opens within the tap-stall timeout. The result is `protocol.Publish`: `Published` (offered — not yet sequenced; confirmed
+  session, starting an attempt at most once a second without blocking its duty cycle, and is fenced only if none opens within the tap-stall timeout. The result is `protocol.Publish`: `Published` (offered — not yet sequenced; confirmed
   ingress tracks it to the producer's own tap), `Declined` (not placed; retryable), or `Refused` (never
   placeable).
 - **Flyweights.** `Payload` and `SequencedEvent` are views over the receive buffer, valid only for the

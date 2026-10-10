@@ -30,7 +30,7 @@ internal sealed class Session : IDisposable
     /// <summary>Frames in flight between a publish and the tap; far above what one round trip holds.</summary>
     internal const int DefaultPendingCapacity = 1024;
 
-    /// <summary>How often a lost session is replaced while the façade allows it.</summary>
+    /// <summary>How often an attempt to replace a lost session begins while the façade allows it.</summary>
     internal const long ReconnectIntervalMs = 1_000;
 
     /// <summary>What the façade above does with what comes off the tap, and with a fence.</summary>
@@ -291,8 +291,9 @@ internal sealed class Session : IDisposable
         }
     }
 
-    // Opens a session in place of the lost one, once a second, until one opens or the tap could have gone silent for
-    // as long: past that the cluster is not coming back for this process, and the session's loss is a fence.
+    // Opens a session in place of the lost one, an attempt at most once a second and each advanced a step per cycle,
+    // until one opens or the tap could have gone silent for as long: past that the cluster is not coming back for
+    // this process, and the session's loss is a fence.
     private void ReplaceSession(string why)
     {
         long nowMs = Clocks.MonotonicMs();
@@ -307,11 +308,14 @@ internal sealed class Session : IDisposable
                   why + "; no session replaced it within " + _tapStallTimeoutMs + "ms");
             return;
         }
-        if (nowMs < _nextReconnectMs)
+        if (!_sender.IsReconnecting)
         {
-            return;
+            if (nowMs < _nextReconnectMs)
+            {
+                return;
+            }
+            _nextReconnectMs = nowMs + ReconnectIntervalMs;
         }
-        _nextReconnectMs = nowMs + ReconnectIntervalMs;
         if (!_sender.Reconnect())
         {
             return;

@@ -246,7 +246,7 @@ class Session
     }
 
   private:
-    // How often a lost session is replaced while the façade allows it.
+    // How often an attempt to replace a lost session begins while the façade allows it.
     static constexpr std::int64_t RECONNECT_INTERVAL_MS = 1'000;
 
     // The fences are deadlines, so they are measured on a clock no wall-clock step can move.
@@ -343,8 +343,9 @@ class Session
         }
     }
 
-    // Opens a session in place of the lost one, once a second, until one opens or the tap could have gone silent
-    // for as long: past that the cluster is not coming back for this process, and the session's loss is a fence.
+    // Opens a session in place of the lost one, an attempt at most once a second and each advanced a step per
+    // cycle, until one opens or the tap could have gone silent for as long: past that the cluster is not coming
+    // back for this process, and the session's loss is a fence.
     void replaceSession(const char* why)
     {
         const std::int64_t nowMs = monotonicMs();
@@ -359,11 +360,14 @@ class Session
                   std::string{ why } + "; no session replaced it within " + std::to_string(m_tapStallTimeoutMs) + "ms");
             return;
         }
-        if (nowMs < m_nextReconnectMs)
+        if (!m_sender.isReconnecting())
         {
-            return;
+            if (nowMs < m_nextReconnectMs)
+            {
+                return;
+            }
+            m_nextReconnectMs = nowMs + RECONNECT_INTERVAL_MS;
         }
-        m_nextReconnectMs = nowMs + RECONNECT_INTERVAL_MS;
         if (!m_sender.reconnect())
         {
             return;

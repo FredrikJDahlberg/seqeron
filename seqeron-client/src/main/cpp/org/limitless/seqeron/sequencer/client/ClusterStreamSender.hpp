@@ -199,10 +199,13 @@ class ClusterStreamSender
     }
 
     /**
-     * Replaces a lost session with a new one, opened as the first was and on the same egress subscription.
+     * Replaces a lost session with a new one, opened as the first was and on the same egress subscription, but
+     * one step per call, so the caller's duty cycle never waits on an unreachable cluster: the co-located
+     * member's IPC ingress, then the dial to every member, then the handshake, each within its own timeout.
      * What the old one had not committed is not carried over: the caller's tracker decides about it.
      *
-     * @return whether a session opened; a failure is logged, and the caller tries again later
+     * @return whether a session opened; until then isReconnecting() says whether to call again, and a failed
+     *         attempt is logged and ends, for the caller to begin another later
      */
     bool reconnect()
     {
@@ -210,30 +213,46 @@ class ClusterStreamSender
         {
             return false; // the test seam has no Aeron client to build a publication with
         }
-        m_clusterSessionId = -1;
-        m_sessionLost = false;
-        m_pendingIngress = PendingIngressSwitch{};
         try
         {
-            if (m_coLocatedMemberId < 0)
+            switch (m_reconnect.stage)
             {
-                auto ingress = dialIngress(); // before m_egress moves: a failed dial must leave it for the next try
-                connect(std::move(ingress), std::move(m_egress), m_egressChannel);
-            }
-            else
-            {
-                openColocated(std::move(m_egress));
+                case Reconnect::Stage::Idle:
+                    m_clusterSessionId = -1;
+                    m_pendingIngress = PendingIngressSwitch{};
+                    m_ingress.reset();
+                    if (m_coLocatedMemberId < 0)
+                    {
+                        beginReconnectDial();
+                    }
+                    else
+                    {
+                        beginReconnectIpc();
+                    }
+                    return false;
+                case Reconnect::Stage::Ipc:
+                    stepReconnectIpc();
+                    return false;
+                case Reconnect::Stage::Dial:
+                    stepReconnectDial();
+                    return false;
+                case Reconnect::Stage::Handshake:
+                    return stepReconnectHandshake();
             }
         }
         catch (const std::exception& ex)
         {
+            m_reconnect = Reconnect{};
             util::Logger::error(util::component::Cluster, util::eventCode::ClusterSessionError,
                                 "could not replace the lost cluster session (%s)", ex.what());
-            return false;
         }
-        util::Logger::info(util::component::Cluster, "cluster session %" PRId64 " replaces the lost one",
-                           m_clusterSessionId);
-        return true;
+        return false;
+    }
+
+    // Whether reconnect() has an attempt under way, which only further calls advance.
+    [[nodiscard]] bool isReconnecting() const noexcept
+    {
+        return m_reconnect.stage != Reconnect::Stage::Idle;
     }
 
     /**
@@ -300,53 +319,9 @@ class ClusterStreamSender
         sendConnectRequest();
 
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(m_connectTimeoutMs);
-
-        auto onEgress = [this](std::span<const std::uint8_t> bytes) {
-            if (bytes.size() < cluster::sbe::MessageHeader::encodedLength())
-            {
-                return;
-            }
-            cluster::sbe::MessageHeader hdr;
-            hdr.wrap(reinterpret_cast<char*>(const_cast<std::uint8_t*>(bytes.data())), 0, 0, bytes.size());
-            if (hdr.templateId() != cluster::sbe::SessionEvent::sbeTemplateId())
-            {
-                return;
-            }
-
-            cluster::sbe::SessionEvent evt;
-            evt.wrapForDecode(reinterpret_cast<char*>(const_cast<std::uint8_t*>(bytes.data())),
-                              cluster::sbe::MessageHeader::encodedLength(), hdr.blockLength(), hdr.version(),
-                              bytes.size());
-            if (evt.code() == cluster::sbe::EventCode::Value::OK)
-            {
-                m_clusterSessionId = evt.clusterSessionId();
-                m_leadershipTermId = evt.leadershipTermId();
-                util::Logger::info(
-                    util::component::Cluster,
-                    "Session opened  sessionId=%" PRId64 "  termId=%" PRId64 "  leader=%d  via ingress %s",
-                    m_clusterSessionId, m_leadershipTermId, evt.leaderMemberId(), m_ingressEndpoint.c_str());
-                ensureIngressTargetsLeader(evt.leaderMemberId());
-            }
-            else if (evt.code() == cluster::sbe::EventCode::Value::REDIRECT)
-            {
-                handleRedirect(evt);
-            }
-            else
-            {
-                util::Logger::error(util::component::Cluster, util::eventCode::ClusterSessionError,
-                                    "SessionEvent error code=%d", static_cast<int>(evt.code()));
-                if (m_clusterSessionId >= 0 && evt.clusterSessionId() == m_clusterSessionId)
-                {
-                    m_clusterSessionId = -1;
-                }
-            }
-        };
-
         while (m_clusterSessionId < 0 && std::chrono::steady_clock::now() < deadline)
         {
-            const int fragments = m_egress->poll(onEgress);
-            applyPendingIngressSwitch(); // a REDIRECT in that batch; never build inside poll()
-            m_idleStrategy.idle(fragments);
+            m_idleStrategy.idle(pollHandshake());
         }
 
         if (m_clusterSessionId < 0)
@@ -404,7 +379,7 @@ class ClusterStreamSender
     }
 
     // True once the cluster has closed this session, as opposed to never having opened one. Latched until
-    // reconnect().
+    // reconnect() opens another.
     [[nodiscard]] bool isSessionLost() const noexcept
     {
         return m_sessionLost;
@@ -440,6 +415,7 @@ class ClusterStreamSender
     // the cluster also expires unresponsive sessions via keep-alive timeout.
     void close()
     {
+        m_reconnect = Reconnect{};
         if (!m_ingress || m_clusterSessionId < 0)
         {
             return;
@@ -465,7 +441,7 @@ class ClusterStreamSender
      */
     void pollEgress(const std::function<void(const std::uint8_t*, std::int32_t)>& onAppMessage)
     {
-        if (!m_egress)
+        if (!m_egress || isReconnecting()) // a replacement's handshake takes its answer off the same egress
         {
             return;
         }
@@ -676,6 +652,162 @@ class ClusterStreamSender
         onAppMessage(bytes.data() + appOff, static_cast<std::int32_t>(bytes.size() - appOff));
     }
 
+    // Polls egress for the handshake's answer, then makes any ingress swap a REDIRECT in it asked for. Returns the
+    // fragments read.
+    int pollHandshake()
+    {
+        const int fragments =
+            m_egress->poll([this](std::span<const std::uint8_t> bytes) { onHandshakeFragment(bytes); });
+        applyPendingIngressSwitch(); // a REDIRECT in that batch; never build inside poll()
+        return fragments;
+    }
+
+    void onHandshakeFragment(std::span<const std::uint8_t> bytes)
+    {
+        if (bytes.size() < cluster::sbe::MessageHeader::encodedLength())
+        {
+            return;
+        }
+        cluster::sbe::MessageHeader hdr;
+        hdr.wrap(reinterpret_cast<char*>(const_cast<std::uint8_t*>(bytes.data())), 0, 0, bytes.size());
+        if (hdr.templateId() != cluster::sbe::SessionEvent::sbeTemplateId())
+        {
+            return;
+        }
+
+        cluster::sbe::SessionEvent evt;
+        evt.wrapForDecode(reinterpret_cast<char*>(const_cast<std::uint8_t*>(bytes.data())),
+                          cluster::sbe::MessageHeader::encodedLength(), hdr.blockLength(), hdr.version(), bytes.size());
+        if (evt.code() == cluster::sbe::EventCode::Value::OK)
+        {
+            m_clusterSessionId = evt.clusterSessionId();
+            m_leadershipTermId = evt.leadershipTermId();
+            util::Logger::info(util::component::Cluster,
+                               "Session opened  sessionId=%" PRId64 "  termId=%" PRId64 "  leader=%d  via ingress %s",
+                               m_clusterSessionId, m_leadershipTermId, evt.leaderMemberId(), m_ingressEndpoint.c_str());
+            ensureIngressTargetsLeader(evt.leaderMemberId());
+        }
+        else if (evt.code() == cluster::sbe::EventCode::Value::REDIRECT)
+        {
+            handleRedirect(evt);
+        }
+        else
+        {
+            util::Logger::error(util::component::Cluster, util::eventCode::ClusterSessionError,
+                                "SessionEvent error code=%d", static_cast<int>(evt.code()));
+            if (m_clusterSessionId >= 0 && evt.clusterSessionId() == m_clusterSessionId)
+            {
+                m_clusterSessionId = -1;
+            }
+        }
+    }
+
+    // reconnect()'s first stage when co-located: the member's IPC ingress, which only a leader listens on.
+    void beginReconnectIpc()
+    {
+        m_reconnect =
+            Reconnect{ .stage = Reconnect::Stage::Ipc,
+                       .deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(m_ipcConnectTimeoutMs),
+                       .ipcRegistrationId =
+                           m_aeron->addPublication(CLUSTER_INGRESS_CHANNEL_IPC, CLUSTER_INGRESS_STREAM_ID) };
+    }
+
+    // Any failure on IPC is a follower's silence, as in connectColocated: the dial to every member follows.
+    void stepReconnectIpc()
+    {
+        std::string failure = "timed out";
+        try
+        {
+            if (!m_reconnect.ipc)
+            {
+                m_reconnect.ipc = m_aeron->findPublication(m_reconnect.ipcRegistrationId);
+            }
+            if (m_reconnect.ipc && m_reconnect.ipc->isConnected())
+            {
+                m_ingress = std::make_unique<detail::AeronIngressTransport>(std::move(m_reconnect.ipc));
+                m_ingressEndpoint = "ipc";
+                beginReconnectHandshake(m_ipcConnectTimeoutMs);
+                return;
+            }
+            if (std::chrono::steady_clock::now() < m_reconnect.deadline)
+            {
+                return;
+            }
+        }
+        catch (const std::exception& ex)
+        {
+            failure = ex.what();
+        }
+        reconnectOverUdp(failure);
+    }
+
+    void reconnectOverUdp(const std::string& ipcFailure)
+    {
+        util::Logger::info(util::component::Cluster,
+                           "Co-located member did not answer IPC ingress (%s) — replacing the session over UDP",
+                           ipcFailure.c_str());
+        m_reconnect = Reconnect{};
+        beginReconnectDial();
+    }
+
+    void beginReconnectDial()
+    {
+        m_reconnect =
+            Reconnect{ .stage = Reconnect::Stage::Dial,
+                       .deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(m_connectTimeoutMs),
+                       .dials = beginDial() };
+    }
+
+    void stepReconnectDial()
+    {
+        std::shared_ptr<aeron::Publication> chosen = stepDial(m_reconnect.dials);
+        if (!chosen && std::chrono::steady_clock::now() < m_reconnect.deadline)
+        {
+            return;
+        }
+        resolveDials(m_reconnect.dials);
+        if (!chosen)
+        {
+            throw std::runtime_error("[ClusterStreamSender] Timed out connecting ingress publication to any of " +
+                                     m_ingressEndpoints);
+        }
+        m_ingress = std::make_unique<detail::AeronIngressTransport>(std::move(chosen));
+        beginReconnectHandshake(m_connectTimeoutMs);
+    }
+
+    void beginReconnectHandshake(const std::int64_t timeoutMs)
+    {
+        const bool overIpc = m_reconnect.stage == Reconnect::Stage::Ipc;
+        m_reconnect = Reconnect{ .stage = Reconnect::Stage::Handshake,
+                                 .deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs),
+                                 .handshakeOverIpc = overIpc };
+        sendConnectRequest();
+    }
+
+    // An unanswered handshake over IPC falls back to the dial, as connectColocated's does.
+    bool stepReconnectHandshake()
+    {
+        pollHandshake();
+        if (m_clusterSessionId >= 0)
+        {
+            m_reconnect = Reconnect{};
+            m_sessionLost = false;
+            util::Logger::info(util::component::Cluster, "cluster session %" PRId64 " replaces the lost one",
+                               m_clusterSessionId);
+            return true;
+        }
+        if (std::chrono::steady_clock::now() < m_reconnect.deadline)
+        {
+            return false;
+        }
+        if (m_reconnect.handshakeOverIpc)
+        {
+            reconnectOverUdp("no answer to the session request");
+            return false;
+        }
+        throw std::runtime_error("[ClusterStreamSender] Timed out waiting for cluster session");
+    }
+
     // Encodes and offers a SessionConnectRequest: the initial handshake, and the re-announce after a REDIRECT.
     void sendConnectRequest()
     {
@@ -858,70 +990,88 @@ class ClusterStreamSender
     // any member answers a SessionConnectRequest, a follower with a REDIRECT, so the first live one will do.
     std::unique_ptr<detail::IngressTransport> dialIngress()
     {
-        struct Dial
-        {
-            std::string endpoint;
-            std::int64_t registrationId;
-            std::shared_ptr<aeron::Publication> publication = nullptr;
-            bool resolved = false;
-        };
-        std::vector<Dial> dials;
-        for (std::string& endpoint : ingressEndpointList(m_ingressEndpoints))
-        {
-            const std::int64_t registrationId =
-                m_aeron->addPublication(protocol::udpChannel(endpoint), CLUSTER_INGRESS_STREAM_ID);
-            dials.push_back(Dial{ .endpoint = std::move(endpoint), .registrationId = registrationId });
-        }
-        // A driver error (an unresolvable host, say) leaves that one member out rather than failing the dial.
-        const auto resolve = [this](Dial& dial) {
-            try
-            {
-                dial.publication = m_aeron->findPublication(dial.registrationId);
-                dial.resolved = dial.publication != nullptr;
-            }
-            catch (const std::exception& ex)
-            {
-                dial.resolved = true;
-                util::Logger::error(util::component::Cluster, util::eventCode::ClusterRedirectUnresolved,
-                                    "Could not build ingress publication to %s (%s)", dial.endpoint.c_str(), ex.what());
-            }
-        };
-
+        std::vector<IngressDial> dials = beginDial();
         std::shared_ptr<aeron::Publication> chosen;
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(m_connectTimeoutMs);
-        while (!chosen && std::chrono::steady_clock::now() < deadline)
+        while (!(chosen = stepDial(dials)) && std::chrono::steady_clock::now() < deadline)
         {
-            for (Dial& dial : dials)
-            {
-                if (!dial.resolved)
-                {
-                    resolve(dial);
-                }
-                if (dial.publication && dial.publication->isConnected())
-                {
-                    chosen = std::move(dial.publication);
-                    m_ingressEndpoint = dial.endpoint;
-                    break;
-                }
-            }
             m_idleStrategy.idle();
         }
-        // A registration never found stays with the driver, so every one is resolved; the unchosen close as
-        // dials goes out of scope.
-        for (Dial& dial : dials)
-        {
-            while (!dial.resolved)
-            {
-                resolve(dial);
-                m_idleStrategy.idle();
-            }
-        }
+        resolveDials(dials);
         if (!chosen)
         {
             throw std::runtime_error("[ClusterStreamSender] Timed out connecting ingress publication to any of " +
                                      m_ingressEndpoints);
         }
         return std::make_unique<detail::AeronIngressTransport>(std::move(chosen));
+    }
+
+    struct IngressDial
+    {
+        std::string endpoint;
+        std::int64_t registrationId;
+        std::shared_ptr<aeron::Publication> publication = nullptr;
+        bool resolved = false;
+    };
+
+    std::vector<IngressDial> beginDial()
+    {
+        std::vector<IngressDial> dials;
+        for (std::string& endpoint : ingressEndpointList(m_ingressEndpoints))
+        {
+            const std::int64_t registrationId =
+                m_aeron->addPublication(protocol::udpChannel(endpoint), CLUSTER_INGRESS_STREAM_ID);
+            dials.push_back(IngressDial{ .endpoint = std::move(endpoint), .registrationId = registrationId });
+        }
+        return dials;
+    }
+
+    // A driver error (an unresolvable host, say) leaves that one member out rather than failing the dial.
+    void resolveDial(IngressDial& dial)
+    {
+        try
+        {
+            dial.publication = m_aeron->findPublication(dial.registrationId);
+            dial.resolved = dial.publication != nullptr;
+        }
+        catch (const std::exception& ex)
+        {
+            dial.resolved = true;
+            util::Logger::error(util::component::Cluster, util::eventCode::ClusterRedirectUnresolved,
+                                "Could not build ingress publication to %s (%s)", dial.endpoint.c_str(), ex.what());
+        }
+    }
+
+    // One pass over the dials; returns the first connected, and points m_ingressEndpoint at it, or null.
+    std::shared_ptr<aeron::Publication> stepDial(std::vector<IngressDial>& dials)
+    {
+        for (IngressDial& dial : dials)
+        {
+            if (!dial.resolved)
+            {
+                resolveDial(dial);
+            }
+            if (dial.publication && dial.publication->isConnected())
+            {
+                m_ingressEndpoint = dial.endpoint;
+                return std::move(dial.publication);
+            }
+        }
+        return nullptr;
+    }
+
+    // A registration never found stays with the driver, so every one is resolved; the unchosen close as dials goes
+    // out of scope.
+    void resolveDials(std::vector<IngressDial>& dials)
+    {
+        for (IngressDial& dial : dials)
+        {
+            while (!dial.resolved)
+            {
+                resolveDial(dial);
+                m_idleStrategy.idle();
+            }
+        }
     }
 
     // The cluster ingress at `endpoint` ("host:port").
@@ -960,6 +1110,25 @@ class ClusterStreamSender
         bool keepCurrentOnFailure = false; // NewLeaderEvent→IPC: stay on the current UDP leg if IPC isn't up
     };
     PendingIngressSwitch m_pendingIngress;
+
+    // A session replacement under way, one step per reconnect() call.
+    struct Reconnect
+    {
+        enum class Stage
+        {
+            Idle,
+            Ipc,
+            Dial,
+            Handshake
+        };
+        Stage stage = Stage::Idle;
+        std::chrono::steady_clock::time_point deadline{};
+        std::int64_t ipcRegistrationId = -1;
+        std::shared_ptr<aeron::Publication> ipc;
+        std::vector<IngressDial> dials;
+        bool handshakeOverIpc = false;
+    };
+    Reconnect m_reconnect;
 
     std::int64_t m_clusterSessionId = -1;
     // Latched once the cluster closes this client's session; see onFragment and isSessionLost().
