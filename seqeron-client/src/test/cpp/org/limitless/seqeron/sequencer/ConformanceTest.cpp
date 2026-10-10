@@ -38,7 +38,9 @@
 #include "org_limitless_seqeron_sbe_frame/SequencedSystemHeader.h"
 #include "org_limitless_seqeron_sbe_frame/SnapshotEnd.h"
 #include "org_limitless_seqeron_sbe_frame/SnapshotStarted.h"
+#include "org_limitless_seqeron_sbe_frame/Unsequenced.h"
 #include "org_limitless_seqeron_sbe_frame/UnsequencedHeader.h"
+#include "org_limitless_seqeron_sbe_frame/UnsequencedSystem.h"
 #include "org_limitless_seqeron_sbe_frame/UnsequencedSystemHeader.h"
 
 namespace frm = org::limitless::seqeron::sbe::frame;
@@ -433,6 +435,59 @@ TEST_F(ConnectedSender, PublishSystemRefusesABodyOverTheCeiling)
                       encoder.putConnectionData(overCeiling.data(), static_cast<std::uint16_t>(overCeiling.size()));
                   }));
     EXPECT_TRUE(m_ingress->m_offered.empty());
+}
+
+// The frame an offer carried, behind the cluster's SessionMessageHeader.
+std::vector<std::uint8_t> offeredFrame(const std::vector<std::uint8_t>& offered)
+{
+    const auto clusterHeaderLength =
+        cluster::sbe::MessageHeader::encodedLength() + cluster::sbe::SessionMessageHeader::sbeBlockLength();
+    return { offered.begin() + static_cast<std::ptrdiff_t>(clusterHeaderLength), offered.end() };
+}
+
+TEST_F(ConnectedSender, PublishedFramesAreTheHeaderThenThePrefixedPayload)
+{
+    // §4.1: the header composite, then the payload behind its uint16 length prefix, encoded here apart and
+    // framed with the codecs' own putPayload/putBody.
+    const std::string data = "connection data";
+    const auto fill = [&](frm::ConnectionOpened& encoder) {
+        encoder.putConnectionData(data.data(), static_cast<std::uint16_t>(data.size()));
+    };
+
+    std::array<char, 256> payload{};
+    frm::ConnectionOpened payloadEncoder;
+    payloadEncoder.wrapAndApplyHeader(payload.data(), 0, payload.size());
+    fill(payloadEncoder);
+    const auto payloadLength =
+        static_cast<std::uint16_t>(frm::MessageHeader::encodedLength() + payloadEncoder.encodedLength());
+    std::vector<std::uint8_t> expectedPayload(protocol::MIN_INGRESS_LENGTH + payloadLength);
+    frm::Unsequenced unsequenced;
+    unsequenced.wrapAndApplyHeader(reinterpret_cast<char*>(expectedPayload.data()), 0, expectedPayload.size());
+    unsequenced.header().sourceId(SOURCE_ID).connectionId(CONNECTION_ID).sessionId(SESSION_ID).payloadId(2);
+    unsequenced.putPayload(payload.data(), payloadLength);
+
+    std::array<char, 256> body{};
+    frm::ConnectionOpened bodyEncoder;
+    bodyEncoder.wrapForEncode(body.data(), 0, body.size());
+    fill(bodyEncoder);
+    const auto bodyLength = static_cast<std::uint16_t>(bodyEncoder.encodedLength());
+    std::vector<std::uint8_t> expectedSystem(protocol::MIN_INGRESS_LENGTH + bodyLength);
+    frm::UnsequencedSystem unsequencedSystem;
+    unsequencedSystem.wrapAndApplyHeader(reinterpret_cast<char*>(expectedSystem.data()), 0, expectedSystem.size());
+    unsequencedSystem.header()
+        .sourceId(SOURCE_ID)
+        .connectionId(CONNECTION_ID)
+        .sessionId(SESSION_ID)
+        .systemEventType(protocol::CONNECTION_OPENED);
+    unsequencedSystem.putBody(body.data(), bodyLength);
+
+    EXPECT_EQ(protocol::Publish::Published,
+              client::publishPayload<frm::ConnectionOpened>(m_sender, SOURCE_ID, CONNECTION_ID, 2, fill));
+    EXPECT_EQ(protocol::Publish::Published, client::publishSystem<frm::ConnectionOpened>(
+                                                m_sender, SOURCE_ID, CONNECTION_ID, protocol::CONNECTION_OPENED, fill));
+    ASSERT_EQ(2U, m_ingress->m_offered.size());
+    EXPECT_EQ(expectedPayload, offeredFrame(m_ingress->m_offered[0]));
+    EXPECT_EQ(expectedSystem, offeredFrame(m_ingress->m_offered[1]));
 }
 
 // Answers whatever the test told it to, and records each frame it is asked to track.

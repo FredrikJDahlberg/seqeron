@@ -6,6 +6,7 @@
 
 #include <array>
 #include <cstdint>
+#include <cstring>
 #include <utility>
 
 #include "org/limitless/seqeron/protocol/Publish.hpp"
@@ -24,18 +25,22 @@ static_assert(INGRESS_ENCODE_BUFFER_LEN <= ClusterStreamSender::MAX_PAYLOAD_LEN)
 
 namespace detail {
 
-// This thread's encode buffers, in static storage: a frame-sized stack array, zeroed per call, costs every
-// send. Two, because a payload or system body is encoded before the frame that carries it.
+// A payload encoded in place gets a whole encode buffer behind the framing, so one past the ceiling is measured
+// and refused rather than overrunning the encoder.
+inline constexpr std::size_t FRAME_BUFFER_LEN = protocol::MIN_INGRESS_LENGTH + INGRESS_ENCODE_BUFFER_LEN;
+
+// This thread's encode buffer, in static storage: a frame-sized stack array, zeroed per call, costs every send.
 inline std::uint8_t* frameBuffer() noexcept
 {
-    alignas(16) static thread_local std::array<std::uint8_t, INGRESS_ENCODE_BUFFER_LEN> buffer;
+    alignas(16) static thread_local std::array<std::uint8_t, FRAME_BUFFER_LEN> buffer;
     return buffer.data();
 }
 
-inline std::uint8_t* bodyBuffer() noexcept
+// Writes the uint16 length prefix just ahead of a payload encoded in place; both families put it there (F-3).
+inline void putPayloadLength(std::uint8_t* const frame, const std::uint16_t length) noexcept
 {
-    alignas(16) static thread_local std::array<std::uint8_t, INGRESS_ENCODE_BUFFER_LEN> buffer;
-    return buffer.data();
+    const std::uint16_t encoded = SBE_LITTLE_ENDIAN_ENCODE_16(length);
+    std::memcpy(frame + protocol::MIN_INGRESS_LENGTH - sizeof(encoded), &encoded, sizeof(encoded));
 }
 
 } // namespace detail
@@ -107,7 +112,7 @@ inline std::uint8_t* bodyBuffer() noexcept
 
 /**
  * Encodes one payload inside an Unsequenced frame and offers it to cluster ingress. The payload is encoded
- * into its own buffer and copied in.
+ * in place, behind the frame's header.
  *
  * @tparam Encoder     the payload's SBE encoder, of any schema
  * @param sender       the cluster session to offer on
@@ -129,13 +134,25 @@ template<typename Encoder, typename Fill>
     {
         return protocol::Publish::Refused;
     }
-    std::uint8_t* const payload = detail::bodyBuffer();
+    std::uint8_t* const buffer = detail::frameBuffer();
+    sbe::frame::Unsequenced frame;
+    frame.wrapAndApplyHeader(reinterpret_cast<char*>(buffer), 0, detail::FRAME_BUFFER_LEN);
+    frame.header()
+        .sourceId(sourceId)
+        .connectionId(connectionId)
+        .sessionId(sender.clusterSessionId())
+        .payloadId(payloadId);
     Encoder encoder;
-    encoder.wrapAndApplyHeader(reinterpret_cast<char*>(payload), 0, INGRESS_ENCODE_BUFFER_LEN);
+    encoder.wrapAndApplyHeader(reinterpret_cast<char*>(buffer), protocol::MIN_INGRESS_LENGTH, detail::FRAME_BUFFER_LEN);
     std::forward<Fill>(fill)(encoder);
-    const auto payloadLength =
-        static_cast<std::uint16_t>(sbe::frame::MessageHeader::encodedLength() + encoder.encodedLength());
-    return publishPayload(sender, tracker, sourceId, connectionId, payloadId, payload, payloadLength);
+    const std::uint64_t payloadLength = sbe::frame::MessageHeader::encodedLength() + encoder.encodedLength();
+    if (payloadLength > protocol::MAX_PAYLOAD_LENGTH)
+    {
+        return protocol::Publish::Refused;
+    }
+    detail::putPayloadLength(buffer, static_cast<std::uint16_t>(payloadLength));
+    return offerFrame(sender, tracker, buffer,
+                      static_cast<std::uint16_t>(protocol::MIN_INGRESS_LENGTH + payloadLength));
 }
 
 /**
@@ -183,27 +200,24 @@ template<typename Encoder, typename Fill>
     {
         return protocol::Publish::Refused;
     }
-    std::uint8_t* const body = detail::bodyBuffer();
-    Encoder encoder;
-    encoder.wrapForEncode(reinterpret_cast<char*>(body), 0, INGRESS_ENCODE_BUFFER_LEN);
-    std::forward<Fill>(fill)(encoder);
-    const auto bodyLength = static_cast<std::uint16_t>(encoder.encodedLength());
-    if (bodyLength > protocol::MAX_PAYLOAD_LENGTH || bodyLength < blockLength)
-    {
-        return protocol::Publish::Refused;
-    }
-
     std::uint8_t* const buffer = detail::frameBuffer();
     sbe::frame::UnsequencedSystem frame;
-    frame.wrapAndApplyHeader(reinterpret_cast<char*>(buffer), 0, INGRESS_ENCODE_BUFFER_LEN);
+    frame.wrapAndApplyHeader(reinterpret_cast<char*>(buffer), 0, detail::FRAME_BUFFER_LEN);
     frame.header()
         .sourceId(sourceId)
         .connectionId(connectionId)
         .sessionId(sender.clusterSessionId())
         .systemEventType(systemEventType);
-    frame.putBody(reinterpret_cast<const char*>(body), bodyLength);
-    const auto length = static_cast<std::uint16_t>(sbe::frame::MessageHeader::encodedLength() + frame.encodedLength());
-    return offerFrame(sender, tracker, buffer, length);
+    Encoder encoder;
+    encoder.wrapForEncode(reinterpret_cast<char*>(buffer), protocol::MIN_INGRESS_LENGTH, detail::FRAME_BUFFER_LEN);
+    std::forward<Fill>(fill)(encoder);
+    const std::uint64_t bodyLength = encoder.encodedLength();
+    if (bodyLength > protocol::MAX_PAYLOAD_LENGTH || bodyLength < static_cast<std::uint64_t>(blockLength))
+    {
+        return protocol::Publish::Refused;
+    }
+    detail::putPayloadLength(buffer, static_cast<std::uint16_t>(bodyLength));
+    return offerFrame(sender, tracker, buffer, static_cast<std::uint16_t>(protocol::MIN_INGRESS_LENGTH + bodyLength));
 }
 
 /**
