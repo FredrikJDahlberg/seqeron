@@ -102,12 +102,12 @@ Coverage is a JaCoCo report at `build/reports/jacoco/test/`, written by `./gradl
 
 ## End-to-end harnesses
 
-The end-to-end harnesses live under `seqeron-service/src/test/scripts/`. **Eight of the eleven are Java-only**
-— they drive the cluster through `ClusterProbe` or `TestGateway`, which attach to a member's own embedded
-media driver or a gateway host's, so six of them need no standalone `aeronmd` at all. Each brings a cluster
+The end-to-end harnesses live under `seqeron-service/src/test/scripts/`. **Nine of the twelve are Java-only**
+— they drive the cluster through `ClusterProbe`, `TestGateway` or `TestApplication`, which attach to a member's
+own embedded media driver or a gateway host's, so seven of them need no standalone `aeronmd` at all. Each brings a cluster
 up and tears it down again; run them from the repository root, with `./gradlew uberJar` done first. The
-ninth, `docker-failover-test.sh`, is the containerized one and wants `./gradlew operatorDist` and Docker
-instead. The tenth and eleventh drive the C# client and want the .NET SDK beside the jar:
+tenth, `docker-failover-test.sh`, is the containerized one and wants `./gradlew operatorDist` and Docker
+instead. The eleventh and twelfth drive the C# client and want the .NET SDK beside the jar:
 `csharp-client-test.sh` on Linux, and `csharp-windows-test.sh` on Windows, in Git Bash, with its member in a
 WSL1 distribution that has a JDK 21.
 
@@ -117,6 +117,7 @@ WSL1 distribution that has a JDK 21.
 | `failover-test.sh` | Force a failover, then cold-start a fresh `ClusterProbe` follower on the new leader and verify it catches up on full history — each node's tap recording is one continuous run spanning both tenures. Two `confirm` producers stream across the kill: the one using `PendingSends` must see every frame exactly once, in order, and an untracked control reports what the kill lost |
 | `gap-recovery-test.sh` | Drop a live tap frame on a caught-up consumer (SIGUSR1 fault injection) and verify it re-walks its recording and heals rather than wedging |
 | `paused-subscriber-test.sh` | `SIGSTOP` a caught-up consumer while more than two tap windows go by, and verify its member stays up and the resumed consumer heals the hole its eviction left |
+| `session-replace-test.sh` | `SIGSTOP` a `TestApplication` past its session timeout, then take quorum away from its member, and verify it replaces its cluster session both times, unfenced, without its duty cycle stopping while an attempt is pending. Needs `./gradlew uberJar compileTestJava` |
 | `replayer-restart-test.sh` | Kill and restart a client's own node and verify the client fails fast and a fresh cold start is served from the node's new recording alone |
 | `gateway-host-test.sh` | A `confirm` producer on a gateway host (node 3) streams while the member its relay reads, the leader, is killed: every frame must come back exactly once, in order, and the relay must move to another member. The host is then restarted, and a fresh `ClusterProbe` follower there must catch up from its new recording |
 | `chaos-runner.sh` | Randomized fault injection against a live 3-node cluster, with the `TestGateway` pair (`GW-T-A`/`GW-T-B`, ports 9200/9201) taking load through its accept gate; every run prints its `SEED` to replay the exact fault sequence. Needs `./gradlew uberJar compileTestJava` |

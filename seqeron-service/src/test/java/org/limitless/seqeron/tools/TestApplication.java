@@ -32,6 +32,7 @@ import org.limitless.seqeron.util.Logger;
  *   probe.sourceId     — the application's sourceId; default 16
  *   probe.snapshotDir  — this replica's own snapshot directory; default {tmpdir}/seqeron-snapshots-app-{memberId}
  *   probe.intervalMs   — pause between markers while leading; default 100
+ *   probe.ipcConnectTimeoutMs — how long a session waits on its member's IPC ingress; the façade's default
  * </pre>
  */
 public final class TestApplication implements Application.Listener, SnapshotListener {
@@ -42,11 +43,15 @@ public final class TestApplication implements Application.Listener, SnapshotList
     /** Exit status of a fenced replica, and of one whose media driver went away. Mirrors TestGateway's. */
     private static final int EXIT_FENCED = 70;
 
+    /** A gap between cluster heartbeats this long is logged when it ends; they arrive once a second. */
+    private static final long HEARTBEAT_SILENCE_NS = TimeUnit.SECONDS.toNanos(3);
+
     private final long intervalNs = TimeUnit.MILLISECONDS.toNanos(Long.getLong("probe.intervalMs", 100));
     private final int sourceId = Integer.getInteger("probe.sourceId", 16);
 
     private long sequencedMarkers;
     private long digest;
+    private long lastHeartbeatNs;
 
     private final ClusterProbe.MarkerEncoder marker = new ClusterProbe.MarkerEncoder();
     private Application app;
@@ -78,6 +83,8 @@ public final class TestApplication implements Application.Listener, SnapshotList
                  .sourceId(sourceId)
                  .clientId(Integer.getInteger("probe.clientId", 11))
                  .memberId(memberId)
+                 .ipcConnectTimeoutMs(Long.getLong("probe.ipcConnectTimeoutMs",
+                                                   Application.DEFAULT_IPC_CONNECT_TIMEOUT_MS))
                  .egressChannel(ClusterProbe.egressChannel())
                  .ingressEndpoints(ClusterProbe.ingressEndpoints())
                  .listener(this)
@@ -129,8 +136,15 @@ public final class TestApplication implements Application.Listener, SnapshotList
             sequencedMarkers, digest);
     }
 
+    /** Timed on dispatch, so the line marks when this duty cycle next ran, not when the frame arrived. */
     @Override
     public void onClusterHeartbeat(final long clusterTimeNs, final long receiveTimeNs) {
+        final long now = System.nanoTime();
+        if (lastHeartbeatNs != 0 && now - lastHeartbeatNs >= HEARTBEAT_SILENCE_NS) {
+            log("cluster heartbeat resumed after %dms of silence",
+                TimeUnit.NANOSECONDS.toMillis(now - lastHeartbeatNs));
+        }
+        lastHeartbeatNs = now;
     }
 
     @Override

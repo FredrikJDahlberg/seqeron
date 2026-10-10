@@ -235,22 +235,24 @@ dispatch and the confirmed publish to zero bytes a frame.
 
 The Java suite covers the deterministic decision-making — `Sequencer`, and `ReplayerService` through
 its `Replayer` seam — and deliberately touches no Aeron runtime: no media driver, no cluster, no Aeron
-mocks. Everything that needs an Aeron runtime is covered by `core_tests` and by the eleven end-to-end scripts under
+mocks. Everything that needs an Aeron runtime is covered by `core_tests` and by the twelve end-to-end scripts under
 `seqeron-service/src/test/scripts`. Coverage is a JaCoCo report per module, at
 `<module>/build/reports/jacoco/test/`, excluding the generated SBE codecs.
 
-**Eight of the eleven harnesses are Java-only.** They drive the cluster through `tools/ClusterProbe`, which
+**Nine of the twelve harnesses are Java-only.** Eight drive the cluster through `tools/ClusterProbe`, which
 submits `ProbeMarker` payloads at ingress (`submit`), round-trips one through consensus and back off
 the tap (`ping`), replays history through the co-located Replayer and then follows the tap live
 (`follow`), or streams through `ClusterStreamSender` and `sequencer/client/PendingSends` and checks its own tap shows
 every frame exactly once, in order (`confirm`, which `failover-test.sh` runs across the leader kill, and
 `gateway-host-test.sh` runs on a gateway host across the loss of the relay's member). The probe attaches to a
 member's own embedded driver, or a gateway host's, so six of the eight need no
-standalone `aeronmd` at all. The ninth, `docker-failover-test.sh`, is the containerized multi-round
-failover soak (`docker/compose.yml`, `./gradlew operatorDist`, CI's `failover.yml`). The tenth,
+standalone `aeronmd` at all. The ninth, `session-replace-test.sh`, drives `TestApplication` (below) through the
+loss of its cluster session, and fails if a replacement stops its duty cycle. The tenth, `docker-failover-test.sh`,
+is the containerized multi-round failover soak (`docker/compose.yml`, `./gradlew operatorDist`, CI's
+`failover.yml`). The eleventh,
 `csharp-client-test.sh`, drives the C# client tier: `Seqeron.ClusterProbe` (`seqeron-client/src/test/csharp-probe`),
 the C# twin of the probe's `confirm` and `follow`, then the C# examples, its gateway pair through a handover.
-It needs the .NET SDK beside the uber jar, and CI runs it in `chaos.yml`. The eleventh,
+It needs the .NET SDK beside the uber jar, and CI runs it in `chaos.yml`. The twelfth,
 `csharp-windows-test.sh`, runs the same C# client on Windows, where it is deployed: one member in WSL1 (three elect without end there) and
 the C# clients beside a gateway host on Windows, on one `windows-latest` runner (CI's `windows.yml`).
 `chaos-runner` needs one more thing the probe cannot supply — a **gateway
