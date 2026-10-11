@@ -7,6 +7,8 @@ import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.sun.management.ThreadMXBean;
+import java.lang.management.ManagementFactory;
 import org.agrona.ExpandableArrayBuffer;
 import org.agrona.MutableDirectBuffer;
 import org.junit.jupiter.api.DisplayName;
@@ -1313,6 +1315,40 @@ class SequencerTest {
                             SESSION_ID, TIMESTAMP);
         return seq.sequenceMessage(buf, 0, encodeIngressGatewayRegistered(buf, 0, 9, SECOND_SOURCE_ID, "GW2-B", 1, 0),
                                    SESSION_ID, TIMESTAMP);
+    }
+
+    // ── Allocation ────────────────────────────────────────────────────────────
+
+    @Test
+    @DisplayName("once compiled, sequencing a frame allocates nothing, on a gateway's session or any other")
+    void sequencingAllocatesNothingOnceCompiled() {
+        final Sequencer seq = new Sequencer();
+        final MutableDirectBuffer buf = new ExpandableArrayBuffer(512);
+        seq.sequenceMessage(buf, 0, encodeIngressGatewayRegistered(buf, 0, 5, SOURCE_ID, "GW-A", 0, 0), SESSION_ID,
+                            TIMESTAMP);
+        seq.pendingGatewayActivation(TIMESTAMP); // designates 5
+        final long gatewaySession = 0xA11CEL; // above 127, as SESSION_ID is: the Long cache holds neither
+        seq.sequenceMessage(buf, 0, encodeIngressGatewayStarted(buf, 0, 5), gatewaySession, TIMESTAMP);
+        final int ingressLength = encodeIngressPayload(ingress, 0);
+        final long firstGlobalSeqNo = seq.globalSeqNo();
+
+        // The interpreter allocates what C2's escape analysis removes, so the first batch to be fully compiled
+        // is the one that counts; one that never stops allocating fails.
+        final ThreadMXBean threads = (ThreadMXBean)ManagementFactory.getThreadMXBean();
+        final int frames = 100_000;
+        long allocated = -1;
+        int batches = 0;
+        for (; batches < 50 && allocated != 0; batches++) {
+            final long before = threads.getCurrentThreadAllocatedBytes();
+            for (int i = 0; i < frames; i++) {
+                seq.sequenceMessage(ingress, 0, ingressLength, gatewaySession, TIMESTAMP);
+                seq.sequenceMessage(ingress, 0, ingressLength, SESSION_ID, TIMESTAMP);
+            }
+            allocated = threads.getCurrentThreadAllocatedBytes() - before;
+        }
+
+        assertEquals(firstGlobalSeqNo + 2L * frames * batches, seq.globalSeqNo()); // none rejected
+        assertEquals(0, allocated);
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────

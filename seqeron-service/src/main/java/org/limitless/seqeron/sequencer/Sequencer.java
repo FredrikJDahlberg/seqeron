@@ -4,6 +4,8 @@ import java.util.concurrent.TimeUnit;
 import org.agrona.DirectBuffer;
 import org.agrona.ExpandableDirectByteBuffer;
 import org.agrona.MutableDirectBuffer;
+import org.agrona.collections.Long2LongHashMap;
+import org.agrona.collections.LongHashSet;
 import org.limitless.seqeron.protocol.FrameLayer;
 import org.limitless.seqeron.protocol.SystemFrame;
 import org.limitless.seqeron.sbe.frame.ClusterHeartbeatEncoder;
@@ -57,6 +59,9 @@ public final class Sequencer {
 
     /** No gateway instance. */
     private static final int NO_GATEWAY_ID = -1;
+
+    /** The gateway maps' missing value: no int32 id equals it, so no id can be refused as one. */
+    private static final long NO_BINDING = Long.MIN_VALUE;
 
     /**
      * How long, in cluster time, a designated instance has to answer {@code GatewayActive} with {@code
@@ -142,16 +147,16 @@ public final class Sequencer {
      * {@link #sessionClosed} knows which instance it lost. Only {@code GatewayStarted} binds a session:
      * {@code header.sourceId} is a routing id other clients legitimately echo, so it proves nothing.
      */
-    private final java.util.Map<Long, Integer> activeGatewaySession = new java.util.HashMap<>();
+    private final Long2LongHashMap activeGatewaySession = new Long2LongHashMap(NO_BINDING);
 
     /**
      * Sessions whose binding a later {@code GatewayStarted} for the same {@code gatewayId} replaced, until they
      * close: whatever still speaks on one is not the instance the log now names (<b>S-6</b> case 3).
      */
-    private final java.util.Set<Long> deposedGatewaySessions = new java.util.HashSet<>();
+    private final LongHashSet deposedGatewaySessions = new LongHashSet();
 
     /** Each logical gateway's designated instance: {@code gatewaySourceId} to the last {@code GatewayActive}'s. */
-    private final java.util.Map<Integer, Integer> designatedGateway = new java.util.HashMap<>();
+    private final Long2LongHashMap designatedGateway = new Long2LongHashMap(NO_BINDING);
 
     /**
      * Open connections per gateway: {@code sourceId} to the {@code connectionId}s with a {@code
@@ -400,15 +405,17 @@ public final class Sequencer {
                 if (!isDesignated(gatewayId)) {
                     return rejectSystem("GatewayStarted names gatewayId " + gatewayId + ", which is not designated");
                 }
-                activeGatewaySession.entrySet().removeIf(binding -> {
-                    if (binding.getValue() != gatewayId) {
-                        return false;
+                for (final Long2LongHashMap.EntryIterator binding = activeGatewaySession.entrySet().iterator();
+                     binding.hasNext();) {
+                    binding.next();
+                    if (binding.getLongValue() != gatewayId) {
+                        continue;
                     }
-                    if (binding.getKey() != sessionId) {
-                        deposedGatewaySessions.add(binding.getKey());
+                    if (binding.getLongKey() != sessionId) {
+                        deposedGatewaySessions.add(binding.getLongKey());
                     }
-                    return true;
-                });
+                    binding.remove();
+                }
                 activeGatewaySession.put(sessionId, gatewayId);
                 releaseStaleConnections(sourceId);
             }
@@ -565,11 +572,11 @@ public final class Sequencer {
      */
     public int sessionClosed(final long sessionId, final long timestamp) {
         deposedGatewaySessions.remove(sessionId);
-        final Integer closedGatewayId = activeGatewaySession.remove(sessionId);
-        if (closedGatewayId == null || !isDesignated(closedGatewayId)) {
+        final long closedGatewayId = activeGatewaySession.remove(sessionId);
+        if (closedGatewayId == NO_BINDING || !isDesignated((int)closedGatewayId)) {
             return NO_FRAME; // a superseded instance's close takes the role from no one
         }
-        final int promoted = promotionTarget(closedGatewayId);
+        final int promoted = promotionTarget((int)closedGatewayId);
         if (promoted == NO_GATEWAY_ID) {
             Logger.error(Logger.CoreComponent.Sequencer, Logger.CoreEventCode.GatewayPromotionFailed, memberId,
                          "gateway instance %d's session closed with no standby to promote — this logical "
@@ -747,18 +754,18 @@ public final class Sequencer {
      * {@code sourceId} (<b>S-6</b> case 2). Bound to a different logical gateway does not count.
      */
     private boolean boundToGateway(final long sessionId, final int sourceId) {
-        final Integer boundGatewayId = activeGatewaySession.get(sessionId);
-        if (boundGatewayId == null) {
+        final long boundGatewayId = activeGatewaySession.get(sessionId);
+        if (boundGatewayId == NO_BINDING) {
             return false;
         }
-        final GatewayRow row = rowFor(boundGatewayId);
+        final GatewayRow row = rowFor((int)boundGatewayId);
         return row != null && row.gatewaySourceId() == sourceId;
     }
 
     /** Whether the last {@code GatewayActive} for {@code gatewayId}'s logical gateway named it. */
     private boolean isDesignated(final int gatewayId) {
         final GatewayRow row = rowFor(gatewayId);
-        return row != null && designatedGateway.getOrDefault(row.gatewaySourceId(), NO_GATEWAY_ID) == gatewayId;
+        return row != null && designatedGateway.get(row.gatewaySourceId()) == gatewayId;
     }
 
     /**
@@ -769,8 +776,8 @@ public final class Sequencer {
         if (deposedGatewaySessions.contains(sessionId)) {
             return true;
         }
-        final Integer boundGatewayId = activeGatewaySession.get(sessionId);
-        return boundGatewayId != null && !isDesignated(boundGatewayId);
+        final long boundGatewayId = activeGatewaySession.get(sessionId);
+        return boundGatewayId != NO_BINDING && !isDesignated((int)boundGatewayId);
     }
 
     /** The Gateway row for {@code gatewayId}, or null if no load has named that instance. */

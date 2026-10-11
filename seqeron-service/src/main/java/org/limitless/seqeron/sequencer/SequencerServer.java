@@ -57,6 +57,8 @@ import org.limitless.seqeron.util.Logger;
  *   sequencer.leaderHeartbeatTimeoutMs — how long a follower waits for a leader heartbeat before it starts an
  *                               election; default 200
  *   sequencer.electionTimeoutMs — how long an election stage waits on the other members; default 200
+ *   aeron.cluster.max.sessions — the most client sessions the cluster holds at once; default 64 rather than
+ *                               Aeron's 10 (doc/ops.md, "Cluster sessions")
  *   aeron.threading.mode       — the embedded driver's threading mode; default DEDICATED (doc/ops.md, "Driver threads")
  *   aeron.ipc.term.buffer.length — the embedded driver's IPC term length; default 16m (doc/ops.md, "Term lengths")
  *   aeron.timer.interval, aeron.untethered.window.limit.timeout, aeron.untethered.linger.timeout — default
@@ -85,6 +87,9 @@ public final class SequencerServer {
     private static final long DEFAULT_LEADER_HEARTBEAT_INTERVAL_MS = 20;
     private static final long DEFAULT_LEADER_HEARTBEAT_TIMEOUT_MS = 200;
     private static final long DEFAULT_ELECTION_TIMEOUT_MS = 200;
+
+    /** Session limit when {@code aeron.cluster.max.sessions} is not set; see doc/ops.md, "Cluster sessions". */
+    private static final int DEFAULT_MAX_CONCURRENT_SESSIONS = 64;
 
     public static void main(final String[] args) {
         final int memberId = Integer.getInteger(PROP_MEMBER_ID, 0);
@@ -157,6 +162,9 @@ public final class SequencerServer {
                 .errorHandler(t
                               -> Logger.error(Logger.CoreComponent.ConsensusModule,
                                               Logger.CoreEventCode.ConsensusModuleError, memberId, "%s", t.toString()));
+        if (System.getProperty(ConsensusModule.Configuration.MAX_CONCURRENT_SESSIONS_PROP_NAME) == null) {
+            consensusCtx.maxConcurrentSessions(DEFAULT_MAX_CONCURRENT_SESSIONS);
+        }
 
         final AtomicBoolean fatal = new AtomicBoolean();
         final Runnable fatalHandler = () -> {

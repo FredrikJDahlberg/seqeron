@@ -184,6 +184,17 @@ seqeron's processes bind these ports, and an application's own must stay clear o
   publication's source port is outside it, since Aeron leaves that to the OS; its subscribers' status
   messages and NAKs come back to it, which a stateful firewall admits as replies.
 
+## Cluster sessions
+
+Every producer holds a cluster session: each gateway instance, its standby included; each replica of a
+co-located application, on every member, a follower's over UDP; and `clusterctl` and `ClusterProbe` while
+they submit. Three members with two applications and two gateway pairs hold 10. A session whose client
+died keeps its place until `sequencer.sessionTimeoutMs` closes it.
+
+The cluster refuses a connection past `aeron.cluster.max.sessions` with "concurrent session limit". Aeron's
+default is 10; a member sets 64 unless the property is set. Set it on every member, above the deployment's
+count with room for the sessions a failover leaves behind. It is a ceiling: nothing is allocated for it.
+
 ## Replayer client ids
 
 Every client on a node — façade, `ReplayerStreamReceiver`, probe — takes a `clientId` that the node's
