@@ -32,7 +32,8 @@ public interface Replayer {
     List<RecordingSpan> listTapRecordings();
 
     /**
-     * Where a still-recording recording has reached.
+     * Where a still-recording recording has reached. On every request's path, so read off the node's counters
+     * rather than asked of the archive.
      * @param recordingId archive recording id
      * @return the live position, or a negative value if this recording is no longer being written
      */

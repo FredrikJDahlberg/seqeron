@@ -207,6 +207,7 @@ public final class ReplayerServer {
                                                .recordingEventsEnabled(false)
                                                .deleteArchiveOnStart(false)
                                                .idleStrategySupplier(idleStrategies);
+        NodeDriver.recordChecksums(archiveCtx, Logger.CoreComponent.ReplayerServer, nodeId);
         return ArchivingMediaDriver.launch(driverCtx, archiveCtx);
     }
 

@@ -163,6 +163,13 @@ seqeron's processes bind these ports, and an application's own must stay clear o
 - **A gateway host binds no fixed port either.** Its relay reaches each member's archive port, and the member
   replies and replays to ephemeral UDP ports at the name `SEQERON_HOST` gives, so a firewall between them
   must let the members reach those.
+- **Members use ephemeral ports between themselves too.** A member that catches up in an election replicates
+  the log from a peer's archive, which replies and replays to its archive's and consensus module's `:0`
+  subscriptions. `-Daeron.receiver.wildcard.port.range="<low> <high>"` on a member's or gateway host's
+  driver confines every `:0` subscription on it, a client's egress included, to that range. Each holds one
+  port while it is open, a few at a time per process, and a range that runs out fails the subscription. A
+  publication's source port is outside it, since Aeron leaves that to the OS; its subscribers' status
+  messages and NAKs come back to it, which a stateful firewall admits as replies.
 
 ## Replayer client ids
 
@@ -288,6 +295,28 @@ so seqeron's drivers set those three to 10 ms, 100 ms and 100 ms. At Aeron's def
 a subscriber that stops for a window's worth of traffic would take its member down. When overriding them,
 keep both timeouts plus two timer intervals well inside that second. A dropped subscriber rejoins at the
 live position after `aeron.untethered.resting.timeout`, 10 s.
+
+## Recording checksums
+
+A member's and a gateway host's archive write a CRC-32C of every frame they record into the frame's
+session id field, which a replay rewrites anyway. `aeron.archive.record.checksum` overrides it, and an empty
+value turns it off. The cost is the recorder thread's, the tap's one tethered consumer, at hardware CRC speed.
+Agrona computes them through `java.util.zip`'s internals, so the JVM needs
+`--add-opens=java.base/java.util.zip=ALL-UNNAMED`, which the launch scripts and the jar's manifest pass; a
+process without it warns at start and records without checksums.
+
+Nothing checks them on replay unless `aeron.archive.replay.checksum` is set, because a check fails every frame
+recorded without one, and a member replays its Raft log, recorded since the cluster first started, at every
+start. An archive whose recordings all carry checksums can turn the check on: one written with checksums
+since its first start, or an older one that `ArchiveTool <archiveDir> checksum CRC-32C -a` has rewritten with
+its process stopped. Then `-Daeron.archive.replay.checksum=CRC-32C` fails a replay at the first damaged frame
+rather than serve it.
+
+To check one recording without the check on, stop its process and run, against a copy of the archive
+directory, `ArchiveTool <copy> verify <recordingId> -a -checksum CRC-32C`; `describe-all` lists the ids.
+`ArchiveTool` is `java -cp seqeron-<version>-uber.jar io.aeron.archive.ArchiveTool`. Never run `verify -checksum`
+over an archive that holds recordings made without checksums: it marks every recording that fails `INVALID`,
+the Raft log included.
 
 ## A node that terminates itself
 

@@ -46,6 +46,7 @@ final class FakeReplayer implements Replayer {
     private RuntimeException archiveFailure;
     private String archiveSessionError;
     private int archivePolls;
+    private int listings;
     private int replayAttempts;
 
     private final Deque<byte[]> requestQueue = new ArrayDeque<>();
@@ -96,6 +97,17 @@ final class FakeReplayer implements Replayer {
         }
     }
 
+    /**
+     * Leaves a recording listed as recording with nothing writing it, as an unclean shutdown does: its position
+     * counter went with the process, and the archive's restart wrote its stop position.
+     */
+    void orphanRecording(final long recordingId) {
+        final Long tip = recordingPositions.remove(recordingId);
+        if (tip != null) {
+            stopPositions.put(recordingId, tip);
+        }
+    }
+
     /** Leaves neither position counter able to report {@code recordingId}'s tip, as a rotation transiently does. */
     void hideTip(final long recordingId) {
         recordingPositions.remove(recordingId);
@@ -135,6 +147,11 @@ final class FakeReplayer implements Replayer {
     /** Makes every subsequent {@code pollArchive} report {@code error}, as a session the archive closed does. */
     void closeArchiveSession(final String error) {
         archiveSessionError = error;
+    }
+
+    /** How many times the archive's tap recordings were listed. */
+    int listings() {
+        return listings;
     }
 
     int archivePolls() {
@@ -216,6 +233,7 @@ final class FakeReplayer implements Replayer {
 
     @Override
     public List<Replayer.RecordingSpan> listTapRecordings() {
+        ++listings;
         throwIfArchiveDown();
         return new ArrayList<>(recordings);
     }

@@ -80,7 +80,8 @@ tasks.named('run') {
     jvmArgs '--add-opens=java.base/sun.nio.ch=ALL-UNNAMED',
             '--add-opens=java.base/java.lang=ALL-UNNAMED',
             '--add-opens=java.base/java.lang.reflect=ALL-UNNAMED',
-            '--add-opens=java.base/jdk.internal.misc=ALL-UNNAMED'
+            '--add-opens=java.base/jdk.internal.misc=ALL-UNNAMED',
+            '--add-opens=java.base/java.util.zip=ALL-UNNAMED'
     workingDir rootProject.projectDir
     standardInput = System.in
 }
@@ -100,7 +101,7 @@ tasks.register('uberJar', Jar) {
     manifest {
         attributes 'Main-Class': application.mainClass.get(),
                    'Add-Opens': 'java.base/sun.nio.ch java.base/java.lang java.base/java.lang.reflect ' +
-                                'java.base/jdk.internal.misc'
+                                'java.base/jdk.internal.misc java.base/java.util.zip'
     }
 
     from(rootProject.file('LICENSE')) { into 'META-INF' }

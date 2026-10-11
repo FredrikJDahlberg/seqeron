@@ -34,6 +34,7 @@ SEQERON_JAVA_OPTS=(
     --add-opens=java.base/java.lang=ALL-UNNAMED
     --add-opens=java.base/java.lang.reflect=ALL-UNNAMED
     --add-opens=java.base/jdk.internal.misc=ALL-UNNAMED
+    --add-opens=java.base/java.util.zip=ALL-UNNAMED
 )
 
 # Call from a script that launches Java; the ones that only signal or delete files do not.

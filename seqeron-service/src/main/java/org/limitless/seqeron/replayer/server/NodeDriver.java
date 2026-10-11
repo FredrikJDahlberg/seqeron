@@ -1,5 +1,7 @@
 package org.limitless.seqeron.replayer.server;
 
+import io.aeron.archive.Archive;
+import io.aeron.archive.checksum.Checksums;
 import io.aeron.driver.Configuration;
 import io.aeron.driver.MediaDriver;
 import io.aeron.driver.ThreadingMode;
@@ -119,6 +121,30 @@ public final class NodeDriver {
             existing = existing.getParent();
         }
         return Files.getFileStore(existing).type();
+    }
+
+    /**
+     * Has the archive write a CRC-32C into every frame it records, where {@code aeron.archive.record.checksum} is not
+     * set, so a damaged recording can be found (doc/ops.md, "Recording checksums"). Nothing verifies them on replay
+     * unless {@code aeron.archive.replay.checksum} is set. Agrona computes them through {@code java.util.zip}'s
+     * internals, so a JVM that does not open it to this code warns and records without them rather than fail.
+     *
+     * @param ctx       a member's or gateway host's archive
+     * @param component who is launching it
+     * @param memberId  its node id
+     */
+    public static void recordChecksums(final Archive.Context ctx, final Logger.Component component,
+                                       final int memberId) {
+        if (System.getProperty(Archive.Configuration.RECORD_CHECKSUM_PROP_NAME) != null) {
+            return;
+        }
+        if (!Object.class.getModule().isOpen("java.util.zip", NodeDriver.class.getModule())) {
+            Logger.log(component, Logger.Severity.Warn, Logger.CoreEventCode.Info, memberId,
+                       "recording without checksums: the JVM does not open java.util.zip — pass "
+                           + "--add-opens=java.base/java.util.zip=ALL-UNNAMED, as the launch scripts do");
+            return;
+        }
+        ctx.recordChecksum(Checksums.crc32c());
     }
 
     /** Sets the untethered-subscriber timing where its Aeron property is not set. */

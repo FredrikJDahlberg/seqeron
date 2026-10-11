@@ -89,7 +89,11 @@ public final class ReplayerService {
     private boolean ready = false;
 
     private boolean integrityFailed = false;
-    private boolean staleActiveRecordingLogged = false;
+    /** The recording served while it was reported alongside a stale active one, else NULL_VALUE. */
+    private long staleReportedFor = NULL_VALUE;
+
+    /** The active tap recording, kept while it is still recording; a node starts a new one only on restart. */
+    private Replayer.RecordingSpan activeRecording;
     private boolean stalled = false;
 
     private long lastStallRetryMs = 0;
@@ -852,9 +856,14 @@ public final class ReplayerService {
 
     /**
      * The newest active tap recording on the local archive, or null. More than one active is an unclean
-     * shutdown's leftover, reported once per episode; the newest holds the older one's content.
+     * shutdown's leftover, reported once per episode; the newest holds the older one's content. Listed again only
+     * once the one found has stopped recording, so a request costs no listing.
      */
     private Replayer.RecordingSpan findActiveRecording() {
+        if (activeRecording != null && replayer.recordingPosition(activeRecording.recordingId()) >= 0) {
+            return activeRecording;
+        }
+        activeRecording = null;
         Replayer.RecordingSpan found = null;
         int activeCount = 0;
         for (final Replayer.RecordingSpan span : replayer.listTapRecordings()) {
@@ -865,13 +874,16 @@ public final class ReplayerService {
                 }
             }
         }
-        if (activeCount > 1 && !staleActiveRecordingLogged) {
+        if (activeCount > 1 && found.recordingId() != staleReportedFor) {
             Logger.error(Logger.CoreComponent.ReplayerService, Logger.CoreEventCode.StaleActiveRecording, memberId,
                          "%d tap recordings report as still recording — an unclean shutdown left an older one "
                              + "unstopped; serving the newest",
                          activeCount);
         }
-        staleActiveRecordingLogged = activeCount > 1;
+        staleReportedFor = activeCount > 1 ? found.recordingId() : NULL_VALUE;
+        if (found != null && replayer.recordingPosition(found.recordingId()) >= 0) {
+            activeRecording = found;
+        }
         return found;
     }
 

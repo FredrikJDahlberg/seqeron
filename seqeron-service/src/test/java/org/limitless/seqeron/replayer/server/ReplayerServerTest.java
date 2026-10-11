@@ -2,8 +2,11 @@ package org.limitless.seqeron.replayer.server;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import io.aeron.archive.Archive;
+import io.aeron.archive.checksum.Checksums;
 import io.aeron.driver.Configuration;
 import io.aeron.driver.MediaDriver;
 import io.aeron.driver.ThreadingMode;
@@ -16,6 +19,7 @@ import org.agrona.concurrent.BackoffIdleStrategy;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.limitless.seqeron.protocol.PortLayout;
+import org.limitless.seqeron.util.Logger;
 
 class ReplayerServerTest {
     @Test
@@ -51,6 +55,28 @@ class ReplayerServerTest {
                 System.clearProperty(Configuration.THREADING_MODE_PROP_NAME);
             } else {
                 System.setProperty(Configuration.THREADING_MODE_PROP_NAME, set);
+            }
+        }
+    }
+
+    @Test
+    void archivesWriteCrc32cChecksumsUnlessAeronRecordChecksumNamesOthers() {
+        final String set = System.clearProperty(Archive.Configuration.RECORD_CHECKSUM_PROP_NAME);
+        try {
+            final Archive.Context unset = new Archive.Context();
+            NodeDriver.recordChecksums(unset, Logger.CoreComponent.ReplayerServer, 0);
+            assertSame(Checksums.crc32c(), unset.recordChecksum());
+
+            System.setProperty(Archive.Configuration.RECORD_CHECKSUM_PROP_NAME, "");
+            final Archive.Context off = new Archive.Context();
+            NodeDriver.recordChecksums(off, Logger.CoreComponent.ReplayerServer, 0);
+            // Left unset, which the archive resolves from the property when it concludes the context.
+            assertNull(off.recordChecksum());
+        } finally {
+            if (set == null) {
+                System.clearProperty(Archive.Configuration.RECORD_CHECKSUM_PROP_NAME);
+            } else {
+                System.setProperty(Archive.Configuration.RECORD_CHECKSUM_PROP_NAME, set);
             }
         }
     }

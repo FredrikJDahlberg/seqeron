@@ -276,11 +276,30 @@ class ReplayerServiceTest {
         request(CLIENT, 2, FROM_START);
         assertEquals(1, logCount(Logger.CoreEventCode.StaleActiveRecording), "the repair is not a new episode");
 
-        fakeReplayer.addRecording(7, 4096, true, 5000); // a later unclean shutdown leaves 6 unstopped
+        fakeReplayer.orphanRecording(6); // a later unclean shutdown leaves 6 unstopped
+        fakeReplayer.addRecording(7, 4096, true, 5000);
         request(CLIENT, 3, FROM_START);
 
         // This anomaly has no counter, so a latch that never re-arms makes every later episode silent.
         assertEquals(2, logCount(Logger.CoreEventCode.StaleActiveRecording));
+        assertEquals(7, lastClientReplay().recordingId());
+    }
+
+    @Test
+    void theActiveRecordingIsListedOnceWhileItKeepsRecording() {
+        fakeReplayer.addRecording(6, 0, true, 4096);
+        makeReady();
+        request(CLIENT, 1, FROM_START);
+        final int listings = fakeReplayer.listings();
+
+        // Each listing is an archive round trip on the one thread that serves every app.
+        request(CLIENT, 2, FROM_START);
+        request(CLIENT, 3, 2048);
+        assertEquals(listings, fakeReplayer.listings());
+
+        fakeReplayer.orphanRecording(6); // the archive stopped writing it
+        request(CLIENT, 4, FROM_START);
+        assertEquals(listings + 1, fakeReplayer.listings());
     }
 
     // ── Steady-state resume ─────────────────────────────────────────────────────

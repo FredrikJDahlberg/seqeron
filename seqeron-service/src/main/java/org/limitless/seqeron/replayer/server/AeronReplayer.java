@@ -39,6 +39,9 @@ public final class AeronReplayer implements Replayer {
     private final ExclusivePublication controlPub;
     private final Subscription requestSub;
 
+    /** The counter {@link #recordingPosition} last found, while it still counts that recording. */
+    private int recordingCounterId = CountersReader.NULL_COUNTER_ID;
+
     public AeronReplayer(final Aeron aeron, final AeronArchive archive, final int memberId) {
         this.aeron = aeron;
         this.archive = archive;
@@ -89,7 +92,15 @@ public final class AeronReplayer implements Replayer {
 
     @Override
     public long recordingPosition(final long recordingId) {
-        return archive.getRecordingPosition(recordingId);
+        final CountersReader counters = aeron.countersReader();
+        if (recordingCounterId == CountersReader.NULL_COUNTER_ID ||
+            !RecordingPos.isActive(counters, recordingCounterId, recordingId)) {
+            recordingCounterId = RecordingPos.findCounterIdByRecording(counters, recordingId, archive.archiveId());
+            if (recordingCounterId == CountersReader.NULL_COUNTER_ID) {
+                return AeronArchive.NULL_POSITION;
+            }
+        }
+        return counters.getCounterValue(recordingCounterId);
     }
 
     @Override

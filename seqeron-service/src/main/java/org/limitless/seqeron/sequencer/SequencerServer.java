@@ -127,6 +127,7 @@ public final class SequencerServer {
                 .recordingEventsEnabled(false)
                 .deleteArchiveOnStart(false)
                 .idleStrategySupplier(idleStrategySupplier);
+        NodeDriver.recordChecksums(archiveCtx, Logger.CoreComponent.SequencerServer, memberId);
 
         final ShutdownSignalBarrier barrier = new ShutdownSignalBarrier();
         final ConsensusModule.Context consensusCtx =

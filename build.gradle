@@ -63,8 +63,8 @@ subprojects {
 
     tasks.named('test') {
         useJUnitPlatform()
-        // Agrona's UnsafeBuffer needs this to access jdk.internal.misc.Unsafe on JDK 21+.
-        jvmArgs '--add-opens=java.base/jdk.internal.misc=ALL-UNNAMED'
+        // Agrona's UnsafeBuffer needs the first to access jdk.internal.misc.Unsafe on JDK 21+, and its CRCs the second.
+        jvmArgs '--add-opens=java.base/jdk.internal.misc=ALL-UNNAMED', '--add-opens=java.base/java.util.zip=ALL-UNNAMED'
         finalizedBy 'jacocoTestReport'
     }
 
