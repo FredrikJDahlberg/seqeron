@@ -149,6 +149,12 @@ snapshots, which is what keeps every member's recording a complete copy of histo
 reason `clusterctl shutdown` stops the cluster with `ABORT`, which takes none. To start clean, delete the
 `archive-<id>` and `cluster-<id>` directories under `baseDir`, or run `purgelog.sh`.
 
+The media driver's directory is recreated at every start, but only once no live driver holds it, and the
+previous driver's errors are first saved beside it, as `<aeronDir>-<timestamp>-error.log`, so they survive the
+restart. A member whose driver closed, as it does on an orderly fatal exit, restarts at once. One killed outright
+restarts once its driver's heartbeat is older than `aeron.driver.timeout` (10 s), the wait its archive and cluster
+mark files already impose.
+
 A leader failover is not a break in the tap. The tap publication is created once and never re-created on
 a leadership change, since `aeron:ipc` has no port to collide on, so a member's recording is one
 continuous run across every leader tenure. [`fault-tolerance.md`](fault-tolerance.md) covers each failure

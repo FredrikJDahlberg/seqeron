@@ -2,12 +2,21 @@ package org.limitless.seqeron.metrics;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import io.aeron.CncFileDescriptor;
+import io.aeron.CommonContext;
+import java.io.File;
+import java.nio.MappedByteBuffer;
 import org.agrona.BitUtil;
 import org.agrona.BufferUtil;
+import org.agrona.IoUtil;
 import org.agrona.concurrent.UnsafeBuffer;
+import org.agrona.concurrent.broadcast.BroadcastBufferDescriptor;
+import org.agrona.concurrent.ringbuffer.ManyToOneRingBuffer;
+import org.agrona.concurrent.ringbuffer.RingBufferDescriptor;
 import org.agrona.concurrent.status.CountersManager;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.limitless.seqeron.protocol.SeqeronCounters;
 
 /**
@@ -23,6 +32,7 @@ import org.limitless.seqeron.protocol.SeqeronCounters;
 class MetricsExporterTest {
     private static final int COUNTER_COUNT = 16;
     private static final int MEMBER = 1;
+    private static final int PAGE_SIZE = 4096;
 
     private final CountersManager counters = newCountersManager();
 
@@ -120,6 +130,33 @@ class MetricsExporterTest {
         assertFalse(body.contains("7up"), body);
     }
 
+    @Test
+    @DisplayName("a scrape follows the member's restart: it reads whichever driver now holds the directory")
+    void scrapeFollowsADriverRestart(@TempDir final File aeronDir) {
+        writeCnc(aeronDir, System.currentTimeMillis(), 42);
+        assertTrue(MetricsExporter.scrape(aeronDir).contains("seqeron_sequencer_global_seq_no{member=\"1\"} 42"));
+
+        // The restarted member's driver deletes the directory and creates a CnC file of its own.
+        assertTrue(new File(aeronDir, CncFileDescriptor.CNC_FILE).delete());
+        writeCnc(aeronDir, System.currentTimeMillis(), 7);
+
+        assertTrue(MetricsExporter.scrape(aeronDir).contains("seqeron_sequencer_global_seq_no{member=\"1\"} 7"));
+    }
+
+    @Test
+    @DisplayName("a scrape of a driver that stopped heartbeating fails rather than serve its last counters")
+    void scrapeRefusesADeadDriver(@TempDir final File aeronDir) {
+        writeCnc(aeronDir, System.currentTimeMillis() - CommonContext.DRIVER_TIMEOUT_MS - 1_000, 42);
+
+        assertThrows(IllegalStateException.class, () -> MetricsExporter.scrape(aeronDir));
+    }
+
+    @Test
+    @DisplayName("a scrape of a directory with no CnC file fails")
+    void scrapeRefusesAMissingDriver(@TempDir final File aeronDir) {
+        assertThrows(Exception.class, () -> MetricsExporter.scrape(aeronDir));
+    }
+
     private void addCounter(final int typeId, final int memberId, final long value) {
         counters.newCounter("seqeron member=" + memberId, typeId,
                             keyBuffer -> keyBuffer.putInt(SeqeronCounters.KEY_MEMBER_ID_OFFSET, memberId))
@@ -134,6 +171,34 @@ class MetricsExporterTest {
                             keyBuffer.putInt(SeqeronCounters.KEY_CLIENT_ID_OFFSET, clientId);
                         })
             .set(value);
+    }
+
+    /** Writes the CnC file a driver would, holding one globalSeqNo counter, its heartbeat last at {@code heartbeatMs}. */
+    private static void writeCnc(final File aeronDir, final long heartbeatMs, final long globalSeqNo) {
+        final int toDriverLength = 1024 + RingBufferDescriptor.TRAILER_LENGTH;
+        final int toClientsLength = 1024 + BroadcastBufferDescriptor.TRAILER_LENGTH;
+        final int countersMetaDataLength = COUNTER_COUNT * CountersManager.METADATA_LENGTH;
+        final int countersValuesLength = COUNTER_COUNT * CountersManager.COUNTER_LENGTH;
+        final MappedByteBuffer cnc = IoUtil.mapNewFile(
+            new File(aeronDir, CncFileDescriptor.CNC_FILE),
+            CncFileDescriptor.computeCncFileLength(
+                toDriverLength + toClientsLength + countersMetaDataLength + countersValuesLength, PAGE_SIZE));
+        try {
+            final UnsafeBuffer metaData = CncFileDescriptor.createMetaDataBuffer(cnc);
+            CncFileDescriptor.fillMetaData(metaData, toDriverLength, toClientsLength, countersMetaDataLength,
+                                           countersValuesLength, 0, 0, heartbeatMs, ProcessHandle.current().pid(),
+                                           PAGE_SIZE);
+            new ManyToOneRingBuffer(CncFileDescriptor.createToDriverBuffer(cnc, metaData))
+                .consumerHeartbeatTime(heartbeatMs);
+            new CountersManager(CncFileDescriptor.createCountersMetaDataBuffer(cnc, metaData),
+                                CncFileDescriptor.createCountersValuesBuffer(cnc, metaData))
+                .newCounter("seqeron member=" + MEMBER, SeqeronCounters.SEQUENCER_GLOBAL_SEQ_NO_TYPE_ID,
+                            keyBuffer -> keyBuffer.putInt(SeqeronCounters.KEY_MEMBER_ID_OFFSET, MEMBER))
+                .set(globalSeqNo);
+            CncFileDescriptor.signalCncReady(metaData);
+        } finally {
+            IoUtil.unmap(cnc);
+        }
     }
 
     private static CountersManager newCountersManager() {

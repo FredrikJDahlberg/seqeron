@@ -56,9 +56,12 @@ public final class NodeDriver {
     }
 
     /**
-     * A seqeron media driver's context: dedicated threads on {@code idleStrategies}, a directory deleted on start,
-     * and the IPC term length and untethered timing of doc/ops.md ("Term lengths", "Untethered subscribers")
-     * where their Aeron properties are not set.
+     * A seqeron media driver's context: dedicated threads on {@code idleStrategies}, and the IPC term length and
+     * untethered timing of doc/ops.md ("Term lengths", "Untethered subscribers") where their Aeron properties are
+     * not set.
+     *
+     * <p>The directory is not deleted unchecked on start: Aeron refuses one a live driver holds, and saves the
+     * previous driver's error log beside it before deleting it.
      *
      * @param aeronDir       the driver's directory
      * @param idleStrategies the idle strategy of each driver thread
@@ -69,8 +72,7 @@ public final class NodeDriver {
                                             .threadingMode(ThreadingMode.DEDICATED)
                                             .conductorIdleStrategy(idleStrategies.get())
                                             .senderIdleStrategy(idleStrategies.get())
-                                            .receiverIdleStrategy(idleStrategies.get())
-                                            .dirDeleteOnStart(true);
+                                            .receiverIdleStrategy(idleStrategies.get());
         if (System.getProperty(Configuration.IPC_TERM_BUFFER_LENGTH_PROP_NAME) == null) {
             ctx.ipcTermBufferLength(DEFAULT_IPC_TERM_BUFFER_LENGTH);
         }

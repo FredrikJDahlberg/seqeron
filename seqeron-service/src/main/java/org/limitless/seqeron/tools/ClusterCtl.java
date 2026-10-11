@@ -22,6 +22,7 @@ import org.limitless.seqeron.protocol.Publish;
 import org.limitless.seqeron.protocol.SeqeronCounters;
 import org.limitless.seqeron.protocol.SequencedFrameDecoder;
 import org.limitless.seqeron.protocol.SystemFrame;
+import org.limitless.seqeron.replayer.client.ReplayerStreamReceiver;
 import org.limitless.seqeron.sbe.frame.ClusterStartedDecoder;
 import org.limitless.seqeron.sbe.frame.GatewayActiveDecoder;
 import org.limitless.seqeron.sbe.frame.ApplicationRegisteredEncoder;
@@ -593,10 +594,13 @@ public final class ClusterCtl {
         }
     }
 
-    /** Subscribes to this node's tap and waits for it to connect; null (having said why) if it never does. */
+    /**
+     * Subscribes to this node's tap, untethered, and waits for it to connect; null (having said why) if it never
+     * does. Tethered, a stopped or killed clusterctl would hold the tap back until its member terminated.
+     */
     private static Subscription awaitTap(final Session session) {
-        final Subscription tap = session.aeron.addSubscription(FrameLayer.FEEDER_CHANNEL,
-                                                               FrameLayer.FEEDER_STREAM_ID);
+        final Subscription tap =
+            session.aeron.addSubscription(ReplayerStreamReceiver.FEEDER_CONSUMER_CHANNEL, FrameLayer.FEEDER_STREAM_ID);
         final long connectDeadline = System.nanoTime() + CONNECT_TIMEOUT_NS;
         while (!tap.isConnected()) {
             if (System.nanoTime() >= connectDeadline) {

@@ -2,13 +2,19 @@ package org.limitless.seqeron.metrics;
 
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
-import io.aeron.Aeron;
+import io.aeron.CncFileDescriptor;
+import io.aeron.CommonContext;
+import java.io.File;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
+import java.nio.MappedByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import org.agrona.BufferUtil;
+import org.agrona.IoUtil;
+import org.agrona.concurrent.UnsafeBuffer;
 import org.agrona.concurrent.status.CountersReader;
 import org.limitless.seqeron.protocol.SeqeronCounters;
 
@@ -128,27 +134,46 @@ public final class MetricsExporter {
     }
 
     public static void main(final String[] args) throws IOException {
-        final Aeron aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(AERON_DIR));
-        final MetricsExporter exporter = new MetricsExporter(aeron.countersReader());
-
+        final File aeronDir = new File(AERON_DIR);
         final HttpServer server = HttpServer.create(new InetSocketAddress(PORT), 0);
-        server.createContext("/metrics", exporter::handleMetrics);
+        server.createContext("/metrics", exchange -> handleMetrics(exchange, aeronDir));
         server.setExecutor(null);
         server.start();
 
         System.out.printf("[MetricsExporter/%d] serving /metrics on port %d from aeronDir=%s%n", MEMBER_ID, PORT,
                           AERON_DIR);
 
-        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-            server.stop(0);
-            aeron.close();
-        }));
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> server.stop(0)));
     }
 
-    private void handleMetrics(final HttpExchange exchange) throws IOException {
+    /**
+     * Renders the counters of the driver running in {@code aeronDir}, mapping its CnC file for this scrape alone.
+     * Mapped afresh each time rather than held by an Aeron client, so a member's restart, which replaces the file,
+     * costs the scrapes while it is down and none after.
+     *
+     * @param aeronDir the member's Aeron directory
+     * @throws IllegalStateException if no live driver holds that directory
+     */
+    static String scrape(final File aeronDir) {
+        final MappedByteBuffer cnc =
+            IoUtil.mapExistingFile(new File(aeronDir, CncFileDescriptor.CNC_FILE), CncFileDescriptor.CNC_FILE);
+        try {
+            if (!CommonContext.isDriverActive(CommonContext.DRIVER_TIMEOUT_MS, message -> { }, cnc)) {
+                throw new IllegalStateException("no live media driver in " + aeronDir);
+            }
+            final UnsafeBuffer metaData = CncFileDescriptor.createMetaDataBuffer(cnc);
+            return new MetricsExporter(new CountersReader(CncFileDescriptor.createCountersMetaDataBuffer(cnc, metaData),
+                                                          CncFileDescriptor.createCountersValuesBuffer(cnc, metaData)))
+                .renderMetrics();
+        } finally {
+            BufferUtil.free(cnc);
+        }
+    }
+
+    private static void handleMetrics(final HttpExchange exchange, final File aeronDir) throws IOException {
         final byte[] body;
         try {
-            body = renderMetrics().getBytes(StandardCharsets.UTF_8);
+            body = scrape(aeronDir).getBytes(StandardCharsets.UTF_8);
         } catch (final Exception ex) {
             final byte[] error =
                 ("aeron counters unavailable: " + ex.getMessage() + "\n").getBytes(StandardCharsets.UTF_8);

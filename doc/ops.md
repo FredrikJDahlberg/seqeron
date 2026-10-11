@@ -14,7 +14,9 @@ Metrics are pulled, not pushed, from a static list of targets rather than throug
 
 - **One exporter per member.** `metrics-exporter.sh` (`MetricsExporter`) runs beside a `SequencerServer`,
   as `clusterctl` does, sharing that member's Aeron directory. It reads the member's counters live from the
-  CnC file (`CountersReader.forEach`) and serves them as `/metrics` in Prometheus text format.
+  CnC file (`CountersReader.forEach`) and serves them as `/metrics` in Prometheus text format. It maps the file
+  per scrape rather than holding an Aeron client, so it follows the member across restarts, and a scrape fails
+  while no live driver holds the directory.
 - **Prometheus scrapes every exporter directly**, one target per member
   (`seqeron-service/src/main/ops/prometheus/prometheus.yml`). Its own `up{job="seqeron",member="N"}` is the
   member's reachability: a member that is down reads 0.
