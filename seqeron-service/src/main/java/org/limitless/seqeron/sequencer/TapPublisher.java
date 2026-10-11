@@ -112,6 +112,10 @@ public final class TapPublisher {
      * Publishes the frame in the sequencer's buffer onto the tap. Spins on back-pressure, since a dropped
      * frame is an unrecoverable gap, but terminates the node once the recording is provably not draining.
      * The only exits are a landed offer and process death.
+     *
+     * <p>{@code offer}, not {@code tryClaim}: a claim saves one copy, only below the tap's MTU, of a frame the
+     * cluster has already logged, replicated and archived, and an aborted claim pads this node's recording
+     * alone, moving its positions off the other members' that {@code TapRelay} resumes at.
      * @param length of the encoded frame at offset 0 of the sequencer's buffer
      */
     public void emit(final int length) {
