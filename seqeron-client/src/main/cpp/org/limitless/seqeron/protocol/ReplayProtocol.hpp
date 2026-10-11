@@ -7,7 +7,7 @@
 
 namespace org::limitless::seqeron::protocol {
 
-inline constexpr const char* REPLAYER_IPC_CHANNEL = "aeron:ipc";
+inline constexpr const char* REPLAYER_IPC_CHANNEL = "aeron:ipc?alias=seqeron-replay";
 inline constexpr std::int32_t REPLAYER_REPLAY_STREAM_ID = 201;
 inline constexpr std::int32_t REPLAYER_REQUEST_STREAM_ID = 202;
 inline constexpr std::int32_t REPLAYER_CONTROL_STREAM_ID = 203;

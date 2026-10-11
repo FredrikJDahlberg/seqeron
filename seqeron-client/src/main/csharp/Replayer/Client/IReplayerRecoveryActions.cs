@@ -38,6 +38,6 @@ internal interface IReplayerRecoveryActions
     /// <summary>The node this app runs on, or null before start; log attribution only.</summary>
     int? MemberId { get; }
 
-    /// <summary>Epoch millis; the unit suite advances it.</summary>
+    /// <summary>Monotonic millis; the unit suite advances it.</summary>
     long NowMs();
 }

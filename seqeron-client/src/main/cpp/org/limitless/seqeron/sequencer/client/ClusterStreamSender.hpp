@@ -48,7 +48,7 @@ namespace org::limitless::seqeron::sequencer::client {
 
 // ── Constants — cluster channels, stream ids and client protocol semver, per io.aeron.cluster.codecs
 //    and AeronCluster.Configuration. ────
-inline constexpr const char* CLUSTER_INGRESS_CHANNEL_IPC = "aeron:ipc";
+inline constexpr const char* CLUSTER_INGRESS_CHANNEL_IPC = "aeron:ipc?alias=seqeron-ingress";
 inline constexpr std::int32_t CLUSTER_INGRESS_STREAM_ID = 101;
 inline constexpr std::int32_t CLUSTER_EGRESS_STREAM_ID = 102;
 inline constexpr std::int32_t CLUSTER_PROTOCOL_VERSION = (0 << 16) | (3 << 8) | 0; // 0.3.0
@@ -959,13 +959,20 @@ class ClusterStreamSender
             primaryFailureReason.c_str(), m_coLocatedMemberId);
     }
 
-    // Adds this client's egress subscription on m_egressChannel and blocks until it is resolved.
+    // Adds this client's egress subscription on m_egressChannel and blocks until it is resolved, or the connect
+    // timeout elapses.
     std::shared_ptr<aeron::Subscription> awaitEgressSubscription()
     {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(m_connectTimeoutMs);
         const auto subId = m_aeron->addSubscription(m_egressChannel, CLUSTER_EGRESS_STREAM_ID);
         std::shared_ptr<aeron::Subscription> egressSub;
         while (!(egressSub = m_aeron->findSubscription(subId)))
         {
+            if (std::chrono::steady_clock::now() >= deadline)
+            {
+                throw std::runtime_error("[ClusterStreamSender] Timed out creating egress subscription on " +
+                                         m_egressChannel);
+            }
             m_idleStrategy.idle();
         }
         return egressSub;

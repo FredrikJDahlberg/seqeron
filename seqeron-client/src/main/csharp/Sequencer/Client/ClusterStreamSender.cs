@@ -26,7 +26,7 @@ namespace Org.Limitless.Seqeron.Sequencer.Client;
 public sealed class ClusterStreamSender : IIngressSender, IDisposable
 {
     // Ingress channel of a client sharing its member's media driver. Only the leader subscribes to it.
-    private const string IngressChannelIpc = "aeron:ipc";
+    private const string IngressChannelIpc = "aeron:ipc?alias=seqeron-ingress";
 
     // Ingress channel of a client reaching members over the network; endpoints name the members.
     private const string IngressChannelUdp = "aeron:udp";

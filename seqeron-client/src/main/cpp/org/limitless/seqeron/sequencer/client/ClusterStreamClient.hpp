@@ -29,7 +29,7 @@ namespace org::limitless::seqeron::sequencer::client {
 inline constexpr std::int32_t ARCHIVE_REPLAY_STREAM_ID = 110;
 
 // Replay channel for a client co-located with the archive it's replaying from.
-inline constexpr const char* REPLAY_CHANNEL_IPC = "aeron:ipc";
+inline constexpr const char* REPLAY_CHANNEL_IPC = "aeron:ipc?alias=seqeron-scan";
 
 /**
  * Resolves a UDP replay channel on localhost, its port from the environment so two instances of the same

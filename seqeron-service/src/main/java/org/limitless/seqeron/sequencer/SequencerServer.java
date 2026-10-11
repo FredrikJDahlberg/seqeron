@@ -156,8 +156,7 @@ public final class SequencerServer {
                 .idleStrategySupplier(idleStrategySupplier)
                 .errorHandler(t
                               -> Logger.error(Logger.CoreComponent.ConsensusModule,
-                                              Logger.CoreEventCode.ConsensusModuleError,
-                                              memberId, "%s", t.getMessage()));
+                                              Logger.CoreEventCode.ConsensusModuleError, memberId, "%s", t.toString()));
 
         final AtomicBoolean fatal = new AtomicBoolean();
         final Runnable fatalHandler = () -> {
@@ -176,7 +175,7 @@ public final class SequencerServer {
                 .idleStrategySupplier(idleStrategySupplier)
                 .errorHandler(t
                               -> Logger.error(Logger.CoreComponent.SequencerService, Logger.CoreEventCode.ServiceError,
-                                              memberId, "%s", t.getMessage()));
+                                              memberId, "%s", t.toString()));
 
         Logger.info(Logger.CoreComponent.SequencerServer, memberId,
                     "Starting member %d | ingress=%s | archive=%s | baseDir=%s | idle=%s", memberId,

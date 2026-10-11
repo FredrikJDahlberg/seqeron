@@ -62,7 +62,7 @@ public static class PortLayout
 
     /// <summary>How a process reaches the archive in its own Aeron directory: no endpoint, so no port to
     /// allocate.</summary>
-    public const string ArchiveControlChannel = "aeron:ipc";
+    public const string ArchiveControlChannel = "aeron:ipc?alias=seqeron-archive";
 
     /// <summary>
     /// Control stream of that link. The archive's own local control and every archive client must name the same

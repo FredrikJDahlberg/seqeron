@@ -8,7 +8,7 @@ import static io.aeron.Aeron.NULL_VALUE;
  */
 public final class ReplayProtocol {
     /** The whole protocol is node-local: a replica and its Replayer share one media driver. */
-    public static final String IPC_CHANNEL = "aeron:ipc";
+    public static final String IPC_CHANNEL = "aeron:ipc?alias=seqeron-replay";
 
     /** ReplayerService → apps: on-demand archive replays (one Aeron session per in-flight replay). */
     public static final int REPLAY_STREAM_ID = 201;

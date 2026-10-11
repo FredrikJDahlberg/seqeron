@@ -31,10 +31,10 @@ namespace org::limitless::seqeron::replayer::client {
 
 // The tap as a consumer subscribes to it: untethered, so a slow app is dropped and heals by replay
 // rather than back-pressuring the sequencer.
-inline const std::string FEEDER_CONSUMER_CHANNEL = std::string(protocol::FEEDER_CHANNEL) + "?tether=false";
+inline const std::string FEEDER_CONSUMER_CHANNEL = std::string(protocol::FEEDER_CHANNEL) + "|tether=false";
 
 // Untethered like the tap, because the Replayer answers every app from one duty-cycle thread.
-inline const std::string REPLAYER_CONTROL_CHANNEL = std::string(protocol::REPLAYER_IPC_CHANNEL) + "?tether=false";
+inline const std::string REPLAYER_CONTROL_CHANNEL = std::string(protocol::REPLAYER_IPC_CHANNEL) + "|tether=false";
 
 /**
  * Follows the co-located SequencerService IPC tap directly, decoding and dispatching sequenced
@@ -306,7 +306,7 @@ class ReplayerStreamReceiver final : private detail::ReplayerRecoveryActions
         // The archive's replaySessionId carries the Aeron image session id in its low 32 bits — the
         // same narrowing poll() uses to hand imageBySessionId.
         const std::string channel = std::string(protocol::REPLAYER_IPC_CHANNEL) +
-                                    "?session-id=" + std::to_string(static_cast<std::int32_t>(replaySessionId));
+                                    "|session-id=" + std::to_string(static_cast<std::int32_t>(replaySessionId));
         m_replaySubRegId = m_aeron->addSubscription(channel, protocol::REPLAYER_REPLAY_STREAM_ID);
     }
 
@@ -389,7 +389,7 @@ class ReplayerStreamReceiver final : private detail::ReplayerRecoveryActions
     std::int64_t nowMs() override
     {
         using namespace std::chrono;
-        return duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
+        return duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
     }
 
     const std::int32_t m_clientId;

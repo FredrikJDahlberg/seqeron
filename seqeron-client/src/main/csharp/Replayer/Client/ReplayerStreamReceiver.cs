@@ -20,11 +20,11 @@ public sealed class ReplayerStreamReceiver : IDisposable
 {
     /// <summary>The tap as a consumer addresses it: untethered, so a slow app is dropped and heals via
     /// replay.</summary>
-    public const string FeederConsumerChannel = FrameLayer.FeederChannel + "?tether=false";
+    public const string FeederConsumerChannel = FrameLayer.FeederChannel + "|tether=false";
 
     // Untethered like the tap: the Replayer answers every app from one thread, so an app that stops polling must
     // not back-pressure the others' replies. A dropped reply costs one resend interval.
-    private const string ControlChannel = ReplayProtocol.IpcChannel + "?tether=false";
+    private const string ControlChannel = ReplayProtocol.IpcChannel + "|tether=false";
 
     private const int FragmentLimit = 16;
 
@@ -314,7 +314,7 @@ public sealed class ReplayerStreamReceiver : IDisposable
             {
                 return;
             }
-            string channel = ReplayProtocol.IpcChannel + "?session-id=" + (int)replaySessionId;
+            string channel = ReplayProtocol.IpcChannel + "|session-id=" + (int)replaySessionId;
             _receiver._replaySubscription = _receiver._aeron.AddSubscription(channel, ReplayProtocol.ReplayStreamId);
         }
 
@@ -332,7 +332,7 @@ public sealed class ReplayerStreamReceiver : IDisposable
 
         public long NowMs()
         {
-            return DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            return Clocks.MonotonicMs();
         }
 
         private long Offer(int length)

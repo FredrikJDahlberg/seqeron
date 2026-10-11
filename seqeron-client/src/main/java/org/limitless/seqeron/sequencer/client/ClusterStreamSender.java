@@ -35,7 +35,7 @@ public final class ClusterStreamSender implements IngressSender, AutoCloseable {
     }
 
     /** Ingress channel of a client sharing its member's media driver. Only the leader subscribes to it. */
-    private static final String INGRESS_CHANNEL_IPC = "aeron:ipc";
+    private static final String INGRESS_CHANNEL_IPC = "aeron:ipc?alias=seqeron-ingress";
 
     /** Ingress channel of a client reaching members over the network; endpoints name the members. */
     private static final String INGRESS_CHANNEL_UDP = "aeron:udp";

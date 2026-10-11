@@ -290,7 +290,7 @@ no Aeron dependency, and is unit-tested directly (`SequencerTest`). `SequencerSe
 (`ClusteredService`) is its Aeron adapter: it decides *when* to call the sequencer and publishes what
 comes back, holding no replicated state itself. Every ingress message gets a cluster-wide monotone
 `globalSeqNo` plus the Raft consensus timestamp, then is republished on the **node-local tap**
-(`FEEDER_CHANNEL` = `aeron:ipc`, `FEEDER_STREAM_ID` = 205), which this node's co-located Aeron Archive
+(`FEEDER_CHANNEL` = `aeron:ipc?alias=seqeron-tap`, `FEEDER_STREAM_ID` = 205), which this node's co-located Aeron Archive
 records. Every frame on it is sequenced: the tap carries `Sequenced` envelopes and nothing else, and
 the sequencer is the stream's only publisher.
 

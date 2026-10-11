@@ -41,7 +41,7 @@ namespace org::limitless::seqeron::protocol {
 
 // The tap: the node-local IPC stream every node republishes each sequenced frame on and records. A
 // consumer subscribes untethered (see ReplayerStreamReceiver), the recording is found by stream id alone.
-inline constexpr const char* FEEDER_CHANNEL = "aeron:ipc";
+inline constexpr const char* FEEDER_CHANNEL = "aeron:ipc?alias=seqeron-tap";
 inline constexpr std::int32_t FEEDER_STREAM_ID = 205;
 
 // Period of the cluster clock: every node emits a ClusterHeartbeat carrying the consensus timestamp, so a

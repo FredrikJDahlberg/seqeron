@@ -19,6 +19,7 @@ import org.limitless.seqeron.sbe.replay.ReplayCompleteEncoder;
 import org.limitless.seqeron.sbe.replay.ReplayHeartbeatEncoder;
 import org.limitless.seqeron.sbe.replay.ReplayRequestEncoder;
 import org.limitless.seqeron.sbe.replay.SnapshotQueryEncoder;
+import org.limitless.seqeron.util.Clocks;
 
 /**
  * App-replica side of the per-node {@code ReplayerService} — the Java twin of
@@ -29,13 +30,13 @@ import org.limitless.seqeron.sbe.replay.SnapshotQueryEncoder;
  */
 public final class ReplayerStreamReceiver implements AutoCloseable {
     /** The tap as a consumer addresses it: untethered, so a slow app is dropped and heals via replay. */
-    public static final String FEEDER_CONSUMER_CHANNEL = FrameLayer.FEEDER_CHANNEL + "?tether=false";
+    public static final String FEEDER_CONSUMER_CHANNEL = FrameLayer.FEEDER_CHANNEL + "|tether=false";
 
     /**
      * Untethered like the tap: the Replayer answers every app from one thread, so an app that stops polling
      * must not back-pressure the others' replies. A dropped reply costs one resend interval.
      */
-    private static final String CONTROL_CHANNEL = ReplayProtocol.IPC_CHANNEL + "?tether=false";
+    private static final String CONTROL_CHANNEL = ReplayProtocol.IPC_CHANNEL + "|tether=false";
 
     private static final int FRAGMENT_LIMIT = 16;
 
@@ -321,7 +322,7 @@ public final class ReplayerStreamReceiver implements AutoCloseable {
                 return;
             }
 
-            final String channel = ReplayProtocol.IPC_CHANNEL + "?session-id=" + (int)replaySessionId;
+            final String channel = ReplayProtocol.IPC_CHANNEL + "|session-id=" + (int)replaySessionId;
             replaySubscription = aeron.addSubscription(channel, ReplayProtocol.REPLAY_STREAM_ID);
         }
 
@@ -348,7 +349,7 @@ public final class ReplayerStreamReceiver implements AutoCloseable {
 
         @Override
         public long nowMs() {
-            return System.currentTimeMillis();
+            return Clocks.monotonicMs();
         }
     }
 }

@@ -60,7 +60,7 @@ public final class PortLayout {
     public static final int CLUSTER_PORT_BLOCK_LAST = CLUSTER_PORT_BASE + CLUSTER_PORT_BLOCK_WIDTH - 1;
 
     /** How a process reaches the archive in its own Aeron directory: no endpoint, so no port to allocate. */
-    public static final String ARCHIVE_CONTROL_CHANNEL = "aeron:ipc";
+    public static final String ARCHIVE_CONTROL_CHANNEL = "aeron:ipc?alias=seqeron-archive";
 
     /**
      * Control stream of that link. The archive's own local control, every Java archive client and the C++

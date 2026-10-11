@@ -29,7 +29,7 @@ inline constexpr const char* ENV_HOSTS = "SEQERON_HOSTS";
 
 // How a process reaches the archive in its own Aeron directory, and that link's control stream. The Java
 // twin is PortLayout's ARCHIVE_CONTROL_CHANNEL/ARCHIVE_CONTROL_STREAM_ID; both sides must name one id.
-inline constexpr const char* ARCHIVE_CONTROL_CHANNEL = "aeron:ipc";
+inline constexpr const char* ARCHIVE_CONTROL_CHANNEL = "aeron:ipc?alias=seqeron-archive";
 inline constexpr std::int32_t ARCHIVE_CONTROL_STREAM_ID = 100;
 
 /**

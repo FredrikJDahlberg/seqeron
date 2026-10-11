@@ -135,7 +135,7 @@ public final class AeronReplayer implements Replayer {
 
     @Override
     public SelfCheckStream openSelfCheckStream(final long replaySessionId) {
-        final String channel = ReplayProtocol.IPC_CHANNEL + "?session-id=" + (int)replaySessionId;
+        final String channel = ReplayProtocol.IPC_CHANNEL + "|session-id=" + (int)replaySessionId;
         final Subscription subscription = aeron.addSubscription(channel, ReplayerService.SELF_CHECK_STREAM_ID);
         return new SelfCheckStream() {
             @Override
@@ -154,7 +154,7 @@ public final class AeronReplayer implements Replayer {
     public IndexStream openIndexStream(final long recordingId, final long position) {
         final long replaySessionId = archive.startReplay(recordingId, position, AeronArchive.REPLAY_ALL_AND_FOLLOW,
                                                          ReplayProtocol.IPC_CHANNEL, ReplayerService.INDEX_STREAM_ID);
-        final String channel = ReplayProtocol.IPC_CHANNEL + "?session-id=" + (int)replaySessionId;
+        final String channel = ReplayProtocol.IPC_CHANNEL + "|session-id=" + (int)replaySessionId;
         final Subscription subscription = aeron.addSubscription(channel, ReplayerService.INDEX_STREAM_ID);
         return new IndexStream() {
             private boolean connected;

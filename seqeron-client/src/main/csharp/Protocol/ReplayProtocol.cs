@@ -6,7 +6,7 @@ namespace Org.Limitless.Seqeron.Protocol;
 public static class ReplayProtocol
 {
     /// <summary>The whole protocol is node-local: a replica and its Replayer share one media driver.</summary>
-    public const string IpcChannel = "aeron:ipc";
+    public const string IpcChannel = "aeron:ipc?alias=seqeron-replay";
 
     /// <summary>ReplayerService to apps: on-demand archive replays (one Aeron session per in-flight
     /// replay).</summary>

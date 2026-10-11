@@ -33,6 +33,6 @@ interface ReplayerRecoveryActions {
     /** The node this app runs on, or null before start — log attribution only. */
     Integer memberId();
 
-    /** Epoch millis; the unit suite advances it. */
+    /** Monotonic millis; the unit suite advances it. */
     long nowMs();
 }

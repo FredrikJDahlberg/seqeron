@@ -129,6 +129,19 @@ Two applications that use the same type id appear as one metric, named by whiche
 | `seqeron_replayer_throttled_requests_total` | counter | replay requests answered `ReplayPending` only because the tap recording trailed the tap by more than a quarter of the window while a replay was running ([Term lengths](#term-lengths)). A held client resends about every 500 ms, so the rate is about twice the number of clients held. A sustained rate means the recorder is falling behind the tap |
 | `seqeron_app_recovery_stalled` | gauge | 1 while this client's recovery has dispatched nothing for 30 s while not caught up, else 0; also labelled `client`. The client is holding, which is safe, but not serving, and nothing else says so. The causes are a `ReplayUnavailable` refusal, a Replayer that never answers, and a gap this member's recording cannot cover; the client's own log line names which |
 
+## Channel aliases
+
+Every `aeron:ipc` channel seqeron opens carries an `alias`, so AeronStat and the driver's counters name
+each stream. An alias changes no matching: IPC publications and subscriptions match by stream id.
+
+| alias | streams |
+|---|---|
+| `seqeron-tap` | the tap, 205 |
+| `seqeron-replay` | the replay protocol, 201–203, and the Replayer's own replays, 204 and 207 |
+| `seqeron-archive` | archive control, 100, and its responses: 120–122 in a member or gateway host |
+| `seqeron-ingress` | a co-located producer's cluster ingress, 101 |
+| `seqeron-scan` | a C++ `ClusterStreamClient` replay, 110 |
+
 ## Ports
 
 seqeron's processes bind these ports, and an application's own must stay clear of them.

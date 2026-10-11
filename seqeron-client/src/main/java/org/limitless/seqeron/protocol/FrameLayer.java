@@ -33,7 +33,7 @@ public final class FrameLayer {
      * The tap: the node-local IPC stream every node republishes each sequenced frame on, in {@code
      * globalSeqNo} order, and records into its own archive. Co-located apps follow it live.
      */
-    public static final String FEEDER_CHANNEL = "aeron:ipc";
+    public static final String FEEDER_CHANNEL = "aeron:ipc?alias=seqeron-tap";
 
     /** Stream id of the tap. See {@link #FEEDER_CHANNEL}. */
     public static final int FEEDER_STREAM_ID = 205;

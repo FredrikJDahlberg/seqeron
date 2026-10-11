@@ -141,7 +141,7 @@ final class AeronTapRelay implements AutoCloseable {
 
     /** One duty-cycle iteration; returns a work count for the idle strategy. */
     int doWork() {
-        nowMs = System.currentTimeMillis();
+        nowMs = Clocks.monotonicMs();
         checkRecording();
         if (fatal) {
             return 0;
