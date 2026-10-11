@@ -40,7 +40,7 @@ fi
 seqeron_require_jar
 JAR="${SEQERON_JAR}"
 
-JAVA_OPTS=("${SEQERON_JAVA_OPTS[@]}")
+JAVA_OPTS=("${SEQERON_SERVER_JAVA_OPTS[@]}")
 
 # 1 = the caller supplies the consumer replica, so don't start the probe follower.
 NO_CONSUMERS="${SEQERON_NO_CONSUMERS:-0}"

@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.io.File;
 import java.util.List;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -111,5 +112,12 @@ class PortLayoutTest {
         assertThrows(IllegalArgumentException.class, () -> PortLayout.parseHosts("h0,h1,"));
         assertEquals(7, PortLayout.parseHosts("h0,h1,h2,h3,h4,h5,h6").size());
         assertThrows(IllegalArgumentException.class, () -> PortLayout.parseHosts("h0,h1,h2,h3,h4,h5,h6,h7"));
+    }
+
+    @Test
+    @DisplayName("a node's default Aeron directory is its own, under /dev/shm where the host has one")
+    void aeronDirIsTheNodesOwnOnTmpfsWhereThereIsOne() {
+        final String parent = new File("/dev/shm").isDirectory() ? "/dev/shm" : System.getProperty("java.io.tmpdir");
+        assertEquals(parent + "/seqeron-seq-aeron-3", PortLayout.aeronDir(3));
     }
 }

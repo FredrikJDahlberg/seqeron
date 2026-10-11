@@ -20,7 +20,7 @@
 # Config (override the SequencerServer-mirroring defaults for multi-node / custom dirs):
 #   CLUSTERCTL_MEMBER_ID          co-located member id             (default 0)
 #   CLUSTERCTL_BASE_DIR           cluster data dir root            (default $TMPDIR/seqeron-seq)
-#   CLUSTERCTL_AERON_DIR          co-located member's Aeron dir     (default $TMPDIR/seqeron-seq-aeron-<id>)
+#   CLUSTERCTL_AERON_DIR          co-located member's Aeron dir     (default seqeron-seq-aeron-<id> under /dev/shm, else $TMPDIR)
 #   CLUSTERCTL_INGRESS_ENDPOINTS  member ingress endpoints          (default from SEQERON_HOSTS, else three on localhost)
 #   CLUSTERCTL_EGRESS_HOST        host the leader replies to        (default this member's in SEQERON_HOSTS, else localhost)
 #   SEQERON_JAR                  path to the uber jar             (default build/libs/seqeron-<v>-uber.jar)

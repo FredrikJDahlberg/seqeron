@@ -53,7 +53,7 @@ done
 JAVA_OPTS=("${SEQERON_JAVA_OPTS[@]}")
 BASE_DIR="${TMP_DIR}/seqeron-seqcs"
 CLUSTER_HOSTS="$(cluster_hosts_string 3)"
-aeron_dir() { echo "${TMP_DIR}/seqeron-seq-aeron-$1"; }
+aeron_dir() { seqeron_aeron_dir "$1"; }
 
 # probe <log> <mode> <member> <clientId> [options...]: one C# probe co-located with <member>.
 probe() {

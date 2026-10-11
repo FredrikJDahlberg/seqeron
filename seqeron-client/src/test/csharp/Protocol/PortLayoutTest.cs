@@ -125,6 +125,13 @@ public class PortLayoutTest
         Assert.False(PortLayout.IsClusterPort(9370));
     }
 
+    [Fact(DisplayName = "a node's default Aeron directory is its own, under /dev/shm where the host has one")]
+    public void AeronDirIsTheNodesOwnOnTmpfsWhereThereIsOne()
+    {
+        string parent = Directory.Exists("/dev/shm") ? "/dev/shm" : Path.GetTempPath();
+        Assert.Equal(Path.Combine(parent, "seqeron-seq-aeron-3"), PortLayout.AeronDir(3));
+    }
+
     // ports.sh is the fourth mirror. Its formula is compared at a moved base as well as the default, as offsets
     // from the base, since this process's own base is fixed at 9300.
     [Theory(DisplayName = "the formula is ports.sh's")]

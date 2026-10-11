@@ -80,7 +80,7 @@ own id:
 
 ```bash
 export SEQERON_HOSTS=host0,host1,host2
-java \
+java -Xlog:gc \
   -Dsequencer.memberId=0 \
   -Dsequencer.baseDir=/var/lib/seqeron \
   -jar seqeron-*-uber.jar
@@ -90,7 +90,9 @@ java \
   `clusterMembers` string from it and binds and advertises its own entry. `-Dsequencer.hosts` sets the
   same list for one process.
 - **`sequencer.baseDir`** is required once there is more than one member. It holds the Raft log and the
-  archive, and the default is under `$TMPDIR`.
+  archive, and the default is under `$TMPDIR`. Put it on a disk, never on tmpfs such as `/dev/shm` where
+  the Aeron directory belongs: neither would survive a restart of the host, and a member on Linux warns
+  at start.
 - **Every other process reads the same list.** An application's default ingress endpoints
   (`PortLayout.ingressEndpoints()`, C++ `protocol::ingressEndpointsCsv()`) name those members; `clusterctl`
   and `ClusterProbe` connect through them; a gateway host relays from their archives.
@@ -131,8 +133,8 @@ The sequenced stream itself has no port: the tap is `aeron:ipc` on each member's
 | `sequencer.memberId`        | `0`                              | this member's Raft id              |
 | `sequencer.hosts`           | `SEQERON_HOSTS`, else `localhost` | every member's host, in id order   |
 | `sequencer.host`            | this member's entry in `hosts`, else `localhost` | the host this member binds and advertises |
-| `sequencer.baseDir`         | `$TMPDIR/seqeron-seq`; required with more than one host | root of the archive and cluster directories |
-| `sequencer.aeronDir`        | `$TMPDIR/seqeron-seq-aeron-<id>`| the media driver's directory; on Linux, keep it on tmpfs such as `/dev/shm`, or the member warns at start ([`ops.md`](ops.md), "Term lengths") |
+| `sequencer.baseDir`         | `$TMPDIR/seqeron-seq`; required with more than one host | root of the archive and cluster directories; on a disk, never tmpfs, or the member warns at start |
+| `sequencer.aeronDir`        | `/dev/shm/seqeron-seq-aeron-<id>`, or under `$TMPDIR` on a host without `/dev/shm` | the media driver's directory; every client sharing the driver defaults to the same (`PortLayout.aeronDir`). On Linux keep it on tmpfs, or the member warns at start ([`ops.md`](ops.md), "Term lengths") |
 | `sequencer.idleStrategy`    | `backoff`                        | `backoff` or `yielding`, for every agent thread; on a host short of cores, share the driver's threads too ([`ops.md`](ops.md), "Driver threads") |
 | `sequencer.sessionTimeoutMs` | `1000`                          | how long the cluster keeps a client session with no keep-alives; a gateway that misses it is replaced by its standby |
 | `sequencer.leaderHeartbeatIntervalMs` | `20`                   | how often the leader heartbeats its followers |

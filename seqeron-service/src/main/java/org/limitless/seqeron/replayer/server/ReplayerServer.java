@@ -37,7 +37,7 @@ import org.limitless.seqeron.util.Logger;
  *                                two is required
  *   replayer.memberId          — this host's node id, one no member uses, which names its directories and labels
  *                                its counters; default 0
- *   replayer.aeronDir          — the Aeron directory; default {tmpdir}/seqeron-seq-aeron-{memberId}
+ *   replayer.aeronDir          — the Aeron directory; default PortLayout.aeronDir(memberId)
  *   replayer.idleStrategy      — duty-cycle idle strategy: {@code backoff} (default), {@code yielding}, or
  *                                {@code busyspin}; busy-spin pays only on an isolated core
  *   replayer.host              — this host's name as the members reach it; default localhost
@@ -83,8 +83,7 @@ public final class ReplayerServer {
     /** Gateway host only: on a cluster member the Replayer runs inside {@code SequencerServer}. */
     public static void main(final String[] args) {
         final int memberId = Integer.getInteger(PROP_MEMBER_ID, 0);
-        final String aeronDir = System.getProperty(
-            PROP_AERON_DIR, System.getProperty("java.io.tmpdir") + "/seqeron-seq-aeron-" + memberId);
+        final String aeronDir = System.getProperty(PROP_AERON_DIR, PortLayout.aeronDir(memberId));
         final String archiveEndpoints = System.getProperty(PROP_ARCHIVE_ENDPOINTS, archiveEndpoints(PortLayout.HOSTS));
         if (archiveEndpoints == null) {
             throw new IllegalArgumentException(

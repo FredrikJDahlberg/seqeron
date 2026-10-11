@@ -111,6 +111,29 @@ public final class NodeDriver {
     }
 
     /**
+     * Warns, on Linux, when a member's {@code baseDir} is on tmpfs: its Raft log and tap recording would not survive
+     * the host's restart, and a cluster whose members restart together would lose its log.
+     * @param component who is launching the member
+     * @param memberId  its node id
+     * @param baseDir   the member's data directory
+     */
+    public static void warnIfTmpfs(final Logger.Component component, final int memberId, final String baseDir) {
+        if (!SystemUtil.isLinux()) {
+            return;
+        }
+        try {
+            if ("tmpfs".equals(fileSystemType(Path.of(baseDir)))) {
+                Logger.log(component, Logger.Severity.Warn, Logger.CoreEventCode.Info, memberId,
+                           "the base directory %s is on tmpfs: the Raft log and tap recording in it do not survive "
+                               + "a restart of the host — put it on a disk",
+                           baseDir);
+            }
+        } catch (final IOException ex) {
+            // The file system cannot be read; nothing to warn about.
+        }
+    }
+
+    /**
      * The type of the file system holding {@code dir}, or its nearest existing ancestor's, since the driver
      * creates the directory.
      * @param dir a directory, existing or not

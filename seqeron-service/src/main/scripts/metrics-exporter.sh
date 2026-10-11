@@ -10,7 +10,7 @@
 #
 # Config (override the SequencerServer-mirroring defaults for multi-node / custom dirs):
 #   METRICS_EXPORTER_MEMBER_ID    co-located member id             (default 0)
-#   METRICS_EXPORTER_AERON_DIR    co-located member's Aeron dir     (default $TMPDIR/seqeron-seq-aeron-<id>)
+#   METRICS_EXPORTER_AERON_DIR    co-located member's Aeron dir     (default seqeron-seq-aeron-<id> under /dev/shm, else $TMPDIR)
 #   METRICS_EXPORTER_PORT         HTTP port to serve /metrics on    (default 9400 + memberId)
 #   SEQERON_JAR                  path to the uber jar             (default build/libs/seqeron-<v>-uber.jar)
 #

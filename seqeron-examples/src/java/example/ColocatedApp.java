@@ -1,6 +1,7 @@
 package example;
 
 import io.aeron.Aeron;
+import java.io.File;
 import java.nio.ByteOrder;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -8,8 +9,8 @@ import org.agrona.MutableDirectBuffer;
 import org.agrona.concurrent.BackoffIdleStrategy;
 import org.agrona.concurrent.IdleStrategy;
 import org.agrona.concurrent.UnsafeBuffer;
-import org.limitless.seqeron.app.ClusterError;
 import org.limitless.seqeron.app.Application;
+import org.limitless.seqeron.app.ClusterError;
 import org.limitless.seqeron.app.Payload;
 import org.limitless.seqeron.protocol.Publish;
 
@@ -49,8 +50,11 @@ public final class ColocatedApp implements Application.Listener {
     public static void main(final String[] args) {
         final int memberId = Integer.getInteger("colocated.member", 0);
         final int clientId = Integer.getInteger("colocated.clientId", 13);
+        // The member's own, as PortLayout.aeronDir names it, which this façade-only example may not import.
         final String aeronDir = System.getProperty(
-            "colocated.aeronDir", System.getProperty("java.io.tmpdir") + "/seqeron-seq-aeron-" + memberId);
+            "colocated.aeronDir",
+            (new File("/dev/shm").isDirectory() ? "/dev/shm" : System.getProperty("java.io.tmpdir")) +
+                "/seqeron-seq-aeron-" + memberId);
 
         final AtomicBoolean running = new AtomicBoolean(true);
         final Thread mainThread = Thread.currentThread();

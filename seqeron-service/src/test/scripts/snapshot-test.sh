@@ -196,8 +196,8 @@ trap cleanup EXIT INT TERM
 pkill -9 -f "sequencer.memberId" 2>/dev/null; pkill -9 -f "probe.gatewayName" 2>/dev/null
 pkill -9 -f "tools.TestApplication" 2>/dev/null
 sleep 1
-rm -rf "$BASE_DIR" "$SNAPSHOT_DIR" "${TMP_DIR}/seqeron-seq-aeron-0" "${TMP_DIR}/seqeron-seq-aeron-1" \
-       "${TMP_DIR}/seqeron-seq-aeron-2" 2>/dev/null
+rm -rf "$BASE_DIR" "$SNAPSHOT_DIR" "$(seqeron_aeron_dir 0)" "$(seqeron_aeron_dir 1)" \
+       "$(seqeron_aeron_dir 2)" 2>/dev/null
 
 # ── 0. The cluster and the topology ───────────────────────────────────────────────
 for m in 0 1 2; do start_seq "$m"; done

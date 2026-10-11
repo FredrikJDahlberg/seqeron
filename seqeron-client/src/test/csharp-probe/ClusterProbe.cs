@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.IO;
 using System.Linq;
 using Adaptive.Aeron;
 using Adaptive.Aeron.Exceptions;
@@ -235,8 +234,7 @@ public static class ClusterProbe
 
     private static Aeron Connect(Options options)
     {
-        string aeronDir =
-            options.String("aeron-dir", Path.Combine(Path.GetTempPath(), "seqeron-seq-aeron-" + options.MemberId));
+        string aeronDir = options.String("aeron-dir", PortLayout.AeronDir(options.MemberId));
         return Aeron.Connect(new Aeron.Context().AeronDirectoryName(aeronDir));
     }
 

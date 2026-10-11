@@ -71,8 +71,7 @@ public final class FollowStream {
     public static void main(final String[] args) {
         final int memberId = Integer.getInteger("follow.member", 0);
         final int clientId = Integer.getInteger("follow.clientId", 7);
-        final String aeronDir = System.getProperty(
-            "follow.aeronDir", System.getProperty("java.io.tmpdir") + "/seqeron-seq-aeron-" + memberId);
+        final String aeronDir = System.getProperty("follow.aeronDir", PortLayout.aeronDir(memberId));
 
         final AtomicBoolean running = new AtomicBoolean(true);
         final Thread mainThread = Thread.currentThread();

@@ -41,7 +41,7 @@ CLUSTER_HOSTS="$(cluster_hosts_string 3)"
 
 pkill -f SequencerServer 2>/dev/null; pkill -f ReplayerServer 2>/dev/null; pkill -f ClusterProbe 2>/dev/null
 sleep 1
-rm -rf "$BASE_DIR" "${TMP_DIR}"/seqeron-seq-aeron-{0,1,2} 2>/dev/null
+rm -rf "$BASE_DIR" "$(seqeron_aeron_dir 0)" "$(seqeron_aeron_dir 1)" "$(seqeron_aeron_dir 2)" 2>/dev/null
 
 FOLLOWER_PID=""
 declare -a SEQ_PIDS

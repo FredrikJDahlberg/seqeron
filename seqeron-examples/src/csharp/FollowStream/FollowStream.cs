@@ -1,6 +1,5 @@
 using System;
 using System.Diagnostics;
-using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
 using Adaptive.Aeron;
@@ -63,8 +62,7 @@ public sealed class FollowStream
     {
         int memberId = EnvInt("SEQERON_NODE_MEMBER_ID", 0);
         int clientId = EnvInt("SEQERON_REPLAYER_CLIENT_ID", 19);
-        string aeronDir = Environment.GetEnvironmentVariable("SEQERON_AERON_DIR") ??
-                          Path.Combine(Path.GetTempPath(), "seqeron-seq-aeron-" + memberId);
+        string aeronDir = Environment.GetEnvironmentVariable("SEQERON_AERON_DIR") ?? PortLayout.AeronDir(memberId);
         return new FollowStream().Run(memberId, clientId, aeronDir);
     }
 

@@ -219,7 +219,7 @@ processes already do. The two client ids differ on purpose, so both examples can
 | --- | --- | --- |
 | `-Dfollow.member` | `SEQERON_NODE_MEMBER_ID` | which node to attach to; default 0 |
 | `-Dfollow.clientId` | `SEQERON_REPLAYER_CLIENT_ID` | this replica's Replayer client id; default 7 in Java, 8 in C++ |
-| `-Dfollow.aeronDir` | `SEQERON_AERON_DIR` | that node's Aeron directory; default `{tmpdir}/seqeron-seq-aeron-{member}` |
+| `-Dfollow.aeronDir` | `SEQERON_AERON_DIR` | that node's Aeron directory; default `PortLayout.aeronDir(member)`: `/dev/shm/seqeron-seq-aeron-{member}`, or under `{tmpdir}` on a host without `/dev/shm` |
 | — | `SEQERON_IDLE_STRATEGY` | `backoff` (default), `yielding` or `busyspin` |
 | — | `SEQERON_EXAMPLE_EGRESS_PORT` | UDP port the ping's cluster session takes egress on; default `9202 + member` |
 | `-Dsnapshot.dir` | `SEQERON_EXAMPLE_SNAPSHOT_DIR` | `SnapshotApp`'s snapshot directory; default `{tmpdir}/seqeron-example-snapshots-{sourceId}-{member}` |

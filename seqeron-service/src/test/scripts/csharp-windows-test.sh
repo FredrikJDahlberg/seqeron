@@ -62,7 +62,7 @@ done
 # The member, in WSL. Its state stays on WSL's own filesystem; its output comes back through wsl.exe.
 WSL_JAR=$(wsl_run wslpath -a "$(cygpath -wa "$JAR")" | tr -d '\r')
 wsl_run pkill -9 -f "sequencer.memberId=" 2>/dev/null
-wsl_run rm -rf /tmp/seqeron-seq /tmp/seqeron-seq-aeron-0
+wsl_run rm -rf /tmp/seqeron-seq /tmp/seqeron-seq-aeron-0 /dev/shm/seqeron-seq-aeron-0
 wsl_run java "${JAVA_OPTS[@]}" -Dsequencer.memberId=0 -Dsequencer.baseDir=/tmp/seqeron-seq \
   -jar "$WSL_JAR" > "$LOG_DIR/seq-0.log" 2>&1 &
 GATEWAY_HOST_PID=""

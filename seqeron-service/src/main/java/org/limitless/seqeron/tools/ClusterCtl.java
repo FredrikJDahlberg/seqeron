@@ -72,8 +72,7 @@ public final class ClusterCtl {
     private static final int MEMBER_ID = Integer.getInteger("clusterctl.memberId", 0);
     private static final String BASE_DIR =
         System.getProperty("clusterctl.baseDir", System.getProperty("java.io.tmpdir") + "/seqeron-seq");
-    private static final String AERON_DIR = System.getProperty(
-        "clusterctl.aeronDir", System.getProperty("java.io.tmpdir") + "/seqeron-seq-aeron-" + MEMBER_ID);
+    private static final String AERON_DIR = System.getProperty("clusterctl.aeronDir", PortLayout.aeronDir(MEMBER_ID));
     private static final File CLUSTER_DIR = new File(BASE_DIR + "/cluster-" + MEMBER_ID);
     private static final String INGRESS_ENDPOINTS =
         System.getProperty("clusterctl.ingressEndpoints", PortLayout.ingressEndpoints());
@@ -663,7 +662,8 @@ public final class ClusterCtl {
             Config (system properties; clusterctl.sh maps the CLUSTERCTL_* env vars onto them):
               clusterctl.memberId          co-located member id             (default 0)
               clusterctl.baseDir           cluster data dir root            (default $TMPDIR/seqeron-seq)
-              clusterctl.aeronDir          co-located member's Aeron dir     (default $TMPDIR/seqeron-seq-aeron-<id>)
+              clusterctl.aeronDir          co-located member's Aeron dir     (default seqeron-seq-aeron-<id> under
+                                                                              /dev/shm, else under $TMPDIR)
               clusterctl.ingressEndpoints  member ingress endpoints          (default from SEQERON_HOSTS,
                                                                               else three on localhost)
               clusterctl.egressHost        host the leader replies to        (default this member's host in

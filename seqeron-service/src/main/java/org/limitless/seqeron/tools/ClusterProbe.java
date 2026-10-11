@@ -54,7 +54,7 @@ import org.limitless.seqeron.util.Logger;
  * <p>System properties:
  * <pre>
  *   probe.memberId          — which cluster member this probe co-locates with (0/1/2); default 0
- *   probe.aeronDir          — that member's Aeron directory; default {tmpdir}/seqeron-seq-aeron-{memberId}
+ *   probe.aeronDir          — that member's Aeron directory; default PortLayout.aeronDir(memberId)
  *   probe.ingressEndpoints  — cluster ingress endpoints; default {@link PortLayout#ingressEndpoints()}: the
  *                             members {@code SEQERON_HOSTS} names, else the three-node localhost set
  *   probe.egressHost        — hostname the leader sends this client's egress to; default this member's
@@ -94,8 +94,7 @@ public final class ClusterProbe {
         return MEMBER_ID;
     }
 
-    private static final String AERON_DIR = System.getProperty(
-        "probe.aeronDir", System.getProperty("java.io.tmpdir") + "/seqeron-seq-aeron-" + MEMBER_ID);
+    private static final String AERON_DIR = System.getProperty("probe.aeronDir", PortLayout.aeronDir(MEMBER_ID));
 
     private static final String INGRESS_ENDPOINTS = System.getProperty(
         "probe.ingressEndpoints", PortLayout.ingressEndpoints());

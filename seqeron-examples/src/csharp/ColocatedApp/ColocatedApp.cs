@@ -48,8 +48,10 @@ public sealed class ColocatedApp : IApplicationListener
     {
         int memberId = EnvInt("SEQERON_NODE_MEMBER_ID", 0);
         int clientId = EnvInt("SEQERON_REPLAYER_CLIENT_ID", 20);
+        // The member's own, as PortLayout.AeronDir names it, which this façade-only example may not name.
         string aeronDir = Environment.GetEnvironmentVariable("SEQERON_AERON_DIR") ??
-                          Path.Combine(Path.GetTempPath(), "seqeron-seq-aeron-" + memberId);
+                          Path.Combine(Directory.Exists("/dev/shm") ? "/dev/shm" : Path.GetTempPath(),
+                                       "seqeron-seq-aeron-" + memberId);
 
         var application = new ColocatedApp();
         using PosixSignalRegistration sigint = PosixSignalRegistration.Create(PosixSignal.SIGINT, application.Stop);

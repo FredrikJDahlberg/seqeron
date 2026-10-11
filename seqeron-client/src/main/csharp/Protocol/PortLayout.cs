@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.IO;
 using System.Linq;
 using System.Text;
 
@@ -69,6 +70,18 @@ public static class PortLayout
     /// id, so it is stated here once rather than per process.
     /// </summary>
     public const int ArchiveControlStreamId = 100;
+
+    /// <summary>
+    /// A node's Aeron directory when none is configured, which a member and every client sharing its driver must
+    /// agree on: <c>seqeron-seq-aeron-&lt;nodeId&gt;</c> under <c>/dev/shm</c> where the host has one, so the
+    /// driver's log buffers are in memory, else under the temp directory.
+    /// </summary>
+    /// <param name="nodeId">A member's id, or a gateway host's node id.</param>
+    public static string AeronDir(int nodeId)
+    {
+        return Path.Combine(Directory.Exists("/dev/shm") ? "/dev/shm" : Path.GetTempPath(),
+                            "seqeron-seq-aeron-" + nodeId);
+    }
 
     /// <summary>
     /// Parses <see cref="EnvPortBase"/>; a pure function so it is testable without the environment. A bad value

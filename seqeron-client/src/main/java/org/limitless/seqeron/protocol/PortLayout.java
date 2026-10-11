@@ -1,5 +1,6 @@
 package org.limitless.seqeron.protocol;
 
+import java.io.File;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
@@ -68,7 +69,22 @@ public final class PortLayout {
      */
     public static final int ARCHIVE_CONTROL_STREAM_ID = 100;
 
+    /** Where a node's Aeron directory goes when the host has it: tmpfs, as Aeron's own default on Linux. */
+    private static final File DEV_SHM = new File("/dev/shm");
+
     private PortLayout() {
+    }
+
+    /**
+     * A node's Aeron directory when none is configured, which a member and every client sharing its driver must
+     * agree on: {@code seqeron-seq-aeron-<nodeId>} under {@code /dev/shm} where the host has one, so the driver's log
+     * buffers are in memory, else under {@code java.io.tmpdir}. The C++ twin is {@code util::resolveAeronDir}.
+     *
+     * @param nodeId a member's id, or a gateway host's node id
+     */
+    public static String aeronDir(final int nodeId) {
+        return (DEV_SHM.isDirectory() ? DEV_SHM.getPath() : System.getProperty("java.io.tmpdir")) +
+            "/seqeron-seq-aeron-" + nodeId;
     }
 
     /**

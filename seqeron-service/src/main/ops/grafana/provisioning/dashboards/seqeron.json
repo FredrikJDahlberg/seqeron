@@ -245,6 +245,72 @@
       ],
       "fieldConfig": { "defaults": {}, "overrides": [] },
       "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single" } }
+    },
+    {
+      "id": 19,
+      "title": "Cluster errors/s",
+      "description": "Errors Aeron Cluster's consensus module and service container have raised on each member. Any is worth reading: clusterctl errors on the member lists them with their stack traces.",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "x": 12, "y": 52, "w": 12, "h": 8 },
+      "targets": [
+        { "refId": "A", "expr": "rate(seqeron_cluster_errors_total[5m])", "legendFormat": "member {{member}} consensus module" },
+        { "refId": "B", "expr": "rate(seqeron_cluster_service_errors_total[5m])", "legendFormat": "member {{member}} service" }
+      ],
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single" } }
+    },
+    {
+      "id": 20,
+      "title": "Cluster node role",
+      "description": "Each member's Raft role: 0 follower, 1 candidate, 2 leader. Exactly one member should read 2; a member that stays at 1 cannot win an election.",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "x": 0, "y": 60, "w": 12, "h": 8 },
+      "targets": [
+        { "refId": "A", "expr": "seqeron_cluster_node_role", "legendFormat": "member {{member}}" }
+      ],
+      "fieldConfig": { "defaults": { "min": 0, "max": 2 }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single" } }
+    },
+    {
+      "id": 21,
+      "title": "Cluster election state",
+      "description": "Each member's election state, Aeron's ElectionState code: 17 (CLOSED) between elections. A member that stays below 17 is stuck in an election.",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "x": 12, "y": 60, "w": 12, "h": 8 },
+      "targets": [
+        { "refId": "A", "expr": "seqeron_cluster_election_state", "legendFormat": "member {{member}}" }
+      ],
+      "fieldConfig": { "defaults": { "min": 0, "max": 17 }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single" } }
+    },
+    {
+      "id": 22,
+      "title": "Client sessions timed out/s",
+      "description": "Client sessions the cluster closed because their keep-alives stopped for sequencer.sessionTimeoutMs: a client that died, or one starved of CPU. A gateway whose session times out is replaced by its standby.",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "x": 0, "y": 68, "w": 12, "h": 8 },
+      "targets": [
+        { "refId": "A", "expr": "rate(seqeron_cluster_timed_out_clients_total[5m])", "legendFormat": "member {{member}}" }
+      ],
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single" } }
+    },
+    {
+      "id": 23,
+      "title": "Cluster commit position",
+      "description": "The log position each member knows committed. It advances with every frame and every heartbeat, so a flat line means the cluster has stopped committing.",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "x": 12, "y": 68, "w": 12, "h": 8 },
+      "targets": [
+        { "refId": "A", "expr": "seqeron_cluster_commit_position", "legendFormat": "member {{member}}" }
+      ],
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single" } }
     }
   ]
 }

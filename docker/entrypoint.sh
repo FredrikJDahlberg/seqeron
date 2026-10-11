@@ -21,7 +21,7 @@ mkdir -p "$(dirname "${LOG_FILE}")"
 # across restarts regardless.
 exec > >(tee "${LOG_FILE}") 2>&1
 
-JAVA_OPTS=("${SEQERON_JAVA_OPTS[@]}")
+JAVA_OPTS=("${SEQERON_SERVER_JAVA_OPTS[@]}")
 
 exec java "${JAVA_OPTS[@]}" \
     -Dsequencer.memberId="${MEMBER_ID}" \

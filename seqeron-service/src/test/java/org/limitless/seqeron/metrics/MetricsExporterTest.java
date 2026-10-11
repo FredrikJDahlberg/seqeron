@@ -2,6 +2,7 @@ package org.limitless.seqeron.metrics;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import io.aeron.AeronCounters;
 import io.aeron.CncFileDescriptor;
 import io.aeron.CommonContext;
 import java.io.File;
@@ -42,7 +43,7 @@ class MetricsExporterTest {
         addAppCounter(SeqeronCounters.APP_RECOVERY_STALLED_TYPE_ID, MEMBER, 9, 0);
         addAppCounter(SeqeronCounters.APP_RECOVERY_STALLED_TYPE_ID, MEMBER, 10, 1);
 
-        final String body = new MetricsExporter(counters).renderMetrics();
+        final String body = new MetricsExporter(counters, MEMBER).renderMetrics();
 
         assertEquals(1, count(body, "# HELP seqeron_app_recovery_stalled "),
                      "a repeated HELP line makes Prometheus reject the entire scrape");
@@ -58,7 +59,7 @@ class MetricsExporterTest {
         addCounter(SeqeronCounters.SEQUENCER_GLOBAL_SEQ_NO_TYPE_ID, MEMBER, 42);
         addAppCounter(SeqeronCounters.APP_RECOVERY_STALLED_TYPE_ID, MEMBER, 10, 1);
 
-        final String body = new MetricsExporter(counters).renderMetrics();
+        final String body = new MetricsExporter(counters, MEMBER).renderMetrics();
 
         assertEquals(1, count(body, "# HELP seqeron_app_recovery_stalled "));
         assertEquals(1, count(body, "# HELP seqeron_sequencer_global_seq_no "));
@@ -74,7 +75,8 @@ class MetricsExporterTest {
     void nodeScopedCounterHasNoClientLabel() {
         addCounter(SeqeronCounters.SEQUENCER_GLOBAL_SEQ_NO_TYPE_ID, MEMBER, 42);
 
-        assertTrue(new MetricsExporter(counters).renderMetrics()
+        assertTrue(new MetricsExporter(counters, MEMBER)
+                       .renderMetrics()
                        .contains("seqeron_sequencer_global_seq_no{member=\"1\"} 42"));
     }
 
@@ -89,8 +91,29 @@ class MetricsExporterTest {
                             })
             .set(12);
 
-        assertTrue(new MetricsExporter(counters).renderMetrics()
+        assertTrue(new MetricsExporter(counters, MEMBER)
+                       .renderMetrics()
                        .contains("seqeron_replayer_snapshot_round{member=\"1\",source=\"3\"} 12"));
+    }
+
+    @Test
+    @DisplayName("Aeron Cluster's counters carry the exporter's member id, since their key holds the cluster id")
+    void clusterCountersAreLabelledWithTheExportersMember() {
+        // Aeron's key: the cluster id where seqeron's carry a member id.
+        counters
+            .newCounter("Cluster errors - clusterId=0", AeronCounters.CLUSTER_CONSENSUS_MODULE_ERROR_COUNT_TYPE_ID,
+                        keyBuffer -> keyBuffer.putInt(0, 0))
+            .set(3);
+        counters
+            .newCounter("Cluster node role - clusterId=0", AeronCounters.CLUSTER_NODE_ROLE_TYPE_ID,
+                        keyBuffer -> keyBuffer.putInt(0, 0))
+            .set(2);
+
+        final String body = new MetricsExporter(counters, MEMBER).renderMetrics();
+
+        assertTrue(body.contains("# TYPE seqeron_cluster_errors_total counter"), body);
+        assertTrue(body.contains("seqeron_cluster_errors_total{member=\"1\"} 3"), body);
+        assertTrue(body.contains("seqeron_cluster_node_role{member=\"1\"} 2"), body);
     }
 
     @Test
@@ -98,7 +121,7 @@ class MetricsExporterTest {
     void unknownTypeIdIsSkipped() {
         counters.newCounter("something.else", 999, keyBuffer -> keyBuffer.putInt(0, MEMBER));
 
-        assertEquals("", new MetricsExporter(counters).renderMetrics());
+        assertEquals("", new MetricsExporter(counters, MEMBER).renderMetrics());
     }
 
     @Test
@@ -111,7 +134,7 @@ class MetricsExporterTest {
                             })
             .set(7);
 
-        final String body = new MetricsExporter(counters).renderMetrics();
+        final String body = new MetricsExporter(counters, MEMBER).renderMetrics();
 
         assertEquals(1, count(body, "# TYPE myapp_fix_sessionsUp untyped"), body);
         assertTrue(body.contains("myapp_fix_sessionsUp{member=\"1\",client=\"3\"} 7"), body);
@@ -124,7 +147,7 @@ class MetricsExporterTest {
                             keyBuffer -> keyBuffer.putInt(SeqeronCounters.KEY_MEMBER_ID_OFFSET, MEMBER))
             .set(1);
 
-        final String body = new MetricsExporter(counters).renderMetrics();
+        final String body = new MetricsExporter(counters, MEMBER).renderMetrics();
 
         assertTrue(body.contains("seqeron_app_counter_5201{member=\"1\",client=\"0\"} 1"), body);
         assertFalse(body.contains("7up"), body);
@@ -134,13 +157,15 @@ class MetricsExporterTest {
     @DisplayName("a scrape follows the member's restart: it reads whichever driver now holds the directory")
     void scrapeFollowsADriverRestart(@TempDir final File aeronDir) {
         writeCnc(aeronDir, System.currentTimeMillis(), 42);
-        assertTrue(MetricsExporter.scrape(aeronDir).contains("seqeron_sequencer_global_seq_no{member=\"1\"} 42"));
+        assertTrue(
+            MetricsExporter.scrape(aeronDir, MEMBER).contains("seqeron_sequencer_global_seq_no{member=\"1\"} 42"));
 
         // The restarted member's driver deletes the directory and creates a CnC file of its own.
         assertTrue(new File(aeronDir, CncFileDescriptor.CNC_FILE).delete());
         writeCnc(aeronDir, System.currentTimeMillis(), 7);
 
-        assertTrue(MetricsExporter.scrape(aeronDir).contains("seqeron_sequencer_global_seq_no{member=\"1\"} 7"));
+        assertTrue(
+            MetricsExporter.scrape(aeronDir, MEMBER).contains("seqeron_sequencer_global_seq_no{member=\"1\"} 7"));
     }
 
     @Test
@@ -148,13 +173,13 @@ class MetricsExporterTest {
     void scrapeRefusesADeadDriver(@TempDir final File aeronDir) {
         writeCnc(aeronDir, System.currentTimeMillis() - CommonContext.DRIVER_TIMEOUT_MS - 1_000, 42);
 
-        assertThrows(IllegalStateException.class, () -> MetricsExporter.scrape(aeronDir));
+        assertThrows(IllegalStateException.class, () -> MetricsExporter.scrape(aeronDir, MEMBER));
     }
 
     @Test
     @DisplayName("a scrape of a directory with no CnC file fails")
     void scrapeRefusesAMissingDriver(@TempDir final File aeronDir) {
-        assertThrows(Exception.class, () -> MetricsExporter.scrape(aeronDir));
+        assertThrows(Exception.class, () -> MetricsExporter.scrape(aeronDir, MEMBER));
     }
 
     private void addCounter(final int typeId, final int memberId, final long value) {

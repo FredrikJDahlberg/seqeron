@@ -52,8 +52,10 @@ public sealed class GatewayApp : IGatewayListener
         int instance = gatewayName == "GW-EX-CS-B" ? 1 : 0;
         int memberId = EnvInt("SEQERON_NODE_MEMBER_ID", 0);
         int clientId = EnvInt("SEQERON_REPLAYER_CLIENT_ID", 21 + instance);
+        // The member's own, as PortLayout.AeronDir names it, which this façade-only example may not name.
         string aeronDir = Environment.GetEnvironmentVariable("SEQERON_AERON_DIR") ??
-                          Path.Combine(Path.GetTempPath(), "seqeron-seq-aeron-" + memberId);
+                          Path.Combine(Directory.Exists("/dev/shm") ? "/dev/shm" : Path.GetTempPath(),
+                                       "seqeron-seq-aeron-" + memberId);
 
         var edge = new GatewayApp();
         using PosixSignalRegistration sigint = PosixSignalRegistration.Create(PosixSignal.SIGINT, edge.Stop);

@@ -22,3 +22,13 @@ aeron_default_dir() {
         echo "${TMP_DIR}/aeron-$(whoami)"
     fi
 }
+
+# A seqeron node's Aeron directory when none is configured, by the same rule: seqeron-seq-aeron-<id> under
+# /dev/shm where it exists, else under TMP_DIR. Mirrors PortLayout.aeronDir and Env.hpp's resolveAeronDir.
+seqeron_aeron_dir() {
+    if [[ -d /dev/shm ]]; then
+        echo "/dev/shm/seqeron-seq-aeron-$1"
+    else
+        echo "${TMP_DIR}/seqeron-seq-aeron-$1"
+    fi
+}

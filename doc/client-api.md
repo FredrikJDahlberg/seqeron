@@ -446,7 +446,7 @@ Aeron's layout: a component's server at the package root, its client in `.client
 |---|---|
 | `FrameLayer` (Java, C#), `SequencedFrame.hpp` (C++) | tap identity (`FEEDER_STREAM_ID` 205), spec §12 size limits; Java/C# also the heartbeat interval |
 | `SystemFrame` (Java, C#), `SequencedFrame.hpp` (C++) | `systemEventType` values |
-| `PortLayout` | cluster port block, per-member ingress endpoints, the producer endpoint list (`ingressEndpoints()`, `ingressEndpoints(parseHosts("h0,h1,h2"))`; C++ `ingressEndpointsCsv`), archive control channel; honours `SEQERON_PORT_BASE` and `SEQERON_HOSTS` |
+| `PortLayout` | cluster port block, per-member ingress endpoints, the producer endpoint list (`ingressEndpoints()`, `ingressEndpoints(parseHosts("h0,h1,h2"))`; C++ `ingressEndpointsCsv`), archive control channel, a node's default Aeron directory (`aeronDir(nodeId)`; C++ `util::resolveAeronDir`); honours `SEQERON_PORT_BASE` and `SEQERON_HOSTS` |
 | `ReplayProtocol` | replay protocol channel and stream ids, `NO_REPLAY_NEEDED` |
 | `Publish` | offer outcome: `Published`, `Refused` (final), `Declined` (retryable) |
 

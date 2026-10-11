@@ -223,8 +223,8 @@ trap cleanup EXIT INT TERM
 # `-cp` line) and the -Dsequencer marker instead.
 pkill -9 -f "$JAR" 2>/dev/null; pkill -9 -f "sequencer.memberId" 2>/dev/null
 pkill -9 -f "probe.gatewayName" 2>/dev/null
-rm -rf "$BASE_DIR" "$SNAPSHOT_DIR" "${TMP_DIR}/seqeron-seq-aeron-0" "${TMP_DIR}/seqeron-seq-aeron-1" \
-       "${TMP_DIR}/seqeron-seq-aeron-2" 2>/dev/null
+rm -rf "$BASE_DIR" "$SNAPSHOT_DIR" "$(seqeron_aeron_dir 0)" "$(seqeron_aeron_dir 1)" \
+       "$(seqeron_aeron_dir 2)" 2>/dev/null
 W=0; while lsof -nP -iUDP:"$(archive_port 0)" -iUDP:"$(archive_port 1)" -iUDP:"$(archive_port 2)" 2>/dev/null \
   | grep -q java; do sleep 0.5; W=$((W+1)); ((W>20)) && { echo "UDP archive ports still held after 10s — stale cluster?"; exit 1; }; done
 
@@ -632,7 +632,7 @@ FAULTS=(fault_kill_leader fault_kill_follower fault_sigkill_node fault_pause_nod
 
 # NOTE — on killing the media driver: there is deliberately no fault_kill_aeronmd, and there is no
 #   standalone aeronmd left to kill. Every process here is on a per-member driver embedded in its
-#   SequencerServer (ClusteredMediaDriver at ${TMP_DIR}/seqeron-seq-aeron-<m>): every ClusterProbe attaches
+#   SequencerServer (ClusteredMediaDriver at $(seqeron_aeron_dir <m>)): every ClusterProbe attaches
 #   there, and the probe's submit/ping runs attach
 #   to member $CN's. So the real "driver dies and restarts at the same path" fault is ALREADY injected by
 #   every kill fault above — asserted by check_driver_loss_failfast.

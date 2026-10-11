@@ -5,7 +5,9 @@
 
 #include <cstdint>
 #include <cstdlib>
+#include <filesystem>
 #include <string>
+#include <system_error>
 
 namespace org::limitless::seqeron::util {
 
@@ -62,10 +64,11 @@ inline std::string joinPath(const std::string& dir, const std::string& name)
 
 /**
  * Resolves the co-located cluster member's Aeron directory, which an app shares to reach that node's tap,
- * Replayer and (while it leads) IPC ingress.
+ * Replayer and (while it leads) IPC ingress. The default is the member's own, under /dev/shm where the host has
+ * one, else under TMPDIR; the Java twin is PortLayout.aeronDir.
  *
  * @param envName  the per-binary override variable
- * @param memberId the member whose directory is the default, matching SequencerServer.java's
+ * @param memberId the member whose directory is the default
  */
 inline std::string resolveAeronDir(const char* envName, const std::int32_t memberId)
 {
@@ -74,9 +77,14 @@ inline std::string resolveAeronDir(const char* envName, const std::int32_t membe
     {
         return value;
     }
+    const std::string name = "seqeron-seq-aeron-" + std::to_string(memberId);
+    std::error_code error;
+    if (std::filesystem::is_directory("/dev/shm", error))
+    {
+        return joinPath("/dev/shm", name);
+    }
     const char* tmpDir = std::getenv("TMPDIR");
-    return joinPath(tmpDir != nullptr && *tmpDir != '\0' ? tmpDir : "/tmp",
-                    "seqeron-seq-aeron-" + std::to_string(memberId));
+    return joinPath(tmpDir != nullptr && *tmpDir != '\0' ? tmpDir : "/tmp", name);
 }
 
 /**

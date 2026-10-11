@@ -36,7 +36,7 @@ metrics-exporter.sh          # serve /metrics on port 9400 + memberId
 | environment variable | property | default |
 |---|---|---|
 | `METRICS_EXPORTER_MEMBER_ID` | `metricsExporter.memberId` | `0` |
-| `METRICS_EXPORTER_AERON_DIR` | `metricsExporter.aeronDir` | `$TMPDIR/seqeron-seq-aeron-<memberId>` |
+| `METRICS_EXPORTER_AERON_DIR` | `metricsExporter.aeronDir` | `/dev/shm/seqeron-seq-aeron-<memberId>`, or under `$TMPDIR` on a host without `/dev/shm` |
 | `METRICS_EXPORTER_PORT` | `metricsExporter.port` | `9400 + memberId` |
 
 The paths below are this checkout's; in an installed distribution (`./gradlew operatorDist`) the same tree
@@ -79,7 +79,8 @@ neither the tap-stall nor the recovery-stall fence can see that state.
 ## Metrics reference
 
 Every metric carries a `member="N"` label, read from the counter's key (`SeqeronCounters.addCounter`,
-`KEY_MEMBER_ID_OFFSET`).
+`KEY_MEMBER_ID_OFFSET`). Aeron Cluster's counters key by cluster id instead, so theirs is the exporter's
+`metricsExporter.memberId`.
 
 ### Counter type ids
 
@@ -92,8 +93,8 @@ The exporter maps a counter to a metric by its Aeron type id. Aeron reserves 0�
 | 5200 | `ReplayerStreamReceiver`, inside every client: `seqeron_app_recovery_stalled` |
 | 5201–5299 | an application's own counters, allocated by the deployment |
 
-The ids are defined in `SeqeronCounters` in each language, and the copies must stay in step. Counters
-outside these ranges are not exported.
+The ids are defined in `SeqeronCounters` in each language, and the copies must stay in step. Of the
+counters outside these ranges, only Aeron Cluster's below are exported ([Aeron Cluster's metrics](#aeron-clusters-metrics)).
 
 The application range (5200–5299) is published by clients, several per member, so its counters carry a
 second label, `client="M"`, the client's Replayer client id; `member` alone would merge them into one
@@ -128,6 +129,21 @@ Two applications that use the same type id appear as one metric, named by whiche
 | `seqeron_replayer_snapshot_round` | gauge | the newest round whose `SnapshotEnd` this member's Replayer has indexed, per source, labelled `source` as well as `member` ([`snapshot.md`](snapshot.md) §5). Every participating source should follow the latest round; one that lags is missing rounds. Rebuilt from the recording after a restart, so it reappears once the index has caught up |
 | `seqeron_replayer_throttled_requests_total` | counter | replay requests answered `ReplayPending` only because the tap recording trailed the tap by more than a quarter of the window while a replay was running ([Term lengths](#term-lengths)). A held client resends about every 500 ms, so the rate is about twice the number of clients held. A sustained rate means the recorder is falling behind the tap |
 | `seqeron_app_recovery_stalled` | gauge | 1 while this client's recovery has dispatched nothing for 30 s while not caught up, else 0; also labelled `client`. The client is holding, which is safe, but not serving, and nothing else says so. The causes are a `ReplayUnavailable` refusal, a Replayer that never answers, and a gap this member's recording cannot cover; the client's own log line names which |
+
+### Aeron Cluster's metrics
+
+The consensus module's and service container's own counters (Aeron's `AeronCounters.CLUSTER_*` type ids),
+on every member:
+
+| metric | type | meaning |
+|---|---|---|
+| `seqeron_cluster_errors_total` | counter | errors the consensus module has raised. `clusterctl errors` lists them ([`clusterctl.md`](clusterctl.md)) |
+| `seqeron_cluster_service_errors_total` | counter | errors the service container has raised, `SequencerService`'s included; listed the same way |
+| `seqeron_cluster_timed_out_clients_total` | counter | client sessions closed for missing keep-alives for `sequencer.sessionTimeoutMs` ([Cluster sessions](#cluster-sessions)) |
+| `seqeron_cluster_commit_position` | gauge | the log position this member knows committed. The 1 Hz heartbeat advances it, so a flat line means nothing is committing |
+| `seqeron_cluster_node_role` | gauge | 0 follower, 1 candidate, 2 leader. Exactly one member reads 2 |
+| `seqeron_cluster_election_state` | gauge | Aeron's `ElectionState` code: 17 (`CLOSED`) between elections, so one that stays below 17 is stuck |
+| `seqeron_cluster_module_state` | gauge | Aeron's `ConsensusModule.State` code: 1 (`ACTIVE`) while serving, 2 suspended, 4–6 shutting down |
 
 ## Channel aliases
 
@@ -236,6 +252,26 @@ Dedicated threads pay only when each has a core. Where they do not, as with seve
 small virtual machine or a container with a CPU quota, a starved member can miss the 200 ms leader heartbeat
 timeout and force an election. Pass `-Daeron.threading.mode=SHARED` and
 `-Daeron.archive.threading.mode=SHARED` there, and keep `backoff` as the idle strategy.
+
+## Garbage collection
+
+A garbage collector's stop-the-world pause stops every thread in the member's JVM: the consensus module,
+the service, the embedded driver and the Replayer. A pause on the leader longer than the 200 ms leader
+heartbeat timeout (`sequencer.leaderHeartbeatTimeoutMs`) costs an election, and one in a gateway longer than
+the 1 s session timeout (`sequencer.sessionTimeoutMs`) hands it over to its standby.
+
+The sequencer allocates nothing per frame (`SequencerTest` checks it), so the pauses to guard against are
+the long ones: a full collection, or a heap being resized.
+
+- **Fix the heap.** Set `-Xms` equal to `-Xmx`, well above the live set, so it is never resized.
+- **Choose the collector for the timeouts.** G1, the JDK's default, aims for 200 ms pauses
+  (`-XX:MaxGCPauseMillis`), the leader heartbeat timeout itself; lower the target, or use generational
+  ZGC (`-XX:+UseZGC -XX:+ZGenerational` on JDK 21), whose pauses are typically under a millisecond.
+- **Read the pauses.** `start-cluster.sh`, `start-gateway-host.sh` and the container pass `-Xlog:gc`
+  (`SEQERON_SERVER_JAVA_OPTS`), which writes each pause and its duration into the process's own log:
+  `[0.264s][info][gc] GC(0) Pause Young (Normal) (G1 Evacuation Pause) 25M->3M(516M) 1.502ms`. Pass it
+  yourself when launching the jar directly. A pause near a timeout explains an election or a handover
+  that nothing else does.
 
 ## Term lengths
 

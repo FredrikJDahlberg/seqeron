@@ -1,6 +1,7 @@
 package example;
 
 import io.aeron.Aeron;
+import java.io.File;
 import java.nio.ByteOrder;
 import java.nio.file.Path;
 import java.util.Arrays;
@@ -63,7 +64,10 @@ public final class SnapshotApp implements Application.Listener, SnapshotListener
         final int memberId = Integer.getInteger("snapshot.member", 0);
         final int clientId = Integer.getInteger("snapshot.clientId", 17);
         final String tmpDir = System.getProperty("java.io.tmpdir");
-        final String aeronDir = System.getProperty("snapshot.aeronDir", tmpDir + "/seqeron-seq-aeron-" + memberId);
+        // The member's own, as PortLayout.aeronDir names it, which this façade-only example may not import.
+        final String aeronDir = System.getProperty("snapshot.aeronDir",
+                                                   (new File("/dev/shm").isDirectory() ? "/dev/shm" : tmpDir) +
+                                                       "/seqeron-seq-aeron-" + memberId);
         // The replica's own, and it must outlive the process: a restart restores from it.
         final Path snapshotDir = Path.of(System.getProperty(
             "snapshot.dir", tmpDir + "/seqeron-example-snapshots-" + SOURCE_ID + "-" + memberId));

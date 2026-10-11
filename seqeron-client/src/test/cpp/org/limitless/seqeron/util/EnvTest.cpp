@@ -5,6 +5,7 @@
 #include <gtest/gtest.h>
 
 #include <cstdlib>
+#include <filesystem>
 #include <optional>
 #include <string>
 
@@ -140,9 +141,26 @@ TEST(Env, AeronDirTakesTheOverride)
     EXPECT_EQ("/dev/shm/aeron-app", resolveAeronDir(VAR, 0));
 }
 
-// The default is member `memberId`'s own directory, which is what SequencerServer.java names.
+// The default is member `memberId`'s own directory, which is what SequencerServer.java names: on tmpfs where the
+// host has /dev/shm, so each host runs the branch it takes.
+TEST(Env, AeronDirDefaultsToTheMembersDirectoryUnderDevShm)
+{
+    if (!std::filesystem::is_directory("/dev/shm"))
+    {
+        GTEST_SKIP() << "this host has no /dev/shm";
+    }
+    const EnvVar tmp{ "TMPDIR", "/var/folders/t/" };
+
+    ::unsetenv(VAR);
+    EXPECT_EQ("/dev/shm/seqeron-seq-aeron-2", resolveAeronDir(VAR, 2)) << "TMPDIR does not apply";
+}
+
 TEST(Env, AeronDirDefaultsToTheMembersDirectoryUnderTmpdir)
 {
+    if (std::filesystem::is_directory("/dev/shm"))
+    {
+        GTEST_SKIP() << "this host has /dev/shm";
+    }
     const EnvVar tmp{ "TMPDIR", "/var/folders/t/" };
 
     ::unsetenv(VAR);
@@ -154,6 +172,10 @@ TEST(Env, AeronDirDefaultsToTheMembersDirectoryUnderTmpdir)
 
 TEST(Env, AeronDirFallsBackToSlashTmpWhenTmpdirIsUnsetOrEmpty)
 {
+    if (std::filesystem::is_directory("/dev/shm"))
+    {
+        GTEST_SKIP() << "this host has /dev/shm";
+    }
     ::unsetenv(VAR);
     {
         const EnvVar tmp{ "TMPDIR", "" };

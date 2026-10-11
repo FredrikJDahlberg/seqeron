@@ -2,6 +2,7 @@ package org.limitless.seqeron.metrics;
 
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
+import io.aeron.AeronCounters;
 import io.aeron.CncFileDescriptor;
 import io.aeron.CommonContext;
 import java.io.File;
@@ -16,16 +17,18 @@ import org.agrona.BufferUtil;
 import org.agrona.IoUtil;
 import org.agrona.concurrent.UnsafeBuffer;
 import org.agrona.concurrent.status.CountersReader;
+import org.limitless.seqeron.protocol.PortLayout;
 import org.limitless.seqeron.protocol.SeqeronCounters;
 
 /**
- * Node-local Prometheus exporter (see {@code doc/ops.md}): converts seqeron counters into Prometheus text format
+ * Node-local Prometheus exporter (see {@code doc/ops.md}): converts seqeron's counters, and Aeron Cluster's own, into
+ * Prometheus text format
  */
 public final class MetricsExporter {
     // ── Configuration (mirrors ClusterCtl's property-naming convention for co-location) ──
     private static final int MEMBER_ID = Integer.getInteger("metricsExporter.memberId", 0);
-    private static final String AERON_DIR = System.getProperty(
-        "metricsExporter.aeronDir", System.getProperty("java.io.tmpdir") + "/seqeron-seq-aeron-" + MEMBER_ID);
+    private static final String AERON_DIR =
+        System.getProperty("metricsExporter.aeronDir", PortLayout.aeronDir(MEMBER_ID));
     private static final int PORT = Integer.getInteger("metricsExporter.port", 9400 + MEMBER_ID);
 
     private record MetricMeta(String name, String help, String type) { }
@@ -126,17 +129,54 @@ public final class MetricsExporter {
                           + "only signal that says so.",
                       "gauge")));
 
+    /**
+     * Aeron Cluster's own counters, from the member's consensus module and service container. Their key holds the
+     * cluster id rather than a member id, so they carry this exporter's.
+     */
+    private static final Map<Integer, MetricMeta> CLUSTER_METRICS_BY_TYPE_ID = Map.ofEntries(
+        Map.entry(AeronCounters.CLUSTER_CONSENSUS_MODULE_ERROR_COUNT_TYPE_ID,
+                  new MetricMeta("seqeron_cluster_errors_total",
+                                 "Count of errors the consensus module has raised; clusterctl errors lists them.",
+                                 "counter")),
+        Map.entry(AeronCounters.CLUSTER_CLUSTERED_SERVICE_ERROR_COUNT_TYPE_ID,
+                  new MetricMeta("seqeron_cluster_service_errors_total",
+                                 "Count of errors the service container has raised; clusterctl errors lists them.",
+                                 "counter")),
+        Map.entry(AeronCounters.CLUSTER_CLIENT_TIMEOUT_COUNT_TYPE_ID,
+                  new MetricMeta("seqeron_cluster_timed_out_clients_total",
+                                 "Count of client sessions the cluster closed for missing keep-alives.", "counter")),
+        Map.entry(AeronCounters.CLUSTER_COMMIT_POSITION_TYPE_ID,
+                  new MetricMeta("seqeron_cluster_commit_position", "The log position this member knows committed.",
+                                 "gauge")),
+        Map.entry(AeronCounters.CLUSTER_NODE_ROLE_TYPE_ID,
+                  new MetricMeta("seqeron_cluster_node_role", "This member's role: 0 follower, 1 candidate, 2 leader.",
+                                 "gauge")),
+        Map.entry(
+            AeronCounters.CLUSTER_ELECTION_STATE_TYPE_ID,
+            new MetricMeta("seqeron_cluster_election_state",
+                           "This member's election state, Aeron's ElectionState code; 17 (CLOSED) between elections.",
+                           "gauge")),
+        Map.entry(AeronCounters.CLUSTER_CONSENSUS_MODULE_STATE_TYPE_ID,
+                  new MetricMeta("seqeron_cluster_module_state",
+                                 "The consensus module's state, Aeron's ConsensusModule.State code; 1 (ACTIVE) when "
+                                     + "serving.",
+                                 "gauge")));
+
     /** The co-located node's CnC counters — the only thing this reads; an Aeron client is not needed. */
     private final CountersReader reader;
 
-    MetricsExporter(final CountersReader reader) {
+    /** The node these counters are on, for the counters whose key does not say. */
+    private final int memberId;
+
+    MetricsExporter(final CountersReader reader, final int memberId) {
         this.reader = reader;
+        this.memberId = memberId;
     }
 
     public static void main(final String[] args) throws IOException {
         final File aeronDir = new File(AERON_DIR);
         final HttpServer server = HttpServer.create(new InetSocketAddress(PORT), 0);
-        server.createContext("/metrics", exchange -> handleMetrics(exchange, aeronDir));
+        server.createContext("/metrics", exchange -> handleMetrics(exchange, aeronDir, MEMBER_ID));
         server.setExecutor(null);
         server.start();
 
@@ -152,9 +192,10 @@ public final class MetricsExporter {
      * costs the scrapes while it is down and none after.
      *
      * @param aeronDir the member's Aeron directory
+     * @param memberId the member's id
      * @throws IllegalStateException if no live driver holds that directory
      */
-    static String scrape(final File aeronDir) {
+    static String scrape(final File aeronDir, final int memberId) {
         final MappedByteBuffer cnc =
             IoUtil.mapExistingFile(new File(aeronDir, CncFileDescriptor.CNC_FILE), CncFileDescriptor.CNC_FILE);
         try {
@@ -163,17 +204,19 @@ public final class MetricsExporter {
             }
             final UnsafeBuffer metaData = CncFileDescriptor.createMetaDataBuffer(cnc);
             return new MetricsExporter(new CountersReader(CncFileDescriptor.createCountersMetaDataBuffer(cnc, metaData),
-                                                          CncFileDescriptor.createCountersValuesBuffer(cnc, metaData)))
+                                                          CncFileDescriptor.createCountersValuesBuffer(cnc, metaData)),
+                                       memberId)
                 .renderMetrics();
         } finally {
             BufferUtil.free(cnc);
         }
     }
 
-    private static void handleMetrics(final HttpExchange exchange, final File aeronDir) throws IOException {
+    private static void handleMetrics(final HttpExchange exchange, final File aeronDir, final int memberId)
+        throws IOException {
         final byte[] body;
         try {
-            body = scrape(aeronDir).getBytes(StandardCharsets.UTF_8);
+            body = scrape(aeronDir, memberId).getBytes(StandardCharsets.UTF_8);
         } catch (final Exception ex) {
             final byte[] error =
                 ("aeron counters unavailable: " + ex.getMessage() + "\n").getBytes(StandardCharsets.UTF_8);
@@ -191,13 +234,15 @@ public final class MetricsExporter {
     }
 
     /**
-     * Renders every seqeron counter this node's CnC file holds as one Prometheus exposition body. A counter
-     * in the app range core has no name for is a consumer's (doc/ops.md, "Counter type ids"), named from its label.
+     * Renders every seqeron and Aeron Cluster counter this node's CnC file holds as one Prometheus exposition body. A
+     * counter in the app range core has no name for is a consumer's (doc/ops.md, "Counter type ids"), named from its
+     * label.
      */
     String renderMetrics() {
         final Map<MetricMeta, StringBuilder> samplesByMetric = new LinkedHashMap<>();
         reader.forEach((counterId, typeId, keyBuffer, label) -> {
-            MetricMeta meta = METRICS_BY_TYPE_ID.get(typeId);
+            final MetricMeta clusterMeta = CLUSTER_METRICS_BY_TYPE_ID.get(typeId);
+            MetricMeta meta = clusterMeta != null ? clusterMeta : METRICS_BY_TYPE_ID.get(typeId);
             if (meta == null) {
                 if (typeId < SeqeronCounters.APP_TYPE_ID_MIN || typeId > SeqeronCounters.APP_TYPE_ID_MAX) {
                     return;
@@ -207,7 +252,7 @@ public final class MetricsExporter {
             final StringBuilder samples = samplesByMetric.computeIfAbsent(meta, name -> new StringBuilder());
             samples.append(meta.name())
                 .append("{member=\"")
-                .append(keyBuffer.getInt(SeqeronCounters.KEY_MEMBER_ID_OFFSET))
+                .append(clusterMeta != null ? memberId : keyBuffer.getInt(SeqeronCounters.KEY_MEMBER_ID_OFFSET))
                 .append('"');
             if (typeId >= SeqeronCounters.APP_TYPE_ID_MIN && typeId <= SeqeronCounters.APP_TYPE_ID_MAX) {
                 samples.append(",client=\"").append(keyBuffer.getInt(SeqeronCounters.KEY_CLIENT_ID_OFFSET)).append('"');

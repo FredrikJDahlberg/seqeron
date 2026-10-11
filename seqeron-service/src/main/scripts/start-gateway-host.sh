@@ -8,7 +8,7 @@
 #
 # Config:
 #   SEQERON_NODE_ID            this host's node id, one no member uses (3 suits a three-member cluster); names its
-#                              Aeron directory, $TMPDIR/seqeron-seq-aeron-<id>, and archive  (default 3)
+#                              Aeron directory, seqeron-seq-aeron-<id>, and archive  (default 3)
 #   SEQERON_HOSTS              every member's host, in member-id order; ReplayerServer and every client on
 #                              this host read it
 #   SEQERON_ARCHIVE_ENDPOINTS  the members' archive control endpoints, host:port, comma-separated
@@ -40,7 +40,7 @@ fi
 
 seqeron_require_jar
 JAR="${SEQERON_JAR}"
-JAVA_OPTS=("${SEQERON_JAVA_OPTS[@]}")
+JAVA_OPTS=("${SEQERON_SERVER_JAVA_OPTS[@]}")
 
 NODE_ID="${SEQERON_NODE_ID:-3}"
 ENDPOINTS="${SEQERON_ARCHIVE_ENDPOINTS:-}"
@@ -77,6 +77,6 @@ trap cleanup INT TERM
 echo "[gateway-host.sh] Waiting for it to relay the log and serve replay…"
 wait_for_log "${LOG}" "ready —" 60 ||
     echo "[gateway-host.sh] WARN: not serving after 60s — is a member reachable at ${ENDPOINTS:-${SEQERON_HOSTS}}?" >&2
-echo "  ReplayerServer    pid=${PID}  log=${LOG}  aeronDir=${TMP_DIR}/seqeron-seq-aeron-${NODE_ID}"
+echo "  ReplayerServer    pid=${PID}  log=${LOG}  aeronDir=$(seqeron_aeron_dir "${NODE_ID}")"
 echo "[gateway-host.sh] Press Ctrl-C to stop"
 wait "${PID}"

@@ -46,7 +46,7 @@ import org.limitless.seqeron.util.Logger;
  *                               and advertise; default this member's entry in sequencer.hosts, else
  *                               localhost
  *   sequencer.baseDir         — data directory root; default /tmp/seqeron-seq
- *   sequencer.aeronDir        — Aeron media driver directory
+ *   sequencer.aeronDir        — Aeron media driver directory; default PortLayout.aeronDir(memberId)
  *   sequencer.idleStrategy    — idle strategy of every agent, the Replayer's included: {@code backoff}
  *                               (default), {@code yielding} or {@code busyspin}. Busy-spin pays only when
  *                               each agent owns a core.
@@ -98,8 +98,7 @@ public final class SequencerServer {
         final String host = System.getProperty(PROP_HOST, hosts.get(memberId));
         final String baseDir =
             System.getProperty(PROP_BASE_DIR, System.getProperty("java.io.tmpdir") + "/seqeron-seq");
-        final String aeronDir = System.getProperty(
-            PROP_AERON_DIR, System.getProperty("java.io.tmpdir") + "/seqeron-seq-aeron-" + memberId);
+        final String aeronDir = System.getProperty(PROP_AERON_DIR, PortLayout.aeronDir(memberId));
         final int archivePort = PortLayout.archivePort(memberId);
         final int ingressPort = PortLayout.ingressPort(memberId);
 
@@ -111,6 +110,7 @@ public final class SequencerServer {
         final Supplier<IdleStrategy> idleStrategySupplier = IdleStrategies.fromProperty(PROP_IDLE_STRATEGY);
         final MediaDriver.Context driverCtx = NodeDriver.context(aeronDir, idleStrategySupplier);
         NodeDriver.warnUnlessTmpfs(Logger.CoreComponent.SequencerServer, memberId, aeronDir);
+        NodeDriver.warnIfTmpfs(Logger.CoreComponent.SequencerServer, memberId, baseDir);
 
         final AeronArchive.Context localArchiveCtx = new AeronArchive.Context()
                                                          .lock(NoOpLock.INSTANCE)

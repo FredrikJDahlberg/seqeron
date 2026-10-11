@@ -1,6 +1,7 @@
 package example;
 
 import io.aeron.Aeron;
+import java.io.File;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.TimeUnit;
@@ -54,8 +55,11 @@ public final class GatewayApp implements Gateway.Listener {
         final int instance = gatewayName.equals("GW-EX-B") ? 1 : 0;
         final int memberId = Integer.getInteger("gateway.member", 0);
         final int clientId = Integer.getInteger("gateway.clientId", 15 + instance);
+        // The member's own, as PortLayout.aeronDir names it, which this façade-only example may not import.
         final String aeronDir = System.getProperty(
-            "gateway.aeronDir", System.getProperty("java.io.tmpdir") + "/seqeron-seq-aeron-" + memberId);
+            "gateway.aeronDir",
+            (new File("/dev/shm").isDirectory() ? "/dev/shm" : System.getProperty("java.io.tmpdir")) +
+                "/seqeron-seq-aeron-" + memberId);
 
         final AtomicBoolean running = new AtomicBoolean(true);
         final Thread mainThread = Thread.currentThread();

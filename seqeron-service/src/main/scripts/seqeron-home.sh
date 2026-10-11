@@ -37,6 +37,10 @@ SEQERON_JAVA_OPTS=(
     --add-opens=java.base/java.util.zip=ALL-UNNAMED
 )
 
+# A member's or gateway host's JVM also logs every GC pause into its own output, to set against the cluster's
+# timeouts (doc/ops.md, "Garbage collection").
+SEQERON_SERVER_JAVA_OPTS=("${SEQERON_JAVA_OPTS[@]}" -Xlog:gc)
+
 # Call from a script that launches Java; the ones that only signal or delete files do not.
 # A checkout names its jar by the VERSION file, since build/libs keeps every version ever built; a
 # distribution has no VERSION file and exactly one jar in lib/, so a second match there is an error.
