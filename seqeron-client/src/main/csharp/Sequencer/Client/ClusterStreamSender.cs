@@ -68,7 +68,8 @@ public sealed class ClusterStreamSender : IIngressSender, IDisposable
     // Whether the open session's ingress is the co-located member's aeron:ipc.
     private bool _overIpc;
 
-    // IPC ingress lost its leader and reaches nobody else, so the session must be replaced.
+    // IPC ingress lost its leader and reaches nobody else, so the session is being replaced over UDP. Until the new one
+    // opens, the old one stands in for it, closed or not.
     private bool _reconnectDue;
 
     // The session Reconnect is opening, one step per call; null while none is.
@@ -108,7 +109,7 @@ public sealed class ClusterStreamSender : IIngressSender, IDisposable
 
     /// <summary>Connects a client sharing a cluster member's Aeron directory: that member's <c>aeron:ipc</c> first,
     /// within the short <paramref name="ipcConnectTimeoutMs"/> since a follower never answers there, then UDP. If
-    /// leadership later moves away, <see cref="PollEgress"/> reconnects over UDP; moving back is not
+    /// leadership later moves away, <see cref="PollEgress"/> reconnects over UDP, a step per call; moving back is not
     /// chased.</summary>
     /// <param name="aeron">the caller's client, on the member's media driver</param>
     /// <param name="memberId">the co-located member</param>
@@ -143,6 +144,19 @@ public sealed class ClusterStreamSender : IIngressSender, IDisposable
                 return false;
             }
         }
+        if (!StepConnect())
+        {
+            return false;
+        }
+        Logger.Info(Logger.CoreComponent.Cluster, Member, "cluster session {0} replaces the lost one",
+                    _cluster.ClusterSessionId);
+        return true;
+    }
+
+    // Advances _connecting one step, and adopts the session it opens in place of the current one. A failed IPC attempt
+    // falls back to UDP; a failed UDP attempt leaves the session lost.
+    private bool StepConnect()
+    {
         AeronCluster opened;
         try
         {
@@ -161,6 +175,8 @@ public sealed class ClusterStreamSender : IIngressSender, IDisposable
             }
             Logger.Error(Logger.CoreComponent.Cluster, Logger.CoreEventCode.ClusterSessionError, Member,
                          "could not replace the lost cluster session ({0})", ex.Message);
+            _reconnectDue = false;
+            _sessionLost = true;
             return false;
         }
         if (opened == null)
@@ -168,13 +184,12 @@ public sealed class ClusterStreamSender : IIngressSender, IDisposable
             return false;
         }
         _connecting = null;
+        CloseSession();
         _cluster = opened;
         _overIpc = _connectingOverIpc;
         _reconnectDue = false;
         _sessionLost = false;
         _stallPolicy.OnOffered(); // a new session inherits no block
-        Logger.Info(Logger.CoreComponent.Cluster, Member, "cluster session {0} replaces the lost one",
-                    _cluster.ClusterSessionId);
         return true;
     }
 
@@ -201,7 +216,7 @@ public sealed class ClusterStreamSender : IIngressSender, IDisposable
     /// releases</returns>
     public bool Send(IDirectBuffer frame, int length)
     {
-        if (_cluster == null || _cluster.Closed || length == 0)
+        if (!IsConnected || length == 0)
         {
             return false;
         }
@@ -215,7 +230,7 @@ public sealed class ClusterStreamSender : IIngressSender, IDisposable
         while ((result = _cluster.Offer(frame, 0, length)) < 0)
         {
             long now = Clocks.MonotonicMs();
-            switch (_stallPolicy.OnOfferFailed(now, result, _sessionLost, _cluster.Closed))
+            switch (_stallPolicy.OnOfferFailed(now, result, _sessionLost && !_reconnectDue, !IsConnected))
             {
                 case IngressStallPolicy.Action.Fatal:
                     throw new InvalidOperationException("cluster ingress offer failed: " + result);
@@ -247,7 +262,7 @@ public sealed class ClusterStreamSender : IIngressSender, IDisposable
     /// <summary>Sends a keep-alive if the interval has elapsed; call it every duty-cycle iteration.</summary>
     public void KeepAlive()
     {
-        if (_cluster == null || _cluster.Closed)
+        if (_cluster == null || _cluster.Closed || _reconnectDue)
         {
             return;
         }
@@ -284,13 +299,13 @@ public sealed class ClusterStreamSender : IIngressSender, IDisposable
         int fragments = _cluster.PollEgress();
         if (_reconnectDue)
         {
-            ReconnectOverUdp();
+            ReplaceIpcSession();
         }
         return fragments;
     }
 
-    /// <summary>Whether a session is open.</summary>
-    public bool IsConnected => _cluster != null && !_cluster.Closed;
+    /// <summary>Whether a session is open, or one whose leader moved away is being replaced.</summary>
+    public bool IsConnected => _cluster != null && (!_cluster.Closed || _reconnectDue);
 
     /// <summary>True once the cluster has closed this session, as opposed to never having opened one. Latched until
     /// <see cref="Reconnect"/> opens another.</summary>
@@ -391,14 +406,26 @@ public sealed class ClusterStreamSender : IIngressSender, IDisposable
         _connecting = null;
     }
 
-    // Replaces an IPC session whose leader moved away: with no endpoints, AeronCluster would wait on the same
-    // aeron:ipc forever. UDP lets the cluster client chase the leader itself.
-    private void ReconnectOverUdp()
+    // Replaces an IPC session whose leader moved away, a step per call: with no endpoints, AeronCluster would wait on
+    // the same aeron:ipc forever. UDP lets the cluster client chase the leader itself.
+    private void ReplaceIpcSession()
     {
-        Logger.Info(Logger.CoreComponent.Cluster, Member,
-                    "leadership moved to member {0} — reconnecting ingress over UDP", _newLeaderMemberId);
-        CloseSession();
-        _cluster = OpenSession(IngressChannelUdp, _ingressEndpoints, ConnectTimeoutNs);
+        if (_connecting == null)
+        {
+            Logger.Info(Logger.CoreComponent.Cluster, Member,
+                        "leadership moved to member {0} — reconnecting ingress over UDP", _newLeaderMemberId);
+            if (!BeginConnect(false))
+            {
+                _reconnectDue = false;
+                _sessionLost = true;
+                return;
+            }
+        }
+        if (StepConnect())
+        {
+            Logger.Info(Logger.CoreComponent.Cluster, Member, "cluster session {0} over UDP replaces the IPC one",
+                        _cluster.ClusterSessionId);
+        }
     }
 
     private void CloseSession()

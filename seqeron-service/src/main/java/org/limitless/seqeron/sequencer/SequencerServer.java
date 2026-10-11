@@ -57,6 +57,7 @@ import org.limitless.seqeron.util.Logger;
  *   sequencer.leaderHeartbeatTimeoutMs — how long a follower waits for a leader heartbeat before it starts an
  *                               election; default 200
  *   sequencer.electionTimeoutMs — how long an election stage waits on the other members; default 200
+ *   aeron.threading.mode       — the embedded driver's threading mode; default DEDICATED (doc/ops.md, "Driver threads")
  *   aeron.ipc.term.buffer.length — the embedded driver's IPC term length; default 16m (doc/ops.md, "Term lengths")
  *   aeron.timer.interval, aeron.untethered.window.limit.timeout, aeron.untethered.linger.timeout — default
  *                               10ms, 100ms, 100ms (doc/ops.md, "Untethered subscribers")

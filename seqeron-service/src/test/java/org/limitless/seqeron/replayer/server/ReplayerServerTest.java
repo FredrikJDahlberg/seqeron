@@ -6,11 +6,13 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.aeron.driver.Configuration;
 import io.aeron.driver.MediaDriver;
+import io.aeron.driver.ThreadingMode;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
+import org.agrona.concurrent.BackoffIdleStrategy;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.limitless.seqeron.protocol.PortLayout;
@@ -33,6 +35,24 @@ class ReplayerServerTest {
         final long evictionNs = ctx.untetheredWindowLimitTimeoutNs() + ctx.untetheredLingerTimeoutNs() +
                                 2 * ctx.timerIntervalNs();
         assertTrue(evictionNs < TimeUnit.MILLISECONDS.toNanos(TapRelay.RECORDING_STALL_FATAL_MS) / 2);
+    }
+
+    @Test
+    void driverThreadsAreDedicatedUnlessAeronThreadingModeNamesOthers() {
+        final String set = System.clearProperty(Configuration.THREADING_MODE_PROP_NAME);
+        try {
+            assertEquals(ThreadingMode.DEDICATED,
+                         NodeDriver.context("aeron", BackoffIdleStrategy::new).threadingMode());
+            System.setProperty(Configuration.THREADING_MODE_PROP_NAME, "SHARED");
+            // Left unset, which the driver resolves from the property when it concludes the context.
+            assertNull(NodeDriver.context("aeron", BackoffIdleStrategy::new).threadingMode());
+        } finally {
+            if (set == null) {
+                System.clearProperty(Configuration.THREADING_MODE_PROP_NAME);
+            } else {
+                System.setProperty(Configuration.THREADING_MODE_PROP_NAME, set);
+            }
+        }
     }
 
     @Test

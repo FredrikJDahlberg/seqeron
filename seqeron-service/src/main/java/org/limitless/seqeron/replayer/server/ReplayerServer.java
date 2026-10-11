@@ -42,6 +42,7 @@ import org.limitless.seqeron.util.Logger;
  *                                {@code busyspin}; busy-spin pays only on an isolated core
  *   replayer.host              — this host's name as the members reach it; default localhost
  *   replayer.baseDir           — data directory root; default {tmpdir}/seqeron-seq
+ *   aeron.threading.mode       — the driver's threading mode; default DEDICATED (doc/ops.md, "Driver threads")
  *   aeron.ipc.term.buffer.length — the driver's IPC term length; default 16m (doc/ops.md, "Term lengths")
  *   aeron.timer.interval, aeron.untethered.window.limit.timeout, aeron.untethered.linger.timeout — default
  *                                10ms, 100ms, 100ms (doc/ops.md, "Untethered subscribers")

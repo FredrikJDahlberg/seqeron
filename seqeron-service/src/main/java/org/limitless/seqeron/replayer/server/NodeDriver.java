@@ -56,9 +56,9 @@ public final class NodeDriver {
     }
 
     /**
-     * A seqeron media driver's context: dedicated threads on {@code idleStrategies}, and the IPC term length and
-     * untethered timing of doc/ops.md ("Term lengths", "Untethered subscribers") where their Aeron properties are
-     * not set.
+     * A seqeron media driver's context: every driver thread on {@code idleStrategies}, and dedicated threads, the IPC
+     * term length and the untethered timing of doc/ops.md ("Driver threads", "Term lengths", "Untethered
+     * subscribers") where their Aeron properties are not set.
      *
      * <p>The directory is not deleted unchecked on start: Aeron refuses one a live driver holds, and saves the
      * previous driver's error log beside it before deleting it.
@@ -69,10 +69,14 @@ public final class NodeDriver {
     public static MediaDriver.Context context(final String aeronDir, final Supplier<IdleStrategy> idleStrategies) {
         final MediaDriver.Context ctx = new MediaDriver.Context()
                                             .aeronDirectoryName(aeronDir)
-                                            .threadingMode(ThreadingMode.DEDICATED)
                                             .conductorIdleStrategy(idleStrategies.get())
                                             .senderIdleStrategy(idleStrategies.get())
-                                            .receiverIdleStrategy(idleStrategies.get());
+                                            .receiverIdleStrategy(idleStrategies.get())
+                                            .sharedNetworkIdleStrategy(idleStrategies.get())
+                                            .sharedIdleStrategy(idleStrategies.get());
+        if (System.getProperty(Configuration.THREADING_MODE_PROP_NAME) == null) {
+            ctx.threadingMode(ThreadingMode.DEDICATED);
+        }
         if (System.getProperty(Configuration.IPC_TERM_BUFFER_LENGTH_PROP_NAME) == null) {
             ctx.ipcTermBufferLength(DEFAULT_IPC_TERM_BUFFER_LENGTH);
         }

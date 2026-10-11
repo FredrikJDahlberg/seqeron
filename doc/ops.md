@@ -193,6 +193,19 @@ This repository's processes use the ids below. An application's should start at 
 | 31–36 | `csharp-client-test.sh` C# probes |
 | 41–43 | `csharp-windows-test.sh` C# probes |
 
+## Driver threads
+
+A member runs nine agent threads: the media driver's conductor, sender and receiver, the archive's
+conductor, recorder and replayer, the consensus module, the service container and the Replayer. Each idles on
+`sequencer.idleStrategy` (`replayer.idleStrategy` on a gateway host), and the driver's three are dedicated
+unless `aeron.threading.mode` names `SHARED_NETWORK` (sender and receiver on one thread) or `SHARED` (all three
+on one). The archive's follow `aeron.archive.threading.mode`, Aeron's property, whose default is dedicated too.
+
+Dedicated threads pay only when each has a core. Where they do not, as with several members on one host, a
+small virtual machine or a container with a CPU quota, a starved member can miss the 200 ms leader heartbeat
+timeout and force an election. Pass `-Daeron.threading.mode=SHARED` and
+`-Daeron.archive.threading.mode=SHARED` there, and keep `backoff` as the idle strategy.
+
 ## Term lengths
 
 Every Aeron stream is a log buffer of three terms, and its term length sets three things: its largest
