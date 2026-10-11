@@ -266,8 +266,9 @@ and MUST have a single owning repository whose codecs every consumer links. A `p
 one application publishes and reads needs no row; the wire behaves the same either way (**P-1**,
 **C-2**), and the only difference is the label `SbeLogPrinter` prints.
 
-All `payloadId`s share one space. Two applications that pick the same number collide on the tap, and
-nothing here detects it; **P-4** detects a wrong decoder only when the encoding describes itself.
+All `payloadId`s share one space. Applications on the same `payloadId` share its protocol. Two protocols
+given the same number collide on the tap, and nothing here detects it; **P-4** detects a wrong decoder
+only when the encoding describes itself.
 
 ### 6.2 Selective consumption
 
