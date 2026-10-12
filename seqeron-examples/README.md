@@ -20,7 +20,7 @@ through the same consumer — so the round trip is measured over the real path.
 | `src/csharp/ColocatedApp` | its front-door twin in C# |
 | `src/csharp/GatewayApp` | a C# gateway pair of its own |
 
-## The same flow, against the front door
+## Consume and publish
 
 `ColocatedApp` does what `FollowStream` does and names none of the tiers under it. Its whole import list
 from seqeron is `app` plus `protocol.Publish`: no receiver, no sender, no envelope, no `systemEventType`.
