@@ -5,7 +5,8 @@ protocols it carries, which are not. §1, §2 and §4 describe what holds today:
 SBE and Protocol Buffers provide. The rest is a **proposed design** for upgrading applications without
 stopping them; none of it is implemented, and the compatibility rules it describes are not yet part of the
 spec. "spec" is
-[`seqeron-protocol-spec.md`](seqeron-protocol-spec.md).
+[`seqeron-protocol-spec.md`](seqeron-protocol-spec.md). How exchanges and log-based systems version their
+protocols is surveyed in [`versioning-prior-art.md`](versioning-prior-art.md).
 
 ## 1. Two protocols, two policies
 
@@ -126,6 +127,14 @@ The client tier already decodes this way: C++ `Payload::decode<Decoder>()` wraps
 `blockLength` and `version`, and `Payload.blockLength()` and `Payload.version()` give Java and C# the same
 values to wrap with. A specified snapshot record (§3.1) carries the same header.
 
+**The rules are checkable from the XML.** Proposed: a checker that compares a schema with every earlier
+version a consumer may still read (§3.2) and verifies that `version` rose, that everything added carries
+`sinceVersion` equal to it, that new fields come after the existing ones, and that nothing was removed,
+reordered or retyped. A change that passes rolls out in any order (§5.3); one that fails needs an
+upcaster (§5) or a new `payloadId` (§7), and the checker names the rule it broke. Run in an application's
+build against the versions it has published, it enforces the rules as a schema registry does at
+registration. It cannot check meaning: a field whose meaning changed passes.
+
 ### 4.2 Protocol Buffers
 
 Fields are identified by number; a missing field decodes to its default and an unknown one is skipped or
@@ -213,6 +222,47 @@ An upcaster turns old into new only, so for such a change **consumers upgrade be
 every path the payload takes: in request/reply, the gateway must read the application's new reply version
 before the application publishes it.
 
+### 5.4 Enforcing the order
+
+Proposed: the cluster enforces consumers-first the way it bootstraps gateways, by declaring in the log
+what may happen and gating every instance on a completeness edge there.
+
+1. **Declare.** The topology document states which versions of each `payloadId` each source reads (the
+   `consumes` attribute, §8). `clusterctl load-topology` validates it before publishing anything, as it
+   validates the gateway list. `PayloadIdRegistered.protocolVersion`, printed and never checked today,
+   becomes the version in force.
+2. **Announce.** Every consumer instance announces on start, as a sequenced system event, the highest
+   version of each `payloadId` it reads.
+3. **Activate.** Once every instance of every consuming source has announced version N, the sequencer
+   synthesizes `ProtocolVersionActive(payloadId, N)`, as it synthesizes the bootstrap `GatewayActive`
+   behind the gateway list's last row. The frame is in the log, so a replay reproduces it.
+4. **Gate, failing closed.**
+   - A producer's façade refuses to publish a version above the active one, reading it from the payload's
+     own `MessageHeader` as `Payload.version()` does. The cluster still opens no payload.
+   - A consumer acts on the new version from that frame on, not from its deployment, so every instance of
+     a source switches at the same `globalSeqNo`; one that acted on a new field while another instance of
+     its source ignored it would diverge and be fenced at the next round (spec **A-7**). The frame is the
+     cutover marker of §7.2 step 3.
+   - An instance announcing a version below the active one cannot read what the log already holds, and is
+     fenced rather than started.
+
+An instance that never announces holds the version back: the rollout stalls rather than a consumer reading
+what it cannot. An operator override is needed for an instance that is gone, as `clusterctl activate`
+overrides the gateway election.
+
+With §4.1's checker, the two divide the work: the checker decides whether a change needs consumers first,
+and the activation enforces it.
+
+**Costs.**
+
+- **A schema 210 change**: an announce event, a synthesized frame, and a `protocolVersion` the sequencer
+  acts on. Under spec **V-3** that is a purge, so it belongs with the next one.
+- **The instances to wait for must be known.** Gateway instances are list rows; an application has one
+  replica per member plus any `offCluster` instances on gateway hosts, none of them listed. The topology
+  must name or count them.
+- **Only producers using the façades are gated.** Gating others would need the sequencer to read payload
+  headers, which it never does, and headerless payloads (§9) have none.
+
 ## 6. An application upgrade, end to end
 
 **A change within the encoding's rules** (§4): deploy producers and consumers in any order, each source's
@@ -299,6 +349,8 @@ publishing replies in v1; `N` is the new one, publishing them in v2.
 | cluster snapshots and the floor `F` | proposed ([`snapshot.md`](snapshot.md) §10) |
 | snapshot records as specified messages, framing in the spec | proposed (§3.1) |
 | upcasters, for payloads and snapshot records | proposed (§5) |
+| a schema checker enforcing §4.1's rules | proposed (§4.1) |
+| consumers-first enforced by the cluster: announced versions and an activation frame | proposed (§5.4): a schema 210 change |
 | a new source beside the old: its own `sourceId`, `payloadId` and rows, loaded into a running cluster | implemented (§7.1) |
 | a source restoring another source's snapshot | proposed (§7.2 step 1) |
 | a reply comparator | proposed (§7.2 step 2) |
@@ -318,9 +370,9 @@ publishing replies in v1; `N` is the new one, publishing them in v2.
    language and library version.
 4. **Read-only consumers** with no state of their own start at `F` under cluster snapshots; one that needs
    history older than `F` reads an export, not the cluster.
-5. **Enforcement of the rollout rules.** Rounds between rollouts and reader-before-writer are operational
-   rules seqeron cannot check. A build could at least refuse a round while it sees instances of its source
-   announcing different builds, which needs a build identity on the log.
+5. **Enforcement of the rollout rules.** §5.4 proposes enforcing reader-before-writer. Rounds between
+   rollouts (§3.2) remain an operational rule: a build could at least refuse a round while it sees
+   instances of its source announcing different versions, which §5.4's announcements would make possible.
 6. **One cutover marker per protocol, or one per consumer** (§7.2 step 3). One per protocol makes every
    consumer switch at once; one per consumer lets each move on its own release, at the cost of a marker
    each.
