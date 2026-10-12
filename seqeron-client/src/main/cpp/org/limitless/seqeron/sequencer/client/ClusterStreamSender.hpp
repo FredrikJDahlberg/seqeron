@@ -61,6 +61,12 @@ inline std::int64_t nowMs()
         .count();
 }
 
+inline std::int64_t monotonicMs()
+{
+    return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+}
+
 /**
  * Finds a member's endpoint in an ingress-endpoint CSV.
  *
@@ -393,7 +399,7 @@ class ClusterStreamSender
         {
             return;
         }
-        const std::int64_t now = nowMs();
+        const std::int64_t now = monotonicMs();
         if (now - m_lastKeepAliveMs < KEEP_ALIVE_INTERVAL_MS)
         {
             return;

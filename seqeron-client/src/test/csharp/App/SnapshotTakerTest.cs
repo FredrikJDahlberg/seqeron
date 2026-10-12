@@ -172,8 +172,8 @@ public class SnapshotTakerTest : IDisposable
         Assert.True(otherRound.OnSnapshotEnd(4, 99, 0, 0), "a late end of an earlier round is no evidence");
     }
 
-    [Fact(DisplayName = "an end that matches makes its round the oldest file kept; one that does not deletes nothing")]
-    public void MatchingEndDeletesOlderRounds()
+    [Fact(DisplayName = "a matching end keeps its round and the confirmed one before it; a mismatch deletes nothing")]
+    public void MatchingEndKeepsTwoConfirmedRounds()
     {
         SnapshotTaker taker = Participating();
         taker.OnSnapshotStarted(1, Header, false);
@@ -188,7 +188,11 @@ public class SnapshotTakerTest : IDisposable
         taker.OnSnapshotStarted(4, Header, false);
         End end = _frames.Ends[0];
         Assert.True(taker.OnSnapshotEnd(4, end.RecordCount, end.Length, end.Crc32C));
-        Assert.Equal(4, StoreOf(1).LatestRound(long.MaxValue));
+        Assert.Equal(3, StoreOf(1).LatestRound(4)); // no round before 4 was confirmed, so none goes
+
+        taker.OnSnapshotStarted(5, Header, false);
+        Assert.True(taker.OnSnapshotEnd(5, end.RecordCount, end.Length, end.Crc32C));
+        Assert.Equal(4, StoreOf(1).LatestRound(5));  // round 4 stays as round 5's fallback
         Assert.Equal(-1, StoreOf(1).LatestRound(4)); // rounds 1 to 3 are gone
     }
 

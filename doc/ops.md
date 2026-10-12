@@ -115,8 +115,11 @@ Two applications that use the same type id appear as one metric, named by whiche
 | `seqeron_sequencer_current_leader_member_id` | gauge | the leader this member's sequencer last recorded |
 | `seqeron_sequencer_last_tick_timestamp_ms` | gauge | the consensus timestamp of the last `ClusterHeartbeat`, in ms (the frame carries ns) |
 | `seqeron_sequencer_gateway_promotion_total` | counter | `GatewayActive` frames promoting a standby: on a gateway session closing, or on a designated instance not publishing `GatewayStarted` within 5 s (`GATEWAY_ACTIVATION_TIMEOUT_MS`) |
+| `seqeron_sequencer_gateway_promotion_failed_total` | counter | times a gateway lost its active instance and had no standby to promote |
 | `seqeron_sequencer_bootstrap_activated` | gauge | 1 once the bootstrap `GatewayActive` is in this cluster's log, else 0 |
 | `seqeron_sequencer_tap_stalled` | gauge | 1 while the tap recording has made no progress for more than 200 ms under back-pressure, else 0; stays 1 when the member terminates for a tap it cannot record ([below](#a-node-that-terminates-itself)) |
+| `seqeron_sequencer_connected_clients` | gauge | external connections open across every gateway: a `ConnectionOpened` with no `ConnectionClosed` yet |
+| `seqeron_sequencer_ingress_messages_total` | counter | ingress frames sequenced; the frames the sequencer synthesizes are not counted |
 | `seqeron_replayer_stalled` | gauge | 1 while the local archive refuses to serve a replay, else 0. Set by every path that asks the archive for one, the startup check included, and cleared by a bounded probe replay the member runs once a second while stalled, so it returns to 0 even when no client is asking for history |
 | `seqeron_replayer_ready` | gauge | 1 once the tap recording is visible and replay requests are served |
 | `seqeron_replayer_active_slots` | gauge | replays in progress |

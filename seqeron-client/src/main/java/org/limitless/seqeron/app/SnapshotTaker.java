@@ -38,6 +38,8 @@ final class SnapshotTaker implements SnapshotRestoreHandler {
     private boolean participating;
     private boolean passive;
     private long round = -1;
+    /** The last round this instance confirmed, kept beside the next as its fallback; -1 for none yet. */
+    private long confirmedRound = -1;
     private boolean serialized;
     private boolean publishing;
     private int recordCount;
@@ -125,8 +127,8 @@ final class SnapshotTaker implements SnapshotRestoreHandler {
     }
 
     /**
-     * The source's own {@code SnapshotEnd} was dispatched. One that matches makes this round's file the oldest
-     * this instance keeps.
+     * The source's own {@code SnapshotEnd} was dispatched. One that matches makes the previous confirmed round's
+     * file the oldest this instance keeps.
      * @return false if it is for the round this instance serialized and disagrees with it: this instance has
      *     diverged from the log (A-7)
      */
@@ -139,7 +141,10 @@ final class SnapshotTaker implements SnapshotRestoreHandler {
         if (endRecordCount != recordCount || endLength != length || crc32c != crc.getValue()) {
             return false;
         }
-        store.deleteBefore(round);
+        if (confirmedRound >= 0) {
+            store.deleteBefore(confirmedRound);
+        }
+        confirmedRound = round;
         return true;
     }
 

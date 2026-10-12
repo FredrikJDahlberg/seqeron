@@ -140,8 +140,8 @@ class SnapshotTaker final : public replayer::client::SnapshotRestoreHandler
     }
 
     /**
-     * Takes the source's own dispatched SnapshotEnd. One that matches makes this round's file the oldest this
-     * instance keeps.
+     * Takes the source's own dispatched SnapshotEnd. One that matches makes the previous confirmed round's file the
+     * oldest this instance keeps.
      *
      * @return false if it is for the round this instance serialized and disagrees with it: this instance has
      *         diverged from the log (A-7)
@@ -159,7 +159,11 @@ class SnapshotTaker final : public replayer::client::SnapshotRestoreHandler
         {
             return false;
         }
-        m_store->deleteBefore(round);
+        if (m_confirmedRound >= 0)
+        {
+            m_store->deleteBefore(m_confirmedRound);
+        }
+        m_confirmedRound = round;
         return true;
     }
 
@@ -233,6 +237,8 @@ class SnapshotTaker final : public replayer::client::SnapshotRestoreHandler
     bool m_participating = false;
     bool m_passive;
     std::int64_t m_round = -1;
+    // The last round this instance confirmed, kept beside the next as its fallback; -1 for none yet.
+    std::int64_t m_confirmedRound = -1;
     bool m_serialized = false;
     bool m_publishing = false;
     std::int32_t m_recordCount = 0;

@@ -224,7 +224,7 @@ TEST(SnapshotTaker, AReplicaThatDoesNotPublishWritesItsFileSubmitsNothingAndComp
     EXPECT_TRUE(otherRound.onSnapshotEnd(4, 99, 0, 0)) << "a late end of an earlier round is no evidence";
 }
 
-TEST(SnapshotTaker, AnEndThatMatchesMakesItsRoundTheOldestFileKeptOneThatDoesNotDeletesNothing)
+TEST(SnapshotTaker, AMatchingEndKeepsItsRoundAndTheConfirmedOneBeforeItAMismatchDeletesNothing)
 {
     Instances t;
     SnapshotTaker& taker = t.participating();
@@ -240,7 +240,11 @@ TEST(SnapshotTaker, AnEndThatMatchesMakesItsRoundTheOldestFileKeptOneThatDoesNot
     taker.onSnapshotStarted(4, HEADER, false);
     const Frames::End end = t.frames.ends[0];
     EXPECT_TRUE(taker.onSnapshotEnd(4, end.recordCount, end.length, end.crc32c));
-    EXPECT_EQ(4, t.lastStore().latestRound());
+    EXPECT_EQ(3, t.lastStore().latestRound(4)) << "no round before 4 was confirmed, so none goes";
+
+    taker.onSnapshotStarted(5, HEADER, false);
+    EXPECT_TRUE(taker.onSnapshotEnd(5, end.recordCount, end.length, end.crc32c));
+    EXPECT_EQ(4, t.lastStore().latestRound(5)) << "round 4 stays as round 5's fallback";
     EXPECT_EQ(-1, t.lastStore().latestRound(4)) << "rounds 1 to 3 are gone";
 }
 

@@ -147,7 +147,7 @@ hot-standby instances of a gateway pair — handles `SnapshotStarted` the same w
    `PendingSends` has resent what the election lost (spec A-5).
 4. **Compare.** On its source's `SnapshotEnd` for the round, every instance that serialized the round
    compares `recordCount`, `length` and `crc32c` with its own (§8). On a match the round's file is
-   confirmed, and the instance deletes its files of earlier rounds once it is durable (§4.1). On the next
+   confirmed, and the instance deletes its files of rounds before the previous confirmed one (§4.1). On the next
    `SnapshotStarted`, a
    publisher that has not yet placed the previous round's end abandons it.
 
@@ -179,9 +179,11 @@ trailer:
   forces none on any system; there the file system's journal commits the rename before the deletions that
   follow it. A write that fails is logged as `SnapshotStoreFailed` and leaves no file; the instance still
   compares the round, and carries on without a copy of it.
-- **Retention.** An instance keeps its newest confirmed file and any newer one, whose end may not be in the
-  log yet. Older files are deleted only once the newest confirmed one is durable, and not at all if it never
-  becomes so. A `.tmp` a crash left behind goes when a later round is confirmed.
+- **Retention.** An instance keeps its two newest confirmed files, and any newer one, whose end may not be in
+  the log yet. A newest confirmed file that is torn, or removed after a failed restore (§7), so leaves an
+  older one to restore. Older files are deleted only once the older of the two is durable, and not at all if
+  it never becomes so. A restart does not know which round it confirmed last, so its first confirmation
+  deletes nothing. A `.tmp` a crash left behind goes with the older files.
 - **Files are portable.** Every instance of a source writes the same bytes for a round (A-6), so a file is
   not tied to the instance that wrote it: a peer's file copied into a new host's directory spares that host
   a full replay.
@@ -328,7 +330,8 @@ change to schema 210 (spec V-3). [`upgrades.md`](upgrades.md) proposes one.
 Application snapshots shorten a client's restart. A member still replays its full Raft log and re-records
 its tap from `globalSeqNo` 1, and nothing is truncated. This section is the proposed design; none of it is
 implemented. §10.1 to §10.5 bound a member's restart and keep every member's history complete, with no change
-to any client; §10.6 truncates history, a separate step that does change them.
+to any client; §10.6 truncates history, a separate step that does change them; §10.7 trims the Raft log,
+which Aeron does not do.
 
 **What the member's replay is for.** It rebuilds two things: the `Sequencer`'s state, and the member's tap
 recording, which the Replayer serves and §5 indexes. An Aeron cluster snapshot replaces the first. The second
@@ -345,26 +348,31 @@ is history, which a snapshot cannot regenerate, so the recording outlives the re
 - **Snapshots are seldom.** Each is taken once `X` bytes have accumulated since the last,
   `sequencer.snapshotLogBytes`, sized from the measured replay rate so that replaying `X` takes no longer
   than the restart a deployment accepts; at a minute, that is hours of traffic. A restart then replays at
-  most `X`, however long the cluster has run, and a cluster whose log has not reached `X` takes none.
+  most `X`, or `2X` after a fallback (§10.2), however long the cluster has run, and a cluster whose log has
+  not reached `X` takes none.
 
 ### 10.2 The `Sequencer`
 
 | | |
 | --- | --- |
-| **contents** | `globalSeqNo`, `rejectedFrameCount`, the gateway rows, the activation queue, the pending activations and their deadlines, the bound sessions, the open connections, the two bootstrap flags, and the policy and the last round with the timestamp of its start; the connected-client count is recomputed. Aeron's own snapshot carries the sessions and the heartbeat timer. |
-| **format** | A schema of its own, Java only: a begin message with `formatVersion` and the scalars, one message per entry, maps in key order, and an end message with the counts. Every member writes the same bytes at the same log position. |
+| **contents** | Every field of `Sequencer` the log sets: `globalSeqNo`, `rejectedFrameCount`, the gateway rows, each logical gateway's designated instance, the activation queue, the pending activations and their deadlines, the bound sessions and the deposed ones, the open connections, the two bootstrap flags, and the policy, the last round with the timestamp of its start, and an unanswered `SnapshotRequested`; the connected-client count is recomputed. Aeron's own snapshot carries the sessions and the heartbeat timer. |
+| **format** | A schema of its own, Java only: a begin message with `formatVersion` and the scalars, one message per entry, maps in key order, and an end message with the counts. Every member writes the same bytes at the same log position. A restored hash map's capacity, and so its iteration order, need not be the original's, so no frame may depend on a map's iteration order. |
+| **test** | `SequencerSnapshotTest` snapshots a `Sequencer` at a random point of a seeded frame sequence, restores a second from it, and feeds both the rest: every frame they encode, and every field, must match. The sequence includes deposed sessions, pending activations and requested rounds, so a field the snapshot misses fails it. |
 | **contract** | `SequencerSnapshot`, a package-private interface in `sequencer` that `Sequencer` implements: `formatVersion`, `onSnapshot(buffer, recordIndex)` and `onRestore(buffer, length, recordIndex)`, the shape of `SnapshotListener`. `SequencerService` drives it from `onTakeSnapshot` and `onStart`. The snapshot point is Aeron's, not a round's cut. |
-| **when** | The leader sets the `ClusterControl` toggle once the commit position is `X` past the last snapshot's log position in Aeron's recording log, so a new leader carries on where the last one stopped. `clusterctl snapshot` is allowed, and `clusterctl shutdown` uses `SHUTDOWN`. |
+| **when** | The leader's service sets the `ClusterControl` toggle to `SNAPSHOT` once the commit position is `X` past the last snapshot's log position in Aeron's recording log, so a new leader carries on where the last one stopped. It asks only while `cluster.role()` is `LEADER`: the consensus module reads the toggle only on the leader and outside an election, so a request set elsewhere would wait and take an extra snapshot once that member leads. The toggle switches only from `NEUTRAL`, by compare-and-set, so a request that meets an operator's `clusterctl snapshot`, or a snapshot in progress, fails and is retried at the next check. `clusterctl snapshot` is allowed, and `clusterctl shutdown` uses `SHUTDOWN`. |
 | **restore** | `onStart` reads the records through a fragment assembler, and refuses a foreign schema, a newer version or a count that differs from the end's, as it refuses any snapshot today. |
-| **the Raft log** | Trimmed below a snapshot by the operator, through Aeron's tooling. A snapshot the next release cannot read then still falls back to a full replay. |
+| **version** | Aeron's `appVersion`, on the consensus module's context and the service container's, has `LOG_VERSION` as its major: a seqeron constant raised by every change spec V-3 makes a purge, and by a snapshot format the next release cannot read. Schema 210's own `version` stays 0 (spec §8), so it cannot serve. Aeron compares majors when it loads a snapshot and when it replays a leadership term from the log, so a member started on an archive V-3 says to purge stops with "incompatible version" rather than sequence another history. `LOG_VERSION` starts at 1, and seqeron's validator also accepts Aeron's default major 0, which every earlier log carries, until the first raise, so the release that introduces it needs no purge. |
+| **the Raft log** | Holds the two newest snapshots and the log from the older one, so the newer always has a fallback. The log below the older is trimmed by `clusterctl trim-log` (§10.7). |
+| **fallback** | A snapshot `onStart` refuses stops the member's start, and Aeron loads no older one by itself. On each member it stops, the operator runs `clusterctl invalidate-latest-snapshot` (`ClusterTool`'s), and the member restores the older snapshot and replays the log from it: at most `2X`. A release reads the snapshot format of the release before it; one that cannot raises `LOG_VERSION` and is deployed as a seqeron protocol change is, on a purged archive (spec V-3). |
 
 ### 10.3 The tap
 
 | | |
 | --- | --- |
 | **find** | The member's newest local recording of the tap. |
-| **verify the tail** | Read its last two segments forward to the first frame that is torn or does not follow from the one before, and truncate the recording there. An OS crash can lose what the archive had not written back, out of order; this cuts it off without forcing the archive to disk. The last frame left is the tip, `G_tip`. |
+| **verify the tail** | The archive does part of this itself: on start, it gives a recording a crash left active a stop position by scanning its last segment to the first empty frame, and refuses to start on a last fragment that straddles a page boundary and is not intact, which `ArchiveTool verify` repairs. It checks nothing before that fragment, and only the last segment. So, with `recordChecksum` (CRC32C) set on the member's archive, read the last two segments forward to the archive's stop position, to the first fragment whose checksum fails or frame whose `globalSeqNo` does not follow the one before, and truncate the recording there. An OS crash can lose what the archive had not written back, out of order; this cuts it off without forcing the archive to disk. The last frame left is the tip, `G_tip`. |
 | **decide** | With `G_snap` the snapshot's `globalSeqNo`: with no snapshot, a new recording, as today. With `G_tip` ≥ `G_snap`, extend the recording at its end. With `G_tip` < `G_snap`, or no recording, copy the frames up to `G_snap` from a peer's tap, as `TapRelay` does, then extend. With no peer reachable, the member exits with 70. |
+| **extend** | The tap publication takes the recording's own parameters from its descriptor, not the driver's defaults: `init-term-id`, `term-length` and `mtu`, and the `term-id` and `term-offset` of its stop position (`ChannelUriStringBuilder.initialPosition`). The archive extends it with `extendRecording`, so its positions run on unchanged even if the node's IPC term length or MTU has been changed since the recording began. |
 | **emit** | While the log replays, nothing numbered at or below the tip is offered, synthesized frames included. |
 | **live** | As today: a recording that stops exits the member with 70 (`TapPublisher`). |
 | **a gateway host** | As today: its relay starts a new recording from `globalSeqNo` 1, and its Replayer rebuilds its index. |
@@ -414,8 +422,8 @@ of the walk from `globalSeqNo` 1.
   resume keep working. Recordings left from earlier starts are deleted.
 - **The integrity check** requires the recording's first frame to be at or before `F`. A gateway host's
   relay starts its recording at `F`.
-- **The Raft log** below the cluster snapshot is trimmed through Aeron's tooling, never by purging its
-  recordings directly.
+- **The Raft log** below the older of the two cluster snapshots kept (§10.2) is trimmed by `clusterctl
+  trim-log` (§10.7).
 
 What changes for clients:
 
@@ -429,8 +437,27 @@ What changes for clients:
 - An instance with no file — a new host, a lost disk, a passive instance that never served — restores
   from a peer's file (§4.1); with none, it is fenced.
 
-A new member or a lost disk takes a peer's cluster snapshot, its tap from `F`, and its clients' snapshot
-files.
+A new member or a lost disk takes the cluster snapshot and the Raft log from Aeron's `ClusterBackup`, which
+replicates both from a running cluster. It copies no tap, which is not in the cluster's recording log, so the
+tap from `F` comes from a peer as §10.3 copies it, and the clients' snapshot files from a peer (§4.1).
+
+### 10.7 Trimming the Raft log
+
+Open-source Aeron trims nothing: a member's log recording grows from its first term, however many snapshots
+it takes. Aeron's retention policy, `RetainEnoughDataForRecoveryPolicy`, belongs to the Data Retention
+Regulator, a premium product, and `ClusterTool`'s `seed-recording-log-from-snapshot` rewrites
+`recording.log` but deletes no data. seqeron therefore needs a procedure of its own: `clusterctl trim-log`,
+to be implemented, run on each member. It does what that policy does, with the count fixed at two (§10.2):
+
+- **Find the floor.** Read `recording.log` (`RecordingLog`, read-only while the member runs) for its two
+  newest valid snapshots, and take the older one's log position.
+- **Purge the log below it.** `purgeSegments` on each log recording the recording log names, at the segment
+  boundary at or below that position, through the member archive's local control.
+- **Purge older snapshots.** `purgeRecording` on every snapshot recording, the consensus module's and the
+  service's, older than the two.
+- **Per member, and safe to repeat.** Each member trims its own archive; a run that fails leaves more than
+  it needs, never less.
+- **Not the tap.** Its history is §10.6's.
 
 ## 11. The snapshot server
 
@@ -600,7 +627,8 @@ own from an earlier tenure.
   into the page cache. A host that cannot hold the file's dirty pages writes at disk speed. The cluster
   session stays alive meanwhile, but the tap does not wait, so a pause long enough to drop the subscriber
   heals through replay.
-- **Disk** holds up to two files per serializing instance: its newest confirmed round and any newer one.
+- **Disk** holds up to three files per serializing instance: its two newest confirmed rounds and any newer
+  one, and one more after a restart until its second confirmation.
 - **A round can be missed.** A source whose publisher changes before its end is placed has no end for that
   round, and its instances keep their previous confirmed file. So does one whose cut falls after a
   leadership change but before the new leader's replica has caught up and reopened its gate, or after a

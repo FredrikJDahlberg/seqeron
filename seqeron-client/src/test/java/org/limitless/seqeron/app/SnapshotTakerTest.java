@@ -202,8 +202,8 @@ class SnapshotTakerTest {
     }
 
     @Test
-    @DisplayName("an end that matches makes its round the oldest file kept; one that does not deletes nothing")
-    void matchingEndDeletesOlderRounds() {
+    @DisplayName("a matching end keeps its round and the confirmed one before it; a mismatch deletes nothing")
+    void matchingEndKeepsTwoConfirmedRounds() {
         final SnapshotTaker taker = participating();
         taker.onSnapshotStarted(1, HEADER, false);
         taker.onSnapshotStarted(2, HEADER, true);
@@ -217,7 +217,11 @@ class SnapshotTakerTest {
         taker.onSnapshotStarted(4, HEADER, false);
         final long[] end = frames.ends.get(0);
         assertTrue(taker.onSnapshotEnd(4, (int)end[1], end[2], end[3]));
-        assertEquals(4, storeOf(1).latestRound(Long.MAX_VALUE));
+        assertEquals(3, storeOf(1).latestRound(4), "no round before 4 was confirmed, so none goes");
+
+        taker.onSnapshotStarted(5, HEADER, false);
+        assertTrue(taker.onSnapshotEnd(5, (int)end[1], end[2], end[3]));
+        assertEquals(4, storeOf(1).latestRound(5), "round 4 stays as round 5's fallback");
         assertEquals(-1, storeOf(1).latestRound(4), "rounds 1 to 3 are gone");
     }
 

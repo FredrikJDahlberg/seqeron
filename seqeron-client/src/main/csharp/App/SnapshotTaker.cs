@@ -36,6 +36,8 @@ internal sealed class SnapshotTaker : ISnapshotRestoreHandler
     private bool _participating;
     private bool _passive;
     private long _round = -1;
+    // The last round this instance confirmed, kept beside the next as its fallback; -1 for none yet.
+    private long _confirmedRound = -1;
     private bool _serialized;
     private bool _publishing;
     private int _recordCount;
@@ -123,8 +125,8 @@ internal sealed class SnapshotTaker : ISnapshotRestoreHandler
         _publishing = mayPublish;
     }
 
-    /// <summary>The source's own <c>SnapshotEnd</c> was dispatched. One that matches makes this round's file the
-    /// oldest this instance keeps.</summary>
+    /// <summary>The source's own <c>SnapshotEnd</c> was dispatched. One that matches makes the previous confirmed
+    /// round's file the oldest this instance keeps.</summary>
     /// <returns>false if it is for the round this instance serialized and disagrees with it: this instance has
     /// diverged from the log (A-7)</returns>
     internal bool OnSnapshotEnd(long endRound, int endRecordCount, long endLength, uint crc32c)
@@ -139,7 +141,11 @@ internal sealed class SnapshotTaker : ISnapshotRestoreHandler
         {
             return false;
         }
-        _store.DeleteBefore(_round);
+        if (_confirmedRound >= 0)
+        {
+            _store.DeleteBefore(_confirmedRound);
+        }
+        _confirmedRound = _round;
         return true;
     }
 
