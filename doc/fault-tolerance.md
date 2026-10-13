@@ -216,19 +216,20 @@ correctly, to many clients at once, and to say so plainly when it cannot.
 - **One recording.** It serves only the member's active tap recording. Every start of the member replays the
   log from `globalSeqNo` 1 into a new recording, so the active one holds the whole log, and an older one is a
   prefix of it that nothing reads.
-- **Integrity check.** Before reporting ready, it replays the first frame of its active recording and checks
-  that its `globalSeqNo` is 1. If not, the member's recording is missing or corrupt: `ready` stays false for
-  the process's life and every request is answered `ReplayUnavailable`, so clients do not each discover the
-  fault separately.
-- **Archive errors.** An archive call that throws during a replay moves the service to a stalled state. It
-  retries every second and answers `ReplayPending` meanwhile, without touching live delivery. The archive
+- **Integrity.** Each client checks that the first frame it dispatches is `globalSeqNo` 1, and that a resumed
+  replay opens on the frame it resumed from; either failing is fatal to the client. A member's recording that
+  is missing or corrupt therefore stops the clients that read it rather than feeding them a short history.
+- **Archive errors.** A request whose archive call throws is answered `ReplayPending`, without touching live
+  delivery; the client's resend is the retry. The Replayer's own calls wait a second after one throws, and every
+  error is counted (`seqeron_replayer_archive_errors_total`) and logged once per episode. The archive
   control session is read every duty cycle, because the archive closes a session whose pings go unread; a
   session it closes anyway cannot be reopened, so that ends the duty cycle.
 - **Slots.** At most `MAX_CONCURRENT_REPLAYS` = 4 replays run at once, and a freed slot goes to a waiting
   client at once. While the tap's recording trails the tap by more than a quarter of the publication window,
   a new replay starts only when none is running: replays compete with the recorder for the disk, and the
-  recorder is what holds the sequencer back. A slot idle for 5 s (`REPLAY_SLOT_TTL_MS`) is reclaimed, which
-  covers a client that died mid-replay. Many concurrent replays happen mainly when a member restarts and all
+  recorder is what holds the sequencer back. A slot frees when its replay's publication is gone: when the
+  client closes its replay subscription at the replay's end, or when the driver times out a client that died
+  mid-replay (spec §10, R-3). Many concurrent replays happen mainly when a member restarts and all
   its clients cold-start together.
 - **Control replies** are offered with a bounded retry, then dropped, never blocked on. The client resends
   on a timer, so a client that is not reading cannot hold up replies to the others.
@@ -286,7 +287,8 @@ directly.
   what it already has; a member that has recorded less than the relay has published is passed over. After
   every member has failed in a row, it waits 500 ms before trying again.
 - **Restart.** A restarted relay starts a new local recording and relays the log from `globalSeqNo` 1, as a
-  member's full-log replay does, so the host's new recording passes the §3.1 integrity check. The cost is the
+  member's full-log replay does, so the host's new recording starts at `globalSeqNo` 1, as a client checks
+  (§3.1). The cost is the
   whole history over the network per restart.
 - **The local recording.** A local tap that refuses a frame is not spun on: the frame is offered again next
   cycle, and the member's replay waits under Aeron flow control. A local recording that stops, or makes no

@@ -1,6 +1,7 @@
 package org.limitless.seqeron.replayer.client;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.file.Path;
@@ -19,7 +20,6 @@ import org.limitless.seqeron.protocol.SystemFrame;
 import org.limitless.seqeron.sbe.frame.ClusterHeartbeatEncoder;
 import org.limitless.seqeron.sbe.frame.MessageHeaderEncoder;
 import org.limitless.seqeron.sbe.replay.ReplayPendingEncoder;
-import org.limitless.seqeron.sbe.replay.ReplayUnavailableEncoder;
 import org.limitless.seqeron.sbe.replay.ReplayingEncoder;
 import org.limitless.seqeron.helpers.SplitMix64;
 import org.limitless.seqeron.util.Logger;
@@ -41,7 +41,7 @@ import org.limitless.seqeron.util.Logger;
  *
  * <p>The e2e harnesses reach these paths too, but a chaos run produces single-digit gap episodes in
  * minutes, all of one kind — one dropped frame on a live tap. A run here is a few hundred, mixing drops
- * with lost requests, refusals, truncated images, stalled replays and recording rotations, in under a
+ * with lost requests, queued requests, truncated images, stalled replays and redeliveries, in under a
  * second.
  *
  * <p><b>Restore</b> — a client restoring its own snapshot (doc/snapshot.md §7) holds both properties from the cut
@@ -55,7 +55,7 @@ import org.limitless.seqeron.util.Logger;
  * failing one is in the test name.
  */
 class ReplayerRecoveryPropertyTest {
-    private static final int CLIENT_ID = 4;
+    private static final long CLIENT_ID = 4;
 
     /** One frame's span in the recording's position space. Opaque to the client — only ordering matters. */
     private static final int STRIDE = 64;
@@ -132,9 +132,6 @@ class ReplayerRecoveryPropertyTest {
         // ── the node's archive: the active recording, complete by construction ─────────────────────────
         private long tip;
 
-        /** Where the active recording's frame 1 starts; a rotation may move it. */
-        private long positionBase;
-
         // ── the Replayer's view of this one client ─────────────────────────────────────────────────────
         private long pendingRequestId = -1;
         private boolean pendingIsQuery;
@@ -175,7 +172,7 @@ class ReplayerRecoveryPropertyTest {
                 publish();
             }
 
-            client = new ReplayerRecovery(CLIENT_ID, this, this::onSequenced, null, null);
+            client = new ReplayerRecovery(this, this::onSequenced, null, null);
             if (restoring) {
                 client.restoreFrom(SOURCE, store, this);
                 expectedNext = CUT + 1;
@@ -202,6 +199,7 @@ class ReplayerRecoveryPropertyTest {
                 }
             }
 
+            assertNull(client.fault(), tag);
             assertTrue(client.isCaughtUp(), tag + ": never re-converged after the faults stopped");
             assertEquals(tip, client.lastGlobalSeqNo(), tag + ": converged short of the tip");
             assertEquals(tip + 1, expectedNext, tag + ": caught up without having dispatched every frame");
@@ -272,7 +270,7 @@ class ReplayerRecoveryPropertyTest {
         }
 
         private void injectFault() {
-            switch (rng.roll(4)) {
+            switch (rng.roll(3)) {
                 case 0 -> {
                     if (replayEndSeqNo >= 0) {
                         // The Replayer stopped this replay under us — its image closes SHORT of the bound.
@@ -283,26 +281,13 @@ class ReplayerRecoveryPropertyTest {
                     clockMs += 6_000; // past REPLAY_STALL_TIMEOUT_MS as well as the resend interval
                     client.doTimers(false);
                 }
-                case 2 -> {
+                default -> {
                     // The same tap frame offered twice. Both de-dupes have to hold: the contiguity one when
                     // it sits at or below the baseline, and the retained FIFO's when it is ahead of a hole.
                     if (lastTapped > 0) {
                         deliver(lastTapped, false);
                     }
                 }
-                default -> rotate();
-            }
-        }
-
-        /**
-         * A new active recording, holding the log from globalSeqNo 1 as a restarted node's does once it has
-         * replayed it. A walk's may lay its frames out elsewhere — a frame or half a frame on — so a resume at an
-         * old position opens on another frame or is refused; a restoring run's keeps its positions, since a
-         * resume at the snapshot's position is its only way back.
-         */
-        private void rotate() {
-            if (!restoring) {
-                positionBase += rng.chance(50) ? STRIDE : STRIDE / 2;
             }
         }
 
@@ -345,10 +330,6 @@ class ReplayerRecoveryPropertyTest {
                 control(replayPending(requestId), REPLAY_PENDING_LENGTH);
                 return;
             }
-            if (chaos && chance(5)) {
-                control(replayUnavailable(requestId), REPLAY_UNAVAILABLE_LENGTH);
-                return;
-            }
             if (query) {
                 final RestoreFrames.Frame location = queryRound == 2
                     ? RestoreFrames.location(CLIENT_ID, requestId, 2, CUT, positionOf(CUT), FORMAT_VERSION,
@@ -362,13 +343,9 @@ class ReplayerRecoveryPropertyTest {
                 serveReplay(requestId, 1, tip);
                 return;
             }
-            final long offset = fromPosition - positionBase;
-            if (offset < 0 || offset % STRIDE != 0 || offset / STRIDE + 1 > tip) {
-                // Not a frame of the active recording — it rotated under the client, and the archive refuses it.
-                control(replaying(requestId, ReplayProtocol.NO_REPLAY_NEEDED, 0), REPLAYING_LENGTH);
-                return;
-            }
-            serveReplay(requestId, offset / STRIDE + 1, tip);
+            assertTrue(fromPosition % STRIDE == 0 && fromPosition / STRIDE + 1 <= tip,
+                       tag + ": resumed at " + fromPosition + ", where no recorded frame starts");
+            serveReplay(requestId, fromPosition / STRIDE + 1, tip);
         }
 
         /** Bound at the tip the recording holds NOW — frames published later are the tap's problem, not this
@@ -428,16 +405,6 @@ class ReplayerRecoveryPropertyTest {
         }
 
         @Override
-        public boolean sendReplayComplete() {
-            return !chaos || chance(70);
-        }
-
-        @Override
-        public boolean sendReplayHeartbeat() {
-            return !chaos || chance(70);
-        }
-
-        @Override
         public void openReplay(final long replaySessionId) {
         }
 
@@ -453,6 +420,11 @@ class ReplayerRecoveryPropertyTest {
         @Override
         public Integer memberId() {
             return 0;
+        }
+
+        @Override
+        public long clientId() {
+            return CLIENT_ID;
         }
 
         @Override
@@ -501,9 +473,9 @@ class ReplayerRecoveryPropertyTest {
             return rng.chance(percent);
         }
 
-        /** Where frame {@code globalSeqNo} starts in the active recording: frame 1 at its base. */
+        /** Where frame {@code globalSeqNo} starts in the active recording: frame 1 at 0. */
         private long positionOf(final long globalSeqNo) {
-            return positionBase + (globalSeqNo - 1) * STRIDE;
+            return (globalSeqNo - 1) * STRIDE;
         }
     }
 
@@ -516,8 +488,6 @@ class ReplayerRecoveryPropertyTest {
         org.limitless.seqeron.sbe.replay.MessageHeaderEncoder.ENCODED_LENGTH;
     private static final int REPLAYING_LENGTH = CONTROL_HEADER_LENGTH + ReplayingEncoder.BLOCK_LENGTH;
     private static final int REPLAY_PENDING_LENGTH = CONTROL_HEADER_LENGTH + ReplayPendingEncoder.BLOCK_LENGTH;
-    private static final int REPLAY_UNAVAILABLE_LENGTH =
-        CONTROL_HEADER_LENGTH + ReplayUnavailableEncoder.BLOCK_LENGTH;
 
     private static UnsafeBuffer frame(final long globalSeqNo) {
         final UnsafeBuffer buffer = new UnsafeBuffer(new byte[256]);
@@ -544,15 +514,6 @@ class ReplayerRecoveryPropertyTest {
     private static UnsafeBuffer replayPending(final long requestId) {
         final UnsafeBuffer buffer = new UnsafeBuffer(new byte[256]);
         new ReplayPendingEncoder()
-            .wrapAndApplyHeader(buffer, 0, new org.limitless.seqeron.sbe.replay.MessageHeaderEncoder())
-            .clientId(CLIENT_ID)
-            .requestId(requestId);
-        return buffer;
-    }
-
-    private static UnsafeBuffer replayUnavailable(final long requestId) {
-        final UnsafeBuffer buffer = new UnsafeBuffer(new byte[256]);
-        new ReplayUnavailableEncoder()
             .wrapAndApplyHeader(buffer, 0, new org.limitless.seqeron.sbe.replay.MessageHeaderEncoder())
             .clientId(CLIENT_ID)
             .requestId(requestId);

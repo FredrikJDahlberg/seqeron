@@ -2,7 +2,7 @@
 
 What an operator watches on a running seqeron deployment, and what the platform settings beneath it mean.
 It covers the metrics stack (a per-member exporter, Prometheus and a Grafana dashboard), the ports and
-Replayer client ids a deployment allocates, the Aeron term lengths, MTU and subscriber timeouts that bound
+client ids a deployment allocates, the Aeron term lengths, MTU and subscriber timeouts that bound
 the tap, what it means when a member or a gateway stops itself, and the clock every frame is stamped with.
 [`running-a-cluster.md`](running-a-cluster.md) covers starting and configuring the cluster itself.
 
@@ -97,7 +97,7 @@ The ids are defined in `SeqeronCounters` in each language, and the copies must s
 counters outside these ranges, only Aeron Cluster's below are exported ([Aeron Cluster's metrics](#aeron-clusters-metrics)).
 
 The application range (5200–5299) is published by clients, several per member, so its counters carry a
-second label, `client="M"`, the client's Replayer client id; `member` alone would merge them into one
+second label, `client="M"`, the client's `clientId` ([Client ids](#client-ids)); `member` alone would merge them into one
 series. The exporter names only seqeron's own counters. An application's counter is exported under the
 first token of its label, so an application labels its counters `<app>.<area>.<metric> member=…
 client=…`: `myapp.fix.sessionsUp member=0 client=3` scrapes as `myapp_fix_sessionsUp{member="0",client="3"}`.
@@ -120,18 +120,15 @@ Two applications that use the same type id appear as one metric, named by whiche
 | `seqeron_sequencer_tap_stalled` | gauge | 1 while the tap recording has made no progress for more than 200 ms under back-pressure, else 0; stays 1 when the member terminates for a tap it cannot record ([below](#a-node-that-terminates-itself)) |
 | `seqeron_sequencer_connected_clients` | gauge | external connections open across every gateway: a `ConnectionOpened` with no `ConnectionClosed` yet |
 | `seqeron_sequencer_ingress_messages_total` | counter | ingress frames sequenced; the frames the sequencer synthesizes are not counted |
-| `seqeron_replayer_stalled` | gauge | 1 while the local archive refuses to serve a replay, else 0. Set by every path that asks the archive for one, the startup check included, and cleared by a bounded probe replay the member runs once a second while stalled, so it returns to 0 even when no client is asking for history |
 | `seqeron_replayer_ready` | gauge | 1 once the tap recording is visible and replay requests are served |
 | `seqeron_replayer_active_slots` | gauge | replays in progress |
 | `seqeron_replayer_pending_requests` | gauge | replay requests waiting for a free slot |
 | `seqeron_replayer_replays_served_total` | counter | replays started since this member came up |
-| `seqeron_replayer_idle_ttl_reclaimed_total` | counter | replay slots reclaimed after sitting idle |
-| `seqeron_replayer_integrity_failure` | gauge | 1 once the active tap recording failed the startup check that it begins at `globalSeqNo` 1, else 0. Only that recording is served, so one that begins later cannot cover the log. Latched: `ready` never returns to 1 in that process |
 | `seqeron_replayer_control_replies_dropped_total` | counter | control replies dropped, rather than retried indefinitely, because a client stopped reading. Each costs that client one resend interval, so the rate, not the total, identifies a stuck client |
-| `seqeron_replayer_client_id_collision` | gauge | 1 once two clients on this member were seen sharing a Replayer client id, else 0. They cancel each other's replays, so the Replayer tells both and both fail (spec R-4) |
 | `seqeron_replayer_snapshot_round` | gauge | the newest round whose `SnapshotEnd` this member's Replayer has indexed, per source, labelled `source` as well as `member` ([`snapshot.md`](snapshot.md) §5). Every participating source should follow the latest round; one that lags is missing rounds. Rebuilt from the recording after a restart, so it reappears once the index has caught up |
 | `seqeron_replayer_throttled_requests_total` | counter | replay requests answered `ReplayPending` only because the tap recording trailed the tap by more than a quarter of the window while a replay was running ([Term lengths](#term-lengths)). A held client resends about every 500 ms, so the rate is about twice the number of clients held. A sustained rate means the recorder is falling behind the tap |
-| `seqeron_app_recovery_stalled` | gauge | 1 while this client's recovery has dispatched nothing for 30 s while not caught up, else 0; also labelled `client`. The client is holding, which is safe, but not serving, and nothing else says so. The causes are a `ReplayUnavailable` refusal, a Replayer that never answers, and a gap this member's recording cannot cover; the client's own log line names which |
+| `seqeron_replayer_archive_errors_total` | counter | local-archive calls that threw. A request one fails is answered `ReplayPending` and the client's resend is the retry; the Replayer's own calls (its readiness check, the snapshot index's replay) wait a second before the next. Live delivery is unaffected, so a sustained rate means only that history is not being served |
+| `seqeron_app_recovery_stalled` | gauge | 1 while this client's recovery has dispatched nothing for 30 s while not caught up, else 0; also labelled `client`. The client is holding, which is safe, but not serving, and nothing else says so. The causes are a Replayer that never answers and a gap this member's recording cannot cover; the client's own log line names which |
 
 ### Aeron Cluster's metrics
 
@@ -214,14 +211,12 @@ The cluster refuses a connection past `aeron.cluster.max.sessions` with "concurr
 default is 10; a member sets 64 unless the property is set. Set it on every member, above the deployment's
 count with room for the sessions a failover leaves behind. It is a ceiling: nothing is allocated for it.
 
-## Replayer client ids
+## Client ids
 
-Every client on a node — façade, `ReplayerStreamReceiver`, probe — takes a `clientId` that the node's
-Replayer keys its replays by, and it must be unique among the clients on that node. Two that share one
-cancel each other's replays and neither catches up. The Replayer detects the collision within a few
-seconds, logs it, sets `seqeron_replayer_client_id_collision` (type id 5108) and tells both clients (spec
-**R-4**). It cannot tell which was there first, so both stop: their next `poll()` or `doWork()` throws
-`IllegalStateException` (Java), `std::runtime_error` (C++) or `InvalidOperationException` (C#).
+Every client on a node — façade, `ReplayerStreamReceiver`, probe — takes a `clientId`, the `client` label of
+its counters. Keep it unique among the clients on a node: two that share one share their counters' series. The
+Replayer does not use it; it addresses each client by an id the client draws from its media driver (spec
+**R-4**).
 
 This repository's processes use the ids below. An application's should start at 23 and skip 31–36 and
 41–43.
@@ -427,8 +422,7 @@ convention for "fenced, restart me". A gateway is not a cluster member, so this 
 - **Restart it** under supervision. Recovery is the usual full-log replay, and the restarted instance
   returns as a standby, active only when named.
 - **For `TAP_STALLED` and `RECOVERY_STALLED`, check the co-located member first.** A stopped
-  `SequencerServer` or an unavailable Replayer (`seqeron_replayer_ready`,
-  `seqeron_replayer_integrity_failure`) explains both.
+  `SequencerServer` or an unavailable Replayer (`seqeron_replayer_ready`) explains both.
 - **A gateway publishes one seqeron metric**, `seqeron_app_recovery_stalled`, as every client does. Its
   fences appear only in its log.
 

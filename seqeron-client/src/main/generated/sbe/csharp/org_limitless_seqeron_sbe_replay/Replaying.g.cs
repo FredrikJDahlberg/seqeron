@@ -14,7 +14,7 @@ namespace Org.Limitless.Seqeron.Sbe.Replay
     /// </summary>
     public sealed partial class Replaying
     {
-        public const ushort BlockLength = (ushort)28;
+        public const ushort BlockLength = (ushort)32;
         public const ushort TemplateId = (ushort)7;
         public const ushort SchemaId = (ushort)212;
         public const ushort SchemaVersion = (ushort)0;
@@ -118,19 +118,19 @@ namespace Org.Limitless.Seqeron.Sbe.Replay
             return "";
         }
 
-        public const int ClientIdNullValue = -2147483648;
-        public const int ClientIdMinValue = -2147483647;
-        public const int ClientIdMaxValue = 2147483647;
+        public const long ClientIdNullValue = -9223372036854775808L;
+        public const long ClientIdMinValue = -9223372036854775807L;
+        public const long ClientIdMaxValue = 9223372036854775807L;
 
-        public int ClientId
+        public long ClientId
         {
             get
             {
-                return _buffer.Int32GetLittleEndian(_offset + 0);
+                return _buffer.Int64GetLittleEndian(_offset + 0);
             }
             set
             {
-                _buffer.Int32PutLittleEndian(_offset + 0, value);
+                _buffer.Int64PutLittleEndian(_offset + 0, value);
             }
         }
 
@@ -143,7 +143,7 @@ namespace Org.Limitless.Seqeron.Sbe.Replay
             return _actingVersion >= RequestIdSinceVersion;
         }
 
-        public const int RequestIdOffset = 4;
+        public const int RequestIdOffset = 8;
 
         public static string RequestIdMetaAttribute(MetaAttribute metaAttribute)
         {
@@ -169,11 +169,11 @@ namespace Org.Limitless.Seqeron.Sbe.Replay
         {
             get
             {
-                return _buffer.Int64GetLittleEndian(_offset + 4);
+                return _buffer.Int64GetLittleEndian(_offset + 8);
             }
             set
             {
-                _buffer.Int64PutLittleEndian(_offset + 4, value);
+                _buffer.Int64PutLittleEndian(_offset + 8, value);
             }
         }
 
@@ -186,7 +186,7 @@ namespace Org.Limitless.Seqeron.Sbe.Replay
             return _actingVersion >= ReplaySessionIdSinceVersion;
         }
 
-        public const int ReplaySessionIdOffset = 12;
+        public const int ReplaySessionIdOffset = 16;
 
         public static string ReplaySessionIdMetaAttribute(MetaAttribute metaAttribute)
         {
@@ -206,17 +206,17 @@ namespace Org.Limitless.Seqeron.Sbe.Replay
         public const long ReplaySessionIdMaxValue = 9223372036854775807L;
 
         /// <summary>
-        /// Aeron replay session to attach to on stream 201 (Subscription.imageBySessionId), or                             NO_REPLAY_NEEDED (-1) when there is nothing to replay from there: for FROM_START the                             client is at the tip; for a position, that position is no good here, and a client with                             a hole open replays from the start (R-2)
+        /// Aeron replay session to attach to on stream 201 (Subscription.imageBySessionId), or                             NO_REPLAY_NEEDED (-1) when there is nothing to replay from there: for FROM_START the                             client is at the tip; for a position, that position is no good here, which the client                             treats as fatal (R-2)
         /// </summary>
         public long ReplaySessionId
         {
             get
             {
-                return _buffer.Int64GetLittleEndian(_offset + 12);
+                return _buffer.Int64GetLittleEndian(_offset + 16);
             }
             set
             {
-                _buffer.Int64PutLittleEndian(_offset + 12, value);
+                _buffer.Int64PutLittleEndian(_offset + 16, value);
             }
         }
 
@@ -229,7 +229,7 @@ namespace Org.Limitless.Seqeron.Sbe.Replay
             return _actingVersion >= CatchUpPositionSinceVersion;
         }
 
-        public const int CatchUpPositionOffset = 20;
+        public const int CatchUpPositionOffset = 24;
 
         public static string CatchUpPositionMetaAttribute(MetaAttribute metaAttribute)
         {
@@ -255,11 +255,11 @@ namespace Org.Limitless.Seqeron.Sbe.Replay
         {
             get
             {
-                return _buffer.Int64GetLittleEndian(_offset + 20);
+                return _buffer.Int64GetLittleEndian(_offset + 24);
             }
             set
             {
-                _buffer.Int64PutLittleEndian(_offset + 20, value);
+                _buffer.Int64PutLittleEndian(_offset + 24, value);
             }
         }
 

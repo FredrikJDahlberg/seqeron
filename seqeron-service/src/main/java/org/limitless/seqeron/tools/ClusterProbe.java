@@ -60,7 +60,7 @@ import org.limitless.seqeron.util.Logger;
  *   probe.egressHost        — hostname the leader sends this client's egress to; default this member's
  *                             entry in {@code SEQERON_HOSTS}, else localhost, which fails when the leader
  *                             is on another host
- *   probe.clientId          — follow, confirm: this replica's Replayer client id; default 9
+ *   probe.clientId          — follow, confirm: this replica's client id, its counters' label; default 9
  *   probe.count             — submit, confirm: frames to send; default 1000
  *   probe.fillerBytes       — submit, confirm: bytes of filler per frame; default 0
  *   probe.pacingMicros      — submit, confirm: pause between frames; default 0 (as fast as ingress accepts)

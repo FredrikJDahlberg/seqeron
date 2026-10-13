@@ -18,14 +18,14 @@ namespace Org.Limitless.Seqeron;
 public class HotPathAllocationTest
 {
     private const int Frames = 1000;
-    private const int ClientId = 3;
+    private const long ClientId = 3;
     private const long SessionId = 4242;
     private const int PayloadId = 6;
 
     [Fact(DisplayName = "a live tap frame is dispatched without allocating")]
     public void LiveTapDispatchAllocatesNothing()
     {
-        var recovery = new ReplayerRecovery(ClientId, new QuietActions(), Ignore, null, null);
+        var recovery = new ReplayerRecovery(new QuietActions(), Ignore, null, null);
         recovery.Start();
         byte[] replaying = ControlMessages.Replaying(ClientId, recovery.RequestId, ReplayProtocol.NoReplayNeeded, 0);
         using (var control = new UnsafeBuffer(replaying))
@@ -128,16 +128,6 @@ public class HotPathAllocationTest
         {
         }
 
-        public bool SendReplayComplete()
-        {
-            return true;
-        }
-
-        public bool SendReplayHeartbeat()
-        {
-            return true;
-        }
-
         public void OpenReplay(long replaySessionId)
         {
         }
@@ -151,6 +141,8 @@ public class HotPathAllocationTest
         }
 
         public int? MemberId => null;
+
+        public long ClientId => HotPathAllocationTest.ClientId;
 
         public long NowMs()
         {

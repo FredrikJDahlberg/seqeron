@@ -14,7 +14,7 @@ namespace Org.Limitless.Seqeron.Sbe.Replay
     /// </summary>
     public sealed partial class SnapshotQuery
     {
-        public const ushort BlockLength = (ushort)24;
+        public const ushort BlockLength = (ushort)28;
         public const ushort TemplateId = (ushort)23;
         public const ushort SchemaId = (ushort)212;
         public const ushort SchemaVersion = (ushort)0;
@@ -118,19 +118,19 @@ namespace Org.Limitless.Seqeron.Sbe.Replay
             return "";
         }
 
-        public const int ClientIdNullValue = -2147483648;
-        public const int ClientIdMinValue = -2147483647;
-        public const int ClientIdMaxValue = 2147483647;
+        public const long ClientIdNullValue = -9223372036854775808L;
+        public const long ClientIdMinValue = -9223372036854775807L;
+        public const long ClientIdMaxValue = 9223372036854775807L;
 
-        public int ClientId
+        public long ClientId
         {
             get
             {
-                return _buffer.Int32GetLittleEndian(_offset + 0);
+                return _buffer.Int64GetLittleEndian(_offset + 0);
             }
             set
             {
-                _buffer.Int32PutLittleEndian(_offset + 0, value);
+                _buffer.Int64PutLittleEndian(_offset + 0, value);
             }
         }
 
@@ -143,7 +143,7 @@ namespace Org.Limitless.Seqeron.Sbe.Replay
             return _actingVersion >= RequestIdSinceVersion;
         }
 
-        public const int RequestIdOffset = 4;
+        public const int RequestIdOffset = 8;
 
         public static string RequestIdMetaAttribute(MetaAttribute metaAttribute)
         {
@@ -169,11 +169,11 @@ namespace Org.Limitless.Seqeron.Sbe.Replay
         {
             get
             {
-                return _buffer.Int64GetLittleEndian(_offset + 4);
+                return _buffer.Int64GetLittleEndian(_offset + 8);
             }
             set
             {
-                _buffer.Int64PutLittleEndian(_offset + 4, value);
+                _buffer.Int64PutLittleEndian(_offset + 8, value);
             }
         }
 
@@ -186,7 +186,7 @@ namespace Org.Limitless.Seqeron.Sbe.Replay
             return _actingVersion >= SourceIdSinceVersion;
         }
 
-        public const int SourceIdOffset = 12;
+        public const int SourceIdOffset = 16;
 
         public static string SourceIdMetaAttribute(MetaAttribute metaAttribute)
         {
@@ -209,11 +209,11 @@ namespace Org.Limitless.Seqeron.Sbe.Replay
         {
             get
             {
-                return _buffer.Int32GetLittleEndian(_offset + 12);
+                return _buffer.Int32GetLittleEndian(_offset + 16);
             }
             set
             {
-                _buffer.Int32PutLittleEndian(_offset + 12, value);
+                _buffer.Int32PutLittleEndian(_offset + 16, value);
             }
         }
 
@@ -226,7 +226,7 @@ namespace Org.Limitless.Seqeron.Sbe.Replay
             return _actingVersion >= RoundSinceVersion;
         }
 
-        public const int RoundOffset = 16;
+        public const int RoundOffset = 20;
 
         public static string RoundMetaAttribute(MetaAttribute metaAttribute)
         {
@@ -249,11 +249,11 @@ namespace Org.Limitless.Seqeron.Sbe.Replay
         {
             get
             {
-                return _buffer.Int64GetLittleEndian(_offset + 16);
+                return _buffer.Int64GetLittleEndian(_offset + 20);
             }
             set
             {
-                _buffer.Int64PutLittleEndian(_offset + 16, value);
+                _buffer.Int64PutLittleEndian(_offset + 20, value);
             }
         }
 

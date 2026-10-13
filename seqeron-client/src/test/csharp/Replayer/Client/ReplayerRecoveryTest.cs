@@ -22,7 +22,7 @@ namespace Org.Limitless.Seqeron.Replayer.Client;
 [Collection(LoggerCollection.Name)]
 public class ReplayerRecoveryTest : IDisposable
 {
-    private const int ClientId = 4;
+    private const long ClientId = 4;
     private const long NoReplayNeeded = ReplayProtocol.NoReplayNeeded;
     private const long FromStart = ReplayProtocol.FromStart;
 
@@ -73,7 +73,6 @@ public class ReplayerRecoveryTest : IDisposable
         public int QueriesSent;
         public int QuerySourceId = -1;
         public long QueryRound = -1;
-        public int HeartbeatsSent;
         public readonly List<bool> StalledGauge = new List<bool>();
 
         public void SendReplayRequest(long requestId, long fromPosition)
@@ -86,19 +85,6 @@ public class ReplayerRecoveryTest : IDisposable
             ++QueriesSent;
             QuerySourceId = sourceId;
             QueryRound = round;
-        }
-
-        // False like a receiver with no publication: every send here is one that never went out, which is the
-        // state the ReplayComplete retry tests need.
-        public bool SendReplayComplete()
-        {
-            return false;
-        }
-
-        public bool SendReplayHeartbeat()
-        {
-            ++HeartbeatsSent;
-            return false;
         }
 
         public void OpenReplay(long replaySessionId)
@@ -115,6 +101,8 @@ public class ReplayerRecoveryTest : IDisposable
         }
 
         public int? MemberId => 0;
+
+        long IReplayerRecoveryActions.ClientId => ClientId;
 
         public long NowMs()
         {
@@ -162,7 +150,7 @@ public class ReplayerRecoveryTest : IDisposable
         _logged.Clear();
         _actions = new RecordingActions();
         _store = new SnapshotStore(Path.Combine(_directory.Path, "instance-" + _stores++));
-        _receiver = new ReplayerRecovery(ClientId, _actions, e => _dispatched.Add(e.GlobalSeqNo), null,
+        _receiver = new ReplayerRecovery(_actions, e => _dispatched.Add(e.GlobalSeqNo), null,
                                          () => _caughtUpAt.Add(_dispatched.Count));
     }
 
@@ -402,7 +390,7 @@ public class ReplayerRecoveryTest : IDisposable
         Assert.False(_receiver.IsCaughtUp);
     }
 
-    [Fact(DisplayName = "a walk reaching its bound catches up and hands its slot back")]
+    [Fact(DisplayName = "a walk reaching its bound catches up")]
     public void AWalkReachingItsBoundCatchesUp()
     {
         AnswerReplaying(7, 500);
@@ -413,7 +401,6 @@ public class ReplayerRecoveryTest : IDisposable
         Assert.True(_receiver.IsCaughtUp, "the recording held the whole log when the request was served");
         Assert.False(_receiver.IsAwaitingReplay, "there is nothing further to ask for");
         Assert.Equal(-1, _receiver.ReplaySessionId);
-        Assert.True(_receiver.CompletePending, "the slot is released, not left to the idle TTL");
     }
 
     // clientId alone cannot identify WHICH request a reply answers. A resend makes the Replayer stop the in-flight
@@ -501,10 +488,9 @@ public class ReplayerRecoveryTest : IDisposable
     }
 
     // Session id 0 is an ordinary archive replaySessionId; -1 is the only value that means "no replay". Testing >= 1
-    // skips both watchdogs for it: no heartbeat, so the Replayer's idle TTL reclaims the slot out from under a
-    // healthy replay, and no stall watchdog once it stops delivering.
-    [Fact(DisplayName = "replay session 0 is heart-beaten and watchdogged like any other")]
-    public void ReplaySessionZeroIsHeartbeatedAndWatchdoggedLikeAnyOther()
+    // skips the stall watchdog for it once it stops delivering.
+    [Fact(DisplayName = "replay session 0 is watchdogged like any other")]
+    public void ReplaySessionZeroIsWatchdoggedLikeAnyOther()
     {
         AnswerReplaying(0, 500);
         Assert.True(_receiver.ReplaySessionId == 0,
@@ -512,13 +498,11 @@ public class ReplayerRecoveryTest : IDisposable
 
         AdvancePastTimers();
 
-        Assert.True(_actions.HeartbeatsSent == 1,
-                    "a slot held on session 0 must still be heart-beaten, or the idle TTL reclaims it");
-        Assert.True(_receiver.IsAwaitingReplay, "and its stall watchdog must still re-request it");
+        Assert.True(_receiver.IsAwaitingReplay, "its stall watchdog must re-request it");
         Assert.Equal(-1, _receiver.ReplaySessionId);
     }
 
-    // ── ReplayPending and ReplayUnavailable ───────────────────────────────────────────────────────
+    // ── ReplayPending ─────────────────────────────────────────────────────────────────────────────
 
     [Fact(DisplayName = "ReplayPending holds at the gap without assigning a session")]
     public void ReplayPendingHoldsAtTheGapWithoutAssigningASession()
@@ -532,88 +516,6 @@ public class ReplayerRecoveryTest : IDisposable
         Assert.True(_receiver.IsAwaitingReplay, "no free Replayer slot -> keep holding at the gap");
         Assert.Equal(-1, _receiver.ReplaySessionId);
         Assert.True(_dispatched.Count == 1, "must not advance past the hole while pending");
-    }
-
-    // A Replayer whose archive failed the globalSeqNo-1 integrity check refuses rather than serving history its own
-    // check rejected. Served anyway, the replay's first frame would not be 1 and this client would abort, taking
-    // down every co-located app over one node's bad archive.
-    [Fact(DisplayName = "ReplayUnavailable holds without aborting or advancing, and reports once per episode")]
-    public void ReplayUnavailableHoldsWithoutAbortingOrAdvancing()
-    {
-        DeliverTap(1);
-        DeliverTap(5); // gap -> awaiting a replay
-        Assert.True(_receiver.IsAwaitingReplay);
-        Assert.False(_receiver.IsCaughtUp);
-
-        CaptureLogs(); // installed after the setup gap, so it captures only the refusal below
-        DeliverUnavailable(_receiver.RequestId);
-
-        Assert.True(_receiver.IsAwaitingReplay, "a refusal must not stop the resend timer");
-        Assert.Equal(-1, _receiver.ReplaySessionId);
-        Assert.True(_dispatched.Count == 1, "must not advance past the hole");
-        Assert.False(_receiver.IsCaughtUp, "consumer gates must stay shut while history is unavailable");
-        Assert.Single(_logged);
-        Assert.Equal(Logger.Severity.Fault, _logged[0].Severity);
-        Assert.Equal(Logger.CoreEventCode.ReplayUnavailable, _logged[0].Code);
-
-        // The Replayer answers every resend the same way; the fault line must not repeat per reply.
-        DeliverUnavailable(_receiver.RequestId);
-        Assert.True(_logged.Count == 1, "one episode is one line, not one per 500ms resend");
-    }
-
-    // A second, distinct outage hours later must report itself: the latch is on the episode, not on the process.
-    // The intervening reply is what ends the first episode.
-    [Fact(DisplayName = "a refusal after the Replayer recovered is reported again")]
-    public void ARefusalAfterTheReplayerRecoveredIsReportedAgain()
-    {
-        DeliverTap(1);
-        DeliverTap(5); // gap -> awaiting a replay
-
-        CaptureLogs();
-        DeliverUnavailable(_receiver.RequestId);
-        Assert.Equal(1, Refusals());
-
-        AnswerReplaying(7, 900);
-        // Later: that node's archive breaks again, its Replayer restarts refusing, and our replay stops delivering,
-        // so we re-request (a new requestId) and are refused a second time.
-        AdvancePastTimers();
-        DeliverUnavailable(_receiver.RequestId);
-
-        Assert.True(Refusals() == 2, "a process-lifetime latch would leave every later outage silent");
-    }
-
-    // Being queued ends the episode too: a Replayer with integrityFailed latched answers ReplayUnavailable, never
-    // ReplayPending, so a pending reply is proof it is serving again.
-    [Fact(DisplayName = "a queued replay also ends the refusal episode")]
-    public void AQueuedReplayAlsoEndsTheRefusalEpisode()
-    {
-        DeliverTap(1);
-        DeliverTap(5);
-
-        CaptureLogs();
-        DeliverUnavailable(_receiver.RequestId);
-        DeliverPending(_receiver.RequestId);
-        AdvancePastTimers();
-        DeliverUnavailable(_receiver.RequestId);
-
-        Assert.Equal(2, Refusals());
-    }
-
-    [Fact(DisplayName = "a ReplayUnavailable for a superseded request says nothing and resets no clock")]
-    public void ReplayUnavailableForASupersededRequestIsIgnored()
-    {
-        DeliverTap(1);
-        DeliverTap(5);
-        long stale = _receiver.RequestId - 1;
-        int sends = _actions.RequestsSent;
-
-        CaptureLogs();
-        DeliverUnavailable(stale);
-        _actions.ClockMs += 600; // > ResendIntervalMs since the CURRENT request went out
-        _receiver.DoTimers(false);
-
-        Assert.True(_logged.Count == 0, "a stale refusal says nothing about the Replayer's current state");
-        Assert.True(sends + 1 == _actions.RequestsSent, "and must not reset the resend clock");
     }
 
     // ── the resend timer ──────────────────────────────────────────────────────────────────────────
@@ -684,23 +586,21 @@ public class ReplayerRecoveryTest : IDisposable
         CompleteReplay();
         Assert.False(_receiver.IsRecovering, "a resume ends at its bound");
 
-        // The result of the same transitions, entered the way production enters it: a resume whose replay opens on
-        // a frame other than the one it anchored on falls back to a walk.
-        DeliverTap(9); // another gap -> another resume
+        // A resume whose bound leaves a retained frame stranded behind a hole resumes again.
+        DeliverTap(9); // another gap -> another resume, anchored on frame 5
         AnswerReplaying(8, 500);
-        DeliverReplay(42);
-        Assert.Equal(FromStart, _receiver.RequestFromPosition);
-        Assert.True(_receiver.IsRecovering, "awaiting the walk");
+        DeliverReplay(5);
+        DeliverReplay(6);
+        CompleteReplay(); // 7 and 8 not covered: 9 is still stranded
+        Assert.True(_receiver.IsRecovering, "awaiting the next resume");
 
         AnswerReplaying(9, 500);
-        // The walk has to close the hole it re-walked for: 9 is retained behind the missing 6..8, and the bound
-        // refuses to end recovery while anything is still stranded there.
-        DeliverReplay(6);
+        DeliverReplay(6); // anchored on frame 6, the last dispatched
         DeliverReplay(7);
         DeliverReplay(8); // dispatching 8 drains the retained 9 straight over
-        Assert.True(_receiver.IsRecovering, "mid-walk until the bound");
+        Assert.True(_receiver.IsRecovering, "mid-resume until the bound");
         CompleteReplay();
-        Assert.False(_receiver.IsRecovering, "a walk ends at its bound too");
+        Assert.False(_receiver.IsRecovering, "that resume ends at its bound too");
     }
 
     // IsCaughtUp is a state, not a latch: consumers gate real decisions on it, and a gateway's tap-stall watchdog
@@ -831,12 +731,12 @@ public class ReplayerRecoveryTest : IDisposable
         DeliverTapTooBigToRetain(5);
         Assert.True(OverflowReports() == 1, "one episode is one line, not one per dropped frame");
 
-        // The re-walk is what covers the dropped frames, so the episode ends when it is requested.
+        // The resume is what covers the dropped frames, so the episode ends when it is requested.
         AnswerReplaying(7, 500);
         DeliverReplay(1);
         DeliverReplay(2);
         CompleteReplay();
-        Assert.Equal(FromStart, _receiver.RequestFromPosition);
+        Assert.True(_receiver.RequestFromPosition == 3072, "at the retained frame 3, drained behind 2");
 
         DeliverTapTooBigToRetain(9);
 
@@ -845,8 +745,10 @@ public class ReplayerRecoveryTest : IDisposable
 
     // ── the resume anchor ─────────────────────────────────────────────────────────────────────────
 
-    [Fact(DisplayName = "a resume replay that opens at the wrong frame falls back to a walk")]
-    public void ResumeAnchorMismatchFallsBackToWalk()
+    // Positions follow from the frames and the recording changes only with the node's driver, so a resume opening
+    // anywhere but its anchor means the recording is not what this client's positions say.
+    [Fact(DisplayName = "a resume replay that opens at the wrong frame is fatal")]
+    public void ResumeAnchorMismatchIsFatal()
     {
         GoLive();
         DeliverTapAt(1, 1024);
@@ -854,15 +756,16 @@ public class ReplayerRecoveryTest : IDisposable
         DeliverTapAt(5, 8192); // gap -> resume anchored on globalSeqNo 2
         AttachReplay(12, 16384);
 
-        DeliverReplay(4); // not the anchor: the active recording rotated under us
+        DeliverReplay(4); // not the anchor
 
-        Assert.True(_receiver.RequestFromPosition == FromStart, "must fall back to the walk, which needs no position");
-        Assert.True(_receiver.IsAwaitingReplay);
+        Assert.Contains("expected 2", _receiver.Fault);
+        Assert.False(_receiver.IsAwaitingReplay, "nothing more is asked for");
+        Assert.Equal(2, _dispatched.Count);
     }
 
     // The anchor is consumed by the first frame of ONE replay episode: a retry of that same logical resume starts a
     // NEW episode and must re-arm the check, or the retried replay's first frame rides with nothing to validate
-    // against and a rotated recording's frame is dispatched merely because it looks contiguous.
+    // against and a wrong frame is dispatched merely because it looks contiguous.
     [Fact(DisplayName = "a resume whose image closes short of its bound re-arms the anchor check")]
     public void ReplayImageClosingShortOfTheBoundOnAResumeReArmsTheAnchorCheck()
     {
@@ -876,13 +779,11 @@ public class ReplayerRecoveryTest : IDisposable
         Assert.True(_receiver.RequestFromPosition != FromStart, "still a resume retry, not a walk step");
 
         AnswerReplaying(8, 500);
-        // The active recording rotated: the retried resume's first frame is NOT the frame it was anchored on, but it
-        // happens to look contiguous.
+        // The retried resume's first frame is NOT the frame it was anchored on, but it looks contiguous.
         DeliverReplay(2);
 
         Assert.True(_dispatched.Count == 1, "must not accept an unanchored frame merely because it looks contiguous");
-        Assert.True(_receiver.RequestFromPosition == FromStart, "the mismatch must fall back to a walk");
-        Assert.True(_receiver.IsAwaitingReplay);
+        Assert.True(_receiver.Fault != null, "the mismatch is fatal");
         Assert.Equal(-1, _receiver.ReplaySessionId);
         Assert.False(_receiver.IsCaughtUp);
     }
@@ -900,20 +801,18 @@ public class ReplayerRecoveryTest : IDisposable
         Assert.True(_receiver.RequestFromPosition != FromStart, "still a resume retry, not a walk step");
 
         AnswerReplaying(8, 500);
-        DeliverReplay(2); // rotated recording, looks contiguous but is not the anchored frame
+        DeliverReplay(2); // looks contiguous but is not the anchored frame
 
         Assert.True(_dispatched.Count == 1, "must not accept an unanchored frame merely because it looks contiguous");
-        Assert.True(_receiver.RequestFromPosition == FromStart, "the mismatch must fall back to a walk");
-        Assert.True(_receiver.IsAwaitingReplay);
+        Assert.True(_receiver.Fault != null, "the mismatch is fatal");
         Assert.Equal(-1, _receiver.ReplaySessionId);
         Assert.False(_receiver.IsCaughtUp);
     }
 
-    // The same rotation seen one step earlier: the Replayer answers "nothing to replay" because the position is
-    // already at its recording's tip. For a walk that means caught up; for a resume it cannot, because we resumed
-    // only on account of a hole we know is open.
-    [Fact(DisplayName = "NoReplayNeeded over an open hole falls back to a walk")]
-    public void NoReplayNeededOverAnOpenHoleFallsBackToAWalk()
+    // For a walk "nothing to replay" means caught up. For a resume the Replayer answers it only when it refuses the
+    // position; a recording that has not reached it yet is answered ReplayPending instead.
+    [Fact(DisplayName = "NoReplayNeeded for a resume is fatal")]
+    public void NoReplayNeededForAResumeIsFatal()
     {
         DeliverTap(1);
         DeliverTap(2);
@@ -923,13 +822,13 @@ public class ReplayerRecoveryTest : IDisposable
 
         AnswerReplaying(NoReplayNeeded, 0);
 
-        Assert.True(_receiver.RequestFromPosition == FromStart, "re-walk instead of believing it");
-        Assert.True(_receiver.IsAwaitingReplay);
+        Assert.Contains("refused a resume", _receiver.Fault);
+        Assert.False(_receiver.IsAwaitingReplay);
         Assert.False(_receiver.IsCaughtUp, "the hole above globalSeqNo=2 is still open");
     }
 
-    // A resume ends at the bound it was given, so it must declare itself caught up and hand the slot back, or the
-    // slot sits until the idle TTL reclaims it.
+    // A resume ends at the bound it was given, so it must declare itself caught up and close its image, which frees
+    // the Replayer's slot.
     [Fact(DisplayName = "a resume reaching its bound catches up and requests nothing more")]
     public void ResumeReachingItsBoundCatchesUpAndRequestsNothingMore()
     {
@@ -954,8 +853,8 @@ public class ReplayerRecoveryTest : IDisposable
     // A resume can reach its bound while a retained-ahead frame still sits behind a hole the replay never covered.
     // Declaring caught up on the bound alone is silently wrong: consumers gate real decisions on it and nothing would
     // rediscover the hole until some later, unrelated tap frame exposed it.
-    [Fact(DisplayName = "a resume reaching its bound with a retained hole still open re-walks instead")]
-    public void ResumeReachingItsBoundWithARetainedHoleStillOpenReWalksInstead()
+    [Fact(DisplayName = "a resume reaching its bound with a retained hole still open resumes again")]
+    public void ResumeReachingItsBoundWithARetainedHoleStillOpenResumesAgain()
     {
         DeliverTap(1);
         Assert.Single(_caughtUpAt);
@@ -969,15 +868,15 @@ public class ReplayerRecoveryTest : IDisposable
 
         Assert.False(_receiver.IsCaughtUp, "must not declare caught up with a retained frame behind a hole");
         Assert.True(_caughtUpAt.Count == 1, "no false re-convergence notification");
-        Assert.True(_receiver.RequestFromPosition == FromStart, "falls back to a walk rather than trusting the bound");
+        Assert.True(_receiver.RequestFromPosition == 2048, "resumes at the last dispatched frame, not the start");
         Assert.True(_receiver.IsAwaitingReplay);
         Assert.Equal(-1, _receiver.ReplaySessionId);
     }
 
     // The overflow half of the same guard. When the FIFO had to DROP tap frames the frontier is short by frames that
     // are gone from the tap for good, and every retained frame draining cleanly says nothing about them.
-    [Fact(DisplayName = "a resume reaching its bound after dropped tap frames re-walks instead")]
-    public void ResumeReachingItsBoundAfterDroppedTapFramesReWalksInstead()
+    [Fact(DisplayName = "a resume reaching its bound after dropped tap frames resumes again")]
+    public void ResumeReachingItsBoundAfterDroppedTapFramesResumesAgain()
     {
         DeliverTap(1);
         Assert.Single(_caughtUpAt);
@@ -992,62 +891,16 @@ public class ReplayerRecoveryTest : IDisposable
 
         Assert.False(_receiver.IsCaughtUp, "frame 4 was dropped: the drained frontier is not the real one");
         Assert.True(_caughtUpAt.Count == 1, "no false re-convergence notification");
-        Assert.True(_receiver.RequestFromPosition == FromStart,
-                    "re-walks now rather than leaving the hole for a later tap gap");
+        Assert.True(_receiver.RequestFromPosition == 3072,
+                    "resumes now rather than leaving the hole for a later tap gap");
         Assert.True(_receiver.IsAwaitingReplay);
-    }
-
-    // ── releasing the replay slot ─────────────────────────────────────────────────────────────────
-
-    // The release was a fire-and-forget offer, so an offer that did not land was indistinguishable from one that
-    // did, and nothing re-sent it, leaving the slot to the idle TTL. There is no publication in these tests, so every
-    // send here is a send that never went out.
-    [Fact(DisplayName = "a ReplayComplete that never went out stays pending")]
-    public void AReplayCompleteThatNeverWentOutStaysPending()
-    {
-        DeliverTap(1);
-        DeliverTap(5); // gap -> resume
-        AnswerReplaying(7, 500);
-        DeliverReplay(1);
-        DeliverReplay(2);
-        DeliverReplay(3);
-        DeliverReplay(4);
-        Assert.False(_receiver.CompletePending, "nothing to release until the resume reaches its bound");
-
-        CompleteReplay();
-
-        Assert.True(_receiver.IsCaughtUp);
-        Assert.True(_receiver.CompletePending, "it never reached the wire: remember it");
-        _receiver.DoTimers(false);
-        Assert.True(_receiver.CompletePending, "the duty cycle retries the release rather than forgetting it");
-    }
-
-    // ReplayComplete names only the clientId, so one landing after a NEW request took a fresh slot would free the
-    // slot that replay is riding.
-    [Fact(DisplayName = "a new request drops a ReplayComplete that never went out")]
-    public void ANewRequestDropsAReplayCompleteThatNeverWentOut()
-    {
-        DeliverTap(1);
-        DeliverTap(5); // gap -> resume
-        AnswerReplaying(7, 500);
-        DeliverReplay(1);
-        DeliverReplay(2);
-        DeliverReplay(3);
-        DeliverReplay(4);
-        CompleteReplay();
-        Assert.True(_receiver.CompletePending);
-
-        DeliverTap(9); // a second gap -> new request, taking a fresh slot
-
-        Assert.True(_receiver.IsAwaitingReplay);
-        Assert.False(_receiver.CompletePending, "dropped: releasing now would free the new slot");
     }
 
     // ── the end of a walk ─────────────────────────────────────────────────────────────────────────
     // A walk ends at its bound, and reaching it is not by itself permission to declare caught up.
 
-    [Fact(DisplayName = "frames still retained when a walk reaches its bound force a re-walk rather than caught-up")]
-    public void RetainedResidualForcesReWalk()
+    [Fact(DisplayName = "frames still retained when a walk reaches its bound force a resume rather than caught-up")]
+    public void RetainedResidualForcesAResume()
     {
         AttachReplay(11, 4096);
         DeliverTap(5); // a hole below it that this walk never reached
@@ -1057,7 +910,7 @@ public class ReplayerRecoveryTest : IDisposable
         CompleteReplay();
 
         Assert.False(_receiver.IsCaughtUp, "declaring caught up here would close the hole by fiat");
-        Assert.Equal(FromStart, _receiver.RequestFromPosition);
+        Assert.True(_receiver.RequestFromPosition == 1024, "resumes at the last dispatched frame");
         Assert.True(_receiver.IsAwaitingReplay);
     }
 
@@ -1073,14 +926,14 @@ public class ReplayerRecoveryTest : IDisposable
         CompleteReplay();
 
         Assert.True(_receiver.IsCaughtUp, "nothing is outstanding: the guard must not fire here");
-        Assert.False(_receiver.IsAwaitingReplay, "not a spurious re-walk");
+        Assert.False(_receiver.IsAwaitingReplay, "not a spurious resume");
     }
 
-    // The same guard driven through to convergence: the re-walk must both happen AND be able to finish. Clearing the
+    // The same guard driven through to convergence: the resume must both happen AND be able to finish. Clearing the
     // overflow on drain forgets the drop and catches up over the hole; never clearing it leaves a client that can
     // never declare itself caught up again.
-    [Fact(DisplayName = "a walk reaching its bound after dropped tap frames re-walks, then catches up")]
-    public void AWalkAfterDroppedTapFramesReWalksThenCatchesUp()
+    [Fact(DisplayName = "a walk reaching its bound after dropped tap frames resumes, then catches up")]
+    public void AWalkAfterDroppedTapFramesResumesThenCatchesUp()
     {
         AnswerReplaying(7, 500);
         DeliverReplay(1);
@@ -1091,15 +944,16 @@ public class ReplayerRecoveryTest : IDisposable
 
         Assert.False(_receiver.IsCaughtUp, "the walk reached its bound, but a tap frame above it was dropped");
         Assert.True(_caughtUpAt.Count == 0, "no false convergence notification: this opens the accept gate");
-        Assert.True(_receiver.RequestFromPosition == FromStart, "re-walks rather than trusting the bound");
+        Assert.True(_receiver.RequestFromPosition == 2048, "resumes rather than trusting the bound");
 
-        // The re-walk replays what the drop lost, and this time nothing is dropped.
+        // The resume replays what the drop lost, and this time nothing is dropped.
         AnswerReplaying(8, 900);
+        DeliverReplay(2); // the anchor
         DeliverReplay(3);
         DeliverReplay(4);
         CompleteReplay();
 
-        Assert.True(_receiver.IsCaughtUp, "a re-walk that dropped nothing must be able to finish");
+        Assert.True(_receiver.IsCaughtUp, "a resume that dropped nothing must be able to finish");
         Assert.Single(_caughtUpAt);
     }
 
@@ -1178,36 +1032,16 @@ public class ReplayerRecoveryTest : IDisposable
     {
         DeliverTap(1);
         DeliverTap(5); // gap -> awaiting a replay
-        DeliverUnavailable(_receiver.RequestId);
 
-        CaptureLogs(); // installed after the refusal, so it captures only the report below
+        CaptureLogs(); // installed after the gap, so it captures only the report below
         Assert.False(CheckProgressAt(ClockMs));
         Assert.True(CheckProgressAt(PastDeadlineMs));
 
         Assert.Single(_logged);
         string text = _logged[0].Message;
-        // Without these an operator cannot tell a refused node from one whose recording cannot cover the hole.
+        // Without these an operator cannot tell an unanswering node from one whose recording cannot cover the hole.
         Assert.Contains("lastGlobalSeqNo=1", text);
         Assert.Contains("awaitingReplay=true", text);
-        Assert.Contains("replayerUnavailable=true", text);
-    }
-
-    [Fact(DisplayName = "the report stops naming a refusal once the Replayer serves again")]
-    public void TheReportStopsNamingARefusalOnceTheReplayerServesAgain()
-    {
-        DeliverTap(1);
-        DeliverTap(5); // gap -> awaiting a replay
-        DeliverUnavailable(_receiver.RequestId);
-        AnswerReplaying(7, 900);
-
-        CaptureLogs(); // installed after the exchange above, so it captures only the report below
-        Assert.False(CheckProgressAt(ClockMs));
-        Assert.True(CheckProgressAt(PastDeadlineMs));
-
-        Assert.Single(_logged);
-        // The field is state, not "was ever refused": a stale true points the operator at a Replayer that is
-        // answering fine, and away from the attached replay that is actually not delivering.
-        Assert.Contains("replayerUnavailable=false", _logged[0].Message);
     }
 
     [Fact(DisplayName = "the stall gauge clears once, on the dispatch that ends a reported episode")]
@@ -1254,7 +1088,7 @@ public class ReplayerRecoveryTest : IDisposable
     {
         var changes = new List<long>();
         _receiver =
-            new ReplayerRecovery(ClientId, _actions, e => _dispatched.Add(e.GlobalSeqNo),
+            new ReplayerRecovery(_actions, e => _dispatched.Add(e.GlobalSeqNo),
                                  (leaderMemberId, leadershipTermId, globalSeqNo) => changes.Add(globalSeqNo), null);
         DeliverLeadershipChanged(1);
 
@@ -1265,29 +1099,7 @@ public class ReplayerRecoveryTest : IDisposable
     [Fact(DisplayName = "onSequenced is required")]
     public void OnSequencedIsRequired()
     {
-        Assert.Throws<ArgumentNullException>(() => new ReplayerRecovery(ClientId, _actions, null, null, null));
-    }
-
-    // ── Client id in use ───────────────────────────────────────────────────────────────────────────
-
-    [Fact(DisplayName = "a notice that this client's id is in use latches, and is reported once")]
-    public void AClientIdInUseNoticeLatchesAndIsReportedOnce()
-    {
-        CaptureLogs();
-        Control(ControlMessages.ReplayClientIdInUse(ClientId));
-        Control(ControlMessages.ReplayClientIdInUse(ClientId));
-
-        Assert.True(_receiver.IsClientIdInUse);
-        Assert.Single(_logged);
-        Assert.Equal(Logger.CoreEventCode.ReplayClientIdCollision, _logged[0].Code);
-    }
-
-    [Fact(DisplayName = "a notice for another client's id is ignored")]
-    public void AClientIdInUseNoticeForAnotherClientIsIgnored()
-    {
-        Control(ControlMessages.ReplayClientIdInUse(ClientId + 1));
-
-        Assert.False(_receiver.IsClientIdInUse);
+        Assert.Throws<ArgumentNullException>(() => new ReplayerRecovery(_actions, null, null, null));
     }
 
     // ── restoring a snapshot ──────────────────────────────────────────────────────────────────────
@@ -1421,8 +1233,8 @@ public class ReplayerRecoveryTest : IDisposable
         Assert.Equal(FromStart, _receiver.RequestFromPosition);
     }
 
-    [Fact(DisplayName = "after a restore, a fall-back to the walk resumes at the snapshot instead")]
-    public void AfterARestoreTheWalkFallbackResumesAtTheSnapshot()
+    [Fact(DisplayName = "after a restore, a resume that opens anywhere but the cut is fatal")]
+    public void AfterARestoreAResumeOpeningAnywhereButTheCutIsFatal()
     {
         WriteSnapshot(2);
         StartRestoring();
@@ -1432,12 +1244,8 @@ public class ReplayerRecoveryTest : IDisposable
 
         DeliverReplay(12); // not the anchor
 
-        Assert.True(_receiver.RequestFromPosition != FromStart, "the start holds nothing this instance may replay");
-        Assert.Equal(Cut * 1024, _receiver.RequestFromPosition);
-        AttachReplay(23, 64 * 1024);
-        DeliverReplayFrame(RestoreFrames.Started(Cut, 2), Cut);
-        DeliverReplay(11);
-        Assert.Equal(new List<long> { 11 }, _dispatched);
+        Assert.Contains("expected " + Cut, _receiver.Fault);
+        Assert.True(_dispatched.Count == 0, "nothing after a wrong cut may be dispatched");
     }
 
     [Fact(DisplayName = "a snapshot that cannot be restored stops recovery: its format, its header, or its records")]
@@ -1471,7 +1279,7 @@ public class ReplayerRecoveryTest : IDisposable
         _receiver.DoTimers(false);
         Assert.Contains("damaged", _receiver.RestoreFailure);
         Assert.False(_receiver.IsRecovering);
-        Assert.Null(new ReplayerRecovery(ClientId, _actions, Ignore, null, null).RestoreFailure);
+        Assert.Null(new ReplayerRecovery(_actions, Ignore, null, null).RestoreFailure);
     }
 
     [Fact(DisplayName =
@@ -1569,12 +1377,6 @@ public class ReplayerRecoveryTest : IDisposable
         Logger.Install(new CallbackLoggerSink(_logged.Add));
     }
 
-    // Refusals only: a re-request logs its own line between two of them, so Count cannot count these.
-    private int Refusals()
-    {
-        return _logged.Count(e => Logger.CoreEventCode.ReplayUnavailable.Equals(e.Code));
-    }
-
     // Retained-buffer overflows only: every gap/re-walk warn shares TapGap, so only the text separates them.
     private int OverflowReports()
     {
@@ -1600,11 +1402,6 @@ public class ReplayerRecoveryTest : IDisposable
     private void DeliverPending(long requestId)
     {
         Control(ControlMessages.ReplayPending(ClientId, requestId));
-    }
-
-    private void DeliverUnavailable(long requestId)
-    {
-        Control(ControlMessages.ReplayUnavailable(ClientId, requestId));
     }
 
     private void Control(byte[] message)

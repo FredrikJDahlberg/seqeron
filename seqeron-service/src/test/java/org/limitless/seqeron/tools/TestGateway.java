@@ -81,7 +81,7 @@ import org.limitless.seqeron.util.Logger;
  * <pre>
  *   probe.gatewayName  — serve: the Gateway row's name this instance joins on; required
  *   probe.listenPort   — the TCP port: the gateway's to bind, the client's to connect to; default 9200
- *   probe.clientId     — serve: this replica's Replayer client id; default 10 (ClusterProbe follow's is 9)
+ *   probe.clientId     — serve: this replica's client id, its counters' label; default 10 (ClusterProbe follow's is 9)
  *   probe.snapshot     — serve: take part in snapshot rounds and restore on start; default false
  *   probe.snapshotDir  — serve: this instance's own snapshot directory; default
  *                        {tmpdir}/seqeron-snapshots-{probe.gatewayName}

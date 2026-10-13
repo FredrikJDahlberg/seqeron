@@ -18,12 +18,6 @@ internal interface IReplayerRecoveryActions
     /// <param name="round">the round of the local file asked about</param>
     void SendSnapshotQuery(long requestId, int sourceId, long round);
 
-    /// <summary>Whether the <c>ReplayComplete</c> reached the wire.</summary>
-    bool SendReplayComplete();
-
-    /// <summary>Whether the <c>ReplayHeartbeat</c> reached the wire.</summary>
-    bool SendReplayHeartbeat();
-
     /// <summary>Subscribes to exactly one replay, this one, for as long as the client rides it.</summary>
     /// <param name="replaySessionId">the replay's session</param>
     void OpenReplay(long replaySessionId);
@@ -37,6 +31,10 @@ internal interface IReplayerRecoveryActions
 
     /// <summary>The node this app runs on, or null before start; log attribution only.</summary>
     int? MemberId { get; }
+
+    /// <summary>The id the Replayer addresses this client's replies to, unique on its media driver; -1 before
+    /// start.</summary>
+    long ClientId { get; }
 
     /// <summary>Monotonic millis; the unit suite advances it.</summary>
     long NowMs();

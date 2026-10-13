@@ -25,9 +25,7 @@
 // Replay-protocol control codecs (sbe-replay.xml) + LeadershipChanged (sbe-frame.xml)
 #include "org_limitless_seqeron_sbe_frame/LeadershipChanged.h"
 #include "org_limitless_seqeron_sbe_replay/MessageHeader.h"
-#include "org_limitless_seqeron_sbe_replay/ReplayClientIdInUse.h"
 #include "org_limitless_seqeron_sbe_replay/ReplayPending.h"
-#include "org_limitless_seqeron_sbe_replay/ReplayUnavailable.h"
 #include "org_limitless_seqeron_sbe_replay/Replaying.h"
 #include "org_limitless_seqeron_sbe_replay/SnapshotLocation.h"
 
@@ -43,11 +41,11 @@ class ReplayerRecoveryActions
     // fromPosition: where to resume the active recording, or protocol::REPLAYER_FROM_START.
     virtual void sendReplayRequest(std::int64_t requestId, std::int64_t fromPosition) = 0;
     virtual void sendSnapshotQuery(std::int64_t requestId, std::int32_t sourceId, std::int64_t round) = 0;
-    virtual bool sendReplayComplete() = 0;
-    virtual bool sendReplayHeartbeat() = 0;
     virtual void openReplay(std::int64_t replaySessionId) = 0;
     virtual void closeReplay() = 0;
     virtual void recoveryStalled(bool stalled) = 0;
+    // The id the Replayer addresses this client's replies to, unique on its media driver; -1 before start.
+    virtual std::int64_t clientId() = 0;
     virtual std::int64_t nowMs() = 0;
 
   protected:
@@ -118,8 +116,7 @@ class RetainBlockPool
 // Given a source to restore (restoreFrom), a cold start first restores the newest snapshot of its own that the log
 // confirms (doc/snapshot.md §7): it asks the Replayer for that round's sequenced SnapshotEnd, reads the file's
 // records into the handler if they match it, dispatching nothing, then resumes at the round's SnapshotStarted with
-// the cut as the anchor; every later fall-back to a walk resumes there instead. A file the log does not confirm gives
-// way to the next older one, and the last to a walk.
+// the cut as the anchor. A file the log does not confirm gives way to the next older one, and the last to a walk.
 class ReplayerRecovery
 {
   public:
@@ -140,7 +137,7 @@ class ReplayerRecovery
     static constexpr std::int64_t RECOVERY_PROGRESS_TIMEOUT_MS = 30'000;
 
     // Caps on frames retained ahead of a hole (see retainFrame) — enough to cover a walk over a normal
-    // recording, not a whole log; past either bound recovery falls back to re-walking.
+    // recording, not a whole log; past either bound recovery resumes at the last dispatched frame.
     static constexpr std::size_t MAX_RETAINED_FRAMES = 65536;
     static constexpr std::size_t MAX_RETAINED_BYTES = 16UL * 1024 * 1024;
 
@@ -149,7 +146,6 @@ class ReplayerRecovery
     static constexpr int MAX_RESTORE_RECORDS_PER_CYCLE = 1024;
 
   private:
-    const std::int32_t m_clientId;
     ReplayerRecoveryActions& m_actions;
     OnSequenced m_onSequenced;
     OnConnected m_onConnected;
@@ -163,13 +159,10 @@ class ReplayerRecovery
     // fromPosition of the current request, for idempotent resend; REPLAYER_FROM_START for a walk
     std::int64_t m_reqFromPosition = protocol::REPLAYER_FROM_START;
     std::int64_t m_lastRequestMs = 0;
-    std::int64_t m_requestId = 0; // advances per send; replies not carrying it are stale (see onControl)
-    std::int64_t m_lastHeartbeatMs = 0;
-    bool m_completePending = false;
+    std::int64_t m_requestId = 0;            // advances per send; replies not carrying it are stale (see onControl)
     std::int64_t m_lastReplayPosition = -1;  // last replay-image position seen; -1 = not attached yet
     std::int64_t m_lastReplayProgressMs = 0; // when it last changed — the stall watchdog's clock
-    bool m_replayerUnavailable = false;
-    bool m_clientIdInUse = false;
+    std::optional<std::string> m_fault;      // why recovery cannot go on; latched, raised by the receiver
 
     std::int64_t m_lastGlobalSeqNo = 0;            // highest globalSeqNo delivered; 0 = none yet
     std::int64_t m_lastFramePosition = 0;          // where that frame starts in the recording; requestResume's anchor
@@ -208,10 +201,9 @@ class ReplayerRecovery
     std::optional<std::string> m_restoreFailure;              // why the restore cannot proceed; latched
 
   public:
-    ReplayerRecovery(const std::int32_t clientId, ReplayerRecoveryActions& actions, OnSequenced onSequenced,
-                     OnConnected onConnected = {}, OnDisconnected onDisconnected = {},
-                     OnLeadershipChanged onLeadershipChanged = {}, OnCaughtUp onCaughtUp = {}) :
-      m_clientId(clientId),
+    explicit ReplayerRecovery(ReplayerRecoveryActions& actions, OnSequenced onSequenced, OnConnected onConnected = {},
+                              OnDisconnected onDisconnected = {}, OnLeadershipChanged onLeadershipChanged = {},
+                              OnCaughtUp onCaughtUp = {}) :
       m_actions(actions),
       m_onSequenced(std::move(onSequenced)),
       m_onConnected(std::move(onConnected)),
@@ -287,23 +279,21 @@ class ReplayerRecovery
     {
         // The envelope is stripped once, here: both frame families carry globalSeqNo, at different offsets.
         const protocol::FrameView entry = protocol::unwrapFrame(frame, length);
-        if (m_restoreFailure || !entry.valid)
+        if (m_restoreFailure || m_fault || !entry.valid)
         {
             return;
         }
         const auto sequenceNumber = entry.globalSeqNo;
+        // First frame off a resume replay: it must be the frame whose position requested. Positions follow from
+        // the frames, and the recording changes only with the node's driver, so a mismatch is a fault.
         if (fromReplay && m_resumeAnchorSequenceNumber != 0)
         {
             const std::int64_t anchor = m_resumeAnchorSequenceNumber;
             m_resumeAnchorSequenceNumber = 0;
             if (sequenceNumber != anchor)
             {
-                util::Logger::warn(util::component::ReplayerStreamReceiver, util::eventCode::TapGap,
-                                   "resume replay opened at globalSeqNo=%lld, expected %lld — the active "
-                                   "recording rotated under us; replaying history from its start (or from the "
-                                   "restored snapshot)",
-                                   static_cast<long long>(sequenceNumber), static_cast<long long>(anchor));
-                rewalk();
+                fail("resume replay at position " + std::to_string(m_reqFromPosition) + " opened at globalSeqNo=" +
+                     std::to_string(sequenceNumber) + ", expected " + std::to_string(anchor));
                 return;
             }
         }
@@ -360,8 +350,7 @@ class ReplayerRecovery
         drainRetained();
     }
 
-    // One message off the Replayer's control stream (Replaying / ReplayPending / ReplayUnavailable /
-    // ReplayClientIdInUse / SnapshotLocation).
+    // One message off the Replayer's control stream (Replaying / ReplayPending / SnapshotLocation).
     void onControl(char* const message, const std::uint64_t length)
     {
         if (length < sbe::replay::MessageHeader::encodedLength())
@@ -372,12 +361,13 @@ class ReplayerRecovery
         sbe::replay::MessageHeader mh;
         mh.wrap(message, 0U, 0U, length);
         const std::uint64_t bodyOff = sbe::replay::MessageHeader::encodedLength();
+        const std::int64_t clientId = m_actions.clientId();
 
         if (mh.templateId() == sbe::replay::Replaying::sbeTemplateId())
         {
             sbe::replay::Replaying replaying;
             replaying.wrapForDecode(message, bodyOff, mh.blockLength(), mh.version(), length);
-            if (replaying.clientId() != m_clientId || replaying.requestId() != m_requestId)
+            if (replaying.clientId() != clientId || replaying.requestId() != m_requestId)
             {
                 return;
             }
@@ -387,7 +377,7 @@ class ReplayerRecovery
         {
             sbe::replay::SnapshotLocation location;
             location.wrapForDecode(message, bodyOff, mh.blockLength(), mh.version(), length);
-            if (m_querying && location.clientId() == m_clientId && location.requestId() == m_requestId)
+            if (m_querying && location.clientId() == clientId && location.requestId() == m_requestId)
             {
                 onSnapshotLocation(location);
             }
@@ -396,37 +386,18 @@ class ReplayerRecovery
         {
             sbe::replay::ReplayPending replayPending;
             replayPending.wrapForDecode(message, bodyOff, mh.blockLength(), mh.version(), length);
-            if (replayPending.clientId() == m_clientId && replayPending.requestId() == m_requestId)
+            if (replayPending.clientId() == clientId && replayPending.requestId() == m_requestId)
             {
                 m_lastRequestMs = m_actions.nowMs();
-                m_replayerUnavailable = false; // queued, not refused — the episode ended (see Replaying)
-            }
-        }
-        else if (mh.templateId() == sbe::replay::ReplayUnavailable::sbeTemplateId())
-        {
-            sbe::replay::ReplayUnavailable replayUnavailable;
-            replayUnavailable.wrapForDecode(message, bodyOff, mh.blockLength(), mh.version(), length);
-            if (replayUnavailable.clientId() == m_clientId && replayUnavailable.requestId() == m_requestId)
-            {
-                onReplayUnavailable();
-            }
-        }
-        else if (mh.templateId() == sbe::replay::ReplayClientIdInUse::sbeTemplateId())
-        {
-            sbe::replay::ReplayClientIdInUse replayClientIdInUse;
-            replayClientIdInUse.wrapForDecode(message, bodyOff, mh.blockLength(), mh.version(), length);
-            if (replayClientIdInUse.clientId() == m_clientId)
-            {
-                onClientIdInUse();
             }
         }
     }
 
-    // Whether this node's Replayer has seen another process requesting under this client's id. Latched: the
-    // receiver raises it from its duty cycle, since a throw from inside a fragment handler is swallowed.
-    bool isClientIdInUse() const
+    // Why recovery cannot go on, or empty. Latched: the receiver raises it from its duty cycle, since a throw from
+    // inside a fragment handler is swallowed.
+    const std::optional<std::string>& fault() const
     {
-        return m_clientIdInUse;
+        return m_fault;
     }
 
     void onReplayPosition(const std::int64_t position)
@@ -473,21 +444,10 @@ class ReplayerRecovery
         {
             requestReplay(m_reqFromPosition); // re-send the same request verbatim
         }
-        if (m_completePending)
-        {
-            sendReplayComplete();
-        }
         // >= 0: 0 is an ordinary replaySessionId, and -1 alone means none.
-        if (m_replaySessionId >= 0)
+        if (m_replaySessionId >= 0 && (nowMs - m_lastReplayProgressMs) > REPLAY_STALL_TIMEOUT_MS)
         {
-            if ((nowMs - m_lastHeartbeatMs) > RESEND_INTERVAL_MS)
-            {
-                sendHeartbeat();
-            }
-            if ((nowMs - m_lastReplayProgressMs) > REPLAY_STALL_TIMEOUT_MS)
-            {
-                onReplayStalled();
-            }
+            onReplayStalled();
         }
     }
 
@@ -510,12 +470,12 @@ class ReplayerRecovery
         m_recoveryStallReported = true;
         util::Logger::fault(util::component::ReplayerStreamReceiver, util::eventCode::RecoveryStalled,
                             "recovery has dispatched nothing for >%lldms: lastGlobalSeqNo=%lld fromPosition=%lld "
-                            "awaitingReplay=%d replaySession=%lld replayerUnavailable=%d querying=%d restoring=%d "
-                            "— holding; check this node's Replayer and its recording",
+                            "awaitingReplay=%d replaySession=%lld querying=%d restoring=%d — holding; check this "
+                            "node's Replayer and its recording",
                             static_cast<long long>(RECOVERY_PROGRESS_TIMEOUT_MS),
                             static_cast<long long>(m_lastGlobalSeqNo), static_cast<long long>(m_reqFromPosition),
-                            m_awaitingReplay ? 1 : 0, static_cast<long long>(m_replaySessionId),
-                            m_replayerUnavailable ? 1 : 0, m_querying ? 1 : 0, m_restoring ? 1 : 0);
+                            m_awaitingReplay ? 1 : 0, static_cast<long long>(m_replaySessionId), m_querying ? 1 : 0,
+                            m_restoring ? 1 : 0);
         m_actions.recoveryStalled(true);
         return true;
     }
@@ -577,11 +537,6 @@ class ReplayerRecovery
         return m_reqFromPosition;
     }
 
-    bool completePending() const
-    {
-        return m_completePending;
-    }
-
   private:
     void requestReplay(const std::int64_t fromPosition)
     {
@@ -592,7 +547,6 @@ class ReplayerRecovery
         m_reqFromPosition = fromPosition;
         m_awaitingReplay = true;
         m_replaySessionId = -1;
-        m_completePending = false;
         m_actions.closeReplay();
         m_lastRequestMs = m_actions.nowMs();
         ++m_requestId;
@@ -603,19 +557,6 @@ class ReplayerRecovery
     {
         requestReplay(m_lastFramePosition);
         m_resumeAnchorSequenceNumber = m_lastGlobalSeqNo;
-    }
-
-    // Replays history from its start again: the active recording from its start, or, once a snapshot is restored,
-    // from its SnapshotStarted, with the cut as the anchor.
-    void rewalk()
-    {
-        if (m_snapshotGlobalSeqNo == 0)
-        {
-            requestReplay(protocol::REPLAYER_FROM_START);
-            return;
-        }
-        requestReplay(m_snapshotPosition);
-        m_resumeAnchorSequenceNumber = m_snapshotGlobalSeqNo;
     }
 
     // Asks about the newest local snapshot below a round, or walks the recording when there is none.
@@ -644,7 +585,6 @@ class ReplayerRecovery
     void onSnapshotLocation(sbe::replay::SnapshotLocation& location)
     {
         m_querying = false;
-        m_replayerUnavailable = false;
         if (location.round() != m_queriedRound)
         {
             util::Logger::info(util::component::ReplayerStreamReceiver,
@@ -774,18 +714,12 @@ class ReplayerRecovery
     void onReplaying(const std::int64_t session, const std::int64_t replayCatchUpPosition)
     {
         m_awaitingReplay = false;
-        m_replayerUnavailable = false;
         if (session == protocol::REPLAYER_NO_REPLAY_NEEDED)
         {
             if (m_reqFromPosition != protocol::REPLAYER_FROM_START)
             {
-                util::Logger::warn(util::component::ReplayerStreamReceiver, util::eventCode::TapGap,
-                                   "resume at position %lld answered 'nothing to replay' while a hole is open "
-                                   "above globalSeqNo=%lld — the active recording rotated under us; replaying "
-                                   "history from its start (or from the restored snapshot)",
-                                   static_cast<long long>(m_reqFromPosition),
-                                   static_cast<long long>(m_lastGlobalSeqNo));
-                rewalk();
+                fail("the Replayer refused a resume at position " + std::to_string(m_reqFromPosition) +
+                     " above globalSeqNo=" + std::to_string(m_lastGlobalSeqNo));
                 return;
             }
             m_replaySessionId = -1; // the recording holds nothing yet — follow the live tap
@@ -802,42 +736,16 @@ class ReplayerRecovery
         m_lastReplayProgressMs = m_actions.nowMs();
     }
 
-    void sendReplayComplete()
+    // Stops recovering: the recording does not hold what the request expected of it.
+    void fail(std::string reason)
     {
-        m_completePending = !m_actions.sendReplayComplete();
-    }
-
-    void sendHeartbeat()
-    {
-        if (m_actions.sendReplayHeartbeat())
-        {
-            m_lastHeartbeatMs = m_actions.nowMs();
-        }
-    }
-
-    void onClientIdInUse()
-    {
-        if (!m_clientIdInUse)
-        {
-            m_clientIdInUse = true;
-            util::Logger::fault(util::component::ReplayerStreamReceiver, util::eventCode::ReplayClientIdCollision,
-                                "this node's Replayer reports another process requesting under clientId=%d — "
-                                "neither can catch up; give each replica on the node its own id",
-                                m_clientId);
-        }
-    }
-
-    void onReplayUnavailable()
-    {
-        if (!m_replayerUnavailable)
-        {
-            m_replayerUnavailable = true;
-            util::Logger::fault(util::component::ReplayerStreamReceiver, util::eventCode::ReplayUnavailable,
-                                "this node's Replayer has no valid history to serve (its archive failed the "
-                                "globalSeqNo-1 integrity check) — holding, not dispatching; repair the node's "
-                                "archive and restart its Replayer");
-        }
-        m_lastRequestMs = m_actions.nowMs();
+        m_awaitingReplay = false;
+        m_replaySessionId = -1;
+        m_actions.closeReplay();
+        util::Logger::fault(util::component::ReplayerStreamReceiver, util::eventCode::TapGap,
+                            "FATAL: %s — this node's recording does not match the positions this client holds",
+                            reason.c_str());
+        m_fault = std::move(reason);
     }
 
     // An attached (or expected) replay stopped delivering — see the watchdog in doTimers.
@@ -851,14 +759,13 @@ class ReplayerRecovery
         reRequestCurrent();
     }
 
-    // The replay reached its bound, or its image closed there.
+    // The replay reached its bound, or its image closed there. Closing the image frees the Replayer's slot.
     void onReplayReachedBound()
     {
         m_actions.closeReplay();
         m_replaySessionId = -1;
         if (reachedTip())
         {
-            sendReplayComplete();
             notifyCaughtUp();
         }
     }
@@ -931,7 +838,7 @@ class ReplayerRecovery
                 m_retainOverflowLogged = true;
                 util::Logger::warn(util::component::ReplayerStreamReceiver, util::eventCode::TapGap,
                                    "retained-frame buffer full at globalSeqNo=%lld (%zu frames, %zu bytes) — "
-                                   "dropping ahead-of-hole frames; recovery falls back to re-walking",
+                                   "dropping ahead-of-hole frames; recovery resumes at the last dispatched frame",
                                    static_cast<long long>(sequenceNumber), m_retainFrameCount, m_retainBytes);
             }
         }
@@ -996,7 +903,7 @@ class ReplayerRecovery
         if (!success)
         {
             endOverflowEpisode();
-            rewalk();
+            requestResume();
         }
         return success;
     }

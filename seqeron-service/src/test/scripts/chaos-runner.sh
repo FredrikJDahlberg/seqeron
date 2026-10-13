@@ -130,7 +130,7 @@ FAILOVER_FAIL=0      # set by fault_kill_leader, folded into the round result by
 declare -a SEQ_LOG_OFFSET   # lines already in seq-<m>.log when its CURRENT boot started — see wait_running
 # Set by fault_tap_drop, consumed by check_invariants: which replica was armed and its pre-fault gap
 # counts, so the round can assert the drop ACTUALLY LANDED rather than passing on liveness alone.
-TAP_DROP_TARGET=""; TAP_DROP_LOG=""; TAP_DROP_RESUMES=0; TAP_DROP_REWALKS=0
+TAP_DROP_TARGET=""; TAP_DROP_LOG=""; TAP_DROP_RESUMES=0
 # Per-replica RecoveryStalled alarms already accounted for, so check_invariants (c) fails a round on a
 # NEW one rather than re-reporting an episode some earlier round already owned.
 declare -a RECOVERY_STALL_BASELINE=(0 0 0)
@@ -376,9 +376,8 @@ a_follower()    { local l="$1" p; while :; do p=$(( RANDOM % 3 )); [[ "$p" != "$
 replica_pid() { local m="$1"; [[ "$m" == "$CN" ]] && echo "${CONSUMER_PID:-}" || echo "${EXTRA_CONSUMER_PIDS[$m]:-}"; }
 replica_log() { local m="$1"; [[ "$m" == "$CN" ]] && echo "$CONSUMER_LOG" || echo "$LOG_DIR/consumer-$m.log"; }
 # A gap the consumer repaired by RESUMING its recording at the hole — the healthy recovery, and the proof
-# that an armed tap-drop actually landed. Distinct from the re-walk fallback counted below.
+# that an armed tap-drop actually landed.
 count_tap_resumes() { grep -c 'tap gap: expected globalSeqNo' "$1" 2>/dev/null || true; }
-count_tap_rewalks() { grep -c 'replaying history from its start' "$1" 2>/dev/null || true; }
 # The client's own "I am not serving" alarm (RecoveryStalled, ReplayerStreamReceiver::checkRecoveryProgress):
 # recovery dispatched nothing for RECOVERY_PROGRESS_TIMEOUT_MS while not caught up. Unlike the one-shot
 # "following live" marker this fires per episode, so it reads CURRENT state rather than latching at boot.
@@ -588,7 +587,6 @@ fault_tap_drop() {  # drop one live tap frame -> gap -> resume-at-the-hole recov
   TAP_DROP_TARGET="$T"
   TAP_DROP_LOG="$(replica_log "$T")"
   TAP_DROP_RESUMES="$(count_tap_resumes "$TAP_DROP_LOG")"
-  TAP_DROP_REWALKS="$(count_tap_rewalks "$TAP_DROP_LOG")"
   log "FAULT tap-drop: SIGUSR1 member $T's replica (leader-co-located; arm one-frame live-tap drop)"
   kill -USR1 "$pid" 2>/dev/null || log "  WARN no live replica pid for member $T"
 }
@@ -725,23 +723,18 @@ check_invariants() {
   if [[ "$cfail" == "1" ]]; then
     fail=1
   else
-    log "  ok: all 3 replicas up and serving (consumer re-walks so far: $(count_tap_rewalks "$CONSUMER_LOG"))"
+    log "  ok: all 3 replicas up and serving"
   fi
   # (c2) EFFICACY, for tap-drop rounds only: the armed drop must have produced a real gap episode on the
   #      target, repaired by a RESUME at the hole. Without this the fault is unverified — a SIGUSR1 to a
   #      dead/unarmed replica silently does nothing and the round still passes (a), (b) and (c), which is
-  #      exactly what it did before. A re-walk is the DEGRADED repair (replaying the whole recording to
-  #      close a one-frame hole; gap-recovery-test.sh asserts 0 of them), so it fails the round too.
+  #      exactly what it did before.
   if [[ -n "$TAP_DROP_TARGET" ]]; then
     local resumes; resumes="$(count_tap_resumes "$TAP_DROP_LOG")"
-    local rewalks; rewalks="$(count_tap_rewalks "$TAP_DROP_LOG")"
     if (( resumes > TAP_DROP_RESUMES )); then
       log "  ok: tap-drop landed on member $TAP_DROP_TARGET — gap resumed at the hole ($TAP_DROP_RESUMES -> $resumes)"
     else
       log "  INVARIANT FAIL: tap-drop on member $TAP_DROP_TARGET produced NO gap episode (resumes stuck at $resumes) — fault did not land"; fail=1
-    fi
-    if (( rewalks > TAP_DROP_REWALKS )); then
-      log "  INVARIANT FAIL: member $TAP_DROP_TARGET fell back to a re-walk ($TAP_DROP_REWALKS -> $rewalks) — expected a resume"; fail=1
     fi
     TAP_DROP_TARGET=""
   fi

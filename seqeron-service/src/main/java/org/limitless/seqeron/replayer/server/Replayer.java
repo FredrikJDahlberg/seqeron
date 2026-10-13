@@ -58,7 +58,7 @@ public interface Replayer {
      * @param recordingId archive recording id
      * @param position where to start replaying from
      * @param length how much to replay
-     * @param streamId {@code REPLAY_STREAM_ID} or {@code SELF_CHECK_STREAM_ID}
+     * @param streamId {@code REPLAY_STREAM_ID}
      * @return the archive's replay session id
      */
     long startReplay(long recordingId, long position, long length, int streamId);
@@ -95,12 +95,12 @@ public interface Replayer {
     long offerControl(DirectBuffer buffer, int offset, int length);
 
     /**
-     * Opens a subscription to the self-check stream, filtered to one replay session: an earlier check's
-     * replay may linger on the same stream and would otherwise read as the next span's first frame.
+     * Whether a replay's publication is still open: until the archive has ended the replay and its subscriber
+     * has let it go, or the subscriber's client has died.
      * @param replaySessionId the session returned by {@link #startReplay}
-     * @return the stream, to be {@link SelfCheckStream#close}d when the check ends
+     * @return false once it is gone
      */
-    SelfCheckStream openSelfCheckStream(long replaySessionId);
+    boolean isReplayLive(long replaySessionId);
 
     /**
      * Opens a replay of a recording that follows it live, onto an internal stream only the snapshot index
@@ -130,14 +130,9 @@ public interface Replayer {
     AtomicCounter newCounter(int typeId, String label);
 
     /**
-     * @return wall-clock milliseconds, for slot ageing and stall-retry pacing
+     * @return wall-clock milliseconds, for archive-retry pacing and error episodes
      */
     long epochMillis();
-
-    /**
-     * @return monotonic milliseconds, for the self-check deadline
-     */
-    long nowMs();
 
     /** The snapshot index's replay of the active recording. */
     interface IndexStream {
@@ -164,17 +159,5 @@ public interface Replayer {
          * @param position the recording position of its first byte
          */
         void onFrame(DirectBuffer buffer, int offset, int length, long position);
-    }
-
-    /** The internal stream a startup self-check replay is read back over. */
-    interface SelfCheckStream {
-        /**
-         * @param handler receives each fragment
-         * @param fragmentLimit maximum fragments to read
-         * @return fragments read
-         */
-        int poll(FragmentHandler handler, int fragmentLimit);
-
-        void close();
     }
 }

@@ -28,7 +28,7 @@ archive records.
 The Replayer serves that recording to the clients on its host, for a cold start or a gap, and is the only
 component that reads the archive. It also indexes every source's `SnapshotEnd` by round, which is how a
 restarting client learns which of its snapshot files the log confirms. Its decisions are pure classes
-(`Replayer`, `ReplaySlotAllocator`, `ReplayClientIdCollisions`, `SnapshotIndex`); `AeronReplayer` is the
+(`Replayer`, `ReplaySlotAllocator`, `SnapshotIndex`); `AeronReplayer` is the
 only part that touches Aeron. On a gateway host the relay (`TapRelay`, `AeronTapRelay`) copies a member's
 tap over UDP and moves to the next member when that one is lost
 ([`fault-tolerance.md`](fault-tolerance.md#33-gateway-host)).

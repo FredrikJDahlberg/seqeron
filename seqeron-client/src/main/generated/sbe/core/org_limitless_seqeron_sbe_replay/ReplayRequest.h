@@ -116,7 +116,7 @@ private:
     }
 
 public:
-    static constexpr std::uint16_t SBE_BLOCK_LENGTH = static_cast<std::uint16_t>(20);
+    static constexpr std::uint16_t SBE_BLOCK_LENGTH = static_cast<std::uint16_t>(24);
     static constexpr std::uint16_t SBE_TEMPLATE_ID = static_cast<std::uint16_t>(6);
     static constexpr std::uint16_t SBE_SCHEMA_ID = static_cast<std::uint16_t>(212);
     static constexpr std::uint16_t SBE_SCHEMA_VERSION = static_cast<std::uint16_t>(0);
@@ -174,7 +174,7 @@ public:
 
     SBE_NODISCARD static SBE_CONSTEXPR std::uint16_t sbeBlockLength() SBE_NOEXCEPT
     {
-        return static_cast<std::uint16_t>(20);
+        return static_cast<std::uint16_t>(24);
     }
 
     SBE_NODISCARD static SBE_CONSTEXPR std::uint64_t sbeBlockAndHeaderLength() SBE_NOEXCEPT
@@ -344,37 +344,37 @@ public:
         return 0;
     }
 
-    static SBE_CONSTEXPR std::int32_t clientIdNullValue() SBE_NOEXCEPT
+    static SBE_CONSTEXPR std::int64_t clientIdNullValue() SBE_NOEXCEPT
     {
-        return SBE_NULLVALUE_INT32;
+        return SBE_NULLVALUE_INT64;
     }
 
-    static SBE_CONSTEXPR std::int32_t clientIdMinValue() SBE_NOEXCEPT
+    static SBE_CONSTEXPR std::int64_t clientIdMinValue() SBE_NOEXCEPT
     {
-        return INT32_C(-2147483647);
+        return INT64_C(-9223372036854775807);
     }
 
-    static SBE_CONSTEXPR std::int32_t clientIdMaxValue() SBE_NOEXCEPT
+    static SBE_CONSTEXPR std::int64_t clientIdMaxValue() SBE_NOEXCEPT
     {
-        return INT32_C(2147483647);
+        return INT64_C(9223372036854775807);
     }
 
     static SBE_CONSTEXPR std::size_t clientIdEncodingLength() SBE_NOEXCEPT
     {
-        return 4;
+        return 8;
     }
 
-    SBE_NODISCARD std::int32_t clientId() const SBE_NOEXCEPT
+    SBE_NODISCARD std::int64_t clientId() const SBE_NOEXCEPT
     {
-        std::int32_t val;
-        std::memcpy(&val, m_buffer + m_offset + 0, sizeof(std::int32_t));
-        return SBE_LITTLE_ENDIAN_ENCODE_32(val);
+        std::int64_t val;
+        std::memcpy(&val, m_buffer + m_offset + 0, sizeof(std::int64_t));
+        return SBE_LITTLE_ENDIAN_ENCODE_64(val);
     }
 
-    ReplayRequest &clientId(const std::int32_t value) SBE_NOEXCEPT
+    ReplayRequest &clientId(const std::int64_t value) SBE_NOEXCEPT
     {
-        std::int32_t val = SBE_LITTLE_ENDIAN_ENCODE_32(value);
-        std::memcpy(m_buffer + m_offset + 0, &val, sizeof(std::int32_t));
+        std::int64_t val = SBE_LITTLE_ENDIAN_ENCODE_64(value);
+        std::memcpy(m_buffer + m_offset + 0, &val, sizeof(std::int64_t));
         return *this;
     }
 
@@ -404,7 +404,7 @@ public:
 
     SBE_NODISCARD static SBE_CONSTEXPR std::size_t requestIdEncodingOffset() SBE_NOEXCEPT
     {
-        return 4;
+        return 8;
     }
 
     static SBE_CONSTEXPR std::int64_t requestIdNullValue() SBE_NOEXCEPT
@@ -430,14 +430,14 @@ public:
     SBE_NODISCARD std::int64_t requestId() const SBE_NOEXCEPT
     {
         std::int64_t val;
-        std::memcpy(&val, m_buffer + m_offset + 4, sizeof(std::int64_t));
+        std::memcpy(&val, m_buffer + m_offset + 8, sizeof(std::int64_t));
         return SBE_LITTLE_ENDIAN_ENCODE_64(val);
     }
 
     ReplayRequest &requestId(const std::int64_t value) SBE_NOEXCEPT
     {
         std::int64_t val = SBE_LITTLE_ENDIAN_ENCODE_64(value);
-        std::memcpy(m_buffer + m_offset + 4, &val, sizeof(std::int64_t));
+        std::memcpy(m_buffer + m_offset + 8, &val, sizeof(std::int64_t));
         return *this;
     }
 
@@ -467,7 +467,7 @@ public:
 
     SBE_NODISCARD static SBE_CONSTEXPR std::size_t fromPositionEncodingOffset() SBE_NOEXCEPT
     {
-        return 12;
+        return 16;
     }
 
     static SBE_CONSTEXPR std::int64_t fromPositionNullValue() SBE_NOEXCEPT
@@ -493,14 +493,14 @@ public:
     SBE_NODISCARD std::int64_t fromPosition() const SBE_NOEXCEPT
     {
         std::int64_t val;
-        std::memcpy(&val, m_buffer + m_offset + 12, sizeof(std::int64_t));
+        std::memcpy(&val, m_buffer + m_offset + 16, sizeof(std::int64_t));
         return SBE_LITTLE_ENDIAN_ENCODE_64(val);
     }
 
     ReplayRequest &fromPosition(const std::int64_t value) SBE_NOEXCEPT
     {
         std::int64_t val = SBE_LITTLE_ENDIAN_ENCODE_64(value);
-        std::memcpy(m_buffer + m_offset + 12, &val, sizeof(std::int64_t));
+        std::memcpy(m_buffer + m_offset + 16, &val, sizeof(std::int64_t));
         return *this;
     }
 

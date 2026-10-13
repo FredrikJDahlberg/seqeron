@@ -2,6 +2,7 @@ package org.limitless.seqeron.replayer.server;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.function.LongPredicate;
 
 /**
  * Admission control and pending-queue bookkeeping behind {@link ReplayerService}'s {@code
@@ -13,18 +14,16 @@ public final class ReplaySlotAllocator {
     public static final long NO_SLOT = -1;
 
     /** One pending request waiting for a free slot, in request order. */
-    public record PendingRequest(int clientId, long requestId, long fromPosition) { }
+    public record PendingRequest(long clientId, long requestId, long fromPosition) { }
 
-    private record ActiveSlot(int clientId, long token, long lastTouchedMs) { }
+    private record ActiveSlot(long clientId, long token) { }
 
     private int maxConcurrent;
-    private final long slotTtlMs;
     private final List<ActiveSlot> active = new ArrayList<>();
     private final List<PendingRequest> pending = new ArrayList<>();
 
-    public ReplaySlotAllocator(final int maxConcurrent, final long slotTtlMs) {
+    public ReplaySlotAllocator(final int maxConcurrent) {
         this.maxConcurrent = maxConcurrent;
-        this.slotTtlMs = slotTtlMs;
     }
 
     public int activeCount() {
@@ -49,7 +48,7 @@ public final class ReplaySlotAllocator {
     }
 
     /** Removes clientId's active slot, if any (a re-request supersedes it); returns its token, or {@link #NO_SLOT}. */
-    public long supersede(final int clientId) {
+    public long supersede(final long clientId) {
         for (int i = 0; i < active.size(); i++) {
             if (active.get(i).clientId() == clientId) {
                 return active.remove(i).token();
@@ -59,8 +58,8 @@ public final class ReplaySlotAllocator {
     }
 
     /** Records a newly-started replay as occupying a slot. */
-    public void activate(final int clientId, final long token, final long nowMs) {
-        active.add(new ActiveSlot(clientId, token, nowMs));
+    public void activate(final long clientId, final long token) {
+        active.add(new ActiveSlot(clientId, token));
     }
 
     /**
@@ -70,7 +69,7 @@ public final class ReplaySlotAllocator {
      * @param requestId the request to answer when it is finally served
      * @param fromPosition start replay position, or {@code ReplayProtocol.FROM_START}
      */
-    public void enqueue(final int clientId, final long requestId, final long fromPosition) {
+    public void enqueue(final long clientId, final long requestId, final long fromPosition) {
         final PendingRequest request = new PendingRequest(clientId, requestId, fromPosition);
         for (int i = 0; i < pending.size(); i++) {
             if (pending.get(i).clientId() == clientId) {
@@ -86,26 +85,10 @@ public final class ReplaySlotAllocator {
      * one would later take a slot the client never uses.
      * @param clientId client identity
      */
-    public void cancelPending(final int clientId) {
+    public void cancelPending(final long clientId) {
         for (int i = 0; i < pending.size(); i++) {
             if (pending.get(i).clientId() == clientId) {
                 pending.remove(i);
-                return;
-            }
-        }
-    }
-
-    /**
-     * Refreshes a client's slot on its {@code ReplayHeartbeat}, so {@link #reclaimIdle} is an idle timeout
-     * rather than a max lifetime: a full-log replay can legitimately run long.
-     * @param clientId client identity
-     * @param nowMs current time
-     */
-    public void touch(final int clientId, final long nowMs) {
-        for (int i = 0; i < active.size(); i++) {
-            final ActiveSlot slot = active.get(i);
-            if (slot.clientId() == clientId) {
-                active.set(i, new ActiveSlot(clientId, slot.token(), nowMs));
                 return;
             }
         }
@@ -120,15 +103,20 @@ public final class ReplaySlotAllocator {
         return hasCapacity() && !pending.isEmpty() ? pending.removeFirst() : null;
     }
 
-    /** Removes and returns the tokens of every slot untouched for longer than the TTL (see {@link #touch}). */
-    public List<Long> reclaimIdle(final long nowMs) {
-        final List<Long> reclaimed = new ArrayList<>();
+    /**
+     * Removes every slot whose replay has ended.
+     * @param isLive whether the replay a token names is still running
+     * @return how many were removed
+     */
+    public int reclaimEnded(final LongPredicate isLive) {
+        int removed = 0;
         for (int i = active.size() - 1; i >= 0; i--) {
-            if (nowMs - active.get(i).lastTouchedMs() > slotTtlMs) {
-                reclaimed.add(active.remove(i).token());
+            if (!isLive.test(active.get(i).token())) {
+                active.remove(i);
+                ++removed;
             }
         }
-        return reclaimed;
+        return removed;
     }
 
     /** Removes every active slot (shutdown), returning their tokens. */

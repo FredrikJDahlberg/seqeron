@@ -104,9 +104,11 @@ wait "$CONTROL_PID"; CONTROL_RC=$?
 
 echo ""
 echo "=== RESULT ==="
-echo "--- Replayer (member $NEWLEADER) replay decisions for fresh client 9 ---"
-grep "replay for client 9" "$LOG_DIR/seq-$NEWLEADER.log" || echo "(none)"
-REPLAYS=$(grep -c "replay for client 9" "$LOG_DIR/seq-$NEWLEADER.log")
+# The Replayer names a client by the id it requests replays as, which the client logs at start.
+FRESH_ID=$(grep -oE "requests replays as client [0-9]+" "$FRESH_LOG" | grep -oE "[0-9]+$" | head -1)
+echo "--- Replayer (member $NEWLEADER) replay decisions for fresh client 9 (client ${FRESH_ID:-?}) ---"
+grep "replay for client ${FRESH_ID:-none}:" "$LOG_DIR/seq-$NEWLEADER.log" || echo "(none)"
+REPLAYS=$(grep -c "replay for client ${FRESH_ID:-none}:" "$LOG_DIR/seq-$NEWLEADER.log")
 echo "replays served to client 9  : $REPLAYS"
 echo "fresh client caught up      : $CAUGHT"
 echo "PendingSends producer       : $(grep -h 'confirm:' "$LOG_DIR/confirm.log" | tail -1)"

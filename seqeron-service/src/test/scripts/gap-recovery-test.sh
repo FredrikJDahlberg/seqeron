@@ -37,8 +37,8 @@
 #      0's continuous recording (via its ReplayerService) at the hole to heal it.
 #   5. SIGTERM the consumer to flush its delivery-latency report.
 #
-# PASS iff the consumer (a) logged a tap gap (the drop took effect and recovery engaged) with NO fallback
-# to a re-walk, AND (b) kept delivering — its post-catch-up sample count n >= DELIVER_THRESHOLD.
+# PASS iff the consumer (a) logged a tap gap (the drop took effect and recovery engaged), AND (b) kept
+# delivering — its post-catch-up sample count n >= DELIVER_THRESHOLD.
 # A wedge freezes n at a handful; a heal tracks the whole flood, so the two are far apart.
 #
 # A second scenario ("larger deliberate gaps") is folded into this same script via an env var, rather
@@ -162,11 +162,6 @@ CONSUMER_PID=""  # exited (or gave up waiting); don't re-kill in cleanup
 
 # ── Assertions ────────────────────────────────────────────────────────────────
 RECOVERIES=$(grep -c "tap gap: expected globalSeqNo" "$CONSUMER_LOG" 2>/dev/null)
-# The gap must have been repaired by a RESUME, not by a re-walk: a re-walk here replays the whole
-# recording to close a one-frame hole, and only appears as a fallback (the recording rotated under the
-# position the resume anchored on) — which cannot happen in this scenario, whose member records
-# continuously across the failover.
-REWALK=$(grep -c "replaying history from its start" "$CONSUMER_LOG" 2>/dev/null)
 DELIVERED=$(grep -oE "n=[0-9]+" "$CONSUMER_LOG" 2>/dev/null | head -1 | cut -d= -f2)
 DELIVERED=${DELIVERED:-0}
 
@@ -174,14 +169,13 @@ echo ""
 echo "=== RESULT ==="
 echo "  gap size (frames dropped per arm)       : $GAP_SIZE"
 echo "  gap recoveries triggered on consumer    : $RECOVERIES"
-echo "  of which fell back to a re-walk         : $REWALK  (expected 0)"
 echo "  post-catch-up frames delivered (n)      : $DELIVERED  (threshold $DELIVER_THRESHOLD)"
-grep -E "tap gap|replaying history from its start|delivery latency" "$CONSUMER_LOG" 2>/dev/null | tail -6 | sed 's/^/    /'
+grep -E "tap gap|delivery latency" "$CONSUMER_LOG" 2>/dev/null | tail -6 | sed 's/^/    /'
 
-if [[ "$RECOVERIES" -ge 1 && "$REWALK" -eq 0 && "$DELIVERED" -ge "$DELIVER_THRESHOLD" ]]; then
+if [[ "$RECOVERIES" -ge 1 && "$DELIVERED" -ge "$DELIVER_THRESHOLD" ]]; then
   echo "GAP-RECOVERY TEST: PASS — consumer resumed its continuous recording at the hole and kept delivering"
   exit 0
 else
-  echo "GAP-RECOVERY TEST: FAIL — consumer did not heal (recoveries=$RECOVERIES, re-walk=$REWALK, delivered=$DELIVERED)"
+  echo "GAP-RECOVERY TEST: FAIL — consumer did not heal (recoveries=$RECOVERIES, delivered=$DELIVERED)"
   exit 1
 fi

@@ -31,7 +31,7 @@ public sealed class GatewayOptions
     /// </summary>
     public bool Passive { get; init; }
 
-    /// <summary>This replica's Replayer client id, unique among the co-located apps on its node.</summary>
+    /// <summary>This replica's client id, its counters' label; unique among the co-located apps on its node.</summary>
     public int ClientId { get; init; }
 
     /// <summary>The node whose tap this instance follows.</summary>

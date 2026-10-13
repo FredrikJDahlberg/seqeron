@@ -28,7 +28,7 @@ public sealed class ReplayerStreamReceiver : IDisposable
 
     private const int FragmentLimit = 16;
 
-    // Scratch for the four control messages this client sends; each is well under 64 bytes.
+    // Scratch for the two control messages this client sends; each is well under 64 bytes.
     private const int RequestBufferLength = 64;
 
     private readonly int _clientId;
@@ -37,8 +37,6 @@ public sealed class ReplayerStreamReceiver : IDisposable
 
     private readonly Replay.MessageHeader _requestHeader = new Replay.MessageHeader();
     private readonly Replay.ReplayRequest _replayRequest = new Replay.ReplayRequest();
-    private readonly Replay.ReplayComplete _replayComplete = new Replay.ReplayComplete();
-    private readonly Replay.ReplayHeartbeat _replayHeartbeat = new Replay.ReplayHeartbeat();
     private readonly Replay.SnapshotQuery _snapshotQuery = new Replay.SnapshotQuery();
     private readonly UnsafeBuffer _requestBuffer = new UnsafeBuffer(GC.AllocateArray<byte>(RequestBufferLength, true));
     private readonly SbeBuffer _requestView = new SbeBuffer();
@@ -49,6 +47,9 @@ public sealed class ReplayerStreamReceiver : IDisposable
 
     private Aeron _aeron;
     private int? _memberId;
+
+    // The id the Replayer addresses this receiver's replies to, drawn from the driver at start; -1 before.
+    private long _replyId = -1;
     private Subscription _tapSubscription;
     private Subscription _replaySubscription;
     private Subscription _controlSubscription;
@@ -57,9 +58,8 @@ public sealed class ReplayerStreamReceiver : IDisposable
     private Counter _recoveryStalledCounter;
 
     /// <summary>A receiver, dropping a live tap frame whenever <paramref name="tapFaults"/> answers true.</summary>
-    /// <param name="clientId">this replica's stable id, unique among the Replayer's co-located apps
-    /// (<c>SEQERON_REPLAYER_CLIENT_ID</c>); two apps sharing one supersede each other's replays and neither ever
-    /// catches up</param>
+    /// <param name="clientId">this replica's id on the node, its counters' <c>client</c> label; replicas sharing one
+    /// share their counters' series</param>
     /// <param name="onSequenced">receives every in-order frame</param>
     /// <param name="onLeadershipChanged">receives each leadership change, or null to have it reach
     /// <paramref name="onSequenced"/></param>
@@ -72,7 +72,7 @@ public sealed class ReplayerStreamReceiver : IDisposable
     {
         _clientId = clientId;
         _tapFaults = tapFaults;
-        _recovery = new ReplayerRecovery(clientId, new Actions(this), onSequenced, onLeadershipChanged, onCaughtUp);
+        _recovery = new ReplayerRecovery(new Actions(this), onSequenced, onLeadershipChanged, onCaughtUp);
         _tapHandler = new FragmentAssembler(OnTapFragment);
         _replayHandler = new FragmentAssembler(OnReplayFragment);
         _controlHandler = new FragmentAssembler(OnControlFragment);
@@ -98,6 +98,9 @@ public sealed class ReplayerStreamReceiver : IDisposable
     {
         _aeron = aeron;
         _memberId = memberId;
+        _replyId = aeron.NextCorrelationId();
+        Logger.Info(Logger.CoreComponent.ReplayerStreamReceiver, memberId,
+                    "clientId {0} requests replays as client {1}", _clientId, _replyId);
         _recoveryStalledCounter = SeqeronCounters.AddAppCounter(
             aeron, SeqeronCounters.AppRecoveryStalledTypeId,
             $"seqeron.app.recoveryStalled member={memberId} client={_clientId}", memberId, _clientId);
@@ -111,8 +114,8 @@ public sealed class ReplayerStreamReceiver : IDisposable
     /// dispatch the tap — <c>ReplayerRecovery</c>'s contiguity check, not the poll routing, decides what a tap
     /// frame is worth mid-walk.</summary>
     /// <returns>fragments consumed</returns>
-    /// <exception cref="InvalidOperationException">once this node's Replayer reports another process using this
-    /// clientId</exception>
+    /// <exception cref="InvalidOperationException">once this node's recording does not hold what recovery asked of
+    /// it</exception>
     public int Poll()
     {
         int work = 0;
@@ -121,10 +124,9 @@ public sealed class ReplayerStreamReceiver : IDisposable
             work += _controlSubscription.Poll(_controlHandler, FragmentLimit);
         }
 
-        if (_recovery.IsClientIdInUse)
+        if (_recovery.Fault != null)
         {
-            throw new InvalidOperationException(
-                $"[ReplayerStreamReceiver] clientId {_clientId} is in use by another process on this node");
+            throw new InvalidOperationException("[ReplayerStreamReceiver] " + _recovery.Fault);
         }
 
         bool requestPubPending = _requestPublication != null && !_requestPublication.IsConnected;
@@ -259,7 +261,7 @@ public sealed class ReplayerStreamReceiver : IDisposable
             }
             Replay.ReplayRequest request = _receiver._replayRequest;
             request.WrapForEncodeAndApplyHeader(_receiver._requestView, 0, _receiver._requestHeader);
-            request.ClientId = _receiver._clientId;
+            request.ClientId = _receiver._replyId;
             request.RequestId = requestId;
             request.FromPosition = fromPosition;
             Offer(Replay.MessageHeader.Size + request.Size);
@@ -273,35 +275,11 @@ public sealed class ReplayerStreamReceiver : IDisposable
             }
             Replay.SnapshotQuery query = _receiver._snapshotQuery;
             query.WrapForEncodeAndApplyHeader(_receiver._requestView, 0, _receiver._requestHeader);
-            query.ClientId = _receiver._clientId;
+            query.ClientId = _receiver._replyId;
             query.RequestId = requestId;
             query.SourceId = sourceId;
             query.Round = round;
             Offer(Replay.MessageHeader.Size + query.Size);
-        }
-
-        public bool SendReplayComplete()
-        {
-            if (!_receiver.RequestPublicationConnected)
-            {
-                return false;
-            }
-            Replay.ReplayComplete complete = _receiver._replayComplete;
-            complete.WrapForEncodeAndApplyHeader(_receiver._requestView, 0, _receiver._requestHeader);
-            complete.ClientId = _receiver._clientId;
-            return Offer(Replay.MessageHeader.Size + complete.Size) >= 0;
-        }
-
-        public bool SendReplayHeartbeat()
-        {
-            if (!_receiver.RequestPublicationConnected)
-            {
-                return false;
-            }
-            Replay.ReplayHeartbeat heartbeat = _receiver._replayHeartbeat;
-            heartbeat.WrapForEncodeAndApplyHeader(_receiver._requestView, 0, _receiver._requestHeader);
-            heartbeat.ClientId = _receiver._clientId;
-            return Offer(Replay.MessageHeader.Size + heartbeat.Size) >= 0;
         }
 
         // Subscribes to exactly one replay, this one, and to nothing on the replay stream otherwise. A standing
@@ -330,14 +308,16 @@ public sealed class ReplayerStreamReceiver : IDisposable
 
         public int? MemberId => _receiver._memberId;
 
+        public long ClientId => _receiver._replyId;
+
         public long NowMs()
         {
             return Clocks.MonotonicMs();
         }
 
-        private long Offer(int length)
+        private void Offer(int length)
         {
-            return _receiver._requestPublication.Offer(_receiver._requestBuffer, 0, length);
+            _receiver._requestPublication.Offer(_receiver._requestBuffer, 0, length);
         }
     }
 }

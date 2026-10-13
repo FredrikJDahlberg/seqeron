@@ -78,9 +78,11 @@ public final class MetricsExporter {
         Map.entry(SeqeronCounters.SEQUENCER_INGRESS_MESSAGES_TYPE_ID,
                   new MetricMeta("seqeron_sequencer_ingress_messages_total",
                                  "Count of ingress messages successfully sequenced.", "counter")),
-        Map.entry(SeqeronCounters.REPLAYER_STALLED_TYPE_ID,
-                  new MetricMeta("seqeron_replayer_stalled",
-                                 "1 while the local archive is unreachable for replay, else 0.", "gauge")),
+        Map.entry(SeqeronCounters.REPLAYER_ARCHIVE_ERRORS_COUNT_TYPE_ID,
+                  new MetricMeta("seqeron_replayer_archive_errors_total",
+                                 "Count of local-archive calls that threw; a sustained rate means the archive is "
+                                     + "not serving replays.",
+                                 "counter")),
         Map.entry(
             SeqeronCounters.REPLAYER_READY_TYPE_ID,
             new MetricMeta("seqeron_replayer_ready",
@@ -94,14 +96,6 @@ public final class MetricsExporter {
         Map.entry(SeqeronCounters.REPLAYER_REPLAYS_SERVED_COUNT_TYPE_ID,
                   new MetricMeta("seqeron_replayer_replays_served_total",
                                  "Count of replays started since this node came up.", "counter")),
-        Map.entry(SeqeronCounters.REPLAYER_IDLE_TTL_RECLAIMED_COUNT_TYPE_ID,
-                  new MetricMeta("seqeron_replayer_idle_ttl_reclaimed_total",
-                                 "Count of replay slots reclaimed by the idle-TTL backstop.", "counter")),
-        Map.entry(SeqeronCounters.REPLAYER_INTEGRITY_FAILURE_TYPE_ID,
-                  new MetricMeta(
-                      "seqeron_replayer_integrity_failure",
-                      "1 once this node's oldest tap recording failed the startup gseq-1 integrity check, else 0.",
-                      "gauge")),
         Map.entry(SeqeronCounters.REPLAYER_CONTROL_REPLIES_DROPPED_COUNT_TYPE_ID,
                   new MetricMeta(
                       "seqeron_replayer_control_replies_dropped_total",
@@ -109,12 +103,6 @@ public final class MetricsExporter {
                           + "control stream. Each costs that app one resend interval and nothing else, so a rising "
                           + "rate — not the absolute value — is what identifies a wedged replica.",
                       "counter")),
-        Map.entry(
-            SeqeronCounters.REPLAYER_CLIENT_ID_COLLISION_TYPE_ID,
-            new MetricMeta("seqeron_replayer_client_id_collision",
-                           "1 once two co-located apps were seen sharing one SEQERON_REPLAYER_CLIENT_ID, else 0. "
-                               + "They stop each other's replays and neither catches up until it is corrected.",
-                           "gauge")),
         Map.entry(SeqeronCounters.REPLAYER_SNAPSHOT_ROUND_TYPE_ID,
                   new MetricMeta("seqeron_replayer_snapshot_round",
                                  "Round of the latest valid snapshot this node has indexed, per source. A source "

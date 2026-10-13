@@ -22,8 +22,6 @@
 
 // Request codecs (sbe-replay.xml); the replies are decoded in ReplayerRecovery.
 #include "org_limitless_seqeron_sbe_replay/MessageHeader.h"
-#include "org_limitless_seqeron_sbe_replay/ReplayComplete.h"
-#include "org_limitless_seqeron_sbe_replay/ReplayHeartbeat.h"
 #include "org_limitless_seqeron_sbe_replay/ReplayRequest.h"
 #include "org_limitless_seqeron_sbe_replay/SnapshotQuery.h"
 
@@ -61,7 +59,8 @@ class ReplayerStreamReceiver final : private detail::ReplayerRecoveryActions
      * Creates a receiver that has not started. A frame whose own callback is empty reaches onSequenced
      * instead.
      *
-     * @param clientId            unique among the replicas on this node; two sharing one never catch up
+     * @param clientId            this replica's id on the node, its counters' client label; replicas sharing one
+     *                            share their counters' series
      * @param onSequenced         every other frame, application and system, in globalSeqNo order; required
      * @param onConnected         each ConnectionOpened
      * @param onDisconnected      each ConnectionClosed
@@ -73,7 +72,7 @@ class ReplayerStreamReceiver final : private detail::ReplayerRecoveryActions
                            OnDisconnected onDisconnected = {}, OnLeadershipChanged onLeadershipChanged = {},
                            OnCaughtUp onCaughtUp = {}) :
       m_clientId(clientId),
-      m_recovery(clientId, *this, std::move(onSequenced), std::move(onConnected), std::move(onDisconnected),
+      m_recovery(*this, std::move(onSequenced), std::move(onConnected), std::move(onDisconnected),
                  std::move(onLeadershipChanged), std::move(onCaughtUp)),
       // Temporaries: FragmentAssembler copies the delegate into its own member.
       m_tapAssembler(
@@ -119,6 +118,9 @@ class ReplayerStreamReceiver final : private detail::ReplayerRecoveryActions
     void start(std::shared_ptr<aeron::Aeron> aeron, const std::int32_t memberId)
     {
         m_aeron = std::move(aeron);
+        m_replyId = m_aeron->nextCorrelationId();
+        util::Logger::info(util::component::ReplayerStreamReceiver, "clientId %d requests replays as client %lld",
+                           static_cast<int>(m_clientId), static_cast<long long>(m_replyId));
         m_recoveryStalledCounterRegId = protocol::addAppCounter(
             m_aeron, protocol::APP_RECOVERY_STALLED_TYPE_ID,
             "seqeron.app.recoveryStalled member=" + std::to_string(memberId) + " client=" + std::to_string(m_clientId),
@@ -133,8 +135,8 @@ class ReplayerStreamReceiver final : private detail::ReplayerRecoveryActions
 
     // One duty-cycle iteration; returns fragments consumed. Drains control, rides an attached replay image,
     // and always drains and dispatches the tap: ReplayerRecovery's contiguity check decides what a tap frame
-    // is worth mid-walk. Throws std::runtime_error once this node's Replayer reports another process using
-    // this clientId.
+    // is worth mid-walk. Throws std::runtime_error once this node's recording does not hold what recovery asked of
+    // it.
     int poll()
     {
         resolveResources();
@@ -144,10 +146,9 @@ class ReplayerStreamReceiver final : private detail::ReplayerRecoveryActions
         {
             work += m_controlSub->poll(m_controlPoll, FRAGMENT_LIMIT);
         }
-        if (m_recovery.isClientIdInUse())
+        if (m_recovery.fault())
         {
-            throw std::runtime_error("[ReplayerStreamReceiver] clientId " + std::to_string(m_clientId) +
-                                     " is in use by another process on this node");
+            throw std::runtime_error("[ReplayerStreamReceiver] " + *m_recovery.fault());
         }
 
         // The request publication's connect is a short race, so retry every poll while it is pending.
@@ -163,7 +164,7 @@ class ReplayerStreamReceiver final : private detail::ReplayerRecoveryActions
             if (m_replayImage)
             {
                 // Held locally across the poll: a replayed frame can abandon this replay from inside the
-                // handler (an anchor mismatch re-walks), which drops m_replayImage.
+                // handler (an anchor mismatch), which drops m_replayImage.
                 const std::shared_ptr<aeron::Image> image = m_replayImage;
                 if (!image->isClosed())
                 {
@@ -238,7 +239,7 @@ class ReplayerStreamReceiver final : private detail::ReplayerRecoveryActions
         alignas(16) std::array<std::uint8_t, REQUEST_BUFFER_LENGTH> buf{};
         sbe::replay::ReplayRequest enc;
         enc.wrapAndApplyHeader(reinterpret_cast<char*>(buf.data()), 0, buf.size());
-        enc.clientId(m_clientId).requestId(requestId).fromPosition(fromPosition);
+        enc.clientId(m_replyId).requestId(requestId).fromPosition(fromPosition);
         const auto len =
             static_cast<aeron::util::index_t>(sbe::replay::MessageHeader::encodedLength() + enc.encodedLength());
         aeron::concurrent::AtomicBuffer ab(buf.data(), buf.size());
@@ -254,43 +255,11 @@ class ReplayerStreamReceiver final : private detail::ReplayerRecoveryActions
         alignas(16) std::array<std::uint8_t, REQUEST_BUFFER_LENGTH> buf{};
         sbe::replay::SnapshotQuery enc;
         enc.wrapAndApplyHeader(reinterpret_cast<char*>(buf.data()), 0, buf.size());
-        enc.clientId(m_clientId).requestId(requestId).sourceId(sourceId).round(round);
+        enc.clientId(m_replyId).requestId(requestId).sourceId(sourceId).round(round);
         const auto len =
             static_cast<aeron::util::index_t>(sbe::replay::MessageHeader::encodedLength() + enc.encodedLength());
         aeron::concurrent::AtomicBuffer ab(buf.data(), buf.size());
         m_requestPub->offer(ab, 0, len);
-    }
-
-    bool sendReplayComplete() override
-    {
-        if (!m_requestPub || !m_requestPub->isConnected())
-        {
-            return false;
-        }
-        alignas(16) std::array<std::uint8_t, REQUEST_BUFFER_LENGTH> buf{};
-        sbe::replay::ReplayComplete enc;
-        enc.wrapAndApplyHeader(reinterpret_cast<char*>(buf.data()), 0, buf.size());
-        enc.clientId(m_clientId);
-        const auto len =
-            static_cast<aeron::util::index_t>(sbe::replay::MessageHeader::encodedLength() + enc.encodedLength());
-        aeron::concurrent::AtomicBuffer ab(buf.data(), buf.size());
-        return m_requestPub->offer(ab, 0, len) >= 0;
-    }
-
-    bool sendReplayHeartbeat() override
-    {
-        if (!m_requestPub || !m_requestPub->isConnected())
-        {
-            return false;
-        }
-        alignas(16) std::array<std::uint8_t, REQUEST_BUFFER_LENGTH> buf{};
-        sbe::replay::ReplayHeartbeat enc;
-        enc.wrapAndApplyHeader(reinterpret_cast<char*>(buf.data()), 0, buf.size());
-        enc.clientId(m_clientId);
-        const auto len =
-            static_cast<aeron::util::index_t>(sbe::replay::MessageHeader::encodedLength() + enc.encodedLength());
-        aeron::concurrent::AtomicBuffer ab(buf.data(), buf.size());
-        return m_requestPub->offer(ab, 0, len) >= 0;
     }
 
     // Subscribes to exactly one replay, this one, and to nothing on the replay stream otherwise. A standing
@@ -386,6 +355,11 @@ class ReplayerStreamReceiver final : private detail::ReplayerRecoveryActions
         return reinterpret_cast<char*>(buffer.buffer()) + offset;
     }
 
+    std::int64_t clientId() override
+    {
+        return m_replyId;
+    }
+
     std::int64_t nowMs() override
     {
         using namespace std::chrono;
@@ -396,6 +370,7 @@ class ReplayerStreamReceiver final : private detail::ReplayerRecoveryActions
     detail::ReplayerRecovery m_recovery;
 
     std::shared_ptr<aeron::Aeron> m_aeron;
+    std::int64_t m_replyId = -1; // the id the Replayer addresses this receiver's replies to, drawn at start
     std::int64_t m_tapSubRegId = -1;
     std::int64_t m_replaySubRegId = -1;
     std::int64_t m_controlSubRegId = -1;

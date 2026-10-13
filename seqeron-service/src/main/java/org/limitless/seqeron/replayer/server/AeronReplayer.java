@@ -15,13 +15,13 @@ import java.util.ArrayList;
 import java.util.List;
 import org.agrona.BitUtil;
 import org.agrona.DirectBuffer;
+import org.agrona.collections.Long2LongHashMap;
 import org.agrona.concurrent.status.AtomicCounter;
 import org.agrona.concurrent.status.CountersReader;
 import org.limitless.seqeron.protocol.FrameLayer;
 import org.limitless.seqeron.protocol.ReplayProtocol;
 import org.limitless.seqeron.protocol.SeqeronCounters;
 import org.limitless.seqeron.sequencer.SequencerService;
-import org.limitless.seqeron.util.Clocks;
 
 /**
  * The production {@link Replayer}: {@link ReplayerService}'s calls forwarded to the
@@ -41,6 +41,9 @@ public final class AeronReplayer implements Replayer {
 
     /** The counter {@link #recordingPosition} last found, while it still counts that recording. */
     private int recordingCounterId = CountersReader.NULL_COUNTER_ID;
+
+    /** The publisher-limit counter of each replay {@link #isReplayLive} has found, by replay session id. */
+    private final Long2LongHashMap replayCounterIds = new Long2LongHashMap(CountersReader.NULL_COUNTER_ID);
 
     public AeronReplayer(final Aeron aeron, final AeronArchive archive, final int memberId) {
         this.aeron = aeron;
@@ -115,7 +118,37 @@ public final class AeronReplayer implements Replayer {
 
     @Override
     public void stopReplay(final long replaySessionId) {
+        replayCounterIds.remove(replaySessionId);
         archive.stopReplay(replaySessionId);
+    }
+
+    @Override
+    public boolean isReplayLive(final long replaySessionId) {
+        final CountersReader counters = aeron.countersReader();
+        final int cached = (int)replayCounterIds.get(replaySessionId);
+        if (cached != CountersReader.NULL_COUNTER_ID && isReplayCounter(counters, cached, replaySessionId)) {
+            return true;
+        }
+        replayCounterIds.remove(replaySessionId);
+        for (int counterId = 0, maxId = counters.maxCounterId(); counterId <= maxId; counterId++) {
+            if (isReplayCounter(counters, counterId, replaySessionId)) {
+                replayCounterIds.put(replaySessionId, counterId);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean isReplayCounter(final CountersReader counters, final int counterId,
+                                           final long replaySessionId) {
+        if (counters.getCounterState(counterId) != CountersReader.RECORD_ALLOCATED ||
+            counters.getCounterTypeId(counterId) != AeronCounters.DRIVER_PUBLISHER_LIMIT_TYPE_ID) {
+            return false;
+        }
+        final int key = CountersReader.metaDataOffset(counterId) + CountersReader.KEY_OFFSET;
+        final DirectBuffer metaData = counters.metaDataBuffer();
+        return metaData.getInt(key + StreamCounter.STREAM_ID_OFFSET) == ReplayProtocol.REPLAY_STREAM_ID &&
+            metaData.getInt(key + StreamCounter.SESSION_ID_OFFSET) == (int)replaySessionId;
     }
 
     @Override
@@ -131,23 +164,6 @@ public final class AeronReplayer implements Replayer {
     @Override
     public long offerControl(final DirectBuffer buffer, final int offset, final int length) {
         return controlPub.offer(buffer, offset, length);
-    }
-
-    @Override
-    public SelfCheckStream openSelfCheckStream(final long replaySessionId) {
-        final String channel = ReplayProtocol.IPC_CHANNEL + "|session-id=" + (int)replaySessionId;
-        final Subscription subscription = aeron.addSubscription(channel, ReplayerService.SELF_CHECK_STREAM_ID);
-        return new SelfCheckStream() {
-            @Override
-            public int poll(final FragmentHandler handler, final int fragmentLimit) {
-                return subscription.poll(handler, fragmentLimit);
-            }
-
-            @Override
-            public void close() {
-                subscription.close();
-            }
-        };
     }
 
     @Override
@@ -207,10 +223,5 @@ public final class AeronReplayer implements Replayer {
     @Override
     public long epochMillis() {
         return System.currentTimeMillis();
-    }
-
-    @Override
-    public long nowMs() {
-        return Clocks.monotonicMs();
     }
 }

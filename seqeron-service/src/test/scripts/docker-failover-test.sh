@@ -11,7 +11,7 @@
 # WHAT IT ASSERTS, in the order they matter:
 #   1. Every round is a genuine leadership change — a new member leads, and the killed one rejoins.
 #   2. A long-lived observer replica on each surviving node keeps delivering IN ORDER across every
-#      failover. ReplayerStreamReceiver enforces gap-freedom: a hole triggers a healing re-walk and
+#      failover. ReplayerStreamReceiver enforces gap-freedom: a hole triggers a healing resume and
 #      logs "re-converged", so the observers' delivered counts and re-convergences are the
 #      continuity evidence. This is the assertion a single-kill test never made.
 #   3. A cold-start probe, started only at the end, replays the WHOLE history — every tenure — off
@@ -223,8 +223,10 @@ delivered_of() {   # last in-order delivered count reported by node $1's observe
         | tail -1 | grep -o '[0-9]*$'
 }
 
+# The Replayer names a client by the id it requests replays as, which the client logs at start.
+COLD_REPLY_ID=$(grep -oE "requests replays as client [0-9]+" "${COLD_LOG}" | grep -oE "[0-9]+$" | head -1)
 REPLAY_DECISIONS="$("${COMPOSE[@]}" logs --no-color "node-${LEADER}" 2>/dev/null \
-                    | grep "replay for client ${COLD_CLIENT_ID}:")"
+                    | grep "replay for client ${COLD_REPLY_ID:-none}:")"
 REPLAYS=$(printf '%s' "${REPLAY_DECISIONS}" | grep -c . )
 REPLAY_BYTES=$(printf '%s' "${REPLAY_DECISIONS}" | tail -1 | grep -o '\[0,[0-9]*)' | grep -o '[0-9]*)' | tr -d ')')
 REPLAY_BYTES="${REPLAY_BYTES:-0}"

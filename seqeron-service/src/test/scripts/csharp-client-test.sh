@@ -154,7 +154,9 @@ echo "=== E: cold start on new leader $L2"
 sleep 3  # let the new leader settle
 probe follow follow "${L2:-$P}" 36 --live-seconds 5; E_RC=$?
 echo "    $(verdict follow)"
-REPLAYS=$(grep -c "replay for client 36" "$LOG_DIR/seq-${L2:-$P}.log")
+# The Replayer names a client by the id it requests replays as, which the client logs at start.
+REPLY_ID=$(grep -oE "requests replays as client [0-9]+" "$LOG_DIR/follow.log" | grep -oE "[0-9]+$" | tail -1)
+REPLAYS=$(grep -c "replay for client ${REPLY_ID:-none}:" "$LOG_DIR/seq-${L2:-$P}.log")
 echo "    replays served to client 36: $REPLAYS"
 
 echo "=== F: the C# examples, and a gateway handover"

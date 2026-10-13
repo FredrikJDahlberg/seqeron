@@ -163,7 +163,7 @@ top-level rather than nested, per .NET design guidelines.
 | `listener` | required | required | | edge or service logic |
 | `gatewayName` | required | | | topology row this instance joins |
 | `sourceId` | with `snapshotListener` | required | | `sourceId` declared in the topology row |
-| `clientId` | ✓ | ✓ | 0 | Replayer client id, unique per node |
+| `clientId` | ✓ | ✓ | 0 | the client's counter label, unique per node |
 | `memberId` | ✓ | ✓ | 0 | member (or gateway host node id) whose tap is followed |
 | `egressChannel` | required | required | | cluster session egress channel |
 | `ingressEndpoints` | ✓ | ✓ | `PortLayout.ingressEndpoints()` | member ingress endpoints |
@@ -362,9 +362,10 @@ restore again and redispatch everything after the cut. Passive gateway activatio
 
 ### Client ids
 
-`clientId` identifies the client to its node's Replayer and must be unique among clients on that node. Two
-clients sharing one cancel each other's replays; the Replayer detects this and both clients stop
-([`ops.md`](ops.md#replayer-client-ids), which also lists the ids this repository uses).
+`clientId` is the `client` label of the client's counters, and should be unique among clients on a node: two
+sharing one share their counters' series ([`ops.md`](ops.md#client-ids), which also lists the ids this
+repository uses). The Replayer addresses a client by an id the client draws from its media driver, which
+makes it unique.
 
 ### Message delivery
 

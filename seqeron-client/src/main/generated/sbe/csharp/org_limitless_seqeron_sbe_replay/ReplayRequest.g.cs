@@ -14,7 +14,7 @@ namespace Org.Limitless.Seqeron.Sbe.Replay
     /// </summary>
     public sealed partial class ReplayRequest
     {
-        public const ushort BlockLength = (ushort)20;
+        public const ushort BlockLength = (ushort)24;
         public const ushort TemplateId = (ushort)6;
         public const ushort SchemaId = (ushort)212;
         public const ushort SchemaVersion = (ushort)0;
@@ -118,22 +118,22 @@ namespace Org.Limitless.Seqeron.Sbe.Replay
             return "";
         }
 
-        public const int ClientIdNullValue = -2147483648;
-        public const int ClientIdMinValue = -2147483647;
-        public const int ClientIdMaxValue = 2147483647;
+        public const long ClientIdNullValue = -9223372036854775808L;
+        public const long ClientIdMinValue = -9223372036854775807L;
+        public const long ClientIdMaxValue = 9223372036854775807L;
 
         /// <summary>
-        /// The client's id, unique among the replayer's co-located clients
+        /// Drawn once by the client from its media driver (Aeron.nextCorrelationId), so unique among the replayer's clients
         /// </summary>
-        public int ClientId
+        public long ClientId
         {
             get
             {
-                return _buffer.Int32GetLittleEndian(_offset + 0);
+                return _buffer.Int64GetLittleEndian(_offset + 0);
             }
             set
             {
-                _buffer.Int32PutLittleEndian(_offset + 0, value);
+                _buffer.Int64PutLittleEndian(_offset + 0, value);
             }
         }
 
@@ -146,7 +146,7 @@ namespace Org.Limitless.Seqeron.Sbe.Replay
             return _actingVersion >= RequestIdSinceVersion;
         }
 
-        public const int RequestIdOffset = 4;
+        public const int RequestIdOffset = 8;
 
         public static string RequestIdMetaAttribute(MetaAttribute metaAttribute)
         {
@@ -172,11 +172,11 @@ namespace Org.Limitless.Seqeron.Sbe.Replay
         {
             get
             {
-                return _buffer.Int64GetLittleEndian(_offset + 4);
+                return _buffer.Int64GetLittleEndian(_offset + 8);
             }
             set
             {
-                _buffer.Int64PutLittleEndian(_offset + 4, value);
+                _buffer.Int64PutLittleEndian(_offset + 8, value);
             }
         }
 
@@ -189,7 +189,7 @@ namespace Org.Limitless.Seqeron.Sbe.Replay
             return _actingVersion >= FromPositionSinceVersion;
         }
 
-        public const int FromPositionOffset = 12;
+        public const int FromPositionOffset = 16;
 
         public static string FromPositionMetaAttribute(MetaAttribute metaAttribute)
         {
@@ -215,11 +215,11 @@ namespace Org.Limitless.Seqeron.Sbe.Replay
         {
             get
             {
-                return _buffer.Int64GetLittleEndian(_offset + 12);
+                return _buffer.Int64GetLittleEndian(_offset + 16);
             }
             set
             {
-                _buffer.Int64PutLittleEndian(_offset + 12, value);
+                _buffer.Int64PutLittleEndian(_offset + 16, value);
             }
         }
 

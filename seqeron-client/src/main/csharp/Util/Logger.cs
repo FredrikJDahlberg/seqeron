@@ -82,9 +82,6 @@ public static class Logger
         /// <summary>A tap offer back-pressured; the sequencer spins rather than drop the frame.</summary>
         TapBackpressure,
 
-        /// <summary>A tap recording does not start where this node's chain says it must.</summary>
-        ArchiveIntegrityFailure,
-
         /// <summary>An older recording still reports as recording, which an unclean shutdown leaves
         /// behind.</summary>
         StaleActiveRecording,
@@ -105,9 +102,6 @@ public static class Logger
         /// <summary>The Replayer's duty cycle failed, typically its media driver going away.</summary>
         ReplayDutyCycleFailure,
 
-        /// <summary>Two co-located replicas are using one client id, so neither converges.</summary>
-        ReplayClientIdCollision,
-
         /// <summary>A duty-cycle thread outlived the deadline for stopping, and is being left behind.</summary>
         ShutdownTimeout,
 
@@ -116,9 +110,6 @@ public static class Logger
 
         /// <summary>The live tap skipped a <c>globalSeqNo</c>; recovery replays the hole.</summary>
         TapGap,
-
-        /// <summary>This node's Replayer has no valid history to serve.</summary>
-        ReplayUnavailable,
 
         /// <summary>Recovery has dispatched nothing for longer than its deadline.</summary>
         RecoveryStalled,

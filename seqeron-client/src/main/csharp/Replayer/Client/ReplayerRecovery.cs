@@ -23,8 +23,8 @@ namespace Org.Limitless.Seqeron.Replayer.Client;
 /// <para>Given a source to restore (<see cref="RestoreFrom"/>), a cold start first restores the newest snapshot of
 /// its own that the log confirms (doc/snapshot.md §7): it asks the Replayer for that round's sequenced
 /// <c>SnapshotEnd</c>, reads the file's records into the handler if they match it, dispatching nothing, then resumes
-/// at the round's <c>SnapshotStarted</c> with the cut as the anchor; every later fall-back to a walk resumes there
-/// instead. A file the log does not confirm gives way to the next older one, and the last to a walk.</para>
+/// at the round's <c>SnapshotStarted</c> with the cut as the anchor. A file the log does not confirm gives way to the
+/// next older one, and the last to a walk.</para>
 /// <para><c>ReplayerRecovery.java</c> and <c>ReplayerRecovery.hpp</c> are its twins; keep the three in step.</para>
 /// </summary>
 internal sealed class ReplayerRecovery
@@ -35,18 +35,17 @@ internal sealed class ReplayerRecovery
     // so a replay with anything left is never quiet this long; a spurious fire re-requests the replay.
     private const long ReplayStallTimeoutMs = 5_000;
 
-    // How long recovery may dispatch nothing before it is reported unconvergent: a re-walk loop that keeps
+    // How long recovery may dispatch nothing before it is reported unconvergent: a re-request loop that keeps
     // finishing healthy replays yet dispatches nothing, which ReplayStallTimeoutMs cannot see.
     private const long RecoveryProgressTimeoutMs = 30_000;
 
-    // Caps on frames retained ahead of a hole; past either, recovery falls back to re-walking.
+    // Caps on frames retained ahead of a hole; past either, recovery resumes at the last dispatched frame.
     private const int MaxRetainedFrames = 65536;
     private const long MaxRetainedBytes = 16L * 1024 * 1024;
 
     /// <summary>Records one duty cycle restores at most, so a large snapshot does not stall the session.</summary>
     internal const int MaxRestoreRecordsPerCycle = 1024;
 
-    private readonly int _clientId;
     private readonly IReplayerRecoveryActions _actions;
     private readonly SequencedHandler _onSequenced;
     private readonly LeadershipHandler _onLeadershipChanged;
@@ -58,8 +57,6 @@ internal sealed class ReplayerRecovery
     private readonly Replay.MessageHeader _controlHeader = new Replay.MessageHeader();
     private readonly Replay.Replaying _replaying = new Replay.Replaying();
     private readonly Replay.ReplayPending _replayPending = new Replay.ReplayPending();
-    private readonly Replay.ReplayUnavailable _replayUnavailable = new Replay.ReplayUnavailable();
-    private readonly Replay.ReplayClientIdInUse _replayClientIdInUse = new Replay.ReplayClientIdInUse();
     private readonly Replay.SnapshotLocation _snapshotLocation = new Replay.SnapshotLocation();
     private readonly UnsafeBuffer _restoreRecord = new UnsafeBuffer();
 
@@ -81,18 +78,8 @@ internal sealed class ReplayerRecovery
     // Advances per send; replies not carrying it are stale (see OnControl).
     private long _requestId;
 
-    private long _lastHeartbeatMs;
-
-    // A ReplayComplete that did not land (transient back-pressure), retried from DoTimers. Nothing supersedes a
-    // release, unlike a request.
-    private bool _completePending;
-
     private long _lastReplayPosition = -1;
     private long _lastReplayProgressMs;
-
-    // The Replayer is refusing to serve us: reported once per episode, and named in the stall report.
-    private bool _replayerUnavailable;
-    private bool _clientIdInUse;
 
     private long _lastGlobalSeqNo;
 
@@ -118,7 +105,7 @@ internal sealed class ReplayerRecovery
     private long _retainBytes;
 
     // Frames were dropped ahead of the hole because the FIFO was full, so this client's frontier is short: it must
-    // re-walk rather than declare itself caught up. Cleared by EndOverflowEpisode.
+    // resume rather than declare itself caught up. Cleared by EndOverflowEpisode.
     private bool _retainOverflowed;
     private bool _retainOverflowLogged;
 
@@ -145,21 +132,17 @@ internal sealed class ReplayerRecovery
     private SnapshotHeader _restoredHeader;
 
     /// <summary>Creates the state machine; nothing is sent before <see cref="Start"/>.</summary>
-    /// <param name="clientId">this replica's stable id, unique among the Replayer's co-located apps
-    /// (<c>SEQERON_REPLAYER_CLIENT_ID</c>); two apps sharing one supersede each other's replays and neither ever
-    /// catches up</param>
     /// <param name="actions">performs the sends and the replay subscription this class decides on, and supplies the
-    /// clock</param>
+    /// clock and the id replies are addressed to</param>
     /// <param name="onSequenced">receives every in-order frame</param>
     /// <param name="onLeadershipChanged">receives each leadership change, or null to have it reach
     /// <paramref name="onSequenced"/></param>
     /// <param name="onCaughtUp">fires on every transition to caught-up, or null</param>
     /// <exception cref="ArgumentNullException">if <paramref name="onSequenced"/> is null</exception>
-    public ReplayerRecovery(int clientId, IReplayerRecoveryActions actions, SequencedHandler onSequenced,
+    public ReplayerRecovery(IReplayerRecoveryActions actions, SequencedHandler onSequenced,
                             LeadershipHandler onLeadershipChanged, CaughtUpHandler onCaughtUp)
     {
         ArgumentNullException.ThrowIfNull(onSequenced);
-        _clientId = clientId;
         _actions = actions;
         _onSequenced = onSequenced;
         _onLeadershipChanged = onLeadershipChanged;
@@ -228,25 +211,22 @@ internal sealed class ReplayerRecovery
     public void OnFrame(IDirectBuffer buffer, int offset, int length, long framePosition, long receiveNs,
                         bool fromReplay)
     {
-        if (RestoreFailure != null || !_event.Wrap(buffer, offset, length))
+        if (RestoreFailure != null || Fault != null || !_event.Wrap(buffer, offset, length))
         {
             return;
         }
         long globalSeqNo = _event.GlobalSeqNo;
 
-        // First frame off a resume replay: it must be the frame whose position requested.
+        // First frame off a resume replay: it must be the frame whose position requested. Positions follow from the
+        // frames, and the recording changes only with the node's driver, so a mismatch is a fault.
         if (fromReplay && _resumeAnchorGlobalSeqNo != 0)
         {
             long anchor = _resumeAnchorGlobalSeqNo;
             _resumeAnchorGlobalSeqNo = 0;
             if (globalSeqNo != anchor)
             {
-                Logger.Log(Logger.CoreComponent.ReplayerStreamReceiver, Logger.Severity.Warn,
-                           Logger.CoreEventCode.TapGap, _actions.MemberId,
-                           "resume replay opened at globalSeqNo={0}, expected {1} — the active recording rotated " +
-                               "under us; replaying history from its start (or from the restored snapshot)",
-                           globalSeqNo, anchor);
-                Rewalk();
+                Fail($"resume replay at position {_requestFromPosition} opened at globalSeqNo={globalSeqNo}, " +
+                     $"expected {anchor}");
                 return;
             }
         }
@@ -306,7 +286,7 @@ internal sealed class ReplayerRecovery
     }
 
     /// <summary>Decodes one Replayer control message (<c>Replaying</c>/<c>ReplayPending</c>/
-    /// <c>ReplayUnavailable</c>/<c>ReplayClientIdInUse</c>/<c>SnapshotLocation</c>).</summary>
+    /// <c>SnapshotLocation</c>).</summary>
     /// <param name="buffer">holding the message</param>
     /// <param name="offset">of its first byte</param>
     /// <param name="length">of the message</param>
@@ -328,10 +308,11 @@ internal sealed class ReplayerRecovery
         }
 
         int templateId = _controlHeader.TemplateId;
+        long clientId = _actions.ClientId;
         if (templateId == Replay.Replaying.TemplateId)
         {
             _replaying.WrapForDecode(_view, bodyOffset, blockLength, version);
-            if (_replaying.ClientId != _clientId)
+            if (_replaying.ClientId != clientId)
             {
                 return; // another replica's reply on the shared control stream
             }
@@ -344,7 +325,7 @@ internal sealed class ReplayerRecovery
         else if (templateId == Replay.SnapshotLocation.TemplateId)
         {
             _snapshotLocation.WrapForDecode(_view, bodyOffset, blockLength, version);
-            if (_querying && _snapshotLocation.ClientId == _clientId && _snapshotLocation.RequestId == _requestId)
+            if (_querying && _snapshotLocation.ClientId == clientId && _snapshotLocation.RequestId == _requestId)
             {
                 OnSnapshotLocation();
             }
@@ -352,35 +333,18 @@ internal sealed class ReplayerRecovery
         else if (templateId == Replay.ReplayPending.TemplateId)
         {
             _replayPending.WrapForDecode(_view, bodyOffset, blockLength, version);
-            if (_replayPending.ClientId == _clientId && _replayPending.RequestId == _requestId)
+            if (_replayPending.ClientId == clientId && _replayPending.RequestId == _requestId)
             {
                 _lastRequestMs = _actions.NowMs();
-                _replayerUnavailable = false; // queued, not refused: the episode ended
-            }
-        }
-        else if (templateId == Replay.ReplayUnavailable.TemplateId)
-        {
-            _replayUnavailable.WrapForDecode(_view, bodyOffset, blockLength, version);
-            if (_replayUnavailable.ClientId == _clientId && _replayUnavailable.RequestId == _requestId)
-            {
-                OnReplayUnavailable();
-            }
-        }
-        else if (templateId == Replay.ReplayClientIdInUse.TemplateId)
-        {
-            _replayClientIdInUse.WrapForDecode(_view, bodyOffset, blockLength, version);
-            if (_replayClientIdInUse.ClientId == _clientId)
-            {
-                OnClientIdInUse();
             }
         }
     }
 
     /// <summary>
-    /// Whether this node's Replayer has seen another process requesting under this client's id. Latched: the
-    /// receiver raises it from its duty cycle, since a throw from inside a fragment handler is swallowed.
+    /// Why recovery cannot go on, or null. Latched: the receiver raises it from its duty cycle, since a throw from
+    /// inside a fragment handler is swallowed.
     /// </summary>
-    public bool IsClientIdInUse => _clientIdInUse;
+    public string Fault { get; private set; }
 
     /// <summary>
     /// Where the attached replay image has reached. Completion is by position, not by the image closing: a bounded
@@ -403,7 +367,7 @@ internal sealed class ReplayerRecovery
 
     /// <summary>
     /// Decides what a closed replay image means. A replay that closes at its bound is complete; any close short of
-    /// it (superseded, TTL-reclaimed, faulted) is not, and treating it as complete would leave a silent hole.
+    /// it (superseded, faulted) is not, and treating it as complete would leave a silent hole.
     /// </summary>
     /// <param name="finalPosition">the image's position when it closed</param>
     public void OnReplayImageClosed(long finalPosition)
@@ -422,8 +386,8 @@ internal sealed class ReplayerRecovery
     }
 
     /// <summary>
-    /// Timer-driven work, once per duty cycle: the next records of a restore, the request resend, an unsent
-    /// <c>ReplayComplete</c>, the replay-slot heartbeat, and the replay stall watchdog.
+    /// Timer-driven work, once per duty cycle: the next records of a restore, the request resend, and the replay
+    /// stall watchdog.
     /// </summary>
     /// <param name="requestPublicationPending">the request publication has not connected yet: retried every cycle
     /// rather than eating a full resend interval for a race much shorter than that</param>
@@ -442,20 +406,7 @@ internal sealed class ReplayerRecovery
         {
             RequestReplay(_requestFromPosition); // re-send the same request verbatim
         }
-        if (_completePending)
-        {
-            SendReplayComplete();
-        }
-
-        if (_replaySessionId < 0)
-        {
-            return;
-        }
-        if ((nowMs - _lastHeartbeatMs) > ResendIntervalMs)
-        {
-            SendHeartbeat();
-        }
-        if ((nowMs - _lastReplayProgressMs) > ReplayStallTimeoutMs)
+        if (_replaySessionId >= 0 && (nowMs - _lastReplayProgressMs) > ReplayStallTimeoutMs)
         {
             OnReplayStalled();
         }
@@ -484,10 +435,10 @@ internal sealed class ReplayerRecovery
         Logger.Fault(Logger.CoreComponent.ReplayerStreamReceiver, Logger.CoreEventCode.RecoveryStalled,
                      _actions.MemberId,
                      "recovery has dispatched nothing for >{0}ms: lastGlobalSeqNo={1} fromPosition={2} " +
-                         "awaitingReplay={3} replaySession={4} replayerUnavailable={5} querying={6} restoring={7} — " +
-                         "holding; check this node's Replayer and its recording",
+                         "awaitingReplay={3} replaySession={4} querying={5} restoring={6} — holding; check this " +
+                         "node's Replayer and its recording",
                      RecoveryProgressTimeoutMs, _lastGlobalSeqNo, _requestFromPosition, Text(_awaitingReplay),
-                     _replaySessionId, Text(_replayerUnavailable), Text(_querying), Text(_restoring));
+                     _replaySessionId, Text(_querying), Text(_restoring));
         _actions.RecoveryStalled(true);
         return true;
     }
@@ -508,7 +459,7 @@ internal sealed class ReplayerRecovery
     public bool IsAwaitingReplay => _awaitingReplay;
 
     /// <summary>
-    /// Mid-walk (cold start or gap re-walk) or awaiting the Replayer's answer: a non-contiguous live-tap frame is
+    /// Mid-replay (cold-start walk or gap resume) or awaiting the Replayer's answer: a non-contiguous live-tap frame is
     /// expected while this holds (the tap runs ahead of the replay), so <see cref="OnFrame"/> drops it without
     /// treating it as a new gap.
     /// </summary>
@@ -534,9 +485,6 @@ internal sealed class ReplayerRecovery
     /// <see cref="ReplayProtocol.FromStart"/>.</summary>
     public long RequestFromPosition => _requestFromPosition;
 
-    /// <summary>A <c>ReplayComplete</c> encoded but not yet out on the wire.</summary>
-    public bool CompletePending => _completePending;
-
     /// <summary>Frames held ahead of the current hole.</summary>
     public int RetainedFrameCount => _retainFrameCount;
 
@@ -554,7 +502,6 @@ internal sealed class ReplayerRecovery
         _requestFromPosition = fromPosition;
         _awaitingReplay = true;
         _replaySessionId = -1;
-        _completePending = false;
         _actions.CloseReplay();
         _lastRequestMs = _actions.NowMs();
         ++_requestId;
@@ -563,26 +510,13 @@ internal sealed class ReplayerRecovery
 
     /// <summary>
     /// Steady-state gap recovery: resume the active recording at the last dispatched frame instead of walking it, so
-    /// a one-frame drop costs a one-frame replay. The recording may have rotated, so the resumed replay's first
-    /// frame is checked against the anchor, falling back to a walk.
+    /// a one-frame drop costs a one-frame replay. The resumed replay's first frame is checked against the
+    /// anchor.
     /// </summary>
     private void RequestResume()
     {
         RequestReplay(_lastFramePosition);
         _resumeAnchorGlobalSeqNo = _lastGlobalSeqNo;
-    }
-
-    /// <summary>Replays history from its start again: the active recording from its start, or, once a snapshot is
-    /// restored, from its <c>SnapshotStarted</c>, with the cut as the anchor.</summary>
-    private void Rewalk()
-    {
-        if (_snapshotGlobalSeqNo == 0)
-        {
-            RequestReplay(ReplayProtocol.FromStart);
-            return;
-        }
-        RequestReplay(_snapshotPosition);
-        _resumeAnchorGlobalSeqNo = _snapshotGlobalSeqNo;
     }
 
     /// <summary>Asks about the newest local snapshot below <paramref name="belowRound"/>, or walks the recording when
@@ -613,7 +547,6 @@ internal sealed class ReplayerRecovery
     private void OnSnapshotLocation()
     {
         _querying = false;
-        _replayerUnavailable = false;
         if (_snapshotLocation.Round != _queriedRound)
         {
             Logger.Info(Logger.CoreComponent.ReplayerStreamReceiver, _actions.MemberId,
@@ -750,18 +683,12 @@ internal sealed class ReplayerRecovery
     private void OnReplaying(long session, long replayCatchUpPosition)
     {
         _awaitingReplay = false;
-        _replayerUnavailable = false;
         if (session == ReplayProtocol.NoReplayNeeded)
         {
             if (_requestFromPosition != ReplayProtocol.FromStart)
             {
-                Logger.Log(Logger.CoreComponent.ReplayerStreamReceiver, Logger.Severity.Warn,
-                           Logger.CoreEventCode.TapGap, _actions.MemberId,
-                           "resume at position {0} answered 'nothing to replay' while a hole is open above " +
-                               "globalSeqNo={1} — the active recording rotated under us; replaying history from its " +
-                               "start (or from the restored snapshot)",
-                           _requestFromPosition, _lastGlobalSeqNo);
-                Rewalk();
+                Fail($"the Replayer refused a resume at position {_requestFromPosition} above " +
+                     $"globalSeqNo={_lastGlobalSeqNo}");
                 return;
             }
             _replaySessionId = -1; // the recording holds nothing yet: follow the live tap
@@ -778,52 +705,15 @@ internal sealed class ReplayerRecovery
         _lastReplayProgressMs = _actions.NowMs();
     }
 
-    private void OnClientIdInUse()
+    /// <summary>Stops recovering: the recording does not hold what the request expected of it.</summary>
+    private void Fail(string reason)
     {
-        if (!_clientIdInUse)
-        {
-            _clientIdInUse = true;
-            Logger.Fault(Logger.CoreComponent.ReplayerStreamReceiver, Logger.CoreEventCode.ReplayClientIdCollision,
-                         _actions.MemberId,
-                         "this node's Replayer reports another process requesting under clientId={0} — neither can " +
-                             "catch up; give each replica on the node its own id",
-                         _clientId);
-        }
-    }
-
-    /// <summary>
-    /// The Replayer's archive failed its globalSeqNo-1 integrity check. Not fatal here: an operator repairs the
-    /// archive and restarts the Replayer, and the resend timer resumes; until then we never catch up.
-    /// </summary>
-    private void OnReplayUnavailable()
-    {
-        if (!_replayerUnavailable)
-        {
-            _replayerUnavailable = true;
-            Logger.Fault(Logger.CoreComponent.ReplayerStreamReceiver, Logger.CoreEventCode.ReplayUnavailable,
-                         _actions.MemberId,
-                         "this node's Replayer has no valid history to serve (its archive failed the globalSeqNo-1 " +
-                             "integrity check) — holding, not dispatching; repair the node's archive and restart its " +
-                             "Replayer");
-        }
-        _lastRequestMs = _actions.NowMs();
-    }
-
-    /// <summary>Releases our replay slot once a replay reaches its bound; <see cref="CompletePending"/> retries
-    /// it.</summary>
-    private void SendReplayComplete()
-    {
-        _completePending = !_actions.SendReplayComplete();
-    }
-
-    /// <summary>Refreshes the replay slot while riding an image, so the Replayer's idle TTL measures an abandoned slot
-    /// rather than a long replay. A lost heartbeat is recovered by the truncated-close path.</summary>
-    private void SendHeartbeat()
-    {
-        if (_actions.SendReplayHeartbeat())
-        {
-            _lastHeartbeatMs = _actions.NowMs();
-        }
+        Fault = reason;
+        _awaitingReplay = false;
+        _replaySessionId = -1;
+        _actions.CloseReplay();
+        Logger.Fault(Logger.CoreComponent.ReplayerStreamReceiver, Logger.CoreEventCode.TapGap, _actions.MemberId,
+                     "FATAL: {0} — this node's recording does not match the positions this client holds", reason);
     }
 
     /// <summary>An attached (or expected) replay stopped delivering: see the watchdog in
@@ -838,14 +728,14 @@ internal sealed class ReplayerRecovery
         ReRequestCurrent();
     }
 
-    /// <summary>The replay reached its bound, or its image closed there.</summary>
+    /// <summary>The replay reached its bound, or its image closed there. Closing the image frees the Replayer's
+    /// slot.</summary>
     private void OnReplayReachedBound()
     {
         _actions.CloseReplay();
         _replaySessionId = -1;
         if (ReachedTip())
         {
-            SendReplayComplete();
             NotifyCaughtUp();
         }
     }
@@ -887,7 +777,7 @@ internal sealed class ReplayerRecovery
 
     /// <summary>
     /// Keeps a live tap frame from beyond the current hole; one not kept is gone. Bounded and lossy past the bound
-    /// (overflow falls back to a re-walk). A plain FIFO: one image delivers globalSeqNo in order, so only an exact
+    /// (overflow falls back to a resume). A plain FIFO: one image delivers globalSeqNo in order, so only an exact
     /// redelivery needs checking.
     /// </summary>
     private void RetainFrame(long globalSeqNo, IDirectBuffer buffer, int offset, int length, long framePosition,
@@ -904,7 +794,7 @@ internal sealed class ReplayerRecovery
                 Logger.Log(Logger.CoreComponent.ReplayerStreamReceiver, Logger.Severity.Warn,
                            Logger.CoreEventCode.TapGap, _actions.MemberId,
                            "retained-frame buffer full at globalSeqNo={0} ({1} frames, {2} bytes) — dropping " +
-                               "ahead-of-hole frames; recovery falls back to re-walking",
+                               "ahead-of-hole frames; recovery resumes at the last dispatched frame",
                            globalSeqNo, _retainFrameCount, _retainBytes);
             }
             return;
@@ -973,8 +863,8 @@ internal sealed class ReplayerRecovery
 
     /// <summary>
     /// The replay side says we are at the tip. Whether we are is the retained FIFO's call: a retained frame may sit
-    /// behind a hole the replay never reached, or an overflow dropped frames. Either way this re-walks now rather
-    /// than waiting for a later tap frame to rediscover the hole.
+    /// behind a hole the replay never reached, or an overflow dropped frames. Either way this resumes at the last
+    /// dispatched frame now rather than waiting for a later tap frame to rediscover the hole.
     /// </summary>
     /// <returns>true only once nothing is left waiting and no overflow is latched</returns>
     private bool ReachedTip()
@@ -985,11 +875,11 @@ internal sealed class ReplayerRecovery
             return true;
         }
         EndOverflowEpisode();
-        Rewalk();
+        RequestResume();
         return false;
     }
 
-    /// <summary>Ends an overflow episode where the covering re-walk is requested, not in
+    /// <summary>Ends an overflow episode where the covering resume is requested, not in
     /// <see cref="DrainRetained"/>, where the dispatch that cleared it would declare us caught up over dropped
     /// frames.</summary>
     private void EndOverflowEpisode()

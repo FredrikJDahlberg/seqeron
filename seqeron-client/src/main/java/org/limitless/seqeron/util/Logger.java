@@ -72,8 +72,6 @@ public final class Logger {
         ServiceError,
         /** A tap offer back-pressured; the sequencer spins rather than drop the frame. */
         TapBackpressure,
-        /** A tap recording does not start where this node's chain says it must. */
-        ArchiveIntegrityFailure,
         /** An older recording still reports as recording, which an unclean shutdown leaves behind. */
         StaleActiveRecording,
         /** This node can no longer record the history it is responsible for. */
@@ -86,16 +84,12 @@ public final class Logger {
         GatewayActivationTimeout,
         /** The Replayer's duty cycle failed — typically its media driver going away. */
         ReplayDutyCycleFailure,
-        /** Two co-located replicas are using one client id, so neither converges. */
-        ReplayClientIdCollision,
         /** A duty-cycle thread outlived the deadline for stopping, and is being left behind. */
         ShutdownTimeout,
         /** A gateway host's relay stopped reading one member's archive and moved to the next. */
         RelaySourceLost,
         /** The live tap skipped a {@code globalSeqNo}; recovery replays the hole. */
         TapGap,
-        /** This node's Replayer has no valid history to serve. */
-        ReplayUnavailable,
         /** Recovery has dispatched nothing for longer than its deadline. */
         RecoveryStalled,
         /** The tap has carried no {@code ClusterHeartbeat} for longer than its deadline. */

@@ -615,7 +615,7 @@ public final class Gateway implements AutoCloseable {
             return this;
         }
 
-        /** This replica's Replayer client id, unique among the co-located apps on its node. */
+        /** This replica's client id, its counters' label; unique among the co-located apps on its node. */
         public Builder clientId(final int clientId) {
             this.clientId = clientId;
             return this;
