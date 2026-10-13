@@ -10,7 +10,7 @@ public sealed class ApplicationOptions
     /// required, because spec §5 is one id space, and never −1, which ingress refuses.</summary>
     public int SourceId { get; init; }
 
-    /// <summary>This replica's Replayer client id, unique among the co-located apps on its node.</summary>
+    /// <summary>This replica's client id, its counters' label; unique among the co-located apps on its node.</summary>
     public int ClientId { get; init; }
 
     /// <summary>The node this replica runs on: whose tap it follows, and whose leadership opens its gate.</summary>

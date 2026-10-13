@@ -54,12 +54,13 @@
     },
     {
       "id": 4,
-      "title": "Replayer stalled",
+      "title": "Replayer archive errors/s",
+      "description": "Local-archive calls that threw. A request one fails is answered ReplayPending and the client's resend is the retry, so a sustained rate means the archive is not serving replays; live delivery is unaffected.",
       "type": "stat",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "x": 12, "y": 0, "w": 4, "h": 4 },
       "targets": [
-        { "refId": "A", "expr": "seqeron_replayer_stalled", "legendFormat": "member {{member}}" }
+        { "refId": "A", "expr": "rate(seqeron_replayer_archive_errors_total[5m])", "legendFormat": "member {{member}}" }
       ],
       "fieldConfig": { "defaults": {}, "overrides": [] },
       "options": {
@@ -196,21 +197,9 @@
       "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single" } }
     },
     {
-      "id": 15,
-      "title": "Idle TTL reclaimed/s",
-      "type": "timeseries",
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "x": 12, "y": 36, "w": 12, "h": 8 },
-      "targets": [
-        { "refId": "A", "expr": "rate(seqeron_replayer_idle_ttl_reclaimed_total[5m])", "legendFormat": "member {{member}}" }
-      ],
-      "fieldConfig": { "defaults": {}, "overrides": [] },
-      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single" } }
-    },
-    {
       "id": 16,
       "title": "Control replies dropped/s",
-      "description": "Replay control replies (Replaying/ReplayPending/ReplayUnavailable) the Replayer dropped at its offer-spin bound rather than spin on. Expected to sit at zero, and it is the RATE that means something — the counter never resets while a node is up, so a flat non-zero line is only old history. A sustained rate means one co-located app subscribed to the control stream and stopped draining it; dropping is deliberate, since the Replayer answers every app from one duty-cycle thread and must not let a wedged one hold the rest. The cost falls on the offending app alone: one ~500 ms resend per drop. NOT_CONNECTED (an app whose subscription is not registered yet) is excluded at the source and never counts here.",
+      "description": "Replay control replies (Replaying/ReplayPending/SnapshotLocation) the Replayer dropped at its offer-spin bound rather than spin on. Expected to sit at zero, and it is the RATE that means something — the counter never resets while a node is up, so a flat non-zero line is only old history. A sustained rate means one co-located app subscribed to the control stream and stopped draining it; dropping is deliberate, since the Replayer answers every app from one duty-cycle thread and must not let a wedged one hold the rest. The cost falls on the offending app alone: one ~500 ms resend per drop. NOT_CONNECTED (an app whose subscription is not registered yet) is excluded at the source and never counts here.",
       "type": "timeseries",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "x": 0, "y": 44, "w": 12, "h": 8 },
@@ -223,7 +212,7 @@
     {
       "id": 17,
       "title": "App recovery stalled",
-      "description": "1 while a co-located replica's recovery has dispatched nothing for 30s while not caught up, else 0. One series per replica (member + replayer clientId), because several run per node. The replica is HOLDING, not corrupting anything — nothing is dispatched from a baseline it cannot establish, so its consumer gates stay shut — but it is also not serving, and it will not recover on its own: the causes are a ReplayUnavailable refusal, a Replayer that never answers, and a hole this node's recording chain cannot cover. Read it with seqeron_replayer_ready and seqeron_replayer_integrity_failure for the node it sits on, and with the replica's own RecoveryStalled fault line, which names the state telling those three apart. Any sustained 1 warrants a look; it clears by itself the moment recovery delivers a frame.",
+      "description": "1 while a co-located replica's recovery has dispatched nothing for 30s while not caught up, else 0. One series per replica (member + clientId), because several run per node. The replica is HOLDING, not corrupting anything — nothing is dispatched from a baseline it cannot establish, so its consumer gates stay shut — but it is also not serving, and it will not recover on its own: the causes are a Replayer that never answers and a hole this node's recording chain cannot cover. Read it with seqeron_replayer_ready for the node it sits on, and with the replica's own RecoveryStalled fault line, which names the state telling those apart. Any sustained 1 warrants a look; it clears by itself the moment recovery delivers a frame.",
       "type": "timeseries",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "x": 12, "y": 44, "w": 12, "h": 8 },

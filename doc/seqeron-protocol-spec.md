@@ -394,8 +394,7 @@ of their own.
 A submitted event's `systemEventType` equals its payload's SBE template id. The four synthesized frames
 also carry their `systemEventType` (5, 16, 18, 30), redundantly with the template id, so that offset 16
 identifies every frame on the tap. Numbers are never reused: `GatewayActivationRequested` took 24
-rather than a vacated number so that no recording can be misread. `ClusterHeartbeat` is unrelated to
-`ReplayHeartbeat` (§10).
+rather than a vacated number so that no recording can be misread.
 
 **A system payload has no `MessageHeader`.** `header.systemEventType` identifies it. An encoder `wrap`s
 the payload rather than calling `wrapAndApplyHeader`, and a decoder takes `BLOCK_LENGTH` and
@@ -580,7 +579,7 @@ seqeron owns two SBE schemas: the frames on the log and the replay control proto
 | file | schema id | contains | change policy (§11) |
 | --- | --- | --- | --- |
 | `sbe-frame.xml` | 210 | the eight top-level templates, the four header composites, `messageHeader`, `varDataEncoding`, and the twelve submitted system payloads | envelopes frozen; system events changeable under **V-3** |
-| `sbe-replay.xml` | 212 | the nine replay control messages (§10) | changed in place, no version bump |
+| `sbe-replay.xml` | 212 | the five replay control messages (§10) | changed in place, no version bump |
 
 The envelopes and system messages are one schema because they have one owner, ship in one artifact and
 follow the same change rule. `version` stays 0 for the life of schema 210, including system message
@@ -713,18 +712,14 @@ counts frames from non-conforming producers.
 
 ## 10. Replay control protocol
 
-Nine messages between a node's replayer and its co-located clients, on streams 202 and 203. They carry
+Five messages between a node's replayer and its co-located clients, on streams 202 and 203. They carry
 no header composite and are never sequenced or recorded.
 
 | message (id) | direction | meaning |
 | --- | --- | --- |
 | `ReplayRequest` (6) | client → replayer | replay the active recording from its start (`fromPosition` = `FROM_START`), or resume it at `fromPosition` |
 | `Replaying` (7) | replayer → client | attach to `replaySessionId` on stream 201 and follow it until `catchUpPosition` |
-| `ReplayPending` (8) | replayer → client | all replay slots are busy; wait at the gap and do not advance past it |
-| `ReplayComplete` (9) | client → replayer | caught up; free the slot now instead of at the idle timeout |
-| `ReplayHeartbeat` (20) | client → replayer | still replaying; sent about every 500 ms to keep the slot |
-| `ReplayUnavailable` (21) | replayer → client | this node cannot serve history for the replayer's lifetime (unlike `ReplayPending`, not transient) |
-| `ReplayClientIdInUse` (22) | replayer → client | two processes on this node are requesting under this `clientId` |
+| `ReplayPending` (8) | replayer → client | not now: no slot is free, the replayer is not ready, or the recording has not reached `fromPosition` yet; wait at the gap and resend |
 | `SnapshotQuery` (23) | client → replayer | is this round of this source's snapshot in the log (`doc/snapshot.md` §5) |
 | `SnapshotLocation` (24) | replayer → client | that round's cut, position and sequenced `SnapshotEnd`, or `round` −1 for none |
 
@@ -732,22 +727,26 @@ no header composite and are never sequenced or recorded.
   including an unchanged resend, and the replayer echoes it. A client MUST ignore a reply whose
   `requestId` is not its current one.
 - **R-2.** `NO_REPLAY_NEEDED` means nothing is to be replayed from where the request asked. For
-  `FROM_START` the recording holds nothing yet and the client is at the tip. For a position, that position
-  is past the recording's tip, before its start, or not a frame boundary in it: the recording changed
-  under the client. A client that resumed because of a hole MUST then replay from the start.
-- **R-3.** The slot timeout is an idle timeout, reset by `ReplayHeartbeat`. A replay has no time limit.
-- **R-4.** `clientId` is unique among a replayer's clients. Two processes sharing one supersede each
-  other's replays, and neither catches up. The replayer detects this from `requestId` stepping backwards
-  (at least three steps within 10 s; a restart is one) and sends `ReplayClientIdInUse` to the id, at most
-  once per 10 s window. It cannot tell the two apart, so both receive it, and a client that receives it for
-  its own `clientId` MUST stop rather than hold.
+  `FROM_START` the recording holds nothing yet and the client is at the tip. For a position, the replayer
+  refuses it: it is before the recording's start or not a frame boundary in it. A client MUST treat that
+  as fatal: positions follow from the frames, and the recording changes only with the node, so the
+  recording does not match the positions the client holds. A position the recording has not reached
+  yet is answered `ReplayPending`.
+- **R-3.** A replay holds its slot until the replay's publication is gone: the archive has ended the
+  replay and its subscriber has let it go, or the subscriber's client has died. A replay has no time
+  limit. A client releases its slot by closing its replay subscription.
+- **R-4.** `clientId` is a correlation id the client draws once from its media driver
+  (`Aeron.nextCorrelationId`), which every co-located client shares, so it is unique among the replayer's
+  clients, two in one process included. A client MUST ignore a reply carrying another `clientId`.
 
 The replayer serves only its node's active tap recording. The cluster takes no snapshots, so a node's
 every start replays the log from `globalSeqNo` 1 into a new recording: the active one alone holds the
-whole log, and an older one is a prefix of it.
+whole log, and an older one is a prefix of it. A client checks that the first frame it dispatches is
+`globalSeqNo` 1.
 
 The client detects completion by reaching `catchUpPosition`, not by the replay image closing: a
-bounded replay of an active recording does not close its image at the bound.
+bounded replay of an active recording does not close its image at the bound. The first frame of a
+resumed replay MUST be the frame the client resumed from; any other is fatal, as for R-2.
 
 Schema 212 changes in place without a version bump. Nothing records it, and a node's replayer and its
 clients are built and restarted together.
@@ -759,21 +758,15 @@ encoded length is 8 + block. None has var-data or repeating groups.
 
 | message | id | block | fields |
 | --- | --- | --- | --- |
-| `ReplayRequest` | 6 | 20 | `clientId` int32, `requestId` int64, `fromPosition` int64 |
-| `Replaying` | 7 | 28 | `clientId` int32, `requestId` int64, `replaySessionId` int64, `catchUpPosition` int64 |
-| `ReplayPending` | 8 | 12 | `clientId` int32, `requestId` int64 |
-| `ReplayComplete` | 9 | 4 | `clientId` int32 |
-| `ReplayHeartbeat` | 20 | 4 | `clientId` int32 |
-| `ReplayUnavailable` | 21 | 12 | `clientId` int32, `requestId` int64 |
-| `ReplayClientIdInUse` | 22 | 4 | `clientId` int32 |
-| `SnapshotQuery` | 23 | 24 | `clientId` int32, `requestId` int64, `sourceId` int32, `round` int64 |
-| `SnapshotLocation` | 24 | 56 | `clientId` int32, `requestId` int64, `round` int64, `asOfGlobalSeqNo` int64, `asOfPosition` int64, `formatVersion` uint32, `recordCount` int32, `length` int64, `crc32c` uint32 |
+| `ReplayRequest` | 6 | 24 | `clientId` int64, `requestId` int64, `fromPosition` int64 |
+| `Replaying` | 7 | 32 | `clientId` int64, `requestId` int64, `replaySessionId` int64, `catchUpPosition` int64 |
+| `ReplayPending` | 8 | 16 | `clientId` int64, `requestId` int64 |
+| `SnapshotQuery` | 23 | 28 | `clientId` int64, `requestId` int64, `sourceId` int32, `round` int64 |
+| `SnapshotLocation` | 24 | 60 | `clientId` int64, `requestId` int64, `round` int64, `asOfGlobalSeqNo` int64, `asOfPosition` int64, `formatVersion` uint32, `recordCount` int32, `length` int64, `crc32c` uint32 |
 
-- `clientId`: identifies the client on the shared control stream. It does not match a reply to a
-  request; `requestId` does (**R-1**).
-- `requestId`: echoed in `Replaying`, `ReplayPending`, `ReplayUnavailable` and `SnapshotLocation`.
-  `ReplayComplete` and `ReplayHeartbeat` have none, because nothing answers them, and
-  `ReplayClientIdInUse` has none because it concerns the id, not a request.
+- `clientId`: the client's id on its media driver (**R-4**). It addresses a reply on the shared control
+  stream; `requestId` matches it to a request (**R-1**).
+- `requestId`: echoed in every reply.
 - `fromPosition`: the position to resume the active recording at, or `FROM_START` = −1 for its start.
 - `replaySessionId`: the Aeron replay session to attach to on stream 201, or `NO_REPLAY_NEEDED` = −1
   (`Aeron.NULL_VALUE`). There is no separate message for "nothing to replay".
@@ -786,16 +779,14 @@ encoded length is 8 + block. None has var-data or repeating groups.
 - `asOfGlobalSeqNo`, `asOfPosition`: the round's cut and the position of its `SnapshotStarted` in the
   active recording.
 
-**Slot limits.** A replayer serves at most `MAX_CONCURRENT_REPLAYS` = 4 replays at once and answers
-`ReplayPending` beyond that. It reclaims a slot idle for `REPLAY_SLOT_TTL_MS` = 5000 ms, ten missed
-heartbeats. A client sends `ReplayHeartbeat` about every 500 ms while its replay image is running.
-A client sends `ReplayComplete` once a replay reaches its bound, which frees the slot immediately.
-
-> **Maximum pending wait = `MAX_CONCURRENT_REPLAYS` × `REPLAY_SLOT_TTL_MS` = 20 000 ms**: the worst
-> case, in which every slot is held by a dead client and the slots are reclaimed one timeout apart. A
-> consumer's recovery-stall timeout MUST exceed it by a margin. A client that receives `ReplayPending`
-> waits at its gap and delivers nothing, so a shorter timeout would fire against a replayer that is
-> working correctly. The client tier's default is 60 000 ms.
+**Slot limits.** A replayer serves at most `MAX_CONCURRENT_REPLAYS` = 4 replays at once, one while its
+tap recording trails the tap by more than a quarter of the publication window, and answers
+`ReplayPending` beyond that. A slot frees when its replay's publication is gone (**R-3**): within a duty
+cycle of the client closing its replay subscription, which it does at `catchUpPosition`, and within the
+media driver's client liveness timeout (`aeron.client.liveness.timeout`, 10 s by default) of a client
+dying. A consumer's recovery-stall timeout MUST exceed that timeout by a margin. A client that receives
+`ReplayPending` waits at its gap and delivers nothing, so a shorter timeout would fire against a
+replayer that is working correctly. The client tier's default is 60 000 ms.
 
 ## 11. Versioning
 
@@ -855,8 +846,6 @@ The protocol's fixed sizes and timings. They are compiled into every implementat
 | `CLUSTER_HEARTBEAT_INTERVAL_MS` | 1000 | §7, §9.3 |
 | `GATEWAY_ACTIVATION_TIMEOUT_MS` | 5000 | §7.2 |
 | `MAX_CONCURRENT_REPLAYS` | 4 | §10.1 |
-| `REPLAY_SLOT_TTL_MS` | 5000 | §10.1 |
-| maximum pending wait | 20 000 ms | §10.1 |
 
 These constants belong to the protocol, not to any one component. Each language compiles in a copy:
 `protocol/FrameLayer.java`, the `Limits` block of `protocol/SequencedFrame.hpp`, and `Protocol/FrameLayer.cs`.

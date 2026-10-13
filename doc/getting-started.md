@@ -104,8 +104,8 @@ caught up
 
 `globalSeqNo` 1 is always the first leader's election. `systemEventType` 16 is `ClusterHeartbeat`, the
 cluster's clock, sequenced once a second. A frame with a `payloadId` instead is an application payload,
-delivered exactly as its producer wrote it. The `clientId` must be unique among the clients on one member,
-since two sharing one cannot both follow the stream; ids 1–22 and 31–43 are this repository's own.
+delivered exactly as its producer wrote it. The `clientId` labels the client's counters and should be unique
+among the clients on one member; ids 1–22 and 31–43 are this repository's own.
 [`client-api.md`](client-api.md) covers the frame families and how to decode each.
 
 ## 4. Publish
@@ -295,7 +295,7 @@ sealed class Hello(int sourceId, int payloadId) : IApplicationListener
 
 It does what `Hello` does in Java, through the same `Application`: an options object where Java has a
 builder, and `Publish` takes the bytes as a buffer or a span. The `clientId`s, 25 and 26, differ from the
-Java programs' 23 and 24, so both languages can follow one member at once.
+Java programs' 23 and 24, so both languages' counters are told apart on one member.
 
 ## Next
 

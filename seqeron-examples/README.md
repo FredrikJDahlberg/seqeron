@@ -207,8 +207,7 @@ half prints its connection line from a `LifecycleEvent` — `ConnectionOpened co
 identity without the payload (see the callback bullet below).
 
 `start-cluster.sh` already runs a `ClusterProbe follow` replica of its own; these attach beside it with
-client ids of their own, since two replicas sharing a Replayer client id supersede each other's replays
-and neither catches up.
+client ids of their own, so their counters are told apart.
 
 ## Configuration
 
@@ -218,7 +217,7 @@ processes already do. The two client ids differ on purpose, so both examples can
 | Java | C++ | |
 | --- | --- | --- |
 | `-Dfollow.member` | `SEQERON_NODE_MEMBER_ID` | which node to attach to; default 0 |
-| `-Dfollow.clientId` | `SEQERON_REPLAYER_CLIENT_ID` | this replica's Replayer client id; default 7 in Java, 8 in C++ |
+| `-Dfollow.clientId` | `SEQERON_REPLAYER_CLIENT_ID` | this replica's client id, its counters' `client` label; default 7 in Java, 8 in C++ |
 | `-Dfollow.aeronDir` | `SEQERON_AERON_DIR` | that node's Aeron directory; default `PortLayout.aeronDir(member)`: `/dev/shm/seqeron-seq-aeron-{member}`, or under `{tmpdir}` on a host without `/dev/shm` |
 | — | `SEQERON_IDLE_STRATEGY` | `backoff` (default), `yielding` or `busyspin` |
 | — | `SEQERON_EXAMPLE_EGRESS_PORT` | UDP port the ping's cluster session takes egress on; default `9202 + member` |

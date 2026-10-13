@@ -47,8 +47,6 @@ inline constexpr EventCode ClusterIpcFallback{ "ClusterIpcFallback" };
 inline constexpr EventCode ClusterRedirectUnresolved{ "ClusterRedirectUnresolved" };
 inline constexpr EventCode FragmentTooShort{ "FragmentTooShort" };
 inline constexpr EventCode ArchiveConnectFailed{ "ArchiveConnectFailed" };
-inline constexpr EventCode ReplayUnavailable{ "ReplayUnavailable" };
-inline constexpr EventCode ReplayClientIdCollision{ "ReplayClientIdCollision" };
 inline constexpr EventCode RecoveryStalled{ "RecoveryStalled" };
 inline constexpr EventCode TapStalled{ "TapStalled" };
 } // namespace eventCode

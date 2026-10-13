@@ -15,11 +15,10 @@ import org.limitless.seqeron.protocol.FrameLayer;
 import org.limitless.seqeron.protocol.ReplayProtocol;
 import org.limitless.seqeron.protocol.SeqeronCounters;
 import org.limitless.seqeron.sbe.replay.MessageHeaderEncoder;
-import org.limitless.seqeron.sbe.replay.ReplayCompleteEncoder;
-import org.limitless.seqeron.sbe.replay.ReplayHeartbeatEncoder;
 import org.limitless.seqeron.sbe.replay.ReplayRequestEncoder;
 import org.limitless.seqeron.sbe.replay.SnapshotQueryEncoder;
 import org.limitless.seqeron.util.Clocks;
+import org.limitless.seqeron.util.Logger;
 
 /**
  * App-replica side of the per-node {@code ReplayerService} — the Java twin of
@@ -40,7 +39,7 @@ public final class ReplayerStreamReceiver implements AutoCloseable {
 
     private static final int FRAGMENT_LIMIT = 16;
 
-    /** Scratch for the four control messages this client sends; each is well under 64 bytes. */
+    /** Scratch for the two control messages this client sends; each is well under 64 bytes. */
     private static final int REQUEST_BUFFER_LENGTH = 64;
 
     private final int clientId;
@@ -50,8 +49,6 @@ public final class ReplayerStreamReceiver implements AutoCloseable {
 
     private final MessageHeaderEncoder requestHeader = new MessageHeaderEncoder();
     private final ReplayRequestEncoder replayRequest = new ReplayRequestEncoder();
-    private final ReplayCompleteEncoder replayComplete = new ReplayCompleteEncoder();
-    private final ReplayHeartbeatEncoder replayHeartbeat = new ReplayHeartbeatEncoder();
     private final SnapshotQueryEncoder snapshotQuery = new SnapshotQueryEncoder();
     private final UnsafeBuffer requestBuffer = new UnsafeBuffer(new byte[REQUEST_BUFFER_LENGTH]);
 
@@ -61,6 +58,9 @@ public final class ReplayerStreamReceiver implements AutoCloseable {
 
     private Aeron aeron;
     private Integer memberId;
+
+    /** The id the Replayer addresses this receiver's replies to, drawn from the driver at start; -1 before. */
+    private long replyId = -1;
     private Subscription tapSubscription;
     private Subscription replaySubscription;
     private Subscription controlSubscription;
@@ -71,9 +71,8 @@ public final class ReplayerStreamReceiver implements AutoCloseable {
     /**
      * A receiver that injects no tap faults.
      *
-     * @param clientId            this replica's stable id, unique among the Replayer's co-located apps
-     *                            ({@code SEQERON_REPLAYER_CLIENT_ID}); two apps sharing one supersede
-     *                            each other's replays and neither ever catches up
+     * @param clientId            this replica's id on the node, its counters' {@code client} label; replicas
+     *                            sharing one share their counters' series
      * @param onSequenced         receives every in-order frame
      * @param onLeadershipChanged receives each leadership change, or null to have it reach onSequenced
      * @param onCaughtUp          fires on every transition to caught-up, or null
@@ -93,7 +92,7 @@ public final class ReplayerStreamReceiver implements AutoCloseable {
                                   final BooleanSupplier tapFaults) {
         this.clientId = clientId;
         this.tapFaults = tapFaults;
-        this.recovery = new ReplayerRecovery(clientId, actions, onSequenced, onLeadershipChanged, onCaughtUp);
+        this.recovery = new ReplayerRecovery(actions, onSequenced, onLeadershipChanged, onCaughtUp);
         this.tapHandler = new FragmentAssembler(this::onTapFragment);
         this.replayHandler = new FragmentAssembler(this::onReplayFragment);
         this.controlFragmentHandler =
@@ -118,6 +117,9 @@ public final class ReplayerStreamReceiver implements AutoCloseable {
     public void start(final Aeron aeron, final int memberId) {
         this.aeron = aeron;
         this.memberId = memberId;
+        replyId = aeron.nextCorrelationId();
+        Logger.info(Logger.CoreComponent.ReplayerStreamReceiver, memberId, "clientId %d requests replays as client %d",
+                    clientId, replyId);
         recoveryStalledCounter = SeqeronCounters.addAppCounter(
             aeron, SeqeronCounters.APP_RECOVERY_STALLED_TYPE_ID,
             "seqeron.app.recoveryStalled member=" + memberId + " client=" + clientId, memberId, clientId);
@@ -132,7 +134,7 @@ public final class ReplayerStreamReceiver implements AutoCloseable {
      * the tap — {@link ReplayerRecovery}'s contiguity check, not the poll routing, decides what a tap frame is
      * worth mid-walk.
      * @return fragments consumed
-     * @throws IllegalStateException once this node's Replayer reports another process using this clientId
+     * @throws IllegalStateException once this node's recording does not hold what recovery asked of it
      */
     public int poll() {
         int work = 0;
@@ -140,9 +142,8 @@ public final class ReplayerStreamReceiver implements AutoCloseable {
             work += controlSubscription.poll(controlFragmentHandler, FRAGMENT_LIMIT);
         }
 
-        if (recovery.isClientIdInUse()) {
-            throw new IllegalStateException("[ReplayerStreamReceiver] clientId " + clientId
-                                            + " is in use by another process on this node");
+        if (recovery.fault() != null) {
+            throw new IllegalStateException("[ReplayerStreamReceiver] " + recovery.fault());
         }
 
         final boolean requestPubPending = requestPublication != null && !requestPublication.isConnected();
@@ -269,7 +270,7 @@ public final class ReplayerStreamReceiver implements AutoCloseable {
                 return; // Replayer not up yet; the resend timer retries
             }
             replayRequest.wrapAndApplyHeader(requestBuffer, 0, requestHeader)
-                         .clientId(clientId)
+                         .clientId(replyId)
                          .requestId(requestId)
                          .fromPosition(fromPosition);
             requestPublication.offer(requestBuffer, 0,
@@ -282,32 +283,12 @@ public final class ReplayerStreamReceiver implements AutoCloseable {
                 return;
             }
             snapshotQuery.wrapAndApplyHeader(requestBuffer, 0, requestHeader)
-                         .clientId(clientId)
+                         .clientId(replyId)
                          .requestId(requestId)
                          .sourceId(sourceId)
                          .round(round);
             requestPublication.offer(requestBuffer, 0,
                                      MessageHeaderEncoder.ENCODED_LENGTH + snapshotQuery.encodedLength());
-        }
-
-        @Override
-        public boolean sendReplayComplete() {
-            if (requestPublication == null || !requestPublication.isConnected()) {
-                return false;
-            }
-            replayComplete.wrapAndApplyHeader(requestBuffer, 0, requestHeader).clientId(clientId);
-            return requestPublication.offer(requestBuffer, 0,
-                                            MessageHeaderEncoder.ENCODED_LENGTH + replayComplete.encodedLength()) >= 0;
-        }
-
-        @Override
-        public boolean sendReplayHeartbeat() {
-            if (requestPublication == null || !requestPublication.isConnected()) {
-                return false;
-            }
-            replayHeartbeat.wrapAndApplyHeader(requestBuffer, 0, requestHeader).clientId(clientId);
-            return requestPublication.offer(requestBuffer, 0,
-                                            MessageHeaderEncoder.ENCODED_LENGTH + replayHeartbeat.encodedLength()) >= 0;
         }
 
         /**
@@ -345,6 +326,11 @@ public final class ReplayerStreamReceiver implements AutoCloseable {
         @Override
         public Integer memberId() {
             return memberId;
+        }
+
+        @Override
+        public long clientId() {
+            return replyId;
         }
 
         @Override

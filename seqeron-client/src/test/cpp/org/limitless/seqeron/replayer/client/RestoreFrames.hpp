@@ -129,7 +129,7 @@ inline std::int64_t valueOf(const std::uint8_t* record)
 }
 
 // The Replayer's answer: a round's cut and sequenced end, or none for round -1.
-inline Bytes location(const std::int32_t clientId, const std::int64_t requestId, const std::int64_t round,
+inline Bytes location(const std::int64_t clientId, const std::int64_t requestId, const std::int64_t round,
                       const std::int64_t asOfGlobalSeqNo, const std::int64_t asOfPosition,
                       const std::uint32_t formatVersion, const Digest& end)
 {

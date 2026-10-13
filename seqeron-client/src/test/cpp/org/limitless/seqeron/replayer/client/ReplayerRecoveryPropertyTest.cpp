@@ -15,8 +15,7 @@
 //
 // The e2e harnesses reach these paths too, but a chaos run produces single-digit gap episodes in minutes,
 // all of one kind — one dropped frame on a live tap. A run here is a few hundred, mixing drops with lost
-// requests, refusals, truncated images, stalled replays, recording rotations and tap redeliveries, in under
-// a second.
+// requests, queued requests, truncated images, stalled replays and tap redeliveries, in under a second.
 //
 // Restore   — a client restoring its own snapshot (doc/snapshot.md §7) holds both properties from the cut on,
 //            under the same faults, and its restored state plus the frames after the cut equals the state a full
@@ -45,7 +44,6 @@
 #include "org_limitless_seqeron_sbe_frame/ClusterHeartbeat.h"
 #include "org_limitless_seqeron_sbe_frame/MessageHeader.h"
 #include "org_limitless_seqeron_sbe_replay/ReplayPending.h"
-#include "org_limitless_seqeron_sbe_replay/ReplayUnavailable.h"
 #include "org_limitless_seqeron_sbe_replay/Replaying.h"
 
 namespace org::limitless::seqeron::replayer::client::detail {
@@ -54,10 +52,9 @@ namespace {
 namespace frm = org::limitless::seqeron::sbe::frame;
 namespace diag = org::limitless::seqeron::util;
 namespace rpl = org::limitless::seqeron::sbe::replay;
-using protocol::REPLAYER_NO_REPLAY_NEEDED;
 using protocol::SequencedEvent;
 
-constexpr std::int32_t CLIENT_ID = 4;
+constexpr std::int64_t CLIENT_ID = 4;
 
 // Stands in for the wall clock. The absolute value is arbitrary; only applied deltas matter.
 constexpr std::int64_t CLOCK_MS = 3 * 60 * 60 * 1000;
@@ -136,16 +133,6 @@ std::vector<std::uint8_t> encodeReplayPending(const std::int64_t requestId)
     return buf;
 }
 
-std::vector<std::uint8_t> encodeReplayUnavailable(const std::int64_t requestId)
-{
-    std::vector<std::uint8_t> buf(32, 0);
-    rpl::ReplayUnavailable enc;
-    enc.wrapAndApplyHeader(reinterpret_cast<char*>(buf.data()), 0, buf.size());
-    enc.clientId(CLIENT_ID).requestId(requestId);
-    buf.resize(enc.sbePosition());
-    return buf;
-}
-
 // One seeded run: the node's archive, its tap and its Replayer, driving one ReplayerRecovery.
 //
 // Implements ReplayerRecoveryActions itself — the client's every outbound act is a request arriving at this
@@ -158,7 +145,7 @@ struct Simulation final
       rng(seed),
       tag("seed=" + std::to_string(seed) + (restoring ? " restoring" : "")),
       restoring(restoring),
-      recovery(CLIENT_ID, *this, [this](const SequencedEvent& event) { onSequenced(event); })
+      recovery(*this, [this](const SequencedEvent& event) { onSequenced(event); })
     {}
 
     void execute()
@@ -210,6 +197,7 @@ struct Simulation final
             }
         }
 
+        EXPECT_FALSE(recovery.fault().has_value()) << tag << ": " << recovery.fault().value_or("");
         EXPECT_TRUE(recovery.isCaughtUp()) << tag << ": never re-converged after the faults stopped";
         EXPECT_EQ(tip, recovery.lastGlobalSeqNo()) << tag << ": converged short of the tip";
         EXPECT_EQ(tip + 1, expectedNext) << tag << ": caught up without having dispatched every frame";
@@ -264,22 +252,10 @@ struct Simulation final
         frames.emplace(publish(), std::move(frame));
     }
 
-    // A new active recording, holding the log from globalSeqNo 1 as a restarted node's does once it has
-    // replayed it. A walk's may lay its frames out elsewhere — a frame or half a frame on — so a resume at an
-    // old position opens on another frame or is refused; a restoring run's keeps its positions, since a
-    // resume at the snapshot's position is its only way back.
-    void rotate()
+    // Where frame globalSeqNo starts in the active recording: frame 1 at 0.
+    static std::int64_t positionOf(const std::int64_t globalSeqNo)
     {
-        if (!restoring)
-        {
-            positionBase += chance(50) ? STRIDE : STRIDE / 2;
-        }
-    }
-
-    // Where frame globalSeqNo starts in the active recording: frame 1 at its base.
-    std::int64_t positionOf(const std::int64_t globalSeqNo) const
-    {
-        return positionBase + (globalSeqNo - 1) * STRIDE;
+        return (globalSeqNo - 1) * STRIDE;
     }
 
     void deliver(const std::int64_t globalSeqNo, const bool fromReplay)
@@ -330,7 +306,7 @@ struct Simulation final
 
     void injectFault()
     {
-        switch (roll(4))
+        switch (roll(3))
         {
             case 0:
                 if (replayEndSeqNo >= 0)
@@ -343,16 +319,13 @@ struct Simulation final
                 clockMs += 6'000; // past REPLAY_STALL_TIMEOUT_MS as well as the resend interval
                 recovery.doTimers(/*requestPublicationPending=*/false);
                 break;
-            case 2:
+            default:
                 // The same tap frame offered twice. Both de-dupes have to hold: the contiguity one when it
                 // sits at or below the baseline, and the retained FIFO's when it is ahead of a hole.
                 if (lastTapped > 0)
                 {
                     deliver(lastTapped, /*fromReplay=*/false);
                 }
-                break;
-            default:
-                rotate();
                 break;
         }
     }
@@ -393,11 +366,6 @@ struct Simulation final
             deliverControl(encodeReplayPending(requestId));
             return;
         }
-        if (chaos && chance(5))
-        {
-            deliverControl(encodeReplayUnavailable(requestId));
-            return;
-        }
         if (query)
         {
             deliverControl(queryRound == 2 ? rf::location(CLIENT_ID, requestId, 2, CUT, positionOf(CUT), FORMAT_VERSION,
@@ -411,14 +379,9 @@ struct Simulation final
             serveReplay(requestId, 1, tip);
             return;
         }
-        const std::int64_t offset = fromPosition - positionBase;
-        if (offset < 0 || offset % STRIDE != 0 || offset / STRIDE + 1 > tip)
-        {
-            // Not a frame of the active recording — it rotated under the client, and the archive refuses it.
-            deliverControl(encodeReplaying(requestId, REPLAYER_NO_REPLAY_NEEDED, 0));
-            return;
-        }
-        serveReplay(requestId, offset / STRIDE + 1, tip);
+        EXPECT_TRUE(fromPosition % STRIDE == 0 && fromPosition / STRIDE + 1 <= tip)
+            << tag << ": resumed at " << fromPosition << ", where no recorded frame starts";
+        serveReplay(requestId, fromPosition / STRIDE + 1, tip);
     }
 
     // Bound at the tip the recording holds NOW — frames published later are the tap's problem, not this
@@ -483,16 +446,6 @@ struct Simulation final
         pendingQueryRound = round;
     }
 
-    bool sendReplayComplete() override
-    {
-        return !chaos || chance(70);
-    }
-
-    bool sendReplayHeartbeat() override
-    {
-        return !chaos || chance(70);
-    }
-
     void openReplay(std::int64_t) override
     {}
 
@@ -503,6 +456,11 @@ struct Simulation final
 
     void recoveryStalled(bool) override
     {}
+
+    std::int64_t clientId() override
+    {
+        return CLIENT_ID;
+    }
 
     std::int64_t nowMs() override
     {
@@ -584,7 +542,6 @@ struct Simulation final
 
     // the node's archive: the active recording, complete by construction
     std::int64_t tip = 0;
-    std::int64_t positionBase = 0; // where the active recording's frame 1 starts; a rotation may move it
 
     // the Replayer's view of this one client
     std::int64_t pendingRequestId = -1;

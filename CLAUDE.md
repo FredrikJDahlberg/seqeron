@@ -346,7 +346,7 @@ file replays from `globalSeqNo` 1. This shortens a client's restart, not a node'
 
 ### The replay protocol — two sides, two namespaces
 **`replayer.server`** is Java only: `ReplayerServer`/`ReplayerService` and their pure seams `Replayer`,
-`ReplaySlotAllocator`, `ReplayClientIdCollisions`, `SnapshotIndex` and the gateway host's `TapRelay`, with
+`ReplaySlotAllocator`, `SnapshotIndex` and the gateway host's `TapRelay`, with
 `AeronReplayer` and `AeronTapRelay` the only parts that touch Aeron. **`replayer.client`** is `ReplayerStreamReceiver` and its pure seam
 `ReplayerRecovery`, plus `SequencedEvent` and an instance's snapshot files, `SnapshotStore` — Java, C++ in
 `org::limitless::seqeron::replayer::client`, and C# in `Org.Limitless.Seqeron.Replayer.Client`. On a member `ReplayerServer` runs inside `SequencerServer`'s
@@ -363,7 +363,7 @@ published, so the host's tap is the log frame for frame, and on losing its membe
 at the same recording position — every member's active recording starts at `globalSeqNo` 1 and its
 positions follow from the frames — falling back to that recording's start if the frame there is not the
 next one. Each start relays from `globalSeqNo` 1 into a new local recording, as a member's restart does, so
-the host's chain passes the same integrity check. Clients there are unchanged: they attach to the host's
+the host's recording starts where a client checks it does. Clients there are unchanged: they attach to the host's
 Aeron directory with the host's node id (one no member uses) where they take a member id, and submit over UDP
 ingress — an `Application` with `offCluster` set, since no leadership there is its own, which makes it the
 one instance whose gate opens once caught up. The member pays one archive replay per gateway host and its sequencer nothing.
@@ -442,7 +442,7 @@ covers all of them:
   twelve submitted **system** payloads (the connection lifecycle events, the cluster markers, the gateway
   list/election frames, `GatewayActivationRequested`, `ApplicationRegistered`, the snapshot frames). No system message carries
   a `header` field — the frame's is the only one. Seqeron's own, and the only thing this tier decodes.
-- `sbe-replay.xml` (schema 212) — the nine **replay control** messages, node-local between a
+- `sbe-replay.xml` (schema 212) — the five **replay control** messages, node-local between a
   `ReplayerService` and its co-located app replicas, never sequenced and never recorded.
 - `sbe-probe.xml` (schema 214) — core's own application payload (`payloadId` 5): one message,
   `ProbeMarker`, carrying a submitter-side `seqNo` and variable-length filler. What `tools/ClusterProbe`

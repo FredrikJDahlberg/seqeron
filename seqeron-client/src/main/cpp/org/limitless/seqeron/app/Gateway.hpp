@@ -96,7 +96,7 @@ class Gateway
     {
         // The GatewayRegistered row name this instance joins on.
         std::string gatewayName;
-        // This replica's Replayer client id, unique among the co-located apps on its node.
+        // This replica's client id, its counters' label; unique among the co-located apps on its node.
         std::int32_t clientId = 0;
         // The node whose tap this instance follows.
         std::int32_t memberId = 0;

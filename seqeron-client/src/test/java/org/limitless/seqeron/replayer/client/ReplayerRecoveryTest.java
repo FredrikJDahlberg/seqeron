@@ -25,9 +25,7 @@ import org.limitless.seqeron.protocol.ReplayProtocol;
 import org.limitless.seqeron.protocol.SnapshotHeader;
 import org.limitless.seqeron.sbe.frame.ClusterHeartbeatEncoder;
 import org.limitless.seqeron.sbe.frame.LeadershipChangedEncoder;
-import org.limitless.seqeron.sbe.replay.ReplayClientIdInUseEncoder;
 import org.limitless.seqeron.sbe.replay.ReplayPendingEncoder;
-import org.limitless.seqeron.sbe.replay.ReplayUnavailableEncoder;
 import org.limitless.seqeron.sbe.replay.ReplayingEncoder;
 import org.limitless.seqeron.util.Logger;
 
@@ -42,7 +40,7 @@ import org.limitless.seqeron.util.Logger;
  * Java case predates the port and already covered the same ground.
  */
 class ReplayerRecoveryTest {
-    private static final int CLIENT_ID = 4;
+    private static final long CLIENT_ID = 4;
     private static final long NO_REPLAY_NEEDED = ReplayProtocol.NO_REPLAY_NEEDED;
 
     private static final long FROM_START = ReplayProtocol.FROM_START;
@@ -95,7 +93,6 @@ class ReplayerRecoveryTest {
         int queriesSent;
         int querySourceId = -1;
         long queryRound = -1;
-        int heartbeatsSent;
         final List<Boolean> stalledGauge = new ArrayList<>();
 
         @Override
@@ -108,19 +105,6 @@ class ReplayerRecoveryTest {
             ++queriesSent;
             querySourceId = sourceId;
             queryRound = round;
-        }
-
-        // False like a receiver with no publication: every send here is one that never went out, which is
-        // the state the ReplayComplete retry tests need.
-        @Override
-        public boolean sendReplayComplete() {
-            return false;
-        }
-
-        @Override
-        public boolean sendReplayHeartbeat() {
-            ++heartbeatsSent;
-            return false;
         }
 
         @Override
@@ -142,6 +126,11 @@ class ReplayerRecoveryTest {
         }
 
         @Override
+        public long clientId() {
+            return CLIENT_ID;
+        }
+
+        @Override
         public long nowMs() {
             return clockMs;
         }
@@ -160,7 +149,7 @@ class ReplayerRecoveryTest {
         logged.clear();
         actions = new RecordingActions();
         store = new SnapshotStore(directory.resolve("instance-" + stores++));
-        receiver = new ReplayerRecovery(CLIENT_ID, actions, event -> dispatched.add(event.globalSeqNo()), null,
+        receiver = new ReplayerRecovery(actions, event -> dispatched.add(event.globalSeqNo()), null,
                                         () -> caughtUpAt.add((long)dispatched.size()));
     }
 
@@ -401,7 +390,7 @@ class ReplayerRecoveryTest {
     }
 
     @Test
-    @DisplayName("a walk reaching its bound catches up and hands its slot back")
+    @DisplayName("a walk reaching its bound catches up")
     void aWalkReachingItsBoundCatchesUp() {
         answerReplaying(7, 500);
         assertEquals(7, receiver.replaySessionId());
@@ -411,7 +400,6 @@ class ReplayerRecoveryTest {
         assertTrue(receiver.isCaughtUp(), "the recording held the whole log when the request was served");
         assertFalse(receiver.isAwaitingReplay(), "there is nothing further to ask for");
         assertEquals(-1, receiver.replaySessionId());
-        assertTrue(receiver.completePending(), "the slot is released, not left to the idle TTL");
     }
 
     // clientId alone cannot identify WHICH request a reply answers. A resend makes the Replayer stop the
@@ -499,24 +487,21 @@ class ReplayerRecoveryTest {
     }
 
     // Session id 0 is an ordinary archive replaySessionId; -1 is the only value that means "no replay".
-    // Testing >= 1 skips both watchdogs for it: no heartbeat, so the Replayer's idle TTL reclaims the slot
-    // out from under a healthy replay, and no stall watchdog once it stops delivering.
+    // Testing >= 1 skips the stall watchdog for it once it stops delivering.
     @Test
-    @DisplayName("replay session 0 is heart-beaten and watchdogged like any other")
-    void replaySessionZeroIsHeartbeatedAndWatchdoggedLikeAnyOther() {
+    @DisplayName("replay session 0 is watchdogged like any other")
+    void replaySessionZeroIsWatchdoggedLikeAnyOther() {
         answerReplaying(0, 500);
         assertEquals(0, receiver.replaySessionId(),
                      "session 0 is a replay this client is riding, not the absence of one");
 
         advancePastTimers();
 
-        assertEquals(1, actions.heartbeatsSent,
-                     "a slot held on session 0 must still be heart-beaten, or the idle TTL reclaims it");
-        assertTrue(receiver.isAwaitingReplay(), "and its stall watchdog must still re-request it");
+        assertTrue(receiver.isAwaitingReplay(), "its stall watchdog must re-request it");
         assertEquals(-1, receiver.replaySessionId());
     }
 
-    // ── ReplayPending and ReplayUnavailable ───────────────────────────────────────────────────────
+    // ── ReplayPending ─────────────────────────────────────────────────────────────────────────────
 
     @Test
     @DisplayName("ReplayPending holds at the gap without assigning a session")
@@ -530,88 +515,6 @@ class ReplayerRecoveryTest {
         assertTrue(receiver.isAwaitingReplay(), "no free Replayer slot -> keep holding at the gap");
         assertEquals(-1, receiver.replaySessionId());
         assertEquals(1, dispatched.size(), "must not advance past the hole while pending");
-    }
-
-    // A Replayer whose archive failed the globalSeqNo-1 integrity check refuses rather than serving
-    // history its own check rejected. Served anyway, the replay's first frame would not be 1 and this
-    // client would abort, taking down every co-located app over one node's bad archive.
-    @Test
-    @DisplayName("ReplayUnavailable holds without aborting or advancing, and reports once per episode")
-    void replayUnavailableHoldsWithoutAbortingOrAdvancing() {
-        deliverTap(1);
-        deliverTap(5); // gap -> awaiting a replay
-        assertTrue(receiver.isAwaitingReplay());
-        assertFalse(receiver.isCaughtUp());
-
-        captureLogs(); // installed after the setup gap, so it captures only the refusal below
-        deliverUnavailable(receiver.requestId());
-
-        assertTrue(receiver.isAwaitingReplay(), "a refusal must not stop the resend timer");
-        assertEquals(-1, receiver.replaySessionId());
-        assertEquals(1, dispatched.size(), "must not advance past the hole");
-        assertFalse(receiver.isCaughtUp(), "consumer gates must stay shut while history is unavailable");
-        assertEquals(1, logged.size());
-        assertEquals(Logger.Severity.Fault, logged.get(0).severity());
-        assertEquals(Logger.CoreEventCode.ReplayUnavailable, logged.get(0).code());
-
-        // The Replayer answers every resend the same way; the fault line must not repeat per reply.
-        deliverUnavailable(receiver.requestId());
-        assertEquals(1, logged.size(), "one episode is one line, not one per 500ms resend");
-    }
-
-    // A second, distinct outage hours later must report itself: the latch is on the episode, not on the
-    // process. The intervening reply is what ends the first episode.
-    @Test
-    @DisplayName("a refusal after the Replayer recovered is reported again")
-    void aRefusalAfterTheReplayerRecoveredIsReportedAgain() {
-        deliverTap(1);
-        deliverTap(5); // gap -> awaiting a replay
-
-        captureLogs();
-        deliverUnavailable(receiver.requestId());
-        assertEquals(1, refusals());
-
-        answerReplaying(7, 900);
-        // Later: that node's archive breaks again, its Replayer restarts refusing, and our replay stops
-        // delivering — so we re-request (a new requestId) and are refused a second time.
-        advancePastTimers();
-        deliverUnavailable(receiver.requestId());
-
-        assertEquals(2, refusals(), "a process-lifetime latch would leave every later outage silent");
-    }
-
-    // Being queued ends the episode too: a Replayer with integrityFailed latched answers ReplayUnavailable,
-    // never ReplayPending, so a pending reply is proof it is serving again.
-    @Test
-    @DisplayName("a queued replay also ends the refusal episode")
-    void aQueuedReplayAlsoEndsTheRefusalEpisode() {
-        deliverTap(1);
-        deliverTap(5);
-
-        captureLogs();
-        deliverUnavailable(receiver.requestId());
-        deliverPending(receiver.requestId());
-        advancePastTimers();
-        deliverUnavailable(receiver.requestId());
-
-        assertEquals(2, refusals());
-    }
-
-    @Test
-    @DisplayName("a ReplayUnavailable for a superseded request says nothing and resets no clock")
-    void replayUnavailableForASupersededRequestIsIgnored() {
-        deliverTap(1);
-        deliverTap(5);
-        final long stale = receiver.requestId() - 1;
-        final int sends = actions.requestsSent;
-
-        captureLogs();
-        deliverUnavailable(stale);
-        actions.clockMs += 600; // > RESEND_INTERVAL_MS since the CURRENT request went out
-        receiver.doTimers(false);
-
-        assertTrue(logged.isEmpty(), "a stale refusal says nothing about the Replayer's current state");
-        assertEquals(sends + 1, actions.requestsSent, "and must not reset the resend clock");
     }
 
     // ── the resend timer ──────────────────────────────────────────────────────────────────────────
@@ -681,23 +584,21 @@ class ReplayerRecoveryTest {
         completeReplay();
         assertFalse(receiver.isRecovering(), "a resume ends at its bound");
 
-        // The result of the same transitions, entered the way production enters it: a resume whose
-        // replay opens on a frame other than the one it anchored on falls back to a walk.
-        deliverTap(9); // another gap -> another resume
+        // A resume whose bound leaves a retained frame stranded behind a hole resumes again.
+        deliverTap(9); // another gap -> another resume, anchored on frame 5
         answerReplaying(8, 500);
-        deliverReplay(42);
-        assertEquals(FROM_START, receiver.requestFromPosition());
-        assertTrue(receiver.isRecovering(), "awaiting the walk");
+        deliverReplay(5);
+        deliverReplay(6);
+        completeReplay(); // 7 and 8 not covered: 9 is still stranded
+        assertTrue(receiver.isRecovering(), "awaiting the next resume");
 
         answerReplaying(9, 500);
-        // The walk has to close the hole it re-walked for: 9 is retained behind the missing 6..8, and the
-        // bound refuses to end recovery while anything is still stranded there.
-        deliverReplay(6);
+        deliverReplay(6); // anchored on frame 6, the last dispatched
         deliverReplay(7);
         deliverReplay(8); // dispatching 8 drains the retained 9 straight over
-        assertTrue(receiver.isRecovering(), "mid-walk until the bound");
+        assertTrue(receiver.isRecovering(), "mid-resume until the bound");
         completeReplay();
-        assertFalse(receiver.isRecovering(), "a walk ends at its bound too");
+        assertFalse(receiver.isRecovering(), "that resume ends at its bound too");
     }
 
     // isCaughtUp() is a state, not a latch: consumers gate real decisions on it, and a gateway's tap-stall
@@ -829,12 +730,12 @@ class ReplayerRecoveryTest {
         deliverTapTooBigToRetain(5);
         assertEquals(1, overflowReports(), "one episode is one line, not one per dropped frame");
 
-        // The re-walk is what covers the dropped frames, so the episode ends when it is requested.
+        // The resume is what covers the dropped frames, so the episode ends when it is requested.
         answerReplaying(7, 500);
         deliverReplay(1);
         deliverReplay(2);
         completeReplay();
-        assertEquals(FROM_START, receiver.requestFromPosition());
+        assertEquals(3072, receiver.requestFromPosition(), "at the retained frame 3, drained behind 2");
 
         deliverTapTooBigToRetain(9);
 
@@ -843,25 +744,27 @@ class ReplayerRecoveryTest {
 
     // ── the resume anchor ─────────────────────────────────────────────────────────────────────────
 
+    // Positions follow from the frames and the recording changes only with the node's driver, so a resume
+    // opening anywhere but its anchor means the recording is not what this client's positions say.
     @Test
-    @DisplayName("a resume replay that opens at the wrong frame falls back to a walk")
-    void resumeAnchorMismatchFallsBackToWalk() {
+    @DisplayName("a resume replay that opens at the wrong frame is fatal")
+    void resumeAnchorMismatchIsFatal() {
         goLive();
         deliverTapAt(1, 1024);
         deliverTapAt(2, 2048);
         deliverTapAt(5, 8192); // gap → resume anchored on globalSeqNo 2
         attachReplay(12, 16384);
 
-        deliverReplay(4); // not the anchor: the active recording rotated under us
+        deliverReplay(4); // not the anchor
 
-        assertEquals(FROM_START, receiver.requestFromPosition(), "must fall back to the walk, which needs no position");
-        assertTrue(receiver.isAwaitingReplay());
+        assertTrue(receiver.fault().contains("expected 2"), receiver.fault());
+        assertFalse(receiver.isAwaitingReplay(), "nothing more is asked for");
+        assertEquals(2, dispatched.size());
     }
 
     // The anchor is consumed by the first frame of ONE replay episode — a retry of that same logical
     // resume starts a NEW episode and must re-arm the check, or the retried replay's first frame rides
-    // with nothing to validate against and a rotated recording's frame is dispatched merely because it
-    // looks contiguous.
+    // with nothing to validate against and a wrong frame is dispatched merely because it looks contiguous.
     @Test
     @DisplayName("a resume whose image closes short of its bound re-arms the anchor check")
     void replayImageClosingShortOfTheBoundOnAResumeReArmsTheAnchorCheck() {
@@ -875,13 +778,11 @@ class ReplayerRecoveryTest {
         assertNotEquals(FROM_START, receiver.requestFromPosition(), "still a resume retry, not a walk step");
 
         answerReplaying(8, 500);
-        // The active recording rotated: the retried resume's first frame is NOT the frame it was anchored
-        // on, but it happens to look contiguous.
+        // The retried resume's first frame is NOT the frame it was anchored on, but it looks contiguous.
         deliverReplay(2);
 
         assertEquals(1, dispatched.size(), "must not accept an unanchored frame merely because it looks contiguous");
-        assertEquals(FROM_START, receiver.requestFromPosition(), "the mismatch must fall back to a walk");
-        assertTrue(receiver.isAwaitingReplay());
+        assertTrue(receiver.fault() != null, "the mismatch is fatal");
         assertEquals(-1, receiver.replaySessionId());
         assertFalse(receiver.isCaughtUp());
     }
@@ -899,21 +800,19 @@ class ReplayerRecoveryTest {
         assertNotEquals(FROM_START, receiver.requestFromPosition(), "still a resume retry, not a walk step");
 
         answerReplaying(8, 500);
-        deliverReplay(2); // rotated recording, looks contiguous but is not the anchored frame
+        deliverReplay(2); // looks contiguous but is not the anchored frame
 
         assertEquals(1, dispatched.size(), "must not accept an unanchored frame merely because it looks contiguous");
-        assertEquals(FROM_START, receiver.requestFromPosition(), "the mismatch must fall back to a walk");
-        assertTrue(receiver.isAwaitingReplay());
+        assertTrue(receiver.fault() != null, "the mismatch is fatal");
         assertEquals(-1, receiver.replaySessionId());
         assertFalse(receiver.isCaughtUp());
     }
 
-    // The same rotation seen one step earlier: the Replayer answers "nothing to replay" because the
-    // position is already at its recording's tip. For a walk that means caught up; for a resume it cannot,
-    // because we resumed only on account of a hole we know is open.
+    // For a walk "nothing to replay" means caught up. For a resume the Replayer answers it only when it
+    // refuses the position; a recording that has not reached it yet is answered ReplayPending instead.
     @Test
-    @DisplayName("NO_REPLAY_NEEDED over an open hole falls back to a walk")
-    void noReplayNeededOverAnOpenHoleFallsBackToAWalk() {
+    @DisplayName("NO_REPLAY_NEEDED for a resume is fatal")
+    void noReplayNeededForAResumeIsFatal() {
         deliverTap(1);
         deliverTap(2);
         assertTrue(receiver.isCaughtUp());
@@ -922,13 +821,13 @@ class ReplayerRecoveryTest {
 
         answerReplaying(NO_REPLAY_NEEDED, 0);
 
-        assertEquals(FROM_START, receiver.requestFromPosition(), "re-walk instead of believing it");
-        assertTrue(receiver.isAwaitingReplay());
+        assertTrue(receiver.fault().contains("refused a resume"), receiver.fault());
+        assertFalse(receiver.isAwaitingReplay());
         assertFalse(receiver.isCaughtUp(), "the hole above globalSeqNo=2 is still open");
     }
 
-    // A resume ends at the bound it was given — so it must declare itself caught up and hand the slot back,
-    // or the slot sits until the idle TTL reclaims it.
+    // A resume ends at the bound it was given — so it must declare itself caught up and close its image,
+    // which frees the Replayer's slot.
     @Test
     @DisplayName("a resume reaching its bound catches up and requests nothing more")
     void resumeReachingItsBoundCatchesUpAndRequestsNothingMore() {
@@ -954,8 +853,8 @@ class ReplayerRecoveryTest {
     // covered. Declaring caught up on the bound alone is silently wrong: consumers gate real decisions on
     // it and nothing would rediscover the hole until some later, unrelated tap frame exposed it.
     @Test
-    @DisplayName("a resume reaching its bound with a retained hole still open re-walks instead")
-    void resumeReachingItsBoundWithARetainedHoleStillOpenReWalksInstead() {
+    @DisplayName("a resume reaching its bound with a retained hole still open resumes again")
+    void resumeReachingItsBoundWithARetainedHoleStillOpenResumesAgain() {
         deliverTap(1);
         assertEquals(1, caughtUpAt.size());
         deliverTap(5); // gap -> resume anchored on frame 1; 5 is retained ahead of the hole
@@ -968,7 +867,7 @@ class ReplayerRecoveryTest {
 
         assertFalse(receiver.isCaughtUp(), "must not declare caught up with a retained frame behind a hole");
         assertEquals(1, caughtUpAt.size(), "no false re-convergence notification");
-        assertEquals(FROM_START, receiver.requestFromPosition(), "falls back to a walk rather than trusting the bound");
+        assertEquals(2048, receiver.requestFromPosition(), "resumes at the last dispatched frame, not the start");
         assertTrue(receiver.isAwaitingReplay());
         assertEquals(-1, receiver.replaySessionId());
     }
@@ -977,8 +876,8 @@ class ReplayerRecoveryTest {
     // frames that are gone from the tap for good, and every retained frame draining cleanly says nothing
     // about them.
     @Test
-    @DisplayName("a resume reaching its bound after dropped tap frames re-walks instead")
-    void resumeReachingItsBoundAfterDroppedTapFramesReWalksInstead() {
+    @DisplayName("a resume reaching its bound after dropped tap frames resumes again")
+    void resumeReachingItsBoundAfterDroppedTapFramesResumesAgain() {
         deliverTap(1);
         assertEquals(1, caughtUpAt.size());
         deliverTap(3);                // gap -> resume anchored on frame 1; 3 is retained
@@ -992,62 +891,16 @@ class ReplayerRecoveryTest {
 
         assertFalse(receiver.isCaughtUp(), "frame 4 was dropped — the drained frontier is not the real one");
         assertEquals(1, caughtUpAt.size(), "no false re-convergence notification");
-        assertEquals(FROM_START, receiver.requestFromPosition(), "re-walks now rather than leaving the hole for a later tap gap");
+        assertEquals(3072, receiver.requestFromPosition(), "resumes now rather than leaving the hole for a later tap gap");
         assertTrue(receiver.isAwaitingReplay());
-    }
-
-    // ── releasing the replay slot ─────────────────────────────────────────────────────────────────
-
-    // The release was a fire-and-forget offer, so an offer that did not land was indistinguishable from
-    // one that did — and nothing re-sent it, leaving the slot to the idle TTL. There is no publication in
-    // these tests, so every send here is a send that never went out.
-    @Test
-    @DisplayName("a ReplayComplete that never went out stays pending")
-    void aReplayCompleteThatNeverWentOutStaysPending() {
-        deliverTap(1);
-        deliverTap(5); // gap -> resume
-        answerReplaying(7, 500);
-        deliverReplay(1);
-        deliverReplay(2);
-        deliverReplay(3);
-        deliverReplay(4);
-        assertFalse(receiver.completePending(), "nothing to release until the resume reaches its bound");
-
-        completeReplay();
-
-        assertTrue(receiver.isCaughtUp());
-        assertTrue(receiver.completePending(), "it never reached the wire — remember it");
-        receiver.doTimers(false);
-        assertTrue(receiver.completePending(), "the duty cycle retries the release rather than forgetting it");
-    }
-
-    // ReplayComplete names only the clientId, so one landing after a NEW request took a fresh slot would
-    // free the slot that replay is riding.
-    @Test
-    @DisplayName("a new request drops a ReplayComplete that never went out")
-    void aNewRequestDropsAReplayCompleteThatNeverWentOut() {
-        deliverTap(1);
-        deliverTap(5); // gap -> resume
-        answerReplaying(7, 500);
-        deliverReplay(1);
-        deliverReplay(2);
-        deliverReplay(3);
-        deliverReplay(4);
-        completeReplay();
-        assertTrue(receiver.completePending());
-
-        deliverTap(9); // a second gap -> new request, taking a fresh slot
-
-        assertTrue(receiver.isAwaitingReplay());
-        assertFalse(receiver.completePending(), "dropped: releasing now would free the new slot");
     }
 
     // ── the end of a walk ─────────────────────────────────────────────────────────────────────────
     // A walk ends at its bound, and reaching it is not by itself permission to declare caught up.
 
     @Test
-    @DisplayName("frames still retained when a walk reaches its bound force a re-walk rather than caught-up")
-    void retainedResidualForcesReWalk() {
+    @DisplayName("frames still retained when a walk reaches its bound force a resume rather than caught-up")
+    void retainedResidualForcesAResume() {
         attachReplay(11, 4096);
         deliverTap(5); // a hole below it that this walk never reached
         deliverReplay(1);
@@ -1056,7 +909,7 @@ class ReplayerRecoveryTest {
         completeReplay();
 
         assertFalse(receiver.isCaughtUp(), "declaring caught up here would close the hole by fiat");
-        assertEquals(FROM_START, receiver.requestFromPosition());
+        assertEquals(1024, receiver.requestFromPosition(), "resumes at the last dispatched frame");
         assertTrue(receiver.isAwaitingReplay());
     }
 
@@ -1072,15 +925,15 @@ class ReplayerRecoveryTest {
         completeReplay();
 
         assertTrue(receiver.isCaughtUp(), "nothing is outstanding — the guard must not fire here");
-        assertFalse(receiver.isAwaitingReplay(), "not a spurious re-walk");
+        assertFalse(receiver.isAwaitingReplay(), "not a spurious resume");
     }
 
-    // The same guard driven through to convergence: the re-walk must both happen AND be able to finish.
+    // The same guard driven through to convergence: the resume must both happen AND be able to finish.
     // Clearing the overflow on drain forgets the drop and catches up over the hole; never clearing it
     // leaves a client that can never declare itself caught up again.
     @Test
-    @DisplayName("a walk reaching its bound after dropped tap frames re-walks, then catches up")
-    void aWalkAfterDroppedTapFramesReWalksThenCatchesUp() {
+    @DisplayName("a walk reaching its bound after dropped tap frames resumes, then catches up")
+    void aWalkAfterDroppedTapFramesResumesThenCatchesUp() {
         answerReplaying(7, 500);
         deliverReplay(1);
         deliverReplay(2);
@@ -1090,15 +943,16 @@ class ReplayerRecoveryTest {
 
         assertFalse(receiver.isCaughtUp(), "the walk reached its bound, but a tap frame above it was dropped");
         assertEquals(0, caughtUpAt.size(), "no false convergence notification — this opens the accept gate");
-        assertEquals(FROM_START, receiver.requestFromPosition(), "re-walks rather than trusting the bound");
+        assertEquals(2048, receiver.requestFromPosition(), "resumes rather than trusting the bound");
 
-        // The re-walk replays what the drop lost, and this time nothing is dropped.
+        // The resume replays what the drop lost, and this time nothing is dropped.
         answerReplaying(8, 900);
+        deliverReplay(2); // the anchor
         deliverReplay(3);
         deliverReplay(4);
         completeReplay();
 
-        assertTrue(receiver.isCaughtUp(), "a re-walk that dropped nothing must be able to finish");
+        assertTrue(receiver.isCaughtUp(), "a resume that dropped nothing must be able to finish");
         assertEquals(1, caughtUpAt.size());
     }
 
@@ -1176,36 +1030,16 @@ class ReplayerRecoveryTest {
     void theReportNamesTheStateThatTellsTheCausesApart() {
         deliverTap(1);
         deliverTap(5); // gap -> awaiting a replay
-        deliverUnavailable(receiver.requestId());
 
-        captureLogs(); // installed after the refusal, so it captures only the report below
+        captureLogs(); // installed after the gap, so it captures only the report below
         assertFalse(checkProgressAt(CLOCK_MS));
         assertTrue(checkProgressAt(PAST_DEADLINE_MS));
 
         assertEquals(1, logged.size());
         final String text = logged.get(0).message();
-        // Without these an operator cannot tell a refused node from one whose recording cannot cover the hole.
+        // Without these an operator cannot tell an unanswering node from one whose recording cannot cover the hole.
         assertTrue(text.contains("lastGlobalSeqNo=1"), text);
         assertTrue(text.contains("awaitingReplay=true"), text);
-        assertTrue(text.contains("replayerUnavailable=true"), text);
-    }
-
-    @Test
-    @DisplayName("the report stops naming a refusal once the Replayer serves again")
-    void theReportStopsNamingARefusalOnceTheReplayerServesAgain() {
-        deliverTap(1);
-        deliverTap(5); // gap -> awaiting a replay
-        deliverUnavailable(receiver.requestId());
-        answerReplaying(7, 900);
-
-        captureLogs(); // installed after the exchange above, so it captures only the report below
-        assertFalse(checkProgressAt(CLOCK_MS));
-        assertTrue(checkProgressAt(PAST_DEADLINE_MS));
-
-        assertEquals(1, logged.size());
-        // The field is state, not "was ever refused": a stale 1 points the operator at a Replayer that is
-        // answering fine, and away from the attached replay that is actually not delivering.
-        assertTrue(logged.get(0).message().contains("replayerUnavailable=false"), logged.get(0).message());
     }
 
     @Test
@@ -1251,7 +1085,7 @@ class ReplayerRecoveryTest {
     @DisplayName("a leadership change with a handler goes to it alone")
     void aLeadershipChangeWithAHandlerGoesToItAlone() {
         final List<Long> changes = new ArrayList<>();
-        receiver = new ReplayerRecovery(CLIENT_ID, actions, event -> dispatched.add(event.globalSeqNo()),
+        receiver = new ReplayerRecovery(actions, event -> dispatched.add(event.globalSeqNo()),
                                         (leaderMemberId, leadershipTermId, globalSeqNo) -> changes.add(globalSeqNo),
                                         null);
         deliverLeadershipChanged(1);
@@ -1263,29 +1097,7 @@ class ReplayerRecoveryTest {
     @Test
     @DisplayName("onSequenced is required")
     void onSequencedIsRequired() {
-        assertThrows(NullPointerException.class, () -> new ReplayerRecovery(CLIENT_ID, actions, null, null, null));
-    }
-
-    // ── Client id in use ───────────────────────────────────────────────────────────────────────────
-
-    @Test
-    @DisplayName("a notice that this client's id is in use latches, and is reported once")
-    void aClientIdInUseNoticeLatchesAndIsReportedOnce() {
-        captureLogs();
-        deliverClientIdInUse(CLIENT_ID);
-        deliverClientIdInUse(CLIENT_ID);
-
-        assertTrue(receiver.isClientIdInUse());
-        assertEquals(1, logged.size());
-        assertEquals(Logger.CoreEventCode.ReplayClientIdCollision, logged.get(0).code());
-    }
-
-    @Test
-    @DisplayName("a notice for another client's id is ignored")
-    void aClientIdInUseNoticeForAnotherClientIsIgnored() {
-        deliverClientIdInUse(CLIENT_ID + 1);
-
-        assertFalse(receiver.isClientIdInUse());
+        assertThrows(NullPointerException.class, () -> new ReplayerRecovery(actions, null, null, null));
     }
 
     // ── helpers ───────────────────────────────────────────────────────────────────────────────────
@@ -1418,8 +1230,8 @@ class ReplayerRecoveryTest {
     }
 
     @Test
-    @DisplayName("after a restore, a fall-back to the walk resumes at the snapshot instead")
-    void afterARestoreTheWalkFallbackResumesAtTheSnapshot() {
+    @DisplayName("after a restore, a resume that opens anywhere but the cut is fatal")
+    void afterARestoreAResumeOpeningAnywhereButTheCutIsFatal() {
         writeSnapshot(2);
         startRestoring();
         answerLocation(2, 1);
@@ -1428,12 +1240,8 @@ class ReplayerRecoveryTest {
 
         deliverReplay(12); // not the anchor
 
-        assertNotEquals(FROM_START, receiver.requestFromPosition(), "the start holds nothing this instance may replay");
-        assertEquals(CUT * 1024, receiver.requestFromPosition());
-        attachReplay(23, 64 * 1024);
-        deliverReplayFrame(RestoreFrames.started(CUT, 2), CUT);
-        deliverReplay(11);
-        assertEquals(List.of(11L), dispatched);
+        assertTrue(receiver.fault().contains("expected " + CUT), receiver.fault());
+        assertTrue(dispatched.isEmpty(), "nothing after a wrong cut may be dispatched");
     }
 
     @Test
@@ -1467,7 +1275,7 @@ class ReplayerRecoveryTest {
         receiver.doTimers(false);
         assertTrue(receiver.restoreFailure().contains("damaged"));
         assertFalse(receiver.isRecovering());
-        assertNull(new ReplayerRecovery(CLIENT_ID, actions, event -> { }, null, null).restoreFailure());
+        assertNull(new ReplayerRecovery(actions, event -> { }, null, null).restoreFailure());
     }
 
     @Test
@@ -1570,11 +1378,6 @@ class ReplayerRecoveryTest {
         Logger.install(logged::add);
     }
 
-    /** Refusals only: a re-request logs its own line between two of them, so size() cannot count these. */
-    private long refusals() {
-        return logged.stream().filter(event -> Logger.CoreEventCode.ReplayUnavailable == event.code()).count();
-    }
-
     /** Retained-buffer overflows only: every gap/re-walk warn shares TapGap, so only the text separates them. */
     private long overflowReports() {
         return logged.stream().filter(event -> event.message().contains("retained-frame buffer full")).count();
@@ -1596,19 +1399,6 @@ class ReplayerRecoveryTest {
 
     private void deliverPending(final long requestId) {
         receiver.onControl(replayPendingBuffer(requestId), 0, replayPendingLength());
-    }
-
-    private void deliverUnavailable(final long requestId) {
-        receiver.onControl(replayUnavailableBuffer(requestId), 0, replayUnavailableLength());
-    }
-
-    private void deliverClientIdInUse(final int clientId) {
-        final UnsafeBuffer buffer = new UnsafeBuffer(new byte[64]);
-        new ReplayClientIdInUseEncoder()
-            .wrapAndApplyHeader(buffer, 0, new org.limitless.seqeron.sbe.replay.MessageHeaderEncoder())
-            .clientId(clientId);
-        receiver.onControl(buffer, 0, org.limitless.seqeron.sbe.replay.MessageHeaderEncoder.ENCODED_LENGTH
-            + ReplayClientIdInUseEncoder.BLOCK_LENGTH);
     }
 
     private void deliverLeadershipChanged(final long globalSeqNo) {
@@ -1691,7 +1481,7 @@ class ReplayerRecoveryTest {
         return replayingBuffer(CLIENT_ID, requestId, replaySessionId, catchUpPosition);
     }
 
-    private static UnsafeBuffer replayingBuffer(final int clientId, final long requestId,
+    private static UnsafeBuffer replayingBuffer(final long clientId, final long requestId,
                                                 final long replaySessionId, final long catchUpPosition) {
         final UnsafeBuffer buffer = new UnsafeBuffer(new byte[256]);
         new ReplayingEncoder()
@@ -1720,19 +1510,5 @@ class ReplayerRecoveryTest {
     private static int replayPendingLength() {
         return org.limitless.seqeron.sbe.replay.MessageHeaderEncoder.ENCODED_LENGTH
             + ReplayPendingEncoder.BLOCK_LENGTH;
-    }
-
-    private static UnsafeBuffer replayUnavailableBuffer(final long requestId) {
-        final UnsafeBuffer buffer = new UnsafeBuffer(new byte[64]);
-        new ReplayUnavailableEncoder()
-            .wrapAndApplyHeader(buffer, 0, new org.limitless.seqeron.sbe.replay.MessageHeaderEncoder())
-            .clientId(CLIENT_ID)
-            .requestId(requestId);
-        return buffer;
-    }
-
-    private static int replayUnavailableLength() {
-        return org.limitless.seqeron.sbe.replay.MessageHeaderEncoder.ENCODED_LENGTH
-            + ReplayUnavailableEncoder.BLOCK_LENGTH;
     }
 }

@@ -30,7 +30,7 @@ namespace Org.Limitless.Seqeron.Replayer.Client;
 [Collection(LoggerCollection.Name)]
 public class ReplayerRecoveryPropertyTest : IDisposable
 {
-    private const int ClientId = 4;
+    private const long ClientId = 4;
 
     // One frame's span in the recording's position space. Opaque to the client: only ordering matters.
     private const int Stride = 64;
@@ -117,9 +117,6 @@ public class ReplayerRecoveryPropertyTest : IDisposable
         // ── the node's archive: the active recording, complete by construction ─────────────────────────
         private long _tip;
 
-        // Where the active recording's frame 1 starts; a rotation may move it.
-        private long _positionBase;
-
         // ── the Replayer's view of this one client ─────────────────────────────────────────────────────
         private long _pendingRequestId = -1;
         private bool _pendingIsQuery;
@@ -165,7 +162,7 @@ public class ReplayerRecoveryPropertyTest : IDisposable
                 Publish();
             }
 
-            _client = new ReplayerRecovery(ClientId, this, OnSequenced, null, null);
+            _client = new ReplayerRecovery(this, OnSequenced, null, null);
             if (_restoring)
             {
                 _client.RestoreFrom(Source, _store, this);
@@ -201,6 +198,7 @@ public class ReplayerRecoveryPropertyTest : IDisposable
                 }
             }
 
+            Assert.True(_client.Fault == null, _tag + ": " + _client.Fault);
             Assert.True(_client.IsCaughtUp, _tag + ": never re-converged after the faults stopped");
             Assert.True(_tip == _client.LastGlobalSeqNo, _tag + ": converged short of the tip");
             Assert.True(_tip + 1 == _expectedNext, _tag + ": caught up without having dispatched every frame");
@@ -293,7 +291,7 @@ public class ReplayerRecoveryPropertyTest : IDisposable
 
         private void InjectFault()
         {
-            switch (_rng.Roll(4))
+            switch (_rng.Roll(3))
             {
                 case 0:
                     if (_replayEndSeqNo >= 0)
@@ -306,7 +304,7 @@ public class ReplayerRecoveryPropertyTest : IDisposable
                     _clockMs += 6_000; // past ReplayStallTimeoutMs as well as the resend interval
                     _client.DoTimers(false);
                     break;
-                case 2:
+                default:
                     // The same tap frame offered twice. Both de-dupes have to hold: the contiguity one when it sits
                     // at or below the baseline, and the retained FIFO's when it is ahead of a hole.
                     if (_lastTapped > 0)
@@ -314,21 +312,6 @@ public class ReplayerRecoveryPropertyTest : IDisposable
                         Deliver(_lastTapped, false);
                     }
                     break;
-                default:
-                    Rotate();
-                    break;
-            }
-        }
-
-        // A new active recording, holding the log from globalSeqNo 1 as a restarted node's does once it has replayed
-        // it. A walk's may lay its frames out elsewhere (a frame or half a frame on), so a resume at an old position
-        // opens on another frame or is refused; a restoring run's keeps its positions, since a resume at the
-        // snapshot's position is its only way back.
-        private void Rotate()
-        {
-            if (!_restoring)
-            {
-                _positionBase += _rng.Chance(50) ? Stride : Stride / 2;
             }
         }
 
@@ -378,11 +361,6 @@ public class ReplayerRecoveryPropertyTest : IDisposable
                 Control(ControlMessages.ReplayPending(ClientId, requestId));
                 return;
             }
-            if (_chaos && Chance(5))
-            {
-                Control(ControlMessages.ReplayUnavailable(ClientId, requestId));
-                return;
-            }
             if (query)
             {
                 Control(queryRound == 2 ? RestoreFrames.Location(ClientId, requestId, 2, Cut, PositionOf(Cut),
@@ -397,14 +375,9 @@ public class ReplayerRecoveryPropertyTest : IDisposable
                 ServeReplay(requestId, 1, _tip);
                 return;
             }
-            long offset = fromPosition - _positionBase;
-            if (offset < 0 || offset % Stride != 0 || offset / Stride + 1 > _tip)
-            {
-                // Not a frame of the active recording: it rotated under the client, and the archive refuses it.
-                Control(ControlMessages.Replaying(ClientId, requestId, ReplayProtocol.NoReplayNeeded, 0));
-                return;
-            }
-            ServeReplay(requestId, offset / Stride + 1, _tip);
+            Assert.True(fromPosition % Stride == 0 && fromPosition / Stride + 1 <= _tip,
+                        _tag + ": resumed at " + fromPosition + ", where no recorded frame starts");
+            ServeReplay(requestId, fromPosition / Stride + 1, _tip);
         }
 
         // Bound at the tip the recording holds NOW: frames published later are the tap's problem, not this
@@ -470,16 +443,6 @@ public class ReplayerRecoveryPropertyTest : IDisposable
             _pendingQueryRound = round;
         }
 
-        public bool SendReplayComplete()
-        {
-            return !_chaos || Chance(70);
-        }
-
-        public bool SendReplayHeartbeat()
-        {
-            return !_chaos || Chance(70);
-        }
-
         public void OpenReplay(long replaySessionId)
         {
         }
@@ -494,6 +457,8 @@ public class ReplayerRecoveryPropertyTest : IDisposable
         }
 
         public int? MemberId => 0;
+
+        long IReplayerRecoveryActions.ClientId => ClientId;
 
         public long NowMs()
         {
@@ -548,10 +513,10 @@ public class ReplayerRecoveryPropertyTest : IDisposable
             return _rng.Chance(percent);
         }
 
-        // Where frame `globalSeqNo` starts in the active recording: frame 1 at its base.
-        private long PositionOf(long globalSeqNo)
+        // Where frame `globalSeqNo` starts in the active recording: frame 1 at 0.
+        private static long PositionOf(long globalSeqNo)
         {
-            return _positionBase + (globalSeqNo - 1) * Stride;
+            return (globalSeqNo - 1) * Stride;
         }
     }
 }

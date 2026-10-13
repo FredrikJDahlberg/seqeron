@@ -28,7 +28,7 @@ import org.limitless.seqeron.util.Logger;
  * <p>System properties, on top of {@link ClusterProbe}'s {@code probe.memberId} / {@code probe.aeronDir} /
  * {@code probe.ingressEndpoints}:
  * <pre>
- *   probe.clientId     — this replica's Replayer client id; default 11
+ *   probe.clientId     — this replica's client id, its counters' label; default 11
  *   probe.sourceId     — the application's sourceId; default 16
  *   probe.snapshotDir  — this replica's own snapshot directory; default {tmpdir}/seqeron-snapshots-app-{memberId}
  *   probe.intervalMs   — pause between markers while leading; default 100

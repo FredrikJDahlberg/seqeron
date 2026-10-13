@@ -136,7 +136,7 @@ jobs:
           path: logs/failover/
 
   # A caught-up consumer that drops a live tap frame after a failover must heal it by resuming its member's
-  # recording at the hole, not by re-walking the chain, and keep delivering.
+  # recording at the hole, and keep delivering.
   gap-recovery:
     name: gap recovery
     runs-on: ubuntu-24.04

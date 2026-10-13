@@ -94,7 +94,7 @@ internal static class RestoreFrames
 
     /// <summary>The Replayer's answer: round <paramref name="round"/>'s cut and sequenced end, or none for round
     /// -1.</summary>
-    public static byte[] Location(int clientId, long requestId, long round, long asOfGlobalSeqNo, long asOfPosition,
+    public static byte[] Location(long clientId, long requestId, long round, long asOfGlobalSeqNo, long asOfPosition,
                                   long formatVersion, Digest end)
     {
         var bytes = new byte[Replay.MessageHeader.Size + Replay.SnapshotLocation.BlockLength];
@@ -117,7 +117,7 @@ internal static class RestoreFrames
 /// them.</summary>
 internal static class ControlMessages
 {
-    public static byte[] Replaying(int clientId, long requestId, long replaySessionId, long catchUpPosition)
+    public static byte[] Replaying(long clientId, long requestId, long replaySessionId, long catchUpPosition)
     {
         var bytes = new byte[Replay.MessageHeader.Size + Replay.Replaying.BlockLength];
         var encoder = new Replay.Replaying();
@@ -129,32 +129,13 @@ internal static class ControlMessages
         return bytes;
     }
 
-    public static byte[] ReplayPending(int clientId, long requestId)
+    public static byte[] ReplayPending(long clientId, long requestId)
     {
         var bytes = new byte[Replay.MessageHeader.Size + Replay.ReplayPending.BlockLength];
         var encoder = new Replay.ReplayPending();
         encoder.WrapForEncodeAndApplyHeader(new DirectBuffer(bytes), 0, new Replay.MessageHeader());
         encoder.ClientId = clientId;
         encoder.RequestId = requestId;
-        return bytes;
-    }
-
-    public static byte[] ReplayUnavailable(int clientId, long requestId)
-    {
-        var bytes = new byte[Replay.MessageHeader.Size + Replay.ReplayUnavailable.BlockLength];
-        var encoder = new Replay.ReplayUnavailable();
-        encoder.WrapForEncodeAndApplyHeader(new DirectBuffer(bytes), 0, new Replay.MessageHeader());
-        encoder.ClientId = clientId;
-        encoder.RequestId = requestId;
-        return bytes;
-    }
-
-    public static byte[] ReplayClientIdInUse(int clientId)
-    {
-        var bytes = new byte[Replay.MessageHeader.Size + Replay.ReplayClientIdInUse.BlockLength];
-        var encoder = new Replay.ReplayClientIdInUse();
-        encoder.WrapForEncodeAndApplyHeader(new DirectBuffer(bytes), 0, new Replay.MessageHeader());
-        encoder.ClientId = clientId;
         return bytes;
     }
 }

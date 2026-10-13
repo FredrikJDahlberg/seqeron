@@ -21,12 +21,8 @@ import org.limitless.seqeron.protocol.ReplayProtocol;
 import org.limitless.seqeron.protocol.SeqeronCounters;
 import org.limitless.seqeron.sbe.replay.MessageHeaderDecoder;
 import org.limitless.seqeron.sbe.replay.MessageHeaderEncoder;
-import org.limitless.seqeron.sbe.replay.ReplayClientIdInUseDecoder;
-import org.limitless.seqeron.sbe.replay.ReplayCompleteEncoder;
-import org.limitless.seqeron.sbe.replay.ReplayHeartbeatEncoder;
 import org.limitless.seqeron.sbe.replay.ReplayPendingDecoder;
 import org.limitless.seqeron.sbe.replay.ReplayRequestEncoder;
-import org.limitless.seqeron.sbe.replay.ReplayUnavailableDecoder;
 import org.limitless.seqeron.sbe.replay.ReplayingDecoder;
 import org.limitless.seqeron.sbe.replay.SnapshotLocationDecoder;
 import org.limitless.seqeron.sbe.replay.SnapshotQueryEncoder;
@@ -45,12 +41,12 @@ import org.limitless.seqeron.util.Logger;
  */
 class ReplayerServiceTest {
     private static final int MEMBER_ID = 0;
-    private static final int CLIENT = 7;
-    private static final int OTHER_CLIENT = 8;
+    private static final long CLIENT = 7;
+    private static final long OTHER_CLIENT = 8;
     private static final long FROM_START = ReplayProtocol.FROM_START;
 
     /** One decoded control reply. {@code catchUpPosition} is unset on non-Replaying replies. */
-    private record Reply(int templateId, int clientId, long requestId, long replaySessionId, long catchUpPosition) { }
+    private record Reply(int templateId, long clientId, long requestId, long replaySessionId, long catchUpPosition) { }
 
     private final List<Logger.LoggerEvent> events = new ArrayList<>();
     private final AtomicInteger fatalCount = new AtomicInteger();
@@ -73,123 +69,29 @@ class ReplayerServiceTest {
         Logger.reset();
     }
 
-    // ── Startup integrity check ─────────────────────────────────────────────────
+    // ── Readiness ───────────────────────────────────────────────────────────────
 
     @Test
-    void aFirstFrameAtGlobalSeqNoOneMakesTheNodeReady() {
-        fakeReplayer.addRecording(6, 0, true, 4096);
-        fakeReplayer.enqueueSelfCheckFrame(sequencedFrame(1));
+    void aVisibleActiveRecordingMakesTheNodeReady() {
+        replayerService.poll();
+        assertEquals(0, fakeReplayer.counter(SeqeronCounters.REPLAYER_READY_TYPE_ID), "nothing recorded yet");
 
-        replayerService.poll(); // opens the self-check
-        assertEquals(0, fakeReplayer.counter(SeqeronCounters.REPLAYER_READY_TYPE_ID));
-        replayerService.poll(); // reads its first fragment
+        fakeReplayer.addRecording(6, 0, true, 4096);
+        replayerService.poll();
 
         assertEquals(1, fakeReplayer.counter(SeqeronCounters.REPLAYER_READY_TYPE_ID));
-        assertEquals(0, fakeReplayer.counter(SeqeronCounters.REPLAYER_INTEGRITY_FAILURE_TYPE_ID));
-        // Bounded to the first frame, not the whole recording: it only ever reads one fragment.
-        assertEquals(1, fakeReplayer.startedReplays().size());
-        assertEquals(ReplayerService.SELF_CHECK_STREAM_ID, fakeReplayer.startedReplays().getFirst().streamId());
+        assertTrue(fakeReplayer.startedReplays().isEmpty(), "readiness replays nothing");
     }
 
     @Test
-    void aFirstFrameThatIsNotGlobalSeqNoOneRefusesEveryRequestForGood() {
-        fakeReplayer.addRecording(6, 0, true, 4096);
-        fakeReplayer.enqueueSelfCheckFrame(sequencedFrame(7));
-
-        replayerService.poll();
-        replayerService.poll();
-
-        assertEquals(1, fakeReplayer.counter(SeqeronCounters.REPLAYER_INTEGRITY_FAILURE_TYPE_ID));
-        assertEquals(0, fakeReplayer.counter(SeqeronCounters.REPLAYER_READY_TYPE_ID));
-        assertTrue(loggedOnce(Logger.CoreEventCode.ArchiveIntegrityFailure));
-
-        fakeReplayer.enqueueRequest(replayRequest(CLIENT, 1, FROM_START));
-        replayerService.poll();
-        assertEquals(ReplayUnavailableDecoder.TEMPLATE_ID, lastReply().templateId());
-
-        // Permanent: retrying reads the same bytes, so nothing is re-opened and ready never returns.
-        final int selfChecks = fakeReplayer.selfCheckStreamsOpened();
-        for (int i = 0; i < 5; i++) {
-            replayerService.poll();
-        }
-        assertEquals(selfChecks, fakeReplayer.selfCheckStreamsOpened());
-        assertEquals(0, fakeReplayer.counter(SeqeronCounters.REPLAYER_READY_TYPE_ID));
-    }
-
-    @Test
-    void onlyTheActiveRecordingIsProvedBeforeReadiness() {
-        fakeReplayer.addRecording(5, 0, false, 4096);
-        fakeReplayer.addRecording(6, 0, true, 4096);
-
+    void aWalkOfAnActiveRecordingWithNothingInItYetHasNothingToReplay() {
+        fakeReplayer.addRecording(6, 0, true, 0); // recording armed, sequencer has published nothing yet
         makeReady();
 
-        // With no snapshots every recording begins at globalSeqNo 1, so the active one alone holds the log, and
-        // it alone is served.
-        final List<Long> checked = fakeReplayer.startedReplays()
-                                       .stream()
-                                       .filter(r -> r.streamId() == ReplayerService.SELF_CHECK_STREAM_ID)
-                                       .map(FakeReplayer.StartedReplay::recordingId)
-                                       .toList();
-        assertEquals(List.of(6L), checked);
-    }
+        final Reply reply = request(CLIENT, 1, FROM_START);
 
-    @Test
-    void anActiveRecordingThatBeginsMidHistoryIsAnIntegrityFailureWhateverPrecedesIt() {
-        fakeReplayer.addRecording(5, 0, false, 4096);
-        fakeReplayer.addRecording(6, 0, true, 4096);
-
-        replayerService.poll(); // opens the check on recording 6
-        fakeReplayer.enqueueSelfCheckFrame(sequencedFrame(4001)); // resumed mid-history
-        replayerService.poll();
-
-        // Recording 5 does not make up for it: it is never served. Only a walking app would otherwise meet the
-        // hole, and then only as a recovery that never converges. This is where it is catchable.
-        assertEquals(1, fakeReplayer.counter(SeqeronCounters.REPLAYER_INTEGRITY_FAILURE_TYPE_ID));
-        assertEquals(0, fakeReplayer.counter(SeqeronCounters.REPLAYER_READY_TYPE_ID));
-        assertTrue(loggedOnce(Logger.CoreEventCode.ArchiveIntegrityFailure));
-        assertEquals(ReplayUnavailableDecoder.TEMPLATE_ID, request(CLIENT, 1, FROM_START).templateId());
-    }
-
-    @Test
-    void aLiveRecordingWithNothingInItYetHoldsReadinessRatherThanPassing() {
-        fakeReplayer.addRecording(6, 0, true, 0); // recording armed, sequencer has published nothing yet
-
-        for (int cycle = 0; cycle < 5; cycle++) {
-            replayerService.poll();
-        }
-
-        // Transient, and passing it would declare the node ready on an archive nothing has proved anything
-        // about.
-        assertEquals(0, fakeReplayer.counter(SeqeronCounters.REPLAYER_READY_TYPE_ID));
-        assertEquals(0, fakeReplayer.counter(SeqeronCounters.REPLAYER_INTEGRITY_FAILURE_TYPE_ID));
-        assertEquals(0, fakeReplayer.selfCheckStreamsOpened());
-    }
-
-    @Test
-    void eachSelfCheckReadsOnlyItsOwnReplaySession() {
-        fakeReplayer.addRecording(6, 0, true, 4096);
-
-        replayerService.poll();
-
-        // Unscoped, the subscription also joins the previous check's lingering replay image mid-stream
-        // and reads its second frame as this check's first.
-        final long session = fakeReplayer.startedReplays().getLast().replaySessionId();
-        assertEquals(session, fakeReplayer.selfCheckSessionId());
-    }
-
-    @Test
-    void aSelfCheckThatDeliversNothingInTimeIsStartedOverRatherThanFailed() {
-        fakeReplayer.addRecording(6, 0, true, 4096); // no self-check frame queued
-
-        replayerService.poll();
-        assertEquals(1, fakeReplayer.selfCheckStreamsOpened());
-        fakeReplayer.advanceMillis(3_000); // past SELF_CHECK_TIMEOUT_NS
-        replayerService.poll();
-        replayerService.poll();
-
-        assertEquals(2, fakeReplayer.selfCheckStreamsOpened());
-        assertEquals(0, fakeReplayer.counter(SeqeronCounters.REPLAYER_INTEGRITY_FAILURE_TYPE_ID));
-        assertEquals(0, fakeReplayer.counter(SeqeronCounters.REPLAYER_READY_TYPE_ID));
+        assertEquals(ReplayProtocol.NO_REPLAY_NEEDED, reply.replaySessionId());
+        assertTrue(noClientReplayStarted());
     }
 
     @Test
@@ -206,12 +108,10 @@ class ReplayerServiceTest {
     @Test
     void aRequestArrivingInTheCycleReadinessFlipsIsHeldUntilTheAppsNextResend() {
         fakeReplayer.addRecording(6, 0, true, 4096);
-        fakeReplayer.enqueueSelfCheckFrame(sequencedFrame(1));
-        replayerService.poll(); // opens the self-check; readiness flips on the next cycle
 
-        // poll() answers requests BEFORE running the integrity check, because a not-ready Replayer still
-        // owes every request an answer and answering costs nothing, whereas the check makes archive
-        // control calls. This one-cycle delay is that ordering's whole cost.
+        // poll() answers requests BEFORE checking readiness, because a not-ready Replayer still owes every
+        // request an answer and answering costs nothing, whereas the check makes archive control calls. This
+        // one-cycle delay is that ordering's whole cost.
         final Reply held = request(CLIENT, 1, FROM_START);
         assertEquals(ReplayPendingDecoder.TEMPLATE_ID, held.templateId());
         assertEquals(1, fakeReplayer.counter(SeqeronCounters.REPLAYER_READY_TYPE_ID));
@@ -317,7 +217,21 @@ class ReplayerServiceTest {
     }
 
     @Test
-    void aResumeBelowTheActiveRecordingsStartIsSteeredOntoTheWalk() {
+    void aResumeTheRecordingHasNotReachedYetIsHeld() {
+        fakeReplayer.addRecording(6, 0, true, 4096);
+        makeReady();
+
+        // The client resumes from a frame it read off the tap, which the recording may still trail.
+        final Reply reply = request(CLIENT, 1, 4096);
+
+        assertEquals(ReplayPendingDecoder.TEMPLATE_ID, reply.templateId());
+        assertTrue(noClientReplayStarted());
+        assertEquals(0, fakeReplayer.counter(SeqeronCounters.REPLAYER_PENDING_REQUESTS_TYPE_ID),
+                     "the client's resend is the retry");
+    }
+
+    @Test
+    void aResumeBelowTheActiveRecordingsStartIsRefused() {
         fakeReplayer.addRecording(6, 2048, true, 4096);
         makeReady();
 
@@ -327,53 +241,52 @@ class ReplayerServiceTest {
         assertTrue(noClientReplayStarted());
     }
 
-    // ── Local-archive stall ─────────────────────────────────────────────────────
+    // ── Local-archive errors ────────────────────────────────────────────────────
 
     @Test
-    void anArchiveThatRefusesAWalkReplayStallsAndHoldsTheClient() {
+    void anArchiveThatRefusesAWalkReplayHoldsTheClientAndIsCounted() {
         fakeReplayer.addRecording(6, 0, true, 4096);
         makeReady();
         fakeReplayer.failReplays(new IllegalStateException("archive gone"));
 
         final Reply reply = request(CLIENT, 1, FROM_START);
 
-        assertEquals(ReplayPendingDecoder.TEMPLATE_ID, reply.templateId());
-        assertEquals(1, fakeReplayer.counter(SeqeronCounters.REPLAYER_STALLED_TYPE_ID));
+        assertEquals(ReplayPendingDecoder.TEMPLATE_ID, reply.templateId(), "the client's resend is the retry");
+        assertEquals(1, fakeReplayer.counter(SeqeronCounters.REPLAYER_ARCHIVE_ERRORS_COUNT_TYPE_ID));
     }
 
     @Test
-    void whileStalledFurtherRequestsAreHeldWithoutProbingTheArchiveAgain() {
+    void everyArchiveErrorIsCountedButReportedOncePerEpisode() {
         fakeReplayer.addRecording(6, 0, true, 4096);
         makeReady();
         fakeReplayer.failReplays(new IllegalStateException("archive gone"));
-        request(CLIENT, 1, FROM_START); // enters STALLED
-        request(CLIENT, 2, FROM_START); // the first request after that is itself the paced probe
-        final int probes = fakeReplayer.replayAttempts();
 
-        fakeReplayer.advanceMillis(100); // inside STALL_RETRY_INTERVAL_MS
-        final Reply reply = request(CLIENT, 3, FROM_START);
+        request(CLIENT, 1, FROM_START);
+        request(CLIENT, 2, FROM_START);
+        request(CLIENT, 3, FROM_START);
+        assertEquals(3, fakeReplayer.counter(SeqeronCounters.REPLAYER_ARCHIVE_ERRORS_COUNT_TYPE_ID));
+        assertEquals(1, archiveErrorReports(), "one episode is one line, not one per resend");
 
-        assertEquals(ReplayPendingDecoder.TEMPLATE_ID, reply.templateId());
-        assertEquals(probes, fakeReplayer.replayAttempts(), "a dead archive must not be hammered every request");
+        fakeReplayer.advanceMillis(60_000);
+        request(CLIENT, 4, FROM_START);
+        assertEquals(2, archiveErrorReports(), "a distinct episode names itself");
     }
 
     @Test
-    void anArchiveThatComesBackClearsTheStallOnTheNextPacedProbe() {
+    void anArchiveThatComesBackServesTheNextResend() {
         fakeReplayer.addRecording(6, 0, true, 4096);
         makeReady();
         fakeReplayer.failReplays(new IllegalStateException("archive gone"));
         request(CLIENT, 1, FROM_START);
 
         fakeReplayer.serveReplaysAgain();
-        fakeReplayer.advanceMillis(1_500); // past STALL_RETRY_INTERVAL_MS
         final Reply reply = request(CLIENT, 2, FROM_START);
 
         assertEquals(ReplayingDecoder.TEMPLATE_ID, reply.templateId());
-        assertEquals(0, fakeReplayer.counter(SeqeronCounters.REPLAYER_STALLED_TYPE_ID));
     }
 
     @Test
-    void aResumeTheArchiveRefusesIsSteeredOntoTheWalkRatherThanCalledAStall() {
+    void aResumeTheArchiveRefusesIsRefusedRatherThanCountedAsAnError() {
         fakeReplayer.addRecording(6, 0, true, 4096);
         makeReady();
         fakeReplayer.failReplays(new IllegalStateException("archive refused the position"));
@@ -381,79 +294,59 @@ class ReplayerServiceTest {
         final Reply reply = request(CLIENT, 1, 2048);
 
         // The archive still answers, so it is the position that is wrong — one the client supplied, in
-        // range but not on a frame boundary of a recording that has rotated. Answering ReplayPending to a
-        // position that can never work would hold that app forever.
+        // range but not on a frame boundary. Answering ReplayPending to a position that can never work would
+        // hold that app forever.
         assertEquals(ReplayProtocol.NO_REPLAY_NEEDED, reply.replaySessionId());
-        assertEquals(0, fakeReplayer.counter(SeqeronCounters.REPLAYER_STALLED_TYPE_ID));
+        assertEquals(0, fakeReplayer.counter(SeqeronCounters.REPLAYER_ARCHIVE_ERRORS_COUNT_TYPE_ID));
     }
 
     @Test
-    void aResumeAnArchiveOutageRefusesIsHeldRatherThanSteeredOntoAReWalk() {
-        // The same exception, the opposite fault. Reading every refused resume as a bad
-        // position sent a whole node's worth of apps off their positions and onto full re-walks
-        // because the archive was down, and reported nothing until one of those walks came back.
+    void aResumeAnArchiveOutageRefusesIsHeldRatherThanRefused() {
+        // The same exception, the opposite fault. Reading every refused resume as a bad position would fail a
+        // whole node's worth of apps because the archive was down.
         fakeReplayer.addRecording(6, 0, true, 4096);
         makeReady();
+        replayerService.poll(); // opens the snapshot index's replay, the Replayer's own archive call
         fakeReplayer.failArchive(new IllegalStateException("archive gone"));
 
         final Reply reply = request(CLIENT, 1, 2048);
 
         assertEquals(ReplayPendingDecoder.TEMPLATE_ID, reply.templateId(), "hold at the gap, keep the position");
-        assertEquals(1, fakeReplayer.counter(SeqeronCounters.REPLAYER_STALLED_TYPE_ID));
+        assertEquals(1, fakeReplayer.counter(SeqeronCounters.REPLAYER_ARCHIVE_ERRORS_COUNT_TYPE_ID));
     }
 
     @Test
-    void anArchiveThatComesBackIsNoticedWithNoRequestToNoticeItOn() {
-        // A Replayer whose apps have all caught up is asked for nothing, so the stall used to have no
-        // way back: seqeron.replayer.stalled stayed at 1 for the rest of the process.
+    void theReplayersOwnArchiveCallsWaitAfterOneThrows() {
         fakeReplayer.addRecording(6, 0, true, 4096);
-        makeReady();
-        fakeReplayer.failReplays(new IllegalStateException("archive gone"));
-        request(CLIENT, 1, FROM_START);
-        assertEquals(1, fakeReplayer.counter(SeqeronCounters.REPLAYER_STALLED_TYPE_ID));
-
-        fakeReplayer.serveReplaysAgain();
-        fakeReplayer.advanceMillis(1_500);
-        replayerService.poll(); // no request arrives, ever again
-
-        assertEquals(0, fakeReplayer.counter(SeqeronCounters.REPLAYER_STALLED_TYPE_ID));
-        assertTrue(noClientReplayStarted(), "the probe is the node's own, not a replay served to an app");
-    }
-
-    @Test
-    void theIdleProbeIsPacedLikeARequestedOne() {
-        fakeReplayer.addRecording(6, 0, true, 4096);
-        makeReady();
-        fakeReplayer.failReplays(new IllegalStateException("archive gone"));
-        request(CLIENT, 1, FROM_START);
-        final int probes = fakeReplayer.replayAttempts();
+        fakeReplayer.failArchive(new IllegalStateException("archive gone"));
+        replayerService.poll();
+        final int listings = fakeReplayer.listings();
 
         for (int cycle = 0; cycle < 10; ++cycle) {
             replayerService.poll();
         }
 
-        assertEquals(probes, fakeReplayer.replayAttempts(), "a dead archive must not be hammered every cycle");
+        assertEquals(listings, fakeReplayer.listings(), "a dead archive must not be hammered every cycle");
         fakeReplayer.advanceMillis(1_500);
         replayerService.poll();
-        assertEquals(probes + 1, fakeReplayer.replayAttempts(), "one probe per interval, though");
+        assertEquals(listings + 1, fakeReplayer.listings(), "one attempt per interval, though");
     }
 
     @Test
-    void anArchiveThatRefusesTheStartupSelfCheckIsReportedRatherThanLookingMerelySlow() {
-        // The self-check used to swallow exactly the faults the replay path reports, so
-        // a node whose archive never answered looked like one that was merely slow to become ready.
+    void anArchiveThatRefusesTheStartupListingIsReportedRatherThanLookingMerelySlow() {
+        // A node whose archive never answered would otherwise look like one that was merely slow to become ready.
         fakeReplayer.addRecording(6, 0, true, 4096);
         fakeReplayer.failArchive(new IllegalStateException("archive gone"));
 
         replayerService.poll();
 
-        assertEquals(1, fakeReplayer.counter(SeqeronCounters.REPLAYER_STALLED_TYPE_ID));
+        assertEquals(1, fakeReplayer.counter(SeqeronCounters.REPLAYER_ARCHIVE_ERRORS_COUNT_TYPE_ID));
         assertEquals(0, fakeReplayer.counter(SeqeronCounters.REPLAYER_READY_TYPE_ID));
         assertEquals(0, fatalCount.get(), "a transient archive fault must not take the duty cycle down");
 
         fakeReplayer.answerArchiveAgain();
+        fakeReplayer.advanceMillis(1_500);
         makeReady();
-        assertEquals(0, fakeReplayer.counter(SeqeronCounters.REPLAYER_STALLED_TYPE_ID));
     }
 
     @Test
@@ -483,13 +376,14 @@ class ReplayerServiceTest {
         for (int client = 1; client <= ReplayerService.MAX_CONCURRENT_REPLAYS; client++) {
             assertEquals(ReplayingDecoder.TEMPLATE_ID, request(client, 1, FROM_START).templateId());
         }
+        final long firstSession = fakeReplayer.startedReplays().getFirst().replaySessionId();
         final int lateClient = ReplayerService.MAX_CONCURRENT_REPLAYS + 1;
 
         assertEquals(ReplayPendingDecoder.TEMPLATE_ID, request(lateClient, 1, FROM_START).templateId());
         assertEquals(1, fakeReplayer.counter(SeqeronCounters.REPLAYER_PENDING_REQUESTS_TYPE_ID));
         assertEquals(0, fakeReplayer.counter(SeqeronCounters.REPLAYER_THROTTLED_REQUESTS_COUNT_TYPE_ID));
 
-        fakeReplayer.enqueueRequest(replayComplete(1));
+        fakeReplayer.endReplay(firstSession);
         replayerService.poll();
 
         final Reply served = lastReply();
@@ -508,10 +402,11 @@ class ReplayerServiceTest {
         fakeReplayer.tapBacklog(new Replayer.TapBacklog(window / 4 + 1, window));
 
         assertEquals(ReplayingDecoder.TEMPLATE_ID, request(CLIENT, 1, FROM_START).templateId());
+        final long session = lastClientReplay().replaySessionId();
         assertEquals(ReplayPendingDecoder.TEMPLATE_ID, request(OTHER_CLIENT, 1, FROM_START).templateId());
         assertEquals(1, fakeReplayer.counter(SeqeronCounters.REPLAYER_THROTTLED_REQUESTS_COUNT_TYPE_ID));
 
-        fakeReplayer.enqueueRequest(replayComplete(CLIENT));
+        fakeReplayer.endReplay(session);
         replayerService.poll();
 
         final Reply served = lastReply();
@@ -536,29 +431,22 @@ class ReplayerServiceTest {
     }
 
     @Test
-    void aHeartbeatKeepsASlotWhileSilenceAgesItOut() {
+    void aSlotIsHeldForAsLongAsItsReplayRunsAndFreedWhenItEnds() {
         fakeReplayer.addRecording(6, 0, true, 4096);
         makeReady();
         request(CLIENT, 1, FROM_START);
         final long session = lastClientReplay().replaySessionId();
 
-        final long almostTtl = ReplayerService.REPLAY_SLOT_TTL_MS * 3 / 4;
-        fakeReplayer.advanceMillis(almostTtl);
-        fakeReplayer.enqueueRequest(replayHeartbeat(CLIENT));
+        // A replay has no time limit: a full-log walk over a log that grows with uptime can run long.
+        fakeReplayer.advanceMillis(60_000);
         replayerService.poll();
-        // One and a half TTLs since the replay started, but only three quarters of one since the heartbeat.
-        fakeReplayer.advanceMillis(almostTtl);
-        replayerService.poll();
-
         assertEquals(1, fakeReplayer.counter(SeqeronCounters.REPLAYER_ACTIVE_SLOTS_TYPE_ID));
-        assertEquals(0, fakeReplayer.counter(SeqeronCounters.REPLAYER_IDLE_TTL_RECLAIMED_COUNT_TYPE_ID));
 
-        fakeReplayer.advanceMillis(ReplayerService.REPLAY_SLOT_TTL_MS + 1); // no further sign of life
+        fakeReplayer.endReplay(session); // the archive ended it, or its client died
         replayerService.poll();
 
         assertEquals(0, fakeReplayer.counter(SeqeronCounters.REPLAYER_ACTIVE_SLOTS_TYPE_ID));
-        assertEquals(1, fakeReplayer.counter(SeqeronCounters.REPLAYER_IDLE_TTL_RECLAIMED_COUNT_TYPE_ID));
-        assertTrue(fakeReplayer.stoppedReplays().contains(session));
+        assertFalse(fakeReplayer.stoppedReplays().contains(session), "nothing is left to stop");
     }
 
     @Test
@@ -641,40 +529,6 @@ class ReplayerServiceTest {
         assertTrue(loggedOnce(Logger.CoreEventCode.ReplayDutyCycleFailure));
     }
 
-    // ── Client-id collision ─────────────────────────────────────────────────────
-
-    @Test
-    void twoAppsSharingAClientIdAreReportedOnce() {
-        fakeReplayer.addRecording(6, 0, true, 4096);
-        makeReady();
-
-        request(CLIENT, 9, FROM_START);
-        request(CLIENT, 8, FROM_START); // a second app's own, lower, requestId sequence
-        request(CLIENT, 7, FROM_START);
-        request(CLIENT, 6, FROM_START);
-
-        assertEquals(1, fakeReplayer.counter(SeqeronCounters.REPLAYER_CLIENT_ID_COLLISION_TYPE_ID));
-        assertTrue(loggedOnce(Logger.CoreEventCode.ReplayClientIdCollision));
-
-        request(CLIENT, 5, FROM_START);
-        assertTrue(loggedOnce(Logger.CoreEventCode.ReplayClientIdCollision));
-    }
-
-    @Test
-    void bothAppsSharingAClientIdAreToldOnce() {
-        fakeReplayer.addRecording(6, 0, true, 4096);
-        makeReady();
-
-        request(OTHER_CLIENT, 1, FROM_START);
-        request(CLIENT, 9, FROM_START);
-        request(CLIENT, 8, FROM_START);
-        request(CLIENT, 7, FROM_START);
-        request(CLIENT, 6, FROM_START);
-        request(CLIENT, 5, FROM_START);
-
-        assertEquals(List.of(CLIENT), clientIdInUseNotices(), "one notice, to the shared id alone");
-    }
-
     // ── Snapshot index and SnapshotQuery (doc/snapshot.md §5) ────────────────────
 
     @Test
@@ -708,19 +562,12 @@ class ReplayerServiceTest {
     }
 
     @Test
-    void aQueryWaitsForReadinessAndIsRefusedOnAFailedNode() {
-        fakeReplayer.addRecording(6, 0, true, 4096);
+    void aQueryWaitsForReadiness() {
         fakeReplayer.enqueueRequest(snapshotQueryMessage(CLIENT, 1, 3, 1));
         replayerService.poll();
-        assertEquals(ReplayPendingDecoder.TEMPLATE_ID, lastReply().templateId());
 
-        fakeReplayer.enqueueSelfCheckFrame(sequencedFrame(7));
-        replayerService.poll();
-        replayerService.poll();
-        fakeReplayer.enqueueRequest(snapshotQueryMessage(CLIENT, 2, 3, 1));
-        replayerService.poll();
-        assertEquals(ReplayUnavailableDecoder.TEMPLATE_ID, lastReply().templateId());
-        assertTrue(fakeReplayer.indexStreamsOpened().isEmpty(), "a node that failed its check indexes nothing");
+        assertEquals(ReplayPendingDecoder.TEMPLATE_ID, lastReply().templateId());
+        assertTrue(fakeReplayer.indexStreamsOpened().isEmpty(), "a node with no recording indexes nothing");
     }
 
     @Test
@@ -743,17 +590,9 @@ class ReplayerServiceTest {
 
     // ── Fixtures and helpers ────────────────────────────────────────────────────
 
-    /**
-     * Passes the startup integrity check, leaving the node serving. This feeds one {@code globalSeqNo} 1 first
-     * frame per self-check opened rather than assuming a cycle count.
-     */
+    /** Polls until the node is serving. */
     private void makeReady() {
-        int fed = 0;
         for (int cycle = 0; cycle < 20 && fakeReplayer.counter(SeqeronCounters.REPLAYER_READY_TYPE_ID) == 0; ++cycle) {
-            if (fakeReplayer.selfCheckStreamsOpened() > fed) {
-                fakeReplayer.enqueueSelfCheckFrame(sequencedFrame(1));
-                ++fed;
-            }
             replayerService.poll();
         }
         assertEquals(1, fakeReplayer.counter(SeqeronCounters.REPLAYER_READY_TYPE_ID),
@@ -761,7 +600,7 @@ class ReplayerServiceTest {
     }
 
     /** Delivers one ReplayRequest and returns the reply it drew. */
-    private Reply request(final int clientId, final long requestId, final long fromPosition) {
+    private Reply request(final long clientId, final long requestId, final long fromPosition) {
         fakeReplayer.enqueueRequest(replayRequest(clientId, requestId, fromPosition));
         replayerService.poll();
         return lastReply();
@@ -780,33 +619,13 @@ class ReplayerServiceTest {
             return new Reply(header.templateId(), decoder.clientId(), decoder.requestId(), decoder.replaySessionId(),
                              decoder.catchUpPosition());
         }
-        if (header.templateId() == ReplayPendingDecoder.TEMPLATE_ID) {
-            final ReplayPendingDecoder decoder = new ReplayPendingDecoder();
-            decoder.wrap(buffer, offset, header.blockLength(), header.version());
-            return new Reply(header.templateId(), decoder.clientId(), decoder.requestId(), 0, 0);
-        }
-        final ReplayUnavailableDecoder decoder = new ReplayUnavailableDecoder();
+        assertEquals(ReplayPendingDecoder.TEMPLATE_ID, header.templateId());
+        final ReplayPendingDecoder decoder = new ReplayPendingDecoder();
         decoder.wrap(buffer, offset, header.blockLength(), header.version());
         return new Reply(header.templateId(), decoder.clientId(), decoder.requestId(), 0, 0);
     }
 
-    /** The clientId of every {@code ReplayClientIdInUse} sent, in order. */
-    private List<Integer> clientIdInUseNotices() {
-        final List<Integer> clientIds = new ArrayList<>();
-        final MessageHeaderDecoder header = new MessageHeaderDecoder();
-        final ReplayClientIdInUseDecoder decoder = new ReplayClientIdInUseDecoder();
-        for (final byte[] reply : fakeReplayer.controlReplies()) {
-            final UnsafeBuffer buffer = new UnsafeBuffer(reply);
-            header.wrap(buffer, 0);
-            if (header.templateId() == ReplayClientIdInUseDecoder.TEMPLATE_ID) {
-                decoder.wrap(buffer, MessageHeaderDecoder.ENCODED_LENGTH, header.blockLength(), header.version());
-                clientIds.add(decoder.clientId());
-            }
-        }
-        return clientIds;
-    }
-
-    /** The most recent replay served to an app, ignoring the startup self-check's own. */
+    /** The most recent replay served to an app. */
     private FakeReplayer.StartedReplay lastClientReplay() {
         final List<FakeReplayer.StartedReplay> clientReplays =
             fakeReplayer.startedReplays()
@@ -821,10 +640,15 @@ class ReplayerServiceTest {
         return fakeReplayer.startedReplays().stream().noneMatch(r -> r.streamId() == ReplayProtocol.REPLAY_STREAM_ID);
     }
 
-    /** No app was served out of {@code recordingId} — ignoring the startup self-check's own replay of it. */
+    /** No app was served out of {@code recordingId}. */
     private boolean noClientReplayFor(final long recordingId) {
         return fakeReplayer.startedReplays().stream().noneMatch(
             r -> r.recordingId() == recordingId && r.streamId() == ReplayProtocol.REPLAY_STREAM_ID);
+    }
+
+    /** Archive-error reports only: they share {@code Info} with every routine line, so only the text separates them. */
+    private long archiveErrorReports() {
+        return events.stream().filter(event -> event.message().startsWith("the local archive refused")).count();
     }
 
     private boolean loggedOnce(final Logger.EventCode code) {
@@ -836,7 +660,7 @@ class ReplayerServiceTest {
     }
 
     /** Delivers one SnapshotQuery and decodes the SnapshotLocation it drew. */
-    private SnapshotLocationDecoder snapshotQuery(final int clientId, final long requestId, final int sourceId,
+    private SnapshotLocationDecoder snapshotQuery(final long clientId, final long requestId, final int sourceId,
                                                   final long round) {
         fakeReplayer.enqueueRequest(snapshotQueryMessage(clientId, requestId, sourceId, round));
         replayerService.poll();
@@ -849,7 +673,7 @@ class ReplayerServiceTest {
 
     // ── Encoders ────────────────────────────────────────────────────────────────
 
-    private byte[] snapshotQueryMessage(final int clientId, final long requestId, final int sourceId,
+    private byte[] snapshotQueryMessage(final long clientId, final long requestId, final int sourceId,
                                         final long round) {
         final SnapshotQueryEncoder encoder = new SnapshotQueryEncoder();
         encoder.wrapAndApplyHeader(encodeBuffer, 0, headerEncoder).clientId(clientId).requestId(requestId)
@@ -857,38 +681,13 @@ class ReplayerServiceTest {
         return encoded(encoder.encodedLength());
     }
 
-    private byte[] replayRequest(final int clientId, final long requestId, final long fromPosition) {
+    private byte[] replayRequest(final long clientId, final long requestId, final long fromPosition) {
         final ReplayRequestEncoder encoder = new ReplayRequestEncoder();
         encoder.wrapAndApplyHeader(encodeBuffer, 0, headerEncoder)
             .clientId(clientId)
             .requestId(requestId)
             .fromPosition(fromPosition);
         return encoded(encoder.encodedLength());
-    }
-
-    private byte[] replayComplete(final int clientId) {
-        final ReplayCompleteEncoder encoder = new ReplayCompleteEncoder();
-        encoder.wrapAndApplyHeader(encodeBuffer, 0, headerEncoder).clientId(clientId);
-        return encoded(encoder.encodedLength());
-    }
-
-    private byte[] replayHeartbeat(final int clientId) {
-        final ReplayHeartbeatEncoder encoder = new ReplayHeartbeatEncoder();
-        encoder.wrapAndApplyHeader(encodeBuffer, 0, headerEncoder).clientId(clientId);
-        return encoded(encoder.encodedLength());
-    }
-
-    /** One frame off the tap recording, as the self-check reads it back: a core ClusterHeartbeat. */
-    private byte[] sequencedFrame(final long globalSeqNo) {
-        final org.limitless.seqeron.sbe.frame.ClusterHeartbeatEncoder frame =
-            new org.limitless.seqeron.sbe.frame.ClusterHeartbeatEncoder();
-        frame.wrapAndApplyHeader(encodeBuffer, 0, new org.limitless.seqeron.sbe.frame.MessageHeaderEncoder());
-        frame.header().sourceId(-1).connectionId(-1).sessionId(-1)
-            .systemEventType(org.limitless.seqeron.protocol.SystemFrame.CLUSTER_HEARTBEAT)
-            .globalSeqNo(globalSeqNo).timestamp(0);
-        final byte[] message = new byte[org.limitless.seqeron.sbe.frame.MessageHeaderEncoder.ENCODED_LENGTH + frame.encodedLength()];
-        encodeBuffer.getBytes(0, message);
-        return message;
     }
 
     private byte[] encoded(final int bodyLength) {

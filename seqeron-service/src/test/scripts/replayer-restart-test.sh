@@ -135,8 +135,10 @@ else
          "fresh client $CLIENT_ID to catch up across the rotated recording"; then
       OLD_RECORDING=$(grep -oE "tap recording [0-9]+ live" "$LOG_DIR/seq-$CN.log" | grep -oE "[0-9]+")
       NEW_RECORDING=$(grep -oE "tap recording [0-9]+ live" "$RESTART_LOG" | grep -oE "[0-9]+")
-      REPLAYS=$(grep -c "replay for client $CLIENT_ID: recording" "$RESTART_LOG")
-      OTHER=$(grep "replay for client $CLIENT_ID: recording" "$RESTART_LOG" \
+      # The Replayer names a client by the id it requests replays as, which the client logs at start.
+      REPLY_ID=$(grep -oE "requests replays as client [0-9]+" "$CLIENT_LOG" | grep -oE "[0-9]+$" | head -1)
+      REPLAYS=$(grep -c "replay for client ${REPLY_ID:-none}: recording" "$RESTART_LOG")
+      OTHER=$(grep "replay for client ${REPLY_ID:-none}: recording" "$RESTART_LOG" \
         | grep -vc "recording $NEW_RECORDING ")
       echo "  recording before / after the restart : $OLD_RECORDING / $NEW_RECORDING"
       echo "  replays served to client $CLIENT_ID      : $REPLAYS"

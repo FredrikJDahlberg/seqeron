@@ -81,7 +81,7 @@ class Application
         // This application's sourceId, the one its <applications> row declares — required, because spec §5
         // is one id space, and never -1, which ingress refuses.
         std::int32_t sourceId = -1;
-        // This replica's Replayer client id, unique among the co-located apps on its node.
+        // This replica's client id, its counters' label; unique among the co-located apps on its node.
         std::int32_t clientId = 0;
         // The node this replica runs on: whose tap it follows, and whose leadership opens its gate.
         std::int32_t memberId = 0;

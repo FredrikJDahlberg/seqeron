@@ -84,7 +84,7 @@ final class RestoreFrames {
     }
 
     /** The Replayer's answer: round {@code round}'s cut and sequenced end, or none for {@code round} −1. */
-    static Frame location(final int clientId, final long requestId, final long round, final long asOfGlobalSeqNo,
+    static Frame location(final long clientId, final long requestId, final long round, final long asOfGlobalSeqNo,
                           final long asOfPosition, final long formatVersion, final Digest end) {
         final UnsafeBuffer buffer = new UnsafeBuffer(new byte[128]);
         final SnapshotLocationEncoder encoder = new SnapshotLocationEncoder();

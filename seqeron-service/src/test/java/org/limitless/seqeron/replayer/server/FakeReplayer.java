@@ -6,8 +6,10 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import org.agrona.DirectBuffer;
 import org.agrona.concurrent.UnsafeBuffer;
 import org.agrona.concurrent.status.AtomicCounter;
@@ -25,7 +27,7 @@ import org.agrona.concurrent.status.CountersReader;
  * delivered with a null {@code Header}, which both of the service's handlers ignore.
  */
 final class FakeReplayer implements Replayer {
-    /** Counter slots; the service allocates ten. */
+    /** Counter slots; the service allocates seven. */
     private static final int COUNTER_CAPACITY = 16;
 
     /** Every recording's term length: the driver's default IPC term, as a member's tap has. */
@@ -53,9 +55,7 @@ final class FakeReplayer implements Replayer {
     private final List<byte[]> controlReplies = new ArrayList<>();
     private long controlOfferResult = 1; // > 0 is a successful offer
 
-    private final Deque<byte[]> selfCheckFrames = new ArrayDeque<>();
-    private int selfCheckStreamsOpened;
-    private long selfCheckSessionId = -1;
+    private final Set<Long> endedReplays = new HashSet<>();
 
     private final Deque<byte[]> indexFrames = new ArrayDeque<>();
     private final List<long[]> indexStreamsOpened = new ArrayList<>();
@@ -70,7 +70,6 @@ final class FakeReplayer implements Replayer {
     private final Map<Integer, AtomicCounter> countersByTypeId = new HashMap<>();
 
     private long epochMillis = 1_000_000L;
-    private long nowMs = 5_000L;
 
     // ── Scripting the node ──────────────────────────────────────────────────────
 
@@ -163,9 +162,9 @@ final class FakeReplayer implements Replayer {
         requestQueue.add(message);
     }
 
-    /** Queues one fragment for the in-flight self-check replay to read back. */
-    void enqueueSelfCheckFrame(final byte[] frame) {
-        selfCheckFrames.add(frame);
+    /** Ends a replay, as the archive reaching its bound and its client letting it go does. */
+    void endReplay(final long replaySessionId) {
+        endedReplays.add(replaySessionId);
     }
 
     /** Queues one frame for the open index replay, at the position after the last one queued. */
@@ -194,7 +193,6 @@ final class FakeReplayer implements Replayer {
 
     void advanceMillis(final long millis) {
         epochMillis += millis;
-        nowMs += millis;
     }
 
     // ── Reading back what the service did ───────────────────────────────────────
@@ -214,15 +212,6 @@ final class FakeReplayer implements Replayer {
 
     List<byte[]> controlReplies() {
         return controlReplies;
-    }
-
-    int selfCheckStreamsOpened() {
-        return selfCheckStreamsOpened;
-    }
-
-    /** The replay session the most recent self-check subscription was scoped to. */
-    long selfCheckSessionId() {
-        return selfCheckSessionId;
     }
 
     long counter(final int typeId) {
@@ -301,27 +290,8 @@ final class FakeReplayer implements Replayer {
     }
 
     @Override
-    public SelfCheckStream openSelfCheckStream(final long replaySessionId) {
-        ++selfCheckStreamsOpened;
-        selfCheckSessionId = replaySessionId;
-        return new SelfCheckStream() {
-            @Override
-            public int poll(final FragmentHandler handler, final int fragmentLimit) {
-                int read = 0;
-                while (read < fragmentLimit && !selfCheckFrames.isEmpty()) {
-                    final byte[] frame = selfCheckFrames.poll();
-                    handler.onFragment(new UnsafeBuffer(frame), 0, frame.length, null);
-                    ++read;
-                }
-                return read;
-            }
-
-            @Override
-            public void close() {
-                // A fresh subscription per check means an abandoned one's data is gone with it.
-                selfCheckFrames.clear();
-            }
-        };
+    public boolean isReplayLive(final long replaySessionId) {
+        return !endedReplays.contains(replaySessionId);
     }
 
     @Override
@@ -379,10 +349,5 @@ final class FakeReplayer implements Replayer {
     @Override
     public long epochMillis() {
         return epochMillis;
-    }
-
-    @Override
-    public long nowMs() {
-        return nowMs;
     }
 }

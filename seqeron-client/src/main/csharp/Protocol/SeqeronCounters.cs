@@ -66,9 +66,6 @@ public static class SeqeronCounters
     /// <summary>Last type id of the Replayer's block.</summary>
     public const int ReplayerTypeIdMax = 5199;
 
-    /// <summary>1 while the local archive is unreachable for replay (live delivery is unaffected), else 0.</summary>
-    public const int ReplayerStalledTypeId = 5100;
-
     /// <summary>1 once the co-located tap recording is visible and replay requests are being served, else
     /// 0.</summary>
     public const int ReplayerReadyTypeId = 5101;
@@ -82,21 +79,20 @@ public static class SeqeronCounters
     /// <summary>Count of replays started since this node came up.</summary>
     public const int ReplayerReplaysServedCountTypeId = 5104;
 
-    /// <summary>Count of replay slots reclaimed by the idle-TTL backstop rather than a normal release.</summary>
-    public const int ReplayerIdleTtlReclaimedCountTypeId = 5105;
-
-    /// <summary>1 once a tap recording has failed the startup integrity check, else 0. Latched.</summary>
-    public const int ReplayerIntegrityFailureTypeId = 5106;
-
     /// <summary>Count of control replies dropped because an app stopped draining the control stream.</summary>
     public const int ReplayerControlRepliesDroppedCountTypeId = 5107;
-
-    /// <summary>1 once two co-located replicas were seen sharing one client id, else 0.</summary>
-    public const int ReplayerClientIdCollisionTypeId = 5108;
 
     /// <summary>The round of one source's latest snapshot this node's Replayer has indexed, keyed
     /// <c>{memberId, sourceId}</c>.</summary>
     public const int ReplayerSnapshotRoundTypeId = 5109;
+
+    /// <summary>Count of replay requests held pending only because the tap recording trailed the tap while a replay
+    /// ran, resends included.</summary>
+    public const int ReplayerThrottledRequestsCountTypeId = 5110;
+
+    /// <summary>Count of local-archive calls that threw (live delivery is unaffected); a sustained rate means the
+    /// archive is not serving replays.</summary>
+    public const int ReplayerArchiveErrorsCountTypeId = 5111;
 
     // Co-located application replicas (5200-5299). Core reserves 5200; a consumer allocates its own in the range
     // (doc/ops.md, "Counter type ids").
@@ -122,7 +118,7 @@ public static class SeqeronCounters
     public const int KeyMemberIdOffset = 0;
 
     /// <summary>
-    /// Offset of the replayer clientId in an <b>app</b> counter's key, so a node's several replicas render as
+    /// Offset of the clientId in an <b>app</b> counter's key, so a node's several replicas render as
     /// separate series. Only the app range carries it.
     /// </summary>
     public const int KeyClientIdOffset = sizeof(int);
@@ -155,7 +151,7 @@ public static class SeqeronCounters
     /// <param name="typeId">its type id, in the app range</param>
     /// <param name="label">its label, US-ASCII</param>
     /// <param name="memberId">the replica's node</param>
-    /// <param name="clientId">the replica's Replayer client id</param>
+    /// <param name="clientId">the replica's client id</param>
     public static Counter AddAppCounter(Aeron aeron, int typeId, string label, int memberId, int clientId)
     {
         using var key = new UnsafeBuffer(new byte[AppKeyLength]);

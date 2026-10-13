@@ -15,12 +15,6 @@ interface ReplayerRecoveryActions {
     /** Offers a {@code SnapshotQuery}; best-effort, like the request. */
     void sendSnapshotQuery(long requestId, int sourceId, long round);
 
-    /** @return whether the {@code ReplayComplete} reached the wire */
-    boolean sendReplayComplete();
-
-    /** @return whether the {@code ReplayHeartbeat} reached the wire */
-    boolean sendReplayHeartbeat();
-
     /** Subscribes to exactly one replay — this one — for as long as the client rides it. */
     void openReplay(long replaySessionId);
 
@@ -32,6 +26,9 @@ interface ReplayerRecoveryActions {
 
     /** The node this app runs on, or null before start — log attribution only. */
     Integer memberId();
+
+    /** The id the Replayer addresses this client's replies to, unique on its media driver; -1 before start. */
+    long clientId();
 
     /** Monotonic millis; the unit suite advances it. */
     long nowMs();

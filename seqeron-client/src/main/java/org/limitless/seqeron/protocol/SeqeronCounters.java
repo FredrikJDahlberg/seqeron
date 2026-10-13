@@ -59,9 +59,6 @@ public final class SeqeronCounters {
     /** Last type id of the Replayer's block. */
     public static final int REPLAYER_TYPE_ID_MAX = 5199;
 
-    /** 1 while the local archive is unreachable for replay (live delivery is unaffected), else 0. */
-    public static final int REPLAYER_STALLED_TYPE_ID = 5100;
-
     /** 1 once the co-located tap recording is visible and replay requests are being served, else 0. */
     public static final int REPLAYER_READY_TYPE_ID = 5101;
 
@@ -74,27 +71,11 @@ public final class SeqeronCounters {
     /** Count of replays started ({@code archive.startReplay}) since this node came up. */
     public static final int REPLAYER_REPLAYS_SERVED_COUNT_TYPE_ID = 5104;
 
-    /** Count of replay slots reclaimed by the idle-TTL backstop rather than a normal release. */
-    public static final int REPLAYER_IDLE_TTL_RECLAIMED_COUNT_TYPE_ID = 5105;
-
-    /**
-     * 1 once a tap recording has failed the startup integrity check (its first frame is not globalSeqNo 1),
-     * else 0. Latched: {@code ready} never becomes 1 again for this process.
-     */
-    public static final int REPLAYER_INTEGRITY_FAILURE_TYPE_ID = 5106;
-
     /**
      * Count of control replies dropped because an app stopped draining the control stream; each costs that
      * app one resend interval. A rising rate means a wedged replica.
      */
     public static final int REPLAYER_CONTROL_REPLIES_DROPPED_COUNT_TYPE_ID = 5107;
-
-    /**
-     * 1 once two co-located apps have been seen sharing one {@code SEQERON_REPLAYER_CLIENT_ID}, else 0. Their
-     * replicas stop each other's replays and will not recover until the configuration is corrected.
-     */
-    /** 1 once two co-located replicas were seen sharing one client id, else 0. */
-    public static final int REPLAYER_CLIENT_ID_COLLISION_TYPE_ID = 5108;
 
     /**
      * The round of one source's latest snapshot this node's Replayer has indexed (doc/snapshot.md §5), one
@@ -107,6 +88,12 @@ public final class SeqeronCounters {
      * resends included: a held client resends about every 500 ms.
      */
     public static final int REPLAYER_THROTTLED_REQUESTS_COUNT_TYPE_ID = 5110;
+
+    /**
+     * Count of local-archive calls that threw (live delivery is unaffected). A request it fails is answered {@code
+     * ReplayPending}, and the client's resend is the retry, so a sustained rate means the archive is not serving.
+     */
+    public static final int REPLAYER_ARCHIVE_ERRORS_COUNT_TYPE_ID = 5111;
 
     // ── Co-located application replicas (5200-5299) ────────────────────────────────────────────
     // Core reserves 5200; a consumer allocates its own in the range (doc/ops.md, "Counter type ids"). Published by
@@ -128,7 +115,7 @@ public final class SeqeronCounters {
     public static final int KEY_MEMBER_ID_OFFSET = 0;
 
     /**
-     * Offset of the replayer clientId in an <b>app</b> counter's key, so a node's several replicas render as
+     * Offset of the clientId in an <b>app</b> counter's key, so a node's several replicas render as
      * separate series. Only the app range carries it, which is why the exporter keys off the range.
      */
     public static final int KEY_CLIENT_ID_OFFSET = BitUtil.SIZE_OF_INT;

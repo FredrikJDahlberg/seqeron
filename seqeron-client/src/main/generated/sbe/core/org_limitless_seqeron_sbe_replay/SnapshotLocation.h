@@ -116,7 +116,7 @@ private:
     }
 
 public:
-    static constexpr std::uint16_t SBE_BLOCK_LENGTH = static_cast<std::uint16_t>(56);
+    static constexpr std::uint16_t SBE_BLOCK_LENGTH = static_cast<std::uint16_t>(60);
     static constexpr std::uint16_t SBE_TEMPLATE_ID = static_cast<std::uint16_t>(24);
     static constexpr std::uint16_t SBE_SCHEMA_ID = static_cast<std::uint16_t>(212);
     static constexpr std::uint16_t SBE_SCHEMA_VERSION = static_cast<std::uint16_t>(0);
@@ -174,7 +174,7 @@ public:
 
     SBE_NODISCARD static SBE_CONSTEXPR std::uint16_t sbeBlockLength() SBE_NOEXCEPT
     {
-        return static_cast<std::uint16_t>(56);
+        return static_cast<std::uint16_t>(60);
     }
 
     SBE_NODISCARD static SBE_CONSTEXPR std::uint64_t sbeBlockAndHeaderLength() SBE_NOEXCEPT
@@ -344,37 +344,37 @@ public:
         return 0;
     }
 
-    static SBE_CONSTEXPR std::int32_t clientIdNullValue() SBE_NOEXCEPT
+    static SBE_CONSTEXPR std::int64_t clientIdNullValue() SBE_NOEXCEPT
     {
-        return SBE_NULLVALUE_INT32;
+        return SBE_NULLVALUE_INT64;
     }
 
-    static SBE_CONSTEXPR std::int32_t clientIdMinValue() SBE_NOEXCEPT
+    static SBE_CONSTEXPR std::int64_t clientIdMinValue() SBE_NOEXCEPT
     {
-        return INT32_C(-2147483647);
+        return INT64_C(-9223372036854775807);
     }
 
-    static SBE_CONSTEXPR std::int32_t clientIdMaxValue() SBE_NOEXCEPT
+    static SBE_CONSTEXPR std::int64_t clientIdMaxValue() SBE_NOEXCEPT
     {
-        return INT32_C(2147483647);
+        return INT64_C(9223372036854775807);
     }
 
     static SBE_CONSTEXPR std::size_t clientIdEncodingLength() SBE_NOEXCEPT
     {
-        return 4;
+        return 8;
     }
 
-    SBE_NODISCARD std::int32_t clientId() const SBE_NOEXCEPT
+    SBE_NODISCARD std::int64_t clientId() const SBE_NOEXCEPT
     {
-        std::int32_t val;
-        std::memcpy(&val, m_buffer + m_offset + 0, sizeof(std::int32_t));
-        return SBE_LITTLE_ENDIAN_ENCODE_32(val);
+        std::int64_t val;
+        std::memcpy(&val, m_buffer + m_offset + 0, sizeof(std::int64_t));
+        return SBE_LITTLE_ENDIAN_ENCODE_64(val);
     }
 
-    SnapshotLocation &clientId(const std::int32_t value) SBE_NOEXCEPT
+    SnapshotLocation &clientId(const std::int64_t value) SBE_NOEXCEPT
     {
-        std::int32_t val = SBE_LITTLE_ENDIAN_ENCODE_32(value);
-        std::memcpy(m_buffer + m_offset + 0, &val, sizeof(std::int32_t));
+        std::int64_t val = SBE_LITTLE_ENDIAN_ENCODE_64(value);
+        std::memcpy(m_buffer + m_offset + 0, &val, sizeof(std::int64_t));
         return *this;
     }
 
@@ -404,7 +404,7 @@ public:
 
     SBE_NODISCARD static SBE_CONSTEXPR std::size_t requestIdEncodingOffset() SBE_NOEXCEPT
     {
-        return 4;
+        return 8;
     }
 
     static SBE_CONSTEXPR std::int64_t requestIdNullValue() SBE_NOEXCEPT
@@ -430,14 +430,14 @@ public:
     SBE_NODISCARD std::int64_t requestId() const SBE_NOEXCEPT
     {
         std::int64_t val;
-        std::memcpy(&val, m_buffer + m_offset + 4, sizeof(std::int64_t));
+        std::memcpy(&val, m_buffer + m_offset + 8, sizeof(std::int64_t));
         return SBE_LITTLE_ENDIAN_ENCODE_64(val);
     }
 
     SnapshotLocation &requestId(const std::int64_t value) SBE_NOEXCEPT
     {
         std::int64_t val = SBE_LITTLE_ENDIAN_ENCODE_64(value);
-        std::memcpy(m_buffer + m_offset + 4, &val, sizeof(std::int64_t));
+        std::memcpy(m_buffer + m_offset + 8, &val, sizeof(std::int64_t));
         return *this;
     }
 
@@ -467,7 +467,7 @@ public:
 
     SBE_NODISCARD static SBE_CONSTEXPR std::size_t roundEncodingOffset() SBE_NOEXCEPT
     {
-        return 12;
+        return 16;
     }
 
     static SBE_CONSTEXPR std::int64_t roundNullValue() SBE_NOEXCEPT
@@ -493,14 +493,14 @@ public:
     SBE_NODISCARD std::int64_t round() const SBE_NOEXCEPT
     {
         std::int64_t val;
-        std::memcpy(&val, m_buffer + m_offset + 12, sizeof(std::int64_t));
+        std::memcpy(&val, m_buffer + m_offset + 16, sizeof(std::int64_t));
         return SBE_LITTLE_ENDIAN_ENCODE_64(val);
     }
 
     SnapshotLocation &round(const std::int64_t value) SBE_NOEXCEPT
     {
         std::int64_t val = SBE_LITTLE_ENDIAN_ENCODE_64(value);
-        std::memcpy(m_buffer + m_offset + 12, &val, sizeof(std::int64_t));
+        std::memcpy(m_buffer + m_offset + 16, &val, sizeof(std::int64_t));
         return *this;
     }
 
@@ -530,7 +530,7 @@ public:
 
     SBE_NODISCARD static SBE_CONSTEXPR std::size_t asOfGlobalSeqNoEncodingOffset() SBE_NOEXCEPT
     {
-        return 20;
+        return 24;
     }
 
     static SBE_CONSTEXPR std::int64_t asOfGlobalSeqNoNullValue() SBE_NOEXCEPT
@@ -556,14 +556,14 @@ public:
     SBE_NODISCARD std::int64_t asOfGlobalSeqNo() const SBE_NOEXCEPT
     {
         std::int64_t val;
-        std::memcpy(&val, m_buffer + m_offset + 20, sizeof(std::int64_t));
+        std::memcpy(&val, m_buffer + m_offset + 24, sizeof(std::int64_t));
         return SBE_LITTLE_ENDIAN_ENCODE_64(val);
     }
 
     SnapshotLocation &asOfGlobalSeqNo(const std::int64_t value) SBE_NOEXCEPT
     {
         std::int64_t val = SBE_LITTLE_ENDIAN_ENCODE_64(value);
-        std::memcpy(m_buffer + m_offset + 20, &val, sizeof(std::int64_t));
+        std::memcpy(m_buffer + m_offset + 24, &val, sizeof(std::int64_t));
         return *this;
     }
 
@@ -593,7 +593,7 @@ public:
 
     SBE_NODISCARD static SBE_CONSTEXPR std::size_t asOfPositionEncodingOffset() SBE_NOEXCEPT
     {
-        return 28;
+        return 32;
     }
 
     static SBE_CONSTEXPR std::int64_t asOfPositionNullValue() SBE_NOEXCEPT
@@ -619,14 +619,14 @@ public:
     SBE_NODISCARD std::int64_t asOfPosition() const SBE_NOEXCEPT
     {
         std::int64_t val;
-        std::memcpy(&val, m_buffer + m_offset + 28, sizeof(std::int64_t));
+        std::memcpy(&val, m_buffer + m_offset + 32, sizeof(std::int64_t));
         return SBE_LITTLE_ENDIAN_ENCODE_64(val);
     }
 
     SnapshotLocation &asOfPosition(const std::int64_t value) SBE_NOEXCEPT
     {
         std::int64_t val = SBE_LITTLE_ENDIAN_ENCODE_64(value);
-        std::memcpy(m_buffer + m_offset + 28, &val, sizeof(std::int64_t));
+        std::memcpy(m_buffer + m_offset + 32, &val, sizeof(std::int64_t));
         return *this;
     }
 
@@ -656,7 +656,7 @@ public:
 
     SBE_NODISCARD static SBE_CONSTEXPR std::size_t formatVersionEncodingOffset() SBE_NOEXCEPT
     {
-        return 36;
+        return 40;
     }
 
     static SBE_CONSTEXPR std::uint32_t formatVersionNullValue() SBE_NOEXCEPT
@@ -682,14 +682,14 @@ public:
     SBE_NODISCARD std::uint32_t formatVersion() const SBE_NOEXCEPT
     {
         std::uint32_t val;
-        std::memcpy(&val, m_buffer + m_offset + 36, sizeof(std::uint32_t));
+        std::memcpy(&val, m_buffer + m_offset + 40, sizeof(std::uint32_t));
         return SBE_LITTLE_ENDIAN_ENCODE_32(val);
     }
 
     SnapshotLocation &formatVersion(const std::uint32_t value) SBE_NOEXCEPT
     {
         std::uint32_t val = SBE_LITTLE_ENDIAN_ENCODE_32(value);
-        std::memcpy(m_buffer + m_offset + 36, &val, sizeof(std::uint32_t));
+        std::memcpy(m_buffer + m_offset + 40, &val, sizeof(std::uint32_t));
         return *this;
     }
 
@@ -719,7 +719,7 @@ public:
 
     SBE_NODISCARD static SBE_CONSTEXPR std::size_t recordCountEncodingOffset() SBE_NOEXCEPT
     {
-        return 40;
+        return 44;
     }
 
     static SBE_CONSTEXPR std::int32_t recordCountNullValue() SBE_NOEXCEPT
@@ -745,14 +745,14 @@ public:
     SBE_NODISCARD std::int32_t recordCount() const SBE_NOEXCEPT
     {
         std::int32_t val;
-        std::memcpy(&val, m_buffer + m_offset + 40, sizeof(std::int32_t));
+        std::memcpy(&val, m_buffer + m_offset + 44, sizeof(std::int32_t));
         return SBE_LITTLE_ENDIAN_ENCODE_32(val);
     }
 
     SnapshotLocation &recordCount(const std::int32_t value) SBE_NOEXCEPT
     {
         std::int32_t val = SBE_LITTLE_ENDIAN_ENCODE_32(value);
-        std::memcpy(m_buffer + m_offset + 40, &val, sizeof(std::int32_t));
+        std::memcpy(m_buffer + m_offset + 44, &val, sizeof(std::int32_t));
         return *this;
     }
 
@@ -782,7 +782,7 @@ public:
 
     SBE_NODISCARD static SBE_CONSTEXPR std::size_t lengthEncodingOffset() SBE_NOEXCEPT
     {
-        return 44;
+        return 48;
     }
 
     static SBE_CONSTEXPR std::int64_t lengthNullValue() SBE_NOEXCEPT
@@ -808,14 +808,14 @@ public:
     SBE_NODISCARD std::int64_t length() const SBE_NOEXCEPT
     {
         std::int64_t val;
-        std::memcpy(&val, m_buffer + m_offset + 44, sizeof(std::int64_t));
+        std::memcpy(&val, m_buffer + m_offset + 48, sizeof(std::int64_t));
         return SBE_LITTLE_ENDIAN_ENCODE_64(val);
     }
 
     SnapshotLocation &length(const std::int64_t value) SBE_NOEXCEPT
     {
         std::int64_t val = SBE_LITTLE_ENDIAN_ENCODE_64(value);
-        std::memcpy(m_buffer + m_offset + 44, &val, sizeof(std::int64_t));
+        std::memcpy(m_buffer + m_offset + 48, &val, sizeof(std::int64_t));
         return *this;
     }
 
@@ -845,7 +845,7 @@ public:
 
     SBE_NODISCARD static SBE_CONSTEXPR std::size_t crc32cEncodingOffset() SBE_NOEXCEPT
     {
-        return 52;
+        return 56;
     }
 
     static SBE_CONSTEXPR std::uint32_t crc32cNullValue() SBE_NOEXCEPT
@@ -871,14 +871,14 @@ public:
     SBE_NODISCARD std::uint32_t crc32c() const SBE_NOEXCEPT
     {
         std::uint32_t val;
-        std::memcpy(&val, m_buffer + m_offset + 52, sizeof(std::uint32_t));
+        std::memcpy(&val, m_buffer + m_offset + 56, sizeof(std::uint32_t));
         return SBE_LITTLE_ENDIAN_ENCODE_32(val);
     }
 
     SnapshotLocation &crc32c(const std::uint32_t value) SBE_NOEXCEPT
     {
         std::uint32_t val = SBE_LITTLE_ENDIAN_ENCODE_32(value);
-        std::memcpy(m_buffer + m_offset + 52, &val, sizeof(std::uint32_t));
+        std::memcpy(m_buffer + m_offset + 56, &val, sizeof(std::uint32_t));
         return *this;
     }
 

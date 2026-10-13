@@ -11,9 +11,7 @@ import org.limitless.seqeron.protocol.ReplayProtocol;
 import org.limitless.seqeron.protocol.SnapshotHeader;
 import org.limitless.seqeron.protocol.SystemFrame;
 import org.limitless.seqeron.sbe.frame.LeadershipChangedDecoder;
-import org.limitless.seqeron.sbe.replay.ReplayClientIdInUseDecoder;
 import org.limitless.seqeron.sbe.replay.ReplayPendingDecoder;
-import org.limitless.seqeron.sbe.replay.ReplayUnavailableDecoder;
 import org.limitless.seqeron.sbe.replay.ReplayingDecoder;
 import org.limitless.seqeron.sbe.replay.SnapshotLocationDecoder;
 import org.limitless.seqeron.util.Logger;
@@ -34,8 +32,8 @@ import org.limitless.seqeron.util.Logger;
  * <p>Given a source to restore ({@link #restoreFrom}), a cold start first restores the newest snapshot of its own
  * that the log confirms (doc/snapshot.md §7): it asks the Replayer for that round's sequenced {@code SnapshotEnd},
  * reads the file's records into the handler if they match it, dispatching nothing, then resumes at the round's
- * {@code SnapshotStarted} with the cut as the anchor; every later fall-back to a walk resumes there instead. A file
- * the log does not confirm gives way to the next older one, and the last to a walk.
+ * {@code SnapshotStarted} with the cut as the anchor. A file the log does not confirm gives way to the next older
+ * one, and the last to a walk.
  */
 final class ReplayerRecovery {
     private static final long RESEND_INTERVAL_MS = 500;
@@ -47,7 +45,7 @@ final class ReplayerRecovery {
     private static final long REPLAY_STALL_TIMEOUT_MS = 5_000;
 
     /**
-     * How long recovery may dispatch nothing before it is reported unconvergent: a re-walk loop that keeps
+     * How long recovery may dispatch nothing before it is reported unconvergent: a re-request loop that keeps
      * finishing healthy replays yet dispatches nothing, which {@link #REPLAY_STALL_TIMEOUT_MS} cannot see.
      */
     private static final long RECOVERY_PROGRESS_TIMEOUT_MS = 30_000;
@@ -55,7 +53,7 @@ final class ReplayerRecovery {
     /** {@code LeadershipChanged}, synthesized onto the sequenced stream; intercepted when it has a handler. */
     private static final int LEADERSHIP_CHANGED = SystemFrame.LEADERSHIP_CHANGED;
 
-    /** Caps on frames retained ahead of a hole; past either, recovery falls back to re-walking. */
+    /** Caps on frames retained ahead of a hole; past either, recovery resumes at the last dispatched frame. */
     private static final int MAX_RETAINED_FRAMES = 65536;
 
     private static final long MAX_RETAINED_BYTES = 16L * 1024 * 1024;
@@ -63,7 +61,6 @@ final class ReplayerRecovery {
     /** Records one duty cycle restores at most, so a large snapshot does not stall the session. */
     static final int MAX_RESTORE_RECORDS_PER_CYCLE = 1024;
 
-    private final int clientId;
     private final ReplayerRecoveryActions actions;
     private final SequencedHandler onSequenced;
     private final LeadershipHandler onLeadershipChanged;
@@ -75,8 +72,6 @@ final class ReplayerRecovery {
         new org.limitless.seqeron.sbe.replay.MessageHeaderDecoder();
     private final ReplayingDecoder replaying = new ReplayingDecoder();
     private final ReplayPendingDecoder replayPending = new ReplayPendingDecoder();
-    private final ReplayUnavailableDecoder replayUnavailable = new ReplayUnavailableDecoder();
-    private final ReplayClientIdInUseDecoder replayClientIdInUse = new ReplayClientIdInUseDecoder();
     private final SnapshotLocationDecoder snapshotLocation = new SnapshotLocationDecoder();
     private final UnsafeBuffer restoreRecord = new UnsafeBuffer(0, 0);
 
@@ -99,20 +94,11 @@ final class ReplayerRecovery {
     /** Advances per send; replies not carrying it are stale — see {@link #onControl}. */
     private long requestId;
 
-    private long lastHeartbeatMs;
-
-    /**
-     * A {@code ReplayComplete} that did not land (transient back-pressure), retried from {@link #doTimers}.
-     * Nothing supersedes a release, unlike a request.
-     */
-    private boolean completePending;
-
     private long lastReplayPosition = -1;
     private long lastReplayProgressMs;
 
-    /** The Replayer is refusing to serve us: reported once per episode, and named in the stall report. */
-    private boolean replayerUnavailable;
-    private boolean clientIdInUse;
+    /** Why recovery cannot go on, or null. Latched: the receiver raises it from its duty cycle. */
+    private String fault;
 
     private long lastGlobalSeqNo;
 
@@ -138,7 +124,7 @@ final class ReplayerRecovery {
 
     /**
      * Frames were dropped ahead of the hole because the FIFO was full, so this client's frontier is short:
-     * it must re-walk rather than declare itself caught up. Cleared by {@link #endOverflowEpisode}.
+     * it must resume rather than declare itself caught up. Cleared by {@link #endOverflowEpisode}.
      */
     private boolean retainOverflowed;
 
@@ -173,20 +159,15 @@ final class ReplayerRecovery {
     private String restoreFailure;
 
     /**
-     * @param clientId            this replica's stable id, unique among the Replayer's co-located apps
-     *                            ({@code SEQERON_REPLAYER_CLIENT_ID}); two apps sharing one supersede
-     *                            each other's replays and neither ever catches up
      * @param actions             performs the sends and the replay subscription this class decides on, and
-     *                            supplies the clock
+     *                            supplies the clock and the id replies are addressed to
      * @param onSequenced         receives every in-order frame
      * @param onLeadershipChanged receives each leadership change, or null to have it reach onSequenced
      * @param onCaughtUp          fires on every transition to caught-up, or null
      * @throws NullPointerException if onSequenced is null
      */
-    public ReplayerRecovery(final int clientId, final ReplayerRecoveryActions actions,
-                            final SequencedHandler onSequenced, final LeadershipHandler onLeadershipChanged,
-                            final CaughtUpHandler onCaughtUp) {
-        this.clientId = clientId;
+    public ReplayerRecovery(final ReplayerRecoveryActions actions, final SequencedHandler onSequenced,
+                            final LeadershipHandler onLeadershipChanged, final CaughtUpHandler onCaughtUp) {
         this.actions = actions;
         this.onSequenced = Objects.requireNonNull(onSequenced, "onSequenced");
         this.onLeadershipChanged = onLeadershipChanged;
@@ -240,23 +221,19 @@ final class ReplayerRecovery {
      */
     public void onFrame(final DirectBuffer buffer, final int offset, final int length, final long framePosition,
                         final long receiveNs, final boolean fromReplay) {
-        if (restoreFailure != null || !event.wrap(buffer, offset, length)) {
+        if (restoreFailure != null || fault != null || !event.wrap(buffer, offset, length)) {
             return;
         }
         final long globalSeqNo = event.globalSeqNo();
 
-        // First frame off a resume replay: it must be the frame whose position requested.
+        // First frame off a resume replay: it must be the frame whose position requested. Positions follow from
+        // the frames, and the recording changes only with the node's driver, so a mismatch is a fault.
         if (fromReplay && resumeAnchorGlobalSeqNo != 0) {
             final long anchor = resumeAnchorGlobalSeqNo;
             resumeAnchorGlobalSeqNo = 0;
             if (globalSeqNo != anchor) {
-                Logger.log(Logger.CoreComponent.ReplayerStreamReceiver, Logger.Severity.Warn,
-                           Logger.CoreEventCode.TapGap,
-                           actions.memberId(),
-                           "resume replay opened at globalSeqNo=%d, expected %d — the active recording rotated "
-                               + "under us; replaying history from its start (or from the restored snapshot)",
-                           globalSeqNo, anchor);
-                rewalk();
+                fail("resume replay at position " + requestFromPosition + " opened at globalSeqNo=" + globalSeqNo
+                     + ", expected " + anchor);
                 return;
             }
         }
@@ -306,10 +283,7 @@ final class ReplayerRecovery {
         drainRetained();
     }
 
-    /**
-     * Decodes one Replayer control message ({@code Replaying}/{@code ReplayPending}/{@code ReplayUnavailable}/
-     * {@code ReplayClientIdInUse}/{@code SnapshotLocation}).
-     */
+    /** Decodes one Replayer control message ({@code Replaying}/{@code ReplayPending}/{@code SnapshotLocation}). */
     public void onControl(final DirectBuffer buffer, final int offset, final int length) {
         if (length < org.limitless.seqeron.sbe.replay.MessageHeaderDecoder.ENCODED_LENGTH) {
             return;
@@ -318,6 +292,7 @@ final class ReplayerRecovery {
         final int bodyOffset = offset + controlHeader.encodedLength();
         final int blockLength = controlHeader.blockLength();
         final int version = controlHeader.version();
+        final long clientId = actions.clientId();
 
         if (controlHeader.templateId() == ReplayingDecoder.TEMPLATE_ID) {
             replaying.wrap(buffer, bodyOffset, blockLength, version);
@@ -337,27 +312,16 @@ final class ReplayerRecovery {
             replayPending.wrap(buffer, bodyOffset, blockLength, version);
             if (replayPending.clientId() == clientId && replayPending.requestId() == requestId) {
                 lastRequestMs = actions.nowMs();
-                replayerUnavailable = false; // queued, not refused — the episode ended
-            }
-        } else if (controlHeader.templateId() == ReplayUnavailableDecoder.TEMPLATE_ID) {
-            replayUnavailable.wrap(buffer, bodyOffset, blockLength, version);
-            if (replayUnavailable.clientId() == clientId && replayUnavailable.requestId() == requestId) {
-                onReplayUnavailable();
-            }
-        } else if (controlHeader.templateId() == ReplayClientIdInUseDecoder.TEMPLATE_ID) {
-            replayClientIdInUse.wrap(buffer, bodyOffset, blockLength, version);
-            if (replayClientIdInUse.clientId() == clientId) {
-                onClientIdInUse();
             }
         }
     }
 
     /**
-     * Whether this node's Replayer has seen another process requesting under this client's id. Latched: the
-     * receiver raises it from its duty cycle, since a throw from inside a fragment handler is swallowed.
+     * Why recovery cannot go on, or null. Latched: the receiver raises it from its duty cycle, since a throw from
+     * inside a fragment handler is swallowed.
      */
-    public boolean isClientIdInUse() {
-        return clientIdInUse;
+    public String fault() {
+        return fault;
     }
 
     /**
@@ -377,7 +341,7 @@ final class ReplayerRecovery {
 
     /**
      * Decides what a closed replay image means. A replay that closes at its bound is complete; any close short
-     * of it (superseded, TTL-reclaimed, faulted) is not, and treating it as complete would leave a silent hole.
+     * of it (superseded, faulted) is not, and treating it as complete would leave a silent hole.
      */
     public void onReplayImageClosed(final long finalPosition) {
         if (finalPosition >= catchUpPosition) {
@@ -393,8 +357,8 @@ final class ReplayerRecovery {
     }
 
     /**
-     * Timer-driven work, once per duty cycle: the next records of a restore, the request resend, an unsent {@code
-     * ReplayComplete}, the replay-slot heartbeat, and the replay stall watchdog.
+     * Timer-driven work, once per duty cycle: the next records of a restore, the request resend, and the replay
+     * stall watchdog.
      * @param requestPublicationPending the request publication has not connected yet — retried every cycle
      *                                  rather than eating a full resend interval for a race much shorter
      *                                  than that
@@ -410,17 +374,7 @@ final class ReplayerRecovery {
         if (awaitingReplay && (requestPublicationPending || (nowMs - lastRequestMs) > RESEND_INTERVAL_MS)) {
             requestReplay(requestFromPosition); // re-send the same request verbatim
         }
-        if (completePending) {
-            sendReplayComplete();
-        }
-
-        if (replaySessionId < 0) {
-            return;
-        }
-        if ((nowMs - lastHeartbeatMs) > RESEND_INTERVAL_MS) {
-            sendHeartbeat();
-        }
-        if ((nowMs - lastReplayProgressMs) > REPLAY_STALL_TIMEOUT_MS) {
+        if (replaySessionId >= 0 && (nowMs - lastReplayProgressMs) > REPLAY_STALL_TIMEOUT_MS) {
             onReplayStalled();
         }
     }
@@ -446,10 +400,10 @@ final class ReplayerRecovery {
         Logger.fault(Logger.CoreComponent.ReplayerStreamReceiver, Logger.CoreEventCode.RecoveryStalled,
                      actions.memberId(),
                      "recovery has dispatched nothing for >%dms: lastGlobalSeqNo=%d fromPosition=%d awaitingReplay=%b "
-                         + "replaySession=%d replayerUnavailable=%b querying=%b restoring=%b — holding; check this "
-                         + "node's Replayer and its recording",
+                         + "replaySession=%d querying=%b restoring=%b — holding; check this node's Replayer and its "
+                         + "recording",
                      RECOVERY_PROGRESS_TIMEOUT_MS, lastGlobalSeqNo, requestFromPosition, awaitingReplay,
-                     replaySessionId, replayerUnavailable, querying, restoring);
+                     replaySessionId, querying, restoring);
         actions.recoveryStalled(true);
         return true;
     }
@@ -481,7 +435,7 @@ final class ReplayerRecovery {
     }
 
     /**
-     * Mid-walk (cold start or gap re-walk) or awaiting the Replayer's answer: a non-contiguous live-tap
+     * Mid-replay (cold-start walk or gap resume) or awaiting the Replayer's answer: a non-contiguous live-tap
      * frame is expected while this holds (the tap runs ahead of the replay), so {@link #onFrame} drops it
      * without treating it as a new gap.
      */
@@ -519,11 +473,6 @@ final class ReplayerRecovery {
         return requestFromPosition;
     }
 
-    /** A {@code ReplayComplete} encoded but not yet out on the wire. */
-    public boolean completePending() {
-        return completePending;
-    }
-
     /** Frames held ahead of the current hole. */
     public int retainedFrameCount() {
         return retainFrameCount;
@@ -541,7 +490,6 @@ final class ReplayerRecovery {
         requestFromPosition = fromPosition;
         awaitingReplay = true;
         replaySessionId = -1;
-        completePending = false;
         actions.closeReplay();
         lastRequestMs = actions.nowMs();
         ++requestId;
@@ -550,25 +498,12 @@ final class ReplayerRecovery {
 
     /**
      * Steady-state gap recovery: resume the active recording at the last dispatched frame instead of walking
-     * it, so a one-frame drop costs a one-frame replay. The recording may have rotated, so the resumed replay's
-     * first frame is checked against the anchor, falling back to a walk.
+     * it, so a one-frame drop costs a one-frame replay. The resumed replay's first frame is checked against the
+     * anchor.
      */
     private void requestResume() {
         requestReplay(lastFramePosition);
         resumeAnchorGlobalSeqNo = lastGlobalSeqNo;
-    }
-
-    /**
-     * Replays history from its start again: the active recording from its start, or, once a snapshot is
-     * restored, from its {@code SnapshotStarted}, with the cut as the anchor.
-     */
-    private void rewalk() {
-        if (snapshotGlobalSeqNo == 0) {
-            requestReplay(ReplayProtocol.FROM_START);
-            return;
-        }
-        requestReplay(snapshotPosition);
-        resumeAnchorGlobalSeqNo = snapshotGlobalSeqNo;
     }
 
     /**
@@ -598,7 +533,6 @@ final class ReplayerRecovery {
      */
     private void onSnapshotLocation() {
         querying = false;
-        replayerUnavailable = false;
         if (snapshotLocation.round() != queriedRound) {
             Logger.info(Logger.CoreComponent.ReplayerStreamReceiver, actions.memberId(),
                         "round %d of source %d has no sequenced SnapshotEnd in this node's index; trying an older "
@@ -717,17 +651,10 @@ final class ReplayerRecovery {
 
     private void onReplaying(final long session, final long replayCatchUpPosition) {
         awaitingReplay = false;
-        replayerUnavailable = false;
         if (session == ReplayProtocol.NO_REPLAY_NEEDED) {
             if (requestFromPosition != ReplayProtocol.FROM_START) {
-                Logger.log(Logger.CoreComponent.ReplayerStreamReceiver, Logger.Severity.Warn,
-                           Logger.CoreEventCode.TapGap,
-                           actions.memberId(),
-                           "resume at position %d answered 'nothing to replay' while a hole is open above "
-                               + "globalSeqNo=%d — the active recording rotated under us; replaying history from "
-                               + "its start (or from the restored snapshot)",
-                           requestFromPosition, lastGlobalSeqNo);
-                rewalk();
+                fail("the Replayer refused a resume at position " + requestFromPosition + " above globalSeqNo="
+                     + lastGlobalSeqNo);
                 return;
             }
             replaySessionId = -1; // the recording holds nothing yet — follow the live tap
@@ -743,46 +670,14 @@ final class ReplayerRecovery {
         lastReplayProgressMs = actions.nowMs();
     }
 
-    private void onClientIdInUse() {
-        if (!clientIdInUse) {
-            clientIdInUse = true;
-            Logger.fault(Logger.CoreComponent.ReplayerStreamReceiver, Logger.CoreEventCode.ReplayClientIdCollision,
-                         actions.memberId(),
-                         "this node's Replayer reports another process requesting under clientId=%d — neither "
-                             + "can catch up; give each replica on the node its own id",
-                         clientId);
-        }
-    }
-
-    /**
-     * The Replayer's archive failed its globalSeqNo-1 integrity check. Not fatal here: an operator repairs
-     * the archive and restarts the Replayer, and the resend timer resumes; until then we never catch up.
-     */
-    private void onReplayUnavailable() {
-        if (!replayerUnavailable) {
-            replayerUnavailable = true;
-            Logger.fault(Logger.CoreComponent.ReplayerStreamReceiver, Logger.CoreEventCode.ReplayUnavailable,
-                         actions.memberId(),
-                         "this node's Replayer has no valid history to serve (its archive failed the "
-                             + "globalSeqNo-1 integrity check) — holding, not dispatching; repair the node's "
-                             + "archive and restart its Replayer");
-        }
-        lastRequestMs = actions.nowMs();
-    }
-
-    /** Releases our replay slot once a replay reaches its bound; {@link #completePending} retries it. */
-    private void sendReplayComplete() {
-        completePending = !actions.sendReplayComplete();
-    }
-
-    /**
-     * Refreshes the replay slot while riding an image, so the Replayer's idle TTL measures an abandoned slot
-     * rather than a long replay. A lost heartbeat is recovered by the truncated-close path.
-     */
-    private void sendHeartbeat() {
-        if (actions.sendReplayHeartbeat()) {
-            lastHeartbeatMs = actions.nowMs();
-        }
+    /** Stops recovering: the recording does not hold what the request expected of it. */
+    private void fail(final String reason) {
+        fault = reason;
+        awaitingReplay = false;
+        replaySessionId = -1;
+        actions.closeReplay();
+        Logger.fault(Logger.CoreComponent.ReplayerStreamReceiver, Logger.CoreEventCode.TapGap, actions.memberId(),
+                     "FATAL: %s — this node's recording does not match the positions this client holds", reason);
     }
 
     /** An attached (or expected) replay stopped delivering — see the watchdog in {@link #doTimers}. */
@@ -795,12 +690,11 @@ final class ReplayerRecovery {
         reRequestCurrent();
     }
 
-    /** The replay reached its bound, or its image closed there. */
+    /** The replay reached its bound, or its image closed there. Closing the image frees the Replayer's slot. */
     private void onReplayReachedBound() {
         actions.closeReplay();
         replaySessionId = -1;
         if (reachedTip()) {
-            sendReplayComplete();
             notifyCaughtUp();
         }
     }
@@ -838,7 +732,7 @@ final class ReplayerRecovery {
 
     /**
      * Keeps a live tap frame from beyond the current hole; one not kept is gone. Bounded and lossy past the
-     * bound (overflow falls back to a re-walk). A plain FIFO: one image delivers globalSeqNo in order, so
+     * bound (overflow falls back to a resume). A plain FIFO: one image delivers globalSeqNo in order, so
      * only an exact redelivery needs checking.
      */
     private void retainFrame(final long globalSeqNo, final DirectBuffer buffer, final int offset, final int length,
@@ -853,7 +747,7 @@ final class ReplayerRecovery {
                            Logger.CoreEventCode.TapGap,
                            actions.memberId(),
                            "retained-frame buffer full at globalSeqNo=%d (%d frames, %d bytes) — dropping "
-                               + "ahead-of-hole frames; recovery falls back to re-walking",
+                               + "ahead-of-hole frames; recovery resumes at the last dispatched frame",
                            globalSeqNo, retainFrameCount, retainBytes);
             }
             return;
@@ -910,8 +804,8 @@ final class ReplayerRecovery {
 
     /**
      * The replay side says we are at the tip. Whether we are is the retained FIFO's call: a retained frame
-     * may sit behind a hole the replay never reached, or an overflow dropped frames. Either way this re-walks
-     * now rather than waiting for a later tap frame to rediscover the hole.
+     * may sit behind a hole the replay never reached, or an overflow dropped frames. Either way this resumes
+     * at the last dispatched frame now rather than waiting for a later tap frame to rediscover the hole.
      * @return true only once nothing is left waiting and no overflow is latched
      */
     private boolean reachedTip() {
@@ -920,12 +814,12 @@ final class ReplayerRecovery {
             return true;
         }
         endOverflowEpisode();
-        rewalk();
+        requestResume();
         return false;
     }
 
     /**
-     * Ends an overflow episode where the covering re-walk is requested, not in {@link #drainRetained}, where
+     * Ends an overflow episode where the covering resume is requested, not in {@link #drainRetained}, where
      * the dispatch that cleared it would declare us caught up over dropped frames.
      */
     private void endOverflowEpisode() {
