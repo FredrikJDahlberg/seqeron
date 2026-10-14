@@ -174,6 +174,23 @@ class GatewayLifecycleTest {
     }
 
     @Test
+    void aFenceClosesAServingGate() {
+        becomeServing();
+        lifecycle.onFenced();
+        assertEquals(State.PASSIVE, lifecycle.state());
+        assertEquals(1, actions.count("close"));
+        assertFalse(lifecycle.onSessionAcquired());
+    }
+
+    @Test
+    void aFenceClosesNothingWhileTheGateIsShut() {
+        loadTopology();
+        lifecycle.onGatewayActive(MY_ID);
+        lifecycle.onFenced(); // still replaying
+        assertEquals(0, actions.count("close"), "never opened, so nothing to close");
+    }
+
+    @Test
     void reopensOnASecondDesignationAsANewEpoch() {
         becomeServing();
         lifecycle.onGatewayActive(SIBLING_ID);

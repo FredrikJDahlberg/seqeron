@@ -172,6 +172,23 @@ TEST_F(GatewayLifecycleTest, StandsDownWhenAGatewayActiveNamesTheSibling)
     EXPECT_EQ(0, lifecycle.advance());
 }
 
+TEST_F(GatewayLifecycleTest, AFenceClosesAServingGate)
+{
+    becomeServing();
+    lifecycle.onFenced();
+    EXPECT_EQ(State::Passive, lifecycle.state());
+    EXPECT_EQ(1, actions.count("close"));
+    EXPECT_FALSE(lifecycle.onSessionAcquired());
+}
+
+TEST_F(GatewayLifecycleTest, AFenceClosesNothingWhileTheGateIsShut)
+{
+    loadTopology();
+    lifecycle.onGatewayActive(MY_ID);
+    lifecycle.onFenced(); // still replaying
+    EXPECT_EQ(0, actions.count("close")) << "never opened, so nothing to close";
+}
+
 TEST_F(GatewayLifecycleTest, ReopensOnASecondDesignationAsANewEpoch)
 {
     becomeServing();

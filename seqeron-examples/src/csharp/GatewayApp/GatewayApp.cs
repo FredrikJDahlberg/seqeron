@@ -39,6 +39,9 @@ public sealed class GatewayApp : IGatewayListener
 
     private static readonly long PingIntervalTicks = Stopwatch.Frequency;
 
+    // Fenced, restart me: this repository's convention (doc/ops.md).
+    private const int ExitFenced = 70;
+
     private volatile bool _running = true;
     private string _fault;
     private bool _open;
@@ -71,7 +74,7 @@ public sealed class GatewayApp : IGatewayListener
         if (edge._fault != null)
         {
             Console.Error.WriteLine("# " + edge._fault);
-            return 1;
+            return ExitFenced;
         }
         return 0;
     }

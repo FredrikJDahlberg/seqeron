@@ -43,6 +43,9 @@ public final class ColocatedApp implements Application.Listener {
 
     private final MutableDirectBuffer pingBody = new UnsafeBuffer(new byte[Long.BYTES]);
 
+    /** Fenced, restart me: this repository's convention (doc/ops.md). */
+    private static final int EXIT_FENCED = 70;
+
     private Application app;
     private long pingSentNs;
     private String fence;
@@ -86,7 +89,7 @@ public final class ColocatedApp implements Application.Listener {
         System.out.flush();
         if (application.fence != null) {
             System.err.println("# " + application.fence);
-            System.exit(1);
+            System.exit(EXIT_FENCED);
         }
     }
 

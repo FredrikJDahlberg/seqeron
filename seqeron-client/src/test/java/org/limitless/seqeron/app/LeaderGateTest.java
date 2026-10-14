@@ -85,6 +85,23 @@ class LeaderGateTest {
     }
 
     @Test
+    @DisplayName("a fence closes an open gate and reports the edge once")
+    void fenceClosesAnOpenGate() {
+        gate.update(true, SELF);
+
+        assertTrue(gate.onFenced());
+        assertFalse(gate.isOpen());
+        assertFalse(gate.onFenced(), "already closed");
+    }
+
+    @Test
+    @DisplayName("a fence on a shut gate reports no edge")
+    void fenceOnAShutGate() {
+        assertFalse(gate.onFenced());
+        assertFalse(gate.isOpen());
+    }
+
+    @Test
     @DisplayName("off the cluster, opens when caught up whoever leads, and only then")
     void offClusterOpensWhoeverLeads() {
         final LeaderGate offCluster = new LeaderGate(SELF, true);

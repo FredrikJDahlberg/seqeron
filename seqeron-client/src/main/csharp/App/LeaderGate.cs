@@ -66,6 +66,15 @@ internal sealed class LeaderGate
         return _open ? Transition.Opened : Transition.Closed;
     }
 
+    /// <summary>The replica fenced: an open gate closes, and the façade updates it no further.</summary>
+    /// <returns>whether it was open, so the closing edge is still to be reported</returns>
+    public bool OnFenced()
+    {
+        bool wasOpen = _open;
+        _open = false;
+        return wasOpen;
+    }
+
     /// <summary>Whether leader-only work may run, without waiting for the next <see cref="Update"/>.</summary>
     public bool IsOpen => _open;
 }

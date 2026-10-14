@@ -157,6 +157,17 @@ final class GatewayLifecycle {
     }
 
     /**
+     * The instance fenced: a serving gate closes, as a sibling's designation closes it, so the edge takes no work
+     * it could not place. The façade advances this no further.
+     */
+    public void onFenced() {
+        if (state == State.SERVING) {
+            state = State.PASSIVE;
+            actions.closeGate();
+        }
+    }
+
+    /**
      * A session arrived through the gate.
      * @return whether to keep it; false means the gate closed while it was in flight, so drop it without
      *         publishing anything about it

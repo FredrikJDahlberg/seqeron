@@ -44,6 +44,9 @@ public final class GatewayApp implements Gateway.Listener {
 
     private final MutableDirectBuffer pingBody = new UnsafeBuffer(new byte[Long.BYTES]);
 
+    /** Fenced, restart me: this repository's convention (doc/ops.md). */
+    private static final int EXIT_FENCED = 70;
+
     private Gateway gateway;
     private boolean open;
     private int connectionId = Gateway.NO_CONNECTION;
@@ -90,7 +93,7 @@ public final class GatewayApp implements Gateway.Listener {
         System.out.flush();
         if (edge.fence != null) {
             System.err.println("# " + edge.fence);
-            System.exit(1);
+            System.exit(EXIT_FENCED);
         }
     }
 

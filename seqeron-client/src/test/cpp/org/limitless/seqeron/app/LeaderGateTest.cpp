@@ -81,6 +81,24 @@ TEST(LeaderGate, LeadershipChangeWhileClosed)
     EXPECT_EQ(Transition::Opened, gate.update(true, SELF)) << "nothing was dispatched, so no cycle is lost";
 }
 
+TEST(LeaderGate, FenceClosesAnOpenGate)
+{
+    LeaderGate gate{ SELF };
+    gate.update(true, SELF);
+
+    EXPECT_TRUE(gate.onFenced());
+    EXPECT_FALSE(gate.isOpen());
+    EXPECT_FALSE(gate.onFenced()) << "already closed";
+}
+
+TEST(LeaderGate, FenceOnAShutGate)
+{
+    LeaderGate gate{ SELF };
+
+    EXPECT_FALSE(gate.onFenced());
+    EXPECT_FALSE(gate.isOpen());
+}
+
 TEST(LeaderGate, OffClusterOpensWhoeverLeads)
 {
     LeaderGate gate{ SELF, true };

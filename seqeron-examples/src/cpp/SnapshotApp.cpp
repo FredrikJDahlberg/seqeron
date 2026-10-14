@@ -58,6 +58,9 @@ constexpr std::uint32_t FORMAT_VERSION = 1;
 
 constexpr std::int64_t TRANSFER_INTERVAL_NS = 1'000'000'000;
 
+// Fenced, restart me: this repository's convention (doc/ops.md).
+constexpr int EXIT_FENCED = 70;
+
 std::atomic_bool running{ true };
 std::string fault;
 
@@ -253,7 +256,7 @@ int main()
     if (!fault.empty())
     {
         std::fprintf(stderr, "# %s\n", fault.c_str());
-        return 1;
+        return EXIT_FENCED;
     }
     return 0;
 }

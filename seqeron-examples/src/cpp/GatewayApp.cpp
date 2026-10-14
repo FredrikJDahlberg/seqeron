@@ -46,6 +46,9 @@ constexpr const char* CLIENT_LABEL = "example-client";
 // What Gateway::openConnection answers when there is none; Edge cannot name Gateway<Edge> before it is complete.
 constexpr std::int32_t NO_CONNECTION = -1;
 
+// Fenced, restart me: this repository's convention (doc/ops.md).
+constexpr int EXIT_FENCED = 70;
+
 std::atomic_bool running{ true };
 std::string fault;
 
@@ -192,7 +195,7 @@ int main()
     if (!fault.empty())
     {
         std::fprintf(stderr, "# %s\n", fault.c_str());
-        return 1;
+        return EXIT_FENCED;
     }
     return 0;
 }

@@ -152,6 +152,9 @@ internal sealed class Session : IDisposable
         CheckFences();
         if (_fenced)
         {
+            // Here rather than at the fence, which may be raised from inside that poll. Nothing polls the receiver
+            // again, and a replay left open would hold one of the member's Replayer slots.
+            _receiver.Dispose();
             return work;
         }
         work += _sender.PollEgress();

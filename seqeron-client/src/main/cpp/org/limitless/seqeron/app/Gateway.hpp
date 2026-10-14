@@ -46,7 +46,8 @@ concept GatewayListener = requires(L& listener, const Payload& payload, std::int
                                    std::int64_t receiveTimeNs, ClusterError fence, const std::string& detail) {
     // Open the edge; false is retried on the next doWork().
     { listener.onActivated(connectionId) } -> std::convertible_to<bool>;
-    // Close it and drop every connection it let in.
+    // Close it and drop every connection it let in: on a sibling's designation, and before onFenced when this
+    // instance fences while serving.
     listener.onStandby();
     listener.onSequenced(payload);
     listener.onConnectionOpened(connectionId, data, length);
@@ -637,8 +638,10 @@ class Gateway
             m_gateway.m_listener.onClusterHeartbeat(clusterTimeNs, receiveTimeNs);
         }
 
+        // A serving edge closes first, so the listener has stood down by the time it hears why.
         void onFenced(const ClusterError fence, const std::string& detail)
         {
+            m_gateway.m_lifecycle.onFenced();
             m_gateway.m_listener.onFenced(fence, detail);
         }
 

@@ -547,8 +547,10 @@ public sealed class Gateway : IDisposable
             _gateway._listener.OnClusterHeartbeat(clusterTimeNs, receiveTimeNs);
         }
 
+        /// <summary>A serving edge closes first, so the listener has stood down by the time it hears why.</summary>
         public void OnFenced(ClusterError fence, string detail)
         {
+            _gateway._lifecycle.OnFenced();
             _gateway._listener.OnFenced(fence, detail);
         }
 

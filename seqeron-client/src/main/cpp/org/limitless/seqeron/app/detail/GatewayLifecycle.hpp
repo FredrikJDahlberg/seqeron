@@ -119,6 +119,17 @@ class GatewayLifecycle
         }
     }
 
+    // The instance fenced: a serving gate closes, as a sibling's designation closes it, so the edge takes no work it
+    // could not place. The façade advances this no further.
+    void onFenced()
+    {
+        if (m_state == State::Serving)
+        {
+            m_state = State::Passive;
+            m_actions.closeGate();
+        }
+    }
+
     // A session arrived through the gate. False means the gate closed while it was in flight: drop it
     // without publishing anything about it.
     [[nodiscard]] bool onSessionAcquired() const noexcept

@@ -117,6 +117,9 @@ class Session
         checkFences();
         if (m_fenced)
         {
+            // Here rather than at the fence, which may be raised from inside that poll. Nothing polls the receiver
+            // again, and a replay left open would hold one of the member's Replayer slots.
+            m_receiver.close();
             return work;
         }
         // Nothing is addressed to a producer on egress: everything it publishes comes back on the tap. Unlike
