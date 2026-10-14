@@ -44,6 +44,15 @@ class LeaderGate
         return m_open ? Transition::Opened : Transition::Closed;
     }
 
+    // The replica fenced: an open gate closes, and the façade updates it no further. Returns whether it was open, so
+    // the closing edge is still to be reported.
+    [[nodiscard]] bool onFenced() noexcept
+    {
+        const bool wasOpen = m_open;
+        m_open = false;
+        return wasOpen;
+    }
+
     [[nodiscard]] bool isOpen() const noexcept
     {
         return m_open;

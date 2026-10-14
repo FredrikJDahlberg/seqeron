@@ -161,6 +161,17 @@ internal sealed class GatewayLifecycle
         }
     }
 
+    /// <summary>The instance fenced: a serving gate closes, as a sibling's designation closes it, so the edge takes
+    /// no work it could not place. The façade advances this no further.</summary>
+    public void OnFenced()
+    {
+        if (_state == State.Serving)
+        {
+            _state = State.Passive;
+            _actions.CloseGate();
+        }
+    }
+
     /// <summary>A session arrived through the gate.</summary>
     /// <returns>whether to keep it; false means the gate closed while it was in flight, so drop it without
     /// publishing anything about it</returns>

@@ -88,7 +88,10 @@ public final class Gateway implements AutoCloseable {
          */
         boolean onActivated(int firstConnectionId);
 
-        /** Stand down: close the edge and drop every connection it let in. Publishes nothing. */
+        /**
+         * Stand down: close the edge and drop every connection it let in. Publishes nothing. On a sibling's
+         * designation, and before {@link #onFenced} when this instance fences while serving.
+         */
         void onStandby();
 
         /** One application payload off this node's tap, in {@code globalSeqNo} order. */
@@ -552,8 +555,10 @@ public final class Gateway implements AutoCloseable {
             listener.onClusterHeartbeat(clusterTimeNs, receiveTimeNs);
         }
 
+        /** A serving edge closes first, so the listener has stood down by the time it hears why. */
         @Override
         public void onFenced(final ClusterError fence, final String detail) {
+            lifecycle.onFenced();
             listener.onFenced(fence, detail);
         }
 

@@ -41,6 +41,9 @@ constexpr std::int32_t SOURCE_ID = 12;
 
 constexpr std::int64_t PING_INTERVAL_NS = 1'000'000'000;
 
+// Fenced, restart me: this repository's convention (doc/ops.md).
+constexpr int EXIT_FENCED = 70;
+
 std::atomic_bool running{ true };
 std::int64_t pingSentNs = 0;
 std::string fault;
@@ -175,7 +178,7 @@ int main()
     if (!fault.empty())
     {
         std::fprintf(stderr, "# %s\n", fault.c_str());
-        return 1;
+        return EXIT_FENCED;
     }
     return 0;
 }

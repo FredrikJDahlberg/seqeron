@@ -150,6 +150,9 @@ final class Session implements AutoCloseable {
         checkCaughtUp();
         checkFences();
         if (fenced) {
+            // Here rather than at the fence, which may be raised from inside that poll. Nothing polls the receiver
+            // again, and a replay left open would hold one of the member's Replayer slots.
+            receiver.close();
             return work;
         }
         work += sender.pollEgress();

@@ -51,6 +51,9 @@ public final class SnapshotApp implements Application.Listener, SnapshotListener
     private long applied;
     private long rejected;
 
+    /** Fenced, restart me: this repository's convention (doc/ops.md). */
+    private static final int EXIT_FENCED = 70;
+
     private final MutableDirectBuffer transfer = new UnsafeBuffer(new byte[TRANSFER_LENGTH]);
     private final Random random = new Random();
     private Application app;
@@ -99,7 +102,7 @@ public final class SnapshotApp implements Application.Listener, SnapshotListener
         System.out.flush();
         if (application.fence != null) {
             System.err.println("# " + application.fence);
-            System.exit(1);
+            System.exit(EXIT_FENCED);
         }
     }
 

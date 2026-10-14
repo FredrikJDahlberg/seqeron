@@ -133,6 +133,19 @@ class ReplayerStreamReceiver final : private detail::ReplayerRecoveryActions
         m_recovery.start();
     }
 
+    // Releases the subscriptions, the request publication and the counter now rather than at destruction;
+    // poll() must not be called after. Not from inside a poll, whose subscription it would release.
+    void close()
+    {
+        closeReplay();
+        resolveResources(); // an add already answered would otherwise stay open with nothing holding it
+        m_tapSub.reset();
+        m_controlSub.reset();
+        m_requestPub.reset();
+        m_recoveryStalledCounter.reset();
+        m_tapSubRegId = m_controlSubRegId = m_requestPubRegId = m_recoveryStalledCounterRegId = -1;
+    }
+
     // One duty-cycle iteration; returns fragments consumed. Drains control, rides an attached replay image,
     // and always drains and dispatches the tap: ReplayerRecovery's contiguity check decides what a tap frame
     // is worth mid-walk. Throws std::runtime_error once this node's recording does not hold what recovery asked of

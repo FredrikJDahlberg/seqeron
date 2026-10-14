@@ -33,7 +33,8 @@ concept ApplicationListener =
     requires(L& listener, const Payload& payload, bool leading, std::int64_t globalSeqNo, std::int64_t clusterTimeNs,
              std::int64_t receiveTimeNs, ClusterError fence, const std::string& detail) {
         // The gate crossed an edge. False is where OutstandingWork::onNotLeader() belongs: every leadership
-        // change shuts an open gate, and the work may have gone with the election.
+        // change shuts an open gate, and the work may have gone with the election. False also comes before
+        // onFenced when this replica fences with its gate open.
         listener.onLeadershipChanged(leading);
         listener.onSequenced(payload);
         listener.onCaughtUp(globalSeqNo);
@@ -386,8 +387,13 @@ class Application
             m_app.m_listener.onClusterHeartbeat(clusterTimeNs, receiveTimeNs);
         }
 
+        // An open gate closes first, so the listener has given up leader-only work by the time it hears why.
         void onFenced(const ClusterError fence, const std::string& detail)
         {
+            if (m_app.m_gate.onFenced())
+            {
+                m_app.m_listener.onLeadershipChanged(false);
+            }
             m_app.m_listener.onFenced(fence, detail);
         }
 

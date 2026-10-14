@@ -39,6 +39,9 @@ public sealed class ColocatedApp : IApplicationListener
 
     private static readonly long PingIntervalTicks = Stopwatch.Frequency;
 
+    // Fenced, restart me: this repository's convention (doc/ops.md).
+    private const int ExitFenced = 70;
+
     private Application _app;
     private volatile bool _running = true;
     private long _pingSentTicks;
@@ -70,7 +73,7 @@ public sealed class ColocatedApp : IApplicationListener
         if (application._fence != null)
         {
             Console.Error.WriteLine("# " + application._fence);
-            return 1;
+            return ExitFenced;
         }
         return 0;
     }

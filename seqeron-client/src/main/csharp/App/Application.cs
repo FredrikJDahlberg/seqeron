@@ -314,8 +314,14 @@ public sealed class Application : IDisposable
             _app._listener.OnClusterHeartbeat(clusterTimeNs, receiveTimeNs);
         }
 
+        /// <summary>An open gate closes first, so the listener has given up leader-only work by the time it hears
+        /// why.</summary>
         public void OnFenced(ClusterError fence, string detail)
         {
+            if (_app._gate.OnFenced())
+            {
+                _app._listener.OnLeadershipChanged(false);
+            }
             _app._listener.OnFenced(fence, detail);
         }
 

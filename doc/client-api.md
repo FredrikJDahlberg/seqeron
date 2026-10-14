@@ -30,7 +30,8 @@ The sections before [Façades](#façades-app) define the model and the contract;
 | [Snapshots](#snapshots) (both façades) | Restart from the newest log-confirmed snapshot, then only the messages after its cut. Fencing of any instance whose state diverges from its source's. | Member restart: a member always replays its full log. |
 
 A **fence** is `onFenced(ClusterError, detail)`, raised once, after which the instance takes no further
-action; the façade releases its cluster session before raising it. Causes: cluster session lost (on a `Gateway` instance that announced its activation on it, or not replaced within 20 s),
+action; the façade releases its cluster session before raising it, and its tap and replay subscriptions at the
+end of that `doWork()`, so a fenced instance holds no Replayer slot. Causes: cluster session lost (on a `Gateway` instance that announced its activation on it, or not replaced within 20 s),
 ingress confirmation fault, recovery stall, tap stall, snapshot divergence, unrestorable snapshot ([`fault-tolerance.md`](fault-tolerance.md) §2.1). Loss of the media driver
 is not a fence; it raises from `doWork()`.
 
@@ -74,7 +75,8 @@ The guarantees are conditional on these; spec §16 states them normatively (**A-
   fragmentation above 8,884 bytes.
 - **Handle `Declined`** by retrying from the duty cycle, not by spinning in a callback. `Refused` is final.
 - **Exit when fenced.** The façade has already released the cluster session, so a standby takes over; a
-  restart is what brings the instance back.
+  restart is what brings the instance back. Exit with 70, this repository's convention for "fenced, restart
+  me" ([`ops.md`](ops.md)), so a supervisor can tell a fence from a crash.
 - **Unique `clientId` per node** ([Client ids](#client-ids)).
 - **Authenticate at the edge.** The cluster accepts any well-formed message.
 
@@ -236,12 +238,12 @@ gateway.close();
 | listener callback | trigger |
 |---|---|
 | `onActivated(firstConnectionId)` | designated active: open the edge |
-| `onStandby()` | another instance designated: close the edge |
+| `onStandby()` | another instance designated, or this one fenced while serving: close the edge |
 | `onSequenced(Payload)` | application payload, in order |
 | `onConnectionOpened` / `onConnectionClosed` | this logical gateway's connection lifecycle from the log, whichever instance issued it — used to rebuild per-connection state during replay, and the only signal for a client that drops without logging out |
 | `onCaughtUp(globalSeqNo)` | each transition to caught up |
 | `onClusterHeartbeat(clusterTimeNs, receiveTimeNs)` | 1 Hz cluster clock |
-| `onFenced(ClusterError, detail)` | terminal: the session is already released, so the standby takes over; normally exit |
+| `onFenced(ClusterError, detail)` | terminal: the session is already released, so the standby takes over, and a serving edge has had `onStandby`; normally exit |
 
 **Snapshots.** With a `snapshotListener` the gateway also requires `sourceId` (the pair's, needed before any
 topology row is dispatched) and `snapshotDirectory` (per instance, not per pair). Every instance writes a
@@ -281,7 +283,8 @@ otherwise.
 `onCaughtUp`, `onClusterHeartbeat` and `onFenced` are as for `Gateway`, and there is no connection
 lifecycle. **Every leadership change closes the gate**, so call `OutstandingWork.onNotLeader()` on `false`:
 a reply submitted during the election may be lost, and the next opening redispatches it. The gate is also
-shut while a lost cluster session is replaced, for the same reason. Retain a request's `sourceId` and
+shut while a lost cluster session is replaced, for the same reason, and it closes at a fence: an open gate
+reports `false` before `onFenced`, and `isLeading()` and `canPublish()` are false from then on. Retain a request's `sourceId` and
 `connectionId`, not its `Payload`.
 
 **Off-cluster.** On a gateway host, `offCluster(true)` makes the replica the sole instance. Its gate opens
@@ -347,7 +350,7 @@ directory and passes the host's node id (unused by any member) as `memberId`. `G
 | duty cycle | `poll()` | `poll()` | `Poll()` |
 | cold restart | `restart()` | `restart()` | `Restart()` |
 | state | `isCaughtUp()`, `lastGlobalSeqNo()`, `currentLeaderMemberId()`, `restoreFailure()` | same; `restoreFailure()` is `std::optional<std::string>` | same, as properties; `RestoreFailure` null if none |
-| release | `close()` | destructor | `Dispose()` |
+| release | `close()` | `close()`, or the destructor | `Dispose()` |
 
 Single-threaded, like the façades.
 

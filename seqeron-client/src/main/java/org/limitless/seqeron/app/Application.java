@@ -65,7 +65,8 @@ public final class Application implements AutoCloseable {
          * its own node leads, or off the cluster caught up alone — false when it may not. <b>Every
          * leadership change closes an open gate</b>, so false is where {@link OutstandingWork#onNotLeader()}
          * belongs: a reply this node submitted during the election may have gone with it, and the next
-         * opening dispatches it again.
+         * opening dispatches it again. False also comes before {@link #onFenced} when this replica fences with
+         * its gate open.
          */
         void onLeadershipChanged(boolean leading);
 
@@ -290,8 +291,12 @@ public final class Application implements AutoCloseable {
             listener.onClusterHeartbeat(clusterTimeNs, receiveTimeNs);
         }
 
+        /** An open gate closes first, so the listener has given up leader-only work by the time it hears why. */
         @Override
         public void onFenced(final ClusterError fence, final String detail) {
+            if (gate.onFenced()) {
+                listener.onLeadershipChanged(false);
+            }
             listener.onFenced(fence, detail);
         }
 

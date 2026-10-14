@@ -73,6 +73,16 @@ final class LeaderGate {
         return open ? Transition.OPENED : Transition.CLOSED;
     }
 
+    /**
+     * The replica fenced: an open gate closes, and the façade updates it no further.
+     * @return whether it was open, so the closing edge is still to be reported
+     */
+    public boolean onFenced() {
+        final boolean wasOpen = open;
+        open = false;
+        return wasOpen;
+    }
+
     /** Whether leader-only work may run, without waiting for the next {@link #update}. */
     public boolean isOpen() {
         return open;

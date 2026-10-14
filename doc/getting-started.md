@@ -151,6 +151,7 @@ public final class Hello implements Application.Listener {
             }
         }
         System.err.println(listener.fence);
+        System.exit(70); // fenced, restart me (ops.md)
     }
 
     @Override
@@ -196,8 +197,8 @@ Three things in it are worth knowing before going further:
   replica beside the leader publishes, so `canPublish()` is false on every other member.
 - **`Published` means placed, not sequenced.** The message reached the leader's ingress. It is sequenced
   when it arrives back in `onSequenced`, and if a leader failover loses it first, the façade resends it.
-- **`onFenced` means stop.** The replica can no longer trust its view of the log. Exit; a restart re-reads
-  the log.
+- **`onFenced` means stop.** The replica can no longer trust its view of the log. Exit, with 70 so a
+  supervisor knows to restart it ([`ops.md`](ops.md)); a restart re-reads the log.
 
 Take `sourceId` and `payloadId` values no other producer uses; [the spec](seqeron-protocol-spec.md) holds
 both registries, §5 and §6.1.
@@ -269,6 +270,7 @@ while (listener.Fence == null)
     idle.Idle(work);
 }
 Console.Error.WriteLine(listener.Fence);
+return 70; // fenced, restart me (ops.md)
 
 sealed class Hello(int sourceId, int payloadId) : IApplicationListener
 {

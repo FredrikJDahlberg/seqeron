@@ -181,6 +181,25 @@ public class GatewayLifecycleTest
     }
 
     [Fact]
+    public void AFenceClosesAServingGate()
+    {
+        BecomeServing();
+        _lifecycle.OnFenced();
+        Assert.Equal(State.Passive, _lifecycle.CurrentState);
+        Assert.Equal(1, _actions.Count("close"));
+        Assert.False(_lifecycle.OnSessionAcquired());
+    }
+
+    [Fact]
+    public void AFenceClosesNothingWhileTheGateIsShut()
+    {
+        LoadTopology();
+        _lifecycle.OnGatewayActive(MyId);
+        _lifecycle.OnFenced(); // still replaying
+        Assert.Equal(0, _actions.Count("close"));
+    }
+
+    [Fact]
     public void ReopensOnASecondDesignationAsANewEpoch()
     {
         BecomeServing();

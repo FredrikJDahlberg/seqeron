@@ -11,7 +11,8 @@ public interface IGatewayListener
     /// <returns>whether the edge opened; false is retried on the next <see cref="Gateway.DoWork"/></returns>
     bool OnActivated(int firstConnectionId);
 
-    /// <summary>Stand down: close the edge and drop every connection it let in. Publishes nothing.</summary>
+    /// <summary>Stand down: close the edge and drop every connection it let in. Publishes nothing. On a sibling's
+    /// designation, and before <see cref="OnFenced"/> when this instance fences while serving.</summary>
     void OnStandby();
 
     /// <summary>One application payload off this node's tap, in <c>globalSeqNo</c> order.</summary>

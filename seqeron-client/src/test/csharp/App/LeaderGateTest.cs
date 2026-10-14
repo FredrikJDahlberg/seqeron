@@ -80,6 +80,23 @@ public class LeaderGateTest
         Assert.Equal(Transition.Opened, _gate.Update(true, Self)); // nothing was dispatched, so no cycle is lost
     }
 
+    [Fact(DisplayName = "a fence closes an open gate and reports the edge once")]
+    public void FenceClosesAnOpenGate()
+    {
+        _gate.Update(true, Self);
+
+        Assert.True(_gate.OnFenced());
+        Assert.False(_gate.IsOpen);
+        Assert.False(_gate.OnFenced()); // already closed
+    }
+
+    [Fact(DisplayName = "a fence on a shut gate reports no edge")]
+    public void FenceOnAShutGate()
+    {
+        Assert.False(_gate.OnFenced());
+        Assert.False(_gate.IsOpen);
+    }
+
     [Fact(DisplayName = "off the cluster, opens when caught up whoever leads, and only then")]
     public void OffClusterOpensWhoeverLeads()
     {
