@@ -145,6 +145,7 @@ class ReplayerRecoveryTest {
     @AfterEach
     void tearDown() {
         Logger.reset();
+        receiver.close();
     }
 
     // ── baseline ──────────────────────────────────────────────────────────────────────────────────

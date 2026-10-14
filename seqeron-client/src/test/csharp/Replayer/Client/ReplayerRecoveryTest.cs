@@ -146,6 +146,7 @@ public class ReplayerRecoveryTest : IDisposable
     public void Dispose()
     {
         Logger.Reset();
+        _receiver.Close();
         _wire.Dispose();
         _directory.Dispose();
     }

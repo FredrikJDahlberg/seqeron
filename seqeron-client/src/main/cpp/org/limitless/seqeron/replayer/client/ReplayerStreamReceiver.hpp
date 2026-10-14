@@ -136,6 +136,7 @@ class ReplayerStreamReceiver final : private detail::ReplayerRecoveryActions
     void close()
     {
         closeReplay();
+        m_recovery.close();
         resolveResources(); // an add already answered would otherwise stay open with nothing holding it
         m_tapSub.reset();
         m_controlSub.reset();
