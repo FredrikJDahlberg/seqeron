@@ -215,8 +215,9 @@ Applications can snapshot their own state instead, and the log makes those snaps
 starts a round by sequencing `SnapshotStarted`, whose position in the order is the round's cut. Every
 instance of a participating source serializes its state at that cut into its own local file, and the
 instance that may publish submits the round's `SnapshotEnd`: a record count, a length and a CRC32C. Every
-instance compares its own file with the sequenced end, and one that differs stops. A restarting
-instance restores its newest file that the log confirms, then replays only what follows the cut. This
+instance compares its own file with the sequenced end, keeps it on a match, and stops on a difference. A
+restarting instance restores its newest confirmed file once a replay shows the log holds its cut, then replays
+only what follows the cut. This
 shortens an application's restart, not a member's. [`snapshot.md`](snapshot.md) is the design in full.
 
 ## Deployment

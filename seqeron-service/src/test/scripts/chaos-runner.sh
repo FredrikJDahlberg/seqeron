@@ -134,7 +134,7 @@ TAP_DROP_TARGET=""; TAP_DROP_LOG=""; TAP_DROP_RESUMES=0
 # Per-replica RecoveryStalled alarms already accounted for, so check_invariants (c) fails a round on a
 # NEW one rather than re-reporting an episode some earlier round already owned.
 declare -a RECOVERY_STALL_BASELINE=(0 0 0)
-LAST_SNAPSHOT_ROUND=0   # the pair's newest indexed round at the last check, for invariant (i)
+LAST_SNAPSHOT_ROUND=0   # the pair's newest confirmed round at the last check, for invariant (i)
 
 # ── Helpers ─────────────────────────────────────────────────────────────────────
 start_seq() {  # start_seq <memberId> — append so leadership history survives restarts (last isLeader= wins)
@@ -642,12 +642,16 @@ FAULTS=(fault_kill_leader fault_kill_follower fault_sigkill_node fault_pause_nod
 #     embedded drivers onto a shared aeronmd — driver dies, cluster node survives, which the embedded
 #     topology cannot produce. Wire it then.
 
-# The newest round of the pair's sourceId whose SnapshotEnd member <m>'s Replayer has indexed, 0 for none.
-snapshot_round() {  # snapshot_round <memberId>
-  local value
-  value=$(CLUSTERCTL_MEMBER_ID="$1" seqeron-service/src/main/scripts/clusterctl.sh counters 2>/dev/null \
-            | grep "snapshotRound source=9 " | grep -oE "[0-9]+ *$" | tr -d ' ')
-  echo "${value:-0}"
+# The newest round either instance of the pair has confirmed, 0 for none. Each instance's counter is on its own
+# member's driver, and starts at 0 with every process.
+snapshot_round() {
+  local m value newest=0
+  for m in "$GW_A_MEMBER" "$GW_B_MEMBER"; do
+    value=$(CLUSTERCTL_MEMBER_ID="$m" seqeron-service/src/main/scripts/clusterctl.sh counters 2>/dev/null \
+              | grep "snapshotRound source=9 " | grep -oE "[0-9]+ *$" | tr -d ' ')
+    (( ${value:-0} > newest )) && newest=${value:-0}
+  done
+  echo "$newest"
 }
 
 # ── Steady-state oracle ──────────────────────────────────────────────────────────
@@ -761,15 +765,15 @@ check_invariants() {
   # (g) a kill-leader round produced a GENUINE failover, as observed by fault_kill_leader.
   [[ "$FAILOVER_FAIL" == "1" ]] && fail=1
   FAILOVER_FAIL=0
-  # (i) snapshot rounds still complete under the faults: the pair's newest round indexed on the leader has
-  #     moved past the last check's. A diverged or unrestorable instance fences and exits, which (b2) catches.
+  # (i) snapshot rounds still complete under the faults: the pair's newest confirmed round has moved past the
+  #     last check's. A diverged or unrestorable instance fences and exits, which (b2) catches.
   if [[ -n "$L" ]]; then
     local r W=0
-    until r="$(snapshot_round "$L")"; (( r > LAST_SNAPSHOT_ROUND )); do
+    until r="$(snapshot_round)"; (( r > LAST_SNAPSHOT_ROUND )); do
       sleep 0.5; W=$((W+1)); ((W > SNAPSHOT_ROUND_TIMEOUT_SECS * 2)) && break
     done
     if (( r > LAST_SNAPSHOT_ROUND )); then
-      log "  ok: snapshot rounds advancing (round $LAST_SNAPSHOT_ROUND -> $r on member $L)"
+      log "  ok: snapshot rounds advancing (round $LAST_SNAPSHOT_ROUND -> $r)"
       LAST_SNAPSHOT_ROUND="$r"
     else
       log "  INVARIANT FAIL: no snapshot round past $LAST_SNAPSHOT_ROUND within ${SNAPSHOT_ROUND_TIMEOUT_SECS}s"; fail=1

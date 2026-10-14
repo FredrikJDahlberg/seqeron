@@ -577,7 +577,7 @@ seqeron owns two SBE schemas: the frames on the log and the replay control proto
 | file | schema id | contains | change policy (§11) |
 | --- | --- | --- | --- |
 | `sbe-frame.xml` | 210 | the eight top-level templates, the four header composites, `messageHeader`, `varDataEncoding`, and the twelve submitted system payloads | envelopes frozen; system events changeable under **V-3** |
-| `sbe-replay.xml` | 212 | the five replay control messages (§10) | changed in place, no version bump |
+| `sbe-replay.xml` | 212 | the three replay control messages (§10) | changed in place, no version bump |
 
 The envelopes and system messages are one schema because they have one owner, ship in one artifact and
 follow the same change rule. `version` stays 0 for the life of schema 210, including system message
@@ -710,7 +710,7 @@ counts frames from non-conforming producers.
 
 ## 10. Replay control protocol
 
-Five messages between a node's replayer and its co-located clients, on streams 202 and 203. They carry
+Three messages between a node's replayer and its co-located clients, on streams 202 and 203. They carry
 no header composite and are never sequenced or recorded.
 
 | message (id) | direction | meaning |
@@ -718,8 +718,6 @@ no header composite and are never sequenced or recorded.
 | `ReplayRequest` (6) | client → replayer | replay the active recording from its start (`fromPosition` = `FROM_START`), or resume it at `fromPosition` |
 | `Replaying` (7) | replayer → client | attach to `replaySessionId` on stream 201 and follow it until `catchUpPosition` |
 | `ReplayPending` (8) | replayer → client | not now: no slot is free, the replayer is not ready, or the recording has not reached `fromPosition` yet; wait at the gap and resend |
-| `SnapshotQuery` (23) | client → replayer | is this round of this source's snapshot in the log (`doc/snapshot.md` §5) |
-| `SnapshotLocation` (24) | replayer → client | that round's cut, position and sequenced `SnapshotEnd`, or `round` −1 for none |
 
 - **R-1.** `requestId` identifies the current request. The client increments it on every send,
   including an unchanged resend, and the replayer echoes it. A client MUST ignore a reply whose
@@ -744,7 +742,9 @@ whole log, and an older one is a prefix of it. A client checks that the first fr
 
 The client detects completion by reaching `catchUpPosition`, not by the replay image closing: a
 bounded replay of an active recording does not close its image at the bound. The first frame of a
-resumed replay MUST be the frame the client resumed from; any other is fatal, as for R-2.
+resumed replay MUST be the frame the client resumed from; any other is fatal, as for R-2. One resume is
+the exception: a replay from a snapshot file's cut (`doc/snapshot.md` §7), whose first frame or refusal
+only tells the client whether the file was cut from this log.
 
 Schema 212 changes in place without a version bump. Nothing records it, and a node's replayer and its
 clients are built and restarted together.
@@ -759,8 +759,6 @@ encoded length is 8 + block. None has var-data or repeating groups.
 | `ReplayRequest` | 6 | 24 | `clientId` int64, `requestId` int64, `fromPosition` int64 |
 | `Replaying` | 7 | 32 | `clientId` int64, `requestId` int64, `replaySessionId` int64, `catchUpPosition` int64 |
 | `ReplayPending` | 8 | 16 | `clientId` int64, `requestId` int64 |
-| `SnapshotQuery` | 23 | 28 | `clientId` int64, `requestId` int64, `sourceId` int32, `round` int64 |
-| `SnapshotLocation` | 24 | 60 | `clientId` int64, `requestId` int64, `round` int64, `asOfGlobalSeqNo` int64, `asOfPosition` int64, `formatVersion` uint32, `recordCount` int32, `length` int64, `crc32c` uint32 |
 
 - `clientId`: the client's id on its media driver (**R-4**). It addresses a reply on the shared control
   stream; `requestId` matches it to a request (**R-1**).
@@ -770,12 +768,6 @@ encoded length is 8 + block. None has var-data or repeating groups.
   (`Aeron.NULL_VALUE`). There is no separate message for "nothing to replay".
 - `catchUpPosition`: where the client stops following the replay and switches to the live tap,
   de-duplicating on `globalSeqNo`.
-- `sourceId`, `round`: the queried source and the round of the snapshot file the client holds. The answer's
-  `round` is that round when the index holds the source's `SnapshotEnd` for it, else −1.
-- `formatVersion`, `recordCount`, `length`, `crc32c`: that `SnapshotEnd`'s, which the client checks its
-  file against.
-- `asOfGlobalSeqNo`, `asOfPosition`: the round's cut and the position of its `SnapshotStarted` in the
-  active recording.
 
 **Slot limits.** A replayer serves at most `MAX_CONCURRENT_REPLAYS` = 4 replays at once, one while its
 tap recording trails the tap by more than a quarter of the publication window, and answers

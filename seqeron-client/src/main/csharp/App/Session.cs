@@ -106,19 +106,10 @@ internal sealed class Session : IDisposable
         _sender.SetIngressHold(_pending);
     }
 
-    /// <summary>Restores <paramref name="sourceId"/>'s newest confirmed snapshot in <paramref name="store"/> first;
-    /// call before starting.</summary>
-    internal void RestoreFrom(int sourceId, SnapshotStore store, ISnapshotRestoreHandler handler)
+    /// <summary>Restores the newest snapshot in <paramref name="store"/> first; call before starting.</summary>
+    internal void RestoreFrom(SnapshotStore store, ISnapshotRestoreHandler handler)
     {
-        _receiver.RestoreFrom(sourceId, store, handler);
-    }
-
-    /// <summary>Follows the tap from its start again, restoring the snapshot given to <see cref="RestoreFrom"/>
-    /// first.</summary>
-    internal void Restart()
-    {
-        _recoveryStall.OnRestart(); // the restore pass dispatches nothing, and is no stall
-        _receiver.Restart();
+        _receiver.RestoreFrom(store, handler);
     }
 
     /// <summary>Opens the cluster session over UDP and starts following this node's tap.</summary>

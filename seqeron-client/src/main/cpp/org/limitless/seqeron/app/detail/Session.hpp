@@ -66,24 +66,14 @@ class Session
     Session& operator=(const Session&) = delete;
 
     /**
-     * Restores a source's newest snapshot in a store that the log confirms before following the tap; call before
-     * starting.
+     * Restores the newest snapshot in a store before following the tap; call before starting.
      *
-     * @param sourceId the source whose snapshot to restore
-     * @param store    this instance's own snapshots; must outlive this object
-     * @param handler  takes the snapshot's records; must outlive this object
+     * @param store   this instance's own snapshots; must outlive this object
+     * @param handler takes the snapshot's records; must outlive this object
      */
-    void restoreFrom(const std::int32_t sourceId, replayer::client::SnapshotStore& store,
-                     replayer::client::SnapshotRestoreHandler& handler)
+    void restoreFrom(replayer::client::SnapshotStore& store, replayer::client::SnapshotRestoreHandler& handler)
     {
-        m_receiver.restoreFrom(sourceId, store, handler);
-    }
-
-    // Follows the tap from its start again, restoring the snapshot given to restoreFrom first.
-    void restart()
-    {
-        m_recoveryStall.onRestart(); // the restore pass dispatches nothing, and is no stall
-        m_receiver.restart();
+        m_receiver.restoreFrom(store, handler);
     }
 
     // Opens the cluster session over UDP and starts following this node's tap.

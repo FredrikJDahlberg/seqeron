@@ -55,20 +55,21 @@ inline constexpr std::int32_t REPLAYER_PENDING_REQUESTS_TYPE_ID = 5103;
 inline constexpr std::int32_t REPLAYER_REPLAYS_SERVED_COUNT_TYPE_ID = 5104;
 // Count of control replies dropped because an app stopped draining the control stream.
 inline constexpr std::int32_t REPLAYER_CONTROL_REPLIES_DROPPED_COUNT_TYPE_ID = 5107;
-// The round of one source's latest snapshot this node's Replayer has indexed, keyed {memberId, sourceId}.
-inline constexpr std::int32_t REPLAYER_SNAPSHOT_ROUND_TYPE_ID = 5109;
 // Count of replay requests held pending only because the tap recording trailed the tap while a replay ran.
 inline constexpr std::int32_t REPLAYER_THROTTLED_REQUESTS_COUNT_TYPE_ID = 5110;
 // Count of local-archive calls that threw; a sustained rate means the archive is not serving replays.
 inline constexpr std::int32_t REPLAYER_ARCHIVE_ERRORS_COUNT_TYPE_ID = 5111;
 
 // ── Co-located application replicas (5200-5299) ──────────────────────────────────────────────
-// Core reserves 5200 and 5299; a consumer allocates its own in 5201-5298 (doc/ops.md, "Counter type ids").
+// Core reserves 5200, 5298 and 5299; a consumer allocates its own in 5201-5297 (doc/ops.md, "Counter type ids").
 inline constexpr std::int32_t APP_TYPE_ID_MIN = 5200;
 inline constexpr std::int32_t APP_TYPE_ID_MAX = 5299;
 
 // 1 while this replica's recovery has been reported unconvergent (see ReplayerRecovery::checkRecoveryProgress), else 0.
 inline constexpr std::int32_t APP_RECOVERY_STALLED_TYPE_ID = 5200;
+
+// The last snapshot round a participating client confirmed (doc/snapshot.md §4), 0 for none yet.
+inline constexpr std::int32_t APP_SNAPSHOT_ROUND_TYPE_ID = 5298;
 
 // Connections a gateway instance holds open: taken and not yet closed, and 0 while it does not serve.
 inline constexpr std::int32_t GATEWAY_CONNECTIONS_TYPE_ID = 5299;
@@ -77,11 +78,9 @@ inline constexpr std::int32_t GATEWAY_CONNECTIONS_TYPE_ID = 5299;
 inline constexpr std::int32_t MIN_TYPE_ID = SEQUENCER_TYPE_ID_MIN;
 inline constexpr std::int32_t MAX_TYPE_ID = APP_TYPE_ID_MAX;
 
-// Key layout: an operator counter's key is the memberId; an app or per-source counter's is memberId, then
-// clientId or sourceId.
+// Key layout: an operator counter's key is the memberId; an app counter's is memberId, then clientId.
 inline constexpr std::size_t KEY_MEMBER_ID_OFFSET = 0;
 inline constexpr std::size_t KEY_CLIENT_ID_OFFSET = 4;
-inline constexpr std::size_t KEY_SOURCE_ID_OFFSET = 4;
 inline constexpr std::size_t KEY_LENGTH = 4;
 inline constexpr std::size_t APP_KEY_LENGTH = 8;
 

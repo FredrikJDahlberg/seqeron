@@ -91,6 +91,14 @@ with code 70 (`NodeDriver.EXIT_FATAL`); [`ops.md`](ops.md) has the operator's pr
 a cluster callback that throws has already had its log position advanced, and `AgentRunner` keeps the agent
 running, so the frame would be silently dropped (spec §9.4).
 
+How the process ends depends on where the condition is found. Inside a retry — a stalled recording, an
+offer no retry can clear, a refused timer — the service thread cannot leave it, and a graceful shutdown
+waits for that thread, so the process halts at once and a failed leader is replaced within the election
+timeout. From the heartbeat check the callback returns, and the member shuts down gracefully. Any shutdown
+after a fatal, including a Replayer's, is halted 15 s after it began (`FATAL_SHUTDOWN_BACKSTOP_MS`), since
+it closes the archive that may be what failed. A halted member leaves its mark files active, and a restart
+is refused until their liveness timeout (about 10 s) has passed.
+
 The remaining members hold identical recordings and keep quorum, and an election moves leadership if the
 failed member led. In a three-member cluster a second failure loses quorum. A restarted member replays the
 full log and rebuilds its recording. Start-up has the same bound — the recording must be live within 5 s
@@ -144,7 +152,7 @@ sequencer promote the standby (§2.2) whatever the application does next; it usu
 - **Only an announced instance fences on a lost session.** Closing the session a designated instance's
   `GatewayStarted` bound is what promotes its sibling (§2.2), and the tap carries no frame for that close, so a
   replacement session could act before the instance has seen whether it was superseded. Any other instance
-  holds nothing the close changed — a standby, a passive one, and one designated after its session was lost,
+  holds nothing the close changed — a standby, and one designated after its session was lost,
   which announces on the replacement instead: it opens a new session as the first was opened, starting an
   attempt at most once a second and advancing it a step per duty cycle, and fences with `CLUSTER_SESSION_LOST`
   only if none opens within the tap-stall timeout and the attempt then under way fails, since one whose request
@@ -193,15 +201,6 @@ a new connection onto an existing session (spec §7.1).
 never repeat across a handover. A crashed instance never publishes its connections' `ConnectionClosed` frames,
 so an application that tracks connections treats `GatewayStarted` as closing every connection still open under
 that `gatewaySourceId` (spec §7.1).
-
-### 2.4 Passive instances
-
-An instance configured passive ([`snapshot.md`](snapshot.md) §4) holds no application state until it is
-activated. It follows the tap for the election alone, from the cut of the newest confirmed snapshot its
-directory holds, or from `globalSeqNo` 1. When a `GatewayActive` names it, it restores (§3.4) and catches up
-before it publishes `GatewayStarted`, so the handover takes as long as the restore and the catch-up. If that
-exceeds the 5 s activation timeout (§2.2), the sequencer passes the role on, and a pair whose other instance
-is down alternates until a restore finishes in time. A hot standby has no such delay.
 
 ## 3. Stream recovery
 
@@ -300,30 +299,31 @@ directly.
 ### 3.4 Snapshot restore
 
 A client whose façade has a `SnapshotListener` restores before it dispatches anything
-([`snapshot.md`](snapshot.md) §7). It takes the newest file in its snapshot directory, asks its member's
-Replayer for that round's sequenced `SnapshotEnd`, reads the file's records if they match it, and resumes
-after the round's cut as it would after a gap. A file the log does not confirm gives way to the next older
-one; with none left, it walks the recording as §3.2 describes.
+([`snapshot.md`](snapshot.md) §7). It takes the newest confirmed file in its snapshot directory, one it named
+only after its source's sequenced `SnapshotEnd` matched it, replays its member's recording from the file's cut
+to see that the frame there is the round's `SnapshotStarted`, reads the file's records, and resumes after the
+cut as it would after a gap. A file whose cut the recording does not hold gives way to the next older one;
+with none left, it walks the recording as §3.2 describes.
 
-- **No replay in flight.** The records come from the local file, so nothing is replayed during a restore;
-  the resume after it is an ordinary one.
+- **One replay before the records.** The check of the cut is a replay whose first frame decides it; the
+  records then come from the local file, and the resume after them is an ordinary one.
 - **After the restore**, every fallback that would walk the recording resumes at the snapshot instead: the
   history before its cut is no longer this client's to replay.
-- **A torn file.** A file is forced to disk before it is named, and an older one is deleted only once a newer
-  one is durable, so an OS crash costs at most the round in flight. A file torn regardless has no trailer, or
-  one that does not match the end, and gives way to an older file.
-- **A damaged file.** A file whose trailer matches the end but whose records do not, or a `formatVersion` or
-  header version the build does not read, fences the client with `SNAPSHOT_UNRESTORABLE`; a restart repeats
-  it until the build is fixed or the file is removed.
-- **No file.** A new host, a lost disk or a passive instance that never served has nothing to restore, and
-  walks from `globalSeqNo` 1. Every instance of a source writes the same bytes, so a peer's file copied into
-  its directory restores it instead.
+- **A crash.** A file is named only once its round is confirmed and the file forced to disk, and an older one
+  is deleted only after that, so a crash costs at most the round in flight. A file torn regardless has no
+  trailer and gives way to an older file.
+- **A purged log.** Its rounds start again at 1, so a file from before the purge may name a round the new log
+  also has. Its cut is a different frame, or none, in the new recording, so the check of the cut rejects it.
+- **A damaged file.** A file whose records do not match its trailer, or a `formatVersion` or header version
+  the build does not read, fences the client with `SNAPSHOT_UNRESTORABLE`; a restart repeats it until the
+  build is fixed or the file is removed.
+- **No file.** A new host or a lost disk has nothing to restore, and walks from `globalSeqNo` 1. Every
+  instance of a source writes the same bytes, so a peer's file copied into its directory restores it instead.
 - **Divergence.** At every later round each instance compares its own serialization with the sequenced end.
-  One that differs is fenced with `SNAPSHOT_DIVERGED` (spec §16 A-7). Its file of that round does not match
-  the end, so its restart restores an older file, or walks, and rebuilds the state from the log.
-- **The index after a member restart.** The Replayer rebuilds its index by reading the recording. A client
-  that starts before it reaches the client's newest round finds no end for it and restores an older file,
-  or walks from `globalSeqNo` 1; either converges.
+  One that differs is fenced with `SNAPSHOT_DIVERGED` (spec §16 A-7). Its file of that round is never
+  confirmed, so its restart restores the round before, or walks, and rebuilds the state from the log.
+- **After a member restart.** The member records its tap again from `globalSeqNo` 1. A client whose cut the
+  new recording has not reached is answered `ReplayPending` and waits for it.
 
 ## 4. Leader-only work
 
@@ -392,7 +392,7 @@ Each failure above has a harness that produces it against a live cluster, all un
 | `session-replace-test.sh` | a `TestApplication` on a follower is `SIGSTOP`ped past its session timeout, then the other two members are, so its member has no quorum; each time it must open a new session rather than fence (§2.1, §4), and the cluster heartbeat must keep reaching it while an attempt is pending. Then both `TestGateway` instances are paused past their session timeout: the standby, designated while its own session was lost, must replace it and serve rather than fence (§2.1) |
 | `replayer-restart-test.sh` | member 0's `SequencerServer` is killed under a caught-up client; the client must fail fast, and a fresh cold start must be served from the member's new recording alone (§3.1) |
 | `gateway-host-test.sh` | a gateway host whose relay reads the leader, which is then killed; a `confirm` producer on the host must see every frame exactly once, in order, and the relay must move to another member. The host is then restarted, and a cold start there must catch up from its new recording (§3.3) |
-| `snapshot-test.sh` | the `TestGateway` pair on three members with snapshot rounds every 2 s. The standby restarts and restores, the active instance is killed and the restored one takes over, the killed one returns passive and is activated, and the other returns as a hot standby restoring the rounds it published. Each restore must report the state the client traffic implies, and no instance may be fenced, so every round is also compared against the restored state (§3.4) |
+| `snapshot-test.sh` | the `TestGateway` pair on three members with snapshot rounds every 2 s. The standby restarts and restores, the active instance is killed and the restored one takes over, and the killed one returns as a hot standby, restoring from the file it confirmed while it served. Each restore must report the state the client traffic implies, and no instance may be fenced, so every round is also compared against the restored state (§3.4) |
 | `csharp-client-test.sh` | the C# client against three members: confirmed ingress across a leader kill (§5), a cold start from `globalSeqNo` 1 (§3.2), and a C# gateway pair handed over when its active instance is killed (§2.2, §2.3) |
 | `csharp-windows-test.sh` | the C# client on Windows beside a gateway host, against one member in WSL1: confirmed ingress (§5), a cold start through the gateway host (§3.2, §3.3), and the C# gateway pair handed over (§2.2, §2.3). One member, because three cannot hold Raft's heartbeats under WSL1; the leader kill is `csharp-client-test.sh`'s |
 | `docker-failover-test.sh` | `ROUNDS` (default 15) leader kills against `docker/compose.yml` under continuous `ProbeMarker` load, restoring each killed member before the next. Every round must change leadership and the killed member must rejoin; an observer on each surviving member must deliver in `globalSeqNo` order throughout; and a cold start at the end must replay the whole multi-tenure history from one recording and reach live. Needs Docker and `./gradlew operatorDist`; CI runs it as `failover.yml`, and `ROUNDS=3` is a quick local run |
@@ -417,7 +417,6 @@ from a pinned commit ([`building.md`](building.md)).
   per-producer sequence number that the sequencer de-duplicates on.
 - **Producer authentication.** The cluster checks well-formedness, not identity (spec §7). Authentication
   belongs at the system's external edges.
-- **Snapshots under cluster faults.** `snapshot-test.sh` kills gateway instances, never members, and the
-  property test injects replay faults but no failover or publisher change mid-round. A round missed because
-  its publisher died mid-round, and a restore against an index still being rebuilt after a member restart,
-  are covered by unit tests only.
+- **Snapshots under cluster faults.** `snapshot-test.sh` kills the leader and restores its clients against
+  the member's new recording, but the property test injects replay faults and no failover or publisher change
+  mid-round. A round missed because its publisher died mid-round is covered by unit tests only.

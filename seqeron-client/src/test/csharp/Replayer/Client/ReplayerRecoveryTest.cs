@@ -45,8 +45,7 @@ public class ReplayerRecoveryTest : IDisposable
     // The largest frame the tap carries (§12): a full payload behind the 44-byte sequenced envelope.
     private const int LargestFrameLength = 44 + FrameLayer.MaxPayloadLength;
 
-    // The source restored, its snapshot's cut, and where frame n starts: n * 1024, as everywhere here.
-    private const int Source = 3;
+    // The snapshot's cut; frame n starts at n * 1024, as everywhere here.
     private const long Cut = 10;
 
     // The snapshot every round here holds: the header, term 4 and leader 2, then one record.
@@ -70,21 +69,11 @@ public class ReplayerRecoveryTest : IDisposable
     {
         public long ClockMs = ReplayerRecoveryTest.ClockMs;
         public int RequestsSent;
-        public int QueriesSent;
-        public int QuerySourceId = -1;
-        public long QueryRound = -1;
         public readonly List<bool> StalledGauge = new List<bool>();
 
         public void SendReplayRequest(long requestId, long fromPosition)
         {
             ++RequestsSent;
-        }
-
-        public void SendSnapshotQuery(long requestId, int sourceId, long round)
-        {
-            ++QueriesSent;
-            QuerySourceId = sourceId;
-            QueryRound = round;
         }
 
         public void OpenReplay(long replaySessionId)
@@ -1104,57 +1093,60 @@ public class ReplayerRecoveryTest : IDisposable
 
     // ── restoring a snapshot ──────────────────────────────────────────────────────────────────────
 
-    [Fact(DisplayName =
-              "a restoring cold start asks the Replayer about its newest local snapshot, holding the live tap")]
-    public void RestoringColdStartQueriesItsSnapshotFirst()
+    [Fact(DisplayName = "a restoring cold start replays from its newest snapshot's cut first, holding the live tap")]
+    public void RestoringColdStartReplaysItsSnapshotsCutFirst()
     {
-        WriteSnapshot(1);
+        RestoreFrames.Write(_store, 1, Cut - 5, (Cut - 5) * 1024, 1, SnapshotHeaderRecord, SnapshotRecord);
         WriteSnapshot(2);
         StartRestoring();
 
-        Assert.Equal(1, _actions.QueriesSent);
-        Assert.Equal(Source, _actions.QuerySourceId);
-        Assert.True(_actions.QueryRound == 2, "the newest round it holds");
-        Assert.False(_receiver.IsAwaitingReplay, "no replay before the answer");
+        Assert.Equal(1, _actions.RequestsSent);
+        Assert.True(_receiver.IsAwaitingReplay);
+        Assert.Equal(Cut * 1024, _receiver.RequestFromPosition); // the newest round's cut
+        Assert.False(_receiver.IsRestoring, "no record before the cut is seen");
         Assert.True(_receiver.IsRecovering);
 
         DeliverTap(40); // mid-stream, and no baseline: held, not fatal
         Assert.Empty(_dispatched);
     }
 
-    [Fact(DisplayName = "an unanswered snapshot query is resent; a pending answer holds it")]
-    public void UnansweredSnapshotQueryIsResent()
+    [Fact(DisplayName = "an unanswered replay of the cut is resent; a pending answer holds it")]
+    public void UnansweredCutReplayIsResent()
     {
         WriteSnapshot(2);
         StartRestoring();
         AdvancePastTimers();
-        Assert.Equal(2, _actions.QueriesSent);
+        Assert.Equal(2, _actions.RequestsSent);
+        Assert.Equal(Cut * 1024, _receiver.RequestFromPosition);
 
         DeliverPending(_receiver.RequestId);
         _actions.ClockMs += 100;
         _receiver.DoTimers(false);
-        Assert.Equal(2, _actions.QueriesSent);
+        Assert.Equal(2, _actions.RequestsSent);
     }
 
-    [Fact(DisplayName = "with no local snapshot, the cold start asks nothing and walks the recording from its start")]
+    [Fact(DisplayName = "with no local snapshot, the cold start walks the recording from its start")]
     public void NoSnapshotWalksFromTheStart()
     {
         StartRestoring();
 
-        Assert.Equal(0, _actions.QueriesSent);
+        Assert.Equal(1, _actions.RequestsSent);
         Assert.False(_receiver.IsRestoring);
         Assert.True(_receiver.IsAwaitingReplay);
         Assert.Equal(FromStart, _receiver.RequestFromPosition);
     }
 
-    [Fact(DisplayName = "a snapshot is restored from its file, dispatching nothing, then resumes anchored at its cut")]
+    [Fact(DisplayName =
+              "a snapshot whose cut the recording holds is restored from its file, then resumes anchored at its cut")]
     public void SnapshotIsRestoredThenResumesAtItsCut()
     {
         WriteSnapshot(2);
         StartRestoring();
-        AnswerLocation(2, 1);
+        AttachReplay(21, 64 * 1024);
+        DeliverReplayFrame(RestoreFrames.Started(Cut, 2), Cut);
         Assert.True(_receiver.IsRestoring);
-        Assert.False(_receiver.IsAwaitingReplay, "the records come from the file, not a replay");
+        Assert.True(_receiver.ReplaySessionId == -1, "the records come from the file, not the replay");
+        Assert.True(_dispatched.Count == 0, "the cut is not dispatched");
 
         _receiver.DoTimers(false);
 
@@ -1164,7 +1156,6 @@ public class ReplayerRecoveryTest : IDisposable
         Assert.Equal(Cut, _receiver.LastGlobalSeqNo);
         Assert.True(_receiver.CurrentLeaderMemberId == 2, "the header's leader");
         Assert.True(_receiver.IsAwaitingReplay);
-        Assert.NotEqual(FromStart, _receiver.RequestFromPosition);
         Assert.Equal(Cut * 1024, _receiver.RequestFromPosition);
 
         AttachReplay(22, 64 * 1024);
@@ -1172,6 +1163,21 @@ public class ReplayerRecoveryTest : IDisposable
         DeliverReplay(11);
         DeliverReplay(12);
         Assert.Equal(new List<long> { 11, 12 }, _dispatched);
+    }
+
+    [Fact(DisplayName = "a replay of the cut that stops advancing is requested again at the cut")]
+    public void StalledCutReplayIsRequestedAgain()
+    {
+        WriteSnapshot(2);
+        StartRestoring();
+        AttachReplay(21, 64 * 1024);
+        AdvancePastTimers();
+
+        Assert.True(_receiver.IsAwaitingReplay);
+        Assert.Equal(Cut * 1024, _receiver.RequestFromPosition);
+        AttachReplay(22, 64 * 1024);
+        DeliverReplayFrame(RestoreFrames.Started(Cut, 2), Cut);
+        Assert.True(_receiver.IsRestoring);
     }
 
     [Fact(DisplayName = "a restore reads a bounded number of records per duty cycle, holding the tap until its last")]
@@ -1183,9 +1189,9 @@ public class ReplayerRecoveryTest : IDisposable
         {
             records[i] = RestoreFrames.Record(i);
         }
-        RestoreFrames.Write(_store, 2, 1, records);
+        RestoreFrames.Write(_store, 2, Cut, Cut * 1024, 1, records);
         StartRestoring();
-        AnswerLocation(2, 1, RestoreFrames.Digest.Of(records));
+        ReplayTheCut();
 
         _receiver.DoTimers(false);
         Assert.True(_receiver.IsRestoring);
@@ -1199,38 +1205,33 @@ public class ReplayerRecoveryTest : IDisposable
         Assert.True(_receiver.IsAwaitingReplay);
     }
 
-    [Fact(DisplayName =
-              "a local snapshot the log does not confirm gives way to the next older one, and the last to a walk")]
-    public void UnconfirmedSnapshotGivesWayToAnOlderOne()
+    [Fact(
+        DisplayName =
+            "a snapshot whose cut the recording does not hold gives way to the next older one, and the last to a walk")]
+    public void SnapshotOfAnotherLogGivesWayToAnOlderOne()
     {
-        for (long round = 1; round <= 4; round++)
+        for (long round = 3; round >= 1; round--)
         {
-            WriteSnapshot(round);
+            WriteSnapshot(round); // newest first: a confirmation deletes the older files
         }
-        string cut = Path.Combine(_directory.Path, "instance-" + (_stores - 1), "3.snapshot");
-        File.WriteAllBytes(cut, File.ReadAllBytes(cut)[..40]);
+        File.WriteAllBytes(StoreFile(4), File.ReadAllBytes(StoreFile(3))[..40]);
         StartRestoring();
 
-        Assert.Equal(4, _actions.QueryRound);
-        AnswerLocation(-1, 1); // no sequenced end for round 4 in the index
-        Assert.Equal(3, _actions.QueryRound);
-        AnswerLocation(3, 1); // its file is cut short
-        Assert.Equal(2, _actions.QueryRound);
-        AnswerLocation(2, 1, new RestoreFrames.Digest(2, 26, 0xBAD)); // its file is not the one sequenced
-        Assert.Equal(1, _actions.QueryRound);
-        AnswerLocation(1, 1);
-        _receiver.DoTimers(false);
-        Assert.Equal(new List<string> { "header 4 2", "0 7" }, _restored);
-        Assert.Equal(Cut, _receiver.LastGlobalSeqNo);
-
-        SetUp();
-        WriteSnapshot(2);
-        StartRestoring();
-        AnswerLocation(-1, 1);
-        Assert.True(_actions.QueriesSent == 1, "nothing older to ask about");
+        Assert.True(_actions.RequestsSent == 1, "round 4 is cut short: no replay for it");
+        AttachReplay(21, 64 * 1024);
+        DeliverReplayFrame(RestoreFrames.Started(Cut, 3, 1), Cut); // another log's frame at round 3's cut
+        Assert.False(_receiver.IsRestoring);
+        Assert.True(_actions.RequestsSent == 2, "round 2's cut, next");
+        AttachReplay(22, 64 * 1024);
+        DeliverReplay(Cut + 1); // round 2's cut is not where this recording has it
+        Assert.False(_receiver.IsRestoring);
+        Assert.Equal(3, _actions.RequestsSent);
+        AnswerReplaying(NoReplayNeeded, 0); // round 1's cut is no frame of this recording
+        Assert.Null(_receiver.Fault);
         Assert.False(_receiver.IsRestoring);
         Assert.True(_receiver.IsAwaitingReplay);
         Assert.Equal(FromStart, _receiver.RequestFromPosition);
+        Assert.True(_restored.Count == 0, "nothing restored from a file the recording does not hold");
     }
 
     [Fact(DisplayName = "after a restore, a resume that opens anywhere but the cut is fatal")]
@@ -1238,7 +1239,7 @@ public class ReplayerRecoveryTest : IDisposable
     {
         WriteSnapshot(2);
         StartRestoring();
-        AnswerLocation(2, 1);
+        ReplayTheCut();
         _receiver.DoTimers(false);
         AttachReplay(22, 64 * 1024);
 
@@ -1251,87 +1252,35 @@ public class ReplayerRecoveryTest : IDisposable
     [Fact(DisplayName = "a snapshot that cannot be restored stops recovery: its format, its header, or its records")]
     public void UnrestorableSnapshotStopsRecovery()
     {
-        WriteSnapshot(2);
+        RestoreFrames.Write(_store, 2, Cut, Cut * 1024, 9, SnapshotHeaderRecord, SnapshotRecord);
         StartRestoring();
-        AnswerLocation(2, 9);
         Assert.Contains("formatVersion 9", _receiver.RestoreFailure);
         Assert.False(_receiver.IsRecovering);
+        Assert.Equal(0, _actions.RequestsSent);
         DeliverTap(40); // no baseline, and no longer an error either
         Assert.Empty(_dispatched);
 
         SetUp();
         byte[] header = (byte[])SnapshotHeaderRecord.Clone();
         header[0] = 9;
-        RestoreFrames.Write(_store, 2, 1, header, SnapshotRecord);
+        RestoreFrames.Write(_store, 2, Cut, Cut * 1024, 1, header, SnapshotRecord);
         StartRestoring();
-        AnswerLocation(2, 1, RestoreFrames.Digest.Of(header, SnapshotRecord));
+        ReplayTheCut();
         _receiver.DoTimers(false);
         Assert.Contains("header of version 9", _receiver.RestoreFailure);
 
         SetUp();
         WriteSnapshot(2);
-        string file = Path.Combine(_directory.Path, "instance-" + (_stores - 1), "2.snapshot");
+        string file = StoreFile(2);
         byte[] damaged = File.ReadAllBytes(file);
         damaged[2 + SnapshotHeaderRecord.Length + 2] ^= 1; // the record's first byte; the trailer still matches
         File.WriteAllBytes(file, damaged);
         StartRestoring();
-        AnswerLocation(2, 1);
+        ReplayTheCut();
         _receiver.DoTimers(false);
         Assert.Contains("damaged", _receiver.RestoreFailure);
         Assert.False(_receiver.IsRecovering);
         Assert.Null(new ReplayerRecovery(_actions, Ignore, null, null).RestoreFailure);
-    }
-
-    [Fact(DisplayName =
-              "a restart restores the snapshot again, holding the tap, and dispatches everything after its cut")]
-    public void RestartRestoresAgainAndRedispatchesAfterTheCut()
-    {
-        WriteSnapshot(2);
-        StartRestoring();
-        AnswerLocation(2, 1);
-        _receiver.DoTimers(false);
-        AttachReplay(22, 64 * 1024);
-        DeliverReplayFrame(RestoreFrames.Started(Cut, 2), Cut);
-        DeliverReplay(11);
-        DeliverTap(12);
-        Assert.True(_receiver.IsCaughtUp);
-        _dispatched.Clear();
-        _restored.Clear();
-
-        _receiver.Restart();
-
-        Assert.False(_receiver.IsCaughtUp);
-        Assert.True(_receiver.ReplaySessionId == -1, "the replay in flight is dropped");
-        Assert.Equal(2, _actions.QueriesSent);
-        DeliverTap(13);
-        Assert.Empty(_dispatched);
-        AnswerLocation(2, 1);
-        _receiver.DoTimers(false);
-        Assert.Equal(new List<string> { "header 4 2", "0 7" }, _restored);
-        Assert.Equal(Cut, _receiver.LastGlobalSeqNo);
-        AttachReplay(23, 64 * 1024);
-        DeliverReplayFrame(RestoreFrames.Started(Cut, 2), Cut);
-        DeliverReplay(11);
-        DeliverReplay(12);
-        Assert.Equal(new List<long> { 11, 12, 13 }, _dispatched); // 13 from the tap, held until contiguous
-    }
-
-    [Fact(DisplayName = "a restart with no snapshot to restore walks the recording from its start again")]
-    public void RestartWithoutASnapshotWalksFromTheStart()
-    {
-        DeliverTap(1);
-        DeliverTap(2);
-
-        _receiver.Restart();
-
-        Assert.False(_receiver.IsCaughtUp);
-        Assert.Equal(0, _receiver.LastGlobalSeqNo);
-        Assert.True(_receiver.IsAwaitingReplay);
-        Assert.Equal(FromStart, _receiver.RequestFromPosition);
-        AttachReplay(21, 64 * 1024);
-        DeliverReplay(1);
-        DeliverReplay(2);
-        Assert.Equal(new List<long> { 1, 2, 1, 2 }, _dispatched);
     }
 
     // ── helpers ───────────────────────────────────────────────────────────────────────────────────
@@ -1342,25 +1291,27 @@ public class ReplayerRecoveryTest : IDisposable
 
     private void StartRestoring()
     {
-        _receiver.RestoreFrom(Source, _store, new RecordingRestoreHandler(_restored));
+        _receiver.RestoreFrom(_store, new RecordingRestoreHandler(_restored));
         _receiver.Start();
     }
 
-    // This instance's file of `round`: the header and one record.
+    // This instance's confirmed file of `round`, cut at Cut: the header and one record.
     private void WriteSnapshot(long round)
     {
-        RestoreFrames.Write(_store, round, 1, SnapshotHeaderRecord, SnapshotRecord);
+        RestoreFrames.Write(_store, round, Cut, Cut * 1024, 1, SnapshotHeaderRecord, SnapshotRecord);
     }
 
-    // The Replayer's answer: round `round` cut at Cut and ending as the files here do, or none.
-    private void AnswerLocation(long round, long formatVersion)
+    // The current store's file of `round`.
+    private string StoreFile(long round)
     {
-        AnswerLocation(round, formatVersion, RestoreFrames.Digest.Of(SnapshotHeaderRecord, SnapshotRecord));
+        return Path.Combine(_directory.Path, "instance-" + (_stores - 1), round + ".snapshot");
     }
 
-    private void AnswerLocation(long round, long formatVersion, RestoreFrames.Digest end)
+    // The replay of the cut opens on the round's SnapshotStarted, as the file recorded it.
+    private void ReplayTheCut()
     {
-        Control(RestoreFrames.Location(ClientId, _receiver.RequestId, round, Cut, Cut * 1024, formatVersion, end));
+        AttachReplay(21, 64 * 1024);
+        DeliverReplayFrame(RestoreFrames.Started(Cut, 2), Cut);
     }
 
     private void DeliverReplayFrame(byte[] frame, long globalSeqNo)

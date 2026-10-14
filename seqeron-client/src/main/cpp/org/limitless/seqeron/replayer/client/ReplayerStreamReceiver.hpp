@@ -23,7 +23,6 @@
 // Request codecs (sbe-replay.xml); the replies are decoded in ReplayerRecovery.
 #include "org_limitless_seqeron_sbe_replay/MessageHeader.h"
 #include "org_limitless_seqeron_sbe_replay/ReplayRequest.h"
-#include "org_limitless_seqeron_sbe_replay/SnapshotQuery.h"
 
 namespace org::limitless::seqeron::replayer::client {
 
@@ -95,17 +94,16 @@ class ReplayerStreamReceiver final : private detail::ReplayerRecoveryActions
     ReplayerStreamReceiver& operator=(const ReplayerStreamReceiver&) = delete;
 
     /**
-     * Restores a source's newest snapshot in a store that the log confirms on start, before anything is
-     * dispatched (doc/snapshot.md §7). Call before start; restoreFailure() reports a snapshot that cannot be
+     * Restores the newest snapshot in a store on start, before anything is dispatched, once a replay shows the log
+     * holds its cut (doc/snapshot.md §7). Call before start; restoreFailure() reports a snapshot that cannot be
      * restored.
      *
-     * @param sourceId the source whose snapshot to restore
-     * @param store    this instance's own snapshots; must outlive this receiver
-     * @param handler  takes the snapshot's records; must outlive this receiver
+     * @param store   this instance's own snapshots; must outlive this receiver
+     * @param handler takes the snapshot's records; must outlive this receiver
      */
-    void restoreFrom(const std::int32_t sourceId, SnapshotStore& store, SnapshotRestoreHandler& handler)
+    void restoreFrom(SnapshotStore& store, SnapshotRestoreHandler& handler)
     {
-        m_recovery.restoreFrom(sourceId, store, handler);
+        m_recovery.restoreFrom(store, handler);
     }
 
     /**
@@ -226,13 +224,6 @@ class ReplayerStreamReceiver final : private detail::ReplayerRecoveryActions
         return m_recovery.currentLeaderMemberId();
     }
 
-    // Starts recovery over as a cold start, restoring the snapshot given to restoreFrom again: a passive gateway
-    // instance's activation. Every frame after the restored cut is dispatched once more.
-    void restart()
-    {
-        m_recovery.restart();
-    }
-
     // Why the snapshot given to restoreFrom cannot be restored, or empty. Latched: recovery has stopped.
     const std::optional<std::string>& restoreFailure() const
     {
@@ -257,22 +248,6 @@ class ReplayerStreamReceiver final : private detail::ReplayerRecoveryActions
             static_cast<aeron::util::index_t>(sbe::replay::MessageHeader::encodedLength() + enc.encodedLength());
         aeron::concurrent::AtomicBuffer ab(buf.data(), buf.size());
         m_requestPub->offer(ab, 0, len); // result deliberately discarded — see ReplayerRecovery::requestReplay
-    }
-
-    void sendSnapshotQuery(const std::int64_t requestId, const std::int32_t sourceId, const std::int64_t round) override
-    {
-        if (!m_requestPub || !m_requestPub->isConnected())
-        {
-            return;
-        }
-        alignas(16) std::array<std::uint8_t, REQUEST_BUFFER_LENGTH> buf{};
-        sbe::replay::SnapshotQuery enc;
-        enc.wrapAndApplyHeader(reinterpret_cast<char*>(buf.data()), 0, buf.size());
-        enc.clientId(m_replyId).requestId(requestId).sourceId(sourceId).round(round);
-        const auto len =
-            static_cast<aeron::util::index_t>(sbe::replay::MessageHeader::encodedLength() + enc.encodedLength());
-        aeron::concurrent::AtomicBuffer ab(buf.data(), buf.size());
-        m_requestPub->offer(ab, 0, len);
     }
 
     // Subscribes to exactly one replay, this one, and to nothing on the replay stream otherwise. A standing

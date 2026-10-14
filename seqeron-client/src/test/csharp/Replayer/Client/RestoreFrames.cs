@@ -7,10 +7,8 @@ using Replay = Org.Limitless.Seqeron.Sbe.Replay;
 
 namespace Org.Limitless.Seqeron.Replayer.Client;
 
-/// <summary>
-/// A snapshot as a restore meets it (doc/snapshot.md §5, §7): the instance's own file, the round's frames, and the
-/// Replayer's answer confirming it.
-/// </summary>
+/// <summary>A snapshot as a restore meets it (doc/snapshot.md §7): the instance's own file and the round's
+/// frames.</summary>
 internal static class RestoreFrames
 {
     /// <summary>What a <c>SnapshotEnd</c> says of a snapshot's records.</summary>
@@ -32,6 +30,17 @@ internal static class RestoreFrames
     public static byte[] Started(long globalSeqNo, long round)
     {
         return Frames.SnapshotStarted(globalSeqNo, round);
+    }
+
+    /// <summary>A <c>SnapshotStarted</c> stamped <paramref name="timestampNs"/>: another log's, when it is not the
+    /// file's.</summary>
+    public static byte[] Started(long globalSeqNo, long round, long timestampNs)
+    {
+        byte[] bytes = Frames.SnapshotStarted(globalSeqNo, round);
+        var header = new Frame.SequencedSystemHeader();
+        header.Wrap(new DirectBuffer(bytes), Frame.MessageHeader.Size, Frame.MessageHeader.SbeSchemaVersion);
+        header.Timestamp = timestampNs;
+        return bytes;
     }
 
     /// <summary>The end the records <paramref name="records"/> match.</summary>
@@ -61,18 +70,21 @@ internal static class RestoreFrames
         return bytes[..(Frame.MessageHeader.Size + frame.Size)];
     }
 
-    /// <summary>Writes <paramref name="records"/> as round <paramref name="round"/>'s file, as the instance did when
-    /// it serialized them.</summary>
-    public static void Write(SnapshotStore store, long round, int formatVersion, params byte[][] records)
+    /// <summary>Writes <paramref name="records"/> as round <paramref name="round"/>'s file and confirms it, as the
+    /// instance did when it serialized them and the log's end agreed. The cut's timestamp is
+    /// <see cref="Frames.Timestamp"/>, as every frame's here.</summary>
+    public static void Write(SnapshotStore store, long round, long cutGlobalSeqNo, long cutPosition, int formatVersion,
+                             params byte[][] records)
     {
         Digest digest = Digest.Of(records);
-        store.Begin(round);
+        store.Begin(round, cutGlobalSeqNo, cutPosition, Frames.Timestamp);
         foreach (byte[] record in records)
         {
             using var buffer = new UnsafeBuffer(record);
             store.Append(buffer, 0, record.Length);
         }
         store.Commit(digest.RecordCount, digest.Length, digest.Crc32C, formatVersion);
+        store.Confirm(round);
         store.AwaitWrites();
     }
 
@@ -90,26 +102,6 @@ internal static class RestoreFrames
     public static byte[] Record(long value)
     {
         return BitConverter.GetBytes(value);
-    }
-
-    /// <summary>The Replayer's answer: round <paramref name="round"/>'s cut and sequenced end, or none for round
-    /// -1.</summary>
-    public static byte[] Location(long clientId, long requestId, long round, long asOfGlobalSeqNo, long asOfPosition,
-                                  long formatVersion, Digest end)
-    {
-        var bytes = new byte[Replay.MessageHeader.Size + Replay.SnapshotLocation.BlockLength];
-        var encoder = new Replay.SnapshotLocation();
-        encoder.WrapForEncodeAndApplyHeader(new DirectBuffer(bytes), 0, new Replay.MessageHeader());
-        encoder.ClientId = clientId;
-        encoder.RequestId = requestId;
-        encoder.Round = round;
-        encoder.AsOfGlobalSeqNo = asOfGlobalSeqNo;
-        encoder.AsOfPosition = asOfPosition;
-        encoder.FormatVersion = (uint)formatVersion;
-        encoder.RecordCount = end.RecordCount;
-        encoder.Length = end.Length;
-        encoder.Crc32c = end.Crc32C;
-        return bytes;
     }
 }
 

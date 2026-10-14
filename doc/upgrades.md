@@ -180,7 +180,7 @@ The Replayer server is the wrong place, for four reasons:
 - **It never sees live messages.** Clients read the live tap directly; the Replayer serves history only.
 - **It never touches the bytes.** A replay is an Aeron Archive replay to the client. Translating would mean
   reading and republishing every message, on the one thread that serves every client on the node.
-- **Translation changes lengths, and positions with them.** Gap resume, snapshot restore at `asOfPosition`
+- **Translation changes lengths, and positions with them.** Gap resume, snapshot restore at a file's `cutPosition`
   and `Payload.position()` all depend on recording positions.
 - **It couples applications to the cluster.** The Replayer would need every application's schemas, so
   every application release would redeploy the members.
@@ -355,7 +355,7 @@ publishing replies in v1; `N` is the new one, publishing them in v2.
 | a source restoring another source's snapshot | proposed (§7.2 step 1) |
 | a reply comparator | proposed (§7.2 step 2) |
 | a cutover marker convention | proposed (§7.2 step 3): application-level; a system event for it could join the next schema 210 change, which purges anyway (spec **V-3**) |
-| retiring a source | proposed: nothing deregisters one. Its ends stay in each Replayer's index, and a snapshot server ([`snapshot.md`](snapshot.md) §11.4) keeps its last two confirmed rounds, since no newer round supersedes them |
+| retiring a source | proposed: nothing deregisters one. Each instance's directory keeps its last confirmed file, and a snapshot server ([`snapshot.md`](snapshot.md) §11.4) its last two confirmed rounds, since no newer round supersedes them |
 | knowing that nothing reads v1 | proposed: a `consumes` attribute on topology rows, a label like the others, would let a tool check that a retirement is safe |
 | compatibility rules for application protocols in the spec | not specified |
 

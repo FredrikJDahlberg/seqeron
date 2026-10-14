@@ -37,7 +37,6 @@ public sealed class ReplayerStreamReceiver : IDisposable
 
     private readonly Replay.MessageHeader _requestHeader = new Replay.MessageHeader();
     private readonly Replay.ReplayRequest _replayRequest = new Replay.ReplayRequest();
-    private readonly Replay.SnapshotQuery _snapshotQuery = new Replay.SnapshotQuery();
     private readonly UnsafeBuffer _requestBuffer = new UnsafeBuffer(GC.AllocateArray<byte>(RequestBufferLength, true));
     private readonly SbeBuffer _requestView = new SbeBuffer();
 
@@ -79,15 +78,14 @@ public sealed class ReplayerStreamReceiver : IDisposable
         SbeBuffers.Wrap(_requestView, _requestBuffer, 0, RequestBufferLength);
     }
 
-    /// <summary>Restores <paramref name="sourceId"/>'s newest snapshot in <paramref name="store"/> that the log
-    /// confirms on <see cref="Start"/>, before anything is dispatched (doc/snapshot.md §7). Call before
-    /// <see cref="Start"/>; <see cref="RestoreFailure"/> reports a snapshot that cannot be restored.</summary>
-    /// <param name="sourceId">the source whose snapshot to restore</param>
+    /// <summary>Restores the newest snapshot in <paramref name="store"/> on <see cref="Start"/>, before anything is
+    /// dispatched, once a replay shows the log holds its cut (doc/snapshot.md §7). Call before <see cref="Start"/>;
+    /// <see cref="RestoreFailure"/> reports a snapshot that cannot be restored.</summary>
     /// <param name="store">this instance's snapshot files</param>
     /// <param name="handler">takes the restored records</param>
-    public void RestoreFrom(int sourceId, SnapshotStore store, ISnapshotRestoreHandler handler)
+    public void RestoreFrom(SnapshotStore store, ISnapshotRestoreHandler handler)
     {
-        _recovery.RestoreFrom(sourceId, store, handler);
+        _recovery.RestoreFrom(store, handler);
     }
 
     /// <summary>Subscribes the tap and control streams, opens the request publication and the convergence counter,
@@ -176,14 +174,6 @@ public sealed class ReplayerStreamReceiver : IDisposable
     /// seen. A replica emits iff its own node is this leader.</summary>
     public int CurrentLeaderMemberId => _recovery.CurrentLeaderMemberId;
 
-    /// <summary>Starts recovery over as a cold start, restoring the snapshot given to <see cref="RestoreFrom"/>
-    /// again: a passive gateway instance's activation. Every frame after the restored cut is dispatched once
-    /// more.</summary>
-    public void Restart()
-    {
-        _recovery.Restart();
-    }
-
     /// <summary>Why the snapshot given to <see cref="RestoreFrom"/> cannot be restored, or null. Latched: recovery
     /// has stopped.</summary>
     public string RestoreFailure => _recovery.RestoreFailure;
@@ -265,21 +255,6 @@ public sealed class ReplayerStreamReceiver : IDisposable
             request.RequestId = requestId;
             request.FromPosition = fromPosition;
             Offer(Replay.MessageHeader.Size + request.Size);
-        }
-
-        public void SendSnapshotQuery(long requestId, int sourceId, long round)
-        {
-            if (!_receiver.RequestPublicationConnected)
-            {
-                return;
-            }
-            Replay.SnapshotQuery query = _receiver._snapshotQuery;
-            query.WrapForEncodeAndApplyHeader(_receiver._requestView, 0, _receiver._requestHeader);
-            query.ClientId = _receiver._replyId;
-            query.RequestId = requestId;
-            query.SourceId = sourceId;
-            query.Round = round;
-            Offer(Replay.MessageHeader.Size + query.Size);
         }
 
         // Subscribes to exactly one replay, this one, and to nothing on the replay stream otherwise. A standing

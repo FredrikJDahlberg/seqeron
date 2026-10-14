@@ -27,18 +27,16 @@ its own (§10): a member still recovers by replaying its full log ([`fault-toler
 | the sequencer | starts rounds: synthesizes `SnapshotStarted` (§3) |
 | every instance holding a participating source's state | serializes its state at `R` into its own file (§4) |
 | the instance that may publish at `R` | submits the round's `SnapshotEnd` (§4) |
-| every instance that serialized the round | compares its own serialization with the sequenced `SnapshotEnd`, and keeps the file it confirms (§4, §8) |
-| `ReplayerService` | indexes each source's `SnapshotEnd`s by round and answers `SnapshotQuery` (§5) |
-| a restarting instance, or a passive gateway instance when activated | restores from its newest confirmed file and resumes at `R + 1` (§7) |
+| every instance that serialized the round | compares its own serialization with the sequenced `SnapshotEnd`, and keeps the file it confirms (§4, §5, §8) |
+| a restarting instance | checks on a replay that its newest confirmed file's cut is in the log, restores from it and resumes at `R + 1` (§7) |
 
 A round:
 
 ```
-operator / heartbeat    sequencer (log)              source instances                     Replayer
+operator / heartbeat    sequencer (log)              source instances
 SnapshotRequested ───►  R: SnapshotStarted ───────►  all: serialize at R into a file
 or interval elapsed     sequences the end      ◄──── publisher: SnapshotEnd
-                        SnapshotEnd ──────────────►  all: compare (A-7), keep the file
-                                    ──────────────────────────────────────────────────►  index
+                        SnapshotEnd ──────────────►  all: compare (A-7), confirm the file
 ```
 
 A snapshot is a sequence of records: the header the façade writes (§6), then the records the application
@@ -133,7 +131,8 @@ hot-standby instances of a gateway pair — handles `SnapshotStarted` the same w
    record 0, then pulls the listener's records: it calls `onSnapshot(buffer, recordIndex)` with one
    65,535-byte buffer, from index 0, until it returns 0, and each call encodes the next record of the state.
    Each record goes straight into the round's file (§4.1), and the façade keeps only their count, length
-   and running CRC. The state is the state after every frame up to `R`, and every record is pulled before
+   and running CRC. The file also records the cut: `R`, the position of its `SnapshotStarted` in the
+   recording, and that frame's consensus timestamp. The state is the state after every frame up to `R`, and every record is pulled before
    `R + 1` is dispatched, so the listener needs no frozen copy. The façade keeps its cluster session alive
    after each record, so the session timeout does not bound how long this takes.
 2. **Publish the end.** The instance that may publish at `R` submits the round's `SnapshotEnd` through
@@ -147,9 +146,8 @@ hot-standby instances of a gateway pair — handles `SnapshotStarted` the same w
    `PendingSends` has resent what the election lost (spec A-5).
 4. **Compare.** On its source's `SnapshotEnd` for the round, every instance that serialized the round
    compares `recordCount`, `length` and `crc32c` with its own (§8). On a match the round's file is
-   confirmed, and the instance deletes its files of rounds before the previous confirmed one (§4.1). On the next
-   `SnapshotStarted`, a
-   publisher that has not yet placed the previous round's end abandons it.
+   confirmed (§5). On the next `SnapshotStarted`, a publisher that has not yet placed the previous round's end
+   abandons it.
 
 The snapshot frames are the façade's; the listener sees none of them. All of this depends on every instance
 of a source serializing the same state to the same bytes (§8).
@@ -161,8 +159,8 @@ requires. A restart restores from what it holds, so it must outlive the process,
 write to it, the other instance of a gateway pair included. §11 proposes a snapshot server per host in its
 place.
 
-`<round>.snapshot` holds the records, each a little-endian uint16 length followed by its bytes, then a
-trailer:
+A round is written as `<round>.tmp`: the records, each a little-endian uint16 length followed by its
+bytes, then a trailer:
 
 | offset | field | type | value |
 | --- | --- | --- | --- |
@@ -171,73 +169,44 @@ trailer:
 | 16 | `recordCount` | int32 | |
 | 20 | `crc32c` | uint32 | |
 | 24 | `formatVersion` | uint32 | the listener's |
-| 28 | magic | uint32 | `0x50414E53`, "SNAP" |
+| 28 | `cutGlobalSeqNo` | int64 | `R` |
+| 36 | `cutPosition` | int64 | where the round's `SnapshotStarted` starts in the recording |
+| 44 | `cutTimestamp` | int64 | that frame's consensus timestamp |
+| 52 | magic | uint32 | `0x32504E53`, "SNP2" |
 
-- **Written, then made durable off the dispatch thread.** A file is written as `<round>.tmp`; a thread of
-  its own then forces it to disk, renames it and forces the directory, so dispatch never waits for the disk.
-  The next round's write waits for the previous one to finish. Windows opens no directory to force, and .NET
-  forces none on any system; there the file system's journal commits the rename before the deletions that
-  follow it. A write that fails is logged as `SnapshotStoreFailed` and leaves no file; the instance still
-  compares the round, and carries on without a copy of it.
-- **Retention.** An instance keeps its two newest confirmed files, and any newer one, whose end may not be in
-  the log yet. A newest confirmed file that is torn, or removed after a failed restore (§7), so leaves an
-  older one to restore. Older files are deleted only once the older of the two is durable, and not at all if
-  it never becomes so. A restart does not know which round it confirmed last, so its first confirmation
-  deletes nothing. A `.tmp` a crash left behind goes with the older files.
+- **Named only once confirmed.** When the instance confirms the round (§5), a thread of its own forces the
+  `.tmp` to disk, renames it `<round>.snapshot` and forces the directory, so dispatch never waits for the
+  disk. A `.snapshot` file is therefore confirmed and durable. The next round's write waits for the previous
+  confirmation to finish. Windows opens no directory to force, and .NET forces none on any system; there the
+  file system's journal commits the rename before the deletions that follow it. A write that fails is logged
+  as `SnapshotStoreFailed` and leaves no file; the instance still compares the round, and carries on without
+  a copy of it.
+- **Retention.** An instance keeps one confirmed file. Once a confirmed file is durable under its name, every
+  older file is deleted, the `.tmp` of a round whose end never came and one a crash left behind included; a
+  file that never becomes durable deletes nothing.
 - **Files are portable.** Every instance of a source writes the same bytes for a round (A-6), so a file is
   not tied to the instance that wrote it: a peer's file copied into a new host's directory spares that host
   a full replay.
 
-**Gateway instances.** An instance of a gateway pair is in one of three roles. The third is a setting of
-its façade that the log never sees.
-
-| role | holds state | at `SnapshotStarted` | when `GatewayActive` names it |
-| --- | --- | --- | --- |
-| active | yes | serializes, writes, publishes the end | — |
-| hot standby | yes | serializes, writes, compares | takes over at once |
-| passive | no | nothing | restores (§7), catches up, then takes over |
-
-A passive instance writes no snapshot. It starts by reading the header (§6) of the newest confirmed file
-its directory holds, left from when it last served, for its list row and the current `GatewayActive`, and
-follows the tap from that snapshot's `asOfPosition` for the election alone; with no file it follows from
-`globalSeqNo` 1. Its activation restores from the same file, or replays from `globalSeqNo` 1.
-
-A failover to a passive instance costs that restore and catch-up, and races the activation deadline:
-`GatewayStarted` follows only once the instance is caught up, and the sequencer promotes the next row after
-`GATEWAY_ACTIVATION_TIMEOUT_MS` (5,000 ms, spec §7.2) of consensus time. A pair whose other instance is down
-then alternates every 5 s until a restore finishes while the passive instance is named. The passive role
-suits state that catches up well inside 5 s; larger state needs a hot standby.
+**Gateway instances.** Both instances of a gateway pair hold state: the active one serializes, writes and
+publishes the end; the hot standby serializes, writes and compares, and takes over at once when
+`GatewayActive` names it. An instance that is not running is not part of the pair until it restarts, restores
+(§7) and catches up.
 
 ## 5. Confirming a snapshot
 
-A restarting instance needs to know which of its files the log confirms. Each `ReplayerService` keeps that
-answer: it follows its member's active recording through an archive replay, as `TapRelay` does, and indexes
-every source's `SnapshotEnd` by round, with where that round's `SnapshotStarted` is, both `R` and its
-position. A tap subscription would not do, since it is untethered and a dropped one misses ends.
+An instance confirms its own file. The tap carries only committed frames, so the source's sequenced
+`SnapshotEnd`, once dispatched, is in the log for good: an instance whose serialization of the round matches
+it (§4 step 4) confirms that round's file there and then, and has no one to ask later. Its file is the
+round's records as every instance of the source wrote them (A-6), so the confirmation holds for a copy of it
+on another host too (§4.1).
 
-- **The first end wins.** A source's first end of a round is the one kept.
-- **Bounded history.** An end whose round started more than four rounds before the latest
-  `SnapshotStarted`, or outside this recording, is not indexed.
-- **Rebuilt on restart**, since every run republishes the log from `globalSeqNo` 1. Every run's active
-  recording starts at `globalSeqNo` 1 and its positions follow from the frames, so a position means the same
-  on every member and in every recording that reaches it.
+What a confirmation cannot prove is that the log the instance later restores against is the one the file
+was cut from: a purged archive starts the log, and its rounds, again at 1. The restore therefore checks the
+cut against the recording before it reads a record (§7 step 3).
 
-Two messages in the replay control protocol (`sbe-replay.xml`, schema 212, spec §10) carry the question and
-the answer:
-
-| message | id | direction | fields |
-| --- | --- | --- | --- |
-| `SnapshotQuery` | 23 | client → replayer | `clientId`, `requestId`, `sourceId`, `round` |
-| `SnapshotLocation` | 24 | replayer → client | `clientId`, `requestId`, `round`, `asOfGlobalSeqNo`, `asOfPosition`, `formatVersion`, `recordCount`, `length`, `crc32c`; `round` = −1 for none |
-
-A query names the round of a file the client holds, and the answer is that round's sequenced end, or none.
-The Replayer answers from what it has indexed so far. A client that starts while its member is still
-replaying the log after a restart finds no end for its newest rounds, and falls back to an older file or to
-`globalSeqNo` 1; waiting for the member's replay to end would be an unbounded wait, which the
-recovery-stall timeout (spec §10.1) does not allow.
-
-Each `ReplayerService` exports, per source, its newest indexed round as a counter, so a source that misses
-rounds is visible ([`ops.md`](ops.md)).
+Each participating instance exports the round it last confirmed as a counter, `seqeron_app_snapshot_round`,
+0 until its process confirms one, so an instance that misses rounds is visible ([`ops.md`](ops.md)).
 
 ## 6. The snapshot header
 
@@ -273,35 +242,34 @@ A `Gateway`'s header continues:
 
 ## 7. Restore
 
-A cold start that names a `sourceId`, or a passive gateway instance's activation, restores in
-`ReplayerRecovery`, in every language:
+A cold start of an instance with a `SnapshotListener` restores in `ReplayerRecovery`, in every language:
 
-1. **Choose.** Take the newest round with a file in the snapshot directory. With none, recover from
-   `globalSeqNo` 1.
-2. **Ask.** Send `SnapshotQuery` for it, resent until answered. With no end for it, return to step 1 for an
-   older round.
-3. **Check the format.** If `formatVersion` is one this build does not support, stop.
-4. **Check the file.** If it has no trailer, or its `recordCount`, `length` or `crc32c` differ from the
-   end's, return to step 1 for an older round. A file an OS crash tore is one such; a file of a round this
-   instance diverged in, and crashed before comparing, is another.
-5. **Read the records**, at most 1,024 a duty cycle, dispatching nothing; frames arriving on the live tap
+1. **Choose.** Take the newest confirmed file in the snapshot directory. One with no trailer gives way to the
+   next older; with none, recover from `globalSeqNo` 1.
+2. **Check the format.** If `formatVersion` is one this build does not support, stop.
+3. **Check the cut.** Request a replay of the recording from the file's `cutPosition`. If its first frame is
+   the frame the file names, `globalSeqNo` `cutGlobalSeqNo` stamped `cutTimestamp`, the file is this log's:
+   close the replay and read it. If it is any other frame, or the Replayer refuses the position (spec R-2),
+   the file was cut from another log, and an older one is tried. A recording that has not reached the
+   position yet, as while its member replays the log after a restart, is answered `ReplayPending`, and the
+   check waits.
+4. **Read the records**, at most 1,024 a duty cycle, dispatching nothing; frames arriving on the live tap
    meanwhile are held, as in any recovery. Record 0 is the header: if its `headerVersion` is one this build
    does not support, stop. Otherwise it stands in for the frames before `R`. Its leader becomes the
    receiver's current leader and its term confirmed ingress's, as the last `LeadershipChanged` before `R`
    would have made them; the source takes part in rounds, as its topology row before `R` said; and a
    `Gateway`'s election state is set from it. Every later record goes to the listener's `onRestore`. Records
-   that do not match the trailer, and so the end, are a damaged file, and the instance stops.
-6. **Resume** at `asOfPosition` with `globalSeqNo` `R` as the anchor, through the ordinary resume path (spec
+   that do not match the trailer are a damaged file, and the instance stops.
+5. **Resume** at `cutPosition` with `globalSeqNo` `R` as the anchor, through the ordinary resume path (spec
    R-1, `requestResume`). The `SnapshotStarted` frame is the anchor and is dropped as a duplicate, so
    dispatch starts at `R + 1`. The instance serialized nothing for the restored round, so that round's
    `SnapshotEnd` changes nothing.
-7. **Go live**, switching to the tap as any resume does.
+6. **Go live**, switching to the tap as any resume does.
 
 An instance that stops is fenced with `SNAPSHOT_UNRESTORABLE`, and a damaged file stays for the operator to
 remove ([`ops.md`](ops.md)). After a restore, every fallback that would walk the recording from its start
-resumes at the restored snapshot's `asOfPosition` instead, where the first frame is `R`, and drops every
-frame up to the last one dispatched. Only a passive gateway instance's activation repeats a completed
-restore, starting over at step 1.
+resumes at the restored snapshot's `cutPosition` instead, where the first frame is `R`, and drops every
+frame up to the last one dispatched.
 
 A consumer that publishes nothing has no snapshot of its own. It may restore from source *X*'s files only if
 it runs *X*'s state machine.
@@ -315,13 +283,13 @@ The scheme is sound only if every instance of a source agrees. Two of spec §16'
 - **A-7. A divergent instance stops.** An instance whose own `recordCount`, `length` or `crc32c` for a round
   differs from its source's sequenced `SnapshotEnd` stops, fenced with `SNAPSHOT_DIVERGED`. The sequenced
   end is the reference: a publisher that diverged has broken A-6, and nothing recovers from that. Its file of
-  the round is never restored, since it does not match the end (§7 step 4).
+  the round is never confirmed, so never restored (§5).
 
 ## 9. Versioning
 
 Every instance of a source runs the same build, and so writes the same `formatVersion`. A format change is
 therefore a coordinated upgrade of every instance, and the restore stops on a format its build does not
-support (§7 step 3). Protocol upgrades that change a source's format while it runs are not designed yet;
+support (§7 step 2). Protocol upgrades that change a source's format while it runs are not designed yet;
 they will build on snapshots, and the field and the stop are already in place, so that design needs no
 change to schema 210 (spec V-3). [`upgrades.md`](upgrades.md) proposes one.
 
@@ -334,7 +302,7 @@ to any client; §10.6 truncates history, a separate step that does change them; 
 which Aeron does not do.
 
 **What the member's replay is for.** It rebuilds two things: the `Sequencer`'s state, and the member's tap
-recording, which the Replayer serves and §5 indexes. An Aeron cluster snapshot replaces the first. The second
+recording, which the Replayer serves. An Aeron cluster snapshot replaces the first. The second
 is history, which a snapshot cannot regenerate, so the recording outlives the restart and is extended.
 
 ### 10.1 Rules
@@ -375,26 +343,15 @@ is history, which a snapshot cannot regenerate, so the recording outlives the re
 | **extend** | The tap publication takes the recording's own parameters from its descriptor, not the driver's defaults: `init-term-id`, `term-length` and `mtu`, and the `term-id` and `term-offset` of its stop position (`ChannelUriStringBuilder.initialPosition`). The archive extends it with `extendRecording`, so its positions run on unchanged even if the node's IPC term length or MTU has been changed since the recording began. |
 | **emit** | While the log replays, nothing numbered at or below the tip is offered, synthesized frames included. |
 | **live** | As today: a recording that stops exits the member with 70 (`TapPublisher`). |
-| **a gateway host** | As today: its relay starts a new recording from `globalSeqNo` 1, and its Replayer rebuilds its index. |
+| **a gateway host** | As today: its relay starts a new recording from `globalSeqNo` 1. |
 
 The decision is a pure class over `G_tip`, `G_snap`, whether a recording exists and whether a peer answers,
 unit-tested as `TapRelay` is.
 
 ### 10.4 The Replayer
 
-The Replayer holds no replicated state, so the cluster snapshot has nothing of it. With the recording kept,
-its one cost that grows with uptime is §5's index, rebuilt from the recording's start; a checkpoint bounds it.
-
-| | |
-| --- | --- |
-| **contents** | The index's ends by round and its starts of the last four rounds, the recording id, and the position the index has read to, `C`. |
-| **storage** | A `SnapshotStore` (§4.1) in the archive directory, keeping the newest. |
-| **when** | Once the index has read `X` bytes past the last checkpoint, and at shutdown, so a restart rescans about as long as the log replays. |
-| **valid** | If its recording id is the active recording's and `C` is at or before that recording's verified end. Otherwise the index is rebuilt from the start. |
-| **retention** | The newest 256 rounds per source. An instance down for more than 256 rounds, 256 × `interval` (§1), finds no end for its file and replays from `globalSeqNo` 1. |
-| **failure** | Logged, never fatal: a lost checkpoint costs a rebuild. |
-
-While it rescans, a client finds no end for the newest rounds and falls back, as §5 describes.
+The Replayer holds no replicated state, so the cluster snapshot has nothing of it, and it keeps no index of
+snapshots (§5): with the recording kept, nothing of it grows with uptime.
 
 ### 10.5 A member's start
 
@@ -402,10 +359,9 @@ While it rescans, a client finds no end for the newest rounds and falls back, as
 2. **Sequencer.** `onStart` restores the snapshot, which gives `G_snap`.
 3. **Tap.** Extend the recording, copying from a peer first if it is behind, or exit with 70.
 4. **Sequencer.** The log replays from the snapshot, emitting nothing up to the tip, and sequencing goes live.
-5. **Replayer.** After step 3, load the checkpoint if it is valid and read on from `C`; then the integrity
-   check, and ready.
+5. **Replayer.** After step 3, the integrity check, and ready.
 
-Step 5 waits for step 3: a checkpoint read before the tail is verified could lie in what step 1 cuts off.
+Step 5 waits for step 3: a replay served before the tail is verified could include what step 1 cuts off.
 
 ### 10.6 Truncating history
 
@@ -414,12 +370,13 @@ of the walk from `globalSeqNo` 1.
 
 - **The floor.** History is kept from the **floor** `F`: the cut of the oldest round a client may still
   restore. The `Sequencer` keeps those rounds' cuts and its snapshot carries them, so every member computes
-  the same `F`. `F` is the cut of the round 255 before the latest, so every round the index keeps (§10.4)
-  is restorable. With no round yet, `F` is `globalSeqNo` 1 and nothing is truncated.
-- **Per member, anchored on `globalSeqNo`.** Each member finds `F`'s position in its own recording through
-  the Replayer's index, rounds it down to a segment boundary and purges the segments below. The recording
-  is the same one, so every position is unchanged: §5's `asOfPosition`, a client's resume and `TapRelay`'s
-  resume keep working. Recordings left from earlier starts are deleted.
+  the same `F`. `F` is the cut of the round 255 before the latest, so an instance down for fewer than 256
+  rounds, 256 × `interval` (§1), can still restore its file. With no round yet, `F` is `globalSeqNo` 1 and
+  nothing is truncated.
+- **Per member, anchored on `globalSeqNo`.** Each member finds `F`'s position in its own recording, where
+  `F`'s `SnapshotStarted` is, rounds it down to a segment boundary and purges the segments below. The
+  recording is the same one, so every position is unchanged: a file's `cutPosition` (§4.1), a client's resume
+  and `TapRelay`'s resume keep working. Recordings left from earlier starts are deleted.
 - **The integrity check** requires the recording's first frame to be at or before `F`. A gateway host's
   relay starts its recording at `F`.
 - **The Raft log** below the older of the two cluster snapshots kept (§10.2) is trimmed by `clusterctl
@@ -430,12 +387,10 @@ What changes for clients:
 - A client with no confirmed file, or one whose newest confirmed round is older than `F`, needs history the
   member no longer has. The Replayer refuses its walk, and the client is fenced rather than started
   mid-history: today it takes whatever frame comes first. A consumer that holds no state, a follower of the
-  live stream, may opt to start at `F` instead.
-- A `SnapshotQuery` answered while the Replayer is still indexing would send the client to a walk that is
-  now refused. The Replayer answers "not yet" until the index has reached the recording's tip, and the
-  client asks again (schema 212).
-- An instance with no file — a new host, a lost disk, a passive instance that never served — restores
-  from a peer's file (§4.1); with none, it is fenced.
+  live stream, may opt to start at `F` instead. A file older than `F` fails the cut check (§7 step 3), since
+  its position is below the recording's start, and leads to the same walk.
+- An instance with no file — a new host, a lost disk — restores from a peer's file (§4.1); with none, it is
+  fenced.
 
 A new member or a lost disk takes the cluster snapshot and the Raft log from Aeron's `ClusterBackup`, which
 replicates both from a running cluster. It copies no tap, which is not in the cluster's recording log, so the
@@ -463,7 +418,9 @@ to be implemented, run on each member. It does what that policy does, with the c
 
 Each instance keeps its snapshots in a directory of its own (§4.1), and an instance with no file replays
 from `globalSeqNo` 1. This section is the proposed design that replaces the directory
-with a snapshot server per host; none of it is implemented.
+with a snapshot server per host; none of it is implemented. It was written when each Replayer confirmed
+snapshots from an index of the log's ends: how the server learns that an instance confirmed a round (§5) is
+open, and §11.2, §11.4 and §11.5 are to be revised for it before any of this is built.
 
 What it changes: a damaged snapshot falls back to an older round rather than stopping the instance, and a host with no snapshot of a source fetches one from a
 peer. Storage leaves the client tier. The façades stream records to the server and read them back, in
@@ -569,7 +526,7 @@ A server fetches a round it has no confirmed recording of, for a source a client
 
 - **in the background**, when the Replayer indexes the source's newest round and no local recording of it
   is confirmed within `SNAPSHOT_FETCH_DELAY_MS` (proposed 5,000): a write that failed, an instance that was
-  down at the cut, a passive gateway instance;
+  down at the cut;
 - **on a `SnapshotFetch`** it has nothing confirmed for, before answering.
 
 Its peers are the member hosts' servers, from `SEQERON_HOSTS` and the port above, and those named in
@@ -585,33 +542,29 @@ member's archive does to a gateway host's relay.
 
 ### 11.6 Restore
 
-§7 steps 1 to 4 become one request:
+§7 steps 1 to 3 become one request:
 
 1. **Ask.** The client sends `SnapshotFetch` for its source, resent until answered. The server takes its
    newest confirmed round and reads the whole recording once, fragment checksums on and the records checked
    against the trailer. A recording that fails is purged and counted, and the next older confirmed round is
    tried. With none, after a fetch (§11.5), it answers `round` −1 and the client walks from `globalSeqNo` 1.
-2. **Check the format**, as §7 step 3.
-3. **Read the records** from the replay on stream 212 named by `replaySessionId`, as §7 step 5. A replay
+2. **Check the format**, as §7 step 2.
+3. **Read the records** from the replay on stream 212 named by `replaySessionId`, as §7 step 4. A replay
    that ends early, because the server stopped, fences the instance with `SNAPSHOT_UNRESTORABLE`, since the
    listener holds part of the state; unlike a damaged file, a restart retries it with nothing to remove.
-4. **Resume** and **go live**, as §7 steps 6 and 7.
+4. **Resume** and **go live**, as §7 steps 5 and 6.
 
 A server that does not answer holds the restore under the recovery-stall timeout (spec §10.1), after which
 the instance is fenced, as for an unavailable Replayer. A walk from `globalSeqNo` 1 would be correct, but
 can take far longer than a gateway's activation deadline.
-
-A passive gateway instance sends `SnapshotFetch` at start, reads record 0 for the election and closes the
-replay; its activation restores in full. Since the server fetches from peers, it needs no snapshot of its
-own from an earlier tenure.
 
 ### 11.7 What changes elsewhere
 
 | where | change |
 | --- | --- |
 | §4 step 1, §4.1 | records go to the server; `snapshotDirectory` and `SnapshotStore`'s files go, in every language |
-| §5 | unchanged; the server is the Replayer's `SnapshotQuery` client |
-| §7 | steps 1 to 4 as §11.6 |
+| §5 | the server learns of a confirmed round (open, above) |
+| §7 | steps 1 to 3 as §11.6 |
 | §10.6 | an instance with no snapshot fetches one through its server (§11.5) |
 | §12 | "No file means a full replay" goes; a process and an archive per host, and a UDP port per member host, are added |
 | spec §10 | the three messages and streams 208 to 212 |
@@ -627,21 +580,23 @@ own from an earlier tenure.
   into the page cache. A host that cannot hold the file's dirty pages writes at disk speed. The cluster
   session stays alive meanwhile, but the tap does not wait, so a pause long enough to drop the subscriber
   heals through replay.
-- **Disk** holds up to three files per serializing instance: its two newest confirmed rounds and any newer
-  one, and one more after a restart until its second confirmation.
+- **Disk** holds up to three files per serializing instance: its confirmed round, the round being written,
+  and one whose end never came, until the next confirmation deletes it.
+- **A crash costs at most a round.** A file is confirmed only when the instance dispatches its round's end, so
+  one written by an instance that stopped before then is never restored, and the restart restores the round
+  before it.
 - **A round can be missed.** A source whose publisher changes before its end is placed has no end for that
   round, and its instances keep their previous confirmed file. So does one whose cut falls after a
   leadership change but before the new leader's replica has caught up and reopened its gate, or after a
   `GatewayActive` but before the instance it names has placed its `GatewayStarted`.
 - **Catching up costs files.** A replica catching up through old rounds serializes and writes a file at
   each `SnapshotStarted` it passes.
-- **No file means a full replay**: a new host, a lost disk, a passive gateway instance that never served.
+- **No file means a full replay**: a new host, a lost disk, a purged log (§7 step 3).
   A peer's file spares it that (§4.1). The server proposed in §11 fetches one.
 - **Durability is paid off the dispatch thread.** Forcing a file to disk takes milliseconds on local SSDs
   and up to about a hundred on network block storage, on the store's own thread. An OS crash before the
   newest file is durable leaves the previous confirmed one, which is deleted only after it.
-- **The Replayer's index** is rebuilt by reading the whole recording on restart, and keeps every round's end
-  of every source.
+- **A restore costs a replay round trip** before its first record: the check of the cut (§7 step 3).
 
 ## 13. Tests
 
@@ -652,17 +607,16 @@ Unit tests, in every language that has the code:
 | the header, the CRC | `SnapshotFormatTest` |
 | rounds and their triggers | `SequencerTest`, `ConformanceTest` |
 | the topology document's rules and publish order | `TopologyDocumentTest` |
-| the index and `SnapshotQuery` | `SnapshotIndexTest`, `ReplayerServiceTest` |
-| the file: its trailer, a torn or damaged one, retention; a golden trailer shared across the languages | `SnapshotStoreTest` |
-| serialization, the end, abandoning, the comparison, retention | `SnapshotTakerTest` |
+| the file: its trailer and cut, confirmation, a torn or damaged one, retention; a golden trailer shared across the languages | `SnapshotStoreTest` |
+| serialization, the end, abandoning, the comparison and confirmation | `SnapshotTakerTest` |
 | a gateway's election state in the header | `GatewayLifecycleTest` |
-| the restore, its fallbacks to older files and to a walk, and a restart | `ReplayerRecoveryTest`, case for case across the languages |
-| restored state plus the tail equals a full replay, under random replay faults and unconfirmed files | `ReplayerRecoveryPropertyTest` |
+| the restore, the check of its cut, its fallbacks to older files and to a walk | `ReplayerRecoveryTest`, case for case across the languages |
+| restored state plus the tail equals a full replay, under random replay faults and a file of another log | `ReplayerRecoveryPropertyTest` |
 
 `snapshot-test.sh` runs the `TestGateway` pair and a `TestApplication` replica per member on a three-member
 cluster, each instance with its own directory kept across its restarts. It drives the pair through
-restores, a failover onto a restored instance, and a passive activation from the file the instance kept
-while it served; then a round started by `clusterctl request-snapshot`, a follower's replica restarting, and
+restores, a failover onto a restored instance, and the killed instance's return, restoring from the file it
+confirmed while it served; then a round started by `clusterctl request-snapshot`, a follower's replica restarting, and
 a leader kill, after which the new leader's replica publishes rounds and the killed member's clients
 restore. It checks each restored state against the client traffic, and every later round against it (A-7).
 

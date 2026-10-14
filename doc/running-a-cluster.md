@@ -25,11 +25,9 @@ and is unit-tested directly. `SequencerService` is its Aeron adapter and holds n
 own. Every member publishes every sequenced frame on a node-local tap (`aeron:ipc`, stream 205), which its
 archive records.
 
-The Replayer serves that recording to the clients on its host, for a cold start or a gap, and is the only
-component that reads the archive. It also indexes every source's `SnapshotEnd` by round, which is how a
-restarting client learns which of its snapshot files the log confirms. Its decisions are pure classes
-(`Replayer`, `ReplaySlotAllocator`, `SnapshotIndex`); `AeronReplayer` is the
-only part that touches Aeron. On a gateway host the relay (`TapRelay`, `AeronTapRelay`) copies a member's
+The Replayer serves that recording to the clients on its host, for a cold start, a gap or the check of a
+snapshot's cut, and is the only component that reads the archive. Its decisions are pure classes
+(`Replayer`, `ReplaySlotAllocator`); `AeronReplayer` is the only part that touches Aeron. On a gateway host the relay (`TapRelay`, `AeronTapRelay`) copies a member's
 tap over UDP and moves to the next member when that one is lost
 ([`fault-tolerance.md`](fault-tolerance.md#33-gateway-host)).
 

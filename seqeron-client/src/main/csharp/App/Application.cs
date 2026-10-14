@@ -61,12 +61,14 @@ public sealed class Application : IDisposable
     private readonly SnapshotFrames _snapshotFrames;
     private readonly int _sourceId;
     private readonly int _memberId;
+    private readonly int _clientId;
     private readonly bool _offCluster;
     private readonly long _ipcConnectTimeoutMs;
     private readonly string _egressChannel;
     private readonly string _ingressEndpoints;
     private readonly byte[] _staging = GC.AllocateArray<byte>(FrameLayer.MaxPayloadLength, true);
     private readonly UnsafeBuffer _stagingBuffer;
+    private Counter _snapshotRoundCounter;
 
     /// <summary>A replica configured by <paramref name="options"/>; nothing is connected until
     /// <see cref="Start"/>.</summary>
@@ -84,6 +86,7 @@ public sealed class Application : IDisposable
         _listener = options.Listener;
         _sourceId = options.SourceId;
         _memberId = options.MemberId;
+        _clientId = options.ClientId;
         _offCluster = options.OffCluster;
         _ipcConnectTimeoutMs = options.IpcConnectTimeoutMs;
         _egressChannel = options.EgressChannel;
@@ -91,13 +94,13 @@ public sealed class Application : IDisposable
         _stagingBuffer = new UnsafeBuffer(_staging);
         _gate = new LeaderGate(options.MemberId, options.OffCluster);
         SnapshotStore store = options.SnapshotListener == null ? null : new SnapshotStore(options.SnapshotDirectory);
-        _snapshots = new SnapshotTaker(options.SnapshotListener, store, false, KeepAlive);
+        _snapshots = new SnapshotTaker(options.SnapshotListener, store, KeepAlive);
         _session = new Session(options.ClientId, options.PendingCapacity, options.TapStallTimeoutMs,
                                options.RecoveryStallTimeoutMs, new SessionDispatch(this));
         _snapshotFrames = new SnapshotFrames(_session, () => _sourceId);
         if (store != null)
         {
-            _session.RestoreFrom(_sourceId, store, _snapshots);
+            _session.RestoreFrom(store, _snapshots);
         }
     }
 
@@ -113,6 +116,13 @@ public sealed class Application : IDisposable
         {
             _session.StartColocated(aeron, _memberId, _ipcConnectTimeoutMs, _egressChannel, _ingressEndpoints);
         }
+        if (_snapshots.IsListening)
+        {
+            _snapshotRoundCounter = SeqeronCounters.AddAppCounter(
+                aeron, SeqeronCounters.AppSnapshotRoundTypeId,
+                $"seqeron.app.snapshotRound source={_sourceId} member={_memberId} client={_clientId}", _memberId,
+                _clientId);
+        }
     }
 
     /// <summary>One duty-cycle iteration: the cluster session and the tap, then the gate over what they
@@ -121,6 +131,7 @@ public sealed class Application : IDisposable
     public int DoWork()
     {
         int work = _session.DoWork();
+        _snapshotRoundCounter?.Set(_snapshots.ConfirmedRound);
         if (_session.IsFenced)
         {
             return work;
@@ -194,6 +205,8 @@ public sealed class Application : IDisposable
     public void Dispose()
     {
         _session.Dispose();
+        _snapshotRoundCounter?.Dispose();
+        _snapshotRoundCounter = null;
     }
 
     internal static void Require(object value, string name)
@@ -265,7 +278,8 @@ public sealed class Application : IDisposable
                     _started.WrapForDecode(_view, 0, Frame.SnapshotStarted.BlockLength,
                                            Frame.SnapshotStarted.SchemaVersion);
                     _app._snapshots.OnSnapshotStarted(
-                        _started.Round,
+                        _started.Round, sequencedEvent.GlobalSeqNo, sequencedEvent.Position,
+                        sequencedEvent.ClusterTimestampNs,
                         new SnapshotHeader(_app._session.LeadershipTermId, _app._session.CurrentLeaderMemberId, null),
                         _app._gate.IsOpen);
                     break;

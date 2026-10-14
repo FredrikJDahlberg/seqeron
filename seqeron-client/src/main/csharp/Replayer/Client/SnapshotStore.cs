@@ -12,30 +12,34 @@ using Org.Limitless.Seqeron.Util;
 namespace Org.Limitless.Seqeron.Replayer.Client;
 
 /// <summary>
-/// This instance's own snapshots, one file per round in a directory no other instance writes (doc/snapshot.md
-/// §4). <c>&lt;round&gt;.snapshot</c> holds the records, each a little-endian uint16 length and its bytes, record 0
-/// the façade's header, then a trailer:
+/// This instance's own snapshots, in a directory no other instance writes (doc/snapshot.md §4.1). A round is written
+/// as <c>&lt;round&gt;.tmp</c>: the records, each a little-endian uint16 length and its bytes, record 0 the façade's
+/// header, then a trailer:
 /// <code>
-///  0  round          int64
-///  8  length         int64    the records' bytes, as SnapshotEnd.length
-/// 16  recordCount    int32
-/// 20  crc32c         uint32
-/// 24  formatVersion  uint32
-/// 28  magic          uint32   Magic
+///  0  round           int64
+///  8  length          int64    the records' bytes, as SnapshotEnd.length
+/// 16  recordCount     int32
+/// 20  crc32c          uint32
+/// 24  formatVersion   uint32
+/// 28  cutGlobalSeqNo  int64    the round's SnapshotStarted
+/// 36  cutPosition     int64    where that frame starts in the recording
+/// 44  cutTimestamp    int64    its consensus timestamp
+/// 52  magic           uint32   Magic
 /// </code>
-/// A file is written as <c>&lt;round&gt;.tmp</c>, then forced to disk and renamed on a thread of its own, so the
-/// caller does not wait for the disk. .NET forces no directory; a journaling file system commits the rename before
-/// the deletions that follow it. A write that fails leaves no file and is logged. Not thread-safe: one thread calls
-/// it, and only its file work runs on the other. <c>SnapshotStore.java</c> and <c>SnapshotStore.hpp</c> are its
-/// twins; keep the three in step.
+/// Once the log confirms the round, a thread of its own forces the file to disk, renames it
+/// <c>&lt;round&gt;.snapshot</c> and deletes every older file, so the caller does not wait for the disk: a
+/// <c>.snapshot</c> file is confirmed and durable, and the store keeps one. .NET forces no directory; a journaling
+/// file system commits the rename before the deletions that follow it. A write that fails leaves no file and is
+/// logged. Not thread-safe: one thread calls it, and only its file work runs on the other. <c>SnapshotStore.java</c>
+/// and <c>SnapshotStore.hpp</c> are its twins; keep the three in step.
 /// </summary>
 public sealed class SnapshotStore
 {
     /// <summary>Bytes after the records.</summary>
-    internal const int TrailerLength = 32;
+    internal const int TrailerLength = 56;
 
-    /// <summary>"SNAP", last in the file, so a file cut short has none.</summary>
-    internal const int Magic = 0x50414E53;
+    /// <summary>"SNP2", last in the file, so a file cut short has none.</summary>
+    internal const int Magic = 0x32504E53;
 
     private const string Suffix = ".snapshot";
     private const string TemporarySuffix = ".tmp";
@@ -47,12 +51,15 @@ public sealed class SnapshotStore
     private readonly string _directory;
     private FileStream _out;
     private long _writingRound;
+    private long _cutGlobalSeqNo;
+    private long _cutPosition;
+    private long _cutTimestampNs;
 
-    // What runs off the caller's thread, one step after another: making files durable and deleting them.
+    // The round whose file was last completed, which Confirm may name; -1 for none.
+    private long _committedRound = -1;
+
+    // What runs off the caller's thread, one step after another: confirming files and deleting older ones.
     private Task _writes = Task.CompletedTask;
-
-    // The newest round whose file is durable under its name. Touched by _writes alone.
-    private long _durableRound = -1;
 
     /// <summary>Opens this instance's snapshot directory.</summary>
     /// <param name="directory">this instance's own; created if missing</param>
@@ -71,13 +78,19 @@ public sealed class SnapshotStore
     }
 
     /// <summary>Starts writing a round's file, dropping any write still open, once the rounds before it are
-    /// durable.</summary>
+    /// confirmed.</summary>
     /// <param name="round">its round</param>
-    public void Begin(long round)
+    /// <param name="cutGlobalSeqNo">its SnapshotStarted's globalSeqNo</param>
+    /// <param name="cutPosition">where that frame starts in the recording</param>
+    /// <param name="cutTimestampNs">that frame's consensus timestamp</param>
+    public void Begin(long round, long cutGlobalSeqNo, long cutPosition, long cutTimestampNs)
     {
         AwaitWrites();
         Abandon();
         _writingRound = round;
+        _cutGlobalSeqNo = cutGlobalSeqNo;
+        _cutPosition = cutPosition;
+        _cutTimestampNs = cutTimestampNs;
         try
         {
             _out =
@@ -112,8 +125,7 @@ public sealed class SnapshotStore
         }
     }
 
-    /// <summary>Completes the file being written: its trailer, then, off this thread, its name once it is
-    /// durable.</summary>
+    /// <summary>Completes the file being written with its trailer, still under its temporary name.</summary>
     /// <param name="recordCount">records appended</param>
     /// <param name="length">their bytes</param>
     /// <param name="crc32c">their CRC-32C</param>
@@ -130,7 +142,10 @@ public sealed class SnapshotStore
         BinaryPrimitives.WriteInt32LittleEndian(trailer.Slice(16), recordCount);
         BinaryPrimitives.WriteUInt32LittleEndian(trailer.Slice(20), crc32c);
         BinaryPrimitives.WriteInt32LittleEndian(trailer.Slice(24), formatVersion);
-        BinaryPrimitives.WriteInt32LittleEndian(trailer.Slice(28), Magic);
+        BinaryPrimitives.WriteInt64LittleEndian(trailer.Slice(28), _cutGlobalSeqNo);
+        BinaryPrimitives.WriteInt64LittleEndian(trailer.Slice(36), _cutPosition);
+        BinaryPrimitives.WriteInt64LittleEndian(trailer.Slice(44), _cutTimestampNs);
+        BinaryPrimitives.WriteInt32LittleEndian(trailer.Slice(52), Magic);
         try
         {
             _out.Write(trailer);
@@ -142,13 +157,13 @@ public sealed class SnapshotStore
             FailWrite(ex);
             return;
         }
-        long round = _writingRound;
-        AfterWrites(() => MakeDurable(round));
+        _committedRound = _writingRound;
     }
 
     /// <summary>Drops the write in progress, if any.</summary>
     public void Abandon()
     {
+        _committedRound = -1;
         if (_out == null)
         {
             return;
@@ -168,26 +183,32 @@ public sealed class SnapshotStore
         }
         catch (Exception ex) when (IsIoFailure(ex))
         {
-            // A leftover goes with the next DeleteBefore.
+            // A leftover goes with the next confirmation.
         }
     }
 
-    /// <summary>Deletes the file of every round before <paramref name="round"/>, and any write of one a crash left
-    /// behind, off this thread once <paramref name="round"/>'s file is durable; if it never is, nothing.</summary>
-    /// <param name="round">the oldest round to keep, one this store committed</param>
-    public void DeleteBefore(long round)
+    /// <summary>The log confirms <paramref name="round"/>: off this thread, its file is made durable under its name,
+    /// and every older file, and any write of one a crash left behind, is deleted. Nothing if its file was not
+    /// completed.</summary>
+    /// <param name="round">the round last committed</param>
+    public void Confirm(long round)
     {
-        AfterWrites(() => DeleteFiles(round));
+        if (round != _committedRound)
+        {
+            return;
+        }
+        _committedRound = -1;
+        AfterWrites(() => ConfirmFile(round));
     }
 
-    /// <summary>Waits until the rounds committed so far are durable, or failed, and the deletions asked for are
-    /// done.</summary>
+    /// <summary>Waits until the rounds confirmed so far are durable, or failed, and the files they replace
+    /// deleted.</summary>
     public void AwaitWrites()
     {
         _writes.Wait();
     }
 
-    /// <summary>The newest round below <paramref name="belowRound"/> with a complete file, or -1.</summary>
+    /// <summary>The newest round below <paramref name="belowRound"/> with a confirmed file, or -1.</summary>
     /// <param name="belowRound"><see cref="long.MaxValue"/> for the newest of all</param>
     public long LatestRound(long belowRound)
     {
@@ -232,7 +253,7 @@ public sealed class SnapshotStore
             input.Seek(size - TrailerLength, SeekOrigin.Begin);
             // A short read is a file cut short underneath.
             if (input.ReadAtLeast(trailer, TrailerLength, false) != TrailerLength ||
-                BinaryPrimitives.ReadInt32LittleEndian(trailer.Slice(28)) != Magic ||
+                BinaryPrimitives.ReadInt32LittleEndian(trailer.Slice(52)) != Magic ||
                 BinaryPrimitives.ReadInt64LittleEndian(trailer) != round)
             {
                 input.Dispose();
@@ -242,7 +263,10 @@ public sealed class SnapshotStore
             return new Reader(input, size - TrailerLength, BinaryPrimitives.ReadInt32LittleEndian(trailer.Slice(16)),
                               BinaryPrimitives.ReadInt64LittleEndian(trailer.Slice(8)),
                               BinaryPrimitives.ReadUInt32LittleEndian(trailer.Slice(20)),
-                              BinaryPrimitives.ReadInt32LittleEndian(trailer.Slice(24)));
+                              BinaryPrimitives.ReadInt32LittleEndian(trailer.Slice(24)),
+                              BinaryPrimitives.ReadInt64LittleEndian(trailer.Slice(28)),
+                              BinaryPrimitives.ReadInt64LittleEndian(trailer.Slice(36)),
+                              BinaryPrimitives.ReadInt64LittleEndian(trailer.Slice(44)));
         }
         catch (Exception ex) when (ex is FileNotFoundException || ex is DirectoryNotFoundException)
         {
@@ -272,8 +296,8 @@ public sealed class SnapshotStore
             _ => step(), CancellationToken.None, TaskContinuationOptions.LongRunning, TaskScheduler.Default);
     }
 
-    // Forces a committed round's file to disk, then names it: only then does the round count as durable.
-    private void MakeDurable(long round)
+    // Forces a committed round's file to disk, then names it, then deletes what it replaces.
+    private void ConfirmFile(long round)
     {
         try
         {
@@ -282,20 +306,12 @@ public sealed class SnapshotStore
                 file.Flush(true);
             }
             File.Move(TemporaryFile(round), FileOf(round), true);
-            _durableRound = round;
         }
         catch (Exception ex) when (IsIoFailure(ex))
         {
             Logger.Log(Logger.CoreComponent.ReplayerStreamReceiver, Logger.Severity.Warn,
                        Logger.CoreEventCode.SnapshotStoreFailed, null,
                        "cannot make round {0}'s snapshot durable in {1}: {2}", round, _directory, ex.Message);
-        }
-    }
-
-    private void DeleteFiles(long round)
-    {
-        if (_durableRound < round)
-        {
             return;
         }
         try
@@ -367,7 +383,7 @@ public sealed class SnapshotStore
         private bool _damaged;
 
         internal Reader(FileStream input, long recordsLength, int recordCount, long length, uint crc32c,
-                        int formatVersion)
+                        int formatVersion, long cutGlobalSeqNo, long cutPosition, long cutTimestampNs)
         {
             _in = input;
             _recordsLength = recordsLength;
@@ -375,6 +391,9 @@ public sealed class SnapshotStore
             Length = length;
             Crc32C = crc32c;
             FormatVersion = formatVersion;
+            CutGlobalSeqNo = cutGlobalSeqNo;
+            CutPosition = cutPosition;
+            CutTimestampNs = cutTimestampNs;
             _recordBuffer = new UnsafeBuffer(_record);
         }
 
@@ -389,6 +408,15 @@ public sealed class SnapshotStore
 
         /// <summary>The trailer's <c>formatVersion</c>.</summary>
         public int FormatVersion { get; }
+
+        /// <summary>The trailer's <c>cutGlobalSeqNo</c>.</summary>
+        public long CutGlobalSeqNo { get; }
+
+        /// <summary>The trailer's <c>cutPosition</c>.</summary>
+        public long CutPosition { get; }
+
+        /// <summary>The trailer's <c>cutTimestamp</c>.</summary>
+        public long CutTimestampNs { get; }
 
         /// <summary>Points <paramref name="view"/> at the next record, valid until the next call.</summary>
         /// <param name="view">wrapped over the record</param>

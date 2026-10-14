@@ -100,21 +100,4 @@ public class RecoveryStallFenceTest
         Assert.False(_policy.OnNotCaughtUp(Seconds(118), 1001));
         Assert.True(_policy.OnNotCaughtUp(Seconds(119), 1001), "60s with the frontier frozen at the new value");
     }
-
-    [Fact(DisplayName = "a restart disarms the fence until the instance catches up again")]
-    public void RestartDisarmsUntilCaughtUp()
-    {
-        _policy.OnCaughtUp();
-        _policy.OnNotCaughtUp(Seconds(0), Stuck);
-
-        _policy.OnRestart(); // a passive instance's activation: its restore pass dispatches nothing
-
-        for (long s = 1; s < 3600; s += 30)
-        {
-            Assert.False(_policy.OnNotCaughtUp(Seconds(s), 0), $"second {s}: a restart is a cold start");
-        }
-        _policy.OnCaughtUp();
-        Assert.False(_policy.OnNotCaughtUp(Seconds(3600), Stuck));
-        Assert.True(_policy.OnNotCaughtUp(Seconds(3660), Stuck), "armed again once caught up");
-    }
 }

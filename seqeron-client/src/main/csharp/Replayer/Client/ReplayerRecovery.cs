@@ -20,11 +20,11 @@ namespace Org.Limitless.Seqeron.Replayer.Client;
 /// the walk has: a cold start would otherwise adopt a mid-stream baseline.</para>
 /// <para><see cref="IsCaughtUp"/> is cleared on a live-tap gap and re-established once contiguous: consumers gate
 /// real decisions on it. Single-threaded: every method runs on the one duty-cycle thread.</para>
-/// <para>Given a source to restore (<see cref="RestoreFrom"/>), a cold start first restores the newest snapshot of
-/// its own that the log confirms (doc/snapshot.md §7): it asks the Replayer for that round's sequenced
-/// <c>SnapshotEnd</c>, reads the file's records into the handler if they match it, dispatching nothing, then resumes
-/// at the round's <c>SnapshotStarted</c> with the cut as the anchor. A file the log does not confirm gives way to the
-/// next older one, and the last to a walk.</para>
+/// <para>Given a snapshot store (<see cref="RestoreFrom"/>), a cold start first restores the newest snapshot it holds
+/// (doc/snapshot.md §7): it replays the recording from the snapshot's cut, and if the frame there is the round's
+/// <c>SnapshotStarted</c> the file recorded, reads the file's records into the handler, dispatching nothing, then
+/// resumes at the cut with it as the anchor. A file whose cut the recording does not hold gives way to the next older
+/// one, and the last to a walk.</para>
 /// <para><c>ReplayerRecovery.java</c> and <c>ReplayerRecovery.hpp</c> are its twins; keep the three in step.</para>
 /// </summary>
 internal sealed class ReplayerRecovery
@@ -57,7 +57,6 @@ internal sealed class ReplayerRecovery
     private readonly Replay.MessageHeader _controlHeader = new Replay.MessageHeader();
     private readonly Replay.Replaying _replaying = new Replay.Replaying();
     private readonly Replay.ReplayPending _replayPending = new Replay.ReplayPending();
-    private readonly Replay.SnapshotLocation _snapshotLocation = new Replay.SnapshotLocation();
     private readonly UnsafeBuffer _restoreRecord = new UnsafeBuffer();
 
     // When the current no-progress episode started; 0 = none timed.
@@ -109,24 +108,21 @@ internal sealed class ReplayerRecovery
     private bool _retainOverflowed;
     private bool _retainOverflowLogged;
 
-    // The source restored from its snapshot, or -1 for none.
-    private int _restoreSourceId = -1;
     private ISnapshotRestoreHandler _restoreHandler;
+
+    // Where the snapshot to restore is, or null for none.
     private SnapshotStore _store;
 
-    // A SnapshotQuery is out and unanswered, about the local file of _queriedRound.
-    private bool _querying;
-    private long _queriedRound;
+    // Replaying from the chosen file's cut, to see that the recording holds it.
+    private bool _checkingCut;
 
     // Reading the chosen file's records; nothing is dispatched until its last.
     private bool _restoring;
     private SnapshotStore.Reader _reader;
     private int _restoreRecordIndex;
 
-    // The chosen snapshot: its round, its cut, and where its SnapshotStarted starts. 0 cut = none.
+    // The chosen snapshot's round.
     private long _snapshotRound;
-    private long _snapshotGlobalSeqNo;
-    private long _snapshotPosition;
 
     // The header of the restore in progress, null before its record 0.
     private SnapshotHeader _restoredHeader;
@@ -149,18 +145,14 @@ internal sealed class ReplayerRecovery
         _onCaughtUp = onCaughtUp;
     }
 
-    /// <summary>
-    /// Restores <paramref name="sourceId"/>'s newest confirmed snapshot in <paramref name="store"/> on
-    /// <see cref="Start"/>, before anything is dispatched. Call before <see cref="Start"/>.
-    /// </summary>
-    /// <param name="sourceId">the source whose snapshot this instance holds</param>
+    /// <summary>Restores the newest snapshot in <paramref name="store"/> on <see cref="Start"/>, before anything is
+    /// dispatched. Call before <see cref="Start"/>.</summary>
     /// <param name="store">this instance's snapshot files</param>
     /// <param name="handler">takes the restored records</param>
-    public void RestoreFrom(int sourceId, SnapshotStore store, ISnapshotRestoreHandler handler)
+    public void RestoreFrom(SnapshotStore store, ISnapshotRestoreHandler handler)
     {
         ArgumentNullException.ThrowIfNull(store);
         ArgumentNullException.ThrowIfNull(handler);
-        _restoreSourceId = sourceId;
         _store = store;
         _restoreHandler = handler;
     }
@@ -169,33 +161,14 @@ internal sealed class ReplayerRecovery
     /// start.</summary>
     public void Start()
     {
-        if (_restoreSourceId >= 0)
+        if (_store != null)
         {
-            QueryBelow(long.MaxValue);
+            ChooseBelow(long.MaxValue);
         }
         else
         {
             RequestReplay(ReplayProtocol.FromStart);
         }
-    }
-
-    /// <summary>
-    /// Starts over as a cold start on a client that has dispatched frames already: a passive gateway instance's
-    /// activation (doc/snapshot.md §4). It restores the source's latest snapshot again, or walks the recording
-    /// without one, and dispatches every frame after that once more, and nothing before. Call only once caught up:
-    /// no query, restore or retained frame is in flight then, so the state reset here is all there is.
-    /// </summary>
-    public void Restart()
-    {
-        _actions.CloseReplay();
-        _replaySessionId = -1;
-        _awaitingReplay = false;
-        _resumeAnchorGlobalSeqNo = 0;
-        _caughtUp = false;
-        _lastGlobalSeqNo = 0;
-        _lastFramePosition = 0;
-        _snapshotGlobalSeqNo = 0;
-        Start();
     }
 
     /// <summary>Decodes one sequenced frame and applies the contiguity rules.</summary>
@@ -223,6 +196,11 @@ internal sealed class ReplayerRecovery
         {
             long anchor = _resumeAnchorGlobalSeqNo;
             _resumeAnchorGlobalSeqNo = 0;
+            if (_checkingCut)
+            {
+                OnCutReplayed(globalSeqNo == anchor && _event.ClusterTimestampNs == _reader.CutTimestampNs);
+                return;
+            }
             if (globalSeqNo != anchor)
             {
                 Fail($"resume replay at position {_requestFromPosition} opened at globalSeqNo={globalSeqNo}, " +
@@ -285,8 +263,7 @@ internal sealed class ReplayerRecovery
         DrainRetained();
     }
 
-    /// <summary>Decodes one Replayer control message (<c>Replaying</c>/<c>ReplayPending</c>/
-    /// <c>SnapshotLocation</c>).</summary>
+    /// <summary>Decodes one Replayer control message (<c>Replaying</c>/<c>ReplayPending</c>).</summary>
     /// <param name="buffer">holding the message</param>
     /// <param name="offset">of its first byte</param>
     /// <param name="length">of the message</param>
@@ -321,14 +298,6 @@ internal sealed class ReplayerRecovery
                 return;
             }
             OnReplaying(_replaying.ReplaySessionId, _replaying.CatchUpPosition);
-        }
-        else if (templateId == Replay.SnapshotLocation.TemplateId)
-        {
-            _snapshotLocation.WrapForDecode(_view, bodyOffset, blockLength, version);
-            if (_querying && _snapshotLocation.ClientId == clientId && _snapshotLocation.RequestId == _requestId)
-            {
-                OnSnapshotLocation();
-            }
         }
         else if (templateId == Replay.ReplayPending.TemplateId)
         {
@@ -398,10 +367,6 @@ internal sealed class ReplayerRecovery
             RestoreRecords();
         }
         long nowMs = _actions.NowMs();
-        if (_querying && (requestPublicationPending || (nowMs - _lastRequestMs) > ResendIntervalMs))
-        {
-            SendSnapshotQuery();
-        }
         if (_awaitingReplay && (requestPublicationPending || (nowMs - _lastRequestMs) > ResendIntervalMs))
         {
             RequestReplay(_requestFromPosition); // re-send the same request verbatim
@@ -435,10 +400,10 @@ internal sealed class ReplayerRecovery
         Logger.Fault(Logger.CoreComponent.ReplayerStreamReceiver, Logger.CoreEventCode.RecoveryStalled,
                      _actions.MemberId,
                      "recovery has dispatched nothing for >{0}ms: lastGlobalSeqNo={1} fromPosition={2} " +
-                         "awaitingReplay={3} replaySession={4} querying={5} restoring={6} — holding; check this " +
+                         "awaitingReplay={3} replaySession={4} checkingCut={5} restoring={6} — holding; check this " +
                          "node's Replayer and its recording",
                      RecoveryProgressTimeoutMs, _lastGlobalSeqNo, _requestFromPosition, Text(_awaitingReplay),
-                     _replaySessionId, Text(_querying), Text(_restoring));
+                     _replaySessionId, Text(_checkingCut), Text(_restoring));
         _actions.RecoveryStalled(true);
         return true;
     }
@@ -463,7 +428,7 @@ internal sealed class ReplayerRecovery
     /// expected while this holds (the tap runs ahead of the replay), so <see cref="OnFrame"/> drops it without
     /// treating it as a new gap.
     /// </summary>
-    public bool IsRecovering => _replaySessionId >= 0 || _awaitingReplay || _querying || _restoring;
+    public bool IsRecovering => _replaySessionId >= 0 || _awaitingReplay || _restoring;
 
     /// <summary>Reading a snapshot's records, before anything after its cut is dispatched.</summary>
     public bool IsRestoring => _restoring;
@@ -519,70 +484,67 @@ internal sealed class ReplayerRecovery
         _resumeAnchorGlobalSeqNo = _lastGlobalSeqNo;
     }
 
-    /// <summary>Asks about the newest local snapshot below <paramref name="belowRound"/>, or walks the recording when
-    /// there is none.</summary>
+    /// <summary>Opens the newest snapshot file below <paramref name="belowRound"/> and replays the recording from its
+    /// cut, or walks the recording when there is none. A format this build does not read stops recovery.</summary>
     /// <param name="belowRound"><see cref="long.MaxValue"/> for the newest of all</param>
-    private void QueryBelow(long belowRound)
+    private void ChooseBelow(long belowRound)
     {
-        _queriedRound = _store.LatestRound(belowRound);
-        if (_queriedRound < 0)
+        CloseReader();
+        for (long round = _store.LatestRound(belowRound); round >= 0; round = _store.LatestRound(round))
         {
-            RequestReplay(ReplayProtocol.FromStart);
+            _reader = _store.Open(round);
+            if (_reader == null)
+            {
+                Logger.Log(Logger.CoreComponent.ReplayerStreamReceiver, Logger.Severity.Warn,
+                           Logger.CoreEventCode.SnapshotStoreFailed, _actions.MemberId,
+                           "round {0}'s snapshot file is cut short; trying an older snapshot", round);
+                continue;
+            }
+            _snapshotRound = round;
+            long formatVersion = (uint)_reader.FormatVersion;
+            if (!_restoreHandler.SupportsFormatVersion(formatVersion))
+            {
+                FailRestore($"round {round} has formatVersion {formatVersion}, which this build does not read");
+                return;
+            }
+            RequestCut();
             return;
         }
-        SendSnapshotQuery();
+        RequestReplay(ReplayProtocol.FromStart);
     }
 
-    /// <summary>Asks this node's Replayer for the sequenced end of the queried round; resent until answered.</summary>
-    private void SendSnapshotQuery()
+    /// <summary>Replays the recording from the chosen snapshot's cut; its first frame decides the restore.</summary>
+    private void RequestCut()
     {
-        _querying = true;
-        _lastRequestMs = _actions.NowMs();
-        ++_requestId;
-        _actions.SendSnapshotQuery(_requestId, _restoreSourceId, _queriedRound);
+        _checkingCut = true;
+        RequestReplay(_reader.CutPosition);
+        _resumeAnchorGlobalSeqNo = _reader.CutGlobalSeqNo;
     }
 
-    /// <summary>Restores the queried round's file if the log confirms it; otherwise moves on to the next older one. A
-    /// format this build does not read stops recovery.</summary>
-    private void OnSnapshotLocation()
+    /// <summary>The replay from the cut opened: on the round's <c>SnapshotStarted</c>, the file's records are read;
+    /// on anything else, or nothing, this recording is not the log the file was cut from, and an older file is
+    /// tried.</summary>
+    private void OnCutReplayed(bool matches)
     {
-        _querying = false;
-        if (_snapshotLocation.Round != _queriedRound)
-        {
-            Logger.Info(Logger.CoreComponent.ReplayerStreamReceiver, _actions.MemberId,
-                        "round {0} of source {1} has no sequenced SnapshotEnd in this node's index; trying an older " +
-                            "snapshot",
-                        _queriedRound, _restoreSourceId);
-            QueryBelow(_queriedRound);
-            return;
-        }
-        if (!_restoreHandler.SupportsFormatVersion(_snapshotLocation.FormatVersion))
-        {
-            FailRestore($"round {_queriedRound} has formatVersion {_snapshotLocation.FormatVersion}, which this " +
-                        "build does not read");
-            return;
-        }
-        _reader = _store.Open(_queriedRound);
-        if (_reader == null || _reader.RecordCount != _snapshotLocation.RecordCount ||
-            _reader.Length != _snapshotLocation.Length || _reader.Crc32C != _snapshotLocation.Crc32c)
+        _checkingCut = false;
+        _replaySessionId = -1;
+        _actions.CloseReplay();
+        if (!matches)
         {
             Logger.Log(Logger.CoreComponent.ReplayerStreamReceiver, Logger.Severity.Warn,
                        Logger.CoreEventCode.SnapshotStoreFailed, _actions.MemberId,
-                       "round {0}'s snapshot file is {1}; trying an older snapshot", _queriedRound,
-                       _reader == null ? "missing or cut short" : "not the one sequenced");
-            CloseReader();
-            QueryBelow(_queriedRound);
+                       "round {0}'s cut, globalSeqNo={1} at position {2}, is not in this node's recording; trying an " +
+                           "older snapshot",
+                       _snapshotRound, _reader.CutGlobalSeqNo, _reader.CutPosition);
+            ChooseBelow(_snapshotRound);
             return;
         }
-        _snapshotRound = _queriedRound;
-        _snapshotGlobalSeqNo = _snapshotLocation.AsOfGlobalSeqNo;
-        _snapshotPosition = _snapshotLocation.AsOfPosition;
         _restoring = true;
         _restoreRecordIndex = 0;
         _restoredHeader = null;
         Logger.Info(Logger.CoreComponent.ReplayerStreamReceiver, _actions.MemberId,
-                    "restoring source {0} from round {1}, cut at globalSeqNo={2} position={3}", _restoreSourceId,
-                    _snapshotRound, _snapshotGlobalSeqNo, _snapshotPosition);
+                    "restoring round {0}, cut at globalSeqNo={1} position={2}", _snapshotRound, _reader.CutGlobalSeqNo,
+                    _reader.CutPosition);
     }
 
     /// <summary>The next records of the restore, at most <see cref="MaxRestoreRecordsPerCycle"/>. They match the end
@@ -600,8 +562,8 @@ internal sealed class ReplayerRecovery
             }
             if (length == SnapshotStore.Reader.Damaged)
             {
-                FailRestore($"round {_snapshotRound}'s snapshot file is damaged: its records do not match the " +
-                            "SnapshotEnd sequenced for it");
+                FailRestore($"round {_snapshotRound}'s snapshot file is damaged: its records do not match its " +
+                            "trailer");
                 return;
             }
             if (_restoreRecordIndex == 0)
@@ -637,16 +599,15 @@ internal sealed class ReplayerRecovery
     private void CompleteRestore()
     {
         _restoring = false;
+        _lastGlobalSeqNo = _reader.CutGlobalSeqNo;
+        _lastFramePosition = _reader.CutPosition;
         CloseReader();
-        _lastGlobalSeqNo = _snapshotGlobalSeqNo;
-        _lastFramePosition = _snapshotPosition;
         _currentLeaderMemberId = _restoredHeader.LeaderMemberId;
         Logger.Info(Logger.CoreComponent.ReplayerStreamReceiver, _actions.MemberId,
-                    "restored source {0} from round {1}; resuming after globalSeqNo={2}", _restoreSourceId,
-                    _snapshotRound, _snapshotGlobalSeqNo);
+                    "restored round {0}; resuming after globalSeqNo={1}", _snapshotRound, _lastGlobalSeqNo);
         if (_onLeadershipChanged != null && _restoredHeader.LeadershipTermId >= 0)
         {
-            _onLeadershipChanged(_currentLeaderMemberId, _restoredHeader.LeadershipTermId, _snapshotGlobalSeqNo);
+            _onLeadershipChanged(_currentLeaderMemberId, _restoredHeader.LeadershipTermId, _lastGlobalSeqNo);
         }
         RequestResume();
     }
@@ -656,21 +617,25 @@ internal sealed class ReplayerRecovery
     private void FailRestore(string reason)
     {
         RestoreFailure = reason;
-        _querying = false;
+        _checkingCut = false;
         _restoring = false;
         CloseReader();
         _awaitingReplay = false;
         _replaySessionId = -1;
         _actions.CloseReplay();
         Logger.Fault(Logger.CoreComponent.ReplayerStreamReceiver, Logger.CoreEventCode.SnapshotRestoreFailed,
-                     _actions.MemberId, "cannot restore source {0}: {1}", _restoreSourceId, reason);
+                     _actions.MemberId, "cannot restore a snapshot: {0}", reason);
     }
 
     /// <summary>Re-asks for whatever is in flight; a resume goes back through <see cref="RequestResume"/> for a fresh
     /// anchor.</summary>
     private void ReRequestCurrent()
     {
-        if (_requestFromPosition == ReplayProtocol.FromStart)
+        if (_checkingCut)
+        {
+            RequestCut();
+        }
+        else if (_requestFromPosition == ReplayProtocol.FromStart)
         {
             RequestReplay(ReplayProtocol.FromStart); // same request verbatim, new request id
         }
@@ -685,6 +650,11 @@ internal sealed class ReplayerRecovery
         _awaitingReplay = false;
         if (session == ReplayProtocol.NoReplayNeeded)
         {
+            if (_checkingCut)
+            {
+                OnCutReplayed(false); // the cut is not a frame of this recording
+                return;
+            }
             if (_requestFromPosition != ReplayProtocol.FromStart)
             {
                 Fail($"the Replayer refused a resume at position {_requestFromPosition} above " +

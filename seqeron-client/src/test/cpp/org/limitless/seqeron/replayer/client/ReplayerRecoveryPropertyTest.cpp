@@ -19,9 +19,9 @@
 //
 // Restore   — a client restoring its own snapshot (doc/snapshot.md §7) holds both properties from the cut on,
 //            under the same faults, and its restored state plus the frames after the cut equals the state a full
-//            replay builds. It holds files of three rounds, of which the log ends only the middle one: the
-//            newest gives way to it. The log holds a superseded round and another source's end among the
-//            snapshot's; which end the Replayer finds is SnapshotIndexTest's (Java), and serializing it is
+//            replay builds. It holds files of two rounds: the newer was cut from another log, whose cut this
+//            recording does not hold where the file says, so it gives way to the older. The log holds a
+//            superseded round and another source's end among the snapshot's; confirming a file is
 //            SnapshotTakerTest's.
 //
 // Seeds are fixed and listed, not drawn from the clock: a failing run must be re-runnable, and a suite that
@@ -72,6 +72,7 @@ constexpr std::int32_t SOURCE = 3;
 constexpr std::int32_t OTHER_SOURCE = 5;
 constexpr std::int64_t CUT = 9;
 constexpr std::int64_t SNAPSHOT_END = 12;
+constexpr std::int64_t NEXT_CUT = 13;
 constexpr std::uint32_t FORMAT_VERSION = 1;
 
 namespace rf = restore_frames;
@@ -164,7 +165,7 @@ struct Simulation final
 
         if (restoring)
         {
-            recovery.restoreFrom(SOURCE, store, *this);
+            recovery.restoreFrom(store, *this);
             expectedNext = CUT + 1;
         }
         recovery.start();
@@ -220,8 +221,9 @@ struct Simulation final
 
   private:
     // Round 1 starts and is superseded by round 2 at CUT before its source ends it; round 2 ends among heartbeats
-    // and another source's end, and round 3 starts and never ends. The client holds a file of each: round 2's
-    // records hold the state at the cut, the heartbeats before it.
+    // and another source's end, and round 3 starts and never ends. The client holds round 2's file, whose records
+    // hold the state at the cut, the heartbeats before it, and a round 3 file from another log, whose cut is a frame
+    // earlier there.
     void publishSnapshotRounds()
     {
         for (int i = 0; i < 5; ++i)
@@ -238,13 +240,12 @@ struct Simulation final
         publishFrame(rf::end(10, OTHER_SOURCE, 2, FORMAT_VERSION, { header }));
         publish(); // heartbeat 11
         publishFrame(rf::end(SNAPSHOT_END, SOURCE, 2, FORMAT_VERSION, { header, count, sum }));
-        publishFrame(rf::started(13, 3));
+        publishFrame(rf::started(NEXT_CUT, 3));
         publish(); // heartbeat 14
 
-        snapshotDigest = rf::Digest::of({ header, count, sum });
-        rf::write(store, 1, FORMAT_VERSION, { header, rf::record(99) });
-        rf::write(store, 2, FORMAT_VERSION, { header, count, sum });
-        rf::write(store, 3, FORMAT_VERSION, { header, rf::record(98) });
+        // Newest first: confirming a round deletes the older files, and both are to stay.
+        rf::write(store, 3, NEXT_CUT, positionOf(NEXT_CUT - 1), FORMAT_VERSION, { header, rf::record(98) });
+        rf::write(store, 2, CUT, positionOf(CUT), FORMAT_VERSION, { header, count, sum });
     }
 
     void publishFrame(rf::Bytes frame)
@@ -352,8 +353,6 @@ struct Simulation final
             return;
         }
         const std::int64_t requestId = pendingRequestId;
-        const bool query = pendingIsQuery;
-        const std::int64_t queryRound = pendingQueryRound;
         const std::int64_t fromPosition = pendingFromPosition;
         pendingRequestId = -1;
         if (requestId != recovery.requestId())
@@ -366,14 +365,6 @@ struct Simulation final
             deliverControl(encodeReplayPending(requestId));
             return;
         }
-        if (query)
-        {
-            deliverControl(queryRound == 2 ? rf::location(CLIENT_ID, requestId, 2, CUT, positionOf(CUT), FORMAT_VERSION,
-                                                          snapshotDigest)
-                                           : rf::location(CLIENT_ID, requestId, -1, -1, -1, 0, rf::Digest{ 0, 0, 0 }));
-            return;
-        }
-
         if (fromPosition == protocol::REPLAYER_FROM_START)
         {
             serveReplay(requestId, 1, tip);
@@ -429,21 +420,7 @@ struct Simulation final
             return; // the offer did not land; only the resend timer recovers this
         }
         pendingRequestId = requestId;
-        pendingIsQuery = false;
         pendingFromPosition = fromPosition;
-    }
-
-    void sendSnapshotQuery(const std::int64_t requestId, const std::int32_t sourceId, const std::int64_t round) override
-    {
-        EXPECT_EQ(SOURCE, sourceId) << tag;
-        EXPECT_TRUE(round == 3 || round == 2) << tag << ": asked about round " << round;
-        if (chaos && chance(15))
-        {
-            return;
-        }
-        pendingRequestId = requestId;
-        pendingIsQuery = true;
-        pendingQueryRound = round;
     }
 
     void openReplay(std::int64_t) override
@@ -527,10 +504,9 @@ struct Simulation final
     const std::string tag;
     const bool restoring;
 
-    // the client's own files, and the digest of the one round the log ends for SOURCE
+    // the client's own files
     helpers::TempDirectory directory;
     SnapshotStore store{ directory.path() };
-    rf::Digest snapshotDigest{};
 
     // every frame that is not a heartbeat, by globalSeqNo: the snapshot rounds
     std::map<std::int64_t, rf::Bytes> frames;
@@ -545,8 +521,6 @@ struct Simulation final
 
     // the Replayer's view of this one client
     std::int64_t pendingRequestId = -1;
-    bool pendingIsQuery = false;
-    std::int64_t pendingQueryRound = -1;
     std::int64_t pendingFromPosition = 0;
     std::int64_t nextSessionId = 1;
 

@@ -10,12 +10,8 @@ import org.limitless.seqeron.sbe.frame.MessageHeaderEncoder;
 import org.limitless.seqeron.sbe.frame.SequencedSystemEncoder;
 import org.limitless.seqeron.sbe.frame.SnapshotEndEncoder;
 import org.limitless.seqeron.sbe.frame.SnapshotStartedEncoder;
-import org.limitless.seqeron.sbe.replay.SnapshotLocationEncoder;
 
-/**
- * A snapshot as a restore meets it (doc/snapshot.md §5, §7): the instance's own file, the round's frames, and the
- * Replayer's answer confirming it.
- */
+/** A snapshot as a restore meets it (doc/snapshot.md §7): the instance's own file and the round's frames. */
 final class RestoreFrames {
     /** One encoded frame or control message. */
     record Frame(UnsafeBuffer buffer, int length) { }
@@ -37,11 +33,16 @@ final class RestoreFrames {
     }
 
     static Frame started(final long globalSeqNo, final long round) {
+        return started(globalSeqNo, round, globalSeqNo * 1000);
+    }
+
+    /** A {@code SnapshotStarted} stamped {@code timestampNs}: another log's, when it is not the file's. */
+    static Frame started(final long globalSeqNo, final long round, final long timestampNs) {
         final UnsafeBuffer buffer = new UnsafeBuffer(new byte[128]);
         final SnapshotStartedEncoder encoder = new SnapshotStartedEncoder();
         encoder.wrapAndApplyHeader(buffer, 0, new MessageHeaderEncoder());
         encoder.header().sourceId(-1).connectionId(-1).sessionId(-1).systemEventType(SystemFrame.SNAPSHOT_STARTED)
-            .globalSeqNo(globalSeqNo).timestamp(globalSeqNo * 1000);
+            .globalSeqNo(globalSeqNo).timestamp(timestampNs);
         encoder.round(round);
         return new Frame(buffer, MessageHeaderEncoder.ENCODED_LENGTH + encoder.encodedLength());
     }
@@ -57,14 +58,19 @@ final class RestoreFrames {
         return system(globalSeqNo, sourceId, SystemFrame.SNAPSHOT_END, body, encoder.encodedLength());
     }
 
-    /** Writes {@code records} as round {@code round}'s file, as the instance did when it serialized them. */
-    static void write(final SnapshotStore store, final long round, final int formatVersion, final byte[]... records) {
+    /**
+     * Writes {@code records} as round {@code round}'s file and confirms it, as the instance did when it serialized
+     * them and the log's end agreed. The cut's timestamp is {@code cutGlobalSeqNo * 1000}, as every frame's here.
+     */
+    static void write(final SnapshotStore store, final long round, final long cutGlobalSeqNo, final long cutPosition,
+                      final int formatVersion, final byte[]... records) {
         final Digest digest = Digest.of(records);
-        store.begin(round);
+        store.begin(round, cutGlobalSeqNo, cutPosition, cutGlobalSeqNo * 1000);
         for (final byte[] record : records) {
             store.append(new UnsafeBuffer(record), 0, record.length);
         }
         store.commit(digest.recordCount(), digest.length(), digest.crc32c(), formatVersion);
+        store.confirm(round);
         store.awaitWrites();
     }
 
@@ -81,25 +87,6 @@ final class RestoreFrames {
         final UnsafeBuffer buffer = new UnsafeBuffer(new byte[Long.BYTES]);
         buffer.putLong(0, value);
         return buffer.byteArray();
-    }
-
-    /** The Replayer's answer: round {@code round}'s cut and sequenced end, or none for {@code round} −1. */
-    static Frame location(final long clientId, final long requestId, final long round, final long asOfGlobalSeqNo,
-                          final long asOfPosition, final long formatVersion, final Digest end) {
-        final UnsafeBuffer buffer = new UnsafeBuffer(new byte[128]);
-        final SnapshotLocationEncoder encoder = new SnapshotLocationEncoder();
-        encoder.wrapAndApplyHeader(buffer, 0, new org.limitless.seqeron.sbe.replay.MessageHeaderEncoder())
-            .clientId(clientId)
-            .requestId(requestId)
-            .round(round)
-            .asOfGlobalSeqNo(asOfGlobalSeqNo)
-            .asOfPosition(asOfPosition)
-            .formatVersion(formatVersion)
-            .recordCount(end.recordCount())
-            .length(end.length())
-            .crc32c(end.crc32c());
-        final int headerLength = org.limitless.seqeron.sbe.replay.MessageHeaderEncoder.ENCODED_LENGTH;
-        return new Frame(buffer, headerLength + encoder.encodedLength());
     }
 
     private static Frame system(final long globalSeqNo, final int sourceId, final int systemEventType,

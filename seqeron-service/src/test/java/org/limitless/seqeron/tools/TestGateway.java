@@ -85,8 +85,7 @@ import org.limitless.seqeron.util.Logger;
  *   probe.snapshot     — serve: take part in snapshot rounds and restore on start; default false
  *   probe.snapshotDir  — serve: this instance's own snapshot directory; default
  *                        {tmpdir}/seqeron-snapshots-{probe.gatewayName}
- *   probe.passive      — serve: hold no state until activated (doc/snapshot.md §4); default false
- *   probe.sourceId     — serve: the pair's sourceId, which a restore queries; default 9
+ *   probe.sourceId     — serve: the pair's sourceId, which labels its snapshot counter; default 9
  *   probe.count        — client: lines to send; default 1
  *   probe.host         — client: host to connect to; default localhost
  * </pre>
@@ -111,7 +110,6 @@ public final class TestGateway {
     private final int listenPort;
     private final int clientId;
     private final boolean snapshot = Boolean.getBoolean("probe.snapshot");
-    private final boolean passive = Boolean.getBoolean("probe.passive");
     private final int sourceId = Integer.getInteger("probe.sourceId", 9);
 
     /** The cluster's view of this gateway's connections, ordered so every instance serializes it alike. */
@@ -177,11 +175,9 @@ public final class TestGateway {
             .snapshotDirectory(Path.of(System.getProperty(
                 "probe.snapshotDir",
                 Path.of(System.getProperty("java.io.tmpdir"), "seqeron-snapshots-" + gatewayName).toString())))
-            .passive(passive)
             .build();
         gateway.start(aeron);
-        log("%s — following the tap as %s, gate shut until a GatewayActive names this instance",
-            passive ? "passive" : "standby", gatewayName);
+        log("standby — following the tap as %s, gate shut until a GatewayActive names this instance", gatewayName);
 
         final AtomicBoolean running = new AtomicBoolean(true);
         final Thread duty = new Thread(() -> {

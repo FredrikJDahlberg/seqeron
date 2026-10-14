@@ -1,5 +1,5 @@
-// An instance's own snapshot files (doc/snapshot.md §4). Case for case with the Java SnapshotStoreTest, whose
-// golden trailer this shares, so a file one language writes is one the other reads.
+// An instance's own snapshot files (doc/snapshot.md §4.1). Case for case with the Java SnapshotStoreTest, whose
+// golden trailer this shares, so a file one language writes is one the others read.
 
 #include <gtest/gtest.h>
 
@@ -19,13 +19,21 @@ namespace {
 
 using Bytes = std::vector<std::uint8_t>;
 
-// Round 3's trailer over the application header and the 3000-byte body as three records, formatVersion 1.
+// Round 3's trailer over the application header and the 3000-byte body as three records, formatVersion 1, cut at
+// globalSeqNo 42, position 43008, timestamp 42000.
 const std::string GOLDEN_TRAILER = "0300000000000000"
                                    "ca0b000000000000"
                                    "04000000"
                                    "6bf5246c"
                                    "01000000"
-                                   "534e4150";
+                                   "2a00000000000000"
+                                   "00a8000000000000"
+                                   "10a4000000000000"
+                                   "534e5032";
+
+constexpr std::int64_t CUT_GLOBAL_SEQ_NO = 42;
+constexpr std::int64_t CUT_POSITION = 43008;
+constexpr std::int64_t CUT_TIMESTAMP_NS = 42000;
 
 // The application header, then the 3000-byte body as records of 1000, 1302 and 698 bytes.
 std::vector<Bytes> records()
@@ -41,11 +49,17 @@ std::vector<Bytes> records()
              Bytes(body.begin() + 2302, body.end()) };
 }
 
-void write(SnapshotStore& store, const std::int64_t round, const std::vector<Bytes>& records)
+void begin(SnapshotStore& store, const std::int64_t round)
+{
+    store.begin(round, CUT_GLOBAL_SEQ_NO, CUT_POSITION, CUT_TIMESTAMP_NS);
+}
+
+// Writes a round's file, as the instance does before the log confirms it.
+void commit(SnapshotStore& store, const std::int64_t round, const std::vector<Bytes>& records)
 {
     std::uint64_t length = 0;
     std::uint32_t crc = 0;
-    store.begin(round);
+    begin(store, round);
     for (const Bytes& record : records)
     {
         store.append(record);
@@ -53,6 +67,13 @@ void write(SnapshotStore& store, const std::int64_t round, const std::vector<Byt
         crc = protocol::crc32c(record.data(), record.size(), crc);
     }
     store.commit(static_cast<std::int32_t>(records.size()), length, crc, 1);
+}
+
+// Writes and confirms a round's file.
+void write(SnapshotStore& store, const std::int64_t round, const std::vector<Bytes>& records)
+{
+    commit(store, round, records);
+    store.confirm(round);
     store.awaitWrites();
 }
 
@@ -105,7 +126,7 @@ std::vector<std::int32_t> readAll(std::optional<SnapshotStore::Reader> reader)
     return lengths;
 }
 
-TEST(SnapshotStore, ACommittedRoundReadsBackRecordByRecordItsTrailerTheSharedGoldenBytes)
+TEST(SnapshotStore, AConfirmedRoundReadsBackRecordByRecordItsTrailerTheSharedGoldenBytes)
 {
     helpers::TempDirectory directory;
     SnapshotStore store(directory.path());
@@ -122,6 +143,9 @@ TEST(SnapshotStore, ACommittedRoundReadsBackRecordByRecordItsTrailerTheSharedGol
     EXPECT_EQ(3018U, reader->length());
     EXPECT_EQ(0x6c24f56bU, reader->crc32c());
     EXPECT_EQ(1U, reader->formatVersion());
+    EXPECT_EQ(CUT_GLOBAL_SEQ_NO, reader->cutGlobalSeqNo());
+    EXPECT_EQ(CUT_POSITION, reader->cutPosition());
+    EXPECT_EQ(CUT_TIMESTAMP_NS, reader->cutTimestampNs());
     std::span<const std::uint8_t> record;
     for (const Bytes& expected : all)
     {
@@ -131,25 +155,31 @@ TEST(SnapshotStore, ACommittedRoundReadsBackRecordByRecordItsTrailerTheSharedGol
     EXPECT_EQ(SnapshotStore::Reader::END, reader->next(record));
 }
 
-TEST(SnapshotStore, OnlyACommittedWriteCountsAndTheNewestRoundBelowABoundIsFound)
+TEST(SnapshotStore, OnlyAConfirmedRoundCountsAndTheNewestRoundBelowABoundIsFound)
 {
     helpers::TempDirectory directory;
     SnapshotStore store(directory.path());
     const Bytes eight(8);
-    store.begin(5);
+    begin(store, 5);
     store.append(eight);
     store.abandon();
-    EXPECT_EQ(-1, store.latestRound()) << "an abandoned write leaves no file";
+    store.confirm(5);
+    store.awaitWrites();
+    EXPECT_TRUE(names(directory.path()).empty()) << "an abandoned write leaves no file, and confirms nothing";
 
-    write(store, 2, records());
+    commit(store, 2, records());
+    EXPECT_EQ(-1, store.latestRound()) << "a round the log has not confirmed";
+    EXPECT_FALSE(store.open(2).has_value());
+    store.confirm(1);
+    store.awaitWrites();
+    EXPECT_EQ((std::vector<std::string>{ "2.tmp" }), names(directory.path()))
+        << "a confirmation of another round confirms nothing";
+
     write(store, 4, records());
-    store.begin(6); // never committed, as a crash leaves it
-    store.append(eight);
-
+    std::filesystem::copy_file(directory.path() / "4.snapshot", directory.path() / "3.snapshot"); // as a crash may
     EXPECT_EQ(4, store.latestRound());
-    EXPECT_EQ(2, store.latestRound(4));
-    EXPECT_EQ(-1, store.latestRound(2));
-    EXPECT_FALSE(store.open(6).has_value());
+    EXPECT_EQ(3, store.latestRound(4));
+    EXPECT_EQ(-1, store.latestRound(3));
     EXPECT_FALSE(store.open(7).has_value()) << "no such round";
 }
 
@@ -185,27 +215,26 @@ TEST(SnapshotStore, AFileCutShortOrOfAnotherRoundDoesNotOpenRecordsThatFailItsTr
     EXPECT_EQ((std::vector<std::int32_t>{ 18, 1000, 1302, 698, DAMAGED }), readAll(store.open(2)));
 }
 
-TEST(SnapshotStore, DeletingBeforeADurableRoundKeepsItAndEveryNewerOneAndClearsAWriteACrashLeftBehind)
+TEST(SnapshotStore, AConfirmationReplacesEveryOlderFileAndAnyWriteACrashLeftBehind)
 {
     helpers::TempDirectory directory;
     {
         SnapshotStore crashed(directory.path());
         write(crashed, 1, records());
-        write(crashed, 2, records());
-        crashed.begin(3);
+        commit(crashed, 2, records());
+        begin(crashed, 3);
     }
 
     SnapshotStore store(directory.path());
-    store.deleteBefore(4);
-    store.awaitWrites();
-    EXPECT_EQ((std::vector<std::string>{ "1.snapshot", "2.snapshot", "3.tmp" }), names(directory.path()))
-        << "round 4 is not durable here";
-
     write(store, 4, records());
-    write(store, 5, records());
-    store.deleteBefore(4);
-    store.awaitWrites();
-    EXPECT_EQ((std::vector<std::string>{ "4.snapshot", "5.snapshot" }), names(directory.path()));
+    EXPECT_EQ((std::vector<std::string>{ "4.snapshot" }), names(directory.path()));
+
+    commit(store, 5, records());
+    begin(store, 6); // round 5's end never came
+    store.abandon();
+    EXPECT_EQ((std::vector<std::string>{ "4.snapshot", "5.tmp" }), names(directory.path()));
+    write(store, 7, records());
+    EXPECT_EQ((std::vector<std::string>{ "7.snapshot" }), names(directory.path()));
 }
 
 TEST(SnapshotStore, ARoundWhoseFileNeverBecameDurableDeletesNothingOlder)
@@ -216,8 +245,6 @@ TEST(SnapshotStore, ARoundWhoseFileNeverBecameDurableDeletesNothingOlder)
     std::filesystem::create_directories(directory.path() / "2.snapshot" / "occupied"); // the name cannot be taken
     write(store, 2, records());
 
-    store.deleteBefore(2);
-    store.awaitWrites();
     EXPECT_TRUE(std::filesystem::is_regular_file(directory.path() / "1.snapshot"));
     EXPECT_TRUE(std::filesystem::is_regular_file(directory.path() / "2.tmp"));
 }

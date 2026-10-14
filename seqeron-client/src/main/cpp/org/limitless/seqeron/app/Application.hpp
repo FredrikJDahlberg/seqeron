@@ -17,6 +17,7 @@
 #include "org/limitless/seqeron/app/detail/SnapshotTaker.hpp"
 #include "org/limitless/seqeron/protocol/PortLayout.hpp"
 #include "org/limitless/seqeron/protocol/Publish.hpp"
+#include "org/limitless/seqeron/protocol/SeqeronCounters.hpp"
 #include "org/limitless/seqeron/protocol/Snapshot.hpp"
 #include "org/limitless/seqeron/replayer/client/SnapshotStore.hpp"
 #include "org/limitless/seqeron/sequencer/client/IngressPublisher.hpp"
@@ -118,7 +119,7 @@ class Application
       m_listener{ listener },
       m_gate{ m_config.memberId, m_config.offCluster },
       m_store{ snapshotStore(m_config) },
-      m_snapshots{ m_config.snapshotListener, m_store.get(), false, [this] { m_session.keepAlive(); } },
+      m_snapshots{ m_config.snapshotListener, m_store.get(), [this] { m_session.keepAlive(); } },
       m_dispatch{ *this },
       m_session{ m_config.clientId, m_config.pendingCapacity, m_config.tapStallTimeoutMs,
                  m_config.recoveryStallTimeoutMs, m_dispatch },
@@ -128,7 +129,7 @@ class Application
         static_assert(ApplicationListener<Listener>);
         if (m_store)
         {
-            m_session.restoreFrom(m_config.sourceId, *m_store, m_snapshots);
+            m_session.restoreFrom(*m_store, m_snapshots);
         }
     }
 
@@ -143,6 +144,15 @@ class Application
      */
     void start(std::shared_ptr<aeron::Aeron> aeron)
     {
+        m_aeron = aeron;
+        if (m_snapshots.isListening())
+        {
+            m_snapshotRoundCounterRegId = protocol::addAppCounter(
+                m_aeron, protocol::APP_SNAPSHOT_ROUND_TYPE_ID,
+                "seqeron.app.snapshotRound source=" + std::to_string(m_config.sourceId) +
+                    " member=" + std::to_string(m_config.memberId) + " client=" + std::to_string(m_config.clientId),
+                m_config.memberId, m_config.clientId);
+        }
         if (m_config.offCluster)
         {
             m_session.start(std::move(aeron), m_config.memberId, m_config.egressChannel, m_config.ingressEndpoints);
@@ -159,6 +169,7 @@ class Application
     int doWork()
     {
         int work = m_session.doWork();
+        updateSnapshotRoundCounter();
         if (m_session.isFenced())
         {
             return work;
@@ -282,9 +293,23 @@ class Application
     void close()
     {
         m_session.close();
+        m_snapshotRoundCounter.reset();
+        m_snapshotRoundCounterRegId = -1;
     }
 
   private:
+    void updateSnapshotRoundCounter()
+    {
+        if (!m_snapshotRoundCounter && m_snapshotRoundCounterRegId >= 0)
+        {
+            m_snapshotRoundCounter = m_aeron->findCounter(m_snapshotRoundCounterRegId);
+        }
+        if (m_snapshotRoundCounter)
+        {
+            m_snapshotRoundCounter->set(m_snapshots.confirmedRound());
+        }
+    }
+
     // A shut gate declines rather than submits: only the leading replica's copy of the work is the one sent.
     template<typename Encoder, typename Fill>
     [[nodiscard]] protocol::Publish submit(const std::int32_t frameSourceId, const std::int32_t connectionId,
@@ -333,7 +358,7 @@ class Application
                 case protocol::SNAPSHOT_STARTED: {
                     auto started = protocol::decodeSystem<sbe::frame::SnapshotStarted>(event);
                     m_app.m_snapshots.onSnapshotStarted(
-                        started.round(),
+                        started.round(), event.globalSeqNo, event.position, event.clusterTimestampNs,
                         protocol::SnapshotHeader{ m_app.m_session.leadershipTermId(),
                                                   m_app.m_session.currentLeaderMemberId(), std::nullopt },
                         m_app.m_gate.isOpen());
@@ -435,6 +460,11 @@ class Application
     SessionDispatch m_dispatch;
     detail::Session<SessionDispatch> m_session;
     detail::SnapshotFrames<detail::Session<SessionDispatch>> m_snapshotFrames;
+
+    // The last round this replica confirmed, null until its async add resolves, and never without a listener.
+    std::shared_ptr<aeron::Aeron> m_aeron;
+    std::int64_t m_snapshotRoundCounterRegId = -1;
+    std::shared_ptr<aeron::Counter> m_snapshotRoundCounter;
 };
 
 } // namespace org::limitless::seqeron::app

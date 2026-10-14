@@ -72,9 +72,7 @@ concept GatewayListener = requires(L& listener, const Payload& payload, std::int
  * state, and the active one then submits the round's SnapshotEnd. An instance whose snapshot differs from the one
  * sequenced is fenced with ClusterError::SnapshotDiverged. On start, an instance given a listener restores the
  * newest snapshot of its own that the log confirms and resumes after its cut, or replays from globalSeqNo 1 without
- * one; one it cannot restore is fenced with ClusterError::SnapshotUnrestorable. A passive instance
- * (Config::passive) holds no state until it is activated: it follows the tap for the election alone, then restores
- * and catches up before it serves.
+ * one; one it cannot restore is fenced with ClusterError::SnapshotUnrestorable.
  *
  * Single-threaded: every method belongs to the caller's one duty-cycle thread, which calls doWork() each
  * iteration. The Java twin is app/Gateway.java; keep the two in step. The Listener is the edge;
@@ -109,8 +107,8 @@ class Gateway
         std::size_t pendingCapacity = DEFAULT_PENDING_CAPACITY;
         std::int64_t tapStallTimeoutMs = DEFAULT_TAP_STALL_TIMEOUT_MS;
         std::int64_t recoveryStallTimeoutMs = DEFAULT_RECOVERY_STALL_TIMEOUT_MS;
-        // The logical gateway's sourceId, the one its rows declare. Required with a snapshotListener, as the restore
-        // asks for the source's snapshot before any row is dispatched.
+        // The logical gateway's sourceId, the one its rows declare. Required with a snapshotListener, whose snapshot
+        // counter it labels.
         std::int32_t sourceId = UNRESOLVED;
         // What serializes this instance's state for snapshot rounds and restores it on start; without one it takes
         // part in none, whatever its rows say, and recovers from globalSeqNo 1. Must outlive the gateway.
@@ -119,11 +117,6 @@ class Gateway
         // other instance, its pair's included, may write it. A restart restores from what it holds, so it must
         // outlive the process.
         std::filesystem::path snapshotDirectory;
-        // Whether this instance holds no state until it is activated (doc/snapshot.md §4). Until then the listener
-        // sees no payload and no connection, and takes part in no round, so it writes no snapshot; on activation the
-        // instance restores the newest one its directory holds, or replays from globalSeqNo 1 without one, before it
-        // serves. A failover to it races the activation deadline, so it suits state that replays well inside 5 s.
-        bool passive = false;
     };
 
     /**
@@ -139,7 +132,7 @@ class Gateway
       m_actions{ *this },
       m_lifecycle{ m_config.gatewayName, m_actions },
       m_store{ snapshotStore(m_config) },
-      m_snapshots{ m_config.snapshotListener, m_store.get(), m_config.passive, [this] { m_session.keepAlive(); } },
+      m_snapshots{ m_config.snapshotListener, m_store.get(), [this] { m_session.keepAlive(); } },
       m_restore{ *this },
       m_dispatch{ *this },
       m_session{ m_config.clientId, m_config.pendingCapacity, m_config.tapStallTimeoutMs,
@@ -150,7 +143,7 @@ class Gateway
         static_assert(GatewayListener<Listener>);
         if (m_store)
         {
-            m_session.restoreFrom(m_config.sourceId, *m_store, m_restore);
+            m_session.restoreFrom(*m_store, m_restore);
         }
     }
 
@@ -170,25 +163,27 @@ class Gateway
                                     "seqeron.gateway.connections member=" + std::to_string(m_config.memberId) +
                                         " client=" + std::to_string(m_config.clientId),
                                     m_config.memberId, m_config.clientId);
+        if (m_snapshots.isListening())
+        {
+            m_snapshotRoundCounterRegId = protocol::addAppCounter(
+                m_aeron, protocol::APP_SNAPSHOT_ROUND_TYPE_ID,
+                "seqeron.app.snapshotRound source=" + std::to_string(m_config.sourceId) +
+                    " member=" + std::to_string(m_config.memberId) + " client=" + std::to_string(m_config.clientId),
+                m_config.memberId, m_config.clientId);
+        }
         m_session.start(std::move(aeron), m_config.memberId, m_config.egressChannel, m_config.ingressEndpoints);
     }
 
     // One duty-cycle iteration: the cluster session and the tap, then whatever the connection lifecycle, the
-    // election and a snapshot round still owe. A passive instance that has been activated starts over here. Nothing
-    // once fenced, so a designation dispatched in the cycle that fenced opens no gate. Returns units of work done,
-    // for the caller's idle strategy.
+    // election and a snapshot round still owe. Nothing once fenced, so a designation dispatched in the cycle that
+    // fenced opens no gate. Returns units of work done, for the caller's idle strategy.
     int doWork()
     {
         int work = m_session.doWork();
-        updateConnectionsCounter();
+        updateCounters();
         if (m_session.isFenced())
         {
             return work;
-        }
-        if (m_snapshots.activate(m_lifecycle.isActivated(), m_session.isCaughtUp()))
-        {
-            m_session.restart();
-            return work + 1;
         }
         work += drainLifecycle();
         work += m_session.isCaughtUp() ? m_lifecycle.advance() : 0;
@@ -331,12 +326,6 @@ class Gateway
         return m_lifecycle.isServing();
     }
 
-    // Whether this instance still holds no state: passive and not yet activated.
-    [[nodiscard]] bool isPassive() const noexcept
-    {
-        return !m_snapshots.holdsState();
-    }
-
     // This logical gateway's sourceId, shared with its standby; UNRESOLVED until a row names it.
     [[nodiscard]] std::int32_t sourceId() const noexcept
     {
@@ -365,10 +354,12 @@ class Gateway
         m_session.close();
         m_connectionsCounter.reset();
         m_connectionsCounterRegId = -1;
+        m_snapshotRoundCounter.reset();
+        m_snapshotRoundCounterRegId = -1;
     }
 
   private:
-    void updateConnectionsCounter()
+    void updateCounters()
     {
         if (!m_connectionsCounter && m_connectionsCounterRegId >= 0)
         {
@@ -377,6 +368,14 @@ class Gateway
         if (m_connectionsCounter)
         {
             m_connectionsCounter->set(static_cast<std::int64_t>(m_connections.size()));
+        }
+        if (!m_snapshotRoundCounter && m_snapshotRoundCounterRegId >= 0)
+        {
+            m_snapshotRoundCounter = m_aeron->findCounter(m_snapshotRoundCounterRegId);
+        }
+        if (m_snapshotRoundCounter)
+        {
+            m_snapshotRoundCounter->set(m_snapshots.confirmedRound());
         }
     }
 
@@ -500,7 +499,7 @@ class Gateway
     };
 
     // What a restore hands over in place of the frames before the cut: the header's election state and connection
-    // id resume point, then, unless passive, the application's records.
+    // id resume point, then the application's records.
     class Restore final : public replayer::client::SnapshotRestoreHandler
     {
       public:
@@ -540,7 +539,7 @@ class Gateway
 
         // A submitted system payload carries no messageHeader, so its block length and version come from this
         // build's own constants (doc/seqeron-protocol-spec.md §7, V-3) — which is what decodeSystem supplies, for a
-        // synthesized frame as much as a submitted one. A passive instance reads the election alone.
+        // synthesized frame as much as a submitted one.
         void onSystem(const protocol::SequencedEvent& event)
         {
             m_gateway.observeConnectionId(event.sourceId, event.connectionId);
@@ -550,13 +549,13 @@ class Gateway
                 // keeps per-connection state rebuilds it from these while it replays, and releases it on the
                 // close — a client that drops its socket without logging out produces no payload at all.
                 case protocol::CONNECTION_OPENED:
-                    if (m_gateway.m_snapshots.holdsState() && event.sourceId == m_gateway.m_lifecycle.gatewaySourceId())
+                    if (event.sourceId == m_gateway.m_lifecycle.gatewaySourceId())
                     {
                         m_gateway.dispatchConnectionOpened(event);
                     }
                     break;
                 case protocol::CONNECTION_CLOSED:
-                    if (m_gateway.m_snapshots.holdsState() && event.sourceId == m_gateway.m_lifecycle.gatewaySourceId())
+                    if (event.sourceId == m_gateway.m_lifecycle.gatewaySourceId())
                     {
                         m_gateway.m_listener.onConnectionClosed(event.connectionId);
                     }
@@ -585,7 +584,8 @@ class Gateway
                 }
                 case protocol::SNAPSHOT_STARTED: {
                     auto started = protocol::decodeSystem<sbe::frame::SnapshotStarted>(event);
-                    m_gateway.m_snapshots.onSnapshotStarted(started.round(), m_gateway.snapshotHeader(),
+                    m_gateway.m_snapshots.onSnapshotStarted(started.round(), event.globalSeqNo, event.position,
+                                                            event.clusterTimestampNs, m_gateway.snapshotHeader(),
                                                             m_gateway.m_lifecycle.isAnnounced());
                     break;
                 }
@@ -618,10 +618,7 @@ class Gateway
         void onPayload(const Payload& payload)
         {
             m_gateway.observeConnectionId(payload.sourceId(), payload.connectionId());
-            if (m_gateway.m_snapshots.holdsState())
-            {
-                m_gateway.m_listener.onSequenced(payload);
-            }
+            m_gateway.m_listener.onSequenced(payload);
         }
 
         void onCaughtUp(const std::int64_t globalSeqNo)
@@ -704,6 +701,9 @@ class Gateway
     std::shared_ptr<aeron::Aeron> m_aeron;
     std::int64_t m_connectionsCounterRegId = -1;
     std::shared_ptr<aeron::Counter> m_connectionsCounter;
+    // The last round this instance confirmed, null until its async add resolves, and never without a listener.
+    std::int64_t m_snapshotRoundCounterRegId = -1;
+    std::shared_ptr<aeron::Counter> m_snapshotRoundCounter;
 
     // The highest connectionId this logical gateway's history holds; the resume point for §7's row.
     std::int32_t m_highestConnectionId = NO_CONNECTION;

@@ -18,11 +18,8 @@ import org.limitless.seqeron.replayer.client.SnapshotStore;
  * <p>No takeover: an instance that is not the publisher at the cut submits nothing for that round, and a
  * publisher that loses the role stops for good.
  *
- * <p>It is also what a restore hands the snapshot's records to (§7), passing the source's own to the listener.
- *
- * <p>A passive instance holds no state until it is activated (§4): it takes part in no round, a restore hands its
- * listener nothing, and the façade dispatches it no payload while {@link #holdsState} is false. The C++ twin is
- * {@code app/detail/SnapshotTaker.hpp}; keep the two in step.
+ * <p>It is also what a restore hands the snapshot's records to (§7), passing the source's own to the listener. The
+ * C++ twin is {@code app/detail/SnapshotTaker.hpp}; keep the two in step.
  */
 final class SnapshotTaker implements SnapshotRestoreHandler {
     /** How an instance places the end of a round it publishes. */
@@ -36,10 +33,9 @@ final class SnapshotTaker implements SnapshotRestoreHandler {
     private final UnsafeBuffer encoding = new UnsafeBuffer(new byte[SnapshotFormat.MAX_RECORD_LENGTH]);
     private final CRC32C crc = new CRC32C();
     private boolean participating;
-    private boolean passive;
     private long round = -1;
-    /** The last round this instance confirmed, kept beside the next as its fallback; -1 for none yet. */
-    private long confirmedRound = -1;
+    /** The last round this instance confirmed; 0 for none yet. */
+    private long confirmedRound;
     private boolean serialized;
     private boolean publishing;
     private int recordCount;
@@ -48,32 +44,12 @@ final class SnapshotTaker implements SnapshotRestoreHandler {
     /**
      * @param listener  what serializes the state, or null if this build takes part in no round
      * @param store     where this instance keeps its snapshots; null exactly when {@code listener} is
-     * @param passive   whether this instance holds no state until it is activated
-     * @param keepAlive  keeps the cluster session alive while a round is serialized; self-throttling
+     * @param keepAlive keeps the cluster session alive while a round is serialized; self-throttling
      */
-    SnapshotTaker(final SnapshotListener listener, final SnapshotStore store, final boolean passive,
-                  final Runnable keepAlive) {
+    SnapshotTaker(final SnapshotListener listener, final SnapshotStore store, final Runnable keepAlive) {
         this.listener = listener;
         this.store = store;
-        this.passive = passive;
         this.keepAlive = keepAlive;
-    }
-
-    /** Whether this instance holds the source's state: false while it is passive. */
-    boolean holdsState() {
-        return !passive;
-    }
-
-    /**
-     * Ends passivity once this instance is activated and caught up on the election.
-     * @return true exactly then: the façade restarts its recovery, which restores the state this instance now holds
-     */
-    boolean activate(final boolean activated, final boolean caughtUp) {
-        if (!passive || !activated || !caughtUp) {
-            return false;
-        }
-        passive = false;
-        return true;
     }
 
     /**
@@ -84,8 +60,18 @@ final class SnapshotTaker implements SnapshotRestoreHandler {
         participating = snapshot && listener != null;
     }
 
+    /** Whether this build takes part in rounds at all: it was given a listener. */
+    boolean isListening() {
+        return listener != null;
+    }
+
     boolean isParticipating() {
         return participating;
+    }
+
+    /** The last round this instance confirmed, its snapshot counter's value; 0 for none yet. */
+    long confirmedRound() {
+        return confirmedRound;
     }
 
     /**
@@ -94,21 +80,25 @@ final class SnapshotTaker implements SnapshotRestoreHandler {
      * listener's bug; the round is dropped, as it is on every instance of the same build, and so is one whose
      * header outgrows a record. One that no longer takes part still abandons the round it held. The cluster
      * session is kept alive after each record, so the round may take as long as its state needs.
-     * @param startedRound its {@code round}
-     * @param header       the façade's header as of the cut
-     * @param mayPublish   whether this instance is the one that publishes at the cut
+     * @param startedRound   its {@code round}
+     * @param cutGlobalSeqNo its {@code globalSeqNo}, the cut
+     * @param cutPosition    where it starts in the recording
+     * @param cutTimestampNs its consensus timestamp
+     * @param header         the façade's header as of the cut
+     * @param mayPublish     whether this instance is the one that publishes at the cut
      */
-    void onSnapshotStarted(final long startedRound, final SnapshotHeader header, final boolean mayPublish) {
+    void onSnapshotStarted(final long startedRound, final long cutGlobalSeqNo, final long cutPosition,
+                           final long cutTimestampNs, final SnapshotHeader header, final boolean mayPublish) {
         publishing = false;
         serialized = false;
-        if (passive || !participating || header.encodedLength() > SnapshotFormat.MAX_RECORD_LENGTH) {
+        if (!participating || header.encodedLength() > SnapshotFormat.MAX_RECORD_LENGTH) {
             return;
         }
         round = startedRound;
         crc.reset();
         recordCount = 0;
         length = 0;
-        store.begin(round);
+        store.begin(round, cutGlobalSeqNo, cutPosition, cutTimestampNs);
         append(header.encode(encoding, 0));
         for (int recordIndex = 0;; recordIndex++) {
             final int recordLength = listener.onSnapshot(encoding, recordIndex);
@@ -127,8 +117,8 @@ final class SnapshotTaker implements SnapshotRestoreHandler {
     }
 
     /**
-     * The source's own {@code SnapshotEnd} was dispatched. One that matches makes the previous confirmed round's
-     * file the oldest this instance keeps.
+     * The source's own {@code SnapshotEnd} was dispatched. One that matches confirms this instance's file of the
+     * round, which then replaces every older one.
      * @return false if it is for the round this instance serialized and disagrees with it: this instance has
      *     diverged from the log (A-7)
      */
@@ -141,9 +131,7 @@ final class SnapshotTaker implements SnapshotRestoreHandler {
         if (endRecordCount != recordCount || endLength != length || crc32c != crc.getValue()) {
             return false;
         }
-        if (confirmedRound >= 0) {
-            store.deleteBefore(confirmedRound);
-        }
+        store.confirm(round);
         confirmedRound = round;
         return true;
     }
@@ -166,16 +154,12 @@ final class SnapshotTaker implements SnapshotRestoreHandler {
     /** The source took part at the cut, and its topology row lies before it, never to be dispatched here. */
     @Override
     public void onSnapshotHeader(final SnapshotHeader header) {
-        if (!passive) {
-            participating(true);
-        }
+        participating(true);
     }
 
     @Override
     public void onSnapshotRecord(final DirectBuffer record, final int length, final int recordIndex) {
-        if (!passive) {
-            listener.onRestore(record, length, recordIndex);
-        }
+        listener.onRestore(record, length, recordIndex);
     }
 
     /**

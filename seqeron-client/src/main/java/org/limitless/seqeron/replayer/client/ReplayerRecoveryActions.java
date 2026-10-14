@@ -12,9 +12,6 @@ interface ReplayerRecoveryActions {
      */
     void sendReplayRequest(long requestId, long fromPosition);
 
-    /** Offers a {@code SnapshotQuery}; best-effort, like the request. */
-    void sendSnapshotQuery(long requestId, int sourceId, long round);
-
     /** Subscribes to exactly one replay — this one — for as long as the client rides it. */
     void openReplay(long replaySessionId);
 

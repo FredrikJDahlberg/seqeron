@@ -23,11 +23,8 @@ namespace org::limitless::seqeron::app::detail {
  * No takeover: an instance that is not the publisher at the cut submits nothing for that round, and a publisher
  * that loses the role stops for good.
  *
- * It is also what a restore hands the snapshot's records to (§7), passing the source's own to the listener.
- *
- * A passive instance holds no state until it is activated (§4): it takes part in no round, a restore hands its
- * listener nothing, and the façade dispatches it no payload while holdsState() is false. The Java twin is
- * app/SnapshotTaker.java; keep the two in step.
+ * It is also what a restore hands the snapshot's records to (§7), passing the source's own to the listener. The
+ * Java twin is app/SnapshotTaker.java; keep the two in step.
  *
  * Actions, how an instance places the end of a round it publishes, provides:
  *   protocol::Publish publishEnd(std::int64_t round, std::int32_t recordCount, std::uint64_t length,
@@ -43,15 +40,13 @@ class SnapshotTaker final : public replayer::client::SnapshotRestoreHandler
      *                  this object
      * @param store     where this instance keeps its snapshots; nullptr exactly when listener is, and must outlive
      *                  this object
-     * @param passive   whether this instance holds no state until it is activated
      * @param keepAlive keeps the cluster session alive while a round is serialized; self-throttling
      */
-    SnapshotTaker(SnapshotListener* const listener, replayer::client::SnapshotStore* const store, const bool passive,
+    SnapshotTaker(SnapshotListener* const listener, replayer::client::SnapshotStore* const store,
                   std::function<void()> keepAlive) :
       m_listener{ listener },
       m_store{ store },
-      m_keepAlive{ std::move(keepAlive) },
-      m_passive{ passive }
+      m_keepAlive{ std::move(keepAlive) }
     {}
 
     SnapshotTaker(const SnapshotTaker&) = delete;
@@ -72,27 +67,16 @@ class SnapshotTaker final : public replayer::client::SnapshotRestoreHandler
         return m_participating;
     }
 
-    // Whether this instance holds the source's state: false while it is passive.
-    [[nodiscard]] bool holdsState() const
+    // Whether this build takes part in rounds at all: it was given a listener.
+    [[nodiscard]] bool isListening() const
     {
-        return !m_passive;
+        return m_listener != nullptr;
     }
 
-    /**
-     * Ends passivity once this instance is activated and caught up on the election.
-     *
-     * @param activated whether the pair's designation names this instance
-     * @param caughtUp  whether this instance has caught up on the tap
-     * @return true exactly then: the façade restarts its recovery, which restores the state this instance now holds
-     */
-    bool activate(const bool activated, const bool caughtUp)
+    // The last round this instance confirmed, its snapshot counter's value; 0 for none yet.
+    [[nodiscard]] std::int64_t confirmedRound() const
     {
-        if (!m_passive || !activated || !caughtUp)
-        {
-            return false;
-        }
-        m_passive = false;
-        return true;
+        return m_confirmedRound;
     }
 
     /**
@@ -102,15 +86,20 @@ class SnapshotTaker final : public replayer::client::SnapshotRestoreHandler
      * record. One that no longer takes part still abandons the round it held. The cluster session is kept alive
      * after each record, so the round may take as long as its state needs.
      *
-     * @param round      its round
-     * @param header     the façade's header as of the cut
-     * @param mayPublish whether this instance is the one that publishes at the cut
+     * @param round          its round
+     * @param cutGlobalSeqNo its globalSeqNo, the cut
+     * @param cutPosition    where it starts in the recording
+     * @param cutTimestampNs its consensus timestamp
+     * @param header         the façade's header as of the cut
+     * @param mayPublish     whether this instance is the one that publishes at the cut
      */
-    void onSnapshotStarted(const std::int64_t round, const protocol::SnapshotHeader& header, const bool mayPublish)
+    void onSnapshotStarted(const std::int64_t round, const std::int64_t cutGlobalSeqNo, const std::int64_t cutPosition,
+                           const std::int64_t cutTimestampNs, const protocol::SnapshotHeader& header,
+                           const bool mayPublish)
     {
         m_publishing = false;
         m_serialized = false;
-        if (m_passive || !m_participating || header.encodedLength() > protocol::MAX_SNAPSHOT_RECORD_LENGTH)
+        if (!m_participating || header.encodedLength() > protocol::MAX_SNAPSHOT_RECORD_LENGTH)
         {
             return;
         }
@@ -118,7 +107,7 @@ class SnapshotTaker final : public replayer::client::SnapshotRestoreHandler
         m_crc = 0;
         m_recordCount = 0;
         m_length = 0;
-        m_store->begin(round);
+        m_store->begin(round, cutGlobalSeqNo, cutPosition, cutTimestampNs);
         append(header.encode(m_encoding.data()));
         for (std::int32_t recordIndex = 0;; ++recordIndex)
         {
@@ -140,8 +129,8 @@ class SnapshotTaker final : public replayer::client::SnapshotRestoreHandler
     }
 
     /**
-     * Takes the source's own dispatched SnapshotEnd. One that matches makes the previous confirmed round's file the
-     * oldest this instance keeps.
+     * Takes the source's own dispatched SnapshotEnd. One that matches confirms this instance's file of the round, which
+     * then replaces every older one.
      *
      * @return false if it is for the round this instance serialized and disagrees with it: this instance has
      *         diverged from the log (A-7)
@@ -159,10 +148,7 @@ class SnapshotTaker final : public replayer::client::SnapshotRestoreHandler
         {
             return false;
         }
-        if (m_confirmedRound >= 0)
-        {
-            m_store->deleteBefore(m_confirmedRound);
-        }
+        m_store->confirm(round);
         m_confirmedRound = round;
         return true;
     }
@@ -187,18 +173,12 @@ class SnapshotTaker final : public replayer::client::SnapshotRestoreHandler
     // The source took part at the cut, and its topology row lies before it, never to be dispatched here.
     void onSnapshotHeader(const protocol::SnapshotHeader&) override
     {
-        if (!m_passive)
-        {
-            participating(true);
-        }
+        participating(true);
     }
 
     void onSnapshotRecord(const std::span<const std::uint8_t> record, const std::int32_t recordIndex) override
     {
-        if (!m_passive)
-        {
-            m_listener->onRestore(record, recordIndex);
-        }
+        m_listener->onRestore(record, recordIndex);
     }
 
     /**
@@ -235,10 +215,9 @@ class SnapshotTaker final : public replayer::client::SnapshotRestoreHandler
     std::function<void()> m_keepAlive;
     std::vector<std::uint8_t> m_encoding = std::vector<std::uint8_t>(protocol::MAX_SNAPSHOT_RECORD_LENGTH);
     bool m_participating = false;
-    bool m_passive;
     std::int64_t m_round = -1;
-    // The last round this instance confirmed, kept beside the next as its fallback; -1 for none yet.
-    std::int64_t m_confirmedRound = -1;
+    // The last round this instance confirmed; 0 for none yet.
+    std::int64_t m_confirmedRound = 0;
     bool m_serialized = false;
     bool m_publishing = false;
     std::int32_t m_recordCount = 0;

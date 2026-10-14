@@ -100,11 +100,6 @@ public final class MetricsExporter {
                           + "control stream. Each costs that app one resend interval and nothing else, so a rising "
                           + "rate — not the absolute value — is what identifies a wedged replica.",
                       "counter")),
-        Map.entry(SeqeronCounters.REPLAYER_SNAPSHOT_ROUND_TYPE_ID,
-                  new MetricMeta("seqeron_replayer_snapshot_round",
-                                 "Round of the latest valid snapshot this node has indexed, per source. A source "
-                                     + "whose round lags the others' is missing rounds.",
-                                 "gauge")),
         Map.entry(SeqeronCounters.REPLAYER_THROTTLED_REQUESTS_COUNT_TYPE_ID,
                   new MetricMeta("seqeron_replayer_throttled_requests_total",
                                  "Count of replay requests held because the tap recording trailed the tap while a "
@@ -117,6 +112,11 @@ public final class MetricsExporter {
                           + "up, else 0. It is holding, which is correct — but it is not serving, and this is the "
                           + "only signal that says so.",
                       "gauge")),
+        Map.entry(SeqeronCounters.APP_SNAPSHOT_ROUND_TYPE_ID,
+                  new MetricMeta("seqeron_app_snapshot_round",
+                                 "The last snapshot round this client confirmed. A client whose round lags the "
+                                     + "others' is missing rounds.",
+                                 "gauge")),
         Map.entry(SeqeronCounters.GATEWAY_CONNECTIONS_TYPE_ID,
                   new MetricMeta("seqeron_gateway_connections",
                                  "Connections this gateway instance holds open; 0 on a standby.", "gauge")));
@@ -248,8 +248,6 @@ public final class MetricsExporter {
                 .append('"');
             if (typeId >= SeqeronCounters.APP_TYPE_ID_MIN && typeId <= SeqeronCounters.APP_TYPE_ID_MAX) {
                 samples.append(",client=\"").append(keyBuffer.getInt(SeqeronCounters.KEY_CLIENT_ID_OFFSET)).append('"');
-            } else if (typeId == SeqeronCounters.REPLAYER_SNAPSHOT_ROUND_TYPE_ID) {
-                samples.append(",source=\"").append(keyBuffer.getInt(SeqeronCounters.KEY_SOURCE_ID_OFFSET)).append('"');
             }
             samples.append("} ").append(reader.getCounterValue(counterId)).append('\n');
         });

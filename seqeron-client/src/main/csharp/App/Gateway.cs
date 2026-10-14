@@ -25,9 +25,7 @@ namespace Org.Limitless.Seqeron.App;
 /// instance whose snapshot differs from the one sequenced is fenced with <see cref="ClusterError.SnapshotDiverged"/>.
 /// On start, an instance given a listener restores the newest snapshot of its own that the log confirms and resumes
 /// after its cut, or replays from <c>globalSeqNo</c> 1 without one; one it cannot restore is fenced with
-/// <see cref="ClusterError.SnapshotUnrestorable"/>. A <see cref="GatewayOptions.Passive"/> instance holds no state
-/// until it is activated: it follows the tap for the election alone, then restores and catches up before it
-/// serves.</para>
+/// <see cref="ClusterError.SnapshotUnrestorable"/>.</para>
 /// <para>Single-threaded: every member belongs to the caller's one duty-cycle thread, which calls
 /// <see cref="DoWork"/> each iteration. <c>Gateway.java</c> and <c>app/Gateway.hpp</c> are its twins; keep the three
 /// in step.</para>
@@ -86,6 +84,8 @@ public sealed class Gateway : IDisposable
     // Connections this instance holds open, taken and not yet closed while serving; the connections gauge.
     private readonly HashSet<int> _connections = new HashSet<int>();
     private Counter _connectionsCounter;
+    private Counter _snapshotRoundCounter;
+    private readonly int _sourceId;
 
     // The highest connectionId this logical gateway's history holds; the resume point for §7's row.
     private int _highestConnectionId = NoConnection;
@@ -110,6 +110,7 @@ public sealed class Gateway : IDisposable
             throw new ArgumentException("SnapshotDirectory is required with a SnapshotListener", nameof(options));
         }
         _listener = options.Listener;
+        _sourceId = options.SourceId;
         _memberId = options.MemberId;
         _clientId = options.ClientId;
         _egressChannel = options.EgressChannel;
@@ -118,13 +119,13 @@ public sealed class Gateway : IDisposable
         SbeBuffers.Wrap(_bodyView, _body, 0, _body.Capacity);
         _lifecycle = new GatewayLifecycle(options.GatewayName, new LifecycleActions(this));
         SnapshotStore store = options.SnapshotListener == null ? null : new SnapshotStore(options.SnapshotDirectory);
-        _snapshots = new SnapshotTaker(options.SnapshotListener, store, options.Passive, KeepAlive);
+        _snapshots = new SnapshotTaker(options.SnapshotListener, store, KeepAlive);
         _session = new Session(options.ClientId, options.PendingCapacity, options.TapStallTimeoutMs,
                                options.RecoveryStallTimeoutMs, new SessionDispatch(this));
         _snapshotFrames = new SnapshotFrames(_session, () => _lifecycle.GatewaySourceId);
         if (store != null)
         {
-            _session.RestoreFrom(options.SourceId, store, new Restore(this));
+            _session.RestoreFrom(store, new Restore(this));
         }
     }
 
@@ -136,24 +137,27 @@ public sealed class Gateway : IDisposable
         _connectionsCounter = SeqeronCounters.AddAppCounter(
             aeron, SeqeronCounters.GatewayConnectionsTypeId,
             $"seqeron.gateway.connections member={_memberId} client={_clientId}", _memberId, _clientId);
+        if (_snapshots.IsListening)
+        {
+            _snapshotRoundCounter = SeqeronCounters.AddAppCounter(
+                aeron, SeqeronCounters.AppSnapshotRoundTypeId,
+                $"seqeron.app.snapshotRound source={_sourceId} member={_memberId} client={_clientId}", _memberId,
+                _clientId);
+        }
     }
 
     /// <summary>One duty-cycle iteration: the cluster session and the tap, then whatever the connection lifecycle,
-    /// the election and a snapshot round still owe. A passive instance that has been activated starts over
-    /// here. Nothing once fenced, so a designation dispatched in the cycle that fenced opens no gate.</summary>
+    /// the election and a snapshot round still owe. Nothing once fenced, so a designation dispatched in the cycle that
+    /// fenced opens no gate.</summary>
     /// <returns>units of work done, for the caller's idle strategy</returns>
     public int DoWork()
     {
         int work = _session.DoWork();
         _connectionsCounter?.Set(_connections.Count);
+        _snapshotRoundCounter?.Set(_snapshots.ConfirmedRound);
         if (_session.IsFenced)
         {
             return work;
-        }
-        if (_snapshots.Activate(_lifecycle.IsActivated, _session.IsCaughtUp))
-        {
-            _session.Restart();
-            return work + 1;
         }
         work += DrainLifecycle();
         work += _session.IsCaughtUp ? _lifecycle.Advance() : 0;
@@ -267,9 +271,6 @@ public sealed class Gateway : IDisposable
     /// has stood it down.</summary>
     public bool IsServing => _lifecycle.IsServing;
 
-    /// <summary>Whether this instance still holds no state: passive and not yet activated.</summary>
-    public bool IsPassive => !_snapshots.HoldsState;
-
     /// <summary>This logical gateway's <c>sourceId</c>, shared with its standby; <see cref="Unresolved"/> until a
     /// <c>GatewayRegistered</c> row names it.</summary>
     public int SourceId => _lifecycle.GatewaySourceId;
@@ -287,6 +288,8 @@ public sealed class Gateway : IDisposable
         _session.Dispose();
         _connectionsCounter?.Dispose();
         _connectionsCounter = null;
+        _snapshotRoundCounter?.Dispose();
+        _snapshotRoundCounter = null;
     }
 
     private int Open(byte[] connectionData)
@@ -403,7 +406,7 @@ public sealed class Gateway : IDisposable
     }
 
     // What a restore hands over in place of the frames before the cut: the header's election state and connection id
-    // resume point, then, unless passive, the application's records.
+    // resume point, then the application's records.
     private sealed class Restore : ISnapshotRestoreHandler
     {
         private readonly Gateway _gateway;
@@ -451,7 +454,7 @@ public sealed class Gateway : IDisposable
         }
 
         // A submitted system payload carries no MessageHeader, so each decode takes this build's own block length and
-        // version (doc/seqeron-protocol-spec.md §7, V-3). A passive instance reads the election alone.
+        // version (doc/seqeron-protocol-spec.md §7, V-3).
         public void OnSystem(SequencedEvent sequencedEvent)
         {
             Gateway g = _gateway;
@@ -470,13 +473,13 @@ public sealed class Gateway : IDisposable
                     }
                     break;
                 case SystemFrame.ConnectionOpened:
-                    if (g._snapshots.HoldsState && sequencedEvent.SourceId == g._lifecycle.GatewaySourceId)
+                    if (sequencedEvent.SourceId == g._lifecycle.GatewaySourceId)
                     {
                         DispatchConnectionOpened(sequencedEvent);
                     }
                     break;
                 case SystemFrame.ConnectionClosed:
-                    if (g._snapshots.HoldsState && sequencedEvent.SourceId == g._lifecycle.GatewaySourceId)
+                    if (sequencedEvent.SourceId == g._lifecycle.GatewaySourceId)
                     {
                         g._listener.OnConnectionClosed(sequencedEvent.ConnectionId);
                     }
@@ -498,8 +501,9 @@ public sealed class Gateway : IDisposable
                     Wrap(sequencedEvent);
                     _snapshotStarted.WrapForDecode(_view, 0, Frame.SnapshotStarted.BlockLength,
                                                    Frame.SnapshotStarted.SchemaVersion);
-                    g._snapshots.OnSnapshotStarted(_snapshotStarted.Round, g.CurrentSnapshotHeader(),
-                                                   g._lifecycle.IsAnnounced);
+                    g._snapshots.OnSnapshotStarted(_snapshotStarted.Round, sequencedEvent.GlobalSeqNo,
+                                                   sequencedEvent.Position, sequencedEvent.ClusterTimestampNs,
+                                                   g.CurrentSnapshotHeader(), g._lifecycle.IsAnnounced);
                     break;
                 case SystemFrame.SnapshotEnd:
                     if (sequencedEvent.SourceId != g._lifecycle.GatewaySourceId)
@@ -530,10 +534,7 @@ public sealed class Gateway : IDisposable
         public void OnPayload(Payload payload)
         {
             _gateway.ObserveConnectionId(payload.SourceId, payload.ConnectionId);
-            if (_gateway._snapshots.HoldsState)
-            {
-                _gateway._listener.OnSequenced(payload);
-            }
+            _gateway._listener.OnSequenced(payload);
         }
 
         public void OnCaughtUp(long globalSeqNo)

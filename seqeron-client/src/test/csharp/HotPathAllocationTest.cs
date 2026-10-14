@@ -124,10 +124,6 @@ public class HotPathAllocationTest
         {
         }
 
-        public void SendSnapshotQuery(long requestId, int sourceId, long round)
-        {
-        }
-
         public void OpenReplay(long replaySessionId)
         {
         }

@@ -169,7 +169,6 @@ top-level rather than nested, per .NET design guidelines.
 | `egressChannel` | required | required | | cluster session egress channel |
 | `ingressEndpoints` | ✓ | ✓ | `PortLayout.ingressEndpoints()` | member ingress endpoints |
 | `offCluster` | | ✓ | false | single instance on a gateway host ([Application](#application)) |
-| `passive` | ✓ | | false | no state until activated ([Gateway](#gateway)) |
 | `snapshotListener` | ✓ | ✓ | none | participate in snapshot rounds |
 | `snapshotDirectory` | with `snapshotListener` | with `snapshotListener` | | this instance's snapshot files |
 | `pendingCapacity` | ✓ | ✓ | 1,024 | messages tracked by confirmed ingress; beyond it `publish` returns `Declined` |
@@ -233,7 +232,7 @@ gateway.close();
 | `openConnection()` / `openConnection(data, length)` | allocate a connection id and place `ConnectionOpened`, retried by `doWork()` |
 | `closeConnection(id)` | place `ConnectionClosed`; dropped for a connection the cluster never saw |
 | `publish(connectionId, payloadId, payload, length)` | submit a payload under this gateway's `sourceId`. C++ also `publish<Encoder>(connectionId, payloadId, fill)` |
-| `isActivated()`, `isServing()`, `isPassive()`, `sourceId()`, `gatewayId()`, `isCaughtUp()`, `lastGlobalSeqNo()` | instance state; `sourceId()` and `gatewayId()` are `UNRESOLVED` until a `GatewayRegistered` row names the instance |
+| `isActivated()`, `isServing()`, `sourceId()`, `gatewayId()`, `isCaughtUp()`, `lastGlobalSeqNo()` | instance state; `sourceId()` and `gatewayId()` are `UNRESOLVED` until a `GatewayRegistered` row names the instance |
 
 | listener callback | trigger |
 |---|---|
@@ -245,17 +244,11 @@ gateway.close();
 | `onClusterHeartbeat(clusterTimeNs, receiveTimeNs)` | 1 Hz cluster clock |
 | `onFenced(ClusterError, detail)` | terminal: the session is already released, so the standby takes over, and a serving edge has had `onStandby`; normally exit |
 
-**Snapshots.** With a `snapshotListener` the gateway also requires `sourceId` (the pair's, needed before any
-topology row is dispatched) and `snapshotDirectory` (per instance, not per pair). Every instance writes a
+**Snapshots.** With a `snapshotListener` the gateway also requires `sourceId` (the pair's, which labels the
+instance's snapshot counter) and `snapshotDirectory` (per instance, not per pair). Every instance writes a
 file at each cut; the instance whose `GatewayStarted` for its current activation has been placed submits the
 round's `SnapshotEnd`. The façade's file header carries the pair's rows, the active instance and the
 highest connection id, replacing the pre-cut messages on restore. See [Snapshots](#snapshots).
-
-**Passive instances.** With `passive(true)` an instance holds no state until activated: it follows the tap
-for the election only, its listener receives no payloads or connections, and it skips snapshot rounds. On
-activation it restores the newest confirmed file in its directory (from when it last served), or replays
-from `globalSeqNo` 1, and serves once caught up. This races the 5 s activation deadline
-([`snapshot.md`](snapshot.md) §4); use it only for state that catches up well within that.
 
 **Reference implementations.** `TestGateway` (`seqeron-service/src/test/java/org/limitless/seqeron/tools/TestGateway.java`);
 `seqeron-examples/src/java/example/GatewayApp.java` and `src/cpp/GatewayApp.cpp` (one pair, from
@@ -300,8 +293,8 @@ equivalent, and `src/csharp/Directory.Build.targets`).
 
 [`snapshot.md`](snapshot.md) specifies the protocol. A façade participates when it has a `snapshotListener`
 (C++: a `SnapshotListener*` that outlives the façade) and, for an `Application`, its topology row sets
-`snapshot="true"`. `snapshotDirectory` holds one file per round and must outlive the process
-([`snapshot.md`](snapshot.md) §4.1).
+`snapshot="true"`. `snapshotDirectory` holds the instance's confirmed file and the one being written, and must
+outlive the process ([`snapshot.md`](snapshot.md) §4.1).
 
 | listener operation | Java | C++ | C# |
 |---|---|---|---|
@@ -313,11 +306,11 @@ equivalent, and `src/csharp/Directory.Build.targets`).
    until it returns 0. Each call encodes one record (at most 65,535 bytes) and returns its length;
    `recordIndex` 0 restarts iteration, and a length outside 0–65,535 abandons the round.
 2. **Every instance writes its own file.** The publishing instance (open gate, or the gateway's active
-   instance as above) submits `SnapshotEnd`; every instance compares it with its own and fences with
-   `SNAPSHOT_DIVERGED` on mismatch.
-3. **On start**, the newest log-confirmed file is restored before any dispatch: `onRestore` once per record
-   in write order, `recordIndex` 0 meaning clear state. Dispatch resumes after the cut; with no confirmed
-   file, from `globalSeqNo` 1.
+   instance as above) submits `SnapshotEnd`; every instance compares it with its own, confirms its file on a
+   match and fences with `SNAPSHOT_DIVERGED` on a mismatch.
+3. **On start**, the newest confirmed file whose cut the recording holds is restored before any dispatch:
+   `onRestore` once per record in write order, `recordIndex` 0 meaning clear state. Dispatch resumes after the
+   cut; with no such file, from `globalSeqNo` 1.
 4. **An unreadable file** (unsupported `formatVersion`, corrupt records) fences with
    `SNAPSHOT_UNRESTORABLE` (C++/C# `ClusterError::SnapshotUnrestorable`; divergence is
    `ClusterError::SnapshotDiverged`).
@@ -345,22 +338,20 @@ directory and passes the host's node id (unused by any member) as `memberId`. `G
 | operation | Java | C++ | C# |
 |---|---|---|---|
 | construct | `(clientId, onSequenced, onLeadershipChanged, onCaughtUp)` | `(clientId, onSequenced, onConnected, onDisconnected, onLeadershipChanged, onCaughtUp)` | as Java, callbacks as delegates |
-| snapshot restore | `restoreFrom(sourceId, SnapshotStore, SnapshotRestoreHandler)`, before `start` | `restoreFrom(sourceId, SnapshotStore&, SnapshotRestoreHandler&)`, before `start` | `RestoreFrom(sourceId, SnapshotStore, ISnapshotRestoreHandler)`, before `Start` |
+| snapshot restore | `restoreFrom(SnapshotStore, SnapshotRestoreHandler)`, before `start` | `restoreFrom(SnapshotStore&, SnapshotRestoreHandler&)`, before `start` | `RestoreFrom(SnapshotStore, ISnapshotRestoreHandler)`, before `Start` |
 | attach | `start(aeron, memberId)` | `start(aeron, memberId)` | `Start(aeron, memberId)` |
 | duty cycle | `poll()` | `poll()` | `Poll()` |
-| cold restart | `restart()` | `restart()` | `Restart()` |
 | state | `isCaughtUp()`, `lastGlobalSeqNo()`, `currentLeaderMemberId()`, `restoreFailure()` | same; `restoreFailure()` is `std::optional<std::string>` | same, as properties; `RestoreFailure` null if none |
 | release | `close()` | `close()`, or the destructor | `Dispose()` |
 
 Single-threaded, like the façades.
 
-**Snapshot restore.** `restoreFrom` makes the cold start take the newest file in the store that the log
-confirms — the Replayer holds the source's sequenced `SnapshotEnd` for that round and the file matches it —
-handing header and records to the handler, a bounded number per `poll()`, before dispatching from the message
-after the cut ([`snapshot.md`](snapshot.md) §7). An unconfirmed file falls back to the next older, the last
-to `globalSeqNo` 1. An unrestorable snapshot (unsupported format or header version, records failing the
-trailer) halts recovery permanently; `restoreFailure()` gives the reason. `restart()` is a cold start:
-restore again and redispatch everything after the cut. Passive gateway activation uses it.
+**Snapshot restore.** `restoreFrom` makes the cold start take the newest confirmed file in the store whose
+cut a replay finds in the recording, handing header and records to the handler, a bounded number per
+`poll()`, before dispatching from the message after the cut ([`snapshot.md`](snapshot.md) §7). A file whose
+cut the recording does not hold falls back to the next older, the last to `globalSeqNo` 1. An unrestorable
+snapshot (unsupported format or header version, records failing the trailer) halts recovery permanently;
+`restoreFailure()` gives the reason.
 
 ### Client ids
 

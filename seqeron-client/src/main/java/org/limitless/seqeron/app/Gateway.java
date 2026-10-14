@@ -43,8 +43,7 @@ import org.limitless.seqeron.sbe.frame.SnapshotStartedDecoder;
  * whose snapshot differs from the one sequenced is fenced with {@link ClusterError#SNAPSHOT_DIVERGED}. On start, an
  * instance given a listener restores the newest snapshot of its own that the log confirms and resumes after its
  * cut, or replays from {@code globalSeqNo} 1 without one; one it cannot restore is fenced with {@link
- * ClusterError#SNAPSHOT_UNRESTORABLE}. A {@linkplain Builder#passive passive} instance holds no state until it is
- * activated: it follows the tap for the election alone, then restores and catches up before it serves.
+ * ClusterError#SNAPSHOT_UNRESTORABLE}.
  *
  * <p>Single-threaded: every method belongs to the caller's one duty-cycle thread, which calls
  * {@link #doWork()} each iteration. The C++ twin is {@code app/Gateway.hpp}; keep the two in step.
@@ -129,6 +128,7 @@ public final class Gateway implements AutoCloseable {
     private final Listener listener;
     private final SnapshotTaker snapshots;
     private final SnapshotFrames snapshotFrames;
+    private final int sourceId;
     private final int memberId;
     private final int clientId;
     private final String egressChannel;
@@ -153,6 +153,7 @@ public final class Gateway implements AutoCloseable {
     /** Connections this instance holds open, taken and not yet closed while serving; the connections gauge. */
     private final Set<Integer> connections = new HashSet<>();
     private Counter connectionsCounter;
+    private Counter snapshotRoundCounter;
 
     /** The highest {@code connectionId} this logical gateway's history holds; the resume point for §7's row. */
     private int highestConnectionId = NO_CONNECTION;
@@ -160,6 +161,7 @@ public final class Gateway implements AutoCloseable {
 
     private Gateway(final Builder builder) {
         this.listener = builder.listener;
+        this.sourceId = builder.sourceId;
         this.memberId = builder.memberId;
         this.clientId = builder.clientId;
         this.egressChannel = builder.egressChannel;
@@ -167,12 +169,12 @@ public final class Gateway implements AutoCloseable {
         this.lifecycle = new GatewayLifecycle(builder.gatewayName, new LifecycleActions());
         final SnapshotStore store =
             builder.snapshotListener == null ? null : new SnapshotStore(builder.snapshotDirectory);
-        this.snapshots = new SnapshotTaker(builder.snapshotListener, store, builder.passive, this::keepAlive);
+        this.snapshots = new SnapshotTaker(builder.snapshotListener, store, this::keepAlive);
         this.session = new Session(builder.clientId, builder.pendingCapacity, builder.tapStallTimeoutMs,
                                    builder.recoveryStallTimeoutMs, new SessionDispatch());
         this.snapshotFrames = new SnapshotFrames(session, lifecycle::gatewaySourceId);
         if (store != null) {
-            session.restoreFrom(builder.sourceId, store, new Restore());
+            session.restoreFrom(store, new Restore());
         }
     }
 
@@ -186,12 +188,18 @@ public final class Gateway implements AutoCloseable {
         connectionsCounter = SeqeronCounters.addAppCounter(
             aeron, SeqeronCounters.GATEWAY_CONNECTIONS_TYPE_ID,
             "seqeron.gateway.connections member=" + memberId + " client=" + clientId, memberId, clientId);
+        if (snapshots.isListening()) {
+            snapshotRoundCounter = SeqeronCounters.addAppCounter(
+                aeron, SeqeronCounters.APP_SNAPSHOT_ROUND_TYPE_ID,
+                "seqeron.app.snapshotRound source=" + sourceId + " member=" + memberId + " client=" + clientId,
+                memberId, clientId);
+        }
     }
 
     /**
      * One duty-cycle iteration: the cluster session and the tap, then whatever the connection lifecycle, the
-     * election and a snapshot round still owe. A passive instance that has been activated starts over here.
-     * Nothing once fenced, so a designation dispatched in the cycle that fenced opens no gate.
+     * election and a snapshot round still owe. Nothing once fenced, so a designation dispatched in the cycle that
+     * fenced opens no gate.
      * @return units of work done, for the caller's idle strategy
      */
     public int doWork() {
@@ -199,12 +207,11 @@ public final class Gateway implements AutoCloseable {
         if (connectionsCounter != null) {
             connectionsCounter.set(connections.size());
         }
+        if (snapshotRoundCounter != null) {
+            snapshotRoundCounter.set(snapshots.confirmedRound());
+        }
         if (session.isFenced()) {
             return work;
-        }
-        if (snapshots.activate(lifecycle.isActivated(), session.isCaughtUp())) {
-            session.restart();
-            return work + 1;
         }
         work += drainLifecycle();
         work += session.isCaughtUp() ? lifecycle.advance() : 0;
@@ -312,11 +319,6 @@ public final class Gateway implements AutoCloseable {
         return lifecycle.isServing();
     }
 
-    /** Whether this instance still holds no state: passive and not yet activated. */
-    public boolean isPassive() {
-        return !snapshots.holdsState();
-    }
-
     /**
      * This logical gateway's {@code sourceId}, shared with its standby; {@link #UNRESOLVED} until a
      * {@code GatewayRegistered} row names it.
@@ -344,6 +346,9 @@ public final class Gateway implements AutoCloseable {
         session.close();
         if (connectionsCounter != null) {
             connectionsCounter.close();
+        }
+        if (snapshotRoundCounter != null) {
+            snapshotRoundCounter.close();
         }
     }
 
@@ -447,7 +452,7 @@ public final class Gateway implements AutoCloseable {
 
     /**
      * What a restore hands over in place of the frames before the cut: the header's election state and connection id
-     * resume point, then, unless passive, the application's records.
+     * resume point, then the application's records.
      */
     private final class Restore implements SnapshotRestoreHandler {
         @Override
@@ -474,7 +479,7 @@ public final class Gateway implements AutoCloseable {
     private final class SessionDispatch implements Session.Dispatch {
         /**
          * A submitted system payload carries no MessageHeader, so each decode takes this build's own block length and
-         * version (doc/seqeron-protocol-spec.md §7, V-3). A passive instance reads the election alone.
+         * version (doc/seqeron-protocol-spec.md §7, V-3).
          */
         @Override
         public void onSystem(final SequencedEvent event) {
@@ -490,12 +495,12 @@ public final class Gateway implements AutoCloseable {
                 }
                 break;
             case SystemFrame.CONNECTION_OPENED:
-                if (snapshots.holdsState() && event.sourceId() == lifecycle.gatewaySourceId()) {
+                if (event.sourceId() == lifecycle.gatewaySourceId()) {
                     dispatchConnectionOpened(event);
                 }
                 break;
             case SystemFrame.CONNECTION_CLOSED:
-                if (snapshots.holdsState() && event.sourceId() == lifecycle.gatewaySourceId()) {
+                if (event.sourceId() == lifecycle.gatewaySourceId()) {
                     listener.onConnectionClosed(event.connectionId());
                 }
                 break;
@@ -512,7 +517,8 @@ public final class Gateway implements AutoCloseable {
             case SystemFrame.SNAPSHOT_STARTED:
                 snapshotStarted.wrap(event.buffer(), event.payloadOffset(), SnapshotStartedDecoder.BLOCK_LENGTH,
                                      SnapshotStartedDecoder.SCHEMA_VERSION);
-                snapshots.onSnapshotStarted(snapshotStarted.round(), snapshotHeader(), lifecycle.isAnnounced());
+                snapshots.onSnapshotStarted(snapshotStarted.round(), event.globalSeqNo(), event.position(),
+                                            event.clusterTimestampNs(), snapshotHeader(), lifecycle.isAnnounced());
                 break;
             case SystemFrame.SNAPSHOT_END:
                 if (event.sourceId() != lifecycle.gatewaySourceId()) {
@@ -539,9 +545,7 @@ public final class Gateway implements AutoCloseable {
         @Override
         public void onPayload(final Payload payload) {
             observeConnectionId(payload.sourceId(), payload.connectionId());
-            if (snapshots.holdsState()) {
-                listener.onSequenced(payload);
-            }
+            listener.onSequenced(payload);
         }
 
         @Override
@@ -585,7 +589,6 @@ public final class Gateway implements AutoCloseable {
         private int sourceId = UNRESOLVED;
         private SnapshotListener snapshotListener;
         private Path snapshotDirectory;
-        private boolean passive;
         private int clientId;
         private int memberId;
         private String egressChannel;
@@ -603,7 +606,7 @@ public final class Gateway implements AutoCloseable {
 
         /**
          * The logical gateway's {@code sourceId}, the one its rows declare. Required with a {@link
-         * #snapshotListener}, as the restore asks for the source's snapshot before any row is dispatched.
+         * #snapshotListener}, whose snapshot counter it labels.
          */
         public Builder sourceId(final int sourceId) {
             this.sourceId = sourceId;
@@ -626,18 +629,6 @@ public final class Gateway implements AutoCloseable {
          */
         public Builder snapshotDirectory(final Path snapshotDirectory) {
             this.snapshotDirectory = snapshotDirectory;
-            return this;
-        }
-
-        /**
-         * Whether this instance holds no state until it is activated (doc/snapshot.md §4). Until then the listener
-         * sees no payload and no connection, and takes part in no round, so it writes no snapshot; on activation the
-         * instance restores the newest one its directory holds, or replays from {@code globalSeqNo} 1 without one,
-         * before it serves. A failover to it races the activation deadline, so it suits state that replays well
-         * inside 5 s.
-         */
-        public Builder passive(final boolean passive) {
-            this.passive = passive;
             return this;
         }
 

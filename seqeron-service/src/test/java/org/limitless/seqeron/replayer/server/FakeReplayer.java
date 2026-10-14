@@ -57,11 +57,6 @@ final class FakeReplayer implements Replayer {
 
     private final Set<Long> endedReplays = new HashSet<>();
 
-    private final Deque<byte[]> indexFrames = new ArrayDeque<>();
-    private final List<long[]> indexStreamsOpened = new ArrayList<>();
-    private long indexPosition;
-    private boolean indexEnded;
-    private final Map<Long, AtomicCounter> sourceCounters = new HashMap<>();
 
     // Direct buffers, not byte[]: CountersManager requires 8-byte alignment.
     private final CountersManager countersManager = new CountersManager(
@@ -165,25 +160,6 @@ final class FakeReplayer implements Replayer {
     /** Ends a replay, as the archive reaching its bound and its client letting it go does. */
     void endReplay(final long replaySessionId) {
         endedReplays.add(replaySessionId);
-    }
-
-    /** Queues one frame for the open index replay, at the position after the last one queued. */
-    void enqueueIndexFrame(final byte[] frame) {
-        indexFrames.add(frame);
-    }
-
-    /** Ends the open index replay, as an archive dropping it does. */
-    void endIndexStream() {
-        indexEnded = true;
-    }
-
-    /** Each index replay opened: its recording and start position. */
-    List<long[]> indexStreamsOpened() {
-        return indexStreamsOpened;
-    }
-
-    long sourceCounter(final int typeId, final int sourceId) {
-        return sourceCounters.get(((long)typeId << 32) | sourceId).get();
     }
 
     /** What every subsequent control offer returns; a negative value is an Aeron offer failure. */
@@ -292,45 +268,6 @@ final class FakeReplayer implements Replayer {
     @Override
     public boolean isReplayLive(final long replaySessionId) {
         return !endedReplays.contains(replaySessionId);
-    }
-
-    @Override
-    public IndexStream openIndexStream(final long recordingId, final long position) {
-        throwIfArchiveDown();
-        indexStreamsOpened.add(new long[] {recordingId, position});
-        indexPosition = position;
-        indexEnded = false;
-        return new IndexStream() {
-            @Override
-            public int poll(final IndexFrameHandler handler, final int fragmentLimit) {
-                int read = 0;
-                while (read < fragmentLimit && !indexFrames.isEmpty()) {
-                    final byte[] frame = indexFrames.poll();
-                    final long start = indexPosition;
-                    indexPosition += frame.length;
-                    handler.onFrame(new UnsafeBuffer(frame), 0, frame.length, start);
-                    ++read;
-                }
-                return read;
-            }
-
-            @Override
-            public boolean isEnded() {
-                return indexEnded;
-            }
-
-            @Override
-            public void close() {
-                indexFrames.clear();
-            }
-        };
-    }
-
-    @Override
-    public AtomicCounter newSourceCounter(final int typeId, final String label, final int sourceId) {
-        final AtomicCounter counter = countersManager.newCounter(label, typeId);
-        sourceCounters.put(((long)typeId << 32) | sourceId, counter);
-        return counter;
     }
 
     @Override
