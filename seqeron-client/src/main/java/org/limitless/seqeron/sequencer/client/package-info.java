@@ -7,8 +7,9 @@
  * in its envelope and offers it, returning {@link org.limitless.seqeron.protocol.Publish}.
  * {@link org.limitless.seqeron.sequencer.client.PendingSends} is what makes a send a frame sequenced.
  *
- * <p>This is what the façades in {@code org.limitless.seqeron.app} are assembled from. A producer that takes
- * one never sees this package; reach for it directly only to assemble a duty cycle of your own.
+ * <p>This is what the façades in {@code org.limitless.seqeron.app} are assembled from, and it is not client API:
+ * it is public for the façades and seqeron's own tools, which sit in other packages, and carries no
+ * compatibility guarantee. A producer takes a façade and never sees this package.
  * {@link org.limitless.seqeron.sequencer.client.IngressTracker} and
  * {@link org.limitless.seqeron.sequencer.client.IngressSender} are the seams {@code PendingSends} and
  * {@code ClusterStreamSender} fill — implement them only to replace those.

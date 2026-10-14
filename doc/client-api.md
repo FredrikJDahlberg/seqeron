@@ -4,8 +4,8 @@ The API of the **client tier**: the `org.limitless:seqeron` artifact (Java), the
 CMake target (C++) and the `Org.Limitless.Seqeron` package (C#). `seqeron-service` (sequencer, Replayer
 server, tools, metrics exporter) is the service tier and is not client API.
 
-The types this page names are the API; other public types exist only for cross-package access
-([Internal types](#internal-types)). The wire contract is
+The types this page names are the API, except those under [Internal types](#internal-types): public only
+for cross-package access, with no compatibility guarantee. The wire contract is
 [`seqeron-protocol-spec.md`](seqeron-protocol-spec.md); the design rationale is in [`overview.md`](overview.md).
 
 The sections before [Façades](#façades-app) define the model and the contract; the rest is reference.
@@ -17,7 +17,6 @@ The sections before [Façades](#façades-app) define the model and the contract;
 | **Gateway** | Edge producer deployed as an active/hot-standby pair, the active instance designated by the cluster: exchange session, client gateway, feed handler | [`Gateway`](#gateway) |
 | **Replicated service** | One replica per cluster member, deterministic over the stream, publishing from the leader's replica | [`Application`](#application) |
 | **Consumer** | Reads the stream and publishes nothing: audit, risk, downstream feed | [`ReplayerStreamReceiver`](#replayerstreamreceiver) |
-| **Custom producer** | Producer that owns its duty cycle rather than taking a façade | `ReplayerStreamReceiver` with `ClusterStreamSender`, `IngressPublisher`, `PendingSends` ([Producing](#producing)) |
 | **Offline reader** | Decodes messages from a recording, outside a live client | `SequencedFrameDecoder` (Java, C#), `unwrapFrame` / `ClusterStreamClient` (C++) |
 
 ## Guarantees
@@ -27,7 +26,7 @@ The sections before [Façades](#façades-app) define the model and the contract;
 | [`ReplayerStreamReceiver`](#replayerstreamreceiver) | Every log message exactly once, in `globalSeqNo` order: archive replay from the local recording, then the live tap, with gap detection and resumption internal. Optional snapshot restore first. | Filtering: every consumer receives every producer's messages. |
 | [`Gateway`](#gateway) | One instance of an active/hot-standby pair; the cluster designates the active instance. A connection id space never reused across handovers, and every connection's open and close on the log, so a successor knows its predecessor's connection state. Nothing an instance sends after a sibling is designated reaches the log (spec **S-6**). Confirmed ingress; fencing. | Edge connection continuity across a handover: the successor reopens the edge and counterparties reconnect. |
 | [`Application`](#application) | One replica per cluster member, all holding identical state; only the leader's replica publishes. Work outstanding at a failover is redispatched by the next leader's replica (`OutstandingWork`). Confirmed ingress; fencing. | Exactly-once replies: across a failover, delivery is at-least-once. |
-| [`PendingSends`](#producing) (inside both façades) | Every placed message is sequenced exactly once, in order, across any number of leader failovers. | Producer process failure: a restarted producer, or a promoted standby, starts with nothing pending. A replaced cluster session, or a gateway instance a sibling superseded: what was pending is dropped. |
+| Confirmed ingress (both façades) | Every placed message is sequenced exactly once, in order, across any number of leader failovers. | Producer process failure: a restarted producer, or a promoted standby, starts with nothing pending. A replaced cluster session, or a gateway instance a sibling superseded: what was pending is dropped. |
 | [Snapshots](#snapshots) (both façades) | Restart from the newest log-confirmed snapshot, then only the messages after its cut. Fencing of any instance whose state diverges from its source's. | Member restart: a member always replays its full log. |
 
 A **fence** is `onFenced(ClusterError, detail)`, raised once, after which the instance takes no further
@@ -325,8 +324,8 @@ equivalent, and `src/csharp/Directory.Build.targets`).
 The façades are composed of I/O-free state machines with twins in every language. `OutstandingWork` —
 leader-only request/reply tracking, redispatched after failover — is the only one exposed, since it models
 the application's work rather than seqeron's. The election, leader gate and stall fences are
-package-private (Java), `internal` (C#) or in `app::detail` (C++). Confirmed ingress, needed by a custom
-duty cycle, is in [`sequencer.client`](#producing).
+package-private (Java), `internal` (C#) or in `app::detail` (C++). Confirmed ingress is
+[`PendingSends`](#producer-components), an internal type.
 
 ## `ReplayerStreamReceiver`
 
@@ -405,21 +404,6 @@ envelope from a raw tap message read out of a recording. `ClusterStreamClient` (
 that keeps the archive session `connectLocalArchive` or `connectToArchiveWithClusterStream` returned calls
 `pollArchiveSession` every duty cycle, because the archive closes a session whose pings go unread.
 
-## Producing
-
-The façades compose these; use them directly only with a custom duty cycle.
-
-| type | role |
-|---|---|
-| `ClusterStreamSender` | The cluster session (Java and C# wrap `AeronCluster`). `connectColocated(aeron, memberId, …)` uses IPC ingress to the local member, falling back to UDP when it is not leader; `connect(…)` is UDP only. Both take the UDP ingress endpoint list `"0=host:port,1=host:port,…"`, needed for fallback and reconnect. The default (`PortLayout.ingressEndpoints()` in Java/C#, `protocol::ingressEndpointsCsv()` in C++, offset by `SEQERON_PORT_BASE`) covers the hosts in `SEQERON_HOSTS`, else every member on `localhost`; `PortLayout.parseHosts` and `ingressEndpoints(List)` (C++ `parseHosts`, `ingressEndpointsCsv(hosts)`) build any other. C++ connects to all members concurrently and follows a follower's redirect to the leader. `send` spins through back pressure and elections. Call `keepAlive()` and `pollEgress()` every duty cycle. |
-| `IngressPublisher` | Encode and offer; returns `protocol.Publish`: `Published`, `Refused` (above `MAX_PAYLOAD_LENGTH`; nothing offered; final), or `Declined` (transport result; retryable). Java/C#: `publishPayload`/`publishSystem` on pre-encoded bytes. C++: free functions templated on the encoder, populated via a `Fill`. |
-| `offerFrame` (C++) | Offers a caller-encoded message; both `publish*` functions end here. Use it for schemaless payloads (spec §13.2), which C++'s encoder-templated `publishPayload` cannot express. Takes the same `IngressTracker`, so confirmation still applies. |
-| `SystemFrame` (Java, C#) | Wraps an encoded payload in its envelope and returns the length; the offer is the caller's. |
-| `PendingSends` | Confirmed ingress. A successful offer is not a sequenced message, and a failover silently drops what the old leader had not committed. Install it as `IngressPublisher`'s tracker and on the sender via `setIngressHold`, feed it your own tap and each leadership term, and call `resendMissing` (spec §16 A-4, A-5). |
-
-`IngressTracker` (implemented by `PendingSends`) and `IngressSender` (implemented by `ClusterStreamSender`)
-are seams; implement them only to replace those types.
-
 ## Packages
 
 Aeron's layout: a component's server at the package root, its client in `.client`, shared wire contract in
@@ -428,7 +412,7 @@ Aeron's layout: a component's server at the package root, its client in `.client
 | package | tier | contents |
 |---|---|---|
 | `protocol` | client | `FrameLayer`, `SystemFrame`, `SequencedFrameDecoder`, `PortLayout`, `ReplayProtocol`, `SeqeronCounters`, `Publish` (C++: `SequencedFrame.hpp`, `PortLayout.hpp`, `ReplayProtocol.hpp`, `SeqeronCounters.hpp`, `Publish.hpp`) |
-| `sequencer.client` | client | `ClusterStreamSender`, `IngressPublisher`, `PendingSends`, `IngressTracker` (C++ also `ClusterStreamClient`) |
+| `sequencer.client` | client | internal: the [producer components](#producer-components) (C++ also `ClusterStreamClient`) |
 | `replayer.client` | client | `ReplayerStreamReceiver`, its callback types (`SequencedHandler`, `LeadershipHandler`, `CaughtUpHandler`), `SnapshotRestoreHandler`, `SnapshotStore`; `SequencedEvent` in Java and C# (C++: `protocol`, beside `unwrapFrame` and `decodeSystem`/`decodeSequenced`) |
 | `app` | client | the façades and their components |
 | `util` | client | support code |
@@ -481,6 +465,23 @@ Visible for cross-package or test access only; no compatibility guarantee.
   two buffer interfaces). The C# test assembly reaches them via `InternalsVisibleTo`.
 - **`seqeron-service`**: `Sequencer`, `SequencerService`, `SequencerServer`, `TapPublisher`,
   `replayer.server`, `tools`, `MetricsExporter`.
+- **`sequencer.client`**: the producer components below.
+
+### Producer components
+
+The façades are assembled from these, and seqeron's own tools use them directly. They are public because
+those callers sit in other packages, not as a supported way to produce: a producer takes a façade.
+
+| type | role |
+|---|---|
+| `ClusterStreamSender` | The cluster session (Java and C# wrap `AeronCluster`). `connectColocated(aeron, memberId, …)` uses IPC ingress to the local member, falling back to UDP when it is not leader; `connect(…)` is UDP only. Both take the UDP ingress endpoint list `"0=host:port,1=host:port,…"`, needed for fallback and reconnect. The default (`PortLayout.ingressEndpoints()` in Java/C#, `protocol::ingressEndpointsCsv()` in C++, offset by `SEQERON_PORT_BASE`) covers the hosts in `SEQERON_HOSTS`, else every member on `localhost`; `PortLayout.parseHosts` and `ingressEndpoints(List)` (C++ `parseHosts`, `ingressEndpointsCsv(hosts)`) build any other. C++ connects to all members concurrently and follows a follower's redirect to the leader. `send` spins through back pressure and elections. Call `keepAlive()` and `pollEgress()` every duty cycle. |
+| `IngressPublisher` | Encode and offer; returns `protocol.Publish`: `Published`, `Refused` (above `MAX_PAYLOAD_LENGTH`; nothing offered; final), or `Declined` (transport result; retryable). Java/C#: `publishPayload`/`publishSystem` on pre-encoded bytes. C++: free functions templated on the encoder, populated via a `Fill`. |
+| `offerFrame` (C++) | Offers a caller-encoded message; both `publish*` functions end here. It carries schemaless payloads (spec §13.2), which C++'s encoder-templated `publishPayload` cannot express. Takes the same `IngressTracker`, so confirmation still applies. |
+| `SystemFrame` (Java, C#) | Wraps an encoded payload in its envelope and returns the length; the offer is the caller's. |
+| `PendingSends` | Confirmed ingress. A successful offer is not a sequenced message, and a failover silently drops what the old leader had not committed. Install it as `IngressPublisher`'s tracker and on the sender via `setIngressHold`, feed it your own tap and each leadership term, and call `resendMissing` (spec §16 A-4, A-5). |
+
+`IngressTracker` (implemented by `PendingSends`) and `IngressSender` (implemented by `ClusterStreamSender`)
+are seams; implement them only to replace those types.
 
 ## Distribution
 
