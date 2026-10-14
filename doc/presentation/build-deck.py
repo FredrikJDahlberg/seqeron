@@ -493,7 +493,7 @@ for ph in s.placeholders:
     else:
         fill_tf(tf, [{"text": "A replicated sequencer on Aeron Cluster", "size": 26, "color": A3}])
 tape(s, 0.8, 5.2, 12, 7, cw=0.52, gap=0.08)
-text(s, 0.8, 5.85, 11.7, 0.4, "Architecture briefing  ·  seqeron 0.12.0  ·  Aeron 1.53.2", size=14, color=A3)
+text(s, 0.8, 5.85, 11.7, 0.4, "Architecture briefing  ·  seqeron 0.13.0  ·  Aeron 1.53.2", size=14, color=A3)
 url = text(s, 0.8, 6.25, 11.7, 0.4, "github.com/FredrikJDahlberg/seqeron", size=14, color=A3)
 url.click_action.hyperlink.address ="https://github.com/FredrikJDahlberg/seqeron"
 notes(s, "seqeron is the sequencing tier: an Aeron Cluster replicated state machine that gives messages from any "
@@ -501,31 +501,32 @@ notes(s, "seqeron is the sequencing tier: an Aeron Cluster replicated state mach
          "deliver that order to every consumer. The row of cells is the deck's motif: the log, numbered by "
          "globalSeqNo.")
 
-s = content("Executive summary", "What seqeron is, what is proven, what is open, and how to try it",
+s = content("Summary", "What seqeron is, what is proven, what a client gets, and how to try it",
             "The one-minute version. seqeron gives every producer's messages one global, gap-free order and every "
             "consumer the same complete history on its own host. Its correctness properties are built in and tested "
-            "against a live cluster; its production properties are not yet established: no performance figures, an "
-            "archive that grows with uptime, no wire security, history lost on a framing protocol upgrade, and no "
-            "disaster-recovery design. It can be evaluated hands-on: a release runs a one-member cluster, the examples "
-            "cover each kind of client in Java, C++ and C# and measure a round trip on your own hardware, and the "
-            "failure harnesses run against a live cluster.")
+            "against a live cluster. Confirmed ingress is exactly once while the producer runs; a restarted producer "
+            "starts with nothing pending, and leader-only replies are at least once across a failover, deduplicated "
+            "by key. A client programs against one façade per kind and writes only its own logic: the "
+            "session, recovery, confirmation and failure handling are behind it, the same in Java, C++ and C#. It can be "
+            "evaluated hands-on: a release runs a one-member cluster, the examples cover each kind of client and "
+            "measure a round trip on your own hardware, and the failure harnesses run against a live cluster. What a "
+            "production deployment needs beyond that, performance figures, a bounded archive, wire security and "
+            "disaster recovery, is in the appendix.")
 text(s, L, 1.75, CW, 0.8, "A Raft-replicated sequencer on Aeron Cluster: one global, gap-free order for every "
      "producer's messages, and the same complete history on every consumer's host. The cluster is Java; clients are "
      "Java, C++ and C#. Open source, Apache 2.0.", size=17)
 summary = [("Proven", A1, [[("Determinism: every decision is a function of the log (S-3)", {})],
                            [("A minority of members can crash with no gap and no renumbering", {})],
-                           [("Confirmed ingress: each message sequenced exactly once, in order, across failovers", {})],
-                           [("A live-cluster harness for every failure, run in CI", {})]]),
-           ("Open before production", A2, [[("Performance: no latency, throughput or sizing figures", {})],
-                                           [("The archive grows with uptime; cluster snapshots designed, not built",
-                                             {})],
-                                           [("No authentication or encryption on the wire", {})],
-                                           [("A framing protocol upgrade purges history", {})],
-                                           [("No disaster-recovery design", {})]]),
+                           [("Confirmed ingress: exactly once, in order, while its producer runs", {})],
+                           [("A live-cluster harness for every failure in the model, run in CI", {})]]),
+           ("What a client gets", A2, [[("One façade, one call per duty cycle, on the caller's thread", {})],
+                                       [("History then live, gap-free, from its own host", {})],
+                                       [("Its own messages confirmed, and resent across a failover", {})],
+                                       [("An elected standby or a leader gate, decided from the log", {})]]),
            ("How to evaluate it", TX, [[("A release runs a one-member cluster; getting-started.md adds a consumer "
                                          "and a producer", {})],
-                                       [("Examples in Java, C++ and C#: a consumer, an application, a gateway pair, "
-                                         "a snapshot restore", {})],
+                                       [("Examples of each kind in Java, C++ and C#; a snapshot restore in Java "
+                                         "and C++", {})],
                                        [("The examples ping through the cluster: a round trip measured on your "
                                          "own hardware", {})],
                                        [("The failure harnesses: leader kills, chaos, a containerized soak", {})]])]
@@ -533,6 +534,9 @@ for i, (t, c, pts) in enumerate(summary):
     x = L + i * (3.84 + 0.305)
     card(s, x, 2.9, 3.84, 3.5, [{"text": t, "size": 18, "bold": True, "head": True, "color": c, "space": 8}]
          + [{"runs": p, "size": 14, "bullet": True, "space": 6} for p in pts], margin=0.22)
+text(s, L, 6.55, CW, 0.4, [{"runs": [("Not yet established: ", {"bold": True, "color": A2}),
+                                    ("performance figures, a bounded archive, wire security, disaster recovery. "
+                                     "The appendix covers each.", {})]}], size=14)
 
 s = content("One replicated order",
             "Every input is stamped once; every service is a deterministic state machine over the result",
@@ -566,40 +570,26 @@ for i, (big, lab, d) in enumerate(stats):
                                   {"text": d, "size": 13, "color": A5}], margin=0.18)
 
 s = content("Context and alternatives", "The problem it solves, and the options it is weighed against",
-            "The alternatives are compared on properties, not numbers, because seqeron's own latency and throughput are not yet measured. Kafka on one partition "
-            "gives a total order and mature tooling, at 5 ms p99 in Confluent's benchmark (1 KB messages at 200 MB/s, "
-            "acks=all, three replicas, fsync off, i3en.2xlarge, August 2020), and has no clock that "
-            "advances while producers are silent and no active/standby producer election. Aeron without clustering gives "
-            "reliable UDP and IPC transport with recording and replay, but no replication: the sequencer is one "
-            "process and a single point of failure. Aeron Cluster used directly "
+            "The alternatives are compared on properties. Kafka on one partition gives a total order and mature "
+            "tooling, but no clock that advances while producers are silent and no active/standby producer election. "
+            "Aeron without clustering gives reliable UDP and IPC transport with recording and replay, but no "
+            "replication: the sequencer is one process and a single point of failure. Aeron Cluster used directly "
             "gives the same consensus and log, but each cluster then rebuilds the tap, replay, the election, confirmed "
-            "ingress and the fences. A database sequence is familiar and transactional, but sequences skip values on "
-            "rollback, so the order is not gap-free, and every message is a database write: its latency is one transaction "
-            "commit, for which no comparable figure is published. Kafka's figure is one way, producer to consumer; "
-            "the Aeron figures are round trips. The Aeron figures are Aeron's "
-            "published round trips for open-source Aeron with the Java media driver at 100,000 messages a second: "
-            "transport 21 µs p50 and 32 µs p99; Aeron Cluster, three nodes in one availability zone on EBS, 95 µs p50 "
-            "and 136 µs p99 (AWS for Industries, Aeron on AWS: 2025 performance benchmark results, 12 February 2026, "
-            "c6in.16xlarge in a cluster placement group). At 1,000,000 messages a second the same open-source cluster's "
-            "p99 rises to about 8.5 ms. On physical hardware Adaptive quotes 18 µs for Aeron transport, without a "
-            "percentile or setup; no comparable figure is published for the cluster. They bound what Aeron costs; seqeron adds sequencing, the tap and the "
-            "producer's confirmation on top, and its own latency is not measured.")
+            "ingress and the fences; the slide Aeron Cluster used directly is that list. A database sequence is familiar and "
+            "transactional, but sequences skip values on rollback, so the order is not gap-free, and every message is "
+            "a database write.")
 card(s, L, 1.75, CW, 1.1, [
     {"text": "Services that must agree on what happened, and in what order: a trading venue, an order management "
              "system, a risk engine. The sequencer architecture settles the order once, in one place, and every "
              "service becomes a deterministic replica of one stream.", "size": 15}], margin=0.2)
-table(s, L, 3.1, [2.45, 3.75, 2.05, 3.88], [
-    ["Option", "Gives", "Round trip p50 / p99", "Drawback"],
-    ["Kafka, one partition", "Total order, retention, mature tooling", "— / 5 ms one way", "No cluster clock or producer election"],
-    ["Aeron", "Reliable UDP and IPC; recording, replay", "21 / 32 µs", "No replication: one sequencer, one point of failure"],
-    ["Aeron Cluster alone", "The same consensus and log", "95 / 136 µs", "Replay, election and confirmed ingress rebuilt per cluster"],
-    ["Database sequence", "Familiar and transactional", "One commit", "Skips values on rollback; a write per message"],
-], size=13, rowh=0.55)
-text(s, L, 5.95, CW, 0.45, ["Aeron: published round trips, open source, 100k msg/s, c6in.16xlarge, one AWS zone (Feb 2026); "
-                           "Adaptive quotes 18 µs on physical hardware.",
-                           "Kafka: Confluent's benchmark, 1 KB at 200 MB/s, acks=all, three replicas, fsync off "
-                           "(Aug 2020). seqeron is not measured."], size=12, color=A5)
-text(s, L, 6.5, CW, 0.4, [{"runs": [("A total order is one serialization point ", {"bold": True}),
+table(s, L, 3.1, [2.6, 4.4, 5.13], [
+    ["Option", "Gives", "Drawback"],
+    ["Kafka, one partition", "Total order, retention, mature tooling", "No cluster clock or producer election"],
+    ["Aeron", "Reliable UDP and IPC; recording, replay", "No replication: one sequencer, one point of failure"],
+    ["Aeron Cluster alone", "The same consensus and log", "Replay, election and confirmed ingress rebuilt per cluster"],
+    ["Database sequence", "Familiar and transactional", "Skips values on rollback; a write per message"],
+], size=14, rowh=0.55)
+text(s, L, 6.1, CW, 0.4, [{"runs": [("A total order is one serialization point ", {"bold": True}),
                                      ("in every option, seqeron's included: its throughput ceiling is the same in "
                                       "kind.", {})]}], size=14, color=A5)
 
@@ -611,7 +601,7 @@ s = content("Aeron Cluster", "Raft over Aeron's transport and archive: replicate
             "to the Raft log, a stream every member's archive records; followers report append positions and an entry "
             "commits at a majority. Every cluster member's service consumes committed entries in the same order. Session "
             "events, timers and the leader's timestamp travel in the log, so time is deterministic too. A restarting "
-            "member normally loads a snapshot and replays the log after it; seqeron disables snapshots, as the Decisions slide covers. Aeron's transport model, media driver and archive are in the appendix.")
+            "member normally loads a snapshot and replays the log after it; seqeron disables snapshots, as the Decisions slide in the appendix covers. Aeron's transport model, media driver and archive are in the appendix.")
 f = Fig(s, L, 1.75, CW / 960)
 f.host(10, 120, 170, 110, "Cluster client")
 f.label(10, 160, 170, 24, "AeronCluster", size=12, color=TX, bold=True)
@@ -662,6 +652,37 @@ for i, (t, a, b) in enumerate(cols):
     text(s, x + 0.25, 5.25, 3.34, 0.9, b, size=14)
 text(s, L, 6.35, CW, 0.4, [{"runs": [("Open source: ", {"bold": True, "color": A1}),
                                     ("Aeron, Agrona and SBE, all Apache 2.0.", {})]}], size=14)
+
+s = content("Aeron Cluster used directly", "What every cluster would otherwise build for itself",
+            "This is the case for seqeron to an Aeron user: what a team building directly on Aeron Cluster writes "
+            "itself, row by row. An offer result says the frame reached the leader's ingress, nothing more, and a "
+            "failover loses whatever the old leader had not committed while the session survives. The archive replays "
+            "bytes from a position and knows nothing of gaps or of catching up, so joining the live stream from history "
+            "without a gap is a state machine to design and prove: ReplayerRecovery, with seeded property tests, in each "
+            "language. Cluster timers exist only inside the clustered service, so a client has no clock while producers "
+            "are silent. Aeron has no notion of an active/standby producer pair, and no way for a client to know its "
+            "view of the log is stale. Its cluster clients are Java and, trailing it, Aeron.NET; the C++ one here is "
+            "written against the wire protocol, and C# runs on Aeron.NET's with every timeout set explicitly.")
+table(s, L, 1.8, [2.85, 4.4, 4.88], [
+    ["Need", "Aeron Cluster gives", "seqeron adds"],
+    ["Know a message is sequenced", "An offer result; failover loses uncommitted ingress silently",
+     "Confirmed ingress: held until its own tap shows it, resent after a term change"],
+    ["Join from history", "Archive replay by byte position; no gaps, no catching up",
+     "Replay-to-live with gap repair and an anchor check, property-tested"],
+    ["A clock while producers are silent", "Timers inside the clustered service only",
+     "ClusterHeartbeat: 1 Hz on consensus time, on every tap"],
+    ["Active/standby producers", "Nothing", "The gateway election, decided from the log"],
+    ["Services outside the member", "Clustered services, in the member's JVM",
+     "Applications on a member or remote, with a leader gate"],
+    ["Clients beyond Java", "A Java cluster client; Aeron.NET trails Aeron",
+     "C++ cluster client (wire protocol) and C# façade"],
+    ["Stop on a stale view", "Nothing", "Fences: close the edge, release the session, report once"],
+], size=13, rowh=0.56)
+card(s, L, 6.45, CW, 0.5, [{"runs": [("Aeron provides the mechanisms ", {"bold": True}),
+                                     ("and almost none of the policy: ", {}),
+                                     ("confirmation, history, recovery, failure handling.", {"bold": True})]}],
+     style="plain", margin=0.12, anchor=MSO_ANCHOR.MIDDLE)
+
 
 # ================================================================= GLANCE
 section("seqeron overview")
@@ -724,8 +745,546 @@ card(s, L, 5.35, CW, 1.25, [{"runs": [("A send that succeeds is not a message se
                                       ("The cluster confirms nothing on egress; step 6 is the producer's own confirmation, "
                                        "on its own tap.", {})], "size": 16}], margin=0.25, anchor=M)
 
-# ================================================================= DECISIONS
-section("Decisions and limits")
+s = content("The tap", "Every cluster member publishes and records its own copy; none is replicated",
+            "All members apply the same committed log in the same order with the same state, so their taps are "
+            "byte-identical frame for frame. Each archive therefore holds complete history: no cross-node replication of "
+            "recordings and no leader-only archive. The tap is created once at start and never re-created on a "
+            "leadership change, so a recording is one continuous run across every leader tenure. The offer is reliable "
+            "because a dropped frame is a permanent hole, and bounded because only the archive, the one tethered "
+            "subscriber, can hold it back. A slow archive that still advances is never timed out. One that makes no "
+            "progress for 200 ms raises the stall gauge, and after 1 s the member exits with code 70 rather than "
+            "throw: a throwing cluster callback has already had its log position advanced.")
+for i in range(3):
+    x = L + i * 1.95
+    text(s, x, 1.85, 1.75, 0.35, f"member {i}", size=12, bold=True, color=A5, align=C)
+    box(s, x, 2.25, 1.75, 0.6, "Raft log", style="box", tsize=13)
+    arrow(s, [(x + 1.11, 2.85), (x + 1.11, 3.46)])
+    text(s, x, 3.22, 1.0, 0.24, "Tap 205", size=10, bold=True, color=A1, anchor=MSO_ANCHOR.MIDDLE)
+    log_cells(s, x, 3.46, 0.22, 0.3, 0.25)
+    arrow(s, [(x + 0.61, 3.76), (x + 0.61, 4.15)])
+    box(s, x, 4.15, 1.75, 0.6, "Archive", style="box", tsize=13)
+text(s, L, 4.95, 5.65, 1.6, [{"text": "Same committed log → byte-identical taps → every archive holds full history.",
+                              "bold": True, "size": 15, "space": 6},
+                             {"text": "The tap survives leadership changes: one continuous recording per member.", "size": 14, "color": A5}])
+text(s, 6.9, 1.85, 5.8, 0.35, "RELIABLE, AND BOUNDED", size=12, bold=True, color=A1)
+table(s, 6.9, 2.25, [2.2, 3.63], [
+    ["Archive state", "Response"],
+    ["Slow, advancing", "Keep retrying; never timed out"],
+    ["No progress 200 ms", "Raise the stall gauge"],
+    ["No progress 1 s", "Terminate the member (exit 70)"],
+    ["Recording gone", "Terminate at once"],
+    ["Stopped silently", "Caught by the 1 Hz liveness check"],
+], size=14, rowh=0.5)
+text(s, 6.9, 5.4, 5.8, 1.2, "A member that cannot keep history stops instead of sequencing history it cannot serve. "
+                            "Peers keep quorum; its restart rebuilds the recording.", size=14, color=A5)
+
+s = content("Live from tap and history from archive", "The Replayer serves one recording to many clients",
+            "Consumers read the tap directly and untethered: one that falls a window behind is dropped by its driver "
+            "within about 0.2 s and heals by replay. History for a cold start or a gap is served by the co-located "
+            "ReplayerService; nothing reads the archive except through it. It serves only the active recording, which "
+            "holds the whole log because every member start replays from globalSeqNo 1. The Replayer checks nothing "
+            "itself: each client checks that its first frame is globalSeqNo 1 and that a resume opens on the frame it "
+            "asked for, and stops otherwise. Four replays at once; a slot frees when its replay's publication leaves the "
+            "driver, at once when the client closes its replay subscription, within the driver's 10 s liveness timeout "
+            "when the client died, below the client's 60 s recovery-stall fence. While the tap's recording trails the "
+            "tap by more than a quarter of the publication "
+            "window, a new replay starts only when none is running: replays compete with the recorder for the disk, and "
+            "the recorder is what holds the sequencer back. seqeron_replayer_throttled_requests_total counts the requests "
+            "held for that reason, and a member warns at start on Linux when its Aeron directory is not on tmpfs. Control "
+            "replies are retried briefly and dropped, never blocked on.")
+box(s, 1.64, 1.6, 1.0, 0.32, "Sequencer", style="box", tsize=11)
+arrow(s, [(2.139, 1.92), (2.139, 2.25)])
+text(s, L, 1.98, 1.4, 0.24, "Tap · aeron:ipc 205", size=10, bold=True, color=A1, anchor=MSO_ANCHOR.MIDDLE)
+log_cells(s, L, 2.25)
+box(s, L, 3.6, 2.3, 0.7, "Archive", style="box", tsize=14)
+box(s, L, 5.2, 2.3, 0.7, "ReplayerService", style="syn", tsize=14)
+arrow(s, [(1.101, 2.61), (1.101, 3.6)])
+arrow(s, [(L + 1.15, 4.3), (L + 1.15, 5.2)])
+box(s, 3.85, 3.6, 1.9, 0.7, "Client", style="box", tsize=14)
+arrow(s, [(1.793, 2.61), (1.793, 2.9), (4.8, 2.9), (4.8, 3.6)], "a")
+text(s, 3.1, 2.52, 2.0, 0.35, "live, untethered", size=12, color=A1)
+arrow(s, [(L + 2.3, 5.55), (4.8, 5.55), (4.8, 4.3)], "w")
+text(s, 3.0, 5.6, 2.0, 0.35, "history", size=12, color=A2)
+rows = [("One recording", "The active one holds the whole log; older ones are prefixes nothing reads."),
+        ("Checked by its clients", "First frame must be globalSeqNo 1, a resume must open where asked, or the client stops."),
+        ("Four slots, one while the recorder is behind", "A slot frees with its replay's publication: a dead client's within 10 s. Clients fence at 60 s."),
+        ("Never held by a client", "Control replies get a bounded retry, then drop; clients resend.")]
+for i, (t, d) in enumerate(rows):
+    y = 1.9 + i * 1.2
+    num_circle(s, 6.4, y + 0.05, i + 1, d=0.45, size=14)
+    text(s, 7.05, y, 5.68, 0.4, t, size=16, bold=True)
+    text(s, 7.05, y + 0.42, 5.68, 0.7, d, size=14, color=A5)
+
+s = content("Header", "Take 18 bytes from ingress, append 16, never touch the payload",
+            "Schema 210, two families. The application family carries an opaque payload named by payloadId: Unsequenced "
+            "on ingress, Sequenced on the tap. The system family is seqeron's own vocabulary, named by systemEventType "
+            "at the same offset 16. Every field is at the same offset in all eight templates, so a consumer tracks "
+            "continuity without branching on message type. sessionId is overwritten by the sequencer with the session "
+            "the frame arrived on; the other ingress fields are copied. Consumers split by "
+            "family first, then dispatch on (payloadId, templateId), never templateId alone. On the wire the 8-byte SBE "
+            "message header comes first and the payload's 2-byte length prefix after the header, so a frame carries "
+            "8 + 18 + 2 = 28 bytes besides its payload on ingress, and 8 + 34 + 2 = 44 on the tap.")
+sc = CW / 880
+f = Fig(s, L - 30 * sc + 0.0, 1.75, sc)
+for u, lab in [(30, "0"), (126, "4"), (222, "8"), (414, "16"), (462, "18"), (654, "26"), (846, "34")]:
+    f.label(u - 20, 10, 40, 22, lab, size=11, color=A5)
+f.box(30, 40, 96, 48, "sourceId", tsize=12)
+f.box(126, 40, 96, 48, "connectionId", tsize=12)
+f.box(222, 40, 192, 48, "sessionId", "set by the sequencer", "syn")
+f.box(414, 40, 48, 48, "payloadId", tsize=8, margin=0)
+f.box(462, 40, 192, 48, "globalSeqNo", style="tap", tsize=13)
+f.box(654, 40, 192, 48, "timestamp", "Raft consensus time, ns", "tap")
+f.arrow([(30, 98), (30, 106), (460, 106), (460, 98)], "ln", head=False)
+f.label(30, 110, 430, 26, "from ingress · 18 bytes, sessionId rewritten", size=12, color=TX)
+f.arrow([(464, 98), (464, 106), (846, 106), (846, 98)], "a", head=False)
+f.label(464, 110, 382, 26, "appended by the sequencer · 16 bytes", size=12, color=A1)
+f.label(30, 140, 816, 24, "Offset 16 is payloadId in the application family and systemEventType in the system family.",
+        size=12)
+card(s, L, 4.15, 5.9, 1.95, [{"text": "Application family", "bold": True, "size": 18, "head": True, "space": 6},
+                            {"text": "Unsequenced (100) → Sequenced (101)", "size": 14, "bold": True, "space": 6},
+                            {"text": "One opaque payload named by payloadId. The cluster decodes no application payload.", "size": 14}])
+card(s, L + 6.23, 4.15, 5.9, 1.95, [{"text": "System family", "bold": True, "size": 18, "head": True, "space": 6},
+                                   {"text": "UnsequencedSystem (102) → SequencedSystem (103), plus 104–107", "size": 14, "bold": True, "space": 6},
+                                   {"text": "Named by systemEventType. Twelve events submitted, four synthesized.", "size": 14}])
+
+s = content("Repairing a gap", "Replay only what was lost; hold live frames meanwhile",
+            "A live frame ahead of the next expected number clears isCaughtUp and requests a resume at the position where "
+            "the last delivered frame ended. The resumed replay's first frame must be the expected number; if not, the "
+            "recording does not match the positions the client holds, and the client stops. Live frames "
+            "past the gap go into a bounded FIFO, 65,536 frames or 16 MiB, and drain when the replay reaches them, so "
+            "recovery ends without a second gap; past either bound it drops them and resumes again at its last delivered "
+            "frame. A replay with no progress for 5 s is requested again. A cold start is "
+            "the same walk from the start. All of it is ReplayerRecovery, a pure state machine with case-for-case tests "
+            "and seeded property tests in Java, C++ and C#.")
+sc = CW / 760
+f = Fig(s, L - 10 * sc, 1.75, sc)
+for lab, y in (("Tap 205", 40), ("Replay 201", 110), ("Delivered", 180)):
+    f.label(10, y, 140, 34, lab, size=14, color=TX, align=PP_ALIGN.LEFT, bold=True)
+tapst = {105: "miss", 106: "held", 107: "held", 108: "held"}
+for k in range(10):
+    n, x = 101 + k, 160 + k * 58
+    st = tapst.get(n, "tap")
+    f.box(x, 40, 50, 34, "×" if n == 105 else str(n), style=st, tsize=13, tcolor=A2 if n == 105 else TX)
+    f.box(x, 180, 50, 34, str(n), style="syn" if n == 105 else "tap", tsize=13)
+f.box(392, 110, 50, 34, "105", style="syn", tsize=13)
+f.arrow([(417, 76), (417, 108)], "d")
+f.label(450, 6, 300, 30, "106 arrives: gap → resume after 104", size=12, color=A2, align=PP_ALIGN.LEFT)
+f.label(450, 80, 300, 26, "106–108 retained in a bounded FIFO", size=12, color=A1, align=PP_ALIGN.LEFT)
+f.label(450, 112, 300, 30, "anchor check: first frame must be 105", size=12, align=PP_ALIGN.LEFT)
+f.label(160, 222, 590, 28, "105 from the replay, then the FIFO drains, then back on the live tap.", size=12,
+        align=PP_ALIGN.LEFT)
+text(s, L, 6.0, CW, 0.7, [{"runs": [("Cold start ", {"bold": True}),
+                                    ("is the same walk from globalSeqNo 1 to the reported end, then the tap, "
+                                     "de-duplicating on globalSeqNo.", {})]}], size=14)
+
+# ================================================================= PRODUCERS
+section("Gateways and applications")
+s = content("Two kinds of producer", "A façade per kind; the application writes its logic and none of seqeron's",
+            "A gateway is an edge producer deployed as an active/hot-standby pair named in the topology; the cluster "
+            "designates the active instance. An application runs one instance on every member, and a member can host "
+            "several applications; LeadershipChanged already picks one instance of each, so only the one on the leader's "
+            "host publishes. Or it runs remote, as the one instance on its own "
+            "host: its gate opens once caught up, whoever leads, and it submits over UDP. Nothing elects "
+            "between two remote instances, so a remote service that needs a standby is a gateway. Both façades run one single-threaded "
+            "duty cycle on the caller's thread: doWork() returns a work count for the caller's idle strategy. The client "
+            "tier starts no threads, and dispatch and confirmed publish allocate nothing once warm, which the C# suite "
+            "tests; Java and C++ have no such test. The deployment is "
+            "declared in one XML topology document that clusterctl load-topology puts on the log.")
+for i, (t, sub, pts) in enumerate([
+        ("Gateway", "active / hot-standby pair",
+         ["Exchange session, client connection, feed handler", "The cluster designates the active instance",
+          "Owns its external connections and a connection-id space"]),
+        ("Application", "one instance on every member, or remote",
+         ["Deterministic service over the stream; several per member", "On a member: publishes only while that member leads",
+          "Remote: one instance on its own host, ingress over UDP",
+          "Owns leader-only work: replies, outbound effects"])]):
+    x = L + i * (5.9 + 0.33)
+    shape(s, x, 1.85, 5.9, 3.0, "card", name="Producer")
+    text(s, x + 0.25, 2.0, 5.4, 0.5, t, size=22, bold=True, head=True)
+    text(s, x + 0.25, 2.5, 5.4, 0.35, sub, size=13, color=A1, bold=True)
+    text(s, x + 0.25, 3.0, 5.4, 1.8, [{"text": p, "bullet": True, "space": 6} for p in pts], size=14)
+text(s, L, 5.1, CW, 0.35, "EACH FAÇADE'S doWork(), ON THE CALLER'S THREAD", size=12, bold=True, color=A5)
+chips = ["Cluster session", "Tap + recovery", "Confirmed ingress", "Election or leader gate", "Fences"]
+cwid = (CW - 4 * 0.3) / 5
+for i, c in enumerate(chips):
+    x = L + i * (cwid + 0.3)
+    box(s, x, 5.5, cwid, 0.7, c, style="tap", tsize=14, kind=MSO_SHAPE.ROUNDED_RECTANGLE)
+    if i < 4:
+        arrow(s, [(x + cwid, 5.85), (x + cwid + 0.3, 5.85)], "a")
+text(s, L, 6.3, CW, 0.65, [
+    {"runs": [("Fence: ", {"bold": True}), ("an instance that can no longer trust its view of the log closes its edge or "
+                                           "leader gate, releases its session, reports once and stops acting.", {})], "space": 2},
+    {"runs": [("Topology: ", {"bold": True}), ("one document declares both kinds; clusterctl load-topology puts it on "
+                                              "the log.", {})]}], size=13, color=A5)
+
+s = content("Java client API", "One object, one call per duty cycle",
+            "Both are from getting-started.md, trimmed to seqeron's part: connecting to the media driver is one Aeron "
+            "call before them, and the idle strategy is Agrona's. The consumer is one object, ReplayerStreamReceiver, and one poll "
+            "per duty cycle: it asks its member's Replayer for the history, delivers it, and switches to the live tap "
+            "when the two meet, every frame once and in globalSeqNo order. The producer takes a façade, here "
+            "Application: it holds the cluster session, follows the stream, confirms its own messages and resends what "
+            "a failover lost, and opens its gate only on the leader's member, so the loop is the application's own logic. "
+            "Published means placed: the message is sequenced when it comes back through onSequenced. onFenced means "
+            "stop: the façade has already closed the gate and released the session, and the examples exit with 70, "
+            "the repository's convention for fenced, restart me. Nothing here starts a thread: doWork() and poll() return a work count for the caller's idle "
+            "strategy. C++ and C# have the same façades; C# takes an options class where Java takes a builder.")
+CONSUMER = """ReplayerStreamReceiver receiver =
+    new ReplayerStreamReceiver(
+        23,                     // clientId
+        event -> handle(event), // history, then live
+        (leader, term, seqNo) -> {},
+        () -> log("caught up"));
+receiver.start(aeron, 0);       // member 0
+while (running) {
+    idle.idle(receiver.poll());
+}"""
+PRODUCER = """Application app = Application.builder()
+    .sourceId(100).clientId(24).memberId(0)
+    .egressChannel(EGRESS)
+    .listener(listener).build();
+app.start(aeron);
+while (running) {
+    final int work = app.doWork();
+    if (pending && app.canPublish()) {
+        // Declined: retry next cycle; Refused is final
+        pending = app.publish(PAYLOAD_ID, msg, length)
+            == Publish.Declined;
+    }
+    idle.idle(work);
+}
+// Listener: frames in order; a fence means stop
+void onSequenced(Payload payload)
+void onFenced(ClusterError fence, String detail)"""
+for i, (t, sub, src) in enumerate([("Consumer", "the read path, no façade needed", CONSUMER),
+                                   ("Producer", "a co-located application", PRODUCER)]):
+    x = L + i * (5.9 + 0.33)
+    text(s, x, 1.75, 5.9, 0.4, [{"runs": [(t, {"bold": True}), ("  " + sub, {"color": A5})]}], size=16)
+    sh = shape(s, x, 2.2, 5.9, 3.4, "card", name="Code")
+    tf = sh.text_frame
+    tf.word_wrap = False
+    tf.vertical_anchor = MSO_ANCHOR.TOP
+    for side in ("left", "right", "top", "bottom"):
+        setattr(tf, "margin_" + side, I(0.18))
+    fill_tf(tf, [{"runs": [(ln.split("//")[0], {}), ("//" + ln.split("//", 1)[1], {"color": A1})]
+                  if "//" in ln else [(ln, {})]} for ln in src.split("\n")], size=11)
+    for para in tf.paragraphs:
+        for r in para.runs:
+            r.font.name = "Menlo"
+pts = [("One thread, yours. ", "doWork() returns a work count; dispatch allocates nothing once warm, tested in C#."),
+       ("Not in your code: ", "the session, recovery, confirmation and resend, the leader gate, the fences."),
+       ("Java, C++ and C#: ", "the same façades; C# takes an options class where Java takes a builder.")]
+for i, (b, d) in enumerate(pts):
+    x = L + i * (3.84 + 0.305)
+    card(s, x, 5.85, 3.84, 0.95, [{"runs": [(b, {"bold": True}), (d, {})], "size": 13}], margin=0.15)
+
+
+s = content("The gateway election", "Every input comes from the log; the output is a sequenced frame",
+            "Walk the tape left to right. The topology rows arrive; the last one has remaining 0, which is the "
+            "completeness edge, and the sequencer synthesizes GatewayActive for each rank-0 instance. GW-A announces "
+            "itself with GatewayStarted, which binds its cluster session, and opens connections. When A's session "
+            "closes, through a crash, network loss or shutdown, the sequencer designates B. B's GatewayStarted carries a "
+            "first connection id above the highest it saw, and a consumer treats it as closing every connection still "
+            "open under the pair, since a crashed instance never closes them. B rebuilt A's connections from the log while "
+            "it was a hot standby.")
+sc = CW / 980
+f = Fig(s, L - 10 * sc, 1.75, sc)
+f.label(10, 0, 400, 26, "log, in globalSeqNo order →", size=12, align=PP_ALIGN.LEFT)
+tape_frames = [("GatewayRegistered", "GW-A · rank 0", "box"), ("GatewayRegistered", "GW-B · rank 1 · last", "box"),
+               ("GatewayActive", "GW-A · bootstrap", "syn"), ("GatewayStarted", "GW-A · binds session", "box"),
+               ("ConnectionOpened", "ids 1 … n, by GW-A", "box"), ("GatewayActive", "GW-B · A's session closed", "syn"),
+               ("GatewayStarted", "GW-B · first id > n", "box")]
+for k, (t, d, st) in enumerate(tape_frames):
+    f.box(10 + k * 138, 34, 128, 82, t, d, st, tsize=11, ssize=10)
+f.label(10, 140, 60, 30, "GW-A", size=13, color=TX, align=PP_ALIGN.LEFT, bold=True)
+f.box(424, 142, 276, 26, "serving", style="bar", tsize=11, tcolor=BG)
+f.label(706, 140, 200, 30, "crashed: session closes", size=11, align=PP_ALIGN.LEFT)
+f.label(10, 190, 60, 30, "GW-B", size=13, color=TX, align=PP_ALIGN.LEFT, bold=True)
+f.box(70, 192, 630, 26, None, style="dim")
+f.label(80, 190, 600, 30, "hot standby: follows the tap, rebuilds A's connections from the log", size=11, color=TX,
+        align=PP_ALIGN.LEFT)
+f.box(838, 192, 128, 26, "serving", style="bar", tsize=11, tcolor=BG)
+y0 = 1.75 + 240 * sc
+shape(s, L, y0 + 0.1, 0.3, 0.3, "syn", name="Legend")
+text(s, L + 0.4, y0 + 0.05, 5, 0.4, "synthesized by the sequencer", size=12, color=A5, anchor=M)
+shape(s, L + 4.2, y0 + 0.1, 0.3, 0.3, "box", name="Legend")
+text(s, L + 4.6, y0 + 0.05, 6, 0.4, "submitted by clusterctl or an instance", size=12, color=A5, anchor=M)
+card(s, L, y0 + 0.7, CW, 0.95, [{"runs": [("Every gateway instance and every application sees the same decision at the same globalSeqNo. ", {"bold": True}),
+                                          ("No two instances can act as active on inconsistent information.", {})], "size": 15}],
+     margin=0.22, anchor=M)
+
+s = content("Leader-only work, through the log", "Outstanding work is replicated; dispatch is local",
+            "Every application instance records a request as outstanding from its sequenced request until its sequenced reply. Only "
+            "the leader's instance dispatches; it replies under the requester's sourceId and connectionId so the "
+            "originating gateway can route it. The request is discharged when the reply is sequenced, not when it is "
+            "sent. Every LeadershipChanged closes the gate, including one naming the same member, because a reply sent "
+            "during the election may have been lost with the old leader's uncommitted log. A newly opened gate "
+            "dispatches every outstanding request in globalSeqNo order. Delivery is at least once across a failover; a "
+            "reply that is a pure function of its request is byte-identical on re-emission and deduplicated by key.")
+sc = CW / 960
+f = Fig(s, L, 1.7, sc)
+f.host(10, 120, 120, 50, "External")
+f.box(170, 120, 150, 50, "Gateway", "active instance")
+f.arrow([(130, 138), (170, 138)])
+f.arrow([(170, 154), (130, 154)])
+f.box(360, 120, 110, 50, "seq N", "request", "tap")
+f.arrow([(320, 145), (360, 145)])
+f.box(510, 40, 180, 50, "Application · member 0", "outstanding: N", tsize=11)
+f.box(510, 120, 180, 50, "Application · member 1", "leader: reply(requester, conn)", "lead", tsize=11)
+f.box(510, 200, 180, 50, "Application · member 2", "outstanding: N", tsize=11)
+for ty in (65, 145, 225):
+    f.arrow([(470, 145), (510, ty)], "d")
+f.box(730, 120, 110, 50, "seq M", "reply", "tap")
+f.arrow([(690, 145), (730, 145)], "a")
+f.label(845, 112, 115, 66, "every instance: N discharged", size=11, align=PP_ALIGN.LEFT)
+f.arrow([(785, 170), (785, 278), (245, 278), (245, 170)], "a")
+f.label(300, 280, 440, 24, "gateway keeps its own sourceId, routes by connectionId", size=11)
+pts3 = [("Replicated", "Outstanding from sequenced request to sequenced reply, on every instance."),
+        ("Gate closes", "On every LeadershipChanged, even for the same leader, and at a fence."),
+        ("At least once", "Deterministic replies make duplicates identical; drop by key.")]
+for i, (t, d) in enumerate(pts3):
+    x = L + i * (3.84 + 0.305)
+    card(s, x, 5.7, 3.84, 1.05, [{"runs": [(t + "  ", {"bold": True}), (d, {})], "size": 13}], margin=0.15, anchor=M)
+
+s = content("Confirmed ingress", "A failover can lose uncommitted ingress silently; the producer's own tap finds it",
+            "A send returns once the frame is on the leader's ingress publication; the cluster confirms nothing. Frames "
+            "the old leader had not committed are lost, and the session survives, so neither side sees a fault: about "
+            "5,500 frames at 100 µs pacing in the failover harness. PendingSends holds each placed frame until the "
+            "producer's own tap shows it, matched by cluster session. A LeadershipChanged with a newer term identifies "
+            "exactly which were lost: the newest frames stamped with the old term that have not appeared. Nothing new is "
+            "placed until they are resent, oldest first. Each frame is then sequenced exactly once, in order. The limit: "
+            "this is in memory, so a restarted producer or a promoted standby starts with nothing pending, and a replaced "
+            "session or a superseded gateway instance drops what was pending.")
+text(s, L, 2.2, 1.8, 0.6, "Producer places", size=14, bold=True, anchor=M)
+text(s, L, 3.6, 1.8, 0.6, "Own tap shows", size=14, bold=True, anchor=M)
+cw_, cg = 0.75, 0.08
+X0 = 2.5
+for k in range(6):
+    x = X0 + k * (cw_ + cg)
+    lost = k >= 3
+    box(s, x, 2.2, cw_, 0.6, f"f{k + 1}", style="miss" if lost else "tap", tsize=13, tcolor=A2 if lost else TX)
+for k in range(3):
+    box(s, X0 + k * (cw_ + cg), 3.6, cw_, 0.6, f"f{k + 1}", style="tap", tsize=13)
+box(s, X0 + 3 * (cw_ + cg), 3.6, 2 * cw_ + cg + 0.6, 0.6, "LeadershipChanged", "term T+1", style="syn", tsize=12, ssize=10)
+R0 = 8.0
+for k in range(4):
+    x = R0 + k * (cw_ + cg)
+    lab = f"f{k + 4}"
+    box(s, x, 2.2, cw_, 0.6, lab, style="syn" if k < 3 else "tap", tsize=13)
+    box(s, x, 3.6, cw_, 0.6, lab, style="tap", tsize=13)
+arrow(s, [(X0 + 3 * (cw_ + cg), 2.92), (X0 + 3 * (cw_ + cg), 3.02), (X0 + 6 * (cw_ + cg) - cg, 3.02),
+          (X0 + 6 * (cw_ + cg) - cg, 2.92)], "w", head=False)
+text(s, X0 + 3 * (cw_ + cg), 3.05, 2.6, 0.35, "lost with the old leader", size=11, color=A2)
+text(s, R0, 1.75, 4.5, 0.4, "resent oldest first, then new work", size=12, color=A2, bold=True)
+text(s, 7.42, 2.2, 0.55, 0.6, "hold", size=12, color=A5, align=C, anchor=M)
+for i, (t, d) in enumerate([("Placed is not sequenced", "Each frame is held until the producer's own tap shows it."),
+                            ("A term change names the losses", "The newest frames of the old term not yet seen."),
+                            ("Limit", "In memory: a restarted producer or promoted standby starts empty; a replaced session drops what was pending.")]):
+    x = L + i * (3.84 + 0.305)
+    card(s, x, 4.75, 3.84, 1.85, [{"text": t, "bold": True, "size": 15, "space": 6, "color": A2 if i == 2 else TX},
+                                  {"text": d, "size": 14}], margin=0.2)
+
+s = content("Application snapshots", "Local files the log confirms; the cluster itself takes none",
+            "The sequencer sequences SnapshotStarted as a round's cut, on an operator request or the policy interval. "
+            "Every instance of a participating source serializes its state at that cut into its own local file. The "
+            "instance that may publish submits SnapshotEnd with record count, length and CRC32C. Every instance compares "
+            "its own file with the sequenced end and fences on a difference, which also makes each round a divergence "
+            "check across instances; a match confirms the file, which replaces every older one. A restarting instance "
+            "restores its confirmed file once a replay from the file's cut position opens on that cut, and replays only "
+            "what follows; with no such file it replays from 1. The Replayer holds no snapshot state. "
+            "This shortens an application's restart, not a member's.")
+flow = [("Begin", "Sequencer sequences SnapshotStarted"), ("Serialize", "Every instance writes its own local file"),
+        ("End", "The publishing instance submits SnapshotEnd: count, length, CRC32C"),
+        ("Compare", "Every instance checks its file: a match confirms it, a difference fences"),
+        ("Restore", "Newest confirmed file, then only what follows the cut")]
+fw = (CW - 4 * 0.35) / 5
+for i, (t, d) in enumerate(flow):
+    x = L + i * (fw + 0.35)
+    shape(s, x, 2.0, fw, 2.9, "syn" if i == 0 else "card", name="Step")
+    num_circle(s, x + 0.2, 2.2, i + 1, d=0.45, size=14, style="warm" if i == 0 else "accent")
+    text(s, x + 0.2, 2.8, fw - 0.4, 0.45, t, size=18, bold=True, head=True)
+    text(s, x + 0.2, 3.3, fw - 0.4, 1.5, d, size=14)
+    if i < 4:
+        arrow(s, [(x + fw, 3.45), (x + fw + 0.35, 3.45)], "a")
+card(s, L, 5.3, CW, 1.3, [{"text": "Application snapshots bound a client's restart to the messages since the last one "
+                                   "and are the intended boundary for application version upgrades.", "size": 16}],
+     margin=0.25, anchor=M)
+
+# ================================================================= FAILURES
+section("Failures and verification")
+s = content("Failure model", "Each failure and its recovery",
+            "Walk the table top to bottom. Note what is absent: there is no recovery procedure that is not a replay. "
+            "globalSeqNo, the gateway list and the active instance are all functions of the log. "
+            "The timings are the defaults. A follower starts an election after 200 ms without a leader heartbeat; how "
+            "long the election takes is not measured. A member exits after 1 s of back-pressure with no recording "
+            "progress, and a stopped recording is caught by the 1 Hz heartbeat's liveness check. A slow consumer's "
+            "driver drops it within about 0.2 s. A missed frame shows at the next frame, which the heartbeat bounds at "
+            "about a second. The cluster closes a silent client's session after the 1 s session timeout, which is what "
+            "promotes a crashed gateway's standby. A fence on a mismatch is immediate; the stall fences wait 20 s on the "
+            "tap and 60 s in recovery, and only on an instance that acts. A fenced gateway's standby takes over at "
+            "once, but nothing replaces a fenced leader's application replica: that application's leader-only work "
+            "waits until the replica restarts and catches up, or leadership moves. A gateway host's relay moves after 3 s, three "
+            "heartbeats, with no frame.")
+table(s, L, 1.8, [2.75, 2.95, 2.68, 3.75], [
+    ["Failure", "What happens", "Detected in (defaults)", "Recovery"],
+    ["Leader lost", "Election; LeadershipChanged", "200 ms heartbeat timeout", "Next globalSeqNo; producers resend"],
+    ["Member lost", "Others keep quorum", "Not needed; no pause", "Restart replays the full log"],
+    ["Archive stops", "Member exits with code 70", "1 s without progress", "As for a lost member"],
+    ["Slow consumer", "Dropped; tap unaffected", "About 0.2 s", "Resumes over the gap"],
+    ["Frame missed on tap", "Next frame reveals the gap", "Next frame, about 1 s", "Resume, holding live frames"],
+    ["Gateway instance fails", "Its session closes", "1 s session timeout", "Standby designated"],
+    ["Client loses its session", "The cluster closes it", "1 s session timeout", "New session; announced gateway fences"],
+    ["Gateway instance fences", "Edge closed, session released", "At once; stalls 20 s, 60 s", "Standby takes over at once"],
+    ["Leader's application fences", "Gate closed, session released", "At once; stalls 20 s, 60 s", "Its restart, or a new leader's replica"],
+    ["Relay's member lost", "The relay hears nothing", "3 s", "Next member, same position"],
+    ["Majority lost", "Nothing commits; tap silent", "Acting instances at 20 s", "Resumes with a majority"],
+], size=13, rowh=0.41)
+
+s = content("Verification", "A harness per failure, against a live cluster",
+            "Every failure in the table has an end-to-end harness against a live cluster. chaos-runner injects "
+            "randomized faults from a printed seed and ends by checking every member's recording is gap-free and at the "
+            "same high mark; every member kill also kills the media driver its clients share, and they must exit. "
+            "Network faults are injected with eBPF against the containerized cluster. The harnesses drive the Java client, "
+            "and the C# client in two of its own. Beneath them, the Java, C++ and C# unit suites test the same decisions "
+            "case for case, and their property tests draw the same fault sequence from a seed. The C++ client is "
+            "covered by its unit suite alone: no harness runs it against a live cluster. Killing a standalone aeronmd "
+            "is not exercised either.")
+harn = [("chaos-runner", "random faults from a seed; recordings gap-free and equal"),
+        ("failover soak", "repeated leader kills in containers"),
+        ("network faults", "eBPF: partitions, lost repair, slow links, dropped ballots"),
+        ("confirmed ingress", "every frame once, in order, across a kill"),
+        ("gateway host", "relay moves when its member dies"),
+        ("session replace", "paused client, lost quorum, paused gateway pair"),
+        ("snapshots", "restore, handover, leader kill"),
+        ("C# client", "Linux and Windows"),
+        ("unit suites", "Java, C++ and C#, case for case; seeded property tests")]
+for i, (t, d) in enumerate(harn):
+    y = 1.85 + i * 0.47
+    text(s, L, y, 3.0, 0.5, t, size=16, bold=True, anchor=M)
+    text(s, L + 3.1, y, CW - 3.1, 0.5, d, size=16, color=A5, anchor=M)
+text(s, L, 6.2, CW, 0.45, [{"runs": [("Not exercised: ", {"bold": True, "color": A2}),
+                                    ("the C++ client against a live cluster; killing a standalone aeronmd.", {})]}],
+     size=16)
+
+s = content("Monitoring", "Each member's counters, scraped by Prometheus, on one Grafana dashboard",
+            "One exporter runs beside each member, sharing its Aeron directory, and serves the member's counters over "
+            "HTTP in Prometheus text format, read live from the CnC file; it needs no cluster session. Prometheus "
+            "pulls every exporter from a static target list, and its own up metric is the member's reachability. "
+            "Grafana is provisioned from files with one dashboard: a panel per metric family plus node apply lag, now "
+            "minus the last ClusterHeartbeat, which is the one place a member publishing a contiguous but stale tap "
+            "shows up. Clients publish counters too: recovery stalled, a gateway instance's open connections, an "
+            "instance's confirmed snapshot round, and an application's own in type ids 5201 to 5297, labelled by member "
+            "and client. Not provided: alert rules, service discovery, authentication on "
+            "the metrics endpoint.")
+pipe = [("Member", "Aeron counters in cnc.dat", "box"), ("metrics-exporter", "HTTP · port 9400 + member id", "syn"),
+        ("Prometheus", "pulls every exporter", "box"), ("Grafana", "one provisioned dashboard", "box")]
+pw = 2.6
+pg = (CW - 4 * pw) / 3
+for i, (t, d, st) in enumerate(pipe):
+    x = L + i * (pw + pg)
+    box(s, x, 1.85, pw, 0.9, t, d, style=st, tsize=15, ssize=11)
+    if i < 3:
+        arrow(s, [(x + pw, 2.3), (x + pw + pg, 2.3)])
+groups = [("Sequencer", ["globalSeqNo and current leader", "Apply lag: now − last heartbeat",
+                         "Rejected ingress, leadership changes", "Tap back-pressure and stall", "Gateway promotions"]),
+          ("Replayer", ["Ready, archive errors", "Active and pending replays",
+                        "Throttled: the recorder is behind"]),
+          ("Clients", ["Recovery stalled, per client", "Open connections, per gateway instance",
+                       "Confirmed snapshot round, per instance",
+                       "An application's own counters, type ids 5201–5297",
+                       "Labelled member and client"])]
+for i, (t, pts) in enumerate(groups):
+    x = L + i * (3.84 + 0.305)
+    card(s, x, 3.15, 3.84, 2.8, [{"text": t, "size": 18, "bold": True, "head": True, "space": 8}]
+         + [{"text": p, "size": 14, "bullet": True, "space": 4} for p in pts], margin=0.22)
+text(s, L, 6.2, CW, 0.4, [{"runs": [("Not provided: ", {"bold": True, "color": A2}),
+                                    ("alert rules, service discovery, authentication on the metrics endpoint.", {})]}], size=14)
+
+# ================================================================= EXPERIENCE
+section("Building on Aeron")
+s = content("What Aeron does not tell you", "Behavior learned the hard way, and what seqeron does about it",
+            "Each row is a behavior of Aeron that is correct by its own contract and easy to build on wrongly, and "
+            "each is already on a slide. Confirmed ingress answers the first; the tap's bounded, reliable offer the "
+            "fourth and fifth; the replay sequences the seventh. A cluster callback that throws has had its log "
+            "position advanced by Image.boundedControlledPoll and AgentRunner keeps the agent alive, so the frame is "
+            "dropped and nothing stops; a member that cannot continue exits with code 70 instead. The client side is "
+            "the same: Image.poll gives a handler's exception to the error handler and advances, so a client records "
+            "the fault and raises it from its own duty cycle. CLOSED from an ingress offer is an election in progress, "
+            "not a dead session. Aeron.NET's defaults are Aeron's, whose new-leader timeout is shorter than an "
+            "election, which csharp-client-test.sh catches on every pull request.")
+table(s, L, 1.75, [3.7, 4.3, 4.13], [
+    ["Aeron", "Consequence", "seqeron"],
+    ["An accepted offer is not a committed one", "A failover loses it; the session survives, so nobody sees it",
+     "Confirmed on the producer's own tap"],
+    ["A cluster callback that throws", "Its position has advanced: the frame is dropped, the agent runs on",
+     "Never throws; exits with code 70"],
+    ["A handler that throws in Image.poll", "The error handler gets it; the position advances anyway",
+     "Recorded, raised from doWork()"],
+    ["Back-pressure is the caller's", "A service thread that blocks stalls the log and the cluster clock",
+     "A bounded retry watching RecordingPos"],
+    ["A stopped recording", "Back-pressures nothing: untethered readers keep it connected",
+     "The 1 Hz heartbeat's liveness check"],
+    ["CLOSED from an ingress offer", "Looks terminal; it is an election in progress", "Keeps spinning: IngressStallPolicy"],
+    ["A bounded replay of a live recording", "Does not close at its bound", "Completion by position"],
+    ["Aeron.NET's defaults", "A new-leader timeout shorter than an election", "Every timeout set explicitly"],
+    ["No C++ cluster client", "Nothing to build on", "Written against the wire protocol"],
+], size=12, rowh=0.48)
+
+
+s = prs.slides.add_slide(L_SECTION)
+_track(s)
+tape(s, 0.8, 2.15, 6, 0)
+for ph in s.placeholders:
+    tf = ph.text_frame
+    tf.margin_left = tf.margin_right = 0
+    if ph.placeholder_format.idx == 0:
+        tf.vertical_anchor = MSO_ANCHOR.TOP
+        fill_tf(tf, [{"text": "Discussion", "size": 44, "bold": True, "color": BG, "head": True}])
+    else:
+        fill_tf(tf, [{"text": "Further reading in doc/", "size": 20, "color": A3}])
+text(s, 0.8, 5.35, 11.7, 1.6, [
+    {"runs": [("overview.md", {"bold": True, "color": BG}), ("  the design   ", {}),
+              ("seqeron-protocol-spec.md", {"bold": True, "color": BG}), ("  normative rules", {})], "space": 6},
+    {"runs": [("fault-tolerance.md", {"bold": True, "color": BG}), ("  each failure   ", {}),
+              ("client-api.md", {"bold": True, "color": BG}), ("  the client tier   ", {}),
+              ("snapshot.md", {"bold": True, "color": BG}), ("  application snapshots", {})], "space": 6},
+    {"runs": [("ops.md", {"bold": True, "color": BG}), ("  ports, counters, runbooks   ", {}),
+              ("clusterctl.md", {"bold": True, "color": BG}), ("  the operator tool", {})]}], size=16, color=A3)
+notes(s, "The last slide presented; the appendix is backup, for questions or a meeting that runs long. Open the "
+         "floor. The decisions slide, after failover at the start of the appendix, is the natural place to return to.")
+
+# ================================================================= APPENDIX
+section("Appendix")
+s = content("Failover", "Where a client switches when its primary cannot be reached; the cluster's own election aside",
+            "The cluster tier's own failover, the Raft election and a member that exits rather than lose its "
+            "recording, is on the failure model slide. These are the client tier's. Ingress: a co-located producer "
+            "uses IPC to its own member and UDP to the leader otherwise; Java and C# replace the session when "
+            "leadership moves off the co-located member, C++ swaps only its publication and follows a follower's "
+            "redirect. A send spins through an election rather than dropping the frame. A session the cluster closed "
+            "is replaced, one attempt a second, and the instance fences after 20 s without one; a gateway instance "
+            "that announced itself on the lost session fences at once, since its sibling may already be designated. "
+            "PendingSends resends what the old leader lost, exactly once and in order. The gateway pair and the "
+            "leader-only work of applications move with the log. A gateway host's relay moves to the next member's "
+            "archive and resumes at the same position, valid because every member's active recording starts at "
+            "globalSeqNo 1. A client's own Replayer, tap and media driver have no alternative: an instance that "
+            "acts fences. A fenced gateway instance's standby takes over at once; nothing replaces a fenced "
+            "leader's application replica, so that application's leader-only work waits until the replica "
+            "restarts and catches up, or leadership moves to another member.")
+table(s, L, 1.8, [3.1, 3.7, 5.33], [
+    ["What", "Fails over to", "Trigger"],
+    ["Ingress path", "UDP to the leader", "Own member not leading, or the IPC connect timed out"],
+    ["A send during an election", "The new leader's ingress", "NewLeader; the send spins rather than drop the frame"],
+    ["Cluster session", "A new session", "The cluster closed it; one attempt a second, a fence after 20 s"],
+    ["Ingress the old leader lost", "A resend to the new leader", "A newer term's LeadershipChanged"],
+    ["Gateway pair", "The next instance by rank", "Session closed, 5 s without GatewayStarted, or clusterctl activate"],
+    ["Leader-only work", "The new leader's replica", "LeadershipChanged opens its gate; outstanding work redispatched"],
+    ["Gateway host's tap relay", "The next member's archive", "3 s without a frame, or a failed read; same position"],
+], size=13, rowh=0.55)
+card(s, L, 6.28, CW, 0.68, [{"runs": [("No failover: ", {"bold": True, "color": A2}),
+                                      ("a client's own Replayer, tap and media driver. An instance that acts fences: "
+                                       "a gateway's standby takes over at once, but a leader's application waits for "
+                                       "its own restart or a new leader.", {})]}],
+     style="plain", margin=0.1, anchor=M)
+
 s = content("Decisions and what they cost", "The choices worth challenging",
             "Lead the discussion here. The most consequential is no cluster snapshots: it buys complete local history "
             "on every member and costs member recovery time and archive size that grow with uptime; the 1 Hz heartbeat "
@@ -834,8 +1393,8 @@ s = content("Deployment and disaster recovery", "What a host needs, where member
             "Aeron directory. Placement follows from Raft: a member per failure domain, so no single rack, power feed or "
             "zone holds a majority. That is also the mitigation for the no-fsync durability model, which loses committed "
             "messages only when a majority of hosts lose power together. Spreading members further apart adds the "
-            "round trip between them to every message, since a commit waits for a majority. Archives are copied off site "
-            "with Aeron Cluster Backup. The rest of disaster recovery is not designed: whether a second site is a "
+            "round trip between them to every message, since a commit waits for a majority. Archives can be copied off "
+            "site with Aeron Cluster Backup, which nothing in seqeron exercises yet. The rest of disaster recovery is not designed: whether a second site is a "
             "stretched cluster or a standby, how a restore is verified, and the RTO and RPO for losing a site, are all "
             "open.")
 dep = [("A member host", TX, [[("One JVM (JDK 21): consensus, sequencer, driver, archive, Replayer", {})],
@@ -845,7 +1404,7 @@ dep = [("A member host", TX, [[("One JVM (JDK 21): consensus, sequencer, driver,
        ("Placement", TX, [[("Each member in its own failure domain: rack, power, zone", {})],
                           [("A commit waits for a majority: the round trip between members is on every message", {})],
                           [("Separate power keeps committed messages safe without fsync", {})]]),
-       ("Disaster recovery", A2, [[("Archives copied off site: Aeron Cluster Backup", {})],
+       ("Disaster recovery", A2, [[("Archives copied off site: Aeron Cluster Backup, not yet exercised", {})],
                                   [("Open: ", {"bold": True}), ("a second site, stretched cluster or standby", {})],
                                   [("Open: ", {"bold": True}), ("how a restore is verified", {})],
                                   [("Open: ", {"bold": True}), ("recovery time and data loss for a site loss", {})]])]
@@ -875,7 +1434,8 @@ table(s, L, 1.8, [2.5, 5.1, 4.53], [
 s = content("Risks and mitigations", "Each risk, and what reduces it",
             "The first three matter most for a production deployment: "
             "unmeasured performance, an archive that grows without bound, and history lost on a framing protocol "
-            "upgrade. A site loss is covered by copying the archives off site, with Aeron Cluster Backup. "
+            "upgrade. A site loss would be covered by copying the archives off site with Aeron Cluster Backup, which "
+            "nothing in seqeron exercises yet. "
             "Several clusters can scale out throughput, but nothing orders messages across them.")
 table(s, L, 1.8, [4.0, 8.13], [
     ["Risk", "Mitigation"],
@@ -884,328 +1444,10 @@ table(s, L, 1.8, [4.0, 8.13], [
     ["Framing protocol upgrade purges history", "Export history to a system of record before each upgrade"],
     ["Majority power loss", "Members on separate power"],
     ["Unauthenticated ports", "Segmented network; an encrypted layer beneath"],
-    ["Site loss", "Archives copied off site: Aeron Cluster Backup"],
+    ["Site loss", "Archives copied off site: Aeron Cluster Backup, not yet exercised"],
     ["One stream's ceiling", "Several clusters scale out"],
 ], size=14, rowh=0.52)
 
-# ================================================================= SEQUENCER
-section("Sequencer and replayer")
-
-s = content("The tap", "Every cluster member publishes and records its own copy; none is replicated",
-            "All members apply the same committed log in the same order with the same state, so their taps are "
-            "byte-identical frame for frame. Each archive therefore holds complete history: no cross-node replication of "
-            "recordings and no leader-only archive. The tap is created once at start and never re-created on a "
-            "leadership change, so a recording is one continuous run across every leader tenure. The offer is reliable "
-            "because a dropped frame is a permanent hole, and bounded because only the archive, the one tethered "
-            "subscriber, can hold it back. A member whose archive cannot keep up exits with code 70 rather than throw: "
-            "a throwing cluster callback has already had its log position advanced.")
-for i in range(3):
-    x = L + i * 1.95
-    text(s, x, 1.85, 1.75, 0.35, f"member {i}", size=12, bold=True, color=A5, align=C)
-    box(s, x, 2.25, 1.75, 0.6, "Raft log", style="box", tsize=13)
-    arrow(s, [(x + 1.11, 2.85), (x + 1.11, 3.46)])
-    text(s, x, 3.22, 1.0, 0.24, "Tap 205", size=10, bold=True, color=A1, anchor=MSO_ANCHOR.MIDDLE)
-    log_cells(s, x, 3.46, 0.22, 0.3, 0.25)
-    arrow(s, [(x + 0.61, 3.76), (x + 0.61, 4.15)])
-    box(s, x, 4.15, 1.75, 0.6, "Archive", style="box", tsize=13)
-text(s, L, 4.95, 5.65, 1.6, [{"text": "Same committed log → byte-identical taps → every archive holds full history.",
-                              "bold": True, "size": 15, "space": 6},
-                             {"text": "The tap survives leadership changes: one continuous recording per member.", "size": 14, "color": A5}])
-text(s, 6.9, 1.85, 5.8, 0.35, "RELIABLE, AND BOUNDED", size=12, bold=True, color=A1)
-table(s, 6.9, 2.25, [2.2, 3.63], [
-    ["Archive state", "Response"],
-    ["Slow, advancing", "Keep retrying; alert at 200 ms"],
-    ["No progress 1 s", "Terminate the member (exit 70)"],
-    ["Recording gone", "Terminate at once"],
-    ["Stopped silently", "Caught by the 1 Hz liveness check"],
-], size=14, rowh=0.55)
-text(s, 6.9, 5.2, 5.8, 1.4, "A member that cannot keep history stops instead of sequencing history it cannot serve. "
-                            "Peers keep quorum; its restart rebuilds the recording.", size=14, color=A5)
-
-s = content("Live from tap and history from archive", "The Replayer serves one recording to many clients",
-            "Consumers read the tap directly and untethered: one that falls a window behind is dropped by its driver "
-            "within about 0.2 s and heals by replay. History for a cold start or a gap is served by the co-located "
-            "ReplayerService; nothing reads the archive except through it. It serves only the active recording, which "
-            "holds the whole log because every member start replays from globalSeqNo 1. Before reporting ready it checks "
-            "that the first frame is globalSeqNo 1; otherwise every request gets ReplayUnavailable for its lifetime. Four "
-            "replays at once, a slot idle 5 s is reclaimed, so the worst pending wait is 20 s, below the client's 60 s "
-            "recovery-stall fence. While the tap's recording trails the tap by more than a quarter of the publication "
-            "window, a new replay starts only when none is running: replays compete with the recorder for the disk, and "
-            "the recorder is what holds the sequencer back. seqeron_replayer_throttled_requests_total counts the requests "
-            "held for that reason, and a member warns at start on Linux when its Aeron directory is not on tmpfs. Control "
-            "replies are retried briefly and dropped, never blocked on.")
-box(s, 1.64, 1.6, 1.0, 0.32, "Sequencer", style="box", tsize=11)
-arrow(s, [(2.139, 1.92), (2.139, 2.25)])
-text(s, L, 1.98, 1.4, 0.24, "Tap · aeron:ipc 205", size=10, bold=True, color=A1, anchor=MSO_ANCHOR.MIDDLE)
-log_cells(s, L, 2.25)
-box(s, L, 3.6, 2.3, 0.7, "Archive", style="box", tsize=14)
-box(s, L, 5.2, 2.3, 0.7, "ReplayerService", style="syn", tsize=14)
-arrow(s, [(1.101, 2.61), (1.101, 3.6)])
-arrow(s, [(L + 1.15, 4.3), (L + 1.15, 5.2)])
-box(s, 3.85, 3.6, 1.9, 0.7, "Client", style="box", tsize=14)
-arrow(s, [(1.793, 2.61), (1.793, 2.9), (4.8, 2.9), (4.8, 3.6)], "a")
-text(s, 3.1, 2.52, 2.0, 0.35, "live, untethered", size=12, color=A1)
-arrow(s, [(L + 2.3, 5.55), (4.8, 5.55), (4.8, 4.3)], "w")
-text(s, 3.0, 5.6, 2.0, 0.35, "history", size=12, color=A2)
-rows = [("One recording", "The active one holds the whole log; older ones are prefixes nothing reads."),
-        ("Proves itself first", "First frame must be globalSeqNo 1, or every answer is ReplayUnavailable."),
-        ("Four slots, one while the recorder is behind", "Idle slots reclaimed after 5 s. Worst-case wait 20 s; clients fence at 60 s."),
-        ("Never held by a client", "Control replies get a bounded retry, then drop; clients resend.")]
-for i, (t, d) in enumerate(rows):
-    y = 1.9 + i * 1.2
-    num_circle(s, 6.4, y + 0.05, i + 1, d=0.45, size=14)
-    text(s, 7.05, y, 5.68, 0.4, t, size=16, bold=True)
-    text(s, 7.05, y + 0.42, 5.68, 0.7, d, size=14, color=A5)
-
-LIVE_LANES = [("Live tap", "stream 205", "tap"), ("Client", "ReplayerStreamReceiver", "box"),
-              ("ReplayerService", "requests 202 · replies 203", "syn"), ("Archive", "active tap recording", "plain")]
-
-SEQ_X = [1.7, 4.1, 8.4, 11.65]
-
-# ================================================================= PRODUCERS
-section("Gateways and applications")
-s = content("Two kinds of producer", "A façade per kind; the application writes its logic and none of seqeron's",
-            "A gateway is an edge producer deployed as an active/hot-standby pair named in the topology; the cluster "
-            "designates the active instance. An application runs one instance on every member, and a member can host "
-            "several applications; LeadershipChanged already picks one instance of each, so only the one on the leader's "
-            "host publishes. Or it runs remote, as the one instance on its own "
-            "host: its gate opens once caught up, whoever leads, and it submits over UDP. Nothing elects "
-            "between two remote instances, so a remote service that needs a standby is a gateway. Both façades run one single-threaded "
-            "duty cycle on the caller's thread: doWork() returns a work count for the caller's idle strategy. The client "
-            "tier starts no threads, and dispatch and confirmed publish allocate nothing once warm. The deployment is "
-            "declared in one XML topology document that clusterctl load-topology puts on the log.")
-for i, (t, sub, pts) in enumerate([
-        ("Gateway", "active / hot-standby (or passive) pair",
-         ["Exchange session, client connection, feed handler", "The cluster designates the active instance",
-          "Owns its external connections and a connection-id space"]),
-        ("Application", "one instance on every member, or remote",
-         ["Deterministic service over the stream; several per member", "On a member: publishes only while that member leads",
-          "Remote: one instance on its own host, ingress over UDP",
-          "Owns leader-only work: replies, outbound effects"])]):
-    x = L + i * (5.9 + 0.33)
-    shape(s, x, 1.85, 5.9, 3.0, "card", name="Producer")
-    text(s, x + 0.25, 2.0, 5.4, 0.5, t, size=22, bold=True, head=True)
-    text(s, x + 0.25, 2.5, 5.4, 0.35, sub, size=13, color=A1, bold=True)
-    text(s, x + 0.25, 3.0, 5.4, 1.8, [{"text": p, "bullet": True, "space": 6} for p in pts], size=14)
-text(s, L, 5.1, CW, 0.35, "EACH FAÇADE'S doWork(), ON THE CALLER'S THREAD", size=12, bold=True, color=A5)
-chips = ["Cluster session", "Tap + recovery", "Confirmed ingress", "Election or leader gate", "Fences"]
-cwid = (CW - 4 * 0.3) / 5
-for i, c in enumerate(chips):
-    x = L + i * (cwid + 0.3)
-    box(s, x, 5.5, cwid, 0.7, c, style="tap", tsize=14, kind=MSO_SHAPE.ROUNDED_RECTANGLE)
-    if i < 4:
-        arrow(s, [(x + cwid, 5.85), (x + cwid + 0.3, 5.85)], "a")
-text(s, L, 6.3, CW, 0.65, [
-    {"runs": [("Fence: ", {"bold": True}), ("an instance that can no longer trust its view of the log reports once, "
-                                           "releases its session and stops acting.", {})], "space": 2},
-    {"runs": [("Topology: ", {"bold": True}), ("one document declares both kinds; clusterctl load-topology puts it on "
-                                              "the log.", {})]}], size=13, color=A5)
-
-s = content("The gateway election", "Every input comes from the log; the output is a sequenced frame",
-            "Walk the tape left to right. The topology rows arrive; the last one has remaining 0, which is the "
-            "completeness edge, and the sequencer synthesizes GatewayActive for each rank-0 instance. GW-A announces "
-            "itself with GatewayStarted, which binds its cluster session, and opens connections. When A's session "
-            "closes, through a crash, network loss or shutdown, the sequencer designates B. B's GatewayStarted carries a "
-            "first connection id above the highest it saw, and makes the sequencer release every connection still open "
-            "under the pair, since a crashed instance never closes them. B rebuilt A's connections from the log while it "
-            "was a hot standby.")
-sc = CW / 980
-f = Fig(s, L - 10 * sc, 1.75, sc)
-f.label(10, 0, 400, 26, "log, in globalSeqNo order →", size=12, align=PP_ALIGN.LEFT)
-tape_frames = [("GatewayRegistered", "GW-A · rank 0", "box"), ("GatewayRegistered", "GW-B · rank 1 · last", "box"),
-               ("GatewayActive", "GW-A · bootstrap", "syn"), ("GatewayStarted", "GW-A · binds session", "box"),
-               ("ConnectionOpened", "ids 1 … n, by GW-A", "box"), ("GatewayActive", "GW-B · A's session closed", "syn"),
-               ("GatewayStarted", "GW-B · first id > n", "box")]
-for k, (t, d, st) in enumerate(tape_frames):
-    f.box(10 + k * 138, 34, 128, 82, t, d, st, tsize=11, ssize=10)
-f.label(10, 140, 60, 30, "GW-A", size=13, color=TX, align=PP_ALIGN.LEFT, bold=True)
-f.box(424, 142, 276, 26, "serving", style="bar", tsize=11, tcolor=BG)
-f.label(706, 140, 200, 30, "crashed: session closes", size=11, align=PP_ALIGN.LEFT)
-f.label(10, 190, 60, 30, "GW-B", size=13, color=TX, align=PP_ALIGN.LEFT, bold=True)
-f.box(70, 192, 630, 26, None, style="dim")
-f.label(80, 190, 600, 30, "hot standby: follows the tap, rebuilds A's connections from the log", size=11, color=TX,
-        align=PP_ALIGN.LEFT)
-f.box(838, 192, 128, 26, "serving", style="bar", tsize=11, tcolor=BG)
-y0 = 1.75 + 240 * sc
-shape(s, L, y0 + 0.1, 0.3, 0.3, "syn", name="Legend")
-text(s, L + 0.4, y0 + 0.05, 5, 0.4, "synthesized by the sequencer", size=12, color=A5, anchor=M)
-shape(s, L + 4.2, y0 + 0.1, 0.3, 0.3, "box", name="Legend")
-text(s, L + 4.6, y0 + 0.05, 6, 0.4, "submitted by clusterctl or an instance", size=12, color=A5, anchor=M)
-card(s, L, y0 + 0.7, CW, 0.95, [{"runs": [("Every gateway instance and every application sees the same decision at the same globalSeqNo. ", {"bold": True}),
-                                          ("No two instances can act as active on inconsistent information.", {})], "size": 15}],
-     margin=0.22, anchor=M)
-
-s = content("Confirmed ingress", "A failover can lose uncommitted ingress silently; the producer's own tap finds it",
-            "A send returns once the frame is on the leader's ingress publication; the cluster confirms nothing. Frames "
-            "the old leader had not committed are lost, and the session survives, so neither side sees a fault: about "
-            "5,500 frames at 100 µs pacing in the failover harness. PendingSends holds each placed frame until the "
-            "producer's own tap shows it, matched by cluster session. A LeadershipChanged with a newer term identifies "
-            "exactly which were lost: the newest frames stamped with the old term that have not appeared. Nothing new is "
-            "placed until they are resent, oldest first. Each frame is then sequenced exactly once, in order. The limit: "
-            "this is in memory, so a restarted producer or a promoted standby starts with nothing pending, and a replaced "
-            "session or a superseded gateway instance drops what was pending.")
-text(s, L, 2.2, 1.8, 0.6, "Producer places", size=14, bold=True, anchor=M)
-text(s, L, 3.6, 1.8, 0.6, "Own tap shows", size=14, bold=True, anchor=M)
-cw_, cg = 0.75, 0.08
-X0 = 2.5
-for k in range(6):
-    x = X0 + k * (cw_ + cg)
-    lost = k >= 3
-    box(s, x, 2.2, cw_, 0.6, f"f{k + 1}", style="miss" if lost else "tap", tsize=13, tcolor=A2 if lost else TX)
-for k in range(3):
-    box(s, X0 + k * (cw_ + cg), 3.6, cw_, 0.6, f"f{k + 1}", style="tap", tsize=13)
-box(s, X0 + 3 * (cw_ + cg), 3.6, 2 * cw_ + cg + 0.6, 0.6, "LeadershipChanged", "term T+1", style="syn", tsize=12, ssize=10)
-R0 = 8.0
-for k in range(4):
-    x = R0 + k * (cw_ + cg)
-    lab = f"f{k + 4}"
-    box(s, x, 2.2, cw_, 0.6, lab, style="syn" if k < 3 else "tap", tsize=13)
-    box(s, x, 3.6, cw_, 0.6, lab, style="tap", tsize=13)
-arrow(s, [(X0 + 3 * (cw_ + cg), 2.92), (X0 + 3 * (cw_ + cg), 3.02), (X0 + 6 * (cw_ + cg) - cg, 3.02),
-          (X0 + 6 * (cw_ + cg) - cg, 2.92)], "w", head=False)
-text(s, X0 + 3 * (cw_ + cg), 3.05, 2.6, 0.35, "lost with the old leader", size=11, color=A2)
-text(s, R0, 1.75, 4.5, 0.4, "resent oldest first, then new work", size=12, color=A2, bold=True)
-text(s, 7.42, 2.2, 0.55, 0.6, "hold", size=12, color=A5, align=C, anchor=M)
-for i, (t, d) in enumerate([("Placed is not sequenced", "Each frame is held until the producer's own tap shows it."),
-                            ("A term change names the losses", "The newest frames of the old term not yet seen."),
-                            ("Limit", "In memory: a restarted producer or promoted standby starts empty; a replaced session drops what was pending.")]):
-    x = L + i * (3.84 + 0.305)
-    card(s, x, 4.75, 3.84, 1.85, [{"text": t, "bold": True, "size": 15, "space": 6, "color": A2 if i == 2 else TX},
-                                  {"text": d, "size": 14}], margin=0.2)
-
-s = content("Application snapshots", "Local files the log confirms; the cluster itself takes none",
-            "The sequencer sequences SnapshotStarted as a round's cut, on an operator request or the policy interval. "
-            "Every instance of a participating source serializes its state at that cut into its own local file. The "
-            "instance that may publish submits SnapshotEnd with record count, length and CRC32C. Every instance compares "
-            "its own file with the sequenced end and fences on a difference, which also makes each round a divergence "
-            "check across instances. A restarting instance asks its Replayer whether its newest file's round is on the log "
-            "and matches, restores it, and replays only what follows the cut; with no confirmed file it replays from 1. "
-            "This shortens an application's restart, not a member's.")
-flow = [("Begin", "Sequencer sequences SnapshotStarted"), ("Serialize", "Every instance writes its own local file"),
-        ("End", "The publishing instance submits SnapshotEnd: count, length, CRC32C"),
-        ("Compare", "Every instance checks its file; a difference fences"),
-        ("Restore", "Newest confirmed file, then only what follows the cut")]
-fw = (CW - 4 * 0.35) / 5
-for i, (t, d) in enumerate(flow):
-    x = L + i * (fw + 0.35)
-    shape(s, x, 2.0, fw, 2.9, "syn" if i == 0 else "card", name="Step")
-    num_circle(s, x + 0.2, 2.2, i + 1, d=0.45, size=14, style="warm" if i == 0 else "accent")
-    text(s, x + 0.2, 2.8, fw - 0.4, 0.45, t, size=18, bold=True, head=True)
-    text(s, x + 0.2, 3.3, fw - 0.4, 1.5, d, size=14)
-    if i < 4:
-        arrow(s, [(x + fw, 3.45), (x + fw + 0.35, 3.45)], "a")
-card(s, L, 5.3, CW, 1.3, [{"text": "Application snapshots bound a client's restart to the messages since the last one "
-                                   "and are the intended boundary for application version upgrades.", "size": 16}],
-     margin=0.25, anchor=M)
-
-# ================================================================= FAILURES
-section("Failures and verification")
-s = content("Failure model", "Each failure and its recovery",
-            "Walk the table top to bottom. Note what is absent: there is no recovery procedure that is not a replay. "
-            "globalSeqNo, the gateway list, the active instance and the open connections are all functions of the log. "
-            "The timings are the defaults. A follower starts an election after 200 ms without a leader heartbeat; how "
-            "long the election takes is not measured. A member exits after 1 s of back-pressure with no recording "
-            "progress, and a stopped recording is caught by the 1 Hz heartbeat's liveness check. A slow consumer's "
-            "driver drops it within about 0.2 s. A missed frame shows at the next frame, which the heartbeat bounds at "
-            "about a second. The cluster closes a silent client's session after the 1 s session timeout, which is what "
-            "promotes a crashed gateway's standby. A fence on a mismatch is immediate; the stall fences wait 20 s on the "
-            "tap and 60 s in recovery, and only on an instance that acts. A gateway host's relay moves after 3 s, three "
-            "heartbeats, with no frame.")
-table(s, L, 1.8, [2.75, 2.95, 2.68, 3.75], [
-    ["Failure", "What happens", "Detected in (defaults)", "Recovery"],
-    ["Leader lost", "Election; LeadershipChanged", "200 ms heartbeat timeout", "Next globalSeqNo; producers resend"],
-    ["Member lost", "Others keep quorum", "No pause unless it led", "Restart replays the full log"],
-    ["Archive stops", "Member exits with code 70", "1 s without progress", "As for a lost member"],
-    ["Slow consumer", "Dropped; tap unaffected", "About 0.2 s", "Resumes over the gap"],
-    ["Frame missed on tap", "Next frame reveals the gap", "Next frame, about 1 s", "Resume, holding live frames"],
-    ["Gateway instance fails", "Its session closes", "1 s session timeout", "Standby designated"],
-    ["Client loses its session", "The cluster closes it", "1 s session timeout", "New session; announced gateway fences"],
-    ["Gateway distrusts its view", "A fence; session released", "At once; stalls 20 s, 60 s", "Standby takes over at once"],
-    ["Relay's member lost", "The relay hears nothing", "3 s", "Next member, same position"],
-    ["Majority lost", "Nothing commits; tap silent", "Acting instances at 20 s", "Resumes with a majority"],
-], size=13, rowh=0.44)
-
-s = content("Verification", "A harness per failure, against a live cluster",
-            "Every failure in the table has an end-to-end harness against a live cluster. chaos-runner injects "
-            "randomized faults from a printed seed and ends by checking every member's recording is gap-free and at the "
-            "same high mark; every member kill also kills the media driver its clients share, and they must exit. "
-            "Network faults are injected with eBPF against the containerized cluster. The harnesses drive the Java client, "
-            "and the C# client in two of its own. Beneath them, the Java, C++ and C# unit suites test the same decisions "
-            "case for case, and their property tests draw the same fault sequence from a seed. The C++ client is "
-            "covered by its unit suite alone: no harness runs it against a live cluster. Killing a standalone aeronmd "
-            "is not exercised either.")
-harn = [("chaos-runner", "random faults from a seed; recordings gap-free and equal"),
-        ("failover soak", "repeated leader kills in containers"),
-        ("network faults", "eBPF: partitions, lost repair, slow links, dropped ballots"),
-        ("confirmed ingress", "every frame once, in order, across a kill"),
-        ("gateway host", "relay moves when its member dies"),
-        ("session replace", "paused client, lost quorum, paused gateway pair"),
-        ("snapshots", "restore, handover, passive activation"),
-        ("C# client", "Linux and Windows"),
-        ("unit suites", "Java, C++ and C#, case for case; seeded property tests")]
-for i, (t, d) in enumerate(harn):
-    y = 1.85 + i * 0.47
-    text(s, L, y, 3.0, 0.5, t, size=16, bold=True, anchor=M)
-    text(s, L + 3.1, y, CW - 3.1, 0.5, d, size=16, color=A5, anchor=M)
-text(s, L, 6.2, CW, 0.45, [{"runs": [("Not exercised: ", {"bold": True, "color": A2}),
-                                    ("the C++ client against a live cluster; killing a standalone aeronmd.", {})]}],
-     size=16)
-
-s = content("Monitoring", "Each member's counters, scraped by Prometheus, on one Grafana dashboard",
-            "One exporter runs beside each member, sharing its Aeron directory, and serves the member's counters over "
-            "HTTP in Prometheus text format, read live from the CnC file; it needs no cluster session. Prometheus "
-            "pulls every exporter from a static target list, and its own up metric is the member's reachability. "
-            "Grafana is provisioned from files with one dashboard: a panel per metric family plus node apply lag, now "
-            "minus the last ClusterHeartbeat, which is the one place a member publishing a contiguous but stale tap "
-            "shows up. Clients publish counters too: recovery stalled, and an application's own in type ids 5201 to "
-            "5299, labelled by member and client. Not provided: alert rules, service discovery, authentication on "
-            "the metrics endpoint.")
-pipe = [("Member", "Aeron counters in cnc.dat", "box"), ("metrics-exporter", "HTTP · port 9400 + member id", "syn"),
-        ("Prometheus", "pulls every exporter", "box"), ("Grafana", "one provisioned dashboard", "box")]
-pw = 2.6
-pg = (CW - 4 * pw) / 3
-for i, (t, d, st) in enumerate(pipe):
-    x = L + i * (pw + pg)
-    box(s, x, 1.85, pw, 0.9, t, d, style=st, tsize=15, ssize=11)
-    if i < 3:
-        arrow(s, [(x + pw, 2.3), (x + pw + pg, 2.3)])
-groups = [("Sequencer", ["globalSeqNo and current leader", "Apply lag: now − last heartbeat",
-                         "Rejected ingress, leadership changes", "Tap back-pressure and stall", "Gateway promotions"]),
-          ("Replayer", ["Ready, stalled, integrity failure", "Active and pending replays",
-                        "Throttled: the recorder is behind", "Snapshot round per source"]),
-          ("Clients", ["Recovery stalled, per client", "An application's own counters, type ids 5201–5299",
-                       "Labelled member and client"])]
-for i, (t, pts) in enumerate(groups):
-    x = L + i * (3.84 + 0.305)
-    card(s, x, 3.15, 3.84, 2.8, [{"text": t, "size": 18, "bold": True, "head": True, "space": 8}]
-         + [{"text": p, "size": 14, "bullet": True, "space": 4} for p in pts], margin=0.22)
-text(s, L, 6.2, CW, 0.4, [{"runs": [("Not provided: ", {"bold": True, "color": A2}),
-                                    ("alert rules, service discovery, authentication on the metrics endpoint.", {})]}], size=14)
-
-s = prs.slides.add_slide(L_SECTION)
-_track(s)
-tape(s, 0.8, 2.15, 6, 0)
-for ph in s.placeholders:
-    tf = ph.text_frame
-    tf.margin_left = tf.margin_right = 0
-    if ph.placeholder_format.idx == 0:
-        tf.vertical_anchor = MSO_ANCHOR.TOP
-        fill_tf(tf, [{"text": "Discussion", "size": 44, "bold": True, "color": BG, "head": True}])
-    else:
-        fill_tf(tf, [{"text": "Further reading in doc/", "size": 20, "color": A3}])
-text(s, 0.8, 5.35, 11.7, 1.6, [
-    {"runs": [("overview.md", {"bold": True, "color": BG}), ("  the design   ", {}),
-              ("seqeron-protocol-spec.md", {"bold": True, "color": BG}), ("  normative rules", {})], "space": 6},
-    {"runs": [("fault-tolerance.md", {"bold": True, "color": BG}), ("  each failure   ", {}),
-              ("client-api.md", {"bold": True, "color": BG}), ("  the client tier   ", {}),
-              ("snapshot.md", {"bold": True, "color": BG}), ("  application snapshots", {})], "space": 6},
-    {"runs": [("ops.md", {"bold": True, "color": BG}), ("  ports, counters, runbooks   ", {}),
-              ("clusterctl.md", {"bold": True, "color": BG}), ("  the operator tool", {})]}], size=16, color=A3)
-notes(s, "The last slide presented; the appendix is backup, for questions or a meeting that runs long. Open the "
-         "floor. The decisions slide is the natural place to return to.")
-
-# ================================================================= APPENDIX
-section("Appendix")
 s = content("Glossary", "The terms this deck uses, one line each",
             "Reference for the whole deck. Rule ids cite seqeron-protocol-spec.md, whose letters are F frame, "
             "T transport, S sequencer, P payload, C registration, R replay, V versioning, E encoding and A application.")
@@ -1324,13 +1566,14 @@ for i, (t, d) in enumerate([("Catalog", "Every recording has an id and start and
                                  {"text": d, "size": 14, "color": TX}])
 
 s = content("Sequencer components", "The replicated state machine has no Aeron dependency",
-            "Sequencer owns globalSeqNo, the gateway list and session bindings, the open-connection set, promotion "
-            "deadlines and the snapshot policy; it validates and encodes every frame. SequencerService is the "
-            "ClusteredService adapter and holds no replicated state. TapPublisher is the reliable-offer discipline for "
+            "Sequencer owns globalSeqNo, the gateway list and session bindings, promotion deadlines and the snapshot "
+            "policy; it validates and encodes every frame and hands each to a sink in globalSeqNo order, the event's own "
+            "frame first and whatever it triggered behind it. SequencerService is the ClusteredService adapter: the sink "
+            "is the tap, and it holds no replicated state and decides no frame order. TapPublisher is the reliable-offer discipline for "
             "the tap. The rule underneath all of it is spec S-3: every reject decision and every byte of every "
             "synthesized frame is a function of the committed log alone.")
-parts = [("SequencerService", "ClusteredService adapter", "Decides when to call the sequencer; publishes what it returns. Holds no replicated state."),
-         ("Sequencer", "the replicated state machine", "Owns globalSeqNo, gateway list, bindings, open connections, deadlines. Validates and encodes."),
+parts = [("SequencerService", "ClusteredService adapter", "Decides when to call the sequencer; its tap is the frame sink. Holds no replicated state."),
+         ("Sequencer", "the replicated state machine", "Owns globalSeqNo, gateway list, bindings, deadlines. Validates, encodes and publishes in order."),
          ("TapPublisher", "reliable, bounded offer", "Retries the tap offer; watches RecordingPos; terminates the member on a stalled archive.")]
 for i, (t, k, d) in enumerate(parts):
     x = L + i * (3.84 + 0.305)
@@ -1344,33 +1587,6 @@ card(s, L, 4.4, CW, 1.7, [{"text": "S-3  Determinism", "bold": True, "size": 13,
                                     "the committed log alone: not node configuration, wall-clock time, local state or "
                                     "hash-map iteration order.", "size": 17, "color": BG, "head": True}],
      style="dark", margin=0.3, anchor=M)
-
-s = content("Header", "Copy 18 bytes, append 16, never touch the payload",
-            "Schema 210, two types. The application type carries an opaque payload named by payloadId: Unsequenced "
-            "on ingress, Sequenced on the tap. The system type is seqeron's own vocabulary, named by systemEventType "
-            "at the same offset 16. Every field is at the same offset in all eight templates, so a consumer tracks "
-            "continuity without branching on message type. sessionId is overwritten by the sequencer. Consumers split by "
-            "type first, then dispatch on (payloadId, templateId), never templateId alone.")
-sc = CW / 880
-f = Fig(s, L - 30 * sc + 0.0, 1.75, sc)
-for u, lab in [(30, "0"), (126, "4"), (222, "8"), (414, "16"), (462, "18"), (654, "26"), (846, "34")]:
-    f.label(u - 20, 10, 40, 22, lab, size=11, color=A5)
-f.box(30, 40, 96, 48, "sourceId", tsize=12)
-f.box(126, 40, 96, 48, "connectionId", tsize=12)
-f.box(222, 40, 192, 48, "sessionId", "set by the sequencer", "syn")
-f.box(414, 40, 48, 48, "type", tsize=11)
-f.box(462, 40, 192, 48, "globalSeqNo", style="tap", tsize=13)
-f.box(654, 40, 192, 48, "timestamp", "Raft consensus time, ns", "tap")
-f.arrow([(30, 98), (30, 106), (460, 106), (460, 98)], "ln", head=False)
-f.label(30, 110, 430, 26, "copied from ingress · 18 bytes", size=12, color=TX)
-f.arrow([(464, 98), (464, 106), (846, 106), (846, 98)], "a", head=False)
-f.label(464, 110, 382, 26, "appended by the sequencer · 16 bytes", size=12, color=A1)
-card(s, L, 4.15, 5.9, 1.95, [{"text": "Application type", "bold": True, "size": 18, "head": True, "space": 6},
-                            {"text": "Unsequenced (100) → Sequenced (101)", "size": 14, "bold": True, "space": 6},
-                            {"text": "One opaque payload named by payloadId. The cluster decodes no application payload.", "size": 14}])
-card(s, L + 6.23, 4.15, 5.9, 1.95, [{"text": "System type", "bold": True, "size": 18, "head": True, "space": 6},
-                                   {"text": "UnsequencedSystem (102) → SequencedSystem (103), plus 104–107", "size": 14, "bold": True, "space": 6},
-                                   {"text": "Named by systemEventType. Twelve events submitted, four synthesized.", "size": 14}])
 
 s = content("Frames created by the sequencer", "Four synthesized frames share the one globalSeqNo counter",
             "These carry sourceId, connectionId and sessionId of −1 and the consensus timestamp. ClusterHeartbeat is "
@@ -1391,45 +1607,96 @@ for i, (t, tid, when, why) in enumerate(frames):
     text(s, x + 0.25, y + 0.8, 5.4, 0.6, [{"runs": [("When  ", {"bold": True}), (when, {})]}], size=14)
     text(s, x + 0.25, y + 1.35, 5.4, 0.8, [{"runs": [("Why  ", {"bold": True}), (why, {})]}], size=14)
 
-s = content("Repairing a gap", "Replay only what was lost; hold live frames meanwhile",
-            "A live frame ahead of the next expected number clears isCaughtUp and requests a resume at the position where "
-            "the last delivered frame ended. The resumed replay's first frame must be the expected number; if not, the "
-            "member restarted and its recording changed, so the client walks the recording from its start. Live frames "
-            "past the gap go into a bounded FIFO, 65,536 frames or 16 MiB, and drain when the replay reaches them, so "
-            "recovery ends without a second gap. A replay with no progress for 5 s is requested again. A cold start is "
-            "the same walk from the start. All of it is ReplayerRecovery, a pure state machine with case-for-case tests "
-            "and seeded property tests in Java, C++ and C#.")
-sc = CW / 760
-f = Fig(s, L - 10 * sc, 1.75, sc)
-for lab, y in (("Tap 205", 40), ("Replay 201", 110), ("Delivered", 180)):
-    f.label(10, y, 140, 34, lab, size=14, color=TX, align=PP_ALIGN.LEFT, bold=True)
-tapst = {105: "miss", 106: "held", 107: "held", 108: "held"}
-for k in range(10):
-    n, x = 101 + k, 160 + k * 58
-    st = tapst.get(n, "tap")
-    f.box(x, 40, 50, 34, "×" if n == 105 else str(n), style=st, tsize=13, tcolor=A2 if n == 105 else TX)
-    f.box(x, 180, 50, 34, str(n), style="syn" if n == 105 else st, tsize=13)
-f.box(392, 110, 50, 34, "105", style="syn", tsize=13)
-f.arrow([(417, 76), (417, 108)], "d")
-f.label(450, 6, 300, 30, "106 arrives: gap → resume after 104", size=12, color=A2, align=PP_ALIGN.LEFT)
-f.label(450, 80, 300, 26, "106–108 retained in a bounded FIFO", size=12, color=A1, align=PP_ALIGN.LEFT)
-f.label(450, 112, 300, 30, "anchor check: first frame must be 105", size=12, align=PP_ALIGN.LEFT)
-f.label(160, 222, 590, 28, "105 from the replay, then the FIFO drains, then back on the live tap.", size=12,
-        align=PP_ALIGN.LEFT)
-text(s, L, 6.0, CW, 0.7, [{"runs": [("Cold start ", {"bold": True}),
-                                    ("is the same walk from globalSeqNo 1 to the reported end, then the tap, "
-                                     "de-duplicating on globalSeqNo.", {})]}], size=14)
+s = content("The replay protocol", "Three node-local messages; never sequenced, never recorded",
+            "Requests on stream 202, replies on 203, replay data on 201. A client addresses itself by a clientId it "
+            "draws once from its media driver, so no two clients share one. Every request carries a requestId the client "
+            "increments on every send, including an unchanged resend, and the replayer echoes; a client ignores any reply "
+            "that is not for its current request. The client detects completion by reaching catchUpPosition, not by the "
+            "replay image closing, because a bounded replay of an active recording does not close at the bound. There is "
+            "no heartbeat and no completion message: the Replayer frees a slot when the replay's publication leaves the "
+            "driver's counters, which the client's closing its replay subscription does at once, and the driver's "
+            "liveness timeout does for a client that died.")
+table(s, L, 1.85, [3.9, 2.2, 6.03], [
+    ["Message", "Direction", "Meaning"],
+    ["ReplayRequest", "client → replayer", "From the start, or resume at a recording position"],
+    ["Replaying", "replayer → client", "Follow this replay session to catchUpPosition"],
+    ["ReplayPending", "replayer → client", "Not now: no free slot, or the position is not recorded yet"],
+], size=14, rowh=0.55)
+card(s, L, 4.3, CW, 1.15, [{"runs": [("A slot lives as long as its replay's publication. ", {"bold": True}),
+                                      ("The client frees it by closing its replay subscription at catchUpPosition; a "
+                                       "client that dies frees it within the driver's 10 s liveness timeout.", {})]}],
+     anchor=M)
+text(s, L, 5.75, CW, 0.4, "clientId comes from the client's media driver; requestId is echoed on every reply, and a client "
+     "ignores replies to anything but its current request.", size=13, color=A5)
+
+LIVE_LANES = [("Live tap", "stream 205", "tap"), ("Client", "ReplayerStreamReceiver", "box"),
+              ("ReplayerService", "requests 202 · replies 203", "syn"), ("Archive", "active tap recording", "plain")]
+
+SEQ_X = [1.7, 4.1, 8.4, 11.65]
+
+s = content("Replay sequence: a cold start", "Walk the recording to its end, then follow the tap",
+            "The Replayer is ready once its active recording is visible. A client's cold start asks for the active "
+            "recording FROM_START, under the clientId it drew from its media driver; the Replayer starts a replay "
+            "bounded at the recording's end as it is now and answers Replaying with the replay session and "
+            "catchUpPosition, echoing the requestId. The client subscribes to stream 201 for that session only, so it "
+            "never holds up another client's replay. Its first frame must be globalSeqNo 1, or the client stops: the "
+            "recording is short. Live tap frames past the end arrive meanwhile and go into the retained FIFO. Completion "
+            "is by position, not by the image closing: a bounded replay of a recording still being written does not "
+            "close at its bound. Closing the replay subscription frees the slot; the FIFO drains, de-duplicated on "
+            "globalSeqNo, and the client is caught up. An empty recording answers NO_REPLAY_NEEDED and the client "
+            "follows the tap at once.")
+q = Seq(s, LIVE_LANES, SEQ_X)
+q.msg(1, 2, "ReplayRequest(clientId, requestId 1, FROM_START)")
+q.msg(2, 3, "startReplay(start → last recorded) · 201")
+q.msg(2, 1, "Replaying(session, catchUpPosition = last recorded)", "d")
+q.note(1, "subscribe to 201 for this replay session only")
+q.msg(3, 1, "frame 1: first frame must be globalSeqNo 1", "w")
+q.begin("LOOP", "until the replay image reaches catchUpPosition")
+q.msg(3, 1, "replayed frames 2, 3 … → dispatched in globalSeqNo order", "w")
+q.msg(0, 1, "frames past the end → retained", "a")
+q.end()
+q.note(1, "position ≥ catchUpPosition: close the replay")
+q.note(2, "publication gone → slot freed for the queue")
+q.note(1, "drain the FIFO → isCaughtUp(), onCaughtUp", style="tap")
+
+s = content("Replay sequence: a gap", "Resume at the last delivered frame; the anchor checks the recording",
+            "A slow consumer is dropped by its driver and misses 105. Frame 106 arrives ahead of the next expected number: "
+            "isCaughtUp() clears, 106 is retained, and the client asks to resume at the position where 104 ended, the "
+            "last frame it delivered. The resumed replay's first frame must be 105, the anchor. If it is any other frame, "
+            "or the Replayer refuses the position with NO_REPLAY_NEEDED, the client stops: positions follow from the "
+            "frames, and the recording changes only with the member, whose restart takes the client's driver with it. "
+            "A position not recorded yet is answered ReplayPending. Live frames keep arriving into the FIFO, bounded at "
+            "65,536 frames or 16 MiB; past either bound the client drops them and resumes again at its last delivered "
+            "frame when the replay ends. On reaching catchUpPosition the client closes the replay, the FIFO drains 106 "
+            "onward and the client is caught up, with no second gap.")
+q = Seq(s, LIVE_LANES, SEQ_X)
+q.msg(0, 1, "104 → dispatched", "a")
+q.msg(0, 1, "105", lost=True)
+q.msg(0, 1, "106, ahead of 105", "a")
+q.note(1, "isCaughtUp() cleared; 106 retained")
+q.msg(1, 2, "ReplayRequest(requestId k, fromPosition = end of 104)")
+q.msg(2, 3, "startReplay(fromPosition → last recorded)")
+q.msg(2, 1, "Replaying(session, catchUpPosition = last recorded)", "d")
+q.msg(0, 1, "107, 108 … → retained", "a")
+q.begin("ALT", "the first replayed frame is 105, the anchor")
+q.msg(3, 1, "105 → dispatched", "w")
+q.note(1, "catchUpPosition: close the replay, slot freed")
+q.note(1, "drain 106, 107, 108 → isCaughtUp(), onCaughtUp", style="tap")
+q.orelse("another frame, or NO_REPLAY_NEEDED: the recording does not match")
+q.note(1, "fatal: raised from the client's duty cycle", style="syn")
+q.end()
 
 s = content("Promotion rules", "Four triggers, one target rule, all on consensus time",
             "Target rule: the lowest preference rank among siblings, excluding the instance that lost the role, so a "
             "pair whose instances were all down converges on whichever starts first. The activation timeout arms at the "
-            "GatewayActive's timestamp plus 5 s on the consensus clock and is evaluated on each heartbeat, at most one "
-            "promotion per heartbeat, so repeated failures move down the list. Being superseded is not a failure: the "
+            "GatewayActive's timestamp plus 5 s on the consensus clock and is evaluated on each heartbeat, which hands "
+            "over every overdue deadline, each gateway at most once, so repeated failures move down the list. Being superseded is not a failure: the "
             "instance closes its edge, keeps its session and keeps following the tap so it can be designated again. From "
             "the GatewayActive that superseded it the sequencer sequences nothing from its session (rule S-6), so it drops "
             "what it still had unconfirmed, and its session closing later promotes nothing. A fence is different: the "
-            "instance no longer trusts its own view, reports once, and its façade releases its session and does nothing "
-            "more, which promotes the standby at the fence. The application decides when to exit.")
+            "instance no longer trusts its own view: its façade closes the edge through onStandby, releases its session, "
+            "reports once and does nothing more, which promotes the standby at the fence. The application decides "
+            "when to exit; the repository's convention is code 70.")
 trig = [("Bootstrap", "After the last topology row, each rank-0 instance."),
         ("Session close", "The designated instance's bound session closes."),
         ("Activation timeout", "No GatewayStarted within 5 s of consensus time."),
@@ -1447,12 +1714,12 @@ card(s, L, 4.95, 5.9, 1.7, [{"text": "Superseded → standby", "bold": True, "si
                             {"text": "Closes its edge, keeps its session, keeps following the tap. Nothing it sends is sequenced. Can be designated again.", "size": 14}],
      style="plain")
 card(s, L + 6.23, 4.95, 5.9, 1.7, [{"text": "Fenced → session released", "bold": True, "size": 17, "head": True, "color": A2, "space": 6},
-                                   {"text": "Its view of the log can no longer be trusted. Reports once, releases its session, does nothing more; the standby is promoted at the fence.", "size": 14}],
+                                   {"text": "Its view of the log can no longer be trusted. Closes its edge, releases its session, reports once; the standby is promoted at the fence.", "size": 14}],
      style="syn")
 
 s = content("Applications: cluster member local or remote", "Each application follows its own member's tap; only the leader's publishes",
             "An application runs one instance on every member, attached to that member's media driver, and a "
-            "member can host several applications, each with its own sourceId and Replayer client id. Every instance follows "
+            "member can host several applications, each with its own sourceId and client id. Every instance follows "
             "its own member's tap and so holds the same state. LeadershipChanged picks the instance that acts: only the one on "
             "the leader's member publishes, over IPC ingress to its own consensus module, and every leadership change "
             "closes its gate, so a reply lost in the election is dispatched again. Remote, the application is the one "
@@ -1490,39 +1757,6 @@ text(s, 8.6, 1.95, 4.13, 4.5, [
     {"text": "Only the application on the leader publishes; every LeadershipChanged closes its gate", "bullet": True, "space": 10},
     {"text": "Remote: one instance on its own host, beside a local ReplayerService; UDP ingress", "bullet": True},
 ], size=15)
-
-s = content("Leader-only work, through the log", "Outstanding work is replicated; dispatch is local",
-            "Every application instance records a request as outstanding from its sequenced request until its sequenced reply. Only "
-            "the leader's instance dispatches; it replies under the requester's sourceId and connectionId so the "
-            "originating gateway can route it. The request is discharged when the reply is sequenced, not when it is "
-            "sent. Every LeadershipChanged closes the gate, including one naming the same member, because a reply sent "
-            "during the election may have been lost with the old leader's uncommitted log. A newly opened gate "
-            "dispatches every outstanding request in globalSeqNo order. Delivery is at least once across a failover; a "
-            "reply that is a pure function of its request is byte-identical on re-emission and deduplicated by key.")
-sc = CW / 960
-f = Fig(s, L, 1.7, sc)
-f.host(10, 120, 120, 50, "External")
-f.box(170, 120, 150, 50, "Gateway", "active instance")
-f.arrow([(130, 138), (170, 138)])
-f.arrow([(170, 154), (130, 154)])
-f.box(360, 120, 110, 50, "seq N", "request", "tap")
-f.arrow([(320, 145), (360, 145)])
-f.box(510, 40, 180, 50, "Application · member 0", "outstanding: N", tsize=11)
-f.box(510, 120, 180, 50, "Application · member 1", "leader: reply(requester, conn)", "lead", tsize=11)
-f.box(510, 200, 180, 50, "Application · member 2", "outstanding: N", tsize=11)
-for ty in (65, 145, 225):
-    f.arrow([(470, 145), (510, ty)], "d")
-f.box(730, 120, 110, 50, "seq M", "reply", "tap")
-f.arrow([(690, 145), (730, 145)], "a")
-f.label(845, 112, 115, 66, "every instance: N discharged", size=11, align=PP_ALIGN.LEFT)
-f.arrow([(785, 170), (785, 278), (245, 278), (245, 170)], "a")
-f.label(300, 280, 440, 24, "gateway keeps its own sourceId, routes by connectionId", size=11)
-pts3 = [("Replicated", "Outstanding from sequenced request to sequenced reply, on every instance."),
-        ("Gate closes", "On every LeadershipChanged, even for the same leader."),
-        ("At least once", "Deterministic replies make duplicates identical; drop by key.")]
-for i, (t, d) in enumerate(pts3):
-    x = L + i * (3.84 + 0.305)
-    card(s, x, 5.7, 3.84, 1.05, [{"runs": [(t + "  ", {"bold": True}), (d, {})], "size": 13}], margin=0.15, anchor=M)
 
 s = content("Remote hosts: the tap relay", "Clients off the cluster see exactly what they would see on a member",
             "A gateway or application host, with clients but no member, runs its own ReplayerServer with a media driver and archive. One archive "
@@ -1583,105 +1817,46 @@ card(s, L, 5.3, CW, 1.3, [{"runs": [("Never blocks the duty cycle. ", {"bold": T
                                      "session after 20 s and the attempt under way failed, the instance fences.", {})],
                            "size": 16}], margin=0.25, anchor=M)
 
-s = content("The snapshot protocol", "Four frames on the log, two node-local messages for a restore",
+s = content("The snapshot protocol", "Four frames on the log; the records never enter it",
             "The topology turns rounds on: SnapshotPolicyRegistered sets the interval, 0 meaning operator requests only, "
             "and each source's row says whether it takes part, which its façades read and the sequencer does not. The "
             "sequencer decodes the policy alone and answers a SnapshotRequested with SnapshotStarted at the next "
             "globalSeqNo, as a GatewayActive follows a GatewayActivationRequested. SnapshotEnd belongs to the frame's "
             "sourceId, one per application or logical gateway per round; the sequencer checks only its format, since "
-            "rejecting a late or superseded end would fence its producer. Each Replayer indexes every source's ends by "
-            "round, and a restoring instance asks it about its newest file before trusting it. The records themselves "
-            "never enter the log.")
+            "rejecting a late or superseded end would fence its producer. Each instance confirms its own file against "
+            "the sequenced end, and the file's trailer records the round's cut, which a restore checks against the "
+            "recording. The Replayer holds no snapshot state, and the records themselves never enter the log.")
 table(s, L, 1.85, [2.85, 2.6, 3.0, 3.68], [
     ["Message", "Sent by", "Fields", "Effect"],
     ["SnapshotPolicyRegistered", "clusterctl load-topology", "intervalSeconds", "Turns rounds on; 0 is operator requests only"],
     ["GatewayRegistered, ApplicationRegistered", "clusterctl load-topology", "snapshot", "Whether that source takes part; read by its façades"],
     ["SnapshotRequested", "clusterctl request-snapshot", "correlationId", "SnapshotStarted at the next globalSeqNo"],
     ["SnapshotStarted", "the sequencer only", "round", "The cut: every participating instance serializes here"],
-    ["SnapshotEnd", "the instance that may publish", "round, recordCount, length, crc32c", "Every instance compares its own; a difference fences"],
-    ["SnapshotQuery", "a restoring instance", "sourceId, round", "Asks its Replayer whether the log ends that round"],
-    ["SnapshotLocation", "the Replayer", "the end, asOfPosition", "Where to resume; round −1 when there is none"],
+    ["SnapshotEnd", "the instance that may publish", "round, recordCount, length, crc32c", "Each instance compares: a match confirms its file, a difference fences"],
 ], size=13, rowh=0.55)
-text(s, L, 6.35, CW, 0.4, "SnapshotQuery and SnapshotLocation are replay control (schema 212): node-local, never "
-     "sequenced. The rest are schema 210.", size=13, color=A5)
+text(s, L, 5.55, CW, 0.4, "All schema 210. A file's trailer carries its round, record count, length, CRC32C and cut: "
+     "globalSeqNo, recording position and timestamp.", size=13, color=A5)
 
-s = content("Replay sequence: a cold start", "Prove the recording, walk it to the end, then follow the tap",
-            "Startup: before it reports ready, the Replayer replays the first frame of its active recording on stream 204 "
-            "and checks it is globalSeqNo 1. A client's cold start asks for the active recording FROM_START; the Replayer "
-            "starts a replay bounded at the recording's end as it is now and answers Replaying with the replay session "
-            "and catchUpPosition, echoing the requestId. The client subscribes to stream 201 for that session only, so "
-            "it never holds up another client's replay. Live tap frames past the end arrive meanwhile and go into the "
-            "retained FIFO. A heartbeat every 500 ms keeps the slot from the 5 s idle reclaim. Completion is by position, "
-            "not by the image closing: a bounded replay of a recording still being written does not close at its bound. "
-            "ReplayComplete frees the slot at once; the FIFO drains, de-duplicated on globalSeqNo, and the client is "
-            "caught up. An empty recording answers NO_REPLAY_NEEDED and the client follows the tap at once.")
-q = Seq(s, LIVE_LANES, SEQ_X)
-q.begin("START", "once, before it reports ready", x=6.9, w=W - L - 6.9)
-q.msg(2, 3, "startReplay(active, first frame) · 204")
-q.msg(3, 2, "first frame is globalSeqNo 1 → ready", "d")
-q.end()
-q.msg(1, 2, "ReplayRequest(clientId, requestId 1, FROM_START)")
-q.msg(2, 3, "startReplay(start → last recorded) · 201")
-q.msg(2, 1, "Replaying(session, catchUpPosition = last recorded)", "d")
-q.note(1, "subscribe to 201 for this replay session only")
-q.begin("LOOP", "until the replay image reaches catchUpPosition")
-q.msg(3, 1, "replayed frames 1, 2, 3 … → dispatched in globalSeqNo order", "w")
-q.msg(0, 1, "frames past the end → retained", "a")
-q.msg(1, 2, "ReplayHeartbeat every 500 ms (slot idle TTL 5 s)")
-q.end()
-q.note(1, "position ≥ catchUpPosition: close the replay")
-q.msg(1, 2, "ReplayComplete → slot freed, a queued request starts")
-q.note(1, "drain the FIFO → isCaughtUp(), onCaughtUp", style="tap")
-
-s = content("Replay sequence: a gap", "Resume at the last delivered frame; the anchor catches a rotation",
-            "A slow consumer is dropped by its driver and misses 105. Frame 106 arrives ahead of the next expected number: "
-            "isCaughtUp() clears, 106 is retained, and the client asks to resume at the position where 104 ended, the "
-            "last frame it delivered. The resumed replay's first frame must be 105, the anchor. If it is any other frame, "
-            "or the Replayer answers NO_REPLAY_NEEDED while the hole is open, the member restarted and its active "
-            "recording is a new one, so the client walks it from the start, or from its restored snapshot's cut. Live "
-            "frames keep arriving into the FIFO, bounded at 65,536 frames or 16 MiB; past either bound the client drops "
-            "them and walks again when the replay ends. On reaching catchUpPosition the FIFO drains 106 onward and the "
-            "client is caught up, with no second gap.")
-q = Seq(s, LIVE_LANES, SEQ_X)
-q.msg(0, 1, "104 → dispatched", "a")
-q.msg(0, 1, "105", lost=True)
-q.msg(0, 1, "106, ahead of 105", "a")
-q.note(1, "isCaughtUp() cleared; 106 retained")
-q.msg(1, 2, "ReplayRequest(requestId k, fromPosition = end of 104)")
-q.msg(2, 3, "startReplay(fromPosition → last recorded)")
-q.msg(2, 1, "Replaying(session, catchUpPosition = last recorded)", "d")
-q.msg(0, 1, "107, 108 … → retained", "a")
-q.begin("ALT", "the first replayed frame is 105, the anchor")
-q.msg(3, 1, "105 → dispatched", "w")
-q.msg(1, 2, "ReplayComplete at catchUpPosition")
-q.note(1, "drain 106, 107, 108 → isCaughtUp(), onCaughtUp", style="tap")
-q.orelse("another frame, or NO_REPLAY_NEEDED: the recording rotated")
-q.msg(1, 2, "ReplayRequest(FROM_START, or the snapshot's cut)")
-q.end()
-
-s = content("Replay sequence: when history is not served", "Every refusal holds the client at the gap and drops nothing",
+s = content("Replay sequence: when history is not served", "Pending holds the client at the gap; a mismatch stops it",
             "Every reply echoes the requestId; a client ignores any reply that is not for its current request. "
             "ReplayPending means the request is queued or the Replayer cannot start it yet: four replays at most, one "
             "while the tap's recording trails the tap by more than a quarter of the publication window, not ready "
-            "before the integrity check passes, or the archive stalled and probed once a second. A queued request "
-            "starts the moment a slot frees. ReplayUnavailable means the integrity check failed and is the answer for "
-            "the process's life; the client holds and keeps resending until an operator repairs the archive and "
-            "restarts the member. ReplayClientIdInUse goes to both processes sharing an id, detected from requestId "
-            "stepping backwards. A replay that stops under the client, no progress for 5 s or an image closed short "
-            "of catchUpPosition, is requested again; a resume re-anchors. Nothing dispatched for 30 s raises the "
-            "recoveryStalled gauge; a façade fences RECOVERY_STALLED after 60 s on a designated instance or the "
-            "leader's replica, above the Replayer's 20 s worst-case wait.")
+            "before its active recording is visible, a resume position the recording has not reached yet, or an "
+            "archive call that threw, which is counted. The client's resend every 500 ms is the retry, and a queued "
+            "request starts once a slot frees. A resume the Replayer refuses, NO_REPLAY_NEEDED for a position, means "
+            "the recording does not match the positions the client holds, and the client stops, as it does when a "
+            "resume opens on the wrong frame. A replay that stops under the client, no progress for 5 s or an image "
+            "closed short of catchUpPosition, is requested again; a resume re-anchors. Nothing dispatched for 30 s "
+            "raises the recoveryStalled gauge; a façade fences RECOVERY_STALLED after 60 s on a designated instance or "
+            "the leader's replica, above the driver's 10 s liveness timeout that frees a dead client's slot.")
 q = Seq(s, LIVE_LANES, SEQ_X)
 q.msg(1, 2, "ReplayRequest(requestId n, fromPosition)")
-q.begin("ALT", "no free slot (4, or 1 while the recorder trails), not ready yet, or the archive stalled")
+q.begin("ALT", "no free slot (4, or 1 while the recorder trails), not ready, not recorded yet, or an archive error")
 q.msg(2, 1, "ReplayPending(n): hold at the gap", "d")
 q.msg(1, 2, "ReplayRequest(n + 1, same position) after 500 ms", )
-q.orelse("integrity check failed: the recording does not start at globalSeqNo 1")
-q.msg(2, 1, "ReplayUnavailable(n), for the process's life", "d")
-q.note(1, "hold, dispatch nothing, keep resending")
-q.orelse("a second process requests under this clientId")
-q.msg(2, 1, "ReplayClientIdInUse, to both", "d")
-q.note(1, "stop: raised from the duty cycle")
+q.orelse("the position is not a frame in the recording")
+q.msg(2, 1, "Replaying(n, NO_REPLAY_NEEDED)", "d")
+q.note(1, "fatal: raised from the client's duty cycle", style="syn")
 q.end()
 q.begin("ALT", "an established replay stops: no progress for 5 s, or its image closes short")
 q.msg(1, 2, "ReplayRequest(new requestId); a resume re-anchors")
@@ -1689,31 +1864,32 @@ q.end()
 q.note(1, "30 s with nothing dispatched: recoveryStalled gauge")
 q.note(1, "60 s: the façade fences RECOVERY_STALLED", style="syn")
 
-s = content("Replay sequence: a snapshot restore", "Restore what the log confirms, then resume after the cut",
-            "A client whose façade has a SnapshotListener restores before it dispatches anything. It takes the newest "
-            "round in its snapshot directory and asks its member's Replayer for that round's sequenced SnapshotEnd, "
-            "which the Replayer's SnapshotIndex holds. The file must match it: record count, length and CRC. A round "
-            "the index lacks, or a file missing, torn or not the one sequenced, gives way to the next older round; with "
-            "none left the client walks from globalSeqNo 1. The records are read from the local file, at most 1,024 "
-            "per poll, so nothing is replayed during a restore. A format or header version the build does not read, or "
-            "records that fail the trailer, halt recovery: restoreFailure, and the façade fences SNAPSHOT_UNRESTORABLE. "
-            "The resume after it is an ordinary one, anchored on the cut, which is dropped as already delivered.")
+s = content("Replay sequence: a snapshot restore", "Check the file's cut on the recording, restore, then resume after it",
+            "A client whose façade has a SnapshotListener restores before it dispatches anything. It opens its confirmed "
+            "file, whose trailer records the round's cut: globalSeqNo, recording position and timestamp. It replays "
+            "from that position, and the first frame must be the round's SnapshotStarted at that globalSeqNo and "
+            "timestamp. Any other frame, or NO_REPLAY_NEEDED, means the file was cut from another log, after a purge "
+            "for example, and it gives way to an older file; with none left the client walks from globalSeqNo 1. "
+            "ReplayPending holds it while a restarted member re-records. The records are read from the local file, at "
+            "most 1,024 per poll. A format or header version the build does not read, or records that fail the "
+            "trailer, halt recovery: restoreFailure, and the façade fences SNAPSHOT_UNRESTORABLE. The resume after it "
+            "is an ordinary one, anchored on the cut, which is dropped as already delivered.")
 q = Seq(s, [("Snapshot files", "SnapshotStore, local", "card")] + LIVE_LANES[1:3]
         + [("Archive", "active tap recording", "plain")], SEQ_X)
-q.msg(1, 0, "latestRound() → round r")
-q.msg(1, 2, "SnapshotQuery(requestId, sourceId, round r)")
-q.note(2, "index: the SnapshotEnd sequenced for r", w=3.1)
-q.msg(2, 1, "SnapshotLocation(cut, position, count, length, crc)", "d")
-q.begin("ALT", "r not in the index, or its file missing or not the one sequenced")
+q.msg(0, 1, "newest round r and its cut")
+q.msg(1, 2, "ReplayRequest(cut position), anchor = the cut")
+q.msg(2, 1, "Replaying(session, catchUpPosition)", "d")
+q.msg(3, 1, "first frame: SnapshotStarted(r) at the cut?", "w")
+q.begin("ALT", "another frame, or NO_REPLAY_NEEDED: a file from another log")
 q.msg(1, 0, "the next older round")
 q.note(1, "none left: ReplayRequest(FROM_START), a walk")
 q.end()
 q.msg(0, 1, "records, ≤ 1,024 per poll")
 q.note(1, "lastGlobalSeqNo = cut; leadership from the header")
-q.msg(1, 2, "ReplayRequest(asOfPosition), anchor = the cut")
+q.msg(1, 2, "ReplayRequest(cut position), anchor = the cut")
 q.msg(2, 1, "Replaying(session, catchUpPosition = last recorded)", "d")
 q.msg(3, 1, "SnapshotStarted (the cut, dropped), then the frames after it", "w")
-q.note(1, "ReplayComplete, drain the FIFO → caught up", style="tap")
+q.note(1, "close the replay, drain the FIFO → caught up", style="tap")
 
 s = content("Snapshot sequence: a round", "Cut, serialize, end, compare; the records never enter the log",
             "A round starts on an operator's SnapshotRequested or when the policy interval elapses at a heartbeat; "
@@ -1722,43 +1898,23 @@ s = content("Snapshot sequence: a round", "Cut, serialize, end, compare; the rec
             "included. Only the instance whose gate is open, the designated gateway instance or the leader's replica, "
             "submits SnapshotEnd, and the sequencer checks only its format. Every instance then compares its own "
             "serialization with the sequenced end; one that differs no longer holds the state the log implies and "
-            "fences. Each Replayer indexes the cut and the source's first end of the round, which is what a later "
-            "restore asks it for. A new round supersedes this one: an end not yet placed is abandoned.")
+            "fences; a match confirms its file, which is forced to disk, renamed <round>.snapshot and replaces every "
+            "older one. A new round supersedes this one: an end not yet placed is abandoned.")
 q = Seq(s, [("clusterctl", "request-snapshot", "plain"), ("Sequencer", "every member", "lead"),
-            ("ReplayerService", "SnapshotIndex", "syn"), ("Instance A", "gate open: publishes", "box"),
-            ("Instance B", "every other instance", "box")], [1.65, 4.15, 6.65, 9.15, 11.65],
-        legend=(("tap", "a"), ("ingress", "ln")))
+            ("Instance A", "gate open: publishes", "box"), ("Instance B", "every other instance", "box")],
+        [1.9, 5.1, 8.3, 11.5], legend=(("tap", "a"), ("ingress", "ln")))
 q.msg(0, 1, "SnapshotRequested")
-q.note(1, "or: interval, at a heartbeat", w=2.4)
-q.msg(1, 4, "SnapshotStarted(r) on every tap: the cut R", "a")
-q.note(2, "notes R and its position", w=2.4)
-q.note(3, "each serializes at R to its own file", w=3.5)
-q.msg(3, 1, "SnapshotEnd(r, count, length, crc)")
-q.msg(1, 4, "SnapshotEnd sequenced, on every tap", "a")
-q.note(2, "index: first end of r wins", w=2.4)
-q.note(3, "each compares its own file with the end", w=3.5)
-q.begin("ALT", "an instance's file differs from the end")
-q.note(3, "it fences: SNAPSHOT_DIVERGED", w=3.5, style="syn")
+q.note(1, "or: interval, at a heartbeat", w=2.6)
+q.msg(1, 3, "SnapshotStarted(r) on every tap: the cut R", "a")
+q.note(2, "each serializes at R to its own <r>.tmp", w=3.8)
+q.msg(2, 1, "SnapshotEnd(r, count, length, crc)")
+q.msg(1, 3, "SnapshotEnd sequenced, on every tap", "a")
+q.note(2, "each compares its own file with the end", w=3.8)
+q.begin("ALT", "an instance's file matches the end")
+q.note(2, "it confirms: <r>.snapshot, older files deleted", w=3.8, style="tap")
+q.orelse("it differs")
+q.note(2, "it fences: SNAPSHOT_DIVERGED", w=3.8, style="syn")
 q.end()
-
-s = content("The replay protocol", "Nine node-local messages; never sequenced, never recorded",
-            "Requests on stream 202, replies on 203, replay data on 201. Every request carries a requestId the client "
-            "increments on every send, including an unchanged resend, and the replayer echoes; a client ignores any reply "
-            "that is not for its current request. The client detects completion by reaching catchUpPosition, not by the "
-            "replay image closing, because a bounded replay of an active recording does not close at the bound. Two "
-            "processes sharing a clientId are detected from requestId stepping backwards and both are told to stop.")
-table(s, L, 1.85, [3.9, 2.2, 6.03], [
-    ["Message", "Direction", "Meaning"],
-    ["ReplayRequest", "client → replayer", "From the start, or resume at a recording position"],
-    ["Replaying", "replayer → client", "Follow this replay session to catchUpPosition"],
-    ["ReplayPending", "replayer → client", "No free slot: hold at the gap"],
-    ["ReplayHeartbeat · Complete", "client → replayer", "Keep the slot · free it now"],
-    ["ReplayUnavailable", "replayer → client", "This node cannot serve history"],
-    ["ReplayClientIdInUse", "replayer → client", "Two processes share a client id: stop"],
-    ["SnapshotQuery · Location", "both", "Is this snapshot round on the log, and where"],
-], size=14, rowh=0.55)
-text(s, L, 6.4, CW, 0.4, "requestId is echoed on every reply; a client ignores replies to anything but its current request.",
-     size=13, color=A5)
 
 s = content("The gateway protocol","Six system frames; only the sequencer designates",
             "This is seqeron's vocabulary, not any edge protocol's. clusterctl load-topology puts the list on the log, one "
@@ -1767,16 +1923,18 @@ s = content("The gateway protocol","Six system frames; only the sequencer design
             "validates first. The designated instance answers with GatewayStarted, which binds its cluster session and "
             "carries the first connection id it will allocate, above any it saw, so ids never repeat across a restart. "
             "Connection frames are the generic half: ConnectionOpened carries the producer's own connection data, opaque "
-            "to the cluster, so a standby can map an id to its session before that connection's first message. S-6 is "
+            "to the cluster, so a standby can map an id to its session before that connection's first message. The "
+            "sequencer keeps no connection state: a consumer treats GatewayStarted as closing the pair's open "
+            "connections. S-6 is "
             "condition 10 of validation, and every input to it comes from the log.")
 table(s, L, 1.85, [2.95, 2.5, 3.0, 3.68], [
     ["Frame", "Sent by", "Fields", "The sequencer"],
     ["GatewayRegistered", "clusterctl load-topology", "gatewayId, sourceId, name, rank, remaining", "Builds the list; remaining 0 bootstraps rank 0"],
     ["GatewayActive", "the sequencer only", "gatewayId", "Designates one instance; arms a 5 s deadline"],
-    ["GatewayStarted", "the designated instance", "gatewayId, firstConnectionId", "Binds its session; releases the pair's open connections"],
+    ["GatewayStarted", "the designated instance", "gatewayId, firstConnectionId", "Binds its session"],
     ["GatewayActivationRequested", "clusterctl activate", "gatewayId", "Validates it, then a GatewayActive at the next number"],
-    ["ConnectionOpened", "the active instance", "connectionData, opaque", "Opens (sourceId, connectionId)"],
-    ["ConnectionClosed", "the active instance", "none", "Closes it"],
+    ["ConnectionOpened", "the active instance", "connectionData, opaque", "Forwards it unopened"],
+    ["ConnectionClosed", "the active instance", "none", "Forwards it"],
 ], size=13, rowh=0.52)
 card(s, L, 5.75, CW, 0.95, [{"runs": [("The log is the judge (S-6). ", {"bold": True}),
                                       ("A GatewayStarted must name the instance the latest GatewayActive designated. Once a "
@@ -1820,11 +1978,16 @@ for i, (t, body) in enumerate([
                                  {"text": body, "size": 13}], margin=0.2)
 
 s = content("Fences", "An instance that cannot trust its view stops before it acts on stale state",
-            "Each fence is reported once through onFenced, after the façade has released its cluster session, so a "
-            "designated instance's standby is promoted at the fence; exiting is the application's decision. The tap-stall timer runs on local monotonic time because consensus time arrives in the very "
+            "Each fence is reported once through onFenced. Before it, the façade closes what lets the instance act, a "
+            "serving gateway's edge through onStandby or an application's open gate through onLeadershipChanged(false), "
+            "and releases its cluster session, so a designated instance's standby is promoted at the fence. At the end "
+            "of that duty cycle it releases its tap and replay subscriptions, so a fenced instance holds no Replayer "
+            "slot. Exiting is the application's decision; the examples exit with 70, the repository's convention for "
+            "fenced, restart me. The tap-stall timer runs on local monotonic time because consensus time arrives in the very "
             "heartbeats being watched for. A replay is not a stall: the tap-stall check is suspended while not caught "
             "up, and the recovery-stall fence covers that time, armed only after the first catch-up because a cold start "
-            "has no useful bound. 60 s exceeds the Replayer's 20 s worst-case pending wait, so a correct Replayer cannot "
+            "has no useful bound. 60 s exceeds the driver's 10 s liveness timeout, the longest a dead client holds a "
+            "replay slot, so a correct Replayer cannot "
             "trip it. A stall fences only an instance that acts, the designated gateway instance or the leader's replica; "
             "any other logs it once, keeps following the tap and logs when it clears, since it cannot begin to act while "
             "stalled. A lost session fences only a gateway instance that announced itself on it; the slide on lost sessions "
@@ -1840,6 +2003,9 @@ table(s, L, 1.85, [3.9, 8.23], [
 ], size=14, rowh=0.58)
 text(s, L, 6.1, CW, 0.5, "An instance that acts: the designated gateway instance, or the leader's replica. Any other logs a stall "
      "and keeps following.", size=13, color=A5)
+text(s, L, 6.5, CW, 0.4, [{"runs": [("Before onFenced: ", {"bold": True}),
+                                    ("the edge or leader gate closes and the session is released. Then exit, by "
+                                     "convention with 70.", {})]}], size=13)
 
 s = content("faulteron", "Network faults for Aeron, injected in eBPF",
             "faulteron is the injector behind the network-fault harnesses on the verification slide, in a repository of "
