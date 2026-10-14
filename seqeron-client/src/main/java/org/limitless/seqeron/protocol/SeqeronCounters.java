@@ -77,12 +77,6 @@ public final class SeqeronCounters {
     public static final int REPLAYER_CONTROL_REPLIES_DROPPED_COUNT_TYPE_ID = 5107;
 
     /**
-     * The round of one source's latest snapshot this node's Replayer has indexed (doc/snapshot.md §5), one
-     * counter per source, keyed {@code {memberId, sourceId}}. A source whose round lags the others' misses rounds.
-     */
-    public static final int REPLAYER_SNAPSHOT_ROUND_TYPE_ID = 5109;
-
-    /**
      * Count of replay requests held pending only because the tap recording trailed the tap while a replay ran,
      * resends included: a held client resends about every 500 ms.
      */
@@ -95,11 +89,11 @@ public final class SeqeronCounters {
     public static final int REPLAYER_ARCHIVE_ERRORS_COUNT_TYPE_ID = 5111;
 
     // ── Co-located application replicas (5200-5299) ────────────────────────────────────────────
-    // Core reserves 5200 and 5299; a consumer allocates its own in 5201-5298 (doc/ops.md, "Counter type ids").
+    // Core reserves 5200, 5298 and 5299; a consumer allocates its own in 5201-5297 (doc/ops.md, "Counter type ids").
     // Published by the apps, not by any Java process: protocol/SeqeronCounters.hpp must match these ids and key layout.
     /**
-     * First type id of the app range: core reserves {@link #APP_RECOVERY_STALLED_TYPE_ID} and {@link
-     * #GATEWAY_CONNECTIONS_TYPE_ID} and no more.
+     * First type id of the app range: core reserves {@link #APP_RECOVERY_STALLED_TYPE_ID}, {@link
+     * #APP_SNAPSHOT_ROUND_TYPE_ID} and {@link #GATEWAY_CONNECTIONS_TYPE_ID} and no more.
      */
     public static final int APP_TYPE_ID_MIN = 5200;
     /** Last type id of the app range; which replica holds which sub-block is the deployment's to record. */
@@ -107,6 +101,12 @@ public final class SeqeronCounters {
 
     /** 1 while a co-located replica's recovery has dispatched nothing while not caught up, else 0. */
     public static final int APP_RECOVERY_STALLED_TYPE_ID = 5200;
+
+    /**
+     * The last snapshot round a participating client confirmed (doc/snapshot.md §4), 0 for none yet. A client whose
+     * round lags the others' is missing rounds.
+     */
+    public static final int APP_SNAPSHOT_ROUND_TYPE_ID = 5298;
 
     /** Connections a gateway instance holds open: taken and not yet closed, and 0 while it does not serve. */
     public static final int GATEWAY_CONNECTIONS_TYPE_ID = 5299;
@@ -124,9 +124,6 @@ public final class SeqeronCounters {
      * separate series. Only the app range carries it, which is why the exporter keys off the range.
      */
     public static final int KEY_CLIENT_ID_OFFSET = BitUtil.SIZE_OF_INT;
-
-    /** Offset of the {@code sourceId} in a per-source counter's key (see {@link #addSourceCounter}). */
-    public static final int KEY_SOURCE_ID_OFFSET = BitUtil.SIZE_OF_INT;
 
     /** Length of the key buffer written by {@link #addCounter}: one int, the memberId. */
     public static final int KEY_LENGTH = BitUtil.SIZE_OF_INT;
@@ -152,17 +149,6 @@ public final class SeqeronCounters {
         final UnsafeBuffer keyBuffer = new UnsafeBuffer(new byte[APP_KEY_LENGTH]);
         keyBuffer.putInt(KEY_MEMBER_ID_OFFSET, memberId);
         keyBuffer.putInt(KEY_CLIENT_ID_OFFSET, clientId);
-        final byte[] labelBytes = label.getBytes(StandardCharsets.US_ASCII);
-        final UnsafeBuffer labelBuffer = new UnsafeBuffer(labelBytes);
-        return aeron.addCounter(typeId, keyBuffer, 0, APP_KEY_LENGTH, labelBuffer, 0, labelBytes.length);
-    }
-
-    /** Allocates a per-source counter keyed on {@code {memberId, sourceId}}, the app counters' layout. */
-    public static Counter addSourceCounter(final Aeron aeron, final int typeId, final String label,
-                                           final int memberId, final int sourceId) {
-        final UnsafeBuffer keyBuffer = new UnsafeBuffer(new byte[APP_KEY_LENGTH]);
-        keyBuffer.putInt(KEY_MEMBER_ID_OFFSET, memberId);
-        keyBuffer.putInt(KEY_SOURCE_ID_OFFSET, sourceId);
         final byte[] labelBytes = label.getBytes(StandardCharsets.US_ASCII);
         final UnsafeBuffer labelBuffer = new UnsafeBuffer(labelBytes);
         return aeron.addCounter(typeId, keyBuffer, 0, APP_KEY_LENGTH, labelBuffer, 0, labelBytes.length);

@@ -110,13 +110,6 @@ struct Client final : ReplayerRecoveryActions
         ++requestsSent;
     }
 
-    void sendSnapshotQuery(std::int64_t, const std::int32_t sourceId, const std::int64_t round) override
-    {
-        ++queriesSent;
-        querySourceId = sourceId;
-        queryRound = round;
-    }
-
     void openReplay(std::int64_t) override
     {}
 
@@ -140,9 +133,6 @@ struct Client final : ReplayerRecoveryActions
 
     std::int64_t clockMs = CLOCK_MS;
     int requestsSent = 0;
-    int queriesSent = 0;
-    std::int32_t querySourceId = -1;
-    std::int64_t queryRound = -1;
     std::vector<bool> stalledGauge;
 
     ReplayerRecovery recovery;
@@ -1313,8 +1303,6 @@ struct NoActions final : ReplayerRecoveryActions
 {
     void sendReplayRequest(std::int64_t, std::int64_t) override
     {}
-    void sendSnapshotQuery(std::int64_t, std::int32_t, std::int64_t) override
-    {}
     void openReplay(std::int64_t) override
     {}
     void closeReplay() override
@@ -1359,8 +1347,7 @@ TEST(ReplayerRecoveryDelivery, OnSequencedIsRequired)
 
 namespace rf = restore_frames;
 
-// The source restored, and its snapshot's cut. Frame n starts at n * 1024, as in the Java twin.
-constexpr std::int32_t RESTORE_SOURCE = 3;
+// The snapshot's cut. Frame n starts at n * 1024, as in the Java twin.
 constexpr std::int64_t CUT = 10;
 
 struct RestoreRecorder final : SnapshotRestoreHandler
@@ -1388,19 +1375,19 @@ struct RestoreRecorder final : SnapshotRestoreHandler
 const rf::Bytes SNAPSHOT_HEADER = rf::header(4, 2);
 const rf::Bytes SNAPSHOT_RECORD = rf::record(7);
 
-// A client restoring RESTORE_SOURCE from a store of its own, started once the test has written its files.
+// A client restoring from a store of its own, started once the test has written its files.
 struct Restoring
 {
     void start()
     {
-        client.recovery.restoreFrom(RESTORE_SOURCE, store, handler);
+        client.recovery.restoreFrom(store, handler);
         client.recovery.start();
     }
 
-    // This instance's file of a round: the header and one record.
+    // This instance's confirmed file of a round, cut at CUT: the header and one record.
     void writeSnapshot(const std::int64_t round)
     {
-        rf::write(store, round, 1, { SNAPSHOT_HEADER, SNAPSHOT_RECORD });
+        rf::write(store, round, CUT, CUT * 1024, 1, { SNAPSHOT_HEADER, SNAPSHOT_RECORD });
     }
 
     std::filesystem::path file(const std::int64_t round) const
@@ -1415,14 +1402,6 @@ struct Restoring
     Client client{ [this](const SequencedEvent& event) { dispatched.push_back(event.globalSeqNo); } };
 };
 
-// The Replayer's answer: round `round` cut at CUT and ending as the files here do, or none for -1.
-void answerLocation(Client& client, const std::int64_t round, const std::uint32_t formatVersion,
-                    const rf::Digest& end = rf::Digest::of({ SNAPSHOT_HEADER, SNAPSHOT_RECORD }))
-{
-    deliverControl(client,
-                   rf::location(CLIENT_ID, client.recovery.requestId(), round, CUT, CUT * 1024, formatVersion, end));
-}
-
 void attachRestoreReplay(Client& client, const std::int64_t replaySessionId)
 {
     deliverControl(client, encodeReplaying(CLIENT_ID, client.recovery.requestId(), replaySessionId, 64 * 1024));
@@ -1432,6 +1411,13 @@ void deliverReplayFrame(Client& client, rf::Bytes frame, const std::int64_t glob
 {
     client.recovery.onFrame(reinterpret_cast<char*>(frame.data()), frame.size(), globalSeqNo * 1024, /*receiveNs=*/0,
                             /*fromReplay=*/true);
+}
+
+// The replay of the cut opens on the round's SnapshotStarted, as the file recorded it.
+void replayTheCut(Client& client)
+{
+    attachRestoreReplay(client, 21);
+    deliverReplayFrame(client, rf::started(CUT, 2), CUT);
 }
 
 rf::Bytes readFile(const std::filesystem::path& path)
@@ -1446,56 +1432,59 @@ void writeFile(const std::filesystem::path& path, const rf::Bytes& bytes)
     out.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
 }
 
-TEST(ReplayerRecoveryRestore, ARestoringColdStartAsksTheReplayerAboutItsNewestLocalSnapshotHoldingTheLiveTap)
+TEST(ReplayerRecoveryRestore, ARestoringColdStartReplaysFromItsNewestSnapshotsCutFirstHoldingTheLiveTap)
 {
     Restoring r;
-    r.writeSnapshot(1);
+    rf::write(r.store, 1, CUT - 5, (CUT - 5) * 1024, 1, { SNAPSHOT_HEADER, SNAPSHOT_RECORD });
     r.writeSnapshot(2);
     r.start();
 
-    EXPECT_EQ(1, r.client.queriesSent);
-    EXPECT_EQ(RESTORE_SOURCE, r.client.querySourceId);
-    EXPECT_EQ(2, r.client.queryRound) << "the newest round it holds";
-    EXPECT_FALSE(r.client.recovery.isAwaitingReplay()) << "no replay before the answer";
+    EXPECT_EQ(1, r.client.requestsSent);
+    EXPECT_TRUE(r.client.recovery.isAwaitingReplay());
+    EXPECT_EQ(CUT * 1024, r.client.recovery.requestFromPosition()) << "the newest round's cut";
+    EXPECT_FALSE(r.client.recovery.isRestoring()) << "no record before the cut is seen";
     EXPECT_TRUE(r.client.recovery.isRecovering());
 
     deliverLive(r.client, 40); // mid-stream, and no baseline: held, not fatal
     EXPECT_TRUE(r.dispatched.empty());
 }
 
-TEST(ReplayerRecoveryRestore, AnUnansweredSnapshotQueryIsResentAndAPendingAnswerHoldsIt)
+TEST(ReplayerRecoveryRestore, AnUnansweredReplayOfTheCutIsResentAndAPendingAnswerHoldsIt)
 {
     Restoring r;
     r.writeSnapshot(2);
     r.start();
     advancePastTimers(r.client);
-    EXPECT_EQ(2, r.client.queriesSent);
+    EXPECT_EQ(2, r.client.requestsSent);
+    EXPECT_EQ(CUT * 1024, r.client.recovery.requestFromPosition());
 
     deliverControl(r.client, encodeReplayPending(CLIENT_ID, r.client.recovery.requestId()));
     r.client.clockMs += 100;
     r.client.recovery.doTimers(/*requestPublicationPending=*/false);
-    EXPECT_EQ(2, r.client.queriesSent);
+    EXPECT_EQ(2, r.client.requestsSent);
 }
 
-TEST(ReplayerRecoveryRestore, WithNoLocalSnapshotTheColdStartAsksNothingAndWalksTheRecordingFromItsStart)
+TEST(ReplayerRecoveryRestore, WithNoLocalSnapshotTheColdStartWalksTheRecordingFromItsStart)
 {
     Restoring r;
     r.start();
 
-    EXPECT_EQ(0, r.client.queriesSent);
+    EXPECT_EQ(1, r.client.requestsSent);
     EXPECT_FALSE(r.client.recovery.isRestoring());
     EXPECT_TRUE(r.client.recovery.isAwaitingReplay());
     EXPECT_EQ(REPLAYER_FROM_START, r.client.recovery.requestFromPosition());
 }
 
-TEST(ReplayerRecoveryRestore, ASnapshotIsRestoredFromItsFileDispatchingNothingThenResumesAnchoredAtItsCut)
+TEST(ReplayerRecoveryRestore, ASnapshotWhoseCutTheRecordingHoldsIsRestoredFromItsFileThenResumesAnchoredAtItsCut)
 {
     Restoring r;
     r.writeSnapshot(2);
     r.start();
-    answerLocation(r.client, 2, 1);
+    attachRestoreReplay(r.client, 21);
+    deliverReplayFrame(r.client, rf::started(CUT, 2), CUT);
     EXPECT_TRUE(r.client.recovery.isRestoring());
-    EXPECT_FALSE(r.client.recovery.isAwaitingReplay()) << "the records come from the file, not a replay";
+    EXPECT_EQ(-1, r.client.recovery.replaySessionId()) << "the records come from the file, not the replay";
+    EXPECT_TRUE(r.dispatched.empty()) << "the cut is not dispatched";
 
     r.client.recovery.doTimers(/*requestPublicationPending=*/false);
 
@@ -1505,7 +1494,6 @@ TEST(ReplayerRecoveryRestore, ASnapshotIsRestoredFromItsFileDispatchingNothingTh
     EXPECT_EQ(CUT, r.client.recovery.lastGlobalSeqNo());
     EXPECT_EQ(2, r.client.recovery.currentLeaderMemberId()) << "the header's leader";
     EXPECT_TRUE(r.client.recovery.isAwaitingReplay());
-    EXPECT_NE(REPLAYER_FROM_START, r.client.recovery.requestFromPosition());
     EXPECT_EQ(CUT * 1024, r.client.recovery.requestFromPosition());
 
     attachRestoreReplay(r.client, 22);
@@ -1513,6 +1501,21 @@ TEST(ReplayerRecoveryRestore, ASnapshotIsRestoredFromItsFileDispatchingNothingTh
     deliverReplayFrame(r.client, encodeHeartbeat(11), 11);
     deliverReplayFrame(r.client, encodeHeartbeat(12), 12);
     EXPECT_EQ((std::vector<std::int64_t>{ 11, 12 }), r.dispatched);
+}
+
+TEST(ReplayerRecoveryRestore, AReplayOfTheCutThatStopsAdvancingIsRequestedAgainAtTheCut)
+{
+    Restoring r;
+    r.writeSnapshot(2);
+    r.start();
+    attachRestoreReplay(r.client, 21);
+    advancePastTimers(r.client);
+
+    EXPECT_TRUE(r.client.recovery.isAwaitingReplay());
+    EXPECT_EQ(CUT * 1024, r.client.recovery.requestFromPosition());
+    attachRestoreReplay(r.client, 22);
+    deliverReplayFrame(r.client, rf::started(CUT, 2), CUT);
+    EXPECT_TRUE(r.client.recovery.isRestoring());
 }
 
 TEST(ReplayerRecoveryRestore, ARestoreReadsABoundedNumberOfRecordsPerDutyCycleHoldingTheTapUntilItsLast)
@@ -1523,9 +1526,9 @@ TEST(ReplayerRecoveryRestore, ARestoreReadsABoundedNumberOfRecordsPerDutyCycleHo
     {
         records.push_back(rf::record(i));
     }
-    rf::write(r.store, 2, 1, records);
+    rf::write(r.store, 2, CUT, CUT * 1024, 1, records);
     r.start();
-    answerLocation(r.client, 2, 1, rf::Digest::of(records));
+    replayTheCut(r.client);
 
     r.client.recovery.doTimers(/*requestPublicationPending=*/false);
     EXPECT_TRUE(r.client.recovery.isRestoring());
@@ -1539,40 +1542,32 @@ TEST(ReplayerRecoveryRestore, ARestoreReadsABoundedNumberOfRecordsPerDutyCycleHo
     EXPECT_TRUE(r.client.recovery.isAwaitingReplay());
 }
 
-TEST(ReplayerRecoveryRestore, ALocalSnapshotTheLogDoesNotConfirmGivesWayToTheNextOlderOneAndTheLastToAWalk)
+TEST(ReplayerRecoveryRestore, ASnapshotWhoseCutTheRecordingDoesNotHoldGivesWayToTheNextOlderOneAndTheLastToAWalk)
 {
+    Restoring r;
+    for (std::int64_t round = 3; round >= 1; --round)
     {
-        Restoring r;
-        for (std::int64_t round = 1; round <= 4; ++round)
-        {
-            r.writeSnapshot(round);
-        }
-        const rf::Bytes intact = readFile(r.file(3));
-        writeFile(r.file(3), rf::Bytes(intact.begin(), intact.begin() + 40));
-        r.start();
+        r.writeSnapshot(round); // newest first: a confirmation deletes the older files
+    }
+    const rf::Bytes intact = readFile(r.file(3));
+    writeFile(r.file(4), rf::Bytes(intact.begin(), intact.begin() + 40));
+    r.start();
 
-        EXPECT_EQ(4, r.client.queryRound);
-        answerLocation(r.client, -1, 1); // no sequenced end for round 4 in the index
-        EXPECT_EQ(3, r.client.queryRound);
-        answerLocation(r.client, 3, 1); // its file is cut short
-        EXPECT_EQ(2, r.client.queryRound);
-        answerLocation(r.client, 2, 1, rf::Digest{ 2, 26, 0xBAD }); // its file is not the one sequenced
-        EXPECT_EQ(1, r.client.queryRound);
-        answerLocation(r.client, 1, 1);
-        r.client.recovery.doTimers(/*requestPublicationPending=*/false);
-        EXPECT_EQ((std::vector<std::string>{ "header 4 2", "0 7" }), r.handler.restored);
-        EXPECT_EQ(CUT, r.client.recovery.lastGlobalSeqNo());
-    }
-    {
-        Restoring r;
-        r.writeSnapshot(2);
-        r.start();
-        answerLocation(r.client, -1, 1);
-        EXPECT_EQ(1, r.client.queriesSent) << "nothing older to ask about";
-        EXPECT_FALSE(r.client.recovery.isRestoring());
-        EXPECT_TRUE(r.client.recovery.isAwaitingReplay());
-        EXPECT_EQ(REPLAYER_FROM_START, r.client.recovery.requestFromPosition());
-    }
+    EXPECT_EQ(1, r.client.requestsSent) << "round 4 is cut short: no replay for it";
+    attachRestoreReplay(r.client, 21);
+    deliverReplayFrame(r.client, rf::started(CUT, 3, 1), CUT); // another log's frame at round 3's cut
+    EXPECT_FALSE(r.client.recovery.isRestoring());
+    EXPECT_EQ(2, r.client.requestsSent) << "round 2's cut, next";
+    attachRestoreReplay(r.client, 22);
+    deliverReplayFrame(r.client, encodeHeartbeat(CUT + 1), CUT + 1); // round 2's cut is not where this recording has it
+    EXPECT_FALSE(r.client.recovery.isRestoring());
+    EXPECT_EQ(3, r.client.requestsSent);
+    deliverControl(r.client, encodeReplaying(CLIENT_ID, r.client.recovery.requestId(), REPLAYER_NO_REPLAY_NEEDED, 0));
+    EXPECT_FALSE(r.client.recovery.fault()) << "round 1's cut is no frame of this recording";
+    EXPECT_FALSE(r.client.recovery.isRestoring());
+    EXPECT_TRUE(r.client.recovery.isAwaitingReplay());
+    EXPECT_EQ(REPLAYER_FROM_START, r.client.recovery.requestFromPosition());
+    EXPECT_TRUE(r.handler.restored.empty()) << "nothing restored from a file the recording does not hold";
 }
 
 TEST(ReplayerRecoveryRestore, AfterARestoreAResumeOpeningAnywhereButTheCutIsFatal)
@@ -1580,7 +1575,7 @@ TEST(ReplayerRecoveryRestore, AfterARestoreAResumeOpeningAnywhereButTheCutIsFata
     Restoring r;
     r.writeSnapshot(2);
     r.start();
-    answerLocation(r.client, 2, 1);
+    replayTheCut(r.client);
     r.client.recovery.doTimers(/*requestPublicationPending=*/false);
     attachRestoreReplay(r.client, 22);
 
@@ -1596,12 +1591,12 @@ TEST(ReplayerRecoveryRestore, ASnapshotThatCannotBeRestoredStopsRecoveryItsForma
 {
     {
         Restoring r;
-        r.writeSnapshot(2);
+        rf::write(r.store, 2, CUT, CUT * 1024, 9, { SNAPSHOT_HEADER, SNAPSHOT_RECORD });
         r.start();
-        answerLocation(r.client, 2, 9);
         ASSERT_TRUE(r.client.recovery.restoreFailure());
         EXPECT_NE(std::string::npos, r.client.recovery.restoreFailure()->find("formatVersion 9"));
         EXPECT_FALSE(r.client.recovery.isRecovering());
+        EXPECT_EQ(0, r.client.requestsSent);
         deliverLive(r.client, 40); // no baseline, and no longer an error either
         EXPECT_TRUE(r.dispatched.empty());
     }
@@ -1609,9 +1604,9 @@ TEST(ReplayerRecoveryRestore, ASnapshotThatCannotBeRestoredStopsRecoveryItsForma
         Restoring r;
         rf::Bytes header = SNAPSHOT_HEADER;
         header[0] = 9;
-        rf::write(r.store, 2, 1, { header, SNAPSHOT_RECORD });
+        rf::write(r.store, 2, CUT, CUT * 1024, 1, { header, SNAPSHOT_RECORD });
         r.start();
-        answerLocation(r.client, 2, 1, rf::Digest::of({ header, SNAPSHOT_RECORD }));
+        replayTheCut(r.client);
         r.client.recovery.doTimers(/*requestPublicationPending=*/false);
         ASSERT_TRUE(r.client.recovery.restoreFailure());
         EXPECT_NE(std::string::npos, r.client.recovery.restoreFailure()->find("header of version 9"));
@@ -1620,10 +1615,10 @@ TEST(ReplayerRecoveryRestore, ASnapshotThatCannotBeRestoredStopsRecoveryItsForma
         Restoring r;
         r.writeSnapshot(2);
         rf::Bytes damaged = readFile(r.file(2));
-        damaged[2 + SNAPSHOT_HEADER.size() + 2] ^= 1; // the record's first byte; the trailer still matches the end
+        damaged[2 + SNAPSHOT_HEADER.size() + 2] ^= 1; // the record's first byte; the trailer still matches
         writeFile(r.file(2), damaged);
         r.start();
-        answerLocation(r.client, 2, 1);
+        replayTheCut(r.client);
         r.client.recovery.doTimers(/*requestPublicationPending=*/false);
         ASSERT_TRUE(r.client.recovery.restoreFailure());
         EXPECT_NE(std::string::npos, r.client.recovery.restoreFailure()->find("damaged"));
@@ -1631,58 +1626,6 @@ TEST(ReplayerRecoveryRestore, ASnapshotThatCannotBeRestoredStopsRecoveryItsForma
     }
     Client client{ [](const SequencedEvent&) {} };
     EXPECT_FALSE(client.recovery.restoreFailure());
-}
-
-TEST(ReplayerRecoveryRestore, ARestartRestoresTheSnapshotAgainHoldingTheTapAndDispatchesEverythingAfterItsCut)
-{
-    Restoring r;
-    r.writeSnapshot(2);
-    r.start();
-    answerLocation(r.client, 2, 1);
-    r.client.recovery.doTimers(/*requestPublicationPending=*/false);
-    attachRestoreReplay(r.client, 22);
-    deliverReplayFrame(r.client, rf::started(CUT, 2), CUT);
-    deliverReplayFrame(r.client, encodeHeartbeat(11), 11);
-    deliverLive(r.client, 12);
-    ASSERT_TRUE(r.client.recovery.isCaughtUp());
-    r.dispatched.clear();
-    r.handler.restored.clear();
-
-    r.client.recovery.restart();
-
-    EXPECT_FALSE(r.client.recovery.isCaughtUp());
-    EXPECT_EQ(-1, r.client.recovery.replaySessionId()) << "the replay in flight is dropped";
-    EXPECT_EQ(2, r.client.queriesSent);
-    deliverLive(r.client, 13);
-    EXPECT_TRUE(r.dispatched.empty());
-    answerLocation(r.client, 2, 1);
-    r.client.recovery.doTimers(/*requestPublicationPending=*/false);
-    EXPECT_EQ((std::vector<std::string>{ "header 4 2", "0 7" }), r.handler.restored);
-    EXPECT_EQ(CUT, r.client.recovery.lastGlobalSeqNo());
-    attachRestoreReplay(r.client, 23);
-    deliverReplayFrame(r.client, rf::started(CUT, 2), CUT);
-    deliverReplayFrame(r.client, encodeHeartbeat(11), 11);
-    deliverReplayFrame(r.client, encodeHeartbeat(12), 12);
-    EXPECT_EQ((std::vector<std::int64_t>{ 11, 12, 13 }), r.dispatched) << "13 from the tap, held until contiguous";
-}
-
-TEST(ReplayerRecoveryRestore, ARestartWithNoSnapshotToRestoreWalksTheRecordingFromItsStartAgain)
-{
-    std::vector<std::int64_t> dispatched;
-    Client client{ [&dispatched](const SequencedEvent& event) { dispatched.push_back(event.globalSeqNo); } };
-    deliverLive(client, 1);
-    deliverLive(client, 2);
-
-    client.recovery.restart();
-
-    EXPECT_FALSE(client.recovery.isCaughtUp());
-    EXPECT_EQ(0, client.recovery.lastGlobalSeqNo());
-    EXPECT_TRUE(client.recovery.isAwaitingReplay());
-    EXPECT_EQ(REPLAYER_FROM_START, client.recovery.requestFromPosition());
-    attachRestoreReplay(client, 21);
-    deliverReplay(client, 1);
-    deliverReplay(client, 2);
-    EXPECT_EQ((std::vector<std::int64_t>{ 1, 2, 1, 2 }), dispatched);
 }
 
 // A lifecycle frame reaches onSequenced when no lifecycle callback was given. This side alone has the

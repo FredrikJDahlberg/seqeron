@@ -91,7 +91,8 @@ The exporter maps a counter to a metric by its Aeron type id. Aeron reserves 0�
 | 5000–5099 | `SequencerService` |
 | 5100–5199 | `ReplayerService` |
 | 5200 | `ReplayerStreamReceiver`, inside every client: `seqeron_app_recovery_stalled` |
-| 5201–5298 | an application's own counters, allocated by the deployment |
+| 5201–5297 | an application's own counters, allocated by the deployment |
+| 5298 | `Application` and `Gateway`, inside every instance with a `SnapshotListener`: `seqeron_app_snapshot_round` |
 | 5299 | `Gateway`, inside every gateway instance: `seqeron_gateway_connections` |
 
 The ids are defined in `SeqeronCounters` in each language, and the copies must stay in step. Of the
@@ -125,10 +126,10 @@ Two applications that use the same type id appear as one metric, named by whiche
 | `seqeron_replayer_pending_requests` | gauge | replay requests waiting for a free slot |
 | `seqeron_replayer_replays_served_total` | counter | replays started since this member came up |
 | `seqeron_replayer_control_replies_dropped_total` | counter | control replies dropped, rather than retried indefinitely, because a client stopped reading. Each costs that client one resend interval, so the rate, not the total, identifies a stuck client |
-| `seqeron_replayer_snapshot_round` | gauge | the newest round whose `SnapshotEnd` this member's Replayer has indexed, per source, labelled `source` as well as `member` ([`snapshot.md`](snapshot.md) §5). Every participating source should follow the latest round; one that lags is missing rounds. Rebuilt from the recording after a restart, so it reappears once the index has caught up |
 | `seqeron_replayer_throttled_requests_total` | counter | replay requests answered `ReplayPending` only because the tap recording trailed the tap by more than a quarter of the window while a replay was running ([Term lengths](#term-lengths)). A held client resends about every 500 ms, so the rate is about twice the number of clients held. A sustained rate means the recorder is falling behind the tap |
-| `seqeron_replayer_archive_errors_total` | counter | local-archive calls that threw. A request one fails is answered `ReplayPending` and the client's resend is the retry; the Replayer's own calls (its readiness check, the snapshot index's replay) wait a second before the next. Live delivery is unaffected, so a sustained rate means only that history is not being served |
+| `seqeron_replayer_archive_errors_total` | counter | local-archive calls that threw. A request one fails is answered `ReplayPending` and the client's resend is the retry; the Replayer's own call, its readiness check, waits a second before the next. Live delivery is unaffected, so a sustained rate means only that history is not being served |
 | `seqeron_app_recovery_stalled` | gauge | 1 while this client's recovery has dispatched nothing for 30 s while not caught up, else 0; also labelled `client`. The client is holding, which is safe, but not serving, and nothing else says so. The causes are a Replayer that never answers and a gap this member's recording cannot cover; the client's own log line names which |
+| `seqeron_app_snapshot_round` | gauge | the last snapshot round this client confirmed against its source's sequenced `SnapshotEnd` ([`snapshot.md`](snapshot.md) §5), 0 until its process confirms one; also labelled `client`, and its label names the `source`. Every instance of a participating source should follow the latest round; one that lags is missing rounds |
 | `seqeron_gateway_connections` | gauge | connections this gateway instance holds open: taken with `openConnection` and not yet closed. 0 on a standby, and reset when the edge closes. Labelled `client` as well as `member`; `sum` over every instance gives a deployment's total |
 
 ### Aeron Cluster's metrics
@@ -284,7 +285,7 @@ stream has cycled through all three terms. A UDP stream costs another 3 × term 
 | the tap (stream 205), every co-located producer's ingress, replay control | `aeron:ipc` | 16 MiB | `aeron.ipc.term.buffer.length` on the member's or gateway host's driver |
 | ingress from a producer not beside the leader, egress, consensus between members | `aeron:udp` | 16 MiB | `aeron.term.buffer.length` on the sending driver |
 | the Raft log | `aeron:udp` | 64 MiB | `aeron.cluster.log.channel`, default `aeron:udp?term-length=64m` |
-| a replay: recovery, the snapshot index, a gateway host's relay | IPC or UDP | the recording's | the stream the recording was made from |
+| a replay: recovery, a gateway host's relay | IPC or UDP | the recording's | the stream the recording was made from |
 
 16 MiB is seqeron's IPC default; Aeron's own is 64 MiB. The other rows are Aeron's defaults. A client
 attached to a member's driver uses that driver's IPC term length and sets none of its own.
@@ -392,7 +393,9 @@ a crash.
   down is a loss of quorum**: treat it as an emergency, not a repeat.
 - **Restart it** once its storage is healthy. Recovery is the usual full-log replay, which rebuilds the
   recording from scratch. Under a supervisor this is automatic: exit 70, against the 0 of an orderly
-  `clusterctl shutdown`, is the signal to restart.
+  `clusterctl shutdown`, is the signal to restart. A member that halted rather than shut down
+  ([`fault-tolerance.md`](fault-tolerance.md) §1.3) leaves its mark files active, and a restart within
+  about 10 s fails with "active mark file detected"; delay the restart by 12 s or retry it.
 - **If it exits 70 again immediately**, the archive is still broken: start-up has the same bound, and the
   recording must go live within 5 s. Fix the storage first.
 
@@ -413,7 +416,7 @@ and 70 is this repository's convention for "fenced, restart me". A gateway is no
 | `TAP_STALLED` | no `ClusterHeartbeat` on the co-located tap for 20 s, usually because that member's `SequencerServer` terminated (above); they share the tap. A standby instance or a replica not on the leader's member logs `TapStalled` instead and keeps running |
 | `RECOVERY_STALLED` | recovery delivered nothing for 60 s after the instance had been caught up; see `seqeron_app_recovery_stalled`. A standby or non-leader replica logs `RecoveryStalled` instead and keeps running |
 | `SNAPSHOT_DIVERGED` | the instance's snapshot of a round differs from the one its source sequenced: its state is not the log's (spec §16 A-7). A restart rebuilds the state; an instance that diverges again has broken determinism (A-6) |
-| `SNAPSHOT_UNRESTORABLE` | the instance cannot restore its newest confirmed snapshot: a `formatVersion` or header version its build does not read, or records that fail the file's trailer, which means a damaged file ([`snapshot.md`](snapshot.md) §7). The log line `SnapshotRestoreFailed` names the round. A restart repeats it until the build is fixed or the file, `<round>.snapshot` in the instance's snapshot directory, is removed; the instance then restores an older file or replays from `globalSeqNo` 1 |
+| `SNAPSHOT_UNRESTORABLE` | the instance cannot restore its newest confirmed snapshot: a `formatVersion` or header version its build does not read, or records that fail the file's trailer, which means a damaged file ([`snapshot.md`](snapshot.md) §7). The log line `SnapshotRestoreFailed` names the round. A restart repeats it until the build is fixed or the file, `<round>.snapshot` in the instance's snapshot directory, is removed; the instance then replays from `globalSeqNo` 1 |
 | `INGRESS_CONFIRM_FAULTED` | an own frame on the tap did not match the oldest pending one, most often because the sequencer rejected one (`seqeron_sequencer_rejected_ingress_total`) |
 
 - **The standby takes over by itself**, if one is running. A fenced instance looks to the cluster like a

@@ -80,10 +80,6 @@ public static class SeqeronCounters
     /// <summary>Count of control replies dropped because an app stopped draining the control stream.</summary>
     public const int ReplayerControlRepliesDroppedCountTypeId = 5107;
 
-    /// <summary>The round of one source's latest snapshot this node's Replayer has indexed, keyed
-    /// <c>{memberId, sourceId}</c>.</summary>
-    public const int ReplayerSnapshotRoundTypeId = 5109;
-
     /// <summary>Count of replay requests held pending only because the tap recording trailed the tap while a replay
     /// ran, resends included.</summary>
     public const int ReplayerThrottledRequestsCountTypeId = 5110;
@@ -92,11 +88,11 @@ public static class SeqeronCounters
     /// archive is not serving replays.</summary>
     public const int ReplayerArchiveErrorsCountTypeId = 5111;
 
-    // Co-located application replicas (5200-5299). Core reserves 5200 and 5299; a consumer allocates its own in
-    // 5201-5298 (doc/ops.md, "Counter type ids").
+    // Co-located application replicas (5200-5299). Core reserves 5200, 5298 and 5299; a consumer allocates its own
+    // in 5201-5297 (doc/ops.md, "Counter type ids").
 
-    /// <summary>First type id of the app range: core reserves <see cref="AppRecoveryStalledTypeId"/> and
-    /// <see cref="GatewayConnectionsTypeId"/> and no more.</summary>
+    /// <summary>First type id of the app range: core reserves <see cref="AppRecoveryStalledTypeId"/>,
+    /// <see cref="AppSnapshotRoundTypeId"/> and <see cref="GatewayConnectionsTypeId"/> and no more.</summary>
     public const int AppTypeIdMin = 5200;
 
     /// <summary>Last type id of the app range.</summary>
@@ -105,6 +101,10 @@ public static class SeqeronCounters
     /// <summary>1 while a co-located replica's recovery has dispatched nothing while not caught up, else
     /// 0.</summary>
     public const int AppRecoveryStalledTypeId = 5200;
+
+    /// <summary>The last snapshot round a participating client confirmed (doc/snapshot.md §4), 0 for none
+    /// yet.</summary>
+    public const int AppSnapshotRoundTypeId = 5298;
 
     /// <summary>Connections a gateway instance holds open: taken and not yet closed, and 0 while it does not
     /// serve.</summary>
@@ -125,13 +125,10 @@ public static class SeqeronCounters
     /// </summary>
     public const int KeyClientIdOffset = sizeof(int);
 
-    /// <summary>Offset of the <c>sourceId</c> in a per-source counter's key.</summary>
-    public const int KeySourceIdOffset = sizeof(int);
-
     /// <summary>Length of an operator counter's key: one int, the memberId.</summary>
     public const int KeyLength = sizeof(int);
 
-    /// <summary>Length of an app or per-source counter's key: memberId, then clientId or sourceId.</summary>
+    /// <summary>Length of an app counter's key: memberId, then clientId.</summary>
     public const int AppKeyLength = 2 * sizeof(int);
 
     /// <summary>Allocates an operator counter keyed on <paramref name="memberId"/>, so a reader recovers the member
@@ -159,21 +156,6 @@ public static class SeqeronCounters
         using var key = new UnsafeBuffer(new byte[AppKeyLength]);
         key.PutInt(KeyMemberIdOffset, memberId);
         key.PutInt(KeyClientIdOffset, clientId);
-        return Add(aeron, typeId, key, label);
-    }
-
-    /// <summary>Allocates a per-source counter keyed on <c>{memberId, sourceId}</c>, the app counters'
-    /// layout.</summary>
-    /// <param name="aeron">the client to allocate it through</param>
-    /// <param name="typeId">its type id</param>
-    /// <param name="label">its label, US-ASCII</param>
-    /// <param name="memberId">the member it describes</param>
-    /// <param name="sourceId">the source it describes</param>
-    public static Counter AddSourceCounter(Aeron aeron, int typeId, string label, int memberId, int sourceId)
-    {
-        using var key = new UnsafeBuffer(new byte[AppKeyLength]);
-        key.PutInt(KeyMemberIdOffset, memberId);
-        key.PutInt(KeySourceIdOffset, sourceId);
         return Add(aeron, typeId, key, label);
     }
 

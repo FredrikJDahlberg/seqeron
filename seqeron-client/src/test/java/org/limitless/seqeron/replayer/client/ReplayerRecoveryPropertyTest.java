@@ -46,9 +46,9 @@ import org.limitless.seqeron.util.Logger;
  *
  * <p><b>Restore</b> — a client restoring its own snapshot (doc/snapshot.md §7) holds both properties from the cut
  * on, under the same faults, and its restored state plus the frames after the cut equals the state a full replay
- * builds. It holds files of three rounds, of which the log ends only the middle one: the newest gives way to it.
- * The log holds a superseded round and another source's end among the snapshot's; which end the Replayer finds is
- * {@code SnapshotIndexTest}'s, and serializing it is {@code SnapshotTakerTest}'s.
+ * builds. It holds files of two rounds: the newer was cut from another log, whose cut this recording does not hold
+ * where the file says, so it gives way to the older. The log holds a superseded round and another source's end among
+ * the snapshot's; confirming a file is {@code SnapshotTakerTest}'s.
  *
  * <p>Seeds are fixed and listed, not drawn from the clock: a failing run must be re-runnable, and a suite
  * that fails on a different case each time is not a regression signal. Add seeds to widen the search; the
@@ -87,6 +87,7 @@ class ReplayerRecoveryPropertyTest {
     private static final int OTHER_SOURCE = 5;
     private static final long CUT = 9;
     private static final long SNAPSHOT_END = 12;
+    private static final long NEXT_CUT = 13;
     private static final int FORMAT_VERSION = 1;
 
     @TempDir
@@ -118,9 +119,6 @@ class ReplayerRecoveryPropertyTest {
         /** The client's own files, null for a run that restores nothing. */
         private final SnapshotStore store;
 
-        /** The digest of the one round the log ends for {@link #SOURCE}. */
-        private RestoreFrames.Digest snapshotDigest;
-
         /** Every frame that is not a heartbeat, by globalSeqNo: the snapshot rounds. */
         private final Map<Long, RestoreFrames.Frame> frames = new HashMap<>();
 
@@ -134,8 +132,6 @@ class ReplayerRecoveryPropertyTest {
 
         // ── the Replayer's view of this one client ─────────────────────────────────────────────────────
         private long pendingRequestId = -1;
-        private boolean pendingIsQuery;
-        private long pendingQueryRound;
         private long pendingFromPosition;
         private long nextSessionId = 1;
 
@@ -174,7 +170,7 @@ class ReplayerRecoveryPropertyTest {
 
             client = new ReplayerRecovery(this, this::onSequenced, null, null);
             if (restoring) {
-                client.restoreFrom(SOURCE, store, this);
+                client.restoreFrom(store, this);
                 expectedNext = CUT + 1;
             }
             client.start();
@@ -219,8 +215,9 @@ class ReplayerRecoveryPropertyTest {
 
         /**
          * Round 1 starts and is superseded by round 2 at {@link #CUT} before its source ends it; round 2 ends among
-         * heartbeats and another source's end, and round 3 starts and never ends. The client holds a file of each:
-         * round 2's records hold the state at the cut, the heartbeats before it.
+         * heartbeats and another source's end, and round 3 starts and never ends. The client holds round 2's file,
+         * whose records hold the state at the cut, the heartbeats before it, and a round 3 file from another log,
+         * whose cut is a frame earlier there.
          */
         private void publishSnapshotRounds() {
             for (int i = 0; i < 5; ++i) {
@@ -236,13 +233,13 @@ class ReplayerRecoveryPropertyTest {
             publishFrame(RestoreFrames.end(10, OTHER_SOURCE, 2, FORMAT_VERSION, header));
             publish(); // heartbeat 11
             publishFrame(RestoreFrames.end(SNAPSHOT_END, SOURCE, 2, FORMAT_VERSION, header, count, sum));
-            publishFrame(RestoreFrames.started(13, 3));
+            publishFrame(RestoreFrames.started(NEXT_CUT, 3));
             publish(); // heartbeat 14
 
-            snapshotDigest = RestoreFrames.Digest.of(header, count, sum);
-            RestoreFrames.write(store, 1, FORMAT_VERSION, header, RestoreFrames.record(99));
-            RestoreFrames.write(store, 2, FORMAT_VERSION, header, count, sum);
-            RestoreFrames.write(store, 3, FORMAT_VERSION, header, RestoreFrames.record(98));
+            // Newest first: confirming a round deletes the older files, and both are to stay.
+            RestoreFrames.write(store, 3, NEXT_CUT, positionOf(NEXT_CUT - 1), FORMAT_VERSION, header,
+                                RestoreFrames.record(98));
+            RestoreFrames.write(store, 2, CUT, positionOf(CUT), FORMAT_VERSION, header, count, sum);
         }
 
         private void publishFrame(final RestoreFrames.Frame frame) {
@@ -318,8 +315,6 @@ class ReplayerRecoveryPropertyTest {
                 return;
             }
             final long requestId = pendingRequestId;
-            final boolean query = pendingIsQuery;
-            final long queryRound = pendingQueryRound;
             final long fromPosition = pendingFromPosition;
             pendingRequestId = -1;
             if (requestId != client.requestId()) {
@@ -330,15 +325,6 @@ class ReplayerRecoveryPropertyTest {
                 control(replayPending(requestId), REPLAY_PENDING_LENGTH);
                 return;
             }
-            if (query) {
-                final RestoreFrames.Frame location = queryRound == 2
-                    ? RestoreFrames.location(CLIENT_ID, requestId, 2, CUT, positionOf(CUT), FORMAT_VERSION,
-                                             snapshotDigest)
-                    : RestoreFrames.location(CLIENT_ID, requestId, -1, -1, -1, 0, new RestoreFrames.Digest(0, 0, 0));
-                client.onControl(location.buffer(), 0, location.length());
-                return;
-            }
-
             if (fromPosition == ReplayProtocol.FROM_START) {
                 serveReplay(requestId, 1, tip);
                 return;
@@ -388,20 +374,7 @@ class ReplayerRecoveryPropertyTest {
                 return; // the offer did not land; only the resend timer recovers this
             }
             pendingRequestId = requestId;
-            pendingIsQuery = false;
             pendingFromPosition = fromPosition;
-        }
-
-        @Override
-        public void sendSnapshotQuery(final long requestId, final int sourceId, final long round) {
-            assertEquals(SOURCE, sourceId, tag);
-            assertTrue(round == 3 || round == 2, tag + ": asked about round " + round);
-            if (chaos && chance(15)) {
-                return;
-            }
-            pendingRequestId = requestId;
-            pendingIsQuery = true;
-            pendingQueryRound = round;
         }
 
         @Override

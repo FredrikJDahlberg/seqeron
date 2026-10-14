@@ -13,10 +13,7 @@ namespace Org.Limitless.Seqeron.App;
 /// and drives <see cref="Submit"/> from its duty cycle; every outcome is the façade's to act on.
 /// <para>No takeover: an instance that is not the publisher at the cut submits nothing for that round, and a
 /// publisher that loses the role stops for good.</para>
-/// <para>It is also what a restore hands the snapshot's records to (§7), passing the source's own to the
-/// listener.</para>
-/// <para>A passive instance holds no state until it is activated (§4): it takes part in no round, a restore hands
-/// its listener nothing, and the façade dispatches it no payload while <see cref="HoldsState"/> is false.
+/// <para>It is also what a restore hands the snapshot's records to (§7), passing the source's own to the listener.
 /// <c>SnapshotTaker.java</c> and <c>app/detail/SnapshotTaker.hpp</c> are its twins; keep the three in step.</para>
 /// </summary>
 internal sealed class SnapshotTaker : ISnapshotRestoreHandler
@@ -34,10 +31,9 @@ internal sealed class SnapshotTaker : ISnapshotRestoreHandler
         new UnsafeBuffer(GC.AllocateArray<byte>(SnapshotFormat.MaxRecordLength, true));
     private uint _crc;
     private bool _participating;
-    private bool _passive;
     private long _round = -1;
-    // The last round this instance confirmed, kept beside the next as its fallback; -1 for none yet.
-    private long _confirmedRound = -1;
+    // The last round this instance confirmed; 0 for none yet.
+    private long _confirmedRound;
     private bool _serialized;
     private bool _publishing;
     private int _recordCount;
@@ -46,31 +42,19 @@ internal sealed class SnapshotTaker : ISnapshotRestoreHandler
     /// <param name="listener">what serializes the state, or null if this build takes part in no round</param>
     /// <param name="store">where this instance keeps its snapshots; null exactly when <paramref name="listener"/>
     /// is</param>
-    /// <param name="passive">whether this instance holds no state until it is activated</param>
     /// <param name="keepAlive">keeps the cluster session alive while a round is serialized; self-throttling</param>
-    internal SnapshotTaker(ISnapshotListener listener, SnapshotStore store, bool passive, Action keepAlive)
+    internal SnapshotTaker(ISnapshotListener listener, SnapshotStore store, Action keepAlive)
     {
         _listener = listener;
         _store = store;
-        _passive = passive;
         _keepAlive = keepAlive;
     }
 
-    /// <summary>Whether this instance holds the source's state: false while it is passive.</summary>
-    internal bool HoldsState => !_passive;
+    /// <summary>Whether this build takes part in rounds at all: it was given a listener.</summary>
+    internal bool IsListening => _listener != null;
 
-    /// <summary>Ends passivity once this instance is activated and caught up on the election.</summary>
-    /// <returns>true exactly then: the façade restarts its recovery, which restores the state this instance now
-    /// holds</returns>
-    internal bool Activate(bool activated, bool caughtUp)
-    {
-        if (!_passive || !activated || !caughtUp)
-        {
-            return false;
-        }
-        _passive = false;
-        return true;
-    }
+    /// <summary>The last round this instance confirmed, its snapshot counter's value; 0 for none yet.</summary>
+    internal long ConfirmedRound => _confirmedRound;
 
     /// <summary>Whether the source's topology row takes part. Without a listener it cannot, whatever the row
     /// says.</summary>
@@ -90,13 +74,17 @@ internal sealed class SnapshotTaker : ISnapshotRestoreHandler
     /// session is kept alive after each record, so the round may take as long as its state needs.
     /// </summary>
     /// <param name="startedRound">its <c>round</c></param>
+    /// <param name="cutGlobalSeqNo">its <c>globalSeqNo</c>, the cut</param>
+    /// <param name="cutPosition">where it starts in the recording</param>
+    /// <param name="cutTimestampNs">its consensus timestamp</param>
     /// <param name="header">the façade's header as of the cut</param>
     /// <param name="mayPublish">whether this instance is the one that publishes at the cut</param>
-    internal void OnSnapshotStarted(long startedRound, SnapshotHeader header, bool mayPublish)
+    internal void OnSnapshotStarted(long startedRound, long cutGlobalSeqNo, long cutPosition, long cutTimestampNs,
+                                    SnapshotHeader header, bool mayPublish)
     {
         _publishing = false;
         _serialized = false;
-        if (_passive || !_participating || header.EncodedLength > SnapshotFormat.MaxRecordLength)
+        if (!_participating || header.EncodedLength > SnapshotFormat.MaxRecordLength)
         {
             return;
         }
@@ -104,7 +92,7 @@ internal sealed class SnapshotTaker : ISnapshotRestoreHandler
         _crc = 0;
         _recordCount = 0;
         _length = 0;
-        _store.Begin(_round);
+        _store.Begin(_round, cutGlobalSeqNo, cutPosition, cutTimestampNs);
         Append(header.Encode(_encoding, 0));
         for (int recordIndex = 0;; recordIndex++)
         {
@@ -125,8 +113,8 @@ internal sealed class SnapshotTaker : ISnapshotRestoreHandler
         _publishing = mayPublish;
     }
 
-    /// <summary>The source's own <c>SnapshotEnd</c> was dispatched. One that matches makes the previous confirmed
-    /// round's file the oldest this instance keeps.</summary>
+    /// <summary>The source's own <c>SnapshotEnd</c> was dispatched. One that matches confirms this instance's file
+    /// of the round, which then replaces every older one.</summary>
     /// <returns>false if it is for the round this instance serialized and disagrees with it: this instance has
     /// diverged from the log (A-7)</returns>
     internal bool OnSnapshotEnd(long endRound, int endRecordCount, long endLength, uint crc32c)
@@ -141,10 +129,7 @@ internal sealed class SnapshotTaker : ISnapshotRestoreHandler
         {
             return false;
         }
-        if (_confirmedRound >= 0)
-        {
-            _store.DeleteBefore(_confirmedRound);
-        }
+        _store.Confirm(_round);
         _confirmedRound = _round;
         return true;
     }
@@ -167,19 +152,13 @@ internal sealed class SnapshotTaker : ISnapshotRestoreHandler
     /// here.</summary>
     public void OnSnapshotHeader(SnapshotHeader header)
     {
-        if (!_passive)
-        {
-            SetParticipating(true);
-        }
+        SetParticipating(true);
     }
 
     /// <inheritdoc/>
     public void OnSnapshotRecord(IDirectBuffer record, int length, int recordIndex)
     {
-        if (!_passive)
-        {
-            _listener.OnRestore(record, length, recordIndex);
-        }
+        _listener.OnRestore(record, length, recordIndex);
     }
 
     /// <summary>Places the end of the round being published. A declined end is placed again on the next

@@ -10,15 +10,21 @@ using Xunit;
 namespace Org.Limitless.Seqeron.Replayer.Client;
 
 /// <summary>
-/// An instance's own snapshot files (doc/snapshot.md §4). The golden trailer is shared with
+/// An instance's own snapshot files (doc/snapshot.md §4.1). The golden trailer is shared with
 /// <c>SnapshotStoreTest.java</c> and <c>SnapshotStoreTest.cpp</c>, so a file one language writes is one the others
 /// read.
 /// </summary>
 public class SnapshotStoreTest : IDisposable
 {
-    // Round 3's trailer over the application header and the 3000-byte body as three records, formatVersion 1.
-    private const string GoldenTrailer =
-        "0300000000000000" + "ca0b000000000000" + "04000000" + "6bf5246c" + "01000000" + "534e4150";
+    // Round 3's trailer over the application header and the 3000-byte body as three records, formatVersion 1, cut at
+    // globalSeqNo 42, position 43008, timestamp 42000.
+    private const string GoldenTrailer = "0300000000000000" + "ca0b000000000000" + "04000000" + "6bf5246c" +
+                                         "01000000" + "2a00000000000000" + "00a8000000000000" + "10a4000000000000" +
+                                         "534e5032";
+
+    private const long CutGlobalSeqNo = 42;
+    private const long CutPosition = 43008;
+    private const long CutTimestampNs = 42000;
 
     private readonly TempDirectory _directory = new TempDirectory();
 
@@ -27,8 +33,8 @@ public class SnapshotStoreTest : IDisposable
         _directory.Dispose();
     }
 
-    [Fact(DisplayName = "a committed round reads back record by record, its trailer the shared golden bytes")]
-    public void CommittedRoundReadsBack()
+    [Fact(DisplayName = "a confirmed round reads back record by record, its trailer the shared golden bytes")]
+    public void ConfirmedRoundReadsBack()
     {
         var store = new SnapshotStore(_directory.Path);
         List<byte[]> records = Records();
@@ -44,6 +50,9 @@ public class SnapshotStoreTest : IDisposable
         Assert.Equal(3018, reader.Length);
         Assert.Equal(0x6c24f56bU, reader.Crc32C);
         Assert.Equal(1, reader.FormatVersion);
+        Assert.Equal(CutGlobalSeqNo, reader.CutGlobalSeqNo);
+        Assert.Equal(CutPosition, reader.CutPosition);
+        Assert.Equal(CutTimestampNs, reader.CutTimestampNs);
         using var view = new UnsafeBuffer();
         foreach (byte[] record in records)
         {
@@ -55,27 +64,31 @@ public class SnapshotStoreTest : IDisposable
         Assert.Equal(SnapshotStore.Reader.End, reader.Next(view));
     }
 
-    [Fact(DisplayName = "only a committed write counts, and the newest round below a bound is found")]
-    public void OnlyCommittedWritesCount()
+    [Fact(DisplayName = "only a confirmed round counts, and the newest round below a bound is found")]
+    public void OnlyConfirmedRoundsCount()
     {
         var store = new SnapshotStore(_directory.Path);
         using var eight = new UnsafeBuffer(new byte[8]);
-        store.Begin(5);
+        Begin(store, 5);
         store.Append(eight, 0, 8);
         store.Abandon();
-        Assert.True(store.LatestRound(long.MaxValue) == -1, "an abandoned write leaves no file");
+        store.Confirm(5);
+        store.AwaitWrites();
+        Assert.True(Names().Count == 0, "an abandoned write leaves no file, and confirms nothing");
 
-        Write(store, 2, Records());
+        Commit(store, 2, Records());
+        Assert.True(store.LatestRound(long.MaxValue) == -1, "a round the log has not confirmed");
+        Assert.Null(store.Open(2));
+        store.Confirm(1);
+        store.AwaitWrites();
+        Assert.Equal(new List<string> { "2.tmp" }, Names()); // a confirmation of another round confirms nothing
+
         Write(store, 4, Records());
-        store.Begin(6); // never committed, as a crash leaves it
-        store.Append(eight, 0, 8);
-
+        File.Copy(FileOf(4), FileOf(3)); // as a crash may leave one
         Assert.Equal(4, store.LatestRound(long.MaxValue));
-        Assert.Equal(2, store.LatestRound(4));
-        Assert.Equal(-1, store.LatestRound(2));
-        Assert.Null(store.Open(6));
+        Assert.Equal(3, store.LatestRound(4));
+        Assert.Equal(-1, store.LatestRound(3));
         Assert.Null(store.Open(7)); // no such round
-        store.Abandon();
     }
 
     [Fact(DisplayName =
@@ -109,27 +122,26 @@ public class SnapshotStoreTest : IDisposable
         Assert.Equal(new List<int> { 18, 1000, 1302, 698, SnapshotStore.Reader.Damaged }, ReadAll(store.Open(2)));
     }
 
-    [Fact(DisplayName =
-              "deleting before a durable round keeps it and every newer one, and clears a write a crash left behind")]
-    public void DeleteBeforeKeepsTheRoundAndNewer()
+    [Fact(DisplayName = "a confirmation replaces every older file, and any write a crash left behind")]
+    public void ConfirmationReplacesOlderFiles()
     {
         var crashed = new SnapshotStore(_directory.Path);
         Write(crashed, 1, Records());
-        Write(crashed, 2, Records());
+        Commit(crashed, 2, Records());
         // What a crash mid-write leaves: a temporary file no process holds open. Windows refuses to delete one a
-        // live writer still holds, as crashed.Begin(3) would.
+        // live writer still holds, as Begin(crashed, 3) would.
         File.WriteAllBytes(Path.Combine(_directory.Path, "3.tmp"), new byte[] { 1, 2, 3 });
 
         var store = new SnapshotStore(_directory.Path);
-        store.DeleteBefore(4);
-        store.AwaitWrites();
-        Assert.Equal(new List<string> { "1.snapshot", "2.snapshot", "3.tmp" }, Names()); // round 4 is not durable here
-
         Write(store, 4, Records());
-        Write(store, 5, Records());
-        store.DeleteBefore(4);
-        store.AwaitWrites();
-        Assert.Equal(new List<string> { "4.snapshot", "5.snapshot" }, Names());
+        Assert.Equal(new List<string> { "4.snapshot" }, Names());
+
+        Commit(store, 5, Records());
+        Begin(store, 6); // round 5's end never came
+        store.Abandon();
+        Assert.Equal(new List<string> { "4.snapshot", "5.tmp" }, Names());
+        Write(store, 7, Records());
+        Assert.Equal(new List<string> { "7.snapshot" }, Names());
     }
 
     [Fact(DisplayName = "a round whose file never became durable deletes nothing older")]
@@ -140,8 +152,6 @@ public class SnapshotStoreTest : IDisposable
         Directory.CreateDirectory(Path.Combine(FileOf(2), "occupied")); // the name cannot be taken
         Write(store, 2, Records());
 
-        store.DeleteBefore(2);
-        store.AwaitWrites();
         Assert.True(File.Exists(FileOf(1)));
         Assert.True(File.Exists(Path.Combine(_directory.Path, "2.tmp")));
     }
@@ -179,9 +189,30 @@ public class SnapshotStoreTest : IDisposable
         return new List<byte[]> { header, body[..1000], body[1000..2302], body[2302..] };
     }
 
+    // Writes and confirms a round's file.
     private static void Write(SnapshotStore store, long round, List<byte[]> records)
     {
-        RestoreFrames.Write(store, round, 1, records.ToArray());
+        Commit(store, round, records);
+        store.Confirm(round);
+        store.AwaitWrites();
+    }
+
+    // Writes a round's file, as the instance does before the log confirms it.
+    private static void Commit(SnapshotStore store, long round, List<byte[]> records)
+    {
+        RestoreFrames.Digest digest = RestoreFrames.Digest.Of(records.ToArray());
+        Begin(store, round);
+        foreach (byte[] record in records)
+        {
+            using var buffer = new UnsafeBuffer(record);
+            store.Append(buffer, 0, record.Length);
+        }
+        store.Commit(digest.RecordCount, digest.Length, digest.Crc32C, 1);
+    }
+
+    private static void Begin(SnapshotStore store, long round)
+    {
+        store.Begin(round, CutGlobalSeqNo, CutPosition, CutTimestampNs);
     }
 
     // Each record's length in order, then what ends the read.

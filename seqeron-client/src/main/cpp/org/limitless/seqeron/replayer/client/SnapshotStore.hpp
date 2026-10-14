@@ -26,12 +26,13 @@
 namespace org::limitless::seqeron::replayer::client {
 
 /**
- * This instance's own snapshots, one file per round in a directory no other instance writes (doc/snapshot.md §4).
- * `<round>.snapshot` holds the records, each a little-endian uint16 length and its bytes, record 0 the façade's
- * header, then a trailer whose layout is in the Java twin, ending in MAGIC. A file is written as `<round>.tmp`, then
- * forced to disk, renamed and its name forced on a thread of its own, so the caller does not wait for the disk. A
- * write that fails leaves no file and is logged. Not thread-safe: one thread calls it, and only its file work runs on
- * the other. The Java twin is replayer/client/SnapshotStore.java; keep the two in step.
+ * This instance's own snapshots, in a directory no other instance writes (doc/snapshot.md §4.1). A round is written
+ * as `<round>.tmp`: the records, each a little-endian uint16 length and its bytes, record 0 the façade's header, then a
+ * trailer whose layout is in the Java twin, ending in MAGIC. Once the log confirms the round, a thread of its own
+ * forces the file to disk, renames it `<round>.snapshot`, forces the name and deletes every older file, so the caller
+ * does not wait for the disk: a `.snapshot` file is confirmed and durable, and the store keeps one. A write that fails
+ * leaves no file and is logged. Not thread-safe: one thread calls it, and only its file work runs on the other. The
+ * Java twin is replayer/client/SnapshotStore.java; keep the two in step.
  */
 class SnapshotStore
 {
@@ -40,10 +41,10 @@ class SnapshotStore
 
   public:
     // Bytes after the records.
-    static constexpr std::size_t TRAILER_LENGTH = 32;
+    static constexpr std::size_t TRAILER_LENGTH = 56;
 
-    // "SNAP", last in the file, so a file cut short has none.
-    static constexpr std::uint32_t MAGIC = 0x50414E53;
+    // "SNP2", last in the file, so a file cut short has none.
+    static constexpr std::uint32_t MAGIC = 0x32504E53;
 
     // One round's file, read record by record, its trailer known before the first.
     class Reader
@@ -77,6 +78,24 @@ class SnapshotStore
         [[nodiscard]] std::uint32_t formatVersion() const
         {
             return m_formatVersion;
+        }
+
+        // The trailer's cutGlobalSeqNo.
+        [[nodiscard]] std::int64_t cutGlobalSeqNo() const
+        {
+            return m_cutGlobalSeqNo;
+        }
+
+        // The trailer's cutPosition.
+        [[nodiscard]] std::int64_t cutPosition() const
+        {
+            return m_cutPosition;
+        }
+
+        // The trailer's cutTimestamp.
+        [[nodiscard]] std::int64_t cutTimestampNs() const
+        {
+            return m_cutTimestampNs;
         }
 
         /**
@@ -134,7 +153,10 @@ class SnapshotStore
           m_recordCount(static_cast<std::int32_t>(protocol::detail::getLe(trailer + 16, 4))),
           m_length(protocol::detail::getLe(trailer + 8, 8)),
           m_crc32c(static_cast<std::uint32_t>(protocol::detail::getLe(trailer + 20, 4))),
-          m_formatVersion(static_cast<std::uint32_t>(protocol::detail::getLe(trailer + 24, 4)))
+          m_formatVersion(static_cast<std::uint32_t>(protocol::detail::getLe(trailer + 24, 4))),
+          m_cutGlobalSeqNo(static_cast<std::int64_t>(protocol::detail::getLe(trailer + 28, 8))),
+          m_cutPosition(static_cast<std::int64_t>(protocol::detail::getLe(trailer + 36, 8))),
+          m_cutTimestampNs(static_cast<std::int64_t>(protocol::detail::getLe(trailer + 44, 8)))
         {}
 
         bool read(std::uint8_t* out, const std::size_t count)
@@ -155,6 +177,9 @@ class SnapshotStore
         std::uint64_t m_length;
         std::uint32_t m_crc32c;
         std::uint32_t m_formatVersion;
+        std::int64_t m_cutGlobalSeqNo;
+        std::int64_t m_cutPosition;
+        std::int64_t m_cutTimestampNs;
         std::uint64_t m_consumed = 0;
         std::uint64_t m_bytes = 0;
         std::int32_t m_count = 0;
@@ -177,15 +202,22 @@ class SnapshotStore
     SnapshotStore& operator=(const SnapshotStore&) = delete;
 
     /**
-     * Starts writing a round's file, dropping any write still open, once the rounds before it are durable.
+     * Starts writing a round's file, dropping any write still open, once the rounds before it are confirmed.
      *
-     * @param round its round
+     * @param round          its round
+     * @param cutGlobalSeqNo its SnapshotStarted's globalSeqNo
+     * @param cutPosition    where that frame starts in the recording
+     * @param cutTimestampNs that frame's consensus timestamp
      */
-    void begin(const std::int64_t round)
+    void begin(const std::int64_t round, const std::int64_t cutGlobalSeqNo, const std::int64_t cutPosition,
+               const std::int64_t cutTimestampNs)
     {
         awaitWrites();
         abandon();
         m_writingRound = round;
+        m_cutGlobalSeqNo = cutGlobalSeqNo;
+        m_cutPosition = cutPosition;
+        m_cutTimestampNs = cutTimestampNs;
         m_out.rdbuf()->pubsetbuf(m_outBuffer.data(), static_cast<std::streamsize>(m_outBuffer.size()));
         m_out.open(temporaryFile(round), std::ios::binary | std::ios::trunc);
         m_writing = true;
@@ -217,7 +249,7 @@ class SnapshotStore
     }
 
     /**
-     * Completes the file being written: its trailer, then, off this thread, its name once it is durable.
+     * Completes the file being written with its trailer, still under its temporary name.
      *
      * @param recordCount   records appended
      * @param length        their bytes
@@ -237,7 +269,10 @@ class SnapshotStore
         protocol::detail::putLe(trailer.data() + 16, static_cast<std::uint32_t>(recordCount), 4);
         protocol::detail::putLe(trailer.data() + 20, crc32c, 4);
         protocol::detail::putLe(trailer.data() + 24, formatVersion, 4);
-        protocol::detail::putLe(trailer.data() + 28, MAGIC, 4);
+        protocol::detail::putLe(trailer.data() + 28, static_cast<std::uint64_t>(m_cutGlobalSeqNo), 8);
+        protocol::detail::putLe(trailer.data() + 36, static_cast<std::uint64_t>(m_cutPosition), 8);
+        protocol::detail::putLe(trailer.data() + 44, static_cast<std::uint64_t>(m_cutTimestampNs), 8);
+        protocol::detail::putLe(trailer.data() + 52, MAGIC, 4);
         m_out.write(reinterpret_cast<const char*>(trailer.data()), TRAILER_LENGTH);
         m_out.close();
         if (!m_out)
@@ -246,12 +281,13 @@ class SnapshotStore
             return;
         }
         m_writing = false;
-        afterWrites([this, round = m_writingRound] { makeDurable(round); });
+        m_committedRound = m_writingRound;
     }
 
     // Drops the write in progress, if any.
     void abandon()
     {
+        m_committedRound = -1;
         if (!m_writing)
         {
             return;
@@ -259,22 +295,27 @@ class SnapshotStore
         m_out.close();
         m_out.clear();
         m_writing = false;
-        std::error_code ignored; // a leftover goes with the next deleteBefore
+        std::error_code ignored; // a leftover goes with the next confirmation
         std::filesystem::remove(temporaryFile(m_writingRound), ignored);
     }
 
     /**
-     * Deletes the file of every round before a round, and any write of one a crash left behind, off this thread once
-     * that round's file is durable; if it never is, nothing.
+     * The log confirms a round: off this thread, its file is made durable under its name, and every older file, and
+     * any write of one a crash left behind, is deleted. Nothing if its file was not completed.
      *
-     * @param round the oldest round to keep, one this store committed
+     * @param round the round last committed
      */
-    void deleteBefore(const std::int64_t round)
+    void confirm(const std::int64_t round)
     {
-        afterWrites([this, round] { deleteFiles(round); });
+        if (round != m_committedRound)
+        {
+            return;
+        }
+        m_committedRound = -1;
+        afterWrites([this, round] { confirmFile(round); });
     }
 
-    // Waits until the rounds committed so far are durable, or failed, and the deletions asked for are done.
+    // Waits until the rounds confirmed so far are durable, or failed, and the files they replace deleted.
     void awaitWrites()
     {
         if (m_writes.valid())
@@ -284,7 +325,7 @@ class SnapshotStore
     }
 
     /**
-     * Finds the newest round below a bound with a complete file.
+     * Finds the newest round below a bound with a confirmed file.
      *
      * @param belowRound the bound; the default finds the newest of all
      * @return that round, or -1
@@ -330,7 +371,7 @@ class SnapshotStore
         std::array<std::uint8_t, TRAILER_LENGTH> trailer{};
         if (size < TRAILER_LENGTH || !in.seekg(static_cast<std::streamoff>(size - TRAILER_LENGTH)) ||
             !in.read(reinterpret_cast<char*>(trailer.data()), TRAILER_LENGTH) ||
-            protocol::detail::getLe(trailer.data() + 28, 4) != MAGIC ||
+            protocol::detail::getLe(trailer.data() + 52, 4) != MAGIC ||
             static_cast<std::int64_t>(protocol::detail::getLe(trailer.data(), 8)) != round || !in.seekg(0))
         {
             return std::nullopt;
@@ -363,8 +404,8 @@ class SnapshotStore
         });
     }
 
-    // Forces a committed round's file to disk, then its name: only then does the round count as durable.
-    void makeDurable(const std::int64_t round)
+    // Forces a committed round's file to disk, then its name, then deletes what it replaces.
+    void confirmFile(const std::int64_t round)
     {
         std::error_code error = sync(temporaryFile(round), O_WRONLY);
         if (!error)
@@ -382,16 +423,6 @@ class SnapshotStore
                                m_directory.c_str(), error.message().c_str());
             return;
         }
-        m_durableRound = round;
-    }
-
-    void deleteFiles(const std::int64_t round)
-    {
-        if (m_durableRound < round)
-        {
-            return;
-        }
-        std::error_code error;
         for (const auto& entry : std::filesystem::directory_iterator(m_directory, error))
         {
             const std::filesystem::path& path = entry.path();
@@ -460,9 +491,12 @@ class SnapshotStore
     std::vector<char> m_outBuffer = std::vector<char>(IO_BUFFER_LENGTH);
     std::ofstream m_out;
     std::int64_t m_writingRound = 0;
+    std::int64_t m_cutGlobalSeqNo = 0;
+    std::int64_t m_cutPosition = 0;
+    std::int64_t m_cutTimestampNs = 0;
     bool m_writing = false; // m_out holds the round's .tmp file
-    // The newest round whose file is durable under its name. Touched by m_writes' steps alone.
-    std::int64_t m_durableRound = -1;
+    // The round whose file was last completed, which confirm may name; -1 for none.
+    std::int64_t m_committedRound = -1;
     // What runs off the caller's thread, one step after another. Last, so its destructor waits before the rest go.
     std::future<void> m_writes;
 };

@@ -16,7 +16,6 @@ import org.limitless.seqeron.protocol.ReplayProtocol;
 import org.limitless.seqeron.protocol.SeqeronCounters;
 import org.limitless.seqeron.sbe.replay.MessageHeaderEncoder;
 import org.limitless.seqeron.sbe.replay.ReplayRequestEncoder;
-import org.limitless.seqeron.sbe.replay.SnapshotQueryEncoder;
 import org.limitless.seqeron.util.Clocks;
 import org.limitless.seqeron.util.Logger;
 
@@ -49,7 +48,6 @@ public final class ReplayerStreamReceiver implements AutoCloseable {
 
     private final MessageHeaderEncoder requestHeader = new MessageHeaderEncoder();
     private final ReplayRequestEncoder replayRequest = new ReplayRequestEncoder();
-    private final SnapshotQueryEncoder snapshotQuery = new SnapshotQueryEncoder();
     private final UnsafeBuffer requestBuffer = new UnsafeBuffer(new byte[REQUEST_BUFFER_LENGTH]);
 
     private final FragmentHandler tapHandler;
@@ -100,12 +98,12 @@ public final class ReplayerStreamReceiver implements AutoCloseable {
     }
 
     /**
-     * Restores {@code sourceId}'s newest snapshot in {@code store} that the log confirms on {@link #start}, before
-     * anything is dispatched (doc/snapshot.md §7). Call before {@link #start}; {@link #restoreFailure()} reports a
-     * snapshot that cannot be restored.
+     * Restores the newest snapshot in {@code store} on {@link #start}, before anything is dispatched, once a replay
+     * shows the log holds its cut (doc/snapshot.md §7). Call before {@link #start}; {@link #restoreFailure()} reports
+     * a snapshot that cannot be restored.
      */
-    public void restoreFrom(final int sourceId, final SnapshotStore store, final SnapshotRestoreHandler handler) {
-        recovery.restoreFrom(sourceId, store, handler);
+    public void restoreFrom(final SnapshotStore store, final SnapshotRestoreHandler handler) {
+        recovery.restoreFrom(store, handler);
     }
 
     /**
@@ -194,14 +192,6 @@ public final class ReplayerStreamReceiver implements AutoCloseable {
         return recovery.currentLeaderMemberId();
     }
 
-    /**
-     * Starts recovery over as a cold start, restoring the snapshot given to {@link #restoreFrom} again: a passive
-     * gateway instance's activation. Every frame after the restored cut is dispatched once more.
-     */
-    public void restart() {
-        recovery.restart();
-    }
-
     /** Why the snapshot given to {@link #restoreFrom} cannot be restored, or null. Latched: recovery has stopped. */
     public String restoreFailure() {
         return recovery.restoreFailure();
@@ -275,20 +265,6 @@ public final class ReplayerStreamReceiver implements AutoCloseable {
                          .fromPosition(fromPosition);
             requestPublication.offer(requestBuffer, 0,
                                      MessageHeaderEncoder.ENCODED_LENGTH + replayRequest.encodedLength());
-        }
-
-        @Override
-        public void sendSnapshotQuery(final long requestId, final int sourceId, final long round) {
-            if (requestPublication == null || !requestPublication.isConnected()) {
-                return;
-            }
-            snapshotQuery.wrapAndApplyHeader(requestBuffer, 0, requestHeader)
-                         .clientId(replyId)
-                         .requestId(requestId)
-                         .sourceId(sourceId)
-                         .round(round);
-            requestPublication.offer(requestBuffer, 0,
-                                     MessageHeaderEncoder.ENCODED_LENGTH + snapshotQuery.encodedLength());
         }
 
         /**

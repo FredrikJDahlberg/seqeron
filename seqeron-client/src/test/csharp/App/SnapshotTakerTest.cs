@@ -88,24 +88,25 @@ public class SnapshotTakerTest : IDisposable
     [Fact(DisplayName = "without a listener, or with the row off, a replica serializes, writes and submits nothing")]
     public void NotParticipating()
     {
-        var noListener = new SnapshotTaker(null, null, false, KeepAlive);
+        var noListener = new SnapshotTaker(null, null, KeepAlive);
         noListener.SetParticipating(true);
         Assert.False(noListener.IsParticipating);
 
-        var rowOff = new SnapshotTaker(_state, Store(), false, KeepAlive);
+        var rowOff = new SnapshotTaker(_state, Store(), KeepAlive);
         rowOff.SetParticipating(false);
-        rowOff.OnSnapshotStarted(1, Header, true);
+        Started(rowOff, 1, true);
         Assert.Equal(0, _state.Serialized);
         Assert.Equal(-1, StoreOf(1).LatestRound(long.MaxValue));
         Assert.Equal(0, rowOff.Submit(_frames));
         Assert.True(rowOff.OnSnapshotEnd(1, 3, 2018, 0), "nothing serialized, nothing to disagree with");
     }
 
-    [Fact(DisplayName = "the round's file holds the header and the records; the publisher submits the end it matches")]
+    [Fact(DisplayName =
+              "the round's file holds the header, the records and the cut; the publisher submits the end it matches")]
     public void PublisherWritesThenSubmitsTheEnd()
     {
         SnapshotTaker taker = Participating();
-        taker.OnSnapshotStarted(7, Header, true);
+        Started(taker, 7, true);
         Assert.Equal(1, _state.Serialized);
         Assert.True(taker.IsPublishing);
         Assert.Equal(1, taker.Submit(_frames)); // the end, once
@@ -117,12 +118,17 @@ public class SnapshotTakerTest : IDisposable
         Assert.Equal(3, end.RecordCount);
         Assert.Equal(2018, end.Length);
         Assert.Equal(5, end.FormatVersion); // the listener's formatVersion
+        Assert.Null(StoreOf(1).Open(7));    // not confirmed before its end is sequenced
+        Assert.True(taker.OnSnapshotEnd(7, end.RecordCount, end.Length, end.Crc32C), "its own end agrees with it");
 
         SnapshotStore.Reader reader = StoreOf(1).Open(7);
         Assert.NotNull(reader);
         Assert.Equal(3, reader.RecordCount);
         Assert.Equal(end.Length, reader.Length);
         Assert.Equal(end.Crc32C, reader.Crc32C);
+        Assert.Equal(70, reader.CutGlobalSeqNo);
+        Assert.Equal(70 * 1024, reader.CutPosition);
+        Assert.Equal(70_000, reader.CutTimestampNs);
         List<byte[]> records = ReadAll(reader);
         using (var first = new UnsafeBuffer(records[0]))
         {
@@ -130,14 +136,13 @@ public class SnapshotTakerTest : IDisposable
         }
         Assert.Equal(Filled(0), records[1]);
         Assert.Equal(Filled(1), records[2]);
-        Assert.True(taker.OnSnapshotEnd(7, end.RecordCount, end.Length, end.Crc32C), "its own end agrees with it");
     }
 
     [Fact(DisplayName = "a declined end is placed again on the next cycle")]
     public void DeclinedEndWaitsForTheNextCycle()
     {
         SnapshotTaker taker = Participating();
-        taker.OnSnapshotStarted(2, Header, true);
+        Started(taker, 2, true);
         _frames.Budget = 0;
         Assert.Equal(0, taker.Submit(_frames));
         Assert.True(taker.IsPublishing);
@@ -151,60 +156,62 @@ public class SnapshotTakerTest : IDisposable
     public void OtherReplicasCompare()
     {
         SnapshotTaker publisher = Participating();
-        publisher.OnSnapshotStarted(4, Header, true);
+        Started(publisher, 4, true);
         publisher.Submit(_frames);
         End end = _frames.Ends[0];
 
         SnapshotTaker follower = Participating();
-        follower.OnSnapshotStarted(4, Header, false);
-        Assert.Equal(4, StoreOf(1).LatestRound(long.MaxValue));
+        Started(follower, 4, false);
         Assert.Equal(0, follower.Submit(new Frames()));
         Assert.True(follower.OnSnapshotEnd(4, end.RecordCount, end.Length, end.Crc32C));
+        Assert.Equal(4, StoreOf(1).LatestRound(long.MaxValue));
 
         SnapshotTaker diverged = Participating();
         _state.Records = 3;
-        diverged.OnSnapshotStarted(4, Header, false);
+        Started(diverged, 4, false);
         Assert.False(diverged.OnSnapshotEnd(4, end.RecordCount, end.Length, end.Crc32C),
                      "different state, different records");
+        Assert.Equal(-1, StoreOf(1).LatestRound(long.MaxValue)); // its file is never confirmed
 
         SnapshotTaker otherRound = Participating();
-        otherRound.OnSnapshotStarted(5, Header, false);
+        Started(otherRound, 5, false);
         Assert.True(otherRound.OnSnapshotEnd(4, 99, 0, 0), "a late end of an earlier round is no evidence");
     }
 
-    [Fact(DisplayName = "a matching end keeps its round and the confirmed one before it; a mismatch deletes nothing")]
-    public void MatchingEndKeepsTwoConfirmedRounds()
+    [Fact(DisplayName =
+              "a matching end confirms its round's file, which replaces every older one; a mismatch confirms nothing")]
+    public void MatchingEndConfirmsTheRound()
     {
         SnapshotTaker taker = Participating();
-        taker.OnSnapshotStarted(1, Header, false);
-        taker.OnSnapshotStarted(2, Header, true);
+        Started(taker, 1, true);
         taker.Submit(_frames);
-        taker.OnSnapshotStarted(3, Header, false);
-        Assert.Equal(3, StoreOf(1).LatestRound(long.MaxValue));
-
-        Assert.False(taker.OnSnapshotEnd(3, 99, 0, 0));
-        Assert.Equal(1, StoreOf(1).LatestRound(2)); // a diverged instance keeps what it had
-
-        taker.OnSnapshotStarted(4, Header, false);
         End end = _frames.Ends[0];
-        Assert.True(taker.OnSnapshotEnd(4, end.RecordCount, end.Length, end.Crc32C));
-        Assert.Equal(3, StoreOf(1).LatestRound(4)); // no round before 4 was confirmed, so none goes
+        Assert.Equal(0, taker.ConfirmedRound);
+        Assert.True(taker.OnSnapshotEnd(1, end.RecordCount, end.Length, end.Crc32C));
+        Assert.Equal(1, taker.ConfirmedRound);
+        Assert.Equal(1, StoreOf(1).LatestRound(long.MaxValue));
 
-        taker.OnSnapshotStarted(5, Header, false);
-        Assert.True(taker.OnSnapshotEnd(5, end.RecordCount, end.Length, end.Crc32C));
-        Assert.Equal(4, StoreOf(1).LatestRound(5));  // round 4 stays as round 5's fallback
-        Assert.Equal(-1, StoreOf(1).LatestRound(4)); // rounds 1 to 3 are gone
+        Started(taker, 2, false);
+        Assert.False(taker.OnSnapshotEnd(2, 99, 0, 0));
+        Assert.Equal(1, taker.ConfirmedRound);
+        Assert.Equal(1, StoreOf(1).LatestRound(long.MaxValue)); // a diverged instance keeps what it had
+
+        Started(taker, 3, false);
+        Assert.True(taker.OnSnapshotEnd(3, end.RecordCount, end.Length, end.Crc32C));
+        Assert.Equal(3, taker.ConfirmedRound);
+        Assert.Equal(3, StoreOf(1).LatestRound(long.MaxValue));
+        Assert.Equal(-1, StoreOf(1).LatestRound(3)); // the older files are gone
     }
 
     [Fact(DisplayName = "a publisher that loses the role stops for good, with no end")]
     public void LostRoleStops()
     {
         SnapshotTaker taker = Participating();
-        taker.OnSnapshotStarted(6, Header, true);
+        Started(taker, 6, true);
         taker.StopPublishing();
         Assert.Equal(0, taker.Submit(_frames));
         Assert.Empty(_frames.Ends);
-        Assert.Equal(6, StoreOf(1).LatestRound(long.MaxValue)); // its file stays
+        Assert.Equal(-1, StoreOf(1).LatestRound(long.MaxValue)); // no end, so nothing is confirmed
     }
 
     [Fact(DisplayName = "a listener answering a length no record can have drops the round, with no file and no end")]
@@ -214,7 +221,7 @@ public class SnapshotTakerTest : IDisposable
         {
             _state.BadLength = length;
             SnapshotTaker taker = Participating();
-            taker.OnSnapshotStarted(3, Header, true);
+            Started(taker, 3, true);
             Assert.False(taker.IsPublishing);
             Assert.Equal(0, taker.Submit(_frames));
             Assert.Equal(-1, StoreOf(1).LatestRound(long.MaxValue));
@@ -226,8 +233,8 @@ public class SnapshotTakerTest : IDisposable
     public void NewRoundSupersedes()
     {
         SnapshotTaker taker = Participating();
-        taker.OnSnapshotStarted(8, Header, true);
-        taker.OnSnapshotStarted(9, Header, true);
+        Started(taker, 8, true);
+        Started(taker, 9, true);
         Assert.Equal(1, taker.Submit(_frames));
         Assert.Single(_frames.Ends);
         Assert.Equal(9, _frames.Ends[0].Round);
@@ -238,9 +245,9 @@ public class SnapshotTakerTest : IDisposable
     public void RoundAfterTheRowTurnedOffAbandonsTheOpenOne()
     {
         SnapshotTaker taker = Participating();
-        taker.OnSnapshotStarted(8, Header, true);
+        Started(taker, 8, true);
         taker.SetParticipating(false);
-        taker.OnSnapshotStarted(9, Header, true);
+        Started(taker, 9, true);
         Assert.False(taker.IsPublishing);
         Assert.Equal(0, taker.Submit(_frames));
         Assert.Empty(_frames.Ends); // round 8 never ended
@@ -253,7 +260,7 @@ public class SnapshotTakerTest : IDisposable
         var state35 = new SnapshotHeader.GatewayState(
             9, 10, 42, Enumerable.Repeat(new SnapshotHeader.GatewayRow(10, 0, "GW"), 1771).ToList());
         SnapshotTaker taker = Participating();
-        taker.OnSnapshotStarted(3, new SnapshotHeader(7, 2, state35), true);
+        Started(taker, 3, new SnapshotHeader(7, 2, state35), true);
         Assert.Equal(0, _state.Serialized); // 1771 rows outgrow a record
         Assert.False(taker.IsPublishing);
         Assert.Null(StoreOf(1).Open(3));
@@ -263,7 +270,7 @@ public class SnapshotTakerTest : IDisposable
               "a restore reads only this build's format, makes the source take part, and hands its records on")]
     public void RestoreHandsRecordsToTheListener()
     {
-        var taker = new SnapshotTaker(_state, Store(), false, KeepAlive);
+        var taker = new SnapshotTaker(_state, Store(), KeepAlive);
         Assert.True(taker.SupportsFormatVersion(5));
         Assert.False(taker.SupportsFormatVersion(6));
 
@@ -274,71 +281,12 @@ public class SnapshotTakerTest : IDisposable
         Assert.Equal(new List<string> { "0:1000:1" }, _state.Restored);
     }
 
-    [Fact(DisplayName = "a passive instance serializes no round, though its row takes part")]
-    public void PassiveSerializesNoRound()
-    {
-        SnapshotTaker taker = Passive();
-        taker.SetParticipating(true);
-        Assert.False(taker.HoldsState);
-        taker.OnSnapshotStarted(1, Header, true);
-        Assert.Equal(0, _state.Serialized);
-        Assert.Equal(-1, StoreOf(1).LatestRound(long.MaxValue));
-        Assert.False(taker.IsPublishing);
-        Assert.Equal(0, taker.Submit(_frames));
-    }
-
-    [Fact(DisplayName = "a passive instance's restore hands its listener nothing")]
-    public void PassiveRestoresNothing()
-    {
-        SnapshotTaker taker = Passive();
-        taker.OnSnapshotHeader(Header);
-        Assert.False(taker.IsParticipating);
-        using var record = new UnsafeBuffer(Filled(1));
-        taker.OnSnapshotRecord(record, 1000, 0);
-        Assert.Empty(_state.Restored);
-    }
-
-    [Fact(DisplayName = "activation waits for the designation and the catch-up, and happens once")]
-    public void ActivationWaitsAndHappensOnce()
-    {
-        SnapshotTaker taker = Passive();
-        Assert.False(taker.Activate(false, true));
-        Assert.False(taker.Activate(true, false));
-        Assert.False(taker.HoldsState);
-        Assert.True(taker.Activate(true, true));
-        Assert.True(taker.HoldsState);
-        Assert.False(taker.Activate(true, true), "the recovery restarts once");
-    }
-
-    [Fact(DisplayName = "once activated, it restores and takes part in the next round")]
-    public void ActivatedRestoresAndTakesPart()
-    {
-        SnapshotTaker taker = Passive();
-        taker.SetParticipating(true);
-        Assert.True(taker.Activate(true, true));
-        taker.OnSnapshotHeader(Header);
-        using var record = new UnsafeBuffer(Filled(1));
-        taker.OnSnapshotRecord(record, 1000, 0);
-        Assert.Equal(new List<string> { "0:1000:1" }, _state.Restored);
-        taker.OnSnapshotStarted(2, Header, true);
-        Assert.Equal(1, _state.Serialized);
-        Assert.True(taker.IsPublishing);
-    }
-
-    [Fact(DisplayName = "an instance that is not passive holds state from the start and has nothing to activate")]
-    public void NotPassiveHoldsStateFromTheStart()
-    {
-        SnapshotTaker taker = Participating();
-        Assert.True(taker.HoldsState);
-        Assert.False(taker.Activate(true, true));
-    }
-
     [Fact(DisplayName = "serializing a round keeps the cluster session alive after every record")]
     public void SerializationKeepsTheSessionAlive()
     {
         _state.Records = 3;
         SnapshotTaker taker = Participating();
-        taker.OnSnapshotStarted(1, Header, true);
+        Started(taker, 1, true);
         Assert.Equal(4, _keepAlives); // the header and three records
     }
 
@@ -350,15 +298,20 @@ public class SnapshotTakerTest : IDisposable
     // A participating instance with a directory of its own.
     private SnapshotTaker Participating()
     {
-        var taker = new SnapshotTaker(_state, Store(), false, KeepAlive);
+        var taker = new SnapshotTaker(_state, Store(), KeepAlive);
         taker.SetParticipating(true);
         return taker;
     }
 
-    // A passive instance with a directory of its own.
-    private SnapshotTaker Passive()
+    // A round's SnapshotStarted: cut at globalSeqNo round * 10.
+    private static void Started(SnapshotTaker taker, long round, bool mayPublish)
     {
-        return new SnapshotTaker(_state, Store(), true, KeepAlive);
+        Started(taker, round, Header, mayPublish);
+    }
+
+    private static void Started(SnapshotTaker taker, long round, SnapshotHeader header, bool mayPublish)
+    {
+        taker.OnSnapshotStarted(round, round * 10, round * 10 * 1024, round * 10_000, header, mayPublish);
     }
 
     private SnapshotStore Store()

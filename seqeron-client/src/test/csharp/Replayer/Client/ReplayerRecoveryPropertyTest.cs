@@ -21,8 +21,8 @@ namespace Org.Limitless.Seqeron.Replayer.Client;
 /// frame ever published.</para>
 /// <para><b>Restore</b>: a client restoring its own snapshot (doc/snapshot.md §7) holds both properties from the cut
 /// on, under the same faults, and its restored state plus the frames after the cut equals the state a full replay
-/// builds. It holds files of three rounds, of which the log ends only the middle one: the newest gives way to
-/// it.</para>
+/// builds. It holds files of two rounds: the newer was cut from another log, whose cut this recording does not hold
+/// where the file says, so it gives way to the older.</para>
 /// <para>The model draws from <see cref="SplitMix64"/> in the same order as <c>ReplayerRecoveryPropertyTest.java</c>
 /// and its C++ twin, so a seed is the same fault sequence in all three. Seeds are fixed and listed: a failing run
 /// must be re-runnable.</para>
@@ -51,6 +51,7 @@ public class ReplayerRecoveryPropertyTest : IDisposable
     private const int OtherSource = 5;
     private const long Cut = 9;
     private const long SnapshotEnd = 12;
+    private const long NextCut = 13;
     private const int FormatVersion = 1;
 
     private readonly TempDirectory _directory = new TempDirectory();
@@ -103,9 +104,6 @@ public class ReplayerRecoveryPropertyTest : IDisposable
         // The client's own files, null for a run that restores nothing.
         private readonly SnapshotStore _store;
 
-        // The digest of the one round the log ends for Source.
-        private RestoreFrames.Digest _snapshotDigest;
-
         // Every frame that is not a heartbeat, by globalSeqNo: the snapshot rounds.
         private readonly Dictionary<long, byte[]> _frames = new Dictionary<long, byte[]>();
 
@@ -119,8 +117,6 @@ public class ReplayerRecoveryPropertyTest : IDisposable
 
         // ── the Replayer's view of this one client ─────────────────────────────────────────────────────
         private long _pendingRequestId = -1;
-        private bool _pendingIsQuery;
-        private long _pendingQueryRound;
         private long _pendingFromPosition;
         private long _nextSessionId = 1;
 
@@ -165,7 +161,7 @@ public class ReplayerRecoveryPropertyTest : IDisposable
             _client = new ReplayerRecovery(this, OnSequenced, null, null);
             if (_restoring)
             {
-                _client.RestoreFrom(Source, _store, this);
+                _client.RestoreFrom(_store, this);
                 _expectedNext = Cut + 1;
             }
             _client.Start();
@@ -220,8 +216,9 @@ public class ReplayerRecoveryPropertyTest : IDisposable
         }
 
         // Round 1 starts and is superseded by round 2 at Cut before its source ends it; round 2 ends among
-        // heartbeats and another source's end, and round 3 starts and never ends. The client holds a file of each:
-        // round 2's records hold the state at the cut, the heartbeats before it.
+        // heartbeats and another source's end, and round 3 starts and never ends. The client holds round 2's file,
+        // whose records hold the state at the cut, the heartbeats before it, and a round 3 file from another log,
+        // whose cut is a frame earlier there.
         private void PublishSnapshotRounds()
         {
             for (int i = 0; i < 5; ++i)
@@ -238,13 +235,13 @@ public class ReplayerRecoveryPropertyTest : IDisposable
             PublishFrame(RestoreFrames.End(10, OtherSource, 2, FormatVersion, header));
             Publish(); // heartbeat 11
             PublishFrame(RestoreFrames.End(SnapshotEnd, Source, 2, FormatVersion, header, count, sum));
-            PublishFrame(RestoreFrames.Started(13, 3));
+            PublishFrame(RestoreFrames.Started(NextCut, 3));
             Publish(); // heartbeat 14
 
-            _snapshotDigest = RestoreFrames.Digest.Of(header, count, sum);
-            RestoreFrames.Write(_store, 1, FormatVersion, header, RestoreFrames.Record(99));
-            RestoreFrames.Write(_store, 2, FormatVersion, header, count, sum);
-            RestoreFrames.Write(_store, 3, FormatVersion, header, RestoreFrames.Record(98));
+            // Newest first: confirming a round deletes the older files, and both are to stay.
+            RestoreFrames.Write(_store, 3, NextCut, PositionOf(NextCut - 1), FormatVersion, header,
+                                RestoreFrames.Record(98));
+            RestoreFrames.Write(_store, 2, Cut, PositionOf(Cut), FormatVersion, header, count, sum);
         }
 
         private void PublishFrame(byte[] frame)
@@ -347,8 +344,6 @@ public class ReplayerRecoveryPropertyTest : IDisposable
                 return;
             }
             long requestId = _pendingRequestId;
-            bool query = _pendingIsQuery;
-            long queryRound = _pendingQueryRound;
             long fromPosition = _pendingFromPosition;
             _pendingRequestId = -1;
             if (requestId != _client.RequestId)
@@ -361,15 +356,6 @@ public class ReplayerRecoveryPropertyTest : IDisposable
                 Control(ControlMessages.ReplayPending(ClientId, requestId));
                 return;
             }
-            if (query)
-            {
-                Control(queryRound == 2 ? RestoreFrames.Location(ClientId, requestId, 2, Cut, PositionOf(Cut),
-                                                                 FormatVersion, _snapshotDigest)
-                                        : RestoreFrames.Location(ClientId, requestId, -1, -1, -1, 0,
-                                                                 new RestoreFrames.Digest(0, 0, 0)));
-                return;
-            }
-
             if (fromPosition == ReplayProtocol.FromStart)
             {
                 ServeReplay(requestId, 1, _tip);
@@ -426,21 +412,7 @@ public class ReplayerRecoveryPropertyTest : IDisposable
                 return; // the offer did not land; only the resend timer recovers this
             }
             _pendingRequestId = requestId;
-            _pendingIsQuery = false;
             _pendingFromPosition = fromPosition;
-        }
-
-        public void SendSnapshotQuery(long requestId, int sourceId, long round)
-        {
-            Assert.True(sourceId == Source, _tag);
-            Assert.True(round == 3 || round == 2, $"{_tag}: asked about round {round}");
-            if (_chaos && Chance(15))
-            {
-                return;
-            }
-            _pendingRequestId = requestId;
-            _pendingIsQuery = true;
-            _pendingQueryRound = round;
         }
 
         public void OpenReplay(long replaySessionId)

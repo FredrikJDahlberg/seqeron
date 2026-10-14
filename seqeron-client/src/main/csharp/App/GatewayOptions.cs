@@ -10,8 +10,7 @@ public sealed class GatewayOptions
     public required string GatewayName { get; init; }
 
     /// <summary>The logical gateway's <c>sourceId</c>, the one its rows declare. Required with a
-    /// <see cref="SnapshotListener"/>, as the restore asks for the source's snapshot before any row is
-    /// dispatched.</summary>
+    /// <see cref="SnapshotListener"/>, whose snapshot counter it labels.</summary>
     public int SourceId { get; init; } = Gateway.Unresolved;
 
     /// <summary>What serializes this instance's state for snapshot rounds and restores it on start; without one it
@@ -22,14 +21,6 @@ public sealed class GatewayOptions
     /// <see cref="SnapshotListener"/>. Its own: no other instance, its pair's included, may write it. A restart
     /// restores from what it holds, so it must outlive the process.</summary>
     public string SnapshotDirectory { get; init; }
-
-    /// <summary>
-    /// Whether this instance holds no state until it is activated (doc/snapshot.md §4). Until then the listener sees
-    /// no payload and no connection, and takes part in no round, so it writes no snapshot; on activation the instance
-    /// restores the newest one its directory holds, or replays from <c>globalSeqNo</c> 1 without one, before it
-    /// serves. A failover to it races the activation deadline, so it suits state that replays well inside 5 s.
-    /// </summary>
-    public bool Passive { get; init; }
 
     /// <summary>This replica's client id, its counters' label; unique among the co-located apps on its node.</summary>
     public int ClientId { get; init; }

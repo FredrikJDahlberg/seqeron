@@ -1,7 +1,7 @@
 #pragma once
 
-// A snapshot as a restore meets it (doc/snapshot.md §5, §7): the instance's own file, the round's frames, and the
-// Replayer's answer confirming it. The twin of the Java tests' RestoreFrames.
+// A snapshot as a restore meets it (doc/snapshot.md §7): the instance's own file and the round's frames. The twin of
+// the Java tests' RestoreFrames.
 
 #include <array>
 #include <cstdint>
@@ -15,7 +15,6 @@
 #include "org_limitless_seqeron_sbe_frame/SequencedSystem.h"
 #include "org_limitless_seqeron_sbe_frame/SnapshotEnd.h"
 #include "org_limitless_seqeron_sbe_frame/SnapshotStarted.h"
-#include "org_limitless_seqeron_sbe_replay/SnapshotLocation.h"
 
 namespace org::limitless::seqeron::replayer::client::restore_frames {
 
@@ -40,7 +39,8 @@ struct Digest
     }
 };
 
-inline Bytes started(const std::int64_t globalSeqNo, const std::int64_t round)
+// A SnapshotStarted stamped timestampNs: another log's, when it is not the file's.
+inline Bytes started(const std::int64_t globalSeqNo, const std::int64_t round, const std::int64_t timestampNs)
 {
     Bytes out(128, 0);
     sbe::frame::SnapshotStarted frame;
@@ -51,10 +51,15 @@ inline Bytes started(const std::int64_t globalSeqNo, const std::int64_t round)
         .sessionId(-1)
         .systemEventType(protocol::SNAPSHOT_STARTED)
         .globalSeqNo(globalSeqNo)
-        .timestamp(globalSeqNo * 1000);
+        .timestamp(timestampNs);
     frame.round(round);
     out.resize(sbe::frame::MessageHeader::encodedLength() + frame.encodedLength());
     return out;
+}
+
+inline Bytes started(const std::int64_t globalSeqNo, const std::int64_t round)
+{
+    return started(globalSeqNo, round, globalSeqNo * 1000);
 }
 
 inline Bytes system(const std::int64_t globalSeqNo, const std::int32_t sourceId, const std::uint16_t systemEventType,
@@ -92,17 +97,19 @@ inline Bytes end(const std::int64_t globalSeqNo, const std::int32_t sourceId, co
                   static_cast<std::uint16_t>(encoder.encodedLength()));
 }
 
-// Writes records as a round's file, as the instance did when it serialized them.
-inline void write(SnapshotStore& store, const std::int64_t round, const std::uint32_t formatVersion,
-                  const std::vector<Bytes>& records)
+// Writes records as a round's file and confirms it, as the instance did when it serialized them and the log's end
+// agreed. The cut's timestamp is cutGlobalSeqNo * 1000, as every frame's here.
+inline void write(SnapshotStore& store, const std::int64_t round, const std::int64_t cutGlobalSeqNo,
+                  const std::int64_t cutPosition, const std::uint32_t formatVersion, const std::vector<Bytes>& records)
 {
     const Digest digest = Digest::of(records);
-    store.begin(round);
+    store.begin(round, cutGlobalSeqNo, cutPosition, cutGlobalSeqNo * 1000);
     for (const Bytes& record : records)
     {
         store.append(record);
     }
     store.commit(digest.recordCount, static_cast<std::uint64_t>(digest.length), digest.crc32c, formatVersion);
+    store.confirm(round);
     store.awaitWrites();
 }
 
@@ -126,27 +133,6 @@ inline Bytes record(const std::int64_t value)
 inline std::int64_t valueOf(const std::uint8_t* record)
 {
     return static_cast<std::int64_t>(protocol::detail::getLe(record, sizeof(std::int64_t)));
-}
-
-// The Replayer's answer: a round's cut and sequenced end, or none for round -1.
-inline Bytes location(const std::int64_t clientId, const std::int64_t requestId, const std::int64_t round,
-                      const std::int64_t asOfGlobalSeqNo, const std::int64_t asOfPosition,
-                      const std::uint32_t formatVersion, const Digest& end)
-{
-    Bytes out(128, 0);
-    sbe::replay::SnapshotLocation encoder;
-    encoder.wrapAndApplyHeader(reinterpret_cast<char*>(out.data()), 0, out.size());
-    encoder.clientId(clientId)
-        .requestId(requestId)
-        .round(round)
-        .asOfGlobalSeqNo(asOfGlobalSeqNo)
-        .asOfPosition(asOfPosition)
-        .formatVersion(formatVersion)
-        .recordCount(end.recordCount)
-        .length(end.length)
-        .crc32c(end.crc32c);
-    out.resize(sbe::replay::MessageHeader::encodedLength() + encoder.encodedLength());
-    return out;
 }
 
 } // namespace org::limitless::seqeron::replayer::client::restore_frames

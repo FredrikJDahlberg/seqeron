@@ -96,12 +96,11 @@ struct Instances
         return taker;
     }
 
-    SnapshotTaker& instance(const bool passive = false)
+    SnapshotTaker& instance()
     {
         stores.push_back(
             std::make_unique<replayer::client::SnapshotStore>(directory.path() / std::to_string(stores.size())));
-        takers.push_back(
-            std::make_unique<SnapshotTaker>(&state, stores.back().get(), passive, [this] { ++keepAlives; }));
+        takers.push_back(std::make_unique<SnapshotTaker>(&state, stores.back().get(), [this] { ++keepAlives; }));
         return *takers.back();
     }
 
@@ -119,6 +118,18 @@ struct Instances
     std::vector<std::unique_ptr<SnapshotTaker>> takers;
     int keepAlives = 0;
 };
+
+// A round's SnapshotStarted: cut at globalSeqNo round * 10.
+void started(SnapshotTaker& taker, const std::int64_t round, const protocol::SnapshotHeader& header,
+             const bool mayPublish)
+{
+    taker.onSnapshotStarted(round, round * 10, round * 10 * 1024, round * 10'000, header, mayPublish);
+}
+
+void started(SnapshotTaker& taker, const std::int64_t round, const bool mayPublish)
+{
+    started(taker, round, HEADER, mayPublish);
+}
 
 std::vector<std::uint8_t> filled(const int value)
 {
@@ -141,24 +152,24 @@ std::vector<std::vector<std::uint8_t>> readAll(replayer::client::SnapshotStore::
 TEST(SnapshotTaker, WithoutAListenerOrWithTheRowOffAReplicaSerializesWritesAndSubmitsNothing)
 {
     Instances t;
-    SnapshotTaker noListener{ nullptr, nullptr, false, [] {} };
+    SnapshotTaker noListener{ nullptr, nullptr, [] {} };
     noListener.participating(true);
     EXPECT_FALSE(noListener.isParticipating());
 
     SnapshotTaker& rowOff = t.instance();
     rowOff.participating(false);
-    rowOff.onSnapshotStarted(1, HEADER, true);
+    started(rowOff, 1, true);
     EXPECT_EQ(0, t.state.serialized);
     EXPECT_EQ(-1, t.lastStore().latestRound());
     EXPECT_EQ(0, rowOff.submit(t.frames));
     EXPECT_TRUE(rowOff.onSnapshotEnd(1, 3, 2018, 0)) << "nothing serialized, nothing to disagree with";
 }
 
-TEST(SnapshotTaker, TheRoundsFileHoldsTheHeaderAndTheRecordsThePublisherSubmitsTheEndItMatches)
+TEST(SnapshotTaker, TheRoundsFileHoldsTheHeaderTheRecordsAndTheCutThePublisherSubmitsTheEndItMatches)
 {
     Instances t;
     SnapshotTaker& taker = t.participating();
-    taker.onSnapshotStarted(7, HEADER, true);
+    started(taker, 7, true);
     EXPECT_EQ(1, t.state.serialized);
     EXPECT_TRUE(taker.isPublishing());
     EXPECT_EQ(1, taker.submit(t.frames)) << "the end, once";
@@ -171,25 +182,29 @@ TEST(SnapshotTaker, TheRoundsFileHoldsTheHeaderAndTheRecordsThePublisherSubmitsT
     EXPECT_EQ(3, end.recordCount);
     EXPECT_EQ(2018, end.length);
     EXPECT_EQ(5U, end.formatVersion) << "the listener's formatVersion";
+    EXPECT_FALSE(t.lastStore().open(7).has_value()) << "not confirmed before its end is sequenced";
+    EXPECT_TRUE(taker.onSnapshotEnd(7, end.recordCount, end.length, end.crc32c)) << "its own end agrees with it";
 
     std::optional<replayer::client::SnapshotStore::Reader> reader = t.lastStore().open(7);
     ASSERT_TRUE(reader.has_value());
     EXPECT_EQ(3, reader->recordCount());
     EXPECT_EQ(static_cast<std::uint64_t>(end.length), reader->length());
     EXPECT_EQ(end.crc32c, reader->crc32c());
+    EXPECT_EQ(70, reader->cutGlobalSeqNo());
+    EXPECT_EQ(70 * 1024, reader->cutPosition());
+    EXPECT_EQ(70'000, reader->cutTimestampNs());
     const auto records = readAll(*reader);
     ASSERT_EQ(3u, records.size());
     EXPECT_EQ(HEADER, protocol::SnapshotHeader::decode(records[0].data(), records[0].size()));
     EXPECT_EQ(filled(0), records[1]);
     EXPECT_EQ(filled(1), records[2]);
-    EXPECT_TRUE(taker.onSnapshotEnd(7, end.recordCount, end.length, end.crc32c)) << "its own end agrees with it";
 }
 
 TEST(SnapshotTaker, ADeclinedEndIsPlacedAgainOnTheNextCycle)
 {
     Instances t;
     SnapshotTaker& taker = t.participating();
-    taker.onSnapshotStarted(2, HEADER, true);
+    started(taker, 2, true);
     t.frames.budget = 0;
     EXPECT_EQ(0, taker.submit(t.frames));
     EXPECT_TRUE(taker.isPublishing());
@@ -202,61 +217,62 @@ TEST(SnapshotTaker, AReplicaThatDoesNotPublishWritesItsFileSubmitsNothingAndComp
 {
     Instances t;
     SnapshotTaker& publisher = t.participating();
-    publisher.onSnapshotStarted(4, HEADER, true);
+    started(publisher, 4, true);
     publisher.submit(t.frames);
     const Frames::End end = t.frames.ends[0];
 
     SnapshotTaker& follower = t.participating();
-    follower.onSnapshotStarted(4, HEADER, false);
-    EXPECT_EQ(4, t.lastStore().latestRound());
+    started(follower, 4, false);
     Frames none;
     EXPECT_EQ(0, follower.submit(none));
     EXPECT_TRUE(follower.onSnapshotEnd(4, end.recordCount, end.length, end.crc32c));
+    EXPECT_EQ(4, t.lastStore().latestRound());
 
     SnapshotTaker& diverged = t.participating();
     t.state.records = 3;
-    diverged.onSnapshotStarted(4, HEADER, false);
+    started(diverged, 4, false);
     EXPECT_FALSE(diverged.onSnapshotEnd(4, end.recordCount, end.length, end.crc32c))
         << "different state, different records";
+    EXPECT_EQ(-1, t.lastStore().latestRound()) << "its file is never confirmed";
 
     SnapshotTaker& otherRound = t.participating();
-    otherRound.onSnapshotStarted(5, HEADER, false);
+    started(otherRound, 5, false);
     EXPECT_TRUE(otherRound.onSnapshotEnd(4, 99, 0, 0)) << "a late end of an earlier round is no evidence";
 }
 
-TEST(SnapshotTaker, AMatchingEndKeepsItsRoundAndTheConfirmedOneBeforeItAMismatchDeletesNothing)
+TEST(SnapshotTaker, AMatchingEndConfirmsItsRoundsFileWhichReplacesEveryOlderOneAMismatchConfirmsNothing)
 {
     Instances t;
     SnapshotTaker& taker = t.participating();
-    taker.onSnapshotStarted(1, HEADER, false);
-    taker.onSnapshotStarted(2, HEADER, true);
+    started(taker, 1, true);
     taker.submit(t.frames);
-    taker.onSnapshotStarted(3, HEADER, false);
-    EXPECT_EQ(3, t.lastStore().latestRound());
-
-    EXPECT_FALSE(taker.onSnapshotEnd(3, 99, 0, 0));
-    EXPECT_EQ(1, t.lastStore().latestRound(2)) << "a diverged instance keeps what it had";
-
-    taker.onSnapshotStarted(4, HEADER, false);
     const Frames::End end = t.frames.ends[0];
-    EXPECT_TRUE(taker.onSnapshotEnd(4, end.recordCount, end.length, end.crc32c));
-    EXPECT_EQ(3, t.lastStore().latestRound(4)) << "no round before 4 was confirmed, so none goes";
+    EXPECT_EQ(0, taker.confirmedRound());
+    EXPECT_TRUE(taker.onSnapshotEnd(1, end.recordCount, end.length, end.crc32c));
+    EXPECT_EQ(1, taker.confirmedRound());
+    EXPECT_EQ(1, t.lastStore().latestRound());
 
-    taker.onSnapshotStarted(5, HEADER, false);
-    EXPECT_TRUE(taker.onSnapshotEnd(5, end.recordCount, end.length, end.crc32c));
-    EXPECT_EQ(4, t.lastStore().latestRound(5)) << "round 4 stays as round 5's fallback";
-    EXPECT_EQ(-1, t.lastStore().latestRound(4)) << "rounds 1 to 3 are gone";
+    started(taker, 2, false);
+    EXPECT_FALSE(taker.onSnapshotEnd(2, 99, 0, 0));
+    EXPECT_EQ(1, taker.confirmedRound());
+    EXPECT_EQ(1, t.lastStore().latestRound()) << "a diverged instance keeps what it had";
+
+    started(taker, 3, false);
+    EXPECT_TRUE(taker.onSnapshotEnd(3, end.recordCount, end.length, end.crc32c));
+    EXPECT_EQ(3, taker.confirmedRound());
+    EXPECT_EQ(3, t.lastStore().latestRound());
+    EXPECT_EQ(-1, t.lastStore().latestRound(3)) << "the older files are gone";
 }
 
 TEST(SnapshotTaker, APublisherThatLosesTheRoleStopsForGoodWithNoEnd)
 {
     Instances t;
     SnapshotTaker& taker = t.participating();
-    taker.onSnapshotStarted(6, HEADER, true);
+    started(taker, 6, true);
     taker.stopPublishing();
     EXPECT_EQ(0, taker.submit(t.frames));
     EXPECT_TRUE(t.frames.ends.empty());
-    EXPECT_EQ(6, t.lastStore().latestRound()) << "its file stays";
+    EXPECT_EQ(-1, t.lastStore().latestRound()) << "no end, so nothing is confirmed";
 }
 
 TEST(SnapshotTaker, AListenerAnsweringALengthNoRecordCanHaveDropsTheRoundWithNoFileAndNoEnd)
@@ -266,7 +282,7 @@ TEST(SnapshotTaker, AListenerAnsweringALengthNoRecordCanHaveDropsTheRoundWithNoF
         Instances t;
         t.state.badLength = length;
         SnapshotTaker& taker = t.participating();
-        taker.onSnapshotStarted(3, HEADER, true);
+        started(taker, 3, true);
         EXPECT_FALSE(taker.isPublishing());
         EXPECT_EQ(0, taker.submit(t.frames));
         EXPECT_EQ(-1, t.lastStore().latestRound());
@@ -278,8 +294,8 @@ TEST(SnapshotTaker, ANewRoundSupersedesOneWhoseEndIsNotYetPlacedOnlyTheNewOneEnd
 {
     Instances t;
     SnapshotTaker& taker = t.participating();
-    taker.onSnapshotStarted(8, HEADER, true);
-    taker.onSnapshotStarted(9, HEADER, true);
+    started(taker, 8, true);
+    started(taker, 9, true);
     EXPECT_EQ(1, taker.submit(t.frames));
     ASSERT_EQ(1u, t.frames.ends.size());
     EXPECT_EQ(9, t.frames.ends[0].round);
@@ -290,9 +306,9 @@ TEST(SnapshotTaker, ARoundStartedAfterTheRowTurnedOffStillEndsTheOneBeingSubmitt
 {
     Instances t;
     SnapshotTaker& taker = t.participating();
-    taker.onSnapshotStarted(8, HEADER, true);
+    started(taker, 8, true);
     taker.participating(false);
-    taker.onSnapshotStarted(9, HEADER, true);
+    started(taker, 9, true);
     EXPECT_FALSE(taker.isPublishing());
     EXPECT_EQ(0, taker.submit(t.frames));
     EXPECT_TRUE(t.frames.ends.empty()) << "round 8 never ended";
@@ -305,7 +321,7 @@ TEST(SnapshotTaker, AHeaderLongerThanARecordDropsTheRound)
     protocol::SnapshotGatewayState rows{ 9, 10, 42, {} };
     rows.rows.assign(1771, protocol::SnapshotGatewayRow{ 10, 0, "GW" });
     SnapshotTaker& taker = t.participating();
-    taker.onSnapshotStarted(3, protocol::SnapshotHeader{ 7, 2, rows }, true);
+    started(taker, 3, protocol::SnapshotHeader{ 7, 2, rows }, true);
     EXPECT_EQ(0, t.state.serialized) << "1771 rows outgrow a record";
     EXPECT_FALSE(taker.isPublishing());
     EXPECT_FALSE(t.lastStore().open(3).has_value());
@@ -325,71 +341,12 @@ TEST(SnapshotTaker, ARestoreReadsOnlyThisBuildsFormatMakesTheSourceTakePartAndHa
     EXPECT_EQ((std::vector<std::string>{ "0:1000:1" }), t.state.restored);
 }
 
-TEST(SnapshotTaker, APassiveInstanceSerializesNoRoundThoughItsRowTakesPart)
-{
-    Instances t;
-    SnapshotTaker& taker = t.instance(true);
-    taker.participating(true);
-    EXPECT_FALSE(taker.holdsState());
-    taker.onSnapshotStarted(1, HEADER, true);
-    EXPECT_EQ(0, t.state.serialized);
-    EXPECT_EQ(-1, t.lastStore().latestRound());
-    EXPECT_FALSE(taker.isPublishing());
-    EXPECT_EQ(0, taker.submit(t.frames));
-}
-
-TEST(SnapshotTaker, APassiveInstancesRestoreHandsItsListenerNothing)
-{
-    Instances t;
-    SnapshotTaker& taker = t.instance(true);
-    taker.onSnapshotHeader(HEADER);
-    EXPECT_FALSE(taker.isParticipating());
-    const std::vector<std::uint8_t> record = filled(1);
-    taker.onSnapshotRecord(record, 0);
-    EXPECT_TRUE(t.state.restored.empty());
-}
-
-TEST(SnapshotTaker, ActivationWaitsForTheDesignationAndTheCatchUpAndHappensOnce)
-{
-    Instances t;
-    SnapshotTaker& taker = t.instance(true);
-    EXPECT_FALSE(taker.activate(false, true));
-    EXPECT_FALSE(taker.activate(true, false));
-    EXPECT_FALSE(taker.holdsState());
-    EXPECT_TRUE(taker.activate(true, true));
-    EXPECT_TRUE(taker.holdsState());
-    EXPECT_FALSE(taker.activate(true, true)) << "the recovery restarts once";
-}
-
-TEST(SnapshotTaker, OnceActivatedItRestoresAndTakesPartInTheNextRound)
-{
-    Instances t;
-    SnapshotTaker& taker = t.instance(true);
-    taker.participating(true);
-    ASSERT_TRUE(taker.activate(true, true));
-    taker.onSnapshotHeader(HEADER);
-    const std::vector<std::uint8_t> record = filled(1);
-    taker.onSnapshotRecord(record, 0);
-    EXPECT_EQ((std::vector<std::string>{ "0:1000:1" }), t.state.restored);
-    taker.onSnapshotStarted(2, HEADER, true);
-    EXPECT_EQ(1, t.state.serialized);
-    EXPECT_TRUE(taker.isPublishing());
-}
-
-TEST(SnapshotTaker, AnInstanceThatIsNotPassiveHoldsStateFromTheStartAndHasNothingToActivate)
-{
-    Instances t;
-    SnapshotTaker& taker = t.instance();
-    EXPECT_TRUE(taker.holdsState());
-    EXPECT_FALSE(taker.activate(true, true));
-}
-
 TEST(SnapshotTaker, SerializingARoundKeepsTheClusterSessionAliveAfterEveryRecord)
 {
     Instances t;
     t.state.records = 3;
     SnapshotTaker& taker = t.participating();
-    taker.onSnapshotStarted(1, HEADER, true);
+    started(taker, 1, true);
     EXPECT_EQ(4, t.keepAlives) << "the header and three records";
 }
 

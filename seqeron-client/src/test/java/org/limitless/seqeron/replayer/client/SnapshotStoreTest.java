@@ -24,20 +24,27 @@ import org.limitless.seqeron.protocol.SnapshotFormat;
 import org.limitless.seqeron.protocol.SnapshotHeader;
 
 /**
- * An instance's own snapshot files (doc/snapshot.md §4). The golden trailer is shared with the C++ {@code
- * SnapshotStoreTest}, so a file one language writes is one the other reads.
+ * An instance's own snapshot files (doc/snapshot.md §4.1). The golden trailer is shared with the C++ and C# {@code
+ * SnapshotStoreTest}s, so a file one language writes is one the others read.
  */
 class SnapshotStoreTest {
-    /** Round 3's trailer over the application header and the 3000-byte body as three records, formatVersion 1. */
+    /**
+     * Round 3's trailer over the application header and the 3000-byte body as three records, formatVersion 1, cut at
+     * globalSeqNo 42, position 43008, timestamp 42000.
+     */
     private static final String GOLDEN_TRAILER = "0300000000000000" + "ca0b000000000000" + "04000000" + "6bf5246c"
-        + "01000000" + "534e4150";
+        + "01000000" + "2a00000000000000" + "00a8000000000000" + "10a4000000000000" + "534e5032";
+
+    private static final long CUT_GLOBAL_SEQ_NO = 42;
+    private static final long CUT_POSITION = 43008;
+    private static final long CUT_TIMESTAMP_NS = 42000;
 
     @TempDir
     Path directory;
 
     @Test
-    @DisplayName("a committed round reads back record by record, its trailer the shared golden bytes")
-    void committedRoundReadsBack() throws IOException {
+    @DisplayName("a confirmed round reads back record by record, its trailer the shared golden bytes")
+    void confirmedRoundReadsBack() throws IOException {
         final SnapshotStore store = new SnapshotStore(directory);
         final List<byte[]> records = records();
         write(store, 3, records);
@@ -54,6 +61,9 @@ class SnapshotStoreTest {
         assertEquals(3018, reader.length());
         assertEquals(0x6c24f56bL, reader.crc32c());
         assertEquals(1, reader.formatVersion());
+        assertEquals(CUT_GLOBAL_SEQ_NO, reader.cutGlobalSeqNo());
+        assertEquals(CUT_POSITION, reader.cutPosition());
+        assertEquals(CUT_TIMESTAMP_NS, reader.cutTimestampNs());
         final UnsafeBuffer view = new UnsafeBuffer(0, 0);
         for (final byte[] record : records) {
             assertEquals(record.length, reader.next(view));
@@ -66,23 +76,28 @@ class SnapshotStoreTest {
     }
 
     @Test
-    @DisplayName("only a committed write counts, and the newest round below a bound is found")
-    void onlyCommittedWritesCount() {
+    @DisplayName("only a confirmed round counts, and the newest round below a bound is found")
+    void onlyConfirmedRoundsCount() throws IOException {
         final SnapshotStore store = new SnapshotStore(directory);
-        store.begin(5);
+        begin(store, 5);
         store.append(new UnsafeBuffer(new byte[8]), 0, 8);
         store.abandon();
-        assertEquals(-1, store.latestRound(Long.MAX_VALUE), "an abandoned write leaves no file");
+        store.confirm(5);
+        store.awaitWrites();
+        assertEquals(List.of(), names(), "an abandoned write leaves no file, and confirms nothing");
 
-        write(store, 2, records());
+        commit(store, 2, records());
+        assertEquals(-1, store.latestRound(Long.MAX_VALUE), "a round the log has not confirmed");
+        assertNull(store.open(2));
+        store.confirm(1);
+        store.awaitWrites();
+        assertEquals(List.of("2.tmp"), names(), "a confirmation of another round confirms nothing");
+
         write(store, 4, records());
-        store.begin(6); // never committed, as a crash leaves it
-        store.append(new UnsafeBuffer(new byte[8]), 0, 8);
-
+        Files.copy(directory.resolve("4.snapshot"), directory.resolve("3.snapshot")); // as a crash may leave one
         assertEquals(4, store.latestRound(Long.MAX_VALUE));
-        assertEquals(2, store.latestRound(4));
-        assertEquals(-1, store.latestRound(2));
-        assertNull(store.open(6));
+        assertEquals(3, store.latestRound(4));
+        assertEquals(-1, store.latestRound(3));
         assertNull(store.open(7), "no such round");
     }
 
@@ -119,23 +134,23 @@ class SnapshotStoreTest {
     }
 
     @Test
-    @DisplayName("deleting before a durable round keeps it and every newer one, and clears a write a crash left behind")
-    void deleteBeforeKeepsTheRoundAndNewer() throws IOException {
+    @DisplayName("a confirmation replaces every older file, and any write a crash left behind")
+    void confirmationReplacesOlderFiles() throws IOException {
         final SnapshotStore crashed = new SnapshotStore(directory);
         write(crashed, 1, records());
-        write(crashed, 2, records());
-        crashed.begin(3);
+        commit(crashed, 2, records());
+        begin(crashed, 3);
 
         final SnapshotStore store = new SnapshotStore(directory);
-        store.deleteBefore(4);
-        store.awaitWrites();
-        assertEquals(List.of("1.snapshot", "2.snapshot", "3.tmp"), names(), "round 4 is not durable here");
-
         write(store, 4, records());
-        write(store, 5, records());
-        store.deleteBefore(4);
-        store.awaitWrites();
-        assertEquals(List.of("4.snapshot", "5.snapshot"), names());
+        assertEquals(List.of("4.snapshot"), names());
+
+        commit(store, 5, records());
+        begin(store, 6); // round 5's end never came
+        store.abandon();
+        assertEquals(List.of("4.snapshot", "5.tmp"), names());
+        write(store, 7, records());
+        assertEquals(List.of("7.snapshot"), names());
     }
 
     @Test
@@ -146,8 +161,6 @@ class SnapshotStoreTest {
         Files.createDirectories(directory.resolve("2.snapshot").resolve("occupied")); // the name cannot be taken
         write(store, 2, records());
 
-        store.deleteBefore(2);
-        store.awaitWrites();
         assertTrue(Files.isRegularFile(directory.resolve("1.snapshot")));
         assertTrue(Files.isRegularFile(directory.resolve("2.tmp")));
     }
@@ -180,17 +193,28 @@ class SnapshotStoreTest {
                        Arrays.copyOfRange(body, 2302, 3000));
     }
 
+    /** Writes and confirms {@code round}'s file. */
     private static void write(final SnapshotStore store, final long round, final List<byte[]> records) {
+        commit(store, round, records);
+        store.confirm(round);
+        store.awaitWrites();
+    }
+
+    /** Writes {@code round}'s file, as the instance does before the log confirms it. */
+    private static void commit(final SnapshotStore store, final long round, final List<byte[]> records) {
         long length = 0;
         final CRC32C crc = new CRC32C();
-        store.begin(round);
+        begin(store, round);
         for (final byte[] record : records) {
             store.append(new UnsafeBuffer(record), 0, record.length);
             length += record.length;
             crc.update(record);
         }
         store.commit(records.size(), length, crc.getValue(), 1);
-        store.awaitWrites();
+    }
+
+    private static void begin(final SnapshotStore store, final long round) {
+        store.begin(round, CUT_GLOBAL_SEQ_NO, CUT_POSITION, CUT_TIMESTAMP_NS);
     }
 
     private List<String> names() throws IOException {

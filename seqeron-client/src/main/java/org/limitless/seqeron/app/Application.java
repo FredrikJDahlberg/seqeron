@@ -1,11 +1,13 @@
 package org.limitless.seqeron.app;
 
 import io.aeron.Aeron;
+import io.aeron.Counter;
 import java.nio.file.Path;
 import java.util.Objects;
 import org.agrona.DirectBuffer;
 import org.limitless.seqeron.protocol.PortLayout;
 import org.limitless.seqeron.protocol.Publish;
+import org.limitless.seqeron.protocol.SeqeronCounters;
 import org.limitless.seqeron.protocol.SnapshotHeader;
 import org.limitless.seqeron.protocol.SystemFrame;
 import org.limitless.seqeron.replayer.client.SequencedEvent;
@@ -94,15 +96,18 @@ public final class Application implements AutoCloseable {
     private final SnapshotFrames snapshotFrames;
     private final int sourceId;
     private final int memberId;
+    private final int clientId;
     private final boolean offCluster;
     private final long ipcConnectTimeoutMs;
     private final String egressChannel;
     private final String ingressEndpoints;
+    private Counter snapshotRoundCounter;
 
     private Application(final Builder builder) {
         this.listener = builder.listener;
         this.sourceId = builder.sourceId;
         this.memberId = builder.memberId;
+        this.clientId = builder.clientId;
         this.offCluster = builder.offCluster;
         this.ipcConnectTimeoutMs = builder.ipcConnectTimeoutMs;
         this.egressChannel = builder.egressChannel;
@@ -110,12 +115,12 @@ public final class Application implements AutoCloseable {
         this.gate = new LeaderGate(builder.memberId, builder.offCluster);
         final SnapshotStore store =
             builder.snapshotListener == null ? null : new SnapshotStore(builder.snapshotDirectory);
-        this.snapshots = new SnapshotTaker(builder.snapshotListener, store, false, this::keepAlive);
+        this.snapshots = new SnapshotTaker(builder.snapshotListener, store, this::keepAlive);
         this.session = new Session(builder.clientId, builder.pendingCapacity, builder.tapStallTimeoutMs,
                                    builder.recoveryStallTimeoutMs, new SessionDispatch());
         this.snapshotFrames = new SnapshotFrames(session, () -> sourceId);
         if (store != null) {
-            session.restoreFrom(sourceId, store, snapshots);
+            session.restoreFrom(store, snapshots);
         }
     }
 
@@ -130,6 +135,12 @@ public final class Application implements AutoCloseable {
         } else {
             session.startColocated(aeron, memberId, ipcConnectTimeoutMs, egressChannel, ingressEndpoints);
         }
+        if (snapshots.isListening()) {
+            snapshotRoundCounter = SeqeronCounters.addAppCounter(
+                aeron, SeqeronCounters.APP_SNAPSHOT_ROUND_TYPE_ID,
+                "seqeron.app.snapshotRound source=" + sourceId + " member=" + memberId + " client=" + clientId,
+                memberId, clientId);
+        }
     }
 
     /**
@@ -139,6 +150,9 @@ public final class Application implements AutoCloseable {
      */
     public int doWork() {
         int work = session.doWork();
+        if (snapshotRoundCounter != null) {
+            snapshotRoundCounter.set(snapshots.confirmedRound());
+        }
         if (session.isFenced()) {
             return work;
         }
@@ -205,6 +219,9 @@ public final class Application implements AutoCloseable {
     @Override
     public void close() {
         session.close();
+        if (snapshotRoundCounter != null) {
+            snapshotRoundCounter.close();
+        }
     }
 
     /** The session's keep-alive, for a round serialized inside a dispatch. */
@@ -245,7 +262,8 @@ public final class Application implements AutoCloseable {
             case SystemFrame.SNAPSHOT_STARTED -> {
                 started.wrap(event.buffer(), event.payloadOffset(), SnapshotStartedDecoder.BLOCK_LENGTH,
                              SnapshotStartedDecoder.SCHEMA_VERSION);
-                snapshots.onSnapshotStarted(started.round(),
+                snapshots.onSnapshotStarted(started.round(), event.globalSeqNo(), event.position(),
+                                            event.clusterTimestampNs(),
                                             new SnapshotHeader(session.leadershipTermId(),
                                                                session.currentLeaderMemberId(), null),
                                             gate.isOpen());

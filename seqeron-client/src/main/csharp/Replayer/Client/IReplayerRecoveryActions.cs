@@ -12,12 +12,6 @@ internal interface IReplayerRecoveryActions
     /// <param name="fromPosition">where to resume the active recording, or <c>ReplayProtocol.FromStart</c></param>
     void SendReplayRequest(long requestId, long fromPosition);
 
-    /// <summary>Offers a <c>SnapshotQuery</c>; best-effort, like the request.</summary>
-    /// <param name="requestId">the id the reply must carry</param>
-    /// <param name="sourceId">the source restored</param>
-    /// <param name="round">the round of the local file asked about</param>
-    void SendSnapshotQuery(long requestId, int sourceId, long round);
-
     /// <summary>Subscribes to exactly one replay, this one, for as long as the client rides it.</summary>
     /// <param name="replaySessionId">the replay's session</param>
     void OpenReplay(long replaySessionId);

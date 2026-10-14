@@ -94,19 +94,19 @@ class MetricsExporterTest {
     }
 
     @Test
-    @DisplayName("the per-source snapshot round carries a source label")
-    void snapshotRoundIsLabelledBySource() {
-        counters.newCounter("seqeron.replayer.snapshotRound source=3 member=1",
-                            SeqeronCounters.REPLAYER_SNAPSHOT_ROUND_TYPE_ID,
+    @DisplayName("a client's snapshot round carries its client label")
+    void snapshotRoundIsLabelledByClient() {
+        counters.newCounter("seqeron.app.snapshotRound source=3 member=1 client=7",
+                            SeqeronCounters.APP_SNAPSHOT_ROUND_TYPE_ID,
                             keyBuffer -> {
                                 keyBuffer.putInt(SeqeronCounters.KEY_MEMBER_ID_OFFSET, MEMBER);
-                                keyBuffer.putInt(SeqeronCounters.KEY_SOURCE_ID_OFFSET, 3);
+                                keyBuffer.putInt(SeqeronCounters.KEY_CLIENT_ID_OFFSET, 7);
                             })
             .set(12);
 
         assertTrue(new MetricsExporter(counters, MEMBER)
                        .renderMetrics()
-                       .contains("seqeron_replayer_snapshot_round{member=\"1\",source=\"3\"} 12"));
+                       .contains("seqeron_app_snapshot_round{member=\"1\",client=\"7\"} 12"));
     }
 
     @Test

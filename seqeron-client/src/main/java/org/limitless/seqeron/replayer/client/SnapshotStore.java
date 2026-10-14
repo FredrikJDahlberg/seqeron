@@ -26,30 +26,34 @@ import org.limitless.seqeron.protocol.SnapshotFormat;
 import org.limitless.seqeron.util.Logger;
 
 /**
- * This instance's own snapshots, one file per round in a directory no other instance writes (doc/snapshot.md
- * §4). {@code <round>.snapshot} holds the records, each a little-endian uint16 length and its bytes, record 0
- * the façade's header, then a trailer:
+ * This instance's own snapshots, in a directory no other instance writes (doc/snapshot.md §4.1). A round is written
+ * as {@code <round>.tmp}: the records, each a little-endian uint16 length and its bytes, record 0 the façade's
+ * header, then a trailer:
  *
  * <pre>
- *  0  round          int64
- *  8  length         int64    the records' bytes, as SnapshotEnd.length
- * 16  recordCount    int32
- * 20  crc32c         uint32
- * 24  formatVersion  uint32
- * 28  magic          uint32   {@link #MAGIC}
+ *  0  round           int64
+ *  8  length          int64    the records' bytes, as SnapshotEnd.length
+ * 16  recordCount     int32
+ * 20  crc32c          uint32
+ * 24  formatVersion   uint32
+ * 28  cutGlobalSeqNo  int64    the round's SnapshotStarted
+ * 36  cutPosition     int64    where that frame starts in the recording
+ * 44  cutTimestamp    int64    its consensus timestamp
+ * 52  magic           uint32   {@link #MAGIC}
  * </pre>
  *
- * A file is written as {@code <round>.tmp}, then forced to disk, renamed and its name forced on a thread of its
- * own, so the caller does not wait for the disk. A write that fails leaves no file and is logged. Not thread-safe:
- * one thread calls it, and only its file work runs on the other. The C++ twin is
+ * Once the log confirms the round, a thread of its own forces the file to disk, renames it {@code
+ * <round>.snapshot}, forces the name and deletes every older file, so the caller does not wait for the disk: a
+ * {@code .snapshot} file is confirmed and durable, and the store keeps one. A write that fails leaves no file and is
+ * logged. Not thread-safe: one thread calls it, and only its file work runs on the other. The C++ twin is
  * {@code replayer/client/SnapshotStore.hpp}; keep the two in step.
  */
 public final class SnapshotStore {
     /** Bytes after the records. */
-    static final int TRAILER_LENGTH = 32;
+    static final int TRAILER_LENGTH = 56;
 
-    /** "SNAP", last in the file, so a file cut short has none. */
-    static final int MAGIC = 0x50414E53;
+    /** "SNP2", last in the file, so a file cut short has none. */
+    static final int MAGIC = 0x32504E53;
 
     private static final String SUFFIX = ".snapshot";
     private static final String TEMPORARY_SUFFIX = ".tmp";
@@ -65,10 +69,13 @@ public final class SnapshotStore {
         new UnsafeBuffer(new byte[RECORD_PREFIX_LENGTH + SnapshotFormat.MAX_RECORD_LENGTH]);
     private OutputStream out;
     private long writingRound;
-    /** What runs off the caller's thread, one step after another: making files durable and deleting them. */
+    private long cutGlobalSeqNo;
+    private long cutPosition;
+    private long cutTimestampNs;
+    /** The round whose file was last completed, which {@link #confirm} may name; -1 for none. */
+    private long committedRound = -1;
+    /** What runs off the caller's thread, one step after another: confirming files and deleting older ones. */
     private CompletableFuture<Void> writes = CompletableFuture.completedFuture(null);
-    /** The newest round whose file is durable under its name. Touched by {@link #writes} alone. */
-    private long durableRound = -1;
 
     /**
      * @param directory this instance's own; created if missing
@@ -84,13 +91,19 @@ public final class SnapshotStore {
     }
 
     /**
-     * Starts writing a round's file, dropping any write still open, once the rounds before it are durable.
-     * @param round its round
+     * Starts writing a round's file, dropping any write still open, once the rounds before it are confirmed.
+     * @param round          its round
+     * @param cutGlobalSeqNo its {@code SnapshotStarted}'s {@code globalSeqNo}
+     * @param cutPosition    where that frame starts in the recording
+     * @param cutTimestampNs that frame's consensus timestamp
      */
-    public void begin(final long round) {
+    public void begin(final long round, final long cutGlobalSeqNo, final long cutPosition, final long cutTimestampNs) {
         awaitWrites();
         abandon();
         writingRound = round;
+        this.cutGlobalSeqNo = cutGlobalSeqNo;
+        this.cutPosition = cutPosition;
+        this.cutTimestampNs = cutTimestampNs;
         try {
             out = new BufferedOutputStream(Files.newOutputStream(temporaryFile(round)), IO_BUFFER_LENGTH);
         } catch (final IOException ex) {
@@ -118,7 +131,7 @@ public final class SnapshotStore {
     }
 
     /**
-     * Completes the file being written: its trailer, then, off this thread, its name once it is durable.
+     * Completes the file being written with its trailer, still under its temporary name.
      * @param recordCount   records appended
      * @param length        their bytes
      * @param crc32c        their CRC-32C
@@ -133,7 +146,10 @@ public final class SnapshotStore {
         scratch.putInt(16, recordCount, LE);
         scratch.putInt(20, (int)crc32c, LE);
         scratch.putInt(24, formatVersion, LE);
-        scratch.putInt(28, MAGIC, LE);
+        scratch.putLong(28, cutGlobalSeqNo, LE);
+        scratch.putLong(36, cutPosition, LE);
+        scratch.putLong(44, cutTimestampNs, LE);
+        scratch.putInt(52, MAGIC, LE);
         try {
             out.write(scratch.byteArray(), 0, TRAILER_LENGTH);
             out.close();
@@ -142,12 +158,12 @@ public final class SnapshotStore {
             failWrite(ex);
             return;
         }
-        final long round = writingRound;
-        writes = writes.thenRunAsync(() -> makeDurable(round), WRITER);
+        committedRound = writingRound;
     }
 
     /** Drops the write in progress, if any. */
     public void abandon() {
+        committedRound = -1;
         if (out == null) {
             return;
         }
@@ -160,26 +176,30 @@ public final class SnapshotStore {
         try {
             Files.deleteIfExists(temporaryFile(writingRound));
         } catch (final IOException ignored) {
-            // A leftover goes with the next deleteBefore.
+            // A leftover goes with the next confirmation.
         }
     }
 
     /**
-     * Deletes the file of every round before {@code round}, and any write of one a crash left behind, off this
-     * thread once {@code round}'s file is durable; if it never is, nothing.
-     * @param round the oldest round to keep, one this store committed
+     * The log confirms {@code round}: off this thread, its file is made durable under its name, and every older
+     * file, and any write of one a crash left behind, is deleted. Nothing if its file was not completed.
+     * @param round the round last committed
      */
-    public void deleteBefore(final long round) {
-        writes = writes.thenRunAsync(() -> deleteFiles(round), WRITER);
+    public void confirm(final long round) {
+        if (round != committedRound) {
+            return;
+        }
+        committedRound = -1;
+        writes = writes.thenRunAsync(() -> confirmFile(round), WRITER);
     }
 
-    /** Waits until the rounds committed so far are durable, or failed, and the deletions asked for are done. */
+    /** Waits until the rounds confirmed so far are durable, or failed, and the files they replace deleted. */
     public void awaitWrites() {
         writes.join();
     }
 
     /**
-     * The newest round below {@code belowRound} with a complete file, or -1.
+     * The newest round below {@code belowRound} with a confirmed file, or -1.
      * @param belowRound {@link Long#MAX_VALUE} for the newest of all
      */
     public long latestRound(final long belowRound) {
@@ -214,12 +234,13 @@ public final class SnapshotStore {
             while (trailer.hasRemaining() && channel.read(trailer, size - TRAILER_LENGTH + trailer.position()) > 0) {
                 // Reads until full; a short read is a file cut short underneath.
             }
-            if (trailer.hasRemaining() || trailer.getInt(28) != MAGIC || trailer.getLong(0) != round) {
+            if (trailer.hasRemaining() || trailer.getInt(52) != MAGIC || trailer.getLong(0) != round) {
                 return null;
             }
             final InputStream in = new BufferedInputStream(Files.newInputStream(path), IO_BUFFER_LENGTH);
             return new Reader(in, size - TRAILER_LENGTH, trailer.getInt(16), trailer.getLong(8),
-                              trailer.getInt(20) & 0xFFFF_FFFFL, trailer.getInt(24));
+                              trailer.getInt(20) & 0xFFFF_FFFFL, trailer.getInt(24), trailer.getLong(28),
+                              trailer.getLong(36), trailer.getLong(44));
         } catch (final NoSuchFileException ex) {
             return null;
         } catch (final IOException ex) {
@@ -236,8 +257,8 @@ public final class SnapshotStore {
         abandon();
     }
 
-    /** Forces a committed round's file to disk, then its name: only then does the round count as durable. */
-    private void makeDurable(final long round) {
+    /** Forces a committed round's file to disk, then its name, then deletes what it replaces. */
+    private void confirmFile(final long round) {
         try {
             try (FileChannel channel = FileChannel.open(temporaryFile(round), StandardOpenOption.WRITE)) {
                 channel.force(true);
@@ -250,16 +271,10 @@ public final class SnapshotStore {
                     names.force(true);
                 }
             }
-            durableRound = round;
         } catch (final IOException ex) {
             Logger.log(Logger.CoreComponent.ReplayerStreamReceiver, Logger.Severity.Warn,
                        Logger.CoreEventCode.SnapshotStoreFailed, "cannot make round %d's snapshot durable in %s: %s",
                        round, directory, ex);
-        }
-    }
-
-    private void deleteFiles(final long round) {
-        if (durableRound < round) {
             return;
         }
         try (DirectoryStream<Path> files = Files.newDirectoryStream(directory)) {
@@ -311,6 +326,9 @@ public final class SnapshotStore {
         private final long length;
         private final long crc32c;
         private final int formatVersion;
+        private final long cutGlobalSeqNo;
+        private final long cutPosition;
+        private final long cutTimestampNs;
         private final byte[] record = new byte[SnapshotFormat.MAX_RECORD_LENGTH];
         private final byte[] prefix = new byte[RECORD_PREFIX_LENGTH];
         private final CRC32C crc = new CRC32C();
@@ -320,13 +338,17 @@ public final class SnapshotStore {
         private boolean damaged;
 
         private Reader(final InputStream in, final long recordsLength, final int recordCount, final long length,
-                       final long crc32c, final int formatVersion) {
+                       final long crc32c, final int formatVersion, final long cutGlobalSeqNo, final long cutPosition,
+                       final long cutTimestampNs) {
             this.in = in;
             this.recordsLength = recordsLength;
             this.recordCount = recordCount;
             this.length = length;
             this.crc32c = crc32c;
             this.formatVersion = formatVersion;
+            this.cutGlobalSeqNo = cutGlobalSeqNo;
+            this.cutPosition = cutPosition;
+            this.cutTimestampNs = cutTimestampNs;
         }
 
         /** The trailer's {@code recordCount}. */
@@ -347,6 +369,21 @@ public final class SnapshotStore {
         /** The trailer's {@code formatVersion}. */
         public int formatVersion() {
             return formatVersion;
+        }
+
+        /** The trailer's {@code cutGlobalSeqNo}. */
+        public long cutGlobalSeqNo() {
+            return cutGlobalSeqNo;
+        }
+
+        /** The trailer's {@code cutPosition}. */
+        public long cutPosition() {
+            return cutPosition;
+        }
+
+        /** The trailer's {@code cutTimestamp}. */
+        public long cutTimestampNs() {
+            return cutTimestampNs;
         }
 
         /**

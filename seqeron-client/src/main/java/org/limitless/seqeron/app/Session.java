@@ -109,15 +109,9 @@ final class Session implements AutoCloseable {
         sender.setIngressHold(pending);
     }
 
-    /** Restores {@code sourceId}'s newest confirmed snapshot in {@code store} first; call before starting. */
-    void restoreFrom(final int sourceId, final SnapshotStore store, final SnapshotRestoreHandler handler) {
-        receiver.restoreFrom(sourceId, store, handler);
-    }
-
-    /** Follows the tap from its start again, restoring the snapshot given to {@link #restoreFrom} first. */
-    void restart() {
-        recoveryStall.onRestart(); // the restore pass dispatches nothing, and is no stall
-        receiver.restart();
+    /** Restores the newest snapshot in {@code store} first; call before starting. */
+    void restoreFrom(final SnapshotStore store, final SnapshotRestoreHandler handler) {
+        receiver.restoreFrom(store, handler);
     }
 
     /** Opens the cluster session over UDP and starts following this node's tap. */

@@ -272,8 +272,8 @@ without it. Its
 list is `seqeron-service/src/test/resources/topology-test-gateway.xml`, whose pair takes part in snapshot rounds
 (`-Dprobe.snapshot`, `-Dprobe.snapshotDir`) so they run under the faults too. `topology-test-snapshot.xml` beside it adds
 **`TestApplication`** (`sourceId` 16, one replica per member), the reference consumer of `app/Application` with a
-`SnapshotListener`; `snapshot-test.sh` loads it and drives both through restores, a failover onto a restored instance, a
-passive activation (`-Dprobe.passive`), an operator-requested round and a cluster leader kill. The two other topology documents here are
+`SnapshotListener`; `snapshot-test.sh` loads it and drives both through restores, a failover onto a restored instance, the
+killed instance's return, an operator-requested round and a cluster leader kill. The two other topology documents here are
 `seqeron-examples/topology.xml`, the pair the Java and C++ `GatewayApp` examples run, and `topology-csharp.xml` beside it,
 the C# example's own pair, which both C# harnesses load.
 
@@ -339,14 +339,14 @@ synthesizes `SnapshotStarted` as a round's cut; every instance of a participatin
 there through its façade's `SnapshotListener` into a file in its own directory (`replayer.client.SnapshotStore`),
 and the one that may publish submits the round's `SnapshotEnd` — record count, length, CRC — the only snapshot
 frame a producer sends. Every instance compares its own serialization with the sequenced end and fences on a
-difference (spec §16 A-6, A-7). Each `ReplayerService` indexes every source's ends by round (`SnapshotIndex`)
-and answers `SnapshotQuery`, and a starting client restores in `ReplayerRecovery` from its newest file whose
-round the log ends and whose trailer matches that end, then resumes after the cut; an instance with no such
-file replays from `globalSeqNo` 1. This shortens a client's restart, not a node's.
+difference (spec §16 A-6, A-7); a match confirms its file, which only then is named `<round>.snapshot` and
+replaces every older one. A starting client restores in `ReplayerRecovery` from its newest confirmed file once a
+replay from the file's cut position opens on that cut — a file from a purged log fails it — then resumes after
+the cut; an instance with no such file replays from `globalSeqNo` 1. The Replayer holds no snapshot state. This shortens a client's restart, not a node's.
 
 ### The replay protocol — two sides, two namespaces
 **`replayer.server`** is Java only: `ReplayerServer`/`ReplayerService` and their pure seams `Replayer`,
-`ReplaySlotAllocator`, `SnapshotIndex` and the gateway host's `TapRelay`, with
+`ReplaySlotAllocator` and the gateway host's `TapRelay`, with
 `AeronReplayer` and `AeronTapRelay` the only parts that touch Aeron. **`replayer.client`** is `ReplayerStreamReceiver` and its pure seam
 `ReplayerRecovery`, plus `SequencedEvent` and an instance's snapshot files, `SnapshotStore` — Java, C++ in
 `org::limitless::seqeron::replayer::client`, and C# in `Org.Limitless.Seqeron.Replayer.Client`. On a member `ReplayerServer` runs inside `SequencerServer`'s
@@ -442,7 +442,7 @@ covers all of them:
   twelve submitted **system** payloads (the connection lifecycle events, the cluster markers, the gateway
   list/election frames, `GatewayActivationRequested`, `ApplicationRegistered`, the snapshot frames). No system message carries
   a `header` field — the frame's is the only one. Seqeron's own, and the only thing this tier decodes.
-- `sbe-replay.xml` (schema 212) — the five **replay control** messages, node-local between a
+- `sbe-replay.xml` (schema 212) — the three **replay control** messages, node-local between a
   `ReplayerService` and its co-located app replicas, never sequenced and never recorded.
 - `sbe-probe.xml` (schema 214) — core's own application payload (`payloadId` 5): one message,
   `ProbeMarker`, carrying a submitter-side `seqNo` and variable-length filler. What `tools/ClusterProbe`
