@@ -184,6 +184,11 @@ final class ReplayerRecovery {
         }
     }
 
+    /** Releases the snapshot file a restore in progress holds open. Nothing may be called after. */
+    public void close() {
+        closeReader();
+    }
+
     /**
      * Decodes one sequenced frame and applies the contiguity rules.
      * @param framePosition where this frame starts in the recording — the tap, a replay image and the

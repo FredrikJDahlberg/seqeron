@@ -247,6 +247,12 @@ class ReplayerRecovery
         }
     }
 
+    // Releases the snapshot file a restore in progress holds open. Nothing may be called after.
+    void close()
+    {
+        m_reader.reset();
+    }
+
     void onFrame(char* const frame, const std::uint64_t length, const std::int64_t framePosition,
                  const std::int64_t receiveNs, const bool fromReplay)
     {

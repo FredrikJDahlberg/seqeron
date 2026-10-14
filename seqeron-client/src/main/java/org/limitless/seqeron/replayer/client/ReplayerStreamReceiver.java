@@ -200,6 +200,7 @@ public final class ReplayerStreamReceiver implements AutoCloseable {
     @Override
     public void close() {
         actions.closeReplay();
+        recovery.close();
         if (tapSubscription != null) {
             tapSubscription.close();
             tapSubscription = null;

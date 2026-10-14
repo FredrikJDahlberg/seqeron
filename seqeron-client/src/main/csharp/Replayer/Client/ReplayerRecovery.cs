@@ -171,6 +171,12 @@ internal sealed class ReplayerRecovery
         }
     }
 
+    /// <summary>Releases the snapshot file a restore in progress holds open. Nothing may be called after.</summary>
+    public void Close()
+    {
+        CloseReader();
+    }
+
     /// <summary>Decodes one sequenced frame and applies the contiguity rules.</summary>
     /// <param name="buffer">holding the frame</param>
     /// <param name="offset">of its first byte</param>

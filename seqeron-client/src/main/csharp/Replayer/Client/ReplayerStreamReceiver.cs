@@ -183,6 +183,7 @@ public sealed class ReplayerStreamReceiver : IDisposable
     public void Dispose()
     {
         CloseReplay();
+        _recovery.Close();
         _tapSubscription?.Dispose();
         _tapSubscription = null;
         _controlSubscription?.Dispose();
