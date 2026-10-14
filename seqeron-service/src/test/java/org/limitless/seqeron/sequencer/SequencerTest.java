@@ -8,6 +8,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.sun.management.ThreadMXBean;
+import io.aeron.archive.client.AeronArchive;
 import java.lang.management.ManagementFactory;
 import org.agrona.ExpandableArrayBuffer;
 import org.agrona.MutableDirectBuffer;
@@ -90,7 +91,8 @@ class SequencerTest {
     /** {@code varDataEncoding}'s nullValue: "absent", not a 65535-byte payload. */
     private static final int NULL_PAYLOAD_LENGTH = 65535;
 
-    private final Sequencer sequencer = new Sequencer();
+    private final FrameRecorder frames = new FrameRecorder();
+    private final Sequencer sequencer = new Sequencer(0, frames);
     private final MutableDirectBuffer ingress = new ExpandableArrayBuffer(512);
 
     // ── Copy-through fidelity ─────────────────────────────────────────────────
@@ -100,10 +102,11 @@ class SequencerTest {
     void sequenceMessagePreservesEveryBytePastTheHeader() {
         final int ingressLength = encodeIngressPayload(ingress, 0);
 
-        final int length = sequencer.sequenceMessage(ingress, 0, ingressLength, SESSION_ID, TIMESTAMP);
+        assertTrue(sequencer.sequenceMessage(ingress, 0, ingressLength, SESSION_ID, TIMESTAMP));
+        final int length = frames.lastLength();
 
         // Every byte value a payload can hold survives the copy unread and unmodified.
-        assertPayloadCopiedThrough(sequencer.buffer(), length, OPAQUE_PAYLOAD);
+        assertPayloadCopiedThrough(frames.last(), length, OPAQUE_PAYLOAD);
     }
 
     @Test
@@ -111,9 +114,10 @@ class SequencerTest {
     void sequenceMessageStampsHeader() {
         final int ingressLength = encodeIngressPayload(ingress, 0);
 
-        final int length = sequencer.sequenceMessage(ingress, 0, ingressLength, SESSION_ID, TIMESTAMP);
+        assertTrue(sequencer.sequenceMessage(ingress, 0, ingressLength, SESSION_ID, TIMESTAMP));
+        final int length = frames.lastLength();
 
-        final org.limitless.seqeron.sbe.frame.SequencedHeaderDecoder header = frameHeaderOf(sequencer.buffer());
+        final org.limitless.seqeron.sbe.frame.SequencedHeaderDecoder header = frameHeaderOf(frames.last());
         // Carried through from the ingress message…
         assertEquals(SOURCE_ID, header.sourceId());
         assertEquals(CONNECTION_ID, header.connectionId());
@@ -131,9 +135,10 @@ class SequencerTest {
         // fixed block and no var-data to tell apart, only a prefix and that many bytes.
         final int ingressLength = encodeIngressPayload(ingress, 0, SHORT_OPAQUE_PAYLOAD);
 
-        final int length = sequencer.sequenceMessage(ingress, 0, ingressLength, SESSION_ID, TIMESTAMP);
+        assertTrue(sequencer.sequenceMessage(ingress, 0, ingressLength, SESSION_ID, TIMESTAMP));
+        final int length = frames.lastLength();
 
-        assertPayloadCopiedThrough(sequencer.buffer(), length, SHORT_OPAQUE_PAYLOAD);
+        assertPayloadCopiedThrough(frames.last(), length, SHORT_OPAQUE_PAYLOAD);
         // The whole ingress frame, minus nothing, plus the two int64s the sequenced header adds.
         assertEquals(ingressLength + HEADER_GROWTH, length);
     }
@@ -148,7 +153,7 @@ class SequencerTest {
 
         sequencer.sequenceMessage(ingress, 0, ingressLength, SESSION_ID, TIMESTAMP);
 
-        final MessageHeaderDecoder egress = new MessageHeaderDecoder().wrap(sequencer.buffer(), 0);
+        final MessageHeaderDecoder egress = new MessageHeaderDecoder().wrap(frames.last(), 0);
         assertEquals(ingressBlockLength + HEADER_GROWTH, egress.blockLength());
         assertEquals(org.limitless.seqeron.sbe.frame.SequencedDecoder.TEMPLATE_ID, egress.templateId());
         assertEquals(MessageHeaderDecoder.SCHEMA_ID, egress.schemaId());
@@ -163,7 +168,7 @@ class SequencerTest {
         new org.limitless.seqeron.sbe.frame.MessageHeaderEncoder().wrap(ingress, 0)
             .version(MessageHeaderDecoder.SCHEMA_VERSION + 1);
 
-        assertEquals(Sequencer.NO_FRAME, sequencer.sequenceMessage(ingress, 0, ingressLength, SESSION_ID, TIMESTAMP));
+        assertFalse(sequencer.sequenceMessage(ingress, 0, ingressLength, SESSION_ID, TIMESTAMP));
         assertEquals(0L, sequencer.globalSeqNo());
     }
 
@@ -174,10 +179,11 @@ class SequencerTest {
         final int offset = 96;
         final int ingressLength = encodeIngressPayload(ingress, offset);
 
-        final int length = sequencer.sequenceMessage(ingress, offset, ingressLength, SESSION_ID, TIMESTAMP);
+        assertTrue(sequencer.sequenceMessage(ingress, offset, ingressLength, SESSION_ID, TIMESTAMP));
+        final int length = frames.lastLength();
 
-        assertPayloadCopiedThrough(sequencer.buffer(), length, OPAQUE_PAYLOAD);
-        assertEquals(CONNECTION_ID, frameHeaderOf(sequencer.buffer()).connectionId());
+        assertPayloadCopiedThrough(frames.last(), length, OPAQUE_PAYLOAD);
+        assertEquals(CONNECTION_ID, frameHeaderOf(frames.last()).connectionId());
     }
 
     // ── globalSeqNo ───────────────────────────────────────────────────────────
@@ -193,17 +199,18 @@ class SequencerTest {
         final MutableDirectBuffer lifecycle = new ExpandableArrayBuffer(64);
 
         final int connectedLength = encodeIngressConnectionOpened(lifecycle, 0);
-        assertEquals(1L,
-                     globalSeqNoOf(sequencer.sequenceMessage(lifecycle, 0, connectedLength, SESSION_ID, TIMESTAMP)));
-        assertEquals(2L, globalSeqNoOf(sequencer.sequenceMessage(ingress, 0, ingressLength, SESSION_ID, TIMESTAMP)));
-        assertEquals(3L, globalSeqNoOf(sequencer.clusterHeartbeat(TIMESTAMP + 1000)));
-        assertEquals(4L, globalSeqNoOf(sequencer.leadershipChanged(1, 2, TIMESTAMP + 1500)));
-        assertEquals(5L, globalSeqNoOf(sequencer.sequenceMessage(ingress, 0, ingressLength, SESSION_ID, TIMESTAMP)));
-
+        assertTrue(sequencer.sequenceMessage(lifecycle, 0, connectedLength, SESSION_ID, TIMESTAMP));
+        assertTrue(sequencer.sequenceMessage(ingress, 0, ingressLength, SESSION_ID, TIMESTAMP));
+        sequencer.clusterHeartbeat(TIMESTAMP + 1000);
+        sequencer.leadershipChanged(1, 2, TIMESTAMP + 1500);
+        assertTrue(sequencer.sequenceMessage(ingress, 0, ingressLength, SESSION_ID, TIMESTAMP));
         final int disconnectedLength = encodeIngressConnectionClosed(lifecycle, 0);
-        assertEquals(
-            6L,
-            globalSeqNoOf(sequencer.sequenceMessage(lifecycle, 0, disconnectedLength, SESSION_ID, TIMESTAMP + 2000)));
+        assertTrue(sequencer.sequenceMessage(lifecycle, 0, disconnectedLength, SESSION_ID, TIMESTAMP + 2000));
+
+        assertEquals(6, frames.count());
+        for (int i = 0; i < frames.count(); i++) {
+            assertEquals(i + 1L, frameHeaderOf(frames.frame(i)).globalSeqNo());
+        }
         assertEquals(6L, sequencer.globalSeqNo());
     }
 
@@ -214,13 +221,13 @@ class SequencerTest {
         sequencer.leadershipChanged(1, 1, TIMESTAMP);
         assertEquals(1L, sequencer.globalSeqNo());
 
-        final int length = sequencer.leadershipChanged(2, 1, TIMESTAMP + 100);
-        assertNotEquals(Sequencer.NO_FRAME, length);
+        sequencer.leadershipChanged(2, 1, TIMESTAMP + 100);
+        assertEquals(2, frames.count());
         assertEquals(2L, sequencer.globalSeqNo());
-        final LeadershipChangedDecoder decoded = decodeLeadershipChanged(sequencer.buffer(), length);
+        final LeadershipChangedDecoder decoded = decodeLeadershipChanged(frames.last(), frames.lastLength());
         assertEquals(1, decoded.newLeaderMemberId());
         assertEquals(2, decoded.leadershipTermId());
-        assertEquals(TIMESTAMP + 100, frameHeaderOf(sequencer.buffer()).timestamp());
+        assertEquals(TIMESTAMP + 100, frameHeaderOf(frames.last()).timestamp());
     }
 
     // ── Ingress validation ────────────────────────────────────────────────────
@@ -234,8 +241,7 @@ class SequencerTest {
         // negative copyLength and threw out of putBytes.
         final int ingressLength = encodeIngressPayload(ingress, 0);
 
-        assertEquals(Sequencer.NO_FRAME,
-                     sequencer.sequenceMessage(ingress, 0, FrameLayer.MIN_INGRESS_LENGTH - 1, SESSION_ID, TIMESTAMP));
+        assertFalse(sequencer.sequenceMessage(ingress, 0, FrameLayer.MIN_INGRESS_LENGTH - 1, SESSION_ID, TIMESTAMP));
         assertEquals(0L, sequencer.globalSeqNo(), "a skipped message must consume no sequence number");
 
         // The next good message is still globalSeqNo 1: consumers detect loss by gaps, so a skip has to
@@ -251,7 +257,7 @@ class SequencerTest {
         final int ingressLength = encodeIngressPayload(ingress, 0);
         new org.limitless.seqeron.sbe.frame.MessageHeaderEncoder().wrap(ingress, 0).schemaId(999);
 
-        assertEquals(Sequencer.NO_FRAME, sequencer.sequenceMessage(ingress, 0, ingressLength, SESSION_ID, TIMESTAMP));
+        assertFalse(sequencer.sequenceMessage(ingress, 0, ingressLength, SESSION_ID, TIMESTAMP));
         assertEquals(0L, sequencer.globalSeqNo());
     }
 
@@ -270,14 +276,14 @@ class SequencerTest {
         final int declared = ingress.getShort(INGRESS_PREFIX_OFFSET, java.nio.ByteOrder.LITTLE_ENDIAN) & 0xFFFF;
 
         putIngressPayloadLength(declared + 1);
-        assertEquals(Sequencer.NO_FRAME, sequencer.sequenceMessage(ingress, 0, length, SESSION_ID, TIMESTAMP));
+        assertFalse(sequencer.sequenceMessage(ingress, 0, length, SESSION_ID, TIMESTAMP));
         putIngressPayloadLength(declared - 1);
-        assertEquals(Sequencer.NO_FRAME, sequencer.sequenceMessage(ingress, 0, length, SESSION_ID, TIMESTAMP));
+        assertFalse(sequencer.sequenceMessage(ingress, 0, length, SESSION_ID, TIMESTAMP));
         putIngressPayloadLength(NULL_PAYLOAD_LENGTH);
-        assertEquals(Sequencer.NO_FRAME, sequencer.sequenceMessage(ingress, 0, length, SESSION_ID, TIMESTAMP));
+        assertFalse(sequencer.sequenceMessage(ingress, 0, length, SESSION_ID, TIMESTAMP));
 
         putIngressPayloadLength(declared);
-        assertNotEquals(Sequencer.NO_FRAME, sequencer.sequenceMessage(ingress, 0, length, SESSION_ID, TIMESTAMP));
+        assertTrue(sequencer.sequenceMessage(ingress, 0, length, SESSION_ID, TIMESTAMP));
         assertEquals(1L, sequencer.globalSeqNo(), "only the well-formed frame consumed a sequence number");
     }
 
@@ -288,7 +294,7 @@ class SequencerTest {
         new org.limitless.seqeron.sbe.frame.UnsequencedHeaderEncoder()
             .wrap(ingress, org.limitless.seqeron.sbe.frame.MessageHeaderEncoder.ENCODED_LENGTH).payloadId(0);
 
-        assertEquals(Sequencer.NO_FRAME, sequencer.sequenceMessage(ingress, 0, length, SESSION_ID, TIMESTAMP));
+        assertFalse(sequencer.sequenceMessage(ingress, 0, length, SESSION_ID, TIMESTAMP));
         assertEquals(0L, sequencer.globalSeqNo());
     }
 
@@ -301,7 +307,7 @@ class SequencerTest {
         final int length = encodeIngressPayloadFrame(ingress, 0, SOURCE_ID, CONNECTION_ID, 1,
                                                      new ExpandableArrayBuffer(8), 4);
 
-        assertEquals(Sequencer.NO_FRAME, sequencer.sequenceMessage(ingress, 0, length, SESSION_ID, TIMESTAMP));
+        assertFalse(sequencer.sequenceMessage(ingress, 0, length, SESSION_ID, TIMESTAMP));
         assertEquals(0L, sequencer.globalSeqNo());
     }
 
@@ -315,7 +321,7 @@ class SequencerTest {
         final MutableDirectBuffer body = new ExpandableArrayBuffer(64);
         final int asSystemBody = encodeIngressSystemFrame(ingress, 0, SOURCE_ID, CONNECTION_ID,
                                                           SystemFrame.CLUSTER_HEARTBEAT, body, 0);
-        assertEquals(Sequencer.NO_FRAME, sequencer.sequenceMessage(ingress, 0, asSystemBody, SESSION_ID, TIMESTAMP));
+        assertFalse(sequencer.sequenceMessage(ingress, 0, asSystemBody, SESSION_ID, TIMESTAMP));
 
         final org.limitless.seqeron.sbe.frame.ClusterHeartbeatEncoder encoder =
             new org.limitless.seqeron.sbe.frame.ClusterHeartbeatEncoder();
@@ -324,7 +330,7 @@ class SequencerTest {
             .systemEventType(SystemFrame.CLUSTER_HEARTBEAT).globalSeqNo(1).timestamp(TIMESTAMP);
         final int asOwnTemplate =
             org.limitless.seqeron.sbe.frame.MessageHeaderEncoder.ENCODED_LENGTH + encoder.encodedLength();
-        assertEquals(Sequencer.NO_FRAME, sequencer.sequenceMessage(ingress, 0, asOwnTemplate, SESSION_ID, TIMESTAMP));
+        assertFalse(sequencer.sequenceMessage(ingress, 0, asOwnTemplate, SESSION_ID, TIMESTAMP));
 
         assertEquals(0L, sequencer.globalSeqNo());
     }
@@ -335,7 +341,7 @@ class SequencerTest {
         final int length = encodeIngressSystemFrame(ingress, 0, SOURCE_ID, CONNECTION_ID, 4242,
                                                     new ExpandableArrayBuffer(8), 0);
 
-        assertEquals(Sequencer.NO_FRAME, sequencer.sequenceMessage(ingress, 0, length, SESSION_ID, TIMESTAMP));
+        assertFalse(sequencer.sequenceMessage(ingress, 0, length, SESSION_ID, TIMESTAMP));
         assertEquals(0L, sequencer.globalSeqNo());
     }
 
@@ -349,8 +355,7 @@ class SequencerTest {
         final int shortBody = org.limitless.seqeron.sbe.frame.GatewayStartedDecoder.BLOCK_LENGTH - 1;
         putIngressPayloadLength(shortBody);
 
-        assertEquals(Sequencer.NO_FRAME, sequencer.sequenceMessage(ingress, 0, INGRESS_PAYLOAD_OFFSET + shortBody,
-                                                                   SESSION_ID, TIMESTAMP));
+        assertFalse(sequencer.sequenceMessage(ingress, 0, INGRESS_PAYLOAD_OFFSET + shortBody, SESSION_ID, TIMESTAMP));
         assertEquals(0L, sequencer.globalSeqNo());
     }
 
@@ -369,12 +374,12 @@ class SequencerTest {
         encoder.putPayload(payload, 0, opaque.length);
         final int length = org.limitless.seqeron.sbe.frame.MessageHeaderEncoder.ENCODED_LENGTH + encoder.encodedLength();
 
-        final int sequenced = sequencer.sequenceMessage(ingress, 0, length, SESSION_ID, TIMESTAMP);
+        assertTrue(sequencer.sequenceMessage(ingress, 0, length, SESSION_ID, TIMESTAMP));
+        final int sequenced = frames.lastLength();
 
-        assertNotEquals(Sequencer.NO_FRAME, sequenced);
-        assertEquals(4, frameHeaderOf(sequencer.buffer()).payloadId(), "the payloadId is carried, not rewritten");
+        assertEquals(4, frameHeaderOf(frames.last()).payloadId(), "the payloadId is carried, not rewritten");
         final byte[] roundTripped = new byte[opaque.length];
-        sequencer.buffer().getBytes(FRAME_OVERHEAD, roundTripped);
+        frames.last().getBytes(FRAME_OVERHEAD, roundTripped);
         assertArrayEquals(opaque, roundTripped);
         assertEquals(FRAME_OVERHEAD + opaque.length, sequenced);
     }
@@ -389,14 +394,13 @@ class SequencerTest {
         final int exact = org.limitless.seqeron.sbe.frame.UnsequencedHeaderDecoder.ENCODED_LENGTH;
 
         new org.limitless.seqeron.sbe.frame.MessageHeaderEncoder().wrap(ingress, 0).blockLength(exact - 1);
-        assertEquals(Sequencer.NO_FRAME, sequencer.sequenceMessage(ingress, 0, ingressLength, SESSION_ID, TIMESTAMP));
+        assertFalse(sequencer.sequenceMessage(ingress, 0, ingressLength, SESSION_ID, TIMESTAMP));
         new org.limitless.seqeron.sbe.frame.MessageHeaderEncoder().wrap(ingress, 0).blockLength(exact + 1);
-        assertEquals(Sequencer.NO_FRAME, sequencer.sequenceMessage(ingress, 0, ingressLength, SESSION_ID, TIMESTAMP));
+        assertFalse(sequencer.sequenceMessage(ingress, 0, ingressLength, SESSION_ID, TIMESTAMP));
         assertEquals(0L, sequencer.globalSeqNo(), "a skipped message must consume no sequence number");
 
         new org.limitless.seqeron.sbe.frame.MessageHeaderEncoder().wrap(ingress, 0).blockLength(exact);
-        assertNotEquals(Sequencer.NO_FRAME, sequencer.sequenceMessage(ingress, 0, ingressLength, SESSION_ID,
-                                                                      TIMESTAMP));
+        assertTrue(sequencer.sequenceMessage(ingress, 0, ingressLength, SESSION_ID, TIMESTAMP));
         assertEquals(1L, sequencer.globalSeqNo());
     }
 
@@ -411,11 +415,11 @@ class SequencerTest {
         final int exact = encodeIngressPayloadFrame(ingress, 0, SOURCE_ID, CONNECTION_ID, SESSION_PAYLOAD_ID,
                                                     payload, FrameLayer.MAX_PAYLOAD_LENGTH);
         assertEquals(FrameLayer.MAX_INGRESS_LENGTH, exact);
-        assertNotEquals(Sequencer.NO_FRAME, sequencer.sequenceMessage(ingress, 0, exact, SESSION_ID, TIMESTAMP));
+        assertTrue(sequencer.sequenceMessage(ingress, 0, exact, SESSION_ID, TIMESTAMP));
 
         final int oversized = encodeIngressPayloadFrame(ingress, 0, SOURCE_ID, CONNECTION_ID, SESSION_PAYLOAD_ID,
                                                         payload, FrameLayer.MAX_PAYLOAD_LENGTH + 1);
-        assertEquals(Sequencer.NO_FRAME, sequencer.sequenceMessage(ingress, 0, oversized, SESSION_ID, TIMESTAMP));
+        assertFalse(sequencer.sequenceMessage(ingress, 0, oversized, SESSION_ID, TIMESTAMP));
         assertEquals(1L, sequencer.globalSeqNo(), "a skipped message must consume no sequence number");
     }
 
@@ -428,7 +432,7 @@ class SequencerTest {
         final int length = encodeIngressPayloadFrame(ingress, 0, Sequencer.NO_SOURCE_ID, CONNECTION_ID,
                                                      SESSION_PAYLOAD_ID, payload, 4);
 
-        assertEquals(Sequencer.NO_FRAME, sequencer.sequenceMessage(ingress, 0, length, SESSION_ID, TIMESTAMP));
+        assertFalse(sequencer.sequenceMessage(ingress, 0, length, SESSION_ID, TIMESTAMP));
         assertEquals(0L, sequencer.globalSeqNo());
     }
 
@@ -439,37 +443,29 @@ class SequencerTest {
         // GatewayStarted under someone else's sourceId and the sequencer promotes on its session close.
         sequencer.sequenceMessage(ingress, 0, encodeIngressGatewayRegistered(ingress, 0, 5, SOURCE_ID, "GW-A", 0, 0),
                                   SESSION_ID, TIMESTAMP);
-        sequencer.pendingGatewayActivation(TIMESTAMP); // designates 5
         final long afterList = sequencer.globalSeqNo();
         final long rogue = SESSION_ID + 1;
 
         // Case 1's second half: the row's gatewaySourceId must be the one the frame carries.
-        assertEquals(Sequencer.NO_FRAME,
-                     sequencer.sequenceMessage(ingress, 0, encodeIngressGatewayStarted(ingress, 0, 5,
-                                                                                       SECOND_SOURCE_ID),
-                                               rogue, TIMESTAMP));
+        assertFalse(sequencer.sequenceMessage(ingress, 0, encodeIngressGatewayStarted(ingress, 0, 5,
+                                                                                      SECOND_SOURCE_ID),
+                                              rogue, TIMESTAMP));
         // Case 2: no binding, so this session may not speak for that logical gateway.
-        assertEquals(Sequencer.NO_FRAME,
-                     sequencer.sequenceMessage(ingress, 0, encodeIngressConnectionOpened(ingress, 0, 1), rogue,
-                                               TIMESTAMP));
+        assertFalse(sequencer.sequenceMessage(ingress, 0, encodeIngressConnectionOpened(ingress, 0, 1), rogue,
+                                              TIMESTAMP));
         // Case 4: the same sourceId under an application payload is not core's to check.
-        assertNotEquals(Sequencer.NO_FRAME,
-                        sequencer.sequenceMessage(ingress, 0,
-                                                  encodeIngressPayloadFrame(ingress, 0, SOURCE_ID, CONNECTION_ID,
-                                                                            SESSION_PAYLOAD_ID,
-                                                                            new ExpandableArrayBuffer(8), 4),
-                                                  rogue, TIMESTAMP));
+        assertTrue(sequencer.sequenceMessage(ingress, 0,
+                                             encodeIngressPayloadFrame(ingress, 0, SOURCE_ID, CONNECTION_ID,
+                                                                       SESSION_PAYLOAD_ID,
+                                                                       new ExpandableArrayBuffer(8), 4),
+                                             rogue, TIMESTAMP));
 
         // The agreeing GatewayStarted binds, and only the session that made the binding is admitted.
-        assertNotEquals(Sequencer.NO_FRAME,
-                        sequencer.sequenceMessage(ingress, 0, encodeIngressGatewayStarted(ingress, 0, 5), rogue,
-                                                  TIMESTAMP));
-        assertNotEquals(Sequencer.NO_FRAME,
-                        sequencer.sequenceMessage(ingress, 0, encodeIngressConnectionOpened(ingress, 0, 1), rogue,
-                                                  TIMESTAMP));
-        assertEquals(Sequencer.NO_FRAME,
-                     sequencer.sequenceMessage(ingress, 0, encodeIngressConnectionOpened(ingress, 0, 2),
-                                               SESSION_ID + 2, TIMESTAMP));
+        assertTrue(sequencer.sequenceMessage(ingress, 0, encodeIngressGatewayStarted(ingress, 0, 5), rogue, TIMESTAMP));
+        assertTrue(sequencer.sequenceMessage(ingress, 0, encodeIngressConnectionOpened(ingress, 0, 1), rogue,
+                                             TIMESTAMP));
+        assertFalse(sequencer.sequenceMessage(ingress, 0, encodeIngressConnectionOpened(ingress, 0, 2),
+                                              SESSION_ID + 2, TIMESTAMP));
         assertEquals(afterList + 3, sequencer.globalSeqNo(), "every rejection left globalSeqNo where it was");
     }
 
@@ -482,45 +478,84 @@ class SequencerTest {
                                   SESSION_ID, TIMESTAMP);
         sequencer.sequenceMessage(ingress, 0, encodeIngressGatewayRegistered(ingress, 0, 6, SOURCE_ID, "GW-B", 1, 0),
                                   SESSION_ID, TIMESTAMP);
-        sequencer.pendingGatewayActivation(TIMESTAMP); // designates 5
         final long first = 0xA11CEL;
         final long second = 0xB0B0L;
         sequencer.sequenceMessage(ingress, 0, encodeIngressGatewayStarted(ingress, 0, 5), first, TIMESTAMP);
         sequencer.sequenceMessage(ingress, 0, encodeIngressConnectionOpened(ingress, 0, 1), first, TIMESTAMP);
 
         sequencer.sequenceMessage(ingress, 0, encodeIngressActivationRequested(ingress, 0, 6), SESSION_ID, TIMESTAMP);
-        sequencer.pendingGatewayActivation(TIMESTAMP); // designates 6
         final long deposed = sequencer.globalSeqNo();
-        assertEquals(Sequencer.NO_FRAME, sequencer.sequenceMessage(ingress, 0, encodeIngressPayload(ingress, 0), first,
-                                                                   TIMESTAMP));
-        assertEquals(Sequencer.NO_FRAME,
-                     sequencer.sequenceMessage(ingress, 0, encodeIngressConnectionOpened(ingress, 0, 2), first,
-                                               TIMESTAMP));
-        assertEquals(Sequencer.NO_FRAME,
-                     sequencer.sequenceMessage(ingress, 0, encodeIngressGatewayStarted(ingress, 0, 5), first,
-                                               TIMESTAMP),
-                     "nor may it declare itself started again");
-        assertEquals(1, sequencer.connectedClientCount(), "so it released nothing");
+        assertFalse(sequencer.sequenceMessage(ingress, 0, encodeIngressPayload(ingress, 0), first, TIMESTAMP));
+        assertFalse(sequencer.sequenceMessage(ingress, 0, encodeIngressConnectionOpened(ingress, 0, 2), first,
+                                              TIMESTAMP));
+        assertFalse(sequencer.sequenceMessage(ingress, 0, encodeIngressGatewayStarted(ingress, 0, 5), first,
+                                              TIMESTAMP),
+                    "nor may it declare itself started again");
         assertEquals(deposed, sequencer.globalSeqNo());
 
-        assertNotEquals(Sequencer.NO_FRAME,
-                        sequencer.sequenceMessage(ingress, 0, encodeIngressGatewayStarted(ingress, 0, 6), second,
-                                                  TIMESTAMP));
-        assertNotEquals(Sequencer.NO_FRAME,
-                        sequencer.sequenceMessage(ingress, 0, encodeIngressPayload(ingress, 0), second, TIMESTAMP));
+        assertTrue(sequencer.sequenceMessage(ingress, 0, encodeIngressGatewayStarted(ingress, 0, 6), second,
+                                             TIMESTAMP));
+        assertTrue(sequencer.sequenceMessage(ingress, 0, encodeIngressPayload(ingress, 0), second, TIMESTAMP));
 
         // Asked back, the same session is admitted again.
         sequencer.sequenceMessage(ingress, 0, encodeIngressActivationRequested(ingress, 0, 5), SESSION_ID, TIMESTAMP);
-        sequencer.pendingGatewayActivation(TIMESTAMP); // designates 5
-        assertNotEquals(Sequencer.NO_FRAME,
-                        sequencer.sequenceMessage(ingress, 0, encodeIngressGatewayStarted(ingress, 0, 5), first,
-                                                  TIMESTAMP));
-        assertNotEquals(Sequencer.NO_FRAME,
-                        sequencer.sequenceMessage(ingress, 0, encodeIngressPayload(ingress, 0), first, TIMESTAMP));
-        assertEquals(Sequencer.NO_FRAME,
-                     sequencer.sequenceMessage(ingress, 0, encodeIngressPayload(ingress, 0), second, TIMESTAMP),
-                     "and 6, deposed in turn, is not");
+        assertTrue(sequencer.sequenceMessage(ingress, 0, encodeIngressGatewayStarted(ingress, 0, 5), first, TIMESTAMP));
+        assertTrue(sequencer.sequenceMessage(ingress, 0, encodeIngressPayload(ingress, 0), first, TIMESTAMP));
+        assertFalse(sequencer.sequenceMessage(ingress, 0, encodeIngressPayload(ingress, 0), second, TIMESTAMP),
+                    "and 6, deposed in turn, is not");
         assertEquals(4, sequencer.rejectedFrameCount());
+    }
+
+    @Test
+    @DisplayName("S-6: designated again, an instance's still-bound session is admitted with no new GatewayStarted")
+    void redesignatedInstanceKeepsItsBinding() {
+        // Case 3 asks only that the latest GatewayActive name the bound instance and that no later
+        // GatewayStarted replaced the binding; an operator's round trip does neither.
+        sequencer.sequenceMessage(ingress, 0, encodeIngressGatewayRegistered(ingress, 0, 5, SOURCE_ID, "GW-A", 0, 1),
+                                  SESSION_ID, TIMESTAMP);
+        sequencer.sequenceMessage(ingress, 0, encodeIngressGatewayRegistered(ingress, 0, 6, SOURCE_ID, "GW-B", 1, 0),
+                                  SESSION_ID, TIMESTAMP);
+        final long first = 0xA11CEL;
+        sequencer.sequenceMessage(ingress, 0, encodeIngressGatewayStarted(ingress, 0, 5), first, TIMESTAMP);
+
+        sequencer.sequenceMessage(ingress, 0, encodeIngressActivationRequested(ingress, 0, 6), SESSION_ID, TIMESTAMP);
+        assertFalse(sequencer.sequenceMessage(ingress, 0, encodeIngressPayload(ingress, 0), first, TIMESTAMP));
+        sequencer.sequenceMessage(ingress, 0, encodeIngressActivationRequested(ingress, 0, 5), SESSION_ID, TIMESTAMP);
+        assertTrue(sequencer.sequenceMessage(ingress, 0, encodeIngressPayload(ingress, 0), first, TIMESTAMP));
+    }
+
+    @Test
+    @DisplayName("S-6: a replaced session stays refused after the session that replaced it closes")
+    void replacedSessionStaysRefusedUntilItCloses() {
+        sequencer.sequenceMessage(ingress, 0, encodeIngressGatewayRegistered(ingress, 0, 5, SOURCE_ID, "GW-A", 0, 1),
+                                  SESSION_ID, TIMESTAMP);
+        sequencer.sequenceMessage(ingress, 0, encodeIngressGatewayRegistered(ingress, 0, 6, SOURCE_ID, "GW-B", 1, 0),
+                                  SESSION_ID, TIMESTAMP);
+        final long replaced = 0xDEADL;
+        final long replacing = 0xA11CEL;
+        sequencer.sequenceMessage(ingress, 0, encodeIngressGatewayStarted(ingress, 0, 5), replaced, TIMESTAMP);
+        sequencer.sequenceMessage(ingress, 0, encodeIngressGatewayStarted(ingress, 0, 5), replacing, TIMESTAMP);
+
+        assertTrue(sequencer.sessionClosed(replacing, TIMESTAMP + 1));
+        sequencer.sequenceMessage(ingress, 0, encodeIngressActivationRequested(ingress, 0, 5), SESSION_ID, TIMESTAMP);
+        assertFalse(sequencer.sequenceMessage(ingress, 0, encodeIngressPayload(ingress, 0), replaced, TIMESTAMP));
+        assertFalse(sequencer.sessionClosed(replaced, TIMESTAMP + 2), "and its own close promotes nothing");
+    }
+
+    @Test
+    @DisplayName("a session that declares another gateway's instance leaves the first one unbound")
+    void rebindingASessionToAnotherGatewayUnbindsTheFirst() {
+        final Sequencer seq = new Sequencer(0, frames);
+        final MutableDirectBuffer buf = new ExpandableArrayBuffer(512);
+        loadTwoPairs(seq, buf); // designates 5 and 8
+        final long session = 0xA11CEL;
+        seq.sequenceMessage(buf, 0, encodeIngressGatewayStarted(buf, 0, 5), session, TIMESTAMP + 1);
+        seq.sequenceMessage(buf, 0, encodeIngressGatewayStarted(buf, 0, 8, SECOND_SOURCE_ID), session, TIMESTAMP + 1);
+
+        seq.clusterHeartbeat(TIMESTAMP + Sequencer.GATEWAY_ACTIVATION_TIMEOUT_NS);
+        assertEquals(6, lastGatewayActive(), "5 is unanswered again, so it is handed over");
+        assertTrue(seq.sessionClosed(session, TIMESTAMP + Sequencer.GATEWAY_ACTIVATION_TIMEOUT_NS + 1));
+        assertEquals(9, lastGatewayActive(), "and the session's close is 8's");
     }
 
     // ── Determinism ───────────────────────────────────────────────────────────
@@ -532,55 +567,38 @@ class SequencerTest {
         // the same bytes, so their tap recordings are interchangeable and any node can serve replay.
         // This is a regression guard — it fails the moment anything non-deterministic (a wall clock, a
         // random id, an iteration-order dependency) creeps into an encode path.
-        final Sequencer nodeA = new Sequencer();
-        final Sequencer nodeB = new Sequencer();
-
-        final byte[][] framesA = runLog(nodeA);
-        final byte[][] framesB = runLog(nodeB);
+        final byte[][] framesA = runLog();
+        final byte[][] framesB = runLog();
 
         assertEquals(framesA.length, framesB.length);
         for (int i = 0; i < framesA.length; i++) {
             assertArrayEquals(framesA[i], framesB[i], "frame " + i + " diverged between nodes");
         }
-        assertEquals(nodeA.globalSeqNo(), nodeB.globalSeqNo());
     }
 
-    /** Drives one fixed "committed log" through a sequencer, returning every frame it emitted. */
-    private byte[][] runLog(final Sequencer target) {
+    /** Drives one fixed "committed log" through a fresh sequencer, returning every frame it published. */
+    private static byte[][] runLog() {
+        final FrameRecorder recorded = new FrameRecorder();
+        final Sequencer target = new Sequencer(0, recorded);
         final MutableDirectBuffer message = new ExpandableArrayBuffer(512);
         final int messageLength = encodeIngressPayload(message, 0);
         final MutableDirectBuffer lifecycle = new ExpandableArrayBuffer(64);
         final int connectedLength = encodeIngressConnectionOpened(lifecycle, 0);
-        final java.util.List<byte[]> frames = new java.util.ArrayList<>();
 
-        collect(frames, target, target.sequenceMessage(lifecycle, 0, connectedLength, SESSION_ID, TIMESTAMP));
-        collect(frames, target, target.leadershipChanged(0, 0, TIMESTAMP + 1));
+        target.sequenceMessage(lifecycle, 0, connectedLength, SESSION_ID, TIMESTAMP);
+        target.leadershipChanged(0, 0, TIMESTAMP + 1);
         final MutableDirectBuffer marker = new ExpandableArrayBuffer(64);
-        collect(frames, target, target.sequenceMessage(marker, 0, encodeIngressSnapshotPolicy(marker, 0, 2),
-                                                       SESSION_ID, TIMESTAMP + 2));
+        target.sequenceMessage(marker, 0, encodeIngressSnapshotPolicy(marker, 0, 2), SESSION_ID, TIMESTAMP + 2);
         for (int i = 0; i < 5; i++) {
-            collect(frames, target, target.sequenceMessage(message, 0, messageLength, SESSION_ID, TIMESTAMP + i));
-            final long heartbeat = TIMESTAMP + 1_000_000_000L * i;
-            collect(frames, target, target.clusterHeartbeat(heartbeat));
-            collect(frames, target, target.snapshotIntervalElapsed(heartbeat));
+            target.sequenceMessage(message, 0, messageLength, SESSION_ID, TIMESTAMP + i);
+            target.clusterHeartbeat(TIMESTAMP + 1_000_000_000L * i);
         }
-        collect(frames, target, target.sequenceMessage(marker, 0, encodeIngressSnapshotRequested(marker, 0, 7),
-                                                       SESSION_ID, TIMESTAMP + 8));
-        collect(frames, target, target.pendingSnapshotStart(TIMESTAMP + 8));
-        collect(frames, target, target.leadershipChanged(1, 0, TIMESTAMP + 9));
-        collect(frames, target, target.leadershipChanged(2, 1, TIMESTAMP + 10));
+        target.sequenceMessage(marker, 0, encodeIngressSnapshotRequested(marker, 0, 7), SESSION_ID, TIMESTAMP + 8);
+        target.leadershipChanged(1, 0, TIMESTAMP + 9);
+        target.leadershipChanged(2, 1, TIMESTAMP + 10);
         final int disconnectedLength = encodeIngressConnectionClosed(lifecycle, 0);
-        collect(frames, target, target.sequenceMessage(lifecycle, 0, disconnectedLength, SESSION_ID, TIMESTAMP + 11));
-        return frames.toArray(new byte[0][]);
-    }
-
-    private static void collect(final java.util.List<byte[]> frames, final Sequencer target, final int length) {
-        if (length == Sequencer.NO_FRAME) {
-            return;
-        }
-        final byte[] frame = new byte[length];
-        target.buffer().getBytes(0, frame);
-        frames.add(frame);
+        target.sequenceMessage(lifecycle, 0, disconnectedLength, SESSION_ID, TIMESTAMP + 11);
+        return recorded.all().toArray(new byte[0][]);
     }
 
     // ── Snapshot ──────────────────────────────────────────────────────────────
@@ -593,7 +611,8 @@ class SequencerTest {
         // globalSeqNo alone and drop the six other replicated fields, so a restored node re-emitted the
         // bootstrap GatewayActive and stopped producing frames identical to its peers'
         // Recovery is full-log replay, which rebuilds all of it.
-        assertThrows(UnsupportedOperationException.class, () -> new SequencerService(() -> { }).onTakeSnapshot(null));
+        assertThrows(UnsupportedOperationException.class,
+                     () -> new SequencerService(0, new AeronArchive.Context(), () -> { }).onTakeSnapshot(null));
     }
 
     // ── Snapshot rounds (doc/snapshot.md §3) ──────────────────────────────────
@@ -601,12 +620,11 @@ class SequencerTest {
     @Test
     @DisplayName("with no policy registered, a SnapshotRequested is sequenced and nothing follows it")
     void snapshotRequestWithoutAPolicyStartsNoRound() {
-        final int request = sequencer.sequenceMessage(ingress, 0, encodeIngressSnapshotRequested(ingress, 0, 7),
-                                                      SESSION_ID, TIMESTAMP);
-        assertEquals(SystemFrame.SNAPSHOT_REQUESTED, systemEventTypeOf(sequencer.buffer(), request));
-        assertEquals(Sequencer.NO_FRAME, sequencer.pendingSnapshotStart(TIMESTAMP));
-        assertEquals(Sequencer.NO_FRAME, sequencer.snapshotIntervalElapsed(TIMESTAMP + 1_000_000_000_000L));
-        assertEquals(1L, sequencer.globalSeqNo());
+        final int request = encodeIngressSnapshotRequested(ingress, 0, 7);
+        assertTrue(sequencer.sequenceMessage(ingress, 0, request, SESSION_ID, TIMESTAMP));
+        assertEquals(SystemFrame.SNAPSHOT_REQUESTED, systemEventTypeOf(frames.last(), frames.lastLength()));
+        sequencer.clusterHeartbeat(TIMESTAMP + 1_000_000_000_000L);
+        assertEquals(2, frames.count(), "the request and the heartbeat, and no SnapshotStarted behind either");
         assertEquals(0L, sequencer.snapshotRound());
     }
 
@@ -616,19 +634,19 @@ class SequencerTest {
         sequencer.sequenceMessage(ingress, 0, encodeIngressSnapshotPolicy(ingress, 0, 0), SESSION_ID, TIMESTAMP);
         for (long round = 1; round <= 2; round++) {
             final long timestamp = TIMESTAMP + round;
+            final int request = frames.count();
             sequencer.sequenceMessage(ingress, 0, encodeIngressSnapshotRequested(ingress, 0, round), SESSION_ID,
                                       timestamp);
-            final long requestSeqNo = sequencer.globalSeqNo();
-            final int started = sequencer.pendingSnapshotStart(timestamp);
-            final SnapshotStartedDecoder decoder = decodeSnapshotStarted(sequencer.buffer(), started);
+            assertEquals(request + 2, frames.count(), "one request, one round");
+            final SnapshotStartedDecoder decoder = decodeSnapshotStarted(frames.last(), frames.lastLength());
             assertEquals(round, decoder.round(), "a new request supersedes the open round");
-            assertEquals(requestSeqNo + 1, systemHeaderOf(sequencer.buffer()).globalSeqNo(), "R follows the request");
-            assertEquals(Sequencer.NO_SOURCE_ID, systemHeaderOf(sequencer.buffer()).sourceId());
-            assertEquals(timestamp, systemHeaderOf(sequencer.buffer()).timestamp());
-            assertEquals(Sequencer.NO_FRAME, sequencer.pendingSnapshotStart(timestamp), "one request, one round");
+            final long requestSeqNo = frameHeaderOf(frames.frame(request)).globalSeqNo();
+            assertEquals(requestSeqNo + 1, systemHeaderOf(frames.last()).globalSeqNo(), "R follows the request");
+            assertEquals(Sequencer.NO_SOURCE_ID, systemHeaderOf(frames.last()).sourceId());
+            assertEquals(timestamp, systemHeaderOf(frames.last()).timestamp());
         }
-        assertEquals(Sequencer.NO_FRAME, sequencer.snapshotIntervalElapsed(TIMESTAMP + 1_000_000_000_000L),
-                     "interval 0: rounds start only on request");
+        sequencer.clusterHeartbeat(TIMESTAMP + 1_000_000_000_000L);
+        assertNothingBehindHeartbeat("interval 0: rounds start only on request");
     }
 
     @Test
@@ -636,22 +654,25 @@ class SequencerTest {
     void snapshotIntervalCountsFromTheLastStart() {
         final long interval = 10_000_000_000L;
         sequencer.sequenceMessage(ingress, 0, encodeIngressSnapshotPolicy(ingress, 0, 10), SESSION_ID, TIMESTAMP);
-        assertEquals(Sequencer.NO_FRAME, sequencer.snapshotIntervalElapsed(TIMESTAMP + interval - 1));
+        sequencer.clusterHeartbeat(TIMESTAMP + interval - 1);
+        assertNothingBehindHeartbeat("the interval has not passed");
 
-        final int first = sequencer.snapshotIntervalElapsed(TIMESTAMP + interval);
-        assertEquals(1L, decodeSnapshotStarted(sequencer.buffer(), first).round());
+        sequencer.clusterHeartbeat(TIMESTAMP + interval);
+        assertEquals(1L, decodeSnapshotStarted(frames.last(), frames.lastLength()).round());
 
         final long requestedAt = TIMESTAMP + interval + interval / 2;
         sequencer.sequenceMessage(ingress, 0, encodeIngressSnapshotRequested(ingress, 0, 9), SESSION_ID, requestedAt);
-        assertEquals(2L, decodeSnapshotStarted(sequencer.buffer(), sequencer.pendingSnapshotStart(requestedAt)).round());
+        assertEquals(2L, decodeSnapshotStarted(frames.last(), frames.lastLength()).round());
 
         // A policy re-published after a round moves nothing: the interval still counts from round 2.
         sequencer.sequenceMessage(ingress, 0, encodeIngressSnapshotPolicy(ingress, 0, 10), SESSION_ID,
                                   requestedAt + 1);
-        assertEquals(Sequencer.NO_FRAME, sequencer.snapshotIntervalElapsed(TIMESTAMP + 2 * interval));
-        final int third = sequencer.snapshotIntervalElapsed(requestedAt + interval);
-        assertEquals(3L, decodeSnapshotStarted(sequencer.buffer(), third).round());
-        assertEquals(Sequencer.NO_FRAME, sequencer.snapshotIntervalElapsed(requestedAt + interval));
+        sequencer.clusterHeartbeat(TIMESTAMP + 2 * interval);
+        assertNothingBehindHeartbeat("the interval counts from round 2");
+        sequencer.clusterHeartbeat(requestedAt + interval);
+        assertEquals(3L, decodeSnapshotStarted(frames.last(), frames.lastLength()).round());
+        sequencer.clusterHeartbeat(requestedAt + interval);
+        assertNothingBehindHeartbeat("and round 3 restarts it");
     }
 
     // ── Lifecycle and clock frames ────────────────────────────────────────────
@@ -666,11 +687,12 @@ class SequencerTest {
         // synthesizing a cluster-session event under the same template ids.
         final MutableDirectBuffer lifecycle = new ExpandableArrayBuffer(64);
 
-        final int connectedLength =
-            sequencer.sequenceMessage(lifecycle, 0, encodeIngressConnectionOpened(lifecycle, 0), SESSION_ID, TIMESTAMP);
-        assertEquals(SystemFrame.CONNECTION_OPENED, systemEventTypeOf(sequencer.buffer(), connectedLength));
+        assertTrue(sequencer.sequenceMessage(lifecycle, 0, encodeIngressConnectionOpened(lifecycle, 0), SESSION_ID,
+                                             TIMESTAMP));
+        final int connectedLength = frames.lastLength();
+        assertEquals(SystemFrame.CONNECTION_OPENED, systemEventTypeOf(frames.last(), connectedLength));
         // The identity is the frame's, not the message's: a system payload carries no header of its own.
-        org.limitless.seqeron.sbe.frame.SequencedSystemHeaderDecoder header = systemHeaderOf(sequencer.buffer());
+        org.limitless.seqeron.sbe.frame.SequencedSystemHeaderDecoder header = systemHeaderOf(frames.last());
         assertEquals(SOURCE_ID, header.sourceId());
         assertEquals(CONNECTION_ID, header.connectionId());
         assertEquals(SESSION_ID, header.sessionId());
@@ -681,10 +703,11 @@ class SequencerTest {
         assertEquals(FRAME_OVERHEAD + ConnectionOpenedDecoder.BLOCK_LENGTH +
                      ConnectionOpenedDecoder.connectionDataHeaderLength(), connectedLength);
 
-        final int disconnectedLength = sequencer.sequenceMessage(
-            lifecycle, 0, encodeIngressConnectionClosed(lifecycle, 0), SESSION_ID, TIMESTAMP + 1);
-        assertEquals(SystemFrame.CONNECTION_CLOSED, systemEventTypeOf(sequencer.buffer(), disconnectedLength));
-        header = systemHeaderOf(sequencer.buffer());
+        assertTrue(sequencer.sequenceMessage(lifecycle, 0, encodeIngressConnectionClosed(lifecycle, 0), SESSION_ID,
+                                             TIMESTAMP + 1));
+        final int disconnectedLength = frames.lastLength();
+        assertEquals(SystemFrame.CONNECTION_CLOSED, systemEventTypeOf(frames.last(), disconnectedLength));
+        header = systemHeaderOf(frames.last());
         assertEquals(CONNECTION_ID, header.connectionId());
         assertEquals(TIMESTAMP + 1, header.timestamp());
         assertEquals(SESSION_ID, header.sessionId());
@@ -697,11 +720,12 @@ class SequencerTest {
         // The gateway's keepalive watchdog reads exactly this field to advance its session clock while
         // a counterparty is silent, so a heartbeat that lost its timestamp would stall every watchdog.
         final long heartbeatTime = TIMESTAMP + 60_000;
-        final int length = sequencer.clusterHeartbeat(heartbeatTime);
+        sequencer.clusterHeartbeat(heartbeatTime);
+        final int length = frames.lastLength();
 
-        final MessageHeaderDecoder framing = new MessageHeaderDecoder().wrap(sequencer.buffer(), 0);
+        final MessageHeaderDecoder framing = new MessageHeaderDecoder().wrap(frames.last(), 0);
         assertEquals(ClusterHeartbeatDecoder.TEMPLATE_ID, framing.templateId());
-        final org.limitless.seqeron.sbe.frame.SequencedSystemHeaderDecoder header = systemHeaderOf(sequencer.buffer());
+        final org.limitless.seqeron.sbe.frame.SequencedSystemHeaderDecoder header = systemHeaderOf(frames.last());
         assertEquals(SystemFrame.CLUSTER_HEARTBEAT, header.systemEventType());
         assertEquals(heartbeatTime, header.timestamp());
         assertEquals(Sequencer.NO_SOURCE_ID, header.sessionId());
@@ -709,61 +733,6 @@ class SequencerTest {
         // The cheapest frame in the system: a framing header and the stamp, with no payload at all.
         assertEquals(MessageHeaderDecoder.ENCODED_LENGTH + ClusterHeartbeatDecoder.BLOCK_LENGTH, length);
         assertEquals(42, length);
-    }
-
-    @Test
-    @DisplayName("connectedClientCount tracks ConnectionOpened/ConnectionClosed pairs off the log")
-    void connectedClientCountTracksLifecycleFrames() {
-        final Sequencer seq = new Sequencer();
-        final MutableDirectBuffer lifecycle = new ExpandableArrayBuffer(64);
-        assertEquals(0, seq.connectedClientCount());
-
-        seq.sequenceMessage(lifecycle, 0, encodeIngressConnectionOpened(lifecycle, 0, 1), SESSION_ID, TIMESTAMP);
-        assertEquals(1, seq.connectedClientCount());
-
-        seq.sequenceMessage(lifecycle, 0, encodeIngressConnectionOpened(lifecycle, 0, 2), SESSION_ID + 1, TIMESTAMP);
-        assertEquals(2, seq.connectedClientCount());
-
-        seq.sequenceMessage(lifecycle, 0, encodeIngressConnectionClosed(lifecycle, 0, 1), SESSION_ID, TIMESTAMP + 1);
-        assertEquals(1, seq.connectedClientCount());
-
-        // Ordinary application traffic must not perturb the count.
-        final int orderLength = encodeIngressPayload(ingress, 0);
-        seq.sequenceMessage(ingress, 0, orderLength, SESSION_ID + 1, TIMESTAMP + 2);
-        assertEquals(1, seq.connectedClientCount());
-    }
-
-    @Test
-    @DisplayName("connectedClientCount is a live gauge, not a running tally that drifts")
-    void connectedClientCountIsALiveGauge() {
-        // What a tally got wrong: a gateway that dies with clients attached publishes no
-        // ConnectionClosed for any of them, so its connects stay counted for the rest of the day.
-        // GatewayStarted is its successor declaring the epoch rolled — every connection still open under
-        // that logical gateway belonged to the instance that went away, and died with its sockets.
-        final Sequencer seq = new Sequencer();
-        final MutableDirectBuffer buf = new ExpandableArrayBuffer(128);
-        // S-6 wants a list to check the two GatewayStarteds against, and a bound session under each: a
-        // ConnectionOpened claiming a listed sourceId is only admitted on one.
-        seq.sequenceMessage(buf, 0, encodeIngressGatewayRegistered(buf, 0, 5, SOURCE_ID, "GW-A", 0, 0), SESSION_ID,
-                            TIMESTAMP);
-        seq.pendingGatewayActivation(TIMESTAMP); // designates 5
-        seq.sequenceMessage(buf, 0, encodeIngressGatewayStarted(buf, 0, 5), SESSION_ID, TIMESTAMP);
-        seq.sequenceMessage(buf, 0, encodeIngressConnectionOpened(buf, 0, 1), SESSION_ID, TIMESTAMP);
-        seq.sequenceMessage(buf, 0, encodeIngressConnectionOpened(buf, 0, 2), SESSION_ID, TIMESTAMP);
-        assertEquals(2, seq.connectedClientCount());
-
-        seq.sequenceMessage(buf, 0, encodeIngressGatewayStarted(buf, 0, 5), SESSION_ID + 1, TIMESTAMP + 1);
-        assertEquals(0, seq.connectedClientCount(), "the dead instance's connections are not still connected");
-
-        // The successor's own connection counts, and counts once however many times the frame arrives.
-        seq.sequenceMessage(buf, 0, encodeIngressConnectionOpened(buf, 0, 1), SESSION_ID + 1, TIMESTAMP + 2);
-        seq.sequenceMessage(buf, 0, encodeIngressConnectionOpened(buf, 0, 1), SESSION_ID + 1, TIMESTAMP + 3);
-        assertEquals(1, seq.connectedClientCount());
-
-        // A disconnect matching nothing open cannot take the gauge below zero.
-        seq.sequenceMessage(buf, 0, encodeIngressConnectionClosed(buf, 0, 1), SESSION_ID + 1, TIMESTAMP + 4);
-        seq.sequenceMessage(buf, 0, encodeIngressConnectionClosed(buf, 0, 1), SESSION_ID + 1, TIMESTAMP + 5);
-        assertEquals(0, seq.connectedClientCount());
     }
 
     // ── Standby promotion (GatewayActive) ─────────────────────────────────────
@@ -775,35 +744,30 @@ class SequencerTest {
         // cluster names the primary's gatewayId behind the row that completes the list. The primary
         // is derived from those rows — the rank-0 one — not configured.
         final int primaryGatewayId = 5;
-        final Sequencer seq = new Sequencer();
+        final Sequencer seq = new Sequencer(0, frames);
         final MutableDirectBuffer buf = new ExpandableArrayBuffer(128);
-
-        assertEquals(Sequencer.NO_FRAME, seq.pendingGatewayActivation(TIMESTAMP),
-                     "nothing pending before the list");
 
         // gatewayId 5 (rank 0) is the primary, 6 (rank 1) the standby; remaining counts down to 0.
         seq.sequenceMessage(buf, 0, encodeIngressGatewayRegistered(buf, 0, primaryGatewayId, SOURCE_ID, "GW-A", 0, 1),
                             SESSION_ID, TIMESTAMP);
-        assertEquals(Sequencer.NO_FRAME, seq.pendingGatewayActivation(TIMESTAMP),
+        assertEquals(1, frames.count(),
                      "an incomplete list designates nobody — remaining is the whole completeness edge");
 
-        final int endLength = seq.sequenceMessage(
-            buf, 0, encodeIngressGatewayRegistered(buf, 0, 6, SOURCE_ID, "GW-B", 1, 0), SESSION_ID, TIMESTAMP);
-        assertEquals(2L, globalSeqNoOf(seq, endLength)); // 2 list rows
+        seq.sequenceMessage(buf, 0, encodeIngressGatewayRegistered(buf, 0, 6, SOURCE_ID, "GW-B", 1, 0), SESSION_ID,
+                            TIMESTAMP + 1);
+        assertEquals(3, frames.count(), "the last row, then the bootstrap behind it");
+        assertEquals(2L, frameHeaderOf(frames.frame(1)).globalSeqNo()); // 2 list rows
 
-        final int activationLength = seq.pendingGatewayActivation(TIMESTAMP + 1);
-        assertNotEquals(Sequencer.NO_FRAME, activationLength);
-        final GatewayActiveDecoder decoded = decodeGatewayActive(seq.buffer(), activationLength);
-        assertEquals(primaryGatewayId, decoded.gatewayId()); // the rank-0 gatewayId, derived from the log
+        assertEquals(primaryGatewayId, lastGatewayActive()); // the rank-0 gatewayId, derived from the log
         // globalSeqNo, timestamp and provenance are the frame's; a core payload carries no header at all.
-        assertEquals(3L, frameHeaderOf(seq.buffer()).globalSeqNo()); // the next globalSeqNo after the last row
-        assertEquals(TIMESTAMP + 1, frameHeaderOf(seq.buffer()).timestamp());
-        assertEquals(Sequencer.NO_SOURCE_ID, frameHeaderOf(seq.buffer()).sourceId()); // synthesized: no submitter
+        assertEquals(3L, frameHeaderOf(frames.last()).globalSeqNo()); // the next globalSeqNo after the last row
+        assertEquals(TIMESTAMP + 1, frameHeaderOf(frames.last()).timestamp()); // the last row's
+        assertEquals(Sequencer.NO_SOURCE_ID, frameHeaderOf(frames.last()).sourceId()); // synthesized: no submitter
 
         // Fires once: re-running load-topology re-asserts the rows without re-designating the primary.
         seq.sequenceMessage(buf, 0, encodeIngressGatewayRegistered(buf, 0, 6, SOURCE_ID, "GW-B", 1, 0), SESSION_ID,
                             TIMESTAMP + 2);
-        assertEquals(Sequencer.NO_FRAME, seq.pendingGatewayActivation(TIMESTAMP + 3));
+        assertEquals(4, frames.count(), "the re-asserted row alone");
     }
 
     @Test
@@ -814,32 +778,28 @@ class SequencerTest {
         // same path bootstrap and both promotions take — so no SequencedSystem is left without an
         // UnsequencedSystem antecedent, and the manual path gets the list validation the other three
         // have from iterating the list.
-        final Sequencer seq = new Sequencer();
+        final Sequencer seq = new Sequencer(0, frames);
         final MutableDirectBuffer buf = new ExpandableArrayBuffer(512);
         seq.sequenceMessage(buf, 0, encodeIngressGatewayRegistered(buf, 0, 5, SOURCE_ID, "GW-A", 0, 1), SESSION_ID,
                             TIMESTAMP);
         seq.sequenceMessage(buf, 0, encodeIngressGatewayRegistered(buf, 0, 6, SOURCE_ID, "GW-B", 1, 0), SESSION_ID,
                             TIMESTAMP);
-        assertNotEquals(Sequencer.NO_FRAME, seq.pendingGatewayActivation(TIMESTAMP)); // bootstrap designates 5
+        assertEquals(5, lastGatewayActive()); // bootstrap designates 5
         assertEquals(3L, seq.globalSeqNo());
 
-        final int requestLength = seq.sequenceMessage(
-            buf, 0, encodeIngressActivationRequested(buf, 0, 6), SESSION_ID, TIMESTAMP + 1);
-        assertNotEquals(Sequencer.NO_FRAME, requestLength, "the request is a submitted event and is forwarded");
-        assertEquals(SystemFrame.GATEWAY_ACTIVATION_REQUESTED, systemEventTypeOf(seq.buffer(), requestLength));
-        assertEquals(4L, seq.globalSeqNo());
+        assertTrue(seq.sequenceMessage(buf, 0, encodeIngressActivationRequested(buf, 0, 6), SESSION_ID, TIMESTAMP + 1),
+                   "the request is a submitted event and is forwarded");
+        assertEquals(5, frames.count(), "the request, then its answer");
+        assertEquals(SystemFrame.GATEWAY_ACTIVATION_REQUESTED, systemEventTypeOf(frames.frame(3), frames.length(3)));
+        assertEquals(4L, frameHeaderOf(frames.frame(3)).globalSeqNo());
 
-        final int activation = seq.pendingGatewayActivation(TIMESTAMP + 2);
-        assertNotEquals(Sequencer.NO_FRAME, activation);
-        assertEquals(6, decodeGatewayActive(seq.buffer(), activation).gatewayId());
-        assertEquals(5L, systemHeaderOf(seq.buffer()).globalSeqNo(), "the answer is one frame behind the request");
-        assertEquals(Sequencer.NO_SOURCE_ID, systemHeaderOf(seq.buffer()).sourceId(), "synthesized: no submitter");
-        assertEquals(Sequencer.NO_FRAME, seq.pendingGatewayActivation(TIMESTAMP + 3), "one activation, once");
+        assertEquals(6, lastGatewayActive());
+        assertEquals(5L, systemHeaderOf(frames.last()).globalSeqNo(), "the answer is one frame behind the request");
+        assertEquals(Sequencer.NO_SOURCE_ID, systemHeaderOf(frames.last()).sourceId(), "synthesized: no submitter");
 
         // And it arms the deadline like every other synthesized activation: instance 6 has to answer.
-        assertEquals(5, decodeGatewayActive(
-            seq.buffer(),
-            seq.pendingGatewayActivationTimeout(TIMESTAMP + 2 + Sequencer.GATEWAY_ACTIVATION_TIMEOUT_NS)).gatewayId());
+        seq.clusterHeartbeat(TIMESTAMP + 1 + Sequencer.GATEWAY_ACTIVATION_TIMEOUT_NS);
+        assertEquals(5, lastGatewayActive());
     }
 
     @Test
@@ -849,26 +809,25 @@ class SequencerTest {
         // one whose list arrived truncated — which is also the deployment where an operator reaches for
         // clusterctl activate. That designation drains through this same queue, so counting drains let the
         // manual repair answer the alarm that was there to say the repair is incomplete.
-        final Sequencer seq = new Sequencer();
+        final Sequencer seq = new Sequencer(0, frames);
         final MutableDirectBuffer buf = new ExpandableArrayBuffer(512);
         assertFalse(seq.bootstrapActivationEmitted());
 
         // remaining never reaches 0: the list is incomplete, so nothing bootstraps.
         seq.sequenceMessage(buf, 0, encodeIngressGatewayRegistered(buf, 0, 5, SOURCE_ID, "GW-A", 0, 1), SESSION_ID,
                             TIMESTAMP);
-        assertEquals(Sequencer.NO_FRAME, seq.pendingGatewayActivation(TIMESTAMP));
+        assertEquals(1, frames.count());
         assertFalse(seq.bootstrapActivationEmitted());
 
         // The operator designates 5 by hand. A real GatewayActive comes out, and the day is still not open.
         seq.sequenceMessage(buf, 0, encodeIngressActivationRequested(buf, 0, 5), SESSION_ID, TIMESTAMP + 1);
-        final int manual = seq.pendingGatewayActivation(TIMESTAMP + 2);
-        assertEquals(5, decodeGatewayActive(seq.buffer(), manual).gatewayId());
+        assertEquals(5, lastGatewayActive());
         assertFalse(seq.bootstrapActivationEmitted(), "an operator's activation is not the bootstrap");
 
         // The last row lands; now the cluster makes the cold-start designation itself.
         seq.sequenceMessage(buf, 0, encodeIngressGatewayRegistered(buf, 0, 6, SOURCE_ID, "GW-B", 1, 0), SESSION_ID,
                             TIMESTAMP + 3);
-        assertNotEquals(Sequencer.NO_FRAME, seq.pendingGatewayActivation(TIMESTAMP + 4));
+        assertEquals(5, lastGatewayActive());
         assertTrue(seq.bootstrapActivationEmitted());
     }
 
@@ -877,12 +836,12 @@ class SequencerTest {
     void bootstrapActivationEmittedStaysFalseWhenNothingIsDesignated() {
         // Fail closed: no rank-0 row, so the bootstrap run queues nothing and no instance is ever
         // designated. The list did complete, which is why the gauge cannot be driven off that edge.
-        final Sequencer seq = new Sequencer();
+        final Sequencer seq = new Sequencer(0, frames);
         final MutableDirectBuffer buf = new ExpandableArrayBuffer(512);
         seq.sequenceMessage(buf, 0, encodeIngressGatewayRegistered(buf, 0, 5, SOURCE_ID, "GW-A", 1, 0), SESSION_ID,
                             TIMESTAMP);
 
-        assertEquals(Sequencer.NO_FRAME, seq.pendingGatewayActivation(TIMESTAMP + 1));
+        assertEquals(1, frames.count(), "the row alone");
         assertFalse(seq.bootstrapActivationEmitted());
     }
 
@@ -891,18 +850,16 @@ class SequencerTest {
     void activationRequestForAnUnknownInstanceIsRejected() {
         // The validation the manual path lacked while it published GatewayActive directly: an operator
         // typo used to put a designation nothing could answer into unreplayable history.
-        final Sequencer seq = new Sequencer();
+        final Sequencer seq = new Sequencer(0, frames);
         final MutableDirectBuffer buf = new ExpandableArrayBuffer(512);
         seq.sequenceMessage(buf, 0, encodeIngressGatewayRegistered(buf, 0, 5, SOURCE_ID, "GW-A", 0, 0), SESSION_ID,
                             TIMESTAMP);
-        seq.pendingGatewayActivation(TIMESTAMP);
         final long globalSeqNo = seq.globalSeqNo();
 
-        assertEquals(Sequencer.NO_FRAME,
-                     seq.sequenceMessage(buf, 0, encodeIngressActivationRequested(buf, 0, 99), SESSION_ID,
-                                         TIMESTAMP + 1));
-        assertEquals(globalSeqNo, seq.globalSeqNo(), "a rejected request consumes no sequence number");
-        assertEquals(Sequencer.NO_FRAME, seq.pendingGatewayActivation(TIMESTAMP + 2), "and designates nobody");
+        assertFalse(seq.sequenceMessage(buf, 0, encodeIngressActivationRequested(buf, 0, 99), SESSION_ID,
+                                        TIMESTAMP + 1));
+        assertEquals(globalSeqNo, seq.globalSeqNo(),
+                     "a rejected request consumes no sequence number, and designates nobody");
     }
 
     @Test
@@ -912,20 +869,19 @@ class SequencerTest {
         // countdown: with no rows there is no remaining==0 to fire on, so the latch stays unset and a
         // later list still elects. clusterctl refuses to publish either list; the sequencer's own
         // answer to a rank-0-less list that reached it anyway is still to activate nobody.
-        final Sequencer seq = new Sequencer();
+        final Sequencer seq = new Sequencer(0, frames);
         final MutableDirectBuffer buf = new ExpandableArrayBuffer(128);
         seq.sequenceMessage(buf, 0, encodeIngressGatewayRegistered(buf, 0, 5, SOURCE_ID, "GW-A", 1, 1), SESSION_ID,
                             TIMESTAMP);
         seq.sequenceMessage(buf, 0, encodeIngressGatewayRegistered(buf, 0, 6, SOURCE_ID, "GW-B", 2, 0), SESSION_ID,
                             TIMESTAMP);
-        assertEquals(Sequencer.NO_FRAME, seq.pendingGatewayActivation(TIMESTAMP + 1),
-                     "no rank-0 row ⇒ no bootstrap activation (fail closed)");
+        assertEquals(2, frames.count(), "no rank-0 row ⇒ no bootstrap activation (fail closed)");
     }
 
     @Test
     @DisplayName("closing the active gateway's session promotes the next-ranked sibling, named by gatewayId")
     void closingGatewaySessionPromotesStandby() {
-        final Sequencer seq = new Sequencer();
+        final Sequencer seq = new Sequencer(0, frames);
         final MutableDirectBuffer buf = new ExpandableArrayBuffer(512);
 
         // One logical gateway (SOURCE_ID) served by an active/standby pair: gatewayId 5 rank 0, 6 rank 1.
@@ -933,28 +889,27 @@ class SequencerTest {
                             TIMESTAMP);
         seq.sequenceMessage(buf, 0, encodeIngressGatewayRegistered(buf, 0, 6, SOURCE_ID, "GW-B", 1, 0), SESSION_ID,
                             TIMESTAMP);
-        seq.pendingGatewayActivation(TIMESTAMP); // designates 5
 
         // GatewayStarted is how instance 5 declares which cluster session it is active on.
         final long gatewaySession = 0xA11CEL;
         seq.sequenceMessage(buf, 0, encodeIngressGatewayStarted(buf, 0, 5), gatewaySession, TIMESTAMP);
 
         // A session no gateway ever claimed is not one — its close promotes nothing.
-        assertEquals(Sequencer.NO_FRAME, seq.sessionClosed(0xBEEFL, TIMESTAMP + 1));
+        assertFalse(seq.sessionClosed(0xBEEFL, TIMESTAMP + 1));
 
-        final int promotionLength = seq.sessionClosed(gatewaySession, TIMESTAMP + 2);
-        assertNotEquals(Sequencer.NO_FRAME, promotionLength);
-        final GatewayActiveDecoder decoded = decodeGatewayActive(seq.buffer(), promotionLength);
+        assertTrue(seq.sessionClosed(gatewaySession, TIMESTAMP + 2));
+        final int promotionLength = frames.lastLength();
+        final GatewayActiveDecoder decoded = decodeGatewayActive(frames.last(), promotionLength);
         // The standby's gatewayId — never the gatewaySourceId. Both instances share the sourceId, so a
         // promotion carrying it designated both at once, and the consumer could only survive that by
         // latching its first match, which made a restarting instance re-activate off a superseded frame.
         assertEquals(6, decoded.gatewayId());
         assertNotEquals(SOURCE_ID, decoded.gatewayId());
-        assertEquals(5L, frameHeaderOf(seq.buffer()).globalSeqNo()); // 2 rows + bootstrap + GatewayStarted + promotion
-        assertEquals(TIMESTAMP + 2, frameHeaderOf(seq.buffer()).timestamp());
+        assertEquals(5L, frameHeaderOf(frames.last()).globalSeqNo()); // 2 rows + bootstrap + GatewayStarted + promotion
+        assertEquals(TIMESTAMP + 2, frameHeaderOf(frames.last()).timestamp());
 
         // The session is forgotten: a duplicate close does not re-promote.
-        assertEquals(Sequencer.NO_FRAME, seq.sessionClosed(gatewaySession, TIMESTAMP + 3));
+        assertFalse(seq.sessionClosed(gatewaySession, TIMESTAMP + 3));
     }
 
     @Test
@@ -963,28 +918,27 @@ class SequencerTest {
         // An instance that reconnects before the cluster times its old session out declared itself on the
         // new session while the dead one was still bound to the same gatewayId. The dead one's close then
         // read as "the active instance went away" and handed the role to the standby — while 5 was serving.
-        final Sequencer seq = new Sequencer();
+        final Sequencer seq = new Sequencer(0, frames);
         final MutableDirectBuffer buf = new ExpandableArrayBuffer(512);
         seq.sequenceMessage(buf, 0, encodeIngressGatewayRegistered(buf, 0, 5, SOURCE_ID, "GW-A", 0, 1), SESSION_ID,
                             TIMESTAMP);
         seq.sequenceMessage(buf, 0, encodeIngressGatewayRegistered(buf, 0, 6, SOURCE_ID, "GW-B", 1, 0), SESSION_ID,
                             TIMESTAMP);
-        seq.pendingGatewayActivation(TIMESTAMP); // designates 5
 
         final long deadSession = 0xDEADL;
         final long liveSession = 0xA11CEL;
         seq.sequenceMessage(buf, 0, encodeIngressGatewayStarted(buf, 0, 5), deadSession, TIMESTAMP);
         seq.sequenceMessage(buf, 0, encodeIngressGatewayStarted(buf, 0, 5), liveSession, TIMESTAMP + 1);
-        final long beforeClose = frameHeaderOf(seq.buffer()).globalSeqNo();
+        final long beforeClose = frameHeaderOf(frames.last()).globalSeqNo();
 
-        assertEquals(Sequencer.NO_FRAME, seq.sessionClosed(deadSession, TIMESTAMP + 2),
-                     "the superseded session is not instance 5's session any more");
+        assertFalse(seq.sessionClosed(deadSession, TIMESTAMP + 2),
+                    "the superseded session is not instance 5's session any more");
 
         // The live one still is, and its close is what promotes.
-        final int promotionLength = seq.sessionClosed(liveSession, TIMESTAMP + 3);
-        assertNotEquals(Sequencer.NO_FRAME, promotionLength);
-        assertEquals(6, decodeGatewayActive(seq.buffer(), promotionLength).gatewayId());
-        assertEquals(beforeClose + 1, frameHeaderOf(seq.buffer()).globalSeqNo(),
+        assertTrue(seq.sessionClosed(liveSession, TIMESTAMP + 3));
+        final int promotionLength = frames.lastLength();
+        assertEquals(6, decodeGatewayActive(frames.last(), promotionLength).gatewayId());
+        assertEquals(beforeClose + 1, frameHeaderOf(frames.last()).globalSeqNo(),
                      "the stale close consumed no sequence number");
     }
 
@@ -993,7 +947,7 @@ class SequencerTest {
     void supersededInstanceCloseDoesNotDemoteTheActiveOne() {
         // An operator handover leaves the old instance's session bound. Its later close read as the active
         // instance going away, and with a third instance the role moved off the healthy one.
-        final Sequencer seq = new Sequencer();
+        final Sequencer seq = new Sequencer(0, frames);
         final MutableDirectBuffer buf = new ExpandableArrayBuffer(512);
         seq.sequenceMessage(buf, 0, encodeIngressGatewayRegistered(buf, 0, 5, SOURCE_ID, "GW-A", 0, 2), SESSION_ID,
                             TIMESTAMP);
@@ -1001,23 +955,20 @@ class SequencerTest {
                             TIMESTAMP);
         seq.sequenceMessage(buf, 0, encodeIngressGatewayRegistered(buf, 0, 7, SOURCE_ID, "GW-C", 2, 0), SESSION_ID,
                             TIMESTAMP);
-        seq.pendingGatewayActivation(TIMESTAMP); // designates 5
         final long first = 0xA11CEL;
         final long third = 0xC0DEL;
         seq.sequenceMessage(buf, 0, encodeIngressGatewayStarted(buf, 0, 5), first, TIMESTAMP);
         seq.sequenceMessage(buf, 0, encodeIngressActivationRequested(buf, 0, 7), SESSION_ID, TIMESTAMP);
-        seq.pendingGatewayActivation(TIMESTAMP); // designates 7
         seq.sequenceMessage(buf, 0, encodeIngressGatewayStarted(buf, 0, 7), third, TIMESTAMP);
         final long beforeClose = seq.globalSeqNo();
 
-        assertEquals(Sequencer.NO_FRAME, seq.sessionClosed(first, TIMESTAMP + 1),
-                     "5 was not designated, so its close hands nothing on");
+        assertFalse(seq.sessionClosed(first, TIMESTAMP + 1), "5 was not designated, so its close hands nothing on");
         assertEquals(beforeClose, seq.globalSeqNo());
 
         // 7's own close still promotes, to the lowest rank other than 7.
-        final int promotionLength = seq.sessionClosed(third, TIMESTAMP + 2);
-        assertNotEquals(Sequencer.NO_FRAME, promotionLength);
-        assertEquals(5, decodeGatewayActive(seq.buffer(), promotionLength).gatewayId());
+        assertTrue(seq.sessionClosed(third, TIMESTAMP + 2));
+        final int promotionLength = frames.lastLength();
+        assertEquals(5, decodeGatewayActive(frames.last(), promotionLength).gatewayId());
     }
 
     @Test
@@ -1027,13 +978,12 @@ class SequencerTest {
         // originating gateway's sourceId on a reply so that gateway can route it. Inferring "this session
         // is a gateway" from it would let that application's restart promote the standby out from under
         // a healthy primary. Only GatewayStarted may claim a session.
-        final Sequencer seq = new Sequencer();
+        final Sequencer seq = new Sequencer(0, frames);
         final MutableDirectBuffer buf = new ExpandableArrayBuffer(512);
         seq.sequenceMessage(buf, 0, encodeIngressGatewayRegistered(buf, 0, 5, SOURCE_ID, "GW-A", 0, 1), SESSION_ID,
                             TIMESTAMP);
         seq.sequenceMessage(buf, 0, encodeIngressGatewayRegistered(buf, 0, 6, SOURCE_ID, "GW-B", 1, 0), SESSION_ID,
                             TIMESTAMP);
-        seq.pendingGatewayActivation(TIMESTAMP); // designates 5
 
         final long gatewaySession = 0xA11CEL;
         seq.sequenceMessage(buf, 0, encodeIngressGatewayStarted(buf, 0, 5), gatewaySession, TIMESTAMP);
@@ -1042,10 +992,10 @@ class SequencerTest {
         final long orderExecSession = 0x0EC1E47L;
         seq.sequenceMessage(buf, 0, encodeIngressPayload(buf, 0), orderExecSession, TIMESTAMP + 1);
 
-        assertEquals(Sequencer.NO_FRAME, seq.sessionClosed(orderExecSession, TIMESTAMP + 2),
-                     "echoing a gateway sourceId must not make a session promotable");
-        assertNotEquals(Sequencer.NO_FRAME, seq.sessionClosed(gatewaySession, TIMESTAMP + 3),
-                        "the session GatewayStarted claimed is still the one that promotes");
+        assertFalse(seq.sessionClosed(orderExecSession, TIMESTAMP + 2),
+                    "echoing a gateway sourceId must not make a session promotable");
+        assertTrue(seq.sessionClosed(gatewaySession, TIMESTAMP + 3),
+                   "the session GatewayStarted claimed is still the one that promotes");
     }
 
     @Test
@@ -1053,17 +1003,17 @@ class SequencerTest {
     void soleGatewayInstanceHasNoStandbyToPromote() {
         // Fail closed: naming a nonexistent instance would activate no one while burning a globalSeqNo,
         // and naming the sourceId (as this used to) would activate everyone.
-        final Sequencer seq = new Sequencer();
+        final Sequencer seq = new Sequencer(0, frames);
         final MutableDirectBuffer buf = new ExpandableArrayBuffer(512);
         seq.sequenceMessage(buf, 0, encodeIngressGatewayRegistered(buf, 0, 5, SOURCE_ID, "GW-A", 0, 0), SESSION_ID,
                             TIMESTAMP);
-        seq.pendingGatewayActivation(TIMESTAMP); // designates 5
 
         final long gatewaySession = 0xA11CEL;
         seq.sequenceMessage(buf, 0, encodeIngressGatewayStarted(buf, 0, 5), gatewaySession, TIMESTAMP);
 
-        assertEquals(Sequencer.NO_PROMOTION_TARGET, seq.sessionClosed(gatewaySession, TIMESTAMP + 1),
-                     "distinct from NO_FRAME: this WAS a gateway session, just one with no standby");
+        assertFalse(seq.sessionClosed(gatewaySession, TIMESTAMP + 1));
+        assertEquals(1L, seq.gatewayPromotionFailedCount(),
+                     "counted, unlike a session that was never a gateway's: this one was, with no standby");
         assertEquals(3L, seq.globalSeqNo(), "a promotion with no target consumes no sequence number");
     }
 
@@ -1076,48 +1026,46 @@ class SequencerTest {
         // and it is published at gate-open, AFTER catch-up. An instance that dies or wedges in cold start
         // was never registered, so no session close could ever promote past it — the cluster kept a
         // designated primary that was never going to serve, with nothing to say so.
-        final Sequencer seq = new Sequencer();
+        final Sequencer seq = new Sequencer(0, frames);
         final MutableDirectBuffer buf = new ExpandableArrayBuffer(512);
-        assertEquals(Sequencer.NO_FRAME, seq.pendingGatewayActivationTimeout(TIMESTAMP),
-                     "nothing designated ⇒ no deadline to miss");
+        seq.clusterHeartbeat(TIMESTAMP);
+        assertNothingBehindHeartbeat("nothing designated ⇒ no deadline to miss");
 
         seq.sequenceMessage(buf, 0, encodeIngressGatewayRegistered(buf, 0, 5, SOURCE_ID, "GW-A", 0, 1), SESSION_ID,
                             TIMESTAMP);
         seq.sequenceMessage(buf, 0, encodeIngressGatewayRegistered(buf, 0, 6, SOURCE_ID, "GW-B", 1, 0), SESSION_ID,
                             TIMESTAMP);
-        assertNotEquals(Sequencer.NO_FRAME, seq.pendingGatewayActivation(TIMESTAMP)); // designates 5
+        assertEquals(5, lastGatewayActive());
 
         final long deadline = TIMESTAMP + Sequencer.GATEWAY_ACTIVATION_TIMEOUT_NS;
-        assertEquals(Sequencer.NO_FRAME, seq.pendingGatewayActivationTimeout(deadline - 1),
-                     "a cold start still inside the deadline is not overdue");
+        seq.clusterHeartbeat(deadline - 1);
+        assertNothingBehindHeartbeat("a cold start still inside the deadline is not overdue");
 
-        final int handover = seq.pendingGatewayActivationTimeout(deadline);
-        assertNotEquals(Sequencer.NO_FRAME, handover);
-        assertEquals(6, decodeGatewayActive(seq.buffer(), handover).gatewayId());
-        assertEquals(4L, seq.globalSeqNo()); // 2 list rows + bootstrap + this
+        seq.clusterHeartbeat(deadline);
+        assertEquals(6, lastGatewayActive());
+        assertEquals(1L, seq.gatewayPromotionCount());
+        assertEquals(7L, seq.globalSeqNo()); // 3 heartbeats + 2 list rows + bootstrap + this
     }
 
     @Test
     @DisplayName("a designated primary that did declare itself started is left alone")
     void designatedPrimaryThatStartedIsNotHandedOver() {
-        final Sequencer seq = new Sequencer();
+        final Sequencer seq = new Sequencer(0, frames);
         final MutableDirectBuffer buf = new ExpandableArrayBuffer(512);
         seq.sequenceMessage(buf, 0, encodeIngressGatewayRegistered(buf, 0, 5, SOURCE_ID, "GW-A", 0, 1), SESSION_ID,
                             TIMESTAMP);
         seq.sequenceMessage(buf, 0, encodeIngressGatewayRegistered(buf, 0, 6, SOURCE_ID, "GW-B", 1, 0), SESSION_ID,
                             TIMESTAMP);
-        seq.pendingGatewayActivation(TIMESTAMP);
 
         final long gatewaySession = 0xA11CEL;
         seq.sequenceMessage(buf, 0, encodeIngressGatewayStarted(buf, 0, 5), gatewaySession, TIMESTAMP + 1);
-        final long globalSeqNo = seq.globalSeqNo();
 
         final long deadline = TIMESTAMP + Sequencer.GATEWAY_ACTIVATION_TIMEOUT_NS;
-        assertEquals(Sequencer.NO_FRAME, seq.pendingGatewayActivationTimeout(deadline));
+        seq.clusterHeartbeat(deadline);
+        assertNothingBehindHeartbeat("an answered activation synthesizes nothing");
         // Disarmed, not merely quiet: a healthy primary must not be demoted one deadline later.
-        assertEquals(Sequencer.NO_FRAME,
-                     seq.pendingGatewayActivationTimeout(deadline + 10 * Sequencer.GATEWAY_ACTIVATION_TIMEOUT_NS));
-        assertEquals(globalSeqNo, seq.globalSeqNo(), "an answered activation synthesizes nothing");
+        seq.clusterHeartbeat(deadline + 10 * Sequencer.GATEWAY_ACTIVATION_TIMEOUT_NS);
+        assertNothingBehindHeartbeat("an answered activation is disarmed");
     }
 
     @Test
@@ -1125,70 +1073,66 @@ class SequencerTest {
     void handoverArmsTheDeadlineOnTheInstanceItNames() {
         // A whole gateway tier that is down must converge on whichever instance comes up first, not on
         // whichever the cluster happened to designate before they all went away.
-        final Sequencer seq = new Sequencer();
+        final Sequencer seq = new Sequencer(0, frames);
         final MutableDirectBuffer buf = new ExpandableArrayBuffer(512);
         seq.sequenceMessage(buf, 0, encodeIngressGatewayRegistered(buf, 0, 5, SOURCE_ID, "GW-A", 0, 1), SESSION_ID,
                             TIMESTAMP);
         seq.sequenceMessage(buf, 0, encodeIngressGatewayRegistered(buf, 0, 6, SOURCE_ID, "GW-B", 1, 0), SESSION_ID,
                             TIMESTAMP);
-        seq.pendingGatewayActivation(TIMESTAMP);
 
         final long first = TIMESTAMP + Sequencer.GATEWAY_ACTIVATION_TIMEOUT_NS;
-        assertEquals(6, decodeGatewayActive(seq.buffer(), seq.pendingGatewayActivationTimeout(first)).gatewayId());
+        seq.clusterHeartbeat(first);
+        assertEquals(6, lastGatewayActive());
 
-        assertEquals(Sequencer.NO_FRAME, seq.pendingGatewayActivationTimeout(first + 1),
-                     "the hand-over restarts the deadline rather than firing again immediately");
+        seq.clusterHeartbeat(first + 1);
+        assertNothingBehindHeartbeat("the hand-over restarts the deadline rather than firing again immediately");
 
-        final long second = first + Sequencer.GATEWAY_ACTIVATION_TIMEOUT_NS;
-        assertEquals(5, decodeGatewayActive(seq.buffer(), seq.pendingGatewayActivationTimeout(second)).gatewayId(),
+        seq.clusterHeartbeat(first + Sequencer.GATEWAY_ACTIVATION_TIMEOUT_NS);
+        assertEquals(5, lastGatewayActive(),
                      "the standby did not start either — the role goes back rather than stopping here");
     }
 
     @Test
     @DisplayName("an unanswered activation with no sibling to hand over to fails closed")
     void unansweredActivationWithNoSiblingFailsClosed() {
-        final Sequencer seq = new Sequencer();
+        final Sequencer seq = new Sequencer(0, frames);
         final MutableDirectBuffer buf = new ExpandableArrayBuffer(512);
         seq.sequenceMessage(buf, 0, encodeIngressGatewayRegistered(buf, 0, 5, SOURCE_ID, "GW-A", 0, 0), SESSION_ID,
                             TIMESTAMP);
-        seq.pendingGatewayActivation(TIMESTAMP);
-        final long globalSeqNo = seq.globalSeqNo();
 
         final long deadline = TIMESTAMP + Sequencer.GATEWAY_ACTIVATION_TIMEOUT_NS;
-        assertEquals(Sequencer.NO_PROMOTION_TARGET, seq.pendingGatewayActivationTimeout(deadline),
-                     "distinct from NO_FRAME: an activation WAS missed, there is just nobody to hand it to");
-        assertEquals(globalSeqNo, seq.globalSeqNo(), "a hand-over with no target consumes no sequence number");
-        assertEquals(Sequencer.NO_FRAME,
-                     seq.pendingGatewayActivationTimeout(deadline + Sequencer.GATEWAY_ACTIVATION_TIMEOUT_NS),
+        seq.clusterHeartbeat(deadline);
+        assertNothingBehindHeartbeat("an activation was missed, and there is nobody to hand it to");
+        assertEquals(1L, seq.gatewayPromotionFailedCount(), "which is counted");
+        seq.clusterHeartbeat(deadline + Sequencer.GATEWAY_ACTIVATION_TIMEOUT_NS);
+        assertEquals(1L, seq.gatewayPromotionFailedCount(),
                      "reported once — a sole instance has nothing to re-designate to");
     }
 
     @Test
     @DisplayName("a promotion on session close arms the deadline too")
     void promotionOnSessionCloseArmsTheDeadline() {
-        final Sequencer seq = new Sequencer();
+        final Sequencer seq = new Sequencer(0, frames);
         final MutableDirectBuffer buf = new ExpandableArrayBuffer(512);
         seq.sequenceMessage(buf, 0, encodeIngressGatewayRegistered(buf, 0, 5, SOURCE_ID, "GW-A", 0, 1), SESSION_ID,
                             TIMESTAMP);
         seq.sequenceMessage(buf, 0, encodeIngressGatewayRegistered(buf, 0, 6, SOURCE_ID, "GW-B", 1, 0), SESSION_ID,
                             TIMESTAMP);
-        seq.pendingGatewayActivation(TIMESTAMP); // designates 5
 
         final long gatewaySession = 0xA11CEL;
         seq.sequenceMessage(buf, 0, encodeIngressGatewayStarted(buf, 0, 5), gatewaySession, TIMESTAMP);
-        assertNotEquals(Sequencer.NO_FRAME, seq.sessionClosed(gatewaySession, TIMESTAMP)); // promotes 6
+        assertTrue(seq.sessionClosed(gatewaySession, TIMESTAMP)); // promotes 6
 
         // The standby it promoted has to declare itself started like any other designated instance —
         // otherwise a crash of the primary while the standby is also down leaves the same dead end.
-        final int handover = seq.pendingGatewayActivationTimeout(TIMESTAMP + Sequencer.GATEWAY_ACTIVATION_TIMEOUT_NS);
-        assertNotEquals(Sequencer.NO_FRAME, handover);
-        assertEquals(5, decodeGatewayActive(seq.buffer(), handover).gatewayId());
+        seq.clusterHeartbeat(TIMESTAMP + Sequencer.GATEWAY_ACTIVATION_TIMEOUT_NS);
+        assertEquals(5, lastGatewayActive());
     }
 
     @Test
     @DisplayName("a GatewayStarted naming an instance no list row does is rejected")
     void unknownGatewayInstancePromotesNothing() {
-        final Sequencer seq = new Sequencer();
+        final Sequencer seq = new Sequencer(0, frames);
         final MutableDirectBuffer buf = new ExpandableArrayBuffer(512);
         seq.sequenceMessage(buf, 0, encodeIngressGatewayRegistered(buf, 0, 5, SOURCE_ID, "GW-A", 0, 1), SESSION_ID,
                             TIMESTAMP);
@@ -1196,12 +1140,11 @@ class SequencerTest {
                             TIMESTAMP);
 
         final long rogueSession = 0xC0FFEEL;
-        assertEquals(Sequencer.NO_FRAME,
-                     seq.sequenceMessage(buf, 0, encodeIngressGatewayStarted(buf, 0, 99), rogueSession, TIMESTAMP),
-                     "S-6 case 1 is total: a gatewayId the list does not name is rejected whatever it carries");
+        assertFalse(seq.sequenceMessage(buf, 0, encodeIngressGatewayStarted(buf, 0, 99), rogueSession, TIMESTAMP),
+                    "S-6 case 1 is total: a gatewayId the list does not name is rejected whatever it carries");
 
-        assertEquals(Sequencer.NO_FRAME, seq.sessionClosed(rogueSession, TIMESTAMP + 1),
-                     "the rejected frame bound nothing, so the close is not an active gateway's");
+        assertFalse(seq.sessionClosed(rogueSession, TIMESTAMP + 1),
+                    "the rejected frame bound nothing, so the close is not an active gateway's");
     }
 
     // ── Two logical gateways ──────────────────────────────────────────────────
@@ -1212,37 +1155,28 @@ class SequencerTest {
     @Test
     @DisplayName("the bootstrap activates the rank-0 primary of every logical gateway, not just one")
     void bootstrapActivatesEveryLogicalGatewaysPrimary() {
-        final Sequencer seq = new Sequencer();
+        final Sequencer seq = new Sequencer(0, frames);
         final MutableDirectBuffer buf = new ExpandableArrayBuffer(512);
-        final int endLength = loadTwoPairs(seq, buf);
+        loadTwoPairs(seq, buf);
 
-        assertEquals(4L, globalSeqNoOf(seq, endLength)); // 4 list rows
+        assertEquals(6, frames.count(), "4 list rows, then one activation per logical gateway");
+        assertEquals(4L, frameHeaderOf(frames.frame(3)).globalSeqNo());
 
-        // One frame per call, in list order, on consecutive globalSeqNos — the adapter drains it.
-        final int first = seq.pendingGatewayActivation(TIMESTAMP + 1);
-        final GatewayActiveDecoder clientPair = decodeGatewayActive(seq.buffer(), first);
-        assertEquals(5, clientPair.gatewayId());
-        assertEquals(5L, frameHeaderOf(seq.buffer()).globalSeqNo());
-
-        final int second = seq.pendingGatewayActivation(TIMESTAMP + 1);
-        final GatewayActiveDecoder secondPair = decodeGatewayActive(seq.buffer(), second);
+        // In list order, on consecutive globalSeqNos behind the last row.
+        assertEquals(5, gatewayActiveAt(4));
+        assertEquals(5L, frameHeaderOf(frames.frame(4)).globalSeqNo());
         // Not the client pair's standby: a second rank-0 row used to overwrite the first designation, so
         // whichever logical gateway loaded last took the only bootstrap and the other never got one.
-        assertEquals(8, secondPair.gatewayId());
-        assertEquals(6L, frameHeaderOf(seq.buffer()).globalSeqNo());
-
-        assertEquals(Sequencer.NO_FRAME, seq.pendingGatewayActivation(TIMESTAMP + 1),
-                     "two logical gateways, two activations");
+        assertEquals(8, gatewayActiveAt(5));
+        assertEquals(6L, frameHeaderOf(frames.frame(5)).globalSeqNo());
     }
 
     @Test
     @DisplayName("losing one logical gateway's active instance promotes only its own sibling")
     void logicalGatewaysPromoteIndependently() {
-        final Sequencer seq = new Sequencer();
+        final Sequencer seq = new Sequencer(0, frames);
         final MutableDirectBuffer buf = new ExpandableArrayBuffer(512);
         loadTwoPairs(seq, buf);
-        seq.pendingGatewayActivation(TIMESTAMP); // designates 5
-        seq.pendingGatewayActivation(TIMESTAMP); // designates 8
 
         final long clientSession = 0xA11CEL;
         final long secondSession = 0xB0B0L;
@@ -1250,14 +1184,16 @@ class SequencerTest {
         seq.sequenceMessage(buf, 0, encodeIngressGatewayStarted(buf, 0, 8, SECOND_SOURCE_ID), secondSession,
                             TIMESTAMP);
 
-        final int promotion = seq.sessionClosed(secondSession, TIMESTAMP + 1);
-        assertEquals(9, decodeGatewayActive(seq.buffer(), promotion).gatewayId(),
+        assertTrue(seq.sessionClosed(secondSession, TIMESTAMP + 1));
+        final int promotion = frames.lastLength();
+        assertEquals(9, decodeGatewayActive(frames.last(), promotion).gatewayId(),
                      "the second pair's standby — promotionTarget filters on the closed instance's own "
                          + "gatewaySourceId");
 
         // The client pair is untouched: its active instance never lost anything.
-        final int clientPromotion = seq.sessionClosed(clientSession, TIMESTAMP + 2);
-        assertEquals(6, decodeGatewayActive(seq.buffer(), clientPromotion).gatewayId());
+        assertTrue(seq.sessionClosed(clientSession, TIMESTAMP + 2));
+        final int clientPromotion = frames.lastLength();
+        assertEquals(6, decodeGatewayActive(frames.last(), clientPromotion).gatewayId());
     }
 
     @Test
@@ -1266,55 +1202,56 @@ class SequencerTest {
         // The regression this guards: one outstanding activation for the whole cluster meant the second
         // bootstrap overwrote the first's deadline, so a designated primary that never arrived was never
         // handed over — silently, and only for whichever pair happened to be designated first.
-        final Sequencer seq = new Sequencer();
+        final Sequencer seq = new Sequencer(0, frames);
         final MutableDirectBuffer buf = new ExpandableArrayBuffer(512);
-        loadTwoPairs(seq, buf);
-        assertNotEquals(Sequencer.NO_FRAME, seq.pendingGatewayActivation(TIMESTAMP)); // designates 5
-        assertNotEquals(Sequencer.NO_FRAME, seq.pendingGatewayActivation(TIMESTAMP)); // designates 8
+        loadTwoPairs(seq, buf); // designates 5 and 8
 
         final long deadline = TIMESTAMP + Sequencer.GATEWAY_ACTIVATION_TIMEOUT_NS;
-        assertEquals(Sequencer.NO_FRAME, seq.pendingGatewayActivationTimeout(deadline - 1));
+        seq.clusterHeartbeat(deadline - 1);
+        assertNothingBehindHeartbeat("neither is due yet");
 
-        // Both come due on the same heartbeat, and both are handed over — the adapter drains this too.
-        assertEquals(6, decodeGatewayActive(seq.buffer(), seq.pendingGatewayActivationTimeout(deadline)).gatewayId());
-        assertEquals(9, decodeGatewayActive(seq.buffer(), seq.pendingGatewayActivationTimeout(deadline)).gatewayId());
-        assertEquals(Sequencer.NO_FRAME, seq.pendingGatewayActivationTimeout(deadline),
-                     "both hand-overs restarted their own deadline");
+        // Both come due on the same heartbeat, and both are handed over behind it.
+        seq.clusterHeartbeat(deadline);
+        assertEquals(6, gatewayActiveAt(frames.count() - 2));
+        assertEquals(9, lastGatewayActive());
+        seq.clusterHeartbeat(deadline);
+        assertNothingBehindHeartbeat("both hand-overs restarted their own deadline");
     }
 
     @Test
     @DisplayName("one logical gateway answering its activation does not excuse the other")
     void answeringOneActivationLeavesTheOtherOnTheClock() {
-        final Sequencer seq = new Sequencer();
+        final Sequencer seq = new Sequencer(0, frames);
         final MutableDirectBuffer buf = new ExpandableArrayBuffer(512);
-        loadTwoPairs(seq, buf);
-        seq.pendingGatewayActivation(TIMESTAMP); // designates 5
-        seq.pendingGatewayActivation(TIMESTAMP); // designates 8
+        loadTwoPairs(seq, buf); // designates 5 and 8
 
         // Only the client pair's primary comes up.
         seq.sequenceMessage(buf, 0, encodeIngressGatewayStarted(buf, 0, 5), 0xA11CEL, TIMESTAMP + 1);
 
         final long deadline = TIMESTAMP + Sequencer.GATEWAY_ACTIVATION_TIMEOUT_NS;
-        assertEquals(9, decodeGatewayActive(seq.buffer(), seq.pendingGatewayActivationTimeout(deadline)).gatewayId(),
+        seq.clusterHeartbeat(deadline);
+        assertEquals(9, lastGatewayActive(),
                      "the second pair is still overdue, and is walked past the answered entry to reach it");
-        assertEquals(Sequencer.NO_FRAME, seq.pendingGatewayActivationTimeout(deadline),
-                     "the healthy pair is disarmed, not merely quiet");
+        final int heartbeat = frames.count() - 2;
+        assertEquals(SystemFrame.CLUSTER_HEARTBEAT, systemHeaderOf(frames.frame(heartbeat)).systemEventType(),
+                     "and the client pair is not handed over");
+        seq.clusterHeartbeat(deadline);
+        assertNothingBehindHeartbeat("the healthy pair is disarmed, not merely quiet");
     }
 
     /**
      * Two active/standby pairs: 5/6 under SOURCE_ID, 8/9 under SECOND_SOURCE_ID, in list order.
-     * One complete list run — remaining counts down to 0 on the last row. Returns that row's frame
-     * length, since it is the frame the bootstrap is synthesized behind.
+     * One complete list run — remaining counts down to 0 on the last row, which the bootstrap follows.
      */
-    private static int loadTwoPairs(final Sequencer seq, final MutableDirectBuffer buf) {
+    private static void loadTwoPairs(final Sequencer seq, final MutableDirectBuffer buf) {
         seq.sequenceMessage(buf, 0, encodeIngressGatewayRegistered(buf, 0, 5, SOURCE_ID, "GW-A", 0, 3), SESSION_ID,
                             TIMESTAMP);
         seq.sequenceMessage(buf, 0, encodeIngressGatewayRegistered(buf, 0, 6, SOURCE_ID, "GW-B", 1, 2), SESSION_ID,
                             TIMESTAMP);
         seq.sequenceMessage(buf, 0, encodeIngressGatewayRegistered(buf, 0, 8, SECOND_SOURCE_ID, "GW2-A", 0, 1),
                             SESSION_ID, TIMESTAMP);
-        return seq.sequenceMessage(buf, 0, encodeIngressGatewayRegistered(buf, 0, 9, SECOND_SOURCE_ID, "GW2-B", 1, 0),
-                                   SESSION_ID, TIMESTAMP);
+        seq.sequenceMessage(buf, 0, encodeIngressGatewayRegistered(buf, 0, 9, SECOND_SOURCE_ID, "GW2-B", 1, 0),
+                            SESSION_ID, TIMESTAMP);
     }
 
     // ── Allocation ────────────────────────────────────────────────────────────
@@ -1322,11 +1259,10 @@ class SequencerTest {
     @Test
     @DisplayName("once compiled, sequencing a frame allocates nothing, on a gateway's session or any other")
     void sequencingAllocatesNothingOnceCompiled() {
-        final Sequencer seq = new Sequencer();
+        final Sequencer seq = new Sequencer(0, (buffer, length) -> { });
         final MutableDirectBuffer buf = new ExpandableArrayBuffer(512);
         seq.sequenceMessage(buf, 0, encodeIngressGatewayRegistered(buf, 0, 5, SOURCE_ID, "GW-A", 0, 0), SESSION_ID,
                             TIMESTAMP);
-        seq.pendingGatewayActivation(TIMESTAMP); // designates 5
         final long gatewaySession = 0xA11CEL; // above 127, as SESSION_ID is: the Long cache holds neither
         seq.sequenceMessage(buf, 0, encodeIngressGatewayStarted(buf, 0, 5), gatewaySession, TIMESTAMP);
         final int ingressLength = encodeIngressPayload(ingress, 0);
@@ -1410,7 +1346,7 @@ class SequencerTest {
         return encodeIngressConnectionOpened(buffer, offset, CONNECTION_ID);
     }
 
-    /** As above, for the one connection identity {@code connectedClientCount} keys its gauge on. */
+    /** As above, for a named connection. */
     private static int encodeIngressConnectionOpened(final MutableDirectBuffer buffer, final int offset,
                                                     final int connectionId) {
         final MutableDirectBuffer payload = new ExpandableArrayBuffer(64);
@@ -1555,14 +1491,25 @@ class SequencerTest {
         return decoder;
     }
 
-    private long globalSeqNoOf(final int length) {
-        return globalSeqNoOf(sequencer, length);
+    /** Reads globalSeqNo off the frame published last, after checking the call sequenced one. */
+    private long globalSeqNoOf(final boolean sequenced) {
+        assertTrue(sequenced);
+        return frameHeaderOf(frames.last()).globalSeqNo();
     }
 
-    /** Reads globalSeqNo off the frame just encoded — its header, at a fixed offset past the framing one. */
-    private static long globalSeqNoOf(final Sequencer target, final int length) {
-        assertNotEquals(Sequencer.NO_FRAME, length);
-        return frameHeaderOf(target.buffer()).globalSeqNo();
+    /** The {@code gatewayId} of the {@code GatewayActive} published last. */
+    private int lastGatewayActive() {
+        return gatewayActiveAt(frames.count() - 1);
+    }
+
+    /** The {@code gatewayId} of the {@code GatewayActive} at {@code index}. */
+    private int gatewayActiveAt(final int index) {
+        return decodeGatewayActive(frames.frame(index), frames.length(index)).gatewayId();
+    }
+
+    /** Asserts the frame published last is a heartbeat: nothing ran off it. */
+    private void assertNothingBehindHeartbeat(final String message) {
+        assertEquals(SystemFrame.CLUSTER_HEARTBEAT, systemHeaderOf(frames.last()).systemEventType(), message);
     }
 
     /** The frame's own header — the identity every message relies on, since it carries none itself. */

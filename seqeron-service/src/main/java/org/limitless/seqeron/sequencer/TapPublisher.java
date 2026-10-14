@@ -1,6 +1,7 @@
 package org.limitless.seqeron.sequencer;
 
 import java.util.concurrent.TimeUnit;
+import org.agrona.DirectBuffer;
 import org.limitless.seqeron.util.Logger;
 
 /**
@@ -15,10 +16,10 @@ public final class TapPublisher {
     /** Everything {@link TapPublisher} cannot do itself; {@link SequencerService} implements it against Aeron. */
     public interface Actions {
         /**
-         * Offers the frame at offset 0 of the sequencer's buffer onto the tap.
+         * Offers the frame at offset 0 of {@code buffer} onto the tap.
          * @return the raw Aeron offer result — negative is a failure, classified by {@link #isUnrecoverable}
          */
-        long offerFrame(int length);
+        long offerFrame(DirectBuffer buffer, int length);
 
         /** Whether an offer result is one no amount of retrying can clear (CLOSED / MAX_POSITION_EXCEEDED). */
         boolean isUnrecoverable(long offerResult);
@@ -109,20 +110,21 @@ public final class TapPublisher {
     }
 
     /**
-     * Publishes the frame in the sequencer's buffer onto the tap. Spins on back-pressure, since a dropped
+     * Publishes a frame onto the tap. Spins on back-pressure, since a dropped
      * frame is an unrecoverable gap, but terminates the node once the recording is provably not draining.
      * The only exits are a landed offer and process death.
      *
      * <p>{@code offer}, not {@code tryClaim}: a claim saves one copy, only below the tap's MTU, of a frame the
      * cluster has already logged, replicated and archived, and an aborted claim pads this node's recording
      * alone, moving its positions off the other members' that {@code TapRelay} resumes at.
-     * @param length of the encoded frame at offset 0 of the sequencer's buffer
+     * @param buffer holding the frame from offset 0
+     * @param length of the frame
      */
-    public void emit(final int length) {
+    public void emit(final DirectBuffer buffer, final int length) {
         int spins = 0;
         long nextAlertNs = 0;
         long result;
-        while ((result = actions.offerFrame(length)) < 0) {
+        while ((result = actions.offerFrame(buffer, length)) < 0) {
             if (actions.isUnrecoverable(result)) {
                 fatalTapFailure("tap publication failed: " + result);
             }

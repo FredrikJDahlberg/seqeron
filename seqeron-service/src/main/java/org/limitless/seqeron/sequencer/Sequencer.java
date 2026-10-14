@@ -4,8 +4,8 @@ import java.util.concurrent.TimeUnit;
 import org.agrona.DirectBuffer;
 import org.agrona.ExpandableDirectByteBuffer;
 import org.agrona.MutableDirectBuffer;
+import org.agrona.collections.IntArrayList;
 import org.agrona.collections.Long2LongHashMap;
-import org.agrona.collections.LongHashSet;
 import org.limitless.seqeron.protocol.FrameLayer;
 import org.limitless.seqeron.protocol.SystemFrame;
 import org.limitless.seqeron.sbe.frame.ClusterHeartbeatEncoder;
@@ -30,9 +30,9 @@ import org.limitless.seqeron.util.Logger;
 
 /**
  * The sequencer's replicated state machine, free of every Aeron type: {@code globalSeqNo}, the gateway
- * list and election, the snapshot rounds, and every frame encode. Each {@code sequence*}/event method encodes one frame into
- * {@link #buffer()} from offset 0 and returns its length, or {@link #NO_FRAME}; {@link SequencerService}
- * publishes it and decides nothing.
+ * list and election, the snapshot rounds, and every frame encode. Each event method hands its frames to
+ * the {@link FrameSink} in {@code globalSeqNo} order, the event's own frame first and whatever it triggered
+ * behind it; {@link SequencerService} publishes them and decides nothing.
  *
  * <p>Sequencing copies the 18-byte ingress header, appends the 16-byte stamp and copies the payload through
  * unopened (<b>E-1</b>); no {@code payloadId} is decoded, only the system payloads state derives from
@@ -42,20 +42,20 @@ import org.limitless.seqeron.util.Logger;
  * every node encodes byte-identical frames. Single-threaded: driven only from the cluster's service thread.
  */
 public final class Sequencer {
+    /** Where every frame goes, in {@code globalSeqNo} order. */
+    public interface FrameSink {
+        /**
+         * @param buffer holding the frame from offset 0; reused for the next frame once this returns
+         * @param length of the frame
+         */
+        void publish(DirectBuffer buffer, int length);
+    }
+
     /**
      * {@code header.sourceId}/{@code connectionId}/{@code sessionId} of the frames the sequencer synthesizes
      * (<b>F-4</b>); a heartbeat or an election has no producer. Refused on ingress.
      */
     public static final int NO_SOURCE_ID = -1;
-
-    /** {@link #pendingGatewayActivation} and friends return this when the event produces no frame. */
-    public static final int NO_FRAME = 0;
-
-    /**
-     * {@link #sessionClosed}'s answer when an active gateway's session closed and no standby exists, so the
-     * caller can tell a gateway tier left with no active instance from a session that was never a gateway's.
-     */
-    public static final int NO_PROMOTION_TARGET = -1;
 
     /** No gateway instance. */
     private static final int NO_GATEWAY_ID = -1;
@@ -65,7 +65,7 @@ public final class Sequencer {
 
     /**
      * How long, in cluster time, a designated instance has to answer {@code GatewayActive} with {@code
-     * GatewayStarted} before {@link #pendingGatewayActivationTimeout} hands the role to a sibling. It is a
+     * GatewayStarted} before {@link #clusterHeartbeat} hands the role to a sibling. It is a
      * failover deadline, so it does not cover a cold start's replay: a pair still replaying trades the role
      * every period, one frame each, until one catches up. An instance that has answered is never swapped out.
      */
@@ -111,9 +111,24 @@ public final class Sequencer {
     private final SnapshotStartedEncoder snapshotStartedEncoder = new SnapshotStartedEncoder();
 
     private final MutableDirectBuffer encodeBuffer = new ExpandableDirectByteBuffer(4096);
+    private final FrameSink sink;
 
-    /** One Gateway row: an instance ({@code gatewayId}) of a logical gateway ({@code gatewaySourceId}). */
-    private record GatewayRow(int gatewayId, int gatewaySourceId, short preferenceRank) { }
+    /**
+     * One Gateway row: an instance ({@code gatewayId}) of a logical gateway ({@code gatewaySourceId}), and the
+     * session its latest {@code GatewayStarted} bound, or {@link #NO_BINDING}.
+     */
+    private static final class GatewayRow {
+        final int gatewayId;
+        int gatewaySourceId;
+        short preferenceRank;
+        long boundSession = NO_BINDING;
+
+        GatewayRow(final int gatewayId, final int gatewaySourceId, final short preferenceRank) {
+            this.gatewayId = gatewayId;
+            this.gatewaySourceId = gatewaySourceId;
+            this.preferenceRank = preferenceRank;
+        }
+    }
 
     /**
      * Every list row seen, in log order, de-duplicated on {@code gatewayId} so a re-published list
@@ -122,14 +137,12 @@ public final class Sequencer {
     private final java.util.List<GatewayRow> gatewayRows = new java.util.ArrayList<>();
 
     /**
-     * The {@code gatewayId}s still to be designated: the rank-0 row of each logical gateway behind the first
-     * complete list, and whatever {@code GatewayActivationRequested} has since named. One bootstrap entry per
-     * logical gateway, since pairs elect independently; empty when no row is rank 0 (fail closed).
+     * The {@code gatewayId}s the frame being sequenced designates, published behind it: the rank-0 row of
+     * each logical gateway behind the first complete list, or the one a {@code GatewayActivationRequested}
+     * names. One bootstrap entry per logical gateway, since pairs elect independently; none when no row is
+     * rank 0 (fail closed).
      */
-    private final java.util.ArrayDeque<QueuedActivation> activationQueue = new java.util.ArrayDeque<>();
-
-    /** A queued designation, and whether it is the bootstrap's — see {@link #bootstrapActivationEmitted}. */
-    private record QueuedActivation(int gatewayId, boolean bootstrap) { }
+    private final IntArrayList activationQueue = new IntArrayList();
 
     // Replicated state: advanced identically on every node.
 
@@ -138,47 +151,37 @@ public final class Sequencer {
 
     /**
      * Ingress frames refused by §9.2 since this node started (<b>S-7</b>). Reaches no frame, but nodes that
-     * applied the same log prefix must agree on it; mirrored onto the operator counter of the same name.
+     * applied the same log prefix must agree on it. The service's operator counter counts these and the
+     * messages that arrive with no client session, which never reach the sequencer.
      */
     private long rejectedFrameCount = 0;
 
     /**
-     * The cluster session each active gateway instance declared itself on, to its {@code gatewayId}, so
-     * {@link #sessionClosed} knows which instance it lost. Only {@code GatewayStarted} binds a session:
-     * {@code header.sourceId} is a routing id other clients legitimately echo, so it proves nothing.
+     * Every session a {@code GatewayStarted} bound, to that frame's {@code gatewayId}, until the session closes.
+     * Only {@code GatewayStarted} binds a session: {@code header.sourceId} is a routing id other clients
+     * legitimately echo, so it proves nothing. A session that is not its instance's {@link
+     * GatewayRow#boundSession} was replaced by a later {@code GatewayStarted} (<b>S-6</b> case 3).
      */
-    private final Long2LongHashMap activeGatewaySession = new Long2LongHashMap(NO_BINDING);
-
-    /**
-     * Sessions whose binding a later {@code GatewayStarted} for the same {@code gatewayId} replaced, until they
-     * close: whatever still speaks on one is not the instance the log now names (<b>S-6</b> case 3).
-     */
-    private final LongHashSet deposedGatewaySessions = new LongHashSet();
+    private final Long2LongHashMap sessionGateway = new Long2LongHashMap(NO_BINDING);
 
     /** Each logical gateway's designated instance: {@code gatewaySourceId} to the last {@code GatewayActive}'s. */
     private final Long2LongHashMap designatedGateway = new Long2LongHashMap(NO_BINDING);
-
-    /**
-     * Open connections per gateway: {@code sourceId} to the {@code connectionId}s with a {@code
-     * ConnectionOpened} and no {@code ConnectionClosed} yet. Never iterated, so hash order reaches no frame.
-     */
-    private final java.util.Map<Integer, java.util.Set<Integer>> openConnections = new java.util.HashMap<>();
-
-    /**
-     * {@link #openConnections}'s total size. Moves only when a connection enters or leaves that map, so an
-     * unmatched close or a repeated open cannot skew it; see {@link #releaseStaleConnections}.
-     */
-    private int connectedClientCount = 0;
 
     /** True once the first complete list queued its bootstrap run; a re-published list designates nobody. */
     private boolean bootstrapActivationQueued = false;
 
     /**
-     * True once a <em>bootstrap</em> {@code GatewayActive} has left {@link #pendingGatewayActivation}: the day
-     * is open. Separate from {@link #bootstrapActivationQueued} because a list with no rank-0 row queues
-     * nothing, and a manual activation drains through the same queue without opening the day.
+     * True once a <em>bootstrap</em> {@code GatewayActive} has been published: the day is open. Separate from
+     * {@link #bootstrapActivationQueued} because a list with no rank-0 row designates nobody, and a manual
+     * activation goes through the same queue without opening the day.
      */
     private boolean bootstrapActivationEmitted = false;
+
+    /** Standbys promoted, on a session close or a missed activation deadline; the operator counter. */
+    private long gatewayPromotionCount = 0;
+
+    /** Promotions that found no standby to hand the role to; the operator counter. */
+    private long gatewayPromotionFailedCount = 0;
 
     /** An outstanding {@code GatewayActive}: which instance was named, and when it stops being excused. */
     private record PendingActivation(int gatewaySourceId, int gatewayId, long deadline) { }
@@ -202,21 +205,19 @@ public final class Sequencer {
     /** When the interval counts from: the last {@code SnapshotStarted}, or the policy row before any round. */
     private long lastSnapshotStart = 0;
 
-    /** A sequenced {@code SnapshotRequested} not yet answered; {@link #pendingSnapshotStart} answers it. */
+    /** A {@code SnapshotRequested} being sequenced; its {@code SnapshotStarted} is published behind it. */
     private boolean snapshotRequested = false;
 
+    /** This node's memberId, for the log lines only. */
+    private final int memberId;
+
     /**
-     * This node's memberId, for the rejection log line only. Set rather than constructed because {@code
-     * cluster.memberId()} is not known yet when this is built; null renders as no member context.
+     * @param memberId this node's cluster memberId, for the log lines only
+     * @param sink     where every frame goes
      */
-    private Integer memberId;
-
-    public Sequencer() {
-    }
-
-    /** The buffer every encode writes into, from offset 0. Valid up to the length just returned. */
-    public MutableDirectBuffer buffer() {
-        return encodeBuffer;
+    public Sequencer(final int memberId, final FrameSink sink) {
+        this.memberId = memberId;
+        this.sink = sink;
     }
 
     /** The last assigned sequence number; 0 before anything has been sequenced. */
@@ -224,54 +225,36 @@ public final class Sequencer {
         return globalSeqNo;
     }
 
-    /** Count of TCP clients currently connected across every gateway; 0 before any {@code ConnectionOpened}. */
-    public int connectedClientCount() {
-        return connectedClientCount;
-    }
-
     /** Ingress frames refused by §9.2 since this node started; see {@link #rejectedFrameCount}. */
     public long rejectedFrameCount() {
         return rejectedFrameCount;
     }
 
-    /**
-     * Names this node in the rejection log line; see {@link #memberId}.
-     * @param memberId this node's cluster memberId
-     */
-    public void memberId(final int memberId) {
-        this.memberId = memberId;
+    /** Standbys promoted since this node started. */
+    public long gatewayPromotionCount() {
+        return gatewayPromotionCount;
+    }
+
+    /** Promotions since this node started that found no standby. */
+    public long gatewayPromotionFailedCount() {
+        return gatewayPromotionFailedCount;
     }
 
     /**
-     * Re-stamps one ingress frame as its sequenced counterpart, copying its payload through verbatim.
+     * Re-stamps one ingress frame of either family as its sequenced counterpart, copying its payload through
+     * verbatim, then publishes whatever it triggered: the {@code GatewayActive}s it designates, then the
+     * {@code SnapshotStarted} it requests. Validates against §9.2 in §9.2's order — each condition
+     * establishes what the next may read.
      *
      * @param buffer    holding the ingress message
      * @param offset    of the ingress message's outer {@code MessageHeader}
      * @param length    of the whole ingress message, framing header included
      * @param sessionId Aeron Cluster session the message arrived on
      * @param timestamp cluster consensus time to stamp
-     * @return length of the encoded frame in {@link #buffer()}, or {@link #NO_FRAME} if the ingress
-     *     message was malformed and skipped
+     * @return whether the frame was sequenced; false if it was refused
      */
-    public int sequenceMessage(final DirectBuffer buffer, final int offset, final int length, final long sessionId,
-                               final long timestamp) {
-        if (length < MessageHeaderDecoder.ENCODED_LENGTH) {
-            return reject("length " + length + " is below the " + MessageHeaderDecoder.ENCODED_LENGTH +
-                          "-byte framing header");
-        }
-        msgHeaderDecoder.wrap(buffer, offset);
-        if (msgHeaderDecoder.schemaId() != MessageHeaderDecoder.SCHEMA_ID) {
-            return reject("schemaId " + msgHeaderDecoder.schemaId() + " is not " + MessageHeaderDecoder.SCHEMA_ID);
-        }
-        return sequenceFrame(buffer, offset, length, sessionId, timestamp);
-    }
-
-    /**
-     * Validates one ingress frame of either family against §9.2, in §9.2's order — each condition
-     * establishes what the next may read — then re-stamps it.
-     */
-    private int sequenceFrame(final DirectBuffer buffer, final int offset, final int length, final long sessionId,
-                              final long timestamp) {
+    public boolean sequenceMessage(final DirectBuffer buffer, final int offset, final int length, final long sessionId,
+                                   final long timestamp) {
         if (length < FrameLayer.MIN_INGRESS_LENGTH) {
             return reject("length " + length + " is below the " + FrameLayer.MIN_INGRESS_LENGTH +
                           "-byte minimum framing");
@@ -279,6 +262,10 @@ public final class Sequencer {
         if (length > FrameLayer.MAX_INGRESS_LENGTH) {
             return reject("length " + length + " is above the " + FrameLayer.MAX_INGRESS_LENGTH +
                           "-byte maximum framing");
+        }
+        msgHeaderDecoder.wrap(buffer, offset);
+        if (msgHeaderDecoder.schemaId() != MessageHeaderDecoder.SCHEMA_ID) {
+            return reject("schemaId " + msgHeaderDecoder.schemaId() + " is not " + MessageHeaderDecoder.SCHEMA_ID);
         }
         if (msgHeaderDecoder.version() != MessageHeaderDecoder.SCHEMA_VERSION) {
             return reject("version " + msgHeaderDecoder.version() + " is not " +
@@ -308,8 +295,6 @@ public final class Sequencer {
         if (sourceId == NO_SOURCE_ID) {
             return reject("sourceId " + NO_SOURCE_ID + " is reserved for the cluster's own frames");
         }
-        final int connectionId = frameHeaderDecoder.connectionId();
-
         if (system) {
             systemHeaderDecoder.wrap(buffer, headerOffset);
             final int systemEventType = systemHeaderDecoder.systemEventType();
@@ -321,10 +306,6 @@ public final class Sequencer {
                 return reject("systemEventType " + systemEventType + " payload of " + bodyLength +
                               " bytes is short of " + blockLength);
             }
-            if (!applySystem(buffer, prefixOffset + UnsequencedDecoder.payloadHeaderLength(), systemEventType,
-                             sourceId, connectionId, sessionId, timestamp)) {
-                return NO_FRAME;
-            }
         } else {
             final int payloadId = frameHeaderDecoder.payloadId();
             if (payloadId == 0) {
@@ -334,10 +315,14 @@ public final class Sequencer {
                 return reject("payloadId " + RETIRED_CORE_ID +
                               " is core's retired id and carries no application protocol");
             }
-            if (deposed(sessionId)) {
-                return reject("payloadId " + payloadId + " arrived on a session whose gateway instance is no "
-                              + "longer designated");
-            }
+        }
+
+        if (deposed(sessionId)) {
+            return reject("a frame arrived on a session whose gateway instance is no longer designated");
+        }
+        if (system && !applySystem(buffer, prefixOffset + UnsequencedDecoder.payloadHeaderLength(),
+                                   systemHeaderDecoder.systemEventType(), sourceId, sessionId, timestamp)) {
+            return false;
         }
 
         final long globalSeq = ++globalSeqNo;
@@ -354,7 +339,19 @@ public final class Sequencer {
             .timestamp(timestamp);
         encodeBuffer.putBytes(TAP_BODY_PREFIX_OFFSET, buffer, prefixOffset,
                               UnsequencedDecoder.payloadHeaderLength() + bodyLength);
-        return TAP_BODY_OFFSET + bodyLength;
+        publish(TAP_BODY_OFFSET + bodyLength);
+
+        for (int i = 0; i < activationQueue.size(); i++) {
+            publish(gatewayActive(activationQueue.getInt(i), timestamp));
+        }
+        activationQueue.clear();
+        if (snapshotRequested) {
+            snapshotRequested = false;
+            if (snapshotIntervalNs != NO_SNAPSHOT_POLICY) {
+                publish(snapshotStarted(timestamp));
+            }
+        }
+        return true;
     }
 
     /**
@@ -363,16 +360,11 @@ public final class Sequencer {
      * {@code BLOCK_LENGTH} and {@code SCHEMA_VERSION} (<b>V-3</b>); condition 9 has checked the length.
      */
     private boolean applySystem(final DirectBuffer buffer, final int bodyOffset, final int systemEventType,
-                                final int sourceId, final int connectionId, final long sessionId,
-                                final long timestamp) {
-        if (deposed(sessionId)) {
-            return rejectSystem("systemEventType " + systemEventType + " arrived on a session whose gateway "
-                                + "instance is no longer designated");
-        }
+                                final int sourceId, final long sessionId, final long timestamp) {
         if (systemEventType != SystemFrame.GATEWAY_STARTED && listClaims(sourceId) &&
             !boundToGateway(sessionId, sourceId)) {
-            return rejectSystem("systemEventType " + systemEventType + " claims listed sourceId " + sourceId +
-                                 " on a session no GatewayStarted bound");
+            return reject("systemEventType " + systemEventType + " claims listed sourceId " + sourceId +
+                          " on a session no GatewayStarted bound");
         }
 
         final int version = MessageHeaderDecoder.SCHEMA_VERSION;
@@ -384,8 +376,9 @@ public final class Sequencer {
                 if (gatewayRegisteredDecoder.remaining() == 0 && !bootstrapActivationQueued) {
                     bootstrapActivationQueued = true;
                     for (final GatewayRow row : gatewayRows) {
-                        if (row.preferenceRank() == 0) {
-                            activationQueue.add(new QueuedActivation(row.gatewayId(), true));
+                        if (row.preferenceRank == 0) {
+                            activationQueue.addInt(row.gatewayId);
+                            bootstrapActivationEmitted = true;
                         }
                     }
                 }
@@ -396,50 +389,30 @@ public final class Sequencer {
                 final int gatewayId = gatewayStartedDecoder.gatewayId();
                 final GatewayRow row = rowFor(gatewayId);
                 if (row == null) {
-                    return rejectSystem("GatewayStarted names gatewayId " + gatewayId + ", which no list row does");
+                    return reject("GatewayStarted names gatewayId " + gatewayId + ", which no list row does");
                 }
-                if (row.gatewaySourceId() != sourceId) {
-                    return rejectSystem("GatewayStarted for gatewayId " + gatewayId + " carries sourceId " +
-                                         sourceId + ", not its row's " + row.gatewaySourceId());
+                if (row.gatewaySourceId != sourceId) {
+                    return reject("GatewayStarted for gatewayId " + gatewayId + " carries sourceId " +
+                                  sourceId + ", not its row's " + row.gatewaySourceId);
                 }
                 if (!isDesignated(gatewayId)) {
-                    return rejectSystem("GatewayStarted names gatewayId " + gatewayId + ", which is not designated");
+                    return reject("GatewayStarted names gatewayId " + gatewayId + ", which is not designated");
                 }
-                for (final Long2LongHashMap.EntryIterator binding = activeGatewaySession.entrySet().iterator();
-                     binding.hasNext();) {
-                    binding.next();
-                    if (binding.getLongValue() != gatewayId) {
-                        continue;
-                    }
-                    if (binding.getLongKey() != sessionId) {
-                        deposedGatewaySessions.add(binding.getLongKey());
-                    }
-                    binding.remove();
+                final long previous = sessionGateway.put(sessionId, gatewayId);
+                if (previous != NO_BINDING && previous != gatewayId) {
+                    unbind(rowFor((int)previous), sessionId);
                 }
-                activeGatewaySession.put(sessionId, gatewayId);
-                releaseStaleConnections(sourceId);
+                row.boundSession = sessionId;
             }
             case SystemFrame.GATEWAY_ACTIVATION_REQUESTED -> {
                 activationRequestedDecoder.wrap(buffer, bodyOffset, GatewayActivationRequestedDecoder.BLOCK_LENGTH,
                                                 version);
                 final int gatewayId = activationRequestedDecoder.gatewayId();
                 if (rowFor(gatewayId) == null) {
-                    return rejectSystem("GatewayActivationRequested names gatewayId " + gatewayId +
-                                         ", which no list row does");
+                    return reject("GatewayActivationRequested names gatewayId " + gatewayId +
+                                  ", which no list row does");
                 }
-                activationQueue.add(new QueuedActivation(gatewayId, false));
-            }
-            case SystemFrame.CONNECTION_OPENED -> {
-                if (openConnections.computeIfAbsent(sourceId, source -> new java.util.HashSet<>())
-                        .add(connectionId)) {
-                    connectedClientCount++;
-                }
-            }
-            case SystemFrame.CONNECTION_CLOSED -> {
-                final java.util.Set<Integer> open = openConnections.get(sourceId);
-                if (open != null && open.remove(connectionId)) {
-                    connectedClientCount--;
-                }
+                activationQueue.addInt(gatewayId);
             }
             case SystemFrame.SNAPSHOT_POLICY_REGISTERED -> {
                 snapshotPolicyDecoder.wrap(buffer, bodyOffset, SnapshotPolicyRegisteredDecoder.BLOCK_LENGTH,
@@ -457,90 +430,52 @@ public final class Sequencer {
         return true;
     }
 
-    /** Refuses a system frame; see {@link #reject}. */
-    private boolean rejectSystem(final String reason) {
-        reject(reason);
-        return false;
-    }
-
-    /** Refuses an ingress frame (<b>S-7</b>): logged and counted, and {@code globalSeqNo} is not advanced. */
-    private int reject(final String reason) {
+    /**
+     * Refuses an ingress frame (<b>S-7</b>): logged and counted, and {@code globalSeqNo} is not advanced.
+     * @return false, for the caller to return
+     */
+    private boolean reject(final String reason) {
         rejectedFrameCount++;
         Logger.error(Logger.CoreComponent.Sequencer, Logger.CoreEventCode.MalformedIngressMessage, memberId,
                      "skipping malformed ingress message: %s (globalSeqNo stays %d)", reason, globalSeqNo);
-        return NO_FRAME;
+        return false;
     }
 
     /**
-     * Encodes the 1 Hz cluster clock frame; consumers read its consensus timestamp while producers are silent.
+     * Publishes the 1 Hz cluster clock frame — consumers read its consensus timestamp while producers are
+     * silent — then everything that runs off it: a hand-over for each designated instance that never answered
+     * with {@code GatewayStarted}, then an interval-triggered {@code SnapshotStarted}.
      * @param timestamp now
      */
-    public int clusterHeartbeat(final long timestamp) {
+    public void clusterHeartbeat(final long timestamp) {
         final long globalSeq = ++globalSeqNo;
         clusterHeartbeatEncoder.wrapAndApplyHeader(encodeBuffer, 0, headerEncoder);
         stampSynthesized(clusterHeartbeatEncoder.header(), SystemFrame.CLUSTER_HEARTBEAT, globalSeq, timestamp);
-        return MessageHeaderEncoder.ENCODED_LENGTH + clusterHeartbeatEncoder.encodedLength();
+        publish(MessageHeaderEncoder.ENCODED_LENGTH + clusterHeartbeatEncoder.encodedLength());
+
+        int overdue;
+        while ((overdue = takeOverdueActivation(timestamp)) != NO_GATEWAY_ID) {
+            handOverUnansweredActivation(overdue, timestamp);
+        }
+        if (snapshotIntervalNs > 0 && timestamp - lastSnapshotStart >= snapshotIntervalNs) {
+            publish(snapshotStarted(timestamp));
+        }
     }
 
     /**
-     * Encodes a {@code LeadershipChanged} event, one per term. A term the same member wins again gets
+     * Publishes a {@code LeadershipChanged} event, one per term. A term the same member wins again gets
      * one too: its election closed ingress, and a producer counts its losses against this frame.
      * @param leadershipTermId the term that begins here
      * @param leaderMemberId leader member identity
      * @param timestamp now
      */
-    public int leadershipChanged(final long leadershipTermId, final int leaderMemberId, final long timestamp) {
+    public void leadershipChanged(final long leadershipTermId, final int leaderMemberId, final long timestamp) {
         final long globalSeq = ++globalSeqNo;
         leadershipChangedEncoder.wrapAndApplyHeader(encodeBuffer, 0, headerEncoder);
         stampSynthesized(leadershipChangedEncoder.header(), SystemFrame.LEADERSHIP_CHANGED, globalSeq, timestamp);
         leadershipChangedEncoder.newLeaderMemberId(leaderMemberId);
         leadershipChangedEncoder.leadershipTermId(leadershipTermId);
-        return MessageHeaderEncoder.ENCODED_LENGTH + leadershipChangedEncoder.encodedLength();
-    }
-
-    /**
-     * The next queued activation, as a {@code GatewayActive} naming one {@code gatewayId}: the bootstrap run
-     * behind the list's last row, or one a {@code GatewayActivationRequested} asked for.
-     *
-     * <p>One frame per call, each with its own {@code globalSeqNo}: the adapter loops until {@link #NO_FRAME},
-     * publishing each before asking again, since every call re-encodes into the same {@link #buffer()}.
-     * @param timestamp now
-     * @return a {@code GatewayActive} frame length, or {@link #NO_FRAME} when none is pending
-     */
-    public int pendingGatewayActivation(final long timestamp) {
-        final QueuedActivation queued = activationQueue.poll();
-        if (queued == null) {
-            return NO_FRAME;
-        }
-        bootstrapActivationEmitted |= queued.bootstrap();
-        return gatewayActive(queued.gatewayId(), timestamp);
-    }
-
-    /**
-     * The {@code SnapshotStarted} answering a {@code SnapshotRequested} just sequenced, at the next {@code
-     * globalSeqNo}; nothing if no policy is registered. A round still being submitted is superseded.
-     * @param timestamp now
-     * @return a {@code SnapshotStarted} frame length, or {@link #NO_FRAME}
-     */
-    public int pendingSnapshotStart(final long timestamp) {
-        if (!snapshotRequested) {
-            return NO_FRAME;
-        }
-        snapshotRequested = false;
-        return snapshotIntervalNs == NO_SNAPSHOT_POLICY ? NO_FRAME : snapshotStarted(timestamp);
-    }
-
-    /**
-     * The interval trigger, evaluated off the heartbeat's consensus timestamp after promotion: a round once
-     * {@code interval} has passed since the last one started, or since the policy row before any round.
-     * @param timestamp now
-     * @return a {@code SnapshotStarted} frame length, or {@link #NO_FRAME}
-     */
-    public int snapshotIntervalElapsed(final long timestamp) {
-        if (snapshotIntervalNs <= 0 || timestamp - lastSnapshotStart < snapshotIntervalNs) {
-            return NO_FRAME;
-        }
-        return snapshotStarted(timestamp);
+        publish(MessageHeaderEncoder.ENCODED_LENGTH + leadershipChangedEncoder.encodedLength());
     }
 
     /** The last round started; 0 before the first. */
@@ -558,7 +493,7 @@ public final class Sequencer {
         return MessageHeaderEncoder.ENCODED_LENGTH + snapshotStartedEncoder.encodedLength();
     }
 
-    /** Whether a bootstrap {@code GatewayActive} has been emitted; the {@code bootstrap_activated} gauge. */
+    /** Whether a bootstrap {@code GatewayActive} has been published; the {@code bootstrap_activated} gauge. */
     public boolean bootstrapActivationEmitted() {
         return bootstrapActivationEmitted;
     }
@@ -567,54 +502,58 @@ public final class Sequencer {
      * A cluster session closed. If the designated instance of a gateway was bound to it, promote its standby.
      * @param sessionId session identity
      * @param timestamp now
-     * @return a {@code GatewayActive} frame length, {@link #NO_FRAME} if this wasn't a designated gateway
-     *     instance's session, or {@link #NO_PROMOTION_TARGET} if it was one but no standby could be found
+     * @return whether a {@code GatewayActive} was published; false if this wasn't a designated gateway
+     *     instance's session, or it was one with no standby to promote
      */
-    public int sessionClosed(final long sessionId, final long timestamp) {
-        deposedGatewaySessions.remove(sessionId);
-        final long closedGatewayId = activeGatewaySession.remove(sessionId);
-        if (closedGatewayId == NO_BINDING || !isDesignated((int)closedGatewayId)) {
-            return NO_FRAME; // a superseded instance's close takes the role from no one
+    public boolean sessionClosed(final long sessionId, final long timestamp) {
+        final long closedGatewayId = sessionGateway.remove(sessionId);
+        if (closedGatewayId == NO_BINDING || !unbind(rowFor((int)closedGatewayId), sessionId) ||
+            !isDesignated((int)closedGatewayId)) {
+            return false; // a replaced binding's or a superseded instance's close takes the role from no one
         }
         final int promoted = promotionTarget((int)closedGatewayId);
         if (promoted == NO_GATEWAY_ID) {
+            gatewayPromotionFailedCount++;
             Logger.error(Logger.CoreComponent.Sequencer, Logger.CoreEventCode.GatewayPromotionFailed, memberId,
                          "gateway instance %d's session closed with no standby to promote — this logical "
                              + "gateway has no active instance until one starts (globalSeqNo stays %d)",
                          closedGatewayId, globalSeqNo);
-            return NO_PROMOTION_TARGET;
+            return false;
         }
-        return gatewayActive(promoted, timestamp);
+        promote(promoted, timestamp);
+        return true;
     }
 
     /**
      * Hands the role on from a designated instance that never answered with {@code GatewayStarted} — one
-     * that died before binding a session, so {@link #sessionClosed} can never promote past it. Evaluated
-     * off the heartbeat's consensus timestamp, so every node decides identically; the promotion arms the
-     * same deadline on the instance it names.
-     * @param timestamp now
-     * @return a {@code GatewayActive} frame length, {@link #NO_FRAME} if nothing was overdue, or {@link
-     *     #NO_PROMOTION_TARGET} if an activation went unanswered and there was no sibling to hand it to
+     * that died before binding a session, so {@link #sessionClosed} can never promote past it. Run off the
+     * heartbeat's consensus timestamp, so every node decides identically; the promotion arms the same
+     * deadline on the instance it names.
+     * @param designated the instance whose deadline passed
+     * @param timestamp  now
      */
-    public int pendingGatewayActivationTimeout(final long timestamp) {
-        final int designated = takeOverdueActivation(timestamp);
-        if (designated == NO_GATEWAY_ID) {
-            return NO_FRAME;
-        }
+    private void handOverUnansweredActivation(final int designated, final long timestamp) {
         final int promoted = promotionTarget(designated);
         if (promoted == NO_GATEWAY_ID) {
+            gatewayPromotionFailedCount++;
             Logger.error(Logger.CoreComponent.Sequencer, Logger.CoreEventCode.GatewayPromotionFailed, memberId,
                          "gateway instance %d never declared itself started within %dms and has no sibling to "
                              + "promote — this logical gateway has no active instance until one starts "
                              + "(globalSeqNo stays %d)",
                          designated, GATEWAY_ACTIVATION_TIMEOUT_MS, globalSeqNo);
-            return NO_PROMOTION_TARGET;
+            return;
         }
         Logger.error(Logger.CoreComponent.Sequencer, Logger.CoreEventCode.GatewayActivationTimeout, memberId,
                      "gateway instance %d never declared itself started within %dms of being designated — "
                          + "handing the role to instance %d",
                      designated, GATEWAY_ACTIVATION_TIMEOUT_MS, promoted);
-        return gatewayActive(promoted, timestamp);
+        promote(promoted, timestamp);
+    }
+
+    /** Publishes the {@code GatewayActive} that hands a logical gateway's role to {@code gatewayId}. */
+    private void promote(final int gatewayId, final long timestamp) {
+        gatewayPromotionCount++;
+        publish(gatewayActive(gatewayId, timestamp));
     }
 
     /**
@@ -630,7 +569,7 @@ public final class Sequencer {
                 continue;
             }
             it.remove();
-            if (!activeGatewaySession.containsValue(pending.gatewayId())) {
+            if (rowFor(pending.gatewayId()).boundSession == NO_BINDING) {
                 return pending.gatewayId();
             }
         }
@@ -650,42 +589,40 @@ public final class Sequencer {
         }
         GatewayRow best = null;
         for (final GatewayRow row : gatewayRows) {
-            if (row.gatewaySourceId() == closed.gatewaySourceId() && row.gatewayId() != closedGatewayId &&
-                (best == null || row.preferenceRank() < best.preferenceRank())) {
+            if (row.gatewaySourceId == closed.gatewaySourceId && row.gatewayId != closedGatewayId &&
+                (best == null || row.preferenceRank < best.preferenceRank)) {
                 best = row;
             }
         }
-        return best == null ? NO_GATEWAY_ID : best.gatewayId();
+        return best == null ? NO_GATEWAY_ID : best.gatewayId;
+    }
+
+    /** Records a Gateway row, updating any earlier row for the same {@code gatewayId} in place. */
+    private void addGatewayRow(final int gatewayId, final int gatewaySourceId, final short preferenceRank) {
+        final GatewayRow row = rowFor(gatewayId);
+        if (row == null) {
+            gatewayRows.add(new GatewayRow(gatewayId, gatewaySourceId, preferenceRank));
+            return;
+        }
+        row.gatewaySourceId = gatewaySourceId;
+        row.preferenceRank = preferenceRank;
     }
 
     /**
-     * Drops every connection still open under {@code gatewaySourceId}: a {@code GatewayStarted} means the
-     * previous instance is gone, and a crash cannot publish its {@code ConnectionClosed}s. It cannot drop a
-     * live connection, because a gateway publishes {@code GatewayStarted} before it opens its accept gate.
-     * @param gatewaySourceId the logical gateway whose instance just changed
+     * Removes {@code row}'s binding if {@code sessionId} holds it.
+     * @return whether it did
      */
-    private void releaseStaleConnections(final int gatewaySourceId) {
-        final java.util.Set<Integer> stale = openConnections.remove(gatewaySourceId);
-        if (stale != null) {
-            connectedClientCount -= stale.size();
+    private static boolean unbind(final GatewayRow row, final long sessionId) {
+        if (row.boundSession != sessionId) {
+            return false;
         }
-    }
-
-    /** Records a Gateway row, replacing any earlier row for the same {@code gatewayId} in place. */
-    private void addGatewayRow(final int gatewayId, final int gatewaySourceId, final short preferenceRank) {
-        final GatewayRow row = new GatewayRow(gatewayId, gatewaySourceId, preferenceRank);
-        for (int i = 0; i < gatewayRows.size(); i++) {
-            if (gatewayRows.get(i).gatewayId() == gatewayId) {
-                gatewayRows.set(i, row);
-                return;
-            }
-        }
-        gatewayRows.add(row);
+        row.boundSession = NO_BINDING;
+        return true;
     }
 
     /**
      * Encodes one {@code GatewayActive} naming {@code gatewayId}, and arms that instance's activation
-     * deadline (see {@link #pendingGatewayActivationTimeout}).
+     * deadline (see {@link #handOverUnansweredActivation}).
      * @param gatewayId gateway identity
      * @param timestamp now
      */
@@ -693,13 +630,18 @@ public final class Sequencer {
         armActivationDeadline(gatewayId, timestamp);
         final GatewayRow row = rowFor(gatewayId);
         if (row != null) {
-            designatedGateway.put(row.gatewaySourceId(), gatewayId);
+            designatedGateway.put(row.gatewaySourceId, gatewayId);
         }
         final long globalSeq = ++globalSeqNo;
         gatewayActiveEncoder.wrapAndApplyHeader(encodeBuffer, 0, headerEncoder);
         stampSynthesized(gatewayActiveEncoder.header(), SystemFrame.GATEWAY_ACTIVE, globalSeq, timestamp);
         gatewayActiveEncoder.gatewayId(gatewayId);
         return MessageHeaderEncoder.ENCODED_LENGTH + gatewayActiveEncoder.encodedLength();
+    }
+
+    /** Hands the frame at offset 0 of {@link #encodeBuffer} to the sink. */
+    private void publish(final int length) {
+        sink.publish(encodeBuffer, length);
     }
 
     /**
@@ -729,9 +671,9 @@ public final class Sequencer {
             return;
         }
         final PendingActivation armed =
-            new PendingActivation(row.gatewaySourceId(), gatewayId, timestamp + GATEWAY_ACTIVATION_TIMEOUT_NS);
+            new PendingActivation(row.gatewaySourceId, gatewayId, timestamp + GATEWAY_ACTIVATION_TIMEOUT_NS);
         for (int i = 0; i < pendingActivations.size(); i++) {
-            if (pendingActivations.get(i).gatewaySourceId() == row.gatewaySourceId()) {
+            if (pendingActivations.get(i).gatewaySourceId() == row.gatewaySourceId) {
                 pendingActivations.set(i, armed);
                 return;
             }
@@ -742,7 +684,7 @@ public final class Sequencer {
     /** Whether any list row names {@code sourceId} as its logical gateway (<b>S-6</b> cases 2 and 4). */
     private boolean listClaims(final int sourceId) {
         for (final GatewayRow row : gatewayRows) {
-            if (row.gatewaySourceId() == sourceId) {
+            if (row.gatewaySourceId == sourceId) {
                 return true;
             }
         }
@@ -754,18 +696,18 @@ public final class Sequencer {
      * {@code sourceId} (<b>S-6</b> case 2). Bound to a different logical gateway does not count.
      */
     private boolean boundToGateway(final long sessionId, final int sourceId) {
-        final long boundGatewayId = activeGatewaySession.get(sessionId);
+        final long boundGatewayId = sessionGateway.get(sessionId);
         if (boundGatewayId == NO_BINDING) {
             return false;
         }
         final GatewayRow row = rowFor((int)boundGatewayId);
-        return row != null && row.gatewaySourceId() == sourceId;
+        return row != null && row.gatewaySourceId == sourceId;
     }
 
     /** Whether the last {@code GatewayActive} for {@code gatewayId}'s logical gateway named it. */
     private boolean isDesignated(final int gatewayId) {
         final GatewayRow row = rowFor(gatewayId);
-        return row != null && designatedGateway.get(row.gatewaySourceId()) == gatewayId;
+        return row != null && designatedGateway.get(row.gatewaySourceId) == gatewayId;
     }
 
     /**
@@ -773,17 +715,15 @@ public final class Sequencer {
      * {@code GatewayStarted} bound it, and since then a sibling was designated or the binding was replaced.
      */
     private boolean deposed(final long sessionId) {
-        if (deposedGatewaySessions.contains(sessionId)) {
-            return true;
-        }
-        final long boundGatewayId = activeGatewaySession.get(sessionId);
-        return boundGatewayId != NO_BINDING && !isDesignated((int)boundGatewayId);
+        final long boundGatewayId = sessionGateway.get(sessionId);
+        return boundGatewayId != NO_BINDING &&
+               (rowFor((int)boundGatewayId).boundSession != sessionId || !isDesignated((int)boundGatewayId));
     }
 
     /** The Gateway row for {@code gatewayId}, or null if no load has named that instance. */
     private GatewayRow rowFor(final int gatewayId) {
         for (final GatewayRow row : gatewayRows) {
-            if (row.gatewayId() == gatewayId) {
+            if (row.gatewayId == gatewayId) {
                 return row;
             }
         }

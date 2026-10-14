@@ -44,8 +44,7 @@ public final class SeqeronCounters {
     /** 1 while tap back-pressure has lasted past the stall threshold with no recording progress, else 0. */
     public static final int SEQUENCER_TAP_STALLED_TYPE_ID = 5008;
 
-    /** Current count of TCP clients connected across every gateway, derived from the sequenced log. */
-    public static final int SEQUENCER_CONNECTED_CLIENTS_TYPE_ID = 5009;
+    // 5009 is retired, and never reused.
 
     /** Count of ingress messages successfully sequenced; {@code rate()} over this is ingress throughput. */
     public static final int SEQUENCER_INGRESS_MESSAGES_TYPE_ID = 5010;
@@ -96,15 +95,21 @@ public final class SeqeronCounters {
     public static final int REPLAYER_ARCHIVE_ERRORS_COUNT_TYPE_ID = 5111;
 
     // ── Co-located application replicas (5200-5299) ────────────────────────────────────────────
-    // Core reserves 5200; a consumer allocates its own in the range (doc/ops.md, "Counter type ids"). Published by
-    // the apps, not by any Java process: protocol/SeqeronCounters.hpp must match these ids and key layout.
-    /** First type id of the app range: core reserves {@link #APP_RECOVERY_STALLED_TYPE_ID} and no more. */
+    // Core reserves 5200 and 5299; a consumer allocates its own in 5201-5298 (doc/ops.md, "Counter type ids").
+    // Published by the apps, not by any Java process: protocol/SeqeronCounters.hpp must match these ids and key layout.
+    /**
+     * First type id of the app range: core reserves {@link #APP_RECOVERY_STALLED_TYPE_ID} and {@link
+     * #GATEWAY_CONNECTIONS_TYPE_ID} and no more.
+     */
     public static final int APP_TYPE_ID_MIN = 5200;
     /** Last type id of the app range; which replica holds which sub-block is the deployment's to record. */
     public static final int APP_TYPE_ID_MAX = 5299;
 
     /** 1 while a co-located replica's recovery has dispatched nothing while not caught up, else 0. */
     public static final int APP_RECOVERY_STALLED_TYPE_ID = 5200;
+
+    /** Connections a gateway instance holds open: taken and not yet closed, and 0 while it does not serve. */
+    public static final int GATEWAY_CONNECTIONS_TYPE_ID = 5299;
 
     /** First type id this class owns, for a typeId-range scan (see {@code clusterctl counters}). */
     public static final int MIN_TYPE_ID = SEQUENCER_TYPE_ID_MIN;

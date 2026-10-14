@@ -6,6 +6,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.ArrayList;
 import java.util.List;
+import org.agrona.DirectBuffer;
+import org.agrona.concurrent.UnsafeBuffer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -26,6 +28,9 @@ import org.limitless.seqeron.util.Logger;
  * that node for a replay.
  */
 class TapPublisherTest {
+    /** The frame every emit offers; its bytes are never read. */
+    private static final DirectBuffer FRAME = new UnsafeBuffer(new byte[64]);
+
     /** Aeron's {@code Publication.BACK_PRESSURED} — a failure that retrying clears. */
     private static final long BACK_PRESSURED = -2;
 
@@ -80,7 +85,7 @@ class TapPublisherTest {
         final List<Boolean> stalledGauge = new ArrayList<>();
 
         @Override
-        public long offerFrame(final int length) {
+        public long offerFrame(final DirectBuffer buffer, final int length) {
             return ++offers <= failedOffers ? failResult : 1;
         }
 
@@ -158,7 +163,7 @@ class TapPublisherTest {
     @Test
     @DisplayName("an offer that lands reads no clock and raises nothing")
     void landedOfferCostsNothing() {
-        publisher.emit(64);
+        publisher.emit(FRAME, 64);
 
         assertEquals(1, actions.offers);
         assertEquals(0, actions.nowNs, "the normal path must not idle, which is what reads the clock");
@@ -171,7 +176,7 @@ class TapPublisherTest {
     void transientBackPressureIsSilent() {
         actions.failedOffers = clockReads(1); // the first read only anchors the period
 
-        publisher.emit(64);
+        publisher.emit(FRAME, 64);
 
         assertEquals(0, actions.alerts);
         assertFalse(publisher.isFatalSignalled());
@@ -182,7 +187,7 @@ class TapPublisherTest {
     void sustainedBackPressureAlertsPerInterval() {
         actions.failedOffers = clockReads(4);
 
-        publisher.emit(64);
+        publisher.emit(FRAME, 64);
 
         assertEquals(3, actions.alerts, "one per elapsed interval after the anchoring read");
         assertFalse(publisher.isFatalSignalled());
@@ -194,7 +199,7 @@ class TapPublisherTest {
         actions.nanosPerIdle = periodOf(TapPublisher.SUSTAINED_BACKPRESSURE_THRESHOLD_NS);
         actions.failedOffers = clockReads(3); // anchor, first observation, then one threshold's worth
 
-        publisher.emit(64);
+        publisher.emit(FRAME, 64);
 
         assertEquals(List.of(true, false), actions.stalledGauge,
                      "raised once — STALLED is edge-triggered — and cleared by the offer that landed");
@@ -207,7 +212,7 @@ class TapPublisherTest {
         actions.nanosPerIdle = periodOf(TapPublisher.SUSTAINED_BACKPRESSURE_THRESHOLD_NS);
         actions.failedOffers = clockReads(8); // five threshold periods past the first observation
 
-        publisher.emit(64);
+        publisher.emit(FRAME, 64);
 
         assertTrue(publisher.isFatalSignalled());
         assertEquals(1, actions.fatals);
@@ -222,7 +227,7 @@ class TapPublisherTest {
         actions.recordedAdvancePerIdle = 1; // the recording keeps moving under the back-pressure
         actions.failedOffers = clockReads(20);
 
-        publisher.emit(64);
+        publisher.emit(FRAME, 64);
 
         assertFalse(publisher.isFatalSignalled(), "this bounds an archive that has stopped, not a busy one");
         assertEquals(List.of(), actions.stalledGauge);
@@ -239,7 +244,7 @@ class TapPublisherTest {
         actions.idlesPerAdvance = 4 * TapPublisher.SPINS_PER_CLOCK_CHECK;
         actions.failedOffers = clockReads(40);
 
-        publisher.emit(64);
+        publisher.emit(FRAME, 64);
 
         assertFalse(publisher.isFatalSignalled(), "the fatal timeout runs from the last advance");
         assertEquals(List.of(true, false), actions.stalledGauge, "raised by a quiet stretch, cleared on landing");
@@ -250,14 +255,14 @@ class TapPublisherTest {
     void nextStallStartsOnAFreshClock() {
         actions.nanosPerIdle = periodOf(TapPublisher.SUSTAINED_BACKPRESSURE_THRESHOLD_NS);
         actions.failedOffers = clockReads(3);
-        publisher.emit(64);
+        publisher.emit(FRAME, 64);
         assertEquals(List.of(true, false), actions.stalledGauge);
 
         // Same recording position as before, and more than the fatal timeout since it last moved: it is the
         // time since THIS stall began that counts, so the next emit may only raise the gauge again.
         actions.nowNs += TapPublisher.TAP_STALL_FATAL_TIMEOUT_NS;
         actions.offers = 0;
-        publisher.emit(64);
+        publisher.emit(FRAME, 64);
 
         assertFalse(publisher.isFatalSignalled());
         assertEquals(List.of(true, false, true, false), actions.stalledGauge);
@@ -269,7 +274,7 @@ class TapPublisherTest {
         actions.recordingActive = false;
         actions.failedOffers = clockReads(2);
 
-        publisher.emit(64);
+        publisher.emit(FRAME, 64);
 
         assertTrue(publisher.isFatalSignalled());
         assertEquals(1, actions.fatals);
@@ -282,7 +287,7 @@ class TapPublisherTest {
         actions.failResult = CLOSED;
         actions.failedOffers = 1;
 
-        publisher.emit(64);
+        publisher.emit(FRAME, 64);
 
         assertTrue(publisher.isFatalSignalled());
         assertEquals(1, actions.fatals);
@@ -295,7 +300,7 @@ class TapPublisherTest {
         actions.recordingActive = false;
         actions.failedOffers = clockReads(6);
 
-        publisher.emit(64);
+        publisher.emit(FRAME, 64);
 
         assertEquals(1, actions.fatals, "a second signalFatal would race the first shutdown");
         assertEquals(0, actions.halts, "and the backstop has not elapsed yet");
@@ -308,7 +313,7 @@ class TapPublisherTest {
         actions.recordingActive = false;
         actions.failedOffers = clockReads(4);
 
-        publisher.emit(64);
+        publisher.emit(FRAME, 64);
 
         assertEquals(1, actions.fatals);
         assertTrue(actions.halts > 0, "the graceful path can wedge on the very archive that failed");

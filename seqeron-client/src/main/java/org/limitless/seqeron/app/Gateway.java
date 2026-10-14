@@ -1,6 +1,7 @@
 package org.limitless.seqeron.app;
 
 import io.aeron.Aeron;
+import io.aeron.Counter;
 import java.util.ArrayDeque;
 import java.nio.file.Path;
 import java.util.HashSet;
@@ -10,6 +11,7 @@ import org.agrona.DirectBuffer;
 import org.agrona.ExpandableArrayBuffer;
 import org.limitless.seqeron.protocol.PortLayout;
 import org.limitless.seqeron.protocol.Publish;
+import org.limitless.seqeron.protocol.SeqeronCounters;
 import org.limitless.seqeron.protocol.SnapshotHeader;
 import org.limitless.seqeron.protocol.SystemFrame;
 import org.limitless.seqeron.replayer.client.SequencedEvent;
@@ -125,6 +127,7 @@ public final class Gateway implements AutoCloseable {
     private final SnapshotTaker snapshots;
     private final SnapshotFrames snapshotFrames;
     private final int memberId;
+    private final int clientId;
     private final String egressChannel;
     private final String ingressEndpoints;
 
@@ -144,6 +147,10 @@ public final class Gateway implements AutoCloseable {
     /** Connections whose {@code ConnectionOpened} has not landed: nothing may be published on one yet. */
     private final Set<Integer> unopened = new HashSet<>();
 
+    /** Connections this instance holds open, taken and not yet closed while serving; the connections gauge. */
+    private final Set<Integer> connections = new HashSet<>();
+    private Counter connectionsCounter;
+
     /** The highest {@code connectionId} this logical gateway's history holds; the resume point for §7's row. */
     private int highestConnectionId = NO_CONNECTION;
     private int nextConnectionId;
@@ -151,6 +158,7 @@ public final class Gateway implements AutoCloseable {
     private Gateway(final Builder builder) {
         this.listener = builder.listener;
         this.memberId = builder.memberId;
+        this.clientId = builder.clientId;
         this.egressChannel = builder.egressChannel;
         this.ingressEndpoints = builder.ingressEndpoints;
         this.lifecycle = new GatewayLifecycle(builder.gatewayName, new LifecycleActions());
@@ -172,6 +180,9 @@ public final class Gateway implements AutoCloseable {
     /** Opens the cluster session and starts following this node's tap; the gate stays shut until designated. */
     public void start(final Aeron aeron) {
         session.start(aeron, memberId, egressChannel, ingressEndpoints);
+        connectionsCounter = SeqeronCounters.addAppCounter(
+            aeron, SeqeronCounters.GATEWAY_CONNECTIONS_TYPE_ID,
+            "seqeron.gateway.connections member=" + memberId + " client=" + clientId, memberId, clientId);
     }
 
     /**
@@ -182,6 +193,9 @@ public final class Gateway implements AutoCloseable {
      */
     public int doWork() {
         int work = session.doWork();
+        if (connectionsCounter != null) {
+            connectionsCounter.set(connections.size());
+        }
         if (session.isFenced()) {
             return work;
         }
@@ -205,6 +219,7 @@ public final class Gateway implements AutoCloseable {
      */
     public void gateClosed() {
         lifecycle.onGateClosed();
+        connections.clear();
     }
 
     /**
@@ -251,6 +266,7 @@ public final class Gateway implements AutoCloseable {
         final int connectionId = nextConnectionId++;
         lifecycleQueue.add(new Lifecycle(connectionId, SystemFrame.CONNECTION_OPENED, connectionData));
         unopened.add(connectionId);
+        connections.add(connectionId);
         return connectionId;
     }
 
@@ -260,6 +276,7 @@ public final class Gateway implements AutoCloseable {
             // Stood down: the connections went with the edge, and a successor's GatewayStarted releases them.
             return;
         }
+        connections.remove(connectionId);
         if (unopened.remove(connectionId)) {
             lifecycleQueue.removeIf(queued -> queued.connectionId() == connectionId);
             return;
@@ -322,6 +339,9 @@ public final class Gateway implements AutoCloseable {
     @Override
     public void close() {
         session.close();
+        if (connectionsCounter != null) {
+            connectionsCounter.close();
+        }
     }
 
     /** Places what the connection lifecycle owes, oldest first, stopping at the first frame that is declined. */
@@ -417,6 +437,7 @@ public final class Gateway implements AutoCloseable {
             // The connections go with the edge, and a successor's GatewayStarted is what releases them.
             lifecycleQueue.clear();
             unopened.clear();
+            connections.clear();
             listener.onStandby();
         }
     }

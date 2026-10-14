@@ -53,6 +53,19 @@ class MetricsExporterTest {
     }
 
     @Test
+    @DisplayName("a gateway instance's connections export under core's name, one series per client")
+    void gatewayConnectionsExportUnderTheirOwnName() {
+        addAppCounter(SeqeronCounters.GATEWAY_CONNECTIONS_TYPE_ID, MEMBER, 9, 3);
+        addAppCounter(SeqeronCounters.GATEWAY_CONNECTIONS_TYPE_ID, MEMBER, 10, 0);
+
+        final String body = new MetricsExporter(counters, MEMBER).renderMetrics();
+
+        assertEquals(1, count(body, "# TYPE seqeron_gateway_connections gauge"));
+        assertTrue(body.contains("seqeron_gateway_connections{member=\"1\",client=\"9\"} 3"), body);
+        assertTrue(body.contains("seqeron_gateway_connections{member=\"1\",client=\"10\"} 0"), body);
+    }
+
+    @Test
     @DisplayName("each metric keeps its own header, and its samples stay together under it")
     void distinctMetricsKeepDistinctHeaders() {
         addAppCounter(SeqeronCounters.APP_RECOVERY_STALLED_TYPE_ID, MEMBER, 9, 0);
