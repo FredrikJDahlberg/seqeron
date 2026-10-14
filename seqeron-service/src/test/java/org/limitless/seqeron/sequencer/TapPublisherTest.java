@@ -215,7 +215,8 @@ class TapPublisherTest {
         publisher.emit(FRAME, 64);
 
         assertTrue(publisher.isFatalSignalled());
-        assertEquals(1, actions.fatals);
+        assertEquals(1, actions.halts, "a graceful shutdown would wait on this thread, which is still spinning");
+        assertEquals(0, actions.fatals);
         assertEquals(Boolean.TRUE, actions.stalledGauge.get(actions.stalledGauge.size() - 1),
                      "the gauge must latch, not clear on the way out");
     }
@@ -277,7 +278,7 @@ class TapPublisherTest {
         publisher.emit(FRAME, 64);
 
         assertTrue(publisher.isFatalSignalled());
-        assertEquals(1, actions.fatals);
+        assertEquals(1, actions.halts);
         assertEquals(List.of(true), actions.stalledGauge, "the gauge must latch, not clear on the way out");
     }
 
@@ -290,33 +291,20 @@ class TapPublisherTest {
         publisher.emit(FRAME, 64);
 
         assertTrue(publisher.isFatalSignalled());
-        assertEquals(1, actions.fatals);
+        assertEquals(1, actions.halts);
         assertEquals(2, actions.offers, "the spin continues — the only exits are a landed offer and death");
     }
 
     @Test
-    @DisplayName("the fatal decision is latched: later failures do not signal a second shutdown")
+    @DisplayName("the fatal decision is latched: later failures in the same spin raise nothing more")
     void fatalIsLatched() {
         actions.recordingActive = false;
         actions.failedOffers = clockReads(6);
 
         publisher.emit(FRAME, 64);
 
-        assertEquals(1, actions.fatals, "a second signalFatal would race the first shutdown");
-        assertEquals(0, actions.halts, "and the backstop has not elapsed yet");
-    }
-
-    @Test
-    @DisplayName("a shutdown that never completes is halted once the backstop elapses")
-    void stalledShutdownIsHalted() {
-        actions.nanosPerIdle = periodOf(TapPublisher.FATAL_SHUTDOWN_BACKSTOP_NS);
-        actions.recordingActive = false;
-        actions.failedOffers = clockReads(4);
-
-        publisher.emit(FRAME, 64);
-
-        assertEquals(1, actions.fatals);
-        assertTrue(actions.halts > 0, "the graceful path can wedge on the very archive that failed");
+        assertEquals(1, actions.halts);
+        assertEquals(0, actions.fatals);
     }
 
     // ── checkRecordingAlive ───────────────────────────────────────────────────────────────────────────
@@ -339,23 +327,24 @@ class TapPublisherTest {
 
         assertTrue(publisher.isFatalSignalled(), "a stopped recording is the case emit's bound never sees");
         assertEquals(1, actions.fatals);
+        assertEquals(0, actions.halts, "the callback returns, so the graceful shutdown can complete");
     }
 
     @Test
-    @DisplayName("the heartbeat check keeps the shutdown backstop alive after a fatal")
-    void heartbeatCheckHaltsAStalledShutdown() {
+    @DisplayName("spins after a signalled fatal raise nothing more: the server's backstop bounds the shutdown")
+    void spinsAfterASignalledFatalRaiseNothing() {
         actions.recordingActive = false;
         publisher.checkRecordingAlive();
+        publisher.checkRecordingAlive();
+
+        actions.nanosPerIdle = periodOf(TapPublisher.TAP_STALL_FATAL_TIMEOUT_NS);
+        actions.failedOffers = clockReads(4);
+        publisher.emit(FRAME, 64);
+        actions.failedTimers = clockReads(4);
+        publisher.scheduleHeartbeat(CLUSTER_TIME_DEADLINE);
+
         assertEquals(1, actions.fatals);
-
-        publisher.checkRecordingAlive();
-        assertEquals(0, actions.halts, "still inside the backstop");
-
-        actions.nowNs += TapPublisher.FATAL_SHUTDOWN_BACKSTOP_NS;
-        publisher.checkRecordingAlive();
-
-        assertEquals(1, actions.halts);
-        assertEquals(1, actions.fatals, "and it re-reports nothing on the way out");
+        assertEquals(0, actions.halts);
     }
 
     // ── scheduleHeartbeat ─────────────────────────────────────────────────────────────────────────────
@@ -389,22 +378,8 @@ class TapPublisherTest {
         publisher.scheduleHeartbeat(CLUSTER_TIME_DEADLINE);
 
         assertTrue(publisher.isFatalSignalled(), "an unscheduled timer stops the cluster clock outright");
-        assertEquals(1, actions.fatals);
-    }
-
-    @Test
-    @DisplayName("a timer spin after a fatal runs the shutdown backstop rather than a second fatal")
-    void timerSpinAfterAFatalHalts() {
-        actions.recordingActive = false;
-        publisher.checkRecordingAlive();
-        assertEquals(1, actions.fatals);
-
-        actions.nanosPerIdle = periodOf(TapPublisher.FATAL_SHUTDOWN_BACKSTOP_NS);
-        actions.failedTimers = clockReads(3);
-        publisher.scheduleHeartbeat(CLUSTER_TIME_DEADLINE);
-
-        assertEquals(1, actions.fatals, "nothing reaches the fatal path once it is latched");
-        assertTrue(actions.halts > 0);
+        assertEquals(1, actions.halts, "a graceful shutdown would wait on this thread, which is still spinning");
+        assertEquals(0, actions.fatals);
     }
 
     // ── helpers ───────────────────────────────────────────────────────────────────────────────────────

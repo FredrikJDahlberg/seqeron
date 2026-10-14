@@ -8,7 +8,7 @@ import org.limitless.seqeron.util.Logger;
  * The two things {@link SequencerService} does from a cluster callback that can back-pressure — put a frame
  * on the tap, and re-arm the cluster clock — under that callback's rule: never return with the work undone,
  * and never throw (a throw skips the message). Both spin, bounded by the node terminating once the wait
- * provably will not clear; one class, so a second failure falls through to the shutdown backstop.
+ * provably will not clear; one class, so the fatal decision is latched across them.
  *
  * <p>Free of Aeron types: the transport is behind {@link Actions}. Single-threaded: the cluster-callback thread.
  */
@@ -48,10 +48,10 @@ public final class TapPublisher {
         /** The {@code seqeron.sequencer.tapStalled} gauge. */
         void tapStalled(boolean stalled);
 
-        /** Brings the node down. Must not block: it signals a shutdown and returns, it does not perform one. */
+        /** Brings the node down gracefully. Must not block: it signals a shutdown and returns. */
         void signalFatal();
 
-        /** Last resort, when the graceful shutdown {@link #signalFatal} kicked off has itself wedged. */
+        /** Ends the process at once: a fatal inside a spin, which a graceful shutdown would wait on forever. */
         void halt();
 
         /** The node this service runs on — log attribution only. */
@@ -88,13 +88,6 @@ public final class TapPublisher {
      */
     static final long HEARTBEAT_SCHEDULE_FATAL_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(1);
 
-    /**
-     * How long a signalled fatal may take before the process is halted outright: the graceful path closes
-     * the archive that may be what is wedged. Well above the ~7s a healthy teardown takes, so it never
-     * pre-empts one about to succeed.
-     */
-    static final long FATAL_SHUTDOWN_BACKSTOP_NS = TimeUnit.SECONDS.toNanos(30);
-
     private final Actions actions;
 
     /** Monotonic reading at the last observed recording advance; 0 when no stall is in progress. */
@@ -103,7 +96,6 @@ public final class TapPublisher {
     private boolean stalled;
 
     private boolean fatalSignalled;
-    private long fatalSignalledNs;
 
     public TapPublisher(final Actions actions) {
         this.actions = actions;
@@ -126,7 +118,7 @@ public final class TapPublisher {
         long result;
         while ((result = actions.offerFrame(buffer, length)) < 0) {
             if (actions.isUnrecoverable(result)) {
-                fatalTapFailure("tap publication failed: " + result);
+                fatalTapFailure("tap publication failed: " + result, true);
             }
             if (++spins >= SPINS_PER_CLOCK_CHECK) {
                 spins = 0;
@@ -167,13 +159,12 @@ public final class TapPublisher {
                 final long nowNs = actions.nanoTime();
                 if (backPressuredSinceNs == 0) {
                     backPressuredSinceNs = nowNs; // first read only anchors the period
-                } else if (fatalSignalled) {
-                    haltIfShutdownStalled(nowNs); // keep the backstop alive: no heartbeat reaches it now
-                } else if (nowNs - backPressuredSinceNs >= HEARTBEAT_SCHEDULE_FATAL_TIMEOUT_NS) {
+                } else if (!fatalSignalled && nowNs - backPressuredSinceNs >= HEARTBEAT_SCHEDULE_FATAL_TIMEOUT_NS) {
                     fatalFailure(Logger.CoreEventCode.ServiceError,
                                  "the consensus module did not accept the cluster-clock timer for " +
                                      TimeUnit.NANOSECONDS.toSeconds(HEARTBEAT_SCHEDULE_FATAL_TIMEOUT_NS) +
-                                     "s of continuous back-pressure");
+                                     "s of continuous back-pressure",
+                                 true);
                 }
             }
             actions.idle();
@@ -186,10 +177,9 @@ public final class TapPublisher {
      * would never see it.
      */
     public void checkRecordingAlive() {
-        if (fatalSignalled) {
-            haltIfShutdownStalled(actions.nanoTime());
-        } else if (!actions.recordingActive()) {
-            fatalTapFailure("the local archive stopped recording the tap (recording " + actions.recordingId() + ")");
+        if (!fatalSignalled && !actions.recordingActive()) {
+            fatalTapFailure("the local archive stopped recording the tap (recording " + actions.recordingId() + ")",
+                            false);
         }
     }
 
@@ -206,14 +196,14 @@ public final class TapPublisher {
      */
     private void onBackPressureThreshold(final long nowNs) {
         if (fatalSignalled) {
-            haltIfShutdownStalled(nowNs);
             return;
         }
         Logger.error(Logger.CoreComponent.Sequencer, Logger.CoreEventCode.TapBackpressure, actions.memberId(),
                      "ALERT: tap back-pressure at globalSeqNo=%d", actions.globalSeqNo());
         actions.tapBackPressureAlert();
         if (!actions.recordingActive()) {
-            fatalTapFailure("the local archive stopped recording the tap (recording " + actions.recordingId() + ")");
+            fatalTapFailure("the local archive stopped recording the tap (recording " + actions.recordingId() + ")",
+                            true);
             return;
         }
         final long recordedPosition = actions.recordedPosition();
@@ -226,8 +216,9 @@ public final class TapPublisher {
         final long stalledNs = nowNs - stallSinceNs;
         if (stalledNs >= TAP_STALL_FATAL_TIMEOUT_NS) {
             fatalTapFailure("the tap recording made no progress for " +
-                            TimeUnit.NANOSECONDS.toMillis(TAP_STALL_FATAL_TIMEOUT_NS) +
-                            "ms of continuous back-pressure");
+                                TimeUnit.NANOSECONDS.toMillis(TAP_STALL_FATAL_TIMEOUT_NS) +
+                                "ms of continuous back-pressure",
+                            true);
         } else if (stalledNs >= SUSTAINED_BACKPRESSURE_THRESHOLD_NS && !stalled) {
             stalled = true;
             actions.tapStalled(true);
@@ -241,42 +232,37 @@ public final class TapPublisher {
     /**
      * Terminates the node over its tap recording, latching the stall gauge so it does not clear on the way out.
      * @param reason what failed, for the operator
+     * @param inSpin whether this thread is inside a spin it cannot leave; see {@link #fatalFailure}
      */
-    private void fatalTapFailure(final String reason) {
+    private void fatalTapFailure(final String reason, final boolean inSpin) {
         if (!fatalSignalled) {
             actions.tapStalled(true);
         }
         fatalFailure(Logger.CoreEventCode.TapRecordingFailure,
-                     reason + ", so it can no longer record the history it is responsible for");
+                     reason + ", so it can no longer record the history it is responsible for", inSpin);
     }
 
     /**
      * Brings this node down: peers keep quorum, and its restart rebuilds its recording over full-log replay.
-     * Latched: later calls only fall through to {@link #haltIfShutdownStalled}.
+     * From inside a spin it halts, since a graceful shutdown waits for this thread, which stays in the spin.
+     * Latched.
      * @param code   which failure class this is, for the operator's log
      * @param reason what failed
+     * @param inSpin whether this thread is inside a spin it cannot leave
      */
-    private void fatalFailure(final Logger.EventCode code, final String reason) {
+    private void fatalFailure(final Logger.EventCode code, final String reason, final boolean inSpin) {
         if (fatalSignalled) {
             return;
         }
         fatalSignalled = true;
-        fatalSignalledNs = actions.nanoTime();
         Logger.fault(Logger.CoreComponent.SequencerService, code, actions.memberId(),
                      "FATAL: %s at globalSeqNo=%d — terminating this node; its peers keep quorum and its restart "
                          + "replays the full log",
                      reason, actions.globalSeqNo());
-        actions.signalFatal();
-    }
-
-    /**
-     * Halts once the graceful teardown {@link Actions#signalFatal} started has taken {@link
-     * #FATAL_SHUTDOWN_BACKSTOP_NS}.
-     * @param nowNs monotonic clock reading
-     */
-    private void haltIfShutdownStalled(final long nowNs) {
-        if (nowNs - fatalSignalledNs >= FATAL_SHUTDOWN_BACKSTOP_NS) {
+        if (inSpin) {
             actions.halt();
+        } else {
+            actions.signalFatal();
         }
     }
 }

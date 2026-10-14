@@ -91,6 +91,12 @@ public final class SequencerServer {
     /** Session limit when {@code aeron.cluster.max.sessions} is not set; see doc/ops.md, "Cluster sessions". */
     private static final int DEFAULT_MAX_CONCURRENT_SESSIONS = 64;
 
+    /**
+     * How long the graceful shutdown after a fatal may take before the process is halted: it closes the archive
+     * that may be what failed. A healthy one fits inside chaos-runner's 10s tap-stall deadline.
+     */
+    private static final long FATAL_SHUTDOWN_BACKSTOP_MS = 15_000;
+
     public static void main(final String[] args) {
         final int memberId = Integer.getInteger(PROP_MEMBER_ID, 0);
         final List<String> hosts = resolveHosts(System.getProperty(PROP_HOSTS),
@@ -168,7 +174,9 @@ public final class SequencerServer {
 
         final AtomicBoolean fatal = new AtomicBoolean();
         final Runnable fatalHandler = () -> {
-            fatal.set(true);
+            if (fatal.compareAndSet(false, true)) {
+                startFatalShutdownBackstop(memberId);
+            }
             barrier.signalAll();
         };
         final SequencerService service = new SequencerService(memberId, localArchiveCtx.clone(), fatalHandler);
@@ -207,6 +215,26 @@ public final class SequencerServer {
         if (!replayerStopped) {
             System.exit(NodeDriver.EXIT_SHUTDOWN_TIMEOUT);
         }
+    }
+
+    /**
+     * Halts the process {@link #FATAL_SHUTDOWN_BACKSTOP_MS} from now, on a daemon thread, so it covers whichever
+     * thread raised the fatal and whatever the shutdown wedges on, and holds up no exit that completes.
+     * @param memberId this node, for the log
+     */
+    private static void startFatalShutdownBackstop(final int memberId) {
+        final Thread backstop = new Thread(() -> {
+            try {
+                Thread.sleep(FATAL_SHUTDOWN_BACKSTOP_MS);
+            } catch (final InterruptedException ignore) {
+                // nothing interrupts it, and the node is committed to dying either way
+            }
+            Logger.fault(Logger.CoreComponent.SequencerServer, Logger.CoreEventCode.ShutdownTimeout, memberId,
+                         "shutdown after a fatal did not complete within %dms: halting", FATAL_SHUTDOWN_BACKSTOP_MS);
+            Runtime.getRuntime().halt(NodeDriver.EXIT_FATAL);
+        }, "seqeron-fatal-backstop");
+        backstop.setDaemon(true);
+        backstop.start();
     }
 
     /**
