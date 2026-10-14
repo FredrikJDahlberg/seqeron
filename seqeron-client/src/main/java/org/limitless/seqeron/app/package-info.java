@@ -12,8 +12,8 @@
  * <p>One block the façades are assembled from is offered on its own:
  * {@link org.limitless.seqeron.app.OutstandingWork}, which is about the application's own request/reply
  * work rather than seqeron's plumbing. The rest — the election, the leader gate and the two stall fences —
- * are package-private, being decisions the façades make and nothing else does; confirmed ingress, which a
- * duty cycle of your own does need, is {@code sequencer.client.PendingSends}.
+ * are package-private, being decisions the façades make and nothing else does; confirmed ingress is
+ * {@code sequencer.client.PendingSends}, public for seqeron's own tools but not client API.
  *
  * <p>A source that takes part in snapshot rounds gives its façade a
  * {@link org.limitless.seqeron.app.SnapshotListener}, which the façade pulls the records of its state from, and
