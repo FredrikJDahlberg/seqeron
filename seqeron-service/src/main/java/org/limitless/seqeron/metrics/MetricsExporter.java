@@ -72,9 +72,6 @@ public final class MetricsExporter {
             new MetricMeta("seqeron_sequencer_tap_stalled",
                            "1 while tap-emit back-pressure has been sustained past the stall threshold, else 0.",
                            "gauge")),
-        Map.entry(SeqeronCounters.SEQUENCER_CONNECTED_CLIENTS_TYPE_ID,
-                  new MetricMeta("seqeron_sequencer_connected_clients",
-                                 "Current count of TCP clients connected across every gateway.", "gauge")),
         Map.entry(SeqeronCounters.SEQUENCER_INGRESS_MESSAGES_TYPE_ID,
                   new MetricMeta("seqeron_sequencer_ingress_messages_total",
                                  "Count of ingress messages successfully sequenced.", "counter")),
@@ -119,7 +116,10 @@ public final class MetricsExporter {
                       "1 while a co-located replica's recovery has dispatched nothing for 30s while not caught "
                           + "up, else 0. It is holding, which is correct — but it is not serving, and this is the "
                           + "only signal that says so.",
-                      "gauge")));
+                      "gauge")),
+        Map.entry(SeqeronCounters.GATEWAY_CONNECTIONS_TYPE_ID,
+                  new MetricMeta("seqeron_gateway_connections",
+                                 "Connections this gateway instance holds open; 0 on a standby.", "gauge")));
 
     /**
      * Aeron Cluster's own counters, from the member's consensus module and service container. Their key holds the

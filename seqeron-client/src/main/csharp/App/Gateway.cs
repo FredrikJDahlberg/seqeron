@@ -62,6 +62,7 @@ public sealed class Gateway : IDisposable
     private readonly SnapshotTaker _snapshots;
     private readonly SnapshotFrames _snapshotFrames;
     private readonly int _memberId;
+    private readonly int _clientId;
     private readonly string _egressChannel;
     private readonly string _ingressEndpoints;
 
@@ -81,6 +82,10 @@ public sealed class Gateway : IDisposable
 
     // Connections whose ConnectionOpened has not landed: nothing may be published on one yet.
     private readonly HashSet<int> _unopened = new HashSet<int>();
+
+    // Connections this instance holds open, taken and not yet closed while serving; the connections gauge.
+    private readonly HashSet<int> _connections = new HashSet<int>();
+    private Counter _connectionsCounter;
 
     // The highest connectionId this logical gateway's history holds; the resume point for §7's row.
     private int _highestConnectionId = NoConnection;
@@ -106,6 +111,7 @@ public sealed class Gateway : IDisposable
         }
         _listener = options.Listener;
         _memberId = options.MemberId;
+        _clientId = options.ClientId;
         _egressChannel = options.EgressChannel;
         _ingressEndpoints = options.IngressEndpoints;
         _stagingBuffer = new UnsafeBuffer(_staging);
@@ -127,6 +133,9 @@ public sealed class Gateway : IDisposable
     public void Start(Aeron aeron)
     {
         _session.Start(aeron, _memberId, _egressChannel, _ingressEndpoints);
+        _connectionsCounter = SeqeronCounters.AddAppCounter(
+            aeron, SeqeronCounters.GatewayConnectionsTypeId,
+            $"seqeron.gateway.connections member={_memberId} client={_clientId}", _memberId, _clientId);
     }
 
     /// <summary>One duty-cycle iteration: the cluster session and the tap, then whatever the connection lifecycle,
@@ -136,6 +145,7 @@ public sealed class Gateway : IDisposable
     public int DoWork()
     {
         int work = _session.DoWork();
+        _connectionsCounter?.Set(_connections.Count);
         if (_session.IsFenced)
         {
             return work;
@@ -161,6 +171,7 @@ public sealed class Gateway : IDisposable
     public void GateClosed()
     {
         _lifecycle.OnGateClosed();
+        _connections.Clear();
     }
 
     /// <summary>
@@ -212,6 +223,7 @@ public sealed class Gateway : IDisposable
             // Stood down: the connections went with the edge, and a successor's GatewayStarted releases them.
             return;
         }
+        _connections.Remove(connectionId);
         if (_unopened.Remove(connectionId))
         {
             _lifecycleQueue.RemoveAll(queued => queued.ConnectionId == connectionId);
@@ -273,6 +285,8 @@ public sealed class Gateway : IDisposable
     public void Dispose()
     {
         _session.Dispose();
+        _connectionsCounter?.Dispose();
+        _connectionsCounter = null;
     }
 
     private int Open(byte[] connectionData)
@@ -284,6 +298,7 @@ public sealed class Gateway : IDisposable
         int connectionId = _nextConnectionId++;
         _lifecycleQueue.Add(new Lifecycle(connectionId, SystemFrame.ConnectionOpened, connectionData));
         _unopened.Add(connectionId);
+        _connections.Add(connectionId);
         return connectionId;
     }
 
@@ -382,6 +397,7 @@ public sealed class Gateway : IDisposable
             // The connections go with the edge, and a successor's GatewayStarted is what releases them.
             _gateway._lifecycleQueue.Clear();
             _gateway._unopened.Clear();
+            _gateway._connections.Clear();
             _gateway._listener.OnStandby();
         }
     }

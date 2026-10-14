@@ -192,7 +192,7 @@ sent them; authentication belongs at the system's external edges.
 | gateway can no longer trust its view | a fence: session lost, tap or recovery stalled, ingress or snapshot mismatch | the instance releases its session, so the standby takes over, and exits |
 
 The member's own recovery is always the same operation: replay the log from `globalSeqNo` 1. All state
-downstream of the log — `globalSeqNo`, the gateway list, which instance is active, the open connections — is
+downstream of the log — `globalSeqNo`, the gateway list, which instance is active — is
 a function of it, with no separate persistence and no separate recovery procedure.
 
 **Durability is replication, not fsync.** A message is committed once a majority of members have written it to

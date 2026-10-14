@@ -81,7 +81,8 @@ class ConformanceTest {
     private static final int VERSION_OFFSET = 6;
 
     private final MutableDirectBuffer ingress = new ExpandableArrayBuffer(4096);
-    private final Sequencer sequencer = new Sequencer();
+    private final FrameRecorder frames = new FrameRecorder();
+    private final Sequencer sequencer = new Sequencer(0, frames);
 
     // ── Row 1. Copy fidelity (§5) ────────────────────────────────────────────────────────────────
 
@@ -92,10 +93,9 @@ class ConformanceTest {
         final byte[] payload = syntheticPayload(payloadLength);
         final int length = payloadFrame(PAYLOAD_ID, SOURCE_ID, payload);
 
-        final int sequenced = sequencer.sequenceMessage(ingress, 0, length, SESSION_ID, TIMESTAMP);
-        assertNotEquals(Sequencer.NO_FRAME, sequenced);
+        assertTrue(sequencer.sequenceMessage(ingress, 0, length, SESSION_ID, TIMESTAMP));
 
-        final SequencedFrameDecoder view = wrapSequenced(sequenced);
+        final SequencedFrameDecoder view = wrapSequenced();
         assertEquals(PAYLOAD_ID, view.payloadId(), "payloadId is copied verbatim");
         assertEquals(payloadLength, view.payloadLength());
         assertArrayEquals(payload, copy(view.buffer(), view.payloadOffset(), view.payloadLength()),
@@ -188,7 +188,8 @@ class ConformanceTest {
     @DisplayName("row 3: each of the twelve submitted events crosses with its payload byte-identical")
     void submittedSystemEventsRoundTrip() {
         for (final Map.Entry<Integer, byte[]> event : submittedEvents().entrySet()) {
-            final Sequencer target = new Sequencer();
+            final FrameRecorder recorded = new FrameRecorder();
+            final Sequencer target = new Sequencer(0, recorded);
             final int systemEventType = event.getKey();
             final byte[] body = event.getValue();
 
@@ -196,7 +197,6 @@ class ConformanceTest {
             // GatewayStarted needs that row designated.
             if (systemEventType == SystemFrame.GATEWAY_STARTED) {
                 loadList(target, 0);
-                activatedGatewayId(target);
             } else if (systemEventType == SystemFrame.GATEWAY_ACTIVATION_REQUESTED) {
                 loadList(target, 1);
             }
@@ -205,10 +205,11 @@ class ConformanceTest {
             final int sourceId = systemEventType == SystemFrame.GATEWAY_STARTED ? LISTED_SOURCE_ID
                                                                                 : CLUSTERCTL_SOURCE_ID;
             final int length = systemFrame(systemEventType, sourceId, body);
-            final int sequenced = target.sequenceMessage(ingress, 0, length, SESSION_ID, TIMESTAMP);
-            assertNotEquals(Sequencer.NO_FRAME, sequenced, "systemEventType " + systemEventType + " was refused");
+            final int forwarded = recorded.count(); // an activation request is answered behind it
+            assertTrue(target.sequenceMessage(ingress, 0, length, SESSION_ID, TIMESTAMP),
+                       "systemEventType " + systemEventType + " was refused");
 
-            final SequencedFrameDecoder view = wrapSequenced(target, sequenced);
+            final SequencedFrameDecoder view = wrapSequenced(recorded.frame(forwarded), recorded.length(forwarded));
             assertTrue(view.isSystem());
             assertEquals(systemEventType, view.systemEventType(), "systemEventType is copied verbatim");
             assertArrayEquals(body, copy(view.buffer(), view.payloadOffset(), view.payloadLength()),
@@ -226,47 +227,44 @@ class ConformanceTest {
         assertTrue(body.length <= FrameLayer.MAX_PAYLOAD_LENGTH);
 
         final int length = systemFrame(SystemFrame.CONNECTION_OPENED, SOURCE_ID, body);
-        final int sequenced = sequencer.sequenceMessage(ingress, 0, length, SESSION_ID, TIMESTAMP);
-        assertNotEquals(Sequencer.NO_FRAME, sequenced);
+        assertTrue(sequencer.sequenceMessage(ingress, 0, length, SESSION_ID, TIMESTAMP));
 
-        final SequencedFrameDecoder view = wrapSequenced(sequenced);
+        final SequencedFrameDecoder view = wrapSequenced();
         assertArrayEquals(body, copy(view.buffer(), view.payloadOffset(), view.payloadLength()));
     }
 
     @Test
     @DisplayName("row 3: the four synthesized frames carry their template, their fields and a redundant type")
     void synthesizedFramesCarryTheirOwnTemplates() {
-        final int heartbeat = sequencer.clusterHeartbeat(TIMESTAMP);
-        assertEquals(ClusterHeartbeatDecoder.TEMPLATE_ID, templateIdOf(heartbeat));
-        assertEquals(42, heartbeat, "no payload at all — the cheapest frame in the system (§4.2)");
-        assertEquals(SystemFrame.CLUSTER_HEARTBEAT, wrapSequenced(heartbeat).systemEventType(),
+        sequencer.clusterHeartbeat(TIMESTAMP);
+        assertEquals(ClusterHeartbeatDecoder.TEMPLATE_ID, lastTemplateId());
+        assertEquals(42, frames.lastLength(), "no payload at all — the cheapest frame in the system (§4.2)");
+        assertEquals(SystemFrame.CLUSTER_HEARTBEAT, wrapSequenced().systemEventType(),
                      "systemEventType is populated on a synthesized frame too, so offset 16 discriminates "
                      + "every frame on the tap");
-        assertEquals(-1, wrapSequenced(heartbeat).sourceId(), "-1 marks the synthesized class (F-4)");
+        assertEquals(-1, wrapSequenced().sourceId(), "-1 marks the synthesized class (F-4)");
 
-        final int leadership = sequencer.leadershipChanged(7, 2, TIMESTAMP);
-        assertEquals(LeadershipChangedDecoder.TEMPLATE_ID, templateIdOf(leadership));
-        assertEquals(SystemFrame.LEADERSHIP_CHANGED, wrapSequenced(leadership).systemEventType());
-        assertEquals(2, decodeLeadershipChanged(sequencer.buffer()).newLeaderMemberId());
-        assertEquals(7, decodeLeadershipChanged(sequencer.buffer()).leadershipTermId());
+        sequencer.leadershipChanged(7, 2, TIMESTAMP);
+        assertEquals(LeadershipChangedDecoder.TEMPLATE_ID, lastTemplateId());
+        assertEquals(SystemFrame.LEADERSHIP_CHANGED, wrapSequenced().systemEventType());
+        assertEquals(2, decodeLeadershipChanged(frames.last()).newLeaderMemberId());
+        assertEquals(7, decodeLeadershipChanged(frames.last()).leadershipTermId());
 
         loadList(sequencer, 0);
-        final int active = sequencer.pendingGatewayActivation(TIMESTAMP);
-        assertEquals(GatewayActiveDecoder.TEMPLATE_ID, templateIdOf(active));
-        assertEquals(SystemFrame.GATEWAY_ACTIVE, wrapSequenced(active).systemEventType());
-        assertEquals(11, decodeGatewayActive(sequencer.buffer()).gatewayId());
+        assertEquals(GatewayActiveDecoder.TEMPLATE_ID, lastTemplateId());
+        assertEquals(SystemFrame.GATEWAY_ACTIVE, wrapSequenced().systemEventType());
+        assertEquals(11, decodeGatewayActive(frames.last()).gatewayId());
 
         final int policy = systemFrame(SystemFrame.SNAPSHOT_POLICY_REGISTERED, CLUSTERCTL_SOURCE_ID,
                                        snapshotPolicyRegisteredBody());
         sequencer.sequenceMessage(ingress, 0, policy, SESSION_ID, TIMESTAMP);
         final int request = systemFrame(SystemFrame.SNAPSHOT_REQUESTED, CLUSTERCTL_SOURCE_ID, snapshotRequestedBody());
         sequencer.sequenceMessage(ingress, 0, request, SESSION_ID, TIMESTAMP);
-        final int started = sequencer.pendingSnapshotStart(TIMESTAMP);
-        assertEquals(SnapshotStartedDecoder.TEMPLATE_ID, templateIdOf(started));
-        assertEquals(50, started);
-        assertEquals(SystemFrame.SNAPSHOT_STARTED, wrapSequenced(started).systemEventType());
+        assertEquals(SnapshotStartedDecoder.TEMPLATE_ID, lastTemplateId());
+        assertEquals(50, frames.lastLength());
+        assertEquals(SystemFrame.SNAPSHOT_STARTED, wrapSequenced().systemEventType());
         final SnapshotStartedDecoder round = new SnapshotStartedDecoder();
-        round.wrap(sequencer.buffer(), MessageHeaderDecoder.ENCODED_LENGTH, SnapshotStartedDecoder.BLOCK_LENGTH,
+        round.wrap(frames.last(), MessageHeaderDecoder.ENCODED_LENGTH, SnapshotStartedDecoder.BLOCK_LENGTH,
                    SnapshotStartedDecoder.SCHEMA_VERSION);
         assertEquals(1, round.round());
     }
@@ -407,11 +405,10 @@ class ConformanceTest {
 
         final byte[] payload = syntheticPayload(16);
         final int good = payloadFrame(PAYLOAD_ID, SOURCE_ID, payload);
-        final int sequenced = sequencer.sequenceMessage(ingress, 0, good, SESSION_ID, TIMESTAMP);
-        assertNotEquals(Sequencer.NO_FRAME, sequenced, "the rejections left no deny list behind (C-2)");
+        assertTrue(sequencer.sequenceMessage(ingress, 0, good, SESSION_ID, TIMESTAMP),
+                   "the rejections left no deny list behind (C-2)");
         assertEquals(1, sequencer.globalSeqNo(), "and cost no sequence number");
-        assertArrayEquals(payload, copy(wrapSequenced(sequenced).buffer(), wrapSequenced(sequenced).payloadOffset(),
-                                        payload.length));
+        assertArrayEquals(payload, copy(wrapSequenced().buffer(), wrapSequenced().payloadOffset(), payload.length));
         assertEquals(2, sequencer.rejectedFrameCount());
     }
 
@@ -458,32 +455,29 @@ class ConformanceTest {
         assertArrayEquals(driveOneLog().toArray(new byte[0][]), driveOneLog().toArray(new byte[0][]));
     }
 
-    /** Feeds one fixed message sequence through a fresh sequencer and collects every frame it emits. */
+    /** Feeds one fixed message sequence through a fresh sequencer and collects every frame it publishes. */
     private List<byte[]> driveOneLog() {
-        final Sequencer target = new Sequencer();
-        final List<byte[]> frames = new ArrayList<>();
+        final FrameRecorder recorded = new FrameRecorder();
+        final Sequencer target = new Sequencer(0, recorded);
         long timestamp = TIMESTAMP;
 
-        collect(frames, target, target.leadershipChanged(0, 0, timestamp));
+        target.leadershipChanged(0, 0, timestamp);
         loadList(target, 0);
-        collect(frames, target, target.sequenceMessage(ingress, 0, lastIngressLength, SESSION_ID, timestamp));
-        collect(frames, target, target.pendingGatewayActivation(timestamp));
+        target.sequenceMessage(ingress, 0, lastIngressLength, SESSION_ID, timestamp);
         final int policy = systemFrame(SystemFrame.SNAPSHOT_POLICY_REGISTERED, CLUSTERCTL_SOURCE_ID,
                                        snapshotPolicyRegisteredBody());
-        collect(frames, target, target.sequenceMessage(ingress, 0, policy, SESSION_ID, timestamp));
+        target.sequenceMessage(ingress, 0, policy, SESSION_ID, timestamp);
         final int request = systemFrame(SystemFrame.SNAPSHOT_REQUESTED, CLUSTERCTL_SOURCE_ID, snapshotRequestedBody());
-        collect(frames, target, target.sequenceMessage(ingress, 0, request, SESSION_ID, timestamp));
-        collect(frames, target, target.pendingSnapshotStart(timestamp));
+        target.sequenceMessage(ingress, 0, request, SESSION_ID, timestamp);
 
         for (int i = 0; i < 3; i++) {
             timestamp += FrameLayer.CLUSTER_HEARTBEAT_INTERVAL_NS;
-            collect(frames, target, target.clusterHeartbeat(timestamp));
-            collect(frames, target, target.snapshotIntervalElapsed(timestamp));
+            target.clusterHeartbeat(timestamp);
             final int length = payloadFrame(PAYLOAD_ID, SOURCE_ID, syntheticPayload(8 + i));
-            collect(frames, target, target.sequenceMessage(ingress, 0, length, SESSION_ID, timestamp));
+            target.sequenceMessage(ingress, 0, length, SESSION_ID, timestamp);
         }
-        collect(frames, target, target.leadershipChanged(1, 1, timestamp));
-        return frames;
+        target.leadershipChanged(1, 1, timestamp);
+        return recorded.all();
     }
 
     // ── Row 6. The boundary payload sizes (§12) ─────────────────────────────────────────────────
@@ -588,7 +582,7 @@ class ConformanceTest {
     void s6BindsAndRefuses() {
         register(sequencer, 11, LISTED_SOURCE_ID, (short)0, 1);
         register(sequencer, 12, LISTED_SOURCE_ID, (short)1, 0);
-        assertEquals(11, activatedGatewayId(sequencer));
+        assertEquals(11, lastGatewayActive());
 
         // Case 1, the positive: gatewayId 11 is a designated row, and its row's gatewaySourceId is what we carry.
         bind(sequencer, 11, SESSION_ID);
@@ -618,18 +612,17 @@ class ConformanceTest {
 
         // Case 4: an application payload under that same sourceId on an unbound session, and clusterctl's marker.
         final int application = payloadFrame(PAYLOAD_ID, LISTED_SOURCE_ID, syntheticPayload(8));
-        assertNotEquals(Sequencer.NO_FRAME,
-                        sequencer.sequenceMessage(ingress, 0, application, SESSION_ID + 1, TIMESTAMP),
-                        "a reply carries its requester's sourceId");
+        assertTrue(sequencer.sequenceMessage(ingress, 0, application, SESSION_ID + 1, TIMESTAMP),
+                   "a reply carries its requester's sourceId");
         final int marker = systemFrame(SystemFrame.CLUSTER_STARTED, CLUSTERCTL_SOURCE_ID, clusterStartedBody());
-        assertNotEquals(Sequencer.NO_FRAME, sequencer.sequenceMessage(ingress, 0, marker, SESSION_ID + 2, TIMESTAMP),
-                        "an unlisted sourceId is unchecked");
+        assertTrue(sequencer.sequenceMessage(ingress, 0, marker, SESSION_ID + 2, TIMESTAMP),
+                   "an unlisted sourceId is unchecked");
 
         // Case 3: once 12 is designated, instance 11's session is admitted nothing, of either family.
         final int request = systemFrame(SystemFrame.GATEWAY_ACTIVATION_REQUESTED, CLUSTERCTL_SOURCE_ID,
                                         activationRequestedBody(12));
-        assertNotEquals(Sequencer.NO_FRAME, sequencer.sequenceMessage(ingress, 0, request, SESSION_ID + 2, TIMESTAMP));
-        assertEquals(12, activatedGatewayId(sequencer));
+        assertTrue(sequencer.sequenceMessage(ingress, 0, request, SESSION_ID + 2, TIMESTAMP));
+        assertEquals(12, lastGatewayActive());
         assertRejected(() -> sequencer.sequenceMessage(ingress, 0, unbound, SESSION_ID, TIMESTAMP));
         assertRejected(() -> sequencer.sequenceMessage(ingress, 0, application, SESSION_ID, TIMESTAMP));
 
@@ -637,8 +630,7 @@ class ConformanceTest {
         bind(sequencer, 12, SESSION_ID + 3);
         bind(sequencer, 12, SESSION_ID + 4);
         assertRejected(() -> sequencer.sequenceMessage(ingress, 0, application, SESSION_ID + 3, TIMESTAMP));
-        assertNotEquals(Sequencer.NO_FRAME,
-                        sequencer.sequenceMessage(ingress, 0, application, SESSION_ID + 4, TIMESTAMP));
+        assertTrue(sequencer.sequenceMessage(ingress, 0, application, SESSION_ID + 4, TIMESTAMP));
 
         assertEquals(8, sequencer.rejectedFrameCount());
     }
@@ -653,28 +645,27 @@ class ConformanceTest {
         register(sequencer, 12, LISTED_SOURCE_ID, (short)1, 1);
         register(sequencer, 13, LISTED_SOURCE_ID, (short)2, 0);
 
-        assertEquals(11, activatedGatewayId(sequencer), "bootstrap designates rank 0, and only rank 0");
-        assertEquals(Sequencer.NO_FRAME, sequencer.pendingGatewayActivation(TIMESTAMP), "and nothing else");
+        assertEquals(11, lastGatewayActive(), "bootstrap designates rank 0, and only rank 0");
+        assertEquals(4, frames.count(), "and nothing else");
 
         // The operator's request is forwarded, and answered one globalSeqNo behind it.
         final int request = systemFrame(SystemFrame.GATEWAY_ACTIVATION_REQUESTED, CLUSTERCTL_SOURCE_ID,
                                         activationRequestedBody(12));
-        assertNotEquals(Sequencer.NO_FRAME, sequencer.sequenceMessage(ingress, 0, request, SESSION_ID, TIMESTAMP));
-        final long forwarded = sequencer.globalSeqNo();
-        final int answer = sequencer.pendingGatewayActivation(TIMESTAMP);
-        assertNotEquals(Sequencer.NO_FRAME, answer);
-        assertEquals(forwarded + 1, sequencer.globalSeqNo(), "the answer sits one behind the request");
-        assertEquals(12, decodeGatewayActive(sequencer.buffer()).gatewayId());
+        assertTrue(sequencer.sequenceMessage(ingress, 0, request, SESSION_ID, TIMESTAMP));
+        final SequencedFrameDecoder forwarded = wrapSequenced(frames.frame(4), frames.length(4));
+        assertEquals(SystemFrame.GATEWAY_ACTIVATION_REQUESTED, forwarded.systemEventType());
+        assertEquals(forwarded.globalSeqNo() + 1, sequencer.globalSeqNo(), "the answer sits one behind the request");
+        assertEquals(12, lastGatewayActive());
 
         // Rank 1 binds and loses it: rank 0 comes back — lowest-rank-excluding, not next-rank-up.
         bind(sequencer, 12, 100L);
-        assertNotEquals(Sequencer.NO_FRAME, sequencer.sessionClosed(100L, TIMESTAMP));
-        assertEquals(11, decodeGatewayActive(sequencer.buffer()).gatewayId());
+        assertTrue(sequencer.sessionClosed(100L, TIMESTAMP));
+        assertEquals(11, lastGatewayActive());
 
         // Rank 0 binds a session and loses it: rank 1 is promoted.
         bind(sequencer, 11, 101L);
-        assertNotEquals(Sequencer.NO_FRAME, sequencer.sessionClosed(101L, TIMESTAMP));
-        assertEquals(12, decodeGatewayActive(sequencer.buffer()).gatewayId());
+        assertTrue(sequencer.sessionClosed(101L, TIMESTAMP));
+        assertEquals(12, lastGatewayActive());
     }
 
     @Test
@@ -682,16 +673,13 @@ class ConformanceTest {
     void activationDeadline() {
         register(sequencer, 11, LISTED_SOURCE_ID, (short)0, 1);
         register(sequencer, 12, LISTED_SOURCE_ID, (short)1, 0);
-        assertEquals(11, activatedGatewayId(sequencer));
+        assertEquals(11, lastGatewayActive());
 
         final long armed = TIMESTAMP;
-        assertEquals(Sequencer.NO_FRAME,
-                     sequencer.pendingGatewayActivationTimeout(armed + Sequencer.GATEWAY_ACTIVATION_TIMEOUT_NS - 1),
-                     "not one heartbeat before the deadline");
-        final int handover =
-            sequencer.pendingGatewayActivationTimeout(armed + Sequencer.GATEWAY_ACTIVATION_TIMEOUT_NS);
-        assertNotEquals(Sequencer.NO_FRAME, handover);
-        assertEquals(12, decodeGatewayActive(sequencer.buffer()).gatewayId());
+        sequencer.clusterHeartbeat(armed + Sequencer.GATEWAY_ACTIVATION_TIMEOUT_NS - 1);
+        assertEquals(ClusterHeartbeatDecoder.TEMPLATE_ID, lastTemplateId(), "not one heartbeat before the deadline");
+        sequencer.clusterHeartbeat(armed + Sequencer.GATEWAY_ACTIVATION_TIMEOUT_NS);
+        assertEquals(12, lastGatewayActive());
     }
 
     @Test
@@ -699,19 +687,20 @@ class ConformanceTest {
     void answeredActivationAndSoleInstance() {
         register(sequencer, 11, LISTED_SOURCE_ID, (short)0, 1);
         register(sequencer, 12, LISTED_SOURCE_ID, (short)1, 0);
-        assertEquals(11, activatedGatewayId(sequencer));
+        assertEquals(11, lastGatewayActive());
         bind(sequencer, 11, 100L);
-        assertEquals(Sequencer.NO_FRAME,
-                     sequencer.pendingGatewayActivationTimeout(TIMESTAMP + 10 *
-                                                               Sequencer.GATEWAY_ACTIVATION_TIMEOUT_NS),
+        sequencer.clusterHeartbeat(TIMESTAMP + 10 * Sequencer.GATEWAY_ACTIVATION_TIMEOUT_NS);
+        assertEquals(ClusterHeartbeatDecoder.TEMPLATE_ID, lastTemplateId(),
                      "a GatewayStarted drops the deadline it answered");
 
-        final Sequencer sole = new Sequencer();
+        final FrameRecorder soleFrames = new FrameRecorder();
+        final Sequencer sole = new Sequencer(0, soleFrames);
         register(sole, 21, 6, (short)0, 0);
-        assertEquals(21, activatedGatewayId(sole));
+        assertEquals(21, gatewayActiveAt(soleFrames, soleFrames.count() - 1));
         bind(sole, 21, 200L);
         final long before = sole.globalSeqNo();
-        assertEquals(Sequencer.NO_PROMOTION_TARGET, sole.sessionClosed(200L, TIMESTAMP));
+        assertFalse(sole.sessionClosed(200L, TIMESTAMP));
+        assertEquals(1L, sole.gatewayPromotionFailedCount(), "a gateway's session closed with nobody to promote");
         assertEquals(before, sole.globalSeqNo(), "no sibling, so no frame and no sequence number");
     }
 
@@ -722,15 +711,13 @@ class ConformanceTest {
         register(sequencer, 12, LISTED_SOURCE_ID, (short)1, 2);
         register(sequencer, 21, 6, (short)0, 1);
         register(sequencer, 22, 6, (short)1, 0);
-        assertEquals(11, activatedGatewayId(sequencer));
-        assertEquals(21, activatedGatewayId(sequencer));
+        assertEquals(11, gatewayActiveAt(frames, frames.count() - 2));
+        assertEquals(21, lastGatewayActive());
 
         // Neither answered, so both deadlines are live and both hand over at the same consensus time.
-        final long deadline = TIMESTAMP + Sequencer.GATEWAY_ACTIVATION_TIMEOUT_NS;
-        assertNotEquals(Sequencer.NO_FRAME, sequencer.pendingGatewayActivationTimeout(deadline));
-        assertEquals(12, decodeGatewayActive(sequencer.buffer()).gatewayId());
-        assertNotEquals(Sequencer.NO_FRAME, sequencer.pendingGatewayActivationTimeout(deadline));
-        assertEquals(22, decodeGatewayActive(sequencer.buffer()).gatewayId());
+        sequencer.clusterHeartbeat(TIMESTAMP + Sequencer.GATEWAY_ACTIVATION_TIMEOUT_NS);
+        assertEquals(12, gatewayActiveAt(frames, frames.count() - 2));
+        assertEquals(22, lastGatewayActive());
     }
 
     // ── Fixtures ─────────────────────────────────────────────────────────────────────────────────
@@ -901,7 +888,7 @@ class ConformanceTest {
                           final short preferenceRank, final int remaining) {
         final int length = systemFrame(SystemFrame.GATEWAY_REGISTERED, CLUSTERCTL_SOURCE_ID,
                                        gatewayRegisteredBody(gatewayId, gatewaySourceId, preferenceRank, remaining));
-        assertNotEquals(Sequencer.NO_FRAME, target.sequenceMessage(ingress, 0, length, SESSION_ID, TIMESTAMP));
+        assertTrue(target.sequenceMessage(ingress, 0, length, SESSION_ID, TIMESTAMP));
     }
 
     /** A one-row list for {@code gatewayId} 11 at rank 0, left open when {@code remaining > 0}. */
@@ -913,53 +900,53 @@ class ConformanceTest {
     private void bind(final Sequencer target, final int gatewayId, final long sessionId) {
         final int length = systemFrame(SystemFrame.GATEWAY_STARTED, gatewayId < 20 ? LISTED_SOURCE_ID : 6,
                                        gatewayStartedBody(gatewayId));
-        assertNotEquals(Sequencer.NO_FRAME, target.sequenceMessage(ingress, 0, length, sessionId, TIMESTAMP));
+        assertTrue(target.sequenceMessage(ingress, 0, length, sessionId, TIMESTAMP));
     }
 
-    /** Drains one synthesized {@code GatewayActive} and returns the {@code gatewayId} it designates. */
-    private int activatedGatewayId(final Sequencer target) {
-        final int length = target.pendingGatewayActivation(TIMESTAMP);
-        assertNotEquals(Sequencer.NO_FRAME, length, "expected a GatewayActive");
-        return decodeGatewayActive(target.buffer()).gatewayId();
+    /** The {@code gatewayId} of the {@code GatewayActive} at {@code index} of what {@code recorded} holds. */
+    private static int gatewayActiveAt(final FrameRecorder recorded, final int index) {
+        final DirectBuffer frame = recorded.frame(index);
+        assertEquals(GatewayActiveDecoder.TEMPLATE_ID, new MessageHeaderDecoder().wrap(frame, 0).templateId(),
+                     "expected a GatewayActive");
+        return decodeGatewayActive(frame).gatewayId();
+    }
+
+    /** The {@code gatewayId} of the {@code GatewayActive} published last. */
+    private int lastGatewayActive() {
+        return gatewayActiveAt(frames, frames.count() - 1);
     }
 
     /** Asserts a rejection cost nothing: no frame, no sequence number, no synthesis, one counter tick. */
-    private void assertRejected(final java.util.function.IntSupplier call) {
+    private void assertRejected(final java.util.function.BooleanSupplier call) {
         assertRejected(call, "", sequencer.globalSeqNo());
     }
 
-    private void assertRejected(final java.util.function.IntSupplier call, final String what) {
+    private void assertRejected(final java.util.function.BooleanSupplier call, final String what) {
         assertRejected(call, what, sequencer.globalSeqNo());
     }
 
-    private void assertRejected(final java.util.function.IntSupplier call, final String what, final long before) {
+    private void assertRejected(final java.util.function.BooleanSupplier call, final String what,
+                                final long before) {
         final long rejectedBefore = sequencer.rejectedFrameCount();
-        assertEquals(Sequencer.NO_FRAME, call.getAsInt(), what);
+        final int published = frames.count();
+        assertFalse(call.getAsBoolean(), what);
         assertEquals(before, sequencer.globalSeqNo(), what + ": globalSeqNo must not move (S-5)");
-        assertEquals(Sequencer.NO_FRAME, sequencer.pendingGatewayActivation(TIMESTAMP),
-                     what + ": nothing at all is emitted, not even behind the rejection");
+        assertEquals(published, frames.count(), what + ": nothing at all is emitted, not even behind the rejection");
         assertEquals(rejectedBefore + 1, sequencer.rejectedFrameCount(), what + ": one counter tick (S-7)");
     }
 
-    private static void collect(final List<byte[]> frames, final Sequencer target, final int length) {
-        if (length != Sequencer.NO_FRAME) {
-            frames.add(copy(target.buffer(), 0, length));
-        }
+    private SequencedFrameDecoder wrapSequenced() {
+        return wrapSequenced(frames.last(), frames.lastLength());
     }
 
-    private SequencedFrameDecoder wrapSequenced(final int length) {
-        return wrapSequenced(sequencer, length);
-    }
-
-    private static SequencedFrameDecoder wrapSequenced(final Sequencer target, final int length) {
+    private static SequencedFrameDecoder wrapSequenced(final DirectBuffer frame, final int length) {
         final SequencedFrameDecoder view = new SequencedFrameDecoder();
-        assertTrue(view.wrap(target.buffer(), 0, length), "the sequencer emitted something that is not a frame");
+        assertTrue(view.wrap(frame, 0, length), "the sequencer emitted something that is not a frame");
         return view;
     }
 
-    private int templateIdOf(final int length) {
-        assertNotEquals(Sequencer.NO_FRAME, length);
-        return new MessageHeaderDecoder().wrap(sequencer.buffer(), 0).templateId();
+    private int lastTemplateId() {
+        return new MessageHeaderDecoder().wrap(frames.last(), 0).templateId();
     }
 
     private static GatewayActiveDecoder decodeGatewayActive(final DirectBuffer buffer) {

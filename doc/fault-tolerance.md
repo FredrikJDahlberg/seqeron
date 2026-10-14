@@ -190,8 +190,9 @@ opened it, during replay as live. `connectionData` carries whatever identity the
 a new connection onto an existing session (spec §7.1).
 
 `GatewayStarted` carries `firstConnectionId`, chosen above the highest id seen in replay, so connection ids
-never repeat across a handover. On `GatewayStarted` the sequencer releases every connection still open under
-that `gatewaySourceId`, since a crashed instance never publishes their `ConnectionClosed` frames.
+never repeat across a handover. A crashed instance never publishes its connections' `ConnectionClosed` frames,
+so an application that tracks connections treats `GatewayStarted` as closing every connection still open under
+that `gatewaySourceId` (spec §7.1).
 
 ### 2.4 Passive instances
 

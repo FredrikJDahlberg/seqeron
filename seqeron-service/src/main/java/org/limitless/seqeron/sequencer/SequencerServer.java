@@ -171,7 +171,7 @@ public final class SequencerServer {
             fatal.set(true);
             barrier.signalAll();
         };
-        final SequencerService service = new SequencerService(fatalHandler);
+        final SequencerService service = new SequencerService(memberId, localArchiveCtx.clone(), fatalHandler);
 
         final ClusteredServiceContainer.Context serviceCtx =
             new ClusteredServiceContainer.Context()

@@ -47,9 +47,7 @@ public static class SeqeronCounters
     /// 0.</summary>
     public const int SequencerTapStalledTypeId = 5008;
 
-    /// <summary>Current count of TCP clients connected across every gateway, derived from the sequenced
-    /// log.</summary>
-    public const int SequencerConnectedClientsTypeId = 5009;
+    // 5009 is retired, and never reused.
 
     /// <summary>Count of ingress messages successfully sequenced; <c>rate()</c> over this is ingress
     /// throughput.</summary>
@@ -94,11 +92,11 @@ public static class SeqeronCounters
     /// archive is not serving replays.</summary>
     public const int ReplayerArchiveErrorsCountTypeId = 5111;
 
-    // Co-located application replicas (5200-5299). Core reserves 5200; a consumer allocates its own in the range
-    // (doc/ops.md, "Counter type ids").
+    // Co-located application replicas (5200-5299). Core reserves 5200 and 5299; a consumer allocates its own in
+    // 5201-5298 (doc/ops.md, "Counter type ids").
 
-    /// <summary>First type id of the app range: core reserves <see cref="AppRecoveryStalledTypeId"/> and no
-    /// more.</summary>
+    /// <summary>First type id of the app range: core reserves <see cref="AppRecoveryStalledTypeId"/> and
+    /// <see cref="GatewayConnectionsTypeId"/> and no more.</summary>
     public const int AppTypeIdMin = 5200;
 
     /// <summary>Last type id of the app range.</summary>
@@ -107,6 +105,10 @@ public static class SeqeronCounters
     /// <summary>1 while a co-located replica's recovery has dispatched nothing while not caught up, else
     /// 0.</summary>
     public const int AppRecoveryStalledTypeId = 5200;
+
+    /// <summary>Connections a gateway instance holds open: taken and not yet closed, and 0 while it does not
+    /// serve.</summary>
+    public const int GatewayConnectionsTypeId = 5299;
 
     /// <summary>First type id seqeron owns, for a typeId-range scan.</summary>
     public const int MinTypeId = SequencerTypeIdMin;

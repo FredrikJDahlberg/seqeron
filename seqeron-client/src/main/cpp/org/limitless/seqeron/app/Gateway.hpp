@@ -23,6 +23,7 @@
 #include "org/limitless/seqeron/app/detail/SnapshotTaker.hpp"
 #include "org/limitless/seqeron/protocol/PortLayout.hpp"
 #include "org/limitless/seqeron/protocol/Publish.hpp"
+#include "org/limitless/seqeron/protocol/SeqeronCounters.hpp"
 #include "org/limitless/seqeron/protocol/SequencedFrame.hpp"
 #include "org/limitless/seqeron/protocol/Snapshot.hpp"
 #include "org/limitless/seqeron/replayer/client/SnapshotRestoreHandler.hpp"
@@ -162,6 +163,12 @@ class Gateway
      */
     void start(std::shared_ptr<aeron::Aeron> aeron)
     {
+        m_aeron = aeron;
+        m_connectionsCounterRegId =
+            protocol::addAppCounter(m_aeron, protocol::GATEWAY_CONNECTIONS_TYPE_ID,
+                                    "seqeron.gateway.connections member=" + std::to_string(m_config.memberId) +
+                                        " client=" + std::to_string(m_config.clientId),
+                                    m_config.memberId, m_config.clientId);
         m_session.start(std::move(aeron), m_config.memberId, m_config.egressChannel, m_config.ingressEndpoints);
     }
 
@@ -172,6 +179,7 @@ class Gateway
     int doWork()
     {
         int work = m_session.doWork();
+        updateConnectionsCounter();
         if (m_session.isFenced())
         {
             return work;
@@ -193,6 +201,7 @@ class Gateway
     void gateClosed()
     {
         m_lifecycle.onGateClosed();
+        m_connections.clear();
     }
 
     // Tells the cluster this instance is alive. doWork() already does it once a cycle; call this as well from
@@ -230,6 +239,7 @@ class Gateway
         m_lifecycleQueue.push_back(
             { connectionId, protocol::CONNECTION_OPENED, std::vector<char>(connectionData, connectionData + length) });
         m_unopened.insert(connectionId);
+        m_connections.insert(connectionId);
         return connectionId;
     }
 
@@ -256,6 +266,7 @@ class Gateway
             // Stood down: the connections went with the edge, and a successor's GatewayStarted releases them.
             return;
         }
+        m_connections.erase(connectionId);
         if (m_unopened.erase(connectionId) > 0)
         {
             std::erase_if(m_lifecycleQueue,
@@ -351,9 +362,23 @@ class Gateway
     void close()
     {
         m_session.close();
+        m_connectionsCounter.reset();
+        m_connectionsCounterRegId = -1;
     }
 
   private:
+    void updateConnectionsCounter()
+    {
+        if (!m_connectionsCounter && m_connectionsCounterRegId >= 0)
+        {
+            m_connectionsCounter = m_aeron->findCounter(m_connectionsCounterRegId);
+        }
+        if (m_connectionsCounter)
+        {
+            m_connectionsCounter->set(static_cast<std::int64_t>(m_connections.size()));
+        }
+    }
+
     // One connection lifecycle frame waiting to be placed.
     struct Lifecycle
     {
@@ -465,6 +490,7 @@ class Gateway
             // The connections go with the edge, and a successor's GatewayStarted is what releases them.
             m_gateway.m_lifecycleQueue.clear();
             m_gateway.m_unopened.clear();
+            m_gateway.m_connections.clear();
             m_gateway.m_listener.onStandby();
         }
 
@@ -668,6 +694,13 @@ class Gateway
 
     // Connections whose ConnectionOpened has not landed: nothing may be published on one yet.
     std::unordered_set<std::int32_t> m_unopened;
+
+    // Connections this instance holds open, taken and not yet closed while serving; the connections gauge, null
+    // until its async add resolves.
+    std::unordered_set<std::int32_t> m_connections;
+    std::shared_ptr<aeron::Aeron> m_aeron;
+    std::int64_t m_connectionsCounterRegId = -1;
+    std::shared_ptr<aeron::Counter> m_connectionsCounter;
 
     // The highest connectionId this logical gateway's history holds; the resume point for §7's row.
     std::int32_t m_highestConnectionId = NO_CONNECTION;

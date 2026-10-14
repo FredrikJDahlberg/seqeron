@@ -35,8 +35,7 @@ inline constexpr std::int32_t SEQUENCER_GATEWAY_PROMOTION_COUNT_TYPE_ID = 5006;
 inline constexpr std::int32_t SEQUENCER_BOOTSTRAP_ACTIVATED_TYPE_ID = 5007;
 // 1 while tap back-pressure has lasted past the stall threshold with no recording progress, else 0.
 inline constexpr std::int32_t SEQUENCER_TAP_STALLED_TYPE_ID = 5008;
-// Current count of TCP clients connected across every gateway, derived from the sequenced log.
-inline constexpr std::int32_t SEQUENCER_CONNECTED_CLIENTS_TYPE_ID = 5009;
+// 5009 is retired, and never reused.
 // Count of ingress messages successfully sequenced.
 inline constexpr std::int32_t SEQUENCER_INGRESS_MESSAGES_TYPE_ID = 5010;
 // Count of gateway session closes that found no standby to promote.
@@ -64,12 +63,15 @@ inline constexpr std::int32_t REPLAYER_THROTTLED_REQUESTS_COUNT_TYPE_ID = 5110;
 inline constexpr std::int32_t REPLAYER_ARCHIVE_ERRORS_COUNT_TYPE_ID = 5111;
 
 // ── Co-located application replicas (5200-5299) ──────────────────────────────────────────────
-// Core reserves 5200; a consumer allocates its own in the range (doc/ops.md, "Counter type ids").
+// Core reserves 5200 and 5299; a consumer allocates its own in 5201-5298 (doc/ops.md, "Counter type ids").
 inline constexpr std::int32_t APP_TYPE_ID_MIN = 5200;
 inline constexpr std::int32_t APP_TYPE_ID_MAX = 5299;
 
 // 1 while this replica's recovery has been reported unconvergent (see ReplayerRecovery::checkRecoveryProgress), else 0.
 inline constexpr std::int32_t APP_RECOVERY_STALLED_TYPE_ID = 5200;
+
+// Connections a gateway instance holds open: taken and not yet closed, and 0 while it does not serve.
+inline constexpr std::int32_t GATEWAY_CONNECTIONS_TYPE_ID = 5299;
 
 // The type ids seqeron owns, for a typeId-range scan.
 inline constexpr std::int32_t MIN_TYPE_ID = SEQUENCER_TYPE_ID_MIN;

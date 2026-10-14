@@ -374,15 +374,15 @@ of their own.
 
 | event | `systemEventType` | carried in | ingress-legal | the sequencer decodes it |
 | --- | --- | --- | --- | --- |
-| `ConnectionOpened` | 1 | payload | yes (producer) | yes: open-connection set |
-| `ConnectionClosed` | 2 | payload | yes (producer) | yes: open-connection set |
+| `ConnectionOpened` | 1 | payload | yes (producer) | no |
+| `ConnectionClosed` | 2 | payload | yes (producer) | no |
 | `LeadershipChanged` | 5 | template 105 | no | no (encodes only) |
 | `ClusterStarted` | 10 | payload | yes (`clusterctl`) | no |
 | `ClusterStopped` | 11 | payload | yes (`clusterctl`) | no |
 | `ClusterHeartbeat` | 16 | template 104 | no | no (encodes only) |
 | `GatewayRegistered` | 17 | payload | yes (`clusterctl load-topology`) | yes: gateway list; bootstrap on `remaining == 0` |
 | `GatewayActive` | 18 | template 106 | no | no (encodes only) |
-| `GatewayStarted` | 19 | payload | yes (gateway) | yes: binds session to `gatewayId`; releases stale connections |
+| `GatewayStarted` | 19 | payload | yes (gateway) | yes: binds session to `gatewayId` |
 | `PayloadIdRegistered` | 23 | payload | yes (`clusterctl load-topology`) | no (§6.3) |
 | `GatewayActivationRequested` | 24 | payload | yes (`clusterctl activate`) | yes: validates `gatewayId`, then synthesizes `GatewayActive` |
 | `ApplicationRegistered` | 25 | payload | yes (`clusterctl load-topology`) | no |
@@ -483,12 +483,10 @@ Field semantics:
 
 The snapshot protocol these events carry is `doc/snapshot.md`.
 
-**Connections.** The sequencer keeps a set of open connections keyed on `(header.sourceId,
-header.connectionId)`. When a logical gateway publishes `GatewayStarted`, the sequencer releases every
-connection still open under that `gatewaySourceId`, because a crashed instance never publishes the
-`ConnectionClosed` frames for its connections. The set is node-local state derived from the log
-(**S-3**), and the release emits no frame. A consumer that tracks connections derives its view from the
-same frames.
+**Connections.** The sequencer keeps no connection state. A consumer that tracks connections derives
+its view from these frames, keyed on `(header.sourceId, header.connectionId)`. A crashed instance never
+publishes the `ConnectionClosed` frames for its connections, so such a consumer treats a `GatewayStarted`
+as closing every connection still open under that `gatewaySourceId`.
 
 `ConnectionClosed` has no payload: `header.connectionId` identifies a connection every consumer has
 already seen open. `ConnectionOpened` carries `connectionData`, because a producer allocates a new
@@ -496,8 +494,7 @@ already seen open. `ConnectionOpened` carries `connectionData`, because a produc
 arrives under a new id. A standby needs the mapping from id to application session before that
 connection's first message, and this frame is the only place it can get it.
 
-- The cluster tier MUST NOT decode `connectionData`. The sequencer dispatches `ConnectionOpened` on
-  `systemEventType` and reads nothing past the block.
+- The cluster tier MUST NOT decode `connectionData`. The sequencer forwards `ConnectionOpened` unopened.
 - Its encoding is the producer's, identified by `header.sourceId`. A consumer that does not recognise
   the producer skips it, as **P-1** skips an unknown `payloadId`. **E-1** applies.
 - It MAY be empty (length prefix 0). The sequencer MUST accept both empty and non-empty.
@@ -542,10 +539,11 @@ are kept in arming order, so two gateways that bootstrap together keep separate 
 node evaluates them in the same order (**S-3**).
 
 **Evaluation** runs on each `ClusterHeartbeat`, using its consensus timestamp and immediately after
-the heartbeat frame, never on a local timer. The sequencer takes the first expired deadline in arming
-order and removes it. If no `GatewayStarted` has bound that `gatewayId` in the meantime, it
-synthesizes a `GatewayActive` for the target; otherwise it discards the deadline. At most one
-promotion happens per heartbeat.
+the heartbeat frame, never on a local timer. The sequencer removes every expired deadline, in arming
+order. For each, if no `GatewayStarted` has bound that `gatewayId` in the meantime, it synthesizes a
+`GatewayActive` for the target, whose new deadline goes to the end of the order; otherwise it
+discards the deadline. Each gateway is promoted at most once per heartbeat, and gateways whose
+deadlines expire together are promoted behind the same heartbeat, in arming order.
 
 Every input to promotion comes from the log: the list from `GatewayRegistered`, the bindings from
 `GatewayStarted`, the time from the consensus timestamp. Every node therefore synthesizes the same

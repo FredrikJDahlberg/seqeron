@@ -91,7 +91,8 @@ The exporter maps a counter to a metric by its Aeron type id. Aeron reserves 0�
 | 5000–5099 | `SequencerService` |
 | 5100–5199 | `ReplayerService` |
 | 5200 | `ReplayerStreamReceiver`, inside every client: `seqeron_app_recovery_stalled` |
-| 5201–5299 | an application's own counters, allocated by the deployment |
+| 5201–5298 | an application's own counters, allocated by the deployment |
+| 5299 | `Gateway`, inside every gateway instance: `seqeron_gateway_connections` |
 
 The ids are defined in `SeqeronCounters` in each language, and the copies must stay in step. Of the
 counters outside these ranges, only Aeron Cluster's below are exported ([Aeron Cluster's metrics](#aeron-clusters-metrics)).
@@ -110,7 +111,7 @@ Two applications that use the same type id appear as one metric, named by whiche
 | `up` | gauge | Prometheus's own, not a counter: 1 if its last scrape of that member's exporter succeeded, else 0 |
 | `seqeron_sequencer_global_seq_no` | gauge | the last `globalSeqNo` on this member's tap |
 | `seqeron_sequencer_tap_backpressure_alerts_total` | counter | times the tap's back-pressure alert has fired |
-| `seqeron_sequencer_rejected_ingress_total` | counter | malformed ingress frames skipped by `Sequencer.sequenceMessage` |
+| `seqeron_sequencer_rejected_ingress_total` | counter | ingress frames refused by spec §9.2, and messages with no client session |
 | `seqeron_sequencer_leadership_change_total` | counter | leadership changes this member has observed and sequenced |
 | `seqeron_sequencer_current_leader_member_id` | gauge | the leader this member's sequencer last recorded |
 | `seqeron_sequencer_last_tick_timestamp_ms` | gauge | the consensus timestamp of the last `ClusterHeartbeat`, in ms (the frame carries ns) |
@@ -118,7 +119,6 @@ Two applications that use the same type id appear as one metric, named by whiche
 | `seqeron_sequencer_gateway_promotion_failed_total` | counter | times a gateway lost its active instance and had no standby to promote |
 | `seqeron_sequencer_bootstrap_activated` | gauge | 1 once the bootstrap `GatewayActive` is in this cluster's log, else 0 |
 | `seqeron_sequencer_tap_stalled` | gauge | 1 while the tap recording has made no progress for more than 200 ms under back-pressure, else 0; stays 1 when the member terminates for a tap it cannot record ([below](#a-node-that-terminates-itself)) |
-| `seqeron_sequencer_connected_clients` | gauge | external connections open across every gateway: a `ConnectionOpened` with no `ConnectionClosed` yet |
 | `seqeron_sequencer_ingress_messages_total` | counter | ingress frames sequenced; the frames the sequencer synthesizes are not counted |
 | `seqeron_replayer_ready` | gauge | 1 once the tap recording is visible and replay requests are served |
 | `seqeron_replayer_active_slots` | gauge | replays in progress |
@@ -129,6 +129,7 @@ Two applications that use the same type id appear as one metric, named by whiche
 | `seqeron_replayer_throttled_requests_total` | counter | replay requests answered `ReplayPending` only because the tap recording trailed the tap by more than a quarter of the window while a replay was running ([Term lengths](#term-lengths)). A held client resends about every 500 ms, so the rate is about twice the number of clients held. A sustained rate means the recorder is falling behind the tap |
 | `seqeron_replayer_archive_errors_total` | counter | local-archive calls that threw. A request one fails is answered `ReplayPending` and the client's resend is the retry; the Replayer's own calls (its readiness check, the snapshot index's replay) wait a second before the next. Live delivery is unaffected, so a sustained rate means only that history is not being served |
 | `seqeron_app_recovery_stalled` | gauge | 1 while this client's recovery has dispatched nothing for 30 s while not caught up, else 0; also labelled `client`. The client is holding, which is safe, but not serving, and nothing else says so. The causes are a Replayer that never answers and a gap this member's recording cannot cover; the client's own log line names which |
+| `seqeron_gateway_connections` | gauge | connections this gateway instance holds open: taken with `openConnection` and not yet closed. 0 on a standby, and reset when the edge closes. Labelled `client` as well as `member`; `sum` over every instance gives a deployment's total |
 
 ### Aeron Cluster's metrics
 
@@ -423,8 +424,8 @@ convention for "fenced, restart me". A gateway is not a cluster member, so this 
   returns as a standby, active only when named.
 - **For `TAP_STALLED` and `RECOVERY_STALLED`, check the co-located member first.** A stopped
   `SequencerServer` or an unavailable Replayer (`seqeron_replayer_ready`) explains both.
-- **A gateway publishes one seqeron metric**, `seqeron_app_recovery_stalled`, as every client does. Its
-  fences appear only in its log.
+- **A gateway publishes two seqeron metrics**: `seqeron_app_recovery_stalled`, as every client does, and
+  `seqeron_gateway_connections`. Its fences appear only in its log.
 
 ## The consensus clock
 
@@ -452,7 +453,7 @@ discipline them.
 - **No alerting rules.** Neither Prometheus alerts nor Grafana alert provisioning: dashboard only.
 - **No service discovery.** `prometheus.yml`'s target list is maintained by hand; for a cluster whose
   membership changes, keep it in step with `SEQERON_HOSTS`.
-- **No gateway fence counters.** Beyond `seqeron_app_recovery_stalled`, a gateway exports nothing of
-  seqeron's: no fence counts, no connection state. `seqeron_sequencer_gateway_promotion_total` shows that
+- **No gateway fence counters.** Beyond `seqeron_app_recovery_stalled` and `seqeron_gateway_connections`, a
+  gateway exports nothing of seqeron's: no fence counts. `seqeron_sequencer_gateway_promotion_total` shows that
   a promotion happened, not why; the gateway's log does. An application can export its own counters in
   the application range ([Counter type ids](#counter-type-ids)).

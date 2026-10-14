@@ -16,10 +16,8 @@ import java.nio.file.Path;
 import java.util.concurrent.TimeUnit;
 import org.agrona.CloseHelper;
 import org.agrona.DirectBuffer;
-import org.agrona.concurrent.NoOpLock;
 import org.agrona.concurrent.status.CountersReader;
 import org.limitless.seqeron.protocol.FrameLayer;
-import org.limitless.seqeron.protocol.PortLayout;
 import org.limitless.seqeron.protocol.SeqeronCounters;
 import org.limitless.seqeron.replayer.server.NodeDriver;
 import org.limitless.seqeron.util.Clocks;
@@ -56,6 +54,11 @@ public final class SequencerService implements ClusteredService {
     /** Brings the whole node down; wired by {@link SequencerServer}. See {@link TapPublisher}. */
     private final Runnable fatalHandler;
 
+    private final int memberId;
+
+    /** The co-located archive's client settings; {@link #onStart} supplies the cluster's Aeron client. */
+    private final AeronArchive.Context archiveContext;
+
     // Aeron runtime
     private Cluster cluster;
     private ExclusivePublication tapPub;
@@ -79,15 +82,19 @@ public final class SequencerService implements ClusteredService {
     private Counter gatewayPromotionCounter;
     private Counter gatewayPromotionFailedCounter;
     private Counter bootstrapActivatedCounter;
-    private Counter connectedClientsCounter;
     private Counter messagesSequencedCounter;
 
     /**
-     * @param fatalHandler run once, from a cluster callback, when this node can no longer record its own
-     *                     tap. Must not block: it signals a shutdown and returns.
+     * @param memberId       this node's cluster memberId
+     * @param archiveContext the co-located archive's client settings; this service owns it
+     * @param fatalHandler   run once, from a cluster callback, when this node can no longer record its own
+     *                       tap. Must not block: it signals a shutdown and returns.
      */
-    public SequencerService(final Runnable fatalHandler) {
-        this.sequencer = new Sequencer();
+    public SequencerService(final int memberId, final AeronArchive.Context archiveContext,
+                            final Runnable fatalHandler) {
+        this.sequencer = new Sequencer(memberId, tap::emit);
+        this.memberId = memberId;
+        this.archiveContext = archiveContext;
         this.fatalHandler = fatalHandler;
     }
 
@@ -112,13 +119,7 @@ public final class SequencerService implements ClusteredService {
         }
 
         try {
-            aeronArchive = AeronArchive.connect(new AeronArchive.Context()
-                                                    .aeron(cluster.context().aeron())
-                                                    .controlRequestChannel(PortLayout.ARCHIVE_CONTROL_CHANNEL)
-                                                    .controlRequestStreamId(PortLayout.ARCHIVE_CONTROL_STREAM_ID)
-                                                    .controlResponseChannel(PortLayout.ARCHIVE_CONTROL_CHANNEL)
-                                                    .controlResponseStreamId(NodeDriver.SEQUENCER_ARCHIVE_RESPONSE_STREAM_ID)
-                                                    .lock(NoOpLock.INSTANCE));
+            aeronArchive = AeronArchive.connect(archiveContext.aeron(cluster.context().aeron()));
             tapPub = cluster.context().aeron().addExclusivePublication(FrameLayer.FEEDER_CHANNEL, FrameLayer.FEEDER_STREAM_ID);
             aeronArchive.startRecording(FrameLayer.FEEDER_CHANNEL, FrameLayer.FEEDER_STREAM_ID, SourceLocation.LOCAL);
             if (!awaitTapRecordingActive()) {
@@ -129,7 +130,7 @@ public final class SequencerService implements ClusteredService {
             CloseHelper.quietCloseAll(aeronArchive, tapPub);
             throw refuseStart("[SequencerService] Refusing to start, the tap cannot be recorded: " + ex);
         }
-        // Counters are NOT created here: cluster.memberId() is still NULL_VALUE during onStart
+        createCounters();
     }
 
     /**
@@ -165,49 +166,35 @@ public final class SequencerService implements ClusteredService {
         return new IllegalStateException(message);
     }
 
-    /**
-     * Creates this node's operator counters on the first callback that needs one, labelled with the
-     * memberId — which is still {@code NULL_VALUE} during {@link #onStart}.
-     */
-    private void ensureCounters() {
-        if (globalSeqNoCounter != null) {
-            return;
-        }
-        final int memberId = cluster.memberId();
-        sequencer.memberId(memberId);
-        globalSeqNoCounter = counter(SeqeronCounters.SEQUENCER_GLOBAL_SEQ_NO_TYPE_ID, "globalSeqNo", memberId);
+    /** Creates this node's operator counters. */
+    private void createCounters() {
+        globalSeqNoCounter = counter(SeqeronCounters.SEQUENCER_GLOBAL_SEQ_NO_TYPE_ID, "globalSeqNo");
         tapBackPressureAlertCounter =
-            counter(SeqeronCounters.SEQUENCER_TAP_BACKPRESSURE_ALERTS_TYPE_ID, "tapBackPressureAlerts", memberId);
-        tapStalledCounter = counter(SeqeronCounters.SEQUENCER_TAP_STALLED_TYPE_ID, "tapStalled", memberId);
+            counter(SeqeronCounters.SEQUENCER_TAP_BACKPRESSURE_ALERTS_TYPE_ID, "tapBackPressureAlerts");
+        tapStalledCounter = counter(SeqeronCounters.SEQUENCER_TAP_STALLED_TYPE_ID, "tapStalled");
         rejectedIngressCounter =
-            counter(SeqeronCounters.SEQUENCER_REJECTED_INGRESS_COUNT_TYPE_ID, "rejectedIngressCount", memberId);
+            counter(SeqeronCounters.SEQUENCER_REJECTED_INGRESS_COUNT_TYPE_ID, "rejectedIngressCount");
         leadershipChangeCounter =
-            counter(SeqeronCounters.SEQUENCER_LEADERSHIP_CHANGE_COUNT_TYPE_ID, "leadershipChangeCount", memberId);
+            counter(SeqeronCounters.SEQUENCER_LEADERSHIP_CHANGE_COUNT_TYPE_ID, "leadershipChangeCount");
         currentLeaderMemberIdCounter =
-            counter(SeqeronCounters.SEQUENCER_CURRENT_LEADER_MEMBER_ID_TYPE_ID, "currentLeaderMemberId", memberId);
+            counter(SeqeronCounters.SEQUENCER_CURRENT_LEADER_MEMBER_ID_TYPE_ID, "currentLeaderMemberId");
         lastHeartbeatTimestampCounter =
-            counter(SeqeronCounters.SEQUENCER_LAST_CLUSTER_HEARTBEAT_TIMESTAMP_TYPE_ID, "lastHeartbeatTimestamp",
-                    memberId);
+            counter(SeqeronCounters.SEQUENCER_LAST_CLUSTER_HEARTBEAT_TIMESTAMP_TYPE_ID, "lastHeartbeatTimestamp");
         gatewayPromotionCounter =
-            counter(SeqeronCounters.SEQUENCER_GATEWAY_PROMOTION_COUNT_TYPE_ID, "gatewayPromotionCount", memberId);
+            counter(SeqeronCounters.SEQUENCER_GATEWAY_PROMOTION_COUNT_TYPE_ID, "gatewayPromotionCount");
         gatewayPromotionFailedCounter =
-            counter(SeqeronCounters.SEQUENCER_GATEWAY_PROMOTION_FAILED_COUNT_TYPE_ID, "gatewayPromotionFailedCount",
-                    memberId);
+            counter(SeqeronCounters.SEQUENCER_GATEWAY_PROMOTION_FAILED_COUNT_TYPE_ID, "gatewayPromotionFailedCount");
         bootstrapActivatedCounter =
-            counter(SeqeronCounters.SEQUENCER_BOOTSTRAP_ACTIVATED_TYPE_ID, "bootstrapActivated", memberId);
-        connectedClientsCounter =
-            counter(SeqeronCounters.SEQUENCER_CONNECTED_CLIENTS_TYPE_ID, "connectedClients", memberId);
-        messagesSequencedCounter =
-            counter(SeqeronCounters.SEQUENCER_INGRESS_MESSAGES_TYPE_ID, "ingressMessages", memberId);
+            counter(SeqeronCounters.SEQUENCER_BOOTSTRAP_ACTIVATED_TYPE_ID, "bootstrapActivated");
+        messagesSequencedCounter = counter(SeqeronCounters.SEQUENCER_INGRESS_MESSAGES_TYPE_ID, "ingressMessages");
     }
 
     /**
      * One operator counter, labelled {@code seqeron.sequencer.<name> member=<memberId>}.
-     * @param typeId   which counter, from {@link SeqeronCounters}
-     * @param name     its name within the {@code seqeron.sequencer} namespace
-     * @param memberId this node
+     * @param typeId which counter, from {@link SeqeronCounters}
+     * @param name   its name within the {@code seqeron.sequencer} namespace
      */
-    private Counter counter(final int typeId, final String name, final int memberId) {
+    private Counter counter(final int typeId, final String name) {
         return SeqeronCounters.addCounter(cluster.context().aeron(), typeId,
                                           "seqeron.sequencer." + name + " member=" + memberId, memberId);
     }
@@ -229,26 +216,11 @@ public final class SequencerService implements ClusteredService {
      */
     @Override
     public void onSessionClose(final ClientSession session, final long timestamp, final CloseReason closeReason) {
-        ensureCounters();
-        publishPromotion(sequencer.sessionClosed(session.id(), timestamp),
-                         "gateway session " + session.id() + " closed (" + closeReason + ")");
-    }
-
-    /**
-     * Publishes whatever a promotion decision came back with, counting both outcomes.
-     * @param activation what {@link Sequencer#sessionClosed} or {@link
-     *     Sequencer#pendingGatewayActivationTimeout} returned
-     * @param reason what triggered it, for the log line
-     */
-    private void publishPromotion(final int activation, final String reason) {
-        if (activation == Sequencer.NO_PROMOTION_TARGET) {
-            // A gateway lost its active instance but nothing replaced it.
-            gatewayPromotionFailedCounter.increment();
-        } else if (activation != Sequencer.NO_FRAME) {
-            gatewayPromotionCounter.increment();
-            Logger.info(Logger.CoreComponent.SequencerService, cluster.memberId(), "%s — promoting standby", reason);
-            emit(activation);
+        if (sequencer.sessionClosed(session.id(), timestamp)) {
+            Logger.info(Logger.CoreComponent.SequencerService, memberId,
+                        "gateway session %d closed (%s) — promoting standby", session.id(), closeReason);
         }
+        updateCounters();
     }
 
     /**
@@ -263,30 +235,19 @@ public final class SequencerService implements ClusteredService {
     @Override
     public void onSessionMessage(final ClientSession session, final long timestamp, final DirectBuffer buffer,
                                  final int offset, final int length, final Header header) {
-        ensureCounters();
         if (session == null) {
             rejectedIngressCounter.increment();
             Logger.error(Logger.CoreComponent.SequencerService, Logger.CoreEventCode.MalformedIngressMessage,
-                         cluster.memberId(), "skipping ingress message with no client session (globalSeqNo stays %d)",
+                         memberId, "skipping ingress message with no client session (globalSeqNo stays %d)",
                          sequencer.globalSeqNo());
             return;
         }
-        final int sequenced = sequencer.sequenceMessage(buffer, offset, length, session.id(), timestamp);
-        if (sequenced != Sequencer.NO_FRAME) {
+        if (sequencer.sequenceMessage(buffer, offset, length, session.id(), timestamp)) {
             messagesSequencedCounter.increment();
-            emit(sequenced);
         } else {
             rejectedIngressCounter.increment();
         }
-
-        int activation;
-        while ((activation = sequencer.pendingGatewayActivation(timestamp)) != Sequencer.NO_FRAME) {
-            emit(activation);
-            if (sequencer.bootstrapActivationEmitted()) {
-                bootstrapActivatedCounter.set(1);
-            }
-        }
-        emitIfAny(sequencer.pendingSnapshotStart(timestamp));
+        updateCounters();
     }
 
     /**
@@ -297,14 +258,8 @@ public final class SequencerService implements ClusteredService {
     @Override
     public void onTimerEvent(final long correlationId, final long timestamp) {
         if (correlationId == HEARTBEAT_TIMER_CORRELATION_ID) {
-            ensureCounters();
-            emit(sequencer.clusterHeartbeat(timestamp));
-
-            int overdue;
-            while ((overdue = sequencer.pendingGatewayActivationTimeout(timestamp)) != Sequencer.NO_FRAME) {
-                publishPromotion(overdue, "a designated gateway instance never declared itself started");
-            }
-            emitIfAny(sequencer.snapshotIntervalElapsed(timestamp));
+            sequencer.clusterHeartbeat(timestamp);
+            updateCounters();
             lastHeartbeatTimestampCounter.set(TimeUnit.NANOSECONDS.toMillis(timestamp)); // exported as ms
             injectTapRecordingFault();
             tap.checkRecordingAlive();
@@ -322,7 +277,7 @@ public final class SequencerService implements ClusteredService {
             return;
         }
         tapFaultTrigger = null;
-        Logger.info(Logger.CoreComponent.SequencerService, cluster.memberId(),
+        Logger.info(Logger.CoreComponent.SequencerService, memberId,
                     "fault injection: stopping this node's tap recording");
         aeronArchive.stopRecording(FrameLayer.FEEDER_CHANNEL, FrameLayer.FEEDER_STREAM_ID);
     }
@@ -379,16 +334,14 @@ public final class SequencerService implements ClusteredService {
      * @param timestamp now
      */
     private void applyLeadership(final long leadershipTermId, final int leaderMemberId, final long timestamp) {
-        ensureCounters();
-
-        final int length = sequencer.leadershipChanged(leadershipTermId, leaderMemberId, timestamp);
+        sequencer.leadershipChanged(leadershipTermId, leaderMemberId, timestamp);
+        updateCounters();
         leadershipChangeCounter.increment();
         currentLeaderMemberIdCounter.set(leaderMemberId);
-        final boolean leader = leaderMemberId == cluster.memberId();
-        Logger.info(Logger.CoreComponent.SequencerService, cluster.memberId(),
+        final boolean leader = leaderMemberId == memberId;
+        Logger.info(Logger.CoreComponent.SequencerService, memberId,
                     "leadership change: term %d, new leader is memberId=%d (isLeader=%b)", leadershipTermId,
                     leaderMemberId, leader);
-        emit(length);
     }
 
     /**
@@ -401,37 +354,27 @@ public final class SequencerService implements ClusteredService {
         closeCounters();
     }
 
-    /** Closes the operator counters; a node that never reached its first callback created none. */
+    /** Closes the operator counters; a node whose start was refused created none. */
     private void closeCounters() {
         CloseHelper.quietCloseAll(globalSeqNoCounter, tapBackPressureAlertCounter, tapStalledCounter,
                                   rejectedIngressCounter, leadershipChangeCounter, currentLeaderMemberIdCounter,
                                   lastHeartbeatTimestampCounter, gatewayPromotionCounter,
-                                  gatewayPromotionFailedCounter, bootstrapActivatedCounter, connectedClientsCounter,
-                                  messagesSequencedCounter);
+                                  gatewayPromotionFailedCounter, bootstrapActivatedCounter, messagesSequencedCounter);
     }
 
-    /** {@link #emit}, unless the sequencer had nothing to emit. */
-    private void emitIfAny(final int length) {
-        if (length != Sequencer.NO_FRAME) {
-            emit(length);
-        }
-    }
-
-    /**
-     * Publishes the frame in the sequencer's buffer onto the tap; see {@link TapPublisher#emit}.
-     * @param length of the encoded frame at offset 0 of the sequencer's buffer
-     */
-    private void emit(final int length) {
-        tap.emit(length);
+    /** Mirrors the sequencer's state onto the operator counters after a callback. */
+    private void updateCounters() {
         globalSeqNoCounter.set(sequencer.globalSeqNo());
-        connectedClientsCounter.set(sequencer.connectedClientCount());
+        gatewayPromotionCounter.set(sequencer.gatewayPromotionCount());
+        gatewayPromotionFailedCounter.set(sequencer.gatewayPromotionFailedCount());
+        bootstrapActivatedCounter.set(sequencer.bootstrapActivationEmitted() ? 1 : 0);
     }
 
     /** The Aeron half of {@link TapPublisher}: calls through to the runtime, no decisions. */
     private final class TapActions implements TapPublisher.Actions {
         @Override
-        public long offerFrame(final int length) {
-            return tapPub.offer(sequencer.buffer(), 0, length);
+        public long offerFrame(final DirectBuffer buffer, final int length) {
+            return tapPub.offer(buffer, 0, length);
         }
 
         @Override
@@ -477,9 +420,7 @@ public final class SequencerService implements ClusteredService {
 
         @Override
         public void tapStalled(final boolean stalled) {
-            if (tapStalledCounter != null) { // null before the first callback creates the counters
-                tapStalledCounter.set(stalled ? 1 : 0);
-            }
+            tapStalledCounter.set(stalled ? 1 : 0);
         }
 
         @Override
@@ -494,7 +435,7 @@ public final class SequencerService implements ClusteredService {
 
         @Override
         public Integer memberId() {
-            return cluster.memberId();
+            return memberId;
         }
 
         @Override
