@@ -97,8 +97,25 @@ Run a single C++ suite by filter, or a single Java test class:
 
 The Java suite covers the deterministic decision-making — `Sequencer`, and `ReplayerService` through
 its `Replayer` seam — and deliberately touches no Aeron runtime: no media driver, no cluster, no Aeron
-mocks. Everything that needs an Aeron runtime is covered by `core_tests` and by the end-to-end harnesses below.
-Coverage is a JaCoCo report at `build/reports/jacoco/test/`, written by `./gradlew test`.
+mocks. Everything that needs an Aeron runtime is covered by `core_tests`, the integration suite and the
+end-to-end harnesses below. Coverage is a JaCoCo report at `build/reports/jacoco/test/`, written by
+`./gradlew test`.
+
+## Integration tests
+
+```bash
+./gradlew :seqeron-service:integrationTest
+```
+
+The suite launches members in the test's own JVM through `SequencerServer.launch`, on Aeron's
+`aeron-test-support`. `FailoverConfirmTest` is `failover-test.sh`'s confirm producer in about two seconds: a
+producer on a follower streams through `PendingSends`, the leader is stopped mid-stream, and its queue must show
+every frame exactly once, in order. `SystemTestWatcher` fails a test on any error in a driver's, archive's or
+consensus module's error log, and copies a failed test's directories to `seqeron-service/build/test-output`. The
+suite runs on JUnit 6, which `aeron-test-support` is built against, and on cluster port base 9500, clear of a
+local cluster on 9300. A member stopped in-process is closed rather than killed, and every member shares one
+JVM's CPU and GC, so the harnesses below remain the evidence for process death, network faults and the C# and
+C++ clients.
 
 ## End-to-end harnesses
 

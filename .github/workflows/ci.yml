@@ -169,6 +169,41 @@ jobs:
           name: jacoco-report
           path: '*/build/reports/jacoco/test/'
 
+  # Members launched in the test's own JVM, on Aeron's test kit; the one Java suite with an Aeron runtime.
+  integration:
+    name: java integration
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Cache Gradle
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-integration-${{ hashFiles('**/*.gradle', 'versions.properties', 'gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: gradle-integration-
+
+      - name: Integration tests
+        run: ./gradlew :seqeron-service:integrationTest
+
+      # SystemTestWatcher copies a failed test's Aeron directories, archives and mark files to build/test-output.
+      - name: Upload results
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: integration-test-results
+          path: |
+            seqeron-service/build/reports/tests/integrationTest/
+            seqeron-service/build/test-output/
+
   # The C# client tier on Aeron.NET. Java only regenerates the codecs for the drift check; the .NET build
   # compiles the committed ones.
   # Windows is where the C# client is deployed; Linux is where csharp-client-test.sh runs it against a cluster.
