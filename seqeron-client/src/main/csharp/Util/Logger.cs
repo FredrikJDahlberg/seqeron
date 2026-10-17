@@ -89,6 +89,10 @@ public static class Logger
         /// <summary>This node can no longer record the history it is responsible for.</summary>
         QueueRecordingFailure,
 
+        /// <summary>The consensus module truncated this node's log below what it applied; its state is not the
+        /// log's.</summary>
+        AppliedLogTruncated,
+
         /// <summary>A replay control reply was dropped, its subscriber having gone away.</summary>
         ControlReplyDropped,
 

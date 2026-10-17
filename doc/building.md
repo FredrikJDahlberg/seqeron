@@ -123,7 +123,10 @@ onwards once each, in order, and the same frame wherever two hold the same globa
 follower restarts while the leader waits on a member that cannot copy the log, truncates the entries it
 acknowledged, and the leader is cut before they are copied back. Each step waits on the members' election state
 and commit position rather than on time, so it reproduces every run, and the stranded member stops advancing. It
-fails on the pinned Aeron, so it runs only under `-PknownAeronFaults`, to check an Aeron upgrade against it.
+fails on the pinned Aeron, so it runs only under `-PknownAeronFaults`, to check an Aeron upgrade against it. A second
+test runs the same sequence by default and checks that the member that truncates the entry takes itself down, and
+that, restarted, it rejoins with an active recording that is one log with the others'
+([`fault-tolerance.md`](fault-tolerance.md) §1.4).
 
 The UDP faults are `SequencerServer.launch`'s `udpFaults` overload, which drops each frame a member's driver sends
 or receives that it names by stream id and direction: all of them, all but the consensus stream, or only the

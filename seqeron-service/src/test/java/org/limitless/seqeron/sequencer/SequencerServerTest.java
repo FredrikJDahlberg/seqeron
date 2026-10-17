@@ -5,11 +5,33 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import io.aeron.cluster.client.ClusterEvent;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.limitless.seqeron.protocol.PortLayout;
 
 class SequencerServerTest {
+    /** Aeron 1.53.2's truncation event, its positions filled in. */
+    private static ClusterEvent truncation(final long logPosition, final long newPosition) {
+        return new ClusterEvent("Truncating Cluster Log - memberId=2 state=CANVASS this.logLeadershipTermId=4 "
+                                + "this.leadershipTermId=4 this.candidateTermId=5 this.commitPosition=" + logPosition +
+                                " this.logPosition=" + logPosition + " this.appendPosition=192 oldPosition=192"
+                                + " newPosition=" + newPosition);
+    }
+
+    @Test
+    void truncatingBelowTheAppliedPositionIsFatal() {
+        assertTrue(SequencerServer.truncatesAppliedLog(truncation(192, 96)));
+    }
+
+    @Test
+    void truncatingOnlyWhatWasNotAppliedIsNot() {
+        assertFalse(SequencerServer.truncatesAppliedLog(truncation(96, 96)));
+        assertFalse(
+            SequencerServer.truncatesAppliedLog(new ClusterEvent("new leader detected due to commit position")));
+        assertFalse(SequencerServer.truncatesAppliedLog(new IllegalStateException(truncation(192, 96).getMessage())));
+    }
+
     @Test
     void singleNodeMembersMatchDocumentedLayout() {
         assertEquals("0,localhost:9302,localhost:9303,localhost:9304,localhost:9305,localhost:9301|",

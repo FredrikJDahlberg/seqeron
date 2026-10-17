@@ -76,6 +76,8 @@ public final class Logger {
         StaleActiveRecording,
         /** This node can no longer record the history it is responsible for. */
         QueueRecordingFailure,
+        /** The consensus module truncated this node's log below what it applied; its state is not the log's. */
+        AppliedLogTruncated,
         /** A replay control reply was dropped, its subscriber having gone away. */
         ControlReplyDropped,
         /** A gateway session closed with no standby to promote, leaving that gateway with none active. */

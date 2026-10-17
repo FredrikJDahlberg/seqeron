@@ -186,6 +186,7 @@ sent them; authentication belongs at the system's external edges.
 | leader lost | Aeron Cluster elects a new leader; the sequencer emits `LeadershipChanged` | the stream continues at the next `globalSeqNo`; producers resend what the old leader had not committed |
 | member lost | the others keep quorum | the member restarts and replays the full log, rebuilding its recording |
 | a member's archive stops recording | the member terminates (exit 70) rather than sequence history it cannot keep | as for a lost member |
+| a member's log is truncated below what it applied (an Aeron Cluster 1.53.2 fault) | the member terminates (exit 70) rather than go on from state the log no longer has | as for a lost member |
 | slow consumer | its media driver drops it within about 0.2 s; the queue is not held back | it resumes over the gap from the Replayer |
 | message missed on the queue | the next message reveals the gap | the client resumes from the last message it delivered, holding live messages meanwhile |
 | gateway instance fails | its cluster session closes | the sequencer designates the standby |

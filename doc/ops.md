@@ -405,6 +405,10 @@ a crash.
 A member also exits 70 when its Replayer's duty cycle dies (a `[ReplayerService/N]` error names it), and 71
 when its shutdown gave up waiting for that duty cycle. Both mean restart it.
 
+It exits 70, too, when its log is truncated below what it applied ([`fault-tolerance.md`](fault-tolerance.md) §1.4):
+`[SequencerServer/N] FATAL: the log was truncated below what this node applied …`. Restart it as above. Its earlier
+queue recording holds frames the cluster no longer has; see that section before serving it.
+
 ## A gateway that fences itself
 
 A gateway built on the client tier's `Gateway` stops itself when it can no longer trust its view of the log
