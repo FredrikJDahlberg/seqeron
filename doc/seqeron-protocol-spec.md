@@ -47,8 +47,8 @@ A frame is one of three classes, by where it came from.
 | class | originates with | encoded by | appears on |
 | --- | --- | --- | --- |
 | unsequenced | an external producer (a gateway, an application, `clusterctl`) | the producer | cluster ingress only |
-| sequenced | an external producer | the sequencer, from an unsequenced frame | the tap and replays of it |
-| synthesized | the cluster | the sequencer | the tap and replays of it |
+| sequenced | an external producer | the sequencer, from an unsequenced frame | the queue and replays of it |
+| synthesized | the cluster | the sequencer | the queue and replays of it |
 
 Sequenced and synthesized frames draw `globalSeqNo` from one counter (§9.1).
 
@@ -70,15 +70,15 @@ Where each kind of message travels, and which of those streams is the durable re
 | stream | channel / stream id | carries | recorded |
 | --- | --- | --- | --- |
 | cluster ingress | Aeron Cluster ingress, inside the L0 session envelope | `Unsequenced` (100) or `UnsequencedSystem` (102), schema 210 | in the Raft log |
-| tap | `aeron:ipc`, stream 205 | `Sequenced` (101), `SequencedSystem` (103), or a synthesized template (104–107), schema 210 | yes, by the co-located archive on every node |
-| replay | stream 201 | archive bytes, identical to the tap | no |
+| queue | `aeron:ipc`, stream 205 | `Sequenced` (101), `SequencedSystem` (103), or a synthesized template (104–107), schema 210 | yes, by the co-located archive on every node |
+| replay | stream 201 | archive bytes, identical to the queue | no |
 | replay request | stream 202 | schema 212, client → replayer | no |
 | replay control | stream 203 | schema 212, replayer → client | no |
 
-- **F-1. The tap is the record.** The cluster takes no snapshots and always recovers by replaying the
-  full log from `globalSeqNo` 1, so the tap's bytes are the only durable copy of a frame. An application
-  snapshot (§7.3) is frames on the tap like any other.
-- **F-2. Every node's tap is byte-identical, frame for frame.** A replay from any node's archive can
+- **F-1. The queue is the record.** The cluster takes no snapshots and always recovers by replaying the
+  full log from `globalSeqNo` 1, so the queue's bytes are the only durable copy of a frame. An application
+  snapshot (§7.3) is frames on the queue like any other.
+- **F-2. Every node's queue is byte-identical, frame for frame.** A replay from any node's archive can
   stand in for any other's. §9.3 keeps this true. Recording positions match only between nodes with the
   same IPC MTU and term length (§12).
 
@@ -156,7 +156,7 @@ carries that in its own payload.
 
 The ingress contract. **S-1:** the sequencer enforces it.
 
-| field | on ingress | on the tap |
+| field | on ingress | on the queue |
 | --- | --- | --- |
 | `sourceId` | set by the producer; MUST NOT be −1 (condition 6); checked against the gateway list (**S-6**) | copied; −1 on a synthesized frame |
 | `connectionId` | set by the producer | copied |
@@ -169,7 +169,7 @@ The ingress contract. **S-1:** the sequencer enforces it.
 
 The outer `MessageHeader` is re-encoded, not copied:
 
-| field | on ingress | on the tap |
+| field | on ingress | on the queue |
 | --- | --- | --- |
 | `schemaId` | MUST be 210 (condition 2) | 210 |
 | `templateId` | MUST be `Unsequenced` or `UnsequencedSystem` (condition 3) | `Sequenced` or `SequencedSystem` respectively |
@@ -267,7 +267,7 @@ one application publishes and reads needs no row; the wire behaves the same eith
 **C-2**), and the only difference is the label `SbeLogPrinter` prints.
 
 All `payloadId`s share one space. Applications on the same `payloadId` share its protocol. Two protocols
-given the same number collide on the tap, and nothing here detects it; **P-4** detects a wrong decoder
+given the same number collide on the queue, and nothing here detects it; **P-4** detects a wrong decoder
 only when the encoding describes itself.
 
 ### 6.2 Selective consumption
@@ -393,7 +393,7 @@ of their own.
 
 A submitted event's `systemEventType` equals its payload's SBE template id. The four synthesized frames
 also carry their `systemEventType` (5, 16, 18, 30), redundantly with the template id, so that offset 16
-identifies every frame on the tap. Numbers are never reused: `GatewayActivationRequested` took 24
+identifies every frame on the queue. Numbers are never reused: `GatewayActivationRequested` took 24
 rather than a vacated number so that no recording can be misread.
 
 **A system payload has no `MessageHeader`.** `header.systemEventType` identifies it. An encoder `wrap`s
@@ -462,7 +462,7 @@ Field semantics:
 - `leadershipTermId`: the term that starts here. One `LeadershipChanged` per term, including a term
   won again by the same member (that election also discarded ingress). Term ids are not contiguous; a
   failed election consumes one.
-- `correlationId`: set by `clusterctl` so it can recognise its own frame on the tap.
+- `correlationId`: set by `clusterctl` so it can recognise its own frame on the queue.
 - `remaining`: gateway rows still to come after this one; 0 marks the last row.
 - `gatewayId`: the list row's identity, unique in the list. `gatewaySourceId`: the logical gateway,
   shared by all its instances; **S-6** compares it with `header.sourceId`. `gatewayName`: US-ASCII,
@@ -696,7 +696,7 @@ A synthesized frame is one fixed-size encode: its own template, fields inline, n
 - The counter is the node-local Aeron counter of type 5002
   (`SeqeronCounters.SEQUENCER_REJECTED_INGRESS_COUNT_TYPE_ID`). Every node rejects the same frames
   (**S-3**), so nodes that have applied the same log prefix MUST report the same count; a difference
-  means the taps have diverged (**F-2**). A restarting node rebuilds the count during its full-log
+  means the queues have diverged (**F-2**). A restarting node rebuilds the count during its full-log
   replay.
 - The log line MUST be written and SHOULD be rate-limited. It carries the condition, the cluster
   session, the frame length, and whichever of `payloadId`, `sourceId` and `connectionId` the conditions
@@ -704,7 +704,7 @@ A synthesized frame is one fixed-size encode: its own template, fields inline, n
 - The sequencer keeps no state derived from a rejection: no deny list, nothing rebuilt on replay.
 
 A conforming producer is refused by its own encode method before sending (**T-3**), and MUST NOT
-publish until it has resolved its own `{gatewayId, gatewaySourceId}` from the list on the tap (§5,
+publish until it has resolved its own `{gatewayId, gatewaySourceId}` from the list on the queue (§5,
 **S-6**), which keeps a `GatewayStarted` from preceding `load-topology`. The counter therefore
 counts frames from non-conforming producers.
 
@@ -735,7 +735,7 @@ no header composite and are never sequenced or recorded.
   (`Aeron.nextCorrelationId`), which every co-located client shares, so it is unique among the replayer's
   clients, two in one process included. A client MUST ignore a reply carrying another `clientId`.
 
-The replayer serves only its node's active tap recording. The cluster takes no snapshots, so a node's
+The replayer serves only its node's active queue recording. The cluster takes no snapshots, so a node's
 every start replays the log from `globalSeqNo` 1 into a new recording: the active one alone holds the
 whole log, and an older one is a prefix of it. A client checks that the first frame it dispatches is
 `globalSeqNo` 1.
@@ -766,11 +766,11 @@ encoded length is 8 + block. None has var-data or repeating groups.
 - `fromPosition`: the position to resume the active recording at, or `FROM_START` = −1 for its start.
 - `replaySessionId`: the Aeron replay session to attach to on stream 201, or `NO_REPLAY_NEEDED` = −1
   (`Aeron.NULL_VALUE`). There is no separate message for "nothing to replay".
-- `catchUpPosition`: where the client stops following the replay and switches to the live tap,
+- `catchUpPosition`: where the client stops following the replay and switches to the live queue,
   de-duplicating on `globalSeqNo`.
 
 **Slot limits.** A replayer serves at most `MAX_CONCURRENT_REPLAYS` = 4 replays at once, one while its
-tap recording trails the tap by more than a quarter of the publication window, and answers
+queue recording trails the queue by more than a quarter of the publication window, and answers
 `ReplayPending` beyond that. A slot frees when its replay's publication is gone (**R-3**): within a duty
 cycle of the client closing its replay subscription, which it does at `catchUpPosition`, and within the
 media driver's client liveness timeout (`aeron.client.liveness.timeout`, 10 s by default) of a client
@@ -825,7 +825,7 @@ The protocol's fixed sizes and timings. They are compiled into every implementat
 | limit | value | reference |
 | --- | --- | --- |
 | `blockLength` | 18 on ingress templates, 34 on `Sequenced`/`SequencedSystem` (exact, §9.2); 34, 46, 38 and 42 on templates 104, 105, 106 and 107 | §4.2, §7.1 |
-| per-message overhead | 92 bytes on ingress (32 Aeron data header + 32 Aeron Cluster session header + 28 frame); 76 on the tap (32 + 44) | §4.2 |
+| per-message overhead | 92 bytes on ingress (32 Aeron data header + 32 Aeron Cluster session header + 28 frame); 76 on the queue (32 + 44) | §4.2 |
 | `MAX_PAYLOAD_LENGTH` | 8884 bytes = 8960 (IPC MTU) − 76 | **T-2** |
 | `MAX_INGRESS_LENGTH` | 28 + 8884 = 8912 bytes (condition 1) | §9.2 |
 | `MIN_INGRESS_LENGTH` | 28 bytes (condition 1) | §4.2 |
@@ -841,7 +841,7 @@ These constants belong to the protocol, not to any one component. Each language 
 `protocol/FrameLayer.java`, the `Limits` block of `protocol/SequencedFrame.hpp`, and `Protocol/FrameLayer.cs`.
 A change starts here, is made in all three, and is a wire change (**V-3**).
 
-> **T-2.** A tap frame of `MAX_PAYLOAD_LENGTH` (8884) is 32 + 8928 = 8960 bytes with its Aeron data
+> **T-2.** A queue frame of `MAX_PAYLOAD_LENGTH` (8884) is 32 + 8928 = 8960 bytes with its Aeron data
 > header: one fragment at an IPC MTU of 8960, the largest a 9000-byte jumbo frame carries. The constant
 > is compiled in and is not configurable. The MTU is not part of the protocol: a frame longer than the
 > MTU less 32 is fragmented. Every stream that carries frames MUST have a term length of at least
@@ -856,14 +856,14 @@ The encode methods are `SystemFrame.wrap`/`wrapPayload` (Java), `SystemFrame.Wra
 `publishPayload`/`publishSystem` (C++). They report refusal as a return value, not an exception, because several callers run inside
 Aeron poll callbacks, where an exception is swallowed (§9.4).
 
-**A frame may be fragmented.** On the tap, its recording and a replay, a frame longer than the IPC MTU
+**A frame may be fragmented.** On the queue, its recording and a replay, a frame longer than the IPC MTU
 (`aeron.ipc.mtu.length`) less 32 spans several fragments; on ingress and the consensus log the same holds
-at the UDP MTU (`aeron.mtu.length`), where Aeron Cluster reassembles it. A consumer of the tap or a replay
+at the UDP MTU (`aeron.mtu.length`), where Aeron Cluster reassembles it. A consumer of the queue or a replay
 MUST reassemble, as Aeron's `FragmentAssembler` does. Once frames fragment, a recording's positions
 depend on its MTU, so every member and gateway host SHOULD use the same IPC MTU.
 
 The MTU is a deployment's trade. At Aeron's default of 1408, payloads up to 1316 bytes never fragment
-anywhere. An IPC MTU of 8960 keeps every frame whole on the tap, but an archive replay carries its
+anywhere. An IPC MTU of 8960 keeps every frame whole on the queue, but an archive replay carries its
 recording's MTU, so each UDP replay — a gateway host's relay, a follower on another host — then needs
 jumbo frames on its path, small frames included, since Aeron batches them into datagrams up to the MTU.
 Raising `MAX_PAYLOAD_LENGTH` is a protocol change (§11), not a deployment setting.
@@ -948,7 +948,7 @@ The suite checks framing and copy fidelity only; it never decodes an application
 ## 16. Producer and replica obligations
 
 What an application must do so that the order of §9.1 reaches its own consumers intact. seqeron cannot
-enforce these rules, since they concern behaviour after the tap. The client tier implements them in
+enforce these rules, since they concern behaviour after the queue. The client tier implements them in
 `app`, in every language; the sender half of A-5 is in `sequencer.client`. A-6 and A-7
 concern sources that take part in snapshot rounds (§7.3, `doc/snapshot.md`).
 
@@ -963,9 +963,9 @@ concern sources that take part in snapshot rounds (§7.3, `doc/snapshot.md`).
 - **A-3. A re-emission is identical.** A-2 delivers at least once. The reply MUST be a pure function of
   the sequenced request and SHOULD be keyed on the request's `globalSeqNo`, so that a duplicate is
   byte-identical. Consumers MUST drop duplicates by that key.
-- **A-4. Ingress is confirmed on the tap, not at send.** A successful send means the frame reached the
+- **A-4. Ingress is confirmed on the queue, not at send.** A successful send means the frame reached the
   leader's ingress, not the log; egress confirms nothing. A producer that must not lose a frame MUST
-  hold it as pending until its own tap shows it, matched by cluster session id, never by `sourceId`
+  hold it as pending until its own queue shows it, matched by cluster session id, never by `sourceId`
   (which a gateway pair shares). A frame stamped with term T that has not appeared by the first
   `LeadershipChanged` with `leadershipTermId` > T is lost. The lost frames are exactly the newest
   frames stamped T, because a leader drops ingress stamped with any other term and every election
@@ -973,12 +973,12 @@ concern sources that take part in snapshot rounds (§7.3, `doc/snapshot.md`).
   per-session order no longer holds (usually because the sequencer rejected a frame, S-7), and the
   producer MUST fence. (`PendingSends`)
 - **A-5. Lost frames are resent before anything new.** From the first sign of a newer term (egress
-  `NewLeader` or the tap's `LeadershipChanged`, whichever comes first) until every older pending frame
+  `NewLeader` or the queue's `LeadershipChanged`, whichever comes first) until every older pending frame
   has been seen or resent, the producer MUST NOT place a new frame. This includes a send already
   retrying through the election: the sender learns of the new leader inside that retry, abandons the
   send and reports it not placed, with the session still open (`setIngressHold`, in both
   `ClusterStreamSender`s). Lost frames MUST be resent oldest first, once the sender stamps a term the
-  tap has reached. A frame already in the log is never pending after it appears on the tap, so a resend
+  queue has reached. A frame already in the log is never pending after it appears on the queue, so a resend
   creates no duplicate. (`PendingSends`)
 - **A-6. Snapshot records are deterministic.** Every instance of a source MUST serialize the same state at
   a round's cut to the same records, byte for byte: no hash-map iteration order, no local time, no node
@@ -991,6 +991,6 @@ concern sources that take part in snapshot rounds (§7.3, `doc/snapshot.md`).
 
 A-4 and A-5 apply within one producer process. A restarted producer, or a standby promoted in its
 place, starts with nothing pending; a frame pending on a cluster session the cluster closed is dropped
-when that session is replaced, since the close is on no tap; and a frame lost without a
+when that session is replaced, since the close is on no queue; and a frame lost without a
 leader change (an ingress image that drops and rejoins within the session timeout) has no term boundary
 to be counted against.

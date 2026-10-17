@@ -195,7 +195,7 @@ publishes the end; the hot standby serializes, writes and compares, and takes ov
 
 ## 5. Confirming a snapshot
 
-An instance confirms its own file. The tap carries only committed frames, so the source's sequenced
+An instance confirms its own file. The queue carries only committed frames, so the source's sequenced
 `SnapshotEnd`, once dispatched, is in the log for good: an instance whose serialization of the round matches
 it (§4 step 4) confirms that round's file there and then, and has no one to ask later. Its file is the
 round's records as every instance of the source wrote them (A-6), so the confirmation holds for a copy of it
@@ -253,7 +253,7 @@ A cold start of an instance with a `SnapshotListener` restores in `ReplayerRecov
    the file was cut from another log, and an older one is tried. A recording that has not reached the
    position yet, as while its member replays the log after a restart, is answered `ReplayPending`, and the
    check waits.
-4. **Read the records**, at most 1,024 a duty cycle, dispatching nothing; frames arriving on the live tap
+4. **Read the records**, at most 1,024 a duty cycle, dispatching nothing; frames arriving on the live queue
    meanwhile are held, as in any recovery. Record 0 is the header: if its `headerVersion` is one this build
    does not support, stop. Otherwise it stands in for the frames before `R`. Its leader becomes the
    receiver's current leader and its term confirmed ingress's, as the last `LeadershipChanged` before `R`
@@ -264,7 +264,7 @@ A cold start of an instance with a `SnapshotListener` restores in `ReplayerRecov
    R-1, `requestResume`). The `SnapshotStarted` frame is the anchor and is dropped as a duplicate, so
    dispatch starts at `R + 1`. The instance serialized nothing for the restored round, so that round's
    `SnapshotEnd` changes nothing.
-6. **Go live**, switching to the tap as any resume does.
+6. **Go live**, switching to the queue as any resume does.
 
 An instance that stops is fenced with `SNAPSHOT_UNRESTORABLE`, and a damaged file stays for the operator to
 remove ([`ops.md`](ops.md)). After a restore, every fallback that would walk the recording from its start
@@ -296,18 +296,18 @@ change to schema 210 (spec V-3). [`upgrades.md`](upgrades.md) proposes one.
 ## 10. Cluster snapshots
 
 Application snapshots shorten a client's restart. A member still replays its full Raft log and re-records
-its tap from `globalSeqNo` 1, and nothing is truncated. This section is the proposed design; none of it is
+its queue from `globalSeqNo` 1, and nothing is truncated. This section is the proposed design; none of it is
 implemented. §10.1 to §10.5 bound a member's restart and keep every member's history complete, with no change
 to any client; §10.6 truncates history, a separate step that does change them; §10.7 trims the Raft log,
 which Aeron does not do.
 
-**What the member's replay is for.** It rebuilds two things: the `Sequencer`'s state, and the member's tap
+**What the member's replay is for.** It rebuilds two things: the `Sequencer`'s state, and the member's queue
 recording, which the Replayer serves. An Aeron cluster snapshot replaces the first. The second
 is history, which a snapshot cannot regenerate, so the recording outlives the restart and is extended.
 
 ### 10.1 Rules
 
-- **The recording is all the three share.** A member's tap recording is one run from `globalSeqNo` 1 across
+- **The recording is all the three share.** A member's queue recording is one run from `globalSeqNo` 1 across
   every restart. A frame's position is fixed once recorded, and nothing below the recording's verified end is
   rewritten.
 - **Replicated state holds nothing member-local**: no recording id and no position.
@@ -333,20 +333,20 @@ is history, which a snapshot cannot regenerate, so the recording outlives the re
 | **the Raft log** | Holds the two newest snapshots and the log from the older one, so the newer always has a fallback. The log below the older is trimmed by `clusterctl trim-log` (§10.7). |
 | **fallback** | A snapshot `onStart` refuses stops the member's start, and Aeron loads no older one by itself. On each member it stops, the operator runs `clusterctl invalidate-latest-snapshot` (`ClusterTool`'s), and the member restores the older snapshot and replays the log from it: at most `2X`. A release reads the snapshot format of the release before it; one that cannot raises `LOG_VERSION` and is deployed as a seqeron protocol change is, on a purged archive (spec V-3). |
 
-### 10.3 The tap
+### 10.3 The queue
 
 | | |
 | --- | --- |
-| **find** | The member's newest local recording of the tap. |
+| **find** | The member's newest local recording of the queue. |
 | **verify the tail** | The archive does part of this itself: on start, it gives a recording a crash left active a stop position by scanning its last segment to the first empty frame, and refuses to start on a last fragment that straddles a page boundary and is not intact, which `ArchiveTool verify` repairs. It checks nothing before that fragment, and only the last segment. So, with `recordChecksum` (CRC32C) set on the member's archive, read the last two segments forward to the archive's stop position, to the first fragment whose checksum fails or frame whose `globalSeqNo` does not follow the one before, and truncate the recording there. An OS crash can lose what the archive had not written back, out of order; this cuts it off without forcing the archive to disk. The last frame left is the tip, `G_tip`. |
-| **decide** | With `G_snap` the snapshot's `globalSeqNo`: with no snapshot, a new recording, as today. With `G_tip` ≥ `G_snap`, extend the recording at its end. With `G_tip` < `G_snap`, or no recording, copy the frames up to `G_snap` from a peer's tap, as `TapRelay` does, then extend. With no peer reachable, the member exits with 70. |
-| **extend** | The tap publication takes the recording's own parameters from its descriptor, not the driver's defaults: `init-term-id`, `term-length` and `mtu`, and the `term-id` and `term-offset` of its stop position (`ChannelUriStringBuilder.initialPosition`). The archive extends it with `extendRecording`, so its positions run on unchanged even if the node's IPC term length or MTU has been changed since the recording began. |
+| **decide** | With `G_snap` the snapshot's `globalSeqNo`: with no snapshot, a new recording, as today. With `G_tip` ≥ `G_snap`, extend the recording at its end. With `G_tip` < `G_snap`, or no recording, copy the frames up to `G_snap` from a peer's queue, as `QueueRelay` does, then extend. With no peer reachable, the member exits with 70. |
+| **extend** | The queue publication takes the recording's own parameters from its descriptor, not the driver's defaults: `init-term-id`, `term-length` and `mtu`, and the `term-id` and `term-offset` of its stop position (`ChannelUriStringBuilder.initialPosition`). The archive extends it with `extendRecording`, so its positions run on unchanged even if the node's IPC term length or MTU has been changed since the recording began. |
 | **emit** | While the log replays, nothing numbered at or below the tip is offered, synthesized frames included. |
-| **live** | As today: a recording that stops exits the member with 70 (`TapPublisher`). |
+| **live** | As today: a recording that stops exits the member with 70 (`QueuePublisher`). |
 | **a gateway host** | As today: its relay starts a new recording from `globalSeqNo` 1. |
 
 The decision is a pure class over `G_tip`, `G_snap`, whether a recording exists and whether a peer answers,
-unit-tested as `TapRelay` is.
+unit-tested as `QueueRelay` is.
 
 ### 10.4 The Replayer
 
@@ -355,9 +355,9 @@ snapshots (§5): with the recording kept, nothing of it grows with uptime.
 
 ### 10.5 A member's start
 
-1. **Tap.** Find the recording, verify its tail and read `G_tip` (§10.3).
+1. **Queue.** Find the recording, verify its tail and read `G_tip` (§10.3).
 2. **Sequencer.** `onStart` restores the snapshot, which gives `G_snap`.
-3. **Tap.** Extend the recording, copying from a peer first if it is behind, or exit with 70.
+3. **Queue.** Extend the recording, copying from a peer first if it is behind, or exit with 70.
 4. **Sequencer.** The log replays from the snapshot, emitting nothing up to the tip, and sequencing goes live.
 5. **Replayer.** After step 3, the integrity check, and ready.
 
@@ -376,7 +376,7 @@ of the walk from `globalSeqNo` 1.
 - **Per member, anchored on `globalSeqNo`.** Each member finds `F`'s position in its own recording, where
   `F`'s `SnapshotStarted` is, rounds it down to a segment boundary and purges the segments below. The
   recording is the same one, so every position is unchanged: a file's `cutPosition` (§4.1), a client's resume
-  and `TapRelay`'s resume keep working. Recordings left from earlier starts are deleted.
+  and `QueueRelay`'s resume keep working. Recordings left from earlier starts are deleted.
 - **The integrity check** requires the recording's first frame to be at or before `F`. A gateway host's
   relay starts its recording at `F`.
 - **The Raft log** below the older of the two cluster snapshots kept (§10.2) is trimmed by `clusterctl
@@ -393,8 +393,8 @@ What changes for clients:
   fenced.
 
 A new member or a lost disk takes the cluster snapshot and the Raft log from Aeron's `ClusterBackup`, which
-replicates both from a running cluster. It copies no tap, which is not in the cluster's recording log, so the
-tap from `F` comes from a peer as §10.3 copies it, and the clients' snapshot files from a peer (§4.1).
+replicates both from a running cluster. It copies no queue, which is not in the cluster's recording log, so
+the queue from `F` comes from a peer as §10.3 copies it, and the clients' snapshot files from a peer (§4.1).
 
 ### 10.7 Trimming the Raft log
 
@@ -412,7 +412,7 @@ to be implemented, run on each member. It does what that policy does, with the c
   service's, older than the two.
 - **Per member, and safe to repeat.** Each member trims its own archive; a run that fails leaves more than
   it needs, never less.
-- **Not the tap.** Its history is §10.6's.
+- **Not the queue.** Its history is §10.6's.
 
 ## 11. The snapshot server
 
@@ -435,8 +435,8 @@ It attaches to the host's media driver, the member's embedded driver or the gate
 - **An Aeron Archive of its own**, beside the member's: its own directory (`snapshot.archiveDir`, default
   `<base>/snapshot-archive-<nodeId>`, best on a device of its own), its own `archiveId` (Aeron's default is
   unique per driver) and its own local control stream. Not the member's archive: that one also records the
-  Raft log and the tap, a durability setting there would fsync the sequencing path, and a large snapshot
-  would compete with the tap recording, whose stall terminates the member after 1 s (`TapPublisher`).
+  Raft log and the queue, a durability setting there would fsync the sequencing path, and a large snapshot
+  would compete with the queue recording, whose stall terminates the member after 1 s (`QueuePublisher`).
 - **The agent**, `SnapshotService`: which recordings are confirmed, retention, restores and peer fetches,
   none of which the archive decides.
 
@@ -578,7 +578,7 @@ can take far longer than a gateway's activation deadline.
   whatever the state's size.
 - **Dispatch pauses** while serialization runs (§4 step 1): the listener's encoding, the CRC and the write
   into the page cache. A host that cannot hold the file's dirty pages writes at disk speed. The cluster
-  session stays alive meanwhile, but the tap does not wait, so a pause long enough to drop the subscriber
+  session stays alive meanwhile, but the queue does not wait, so a pause long enough to drop the subscriber
   heals through replay.
 - **Disk** holds up to three files per serializing instance: its confirmed round, the round being written,
   and one whose end never came, until the next confirmation deletes it.
