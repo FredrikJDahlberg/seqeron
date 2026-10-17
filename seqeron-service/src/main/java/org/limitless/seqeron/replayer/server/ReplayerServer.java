@@ -73,6 +73,7 @@ public final class ReplayerServer {
     private static final long SHUTDOWN_JOIN_TIMEOUT_MS = 5_000;
 
     private final int memberId;
+    private final ArchivingMediaDriver driver;
     private final Aeron aeron;
     private final AeronArchive archive;
     private final AeronQueueRelay relay;
@@ -80,33 +81,57 @@ public final class ReplayerServer {
     private final Thread replayerThread;
     private final Thread relayThread;
 
+    /**
+     * A gateway host's settings, which {@link #fromProperties()} reads from the system properties above.
+     *
+     * @param nodeId           this host's node id, one no member uses, which names its directories and labels its
+     *                         counters
+     * @param aeronDir         the host's Aeron directory
+     * @param baseDir          the root of the host's archive directory
+     * @param archiveEndpoints the members' archive control endpoints, {@code host:port}, tried in order
+     * @param host             this host's name as the members reach it
+     * @param idleStrategies   the idle strategy of every agent, the relay's and the Replayer's included
+     */
+    public record GatewayHostConfig(int nodeId, String aeronDir, String baseDir, List<String> archiveEndpoints,
+                                    String host, Supplier<IdleStrategy> idleStrategies) {
+        /**
+         * Reads the settings from the system properties, with their documented defaults.
+         *
+         * @return the settings
+         * @throws IllegalArgumentException if neither {@code replayer.archiveEndpoints} nor {@code SEQERON_HOSTS}
+         *                                  names a member archive
+         */
+        public static GatewayHostConfig fromProperties() {
+            final int nodeId = Integer.getInteger(PROP_MEMBER_ID, 0);
+            final String archiveEndpoints =
+                System.getProperty(PROP_ARCHIVE_ENDPOINTS, ReplayerServer.archiveEndpoints(PortLayout.HOSTS));
+            if (archiveEndpoints == null) {
+                throw new IllegalArgumentException(
+                    PROP_ARCHIVE_ENDPOINTS + " or " + PortLayout.ENV_HOSTS +
+                    " is required: on a cluster member the Replayer runs inside SequencerServer");
+            }
+            return new GatewayHostConfig(
+                nodeId, System.getProperty(PROP_AERON_DIR, PortLayout.aeronDir(nodeId)),
+                System.getProperty(PROP_BASE_DIR, System.getProperty("java.io.tmpdir") + "/seqeron-seq"),
+                parseEndpoints(archiveEndpoints), System.getProperty(PROP_HOST, PortLayout.DEFAULT_HOST),
+                IdleStrategies.fromProperty(PROP_IDLE_STRATEGY));
+        }
+    }
+
     /** Gateway host only: on a cluster member the Replayer runs inside {@code SequencerServer}. */
     public static void main(final String[] args) {
-        final int memberId = Integer.getInteger(PROP_MEMBER_ID, 0);
-        final String aeronDir = System.getProperty(PROP_AERON_DIR, PortLayout.aeronDir(memberId));
-        final String archiveEndpoints = System.getProperty(PROP_ARCHIVE_ENDPOINTS, archiveEndpoints(PortLayout.HOSTS));
-        if (archiveEndpoints == null) {
-            throw new IllegalArgumentException(
-                PROP_ARCHIVE_ENDPOINTS + " or " + PortLayout.ENV_HOSTS
-                    + " is required: on a cluster member the Replayer runs inside SequencerServer");
-        }
-        final String host = System.getProperty(PROP_HOST, PortLayout.DEFAULT_HOST);
-        final Supplier<IdleStrategy> idleStrategies = IdleStrategies.fromProperty(PROP_IDLE_STRATEGY);
-
-        final ArchivingMediaDriver driver = launchDriver(memberId, aeronDir, host, idleStrategies);
+        final GatewayHostConfig config = GatewayHostConfig.fromProperties();
         final AtomicBoolean dutyCycleFatal = new AtomicBoolean();
         final ShutdownSignalBarrier barrier = new ShutdownSignalBarrier();
-        final ReplayerServer server =
-            new ReplayerServer(memberId, aeronDir, parseEndpoints(archiveEndpoints), host, idleStrategies, () -> {
-                dutyCycleFatal.set(true);
-                barrier.signalAll();
-            });
+        final ReplayerServer server = launchGatewayHost(config, () -> {
+            dutyCycleFatal.set(true);
+            barrier.signalAll();
+        });
 
         barrier.await();
         final boolean stopped = server.stop();
         if (stopped) {
-            CloseHelper.quietClose(driver);
-            Logger.info(Logger.CoreComponent.ReplayerServer, memberId, "Shutdown complete");
+            Logger.info(Logger.CoreComponent.ReplayerServer, config.nodeId(), "Shutdown complete");
         }
         barrier.close();
 
@@ -115,6 +140,25 @@ public final class ReplayerServer {
         }
         if (!stopped) {
             System.exit(NodeDriver.EXIT_SHUTDOWN_TIMEOUT);
+        }
+    }
+
+    /**
+     * Starts a gateway host in this process: its own media driver and archive, the relay that copies a member's
+     * queue onto the host's, and the Replayer; {@link #main} is this over {@link GatewayHostConfig#fromProperties()}.
+     *
+     * @param config       the host's settings
+     * @param fatalHandler run once if a duty cycle dies; the host should then stop
+     * @return the running host, which the caller stops with {@link #stop()}, the driver and archive included
+     */
+    public static ReplayerServer launchGatewayHost(final GatewayHostConfig config, final Runnable fatalHandler) {
+        final ArchivingMediaDriver driver = launchDriver(config);
+        try {
+            return new ReplayerServer(config.nodeId(), driver, config.aeronDir(), config.archiveEndpoints(),
+                                      config.host(), config.idleStrategies(), fatalHandler);
+        } catch (final RuntimeException ex) {
+            CloseHelper.quietClose(driver);
+            throw ex;
         }
     }
 
@@ -129,13 +173,15 @@ public final class ReplayerServer {
      */
     public static ReplayerServer launch(final int memberId, final String aeronDir,
                                         final Supplier<IdleStrategy> idleStrategies, final Runnable fatalHandler) {
-        return new ReplayerServer(memberId, aeronDir, null, PortLayout.DEFAULT_HOST, idleStrategies, fatalHandler);
+        return new ReplayerServer(memberId, null, aeronDir, null, PortLayout.DEFAULT_HOST, idleStrategies,
+                                  fatalHandler);
     }
 
-    private ReplayerServer(final int memberId, final String aeronDir, final List<String> archiveEndpoints,
-                           final String host, final Supplier<IdleStrategy> idleStrategies,
-                           final Runnable fatalHandler) {
+    private ReplayerServer(final int memberId, final ArchivingMediaDriver driver, final String aeronDir,
+                           final List<String> archiveEndpoints, final String host,
+                           final Supplier<IdleStrategy> idleStrategies, final Runnable fatalHandler) {
         this.memberId = memberId;
+        this.driver = driver;
         aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(aeronDir));
         archive = AeronArchive.connect(new AeronArchive.Context()
             .aeron(aeron)
@@ -164,8 +210,9 @@ public final class ReplayerServer {
     }
 
     /**
-     * Stops the duty cycle, then closes the archive session and Aeron client. A duty-cycle thread still running
-     * after {@link #SHUTDOWN_JOIN_TIMEOUT_MS} leaves both open rather than closing them under it.
+     * Stops the duty cycle, then closes the archive session and Aeron client, and on a gateway host its driver and
+     * archive. A duty-cycle thread still running after {@link #SHUTDOWN_JOIN_TIMEOUT_MS} leaves them all open rather
+     * than closing them under it.
      *
      * @return whether the duty cycle stopped and everything was closed.
      */
@@ -176,6 +223,7 @@ public final class ReplayerServer {
             CloseHelper.quietClose(relay);
             archive.close();
             aeron.close();
+            CloseHelper.quietClose(driver);
         } else {
             Logger.error(Logger.CoreComponent.ReplayerServer, Logger.CoreEventCode.ShutdownTimeout, memberId,
                          "duty-cycle thread still running %dms after being told to stop — exiting without "
@@ -189,9 +237,12 @@ public final class ReplayerServer {
      * A gateway host's own media driver and archive. The archive takes local clients only: this host's
      * Replayer and relay, over {@code aeron:ipc}.
      */
-    private static ArchivingMediaDriver launchDriver(final int nodeId, final String aeronDir, final String host,
-                                                     final Supplier<IdleStrategy> idleStrategies) {
-        final String baseDir = System.getProperty(PROP_BASE_DIR, System.getProperty("java.io.tmpdir") + "/seqeron-seq");
+    private static ArchivingMediaDriver launchDriver(final GatewayHostConfig config) {
+        final int nodeId = config.nodeId();
+        final String aeronDir = config.aeronDir();
+        final String baseDir = config.baseDir();
+        final String host = config.host();
+        final Supplier<IdleStrategy> idleStrategies = config.idleStrategies();
         final MediaDriver.Context driverCtx = NodeDriver.context(aeronDir, idleStrategies);
         NodeDriver.warnUnlessTmpfs(Logger.CoreComponent.ReplayerServer, nodeId, aeronDir);
         final Archive.Context archiveCtx = new Archive.Context()
