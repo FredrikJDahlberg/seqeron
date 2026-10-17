@@ -4,7 +4,7 @@ namespace Org.Limitless.Seqeron.Sequencer.Client;
 
 /// <summary>
 /// What <see cref="IngressPublisher"/> tells, and asks, about each frame it places, so a producer confirms its
-/// ingress on the tap without handling a frame itself; and what the sender tells, and asks, about a leader change.
+/// ingress on the queue without handling a frame itself; and what the sender tells, and asks, about a leader change.
 /// A send spinning through an election would land in the new term ahead of older frames that election lost, so the
 /// sender gives it up while the hold is on. <see cref="PendingSends"/> is the implementation;
 /// <c>IngressTracker.java</c> and <c>sequencer/client/IngressTracker.hpp</c> are its twins.

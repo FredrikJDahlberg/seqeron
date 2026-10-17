@@ -2,7 +2,7 @@ package org.limitless.seqeron.app;
 
 /**
  * A gateway's recovery-stall fence: recovery dispatching nothing for a deadline, once this instance has been
- * caught up at least once. It covers the state a tap-silence watchdog cannot, because that watchdog is gated
+ * caught up at least once. It covers the state a queue-silence watchdog cannot, because that watchdog is gated
  * on {@code isCaughtUp()}: a recovery that never converges would otherwise keep an active gateway serving
  * behind a view of the log frozen at a hole it cannot close.
  *

@@ -4,7 +4,7 @@ import org.agrona.DirectBuffer;
 
 /**
  * What {@link IngressPublisher} tells, and asks, about each frame it places, so a producer confirms its
- * ingress on the tap without handling a frame itself; and what the sender tells, and asks, about a leader
+ * ingress on the queue without handling a frame itself; and what the sender tells, and asks, about a leader
  * change. A send spinning through an election would land in the new term ahead of older frames that election
  * lost, so the sender gives it up while the hold is on. {@link PendingSends} is the implementation; the
  * C++ twin is {@code sequencer/client/IngressTracker.hpp}.

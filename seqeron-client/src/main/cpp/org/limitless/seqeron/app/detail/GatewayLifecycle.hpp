@@ -36,7 +36,7 @@ class GatewayLifecycle
       m_actions{ actions }
     {}
 
-    // The tap reached the live frontier for the first time. Returns whether this left Replaying.
+    // The queue reached the live frontier for the first time. Returns whether this left Replaying.
     bool onCaughtUp()
     {
         if (m_state != State::Replaying)

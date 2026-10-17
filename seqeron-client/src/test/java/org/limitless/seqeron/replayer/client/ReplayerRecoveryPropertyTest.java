@@ -28,7 +28,7 @@ import org.limitless.seqeron.util.Logger;
  * {@link ReplayerRecovery} against a MODEL of the counterparty it talks to, rather than against scripted
  * stimuli: {@link ReplayerRecoveryTest} names one situation per case and asserts the decision taken in it,
  * which is what pins the protocol down, but it can only reach the interleavings someone thought to write.
- * Here the node's archive, its tap and its Replayer are simulated, a seeded generator drives faults through
+ * Here the node's archive, its queue and its Replayer are simulated, a seeded generator drives faults through
  * them, and the two properties recovery exists to provide are asserted over whatever comes out.
  *
  * <p><b>Safety</b> — every dispatched frame is the next globalSeqNo, always. No gap, no duplicate, no
@@ -40,7 +40,7 @@ import org.limitless.seqeron.util.Logger;
  * without this one the suite would pass on a client that gave up.
  *
  * <p>The e2e harnesses reach these paths too, but a chaos run produces single-digit gap episodes in
- * minutes, all of one kind — one dropped frame on a live tap. A run here is a few hundred, mixing drops
+ * minutes, all of one kind — one dropped frame on a live queue. A run here is a few hundred, mixing drops
  * with lost requests, held requests, truncated images, stalled replays and redeliveries, in under a
  * second.
  *
@@ -106,7 +106,7 @@ class ReplayerRecoveryPropertyTest {
     }
 
     /**
-     * One seeded run: the node's archive, its tap and its Replayer, driving one {@link ReplayerRecovery}.
+     * One seeded run: the node's archive, its queue and its Replayer, driving one {@link ReplayerRecovery}.
      *
      * <p>Implements {@link ReplayerRecoveryActions} itself — the client's every outbound act is a request
      * arriving at this Replayer, so recording them and serving them are the same object.
@@ -139,8 +139,8 @@ class ReplayerRecoveryPropertyTest {
         private long replayCursor;
         private long replayEndSeqNo = -1;
 
-        /** Last globalSeqNo the tap actually delivered — what a redelivery re-offers. */
-        private long lastTapped;
+        /** Last globalSeqNo the queue actually delivered — what a redelivery re-offers. */
+        private long lastLive;
 
         private long clockMs = CLOCK_MS;
         private boolean chaos = true;
@@ -159,7 +159,7 @@ class ReplayerRecoveryPropertyTest {
 
         void execute() {
             // History before the client starts. A cold start over an EMPTY archive that then drops the very
-            // first tap frame is the one designed abort — the first frame observed must be globalSeqNo 1 —
+            // first queue frame is the one designed abort — the first frame observed must be globalSeqNo 1 —
             // and not a recovery failure, so the model does not construct it.
             if (restoring) {
                 publishSnapshotRounds();
@@ -179,11 +179,11 @@ class ReplayerRecoveryPropertyTest {
                 chaosStep();
             }
 
-            // Quiescence: faults off, but the tap keeps running. A hole the chaos phase left open is only
-            // ever discovered by the NEXT tap frame, so convergence has to be given one.
+            // Quiescence: faults off, but the queue keeps running. A hole the chaos phase left open is only
+            // ever discovered by the NEXT queue frame, so convergence has to be given one.
             chaos = false;
             for (int i = 0; i < 3; ++i) {
-                deliverTap(publish());
+                deliverQueue(publish());
             }
             for (int step = 0; step < QUIESCE_STEPS && !converged(); ++step) {
                 if (pendingRequestId >= 0) {
@@ -254,9 +254,9 @@ class ReplayerRecoveryPropertyTest {
             switch (rng.roll(10)) {
                 case 0, 1, 2, 3 -> {
                     final long globalSeqNo = publish();
-                    // A tap drop is the fault the whole resume path exists for, so it is the common one.
+                    // A queue drop is the fault the whole resume path exists for, so it is the common one.
                     if (!chance(20)) {
-                        deliverTap(globalSeqNo);
+                        deliverQueue(globalSeqNo);
                     }
                 }
                 case 4, 5 -> serveRequest();
@@ -279,23 +279,23 @@ class ReplayerRecoveryPropertyTest {
                     client.doTimers(false);
                 }
                 default -> {
-                    // The same tap frame offered twice. Both de-dupes have to hold: the contiguity one when
+                    // The same queue frame offered twice. Both de-dupes have to hold: the contiguity one when
                     // it sits at or below the baseline, and the retained FIFO's when it is ahead of a hole.
-                    if (lastTapped > 0) {
-                        deliver(lastTapped, false);
+                    if (lastLive > 0) {
+                        deliver(lastLive, false);
                     }
                 }
             }
         }
 
-        // ── the tap ────────────────────────────────────────────────────────────────────────────────────
+        // ── the queue ────────────────────────────────────────────────────────────────────────────────────
 
         private long publish() {
             return ++tip;
         }
 
-        private void deliverTap(final long globalSeqNo) {
-            lastTapped = globalSeqNo;
+        private void deliverQueue(final long globalSeqNo) {
+            lastLive = globalSeqNo;
             deliver(globalSeqNo, false);
         }
 
@@ -334,8 +334,10 @@ class ReplayerRecoveryPropertyTest {
             serveReplay(requestId, fromPosition / STRIDE + 1, tip);
         }
 
-        /** Bound at the tip the recording holds NOW — frames published later are the tap's problem, not this
-         *  replay's, which is exactly how a bounded replay of an active recording behaves. */
+        /**
+         * Bound at the tip the recording holds NOW — frames published later are the queue's problem, not this
+         *  replay's, which is exactly how a bounded replay of an active recording behaves.
+         */
         private void serveReplay(final long requestId, final long fromSeqNo, final long toSeqNo) {
             replayCursor = fromSeqNo;
             replayEndSeqNo = toSeqNo;

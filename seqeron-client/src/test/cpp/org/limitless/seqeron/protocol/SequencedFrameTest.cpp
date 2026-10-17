@@ -5,7 +5,7 @@
 // the subscriber position anyway, so a throw here loses the frame silently.
 //
 // The Java twin is SequencedFrameDecoderTest.java over SequencedFrameDecoder, case for case in the same
-// order, so a divergence shows up as a missing case rather than as a decode failure on a live tap. Its
+// order, so a divergence shows up as a missing case rather than as a decode failure on a live queue. Its
 // one extra case is the offset one: wrap() takes an offset where unwrapFrame takes a pointer.
 
 #include <gtest/gtest.h>

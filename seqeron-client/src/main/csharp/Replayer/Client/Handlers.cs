@@ -11,6 +11,6 @@ public delegate void SequencedHandler(SequencedEvent sequencedEvent);
 /// <param name="globalSeqNo">this frame's own sequence number, which counts toward continuity</param>
 public delegate void LeadershipHandler(int newLeaderMemberId, long leadershipTermId, long globalSeqNo);
 
-/// <summary>Fires on every transition to caught-up: when the receiver reaches the live tap, and again after each gap
+/// <summary>Fires on every transition to caught-up: when the receiver reaches the live queue, and again after each gap
 /// it heals.</summary>
 public delegate void CaughtUpHandler();

@@ -38,7 +38,7 @@ class ReplayerServerTest {
         // Each timeout is noticed up to one timer interval late.
         final long evictionNs = ctx.untetheredWindowLimitTimeoutNs() + ctx.untetheredLingerTimeoutNs() +
                                 2 * ctx.timerIntervalNs();
-        assertTrue(evictionNs < TimeUnit.MILLISECONDS.toNanos(TapRelay.RECORDING_STALL_FATAL_MS) / 2);
+        assertTrue(evictionNs < TimeUnit.MILLISECONDS.toNanos(QueueRelay.RECORDING_STALL_FATAL_MS) / 2);
     }
 
     @Test

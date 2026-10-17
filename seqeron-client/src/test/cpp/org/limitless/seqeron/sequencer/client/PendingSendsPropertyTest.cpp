@@ -2,7 +2,7 @@
 // term and drops the rest, commits a prefix, and loses everything uncommitted at an election. After one, the
 // old leader either still takes ingress and drops it, or is gone and a send spins until egress brings the
 // NewLeader — giving the send up if the hold is on, as ClusterStreamSender does. The sender may reconnect on a
-// new session then. The tap lags, a sibling shares the producer's sourceId, and term ids skip, as after a
+// new session then. The queue lags, a sibling shares the producer's sourceId, and term ids skip, as after a
 // failed ballot.
 //
 // Checked once the faults stop and everything has drained: the log holds every frame the producer sent
@@ -37,7 +37,7 @@ constexpr std::int64_t LEADERSHIP_CHANGED = -1;
 constexpr std::uint16_t PAYLOAD_ID = 6;
 constexpr int ALL = std::numeric_limits<int>::max();
 
-// One tap entry: frame value from session, or a term's LeadershipChanged.
+// One queue entry: frame value from session, or a term's LeadershipChanged.
 struct Entry
 {
     std::int64_t session;
@@ -122,17 +122,17 @@ struct Model
         for (int k = count; k > 0 && !uncommitted.empty(); --k)
         {
             log.push_back(uncommitted.front().value);
-            tap.push_back(uncommitted.front());
+            queue.push_back(uncommitted.front());
             uncommitted.pop_front();
         }
     }
 
     void deliver(const int count)
     {
-        for (int k = count; k > 0 && !tap.empty(); --k)
+        for (int k = count; k > 0 && !queue.empty(); --k)
         {
-            const Entry entry = tap.front();
-            tap.pop_front();
+            const Entry entry = queue.front();
+            queue.pop_front();
             if (entry.session == LEADERSHIP_CHANGED)
             {
                 pending.onLeadershipChanged(entry.value);
@@ -152,7 +152,7 @@ struct Model
     Sender sender{ *this };
     std::array<std::uint8_t, protocol::MAX_INGRESS_LENGTH> frame{};
     std::deque<Entry> uncommitted; // accepted by the current leader, not yet committed
-    std::deque<Entry> tap;         // committed, not yet delivered to the producer's tap
+    std::deque<Entry> queue;       // committed, not yet delivered to the producer's queue
     std::vector<std::int64_t> log; // the producer's frames in log order
     std::int64_t clusterTerm = 0;
     std::int64_t senderTerm = 0;
@@ -181,7 +181,7 @@ TEST_P(PendingSendsProperty, LogsEveryFrameOnceInOrderAcrossFailovers)
         }
         else if (action < 55)
         {
-            model.tap.push_back({ SIBLING, model.roll(8) });
+            model.queue.push_back({ SIBLING, model.roll(8) });
         }
         else if (action < 80)
         {
@@ -195,7 +195,7 @@ TEST_P(PendingSendsProperty, LogsEveryFrameOnceInOrderAcrossFailovers)
         {
             model.uncommitted.clear();
             model.clusterTerm += 1 + model.roll(2);
-            model.tap.push_back({ LEADERSHIP_CHANGED, model.clusterTerm });
+            model.queue.push_back({ LEADERSHIP_CHANGED, model.clusterTerm });
             model.oldLeaderTakesIngress = model.roll(2) == 0;
         }
         else if (model.senderTerm != model.clusterTerm)

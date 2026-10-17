@@ -105,7 +105,7 @@ replay codecs and the cluster mirror's IR) and `seqeron-service` (the **service 
 `ColocatedApp.java` proves the narrower claim that `app` is sufficient on its own — `checkFacadeOnly`
 fails its build if it names anything outside `app` beyond `protocol.Publish`, the way
 `FacadeSurfaceTest` checks the same from inside the client tier. Anything the service tier
-shares with a client — the tap's identity, the cluster clock, the port block, the replay protocol's
+shares with a client — the queue's identity, the cluster clock, the port block, the replay protocol's
 addresses — goes in `protocol`, never in a service-tier class. C++ is the client tier alone, in the
 same directories and namespaces — plus a `detail/` directory and namespace beneath a package for what Java
 makes package-private (the façade blocks, the recovery and transport seams), since header-only C++ has no
@@ -135,9 +135,9 @@ explicitly: Aeron.NET's defaults are Aeron's, whose new-leader timeout is shorte
 
 **A send that succeeds is not a frame sequenced.** Nothing confirms ingress on egress, and a leader
 failover silently loses whatever the old leader had not committed — the session survives it.
-`sequencer/client/PendingSends` is the confirm-on-tap tracker (spec §16 A-4, A-5): a producer gives it to
+`sequencer/client/PendingSends` is the confirm-on-queue tracker (spec §16 A-4, A-5): a producer gives it to
 `IngressPublisher` as its `IngressTracker` (which tracks what it places and declines while it holds or is
-full) and to the sender with `setIngressHold`, feeds it its own tap and each `LeadershipChanged`'s term, and
+full) and to the sender with `setIngressHold`, feeds it its own queue and each `LeadershipChanged`'s term, and
 resends what a term change lost. Every language,
 case for case, with a property test asserting exactly-once, in-order delivery across random failovers;
 `failover-test.sh` proves the same across a real leader kill, and `csharp-client-test.sh` for C#.
@@ -230,7 +230,7 @@ Single suites:
 `./cmake-build-debug/core_tests --gtest_filter='ReplayerRecovery*'` and
 `./gradlew test --tests '*SequencerTest'`. The C# suite is the Java client tier's tests case for case, plus the
 spec §14 conformance rows `ConformanceTest.cpp` runs, and three of its own: the committed codecs' schema ids,
-the session timeouts read back from the context it connects with, and an allocation test that holds the tap
+the session timeouts read back from the context it connects with, and an allocation test that holds the queue
 dispatch and the confirmed publish to zero bytes a frame.
 
 The Java suite covers the deterministic decision-making — `Sequencer`, and `ReplayerService` through
@@ -241,8 +241,8 @@ mocks. Everything that needs an Aeron runtime is covered by `core_tests` and by 
 
 **Nine of the twelve harnesses are Java-only.** Eight drive the cluster through `tools/ClusterProbe`, which
 submits `ProbeMarker` payloads at ingress (`submit`), round-trips one through consensus and back off
-the tap (`ping`), replays history through the co-located Replayer and then follows the tap live
-(`follow`), or streams through `ClusterStreamSender` and `sequencer/client/PendingSends` and checks its own tap shows
+the queue (`ping`), replays history through the co-located Replayer and then follows the queue live
+(`follow`), or streams through `ClusterStreamSender` and `sequencer/client/PendingSends` and checks its own queue shows
 every frame exactly once, in order (`confirm`, which `failover-test.sh` runs across the leader kill, and
 `gateway-host-test.sh` runs on a gateway host across the loss of the relay's member). The probe attaches to a
 member's own embedded driver, or a gateway host's, so six of the eight need no
@@ -289,25 +289,25 @@ after READY, and names them in `SEQERON_EXTRA_PROCESSES` so `stop-cluster.sh` sw
 no Aeron dependency, and is unit-tested directly (`SequencerTest`). `SequencerService`
 (`ClusteredService`) is its Aeron adapter: it decides *when* to call the sequencer and publishes what
 comes back, holding no replicated state itself. Every ingress message gets a cluster-wide monotone
-`globalSeqNo` plus the Raft consensus timestamp, then is republished on the **node-local tap**
-(`FEEDER_CHANNEL` = `aeron:ipc?alias=seqeron-tap`, `FEEDER_STREAM_ID` = 205), which this node's co-located Aeron Archive
-records. Every frame on it is sequenced: the tap carries `Sequenced` envelopes and nothing else, and
+`globalSeqNo` plus the Raft consensus timestamp, then is republished on the **node-local queue**
+(`QUEUE_CHANNEL` = `aeron:ipc?alias=seqeron-queue`, `QUEUE_STREAM_ID` = 205), which this node's co-located Aeron Archive
+records. Every frame on it is sequenced: the queue carries `Sequenced` envelopes and nothing else, and
 the sequencer is the stream's only publisher.
 
-**Every node publishes and records its own tap** — leader and follower alike. All nodes process the
+**Every node publishes and records its own queue** — leader and follower alike. All nodes process the
 same committed log in the same order and keep identical sequencing state (so a new leader resumes
-exactly where the last one left off), which makes the taps byte-identical across nodes, frame for frame
+exactly where the last one left off), which makes the queues byte-identical across nodes, frame for frame
 (recording positions match only at equal IPC MTU and term length): each archive
-independently holds complete history, with no cross-node replication. The tap publication is created
+independently holds complete history, with no cross-node replication. The queue publication is created
 once in `onStart` and never re-created on a leadership change (`aeron:ipc` has no port to collide on),
 so a node's recording is one continuous run spanning every leader tenure.
 
-Consumers split live from history: co-located apps subscribe to the tap **directly** for the live feed
+Consumers split live from history: co-located apps subscribe to the queue **directly** for the live feed
 (untethered, so a slow app is dropped and heals via replay rather than back-pressuring), while the
 co-located `ReplayerService` serves cold-start/gap replay off the same recording. `emit` is reliable —
 it spins until the offer lands, since a dropped frame would be an unrecoverable hole — and can only
-block on local-archive write back-pressure, because the recording is the tap's one tethered subscriber.
-Reliable is not unbounded: `TapPublisher` — the reliable-offer discipline, split off the way `Sequencer` is
+block on local-archive write back-pressure, because the recording is the queue's one tethered subscriber.
+Reliable is not unbounded: `QueuePublisher` — the reliable-offer discipline, split off the way `Sequencer` is
 and unit-tested the same way — watches the archive's `RecordingPos` counter,
 and a node whose recording has stopped or stopped advancing **terminates itself** (`NodeDriver.EXIT_FATAL` = 70) rather
 than sequence history it cannot keep. Peers keep quorum, and the restart rebuilds its recording over the
@@ -330,7 +330,7 @@ which is exactly when a gateway's keepalive watchdog must probe.
 **Cluster snapshots are not supported**, and both `ClusteredService` hooks refuse: `onTakeSnapshot` throws, and
 `onStart` refuses a snapshot image rather than restoring from one. `clusterctl shutdown` uses `ABORT`,
 and a node's recovery is always full-log replay from `globalSeqNo` 1. That is deliberate: replaying the whole log
-is what keeps each node's tap recording complete and gap-free — a node restored from a snapshot would
+is what keeps each node's queue recording complete and gap-free — a node restored from a snapshot would
 record only from wherever it resumed. The cost is that recovery time and archive size grow with uptime
 (the 1 Hz heartbeat alone is ~86.4k frames/day).
 
@@ -346,8 +346,8 @@ the cut; an instance with no such file replays from `globalSeqNo` 1. The Replaye
 
 ### The replay protocol — two sides, two namespaces
 **`replayer.server`** is Java only: `ReplayerServer`/`ReplayerService` and their pure seams `Replayer`,
-`ReplaySlotAllocator` and the gateway host's `TapRelay`, with
-`AeronReplayer` and `AeronTapRelay` the only parts that touch Aeron. **`replayer.client`** is `ReplayerStreamReceiver` and its pure seam
+`ReplaySlotAllocator` and the gateway host's `QueueRelay`, with
+`AeronReplayer` and `AeronQueueRelay` the only parts that touch Aeron. **`replayer.client`** is `ReplayerStreamReceiver` and its pure seam
 `ReplayerRecovery`, plus `SequencedEvent` and an instance's snapshot files, `SnapshotStore` — Java, C++ in
 `org::limitless::seqeron::replayer::client`, and C# in `Org.Limitless.Seqeron.Replayer.Client`. On a member `ReplayerServer` runs inside `SequencerServer`'s
 JVM, on its embedded driver, so a fatal in either exits the node with 70; its own `main` is the gateway
@@ -356,10 +356,10 @@ host's alone. The two sides share only the protocol's addresses —
 `FROM_START` and `NO_REPLAY_NEEDED` — and those are `protocol/ReplayProtocol` in every language.
 
 **A gateway host runs clients with no member on it.** `ReplayerServer` with `replayer.archiveEndpoints`
-runs its own media driver and archive, and `AeronTapRelay` copies a member's tap onto the host's own: one
+runs its own media driver and archive, and `AeronQueueRelay` copies a member's queue onto the host's own: one
 archive replay, over UDP, that follows the member's active recording live. Its decisions are the pure
-**`TapRelay`**, unit-tested the way `TapPublisher` is. It republishes only the frame after the last one it
-published, so the host's tap is the log frame for frame, and on losing its member it resumes on the next
+**`QueueRelay`**, unit-tested the way `QueuePublisher` is. It republishes only the frame after the last one it
+published, so the host's queue is the log frame for frame, and on losing its member it resumes on the next
 at the same recording position — every member's active recording starts at `globalSeqNo` 1 and its
 positions follow from the frames — falling back to that recording's start if the frame there is not the
 next one. Each start relays from `globalSeqNo` 1 into a new local recording, as a member's restart does, so
@@ -371,17 +371,17 @@ one instance whose gate opens once caught up. The member pays one archive replay
 `ReplayerStreamReceiver` is the Aeron adapter only — subscriptions, the replay image, the clocks; every
 decision it makes about them lives in **`ReplayerRecovery`**, which holds none of them and is where the
 unit suite drives the walk/resume/gap state machine — `ReplayerRecoveryTest` names one situation per case,
-`ReplayerRecoveryPropertyTest` drives seeded fault sequences against a model of the archive/tap/Replayer and
+`ReplayerRecoveryPropertyTest` drives seeded fault sequences against a model of the archive/queue/Replayer and
 asserts gap-freedom and convergence over whatever comes out; both tests exist in every language. The Java,
 C++ and C# classes are faithful ports of each other: same protocol, same state machine, same adapter/seam
 split. Keep all six files and all six tests in step — the three `ReplayerRecoveryTest`s are case for
 case in the same order precisely so a divergence is visible as a missing case rather than as a
-runtime decode failure on a live tap, and the three property tests draw from `SplitMix64` in the same order, so
+runtime decode failure on a live queue, and the three property tests draw from `SplitMix64` in the same order, so
 a seed makes the same fault sequence in each.
 
 ### Frames: two families, one envelope
 **Everything on the wire is `sbe-frame.xml` (schema 210), in two families.** The **application** family
-is `Unsequenced` (100) on ingress, republished as `Sequenced` (101) on the tap, carrying one opaque
+is `Unsequenced` (100) on ingress, republished as `Sequenced` (101) on the queue, carrying one opaque
 length-prefixed payload named by `header.payloadId`. The **system** family is seqeron's own vocabulary
 (spec §7), named by `header.systemEventType` at the same offset: `UnsequencedSystem` (102) →
 `SequencedSystem` (103) for the twelve events a producer submits, plus four templates of their own for
@@ -421,7 +421,7 @@ kind of producer owns the socket, which is why they are not `Client*`.
 
 `clusterctl load-topology <file>` publishes the deployment document — XML validated against
 `topology.xsd`, which ships in the jar and `TopologyDocument` — the parse/validate half, split off
-and unit-tested the way `Sequencer` and `TapPublisher` are — resolves off its own classpath. Its three
+and unit-tested the way `Sequencer` and `QueuePublisher` are — resolves off its own classpath. Its three
 sections are the complete producer view of a deployment: `<gateways>` (the elected pairs),
 `<applications>` (the co-located, leader-gated kind, `sourceId` required so every producer sits in spec
 §5's one id space), and `<protocols>` (`PayloadIdRegistered` rows naming each `payloadId`). **Only the

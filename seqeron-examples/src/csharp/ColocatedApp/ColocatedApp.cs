@@ -14,7 +14,7 @@ namespace Example;
 /// <summary>
 /// The same flow as FollowStream, written against the front door instead of the tiers under it. Look at the
 /// usings: the App namespace, the Publish alias, Aeron and Agrona, and nothing else. There is no receiver here, no
-/// sender, no envelope and no <c>systemEventType</c> — the façade assembles the cluster session, the tap, confirmed
+/// sender, no envelope and no <c>systemEventType</c> — the façade assembles the cluster session, the queue, confirmed
 /// ingress across a failover, the fences and the leader gate, and hands this class <see cref="Payload"/>s.
 /// <para>A co-located application is the producer kind nothing elects: one replica per node, publishing only while
 /// its own node leads. That is why it needs no topology document to run — <c>LeadershipChanged</c> already picks
@@ -107,7 +107,7 @@ public sealed class ColocatedApp : IApplicationListener
 
     // One payload at cluster ingress, on this application's own sourceId and no connection, from a span: the façade
     // copies it once into a buffer of its own. Nothing waits here for the echo: this process is its own consumer and
-    // picks it up off the tap like any other frame.
+    // picks it up off the queue like any other frame.
     private void Ping()
     {
         _pingSentTicks = Stopwatch.GetTimestamp();
@@ -121,7 +121,7 @@ public sealed class ColocatedApp : IApplicationListener
         }
     }
 
-    // Every application payload on this node's tap, in globalSeqNo order, history and live alike — every replica sees
+    // Every application payload on this node's queue, in globalSeqNo order, history and live alike — every replica sees
     // the same ones and so holds the same state. System frames never arrive here; the façade acts on them and reports
     // only what an application has a decision to make about.
     public void OnSequenced(Payload payload)
@@ -156,7 +156,7 @@ public sealed class ColocatedApp : IApplicationListener
 
     public void OnCaughtUp(long globalSeqNo)
     {
-        Console.WriteLine($"# caught up at {globalSeqNo} — following the tap live");
+        Console.WriteLine($"# caught up at {globalSeqNo} — following the queue live");
     }
 
     // The cluster clock, once a second: the one time source that keeps advancing while every producer is silent, and

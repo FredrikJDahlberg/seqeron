@@ -8,7 +8,7 @@ namespace Org.Limitless.Seqeron.App;
 
 /// <summary>
 /// Unit tests for the two ways a payload is addressed: past its own <c>MessageHeader</c> when it has one, and from
-/// its first byte when it has none (spec §13.2). No Aeron runtime — the event is a view over an encoded tap frame.
+/// its first byte when it has none (spec §13.2). No Aeron runtime — the event is a view over an encoded queue frame.
 /// Case for case with <c>PayloadTest.java</c>.
 /// </summary>
 public class PayloadTest

@@ -1,11 +1,11 @@
 // Follows one node's ordered stream end to end: history replayed through that node's co-located
-// ReplayerService, then the live tap, with the switch between them handled by the receiver. The C++ twin
+// ReplayerService, then the live queue, with the switch between them handled by the receiver. The C++ twin
 // of src/java's FollowStream — same flow, same output.
 //
 // Once caught up it also produces — one ping a second at cluster ingress, whose echo comes back through
 // onSequenced with everything else. Both families are exercised in both directions: the ping is an
 // application payload, and the connection this example announces is a system event, submitted with
-// publishSystem and decoded off the tap in printSystem.
+// publishSystem and decoded off the queue in printSystem.
 //
 // Start a node first (seqeron-service/src/main/scripts/start-cluster.sh in the seqeron repo), then run this.
 // Environment: SEQERON_NODE_MEMBER_ID (default 0), SEQERON_REPLAYER_CLIENT_ID (default 8),
@@ -113,7 +113,7 @@ void closeConnection(client::ClusterStreamSender& sender)
 // offered through offerFrame, where publishPayload itself ends: the same three answers, and the same place an
 // IngressTracker would confirm it.
 //
-// Nothing waits here for the echo: the consumer this process already is picks it up off the tap like every
+// Nothing waits here for the echo: the consumer this process already is picks it up off the queue like every
 // other frame.
 void ping(client::ClusterStreamSender& sender)
 {
@@ -190,7 +190,7 @@ void printSystem(const SequencedEvent& event)
 }
 
 // Every other frame arrives here in globalSeqNo order, history and live alike — the receiver requests a
-// replay for anything the live tap dropped and dispatches nothing out of order in the meantime.
+// replay for anything the live queue dropped and dispatches nothing out of order in the meantime.
 void onSequenced(const SequencedEvent& event)
 {
     if (!inOrder(event.globalSeqNo))
@@ -275,7 +275,7 @@ int main()
     sender.connectColocated(aeron, memberId, IPC_CONNECT_TIMEOUT_MS, egressChannel);
 
     replayer::ReplayerStreamReceiver receiver(clientId, onSequenced, onConnected, onDisconnected, onLeadershipChanged,
-                                              [] { std::puts("# caught up — following the tap live"); });
+                                              [] { std::puts("# caught up — following the queue live"); });
     receiver.start(aeron, memberId);
     std::printf("# following member %d via %s\n", memberId, aeronDir.c_str());
 

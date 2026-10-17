@@ -37,7 +37,7 @@ A new build of a stateful application meets its protocol in three places:
 | --- | --- | --- |
 | **history** | the log, from `globalSeqNo` 1 or from a snapshot's cut | it recovers |
 | **state** | its own snapshot files ([`snapshot.md`](snapshot.md)) | it restores |
-| **in-flight messages** | the live tap, from producers not yet upgraded | it runs alongside older builds |
+| **in-flight messages** | the live queue, from producers not yet upgraded | it runs alongside older builds |
 
 Each needs a different answer. Today the application answers all three alone, and since the log is never
 truncated, a consumer that recovers from `globalSeqNo` 1 must read every payload version ever recorded.
@@ -177,7 +177,7 @@ there, so all are translated alike.
 
 The Replayer server is the wrong place, for four reasons:
 
-- **It never sees live messages.** Clients read the live tap directly; the Replayer serves history only.
+- **It never sees live messages.** Clients read the live queue directly; the Replayer serves history only.
 - **It never touches the bytes.** A replay is an Aeron Archive replay to the client. Translating would mean
   reading and republishing every message, on the one thread that serves every client on the node.
 - **Translation changes lengths, and positions with them.** Gap resume, snapshot restore at a file's `cutPosition`

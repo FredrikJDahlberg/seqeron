@@ -28,8 +28,8 @@ public final class Logger {
         ReplayerServer,
         /** That server's duty cycle. */
         ReplayerService,
-        /** On a gateway host, the relay that copies a member's tap onto the local one. */
-        TapRelay,
+        /** On a gateway host, the relay that copies a member's queue onto the local one. */
+        QueueRelay,
         /** The client-side receiver, reporting from inside a consumer's replica. */
         ReplayerStreamReceiver,
         /** The cluster session client, {@code ClusterStreamSender}. */
@@ -70,12 +70,12 @@ public final class Logger {
         ConsensusModuleError,
         /** The clustered service raised one. */
         ServiceError,
-        /** A tap offer back-pressured; the sequencer spins rather than drop the frame. */
-        TapBackpressure,
+        /** A queue offer back-pressured; the sequencer spins rather than drop the frame. */
+        QueueBackpressure,
         /** An older recording still reports as recording, which an unclean shutdown leaves behind. */
         StaleActiveRecording,
         /** This node can no longer record the history it is responsible for. */
-        TapRecordingFailure,
+        QueueRecordingFailure,
         /** A replay control reply was dropped, its subscriber having gone away. */
         ControlReplyDropped,
         /** A gateway session closed with no standby to promote, leaving that gateway with none active. */
@@ -88,12 +88,12 @@ public final class Logger {
         ShutdownTimeout,
         /** A gateway host's relay stopped reading one member's archive and moved to the next. */
         RelaySourceLost,
-        /** The live tap skipped a {@code globalSeqNo}; recovery replays the hole. */
-        TapGap,
+        /** The live queue skipped a {@code globalSeqNo}; recovery replays the hole. */
+        QueueGap,
         /** Recovery has dispatched nothing for longer than its deadline. */
         RecoveryStalled,
-        /** The tap has carried no {@code ClusterHeartbeat} for longer than its deadline. */
-        TapStalled,
+        /** The queue has carried no {@code ClusterHeartbeat} for longer than its deadline. */
+        QueueStalled,
         /** The first frame observed was not {@code globalSeqNo} 1, so history is incomplete. */
         FirstFrameNotOne,
         /** A source's latest snapshot cannot be restored, so its instance cannot recover. */

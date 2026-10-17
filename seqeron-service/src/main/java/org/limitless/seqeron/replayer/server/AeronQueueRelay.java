@@ -27,22 +27,22 @@ import org.limitless.seqeron.util.Clocks;
 import org.limitless.seqeron.util.Logger;
 
 /**
- * The Aeron adapter for {@link TapRelay}: on a gateway host, reads a member's tap recording over UDP with
- * one replay that follows it live, and republishes each frame onto this host's own tap, which the local
+ * The Aeron adapter for {@link QueueRelay}: on a gateway host, reads a member's queue recording over UDP with
+ * one replay that follows it live, and republishes each frame onto this host's own queue, which the local
  * archive records and {@link ReplayerService} serves exactly as it does on a member. Nothing on the
  * member changes: its archive already takes remote clients, and a replay costs its sequencer nothing.
  *
- * <p>A back-pressured local tap is not spun on: the fragment is aborted and offered again next cycle, and
+ * <p>A back-pressured local queue is not spun on: the fragment is aborted and offered again next cycle, and
  * the member's replay waits behind it under Aeron's flow control.
  */
-final class AeronTapRelay implements AutoCloseable {
+final class AeronQueueRelay implements AutoCloseable {
     /** Stream the member's archive replays to this relay on, on an ephemeral port of its own. */
     static final int REPLAY_STREAM_ID = 206;
 
     /** How long one request to a member's archive may go unanswered; a dead member costs this much. */
     private static final long ARCHIVE_MESSAGE_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(1);
 
-    /** How long the local archive may take to attach to the local tap. */
+    /** How long the local archive may take to attach to the local queue. */
     private static final long RECORDING_START_TIMEOUT_MS = 10_000;
 
     /** How long the driver may take to bind the replay subscription's ephemeral port. */
@@ -59,8 +59,8 @@ final class AeronTapRelay implements AutoCloseable {
     private final int nodeId;
     private final IdleStrategy idleStrategy;
     private final Runnable fatalHandler;
-    private final TapRelay relay;
-    private final ExclusivePublication tap;
+    private final QueueRelay relay;
+    private final ExclusivePublication queue;
     private final CountersReader counters;
     private final int recordingCounterId;
     private final long recordingId;
@@ -72,13 +72,13 @@ final class AeronTapRelay implements AutoCloseable {
     private Subscription replay;
     private long replaySessionId = NULL_VALUE;
     private boolean imageSeen;
-    private TapRelay.Verdict pending;
+    private QueueRelay.Verdict pending;
     private long nowMs;
     private long nextRecordingCheckMs;
     private boolean fatal;
 
     /**
-     * Creates the local tap and starts the local archive recording it. The local archive client is used
+     * Creates the local queue and starts the local archive recording it. The local archive client is used
      * here and in {@link #close} only, both on the launching thread while no duty cycle runs.
      *
      * @param aeron            this host's own media driver
@@ -90,8 +90,8 @@ final class AeronTapRelay implements AutoCloseable {
      * @param fatalHandler     run once, from the duty cycle, when the relay can no longer keep the local
      *                         history; it must signal a shutdown and return
      */
-    AeronTapRelay(final Aeron aeron, final AeronArchive localArchive, final List<String> archiveEndpoints,
-                  final String host, final int nodeId, final IdleStrategy idleStrategy, final Runnable fatalHandler) {
+    AeronQueueRelay(final Aeron aeron, final AeronArchive localArchive, final List<String> archiveEndpoints,
+                    final String host, final int nodeId, final IdleStrategy idleStrategy, final Runnable fatalHandler) {
         this.aeron = aeron;
         this.localArchive = localArchive;
         this.archiveEndpoints = archiveEndpoints;
@@ -99,17 +99,17 @@ final class AeronTapRelay implements AutoCloseable {
         this.nodeId = nodeId;
         this.idleStrategy = idleStrategy;
         this.fatalHandler = fatalHandler;
-        this.relay = new TapRelay(archiveEndpoints.size());
+        this.relay = new QueueRelay(archiveEndpoints.size());
         this.counters = aeron.countersReader();
 
-        tap = aeron.addExclusivePublication(FrameLayer.FEEDER_CHANNEL, FrameLayer.FEEDER_STREAM_ID);
-        localArchive.startRecording(FrameLayer.FEEDER_CHANNEL, FrameLayer.FEEDER_STREAM_ID, SourceLocation.LOCAL);
+        queue = aeron.addExclusivePublication(FrameLayer.QUEUE_CHANNEL, FrameLayer.QUEUE_STREAM_ID);
+        localArchive.startRecording(FrameLayer.QUEUE_CHANNEL, FrameLayer.QUEUE_STREAM_ID, SourceLocation.LOCAL);
         final long deadlineMs = Clocks.monotonicMs() + RECORDING_START_TIMEOUT_MS;
         int counterId;
-        while ((counterId = RecordingPos.findCounterIdBySession(counters, tap.sessionId(), localArchive.archiveId())) ==
-               CountersReader.NULL_COUNTER_ID) {
+        while ((counterId = RecordingPos.findCounterIdBySession(
+                    counters, queue.sessionId(), localArchive.archiveId())) == CountersReader.NULL_COUNTER_ID) {
             if (Clocks.monotonicMs() >= deadlineMs) {
-                throw new IllegalStateException("the local archive did not start recording the tap within " +
+                throw new IllegalStateException("the local archive did not start recording the queue within " +
                                                 RECORDING_START_TIMEOUT_MS + "ms");
             }
             idleStrategy.idle();
@@ -125,7 +125,7 @@ final class AeronTapRelay implements AutoCloseable {
      * @param running true while running
      */
     void run(final AtomicBoolean running) {
-        Logger.info(Logger.CoreComponent.TapRelay, nodeId, "relaying from member archives %s onto local recording %d",
+        Logger.info(Logger.CoreComponent.QueueRelay, nodeId, "relaying from member archives %s onto local recording %d",
                     archiveEndpoints, recordingId);
         try {
             while (running.get() && !fatal) {
@@ -133,7 +133,7 @@ final class AeronTapRelay implements AutoCloseable {
             }
         } catch (final RuntimeException ex) {
             fatal = true;
-            Logger.fault(Logger.CoreComponent.TapRelay, Logger.CoreEventCode.ReplayDutyCycleFailure, nodeId,
+            Logger.fault(Logger.CoreComponent.QueueRelay, Logger.CoreEventCode.ReplayDutyCycleFailure, nodeId,
                          "FATAL: relay duty cycle terminated by an uncaught exception (%s)", ex.toString());
             fatalHandler.run();
         }
@@ -164,18 +164,18 @@ final class AeronTapRelay implements AutoCloseable {
         if (fatal) {
             return work;
         }
-        if (pending == TapRelay.Verdict.REPLAY_FROM_START) {
+        if (pending == QueueRelay.Verdict.REPLAY_FROM_START) {
             pending = null;
             restartReplay();
-        } else if (pending == TapRelay.Verdict.DROP_SOURCE) {
+        } else if (pending == QueueRelay.Verdict.DROP_SOURCE) {
             pending = null;
-            dropSource("its tap recording has a hole where this relay needs frame " + (relay.lastGlobalSeqNo() + 1));
+            dropSource("its queue recording has a hole where this relay needs frame " + (relay.lastGlobalSeqNo() + 1));
         } else if (work == 0) {
             imageSeen |= replay.imageCount() > 0;
             if (imageSeen && replay.imageCount() == 0) {
                 dropSource("its replay ended");
             } else if (relay.isSourceStalled(nowMs)) {
-                dropSource("nothing received for " + TapRelay.SOURCE_TIMEOUT_MS + "ms");
+                dropSource("nothing received for " + QueueRelay.SOURCE_TIMEOUT_MS + "ms");
             }
         }
         return work;
@@ -184,13 +184,12 @@ final class AeronTapRelay implements AutoCloseable {
     @Override
     public void close() {
         closeSource();
-        CloseHelper.quietClose(
-            () -> localArchive.stopRecording(FrameLayer.FEEDER_CHANNEL, FrameLayer.FEEDER_STREAM_ID));
-        CloseHelper.quietClose(tap);
+        CloseHelper.quietClose(() -> localArchive.stopRecording(FrameLayer.QUEUE_CHANNEL, FrameLayer.QUEUE_STREAM_ID));
+        CloseHelper.quietClose(queue);
     }
 
     private Action onFragment(final DirectBuffer buffer, final int offset, final int length, final Header header) {
-        final TapRelay.Verdict verdict =
+        final QueueRelay.Verdict verdict =
             view.wrap(buffer, offset, length) ? relay.onFrame(view.globalSeqNo(), nowMs) : relay.onUnreadable();
         switch (verdict) {
         case SKIP:
@@ -204,17 +203,17 @@ final class AeronTapRelay implements AutoCloseable {
     }
 
     private Action publish(final DirectBuffer buffer, final int offset, final int length, final Header header) {
-        final long result = tap.offer(buffer, offset, length);
+        final long result = queue.offer(buffer, offset, length);
         if (result > 0) {
             relay.onPublished(view.globalSeqNo(), header.position());
             return Action.CONTINUE;
         }
         if (result == Publication.CLOSED || result == Publication.MAX_POSITION_EXCEEDED) {
-            fatal("the local tap refused frame " + view.globalSeqNo() + " for good (" + result + ")");
+            fatal("the local queue refused frame " + view.globalSeqNo() + " for good (" + result + ")");
             return Action.BREAK;
         }
         if (relay.onBackPressured(nowMs, counters.getCounterValue(recordingCounterId))) {
-            fatal("the local recording made no progress for " + TapRelay.RECORDING_STALL_FATAL_MS +
+            fatal("the local recording made no progress for " + QueueRelay.RECORDING_STALL_FATAL_MS +
                   "ms of back-pressure");
             return Action.BREAK;
         }
@@ -228,7 +227,7 @@ final class AeronTapRelay implements AutoCloseable {
         }
         nextRecordingCheckMs = nowMs + RECORDING_CHECK_INTERVAL_MS;
         if (!RecordingPos.isActive(counters, recordingCounterId, recordingId)) {
-            fatal("the local archive stopped recording the tap (recording " + recordingId + ")");
+            fatal("the local archive stopped recording the queue (recording " + recordingId + ")");
         }
     }
 
@@ -259,11 +258,11 @@ final class AeronTapRelay implements AutoCloseable {
         }
     }
 
-    /** Replays the member's active tap recording from where {@link TapRelay#replayFrom} says, following it live. */
+    /** Replays the member's active queue recording from where {@link QueueRelay#replayFrom} says, following it live. */
     private void startReplay() {
         // The newest recording still recording; an unclean shutdown can leave an older one looking active too.
         final long[] newest = { NULL_VALUE, 0 };
-        source.listRecordingsForUri(0, Integer.MAX_VALUE, "", FrameLayer.FEEDER_STREAM_ID,
+        source.listRecordingsForUri(0, Integer.MAX_VALUE, "", FrameLayer.QUEUE_STREAM_ID,
                                     (controlSessionId, correlationId, id, startTimestamp, stopTimestamp, start,
                                      stopPosition, initialTermId, segmentFileLength, termBufferLength, mtuLength,
                                      sessionId, streamId, strippedChannel, originalChannel, sourceIdentity) -> {
@@ -275,12 +274,12 @@ final class AeronTapRelay implements AutoCloseable {
         final long activeId = newest[0];
         final long startPosition = newest[1];
         if (activeId == NULL_VALUE) {
-            dropSource("it is not recording a tap");
+            dropSource("it is not recording a queue");
             return;
         }
 
         final long from = relay.replayFrom(startPosition, source.getRecordingPosition(activeId), nowMs);
-        if (from == TapRelay.NOT_SUITABLE) {
+        if (from == QueueRelay.NOT_SUITABLE) {
             dropSource("its recording is behind this relay's frame " + relay.lastGlobalSeqNo());
             return;
         }
@@ -290,7 +289,7 @@ final class AeronTapRelay implements AutoCloseable {
         final String channel = resolvedChannel(replay);
         replaySessionId =
             source.startReplay(activeId, from, AeronArchive.REPLAY_ALL_AND_FOLLOW, channel, REPLAY_STREAM_ID);
-        Logger.info(Logger.CoreComponent.TapRelay, nodeId,
+        Logger.info(Logger.CoreComponent.QueueRelay, nodeId,
                     "following member archive %s: recording %d from position %d, after globalSeqNo %d",
                     archiveEndpoints.get(relay.sourceIndex()), activeId, from, relay.lastGlobalSeqNo());
     }
@@ -310,7 +309,7 @@ final class AeronTapRelay implements AutoCloseable {
     }
 
     private void dropSource(final String reason) {
-        Logger.error(Logger.CoreComponent.TapRelay, Logger.CoreEventCode.RelaySourceLost, nodeId,
+        Logger.error(Logger.CoreComponent.QueueRelay, Logger.CoreEventCode.RelaySourceLost, nodeId,
                      "left member archive %s: %s", archiveEndpoints.get(relay.sourceIndex()), reason);
         closeSource();
         relay.onSourceLost(nowMs);
@@ -334,7 +333,7 @@ final class AeronTapRelay implements AutoCloseable {
 
     private void fatal(final String reason) {
         fatal = true;
-        Logger.fault(Logger.CoreComponent.TapRelay, Logger.CoreEventCode.TapRecordingFailure, nodeId,
+        Logger.fault(Logger.CoreComponent.QueueRelay, Logger.CoreEventCode.QueueRecordingFailure, nodeId,
                      "FATAL: %s at globalSeqNo=%d, so this host can no longer keep the history it serves", reason,
                      relay.lastGlobalSeqNo());
         fatalHandler.run();

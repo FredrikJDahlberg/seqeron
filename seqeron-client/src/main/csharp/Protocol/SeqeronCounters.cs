@@ -19,11 +19,11 @@ public static class SeqeronCounters
     /// <summary>Last type id of the sequencer's block.</summary>
     public const int SequencerTypeIdMax = 5099;
 
-    /// <summary>The last globalSeqNo emitted on this node's tap.</summary>
+    /// <summary>The last globalSeqNo emitted on this node's queue.</summary>
     public const int SequencerGlobalSeqNoTypeId = 5000;
 
-    /// <summary>Count of times the tap-emit back-pressure alert threshold has fired.</summary>
-    public const int SequencerTapBackpressureAlertsTypeId = 5001;
+    /// <summary>Count of times the queue-emit back-pressure alert threshold has fired.</summary>
+    public const int SequencerQueueBackpressureAlertsTypeId = 5001;
 
     /// <summary>Count of malformed ingress messages the sequencer skipped.</summary>
     public const int SequencerRejectedIngressCountTypeId = 5002;
@@ -43,9 +43,9 @@ public static class SeqeronCounters
     /// <summary>1 once the bootstrap <c>GatewayActive</c> has been emitted in this cluster's log, else 0.</summary>
     public const int SequencerBootstrapActivatedTypeId = 5007;
 
-    /// <summary>1 while tap back-pressure has lasted past the stall threshold with no recording progress, else
+    /// <summary>1 while queue back-pressure has lasted past the stall threshold with no recording progress, else
     /// 0.</summary>
-    public const int SequencerTapStalledTypeId = 5008;
+    public const int SequencerQueueStalledTypeId = 5008;
 
     // 5009 is retired, and never reused.
 
@@ -64,7 +64,7 @@ public static class SeqeronCounters
     /// <summary>Last type id of the Replayer's block.</summary>
     public const int ReplayerTypeIdMax = 5199;
 
-    /// <summary>1 once the co-located tap recording is visible and replay requests are being served, else
+    /// <summary>1 once the co-located queue recording is visible and replay requests are being served, else
     /// 0.</summary>
     public const int ReplayerReadyTypeId = 5101;
 
@@ -80,7 +80,7 @@ public static class SeqeronCounters
     /// <summary>Count of control replies dropped because an app stopped draining the control stream.</summary>
     public const int ReplayerControlRepliesDroppedCountTypeId = 5107;
 
-    /// <summary>Count of replay requests held pending only because the tap recording trailed the tap while a replay
+    /// <summary>Count of replay requests held pending only because the queue recording trailed the queue while a replay
     /// ran, resends included.</summary>
     public const int ReplayerThrottledRequestsCountTypeId = 5110;
 

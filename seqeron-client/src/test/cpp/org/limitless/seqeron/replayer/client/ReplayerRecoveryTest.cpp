@@ -10,7 +10,7 @@
 // ReplayerRecovery holds no Aeron runtime and no clock of its own, so this suite drives it directly: its
 // transport is recorded through ReplayerRecoveryActions and its clock is owned by the test. The
 // receiver's own Aeron side — subscription polling, image attach, and its guarantee to always drain AND
-// dispatch the tap regardless of state — has no seam here and is exercised by
+// dispatch the queue regardless of state — has no seam here and is exercised by
 // seqeron-service/src/test/scripts/gap-recovery-test.sh.
 
 #include <cstdint>
@@ -76,7 +76,7 @@ struct ScopedLoggerSink final : diag::LoggerSink
     std::vector<diag::LoggerEvent> events;
 };
 
-// Retained-buffer overflows only: every gap/resume warn shares eventCode::TapGap, so only the text
+// Retained-buffer overflows only: every gap/resume warn shares eventCode::QueueGap, so only the text
 // separates them.
 std::size_t overflowReports(const ScopedLoggerSink& sink)
 {
@@ -158,7 +158,7 @@ std::vector<std::uint8_t> encodeHeartbeat(const std::int64_t globalSeqNo)
     return buf;
 }
 
-// Feeds one Heartbeat frame in exactly as the receiver would off the live tap. framePosition is where
+// Feeds one Heartbeat frame in exactly as the receiver would off the live queue. framePosition is where
 // the frame starts in the recording — the default 0 suffices wherever a test does not care, but
 // requestResume anchors on the last dispatched frame's position, so a test that checks the anchor must
 // space its frames apart.
@@ -169,7 +169,7 @@ void deliverLive(Client& client, const std::int64_t globalSeqNo, const std::int6
                             /*fromReplay=*/false);
 }
 
-// A live tap frame too big for the retained-ahead FIFO to hold: a Heartbeat zero-padded past
+// A live queue frame too big for the retained-ahead FIFO to hold: a Heartbeat zero-padded past
 // RetainBlock::SIZE, which retainFrame refuses outright (recordSize > RetainBlock::SIZE). The
 // cheapest of its three overflow triggers to drive — the other two need 65536 frames or 16 MiB.
 void deliverLiveTooBigToRetain(Client& client, const std::int64_t globalSeqNo)
@@ -180,10 +180,10 @@ void deliverLiveTooBigToRetain(Client& client, const std::int64_t globalSeqNo)
                             /*fromReplay=*/false);
 }
 
-// The largest frame the tap carries (§12): a full payload behind the 44-byte sequenced envelope.
+// The largest frame the queue carries (§12): a full payload behind the 44-byte sequenced envelope.
 constexpr std::size_t LARGEST_FRAME_LENGTH = 44 + protocol::MAX_PAYLOAD_LENGTH;
 
-// A live tap frame of `length` bytes: a Heartbeat, decoded from the front, zero-padded to it.
+// A live queue frame of `length` bytes: a Heartbeat, decoded from the front, zero-padded to it.
 void deliverLivePadded(Client& client, const std::int64_t globalSeqNo, const std::size_t length)
 {
     auto buf = encodeHeartbeat(globalSeqNo);
@@ -271,20 +271,20 @@ TEST(ReplayerRecoveryBaseline, FirstFrameNotAtGlobalSeqNoOneAbortsTheProcess)
         << "must not silently adopt a mid-stream baseline";
 }
 
-// Coverage for the gap-recovery/re-walk state machine (the "gap re-walk starves the tap it is
+// Coverage for the gap-recovery/re-walk state machine (the "gap re-walk starves the queue it is
 // recovering" fault, fixed 2026-07-31): mid-stream gap detection, de-dup of already-seen replayed frames, the
 // Replayer control-stream transitions (Replaying / NO_REPLAY_NEEDED / ReplayPending), and the
 // walk ending at its bound — the contiguity/de-dupe decision, the isRecovering()
-// predicate that separates a real hole from the tap running ahead of an in-flight walk, and the
+// predicate that separates a real hole from the queue running ahead of an in-flight walk, and the
 // isCaughtUp() state transitions consumers gate on.
 
 // Companion to ReplayerStreamReceiverBaseline.FirstFrameNotAtGlobalSeqNoOneAbortsTheProcess, and the
-// regression the 2026-08-05 seam fix first introduced: once the tap is dispatched mid-walk, a cold start
-// races a live tap already carrying mid-stream globalSeqNos against a replay that has not delivered 1
-// yet. That tap frame is neither a valid baseline nor a fault — only the walk may establish the
+// regression the 2026-08-05 seam fix first introduced: once the queue is dispatched mid-walk, a cold start
+// races a live queue already carrying mid-stream globalSeqNos against a replay that has not delivered 1
+// yet. That queue frame is neither a valid baseline nor a fault — only the walk may establish the
 // baseline. (Caught by gap-recovery-test.sh, where every consumer aborted at startup with "first frame
 // observed has globalSeqNo=15"; this locks it where it costs a millisecond instead of a cluster.)
-TEST(ReplayerRecoveryBaseline, LiveTapMayNotEstablishTheBaselineWhileTheColdStartWalkIsInFlight)
+TEST(ReplayerRecoveryBaseline, LiveQueueMayNotEstablishTheBaselineWhileTheColdStartWalkIsInFlight)
 {
     int delivered = 0;
     Client client{ [&](const SequencedEvent&) { ++delivered; } };
@@ -296,7 +296,7 @@ TEST(ReplayerRecoveryBaseline, LiveTapMayNotEstablishTheBaselineWhileTheColdStar
 
     deliverLive(client, 15); // the live tip, far ahead of a replay that has not started delivering
 
-    EXPECT_EQ(0, delivered) << "must not adopt the live tap's mid-stream baseline";
+    EXPECT_EQ(0, delivered) << "must not adopt the live queue's mid-stream baseline";
     EXPECT_FALSE(client.recovery.isCaughtUp());
 
     deliverReplay(client, 1); // the walk supplies the real baseline
@@ -321,7 +321,7 @@ TEST(ReplayerRecoveryGapRecovery, MidStreamGapTriggersReplayRequestAndWithholdsT
     EXPECT_EQ(-1, client.recovery.replaySessionId()) << "no session yet — only a request, until the Replayer answers";
 }
 
-TEST(ReplayerRecoveryGapRecovery, TapGapReportsAStructuredDiagnosticEvent)
+TEST(ReplayerRecoveryGapRecovery, QueueGapReportsAStructuredDiagnosticEvent)
 {
     ScopedLoggerSink sink;
     Client client{ [](const SequencedEvent&) {} };
@@ -334,17 +334,17 @@ TEST(ReplayerRecoveryGapRecovery, TapGapReportsAStructuredDiagnosticEvent)
     const auto& event = sink.events[0];
     EXPECT_EQ(diag::component::ReplayerStreamReceiver, event.component);
     EXPECT_EQ(diag::Severity::Warn, event.severity);
-    EXPECT_EQ(diag::eventCode::TapGap, event.code);
+    EXPECT_EQ(diag::eventCode::QueueGap, event.code);
     const std::string text(event.text.data(), event.textLen);
-    EXPECT_EQ("tap gap: expected globalSeqNo=3 got 5 — resuming the recording at globalSeqNo=2", text);
+    EXPECT_EQ("queue gap: expected globalSeqNo=3 got 5 — resuming the recording at globalSeqNo=2", text);
 }
 
-// A tap frame that is non-contiguous only because the tap runs ahead of an in-flight replay must not be
-// mistaken for a new gap. Now that poll() dispatches the tap mid-walk instead of discarding it (the
-// 2026-08-05 seam fix), this is the common case, not a rarity: every tap frame arriving while a walk
+// A queue frame that is non-contiguous only because the queue runs ahead of an in-flight replay must not be
+// mistaken for a new gap. Now that poll() dispatches the queue mid-walk instead of discarding it (the
+// 2026-08-05 seam fix), this is the common case, not a rarity: every queue frame arriving while a walk
 // replays history reads as "ahead". Superseding the walk on each one would restart it from the start
 // forever under any sustained publish rate.
-TEST(ReplayerRecoveryGapRecovery, TapFrameAheadOfAnInFlightWalkDoesNotSupersedeIt)
+TEST(ReplayerRecoveryGapRecovery, QueueFrameAheadOfAnInFlightWalkDoesNotSupersedeIt)
 {
     ScopedLoggerSink sink;
     int delivered = 0;
@@ -356,7 +356,7 @@ TEST(ReplayerRecoveryGapRecovery, TapFrameAheadOfAnInFlightWalkDoesNotSupersedeI
     ASSERT_EQ(1u, sink.events.size()) << "the genuine steady-state gap";
 
     // The Replayer answers with an active session: now mid-walk (m_replaySessionId >= 0), not merely
-    // awaiting an answer. (The e2e version of this scenario — re-arming a live-tap drop while a real walk
+    // awaiting an answer. (The e2e version of this scenario — re-arming a live-queue drop while a real walk
     // is in flight — was attempted and abandoned as impractical: local Aeron IPC replay of a small gap
     // completes too fast for a shell-level poll-then-signal loop to reliably land inside the window; see
     // the 2026-08-02 investigation. This state transition is locked down here instead.)
@@ -366,8 +366,8 @@ TEST(ReplayerRecoveryGapRecovery, TapFrameAheadOfAnInFlightWalkDoesNotSupersedeI
     ASSERT_FALSE(client.recovery.isAwaitingReplay());
     ASSERT_TRUE(client.recovery.isRecovering());
 
-    // A later frame arrives on the live tap while that walk is still riding history. m_lastGlobalSeqNo is
-    // still 1, so it is non-contiguous — but it is the tap running ahead, not a hole the walk won't cover.
+    // A later frame arrives on the live queue while that walk is still riding history. m_lastGlobalSeqNo is
+    // still 1, so it is non-contiguous — but it is the queue running ahead, not a hole the walk won't cover.
     deliverLive(client, 12);
 
     EXPECT_EQ(99, client.recovery.replaySessionId()) << "the in-flight walk must run to completion, not be restarted";
@@ -378,13 +378,13 @@ TEST(ReplayerRecoveryGapRecovery, TapFrameAheadOfAnInFlightWalkDoesNotSupersedeI
     EXPECT_EQ(1u, sink.events.size()) << "and it is not reported as a second gap";
 }
 
-// The replay->live seam: the tap is dispatched throughout a walk, so the frame at
-// gseq == last+1 lands the instant the replay reaches it. Before the fix poll() routed tap frames to a
+// The replay->live seam: the queue is dispatched throughout a walk, so the frame at
+// gseq == last+1 lands the instant the replay reaches it. Before the fix poll() routed queue frames to a
 // discard handler while recovering, consuming exactly these frames — so every walk ended one guaranteed
 // gap short of live and re-walked the whole recording, converging only if nothing was published during the
-// final round trip. NOTE: poll()'s handler *routing* needs a live tap subscription and is exercised only
+// final round trip. NOTE: poll()'s handler *routing* needs a live queue subscription and is exercised only
 // by seqeron-service/src/test/scripts/gap-recovery-test.sh; what is locked here is the decision logic it feeds.
-TEST(ReplayerRecoveryGapRecovery, LiveTapFrameAtTheSeamIsDispatchedWhileTheWalkIsStillInFlight)
+TEST(ReplayerRecoveryGapRecovery, LiveQueueFrameAtTheSeamIsDispatchedWhileTheWalkIsStillInFlight)
 {
     int delivered = 0;
     Client client{ [&](const SequencedEvent&) { ++delivered; } };
@@ -397,10 +397,10 @@ TEST(ReplayerRecoveryGapRecovery, LiveTapFrameAtTheSeamIsDispatchedWhileTheWalkI
     ASSERT_FALSE(client.recovery.isCaughtUp()) << "still riding replayed history";
     ASSERT_TRUE(client.recovery.isRecovering());
 
-    deliverLive(client, 3); // the seam: first tap frame contiguous with what the replay delivered
+    deliverLive(client, 3); // the seam: first queue frame contiguous with what the replay delivered
 
     EXPECT_EQ(3, delivered) << "the seam frame must be dispatched, not discarded as mid-walk noise";
-    EXPECT_TRUE(client.recovery.isCaughtUp()) << "a contiguous frame off the live tap means we are following live";
+    EXPECT_TRUE(client.recovery.isCaughtUp()) << "a contiguous frame off the live queue means we are following live";
 }
 
 // A steady-state gap resumes the recording at the frame last dispatched, so repairing a
@@ -432,7 +432,7 @@ TEST(ReplayerRecoveryGapRecovery, DuplicateAndStaleFramesFromReplayAreDropped)
 
     deliverReplay(client, 1); // already seen live -> dup
     deliverReplay(client, 2); // already seen live -> dup
-    EXPECT_EQ(2, delivered) << "replayed frames already delivered off the live tap must be de-duped";
+    EXPECT_EQ(2, delivered) << "replayed frames already delivered off the live queue must be de-duped";
 
     deliverReplay(client, 3); // new -> delivered
     EXPECT_EQ(3, delivered);
@@ -561,7 +561,7 @@ TEST(ReplayerRecoveryGapRecovery, ReplayImageClosingAtTheBoundCompletesTheReplay
 
 // Any other close (supersede, archive fault, Replayer shutdown) leaves the image short
 // of the bound. Completing there skips history that was never replayed — a silent hole, since only a
-// later tap gap could ever expose it.
+// later queue gap could ever expose it.
 TEST(ReplayerRecoveryGapRecovery, ReplayImageClosingShortOfTheBoundReRequestsIt)
 {
     ScopedLoggerSink sink;
@@ -662,12 +662,12 @@ TEST(ReplayerRecoveryGapRecovery, StuckAwaitingReplayResendsAfterTheIntervalElap
         << "resend repeats the same request verbatim, still the resume";
 }
 
-// isRecovering() is what separates "the tap is ahead of my replay" from "there is a hole" — narrowing it
+// isRecovering() is what separates "the queue is ahead of my replay" from "there is a hole" — narrowing it
 // to miss a state means a walk supersedes itself on its own in-flight frames (see
-// TapFrameAheadOfAnInFlightWalkDoesNotSupersedeIt), widening it means a real gap goes unreported. This
+// QueueFrameAheadOfAnInFlightWalkDoesNotSupersedeIt), widening it means a real gap goes unreported. This
 // walks every transition it must track. (It also guarded the discard routing behind the
-// 2026-07-31 "gap re-walk starves the tap it is recovering" fault; that discard is gone as of 2026-08-05 —
-// poll() now always drains AND dispatches the tap — but the predicate itself carries more weight, not
+// 2026-07-31 "gap re-walk starves the queue it is recovering" fault; that discard is gone as of 2026-08-05 —
+// poll() now always drains AND dispatches the queue — but the predicate itself carries more weight, not
 // less.)
 TEST(ReplayerRecoveryGapRecovery, RecoveringFlagTracksWalkAndAwaitingReplayState)
 {
@@ -710,11 +710,11 @@ TEST(ReplayerRecoveryGapRecovery, RecoveringFlagTracksWalkAndAwaitingReplayState
 }
 
 // isCaughtUp() is a state, not a latch. Consumers gate real decisions on it — LeaderGate's
-// leader-only emission, and a gateway's tap-stall watchdog, which measures silence in DISPATCHED
+// leader-only emission, and a gateway's queue-stall watchdog, which measures silence in DISPATCHED
 // frames and fences the gateway after 20s. A resume dispatches
 // nothing until the replay passes the hole, so leaving it latched made the gateway diagnose its own
 // recovery as a stalled sequencer and force a standby promotion it did not need.
-TEST(ReplayerRecoveryGapRecovery, TapGapRevokesCaughtUpUntilTheStreamGoesContiguousAgain)
+TEST(ReplayerRecoveryGapRecovery, QueueGapRevokesCaughtUpUntilTheStreamGoesContiguousAgain)
 {
     int caughtUpNotifications = 0;
     Client client{ [](const SequencedEvent&) {}, [&] { ++caughtUpNotifications; } };
@@ -732,7 +732,7 @@ TEST(ReplayerRecoveryGapRecovery, TapGapRevokesCaughtUpUntilTheStreamGoesContigu
     EXPECT_FALSE(client.recovery.isCaughtUp()) << "4 is still missing — the hole is not closed yet";
     EXPECT_EQ(1, caughtUpNotifications);
 
-    deliverReplay(client, 4); // closes the hole; the retained tap frame 5 then hands straight over
+    deliverReplay(client, 4); // closes the hole; the retained queue frame 5 then hands straight over
 
     EXPECT_TRUE(client.recovery.isCaughtUp()) << "the retained frame closes the seam with no further round trip";
     EXPECT_EQ(2, caughtUpNotifications) << "consumers must be able to re-arm on re-convergence, not just "
@@ -798,7 +798,7 @@ TEST(ReplayerRecoveryGapRecovery, GapInReplayedHistoryIsReportedOncePerEpisode)
     EXPECT_EQ(1, delivered) << "the frame past the hole must not be dispatched";
     ASSERT_EQ(1u, sink.events.size());
     EXPECT_EQ(diag::Severity::Warn, sink.events[0].severity);
-    EXPECT_EQ(diag::eventCode::TapGap, sink.events[0].code);
+    EXPECT_EQ(diag::eventCode::QueueGap, sink.events[0].code);
 
     deliverReplay(client, 8);
     EXPECT_EQ(1u, sink.events.size()) << "the walk retries against the same recording — report the episode, not "
@@ -973,7 +973,7 @@ TEST(ReplayerRecoveryGapRecovery, AnUnsentRequestIsNotReSentOncePerPoll)
 // sits behind a hole the replay never covered — onReplaySegmentComplete used to declare caught up on the
 // bound alone, with no check that m_lastGlobalSeqNo had actually reached the frontier the retained FIFO
 // knows about. That reading is silently wrong: consumers gate real decisions on isCaughtUp() and nothing
-// would rediscover the hole until some later, unrelated tap frame happened to expose it.
+// would rediscover the hole until some later, unrelated queue frame happened to expose it.
 TEST(ReplayerRecoveryGapRecovery, ResumeReachingItsBoundWithARetainedHoleStillOpenResumesAgain)
 {
     int caughtUpNotifications = 0;
@@ -999,12 +999,12 @@ TEST(ReplayerRecoveryGapRecovery, ResumeReachingItsBoundWithARetainedHoleStillOp
     EXPECT_EQ(-1, client.recovery.replaySessionId());
 }
 
-// The overflow half of the same guard. When retainFrame had to DROP tap frames, the
-// frontier is short by frames that are gone from the tap for good, and every retained frame draining
+// The overflow half of the same guard. When retainFrame had to DROP queue frames, the
+// frontier is short by frames that are gone from the queue for good, and every retained frame draining
 // cleanly says nothing about them. drainRetained used to clear the overflow on its first dispatch —
 // before this check could read it — so precisely the run that drained successfully was the one that
 // declared itself caught up over the hole.
-TEST(ReplayerRecoveryGapRecovery, ResumeReachingItsBoundAfterDroppedTapFramesResumesAgain)
+TEST(ReplayerRecoveryGapRecovery, ResumeReachingItsBoundAfterDroppedQueueFramesResumesAgain)
 {
     int caughtUpNotifications = 0;
     Client client{ [](const SequencedEvent&) {}, [&] { ++caughtUpNotifications; } };
@@ -1024,11 +1024,11 @@ TEST(ReplayerRecoveryGapRecovery, ResumeReachingItsBoundAfterDroppedTapFramesRes
     EXPECT_FALSE(client.recovery.isCaughtUp()) << "frame 4 was dropped — the drained frontier is not the real one";
     EXPECT_EQ(1, caughtUpNotifications) << "no false re-convergence notification";
     EXPECT_NE(REPLAYER_FROM_START, client.recovery.requestFromPosition())
-        << "resumes now rather than leaving the hole for a later tap gap";
+        << "resumes now rather than leaving the hole for a later queue gap";
     EXPECT_TRUE(client.recovery.isAwaitingReplay());
 }
 
-TEST(ReplayerRecoveryGapRecovery, DroppedTapFramesAreReportedOncePerEpisode)
+TEST(ReplayerRecoveryGapRecovery, DroppedQueueFramesAreReportedOncePerEpisode)
 {
     Client client{ [](const SequencedEvent&) {} };
     deliverLive(client, 1);
@@ -1053,7 +1053,7 @@ TEST(ReplayerRecoveryGapRecovery, DroppedTapFramesAreReportedOncePerEpisode)
 }
 
 // Retained frames the replay has meanwhile covered are discarded on drain rather than double-delivered —
-// the ranges legitimately overlap, since a replay restarts behind the hole while the tap keeps arriving.
+// the ranges legitimately overlap, since a replay restarts behind the hole while the queue keeps arriving.
 TEST(ReplayerRecoveryGapRecovery, RetainedFramesAlreadyCoveredByTheReplayAreNotRedelivered)
 {
     std::vector<std::int64_t> delivered;
@@ -1065,7 +1065,7 @@ TEST(ReplayerRecoveryGapRecovery, RetainedFramesAlreadyCoveredByTheReplayAreNotR
 
     deliverReplay(client, 1); // a resume opens on the frame it anchored at — already delivered, deduped
     deliverReplay(client, 2);
-    deliverReplay(client, 3); // the replay covers a frame the tap already retained
+    deliverReplay(client, 3); // the replay covers a frame the queue already retained
     deliverReplay(client, 4); // and another
 
     EXPECT_EQ((std::vector<std::int64_t>{ 1, 2, 3, 4 }), delivered) << "each globalSeqNo dispatched exactly once";
@@ -1080,7 +1080,7 @@ TEST(ReplayerRecoveryGapRecovery, AWalkReachingItsBoundWithARetainedHoleStillOpe
     int caughtUpNotifications = 0;
     Client client{ [](const SequencedEvent&) {}, [&] { ++caughtUpNotifications; } };
 
-    // A walk bounded at globalSeqNo 2 — while the tap runs ahead and frame 5 is retained behind the hole at 3,4.
+    // A walk bounded at globalSeqNo 2 — while the queue runs ahead and frame 5 is retained behind the hole at 3,4.
     deliverControl(client, encodeReplaying(/*clientId=*/1, client.recovery.requestId(), /*replaySessionId=*/7,
                                            /*catchUpPosition=*/500));
     deliverReplay(client, 1);
@@ -1116,7 +1116,7 @@ TEST(ReplayerRecoveryGapRecovery, AWalkReachingItsBoundWithEveryRetainedFrameDra
 // finish. The overflow is cleared where that resume is requested, which is the only clear point that does
 // both — clearing it on drain forgets the drop and catches up over the hole, never clearing it leaves a
 // client that can never declare itself caught up again.
-TEST(ReplayerRecoveryGapRecovery, AWalkReachingItsBoundAfterDroppedTapFramesResumesThenCatchesUp)
+TEST(ReplayerRecoveryGapRecovery, AWalkReachingItsBoundAfterDroppedQueueFramesResumesThenCatchesUp)
 {
     int caughtUpNotifications = 0;
     Client client{ [](const SequencedEvent&) {}, [&] { ++caughtUpNotifications; } };
@@ -1125,11 +1125,11 @@ TEST(ReplayerRecoveryGapRecovery, AWalkReachingItsBoundAfterDroppedTapFramesResu
                                            /*catchUpPosition=*/500));
     deliverReplay(client, 1);
     deliverReplay(client, 2);
-    deliverLiveTooBigToRetain(client, 4); // the tap runs ahead of the walk, and this one is dropped
+    deliverLiveTooBigToRetain(client, 4); // the queue runs ahead of the walk, and this one is dropped
 
     completeReplay(client);
 
-    EXPECT_FALSE(client.recovery.isCaughtUp()) << "the walk reached its bound, but a tap frame above it was dropped";
+    EXPECT_FALSE(client.recovery.isCaughtUp()) << "the walk reached its bound, but a queue frame above it was dropped";
     EXPECT_EQ(0, caughtUpNotifications) << "no false convergence notification — this opens the accept gate";
     ASSERT_NE(REPLAYER_FROM_START, client.recovery.requestFromPosition()) << "resumes rather than trusting the bound";
 
@@ -1193,14 +1193,14 @@ TEST(ReplayerRecoveryConvergence, AGapAfterAHealthyRunStartsItsOwnEpisodeRatherT
     deliverLive(client, 1);                          // ... which then converges
     ASSERT_TRUE(client.recovery.isCaughtUp());
 
-    deliverLive(client, 5); // much later, a tap gap: !isCaughtUp() again
+    deliverLive(client, 5); // much later, a queue gap: !isCaughtUp() again
     ASSERT_FALSE(client.recovery.isCaughtUp());
 
     // Inheriting the cold-start clock would report this the instant the gap opened, before the re-walk
     // it triggers had any chance to converge.
     EXPECT_FALSE(checkProgressAt(client, PAST_DEADLINE_MS));
-    ASSERT_EQ(1u, sink.events.size()) << "the tap-gap warn only — no convergence report";
-    EXPECT_EQ(diag::eventCode::TapGap, sink.events[0].code);
+    ASSERT_EQ(1u, sink.events.size()) << "the queue-gap warn only — no convergence report";
+    EXPECT_EQ(diag::eventCode::QueueGap, sink.events[0].code);
 }
 
 TEST(ReplayerRecoveryConvergence, ACaughtUpClientThatSimplyGoesQuietIsNotReported)
@@ -1210,7 +1210,7 @@ TEST(ReplayerRecoveryConvergence, ACaughtUpClientThatSimplyGoesQuietIsNotReporte
     deliverLive(client, 1);
     ASSERT_TRUE(client.recovery.isCaughtUp());
 
-    // A tap that goes silent is the tap-stall fence's business, and it is not a convergence
+    // A queue that goes silent is the queue-stall fence's business, and it is not a convergence
     // failure at all — diagnosing it as one would put a second, wrong explanation on the same event.
     EXPECT_FALSE(checkProgressAt(client, CLOCK_MS));
     EXPECT_FALSE(checkProgressAt(client, PAST_DEADLINE_MS));
@@ -1432,7 +1432,7 @@ void writeFile(const std::filesystem::path& path, const rf::Bytes& bytes)
     out.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
 }
 
-TEST(ReplayerRecoveryRestore, ARestoringColdStartReplaysFromItsNewestSnapshotsCutFirstHoldingTheLiveTap)
+TEST(ReplayerRecoveryRestore, ARestoringColdStartReplaysFromItsNewestSnapshotsCutFirstHoldingTheLiveQueue)
 {
     Restoring r;
     rf::write(r.store, 1, CUT - 5, (CUT - 5) * 1024, 1, { SNAPSHOT_HEADER, SNAPSHOT_RECORD });
@@ -1518,7 +1518,7 @@ TEST(ReplayerRecoveryRestore, AReplayOfTheCutThatStopsAdvancingIsRequestedAgainA
     EXPECT_TRUE(r.client.recovery.isRestoring());
 }
 
-TEST(ReplayerRecoveryRestore, ARestoreReadsABoundedNumberOfRecordsPerDutyCycleHoldingTheTapUntilItsLast)
+TEST(ReplayerRecoveryRestore, ARestoreReadsABoundedNumberOfRecordsPerDutyCycleHoldingTheQueueUntilItsLast)
 {
     Restoring r;
     std::vector<rf::Bytes> records{ SNAPSHOT_HEADER };

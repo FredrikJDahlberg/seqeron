@@ -19,7 +19,7 @@ import org.limitless.seqeron.util.Logger;
  * streams of the archive clients sharing it, and the exit statuses of the process that runs it.
  */
 public final class NodeDriver {
-    /** Exit status of a process that can no longer record its tap or serve replay; restart it. */
+    /** Exit status of a process that can no longer record its queue or serve replay; restart it. */
     public static final int EXIT_FATAL = 70;
 
     /**
@@ -38,7 +38,7 @@ public final class NodeDriver {
     /** {@link ReplayerServer}'s. */
     static final int REPLAYER_ARCHIVE_RESPONSE_STREAM_ID = 120;
 
-    /** {@link AeronTapRelay}'s session with a member's archive. */
+    /** {@link AeronQueueRelay}'s session with a member's archive. */
     static final int RELAY_ARCHIVE_RESPONSE_STREAM_ID = 122;
 
     /** IPC term length when {@code aeron.ipc.term.buffer.length} is not set, rather than Aeron's 64 MiB. */
@@ -49,7 +49,7 @@ public final class NodeDriver {
 
     /**
      * Untethered window-limit and linger timeouts when their Aeron properties are not set, rather than Aeron's 5s
-     * each. Until evicted, a stalled subscriber holds the tap's window, and the sequencer and a gateway host's
+     * each. Until evicted, a stalled subscriber holds the queue's window, and the sequencer and a gateway host's
      * relay each terminate after 1s of back-pressure with no recording progress.
      */
     static final long DEFAULT_UNTETHERED_TIMEOUT_NS = TimeUnit.MILLISECONDS.toNanos(100);
@@ -87,7 +87,7 @@ public final class NodeDriver {
     }
 
     /**
-     * Warns, on Linux, when {@code aeronDir} is not on tmpfs: the driver's log buffers, the tap's among them, are
+     * Warns, on Linux, when {@code aeronDir} is not on tmpfs: the driver's log buffers, the queue's among them, are
      * memory-mapped files there, and writing back their dirty pages to a disk stalls the threads that write them.
      * @param component who is launching the driver
      * @param memberId  its node id
@@ -102,7 +102,7 @@ public final class NodeDriver {
             if (!"tmpfs".equals(type)) {
                 Logger.log(component, Logger.Severity.Warn, Logger.CoreEventCode.Info, memberId,
                            "the Aeron directory %s is on %s, not tmpfs: page writeback of its log buffers can "
-                               + "stall the tap — put it under /dev/shm",
+                               + "stall the queue — put it under /dev/shm",
                            aeronDir, type);
             }
         } catch (final IOException ex) {
@@ -111,7 +111,7 @@ public final class NodeDriver {
     }
 
     /**
-     * Warns, on Linux, when a member's {@code baseDir} is on tmpfs: its Raft log and tap recording would not survive
+     * Warns, on Linux, when a member's {@code baseDir} is on tmpfs: its Raft log and queue recording would not survive
      * the host's restart, and a cluster whose members restart together would lose its log.
      * @param component who is launching the member
      * @param memberId  its node id
@@ -124,7 +124,7 @@ public final class NodeDriver {
         try {
             if ("tmpfs".equals(fileSystemType(Path.of(baseDir)))) {
                 Logger.log(component, Logger.Severity.Warn, Logger.CoreEventCode.Info, memberId,
-                           "the base directory %s is on tmpfs: the Raft log and tap recording in it do not survive "
+                           "the base directory %s is on tmpfs: the Raft log and queue recording in it do not survive "
                                + "a restart of the host — put it on a disk",
                            baseDir);
             }

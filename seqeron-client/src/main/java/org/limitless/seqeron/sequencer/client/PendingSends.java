@@ -9,17 +9,17 @@ import org.limitless.seqeron.sbe.frame.UnsequencedHeaderDecoder;
 import org.limitless.seqeron.sbe.frame.UnsequencedSystemDecoder;
 
 /**
- * A producer's ingress frames that its own tap has not yet shown, which of them a leader change lost, and
+ * A producer's ingress frames that its own queue has not yet shown, which of them a leader change lost, and
  * their resend ahead of anything new.
  *
  * <p><b>Why a count is enough.</b> A leader drops ingress stamped with any term but its own, and every
- * election discards the ingress the old leader had not read. So a frame stamped term T is either on the tap
+ * election discards the ingress the old leader had not read. So a frame stamped term T is either on the queue
  * before the first {@code LeadershipChanged} with a term above T, or lost, and the lost ones are the newest
  * frames stamped T. Once that boundary has passed, every frame still pending with a term below it is
  * {@link #missing()}. The same holds when the same member wins the new term.
  *
  * <p><b>Resent in order, never twice.</b> A committed frame is never missing, so nothing is duplicated. From a
- * newer term's first sign — the sender's {@code NewLeader} or the tap's {@code LeadershipChanged}, whichever
+ * newer term's first sign — the sender's {@code NewLeader} or the queue's {@code LeadershipChanged}, whichever
  * comes first — until every older frame is seen or resent, {@link #isHolding()}: send nothing new, and give
  * this to the sender with {@code setIngressHold}, so a send already spinning through the election is given
  * up rather than landing ahead of the resend. {@link #resendMissing} does the resend. Given to an
@@ -33,7 +33,7 @@ import org.limitless.seqeron.sbe.frame.UnsequencedSystemDecoder;
  * before sending. Tracking into a full ring latches it too: an untracked send breaks the count.
  *
  * <p>Limits: it lasts only as long as the process, so a promoted standby starts with nothing pending; it
- * needs the producer to follow its own tap; a lost session's frames are {@link #discardUnconfirmed discarded},
+ * needs the producer to follow its own queue; a lost session's frames are {@link #discardUnconfirmed discarded},
  * since nothing bounds them; loss with no leader change has no boundary and is not detected. The C++ twin is
  * {@code sequencer/client/PendingSends.hpp}; keep the two in step.
  */
@@ -132,7 +132,7 @@ public final class PendingSends implements IngressTracker {
         return resent;
     }
 
-    /** Every frame off the tap, in order. Only this producer's own frames change anything. */
+    /** Every frame off the queue, in order. Only this producer's own frames change anything. */
     public void onSequenced(final SequencedEvent event) {
         final int index = missing();
         if (index == size) {
@@ -150,7 +150,7 @@ public final class PendingSends implements IngressTracker {
     }
 
     /**
-     * Forgets every pending frame, for a session replaced after the cluster closed it. That close is on no tap,
+     * Forgets every pending frame, for a session replaced after the cluster closed it. That close is on no queue,
      * so nothing tells which of its frames committed: those that did still arrive and match nothing, and the
      * rest are lost, as they are when the producer restarts.
      *
@@ -172,7 +172,7 @@ public final class PendingSends implements IngressTracker {
         return count;
     }
 
-    /** Frames tracked and not yet seen on the tap, missing ones included. */
+    /** Frames tracked and not yet seen on the queue, missing ones included. */
     public int size() {
         return size;
     }

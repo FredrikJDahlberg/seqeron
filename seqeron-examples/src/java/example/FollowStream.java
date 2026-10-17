@@ -24,13 +24,13 @@ import org.limitless.seqeron.sequencer.client.IngressPublisher;
 
 /**
  * Follows one node's ordered stream end to end: history replayed through that node's co-located
- * ReplayerService, then the live tap, with the switch between them handled by the receiver. Once caught
+ * ReplayerService, then the live queue, with the switch between them handled by the receiver. Once caught
  * up it also produces — one ping a second at cluster ingress, whose echo comes back through
  * {@link #onSequenced} with everything else.
  *
  * <p>Both families are exercised in both directions: the ping is an application payload, and the
  * connection this example announces is a system event, submitted with {@code publishSystem} and decoded
- * off the tap in {@link #printSystem}.
+ * off the queue in {@link #printSystem}.
  *
  * <p>Start a node first ({@code seqeron-service/src/main/scripts/start-cluster.sh} in the seqeron repo), then
  * {@code ./gradlew -p seqeron-examples run}. Properties: {@code -Dfollow.member} (default 0),
@@ -89,10 +89,9 @@ public final class FollowStream {
         // which is the only member that subscribes to IPC ingress.
         try (Aeron aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(aeronDir));
              ClusterStreamSender sender = new ClusterStreamSender();
-             ReplayerStreamReceiver receiver = new ReplayerStreamReceiver(
-                 clientId, FollowStream::onSequenced, FollowStream::onLeadershipChanged,
-                 () -> System.out.println("# caught up — following the tap live"))) {
-
+             ReplayerStreamReceiver receiver =
+                 new ReplayerStreamReceiver(clientId, FollowStream::onSequenced, FollowStream::onLeadershipChanged,
+                                            () -> System.out.println("# caught up — following the queue live"))) {
             sender.connectColocated(aeron, memberId, IPC_CONNECT_TIMEOUT_MS, EGRESS_CHANNEL,
                                     PortLayout.ingressEndpoints());
             receiver.start(aeron, memberId);
@@ -160,7 +159,7 @@ public final class FollowStream {
      * holding the {@code nanoTime} it left on. Not SBE, and it need not be — the cluster tier decodes no
      * {@code payloadId} at all, so a payload is copied through unopened whatever it holds.
      *
-     * <p>Nothing waits here for the echo: the consumer this process already is picks it up off the tap
+     * <p>Nothing waits here for the echo: the consumer this process already is picks it up off the queue
      * like every other frame.
      */
     private static void ping(final ClusterStreamSender sender) {
@@ -176,7 +175,7 @@ public final class FollowStream {
 
     /**
      * Every other frame arrives here in globalSeqNo order, history and live alike — the receiver requests
-     * a replay for anything the live tap dropped and dispatches nothing out of order in the meantime.
+     * a replay for anything the live queue dropped and dispatches nothing out of order in the meantime.
      */
     private static void onSequenced(final SequencedEvent event) {
         if (!inOrder(event.globalSeqNo())) {

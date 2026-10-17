@@ -30,7 +30,7 @@ import org.limitless.seqeron.sbe.frame.SnapshotStartedDecoder;
  * <p>These deliberately touch no Aeron runtime — no media driver, no cluster, no Aeron mocks. {@link
  * Sequencer} is a pure function of its inputs, so the whole state machine is exercised by calling it
  * and decoding the frames it writes, which is what makes these tests fast and stable enough to run
- * on every build. Everything Aeron-dependent ({@link SequencerService}'s tap publication, archive
+ * on every build. Everything Aeron-dependent ({@link SequencerService}'s queue publication, archive
  * recording, timer scheduling) stays covered by the end-to-end scripts under
  * {@code seqeron-service/src/test/scripts}.
  *
@@ -144,9 +144,9 @@ class SequencerTest {
     }
 
     @Test
-    @DisplayName("the tap frame is a Sequenced envelope, its block exactly the header composite")
+    @DisplayName("the queue frame is a Sequenced envelope, its block exactly the header composite")
     void egressFrameIsASequencedEnvelope() {
-        // The ingress and tap templates differ, and their blockLengths differ by exactly the stamp: the
+        // The ingress and queue templates differ, and their blockLengths differ by exactly the stamp: the
         // envelope's block IS its header composite, so anything else here means the two are out of step.
         final int ingressLength = encodeIngressPayload(ingress, 0);
         final int ingressBlockLength = new MessageHeaderDecoder().wrap(ingress, 0).blockLength();
@@ -303,7 +303,7 @@ class SequencerTest {
     void retiredCorePayloadIdIsRefusedOnIngress() {
         // Core is not an application and no longer rides a payload (§6.1). Refusing 1 rather than
         // reserving it is what makes a producer still on the old build fail loudly instead of having core
-        // bytes copied onto the tap as an application payload nothing will ever decode.
+        // bytes copied onto the queue as an application payload nothing will ever decode.
         final int length = encodeIngressPayloadFrame(ingress, 0, SOURCE_ID, CONNECTION_ID, 1,
                                                      new ExpandableArrayBuffer(8), 4);
 
@@ -564,7 +564,7 @@ class SequencerTest {
     @DisplayName("replaying the same log on a second instance produces byte-identical frames")
     void replayingTheSameLogProducesByteIdenticalFrames() {
         // The core replicated-state-machine property: two nodes fed the same committed log must emit
-        // the same bytes, so their tap recordings are interchangeable and any node can serve replay.
+        // the same bytes, so their queue recordings are interchangeable and any node can serve replay.
         // This is a regression guard — it fails the moment anything non-deterministic (a wall clock, a
         // random id, an iteration-order dependency) creeps into an encode path.
         final byte[][] framesA = runLog();
@@ -1450,8 +1450,8 @@ class SequencerTest {
         assertEquals(SESSION_PAYLOAD_ID, frameHeaderOf(buffer).payloadId());
         final int declared = buffer.getShort(FRAME_OVERHEAD - PAYLOAD_PREFIX_LENGTH,
                                              java.nio.ByteOrder.LITTLE_ENDIAN) & 0xFFFF;
-        assertEquals(expected.length, declared, "the tap frame's payload prefix");
-        assertEquals(FRAME_OVERHEAD + expected.length, length, "the tap frame's total length");
+        assertEquals(expected.length, declared, "the queue frame's payload prefix");
+        assertEquals(FRAME_OVERHEAD + expected.length, length, "the queue frame's total length");
 
         final byte[] actual = new byte[expected.length];
         buffer.getBytes(FRAME_OVERHEAD, actual);
@@ -1479,7 +1479,7 @@ class SequencerTest {
         assertEquals(blockLength, header.blockLength());
         assertEquals(org.limitless.seqeron.sbe.frame.MessageHeaderDecoder.ENCODED_LENGTH + blockLength, length);
         assertEquals(systemEventType, systemHeaderOf(buffer).systemEventType(),
-                     "offset 16 discriminates every frame on the tap, synthesized ones included");
+                     "offset 16 discriminates every frame on the queue, synthesized ones included");
         final int block = org.limitless.seqeron.sbe.frame.MessageHeaderDecoder.ENCODED_LENGTH;
         if (decoder instanceof GatewayActiveDecoder d) {
             d.wrap(buffer, block, blockLength, header.version());

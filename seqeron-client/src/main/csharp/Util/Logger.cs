@@ -32,8 +32,8 @@ public static class Logger
         /// <summary>That server's duty cycle.</summary>
         ReplayerService,
 
-        /// <summary>On a gateway host, the relay that copies a member's tap onto the local one.</summary>
-        TapRelay,
+        /// <summary>On a gateway host, the relay that copies a member's queue onto the local one.</summary>
+        QueueRelay,
 
         /// <summary>The client-side receiver, reporting from inside a consumer's replica.</summary>
         ReplayerStreamReceiver,
@@ -79,15 +79,15 @@ public static class Logger
         /// <summary>The clustered service raised one.</summary>
         ServiceError,
 
-        /// <summary>A tap offer back-pressured; the sequencer spins rather than drop the frame.</summary>
-        TapBackpressure,
+        /// <summary>A queue offer back-pressured; the sequencer spins rather than drop the frame.</summary>
+        QueueBackpressure,
 
         /// <summary>An older recording still reports as recording, which an unclean shutdown leaves
         /// behind.</summary>
         StaleActiveRecording,
 
         /// <summary>This node can no longer record the history it is responsible for.</summary>
-        TapRecordingFailure,
+        QueueRecordingFailure,
 
         /// <summary>A replay control reply was dropped, its subscriber having gone away.</summary>
         ControlReplyDropped,
@@ -108,14 +108,14 @@ public static class Logger
         /// <summary>A gateway host's relay stopped reading one member's archive and moved to the next.</summary>
         RelaySourceLost,
 
-        /// <summary>The live tap skipped a <c>globalSeqNo</c>; recovery replays the hole.</summary>
-        TapGap,
+        /// <summary>The live queue skipped a <c>globalSeqNo</c>; recovery replays the hole.</summary>
+        QueueGap,
 
         /// <summary>Recovery has dispatched nothing for longer than its deadline.</summary>
         RecoveryStalled,
 
-        /// <summary>The tap has carried no <c>ClusterHeartbeat</c> for longer than its deadline.</summary>
-        TapStalled,
+        /// <summary>The queue has carried no <c>ClusterHeartbeat</c> for longer than its deadline.</summary>
+        QueueStalled,
 
         /// <summary>The first frame observed was not <c>globalSeqNo</c> 1, so history is incomplete.</summary>
         FirstFrameNotOne,

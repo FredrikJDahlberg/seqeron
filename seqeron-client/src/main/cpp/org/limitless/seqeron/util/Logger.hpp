@@ -37,7 +37,7 @@ inline constexpr Component ReplayerStreamReceiver{ "ReplayerStreamReceiver" };
 // no anomaly of its own to identify.
 namespace eventCode {
 inline constexpr EventCode Info{ "Info" };
-inline constexpr EventCode TapGap{ "TapGap" };
+inline constexpr EventCode QueueGap{ "QueueGap" };
 inline constexpr EventCode FirstFrameNotOne{ "FirstFrameNotOne" };
 inline constexpr EventCode SnapshotRestoreFailed{ "SnapshotRestoreFailed" };
 inline constexpr EventCode SnapshotStoreFailed{ "SnapshotStoreFailed" };
@@ -48,7 +48,7 @@ inline constexpr EventCode ClusterRedirectUnresolved{ "ClusterRedirectUnresolved
 inline constexpr EventCode FragmentTooShort{ "FragmentTooShort" };
 inline constexpr EventCode ArchiveConnectFailed{ "ArchiveConnectFailed" };
 inline constexpr EventCode RecoveryStalled{ "RecoveryStalled" };
-inline constexpr EventCode TapStalled{ "TapStalled" };
+inline constexpr EventCode QueueStalled{ "QueueStalled" };
 } // namespace eventCode
 
 enum class Severity : std::uint8_t

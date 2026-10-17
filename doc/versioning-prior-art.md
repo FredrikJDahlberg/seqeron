@@ -130,7 +130,7 @@ version or the encoded one; only the former protects a reader compiled against t
 
 ## 7. Bearing on seqeron
 
-- **The tap is a one-to-many stream.** One encoding serves every consumer, live and replayed, so §5's
+- **The queue is a one-to-many stream.** One encoding serves every consumer, live and replayed, so §5's
   conclusion applies: one version on the wire, readers that tolerate extension, a breaking change as a new
   identity. [`upgrades.md`](upgrades.md) §7.1 already makes v2 a new `payloadId`. Per-consumer encoding and
   Binance's masking have no place to run (`upgrades.md` §5.1).

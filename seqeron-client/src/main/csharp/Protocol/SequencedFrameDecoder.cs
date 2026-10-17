@@ -6,7 +6,7 @@ using SbeBuffer = Org.SbeTool.Sbe.Dll.DirectBuffer;
 namespace Org.Limitless.Seqeron.Protocol;
 
 /// <summary>
-/// One frame off the tap with the envelope stripped; <c>SequencedFrameDecoder.java</c> and <c>FrameView</c> in
+/// One frame off the queue with the envelope stripped; <c>SequencedFrameDecoder.java</c> and <c>FrameView</c> in
 /// <c>SequencedFrame.hpp</c> are its twins, and the three stay in step. <see cref="IsSystem"/> says which family:
 /// an application frame dispatches on <c>(PayloadId, TemplateId)</c>, never <c>TemplateId</c> alone, and a system
 /// frame on <see cref="SystemEventType"/>.

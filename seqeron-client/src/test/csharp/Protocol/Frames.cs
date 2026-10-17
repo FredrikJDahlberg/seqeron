@@ -4,7 +4,7 @@ using Frame = Org.Limitless.Seqeron.Sbe.Frame;
 
 namespace Org.Limitless.Seqeron.Protocol;
 
-// Sequenced frames as the sequencer writes them onto the tap, built with the generated encoders.
+// Sequenced frames as the sequencer writes them onto the queue, built with the generated encoders.
 internal static class Frames
 {
     public const int SourceId = 7;

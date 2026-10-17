@@ -3,7 +3,7 @@
     The probe protocol — payloadId 5.
 
     One message, so that the cluster tier's end-to-end scripts can drive a cluster with no
-    application binary: ClusterProbe submits it at ingress and reads it back off the tap.
+    application binary: ClusterProbe submits it at ingress and reads it back off the queue.
 
     An application schema, deliberately: the sequencer decodes no payloadId at all (spec §6, S-2), so a
     probe frame exercises the same copy-through path a product payload does, and needs no change to
@@ -45,7 +45,7 @@
     <sbe:message name="ProbeMarker" id="1"
                  description="One probe frame. seqNo is the submitter's own count, independent of the
                               globalSeqNo the cluster assigns: it is what lets a follower verify that
-                              what came back off the tap is what went in, and what a liveness check
+                              what came back off the queue is what went in, and what a liveness check
                               matches its own submission on. filler sizes the frame, so a load run can
                               build an archive of a chosen byte size rather than of a chosen frame
                               count — replay-bench.sh reports MB/s and would otherwise measure a

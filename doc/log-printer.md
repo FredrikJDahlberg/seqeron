@@ -51,8 +51,8 @@ is what an entry added by a later Aeron version looks like.
 ## Selecting a recording
 
 An archive directory holds several recordings, and by default the printer prints them all. Stream 100 is
-the Raft log. Each recording on stream 205 is one generation of the tap: a member that restarts replays
-its whole log onto a new tap recording, which starts again at `globalSeqNo` 1, so every earlier
+the Raft log. Each recording on stream 205 is one generation of the queue: a member that restarts replays
+its whole log onto a new queue recording, which starts again at `globalSeqNo` 1, so every earlier
 generation is a prefix of the newest.
 
 `--stream 205` prints only the newest recording on the stream: one complete copy of the sequenced

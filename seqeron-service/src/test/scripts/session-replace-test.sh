@@ -7,7 +7,7 @@
 # The client is TestApplication, a co-located application on a follower: an Application may always replace its
 # session (a designated gateway instance fences instead, doc/fault-tolerance.md §2.1). Each attempt tries its
 # member's IPC ingress first, which a follower never answers, and its IPC timeout is set to IPC_CONNECT_TIMEOUT_MS,
-# so every attempt spends that long pending while the cluster is healthy and the tap carries a heartbeat a second.
+# so every attempt spends that long pending while the cluster is healthy and the queue carries a heartbeat a second.
 # TestApplication logs any heartbeat silence of 3 s or more, timed on dispatch: a replacement that blocked the
 # duty cycle would log one at least as long as the IPC timeout, where the pause alone logs one about a second
 # longer than itself.

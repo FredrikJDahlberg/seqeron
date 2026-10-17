@@ -13,7 +13,7 @@ import org.limitless.seqeron.sbe.frame.MessageHeaderEncoder;
 /**
  * Unit tests for the two ways a payload is addressed: past its own {@code MessageHeader} when it has one,
  * and from its first byte when it has none (spec §13.2). No Aeron runtime — the event is a view over an
- * encoded tap frame.
+ * encoded queue frame.
  */
 class PayloadTest {
     private static final int PAYLOAD_ID = 5;

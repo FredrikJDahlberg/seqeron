@@ -1,11 +1,11 @@
 package org.limitless.seqeron.replayer.server;
 
 /**
- * What a gateway host's relay decides, free of Aeron: which member's tap recording it reads, where a
- * replay of it starts, which frames it republishes onto the local tap, and when it gives up on a member
- * or on itself. {@link AeronTapRelay} is the adapter.
+ * What a gateway host's relay decides, free of Aeron: which member's queue recording it reads, where a
+ * replay of it starts, which frames it republishes onto the local queue, and when it gives up on a member
+ * or on itself. {@link AeronQueueRelay} is the adapter.
  *
- * <p>It republishes exactly the frame after the last one it published, so the local tap holds the log
+ * <p>It republishes exactly the frame after the last one it published, so the local queue holds the log
  * frame for frame whichever member each frame came from. Every member's active recording starts at
  * {@code globalSeqNo} 1 and its positions follow from the frames alone, so a replay on the next member
  * normally resumes at the position the last one reached. Nothing depends on that: a frame past the
@@ -14,7 +14,7 @@ package org.limitless.seqeron.replayer.server;
  *
  * <p>Single-threaded: the relay's duty cycle.
  */
-final class TapRelay {
+final class QueueRelay {
     /** What to do with one frame off a member's replay. */
     enum Verdict {
         /** The next frame: republish it. */
@@ -59,7 +59,7 @@ final class TapRelay {
      *
      * @param sourceCount how many member archives it may read from
      */
-    TapRelay(final int sourceCount) {
+    QueueRelay(final int sourceCount) {
         if (sourceCount < 1) {
             throw new IllegalArgumentException("a relay needs at least one member archive");
         }
@@ -82,7 +82,7 @@ final class TapRelay {
     }
 
     /**
-     * Where to replay a member's active tap recording from.
+     * Where to replay a member's active queue recording from.
      *
      * @param startPosition    where that recording starts
      * @param recordedPosition how far it has recorded
@@ -128,7 +128,7 @@ final class TapRelay {
     }
 
     /**
-     * The frame {@link #onFrame} said to publish is on the local tap.
+     * The frame {@link #onFrame} said to publish is on the local queue.
      *
      * @param globalSeqNo    its {@code globalSeqNo}
      * @param sourcePosition the member recording's position just past it
@@ -141,10 +141,10 @@ final class TapRelay {
     }
 
     /**
-     * The local tap refused the frame; it is offered again next cycle.
+     * The local queue refused the frame; it is offered again next cycle.
      *
      * @param nowMs            the clock
-     * @param recordedPosition how far the local archive has recorded the local tap
+     * @param recordedPosition how far the local archive has recorded the local queue
      * @return true once the local recording has made no progress for {@link #RECORDING_STALL_FATAL_MS}
      */
     boolean onBackPressured(final long nowMs, final long recordedPosition) {

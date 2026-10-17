@@ -59,7 +59,7 @@ struct RetainBlock
 };
 
 // Per-record framing within a block. Carries the receive stamp and position from when the frame
-// arrived, so a consumer's delivery-latency stats measure the tap, not the drain.
+// arrived, so a consumer's delivery-latency stats measure the queue, not the drain.
 struct RetainRecordHeader
 {
     std::int64_t globalSeqNo;
@@ -166,12 +166,12 @@ class ReplayerRecovery
     std::int64_t m_lastFramePosition = 0;          // where that frame starts in the recording; requestResume's anchor
     std::int64_t m_resumeAnchorSequenceNumber = 0; // globalSeqNo a resume replay must open at, or 0 if not resuming
     bool m_replayGapLogged = false;                // report a hole in replayed history once per episode, not per frame
-    bool m_caughtUp = false;                       // following live; revoked on a tap gap, re-established at the seam
+    bool m_caughtUp = false;                       // following live; revoked on a queue gap, re-established at the seam
 
     std::int64_t m_noProgressSinceMs = 0; // when the current no-progress episode started; 0 = none timed
     bool m_recoveryStallReported = false;
 
-    // Live tap frames from beyond the current hole, retained in arrival order (see retainFrame).
+    // Live queue frames from beyond the current hole, retained in arrival order (see retainFrame).
     RetainBlockPool m_retainPool;
     std::deque<RetainBlock*> m_retained;
     std::size_t m_retainReadOffset = 0;          // offset of the next unconsumed record within m_retained.front()
@@ -291,8 +291,8 @@ class ReplayerRecovery
             {
                 if (!fromReplay && !isRecovering())
                 {
-                    util::Logger::warn(util::component::ReplayerStreamReceiver, util::eventCode::TapGap,
-                                       "tap gap: expected globalSeqNo=%lld got %lld — "
+                    util::Logger::warn(util::component::ReplayerStreamReceiver, util::eventCode::QueueGap,
+                                       "queue gap: expected globalSeqNo=%lld got %lld — "
                                        "resuming the recording at globalSeqNo=%lld",
                                        static_cast<long long>(m_lastGlobalSeqNo + 1),
                                        static_cast<long long>(sequenceNumber),
@@ -307,7 +307,7 @@ class ReplayerRecovery
                 else if (!m_replayGapLogged)
                 {
                     m_replayGapLogged = true;
-                    util::Logger::warn(util::component::ReplayerStreamReceiver, util::eventCode::TapGap,
+                    util::Logger::warn(util::component::ReplayerStreamReceiver, util::eventCode::QueueGap,
                                        "gap in REPLAYED history: expected globalSeqNo=%lld got %lld — this "
                                        "node's recording does not cover the hole; recovery cannot converge "
                                        "until it does",
@@ -396,7 +396,7 @@ class ReplayerRecovery
         }
         else
         {
-            util::Logger::warn(util::component::ReplayerStreamReceiver, util::eventCode::TapGap,
+            util::Logger::warn(util::component::ReplayerStreamReceiver, util::eventCode::QueueGap,
                                "replay image closed at position %lld, short of catchUpPosition %lld — the replay was "
                                "stopped under us; re-requesting it",
                                static_cast<long long>(finalPosition), static_cast<long long>(m_catchUpPosition));
@@ -698,7 +698,7 @@ class ReplayerRecovery
                      " above globalSeqNo=" + std::to_string(m_lastGlobalSeqNo));
                 return;
             }
-            m_replaySessionId = -1; // the recording holds nothing yet — follow the live tap
+            m_replaySessionId = -1; // the recording holds nothing yet — follow the live queue
             if (reachedTip())
             {
                 notifyCaughtUp();
@@ -718,7 +718,7 @@ class ReplayerRecovery
         m_awaitingReplay = false;
         m_replaySessionId = -1;
         m_actions.closeReplay();
-        util::Logger::fault(util::component::ReplayerStreamReceiver, util::eventCode::TapGap,
+        util::Logger::fault(util::component::ReplayerStreamReceiver, util::eventCode::QueueGap,
                             "FATAL: %s — this node's recording does not match the positions this client holds",
                             reason.c_str());
         m_fault = std::move(reason);
@@ -727,7 +727,7 @@ class ReplayerRecovery
     // An attached (or expected) replay stopped delivering — see the watchdog in doTimers.
     void onReplayStalled()
     {
-        util::Logger::warn(util::component::ReplayerStreamReceiver, util::eventCode::TapGap,
+        util::Logger::warn(util::component::ReplayerStreamReceiver, util::eventCode::QueueGap,
                            "replay session %lld made no progress for %lldms at position %lld of "
                            "catchUpPosition %lld — re-requesting it",
                            static_cast<long long>(m_replaySessionId), static_cast<long long>(REPLAY_STALL_TIMEOUT_MS),
@@ -812,7 +812,7 @@ class ReplayerRecovery
             if (!m_retainOverflowLogged)
             {
                 m_retainOverflowLogged = true;
-                util::Logger::warn(util::component::ReplayerStreamReceiver, util::eventCode::TapGap,
+                util::Logger::warn(util::component::ReplayerStreamReceiver, util::eventCode::QueueGap,
                                    "retained-frame buffer full at globalSeqNo=%lld (%zu frames, %zu bytes) — "
                                    "dropping ahead-of-hole frames; recovery resumes at the last dispatched frame",
                                    static_cast<long long>(sequenceNumber), m_retainFrameCount, m_retainBytes);

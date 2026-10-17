@@ -18,7 +18,7 @@
 #      the final leader's single continuous recording, and reaches "following live". Because load
 #      has been running throughout, that history is application payload, not just heartbeats.
 #
-# Every node records its own node-local tap continuously — the tap publication is never re-created
+# Every node records its own node-local queue continuously — the queue publication is never re-created
 # on a leadership change — so each node's recording is one run spanning every tenure it lived
 # through, which is what makes assertion 3 possible on a member that was a follower for most of them.
 #
@@ -184,7 +184,7 @@ for (( round = 1; round <= ROUNDS; round++ )); do
     echo "round ${round}: new leader = member ${LEADER}"
 
     # Restore the member so the next round starts from a full three. It recovers over its own Raft
-    # log (the volume persists) and rebuilds its tap recording by full-log replay — no snapshots.
+    # log (the volume persists) and rebuilds its queue recording by full-log replay — no snapshots.
     # The load keeps running throughout the settle, so it rejoins into a moving cluster.
     sleep "${SIGKILL_MARKFILE_SETTLE_SECS}"
     docker start "node-${KILLED}" > /dev/null

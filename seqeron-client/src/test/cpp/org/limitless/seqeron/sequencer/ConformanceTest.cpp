@@ -625,25 +625,25 @@ TEST(Conformance, UnknownPayloadsAndEventsAreReadableSoContinuityHolds)
     // globalSeqNo sits at 18 on all six sequenced messages (F-3), so the continuity read is branch-free
     // over frames the consumer comprehends none of. Every one of these must come back valid: a frame
     // dropped here is a globalSeqNo missing from that read, which reads as a gap that is not there.
-    std::vector<std::vector<std::uint8_t>> tap;
-    tap.push_back(payloadFrame(1, 4095, 8));
-    tap.push_back(systemFrame(2, protocol::PAYLOAD_ID_REGISTERED, [](char* body, std::size_t cap) {
+    std::vector<std::vector<std::uint8_t>> queue;
+    queue.push_back(payloadFrame(1, 4095, 8));
+    queue.push_back(systemFrame(2, protocol::PAYLOAD_ID_REGISTERED, [](char* body, std::size_t cap) {
         frm::PayloadIdRegistered encoder;
         encoder.wrapForEncode(body, 0, cap);
         encoder.payloadId(4).protocolVersion(1);
         encoder.putProtocolName("basicdata");
         return static_cast<std::uint16_t>(encoder.encodedLength());
     }));
-    tap.push_back(synthesizedFrame<frm::ClusterHeartbeat>(3, protocol::CLUSTER_HEARTBEAT, [](auto&) {}));
-    tap.push_back(synthesizedFrame<frm::LeadershipChanged>(4, protocol::LEADERSHIP_CHANGED,
-                                                           [](frm::LeadershipChanged& f) { f.newLeaderMemberId(2); }));
-    tap.push_back(synthesizedFrame<frm::GatewayActive>(5, protocol::GATEWAY_ACTIVE,
-                                                       [](frm::GatewayActive& f) { f.gatewayId(3); }));
-    tap.push_back(synthesizedFrame<frm::SnapshotStarted>(6, protocol::SNAPSHOT_STARTED,
-                                                         [](frm::SnapshotStarted& f) { f.round(1); }));
+    queue.push_back(synthesizedFrame<frm::ClusterHeartbeat>(3, protocol::CLUSTER_HEARTBEAT, [](auto&) {}));
+    queue.push_back(synthesizedFrame<frm::LeadershipChanged>(
+        4, protocol::LEADERSHIP_CHANGED, [](frm::LeadershipChanged& f) { f.newLeaderMemberId(2); }));
+    queue.push_back(synthesizedFrame<frm::GatewayActive>(5, protocol::GATEWAY_ACTIVE,
+                                                         [](frm::GatewayActive& f) { f.gatewayId(3); }));
+    queue.push_back(synthesizedFrame<frm::SnapshotStarted>(6, protocol::SNAPSHOT_STARTED,
+                                                           [](frm::SnapshotStarted& f) { f.round(1); }));
 
     std::int64_t expected = 1;
-    for (const auto& frame : tap)
+    for (const auto& frame : queue)
     {
         const auto view = viewOf(frame);
         EXPECT_TRUE(view.valid) << "frame " << expected << " is unreadable, so P-3 would lose its globalSeqNo";

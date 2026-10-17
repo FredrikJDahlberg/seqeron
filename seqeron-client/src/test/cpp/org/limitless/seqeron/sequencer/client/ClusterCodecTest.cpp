@@ -41,7 +41,7 @@ TEST(FrameCodec, ConnectionOpenedRoundTripsInsideAnUnsequencedSystemFrame)
 
     const auto view = protocol::unwrapFrame(reinterpret_cast<const char*>(buffer.data()),
                                             frm::MessageHeader::encodedLength() + frame.encodedLength());
-    ASSERT_FALSE(view.valid) << "an ingress frame is not a tap frame; only the sequenced messages are";
+    ASSERT_FALSE(view.valid) << "an ingress frame is not a queue frame; only the sequenced messages are";
 }
 
 TEST(FrameCodec, ConnectionClosedRoundTripsInsideASequencedSystemFrame)

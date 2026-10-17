@@ -13,7 +13,7 @@ public sealed class ApplicationOptions
     /// <summary>This replica's client id, its counters' label; unique among the co-located apps on its node.</summary>
     public int ClientId { get; init; }
 
-    /// <summary>The node this replica runs on: whose tap it follows, and whose leadership opens its gate.</summary>
+    /// <summary>The node this replica runs on: whose queue it follows, and whose leadership opens its gate.</summary>
     public int MemberId { get; init; }
 
     /// <summary>Whether this node is a gateway host, running no member, rather than a member: the gate then opens
@@ -40,7 +40,7 @@ public sealed class ApplicationOptions
 
     public int PendingCapacity { get; init; } = Application.DefaultPendingCapacity;
 
-    public long TapStallTimeoutMs { get; init; } = Application.DefaultTapStallTimeoutMs;
+    public long QueueStallTimeoutMs { get; init; } = Application.DefaultQueueStallTimeoutMs;
 
     public long RecoveryStallTimeoutMs { get; init; } = Application.DefaultRecoveryStallTimeoutMs;
 

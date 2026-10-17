@@ -84,11 +84,11 @@ public final class Sequencer {
     private static final int NULL_PAYLOAD_LENGTH = 65535;
 
     /** Offset of the payload's length prefix in a forwarded frame; the same in both families (<b>F-3</b>). */
-    private static final int TAP_BODY_PREFIX_OFFSET =
+    private static final int QUEUE_BODY_PREFIX_OFFSET =
         MessageHeaderEncoder.ENCODED_LENGTH + SequencedHeaderEncoder.ENCODED_LENGTH;
 
     /** Offset of the payload itself, one length prefix past that. */
-    private static final int TAP_BODY_OFFSET = TAP_BODY_PREFIX_OFFSET + UnsequencedDecoder.payloadHeaderLength();
+    private static final int QUEUE_BODY_OFFSET = QUEUE_BODY_PREFIX_OFFSET + UnsequencedDecoder.payloadHeaderLength();
 
     // The two ingress header composites differ only in the name of the uint16 at offset 16.
     private final MessageHeaderDecoder msgHeaderDecoder = new MessageHeaderDecoder();
@@ -102,9 +102,9 @@ public final class Sequencer {
         new GatewayActivationRequestedDecoder();
     private final SnapshotPolicyRegisteredDecoder snapshotPolicyDecoder = new SnapshotPolicyRegisteredDecoder();
 
-    // tapHeaderEncoder writes the three stamp fields, at offsets common to both sequenced composites.
+    // queueHeaderEncoder writes the three stamp fields, at offsets common to both sequenced composites.
     private final MessageHeaderEncoder headerEncoder = new MessageHeaderEncoder();
-    private final SequencedHeaderEncoder tapHeaderEncoder = new SequencedHeaderEncoder();
+    private final SequencedHeaderEncoder queueHeaderEncoder = new SequencedHeaderEncoder();
     private final LeadershipChangedEncoder leadershipChangedEncoder = new LeadershipChangedEncoder();
     private final ClusterHeartbeatEncoder clusterHeartbeatEncoder = new ClusterHeartbeatEncoder();
     private final GatewayActiveEncoder gatewayActiveEncoder = new GatewayActiveEncoder();
@@ -333,13 +333,13 @@ public final class Sequencer {
             .version(MessageHeaderEncoder.SCHEMA_VERSION);
         encodeBuffer.putBytes(MessageHeaderEncoder.ENCODED_LENGTH, buffer, headerOffset,
                               UnsequencedHeaderDecoder.ENCODED_LENGTH);
-        tapHeaderEncoder.wrap(encodeBuffer, MessageHeaderEncoder.ENCODED_LENGTH)
+        queueHeaderEncoder.wrap(encodeBuffer, MessageHeaderEncoder.ENCODED_LENGTH)
             .sessionId(sessionId)
             .globalSeqNo(globalSeq)
             .timestamp(timestamp);
-        encodeBuffer.putBytes(TAP_BODY_PREFIX_OFFSET, buffer, prefixOffset,
+        encodeBuffer.putBytes(QUEUE_BODY_PREFIX_OFFSET, buffer, prefixOffset,
                               UnsequencedDecoder.payloadHeaderLength() + bodyLength);
-        publish(TAP_BODY_OFFSET + bodyLength);
+        publish(QUEUE_BODY_OFFSET + bodyLength);
 
         for (int i = 0; i < designations.size(); i++) {
             publish(gatewayActive(designations.getInt(i), timestamp));
@@ -647,7 +647,7 @@ public final class Sequencer {
     /**
      * Stamps a synthesized frame's header: <b>F-4</b>'s {@code -1} identity, encoded on every node rather
      * than copied through (<b>E-1</b>'s exception). {@code systemEventType} is redundant with the template
-     * id and written anyway, so offset 16 discriminates every frame on the tap.
+     * id and written anyway, so offset 16 discriminates every frame on the queue.
      */
     private static void stampSynthesized(final SequencedSystemHeaderEncoder header, final int systemEventType,
                                          final long globalSeq, final long timestamp) {

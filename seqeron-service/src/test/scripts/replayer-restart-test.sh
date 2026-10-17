@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # replayer-restart-test.sh — an app running through its own node's restart, and a cold start across a
 # genuine recording rotation. failover-test.sh only cold-starts a FRESH
-# client after a leader kill against a node whose own tap recording was never rotated; gap-recovery-test.sh
+# client after a leader kill against a node whose own queue recording was never rotated; gap-recovery-test.sh
 # deliberately keeps its consumer's own member (0) alive throughout. Neither restarts the consumer's OWN
 # node. This script does, against real Aeron/Archive processes — not fabricated frames (that
 # precision-testing already lives in ReplayerStreamReceiverTest.cpp's unit suite).
@@ -15,7 +15,7 @@
 # embedded media driver and must fail fast (die within the driver-loss grace window) rather than spin forever
 # against a dead driver — the same invariant chaos-runner.sh's assert_died_on_driver_loss checks, asserted
 # here directly rather than as one random outcome among many. Member 0 is restarted: with no snapshots,
-# recovery is a full-log replay onto a BRAND NEW tap publication/recording, leaving the pre-restart recording
+# recovery is a full-log replay onto a BRAND NEW queue publication/recording, leaving the pre-restart recording
 # stopped beside it. A fresh client (same clientId) must then catch up from the new recording alone: it
 # starts at globalSeqNo 1 and holds the whole log, so the old one is never served.
 #
@@ -133,8 +133,8 @@ else
     echo "started fresh client $CLIENT_ID (cold start) after member $CN's own restart"
     if wait_for "following live" "$CLIENT_LOG" $((APP_CATCHUP_TIMEOUT_SECS * 2)) \
          "fresh client $CLIENT_ID to catch up across the rotated recording"; then
-      OLD_RECORDING=$(grep -oE "tap recording [0-9]+ live" "$LOG_DIR/seq-$CN.log" | grep -oE "[0-9]+")
-      NEW_RECORDING=$(grep -oE "tap recording [0-9]+ live" "$RESTART_LOG" | grep -oE "[0-9]+")
+      OLD_RECORDING=$(grep -oE "queue recording [0-9]+ live" "$LOG_DIR/seq-$CN.log" | grep -oE "[0-9]+")
+      NEW_RECORDING=$(grep -oE "queue recording [0-9]+ live" "$RESTART_LOG" | grep -oE "[0-9]+")
       # The Replayer names a client by the id it requests replays as, which the client logs at start.
       REPLY_ID=$(grep -oE "requests replays as client [0-9]+" "$CLIENT_LOG" | grep -oE "[0-9]+$" | head -1)
       REPLAYS=$(grep -c "replay for client ${REPLY_ID:-none}: recording" "$RESTART_LOG")

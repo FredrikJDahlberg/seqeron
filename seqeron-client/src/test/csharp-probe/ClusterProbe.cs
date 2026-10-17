@@ -17,11 +17,11 @@ namespace Org.Limitless.Seqeron.Tools;
 /// <c>follow</c> modes, speaking the same <c>ProbeMarker</c> (payloadId 5, sourceId 8) and printing the same
 /// verdict lines, so <c>csharp-client-test.sh</c> judges it as <c>failover-test.sh</c> judges the Java one.
 /// <list type="bullet">
-/// <item><c>confirm</c>: catches up on the co-located tap, then streams <c>--count</c> markers through an
+/// <item><c>confirm</c>: catches up on the co-located queue, then streams <c>--count</c> markers through an
 /// <see cref="IngressPublisher"/> — tracked by <see cref="PendingSends"/> unless <c>--untracked</c> — and exits 0 iff
-/// its own tap showed 1..count exactly once, in order. <c>--colocated</c> connects through the member's IPC ingress
+/// its own queue showed 1..count exactly once, in order. <c>--colocated</c> connects through the member's IPC ingress
 /// first, falling back to UDP.</item>
-/// <item><c>follow</c>: cold-starts a <see cref="ReplayerStreamReceiver"/>, follows the tap live for
+/// <item><c>follow</c>: cold-starts a <see cref="ReplayerStreamReceiver"/>, follows the queue live for
 /// <c>--live-seconds</c> after catching up, and exits 0 iff it dispatched every frame from <c>globalSeqNo</c> 1 with
 /// no gap.</item>
 /// </list>
@@ -214,7 +214,7 @@ public static class ClusterProbe
         {
             receiver.Start(aeron, options.MemberId);
             Logger.Info(Logger.CoreComponent.ClusterProbe, options.MemberId,
-                        "Following the node tap — replaying history via the Replayer, then live");
+                        "Following the node queue — replaying history via the Replayer, then live");
             long deadlineMs = long.MaxValue;
             while (Clocks.MonotonicMs() < deadlineMs)
             {
@@ -276,7 +276,7 @@ public static class ClusterProbe
         }
     }
 
-    // The seqNos this process's own sessions put on the tap, in tap order.
+    // The seqNos this process's own sessions put on the queue, in queue order.
     private sealed class OwnFrames
     {
         public readonly HashSet<long> Sessions = new HashSet<long>();
@@ -296,7 +296,7 @@ public static class ClusterProbe
                                                      ByteOrder.LittleEndian));
         }
 
-        // 0 if the tap showed 1..count exactly once, in order; logs the tally either way.
+        // 0 if the queue showed 1..count exactly once, in order; logs the tally either way.
         public int Judge(int memberId, int count, int resent)
         {
             var distinct = new HashSet<long>(SeqNos);
@@ -313,7 +313,7 @@ public static class ClusterProbe
             bool exact = missing == 0 && duplicated == 0 && outOfOrder == 0;
             Logger.Info(
                 Logger.CoreComponent.ClusterProbe, memberId,
-                "confirm: {0} — tap showed {1} of {2}: missing {3}, duplicated {4}, out of order {5}; resent {6}",
+                "confirm: {0} — queue showed {1} of {2}: missing {3}, duplicated {4}, out of order {5}; resent {6}",
                 exact ? "EXACT" : "NOT EXACT", SeqNos.Count, count, missing, duplicated, outOfOrder, resent);
             return exact ? 0 : 1;
         }

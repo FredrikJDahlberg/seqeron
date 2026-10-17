@@ -15,10 +15,10 @@ import org.junit.jupiter.api.Test;
 import org.limitless.seqeron.util.Logger;
 
 /**
- * The reliable-offer discipline behind {@code SequencerService}: how long it waits on a back-pressured tap
+ * The reliable-offer discipline behind {@code SequencerService}: how long it waits on a back-pressured queue
  * or a consensus module that will not take a timer, and when it stops waiting and takes the node down
- * instead. {@link TapPublisher} holds no Aeron runtime and no clock of its own, so the suite drives it
- * directly — its transport is recorded through {@link TapPublisher.Actions} and its clock is owned by the
+ * instead. {@link QueuePublisher} holds no Aeron runtime and no clock of its own, so the suite drives it
+ * directly — its transport is recorded through {@link QueuePublisher.Actions} and its clock is owned by the
  * test, which advances it only where the real one would: on an idle between attempts.
  *
  * <p>This is the {@code NodeDriver.EXIT_FATAL} contract, and the reason it is worth pinning here rather than only
@@ -27,7 +27,7 @@ import org.limitless.seqeron.util.Logger;
  * sequencing history into an archive that is no longer recording it, and nothing says so until someone asks
  * that node for a replay.
  */
-class TapPublisherTest {
+class QueuePublisherTest {
     /** The frame every emit offers; its bytes are never read. */
     private static final DirectBuffer FRAME = new UnsafeBuffer(new byte[64]);
 
@@ -40,14 +40,14 @@ class TapPublisherTest {
     private static final long CLUSTER_TIME_DEADLINE = 1_000;
 
     private Recorder actions;
-    private TapPublisher publisher;
+    private QueuePublisher publisher;
 
     /** Every alert logs, and the fatal tests raise a hundred — kept out of the build output. */
     @BeforeEach
     void setUp() {
         Logger.install(event -> { });
         actions = new Recorder();
-        publisher = new TapPublisher(actions);
+        publisher = new QueuePublisher(actions);
     }
 
     @AfterEach
@@ -59,18 +59,18 @@ class TapPublisherTest {
      * The transport recorded rather than performed. The clock advances only on {@link #idle}, so a test
      * says how long back-pressure lasts by saying how many offers fail — nothing here moves on its own.
      */
-    private static final class Recorder implements TapPublisher.Actions {
+    private static final class Recorder implements QueuePublisher.Actions {
         /**
          * How far the clock moves per idle, expressed as the span of one {@link
-         * TapPublisher#SPINS_PER_CLOCK_CHECK} period. The alert interval by default, so one period is one
+         * QueuePublisher#SPINS_PER_CLOCK_CHECK} period. The alert interval by default, so one period is one
          * alert; a test needing a coarser unit sets it and keeps its loop counts small.
          */
-        long nanosPerIdle = periodOf(TapPublisher.BACK_PRESSURE_ALERT_INTERVAL_NS);
+        long nanosPerIdle = periodOf(QueuePublisher.BACK_PRESSURE_ALERT_INTERVAL_NS);
 
         long nowNs;
-        long failedOffers;   // offers to fail before one lands
+        long failedOffers; // offers to fail before one lands
         long failResult = BACK_PRESSURED;
-        long failedTimers;   // scheduleTimer refusals before one is accepted
+        long failedTimers; // scheduleTimer refusals before one is accepted
         boolean recordingActive = true;
         long recordedPosition;
         long recordedAdvancePerIdle; // an archive that is slow but still draining
@@ -128,12 +128,12 @@ class TapPublisherTest {
         }
 
         @Override
-        public void tapBackPressureAlert() {
+        public void queueBackPressureAlert() {
             ++alerts;
         }
 
         @Override
-        public void tapStalled(final boolean stalled) {
+        public void queueStalled(final boolean stalled) {
             stalledGauge.add(stalled);
         }
 
@@ -196,7 +196,7 @@ class TapPublisherTest {
     @Test
     @DisplayName("a recording that stops advancing raises the stall gauge, which the next landed offer clears")
     void noRecordingProgressRaisesAndClearsTheStallGauge() {
-        actions.nanosPerIdle = periodOf(TapPublisher.SUSTAINED_BACKPRESSURE_THRESHOLD_NS);
+        actions.nanosPerIdle = periodOf(QueuePublisher.SUSTAINED_BACKPRESSURE_THRESHOLD_NS);
         actions.failedOffers = clockReads(3); // anchor, first observation, then one threshold's worth
 
         publisher.emit(FRAME, 64);
@@ -209,7 +209,7 @@ class TapPublisherTest {
     @Test
     @DisplayName("a recording still making no progress at the fatal timeout terminates the node")
     void noRecordingProgressPastTheFatalTimeoutTerminates() {
-        actions.nanosPerIdle = periodOf(TapPublisher.SUSTAINED_BACKPRESSURE_THRESHOLD_NS);
+        actions.nanosPerIdle = periodOf(QueuePublisher.SUSTAINED_BACKPRESSURE_THRESHOLD_NS);
         actions.failedOffers = clockReads(8); // five threshold periods past the first observation
 
         publisher.emit(FRAME, 64);
@@ -224,7 +224,7 @@ class TapPublisherTest {
     @Test
     @DisplayName("an archive that is slow but still draining is never fatal, however long it back-pressures")
     void slowButDrainingArchiveIsLeftAlone() {
-        actions.nanosPerIdle = periodOf(TapPublisher.TAP_STALL_FATAL_TIMEOUT_NS);
+        actions.nanosPerIdle = periodOf(QueuePublisher.QUEUE_STALL_FATAL_TIMEOUT_NS);
         actions.recordedAdvancePerIdle = 1; // the recording keeps moving under the back-pressure
         actions.failedOffers = clockReads(20);
 
@@ -240,9 +240,9 @@ class TapPublisherTest {
     void intermittentProgressRaisesTheGaugeButNeverTerminates() {
         // One idle per threshold period; progress every fourth, so each quiet stretch crosses the stall
         // threshold but never the fatal timeout, which is measured from the last advance.
-        actions.nanosPerIdle = periodOf(TapPublisher.SUSTAINED_BACKPRESSURE_THRESHOLD_NS);
+        actions.nanosPerIdle = periodOf(QueuePublisher.SUSTAINED_BACKPRESSURE_THRESHOLD_NS);
         actions.recordedAdvancePerIdle = 1;
-        actions.idlesPerAdvance = 4 * TapPublisher.SPINS_PER_CLOCK_CHECK;
+        actions.idlesPerAdvance = 4 * QueuePublisher.SPINS_PER_CLOCK_CHECK;
         actions.failedOffers = clockReads(40);
 
         publisher.emit(FRAME, 64);
@@ -254,14 +254,14 @@ class TapPublisherTest {
     @Test
     @DisplayName("a landed offer starts the next stall on a fresh clock, not the recording position's age")
     void nextStallStartsOnAFreshClock() {
-        actions.nanosPerIdle = periodOf(TapPublisher.SUSTAINED_BACKPRESSURE_THRESHOLD_NS);
+        actions.nanosPerIdle = periodOf(QueuePublisher.SUSTAINED_BACKPRESSURE_THRESHOLD_NS);
         actions.failedOffers = clockReads(3);
         publisher.emit(FRAME, 64);
         assertEquals(List.of(true, false), actions.stalledGauge);
 
         // Same recording position as before, and more than the fatal timeout since it last moved: it is the
         // time since THIS stall began that counts, so the next emit may only raise the gauge again.
-        actions.nowNs += TapPublisher.TAP_STALL_FATAL_TIMEOUT_NS;
+        actions.nowNs += QueuePublisher.QUEUE_STALL_FATAL_TIMEOUT_NS;
         actions.offers = 0;
         publisher.emit(FRAME, 64);
 
@@ -337,7 +337,7 @@ class TapPublisherTest {
         publisher.checkRecordingAlive();
         publisher.checkRecordingAlive();
 
-        actions.nanosPerIdle = periodOf(TapPublisher.TAP_STALL_FATAL_TIMEOUT_NS);
+        actions.nanosPerIdle = periodOf(QueuePublisher.QUEUE_STALL_FATAL_TIMEOUT_NS);
         actions.failedOffers = clockReads(4);
         publisher.emit(FRAME, 64);
         actions.failedTimers = clockReads(4);
@@ -361,7 +361,7 @@ class TapPublisherTest {
     @Test
     @DisplayName("back-pressure on the timer clears on its own without going fatal")
     void transientTimerBackPressureIsNotFatal() {
-        actions.nanosPerIdle = periodOf(TapPublisher.HEARTBEAT_SCHEDULE_FATAL_TIMEOUT_NS / 4);
+        actions.nanosPerIdle = periodOf(QueuePublisher.HEARTBEAT_SCHEDULE_FATAL_TIMEOUT_NS / 4);
         actions.failedTimers = clockReads(3);
 
         publisher.scheduleHeartbeat(CLUSTER_TIME_DEADLINE);
@@ -372,7 +372,7 @@ class TapPublisherTest {
     @Test
     @DisplayName("a consensus module that never takes the cluster-clock timer is fatal")
     void wedgedConsensusModuleIsFatal() {
-        actions.nanosPerIdle = periodOf(TapPublisher.HEARTBEAT_SCHEDULE_FATAL_TIMEOUT_NS);
+        actions.nanosPerIdle = periodOf(QueuePublisher.HEARTBEAT_SCHEDULE_FATAL_TIMEOUT_NS);
         actions.failedTimers = clockReads(3);
 
         publisher.scheduleHeartbeat(CLUSTER_TIME_DEADLINE);
@@ -386,10 +386,10 @@ class TapPublisherTest {
 
     /**
      * How many failed attempts it takes to reach {@code reads} clock checks. The spin reads the clock every
-     * {@link TapPublisher#SPINS_PER_CLOCK_CHECK} attempts, and the first read only anchors the period.
+     * {@link QueuePublisher#SPINS_PER_CLOCK_CHECK} attempts, and the first read only anchors the period.
      */
     private static long clockReads(final int reads) {
-        return (long)reads * TapPublisher.SPINS_PER_CLOCK_CHECK;
+        return (long)reads * QueuePublisher.SPINS_PER_CLOCK_CHECK;
     }
 
     /**
@@ -397,6 +397,6 @@ class TapPublisherTest {
      * integer division cannot leave a period a few nanoseconds short of the deadline it is meant to cross.
      */
     private static long periodOf(final long spanNs) {
-        return spanNs / TapPublisher.SPINS_PER_CLOCK_CHECK + 1;
+        return spanNs / QueuePublisher.SPINS_PER_CLOCK_CHECK + 1;
     }
 }

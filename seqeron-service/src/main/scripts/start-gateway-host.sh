@@ -2,7 +2,7 @@
 # start-gateway-host.sh — make this host, which runs no cluster member, one that clients can run on.
 #
 # Starts ReplayerServer in gateway-host mode: its own media driver and archive, and a relay that copies a
-# member's tap onto this host's own over UDP, moving to the next member when that one is lost. Gateways,
+# member's queue onto this host's own over UDP, moving to the next member when that one is lost. Gateways,
 # consumers and ClusterProbe on this host then attach to its Aeron directory exactly as they would on a
 # member, and submit over UDP ingress.
 #

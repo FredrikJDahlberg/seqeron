@@ -1,7 +1,7 @@
 // The same flow as FollowStream.cpp, written against the front door instead of the tiers under it, and the
 // C++ twin of src/java's ColocatedApp. Look at the includes: app, protocol/Publish, and util for the two
 // things Java gets from its own standard library. No receiver, no sender, no envelope, no systemEventType —
-// app::Application assembles the cluster session, the tap, confirmed ingress across a failover, the
+// app::Application assembles the cluster session, the queue, confirmed ingress across a failover, the
 // fences and the leader gate, and hands this file Payloads.
 //
 // A co-located application is the producer kind nothing elects: one replica per node, publishing only while
@@ -83,7 +83,7 @@ struct PingListener
         std::puts(leading ? "# leading — publishing" : "# not leading — silent");
     }
 
-    // Every application payload on this node's tap, in globalSeqNo order, history and live alike — every
+    // Every application payload on this node's queue, in globalSeqNo order, history and live alike — every
     // replica sees the same ones and so holds the same state. System frames never arrive here; the façade
     // acts on them and reports only what an application has a decision to make about.
     void onSequenced(const app::Payload& payload) const
@@ -103,7 +103,7 @@ struct PingListener
 
     void onCaughtUp(const std::int64_t globalSeqNo) const
     {
-        std::printf("# caught up at %lld — following the tap live\n", static_cast<long long>(globalSeqNo));
+        std::printf("# caught up at %lld — following the queue live\n", static_cast<long long>(globalSeqNo));
     }
 
     // The cluster clock, once a second: the one time source that keeps advancing while every producer is

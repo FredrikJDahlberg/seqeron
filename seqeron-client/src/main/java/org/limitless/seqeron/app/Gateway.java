@@ -50,15 +50,17 @@ import org.limitless.seqeron.sbe.frame.SnapshotStartedDecoder;
  */
 public final class Gateway implements AutoCloseable {
     /**
-     * How long the tap may be silent before this instance is fenced — 20 heartbeat periods. The deployment
+     * How long the queue may be silent before this instance is fenced — 20 heartbeat periods. The deployment
      * policy every gateway had been copying.
      */
-    public static final long DEFAULT_TAP_STALL_TIMEOUT_MS = Session.DEFAULT_TAP_STALL_TIMEOUT_MS;
+    public static final long DEFAULT_QUEUE_STALL_TIMEOUT_MS = Session.DEFAULT_QUEUE_STALL_TIMEOUT_MS;
 
-    /** How long recovery may dispatch nothing, once caught up before; longer than the tap's, as a re-walk is slower. */
+    /**
+     * How long recovery may dispatch nothing, once caught up before; longer than the queue's, as a re-walk is slower.
+     */
     public static final long DEFAULT_RECOVERY_STALL_TIMEOUT_MS = Session.DEFAULT_RECOVERY_STALL_TIMEOUT_MS;
 
-    /** Frames in flight between a publish and the tap; far above what one round trip holds. */
+    /** Frames in flight between a publish and the queue; far above what one round trip holds. */
     public static final int DEFAULT_PENDING_CAPACITY = Session.DEFAULT_PENDING_CAPACITY;
 
     /**
@@ -93,7 +95,7 @@ public final class Gateway implements AutoCloseable {
          */
         void onStandby();
 
-        /** One application payload off this node's tap, in {@code globalSeqNo} order. */
+        /** One application payload off this node's queue, in {@code globalSeqNo} order. */
         void onSequenced(Payload payload);
 
         /**
@@ -170,7 +172,7 @@ public final class Gateway implements AutoCloseable {
         final SnapshotStore store =
             builder.snapshotListener == null ? null : new SnapshotStore(builder.snapshotDirectory);
         this.snapshots = new SnapshotTaker(builder.snapshotListener, store, this::keepAlive);
-        this.session = new Session(builder.clientId, builder.pendingCapacity, builder.tapStallTimeoutMs,
+        this.session = new Session(builder.clientId, builder.pendingCapacity, builder.queueStallTimeoutMs,
                                    builder.recoveryStallTimeoutMs, new SessionDispatch());
         this.snapshotFrames = new SnapshotFrames(session, lifecycle::gatewaySourceId);
         if (store != null) {
@@ -182,7 +184,7 @@ public final class Gateway implements AutoCloseable {
         return new Builder();
     }
 
-    /** Opens the cluster session and starts following this node's tap; the gate stays shut until designated. */
+    /** Opens the cluster session and starts following this node's queue; the gate stays shut until designated. */
     public void start(final Aeron aeron) {
         session.start(aeron, memberId, egressChannel, ingressEndpoints);
         connectionsCounter = SeqeronCounters.addAppCounter(
@@ -197,7 +199,7 @@ public final class Gateway implements AutoCloseable {
     }
 
     /**
-     * One duty-cycle iteration: the cluster session and the tap, then whatever the connection lifecycle, the
+     * One duty-cycle iteration: the cluster session and the queue, then whatever the connection lifecycle, the
      * election and a snapshot round still owe. Nothing once fenced, so a designation dispatched in the cycle that
      * fenced opens no gate.
      * @return units of work done, for the caller's idle strategy
@@ -340,7 +342,7 @@ public final class Gateway implements AutoCloseable {
         return session.lastGlobalSeqNo();
     }
 
-    /** Closes the cluster session and the tap. The Aeron client is the caller's and is left open. */
+    /** Closes the cluster session and the queue. The Aeron client is the caller's and is left open. */
     @Override
     public void close() {
         session.close();
@@ -475,7 +477,7 @@ public final class Gateway implements AutoCloseable {
         }
     }
 
-    /** What comes off the tap, split into what the election reads and what the consumer does. */
+    /** What comes off the queue, split into what the election reads and what the consumer does. */
     private final class SessionDispatch implements Session.Dispatch {
         /**
          * A submitted system payload carries no MessageHeader, so each decode takes this build's own block length and
@@ -568,7 +570,7 @@ public final class Gateway implements AutoCloseable {
 
         /**
          * Not once this activation's {@code GatewayStarted} went out: closing the session it bound promotes the
-         * sibling, and no frame on the tap says whether that promotion is still to come, so a replacement could
+         * sibling, and no frame on the queue says whether that promotion is still to come, so a replacement could
          * act on a stale view. One designated after its session was lost bound nothing, and announces on the new one.
          */
         @Override
@@ -595,7 +597,7 @@ public final class Gateway implements AutoCloseable {
         private String ingressEndpoints = PortLayout.ingressEndpoints();
         private Listener listener;
         private int pendingCapacity = DEFAULT_PENDING_CAPACITY;
-        private long tapStallTimeoutMs = DEFAULT_TAP_STALL_TIMEOUT_MS;
+        private long queueStallTimeoutMs = DEFAULT_QUEUE_STALL_TIMEOUT_MS;
         private long recoveryStallTimeoutMs = DEFAULT_RECOVERY_STALL_TIMEOUT_MS;
 
         /** The {@code GatewayRegistered} row name this instance joins on. */
@@ -638,7 +640,7 @@ public final class Gateway implements AutoCloseable {
             return this;
         }
 
-        /** The node whose tap this instance follows. */
+        /** The node whose queue this instance follows. */
         public Builder memberId(final int memberId) {
             this.memberId = memberId;
             return this;
@@ -666,8 +668,8 @@ public final class Gateway implements AutoCloseable {
             return this;
         }
 
-        public Builder tapStallTimeoutMs(final long tapStallTimeoutMs) {
-            this.tapStallTimeoutMs = tapStallTimeoutMs;
+        public Builder queueStallTimeoutMs(final long queueStallTimeoutMs) {
+            this.queueStallTimeoutMs = queueStallTimeoutMs;
             return this;
         }
 

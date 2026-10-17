@@ -7,7 +7,7 @@ frame on the log, so the action is ordered with everything else and every replic
 the cluster cleanly and reads a member's counters. It does not launch or restart processes; that is
 `start-cluster.sh`'s job, or the deployment's own supervisor's.
 
-It runs on a cluster member. It reaches that member's tap through the member's Aeron directory, over
+It runs on a cluster member. It reaches that member's queue through the member's Aeron directory, over
 `aeron:ipc`, and reads its cluster directory for Aeron's `io.aeron.cluster.ClusterTool`, which works only
 on local files. It is one class, `org.limitless.seqeron.tools.ClusterCtl`, launched by
 `seqeron-service/src/main/scripts/clusterctl.sh`. "spec §n" refers to `doc/seqeron-protocol-spec.md`.
@@ -46,14 +46,14 @@ A command that publishes works the same way every time:
    configured UDP endpoints, and fails if no leader answers.
 2. It publishes its frame with `sourceId` 2, which spec §5 reserves for `clusterctl`, and `connectionId` −1.
 3. It waits up to 5 s for the frame, or the frame the sequencer answers it with, to appear on the local
-   tap.
+   queue.
 
 It exits 0 on success; 1 if the cluster is unreachable, no leader answers, the frame does not appear in
 time, or the abort fails; 2 for a usage error or an invalid topology file.
 
 ### start
 
-Publishes `ClusterStarted` with a fresh `correlationId`, waits for it on the tap and prints its
+Publishes `ClusterStarted` with a fresh `correlationId`, waits for it on the queue and prints its
 `globalSeqNo`. It starts nothing: it records that the cluster is up and accepting ingress. Its success
 shows that a leader is elected and ingress works, which a running process alone does not.
 
@@ -64,7 +64,7 @@ a unit started on all of them, because only the leader acts:
 
 1. On a follower (by `ClusterTool.isLeader`), it prints a message and exits 0. The leader's abort stops
    this member.
-2. On the leader, it publishes `ClusterStopped` and waits for it on the tap.
+2. On the leader, it publishes `ClusterStopped` and waits for it on the queue.
 3. It calls `ClusterTool.abort` on the local cluster directory, whether or not step 2 succeeded. A cluster
    that is being stopped is often unhealthy, and the marker may not arrive in time; the cluster is still
    stopped through the abort, never by killing processes. A log that ends without `ClusterStopped` shows
@@ -82,10 +82,10 @@ replaying from `globalSeqNo` 1 is what keeps every member's recording complete
 ([`fault-tolerance.md`](fault-tolerance.md) §0). `ABORT` takes none. Aeron's default termination hook does
 nothing, which would leave `SequencerServer` waiting after the consensus module stopped, so
 `SequencerServer` sets it to release its shutdown barrier. On `ABORT` every member then closes its archive
-through the normal shutdown path, and `SequencerService.onTerminate` closes the tap publication, giving
+through the normal shutdown path, and `SequencerService.onTerminate` closes the queue publication, giving
 the recording a valid stop position.
 
-After a shutdown any member's archive holds the complete log, since every tap is identical, and
+After a shutdown any member's archive holds the complete log, since every queue is identical, and
 `sbe-log-printer.sh` reads it offline.
 
 ### activate
@@ -109,7 +109,7 @@ after the timeout. What the participating sources then do is [`snapshot.md`](sna
 
 Publishes the deployment's topology document (spec §6.4): an XML file validated against the
 `topology.xsd` packaged in the jar. It becomes a sequence of frames, and the command waits for the last
-gateway row on the tap:
+gateway row on the queue:
 
 | section | frames | the sequencer |
 | --- | --- | --- |

@@ -531,7 +531,7 @@ TEST(ClusterStreamSenderReliableSend, SendSpinsUntilOfferAccepted)
 
 // The spin's other two exits both need a leader — one to accept the frame, the other to send the close —
 // so when quorum is lost neither ever arrives. Left unbounded that stops the caller's whole duty cycle
-// with it (no tap poll, no keep-alive, no tap-stall fence) silently, for as long as the outage lasts.
+// with it (no queue poll, no keep-alive, no queue-stall fence) silently, for as long as the outage lasts.
 // Bounded, it becomes the session loss it already is, and the caller's existing isSessionLost() fence
 // takes it from there.
 TEST(ClusterStreamSender, SendGivesTheSessionUpWhenNoLeaderEverAcceptsIngress)

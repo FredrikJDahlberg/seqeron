@@ -1,7 +1,7 @@
 # Follow the ordered stream
 
 The smallest client of seqeron there is, once per language and the same flow in each: it replays a node's
-history through that node's co-located `ReplayerService`, switches to the live tap when it catches up, and
+history through that node's co-located `ReplayerService`, switches to the live queue when it catches up, and
 prints every frame in `globalSeqNo` order. Each also produces, in both families: one `ConnectionOpened`
 system event announcing itself, then one `ping` payload a second at cluster ingress, whose echo comes back
 through the same consumer — so the round trip is measured over the real path.
@@ -24,7 +24,7 @@ through the same consumer — so the round trip is measured over the real path.
 
 `ColocatedApp` does what `FollowStream` does and names none of the tiers under it. Its whole import list
 from seqeron is `app` plus `protocol.Publish`: no receiver, no sender, no envelope, no `systemEventType`.
-`Application` assembles the cluster session, the tap, confirmed ingress across a failover, the
+`Application` assembles the cluster session, the queue, confirmed ingress across a failover, the
 fences and the leader gate, and hands it `Payload`s. The C++ twin adds `util/Env.hpp` and
 `util/IdleStrategy.hpp`, which are support code beside the façade rather than a tier under it, and which
 the Java half takes from its own standard library instead.
@@ -94,7 +94,7 @@ against `app` alone and its imports and includes are checked the same way.
 
 **How it is restored.** A replica given a `SnapshotListener` starts by asking its node's Replayer for the
 `SnapshotEnd` of the newest round it holds a file for, and checks the file against it. On a match it calls
-`onRestore` with each record in order, then resumes the tap at `R + 1`. A file the log does not confirm, or
+`onRestore` with each record in order, then resumes the queue at `R + 1`. A file the log does not confirm, or
 that does not match its end, is passed over for an older one; with none left, it replays from `globalSeqNo` 1
 as any other replica does. A file whose records are damaged, or whose `formatVersion` the build does not
 support, fences it with `SNAPSHOT_UNRESTORABLE`.
@@ -195,7 +195,7 @@ Output is one line per frame — `globalSeqNo`, then the decoded system event, o
     2 ClusterHeartbeat cluster clock 1789911942118284000ns
     3 ClusterHeartbeat cluster clock 1789911943118604000ns
     …
-    # caught up — following the tap live
+    # caught up — following the queue live
     231 ConnectionOpened connection=1 label=14 bytes
     232 ping echoed, round trip 3959us
     234 ping echoed, round trip 6415us

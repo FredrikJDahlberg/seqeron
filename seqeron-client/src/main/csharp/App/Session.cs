@@ -12,7 +12,7 @@ using Org.Limitless.Seqeron.Util;
 namespace Org.Limitless.Seqeron.App;
 
 /// <summary>
-/// What every seqeron client does the same way: the cluster session it submits on, the co-located tap it follows,
+/// What every seqeron client does the same way: the cluster session it submits on, the co-located queue it follows,
 /// confirmed ingress across a failover, and the fences that say when it may no longer act — wired together into one
 /// <see cref="DoWork"/> whose ordering is not the caller's to get right.
 /// <para>Not API. <see cref="Gateway"/> and <see cref="Application"/> are the façades over it.
@@ -20,20 +20,20 @@ namespace Org.Limitless.Seqeron.App;
 /// </summary>
 internal sealed class Session : IDisposable
 {
-    /// <summary>The deployment policy every producer had been copying: the tap may be silent for 20 heartbeat
+    /// <summary>The deployment policy every producer had been copying: the queue may be silent for 20 heartbeat
     /// periods.</summary>
-    internal const long DefaultTapStallTimeoutMs = 20 * FrameLayer.ClusterHeartbeatIntervalMs;
+    internal const long DefaultQueueStallTimeoutMs = 20 * FrameLayer.ClusterHeartbeatIntervalMs;
 
-    /// <summary>Longer than the tap's, since a re-walk is slower than the live stream it is catching up to.</summary>
-    internal const long DefaultRecoveryStallTimeoutMs = 3 * DefaultTapStallTimeoutMs;
+    /// <summary>Longer than the queue's, since a re-walk is slower than the live stream it is catching up to.</summary>
+    internal const long DefaultRecoveryStallTimeoutMs = 3 * DefaultQueueStallTimeoutMs;
 
-    /// <summary>Frames in flight between a publish and the tap; far above what one round trip holds.</summary>
+    /// <summary>Frames in flight between a publish and the queue; far above what one round trip holds.</summary>
     internal const int DefaultPendingCapacity = 1024;
 
     /// <summary>How often an attempt to replace a lost session begins while the façade allows it.</summary>
     internal const long ReconnectIntervalMs = 1_000;
 
-    /// <summary>What the façade above does with what comes off the tap, and with a fence.</summary>
+    /// <summary>What the façade above does with what comes off the queue, and with a fence.</summary>
     internal interface IDispatch
     {
         /// <summary>A system frame this core does not consume itself. <c>LeadershipChanged</c> never arrives
@@ -70,11 +70,11 @@ internal sealed class Session : IDisposable
     private readonly ClusterStreamSender _sender = new ClusterStreamSender();
     private readonly ReplayerStreamReceiver _receiver;
     private readonly RecoveryStallFence _recoveryStall;
-    private readonly TapStallFence _tapStall;
+    private readonly QueueStallFence _queueStall;
     private readonly Payload _payload = new Payload();
 
     private readonly long _recoveryStallTimeoutMs;
-    private readonly long _tapStallTimeoutMs;
+    private readonly long _queueStallTimeoutMs;
 
     // The cluster's own account of why this session ended, kept for the fence's detail.
     private string _sessionFault;
@@ -92,16 +92,16 @@ internal sealed class Session : IDisposable
     // The term of the last LeadershipChanged applied; -1 before the first.
     private long _leadershipTermId = -1;
 
-    internal Session(int clientId, int pendingCapacity, long tapStallTimeoutMs, long recoveryStallTimeoutMs,
+    internal Session(int clientId, int pendingCapacity, long queueStallTimeoutMs, long recoveryStallTimeoutMs,
                      IDispatch dispatch)
     {
         _dispatch = dispatch;
-        _tapStallTimeoutMs = tapStallTimeoutMs;
+        _queueStallTimeoutMs = queueStallTimeoutMs;
         _recoveryStallTimeoutMs = recoveryStallTimeoutMs;
         _pending = new PendingSends(pendingCapacity);
         _publisher = new IngressPublisher(_pending);
         _recoveryStall = new RecoveryStallFence(recoveryStallTimeoutMs);
-        _tapStall = new TapStallFence(tapStallTimeoutMs);
+        _queueStall = new QueueStallFence(queueStallTimeoutMs);
         _receiver = new ReplayerStreamReceiver(clientId, OnSequenced, OnLeadershipChanged, null);
         _sender.SetIngressHold(_pending);
     }
@@ -112,7 +112,7 @@ internal sealed class Session : IDisposable
         _receiver.RestoreFrom(store, handler);
     }
 
-    /// <summary>Opens the cluster session over UDP and starts following this node's tap.</summary>
+    /// <summary>Opens the cluster session over UDP and starts following this node's queue.</summary>
     internal void Start(Aeron aeron, int memberId, string egressChannel, string ingressEndpoints)
     {
         _sender.Connect(aeron, egressChannel, ingressEndpoints, new SessionListener(this));
@@ -129,7 +129,7 @@ internal sealed class Session : IDisposable
         _receiver.Start(aeron, memberId);
     }
 
-    /// <summary>One duty cycle, in the order the parts require: the tap first, so a fence is judged on what this
+    /// <summary>One duty cycle, in the order the parts require: the queue first, so a fence is judged on what this
     /// cycle saw; the resend last, so nothing new goes out ahead of it.</summary>
     /// <returns>units of work done</returns>
     internal int DoWork()
@@ -216,7 +216,7 @@ internal sealed class Session : IDisposable
         }
         long nowMs = Clocks.MonotonicMs();
         _recoveryStall.OnCaughtUp();
-        _tapStall.OnCaughtUp(nowMs);
+        _queueStall.OnCaughtUp(nowMs);
         _dispatch.OnCaughtUp(_receiver.LastGlobalSeqNo);
     }
 
@@ -258,10 +258,10 @@ internal sealed class Session : IDisposable
                 return;
             }
         }
-        else if (_tapStall.IsStalled(nowMs))
+        else if (_queueStall.IsStalled(nowMs))
         {
-            Stalled(ClusterError.TapStalled, Logger.CoreEventCode.TapStalled,
-                    "no ClusterHeartbeat for >" + _tapStallTimeoutMs + "ms");
+            Stalled(ClusterError.QueueStalled, Logger.CoreEventCode.QueueStalled,
+                    "no ClusterHeartbeat for >" + _queueStallTimeoutMs + "ms");
             return;
         }
         if (_stallAlarm != null)
@@ -271,7 +271,7 @@ internal sealed class Session : IDisposable
         }
     }
 
-    // Fences an instance that acts; one that does not raises an alarm once and keeps following the tap.
+    // Fences an instance that acts; one that does not raises an alarm once and keeps following the queue.
     private void Stalled(ClusterError stall, Logger.CoreEventCode code, string detail)
     {
         if (_dispatch.IsActing())
@@ -288,7 +288,7 @@ internal sealed class Session : IDisposable
     }
 
     // Opens a session in place of the lost one, an attempt at most once a second and each advanced a step per cycle,
-    // until one opens or the tap could have gone silent for as long: past that the cluster is not coming back for
+    // until one opens or the queue could have gone silent for as long: past that the cluster is not coming back for
     // this process, and the session's loss is a fence. An attempt under way then is let finish, since one whose
     // request an election swallowed spends its whole timeout.
     private void ReplaceSession(string why)
@@ -299,10 +299,10 @@ internal sealed class Session : IDisposable
             _sessionLostSinceMs = nowMs;
             _nextReconnectMs = nowMs;
         }
-        if (nowMs - _sessionLostSinceMs > _tapStallTimeoutMs && !_sender.IsReconnecting)
+        if (nowMs - _sessionLostSinceMs > _queueStallTimeoutMs && !_sender.IsReconnecting)
         {
             Fence(ClusterError.ClusterSessionLost,
-                  why + "; no session replaced it within " + _tapStallTimeoutMs + "ms");
+                  why + "; no session replaced it within " + _queueStallTimeoutMs + "ms");
             return;
         }
         if (!_sender.IsReconnecting)
@@ -322,7 +322,7 @@ internal sealed class Session : IDisposable
         DiscardUnconfirmed("the session they went out on was lost (" + why + ")");
     }
 
-    /// <summary>Forgets every frame not yet seen on the tap, for a façade that knows none of them will be
+    /// <summary>Forgets every frame not yet seen on the queue, for a façade that knows none of them will be
     /// sequenced.</summary>
     internal void DiscardUnconfirmed(string why)
     {
@@ -362,7 +362,7 @@ internal sealed class Session : IDisposable
         {
             if (sequencedEvent.SystemEventType == SystemFrame.ClusterHeartbeat)
             {
-                _tapStall.OnClusterHeartbeat(Clocks.MonotonicMs());
+                _queueStall.OnClusterHeartbeat(Clocks.MonotonicMs());
                 _dispatch.OnClusterHeartbeat(sequencedEvent.ClusterTimestampNs, sequencedEvent.ReceiveTimeNs);
             }
             _dispatch.OnSystem(sequencedEvent);
@@ -385,7 +385,7 @@ internal sealed class Session : IDisposable
         public void OnMessage(long clusterSessionId, long timestamp, IDirectBuffer buffer, int offset, int length,
                               Header header)
         {
-            // Nothing is addressed to a producer on egress: everything it publishes comes back on the tap.
+            // Nothing is addressed to a producer on egress: everything it publishes comes back on the queue.
         }
 
         public void OnSessionEvent(long correlationId, long clusterSessionId, long leadershipTermId, int leaderMemberId,

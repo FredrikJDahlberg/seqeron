@@ -18,9 +18,9 @@ enum class ClusterError : std::uint8_t
     // Recovery has dispatched nothing for the deadline, on an instance that had caught up before; only a designated
     // gateway instance or the leader's replica fences, any other logs it.
     RecoveryStalled,
-    // No ClusterHeartbeat for the deadline: this process has stopped seeing its node's tap. Fences as RecoveryStalled
+    // No ClusterHeartbeat for the deadline: this process has stopped seeing its node's queue. Fences as RecoveryStalled
     // does.
-    TapStalled,
+    QueueStalled,
     // This instance's snapshot of a round differs from its source's sequenced one: its state is not the log's (A-7).
     SnapshotDiverged,
     // This instance's source has a snapshot it cannot restore: a format or header version this build does not
@@ -32,7 +32,7 @@ enum class ClusterError : std::uint8_t
  * The error's name, for a log line.
  *
  * @param error the error to name
- * @return its name in upper snake case, e.g. "TAP_STALLED"
+ * @return its name in upper snake case, e.g. "QUEUE_STALLED"
  */
 inline const char* clusterErrorName(const ClusterError error)
 {
@@ -44,8 +44,8 @@ inline const char* clusterErrorName(const ClusterError error)
             return "INGRESS_CONFIRM_FAULTED";
         case ClusterError::RecoveryStalled:
             return "RECOVERY_STALLED";
-        case ClusterError::TapStalled:
-            return "TAP_STALLED";
+        case ClusterError::QueueStalled:
+            return "QUEUE_STALLED";
         case ClusterError::SnapshotDiverged:
             return "SNAPSHOT_DIVERGED";
         case ClusterError::SnapshotUnrestorable:

@@ -39,13 +39,13 @@ namespace org::limitless::seqeron::protocol {
 
 // ── Constants matching SequencerService / SequencerServer ──────────────────────
 
-// The tap: the node-local IPC stream every node republishes each sequenced frame on and records. A
+// The queue: the node-local IPC stream every node republishes each sequenced frame on and records. A
 // consumer subscribes untethered (see ReplayerStreamReceiver), the recording is found by stream id alone.
-inline constexpr const char* FEEDER_CHANNEL = "aeron:ipc?alias=seqeron-tap";
-inline constexpr std::int32_t FEEDER_STREAM_ID = 205;
+inline constexpr const char* QUEUE_CHANNEL = "aeron:ipc?alias=seqeron-queue";
+inline constexpr std::int32_t QUEUE_STREAM_ID = 205;
 
 // Period of the cluster clock: every node emits a ClusterHeartbeat carrying the consensus timestamp, so a
-// consumer has a clock that advances while producers are silent, and a tap watchdog has whole periods to
+// consumer has a clock that advances while producers are silent, and a queue watchdog has whole periods to
 // span. The Java twin is FrameLayer.CLUSTER_HEARTBEAT_INTERVAL_MS; keep the two in step.
 inline constexpr std::int64_t CLUSTER_HEARTBEAT_INTERVAL_MS = 1000;
 inline constexpr std::int64_t CLUSTER_HEARTBEAT_INTERVAL_NS = CLUSTER_HEARTBEAT_INTERVAL_MS * 1'000'000;
@@ -56,7 +56,7 @@ inline constexpr std::int64_t CLUSTER_HEARTBEAT_INTERVAL_NS = CLUSTER_HEARTBEAT_
 // (V-3) and lands in both. Never read from a transport per frame: S-3 forbids checking a node's own MTU.
 
 // An 8960-byte IPC MTU, one jumbo frame, less the 76 bytes of Aeron data header and sequenced envelope, so a
-// tap whose MTU is that large never fragments.
+// queue whose MTU is that large never fragments.
 inline constexpr std::uint16_t MAX_PAYLOAD_LENGTH = 8884;
 
 // Smallest ingress frame of either family: the framing header, the header composite and the payload's own
@@ -72,7 +72,7 @@ inline constexpr std::uint16_t MAX_INGRESS_LENGTH = MIN_INGRESS_LENGTH + MAX_PAY
 // ── The systemEventType table (doc/seqeron-protocol-spec.md §7) ────────────────
 //
 // A submitted event's value is its payload codec's template id. The four synthesized events have templates
-// of their own and stamp these values at offset 16 so that field discriminates every frame on the tap.
+// of their own and stamp these values at offset 16 so that field discriminates every frame on the queue.
 // The Java twin is SystemFrame; keep the two in step.
 inline constexpr std::uint16_t CONNECTION_OPENED = sbe::frame::ConnectionOpened::sbeTemplateId();
 inline constexpr std::uint16_t CONNECTION_CLOSED = sbe::frame::ConnectionClosed::sbeTemplateId();
@@ -137,7 +137,7 @@ constexpr std::int32_t ingressBlockLength(const std::uint16_t systemEventType)
 /**
  * Carries one message from the cluster stream.
  *
- * Every fragment on the tap is one of six messages (doc/seqeron-protocol-spec.md §4), and the same
+ * Every fragment on the queue is one of six messages (doc/seqeron-protocol-spec.md §4), and the same
  * 2-byte field at offset 16 discriminates all of them: a `Sequenced` frame carries one opaque
  * application payload named by payloadId, the five system messages carry seqeron's own vocabulary named
  * by systemEventType. `system` says which. A consumer of an application frame dispatches on
@@ -170,7 +170,7 @@ struct SequencedEvent
 };
 
 /**
- * One frame off the tap, unwrapped: everything a consumer dispatches on, with the envelope stripped.
+ * One frame off the queue, unwrapped: everything a consumer dispatches on, with the envelope stripped.
  *
  * The two stream clients both build one of these and then differ only in what they do with it, which is
  * the point: the envelope is stripped here, once, rather than at every consumer. The identity is the

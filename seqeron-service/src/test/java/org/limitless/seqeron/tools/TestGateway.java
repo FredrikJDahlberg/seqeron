@@ -40,7 +40,7 @@ import org.limitless.seqeron.util.Logger;
  * {@link ClusterProbe}'s package because it reuses that class's cluster-connect and offer plumbing, which
  * is package-private and stays that way.
  *
- * <p>{@link ClusterProbe} gave core's harnesses a load generator and a tap consumer, which is what four of
+ * <p>{@link ClusterProbe} gave core's harnesses a load generator and a queue consumer, which is what four of
  * the five needed. {@code chaos-runner.sh} needed a fifth thing they cannot supply: a <b>gateway pair</b>
  * under the faults. Everything that machinery does is the cluster tier's own — {@code GatewayStarted}
  * binding a cluster session to a {@code gatewayId}, the sequencer synthesizing {@code GatewayActive} on all
@@ -55,7 +55,7 @@ import org.limitless.seqeron.util.Logger;
  * <p><b>The invariant it exists to hold</b> is the one both real gateways hold: nothing reaches the socket
  * that has not round-tripped consensus. A client line in becomes a {@code ProbeMarker} stamped with that
  * connection's {@code connectionId}, and the reply is written only when that frame comes back off the
- * co-located tap. That is what makes the accept gate observable from outside the process, which in turn is
+ * co-located queue. That is what makes the accept gate observable from outside the process, which in turn is
  * what lets a harness assert "still accepting TCP with no media driver" — the sharpest thing the old
  * gateway rounds checked.
  *
@@ -72,7 +72,7 @@ import org.limitless.seqeron.util.Logger;
  * reference data. A client connection is a socket and an int.
  *
  * <p>Its one piece of state is the cluster's view of its connections and a count of the markers sequenced under its
- * {@code sourceId}, which every instance derives from the tap alike. With {@code probe.snapshot} it snapshots and
+ * {@code sourceId}, which every instance derives from the queue alike. With {@code probe.snapshot} it snapshots and
  * restores that state (doc/snapshot.md), and its caught-up line reports it, so a harness can compare an instance
  * that restored with one that replayed.
  *
@@ -177,7 +177,7 @@ public final class TestGateway {
                 Path.of(System.getProperty("java.io.tmpdir"), "seqeron-snapshots-" + gatewayName).toString())))
             .build();
         gateway.start(aeron);
-        log("standby — following the tap as %s, gate shut until a GatewayActive names this instance", gatewayName);
+        log("standby — following the queue as %s, gate shut until a GatewayActive names this instance", gatewayName);
 
         final AtomicBoolean running = new AtomicBoolean(true);
         final Thread duty = new Thread(() -> {
@@ -295,7 +295,7 @@ public final class TestGateway {
 
     /**
      * Submits one {@code ProbeMarker} per complete line read. Nothing is written back here: the reply is
-     * this frame's own return off the tap, which is the whole invariant. A publish the gateway declines —
+     * this frame's own return off the queue, which is the whole invariant. A publish the gateway declines —
      * ingress held, back-pressured, or the connection not yet announced — leaves the line in its buffer.
      */
     private int submitLines(final Connection connection) {

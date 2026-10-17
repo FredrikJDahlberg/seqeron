@@ -41,7 +41,7 @@ jobs:
           - leg: random
             only_fault: ''
           # A fixed leg for the one fault a random draw can miss entirely: SEED=4242 over 20 rounds
-          # drew pause/tap-stall/sigkill/tap-drop/kill-follower and ZERO kill-leader. Failover is the
+          # drew pause/queue-stall/sigkill/queue-drop/kill-follower and ZERO kill-leader. Failover is the
           # fault least tolerable to leave to chance, so it gets a leg that always runs it.
           - leg: kill-leader
             only_fault: fault_kill_leader
@@ -135,7 +135,7 @@ jobs:
           name: failover-loss-logs
           path: logs/failover/
 
-  # A caught-up consumer that drops a live tap frame after a failover must heal it by resuming its member's
+  # A caught-up consumer that drops a live queue frame after a failover must heal it by resuming its member's
   # recording at the hole, and keep delivering.
   gap-recovery:
     name: gap recovery
@@ -171,8 +171,8 @@ jobs:
           name: gap-recovery-logs
           path: logs/gap-recovery/
 
-  # A consumer that stops polling while more than two tap windows go by must be evicted before its member's
-  # tap-stall fatal, and heal once resumed (doc/ops.md, "Untethered subscribers").
+  # A consumer that stops polling while more than two queue windows go by must be evicted before its member's
+  # queue-stall fatal, and heal once resumed (doc/ops.md, "Untethered subscribers").
   paused-subscriber:
     name: paused subscriber
     runs-on: ubuntu-24.04

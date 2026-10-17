@@ -45,7 +45,7 @@
 
         <!-- 34 bytes: unsequencedHeader's 18, then globalSeqNo and timestamp. -->
         <composite name="sequencedHeader"
-                   description="Application frame header on the tap: the ingress header, plus globalSeqNo and timestamp">
+                   description="Application frame header on the queue: the ingress header, plus globalSeqNo and timestamp">
             <type name="sourceId"     primitiveType="int32"
                   description="Copied from ingress"/>
             <type name="connectionId" primitiveType="int32"
@@ -75,7 +75,7 @@
 
         <!-- 34 bytes: unsequencedSystemHeader's 18, then globalSeqNo and timestamp. -->
         <composite name="sequencedSystemHeader"
-                   description="System frame header on the tap: the ingress header, plus globalSeqNo and timestamp. Also the header of the three synthesized templates">
+                   description="System frame header on the queue: the ingress header, plus globalSeqNo and timestamp. Also the header of the three synthesized templates">
             <type name="sourceId"        primitiveType="int32"
                   description="Copied from ingress; -1 on a synthesized frame (F-4)"/>
             <type name="connectionId"    primitiveType="int32"
@@ -91,7 +91,7 @@
         </composite>
 
         <type name="correlationId" primitiveType="int64"
-              description="Set by clusterctl so it can recognise its own frame on the tap"/>
+              description="Set by clusterctl so it can recognise its own frame on the queue"/>
 
         <type name="gatewayName" primitiveType="char" length="32" characterEncoding="US-ASCII"
               description="Name an instance is launched with (e.g. SEQERON_*_GATEWAY_NAME), by which it finds its list row; byte 0 = 0x00 means absent"/>
@@ -116,11 +116,11 @@
                  description="An application frame on cluster ingress. The sequencer either republishes it as Sequenced or rejects it and emits nothing (§9.2)">
         <field name="header"  id="20001" type="unsequencedHeader"/>
         <data  name="payload" id="20040" type="varDataEncoding"
-               description="The payload, opaque to the cluster and copied unchanged to the tap. At most MAX_PAYLOAD_LENGTH bytes (§12); MAY be empty"/>
+               description="The payload, opaque to the cluster and copied unchanged to the queue. At most MAX_PAYLOAD_LENGTH bytes (§12); MAY be empty"/>
     </sbe:message>
 
     <sbe:message name="Sequenced" id="101"
-                 description="An application frame on the tap: a sequenced ingress frame, payload unchanged">
+                 description="An application frame on the queue: a sequenced ingress frame, payload unchanged">
         <field name="header"  id="20001" type="sequencedHeader"/>
         <data  name="payload" id="20040" type="varDataEncoding"
                description="The payload, byte-identical to the ingress frame's"/>
@@ -139,7 +139,7 @@
     </sbe:message>
 
     <sbe:message name="SequencedSystem" id="103"
-                 description="A submitted system frame on the tap: a sequenced ingress frame, payload unchanged">
+                 description="A submitted system frame on the queue: a sequenced ingress frame, payload unchanged">
         <field name="header" id="20001" type="sequencedSystemHeader"/>
         <data  name="body"   id="20045" type="varDataEncoding"
                description="The event, byte-identical to the ingress frame's payload"/>
@@ -147,7 +147,7 @@
 
     <!-- Synthesized by the sequencer, fields inline. Every node encodes its own copy (E-1), so each
          encode must depend only on the log (S-3). systemEventType is set, redundantly with the template
-         id, so that offset 16 identifies every frame on the tap. -->
+         id, so that offset 16 identifies every frame on the queue. -->
 
     <sbe:message name="ClusterHeartbeat" id="104"
                  description="The cluster clock, synthesized once a second from a cluster timer. No payload: the frame's timestamp and globalSeqNo are the message (42 bytes)">

@@ -6,7 +6,7 @@ import org.limitless.seqeron.sbe.frame.UnsequencedDecoder;
 import org.limitless.seqeron.sbe.frame.UnsequencedHeaderDecoder;
 
 /**
- * The frame layer's constants: the tap's identity, the cluster clock, and the size limits of spec §12.
+ * The frame layer's constants: the queue's identity, the cluster clock, and the size limits of spec §12.
  * Java's compiled-in mirror of the spec (C++'s is {@code SequencedFrame.hpp}); a change is a wire change
  * (<b>V-3</b>) and lands in both. Here because producer, sequencer and consumer all answer to them. Never
  * read from a transport: <b>S-3</b> forbids checking a node's own MTU, which would fork {@code globalSeqNo}.
@@ -14,7 +14,7 @@ import org.limitless.seqeron.sbe.frame.UnsequencedHeaderDecoder;
 public final class FrameLayer {
     /**
      * Largest payload any frame may carry (<b>T-2</b>): an 8960-byte IPC MTU, one jumbo frame, less the 76
-     * bytes of Aeron data header and sequenced envelope, so a tap whose MTU is that large never fragments.
+     * bytes of Aeron data header and sequenced envelope, so a queue whose MTU is that large never fragments.
      */
     public static final int MAX_PAYLOAD_LENGTH = 8884;
 
@@ -30,18 +30,18 @@ public final class FrameLayer {
     public static final int MAX_INGRESS_LENGTH = MIN_INGRESS_LENGTH + MAX_PAYLOAD_LENGTH;
 
     /**
-     * The tap: the node-local IPC stream every node republishes each sequenced frame on, in {@code
+     * The queue: the node-local IPC stream every node republishes each sequenced frame on, in {@code
      * globalSeqNo} order, and records into its own archive. Co-located apps follow it live.
      */
-    public static final String FEEDER_CHANNEL = "aeron:ipc?alias=seqeron-tap";
+    public static final String QUEUE_CHANNEL = "aeron:ipc?alias=seqeron-queue";
 
-    /** Stream id of the tap. See {@link #FEEDER_CHANNEL}. */
-    public static final int FEEDER_STREAM_ID = 205;
+    /** Stream id of the queue. See {@link #QUEUE_CHANNEL}. */
+    public static final int QUEUE_STREAM_ID = 205;
 
     /**
      * Period of the cluster clock: every node emits a {@code ClusterHeartbeat} carrying the consensus
      * timestamp, so consumers have a clock that advances while producers are silent. The sequencer's own
-     * deadlines are quantised to it, and a consumer's tap watchdog must span whole periods. Each beat grows
+     * deadlines are quantised to it, and a consumer's queue watchdog must span whole periods. Each beat grows
      * the log, so this trades clock resolution against recovery time.
      */
     public static final long CLUSTER_HEARTBEAT_INTERVAL_MS = 1000;

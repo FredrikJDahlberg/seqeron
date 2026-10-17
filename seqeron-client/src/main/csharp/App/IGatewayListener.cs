@@ -15,7 +15,7 @@ public interface IGatewayListener
     /// designation, and before <see cref="OnFenced"/> when this instance fences while serving.</summary>
     void OnStandby();
 
-    /// <summary>One application payload off this node's tap, in <c>globalSeqNo</c> order.</summary>
+    /// <summary>One application payload off this node's queue, in <c>globalSeqNo</c> order.</summary>
     void OnSequenced(Payload payload);
 
     /// <summary>This logical gateway took a connection, whichever instance issued it. A consumer that keeps

@@ -8,11 +8,11 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 /**
- * Unit tests for the tap-silence verdict a producer applies once caught up. No Aeron runtime: the catch-up
+ * Unit tests for the queue-silence verdict a producer applies once caught up. No Aeron runtime: the catch-up
  * transition and the {@code ClusterHeartbeat} arrivals are exactly the two signals {@code app.Session} feeds
  * in off {@code ReplayerStreamReceiver}.
  */
-class TapStallFenceTest {
+class QueueStallFenceTest {
     private static final long DEADLINE_MS = 20 * 1000;
     /** Arbitrary clock origin: the fence is only ever read as a difference. */
     private static final long T0 = TimeUnit.HOURS.toMillis(7);
@@ -21,7 +21,7 @@ class TapStallFenceTest {
         return T0 + TimeUnit.SECONDS.toMillis(s);
     }
 
-    private final TapStallFence fence = new TapStallFence(DEADLINE_MS);
+    private final QueueStallFence fence = new QueueStallFence(DEADLINE_MS);
 
     @Test
     @DisplayName("an instance still replaying is never fenced, however long the replay takes")

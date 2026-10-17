@@ -15,7 +15,7 @@ inline constexpr std::int32_t REPLAYER_CONTROL_STREAM_ID = 203;
 // ReplayRequest.fromPosition asking for the active recording from its start.
 inline constexpr std::int64_t REPLAYER_FROM_START = -1;
 
-// Replaying.replaySessionId sentinel: "nothing to replay, you are at the tip — follow the live tap".
+// Replaying.replaySessionId sentinel: "nothing to replay, you are at the tip — follow the live queue".
 inline constexpr std::int64_t REPLAYER_NO_REPLAY_NEEDED = -1;
 
 } // namespace org::limitless::seqeron::protocol

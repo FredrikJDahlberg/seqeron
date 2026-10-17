@@ -29,7 +29,7 @@ final class GatewayLifecycle {
 
     /** Where this instance stands. */
     public enum State {
-        /** Following the tap through history; the gate stays shut whatever the activation says. */
+        /** Following the queue through history; the gate stays shut whatever the activation says. */
         REPLAYING,
         /** Caught up with the gate shut. Where a standby sits and a superseded instance lands. */
         PASSIVE,
@@ -88,7 +88,7 @@ final class GatewayLifecycle {
     }
 
     /**
-     * The tap reached the live frontier for the first time.
+     * The queue reached the live frontier for the first time.
      * @return whether this left {@code REPLAYING}
      */
     public boolean onCaughtUp() {

@@ -16,10 +16,10 @@ namespace Example;
 
 /// <summary>
 /// Follows one node's ordered stream end to end: history replayed through that node's co-located ReplayerService,
-/// then the live tap, with the switch between them handled by the receiver. Once caught up it also produces — one
+/// then the live queue, with the switch between them handled by the receiver. Once caught up it also produces — one
 /// ping a second at cluster ingress, whose echo comes back through <see cref="OnSequenced"/> with everything else.
 /// <para>Both families are exercised in both directions: the ping is an application payload, and the connection
-/// this example announces is a system event, submitted with <c>PublishSystem</c> and decoded off the tap in
+/// this example announces is a system event, submitted with <c>PublishSystem</c> and decoded off the queue in
 /// <see cref="PrintSystem"/>. The C# twin of <c>FollowStream.java</c>.</para>
 /// <para>Environment: <c>SEQERON_NODE_MEMBER_ID</c> (default 0), <c>SEQERON_REPLAYER_CLIENT_ID</c> (default 19),
 /// <c>SEQERON_AERON_DIR</c>, <c>SEQERON_IDLE_STRATEGY</c>.</para>
@@ -78,7 +78,7 @@ public sealed class FollowStream
         using var sender = new ClusterStreamSender();
         using var receiver =
             new ReplayerStreamReceiver(clientId, OnSequenced, OnLeadershipChanged,
-                                       () => Console.WriteLine("# caught up — following the tap live"));
+                                       () => Console.WriteLine("# caught up — following the queue live"));
         sender.ConnectColocated(aeron, memberId, IpcConnectTimeoutMs, EgressChannel, PortLayout.IngressEndpoints());
         receiver.Start(aeron, memberId);
         Console.WriteLine($"# following member {memberId} via {aeronDir}");
@@ -150,7 +150,7 @@ public sealed class FollowStream
 
     // One ping at cluster ingress: the examples' own payloadId, and a payload of eight raw bytes holding the
     // timestamp it left on. Not SBE, and it need not be — the cluster tier decodes no payloadId at all. Nothing waits
-    // here for the echo: the consumer this process already is picks it up off the tap like every other frame.
+    // here for the echo: the consumer this process already is picks it up off the queue like every other frame.
     private void Ping(ClusterStreamSender sender)
     {
         _pingSentTicks = Stopwatch.GetTimestamp();
@@ -165,7 +165,7 @@ public sealed class FollowStream
     }
 
     // Every other frame arrives here in globalSeqNo order, history and live alike — the receiver requests a replay
-    // for anything the live tap dropped and dispatches nothing out of order in the meantime.
+    // for anything the live queue dropped and dispatches nothing out of order in the meantime.
     private void OnSequenced(SequencedEvent sequencedEvent)
     {
         if (!InOrder(sequencedEvent.GlobalSeqNo))

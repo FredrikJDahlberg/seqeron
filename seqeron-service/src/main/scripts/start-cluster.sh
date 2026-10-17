@@ -5,7 +5,7 @@
 # names none (the same split start-three-node-cluster.sh makes):
 #
 #   1. SequencerServer  (Java, single-node Aeron Cluster, member 0, and its Replayer: serves archive
-#                        replay to co-located apps over aeron:ipc; apps read the tap directly for live)
+#                        replay to co-located apps over aeron:ipc; apps read the queue directly for live)
 #   2. ClusterProbe follow (Java, the edge-neutral consumer replica)
 #
 # SEQERON_NO_CONSUMERS=1 leaves out the probe replica, for a caller that supplies its own consumer —
