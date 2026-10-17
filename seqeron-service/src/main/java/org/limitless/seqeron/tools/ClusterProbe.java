@@ -122,13 +122,14 @@ public final class ClusterProbe {
 
     /**
      * How often {@link #offer} keeps its own session alive while it spins. Must stay well inside the
-     * cluster's {@code sessionTimeoutNs} (1s by default, {@code sequencer.sessionTimeoutMs}).
+     * cluster's {@code sessionTimeoutNs} (5s by default, {@code sequencer.sessionTimeoutMs}).
      */
     private static final long KEEP_ALIVE_INTERVAL_NS = TimeUnit.MILLISECONDS.toNanos(200);
 
     /**
-     * How long the client waits for a {@code NewLeader} before closing itself. The default, 2x the cluster's
-     * 200ms {@code leaderHeartbeatTimeoutNs}, is shorter than an election.
+     * How long the client waits for a {@code NewLeader} once the leader's egress image has gone, before closing
+     * itself. Aeron's default, 2x the cluster's {@code leaderHeartbeatTimeoutNs} (2s by default), leaves no margin
+     * over an election.
      */
     private static final long NEW_LEADER_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(5);
     private static final long ECHO_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(10);

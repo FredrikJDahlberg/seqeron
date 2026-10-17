@@ -555,8 +555,7 @@ class ClusterStreamSender
     }
 
   private:
-    // Paired with the cluster's sessionTimeoutNs (1s) at a 5x margin; raising this alone reaps healthy
-    // sessions.
+    // Well inside the cluster's sessionTimeoutNs (5s); raising it towards that reaps healthy sessions.
     static constexpr std::int64_t KEEP_ALIVE_INTERVAL_MS = 200;
 
     // How long send() tolerates continuous refusal before calling the session lost: 2x the slowest election

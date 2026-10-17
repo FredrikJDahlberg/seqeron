@@ -14,7 +14,7 @@
 #
 # Sequence:
 #   1. A three-node cluster; TestApplication on a member that does not lead catches up.
-#   2. SIGSTOP the application for CLIENT_PAUSE_SECS, past the cluster's 1 s session timeout, and SIGCONT it.
+#   2. SIGSTOP the application for CLIENT_PAUSE_SECS, past the cluster's 5 s session timeout, and SIGCONT it.
 #   3. SIGSTOP the other two members for QUORUM_PAUSE_SECS, so the application's member has no quorum: long
 #      enough for the client's 5 s new-leader timeout to close its session, short enough for the members' own
 #      10 s service interval to survive the pause. SIGCONT them.
@@ -45,11 +45,11 @@ TEST_CLASSES="seqeron-service/build/classes/java/test"
 APP_CP="$JAR:$TEST_CLASSES"
 LOG_DIR="logs/session-replace"
 TOPOLOGY="seqeron-service/src/test/resources/topology-test-gateway.xml"
-CLIENT_PAUSE_SECS="${CLIENT_PAUSE_SECS:-3}"
+CLIENT_PAUSE_SECS="${CLIENT_PAUSE_SECS:-7}"
 QUORUM_PAUSE_SECS="${QUORUM_PAUSE_SECS:-7}"
-GATEWAY_PAUSE_SECS="${GATEWAY_PAUSE_SECS:-2}"   # past the 1 s session timeout, inside the 5 s activation timeout
-IPC_CONNECT_TIMEOUT_MS=8000   # well past CLIENT_PAUSE_SECS, well inside the 20 s the façade allows a replacement
-SILENCE_LIMIT_MS=6000         # between the pause's silence and the IPC timeout's
+GATEWAY_PAUSE_SECS="${GATEWAY_PAUSE_SECS:-7}"   # past the 5 s session timeout, inside the standby's 5 s activation timeout
+IPC_CONNECT_TIMEOUT_MS=12000  # well past CLIENT_PAUSE_SECS, well inside the 20 s the façade allows a replacement
+SILENCE_LIMIT_MS=10000        # between the pause's silence and the IPC timeout's
 REPLACE_TIMEOUT_SECS=40
 
 [[ -f "$TEST_CLASSES/org/limitless/seqeron/tools/TestApplication.class" ]] \

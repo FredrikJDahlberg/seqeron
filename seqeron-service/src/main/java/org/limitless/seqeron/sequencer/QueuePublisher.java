@@ -76,8 +76,8 @@ public final class QueuePublisher {
 
     /**
      * How long the recording may make <em>zero</em> progress under back-pressure before the node
-     * terminates. An archive that is slow but still advancing is never timed out. 5x the stall gauge, on
-     * the order of the cluster's 1s {@code sessionTimeoutNs}; re-tune against production storage.
+     * terminates. An archive that is slow but still advancing is never timed out. 5x the stall gauge; re-tune
+     * against production storage.
      */
     static final long QUEUE_STALL_FATAL_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(1);
 

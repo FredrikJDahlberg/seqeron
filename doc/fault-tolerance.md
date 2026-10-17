@@ -62,7 +62,7 @@ history of leadership, and a client can tell the current leader from the log alo
 **A failover can lose ingress without any error.** A send returns once the frame is on the leader's ingress
 publication, and the cluster confirms nothing on egress. Frames the old leader had not committed are lost,
 as is everything offered to its publication before the producer learns of the new leader — in
-`failover-test.sh`, about 5,500 frames at 100 µs pacing. The session survives, so neither side sees a fault.
+`failover-test.sh`, at 100 µs pacing, either about 100 frames or about 10,000, in roughly equal shares of runs. The session survives, so neither side sees a fault.
 §5 describes how a producer detects and resends those frames.
 
 ### 1.3 A node that cannot record terminates itself

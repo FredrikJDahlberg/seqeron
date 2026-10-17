@@ -44,7 +44,7 @@ is not a fence; it raises from `doWork()`.
   cluster member or [gateway host](#replayerstreamreceiver) on the same host. The queue and the replay are IPC;
   no client reads the stream from a remote host.
 - **Bounded callbacks.** The duty cycle carries the cluster session keep-alive. A session idle for
-  `sequencer.sessionTimeoutMs` (default 1 s) is closed by the cluster; for a gateway, that hands over to the
+  `sequencer.sessionTimeoutMs` (default 5 s) is closed by the cluster; for a gateway, that hands over to the
   standby. A callback that must spin calls `keepAlive()`.
 - **Back pressure blocks, bounded.** `publish`/`reply` spin through ingress back pressure and leader
   elections until the offer lands, for at most 10 s; beyond that the session is treated as lost. A
