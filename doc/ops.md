@@ -177,6 +177,7 @@ seqeron's processes bind these ports, and an application's own must stay clear o
 | 9205, 9206 | `seqeron-examples`' C++ gateway pair's cluster egress (UDP) |
 | `9207 + memberId` | `seqeron-examples`' C++ `SnapshotApp` cluster egress (UDP) |
 | 9220–9224 | `cpp-client-test.sh`'s C++ probes' cluster egress (UDP, test harnesses only) |
+| 9500–9569 | `:seqeron-service:integrationTest`'s cluster block (`SEQERON_PORT_BASE=9500`, test runs only) |
 
 - **`base`** is 9300 unless `SEQERON_PORT_BASE` sets it, to a value from 1024 to 65466; a process given an
   invalid value fails at startup. Moving the base does not move the other ports in the table.

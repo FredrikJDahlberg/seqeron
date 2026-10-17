@@ -224,6 +224,7 @@ version, which agrees with Java's on everything a client touches. `csharp-client
 ```bash
 cmake --build cmake-build-debug --target run_tests   # GoogleTest
 ./gradlew test                                       # JUnit
+./gradlew :seqeron-service:integrationTest           # JUnit 6, members in the test's JVM
 dotnet test --project seqeron-client/src/test/csharp/Seqeron.Client.Tests.csproj   # xUnit
 ```
 `run_tests` is `ctest --output-on-failure` with the build dependency wired, and also builds
@@ -237,9 +238,16 @@ dispatch and the confirmed publish to zero bytes a frame.
 
 The Java suite covers the deterministic decision-making — `Sequencer`, and `ReplayerService` through
 its `Replayer` seam — and deliberately touches no Aeron runtime: no media driver, no cluster, no Aeron
-mocks. Everything that needs an Aeron runtime is covered by `core_tests` and by the thirteen end-to-end scripts under
-`seqeron-service/src/test/scripts`. Coverage is a JaCoCo report per module, at
+mocks. Everything that needs an Aeron runtime is covered by `core_tests`, by the integration suite and by the
+thirteen end-to-end scripts under `seqeron-service/src/test/scripts`. Coverage is a JaCoCo report per module, at
 `<module>/build/reports/jacoco/test/`, excluding the generated SBE codecs.
+
+**The integration suite** (`seqeron-service/src/integrationTest`) launches members in the test's own JVM through
+`SequencerServer.launch`, on Aeron's `aeron-test-support`: `FailoverConfirmTest` is `failover-test.sh`'s confirm
+producer across a leader stop, and `SystemTestWatcher` fails a test on any error a driver, archive or consensus
+module logs. It runs on JUnit 6, which `aeron-test-support` is built against, on cluster port base 9500, and in
+CI's `java integration` job; neither `test` nor `check` runs it. A member stopped in-process is closed rather than
+killed, so the harnesses stay the evidence for process death and network faults.
 
 **Nine of the thirteen harnesses are Java-only.** Eight drive the cluster through `tools/ClusterProbe`, which
 submits `ProbeMarker` payloads at ingress (`submit`), round-trips one through consensus and back off
