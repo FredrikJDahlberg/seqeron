@@ -119,8 +119,15 @@ timing. Both tests then read every queue recording on every member, and on the h
 since a client's `ReplayerRecovery` would hide a repeated frame or replay over a gap: each must hold globalSeqNo 1
 onwards once each, in order, and the same frame wherever two hold the same globalSeqNo.
 
-The UDP cut is `SequencerServer.launch`'s `udpFaults` overload, which drops every frame a member's driver sends or
-receives while it answers true. `SystemTestWatcher` fails a test on any error in a driver's, archive's or
+`CommittedEntryLossTest` scripts a fault sequence under which Aeron Cluster 1.53.2 loses a committed entry: a
+follower restarts while the leader waits on a member that cannot copy the log, truncates the entries it
+acknowledged, and the leader is cut before they are copied back. Each step waits on the members' election state
+and commit position rather than on time, so it reproduces every run, and the stranded member stops advancing. It
+fails on the pinned Aeron, so it runs only under `-PknownAeronFaults`, to check an Aeron upgrade against it.
+
+The UDP faults are `SequencerServer.launch`'s `udpFaults` overload, which drops each frame a member's driver sends
+or receives that it names by stream id and direction: all of them, all but the consensus stream, or only the
+consensus messages the member sends. `SystemTestWatcher` fails a test on any error in a driver's, archive's or
 consensus module's error log, and copies a failed test's directories to `seqeron-service/build/test-output`. The
 suite runs on JUnit 6, which `aeron-test-support` is built against, and on cluster port base 9500, clear of a
 local cluster on 9300. A member stopped in-process is closed rather than killed, a cut drops frames rather than
