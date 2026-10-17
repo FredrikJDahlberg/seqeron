@@ -46,7 +46,7 @@ public final class SystemFrame {
 
     /**
      * The {@code systemEventType} table (§7). A submitted event's value is its payload codec's template id; the
-     * four synthesized events have templates of their own and stamp these at offset 16 so that field
+     * five synthesized events have templates of their own and stamp these at offset 16 so that field
      * discriminates every frame on the queue.
      */
     public static final int CONNECTION_OPENED = ConnectionOpenedEncoder.TEMPLATE_ID;
@@ -95,6 +95,9 @@ public final class SystemFrame {
 
     /** Synthesis-only; {@code SnapshotStartedEncoder.TEMPLATE_ID} is the frame's, not this. */
     public static final int SNAPSHOT_STARTED = 30;
+
+    /** Synthesis-only; {@code SessionClosedEncoder.TEMPLATE_ID} is the frame's, not this. */
+    public static final int SESSION_CLOSED = 31;
 
     /**
      * The compiled {@code BLOCK_LENGTH} of the event {@code systemEventType} names, or {@link

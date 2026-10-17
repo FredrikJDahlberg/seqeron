@@ -113,8 +113,8 @@ Everything on the wire is one SBE schema (210), in two families sharing one head
 - The **system family** is seqeron's own vocabulary, named by `header.systemEventType` at the same offset:
   connections opening and closing, the gateway list and the election, the cluster's start and stop
   markers, the protocol registry, and snapshot rounds. Producers submit twelve such events; the
-  sequencer synthesizes four (`LeadershipChanged`, `ClusterHeartbeat`, `GatewayActive`,
-  `SnapshotStarted`).
+  sequencer synthesizes five (`LeadershipChanged`, `ClusterHeartbeat`, `GatewayActive`,
+  `SnapshotStarted`, `SessionClosed`).
 
 | offset | field | ingress | queue |
 | --- | --- | --- | --- |
@@ -172,9 +172,9 @@ de-duplicated by its key.
 A send that succeeds means the message reached the leader, not the log. A leader that fails takes its
 uncommitted ingress with it, and the producer's session survives, so neither side sees an error. The
 client tier closes that gap: `PendingSends` holds every message until the producer's own queue shows it. A
-term change identifies exactly which messages were lost; the producer places nothing new until those are
-resent, oldest first. Each message is then sequenced exactly once, in order, across any number of leader
-failovers.
+term change, or the `SessionClosed` of the session a message went out on, identifies exactly which messages
+were lost; the producer places nothing new until those are resent, oldest first. Each message is then
+sequenced exactly once, in order, across any number of leader failovers and session replacements.
 
 ## Failure handling
 

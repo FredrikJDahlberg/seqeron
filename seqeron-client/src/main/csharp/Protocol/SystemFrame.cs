@@ -32,7 +32,7 @@ public sealed class SystemFrame
     /// <summary>§9.2 condition 7: 0 names no protocol, and 1 is core's retired id.</summary>
     private const int RetiredCorePayloadId = 1;
 
-    // The systemEventType table (§7). A submitted event's value is its payload codec's template id; the four
+    // The systemEventType table (§7). A submitted event's value is its payload codec's template id; the five
     // synthesized events have templates of their own and stamp these at offset 16, so that field discriminates
     // every frame on the queue. SystemFrame.java and SequencedFrame.hpp hold the same table.
 
@@ -83,6 +83,9 @@ public sealed class SystemFrame
 
     /// <summary>Synthesis-only; <c>SnapshotStarted.TemplateId</c> is the frame's, not this.</summary>
     public const int SnapshotStarted = 30;
+
+    /// <summary>Synthesis-only; <c>SessionClosed.TemplateId</c> is the frame's, not this.</summary>
+    public const int SessionClosed = 31;
 
     /// <summary>
     /// The compiled block length of the event <paramref name="systemEventType"/> names, or

@@ -24,8 +24,10 @@ import org.limitless.seqeron.helpers.SplitMix64;
  * its own term and drops the rest, commits a prefix, and loses everything uncommitted at an election. After
  * one, the old leader either still takes ingress and drops it, or is gone and a send spins until egress brings
  * the {@code NewLeader} — giving the send up if the hold is on, as {@code ClusterStreamSender} does. The
- * sender may reconnect on a new session then. The queue lags, a sibling shares the producer's {@code sourceId},
- * and term ids skip, as after a failed ballot.
+ * sender may reconnect on a new session then. The cluster also closes the producer's session at random, and
+ * drops what it sends on it until the producer replaces it; a close an election loses, the next leader makes
+ * again. The queue lags, a sibling shares the producer's {@code sourceId}, and term ids skip, as after a failed
+ * ballot.
  *
  * <p>Checked once the faults stop and everything has drained: the log holds every frame the producer sent
  * exactly once, in send order, and nothing faulted. Seeds are fixed; the failing one is in the test name.
@@ -37,9 +39,10 @@ class PendingSendsPropertyTest {
     private static final int QUIESCE_ROUNDS = 100;
     private static final long SIBLING = 1_000_000;
     private static final long LEADERSHIP_CHANGED = -1;
+    private static final long SESSION_CLOSED = -2;
     private static final int PAYLOAD_ID = 6;
 
-    /** One queue entry: frame {@code value} from {@code session}, or a term's LeadershipChanged. */
+    /** One log entry: frame {@code value} from {@code session}, a term's LeadershipChanged, or a session's close. */
     private record Entry(long session, long value) { }
 
     private final PendingSends pending = new PendingSends(CAPACITY);
@@ -58,6 +61,8 @@ class PendingSendsPropertyTest {
     private long senderTerm = 0;
     private long session = 1;
     private boolean oldLeaderTakesIngress;
+    /** The cluster has closed {@link #session}, and the producer has not replaced it yet. */
+    private boolean closedAtCluster;
     private long next = 0;
     private int resent = 0;
 
@@ -71,7 +76,7 @@ class PendingSendsPropertyTest {
                     return false;
                 }
             }
-            if (senderTerm == clusterTerm) {
+            if (senderTerm == clusterTerm && !closedAtCluster) {
                 uncommitted.add(new Entry(session, frame.getLong(FrameLayer.MIN_INGRESS_LENGTH)));
             }
             return true;
@@ -105,15 +110,24 @@ class PendingSendsPropertyTest {
             } else if (action < 85) {
                 resent += pending.resendMissing(sender);
             } else if (action < 87) {
-                uncommitted.clear();
-                clusterTerm += 1 + rng.roll(2);
-                queue.add(new Entry(LEADERSHIP_CHANGED, clusterTerm));
-                oldLeaderTakesIngress = rng.roll(2) == 0;
+                elect();
+            } else if (action < 88) {
+                if (!closedAtCluster) {
+                    closedAtCluster = true;
+                    uncommitted.add(new Entry(SESSION_CLOSED, session));
+                }
+            } else if (action < 91) {
+                if (closedAtCluster) {
+                    replaceSession();
+                }
             } else if (senderTerm != clusterTerm) {
                 newLeader();
             }
         }
         for (int round = 0; round < QUIESCE_ROUNDS && pending.size() > 0; round++) {
+            if (closedAtCluster) {
+                replaceSession();
+            }
             if (senderTerm != clusterTerm) {
                 newLeader();
             }
@@ -144,14 +158,40 @@ class PendingSendsPropertyTest {
         senderTerm = clusterTerm;
         if (rng.roll(2) == 0) {
             session++;
+            closedAtCluster = false;
         }
         pending.onNewLeader(senderTerm);
+    }
+
+    /** Everything uncommitted is lost but the closes, which the new leader makes again. */
+    private void elect() {
+        final List<Entry> closes = new ArrayList<>();
+        for (final Entry entry : uncommitted) {
+            if (entry.session() == SESSION_CLOSED) {
+                closes.add(entry);
+            }
+        }
+        uncommitted.clear();
+        clusterTerm += 1 + rng.roll(2);
+        queue.add(new Entry(LEADERSHIP_CHANGED, clusterTerm));
+        uncommitted.addAll(closes);
+        oldLeaderTakesIngress = rng.roll(2) == 0;
+    }
+
+    /** The producer opens a new session in the current term, and resends in the same duty cycle, as {@code Session} does. */
+    private void replaceSession() {
+        session++;
+        senderTerm = clusterTerm;
+        closedAtCluster = false;
+        resent += pending.resendMissing(sender);
     }
 
     private void commit(final int count) {
         for (int k = count; k > 0 && !uncommitted.isEmpty(); k--) {
             final Entry entry = uncommitted.poll();
-            log.add(entry.value());
+            if (entry.session() != SESSION_CLOSED) {
+                log.add(entry.value());
+            }
             queue.add(entry);
         }
     }
@@ -161,6 +201,10 @@ class PendingSendsPropertyTest {
             final Entry entry = queue.poll();
             if (entry.session() == LEADERSHIP_CHANGED) {
                 pending.onLeadershipChanged(entry.value());
+                continue;
+            }
+            if (entry.session() == SESSION_CLOSED) {
+                pending.onSequenced(SequencedEvents.sessionClosed(entry.value()));
                 continue;
             }
             body.putLong(0, entry.value());
