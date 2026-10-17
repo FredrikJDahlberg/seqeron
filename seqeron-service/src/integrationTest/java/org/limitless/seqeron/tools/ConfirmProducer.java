@@ -18,7 +18,8 @@ import org.limitless.seqeron.sequencer.client.PendingSends;
 
 /**
  * ClusterProbe confirm's producer, driven one duty cycle at a time: it sends seqNo 1..count through
- * {@link PendingSends} while following its member's queue, and resends what a leadership change lost.
+ * {@link PendingSends} while following its member's queue, replaces a lost session, and resends what a leadership
+ * change or a closed session lost.
  */
 final class ConfirmProducer implements AutoCloseable {
     /** ClusterProbe confirm's: how long a run may go without sending, resending or seeing an own frame. */
@@ -83,8 +84,13 @@ final class ConfirmProducer implements AutoCloseable {
         receiver.poll();
         sender.pollEgress();
         sender.keepAlive();
-        if (sender.isSessionLost() || pending.isFaulted()) {
-            fail(pending.isFaulted() ? "PendingSends faulted" : "cluster session lost");
+        if (pending.isFaulted()) {
+            fail("PendingSends faulted");
+        }
+        // As app/Session does: AeronCluster closes itself silently when no new leader arrives in time, and the
+        // queue's SessionClosed may be the only word of a close.
+        if (sender.isSessionLost() || !sender.isConnected() || pending.isClosed(sender.clusterSessionId())) {
+            sender.reconnect();
         }
         final int resentNow = pending.resendMissing(sender);
         resent += resentNow;
