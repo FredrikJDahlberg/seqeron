@@ -24,15 +24,15 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: '21'
 
       - name: Cache Gradle
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.gradle/caches
@@ -45,12 +45,12 @@ jobs:
       - name: Build operator distribution
         run: ./gradlew operatorDist
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
 
       # Built here rather than by `compose up --build` so the layer cache persists between runs;
       # load: true puts the tag in the runner's daemon, where compose finds it.
       - name: Build node image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: docker/Dockerfile
@@ -70,7 +70,7 @@ jobs:
 
       - name: Upload node logs
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: failover-logs
           path: logs/docker-failover/
@@ -88,22 +88,22 @@ jobs:
       SEQERON_DIR: ${{ github.workspace }}
       TIMEOUT_SCALE: '3'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Pinned, so a faulteron change reaches this workflow only when this line moves.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           repository: FredrikJDahlberg/faulteron
           ref: ad4209117b7725fdfd8d02856e8d781dbef84365
           path: faulteron
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: '21'
 
       - name: Cache Gradle
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.gradle/caches
@@ -156,7 +156,7 @@ jobs:
 
       - name: Upload faulteron logs
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: network-fault-logs
           path: faulteron/logs/

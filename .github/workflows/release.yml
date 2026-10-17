@@ -18,7 +18,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # v0.2.0 was tagged on a commit whose VERSION still said 0.1.0.
       - name: Tag matches VERSION
@@ -32,12 +32,12 @@ jobs:
           echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
           echo "image=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/seqeron-service" >> "${GITHUB_OUTPUT}"
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: '21'
 
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: '10.0.x'
 
@@ -63,16 +63,16 @@ jobs:
           curl -s "https://jitpack.io/com/github/${GITHUB_REPOSITORY}/${GITHUB_REF_NAME}/build.log" | tail -n 50
           exit 1
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
 
-      - uses: docker/login-action@v3
+      - uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ github.token }}
 
       - name: Push node image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: docker/Dockerfile
