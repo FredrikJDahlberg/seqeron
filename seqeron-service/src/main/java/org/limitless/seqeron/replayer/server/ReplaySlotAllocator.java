@@ -5,9 +5,9 @@ import java.util.List;
 import java.util.function.LongPredicate;
 
 /**
- * Admission control and pending-queue bookkeeping behind {@link ReplayerService}'s {@code
+ * Admission control and pending-request bookkeeping behind {@link ReplayerService}'s {@code
  * MAX_CONCURRENT_REPLAYS} cap, free of archive and Aeron calls. The {@code token} it is handed is opaque.
- * The pending queue holds at most one request per client, since a waiting client resends every ~500ms.
+ * The pending list holds at most one request per client, since a waiting client resends every ~500ms.
  */
 public final class ReplaySlotAllocator {
     /** {@link #supersede} uses this value for "no active slot for that client". */
@@ -63,13 +63,13 @@ public final class ReplaySlotAllocator {
     }
 
     /**
-     * Queues a request that found no free slot, replacing any the client already has queued in place, so a
+     * Holds a request that found no free slot, replacing any the client already has pending in place, so a
      * resend neither accretes entries nor loses the client its turn.
      * @param clientId client identity
      * @param requestId the request to answer when it is finally served
      * @param fromPosition start replay position, or {@code ReplayProtocol.FROM_START}
      */
-    public void enqueue(final long clientId, final long requestId, final long fromPosition) {
+    public void addPending(final long clientId, final long requestId, final long fromPosition) {
         final PendingRequest request = new PendingRequest(clientId, requestId, fromPosition);
         for (int i = 0; i < pending.size(); i++) {
             if (pending.get(i).clientId() == clientId) {
@@ -81,7 +81,7 @@ public final class ReplaySlotAllocator {
     }
 
     /**
-     * Drops the client's queued request, if any, as its current one is answered: left behind, the stale
+     * Drops the client's pending request, if any, as its current one is answered: left behind, the stale
      * one would later take a slot the client never uses.
      * @param clientId client identity
      */
@@ -95,8 +95,8 @@ public final class ReplaySlotAllocator {
     }
 
     /**
-     * Pops the next pending request, or null if the queue is empty or every slot is taken. Callers bound a
-     * drain pass to {@link #pendingCount()}, so a request that re-queues itself is retried once per pass.
+     * Pops the next pending request, or null if none is pending or every slot is taken. Callers bound a
+     * drain pass to {@link #pendingCount()}, so a request that is held again is retried once per pass.
      * @return the longest-waiting client's current request, or null
      */
     public PendingRequest pollPending() {

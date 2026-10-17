@@ -807,7 +807,7 @@ class SequencerTest {
     void bootstrapActivationEmittedAnswersForTheBootstrapRunAlone() {
         // The gauge behind this is the "did the day open?" alarm, and the deployment it is read on is the
         // one whose list arrived truncated — which is also the deployment where an operator reaches for
-        // clusterctl activate. That designation drains through this same queue, so counting drains let the
+        // clusterctl activate. That designation drains through this same list, so counting drains let the
         // manual repair answer the alarm that was there to say the repair is incomplete.
         final Sequencer seq = new Sequencer(0, frames);
         final MutableDirectBuffer buf = new ExpandableArrayBuffer(512);
@@ -834,7 +834,7 @@ class SequencerTest {
     @Test
     @DisplayName("a complete list that designates nobody does not mark bootstrap activated either")
     void bootstrapActivationEmittedStaysFalseWhenNothingIsDesignated() {
-        // Fail closed: no rank-0 row, so the bootstrap run queues nothing and no instance is ever
+        // Fail closed: no rank-0 row, so the bootstrap run schedules nothing and no instance is ever
         // designated. The list did complete, which is why the gauge cannot be driven off that edge.
         final Sequencer seq = new Sequencer(0, frames);
         final MutableDirectBuffer buf = new ExpandableArrayBuffer(512);

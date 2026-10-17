@@ -251,10 +251,10 @@ public final class ReplayerService {
             if (replaySlots.activeCount() < MAX_CONCURRENT_REPLAYS) {
                 throttledRequestsCounter.increment();
             }
-            replaySlots.enqueue(clientId, requestId, fromPosition);
+            replaySlots.addPending(clientId, requestId, fromPosition);
             sendPending(clientId, requestId);
             Logger.info(Logger.CoreComponent.ReplayerService, memberId,
-                        "client %d queued: no free replay slot (active=%d/%d%s, pending=%d)", clientId,
+                        "client %d pending: no free replay slot (active=%d/%d%s, pending=%d)", clientId,
                         replaySlots.activeCount(), limit,
                         limit < MAX_CONCURRENT_REPLAYS ? " while the tap recording is behind" : "",
                         replaySlots.pendingCount());
@@ -323,7 +323,7 @@ public final class ReplayerService {
 
         final Replayer.RecordingSpan active = findActiveRecording();
         if (active == null) {
-            replaySlots.enqueue(clientId, requestId, fromPosition);
+            replaySlots.addPending(clientId, requestId, fromPosition);
             sendPending(clientId, requestId);
             return;
         }
@@ -338,7 +338,7 @@ public final class ReplayerService {
         final long recordingId = active.recordingId();
         final long tip = tipOf(recordingId);
         if (tip < 0) {
-            replaySlots.enqueue(clientId, requestId, fromPosition);
+            replaySlots.addPending(clientId, requestId, fromPosition);
             sendPending(clientId, requestId);
             return;
         }

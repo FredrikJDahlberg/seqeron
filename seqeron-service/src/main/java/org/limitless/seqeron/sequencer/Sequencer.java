@@ -142,7 +142,7 @@ public final class Sequencer {
      * names. One bootstrap entry per logical gateway, since pairs elect independently; none when no row is
      * rank 0 (fail closed).
      */
-    private final IntArrayList activationQueue = new IntArrayList();
+    private final IntArrayList designations = new IntArrayList();
 
     // Replicated state: advanced identically on every node.
 
@@ -167,13 +167,13 @@ public final class Sequencer {
     /** Each logical gateway's designated instance: {@code gatewaySourceId} to the last {@code GatewayActive}'s. */
     private final Long2LongHashMap designatedGateway = new Long2LongHashMap(NO_BINDING);
 
-    /** True once the first complete list queued its bootstrap run; a re-published list designates nobody. */
-    private boolean bootstrapActivationQueued = false;
+    /** True once the first complete list scheduled its bootstrap run; a re-published list designates nobody. */
+    private boolean bootstrapActivationScheduled = false;
 
     /**
      * True once a <em>bootstrap</em> {@code GatewayActive} has been published: the day is open. Separate from
-     * {@link #bootstrapActivationQueued} because a list with no rank-0 row designates nobody, and a manual
-     * activation goes through the same queue without opening the day.
+     * {@link #bootstrapActivationScheduled} because a list with no rank-0 row designates nobody, and a manual
+     * activation goes through the same list without opening the day.
      */
     private boolean bootstrapActivationEmitted = false;
 
@@ -341,10 +341,10 @@ public final class Sequencer {
                               UnsequencedDecoder.payloadHeaderLength() + bodyLength);
         publish(TAP_BODY_OFFSET + bodyLength);
 
-        for (int i = 0; i < activationQueue.size(); i++) {
-            publish(gatewayActive(activationQueue.getInt(i), timestamp));
+        for (int i = 0; i < designations.size(); i++) {
+            publish(gatewayActive(designations.getInt(i), timestamp));
         }
-        activationQueue.clear();
+        designations.clear();
         if (snapshotRequested) {
             snapshotRequested = false;
             if (snapshotIntervalNs != NO_SNAPSHOT_POLICY) {
@@ -373,11 +373,11 @@ public final class Sequencer {
                 gatewayRegisteredDecoder.wrap(buffer, bodyOffset, GatewayRegisteredDecoder.BLOCK_LENGTH, version);
                 addGatewayRow(gatewayRegisteredDecoder.gatewayId(), gatewayRegisteredDecoder.gatewaySourceId(),
                               gatewayRegisteredDecoder.preferenceRank());
-                if (gatewayRegisteredDecoder.remaining() == 0 && !bootstrapActivationQueued) {
-                    bootstrapActivationQueued = true;
+                if (gatewayRegisteredDecoder.remaining() == 0 && !bootstrapActivationScheduled) {
+                    bootstrapActivationScheduled = true;
                     for (final GatewayRow row : gatewayRows) {
                         if (row.preferenceRank == 0) {
-                            activationQueue.addInt(row.gatewayId);
+                            designations.addInt(row.gatewayId);
                             bootstrapActivationEmitted = true;
                         }
                     }
@@ -412,7 +412,7 @@ public final class Sequencer {
                     return reject("GatewayActivationRequested names gatewayId " + gatewayId +
                                   ", which no list row does");
                 }
-                activationQueue.addInt(gatewayId);
+                designations.addInt(gatewayId);
             }
             case SystemFrame.SNAPSHOT_POLICY_REGISTERED -> {
                 snapshotPolicyDecoder.wrap(buffer, bodyOffset, SnapshotPolicyRegisteredDecoder.BLOCK_LENGTH,

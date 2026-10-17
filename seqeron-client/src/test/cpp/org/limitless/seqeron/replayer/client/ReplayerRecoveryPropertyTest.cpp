@@ -15,7 +15,7 @@
 //
 // The e2e harnesses reach these paths too, but a chaos run produces single-digit gap episodes in minutes,
 // all of one kind — one dropped frame on a live tap. A run here is a few hundred, mixing drops with lost
-// requests, queued requests, truncated images, stalled replays and tap redeliveries, in under a second.
+// requests, held requests, truncated images, stalled replays and tap redeliveries, in under a second.
 //
 // Restore   — a client restoring its own snapshot (doc/snapshot.md §7) holds both properties from the cut on,
 //            under the same faults, and its restored state plus the frames after the cut equals the state a full

@@ -18,7 +18,7 @@ import org.agrona.concurrent.status.CountersReader;
 
 /**
  * An in-memory node for {@link ReplayerService} to serve: a scripted archive, the two app-facing IPC
- * streams as plain queues, real Agrona counters, and a clock the test moves by hand. No media driver,
+ * streams as plain deques, real Agrona counters, and a clock the test moves by hand. No media driver,
  * no archive, no cluster — {@code ReplayerServiceTest} runs in milliseconds like the rest of the Java
  * suite.
  *
@@ -51,7 +51,7 @@ final class FakeReplayer implements Replayer {
     private int listings;
     private int replayAttempts;
 
-    private final Deque<byte[]> requestQueue = new ArrayDeque<>();
+    private final Deque<byte[]> requests = new ArrayDeque<>();
     private final List<byte[]> controlReplies = new ArrayList<>();
     private long controlOfferResult = 1; // > 0 is a successful offer
 
@@ -152,9 +152,9 @@ final class FakeReplayer implements Replayer {
         return archivePolls;
     }
 
-    /** Queues one encoded app → Replayer message for the next {@code pollRequests}. */
-    void enqueueRequest(final byte[] message) {
-        requestQueue.add(message);
+    /** Offers one encoded app → Replayer message for the next {@code pollRequests}. */
+    void offerRequest(final byte[] message) {
+        requests.add(message);
     }
 
     /** Ends a replay, as the archive reaching its bound and its client letting it go does. */
@@ -246,8 +246,8 @@ final class FakeReplayer implements Replayer {
     @Override
     public int pollRequests(final FragmentHandler handler, final int fragmentLimit) {
         int read = 0;
-        while (read < fragmentLimit && !requestQueue.isEmpty()) {
-            final byte[] message = requestQueue.poll();
+        while (read < fragmentLimit && !requests.isEmpty()) {
+            final byte[] message = requests.poll();
             handler.onFragment(new UnsafeBuffer(message), 0, message.length, null);
             ++read;
         }
