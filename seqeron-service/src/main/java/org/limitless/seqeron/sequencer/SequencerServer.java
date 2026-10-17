@@ -66,12 +66,13 @@ import org.limitless.seqeron.util.Logger;
  *                               (default), {@code yielding} or {@code busyspin}. Busy-spin pays only when
  *                               each agent owns a core.
  *   sequencer.sessionTimeoutMs — how long the cluster keeps a client session with no keep-alives; default
- *                               1000. A gateway that misses it is replaced by its standby, so raise it on
- *                               an oversubscribed host.
- *   sequencer.leaderHeartbeatIntervalMs — how often the leader heartbeats its followers; default 20
+ *                               5000. A gateway that misses it is replaced by its standby. Keep it well above
+ *                               the leader heartbeat timeout (doc/ops.md, "Consensus timeouts").
+ *   sequencer.leaderHeartbeatIntervalMs — how often the leader heartbeats its followers; default 200
  *   sequencer.leaderHeartbeatTimeoutMs — how long a follower waits for a leader heartbeat before it starts an
- *                               election; default 200
- *   sequencer.electionTimeoutMs — how long an election stage waits on the other members; default 200
+ *                               election, and how long a member copying the log waits on progress; default
+ *                               2000
+ *   sequencer.electionTimeoutMs — how long an election stage waits on the other members; default 1000
  *   aeron.cluster.max.sessions — the most client sessions the cluster holds at once; default 64 rather than
  *                               Aeron's 10 (doc/ops.md, "Cluster sessions")
  *   aeron.threading.mode       — the embedded driver's threading mode; default DEDICATED (doc/ops.md, "Driver threads")
@@ -98,10 +99,10 @@ public final class SequencerServer {
     private static final String PROP_LEADER_HEARTBEAT_TIMEOUT_MS = "sequencer.leaderHeartbeatTimeoutMs";
     private static final String PROP_ELECTION_TIMEOUT_MS = "sequencer.electionTimeoutMs";
 
-    private static final long DEFAULT_SESSION_TIMEOUT_MS = 1000;
-    private static final long DEFAULT_LEADER_HEARTBEAT_INTERVAL_MS = 20;
-    private static final long DEFAULT_LEADER_HEARTBEAT_TIMEOUT_MS = 200;
-    private static final long DEFAULT_ELECTION_TIMEOUT_MS = 200;
+    public static final long DEFAULT_SESSION_TIMEOUT_MS = 5000;
+    public static final long DEFAULT_LEADER_HEARTBEAT_INTERVAL_MS = 200;
+    public static final long DEFAULT_LEADER_HEARTBEAT_TIMEOUT_MS = 2000;
+    public static final long DEFAULT_ELECTION_TIMEOUT_MS = 1000;
 
     /** Session limit when {@code aeron.cluster.max.sessions} is not set; see doc/ops.md, "Cluster sessions". */
     private static final int DEFAULT_MAX_CONCURRENT_SESSIONS = 64;
@@ -302,7 +303,7 @@ public final class SequencerServer {
                 .leaderHeartbeatIntervalNs(TimeUnit.MILLISECONDS.toNanos(config.leaderHeartbeatIntervalMs()))
                 .leaderHeartbeatTimeoutNs(TimeUnit.MILLISECONDS.toNanos(config.leaderHeartbeatTimeoutMs()))
                 .electionTimeoutNs(TimeUnit.MILLISECONDS.toNanos(config.electionTimeoutMs()))
-                .electionStatusIntervalNs(TimeUnit.MILLISECONDS.toNanos(20))
+                .electionStatusIntervalNs(TimeUnit.MILLISECONDS.toNanos(config.electionTimeoutMs() / 10))
                 .startupCanvassTimeoutNs(TimeUnit.SECONDS.toNanos(5))
                 .sessionTimeoutNs(TimeUnit.MILLISECONDS.toNanos(config.sessionTimeoutMs()))
                 .idleStrategySupplier(idleStrategySupplier)

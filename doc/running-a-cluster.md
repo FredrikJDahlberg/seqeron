@@ -20,7 +20,7 @@ hosts that run applications but no member.
 
 Inside the member, `Sequencer` is the replicated state machine: it stamps each ingress frame with the
 next `globalSeqNo` and the Raft consensus timestamp, and synthesizes the frames the cluster owns
-(`ClusterHeartbeat`, `LeadershipChanged`, `GatewayActive`, `SnapshotStarted`). It has no Aeron dependency
+(`ClusterHeartbeat`, `LeadershipChanged`, `GatewayActive`, `SnapshotStarted`, `SessionClosed`). It has no Aeron dependency
 and is unit-tested directly. `SequencerService` is its Aeron adapter and holds no replicated state of its
 own. Every member publishes every sequenced frame on a node-local queue (`aeron:ipc`, stream 205), which its
 archive records.
@@ -134,10 +134,10 @@ The sequenced stream itself has no port: the queue is `aeron:ipc` on each member
 | `sequencer.baseDir`         | `$TMPDIR/seqeron-seq`; required with more than one host | root of the archive and cluster directories; on a disk, never tmpfs, or the member warns at start |
 | `sequencer.aeronDir`        | `/dev/shm/seqeron-seq-aeron-<id>`, or under `$TMPDIR` on a host without `/dev/shm` | the media driver's directory; every client sharing the driver defaults to the same (`PortLayout.aeronDir`). On Linux keep it on tmpfs, or the member warns at start ([`ops.md`](ops.md), "Term lengths") |
 | `sequencer.idleStrategy`    | `backoff`                        | `backoff` or `yielding`, for every agent thread; on a host short of cores, share the driver's threads too ([`ops.md`](ops.md), "Driver threads") |
-| `sequencer.sessionTimeoutMs` | `1000`                          | how long the cluster keeps a client session with no keep-alives; a gateway that misses it is replaced by its standby |
-| `sequencer.leaderHeartbeatIntervalMs` | `20`                   | how often the leader heartbeats its followers |
-| `sequencer.leaderHeartbeatTimeoutMs` | `200`                   | how long a follower waits for a leader heartbeat before it starts an election |
-| `sequencer.electionTimeoutMs` | `200`                          | how long an election stage waits on the other members |
+| `sequencer.sessionTimeoutMs` | `5000`                          | how long the cluster keeps a client session with no keep-alives; a gateway that misses it is replaced by its standby. Keep it well above the leader heartbeat timeout ([`ops.md`](ops.md), "Consensus timeouts") |
+| `sequencer.leaderHeartbeatIntervalMs` | `200`                  | how often the leader heartbeats its followers |
+| `sequencer.leaderHeartbeatTimeoutMs` | `2000`                  | how long a follower waits for a leader heartbeat before it starts an election ([`ops.md`](ops.md), "Consensus timeouts") |
+| `sequencer.electionTimeoutMs` | `1000`                         | how long an election stage waits on the other members |
 | `aeron.cluster.max.sessions` | `64`, rather than Aeron's 10   | the most client sessions the cluster holds at once ([`ops.md`](ops.md), "Cluster sessions") |
 
 The Replayer runs in the member's JVM, on its media driver, and takes no configuration of its own.

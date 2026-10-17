@@ -192,8 +192,9 @@ internal sealed class Session : IDisposable
 
     /// <summary>Whether a cluster session is open. The recorded fault and <c>IsConnected</c> as well as the sender's
     /// latch: <c>AeronCluster</c> also closes itself, with no event at all, when a new leader does not arrive before
-    /// its timeout.</summary>
-    internal bool HasSession => _sessionFault == null && !_sender.IsSessionLost && _sender.IsConnected;
+    /// its timeout. And the queue, whose <c>SessionClosed</c> is the cluster's own word.</summary>
+    internal bool HasSession => _sessionFault == null && !_sender.IsSessionLost && _sender.IsConnected &&
+                                !_pending.IsClosed(_sender.ClusterSessionId);
 
     public void Dispose()
     {
@@ -319,7 +320,13 @@ internal sealed class Session : IDisposable
         }
         _sessionFault = null;
         _sessionLostSinceMs = -1;
-        DiscardUnconfirmed("the session they went out on was lost (" + why + ")");
+        if (_pending.Count > 0)
+        {
+            Logger.Info(Logger.CoreComponent.Cluster, null,
+                        "{0} unconfirmed frames hold new ones until the queue settles them: the session they went " +
+                            "out on was lost ({1})",
+                        _pending.Count, why);
+        }
     }
 
     /// <summary>Forgets every frame not yet seen on the queue, for a façade that knows none of them will be

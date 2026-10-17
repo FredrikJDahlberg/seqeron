@@ -22,6 +22,7 @@ import org.limitless.seqeron.sbe.frame.ConnectionOpenedDecoder;
 import org.limitless.seqeron.sbe.frame.GatewayActiveDecoder;
 import org.limitless.seqeron.sbe.frame.LeadershipChangedDecoder;
 import org.limitless.seqeron.sbe.frame.MessageHeaderDecoder;
+import org.limitless.seqeron.sbe.frame.SessionClosedDecoder;
 import org.limitless.seqeron.sbe.frame.SnapshotStartedDecoder;
 
 /**
@@ -555,7 +556,7 @@ class SequencerTest {
         seq.clusterHeartbeat(TIMESTAMP + Sequencer.GATEWAY_ACTIVATION_TIMEOUT_NS);
         assertEquals(6, lastGatewayActive(), "5 is unanswered again, so it is handed over");
         assertTrue(seq.sessionClosed(session, TIMESTAMP + Sequencer.GATEWAY_ACTIVATION_TIMEOUT_NS + 1));
-        assertEquals(9, lastGatewayActive(), "and the session's close is 8's");
+        assertEquals(9, promotedOnClose(session), "and the session's close is 8's");
     }
 
     // ── Determinism ───────────────────────────────────────────────────────────
@@ -898,15 +899,17 @@ class SequencerTest {
         assertFalse(seq.sessionClosed(0xBEEFL, TIMESTAMP + 1));
 
         assertTrue(seq.sessionClosed(gatewaySession, TIMESTAMP + 2));
-        final int promotionLength = frames.lastLength();
-        final GatewayActiveDecoder decoded = decodeGatewayActive(frames.last(), promotionLength);
+        assertEquals(6, promotedOnClose(gatewaySession));
+        final int promotion = frames.count() - 2;
+        final GatewayActiveDecoder decoded = decodeGatewayActive(frames.frame(promotion), frames.length(promotion));
         // The standby's gatewayId — never the gatewaySourceId. Both instances share the sourceId, so a
         // promotion carrying it designated both at once, and the consumer could only survive that by
         // latching its first match, which made a restarting instance re-activate off a superseded frame.
         assertEquals(6, decoded.gatewayId());
         assertNotEquals(SOURCE_ID, decoded.gatewayId());
-        assertEquals(5L, frameHeaderOf(frames.last()).globalSeqNo()); // 2 rows + bootstrap + GatewayStarted + promotion
-        assertEquals(TIMESTAMP + 2, frameHeaderOf(frames.last()).timestamp());
+        // 2 rows + bootstrap + GatewayStarted + the unclaimed session's SessionClosed + promotion
+        assertEquals(6L, frameHeaderOf(frames.frame(promotion)).globalSeqNo());
+        assertEquals(TIMESTAMP + 2, frameHeaderOf(frames.frame(promotion)).timestamp());
 
         // The session is forgotten: a duplicate close does not re-promote.
         assertFalse(seq.sessionClosed(gatewaySession, TIMESTAMP + 3));
@@ -936,10 +939,9 @@ class SequencerTest {
 
         // The live one still is, and its close is what promotes.
         assertTrue(seq.sessionClosed(liveSession, TIMESTAMP + 3));
-        final int promotionLength = frames.lastLength();
-        assertEquals(6, decodeGatewayActive(frames.last(), promotionLength).gatewayId());
-        assertEquals(beforeClose + 1, frameHeaderOf(frames.last()).globalSeqNo(),
-                     "the stale close consumed no sequence number");
+        assertEquals(6, promotedOnClose(liveSession));
+        assertEquals(beforeClose + 2, frameHeaderOf(frames.frame(frames.count() - 2)).globalSeqNo(),
+                     "the stale close published its SessionClosed and nothing else");
     }
 
     @Test
@@ -963,12 +965,11 @@ class SequencerTest {
         final long beforeClose = seq.globalSeqNo();
 
         assertFalse(seq.sessionClosed(first, TIMESTAMP + 1), "5 was not designated, so its close hands nothing on");
-        assertEquals(beforeClose, seq.globalSeqNo());
+        assertEquals(beforeClose + 1, seq.globalSeqNo(), "only its SessionClosed");
 
         // 7's own close still promotes, to the lowest rank other than 7.
         assertTrue(seq.sessionClosed(third, TIMESTAMP + 2));
-        final int promotionLength = frames.lastLength();
-        assertEquals(5, decodeGatewayActive(frames.last(), promotionLength).gatewayId());
+        assertEquals(5, promotedOnClose(third));
     }
 
     @Test
@@ -999,6 +1000,26 @@ class SequencerTest {
     }
 
     @Test
+    @DisplayName("every session close is sequenced as SessionClosed, after the promotion it causes")
+    void sessionCloseIsSequenced() {
+        final Sequencer seq = new Sequencer(0, frames);
+        final MutableDirectBuffer buf = new ExpandableArrayBuffer(512);
+        final long session = 0xC0FFEEL;
+        seq.sequenceMessage(buf, 0, encodeIngressPayload(buf, 0), session, TIMESTAMP);
+        final int before = frames.count();
+
+        assertFalse(seq.sessionClosed(session, TIMESTAMP + 1));
+        assertEquals(before + 1, frames.count(), "one frame, though the session was no gateway's");
+        assertEquals(session, decodeSessionClosed(frames.last(), frames.lastLength()).clusterSessionId());
+        final org.limitless.seqeron.sbe.frame.SequencedSystemHeaderDecoder header = systemHeaderOf(frames.last());
+        assertEquals(-1, header.sourceId(), "F-4: the cluster's own frame");
+        assertEquals(-1, header.connectionId());
+        assertEquals(-1L, header.sessionId(), "the closed session is the field's, not the header's");
+        assertEquals(2L, header.globalSeqNo());
+        assertEquals(TIMESTAMP + 1, header.timestamp());
+    }
+
+    @Test
     @DisplayName("closing the only instance of a logical gateway promotes nothing")
     void soleGatewayInstanceHasNoStandbyToPromote() {
         // Fail closed: naming a nonexistent instance would activate no one while burning a globalSeqNo,
@@ -1014,7 +1035,8 @@ class SequencerTest {
         assertFalse(seq.sessionClosed(gatewaySession, TIMESTAMP + 1));
         assertEquals(1L, seq.gatewayPromotionFailedCount(),
                      "counted, unlike a session that was never a gateway's: this one was, with no standby");
-        assertEquals(3L, seq.globalSeqNo(), "a promotion with no target consumes no sequence number");
+        assertEquals(4L, seq.globalSeqNo(), "a promotion with no target consumes no sequence number, the close's own "
+                                                + "SessionClosed one");
     }
 
     // ── Activation deadline (a designated instance that never declares itself started) ────────────
@@ -1185,15 +1207,13 @@ class SequencerTest {
                             TIMESTAMP);
 
         assertTrue(seq.sessionClosed(secondSession, TIMESTAMP + 1));
-        final int promotion = frames.lastLength();
-        assertEquals(9, decodeGatewayActive(frames.last(), promotion).gatewayId(),
+        assertEquals(9, promotedOnClose(secondSession),
                      "the second pair's standby — promotionTarget filters on the closed instance's own "
                          + "gatewaySourceId");
 
         // The client pair is untouched: its active instance never lost anything.
         assertTrue(seq.sessionClosed(clientSession, TIMESTAMP + 2));
-        final int clientPromotion = frames.lastLength();
-        assertEquals(6, decodeGatewayActive(frames.last(), clientPromotion).gatewayId());
+        assertEquals(6, promotedOnClose(clientSession));
     }
 
     @Test
@@ -1430,6 +1450,11 @@ class SequencerTest {
                                  SnapshotStartedDecoder.BLOCK_LENGTH, new SnapshotStartedDecoder());
     }
 
+    private static SessionClosedDecoder decodeSessionClosed(final MutableDirectBuffer buffer, final int length) {
+        return decodeSynthesized(buffer, length, SessionClosedDecoder.TEMPLATE_ID, SystemFrame.SESSION_CLOSED,
+                                 SessionClosedDecoder.BLOCK_LENGTH, new SessionClosedDecoder());
+    }
+
     private static GatewayActiveDecoder decodeGatewayActive(final MutableDirectBuffer buffer, final int length) {
         return decodeSynthesized(buffer, length, GatewayActiveDecoder.TEMPLATE_ID, SystemFrame.GATEWAY_ACTIVE,
                                  GatewayActiveDecoder.BLOCK_LENGTH, new GatewayActiveDecoder());
@@ -1466,7 +1491,7 @@ class SequencerTest {
     }
 
     /**
-     * Decodes one of the four the sequencer synthesizes. Each has a template of its own and carries its
+     * Decodes one of the five the sequencer synthesizes. Each has a template of its own and carries its
      * fields inline, so there is no payload and no length prefix: the frame is its framing header plus its
      * block, and the decoder is wrapped over that block with its own compiled constants (<b>V-3</b>).
      */
@@ -1485,6 +1510,8 @@ class SequencerTest {
             d.wrap(buffer, block, blockLength, header.version());
         } else if (decoder instanceof SnapshotStartedDecoder d) {
             d.wrap(buffer, block, blockLength, header.version());
+        } else if (decoder instanceof SessionClosedDecoder d) {
+            d.wrap(buffer, block, blockLength, header.version());
         } else {
             ((LeadershipChangedDecoder)decoder).wrap(buffer, block, blockLength, header.version());
         }
@@ -1495,6 +1522,12 @@ class SequencerTest {
     private long globalSeqNoOf(final boolean sequenced) {
         assertTrue(sequenced);
         return frameHeaderOf(frames.last()).globalSeqNo();
+    }
+
+    /** The {@code gatewayId} a session's close promoted, after checking the close ended on its {@code SessionClosed}. */
+    private int promotedOnClose(final long sessionId) {
+        assertEquals(sessionId, decodeSessionClosed(frames.last(), frames.lastLength()).clusterSessionId());
+        return gatewayActiveAt(frames.count() - 2);
     }
 
     /** The {@code gatewayId} of the {@code GatewayActive} published last. */

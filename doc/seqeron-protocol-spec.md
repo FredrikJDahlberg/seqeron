@@ -24,9 +24,9 @@ around a payload and its own system vocabulary; the application owns the payload
 | layer | contents | schema | owner |
 | --- | --- | --- | --- |
 | L0 transport | Aeron channels and stream ids; the Aeron Cluster ingress/egress session protocol | `sbe-cluster.xml` (111), a mirror of `io.aeron.cluster.codecs` | Aeron |
-| L1 frame | two envelope pairs, `Unsequenced`/`Sequenced` (application) and `UnsequencedSystem`/`SequencedSystem` (system), plus four synthesized templates | `sbe-frame.xml` (210) | seqeron |
+| L1 frame | two envelope pairs, `Unsequenced`/`Sequenced` (application) and `UnsequencedSystem`/`SequencedSystem` (system), plus five synthesized templates | `sbe-frame.xml` (210) | seqeron |
 | L2 payload | one opaque, length-prefixed byte range per application frame, named by `payloadId` | the application's | the owner of that `payloadId` |
-| system messages | seqeron's sixteen events, named by `systemEventType` | `sbe-frame.xml` (210) | seqeron |
+| system messages | seqeron's seventeen events, named by `systemEventType` | `sbe-frame.xml` (210) | seqeron |
 | replay control | replayer ↔ client messages; node-local, never sequenced, never recorded | `sbe-replay.xml` (212) | seqeron |
 
 The cluster tier never decodes an application payload.
@@ -53,7 +53,7 @@ A frame is one of three classes, by where it came from.
 Sequenced and synthesized frames draw `globalSeqNo` from one counter (§9.1).
 
 The template identifies a synthesized frame: `ClusterHeartbeat`, `LeadershipChanged`,
-`GatewayActive` and `SnapshotStarted` have templates of their own and no ingress form. Their header also carries
+`GatewayActive`, `SnapshotStarted` and `SessionClosed` have templates of their own and no ingress form. Their header also carries
 `sourceId`, `connectionId` and `sessionId` = −1, since there is no external producer, connection or
 session to name. A consumer that needs to test provenance MUST test `sourceId` (**F-4**) and MUST NOT
 depend on the other two fields.
@@ -85,7 +85,7 @@ Where each kind of message travels, and which of those streams is the durable re
 ## 4. The frame layer
 
 Every message the cluster sequences is one of eight SBE templates. Four are envelope pairs, ingress and
-sequenced, one pair per family; four are frames the sequencer synthesizes itself.
+sequenced, one pair per family; five are frames the sequencer synthesizes itself.
 
 ```
 Unsequenced        (schema 210, template 100) { unsequencedHeader,       payload:varData }
@@ -96,6 +96,7 @@ ClusterHeartbeat   (schema 210, template 104) { sequencedSystemHeader }
 LeadershipChanged  (schema 210, template 105) { sequencedSystemHeader,   newLeaderMemberId, leadershipTermId }
 GatewayActive      (schema 210, template 106) { sequencedSystemHeader,   gatewayId }
 SnapshotStarted    (schema 210, template 107) { sequencedSystemHeader,   round }
+SessionClosed      (schema 210, template 108) { sequencedSystemHeader,   clusterSessionId }
 ```
 
 The members of each pair differ only in the fields sequencing adds. An application frame carries one
@@ -368,8 +369,8 @@ last, so every participating row precedes the first round.
 
 ## 7. System messages
 
-Sixteen events, defined in schema 210 beside the envelopes. Twelve are submitted by producers and
-travel in `UnsequencedSystem`/`SequencedSystem`. Four are synthesized by the sequencer and have templates
+Seventeen events, defined in schema 210 beside the envelopes. Twelve are submitted by producers and
+travel in `UnsequencedSystem`/`SequencedSystem`. Five are synthesized by the sequencer and have templates
 of their own.
 
 | event | `systemEventType` | carried in | ingress-legal | the sequencer decodes it |
@@ -390,9 +391,10 @@ of their own.
 | `SnapshotEnd` | 28 | payload | yes (participating source) | no |
 | `SnapshotPolicyRegistered` | 29 | payload | yes (`clusterctl load-topology`) | yes: the round interval (§7.3) |
 | `SnapshotStarted` | 30 | template 107 | no | no (encodes only) |
+| `SessionClosed` | 31 | template 108 | no | no (encodes only) |
 
-A submitted event's `systemEventType` equals its payload's SBE template id. The four synthesized frames
-also carry their `systemEventType` (5, 16, 18, 30), redundantly with the template id, so that offset 16
+A submitted event's `systemEventType` equals its payload's SBE template id. The five synthesized frames
+also carry their `systemEventType` (5, 16, 18, 30, 31), redundantly with the template id, so that offset 16
 identifies every frame on the queue. Numbers are never reused: `GatewayActivationRequested` took 24
 rather than a vacated number so that no recording can be misread.
 
@@ -406,6 +408,11 @@ instance's session closing, an activation timeout, and a `GatewayActivationReque
 the sequencer validates the request against the list, sequences it, and synthesizes the
 `GatewayActive` at the next `globalSeqNo`. The operator's request is therefore on the log, and every
 `SequencedSystem` frame has an `UnsequencedSystem` origin.
+
+**`SessionClosed` bounds what a session got into the log.** The sequencer synthesizes one for every
+cluster session close, gateway or not, after any `GatewayActive` that close causes (§7.2). The consensus
+module appends nothing from a session once it begins closing it, and the close follows everything it did
+append, so a frame from that session not on the queue before its `SessionClosed` never will be (**A-4**).
 
 Header of a synthesized frame (§5 covers ingress only):
 
@@ -451,6 +458,7 @@ synthesized templates' blocks include the 34-byte header composite.
 | `SnapshotEnd` | 28 | 28 | 72 | `round` int64, `recordCount` int32, `length` int64, `crc32c` uint32, `formatVersion` uint32 |
 | `SnapshotPolicyRegistered` | 29 | 4 | 48 | `intervalSeconds` uint32 |
 | `SnapshotStarted` | 30 | 42 | 50 | `round` int64 |
+| `SessionClosed` | 31 | 42 | 50 | `clusterSessionId` int64 |
 
 Frame bytes are for the sequenced form: 44 + block for a submitted event, 8 + block for a synthesized
 template.
@@ -474,6 +482,7 @@ Field semantics:
 - `snapshot`: 1 if the source takes part in snapshot rounds, else 0; the same on every row of one
   `gatewaySourceId`.
 - `round`: a snapshot round's number, from 1; its cut is the `globalSeqNo` of its `SnapshotStarted`.
+- `clusterSessionId`: the Aeron Cluster session that closed. The header's `sessionId` stays −1 (**F-4**).
 - `recordCount`, `length`, `crc32c`: the snapshot's records, its header included, their bytes, and the
   CRC-32C of those bytes in order. The records themselves never enter the log; they stay with the
   instances that serialized them.
@@ -522,7 +531,8 @@ down converges on whichever instance starts first.
    in list order.
 2. Session close: the cluster session bound by a `GatewayStarted` (**S-6**) closes. The binding is
    removed first; then, if the most recent `GatewayActive` for that gateway names the instance the
-   binding named, the target rule runs for it. A superseded instance's close promotes nothing.
+   binding named, the target rule runs for it. A superseded instance's close promotes nothing. The
+   close's own `SessionClosed` follows, promotion or not.
 3. Activation timeout: a designated instance has not published a `GatewayStarted` within
    `GATEWAY_ACTIVATION_TIMEOUT_MS`. Without this trigger an instance that failed before registering
    could never be promoted past, since no session of its own would close.
@@ -576,7 +586,7 @@ seqeron owns two SBE schemas: the frames on the log and the replay control proto
 
 | file | schema id | contains | change policy (§11) |
 | --- | --- | --- | --- |
-| `sbe-frame.xml` | 210 | the eight top-level templates, the four header composites, `messageHeader`, `varDataEncoding`, and the twelve submitted system payloads | envelopes frozen; system events changeable under **V-3** |
+| `sbe-frame.xml` | 210 | the nine top-level templates, the four header composites, `messageHeader`, `varDataEncoding`, and the twelve submitted system payloads | envelopes frozen; system events changeable under **V-3** |
 | `sbe-replay.xml` | 212 | the three replay control messages (§10) | changed in place, no version bump |
 
 The envelopes and system messages are one schema because they have one owner, ship in one artifact and
@@ -636,7 +646,7 @@ Implementation notes:
 - Conditions 4 and 5 are equalities, not bounds. A short `blockLength` would place the length prefix
   inside the header; a long one, or a length prefix short of the frame end, would silently drop bytes on
   every node. Compare condition 4 against the composite's generated `ENCODED_LENGTH`.
-- Condition 3 rejects the four synthesized templates before any payload is read. Condition 8 rejects
+- Condition 3 rejects the five synthesized templates before any payload is read. Condition 8 rejects
   the same events named inside an `UnsequencedSystem`.
 - The size limits are compiled-in protocol constants (§12), never read from a node's transport
   configuration per frame: a node configured differently from its peers would diverge (**S-3**). The
@@ -896,7 +906,7 @@ order and serves for correlation.
 ### 13.2 Payload encodings
 
 > **E-1.** An application or system payload that arrived through ingress is encoded once, by its producer, and
-> is never re-encoded after sequencing. The exception is the four synthesized frames, which have no
+> is never re-encoded after sequencing. The exception is the five synthesized frames, which have no
 > producer: every node encodes its own copy.
 
 An application payload may use any encoding: SBE, protobuf, raw FIX, a proprietary binary. Every
@@ -969,7 +979,9 @@ concern sources that take part in snapshot rounds (§7.3, `doc/snapshot.md`).
   (which a gateway pair shares). A frame stamped with term T that has not appeared by the first
   `LeadershipChanged` with `leadershipTermId` > T is lost. The lost frames are exactly the newest
   frames stamped T, because a leader drops ingress stamped with any other term and every election
-  discards unread ingress. If the producer sees an own frame that differs from its oldest pending one,
+  discards unread ingress. A frame from a session that has not appeared by that session's
+  `SessionClosed` is lost too (§7). A session whose open never committed has no `SessionClosed`, but was
+  lost to an election, which the term bounds. If the producer sees an own frame that differs from its oldest pending one,
   per-session order no longer holds (usually because the sequencer rejected a frame, S-7), and the
   producer MUST fence. (`PendingSends`)
 - **A-5. Lost frames are resent before anything new.** From the first sign of a newer term (egress
@@ -977,8 +989,10 @@ concern sources that take part in snapshot rounds (§7.3, `doc/snapshot.md`).
   has been seen or resent, the producer MUST NOT place a new frame. This includes a send already
   retrying through the election: the sender learns of the new leader inside that retry, abandons the
   send and reports it not placed, with the session still open (`setIngressHold`, in both
-  `ClusterStreamSender`s). Lost frames MUST be resent oldest first, once the sender stamps a term the
-  queue has reached. A frame already in the log is never pending after it appears on the queue, so a resend
+  `ClusterStreamSender`s). The same holds from the replacement of a session until every frame pending
+  on the old one has been seen or resent, since only the queue settles them. Lost frames MUST be resent
+  oldest first, once the sender stamps a term the queue has reached, on a session the queue has not shown
+  closed. A frame already in the log is never pending after it appears on the queue, so a resend
   creates no duplicate. (`PendingSends`)
 - **A-6. Snapshot records are deterministic.** Every instance of a source MUST serialize the same state at
   a round's cut to the same records, byte for byte: no hash-map iteration order, no local time, no node
@@ -990,7 +1004,6 @@ concern sources that take part in snapshot rounds (§7.3, `doc/snapshot.md`).
   fence with `SNAPSHOT_DIVERGED`. (`SnapshotTaker`)
 
 A-4 and A-5 apply within one producer process. A restarted producer, or a standby promoted in its
-place, starts with nothing pending; a frame pending on a cluster session the cluster closed is dropped
-when that session is replaced, since the close is on no queue; and a frame lost without a
-leader change (an ingress image that drops and rejoins within the session timeout) has no term boundary
-to be counted against.
+place, starts with nothing pending; and a frame lost with neither a leader change nor a session close
+(an ingress image that drops and rejoins within the session timeout) has no boundary to be counted
+against.

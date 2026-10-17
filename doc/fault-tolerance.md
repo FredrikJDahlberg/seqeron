@@ -62,7 +62,7 @@ history of leadership, and a client can tell the current leader from the log alo
 **A failover can lose ingress without any error.** A send returns once the frame is on the leader's ingress
 publication, and the cluster confirms nothing on egress. Frames the old leader had not committed are lost,
 as is everything offered to its publication before the producer learns of the new leader — in
-`failover-test.sh`, about 5,500 frames at 100 µs pacing. The session survives, so neither side sees a fault.
+`failover-test.sh`, at 100 µs pacing, either about 100 frames or about 10,000, in roughly equal shares of runs. The session survives, so neither side sees a fault.
 §5 describes how a producer detects and resends those frames.
 
 ### 1.3 A node that cannot record terminates itself
@@ -166,14 +166,14 @@ sequencer promote the standby (§2.2) whatever the application does next; it usu
   clears. It cannot begin to act while stalled, since designation and leadership reach it on the queue. A
   standby that never recovers stays up and unready, so alert on that log line.
 - **Only an announced instance fences on a lost session.** Closing the session a designated instance's
-  `GatewayStarted` bound is what promotes its sibling (§2.2), and the queue carries no frame for that close, so a
-  replacement session could act before the instance has seen whether it was superseded. Any other instance
+  `GatewayStarted` bound is what promotes its sibling (§2.2), so a replacement session could act before the
+  instance has read, at that close's `SessionClosed`, whether it was superseded. Any other instance
   holds nothing the close changed — a standby, and one designated after its session was lost,
   which announces on the replacement instead: it opens a new session as the first was opened, starting an
   attempt at most once a second and advancing it a step per duty cycle, and fences with `CLUSTER_SESSION_LOST`
   only if none opens within the queue-stall timeout and the attempt then under way fails, since one whose request
-  an election swallowed spends its whole timeout. What was unconfirmed on the old session is dropped, not resent
-  (§5).
+  an election swallowed spends its whole timeout. What was unconfirmed on the old session holds new frames
+  until the queue settles it, and what it lost is resent first (§5).
 
 Being superseded is not a fence. When a `GatewayActive` names a sibling, the instance's listener gets
 `onStandby`; it closes its external connections, keeps its cluster session and goes on following the queue,
@@ -193,7 +193,7 @@ on inconsistent information. It does so on four triggers (spec §7.2):
    a network loss or a shutdown, which Aeron Cluster reports alike as a session close. The binding is keyed on
    `GatewayStarted`, not on `sourceId`, because other producers may legitimately carry a gateway's
    `sourceId`. An instance that has since been superseded keeps its binding until its session closes, and
-   that close promotes nothing.
+   that close promotes nothing. Every close, promotion or not, is then sequenced as `SessionClosed`.
 3. **Activation timeout:** a designated instance that publishes no `GatewayStarted` within 5 s is passed
    over.
 4. **Operator request:** `clusterctl activate <gatewayId>` publishes `GatewayActivationRequested` and waits
@@ -379,9 +379,16 @@ A producer that must not lose a frame confirms each one on its own queue (spec �
 id. After a `LeadershipChanged` with a newer term, any frame stamped with an older term that has not appeared
 is lost, and the lost frames are exactly the newest ones stamped with that term.
 
-From the first sign of a new term until those frames are resent, `IngressPublisher` places nothing new, and
-the sender abandons a send already retrying through the election (`setIngressHold`). The lost frames are
-resent oldest first. The result is every frame sequenced exactly once, in order.
+A closed session is the same kind of boundary. The consensus module appends nothing from a session once it
+begins closing it, and the close follows everything it did append, so a frame not on the queue before that
+session's `SessionClosed` is lost. A session whose open never committed has no `SessionClosed`, but was lost
+to an election, which the term bounds. A producer whose session the cluster closed replaces it (§2.1, §4), and
+the queue's `SessionClosed` for its own session also counts as that loss.
+
+From the first sign of a new term, or from a session's replacement, until every older frame is seen or resent,
+`IngressPublisher` places nothing new, and the sender abandons a send already retrying through the election
+(`setIngressHold`). The lost frames are resent oldest first, never onto a session the queue has shown closed.
+The result is every frame sequenced exactly once, in order.
 
 `failover-test.sh` runs two producers across a leader kill: the one using `PendingSends` must see every frame
 on the queue exactly once and in order, and the other reports what it lost. `cpp-client-test.sh` and
@@ -427,10 +434,9 @@ from a pinned commit ([`building.md`](building.md)).
   share, and `chaos-runner.sh` asserts that the consumer and gateway instance there exit; a standalone `aeronmd`
   is never killed.
 - **Ingress lost outside one producer process.** `PendingSends` keeps its state in memory and counts losses
-  against a leadership change. A frame lost without a leader change — an ingress image that drops and rejoins
-  within the session timeout — has no term boundary to be counted against, and a restarted producer, or a
-  standby promoted in its place, starts with nothing pending. A session the cluster closed has no boundary
-  either, so what was pending on it is dropped when it is replaced (§2.1, §4). Covering either needs a durable outbox or a
+  against a leadership change or a session close. A frame lost with neither — an ingress image that drops and
+  rejoins within the session timeout — has no boundary to be counted against, and a restarted producer, or a
+  standby promoted in its place, starts with nothing pending. Covering either needs a durable outbox or a
   per-producer sequence number that the sequencer de-duplicates on.
 - **Producer authentication.** The cluster checks well-formedness, not identity (spec §7). Authentication
   belongs at the system's external edges.

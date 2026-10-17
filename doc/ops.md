@@ -243,6 +243,24 @@ This repository's processes use the ids below. An application's should start at 
 | 31–36 | `csharp-client-test.sh` C# probes; `cpp-client-test.sh` C++ probes |
 | 41–43 | `csharp-windows-test.sh` C# probes |
 
+## Consensus timeouts
+
+A member that hears no heartbeat from the leader for `sequencer.leaderHeartbeatTimeoutMs` (2 s) starts an
+election, and each election stage waits `sequencer.electionTimeoutMs` (1 s) on the others; the leader heartbeats
+every `sequencer.leaderHeartbeatIntervalMs` (200 ms). These are Aeron's ratios, and a failover takes about 3 to 4 s.
+Set them alike on every member.
+
+The heartbeat timeout is also how long a member copying the log from the leader waits on progress before it gives up,
+and a copy that keeps giving up is part of how Aeron Cluster 1.53.2 loses a committed entry
+([`fault-tolerance.md`](fault-tolerance.md) §1.4). Lowering it buys a faster failover with more elections that only a
+GC pause or a starved thread started, and more abandoned copies. Raising it is bounded by the clients: the new-leader
+wait (5 s), a send's spin through an election (10 s) and the queue-stall fence (20 s) must each outlast a failover,
+and the 5 s startup canvass must be at least twice the heartbeat timeout.
+
+`sequencer.sessionTimeoutMs` (5 s) must stay well above the heartbeat timeout. A leader cut off from its followers
+still leads until the heartbeat timeout tells it otherwise, and a client session it stops hearing in that time it
+closes, telling the client, which drops the session once the cut heals.
+
 ## Driver threads
 
 A member runs nine agent threads: the media driver's conductor, sender and receiver, the archive's
@@ -252,24 +270,24 @@ unless `aeron.threading.mode` names `SHARED_NETWORK` (sender and receiver on one
 on one). The archive's follow `aeron.archive.threading.mode`, Aeron's property, whose default is dedicated too.
 
 Dedicated threads pay only when each has a core. Where they do not, as with several members on one host, a
-small virtual machine or a container with a CPU quota, a starved member can miss the 200 ms leader heartbeat
+small virtual machine or a container with a CPU quota, a starved member can miss the 2 s leader heartbeat
 timeout and force an election. Pass `-Daeron.threading.mode=SHARED` and
 `-Daeron.archive.threading.mode=SHARED` there, and keep `backoff` as the idle strategy.
 
 ## Garbage collection
 
 A garbage collector's stop-the-world pause stops every thread in the member's JVM: the consensus module,
-the service, the embedded driver and the Replayer. A pause on the leader longer than the 200 ms leader
+the service, the embedded driver and the Replayer. A pause on the leader longer than the 2 s leader
 heartbeat timeout (`sequencer.leaderHeartbeatTimeoutMs`) costs an election, and one in a gateway longer than
-the 1 s session timeout (`sequencer.sessionTimeoutMs`) hands it over to its standby.
+the 5 s session timeout (`sequencer.sessionTimeoutMs`) hands it over to its standby.
 
 The sequencer allocates nothing per frame (`SequencerTest` checks it), so the pauses to guard against are
 the long ones: a full collection, or a heap being resized.
 
 - **Fix the heap.** Set `-Xms` equal to `-Xmx`, well above the live set, so it is never resized.
 - **Choose the collector for the timeouts.** G1, the JDK's default, aims for 200 ms pauses
-  (`-XX:MaxGCPauseMillis`), the leader heartbeat timeout itself; lower the target, or use generational
-  ZGC (`-XX:+UseZGC -XX:+ZGenerational` on JDK 21), whose pauses are typically under a millisecond.
+  (`-XX:MaxGCPauseMillis`), well inside both timeouts but missed on a loaded host; lower the target, or use
+  generational ZGC (`-XX:+UseZGC -XX:+ZGenerational` on JDK 21), whose pauses are typically under a millisecond.
 - **Read the pauses.** `start-cluster.sh`, `start-gateway-host.sh` and the container pass `-Xlog:gc`
   (`SEQERON_SERVER_JAVA_OPTS`), which writes each pause and its duration into the process's own log:
   `[0.264s][info][gc] GC(0) Pause Young (Normal) (G1 Evacuation Pause) 25M->3M(516M) 1.502ms`. Pass it

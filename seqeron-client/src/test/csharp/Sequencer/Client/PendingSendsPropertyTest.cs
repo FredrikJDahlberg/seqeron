@@ -14,8 +14,9 @@ namespace Org.Limitless.Seqeron.Sequencer.Client;
 /// its own term and drops the rest, commits a prefix, and loses everything uncommitted at an election. After one,
 /// the old leader either still takes ingress and drops it, or is gone and a send spins until egress brings the
 /// <c>NewLeader</c> — giving the send up if the hold is on, as <c>ClusterStreamSender</c> does. The sender may
-/// reconnect on a new session then. The queue lags, a sibling shares the producer's <c>sourceId</c>, and term ids
-/// skip, as after a failed ballot.
+/// reconnect on a new session then. The cluster also closes the producer's session at random, and drops what it
+/// sends on it until the producer replaces it; a close an election loses, the next leader makes again. The queue
+/// lags, a sibling shares the producer's <c>sourceId</c>, and term ids skip, as after a failed ballot.
 /// <para>Checked once the faults stop and everything has drained: the log holds every frame the producer sent
 /// exactly once, in send order, and nothing faulted. Seeds are fixed; the failing one is in the test name. Draws are
 /// made in the same order as <c>PendingSendsPropertyTest.java</c> and <c>PendingSendsPropertyTest.cpp</c>, so a
@@ -28,9 +29,10 @@ public class PendingSendsPropertyTest
     private const int QuiesceRounds = 100;
     private const long Sibling = 1_000_000;
     private const long LeadershipChanged = -1;
+    private const long SessionClosed = -2;
     private const int PayloadId = 6;
 
-    // One queue entry: frame Value from Session, or a term's LeadershipChanged.
+    // One log entry: frame Value from Session, a term's LeadershipChanged, or a session's close.
     private readonly record struct Entry(long Session, long Value);
 
     private readonly PendingSends _pending = new PendingSends(Capacity);
@@ -53,6 +55,9 @@ public class PendingSendsPropertyTest
     private long _senderTerm;
     private long _session = 1;
     private bool _oldLeaderTakesIngress;
+
+    // The cluster has closed _session, and the producer has not replaced it yet.
+    private bool _closedAtCluster;
     private long _next;
     private int _resent;
 
@@ -82,7 +87,7 @@ public class PendingSendsPropertyTest
                     return false;
                 }
             }
-            if (_test._senderTerm == _test._clusterTerm)
+            if (_test._senderTerm == _test._clusterTerm && !_test._closedAtCluster)
             {
                 _test._uncommitted.Enqueue(new Entry(_test._session, frame.GetLong(FrameLayer.MinIngressLength)));
             }
@@ -126,10 +131,22 @@ public class PendingSendsPropertyTest
             }
             else if (action < 87)
             {
-                _uncommitted.Clear();
-                _clusterTerm += 1 + _rng.Roll(2);
-                _queue.Enqueue(new Entry(LeadershipChanged, _clusterTerm));
-                _oldLeaderTakesIngress = _rng.Roll(2) == 0;
+                Elect();
+            }
+            else if (action < 88)
+            {
+                if (!_closedAtCluster)
+                {
+                    _closedAtCluster = true;
+                    _uncommitted.Enqueue(new Entry(SessionClosed, _session));
+                }
+            }
+            else if (action < 91)
+            {
+                if (_closedAtCluster)
+                {
+                    ReplaceSession();
+                }
             }
             else if (_senderTerm != _clusterTerm)
             {
@@ -138,6 +155,10 @@ public class PendingSendsPropertyTest
         }
         for (int round = 0; round < QuiesceRounds && _pending.Count > 0; round++)
         {
+            if (_closedAtCluster)
+            {
+                ReplaceSession();
+            }
             if (_senderTerm != _clusterTerm)
             {
                 NewLeader();
@@ -174,8 +195,32 @@ public class PendingSendsPropertyTest
         if (_rng.Roll(2) == 0)
         {
             _session++;
+            _closedAtCluster = false;
         }
         _pending.OnNewLeader(_senderTerm);
+    }
+
+    // Everything uncommitted is lost but the closes, which the new leader makes again.
+    private void Elect()
+    {
+        var closes = _uncommitted.Where(entry => entry.Session == SessionClosed).ToList();
+        _uncommitted.Clear();
+        _clusterTerm += 1 + _rng.Roll(2);
+        _queue.Enqueue(new Entry(LeadershipChanged, _clusterTerm));
+        foreach (Entry close in closes)
+        {
+            _uncommitted.Enqueue(close);
+        }
+        _oldLeaderTakesIngress = _rng.Roll(2) == 0;
+    }
+
+    // The producer opens a new session in the current term, and resends in the same duty cycle, as Session does.
+    private void ReplaceSession()
+    {
+        _session++;
+        _senderTerm = _clusterTerm;
+        _closedAtCluster = false;
+        _resent += _pending.ResendMissing(_sender);
     }
 
     private void Commit(int count)
@@ -183,7 +228,10 @@ public class PendingSendsPropertyTest
         for (int k = count; k > 0 && _uncommitted.Count > 0; k--)
         {
             Entry entry = _uncommitted.Dequeue();
-            _log.Add(entry.Value);
+            if (entry.Session != SessionClosed)
+            {
+                _log.Add(entry.Value);
+            }
             _queue.Enqueue(entry);
         }
     }
@@ -196,6 +244,11 @@ public class PendingSendsPropertyTest
             if (entry.Session == LeadershipChanged)
             {
                 _pending.OnLeadershipChanged(entry.Value);
+                continue;
+            }
+            if (entry.Session == SessionClosed)
+            {
+                _pending.OnSequenced(SequencedEvents.SessionClosed(entry.Value));
                 continue;
             }
             _body.PutLong(0, entry.Value);

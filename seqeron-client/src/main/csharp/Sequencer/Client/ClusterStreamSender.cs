@@ -36,11 +36,11 @@ public sealed class ClusterStreamSender : IIngressSender, IDisposable
 
     internal const long ConnectTimeoutNs = 10_000_000_000L;
 
-    // How long the client waits for a NewLeader before closing itself. The default, 2x the cluster's 200ms
-    // leaderHeartbeatTimeoutNs, is shorter than an election.
+    // How long the client waits for a NewLeader once the leader's egress image has gone, before closing itself.
+    // Aeron's default, 2x the cluster's leaderHeartbeatTimeoutNs (2s by default), leaves no margin over an election.
     internal const long NewLeaderTimeoutNs = 5_000_000_000L;
 
-    // Well inside the cluster's sequencer.sessionTimeoutMs (1s), as the twins' is.
+    // Well inside the cluster's sequencer.sessionTimeoutMs (5s), as the twins' is.
     private const long KeepAliveIntervalMs = 200;
 
     // How long Send spins before calling the session what it has become.

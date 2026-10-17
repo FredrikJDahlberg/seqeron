@@ -99,9 +99,9 @@ QUEUE_STALL_DEADLINE_SECS="${QUEUE_STALL_DEADLINE_SECS:-10}"
 # Not a harness deadline — the CLUSTER's own session timeout, passed to every member below. It is the
 # one Aeron timeout a slow host does lengthen: a gateway's keep-alive shares its duty cycle with a
 # blocking ingress offer, so a failover that leaves ingress unconnected can starve keep-alives past
-# the 1s default, and the pair fences itself on a cluster that is otherwise healthy.
-SESSION_TIMEOUT_MS="${SESSION_TIMEOUT_MS:-1000}"
-PAUSE_SECS=0.5
+# it, and the pair fences itself on a cluster that is otherwise healthy.
+SESSION_TIMEOUT_MS="${SESSION_TIMEOUT_MS:-5000}"
+PAUSE_SECS=3   # past the 2 s leader heartbeat timeout, so a paused leader costs an election
 
 JAVA_OPTS=("${SEQERON_JAVA_OPTS[@]}")
 BASE_DIR="${TMP_DIR}/seqeron-seqfo"
@@ -812,7 +812,7 @@ verify_sequence() {
   kill "${LOAD_PID:-}" 2>/dev/null; pkill -f ClusterProbe 2>/dev/null
   pkill -f "TestGateway client" 2>/dev/null; LOAD_PID=""
   sleep 3
-  # The gateways go first: SIGSTOPping the members stops the consensus modules too, and a 1s
+  # The gateways go first: SIGSTOPping the members stops the consensus modules too, and the
   # sessionTimeoutNs means every gateway would fence on TIMEOUT mid-snapshot and fill its log with a
   # failure that is this script's doing, not the run's.
   for m in "$GW_A_MEMBER" "$GW_B_MEMBER"; do kill "${GW_PIDS[$m]:-0}" 2>/dev/null; done

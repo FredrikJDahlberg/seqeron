@@ -54,7 +54,8 @@ public class SequencedFrameDecoder
         }
         if (frameTemplateId == Frame.ClusterHeartbeat.TemplateId ||
             frameTemplateId == Frame.LeadershipChanged.TemplateId ||
-            frameTemplateId == Frame.GatewayActive.TemplateId || frameTemplateId == Frame.SnapshotStarted.TemplateId)
+            frameTemplateId == Frame.GatewayActive.TemplateId || frameTemplateId == Frame.SnapshotStarted.TemplateId ||
+            frameTemplateId == Frame.SessionClosed.TemplateId)
         {
             return WrapSynthesized(offset, length);
         }
@@ -119,7 +120,7 @@ public class SequencedFrameDecoder
         return payloadStart + PayloadLength <= length;
     }
 
-    /// <summary>One of the four synthesized events: no payload, its fields inline in the frame's own
+    /// <summary>One of the five synthesized events: no payload, its fields inline in the frame's own
     /// block.</summary>
     private bool WrapSynthesized(int offset, int length)
     {
@@ -201,7 +202,7 @@ public class SequencedFrameDecoder
     /// <summary>
     /// Offset within <see cref="Buffer"/> of what a consumer decodes: the payload, its own 8-byte
     /// <c>MessageHeader</c> included, on an application frame; the payload on a submitted system frame; the
-    /// frame's own block on one of the synthesized four.
+    /// frame's own block on one of the synthesized five.
     /// </summary>
     public int PayloadOffset { get; private set; }
 

@@ -252,8 +252,8 @@ C# reads the C++ variables bar `SEQERON_EXAMPLE_EGRESS_PORT` — its egress is e
   carry the same call with the same semantics, so either example runs attached to any member, and nothing
   here configures a cluster: the member id it follows is the member id it produces to.
 - **One session, kept alive.** The session is opened once and pinged every second, so the duty cycle calls
-  `keepAlive()` every iteration — the cluster's `sessionTimeoutMs` is 1s, which one ping a second does not
-  meet on its own, and the sender holds the 200ms interval and decides when one is actually due.
+  `keepAlive()` every iteration rather than leaving the session to the ping's pace: the sender holds the 200ms
+  interval and decides when one is actually due.
 - **One publish, three answers.** `Publish` is `Published`, `Refused` (the payload is above
   `MAX_PAYLOAD_LENGTH` — local, permanent, nothing was offered) or `Declined` (the transport's answer, and
   the one worth retrying). The ping retries a `Declined` by simply sending the next second's.

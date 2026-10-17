@@ -233,10 +233,11 @@ class Session
     }
 
     // Whether a cluster session is open: the sender gives its session up, with no event at all, when a new
-    // leader does not arrive before its timeout, hence isConnected() as well as the latch.
+    // leader does not arrive before its timeout, hence isConnected() as well as the latch. And the queue, whose
+    // SessionClosed is the cluster's own word.
     [[nodiscard]] bool hasSession() const
     {
-        return !m_sender.isSessionLost() && m_sender.isConnected();
+        return !m_sender.isSessionLost() && m_sender.isConnected() && !m_pending.isClosed(m_sender.clusterSessionId());
     }
 
     // Closes the cluster session. The receiver releases its streams when this object goes.
@@ -374,7 +375,13 @@ class Session
             return;
         }
         m_sessionLostSinceMs = -1;
-        discardUnconfirmed(std::string{ "the session they went out on was lost (" } + why + ")");
+        if (m_pending.size() > 0)
+        {
+            util::Logger::info(util::component::Cluster,
+                               "%zu unconfirmed frames hold new ones until the queue settles them: the session they "
+                               "went out on was lost (%s)",
+                               m_pending.size(), why);
+        }
     }
 
     // Confirmed ingress takes the term first: nothing new may go out before the hold it may place is on.

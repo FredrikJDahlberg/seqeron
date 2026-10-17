@@ -46,12 +46,13 @@ public final class ClusterStreamSender implements IngressSender, AutoCloseable {
     private static final long CONNECT_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(10);
 
     /**
-     * How long the client waits for a {@code NewLeader} before closing itself. The default, 2x the cluster's
-     * 200ms {@code leaderHeartbeatTimeoutNs}, is shorter than an election.
+     * How long the client waits for a {@code NewLeader} once the leader's egress image has gone, before closing
+     * itself. Aeron's default, 2x the cluster's {@code leaderHeartbeatTimeoutNs} (2s by default), leaves no margin
+     * over an election.
      */
     private static final long NEW_LEADER_TIMEOUT_NS = TimeUnit.SECONDS.toNanos(5);
 
-    /** Well inside the cluster's {@code sequencer.sessionTimeoutMs} (1s), as the C++ twin's is. */
+    /** Well inside the cluster's {@code sequencer.sessionTimeoutMs} (5s), as the C++ twin's is. */
     private static final long KEEP_ALIVE_INTERVAL_MS = 200;
 
     /** How long {@link #send} spins before calling the session what it has become. */

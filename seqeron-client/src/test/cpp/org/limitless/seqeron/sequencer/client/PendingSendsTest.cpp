@@ -9,6 +9,7 @@
 
 #include <gtest/gtest.h>
 
+#include "org/limitless/seqeron/helpers/SessionClosedEvent.hpp"
 #include "org/limitless/seqeron/sequencer/client/PendingSends.hpp"
 
 #include "org_limitless_seqeron_sbe_frame/Unsequenced.h"
@@ -95,6 +96,11 @@ class PendingSendsTest : public testing::Test
         event.payload = reinterpret_cast<const char*>(&n);
         event.payloadLength = sizeof(n);
         m_pending.onSequenced(event);
+    }
+
+    void sessionClosed(const std::int64_t session)
+    {
+        m_pending.onSequenced(helpers::SessionClosedEvent{ session }.event);
     }
 
     PendingSends m_pending{ CAPACITY };
@@ -340,6 +346,83 @@ TEST_F(PendingSendsTest, FullRingResendsInPlace)
     }
     EXPECT_EQ(0u, m_pending.size());
     EXPECT_FALSE(m_pending.isFaulted());
+}
+
+TEST_F(PendingSendsTest, FramesNotSeenBeforeTheirSessionClosedAreMissing)
+{
+    send(OWN, 1, 1);
+    send(OWN, 1, 2);
+    send(OWN, 1, 3);
+    arrive(OWN, 1);
+    sessionClosed(OWN);
+    EXPECT_EQ(2u, m_pending.missing());
+    EXPECT_TRUE(m_pending.isHolding());
+    EXPECT_TRUE(m_pending.isClosed(OWN));
+}
+
+TEST_F(PendingSendsTest, AnotherSessionsCloseChangesNothing)
+{
+    send(OWN, 1, 1);
+    sessionClosed(SIBLING);
+    EXPECT_EQ(0u, m_pending.missing());
+    EXPECT_FALSE(m_pending.isHolding());
+    EXPECT_FALSE(m_pending.isClosed(SIBLING));
+}
+
+TEST_F(PendingSendsTest, ReplacedSessionsFramesHoldUntilItsClose)
+{
+    FakeSender sender{ .term = 1 };
+    send(OWN, 1, 1);
+    send(OWN, 1, 2);
+    sender.session = OWN + 1;
+    EXPECT_EQ(0u, m_pending.resendMissing(sender)) << "nothing is known lost yet";
+    EXPECT_TRUE(m_pending.isHolding()) << "but the old session's frames are unsettled";
+    arrive(OWN, 1);
+    EXPECT_TRUE(m_pending.isHolding());
+    sessionClosed(OWN);
+    EXPECT_EQ(1u, m_pending.missing());
+    EXPECT_EQ(1u, m_pending.resendMissing(sender));
+    EXPECT_EQ((std::vector<std::int32_t>{ 2 }), sender.sent);
+    EXPECT_FALSE(m_pending.isHolding());
+    arrive(OWN + 1, 2);
+    EXPECT_EQ(0u, m_pending.size());
+    EXPECT_FALSE(m_pending.isFaulted());
+}
+
+TEST_F(PendingSendsTest, NothingIsResentOntoAClosedSession)
+{
+    FakeSender sender{ .term = 1 };
+    send(OWN, 1, 1);
+    sessionClosed(OWN);
+    EXPECT_EQ(0u, m_pending.resendMissing(sender));
+    EXPECT_TRUE(sender.sent.empty());
+    sender.session = OWN + 1;
+    EXPECT_FALSE(m_pending.isClosed(OWN + 1));
+    EXPECT_EQ(1u, m_pending.resendMissing(sender));
+    EXPECT_EQ((std::vector<std::int32_t>{ 1 }), sender.sent);
+}
+
+TEST_F(PendingSendsTest, FrameOnAClosedSessionIsMissingAtOnce)
+{
+    send(OWN, 1, 1);
+    arrive(OWN, 1);
+    sessionClosed(OWN);
+    EXPECT_FALSE(m_pending.isHolding());
+    send(OWN, 1, 2);
+    EXPECT_EQ(1u, m_pending.missing());
+    EXPECT_TRUE(m_pending.isHolding());
+}
+
+TEST_F(PendingSendsTest, ReplacedSessionWithNoCloseIsSettledByTheTerm)
+{
+    FakeSender sender{ .term = 2 };
+    send(OWN, 1, 1);
+    sender.session = OWN + 1;
+    m_pending.resendMissing(sender);
+    EXPECT_TRUE(m_pending.isHolding());
+    m_pending.onLeadershipChanged(2);
+    EXPECT_EQ(1u, m_pending.resendMissing(sender));
+    EXPECT_FALSE(m_pending.isHolding());
 }
 
 TEST_F(PendingSendsTest, DiscardedSessionsFramesMatchNothing)
